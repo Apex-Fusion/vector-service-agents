@@ -140,7 +140,7 @@ The receipt has eight fields. The supplier's runtime builds and signs it. The se
 4. The signature verifies over the canonical receipt.
 5. `result_receipt_hash` on the ledger equals the sha256 of the canonical `{ receipt, signature }`.
 
-Anyone can repeat it with the receipt, the signature and the escrow reference. Checks 1 to 4 need only those and the supplier's public key, which is at `GET <endpoint>/capability`. Check 5 reads the ledger, which still returns the Submitted datum after the Accept.
+Anyone can repeat it with the receipt, the signature, the escrow reference and the report text. Checks 1 to 4 need only those and the supplier's public key, which is at `GET <endpoint>/capability`. Check 5 reads the ledger, which still returns the Submitted datum after the Accept.
 
 The receipt says who answered, with which exact bytes, to which request, for which escrow. It does not say the report is complete or correct. The report is what its sources returned at `as_of`. It ends with `blind_spots`, a list of what it does not tell you. Read that list. The fields of the report are in [specs/agent-history.md](../specs/agent-history.md).
 

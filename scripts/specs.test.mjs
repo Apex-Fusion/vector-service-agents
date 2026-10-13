@@ -138,7 +138,7 @@ test('docs/HIRE.md: the ledger unit is named once, in section 3, and nowhere els
   assert.equal(guide.match(UNIT_NAME)?.length, 1);
   assert.ok(section(guide, '3. We fund it').includes("the ledger's native unit, " + UNIT_NAME.source));
   // Every other file of the repo says "unit" or prints lovelace. The planning documents and the recorded ledger data are not part of this rule.
-  const skip = (p) => /(^|[\\/])(node_modules|\.git|\.superpowers|fixtures)([\\/]|$)/.test(p) || p.startsWith(join('docs', 'superpowers')) || p === 'pnpm-lock.yaml';
+  const skip = (p) => /(^|[\\/])(node_modules|\.git|\.superpowers)([\\/]|$)/.test(p) || /(^|[\\/])test[\\/]fixtures([\\/]|$)/.test(p) || p.startsWith(join('docs', 'superpowers')) || p === 'pnpm-lock.yaml';
   const walk = (dir, out = []) => { for (const e of readdirSync(dir, { withFileTypes: true })) { const p = join(dir, e.name); if (skip(p)) continue; e.isDirectory() ? walk(p, out) : out.push(p); } return out; };
   const hits = walk('.').filter((p) => /\.(ts|mjs|json|md|yml|yaml|template)$/.test(p) && p !== join('docs', 'HIRE.md')).filter((p) => readFileSync(p, 'utf8').match(UNIT_NAME));
   assert.deepEqual(hits, []);
