@@ -143,18 +143,118 @@ describe('what specs/agent-history.md says safeFetch refuses', () => {
   const row = spec.split('\n').find((l) => l.startsWith("| the subject agent's own endpoint |")) ?? '';
   const lookup = async () => [{ address: '8.8.8.8', family: 4 }];
   test('the spec lists the refusals by name and does not call them "private or reserved"', () => {
-    expect(row).toContain('a URL that is not https, a URL with credentials in it, a host that is or resolves to a loopback, private, link-local, CGNAT or unspecified address, and redirects');
+    expect(row).toContain('a URL that is not https, a URL with credentials in it, a host that is or resolves to a loopback, private, link-local, CGNAT or unspecified address (or an IPv6 site-local or multicast one; an IPv4 address inside an IPv6 address counts as that IPv4 address), and redirects');
     expect(row).not.toMatch(/reserved/);
   });
   test('each of them is refused by the code', async () => {
     expect(() => assertSafeUrl('http://example.com/')).toThrow(/https/);
     expect(() => assertSafeUrl('https://user:pw@example.com/')).toThrow(/credentials/);
-    const examples: Record<string, string[]> = { loopback: ['127.0.0.1', '::1'], private: ['10.0.0.1', '172.16.0.1', '192.168.0.1', 'fd00::1'], 'link-local': ['169.254.169.254', 'fe80::1'], CGNAT: ['100.64.0.1'], unspecified: ['0.0.0.0', '::'] };
+    const examples: Record<string, string[]> = { loopback: ['127.0.0.1', '::1'], private: ['10.0.0.1', '172.16.0.1', '192.168.0.1', 'fd00::1'], 'link-local': ['169.254.169.254', 'fe80::1'], CGNAT: ['100.64.0.1'], unspecified: ['0.0.0.0', '::'], 'site-local': ['fec0::1'], multicast: ['ff02::1'] };
     for (const [kind, ips] of Object.entries(examples)) {
       expect(row, kind).toContain(kind);
       for (const ip of ips) expect(isPrivateAddress(ip), `${kind}: ${ip}`).toBe(true);
     }
     const redirect = (async () => new Response('', { status: 302, headers: { location: 'https://elsewhere.example/' } })) as any;
     await expect(safeFetch('https://ok.example/', {}, { lookup, fetchImpl: redirect })).rejects.toThrow(/redirect/);
+  });
+});
+
+// Hardening made here first (the MCP server vendors this file): the budget covers the host lookup, and an address is judged by its range in whatever
+// spelling it arrives. Injected lookup and fetch only, no network.
+describe('safeFetch: the budget covers the host lookup', () => {
+  const ok = (async () => new Response('x')) as any;
+  test('a lookup that never answers is cut at the timeout with the same TimeoutError, and fetch is never reached', async () => {
+    let fetched = false;
+    const lookup = () => new Promise<never>(() => {});
+    const f = (async () => { fetched = true; return new Response('x'); }) as any;
+    const t0 = performance.now();
+    await expect(safeFetch('https://slow.example/', {}, { lookup, timeoutMs: 30, fetchImpl: f })).rejects.toMatchObject({ name: 'TimeoutError' });
+    expect(performance.now() - t0).toBeLessThan(2_000);
+    expect(fetched).toBe(false);
+  });
+  test('the lookup and the fetch share one budget: a slow lookup leaves the fetch what is left of it', async () => {
+    const lookup = () => new Promise<Array<{ address: string; family: number }>>((resolve) => setTimeout(() => resolve([{ address: '8.8.8.8', family: 4 }]), 300));
+    // a fetch that never answers and rejects with the signal reason, as the real one does
+    const hang = (async (_u: any, init?: RequestInit) => new Promise((_ok, fail) => { const s = init!.signal!; if (s.aborted) fail(s.reason); s.addEventListener('abort', () => fail(s.reason), { once: true }); })) as any;
+    const t0 = performance.now();
+    await expect(safeFetch('https://slow.example/', {}, { lookup, timeoutMs: 600, fetchImpl: hang })).rejects.toMatchObject({ name: 'TimeoutError' });
+    const ms = performance.now() - t0;
+    expect(ms).toBeGreaterThanOrEqual(520); // the whole budget was used
+    expect(ms).toBeLessThan(850); // and not the lookup time on top of it (300 + 600)
+  });
+  test('a lookup that fails or answers after the budget is dropped: no unhandled rejection, no fetch', async () => {
+    let fetched = false;
+    const lookup = () => new Promise<never>((_ok, fail) => setTimeout(() => fail(new Error('the resolver answered late')), 80));
+    const f = (async () => { fetched = true; return new Response('x'); }) as any;
+    await expect(safeFetch('https://slow.example/', {}, { lookup, timeoutMs: 20, fetchImpl: f })).rejects.toMatchObject({ name: 'TimeoutError' });
+    await new Promise((r) => setTimeout(r, 200)); // the late failure arrives; the test run fails if it is unhandled
+    expect(fetched).toBe(false);
+  });
+  test('a lookup that answers in time is untouched by the budget; the host is what the lookup was asked for', async () => {
+    const asked: string[] = [];
+    const lookup = async (h: string) => { asked.push(h); return [{ address: '8.8.8.8', family: 4 }]; };
+    await expect(safeFetch('https://ok.example/p', {}, { lookup, timeoutMs: 5_000, fetchImpl: ok })).resolves.toMatchObject({ status: 200, text: 'x' });
+    expect(asked).toEqual(['ok.example']);
+  });
+});
+
+describe('safeFetch: IPv6 literals are judged directly, with no lookup', () => {
+  const mustNotLookUp = async () => { throw new Error('lookup must not be called for an address literal'); };
+  const reached = () => { const urls: string[] = []; return { urls, f: (async (u: any) => { urls.push(String(u)); return new Response('x'); }) as any }; };
+  test('URL.hostname keeps the brackets, and a literal of a private or special range is refused all the same', async () => {
+    expect(new URL('https://[::1]/').hostname).toBe('[::1]'); // the reason for stripping them
+    for (const host of ['[::1]', '[::]', '[fd00::1]', '[fe80::1]', '[fec0::1]', '[ff02::1]', '[::ffff:10.0.0.1]', '[::ffff:a9fe:a9fe]', '[::10.0.0.1]', '[64:ff9b::a00:1]', '[0:0:0:0:0:0:0:1]']) {
+      const { urls, f } = reached();
+      await expect(safeFetch(`https://${host}/x`, {}, { lookup: mustNotLookUp, fetchImpl: f }), host).rejects.toThrow(/private/);
+      expect(urls, host).toEqual([]);
+    }
+  });
+  test('a public IPv6 literal, and one that maps or translates to a public IPv4 address, goes straight to fetch', async () => {
+    for (const host of ['[2606:4700::1111]', '[2001:4860:4860::8888]', '[::ffff:8.8.8.8]', '[64:ff9b::808:808]']) {
+      const { urls, f } = reached();
+      await expect(safeFetch(`https://${host}/p`, {}, { lookup: mustNotLookUp, fetchImpl: f }), host).resolves.toMatchObject({ status: 200 });
+      expect(urls, host).toHaveLength(1);
+    }
+  });
+  test('an address that comes back from the lookup is judged in whatever form the resolver gives it', async () => {
+    for (const address of ['0:0:0:0:0:0:0:1', '::0001', '0:0:0:0:0:ffff:10.0.0.1', '::FFFF:A00:1', '::10.0.0.1', '64:ff9b::a00:1', 'FEC0::1', 'FF02::1']) {
+      const lookup = async () => [{ address, family: 6 }];
+      await expect(safeFetch('https://sneaky.example/', {}, { lookup, fetchImpl: (async () => new Response('x')) as any }), address).rejects.toThrow(/private/);
+    }
+    // One private answer among public ones is enough to refuse the host.
+    const mixed = async () => [{ address: '2606:4700::1111', family: 6 }, { address: '::ffff:10.0.0.1', family: 6 }];
+    await expect(safeFetch('https://sneaky.example/', {}, { lookup: mixed, fetchImpl: (async () => new Response('x')) as any })).rejects.toThrow(/private/);
+  });
+});
+
+describe('isPrivateAddress reads every spelling of an IPv6 address', () => {
+  test('loopback and unspecified, written out, padded or compressed', () => {
+    for (const ip of ['::1', '0:0:0:0:0:0:0:1', '::0001', '0000:0000:0000:0000:0000:0000:0000:0001', '::', '0:0:0:0:0:0:0:0', '0::0']) expect(isPrivateAddress(ip), ip).toBe(true);
+  });
+  test('an IPv4 address inside an IPv6 one counts as that IPv4 address: mapped, compatible and NAT64, dotted or in hex', () => {
+    for (const ip of ['::ffff:10.0.0.1', '0:0:0:0:0:ffff:10.0.0.1', '::FFFF:A00:1', '::ffff:7f00:1', '::ffff:c0a8:101', '::ffff:ac10:1', '::ffff:a9fe:a9fe', '::ffff:6440:1', '::10.0.0.1', '::a00:1', '::127.0.0.1', '64:ff9b::a00:1', '64:ff9b::10.0.0.1', '0064:ff9b:0:0:0:0:a00:1', '64:ff9b::7f00:1']) expect(isPrivateAddress(ip), ip).toBe(true);
+    for (const ip of ['::ffff:8.8.8.8', '::ffff:808:808', '64:ff9b::808:808', '64:ff9b::8.8.8.8', '::ffff:172.32.0.1']) expect(isPrivateAddress(ip), ip).toBe(false);
+  });
+  test('unique-local, link-local, site-local and multicast, in either case and with or without a zone', () => {
+    for (const ip of ['fc00::1', 'fd00::1', 'FD00::1', 'fdff::1', 'fd00:0:0:0:0:0:0:1', 'fe80::1', 'FE80::1', 'febf::1', 'fe80::1%eth0', 'fec0::1', 'feff::1', 'ff00::', 'ff02::1', 'FF05::2']) expect(isPrivateAddress(ip), ip).toBe(true);
+    for (const ip of ['2606:4700::1111', '2001:4860:4860::8888', '2a00:1450:4001::', '2000::1', '3fff::1', 'fbff::1', 'fe7f::1']) expect(isPrivateAddress(ip), ip).toBe(false);
+  });
+  test('text that is not an address is refused, and the IPv4 rules are as they were', () => {
+    for (const ip of ['', 'localhost', '[::1]', '1.2.3', '::g', '1:2:3:4:5:6:7:8:9', '1::2::3', 'example.com']) expect(isPrivateAddress(ip), JSON.stringify(ip)).toBe(true);
+    for (const ip of ['0.0.0.0', '10.1.2.3', '100.127.255.255', '127.0.0.1', '169.254.1.1', '172.16.0.1', '172.31.255.255', '192.168.0.1']) expect(isPrivateAddress(ip), ip).toBe(true);
+    for (const ip of ['8.8.8.8', '100.63.255.255', '100.128.0.1', '172.15.0.1', '172.32.0.1', '192.169.0.1', '169.253.0.1']) expect(isPrivateAddress(ip), ip).toBe(false);
+  });
+});
+
+describe('safeFetch keeps its own redirect policy', () => {
+  test('a caller redirect option cannot defeat redirect: manual, because the module\'s own init wins', async () => {
+    const lookup = async () => [{ address: '8.8.8.8', family: 4 }];
+    const seen: Array<RequestInit | undefined> = [];
+    const f = (async (_u: any, init?: RequestInit) => { seen.push(init); return new Response('', { status: 302, headers: { location: 'http://evil.example/' } }); }) as any;
+    for (const redirect of ['follow', 'error'] as const) {
+      await expect(safeFetch('https://ok.example/', { redirect }, { lookup, fetchImpl: f }), redirect).rejects.toThrow(/redirect/);
+      expect(seen.at(-1)?.redirect, redirect).toBe('manual');
+    }
+    expect(seen).toHaveLength(2);
   });
 });
