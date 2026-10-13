@@ -43,3 +43,86 @@ describe('safeFetch policy', () => {
     await expect(safeFetch('https://169.254.169.254/latest/meta-data', {}, { lookup, fetchImpl: f })).rejects.toThrow(/private/);
   });
 });
+
+// Hardening (made here first; PR 3 vendors it): the byte cap must hold while the body streams in, not after
+// the whole body has been buffered, because Task 4 points safeFetch at endpoints a registrant controls.
+describe('safeFetch body cap and abort handling', () => {
+  const lookup = async () => [{ address: '8.8.8.8', family: 4 }];
+  const URL_ = 'https://ok.example/';
+  // A pull-driven body of the given chunk sizes that counts pulls and notes a cancel.
+  const countedBody = (sizes: number[], strategy?: QueuingStrategy<Uint8Array>) => {
+    const seen = { pulls: 0, cancelled: false };
+    let next = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) { seen.pulls++; if (next < sizes.length) c.enqueue(new Uint8Array(sizes[next++]).fill(97)); else c.close(); },
+      cancel() { seen.cancelled = true; },
+    }, strategy);
+    return { body, seen };
+  };
+
+  test('stops reading and cancels the body once the running total passes the cap', async () => {
+    const { body, seen } = countedBody(Array(100).fill(1_000));
+    const f = (async () => new Response(body)) as any;
+    await expect(safeFetch(URL_, {}, { lookup, maxResponseBytes: 2_500, fetchImpl: f })).rejects.toThrow(/exceeds the 2500 byte cap/);
+    expect(seen.pulls).toBeLessThanOrEqual(4);
+    expect(seen.cancelled).toBe(true);
+  });
+
+  test('refuses a content-length above the cap before pulling any body byte', async () => {
+    // highWaterMark 0: no look-ahead, so a pull can only come from a read of the body
+    const { body, seen } = countedBody(Array(100).fill(1_000), { highWaterMark: 0 });
+    const f = (async () => new Response(body, { headers: { 'content-length': '10000' } })) as any;
+    await expect(safeFetch(URL_, {}, { lookup, maxResponseBytes: 1_000, fetchImpl: f })).rejects.toThrow(/response of 10000 bytes exceeds the 1000 byte cap/);
+    expect(seen.pulls).toBe(0);
+    expect(seen.cancelled).toBe(true);
+  });
+
+  test('a body of exactly the cap resolves, one byte more does not', async () => {
+    const plain = await safeFetch(URL_, {}, { lookup, maxResponseBytes: 1_000, fetchImpl: (async () => new Response('a'.repeat(1_000))) as any });
+    expect(plain.text).toBe('a'.repeat(1_000));
+    // streamed in two chunks with an honest content-length: neither the header check nor the running total may trip
+    const exact = countedBody([500, 500]);
+    const ok = await safeFetch(URL_, {}, { lookup, maxResponseBytes: 1_000, fetchImpl: (async () => new Response(exact.body, { headers: { 'content-length': '1000' } })) as any });
+    expect(ok.text).toBe('a'.repeat(1_000));
+    expect(exact.seen.cancelled).toBe(false);
+    const over = countedBody([500, 501, 500]); // a third chunk keeps the source open, so there is something left to cancel
+    await expect(safeFetch(URL_, {}, { lookup, maxResponseBytes: 1_000, fetchImpl: (async () => new Response(over.body)) as any })).rejects.toThrow(/exceeds/);
+    expect(over.seen.cancelled).toBe(true);
+  });
+
+  test('a null body (204) yields empty text, and multi-byte text split across chunks survives', async () => {
+    const empty = await safeFetch(URL_, {}, { lookup, fetchImpl: (async () => new Response(null, { status: 204 })) as any });
+    expect(empty).toMatchObject({ status: 204, text: '' });
+    const euro = new TextEncoder().encode('€uro'); // 0xE2 0x82 0xAC then ASCII: split inside the first character
+    const split = new Response(new ReadableStream<Uint8Array>({ start(c) { c.enqueue(euro.slice(0, 1)); c.enqueue(euro.slice(1, 2)); c.enqueue(euro.slice(2)); c.close(); } }));
+    expect((await safeFetch(URL_, {}, { lookup, fetchImpl: (async () => split) as any })).text).toBe('€uro');
+  });
+
+  test('an already-aborted caller signal reaches fetch and makes safeFetch reject', async () => {
+    const ac = new AbortController();
+    ac.abort(new Error('caller gave up'));
+    let received: AbortSignal | undefined;
+    // behave like fetch: refuse to start on an aborted signal
+    const f = (async (_u: any, init?: RequestInit) => { received = init?.signal ?? undefined; init?.signal?.throwIfAborted(); return new Response('x'); }) as any;
+    await expect(safeFetch(URL_, { signal: ac.signal }, { lookup, fetchImpl: f })).rejects.toThrow('caller gave up');
+    expect(received?.aborted).toBe(true);
+  });
+
+  test('a caller signal does not displace the timeout, and aborting it mid-call still stops the call', async () => {
+    // a fetch that never answers and rejects with the signal reason, as the real one does
+    const hang = (entered = () => {}) => (async (_u: any, init?: RequestInit) => new Promise((_ok, fail) => {
+      const s = init!.signal!;
+      if (s.aborted) return fail(s.reason);
+      s.addEventListener('abort', () => fail(s.reason), { once: true });
+      entered();
+    })) as any;
+    await expect(safeFetch(URL_, { signal: new AbortController().signal }, { lookup, timeoutMs: 20, fetchImpl: hang() })).rejects.toMatchObject({ name: 'TimeoutError' });
+    let entered!: () => void;
+    const started = new Promise<void>((r) => { entered = r; });
+    const ac = new AbortController();
+    const pending = safeFetch(URL_, { signal: ac.signal }, { lookup, fetchImpl: hang(entered) });
+    await started;
+    ac.abort(new Error('caller stopped it'));
+    await expect(pending).rejects.toThrow('caller stopped it');
+  });
+});

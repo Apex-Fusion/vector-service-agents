@@ -16,7 +16,19 @@ describe('clients', () => {
     let seen = '';
     const fake = (async (u: any) => { seen = String(u); return new Response('[]', { status: 200 }); }) as typeof fetch;
     await indexer.escrows({ supplier: 'ab' }, fake);
-    expect(seen).toBe('https://mp-indexer.vector.apexfusion.org/escrows?supplier=ab');
+    expect(seen).toBe(`${INDEXER_URL}/escrows?supplier=ab`);
+  });
+  test('indexer.escrows leaves undefined filters out of the query string', async () => {
+    let seen = '';
+    const fake = (async (u: any) => { seen = String(u); return new Response('[]', { status: 200 }); }) as typeof fetch;
+    await indexer.escrows({ supplier: undefined, buyer: 'ab' }, fake);
+    expect(seen).toBe(`${INDEXER_URL}/escrows?buyer=ab`);
+  });
+  test('indexer.escrows with no filters sends no query string at all', async () => {
+    let seen = '';
+    const fake = (async (u: any) => { seen = String(u); return new Response('[]', { status: 200 }); }) as typeof fetch;
+    await indexer.escrows({}, fake);
+    expect(seen).toBe(`${INDEXER_URL}/escrows`);
   });
 });
 
@@ -27,13 +39,22 @@ describe('fixture store and error contract', () => {
     const store: Record<string, { status: number; body: string }> = {};
     const rec = recordingFetch((async () => new Response('[]', { status: 200 })) as typeof fetch, store);
     const asset = 'ab'.repeat(32);
+    const tx = 'cd'.repeat(32);
     await koios.assetUtxos(REGISTRY_POLICY, asset, rec);
     await koios.addressUtxos([REGISTRY_ADDRESS], rec);
+    await koios.assetHistory(REGISTRY_POLICY, asset, rec);
+    await koios.assetTxs(REGISTRY_POLICY, asset, rec);
+    await koios.txInfo([tx], rec);
+    await koios.utxoInfo([`${tx}#0`], rec);
     await koios.tip(rec);
     await indexer.suppliers(rec);
     expect(Object.keys(store)).toEqual([
       `POST ${KOIOS_URL}/asset_utxos ${JSON.stringify({ _asset_list: [[REGISTRY_POLICY, asset]], _extended: true })}`,
       `POST ${KOIOS_URL}/address_utxos ${JSON.stringify({ _addresses: [REGISTRY_ADDRESS], _extended: true })}`,
+      `POST ${KOIOS_URL}/asset_history ${JSON.stringify({ _asset_policy: REGISTRY_POLICY, _asset_name: asset })}`,
+      `POST ${KOIOS_URL}/asset_txs ${JSON.stringify({ _asset_policy: REGISTRY_POLICY, _asset_name: asset, _history: true })}`,
+      `POST ${KOIOS_URL}/tx_info ${JSON.stringify({ _tx_hashes: [tx] })}`,
+      `POST ${KOIOS_URL}/utxo_info ${JSON.stringify({ _utxo_refs: [`${tx}#0`], _extended: true })}`,
       `GET ${KOIOS_URL}/tip `,
       `GET ${INDEXER_URL}/suppliers `,
     ]);

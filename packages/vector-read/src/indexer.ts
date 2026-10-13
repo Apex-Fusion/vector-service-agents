@@ -9,5 +9,9 @@ async function getJson<T>(url: string, f: Fetch = fetch): Promise<T> {
 }
 export const indexer = {
   suppliers: (f?: Fetch) => getJson<SupplierRow[]>(`${INDEXER_URL}/suppliers`, f),
-  escrows: (q: { supplier?: string; buyer?: string }, f?: Fetch) => getJson<EscrowRow[]>(`${INDEXER_URL}/escrows?${new URLSearchParams(q as Record<string, string>)}`, f),
+  escrows: (q: { supplier?: string; buyer?: string }, f?: Fetch) => {
+    // Only filters that are set go on the wire: an undefined one must not become "supplier=undefined", and no filters means no "?".
+    const qs = new URLSearchParams(Object.entries(q).filter((e): e is [string, string] => e[1] != null)).toString();
+    return getJson<EscrowRow[]>(`${INDEXER_URL}/escrows${qs ? `?${qs}` : ''}`, f);
+  },
 };
