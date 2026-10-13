@@ -16,4 +16,15 @@ describe('parseWire', () => {
     expect(() => parseWire(wrap('{"subject":"' + 'ab'.repeat(28) + '","include":["nope"]}'))).toThrowError(/include/);
     expect(() => parseWire('x'.repeat(70_000))).toThrowError(/too large/);
   });
+  test('measures the body in bytes, not UTF-16 code units', () => {
+    const body = 'é'.repeat(33_000); // 33,000 code units but 66,000 bytes on the wire
+    expect(body.length).toBeLessThan(64 * 1024);
+    expect(() => parseWire(body)).toThrowError(/request too large \(66000 bytes, max 65536\)/);
+  });
+  test('requires the single wire message to have role user', () => {
+    const msg = (role: unknown) => JSON.stringify([{ content: '{"subject":"' + 'ab'.repeat(28) + '"}', role }]);
+    expect(() => parseWire(msg('assistant'))).toThrowError(expect.objectContaining({ status: 400, message: expect.stringMatching(/role/) }));
+    expect(() => parseWire(msg(undefined))).toThrowError(expect.objectContaining({ status: 400, message: expect.stringMatching(/role/) }));
+    expect(parseWire(msg('user')).subject).toBe('ab'.repeat(28));
+  });
 });

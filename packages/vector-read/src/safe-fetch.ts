@@ -81,6 +81,7 @@ export async function safeFetch(url: string, init: RequestInit = {}, opts: SafeF
   const res = await f(u.toString(), { ...init, redirect: 'manual', signal });
   if (res.status >= 300 && res.status < 400) {
     const loc = res.headers.get('location') ?? '';
+    await res.body?.cancel().catch(() => {});
     throw new Error(`safeFetch: redirect to ${loc || '(no location)'} refused (redirects are not followed)`);
   }
   const buf = await readCapped(res, opts.maxResponseBytes ?? SAFE_FETCH_DEFAULTS.maxResponseBytes);

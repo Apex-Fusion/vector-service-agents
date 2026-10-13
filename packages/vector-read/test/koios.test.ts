@@ -30,6 +30,13 @@ describe('clients', () => {
     await indexer.escrows({}, fake);
     expect(seen).toBe(`${INDEXER_URL}/escrows`);
   });
+  test('addressUtxos pages through a query-string offset, and no offset leaves the path as it was', async () => {
+    const seen: string[] = [];
+    const fake = (async (u: any) => { seen.push(String(u)); return new Response('[]', { status: 200 }); }) as typeof fetch;
+    await koios.addressUtxos([REGISTRY_ADDRESS], fake);
+    await koios.addressUtxos([REGISTRY_ADDRESS], fake, 1000);
+    expect(seen).toEqual([`${KOIOS_URL}/address_utxos`, `${KOIOS_URL}/address_utxos?offset=1000`]);
+  });
 });
 
 // Downstream fixtures (agent-history and later agents) are hand-written against these exact keys,

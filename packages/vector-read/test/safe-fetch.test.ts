@@ -77,6 +77,15 @@ describe('safeFetch body cap and abort handling', () => {
     expect(seen.cancelled).toBe(true);
   });
 
+  test('a refused redirect cancels its unread body instead of leaving the connection open', async () => {
+    // highWaterMark 0: no look-ahead, so a pull can only come from a read of the body
+    const { body, seen } = countedBody(Array(100).fill(1_000), { highWaterMark: 0 });
+    const f = (async () => new Response(body, { status: 302, headers: { location: 'http://evil.example/' } })) as any;
+    await expect(safeFetch(URL_, {}, { lookup, fetchImpl: f })).rejects.toThrow(/redirect/);
+    expect(seen.pulls).toBe(0);
+    expect(seen.cancelled).toBe(true);
+  });
+
   test('a body of exactly the cap resolves, one byte more does not', async () => {
     const plain = await safeFetch(URL_, {}, { lookup, maxResponseBytes: 1_000, fetchImpl: (async () => new Response('a'.repeat(1_000))) as any });
     expect(plain.text).toBe('a'.repeat(1_000));

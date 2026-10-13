@@ -12,7 +12,7 @@ export async function get<T>(path: string, fetchImpl: Fetch = fetch, timeoutMs =
   return (await res.json()) as T;
 }
 export interface KoiosUtxo { tx_hash: string; tx_index: number; address?: string; value: string; block_height?: number; block_time?: number; is_spent?: boolean; inline_datum?: { bytes: string } | null; asset_list?: Array<{ policy_id: string; asset_name: string; quantity: string }> | null; reference_script?: { hash: string; bytes: string } | null }
-export interface KoiosTxInfo { tx_hash: string; block_height: number; tx_timestamp: number; inputs: Array<{ tx_hash: string; tx_index: number; payment_addr: { cred: string; bech32: string }; value: string; asset_list?: Array<{ policy_id: string; asset_name: string; quantity: string }> }>; outputs: Array<{ tx_index: number; payment_addr: { cred: string; bech32: string }; value: string; inline_datum: { bytes: string } | null; asset_list?: Array<{ policy_id: string; asset_name: string; quantity: string }> }>; assets_minted?: Array<{ policy_id: string; asset_name: string; quantity: string }> }
+export interface KoiosTxInfo { tx_hash: string; block_height: number; tx_block_index: number; tx_timestamp: number; inputs: Array<{ tx_hash: string; tx_index: number; payment_addr: { cred: string; bech32: string }; value: string; asset_list?: Array<{ policy_id: string; asset_name: string; quantity: string }> }>; outputs: Array<{ tx_index: number; payment_addr: { cred: string; bech32: string }; value: string; datum_hash?: string | null; inline_datum: { bytes: string | null; value?: unknown } | null; asset_list?: Array<{ policy_id: string; asset_name: string; quantity: string }> }>; assets_minted?: Array<{ policy_id: string; asset_name: string; quantity: string }> }
 export const koios = {
   post,
   tip: (f?: Fetch) => get<Array<{ block_no: number; abs_slot: number; block_time: number; hash: string }>>('tip', f),
@@ -21,6 +21,7 @@ export const koios = {
   assetTxs: (policy: string, name: string, f?: Fetch) => post<Array<{ tx_hash: string; block_height: number; block_time: number }>>('asset_txs', { _asset_policy: policy, _asset_name: name, _history: true }, f),
   // Without _inputs and _assets Koios answers with empty inputs, empty assets_minted and empty output asset_list.
   txInfo: (hashes: string[], f?: Fetch) => post<KoiosTxInfo[]>('tx_info', { _tx_hashes: hashes, _inputs: true, _assets: true }, f),
-  addressUtxos: (addresses: string[], f?: Fetch) => post<KoiosUtxo[]>('address_utxos', { _addresses: addresses, _extended: true }, f, 40_000),
+  // Koios answers at most 1,000 rows per call; `offset` (a query parameter) reads the next page. Omitted, the path is unchanged.
+  addressUtxos: (addresses: string[], f?: Fetch, offset?: number) => post<KoiosUtxo[]>(offset ? `address_utxos?offset=${offset}` : 'address_utxos', { _addresses: addresses, _extended: true }, f, 40_000),
   utxoInfo: (refs: string[], f?: Fetch) => post<KoiosUtxo[]>('utxo_info', { _utxo_refs: refs, _extended: true }, f),
 };
