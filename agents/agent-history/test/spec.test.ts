@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { replayFetch } from '@vsa/vector-read';
-import { buildReport, BLIND_SPOTS } from '../src/report.ts';
+import { buildReport, BLIND_SPOTS, CURRENT_STATE_GAP, REPORT_BUDGET_MS, lastKnownKeyLine } from '../src/report.ts';
 import { manifestFromEnv } from '../src/server.ts';
 import { TEST_ENV } from './support.ts';
 // specs/agent-history.md is written from what the code emits. These tests keep it that way.
@@ -25,8 +25,9 @@ describe('specs/agent-history.md', () => {
   });
   test('the manifest gaps are blind-spot lines, so the spec lists them word for word as well', () => {
     const m = manifestFromEnv(TEST_ENV);
-    expect(m.gaps).toEqual([BLIND_SPOTS[1], `${BLIND_SPOTS[2]} ${BLIND_SPOTS[3]}`]);
-    for (const line of [BLIND_SPOTS[1], BLIND_SPOTS[2], BLIND_SPOTS[3]]) expect(section('Known gaps')).toContain(line);
+    expect(m.gaps).toEqual([BLIND_SPOTS[1], `${BLIND_SPOTS[2]} ${BLIND_SPOTS[3]}`, CURRENT_STATE_GAP]);
+    expect(CURRENT_STATE_GAP).toBe(BLIND_SPOTS[5]);
+    for (const line of [BLIND_SPOTS[1], BLIND_SPOTS[2], BLIND_SPOTS[3], CURRENT_STATE_GAP]) expect(section('Known gaps')).toContain(line);
   });
   test('the opening line says what the manifest description says', () => {
     const first = manifestFromEnv(TEST_ENV).description.split(' Read-only')[0]; // the sentence before "Read-only; no model cost."
@@ -35,7 +36,7 @@ describe('specs/agent-history.md', () => {
   });
   test('the lines a report adds are in Known gaps', () => {
     const gaps = section('Known gaps');
-    for (const line of ['No registry record found for this subject.', 'marketplace and key_roles were not read: the subject has no live registry record', 'module scan may be truncated at 1,000 rows']) expect(gaps).toContain(line);
+    for (const line of ['No registry record found for this subject.', 'marketplace and key_roles were not read: the subject has no live registry record', lastKnownKeyLine('<key hash>'), 'module scan may be truncated at 1,000 rows']) expect(gaps).toContain(line);
   });
   test('the Terms tables carry the numbers of the manifest', () => {
     const t = manifestFromEnv(TEST_ENV).terms;
@@ -49,6 +50,8 @@ describe('specs/agent-history.md', () => {
     expect(terms).toContain(`| Processing window, advert \`max_processing_ms\` | ${t.max_processing_ms} ms |`);
     expect(terms).toContain(`| Wire payload, the body of \`POST /\` | ${t.input_limits.request_bytes} bytes (64 KiB), counted in bytes |`);
     expect(terms).toContain('| Service timeout, `SERVICE_TIMEOUT_MS` | 180000 ms |');
+    expect(terms).toContain(`| Report time budget | ${REPORT_BUDGET_MS} ms |`);
+    expect(terms).toContain('A section that has not finished by then is reported as `{ "error": "time budget exceeded" }`');
   });
   test('the capability id, the status line and the one Response heading the manifest links to', () => {
     const m = manifestFromEnv(TEST_ENV);

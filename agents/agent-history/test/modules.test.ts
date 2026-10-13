@@ -117,6 +117,38 @@ describe('module datums are matched by the identifier the subject was given as',
   });
 });
 
+describe('Module-1 and Module-6 are read with all their addresses at once', () => {
+  // A fetch that holds every address_utxos call until the gate opens, and notes which addresses were asked for in the meantime.
+  const gated = () => {
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    const asked: string[] = [];
+    const replay = replayFetch(fx.store);
+    const f = (async (u: any, i?: RequestInit) => { asked.push(JSON.parse(String(i?.body))._addresses[0]); await gate; return replay(u, i); }) as typeof fetch;
+    return { f, asked, open };
+  };
+  const settle = async (asked: string[], n: number) => { for (let i = 0; i < 100 && asked.length < n; i++) await new Promise((r) => setTimeout(r, 10)); };
+  test('the six Module-1 addresses are all asked before any is answered, and the labels keep the order of the addresses', async () => {
+    const { f, asked, open } = gated();
+    const run = disputeSection(subject('asset', CHANDRA, OWNER), f);
+    await settle(asked, 6);
+    const whileWaiting = [...asked];
+    open();
+    const r = await run;
+    expect(whileWaiting.sort()).toEqual(Object.values(M1_ADDRESSES).sort());
+    expect(Object.keys(r)).toEqual(Object.keys(M1_ADDRESSES));
+  });
+  test('the three Module-6 addresses are all asked before any is answered', async () => {
+    const { f, asked, open } = gated();
+    const run = selfImprovementSection(subject('asset', CHANDRA, OWNER), f);
+    await settle(asked, 3);
+    const whileWaiting = [...asked];
+    open();
+    await run;
+    expect(whileWaiting.sort()).toEqual(Object.values(M6_ADDRESSES).sort());
+  });
+});
+
 describe('module scans', () => {
   const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ tx_hash: (i + 1).toString(16).padStart(64, '0'), tx_index: 0, value: '1', inline_datum: null, asset_list: [] }));
   const page = (n: number) => ({ status: 200, body: JSON.stringify(rows(n)) });

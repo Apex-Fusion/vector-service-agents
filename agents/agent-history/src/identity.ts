@@ -11,12 +11,20 @@ const hasToken = (l: Array<{ policy_id: string; asset_name: string }> | null | u
 // The one test for "this datum has bytes": null, undefined and the empty string all mean the bytes are not there.
 const bytesOf = (d: { bytes?: string | null } | null | undefined): string | null => (d?.bytes ? d.bytes : null);
 const refOf = (txHash: string, index: number) => `${txHash}#${index}`;
+// The identity section, and the one value the report needs that is not part of it: the key that owned the record last, whether or not the
+// record is still there. It is the last to_pkh of the updates, else the owner at registration; null when the subject was never registered.
+// A subject whose record is gone (deregistered, or the token left the registry) has no live controller, and this is the key the marketplace
+// section is then read with.
+export interface IdentityTimeline { section: IdentitySection; last_controller_pkh: string | null }
 export async function identitySection(s: Subject, f: Fetch): Promise<IdentitySection> {
+  return (await identityTimeline(s, f)).section;
+}
+export async function identityTimeline(s: Subject, f: Fetch): Promise<IdentityTimeline> {
   const empty: IdentitySection = { registered: null, record: null, updates: [], deregistered: null };
   const asset = s.asset_name;
-  if (!asset) return empty;
+  if (!asset) return { section: empty, last_controller_pkh: null };
   const list = await koios.assetTxs(REGISTRY_POLICY, asset, f);
-  if (list.length === 0) return empty;
+  if (list.length === 0) return { section: empty, last_controller_pkh: null };
   const infos = await koios.txInfo(list.map((t) => t.tx_hash), f);
   const byHash = new Map(infos.map((t) => [t.tx_hash, t]));
   // Oldest first. Transactions of one block are told apart by their position in it (asset_txs lists newest first).
@@ -47,5 +55,5 @@ export async function identitySection(s: Subject, f: Fetch): Promise<IdentitySec
     } else if (spentToken) { out.deregistered = at; record = null; }
   }
   out.record = record;
-  return out;
+  return { section: out, last_controller_pkh: prevOwner };
 }

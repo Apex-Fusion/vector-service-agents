@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import { Data, Constr, fromText } from '@lucid-evolution/lucid';
 import { replayFetch, REGISTRY_POLICY, REGISTRY_ADDRESS } from '@vsa/vector-read';
-import { identitySection } from '../src/identity.ts';
+import { identitySection, identityTimeline } from '../src/identity.ts';
 const ASSET = 'ab'.repeat(32), A = 'cd'.repeat(28), B = 'ef'.repeat(28), K = 'https://v2.koios.vector.mainnet.apexfusion.org/api/v1';
 const reg = (owner: string) => Data.to(new Constr(0, [new Constr(0, [owner]), fromText('A'), fromText('d'), [fromText('x.y.v1')], fromText('fw'), fromText(''), 1n]));
 const tok = [{ policy_id: REGISTRY_POLICY, asset_name: ASSET, quantity: '1' }];
@@ -84,5 +84,30 @@ describe('identitySection with datums posted by hash', () => {
   });
   test('a datum that cannot be read is an error, not a deregistration', async () => {
     await expect(identitySection(subject, replayFetch(storeFor(txs.slice(0, 1), [])))).rejects.toThrow(/could not be read/);
+  });
+});
+
+// The key the report falls back on when the registry no longer holds the record: the last to_pkh of the updates, else the owner at registration.
+describe('identityTimeline: the last controller key', () => {
+  test('after a rotation and a deregistration it is the key rotated to; the section is the one identitySection gives', async () => {
+    const t = await identityTimeline(subject, replayFetch(store));
+    expect(t.last_controller_pkh).toBe(B);
+    expect(t.section).toEqual(await identitySection(subject, replayFetch(store)));
+    expect(t.section.record).toBeNull();
+  });
+  test('registered and deregistered with no update in between it is the owner at registration', async () => {
+    const direct = [txs[0], { ...txs[2], inputs: txs[1].inputs }]; // the token leaves the registry in the transaction after the registration
+    const t = await identityTimeline(subject, replayFetch(storeOf(direct)));
+    expect(t.section).toMatchObject({ registered: { block: 100 }, deregistered: { block: 300 }, record: null, updates: [] });
+    expect(t.last_controller_pkh).toBe(A);
+  });
+  test('with a live record it is the owner of that record', async () => {
+    const t = await identityTimeline(subject, replayFetch(storeOf(txs.slice(0, 2))));
+    expect(t.section.record?.owner_pkh).toBe(B);
+    expect(t.last_controller_pkh).toBe(B);
+  });
+  test('a subject that was never registered, or has no asset name, has none', async () => {
+    expect((await identityTimeline(subject, replayFetch(storeOf([])))).last_controller_pkh).toBeNull();
+    expect((await identityTimeline({ kind: 'pkh', asset_name: null, did: null, controller_pkh: A, candidates: [] }, replayFetch({}))).last_controller_pkh).toBeNull();
   });
 });

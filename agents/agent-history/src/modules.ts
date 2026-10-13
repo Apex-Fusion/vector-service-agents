@@ -27,9 +27,13 @@ export async function reputationSection(s: Subject, f: Fetch, scan?: ModuleScan)
   const stakes = stakeUtxos.flatMap((u) => { try { const d = decodeStakeDatum(u.inline_datum!.bytes); return (s.kind === 'asset' ? d.agent_asset_name === s.asset_name : d.owner_pkh === s.controller_pkh) ? [{ utxo: ref(u), ...d, stake_lovelace: d.stake_lovelace.toString() }] : []; } catch { return []; } });
   return { stakes, endorsements: mentions(endorseUtxos, s) };
 }
+// All the addresses are read at the same time (Module-1 has six, Module-6 three): read one after another, a slow Koios would add its delay six times.
+// The labels come out in the order the addresses were given.
 export async function genericModuleSection(addresses: Record<string, string>, s: Subject, f: Fetch, scan?: ModuleScan) {
+  const entries = Object.entries(addresses);
+  const rows = await Promise.all(entries.map(([, address]) => moduleRows(address, f, scan)));
   const out: Record<string, ReturnType<typeof mentions>> = {};
-  for (const [label, address] of Object.entries(addresses)) out[label] = mentions(await moduleRows(address, f, scan), s);
+  entries.forEach(([label], i) => { out[label] = mentions(rows[i], s); });
   return out;
 }
 export const disputeSection = (s: Subject, f: Fetch, scan?: ModuleScan) => genericModuleSection(M1_ADDRESSES, s, f, scan);

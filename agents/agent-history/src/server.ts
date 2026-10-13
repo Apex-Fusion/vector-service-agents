@@ -3,7 +3,7 @@ import type { IncomingMessage } from 'node:http';
 import { REGISTRY_ADDRESS } from '@vsa/vector-read';
 import type { Fetch, SafeFetchOpts } from '@vsa/vector-read';
 import { parseWire, BadRequest, MAX_BODY } from './request.ts';
-import { buildReport, degradedReasons, ESCROW_ROWS_GAP, DISPUTE_MODULE_GAP, GENERIC_MATCH_GAP } from './report.ts';
+import { buildReport, degradedReasons, ESCROW_ROWS_GAP, DISPUTE_MODULE_GAP, GENERIC_MATCH_GAP, CURRENT_STATE_GAP } from './report.ts';
 import type { Report } from './report.ts';
 import { TtlCache } from './cache.ts';
 // A number from the environment: absent or empty means the default (an empty string must not become 0); anything else must be a
@@ -37,7 +37,7 @@ export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
     terms: { price_lovelace: envInt('ADVERT_PRICE_LOVELACE', env.ADVERT_PRICE_LOVELACE, 1_000_000), supplier_bond_lovelace: 1_000_000, buyer_bond_lovelace: 1_000_000, max_processing_ms: envInt('ADVERT_MAX_PROCESSING_MS', env.ADVERT_MAX_PROCESSING_MS, 300_000), input_limits: { request_bytes: MAX_BODY } },
     behaviour: { data_handling: 'Reads public ledger data only; the request subject is held in memory, and a report is served from cache for at most 60 s (expired entries are purged lazily).', third_parties: ['Koios (Vector mainnet indexer)', 'marketplace indexer', "the subject agent's own endpoint (one GET /capability, 64 KiB cap, 20 s budget)"] },
     status: { chip: statusChip(env.AGENT_STATUS_CHIP), since: env.AGENT_STATUS_SINCE ?? '2026-10-13' },
-    gaps: [ESCROW_ROWS_GAP, `${DISPUTE_MODULE_GAP} ${GENERIC_MATCH_GAP}`],
+    gaps: [ESCROW_ROWS_GAP, `${DISPUTE_MODULE_GAP} ${GENERIC_MATCH_GAP}`, CURRENT_STATE_GAP],
     links: { spec: 'https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/agent-history.md', source: 'https://github.com/Apex-Fusion/vector-service-agents/tree/main/agents/agent-history', explorer_advert: env.ADVERT_EXPLORER_URL ?? '' },
   };
 }

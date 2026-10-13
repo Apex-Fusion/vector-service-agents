@@ -6,7 +6,7 @@ import type { Server } from 'node:http';
 import { replayFetch } from '@vsa/vector-read';
 import type { Fetch } from '@vsa/vector-read';
 import { createServer, manifestFromEnv, envInt } from '../src/server.ts';
-import { BLIND_SPOTS } from '../src/report.ts';
+import { BLIND_SPOTS, buildReport } from '../src/report.ts';
 import { TEST_ENV, TEST_CONTACT } from './support.ts';
 const fx = JSON.parse(readFileSync(new URL('./fixtures/chandra.json', import.meta.url), 'utf8'));
 const ASSET = '5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db';
@@ -237,6 +237,21 @@ describe('degraded reports are answered but not cached', () => {
       expect(withTip.json.as_of).not.toBeNull();
     });
   });
+  test('a section that never answers is cut at the report budget: the job is answered, with that section as an error, and the report is not kept', async () => {
+    const replay = replayFetch(fx.store);
+    const calls: string[] = [];
+    const stuck = (async (u: any, i?: RequestInit) => { calls.push(String(u)); return String(u).endsWith('/suppliers') ? new Promise<Response>(() => {}) : replay(u, i); }) as Fetch;
+    const shortBudget = ((req, f, o) => buildReport(req, f, { ...o, budgetMs: 200 })) as typeof buildReport; // the real builder, with a budget a test can wait for
+    await withServer({ fetchImpl: stuck, buildReport: shortBudget }, async (post) => {
+      const first = await post(wire(['identity', 'marketplace']));
+      expect(first.status).toBe(200);
+      expect(first.json.marketplace).toEqual({ error: 'time budget exceeded' });
+      expect(first.json.identity.registered.block).toBe(7275113);
+      const afterFirst = calls.length;
+      await post(wire(['identity', 'marketplace']));
+      expect(calls.length).toBeGreaterThan(afterFirst); // built again, not served from the cache
+    });
+  });
 });
 
 describe('manifest', () => {
@@ -309,9 +324,11 @@ describe('manifest', () => {
   });
   test('the texts frozen into the advert hash: the gaps are the blind-spot sentences, the description does not claim the service signs, the subject agent endpoint is a named third party, the cache wording is exact', () => {
     const m = manifestFromEnv(TEST_ENV);
-    expect(m.gaps).toHaveLength(2);
+    expect(m.gaps).toHaveLength(3);
     expect(m.gaps[0]).toBe(BLIND_SPOTS[1]); // the same sentences in the manifest and in every report
     expect(m.gaps[1]).toBe(`${BLIND_SPOTS[2]} ${BLIND_SPOTS[3]}`);
+    expect(m.gaps[2]).toBe(BLIND_SPOTS[5]); // the module sections show the ledger as it is now
+    expect(m.gaps[2]).toMatch(/A withdrawn stake, a closed claim or a spent proposal no longer appears/);
     expect(m.gaps[1]).not.toMatch(/v15-sim/); // both Module-1 deployments are read, so there is no gap to state
     expect(m.gaps[1]).toMatch(/the asset name for a DID or asset name and the key hash for a key hash/);
     expect(m.gaps[1]).toMatch(/An entry that names an agent only by its controller key is not found for a DID or asset name/);
