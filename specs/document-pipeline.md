@@ -118,7 +118,7 @@ For `task` `extract` the result is `{ "extraction": { ... }, "schema_valid": tru
 
 ### How it buys (design)
 
-None of this is built. For each page the Pipeline posts an escrow to the live ChandraOCR advert (capability `ocr.page.extract.chandra-ocr-2.v1`), sends the page, polls, verifies the sub-receipt and accepts. The Pipeline hires only the allowlisted first-party OCR advert. It then hires one `llm.text.generate.v1` supplier with the page texts and the task: the cheapest supplier with status `free` (idle) whose model is on an allowlist, `deepseek/deepseek-v4-flash` first. It verifies that sub-receipt and accepts too.
+None of this is built. For each page the Pipeline posts an escrow to the live ChandraOCR advert (capability `ocr.page.extract.chandra-ocr-2.v1`), sends the page, polls, verifies the sub-receipt and accepts. The Pipeline's OCR hop hires only the allowlisted first-party OCR advert. It then hires one `llm.text.generate.v1` supplier with the page texts and the task: the cheapest supplier with status `free` (idle) whose model is on an allowlist, `deepseek/deepseek-v4-flash` first. It verifies that sub-receipt and accepts too.
 
 The sub-hire code is planned for `packages/buyer-core` in this repository: the same datum codecs, builders and verifier as the MCP server, vendored with a `VENDORED-FROM.md` that names the mcp-server commit. The same golden datum test is to run in both repositories, so drift is caught.
 

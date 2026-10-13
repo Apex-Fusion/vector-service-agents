@@ -108,8 +108,8 @@ test('the Pipeline states its economics and the first-party OCR hop; the Advocat
   assert.equal(pipeline.match(/both Foundation-operated/), null);
   assert.match(DESIGN, /the Pipeline's buyer key Foundation-operated, the OCR agent's supplier key HAL8-operated/);
   // The hiring rule is stated as an allowlist. No reason about what a backend is made of appears on a public surface.
-  assert.ok(section(pipeline, 'Interface').includes('The Pipeline hires only the allowlisted first-party OCR advert.'));
-  assert.ok(DESIGN.includes('The Pipeline hires only the allowlisted first-party OCR advert.'));
+  assert.ok(section(pipeline, 'Interface').includes("The Pipeline's OCR hop hires only the allowlisted first-party OCR advert."));
+  assert.ok(DESIGN.includes("The Pipeline's OCR hop hires only the allowlisted first-party OCR advert."));
   for (const text of [pipeline, DESIGN]) assert.equal(text.match(/subscription|proxy/i), null);
   assert.match(section(pipeline, 'Operator and data handling'), /Direct hire of the OCR agent by outsiders is out of scope for this programme/);
   assert.equal(pipeline.match(/not offered to outsiders/), null); // the OCR advert is Active on the public indexer
