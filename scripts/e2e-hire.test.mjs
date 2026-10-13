@@ -15,9 +15,11 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 // scripts/e2e-hire.mjs against a fake builder (an MCP server over HTTP, here) and a fake signer (an MCP server over stdio,
 // scripts/fixtures/fake-signer.mjs). Nothing here touches a network beyond 127.0.0.1, a key or a ledger.
 // The fakes answer in the shapes the tools are specified to answer in. Tool names and inputs are those of the design spec, section 5.
-// The field names inside the JSON answers (escrow_ref, tx_hash, deliver_by, seconds_left, jobId, state, receipt_signature, verified,
-// checks) are those of the tool definitions in Plan A (docs/superpowers/plans/2026-10-13-plan-a-mcp-marketplace-tools.md), because PR 2
-// and PR 3 are not implemented yet. Only advert_ref in the supplier list is read from a real tool (PR 1).
+// The field names inside the JSON answers of the post and accept tools (escrow_ref, tx_hash, deliver_by, lock_lovelace, seconds_left) are
+// those that PR 2 emits: it is open as https://github.com/Apex-Fusion/mcp-server/pull/21, and its JSON blocks were checked against these
+// fakes at its head, 94b8f41. The field names of the job tools (jobId, state, receipt_signature, verified, checks) are those of the tool
+// definitions in Plan A (docs/superpowers/plans/2026-10-13-plan-a-mcp-marketplace-tools.md), because PR 3 is not implemented yet.
+// advert_ref in the supplier list is read from a real tool (PR 1).
 const SCRIPT = fileURLToPath(new URL('./e2e-hire.mjs', import.meta.url));
 const FAKE_SIGNER = fileURLToPath(new URL('./fixtures/fake-signer.mjs', import.meta.url));
 const CAPABILITY = 'identity.history.report.v1';
@@ -370,6 +372,9 @@ test('a run killed during the send leaves "sending"; the next run stops with the
   for (const word of ['"job_id"', 'vector_marketplace_get_supplier', 'vector_build_marketplace_reclaim', 'deliver_by', 'Submitted']) assert.ok(stopped.stderr.includes(word), `the recovery steps mention ${word}`);
   assert.ok(stopped.stderr.includes(`/escrows/${encodeURIComponent(ESCROW_REF)}`), 'the one-row read of the escrow, with the # written as %23');
   assert.ok(stopped.stderr.includes('vector_build_marketplace_accept'), 'a Submitted escrow has one way to close');
+  assert.ok(stopped.stderr.includes('"No live continuation of escrow <escrow_ref> found (spent, or not yet indexed); retry or check the explorer."'), 'the refusal of the accept tool, as PR 2 words it');
+  assert.match(stopped.stderr, /ask once more, because the indexer can lag the ledger\. If it refuses again, the escrow is spent and the supplier has most likely released it/, 'one retry before concluding that the supplier released it');
+  assert.doesNotMatch(stopped.stderr, /already closed/);
   assert.doesNotMatch(stopped.stderr, /newest row|accept by hand/);
   assert.deepEqual(builder.names(), [], 'the builder is asked nothing, the send least of all');
 
@@ -396,6 +401,8 @@ test('a send that the tool reports as failed leaves no marker; the free list is 
   const refused = await run(t.env(builder));
   assert.equal(refused.code, 1);
   assert.match(refused.stderr, /is not among the free suppliers/);
+  assert.ok(refused.stderr.includes(`An earlier run already posted escrow ${ESCROW_REF}`), 'the escrow that is already posted');
+  for (const word of ['still Open', 'vector_build_marketplace_reclaim', 'deliver_by', 'move', 'start a new run']) assert.ok(refused.stderr.includes(word), `the stop says ${word}`);
   assert.deepEqual(builder.names(), ['vector_marketplace_list_suppliers']);
 
   builder.calls.length = 0;
@@ -533,6 +540,7 @@ test('refuses an advert that is not among the free suppliers, before anything is
   const r = await run(setup().env(builder));
   assert.equal(r.code, 1);
   assert.match(r.stderr, new RegExp(ADVERT_REF));
+  assert.doesNotMatch(r.stderr, /already posted/, 'no escrow was posted by an earlier run, so none is mentioned');
   assert.deepEqual(builder.names(), ['vector_marketplace_list_suppliers']);
 });
 

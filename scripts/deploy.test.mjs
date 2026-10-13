@@ -105,6 +105,28 @@ test('compose: SERVICE_URL names the service container, its port and the path /,
   assert.equal(agent.environment.SERVICE_CONTENT_TYPE, 'application/json');
 });
 
+test('compose: the service image is named by digest (a placeholder in the repository), and the runbook records the digest before the service starts', () => {
+  // The manifest the service renders is hashed into the advert; a tag that moves would change the bytes behind the hash. A real digest is accepted too.
+  assert.match(service.image, /^ghcr\.io\/apex-fusion\/vector-service-agents\/agent-history@sha256:(<digest>|[0-9a-f]{64})$/);
+  assert.doesNotMatch(service.image, /:latest/);
+  assert.match(read('deploy/apex-web/docker-compose.agent-history.yml'), /# Pinned by digest, not by tag\./);
+  const two = section(runbook, '2. Log in to the registry and get the service image');
+  assert.ok(two.includes("docker image inspect --format '{{index .RepoDigests 0}}' ghcr.io/apex-fusion/vector-service-agents/agent-history:latest"));
+  assert.ok(two.includes('`@sha256:<digest>`') && two.includes('`invalid reference format`'), 'the placeholder, and what compose says while it is there');
+  assert.ok(two.includes("docker image inspect --format '{{.Id}}'"), 'the image ID, for a local build without a digest');
+  assert.ok(two.indexOf('docker pull') < two.indexOf('Then pin the image.'), 'after the pull or the build');
+  const nine = section(runbook, '9. Start the service');
+  assert.ok(nine.includes("grep -E '^    image: (ghcr[.]io/apex-fusion/vector-service-agents/agent-history@sha256:|sha256:)[0-9a-f]{64}$' docker-compose.agent-history.yml"));
+  assert.ok(nine.indexOf('First check the pin of step 2.') < nine.indexOf('up -d service'), 'checked before the service is started');
+  // The check the runbook gives accepts a real digest line and an image ID, and refuses the placeholder.
+  const check = /^    image: (ghcr[.]io\/apex-fusion\/vector-service-agents\/agent-history@sha256:|sha256:)[0-9a-f]{64}$/;
+  assert.match(`    image: ghcr.io/apex-fusion/vector-service-agents/agent-history@sha256:${'ab'.repeat(32)}`, check);
+  assert.match(`    image: sha256:${'ab'.repeat(32)}`, check);
+  assert.doesNotMatch('    image: ghcr.io/apex-fusion/vector-service-agents/agent-history@sha256:<digest>', check);
+  assert.match(section(runbook, 'If something goes wrong'), /\| `invalid reference format` for the service image \|/);
+  assert.ok(readme.includes('(`@sha256:<digest>`, a placeholder in the repository)'), 'the host administrator is told');
+});
+
 test('compose: the runtime holds the key, the service gets it blanked', () => {
   assert.ok(!('SUPPLIER_PRIV_KEY_HEX' in agent.environment), 'the runtime reads the key from the env file');
   assert.equal(service.environment.SUPPLIER_PRIV_KEY_HEX, '', 'an empty string overrides the value from env_file');
@@ -250,7 +272,7 @@ test('CI: the publish job runs on a push to main after the tests, logs in with G
   assert.equal(build.with.context, '.');
   assert.equal(build.with.file, 'agents/agent-history/Dockerfile');
   assert.equal(build.with.push, true);
-  const image = service.image.replace(/:latest$/, '');
+  const image = service.image.replace(/@sha256:.*$/, ''); // the compose file names the image by digest; CI pushes the two tags of the same repository
   assert.deepEqual(build.with.tags.trim().split('\n'), [`${image}:latest`, `${image}:\${{ github.sha }}`]);
   assert.equal(ci.jobs.test.steps.at(-1).run, 'pnpm test');
 });
@@ -362,7 +384,11 @@ test('RUNBOOK: the registry record is the manifest description, the spec capabil
 test('RUNBOOK: funding is two transfers (5 alone, then 50), and the key is generated on the box and is the only copy', () => {
   assert.match(runbook, /exactly 5 units alone/);
   assert.match(runbook, /then 50 units/);
-  assert.match(runbook, /this file is the only copy\. There is no recovery phrase/);
+  assert.match(runbook, /this file is the only copy until step 7\. There is no recovery phrase/);
+  // Step 7 writes a second plaintext copy of the key, and the runbook says so where it happens, where the key is generated and in Back out.
+  assert.match(section(runbook, '4. Make the env file and generate the supplier key'), /Step 7 writes a second plaintext copy of the key to `\/opt\/agent-history\/ops\/wallet`/);
+  assert.match(section(runbook, '7. Register the identity'), /That file is a second plaintext copy of the supplier key, next to the one in the env file\./);
+  assert.match(section(runbook, 'Back out'), /4\. Operator: remove the second plaintext copy of the supplier key that step 7 wrote: `shred -u \/opt\/agent-history\/ops\/wallet`/);
   assert.match(runbook, /gen-keypair\.ts --network 1/);
   assert.match(runbook, /chmod 600 \.env\.agent-history/);
   assert.match(runbook, /read -rs GHCR_TOKEN/);
@@ -429,17 +455,40 @@ test('RUNBOOK step 17: the last item names every file that says PROPOSED about A
     .filter((f) => /\bPROPOSED\b/.test(read(f)) || /^AGENT_STATUS_CHIP=proposed$/m.test(read(f)));
   assert.ok(carriers.length >= 10, `the walk found the files: ${carriers.join(', ')}`);
   for (const f of carriers) assert.ok(item8.includes('`' + f + '`'), `item 8 names ${f}`);
-  for (const [, named] of item8.matchAll(/`([A-Za-z0-9_.\/-]+\.(?:md|yml|snippet|example|ts|mjs))`/g)) assert.ok(existsSync(join(root, named)), `item 8 names a file that exists: ${named}`);
+  // The code says `proposed` too: the service default, the manifest template and the tests that pin it. Every file of the agent that carries the word as a value is named.
+  const codeSide = [...sourceFiles('agents/agent-history/src'), ...sourceFiles('agents/agent-history/test'), 'agents/agent-history/agent.json.template'].filter((f) => /(['"])proposed\1/.test(read(f)));
+  for (const must of ['agents/agent-history/src/server.ts', 'agents/agent-history/agent.json.template', 'agents/agent-history/test/server.test.ts']) assert.ok(codeSide.includes(must), `${must} carries the word as a value`);
+  for (const f of codeSide) assert.ok(item8.includes('`' + f + '`'), `item 8 names ${f}`);
+  assert.match(item8, /regenerate it from the code, never by hand/);
+  assert.match(item8, /The Identity and Links sections of the spec .* were refreshed after steps 7 and 12; check that they are still true\./);
+  for (const [, named] of item8.matchAll(/`([A-Za-z0-9_.\/-]+\.(?:md|yml|snippet|example|ts|mjs|template))`/g)) assert.ok(existsSync(join(root, named)), `item 8 names a file that exists: ${named}`);
 });
 
 test('RUNBOOK: Back out retires the advert first with the supplier key, then stops the services, then the host administrator removes the Caddy block', () => {
   const back = section(runbook, 'Back out');
   const at = (needle) => { const i = back.indexOf(needle); assert.ok(i >= 0, needle); return i; };
-  const order = ['1. Retire the advert.', 'agent/src/cli/retire-advert.ts', '--advert-ref', '2. Stop the containers', 'docker compose -f docker-compose.agent-history.yml down', '3. Host administrator: remove the Caddy block'];
+  const order = ['1. Retire the advert.', 'Skip this point when `ADVERT_REF` in the env file is empty: no advert was posted', 'agent/src/cli/retire-advert.ts', '--advert-ref', '2. Stop the containers', 'docker compose -f docker-compose.agent-history.yml down', '3. Host administrator: remove the Caddy block', '4. Operator: remove the second plaintext copy'];
   const places = order.map(at);
   assert.deepEqual([...places].sort((a, b) => a - b), places);
   assert.match(back, /signed with the supplier key in the env file/);
   assert.ok(runbook.indexOf('\n## Back out\n') > runbook.indexOf('\n## 17.') && runbook.indexOf('\n## Back out\n') < runbook.indexOf('\n## If something goes wrong\n'), 'after step 17, before the failure table');
+});
+
+test('RUNBOOK: the spec is refreshed in a pull request after the identity (step 7) and after the advert (step 12), and the service is asked by key hash before the advert', () => {
+  const seven = section(runbook, '7. Register the identity');
+  assert.ok(seven.includes('Record the identity in the repository.') && seven.includes('"This agent has no registry record yet."') && seven.includes('`scripts/specs.test.mjs`'));
+  assert.ok(seven.indexOf('Record the identity in the repository.') > seven.indexOf("grep -c '^AGENT_DID=did:vector:agent:'"), 'after the identity is checked');
+  const twelve = section(runbook, '12. Post the advert');
+  assert.ok(twelve.includes('Record the advert in the repository.') && twelve.includes('"Advert on the explorer: none yet. The advert is not posted."'));
+  assert.ok(twelve.includes('https://explorer.vector.mainnet.apexfusion.org/transaction/hash/') && twelve.includes('The status word stays PROPOSED until step 17.'));
+  assert.ok(twelve.indexOf('Record the advert in the repository.') > twelve.indexOf('ADVERT_REF=$(docker compose'), 'after the advert is posted');
+  assert.match(section(runbook, '17. Flip the status'), /refreshed after steps 7 and 12/);
+  const nine = section(runbook, '9. Start the service');
+  assert.ok(nine.includes("KEY=$(sed -n 's/^SUPPLIER_PKH=//p' .env.agent-history)"), 'the key hash comes from the env file');
+  assert.ok(nine.includes('`subject.kind` is `pkh`, `subject.candidates` lists the record of step 7, and `marketplace` is an object, not null.'));
+  assert.ok(nine.includes('docs/HIRE.md') && nine.includes('section 7 invites members to use'), 'why the key-hash query is asked');
+  assert.ok(nine.indexOf('"$KEY"') > nine.indexOf('"$DID"'), 'after the query by DID');
+  assert.ok(runbook.indexOf('"$KEY"') < runbook.indexOf('## 12.'), 'before the advert is posted');
 });
 
 test('RUNBOOK: the key is never sent anywhere, the registry login block is bash, the hash script runs from the repository root, PR 2 is open, the wallet monitor is named', () => {

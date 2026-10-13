@@ -360,7 +360,7 @@ What leaves to third parties:
 |---|---|
 | Koios v2 for Vector mainnet | the identifiers the report asks about: asset names, key hashes, transaction hashes, module addresses |
 | the marketplace indexer | the controller key hash |
-| the subject agent's own endpoint | one `GET /capability`: https only, a 64 KiB cap, a 20 s budget, refused when the host resolves to a private or reserved address |
+| the subject agent's own endpoint | one `GET /capability` through `safeFetch`, with a 64 KiB cap and a 20 s budget. It refuses: a URL that is not https, a URL with credentials in it, a host that is or resolves to a loopback, private, link-local, CGNAT or unspecified address, and redirects (a 3xx answer is an error and is not followed) |
 
 Datalab, OpenRouter and Brave are not used. There is no model, no OCR and no web search.
 

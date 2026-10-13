@@ -93,6 +93,11 @@ test('the terms of each spec are the terms in the design spec, read from its Ter
   }
 });
 
+test('the design spec gives the registry endpoint as the public URL, the one the advert carries, not a service URL', () => {
+  assert.ok(DESIGN.includes("endpoint = its public URL (the advert's `endpoint_url`)"));
+  assert.equal(DESIGN.match(/endpoint = its service URL/), null);
+});
+
 test('the Pipeline states its economics and the first-party OCR hop; the Advocate states its declared bias verbatim', () => {
   const pipeline = read('document-pipeline');
   assert.match(section(pipeline, 'Terms'), /at five pages the Pipeline spends about 19 in locks and fees to earn 5/);
@@ -177,7 +182,10 @@ const BONDS_RETURN = /both bonds (return|come back|are returned)|bonds? (are )?r
 test('docs/HIRE.md: who receives what on Accept, Release and Reclaim', () => {
   const three = section(hire(), '3. We fund it');
   assert.ok(three.includes('On Accept the supplier receives the price and the supplier bond, and your bond returns to you.'));
-  assert.ok(three.includes("If you do not accept within 600000 ms of the supplier's Submit, the supplier may Release the escrow and take the price and both bonds."));
+  // One sentence, one unit: the Accept window is 600 s, and a Release hands the supplier everything that is locked, the buyer bond included.
+  assert.ok(three.includes("If you do not accept within 600 s of the supplier's Submit, the supplier may Release the escrow and keep everything that is locked: the price and both bonds, your buyer bond included."));
+  assert.equal(three.match(/may Release/g)?.length, 1, 'said once');
+  assert.equal(hire().match(/\b600000 ms\b/), null, 'the guide gives the window in seconds everywhere');
   assert.ok(three.includes('If the supplier never submits, you reclaim the price and both bonds after `deliver_by`.'));
 });
 
@@ -270,6 +278,17 @@ test('docs/HIRE.md and docs/E2E.md: every place that lists what the receipt chec
   }
 });
 
+test('docs/HIRE.md: the status box says what runs today and that there is no audit; the client config file is said to hold the key in plain text', () => {
+  const guide = hire();
+  const line = 'The hosted server is running with 24 tools today; the marketplace tools are not on it yet. No third-party audit of the marketplace contracts exists.';
+  assert.equal(guide.split(line).length - 1, 1, 'once');
+  assert.ok(guide.indexOf('**Status: PROPOSED.**') < guide.indexOf(line) && guide.indexOf(line) < guide.indexOf('| Piece |'), 'inside the status box, above the table');
+  const four = section(guide, '4. Two lines of config');
+  assert.ok(four.includes('The client config file now holds the raw signer key in plain text.'));
+  assert.match(four, /can sign with the key and spend what it holds/);
+  assert.ok(four.indexOf('in plain text') > four.indexOf('```json') && four.indexOf('in plain text') < four.indexOf('The two limits'), 'after the config, before the limits');
+});
+
 test('docs/HIRE.md: the npx package is called not published before the first npx command, and the client config runs the signer with node', () => {
   const guide = hire();
   const caveat = guide.indexOf('The npx package is not published yet');
@@ -301,6 +320,11 @@ test('docs/E2E.md and scripts/e2e-hire.mjs agree on the send step, the signer se
   assert.ok(script.includes('an earlier run called vector_marketplace_send_job and recorded no job id') && e2e.includes('an earlier run called vector_marketplace_send_job'), 'the message the operator sees is the one the runbook quotes');
   assert.match(e2e, /\| Exit code 1, and the message starts "an earlier run called vector_marketplace_send_job" \|/);
   assert.match(e2e, /\| The check by hand says `response_hash` fails \|/);
+  // An advert that is no longer free after an earlier run posted the escrow, and a signed transaction that can never land.
+  assert.match(e2e, /\| Exit code 1, "is not among the free suppliers", after an earlier run already posted the escrow \|/);
+  assert.match(e2e, /\| Exit code 1, and the same transaction is reported as not confirmed on every rerun \|/);
+  assert.ok(e2e.includes('every rerun submits that same transaction again') && e2e.includes('mv e2e-state.json e2e-state.old.json'));
+  assert.ok(script.includes('An earlier run already posted escrow') && script.includes('is still Open'));
   assert.equal(e2e.match(/never reads/), null, 'the script reads the settings it forwards; it never prints or stores them');
   assert.ok(e2e.includes('The script forwards every `VECTOR_SIGNER_` setting to the signer process it starts.') && e2e.includes('The script never prints or stores the value of a setting.'));
   assert.match(e2e, /`keygen` command, which arrives with PR 4/);
@@ -315,7 +339,7 @@ test('docs/HIRE.md: PR 2 is open with its link, the last message lists the repor
   const row = (needle) => guide.split('\n').find((l) => l.startsWith('|') && l.includes(needle)) ?? '';
   assert.ok(row('vector_build_marketplace_post_escrow').includes('PR 2 open (#21, stacked on #20): [Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21)'));
   assert.match(row('| Reads back what it already has |'), /^\| 6 \| .* You hold the report text, the receipt, the signature, the escrow reference and two links\./);
-  assert.ok(section(guide, '3. We fund it').includes("If you miss the 600 s Accept window after the supplier's Submit, the supplier may Release and keep your buyer bond."));
+  assert.ok(section(guide, '3. We fund it').includes('the supplier may Release the escrow and keep everything that is locked: the price and both bonds, your buyer bond included.'));
 });
 
 test('docs/E2E.md and scripts/e2e-hire.mjs: the recovery text reads the escrow by its reference and closes a Submitted first-party escrow in one way', () => {
@@ -329,6 +353,10 @@ test('docs/E2E.md and scripts/e2e-hire.mjs: the recovery text reads the escrow b
     assert.doesNotMatch(text, /accept by hand|Let the (600000 ms|accept) window pass|Do not accept what you cannot verify/i, name);
     for (const word of ['vector_build_marketplace_accept', 'vector_build_marketplace_reclaim', 'posted_at', 'Submitted']) assert.ok(text.includes(word), `${name}: ${word}`);
     assert.match(text, /a Release would hand it to the supplier/, name);
+    // PR 2's refusal for an escrow that is spent or not yet indexed, quoted as the tool words it, and one retry before concluding anything.
+    assert.ok(text.includes('No live continuation of escrow <escrow') && text.includes('(spent, or not yet indexed); retry or check the explorer.'), `${name}: the refusal of the accept tool`);
+    assert.match(text, /ask once more, because the indexer can lag the ledger/, name);
+    assert.doesNotMatch(text, /already closed/, name);
   }
   assert.ok(recovery.includes('%23'), 'the # of the reference is written as %23');
   assert.ok(fromScript.includes('encodeURIComponent(post.escrow_ref)'));

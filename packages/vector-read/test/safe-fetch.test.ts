@@ -1,5 +1,6 @@
 // Vitest port of packages/builder/test/safe-fetch.test.ts (Plan A Task 7 Step 1; node:test -> vitest).
 import { describe, test, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { assertSafeUrl, isPrivateAddress, safeFetch } from '../src/safe-fetch.ts';
 
 describe('safeFetch policy', () => {
@@ -133,5 +134,27 @@ describe('safeFetch body cap and abort handling', () => {
     await started;
     ac.abort(new Error('caller stopped it'));
     await expect(pending).rejects.toThrow('caller stopped it');
+  });
+});
+
+// Local to this repo: specs/agent-history.md says exactly what safeFetch refuses. Each thing it lists is refused by the code.
+describe('what specs/agent-history.md says safeFetch refuses', () => {
+  const spec = readFileSync(new URL('../../../specs/agent-history.md', import.meta.url), 'utf8');
+  const row = spec.split('\n').find((l) => l.startsWith("| the subject agent's own endpoint |")) ?? '';
+  const lookup = async () => [{ address: '8.8.8.8', family: 4 }];
+  test('the spec lists the refusals by name and does not call them "private or reserved"', () => {
+    expect(row).toContain('a URL that is not https, a URL with credentials in it, a host that is or resolves to a loopback, private, link-local, CGNAT or unspecified address, and redirects');
+    expect(row).not.toMatch(/reserved/);
+  });
+  test('each of them is refused by the code', async () => {
+    expect(() => assertSafeUrl('http://example.com/')).toThrow(/https/);
+    expect(() => assertSafeUrl('https://user:pw@example.com/')).toThrow(/credentials/);
+    const examples: Record<string, string[]> = { loopback: ['127.0.0.1', '::1'], private: ['10.0.0.1', '172.16.0.1', '192.168.0.1', 'fd00::1'], 'link-local': ['169.254.169.254', 'fe80::1'], CGNAT: ['100.64.0.1'], unspecified: ['0.0.0.0', '::'] };
+    for (const [kind, ips] of Object.entries(examples)) {
+      expect(row, kind).toContain(kind);
+      for (const ip of ips) expect(isPrivateAddress(ip), `${kind}: ${ip}`).toBe(true);
+    }
+    const redirect = (async () => new Response('', { status: 302, headers: { location: 'https://elsewhere.example/' } })) as any;
+    await expect(safeFetch('https://ok.example/', {}, { lookup, fetchImpl: redirect })).rejects.toThrow(/redirect/);
   });
 });

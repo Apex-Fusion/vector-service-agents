@@ -144,6 +144,14 @@ async function landTx(key, build, builder, signer) {
   return rec;
 }
 
+// What an earlier run leaves behind when the advert stops being free after the escrow was posted: that escrow is Open, because nothing was sent.
+function postedEscrowNote() {
+  const post = state.post;
+  if (!post?.escrow_ref) return '';
+  const when = post.deliver_by ? new Date(Number(post.deliver_by)).toISOString() : 'deliver_by';
+  return ` An earlier run already posted escrow ${post.escrow_ref}${post.confirmed ? '' : ' (its confirmation was not recorded)'} and sent nothing to the supplier, so that escrow is still Open. Reclaim it with vector_build_marketplace_reclaim after deliver_by (${when}), then move ${STATE_PATH} away and start a new run (docs/E2E.md, "If a run stops").`;
+}
+
 // The one step that cannot simply be repeated: a second send for an escrow the supplier has already claimed is refused (409), and the job id
 // exists only in the answer to the first send. So the state says "sending" before the call and drops it when the id is written down.
 function sendInterrupted(post) {
@@ -155,7 +163,7 @@ function sendInterrupted(post) {
     `  2. Otherwise look at the escrow: vector_marketplace_get_supplier for ${ADVERT_REF} (status busy means a job is running). The indexer keeps one row for each version of the escrow, and the versions of one job share posted_at.`,
     `     The escrow you posted, one row: ${INDEXER_URL}/escrows/${encodeURIComponent(post.escrow_ref)} (its posted_at names the job). Then ${INDEXER_URL}/escrows?buyer=<buyer key hash> lists the versions: among the rows with that posted_at, the furthest state (Submitted, then Claimed, then Open) is where the escrow stands.`,
     `     Open or Claimed: wait for deliver_by (${when}), reclaim the escrow with vector_build_marketplace_reclaim, move the state file away and start a new run.`,
-    '     Submitted: the report cannot be read without the job id, so this run is not evidence. The escrow is first-party, so close it with vector_build_marketplace_accept while the accept window is open: your bond of 1 comes back, and a Release would hand it to the supplier. If the accept tool reports that the escrow is already closed, the supplier has released it. Then move the state file away and start a new run.',
+    '     Submitted: the report cannot be read without the job id, so this run is not evidence. The escrow is first-party, so close it with vector_build_marketplace_accept while the accept window is open: your bond of 1 comes back, and a Release would hand it to the supplier. If the accept tool refuses with "No live continuation of escrow <escrow_ref> found (spent, or not yet indexed); retry or check the explorer.", wait a minute and ask once more, because the indexer can lag the ledger. If it refuses again, the escrow is spent and the supplier has most likely released it: look at the escrow on the explorer. Then move the state file away and start a new run.',
   ].join('\n'));
 }
 
@@ -181,7 +189,7 @@ async function main(builder, signer) {
   // working for us and shows as busy, so a rerun must not ask again.
   if (!job.job_id) {
     const listed = (await call(builder, 'vector_marketplace_list_suppliers', { capability_id: CAPABILITY, limit: 50 })).json ?? [];
-    if (!listed.some((s) => s.advert_ref?.toLowerCase() === ADVERT_REF.toLowerCase())) throw new Fail(`${ADVERT_REF} is not among the free suppliers for ${CAPABILITY}. It may be busy, retired or not advertised`);
+    if (!listed.some((s) => s.advert_ref?.toLowerCase() === ADVERT_REF.toLowerCase())) throw new Fail(`${ADVERT_REF} is not among the free suppliers for ${CAPABILITY}. It may be busy, retired or not advertised.${postedEscrowNote()}`);
   }
 
   if (DRY) { printPlan(address, resultKey); return null; }

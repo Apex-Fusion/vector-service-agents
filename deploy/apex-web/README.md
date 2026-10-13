@@ -9,7 +9,7 @@ This note says what will be installed on the box and what the host administrator
 | Container | Image | Listens on | Reachable from |
 |---|---|---|---|
 | `agent-history-agent` | built on the box from `https://github.com/Apex-Fusion/vector-agent-template.git` at the pinned commit `c4c378a` (`CAPABILITY_KIND=custom`) | 8080 | Caddy, over `umami_default`. The host, on `127.0.0.1:8083` only |
-| `agent-history-service` | `ghcr.io/apex-fusion/vector-service-agents/agent-history` | 9091 | The runtime and Caddy, over `umami_default`. Nothing on the host |
+| `agent-history-service` | `ghcr.io/apex-fusion/vector-service-agents/agent-history`, pinned by digest | 9091 | The runtime and Caddy, over `umami_default`. Nothing on the host |
 
 The working directory on the box is `/opt/agent-history/repo/deploy/apex-web`, inside a checkout of this repository. The compose project is `agent-history`. Both containers join the existing external network `umami_default`, which the umami stack created. The runtime claims jobs, calls the service, signs the receipt and submits its hash. The service reads public ledger data and holds no key: it reads the same env file as the runtime, and the compose file blanks the one secret in it for the service.
 
@@ -19,13 +19,13 @@ The working directory on the box is `/opt/agent-history/repo/deploy/apex-web`, i
 
 2. **Registry login.** The package is private. On the box: `docker login ghcr.io -u <user> --password-stdin`, with a token that has `read:packages`.
 
-3. **The image.** The CI job that publishes `ghcr.io/apex-fusion/vector-service-agents/agent-history` tags two names: `:latest` and `:<full git commit sha>`. To pin a version, put the sha tag in the `image:` line of the compose file. Until CI can publish, build the image on the box from a checkout of this repository and let compose use it:
+3. **The image.** The CI job that publishes `ghcr.io/apex-fusion/vector-service-agents/agent-history` tags two names: `:latest` and `:<full git commit sha>`. The compose file does not use either tag. It names the image by digest (`@sha256:<digest>`, a placeholder in the repository), so that a later pull cannot change the bytes behind the advert's `detail_hash`. After the pull, the host administrator records the digest and hands it to the operator, who puts it in the `image:` line before the service starts ([RUNBOOK.md](RUNBOOK.md), step 2). Until CI can publish, build the image on the box from a checkout of this repository and let compose use it:
 
    ```sh
    docker build -f agents/agent-history/Dockerfile -t ghcr.io/apex-fusion/vector-service-agents/agent-history:latest .
    ```
 
-   Compose does not pull an image it already has, so `up -d` then runs the local build.
+   The digest (or, where Docker keeps none for a local image, the image ID) of that local build is the one to record. Compose does not pull an image that it already has, so `up -d` then runs the local build.
 
 4. **Caddy.** Merge the block below into `/opt/umami/Caddyfile` (it is the block in `Caddyfile.snippet`, which also carries comments), validate and reload:
 

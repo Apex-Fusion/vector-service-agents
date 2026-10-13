@@ -49,6 +49,14 @@ docker build -f agents/agent-history/Dockerfile -t ghcr.io/apex-fusion/vector-se
 cd deploy/apex-web
 ```
 
+Then pin the image. The manifest that the service renders is hashed into the advert (step 12), and `:latest` moves with every merge to `main`, so a later pull could change the bytes behind that hash. The compose file therefore names the image by digest. It ships with the placeholder `@sha256:<digest>`, and compose refuses to start the service (`invalid reference format`) until the placeholder is replaced. Record the digest of the image that is on the box now:
+
+```sh
+docker image inspect --format '{{index .RepoDigests 0}}' ghcr.io/apex-fusion/vector-service-agents/agent-history:latest
+```
+
+It prints the image name, `@sha256:` and 64 hex digits. Give that line to the operator. In `docker-compose.agent-history.yml` the operator replaces `@sha256:<digest>` in the `image:` line of `service` with `@sha256:` and the 64 digits. That is the only local change to the checkout, and it has to be made before step 9. If the command prints an error because `RepoDigests` is empty (an image built on the box by a Docker that keeps no digest for local images), use the image ID instead: `docker image inspect --format '{{.Id}}' ghcr.io/apex-fusion/vector-service-agents/agent-history:latest` prints `sha256:` and 64 hex digits, and the whole `image:` value is that. Do not pull `:latest` over the pinned service after the advert is posted: a new image has a new digest and can change the manifest, so the hash of step 11 has to be taken again.
+
 ## 3. Build the runtime image
 
 ```sh
@@ -87,7 +95,7 @@ grep -c '^OPERATOR_CONTACT=[^<[:space:]]' .env.agent-history
 
 It must print 1: a value that does not start with an angle bracket.
 
-The key is a raw keypair and this file is the only copy. There is no recovery phrase, and nothing can derive it again. Copy `.env.agent-history` to the operator's encrypted offline store now, before the address receives anything. A wallet whose key is lost is gone, whatever the ledger shows for it.
+The key is a raw keypair and this file is the only copy until step 7. There is no recovery phrase, and nothing can derive it again. Copy `.env.agent-history` to the operator's encrypted offline store now, before the address receives anything. A wallet whose key is lost is gone, whatever the ledger shows for it. Step 7 writes a second plaintext copy of the key to `/opt/agent-history/ops/wallet`: from then on the key is in two files on the box, and both are protected the same way.
 
 ## 5. Adapt the ops scripts
 
@@ -140,9 +148,11 @@ python3 make-skey.py
 ./register-did.sh
 ```
 
-The first line removes the empty `AGENT_DID=` line that came with the example: the script refuses to run when the name is already in the file, and it appends the real value. `make-skey.py` writes the signing key, in the form the signer reads, to `/opt/agent-history/ops/wallet` (mode 600). `register-did.sh` builds the registration on the hosted keyless MCP server, signs it locally with the byte-preserving signer, submits it, waits for it, and appends `AGENT_DID` and `AGENT_REGISTER_TX` to the env file. The record has the name `Agent History`, the capability `identity.history.report.v1`, the framework `vector-service-agents`, the endpoint `https://mp-suppliers-history.hal8.ai` and the manifest's description.
+The first line removes the empty `AGENT_DID=` line that came with the example: the script refuses to run when the name is already in the file, and it appends the real value. `make-skey.py` writes the signing key, in the form the signer reads, to `/opt/agent-history/ops/wallet` (mode 600). That file is a second plaintext copy of the supplier key, next to the one in the env file. Keep it as private as the env file, and remove it in Back out (point 4). `register-did.sh` builds the registration on the hosted keyless MCP server, signs it locally with the byte-preserving signer, submits it, waits for it, and appends `AGENT_DID` and `AGENT_REGISTER_TX` to the env file. The record has the name `Agent History`, the capability `identity.history.report.v1`, the framework `vector-service-agents`, the endpoint `https://mp-suppliers-history.hal8.ai` and the manifest's description.
 
 Check: `grep -c '^AGENT_DID=did:vector:agent:' /opt/agent-history/repo/deploy/apex-web/.env.agent-history` prints 1. If the script stops with an error, read the first gotcha at the end before running it again. If it ends with `NOT CONFIRMED`, look at the explorer before running it again: the transaction may still land.
+
+Record the identity in the repository. `specs/agent-history.md` still says "This agent has no registry record yet." Once the check above prints 1, open a pull request that puts the DID into the Identity section of the spec (the DID row, the "Registry record, planned" row and that sentence), together with the test that pins the sentence for this spec in `scripts/specs.test.mjs`. The status word does not change here. Step 17 is the only place that flips it.
 
 ## 8. Stake in Module-3
 
@@ -159,8 +169,16 @@ The staked capabilities must be a subset of the registry record's, and here both
 
 Operator. Start `service` by name. A bare `docker compose up -d` also starts the runtime, which exits at boot while `ADVERT_REF` is empty.
 
+First check the pin of step 2. The `image:` line of `service` must name a digest of 64 hex digits (or an image ID), not the placeholder, or compose stops with `invalid reference format`:
+
 ```sh
 cd /opt/agent-history/repo/deploy/apex-web
+grep -E '^    image: (ghcr[.]io/apex-fusion/vector-service-agents/agent-history@sha256:|sha256:)[0-9a-f]{64}$' docker-compose.agent-history.yml
+```
+
+It prints that line. Then start the service:
+
+```sh
 docker compose -f docker-compose.agent-history.yml up -d service
 docker exec agent-history-service wget -qO- http://127.0.0.1:9091/healthz
 docker exec agent-history-service wget -qO- http://127.0.0.1:9091/agent.json
@@ -175,6 +193,16 @@ DID=$(sed -n 's/^AGENT_DID=//p' .env.agent-history)
 printf '[{"content":"{\\"subject\\":\\"%s\\"}","role":"user"}]' "$DID" \
   | docker exec -i agent-history-service wget -qO- --header='content-type: application/json' --post-file=/dev/stdin http://127.0.0.1:9091/ | head -c 700
 ```
+
+The same by key hash, the other kind of subject that [docs/HIRE.md](../../docs/HIRE.md) section 7 invites members to use. This is the last check of the service before the advert is posted:
+
+```sh
+KEY=$(sed -n 's/^SUPPLIER_PKH=//p' .env.agent-history)
+printf '[{"content":"{\\"subject\\":\\"%s\\"}","role":"user"}]' "$KEY" \
+  | docker exec -i agent-history-service wget -qO- --header='content-type: application/json' --post-file=/dev/stdin http://127.0.0.1:9091/ | head -c 700
+```
+
+`subject.kind` is `pkh`, `subject.candidates` lists the record of step 7, and `marketplace` is an object, not null.
 
 ## 10. DNS and Caddy
 
@@ -239,6 +267,8 @@ sed -i "s|^ADVERT_REF=.*|ADVERT_REF=$ADVERT_REF|; s|^ADVERT_DETAIL_HASH=.*|ADVER
 
 If the command stops with an error after the transaction went out, look at the indexer (step 14) before running it again, so that a second advert is not posted.
 
+Record the advert in the repository. In a pull request, put the explorer link of the advert transaction in the Links section of `specs/agent-history.md`, in place of "Advert on the explorer: none yet. The advert is not posted." The link is `https://explorer.vector.mainnet.apexfusion.org/transaction/hash/` followed by the transaction id, which is `ADVERT_REF` up to the `#`. In the same pull request refresh the rows of the Identity table that still say "planned" or "not in service" and have become true by now (the reputation stake of step 8, the public URL of steps 10 and 13). The manifest keeps an empty `links.explorer_advert`: the advert's own transaction id cannot be inside the manifest the advert hashes. The status word stays PROPOSED until step 17.
+
 ## 13. Start the runtime
 
 Operator. The env file changed, so create the container fresh:
@@ -291,13 +321,13 @@ The status is in the manifest, so changing it changes the bytes the advert hashe
 5. Hash the new manifest (step 11).
 6. Post the new advert (step 12). The new `ADVERT_REF` replaces the old one in the env file.
 7. `docker compose -f docker-compose.agent-history.yml up -d --force-recreate agent`, then steps 13 and 14 again.
-8. In the repository, in a pull request, change every file that says PROPOSED about Agent History, and the tests that pin the word: `specs/agent-history.md` (Status), `agents/agent-history/README.md`, `README.md` (the table), `docs/HIRE.md`, `docs/E2E.md`, `deploy/apex-web/README.md`, `deploy/apex-web/RUNBOOK.md` (its first paragraph and step 14), the first lines of `deploy/apex-web/docker-compose.agent-history.yml` and `deploy/apex-web/Caddyfile.snippet`, and `deploy/apex-web/.env.agent-history.example`. The tests are `agents/agent-history/test/spec.test.ts`, `scripts/specs.test.mjs` and `scripts/deploy.test.mjs`. They fail until all of the files agree.
+8. In the repository, in a pull request, change every file that says PROPOSED about Agent History, and the tests that pin the word: `specs/agent-history.md` (Status), `agents/agent-history/README.md`, `README.md` (the table), `docs/HIRE.md`, `docs/E2E.md`, `deploy/apex-web/README.md`, `deploy/apex-web/RUNBOOK.md` (its first paragraph and step 14), the first lines of `deploy/apex-web/docker-compose.agent-history.yml` and `deploy/apex-web/Caddyfile.snippet`, and `deploy/apex-web/.env.agent-history.example`. The code carries the word as a default too: the `proposed` default in `agents/agent-history/src/server.ts`, the manifest template `agents/agent-history/agent.json.template` (regenerate it from the code, never by hand) and the pins in `agents/agent-history/test/server.test.ts`. The tests are `agents/agent-history/test/spec.test.ts`, `scripts/specs.test.mjs` and `scripts/deploy.test.mjs`. They fail until all of the files agree. The Identity and Links sections of the spec (the DID, the stake, the public URL, the advert and its explorer link) were refreshed after steps 7 and 12; check that they are still true.
 
 ## Back out
 
 To stop the agent, and as the first move of step 17. The order matters: the advert goes first, so that nobody can post an escrow against an agent that is about to stop.
 
-1. Retire the advert. Operator: the transaction is signed with the supplier key in the env file. Check `curl -s http://127.0.0.1:8083/status` says `free` (`working` means a job is in flight: wait for it). From `/opt/agent-history/repo/deploy/apex-web`:
+1. Retire the advert. Skip this point when `ADVERT_REF` in the env file is empty: no advert was posted, and there is nothing to retire (go on with point 2). Operator: the transaction is signed with the supplier key in the env file. Check `curl -s http://127.0.0.1:8083/status` says `free` (`working` means a job is in flight: wait for it). From `/opt/agent-history/repo/deploy/apex-web`:
 
    ```sh
    docker compose -f docker-compose.agent-history.yml run --rm --no-deps -T agent \
@@ -308,6 +338,7 @@ To stop the agent, and as the first move of step 17. The order matters: the adve
    Wait for it to confirm. The units it locked come back.
 2. Stop the containers, operator or host administrator: `docker compose -f docker-compose.agent-history.yml down`. The external network `umami_default` is not touched.
 3. Host administrator: remove the Caddy block from `/opt/umami/Caddyfile`, validate and reload ([README.md](README.md), point 4), and remove the DNS record if it will not be reused.
+4. Operator: remove the second plaintext copy of the supplier key that step 7 wrote: `shred -u /opt/agent-history/ops/wallet`. The env file still holds the key. When the identity or the stake is withdrawn later, `python3 make-skey.py` writes the file again from the env file for that signing, and the file is removed again afterwards.
 
 The registry identity and the Module-3 stake stay on the ledger until the operator withdraws them. The deposit returns on deregistration and the stake after its cooldown.
 
@@ -322,7 +353,8 @@ The registry identity and the Module-3 stake stay on the ledger until the operat
 | The env file changed and nothing happened | `restart` does not re-read it. | `up -d --force-recreate <service>`. |
 | `network umami_default declared as external, but could not be found` | Wrong host, or the umami stack is down. | Start the umami stack. |
 | `pull access denied` for the service image | Not logged in to `ghcr.io`, or the image is not published yet. | Step 2. |
-| The served `/agent.json` hashes differently from the advert's `detail_hash` | The manifest changed after the advert was posted. | Retire the advert (Back out, point 1), then repeat steps 11, 12 and 13. |
+| `invalid reference format` for the service image | The placeholder `@sha256:<digest>` is still in the `image:` line of the compose file. | Record the digest and put it in, step 2. |
+| The served `/agent.json` hashes differently from the advert's `detail_hash` | The manifest changed after the advert was posted: the env file, or a service image other than the digest the advert was hashed with. | Retire the advert (Back out, point 1), then repeat steps 11, 12 and 13. |
 
 ## Two gotchas that cost real transactions
 

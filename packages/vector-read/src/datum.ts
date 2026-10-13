@@ -49,6 +49,14 @@ function asInt(x: unknown, where: string): bigint {
   if (typeof x !== 'bigint') throw new Error(`${where}: expected integer`);
   return x;
 }
+// A JS number rounds integers beyond 2^53 - 1 without a sound. The advert's two sizes become numbers that later code does
+// arithmetic on (deliver_by = now + window), so a value that cannot be held exactly is refused, naming the field.
+const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+function asSafeInt(x: unknown, where: string): number {
+  const n = asInt(x, where);
+  if (n > MAX_SAFE || n < -MAX_SAFE) throw new Error(`${where}: integer outside the safe range`);
+  return Number(n);
+}
 function optionInt(x: unknown, where: string): number | null {
   const c = asConstr(x, where);
   if (c.index === 1) return null;
@@ -72,8 +80,8 @@ export function decodeAdvertDatum(hex: string): AdvertDatum {
     supplier_pkh: asBytes(f[0], 'advert.supplier_pkh'),
     capability_id: toText(asBytes(f[1], 'advert.capability_id')),
     model: toText(asBytes(f[2], 'advert.model')),
-    max_output_tokens: Number(asInt(f[3], 'advert.max_output_tokens')),
-    max_processing_ms: Number(asInt(f[4], 'advert.max_processing_ms')),
+    max_output_tokens: asSafeInt(f[3], 'advert.max_output_tokens'),
+    max_processing_ms: asSafeInt(f[4], 'advert.max_processing_ms'),
     price_lovelace: asInt(f[5], 'advert.price'),
     supplier_bond_lovelace: asInt(f[6], 'advert.supplier_bond'),
     buyer_bond_lovelace: asInt(f[7], 'advert.buyer_bond'),
@@ -83,6 +91,25 @@ export function decodeAdvertDatum(hex: string): AdvertDatum {
     advertised_at: Number(asInt(f[11], 'advert.advertised_at')),
     status: status === 0 ? 'Active' : 'Retired',
   };
+}
+
+// Positions of the four bytestring fields decodeAdvertDatum turns into text: capability_id, model, endpoint_url, detail_uri.
+const ADVERT_TEXT_FIELDS = [1, 2, 8, 9];
+
+/**
+ * True when the advert's four text fields are valid UTF-8 exactly as stored. decodeAdvertDatum reads them with toText,
+ * which replaces invalid sequences with U+FFFD and drops a leading BOM, so for such an advert re-encoding the decoded
+ * text would not reproduce the on-chain bytes. Takes the raw datum; one that is not a well-formed advert is false.
+ */
+export function advertTextFieldsRoundTrip(datumHex: string): boolean {
+  let parsed: Data;
+  try { parsed = Data.from(datumHex); } catch { return false; }
+  if (!(parsed instanceof Constr) || parsed.fields.length !== 13) return false;
+  const fields = parsed.fields;
+  return ADVERT_TEXT_FIELDS.every((i) => {
+    const hex = fields[i];
+    return typeof hex === 'string' && fromText(toText(hex)) === hex.toLowerCase();
+  });
 }
 
 export function decodeEscrowDatum(hex: string): EscrowDatum {
@@ -170,8 +197,8 @@ export function requestSpecHash(a: Pick<AdvertDatum, 'capability_id' | 'max_outp
 export function wirePayloadFor(payload: string): string { return canonicalize([{ content: payload, role: 'user' }]); }
 export function promptHashForPayload(payload: string): string { return sha256Utf8Hex(wirePayloadFor(payload)); }
 
-// Min-ada floor for the escrow's largest future datum (Submitted). Port of minAdaFloor.ts.
-// Sized from encodeEscrowDatum, which is byte-identical to the marketplace's encoder, so it matches minAdaFloor.ts exactly.
+// The min-UTxO floor for the escrow's largest future datum (Submitted). Port of the marketplace's floor (agents-marketplace packages/shared).
+// Sized from encodeEscrowDatum, which is byte-identical to the marketplace's encoder, so it matches the marketplace's floor exactly.
 const UTXO_COST_PER_BYTE = 4310n;
 const OUTPUT_OVERHEAD_BYTES = 160n;
 const SAFETY_MARGIN_LOVELACE = 50_000n;

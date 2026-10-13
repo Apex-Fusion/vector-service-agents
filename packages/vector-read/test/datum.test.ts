@@ -1,14 +1,15 @@
-// Vitest port of packages/builder/test/marketplace-datum.test.ts @ 4a7b223 (Apex-Fusion/mcp-server,
-// branch feat/marketplace-read-tools). node:assert/strict calls became expect() equivalents with the
+// Vitest port of packages/builder/test/marketplace-datum.test.ts @ 94b8f41 (Apex-Fusion/mcp-server,
+// branch feat/marketplace-build-tools, PR 2). node:assert/strict calls became expect() equivalents with the
 // same meaning (deepEqual -> toStrictEqual, equal -> toBe, throws -> toThrow, ok(cond) -> a comparison
-// matcher). The 'registry and stake datums' block below is local to this repo.
+// matcher). The 'registry and stake datums' block below is local to this repo. Two tests of the 4a7b223 port that
+// the source has since dropped as redundant are kept here (the semantic-equality test and the two lock-floor bounds).
 import { describe, test, expect } from 'vitest';
 import { createHash } from 'node:crypto';
 import { Data, Constr, fromText } from '@lucid-evolution/lucid';
 import {
   decodeAdvertDatum, decodeEscrowDatum, encodeEscrowDatum, canonicalize,
   requestSpecHash, wirePayloadFor, promptHashForPayload, escrowLockFloor, parseOutRef, formatOutRef,
-  decodeRegistryDatum, decodeStakeDatum, topLevelBytes, blake2b224Hex,
+  advertTextFieldsRoundTrip, decodeRegistryDatum, decodeStakeDatum, topLevelBytes, blake2b224Hex,
 } from '../src/datum.ts';
 import {
   ADVERT_DATUM_HEX, ADVERT_EXPECTED, ESCROW_OPEN_DATUM_HEX, ESCROW_EXPECTED, ESCROW_LOCKED_LOVELACE, ESCROW_REF,
@@ -18,8 +19,26 @@ describe('advert datum', () => {
   test('decodes the live ChandraOCR advert field by field', () => {
     expect(decodeAdvertDatum(ADVERT_DATUM_HEX)).toStrictEqual(ADVERT_EXPECTED);
   });
+  test('decodes Lucid-compact framing too (third-party suppliers using Lucid or Mesh emit d8799f…ff)', () => {
+    const compact = Data.to(Data.from(ADVERT_DATUM_HEX));
+    expect(compact.startsWith('d8799f'), 'indefinite-length framing, not the on-chain definite one').toBe(true);
+    expect(decodeAdvertDatum(compact)).toStrictEqual(ADVERT_EXPECTED);
+  });
   test('request_spec_hash of that advert matches the live escrow datum', () => {
     expect(requestSpecHash(decodeAdvertDatum(ADVERT_DATUM_HEX))).toBe(ESCROW_EXPECTED.request_spec_hash);
+  });
+  // max_output_tokens and max_processing_ms become JS numbers that later code does arithmetic on (deliver_by = now + window).
+  // Past 2^53 a Number silently rounds, so the decoder refuses instead of handing on a wrong duration.
+  test('max_output_tokens and max_processing_ms must be safe integers, and the error names the field', () => {
+    const withField = (index: number, value: bigint) => { const c = Data.from(ADVERT_DATUM_HEX) as Constr<Data>; c.fields[index] = value; return Data.to(c); };
+    const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+    for (const [index, name] of [[3, 'max_output_tokens'], [4, 'max_processing_ms']] as const) {
+      expect(decodeAdvertDatum(withField(index, MAX_SAFE))[name], `${name}: 2^53 - 1 is fine`).toBe(Number.MAX_SAFE_INTEGER);
+      expect(decodeAdvertDatum(withField(index, -MAX_SAFE))[name], `${name}: the decoder stays lenient about sign`).toBe(-Number.MAX_SAFE_INTEGER);
+      for (const bad of [MAX_SAFE + 1n, MAX_SAFE + 2n, -MAX_SAFE - 1n, 2n ** 64n, 10n ** 40n]) {
+        expect(() => decodeAdvertDatum(withField(index, bad)), `${name} = ${bad}`).toThrow(new RegExp(`advert\.${name}: .*safe`));
+      }
+    }
   });
 });
 
@@ -35,6 +54,11 @@ describe('escrow datum', () => {
   test('re-encoding is semantically identical to the on-chain bytes', () => {
     const ours = encodeEscrowDatum(decodeEscrowDatum(ESCROW_OPEN_DATUM_HEX));
     expect(Data.from(ours)).toStrictEqual(Data.from(ESCROW_OPEN_DATUM_HEX));
+  });
+  test('decodes Lucid-compact framing too (third-party suppliers using Lucid or Mesh emit d8799f…ff)', () => {
+    const compact = Data.to(Data.from(ESCROW_OPEN_DATUM_HEX));
+    expect(compact.startsWith('d8799f'), 'indefinite-length framing, not the on-chain definite one').toBe(true);
+    expect(decodeEscrowDatum(compact)).toStrictEqual(ESCROW_EXPECTED);
   });
   test('round-trips Submitted state with both options present', () => {
     const d = { ...ESCROW_EXPECTED, submitted_at: 1786530100000, result_receipt_hash: 'ab'.repeat(32), state: 'Submitted' as const };
@@ -52,13 +76,13 @@ describe('escrow datum', () => {
     const d = { ...ESCROW_EXPECTED, submitted_at: submittedAt, result_receipt_hash: receipt, state: 'Submitted' as const };
     expect(encodeEscrowDatum(d)).toBe(expected);
   });
-  test('bytestring headers use the shortest definite form across the 24 / 256 boundaries', () => {
+  test('bytestring headers use the shortest definite form across the 24 / 256 / 65,536 boundaries', () => {
     const capHex = '5821' + Buffer.from(ESCROW_EXPECTED.capability_id, 'utf8').toString('hex');
     const at = ESCROW_OPEN_DATUM_HEX.indexOf(capHex);
     expect(at).toBeGreaterThan(0);
     const head = ESCROW_OPEN_DATUM_HEX.slice(0, at);
     const tail = ESCROW_OPEN_DATUM_HEX.slice(at + capHex.length);
-    for (const [len, header] of [[0, '40'], [23, '57'], [24, '5818'], [255, '58ff'], [256, '590100']] as const) {
+    for (const [len, header] of [[0, '40'], [23, '57'], [24, '5818'], [255, '58ff'], [256, '590100'], [65_535, '59ffff']] as const) {
       const d = { ...ESCROW_EXPECTED, capability_id: 'a'.repeat(len) };
       expect(encodeEscrowDatum(d), `${len}-byte capability_id`).toBe(head + header + '61'.repeat(len) + tail);
     }
@@ -68,6 +92,8 @@ describe('escrow datum', () => {
     expect(() => encodeEscrowDatum({ ...ESCROW_EXPECTED, payment_lovelace: 2n ** 64n })).toThrow(/uint64/);
     expect(() => encodeEscrowDatum({ ...ESCROW_EXPECTED, prompt_hash: 'abc' })).toThrow(/even-length hex/);
     expect(() => encodeEscrowDatum({ ...ESCROW_EXPECTED, state: 'Bogus' as never })).toThrow(/unknown state/);
+    // the 64 KiB bytestring guard: 65,535 bytes is the last that fits the 59 xx xx header (covered above)
+    expect(() => encodeEscrowDatum({ ...ESCROW_EXPECTED, capability_id: 'a'.repeat(65_536) })).toThrow(/too long/);
   });
   test('lock floor never goes below the economic total and covers the live lock', () => {
     const open = decodeEscrowDatum(ESCROW_OPEN_DATUM_HEX);
@@ -93,6 +119,40 @@ describe('hashing', () => {
     expect(parseOutRef(ESCROW_REF)).toStrictEqual({ txHash: ESCROW_REF.slice(0, 64), outputIndex: 0 });
     expect(formatOutRef(ESCROW_REF.slice(0, 64), 0)).toBe(ESCROW_REF);
     expect(() => parseOutRef('nope#1')).toThrow(/out ref/);
+  });
+});
+
+// decodeAdvertDatum reads the four text fields with toText, which is lossy for bytes that are not UTF-8 (invalid
+// sequences become U+FFFD, a leading BOM is dropped). Writing such an advert's capability id into an escrow datum
+// would produce different bytes than the advert holds, so the Post builder checks the raw bytes first.
+describe('advertTextFieldsRoundTrip', () => {
+  const TEXT_FIELDS = { capability_id: 1, model: 2, endpoint_url: 8, detail_uri: 9 } as const;
+  const withField = (index: number, value: unknown): string => {
+    const c = Data.from(ADVERT_DATUM_HEX) as Constr<Data>;
+    c.fields[index] = value as Data;
+    return Data.to(c);
+  };
+  test('the live advert round-trips, empty detail_uri included', () => {
+    expect(advertTextFieldsRoundTrip(ADVERT_DATUM_HEX)).toBe(true);
+  });
+  test('valid multi-byte UTF-8 round-trips in every text field', () => {
+    const text = fromText('café ☕ 日本語 🚀');
+    for (const [name, index] of Object.entries(TEXT_FIELDS)) expect(advertTextFieldsRoundTrip(withField(index, text)), name).toBe(true);
+  });
+  test('a long text field (chunked bytestring in Lucid-compact framing) round-trips', () => {
+    const datum = withField(TEXT_FIELDS.endpoint_url, fromText('https://' + 'a'.repeat(200) + '.example'));
+    expect(datum.startsWith('d8799f'), 'Lucid-compact framing').toBe(true);
+    expect(advertTextFieldsRoundTrip(datum)).toBe(true);
+  });
+  test('a lone ff byte in any of the four text fields does not', () => {
+    for (const [name, index] of Object.entries(TEXT_FIELDS)) expect(advertTextFieldsRoundTrip(withField(index, 'ff')), name).toBe(false);
+  });
+  test('other byte sequences toText cannot reproduce do not: truncated, overlong, surrogate, leading BOM, mid-string', () => {
+    for (const hex of ['c3', 'c080', 'eda080', 'efbbbf61', '61ff62']) expect(advertTextFieldsRoundTrip(withField(TEXT_FIELDS.model, hex)), hex).toBe(false);
+  });
+  test('anything that is not a well-formed advert datum is false, not a throw', () => {
+    for (const hex of [ESCROW_OPEN_DATUM_HEX, 'd87980', 'ff', 'zz', '']) expect(advertTextFieldsRoundTrip(hex), JSON.stringify(hex)).toBe(false);
+    expect(advertTextFieldsRoundTrip(withField(TEXT_FIELDS.capability_id, 5n)), 'integer where bytes belong').toBe(false);
   });
 });
 

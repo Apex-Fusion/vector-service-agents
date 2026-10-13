@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { Data, Constr, fromText } from '@lucid-evolution/lucid';
-import { replayFetch, didFor, KOIOS_URL, M3_REPUTATION_ADDRESS, M3_ENDORSEMENT_ADDRESS, M1_ADDRESSES, M6_ADDRESSES } from '@vsa/vector-read';
+import { replayFetch, didFor, topLevelBytes, KOIOS_URL, M3_REPUTATION_ADDRESS, M3_ENDORSEMENT_ADDRESS, M1_ADDRESSES, M6_ADDRESSES } from '@vsa/vector-read';
 import { reputationSection, disputeSection, selfImprovementSection } from '../src/modules.ts';
 import type { ModuleScan } from '../src/modules.ts';
 import type { Subject } from '../src/subject.ts';
@@ -37,23 +37,25 @@ describe('Module-3 stakes follow the kind of subject', () => {
     expect(refs(r)).toEqual([RECORDED, `${txOf(1)}#0`]);
     expect(r.stakes.map((s) => s.agent_asset_name)).toEqual([CHANDRA, SIBLING]);
   });
-  test('on the recorded ledger data, one agent of a key with eight stakes gets exactly its own', async () => {
+  // Only ChandraOCR's own rows are pinned exactly (its stake above and in report.test.ts). Other agents' rows are unrelated data: a later recording
+  // may hold more of them, so they are checked by what they must be, and counted from below.
+  test('on the recorded ledger data, one agent of a key with many stakes gets its own and none of its siblings', async () => {
     const asAsset = await reputationSection(subject('asset', AGENT, BUSY_OWNER), replayFetch(fx.store));
-    expect(asAsset.stakes).toHaveLength(1);
-    expect(asAsset.stakes[0]).toMatchObject({ agent_asset_name: AGENT, owner_pkh: BUSY_OWNER, stake_lovelace: '50000000' });
+    expect(asAsset.stakes.length).toBeGreaterThanOrEqual(1);
+    for (const s of asAsset.stakes) expect(s).toMatchObject({ agent_asset_name: AGENT, owner_pkh: BUSY_OWNER }); // no sibling of the same owner
     const asKey = await reputationSection(subject('pkh', null, BUSY_OWNER), replayFetch(fx.store));
-    expect(asKey.stakes).toHaveLength(8);
+    expect(asKey.stakes.length).toBeGreaterThanOrEqual(8); // eight when recorded
+    for (const s of asKey.stakes) expect(s.owner_pkh).toBe(BUSY_OWNER);
+    expect(new Set(asKey.stakes.map((s) => s.agent_asset_name)).size).toBeGreaterThan(1); // the key has siblings
+    expect(asKey.stakes.map((s) => s.agent_asset_name)).toContain(AGENT);
   });
 });
 
 describe('Module-3 endorsements', () => {
-  test('an endorsement datum recorded from the ledger is found by the asset name it names', async () => {
+  test('endorsement datums recorded from the ledger are found by the asset name they name', async () => {
     const r = await reputationSection(subject('asset', AGENT, null), replayFetch(fx.store));
-    expect(r.endorsements).toHaveLength(4);
-    expect(r.endorsements).toContainEqual({
-      utxo: 'd067d343132869f0c065a1ec88273cb83d41540b73a7bcdaebfe324302506d54#0', block: 4938952,
-      fields: ['efeda5bbbebd452dcd532744213a98addb8f85525833ee83f0b40dee417195d1', AGENT],
-    });
+    expect(r.endorsements.length).toBeGreaterThanOrEqual(4); // four when recorded
+    for (const e of r.endorsements) expect(e).toEqual({ utxo: expect.stringMatching(/^[0-9a-f]{64}#\d+$/), block: expect.any(Number), fields: expect.arrayContaining([AGENT]) });
   });
   test('an agent that no recorded endorsement names has none', async () => {
     const r = await reputationSection(subject('asset', CHANDRA, OWNER), replayFetch(fx.store));
@@ -101,19 +103,26 @@ describe('module datums are matched by the identifier the subject was given as',
     expect(r.dispute.claim_v15_sim).toEqual([]);
     expect(r.dispute.jury_pool).toEqual([]);
   });
-  // A Module-1 claim recorded from the v15-sim claim address (13 rows then). Its first field is the asset name of a registered agent, its second a key hash.
-  const RECORDED_CLAIM = {
-    utxo: '643c70cb36256a932762572310090bf161a6be99fa5fa14e597e8fc60f256e4d#1', block: 4955306,
-    fields: ['601f42f37be71a51cd3a655f4b774d30c8a9565b1a92ea5244fb7d479d788726', '8052f1fcdc94518c30ca16b027e7409232329c4ffb9f45602c43cf2a', '107e05ea123c081f285964fc9c6bdebc7cd60fde2165c0dfd76f19dd95bc94f5',
-      '646174615f696e646578696e67', '697066733a2f2f73696d2f6c6966656379636c655f736d6f6b655f31373736383230343838'],
-  };
-  test('a v15-sim claim recorded from the ledger is found by the asset name it names, and nothing is found at the v14 addresses', async () => {
-    const r = await disputeSection(subject('asset', RECORDED_CLAIM.fields[0], null), replayFetch(fx.store));
-    expect(r).toEqual({ claim: [], challenge: [], jury_pool: [], claim_v15_sim: [RECORDED_CLAIM], challenge_v15_sim: [], jury_pool_v15_sim: [] });
+  // A Module-1 claim read from the recording itself: the first recorded row at the v15-sim claim address whose first bytes field is an asset name and whose
+  // second is a key hash (13 rows when recorded). It belongs to another agent, so nothing about it is typed in here: a later recording has other rows.
+  const claimRow = (() => {
+    const rows: Array<{ tx_hash: string; tx_index: number; block_height?: number; inline_datum: { bytes: string } | null }> = JSON.parse(fx.store[addressKey(M1_ADDRESSES.claim_v15_sim)].body);
+    for (const u of rows) {
+      const fields = u.inline_datum ? topLevelBytes(u.inline_datum.bytes) : [];
+      if (fields.length >= 2 && fields[0].length === 64 && fields[1].length === 56) return { utxo: `${u.tx_hash}#${u.tx_index}`, block: u.block_height ?? null, fields };
+    }
+    throw new Error('the recording holds no v15-sim claim of the expected shape');
+  })();
+  test('a v15-sim claim recorded from the ledger is found by the asset name it names', async () => {
+    const r = await disputeSection(subject('asset', claimRow.fields[0], null), replayFetch(fx.store));
+    expect(r.claim_v15_sim.length).toBeGreaterThanOrEqual(1);
+    expect(r.claim_v15_sim).toContainEqual(claimRow);
+    for (const e of r.claim_v15_sim) expect(e.fields).toContain(claimRow.fields[0]);
   });
   test('the same recorded claim is found by the key hash it carries, for a subject given as a key hash', async () => {
-    const r = await disputeSection(subject('pkh', null, RECORDED_CLAIM.fields[1]), replayFetch(fx.store));
-    expect(r.claim_v15_sim).toEqual([RECORDED_CLAIM]);
+    const r = await disputeSection(subject('pkh', null, claimRow.fields[1]), replayFetch(fx.store));
+    expect(r.claim_v15_sim).toContainEqual(claimRow);
+    for (const e of r.claim_v15_sim) expect(e.fields).toContain(claimRow.fields[1]);
   });
 });
 
