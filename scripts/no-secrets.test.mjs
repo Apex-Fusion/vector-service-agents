@@ -8,3 +8,9 @@ test('no key material in the repo', () => {
   const hits = walk('.').filter((p) => /\.(ts|js|mjs|json|md|yml|yaml|example)$/.test(p) && !p.endsWith('no-secrets.test.mjs')).filter((p) => FORBIDDEN.test(readFileSync(p, 'utf8')));
   assert.deepEqual(hits, []);
 });
+
+test('no key handling in agent service sources', () => {
+  const AGENT_SRC = /(mnemonic|seed|PRIV_KEY_HEX)/i;
+  const hits = walk('.').filter((p) => /^agents[\\/][^\\/]+[\\/]src[\\/]/.test(p)).filter((p) => AGENT_SRC.test(readFileSync(p, 'utf8')));
+  assert.deepEqual(hits, []);
+});
