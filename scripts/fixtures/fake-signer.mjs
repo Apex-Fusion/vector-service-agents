@@ -1,7 +1,7 @@
 // A stand-in for the local signer, for the tests of scripts/e2e-hire.mjs.
 // It holds no key and signs nothing. It answers the two tools the script calls in the shapes the real signer answers.
 // It is configured the way the real signer is, through VECTOR_SIGNER_ settings, because those are the only settings the script passes on:
-//   VECTOR_SIGNER_AUDIT_LOG_PATH         every call is appended there, as one JSON line, so a test can see what was asked of it
+//   VECTOR_SIGNER_AUDIT_LOG_PATH         every call is appended there, as one JSON line (with this process's pid), so a test can see what was asked of it
 //   VECTOR_SIGNER_SPEND_LIMIT_PER_TX     a transaction is refused above it, in lovelace; every transaction here moves 3.5 units
 //   VECTOR_SIGNER_FAKE_HIDE              comma-separated tool names to leave out of the tool list
 //   VECTOR_SIGNER_FAKE_WRONG_HASH=1      the signed transaction is reported with a hash that is not the one of the transaction given
@@ -27,7 +27,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args = {} } = request.params;
   // Which settings this process can see: the names only, never a value.
-  record({ name, args, vectorSettings: Object.keys(process.env).filter((k) => k.startsWith('VECTOR_')).sort(), scriptSettings: SCRIPT_SETTINGS.filter((k) => k in process.env) });
+  record({ pid: process.pid, name, args, vectorSettings: Object.keys(process.env).filter((k) => k.startsWith('VECTOR_')).sort(), scriptSettings: SCRIPT_SETTINGS.filter((k) => k in process.env) });
   if (name === 'vector_signer_get_address') return text(`Signer address: ${FAKE_ADDRESS}\nKey source: a test double`);
   if (name === 'vector_signer_sign') {
     if (NET_OUTFLOW > Number(process.env.VECTOR_SIGNER_SPEND_LIMIT_PER_TX ?? '100000000')) return text('REFUSED. Net outflow is above the per-transaction limit.');

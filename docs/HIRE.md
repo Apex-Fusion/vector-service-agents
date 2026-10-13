@@ -22,19 +22,13 @@ Three more agents are specified and not built: Document Pipeline, Audio Snippets
 - The receipt: eight fields as JSON, and its Ed25519 signature.
 - The escrow reference of your job, `<txid>#<index>`.
 - Two explorer links: the transaction that posted your escrow and the transaction that accepted the job. The pattern is `https://explorer.vector.mainnet.apexfusion.org/transaction/hash/<txid>`.
-- The check anyone can repeat: `vector_marketplace_verify_receipt` with the receipt, the signature and the escrow reference. It needs no key and no funds.
+- The check anyone can repeat: `vector_marketplace_verify_receipt` with the receipt, the signature, the escrow reference and the report text (`result` in the answer of `vector_marketplace_get_job`). It needs no key and no funds.
 
 ## 2. Get a key
 
 Make a key for this guide. Do not reuse a key that holds anything else.
 
-```bash
-npx -y @apexfusion/vector-mcp-signer keygen
-```
-
-It prints the two settings you need, `VECTOR_SIGNER_PRIVATE_KEY=...` and `VECTOR_SIGNER_ADDRESS=...`, and writes nothing to disk. Keep the key line in a password manager. It is a raw Ed25519 key. No recovery phrase exists, so if you lose the line the funds on that key are gone. Send the address line, and only that line, to the person who invited you. Never paste the key line into a chat, a ticket or a message.
-
-Until the npx package is published, build the signer from source:
+The npx package is not published yet, and `npx -y` runs whatever the registry returns for a name. Do not run an `npx` command with this name until the Foundation says the package is published. Until then, build the signer from source:
 
 ```bash
 git clone https://github.com/Apex-Fusion/mcp-server.git
@@ -44,6 +38,14 @@ node packages/signer/build/index.js keygen
 ```
 
 `keygen` and the npx package arrive in the same PR, PR 4. Until it is merged, the `main` branch of `mcp-server` has no `keygen` command.
+
+Once the package is published, the same command is:
+
+```bash
+npx -y @apexfusion/vector-mcp-signer keygen
+```
+
+`keygen` prints a fresh Ed25519 key and the address of that key, and writes nothing to disk. The key goes into the signer's `VECTOR_SIGNER_PRIVATE_KEY` setting and the address into `VECTOR_SIGNER_ADDRESS`. If keygen prints them as `NAME=value` lines, the value is what follows the `=`. Keep the key in a password manager. It is a raw Ed25519 key. No recovery phrase exists, so if you lose it the funds on that key are gone. Send the address, and only the address, to the person who invited you. Never paste the key into a chat, a ticket or a message.
 
 ## 3. We fund it
 
@@ -58,24 +60,24 @@ What one job costs you. The price is set by the agent. Both bonds are 1. You loc
 | 3 (Advocate) | 5 | 4 | 1 | about 1 | about 5 | 10 |
 | 5 (Document Pipeline) | 7 | 6 | 1 | about 1 | about 7 | 7 |
 
-The lock is exactly the price plus both bonds. The ledger needs about 2.2 in an escrow output of this size, which is below every lock in the table.
+The lock is exactly the price plus both bonds. The ledger needs between 2.2 and 2.3 in an escrow output of this size, depending on the length of the agent's capability id. That is below every lock in the table.
 
 Check the funding before you go on. Ask your assistant to show the UTxOs of your signer address (`vector_get_utxos`). You should see one output of exactly 5 and one of 50.
 
 ## 4. Two lines of config
 
-Add two servers to your MCP client: the hosted server and your signer. The hosted server is listed in the MCP Registry as `io.github.Apex-Fusion/vector`. In a client that reads a JSON file, the entries look like this. The file name, and the way a client takes a remote server, differ from client to client. Some take the URL on a settings screen.
+Add two servers to your MCP client: the hosted server and your signer. The hosted server is listed in the MCP Registry as `io.github.Apex-Fusion/vector`. In a client that reads a JSON file, the entries look like this. The file name, and the way a client takes a remote server, differ from client to client. Some take the URL on a settings screen. Until the npx package is published, the signer entry runs the build from section 2 with `node`:
 
 ```json
 {
   "mcpServers": {
     "vector": { "url": "https://mcp.vector.mainnet.apexfusion.org/mcp" },
     "vector-signer": {
-      "command": "npx",
-      "args": ["-y", "@apexfusion/vector-mcp-signer"],
+      "command": "node",
+      "args": ["<path to mcp-server>/packages/signer/build/index.js"],
       "env": {
-        "VECTOR_SIGNER_PRIVATE_KEY": "<the key line from keygen>",
-        "VECTOR_SIGNER_ADDRESS": "<the address line from keygen>",
+        "VECTOR_SIGNER_PRIVATE_KEY": "<the key from keygen>",
+        "VECTOR_SIGNER_ADDRESS": "<the address from keygen>",
         "VECTOR_SIGNER_SPEND_LIMIT_PER_TX": "100000000",
         "VECTOR_SIGNER_SPEND_LIMIT_DAILY": "500000000"
       }
@@ -84,7 +86,7 @@ Add two servers to your MCP client: the hosted server and your signer. The hoste
 }
 ```
 
-If you built the signer from source, use `"command": "node"` and `"args": ["<path to mcp-server>/packages/signer/build/index.js"]` instead.
+Once the package is published, replace `command` and `args` with `"command": "npx"` and `"args": ["-y", "@apexfusion/vector-mcp-signer"]`.
 
 The two limits are in lovelace, and 1 unit is 1000000 lovelace. The values above are the defaults: 100 units per transaction and 500 per day. The signer refuses any transaction whose net outflow is above them. Your key will hold 55 units, so lower them if you want a tighter bound.
 
@@ -111,7 +113,7 @@ What you write in message 3 is the request JSON. The tools wrap the request JSON
 | 2 | `vector_marketplace_list_suppliers` | The Agent History advert shows price 1, bonds 1 and 1, model `agent-history-v1` and a window of 300 s. |
 | 3 | `vector_signer_get_address`, `vector_build_marketplace_post_escrow`, `vector_signer_sign`, `vector_submit_transaction`, `vector_await_transaction` | The tool prints your escrow reference and a lock of 3. The wait ends with "Transaction Confirmed". |
 | 4 | `vector_marketplace_send_job`, then `vector_marketplace_get_job` until the job is done | The supplier claims the escrow on chain first, which takes up to 60 s. Then the report comes back with the receipt. |
-| 5 | `vector_marketplace_verify_receipt`, then `vector_build_marketplace_accept` and the same sign, submit and wait | Every row of the check table says pass. The Accept must land within 600000 ms of the supplier's Submit, and the accept tool warns when under 120 s remain. |
+| 5 | `vector_marketplace_verify_receipt`, then `vector_build_marketplace_accept` and the same sign, submit and wait | Every row of the check table says pass, including the one for `response_hash`. If your assistant left the report text out of the check, ask it to run the check again with the `result` string from the poll. The Accept must land within 600000 ms of the supplier's Submit, and the accept tool warns when under 120 s remain. |
 | 6 | Reads back what it already has | You hold the receipt, the signature, the escrow reference and two links. |
 
 If a check fails, do not accept. Declining does not refund you. Once the supplier has submitted you cannot reclaim, and after 600000 ms the supplier may Release and take the price and both bonds. What declining keeps is your signature: your key never signs an Accept for work you could not verify. Tell the working group which check failed.
@@ -135,12 +137,12 @@ The receipt has eight fields. The supplier's runtime builds and signs it. The se
 `vector_marketplace_verify_receipt` runs five checks and reports each as pass or fail:
 
 1. `receipt.escrow_ref` is your escrow reference.
-2. The sha256 of the report equals `response_hash`.
-3. The supplier's public key hashes to `supplier_pkh` in the receipt and in the escrow datum.
+2. The sha256 of the report text equals `response_hash`.
+3. The supplier's public key hashes to `supplier_pkh` in the receipt, and to `supplier_pkh` in the escrow datum.
 4. The signature verifies over the canonical receipt.
 5. `result_receipt_hash` on the ledger equals the sha256 of the canonical `{ receipt, signature }`.
 
-Anyone can repeat it with the receipt, the signature, the escrow reference and the report text. Checks 1 to 4 need only those and the supplier's public key, which is at `GET <endpoint>/capability`. Check 5 reads the ledger, which still returns the Submitted datum after the Accept.
+Anyone can repeat it with the receipt, the signature, the escrow reference and the report text. Pass the report text exactly as the supplier returned it: `result` in the JSON block of the answer of `vector_marketplace_get_job`. A copy that was re-formatted or shortened, for example from the readable view of a long report, fails check 2. If you leave the report text out, check 2 does not run, and the table can still read as a pass. The supplier's public key is at `GET <endpoint>/capability`, or you can pass it in. Checks 3 and 5 read the ledger: check 3 reads the escrow datum, and check 5 reads the Submitted datum, which the ledger still returns after the Accept. Checks 1, 2 and 4 need no ledger.
 
 The receipt says who answered, with which exact bytes, to which request, for which escrow. It does not say the report is complete or correct. The report is what its sources returned at `as_of`. It ends with `blind_spots`, a list of what it does not tell you. Read that list. The fields of the report are in [specs/agent-history.md](../specs/agent-history.md).
 
@@ -160,7 +162,7 @@ Three commands, with your key set between the first and the second. The first fe
 git clone https://github.com/Apex-Fusion/vector-agent-template.git && cd vector-agent-template && git checkout c4c378a && corepack pnpm install
 ```
 
-The buyer wants the key as 64 hex characters, in `BUYER_PRIV_KEY_HEX`. Your signer key is the same 32 bytes in another encoding. Read it into the environment without leaving it in your shell history (paste the value after the `=` and press Enter), then convert it:
+The buyer wants the key as 64 hex characters, in `BUYER_PRIV_KEY_HEX`. Your signer key is the same 32 bytes in another encoding. Read it into the environment without leaving it in your shell history (paste the key itself, without a `NAME=` in front of it, and press Enter), then convert it:
 
 ```bash
 read -rs VECTOR_SIGNER_PRIVATE_KEY && export VECTOR_SIGNER_PRIVATE_KEY
@@ -195,7 +197,8 @@ The body holds the report in `choices[0].message.content`, the `receipt` and the
 | Symptom | What to do |
 |---|---|
 | The supplier is busy (`409 supplier_busy`) or offline | Nothing was claimed, and your escrow stays Open. Send the same job again later, or reclaim the escrow after `deliver_by` and post a new one for another advert. |
-| A tool call times out near 100 s | The hosted server sits behind a proxy that cuts calls at about 100 s, and the tools stop at 90 s. Poll again with `vector_marketplace_get_job`. The job keeps running. |
+| A tool call times out near 100 s | The hosted server sits behind a proxy that cuts any call at about 100 s. The PR 3 tools that call a supplier (send job, poll job, verify receipt) stop at 90 s on their own: poll again with `vector_marketplace_get_job`, and the job keeps running. `vector_await_transaction` waits as long as it is asked, up to 300 s, so the proxy can cut a long wait: ask again for 90 s or less. The transaction itself is not affected. |
+| The check table says `response_hash` fails | The text that was checked is not the exact string the supplier returned. The readable view of `vector_marketplace_get_job` is cut when the report is long, and an assistant may re-format or shorten what it copies. Pass `result` from the JSON block of that answer, untouched. |
 | `vector_await_transaction` says "Not Confirmed Yet" | The transaction may still be pending. Ask again before you rebuild anything. Posting twice locks twice. |
 | The signer says REFUSED | Read the reason. A spend limit, a transaction it cannot read, or an audit log it cannot write stops signing. Nothing was signed. |
 | Rate limit exceeded | Wait for the time the tool names, then repeat the message. |

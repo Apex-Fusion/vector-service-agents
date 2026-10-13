@@ -2,9 +2,10 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, readFileSync, existsSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -12,8 +13,11 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 // scripts/e2e-hire.mjs against a fake builder (an MCP server over HTTP, here) and a fake signer (an MCP server over stdio,
-// scripts/fixtures/fake-signer.mjs). Nothing here touches a network beyond 127.0.0.1, a key or a ledger. The fakes answer in the
-// shapes the real tools are specified to answer in (docs/superpowers/specs, section 5).
+// scripts/fixtures/fake-signer.mjs). Nothing here touches a network beyond 127.0.0.1, a key or a ledger.
+// The fakes answer in the shapes the tools are specified to answer in. Tool names and inputs are those of the design spec, section 5.
+// The field names inside the JSON answers (escrow_ref, tx_hash, deliver_by, seconds_left, jobId, state, receipt_signature, verified,
+// checks) are those of the tool definitions in Plan A (docs/superpowers/plans/2026-10-13-plan-a-mcp-marketplace-tools.md), because PR 2
+// and PR 3 are not implemented yet. Only advert_ref in the supplier list is read from a real tool (PR 1).
 const SCRIPT = fileURLToPath(new URL('./e2e-hire.mjs', import.meta.url));
 const FAKE_SIGNER = fileURLToPath(new URL('./fixtures/fake-signer.mjs', import.meta.url));
 const CAPABILITY = 'identity.history.report.v1';
@@ -44,11 +48,14 @@ const UNSIGNED = { post: 'ab'.repeat(80), accept: 'cd'.repeat(80) };
 const TX = { post: sha(UNSIGNED.post), accept: sha(UNSIGNED.accept) };
 const ESCROW_REF = `${TX.post}#0`;
 
-// opts (read at call time, so a test can change them between two runs): tools, schemas, listed, pending, verified, verifyFailures, notConfirmed, submitHash, deliverBy.
+// opts (read at call time, so a test can change them between two runs): tools, schemas, listed, pending, verified, verifyFailures,
+// notConfirmed, slowConfirm, submitHash, deliverBy, sendFails, sendAnswer, hangSend, dropSend, onSend, jobFailed.
 const builders = [];
 async function fakeBuilder(opts = {}) {
   const calls = [];
-  let polls = 0, verifies = 0;
+  let polls = 0, verifies = 0, sends = 0;
+  let inFlight; // the response of the request being served, so that a handler can drop the connection
+  const asked = {};
   const handlers = {
     vector_marketplace_list_capabilities: () => withJson('# Marketplace capabilities', [{ capability_id: CAPABILITY, supplier_count: 1 }]),
     vector_marketplace_list_suppliers: () => (opts.listed === false ? 'No suppliers found for identity.history.report.v1 with status free.' : withJson('# Marketplace suppliers', [{ advert_ref: ADVERT_REF, capability_id: CAPABILITY, model: 'agent-history-v1', price_lovelace: '1000000' }])),
@@ -58,9 +65,22 @@ async function fakeBuilder(opts = {}) {
       const hash = opts.submitHash ?? sha(signedTxCbor.slice(2)); // submitHash: the ledger reports a transaction other than the one given
       return `# Transaction Submitted\n\nTransaction Hash: ${hash}\n\n[View on Explorer](https://explorer.example/transaction/${hash})`;
     },
-    vector_await_transaction: ({ txHash }) => ((opts.notConfirmed ?? []).includes(txHash) ? `# Not Confirmed Yet\n\nTransaction ${txHash} did not appear on-chain within 180s.` : `# Transaction Confirmed\n\nTransaction Hash: ${txHash}`),
-    vector_marketplace_send_job: () => withJson('# Job sent', { jobId: 'job-1', status: 'accepted', route: 'template', capabilityId: CAPABILITY }),
-    vector_marketplace_get_job: () => (++polls <= (opts.pending ?? 1) ? withJson('# Job job-1: running', { state: 'pending', status: 'running' }) : withJson('# Job job-1: done', { state: 'done', result: REPORT, receipt: { ...RECEIPT, escrow_ref: ESCROW_REF }, receipt_signature: SIGNATURE, supplier_pkh: RECEIPT.supplier_pkh })),
+    vector_await_transaction: ({ txHash }) => {
+      asked[txHash] = (asked[txHash] ?? 0) + 1;
+      const pending = (opts.notConfirmed ?? []).includes(txHash) || asked[txHash] <= (opts.slowConfirm ?? 0); // slowConfirm: that many answers of "not yet" for each transaction
+      return pending ? `# Not Confirmed Yet\n\nTransaction ${txHash} did not appear on-chain within 90s.` : `# Transaction Confirmed\n\nTransaction Hash: ${txHash}`;
+    },
+    vector_marketplace_send_job: () => {
+      opts.onSend?.();
+      if (opts.hangSend) return new Promise(() => {}); // no answer at all: the test ends the script while it waits
+      if (opts.dropSend) { inFlight.destroy(); return new Promise(() => {}); } // the connection breaks before an answer
+      if (++sends <= (opts.sendFails ?? 0)) return 'Failed to send job: supplier is already working another job (409 supplier_busy)\n\n**Troubleshooting Tips:**\n1. Pick another advert';
+      return opts.sendAnswer ?? withJson('# Job sent', { jobId: 'job-1', status: 'accepted', route: 'template', capabilityId: CAPABILITY });
+    },
+    vector_marketplace_get_job: () => {
+      if (opts.jobFailed) return withJson('# Job job-1: failed', { state: 'failed', reason: 'service_error', message: 'the service answered 500' });
+      return ++polls <= (opts.pending ?? 1) ? withJson('# Job job-1: running', { state: 'pending', status: 'running' }) : withJson('# Job job-1: done', { state: 'done', result: REPORT, receipt: { ...RECEIPT, escrow_ref: ESCROW_REF }, receipt_signature: SIGNATURE, supplier_pkh: RECEIPT.supplier_pkh });
+    },
     vector_marketplace_verify_receipt: () => {
       const ok = opts.verified !== false && ++verifies > (opts.verifyFailures ?? 0); // verifyFailures: the ledger lags, the first answers say the on-chain hash is missing
       return withJson('# Receipt verification', { verified: ok, checks: { escrow_ref_matches: true, response_hash_matches: true, pub_key_is_supplier: true, signature_valid: opts.verified !== false, on_chain_hash_matches: ok } });
@@ -70,12 +90,13 @@ async function fakeBuilder(opts = {}) {
   const http = createServer(async (req, res) => {
     if (req.method !== 'POST' || req.url !== '/mcp') { res.writeHead(405, { allow: 'POST' }).end(); return; }
     const chunks = []; for await (const c of req) chunks.push(c);
+    inFlight = res;
     const mcp = new Server({ name: 'fake-builder', version: '0.0.0' }, { capabilities: { tools: {} } });
     mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolList() }));
     mcp.setRequestHandler(CallToolRequestSchema, async (r) => {
       calls.push({ name: r.params.name, args: r.params.arguments ?? {} });
       const handler = handlers[r.params.name];
-      return handler ? { content: [{ type: 'text', text: handler(r.params.arguments ?? {}) }] } : { isError: true, content: [{ type: 'text', text: `unknown tool ${r.params.name}` }] };
+      return handler ? { content: [{ type: 'text', text: await handler(r.params.arguments ?? {}) }] } : { isError: true, content: [{ type: 'text', text: `unknown tool ${r.params.name}` }] };
     });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on('close', () => { transport.close(); mcp.close(); });
@@ -83,7 +104,7 @@ async function fakeBuilder(opts = {}) {
     await transport.handleRequest(req, res, JSON.parse(Buffer.concat(chunks).toString('utf8')));
   });
   await new Promise((resolve) => http.listen(0, '127.0.0.1', resolve));
-  const builder = { url: `http://127.0.0.1:${http.address().port}/mcp`, calls, opts, names: () => calls.map((c) => c.name), close: () => http.close() };
+  const builder = { url: `http://127.0.0.1:${http.address().port}/mcp`, calls, opts, names: () => calls.map((c) => c.name), close: () => { http.closeAllConnections?.(); http.close(); } };
   builders.push(builder);
   return builder;
 }
@@ -101,12 +122,13 @@ function setup(overrides = {}) {
     ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(VECTOR_|BUILDER_URL|SIGNER_ENTRY|ADVERT_REF|PAYLOAD|E2E_|EXPLORER_URL)/.test(k))),
     BUILDER_URL: builder.url, SIGNER_ENTRY: FAKE_SIGNER, ADVERT_REF, PAYLOAD, E2E_STATE: files.state, E2E_POLL_MS: '10', VECTOR_SIGNER_AUDIT_LOG_PATH: files.signerLog, ...overrides, ...extra,
   });
-  return { dir, files, signerCalls, env };
+  return { dir, files, signerCalls, env, state: () => JSON.parse(readFileSync(files.state, 'utf8')) };
 }
 function run(env, args = []) {
   return new Promise((resolve) => execFile(process.execPath, [SCRIPT, ...args], { env, timeout: 90_000 }, (error, stdout, stderr) => resolve({ code: error ? (error.code ?? 1) : 0, stdout, stderr })));
 }
 const signs = (calls) => calls.filter((c) => c.name === 'vector_signer_sign').length;
+const USAGE = 'usage: node scripts/e2e-hire.mjs [--dry-run]';
 
 test('stops at once when the builder lacks the marketplace tools, and names all nine (the hosted server today)', async () => {
   const builder = await fakeBuilder({ tools: ['vector_submit_transaction', 'vector_await_transaction'] });
@@ -152,7 +174,7 @@ test('stops when the ledger took a different transaction than the one that was s
   assert.equal(r.code, 1);
   assert.match(r.stderr, new RegExp(`post: the ledger took f{64}, not ${TX.post}`));
   assert.equal(builder.names().includes('vector_await_transaction'), false);
-  assert.equal(JSON.parse(readFileSync(t.files.state, 'utf8')).post.confirmed, undefined);
+  assert.equal(t.state().post.confirmed, undefined);
 });
 
 test('exits 2 and names the settings that are missing', async () => {
@@ -162,6 +184,57 @@ test('exits 2 and names the settings that are missing', async () => {
   const r = await run(env);
   assert.equal(r.code, 2);
   assert.match(r.stderr, /ADVERT_REF/); assert.match(r.stderr, /SIGNER_ENTRY/);
+  assert.deepEqual(builder.calls, []);
+});
+
+test('exits 2 for an advert reference or a request JSON that is malformed, before anything is connected', async () => {
+  const builder = await fakeBuilder();
+  const t = setup();
+  const advert = await run(t.env(builder, { ADVERT_REF: 'not-a-reference' }));
+  assert.equal(advert.code, 2);
+  assert.match(advert.stderr, /ADVERT_REF must be <txid>#<index>, got "not-a-reference"/);
+  const payload = await run(t.env(builder, { PAYLOAD: '{"subject":' }));
+  assert.equal(payload.code, 2);
+  assert.match(payload.stderr, /PAYLOAD must be the request JSON/);
+  assert.deepEqual(builder.calls, []);
+  assert.deepEqual(t.signerCalls(), []);
+});
+
+test('rejects an unknown flag or argument with exit 2 and the usage line, before anything is connected', async () => {
+  const builder = await fakeBuilder();
+  const t = setup();
+  for (const args of [['--dryrun'], ['--dry-run', 'extra'], ['--help']]) {
+    const r = await run(t.env(builder), args);
+    assert.equal(r.code, 2, args.join(' '));
+    assert.ok(r.stderr.includes(`unknown argument ${args.filter((a) => a !== '--dry-run').join(' ')}`), args.join(' '));
+    assert.ok(r.stderr.includes(USAGE), 'the usage line');
+  }
+  assert.deepEqual(builder.calls, []);
+  assert.deepEqual(t.signerCalls(), []);
+});
+
+test('E2E_POLL_MS must be a positive whole number of milliseconds, and anything else exits 2', async () => {
+  const builder = await fakeBuilder();
+  const t = setup();
+  for (const bad of ['0', '-5', '1.5', 'fast', '10ms', '1e3']) {
+    const r = await run(t.env(builder, { E2E_POLL_MS: bad }));
+    assert.equal(r.code, 2, bad);
+    assert.ok(r.stderr.includes(`E2E_POLL_MS must be a positive whole number of milliseconds, got "${bad}"`), bad);
+  }
+  assert.deepEqual(builder.calls, []);
+});
+
+test('a state file that is not a JSON object exits 2, names the file and leaves it as it was', async () => {
+  const builder = await fakeBuilder();
+  const t = setup();
+  for (const content of ['{"run": ', 'not json at all', '[]', 'null', '"text"']) {
+    writeFileSync(t.files.state, content);
+    const r = await run(t.env(builder));
+    assert.equal(r.code, 2, content);
+    assert.ok(r.stderr.includes(t.files.state), `names the file for ${content}`);
+    assert.match(r.stderr, /not valid JSON|does not hold a JSON object/);
+    assert.equal(readFileSync(t.files.state, 'utf8'), content, 'the file is untouched');
+  }
   assert.deepEqual(builder.calls, []);
 });
 
@@ -176,6 +249,7 @@ test('--dry-run reads, prints every call it would make, and signs, submits and s
   let at = -1;
   for (const tool of planned) { const i = r.stdout.indexOf(tool, at + 1); assert.ok(i > at, `${tool} is planned, in order`); at = i; }
   assert.ok(r.stdout.includes(ADVERT_REF) && r.stdout.includes(ADDRESS), 'the plan carries the real arguments');
+  assert.equal((r.stdout.match(/done in an earlier run/g) ?? []).length, 0, 'nothing is done yet');
   assert.equal(existsSync(t.files.state), false, 'a dry run writes no state');
 });
 
@@ -196,7 +270,7 @@ test('a full run: post, send, poll, verify, accept, each transaction signed, sub
   assert.deepEqual(byName('vector_marketplace_send_job')[0].args, { escrow_ref: ESCROW_REF, payload: PAYLOAD });
   assert.deepEqual(byName('vector_marketplace_verify_receipt')[0].args, { escrow_ref: ESCROW_REF, receipt: { ...RECEIPT, escrow_ref: ESCROW_REF }, receipt_signature: SIGNATURE, output: REPORT });
   assert.deepEqual(byName('vector_submit_transaction').map((c) => c.args.signedTxCbor), [`ff${UNSIGNED.post}`, `ff${UNSIGNED.accept}`], 'what the signer returned is what was submitted');
-  assert.deepEqual(byName('vector_await_transaction').map((c) => c.args.txHash), [TX.post, TX.accept]);
+  assert.deepEqual(byName('vector_await_transaction').map((c) => c.args), [{ txHash: TX.post, timeoutSeconds: 90 }, { txHash: TX.accept, timeoutSeconds: 90 }], 'a wait is asked for in slices of 90 s, under the proxy cut near 100 s');
   assert.deepEqual(t.signerCalls().map((c) => c.name), ['vector_signer_get_address', 'vector_signer_sign', 'vector_signer_sign']);
   const evidence = JSON.parse(r.stdout);
   assert.equal(evidence.run, 'first-party');
@@ -206,9 +280,11 @@ test('a full run: post, send, poll, verify, accept, each transaction signed, sub
   assert.equal(evidence.explorer.accept, `https://explorer.vector.mainnet.apexfusion.org/transaction/hash/${TX.accept}`);
   assert.deepEqual(evidence.receipt, { ...RECEIPT, escrow_ref: ESCROW_REF });
   assert.equal(evidence.receipt_signature, SIGNATURE);
+  assert.equal(evidence.result, REPORT, 'the report text is in the evidence, so the receipt can be checked again from the evidence alone');
   assert.equal(evidence.result_sha256, sha(REPORT));
-  const state = JSON.parse(readFileSync(t.files.state, 'utf8'));
+  const state = t.state();
   assert.equal(state.post.confirmed, true); assert.equal(state.accept.confirmed, true);
+  assert.deepEqual(readdirSync(t.dir).sort(), ['signer.log', 'state.json'], 'the state is written through a temporary file that is renamed, and none is left');
 });
 
 test('does not accept a receipt that fails verification', async () => {
@@ -231,17 +307,143 @@ test('verification is tried again while the ledger lags the supplier, and the ru
   assert.equal(builder.names().filter((n) => n === 'vector_build_marketplace_accept').length, 1);
 });
 
-test('a rerun after the job was sent continues although the supplier now shows as busy with our own job', async () => {
-  const builder = await fakeBuilder({ pending: 1, deliverBy: Date.now() - 1000 });
+test('a wait for confirmation is asked for in slices of 90 s and repeated until the transaction is confirmed', async () => {
+  const builder = await fakeBuilder({ slowConfirm: 2 });
+  const r = await run(setup().env(builder));
+  assert.equal(r.code, 0, r.stderr);
+  const waits = builder.calls.filter((c) => c.name === 'vector_await_transaction');
+  assert.deepEqual(waits.map((c) => c.args.txHash), [TX.post, TX.post, TX.post, TX.accept, TX.accept, TX.accept]);
+  assert.deepEqual([...new Set(waits.map((c) => c.args.timeoutSeconds))], [90]);
+});
+
+test('a job that the supplier reports as failed stops the run with the reason and the reclaim step, and nothing is verified or accepted', async () => {
+  const builder = await fakeBuilder({ jobFailed: true });
+  const t = setup();
+  const r = await run(t.env(builder));
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /the job failed: service_error the service answered 500/);
+  assert.match(r.stderr, /Reclaim the escrow after deliver_by with vector_build_marketplace_reclaim/);
+  assert.equal(builder.names().includes('vector_marketplace_verify_receipt'), false);
+  assert.equal(builder.names().includes('vector_build_marketplace_accept'), false);
+  assert.equal(signs(t.signerCalls()), 1, 'only the post was signed');
+  assert.equal(r.stdout, '');
+  const job = t.state().job;
+  assert.equal(job.job_id, 'job-1', 'the job id is kept');
+  assert.equal('result' in job, false);
+});
+
+test('the state says "sending" before the send call, and drops it once the job id is written down', async () => {
+  const t = setup();
+  let during;
+  const builder = await fakeBuilder({ onSend: () => { during = t.state().job; } });
+  const r = await run(t.env(builder));
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(typeof during.sending, 'string', 'the marker was in the state file while the call was running');
+  assert.equal('job_id' in during, false);
+  const job = t.state().job;
+  assert.equal(job.job_id, 'job-1');
+  assert.equal('sending' in job, false);
+});
+
+test('a run killed during the send leaves "sending"; the next run stops with the recovery steps and sends nothing; with the job id written in, it goes on', async () => {
+  const t = setup();
+  let started;
+  const sendStarted = new Promise((resolve) => { started = resolve; });
+  const builder = await fakeBuilder({ hangSend: true, onSend: () => started() });
+  const child = spawn(process.execPath, [SCRIPT], { env: t.env(builder), stdio: 'ignore' });
+  const exited = once(child, 'exit');
+  const giveUp = new Promise((_, reject) => setTimeout(() => reject(new Error('the script never reached the send')), 30_000).unref());
+  await Promise.race([sendStarted, giveUp, exited.then(() => { throw new Error('the script ended before it sent the job'); })]);
+  child.kill();
+  await exited;
+  for (const c of t.signerCalls()) { try { process.kill(c.pid); } catch { /* it has gone with its parent */ } } // the signer child of the killed script
+  const afterKill = t.state();
+  assert.equal(typeof afterKill.job.sending, 'string');
+  assert.equal('job_id' in afterKill.job, false);
+
+  builder.calls.length = 0;
+  builder.opts.hangSend = false;
+  const stopped = await run(t.env(builder));
+  assert.equal(stopped.code, 1);
+  assert.match(stopped.stderr, /recorded no job id/);
+  assert.ok(stopped.stderr.includes(ESCROW_REF), 'names the escrow');
+  for (const word of ['"job_id"', 'vector_marketplace_get_supplier', 'vector_build_marketplace_reclaim', 'deliver_by', 'Submitted']) assert.ok(stopped.stderr.includes(word), `the recovery steps mention ${word}`);
+  assert.deepEqual(builder.names(), [], 'the builder is asked nothing, the send least of all');
+
+  // The operator found the id in the log of the first run and wrote it in.
+  writeFileSync(t.files.state, JSON.stringify({ ...afterKill, job: { job_id: 'job-1' } }));
+  const resumed = await run(t.env(builder));
+  assert.equal(resumed.code, 0, resumed.stderr);
+  assert.equal(builder.names().includes('vector_marketplace_send_job'), false);
+  assert.equal(builder.names().includes('vector_marketplace_list_suppliers'), false, 'the job was sent, so the free list is not asked');
+  assert.equal(JSON.parse(resumed.stdout).escrow_ref, ESCROW_REF);
+});
+
+test('a send that the tool reports as failed leaves no marker; the free list is asked again before the send is tried again', async () => {
+  const builder = await fakeBuilder({ sendFails: 1 });
   const t = setup();
   const first = await run(t.env(builder));
   assert.equal(first.code, 1);
-  assert.match(first.stderr, /did not finish before deliver_by/);
+  assert.match(first.stderr, /vector_marketplace_send_job failed: Failed to send job/);
+  assert.equal(t.state().post.confirmed, true, 'the post is done');
+  assert.equal('sending' in t.state().job, false, 'a failure the tool reported is a known outcome, not a maybe');
+
   builder.calls.length = 0;
-  builder.opts.listed = false; // a busy supplier is not in the free list
+  builder.opts.listed = false; // the post is signed, but the job is not sent: the supplier must still be free
+  const refused = await run(t.env(builder));
+  assert.equal(refused.code, 1);
+  assert.match(refused.stderr, /is not among the free suppliers/);
+  assert.deepEqual(builder.names(), ['vector_marketplace_list_suppliers']);
+
+  builder.calls.length = 0;
+  builder.opts.listed = true;
   const second = await run(t.env(builder));
   assert.equal(second.code, 0, second.stderr);
-  assert.deepEqual(builder.names(), ['vector_marketplace_get_job', 'vector_marketplace_verify_receipt', 'vector_build_marketplace_accept', 'vector_submit_transaction', 'vector_await_transaction']);
+  assert.deepEqual(builder.names().slice(0, 3), ['vector_marketplace_list_suppliers', 'vector_marketplace_send_job', 'vector_marketplace_get_job']);
+  assert.equal(builder.names().includes('vector_build_marketplace_post_escrow'), false);
+});
+
+test('a send answered without a job id keeps the marker, because the supplier may have claimed; the next run stops', async () => {
+  const builder = await fakeBuilder({ sendAnswer: '# Job sent\n\nno data block in this answer' });
+  const t = setup();
+  const first = await run(t.env(builder));
+  assert.equal(first.code, 1);
+  assert.match(first.stderr, /answered without a job id/);
+  assert.equal(typeof t.state().job.sending, 'string');
+  builder.calls.length = 0;
+  const second = await run(t.env(builder));
+  assert.equal(second.code, 1);
+  assert.match(second.stderr, /recorded no job id/);
+  assert.deepEqual(builder.names(), []);
+});
+
+test('a send whose connection breaks before any answer keeps the marker, because the supplier may have claimed; the next run stops', async () => {
+  const builder = await fakeBuilder({ dropSend: true });
+  const t = setup();
+  const first = await run(t.env(builder));
+  assert.equal(first.code, 1);
+  assert.match(first.stderr, /vector_marketplace_send_job gave no answer/);
+  assert.equal(typeof t.state().job.sending, 'string');
+  builder.calls.length = 0;
+  builder.opts.dropSend = false;
+  const second = await run(t.env(builder));
+  assert.equal(second.code, 1);
+  assert.match(second.stderr, /recorded no job id/);
+  assert.deepEqual(builder.names(), []);
+});
+
+test('the state is written through a temporary file: when that file cannot be written, the state file is left exactly as it was', async () => {
+  const builder = await fakeBuilder({ pending: 1, deliverBy: Date.now() - 1000 });
+  const t = setup();
+  const first = await run(t.env(builder));
+  assert.equal(first.code, 1); // stopped after the send, with a state worth keeping
+  const before = readFileSync(t.files.state, 'utf8');
+  mkdirSync(`${t.files.state}.tmp`); // a directory where the temporary file would go
+  builder.calls.length = 0;
+  const second = await run(t.env(builder));
+  assert.equal(second.code, 1);
+  assert.match(second.stderr, /unexpected error/);
+  assert.equal(readFileSync(t.files.state, 'utf8'), before, 'the state file was not touched');
 });
 
 test('a rerun continues where the last run stopped: a post that was not confirmed is submitted again, not built and signed again', async () => {
@@ -250,7 +452,8 @@ test('a rerun continues where the last run stopped: a post that was not confirme
   const first = await run(t.env(builder));
   assert.equal(first.code, 1);
   assert.match(first.stderr, /not confirmed yet/);
-  assert.equal(JSON.parse(readFileSync(t.files.state, 'utf8')).post.confirmed, undefined);
+  assert.equal(builder.names().filter((n) => n === 'vector_await_transaction').length, 4, 'four slices of 90 s before it gives up');
+  assert.equal(t.state().post.confirmed, undefined);
   builder.calls.length = 0;
   builder.opts.notConfirmed = [];
   const second = await run(t.env(builder));
@@ -259,6 +462,28 @@ test('a rerun continues where the last run stopped: a post that was not confirme
   assert.deepEqual(builder.calls.filter((c) => c.name === 'vector_submit_transaction')[0].args.signedTxCbor, `ff${UNSIGNED.post}`, 'the same signed transaction is submitted again');
   assert.equal(signs(t.signerCalls()), 2, 'the post is signed once in two runs, and the accept once');
   assert.equal(JSON.parse(second.stdout).escrow_ref, ESCROW_REF);
+});
+
+test('a rerun after the job was sent continues although the supplier now shows as busy with our own job', async () => {
+  const builder = await fakeBuilder({ pending: 1, deliverBy: Date.now() - 1000 });
+  const t = setup();
+  const first = await run(t.env(builder));
+  assert.equal(first.code, 1);
+  assert.match(first.stderr, /did not finish before deliver_by/);
+
+  // A dry run over this state shows what is done: the post (four calls) and the send, not the poll.
+  const dry = await run(t.env(builder), ['--dry-run']);
+  assert.equal(dry.code, 0, dry.stderr);
+  const lines = dry.stdout.split('\n').filter((l) => /^ ?\d+\. /.test(l));
+  assert.equal(lines.length, 11);
+  assert.deepEqual(lines.map((l) => l.includes('done in an earlier run, skipped')), [true, true, true, true, true, false, false, false, false, false, false]);
+  assert.match(lines[5], /repeated until done or deliver_by/);
+
+  builder.calls.length = 0;
+  builder.opts.listed = false; // a busy supplier is not in the free list
+  const second = await run(t.env(builder));
+  assert.equal(second.code, 0, second.stderr);
+  assert.deepEqual(builder.names(), ['vector_marketplace_get_job', 'vector_marketplace_verify_receipt', 'vector_build_marketplace_accept', 'vector_submit_transaction', 'vector_await_transaction']);
 });
 
 test('a finished run is not repeated: a rerun prints the same evidence and builds, signs and sends nothing', async () => {
@@ -273,6 +498,21 @@ test('a finished run is not repeated: a rerun prints the same evidence and build
   assert.deepEqual(JSON.parse(again.stdout), JSON.parse(first.stdout));
   assert.deepEqual(builder.names(), [], 'the builder is not asked anything');
   assert.equal(signs(t.signerCalls()), signed);
+});
+
+test('--dry-run over a finished state marks every step as done, calls nothing and leaves the state as it was', async () => {
+  const builder = await fakeBuilder();
+  const t = setup();
+  const first = await run(t.env(builder));
+  assert.equal(first.code, 0, first.stderr);
+  builder.calls.length = 0;
+  const before = readFileSync(t.files.state, 'utf8');
+  const dry = await run(t.env(builder), ['--dry-run']);
+  assert.equal(dry.code, 0, dry.stderr);
+  assert.equal((dry.stdout.match(/done in an earlier run, skipped/g) ?? []).length, 11, 'all eleven calls are marked as done');
+  assert.match(dry.stderr, /this run finished earlier/);
+  assert.deepEqual(builder.names(), []);
+  assert.equal(readFileSync(t.files.state, 'utf8'), before);
 });
 
 test('a signer refusal stops the run before anything is submitted', async () => {

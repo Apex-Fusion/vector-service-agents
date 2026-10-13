@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 // The four agent specs share one structure and one set of public-wording rules (docs/superpowers/specs/2026-10-13-vector-service-agents-design.md, section 8).
 // The member guide and the E2E runbook are pinned against the same specs and the design at the end of this file.
 const HEADINGS = ['Status', 'Identity', 'Capability id', 'Terms', 'Interface', 'What the receipt commits to', 'Operator and data handling', 'Known gaps', 'How to hire it', 'Changelog', 'Links'];
@@ -138,9 +139,10 @@ test('docs/HIRE.md: the ledger unit is named once, in section 3, and nowhere els
   assert.equal(guide.match(UNIT_NAME)?.length, 1);
   assert.ok(section(guide, '3. We fund it').includes("the ledger's native unit, " + UNIT_NAME.source));
   // Every other file of the repo says "unit" or prints lovelace. The planning documents and the recorded ledger data are not part of this rule.
-  const skip = (p) => /(^|[\\/])(node_modules|\.git|\.superpowers)([\\/]|$)/.test(p) || /(^|[\\/])test[\\/]fixtures([\\/]|$)/.test(p) || p.startsWith(join('docs', 'superpowers')) || p === 'pnpm-lock.yaml';
-  const walk = (dir, out = []) => { for (const e of readdirSync(dir, { withFileTypes: true })) { const p = join(dir, e.name); if (skip(p)) continue; e.isDirectory() ? walk(p, out) : out.push(p); } return out; };
-  const hits = walk('.').filter((p) => /\.(ts|mjs|json|md|yml|yaml|template)$/.test(p) && p !== join('docs', 'HIRE.md')).filter((p) => readFileSync(p, 'utf8').match(UNIT_NAME));
+  const root = fileURLToPath(new URL('../', import.meta.url));
+  const skip = (rel) => /(^|[\\/])(node_modules|\.git|\.superpowers)([\\/]|$)/.test(rel) || /(^|[\\/])test[\\/]fixtures([\\/]|$)/.test(rel) || rel.startsWith(join('docs', 'superpowers')) || rel === 'pnpm-lock.yaml';
+  const walk = (dir, out = []) => { for (const e of readdirSync(dir, { withFileTypes: true })) { const p = join(dir, e.name); if (skip(relative(root, p))) continue; e.isDirectory() ? walk(p, out) : out.push(relative(root, p)); } return out; };
+  const hits = walk(root).filter((rel) => /\.(ts|mjs|json|md|yml|yaml|template)$/.test(rel) && rel !== join('docs', 'HIRE.md')).filter((rel) => readFileSync(join(root, rel), 'utf8').match(UNIT_NAME));
   assert.deepEqual(hits, []);
 });
 
@@ -230,4 +232,53 @@ test('docs/E2E.md: every run is marked first-party, the commands are exact, and 
   const settings = [...new Set([...e2eScript().matchAll(/\benv\.([A-Z][A-Z0-9_]+)/g), ...e2eScript().matchAll(/need\('([A-Z][A-Z0-9_]+)'\)/g)].map((m) => m[1]))];
   assert.ok(settings.length >= 5, 'the script reads its settings from the environment');
   for (const name of settings) assert.ok(e2e.includes('`' + name + '`'), `docs/E2E.md explains ${name}`);
+});
+
+test('docs/HIRE.md and docs/E2E.md: every place that lists what the receipt check takes lists the report text', () => {
+  for (const [name, body] of [['docs/HIRE.md', hire()], ['docs/E2E.md', doc('E2E.md')]]) {
+    // A line that talks about running or repeating the check and names the signature and the escrow reference lists its inputs. Without the report text the response-hash check does not run.
+    const lists = body.split('\n').filter((l) => /verify_receipt|repeat it/.test(l) && /signature/.test(l) && /escrow/.test(l));
+    assert.ok(lists.length >= 1, `${name} lists the inputs of the check`);
+    for (const l of lists) assert.match(l, /report text|`result`/, `${name}: ${l.slice(0, 100)}`);
+  }
+});
+
+test('docs/HIRE.md: the npx package is called not published before the first npx command, and the client config runs the signer with node', () => {
+  const guide = hire();
+  const caveat = guide.indexOf('The npx package is not published yet');
+  const firstNpx = guide.search(/^npx -y /m);
+  assert.ok(caveat > 0 && firstNpx > caveat, 'the caveat comes first');
+  const config = JSON.parse(guide.match(/```json\n([\s\S]*?)\n```/)[1]);
+  assert.equal(config.mcpServers['vector-signer'].command, 'node');
+  assert.equal(config.mcpServers.vector.url, designEndpoint('MCP'));
+  assert.deepEqual(Object.keys(config.mcpServers['vector-signer'].env), ['VECTOR_SIGNER_PRIVATE_KEY', 'VECTOR_SIGNER_ADDRESS', 'VECTOR_SIGNER_SPEND_LIMIT_PER_TX', 'VECTOR_SIGNER_SPEND_LIMIT_DAILY']);
+  assert.ok(guide.includes('replace `command` and `args` with `"command": "npx"`'));
+});
+
+test('docs/HIRE.md: the keygen output format is not pinned; the escrow minimum is a range; the 90 s limit belongs to the PR 3 tools, not to the wait', () => {
+  const guide = hire();
+  assert.equal(guide.match(/VECTOR_SIGNER_PRIVATE_KEY=\.\.\./), null, 'no NAME=... line is promised from keygen');
+  assert.ok(guide.includes('If keygen prints them as `NAME=value` lines, the value is what follows the `=`.'));
+  assert.ok(section(guide, '3. We fund it').includes('between 2.2 and 2.3 in an escrow output of this size, depending on the length of the agent'));
+  const timeouts = guide.split('\n').find((l) => l.startsWith('| A tool call times out near 100 s')) ?? '';
+  assert.ok(timeouts.includes('The PR 3 tools that call a supplier (send job, poll job, verify receipt) stop at 90 s on their own'));
+  assert.ok(timeouts.includes('`vector_await_transaction` waits as long as it is asked, up to 300 s'));
+  assert.match(guide, /\| The check table says `response_hash` fails \|/);
+});
+
+test('docs/E2E.md and scripts/e2e-hire.mjs agree on the send step, the signer settings and the response-hash row', () => {
+  const e2e = doc('E2E.md');
+  const script = e2eScript();
+  assert.ok(e2e.includes('## If the send step was interrupted'));
+  assert.ok(script.includes('docs/E2E.md, "If the send step was interrupted"'), 'the script points at that section');
+  assert.ok(script.includes('an earlier run called vector_marketplace_send_job and recorded no job id') && e2e.includes('an earlier run called vector_marketplace_send_job'), 'the message the operator sees is the one the runbook quotes');
+  assert.match(e2e, /\| Exit code 1, and the message starts "an earlier run called vector_marketplace_send_job" \|/);
+  assert.match(e2e, /\| The check by hand says `response_hash` fails \|/);
+  assert.equal(e2e.match(/never reads/), null, 'the script reads the settings it forwards; it never prints or stores them');
+  assert.ok(e2e.includes('The script forwards every `VECTOR_SIGNER_` setting to the signer process it starts.') && e2e.includes('The script never prints or stores the value of a setting.'));
+  assert.match(e2e, /`keygen` command, which arrives with PR 4/);
+  assert.ok(e2e.includes('`--dry-run` is the only argument the script takes.'));
+  assert.ok(e2e.includes('asks `vector_await_transaction` to wait 90 s at a time, up to four times'));
+  assert.match(script, /const AWAIT_SLICE_S = 90;/);
+  assert.match(script, /const AWAIT_SLICES = 4;/);
 });

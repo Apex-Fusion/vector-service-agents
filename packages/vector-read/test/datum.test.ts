@@ -121,3 +121,20 @@ describe('blake2b224Hex', () => {
     expect(blake2b224Hex('00'.repeat(32))).toBe('f9dca21a6c826ec8acb4cf395cbc24351937bfe6560b2683ab8b415f');
   });
 });
+
+// Local to this repo. docs/HIRE.md section 3 says a lock is exactly price plus both bonds, because the ledger's minimum for the escrow
+// output is between 2.2 and 2.3 units whatever the agent, and the smallest lock is 3. The minimum grows with the length of the capability id.
+describe('escrow output minimum of the service agents', () => {
+  test('is between 2.2 and 2.3 units for each agent, so its lock is exactly price plus both bonds', () => {
+    const open = decodeEscrowDatum(ESCROW_OPEN_DATUM_HEX);
+    const agents = [['identity.history.report.v1', 1n], ['audio.transcript.snippets.v1', 2n], ['research.advocate.onesided.v1', 3n], ['document.pipeline.ocr-summary.v1', 5n]] as const;
+    for (const [capability_id, price] of agents) {
+      const datum = { ...open, capability_id, payment_lovelace: price * 1_000_000n, buyer_bond_lovelace: 1_000_000n, supplier_bond_lovelace: 1_000_000n };
+      const minimum = escrowLockFloor(datum, 1n);
+      expect(minimum, `${capability_id}: ${minimum}`).toBeGreaterThanOrEqual(2_200_000n);
+      expect(minimum, `${capability_id}: ${minimum}`).toBeLessThanOrEqual(2_300_000n);
+      const economic = (price + 2n) * 1_000_000n;
+      expect(escrowLockFloor(datum, economic), `${capability_id}: the lock`).toBe(economic);
+    }
+  });
+});

@@ -54,18 +54,19 @@ The recorder refuses to overwrite the fixture when the live report has a failed 
 
 ## Live check
 
-A local run against the live ledger, 2026-10-13, chain tip at block 8,727,027, subject the ChandraOCR DID, all sections:
+A local run against the live ledger, 2026-10-13, chain tip at block 8,729,902, subject the ChandraOCR DID, all sections. The report now reads 11 module addresses: the three Module-1 v15-sim addresses join the eight it read before.
 
 | Check | Result |
 |---|---|
-| Time, first request | 3.0 s (limit for this check: 60 s) |
-| Time, identical request again | 0.2 s, from the cache; the body is byte-identical |
+| Time, first request | 1.6 s (limit for this check: 60 s) |
+| Time, identical request again | 2 ms, from the cache; the body is byte-identical (6,502 bytes) |
 | `identity.registered` | tx `fee14e5f...`, block 7275113 |
 | `reputation.stakes[0]` | `05563e75...#0`, `stake_lovelace` "10000000" |
 | `key_roles.capability_key_matches_controller` | true |
 | `marketplace.as_supplier.escrows` | `total` 3436, `latest_checked` 50, `latest_spent` 50 |
+| `dispute` | six arrays, three from the v14 addresses and three from the v15-sim addresses, all empty for this agent |
 | Sections with an error | none |
 
 `escrows.total` counts the indexer's rows, which are escrow UTxO versions: the 3,436 rows are 1,160 jobs, each listed once per state it reached (Open, Claimed, Submitted). The report checks the latest 50 rows per side on the ledger and does not check the older ones: here `latest_checked` is 50 and all 50 are spent (`latest_spent` 50). No row records how a job ended; the report says so under `blind_spots`.
 
-A second run after review batch 2, which reads the sections concurrently, 2026-10-13, chain tip at block 8,727,874, same subject and sections: the first request took 1.5 s, the identical second request 3 ms from the cache, no section had an error, and the 3,436 rows and 50 of 50 spent were the same.
+Two earlier runs on the same day, before the v15-sim addresses were added, gave the same values. The first took 3.0 s (chain tip at block 8,727,027). The second, after review batch 2 made the sections run concurrently, took 1.5 s (block 8,727,874) and answered the identical request in 3 ms from the cache.
