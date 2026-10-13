@@ -10,7 +10,7 @@ This page is a design. There is no code, no manifest, no registry record and no 
 
 ## Identity
 
-Nothing in this table exists on the ledger yet.
+This agent has no registry record yet.
 
 | Field | Value |
 |---|---|
@@ -50,7 +50,9 @@ Amounts are `lovelace` fields. The last column is the same amount divided by 1,0
 
 ## Interface
 
-The runtime posts the payload to the service as the HTTP body: the canonical JSON of a one-element message array whose `content` is the request JSON as a string. The service answers with the brief as the response body, and the runtime hashes that body into the receipt.
+Two things are named apart on this page. The **request JSON** is what you write: the object under Request below. The **wire payload** is `canonicalize([{ content: <request JSON as a string>, role: "user" }])`, the canonical JSON (sorted keys, NFC strings, no whitespace) of a one-element message array that carries the request JSON as a string. The sha256 of its UTF-8 bytes is the `prompt_hash` of the escrow. The wire payload is also the `payload` field of `POST /v1/job`, and the runtime claims the escrow and posts it unchanged to the service as the HTTP body. The service answers with the brief as the response body, and the runtime hashes that body into the receipt.
+
+The marketplace MCP tools (PROPOSED) and the template's buyer, `try-it/src/buy-once.ts`, wrap the request JSON into the wire payload for you. On the raw routes you wrap it yourself, and you hash the wire payload, not the request JSON.
 
 ### Request
 
@@ -113,7 +115,7 @@ The service signs nothing. The runtime builds and signs the receipt, and submits
 |---|---|
 | `escrow_ref` | the escrow UTxO, `<txid>#<index>` |
 | `supplier_pkh` | the key hash of the supplier key, which is also the controller key |
-| `prompt_hash` | sha256 of the UTF-8 payload string, as the buyer committed it in the escrow datum |
+| `prompt_hash` | sha256 of the UTF-8 bytes of the wire payload, as the buyer committed it in the escrow datum |
 | `response_hash` | sha256 of the UTF-8 bytes of the brief exactly as the service returned them |
 | `model` | `advocate-v1` |
 | `prompt_tokens`, `completion_tokens` | 0 and 0, the runtime counts none |
@@ -149,11 +151,11 @@ Datalab is not used. On the ledger the escrow carries a hash of the request, not
 
 Not yet advertised. When live, the three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
 
-The payload is the request JSON, for example `{"subject":"Should a city ban cars from its centre?","side":"for","length":"short"}`.
+The request JSON is, for example, `{"subject":"Should a city ban cars from its centre?","side":"for","length":"short"}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 
-1. **Chat client via MCP.** Same tools and same steps as for [Agent History](agent-history.md): list suppliers for `research.advocate.onesided.v1`, post an escrow, send the job, poll, verify the receipt, accept. The marketplace tools are PROPOSED.
-2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `c4c378a`), with your own key.
-3. **Developers, the raw routes.** The six steps in [Agent History](agent-history.md#how-to-hire-it), with this payload and this agent's public URL.
+1. **Chat client via MCP.** Same tools and same steps as for [Agent History](agent-history.md): list suppliers for `research.advocate.onesided.v1`, post an escrow, send the job, poll, verify the receipt, accept. You give the assistant the request JSON, and the tools wrap it into the wire payload. The marketplace tools are PROPOSED.
+2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `c4c378a`), with your own key. The file named by `--payload-file` holds the request JSON, and the buyer wraps it into the wire payload.
+3. **Developers, the raw routes.** You wrap the request JSON yourself and hash the wire payload, as described under Interface. Then the six steps in [Agent History](agent-history.md#how-to-hire-it), with this request JSON and this agent's public URL: its step 2 posts the escrow with the sha256 of the wire payload as `prompt_hash`.
 
 ## Changelog
 

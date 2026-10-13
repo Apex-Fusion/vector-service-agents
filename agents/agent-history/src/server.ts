@@ -3,7 +3,7 @@ import type { IncomingMessage } from 'node:http';
 import { REGISTRY_ADDRESS } from '@vsa/vector-read';
 import type { Fetch, SafeFetchOpts } from '@vsa/vector-read';
 import { parseWire, BadRequest, MAX_BODY } from './request.ts';
-import { buildReport, degradedReasons, ESCROW_ROWS_GAP } from './report.ts';
+import { buildReport, degradedReasons, ESCROW_ROWS_GAP, DISPUTE_MODULE_GAP, GENERIC_MATCH_GAP } from './report.ts';
 import type { Report } from './report.ts';
 import { TtlCache } from './cache.ts';
 // A number from the environment: absent or empty means the default (an empty string must not become 0); anything else must be a
@@ -23,15 +23,15 @@ function statusChip(v: string | undefined): string {
 export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
   return {
     schema: 'vector.agent-manifest.v1', name: 'Agent History', capability_id: 'identity.history.report.v1', version: env.AGENT_VERSION ?? '0.1.0',
-    description: 'Everything the Vector ledger knows about one agent identifier, as one signed report. Read-only; no model cost.',
+    description: "Everything the Vector ledger knows about one agent identifier, as one report per job, delivered with the runtime's signed receipt. Read-only; no model cost.",
     operator: { name: 'Apex Fusion Foundation', contact: env.OPERATOR_CONTACT ?? 'filip.blagojevic@foundation.apexfusion.org' },
     identity: { did: env.AGENT_DID ?? '', controller_pkh: env.SUPPLIER_PKH ?? '', registry_address: REGISTRY_ADDRESS },
     keys: { supplier_pkh: env.SUPPLIER_PKH ?? '', pub_key_hex: env.SUPPLIER_PUB_KEY_HEX ?? '' },
     interface: { request_schema: { type: 'object', required: ['subject'], properties: { subject: { type: 'string', description: 'DID, registry asset name (64 hex) or key hash (56 hex)' }, include: { type: 'array', items: { enum: ['identity', 'marketplace', 'reputation', 'dispute', 'self_improvement'] } } } }, response_schema: { $ref: 'https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/agent-history.md#response' }, routes: { job: '/v1/job', status: '/status', capability: '/capability' } },
     terms: { price_lovelace: envInt('ADVERT_PRICE_LOVELACE', env.ADVERT_PRICE_LOVELACE, 1_000_000), supplier_bond_lovelace: 1_000_000, buyer_bond_lovelace: 1_000_000, max_processing_ms: envInt('ADVERT_MAX_PROCESSING_MS', env.ADVERT_MAX_PROCESSING_MS, 300_000), input_limits: { request_bytes: MAX_BODY } },
-    behaviour: { data_handling: 'Reads public ledger data only; the request subject is kept in memory for at most 60 s (expired entries are purged lazily).', third_parties: ['Koios (Vector mainnet indexer)', 'marketplace indexer', "the subject agent's own endpoint (one GET /capability, 64 KiB cap, 20 s budget)"] },
+    behaviour: { data_handling: 'Reads public ledger data only; the request subject is held in memory, and a report is served from cache for at most 60 s (expired entries are purged lazily).', third_parties: ['Koios (Vector mainnet indexer)', 'marketplace indexer', "the subject agent's own endpoint (one GET /capability, 64 KiB cap, 20 s budget)"] },
     status: { chip: statusChip(env.AGENT_STATUS_CHIP), since: env.AGENT_STATUS_SINCE ?? '2026-10-13' },
-    gaps: [ESCROW_ROWS_GAP, 'Module-1 and Module-6 matched generically'],
+    gaps: [ESCROW_ROWS_GAP, `${DISPUTE_MODULE_GAP} ${GENERIC_MATCH_GAP}`],
     links: { spec: 'https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/agent-history.md', source: 'https://github.com/Apex-Fusion/vector-service-agents/tree/main/agents/agent-history', explorer_advert: env.ADVERT_EXPLORER_URL ?? '' },
   };
 }
@@ -52,7 +52,10 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on('error', reject);
   });
 }
-export function createServer(opts: { fetchImpl?: Fetch; manifest?: AgentManifest; lookup?: SafeFetchOpts['lookup']; buildReport?: typeof buildReport } = {}) {
+export function createServer(opts: {
+  fetchImpl?: Fetch; manifest?: AgentManifest; lookup?: SafeFetchOpts['lookup'];
+  buildReport?: typeof buildReport; // test seam: a test injects its own report builder; the service always runs the real one
+} = {}) {
   const manifest = opts.manifest ?? manifestFromEnv();
   const f = opts.fetchImpl ?? fetch;
   const build = opts.buildReport ?? buildReport;

@@ -22,11 +22,15 @@ describe('specs/agent-history.md', () => {
     const gaps = section('Known gaps');
     for (const line of BLIND_SPOTS) expect(gaps, line.slice(0, 50)).toContain(`\n- ${line}\n`);
   });
-  test('the first manifest gap is that same sentence, and the second is in the spec too', () => {
+  test('the manifest gaps are blind-spot lines, so the spec lists them word for word as well', () => {
     const m = manifestFromEnv({});
-    expect(m.gaps[0]).toBe(BLIND_SPOTS[1]);
-    expect(m.gaps[1]).toBe('Module-1 and Module-6 matched generically');
-    expect(section('Known gaps')).toContain(BLIND_SPOTS[3].split(':')[0]);
+    expect(m.gaps).toEqual([BLIND_SPOTS[1], `${BLIND_SPOTS[2]} ${BLIND_SPOTS[3]}`]);
+    for (const line of [BLIND_SPOTS[1], BLIND_SPOTS[2], BLIND_SPOTS[3]]) expect(section('Known gaps')).toContain(line);
+  });
+  test('the opening line says what the manifest description says', () => {
+    const first = manifestFromEnv({}).description.split(' Read-only')[0]; // the sentence before "Read-only; no model cost."
+    expect(first).toContain('delivered with the runtime');
+    expect(spec.split('\n')[2]).toContain(first);
   });
   test('the lines a report adds are in Known gaps', () => {
     const gaps = section('Known gaps');
@@ -42,7 +46,7 @@ describe('specs/agent-history.md', () => {
     const locked = t.price_lovelace + t.supplier_bond_lovelace + t.buyer_bond_lovelace;
     expect(terms).toContain(`| Locked by the buyer (price and both bonds) | ${locked} | ${printed(locked)} |`);
     expect(terms).toContain(`| Processing window, advert \`max_processing_ms\` | ${t.max_processing_ms} ms |`);
-    expect(terms).toContain(`| Request body | ${t.input_limits.request_bytes} bytes (64 KiB), counted in bytes |`);
+    expect(terms).toContain(`| Wire payload, the body of \`POST /\` | ${t.input_limits.request_bytes} bytes (64 KiB), counted in bytes |`);
     expect(terms).toContain('| Service timeout, `SERVICE_TIMEOUT_MS` | 180000 ms |');
   });
   test('the capability id, the status line and the one Response heading the manifest links to', () => {

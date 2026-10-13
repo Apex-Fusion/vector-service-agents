@@ -1,6 +1,6 @@
 // packages/vector-read/test/koios.test.ts
 import { describe, test, expect } from 'vitest';
-import { koios, indexer, recordingFetch, replayFetch, KOIOS_URL, INDEXER_URL, REGISTRY_POLICY, REGISTRY_ADDRESS } from '../src/index.ts';
+import { koios, indexer, recordingFetch, replayFetch, KOIOS_URL, KOIOS_PAGE, INDEXER_URL, REGISTRY_POLICY, REGISTRY_ADDRESS } from '../src/index.ts';
 describe('clients', () => {
   test('utxoInfo posts _utxo_refs and replays through the fixture store', async () => {
     const store: Record<string, { status: number; body: string }> = {};
@@ -34,7 +34,8 @@ describe('clients', () => {
     const seen: string[] = [];
     const fake = (async (u: any) => { seen.push(String(u)); return new Response('[]', { status: 200 }); }) as typeof fetch;
     await koios.addressUtxos([REGISTRY_ADDRESS], fake);
-    await koios.addressUtxos([REGISTRY_ADDRESS], fake, 1000);
+    await koios.addressUtxos([REGISTRY_ADDRESS], fake, KOIOS_PAGE);
+    expect(KOIOS_PAGE).toBe(1_000); // the Koios row cap: the registry scan pages by it and the module scans say when a page may have been cut
     expect(seen).toEqual([`${KOIOS_URL}/address_utxos`, `${KOIOS_URL}/address_utxos?offset=1000`]);
   });
 });

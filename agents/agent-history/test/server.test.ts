@@ -278,14 +278,20 @@ describe('manifest', () => {
       expect(() => manifestFromEnv({ AGENT_STATUS_CHIP: bad }), bad).toThrow(/AGENT_STATUS_CHIP/);
     }
   });
-  test('the texts frozen into the advert hash: gaps[0] is the UTxO-version truth, the subject agent endpoint is a named third party, the cache wording is exact', () => {
+  test('the texts frozen into the advert hash: the gaps are the blind-spot sentences, the description does not claim the service signs, the subject agent endpoint is a named third party, the cache wording is exact', () => {
     const m = manifestFromEnv({});
-    expect(m.gaps[0]).toBe(BLIND_SPOTS[1]); // the same sentence in the manifest and in every report
+    expect(m.gaps).toHaveLength(2);
+    expect(m.gaps[0]).toBe(BLIND_SPOTS[1]); // the same sentences in the manifest and in every report
+    expect(m.gaps[1]).toBe(`${BLIND_SPOTS[2]} ${BLIND_SPOTS[3]}`);
+    expect(m.gaps[1]).toMatch(/Only the Module-1 v14 addresses are read, not the v15-sim set/);
+    expect(m.gaps[1]).toMatch(/an entry that carries only the controller key may belong to another agent of the same key/);
+    expect(m.gaps[1]).toMatch(/Module-3 endorsements, are matched generically/);
+    expect(m.description).toBe("Everything the Vector ledger knows about one agent identifier, as one report per job, delivered with the runtime's signed receipt. Read-only; no model cost.");
     expect(m.gaps[0]).toMatch(/one per escrow UTxO version/);
     expect(m.gaps[0]).toMatch(/never as Accepted, Released or Reclaimed/);
     expect(m.gaps[0]).toMatch(/no outcome counts/);
     expect(m.gaps[0]).toMatch(/by_indexer_state/);
     expect(m.behaviour.third_parties).toEqual(['Koios (Vector mainnet indexer)', 'marketplace indexer', "the subject agent's own endpoint (one GET /capability, 64 KiB cap, 20 s budget)"]);
-    expect(m.behaviour.data_handling).toBe('Reads public ledger data only; the request subject is kept in memory for at most 60 s (expired entries are purged lazily).');
+    expect(m.behaviour.data_handling).toBe('Reads public ledger data only; the request subject is held in memory, and a report is served from cache for at most 60 s (expired entries are purged lazily).');
   });
 });

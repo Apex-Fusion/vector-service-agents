@@ -1,6 +1,6 @@
 # Agent History
 
-Capability `identity.history.report.v1`. Everything the Vector ledger knows about one agent identifier, as one report with a signed receipt. Read-only. No model cost.
+Capability `identity.history.report.v1`. Everything the Vector ledger knows about one agent identifier, as one report per job, delivered with the runtime's signed receipt. Read-only. No model cost.
 
 ## Status
 
@@ -10,7 +10,7 @@ The service is built. Its tests replay recorded ledger data, and it has been run
 
 ## Identity
 
-Nothing in this table exists on the ledger yet.
+This agent has no registry record yet.
 
 | Field | Value |
 |---|---|
@@ -45,7 +45,7 @@ Amounts are `lovelace` fields. The last column is the same amount divided by 1,0
 | Processing window, advert `max_processing_ms` | 300000 ms |
 | Service timeout, `SERVICE_TIMEOUT_MS` | 180000 ms |
 | Accept window after the Submit | 600000 ms |
-| Request body | 65536 bytes (64 KiB), counted in bytes |
+| Wire payload, the body of `POST /` | 65536 bytes (64 KiB), counted in bytes |
 | Jobs at a time | 1 |
 | Report cache | 60 s per subject and section list |
 
@@ -55,11 +55,13 @@ The runtime has one session slot. A second hire while a job runs is refused with
 
 ## Interface
 
-The runtime receives the hire on `POST /v1/job`, claims the escrow and posts the payload to this service as the HTTP body of `POST /`. The payload is the canonical JSON of a one-element message array whose `content` is the request JSON as a string. The service answers with the report as the response body, and the runtime hashes that body into the receipt.
+Two things are named apart on this page. The **request JSON** is what you write: the object under Request below. The **wire payload** is `canonicalize([{ content: <request JSON as a string>, role: "user" }])`, the canonical JSON (sorted keys, NFC strings, no whitespace) of a one-element message array that carries the request JSON as a string. The sha256 of its UTF-8 bytes is the `prompt_hash` of the escrow. The wire payload is also the `payload` field of `POST /v1/job`, and the runtime claims the escrow and posts it unchanged to this service as the HTTP body of `POST /`. The service answers with the report as the response body, and the runtime hashes that body into the receipt.
+
+The marketplace MCP tools (PROPOSED) and the template's buyer, `try-it/src/buy-once.ts`, wrap the request JSON into the wire payload for you. On the raw routes you wrap it yourself, and you hash the wire payload, not the request JSON.
 
 ### Request
 
-The request JSON, as the `content` string:
+The request JSON:
 
 ```json
 {
@@ -75,18 +77,18 @@ The request JSON, as the `content` string:
 
 A key hash resolves to every registry record whose current owner is that key: the service scans the registry address and lists them all under `subject.candidates`, ordered by asset name. The first is the one the report is about. A key hash that owns no record still gets its marketplace section.
 
-The payload as the service receives it, for a request with only `subject`. Its sha256 is the `prompt_hash` of the escrow:
+The wire payload for a request with only `subject`. Its sha256 is the `prompt_hash` of the escrow, and the service receives exactly this as the HTTP body:
 
 ```text
 [{"content":"{\"subject\":\"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db\"}","role":"user"}]
 ```
 
-The service refuses a body that is not exactly one message with `role` `user` and a `content` string holding a JSON object with a `subject`.
+The service refuses a wire payload that is not exactly one message with `role` `user` and a `content` string holding a JSON object with a `subject`.
 
 | Status | Body | When |
 |---|---|---|
 | 200 | the report | The report was built. A section that failed is `{ "error": "<message>" }` and the rest is intact |
-| 400 | `{ "reason": "bad_request", "message": "..." }` | The body is over 65536 bytes, is not JSON, is not one `user` message, has no `subject`, has an unknown `include` value, or has a malformed subject or a DID under another policy |
+| 400 | `{ "reason": "bad_request", "message": "..." }` | The wire payload is over 65536 bytes, is not JSON, is not one `user` message, has no `subject`, has an unknown `include` value, or has a malformed subject or a DID under another policy |
 | 404 | `{ "reason": "not_found" }` | Any route other than `POST /`, `GET /agent.json` and `GET /healthz` |
 | 500 | `{ "reason": "internal", "message": "..." }` | The report could not be built at all, for example the subject lookup failed |
 
@@ -324,7 +326,7 @@ The service signs nothing. The runtime builds and signs the receipt, and submits
 |---|---|
 | `escrow_ref` | the escrow UTxO, `<txid>#<index>` |
 | `supplier_pkh` | the key hash of the supplier key, which is also the controller key |
-| `prompt_hash` | sha256 of the UTF-8 payload string above, as the buyer committed it in the escrow datum |
+| `prompt_hash` | sha256 of the UTF-8 bytes of the wire payload above, as the buyer committed it in the escrow datum |
 | `response_hash` | sha256 of the UTF-8 bytes of the report exactly as the service returned them |
 | `model` | `agent-history-v1` |
 | `prompt_tokens`, `completion_tokens` | 0 and 0, there is no model |
@@ -338,9 +340,9 @@ The receipt commits to who answered, with which exact bytes, to which request, f
 
 Operator: Apex Fusion Foundation. The contact is `operator.contact` in the manifest.
 
-What the service sees: the request (a subject and a section list) and the time of the request. What it keeps: the subject, inside the cache key, and the finished report, in memory for at most 60 s. Expired entries are purged lazily, when another entry is added. It writes no request log. When a request fails with a 500 it logs the error message, never the request.
+What the service sees: the request (a subject and a section list) and the time of the request. What it keeps: the subject, inside the cache key, and the finished report, in memory. A report is served from cache for at most 60 s; expired entries are purged lazily, when another entry is added, so an expired entry can stay in memory until then. It writes no request log. When a request fails with a 500 it logs the error message, never the request.
 
-The template runtime in front of the service sees the same payload. It keeps each finished job, report included, in memory for 600000 ms and loses it on a restart. The request is never put on the ledger: the escrow datum carries its sha256.
+The template runtime in front of the service sees the same wire payload. It keeps each finished job, report included, in memory for 600000 ms and loses it on a restart. The request is never put on the ledger: the escrow datum carries its sha256.
 
 What leaves to third parties:
 
@@ -374,14 +376,14 @@ Outcome counts per job are not in 0.1.0. They need the spending transaction of e
 
 Not yet advertised. When live, the three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
 
-The payload is the request JSON, for example `{"subject":"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db"}`.
+The request JSON is, for example, `{"subject":"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db"}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 
-1. **Chat client via MCP.** The hosted keyless MCP server builds the transactions and your local signer signs them, so your own key is the buyer. Ask your assistant to list the suppliers for `identity.history.report.v1`, post an escrow to the advert, send the job, poll for the result, verify the receipt and accept. The tools are `vector_marketplace_list_suppliers`, `vector_build_marketplace_post_escrow`, `vector_marketplace_send_job`, `vector_marketplace_get_job`, `vector_marketplace_verify_receipt` and `vector_build_marketplace_accept`, with `vector_signer_sign`, `vector_submit_transaction` and `vector_await_transaction` to sign and submit. The marketplace tools are PROPOSED: they are not on the hosted server as of 2026-10-13.
-2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `c4c378a`), with `--advert-ref`, `--endpoint` and `--payload-file`, and your own key. The payload file holds the request JSON, and the buyer wraps it into the message array.
-3. **Developers, the raw routes.** On the agent's public URL:
+1. **Chat client via MCP.** The hosted keyless MCP server builds the transactions and your local signer signs them, so your own key is the buyer. Ask your assistant to list the suppliers for `identity.history.report.v1`, post an escrow to the advert, send the job, poll for the result, verify the receipt and accept. You give the assistant the request JSON, and the tools wrap it into the wire payload. The tools are `vector_marketplace_list_suppliers`, `vector_build_marketplace_post_escrow`, `vector_marketplace_send_job`, `vector_marketplace_get_job`, `vector_marketplace_verify_receipt` and `vector_build_marketplace_accept`, with `vector_signer_sign`, `vector_submit_transaction` and `vector_await_transaction` to sign and submit. The marketplace tools are PROPOSED: they are not on the hosted server as of 2026-10-13.
+2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `c4c378a`), with `--advert-ref`, `--endpoint` and `--payload-file`, and your own key. The file named by `--payload-file` holds the request JSON, and the buyer wraps it into the wire payload.
+3. **Developers, the raw routes.** You wrap the request JSON yourself and hash the wire payload. On the agent's public URL:
    1. `GET /agent.json` and compare its sha256 with the `detail_hash` of the advert.
-   2. Post an escrow for the advert with the price and both bonds. Its `prompt_hash` is the sha256 of the payload string shown under Request.
-   3. `POST /v1/job` with `{ "escrow_ref": "<txid>#<index>", "payload": "<the payload string>" }`. The runtime answers 202 with a `job_id` once its Claim has confirmed, which can take up to 60 s.
+   2. Build the wire payload from your request JSON as shown under Request, and post an escrow for the advert with the price and both bonds. The escrow's `prompt_hash` is the sha256 of the wire payload's UTF-8 bytes, not of the request JSON.
+   3. `POST /v1/job` with `{ "escrow_ref": "<txid>#<index>", "payload": "<the wire payload>" }`. The runtime answers 202 with a `job_id` once its Claim has confirmed, which can take up to 60 s.
    4. `GET /v1/job/<job_id>` until it answers 200. The body has the report in `choices[0].message.content`, the `receipt` and the `receipt_signature`.
    5. `GET /capability` returns `pub_key_hex`. Verify the receipt against it, offline and against the chain, with `try-it/src/verify-receipt.ts`.
    6. Accept within 600000 ms of the Submit.

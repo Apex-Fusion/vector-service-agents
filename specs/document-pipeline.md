@@ -10,7 +10,7 @@ This page is a design. There is no code, no manifest, no registry record and no 
 
 ## Identity
 
-Nothing in this table exists on the ledger yet.
+This agent has no registry record yet.
 
 | Field | Value |
 |---|---|
@@ -53,7 +53,9 @@ Economics: at five pages the Pipeline spends about 19 in locks and fees to earn 
 
 ## Interface
 
-The runtime posts the payload to the service as the HTTP body: the canonical JSON of a one-element message array whose `content` is the request JSON as a string. The service answers with the result as the response body, and the runtime hashes that body into the receipt.
+Two things are named apart on this page. The **request JSON** is what you write: the object under Request below. The **wire payload** is `canonicalize([{ content: <request JSON as a string>, role: "user" }])`, the canonical JSON (sorted keys, NFC strings, no whitespace) of a one-element message array that carries the request JSON as a string. The sha256 of its UTF-8 bytes is the `prompt_hash` of the escrow. The wire payload is also the `payload` field of `POST /v1/job`, and the runtime claims the escrow and posts it unchanged to the service as the HTTP body. The service answers with the result as the response body, and the runtime hashes that body into the receipt.
+
+The marketplace MCP tools (PROPOSED) and the template's buyer, `try-it/src/buy-once.ts`, wrap the request JSON into the wire payload for you. On the raw routes you wrap it yourself, and you hash the wire payload, not the request JSON.
 
 Media inputs are an https URL, or base64 under 1 MB: chat clients cannot carry media in a tool call, and the hosted MCP server caps requests at 1 MB. The service fetches a URL itself, with the same rules as the MCP server (https only, private and reserved addresses refused) and a 20 MB cap, and writes `source.sha256` and `source.bytes` into its output, so the signed receipt commits to the exact document.
 
@@ -128,7 +130,7 @@ The service signs nothing. The runtime builds and signs the receipt, and submits
 |---|---|
 | `escrow_ref` | the escrow UTxO, `<txid>#<index>` |
 | `supplier_pkh` | the key hash of the supplier key, which is also the controller key |
-| `prompt_hash` | sha256 of the UTF-8 payload string, as the buyer committed it in the escrow datum |
+| `prompt_hash` | sha256 of the UTF-8 bytes of the wire payload, as the buyer committed it in the escrow datum |
 | `response_hash` | sha256 of the UTF-8 bytes of the result exactly as the service returned them |
 | `model` | `document-pipeline-v1` |
 | `prompt_tokens`, `completion_tokens` | 0 and 0, the runtime counts none |
@@ -147,7 +149,7 @@ What the service sees: the document (the fetched bytes or the base64 input), the
 | Party | What it receives |
 |---|---|
 | the host of the source URL | the fetch of the document |
-| the ChandraOCR agent, and Datalab behind it | each page as an image. The OCR hop is first-party: the Pipeline's buyer key and the OCR agent's supplier key are both Foundation-operated, which keeps the Datalab terms. The OCR agent is not offered to outsiders directly |
+| the ChandraOCR agent, and Datalab behind it | each page as an image. The OCR hop is first-party: the Pipeline's buyer key and the OCR agent's supplier key are both Foundation-operated, which keeps the Datalab terms. Direct hire of the OCR agent by outsiders is out of scope for this programme |
 | the LLM supplier it hires, and its model provider (for example OpenRouter) | the page texts and the task |
 | Koios and the marketplace indexer | the identifiers of the escrows it posts and reads |
 
@@ -166,11 +168,11 @@ On the ledger the sub-escrows carry hashes, not the document or its text. The se
 
 Not yet advertised. When live, the three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
 
-The payload is the request JSON, for example `{"source":{"url":"https://example.org/letter.pdf"},"task":"summary","language":"en","max_pages":1}`.
+The request JSON is, for example, `{"source":{"url":"https://example.org/letter.pdf"},"task":"summary","language":"en","max_pages":1}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 
-1. **Chat client via MCP.** Same tools and same steps as for [Agent History](agent-history.md): list suppliers for `document.pipeline.ocr-summary.v1`, post an escrow, send the job, poll, verify the receipt, accept. The marketplace tools are PROPOSED.
-2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `c4c378a`), with your own key. Allow for the 30 min processing window.
-3. **Developers, the raw routes.** The six steps in [Agent History](agent-history.md#how-to-hire-it), with this payload and this agent's public URL.
+1. **Chat client via MCP.** Same tools and same steps as for [Agent History](agent-history.md): list suppliers for `document.pipeline.ocr-summary.v1`, post an escrow, send the job, poll, verify the receipt, accept. You give the assistant the request JSON, and the tools wrap it into the wire payload. The marketplace tools are PROPOSED.
+2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `c4c378a`), with your own key. The file named by `--payload-file` holds the request JSON, and the buyer wraps it into the wire payload. Allow for the 30 min processing window.
+3. **Developers, the raw routes.** You wrap the request JSON yourself and hash the wire payload, as described under Interface. Then the six steps in [Agent History](agent-history.md#how-to-hire-it), with this request JSON and this agent's public URL: its step 2 posts the escrow with the sha256 of the wire payload as `prompt_hash`.
 
 ## Changelog
 

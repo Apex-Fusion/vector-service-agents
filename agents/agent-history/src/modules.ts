@@ -1,9 +1,8 @@
-import { koios, decodeStakeDatum, topLevelBytes, M3_REPUTATION_ADDRESS, M3_ENDORSEMENT_ADDRESS, M1_ADDRESSES, M6_ADDRESSES } from '@vsa/vector-read';
+import { koios, decodeStakeDatum, topLevelBytes, KOIOS_PAGE, M3_REPUTATION_ADDRESS, M3_ENDORSEMENT_ADDRESS, M1_ADDRESSES, M6_ADDRESSES } from '@vsa/vector-read';
 import type { Fetch, KoiosUtxo } from '@vsa/vector-read';
 import type { Subject } from './subject.ts';
 const ref = (u: KoiosUtxo) => `${u.tx_hash}#${u.tx_index}`;
-// Koios answers with at most this many rows per call, and a module address is read with one call: a full page may have been cut.
-const KOIOS_PAGE = 1_000;
+// A module address is read with one call of at most KOIOS_PAGE rows, so a full page may have been cut.
 // Set to true when a module page comes back full; the report turns it into a blind-spot line.
 export interface ModuleScan { truncated: boolean }
 async function moduleRows(address: string, f: Fetch, scan?: ModuleScan): Promise<KoiosUtxo[]> {

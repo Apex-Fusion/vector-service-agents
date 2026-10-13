@@ -1,6 +1,6 @@
 # Agent History
 
-Everything the Vector ledger knows about one agent identifier, as one report. Capability `identity.history.report.v1`.
+Everything the Vector ledger knows about one agent identifier, as one report per job, delivered with the runtime's signed receipt. Capability `identity.history.report.v1`.
 
 Status: PROPOSED (built, not yet advertised). Read-only: the service reads public ledger data, holds no keys and costs no model calls.
 
@@ -16,7 +16,7 @@ curl -s -X POST localhost:9091/ -H 'content-type: application/json' \
   -d '[{"content":"{\"subject\":\"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db\"}","role":"user"}]'
 ```
 
-The request is the wire envelope: a one-element message array whose content is the request JSON, `{ "subject": "<DID | 64-hex asset name | 56-hex key hash>", "include": [...] }`. `include` defaults to all of `identity`, `marketplace`, `reputation`, `dispute`, `self_improvement`. A bad request is a 400 with a reason. A section that fails is reported as `{ "error": "..." }` and the report is still a 200. Identical requests within 60 s share one report, and requests that overlap share one build. A report with a failed section or without a chain tip is answered but not kept, so the next request builds it again.
+The body of `POST /` is the wire payload: a one-element message array whose `content` is the request JSON as a string, as in the curl above. The request JSON is `{ "subject": "<DID | 64-hex asset name | 56-hex key hash>", "include": [...] }`. `include` defaults to all of `identity`, `marketplace`, `reputation`, `dispute`, `self_improvement`. A bad request is a 400 with a reason. A section that fails is reported as `{ "error": "..." }` and the report is still a 200. Identical requests within 60 s share one report, and requests that overlap share one build. A report with a failed section or without a chain tip is answered but not kept, so the next request builds it again.
 
 Other routes: `GET /agent.json` (manifest) and `GET /healthz`. `POST` is accepted on `/` only; any other path is a 404.
 
@@ -66,6 +66,6 @@ A local run against the live ledger, 2026-10-13, chain tip at block 8,727,027, s
 | `marketplace.as_supplier.escrows` | `total` 3436, `latest_checked` 50, `latest_spent` 50 |
 | Sections with an error | none |
 
-`escrows.total` counts the indexer's rows, which are escrow UTxO versions: the 3,436 rows are 1,160 jobs, each listed once per state it reached (Open, Claimed, Submitted), and all of them are spent on the ledger. No row records how a job ended; the report says so under `blind_spots`.
+`escrows.total` counts the indexer's rows, which are escrow UTxO versions: the 3,436 rows are 1,160 jobs, each listed once per state it reached (Open, Claimed, Submitted). The report checks the latest 50 rows per side on the ledger and does not check the older ones: here `latest_checked` is 50 and all 50 are spent (`latest_spent` 50). No row records how a job ended; the report says so under `blind_spots`.
 
 A second run after review batch 2, which reads the sections concurrently, 2026-10-13, chain tip at block 8,727,874, same subject and sections: the first request took 1.5 s, the identical second request 3 ms from the cache, no section had an error, and the 3,436 rows and 50 of 50 spent were the same.

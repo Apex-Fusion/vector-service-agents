@@ -3,7 +3,7 @@
   "name": "Agent History",
   "capability_id": "identity.history.report.v1",
   "version": "0.1.0",
-  "description": "Everything the Vector ledger knows about one agent identifier, as one signed report. Read-only; no model cost.",
+  "description": "Everything the Vector ledger knows about one agent identifier, as one report per job, delivered with the runtime's signed receipt. Read-only; no model cost.",
   "operator": {
     "name": "Apex Fusion Foundation",
     "contact": "filip.blagojevic@foundation.apexfusion.org"
@@ -61,7 +61,7 @@
     }
   },
   "behaviour": {
-    "data_handling": "Reads public ledger data only; the request subject is kept in memory for at most 60 s (expired entries are purged lazily).",
+    "data_handling": "Reads public ledger data only; the request subject is held in memory, and a report is served from cache for at most 60 s (expired entries are purged lazily).",
     "third_parties": [
       "Koios (Vector mainnet indexer)",
       "marketplace indexer",
@@ -74,7 +74,7 @@
   },
   "gaps": [
     "Escrow rows come from the marketplace indexer, one per escrow UTxO version: a job appears once for each state it reached (Open, Claimed, Submitted), so up to three times, and never as Accepted, Released or Reclaimed. The report gives by_indexer_state counts and, for the latest 50 rows per side, how many are spent on the ledger (latest_checked, latest_spent). It gives no outcome counts: Accept, Release and Reclaim are not told apart.",
-    "Module-1 and Module-6 matched generically"
+    "The dispute module is deployed but not wired to the escrow contract; dispute entries, if any, are matched by asset name or key hash without a verified schema. Only the Module-1 v14 addresses are read, not the v15-sim set. Module-1 and Module-6 datums, and Module-3 endorsements, are matched generically: a datum is attributed to the subject when one of its bytes fields (top level or one constructor deep) equals the asset name or the controller key hash, so an entry that carries only the controller key may belong to another agent of the same key. Their full layouts are not decoded."
   ],
   "links": {
     "spec": "https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/agent-history.md",

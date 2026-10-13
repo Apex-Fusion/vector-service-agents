@@ -1,9 +1,8 @@
-import { koios, decodeRegistryDatum, REGISTRY_POLICY, REGISTRY_ADDRESS, didFor } from '@vsa/vector-read';
+import { koios, decodeRegistryDatum, KOIOS_PAGE, REGISTRY_POLICY, REGISTRY_ADDRESS, didFor } from '@vsa/vector-read';
 import type { Fetch, KoiosUtxo, RegistryDatum } from '@vsa/vector-read';
 import { BadRequest } from './request.ts';
 export interface Subject { kind: 'asset' | 'pkh'; asset_name: string | null; did: string | null; controller_pkh: string | null; candidates: Array<{ asset_name: string; did: string; name: string }> }
 const DID_RE = /^did:vector:agent:([0-9a-f]{56}):([0-9a-f]{64})$/i;
-const PAGE = 1_000; // Koios answers with at most this many rows per call
 const MAX_PAGES = 20; // 20,000 registry UTxOs, far above the few hundred on mainnet; past it the scan fails instead of truncating
 // A registry datum, or null when the UTxO carries none or it does not decode (such a UTxO is not a usable record).
 const registryRecord = (u: KoiosUtxo): RegistryDatum | null => {
@@ -26,11 +25,11 @@ export async function resolveSubject(input: string, f: Fetch): Promise<Subject> 
   if (!/^[0-9a-f]{56}$/i.test(input)) throw new BadRequest('subject must be a DID, a 64-hex registry asset name, or a 56-hex key hash');
   const pkh = input.toLowerCase();
   const found = new Map<string, Subject['candidates'][number]>();
-  // Only an empty page ends the scan: a page shorter than PAGE is not known to be the last one. The next page starts
-  // after the rows actually read, which is page * PAGE while pages come back full.
+  // Only an empty page ends the scan: a page shorter than KOIOS_PAGE is not known to be the last one. The next page starts
+  // after the rows actually read, which is page * KOIOS_PAGE while pages come back full.
   let offset = 0;
   for (let page = 0; ; page++) {
-    if (page === MAX_PAGES) throw new Error(`registry scan did not end within ${MAX_PAGES} pages of ${PAGE} UTxOs`);
+    if (page === MAX_PAGES) throw new Error(`registry scan did not end within ${MAX_PAGES} pages of ${KOIOS_PAGE} UTxOs`);
     const rows = await koios.addressUtxos([REGISTRY_ADDRESS], f, offset);
     if (rows.length === 0) break;
     offset += rows.length;
