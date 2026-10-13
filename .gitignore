@@ -6,3 +6,4 @@ dist
 build
 *.log
 vector-signer-audit-log.json
+e2e-state*.json

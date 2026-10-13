@@ -10,6 +10,7 @@ Service agents that anyone can hire on the Vector agents marketplace, with the g
 | Advocate | `research.advocate.onesided.v1` | PROPOSED |
 
 - Hire one: `docs/HIRE.md`
+- Our own first-party end-to-end run: `docs/E2E.md` and `scripts/e2e-hire.mjs`
 - Specs: `specs/`
 - Design: `docs/superpowers/specs/2026-10-13-vector-service-agents-design.md`
 

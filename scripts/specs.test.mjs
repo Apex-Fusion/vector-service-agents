@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 // The four agent specs share one structure and one set of public-wording rules (docs/superpowers/specs/2026-10-13-vector-service-agents-design.md, section 8).
+// The member guide and the E2E runbook are pinned against the same specs and the design at the end of this file.
 const HEADINGS = ['Status', 'Identity', 'Capability id', 'Terms', 'Interface', 'What the receipt commits to', 'Operator and data handling', 'Known gaps', 'How to hire it', 'Changelog', 'Links'];
 const AGENTS = {
   'agent-history': { capability: 'identity.history.report.v1', model: 'agent-history-v1', status: 'PROPOSED (built, not yet advertised). Since 2026-10-13.' },
@@ -99,4 +101,133 @@ test('the Pipeline states its economics and the first-party OCR hop; the Advocat
   assert.equal(pipeline.match(/not offered to outsiders/), null); // the OCR advert is Active on the public indexer
   assert.ok(read('advocate').includes('"This brief argues one side only, by design, and omits counter-arguments."'));
   assert.equal(read('advocate').split('This brief argues one side only, by design, and omits counter-arguments.').length - 1, 3); // the rule, the shape and the example
+});
+
+// ---- The member guide (docs/HIRE.md) and the E2E runbook (docs/E2E.md) ----
+// They are read by people who act on them, so their numbers, tool names and wording are pinned here against the specs and the design.
+const doc = (name) => readFileSync(new URL(`../docs/${name}`, import.meta.url), 'utf8');
+const hire = () => doc('HIRE.md');
+const e2eScript = () => readFileSync(new URL('./e2e-hire.mjs', import.meta.url), 'utf8');
+const HIRE_SECTIONS = ['What you will end up with', 'Get a key', 'We fund it', 'Two lines of config', 'The chat script', 'Read your receipt', 'Register your own identifier (optional)', 'The terminal path', 'When it goes wrong', 'Honesty box'];
+const CHAT_SCRIPT = [
+  '1. "List the marketplace capabilities on Vector."',
+  '2. "Show me free suppliers for identity.history.report.v1."',
+  '3. "Hire the first one. Payload: {"subject":"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db"}. Use my signer address as changeAddress, sign, submit and wait for confirmation."',
+  '4. "Send the job with the same payload, then poll until it is done."',
+  '5. "Verify the receipt. If every check passes, accept, sign, submit and wait."',
+  '6. "Show me the receipt, the signature, the escrow reference and explorer links for the post and the accept."',
+];
+// The nine marketplace tools are read from the design spec, so a renamed tool fails here before it fails in a member's chat.
+const MARKETPLACE_TOOLS = [...new Set(DESIGN.match(/\bvector_(?:build_)?marketplace_[a-z_]+/g))].sort();
+const OTHER_TOOLS = ['vector_signer_get_address', 'vector_signer_decode_transaction', 'vector_signer_sign', 'vector_signer_get_spend_limits', 'vector_submit_transaction', 'vector_await_transaction', 'vector_build_register_agent', 'vector_build_deregister_agent', 'vector_get_utxos', 'vector_get_balance'];
+const designEndpoint = (label) => new RegExp(label + ' `([^`]+)`').exec(DESIGN)?.[1];
+const AGENT_SPEC = { 'Agent History': 'agent-history', 'Audio Snippets': 'audio-snippets', Advocate: 'advocate', 'Document Pipeline': 'document-pipeline' };
+
+test('docs/HIRE.md: the ten sections of the design, numbered, in the order the member does them', () => {
+  assert.deepEqual([...hire().matchAll(/^## (\d+)\. (.+)$/gm)].map((m) => [Number(m[1]), m[2]]), HIRE_SECTIONS.map((title, i) => [i + 1, title]));
+  assert.ok(hire().startsWith('# '), 'starts with a title');
+});
+
+test('docs/HIRE.md: the chat script is verbatim, six lines in one block, inside section 5', () => {
+  const five = section(hire(), '5. The chat script');
+  assert.ok(five.includes('```text\n' + CHAT_SCRIPT.join('\n') + '\n```'), 'the six lines, in order, in one fenced block');
+});
+
+test('docs/HIRE.md: the ledger unit is named once, in section 3, and nowhere else in the repo', () => {
+  const guide = hire();
+  assert.equal(guide.match(UNIT_NAME)?.length, 1);
+  assert.ok(section(guide, '3. We fund it').includes("the ledger's native unit, " + UNIT_NAME.source));
+  // Every other file of the repo says "unit" or prints lovelace. The planning documents and the recorded ledger data are not part of this rule.
+  const skip = (p) => /(^|[\\/])(node_modules|\.git|\.superpowers|fixtures)([\\/]|$)/.test(p) || p.startsWith(join('docs', 'superpowers')) || p === 'pnpm-lock.yaml';
+  const walk = (dir, out = []) => { for (const e of readdirSync(dir, { withFileTypes: true })) { const p = join(dir, e.name); if (skip(p)) continue; e.isDirectory() ? walk(p, out) : out.push(p); } return out; };
+  const hits = walk('.').filter((p) => /\.(ts|mjs|json|md|yml|yaml|template)$/.test(p) && p !== join('docs', 'HIRE.md')).filter((p) => readFileSync(p, 'utf8').match(UNIT_NAME));
+  assert.deepEqual(hits, []);
+});
+
+test('docs/HIRE.md and docs/E2E.md: no em or en dash; nothing says LIVE or DEPLOYED except the sentence that denies it', () => {
+  for (const name of ['HIRE.md', 'E2E.md']) assert.equal(doc(name).match(DASHES), null, name);
+  const guide = hire();
+  assert.ok(guide.includes('Nothing in this guide is LIVE or DEPLOYED.'));
+  assert.equal(guide.replace('Nothing in this guide is LIVE or DEPLOYED.', '').match(/\b(LIVE|DEPLOYED)\b/g), null);
+  assert.equal(doc('E2E.md').match(/\b(LIVE|DEPLOYED)\b/g), null);
+});
+
+test('docs/HIRE.md: the request JSON and the wire payload are named apart, as in the specs', () => {
+  const five = section(hire(), '5. The chat script');
+  assert.ok(five.includes(WIRE_PAYLOAD), 'section 5 defines the wire payload');
+  assert.match(five, /wrap the request JSON into the wire payload/);
+  assert.equal(hire().match(/payload is the request JSON/i), null);
+  assert.match(section(hire(), '8. The terminal path'), /holds the request JSON, and the buyer wraps it into the wire payload/);
+});
+
+test('docs/HIRE.md: who receives what on Accept, Release and Reclaim; never "both bonds return"', () => {
+  const three = section(hire(), '3. We fund it');
+  assert.ok(three.includes('On Accept the supplier receives the price and the supplier bond, and your bond returns to you.'));
+  assert.ok(three.includes("If you do not accept within 600000 ms of the supplier's Submit, the supplier may Release the escrow and take the price and both bonds."));
+  assert.ok(three.includes('If the supplier never submits, you reclaim the price and both bonds after `deliver_by`.'));
+  assert.equal(hire().match(/both bonds (return|come back|are returned)|bonds? (are )?returned|returned on accept|bonds back/i), null);
+});
+
+test('docs/HIRE.md: the cost table is the escrow arithmetic, with the prices of the four specs', () => {
+  const rows = [...section(hire(), '3. We fund it').matchAll(/^\| (\d+) \(([^)]+)\) \| (\d+) \| (\d+) \| (\d+) \| about (\d+) \| about (\d+) \| (\d+) \|$/gm)];
+  assert.deepEqual(rows.map((m) => m[2]).sort(), Object.keys(AGENT_SPEC).sort(), 'one row for each agent');
+  for (const [, price, agent, lock, supplier, back, fees, pay, jobs] of rows) {
+    const terms = section(read(AGENT_SPEC[agent]), 'Terms');
+    const unit = (label) => Number(terms.match(new RegExp('[|] ' + label + ' [|] ([0-9]+) '))?.[1]) / 1_000_000;
+    assert.equal(Number(price), unit('Price'), `${agent}: the price of the spec`);
+    assert.equal(Number(lock), unit('Locked by the buyer [(]price and both bonds[)]'), `${agent}: the lock is price plus both bonds`);
+    assert.equal(Number(supplier), unit('Price') + unit('Supplier bond'), `${agent}: the supplier receives the price and the supplier bond`);
+    assert.equal(Number(back), unit('Buyer bond'), `${agent}: only the buyer bond comes back`);
+    assert.equal(Number(fees), 1, `${agent}: fees about 1 across Post and Accept`);
+    assert.equal(Number(pay), Number(lock) - Number(back) + Number(fees), `${agent}: what an accepted job costs the buyer`);
+    assert.equal(Number(jobs), Math.floor(50 / Number(pay)), `${agent}: accepted jobs per float of 50`);
+  }
+});
+
+test('docs/HIRE.md and the design agree on the figures a member types or reads', () => {
+  const guide = hire();
+  assert.ok(guide.includes(designEndpoint('MCP')), 'the hosted server URL');
+  assert.ok(guide.includes(designEndpoint('Ogmios')), 'the Ogmios URL of the terminal path');
+  assert.ok(guide.includes(`VECTOR_ZERO_TIME_MS=${DESIGN.match(/Zero time[^|]*[|] `(\d+)`/)[1]}`), 'the genesis time of the terminal path');
+  assert.ok(guide.includes('https://explorer.vector.mainnet.apexfusion.org/transaction/hash/<txid>'), 'the explorer link pattern');
+  assert.match(DESIGN, /per-transaction cap 100, daily cap 500/);
+  assert.ok(guide.includes('"VECTOR_SIGNER_SPEND_LIMIT_PER_TX": "100000000"') && guide.includes('"VECTOR_SIGNER_SPEND_LIMIT_DAILY": "500000000"'), '100 and 500 units, as lovelace');
+  assert.ok(guide.includes('c4c378a'), 'the pinned template commit');
+  for (const flag of ['--advert-ref', '--endpoint', '--payload-file']) assert.ok(guide.includes(flag), flag);
+});
+
+test('docs/HIRE.md: says what is and is not in service, tool by tool', () => {
+  const guide = hire();
+  assert.equal(MARKETPLACE_TOOLS.length, 9);
+  for (const tool of MARKETPLACE_TOOLS) assert.ok(guide.includes('`' + tool + '`'), tool);
+  const row = (needle) => guide.split('\n').find((l) => l.startsWith('|') && l.includes(needle)) ?? '';
+  assert.match(row('vector_marketplace_list_capabilities'), /Open PR 1: \[Apex-Fusion\/mcp-server#20\]\(https:\/\/github.com\/Apex-Fusion\/mcp-server\/pull\/20\)/);
+  assert.match(row('vector_build_marketplace_post_escrow'), /PR 2, in progress/);
+  assert.match(row('vector_marketplace_send_job'), /PR 3, planned/);
+  assert.match(row('@apexfusion/vector-mcp-signer'), /PR 4, planned.*not published/);
+  assert.match(row('identity.history.report.v1'), /PROPOSED \(built, not yet advertised\)/);
+  assert.match(row('mcp.vector.mainnet.apexfusion.org'), /v2\.0\.0, 24 tools/);
+});
+
+test('docs/HIRE.md, docs/E2E.md and scripts/e2e-hire.mjs: every tool named is in the design or on the hosted server today', () => {
+  const known = new Set([...MARKETPLACE_TOOLS, ...OTHER_TOOLS]);
+  for (const [name, text] of [['docs/HIRE.md', hire()], ['docs/E2E.md', doc('E2E.md')], ['scripts/e2e-hire.mjs', e2eScript()]]) {
+    const unknown = [...new Set(text.match(/\bvector_[a-z_]+/g) ?? [])].filter((t) => !known.has(t));
+    assert.deepEqual(unknown, [], `${name} names a tool that is not known`);
+  }
+  for (const tool of MARKETPLACE_TOOLS) assert.ok(e2eScript().includes(tool), `the script uses ${tool}`);
+});
+
+test('docs/E2E.md: every run is marked first-party, the commands are exact, and every setting the script reads is explained', () => {
+  const e2e = doc('E2E.md');
+  assert.ok(e2e.startsWith('# '), 'starts with a title');
+  assert.match(e2e, /first-party/);
+  assert.ok(e2e.includes('node scripts/e2e-hire.mjs --dry-run') && e2e.includes('node scripts/e2e-hire.mjs\n'));
+  const table = e2e.split('\n').filter((l) => l.startsWith('|'));
+  const results = table.slice(table.findIndex((l) => l.startsWith('| Date |')));
+  assert.equal(results[0], '| Date | Run | Escrow reference | Post transaction | Accept transaction | Verdict |');
+  for (const row of results.slice(2)) assert.equal(row.split('|')[2].trim(), 'first-party', `a run row says first-party: ${row}`);
+  const settings = [...new Set([...e2eScript().matchAll(/\benv\.([A-Z][A-Z0-9_]+)/g), ...e2eScript().matchAll(/need\('([A-Z][A-Z0-9_]+)'\)/g)].map((m) => m[1]))];
+  assert.ok(settings.length >= 5, 'the script reads its settings from the environment');
+  for (const name of settings) assert.ok(e2e.includes('`' + name + '`'), `docs/E2E.md explains ${name}`);
 });
