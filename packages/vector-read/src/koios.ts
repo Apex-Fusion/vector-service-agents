@@ -19,7 +19,8 @@ export const koios = {
   assetUtxos: (policy: string, name: string, f?: Fetch) => post<KoiosUtxo[]>('asset_utxos', { _asset_list: [[policy, name]], _extended: true }, f),
   assetHistory: (policy: string, name: string, f?: Fetch) => post<Array<{ minting_txs: Array<{ tx_hash: string; quantity: string; block_time: number }> }>>('asset_history', { _asset_policy: policy, _asset_name: name }, f),
   assetTxs: (policy: string, name: string, f?: Fetch) => post<Array<{ tx_hash: string; block_height: number; block_time: number }>>('asset_txs', { _asset_policy: policy, _asset_name: name, _history: true }, f),
-  txInfo: (hashes: string[], f?: Fetch) => post<KoiosTxInfo[]>('tx_info', { _tx_hashes: hashes }, f),
+  // Without _inputs and _assets Koios answers with empty inputs, empty assets_minted and empty output asset_list.
+  txInfo: (hashes: string[], f?: Fetch) => post<KoiosTxInfo[]>('tx_info', { _tx_hashes: hashes, _inputs: true, _assets: true }, f),
   addressUtxos: (addresses: string[], f?: Fetch) => post<KoiosUtxo[]>('address_utxos', { _addresses: addresses, _extended: true }, f, 40_000),
   utxoInfo: (refs: string[], f?: Fetch) => post<KoiosUtxo[]>('utxo_info', { _utxo_refs: refs, _extended: true }, f),
 };

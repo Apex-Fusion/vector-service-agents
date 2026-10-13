@@ -53,7 +53,7 @@ describe('fixture store and error contract', () => {
       `POST ${KOIOS_URL}/address_utxos ${JSON.stringify({ _addresses: [REGISTRY_ADDRESS], _extended: true })}`,
       `POST ${KOIOS_URL}/asset_history ${JSON.stringify({ _asset_policy: REGISTRY_POLICY, _asset_name: asset })}`,
       `POST ${KOIOS_URL}/asset_txs ${JSON.stringify({ _asset_policy: REGISTRY_POLICY, _asset_name: asset, _history: true })}`,
-      `POST ${KOIOS_URL}/tx_info ${JSON.stringify({ _tx_hashes: [tx] })}`,
+      `POST ${KOIOS_URL}/tx_info ${JSON.stringify({ _tx_hashes: [tx], _inputs: true, _assets: true })}`,
       `POST ${KOIOS_URL}/utxo_info ${JSON.stringify({ _utxo_refs: [`${tx}#0`], _extended: true })}`,
       `GET ${KOIOS_URL}/tip `,
       `GET ${INDEXER_URL}/suppliers `,
