@@ -6,7 +6,7 @@
   "description": "The registry, stake, marketplace and module records the Vector ledger holds for one agent identifier, with the gaps stated. One report per job, delivered with the runtime's signed receipt. Read-only; no model cost.",
   "operator": {
     "name": "Apex Fusion Foundation",
-    "contact": "filip.blagojevic@foundation.apexfusion.org"
+    "contact": "<OPERATOR_CONTACT>"
   },
   "identity": {
     "did": "<AGENT_DID>",

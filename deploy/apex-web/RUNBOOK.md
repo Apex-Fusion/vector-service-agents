@@ -79,6 +79,14 @@ awk -F= '/^SUPPLIER_/ { print $1, length($2) }' .env.agent-history
 
 The last command must print `SUPPLIER_PRIV_KEY_HEX 64`, `SUPPLIER_PUB_KEY_HEX 64`, `SUPPLIER_PKH 56` and `SUPPLIER_ADDRESS 58`. All four are needed. An empty public key breaks the receipt check, and an empty key hash makes the runtime reject its own claims as `wrong_supplier`.
 
+Then set the contact address, the one value in the file that is not generated. `OPERATOR_CONTACT` is required: the service stops at start without it, and the address is published in the manifest that the advert hashes, so it is final before step 11. Use the role address that the Foundation confirms, never a person's address. The line holds a placeholder in angle brackets from the example. Edit it in place, then check:
+
+```sh
+grep -c '^OPERATOR_CONTACT=[^<[:space:]]' .env.agent-history
+```
+
+It must print 1: a value that does not start with an angle bracket.
+
 The key is a raw keypair and this file is the only copy. There is no recovery phrase, and nothing can derive it again. Copy `.env.agent-history` to the operator's encrypted offline store now, before the address receives anything. A wallet whose key is lost is gone, whatever the ledger shows for it.
 
 ## 5. Adapt the ops scripts
@@ -158,7 +166,7 @@ docker exec agent-history-service wget -qO- http://127.0.0.1:9091/healthz
 docker exec agent-history-service wget -qO- http://127.0.0.1:9091/agent.json
 ```
 
-`/healthz` answers `{"ok":true}`. The manifest must show the new DID in `identity.did`, the key hash in `identity.controller_pkh` and `keys.supplier_pkh`, the public key in `keys.pub_key_hex`, `status.chip` `proposed`, `status.since` `2026-10-13` and an empty `links.explorer_advert`. The advert's hash will cover exactly these bytes.
+`/healthz` answers `{"ok":true}`. The manifest must show the role address of step 4 in `operator.contact`, the new DID in `identity.did`, the key hash in `identity.controller_pkh` and `keys.supplier_pkh`, the public key in `keys.pub_key_hex`, `status.chip` `proposed`, `status.since` `2026-10-13` and an empty `links.explorer_advert`. The advert's hash will cover exactly these bytes.
 
 The service can report on itself. This shows what a buyer will get, including the registration of step 7 and the stake of step 8. Koios can take a minute to show a new registration:
 
@@ -310,6 +318,7 @@ The registry identity and the Module-3 stake stay on the ledger until the operat
 | The runtime restarts and its log says `missing required env var ADVERT_REF` | It was started before the advert existed. | `docker compose -f docker-compose.agent-history.yml stop agent`, finish step 12, then step 13. |
 | `/capability` shows an empty public key, or claims fail with `wrong_supplier` | `SUPPLIER_PUB_KEY_HEX` or `SUPPLIER_PKH` is empty in the env file. | Fill all four identity values from one key (step 4), then recreate. |
 | Jobs fail with `service_unreachable` | The runtime cannot reach the service. | `docker exec agent-history-agent printenv SERVICE_URL` must print `http://agent-history-service:9091/`. Check that both containers run and sit on `umami_default`. |
+| The service container keeps restarting and `docker logs agent-history-service` says `environment variable OPERATOR_CONTACT is required` | The contact line in the env file is empty or missing. | Set it as in step 4, then `up -d --force-recreate service`. |
 | The env file changed and nothing happened | `restart` does not re-read it. | `up -d --force-recreate <service>`. |
 | `network umami_default declared as external, but could not be found` | Wrong host, or the umami stack is down. | Start the umami stack. |
 | `pull access denied` for the service image | Not logged in to `ghcr.io`, or the image is not published yet. | Step 2. |

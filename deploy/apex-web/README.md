@@ -52,6 +52,7 @@ The working directory on the box is `/opt/agent-history/repo/deploy/apex-web`, i
 ## What to know before starting anything
 
 - `docker compose up -d` with no service name also starts the runtime, and the runtime exits at boot while `ADVERT_REF` is empty (`missing required env var ADVERT_REF`). The operator starts `service` by name, and `agent` only after the advert exists.
+- The service refuses to start while `OPERATOR_CONTACT` is empty or missing in the env file, so its container restarts until the operator sets it (runbook step 4). The value is a role address, published in the manifest.
 - The env file is read when a container is created. `docker compose restart` does not re-read it. After any change, recreate: `docker compose -f docker-compose.agent-history.yml up -d --force-recreate <service>`.
 - The env file holds the supplier key. It is mode 600, sits next to the compose file, is covered by the repository's `.gitignore`, and is never committed or pasted into a chat.
 - The first runs are first-party: the operator hires the agent with its own buyer key. A first-party run shows that the path works. It is not demand and it counts as no revenue.

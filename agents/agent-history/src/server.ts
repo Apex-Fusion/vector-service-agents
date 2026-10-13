@@ -13,6 +13,12 @@ export function envInt(name: string, v: string | undefined, fallback: number): n
   if (!/^\d+$/.test(v) || !Number.isSafeInteger(Number(v))) throw new Error(`environment variable ${name} must be a non-negative integer, got "${v}"`);
   return Number(v);
 }
+// A setting the service cannot start without. Absent, empty and blank all mean it was not given, and the error names the variable.
+// The value is published in the manifest the advert hashes, so there is no default: a default would be published by every deployment that forgot to set it.
+export function requiredEnv(name: string, v: string | undefined): string {
+  if (v === undefined || v.trim() === '') throw new Error(`environment variable ${name} is required (the operator's contact address, published in the manifest) and is not set`);
+  return v.trim();
+}
 const CHIPS = ['LIVE', 'DEPLOYED', 'PROPOSED'];
 // The status word: LIVE, DEPLOYED or PROPOSED in any case, carried in the manifest in lower case. Absent or empty means proposed.
 function statusChip(v: string | undefined): string {
@@ -24,7 +30,7 @@ export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
   return {
     schema: 'vector.agent-manifest.v1', name: 'Agent History', capability_id: 'identity.history.report.v1', version: env.AGENT_VERSION ?? '0.1.0',
     description: "The registry, stake, marketplace and module records the Vector ledger holds for one agent identifier, with the gaps stated. One report per job, delivered with the runtime's signed receipt. Read-only; no model cost.",
-    operator: { name: 'Apex Fusion Foundation', contact: env.OPERATOR_CONTACT ?? 'filip.blagojevic@foundation.apexfusion.org' },
+    operator: { name: 'Apex Fusion Foundation', contact: requiredEnv('OPERATOR_CONTACT', env.OPERATOR_CONTACT) },
     identity: { did: env.AGENT_DID ?? '', controller_pkh: env.SUPPLIER_PKH ?? '', registry_address: REGISTRY_ADDRESS },
     keys: { supplier_pkh: env.SUPPLIER_PKH ?? '', pub_key_hex: env.SUPPLIER_PUB_KEY_HEX ?? '' },
     interface: { request_schema: { type: 'object', required: ['subject'], properties: { subject: { type: 'string', description: 'DID, registry asset name (64 hex) or key hash (56 hex)' }, include: { type: 'array', items: { enum: ['identity', 'marketplace', 'reputation', 'dispute', 'self_improvement'] } } } }, response_schema: { $ref: 'https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/agent-history.md#response' }, routes: { job: '/v1/job', status: '/status', capability: '/capability' } },

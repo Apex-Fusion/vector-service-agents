@@ -4,14 +4,14 @@ The registry, stake, marketplace and module records the Vector ledger holds for 
 
 Status: PROPOSED (built, not yet advertised). Read-only: the service reads public ledger data, holds no keys and costs no model calls.
 
-`agent.json.template` is the manifest with placeholders. The service renders the real manifest from its environment when it starts (`AGENT_DID`, `SUPPLIER_PKH`, `SUPPLIER_PUB_KEY_HEX` and the optional settings, see Manifest below) and serves those bytes at `GET /agent.json`. It never serves the template itself. `<AGENT_DID>`, `<SUPPLIER_PKH>` and `<SUPPLIER_PUB_KEY_HEX>` in the template stand for those three values.
+`agent.json.template` is the manifest with placeholders. The service renders the real manifest from its environment when it starts (`OPERATOR_CONTACT`, `AGENT_DID`, `SUPPLIER_PKH`, `SUPPLIER_PUB_KEY_HEX` and the optional settings, see Manifest below) and serves those bytes at `GET /agent.json`. It never serves the template itself. `<OPERATOR_CONTACT>`, `<AGENT_DID>`, `<SUPPLIER_PKH>` and `<SUPPLIER_PUB_KEY_HEX>` in the template stand for those four values.
 
 ## Run it
 
 ```bash
 pnpm install
 cd agents/agent-history
-AGENT_DID=did:local PORT=9091 pnpm start
+OPERATOR_CONTACT=ops@example.test AGENT_DID=did:local PORT=9091 pnpm start
 curl -s -X POST localhost:9091/ -H 'content-type: application/json' \
   -d '[{"content":"{\"subject\":\"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db\"}","role":"user"}]'
 ```
@@ -22,7 +22,7 @@ Other routes: `GET /agent.json` (manifest) and `GET /healthz`. `POST` is accepte
 
 ## Manifest
 
-`agent.json.template` is the JSON that `manifestFromEnv` prints with the three placeholders. A test keeps the two equal, so change the template by changing `manifestFromEnv` and regenerating it. The specification of the agent is `specs/agent-history.md` at the repository root.
+`agent.json.template` is the JSON that `manifestFromEnv` prints with the four placeholders. A test keeps the two equal, so change the template by changing `manifestFromEnv` and regenerating it. The specification of the agent is `specs/agent-history.md` at the repository root.
 
 | Variable | Manifest field | Default |
 |---|---|---|
@@ -30,14 +30,14 @@ Other routes: `GET /agent.json` (manifest) and `GET /healthz`. `POST` is accepte
 | `SUPPLIER_PKH` | `identity.controller_pkh` and `keys.supplier_pkh` | empty |
 | `SUPPLIER_PUB_KEY_HEX` | `keys.pub_key_hex` | empty |
 | `AGENT_VERSION` | `version` | `0.1.0` |
-| `OPERATOR_CONTACT` | `operator.contact` | the Foundation address in `src/server.ts` |
+| `OPERATOR_CONTACT` | `operator.contact` | none. Required: the service stops at start without it |
 | `ADVERT_PRICE_LOVELACE` | `terms.price_lovelace` | `1000000` |
 | `ADVERT_MAX_PROCESSING_MS` | `terms.max_processing_ms` | `300000` |
 | `AGENT_STATUS_CHIP` | `status.chip`, in lower case | `proposed` |
 | `AGENT_STATUS_SINCE` | `status.since` | `2026-10-13` |
 | `ADVERT_EXPLORER_URL` | `links.explorer_advert` | empty |
 
-Numbers (and `PORT`) must be non-negative integers. `AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case. Anything else stops the service at start, and the error names the variable.
+Numbers (and `PORT`) must be non-negative integers. `AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case. `OPERATOR_CONTACT` must be set and not blank. A value that breaks one of these rules stops the service at start, and the error names the variable. `OPERATOR_CONTACT` has no default, because the value is published in the manifest that the advert hashes: use a role address that the Foundation confirms, never a person's.
 
 The advert `detail_uri` points at `GET /agent.json` and its `detail_hash` is the sha256 of the bytes served there. Adverts are immutable, so a changed manifest means a retired advert and a new one. From the repository root, print the hash of a running agent with `node scripts/manifest-hash.mjs https://<host>`.
 

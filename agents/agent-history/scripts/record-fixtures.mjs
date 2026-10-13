@@ -8,7 +8,8 @@ import { buildReport, degradedReasons } from '../src/report.ts';
 import { manifestFromEnv } from '../src/server.ts';
 const store = {};
 const req = { subject: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db', include: ['identity', 'marketplace', 'reputation', 'dispute', 'self_improvement'] };
-const report = await buildReport(req, recordingFetch(fetch, store), { manifest: manifestFromEnv({}) });
+// The manifest needs a contact address and the report does not carry it; this one is never published.
+const report = await buildReport(req, recordingFetch(fetch, store), { manifest: manifestFromEnv({ OPERATOR_CONTACT: 'recorder@example.test' }) });
 const problems = degradedReasons(report);
 if (!report.identity?.error && !report.identity?.registered) problems.push('identity.registered is null');
 if (problems.length) {

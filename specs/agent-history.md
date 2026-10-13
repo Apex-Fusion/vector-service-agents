@@ -49,7 +49,7 @@ Amounts are `lovelace` fields. The last column is the same amount divided by 1,0
 | Jobs at a time | 1 |
 | Report cache | 60 s per subject and section list |
 
-The buyer locks the price and both bonds. On Accept the supplier is paid the price and gets its own bond back, and the buyer gets its bond back. If the buyer does not Accept within the accept window, the supplier may Release the escrow and take the payment and both bonds. If the supplier never submits, the buyer reclaims after `deliver_by`. The escrow contract has no dispute action. The fee floor is 500000 lovelace per transaction, paid on top by whoever builds it.
+The buyer locks the price and both bonds. On Accept the supplier receives the price and the supplier bond, and the buyer's bond returns to the buyer. If the buyer does not Accept within the accept window, the supplier may Release the escrow and take the payment and both bonds. If the supplier never submits, the buyer reclaims after `deliver_by`. The escrow contract has no dispute action. The fee floor is 500000 lovelace per transaction, paid on top by whoever builds it.
 
 The runtime has one session slot. A second hire while a job runs is refused with `409 supplier_busy` before anything is claimed.
 

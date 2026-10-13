@@ -5,13 +5,14 @@ import { replayFetch, KOIOS_URL, INDEXER_URL, REGISTRY_POLICY, REGISTRY_ADDRESS,
 import type { Fetch } from '@vsa/vector-read';
 import { buildReport, degradedReasons, BLIND_SPOTS } from '../src/report.ts';
 import { manifestFromEnv } from '../src/server.ts';
+import { TEST_ENV } from './support.ts';
 const fx = JSON.parse(readFileSync(new URL('./fixtures/chandra.json', import.meta.url), 'utf8'));
 const DID = 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db';
 const PKH = '401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9';
 const ALL = ['identity', 'marketplace', 'reputation', 'dispute', 'self_improvement'] as const;
 // The recorded /capability answer is replayed; the host lookup is stubbed so no test depends on DNS.
 const lookup = async () => [{ address: '8.8.8.8', family: 4 }];
-const opts = { manifest: manifestFromEnv({}), lookup };
+const opts = { manifest: manifestFromEnv(TEST_ENV), lookup };
 describe('ChandraOCR report (recorded fixtures)', () => {
   test('identity', async () => {
     const r = await buildReport({ subject: DID, include: ['identity'] }, replayFetch(fx.store), opts);

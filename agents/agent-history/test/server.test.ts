@@ -1,17 +1,20 @@
 import { describe, test, expect, vi, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import type { Server } from 'node:http';
 import { replayFetch } from '@vsa/vector-read';
 import type { Fetch } from '@vsa/vector-read';
 import { createServer, manifestFromEnv, envInt } from '../src/server.ts';
 import { BLIND_SPOTS } from '../src/report.ts';
+import { TEST_ENV, TEST_CONTACT } from './support.ts';
 const fx = JSON.parse(readFileSync(new URL('./fixtures/chandra.json', import.meta.url), 'utf8'));
 const ASSET = '5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db';
 const K = 'https://v2.koios.vector.mainnet.apexfusion.org/api/v1';
 // The recorded /capability answer is replayed; the host lookup is stubbed so no test depends on DNS.
 const lookup = async () => [{ address: '8.8.8.8', family: 4 }];
 async function call(body: string, method = 'POST', path = '/') {
-  const srv = createServer({ fetchImpl: replayFetch(fx.store), manifest: manifestFromEnv({ AGENT_DID: 'did:test' }), lookup });
+  const srv = createServer({ fetchImpl: replayFetch(fx.store), manifest: manifestFromEnv({ ...TEST_ENV, AGENT_DID: 'did:test' }), lookup });
   await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
   const port = (srv.address() as any).port;
   const res = await fetch(`http://127.0.0.1:${port}${path}`, { method, body: method === 'POST' ? body : undefined, headers: { 'content-type': 'application/json' } });
@@ -33,7 +36,7 @@ describe('http surface', () => {
   });
   test('an unknown subject is a 200 with no identity', async () => {
     const store = { ...fx.store, [`POST ${K}/asset_utxos ` + JSON.stringify({ _asset_list: [['be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01', '11'.repeat(32)]], _extended: true })]: { status: 200, body: '[]' }, [`POST ${K}/asset_txs ` + JSON.stringify({ _asset_policy: 'be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01', _asset_name: '11'.repeat(32), _history: true })]: { status: 200, body: '[]' } };
-    const srv = createServer({ fetchImpl: replayFetch(store), manifest: manifestFromEnv({}), lookup });
+    const srv = createServer({ fetchImpl: replayFetch(store), manifest: manifestFromEnv(TEST_ENV), lookup });
     await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
     const port = (srv.address() as any).port;
     const res = await fetch(`http://127.0.0.1:${port}/`, { method: 'POST', body: JSON.stringify([{ content: JSON.stringify({ subject: '11'.repeat(32), include: ['identity'] }), role: 'user' }]) });
@@ -45,7 +48,7 @@ describe('http surface', () => {
 // One server for several requests; the cache lives as long as the server does.
 type Reply = { status: number; json: any };
 async function withServer<T>(opts: Parameters<typeof createServer>[0], fn: (post: (body: string) => Promise<Reply>, get: (path: string) => Promise<Reply>) => Promise<T>): Promise<T> {
-  const srv: Server = createServer({ manifest: manifestFromEnv({}), lookup, ...opts });
+  const srv: Server = createServer({ manifest: manifestFromEnv(TEST_ENV), lookup, ...opts });
   await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
   const port = (srv.address() as any).port;
   const post = async (body: string) => { const res = await fetch(`http://127.0.0.1:${port}/`, { method: 'POST', body }); return { status: res.status, json: await res.json() }; };
@@ -60,7 +63,7 @@ function counting(gate?: Promise<void>) {
   const f = (async (u: any, i?: RequestInit) => { calls.push(String(u)); if (gate) await gate; return replay(u, i); }) as Fetch;
   return { calls, f };
 }
-afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe('wire checks over http', () => {
   const pad = (n: number) => { // a well-formed message of exactly n bytes whose subject is not a valid subject
@@ -178,7 +181,7 @@ describe('http surface hardening', () => {
   });
   test('a failure after the headers went out destroys the response and sends nothing more', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const srv = createServer({ fetchImpl: replayFetch({}), manifest: manifestFromEnv({}) });
+    const srv = createServer({ fetchImpl: replayFetch({}), manifest: manifestFromEnv(TEST_ENV) });
     const res: any = {
       headersSent: false,
       writeHead: vi.fn(() => { res.headersSent = true; throw new Error('socket closed'); }),
@@ -238,7 +241,7 @@ describe('degraded reports are answered but not cached', () => {
 
 describe('manifest', () => {
   test('GET /agent.json serves exactly the bytes JSON.stringify gives for the manifest', async () => {
-    const manifest = manifestFromEnv({ AGENT_DID: 'did:test', SUPPLIER_PKH: 'ab'.repeat(28), SUPPLIER_PUB_KEY_HEX: 'cd'.repeat(32) });
+    const manifest = manifestFromEnv({ ...TEST_ENV, AGENT_DID: 'did:test', SUPPLIER_PKH: 'ab'.repeat(28), SUPPLIER_PUB_KEY_HEX: 'cd'.repeat(32) });
     const srv: Server = createServer({ manifest, fetchImpl: replayFetch({}) });
     await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
     const res = await fetch(`http://127.0.0.1:${(srv.address() as any).port}/agent.json`);
@@ -247,39 +250,65 @@ describe('manifest', () => {
     expect(bytes).toBe(JSON.stringify(manifest));
     expect(JSON.parse(bytes).keys).toEqual({ supplier_pkh: 'ab'.repeat(28), pub_key_hex: 'cd'.repeat(32) });
   });
-  test('agent.json.template is the manifest with placeholders for the three env-derived fields', () => {
+  test('agent.json.template is the manifest with placeholders for the four fields the operator supplies', () => {
     const template = JSON.parse(readFileSync(new URL('../agent.json.template', import.meta.url), 'utf8'));
-    expect(template).toEqual(manifestFromEnv({ AGENT_DID: '<AGENT_DID>', SUPPLIER_PKH: '<SUPPLIER_PKH>', SUPPLIER_PUB_KEY_HEX: '<SUPPLIER_PUB_KEY_HEX>' }));
+    expect(template).toEqual(manifestFromEnv({ OPERATOR_CONTACT: '<OPERATOR_CONTACT>', AGENT_DID: '<AGENT_DID>', SUPPLIER_PKH: '<SUPPLIER_PKH>', SUPPLIER_PUB_KEY_HEX: '<SUPPLIER_PUB_KEY_HEX>' }));
+  });
+  test('OPERATOR_CONTACT is required: unset, empty and blank stop the service at start, and the error names the variable', () => {
+    for (const v of [undefined, '', ' ', '\t\n']) {
+      expect(() => manifestFromEnv(v === undefined ? {} : { OPERATOR_CONTACT: v }), JSON.stringify(v)).toThrow(/OPERATOR_CONTACT/);
+    }
+    expect(manifestFromEnv(TEST_ENV).operator).toEqual({ name: 'Apex Fusion Foundation', contact: TEST_CONTACT });
+    expect(manifestFromEnv({ OPERATOR_CONTACT: `  ${TEST_CONTACT}\n` }).operator.contact).toBe(TEST_CONTACT);
+  });
+  test('no address is built into the code: the manifest holds exactly the contact it was given', () => {
+    // A default address would be published by every deployment that forgot to set the variable, and it is hashed into the advert.
+    expect(JSON.stringify(manifestFromEnv({ OPERATOR_CONTACT: 'a role' }))).not.toMatch(/@/);
+    expect(readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8')).not.toMatch(/@[a-z0-9-]+\.[a-z]/i);
+  });
+  test('createServer without a manifest reads the environment and refuses to start without OPERATOR_CONTACT', () => {
+    vi.stubEnv('OPERATOR_CONTACT', '');
+    expect(() => createServer()).toThrow(/OPERATOR_CONTACT/);
+    vi.stubEnv('OPERATOR_CONTACT', TEST_CONTACT);
+    createServer().close(); // building the server does not listen
+  });
+  test('the process exits at start with the variable named when OPERATOR_CONTACT is not set', () => {
+    const cwd = fileURLToPath(new URL('..', import.meta.url));
+    const run = (contact: string) => spawnSync(process.execPath, ['--import', 'tsx', 'src/index.ts'], { cwd, encoding: 'utf8', timeout: 60_000, env: { ...process.env, OPERATOR_CONTACT: contact, PORT: '0', HOST: '127.0.0.1' } });
+    const blank = run('');
+    expect(blank.status).toBe(1);
+    expect(blank.stderr).toMatch(/environment variable OPERATOR_CONTACT is required/);
+    expect(blank.stdout).not.toMatch(/listening/);
   });
   test('defaults: proposed, one unit price and two bonds in lovelace, 300 s, the request limit of the wire check', () => {
-    const m = manifestFromEnv({});
+    const m = manifestFromEnv(TEST_ENV);
     expect(m).toMatchObject({ capability_id: 'identity.history.report.v1', status: { chip: 'proposed' }, terms: { price_lovelace: 1_000_000, supplier_bond_lovelace: 1_000_000, buyer_bond_lovelace: 1_000_000, max_processing_ms: 300_000, input_limits: { request_bytes: 65_536 } } });
   });
   test('numeric settings: absent or empty means the default, a number is used', () => {
-    expect(manifestFromEnv({ ADVERT_PRICE_LOVELACE: '' }).terms.price_lovelace).toBe(1_000_000);
-    expect(manifestFromEnv({ ADVERT_PRICE_LOVELACE: '2000000', ADVERT_MAX_PROCESSING_MS: '120000' }).terms).toMatchObject({ price_lovelace: 2_000_000, max_processing_ms: 120_000 });
-    expect(manifestFromEnv({ ADVERT_PRICE_LOVELACE: '0' }).terms.price_lovelace).toBe(0);
+    expect(manifestFromEnv({ ...TEST_ENV, ADVERT_PRICE_LOVELACE: '' }).terms.price_lovelace).toBe(1_000_000);
+    expect(manifestFromEnv({ ...TEST_ENV, ADVERT_PRICE_LOVELACE: '2000000', ADVERT_MAX_PROCESSING_MS: '120000' }).terms).toMatchObject({ price_lovelace: 2_000_000, max_processing_ms: 120_000 });
+    expect(manifestFromEnv({ ...TEST_ENV, ADVERT_PRICE_LOVELACE: '0' }).terms.price_lovelace).toBe(0);
   });
   test('numeric settings must be non-negative integers, and the error names the variable', () => {
     for (const bad of ['one', '-1', '1.5', '1e6', ' 5', '0x10', '99999999999999999999']) {
-      expect(() => manifestFromEnv({ ADVERT_PRICE_LOVELACE: bad }), bad).toThrow(/ADVERT_PRICE_LOVELACE/);
+      expect(() => manifestFromEnv({ ...TEST_ENV, ADVERT_PRICE_LOVELACE: bad }), bad).toThrow(/ADVERT_PRICE_LOVELACE/);
     }
-    expect(() => manifestFromEnv({ ADVERT_MAX_PROCESSING_MS: '-300000' })).toThrow(/ADVERT_MAX_PROCESSING_MS/);
+    expect(() => manifestFromEnv({ ...TEST_ENV, ADVERT_MAX_PROCESSING_MS: '-300000' })).toThrow(/ADVERT_MAX_PROCESSING_MS/);
     expect(() => envInt('PORT', 'ninety', 9091)).toThrow(/PORT/);
     expect(envInt('PORT', undefined, 9091)).toBe(9091);
     expect(envInt('PORT', '0', 9091)).toBe(0);
   });
   test('AGENT_STATUS_CHIP must be LIVE, DEPLOYED or PROPOSED in any case; the manifest carries it in lower case', () => {
-    expect(manifestFromEnv({}).status.chip).toBe('proposed');
-    expect(manifestFromEnv({ AGENT_STATUS_CHIP: '' }).status.chip).toBe('proposed');
-    expect(manifestFromEnv({ AGENT_STATUS_CHIP: 'LIVE' }).status.chip).toBe('live');
-    expect(manifestFromEnv({ AGENT_STATUS_CHIP: 'Deployed' }).status.chip).toBe('deployed');
+    expect(manifestFromEnv(TEST_ENV).status.chip).toBe('proposed');
+    expect(manifestFromEnv({ ...TEST_ENV, AGENT_STATUS_CHIP: '' }).status.chip).toBe('proposed');
+    expect(manifestFromEnv({ ...TEST_ENV, AGENT_STATUS_CHIP: 'LIVE' }).status.chip).toBe('live');
+    expect(manifestFromEnv({ ...TEST_ENV, AGENT_STATUS_CHIP: 'Deployed' }).status.chip).toBe('deployed');
     for (const bad of ['launched', 'live!', 'prod', 'PROPOSED ']) {
-      expect(() => manifestFromEnv({ AGENT_STATUS_CHIP: bad }), bad).toThrow(/AGENT_STATUS_CHIP/);
+      expect(() => manifestFromEnv({ ...TEST_ENV, AGENT_STATUS_CHIP: bad }), bad).toThrow(/AGENT_STATUS_CHIP/);
     }
   });
   test('the texts frozen into the advert hash: the gaps are the blind-spot sentences, the description does not claim the service signs, the subject agent endpoint is a named third party, the cache wording is exact', () => {
-    const m = manifestFromEnv({});
+    const m = manifestFromEnv(TEST_ENV);
     expect(m.gaps).toHaveLength(2);
     expect(m.gaps[0]).toBe(BLIND_SPOTS[1]); // the same sentences in the manifest and in every report
     expect(m.gaps[1]).toBe(`${BLIND_SPOTS[2]} ${BLIND_SPOTS[3]}`);

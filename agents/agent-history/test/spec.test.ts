@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { replayFetch } from '@vsa/vector-read';
 import { buildReport, BLIND_SPOTS } from '../src/report.ts';
 import { manifestFromEnv } from '../src/server.ts';
+import { TEST_ENV } from './support.ts';
 // specs/agent-history.md is written from what the code emits. These tests keep it that way.
 const spec = readFileSync(new URL('../../../specs/agent-history.md', import.meta.url), 'utf8');
 const fx = JSON.parse(readFileSync(new URL('./fixtures/chandra.json', import.meta.url), 'utf8'));
@@ -23,12 +24,12 @@ describe('specs/agent-history.md', () => {
     for (const line of BLIND_SPOTS) expect(gaps, line.slice(0, 50)).toContain(`\n- ${line}\n`);
   });
   test('the manifest gaps are blind-spot lines, so the spec lists them word for word as well', () => {
-    const m = manifestFromEnv({});
+    const m = manifestFromEnv(TEST_ENV);
     expect(m.gaps).toEqual([BLIND_SPOTS[1], `${BLIND_SPOTS[2]} ${BLIND_SPOTS[3]}`]);
     for (const line of [BLIND_SPOTS[1], BLIND_SPOTS[2], BLIND_SPOTS[3]]) expect(section('Known gaps')).toContain(line);
   });
   test('the opening line says what the manifest description says', () => {
-    const first = manifestFromEnv({}).description.split(' Read-only')[0]; // the sentence before "Read-only; no model cost."
+    const first = manifestFromEnv(TEST_ENV).description.split(' Read-only')[0]; // the sentence before "Read-only; no model cost."
     expect(first).toContain('delivered with the runtime');
     expect(spec.split('\n')[2]).toContain(first);
   });
@@ -37,7 +38,7 @@ describe('specs/agent-history.md', () => {
     for (const line of ['No registry record found for this subject.', 'marketplace and key_roles were not read: the subject has no live registry record', 'module scan may be truncated at 1,000 rows']) expect(gaps).toContain(line);
   });
   test('the Terms tables carry the numbers of the manifest', () => {
-    const t = manifestFromEnv({}).terms;
+    const t = manifestFromEnv(TEST_ENV).terms;
     const printed = (n: number) => (n / 1_000_000).toFixed(6);
     const terms = section('Terms');
     expect(terms).toContain(`| Price | ${t.price_lovelace} | ${printed(t.price_lovelace)} |`);
@@ -50,7 +51,7 @@ describe('specs/agent-history.md', () => {
     expect(terms).toContain('| Service timeout, `SERVICE_TIMEOUT_MS` | 180000 ms |');
   });
   test('the capability id, the status line and the one Response heading the manifest links to', () => {
-    const m = manifestFromEnv({});
+    const m = manifestFromEnv(TEST_ENV);
     expect(section('Capability id')).toContain(`\`${m.capability_id}\``);
     expect(section('Status')).toContain('PROPOSED (built, not yet advertised). Since 2026-10-13.');
     expect(m.status).toEqual({ chip: 'proposed', since: '2026-10-13' });
@@ -60,7 +61,7 @@ describe('specs/agent-history.md', () => {
   test('the response example has exactly the key paths of a real report', async () => {
     const block = spec.split('\n### Response\n')[1].split('```json\n')[1].split('\n```')[0];
     const example = JSON.parse(block);
-    const real = JSON.parse(JSON.stringify(await buildReport({ subject: DID, include: ['identity', 'marketplace', 'reputation', 'dispute', 'self_improvement'] }, replayFetch(fx.store), { manifest: manifestFromEnv({}), lookup })));
+    const real = JSON.parse(JSON.stringify(await buildReport({ subject: DID, include: ['identity', 'marketplace', 'reputation', 'dispute', 'self_improvement'] }, replayFetch(fx.store), { manifest: manifestFromEnv(TEST_ENV), lookup })));
     expect(paths(example).sort()).toEqual(paths(real).sort());
     expect(example.blind_spots).toEqual(BLIND_SPOTS);
   });

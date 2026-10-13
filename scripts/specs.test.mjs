@@ -162,12 +162,31 @@ test('docs/HIRE.md: the request JSON and the wire payload are named apart, as in
   assert.match(section(hire(), '8. The terminal path'), /holds the request JSON, and the buyer wraps it into the wire payload/);
 });
 
-test('docs/HIRE.md: who receives what on Accept, Release and Reclaim; never "both bonds return"', () => {
+// Only the buyer's bond comes back on Accept. The supplier receives the price and the supplier bond, and a Release hands the supplier everything that is locked.
+// These phrasings say otherwise: both bonds returning, a bond "returned", the supplier getting its own bond back.
+const BONDS_RETURN = /both bonds (return|come back|are returned)|bonds? (are )?returned|returned on accept|bonds back|own bond|its bond back/i;
+
+test('docs/HIRE.md: who receives what on Accept, Release and Reclaim', () => {
   const three = section(hire(), '3. We fund it');
   assert.ok(three.includes('On Accept the supplier receives the price and the supplier bond, and your bond returns to you.'));
   assert.ok(three.includes("If you do not accept within 600000 ms of the supplier's Submit, the supplier may Release the escrow and take the price and both bonds."));
   assert.ok(three.includes('If the supplier never submits, you reclaim the price and both bonds after `deliver_by`.'));
-  assert.equal(hire().match(/both bonds (return|come back|are returned)|bonds? (are )?returned|returned on accept|bonds back/i), null);
+});
+
+test('the guide, the four specs and the E2E runbook never say that both bonds return or that the supplier gets a bond back', () => {
+  const texts = [['docs/HIRE.md', hire()], ['docs/E2E.md', doc('E2E.md')], ...Object.keys(AGENTS).map((name) => [`specs/${name}.md`, read(name)])];
+  assert.equal(texts.length, 6);
+  for (const [name, text] of texts) assert.equal(text.match(BONDS_RETURN), null, name);
+  // The pattern finds each wording it exists for, among them the sentence that was wrong in specs/agent-history.md.
+  for (const wrong of ['On Accept the supplier is paid the price and gets its own bond back.', 'the supplier gets its bond back', 'both bonds return', 'both bonds come back', 'the bonds are returned', 'returned on Accept', 'the bonds back']) assert.match(wrong, BONDS_RETURN, wrong);
+  for (const right of ["the buyer's bond returns to the buyer", 'your bond returns to you', 'your bond of 1 comes back']) assert.doesNotMatch(right, BONDS_RETURN, right);
+});
+
+test('specs/agent-history.md: on Accept the supplier receives the price and the supplier bond, and the buyer bond returns to the buyer', () => {
+  const terms = section(read('agent-history'), 'Terms');
+  assert.ok(terms.includes("On Accept the supplier receives the price and the supplier bond, and the buyer's bond returns to the buyer."));
+  assert.ok(terms.includes('the supplier may Release the escrow and take the payment and both bonds'));
+  assert.ok(terms.includes('If the supplier never submits, the buyer reclaims after `deliver_by`.'));
 });
 
 test('docs/HIRE.md: the cost table is the escrow arithmetic, with the prices of the four specs', () => {

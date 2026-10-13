@@ -34,6 +34,11 @@ function parseEnv(text) {
   return env;
 }
 const example = parseEnv(exampleText);
+// A value in angle brackets stands for something the operator supplies, so for every check below it is the same as a value that is not there.
+const PLACEHOLDER = /^<.*>$/;
+const withoutPlaceholders = (env) => Object.fromEntries(Object.entries(env).filter(([, v]) => !PLACEHOLDER.test(v)));
+// OPERATOR_CONTACT has no default, so every manifest rendered here is given one. A fixed address on a reserved domain, never one that is used.
+const TEST_CONTACT = 'ops@example.test';
 const specNumber = (re) => Number(re.exec(SPEC)?.[1]);
 const SPEC_TERMS = {
   price: specNumber(/\| Price \| (\d+) \|/), supplierBond: specNumber(/\| Supplier bond \| (\d+) \|/), buyerBond: specNumber(/\| Buyer bond \| (\d+) \|/),
@@ -64,6 +69,9 @@ const keyProblems = (vars) => Object.entries(vars).flatMap(([name, value]) => [
 ]);
 const DASHES = new RegExp('[' + String.fromCharCode(0x2013, 0x2014) + ']');
 const UNIT_NAME = new RegExp('AP' + '3X', 'i');
+// Individual names stay off every public surface. Case-insensitive on purpose: an address such as first.last@host is lower case, and the
+// first guard (capitalised names only) let one through into the manifest.
+const NAMES = /\b(Filip|Blagojevi\w*|David|Cejtlin|Chris|Jerry|Armando|Andrej|Casl\w+|Nikola|Danielle|Tom Flynn)\b/i;
 const PUBLIC_FILES = ['deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md', 'deploy/apex-web/docker-compose.agent-history.yml', 'deploy/apex-web/.env.agent-history.example', 'deploy/apex-web/Caddyfile.snippet', 'agents/agent-history/Dockerfile', '.dockerignore'];
 
 test('compose: two containers with fixed names, the runtime on loopback only, the service unpublished, both on the shared network', () => {
@@ -113,12 +121,15 @@ test('compose: the processing window and the service timeout are the spec terms,
 test('env example: known names only, each once; every secret is empty; nothing in the example or in the compose environment looks like key material', () => {
   const RUNTIME = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'ADVERT_REF'];
   const POST_ADVERT = ['ADVERT_CAPABILITY_ID', 'ADVERT_MODEL', 'ADVERT_PRICE_LOVELACE', 'ADVERT_SUPPLIER_BOND_LOVELACE', 'ADVERT_BUYER_BOND_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_ENDPOINT_URL', 'ADVERT_DETAIL_URI', 'ADVERT_DETAIL_HASH'];
-  const MANIFEST = ['AGENT_DID', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_EXPLORER_URL'];
+  const MANIFEST = ['OPERATOR_CONTACT', 'AGENT_DID', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_EXPLORER_URL'];
   assert.deepEqual(Object.keys(example).filter((n) => ![...RUNTIME, ...POST_ADVERT, ...MANIFEST].includes(n)), [], 'a name the runtime, the advert command and the service never read');
   assert.deepEqual(keyProblems(example), []);
   assert.deepEqual(keyProblems(agent.environment), [], 'the compose environment of the runtime');
   assert.deepEqual(keyProblems(service.environment), [], 'the compose environment of the service');
   for (const name of ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'ADVERT_REF', 'ADVERT_DETAIL_HASH', 'AGENT_DID', 'ADVERT_EXPLORER_URL']) assert.equal(example[name], '', `${name} is filled by the runbook`);
+  // The contact is the one value the operator types. It is a placeholder in angle brackets (never an address), and it says what goes there.
+  assert.match(example.OPERATOR_CONTACT, PLACEHOLDER);
+  assert.ok(example.OPERATOR_CONTACT.startsWith('<role address'), 'a role address is asked for');
 });
 
 test('key check: it flags a secret name with a value, a key-shaped value and an address, and passes what the compose file holds', () => {
@@ -135,9 +146,11 @@ test('env example: every name the service code reads is in the example, in the c
   for (const f of ['agents/agent-history/src/server.ts', 'agents/agent-history/src/index.ts', 'packages/vector-read/src/constants.ts']) assert.ok(files.includes(f), `the scan includes ${f}`);
   const names = new Set(files.flatMap((f) => [...envNamesIn(read(f))]));
   assert.ok(names.size >= 12, 'the scan found the settings');
-  const DEFAULT_IN_CODE = ['AGENT_VERSION', 'OPERATOR_CONTACT', 'KOIOS_URL', 'INDEXER_URL']; // left unset on purpose: a value here would pin a default that the code owns
+  const DEFAULT_IN_CODE = ['AGENT_VERSION', 'KOIOS_URL', 'INDEXER_URL']; // left unset on purpose: a value here would pin a default that the code owns
   assert.deepEqual([...names].filter((n) => !(n in example) && !(n in service.environment) && !DEFAULT_IN_CODE.includes(n)), []);
   for (const n of DEFAULT_IN_CODE) assert.ok(!(n in example), `${n} stays unset in the example`);
+  // OPERATOR_CONTACT has no default in the code: the service reads it, requires it, and the example carries the placeholder for it.
+  assert.ok(names.has('OPERATOR_CONTACT') && 'OPERATOR_CONTACT' in example);
 });
 
 test('env scan: it finds every form of environment read the service code could use, and nothing else', () => {
@@ -177,8 +190,10 @@ test('env example: the status word is the spec status, and the manifest it produ
   assert.equal(example.AGENT_STATUS_CHIP, 'proposed', 'nothing is advertised, so nothing may claim more');
   // The service takes an empty string as given, so an empty AGENT_STATUS_SINCE would put since "" into the manifest.
   assert.notEqual(example.AGENT_STATUS_SINCE, '');
-  const [withExample, withNothing] = renderManifests([example, {}]);
+  // Placeholders are unset, and the one setting with no default is supplied for both.
+  const [withExample, withNothing] = renderManifests([{ ...withoutPlaceholders(example), OPERATOR_CONTACT: TEST_CONTACT }, { OPERATOR_CONTACT: TEST_CONTACT }]);
   assert.deepEqual(withExample, withNothing, 'the example changes nothing in the manifest the advert will hash');
+  assert.equal(withExample.operator.contact, TEST_CONTACT);
   assert.equal(withExample.status.chip, 'proposed');
   assert.equal(withExample.links.explorer_advert, '');
 });
@@ -241,7 +256,6 @@ test('CI: the publish job runs on a push to main after the tests, logs in with G
 });
 
 test('README and RUNBOOK: PROPOSED, no LIVE or DEPLOYED claim, no dash, no unit name, no person named', () => {
-  const NAMES = /\b(Filip|Blagojevi\w*|David|Cejtlin|Chris|Jerry|Armando|Andrej|Casl\w+|Nikola|Danielle|Tom Flynn)\b/;
   for (const rel of PUBLIC_FILES) {
     const text = read(rel);
     assert.doesNotMatch(text, DASHES, `${rel}: no em or en dash`);
@@ -254,12 +268,46 @@ test('README and RUNBOOK: PROPOSED, no LIVE or DEPLOYED claim, no dash, no unit 
   assert.match(snippet, /PROPOSED/);
 });
 
+test('no individual name, and no personal address, on any public surface: the manifest template, the service source, the specs, the guides and both READMEs', () => {
+  const files = [
+    ...PUBLIC_FILES, 'agents/agent-history/agent.json.template', 'agents/agent-history/README.md', 'README.md', 'docs/HIRE.md', 'docs/E2E.md',
+    ...sourceFiles('agents/agent-history/src'),
+    ...readdirSync(join(root, 'specs')).map((f) => `specs/${f}`),
+  ];
+  assert.ok(files.length >= 20 && new Set(files).size === files.length, `the list reaches every surface, found ${files.length}`);
+  for (const must of ['agents/agent-history/agent.json.template', 'agents/agent-history/src/server.ts', 'specs/agent-history.md', 'specs/document-pipeline.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md']) assert.ok(files.includes(must), `${must} is scanned`);
+  for (const rel of files) assert.doesNotMatch(read(rel), NAMES, `${rel}: roles, not people`);
+});
+
+test('the name guard: it finds a name in any case, inside an address too, and not a longer word', () => {
+  for (const hit of ['Filip', 'filip.blagojevic@foundation.example', 'BLAGOJEVIC', 'David Cejtlin', 'chris', 'tom flynn', 'ask Jerry first']) assert.match(hit, NAMES, hit);
+  for (const miss of ['Christmas', 'Davidson', 'a role address', 'ops@example.test', 'ecosystem@<foundation domain>']) assert.doesNotMatch(miss, NAMES, miss);
+});
+
+test('the service has no built-in contact address: the template carries a placeholder and the example asks for a role address', () => {
+  const template = JSON.parse(read('agents/agent-history/agent.json.template'));
+  assert.equal(template.operator.contact, '<OPERATOR_CONTACT>');
+  assert.doesNotMatch(read('agents/agent-history/src/server.ts'), /[A-Za-z0-9._-]+@[A-Za-z0-9-]+\.[A-Za-z]/, 'no address in the source');
+  assert.match(exampleText, /^# OPERATOR_CONTACT is required: the service stops at start without it/m);
+  assert.match(exampleText, /^OPERATOR_CONTACT=<role address, e\.g\. ecosystem@<foundation domain>; the Foundation confirms which>$/m);
+});
+
+test('RUNBOOK: the contact address is set in step 4 and checked in step 9, and the failure to start without it has a row in the failure table', () => {
+  const four = section(runbook, '4. Make the env file and generate the supplier key');
+  assert.ok(four.includes('`OPERATOR_CONTACT` is required'));
+  assert.ok(four.includes("never a person's address"));
+  assert.ok(four.includes("grep -c '^OPERATOR_CONTACT=[^<[:space:]]' .env.agent-history"));
+  assert.ok(section(runbook, '9. Start the service').includes('the role address of step 4 in `operator.contact`'));
+  assert.match(section(runbook, 'If something goes wrong'), /environment variable OPERATOR_CONTACT is required/);
+  assert.ok(readme.includes('`OPERATOR_CONTACT` is empty or missing'), 'the host administrator is told why the container restarts');
+});
+
 test('RUNBOOK: the seventeen steps in order, and the step numbers the other files quote are the right steps', () => {
   const STEPS = ['Put the files on the box', 'Log in to the registry and get the service image', 'Build the runtime image', 'Make the env file and generate the supplier key', 'Adapt the ops scripts', 'Fund the supplier wallet', 'Register the identity', 'Stake in Module-3', 'Start the service', 'DNS and Caddy', 'Hash the manifest', 'Post the advert', 'Start the runtime', 'Check the advert on the indexer', 'The first-party run', 'Wallet monitor', 'Flip the status'];
   assert.deepEqual([...runbook.matchAll(/^## (\d+)\. (.+)$/gm)].map((m) => [Number(m[1]), m[2]]), STEPS.map((title, i) => [i + 1, title]));
   for (const m of runbook.matchAll(/\bsteps? (\d+)/g)) assert.ok(Number(m[1]) >= 1 && Number(m[1]) <= STEPS.length, `step ${m[1]}`);
   const quoted = [...exampleText.matchAll(/RUNBOOK\.md step (\d+), "([^"]+)"/g)];
-  assert.equal(quoted.length, 2);
+  assert.equal(quoted.length, 3, 'the example names steps 4, 7 and 17');
   for (const m of quoted) assert.equal(STEPS[Number(m[1]) - 1], m[2], `the example quotes step ${m[1]}`);
   assert.match(runbook, /does every step except three\. Step 2 \(the registry login and the service image\) and step 10 \(DNS and Caddy\) are the host administrator's, see \[README\.md\]\(README\.md\)\. Step 6 \(funding the supplier wallet\) is the Foundation's\./);
   assert.match(section(runbook, '2. Log in to the registry and get the service image'), /^\nHost administrator\. /);
@@ -293,7 +341,7 @@ test('RUNBOOK: the post-advert flags are the terms of the example and the spec, 
 
 test('RUNBOOK: the registry record is the manifest description, the spec capability and framework, and the public URL', () => {
   const desc = /^DESC="(.+)"$/m.exec(runbook)[1];
-  const [{ description }] = renderManifests([{}]);
+  const [{ description }] = renderManifests([{ OPERATOR_CONTACT: TEST_CONTACT }]);
   assert.equal(desc, description);
   assert.ok(desc.length <= 256, 'the registry takes 256 characters of description');
   assert.ok(runbook.includes('"capabilities":["identity.history.report.v1"]') && runbook.includes('CAPABILITIES = ["identity.history.report.v1"]'));
