@@ -2,7 +2,7 @@ export const SECTIONS = ['identity', 'marketplace', 'reputation', 'dispute', 'se
 export type Section = typeof SECTIONS[number];
 export interface HistoryRequest { subject: string; include: Section[] }
 export class BadRequest extends Error { status = 400; constructor(m: string) { super(m); } }
-const MAX_BODY = 64 * 1024;
+export const MAX_BODY = 64 * 1024;
 export function parseWire(body: string): HistoryRequest {
   // Bytes on the wire, not UTF-16 code units: the HTTP layer counts the same unit.
   const bytes = Buffer.byteLength(body, 'utf8');
