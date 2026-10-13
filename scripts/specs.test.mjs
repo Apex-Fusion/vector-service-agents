@@ -204,7 +204,7 @@ test('docs/HIRE.md: says what is and is not in service, tool by tool', () => {
   for (const tool of MARKETPLACE_TOOLS) assert.ok(guide.includes('`' + tool + '`'), tool);
   const row = (needle) => guide.split('\n').find((l) => l.startsWith('|') && l.includes(needle)) ?? '';
   assert.match(row('vector_marketplace_list_capabilities'), /Open PR 1: \[Apex-Fusion\/mcp-server#20\]\(https:\/\/github.com\/Apex-Fusion\/mcp-server\/pull\/20\)/);
-  assert.match(row('vector_build_marketplace_post_escrow'), /PR 2, in progress/);
+  assert.match(row('vector_build_marketplace_post_escrow'), /PR 2 open \(#21, stacked on #20\)/);
   assert.match(row('vector_marketplace_send_job'), /PR 3, planned/);
   assert.match(row('@apexfusion/vector-mcp-signer'), /PR 4, planned.*not published/);
   assert.match(row('identity.history.report.v1'), /PROPOSED \(built, not yet advertised\)/);
@@ -281,4 +281,28 @@ test('docs/E2E.md and scripts/e2e-hire.mjs agree on the send step, the signer se
   assert.ok(e2e.includes('asks `vector_await_transaction` to wait 90 s at a time, up to four times'));
   assert.match(script, /const AWAIT_SLICE_S = 90;/);
   assert.match(script, /const AWAIT_SLICES = 4;/);
+});
+
+test('docs/HIRE.md: PR 2 is open with its link, the last message lists the report text, and the lost buyer bond is said in one sentence', () => {
+  const guide = hire();
+  const row = (needle) => guide.split('\n').find((l) => l.startsWith('|') && l.includes(needle)) ?? '';
+  assert.ok(row('vector_build_marketplace_post_escrow').includes('PR 2 open (#21, stacked on #20): [Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21)'));
+  assert.match(row('| Reads back what it already has |'), /^\| 6 \| .* You hold the report text, the receipt, the signature, the escrow reference and two links\./);
+  assert.ok(section(guide, '3. We fund it').includes("If you miss the 600 s Accept window after the supplier's Submit, the supplier may Release and keep your buyer bond."));
+});
+
+test('docs/E2E.md and scripts/e2e-hire.mjs: the recovery text reads the escrow by its reference and closes a Submitted first-party escrow in one way', () => {
+  const recovery = section(doc('E2E.md'), 'If the send step was interrupted');
+  const script = e2eScript();
+  const fromScript = script.slice(script.indexOf('function sendInterrupted'), script.indexOf('async function main'));
+  assert.ok(recovery.length > 500 && fromScript.length > 500, 'both slices were found');
+  for (const [name, text] of [['docs/E2E.md', recovery], ['scripts/e2e-hire.mjs', fromScript]]) {
+    assert.ok(text.includes('mp-indexer.vector.apexfusion.org/escrows/') || text.includes('${INDEXER_URL}/escrows/'), `${name}: the one-row read`);
+    assert.doesNotMatch(text, /newest row/, name);
+    assert.doesNotMatch(text, /accept by hand|Let the (600000 ms|accept) window pass|Do not accept what you cannot verify/i, name);
+    for (const word of ['vector_build_marketplace_accept', 'vector_build_marketplace_reclaim', 'posted_at', 'Submitted']) assert.ok(text.includes(word), `${name}: ${word}`);
+    assert.match(text, /a Release would hand it to the supplier/, name);
+  }
+  assert.ok(recovery.includes('%23'), 'the # of the reference is written as %23');
+  assert.ok(fromScript.includes('encodeURIComponent(post.escrow_ref)'));
 });

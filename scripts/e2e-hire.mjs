@@ -57,6 +57,7 @@ const PAYLOAD = env.PAYLOAD ?? DEFAULT_PAYLOAD;
 const STATE_PATH = env.E2E_STATE ?? 'e2e-state.json';
 const POLL_MS = env.E2E_POLL_MS === undefined ? 5000 : /^[1-9]\d*$/.test(env.E2E_POLL_MS) ? Number(env.E2E_POLL_MS) : Number.NaN;
 const EXPLORER_URL = (env.EXPLORER_URL ?? 'https://explorer.vector.mainnet.apexfusion.org').replace(/\/+$/, '');
+const INDEXER_URL = 'https://mp-indexer.vector.apexfusion.org'; // for the recovery text only
 if (missing.length) refuse(`set ${missing.join(' and ')} (see docs/E2E.md)`);
 if (!/^[0-9a-f]{64}#\d+$/i.test(ADVERT_REF)) refuse(`ADVERT_REF must be <txid>#<index>, got "${ADVERT_REF}"`);
 try { JSON.parse(PAYLOAD); } catch { refuse('PAYLOAD must be the request JSON, a JSON document'); }
@@ -151,9 +152,10 @@ function sendInterrupted(post) {
     `an earlier run called vector_marketplace_send_job and recorded no job id (job.sending in ${STATE_PATH}).`,
     `The supplier may have claimed escrow ${post.escrow_ref}, and sending again would be refused with 409. Nothing was sent now. To go on (docs/E2E.md, "If the send step was interrupted"):`,
     '  1. If you have the output of that run, find the job id under "== vector_marketplace_send_job". Add it to the job section of the state file as "job_id", delete "sending", and run the script again.',
-    `  2. Otherwise look at the escrow: vector_marketplace_get_supplier for ${ADVERT_REF} (status busy means a job is running), or the rows of the buyer key at the marketplace indexer (state Open, Claimed or Submitted).`,
+    `  2. Otherwise look at the escrow: vector_marketplace_get_supplier for ${ADVERT_REF} (status busy means a job is running). The indexer keeps one row for each version of the escrow, and the versions of one job share posted_at.`,
+    `     The escrow you posted, one row: ${INDEXER_URL}/escrows/${encodeURIComponent(post.escrow_ref)} (its posted_at names the job). Then ${INDEXER_URL}/escrows?buyer=<buyer key hash> lists the versions: among the rows with that posted_at, the furthest state (Submitted, then Claimed, then Open) is where the escrow stands.`,
     `     Open or Claimed: wait for deliver_by (${when}), reclaim the escrow with vector_build_marketplace_reclaim, move the state file away and start a new run.`,
-    '     Submitted: the report cannot be read without the job id. Do not accept what you cannot verify. Let the accept window pass or accept by hand, move the state file away and start a new run. This run is not evidence.',
+    '     Submitted: the report cannot be read without the job id, so this run is not evidence. The escrow is first-party, so close it with vector_build_marketplace_accept while the accept window is open: your bond of 1 comes back, and a Release would hand it to the supplier. If the accept tool reports that the escrow is already closed, the supplier has released it. Then move the state file away and start a new run.',
   ].join('\n'));
 }
 

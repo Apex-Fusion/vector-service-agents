@@ -368,6 +368,9 @@ test('a run killed during the send leaves "sending"; the next run stops with the
   assert.match(stopped.stderr, /recorded no job id/);
   assert.ok(stopped.stderr.includes(ESCROW_REF), 'names the escrow');
   for (const word of ['"job_id"', 'vector_marketplace_get_supplier', 'vector_build_marketplace_reclaim', 'deliver_by', 'Submitted']) assert.ok(stopped.stderr.includes(word), `the recovery steps mention ${word}`);
+  assert.ok(stopped.stderr.includes(`/escrows/${encodeURIComponent(ESCROW_REF)}`), 'the one-row read of the escrow, with the # written as %23');
+  assert.ok(stopped.stderr.includes('vector_build_marketplace_accept'), 'a Submitted escrow has one way to close');
+  assert.doesNotMatch(stopped.stderr, /newest row|accept by hand/);
   assert.deepEqual(builder.names(), [], 'the builder is asked nothing, the send least of all');
 
   // The operator found the id in the log of the first run and wrote it in.

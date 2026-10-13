@@ -145,11 +145,11 @@ The cross-module key is the registry asset name (Modules 1, 3, 6 store it in the
 
 ### 7.1 Common runtime
 
-- Template runtime at the pinned commit `c4c378a` (`vector-agent-template`, MIT, mainnet-proven 2026-08-19), `CAPABILITY_KIND=custom`, `SERVICE_URL=http://service:9091`, `SERVICE_CONTENT_TYPE=application/json`.
+- Template runtime at the pinned commit `c4c378a` (`vector-agent-template`, MIT, mainnet-proven 2026-08-19), `CAPABILITY_KIND=custom`, `SERVICE_URL=http://agent-history-service:9091/` (shown for Agent History: the service's container name, because the alias `service` is shared by every agent on `umami_default`; the path `/` is the only one the service accepts POST on), `SERVICE_CONTENT_TYPE=application/json`.
 - **Wire contract.** The runtime POSTs the canonical one-element message array to the service: `[{"content": "<payload string>", "role": "user"}]`. Every service parses `JSON.parse(body)[0].content` and then parses that string as JSON. The service's response body becomes the output payload; the runtime hashes it into `response_hash`, signs the eight-field receipt and submits the hash.
 - **Timing.** `SERVICE_TIMEOUT_MS <= ADVERT_MAX_PROCESSING_MS - 60 000`; the runtime also keeps 30 s to land the Submit. Values per agent below.
-- **Inputs by URL.** Chat clients cannot carry media in a tool call and the hosted server caps requests at 1 MB, so media inputs are an https URL; base64 is accepted under 1 MB. Each service fetches through its own `safeFetch` (same rules as the server's, larger size caps as stated per agent) and writes `source.sha256` and `source.bytes` into its output, so the signed receipt still commits to the exact media.
-- **Keys.** The runtime holds the supplier key (`SUPPLIER_PRIV_KEY_HEX`). Services hold no chain keys, with one exception: the Pipeline's buyer key (7.3). Keys are generated on the box by `ops/provision-env.sh`; nobody pastes keys into chat.
+- **Inputs by URL.** Chat clients cannot carry media in a tool call and the hosted server caps requests at 1 MB, so media inputs are an https URL; base64 is accepted under 600,000 bytes of raw media. The wire payload is capped at 900,000 bytes: the runtime's `/v1/job` takes 1 MB of JSON that holds it escaped, and the template's buyer refuses a larger one. Base64 adds a third, so 600,000 raw bytes become 800,000 characters and leave 100,000 bytes for the rest of the request. Each service fetches through its own `safeFetch` (same rules as the server's, larger size caps as stated per agent) and writes `source.sha256` and `source.bytes` into its output, so the signed receipt still commits to the exact media.
+- **Keys.** The runtime holds the supplier key (`SUPPLIER_PRIV_KEY_HEX`). Services hold no chain keys, with one exception: the Pipeline's buyer key (7.3). Keys are generated on the box by the runtime image's `gen-keypair`, straight into the env file (`deploy/apex-web/RUNBOOK.md`, step 4); nobody pastes keys into chat.
 - **Identity.** Each agent registers a DID (`register-did.sh`, byte-preserving `sign-tx.py`) with name, description, capabilities equal to its capability id, framework `vector-service-agents`, endpoint = its service URL; then self-stakes 10 in Module-3 on that capability (`m3-self-stake.py`, mainnet genesis patched). Staked capabilities must be a subset of registry capabilities.
 - **Wallets.** One pure collateral output of 5 plus a float: 25 to 50 for History, Snippets and Advocate; 100 for the Pipeline. `wallet-monitor` gets each address.
 - **Manifest.** Each service serves `GET /agent.json` (section 8). The advert's `detail_uri` points at it and `detail_hash` is the sha256 of the bytes at post time. Adverts are immutable; a changed manifest means a retired advert and a new one.
@@ -157,7 +157,7 @@ The cross-module key is the registry asset name (Modules 1, 3, 6 store it in the
 
 ### 7.2 Agent History · `identity.history.report.v1` · PROPOSED
 
-Everything the ledger knows about one agent identifier, as one report per job, delivered with the runtime's signed receipt. Read-only, no model cost.
+The registry, stake, marketplace and module records the Vector ledger holds for one agent identifier, with the gaps stated. One report per job, delivered with the runtime's signed receipt. Read-only, no model cost.
 
 **Request** (JSON in the message content)
 
@@ -345,7 +345,7 @@ Tests are written before the code they test, per the repos' existing practice.
 | Agents | Agent History, Document Pipeline, Audio Snippets, Advocate; ChandraOCR out of scope as a direct hire, used inside the Pipeline |
 | Prices | 1 / 5 / 2 / 3; bonds 1 and 1 everywhere |
 | Hosting | apex-web, chandra-supplier pattern, David hosts |
-| Media inputs | https URL, base64 under 1 MB, source hash in the output |
+| Media inputs | https URL, base64 under 600,000 bytes of raw media (wire payload capped at 900,000 bytes), source hash in the output |
 | Publication | internal Discord → Chris → WG GitHub issue → docs site after the first outside receipt |
 | Unit name | once in the guide, "unit" elsewhere |
 

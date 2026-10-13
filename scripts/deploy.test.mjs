@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 // The deployment files of Agent History (Dockerfile, compose, env example, Caddy snippet, README, RUNBOOK, CI publish job) are read by a
 // host administrator and an operator who act on them. Docker is not needed here: these tests parse the files and keep them equal to each
@@ -45,6 +45,23 @@ function renderManifests(envs) {
   const out = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code, JSON.stringify(envs)], { cwd: join(root, 'agents/agent-history'), encoding: 'utf8' });
   return JSON.parse(out);
 }
+// The names of the environment variables a source file reads: process.env.NAME, env.NAME, env['NAME'], envInt('NAME', ...) and { NAME, OTHER: alias, THIRD = 'x' } = process.env.
+function envNamesIn(source) {
+  const names = new Set();
+  for (const m of source.matchAll(/\benv\.([A-Z][A-Z0-9_]*)/g)) names.add(m[1]);
+  for (const m of source.matchAll(/\benv\[\s*['"]([A-Z][A-Z0-9_]*)['"]\s*\]/g)) names.add(m[1]);
+  for (const m of source.matchAll(/\benvInt\(\s*['"]([A-Z][A-Z0-9_]*)['"]/g)) names.add(m[1]);
+  for (const m of source.matchAll(/\{([^{}]*)\}\s*=\s*(?:process\.)?env\b/g)) for (const part of m[1].split(',')) { const n = /^\s*([A-Z][A-Z0-9_]*)\b/.exec(part); if (n) names.add(n[1]); }
+  return names;
+}
+const sourceFiles = (dir) => readdirSync(join(root, dir), { recursive: true }).filter((f) => /\.(ts|mts|js|mjs)$/.test(f)).map((f) => `${dir}/${f.split(sep).join('/')}`);
+// A secret name must have an empty value, and no value may be shaped like a key, a key hash or an address.
+const SECRET_NAME = /PRIV_KEY|SECRET|TOKEN|PASSWORD|API_KEY|AUTH_HEADER/;
+const KEY_SHAPED = [/^[0-9a-f]{64}$/i, /^[0-9a-f]{56}$/i, /^addr1/, /ed25519_sk/i];
+const keyProblems = (vars) => Object.entries(vars).flatMap(([name, value]) => [
+  ...(SECRET_NAME.test(name) && String(value) !== '' ? [`${name} must be empty`] : []),
+  ...KEY_SHAPED.filter((re) => re.test(String(value))).map((re) => `${name} looks like key material (${re})`),
+]);
 const DASHES = new RegExp('[' + String.fromCharCode(0x2013, 0x2014) + ']');
 const UNIT_NAME = new RegExp('AP' + '3X', 'i');
 const PUBLIC_FILES = ['deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md', 'deploy/apex-web/docker-compose.agent-history.yml', 'deploy/apex-web/.env.agent-history.example', 'deploy/apex-web/Caddyfile.snippet', 'agents/agent-history/Dockerfile', '.dockerignore'];
@@ -93,28 +110,40 @@ test('compose: the processing window and the service timeout are the spec terms,
   assert.equal(service.environment.PORT, '9091');
 });
 
-test('env example: known names only, each once; every secret is empty; nothing looks like key material', () => {
+test('env example: known names only, each once; every secret is empty; nothing in the example or in the compose environment looks like key material', () => {
   const RUNTIME = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'ADVERT_REF'];
   const POST_ADVERT = ['ADVERT_CAPABILITY_ID', 'ADVERT_MODEL', 'ADVERT_PRICE_LOVELACE', 'ADVERT_SUPPLIER_BOND_LOVELACE', 'ADVERT_BUYER_BOND_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_ENDPOINT_URL', 'ADVERT_DETAIL_URI', 'ADVERT_DETAIL_HASH'];
   const MANIFEST = ['AGENT_DID', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_EXPLORER_URL'];
   assert.deepEqual(Object.keys(example).filter((n) => ![...RUNTIME, ...POST_ADVERT, ...MANIFEST].includes(n)), [], 'a name the runtime, the advert command and the service never read');
-  for (const [name, value] of Object.entries(example)) {
-    if (/PRIV_KEY|SECRET|TOKEN|PASSWORD|API_KEY|AUTH_HEADER/.test(name)) assert.equal(value, '', `${name} must be empty`);
-    assert.doesNotMatch(value, /^[0-9a-f]{64}$/i, `${name} looks like a key or a hash`);
-    assert.doesNotMatch(value, /^[0-9a-f]{56}$/i, `${name} looks like a key hash`);
-    assert.doesNotMatch(value, /^addr1/, `${name} looks like an address`);
-    assert.doesNotMatch(value, /ed25519_sk/i, `${name} looks like a key`);
-  }
+  assert.deepEqual(keyProblems(example), []);
+  assert.deepEqual(keyProblems(agent.environment), [], 'the compose environment of the runtime');
+  assert.deepEqual(keyProblems(service.environment), [], 'the compose environment of the service');
   for (const name of ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'ADVERT_REF', 'ADVERT_DETAIL_HASH', 'AGENT_DID', 'ADVERT_EXPLORER_URL']) assert.equal(example[name], '', `${name} is filled by the runbook`);
 });
 
-test('env example: every name the service reads is in the example, in the compose environment, or has a default in the code', () => {
-  const sources = ['agents/agent-history/src', 'packages/vector-read/src'].flatMap((dir) => readdirSync(join(root, dir)).filter((f) => f.endsWith('.ts')).map((f) => read(`${dir}/${f}`)));
-  const names = new Set(sources.flatMap((text) => [...text.matchAll(/\benv\.([A-Z][A-Z0-9_]+)/g), ...text.matchAll(/envInt\('([A-Z][A-Z0-9_]+)'/g)].map((m) => m[1])));
-  assert.ok(names.size >= 10, 'the scan found the settings');
+test('key check: it flags a secret name with a value, a key-shaped value and an address, and passes what the compose file holds', () => {
+  assert.deepEqual(keyProblems({ SUPPLIER_PRIV_KEY_HEX: 'x' }), ['SUPPLIER_PRIV_KEY_HEX must be empty']);
+  assert.equal(keyProblems({ SOMETHING: 'ab'.repeat(32) }).length, 1, 'a 64-hex value');
+  assert.equal(keyProblems({ SOMETHING: 'ab'.repeat(28) }).length, 1, 'a 56-hex value');
+  assert.equal(keyProblems({ SOMETHING: 'addr1v' + 'q'.repeat(50) }).length, 1, 'an address');
+  assert.deepEqual(keyProblems({ SUPPLIER_PRIV_KEY_HEX: '', SERVICE_URL: 'http://agent-history-service:9091/', ESCROW_REF_UTXO: 'ab'.repeat(32) + '#0' }), []);
+});
+
+test('env example: every name the service code reads is in the example, in the compose environment, or has a default in the code', () => {
+  const files = [...sourceFiles('agents/agent-history/src'), ...sourceFiles('packages/vector-read/src')];
+  assert.ok(files.length >= 15, `the scan reaches every source file, found ${files.length}`);
+  for (const f of ['agents/agent-history/src/server.ts', 'agents/agent-history/src/index.ts', 'packages/vector-read/src/constants.ts']) assert.ok(files.includes(f), `the scan includes ${f}`);
+  const names = new Set(files.flatMap((f) => [...envNamesIn(read(f))]));
+  assert.ok(names.size >= 12, 'the scan found the settings');
   const DEFAULT_IN_CODE = ['AGENT_VERSION', 'OPERATOR_CONTACT', 'KOIOS_URL', 'INDEXER_URL']; // left unset on purpose: a value here would pin a default that the code owns
   assert.deepEqual([...names].filter((n) => !(n in example) && !(n in service.environment) && !DEFAULT_IN_CODE.includes(n)), []);
   for (const n of DEFAULT_IN_CODE) assert.ok(!(n in example), `${n} stays unset in the example`);
+});
+
+test('env scan: it finds every form of environment read the service code could use, and nothing else', () => {
+  const sample = "const a = process.env.ONE; const b = env.TWO ?? 'x'; const c = env['THREE']; const d = envInt(\"FOUR\", env.FIVE, 1); const { SIX, SEVEN: alias, EIGHT = 'x' } = process.env; const { NINE } = env;";
+  assert.deepEqual([...envNamesIn(sample)].sort(), ['EIGHT', 'FIVE', 'FOUR', 'NINE', 'ONE', 'SEVEN', 'SIX', 'THREE', 'TWO']);
+  assert.deepEqual([...envNamesIn('const x = other.NAME; const { lower } = env; // env is mentioned')], []);
 });
 
 test('env example: the runtime gets every name the pinned template lists for CAPABILITY_KIND=custom', () => {
@@ -186,9 +215,10 @@ test('Dockerfile: builds from the repo root, installs the right workspace, runs 
   const cmd = /^CMD \["node_modules\/\.bin\/tsx", "([^"]+)"\]$/m.exec(dockerfile);
   assert.ok(cmd && existsSync(join(root, cmd[1])), 'the entry file exists');
   assert.ok(service.image.startsWith('ghcr.io/apex-fusion/vector-service-agents/'));
-  const ignore = read('.dockerignore');
-  assert.match(ignore, /^node_modules$/m, 'a host node_modules must never reach the image');
-  assert.match(ignore, /^\.env\.\*$/m);
+  assert.match(dockerfile, /^COPY --from=builder --chown=node:node \/repo \/repo$/m, 'one layer, owned by node');
+  assert.doesNotMatch(dockerfile, /^RUN chown /m, 'a separate chown layer copies the whole tree a second time');
+  const ignore = read('.dockerignore').split('\n');
+  for (const line of ['node_modules', '**/node_modules', '**/.env', '**/.env.*']) assert.ok(ignore.includes(line), `.dockerignore has ${line}: a host node_modules or a key in an env file, at any depth, must never reach the build context`);
 });
 
 test('CI: the publish job runs on a push to main after the tests, logs in with GITHUB_TOKEN and pushes the compose image under both tags', () => {
@@ -231,7 +261,9 @@ test('RUNBOOK: the seventeen steps in order, and the step numbers the other file
   const quoted = [...exampleText.matchAll(/RUNBOOK\.md step (\d+), "([^"]+)"/g)];
   assert.equal(quoted.length, 2);
   for (const m of quoted) assert.equal(STEPS[Number(m[1]) - 1], m[2], `the example quotes step ${m[1]}`);
-  assert.match(runbook, /does every step except step 10, which is the host administrator's/);
+  assert.match(runbook, /does every step except three\. Step 2 \(the registry login and the service image\) and step 10 \(DNS and Caddy\) are the host administrator's, see \[README\.md\]\(README\.md\)\. Step 6 \(funding the supplier wallet\) is the Foundation's\./);
+  assert.match(section(runbook, '2. Log in to the registry and get the service image'), /^\nHost administrator\. /);
+  assert.match(section(runbook, '6. Fund the supplier wallet'), /^\nThe Foundation\. /);
   assert.match(section(runbook, '10. DNS and Caddy'), /^\nHost administrator, from/);
 });
 
@@ -308,8 +340,69 @@ test('README: the host administrator is told the DNS names, the ports, the regis
   assert.ok(readme.includes('`127.0.0.1:8083`') && readme.includes('loopback'));
   assert.ok(readme.includes('docker login ghcr.io') && readme.includes('read:packages'));
   assert.ok(readme.includes(':latest') && readme.includes(':<full git commit sha>'));
-  assert.ok(readme.includes('agent/src/cli/retire-advert.ts'), 'the rollback runs the retire command of the pinned runtime image');
-  assert.ok(readme.includes('docker compose -f docker-compose.agent-history.yml down'));
+  assert.ok(readme.includes('[RUNBOOK.md](RUNBOOK.md), under "Back out"'), 'the rollback note points at the runbook section');
+  assert.ok(!readme.includes('retire-advert.ts'), 'the retire command lives in one place, the runbook');
   assert.ok(readme.includes('--force-recreate') && readme.includes('does not re-read it'));
   for (const container of [agent.container_name, service.container_name]) assert.ok(readme.includes(`\`${container}\``), container);
+});
+
+test('RUNBOOK step 17: the old advert is retired before the service restarts and before the new manifest is hashed', () => {
+  const s17 = section(runbook, '17. Flip the status');
+  const at = (needle) => { const i = s17.indexOf(needle); assert.ok(i >= 0, needle); return i; };
+  const order = ['1. Check `curl', '2. Retire the old advert (Back out, point 1)', '3. In `.env.agent-history`', '4. `docker compose -f docker-compose.agent-history.yml up -d --force-recreate service`', '5. Hash the new manifest (step 11)', '6. Post the new advert (step 12)', '7. `docker compose -f docker-compose.agent-history.yml up -d --force-recreate agent`', '8. In the repository'];
+  const places = order.map(at);
+  assert.deepEqual([...places].sort((a, b) => a - b), places, 'retire, edit, recreate the service, hash, post, recreate the runtime, update the repository');
+  assert.match(s17, /no Active advert carries a stale `detail_hash` while the service restarts/);
+});
+
+// Every file of the repository, as a path with forward slashes, without the folders that hold other people's files or planning notes.
+function repoFiles(dir = '', out = []) {
+  for (const e of readdirSync(join(root, dir), { withFileTypes: true })) {
+    const rel = dir === '' ? e.name : `${dir}/${e.name}`;
+    if (e.isDirectory()) { if (!['node_modules', '.git', '.superpowers'].includes(e.name) && rel !== 'docs/superpowers') repoFiles(rel, out); } else out.push(rel);
+  }
+  return out;
+}
+
+test('RUNBOOK step 17: the last item names every file that says PROPOSED about Agent History, and only files that exist', () => {
+  const s17 = section(runbook, '17. Flip the status');
+  const item8 = s17.slice(s17.indexOf('8. In the repository'));
+  const OTHER_AGENTS = ['specs/document-pipeline.md', 'specs/audio-snippets.md', 'specs/advocate.md'];
+  const carriers = repoFiles().filter((f) => /(\.md|\.yml|Caddyfile\.snippet|\.example)$/.test(f) && !OTHER_AGENTS.includes(f))
+    .filter((f) => /\bPROPOSED\b/.test(read(f)) || /^AGENT_STATUS_CHIP=proposed$/m.test(read(f)));
+  assert.ok(carriers.length >= 10, `the walk found the files: ${carriers.join(', ')}`);
+  for (const f of carriers) assert.ok(item8.includes('`' + f + '`'), `item 8 names ${f}`);
+  for (const [, named] of item8.matchAll(/`([A-Za-z0-9_.\/-]+\.(?:md|yml|snippet|example|ts|mjs))`/g)) assert.ok(existsSync(join(root, named)), `item 8 names a file that exists: ${named}`);
+});
+
+test('RUNBOOK: Back out retires the advert first with the supplier key, then stops the services, then the host administrator removes the Caddy block', () => {
+  const back = section(runbook, 'Back out');
+  const at = (needle) => { const i = back.indexOf(needle); assert.ok(i >= 0, needle); return i; };
+  const order = ['1. Retire the advert.', 'agent/src/cli/retire-advert.ts', '--advert-ref', '2. Stop the containers', 'docker compose -f docker-compose.agent-history.yml down', '3. Host administrator: remove the Caddy block'];
+  const places = order.map(at);
+  assert.deepEqual([...places].sort((a, b) => a - b), places);
+  assert.match(back, /signed with the supplier key in the env file/);
+  assert.ok(runbook.indexOf('\n## Back out\n') > runbook.indexOf('\n## 17.') && runbook.indexOf('\n## Back out\n') < runbook.indexOf('\n## If something goes wrong\n'), 'after step 17, before the failure table');
+});
+
+test('RUNBOOK: the key is never sent anywhere, the registry login block is bash, the hash script runs from the repository root, PR 2 is open, the wallet monitor is named', () => {
+  assert.match(section(runbook, '4. Make the env file and generate the supplier key'), /is never sent anywhere\./);
+  assert.doesNotMatch(runbook, /never leaves/);
+  assert.match(section(runbook, '2. Log in to the registry and get the service image'), /```bash\nread -rs GHCR_TOKEN/);
+  assert.match(section(runbook, '11. Hash the manifest'), /```sh\ncd \/opt\/agent-history\/repo\nnode scripts\/manifest-hash\.mjs /);
+  const s15 = section(runbook, '15. The first-party run');
+  assert.ok(s15.includes('PR 2 is open as [Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21), stacked on #20. PR 3 and PR 4 follow.'));
+  assert.doesNotMatch(s15, /PRs 2 and 3 follow/);
+  const s16 = section(runbook, '16. Wallet monitor');
+  assert.ok(s16.includes('`Apex-Fusion/agents-marketplace`') && s16.includes('`wallet-monitor/wallets.json`'));
+  assert.doesNotMatch(s16, /upstream repository/);
+});
+
+test('agent README: the Image section says the publish job pushes on merge to main, that it has not run yet, and that nothing is deployed', () => {
+  const image = section(read('agents/agent-history/README.md'), 'Image');
+  assert.ok(image.length > 300, 'the section exists');
+  assert.ok(image.includes('docker build -f agents/agent-history/Dockerfile'));
+  assert.ok(image.includes('pushes the image on merge to `main`'));
+  assert.ok(image.includes('It has not run yet: Actions is blocked on this private repository.'));
+  assert.ok(image.includes('Nothing is deployed yet.'));
 });

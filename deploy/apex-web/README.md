@@ -58,15 +58,6 @@ The working directory on the box is `/opt/agent-history/repo/deploy/apex-web`, i
 
 ## Rollback
 
-1. Retire the advert first, so nobody can post an escrow against an agent that is about to stop. Check `curl -s http://127.0.0.1:8083/status` says `free` (a `working` agent has a job in flight: wait for it). From this folder:
+The order and the commands are in [RUNBOOK.md](RUNBOOK.md), under "Back out". The operator retires the advert first, so that nobody can post an escrow against an agent that is about to stop. That transaction is signed with the supplier key in the env file, so it is not the host administrator's. Then the containers stop. The host administrator's part comes last: remove the Caddy block from `/opt/umami/Caddyfile`, validate and reload, and remove the DNS record if it will not be reused.
 
-   ```sh
-   docker compose -f docker-compose.agent-history.yml run --rm --no-deps -T agent \
-     node_modules/.bin/tsx agent/src/cli/retire-advert.ts \
-     --advert-ref "$(sed -n 's/^ADVERT_REF=//p' .env.agent-history)"
-   ```
-
-2. Stop the containers: `docker compose -f docker-compose.agent-history.yml down`. The external network `umami_default` is not touched.
-3. Remove the Caddy block and reload, and the DNS record if it will not be reused.
-
-The registry identity and the Module-3 stake stay on the ledger until the operator withdraws them. The deposit returns on deregistration and the stake after its cooldown.
+The registry identity and the Module-3 stake stay on the ledger until the operator withdraws them.

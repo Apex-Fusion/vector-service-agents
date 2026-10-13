@@ -2,7 +2,7 @@
 
 Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED. This runbook says what will happen, in order. None of it has been run on the box.
 
-The operator holds the keys and does every step except step 10, which is the host administrator's (DNS and Caddy, see [README.md](README.md)). Every run of the agent is first-party until a payer outside our control appears. A first-party run shows that the path works. It is not demand and it counts as no revenue.
+The operator holds the keys and does every step except three. Step 2 (the registry login and the service image) and step 10 (DNS and Caddy) are the host administrator's, see [README.md](README.md). Step 6 (funding the supplier wallet) is the Foundation's. Every run of the agent is first-party until a payer outside our control appears. A first-party run shows that the path works. It is not demand and it counts as no revenue.
 
 One thing about the order. The advert carries the sha256 of the manifest the service serves at `/agent.json`, and adverts are immutable. So everything the manifest contains (the agent identifier, the keys, the status word) has to be final before the hash is taken. That is why the identity is registered (steps 7 and 8) before the advert (step 12), and why changing the status afterwards costs a new advert (step 17).
 
@@ -32,9 +32,9 @@ The repository is private, so the box needs read access to it. Copying `deploy/a
 
 ## 2. Log in to the registry and get the service image
 
-Operator, or the host administrator. The package is private; the token needs `read:packages`.
+Host administrator. The package is private; the token needs `read:packages`.
 
-```sh
+```bash
 read -rs GHCR_TOKEN
 printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u <user> --password-stdin
 unset GHCR_TOKEN
@@ -59,7 +59,7 @@ This clones `vector-agent-template` at the pinned commit `c4c378a` and installs 
 
 ## 4. Make the env file and generate the supplier key
 
-The key is generated on the box and never leaves it. This prints no secret: it writes the four values into the env file and shows only their lengths. From here on the compose commands need the external network `umami_default`, which exists on the box.
+The key is generated on the box and is never sent anywhere. This prints no secret: it writes the four values into the env file and shows only their lengths. From here on the compose commands need the external network `umami_default`, which exists on the box.
 
 ```sh
 umask 077
@@ -180,9 +180,10 @@ It must return the manifest of step 9, byte for byte. `/healthz` on the public n
 
 ## 11. Hash the manifest
 
-Operator. From a checkout on any machine with Node 22 (it only fetches public bytes):
+Operator. Run it from the root of the repository checkout, on any machine with Node 22; the script only fetches public bytes. On the box the root is `/opt/agent-history/repo`:
 
 ```sh
+cd /opt/agent-history/repo
 node scripts/manifest-hash.mjs https://mp-suppliers-history.hal8.ai
 ```
 
@@ -263,26 +264,44 @@ It must print `Active free identity.history.report.v1` and the hash of step 11. 
 
 ## 15. The first-party run
 
-Operator. Follow [E2E.md](../../docs/E2E.md) with `ADVERT_REF` from step 12 and the funded test buyer key. This is the step that proves the path, and nothing before it settles a job. As of 2026-10-13 the hosted MCP server has none of the nine marketplace tools the script needs. PR 1 is open as [Apex-Fusion/mcp-server#20](https://github.com/Apex-Fusion/mcp-server/pull/20) and PRs 2 and 3 follow. Until they are deployed, E2E.md says to build the PR 3 branch and run it locally. Add the run to the Results table in E2E.md. Only a run that ends in the printed evidence counts.
+Operator. Follow [E2E.md](../../docs/E2E.md) with `ADVERT_REF` from step 12 and the funded test buyer key. This is the step that proves the path, and nothing before it settles a job. As of 2026-10-13 the hosted MCP server has none of the nine marketplace tools the script needs. PR 1 is open as [Apex-Fusion/mcp-server#20](https://github.com/Apex-Fusion/mcp-server/pull/20), and PR 2 is open as [Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21), stacked on #20. PR 3 and PR 4 follow. Until PRs 1 to 3 are deployed, E2E.md says to build the PR 3 branch and run it locally. Add the run to the Results table in E2E.md. Only a run that ends in the printed evidence counts.
 
 ## 16. Wallet monitor
 
-Operator. Add the supplier address to the fleet's wallet monitor (upstream repository), so that a drained float is seen before a claim fails.
+Operator. Add the supplier address to the fleet's wallet monitor, so that a drained float is seen before a claim fails. The monitor is `wallet-monitor/` in the `Apex-Fusion/agents-marketplace` repository (see its README). On the machine that runs it, add one entry to `wallet-monitor/wallets.json`, which is not in git: `{ "name": "supplier-agent-history", "address": "<SUPPLIER_ADDRESS from the env file>" }`. The monitor posts to Slack when a wallet drops below its threshold.
 
 ## 17. Flip the status
 
 Operator, and only after step 14 shows the advert Active and step 15 has ended with a settled first-party job. Then the status can honestly change from `proposed`. Set `deployed` or `live` as the operator decides: a first-party run shows that the path works, and it is not demand.
 
-The status is in the manifest, so changing it changes the bytes the advert hashed, and a reader who compares the served manifest with the advert's `detail_hash` would see a mismatch. The advert has to be retired and posted again:
+The status is in the manifest, so changing it changes the bytes the advert hashed, and a reader who compares the served manifest with the advert's `detail_hash` would see a mismatch. The advert has to be retired and posted again. The old advert goes first, so that no Active advert carries a stale `detail_hash` while the service restarts:
 
 1. Check `curl -s http://127.0.0.1:8083/status` says `free`, and that no escrow is open against the advert.
-2. In `.env.agent-history`, set `AGENT_STATUS_CHIP` to the new word and `AGENT_STATUS_SINCE` to today's date.
-3. `docker compose -f docker-compose.agent-history.yml up -d --force-recreate service`
-4. Hash the new manifest (step 11).
-5. Retire the old advert with the command in [README.md](README.md), Rollback, point 1, and wait for it to confirm.
+2. Retire the old advert (Back out, point 1) and wait for it to confirm. From here until item 6 the agent has no advert.
+3. In `.env.agent-history`, set `AGENT_STATUS_CHIP` to the new word and `AGENT_STATUS_SINCE` to today's date.
+4. `docker compose -f docker-compose.agent-history.yml up -d --force-recreate service`
+5. Hash the new manifest (step 11).
 6. Post the new advert (step 12). The new `ADVERT_REF` replaces the old one in the env file.
 7. `docker compose -f docker-compose.agent-history.yml up -d --force-recreate agent`, then steps 13 and 14 again.
-8. In the repository, in a pull request, change the status words that say PROPOSED: the Status section and opening lines of `specs/agent-history.md`, the table in the root `README.md`, `docs/HIRE.md`, and `.env.agent-history.example`. The tests that pin them (`agents/agent-history/test/spec.test.ts`, `scripts/specs.test.mjs`, `scripts/deploy.test.mjs`) fail until all of them agree.
+8. In the repository, in a pull request, change every file that says PROPOSED about Agent History, and the tests that pin the word: `specs/agent-history.md` (Status), `agents/agent-history/README.md`, `README.md` (the table), `docs/HIRE.md`, `docs/E2E.md`, `deploy/apex-web/README.md`, `deploy/apex-web/RUNBOOK.md` (its first paragraph and step 14), the first lines of `deploy/apex-web/docker-compose.agent-history.yml` and `deploy/apex-web/Caddyfile.snippet`, and `deploy/apex-web/.env.agent-history.example`. The tests are `agents/agent-history/test/spec.test.ts`, `scripts/specs.test.mjs` and `scripts/deploy.test.mjs`. They fail until all of the files agree.
+
+## Back out
+
+To stop the agent, and as the first move of step 17. The order matters: the advert goes first, so that nobody can post an escrow against an agent that is about to stop.
+
+1. Retire the advert. Operator: the transaction is signed with the supplier key in the env file. Check `curl -s http://127.0.0.1:8083/status` says `free` (`working` means a job is in flight: wait for it). From `/opt/agent-history/repo/deploy/apex-web`:
+
+   ```sh
+   docker compose -f docker-compose.agent-history.yml run --rm --no-deps -T agent \
+     node_modules/.bin/tsx agent/src/cli/retire-advert.ts \
+     --advert-ref "$(sed -n 's/^ADVERT_REF=//p' .env.agent-history)"
+   ```
+
+   Wait for it to confirm. The units it locked come back.
+2. Stop the containers, operator or host administrator: `docker compose -f docker-compose.agent-history.yml down`. The external network `umami_default` is not touched.
+3. Host administrator: remove the Caddy block from `/opt/umami/Caddyfile`, validate and reload ([README.md](README.md), point 4), and remove the DNS record if it will not be reused.
+
+The registry identity and the Module-3 stake stay on the ledger until the operator withdraws them. The deposit returns on deregistration and the stake after its cooldown.
 
 ## If something goes wrong
 
@@ -294,7 +313,7 @@ The status is in the manifest, so changing it changes the bytes the advert hashe
 | The env file changed and nothing happened | `restart` does not re-read it. | `up -d --force-recreate <service>`. |
 | `network umami_default declared as external, but could not be found` | Wrong host, or the umami stack is down. | Start the umami stack. |
 | `pull access denied` for the service image | Not logged in to `ghcr.io`, or the image is not published yet. | Step 2. |
-| The served `/agent.json` hashes differently from the advert's `detail_hash` | The manifest changed after the advert was posted. | Step 17, items 4 to 7. |
+| The served `/agent.json` hashes differently from the advert's `detail_hash` | The manifest changed after the advert was posted. | Retire the advert (Back out, point 1), then repeat steps 11, 12 and 13. |
 
 ## Two gotchas that cost real transactions
 

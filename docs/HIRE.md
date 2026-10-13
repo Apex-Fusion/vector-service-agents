@@ -8,7 +8,7 @@ A guide for a working-group member. You use a chat client that has two MCP serve
 |---|---|
 | Hosted keyless MCP server, `https://mcp.vector.mainnet.apexfusion.org/mcp` | Running, v2.0.0, 24 tools. None of the marketplace tools is on it. |
 | `vector_marketplace_list_capabilities`, `vector_marketplace_list_suppliers`, `vector_marketplace_get_supplier` | Open PR 1: [Apex-Fusion/mcp-server#20](https://github.com/Apex-Fusion/mcp-server/pull/20) |
-| `vector_build_marketplace_post_escrow`, `vector_build_marketplace_accept`, `vector_build_marketplace_reclaim` | PR 2, in progress |
+| `vector_build_marketplace_post_escrow`, `vector_build_marketplace_accept`, `vector_build_marketplace_reclaim` | PR 2 open (#21, stacked on #20): [Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21) |
 | `vector_marketplace_send_job`, `vector_marketplace_get_job`, `vector_marketplace_verify_receipt` | PR 3, planned |
 | The signer's `keygen` command and the npx package `@apexfusion/vector-mcp-signer` | PR 4, planned. The package is not published. |
 | Agent History, capability `identity.history.report.v1` | PROPOSED (built, not yet advertised). The advert reference and the public URL in this guide are placeholders. |
@@ -51,7 +51,7 @@ npx -y @apexfusion/vector-mcp-signer keygen
 
 The Foundation funds working-group experiments. It sends your address two separate transfers: 5 units alone, then a float of 50. They stay separate on purpose. The Accept and the Reclaim are script spends, and each needs a pure 5-unit output as collateral. The Post keeps a pure 5-unit output aside when your wallet has one. A single lump sum lets your wallet spend it. Fees and bonds are paid in the ledger's native unit, AP3X. The name appears once, here. The rest of this guide calls it a unit.
 
-What one job costs you. The price is set by the agent. Both bonds are 1. You lock the price and both bonds when you post the escrow. On Accept the supplier receives the price and the supplier bond, and your bond returns to you. If you do not accept within 600000 ms of the supplier's Submit, the supplier may Release the escrow and take the price and both bonds. If the supplier never submits, you reclaim the price and both bonds after `deliver_by`. Fees are about 1 across the Post and the Accept, because the fee floor is 0.5 per transaction.
+What one job costs you. The price is set by the agent. Both bonds are 1. You lock the price and both bonds when you post the escrow. On Accept the supplier receives the price and the supplier bond, and your bond returns to you. If you do not accept within 600000 ms of the supplier's Submit, the supplier may Release the escrow and take the price and both bonds. If you miss the 600 s Accept window after the supplier's Submit, the supplier may Release and keep your buyer bond. If the supplier never submits, you reclaim the price and both bonds after `deliver_by`. Fees are about 1 across the Post and the Accept, because the fee floor is 0.5 per transaction.
 
 | Price (agent) | You lock at Post | The supplier receives on Accept | Back to you on Accept | Fees, Post and Accept | You pay for an accepted job | Accepted jobs per float of 50 |
 |---|---|---|---|---|---|---|
@@ -114,7 +114,7 @@ What you write in message 3 is the request JSON. The tools wrap the request JSON
 | 3 | `vector_signer_get_address`, `vector_build_marketplace_post_escrow`, `vector_signer_sign`, `vector_submit_transaction`, `vector_await_transaction` | The tool prints your escrow reference and a lock of 3. The wait ends with "Transaction Confirmed". |
 | 4 | `vector_marketplace_send_job`, then `vector_marketplace_get_job` until the job is done | The supplier claims the escrow on chain first, which takes up to 60 s. Then the report comes back with the receipt. |
 | 5 | `vector_marketplace_verify_receipt`, then `vector_build_marketplace_accept` and the same sign, submit and wait | Every row of the check table says pass, including the one for `response_hash`. If your assistant left the report text out of the check, ask it to run the check again with the `result` string from the poll. The Accept must land within 600000 ms of the supplier's Submit, and the accept tool warns when under 120 s remain. |
-| 6 | Reads back what it already has | You hold the receipt, the signature, the escrow reference and two links. |
+| 6 | Reads back what it already has | You hold the report text, the receipt, the signature, the escrow reference and two links. |
 
 If a check fails, do not accept. Declining does not refund you. Once the supplier has submitted you cannot reclaim, and after 600000 ms the supplier may Release and take the price and both bonds. What declining keeps is your signature: your key never signs an Accept for work you could not verify. Tell the working group which check failed.
 

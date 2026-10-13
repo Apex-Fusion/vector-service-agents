@@ -11,8 +11,7 @@ COPY agents/agent-history ./agents/agent-history
 FROM node:22-alpine
 WORKDIR /repo
 RUN apk add --no-cache tini
-COPY --from=builder /repo /repo
-RUN chown -R node:node /repo
+COPY --from=builder --chown=node:node /repo /repo
 USER node
 ENV NODE_ENV=production PORT=9091 HOST=0.0.0.0
 EXPOSE 9091
