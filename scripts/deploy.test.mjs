@@ -268,15 +268,24 @@ test('README and RUNBOOK: PROPOSED, no LIVE or DEPLOYED claim, no dash, no unit 
   assert.match(snippet, /PROPOSED/);
 });
 
-test('no individual name, and no personal address, on any public surface: the manifest template, the service source, the specs, the guides and both READMEs', () => {
+test('no individual name, and no personal address, on any public surface: the manifest template, the service source, the specs, the guides, both READMEs and the planning documents', () => {
+  // The planning documents (docs/superpowers) are tracked and go public with the repository, so they are held to the same rule.
+  const planning = readdirSync(join(root, 'docs/superpowers'), { recursive: true }).filter((f) => f.endsWith('.md')).map((f) => `docs/superpowers/${f.split(sep).join('/')}`);
+  assert.equal(planning.length, 3, `the design spec and the two plans: ${planning.join(', ')}`);
   const files = [
     ...PUBLIC_FILES, 'agents/agent-history/agent.json.template', 'agents/agent-history/README.md', 'README.md', 'docs/HIRE.md', 'docs/E2E.md',
     ...sourceFiles('agents/agent-history/src'),
     ...readdirSync(join(root, 'specs')).map((f) => `specs/${f}`),
+    ...planning,
   ];
-  assert.ok(files.length >= 20 && new Set(files).size === files.length, `the list reaches every surface, found ${files.length}`);
-  for (const must of ['agents/agent-history/agent.json.template', 'agents/agent-history/src/server.ts', 'specs/agent-history.md', 'specs/document-pipeline.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md']) assert.ok(files.includes(must), `${must} is scanned`);
+  assert.ok(files.length >= 23 && new Set(files).size === files.length, `the list reaches every surface, found ${files.length}`);
+  for (const must of ['agents/agent-history/agent.json.template', 'agents/agent-history/src/server.ts', 'specs/agent-history.md', 'specs/document-pipeline.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md', ...planning]) assert.ok(files.includes(must), `${must} is scanned`);
   for (const rel of files) assert.doesNotMatch(read(rel), NAMES, `${rel}: roles, not people`);
+  // A path into someone's home folder names its owner too, and a reviewer's handle is a name.
+  for (const rel of planning) {
+    assert.doesNotMatch(read(rel), /C:[\/]Users[\/]|\/(Users|home)\/[A-Za-z]/, `${rel}: no path into a home folder`);
+    assert.doesNotMatch(read(rel), /--reviewer [a-z0-9]+-[a-z]+\b/, `${rel}: no reviewer handle`);
+  }
 });
 
 test('the name guard: it finds a name in any case, inside an address too, and not a longer word', () => {

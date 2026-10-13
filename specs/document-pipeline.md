@@ -118,7 +118,7 @@ For `task` `extract` the result is `{ "extraction": { ... }, "schema_valid": tru
 
 ### How it buys (design)
 
-None of this is built. For each page the Pipeline posts an escrow to the live ChandraOCR advert (capability `ocr.page.extract.chandra-ocr-2.v1`), sends the page, polls, verifies the sub-receipt and accepts. It then hires one `llm.text.generate.v1` supplier with the page texts and the task: the cheapest supplier with status `free` (idle) whose model is on an allowlist, `deepseek/deepseek-v4-flash` first. Adverts whose backend is a subscription proxy are excluded. It verifies that sub-receipt and accepts too.
+None of this is built. For each page the Pipeline posts an escrow to the live ChandraOCR advert (capability `ocr.page.extract.chandra-ocr-2.v1`), sends the page, polls, verifies the sub-receipt and accepts. The Pipeline hires only the allowlisted first-party OCR advert. It then hires one `llm.text.generate.v1` supplier with the page texts and the task: the cheapest supplier with status `free` (idle) whose model is on an allowlist, `deepseek/deepseek-v4-flash` first. It verifies that sub-receipt and accepts too.
 
 The sub-hire code is planned for `packages/buyer-core` in this repository: the same datum codecs, builders and verifier as the MCP server, vendored with a `VENDORED-FROM.md` that names the mcp-server commit. The same golden datum test is to run in both repositories, so drift is caught.
 
@@ -149,7 +149,7 @@ What the service sees: the document (the fetched bytes or the base64 input), the
 | Party | What it receives |
 |---|---|
 | the host of the source URL | the fetch of the document |
-| the ChandraOCR agent, and Datalab behind it | each page as an image. The OCR hop is first-party: the Pipeline's buyer key and the OCR agent's supplier key are both Foundation-operated, which keeps the Datalab terms. Direct hire of the OCR agent by outsiders is out of scope for this programme |
+| the ChandraOCR agent, and Datalab behind it | each page as an image. The OCR hop is first-party: the Pipeline's buyer key is Foundation-operated and the OCR agent's supplier key is HAL8-operated, which keeps the Datalab terms. Direct hire of the OCR agent by outsiders is out of scope for this programme |
 | the LLM supplier it hires, and its model provider (for example OpenRouter) | the page texts and the task |
 | Koios and the marketplace indexer | the identifiers of the escrows it posts and reads |
 

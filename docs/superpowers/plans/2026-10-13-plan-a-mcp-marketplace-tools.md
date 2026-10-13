@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript ESM, npm workspaces, Node >= 22, `@lucid-evolution/lucid` 0.4.x (CML for Ed25519 verify), `@modelcontextprotocol/sdk`, `zod/v4`, `node:test` + `tsx`, tsup.
 
-**Spec:** `C:\Users\Filip\Documents\Claude\vector-service-agents\docs\superpowers\specs\2026-10-13-vector-service-agents-design.md` (sections 4, 5, 6, 10, 11)
+**Spec:** `<workspace>\vector-service-agents\docs\superpowers\specs\2026-10-13-vector-service-agents-design.md` (sections 4, 5, 6, 10, 11)
 
 ## Global Constraints
 
@@ -20,7 +20,7 @@
 - Transactions: `addSignerKey(pkh)`, `validFrom(now - 60_000)`, `setMinFee(500_000n)`, `complete({ localUPLCEval: false })` for script spends, `ensureSlotConfig(provider)` before any validity bound.
 - The snapshot test pins every tool's description and input schema. After adding tools: `npm run build && node packages/builder/scripts/regen-tool-schemas.mjs`, then commit the JSON. Never hand-edit the snapshot.
 - Vocabulary in tool descriptions and output: "stake, bond, escrow, settlement, receipt"; amounts are printed with `lovelaceToAda()` as the existing tools do.
-- Commit after every green step. Branch names: `feat/marketplace-read-tools`, `feat/marketplace-build-tools`, `feat/marketplace-transport`, `feat/signer-npx`. PRs target `Apex-Fusion/mcp-server` `main`; reviewer David Cejtlin (`dcejtlin-apex`). PR descriptions end with the attribution line given in the session.
+- Commit after every green step. Branch names: `feat/marketplace-read-tools`, `feat/marketplace-build-tools`, `feat/marketplace-transport`, `feat/signer-npx`. PRs target `Apex-Fusion/mcp-server` `main`; reviewer the HAL8 lead builder (`<reviewer handle>`). PR descriptions end with the attribution line given in the session.
 
 ## Review Focus
 
@@ -60,12 +60,12 @@
 ### Task 1: Worktree, install, baseline
 
 **Files:**
-- none created; repo root `C:\Users\Filip\Documents\Claude\vector-agentic-framework\mcp-server\repo`
+- none created; repo root `<workspace>\vector-agentic-framework\mcp-server\repo`
 
 - [ ] **Step 1: Fetch upstream and create the worktree**
 
 ```bash
-cd "C:/Users/Filip/Documents/Claude/vector-agentic-framework/mcp-server/repo"
+cd "<workspace>/vector-agentic-framework/mcp-server/repo"
 git fetch upstream
 git worktree add "../wt-marketplace-read" -b feat/marketplace-read-tools upstream/main
 cd "../wt-marketplace-read"
@@ -745,7 +745,7 @@ git commit -m "feat(marketplace): read tools (capabilities, suppliers, advert) a
 git push -u upstream feat/marketplace-read-tools
 gh pr create --repo Apex-Fusion/mcp-server --base main --head feat/marketplace-read-tools \
   --title "Marketplace read tools: list capabilities, list suppliers, get advert" \
-  --reviewer dcejtlin-apex \
+  --reviewer <reviewer handle> \
   --body-file - <<'EOF'
 ## What
 Three read-only marketplace tools on the hosted keyless server, backed by the public indexer and Koios. No outbound calls to supplier URLs in this PR.
@@ -783,7 +783,7 @@ EOF
 - [ ] **Step 1: Create the worktree for PR 2 on top of PR 1**
 
 ```bash
-cd "C:/Users/Filip/Documents/Claude/vector-agentic-framework/mcp-server/wt-marketplace-read"
+cd "<workspace>/vector-agentic-framework/mcp-server/wt-marketplace-read"
 git worktree add "../wt-marketplace-build" -b feat/marketplace-build-tools feat/marketplace-read-tools
 cd "../wt-marketplace-build" && npm ci && cp ../wt-marketplace-read/.env .env
 ```
@@ -1237,7 +1237,7 @@ Expected: `wrote 30 tool schemas`, all green. Update README ("30", list the thre
 git add -A && git commit -m "feat(marketplace): keyless build tools for escrow post, accept and reclaim"
 git push -u upstream feat/marketplace-build-tools
 gh pr create --repo Apex-Fusion/mcp-server --base feat/marketplace-read-tools --head feat/marketplace-build-tools \
-  --title "Marketplace build tools: unsigned escrow post, accept, reclaim" --reviewer dcejtlin-apex \
+  --title "Marketplace build tools: unsigned escrow post, accept, reclaim" --reviewer <reviewer handle> \
   --body "Stacked on #<PR1 number>; retarget to main once PR 1 merges. Unsigned builders on lucidForAddress; golden datum tests; Accept/Reclaim plans unit-tested, assembly exercised in the first-party E2E before deploy. Reclaim ships so a member can never strand funds on a silent supplier.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)"
@@ -1357,7 +1357,7 @@ export async function safeFetch(url: string, init: RequestInit = {}, opts: SafeF
 - [ ] **Step 4: Run tests, commit**
 
 ```bash
-cd "C:/Users/Filip/Documents/Claude/vector-agentic-framework/mcp-server/wt-marketplace-build"
+cd "<workspace>/vector-agentic-framework/mcp-server/wt-marketplace-build"
 git worktree add "../wt-marketplace-transport" -b feat/marketplace-transport feat/marketplace-build-tools && cd "../wt-marketplace-transport" && npm ci && cp ../wt-marketplace-build/.env .env
 node --import tsx --test packages/builder/test/safe-fetch.test.ts
 git add -A && git commit -m "feat(marketplace): safeFetch policy for supplier URLs"
@@ -1376,7 +1376,7 @@ Expected: 6 tests pass before the commit.
 - [ ] **Step 1: Pin the fleet routes from marketplace main**
 
 ```bash
-cd "C:/Users/Filip/Documents/Claude/agents-marketplace" && git fetch origin && git grep -n -E 'app\.(post|get)\("/v1/' origin/main -- supplier/src/server.ts
+cd "<workspace>/agents-marketplace" && git fetch origin && git grep -n -E 'app\.(post|get)\("/v1/' origin/main -- supplier/src/server.ts
 ```
 Record the exact paths printed for chat/completions or responses, ocr/extract and audio/synthesize (post and poll). If the chat POST path printed is `/v1/responses`, use it in `ROUTES.chat.post` below instead of `/v1/chat/completions`; the poll path follows the same prefix with `/:jobId`.
 
@@ -1715,7 +1715,7 @@ Expected: `wrote 33 tool schemas`, all green. Update README (33, list the three)
 git add -A && git commit -m "feat(marketplace): send job, poll job, verify receipt behind safeFetch"
 git push -u upstream feat/marketplace-transport
 gh pr create --repo Apex-Fusion/mcp-server --base feat/marketplace-build-tools --head feat/marketplace-transport \
-  --title "Marketplace transport: send job, poll job, verify receipt (safeFetch)" --reviewer dcejtlin-apex \
+  --title "Marketplace transport: send job, poll job, verify receipt (safeFetch)" --reviewer <reviewer handle> \
   --body "Stacked on PR 2. First outbound calls to supplier URLs on the public server, all through safeFetch: https only, private ranges refused after DNS resolution, 1 MB out / 2 MB in, 90 s budget, no redirects. Receipt verification is the template's strict five-check version with CML Ed25519. Routes pinned from agents-marketplace main in a test.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)"
@@ -1811,12 +1811,12 @@ and `npx -y @apexfusion/vector-mcp-signer keygen` as the first step.
 - [ ] **Step 5: Run tests, smoke, commit, PR 4**
 
 ```bash
-cd "C:/Users/Filip/Documents/Claude/vector-agentic-framework/mcp-server/wt-marketplace-read"
+cd "<workspace>/vector-agentic-framework/mcp-server/wt-marketplace-read"
 git worktree add "../wt-signer-npx" -b feat/signer-npx upstream/main && cd "../wt-signer-npx" && npm ci
 node --import tsx --test packages/signer/test/keygen.test.ts && npm run build && npm run test:smoke:signer && npm run typecheck
 git add -A && git commit -m "feat(signer): keygen subcommand and publishable package"
 git push -u upstream feat/signer-npx
-gh pr create --repo Apex-Fusion/mcp-server --base main --head feat/signer-npx --title "Signer: npx install and keygen" --reviewer dcejtlin-apex \
+gh pr create --repo Apex-Fusion/mcp-server --base main --head feat/signer-npx --title "Signer: npx install and keygen" --reviewer <reviewer handle> \
   --body "Removes private:true, adds files/publishConfig, and a keygen subcommand that prints a fresh bech32 Ed25519 key and its mainnet enterprise address. Publishing to npm under @apexfusion needs an owner with rights to the scope (open item).
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)"
@@ -1829,12 +1829,12 @@ Expected: PR opened; publishing itself is a human step (`npm publish --workspace
 
 ### Task 11: Local end-to-end against mainnet, no outsider
 
-Run after Plan B's Agent History advert exists and Filip has funded the test buyer key.
+Run after Plan B's Agent History advert exists and the Foundation's ecosystem lead has funded the test buyer key.
 
 - [ ] **Step 1: Start the builder locally with the mainnet `.env` from the transport worktree**
 
 ```bash
-cd "C:/Users/Filip/Documents/Claude/vector-agentic-framework/mcp-server/wt-marketplace-transport" && npm run build && PORT=3300 node packages/builder/build/index.js
+cd "<workspace>/vector-agentic-framework/mcp-server/wt-marketplace-transport" && npm run build && PORT=3300 node packages/builder/build/index.js
 ```
 Expected: stderr shows "listening on port 3300".
 

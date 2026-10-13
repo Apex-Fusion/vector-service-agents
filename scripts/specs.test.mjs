@@ -98,6 +98,14 @@ test('the Pipeline states its economics and the first-party OCR hop; the Advocat
   assert.match(section(pipeline, 'Terms'), /at five pages the Pipeline spends about 19 in locks and fees to earn 5/);
   assert.match(section(pipeline, 'Terms'), /subsidises this on purpose while the fee floor stands/);
   assert.match(section(pipeline, 'Operator and data handling'), /The OCR hop is first-party/);
+  // The ChandraOCR registry record says HAL8-operated: the Pipeline's buyer key is the Foundation's, the OCR agent's supplier key is HAL8's.
+  assert.match(section(pipeline, 'Operator and data handling'), /the Pipeline's buyer key is Foundation-operated and the OCR agent's supplier key is HAL8-operated/);
+  assert.equal(pipeline.match(/both Foundation-operated/), null);
+  assert.match(DESIGN, /the Pipeline's buyer key Foundation-operated, the OCR agent's supplier key HAL8-operated/);
+  // The hiring rule is stated as an allowlist. No reason about what a backend is made of appears on a public surface.
+  assert.ok(section(pipeline, 'Interface').includes('The Pipeline hires only the allowlisted first-party OCR advert.'));
+  assert.ok(DESIGN.includes('The Pipeline hires only the allowlisted first-party OCR advert.'));
+  for (const text of [pipeline, DESIGN]) assert.equal(text.match(/subscription|proxy/i), null);
   assert.match(section(pipeline, 'Operator and data handling'), /Direct hire of the OCR agent by outsiders is out of scope for this programme/);
   assert.equal(pipeline.match(/not offered to outsiders/), null); // the OCR advert is Active on the public indexer
   assert.ok(read('advocate').includes('"This brief argues one side only, by design, and omits counter-arguments."'));

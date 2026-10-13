@@ -1,6 +1,6 @@
 # Vector service agents: design spec
 
-**Date:** 2026-10-13 · **Status:** approved in conversation, awaiting written review · **Owners:** Filip Blagojević (design, funding, sends), Claude (code, docs), David Cejtlin (review, deploy, hosting)
+**Date:** 2026-10-13 · **Status:** approved in conversation, awaiting written review · **Owners:** the Foundation's ecosystem lead (design, funding, sends), Claude (code, docs), the HAL8 lead builder (review, deploy, hosting)
 
 ## 1. Purpose and success
 
@@ -16,7 +16,7 @@ Four service agents run on the Vector marketplace, hireable by anyone, with a gu
 
 - Nine marketplace tools on the hosted keyless MCP server, in three PRs, plus a fourth PR that makes the local signer installable with `npx`.
 - Four agents: Agent History, Document Pipeline, Audio Snippets, Advocate. Each ships as a spec, a manifest, a service, a compose file for apex-web, and a registry identity with a Module-3 self-stake.
-- The member guide `docs/HIRE.md`, the per-agent specs, the note to David, the internal Discord post.
+- The member guide `docs/HIRE.md`, the per-agent specs, the note to the HAL8 lead builder, the internal Discord post.
 
 **Out of scope for this spec** (named so nobody waits for them): reputation and dispute tools on the MCP server (next slice); a supplier-side "post advert" tool; the docs-site page (after the first outside receipt); direct hire of the OCR agent by outsiders (Datalab terms); a Judge agent that hires two Advocates; Meeting Minutes; any change to the escrow contract.
 
@@ -24,11 +24,11 @@ Four service agents run on the Vector marketplace, hireable by anyone, with a gu
 
 | Piece | Repo | Owner | Reviewer |
 |---|---|---|---|
-| Marketplace tools, PRs 1 to 3, signer PR 4 | `Apex-Fusion/mcp-server` (Apache-2.0) | Filip + Claude | David |
-| Agents, manifests, specs, guide, compose files | new `Apex-Fusion/vector-service-agents` (MIT) | Filip + Claude build, David hosts | David |
-| Public wording (guide, Discord, WG issue) | same repo | Claude drafts, Filip sends | Chris signs off |
+| Marketplace tools, PRs 1 to 3, signer PR 4 | `Apex-Fusion/mcp-server` (Apache-2.0) | the Foundation's ecosystem lead + Claude | the HAL8 lead builder |
+| Agents, manifests, specs, guide, compose files | new `Apex-Fusion/vector-service-agents` (MIT) | the Foundation's ecosystem lead + Claude build, the HAL8 lead builder hosts | the HAL8 lead builder |
+| Public wording (guide, Discord, WG issue) | same repo | Claude drafts, the Foundation's ecosystem lead sends | the Foundation CEO signs off |
 
-Local project folder: `C:\Users\Filip\Documents\Claude\vector-service-agents` (this spec lives in it).
+Local project folder: `<workspace>\vector-service-agents` (this spec lives in it).
 
 **Repo layout of `vector-service-agents`**
 
@@ -217,7 +217,7 @@ Limits: fetched source ≤ 20 MB; `max_pages` ≤ 5 in v1; PDF pages are rendere
   "accounting": { "sub_jobs": 6, "locked_total_lovelace", "fees_total_lovelace" } }
 ```
 
-**How it buys.** The service holds its own buyer key (`PIPELINE_BUYER_PRIV_KEY_HEX`, Foundation-funded, separate from the supplier key so Claims and Posts never contend for the same UTxOs). Per page: Post an escrow to the OCR advert (`87c46c30026b438ef0aaedcf3c656743b32dd68ce69e36d11f1e2d2b91659e5d#0`), `POST /v1/ocr/extract` with `X-Escrow-Ref`, poll, verify, Accept. Then one `llm.text.generate.v1` job on the cheapest free supplier whose model is in an allowlist (`deepseek/deepseek-v4-flash` first; the `gpt-*` advert is excluded because its backend is a subscription proxy), with the page texts and the task; verify; Accept. Sub-hire code lives in `packages/buyer-core` in this repo: the same datum codecs, builders and verifier as PR 2 and PR 3, vendored with a `VENDORED-FROM.md` that names the mcp-server commit, and the same golden datum test runs in both repos so drift is caught, not assumed. The OCR hop is first-party (buyer and supplier both Foundation-operated), which keeps the Datalab terms. Both of the Pipeline's keys are published in `agent.json` under `keys`.
+**How it buys.** The service holds its own buyer key (`PIPELINE_BUYER_PRIV_KEY_HEX`, Foundation-funded, separate from the supplier key so Claims and Posts never contend for the same UTxOs). Per page: Post an escrow to the OCR advert (`87c46c30026b438ef0aaedcf3c656743b32dd68ce69e36d11f1e2d2b91659e5d#0`), `POST /v1/ocr/extract` with `X-Escrow-Ref`, poll, verify, Accept. The Pipeline hires only the allowlisted first-party OCR advert. Then one `llm.text.generate.v1` job on the cheapest free supplier whose model is in an allowlist (`deepseek/deepseek-v4-flash` first), with the page texts and the task; verify; Accept. Sub-hire code lives in `packages/buyer-core` in this repo: the same datum codecs, builders and verifier as PR 2 and PR 3, vendored with a `VENDORED-FROM.md` that names the mcp-server commit, and the same golden datum test runs in both repos so drift is caught, not assumed. The OCR hop is first-party (the Pipeline's buyer key Foundation-operated, the OCR agent's supplier key HAL8-operated), which keeps the Datalab terms. Both of the Pipeline's keys are published in `agent.json` under `keys`.
 
 **Terms.** Price 5; bonds 1 and 1; `ADVERT_MAX_PROCESSING_MS` 1 800 000 (30 min, sequential pages at the OCR advert's 300 s SLA); `SERVICE_TIMEOUT_MS` 1 680 000. Model string `document-pipeline-v1`. Economics stated plainly in the spec file: at five pages the Pipeline spends about 19 in locks and fees to earn 5; the Foundation subsidises this on purpose while the fee floor stands.
 
@@ -329,10 +329,10 @@ Tests are written before the code they test, per the repos' existing practice.
 
 1. Spec approved in writing → implementation plan (writing-plans) → work in git worktrees, one branch per PR.
 2. **PR 1** opened; **PR 2** branch with the golden datum test passing; **Agent History** service running locally against Koios. (Today.)
-3. Filip funds: our test buyer key; four agent wallets (collateral plus float). Filip executes every transfer; Claude never sees a key.
-4. Note to David goes out first (section 12), naming the gateway `/mcp` overlap. David reviews PRs 1 to 4, dispatches the mainnet deploy (`deploy-mainnet.yml`, manual), adds four DNS names and Caddy blocks, pulls the images.
+3. The Foundation's ecosystem lead funds: our test buyer key; four agent wallets (collateral plus float). The Foundation's ecosystem lead executes every transfer; Claude never sees a key.
+4. The note to the HAL8 lead builder goes out first (section 12), naming the gateway `/mcp` overlap. The HAL8 lead builder reviews PRs 1 to 4, dispatches the mainnet deploy (`deploy-mainnet.yml`, manual), adds four DNS names and Caddy blocks, pulls the images.
 5. Agents register DIDs and self-stake via the existing ops scripts; adverts posted with `detail_uri` set; manifests frozen.
-6. Our own first-party hire of Agent History through the deployed server succeeds → the receipt and the guide draft go to internal Discord → Chris signs off → issue in `aaif/wg-identity-and-trust` → one member (Sal Kimmich first) walks the guide with us on a call → first outside receipt → docs-site page.
+6. Our own first-party hire of Agent History through the deployed server succeeds → the receipt and the guide draft go to internal Discord → the Foundation CEO signs off → issue in `aaif/wg-identity-and-trust` → one member (a working-group ally first) walks the guide with us on a call → first outside receipt → docs-site page.
 
 ## 12. Decisions made in this design session
 
@@ -341,35 +341,35 @@ Tests are written before the code they test, per the repos' existing practice.
 | Success criterion | a person we do not control hires an agent and holds the receipt |
 | First hirer | a WG member, by hand, from a chat client |
 | Funding | Foundation-funded key the member holds; their key is the buyer |
-| Channel | extend the hosted keyless MCP server; local signer signs; several PRs, David approves |
+| Channel | extend the hosted keyless MCP server; local signer signs; several PRs, the HAL8 lead builder approves |
 | Agents | Agent History, Document Pipeline, Audio Snippets, Advocate; ChandraOCR out of scope as a direct hire, used inside the Pipeline |
 | Prices | 1 / 5 / 2 / 3; bonds 1 and 1 everywhere |
-| Hosting | apex-web, chandra-supplier pattern, David hosts |
+| Hosting | apex-web, chandra-supplier pattern, the HAL8 lead builder hosts |
 | Media inputs | https URL, base64 under 600,000 bytes of raw media (wire payload capped at 900,000 bytes), source hash in the output |
-| Publication | internal Discord → Chris → WG GitHub issue → docs site after the first outside receipt |
+| Publication | internal Discord → the Foundation CEO → WG GitHub issue → docs site after the first outside receipt |
 | Unit name | once in the guide, "unit" elsewhere |
 
 **Open items that need a human**
 
 | Item | Who |
 |---|---|
-| Fund the test buyer key and four agent wallets | Filip |
-| Brave Search API key for Advocate; confirm OpenRouter key reuse | Filip |
-| `@apexfusion` npm scope ownership for the signer publish | Filip or David |
-| apex-web CPU and memory check for whisper model size | David (or Filip over SSH) |
-| DNS names, Caddy blocks, mainnet deploy dispatch | David |
-| Alignment on the gateway `/mcp` overlap | Filip sends the note, David answers |
-| Sign-off on public wording | Chris |
+| Fund the test buyer key and four agent wallets | the Foundation's ecosystem lead |
+| Brave Search API key for Advocate; confirm OpenRouter key reuse | the Foundation's ecosystem lead |
+| `@apexfusion` npm scope ownership for the signer publish | the Foundation's ecosystem lead or the HAL8 lead builder |
+| apex-web CPU and memory check for whisper model size | the HAL8 lead builder (or the Foundation's ecosystem lead over SSH) |
+| DNS names, Caddy blocks, mainnet deploy dispatch | the HAL8 lead builder |
+| Alignment on the gateway `/mcp` overlap | the Foundation's ecosystem lead sends the note, the HAL8 lead builder answers |
+| Sign-off on public wording | the Foundation CEO |
 
 ## 13. Risks
 
 | Risk | Answer in this design |
 |---|---|
-| Two marketplace-over-MCP efforts (David's gateway `/mcp`, this) | Note to David first; the two are complementary (custodial convenience vs identity-grade keyless) and share no code paths |
+| Two marketplace-over-MCP efforts (the HAL8 lead builder's gateway `/mcp`, this) | Note to the HAL8 lead builder first; the two are complementary (custodial convenience vs identity-grade keyless) and share no code paths |
 | SSRF through on-chain `endpoint_url` and `detail_uri` | `safeFetch` rules, applied on the server and inside every service |
 | Fee floor makes every job cost about 1 in fees plus the lock | Stated in the guide; Foundation funds; the Pipeline's subsidy named in its spec |
 | Whisper on an unmeasured CPU box | model size decided after the check; 10-minute input cap; long SLA |
 | Fleet route changed upstream (`/v1/responses`) | route table read from origin/main at port time and pinned in a test |
 | Member strands funds on a supplier that never claims | `vector_build_marketplace_reclaim` ships in PR 2, before any outsider is invited |
 | Snapshot test blocks PRs | regen script fixed in PR 1; count derived |
-| Public wording drifts from canon | Chris sign-off gate; status chips on every surface |
+| Public wording drifts from canon | the Foundation CEO sign-off gate; status chips on every surface |
