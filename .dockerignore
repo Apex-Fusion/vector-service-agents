@@ -1,0 +1,18 @@
+# Build context for agents/agent-history/Dockerfile is the repo root.
+# node_modules is the entry that matters. A copy installed on the host carries host-specific pnpm links, and COPY would lay it over
+# the image's own install. The image installs its own from the lockfile.
+node_modules
+**/node_modules
+.git
+.github
+.superpowers
+.env
+.env.*
+!.env.*.example
+*.log
+dist
+build
+docs
+specs
+deploy
+scripts

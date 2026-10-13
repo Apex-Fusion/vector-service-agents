@@ -70,3 +70,7 @@ A local run against the live ledger, 2026-10-13, chain tip at block 8,729,902, s
 `escrows.total` counts the indexer's rows, which are escrow UTxO versions: the 3,436 rows are 1,160 jobs, each listed once per state it reached (Open, Claimed, Submitted). The report checks the latest 50 rows per side on the ledger and does not check the older ones: here `latest_checked` is 50 and all 50 are spent (`latest_spent` 50). No row records how a job ended; the report says so under `blind_spots`.
 
 Two earlier runs on the same day, before the v15-sim addresses were added, gave the same values. The first took 3.0 s (chain tip at block 8,727,027). The second, after review batch 2 made the sections run concurrently, took 1.5 s (block 8,727,874) and answered the identical request in 3 ms from the cache.
+
+## Image
+
+`Dockerfile` builds the service image. The build context is the repository root, because the image installs the workspace from the lockfile: `docker build -f agents/agent-history/Dockerfile -t vsa/agent-history:dev .`. The image runs as the `node` user under `tini`, listens on 9091 and answers `/healthz` for its health check. It holds no key. On a push to `main` the publish job in `.github/workflows/ci.yml` builds it and pushes it to `ghcr.io/apex-fusion/vector-service-agents/agent-history` as `:latest` and as `:<commit sha>`. Nothing is deployed yet. How it will be put on the box, and what the operator and the host administrator each do: `deploy/apex-web/README.md` and `deploy/apex-web/RUNBOOK.md`.

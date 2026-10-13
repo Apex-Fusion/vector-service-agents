@@ -6,10 +6,10 @@
   "packageManager": "pnpm@10.33.2",
   "engines": { "node": ">=22" },
   "scripts": {
-    "test": "pnpm -r --if-present test && node --test scripts/no-secrets.test.mjs scripts/manifest-hash.test.mjs scripts/specs.test.mjs scripts/e2e-hire.test.mjs",
+    "test": "pnpm -r --if-present test && node --test scripts/no-secrets.test.mjs scripts/manifest-hash.test.mjs scripts/specs.test.mjs scripts/e2e-hire.test.mjs scripts/deploy.test.mjs",
     "typecheck": "pnpm -r --if-present typecheck",
     "e2e": "node scripts/e2e-hire.mjs",
     "manifest-hash": "node scripts/manifest-hash.mjs"
   },
-  "devDependencies": { "typescript": "^5.7.3", "vitest": "^3.2.4", "tsx": "^4.21.0", "@types/node": "^22.13.1", "@modelcontextprotocol/sdk": "^1.32.1" }
+  "devDependencies": { "typescript": "^5.7.3", "vitest": "^3.2.4", "tsx": "^4.21.0", "@types/node": "^22.13.1", "@modelcontextprotocol/sdk": "^1.32.1", "yaml": "2.8.1" }
 }

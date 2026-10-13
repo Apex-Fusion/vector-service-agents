@@ -11,6 +11,7 @@ Service agents that anyone can hire on the Vector agents marketplace, with the g
 
 - Hire one: `docs/HIRE.md`
 - Our own first-party end-to-end run: `docs/E2E.md` and `scripts/e2e-hire.mjs`
+- Putting Agent History on the apex-web box: `deploy/apex-web/README.md` (host administrator) and `deploy/apex-web/RUNBOOK.md` (operator)
 - Specs: `specs/`
 - Design: `docs/superpowers/specs/2026-10-13-vector-service-agents-design.md`
 

@@ -1,0 +1,315 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { parse as parseYaml } from 'yaml';
+// The deployment files of Agent History (Dockerfile, compose, env example, Caddy snippet, README, RUNBOOK, CI publish job) are read by a
+// host administrator and an operator who act on them. Docker is not needed here: these tests parse the files and keep them equal to each
+// other, to the service code, to the spec and to the design. docker compose config, docker build and caddy validate were run by hand.
+const root = fileURLToPath(new URL('../', import.meta.url));
+const read = (rel) => readFileSync(join(root, rel), 'utf8');
+const section = (text, heading) => (text.split(`\n## ${heading}\n`)[1] ?? '').split('\n## ')[0];
+const DESIGN = read('docs/superpowers/specs/2026-10-13-vector-service-agents-design.md');
+const SPEC = read('specs/agent-history.md');
+const compose = parseYaml(read('deploy/apex-web/docker-compose.agent-history.yml'));
+const exampleText = read('deploy/apex-web/.env.agent-history.example');
+const readme = read('deploy/apex-web/README.md');
+const runbook = read('deploy/apex-web/RUNBOOK.md');
+const snippet = read('deploy/apex-web/Caddyfile.snippet');
+const dockerfile = read('agents/agent-history/Dockerfile');
+const ci = parseYaml(read('.github/workflows/ci.yml'));
+const { agent, service } = compose.services;
+// The example as a name to value map. A name listed twice is a mistake, not an override.
+function parseEnv(text) {
+  const env = {};
+  for (const line of text.split('\n')) {
+    if (line.trim() === '' || line.startsWith('#')) continue;
+    const m = /^([A-Z][A-Z0-9_]*)=(.*)$/.exec(line);
+    assert.ok(m, `not NAME=value: ${line}`);
+    assert.ok(!(m[1] in env), `${m[1]} is listed twice`);
+    env[m[1]] = m[2];
+  }
+  return env;
+}
+const example = parseEnv(exampleText);
+const specNumber = (re) => Number(re.exec(SPEC)?.[1]);
+const SPEC_TERMS = {
+  price: specNumber(/\| Price \| (\d+) \|/), supplierBond: specNumber(/\| Supplier bond \| (\d+) \|/), buyerBond: specNumber(/\| Buyer bond \| (\d+) \|/),
+  window: specNumber(/advert `max_processing_ms` \| (\d+) ms/), timeout: specNumber(/Service timeout, `SERVICE_TIMEOUT_MS` \| (\d+) ms/),
+};
+// The manifest the service renders for a given environment, run through the real code (tsx), so that nothing here re-implements it.
+function renderManifests(envs) {
+  const code = "import { manifestFromEnv } from './src/server.ts'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((e) => manifestFromEnv(e))));";
+  const out = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code, JSON.stringify(envs)], { cwd: join(root, 'agents/agent-history'), encoding: 'utf8' });
+  return JSON.parse(out);
+}
+const DASHES = new RegExp('[' + String.fromCharCode(0x2013, 0x2014) + ']');
+const UNIT_NAME = new RegExp('AP' + '3X', 'i');
+const PUBLIC_FILES = ['deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md', 'deploy/apex-web/docker-compose.agent-history.yml', 'deploy/apex-web/.env.agent-history.example', 'deploy/apex-web/Caddyfile.snippet', 'agents/agent-history/Dockerfile', '.dockerignore'];
+
+test('compose: two containers with fixed names, the runtime on loopback only, the service unpublished, both on the shared network', () => {
+  assert.equal(compose.name, 'agent-history');
+  assert.deepEqual(Object.keys(compose.services), ['agent', 'service']);
+  assert.equal(agent.container_name, 'agent-history-agent');
+  assert.equal(service.container_name, 'agent-history-service');
+  assert.deepEqual(agent.ports, ['127.0.0.1:8083:8080']);
+  assert.equal(service.ports, undefined);
+  assert.deepEqual(agent.networks, ['umami_default']);
+  assert.deepEqual(service.networks, ['umami_default']);
+  assert.deepEqual(compose.networks.umami_default, { external: true, name: 'umami_default' });
+  assert.deepEqual(agent.depends_on, ['service']);
+  for (const s of [agent, service]) assert.deepEqual(s.env_file, [{ path: './.env.agent-history', required: true }]);
+});
+
+test('compose: the runtime is built from the pinned template commit, written in full because BuildKit does not resolve the short form', () => {
+  assert.match(agent.build.context, /^https:\/\/github\.com\/Apex-Fusion\/vector-agent-template\.git#c4c378a[0-9a-f]{33}$/);
+  assert.equal(agent.build.dockerfile, 'agent/Dockerfile');
+  assert.ok(SPEC.includes('pinned commit `c4c378a`'), 'the spec names the same commit');
+});
+
+test('compose: SERVICE_URL names the service container, its port and the path /, and is not the shared alias "service"', () => {
+  const url = new URL(agent.environment.SERVICE_URL);
+  assert.equal(url.protocol, 'http:');
+  assert.equal(url.hostname, service.container_name, 'the container name is unique on umami_default; the alias "service" would match every agent');
+  assert.equal(url.port, service.environment.PORT);
+  assert.equal(url.pathname, '/', 'the service accepts POST on / only');
+  assert.ok(agent.environment.SERVICE_URL.endsWith('/'), 'with the trailing slash');
+  assert.equal(agent.environment.CAPABILITY_KIND, 'custom');
+  assert.equal(agent.environment.SERVICE_CONTENT_TYPE, 'application/json');
+});
+
+test('compose: the runtime holds the key, the service gets it blanked', () => {
+  assert.ok(!('SUPPLIER_PRIV_KEY_HEX' in agent.environment), 'the runtime reads the key from the env file');
+  assert.equal(service.environment.SUPPLIER_PRIV_KEY_HEX, '', 'an empty string overrides the value from env_file');
+});
+
+test('compose: the processing window and the service timeout are the spec terms, and nest as the runtime requires', () => {
+  assert.equal(Number(agent.environment.ADVERT_MAX_PROCESSING_MS), SPEC_TERMS.window);
+  assert.equal(Number(agent.environment.SERVICE_TIMEOUT_MS), SPEC_TERMS.timeout);
+  assert.ok(Number(agent.environment.SERVICE_TIMEOUT_MS) <= Number(agent.environment.ADVERT_MAX_PROCESSING_MS) - 60_000, 'the runtime refuses to boot otherwise');
+  assert.equal(agent.environment.PORT, '8080');
+  assert.equal(service.environment.PORT, '9091');
+});
+
+test('env example: known names only, each once; every secret is empty; nothing looks like key material', () => {
+  const RUNTIME = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'ADVERT_REF'];
+  const POST_ADVERT = ['ADVERT_CAPABILITY_ID', 'ADVERT_MODEL', 'ADVERT_PRICE_LOVELACE', 'ADVERT_SUPPLIER_BOND_LOVELACE', 'ADVERT_BUYER_BOND_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_ENDPOINT_URL', 'ADVERT_DETAIL_URI', 'ADVERT_DETAIL_HASH'];
+  const MANIFEST = ['AGENT_DID', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_EXPLORER_URL'];
+  assert.deepEqual(Object.keys(example).filter((n) => ![...RUNTIME, ...POST_ADVERT, ...MANIFEST].includes(n)), [], 'a name the runtime, the advert command and the service never read');
+  for (const [name, value] of Object.entries(example)) {
+    if (/PRIV_KEY|SECRET|TOKEN|PASSWORD|API_KEY|AUTH_HEADER/.test(name)) assert.equal(value, '', `${name} must be empty`);
+    assert.doesNotMatch(value, /^[0-9a-f]{64}$/i, `${name} looks like a key or a hash`);
+    assert.doesNotMatch(value, /^[0-9a-f]{56}$/i, `${name} looks like a key hash`);
+    assert.doesNotMatch(value, /^addr1/, `${name} looks like an address`);
+    assert.doesNotMatch(value, /ed25519_sk/i, `${name} looks like a key`);
+  }
+  for (const name of ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'ADVERT_REF', 'ADVERT_DETAIL_HASH', 'AGENT_DID', 'ADVERT_EXPLORER_URL']) assert.equal(example[name], '', `${name} is filled by the runbook`);
+});
+
+test('env example: every name the service reads is in the example, in the compose environment, or has a default in the code', () => {
+  const sources = ['agents/agent-history/src', 'packages/vector-read/src'].flatMap((dir) => readdirSync(join(root, dir)).filter((f) => f.endsWith('.ts')).map((f) => read(`${dir}/${f}`)));
+  const names = new Set(sources.flatMap((text) => [...text.matchAll(/\benv\.([A-Z][A-Z0-9_]+)/g), ...text.matchAll(/envInt\('([A-Z][A-Z0-9_]+)'/g)].map((m) => m[1])));
+  assert.ok(names.size >= 10, 'the scan found the settings');
+  const DEFAULT_IN_CODE = ['AGENT_VERSION', 'OPERATOR_CONTACT', 'KOIOS_URL', 'INDEXER_URL']; // left unset on purpose: a value here would pin a default that the code owns
+  assert.deepEqual([...names].filter((n) => !(n in example) && !(n in service.environment) && !DEFAULT_IN_CODE.includes(n)), []);
+  for (const n of DEFAULT_IN_CODE) assert.ok(!(n in example), `${n} stays unset in the example`);
+});
+
+test('env example: the runtime gets every name the pinned template lists for CAPABILITY_KIND=custom', () => {
+  // From .env.example of vector-agent-template at c4c378a. The optional ones (SERVICE_AUTH_HEADER, WALLET_HEALTH_INTERVAL_MS, BUYER_PRIV_KEY_HEX) are left out.
+  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'PORT'];
+  assert.deepEqual(NEEDED.filter((n) => !(n in example) && !(n in agent.environment)), []);
+  assert.equal(example.NETWORK_ID, '1');
+  assert.equal(example.LIVE_CHAIN, '1');
+  assert.ok(example.OGMIOS_URL.startsWith('https://'), 'https, not wss');
+});
+
+test('env example: the chain values and the advert terms are the design and the spec', () => {
+  const [, escrowTx] = /`ESCROW_REF_UTXO` \/ `ADVERT_REF_UTXO` \| `([0-9a-f]{64})#0` \/ `…#1`/.exec(DESIGN);
+  assert.equal(example.ESCROW_REF_UTXO, `${escrowTx}#0`);
+  assert.equal(example.ADVERT_REF_UTXO, `${escrowTx}#1`);
+  assert.equal(example.VECTOR_ZERO_TIME_MS, /Zero time[^|]*[|] `(\d+)`/.exec(DESIGN)[1]);
+  assert.equal(example.OGMIOS_URL, /Ogmios `([^`]+)`/.exec(DESIGN)[1]);
+  assert.equal(example.ADVERT_CAPABILITY_ID, 'identity.history.report.v1');
+  assert.ok(SPEC.includes(`\`${example.ADVERT_CAPABILITY_ID}\``));
+  assert.ok(SPEC.includes(`The model string in the advert and in every receipt is \`${example.ADVERT_MODEL}\`.`));
+  assert.deepEqual([example.ADVERT_PRICE_LOVELACE, example.ADVERT_SUPPLIER_BOND_LOVELACE, example.ADVERT_BUYER_BOND_LOVELACE, example.ADVERT_MAX_PROCESSING_MS].map(Number), [SPEC_TERMS.price, SPEC_TERMS.supplierBond, SPEC_TERMS.buyerBond, SPEC_TERMS.window]);
+  assert.equal(example.ADVERT_MAX_PROCESSING_MS, agent.environment.ADVERT_MAX_PROCESSING_MS);
+  assert.equal(example.ADVERT_DETAIL_URI, `${example.ADVERT_ENDPOINT_URL}/agent.json`);
+  assert.equal(new URL(example.ADVERT_ENDPOINT_URL).hostname, 'mp-suppliers-history.hal8.ai');
+  assert.ok(SPEC.includes(`\`${example.ADVERT_ENDPOINT_URL}\``), 'the spec names the same public URL');
+  assert.ok(DESIGN.includes('`mp-suppliers-history.hal8.ai`'));
+});
+
+test('env example: the status word is the spec status, and the manifest it produces is the default manifest', () => {
+  assert.ok(section(SPEC, 'Status').includes(`${example.AGENT_STATUS_CHIP.toUpperCase()} (built, not yet advertised). Since ${example.AGENT_STATUS_SINCE}.`));
+  assert.equal(example.AGENT_STATUS_CHIP, 'proposed', 'nothing is advertised, so nothing may claim more');
+  // The service takes an empty string as given, so an empty AGENT_STATUS_SINCE would put since "" into the manifest.
+  assert.notEqual(example.AGENT_STATUS_SINCE, '');
+  const [withExample, withNothing] = renderManifests([example, {}]);
+  assert.deepEqual(withExample, withNothing, 'the example changes nothing in the manifest the advert will hash');
+  assert.equal(withExample.status.chip, 'proposed');
+  assert.equal(withExample.links.explorer_advert, '');
+});
+
+test('Caddy snippet: the site block is the endpoint host, the manifest goes to the service, everything else to the runtime, and it is last in the file', () => {
+  const lines = snippet.split('\n');
+  const first = lines.findIndex((l) => !l.startsWith('#') && l.trim() !== '');
+  const block = lines.slice(first).join('\n').trimEnd();
+  assert.match(block, /^mp-suppliers-history\.hal8\.ai \{\n    handle \/agent\.json \{\n        reverse_proxy (\S+)\n    \}\n    handle \{\n        reverse_proxy (\S+)\n    \}\n\}$/);
+  const [, toService, toAgent] = block.match(/reverse_proxy (\S+)[\s\S]*reverse_proxy (\S+)/);
+  assert.equal(toService, `${service.container_name}:${service.environment.PORT}`);
+  assert.equal(toAgent, `${agent.container_name}:${agent.environment.PORT}`);
+  assert.equal(block.split('\n')[0], `${new URL(example.ADVERT_ENDPOINT_URL).hostname} {`);
+  assert.ok(lines.slice(0, first).every((l) => l.startsWith('#') || l.trim() === ''), 'only comments before the block');
+  const unindented = readme.split('\n').map((l) => l.replace(/^ {3}/, '')).join('\n'); // the README shows the block inside a numbered list
+  assert.ok(unindented.includes('```\n' + block + '\n```'), 'the README shows the same block');
+});
+
+test('Dockerfile: builds from the repo root, installs the right workspace, runs the service on the port the compose file and healthcheck use', () => {
+  const pkg = JSON.parse(read('agents/agent-history/package.json'));
+  const rootPkg = JSON.parse(read('package.json'));
+  assert.ok(dockerfile.includes(`--filter '${pkg.name}...'`));
+  assert.ok(dockerfile.includes(`corepack prepare ${rootPkg.packageManager} --activate`));
+  const bases = [...dockerfile.matchAll(/^FROM node:(\d+)-alpine/gm)].map((m) => m[1]);
+  assert.deepEqual(bases, [read('.nvmrc').trim(), read('.nvmrc').trim()], 'two stages, both on the Node major of .nvmrc');
+  const sources = [...dockerfile.matchAll(/^COPY (?!--from)(.+) \S+$/gm)].flatMap((m) => m[1].split(' '));
+  assert.ok(sources.length >= 6);
+  for (const src of sources) assert.ok(existsSync(join(root, src)), `COPY source exists: ${src}`);
+  assert.match(dockerfile, /^ENV NODE_ENV=production PORT=9091 HOST=0\.0\.0\.0$/m);
+  assert.match(dockerfile, /^EXPOSE 9091$/m);
+  assert.match(dockerfile, /^HEALTHCHECK .* http:\/\/127\.0\.0\.1:9091\/healthz /m);
+  assert.match(dockerfile, /^USER node$/m);
+  assert.match(dockerfile, /^ENTRYPOINT \["\/sbin\/tini", "--"\]$/m);
+  const cmd = /^CMD \["node_modules\/\.bin\/tsx", "([^"]+)"\]$/m.exec(dockerfile);
+  assert.ok(cmd && existsSync(join(root, cmd[1])), 'the entry file exists');
+  assert.ok(service.image.startsWith('ghcr.io/apex-fusion/vector-service-agents/'));
+  const ignore = read('.dockerignore');
+  assert.match(ignore, /^node_modules$/m, 'a host node_modules must never reach the image');
+  assert.match(ignore, /^\.env\.\*$/m);
+});
+
+test('CI: the publish job runs on a push to main after the tests, logs in with GITHUB_TOKEN and pushes the compose image under both tags', () => {
+  const job = ci.jobs.publish;
+  assert.equal(job.needs, 'test');
+  assert.match(job.if, /github\.event_name == 'push'/);
+  assert.match(job.if, /github\.ref == 'refs\/heads\/main'/);
+  assert.deepEqual(job.permissions, { contents: 'read', packages: 'write' });
+  const login = job.steps.find((s) => s.uses === 'docker/login-action@v3');
+  const build = job.steps.find((s) => s.uses === 'docker/build-push-action@v6');
+  assert.ok(login && build);
+  assert.equal(login.with.registry, 'ghcr.io');
+  assert.equal(login.with.password, '${{ secrets.GITHUB_TOKEN }}');
+  assert.equal(build.with.context, '.');
+  assert.equal(build.with.file, 'agents/agent-history/Dockerfile');
+  assert.equal(build.with.push, true);
+  const image = service.image.replace(/:latest$/, '');
+  assert.deepEqual(build.with.tags.trim().split('\n'), [`${image}:latest`, `${image}:\${{ github.sha }}`]);
+  assert.equal(ci.jobs.test.steps.at(-1).run, 'pnpm test');
+});
+
+test('README and RUNBOOK: PROPOSED, no LIVE or DEPLOYED claim, no dash, no unit name, no person named', () => {
+  const NAMES = /\b(Filip|Blagojevi\w*|David|Cejtlin|Chris|Jerry|Armando|Andrej|Casl\w+|Nikola|Danielle|Tom Flynn)\b/;
+  for (const rel of PUBLIC_FILES) {
+    const text = read(rel);
+    assert.doesNotMatch(text, DASHES, `${rel}: no em or en dash`);
+    assert.doesNotMatch(text, UNIT_NAME, `${rel}: the unit is called units`);
+    assert.doesNotMatch(text, NAMES, `${rel}: roles, not people`);
+    assert.doesNotMatch(text.replace('Nothing in this folder is LIVE or DEPLOYED.', ''), /\b(LIVE|DEPLOYED)\b/, `${rel}: no status claim`);
+  }
+  for (const rel of ['deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md']) assert.ok(read(rel).includes('Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED.'), rel);
+  assert.match(read('deploy/apex-web/docker-compose.agent-history.yml'), /PROPOSED/);
+  assert.match(snippet, /PROPOSED/);
+});
+
+test('RUNBOOK: the seventeen steps in order, and the step numbers the other files quote are the right steps', () => {
+  const STEPS = ['Put the files on the box', 'Log in to the registry and get the service image', 'Build the runtime image', 'Make the env file and generate the supplier key', 'Adapt the ops scripts', 'Fund the supplier wallet', 'Register the identity', 'Stake in Module-3', 'Start the service', 'DNS and Caddy', 'Hash the manifest', 'Post the advert', 'Start the runtime', 'Check the advert on the indexer', 'The first-party run', 'Wallet monitor', 'Flip the status'];
+  assert.deepEqual([...runbook.matchAll(/^## (\d+)\. (.+)$/gm)].map((m) => [Number(m[1]), m[2]]), STEPS.map((title, i) => [i + 1, title]));
+  for (const m of runbook.matchAll(/\bsteps? (\d+)/g)) assert.ok(Number(m[1]) >= 1 && Number(m[1]) <= STEPS.length, `step ${m[1]}`);
+  const quoted = [...exampleText.matchAll(/RUNBOOK\.md step (\d+), "([^"]+)"/g)];
+  assert.equal(quoted.length, 2);
+  for (const m of quoted) assert.equal(STEPS[Number(m[1]) - 1], m[2], `the example quotes step ${m[1]}`);
+  assert.match(runbook, /does every step except step 10, which is the host administrator's/);
+  assert.match(section(runbook, '10. DNS and Caddy'), /^\nHost administrator, from/);
+});
+
+test('RUNBOOK: the manifest is final before it is hashed, and the hash is taken before the advert is posted', () => {
+  const at = (needle) => { const i = runbook.indexOf(needle); assert.ok(i >= 0, needle); return i; };
+  const order = ['./register-did.sh', './venv/bin/python m3-self-stake.py', 'up -d service', 'node scripts/manifest-hash.mjs', 'post-advert.ts --dry-run', 'ADVERT_REF=$(docker compose', 'up -d --force-recreate agent'];
+  const places = order.map(at);
+  assert.deepEqual([...places].sort((a, b) => a - b), places, 'the commands appear in this order');
+  const ups = runbook.match(/docker compose -f \S+ up -d[^\n`]*/g);
+  assert.ok(ups.length >= 4, 'the runbook has the up commands');
+  for (const cmd of ups) assert.match(cmd, /up -d (--force-recreate )?(service|agent)$/, `a bare up -d also starts the runtime: ${cmd}`);
+  assert.doesNotMatch(runbook, /docker compose [^\n]*\brestart\b/);
+});
+
+test('RUNBOOK: the post-advert flags are the terms of the example and the spec, with the dry run and the real run identical', () => {
+  const blocks = [...runbook.matchAll(/post-advert\.ts( --dry-run)? \x5c\n((?:  --[^\n]+\n)+)/g)];
+  assert.equal(blocks.length, 2, 'a dry run and the real run');
+  const flags = (body) => Object.fromEntries([...body.matchAll(/--([a-z-]+) (\S+?)(?: \x5c)?(?: \| tail -1\))?$/gm)].map((m) => [m[1], m[2].replace(/^"|"$/g, '')]));
+  const [dry, real] = blocks.map((m) => flags(m[2]));
+  assert.deepEqual(dry, real);
+  assert.deepEqual(real, {
+    'capability-id': example.ADVERT_CAPABILITY_ID, model: example.ADVERT_MODEL, 'max-output-tokens': '8192', 'price-lovelace': example.ADVERT_PRICE_LOVELACE,
+    'max-processing-ms': example.ADVERT_MAX_PROCESSING_MS, 'endpoint-url': example.ADVERT_ENDPOINT_URL, 'detail-uri': example.ADVERT_DETAIL_URI, 'detail-hash': '$DETAIL_HASH',
+  });
+  assert.ok(blocks[0][1], 'the first block is the dry run');
+});
+
+test('RUNBOOK: the registry record is the manifest description, the spec capability and framework, and the public URL', () => {
+  const desc = /^DESC="(.+)"$/m.exec(runbook)[1];
+  const [{ description }] = renderManifests([{}]);
+  assert.equal(desc, description);
+  assert.ok(desc.length <= 256, 'the registry takes 256 characters of description');
+  assert.ok(runbook.includes('"capabilities":["identity.history.report.v1"]') && runbook.includes('CAPABILITIES = ["identity.history.report.v1"]'));
+  assert.ok(runbook.includes('"framework":"vector-service-agents"') && SPEC.includes('framework `vector-service-agents`'));
+  assert.ok(runbook.includes(`"endpoint":"${example.ADVERT_ENDPOINT_URL}"`));
+  assert.ok(runbook.includes(`(this one is ${desc.length})`), 'the length the runbook quotes');
+});
+
+test('RUNBOOK: funding is two transfers (5 alone, then 50), and the key is generated on the box and is the only copy', () => {
+  assert.match(runbook, /exactly 5 units alone/);
+  assert.match(runbook, /then 50 units/);
+  assert.match(runbook, /this file is the only copy\. There is no recovery phrase/);
+  assert.match(runbook, /gen-keypair\.ts --network 1/);
+  assert.match(runbook, /chmod 600 \.env\.agent-history/);
+  assert.match(runbook, /read -rs GHCR_TOKEN/);
+});
+
+test('RUNBOOK: ends with the two gotchas of the chandra ops README, word for word', () => {
+  const GOTCHAS = [
+    '**1. Never re-serialize an MCP-built transaction.** `sign-tx.py` splices the',
+    'signature in while preserving every original byte of both the body and the',
+    "witness set. A decode/re-encode round-trip canonicalizes Plutus data's",
+    'indefinite-length arrays (`d8799f…ff` → definite), which changes',
+    '`script_data_hash` and the ledger rejects with `PPViewHashesDontMatch`',
+    '(observed on the first registry attempt). Re-serializing the body alone',
+    'changes the tx id and voids the signature.',
+    '',
+    '**2. The Module-3 SDK is testnet-pinned.** `constants.py` ships',
+    '`SYSTEM_START_UNIX_S = 1752057484` (testnet genesis) plus testnet Ogmios and',
+    'submit URLs. On mainnet you must pass mainnet endpoints explicitly AND patch',
+    'the genesis constant to `1756485600`, or `StakeDatum.last_updated` lands ~51',
+    'days off, fails Rule 6 of `validate_create_stake`, and the script aborts with',
+    'an opaque "terminated with error". `m3-self-stake.py` patches it and asserts',
+    'the result against wall clock before spending anything.',
+  ].join('\n');
+  assert.ok(runbook.trimEnd().endsWith(GOTCHAS), 'the gotchas are the last thing in the runbook');
+});
+
+test('README: the host administrator is told the DNS names, the ports, the registry login, the image tags, the env-file rule and the rollback', () => {
+  for (const host of ['mp-suppliers-history.hal8.ai', 'mp-suppliers-pipeline.hal8.ai', 'mp-suppliers-snippets.hal8.ai', 'mp-suppliers-advocate.hal8.ai']) {
+    assert.ok(readme.includes(`\`${host}\``), host);
+    assert.ok(DESIGN.includes(host), `the design names ${host}`);
+  }
+  assert.ok(readme.includes('`127.0.0.1:8083`') && readme.includes('loopback'));
+  assert.ok(readme.includes('docker login ghcr.io') && readme.includes('read:packages'));
+  assert.ok(readme.includes(':latest') && readme.includes(':<full git commit sha>'));
+  assert.ok(readme.includes('agent/src/cli/retire-advert.ts'), 'the rollback runs the retire command of the pinned runtime image');
+  assert.ok(readme.includes('docker compose -f docker-compose.agent-history.yml down'));
+  assert.ok(readme.includes('--force-recreate') && readme.includes('does not re-read it'));
+  for (const container of [agent.container_name, service.container_name]) assert.ok(readme.includes(`\`${container}\``), container);
+});
