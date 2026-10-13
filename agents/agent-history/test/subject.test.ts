@@ -10,7 +10,8 @@ const second = { ...utxo, tx_index: 1, asset_list: [{ policy_id: REGISTRY_POLICY
 const assetUtxosKey = (asset: string) => `POST ${K}/asset_utxos ${JSON.stringify({ _asset_list: [[REGISTRY_POLICY, asset]], _extended: true })}`;
 const addressUtxosKey = (offset = 0) => `POST ${K}/address_utxos${offset ? `?offset=${offset}` : ''} ${JSON.stringify({ _addresses: [REGISTRY_ADDRESS], _extended: true })}`;
 const ok = (rows: unknown[]) => ({ status: 200, body: JSON.stringify(rows) });
-const store = { [assetUtxosKey(ASSET)]: ok([utxo]), [addressUtxosKey()]: ok([utxo, second]) };
+// The scan reads on until a page comes back empty, so a store of one short page also holds the empty page after it (offset = rows read).
+const store = { [assetUtxosKey(ASSET)]: ok([utxo]), [addressUtxosKey()]: ok([utxo, second]), [addressUtxosKey(2)]: ok([]) };
 // A row that is not a registry record at all (no datum): the scan has to read past it.
 const filler = (i: number) => ({ tx_hash: i.toString(16).padStart(64, '0'), tx_index: 0, address: REGISTRY_ADDRESS, value: '1', inline_datum: null, asset_list: [] });
 const page = (from: number) => Array.from({ length: 1_000 }, (_, i) => filler(from + i));
@@ -67,8 +68,8 @@ describe('resolveSubject strictness', () => {
     expect(s).toMatchObject({ kind: 'asset', asset_name: ASSET, controller_pkh: null });
   });
   test('the candidate that is reported does not depend on the order Koios lists the UTxOs in', async () => {
-    const forward = await resolveSubject(OWNER, replayFetch({ [addressUtxosKey()]: ok([utxo, second]) }));
-    const reverse = await resolveSubject(OWNER, replayFetch({ [addressUtxosKey()]: ok([second, utxo]) }));
+    const forward = await resolveSubject(OWNER, replayFetch({ [addressUtxosKey()]: ok([utxo, second]), [addressUtxosKey(2)]: ok([]) }));
+    const reverse = await resolveSubject(OWNER, replayFetch({ [addressUtxosKey()]: ok([second, utxo]), [addressUtxosKey(2)]: ok([]) }));
     expect(forward.candidates.map((c) => c.asset_name)).toEqual([ASSET, OTHER]);
     expect(reverse).toEqual(forward);
     expect(reverse.asset_name).toBe(ASSET);
@@ -76,10 +77,25 @@ describe('resolveSubject strictness', () => {
 });
 
 describe('resolveSubject key-hash scan paging', () => {
-  test('reads the next page while pages come back full, and stops at the first short page', async () => {
-    // a third request would be an unrecorded key, hence a fixture miss
-    const s = await resolveSubject(OWNER, replayFetch({ [addressUtxosKey()]: ok(page(1)), [addressUtxosKey(1_000)]: ok([utxo]) }));
+  test('reads on until a page comes back empty, including after a page shorter than 1,000', async () => {
+    const urls: string[] = [];
+    // a request at any other offset would be an unrecorded key, hence a fixture miss
+    const replay = replayFetch({ [addressUtxosKey()]: ok(page(1)), [addressUtxosKey(1_000)]: ok([utxo]), [addressUtxosKey(1_001)]: ok([]) });
+    const s = await resolveSubject(OWNER, (async (u: any, i?: RequestInit) => { urls.push(String(u)); return replay(u, i); }) as typeof fetch);
     expect(s.candidates.map((c) => c.asset_name)).toEqual([ASSET]);
+    expect(urls.map((u) => u.split('?')[1] ?? '')).toEqual(['', 'offset=1000', 'offset=1001']);
+  });
+  test('a short page does not end the scan: the next page starts after the rows actually read', async () => {
+    const s = await resolveSubject(OWNER, replayFetch({ [addressUtxosKey()]: ok(page(1).slice(0, 600)), [addressUtxosKey(600)]: ok([utxo]), [addressUtxosKey(601)]: ok([]) }));
+    expect(s.candidates.map((c) => c.asset_name)).toEqual([ASSET]);
+  });
+  test('an empty first page ends the scan with no candidates after exactly one call', async () => {
+    const urls: string[] = [];
+    const replay = replayFetch({ [addressUtxosKey()]: ok([]) });
+    const counting = (async (u: any, i?: RequestInit) => { urls.push(String(u)); return replay(u, i); }) as typeof fetch;
+    const s = await resolveSubject(OWNER, counting);
+    expect(s).toMatchObject({ kind: 'pkh', asset_name: null, candidates: [] });
+    expect(urls).toHaveLength(1);
   });
   test('a full page followed by an empty one ends the scan', async () => {
     const s = await resolveSubject(OWNER, replayFetch({ [addressUtxosKey()]: ok(page(1)), [addressUtxosKey(1_000)]: ok([]) }));

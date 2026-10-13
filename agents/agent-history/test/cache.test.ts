@@ -105,3 +105,33 @@ describe('TtlCache sharing and bounds', () => {
     expect(c.size).toBe(1_000);
   });
 });
+
+describe('TtlCache keep predicate', () => {
+  test('a value the predicate refuses is returned but not kept: the next caller loads again', async () => {
+    const c = new TtlCache<number>(60_000);
+    let loads = 0;
+    const load = async () => ++loads;
+    const keep = (v: number) => v > 1;
+    expect(await c.getOr('k', load, keep)).toBe(1);
+    expect(c.size).toBe(0);
+    expect(await c.getOr('k', load, keep)).toBe(2);
+    expect(c.size).toBe(1);
+    expect(await c.getOr('k', load, keep)).toBe(2); // kept this time, so served from memory
+    expect(loads).toBe(2);
+  });
+  test('callers that share a pending load all get a refused value, and none of it is kept', async () => {
+    const c = new TtlCache<string>(60_000);
+    let resolve!: (v: string) => void;
+    const pending = new Promise<string>((r) => { resolve = r; });
+    const a = c.getOr('k', () => pending, () => false);
+    const b = c.getOr('k', () => { throw new Error('must not start a second load'); }, () => false);
+    resolve('partial');
+    expect(await Promise.all([a, b])).toEqual(['partial', 'partial']);
+    expect(c.size).toBe(0);
+  });
+  test('a predicate that throws counts as a refusal and does not fail the caller', async () => {
+    const c = new TtlCache<string>(60_000);
+    expect(await c.getOr('k', async () => 'v', () => { throw new Error('predicate bug'); })).toBe('v');
+    expect(c.size).toBe(0);
+  });
+});

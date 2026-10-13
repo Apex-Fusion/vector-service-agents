@@ -26,16 +26,20 @@ export async function resolveSubject(input: string, f: Fetch): Promise<Subject> 
   if (!/^[0-9a-f]{56}$/i.test(input)) throw new BadRequest('subject must be a DID, a 64-hex registry asset name, or a 56-hex key hash');
   const pkh = input.toLowerCase();
   const found = new Map<string, Subject['candidates'][number]>();
+  // Only an empty page ends the scan: a page shorter than PAGE is not known to be the last one. The next page starts
+  // after the rows actually read, which is page * PAGE while pages come back full.
+  let offset = 0;
   for (let page = 0; ; page++) {
     if (page === MAX_PAGES) throw new Error(`registry scan did not end within ${MAX_PAGES} pages of ${PAGE} UTxOs`);
-    const rows = await koios.addressUtxos([REGISTRY_ADDRESS], f, page * PAGE);
+    const rows = await koios.addressUtxos([REGISTRY_ADDRESS], f, offset);
+    if (rows.length === 0) break;
+    offset += rows.length;
     for (const u of rows) {
       const d = registryRecord(u);
       if (!d || d.owner_pkh !== pkh) continue;
       const tok = (u.asset_list ?? []).find((a) => a.policy_id === REGISTRY_POLICY);
       if (tok) found.set(tok.asset_name, { asset_name: tok.asset_name, did: didFor(tok.asset_name), name: d.name });
     }
-    if (rows.length < PAGE) break;
   }
   // Koios gives no order guarantee, so sort: the candidate reported first must not depend on how the rows arrived.
   const candidates = [...found.values()].sort((a, b) => (a.asset_name < b.asset_name ? -1 : a.asset_name > b.asset_name ? 1 : 0));
