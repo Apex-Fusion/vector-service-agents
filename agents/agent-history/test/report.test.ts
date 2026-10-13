@@ -39,13 +39,13 @@ describe('ChandraOCR report (recorded fixtures)', () => {
 });
 
 describe('report assembly against the recording', () => {
-  test('replaying the recording reproduces the recorded live report: every data section, and the same sources', async () => {
+  test('replaying the recording reproduces the recorded live report exactly: every section, the sources and the blind spots', async () => {
     const r = JSON.parse(JSON.stringify(await buildReport({ subject: DID, include: [...ALL] }, replayFetch(fx.store), opts)));
-    // The recording predates the sorted sources and the reworded blind spots; the ledger data in it is unchanged.
     const { sources, blind_spots, ...data } = r;
-    const { sources: recordedSources, blind_spots: _recordedBlindSpots, ...recordedData } = fx.report;
+    const { sources: recordedSources, blind_spots: recordedBlindSpots, ...recordedData } = fx.report;
     expect(data).toEqual(recordedData);
-    expect(sources).toEqual([...recordedSources].sort());
+    expect(sources).toEqual(recordedSources); // the same URLs in the same (sorted) order
+    expect(blind_spots).toEqual(recordedBlindSpots);
     expect(blind_spots).toEqual(BLIND_SPOTS); // nothing was missing or truncated for this subject, so only the fixed lines
   });
   test('the Module-3 stake is a real recorded datum, decoded field by field', async () => {
@@ -62,7 +62,7 @@ describe('report assembly against the recording', () => {
   });
   test('the dispute and self-improvement sections list their module addresses and find nothing for this agent', async () => {
     const r = await buildReport({ subject: DID, include: ['dispute', 'self_improvement'] }, replayFetch(fx.store), opts);
-    expect(r.dispute).toEqual({ claim: [], challenge: [], jury_pool: [] });
+    expect(r.dispute).toEqual({ claim: [], challenge: [], jury_pool: [], claim_v15_sim: [], challenge_v15_sim: [], jury_pool_v15_sim: [] });
     expect(r.self_improvement).toEqual({ proposal: [], critique: [], endorsement: [] });
   });
   test('key roles: the capability key hashes to the controller', async () => {

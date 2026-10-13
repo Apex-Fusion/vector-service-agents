@@ -10,9 +10,12 @@ async function moduleRows(address: string, f: Fetch, scan?: ModuleScan): Promise
   if (scan && rows.length >= KOIOS_PAGE) scan.truncated = true;
   return rows;
 }
-// A module datum is the subject's when one of its bytes fields, at the top level or one constructor deep, is the asset name or the controller key hash.
-export function matchesSubject(fields: string[], s: Pick<Subject, 'asset_name' | 'controller_pkh'>): boolean {
-  return (s.asset_name !== null && fields.includes(s.asset_name)) || (s.controller_pkh !== null && fields.includes(s.controller_pkh));
+// A module datum is the subject's when one of its bytes fields, at the top level or one constructor deep, is the identifier the subject was given as:
+// the asset name for a DID or asset name, the key hash for a key hash. The same rule the Module-3 stakes follow. A sibling agent (same owner key,
+// other asset) therefore stays out of an asset subject's report, and an asset subject is not found through its owner key.
+export function matchesSubject(fields: string[], s: Pick<Subject, 'kind' | 'asset_name' | 'controller_pkh'>): boolean {
+  const id = s.kind === 'asset' ? s.asset_name : s.controller_pkh;
+  return id !== null && fields.includes(id);
 }
 function mentions(utxos: KoiosUtxo[], s: Subject) {
   return utxos.flatMap((u) => { try { const fields = topLevelBytes(u.inline_datum!.bytes); return matchesSubject(fields, s) ? [{ utxo: ref(u), block: u.block_height ?? null, fields }] : []; } catch { return []; } });

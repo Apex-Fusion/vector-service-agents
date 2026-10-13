@@ -283,8 +283,9 @@ describe('manifest', () => {
     expect(m.gaps).toHaveLength(2);
     expect(m.gaps[0]).toBe(BLIND_SPOTS[1]); // the same sentences in the manifest and in every report
     expect(m.gaps[1]).toBe(`${BLIND_SPOTS[2]} ${BLIND_SPOTS[3]}`);
-    expect(m.gaps[1]).toMatch(/Only the Module-1 v14 addresses are read, not the v15-sim set/);
-    expect(m.gaps[1]).toMatch(/an entry that carries only the controller key may belong to another agent of the same key/);
+    expect(m.gaps[1]).not.toMatch(/v15-sim/); // both Module-1 deployments are read, so there is no gap to state
+    expect(m.gaps[1]).toMatch(/the asset name for a DID or asset name and the key hash for a key hash/);
+    expect(m.gaps[1]).toMatch(/An entry that names an agent only by its controller key is not found for a DID or asset name/);
     expect(m.gaps[1]).toMatch(/Module-3 endorsements, are matched generically/);
     expect(m.description).toBe("Everything the Vector ledger knows about one agent identifier, as one report per job, delivered with the runtime's signed receipt. Read-only; no model cost.");
     expect(m.gaps[0]).toMatch(/one per escrow UTxO version/);

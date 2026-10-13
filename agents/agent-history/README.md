@@ -50,7 +50,7 @@ pnpm --filter @vsa/agent-history record-fixtures   # needs network; rewrites tes
 
 The tests replay `test/fixtures/chandra.json`, a recording of every Koios, indexer and supplier call behind the ChandraOCR report (registration at block 7,275,113, the Module-3 stake `05563e75...#0`). No test needs the network.
 
-The recorder refuses to overwrite the fixture when the live report has a failed section, no chain tip or no registry record. The `report` stored in the fixture was made before the sources were sorted and the blind spots reworded, so the report test compares its data sections and its set of sources, and the blind-spot lines are tested against `BLIND_SPOTS`. Recording again refreshes it.
+The recorder refuses to overwrite the fixture when the live report has a failed section, no chain tip or no registry record. The `report` stored in the fixture is the report the code built during the recording, and the report test compares a fresh replay with it exactly: every section, the sources and the blind spots. Record again after any change to the shape of the report, then update the example in `specs/agent-history.md`, whose key paths a test keeps equal to a real report. The last recording, 2026-10-13, added the three Module-1 v15-sim addresses; the ledger data it holds for ChandraOCR is otherwise the same as before (3,436 indexer rows, the stake, the registration), with a later chain tip.
 
 ## Live check
 

@@ -96,7 +96,7 @@ The runtime fails the job on any non-2xx answer, and the buyer reclaims after `d
 
 ### Response
 
-`schema` is `vector.agent-history.report.v1`. The report below is a real answer for the ChandraOCR agent from a live run on 2026-10-13, at block 8727874. `generated_by.did` is shown as a placeholder because this agent has no DID yet. Sections that were not in `include` are absent, not null.
+`schema` is `vector.agent-history.report.v1`. The report below is a real answer for the ChandraOCR agent from a live run on 2026-10-13, at block 8728604. `generated_by.did` is shown as a placeholder because this agent has no DID yet. Sections that were not in `include` are absent, not null.
 
 ```json
 {
@@ -114,9 +114,9 @@ The runtime fails the job on any non-2xx answer, and the buyer reclaims after `d
     "candidates": []
   },
   "as_of": {
-    "block": 8727874,
-    "slot": 35414666,
-    "time": 1791900266
+    "block": 8728604,
+    "slot": 35417368,
+    "time": 1791902968
   },
   "identity": {
     "registered": {
@@ -233,7 +233,10 @@ The runtime fails the job on any non-2xx answer, and the buyer reclaims after `d
   "dispute": {
     "claim": [],
     "challenge": [],
-    "jury_pool": []
+    "jury_pool": [],
+    "claim_v15_sim": [],
+    "challenge_v15_sim": [],
+    "jury_pool_v15_sim": []
   },
   "self_improvement": {
     "proposal": [],
@@ -261,8 +264,8 @@ The runtime fails the job on any non-2xx answer, and the buyer reclaims after `d
   "blind_spots": [
     "Receipts name the supplier key hash, not the registry identifier; identity and marketplace are joined by key hash.",
     "Escrow rows come from the marketplace indexer, one per escrow UTxO version: a job appears once for each state it reached (Open, Claimed, Submitted), so up to three times, and never as Accepted, Released or Reclaimed. The report gives by_indexer_state counts and, for the latest 50 rows per side, how many are spent on the ledger (latest_checked, latest_spent). It gives no outcome counts: Accept, Release and Reclaim are not told apart.",
-    "The dispute module is deployed but not wired to the escrow contract; dispute entries, if any, are matched by asset name or key hash without a verified schema. Only the Module-1 v14 addresses are read, not the v15-sim set.",
-    "Module-1 and Module-6 datums, and Module-3 endorsements, are matched generically: a datum is attributed to the subject when one of its bytes fields (top level or one constructor deep) equals the asset name or the controller key hash, so an entry that carries only the controller key may belong to another agent of the same key. Their full layouts are not decoded.",
+    "The dispute module is deployed but not wired to the escrow contract; dispute entries, if any, are matched without a verified schema.",
+    "Module-1 and Module-6 datums, and Module-3 endorsements, are matched generically: a datum is attributed to the subject when one of its bytes fields (top level or one constructor deep) equals the identifier the subject was given as, the asset name for a DID or asset name and the key hash for a key hash. An entry that names an agent only by its controller key is not found for a DID or asset name, and an entry that names only an asset name is not found for a key hash. Their full layouts are not decoded.",
     "Module-3 stakes are read with the six-field stake layout and other datums at that address are skipped. A subject given as a DID or asset name keeps only the stakes whose datum names that asset, not those that share its owner key; a subject given as a key hash keeps every stake that key owns, whatever the asset."
   ]
 }
@@ -283,9 +286,9 @@ Times named `time` are Unix seconds. `registered_at`, `last_updated`, `advertise
 | `marketplace.*.adverts[]` | the adverts the marketplace indexer lists for the controller key |
 | `marketplace.*.escrows` | `total` is the number of indexer rows, which are escrow UTxO versions and not jobs. `by_indexer_state` counts rows per state label. `latest_checked` is how many of the newest rows (by `posted_at`, at most 50) were looked up on the ledger, and `latest_spent` how many of those are spent. `first` and `last` are the oldest and newest row exactly as the indexer returns it, or null. There are no outcome counts |
 | `reputation.stakes[]` | Module-3 stakes: `utxo`, `agent_asset_name`, `owner_pkh`, `stake_lovelace`, `capabilities[]`, `last_updated`, `history_points`. Which stakes are kept depends on the kind of subject, see Known gaps |
-| `reputation.endorsements[]` | Module-3 endorsement datums that name the subject: `utxo`, `block`, and `fields[]`, the datum's bytes fields in hex. Whether the subject is the endorser or the endorsed is not decoded |
-| `dispute` | `claim[]`, `challenge[]` and `jury_pool[]`, the Module-1 v14 datums that name the subject, each entry shaped like an endorsement |
-| `self_improvement` | `proposal[]`, `critique[]` and `endorsement[]`, the Module-6 v8 datums that name the subject, each entry shaped like an endorsement |
+| `reputation.endorsements[]` | Module-3 endorsement datums that name the subject: `utxo`, `block`, and `fields[]`, the datum's bytes fields in hex. A datum names the subject when one of its bytes fields is the asset name, for a subject given as a DID or asset name, or the key hash, for a subject given as a key hash. Whether the subject is the endorser or the endorsed is not decoded |
+| `dispute` | `claim[]`, `challenge[]` and `jury_pool[]` from the Module-1 v14 addresses, and `claim_v15_sim[]`, `challenge_v15_sim[]` and `jury_pool_v15_sim[]` from the v15-sim addresses: the datums that name the subject (as for endorsements), each entry shaped like an endorsement |
+| `self_improvement` | `proposal[]`, `critique[]` and `endorsement[]`, the Module-6 v8 datums that name the subject (as for endorsements), each entry shaped like an endorsement |
 | `key_roles` | `controller_pkh`, `advert_count` (null when `marketplace` was not read, so unknown is not shown as zero), `capability_endpoint` (the endpoint in the registry record) and `capability_key_matches_controller`. The last is true when the `pub_key_hex` served at `GET <endpoint>/capability` hashes (blake2b-224) to the controller key hash, false when it hashes to another key, and `"unknown"` when there is no endpoint or no controller, or the endpoint did not answer with a valid key. The endpoint comes from the registry record, so the check runs only when `identity` is included |
 | `sources` | every URL the report read, once each, sorted. Request bodies are not part of it, so `address_utxos` appears once however many addresses were read |
 | `blind_spots` | the fixed lines under Known gaps, plus the lines added when they apply |
@@ -314,6 +317,9 @@ Module addresses read, one page each:
 | Module-1 v14 | claim | `addr1wx5ayt5tq8fg905qq7udnclg4a2g42jk78p7gv7qahwcwcqjd9tzq` |
 | Module-1 v14 | challenge | `addr1wyf8qr6240wk8j4t8zklk5z9tkj55njtcpqz5jcat2gdr7cazrd0t` |
 | Module-1 v14 | jury_pool | `addr1wy4sr34nzeprwatleqhxg7qvv0k0c826wv7wjxdrutn472q7yn6fa` |
+| Module-1 v15-sim | claim_v15_sim | `addr1w9k85p6leg570zlp38ph4rgdflhu90y643xmn349a8e7mqg99t9y5` |
+| Module-1 v15-sim | challenge_v15_sim | `addr1wx3g523kcu09x7mvgzwk9l4glrakyve2k6d9cu50kguj8ac5p5yvr` |
+| Module-1 v15-sim | jury_pool_v15_sim | `addr1w9cntm556kdnk9u4d4jg8ycyrndjn7d5wqm6ez50ttkvregs63695` |
 | Module-6 v8 | proposal | `addr1wxvtvyx9jkt7jprdhm0g6wxkl8pvvc63vlwumju8f5uatzgnjjjcr` |
 | Module-6 v8 | critique | `addr1w9gas5jxfye79d7g87lddu5p3lhvt67ku4ptfvgyqn4rp6stn80z3` |
 | Module-6 v8 | endorsement | `addr1w8t3qgtthdpznyaw5vtdh87tlekzg5f5rdcav20ghwf7pms2mfltj` |
@@ -360,15 +366,15 @@ Every report carries these five lines in `blind_spots`, word for word. A test ke
 
 - Receipts name the supplier key hash, not the registry identifier; identity and marketplace are joined by key hash.
 - Escrow rows come from the marketplace indexer, one per escrow UTxO version: a job appears once for each state it reached (Open, Claimed, Submitted), so up to three times, and never as Accepted, Released or Reclaimed. The report gives by_indexer_state counts and, for the latest 50 rows per side, how many are spent on the ledger (latest_checked, latest_spent). It gives no outcome counts: Accept, Release and Reclaim are not told apart.
-- The dispute module is deployed but not wired to the escrow contract; dispute entries, if any, are matched by asset name or key hash without a verified schema. Only the Module-1 v14 addresses are read, not the v15-sim set.
-- Module-1 and Module-6 datums, and Module-3 endorsements, are matched generically: a datum is attributed to the subject when one of its bytes fields (top level or one constructor deep) equals the asset name or the controller key hash, so an entry that carries only the controller key may belong to another agent of the same key. Their full layouts are not decoded.
+- The dispute module is deployed but not wired to the escrow contract; dispute entries, if any, are matched without a verified schema.
+- Module-1 and Module-6 datums, and Module-3 endorsements, are matched generically: a datum is attributed to the subject when one of its bytes fields (top level or one constructor deep) equals the identifier the subject was given as, the asset name for a DID or asset name and the key hash for a key hash. An entry that names an agent only by its controller key is not found for a DID or asset name, and an entry that names only an asset name is not found for a key hash. Their full layouts are not decoded.
 - Module-3 stakes are read with the six-field stake layout and other datums at that address are skipped. A subject given as a DID or asset name keeps only the stakes whose datum names that asset, not those that share its owner key; a subject given as a key hash keeps every stake that key owns, whatever the asset.
 
 A report adds a line when it applies:
 
 - `No registry record found for this subject.` goes first when `identity` was read and the subject was never registered.
 - `marketplace and key_roles were not read: the subject has no live registry record` goes first when the subject has no controller key: it was deregistered, the token left the registry address, or its datum cannot be decoded. `marketplace` is null and `key_roles` has no controller.
-- `module scan may be truncated at 1,000 rows` goes last when a Module-1, Module-3 or Module-6 address returned a full page of 1,000 rows. Each of those addresses is read with one call. On 2026-10-13 they held 1 to 16 rows each.
+- `module scan may be truncated at 1,000 rows` goes last when a Module-1, Module-3 or Module-6 address returned a full page of 1,000 rows. Each of those addresses is read with one call. On 2026-10-13 they held 1 to 46 rows each.
 
 Outcome counts per job are not in 0.1.0. They need the spending transaction of each job's last escrow UTxO, which the Koios instance does not give through `utxo_info`. They are a follow-up.
 
