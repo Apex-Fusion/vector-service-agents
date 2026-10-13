@@ -1,6 +1,6 @@
 # Agent History
 
-Everything the Vector ledger knows about one agent identifier, as one report per job, delivered with the runtime's signed receipt. Capability `identity.history.report.v1`.
+The registry, stake, marketplace and module records the Vector ledger holds for one agent identifier, with the gaps stated. One report per job, delivered with the runtime's signed receipt. Capability `identity.history.report.v1`.
 
 Status: PROPOSED (built, not yet advertised). Read-only: the service reads public ledger data, holds no keys and costs no model calls.
 

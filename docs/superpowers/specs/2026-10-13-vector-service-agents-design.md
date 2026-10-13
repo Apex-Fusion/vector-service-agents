@@ -157,7 +157,7 @@ The cross-module key is the registry asset name (Modules 1, 3, 6 store it in the
 
 ### 7.2 Agent History · `identity.history.report.v1` · PROPOSED
 
-Everything the ledger knows about one agent identifier, as one signed report. Read-only, no model cost.
+Everything the ledger knows about one agent identifier, as one report per job, delivered with the runtime's signed receipt. Read-only, no model cost.
 
 **Request** (JSON in the message content)
 
@@ -183,7 +183,7 @@ Everything the ledger knows about one agent identifier, as one signed report. Re
 | `sources` | every URL queried | |
 | `blind_spots` | fixed list: receipts name keys not DIDs; module links to escrows are by key hash; dispute module is not wired to the escrow; indexer outcome labels are not used | |
 
-**Terms.** Price 1; bonds 1 and 1; `ADVERT_MAX_PROCESSING_MS` 300 000; `SERVICE_TIMEOUT_MS` 180 000. In-memory cache of Koios responses, 60 s TTL. Model string in the advert and receipt: `agent-history-v1`.
+**Terms.** Price 1; bonds 1 and 1; `ADVERT_MAX_PROCESSING_MS` 300 000; `SERVICE_TIMEOUT_MS` 180 000. In-memory cache of reports (60 s per subject). Model string in the advert and receipt: `agent-history-v1`.
 
 **Tests.** Golden fixtures recorded from Koios for ChandraOCR (registration at block 7,275,113, the Module-3 stake `05563e75…#0`, the 12 August job `1f1566b4…`), replayed offline; the report for that subject is asserted field by field, including `counts_by_outcome.accepted >= 1` and `receipt_signer_match: true`.
 

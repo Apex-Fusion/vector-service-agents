@@ -55,7 +55,7 @@ Two things are named apart on this page. The **request JSON** is what you write:
 
 The marketplace MCP tools (PROPOSED) and the template's buyer, `try-it/src/buy-once.ts`, wrap the request JSON into the wire payload for you. On the raw routes you wrap it yourself, and you hash the wire payload, not the request JSON.
 
-Media inputs are an https URL, or base64 under 1 MB: chat clients cannot carry media in a tool call, and the hosted MCP server caps requests at 1 MB. The service fetches a URL itself, with the same rules as the MCP server (https only, private and reserved addresses refused) and a 50 MB cap, and writes `source.sha256` and `source.bytes` into its output, so the signed receipt commits to the exact media.
+Media inputs are an https URL, or base64 under 600,000 bytes of raw media: chat clients cannot carry media in a tool call, and the hosted MCP server caps requests at 1 MB. The wire payload is capped at 900,000 bytes: the runtime's `/v1/job` takes 1 MB of JSON that holds it escaped, and the template's buyer refuses a larger one. Base64 adds a third, so 600,000 raw bytes become 800,000 characters and leave 100,000 bytes for the rest of the request. The service fetches a URL itself, with the same rules as the MCP server (https only, private and reserved addresses refused) and a 50 MB cap, and writes `source.sha256` and `source.bytes` into its output, so the signed receipt commits to the exact media.
 
 ### Request
 
@@ -140,7 +140,7 @@ Operator: Apex Fusion Foundation. The contact is `operator.contact` in the manif
 
 What the service sees: the media, the language, the query, the quotes and the ranges. Transcription and cutting run on the Foundation's box. The only thing that leaves is the fetch of the media, which goes to the host of the source URL.
 
-Datalab, OpenRouter and Brave are not used. On the ledger the escrow carries a hash of the request, not the media.
+Datalab, OpenRouter and Brave are not used. On the ledger the escrow carries the sha256 of the wire payload, not the media.
 
 ## Known gaps
 

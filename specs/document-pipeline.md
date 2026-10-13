@@ -57,7 +57,7 @@ Two things are named apart on this page. The **request JSON** is what you write:
 
 The marketplace MCP tools (PROPOSED) and the template's buyer, `try-it/src/buy-once.ts`, wrap the request JSON into the wire payload for you. On the raw routes you wrap it yourself, and you hash the wire payload, not the request JSON.
 
-Media inputs are an https URL, or base64 under 1 MB: chat clients cannot carry media in a tool call, and the hosted MCP server caps requests at 1 MB. The service fetches a URL itself, with the same rules as the MCP server (https only, private and reserved addresses refused) and a 20 MB cap, and writes `source.sha256` and `source.bytes` into its output, so the signed receipt commits to the exact document.
+Media inputs are an https URL, or base64 under 600,000 bytes of raw media: chat clients cannot carry media in a tool call, and the hosted MCP server caps requests at 1 MB. The wire payload is capped at 900,000 bytes: the runtime's `/v1/job` takes 1 MB of JSON that holds it escaped, and the template's buyer refuses a larger one. Base64 adds a third, so 600,000 raw bytes become 800,000 characters and leave 100,000 bytes for the rest of the request. The service fetches a URL itself, with the same rules as the MCP server (https only, private and reserved addresses refused) and a 20 MB cap, and writes `source.sha256` and `source.bytes` into its output, so the signed receipt commits to the exact document.
 
 ### Request
 

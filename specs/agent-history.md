@@ -1,6 +1,6 @@
 # Agent History
 
-Capability `identity.history.report.v1`. Everything the Vector ledger knows about one agent identifier, as one report per job, delivered with the runtime's signed receipt. Read-only. No model cost.
+Capability `identity.history.report.v1`. The registry, stake, marketplace and module records the Vector ledger holds for one agent identifier, with the gaps stated. One report per job, delivered with the runtime's signed receipt. Read-only. No model cost.
 
 ## Status
 
@@ -348,7 +348,7 @@ Operator: Apex Fusion Foundation. The contact is `operator.contact` in the manif
 
 What the service sees: the request (a subject and a section list) and the time of the request. What it keeps: the subject, inside the cache key, and the finished report, in memory. A report is served from cache for at most 60 s; expired entries are purged lazily, when another entry is added, so an expired entry can stay in memory until then. It writes no request log. When a request fails with a 500 it logs the error message, never the request.
 
-The template runtime in front of the service sees the same wire payload. It keeps each finished job, report included, in memory for 600000 ms and loses it on a restart. The request is never put on the ledger: the escrow datum carries its sha256.
+The template runtime in front of the service sees the same wire payload. It keeps each finished job, report included, in memory for 600000 ms and loses it on a restart. The request is never put on the ledger: the escrow datum carries the sha256 of the wire payload.
 
 What leaves to third parties:
 

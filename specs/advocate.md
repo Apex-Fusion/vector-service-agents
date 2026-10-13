@@ -137,7 +137,7 @@ What the service sees: the subject, the side, the audience, the length and the l
 | the host of each result page | the fetch of the page |
 | OpenRouter, and the model provider behind it | the subject, the side and the fetched page texts |
 
-Datalab is not used. On the ledger the escrow carries a hash of the request, not the request.
+Datalab is not used. On the ledger the escrow carries the sha256 of the wire payload, not the request.
 
 ## Known gaps
 

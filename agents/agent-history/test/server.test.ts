@@ -287,7 +287,7 @@ describe('manifest', () => {
     expect(m.gaps[1]).toMatch(/the asset name for a DID or asset name and the key hash for a key hash/);
     expect(m.gaps[1]).toMatch(/An entry that names an agent only by its controller key is not found for a DID or asset name/);
     expect(m.gaps[1]).toMatch(/Module-3 endorsements, are matched generically/);
-    expect(m.description).toBe("Everything the Vector ledger knows about one agent identifier, as one report per job, delivered with the runtime's signed receipt. Read-only; no model cost.");
+    expect(m.description).toBe("The registry, stake, marketplace and module records the Vector ledger holds for one agent identifier, with the gaps stated. One report per job, delivered with the runtime's signed receipt. Read-only; no model cost.");
     expect(m.gaps[0]).toMatch(/one per escrow UTxO version/);
     expect(m.gaps[0]).toMatch(/never as Accepted, Released or Reclaimed/);
     expect(m.gaps[0]).toMatch(/no outcome counts/);

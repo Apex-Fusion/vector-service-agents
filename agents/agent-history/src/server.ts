@@ -23,7 +23,7 @@ function statusChip(v: string | undefined): string {
 export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
   return {
     schema: 'vector.agent-manifest.v1', name: 'Agent History', capability_id: 'identity.history.report.v1', version: env.AGENT_VERSION ?? '0.1.0',
-    description: "Everything the Vector ledger knows about one agent identifier, as one report per job, delivered with the runtime's signed receipt. Read-only; no model cost.",
+    description: "The registry, stake, marketplace and module records the Vector ledger holds for one agent identifier, with the gaps stated. One report per job, delivered with the runtime's signed receipt. Read-only; no model cost.",
     operator: { name: 'Apex Fusion Foundation', contact: env.OPERATOR_CONTACT ?? 'filip.blagojevic@foundation.apexfusion.org' },
     identity: { did: env.AGENT_DID ?? '', controller_pkh: env.SUPPLIER_PKH ?? '', registry_address: REGISTRY_ADDRESS },
     keys: { supplier_pkh: env.SUPPLIER_PKH ?? '', pub_key_hex: env.SUPPLIER_PUB_KEY_HEX ?? '' },
