@@ -6,7 +6,7 @@
   "packageManager": "pnpm@10.33.2",
   "engines": { "node": ">=22" },
   "scripts": {
-    "test": "pnpm -r --if-present test && node --test scripts/no-secrets.test.mjs",
+    "test": "pnpm -r --if-present test && node --test scripts/no-secrets.test.mjs scripts/manifest-hash.test.mjs scripts/specs.test.mjs",
     "typecheck": "pnpm -r --if-present typecheck",
     "e2e": "node scripts/e2e-hire.mjs",
     "manifest-hash": "node scripts/manifest-hash.mjs"

@@ -189,6 +189,8 @@ Everything the ledger knows about one agent identifier, as one signed report. Re
 
 **Gaps stated in the spec file.** Module-3 and Module-6 datum layouts beyond the stake datum are read from the activity-api decoder and the module docs, not from a local clone of `vector-agent-modules`; the first live report against each module is checked by hand before the advert is posted.
 
+Field names are normative in specs/agent-history.md (written from the implementation).
+
 ### 7.3 Document Pipeline · `document.pipeline.ocr-summary.v1` · PROPOSED
 
 An orchestrator: it buys OCR per page from the live OCR agent and a summary or extraction from an LLM supplier, verifies each sub-receipt, and signs one receipt over the whole bundle. For the working group it demonstrates a delegation chain made visible by receipts, with accountability staying on the Pipeline's key; the parties it hires are independent agents, not sub-agents, by the group's own distinction.
