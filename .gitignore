@@ -1,0 +1,9 @@
+node_modules
+.env
+.env.*
+!.env.*.example
+dist
+build
+*.log
+vector-signer-audit-log.json
+e2e-state*.json*

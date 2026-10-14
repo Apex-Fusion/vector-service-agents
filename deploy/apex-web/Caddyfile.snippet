@@ -1,0 +1,14 @@
+# deploy/apex-web/Caddyfile.snippet - site block for the shared Caddy on apex-web (container umami-caddy-1, file /opt/umami/Caddyfile).
+# PROPOSED: not installed. The host administrator merges it and reloads Caddy (README.md). The hostname must be DNS only (grey cloud),
+# or Caddy cannot get its certificate. The block must stay the last thing in this file: the install script of the chandra stack
+# takes everything from the hostname line to the end.
+# The runtime does not serve /agent.json, and the advert's detail_uri points at it, so that one path goes to the service.
+# Everything else goes to the runtime.
+mp-suppliers-history.hal8.ai {
+    handle /agent.json {
+        reverse_proxy agent-history-service:9091
+    }
+    handle {
+        reverse_proxy agent-history-agent:8080
+    }
+}

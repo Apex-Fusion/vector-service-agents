@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Stand up the public `vector-service-agents` repo with a shared read-only chain library, the Agent History service running behind the template runtime, the four agent specs and manifests, the member guide, the first-party end-to-end script, and the apex-web deployment files David needs.
+**Goal:** Stand up the public `vector-service-agents` repo with a shared read-only chain library, the Agent History service running behind the template runtime, the four agent specs and manifests, the member guide, the first-party end-to-end script, and the apex-web deployment files the HAL8 lead builder needs.
 
 **Architecture:** A pnpm workspace. `packages/vector-read` holds Koios and indexer clients, datum decoders (vendored from Plan A's codecs, same golden tests) and a small `safeFetch`. `agents/agent-history` is a plain `node:http` service that the template runtime calls at `SERVICE_URL`: it parses the one-element message array, builds one JSON report from Koios, the indexer and the module addresses, and serves `GET /agent.json`. Deployment is two containers per agent on apex-web (runtime image built from the template at commit `c4c378a`, service image from this repo). Nothing in this repo holds a chain key.
 
@@ -19,7 +19,7 @@
 - Wire contract with the template runtime: the service receives `[{"content": "<string>", "role": "user"}]`, parses `JSON.parse(body)[0].content`, then parses that string as the request JSON; it returns the result JSON as the whole response body with `content-type: application/json`; HTTP 4xx for a bad request, 5xx for an internal failure (the runtime fails the job and the buyer reclaims).
 - Mainnet constants exactly as in the spec section 6. Koios v2 base `https://v2.koios.vector.mainnet.apexfusion.org/api/v1`; indexer `https://mp-indexer.vector.apexfusion.org`.
 - Outbound fetches from a service go through `safeFetch` (same rules as Plan A Task 7) with a 20 s budget and a 1 MB cap unless stated.
-- Commit after every green step. Branch `main` in `C:\Users\Filip\Documents\Claude\vector-service-agents` (already initialised with the spec). Create the GitHub repo in Task 1; push at the end of each task.
+- Commit after every green step. Branch `main` in `<workspace>\vector-service-agents` (already initialised with the spec). Create the GitHub repo in Task 1; push at the end of each task.
 
 ## Review Focus
 
@@ -177,7 +177,7 @@ jobs:
 - [ ] **Step 2: Install, run the secrets test, commit, create the GitHub repo**
 
 ```bash
-cd "C:/Users/Filip/Documents/Claude/vector-service-agents"
+cd "<workspace>/vector-service-agents"
 corepack enable && corepack prepare pnpm@10.33.2 --activate
 pnpm install
 node --test scripts/no-secrets.test.mjs
@@ -778,7 +778,7 @@ export function manifestFromEnv(env = process.env) {
   return {
     schema: 'vector.agent-manifest.v1', name: 'Agent History', capability_id: 'identity.history.report.v1', version: env.AGENT_VERSION ?? '0.1.0',
     description: 'Everything the Vector ledger knows about one agent identifier, as one signed report. Read-only; no model cost.',
-    operator: { name: 'Apex Fusion Foundation', contact: env.OPERATOR_CONTACT ?? 'filip.blagojevic@foundation.apexfusion.org' },
+    operator: { name: 'Apex Fusion Foundation', contact: env.OPERATOR_CONTACT },
     identity: { did: env.AGENT_DID ?? '', controller_pkh: env.SUPPLIER_PKH ?? '', registry_address: 'addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42' },
     keys: { supplier_pkh: env.SUPPLIER_PKH ?? '', pub_key_hex: env.SUPPLIER_PUB_KEY_HEX ?? '' },
     interface: { request_schema: { type: 'object', required: ['subject'], properties: { subject: { type: 'string', description: 'DID, registry asset name (64 hex) or key hash (56 hex)' }, include: { type: 'array', items: { enum: ['identity', 'marketplace', 'reputation', 'dispute', 'self_improvement'] } } } }, response_schema: { $ref: 'https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/agent-history.md#response' }, routes: { job: '/v1/job', status: '/status', capability: '/capability' } },
@@ -1127,9 +1127,9 @@ mp-suppliers-history.hal8.ai {
 ```
 Note in `README.md`: the service's `/agent.json` must also be reachable at the advert's `detail_uri`; the template runtime does not proxy it, so add a second Caddy route: `handle /agent.json { reverse_proxy agent-history-service:9091 }` inside the same site block, before the default `reverse_proxy`.
 
-- [ ] **Step 3: `deploy/apex-web/RUNBOOK.md`** (operator = Filip, DNS and Caddy = David): the ordered commands adapted from `chandra-supplier/ops/README.md`: generate the keypair on the box (`corepack pnpm --filter @marketplace/supplier exec tsx src/cli/gen-keypair.ts --network 1` inside the template checkout, or the compose `agent` image), fund 5 then 25 to 50 (two transfers), `docker compose -f docker-compose.agent-history.yml up -d service`, confirm `curl -s http://127.0.0.1:8083/healthz` after DNS, compute `ADVERT_DETAIL_HASH` with `node scripts/manifest-hash.mjs https://mp-suppliers-history.hal8.ai`, post the advert with the template's `tx:post-advert` (flags: `--capability-id identity.history.report.v1 --model agent-history-v1 --price-lovelace 1000000 --max-processing-ms 300000 --endpoint-url https://mp-suppliers-history.hal8.ai --detail-uri https://mp-suppliers-history.hal8.ai/agent.json --detail-hash <hash>`), write `ADVERT_REF` into the env file, restart `agent`, register the DID with `chandra-supplier/ops/register-did.sh` adapted to this agent's name, capabilities `["identity.history.report.v1"]`, framework `vector-service-agents`, endpoint `https://mp-suppliers-history.hal8.ai`, then `m3-self-stake.py` with the mainnet genesis patch, then write `AGENT_DID` into the env and restart `service`. End with the two gotchas copied verbatim from the chandra ops README (byte-preserving signer; testnet-pinned Module-3 SDK).
+- [ ] **Step 3: `deploy/apex-web/RUNBOOK.md`** (operator = the Foundation's ecosystem lead, DNS and Caddy = the HAL8 lead builder): the ordered commands adapted from `chandra-supplier/ops/README.md`: generate the keypair on the box (`corepack pnpm --filter @marketplace/supplier exec tsx src/cli/gen-keypair.ts --network 1` inside the template checkout, or the compose `agent` image), fund 5 then 25 to 50 (two transfers), `docker compose -f docker-compose.agent-history.yml up -d service`, confirm `curl -s http://127.0.0.1:8083/healthz` after DNS, compute `ADVERT_DETAIL_HASH` with `node scripts/manifest-hash.mjs https://mp-suppliers-history.hal8.ai`, post the advert with the template's `tx:post-advert` (flags: `--capability-id identity.history.report.v1 --model agent-history-v1 --price-lovelace 1000000 --max-processing-ms 300000 --endpoint-url https://mp-suppliers-history.hal8.ai --detail-uri https://mp-suppliers-history.hal8.ai/agent.json --detail-hash <hash>`), write `ADVERT_REF` into the env file, restart `agent`, register the DID with `chandra-supplier/ops/register-did.sh` adapted to this agent's name, capabilities `["identity.history.report.v1"]`, framework `vector-service-agents`, endpoint `https://mp-suppliers-history.hal8.ai`, then `m3-self-stake.py` with the mainnet genesis patch, then write `AGENT_DID` into the env and restart `service`. End with the two gotchas copied verbatim from the chandra ops README (byte-preserving signer; testnet-pinned Module-3 SDK).
 
-- [ ] **Step 4: `deploy/apex-web/README.md` for David**: what to pull (image tag), the two DNS names needed now (`mp-suppliers-history.hal8.ai`) and later (`pipeline`, `snippets`, `advocate`), the Caddy block, the ports used (8083 loopback), and the rollback (`docker compose down`, retire the advert with `tx:retire-advert`).
+- [ ] **Step 4: `deploy/apex-web/README.md` for the HAL8 lead builder**: what to pull (image tag), the two DNS names needed now (`mp-suppliers-history.hal8.ai`) and later (`pipeline`, `snippets`, `advocate`), the Caddy block, the ports used (8083 loopback), and the rollback (`docker compose down`, retire the advert with `tx:retire-advert`).
 
 - [ ] **Step 5: CI image publish job**
 
@@ -1144,21 +1144,21 @@ git add -A && git commit -m "deploy: agent-history image, apex-web compose, env 
 ### Task 8: Comms drafts and log entry (outside the public repo)
 
 **Files:**
-- Create: `C:\Users\Filip\Documents\Claude\AAIF\comms\2026-10-13-david-marketplace-mcp-note-v0.1.md`, `C:\Users\Filip\Documents\Claude\AAIF\comms\2026-10-13-discord-internal-service-agents-v0.1.md`
-- Modify: `C:\Users\Filip\Documents\Claude\AAIF\LOG.md` (append entry 025)
+- Create: `<workspace>\AAIF\comms\2026-10-13-lead-builder-marketplace-mcp-note-v0.1.md`, `<workspace>\AAIF\comms\2026-10-13-discord-internal-service-agents-v0.1.md`
+- Modify: `<workspace>\AAIF\LOG.md` (append entry 025)
 
-- [ ] **Step 1: David note** (Filip's voice, short): what we're building (marketplace tools on the hosted keyless server, four PRs; the service-agents repo; apex-web hosting), the overlap with his gateway `/mcp` for Paper2Agent and why both can exist (custodial convenience vs identity-grade keyless), what we need from him (review the PRs, dispatch the mainnet deploy, one DNS name and Caddy block now, the npm scope question), and the two questions (producer count and admission rules for the WG answer; the `/v1/responses` route).
+- [ ] **Step 1: Note to the HAL8 lead builder** (the Foundation's ecosystem lead's voice, short): what we're building (marketplace tools on the hosted keyless server, four PRs; the service-agents repo; apex-web hosting), the overlap with the HAL8 lead builder's gateway `/mcp` for Paper2Agent and why both can exist (custodial convenience vs identity-grade keyless), what we need from the HAL8 lead builder (review the PRs, dispatch the mainnet deploy, one DNS name and Caddy block now, the npm scope question), and the two questions (producer count and admission rules for the WG answer; the `/v1/responses` route).
 
-- [ ] **Step 2: Internal Discord post** (after the first first-party hire): the receipt, the escrow ref, the two explorer links, one line on what Agent History returns, the `HIRE.md` link, "first-party, labelled as such", and the ask to Chris for sign-off on the public wording.
+- [ ] **Step 2: Internal Discord post** (after the first first-party hire): the receipt, the escrow ref, the two explorer links, one line on what Agent History returns, the `HIRE.md` link, "first-party, labelled as such", and the ask to the Foundation CEO for sign-off on the public wording.
 
-- [ ] **Step 3: LOG entry 025**: the plan files, what was built today, what is pending on Filip (funds, Brave key later, npm scope) and David (review, deploy, DNS).
+- [ ] **Step 3: LOG entry 025**: the plan files, what was built today, what is pending on the Foundation's ecosystem lead (funds, Brave key later, npm scope) and the HAL8 lead builder (review, deploy, DNS).
 
 ---
 
 ## Self-review notes
 
 - Spec coverage: §3 repo layout → Task 1; §4 and §7.1 runtime contract → Tasks 4 and 7; §7.2 Agent History → Tasks 3 and 4; §8 specs and manifests → Task 5; §9 guide → Task 6; §10 tests → every task; §11 steps 2, 4 and 5 → Tasks 6, 7, 8.
-- **Deviation from spec §7.2, flagged for Filip:** escrow outcomes read "from the redeemer" need the spending transaction of each escrow, and this Koios instance's `tx_info` returns `plutus_contracts: []` and has no spent-by lookup, so v1 reports the indexer's state plus Koios spent flags for the latest 50 escrows per side, and says so in `outcome_verification` and `blind_spots`. A redeemer-based classifier needs a local cache fed from the escrow address history; it is a follow-up task, not silently dropped.
+- **Deviation from spec §7.2, flagged for the Foundation's ecosystem lead:** escrow outcomes read "from the redeemer" need the spending transaction of each escrow, and this Koios instance's `tx_info` returns `plutus_contracts: []` and has no spent-by lookup, so v1 reports the indexer's state plus Koios spent flags for the latest 50 escrows per side, and says so in `outcome_verification` and `blind_spots`. A redeemer-based classifier needs a local cache fed from the escrow address history; it is a follow-up task, not silently dropped.
 - Deviation from spec §7.2 "key_roles.receipt_signer_match": receipts are not persisted anywhere public, so the check is `capability_key_matches_controller` (the supplier's served public key hashes to the controller key). Same intent, verifiable today.
 - Review Focus 1 to 5 are pinned in Task 4 (`server.test.ts` unknown subject, `report.test.ts` failing section, `server.test.ts` 400), Task 3 (`subject.test.ts` candidates, `identity.test.ts` deregistration), Task 4 (`request.test.ts` size and subject).
 - Plan C (Pipeline, Snippets, Advocate) starts from this repo and `packages/vector-read`; the Pipeline's signing buyer package (`packages/buyer-core`) is created there, vendoring Plan A's builders.

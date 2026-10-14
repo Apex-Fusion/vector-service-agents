@@ -1,6 +1,6 @@
 # Vector service agents: design spec
 
-**Date:** 2026-10-13 · **Status:** approved in conversation, awaiting written review · **Owners:** Filip Blagojević (design, funding, sends), Claude (code, docs), David Cejtlin (review, deploy, hosting)
+**Date:** 2026-10-13 · **Status:** approved in conversation, awaiting written review · **Owners:** the Foundation's ecosystem lead (design, funding, sends), Claude (code, docs), the HAL8 lead builder (review, deploy, hosting)
 
 ## 1. Purpose and success
 
@@ -16,7 +16,7 @@ Four service agents run on the Vector marketplace, hireable by anyone, with a gu
 
 - Nine marketplace tools on the hosted keyless MCP server, in three PRs, plus a fourth PR that makes the local signer installable with `npx`.
 - Four agents: Agent History, Document Pipeline, Audio Snippets, Advocate. Each ships as a spec, a manifest, a service, a compose file for apex-web, and a registry identity with a Module-3 self-stake.
-- The member guide `docs/HIRE.md`, the per-agent specs, the note to David, the internal Discord post.
+- The member guide `docs/HIRE.md`, the per-agent specs, the note to the HAL8 lead builder, the internal Discord post.
 
 **Out of scope for this spec** (named so nobody waits for them): reputation and dispute tools on the MCP server (next slice); a supplier-side "post advert" tool; the docs-site page (after the first outside receipt); direct hire of the OCR agent by outsiders (Datalab terms); a Judge agent that hires two Advocates; Meeting Minutes; any change to the escrow contract.
 
@@ -24,11 +24,11 @@ Four service agents run on the Vector marketplace, hireable by anyone, with a gu
 
 | Piece | Repo | Owner | Reviewer |
 |---|---|---|---|
-| Marketplace tools, PRs 1 to 3, signer PR 4 | `Apex-Fusion/mcp-server` (Apache-2.0) | Filip + Claude | David |
-| Agents, manifests, specs, guide, compose files | new `Apex-Fusion/vector-service-agents` (MIT) | Filip + Claude build, David hosts | David |
-| Public wording (guide, Discord, WG issue) | same repo | Claude drafts, Filip sends | Chris signs off |
+| Marketplace tools, PRs 1 to 3, signer PR 4 | `Apex-Fusion/mcp-server` (Apache-2.0) | the Foundation's ecosystem lead + Claude | the HAL8 lead builder |
+| Agents, manifests, specs, guide, compose files | new `Apex-Fusion/vector-service-agents` (MIT) | the Foundation's ecosystem lead + Claude build, the HAL8 lead builder hosts | the HAL8 lead builder |
+| Public wording (guide, Discord, WG issue) | same repo | Claude drafts, the Foundation's ecosystem lead sends | the Foundation CEO signs off |
 
-Local project folder: `C:\Users\Filip\Documents\Claude\vector-service-agents` (this spec lives in it).
+Local project folder: `<workspace>\vector-service-agents` (this spec lives in it).
 
 **Repo layout of `vector-service-agents`**
 
@@ -145,19 +145,19 @@ The cross-module key is the registry asset name (Modules 1, 3, 6 store it in the
 
 ### 7.1 Common runtime
 
-- Template runtime at the pinned commit `c4c378a` (`vector-agent-template`, MIT, mainnet-proven 2026-08-19), `CAPABILITY_KIND=custom`, `SERVICE_URL=http://service:9091`, `SERVICE_CONTENT_TYPE=application/json`.
+- Template runtime at the pinned commit `c4c378a` (`vector-agent-template`, MIT, mainnet-proven 2026-08-19), `CAPABILITY_KIND=custom`, `SERVICE_URL=http://agent-history-service:9091/` (shown for Agent History: the service's container name, because the alias `service` is shared by every agent on `umami_default`; the path `/` is the only one the service accepts POST on), `SERVICE_CONTENT_TYPE=application/json`.
 - **Wire contract.** The runtime POSTs the canonical one-element message array to the service: `[{"content": "<payload string>", "role": "user"}]`. Every service parses `JSON.parse(body)[0].content` and then parses that string as JSON. The service's response body becomes the output payload; the runtime hashes it into `response_hash`, signs the eight-field receipt and submits the hash.
 - **Timing.** `SERVICE_TIMEOUT_MS <= ADVERT_MAX_PROCESSING_MS - 60 000`; the runtime also keeps 30 s to land the Submit. Values per agent below.
-- **Inputs by URL.** Chat clients cannot carry media in a tool call and the hosted server caps requests at 1 MB, so media inputs are an https URL; base64 is accepted under 1 MB. Each service fetches through its own `safeFetch` (same rules as the server's, larger size caps as stated per agent) and writes `source.sha256` and `source.bytes` into its output, so the signed receipt still commits to the exact media.
-- **Keys.** The runtime holds the supplier key (`SUPPLIER_PRIV_KEY_HEX`). Services hold no chain keys, with one exception: the Pipeline's buyer key (7.3). Keys are generated on the box by `ops/provision-env.sh`; nobody pastes keys into chat.
-- **Identity.** Each agent registers a DID (`register-did.sh`, byte-preserving `sign-tx.py`) with name, description, capabilities equal to its capability id, framework `vector-service-agents`, endpoint = its service URL; then self-stakes 10 in Module-3 on that capability (`m3-self-stake.py`, mainnet genesis patched). Staked capabilities must be a subset of registry capabilities.
+- **Inputs by URL.** Chat clients cannot carry media in a tool call and the hosted server caps requests at 1 MB, so media inputs are an https URL; base64 is accepted under 600,000 bytes of raw media. The wire payload is capped at 900,000 bytes: the runtime's `/v1/job` takes 1 MB of JSON that holds it escaped, and the template's buyer refuses a larger one. Base64 adds a third, so 600,000 raw bytes become 800,000 characters and leave 100,000 bytes for the rest of the request. Each service fetches through its own `safeFetch` (same rules as the server's, larger size caps as stated per agent) and writes `source.sha256` and `source.bytes` into its output, so the signed receipt still commits to the exact media.
+- **Keys.** The runtime holds the supplier key (`SUPPLIER_PRIV_KEY_HEX`). Services hold no chain keys, with one exception: the Pipeline's buyer key (7.3). Keys are generated on the box by the runtime image's `gen-keypair`, straight into the env file (`deploy/apex-web/RUNBOOK.md`, step 4); nobody pastes keys into chat.
+- **Identity.** Each agent registers a DID (`register-did.sh`, byte-preserving `sign-tx.py`) with name, description, capabilities equal to its capability id, framework `vector-service-agents`, endpoint = its public URL (the advert's `endpoint_url`); then self-stakes 10 in Module-3 on that capability (`m3-self-stake.py`, mainnet genesis patched). Staked capabilities must be a subset of registry capabilities.
 - **Wallets.** One pure collateral output of 5 plus a float: 25 to 50 for History, Snippets and Advocate; 100 for the Pipeline. `wallet-monitor` gets each address.
 - **Manifest.** Each service serves `GET /agent.json` (section 8). The advert's `detail_uri` points at it and `detail_hash` is the sha256 of the bytes at post time. Adverts are immutable; a changed manifest means a retired advert and a new one.
 - **Containers.** Two per agent on `umami_default`: `agent` (runtime image built from the template at the pinned commit) and `service` (image from this repo, `ghcr.io/apex-fusion/vector-service-agents/<agent>`), loopback-published for drills, public through Caddy. Hostnames: `mp-suppliers-history.hal8.ai`, `mp-suppliers-pipeline.hal8.ai`, `mp-suppliers-snippets.hal8.ai`, `mp-suppliers-advocate.hal8.ai`.
 
 ### 7.2 Agent History · `identity.history.report.v1` · PROPOSED
 
-Everything the ledger knows about one agent identifier, as one signed report. Read-only, no model cost.
+The registry, stake, marketplace and module records the Vector ledger holds for one agent identifier, with the gaps stated. One report per job, delivered with the runtime's signed receipt. Read-only, no model cost.
 
 **Request** (JSON in the message content)
 
@@ -174,7 +174,7 @@ Everything the ledger knows about one agent identifier, as one signed report. Re
 |---|---|---|
 | `subject` | resolved did, asset name, controller pkh, registry address | Koios `asset_utxos`, `utxo_info` |
 | `as_of` | block, slot, time | Koios `tip` |
-| `identity` | `registered {tx, block, time, seed}`; `record {name, description, capabilities, framework, endpoint, registered_at}`; `updates[] {tx, block, time, kind: update \| controller_rotation, from_pkh, to_pkh}` (a rotation is a change of datum field 0 between the spent and the new UTxO); `deregistered {tx, block, time}` or null (burn with no continuing output) | Koios `asset_history`, `asset_txs`, `tx_info` |
+| `identity` | `registered {tx, block, time}`; `record {name, description, capabilities, framework, endpoint, registered_at}`; `updates[] {tx, block, time, kind: update \| controller_rotation, from_pkh, to_pkh}` (a rotation is a change of datum field 0 between the spent and the new UTxO); `deregistered {tx, block, time}` or null (burn with no continuing output) | Koios `asset_history`, `asset_txs`, `tx_info` |
 | `marketplace.as_supplier` / `as_buyer` | `adverts[] {advert_ref, capability_id, model, price, status, advertised_at}`; `escrows {counts_by_outcome {open, claimed, submitted, accepted, released, reclaimed}, first, last}`. Outcome comes from the redeemer of the final spend (`tx_info` → `plutus_contracts[].input.redeemer`): Constr 2 accepted, 3 reclaimed, 4 released. This is more than the indexer does today (it reports every terminal spend as Accept) | indexer `/suppliers/:pkh`, `/escrows?supplier=`, `/escrows?buyer=`; Koios `tx_info` |
 | `reputation` | `stakes[] {utxo, stake_amount, capabilities, last_updated, history_points}`, `endorsements_received[]`, `endorsements_given[]` | Koios `address_utxos` on the two Module-3 addresses, filtered by asset name in datum field 0 |
 | `dispute` | `claims[]`, `challenges[]`, `juror` or null | Module-1 addresses (v14 and v15-sim), same filter |
@@ -183,11 +183,13 @@ Everything the ledger knows about one agent identifier, as one signed report. Re
 | `sources` | every URL queried | |
 | `blind_spots` | fixed list: receipts name keys not DIDs; module links to escrows are by key hash; dispute module is not wired to the escrow; indexer outcome labels are not used | |
 
-**Terms.** Price 1; bonds 1 and 1; `ADVERT_MAX_PROCESSING_MS` 300 000; `SERVICE_TIMEOUT_MS` 180 000. In-memory cache of Koios responses, 60 s TTL. Model string in the advert and receipt: `agent-history-v1`.
+**Terms.** Price 1; bonds 1 and 1; `ADVERT_MAX_PROCESSING_MS` 300 000; `SERVICE_TIMEOUT_MS` 180 000. In-memory cache of reports (60 s per subject). Model string in the advert and receipt: `agent-history-v1`.
 
 **Tests.** Golden fixtures recorded from Koios for ChandraOCR (registration at block 7,275,113, the Module-3 stake `05563e75…#0`, the 12 August job `1f1566b4…`), replayed offline; the report for that subject is asserted field by field, including `counts_by_outcome.accepted >= 1` and `receipt_signer_match: true`.
 
 **Gaps stated in the spec file.** Module-3 and Module-6 datum layouts beyond the stake datum are read from the activity-api decoder and the module docs, not from a local clone of `vector-agent-modules`; the first live report against each module is checked by hand before the advert is posted.
+
+Field names are normative in specs/agent-history.md (written from the implementation).
 
 ### 7.3 Document Pipeline · `document.pipeline.ocr-summary.v1` · PROPOSED
 
@@ -215,7 +217,7 @@ Limits: fetched source ≤ 20 MB; `max_pages` ≤ 5 in v1; PDF pages are rendere
   "accounting": { "sub_jobs": 6, "locked_total_lovelace", "fees_total_lovelace" } }
 ```
 
-**How it buys.** The service holds its own buyer key (`PIPELINE_BUYER_PRIV_KEY_HEX`, Foundation-funded, separate from the supplier key so Claims and Posts never contend for the same UTxOs). Per page: Post an escrow to the OCR advert (`10c6108590c1daa54c042176fcf08393c640c0746892e473a4a65f96ad85c546#0`), `POST /v1/ocr/extract` with `X-Escrow-Ref`, poll, verify, Accept. Then one `llm.text.generate.v1` job on the cheapest free supplier whose model is in an allowlist (`deepseek/deepseek-v4-flash` first; the `gpt-*` advert is excluded because its backend is a subscription proxy), with the page texts and the task; verify; Accept. Sub-hire code lives in `packages/buyer-core` in this repo: the same datum codecs, builders and verifier as PR 2 and PR 3, vendored with a `VENDORED-FROM.md` that names the mcp-server commit, and the same golden datum test runs in both repos so drift is caught, not assumed. The OCR hop is first-party (buyer and supplier both Foundation-operated), which keeps the Datalab terms. Both of the Pipeline's keys are published in `agent.json` under `keys`.
+**How it buys.** The service holds its own buyer key (`PIPELINE_BUYER_PRIV_KEY_HEX`, Foundation-funded, separate from the supplier key so Claims and Posts never contend for the same UTxOs). Per page: Post an escrow to the OCR advert (`87c46c30026b438ef0aaedcf3c656743b32dd68ce69e36d11f1e2d2b91659e5d#0`), `POST /v1/ocr/extract` with `X-Escrow-Ref`, poll, verify, Accept. The Pipeline's OCR hop hires only the allowlisted first-party OCR advert. Then one `llm.text.generate.v1` job on the cheapest free supplier whose model is in an allowlist (`deepseek/deepseek-v4-flash` first), with the page texts and the task; verify; Accept. Sub-hire code lives in `packages/buyer-core` in this repo: the same datum codecs, builders and verifier as PR 2 and PR 3, vendored with a `VENDORED-FROM.md` that names the mcp-server commit, and the same golden datum test runs in both repos so drift is caught, not assumed. The OCR hop is first-party (the Pipeline's buyer key Foundation-operated, the OCR agent's supplier key HAL8-operated), which keeps the Datalab terms. Both of the Pipeline's keys are published in `agent.json` under `keys`.
 
 **Terms.** Price 5; bonds 1 and 1; `ADVERT_MAX_PROCESSING_MS` 1 800 000 (30 min, sequential pages at the OCR advert's 300 s SLA); `SERVICE_TIMEOUT_MS` 1 680 000. Model string `document-pipeline-v1`. Economics stated plainly in the spec file: at five pages the Pipeline spends about 19 in locks and fees to earn 5; the Foundation subsidises this on purpose while the fee floor stands.
 
@@ -302,7 +304,7 @@ Order of the document, as the member will do it:
 
 1. **What you'll end up with:** a receipt JSON, its signature, an escrow reference, two explorer links, and the one command anyone can run to verify it.
 2. **Get a key:** `npx -y @apexfusion/vector-mcp-signer keygen` (until PR 4 lands: clone `mcp-server`, `npm ci && npm run build`, run the signer from `packages/signer`). Send us the address only.
-3. **We fund it.** The Foundation funds working-group experiments: a 5 collateral output and a float of 50. Fees and bonds are paid in the ledger's native unit, AP3X; the name appears once, here. What one job does: locks price plus two bonds of 1 (returned on accept), burns about 1 in fees across Post and Accept. A float of 50 is roughly ten to twenty jobs depending on the agent.
+3. **We fund it.** The Foundation funds working-group experiments: a 5 collateral output and a float of 50. Fees and bonds are paid in the ledger's native unit, AP3X; the name appears once, here. What one job does: locks price plus two bonds of 1. On accept the supplier receives the price and the supplier bond, your bond of 1 returns to you, and about 1 burns in fees across Post and Accept, so an accepted job costs you the price plus 1 plus about 1. A float of 50 is roughly seven to sixteen accepted jobs depending on the agent.
 4. **Two lines of config:** the hosted server URL (already listed in the MCP Registry as `io.github.Apex-Fusion/vector`) and the local signer with its caps (100 per transaction, 500 per day by default).
 5. **The chat script,** verbatim: list capabilities; show suppliers for `identity.history.report.v1`; hire that one with this payload; when the receipt verifies, accept. The assistant makes about a dozen tool calls; the member reads three results.
 6. **Read your receipt:** the eight fields, what each hash is, and `vector_marketplace_verify_receipt` as the offline check anyone can repeat.
@@ -327,10 +329,10 @@ Tests are written before the code they test, per the repos' existing practice.
 
 1. Spec approved in writing → implementation plan (writing-plans) → work in git worktrees, one branch per PR.
 2. **PR 1** opened; **PR 2** branch with the golden datum test passing; **Agent History** service running locally against Koios. (Today.)
-3. Filip funds: our test buyer key; four agent wallets (collateral plus float). Filip executes every transfer; Claude never sees a key.
-4. Note to David goes out first (section 12), naming the gateway `/mcp` overlap. David reviews PRs 1 to 4, dispatches the mainnet deploy (`deploy-mainnet.yml`, manual), adds four DNS names and Caddy blocks, pulls the images.
+3. The Foundation's ecosystem lead funds: our test buyer key; four agent wallets (collateral plus float). The Foundation's ecosystem lead executes every transfer; Claude never sees a key.
+4. The note to the HAL8 lead builder goes out first (section 12), naming the gateway `/mcp` overlap. The HAL8 lead builder reviews PRs 1 to 4, dispatches the mainnet deploy (`deploy-mainnet.yml`, manual), adds four DNS names and Caddy blocks, pulls the images.
 5. Agents register DIDs and self-stake via the existing ops scripts; adverts posted with `detail_uri` set; manifests frozen.
-6. Our own first-party hire of Agent History through the deployed server succeeds → the receipt and the guide draft go to internal Discord → Chris signs off → issue in `aaif/wg-identity-and-trust` → one member (Sal Kimmich first) walks the guide with us on a call → first outside receipt → docs-site page.
+6. Our own first-party hire of Agent History through the deployed server succeeds → the receipt and the guide draft go to internal Discord → the Foundation CEO signs off → issue in `aaif/wg-identity-and-trust` → one member (a working-group ally first) walks the guide with us on a call → first outside receipt → docs-site page.
 
 ## 12. Decisions made in this design session
 
@@ -339,35 +341,35 @@ Tests are written before the code they test, per the repos' existing practice.
 | Success criterion | a person we do not control hires an agent and holds the receipt |
 | First hirer | a WG member, by hand, from a chat client |
 | Funding | Foundation-funded key the member holds; their key is the buyer |
-| Channel | extend the hosted keyless MCP server; local signer signs; several PRs, David approves |
+| Channel | extend the hosted keyless MCP server; local signer signs; several PRs, the HAL8 lead builder approves |
 | Agents | Agent History, Document Pipeline, Audio Snippets, Advocate; ChandraOCR out of scope as a direct hire, used inside the Pipeline |
 | Prices | 1 / 5 / 2 / 3; bonds 1 and 1 everywhere |
-| Hosting | apex-web, chandra-supplier pattern, David hosts |
-| Media inputs | https URL, base64 under 1 MB, source hash in the output |
-| Publication | internal Discord → Chris → WG GitHub issue → docs site after the first outside receipt |
+| Hosting | apex-web, chandra-supplier pattern, the HAL8 lead builder hosts |
+| Media inputs | https URL, base64 under 600,000 bytes of raw media (wire payload capped at 900,000 bytes), source hash in the output |
+| Publication | internal Discord → the Foundation CEO → WG GitHub issue → docs site after the first outside receipt |
 | Unit name | once in the guide, "unit" elsewhere |
 
 **Open items that need a human**
 
 | Item | Who |
 |---|---|
-| Fund the test buyer key and four agent wallets | Filip |
-| Brave Search API key for Advocate; confirm OpenRouter key reuse | Filip |
-| `@apexfusion` npm scope ownership for the signer publish | Filip or David |
-| apex-web CPU and memory check for whisper model size | David (or Filip over SSH) |
-| DNS names, Caddy blocks, mainnet deploy dispatch | David |
-| Alignment on the gateway `/mcp` overlap | Filip sends the note, David answers |
-| Sign-off on public wording | Chris |
+| Fund the test buyer key and four agent wallets | the Foundation's ecosystem lead |
+| Brave Search API key for Advocate; confirm OpenRouter key reuse | the Foundation's ecosystem lead |
+| `@apexfusion` npm scope ownership for the signer publish | the Foundation's ecosystem lead or the HAL8 lead builder |
+| apex-web CPU and memory check for whisper model size | the HAL8 lead builder (or the Foundation's ecosystem lead over SSH) |
+| DNS names, Caddy blocks, mainnet deploy dispatch | the HAL8 lead builder |
+| Alignment on the gateway `/mcp` overlap | the Foundation's ecosystem lead sends the note, the HAL8 lead builder answers |
+| Sign-off on public wording | the Foundation CEO |
 
 ## 13. Risks
 
 | Risk | Answer in this design |
 |---|---|
-| Two marketplace-over-MCP efforts (David's gateway `/mcp`, this) | Note to David first; the two are complementary (custodial convenience vs identity-grade keyless) and share no code paths |
+| Two marketplace-over-MCP efforts (the HAL8 lead builder's gateway `/mcp`, this) | Note to the HAL8 lead builder first; the two are complementary (custodial convenience vs identity-grade keyless) and share no code paths |
 | SSRF through on-chain `endpoint_url` and `detail_uri` | `safeFetch` rules, applied on the server and inside every service |
 | Fee floor makes every job cost about 1 in fees plus the lock | Stated in the guide; Foundation funds; the Pipeline's subsidy named in its spec |
 | Whisper on an unmeasured CPU box | model size decided after the check; 10-minute input cap; long SLA |
 | Fleet route changed upstream (`/v1/responses`) | route table read from origin/main at port time and pinned in a test |
 | Member strands funds on a supplier that never claims | `vector_build_marketplace_reclaim` ships in PR 2, before any outsider is invited |
 | Snapshot test blocks PRs | regen script fixed in PR 1; count derived |
-| Public wording drifts from canon | Chris sign-off gate; status chips on every surface |
+| Public wording drifts from canon | the Foundation CEO sign-off gate; status chips on every surface |

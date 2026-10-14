@@ -1,0 +1,85 @@
+{
+  "schema": "vector.agent-manifest.v1",
+  "name": "Agent History",
+  "capability_id": "identity.history.report.v1",
+  "version": "0.1.0",
+  "description": "The registry, stake, marketplace and module records the Vector ledger holds for one agent identifier, with the gaps stated. One report per job, delivered with the runtime's signed receipt. Read-only; no model cost.",
+  "operator": {
+    "name": "Apex Fusion Foundation",
+    "contact": "<OPERATOR_CONTACT>"
+  },
+  "identity": {
+    "did": "<AGENT_DID>",
+    "controller_pkh": "<SUPPLIER_PKH>",
+    "registry_address": "addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42"
+  },
+  "keys": {
+    "supplier_pkh": "<SUPPLIER_PKH>",
+    "pub_key_hex": "<SUPPLIER_PUB_KEY_HEX>"
+  },
+  "interface": {
+    "request_schema": {
+      "type": "object",
+      "required": [
+        "subject"
+      ],
+      "properties": {
+        "subject": {
+          "type": "string",
+          "description": "DID, registry asset name (64 hex) or key hash (56 hex)"
+        },
+        "include": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "identity",
+              "marketplace",
+              "reputation",
+              "dispute",
+              "self_improvement"
+            ]
+          }
+        }
+      }
+    },
+    "response_schema": {
+      "$ref": "https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/agent-history.md#response"
+    },
+    "routes": {
+      "job": "/v1/job",
+      "status": "/status",
+      "capability": "/capability"
+    }
+  },
+  "terms": {
+    "price_lovelace": 1000000,
+    "supplier_bond_lovelace": 1000000,
+    "buyer_bond_lovelace": 1000000,
+    "max_processing_ms": 300000,
+    "input_limits": {
+      "request_bytes": 65536
+    }
+  },
+  "behaviour": {
+    "data_handling": "Reads public ledger data only; the request subject is held in memory, and a report is served from cache for at most 60 s (expired entries are purged lazily).",
+    "third_parties": [
+      "Koios (Vector mainnet indexer)",
+      "marketplace indexer",
+      "the subject agent's own endpoint (one GET /capability, 64 KiB cap, 20 s budget)"
+    ]
+  },
+  "status": {
+    "chip": "proposed",
+    "since": "2026-10-13"
+  },
+  "gaps": [
+    "Escrow rows come from the marketplace indexer, one per escrow UTxO version: a job appears once for each state it reached (Open, Claimed, Submitted), so up to three times, and never as Accepted, Released or Reclaimed. The report gives by_indexer_state counts and, for the latest 50 rows per side, how many are spent on the ledger (latest_checked, latest_spent). It gives no outcome counts: Accept, Release and Reclaim are not told apart.",
+    "The dispute module is deployed but not wired to the escrow contract; dispute entries, if any, are matched without a verified schema. Module-1 and Module-6 datums, and Module-3 endorsements, are matched generically: a datum is attributed to the subject when one of its bytes fields (top level or one constructor deep) equals the identifier the subject was given as, the asset name for a DID or asset name and the key hash for a key hash. An entry that names an agent only by its controller key is not found for a DID or asset name, and an entry that names only an asset name is not found for a key hash. Their full layouts are not decoded.",
+    "The reputation, dispute and self_improvement sections list the unspent outputs at the module addresses as they are now. A withdrawn stake, a closed claim or a spent proposal no longer appears, and the report does not say that it ever existed."
+  ],
+  "links": {
+    "spec": "https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/agent-history.md",
+    "source": "https://github.com/Apex-Fusion/vector-service-agents/tree/main/agents/agent-history",
+    "explorer_advert": ""
+  }
+}

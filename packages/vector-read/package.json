@@ -1,0 +1,7 @@
+{
+  "name": "@vsa/vector-read", "version": "0.1.0", "private": true, "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit" },
+  "dependencies": { "@lucid-evolution/lucid": "^0.4.29", "@noble/hashes": "^1.7.1" },
+  "devDependencies": { "vitest": "^3.2.4", "typescript": "^5.7.3", "@types/node": "^22.13.1" }
+}
