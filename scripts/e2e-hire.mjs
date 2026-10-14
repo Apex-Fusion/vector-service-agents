@@ -170,7 +170,7 @@ function postedEscrowNote() {
   const post = state.post;
   if (!post?.escrow_ref) return '';
   if (!post.confirmed) {
-    return ` An earlier run signed escrow ${post.escrow_ref} in transaction ${post.tx_hash} and never recorded that it was confirmed, so that escrow may not be on the ledger, and nothing was sent to the supplier. Do not reclaim it or move ${STATE_PATH} away yet: look the transaction up on the explorer and follow the row "the same transaction is reported as not confirmed on every rerun" in docs/E2E.md ("If a run stops").`;
+    return ` An earlier run signed escrow ${post.escrow_ref} in transaction ${post.tx_hash} and never recorded that it was confirmed, so that escrow may not be on the ledger, and nothing was sent to the supplier. Look the transaction up on the explorer. If it is there, the escrow is Open: reclaim it with vector_build_marketplace_reclaim after deliver_by (${deliverByOf(post)}), then move ${STATE_PATH} away and start a new run. If it is not there, follow the row "is not among the free suppliers" in docs/E2E.md ("If a run stops"). While the advert is not free, running the script again stops at the same check.`;
   }
   return ` An earlier run already posted escrow ${post.escrow_ref} and sent nothing to the supplier, so that escrow is still Open. Reclaim it with vector_build_marketplace_reclaim after deliver_by (${deliverByOf(post)}), then move ${STATE_PATH} away and start a new run (docs/E2E.md, "If a run stops").`;
 }

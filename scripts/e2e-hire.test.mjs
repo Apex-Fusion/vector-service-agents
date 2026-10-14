@@ -446,7 +446,7 @@ test('a send that the tool reports as failed leaves no marker; the free list is 
   assert.equal(builder.names().includes('vector_build_marketplace_post_escrow'), false);
 });
 
-test('a post whose confirmation was never recorded is not called Open: the stop points to the "not confirmed on every rerun" row of docs/E2E.md', async () => {
+test('a post whose confirmation was never recorded is not called Open: the stop says what to do if the transaction is on the explorer and points to the "is not among the free suppliers" row of docs/E2E.md', async () => {
   const builder = await fakeBuilder({ notConfirmed: [TX.post] });
   const t = setup();
   const first = await run(t.env(builder));
@@ -462,7 +462,11 @@ test('a post whose confirmation was never recorded is not called Open: the stop 
   assert.ok(refused.stderr.includes(`An earlier run signed escrow ${ESCROW_REF} in transaction ${TX.post} and never recorded that it was confirmed`), 'names the escrow and its transaction');
   assert.ok(refused.stderr.includes('so that escrow may not be on the ledger, and nothing was sent to the supplier'));
   assert.doesNotMatch(refused.stderr, /still Open|already posted/, 'an escrow that may not exist is not called Open');
-  assert.ok(refused.stderr.includes('follow the row "the same transaction is reported as not confirmed on every rerun" in docs/E2E.md ("If a run stops")'), 'the row to follow');
+  const when = new Date(Number(t.state().post.deliver_by)).toISOString();
+  assert.ok(refused.stderr.includes(`Look the transaction up on the explorer. If it is there, the escrow is Open: reclaim it with vector_build_marketplace_reclaim after deliver_by (${when}), then move ${t.files.state} away and start a new run.`), 'the way out when the transaction is on the explorer');
+  assert.ok(refused.stderr.includes('If it is not there, follow the row "is not among the free suppliers" in docs/E2E.md ("If a run stops").'), 'the row whose way out applies');
+  assert.ok(refused.stderr.includes('While the advert is not free, running the script again stops at the same check.'));
+  assert.doesNotMatch(refused.stderr, /not confirmed on every rerun/, 'not the row that says to run the script again');
   assert.deepEqual(builder.names(), ['vector_marketplace_list_suppliers']);
 });
 

@@ -503,7 +503,9 @@ test('RUNBOOK: the key is never sent anywhere, the registry login block is bash,
   assert.match(section(runbook, '2. Log in to the registry and get the service image'), /```bash\nread -rs GHCR_TOKEN/);
   assert.match(section(runbook, '11. Hash the manifest'), /```sh\ncd \/opt\/agent-history\/repo\nnode scripts\/manifest-hash\.mjs /);
   const s15 = section(runbook, '15. The first-party run');
-  assert.ok(s15.includes('As of 2026-10-14 the nine marketplace tools the script needs are merged into `main` of Apex-Fusion/mcp-server (PR 1 as [#20](https://github.com/Apex-Fusion/mcp-server/pull/20), PR 2 as [#21](https://github.com/Apex-Fusion/mcp-server/pull/21), PR 3 as [#23](https://github.com/Apex-Fusion/mcp-server/pull/23) with PR 2, and PR 4 as [#22](https://github.com/Apex-Fusion/mcp-server/pull/22)), awaiting the mainnet cutover.'));
+  assert.ok(s15.includes('As of 2026-10-14 the nine marketplace tools the script needs are merged into `main` of Apex-Fusion/mcp-server (PR 1 as [#20](https://github.com/Apex-Fusion/mcp-server/pull/20), PR 2 as [#21](https://github.com/Apex-Fusion/mcp-server/pull/21) and PR 3 as [#23](https://github.com/Apex-Fusion/mcp-server/pull/23) with PR 2), awaiting the mainnet cutover.'));
+  assert.ok(s15.includes('PR 4 ([#22](https://github.com/Apex-Fusion/mcp-server/pull/22)), the signer package with its `keygen` command, is merged too, and the package is not published.'));
+  assert.doesNotMatch(s15, /and PR 4 as/, 'PR 4 is the signer, not one of the nine marketplace tools');
   assert.ok(s15.includes('The hosted mainnet MCP server still serves 24 tools, none of them a marketplace tool, and the maintainer cuts it over on purpose, after this run.'));
   assert.doesNotMatch(s15, /PR 2 is open|PR 3 and PR 4 follow|PRs 2 and 3 follow|are deployed|PR 3 branch/);
   const s16 = section(runbook, '16. Wallet monitor');

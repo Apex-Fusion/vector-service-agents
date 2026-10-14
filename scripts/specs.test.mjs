@@ -329,7 +329,10 @@ test('docs/E2E.md and scripts/e2e-hire.mjs agree on the send step, the signer se
   assert.match(e2e, /\| Exit code 1, and the same transaction is reported as not confirmed on every rerun \|/);
   assert.ok(e2e.includes('every rerun submits that same transaction again') && e2e.includes('mv e2e-state.json e2e-state.old.json'));
   assert.ok(script.includes('An earlier run already posted escrow') && script.includes('is still Open'));
-  assert.ok(script.includes('follow the row "the same transaction is reported as not confirmed on every rerun" in docs/E2E.md'), 'the note for a post that was never confirmed names a row that exists in the runbook');
+  assert.ok(script.includes('follow the row "is not among the free suppliers" in docs/E2E.md ("If a run stops")'), 'the note for a post that was never confirmed names the row whose way out applies, not the row that says to run the script again');
+  const freeRow = e2e.split('\n').find((l) => l.startsWith('| Exit code 1, "is not among the free suppliers", after an earlier run already posted the escrow |')) ?? '';
+  for (const text of ['look the post transaction up on the explorer first. If it is there, the escrow is Open and the same steps apply.', 'If it is not there, nothing was posted:', 'a reclaim after `deliver_by`', 'While the advert is not free, running the script again stops at the same check.']) assert.ok(freeRow.includes(text), `the runbook row says ${text}`);
+  assert.equal(freeRow.includes('follow the next row'), false, 'the row carries its own way out');
   assert.equal(e2e.match(/never reads/), null, 'the script reads the settings it forwards; it never prints or stores them');
   assert.ok(e2e.includes('The script forwards every `VECTOR_SIGNER_` setting to the signer process it starts.') && e2e.includes('The script never prints or stores the value of a setting.'));
   assert.match(e2e, /`keygen` command \(PR 4, merged into `main` on 2026-10-14; the npx package is not published yet\)/);
@@ -397,6 +400,11 @@ test('docs/E2E.md and scripts/e2e-hire.mjs: buyerAddress, the skipped and incomp
   assert.ok(fromScript.length > 400, 'the check-the-escrow text was found in the script');
   for (const word of ["the supplier's Submit may still land", 'vector_build_marketplace_accept', 'seconds_left', '600 s', 'Open or Claimed', 'vector_build_marketplace_reclaim']) assert.ok(fromScript.includes(word), `the script says ${word}`);
   assert.doesNotMatch(script, /Reclaim the escrow/, 'the script never tells the operator to simply reclaim');
+  // The row for a lost state file names the Submitted case too, and the funded-key paragraph says where keygen is run.
+  const lost = e2e.split('\n').find((l) => l.startsWith('| Exit code 2 |')) ?? '';
+  for (const text of ['find it through the indexer rows of the buyer key', 'as in the first row of this table', 'vector_build_marketplace_accept', '`seconds_left`', 'If it is Submitted, accept within 600 s of the Submit', 'If it is Open or Claimed, reclaim it with `vector_build_marketplace_reclaim` after `deliver_by`']) assert.ok(lost.includes(text), `the lost-state row says ${text}`);
+  assert.equal(lost.includes('reclaim it after `deliver_by` before you start a new run'), false, 'no bare reclaim');
+  assert.ok(e2e.includes("Run `keygen` in your own terminal, never through the assistant's shell tool: its output goes back into the conversation, so the only copy of the key would reach the model provider."));
 });
 
 test('the marketplace tools are said to be merged and awaiting the mainnet cutover in the runbook, the script and the four specs, and way 1 of the Agent History spec names buyerAddress', () => {
