@@ -30,6 +30,8 @@ Three more agents are specified and not built: Document Pipeline, Audio Snippets
 
 Make a key for this guide. Do not reuse a key that holds anything else.
 
+Run `keygen` in your own terminal, never through your assistant's shell tool. The output of a shell tool goes back into the conversation, so the only copy of the key would reach your model provider.
+
 The npx package is not published yet, and `npx -y` runs whatever the registry returns for a name. Do not run an `npx` command with this name until the Foundation says the package is published. Until then, build the signer from source:
 
 ```bash
@@ -104,7 +106,7 @@ Paste the six messages one at a time into a chat that has both servers on. Your 
 1. "List the marketplace capabilities on Vector."
 2. "Show me free suppliers for identity.history.report.v1."
 3. "Hire the first one. Payload: {"subject":"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db"}. Use my signer address as changeAddress, sign, submit and wait for confirmation."
-4. "Send the job with the same payload, then poll until it is done."
+4. "Send the job with the same payload, then poll until it is done. Use my signer address as buyerAddress in both calls."
 5. "Verify the receipt. If every check passes, accept, sign, submit and wait."
 6. "Show me the receipt, the signature, the escrow reference and explorer links for the post and the accept."
 ```
@@ -116,8 +118,8 @@ What you write in message 3 is the request JSON. The tools wrap the request JSON
 | 1 | `vector_marketplace_list_capabilities` | `identity.history.report.v1` is in the list. |
 | 2 | `vector_marketplace_list_suppliers` | The Agent History advert shows price 1, bonds 1 and 1, model `agent-history-v1` and a window of 300 s. |
 | 3 | `vector_signer_get_address`, `vector_build_marketplace_post_escrow`, `vector_signer_sign`, `vector_submit_transaction`, `vector_await_transaction` | The tool prints your escrow reference and a lock of 3. The wait ends with "Transaction Confirmed". |
-| 4 | `vector_marketplace_send_job`, then `vector_marketplace_get_job` until the job is done | The supplier claims the escrow on chain first, which takes up to 60 s. Then the report comes back with the receipt. |
-| 5 | `vector_marketplace_verify_receipt`, then `vector_build_marketplace_accept` and the same sign, submit and wait | Every row of the check table says pass, including the one for `response_hash`. If your assistant left the report text out of the check, ask it to run the check again with the `result` string from the poll. The Accept must land within 600 s of the supplier's Submit, and the accept tool warns when under 120 s remain. |
+| 4 | `vector_marketplace_send_job`, then `vector_marketplace_get_job` until the job is done. Both take your signer address as `buyerAddress`. | The supplier claims the escrow on chain first, which takes up to 60 s. Then the report comes back with the receipt. `buyerAddress` must be the wallet that posted and funded the escrow, which is your signer address. |
+| 5 | `vector_marketplace_verify_receipt`, then `vector_build_marketplace_accept` and the same sign, submit and wait | The verdict reads VERIFIED and every row of the check table says pass, including the one for `response_hash`. A row that says skipped makes the verdict INCOMPLETE, which is not a pass. For `response_hash` it means your assistant left the report text out of the check, so ask it to run the check again with the `result` string from the poll. The Accept must land within 600 s of the supplier's Submit, and the accept tool warns when under 120 s remain. |
 | 6 | Reads back what it already has | You hold the report text, the receipt, the signature, the escrow reference and two links. |
 
 If a check fails, do not accept. Declining does not refund you. Once the supplier has submitted you cannot reclaim, and after 600 s the supplier may Release and take the price and both bonds. What declining keeps is your signature: your key never signs an Accept for work you could not verify. Tell the working group which check failed.
@@ -138,7 +140,7 @@ The receipt has eight fields. The supplier's runtime builds and signs it. The se
 
 `receipt_signature` is an Ed25519 signature over the canonical JSON of the receipt: sorted keys, no whitespace. When the supplier submitted, it also put the sha256 of the canonical JSON of `{ receipt, signature }` on the ledger, as `result_receipt_hash` in the Submitted escrow datum.
 
-`vector_marketplace_verify_receipt` runs five checks and reports each as pass or fail:
+`vector_marketplace_verify_receipt` runs five checks and one extra row, and reports each as pass, fail or skipped. The verdict reads VERIFIED only when every row passes. It reads FAILED when a row fails, and INCOMPLETE when nothing failed but a row was skipped:
 
 1. `receipt.escrow_ref` is your escrow reference.
 2. The sha256 of the report text equals `response_hash`.
@@ -146,7 +148,9 @@ The receipt has eight fields. The supplier's runtime builds and signs it. The se
 4. The signature verifies over the canonical receipt.
 5. `result_receipt_hash` on the ledger equals the sha256 of the canonical `{ receipt, signature }`.
 
-Anyone can repeat it with the receipt, the signature, the escrow reference and the report text. Pass the report text exactly as the supplier returned it: `result` in the JSON block of the answer of `vector_marketplace_get_job`. A copy that was re-formatted or shortened, for example from the readable view of a long report, fails check 2. If you leave the report text out, check 2 does not run, and the table can still read as a pass. The supplier's public key is at `GET <endpoint>/capability`, or you can pass it in. Checks 3 and 5 read the ledger: check 3 reads the escrow datum, and check 5 reads the Submitted datum, which the ledger still returns after the Accept. Checks 1, 2 and 4 need no ledger.
+The extra row is not one of the five: the `prompt_hash` in the receipt equals the `prompt_hash` in the escrow datum, so the receipt is for the request you committed to.
+
+Anyone can repeat it with the receipt, the signature, the escrow reference and the report text. Pass the report text exactly as the supplier returned it: `result` in the JSON block of the answer of `vector_marketplace_get_job`. A copy that was re-formatted or shortened, for example from the readable view of a long report, fails check 2. If you leave the report text out, check 2 is skipped and the verdict reads INCOMPLETE, which is never a pass. The supplier's public key is at `GET <endpoint>/capability`, or you can pass it in. Checks 3 and 5 and the extra row read the ledger: check 3 and the extra row read the escrow datum, and check 5 reads the Submitted datum. Check 5 works before and after the Accept: the Submitted output is found on the ledger while it is live, through the marketplace indexer once the Accept has spent it, or by the `submitted_ref` you pass. Checks 1, 2 and 4 need no ledger.
 
 The receipt says who answered, with which exact bytes, to which request, for which escrow. It does not say the report is complete or correct. The report is what its sources returned at `as_of`. It ends with `blind_spots`, a list of what it does not tell you. Read that list. The fields of the report are in [specs/agent-history.md](../specs/agent-history.md).
 

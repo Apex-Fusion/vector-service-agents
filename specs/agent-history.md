@@ -360,7 +360,7 @@ What leaves to third parties:
 |---|---|
 | Koios v2 for Vector mainnet | the identifiers the report asks about: asset names, key hashes, transaction hashes, module addresses |
 | the marketplace indexer | the controller key hash |
-| the subject agent's own endpoint | one `GET /capability` through `safeFetch`, with a 64 KiB cap and a 20 s budget. It refuses: a URL that is not https, a URL with credentials in it, a host that is or resolves to a loopback, private, link-local, CGNAT or unspecified address (or an IPv6 site-local or multicast one; an IPv4 address inside an IPv6 address counts as that IPv4 address), and redirects (a 3xx answer is an error and is not followed) |
+| the subject agent's own endpoint | one `GET /capability` through `safeFetch`, with a 64 KiB cap and a 20 s budget. It refuses: a URL that is not https, a URL with credentials in it, a host that is or resolves to a loopback, private, link-local, CGNAT, benchmarking (198.18.0.0/15), multicast, class E (240.0.0.0/4), IETF protocol (192.0.0.0/24) or unspecified address (or an IPv6 site-local one; an IPv6 address in ::ffff:0:0/96 or 64:ff9b::/96 counts as the IPv4 address inside it, and one in ::/96 is refused whatever it carries), and redirects (a 3xx answer is an error and is not followed) |
 
 Datalab, OpenRouter and Brave are not used. There is no model, no OCR and no web search.
 

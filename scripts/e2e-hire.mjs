@@ -94,12 +94,20 @@ async function toolsOf(client) {
   do { const r = await client.listTools(cursor ? { cursor } : undefined); out.push(...r.tools); cursor = r.nextCursor; } while (cursor);
   return new Map(out.map((t) => [t.name, t]));
 }
-// A call by name. The arguments are checked against the server's own schema first: a server drops an argument it does not know without a
-// word, and a silently dropped argument is how a hash check ends up skipped.
-async function call(side, name, args = {}, { timeoutMs = 120_000, allowFail = false } = {}) {
-  const known = Object.keys(side.tools.get(name)?.inputSchema?.properties ?? {});
+// The arguments of a call held against the schema the server publishes for the tool, in both directions. A server drops an argument it does not
+// know without a word, and a silently dropped argument is how a hash check ends up skipped. And a call that lacks an argument the schema requires
+// is refused by the server only when it is made, which for the send is after the escrow was posted. So a stray and a missing one are refused here.
+function checkArgs(side, name, args) {
+  const schema = side.tools.get(name)?.inputSchema;
+  const known = Object.keys(schema?.properties ?? {});
   const stray = Object.keys(args).filter((k) => !known.includes(k));
   if (stray.length) throw new Fail(`${name} has no argument ${stray.join(', ')}; it takes ${known.join(', ') || 'none'}`);
+  const absent = (schema?.required ?? []).filter((k) => args[k] === undefined);
+  if (absent.length) throw new Fail(`${name} requires ${absent.join(', ')}, which the call lacks; it takes ${known.join(', ')}`);
+}
+// A call by name, after its arguments passed that check.
+async function call(side, name, args = {}, { timeoutMs = 120_000, allowFail = false } = {}) {
+  checkArgs(side, name, args);
   const r = await side.client.callTool({ name, arguments: args }, undefined, { timeout: timeoutMs });
   const text = textOf(r);
   log(`\n== ${name}\n${shorten(text)}`);
@@ -144,12 +152,27 @@ async function landTx(key, build, builder, signer) {
   return rec;
 }
 
-// What an earlier run leaves behind when the advert stops being free after the escrow was posted: that escrow is Open, because nothing was sent.
+const deliverByOf = (post) => (post.deliver_by ? new Date(Number(post.deliver_by)).toISOString() : 'deliver_by');
+
+// What a failed or a stalled job leaves open. The job tool does not know where the escrow stands, and the supplier's Submit may still land after the
+// job was reported as failed or the wait ran out. So reclaiming is the answer only for an Open or Claimed escrow, and a Submitted one has a clock.
+function checkTheEscrow(post) {
+  return [
+    `The job tool does not know where escrow ${post.escrow_ref} stands, and the supplier's Submit may still land. Check the escrow before you reclaim anything (docs/E2E.md, "If a run stops"):`,
+    "  Submitted: accept within 600 s of the supplier's Submit, or the supplier may Release and keep everything that is locked, your bond included. vector_build_marketplace_accept builds only for a Submitted escrow and prints seconds_left, so asking it is the check. A Submitted escrow cannot be reclaimed.",
+    `  Open or Claimed: reclaim it with vector_build_marketplace_reclaim after deliver_by (${deliverByOf(post)}).`,
+  ].join('\n');
+}
+
+// What an earlier run leaves behind when the advert stops being free after the escrow was posted. Only a post whose confirmation was recorded is
+// known to be on the ledger: that escrow is Open, because nothing was sent. A post that was signed and never confirmed may not exist at all.
 function postedEscrowNote() {
   const post = state.post;
   if (!post?.escrow_ref) return '';
-  const when = post.deliver_by ? new Date(Number(post.deliver_by)).toISOString() : 'deliver_by';
-  return ` An earlier run already posted escrow ${post.escrow_ref}${post.confirmed ? '' : ' (its confirmation was not recorded)'} and sent nothing to the supplier, so that escrow is still Open. Reclaim it with vector_build_marketplace_reclaim after deliver_by (${when}), then move ${STATE_PATH} away and start a new run (docs/E2E.md, "If a run stops").`;
+  if (!post.confirmed) {
+    return ` An earlier run signed escrow ${post.escrow_ref} in transaction ${post.tx_hash} and never recorded that it was confirmed, so that escrow may not be on the ledger, and nothing was sent to the supplier. Do not reclaim it or move ${STATE_PATH} away yet: look the transaction up on the explorer and follow the row "the same transaction is reported as not confirmed on every rerun" in docs/E2E.md ("If a run stops").`;
+  }
+  return ` An earlier run already posted escrow ${post.escrow_ref} and sent nothing to the supplier, so that escrow is still Open. Reclaim it with vector_build_marketplace_reclaim after deliver_by (${deliverByOf(post)}), then move ${STATE_PATH} away and start a new run (docs/E2E.md, "If a run stops").`;
 }
 
 // The one step that cannot simply be repeated: a second send for an escrow the supplier has already claimed is refused (409), and the job id
@@ -185,6 +208,10 @@ async function main(builder, signer) {
   }
   if (job.sending && !job.job_id) throw sendInterrupted(state.post ?? {});
 
+  // A fresh run holds every call it is going to make against the schemas the servers publish, before the first transaction is built. A tool whose
+  // arguments changed since this script was written would otherwise show only at its own call, and for the send that is after the escrow was posted.
+  if (!state.post?.signed_cbor) for (const [name, args] of stepsOf(address, resultKey)) checkArgs(SIGNER_TOOLS.includes(name) ? signer : builder, name, args);
+
   // Read-only: before the job is sent, the advert must be among the free suppliers of the capability. Once it is sent the supplier is
   // working for us and shows as busy, so a rerun must not ask again.
   if (!job.job_id) {
@@ -208,7 +235,7 @@ async function main(builder, signer) {
     job.sending = new Date().toISOString(); save(); // before the call: if this process dies or times out, the next run knows the send may have happened
     let sent;
     try {
-      sent = await call(builder, 'vector_marketplace_send_job', { escrow_ref: post.escrow_ref, payload: PAYLOAD }, { timeoutMs: 150_000 });
+      sent = await call(builder, 'vector_marketplace_send_job', { escrow_ref: post.escrow_ref, payload: PAYLOAD, buyerAddress: address }, { timeoutMs: 150_000 });
     } catch (e) {
       // An answer that says the send failed (or an argument that was refused before the call) leaves the escrow Open, and the send can be tried again.
       // No answer at all (a timeout, a dropped connection) leaves the marker: the supplier may have claimed.
@@ -223,11 +250,11 @@ async function main(builder, signer) {
   if (!job.result) {
     const until = Number(post.deliver_by) || Date.now() + 10 * 60_000;
     for (;;) {
-      const polled = await call(builder, 'vector_marketplace_get_job', { escrow_ref: post.escrow_ref, job_id: job.job_id });
+      const polled = await call(builder, 'vector_marketplace_get_job', { escrow_ref: post.escrow_ref, job_id: job.job_id, buyerAddress: address });
       const j = polled.json ?? {};
       if (j.state === 'done') { Object.assign(job, { result: j.result, receipt: j.receipt, receipt_signature: j.receipt_signature }); save(); break; }
-      if (j.state === 'failed') throw new Fail(`the job failed: ${j.reason ?? ''} ${j.message ?? ''}`.trim() + `. Reclaim the escrow after deliver_by with vector_build_marketplace_reclaim`);
-      if (Date.now() > until) throw new Fail('the job did not finish before deliver_by. Reclaim the escrow with vector_build_marketplace_reclaim');
+      if (j.state === 'failed') throw new Fail(`the job failed: ${j.reason ?? ''} ${j.message ?? ''}`.trim() + `.\n${checkTheEscrow(post)}`);
+      if (Date.now() > until) throw new Fail(`the job did not finish before deliver_by.\n${checkTheEscrow(post)}`);
       await sleep(POLL_MS);
     }
   }
@@ -267,23 +294,27 @@ function evidenceOf() {
   };
 }
 
-// What a real run would do, in order, with the arguments it already knows, and which steps an earlier run has already done. Printed by --dry-run.
-function printPlan(address, resultKey) {
+// What a real run would do, in order, with the arguments it already knows, and which steps an earlier run has already done. --dry-run prints it,
+// and a fresh run checks the arguments of every step against the schemas before it builds anything.
+function stepsOf(address, resultKey) {
   const post = state.post ?? {}, job = state.job ?? {}, accept = state.accept ?? {};
   const done = (yes) => (yes ? ' (done in an earlier run, skipped)' : '');
-  const steps = [
+  return [
     ['vector_build_marketplace_post_escrow', { changeAddress: address, advert_ref: ADVERT_REF, payload: PAYLOAD }, done(post.signed_cbor)],
     ['vector_signer_sign', { txCbor: '<unsigned post>' }, done(post.signed_cbor)],
     ['vector_submit_transaction', { signedTxCbor: '<signed post>' }, done(post.confirmed)],
     ['vector_await_transaction', { txHash: '<post tx>', timeoutSeconds: AWAIT_SLICE_S }, done(post.confirmed)],
-    ['vector_marketplace_send_job', { escrow_ref: '<escrow_ref>', payload: PAYLOAD }, done(job.job_id)],
-    ['vector_marketplace_get_job', { escrow_ref: '<escrow_ref>', job_id: '<job_id>' }, job.result ? done(true) : ' (repeated until done or deliver_by)'],
+    ['vector_marketplace_send_job', { escrow_ref: '<escrow_ref>', payload: PAYLOAD, buyerAddress: address }, done(job.job_id)],
+    ['vector_marketplace_get_job', { escrow_ref: '<escrow_ref>', job_id: '<job_id>', buyerAddress: address }, job.result ? done(true) : ' (repeated until done or deliver_by)'],
     ['vector_marketplace_verify_receipt', { escrow_ref: '<escrow_ref>', receipt: '<receipt>', receipt_signature: '<signature>', [resultKey]: '<report text>' }, done(accept.confirmed)],
     ['vector_build_marketplace_accept', { changeAddress: address, escrow_ref: '<escrow_ref>' }, done(accept.signed_cbor)],
     ['vector_signer_sign', { txCbor: '<unsigned accept>' }, done(accept.signed_cbor)],
     ['vector_submit_transaction', { signedTxCbor: '<signed accept>' }, done(accept.confirmed)],
     ['vector_await_transaction', { txHash: '<accept tx>', timeoutSeconds: AWAIT_SLICE_S }, done(accept.confirmed)],
   ];
+}
+function printPlan(address, resultKey) {
+  const steps = stepsOf(address, resultKey);
   console.log(`dry run: ${steps.length} calls follow. Nothing is signed, submitted or sent.`);
   steps.forEach(([name, args, note], i) => console.log(`${String(i + 1).padStart(2)}. ${name} ${JSON.stringify(args)}${note}`));
 }

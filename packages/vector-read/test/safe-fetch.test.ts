@@ -143,19 +143,31 @@ describe('what specs/agent-history.md says safeFetch refuses', () => {
   const row = spec.split('\n').find((l) => l.startsWith("| the subject agent's own endpoint |")) ?? '';
   const lookup = async () => [{ address: '8.8.8.8', family: 4 }];
   test('the spec lists the refusals by name and does not call them "private or reserved"', () => {
-    expect(row).toContain('a URL that is not https, a URL with credentials in it, a host that is or resolves to a loopback, private, link-local, CGNAT or unspecified address (or an IPv6 site-local or multicast one; an IPv4 address inside an IPv6 address counts as that IPv4 address), and redirects');
+    expect(row).toContain('a URL that is not https, a URL with credentials in it, a host that is or resolves to a loopback, private, link-local, CGNAT, benchmarking (198.18.0.0/15), multicast, class E (240.0.0.0/4), IETF protocol (192.0.0.0/24) or unspecified address (or an IPv6 site-local one; an IPv6 address in ::ffff:0:0/96 or 64:ff9b::/96 counts as the IPv4 address inside it, and one in ::/96 is refused whatever it carries), and redirects');
     expect(row).not.toMatch(/reserved/);
   });
   test('each of them is refused by the code', async () => {
     expect(() => assertSafeUrl('http://example.com/')).toThrow(/https/);
     expect(() => assertSafeUrl('https://user:pw@example.com/')).toThrow(/credentials/);
-    const examples: Record<string, string[]> = { loopback: ['127.0.0.1', '::1'], private: ['10.0.0.1', '172.16.0.1', '192.168.0.1', 'fd00::1'], 'link-local': ['169.254.169.254', 'fe80::1'], CGNAT: ['100.64.0.1'], unspecified: ['0.0.0.0', '::'], 'site-local': ['fec0::1'], multicast: ['ff02::1'] };
+    const examples: Record<string, string[]> = {
+      loopback: ['127.0.0.1', '::1'], private: ['10.0.0.1', '172.16.0.1', '192.168.0.1', 'fd00::1'], 'link-local': ['169.254.169.254', 'fe80::1'], CGNAT: ['100.64.0.1'],
+      unspecified: ['0.0.0.0', '::'], 'site-local': ['fec0::1'], multicast: ['ff02::1', '224.0.0.1', '239.255.255.255'],
+      benchmarking: ['198.18.0.1', '198.19.255.255'], 'class E': ['240.0.0.1', '255.255.255.255'], 'IETF protocol': ['192.0.0.1'],
+    };
     for (const [kind, ips] of Object.entries(examples)) {
       expect(row, kind).toContain(kind);
       for (const ip of ips) expect(isPrivateAddress(ip), `${kind}: ${ip}`).toBe(true);
     }
     const redirect = (async () => new Response('', { status: 302, headers: { location: 'https://elsewhere.example/' } })) as any;
     await expect(safeFetch('https://ok.example/', {}, { lookup, fetchImpl: redirect })).rejects.toThrow(/redirect/);
+  });
+  test('the sentence about an IPv4 address inside an IPv6 one is exact: mapped and NAT64 count as the address inside, all of ::/96 is refused', () => {
+    for (const prefix of ['::ffff:0:0/96', '64:ff9b::/96', '::/96']) expect(row, prefix).toContain(prefix);
+    // counts as the IPv4 address inside it: a private one inside is refused, a public one inside is not
+    for (const ip of ['::ffff:10.0.0.1', '64:ff9b::10.0.0.1']) expect(isPrivateAddress(ip), ip).toBe(true);
+    for (const ip of ['::ffff:8.8.8.8', '64:ff9b::8.8.8.8']) expect(isPrivateAddress(ip), ip).toBe(false);
+    // refused whatever it carries: the IPv4-compatible form of a public address is refused all the same
+    for (const ip of ['::8.8.8.8', '::808:808', '::1.2.3.4', '::']) expect(isPrivateAddress(ip), ip).toBe(true);
   });
 });
 
@@ -231,7 +243,7 @@ describe('isPrivateAddress reads every spelling of an IPv6 address', () => {
   test('loopback and unspecified, written out, padded or compressed', () => {
     for (const ip of ['::1', '0:0:0:0:0:0:0:1', '::0001', '0000:0000:0000:0000:0000:0000:0000:0001', '::', '0:0:0:0:0:0:0:0', '0::0']) expect(isPrivateAddress(ip), ip).toBe(true);
   });
-  test('an IPv4 address inside an IPv6 one counts as that IPv4 address: mapped, compatible and NAT64, dotted or in hex', () => {
+  test('mapped and NAT64 addresses count as the IPv4 address inside them, and the compatible form is refused: dotted or in hex', () => {
     for (const ip of ['::ffff:10.0.0.1', '0:0:0:0:0:ffff:10.0.0.1', '::FFFF:A00:1', '::ffff:7f00:1', '::ffff:c0a8:101', '::ffff:ac10:1', '::ffff:a9fe:a9fe', '::ffff:6440:1', '::10.0.0.1', '::a00:1', '::127.0.0.1', '64:ff9b::a00:1', '64:ff9b::10.0.0.1', '0064:ff9b:0:0:0:0:a00:1', '64:ff9b::7f00:1']) expect(isPrivateAddress(ip), ip).toBe(true);
     for (const ip of ['::ffff:8.8.8.8', '::ffff:808:808', '64:ff9b::808:808', '64:ff9b::8.8.8.8', '::ffff:172.32.0.1']) expect(isPrivateAddress(ip), ip).toBe(false);
   });
@@ -239,10 +251,47 @@ describe('isPrivateAddress reads every spelling of an IPv6 address', () => {
     for (const ip of ['fc00::1', 'fd00::1', 'FD00::1', 'fdff::1', 'fd00:0:0:0:0:0:0:1', 'fe80::1', 'FE80::1', 'febf::1', 'fe80::1%eth0', 'fec0::1', 'feff::1', 'ff00::', 'ff02::1', 'FF05::2']) expect(isPrivateAddress(ip), ip).toBe(true);
     for (const ip of ['2606:4700::1111', '2001:4860:4860::8888', '2a00:1450:4001::', '2000::1', '3fff::1', 'fbff::1', 'fe7f::1']) expect(isPrivateAddress(ip), ip).toBe(false);
   });
-  test('text that is not an address is refused, and the IPv4 rules are as they were', () => {
+  test('text that is not an address is refused, and the IPv4 rules of before still hold (the four new ranges have their own tests)', () => {
     for (const ip of ['', 'localhost', '[::1]', '1.2.3', '::g', '1:2:3:4:5:6:7:8:9', '1::2::3', 'example.com']) expect(isPrivateAddress(ip), JSON.stringify(ip)).toBe(true);
     for (const ip of ['0.0.0.0', '10.1.2.3', '100.127.255.255', '127.0.0.1', '169.254.1.1', '172.16.0.1', '172.31.255.255', '192.168.0.1']) expect(isPrivateAddress(ip), ip).toBe(true);
     for (const ip of ['8.8.8.8', '100.63.255.255', '100.128.0.1', '172.15.0.1', '172.32.0.1', '192.169.0.1', '169.253.0.1']) expect(isPrivateAddress(ip), ip).toBe(false);
+  });
+});
+
+// The IPv4 ranges that are never a public host, one test for each. In each: the first, the last and some addresses in between are refused, the address just
+// outside the range is not (where it is itself public), and the same addresses inside an IPv4-mapped (::ffff:a.b.c.d) and a NAT64 (64:ff9b::a.b.c.d)
+// address are judged the same way, because those count as the IPv4 address they carry. The hex forms are checked against the dotted ones by hand:
+// c000 0001 is 192.0.0.1, c612 is 198.18, c613 is 198.19, e000 is 224.0, efff is 239.255, f000 is 240.0.
+describe('isPrivateAddress refuses the IPv4 ranges that are never a public host', () => {
+  const refused = (ips: string[]) => { for (const ip of ips) expect(isPrivateAddress(ip), ip).toBe(true); };
+  const allowed = (ips: string[]) => { for (const ip of ips) expect(isPrivateAddress(ip), ip).toBe(false); };
+  test('192.0.0.0/24, the IETF protocol assignments', () => {
+    refused(['192.0.0.0', '192.0.0.9', '192.0.0.170', '192.0.0.255', '::ffff:192.0.0.1', '::ffff:c000:1', '64:ff9b::c000:1', '64:ff9b::192.0.0.255']);
+    allowed(['191.255.255.255', '192.0.1.0', '192.0.1.1', '::ffff:192.0.1.1', '::ffff:c000:101', '64:ff9b::c000:101']);
+  });
+  test('198.18.0.0/15, benchmarking', () => {
+    refused(['198.18.0.0', '198.18.0.1', '198.19.0.1', '198.19.255.255', '::ffff:198.18.0.1', '::ffff:c612:1', '64:ff9b::c613:ffff']);
+    allowed(['198.17.255.255', '198.20.0.0', '198.20.0.1', '::ffff:198.20.0.1', '::ffff:c614:1', '64:ff9b::c611:ffff']);
+  });
+  test('224.0.0.0/4, multicast', () => {
+    refused(['224.0.0.0', '224.0.0.1', '224.0.0.251', '232.1.2.3', '239.255.255.255', '::ffff:224.0.0.1', '::ffff:e000:1', '64:ff9b::efff:ffff']);
+    allowed(['223.255.255.255', '::ffff:223.255.255.255', '::ffff:dfff:ffff', '64:ff9b::dfff:ffff']);
+  });
+  test('240.0.0.0/4, class E, with the broadcast address; it follows the multicast range without a gap', () => {
+    refused(['239.255.255.255', '240.0.0.0', '240.0.0.1', '248.1.2.3', '254.255.255.255', '255.255.255.255', '::ffff:240.0.0.1', '::ffff:f000:1', '::ffff:255.255.255.255', '64:ff9b::ffff:ffff']);
+  });
+  test('a host that is one of these addresses, or resolves to one, is refused before fetch; the public neighbours are not', async () => {
+    const mustNotLookUp = async () => { throw new Error('lookup must not be called for an address literal'); };
+    for (const ip of ['192.0.0.9', '198.18.0.1', '224.0.0.251', '255.255.255.255']) {
+      let fetched = false;
+      const f = (async () => { fetched = true; return new Response('x'); }) as any;
+      await expect(safeFetch(`https://${ip}/x`, {}, { lookup: mustNotLookUp, fetchImpl: f }), ip).rejects.toThrow(/private/);
+      await expect(safeFetch('https://sneaky.example/', {}, { lookup: async () => [{ address: ip, family: 4 }], fetchImpl: f }), ip).rejects.toThrow(/private/);
+      expect(fetched, ip).toBe(false);
+    }
+    for (const ip of ['192.0.1.1', '198.20.0.1', '223.255.255.255']) {
+      await expect(safeFetch(`https://${ip}/x`, {}, { lookup: mustNotLookUp, fetchImpl: (async () => new Response('x')) as any }), ip).resolves.toMatchObject({ status: 200 });
+    }
   });
 });
 

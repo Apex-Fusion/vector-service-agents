@@ -72,6 +72,8 @@ const UNIT_NAME = new RegExp('AP' + '3X', 'i');
 // Individual names stay off every public surface. Case-insensitive on purpose: an address such as first.last@host is lower case, and the
 // first guard (capitalised names only) let one through into the manifest.
 const NAMES = /\b(Filip|Blagojevi\w*|David|Cejtlin|Chris|Jerry|Armando|Andrej|Casl\w+|Nikola|Danielle|Tom Flynn)\b/i;
+// A path into someone's home folder names its owner too. Either separator: C:\Users\x is as much a path as C:/Users/x.
+const HOME_PATH = /C:[\\/]Users[\\/]|[\\/](Users|home)[\\/][A-Za-z]/;
 const PUBLIC_FILES = ['deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md', 'deploy/apex-web/docker-compose.agent-history.yml', 'deploy/apex-web/.env.agent-history.example', 'deploy/apex-web/Caddyfile.snippet', 'agents/agent-history/Dockerfile', '.dockerignore'];
 
 test('compose: two containers with fixed names, the runtime on loopback only, the service unpublished, both on the shared network', () => {
@@ -305,7 +307,7 @@ test('no individual name, and no personal address, on any public surface: the ma
   for (const rel of files) assert.doesNotMatch(read(rel), NAMES, `${rel}: roles, not people`);
   // A path into someone's home folder names its owner too, and a reviewer's handle is a name.
   for (const rel of planning) {
-    assert.doesNotMatch(read(rel), /C:[\/]Users[\/]|\/(Users|home)\/[A-Za-z]/, `${rel}: no path into a home folder`);
+    assert.doesNotMatch(read(rel), HOME_PATH, `${rel}: no path into a home folder`);
     assert.doesNotMatch(read(rel), /--reviewer [a-z0-9]+-[a-z]+\b/, `${rel}: no reviewer handle`);
   }
 });
@@ -313,6 +315,10 @@ test('no individual name, and no personal address, on any public surface: the ma
 test('the name guard: it finds a name in any case, inside an address too, and not a longer word', () => {
   for (const hit of ['Filip', 'filip.blagojevic@foundation.example', 'BLAGOJEVIC', 'David Cejtlin', 'chris', 'tom flynn', 'ask Jerry first']) assert.match(hit, NAMES, hit);
   for (const miss of ['Christmas', 'Davidson', 'a role address', 'ops@example.test', 'ecosystem@<foundation domain>']) assert.doesNotMatch(miss, NAMES, miss);
+});
+
+test('the home-path guard: it finds a path into a home folder with either separator', () => {
+  for (const hit of ['C:/Users/someone/notes.md', 'C:\\Users\\someone\\notes.md', '/home/someone/notes.md', '\\home\\someone\\notes.md']) assert.match(hit, HOME_PATH, hit);
 });
 
 test('the service has no built-in contact address: the template carries a placeholder and the example asks for a role address', () => {

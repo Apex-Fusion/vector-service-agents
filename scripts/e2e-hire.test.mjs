@@ -14,12 +14,13 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 
 // scripts/e2e-hire.mjs against a fake builder (an MCP server over HTTP, here) and a fake signer (an MCP server over stdio,
 // scripts/fixtures/fake-signer.mjs). Nothing here touches a network beyond 127.0.0.1, a key or a ledger.
-// The fakes answer in the shapes the tools are specified to answer in. Tool names and inputs are those of the design spec, section 5.
-// The field names inside the JSON answers of the post and accept tools (escrow_ref, tx_hash, deliver_by, lock_lovelace, seconds_left) are
-// those that PR 2 emits: it is open as https://github.com/Apex-Fusion/mcp-server/pull/21, and its JSON blocks were checked against these
-// fakes at its head, 94b8f41. The field names of the job tools (jobId, state, receipt_signature, verified, checks) are those of the tool
-// definitions in Plan A (docs/superpowers/plans/2026-10-13-plan-a-mcp-marketplace-tools.md), because PR 3 is not implemented yet.
-// advert_ref in the supplier list is read from a real tool (PR 1).
+// The fakes answer in the shapes the merged tools answer in. The nine marketplace tools, their argument names and the arguments each of them
+// requires are those of packages/builder/test/smoke/tool-schemas.snapshot.json of Apex-Fusion/mcp-server (33 tools, main at 2cf99e1), among
+// them buyerAddress, which the send and the poll require. The field names inside the JSON answers of the post and accept tools (escrow_ref,
+// tx_hash, deliver_by, lock_lovelace, seconds_left) are those of PR 2 (https://github.com/Apex-Fusion/mcp-server/pull/21, merged). The answers
+// of the job tools (job_id, state, receipt_signature, and from the check a verdict, verified, and a state of pass, fail or skipped for each of
+// the five checks and the extra prompt_hash row) are those of PR 3, also merged (marketplace-transport-tools.ts). advert_ref in the supplier
+// list is read from a real tool (PR 1). A fake server refuses a call that lacks an argument its schema requires, as the merged server does.
 const SCRIPT = fileURLToPath(new URL('./e2e-hire.mjs', import.meta.url));
 const FAKE_SIGNER = fileURLToPath(new URL('./fixtures/fake-signer.mjs', import.meta.url));
 const CAPABILITY = 'identity.history.report.v1';
@@ -31,19 +32,20 @@ const RECEIPT = { escrow_ref: 'set below', supplier_pkh: 'cd'.repeat(28), prompt
 const SIGNATURE = 'c1'.repeat(64);
 const sha = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
 const withJson = (md, data) => `${md}\n\n\`\`\`json\n${JSON.stringify(data)}\n\`\`\``;
-const schema = (...names) => ({ type: 'object', properties: Object.fromEntries(names.map((n) => [n, { type: 'string' }])) });
+// A tool's input schema as the server lists it: the arguments it requires, then the ones it takes besides.
+const schema = (required = [], optional = []) => ({ type: 'object', properties: Object.fromEntries([...required, ...optional].map((n) => [n, { type: 'string' }])), required });
 const SCHEMAS = {
   vector_marketplace_list_capabilities: schema(),
-  vector_marketplace_list_suppliers: schema('capability_id', 'only_free', 'limit'),
-  vector_marketplace_get_supplier: schema('advert_ref'),
-  vector_build_marketplace_post_escrow: schema('changeAddress', 'advert_ref', 'payload', 'deliver_by_ms'),
-  vector_build_marketplace_accept: schema('changeAddress', 'escrow_ref'),
-  vector_build_marketplace_reclaim: schema('changeAddress', 'escrow_ref'),
-  vector_marketplace_send_job: schema('escrow_ref', 'payload', 'route'),
-  vector_marketplace_get_job: schema('escrow_ref', 'job_id', 'route'),
-  vector_marketplace_verify_receipt: schema('escrow_ref', 'receipt', 'receipt_signature', 'output', 'supplier_pub_key_hex'),
-  vector_submit_transaction: schema('signedTxCbor'),
-  vector_await_transaction: schema('txHash', 'timeoutSeconds'),
+  vector_marketplace_list_suppliers: schema([], ['capability_id', 'only_free', 'limit']),
+  vector_marketplace_get_supplier: schema(['advert_ref']),
+  vector_build_marketplace_post_escrow: schema(['changeAddress', 'advert_ref', 'payload'], ['deliver_by_ms']),
+  vector_build_marketplace_accept: schema(['changeAddress', 'escrow_ref']),
+  vector_build_marketplace_reclaim: schema(['changeAddress', 'escrow_ref']),
+  vector_marketplace_send_job: schema(['escrow_ref', 'payload', 'buyerAddress']),
+  vector_marketplace_get_job: schema(['escrow_ref', 'job_id', 'buyerAddress']),
+  vector_marketplace_verify_receipt: schema(['escrow_ref', 'receipt', 'receipt_signature'], ['result', 'supplier_pub_key_hex', 'submitted_ref']),
+  vector_submit_transaction: schema(['signedTxCbor']),
+  vector_await_transaction: schema(['txHash'], ['timeoutSeconds']),
 };
 const NINE = Object.keys(SCHEMAS).filter((n) => /marketplace/.test(n));
 const UNSIGNED = { post: 'ab'.repeat(80), accept: 'cd'.repeat(80) };
@@ -77,15 +79,29 @@ async function fakeBuilder(opts = {}) {
       if (opts.hangSend) return new Promise(() => {}); // no answer at all: the test ends the script while it waits
       if (opts.dropSend) { inFlight.destroy(); return new Promise(() => {}); } // the connection breaks before an answer
       if (++sends <= (opts.sendFails ?? 0)) return 'Failed to send job: supplier is already working another job (409 supplier_busy)\n\n**Troubleshooting Tips:**\n1. Pick another advert';
-      return opts.sendAnswer ?? withJson('# Job sent', { jobId: 'job-1', status: 'accepted', route: 'template', capabilityId: CAPABILITY });
+      return opts.sendAnswer ?? withJson('# Job sent', { job_id: 'job-1', status: 'accepted', escrow_ref: ESCROW_REF, capability_id: CAPABILITY });
     },
     vector_marketplace_get_job: () => {
-      if (opts.jobFailed) return withJson('# Job job-1: failed', { state: 'failed', reason: 'service_error', message: 'the service answered 500' });
-      return ++polls <= (opts.pending ?? 1) ? withJson('# Job job-1: running', { state: 'pending', status: 'running' }) : withJson('# Job job-1: done', { state: 'done', result: REPORT, receipt: { ...RECEIPT, escrow_ref: ESCROW_REF }, receipt_signature: SIGNATURE, supplier_pkh: RECEIPT.supplier_pkh });
+      const ids = { job_id: 'job-1', escrow_ref: ESCROW_REF };
+      if (opts.jobFailed) return withJson('# Job job-1: failed', { state: 'failed', ...ids, reason: 'service_error', message: 'the service answered 500' });
+      return ++polls <= (opts.pending ?? 1) ? withJson('# Job job-1: pending', { state: 'pending', ...ids, status: 'running' }) : withJson('# Job job-1: done', { state: 'done', ...ids, result: REPORT, receipt: { ...RECEIPT, escrow_ref: ESCROW_REF }, receipt_signature: SIGNATURE, submitted_ref: null, supplier_pkh: RECEIPT.supplier_pkh });
     },
-    vector_marketplace_verify_receipt: () => {
-      const ok = opts.verified !== false && ++verifies > (opts.verifyFailures ?? 0); // verifyFailures: the ledger lags, the first answers say the on-chain hash is missing
-      return withJson('# Receipt verification', { verified: ok, checks: { escrow_ref_matches: true, response_hash_matches: true, pub_key_is_supplier: true, signature_valid: opts.verified !== false, on_chain_hash_matches: ok } });
+    vector_marketplace_verify_receipt: (args) => {
+      // A verdict, the boolean verified, and a state for each of the five checks and the extra row. A check that was not run is skipped, and a verdict
+      // with a skipped row is incomplete, never verified. Check 2 is skipped without the report text; check 5 is skipped for the first verifyFailures
+      // answers (the ledger lags the supplier's Submit, so the Submitted output is not found yet); verified: false makes the signature check fail.
+      const lagging = ++verifies <= (opts.verifyFailures ?? 0);
+      const checks = {
+        escrow_ref_matches: 'pass',
+        response_hash_matches: (args.result ?? args.output) === undefined ? 'skipped' : 'pass',
+        supplier_key_matches: 'pass',
+        signature_valid: opts.verified === false ? 'fail' : 'pass',
+        on_chain_hash_matches: lagging ? 'skipped' : 'pass',
+        prompt_hash_matches: 'pass',
+      };
+      const states = Object.values(checks);
+      const verdict = states.includes('fail') ? 'failed' : states.includes('skipped') ? 'incomplete' : 'verified';
+      return withJson(`# Receipt check: ${verdict.toUpperCase()}`, { verdict, verified: verdict === 'verified', escrow_ref: args.escrow_ref, checks });
     },
   };
   const toolList = () => (opts.tools ?? Object.keys(SCHEMAS)).map((name) => ({ name, description: name, inputSchema: opts.schemas?.[name] ?? SCHEMAS[name] }));
@@ -98,6 +114,8 @@ async function fakeBuilder(opts = {}) {
     mcp.setRequestHandler(CallToolRequestSchema, async (r) => {
       calls.push({ name: r.params.name, args: r.params.arguments ?? {} });
       const handler = handlers[r.params.name];
+      const lacking = (toolList().find((t) => t.name === r.params.name)?.inputSchema.required ?? []).filter((k) => r.params.arguments?.[k] === undefined);
+      if (lacking.length) return { isError: true, content: [{ type: 'text', text: `Invalid arguments for tool ${r.params.name}: ${lacking.join(', ')} is required` }] };
       return handler ? { content: [{ type: 'text', text: await handler(r.params.arguments ?? {}) }] } : { isError: true, content: [{ type: 'text', text: `unknown tool ${r.params.name}` }] };
     });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
@@ -130,6 +148,14 @@ function run(env, args = []) {
   return new Promise((resolve) => execFile(process.execPath, [SCRIPT, ...args], { env, timeout: 90_000 }, (error, stdout, stderr) => resolve({ code: error ? (error.code ?? 1) : 0, stdout, stderr })));
 }
 const signs = (calls) => calls.filter((c) => c.name === 'vector_signer_sign').length;
+// What a failed job and a stalled job both say. The job tool does not know where the escrow stands and the supplier's Submit may still land, so the
+// escrow is checked before anything is reclaimed: a Submitted one has a clock and cannot be reclaimed, the accept tool builds only for a Submitted
+// one (so asking it is the check), and only an Open or Claimed one is reclaimed, after deliver_by.
+function assertChecksTheEscrow(stderr) {
+  for (const word of [`does not know where escrow ${ESCROW_REF} stands`, "supplier's Submit may still land", 'Submitted', 'vector_build_marketplace_accept', 'seconds_left', '600 s', 'Open or Claimed', 'vector_build_marketplace_reclaim', 'deliver_by']) assert.ok(stderr.includes(word), `says ${word}`);
+  assert.ok(stderr.indexOf('vector_build_marketplace_accept') < stderr.indexOf('vector_build_marketplace_reclaim'), 'the check comes before the reclaim');
+  assert.doesNotMatch(stderr, /Reclaim the escrow/, 'no bare reclaim');
+}
 const USAGE = 'usage: node scripts/e2e-hire.mjs [--dry-run]';
 
 test('stops at once when the builder lacks the marketplace tools, and names all nine (the hosted server today)', async () => {
@@ -251,6 +277,7 @@ test('--dry-run reads, prints every call it would make, and signs, submits and s
   let at = -1;
   for (const tool of planned) { const i = r.stdout.indexOf(tool, at + 1); assert.ok(i > at, `${tool} is planned, in order`); at = i; }
   assert.ok(r.stdout.includes(ADVERT_REF) && r.stdout.includes(ADDRESS), 'the plan carries the real arguments');
+  assert.equal((r.stdout.match(/"buyerAddress":"addr1v/g) ?? []).length, 2, 'the send and the poll name the buyer');
   assert.equal((r.stdout.match(/done in an earlier run/g) ?? []).length, 0, 'nothing is done yet');
   assert.equal(existsSync(t.files.state), false, 'a dry run writes no state');
 });
@@ -269,8 +296,10 @@ test('a full run: post, send, poll, verify, accept, each transaction signed, sub
   ]);
   const byName = (n) => builder.calls.filter((c) => c.name === n);
   assert.deepEqual(byName('vector_build_marketplace_post_escrow')[0].args, { changeAddress: ADDRESS, advert_ref: ADVERT_REF, payload: PAYLOAD });
-  assert.deepEqual(byName('vector_marketplace_send_job')[0].args, { escrow_ref: ESCROW_REF, payload: PAYLOAD });
-  assert.deepEqual(byName('vector_marketplace_verify_receipt')[0].args, { escrow_ref: ESCROW_REF, receipt: { ...RECEIPT, escrow_ref: ESCROW_REF }, receipt_signature: SIGNATURE, output: REPORT });
+  assert.deepEqual(byName('vector_marketplace_send_job')[0].args, { escrow_ref: ESCROW_REF, payload: PAYLOAD, buyerAddress: ADDRESS }, 'the buyer is the wallet that posted and funded the escrow: the signer address');
+  const poll = { escrow_ref: ESCROW_REF, job_id: 'job-1', buyerAddress: ADDRESS };
+  assert.deepEqual(byName('vector_marketplace_get_job').map((c) => c.args), [poll, poll], 'every poll names the buyer, like the send');
+  assert.deepEqual(byName('vector_marketplace_verify_receipt')[0].args, { escrow_ref: ESCROW_REF, receipt: { ...RECEIPT, escrow_ref: ESCROW_REF }, receipt_signature: SIGNATURE, result: REPORT });
   assert.deepEqual(byName('vector_submit_transaction').map((c) => c.args.signedTxCbor), [`ff${UNSIGNED.post}`, `ff${UNSIGNED.accept}`], 'what the signer returned is what was submitted');
   assert.deepEqual(byName('vector_await_transaction').map((c) => c.args), [{ txHash: TX.post, timeoutSeconds: 90 }, { txHash: TX.accept, timeoutSeconds: 90 }], 'a wait is asked for in slices of 90 s, under the proxy cut near 100 s');
   assert.deepEqual(t.signerCalls().map((c) => c.name), ['vector_signer_get_address', 'vector_signer_sign', 'vector_signer_sign']);
@@ -318,13 +347,13 @@ test('a wait for confirmation is asked for in slices of 90 s and repeated until 
   assert.deepEqual([...new Set(waits.map((c) => c.args.timeoutSeconds))], [90]);
 });
 
-test('a job that the supplier reports as failed stops the run with the reason and the reclaim step, and nothing is verified or accepted', async () => {
+test('a job that the supplier reports as failed stops the run with the reason and the check of the escrow, not a bare reclaim; nothing is verified or accepted', async () => {
   const builder = await fakeBuilder({ jobFailed: true });
   const t = setup();
   const r = await run(t.env(builder));
   assert.equal(r.code, 1);
   assert.match(r.stderr, /the job failed: service_error the service answered 500/);
-  assert.match(r.stderr, /Reclaim the escrow after deliver_by with vector_build_marketplace_reclaim/);
+  assertChecksTheEscrow(r.stderr);
   assert.equal(builder.names().includes('vector_marketplace_verify_receipt'), false);
   assert.equal(builder.names().includes('vector_build_marketplace_accept'), false);
   assert.equal(signs(t.signerCalls()), 1, 'only the post was signed');
@@ -403,6 +432,7 @@ test('a send that the tool reports as failed leaves no marker; the free list is 
   assert.match(refused.stderr, /is not among the free suppliers/);
   assert.ok(refused.stderr.includes(`An earlier run already posted escrow ${ESCROW_REF}`), 'the escrow that is already posted');
   for (const word of ['still Open', 'vector_build_marketplace_reclaim', 'deliver_by', 'move', 'start a new run']) assert.ok(refused.stderr.includes(word), `the stop says ${word}`);
+  assert.doesNotMatch(refused.stderr, /never recorded/, 'the post was confirmed, so there is nothing to doubt');
   assert.deepEqual(builder.names(), ['vector_marketplace_list_suppliers']);
 
   builder.calls.length = 0;
@@ -411,6 +441,26 @@ test('a send that the tool reports as failed leaves no marker; the free list is 
   assert.equal(second.code, 0, second.stderr);
   assert.deepEqual(builder.names().slice(0, 3), ['vector_marketplace_list_suppliers', 'vector_marketplace_send_job', 'vector_marketplace_get_job']);
   assert.equal(builder.names().includes('vector_build_marketplace_post_escrow'), false);
+});
+
+test('a post whose confirmation was never recorded is not called Open: the stop points to the "not confirmed on every rerun" row of docs/E2E.md', async () => {
+  const builder = await fakeBuilder({ notConfirmed: [TX.post] });
+  const t = setup();
+  const first = await run(t.env(builder));
+  assert.equal(first.code, 1);
+  assert.match(first.stderr, /not confirmed yet/);
+  assert.equal(t.state().post.confirmed, undefined, 'the confirmation was never recorded');
+
+  builder.calls.length = 0;
+  builder.opts.listed = false; // the advert is no longer free, and the post of the first run is signed but not known to be on the ledger
+  const refused = await run(t.env(builder));
+  assert.equal(refused.code, 1);
+  assert.match(refused.stderr, /is not among the free suppliers/);
+  assert.ok(refused.stderr.includes(`An earlier run signed escrow ${ESCROW_REF} in transaction ${TX.post} and never recorded that it was confirmed`), 'names the escrow and its transaction');
+  assert.ok(refused.stderr.includes('so that escrow may not be on the ledger, and nothing was sent to the supplier'));
+  assert.doesNotMatch(refused.stderr, /still Open|already posted/, 'an escrow that may not exist is not called Open');
+  assert.ok(refused.stderr.includes('follow the row "the same transaction is reported as not confirmed on every rerun" in docs/E2E.md ("If a run stops")'), 'the row to follow');
+  assert.deepEqual(builder.names(), ['vector_marketplace_list_suppliers']);
 });
 
 test('a send answered without a job id keeps the marker, because the supplier may have claimed; the next run stops', async () => {
@@ -480,6 +530,7 @@ test('a rerun after the job was sent continues although the supplier now shows a
   const first = await run(t.env(builder));
   assert.equal(first.code, 1);
   assert.match(first.stderr, /did not finish before deliver_by/);
+  assertChecksTheEscrow(first.stderr); // a stalled job is not known to be unsubmitted either
 
   // A dry run over this state shows what is done: the post (four calls) and the send, not the poll.
   const dry = await run(t.env(builder), ['--dry-run']);
@@ -554,19 +605,61 @@ test('refuses a state file that belongs to another run', async () => {
   assert.equal(builder.names().includes('vector_build_marketplace_post_escrow'), false);
 });
 
-test('takes argument names from the server: the receipt text goes in "result" when the tool calls it that, and a tool without an argument fails loudly', async () => {
-  const renamed = { ...SCHEMAS.vector_marketplace_verify_receipt, properties: { escrow_ref: {}, receipt: {}, receipt_signature: {}, result: {} } };
+test('takes argument names from the server: the report text goes in "output" when the tool calls it that (the merged tool says "result"), and a tool without an argument fails loudly', async () => {
+  const renamed = { ...SCHEMAS.vector_marketplace_verify_receipt, properties: { escrow_ref: {}, receipt: {}, receipt_signature: {}, output: {} } };
   const builder = await fakeBuilder({ schemas: { vector_marketplace_verify_receipt: renamed } });
   const ok = await run(setup().env(builder));
   assert.equal(ok.code, 0, ok.stderr);
   const verify = builder.calls.find((c) => c.name === 'vector_marketplace_verify_receipt').args;
-  assert.equal(verify.result, REPORT); assert.equal('output' in verify, false);
+  assert.equal(verify.output, REPORT); assert.equal('result' in verify, false);
 
-  const strict = await fakeBuilder({ schemas: { vector_build_marketplace_post_escrow: schema('changeAddress', 'payload') } });
+  const strict = await fakeBuilder({ schemas: { vector_build_marketplace_post_escrow: schema(['changeAddress', 'payload']) } });
   const bad = await run(setup().env(strict));
   assert.equal(bad.code, 1);
   assert.match(bad.stderr, /vector_build_marketplace_post_escrow has no argument advert_ref/);
   assert.equal(strict.names().includes('vector_build_marketplace_post_escrow'), false);
+});
+
+test('a tool that requires an argument the script does not send stops a fresh run before any transaction is built, and the dry run says so too', async () => {
+  // The merged send requires buyerAddress. Here it requires one more, which nothing in the script knows about.
+  const builder = await fakeBuilder({ schemas: { vector_marketplace_send_job: schema(['escrow_ref', 'payload', 'buyerAddress', 'route']) } });
+  const t = setup();
+  for (const args of [[], ['--dry-run']]) {
+    const r = await run(t.env(builder), args);
+    assert.equal(r.code, 1, args.join(' ') || 'a real run');
+    assert.match(r.stderr, /vector_marketplace_send_job requires route, which the call lacks/);
+    assert.equal(r.stdout, '', 'neither a plan nor evidence');
+  }
+  assert.deepEqual(builder.calls, [], 'the builder was asked nothing: no supplier list, no escrow built');
+  assert.deepEqual(t.signerCalls().map((c) => c.name), ['vector_signer_get_address', 'vector_signer_get_address'], 'the signer was asked for its address and for nothing else');
+  assert.equal('post' in t.state(), false, 'no transaction was built or signed');
+});
+
+test('a rerun past the post still refuses a call that lacks a required argument, before the tool is called', async () => {
+  const builder = await fakeBuilder({ pending: 1, deliverBy: Date.now() - 1000 });
+  const t = setup();
+  const first = await run(t.env(builder));
+  assert.equal(first.code, 1);
+  assert.match(first.stderr, /did not finish before deliver_by/);
+  builder.calls.length = 0;
+  builder.opts.schemas = { vector_marketplace_get_job: schema(['escrow_ref', 'job_id', 'buyerAddress', 'route']) }; // the poll now requires one more
+  const second = await run(t.env(builder));
+  assert.equal(second.code, 1);
+  assert.match(second.stderr, /vector_marketplace_get_job requires route, which the call lacks/);
+  assert.deepEqual(builder.names(), [], 'the poll was not called');
+});
+
+test('a receipt check that stays incomplete is not a pass: the run does not accept, and the skipped row is in its message', async () => {
+  const builder = await fakeBuilder({ verifyFailures: 99 }); // the ledger never shows the supplier's Submit, so check 5 stays skipped
+  const t = setup();
+  const r = await run(t.env(builder));
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /NOT accepting/);
+  assert.match(r.stderr, /"on_chain_hash_matches":"skipped"/);
+  assert.equal(builder.names().filter((n) => n === 'vector_marketplace_verify_receipt').length, 6, 'six tries');
+  assert.equal(builder.names().includes('vector_build_marketplace_accept'), false);
+  assert.equal(signs(t.signerCalls()), 1, 'only the post was signed');
+  assert.equal(r.stdout, '');
 });
 
 test('key material: the signer gets the VECTOR_SIGNER_ settings and nothing else of this shell, and no setting value is printed or stored', async () => {

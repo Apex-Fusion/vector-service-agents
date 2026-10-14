@@ -127,7 +127,7 @@ const CHAT_SCRIPT = [
   '1. "List the marketplace capabilities on Vector."',
   '2. "Show me free suppliers for identity.history.report.v1."',
   '3. "Hire the first one. Payload: {"subject":"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db"}. Use my signer address as changeAddress, sign, submit and wait for confirmation."',
-  '4. "Send the job with the same payload, then poll until it is done."',
+  '4. "Send the job with the same payload, then poll until it is done. Use my signer address as buyerAddress in both calls."',
   '5. "Verify the receipt. If every check passes, accept, sign, submit and wait."',
   '6. "Show me the receipt, the signature, the escrow reference and explorer links for the post and the accept."',
 ];
@@ -325,6 +325,7 @@ test('docs/E2E.md and scripts/e2e-hire.mjs agree on the send step, the signer se
   assert.match(e2e, /\| Exit code 1, and the same transaction is reported as not confirmed on every rerun \|/);
   assert.ok(e2e.includes('every rerun submits that same transaction again') && e2e.includes('mv e2e-state.json e2e-state.old.json'));
   assert.ok(script.includes('An earlier run already posted escrow') && script.includes('is still Open'));
+  assert.ok(script.includes('follow the row "the same transaction is reported as not confirmed on every rerun" in docs/E2E.md'), 'the note for a post that was never confirmed names a row that exists in the runbook');
   assert.equal(e2e.match(/never reads/), null, 'the script reads the settings it forwards; it never prints or stores them');
   assert.ok(e2e.includes('The script forwards every `VECTOR_SIGNER_` setting to the signer process it starts.') && e2e.includes('The script never prints or stores the value of a setting.'));
   assert.match(e2e, /`keygen` command, which arrives with PR 4/);
@@ -360,4 +361,36 @@ test('docs/E2E.md and scripts/e2e-hire.mjs: the recovery text reads the escrow b
   }
   assert.ok(recovery.includes('%23'), 'the # of the reference is written as %23');
   assert.ok(fromScript.includes('encodeURIComponent(post.escrow_ref)'));
+});
+
+test('docs/HIRE.md: the receipt check is described as the merged tool answers it, message 4 names buyerAddress, and keygen is run in the member\'s own terminal', () => {
+  const guide = hire();
+  const six = section(guide, '6. Read your receipt');
+  assert.ok(six.includes('runs five checks and one extra row, and reports each as pass, fail or skipped'));
+  assert.ok(six.includes('The verdict reads VERIFIED only when every row passes. It reads FAILED when a row fails, and INCOMPLETE when nothing failed but a row was skipped'));
+  assert.ok(six.includes('the `prompt_hash` in the receipt equals the `prompt_hash` in the escrow datum'), 'the extra row');
+  assert.ok(six.includes('check 2 is skipped and the verdict reads INCOMPLETE, which is never a pass'));
+  assert.equal(guide.match(/can still read as a pass|as pass or fail:/), null, 'the wording of before the tool had a skipped state');
+  const five = section(guide, '5. The chat script');
+  assert.ok(five.includes('`buyerAddress` must be the wallet that posted and funded the escrow, which is your signer address.'), 'the table of message 4 says what buyerAddress is');
+  const two = section(guide, '2. Get a key');
+  assert.ok(two.includes("Run `keygen` in your own terminal, never through your assistant's shell tool."));
+  assert.ok(two.includes('so the only copy of the key would reach your model provider'));
+  assert.ok(two.indexOf('never through your assistant') < two.indexOf('node packages/signer/build/index.js keygen'), 'said before the first command');
+});
+
+test('docs/E2E.md and scripts/e2e-hire.mjs: buyerAddress, the skipped and incomplete wording, and a failed or stalled job checked before it is reclaimed', () => {
+  const e2e = doc('E2E.md');
+  const script = e2eScript();
+  assert.ok(e2e.includes("The send and every poll pass the signer's address as `buyerAddress`"));
+  assert.equal((script.match(/buyerAddress: address/g) ?? []).length, 4, 'the send and the poll, in the calls and in the plan');
+  assert.ok(e2e.includes('check 2 is skipped, and a skipped row makes the verdict `incomplete`, never a pass'));
+  assert.ok(e2e.includes('stops the run before any money moves') && script.includes('if (!state.post?.signed_cbor) for (const [name, args] of stepsOf('), 'a fresh run checks its arguments first');
+  const row = e2e.split('\n').find((l) => l.startsWith('| Exit code 1 | A step failed.')) ?? '';
+  assert.doesNotMatch(row, /If the job failed or `deliver_by` passed, reclaim/);
+  for (const word of ["the supplier's Submit may still land", 'vector_build_marketplace_accept', '`seconds_left`', '600 s', 'Open or Claimed']) assert.ok(row.includes(word), `the runbook row says ${word}`);
+  const fromScript = script.slice(script.indexOf('function checkTheEscrow'), script.indexOf('function postedEscrowNote'));
+  assert.ok(fromScript.length > 400, 'the check-the-escrow text was found in the script');
+  for (const word of ["the supplier's Submit may still land", 'vector_build_marketplace_accept', 'seconds_left', '600 s', 'Open or Claimed', 'vector_build_marketplace_reclaim']) assert.ok(fromScript.includes(word), `the script says ${word}`);
+  assert.doesNotMatch(script, /Reclaim the escrow/, 'the script never tells the operator to simply reclaim');
 });
