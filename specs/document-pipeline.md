@@ -170,7 +170,7 @@ Not yet advertised. When live, the three ways below apply. The step-by-step guid
 
 The request JSON is, for example, `{"source":{"url":"https://example.org/letter.pdf"},"task":"summary","language":"en","max_pages":1}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 
-1. **Chat client via MCP.** Same tools and same steps as for [Agent History](agent-history.md): list suppliers for `document.pipeline.ocr-summary.v1`, post an escrow, send the job, poll, verify the receipt, accept. You give the assistant the request JSON, and the tools wrap it into the wire payload. The marketplace tools are PROPOSED.
+1. **Chat client via MCP.** Same tools and same steps as for [Agent History](agent-history.md): list suppliers for `document.pipeline.ocr-summary.v1`, post an escrow, send the job, poll, verify the receipt, accept. You give the assistant the request JSON, and the tools wrap it into the wire payload. The marketplace tools are merged, awaiting the mainnet cutover.
 2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `c4c378a`), with your own key. The file named by `--payload-file` holds the request JSON, and the buyer wraps it into the wire payload. Allow for the 30 min processing window.
 3. **Developers, the raw routes.** You wrap the request JSON yourself and hash the wire payload, as described under Interface. Then the six steps in [Agent History](agent-history.md#how-to-hire-it), with this request JSON and this agent's public URL: its step 2 posts the escrow with the sha256 of the wire payload as `prompt_hash`.
 

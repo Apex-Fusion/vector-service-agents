@@ -238,12 +238,16 @@ test('docs/HIRE.md: says what is and is not in service, tool by tool', () => {
   assert.equal(MARKETPLACE_TOOLS.length, 9);
   for (const tool of MARKETPLACE_TOOLS) assert.ok(guide.includes('`' + tool + '`'), tool);
   const row = (needle) => guide.split('\n').find((l) => l.startsWith('|') && l.includes(needle)) ?? '';
-  assert.match(row('vector_marketplace_list_capabilities'), /Open PR 1: \[Apex-Fusion\/mcp-server#20\]\(https:\/\/github.com\/Apex-Fusion\/mcp-server\/pull\/20\)/);
-  assert.match(row('vector_build_marketplace_post_escrow'), /PR 2 open \(#21, stacked on #20\)/);
-  assert.match(row('vector_marketplace_send_job'), /PR 3, planned/);
-  assert.match(row('@apexfusion/vector-mcp-signer'), /PR 4, planned.*not published/);
+  // The nine tools are merged into main (2026-10-14) and wait for the mainnet cutover: not "open", not "planned", and not in service.
+  const awaiting = 'merged into `main` on 2026-10-14, awaiting the mainnet cutover: ';
+  assert.ok(row('vector_marketplace_list_capabilities').includes('PR 1, ' + awaiting + '[Apex-Fusion/mcp-server#20](https://github.com/Apex-Fusion/mcp-server/pull/20)'));
+  assert.ok(row('vector_build_marketplace_post_escrow').includes('PR 2, ' + awaiting + '[Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21)'));
+  assert.ok(row('vector_marketplace_send_job').includes('PR 3, merged into `main` on 2026-10-14 with PR 2, awaiting the mainnet cutover: [Apex-Fusion/mcp-server#23](https://github.com/Apex-Fusion/mcp-server/pull/23)'));
+  assert.match(row('@apexfusion/vector-mcp-signer'), /PR 4, merged into `main` on 2026-10-14: \[Apex-Fusion\/mcp-server#22\]\(https:\/\/github.com\/Apex-Fusion\/mcp-server\/pull\/22\)\. The package is not published/);
   assert.match(row('identity.history.report.v1'), /PROPOSED \(built, not yet advertised\)/);
-  assert.match(row('mcp.vector.mainnet.apexfusion.org'), /v2\.0\.0, 24 tools/);
+  assert.match(row('mcp.vector.mainnet.apexfusion.org'), /v2\.0\.0, 24 tools\. None of the marketplace tools is on it\. The maintainer cuts it over on purpose, and the cutover waits for the first-party run in \[docs\/E2E\.md\]\(E2E\.md\)/);
+  assert.match(row('Hosted testnet instance'), /Updates itself from `main`, so it lists the marketplace tools\. It reads the mainnet marketplace indexer with the testnet Koios/);
+  assert.equal(guide.match(/Open PR 1|PR 2 open|PR 3, planned|PR 4, planned|stacked on #20/), null, 'the statuses of before the merge');
 });
 
 test('docs/HIRE.md, docs/E2E.md and scripts/e2e-hire.mjs: every tool named is in the design or on the hosted server today', () => {
@@ -280,7 +284,7 @@ test('docs/HIRE.md and docs/E2E.md: every place that lists what the receipt chec
 
 test('docs/HIRE.md: the status box says what runs today and that there is no audit; the client config file is said to hold the key in plain text', () => {
   const guide = hire();
-  const line = 'The hosted server is running with 24 tools today; the marketplace tools are not on it yet. No third-party audit of the marketplace contracts exists.';
+  const line = 'The hosted mainnet server is running with 24 tools today; the marketplace tools are merged, awaiting the mainnet cutover. No third-party audit of the marketplace contracts exists.';
   assert.equal(guide.split(line).length - 1, 1, 'once');
   assert.ok(guide.indexOf('**Status: PROPOSED.**') < guide.indexOf(line) && guide.indexOf(line) < guide.indexOf('| Piece |'), 'inside the status box, above the table');
   const four = section(guide, '4. Two lines of config');
@@ -328,17 +332,17 @@ test('docs/E2E.md and scripts/e2e-hire.mjs agree on the send step, the signer se
   assert.ok(script.includes('follow the row "the same transaction is reported as not confirmed on every rerun" in docs/E2E.md'), 'the note for a post that was never confirmed names a row that exists in the runbook');
   assert.equal(e2e.match(/never reads/), null, 'the script reads the settings it forwards; it never prints or stores them');
   assert.ok(e2e.includes('The script forwards every `VECTOR_SIGNER_` setting to the signer process it starts.') && e2e.includes('The script never prints or stores the value of a setting.'));
-  assert.match(e2e, /`keygen` command, which arrives with PR 4/);
+  assert.match(e2e, /`keygen` command \(PR 4, merged into `main` on 2026-10-14; the npx package is not published yet\)/);
   assert.ok(e2e.includes('`--dry-run` is the only argument the script takes.'));
   assert.ok(e2e.includes('asks `vector_await_transaction` to wait 90 s at a time, up to four times'));
   assert.match(script, /const AWAIT_SLICE_S = 90;/);
   assert.match(script, /const AWAIT_SLICES = 4;/);
 });
 
-test('docs/HIRE.md: PR 2 is open with its link, the last message lists the report text, and the lost buyer bond is said in one sentence', () => {
+test('docs/HIRE.md: PR 2 is merged and awaits the cutover, with its link; the last message lists the report text, and the lost buyer bond is said in one sentence', () => {
   const guide = hire();
   const row = (needle) => guide.split('\n').find((l) => l.startsWith('|') && l.includes(needle)) ?? '';
-  assert.ok(row('vector_build_marketplace_post_escrow').includes('PR 2 open (#21, stacked on #20): [Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21)'));
+  assert.ok(row('vector_build_marketplace_post_escrow').includes('PR 2, merged into `main` on 2026-10-14, awaiting the mainnet cutover: [Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21)'));
   assert.match(row('| Reads back what it already has |'), /^\| 6 \| .* You hold the report text, the receipt, the signature, the escrow reference and two links\./);
   assert.ok(section(guide, '3. We fund it').includes('the supplier may Release the escrow and keep everything that is locked: the price and both bonds, your buyer bond included.'));
 });
@@ -393,4 +397,26 @@ test('docs/E2E.md and scripts/e2e-hire.mjs: buyerAddress, the skipped and incomp
   assert.ok(fromScript.length > 400, 'the check-the-escrow text was found in the script');
   for (const word of ["the supplier's Submit may still land", 'vector_build_marketplace_accept', 'seconds_left', '600 s', 'Open or Claimed', 'vector_build_marketplace_reclaim']) assert.ok(fromScript.includes(word), `the script says ${word}`);
   assert.doesNotMatch(script, /Reclaim the escrow/, 'the script never tells the operator to simply reclaim');
+});
+
+test('the marketplace tools are said to be merged and awaiting the mainnet cutover in the runbook, the script and the four specs, and way 1 of the Agent History spec names buyerAddress', () => {
+  const e2e = doc('E2E.md');
+  assert.ok(e2e.includes('The nine marketplace tools are merged into `main` of Apex-Fusion/mcp-server (2026-10-14), awaiting the mainnet cutover: the hosted mainnet server still serves 24 tools, none of them a marketplace tool.'));
+  assert.ok(e2e.includes("The cutover is the maintainer's deliberate step and waits for this run."));
+  const builderRow = e2e.split('\n').find((l) => l.startsWith('| `BUILDER_URL` |')) ?? '';
+  assert.ok(builderRow.includes('build `main` of Apex-Fusion/mcp-server and run it locally'));
+  assert.ok(builderRow.includes('The hosted testnet instance lists the same tools, but it reads the mainnet marketplace indexer with the testnet Koios'));
+  assert.equal(e2e.match(/three PRs|PR 3 branch|PR 4 \(planned\)|none of the nine marketplace tools/), null, 'the statuses of before the merge');
+  const script = e2eScript();
+  assert.ok(script.includes('They are merged into main of Apex-Fusion/mcp-server (2026-10-14) and reach the hosted mainnet server with the mainnet cutover.'));
+  assert.equal(script.match(/three PRs|PR 3 branch/), null);
+  const wayOne = section(read('agent-history'), 'How to hire it').split('\n').find((l) => l.startsWith('1. **Chat client via MCP.**')) ?? '';
+  assert.ok(wayOne.includes('The send and every poll also take your signer address as `buyerAddress`, the wallet that posted and funded the escrow.'));
+  assert.ok(wayOne.includes('The marketplace tools are merged into `main` of Apex-Fusion/mcp-server, awaiting the mainnet cutover: the hosted mainnet server serves 24 tools as of 2026-10-14.'));
+  for (const name of ['document-pipeline', 'audio-snippets', 'advocate']) {
+    const how = section(read(name), 'How to hire it');
+    assert.ok(how.includes('The marketplace tools are merged, awaiting the mainnet cutover.'), name);
+    assert.equal(how.match(/marketplace tools are PROPOSED/), null, name);
+  }
+  assert.equal(read('agent-history').match(/not on the hosted server/), null);
 });

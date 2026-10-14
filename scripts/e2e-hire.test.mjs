@@ -165,6 +165,9 @@ test('stops at once when the builder lacks the marketplace tools, and names all 
   assert.equal(r.code, 3);
   for (const tool of NINE) assert.ok(r.stderr.includes(tool), `names ${tool}`);
   assert.match(r.stderr, /PR 1/); assert.match(r.stderr, /PR 2/); assert.match(r.stderr, /PR 3/);
+  assert.ok(r.stderr.includes('They are merged into main of Apex-Fusion/mcp-server (2026-10-14) and reach the hosted mainnet server with the mainnet cutover.'), 'says where the tools are');
+  assert.ok(r.stderr.includes('for example a local build of main: PORT=3300'), 'a local build of main');
+  assert.doesNotMatch(r.stderr, /three PRs|PR 3 branch/, 'the statuses of before the merge');
   assert.deepEqual(builder.calls, [], 'no tool was called');
   assert.deepEqual(t.signerCalls(), [], 'the signer was not even started');
   assert.equal(existsSync(t.files.state), false);

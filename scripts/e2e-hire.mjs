@@ -1,7 +1,7 @@
 // scripts/e2e-hire.mjs - our own first-party hire of Agent History through the MCP tools. See docs/E2E.md.
 //
-// It drives two MCP servers with the official SDK. The builder (the hosted server, or a local build of the marketplace PRs) reads the
-// ledger and builds unsigned transactions. The signer holds the key and signs. This script holds no key and prints none: it forwards
+// It drives two MCP servers with the official SDK. The builder (the hosted server, or a local build of main of Apex-Fusion/mcp-server) reads
+// the ledger and builds unsigned transactions. The signer holds the key and signs. This script holds no key and prints none: it forwards
 // the VECTOR_SIGNER_ settings of this shell to the signer it starts (the SDK adds its short list of default variables, such as PATH)
 // and nothing else, and it reads the signer's address from the signer's own tool.
 //
@@ -32,8 +32,8 @@ if (strayArgs.length) { log(`e2e-hire: unknown argument ${strayArgs.join(' ')}\n
 const DRY = argv.includes('--dry-run');
 const CAPABILITY = 'identity.history.report.v1';
 const DEFAULT_PAYLOAD = '{"subject":"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db"}';
-// The nine marketplace tools and the PR of Apex-Fusion/mcp-server that brings each. All nine are required: a hire without the
-// reclaim tool can strand funds, so a builder that lacks it is not ready for an outside member either.
+// The nine marketplace tools and the PR of Apex-Fusion/mcp-server that brought each (all merged into main on 2026-10-14). All nine are
+// required: a hire without the reclaim tool can strand funds, so a builder that lacks it is not ready for an outside member either.
 const PR_OF = {
   vector_marketplace_list_capabilities: 'PR 1 (read tools)', vector_marketplace_list_suppliers: 'PR 1 (read tools)', vector_marketplace_get_supplier: 'PR 1 (read tools)',
   vector_build_marketplace_post_escrow: 'PR 2 (build tools)', vector_build_marketplace_accept: 'PR 2 (build tools)', vector_build_marketplace_reclaim: 'PR 2 (build tools)',
@@ -330,8 +330,8 @@ try {
     const byPr = Object.entries(Object.groupBy(lacking.filter((t) => PR_OF[t]), (t) => PR_OF[t])).map(([pr, names]) => `  ${pr}: ${names.join(', ')}`);
     const other = lacking.filter((t) => !PR_OF[t]);
     throw new Fail([`the builder at ${BUILDER_URL} lists ${builder.tools.size} tools and lacks these:`, ...byPr, ...(other.length ? [`  other: ${other.join(', ')}`] : []),
-      'This run needs all nine marketplace tools. They arrive in three PRs to Apex-Fusion/mcp-server. Point BUILDER_URL at a builder that has them,',
-      'for example a local build of the PR 3 branch: PORT=3300 node packages/builder/build/index.js, then BUILDER_URL=http://localhost:3300/mcp'].join('\n'), 3);
+      'This run needs all nine marketplace tools. They are merged into main of Apex-Fusion/mcp-server (2026-10-14) and reach the hosted mainnet server with the mainnet cutover. Point BUILDER_URL at a builder that has them,',
+      'for example a local build of main: PORT=3300 node packages/builder/build/index.js, then BUILDER_URL=http://localhost:3300/mcp'].join('\n'), 3);
   }
   // Only the VECTOR_SIGNER_ settings go to the signer. Nothing else of this shell does.
   const signerEnv = Object.fromEntries(Object.entries(env).filter(([k, v]) => k.startsWith('VECTOR_SIGNER_') && v !== undefined));
