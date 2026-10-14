@@ -4,15 +4,15 @@ A guide for a working-group member. You use a chat client that has two MCP serve
 
 **Status: PROPOSED.** Nothing in this guide is LIVE or DEPLOYED. It was written on 2026-10-13, and its status table was brought up to date on 2026-10-14. You can finish it only when the tools, the signer and the agent in this table are in service and your key is funded.
 
-The hosted mainnet server is running with 24 tools today; the marketplace tools are merged, awaiting the mainnet cutover. No third-party audit of the marketplace contracts exists.
+The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nine marketplace tools are on it. No third-party audit of the marketplace contracts exists.
 
 | Piece | Status on 2026-10-14 |
 |---|---|
-| Hosted keyless MCP server, `https://mcp.vector.mainnet.apexfusion.org/mcp` | Running, v2.0.0, 24 tools. None of the marketplace tools is on it. The maintainer cuts it over on purpose, and the cutover waits for the first-party run in [docs/E2E.md](E2E.md). |
+| Hosted keyless MCP server, `https://mcp.vector.mainnet.apexfusion.org/mcp` | Running, v2.0.0, 33 tools. All nine marketplace tools are on it, checked on 2026-10-14 with an MCP `initialize` and `tools/list` handshake. No first-party run of the path is recorded yet, see [docs/E2E.md](E2E.md). |
 | Hosted testnet instance of the same server | Updates itself from `main`, so it lists the marketplace tools. It reads the mainnet marketplace indexer with the testnet Koios, so it is not the server of this guide. |
-| `vector_marketplace_list_capabilities`, `vector_marketplace_list_suppliers`, `vector_marketplace_get_supplier` | PR 1, merged into `main` on 2026-10-14, awaiting the mainnet cutover: [Apex-Fusion/mcp-server#20](https://github.com/Apex-Fusion/mcp-server/pull/20) |
-| `vector_build_marketplace_post_escrow`, `vector_build_marketplace_accept`, `vector_build_marketplace_reclaim` | PR 2, merged into `main` on 2026-10-14, awaiting the mainnet cutover: [Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21) |
-| `vector_marketplace_send_job`, `vector_marketplace_get_job`, `vector_marketplace_verify_receipt` | PR 3, merged into `main` on 2026-10-14 with PR 2, awaiting the mainnet cutover: [Apex-Fusion/mcp-server#23](https://github.com/Apex-Fusion/mcp-server/pull/23) |
+| `vector_marketplace_list_capabilities`, `vector_marketplace_list_suppliers`, `vector_marketplace_get_supplier` | PR 1, merged into `main` on 2026-10-14, on the hosted mainnet server: [Apex-Fusion/mcp-server#20](https://github.com/Apex-Fusion/mcp-server/pull/20) |
+| `vector_build_marketplace_post_escrow`, `vector_build_marketplace_accept`, `vector_build_marketplace_reclaim` | PR 2, merged into `main` on 2026-10-14, on the hosted mainnet server: [Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21) |
+| `vector_marketplace_send_job`, `vector_marketplace_get_job`, `vector_marketplace_verify_receipt` | PR 3, merged into `main` on 2026-10-14 with PR 2, on the hosted mainnet server: [Apex-Fusion/mcp-server#23](https://github.com/Apex-Fusion/mcp-server/pull/23) |
 | The signer's `keygen` command and the npx package `@apexfusion/vector-mcp-signer` | PR 4, merged into `main` on 2026-10-14: [Apex-Fusion/mcp-server#22](https://github.com/Apex-Fusion/mcp-server/pull/22). The package is not published, so `keygen` runs from a build of `main`. |
 | Agent History, capability `identity.history.report.v1` | PROPOSED (built, not yet advertised). The advert reference and the public URL in this guide are placeholders. |
 | The funding for your key | Sent by hand by the Foundation. |

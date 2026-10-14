@@ -330,7 +330,7 @@ try {
     const byPr = Object.entries(Object.groupBy(lacking.filter((t) => PR_OF[t]), (t) => PR_OF[t])).map(([pr, names]) => `  ${pr}: ${names.join(', ')}`);
     const other = lacking.filter((t) => !PR_OF[t]);
     throw new Fail([`the builder at ${BUILDER_URL} lists ${builder.tools.size} tools and lacks these:`, ...byPr, ...(other.length ? [`  other: ${other.join(', ')}`] : []),
-      'This run needs all nine marketplace tools. They are merged into main of Apex-Fusion/mcp-server (2026-10-14) and reach the hosted mainnet server with the mainnet cutover. Point BUILDER_URL at a builder that has them,',
+      'This run needs all nine marketplace tools. They are merged into main of Apex-Fusion/mcp-server and on the hosted mainnet server as of 2026-10-14, so a builder that lacks them is some other builder. Point BUILDER_URL at a builder that has them,',
       'for example a local build of main: PORT=3300 node packages/builder/build/index.js, then BUILDER_URL=http://localhost:3300/mcp'].join('\n'), 3);
   }
   // Only the VECTOR_SIGNER_ settings go to the signer. Nothing else of this shell does.

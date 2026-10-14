@@ -497,17 +497,18 @@ test('RUNBOOK: the spec is refreshed in a pull request after the identity (step 
   assert.ok(runbook.indexOf('"$KEY"') < runbook.indexOf('## 12.'), 'before the advert is posted');
 });
 
-test('RUNBOOK: the key is never sent anywhere, the registry login block is bash, the hash script runs from the repository root, the marketplace tools are merged and await the mainnet cutover, the wallet monitor is named', () => {
+test('RUNBOOK: the key is never sent anywhere, the registry login block is bash, the hash script runs from the repository root, the marketplace tools are on the hosted mainnet server, the wallet monitor is named', () => {
   assert.match(section(runbook, '4. Make the env file and generate the supplier key'), /is never sent anywhere\./);
   assert.doesNotMatch(runbook, /never leaves/);
   assert.match(section(runbook, '2. Log in to the registry and get the service image'), /```bash\nread -rs GHCR_TOKEN/);
   assert.match(section(runbook, '11. Hash the manifest'), /```sh\ncd \/opt\/agent-history\/repo\nnode scripts\/manifest-hash\.mjs /);
   const s15 = section(runbook, '15. The first-party run');
-  assert.ok(s15.includes('As of 2026-10-14 the nine marketplace tools the script needs are merged into `main` of Apex-Fusion/mcp-server (PR 1 as [#20](https://github.com/Apex-Fusion/mcp-server/pull/20), PR 2 as [#21](https://github.com/Apex-Fusion/mcp-server/pull/21) and PR 3 as [#23](https://github.com/Apex-Fusion/mcp-server/pull/23) with PR 2), awaiting the mainnet cutover.'));
+  assert.ok(s15.includes('As of 2026-10-14 the nine marketplace tools the script needs are merged into `main` of Apex-Fusion/mcp-server (PR 1 as [#20](https://github.com/Apex-Fusion/mcp-server/pull/20), PR 2 as [#21](https://github.com/Apex-Fusion/mcp-server/pull/21) and PR 3 as [#23](https://github.com/Apex-Fusion/mcp-server/pull/23) with PR 2) and are on the hosted mainnet MCP server, which lists 33 tools.'));
   assert.ok(s15.includes('PR 4 ([#22](https://github.com/Apex-Fusion/mcp-server/pull/22)), the signer package with its `keygen` command, is merged too, and the package is not published.'));
   assert.doesNotMatch(s15, /and PR 4 as/, 'PR 4 is the signer, not one of the nine marketplace tools');
-  assert.ok(s15.includes('The hosted mainnet MCP server still serves 24 tools, none of them a marketplace tool, and the maintainer cuts it over on purpose, after this run.'));
+  assert.ok(s15.includes('The default `BUILDER_URL` of the script is the hosted mainnet MCP server, so the run needs no local builder. E2E.md keeps the local build of `main` as the fallback for a builder that lacks the tools.'));
   assert.doesNotMatch(s15, /PR 2 is open|PR 3 and PR 4 follow|PRs 2 and 3 follow|are deployed|PR 3 branch/);
+  assert.doesNotMatch(s15, /cutover|cuts it over|24 tools|none of them a marketplace tool|awaiting the|still serves/i, 'nothing waits for a cutover any more');
   const s16 = section(runbook, '16. Wallet monitor');
   assert.ok(s16.includes('`Apex-Fusion/agents-marketplace`') && s16.includes('`wallet-monitor/wallets.json`'));
   assert.doesNotMatch(s16, /upstream repository/);
