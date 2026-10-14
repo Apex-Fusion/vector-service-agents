@@ -482,7 +482,12 @@ test('RUNBOOK: Back out retires the advert first with the supplier key, then sto
 
 test('RUNBOOK: the spec is refreshed in a pull request after the identity (step 7) and after the advert (step 12), and the service is asked by key hash before the advert', () => {
   const seven = section(runbook, '7. Register the identity');
-  assert.ok(seven.includes('Record the identity in the repository.') && seven.includes('"This agent has no registry record yet."') && seven.includes('`scripts/specs.test.mjs`'));
+  assert.ok(seven.includes('Record the identity in the repository.') && seven.includes('the DID and the registration transaction into the Identity section of `specs/agent-history.md`') && seven.includes('`scripts/specs.test.mjs`'));
+  // The record exists since 2026-10-14, so the spec no longer says it has none, and the runbook does not quote that sentence as what the spec still says.
+  assert.ok(seven.includes('the "Registry record" row and the sentence that says the agent has a registry record'));
+  assert.equal(seven.includes('This agent has no registry record yet.'), false);
+  assert.equal(seven.includes('Registry record, planned'), false);
+  assert.equal(SPEC.includes('This agent has no registry record yet.'), false);
   assert.ok(seven.indexOf('Record the identity in the repository.') > seven.indexOf("grep -c '^AGENT_DID=did:vector:agent:'"), 'after the identity is checked');
   const twelve = section(runbook, '12. Post the advert');
   assert.ok(twelve.includes('Record the advert in the repository.') && twelve.includes('"Advert on the explorer: none yet. The advert is not posted."'));

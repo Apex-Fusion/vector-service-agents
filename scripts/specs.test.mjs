@@ -6,11 +6,14 @@ import { fileURLToPath } from 'node:url';
 // The four agent specs share one structure and one set of public-wording rules (docs/superpowers/specs/2026-10-13-vector-service-agents-design.md, section 8).
 // The member guide and the E2E runbook are pinned against the same specs and the design at the end of this file.
 const HEADINGS = ['Status', 'Identity', 'Capability id', 'Terms', 'Interface', 'What the receipt commits to', 'Operator and data handling', 'Known gaps', 'How to hire it', 'Changelog', 'Links'];
+// The sentence under "Identity" in each spec. The three designs have no registry record. Agent History was registered on 2026-10-14 (RUNBOOK step 7) and says so.
+const NO_RECORD = 'This agent has no registry record yet.';
+const HAS_RECORD = 'This agent has had a registry record since 2026-10-14.';
 const AGENTS = {
-  'agent-history': { capability: 'identity.history.report.v1', model: 'agent-history-v1', status: 'PROPOSED (built, not yet advertised). Since 2026-10-13.' },
-  'document-pipeline': { capability: 'document.pipeline.ocr-summary.v1', model: 'document-pipeline-v1', status: 'PROPOSED (not built). Since 2026-10-13.' },
-  'audio-snippets': { capability: 'audio.transcript.snippets.v1', model: 'audio-snippets-v1', status: 'PROPOSED (not built). Since 2026-10-13.' },
-  advocate: { capability: 'research.advocate.onesided.v1', model: 'advocate-v1', status: 'PROPOSED (not built). Since 2026-10-13.' },
+  'agent-history': { capability: 'identity.history.report.v1', model: 'agent-history-v1', status: 'PROPOSED (built, not yet advertised). Since 2026-10-13.', record: HAS_RECORD },
+  'document-pipeline': { capability: 'document.pipeline.ocr-summary.v1', model: 'document-pipeline-v1', status: 'PROPOSED (not built). Since 2026-10-13.', record: NO_RECORD },
+  'audio-snippets': { capability: 'audio.transcript.snippets.v1', model: 'audio-snippets-v1', status: 'PROPOSED (not built). Since 2026-10-13.', record: NO_RECORD },
+  advocate: { capability: 'research.advocate.onesided.v1', model: 'advocate-v1', status: 'PROPOSED (not built). Since 2026-10-13.', record: NO_RECORD },
 };
 // The ledger's native unit is named once, in docs/HIRE.md. Spelled in two parts, so a search for the name finds only the guide.
 const UNIT_NAME = new RegExp('AP' + '3X', 'gi');
@@ -26,7 +29,7 @@ test('specs/ holds exactly the four agent specs', () => {
   assert.deepEqual(readdirSync(new URL('../specs/', import.meta.url)).sort(), Object.keys(AGENTS).map((n) => `${n}.md`).sort());
 });
 
-for (const [name, { capability, status }] of Object.entries(AGENTS)) {
+for (const [name, { capability, status, record }] of Object.entries(AGENTS)) {
   test(`${name}: the eleven headings in order, the capability id and the status line`, () => {
     const text = read(name);
     assert.deepEqual([...text.matchAll(/^## (.+)$/gm)].map((m) => m[1]), HEADINGS);
@@ -43,9 +46,11 @@ for (const [name, { capability, status }] of Object.entries(AGENTS)) {
     assert.equal(text.match(UNIT_NAME), null);
   });
 
-  test(`${name}: the Identity section says the agent has no registry record, and it does not claim the whole table is absent`, () => {
+  test(`${name}: the Identity section says whether the agent has a registry record, and it does not claim the whole table is absent`, () => {
     const text = read(name);
-    assert.ok(section(text, 'Identity').includes('This agent has no registry record yet.'));
+    const identity = section(text, 'Identity');
+    assert.ok(identity.includes(`\n${record}\n`), `the Identity section says "${record}"`);
+    assert.equal(identity.includes(record === HAS_RECORD ? NO_RECORD : HAS_RECORD), false, 'and not the other sentence');
     assert.equal(text.match(/Nothing in this table/), null); // the registry address row does exist
   });
 
@@ -64,6 +69,53 @@ for (const [name, { capability, status }] of Object.entries(AGENTS)) {
     for (const [, , lovelace, printed] of rows) assert.equal((Number(lovelace) / 1_000_000).toFixed(6), printed);
   });
 }
+
+// Agent History has a registry record and a Module-3 self-stake since 2026-10-14 (RUNBOOK steps 7 and 8, run on the box that day). The spec records both and claims nothing more:
+// the public URL is not in service, there is no advert, no job has settled, and the status word is still PROPOSED. The values are the ones the ledger holds for that registration.
+const AH = {
+  did: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:8a98c4b74f0e49a09ca4b3502e121c96a8e6992afd2cba64ef8128042fedd440',
+  registerTx: '6da5a2b4435257daf905f92f7ae281446d627aaedee25193cf55d94a547a49fa',
+  stakeTx: 'eaf4d43d33da429e0d1072e2f01ae628958dedef97a385bc4d8120b3c8debba7',
+  controllerPkh: '1ea22a13acac6da070959317bad9bf5e510e8f7875a6727d3a5262cd',
+};
+const EXPLORER_TX = 'https://explorer.vector.mainnet.apexfusion.org/transaction/hash/';
+
+test('specs/agent-history.md: the Status paragraph and the Identity sentence say the registry record exists since 2026-10-14, and the words of before do not come back', () => {
+  const text = read('agent-history');
+  assert.ok(section(text, 'Status').includes('It is not deployed, has had a registry record since 2026-10-14 and has no advert. Nothing on this page is LIVE or DEPLOYED.'));
+  assert.ok(section(text, 'Identity').includes(`\n${HAS_RECORD}\n`));
+  // The words of before the registration. The lines a report adds for a subject that has no record ("No registry record found for this subject.") are about other subjects and stay.
+  assert.equal(section(text, 'Status').match(/no registry record/i), null, 'the Status paragraph does not say that the agent has no record');
+  assert.equal(text.match(/no registry record yet/i), null);
+  assert.equal(text.match(/has no DID yet/i), null);
+  assert.equal(section(text, 'Identity').match(/not registered|When registered|Registry record, planned|Reputation stake, planned/), null);
+  // The Response example was recorded on 2026-10-13, the day before the registration, so its placeholder is explained by the date and not by a missing DID.
+  assert.ok(text.includes('`generated_by.did` is shown as a placeholder because the run was made before this agent was registered on 2026-10-14.'));
+});
+
+test('specs/agent-history.md: the DID, the registry record and the reputation stake of 2026-10-14 are in the Identity table with their transactions, and the URL and the advert are still said not to be in service', () => {
+  const text = read('agent-history');
+  const row = (label) => section(text, 'Identity').split('\n').find((l) => l.startsWith(`| ${label} |`)) ?? '';
+  // The DID has the registry policy of the DID in the Request example and an asset name of 64 hex. The explorer link has the pattern the member guide gives.
+  const policy = /did:vector:agent:([0-9a-f]{56}):/.exec(section(text, 'Interface'))?.[1] ?? '';
+  assert.match(policy, /^[0-9a-f]{56}$/);
+  assert.match(AH.did, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
+  assert.ok(readFileSync(new URL('../docs/HIRE.md', import.meta.url), 'utf8').includes(`${EXPLORER_TX}<txid>`), 'the explorer link pattern');
+  assert.equal(row('DID'), `| DID | \`${AH.did}\` |`);
+  const record = row('Registry record');
+  for (const part of [
+    'name `Agent History`', 'description as in the manifest', 'capabilities `identity.history.report.v1`', 'framework `vector-service-agents`', "endpoint the agent's public URL",
+    `controller key hash \`${AH.controllerPkh}\` (the supplier key hash)`, 'Registered on 2026-10-14 in the confirmed transaction', `[\`${AH.registerTx}\`](${EXPLORER_TX}${AH.registerTx})`,
+    'The deposit is 10000000 lovelace (10.000000), refundable on deregistration',
+  ]) assert.ok(record.includes(part), `the Registry record row says: ${part}`);
+  const stake = row('Reputation stake');
+  for (const part of ['a Module-3 self-stake of 10000000 lovelace (10.000000) on the capability', 'made on 2026-10-14 in transaction', `[\`${AH.stakeTx}\`](${EXPLORER_TX}${AH.stakeTx})`]) assert.ok(stake.includes(part), `the Reputation stake row says: ${part}`);
+  assert.notEqual(AH.registerTx, AH.stakeTx, 'two transactions');
+  // What is not true yet is still said: the URL is not in service, the advert is not posted, and nothing can be hired.
+  assert.equal(row('Public URL, planned'), '| Public URL, planned | `https://mp-suppliers-history.hal8.ai` (not in service) |');
+  assert.ok(section(text, 'Links').includes('- Advert on the explorer: none yet. The advert is not posted.'));
+  assert.ok(section(text, 'How to hire it').includes('Not yet advertised. When live, the three ways below apply.'));
+});
 
 test('the three specs that are not built say so under How to hire it', () => {
   for (const name of ['document-pipeline', 'audio-snippets', 'advocate']) {
