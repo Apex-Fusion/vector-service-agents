@@ -481,8 +481,8 @@ test('docs/E2E.md and scripts/e2e-hire.mjs: buyerAddress, the skipped and incomp
 test('the marketplace tools are said to be on the hosted mainnet server (33 tools, 2026-10-14) in the runbooks, the script and the four specs, nothing waits for a cutover, and way 1 of the Agent History spec names buyerAddress', () => {
   const e2e = doc('E2E.md');
   assert.ok(e2e.includes('The nine marketplace tools are merged into `main` of Apex-Fusion/mcp-server and are on the hosted mainnet server as of 2026-10-14: an MCP `initialize` and `tools/list` handshake that day listed 33 tools, the nine among them.'));
-  // The advert was posted on 2026-10-14, so the check that ADVERT_REF is among the free suppliers can pass. What is still not done stays said: the test buyer key is not funded, so a live run cannot finish.
-  assert.ok(e2e.includes(`The Agent History advert was posted on 2026-10-14, reference \`${AH.advertRef}\`, and the test buyer key is not funded.`));
+  // The advert was posted on 2026-10-14, so the check that ADVERT_REF is among the free suppliers can pass. What is still not done stays said: no first-party run yet.
+  assert.ok(e2e.includes(`The Agent History advert was posted on 2026-10-14, reference \`${AH.advertRef}\`. The first-party run has not been made yet.`));
   assert.ok(e2e.includes('Against the hosted mainnet server the script now passes its first check, the tool list of the builder. The check that `ADVERT_REF` is among the free suppliers can pass with that reference: the marketplace indexer listed the advert as Active and free on 2026-10-14.'));
   assert.equal(e2e.match(/advert is not posted|until the advert is posted|not yet advertised|not in service|<ADVERT_REF>/i), null, 'the words of before the advert');
   assert.equal(e2e.replace('| none yet | first-party | | | | not run |', '').match(/none yet/i), null, 'the only "none yet" is the empty row of the Results table');
