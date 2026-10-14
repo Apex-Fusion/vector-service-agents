@@ -1,6 +1,6 @@
 # Runbook: Agent History on apex-web
 
-Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED. This runbook says what will happen, in order. Steps 1 to 9 were run on the box on 2026-10-14. The rest has not been run.
+Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED. This runbook says what will happen, in order. Steps 1 to 14 were run on the box on 2026-10-14. The rest has not been run.
 
 The operator holds the keys and does every step except three. Step 2 (the registry login and the service image) and step 10 (DNS and Caddy) are the host administrator's, see [README.md](README.md). Step 6 (funding the supplier wallet) is the Foundation's. Every run of the agent is first-party until a payer outside our control appears. A first-party run shows that the path works. It is not demand and it counts as no revenue.
 
