@@ -210,8 +210,8 @@ test('env example: the chain values and the advert terms are the design and the 
 });
 
 test('env example: the status word is the spec status, and the manifest it produces is the default manifest', () => {
-  assert.ok(section(SPEC, 'Status').includes(`${example.AGENT_STATUS_CHIP.toUpperCase()} (built, not yet advertised). Since ${example.AGENT_STATUS_SINCE}.`));
-  assert.equal(example.AGENT_STATUS_CHIP, 'proposed', 'nothing is advertised, so nothing may claim more');
+  assert.ok(section(SPEC, 'Status').includes(`${example.AGENT_STATUS_CHIP.toUpperCase()} (advertised on 2026-10-14, no job settled). Since ${example.AGENT_STATUS_SINCE}.`));
+  assert.equal(example.AGENT_STATUS_CHIP, 'proposed', 'the advert is posted and no job has settled, so nothing may claim more');
   // The service takes an empty string as given, so an empty AGENT_STATUS_SINCE would put since "" into the manifest.
   assert.notEqual(example.AGENT_STATUS_SINCE, '');
   // Placeholders are unset, and the one setting with no default is supplied for both.
@@ -290,6 +290,16 @@ test('README and RUNBOOK: PROPOSED, no LIVE or DEPLOYED claim, no dash, no unit 
   for (const rel of ['deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md']) assert.ok(read(rel).includes('Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED.'), rel);
   assert.match(read('deploy/apex-web/docker-compose.agent-history.yml'), /PROPOSED/);
   assert.match(snippet, /PROPOSED/);
+});
+
+test('RUNBOOK: the status line says that steps 1 to 14 were run on the box on 2026-10-14 and the rest was not, and the step texts stay instructions', () => {
+  const status = runbook.split('\n')[2];
+  assert.ok(status.startsWith('Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED.'));
+  assert.ok(status.endsWith('Steps 1 to 14 were run on the box on 2026-10-14. The rest has not been run.'));
+  assert.equal(runbook.match(/Steps 1 to 9 were run/), null);
+  // Step 14 ends on the advert being Active with PROPOSED still standing, and steps 15 to 17 are ahead. Step 12 still tells the operator what to record: it is an instruction, so it still quotes the words it replaces.
+  assert.ok(section(runbook, '14. Check the advert on the indexer').includes('From here the agent is advertised and PROPOSED still stands: no job has settled.'));
+  assert.ok(section(runbook, '12. Post the advert').includes('Record the advert in the repository.'));
 });
 
 test('no individual name, and no personal address, on any public surface: the manifest template, the service source, the specs, the guides, both READMEs and the planning documents', () => {
@@ -482,7 +492,12 @@ test('RUNBOOK: Back out retires the advert first with the supplier key, then sto
 
 test('RUNBOOK: the spec is refreshed in a pull request after the identity (step 7) and after the advert (step 12), and the service is asked by key hash before the advert', () => {
   const seven = section(runbook, '7. Register the identity');
-  assert.ok(seven.includes('Record the identity in the repository.') && seven.includes('"This agent has no registry record yet."') && seven.includes('`scripts/specs.test.mjs`'));
+  assert.ok(seven.includes('Record the identity in the repository.') && seven.includes('the DID and the registration transaction into the Identity section of `specs/agent-history.md`') && seven.includes('`scripts/specs.test.mjs`'));
+  // The record exists since 2026-10-14, so the spec no longer says it has none, and the runbook does not quote that sentence as what the spec still says.
+  assert.ok(seven.includes('the "Registry record" row and the sentence that says the agent has a registry record'));
+  assert.equal(seven.includes('This agent has no registry record yet.'), false);
+  assert.equal(seven.includes('Registry record, planned'), false);
+  assert.equal(SPEC.includes('This agent has no registry record yet.'), false);
   assert.ok(seven.indexOf('Record the identity in the repository.') > seven.indexOf("grep -c '^AGENT_DID=did:vector:agent:'"), 'after the identity is checked');
   const twelve = section(runbook, '12. Post the advert');
   assert.ok(twelve.includes('Record the advert in the repository.') && twelve.includes('"Advert on the explorer: none yet. The advert is not posted."'));

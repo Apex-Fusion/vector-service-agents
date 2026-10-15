@@ -1,6 +1,6 @@
 # Runbook: Agent History on apex-web
 
-Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED. This runbook says what will happen, in order. None of it has been run on the box.
+Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED. This runbook says what will happen, in order. Steps 1 to 14 were run on the box on 2026-10-14. The rest has not been run.
 
 The operator holds the keys and does every step except three. Step 2 (the registry login and the service image) and step 10 (DNS and Caddy) are the host administrator's, see [README.md](README.md). Step 6 (funding the supplier wallet) is the Foundation's. Every run of the agent is first-party until a payer outside our control appears. A first-party run shows that the path works. It is not demand and it counts as no revenue.
 
@@ -152,7 +152,7 @@ The first line removes the empty `AGENT_DID=` line that came with the example: t
 
 Check: `grep -c '^AGENT_DID=did:vector:agent:' /opt/agent-history/repo/deploy/apex-web/.env.agent-history` prints 1. If the script stops with an error, read the first gotcha at the end before running it again. If it ends with `NOT CONFIRMED`, look at the explorer before running it again: the transaction may still land.
 
-Record the identity in the repository. `specs/agent-history.md` still says "This agent has no registry record yet." Once the check above prints 1, open a pull request that puts the DID into the Identity section of the spec (the DID row, the "Registry record, planned" row and that sentence), together with the test that pins the sentence for this spec in `scripts/specs.test.mjs`. The status word does not change here. Step 17 is the only place that flips it.
+Record the identity in the repository. Once the check above prints 1, open a pull request that puts the DID and the registration transaction into the Identity section of `specs/agent-history.md` (the DID row, the "Registry record" row and the sentence that says the agent has a registry record), together with the test that pins them in `scripts/specs.test.mjs`. The status word does not change here. Step 17 is the only place that flips it.
 
 ## 8. Stake in Module-3
 

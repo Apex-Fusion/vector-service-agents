@@ -4,22 +4,22 @@ Capability `identity.history.report.v1`. The registry, stake, marketplace and mo
 
 ## Status
 
-PROPOSED (built, not yet advertised). Since 2026-10-13.
+PROPOSED (advertised on 2026-10-14, no job settled). Since 2026-10-13.
 
-The service is built. Its tests replay recorded ledger data, and it has been run against live ledger reads. It is not deployed, has no registry record and has no advert. Nothing on this page is LIVE or DEPLOYED.
+The service is built. Its tests replay recorded ledger data, and it has been run against live ledger reads. It is not deployed, has had a registry record since 2026-10-14 and has had an advert since 2026-10-14. No job has settled. Nothing on this page is LIVE or DEPLOYED.
 
 ## Identity
 
-This agent has no registry record yet.
+This agent has had a registry record since 2026-10-14.
 
 | Field | Value |
 |---|---|
-| DID | not registered. When registered: `did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:<asset name>` |
+| DID | `did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:8a98c4b74f0e49a09ca4b3502e121c96a8e6992afd2cba64ef8128042fedd440` |
 | Controller | the supplier key, the key that signs this agent's receipts. Its key hash is `keys.supplier_pkh` and `identity.controller_pkh` in the manifest |
 | Registry address | `addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42` |
-| Registry record, planned | name `Agent History`; description as in the manifest; capabilities `identity.history.report.v1`; framework `vector-service-agents`; endpoint the agent's public URL |
-| Public URL, planned | `https://mp-suppliers-history.hal8.ai` (not in service) |
-| Reputation stake, planned | a Module-3 self-stake of 10000000 lovelace (10.000000) on the capability |
+| Registry record | name `Agent History`; description as in the manifest; capabilities `identity.history.report.v1`; framework `vector-service-agents`; endpoint the agent's public URL; controller key hash `1ea22a13acac6da070959317bad9bf5e510e8f7875a6727d3a5262cd` (the supplier key hash). Registered on 2026-10-14 in the confirmed transaction [`6da5a2b4435257daf905f92f7ae281446d627aaedee25193cf55d94a547a49fa`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/6da5a2b4435257daf905f92f7ae281446d627aaedee25193cf55d94a547a49fa). The deposit is 10000000 lovelace (10.000000), refundable on deregistration |
+| Public URL | `https://mp-suppliers-history.hal8.ai` (in service as of 2026-10-14) |
+| Reputation stake | a Module-3 self-stake of 10000000 lovelace (10.000000) on the capability, made on 2026-10-14 in transaction [`eaf4d43d33da429e0d1072e2f01ae628958dedef97a385bc4d8120b3c8debba7`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/eaf4d43d33da429e0d1072e2f01ae628958dedef97a385bc4d8120b3c8debba7) |
 
 ## Capability id
 
@@ -99,7 +99,7 @@ The runtime fails the job on any non-2xx answer, and the buyer reclaims after `d
 
 ### Response
 
-`schema` is `vector.agent-history.report.v1`. The report below is a real answer for the ChandraOCR agent from a live run on 2026-10-13, at block 8728604. `generated_by.did` is shown as a placeholder because this agent has no DID yet. Sections that were not in `include` are absent, not null.
+`schema` is `vector.agent-history.report.v1`. The report below is a real answer for the ChandraOCR agent from a live run on 2026-10-13, at block 8728604. `generated_by.did` is shown as a placeholder because the run was made before this agent was registered on 2026-10-14. Sections that were not in `include` are absent, not null.
 
 ```json
 {
@@ -386,7 +386,7 @@ Outcome counts per job are not in 0.1.0. They need the spending transaction of e
 
 ## How to hire it
 
-Not yet advertised. When live, the three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
+Advertised on 2026-10-14: the marketplace indexer listed the advert as Active and free that day. No job has settled. The three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
 
 The request JSON is, for example, `{"subject":"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db"}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 
@@ -406,7 +406,7 @@ The request JSON is, for example, `{"subject":"did:vector:agent:be1a0a2912da1807
 
 ## Links
 
-- Manifest: `GET /agent.json` on the agent's public URL, once it is in service. The template is [agents/agent-history/agent.json.template](../agents/agent-history/agent.json.template).
+- Manifest: `GET /agent.json` on the agent's public URL, in service as of 2026-10-14. The template is [agents/agent-history/agent.json.template](../agents/agent-history/agent.json.template).
 - Source: [agents/agent-history](../agents/agent-history)
 - Design: [docs/superpowers/specs/2026-10-13-vector-service-agents-design.md](../docs/superpowers/specs/2026-10-13-vector-service-agents-design.md)
-- Advert on the explorer: none yet. The advert is not posted.
+- Advert on the explorer: posted on 2026-10-14 in the confirmed transaction [`13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c). The advert reference is `13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c#0`. The marketplace indexer listed it as Active and free on 2026-10-14.

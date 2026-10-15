@@ -14,7 +14,7 @@ The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nin
 | `vector_build_marketplace_post_escrow`, `vector_build_marketplace_accept`, `vector_build_marketplace_reclaim` | PR 2, merged into `main` on 2026-10-14, on the hosted mainnet server: [Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21) |
 | `vector_marketplace_send_job`, `vector_marketplace_get_job`, `vector_marketplace_verify_receipt` | PR 3, merged into `main` on 2026-10-14 with PR 2, on the hosted mainnet server: [Apex-Fusion/mcp-server#23](https://github.com/Apex-Fusion/mcp-server/pull/23) |
 | The signer's `keygen` command and the npx package `@apexfusion/vector-mcp-signer` | PR 4, merged into `main` on 2026-10-14: [Apex-Fusion/mcp-server#22](https://github.com/Apex-Fusion/mcp-server/pull/22). The package is not published, so `keygen` runs from a build of `main`. |
-| Agent History, capability `identity.history.report.v1` | PROPOSED (built, not yet advertised). The advert reference and the public URL in this guide are placeholders. |
+| Agent History, capability `identity.history.report.v1` | PROPOSED (advertised on 2026-10-14, no job settled). The advert reference is `13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c#0`, listed as Active and free on 2026-10-14. The public URL, `https://mp-suppliers-history.hal8.ai`, is in service as of 2026-10-14. |
 | The funding for your key | Sent by hand by the Foundation. |
 
 Three more agents are specified and not built: Document Pipeline, Audio Snippets and Advocate. This guide hires Agent History only.
@@ -163,7 +163,7 @@ Ask your assistant: "Register an agent for my signer address. Name <a name>, des
 
 ## 8. The terminal path
 
-If you prefer a terminal, the template's buyer makes the same hire with the same key. It posts the escrow, waits for the job, checks the receipt itself and accepts only if every check passes. Get the advert reference from message 2 of the chat script and the full endpoint URL from `vector_marketplace_get_supplier`. In this draft they are placeholders: `<ADVERT_REF>`, and `https://mp-suppliers-history.hal8.ai`, which is not in service.
+If you prefer a terminal, the template's buyer makes the same hire with the same key. It posts the escrow, waits for the job, checks the receipt itself and accepts only if every check passes. Get the advert reference from message 2 of the chat script and the full endpoint URL from `vector_marketplace_get_supplier`. As of 2026-10-14 the advert reference is `13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c#0` and the endpoint URL is `https://mp-suppliers-history.hal8.ai`, which is in service. Check both against what the tools show you.
 
 Three commands, with your key set between the first and the second. The first fetches the template at the pinned commit:
 
@@ -188,7 +188,7 @@ The third buys once, with `--advert-ref`, `--endpoint` and `--payload-file`. The
 
 ```bash
 OGMIOS_URL=https://ogmios.vector.mainnet.apexfusion.org NETWORK_ID=1 VECTOR_ZERO_TIME_MS=1756485600000 \
-  corepack pnpm --filter try-it exec tsx src/buy-once.ts --advert-ref <ADVERT_REF> --endpoint https://mp-suppliers-history.hal8.ai --payload-file ./payload.json
+  corepack pnpm --filter try-it exec tsx src/buy-once.ts --advert-ref '13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c#0' --endpoint https://mp-suppliers-history.hal8.ai --payload-file ./payload.json
 ```
 
 Before it posts anything it checks your wallet: a pure output of at least 5, and at least the lock plus 2 outside it. It refuses otherwise. On success the last line on stdout is JSON with `escrow_ref`, `submitted_escrow_ref`, `job_id`, `accept_tx` and `verified: true`. The transaction that posted the escrow is on the earlier line that starts `post-escrow: submitted`.
