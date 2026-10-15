@@ -5,11 +5,12 @@
 // Claim and Submit, are test hooks (markClaimed, markSubmitted) that a stub supplier calls. Refs are deterministic: the n-th Post (from 1)
 // opens `${sha256(prefix + n)}#0`. Every transaction pays the fee out of the wallet float: a Post takes the lock and its fee; an Accept
 // returns the buyer bond and the lock-floor excess and pays its fee; a Reclaim returns the whole lock and pays its fee. The collateral is
-// never spent. A Reclaim opens where the vendored planReclaim opens it, at the first whole second strictly after deliver_by. Not modelled:
-// the accept window after a Submit and the supplier's Release.
+// never spent. A Reclaim opens where the vendored planReclaim opens it, at the first whole second strictly after deliver_by. A third hook,
+// failNextPost, makes the next Post fail the way RealChain's fails after the signature (a TxNotConfirmedError), for the caller that must keep
+// track of an escrow that may still land. Not modelled: the accept window after a Submit and the supplier's Release.
 import { formatOutRef, parseOutRef, sha256Utf8Hex } from '@vsa/vector-read';
 import type { AdvertDatum, EscrowDatum } from '@vsa/vector-read';
-import type { Chain, ChainEscrowState, PostResult } from './chain.ts';
+import type { Chain, ChainEscrowState, PostResult, TxNotConfirmedError } from './chain.ts';
 import { planFleetPostEscrow } from './fleet-build.ts';
 import { enterpriseAddressOf } from './vendored/mcp/marketplace-build.ts';
 
@@ -49,6 +50,7 @@ export class FakeChain implements Chain {
   readonly #collateral: bigint | null;
   #float: bigint;
   #posts = 0;
+  #failNextPost: TxNotConfirmedError | null = null;
 
   constructor(opts: FakeChainOptions = {}) {
     for (const [ref, advert] of Object.entries(opts.adverts ?? {})) this.#adverts.set(canonical(ref), advert);
@@ -72,6 +74,11 @@ export class FakeChain implements Chain {
     if (owed > FakeChain.LOCK_LOVELACE) throw new Error(`FakeChain locks ${FakeChain.LOCK_LOVELACE} lovelace on every Post, less than the ${owed} advert ${advertRef} asks for.`);
     const cost = FakeChain.LOCK_LOVELACE + FakeChain.FEE_LOVELACE;
     if (this.#float < cost) throw new Error(`FakeChain: the float of ${this.#float} lovelace cannot pay the lock and the fee (${cost}).`);
+    const failure = this.#failNextPost;
+    if (failure !== null) {
+      this.#failNextPost = null;
+      throw failure;
+    }
     this.#float -= cost;
     const txHash = sha256Utf8Hex(`${this.#prefix}${++this.#posts}`);
     const escrowRef = formatOutRef(txHash, 0);
@@ -117,6 +124,15 @@ export class FakeChain implements Chain {
 
   async readAdvert(advertRef: string): Promise<AdvertDatum> {
     return this.#advert(canonical(advertRef));
+  }
+
+  /**
+   * Test hook, a Post that was signed and not seen confirmed: the next postEscrow that passes the refusals of a real Post throws `error` and opens
+   * nothing, as a Post that has not landed (whatever its `mayLand` says). The float and the ref counter do not move. One Post only; the one after it
+   * is an ordinary Post again.
+   */
+  failNextPost(error: TxNotConfirmedError): void {
+    this.#failNextPost = error;
   }
 
   /** Test hook, the supplier's Claim: Open becomes Claimed. */

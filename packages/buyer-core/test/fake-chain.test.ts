@@ -3,7 +3,7 @@
 // hooks, Accept, Reclaim), deterministic refs, the lock and fee constants, and the wallet float those transactions move.
 import { describe, it, expect } from 'vitest';
 import { decodeAdvertDatum, sha256Utf8Hex } from '@vsa/vector-read';
-import { FakeChain, DELIVER_BY_BUFFER_MS } from '../src/index.ts';
+import { FakeChain, DELIVER_BY_BUFFER_MS, TxNotConfirmedError } from '../src/index.ts';
 import type { Chain, FakeChainOptions, PostResult } from '../src/index.ts';
 import { ADVERT_REF, ADVERT_DATUM_HEX, ADVERT_EXPECTED } from './fixtures/marketplace.fixture.ts';
 
@@ -177,6 +177,29 @@ describe('FakeChain', () => {
     const { chain, post } = setup({ collateralLovelace: null });
     expect((await post()).collateralKept).toBe(false);
     expect((await chain.wallet()).collateralLovelace).toBeNull();
+  });
+
+  it('failNextPost: the next Post is planned as usual, then throws the given TxNotConfirmedError and opens nothing; the Post after it is an ordinary one', async () => {
+    const { chain, post } = setup();
+    const lost = `${'ee'.repeat(32)}#0`;
+    const error = new TxNotConfirmedError(`The Post ${'ee'.repeat(32)} of escrow ${lost} may not have been submitted (fetch failed).`, {
+      txHash: 'ee'.repeat(32), escrowRef: lost, deliverBy: T0 + 480_000, validTo: T0 + 180_000, mayLand: true,
+    });
+    chain.failNextPost(error);
+    await expect(post()).rejects.toBe(error);
+    // Nothing landed: no escrow at the ref, the float untouched, the ref counter where it was.
+    expect(await chain.escrowState(lost)).toBe('unknown');
+    expect((await chain.wallet()).floatLovelace).toBe(50_000_000n);
+    expect((await post()).escrowRef).toBe(`${sha256Utf8Hex('pipeline-test/1')}#0`);
+  });
+
+  it('failNextPost: a Post the real one refuses is refused first, and the failure waits for the next Post that would have been made', async () => {
+    const { chain, post } = setup();
+    const error = new TxNotConfirmedError('The Post was refused and cannot land (400).', { txHash: 'ee'.repeat(32), escrowRef: `${'ee'.repeat(32)}#0`, deliverBy: T0 + 480_000, validTo: T0 + 180_000, mayLand: false });
+    chain.failNextPost(error);
+    await expect(post('not a hash')).rejects.toThrow(/prompt hash must be 64 lowercase hex characters/);
+    await expect(post()).rejects.toBe(error);
+    expect((await post()).escrowRef).toBe(`${sha256Utf8Hex('pipeline-test/1')}#0`);
   });
 
   it('posts only against an advert it knows, under the checks of the real Post (prompt hash shape, the buyer as supplier)', async () => {

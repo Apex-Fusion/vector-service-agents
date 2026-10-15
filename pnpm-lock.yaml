@@ -57,6 +57,9 @@ importers:
       '@vsa/vector-read':
         specifier: workspace:*
         version: link:../../packages/vector-read
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
     devDependencies:
       '@types/node':
         specifier: ^22.13.1
