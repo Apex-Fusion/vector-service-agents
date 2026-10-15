@@ -264,17 +264,42 @@ describe('runJanitorOnce: an Accept the run could not see confirmed (ruling R33)
     expect(store.list()).toStrictEqual([{ ...entry, lost_to_release_after: entry.deliver_by + 600_000 }]);
   });
 
-  it('reads Open or Claimed for an escrow it accepted as an indexer that lags the Submit: kept as it is, never reclaimed', async () => {
+  it('reads Open or Claimed for an escrow it accepted as an indexer that lags the Submit: kept as it is until deliver_by + 5 s', async () => {
     const { chain, store, entry, passAt } = await pendingAccept(T0 + 60_000);
-    const lagging = readsAs(chain, 'Claimed');
-    expect(await passAt(entry.deliver_by + 5_000, lagging)).toMatchObject([{ action: 'kept', note: 'Claimed: an escrow whose Accept was sent reads Claimed while the indexer lags its Submit; read again on the next pass' }]);
+    const lagging = readsAs(chain, 'Claimed', 'Open');
+    expect(await passAt(T0 + 30_000, lagging)).toMatchObject([{ action: 'kept', note: 'Claimed: an escrow whose Accept was sent reads Claimed while the indexer lags its Submit; read again on the next pass' }]);
+    // The Accept can no longer land, but deliver_by + 5 s has not come: still kept.
+    expect(await passAt(entry.deliver_by + 4_999, lagging)).toMatchObject([{ action: 'kept', note: 'Open: an escrow whose Accept was sent reads Open while the indexer lags its Submit; read again on the next pass' }]);
     expect(store.list()).toStrictEqual([{ ...entry, accept_pending: { tx_hash: TX, valid_to: T0 + 60_000, by: 'run' } }]);
     expect(await chain.escrowState(entry.escrow_ref)).toBe('Submitted');
+  });
+
+  it('falls back to the rule of any entry once its Accept can no longer land and deliver_by + 5 s has passed: an Open or Claimed escrow is reclaimed', async () => {
+    const s = setup();
+    const entry = await s.post();
+    s.chain.markClaimed(entry.escrow_ref);
+    s.store.update(entry.escrow_ref, { accept_pending: { tx_hash: TX, valid_to: entry.deliver_by + 60_000, by: 'run' } });
+    // Past deliver_by + 5 s, but the Accept may still land: kept.
+    expect(await s.passAt(entry.deliver_by + 5_000)).toMatchObject([{ action: 'kept', note: expect.stringMatching(/^Claimed: an escrow whose Accept was sent/) }]);
+    expect(await s.chain.escrowState(entry.escrow_ref)).toBe('Claimed');
+    // Both passed: the Reclaim of the normal rule.
+    expect(await s.passAt(entry.deliver_by + 60_000)).toMatchObject([{ action: 'reclaimed', note: expect.stringMatching(/^Claimed: the Reclaim [0-9a-f]{64} returned everything it locked$/) }]);
+    expect(await s.chain.escrowState(entry.escrow_ref)).toBe('spent');
+    expect(s.store.list()).toStrictEqual([]);
+  });
+
+  it('keeps a marked entry whose fallback Reclaim fails, for the next pass', async () => {
+    const s = setup();
+    const entry = await s.post();
+    s.store.update(entry.escrow_ref, { accept_pending: { tx_hash: TX, valid_to: T0, by: 'run' } });
+    const refusing: JanitorChain = { escrowState: (r) => s.chain.escrowState(r), reclaim: async () => { throw new Error('The Reclaim was refused'); }, accept: (r) => s.chain.accept(r) };
+    expect(await s.passAt(entry.deliver_by + 5_000, refusing)).toStrictEqual([{ escrow_ref: entry.escrow_ref, action: 'kept', note: 'Open: the Reclaim failed (The Reclaim was refused)' }]);
+    expect(s.store.list()).toHaveLength(1);
   });
 });
 
 describe('StrandedStore', () => {
-  const entry: StrandedEntry ={ escrow_ref: `${'ab'.repeat(32)}#0`, deliver_by: T0 + 480_000, posted_at: T0, kind: 'ocr' };
+  const entry: StrandedEntry = { escrow_ref: `${'ab'.repeat(32)}#0`, deliver_by: T0 + 480_000, posted_at: T0, kind: 'ocr' };
 
   it('survives a reload: a new store on the same directory has the same entries, with what the janitor noted', () => {
     const dir = stateDir();

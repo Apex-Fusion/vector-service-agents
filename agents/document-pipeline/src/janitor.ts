@@ -8,7 +8,8 @@
 // The janitor looks at each entry from 5 s after its deliver_by on, the first moment a Reclaim is sure to be open, and at an entry marked
 // accept_pending at once:
 //   Open or Claimed   reclaimed (everything locked comes back), and removed once the Reclaim is confirmed; a Reclaim that fails is tried again on the
-//                     next pass. An escrow whose Accept was sent cannot be Open or Claimed: that read is an indexer behind the Submit, and is kept.
+//                     next pass. An escrow whose Accept was sent reads Open or Claimed only while an indexer lags its Submit, and is kept, until its
+//                     Accept can no longer land and deliver_by + 5 s has passed: from then on it is reclaimed like any other.
 //   Submitted         kept: the supplier submitted a receipt the run did not accept (it failed a check, or the run ran out of time), so it cannot be
 //                     reclaimed, and the supplier may release it once the accept window after its Submit has passed. The entry notes from when that
 //                     is sure (lost_to_release_after, deliver_by + 600 s, as the Submit came before deliver_by), and stays until it is spent.
@@ -232,17 +233,26 @@ async function tend(store: StrandedStore, chain: JanitorChain, entry: StrandedEn
     if (entry.lost_to_release_after === undefined) store.update(ref, { lost_to_release_after: lostAfter });
     return did('kept', `Submitted: it cannot be reclaimed, and its supplier may release it from ${iso(lostAfter)} at the latest`);
   }
+  return reclaimed(store, chain, ref, state);
+}
+
+/** The Reclaim of an Open or Claimed escrow, and the entry removed once it is confirmed; one that fails keeps the entry for the next pass. */
+async function reclaimed(store: StrandedStore, chain: JanitorChain, ref: string, state: 'Open' | 'Claimed'): Promise<JanitorAction> {
   let txHash: string;
-  try { ({ txHash } = await chain.reclaim(ref)); } catch (err) { return did('kept', `${state}: the Reclaim failed (${errorText(err)})`); }
+  try { ({ txHash } = await chain.reclaim(ref)); } catch (err) { return { escrow_ref: ref, action: 'kept', note: `${state}: the Reclaim failed (${errorText(err)})` }; }
   store.remove(ref);
-  return did('reclaimed', `${state}: the Reclaim ${txHash} returned everything it locked`);
+  return { escrow_ref: ref, action: 'reclaimed', note: `${state}: the Reclaim ${txHash} returned everything it locked` };
 }
 
 /** An escrow whose Accept may still land, read live (ruling R33). */
 async function tendAccept(store: StrandedStore, chain: JanitorChain, entry: StrandedEntry, pending: AcceptPending, state: 'Open' | 'Claimed' | 'Submitted', now: number): Promise<JanitorAction> {
   const ref = entry.escrow_ref;
   const did = (action: JanitorAction['action'], note: string): JanitorAction => ({ escrow_ref: ref, action, note });
-  if (state !== 'Submitted') return did('kept', `${state}: an escrow whose Accept was sent reads ${state} while the indexer lags its Submit; read again on the next pass`);
+  if (state !== 'Submitted') {
+    // Lag behind the Submit, until the Accept can no longer land and deliver_by + 5 s has passed: then the rule of any entry, the Reclaim.
+    if (now >= pending.valid_to && now >= entry.deliver_by + JANITOR_GRACE_MS) return reclaimed(store, chain, ref, state);
+    return did('kept', `${state}: an escrow whose Accept was sent reads ${state} while the indexer lags its Submit; read again on the next pass`);
+  }
   if (now < pending.valid_to) return did('kept', `Submitted: its Accept ${pending.tx_hash} may still land until ${iso(pending.valid_to)}`);
   const notLanded = `Submitted: its Accept ${pending.tx_hash} did not land by ${iso(pending.valid_to)}`;
   const lost = (why: string): JanitorAction => {

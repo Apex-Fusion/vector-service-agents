@@ -1,24 +1,32 @@
 // agents/document-pipeline/src/extract.ts
-// The schema of an `extract` job and the reading of the model's answer against it. The schema comes from the person who hired the Pipeline and runs
-// against what a model wrote, after every sub-escrow is paid, so it is held to what can be checked safely, at once and before anything is spent
-// (ruling R27). It is compiled with Ajv's default draft-07, stopping at the first error, in strict mode: a misspelt keyword is refused instead of
-// quietly constraining nothing, a remote $ref is never fetched and so does not resolve, and Ajv writes no warning to the console. Refused as
-// schema_invalid (400):
-//   - a root $async, true or false: an asynchronous validator answers with a promise, which an invalid answer rejects (and a validator Ajv compiled as
-//     asynchronous all the same is refused too);
-//   - the keywords pattern, patternProperties and format, wherever they stand (ruling R36). The first two hold regular expressions from the request,
-//     which would run against the model's answer; format is not checked here and is refused rather than silently ignored. Two guards hold this. A
-//     walk of the schema finds all three anywhere, a definition nothing refers to included, and tells a keyword from a property that has the same
-//     name (a name under properties) or from data (const, enum, default, examples). And Ajv itself refuses them in every schema it compiles, which
-//     covers a $ref that points into data and makes Ajv compile it as a schema: it forgets pattern and patternProperties, so strict mode refuses
-//     them, and it knows no format, so it refuses any format it is asked to check.
-// The check of an answer never throws and counts only a synchronous true as valid: a validator that throws (a recursive $ref on data nested past the
-// stack) or answers anything else says invalid.
+// The schema of an `extract` job and the reading of the model's answer against it. The schema comes from the person who hired the Pipeline, and the
+// check it compiles to runs against what a model wrote after every sub-escrow is paid, in the process that runs every other job. So it is held to
+// what can be checked safely and at once, before anything is fetched or posted (ruling R27); anything else is schema_invalid (400). In this order:
+//   - its JSON nesting is at most 32 levels (the root object is level 1, and every object or array inside one is a level deeper, data included), and
+//     its canonical JSON at most 16384 bytes (ruling R42);
+//   - no $async at the root, true or false: an asynchronous validator answers with a promise, which an invalid answer rejects;
+//   - a walk of the schema, in every place a keyword Ajv's draft-07 vocabulary knows holds a subschema (additionalItems, additionalProperties,
+//     contains, propertyNames, if, then, else, not, contentSchema; items, one schema or a list; allOf, anyOf, oneOf; and the maps properties and
+//     dependencies; the three other maps, patternProperties, definitions and $defs, are refused where they stand), refuses the keywords
+//       $ref, $dynamicRef, $recursiveRef, $id, $defs and definitions (ruling R42): a chain or a cycle of references makes the check of a short answer
+//         take time and memory exponential in the schema, until the process runs out of heap, which no try survives. v1 takes no reference of any
+//         kind, and none of the keywords that name or hold what a reference would point at;
+//       pattern, patternProperties and format (ruling R36): the first two hold regular expressions from the request, which would run against the
+//         answer; format is not checked here, and is refused rather than silently ignored;
+//     and an allOf, anyOf or oneOf of more than 16 entries. A property name under properties is not a keyword, and data (const, enum, default,
+//     examples) is not walked: nothing refers into it, since no reference is taken;
+//   - Ajv compiles it as draft-07, stopping at the first error, in strict mode, so an unknown or misspelt keyword is refused. Ajv is a second guard
+//     over every schema it compiles: it forgets pattern and patternProperties, so strict mode refuses them, and it knows no format, so it refuses any
+//     format it is asked to check. A validator it compiled as asynchronous all the same is refused.
+// What is not bounded: the work of a check grows with the size of the answer times the size of the schema, and uniqueItems compares items pairwise.
+// The answer is bounded by the chat supplier's output limit, and the schema by the bounds above.
 //
+// The check of an answer never throws and counts only a synchronous true as valid: a validator that throws, or answers anything else, says invalid.
 // The answer is read as JSON as it is first; only when that fails is the first fenced block looked for, with indexOf and no regular expression, so
 // reading any answer is linear in its length. One that is not JSON, or does not validate, is kept as raw_text with schema_valid false: the job still
 // succeeds, the supplier delivered.
 import Ajv from 'ajv';
+import { canonicalize } from '@vsa/vector-read';
 import { errorText } from './format.ts';
 import type { Task } from './request.ts';
 import { PipelineError } from './result.ts';
@@ -29,35 +37,66 @@ export type ExtractionCheck = (value: unknown) => boolean;
 /** A compiled validator as Ajv hands it over: called with the answer, and marked $async when it answers with a promise. */
 export type Validator = ((value: unknown) => unknown) & { $async?: unknown };
 
-const REFUSED = ['pattern', 'patternProperties', 'format'] as const;
-// Where draft-07 keeps subschemas: one schema; a map of schemas by name (dependencies maps to a schema or to a list of names); a list of schemas.
-// `items` is one schema or a list. Every other keyword holds data or names, never a schema, and an unknown keyword is refused by strict mode.
-const ONE = ['additionalItems', 'additionalProperties', 'contains', 'propertyNames', 'if', 'then', 'else', 'not'];
-const MAPS = ['properties', 'patternProperties', 'definitions', '$defs', 'dependencies'];
+/** The most levels of JSON nesting an extraction schema may have (ruling R42). */
+export const SCHEMA_MAX_DEPTH = 32;
+/** The most bytes the canonical JSON of an extraction schema may have (ruling R42). */
+export const SCHEMA_MAX_BYTES = 16_384;
+/** The most entries an allOf, anyOf or oneOf may have (ruling R42). */
+export const COMBINATION_MAX_ENTRIES = 16;
+/** The most characters of a place in the schema a refusal names. */
+const PLACE_MAX_CHARACTERS = 200;
+
+const REFERENCES = ['$ref', '$dynamicRef', '$recursiveRef', '$id', '$defs', 'definitions'] as const;
+const EXPRESSIONS = ['pattern', 'patternProperties', 'format'] as const;
+// Where Ajv's draft-07 vocabulary keeps subschemas: one schema; a map of schemas by name (dependencies maps to a schema or to a list of names); a
+// list of schemas. `items` is one schema or a list. contentSchema is an annotation Ajv never compiles, walked all the same. The other maps
+// (patternProperties, definitions, $defs) are refused keywords, so the walk never descends into them.
+const ONE = ['additionalItems', 'additionalProperties', 'contains', 'propertyNames', 'if', 'then', 'else', 'not', 'contentSchema'];
+const MAPS = ['properties', 'dependencies'];
 const LISTS = ['allOf', 'anyOf', 'oneOf'];
 
 const invalid = (why: string): PipelineError => new PipelineError('schema_invalid', `The schema cannot be used: ${why}. Nothing was spent.`, 400);
 const isSchemaObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 /** The JSON pointer of `step` below `at`, escaped as RFC 6901 writes it. */
 const below = (at: string, step: string | number): string => `${at}/${String(step).replaceAll('~', '~0').replaceAll('/', '~1')}`;
+/** A place as a refusal names it: at most 200 characters of its pointer. */
+const place = (at: string): string => (at.length > PLACE_MAX_CHARACTERS ? `${at.slice(0, PLACE_MAX_CHARACTERS)}...` : at);
 
-/**
- * The first refused keyword found in `schema` and where it stands, as a JSON pointer from the root (#), or null. Only the places that hold subschemas
- * are walked, and the walk keeps its own stack, so a schema nested deeper than the call stack is walked too.
- */
-function refusedKeyword(schema: Record<string, unknown>): { keyword: string; at: string } | null {
+/** Whether the JSON nesting of `value` goes deeper than `max` levels. Keeps its own stack and stops at the first level too deep. */
+function deeperThan(value: unknown, max: number): boolean {
+  const stack: Array<{ node: unknown; depth: number }> = [{ node: value, depth: 1 }];
+  for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
+    if (next.depth > max) return true;
+    const { node, depth } = next;
+    if (node === null || typeof node !== 'object') continue;
+    for (const child of Array.isArray(node) ? node : Object.values(node)) {
+      if (child !== null && typeof child === 'object') stack.push({ node: child, depth: depth + 1 });
+    }
+  }
+  return false;
+}
+
+/** Why the walk refuses `schema` (see the head of this file), or null. The walk keeps its own stack. */
+function walkRefusal(schema: Record<string, unknown>): string | null {
   const stack: Array<{ node: unknown; at: string }> = [{ node: schema, at: '#' }];
   for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
     const { node, at } = next;
     // A boolean schema holds no keyword; anything else that is not an object the compile refuses.
     if (!isSchemaObject(node)) continue;
-    for (const keyword of REFUSED) if (Object.hasOwn(node, keyword)) return { keyword, at };
+    for (const keyword of REFERENCES) {
+      if (Object.hasOwn(node, keyword)) return `it uses the keyword ${keyword} at ${place(at)} (v1 takes no reference: a chain or a cycle of references makes the check of an answer exponential)`;
+    }
+    for (const keyword of EXPRESSIONS) {
+      if (Object.hasOwn(node, keyword)) return `it uses the keyword ${keyword} at ${place(at)} (pattern, patternProperties and format are refused: the first two would run a regular expression from the request against the answer, and format is not checked)`;
+    }
     for (const keyword of ONE) if (Object.hasOwn(node, keyword)) stack.push({ node: node[keyword], at: below(at, keyword) });
     if (Array.isArray(node.items)) node.items.forEach((item, i) => stack.push({ node: item, at: below(below(at, 'items'), i) }));
     else if (Object.hasOwn(node, 'items')) stack.push({ node: node.items, at: below(at, 'items') });
     for (const keyword of LISTS) {
       const list = node[keyword];
-      if (Array.isArray(list)) list.forEach((item, i) => stack.push({ node: item, at: below(below(at, keyword), i) }));
+      if (!Array.isArray(list)) continue;
+      if (list.length > COMBINATION_MAX_ENTRIES) return `the ${keyword} at ${place(at)} has ${list.length} entries, more than ${COMBINATION_MAX_ENTRIES}`;
+      list.forEach((item, i) => stack.push({ node: item, at: below(below(at, keyword), i) }));
     }
     for (const keyword of MAPS) {
       const map = node[keyword];
@@ -66,6 +105,17 @@ function refusedKeyword(schema: Record<string, unknown>): { keyword: string; at:
     }
   }
   return null;
+}
+
+/**
+ * The Ajv every extraction schema is compiled with: draft-07, stopping at the first error, strict, silent, without pattern and patternProperties
+ * (strict mode refuses them as unknown keywords) and with no format defined (any format is refused as unknown). The second guard of the head of this file.
+ */
+export function extractionAjv(): Ajv {
+  const ajv = new Ajv({ allErrors: false, logger: false });
+  ajv.removeKeyword('pattern');
+  ajv.removeKeyword('patternProperties');
+  return ajv;
 }
 
 /**
@@ -86,19 +136,15 @@ export function checkOf(validate: Validator): ExtractionCheck {
 /** Compiles the schema of an extract request, before anything is fetched or posted (see the head of this file). Throws schema_invalid (400). */
 export function compileExtractionSchema(schema: Record<string, unknown> | undefined): ExtractionCheck {
   if (schema === undefined) throw invalid('task "extract" needs a schema');
+  if (deeperThan(schema, SCHEMA_MAX_DEPTH)) throw invalid(`its JSON is nested deeper than ${SCHEMA_MAX_DEPTH} levels`);
+  const bytes = Buffer.byteLength(canonicalize(schema), 'utf8');
+  if (bytes > SCHEMA_MAX_BYTES) throw invalid(`it is ${bytes} bytes of canonical JSON, more than ${SCHEMA_MAX_BYTES}`);
   if (Object.hasOwn(schema, '$async')) throw invalid('it declares $async at the root, and an asynchronous validator answers with a promise that an invalid answer rejects');
-  const refused = refusedKeyword(schema);
-  if (refused !== null) {
-    throw invalid(`it uses the keyword ${refused.keyword} at ${refused.at} (pattern, patternProperties and format are refused wherever they stand: the first two would run a regular expression from the request against the answer, and format is not checked)`);
-  }
+  const refusal = walkRefusal(schema);
+  if (refusal !== null) throw invalid(refusal);
   let validate: Validator;
-  try {
-    const ajv = new Ajv({ allErrors: false, logger: false });
-    ajv.removeKeyword('pattern');
-    ajv.removeKeyword('patternProperties');
-    validate = ajv.compile(schema);
-  } catch (err) {
-    throw invalid(`it does not compile as a JSON Schema of draft-07 in strict mode, with no remote reference (${errorText(err)})`);
+  try { validate = extractionAjv().compile(schema); } catch (err) {
+    throw invalid(`it does not compile as a JSON Schema of draft-07 in strict mode (${errorText(err)})`);
   }
   return checkOf(validate);
 }

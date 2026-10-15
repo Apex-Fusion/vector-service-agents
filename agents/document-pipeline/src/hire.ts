@@ -6,9 +6,12 @@
 // (src/orchestrate.ts); nothing a supplier says here moves money but its signed receipt, checked against the hash its Submit put on chain. A write of
 // the stranded store that fails after money moved is store_write_failed (500), naming the escrow, never a plain error.
 //
-// The send (75 s at most each). Accepted: there is a job id to poll. Busy (409 supplier_busy), and a supplier whose view of the chain does not show
-// the escrow yet (404 escrow_not_found, ruling R32): sent again every 15 s, on the same escrow, until 90 s before its deliver_by (<hop>_busy, and
-// <hop>_refused for one that never sees it). Any other 4xx is the supplier turning the job down (<hop>_refused). No answer, a 5xx, or a 202 without a
+// The send (75 s at most each). Accepted: there is a job id to poll. Busy (409 supplier_busy): sent again every 15 s, on the same escrow, until 90 s
+// before its deliver_by (<hop>_busy). Not found (404 escrow_not_found, ruling R32): the supplier looks the Post output up before anything else, and
+// does not find it either because it does not see the Post yet or because its own Claim, after an earlier send whose answer was lost, has spent it.
+// So the escrow is read: Open, and the job is sent again like a busy one (<hop>_refused for a supplier that never sees it); anything else, or a state
+// that cannot be read, means the supplier may hold the job with no job id to ask it for (<hop>_send_lost). Only a 404 is a not-found: the same reason
+// on a 5xx is handled as any 5xx. Any other 4xx is the supplier turning the job down (<hop>_refused). No answer, a 5xx, or a 202 without a
 // job id may come after the supplier's Claim, so the escrow is read before anything else: Open allows one more send (a second unknown outcome is
 // <hop>_send_lost, a second 5xx <hop>_refused); anything else, or a state that cannot be read, means the supplier may hold the escrow with no job id to
 // ask it for (<hop>_send_lost). A send is never repeated blindly, and every message that gives the escrow up says the state it was read in.
@@ -135,7 +138,13 @@ async function handOver<T>(deps: HireDeps, supplier: Supplier, job: Job<T>, post
     sends += 1;
     if (sent.kind === 'accepted') return sent.jobId;
     const answer = sent.kind === 'refused' ? `${sent.status} ${sent.reason}${sent.message === '' ? '' : `: ${sent.message}`}` : '';
-    const notFound = sent.kind === 'refused' && sent.reason === 'escrow_not_found';
+    const notFound = sent.kind === 'refused' && sent.status === 404 && sent.reason === 'escrow_not_found';
+    if (notFound) {
+      const state = await stateOf(deps.chain, post.escrowRef);
+      if (state !== 'Open') {
+        throw failure(supplier, 'send_lost', `${named(supplier)} answered ${answer}, and ${escrow} is ${said(state)}: the supplier may hold the job from an earlier send whose answer was lost, and there is no job id to ask it for the result. The escrow goes to the janitor.`);
+      }
+    }
     if (sent.kind === 'busy' || notFound) {
       const next = fit(deps, deps.clock() + BUSY_RETRY_MS, sendUntil);
       if (next === 'in time') {

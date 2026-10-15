@@ -8,7 +8,8 @@
 // The codes and their status:
 //   400  schema_invalid (the extraction schema is refused before anything is fetched or posted)
 //   500  store_write_failed (the stranded store could not be written after money moved; the message names the escrow)
-//   503  insufficient_float, ocr_supplier_unavailable, llm_supplier_unavailable (the service cannot take a job now; nothing was spent)
+//   503  insufficient_float, ocr_supplier_unavailable, llm_supplier_unavailable (the service cannot take a job now). Nothing was spent, except when
+//        llm_supplier_unavailable comes from the second choice of the chat supplier (ruling R35), which is made after the pages are paid
 //   422  every other: page_too_large, deadline, llm_incomplete, and for each hop (ocr, llm) <hop>_post_failed, _busy, _refused, _send_lost, _failed,
 //        _timeout, _bad_result, _receipt_failed, _receipt_unavailable and _accept_failed. src/hire.ts says when each one is thrown.
 import type { FleetVerification, Receipt } from '@vsa/buyer-core';

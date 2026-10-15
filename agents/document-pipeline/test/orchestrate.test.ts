@@ -272,14 +272,33 @@ describe('runPipeline: task extract', () => {
     expect((await runPipeline(extract, run.deps)).result).toStrictEqual({ extraction: { title: '```json {} ```' }, schema_valid: true });
   });
 
-  it('an answer nested past the stack against a recursive schema is not valid, and nothing crashes: the job succeeds with the raw text', async () => {
-    const run = setup();
-    const depth = 100_000;
-    run.m.llm.answer = `${'['.repeat(depth)}${']'.repeat(depth)}`;
-    const recursive = { $ref: '#/definitions/node', definitions: { node: { type: 'array', items: { $ref: '#/definitions/node' } } } };
-    const result = await runPipeline(request({ task: 'extract', schema: recursive }), run.deps);
-    expect(result.result).toStrictEqual({ extraction: null, schema_valid: false, raw_text: run.m.llm.answer });
-    expect(await states(run.m, escrowNo(1), escrowNo(2), escrowNo(3))).toStrictEqual(['spent', 'spent', 'spent']);
+  it('a schema with references is refused before anything is fetched or posted: the chain of the review and a recursive tree (ruling R42)', async () => {
+    const definitions: Record<string, unknown> = { d23: { type: 'string' } };
+    for (let i = 0; i < 23; i++) definitions[`d${i}`] = { anyOf: [{ $ref: `#/definitions/d${i + 1}` }, { $ref: `#/definitions/d${i + 1}` }] };
+    const tree = { type: 'object', properties: { title: { type: 'string' }, children: { type: 'array', items: { $ref: '#' } } } };
+    for (const schema of [{ $ref: '#/definitions/d0', definitions }, tree]) {
+      const run = setup();
+      run.m.llm.answer = '{"title":"A letter","children":[{"children":[{"children":[]}]}]}';
+      const error = await failure(runPipeline(request({ task: 'extract', schema }), run.deps), 'schema_invalid', 400);
+      expect(error.message).toMatch(/\$ref at #/);
+      expect(run.m.calls).toStrictEqual([]);
+      expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
+    }
+  });
+
+  it('a plain object schema with nested properties checks a nested answer at every level', async () => {
+    const schema = {
+      type: 'object', required: ['title', 'sender'],
+      properties: { title: { type: 'string' }, sender: { type: 'object', required: ['name'], properties: { name: { type: 'string' }, address: { type: 'object', properties: { city: { type: 'string' } } } } } },
+    };
+    const valid = setup();
+    valid.m.llm.answer = '{"title":"A letter","sender":{"name":"The city archive","address":{"city":"Split"}}}';
+    expect((await runPipeline(request({ task: 'extract', schema }), valid.deps)).result).toStrictEqual({
+      extraction: { title: 'A letter', sender: { name: 'The city archive', address: { city: 'Split' } } }, schema_valid: true,
+    });
+    const invalid = setup();
+    invalid.m.llm.answer = '{"title":"A letter","sender":{"name":"The city archive","address":{"city":21000}}}';
+    expect((await runPipeline(request({ task: 'extract', schema }), invalid.deps)).result).toStrictEqual({ extraction: null, schema_valid: false, raw_text: invalid.m.llm.answer });
   });
 });
 
@@ -355,13 +374,50 @@ describe('runPipeline: sending a job', () => {
     expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
   });
 
-  it('a supplier that does not see the escrow yet (404 escrow_not_found) is sent the job again every 15 s like a busy one: twice, then 202, one escrow and three sends (ruling R32)', async () => {
+  it('a supplier that does not see the escrow yet (404 escrow_not_found) while it reads Open is sent the job again every 15 s like a busy one: twice, then 202, one escrow and three sends (ruling R32)', async () => {
     const run = setup();
     run.m.ocr.notFound = 2;
-    const result = await runPipeline(request(), run.deps);
+    let reads = 0;
+    const chain = chainWith(run.m, { escrowState: (r) => { reads += 1; return run.m.chain.escrowState(r); } });
+    const result = await runPipeline(request(), { ...run.deps, chain });
     expect(result).toStrictEqual(GOLDEN);
     expect(run.m.ocr.sends.map((s) => s.escrowRef)).toStrictEqual([escrowNo(1), escrowNo(1), escrowNo(1), escrowNo(2)]);
     expect(run.sleeps.slice(0, 2)).toStrictEqual([15_000, 15_000]);
+    // Each not-found answer reads the escrow before the job is sent again.
+    expect(reads).toBe(2);
+  });
+
+  it('a not-found answer while the escrow reads Claimed is a supplier that took an earlier send whose answer was lost: ocr_send_lost at once, never sent again (ruling R32)', async () => {
+    const run = setup();
+    // The first send is taken (the supplier claims) and its answer lost; the first read of the escrow lags the Claim and still says Open.
+    run.m.ocr.lose = ['after-claim'];
+    run.m.ocr.notFound = 1;
+    let reads = 0;
+    const chain = chainWith(run.m, { escrowState: async (r) => { reads += 1; return reads === 1 ? 'Open' : run.m.chain.escrowState(r); } });
+    const error = await failure(runPipeline(request(), { ...run.deps, chain }), 'ocr_send_lost');
+    expect(error.message).toMatch(/404 escrow_not_found/);
+    expect(error.message).toMatch(/is Claimed/);
+    expect(run.m.ocr.sends).toHaveLength(2);
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['Claimed']);
+    expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
+  });
+
+  it('a not-found answer while the state of the escrow cannot be read is not sent again either: ocr_send_lost', async () => {
+    const run = setup();
+    run.m.ocr.notFound = 1;
+    const chain = chainWith(run.m, { escrowState: async () => { throw new Error('Could not read escrow: Koios answered 503'); } });
+    const error = await failure(runPipeline(request(), { ...run.deps, chain }), 'ocr_send_lost');
+    expect(error.message).toMatch(/could not be read/);
+    expect(run.m.ocr.sends).toHaveLength(1);
+  });
+
+  it('only a 404 is a not-found: a 5xx that names escrow_not_found is an answer that may come after a claim, handled as any 5xx (ruling R32)', async () => {
+    const run = setup();
+    run.m.ocr.refuse = { status: 503, reason: 'escrow_not_found' };
+    const error = await failure(runPipeline(request(), run.deps), 'ocr_refused');
+    expect(error.message).toMatch(/refused page 1 twice \(503 escrow_not_found/);
+    expect(run.m.ocr.sends).toHaveLength(2);
+    expect(run.sleeps).toStrictEqual([]);
   });
 
   it('a supplier that never sees the escrow is sent the job until 90 s before deliver_by, then ocr_refused, naming the state the escrow is in (ruling R32)', async () => {
