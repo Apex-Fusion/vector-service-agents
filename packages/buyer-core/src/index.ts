@@ -6,7 +6,9 @@
 // layer is buyer-core's own: the fleet Post (fleet-build.ts), the Chain interface with RealChain behind createRealChain (chain.ts), the
 // in-memory FakeChain the service tests run against (fake-chain.ts), and the fee of a signed transaction (fees.ts). So is the HTTP side of a fleet hire:
 // the clients that send a job to a supplier once its Post is made, poll it, and read /capability and /status (fleet-clients.ts), and the choice of the
-// chat supplier and the OCR advert from the marketplace indexer (select-supplier.ts). Suppliers are reached only through safeFetch.
+// chat supplier and the OCR advert from the marketplace indexer (select-supplier.ts). Suppliers are reached only through safeFetch. What a supplier
+// returns is checked before an escrow is accepted: verifyReceipt (vendored) is the hosted server's check, which hashes the result text, and verifyFleetReceipt
+// (fleet-verify.ts) is the check of a fleet job, whose response hash is the one of a canonical envelope that the buyer recomputes.
 export { planPostEscrow, buildPostEscrow, planAccept, buildAccept, planReclaim, buildReclaim, reserveCollateralInputs } from './vendored/mcp/marketplace-build.ts';
 export { lucidForAddress } from './vendored/mcp/build.ts';
 export { resolveEscrowLineage, readEscrowOutput, readSubmittedOutput, submittedRefsOf } from './vendored/mcp/marketplace-lineage.ts';
@@ -29,3 +31,5 @@ export { feeOfSignedTx } from './fees.ts';
 export { readCapability, probeStatus, sendOcrJob, sendResponsesJob, pollOcrJob, pollResponsesJob } from './fleet-clients.ts';
 export type { FetchLike, SupplierCapability, Receipt, SendResult, PollResult } from './fleet-clients.ts';
 export { selectLlmSupplier, findOcrAdvert } from './select-supplier.ts';
+export { verifyFleetReceipt } from './fleet-verify.ts';
+export type { FleetVerifyInput, FleetVerification } from './fleet-verify.ts';
