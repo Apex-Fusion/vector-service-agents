@@ -158,14 +158,15 @@ function assertChecksTheEscrow(stderr) {
 }
 const USAGE = 'usage: node scripts/e2e-hire.mjs [--dry-run]';
 
-test('stops at once when the builder lacks the marketplace tools, and names all nine (the hosted server today)', async () => {
+test('stops at once when the builder lacks the marketplace tools, and names all nine (a builder other than the hosted mainnet server)', async () => {
   const builder = await fakeBuilder({ tools: ['vector_submit_transaction', 'vector_await_transaction'] });
   const t = setup();
   const r = await run(t.env(builder));
   assert.equal(r.code, 3);
   for (const tool of NINE) assert.ok(r.stderr.includes(tool), `names ${tool}`);
   assert.match(r.stderr, /PR 1/); assert.match(r.stderr, /PR 2/); assert.match(r.stderr, /PR 3/);
-  assert.ok(r.stderr.includes('They are merged into main of Apex-Fusion/mcp-server (2026-10-14) and reach the hosted mainnet server with the mainnet cutover.'), 'says where the tools are');
+  assert.ok(r.stderr.includes('They are merged into main of Apex-Fusion/mcp-server and on the hosted mainnet server as of 2026-10-14, so a builder that lacks them is some other builder.'), 'says where the tools are');
+  assert.doesNotMatch(r.stderr, /cutover|cuts it over/i, 'no wait for a cutover');
   assert.ok(r.stderr.includes('for example a local build of main: PORT=3300'), 'a local build of main');
   assert.doesNotMatch(r.stderr, /three PRs|PR 3 branch/, 'the statuses of before the merge');
   assert.deepEqual(builder.calls, [], 'no tool was called');

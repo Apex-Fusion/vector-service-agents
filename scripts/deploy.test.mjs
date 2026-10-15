@@ -210,8 +210,8 @@ test('env example: the chain values and the advert terms are the design and the 
 });
 
 test('env example: the status word is the spec status, and the manifest it produces is the default manifest', () => {
-  assert.ok(section(SPEC, 'Status').includes(`${example.AGENT_STATUS_CHIP.toUpperCase()} (built, not yet advertised). Since ${example.AGENT_STATUS_SINCE}.`));
-  assert.equal(example.AGENT_STATUS_CHIP, 'proposed', 'nothing is advertised, so nothing may claim more');
+  assert.ok(section(SPEC, 'Status').includes(`${example.AGENT_STATUS_CHIP.toUpperCase()} (advertised on 2026-10-14, no job settled). Since ${example.AGENT_STATUS_SINCE}.`));
+  assert.equal(example.AGENT_STATUS_CHIP, 'proposed', 'the advert is posted and no job has settled, so nothing may claim more');
   // The service takes an empty string as given, so an empty AGENT_STATUS_SINCE would put since "" into the manifest.
   assert.notEqual(example.AGENT_STATUS_SINCE, '');
   // Placeholders are unset, and the one setting with no default is supplied for both.
@@ -290,6 +290,16 @@ test('README and RUNBOOK: PROPOSED, no LIVE or DEPLOYED claim, no dash, no unit 
   for (const rel of ['deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md']) assert.ok(read(rel).includes('Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED.'), rel);
   assert.match(read('deploy/apex-web/docker-compose.agent-history.yml'), /PROPOSED/);
   assert.match(snippet, /PROPOSED/);
+});
+
+test('RUNBOOK: the status line says that steps 1 to 14 were run on the box on 2026-10-14 and the rest was not, and the step texts stay instructions', () => {
+  const status = runbook.split('\n')[2];
+  assert.ok(status.startsWith('Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED.'));
+  assert.ok(status.endsWith('Steps 1 to 14 were run on the box on 2026-10-14. The rest has not been run.'));
+  assert.equal(runbook.match(/Steps 1 to 9 were run/), null);
+  // Step 14 ends on the advert being Active with PROPOSED still standing, and steps 15 to 17 are ahead. Step 12 still tells the operator what to record: it is an instruction, so it still quotes the words it replaces.
+  assert.ok(section(runbook, '14. Check the advert on the indexer').includes('From here the agent is advertised and PROPOSED still stands: no job has settled.'));
+  assert.ok(section(runbook, '12. Post the advert').includes('Record the advert in the repository.'));
 });
 
 test('no individual name, and no personal address, on any public surface: the manifest template, the service source, the specs, the guides, both READMEs and the planning documents', () => {
@@ -482,7 +492,12 @@ test('RUNBOOK: Back out retires the advert first with the supplier key, then sto
 
 test('RUNBOOK: the spec is refreshed in a pull request after the identity (step 7) and after the advert (step 12), and the service is asked by key hash before the advert', () => {
   const seven = section(runbook, '7. Register the identity');
-  assert.ok(seven.includes('Record the identity in the repository.') && seven.includes('"This agent has no registry record yet."') && seven.includes('`scripts/specs.test.mjs`'));
+  assert.ok(seven.includes('Record the identity in the repository.') && seven.includes('the DID and the registration transaction into the Identity section of `specs/agent-history.md`') && seven.includes('`scripts/specs.test.mjs`'));
+  // The record exists since 2026-10-14, so the spec no longer says it has none, and the runbook does not quote that sentence as what the spec still says.
+  assert.ok(seven.includes('the "Registry record" row and the sentence that says the agent has a registry record'));
+  assert.equal(seven.includes('This agent has no registry record yet.'), false);
+  assert.equal(seven.includes('Registry record, planned'), false);
+  assert.equal(SPEC.includes('This agent has no registry record yet.'), false);
   assert.ok(seven.indexOf('Record the identity in the repository.') > seven.indexOf("grep -c '^AGENT_DID=did:vector:agent:'"), 'after the identity is checked');
   const twelve = section(runbook, '12. Post the advert');
   assert.ok(twelve.includes('Record the advert in the repository.') && twelve.includes('"Advert on the explorer: none yet. The advert is not posted."'));
@@ -497,17 +512,18 @@ test('RUNBOOK: the spec is refreshed in a pull request after the identity (step 
   assert.ok(runbook.indexOf('"$KEY"') < runbook.indexOf('## 12.'), 'before the advert is posted');
 });
 
-test('RUNBOOK: the key is never sent anywhere, the registry login block is bash, the hash script runs from the repository root, the marketplace tools are merged and await the mainnet cutover, the wallet monitor is named', () => {
+test('RUNBOOK: the key is never sent anywhere, the registry login block is bash, the hash script runs from the repository root, the marketplace tools are on the hosted mainnet server, the wallet monitor is named', () => {
   assert.match(section(runbook, '4. Make the env file and generate the supplier key'), /is never sent anywhere\./);
   assert.doesNotMatch(runbook, /never leaves/);
   assert.match(section(runbook, '2. Log in to the registry and get the service image'), /```bash\nread -rs GHCR_TOKEN/);
   assert.match(section(runbook, '11. Hash the manifest'), /```sh\ncd \/opt\/agent-history\/repo\nnode scripts\/manifest-hash\.mjs /);
   const s15 = section(runbook, '15. The first-party run');
-  assert.ok(s15.includes('As of 2026-10-14 the nine marketplace tools the script needs are merged into `main` of Apex-Fusion/mcp-server (PR 1 as [#20](https://github.com/Apex-Fusion/mcp-server/pull/20), PR 2 as [#21](https://github.com/Apex-Fusion/mcp-server/pull/21) and PR 3 as [#23](https://github.com/Apex-Fusion/mcp-server/pull/23) with PR 2), awaiting the mainnet cutover.'));
+  assert.ok(s15.includes('As of 2026-10-14 the nine marketplace tools the script needs are merged into `main` of Apex-Fusion/mcp-server (PR 1 as [#20](https://github.com/Apex-Fusion/mcp-server/pull/20), PR 2 as [#21](https://github.com/Apex-Fusion/mcp-server/pull/21) and PR 3 as [#23](https://github.com/Apex-Fusion/mcp-server/pull/23) with PR 2) and are on the hosted mainnet MCP server, which lists 33 tools.'));
   assert.ok(s15.includes('PR 4 ([#22](https://github.com/Apex-Fusion/mcp-server/pull/22)), the signer package with its `keygen` command, is merged too, and the package is not published.'));
   assert.doesNotMatch(s15, /and PR 4 as/, 'PR 4 is the signer, not one of the nine marketplace tools');
-  assert.ok(s15.includes('The hosted mainnet MCP server still serves 24 tools, none of them a marketplace tool, and the maintainer cuts it over on purpose, after this run.'));
+  assert.ok(s15.includes('The default `BUILDER_URL` of the script is the hosted mainnet MCP server, so the run needs no local builder. E2E.md keeps the local build of `main` as the fallback for a builder that lacks the tools.'));
   assert.doesNotMatch(s15, /PR 2 is open|PR 3 and PR 4 follow|PRs 2 and 3 follow|are deployed|PR 3 branch/);
+  assert.doesNotMatch(s15, /cutover|cuts it over|24 tools|none of them a marketplace tool|awaiting the|still serves/i, 'nothing waits for a cutover any more');
   const s16 = section(runbook, '16. Wallet monitor');
   assert.ok(s16.includes('`Apex-Fusion/agents-marketplace`') && s16.includes('`wallet-monitor/wallets.json`'));
   assert.doesNotMatch(s16, /upstream repository/);
