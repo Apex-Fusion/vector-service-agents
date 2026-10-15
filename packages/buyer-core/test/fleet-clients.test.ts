@@ -10,7 +10,7 @@ import { canonicalize, sha256Utf8Hex } from '@vsa/vector-read';
 import { ocrResponseHash, responsesOutputText, responsesResponseHash } from '../src/commitments.ts';
 import { readCapability, probeStatus, sendOcrJob, sendResponsesJob, pollOcrJob, pollResponsesJob } from '../src/fleet-clients.ts';
 import type { PollResult, SendResult } from '../src/fleet-clients.ts';
-import { hang, json, routedFetch } from './fake-fetch.ts';
+import { boom, hang, json, routedFetch, text } from './fake-fetch.ts';
 import type { Answer } from './fake-fetch.ts';
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -35,17 +35,9 @@ function exactly(bytes: number, make: (pad: string) => string): string {
   expect(Buffer.byteLength(text)).toBe(bytes);
   return text;
 }
-const text = (status: number, body: string, type = 'text/plain'): Response => new Response(body, { status, headers: { 'content-type': type } });
-const boom: Answer = () => { throw new TypeError('fetch failed'); };
-
-// The calls an endpoint must never get: the outbound policy of safeFetch refuses these before anything is sent.
-const REFUSED_ENDPOINTS: Array<[string, string]> = [
-  ['an http endpoint', 'http://203.0.113.10'],
-  ['a private address', 'https://10.0.0.5'],
-  ['the loopback address', 'https://127.0.0.1'],
-  ['the link-local metadata address', 'https://169.254.169.254'],
-  ['credentials in the URL', 'https://user:pw@203.0.113.10'],
-];
+// The outbound policy itself (https only, private and reserved ranges, credentials, redirects) is tested where it lives, in packages/vector-read. Here one
+// refused endpoint for each function pins that the call goes through it: a private address is never reached, whichever function is called.
+const PRIVATE = 'https://10.0.0.5';
 
 // --- Sending a job ----------------------------------------------------------------------------------------------------------------
 type Sender = (endpoint: string, escrowRef: string, fetchImpl: typeof fetch, timeoutMs?: number) => Promise<SendResult>;
@@ -148,15 +140,18 @@ describe.each(SENDERS)('$name', ({ path, send, wire }) => {
     expect(await send(ENDPOINT, ESCROW, f.fetchImpl)).toStrictEqual({ kind: 'refused', status: 200, reason: 'http_200', message: '' });
   });
 
-  it('a call that outlasts its budget is a timeout, and the fetch itself was told to stop', async () => {
+  it('a call that outlasts its budget is a timeout, and the fetch itself was told to stop; the client never sends again by itself', async () => {
     const f = route(hang);
     expect(await send(ENDPOINT, ESCROW, f.fetchImpl, 25)).toStrictEqual({ kind: 'timeout' });
     expect(f.calls[0].signal?.aborted).toBe(true);
+    // A POST that timed out may have claimed the escrow, so a second one would be a blind retry: that is for the caller to decide, after it has read the escrow.
+    expect(f.calls).toHaveLength(1);
   });
 
-  it('a network error is a timeout too: the outcome of the POST is unknown either way, so the caller reads the escrow before it sends again', async () => {
+  it('a network error is a timeout too: the outcome of the POST is unknown either way, so the caller reads the escrow before it sends again, and the client sends once', async () => {
     const f = route(boom);
     expect(await send(ENDPOINT, ESCROW, f.fetchImpl)).toStrictEqual({ kind: 'timeout' });
+    expect(f.calls).toHaveLength(1);
   });
 
   it('the budget is timeoutMs, 75 s by default (the supplier answers only after its own Claim, which takes up to 60 s); a budget of no time is a timeout, not a crash', async () => {
@@ -185,9 +180,9 @@ describe.each(SENDERS)('$name', ({ path, send, wire }) => {
     expect(await send(ENDPOINT, ESCROW, over.fetchImpl)).toStrictEqual({ kind: 'timeout' });
   });
 
-  it.each(REFUSED_ENDPOINTS)('never sends to %s: the outbound policy refuses it before a byte leaves, and the result is a timeout', async (_name, endpoint) => {
-    const f = route(accepted, endpoint);
-    expect(await send(endpoint, ESCROW, f.fetchImpl)).toStrictEqual({ kind: 'timeout' });
+  it('never sends to a private address: the outbound policy refuses it before a byte leaves, and the result is a timeout', async () => {
+    const f = route(accepted, PRIVATE);
+    expect(await send(PRIVATE, ESCROW, f.fetchImpl)).toStrictEqual({ kind: 'timeout' });
     expect(f.calls).toHaveLength(0);
   });
 
@@ -215,15 +210,17 @@ describe('what goes on the wire', () => {
 });
 
 // --- Polling a job ----------------------------------------------------------------------------------------------------------------
-type Poller = (endpoint: string, jobId: string, fetchImpl: typeof fetch) => Promise<PollResult>;
-const POLLERS: Array<{ name: string; path: string; poll: Poller; done: Record<string, unknown> }> = [
-  { name: 'pollOcrJob', path: '/v1/ocr/extract', poll: pollOcrJob, done: OCR_DONE },
-  { name: 'pollResponsesJob', path: '/v1/responses', poll: pollResponsesJob, done: CHAT_DONE },
+type PollerFor = (endpoint: string, jobId: string, fetchImpl: typeof fetch, escrowRef: string) => Promise<PollResult>;
+const POLLERS: Array<{ name: string; path: string; pollFor: PollerFor; done: Record<string, unknown> }> = [
+  { name: 'pollOcrJob', path: '/v1/ocr/extract', pollFor: pollOcrJob, done: OCR_DONE },
+  { name: 'pollResponsesJob', path: '/v1/responses', pollFor: pollResponsesJob, done: CHAT_DONE },
 ];
 
-describe.each(POLLERS)('$name', ({ path, poll, done }) => {
+describe.each(POLLERS)('$name', ({ path, pollFor, done }) => {
   const url = `${ENDPOINT}${path}/${JOB}`;
   const route = (answer: Answer) => routedFetch({ [`GET ${url}`]: answer });
+  /** The poll for the escrow that the answers below are for. */
+  const poll = (endpoint: string, jobId: string, fetchImpl: typeof fetch) => pollFor(endpoint, jobId, fetchImpl, ESCROW);
 
   it.each(['accepted', 'running'])('a 202 %s is running, and the request is a GET of the job route with no body', async (status) => {
     const f = route(json(202, { status, escrow_ref: ESCROW }));
@@ -256,6 +253,8 @@ describe.each(POLLERS)('$name', ({ path, poll, done }) => {
     expect('submittedRef' in result).toBe(false);
   });
 
+  // The supplier answers 200 for a done job only, always with its receipt and the signature, and sends a failed job with its own envelope on an error
+  // status. So a 200 without them is no answer of the supplier's (a proxy page, a gateway body): the poll rejects, like a 502 page, and says nothing of the job.
   it.each([
     ['no receipt', { ...done, receipt: undefined }],
     ['a receipt that is not an object', { ...done, receipt: 'signed' }],
@@ -263,12 +262,57 @@ describe.each(POLLERS)('$name', ({ path, poll, done }) => {
     ['no signature', { ...done, receipt_signature: undefined }],
     ['an empty signature', { ...done, receipt_signature: '' }],
     ['a signature that is not a string', { ...done, receipt_signature: 12 }],
-  ])('a 200 with %s is failed as bad_response: a job is done only when the supplier hands over a receipt and its signature', async (_name, body) => {
-    expect(await poll(ENDPOINT, JOB, route(json(200, body)).fetchImpl)).toMatchObject({ kind: 'failed', reason: 'bad_response' });
+    ['the failed envelope of a job', { status: 'failed', reason: 'upstream_unavailable', message: 'the model provider did not answer', escrow_ref: ESCROW }],
+  ])('a 200 with %s rejects, naming the job and the status', async (_name, body) => {
+    await expect(poll(ENDPOINT, JOB, route(json(200, body)).fetchImpl)).rejects.toThrow(new RegExp(`^Could not poll job ${JOB}: the supplier answered 200 with a JSON object that is no finished job`));
   });
 
-  it.each([['not JSON', text(200, 'Service Unavailable')], ['a JSON array', json(200, [done])], ['an empty body', text(200, '')]])('a 200 whose body is %s is failed as bad_response', async (_name, answer) => {
-    expect(await poll(ENDPOINT, JOB, route(answer).fetchImpl)).toMatchObject({ kind: 'failed', reason: 'bad_response' });
+  it.each([['not JSON', text(200, 'Service Unavailable')], ['a JSON array', json(200, [done])], ['an empty body', text(200, '')]])('a 200 whose body is %s rejects the same way', async (_name, answer) => {
+    await expect(poll(ENDPOINT, JOB, route(answer).fetchImpl)).rejects.toThrow(new RegExp(`^Could not poll job ${JOB}: the supplier answered 200 with no JSON object`));
+  });
+
+  it('a 200 that is no finished job never yields done, and does not say the job failed; the message does not name the endpoint', async () => {
+    const answers = [text(200, 'Service Unavailable'), text(200, ''), json(200, {}), json(200, [done]), json(200, { ...done, receipt: undefined }), json(200, { ...done, receipt_signature: '' })];
+    for (const answer of answers) {
+      const outcome = await poll(ENDPOINT, JOB, route(answer).fetchImpl).then((result) => result, (error: unknown) => error);
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as { kind?: string }).kind).not.toBe('done');
+      expect((outcome as { kind?: string }).kind).not.toBe('failed');
+      expect((outcome as Error).message).not.toContain('203.0.113.10');
+    }
+  });
+
+  it('a done answer must name the escrow the poll was made for, in its escrow_ref: in any spelling of the hex', async () => {
+    const shouted = await poll(ENDPOINT, JOB, route(json(200, { ...done, escrow_ref: ESCROW.toUpperCase() })).fetchImpl);
+    expect(shouted.kind).toBe('done');
+  });
+
+  it.each([
+    ['another transaction', `${'cd'.repeat(32)}#0`],
+    ['another output of the same transaction', `${'ab'.repeat(32)}#1`],
+  ])('a done answer that names %s rejects: it is not an answer about this job, and its text and receipt are not used', async (_name, other) => {
+    await expect(poll(ENDPOINT, JOB, route(json(200, { ...done, escrow_ref: other })).fetchImpl))
+      .rejects.toThrow(new RegExp(`^Could not poll job ${JOB}: the supplier answered 200 with a finished job of another escrow than ${ESCROW}; it is not used\\.$`));
+  });
+
+  it.each([['no escrow_ref', undefined], ['an escrow_ref that is null', null], ['an escrow_ref that is not a string', 7], ['an empty escrow_ref', ''], ['an escrow_ref that is not a ref', 'not a ref']])('a done answer with %s rejects: it names no escrow', async (_name, value) => {
+    await expect(poll(ENDPOINT, JOB, route(json(200, { ...done, escrow_ref: value })).fetchImpl)).rejects.toThrow(/a finished job that names no escrow/);
+  });
+
+  it('takes the escrow the poll is made for in any spelling too', async () => {
+    const f = route(json(200, done));
+    expect((await pollFor(ENDPOINT, JOB, f.fetchImpl, ESCROW.toUpperCase())).kind).toBe('done');
+  });
+
+  it('the escrow checked is the one the answer itself names, not the one in the receipt', async () => {
+    // The receipt names the right escrow and the answer names another: the result is not used.
+    await expect(poll(ENDPOINT, JOB, route(json(200, { ...done, receipt: RECEIPT, escrow_ref: `${'cd'.repeat(32)}#0` })).fetchImpl)).rejects.toThrow(/another escrow/);
+  });
+
+  it('refuses a malformed escrow ref before anything is sent', async () => {
+    const f = route(json(200, done));
+    for (const bad of ['not-a-ref', ESCROW.slice(0, 64), '']) await expect(pollFor(ENDPOINT, JOB, f.fetchImpl, bad)).rejects.toThrow(/Invalid out ref/);
+    expect(f.calls).toHaveLength(0);
   });
 
   it('a 404 is gone: the supplier restarted or evicted the job', async () => {
@@ -336,9 +380,9 @@ describe.each(POLLERS)('$name', ({ path, poll, done }) => {
     expect(await poll(ENDPOINT, 'Job_1-a', f.fetchImpl)).toStrictEqual({ kind: 'running', status: 'running' });
   });
 
-  it.each(REFUSED_ENDPOINTS)('never polls %s: it rejects and nothing is sent', async (_name, endpoint) => {
+  it('never polls a private address: it rejects and nothing is sent', async () => {
     const f = routedFetch({});
-    await expect(poll(endpoint, JOB, f.fetchImpl)).rejects.toThrow(/Could not poll job/);
+    await expect(poll(PRIVATE, JOB, f.fetchImpl)).rejects.toThrow(/Could not poll job/);
     expect(f.calls).toHaveLength(0);
   });
 });
@@ -346,14 +390,14 @@ describe.each(POLLERS)('$name', ({ path, poll, done }) => {
 describe('the body of a done job', () => {
   it('is what the commitments of the fleet take whole: the page text and its format hash as the supplier hashed them', async () => {
     const f = routedFetch({ [`GET ${ENDPOINT}/v1/ocr/extract/${JOB}`]: json(200, OCR_DONE) });
-    const result = await pollOcrJob(ENDPOINT, JOB, f.fetchImpl);
+    const result = await pollOcrJob(ENDPOINT, JOB, f.fetchImpl, ESCROW);
     if (result.kind !== 'done') throw new Error('expected done');
     expect(ocrResponseHash(result.body as { content: string; output_format: string })).toBe(sha256Utf8Hex(canonicalize({ content: 'Page one of the test document.', output_format: 'markdown' })));
   });
 
   it('and so are the output, status and incomplete_details of the Responses object, with the text of the answer', async () => {
     const f = routedFetch({ [`GET ${ENDPOINT}/v1/responses/${JOB}`]: json(200, CHAT_DONE) });
-    const result = await pollResponsesJob(ENDPOINT, JOB, f.fetchImpl);
+    const result = await pollResponsesJob(ENDPOINT, JOB, f.fetchImpl, ESCROW);
     if (result.kind !== 'done') throw new Error('expected done');
     expect(responsesResponseHash(result.body)).toBe(sha256Utf8Hex(canonicalize({ output: CHAT_DONE.output, status: 'completed', incomplete_details: null })));
     expect(responsesOutputText(result.body)).toBe('A summary.');
@@ -424,9 +468,9 @@ describe('readCapability', () => {
     await expect(readCapability(ENDPOINT, route(text(200, exactly(65_537, body), 'application/json')).fetchImpl)).rejects.toThrow(/over the 65536 byte limit/);
   });
 
-  it.each(REFUSED_ENDPOINTS)('never reads %s: it rejects and nothing is sent', async (_name, endpoint) => {
+  it('never reads a private address: it rejects and nothing is sent', async () => {
     const f = routedFetch({});
-    await expect(readCapability(endpoint, f.fetchImpl)).rejects.toThrow(/Could not read the capability/);
+    await expect(readCapability(PRIVATE, f.fetchImpl)).rejects.toThrow(/Could not read the capability/);
     expect(f.calls).toHaveLength(0);
   });
 });
@@ -460,9 +504,9 @@ describe('probeStatus', () => {
     expect(spy).toHaveBeenLastCalledWith(2_000);
   });
 
-  it.each(REFUSED_ENDPOINTS)('never probes %s: unreachable and nothing is sent', async (_name, endpoint) => {
+  it('never probes a private address: unreachable and nothing is sent', async () => {
     const f = routedFetch({});
-    expect(await probeStatus(endpoint, f.fetchImpl)).toBe('unreachable');
+    expect(await probeStatus(PRIVATE, f.fetchImpl)).toBe('unreachable');
     expect(f.calls).toHaveLength(0);
   });
 });

@@ -13,6 +13,13 @@ import type { FetchLike, SupplierCapability } from './fleet-clients.ts';
 
 const LLM_CAPABILITY = 'llm.text.generate.v1';
 const OCR_CAPABILITY = 'ocr.page.extract.chandra-ocr-2.v1';
+/** All the selection may take, from the moment it is called: a supplier that does not answer costs up to 22 s (20 s for /capability, 2 s for /status). */
+const DEFAULT_BUDGET_MS = 120_000;
+/** The most suppliers the selection asks, in order, before it gives up. */
+const DEFAULT_MAX_CANDIDATES = 6;
+/** The longest delay a timer takes: Node cuts a longer one to a millisecond. */
+const MAX_TIMER_MS = 2_147_483_647;
+const EXPIRED = Symbol('the budget of the selection ran out');
 
 /**
  * `fetchImpl` aimed at the indexer at `indexerUrl`. The vendored fetchSuppliers builds its URLs on INDEXER_URL, a constant it reads from the environment when
@@ -27,6 +34,19 @@ function aimedAt(indexerUrl: string | undefined, fetchImpl: FetchLike): FetchLik
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     return fetchImpl(url.startsWith(`${INDEXER_URL}/`) ? `${base}${url.slice(INDEXER_URL.length)}` : input, init);
   }) as FetchLike;
+}
+
+/** `fetchImpl` whose every request is also cancelled when `signal` fires. */
+function cancelledBy(signal: AbortSignal, fetchImpl: FetchLike): FetchLike {
+  return ((input: Parameters<FetchLike>[0], init?: Parameters<FetchLike>[1]) =>
+    fetchImpl(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal })) as FetchLike;
+}
+
+/** A limit the caller gave, whole and not below zero, or `fallback` when none was given. Infinity lifts the limit; a value that is not a number is a mistake. */
+function limitOf(value: number | undefined, fallback: number, name: string): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'number' || Number.isNaN(value)) throw new TypeError(`${name} must be a number.`);
+  return Math.max(0, Math.floor(value));
 }
 
 const byPrice = (a: bigint, b: bigint): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -44,25 +64,44 @@ function sameRef(a: string, b: string): boolean {
 
 /**
  * The chat supplier to hire, or null when none is fit. The candidates are the free `llm.text.generate.v1` adverts whose model is on `allowlist`, in this
- * order: the position of the model on the allowlist, then the price (lowest first), then when the supplier was last seen (latest first). Each candidate in
- * turn is asked for its /capability, which must carry `inference_api: "responses"` and the very `advert_ref` the indexer lists for it, and, when `probe` is
- * true, for its /status, which must be `free`. The first that passes is the answer, so the candidates after it are not contacted. A candidate whose
- * /capability or /status cannot be read is skipped, not an error. Rejects when the indexer cannot be read.
+ * order: the position of the model on the allowlist, then the price (lowest first), then when the supplier was last seen (latest first; a supplier never seen,
+ * or seen at a time that is no date, last). At most `maxCandidates` (6 by default) are asked, each in turn for its /capability, which must carry
+ * `inference_api: "responses"` and the very `advert_ref` the indexer lists for it, and, when `probe` is true, for its /status, which must be `free`. The first
+ * that passes is the answer, so the candidates after it are not contacted. A candidate whose /capability or /status cannot be read is skipped, not an error.
+ * The whole selection has `budgetMs` (120 s by default) from the moment it is called, the read of the indexer included: when that runs out before a
+ * candidate has passed, the call in flight is cancelled and the answer is null, and a candidate that answers after that is not used. Infinity lifts either limit.
+ * Rejects when the indexer cannot be read, and when a limit is not a number.
  */
-export async function selectLlmSupplier(args: { fetchImpl: FetchLike; indexerUrl?: string; allowlist: readonly string[]; probe?: boolean }): Promise<{
+export async function selectLlmSupplier(args: { fetchImpl: FetchLike; indexerUrl?: string; allowlist: readonly string[]; probe?: boolean; budgetMs?: number; maxCandidates?: number }): Promise<{
   advertRef: string; endpoint: string; model: string; supplierPkh: string; priceLovelace: bigint; capability: SupplierCapability;
 } | null> {
+  const startedAt = performance.now();
+  const budgetMs = limitOf(args.budgetMs, DEFAULT_BUDGET_MS, 'budgetMs');
+  const maxCandidates = limitOf(args.maxCandidates, DEFAULT_MAX_CANDIDATES, 'maxCandidates');
   const rows = await fetchSuppliers({ capability_id: LLM_CAPABILITY, onlyFree: true, fetchImpl: aimedAt(args.indexerUrl, args.fetchImpl) });
   const candidates = rows
     .map((row) => ({ row, rank: args.allowlist.indexOf(row.model) }))
     .filter((candidate) => candidate.rank >= 0)
-    .sort((a, b) => a.rank - b.rank || byPrice(a.row.price_lovelace, b.row.price_lovelace) || newerFirst(seenAt(a.row.last_seen_iso), seenAt(b.row.last_seen_iso)));
-  for (const { row } of candidates) {
+    .sort((a, b) => a.rank - b.rank || byPrice(a.row.price_lovelace, b.row.price_lovelace) || newerFirst(seenAt(a.row.last_seen_iso), seenAt(b.row.last_seen_iso)))
+    .slice(0, maxCandidates);
+  const left = budgetMs - (performance.now() - startedAt);
+  if (left <= 0 || candidates.length === 0) return null;
+  // From here on every request is cancelled when the budget runs out, and the wait for a candidate ends then even if it cannot be cancelled (a host lookup).
+  const cutoff = AbortSignal.timeout(Math.min(Math.ceil(left), MAX_TIMER_MS));
+  const reach = cancelledBy(cutoff, args.fetchImpl);
+  const expired = new Promise<typeof EXPIRED>((resolve) => { cutoff.addEventListener('abort', () => resolve(EXPIRED), { once: true }); });
+  // One candidate: the supplier to hire if it passes, else null. It never rejects, so one that is still running when the budget ends is left to end alone.
+  const hire = async (row: (typeof rows)[number]) => {
     let capability: SupplierCapability;
-    try { capability = await readCapability(row.endpoint_url, args.fetchImpl); } catch { continue; }
-    if (capability.inference_api !== 'responses' || !sameRef(capability.advert_ref, row.utxo_ref)) continue;
-    if (args.probe === true && (await probeStatus(row.endpoint_url, args.fetchImpl)) !== 'free') continue;
+    try { capability = await readCapability(row.endpoint_url, reach); } catch { return null; }
+    if (capability.inference_api !== 'responses' || !sameRef(capability.advert_ref, row.utxo_ref)) return null;
+    if (args.probe === true && (await probeStatus(row.endpoint_url, reach)) !== 'free') return null;
     return { advertRef: row.utxo_ref, endpoint: row.endpoint_url, model: row.model, supplierPkh: row.supplier_pkh, priceLovelace: row.price_lovelace, capability };
+  };
+  for (const { row } of candidates) {
+    const found = await Promise.race([hire(row), expired]);
+    if (found === EXPIRED) return null;
+    if (found !== null) return found;
   }
   return null;
 }

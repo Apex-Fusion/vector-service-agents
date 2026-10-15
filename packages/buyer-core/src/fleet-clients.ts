@@ -17,10 +17,12 @@
 //             the claim, so the caller reads the escrow's state before it reclaims or sends again.
 //   timeout   no answer was read: the budget ran out, the network failed, the answer was over the cap, or the outbound policy refused the endpoint. The POST
 //             may have reached the supplier, which may have claimed the escrow, so the caller reads the escrow's state before it does anything else, and
-//             never sends again blindly.
-// What a poll says. running (202), done (200 with the receipt and its signature), failed (the supplier's own word: its failed envelope, or a 200 that is no
-// finished job), gone (404: the supplier restarted or evicted the job). A poll that gets no answer of the supplier's at all (the call fails, or a proxy
-// answers with a page or a body of its own) rejects instead of saying failed: the job may well be running, and the caller asks again on its next tick.
+//             never sends again blindly. Neither does this client: whatever the outcome, a send makes one POST.
+// What a poll says. running (202), done (200 with the receipt and its signature, for the escrow the poll was made for), failed (the supplier's own word: its
+// failed or error envelope on an error status), gone (404: the supplier restarted or evicted the job). A poll that gets no answer of the supplier's at all
+// rejects instead of saying failed: the call fails, a proxy answers with a page or a body of its own, or a 200 comes without the receipt and its signature
+// (the supplier answers 200 for a done job only, always with both, and sends a failed job with its own envelope on an error status). The job may well be
+// running, and the caller asks again on its next tick.
 import { safeFetch } from '@vsa/vector-read';
 import { ROUTES, callFailure, canonicalRef, jsonObject, trim } from './vendored/mcp/marketplace-supplier.ts';
 import type { Call, Route } from './vendored/mcp/marketplace-supplier.ts';
@@ -165,58 +167,70 @@ export function sendResponsesJob(endpoint: string, escrowRef: string, body: { in
 }
 
 // --- Polling a job ----------------------------------------------------------------------------------------------------------------
-function failed(reason: string, message: string): PollResult {
-  return { kind: 'failed', reason, message };
-}
-
 /** The ref a supplier names as its Submitted output, in canonical form, or undefined when it names none or not a ref: a hint, checked against the chain by whoever uses it. */
 function submittedRefOf(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   try { return canonicalRef(value); } catch { return undefined; }
 }
 
-function pollResult(jobId: string, status: number, text: string): PollResult {
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * The result of a poll answer. `escrowRef` is the canonical ref the poll was made for: a done answer must name it (a job id is a bearer token, and the
+ * answer of a supplier that names another escrow, or none, is not an answer about this job).
+ */
+function pollResult(jobId: string, escrowRef: string, status: number, text: string): PollResult {
+  const lost = (why: string) => new Error(`Could not poll job ${jobId}: the supplier answered ${status} with ${why}.`);
   if (status === 404) return { kind: 'gone' };
   const answer = jsonObject(text);
   // A 202 says the job is not finished whatever else the body says.
   if (status === 202) return { kind: 'running', status: typeof answer?.status === 'string' && answer.status !== '' ? answer.status.slice(0, 100) : 'running' };
   if (status === 200) {
-    if (answer === null) return failed('bad_response', 'The supplier answered 200 with something that is not a JSON object.');
+    if (answer === null) throw lost('no JSON object');
     const { receipt, receipt_signature: signature } = answer;
-    // A job is done when the supplier hands over a receipt and its signature; the receipt is what the Accept is decided on.
-    if (receipt === null || typeof receipt !== 'object' || Array.isArray(receipt) || typeof signature !== 'string' || signature === '') {
-      return failed('bad_response', 'The supplier answered 200 without a receipt object and a non-empty receipt_signature.');
-    }
+    // A job is done when the supplier hands over a receipt and its signature; the receipt is what the Accept is decided on. A 200 without them is no
+    // answer of the supplier's (see the head of this file), and the poll does not say the job failed.
+    if (!isObject(receipt) || typeof signature !== 'string' || signature === '') throw lost('a JSON object that is no finished job (no receipt object and non-empty receipt_signature)');
+    const echoed = answer.escrow_ref;
+    let named: string | undefined;
+    if (typeof echoed === 'string') { try { named = canonicalRef(echoed); } catch { /* names no escrow, below */ } }
+    if (named === undefined) throw lost('a finished job that names no escrow (escrow_ref)');
+    if (named !== escrowRef) throw lost(`a finished job of another escrow than ${escrowRef}; it is not used`);
     const submittedRef = submittedRefOf(answer.submitted_ref);
-    return { kind: 'done', body: answer, receipt: receipt as Receipt, receiptSignature: signature, ...(submittedRef === undefined ? {} : { submittedRef }) };
+    return { kind: 'done', body: answer, receipt, receiptSignature: signature, ...(submittedRef === undefined ? {} : { submittedRef }) };
   }
   // An error status with the supplier's envelope (the failed one of a job, `{status: "failed", reason, message}`, or an error one, `{reason, message}`) is
   // its own word. A page, or a JSON object that is no envelope of the supplier's (a proxy's, a gateway's), is not: the job may well be running.
   if (status >= 400 && answer !== null && (answer.status === 'failed' || typeof answer.reason === 'string')) return { kind: 'failed', ...said(status, answer) };
-  throw new Error(`Could not poll job ${jobId}: the supplier answered ${status} with ${answer === null ? 'no JSON object' : 'a JSON object that is no envelope of its own'}.`);
+  throw lost(answer === null ? 'no JSON object' : 'a JSON object that is no envelope of its own');
 }
 
-async function poll(route: Route, endpoint: string, jobId: string, fetchImpl: FetchLike): Promise<PollResult> {
+async function poll(route: Route, endpoint: string, jobId: string, fetchImpl: FetchLike, escrowRef: string): Promise<PollResult> {
   if (typeof jobId !== 'string' || !JOB_ID.test(jobId)) throw new Error('The job id must be 1 to 128 letters, digits, hyphens or underscores.');
+  const expected = canonicalRef(escrowRef);
   let res: { status: number; text: string };
   try {
     res = await safeFetch(route.poll(endpoint, jobId), { headers: READ_HEADERS }, { ...POLL_CALL, fetchImpl });
   } catch (err) {
     throw new Error(`Could not poll job ${jobId}: ${callFailure(err, POLL_CALL)}.`);
   }
-  return pollResult(jobId, res.status, res.text);
+  return pollResult(jobId, expected, res.status, res.text);
 }
 
 /**
- * GET /v1/ocr/extract/:jobId (20 s, 1,000,000 bytes). `done` carries the whole body of the finished job (the page text and its output format among the
- * rest, which is what the response hash is made of), the receipt and its signature, and the Submitted ref when the build names one. Rejects when the call
- * gets no usable answer (see the head of this file) or the job id is not 1 to 128 letters, digits, hyphens and underscores.
+ * GET /v1/ocr/extract/:jobId (20 s, 1,000,000 bytes) for the job that `jobId` names, sent for the escrow `escrowRef`. `done` carries the whole body of the
+ * finished job (the page text and its output format among the rest, which is what the response hash is made of), the receipt and its signature, and the
+ * Submitted ref when the build names one; a done answer must name `escrowRef` in its escrow_ref, or the poll rejects. Rejects as well when the call gets no
+ * usable answer (see the head of this file), when the job id is not 1 to 128 letters, digits, hyphens and underscores, and when `escrowRef` is malformed,
+ * the last two before anything is sent.
  */
-export function pollOcrJob(endpoint: string, jobId: string, fetchImpl: FetchLike): Promise<PollResult> {
-  return poll(ROUTES.ocr, endpoint, jobId, fetchImpl);
+export function pollOcrJob(endpoint: string, jobId: string, fetchImpl: FetchLike, escrowRef: string): Promise<PollResult> {
+  return poll(ROUTES.ocr, endpoint, jobId, fetchImpl, escrowRef);
 }
 
-/** GET /v1/responses/:jobId, with the budget, the cap and the results of pollOcrJob. `done` carries the whole Responses object with the receipt fields. */
-export function pollResponsesJob(endpoint: string, jobId: string, fetchImpl: FetchLike): Promise<PollResult> {
-  return poll(ROUTES.chat, endpoint, jobId, fetchImpl);
+/** GET /v1/responses/:jobId, with the budget, the cap, the escrow check and the results of pollOcrJob. `done` carries the whole Responses object with the receipt fields. */
+export function pollResponsesJob(endpoint: string, jobId: string, fetchImpl: FetchLike, escrowRef: string): Promise<PollResult> {
+  return poll(ROUTES.chat, endpoint, jobId, fetchImpl, escrowRef);
 }

@@ -3,11 +3,13 @@
 // then the most recently seen; the supplier itself must serve the Responses API for the advert the indexer lists, and be free) and which OCR advert
 // (findOcrAdvert: the one free advert of the allowlisted key, or none). The indexer is read with the vendored fetchSuppliers. The suppliers are reached
 // through safeFetch, so their endpoints are IP literals of the documentation range 203.0.113.0/24: public for safeFetch, and no host lookup.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { findOcrAdvert, selectLlmSupplier } from '../src/select-supplier.ts';
 import { INDEXER_URL } from '../src/vendored/mcp/marketplace-constants.ts';
-import { json, routedFetch } from './fake-fetch.ts';
+import { boom, delayed, hang, json, routedFetch, text } from './fake-fetch.ts';
 import type { Answer, FakeFetch } from './fake-fetch.ts';
+
+afterEach(() => { vi.restoreAllMocks(); });
 
 const INDEXER = 'https://indexer.test';
 const DEEPSEEK = 'deepseek/deepseek-v4-flash';
@@ -53,9 +55,10 @@ function llm(n: number, model: string, o: { row?: Record<string, unknown>; capab
   const status = o.live === undefined ? live('free') : typeof o.live === 'string' ? live(o.live) : o.live;
   return { n, model, row: row(n, model, o.row), capability, status };
 }
-/** The fake network: the indexer listing `nodes` (and any `extra` rows) and the two routes of each node. */
-function network(nodes: Node[], extra: unknown[] = []): FakeFetch {
-  const routes: Record<string, Answer> = { [`GET ${INDEXER}/suppliers`]: json(200, [...nodes.map((x) => x.row), ...extra]) };
+/** The fake network: the indexer listing `nodes` (after `indexerDelayMs`, when given) and the two routes of each node. */
+function network(nodes: Node[], opts: { indexerDelayMs?: number } = {}): FakeFetch {
+  const listing = json(200, nodes.map((x) => x.row));
+  const routes: Record<string, Answer> = { [`GET ${INDEXER}/suppliers`]: opts.indexerDelayMs === undefined ? listing : delayed(opts.indexerDelayMs, listing) };
   for (const x of nodes) {
     routes[`GET ${endpointOf(x.n)}/capability`] = x.capability;
     routes[`GET ${endpointOf(x.n)}/status`] = x.status;
@@ -98,8 +101,23 @@ describe('selectLlmSupplier', () => {
       llm(6, KIMI, { row: { price_lovelace: '50000', ...seen('12') }, capability: down }),
       llm(7, DEEPSEEK, { row: { price_lovelace: '200000', last_seen_iso: null }, capability: down }),
     ]);
-    expect(await select(f)).toBeNull();
+    // All seven are asked, so the default limit of six candidates is lifted here.
+    expect(await select(f, { maxCandidates: 7 })).toBeNull();
     expect(askedOf(f, '/capability')).toStrictEqual([4, 3, 7, 2, 5, 6, 1].map((n) => hostOf(endpointOf(n))));
+  });
+
+  it('a supplier last seen at a time that is no date sorts after the ones that have a date, at an equal price: not by the text, as the indexer sorts', async () => {
+    const seen = (iso: string | null) => ({ last_seen_iso: iso });
+    const f = network([
+      llm(1, DEEPSEEK, { row: seen('sometime last week'), capability: down }),
+      llm(2, DEEPSEEK, { row: seen('2026-10-13T09:00:00.000Z'), capability: down }),
+      llm(3, DEEPSEEK, { row: seen(''), capability: down }),
+      llm(4, DEEPSEEK, { row: seen('2026-10-13T11:00:00.000Z'), capability: down }),
+      llm(5, DEEPSEEK, { row: seen(null), capability: down }),
+    ]);
+    expect(await select(f)).toBeNull();
+    // The text "sometime last week" comes after every date in a descending sort of strings, which is how the vendored list is ordered: here it is last with the others.
+    expect(askedOf(f, '/capability')).toStrictEqual([4, 2, 1, 3, 5].map((n) => hostOf(endpointOf(n))));
   });
 
   it('within one model and price, falls to the next supplier when the first cannot serve', async () => {
@@ -142,10 +160,8 @@ describe('selectLlmSupplier', () => {
   });
 
   it('skips a supplier whose /capability cannot be read: an error status, a page, a network error, a body without its key', async () => {
-    const boom: Answer = () => { throw new TypeError('fetch failed'); };
-    const page: Answer = () => new Response('<html>login</html>', { status: 200, headers: { 'content-type': 'text/html' } });
     const unreadable: Array<[string, Record<string, unknown> | Answer]> = [
-      ['an error status', down], ['a page', page], ['a network error', boom], ['no public key', { pub_key_hex: undefined }], ['a supplier key hash that is not a string', { supplier_pkh: 4 }],
+      ['an error status', down], ['a page', text(200, '<html>login</html>', 'text/html')], ['a network error', boom], ['no public key', { pub_key_hex: undefined }], ['a supplier key hash that is not a string', { supplier_pkh: 4 }],
     ];
     for (const [name, bad] of unreadable) {
       const f = network([llm(1, DEEPSEEK, { row: { price_lovelace: '100000' }, capability: bad }), llm(2, DEEPSEEK)]);
@@ -154,7 +170,6 @@ describe('selectLlmSupplier', () => {
   });
 
   it('with probe true a supplier must be free on /status too: working, offline and unreachable are skipped', async () => {
-    const boom: Answer = () => { throw new TypeError('fetch failed'); };
     const notFree: Array<[string, string | Answer]> = [['working', 'working'], ['offline', 'offline'], ['a status word of nobody', 'busy'], ['an error status', down], ['a network error', boom]];
     for (const [name, status] of notFree) {
       const f = network([llm(1, DEEPSEEK, { row: { price_lovelace: '100000' }, live: status }), llm(2, DEEPSEEK, { live: 'free' })]);
@@ -188,6 +203,103 @@ describe('selectLlmSupplier', () => {
     const f = network([llm(1, DEEPSEEK, { row: { price_lovelace: '100000' } }), llm(2, DEEPSEEK, { row: { price_lovelace: '200000' } })]);
     expect((await select(f, { probe: true }))?.advertRef).toBe(advertOf(1));
     expect(f.calls.map((c) => hostOf(c.url))).toStrictEqual(['indexer.test', '203.0.113.1', '203.0.113.1']);
+  });
+
+  describe('its limits', () => {
+    // Nine adverts: one of a model off the allowlist, six of one model that cannot serve (the cheapest first), and two that can.
+    const crowd = () => network([
+      llm(9, 'kimi-k3', { row: { price_lovelace: '1' } }),
+      ...[1, 2, 3, 4, 5, 6].map((n) => llm(n, DEEPSEEK, { row: { price_lovelace: String(100_000 + n) }, capability: down })),
+      llm(7, DEEPSEEK, { row: { price_lovelace: '100007' } }),
+      llm(8, DEEPSEEK, { row: { price_lovelace: '100008' } }),
+    ]);
+
+    it('asks at most six suppliers by default: the seventh is not reached, however well it would serve, and a model off the allowlist is not one of the six', async () => {
+      const f = crowd();
+      expect(await select(f)).toBeNull();
+      expect(askedOf(f, '/capability')).toStrictEqual([1, 2, 3, 4, 5, 6].map((n) => hostOf(endpointOf(n))));
+    });
+
+    it('asks as many as maxCandidates says: seven reach the seventh, two stop at the second, none asks no one, Infinity lifts the limit', async () => {
+      expect((await select(crowd(), { maxCandidates: 7 }))?.advertRef).toBe(advertOf(7));
+      const two = crowd();
+      expect(await select(two, { maxCandidates: 2 })).toBeNull();
+      expect(askedOf(two, '/capability')).toStrictEqual([1, 2].map((n) => hostOf(endpointOf(n))));
+      const none = crowd();
+      expect(await select(none, { maxCandidates: 0 })).toBeNull();
+      expect(none.calls.map((c) => hostOf(c.url))).toStrictEqual(['indexer.test']);
+      expect((await select(crowd(), { maxCandidates: Number.POSITIVE_INFINITY }))?.advertRef).toBe(advertOf(7));
+    });
+
+    it('stops when the budget runs out: a supplier that does not answer is cancelled, and the ones after it are not asked', async () => {
+      const f = network([llm(1, DEEPSEEK, { row: { price_lovelace: '100000' }, capability: hang }), llm(2, DEEPSEEK, { row: { price_lovelace: '200000' } })]);
+      const started = performance.now();
+      expect(await select(f, { budgetMs: 50 })).toBeNull();
+      // The budget ended the call, not the 20 s that /capability may take.
+      expect(performance.now() - started).toBeLessThan(5000);
+      expect(askedOf(f, '/capability')).toStrictEqual([hostOf(endpointOf(1))]);
+      expect(f.calls.find((c) => c.url === `${endpointOf(1)}/capability`)?.signal?.aborted).toBe(true);
+    });
+
+    it('the budget also cancels a /status call that is in flight', async () => {
+      const f = network([llm(1, DEEPSEEK, { live: hang })]);
+      expect(await select(f, { probe: true, budgetMs: 50 })).toBeNull();
+      expect(f.calls.find((c) => c.url === `${endpointOf(1)}/status`)?.signal?.aborted).toBe(true);
+    });
+
+    it('the limit of a call to a supplier stays in force inside the selection: one that does not answer in time is skipped, and the next is asked', async () => {
+      // A /capability call may take 20 s. The limit is shortened to 30 ms so that the test does not wait for it.
+      const real = AbortSignal.timeout.bind(AbortSignal);
+      vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => real(ms === 20_000 ? 30 : ms));
+      const f = network([llm(1, DEEPSEEK, { row: { price_lovelace: '100000' }, capability: hang }), llm(2, DEEPSEEK, { row: { price_lovelace: '200000' } })]);
+      expect((await select(f))?.advertRef).toBe(advertOf(2));
+    });
+
+    it('a supplier that would answer after the budget is not used: the selection has given up before it can', async () => {
+      let release: () => void = () => {};
+      const late: Answer = async () => {
+        await new Promise<void>((resolve) => { release = resolve; });
+        return json(200, capabilityOf(1, DEEPSEEK));
+      };
+      const f = network([llm(1, DEEPSEEK, { capability: late })]);
+      // Nothing releases the supplier until the selection has returned, so only the budget can have ended the call.
+      expect(await select(f, { budgetMs: 40 })).toBeNull();
+      release();
+    });
+
+    it('the budget runs from the call, the read of the indexer included: a slow indexer leaves nothing for the suppliers', async () => {
+      const f = network([llm(1, DEEPSEEK)], { indexerDelayMs: 80 });
+      expect(await select(f, { budgetMs: 40 })).toBeNull();
+      expect(f.calls.map((c) => hostOf(c.url))).toStrictEqual(['indexer.test']);
+    });
+
+    it('a budget of no time asks no supplier', async () => {
+      const f = network([llm(1, DEEPSEEK)]);
+      expect(await select(f, { budgetMs: 0 })).toBeNull();
+      expect(f.calls.map((c) => hostOf(c.url))).toStrictEqual(['indexer.test']);
+    });
+
+    it('a supplier that answers within the budget is used', async () => {
+      const f = network([llm(1, DEEPSEEK, { capability: delayed(30, json(200, capabilityOf(1, DEEPSEEK))) })]);
+      expect((await select(f, { budgetMs: 5000 }))?.advertRef).toBe(advertOf(1));
+    });
+
+    it('the budget is 120 s by default, from the call', async () => {
+      const spy = vi.spyOn(AbortSignal, 'timeout');
+      await select(network([llm(1, DEEPSEEK)]));
+      expect(spy.mock.calls.some(([ms]) => ms > 119_000 && ms <= 120_000)).toBe(true);
+      spy.mockClear();
+      await select(network([llm(1, DEEPSEEK)]), { budgetMs: 5000 });
+      expect(spy.mock.calls.some(([ms]) => ms > 4000 && ms <= 5000)).toBe(true);
+    });
+
+    it('a limit that is not a number is refused, and one below zero is none', async () => {
+      await expect(select(network([llm(1, DEEPSEEK)]), { budgetMs: Number.NaN })).rejects.toThrow(TypeError);
+      await expect(select(network([llm(1, DEEPSEEK)]), { maxCandidates: Number.NaN })).rejects.toThrow(TypeError);
+      const f = crowd();
+      expect(await select(f, { maxCandidates: -3 })).toBeNull();
+      expect(askedOf(f, '/capability')).toStrictEqual([]);
+    });
   });
 
   it('returns null when no supplier passes: nothing listed, nothing on the allowlist, an empty allowlist, every candidate failing', async () => {

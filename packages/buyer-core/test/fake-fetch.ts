@@ -11,23 +11,37 @@ export function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
 
-/** An answer that never comes: it settles only when the call's signal fires, as a real fetch does. */
+/** A plain-text (or other non-JSON) answer. */
+export const text = (status: number, body: string, type = 'text/plain'): Response => new Response(body, { status, headers: { 'content-type': type } });
+
+/** An answer that fails the way a dropped connection does: the fetch itself rejects. */
+export const boom: Answer = () => { throw new TypeError('fetch failed'); };
+
+/** An answer that never comes: it settles only when the call's signal fires, as a real fetch does (at once, for a call whose signal has fired already). */
 export const hang: Answer = (call) => new Promise<Response>((_resolve, reject) => {
-  call.signal?.addEventListener('abort', () => reject(call.signal?.reason), { once: true });
+  const signal = call.signal;
+  if (signal?.aborted) { reject(signal.reason); return; }
+  signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
 });
 
 // A Response answer is read once and rebuilt for each call, so one entry can answer many. It is not cloned: a clone is a tee of the body, and the
 // cancel of one branch (what safeFetch does with a body over its cap) settles only when the other branch is cancelled too, which nobody would do.
-const snapshots = new WeakMap<Response, Promise<{ status: number; headers: Array<[string, string]>; text: string }>>();
+const snapshots = new WeakMap<Response, Promise<{ status: number; headers: Array<[string, string]>; body: string }>>();
 async function rebuilt(answer: Response): Promise<Response> {
   let snapshot = snapshots.get(answer);
   if (snapshot === undefined) {
-    snapshot = answer.text().then((text) => ({ status: answer.status, headers: [...answer.headers], text }));
+    snapshot = answer.text().then((body) => ({ status: answer.status, headers: [...answer.headers], body }));
     snapshots.set(answer, snapshot);
   }
-  const { status, headers, text } = await snapshot;
-  return new Response(text === '' ? null : text, { status, headers });
+  const { status, headers, body } = await snapshot;
+  return new Response(body === '' ? null : body, { status, headers });
 }
+
+/** `answer` after `ms`, whatever the call's signal does: a slow supplier that does not notice it was cancelled. */
+export const delayed = (ms: number, answer: Answer): Answer => async (call) => {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  return typeof answer === 'function' ? answer(call) : rebuilt(answer);
+};
 
 /** A fetch that answers from `routes`, keyed "GET https://host/path". */
 export function routedFetch(routes: Record<string, Answer>): FakeFetch {
