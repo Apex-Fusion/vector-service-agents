@@ -204,7 +204,7 @@ test('the Pipeline states its economics and the first-party OCR hop; the Advocat
 const doc = (name) => readFileSync(new URL(`../docs/${name}`, import.meta.url), 'utf8');
 const hire = () => doc('HIRE.md');
 const e2eScript = () => readFileSync(new URL('./e2e-hire.mjs', import.meta.url), 'utf8');
-const HIRE_SECTIONS = ['What you will end up with', 'Get a key', 'We fund it', 'Two lines of config', 'The chat script', 'Read your receipt', 'Register your own identifier (optional)', 'The terminal path', 'When it goes wrong', 'Honesty box'];
+const HIRE_SECTIONS = ['What you will end up with', 'Get a key', 'Fund it', 'Two lines of config', 'The chat script', 'Read your receipt', 'Register your own identifier (optional)', 'The terminal path', 'When it goes wrong', 'Honesty box'];
 const CHAT_SCRIPT = [
   '1. "List the marketplace capabilities on Vector."',
   '2. "Show me free suppliers for identity.history.report.v1."',
@@ -222,9 +222,11 @@ const AGENT_SPEC = { 'Agent History': 'agent-history', 'Audio Snippets': 'audio-
 // 24 tools, none of the nine on the server. None of it may be written again, so one pattern is held against all of them (see the last test of this file).
 const WAITS_FOR_CUTOVER = /cutover|cut over|cuts it over|24 tools|none of them a marketplace tool|none of the marketplace tools|awaiting the|merged, awaiting|has them only after|still serves/i;
 
-test('docs/HIRE.md: the ten sections of the design, numbered, in the order the member does them', () => {
+test('docs/HIRE.md: the ten sections of the design, numbered, in the order the member does them; the first paragraph says the guide is for anyone with a chat client and a key, written for a working-group member first', () => {
   assert.deepEqual([...hire().matchAll(/^## (\d+)\. (.+)$/gm)].map((m) => [Number(m[1]), m[2]]), HIRE_SECTIONS.map((title, i) => [i + 1, title]));
   assert.ok(hire().startsWith('# '), 'starts with a title');
+  assert.ok(hire().split('\n')[2].startsWith('A guide for anyone with a chat client and a key. It was written for a working-group member first. You use a chat client that has two MCP servers connected'), 'the first paragraph');
+  assert.equal(hire().match(/A guide for a working-group member/), null, 'the words of before');
 });
 
 test('docs/HIRE.md: the chat script is verbatim, six lines in one block, inside section 5', () => {
@@ -235,7 +237,7 @@ test('docs/HIRE.md: the chat script is verbatim, six lines in one block, inside 
 test('docs/HIRE.md: the ledger unit is named once, in section 3, and nowhere else in the repo', () => {
   const guide = hire();
   assert.equal(guide.match(UNIT_NAME)?.length, 1);
-  assert.ok(section(guide, '3. We fund it').includes("the ledger's native unit, " + UNIT_NAME.source));
+  assert.ok(section(guide, '3. Fund it').includes("the ledger's native unit, " + UNIT_NAME.source));
   // Every other file of the repo says "unit" or prints lovelace. The planning documents and the recorded ledger data are not part of this rule.
   const root = fileURLToPath(new URL('../', import.meta.url));
   // The run outputs of docs/E2E.md (git-ignored, repository root) are an operator's files, not the repository: skipped.
@@ -244,6 +246,27 @@ test('docs/HIRE.md: the ledger unit is named once, in section 3, and nowhere els
   const walk = (dir, out = []) => { for (const e of readdirSync(dir, { withFileTypes: true })) { const p = join(dir, e.name); if (skip(relative(root, p))) continue; e.isDirectory() ? walk(p, out) : out.push(relative(root, p)); } return out; };
   const hits = walk(root).filter((rel) => /\.(ts|mjs|json|md|yml|yaml|template)$/.test(rel) && rel !== join('docs', 'HIRE.md')).filter((rel) => readFileSync(join(root, rel), 'utf8').match(UNIT_NAME));
   assert.deepEqual(hits, []);
+});
+
+// Section 3 of the guide has two ways to fund the key since 2026-10-15. The Foundation's way is the text of before, kept word for word (the one sentence that names the unit is in it). The reader's own way says what a key funded by hand needs.
+const FOUNDATION_WAY = "The Foundation funds working-group experiments. It sends your address two separate transfers: 5 units alone, then a float of 50. They stay separate on purpose. The Accept and the Reclaim are script spends, and each needs a pure 5-unit output as collateral. The Post keeps a pure 5-unit output aside when your wallet has one. A single lump sum lets your wallet spend it. Fees and bonds are paid in the ledger's native unit, " + UNIT_NAME.source + '. The name appears once, here. The rest of this guide calls it a unit.';
+
+test('docs/HIRE.md section 3: two ways to fund the key, the Foundation way kept word for word, the own way says Vector mainnet, a key from keygen only and 5 alone before the float; the cost table and the check come after both', () => {
+  const three = section(hire(), '3. Fund it');
+  const at = (needle) => { const i = three.indexOf(needle); assert.ok(i >= 0, `section 3 says: ${needle}`); return i; };
+  const order = ['There are two ways to fund your key. The cost table and the check below apply to both.', "**(a) The Foundation funds a working-group member's key, on request.**", FOUNDATION_WAY, '**(b) Or fund it yourself.**', 'What one job costs you.', '| Price (agent) |', 'Check the funding before you go on.', '(`vector_get_utxos`)'];
+  const positions = order.map(at);
+  assert.deepEqual(positions, [...positions].sort((a, b) => a - b), 'the intro, the Foundation way, the own way, the cost, the table and the check: in this order');
+  const own = three.slice(at('**(b) Or fund it yourself.**'), at('What one job costs you.'));
+  for (const part of [
+    'The units must be on Vector mainnet.',
+    'Units on Prime, on Nexus or in a bridged form elsewhere cannot fund your key.',
+    'The Reactor bridge moves units from Prime to Vector.',
+    "The signer accepts only a key made by `keygen`. It does not take a wallet's recovery phrase, so a wallet's balance has to be sent to the address `keygen` printed.",
+    'Send 5 alone first, then the float of 50. That is two transfers, for the reason given in (a).',
+  ]) assert.ok(own.includes(part), `the own way says: ${part}`);
+  assert.equal(own.match(UNIT_NAME), null, 'the own way says units, the name is in the Foundation way');
+  assert.equal(hire().match(/We fund it/), null, 'the title of before');
 });
 
 test('docs/HIRE.md and docs/E2E.md: no em or en dash; nothing says LIVE except the sentence that denies it; DEPLOYED only in the status paragraph of each and in the Agent History row of the guide', () => {
@@ -276,7 +299,7 @@ test('docs/HIRE.md: the request JSON and the wire payload are named apart, as in
 const BONDS_RETURN = /both bonds (return|come back|are returned)|bonds? (are )?returned|returned on accept|bonds back|own bond|its bond back/i;
 
 test('docs/HIRE.md: who receives what on Accept, Release and Reclaim', () => {
-  const three = section(hire(), '3. We fund it');
+  const three = section(hire(), '3. Fund it');
   assert.ok(three.includes('On Accept the supplier receives the price and the supplier bond, and your bond returns to you.'));
   // One sentence, one unit: the Accept window is 600 s, and a Release hands the supplier everything that is locked, the buyer bond included.
   assert.ok(three.includes("If you do not accept within 600 s of the supplier's Submit, the supplier may Release the escrow and keep everything that is locked: the price and both bonds, your buyer bond included."));
@@ -302,7 +325,7 @@ test('specs/agent-history.md: on Accept the supplier receives the price and the 
 });
 
 test('docs/HIRE.md: the cost table is the escrow arithmetic, with the prices of the four specs', () => {
-  const rows = [...section(hire(), '3. We fund it').matchAll(/^\| (\d+) \(([^)]+)\) \| (\d+) \| (\d+) \| (\d+) \| about (\d+) \| about (\d+) \| (\d+) \|$/gm)];
+  const rows = [...section(hire(), '3. Fund it').matchAll(/^\| (\d+) \(([^)]+)\) \| (\d+) \| (\d+) \| (\d+) \| about (\d+) \| about (\d+) \| (\d+) \|$/gm)];
   assert.deepEqual(rows.map((m) => m[2]).sort(), Object.keys(AGENT_SPEC).sort(), 'one row for each agent');
   for (const [, price, agent, lock, supplier, back, fees, pay, jobs] of rows) {
     const terms = section(read(AGENT_SPEC[agent]), 'Terms');
@@ -411,7 +434,7 @@ test('docs/HIRE.md: the keygen output format is not pinned; the escrow minimum i
   const guide = hire();
   assert.equal(guide.match(/VECTOR_SIGNER_PRIVATE_KEY=\.\.\./), null, 'no NAME=... line is promised from keygen');
   assert.ok(guide.includes('If keygen prints them as `NAME=value` lines, the value is what follows the `=`.'));
-  assert.ok(section(guide, '3. We fund it').includes('between 2.2 and 2.3 in an escrow output of this size, depending on the length of the agent'));
+  assert.ok(section(guide, '3. Fund it').includes('between 2.2 and 2.3 in an escrow output of this size, depending on the length of the agent'));
   const timeouts = guide.split('\n').find((l) => l.startsWith('| A tool call times out near 100 s')) ?? '';
   assert.ok(timeouts.includes('The PR 3 tools that call a supplier (send job, poll job, verify receipt) stop at 90 s on their own'));
   assert.ok(timeouts.includes('`vector_await_transaction` waits as long as it is asked, up to 300 s'));
@@ -449,7 +472,7 @@ test('docs/HIRE.md: PR 2 is merged and its tools are on the hosted mainnet serve
   const row = (needle) => guide.split('\n').find((l) => l.startsWith('|') && l.includes(needle)) ?? '';
   assert.ok(row('vector_build_marketplace_post_escrow').includes('PR 2, merged into `main` on 2026-10-14, on the hosted mainnet server: [Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21)'));
   assert.match(row('| Reads back what it already has |'), /^\| 6 \| .* You hold the report text, the receipt, the signature, the escrow reference and two links\./);
-  assert.ok(section(guide, '3. We fund it').includes('the supplier may Release the escrow and keep everything that is locked: the price and both bonds, your buyer bond included.'));
+  assert.ok(section(guide, '3. Fund it').includes('the supplier may Release the escrow and keep everything that is locked: the price and both bonds, your buyer bond included.'));
 });
 
 test('docs/E2E.md and scripts/e2e-hire.mjs: the recovery text reads the escrow by its reference and closes a Submitted first-party escrow in one way', () => {
@@ -566,6 +589,41 @@ test('both READMEs: Agent History is DEPLOYED since 2026-10-15 and the other thr
     '| Advocate | `research.advocate.onesided.v1` | PROPOSED |',
   ]);
   for (const [name, text] of [['agents/agent-history/README.md', agentReadme], ['README.md', rootReadme]]) assert.equal(text.match(/not yet advertised|no advert\b|not posted|not in service|<ADVERT_REF>/i), null, name);
+});
+
+// The root README tells a newcomer how to hire Agent History in one short section (2026-10-15). Its commands, its server URL and its figures are the guide's and the design's, so they are held against both here.
+test('README: the section "Hire Agent History" sits between the status table and the link list in eight to twelve short lines, with the commands, the hosted server, the 5-alone rule, the end state and the honesty line; it names no unit, no dash and no status', () => {
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const heading = '\n## Hire Agent History\n';
+  assert.equal(readme.split(heading).length - 1, 1, 'one such section');
+  const start = readme.indexOf(heading);
+  const links = readme.indexOf('\n- Hire one: `docs/HIRE.md`\n');
+  assert.ok(readme.slice(0, start).trimEnd().endsWith('| Advocate | `research.advocate.onesided.v1` | PROPOSED |'), 'right after the status table');
+  assert.ok(links > start, 'before the link list');
+  const body = readme.slice(start + heading.length, links);
+  const lines = body.split('\n').filter((l) => l.trim() !== '');
+  assert.ok(lines.length >= 8 && lines.length <= 12, `eight to twelve lines, found ${lines.length}`);
+  for (const part of [
+    '1. Clone https://github.com/Apex-Fusion/mcp-server. In its folder, build the signer from `main`: `npm ci && npm run build`.',
+    '2. In the same folder, in your own terminal and never through an assistant, run `node packages/signer/build/index.js keygen`.',
+    '3. Send units on Vector mainnet to the address `keygen` prints. Send 5 alone first, as collateral.',
+    '4. Then send a float. One job costs about 3.',
+    `5. Add the hosted server to your client: \`${designEndpoint('MCP')}\`.`,
+    '6. Add the signer too, with the key in its environment (`docs/HIRE.md` section 4).',
+    '7. Paste the six chat messages in `docs/HIRE.md` section 5, one at a time.',
+    'You end with the report, an Ed25519-signed receipt, the escrow reference, two explorer links, and a check anyone can repeat with no key.',
+    "The supplier is first-party and the contracts have no third-party audit. Accept within 600 s of the supplier's submit, or the supplier may keep the lock.",
+  ]) assert.ok(lines.includes(part), `the section has the line: ${part}`);
+  // What the section says is what the guide says: the two commands, the 5 alone, the cost of a job, the six messages and the 600 s.
+  assert.ok(section(hire(), '2. Get a key').includes('npm ci && npm run build\nnode packages/signer/build/index.js keygen'), 'the commands of the guide');
+  const three = section(hire(), '3. Fund it');
+  assert.ok(three.includes('Send 5 alone first, then the float of 50.'), 'the guide sends 5 alone first');
+  assert.ok(three.split('\n').some((l) => l.startsWith('| 1 (Agent History) | 3 | ') && l.endsWith(' | about 3 | 16 |')), 'one job costs about 3');
+  assert.ok(three.includes("If you do not accept within 600 s of the supplier's Submit, the supplier may Release the escrow and keep everything that is locked"), 'the 600 s line');
+  assert.equal(CHAT_SCRIPT.length, 6, 'the six chat messages of section 5');
+  assert.equal(readme.match(UNIT_NAME), null, 'the README says units, the guide names the unit once');
+  assert.equal(readme.match(DASHES), null, 'hyphens only');
+  assert.equal(body.match(/\b(LIVE|DEPLOYED|PROPOSED)\b/), null, 'the section changes no status');
 });
 
 // ---- The first first-party run, 2026-10-15 (RUNBOOK step 15) ----
