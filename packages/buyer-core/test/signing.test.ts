@@ -1,7 +1,10 @@
 // packages/buyer-core/test/signing.test.ts
 import { describe, it, expect } from 'vitest';
 import { CML } from '@lucid-evolution/lucid';
-import { rawHexToBech32, signTransaction } from '../src/index.ts';
+import { blake2b224Hex } from '@vsa/vector-read';
+import { buyerIdentityOf, paymentKeyHashOf, rawHexToBech32, signTransaction } from '../src/index.ts';
+import { RealChain } from '../src/chain.ts';
+import type { ChainProvider } from '../src/chain.ts';
 
 const rawHexOf = (sk: CML.PrivateKey): string => Buffer.from(sk.to_raw_bytes()).toString('hex');
 
@@ -53,5 +56,42 @@ describe('signing with a raw key', () => {
     expect(txHashHex).toBe(CML.hash_transaction(unsigned.body()).to_hex());
     expect(witness.vkey().verify(txHash.to_raw_bytes(), witness.ed25519_signature())).toBe(true);
     expect(witness.vkey().verify(new Uint8Array(32), witness.ed25519_signature())).toBe(false);
+  });
+});
+
+describe('the identity of a buyer key', () => {
+  /** What gen-keypair prints for a key, composed byte by byte: the hash of the public key, and the address of header 0x61 (enterprise, key credential, mainnet) over it. */
+  const printed = (sk: CML.PrivateKey) => {
+    const buyerPkh = blake2b224Hex(Buffer.from(sk.to_public().to_raw_bytes()).toString('hex'));
+    return { buyerPkh, address: CML.Address.from_raw_bytes(Buffer.from(`61${buyerPkh}`, 'hex')).to_bech32() };
+  };
+
+  it('buyerIdentityOf gives the key hash and the mainnet enterprise address of the key, with no node asked', () => {
+    for (let i = 0; i < 3; i++) {
+      const sk = CML.PrivateKey.generate_ed25519();
+      expect(buyerIdentityOf(rawHexOf(sk))).toStrictEqual(printed(sk));
+    }
+  });
+
+  it('is what RealChain derives for the same key', () => {
+    const hex = rawHexOf(CML.PrivateKey.generate_ed25519());
+    const chain = new RealChain({} as ChainProvider, { privateKeyHex: hex }); // the constructor reads nothing from the node
+    expect(buyerIdentityOf(hex)).toStrictEqual({ buyerPkh: chain.buyerPkh, address: chain.address });
+  });
+
+  it('gives an address that decodes to its key hash and starts as a mainnet enterprise key address does', () => {
+    const { buyerPkh, address } = buyerIdentityOf(rawHexOf(CML.PrivateKey.generate_ed25519()));
+    expect(address.startsWith('addr1v')).toBe(true);
+    expect(paymentKeyHashOf(address)).toBe(buyerPkh);
+  });
+
+  it('refuses anything but 64 lowercase hex, and the message does not carry what it was given', () => {
+    const hex = rawHexOf(CML.PrivateKey.generate_ed25519());
+    for (const bad of [hex.toUpperCase(), hex.slice(1), `${hex}0`, `${hex.slice(1)}g`, `0x${hex}`, '']) {
+      let message = '';
+      try { buyerIdentityOf(bad); } catch (e) { message = (e as Error).message; }
+      expect(message, bad).toMatch(/64 lowercase hex/);
+      if (bad !== '') expect(message).not.toContain(bad);
+    }
   });
 });

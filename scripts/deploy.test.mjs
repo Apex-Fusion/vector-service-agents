@@ -506,10 +506,12 @@ test('RUNBOOK step 17: the last item names the files that said PROPOSED about Ag
 test('status words: no file says PROPOSED about Agent History, and no file says LIVE except to deny it', () => {
   const OTHER_AGENTS = ['specs/document-pipeline.md', 'specs/audio-snippets.md', 'specs/advocate.md'];
   // What may still say PROPOSED outside the specs of the agents that are not built: their rows in the table of the root README, the rule that lists the three words,
-  // the marketplace tools in the Interface section of the spec (the tools, not the agent), and two instructions of the runbook that speak for the order of a first run.
+  // the marketplace tools in the Interface section of the spec (the tools, not the agent), the status line of the README of the Document Pipeline (built, not
+  // deployed), and two instructions of the runbook that speak for the order of a first run.
   const PROPOSED_OK = {
     'README.md': [/^\| (Document Pipeline|Audio Snippets|Advocate) \| `[a-z.0-9-]+` \| PROPOSED \|$/],
     'agents/agent-history/README.md': [/`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./],
+    'agents/document-pipeline/README.md': [/^Status: PROPOSED \(built, not deployed\)\. Since 2026-10-15\. /],
     'specs/agent-history.md': [/^The marketplace MCP tools \(PROPOSED\) and the template's buyer, /],
     'deploy/apex-web/RUNBOOK.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about Agent History/],
   };

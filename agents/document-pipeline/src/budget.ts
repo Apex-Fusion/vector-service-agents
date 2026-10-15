@@ -13,6 +13,8 @@
 // What a run may lock is checked before the first Post: the collateral output, and a float for every sub-job it could post.
 import { PipelineError } from './result.ts';
 
+/** How long after its request arrived a run must be over: the server sets the deadline of each request to its arrival plus this (see the head of this file). */
+export const JOB_DEADLINE_MS = 1_620_000;
 /** No page is started with less than this left before the deadline (ruling R40; see the head of this file). */
 export const PAGE_MIN_LEFT_MS = 660_000;
 /** No chat job is started with less than this left before the deadline (ruling R40). */

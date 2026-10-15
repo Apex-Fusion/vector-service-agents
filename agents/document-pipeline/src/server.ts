@@ -1,0 +1,312 @@
+// agents/document-pipeline/src/server.ts
+// The service behind the template runtime: the manifest it publishes and the three routes it answers. The runtime holds the supplier key, claims the
+// escrow of a hirer and posts the job to this service as the body of POST / (the wire message below); the service runs the pipeline (src/orchestrate.ts)
+// and answers with the result, which the runtime hashes into the one receipt it signs. The service holds the buyer key and nothing else (src/start.ts).
+//
+//   GET  /healthz     {ok: true}, or 503 {ok: false, reason: "insufficient_float"} once the last check of the buyer wallet failed. The check is made at most
+//                     once a minute, in the background: a request is answered from the last one and never waits for the next.
+//   GET  /agent.json  the manifest, the bytes JSON.stringify gives, which the advert hashes.
+//   POST /            the wire message only, at most 1 MB, one job at a time: a second one gets 409 {error: "busy"}. The answer is JSON.stringify(result),
+//                     serialised once. A refusal is {error: code, message} with its status: 400 for a request the intake refuses (RequestError), 422 for a
+//                     document or a hire that failed, 503 when the service cannot take a job now, 500 for store_write_failed (PipelineError); anything else
+//                     is 500 {error: "internal"} with no detail, and the cause goes to the log, by message only, never the request.
+//   anything else     404.
+import { createServer as httpServer } from 'node:http';
+import type { IncomingMessage, Server } from 'node:http';
+import { REGISTRY_ADDRESS } from '@vsa/vector-read';
+import { JOB_DEADLINE_MS } from './budget.ts';
+import { COMBINATION_MAX_ENTRIES, SCHEMA_MAX_BYTES, SCHEMA_MAX_DEPTH } from './extract.ts';
+import { errorText } from './format.ts';
+import { GAPS } from './gaps.ts';
+import { assertFunded, runPipeline as realRunPipeline } from './orchestrate.ts';
+import type { Deps, PipelineResult } from './orchestrate.ts';
+import { DEFAULT_LANGUAGE, MAX_INLINE_BYTES, MAX_PAGES, RequestError, parseRequest } from './request.ts';
+import type { PipelineRequest } from './request.ts';
+import { PipelineError } from './result.ts';
+import { MAX_SOURCE_BYTES } from './source.ts';
+
+// --- The environment -----------------------------------------------------------------------------------------------------------------
+// A number from the environment: absent or empty means the default (an empty string must not become 0); anything else must be a non-negative integer,
+// and the error names the variable.
+export function envInt(name: string, v: string | undefined, fallback: number): number {
+  if (v === undefined || v === '') return fallback;
+  if (!/^\d+$/.test(v) || !Number.isSafeInteger(Number(v))) throw new Error(`environment variable ${name} must be a non-negative integer, got "${v}"`);
+  return Number(v);
+}
+// A setting the service cannot start without. Absent, empty and blank all mean it was not given, and the error names the variable. What it is for goes in
+// the message. A value that is published in the manifest has no default: a default would be published by every deployment that forgot to set it.
+export function requiredEnv(name: string, v: string | undefined, what: string): string {
+  if (v === undefined || v.trim() === '') throw new Error(`environment variable ${name} is required (${what}) and is not set`);
+  return v.trim();
+}
+const CHIPS = ['LIVE', 'DEPLOYED', 'PROPOSED'];
+// The status word: live, deployed or proposed in any case, carried in the manifest in lower case. Absent or empty means proposed: the Pipeline is built and
+// not yet deployed. A word above that is the operator's to set, by this variable, once it is true.
+function statusChip(v: string | undefined): string {
+  if (v === undefined || v === '') return 'proposed';
+  if (!CHIPS.includes(v.toUpperCase())) throw new Error(`environment variable AGENT_STATUS_CHIP must be one of ${CHIPS.join(', ')}, got "${v}"`);
+  return v.toLowerCase();
+}
+// The date the status word began, YYYY-MM-DD; absent or empty means the day the service was built.
+function statusSince(v: string | undefined): string {
+  if (v === undefined || v.trim() === '') return '2026-10-15';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v.trim())) throw new Error(`environment variable AGENT_STATUS_SINCE must be a date as YYYY-MM-DD, got "${v}"`);
+  return v.trim();
+}
+
+// --- The manifest --------------------------------------------------------------------------------------------------------------------
+const SPEC_URL = 'https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/document-pipeline.md';
+const SOURCE_URL = 'https://github.com/Apex-Fusion/vector-service-agents/tree/main/agents/document-pipeline';
+/** What a buyer may post: the wire payload, 900000 bytes (the runtime takes 1 MB of JSON that holds it escaped). The service itself reads up to MAX_BODY. */
+const WIRE_PAYLOAD_BYTES = 900_000;
+// Standard base64 with its padding and nothing else; the form parseRequest accepts, and 800000 characters are 600000 raw bytes.
+const BASE64_PATTERN = '^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$';
+// A language code: 2 to 8 letters and hyphen-separated subtags of 1 to 8 letters or digits (en, en-GB, zh-Hant-TW, es-419), at most 16 characters.
+const LANGUAGE_PATTERN = '^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$';
+const base64 = (what: string) => ({
+  type: 'string', minLength: 4, maxLength: (MAX_INLINE_BYTES / 3) * 4, pattern: BASE64_PATTERN,
+  description: `${what} as standard base64 text, padded, with no line breaks; at most ${MAX_INLINE_BYTES} bytes of media`,
+});
+
+/**
+ * What the intake (src/request.ts) accepts, as a JSON Schema: test/server.test.ts holds the two to each other on a table of requests. What a schema cannot say
+ * is in `notes` below: the rules for the extraction schema, and what an extraction does with an answer that does not fit it.
+ */
+const REQUEST_SCHEMA = {
+  type: 'object',
+  required: ['source', 'task'],
+  additionalProperties: false,
+  properties: {
+    source: {
+      description: 'The document: an https URL of a PDF, PNG or JPEG (at most 20971520 bytes), or a PDF or an image as base64',
+      oneOf: [
+        { type: 'object', required: ['url'], additionalProperties: false, properties: { url: { type: 'string', minLength: 9, pattern: '^https://', description: 'An https URL; the service fetches it itself' } } },
+        { type: 'object', required: ['pdf_b64', 'mime'], additionalProperties: false, properties: { pdf_b64: base64('A PDF'), mime: { const: 'application/pdf' } } },
+        { type: 'object', required: ['image_b64', 'mime'], additionalProperties: false, properties: { image_b64: base64('A PNG or JPEG image'), mime: { enum: ['image/png', 'image/jpeg'] } } },
+      ],
+    },
+    task: { enum: ['summary', 'extract'], description: 'summary: a plain-text summary of the pages. extract: one JSON object valid against schema' },
+    schema: { type: 'object', description: 'A JSON Schema for the extraction: required with task extract, refused with task summary; the rules it must keep are in notes' },
+    language: {
+      type: 'string', maxLength: 16, pattern: LANGUAGE_PATTERN, default: DEFAULT_LANGUAGE,
+      description: 'The language code of the answer, such as en or en-GB: 2 to 8 letters and optional hyphen-separated subtags of up to 8 letters or digits, at most 16 characters',
+    },
+    max_pages: { type: 'integer', minimum: 1, maximum: MAX_PAGES, default: MAX_PAGES, description: 'The most pages read, from the first; a longer document is read in part' },
+  },
+  // The schema goes with the extraction and with nothing else: required with it, absent without it.
+  allOf: [
+    { if: { properties: { task: { const: 'extract' } }, required: ['task'] }, then: { properties: { schema: { type: 'object' } }, required: ['schema'] }, else: { properties: { schema: false } } },
+  ],
+};
+const NOTES = [
+  'The schema, which goes with task extract and with no other task, is a JSON Schema of draft-07 read in strict mode: a keyword the validator does not know is refused.',
+  'The schema may not use $ref, $dynamicRef, $recursiveRef, $id, $defs, definitions, pattern, patternProperties or format, or have a __proto__ key. '
+    + `It is at most ${SCHEMA_MAX_BYTES} bytes of JSON and ${SCHEMA_MAX_DEPTH} levels deep, and each of its anyOf, oneOf and allOf has at most ${COMBINATION_MAX_ENTRIES} entries. `
+    + 'A schema that breaks a rule is refused with the code schema_invalid (400) before anything is spent.',
+  'An extraction whose answer is not JSON, or does not validate against the schema, is not an error: the result has schema_valid false and extraction null, and the answer is kept as raw_text.',
+];
+
+export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
+  return {
+    schema: 'vector.agent-manifest.v1', name: 'Document Pipeline', capability_id: 'document.pipeline.ocr-summary.v1', version: env.AGENT_VERSION ?? '0.1.0',
+    description: 'Reads a document: OCR for each page, then a summary or a structured extraction, with every sub-receipt checked and one receipt over the whole bundle.',
+    operator: { name: 'Apex Fusion Foundation', contact: requiredEnv('OPERATOR_CONTACT', env.OPERATOR_CONTACT, "the operator's contact address, published in the manifest") },
+    identity: { did: env.AGENT_DID ?? '', controller_pkh: env.SUPPLIER_PKH ?? '', registry_address: REGISTRY_ADDRESS },
+    keys: { supplier_pkh: env.SUPPLIER_PKH ?? '', pub_key_hex: env.SUPPLIER_PUB_KEY_HEX ?? '', buyer_pkh: env.PIPELINE_BUYER_PKH ?? '' },
+    interface: {
+      request_schema: REQUEST_SCHEMA,
+      response_schema: { $ref: `${SPEC_URL}#response` },
+      routes: { job: '/v1/job', status: '/status', capability: '/capability' },
+      notes: [...NOTES],
+    },
+    terms: {
+      price_lovelace: envInt('ADVERT_PRICE_LOVELACE', env.ADVERT_PRICE_LOVELACE, 5_000_000), supplier_bond_lovelace: 1_000_000, buyer_bond_lovelace: 1_000_000,
+      max_processing_ms: envInt('ADVERT_MAX_PROCESSING_MS', env.ADVERT_MAX_PROCESSING_MS, 1_800_000),
+      input_limits: { request_bytes: WIRE_PAYLOAD_BYTES, source_bytes: MAX_SOURCE_BYTES, inline_media_bytes: MAX_INLINE_BYTES, max_pages: MAX_PAGES },
+    },
+    behaviour: {
+      data_handling: 'The document, its page images, the task and the schema are held in memory while a job runs; a PDF is also written to a private temporary directory while its pages are rendered, and removed after. '
+        + 'Pages go to the OCR agent as images, the page texts, the task and any schema to the LLM supplier, and escrow identifiers to Koios and the marketplace indexer; on the ledger the sub-escrows carry hashes, not the document or its text. '
+        + 'The service writes only the bookkeeping of the escrows it posts (references, times, the hop, a transaction hash) to its state directory, and its log carries job outcomes, never a request or a document.',
+      third_parties: ['the host of the source URL', 'the ChandraOCR agent, and Datalab behind it', 'the LLM supplier it hires, and its model provider', 'Koios (Vector mainnet indexer)', 'marketplace indexer'],
+    },
+    status: { chip: statusChip(env.AGENT_STATUS_CHIP), since: statusSince(env.AGENT_STATUS_SINCE) },
+    gaps: [...GAPS],
+    links: { spec: SPEC_URL, source: SOURCE_URL, explorer_advert: env.ADVERT_EXPLORER_URL ?? '' },
+  };
+}
+export type AgentManifest = ReturnType<typeof manifestFromEnv>;
+
+/** The five fields the operator supplies, as the placeholders the template file shows. */
+export const TEMPLATE_ENV = {
+  OPERATOR_CONTACT: '<OPERATOR_CONTACT>', AGENT_DID: '<AGENT_DID>', SUPPLIER_PKH: '<SUPPLIER_PKH>', SUPPLIER_PUB_KEY_HEX: '<SUPPLIER_PUB_KEY_HEX>',
+  PIPELINE_BUYER_PKH: '<PIPELINE_BUYER_PKH>',
+} as const;
+/** The text of agent.json.template: the manifest with the placeholders, indented, with a line break at the end. `pnpm --filter @vsa/document-pipeline template` writes it. */
+export const renderTemplate = (): string => `${JSON.stringify(manifestFromEnv(TEMPLATE_ENV), null, 2)}\n`;
+
+// --- The wire message ----------------------------------------------------------------------------------------------------------------
+/** The most bytes of body the service reads: 1 MB. A buyer posts at most WIRE_PAYLOAD_BYTES; the rest is the room the runtime's own framing needs. */
+export const MAX_BODY = 1_000_000;
+
+/** A body that is not the wire message, or is too large. Carries a stable `code` and the `status` the service answers with. */
+export class WireError extends Error {
+  readonly code: 'bad_wire' | 'request_too_large';
+  readonly status = 400;
+  constructor(code: 'bad_wire' | 'request_too_large', message: string) {
+    super(message);
+    this.name = 'WireError';
+    this.code = code;
+  }
+}
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const WIRE_SHAPE = 'the body must be the one-element message array [{"content": "<request JSON as a string>", "role": "user"}]';
+
+/** The request JSON out of the wire message the runtime posts: `[{"content": "<request JSON as a string>", "role": "user"}]`. The request JSON is parseRequest's to read. */
+export function parseWire(body: string): string {
+  // Bytes on the wire, not UTF-16 code units: the HTTP layer counts the same unit.
+  const bytes = Buffer.byteLength(body, 'utf8');
+  if (bytes > MAX_BODY) throw new WireError('request_too_large', `the request is too large (${bytes} bytes, the service reads at most ${MAX_BODY})`);
+  let list: unknown;
+  try { list = JSON.parse(body); } catch { throw new WireError('bad_wire', `the body is not JSON: ${WIRE_SHAPE}`); }
+  if (!Array.isArray(list) || list.length !== 1 || !isObject(list[0]) || typeof list[0].content !== 'string') throw new WireError('bad_wire', WIRE_SHAPE);
+  if (list[0].role !== 'user') throw new WireError('bad_wire', "the message role must be 'user'");
+  return list[0].content;
+}
+
+// Reads the request body as bytes, the unit parseWire counts in. Past MAX_BODY it stops keeping data and fails at once (the caller answers 400 and closes the
+// connection); the rest of the upload is read and dropped, never held.
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let bytes = 0, failed = false;
+    req.on('data', (c: Buffer) => {
+      bytes += c.length;
+      if (bytes <= MAX_BODY) chunks.push(c);
+      else if (!failed) { failed = true; reject(new WireError('request_too_large', `the request is too large (more than ${MAX_BODY} bytes, the most the service reads)`)); }
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks, bytes).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
+// --- The health check ----------------------------------------------------------------------------------------------------------------
+/** How long the answer of a wallet check stands. */
+export const FLOAT_TTL_MS = 60_000;
+/** How long a wallet check may take before it counts as failed: the provider's own calls carry no time limit. */
+export const FLOAT_TIMEOUT_MS = 30_000;
+
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
+    timer.unref();
+    work.then((value) => { clearTimeout(timer); resolve(value); }, (err: unknown) => { clearTimeout(timer); reject(err); });
+  });
+}
+
+/**
+ * Whether the buyer wallet can fund a job: the last answer of a check, with the check made again in the background when that answer is older than the TTL.
+ * A request asks `poke` to start a check if one is due and reads `healthy` at once, so it never waits for the node. One check runs at a time. Nothing is
+ * known before the first check has answered, and until then the wallet counts as fine.
+ */
+class FloatMonitor {
+  #healthy = true;
+  #running = false;
+  #checkedAt = Number.NEGATIVE_INFINITY;
+  readonly #check: () => Promise<void>;
+  readonly #clock: () => number;
+  readonly #ttlMs: number;
+  readonly #timeoutMs: number;
+  readonly #log: (line: string) => void;
+  constructor(check: () => Promise<void>, clock: () => number, ttlMs: number, timeoutMs: number, log: (line: string) => void) {
+    this.#check = check;
+    this.#clock = clock;
+    this.#ttlMs = ttlMs;
+    this.#timeoutMs = timeoutMs;
+    this.#log = log;
+  }
+  get healthy(): boolean { return this.#healthy; }
+  poke(): void {
+    if (this.#running) return;
+    const age = this.#clock() - this.#checkedAt;
+    if (age >= 0 && age < this.#ttlMs) return; // an answer from the future, after the clock was set back, is not a fresh one
+    this.#running = true;
+    this.#run().catch(() => undefined);
+  }
+  async #run(): Promise<void> {
+    let failure: string | null = null;
+    try { await withTimeout(this.#check(), this.#timeoutMs); } catch (err) { failure = errorText(err); }
+    this.#checkedAt = this.#clock();
+    this.#running = false;
+    // A change of state is logged once, with its reason, and a repeat is not.
+    if (failure !== null && this.#healthy) this.#log(`wallet check failed: ${failure}`);
+    if (failure === null && !this.#healthy) this.#log('wallet check passed again');
+    this.#healthy = failure === null;
+  }
+}
+
+// --- The server ----------------------------------------------------------------------------------------------------------------------
+export interface ServerOptions {
+  manifest: AgentManifest;
+  /** Everything a run is given but its deadline, which the server sets for each request. */
+  deps: Omit<Deps, 'deadlineMs'>;
+  /** Test seam: a test injects its own run; the service always runs the real one. */
+  runPipeline?: (req: PipelineRequest, deps: Deps) => Promise<PipelineResult>;
+  /** Where a line of the log goes; the default prints it with the name of the service. */
+  log?: (line: string) => void;
+  /** How long a wallet check stands (FLOAT_TTL_MS), and how long it may take (FLOAT_TIMEOUT_MS). */
+  floatTtlMs?: number;
+  floatTimeoutMs?: number;
+}
+/** The log of the process: one line each on stdout, with the name of the service. */
+export const defaultLog = (line: string): void => { console.log(`[document-pipeline] ${line}`); };
+
+export function createServer(opts: ServerOptions): Server {
+  const { deps } = opts;
+  const run = opts.runPipeline ?? realRunPipeline;
+  const log = opts.log ?? defaultLog;
+  const manifestText = JSON.stringify(opts.manifest);
+  const monitor = new FloatMonitor(() => assertFunded(deps.chain, MAX_PAGES), deps.clock, opts.floatTtlMs ?? FLOAT_TTL_MS, opts.floatTimeoutMs ?? FLOAT_TIMEOUT_MS, log);
+  monitor.poke(); // the first check, at start
+  // One job at a time: the money of a job is the buyer wallet's, and the wallet is one. A request takes the slot once it has been read and found to be a
+  // request, not while its upload is under way, so that a client that stalls cannot hold it.
+  let busy = false;
+  return httpServer(async (req, res) => {
+    const arrivedAt = deps.clock();
+    // The body is serialised before anything is written, so a body that cannot be serialised can still be answered with a 500.
+    const sendText = (status: number, text: string) => {
+      res.writeHead(status, { 'content-type': 'application/json', ...(status === 400 ? { connection: 'close' } : {}) });
+      res.end(text);
+    };
+    const send = (status: number, body: unknown) => sendText(status, JSON.stringify(body));
+    try {
+      if (req.method === 'GET' && req.url === '/healthz') {
+        monitor.poke();
+        return monitor.healthy ? send(200, { ok: true }) : send(503, { ok: false, reason: 'insufficient_float' });
+      }
+      if (req.method === 'GET' && req.url === '/agent.json') return sendText(200, manifestText);
+      if (req.method !== 'POST' || req.url !== '/') return send(404, { error: 'not_found' });
+      const request = parseRequest(parseWire(await readBody(req)));
+      if (busy) return send(409, { error: 'busy' });
+      busy = true;
+      let result: PipelineResult;
+      try {
+        result = await run(request, { ...deps, deadlineMs: arrivedAt + JOB_DEADLINE_MS });
+      } finally {
+        busy = false;
+      }
+      const text = JSON.stringify(result);
+      log(`job done in ${deps.clock() - arrivedAt} ms: ${result.accounting.sub_jobs} sub-jobs`);
+      return sendText(200, text);
+    } catch (e) {
+      // Headers already out: nothing more can be said on this response. Log why, then cut it.
+      if (res.headersSent) { log(`response failed after the headers were sent: ${errorText(e)}`); res.destroy(); return; }
+      if (e instanceof WireError || e instanceof RequestError || e instanceof PipelineError) {
+        log(`${e instanceof PipelineError ? 'job failed' : 'request refused'} after ${deps.clock() - arrivedAt} ms: ${e.code} (${e.status})`);
+        return send(e.status, { error: e.code, message: e.message });
+      }
+      log(`job failed after ${deps.clock() - arrivedAt} ms: internal error: ${errorText(e)}`); // the message only, never the request
+      return send(500, { error: 'internal' });
+    }
+  });
+}

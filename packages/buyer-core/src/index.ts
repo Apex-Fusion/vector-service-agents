@@ -16,7 +16,7 @@ export { fetchSuppliers, fetchSupplier, readAdvert, koiosUtxoInfo, koiosTxInputC
 export { verifyReceipt, verifyJob } from './vendored/mcp/marketplace-verify.ts';
 export { OgmiosProvider } from './vendored/mcp-shared/provider.ts';
 export { signTransaction } from './vendored/signer/sign.ts';
-export { rawHexToBech32 } from './signing.ts';
+export { rawHexToBech32, buyerIdentityOf } from './signing.ts';
 export { ensureSlotConfig, paymentKeyHashOf } from './vendored/mcp/gov-build.ts';
 export { ESCROW_REF_UTXO, ACCEPT_WINDOW_MS, DELIVER_BY_BUFFER_MS, MARKETPLACE_MIN_FEE } from './vendored/mcp/marketplace-constants.ts';
 export { VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from './vendored/mcp-shared/config.ts';

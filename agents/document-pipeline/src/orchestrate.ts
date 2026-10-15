@@ -138,8 +138,11 @@ export async function runPipeline(req: PipelineRequest, deps: Deps): Promise<Pip
   };
 }
 
-/** The wallet pre-flight: a collateral output, and a float of (max_pages + 1) x 4500000 outside it. A wallet that cannot be read is not confirmed. */
-async function assertFunded(chain: Chain, maxPages: number): Promise<void> {
+/**
+ * The wallet pre-flight: a collateral output, and a float of (max_pages + 1) x 4500000 outside it. A wallet that cannot be read is not confirmed.
+ * Exported for the server's health check, which asks it for a run of the most pages, so that /healthz and a job are held to the same rule.
+ */
+export async function assertFunded(chain: Chain, maxPages: number): Promise<void> {
   const needed = floatNeeded(maxPages);
   const jobs = `the ${maxPages + 1} sub-jobs of a run of ${maxPages} page${maxPages === 1 ? '' : 's'}`;
   let wallet: Awaited<ReturnType<Chain['wallet']>>;
