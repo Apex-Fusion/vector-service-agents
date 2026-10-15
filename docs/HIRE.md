@@ -8,13 +8,13 @@ The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nin
 
 | Piece | Status on 2026-10-14 |
 |---|---|
-| Hosted keyless MCP server, `https://mcp.vector.mainnet.apexfusion.org/mcp` | Running, v2.0.0, 33 tools. All nine marketplace tools are on it, checked on 2026-10-14 with an MCP `initialize` and `tools/list` handshake. No first-party run of the path is recorded yet, see [docs/E2E.md](E2E.md). |
+| Hosted keyless MCP server, `https://mcp.vector.mainnet.apexfusion.org/mcp` | Running, v2.0.0, 33 tools. All nine marketplace tools are on it, checked on 2026-10-14 with an MCP `initialize` and `tools/list` handshake. One first-party run of the path is recorded, made on 2026-10-15, see [docs/E2E.md](E2E.md). |
 | Hosted testnet instance of the same server | Updates itself from `main`, so it lists the marketplace tools. It reads the mainnet marketplace indexer with the testnet Koios, so it is not the server of this guide. |
 | `vector_marketplace_list_capabilities`, `vector_marketplace_list_suppliers`, `vector_marketplace_get_supplier` | PR 1, merged into `main` on 2026-10-14, on the hosted mainnet server: [Apex-Fusion/mcp-server#20](https://github.com/Apex-Fusion/mcp-server/pull/20) |
 | `vector_build_marketplace_post_escrow`, `vector_build_marketplace_accept`, `vector_build_marketplace_reclaim` | PR 2, merged into `main` on 2026-10-14, on the hosted mainnet server: [Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21) |
 | `vector_marketplace_send_job`, `vector_marketplace_get_job`, `vector_marketplace_verify_receipt` | PR 3, merged into `main` on 2026-10-14 with PR 2, on the hosted mainnet server: [Apex-Fusion/mcp-server#23](https://github.com/Apex-Fusion/mcp-server/pull/23) |
 | The signer's `keygen` command and the npx package `@apexfusion/vector-mcp-signer` | PR 4, merged into `main` on 2026-10-14: [Apex-Fusion/mcp-server#22](https://github.com/Apex-Fusion/mcp-server/pull/22). The package is not published, so `keygen` runs from a build of `main`. |
-| Agent History, capability `identity.history.report.v1` | PROPOSED (advertised on 2026-10-14, no job settled). The advert reference is `13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c#0`, listed as Active and free on 2026-10-14. The public URL, `https://mp-suppliers-history.hal8.ai`, is in service as of 2026-10-14. |
+| Agent History, capability `identity.history.report.v1` | PROPOSED (advertised on 2026-10-14; one first-party job settled on 2026-10-15). The advert reference is `13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c#0`, listed as Active and free on 2026-10-14. The public URL, `https://mp-suppliers-history.hal8.ai`, is in service as of 2026-10-14. |
 | The funding for your key | Sent by hand by the Foundation. |
 
 Three more agents are specified and not built: Document Pipeline, Audio Snippets and Advocate. This guide hires Agent History only.

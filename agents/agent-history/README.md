@@ -2,7 +2,7 @@
 
 The registry, stake, marketplace and module records the Vector ledger holds for one agent identifier, with the gaps stated. One report per job, delivered with the runtime's signed receipt. Capability `identity.history.report.v1`.
 
-Status: PROPOSED (advertised on 2026-10-14, no job settled). Read-only: the service reads public ledger data, holds no keys and costs no model calls.
+Status: PROPOSED (advertised on 2026-10-14; one first-party job settled on 2026-10-15). Read-only: the service reads public ledger data, holds no keys and costs no model calls.
 
 `agent.json.template` is the manifest with placeholders. The service renders the real manifest from its environment when it starts (`OPERATOR_CONTACT`, `AGENT_DID`, `SUPPLIER_PKH`, `SUPPLIER_PUB_KEY_HEX` and the optional settings, see Manifest below) and serves those bytes at `GET /agent.json`. It never serves the template itself. `<OPERATOR_CONTACT>`, `<AGENT_DID>`, `<SUPPLIER_PKH>` and `<SUPPLIER_PUB_KEY_HEX>` in the template stand for those four values.
 

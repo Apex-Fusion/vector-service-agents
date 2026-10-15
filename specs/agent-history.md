@@ -4,9 +4,9 @@ Capability `identity.history.report.v1`. The registry, stake, marketplace and mo
 
 ## Status
 
-PROPOSED (advertised on 2026-10-14, no job settled). Since 2026-10-13.
+PROPOSED (advertised on 2026-10-14; one first-party job settled on 2026-10-15). Since 2026-10-13.
 
-The service is built. Its tests replay recorded ledger data, and it has been run against live ledger reads. It is not deployed, has had a registry record since 2026-10-14 and has had an advert since 2026-10-14. No job has settled. Nothing on this page is LIVE or DEPLOYED.
+The service is built. Its tests replay recorded ledger data, and it has been run against live ledger reads. It is not deployed, has had a registry record since 2026-10-14 and has had an advert since 2026-10-14. One first-party job has settled, on 2026-10-15; it is not demand. Nothing on this page is LIVE or DEPLOYED.
 
 ## Identity
 
@@ -386,7 +386,7 @@ Outcome counts per job are not in 0.1.0. They need the spending transaction of e
 
 ## How to hire it
 
-Advertised on 2026-10-14: the marketplace indexer listed the advert as Active and free that day. No job has settled. The three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
+Advertised on 2026-10-14: the marketplace indexer listed the advert as Active and free that day. One first-party job has settled, on 2026-10-15; it is not demand. The three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
 
 The request JSON is, for example, `{"subject":"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db"}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 
@@ -410,3 +410,4 @@ The request JSON is, for example, `{"subject":"did:vector:agent:be1a0a2912da1807
 - Source: [agents/agent-history](../agents/agent-history)
 - Design: [docs/superpowers/specs/2026-10-13-vector-service-agents-design.md](../docs/superpowers/specs/2026-10-13-vector-service-agents-design.md)
 - Advert on the explorer: posted on 2026-10-14 in the confirmed transaction [`13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c). The advert reference is `13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c#0`. The marketplace indexer listed it as Active and free on 2026-10-14.
+- First-party hire on 2026-10-15, verdict VERIFIED: the post transaction [`5248c71eb5eb65f8bfa865a837f34cc85e6d18fe07b01f14cc2ca22660176765`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/5248c71eb5eb65f8bfa865a837f34cc85e6d18fe07b01f14cc2ca22660176765) and the accept transaction [`902df222e6e1ab76d2d7f1085963b4dbf3a9b4b88353b82481c57a92fbc5c03c`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/902df222e6e1ab76d2d7f1085963b4dbf3a9b4b88353b82481c57a92fbc5c03c) on the explorer, and the evidence in [docs/evidence/2026-10-15-agent-history-run-1.json](../docs/evidence/2026-10-15-agent-history-run-1.json).
