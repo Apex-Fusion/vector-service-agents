@@ -154,10 +154,40 @@ describe('verifyFleetReceipt, each check on its own', () => {
     expect(await verifyFleetReceipt({ ...j.input, receiptSignature: newKey().sign(j.receipt) })).toStrictEqual(onlyFails('signature_valid', 'on_chain_hash_matches'));
   });
 
-  it.each(['prompt_tokens', 'completion_tokens', 'wallclock_ms'])('%s is read by no check but the signature covers it: a change after signing fails the signature and the on-chain row', async (field) => {
+  // Each of the eight fields, changed after the supplier signed. The signature and the hash on chain were made over the receipt as it was, so those two rows
+  // fail whichever field it is. Five fields are also read by a check of their own, which fails as well; the three numbers are read by no check, and only the
+  // signature and the hash on chain stand between them and a change.
+  const CHANGED_AFTER_SIGNING: Array<[string, unknown, Array<keyof Checks>]> = [
+    ['escrow_ref', OTHER_ESCROW, ['escrow_ref_matches']],
+    ['supplier_pkh', 'ee'.repeat(28), ['supplier_key_matches']],
+    ['prompt_hash', 'ee'.repeat(32), ['prompt_hash_matches']],
+    ['response_hash', 'ee'.repeat(32), ['response_hash_matches']],
+    ['model', 'another-model-v1', ['model_matches']],
+    ['prompt_tokens', 1, []],
+    ['completion_tokens', 1, []],
+    ['wallclock_ms', 4211, []],
+  ];
+  it('the table of changed fields names every field of the receipt', () => {
+    expect(CHANGED_AFTER_SIGNING.map(([field]) => field).sort()).toStrictEqual(Object.keys(job().receipt).sort());
+  });
+  it.each(CHANGED_AFTER_SIGNING)('%s changed after signing fails the signature and the on-chain row, and its own check if it has one', async (field, changed, own) => {
     const j = job();
-    const tampered = { ...j.receipt, [field]: (j.receipt[field] as number) + 1 };
-    expect(await verifyFleetReceipt({ ...j.input, receipt: tampered })).toStrictEqual(onlyFails('signature_valid', 'on_chain_hash_matches'));
+    expect(j.receipt[field]).not.toStrictEqual(changed);
+    expect(await verifyFleetReceipt({ ...j.input, receipt: { ...j.receipt, [field]: changed } })).toStrictEqual(onlyFails('signature_valid', 'on_chain_hash_matches', ...own));
+  });
+
+  // The four hex fields written in upper case after signing. Their own checks ignore the case of hex, so they still pass: the binding to what the supplier
+  // signed is the only thing that refuses the change, and the case-insensitive rows depend on it.
+  it.each(['escrow_ref', 'supplier_pkh', 'prompt_hash', 'response_hash'])('%s written in upper case after signing: its own check still passes, the signature and the on-chain row do not', async (field) => {
+    const j = job();
+    const upper = (j.receipt[field] as string).toUpperCase();
+    expect(upper).not.toBe(j.receipt[field]);
+    expect(await verifyFleetReceipt({ ...j.input, receipt: { ...j.receipt, [field]: upper } })).toStrictEqual(onlyFails('signature_valid', 'on_chain_hash_matches'));
+  });
+
+  it('a ninth field added after signing fails the signature and the on-chain row: they cover the receipt as a whole', async () => {
+    const j = job();
+    expect(await verifyFleetReceipt({ ...j.input, receipt: { ...j.receipt, note: 'added after signing' } })).toStrictEqual(onlyFails('signature_valid', 'on_chain_hash_matches'));
   });
 });
 
@@ -191,6 +221,15 @@ describe('verifyFleetReceipt, the hash on chain and the verdict', () => {
     // A read that throws before it returns its promise is a rejection as well, not a throw out of verifyFleetReceipt.
     await expect(verifyFleetReceipt({ ...j.input, onChainReceiptHash: () => { throw boom; } })).rejects.toBe(boom);
   });
+
+  // The read is typed string or null. One that resolves anything else is a broken Chain, and the answer is a failed row, not a TypeError out of the vendored
+  // call (which would call .toLowerCase on it): the on-chain row is the only one that fails, and the six others are judged as they would be.
+  it.each([['undefined', undefined], ['a number', 42], ['an object', { hash: 'ab' }], ['an empty string', '']])('a read that resolves %s is no hash of a receipt: the on-chain row fails, nothing rejects, the other rows are still made', async (_what, odd) => {
+    const j = job();
+    const broken = async () => odd as unknown as string;
+    expect(await verifyFleetReceipt({ ...j.input, onChainReceiptHash: broken })).toStrictEqual(onlyFails('on_chain_hash_matches'));
+    expect(await verifyFleetReceipt({ ...j.input, model: 'another-model-v1', onChainReceiptHash: broken })).toStrictEqual(onlyFails('on_chain_hash_matches', 'model_matches'));
+  });
 });
 
 describe('verifyFleetReceipt, a malformed receipt', () => {
@@ -220,14 +259,35 @@ describe('verifyFleetReceipt, a malformed receipt', () => {
     }
   });
 
-  it.each([['empty', ''], ['63 bytes', 'ab'.repeat(63)], ['65 bytes', 'ab'.repeat(65)], ['not hex', 'zz'.repeat(64)], ['a number', 1234], ['undefined', undefined]])('a signature that is %s fails the signature check and the on-chain row, and nothing throws', async (_what, bad) => {
+  // `Buffer.from(hex, 'hex')` drops a last odd digit instead of failing, so it is the length of the string that refuses the odd-length cases. They are cut
+  // from the real signature and the real key, so that each is a value that is almost right.
+  const BAD_SIGNATURES: Array<[string, (j: Job) => unknown]> = [
+    ['empty', () => ''],
+    ['127 hex digits, the real signature without its last digit', (j) => j.signature.slice(0, -1)],
+    ['129 hex digits, the real signature and one more', (j) => `${j.signature}0`],
+    ['63 bytes', () => 'ab'.repeat(63)],
+    ['65 bytes', () => 'ab'.repeat(65)],
+    ['not hex', () => 'zz'.repeat(64)],
+    ['a number', () => 1234],
+    ['undefined', () => undefined],
+  ];
+  it.each(BAD_SIGNATURES)('a signature that is %s fails the signature check and the on-chain row, and nothing throws', async (_what, bad) => {
     const j = job();
-    expect(await verifyFleetReceipt({ ...j.input, receiptSignature: bad as unknown as string })).toStrictEqual(onlyFails('signature_valid', 'on_chain_hash_matches'));
+    expect(await verifyFleetReceipt({ ...j.input, receiptSignature: bad(j) as string })).toStrictEqual(onlyFails('signature_valid', 'on_chain_hash_matches'));
   });
 
-  it.each([['empty', ''], ['31 bytes', 'ab'.repeat(31)], ['not hex', 'zz'.repeat(32)], ['a number', 99], ['undefined', undefined]])('a public key that is %s fails the key check and the signature check, and nothing throws', async (_what, bad) => {
+  const BAD_KEYS: Array<[string, (j: Job) => unknown]> = [
+    ['empty', () => ''],
+    ['63 hex digits, the real key without its last digit', (j) => j.key.pubKeyHex.slice(0, -1)],
+    ['65 hex digits, the real key and one more', (j) => `${j.key.pubKeyHex}0`],
+    ['31 bytes', () => 'ab'.repeat(31)],
+    ['not hex', () => 'zz'.repeat(32)],
+    ['a number', () => 99],
+    ['undefined', () => undefined],
+  ];
+  it.each(BAD_KEYS)('a public key that is %s fails the key check and the signature check, and nothing throws', async (_what, bad) => {
     const j = job();
-    expect(await verifyFleetReceipt({ ...j.input, supplierPubKeyHex: bad as unknown as string })).toStrictEqual(onlyFails('supplier_key_matches', 'signature_valid'));
+    expect(await verifyFleetReceipt({ ...j.input, supplierPubKeyHex: bad(j) as string })).toStrictEqual(onlyFails('supplier_key_matches', 'signature_valid'));
   });
 
   it('a value that is missing, or is no digest or no ref, does not match, not even the same value on both sides', async () => {
@@ -243,6 +303,43 @@ describe('verifyFleetReceipt, a malformed receipt', () => {
     const missing = undefined as unknown as string;
     const j = job({ omit: ['escrow_ref', 'response_hash', 'model'] });
     expect(await verifyFleetReceipt({ ...j.input, escrowRef: missing, responseHashHex: missing, model: missing })).toStrictEqual(onlyFails('escrow_ref_matches', 'response_hash_matches', 'model_matches'));
+  });
+});
+
+describe('verifyFleetReceipt, a receipt too deep to hash', () => {
+  // A poll answer may be 1,000,000 bytes, and JSON.parse reads a hundred thousand levels of nesting in 600,000 of them, so a supplier can send a receipt that the
+  // vendored canonicalize cannot walk: it recurses, and the stack runs out (RangeError). The signature row of the vendored verifier has a guard for that and its
+  // on-chain row has none, so the call itself throws. 50,000 levels are far past where the stack gives out here (about 7,000 for objects, and between 2,500 and 6,000
+  // for arrays by how warm the code is), and they are built in a loop: a recursive builder would overflow the test itself.
+  const DEPTH = 50_000;
+  const NESTED: Array<[string, () => unknown]> = [
+    ['arrays', () => { let deep: unknown = 'x'; for (let i = 0; i < DEPTH; i++) deep = [deep]; return deep; }],
+    ['objects', () => { let deep: unknown = 'x'; for (let i = 0; i < DEPTH; i++) deep = { n: deep }; return deep; }],
+  ];
+
+  it.each(NESTED)('a receipt with a field nested %s deep is FAILED and not a rejection: the four rows of the vendored call fail, the three made here are still made', async (_shape, nest) => {
+    const j = job(); // signed while shallow; the depth is added after, so no signature of it exists
+    const receipt = { ...j.receipt, extra: nest() };
+    // The premise: the vendored function the verifier reaches does throw on this receipt, so what the test proves is the guard and not the size of the stack.
+    expect(() => canonicalize({ receipt, signature: j.signature })).toThrow(RangeError);
+    expect(await verifyFleetReceipt({ ...j.input, receipt })).toStrictEqual({
+      verdict: 'FAILED',
+      checks: { ...ALL_PASS, supplier_key_matches: 'fail', signature_valid: 'fail', on_chain_hash_matches: 'fail', prompt_hash_matches: 'fail' },
+    });
+  });
+
+  it('with no hash on chain to compare, the vendored call never hashes the receipt: its signature row fails by itself, the key and prompt rows are made, the on-chain row is skipped', async () => {
+    const j = job();
+    const receipt = { ...j.receipt, extra: NESTED[0][1]() };
+    expect(await verifyFleetReceipt({ ...j.input, receipt, onChainReceiptHash: async () => null })).toStrictEqual({
+      verdict: 'FAILED', checks: { ...ALL_PASS, signature_valid: 'fail', on_chain_hash_matches: 'skipped' },
+    });
+  });
+
+  it('the error of the read is still the rejection for such a receipt: the read comes first and is not caught', async () => {
+    const j = job();
+    const boom = new Error('the indexer is behind');
+    await expect(verifyFleetReceipt({ ...j.input, receipt: { ...j.receipt, extra: NESTED[0][1]() }, onChainReceiptHash: async () => { throw boom; } })).rejects.toBe(boom);
   });
 });
 
@@ -275,6 +372,18 @@ describe('verifyFleetReceipt, how values are compared', () => {
   it('escrow refs are compared as refs: another index or another transaction is another escrow', async () => {
     const j = job();
     for (const other of [`${'ab'.repeat(32)}#1`, OTHER_ESCROW]) expect(await verifyFleetReceipt({ ...j.input, escrowRef: other }), other).toStrictEqual(onlyFails('escrow_ref_matches'));
+  });
+
+  // parseOutRef trims its input and reads the index as a number, so a ref written with padding or with leading zeros in its index is read as the same ref. That
+  // leniency is the vendored one (the clients take it too), it is intended here, and it costs nothing: the signature covers the string as the supplier wrote it.
+  it('an escrow_ref that is the same ref written with padding or with leading zeros in its index still names the escrow', async () => {
+    for (const written of [` ${ESCROW}`, `${ESCROW}\n`, `${'ab'.repeat(32)}#000`]) {
+      expect(written).not.toBe(ESCROW);
+      const j = job({ receipt: { escrow_ref: written } });
+      expect(await verifyFleetReceipt(j.input), JSON.stringify(written)).toStrictEqual({ verdict: 'VERIFIED', checks: ALL_PASS });
+    }
+    const j = job();
+    expect(await verifyFleetReceipt({ ...j.input, escrowRef: `  ${ESCROW}\t` })).toStrictEqual({ verdict: 'VERIFIED', checks: ALL_PASS });
   });
 
   it('the model is compared exactly: no case folding, no trimming, no prefix', async () => {

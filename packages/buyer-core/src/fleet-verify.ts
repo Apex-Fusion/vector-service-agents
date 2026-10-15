@@ -8,9 +8,10 @@
 //   escrow_ref_matches     both refs go through canonicalRef; the vendored row wants the receipt's ref spelled as the caller's, character for character
 //   response_hash_matches  against the recomputed hash, which is an input here
 //   model_matches          the vendored verifier has no such row
-import { canonicalRef } from './vendored/mcp/marketplace-supplier.ts';
+// The vendored call is made inside a try (vendoredRows): it can throw on a receipt the supplier sends, and nothing about a receipt may throw out of this module.
 import { verifyReceipt } from './vendored/mcp/marketplace-verify.ts';
 import type { Receipt } from './fleet-clients.ts';
+import { isRecord, sameRef } from './guards.ts';
 
 export interface FleetVerifyInput {
   /** The escrow the job was hired under (`<txid>#<index>`). The receipt must name it. Refs are compared as refs, so the spelling of the hex does not matter. */
@@ -31,7 +32,8 @@ export interface FleetVerifyInput {
   model: string;
   /**
    * The result_receipt_hash of the escrow's Submitted output (`Chain.onChainReceiptHash`), or null when there is none to read. It is called once per
-   * verification, whatever the other checks say. When it throws or rejects, verifyFleetReceipt rejects with that error.
+   * verification, whatever the other checks say. When it throws or rejects, verifyFleetReceipt rejects with that error. When it resolves anything but a string
+   * or null it has broken its contract, and the on-chain row fails.
    */
   onChainReceiptHash: () => Promise<string | null>;
 }
@@ -57,18 +59,40 @@ export interface FleetVerification {
 }
 
 const HEX64 = /^[0-9a-f]{64}$/i;
-const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const passIf = (ok: boolean): 'pass' | 'fail' => (ok ? 'pass' : 'fail');
-
-/** Do two refs name the same output? Compared as refs, so the spelling of the hex does not matter; anything that is no ref names nothing, not even itself. */
-function sameRef(claimed: unknown, expected: unknown): boolean {
-  if (typeof claimed !== 'string' || typeof expected !== 'string') return false;
-  try { return canonicalRef(claimed) === canonicalRef(expected); } catch { return false; }
-}
 
 /** Is the digest the receipt names the one the buyer computed? The spelling of the hex does not matter; a value that is no digest matches nothing, not even itself. */
 function sameDigest(claimed: unknown, computed: unknown): boolean {
   return typeof claimed === 'string' && HEX64.test(claimed) && typeof computed === 'string' && claimed.toLowerCase() === computed.toLowerCase();
+}
+
+type VendoredRows = Pick<FleetVerification['checks'], 'supplier_key_matches' | 'signature_valid' | 'on_chain_hash_matches' | 'prompt_hash_matches'>;
+
+/**
+ * The four rows the vendored verifier owns. Its escrow_ref row is not used (check 1 is made in verifyFleetReceipt) and no result text is passed, which skips
+ * the one text check that does not apply to an envelope hash (check 2 is made there too).
+ *
+ * The call is made inside a try, because it can throw on a receipt the supplier sends. The vendored function is documented as one that never throws, and it
+ * does not hold to that: canonicalize recurses, a receipt nested deeper than the stack allows makes it throw a RangeError, and the vendored signature row has a
+ * guard for that where its on-chain row has none. A supplier can send such a receipt (the poll takes a body of a million bytes, which holds a hundred thousand
+ * levels). A receipt that cannot be walked verifies nothing, so on a throw the four rows fail, and the on-chain row is skipped only when there was no hash to
+ * compare, as it is when the call returns.
+ */
+function vendoredRows(input: FleetVerifyInput, hashOnChain: string | null): VendoredRows {
+  try {
+    const rows = verifyReceipt({
+      receipt: input.receipt, signature: input.receiptSignature, escrowRef: input.escrowRef, supplierPubKeyHex: input.supplierPubKeyHex,
+      escrowSupplierPkh: input.supplierPkhExpected, escrowPromptHash: input.promptHashHex, resultReceiptHashOnChain: hashOnChain,
+    }).checks;
+    return {
+      supplier_key_matches: passIf(rows.supplier_key_matches.state === 'pass'),
+      signature_valid: passIf(rows.signature_valid.state === 'pass'),
+      on_chain_hash_matches: rows.on_chain_hash_matches.state === 'skipped' ? 'skipped' : passIf(rows.on_chain_hash_matches.state === 'pass'),
+      prompt_hash_matches: passIf(rows.prompt_hash_matches.state === 'pass'),
+    };
+  } catch {
+    return { supplier_key_matches: 'fail', signature_valid: 'fail', on_chain_hash_matches: hashOnChain === null ? 'skipped' : 'fail', prompt_hash_matches: 'fail' };
+  }
 }
 
 /**
@@ -77,28 +101,28 @@ function sameDigest(claimed: unknown, computed: unknown): boolean {
  * is a receipt to accept an escrow on.
  *
  * The receipt is the supplier's own account of the job, and so are its signature and its public key: whatever they are, a check that cannot be made on
- * them fails and nothing throws. The one rejection is not about the receipt. `onChainReceiptHash` is awaited once, whatever the other checks say, and
- * an error from it is not caught: the call rejects with that error and makes no verdict, because a read that failed says nothing about the receipt.
- * The caller (the orchestrator, which asks again while the indexer catches up with the supplier's Submit) decides what to do with it.
+ * them fails and nothing throws. That holds for a receipt that cannot be walked at all, one nested deeper than the stack allows, which a supplier can send
+ * within the size the poll accepts: the vendored call throws on it, and the four rows it owns fail (see vendoredRows). The one rejection is not about the
+ * receipt. `onChainReceiptHash` is awaited once, whatever the other checks say, before anything is hashed, and an error from it is not caught: the call
+ * rejects with that error and makes no verdict, because a read that failed says nothing about the receipt. The caller (the orchestrator, which asks again
+ * while the indexer catches up with the supplier's Submit) decides what to do with it. A read that resolves anything but a string or null has broken the
+ * contract of the callback; that is a failed on-chain row and not a rejection.
  */
 export async function verifyFleetReceipt(input: FleetVerifyInput): Promise<FleetVerification> {
-  const onChainHash = await input.onChainReceiptHash();
+  const hashOnChain = await input.onChainReceiptHash();
+  // The read is typed string or null. One that resolves anything else has broken that: the on-chain row fails, and the vendored call is told there is no hash,
+  // so that it is not handed a value it would call .toLowerCase on.
+  const brokenRead = hashOnChain !== null && typeof hashOnChain !== 'string';
   const receipt = isRecord(input.receipt) ? input.receipt : null;
-
-  // The four rows the vendored verifier owns. Its escrow_ref row is not used (check 1 is made below) and no result text is passed, which skips the one
-  // text check that does not apply to an envelope hash (check 2 is made below).
-  const vendored = verifyReceipt({
-    receipt: input.receipt, signature: input.receiptSignature, escrowRef: input.escrowRef, supplierPubKeyHex: input.supplierPubKeyHex,
-    escrowSupplierPkh: input.supplierPkhExpected, escrowPromptHash: input.promptHashHex, resultReceiptHashOnChain: onChainHash,
-  }).checks;
+  const vendored = vendoredRows(input, brokenRead ? null : hashOnChain);
 
   const checks: FleetVerification['checks'] = {
     escrow_ref_matches: passIf(receipt !== null && sameRef(receipt.escrow_ref, input.escrowRef)),
     response_hash_matches: passIf(receipt !== null && sameDigest(receipt.response_hash, input.responseHashHex)),
-    supplier_key_matches: passIf(vendored.supplier_key_matches.state === 'pass'),
-    signature_valid: passIf(vendored.signature_valid.state === 'pass'),
-    on_chain_hash_matches: vendored.on_chain_hash_matches.state === 'skipped' ? 'skipped' : passIf(vendored.on_chain_hash_matches.state === 'pass'),
-    prompt_hash_matches: passIf(vendored.prompt_hash_matches.state === 'pass'),
+    supplier_key_matches: vendored.supplier_key_matches,
+    signature_valid: vendored.signature_valid,
+    on_chain_hash_matches: brokenRead ? 'fail' : vendored.on_chain_hash_matches,
+    prompt_hash_matches: vendored.prompt_hash_matches,
     model_matches: passIf(receipt !== null && typeof receipt.model === 'string' && receipt.model === input.model),
   };
   const states = Object.values(checks);

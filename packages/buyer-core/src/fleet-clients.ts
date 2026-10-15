@@ -26,6 +26,7 @@
 import { safeFetch } from '@vsa/vector-read';
 import { ROUTES, callFailure, canonicalRef, jsonObject, trim } from './vendored/mcp/marketplace-supplier.ts';
 import type { Call, Route } from './vendored/mcp/marketplace-supplier.ts';
+import { isRecord } from './guards.ts';
 
 /** The fetch safeFetch calls for each request, once it has vetted the host. Production passes the platform fetch; tests pass a fake. */
 export type FetchLike = typeof fetch;
@@ -173,10 +174,6 @@ function submittedRefOf(value: unknown): string | undefined {
   try { return canonicalRef(value); } catch { return undefined; }
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
 /**
  * The result of a poll answer. `escrowRef` is the canonical ref the poll was made for: a done answer must name it (a job id is a bearer token, and the
  * answer of a supplier that names another escrow, or none, is not an answer about this job).
@@ -192,7 +189,7 @@ function pollResult(jobId: string, escrowRef: string, status: number, text: stri
     const { receipt, receipt_signature: signature } = answer;
     // A job is done when the supplier hands over a receipt and its signature; the receipt is what the Accept is decided on. A 200 without them is no
     // answer of the supplier's (see the head of this file), and the poll does not say the job failed.
-    if (!isObject(receipt) || typeof signature !== 'string' || signature === '') throw lost('a JSON object that is no finished job (no receipt object and non-empty receipt_signature)');
+    if (!isRecord(receipt) || typeof signature !== 'string' || signature === '') throw lost('a JSON object that is no finished job (no receipt object and non-empty receipt_signature)');
     const echoed = answer.escrow_ref;
     let named: string | undefined;
     if (typeof echoed === 'string') { try { named = canonicalRef(echoed); } catch { /* names no escrow, below */ } }

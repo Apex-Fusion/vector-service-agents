@@ -7,7 +7,7 @@
 // made against. So `advertRef` below is the row's `utxo_ref`.
 import { fetchSuppliers } from './vendored/mcp/marketplace-indexer.ts';
 import { INDEXER_URL, indexerUrlFrom } from './vendored/mcp/marketplace-constants.ts';
-import { canonicalRef } from './vendored/mcp/marketplace-supplier.ts';
+import { sameRef } from './guards.ts';
 import { probeStatus, readCapability } from './fleet-clients.ts';
 import type { FetchLike, SupplierCapability } from './fleet-clients.ts';
 
@@ -56,11 +56,6 @@ const seenAt = (iso: string | null): number => {
   return Number.isNaN(time) ? Number.NEGATIVE_INFINITY : time;
 };
 const newerFirst = (a: number, b: number): number => (a === b ? 0 : a > b ? -1 : 1);
-
-/** Do two refs name the same output? Compared as refs, so the spelling of the hex does not matter; text that is no ref names nothing. */
-function sameRef(a: string, b: string): boolean {
-  try { return canonicalRef(a) === canonicalRef(b); } catch { return false; }
-}
 
 /**
  * The chat supplier to hire, or null when none is fit. The candidates are the free `llm.text.generate.v1` adverts whose model is on `allowlist`, in this
