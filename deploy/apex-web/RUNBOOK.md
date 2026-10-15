@@ -1,6 +1,6 @@
 # Runbook: Agent History on apex-web
 
-Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE. This runbook says what happens, in order. Steps 1 to 15 and 17 were run on 2026-10-14 and 2026-10-15; step 16, the wallet monitor, is pending with the operator of the fleet box.
+Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE. This runbook says what happens, in order. Steps 1 to 15 and 17 were run on 2026-10-14 and 2026-10-15. Step 16, the wallet monitor, is not used for this agent (operator's decision, 2026-10-15).
 
 The operator holds the keys and does every step except three. Step 2 (the registry login and the service image) and step 10 (DNS and Caddy) are the host administrator's, see [README.md](README.md). Step 6 (funding the supplier wallet) is the Foundation's. Every run of the agent is first-party until a payer outside our control appears. A first-party run shows that the path works. It is not demand and it counts as no revenue.
 
@@ -308,7 +308,7 @@ Operator. Follow [E2E.md](../../docs/E2E.md) with `ADVERT_REF` from step 12 and 
 
 ## 16. Wallet monitor
 
-Operator. Add the supplier address to the fleet's wallet monitor, so that a drained float is seen before a claim fails. The monitor is `wallet-monitor/` in the `Apex-Fusion/agents-marketplace` repository (see its README). On the machine that runs it, add one entry to `wallet-monitor/wallets.json`, which is not in git: `{ "name": "supplier-agent-history", "address": "<SUPPLIER_ADDRESS from the env file>" }`. The monitor posts to Slack when a wallet drops below its threshold.
+Not used for this agent: the operator decided on 2026-10-15 that the fleet's wallet monitor does not watch this supplier; the float is read by hand with the check of step 6. Kept for an operator who wants it. Add the supplier address to the fleet's wallet monitor, so that a drained float is seen before a claim fails. The monitor is `wallet-monitor/` in the `Apex-Fusion/agents-marketplace` repository (see its README). On the machine that runs it, add one entry to `wallet-monitor/wallets.json`, which is not in git: `{ "name": "supplier-agent-history", "address": "<SUPPLIER_ADDRESS from the env file>" }`. The monitor posts to Slack when a wallet drops below its threshold.
 
 ## 17. Flip the status
 
