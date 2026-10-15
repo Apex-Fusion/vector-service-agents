@@ -299,14 +299,14 @@ test('README, RUNBOOK, compose file and Caddy snippet: DEPLOYED since 2026-10-15
     assert.doesNotMatch(text.replace(STATUS, '').replace(HEADER[rel] ?? '', ''), /\b(LIVE|DEPLOYED)\b/, `${rel}: no status claim beyond the status line`);
   }
   for (const rel of ['deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md']) assert.ok(read(rel).includes(STATUS), rel);
-  assert.equal(readme.split('\n')[2], `${STATUS} Steps 1 to 17 of the runbook were run on 2026-10-14 and 2026-10-15.`);
+  assert.equal(readme.split('\n')[2], `${STATUS} Steps 1 to 15 and 17 of the runbook were run on 2026-10-14 and 2026-10-15; step 16, the wallet monitor, is pending with the operator of the fleet box.`);
   for (const [rel, header] of Object.entries(HEADER)) assert.ok(read(rel).split('\n')[1].startsWith(header), `${rel}: the second line says what happened on the box`);
   assert.doesNotMatch(read('deploy/apex-web/docker-compose.agent-history.yml') + snippet, /PROPOSED/);
 });
 
 test('RUNBOOK: the status line says that steps 1 to 17 were run on 2026-10-14 and 2026-10-15, the step texts stay instructions, and a first run is told to start with the earlier word', () => {
   const status = runbook.split('\n')[2];
-  assert.equal(status, 'Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE. This runbook says what happens, in order. Steps 1 to 17 were run on 2026-10-14 and 2026-10-15.');
+  assert.equal(status, 'Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE. This runbook says what happens, in order. Steps 1 to 15 and 17 were run on 2026-10-14 and 2026-10-15; step 16, the wallet monitor, is pending with the operator of the fleet box.');
   assert.equal(runbook.match(/Steps 1 to (9|14|15) were run|The rest has not been run|what will happen/), null);
   // Step 14 ends, in the order of the runbook, on the advert being Active: the status word stays as it was until step 17. It names no word, so it stays right after the flip too.
   // Step 12 still tells the operator what to record: it is an instruction, so it still quotes the words it replaces.

@@ -1,6 +1,6 @@
 # Runbook: Agent History on apex-web
 
-Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE. This runbook says what happens, in order. Steps 1 to 17 were run on 2026-10-14 and 2026-10-15.
+Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE. This runbook says what happens, in order. Steps 1 to 15 and 17 were run on 2026-10-14 and 2026-10-15; step 16, the wallet monitor, is pending with the operator of the fleet box.
 
 The operator holds the keys and does every step except three. Step 2 (the registry login and the service image) and step 10 (DNS and Caddy) are the host administrator's, see [README.md](README.md). Step 6 (funding the supplier wallet) is the Foundation's. Every run of the agent is first-party until a payer outside our control appears. A first-party run shows that the path works. It is not demand and it counts as no revenue.
 

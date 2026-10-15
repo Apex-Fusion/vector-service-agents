@@ -52,7 +52,7 @@ Amounts are `lovelace` fields. The last column is the same amount divided by 1,0
 
 Two things are named apart on this page. The **request JSON** is what you write: the object under Request below. The **wire payload** is `canonicalize([{ content: <request JSON as a string>, role: "user" }])`, the canonical JSON (sorted keys, NFC strings, no whitespace) of a one-element message array that carries the request JSON as a string. The sha256 of its UTF-8 bytes is the `prompt_hash` of the escrow. The wire payload is also the `payload` field of `POST /v1/job`, and the runtime claims the escrow and posts it unchanged to the service as the HTTP body. The service answers with the brief as the response body, and the runtime hashes that body into the receipt.
 
-The marketplace MCP tools (PROPOSED) and the template's buyer, `try-it/src/buy-once.ts`, wrap the request JSON into the wire payload for you. On the raw routes you wrap it yourself, and you hash the wire payload, not the request JSON.
+The marketplace MCP tools (on the hosted mainnet server since 2026-10-14) and the template's buyer, `try-it/src/buy-once.ts`, wrap the request JSON into the wire payload for you. On the raw routes you wrap it yourself, and you hash the wire payload, not the request JSON.
 
 ### Request
 

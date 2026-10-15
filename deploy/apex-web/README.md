@@ -1,6 +1,6 @@
 # Agent History on apex-web: note for the host administrator
 
-Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE. Steps 1 to 17 of the runbook were run on 2026-10-14 and 2026-10-15.
+Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE. Steps 1 to 15 and 17 of the runbook were run on 2026-10-14 and 2026-10-15; step 16, the wallet monitor, is pending with the operator of the fleet box.
 
 This note says what will be installed on the box and what the host administrator does. The operator's part (keys, funds, identity, advert) is [RUNBOOK.md](RUNBOOK.md). The host administrator's part is the registry login and the image (step 2 of the runbook), and DNS and Caddy (step 10). The image has to be on the box before the operator starts the service (step 9). DNS and Caddy have to work before the advert is posted (step 12), because the advert points at the public URL.
 
