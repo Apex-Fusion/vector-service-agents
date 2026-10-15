@@ -133,8 +133,10 @@ const json = (status: number, body: unknown): Response => new Response(JSON.stri
  *   proxy                 a 502 HTML page of a proxy, no answer of the supplier's
  *   no-receipt            a 200 without the receipt and its signature, no answer of the supplier's
  *   gateway-after-submit  finishes the job, then a gateway's JSON error with a reason on a 504, which the client reads as `failed`
+ *   { fail, submitted }   the supplier's own failure envelope with the reason `fail` on a 502, after its Submit landed when `submitted` (as the real one
+ *                         answers submit_timeout when it could not see its Submit confirmed) and with nothing submitted otherwise
  */
-export type PollStep = 'running' | 'done' | 'failed' | 'gone' | 'proxy' | 'no-receipt' | 'gateway-after-submit';
+export type PollStep = 'running' | 'done' | 'failed' | 'gone' | 'proxy' | 'no-receipt' | 'gateway-after-submit' | { fail: string; submitted: boolean };
 
 interface StubJob { id: string; escrowRef: string; request: Record<string, unknown>; steps: PollStep[]; finished?: Record<string, unknown> }
 
@@ -143,8 +145,10 @@ abstract class StubSupplier {
   busy = 0;
   /** The next sends fail the way a dropped connection does, after the supplier claimed the escrow or before. */
   lose: Array<'after-claim' | 'before-claim'> = [];
-  /** Answer every send with this refusal, before any claim. */
-  refuse: { status: number; reason: string } | null = null;
+  /** Answer the next N sends with 404 escrow_not_found, as a supplier whose view of the chain does not show the Post yet; the escrow stays Open. */
+  notFound = 0;
+  /** Answer every send with this refusal: before any claim, or, with `claim`, after claiming the escrow (it took the job from an earlier send). */
+  refuse: { status: number; reason: string; claim?: boolean } | null = null;
   /** The poll steps of every new job, unless `plans` holds one for it. */
   steps: PollStep[] = ['running', 'done'];
   /** The poll steps of the next jobs, one list per job, in order. */
@@ -187,7 +191,14 @@ abstract class StubSupplier {
       this.busy -= 1;
       return json(409, { reason: 'supplier_busy', message: 'supplier is already working another job' });
     }
-    if (this.refuse !== null) return json(this.refuse.status, { reason: this.refuse.reason, message: `the supplier refused the job (${this.refuse.reason})` });
+    if (this.notFound > 0) {
+      this.notFound -= 1;
+      return json(404, { reason: 'escrow_not_found', message: 'escrow UTxO not found on chain' });
+    }
+    if (this.refuse !== null) {
+      if (this.refuse.claim === true) this.chain.markClaimed(escrowRef);
+      return json(this.refuse.status, { reason: this.refuse.reason, message: `the supplier refused the job (${this.refuse.reason})` });
+    }
     let request: unknown;
     try { request = JSON.parse(body); } catch { return json(400, { reason: 'bad_request', message: 'the body is not JSON' }); }
     if (request === null || typeof request !== 'object' || Array.isArray(request)) return json(400, { reason: 'bad_request', message: 'the body is not an object' });
@@ -206,6 +217,10 @@ abstract class StubSupplier {
     if (job === undefined) return json(404, { reason: 'job_not_found', message: `no job found with id ${id}` });
     const step = job.steps.length > 1 ? (job.steps.shift() as PollStep) : job.steps[0];
     const finished = (): Record<string, unknown> => job.finished ?? (job.finished = this.finish(job, this.forge ? FORGER_KEY : this.key));
+    if (typeof step === 'object') {
+      if (step.submitted) finished();
+      return json(502, { status: 'failed', reason: step.fail, message: `the job failed (${step.fail})`, escrow_ref: job.escrowRef });
+    }
     switch (step) {
       case 'running': return json(202, { status: 'running', escrow_ref: job.escrowRef });
       case 'failed': return json(502, { status: 'failed', reason: 'upstream_failure', message: 'the upstream model did not answer', escrow_ref: job.escrowRef });

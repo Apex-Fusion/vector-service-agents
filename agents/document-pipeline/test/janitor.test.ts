@@ -9,10 +9,10 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DELIVER_BY_BUFFER_MS, FakeChain } from '@vsa/buyer-core';
+import { DELIVER_BY_BUFFER_MS, FakeChain, TxNotConfirmedError } from '@vsa/buyer-core';
 import type { Chain, ChainEscrowState } from '@vsa/buyer-core';
 import { runJanitorOnce, startJanitor, StrandedStore } from '../src/janitor.ts';
-import type { StrandedEntry } from '../src/janitor.ts';
+import type { JanitorChain, StrandedEntry } from '../src/janitor.ts';
 import { OCR_ADVERT, OCR_ADVERT_REF, T0, WINDOW_MS } from './stub-suppliers.ts';
 
 const PROMPT = 'ab'.repeat(32);
@@ -35,12 +35,12 @@ function setup() {
     return entry;
   };
   /** One pass at `at`, with the chain's clock there too. */
-  const passAt = (at: number, on: Pick<Chain, 'escrowState' | 'reclaim'> = chain) => { clock.now = at; return runJanitorOnce(store, on, at); };
+  const passAt = (at: number, on: JanitorChain = chain) => { clock.now = at; return runJanitorOnce(store, on, at); };
   return { clock, chain, store, post, passAt };
 }
 
 /** `chain` with its escrowState answered by `states`, one per call, then by the chain itself. */
-function readsAs(chain: FakeChain, ...states: Array<ChainEscrowState | Error>): Pick<Chain, 'escrowState' | 'reclaim'> {
+function readsAs(chain: FakeChain, ...states: Array<ChainEscrowState | Error>): JanitorChain {
   return {
     escrowState: async (ref) => {
       const next = states.shift();
@@ -48,6 +48,7 @@ function readsAs(chain: FakeChain, ...states: Array<ChainEscrowState | Error>): 
       return next ?? chain.escrowState(ref);
     },
     reclaim: (ref) => chain.reclaim(ref),
+    accept: (ref) => chain.accept(ref),
   };
 }
 
@@ -117,7 +118,7 @@ describe('runJanitorOnce', () => {
     const entry = await post();
     const at = entry.deliver_by + 5_000;
     const reads: Array<ChainEscrowState | Error> = ['spent', 'Open', 'spent'];
-    const flaky: Pick<Chain, 'escrowState' | 'reclaim'> = { escrowState: async (ref) => { const next = reads.shift(); if (next instanceof Error) throw next; return next ?? chain.escrowState(ref); }, reclaim: async () => { throw new Error('no node'); } };
+    const flaky: JanitorChain = { escrowState: async (ref) => { const next = reads.shift(); if (next instanceof Error) throw next; return next ?? chain.escrowState(ref); }, reclaim: async () => { throw new Error('no node'); }, accept: (ref) => chain.accept(ref) };
     await passAt(at, flaky);
     expect(store.list()[0].gone_reads).toBe(1);
     expect(await passAt(at + 1, flaky)).toMatchObject([{ action: 'kept', note: 'Open: the Reclaim failed (no node)' }]);
@@ -140,7 +141,7 @@ describe('runJanitorOnce', () => {
   it('keeps an entry whose Reclaim fails, for the next pass', async () => {
     const { chain, store, post, passAt } = setup();
     const entry = await post();
-    const refusing: Pick<Chain, 'escrowState' | 'reclaim'> = { escrowState: (ref) => chain.escrowState(ref), reclaim: async () => { throw new Error('The Reclaim was refused'); } };
+    const refusing: JanitorChain = { escrowState: (ref) => chain.escrowState(ref), reclaim: async () => { throw new Error('The Reclaim was refused'); }, accept: (ref) => chain.accept(ref) };
     expect(await passAt(entry.deliver_by + 5_000, refusing)).toStrictEqual([{ escrow_ref: entry.escrow_ref, action: 'kept', note: 'Open: the Reclaim failed (The Reclaim was refused)' }]);
     expect(store.list()).toStrictEqual([entry]);
     expect(await passAt(entry.deliver_by + 65_000)).toMatchObject([{ action: 'reclaimed' }]);
@@ -181,8 +182,99 @@ describe('runJanitorOnce', () => {
   });
 });
 
+// The run's Accept was signed and submitted but not seen confirmed, and may still land (ruling R33): the run kept its result and left the escrow here,
+// marked. The janitor looks at it at once. Spent (on two passes) is the Accept that landed. Submitted while the Accept may still land is waited for.
+// Submitted once it can no longer land: one more Accept while the accept window is still open, bounded here by posted_at + 600 s (the Chain gives no
+// submitted_at, and the Submit came after the Post); otherwise, or when the run's Accept was already followed by the janitor's, the escrow is lost.
+describe('runJanitorOnce: an Accept the run could not see confirmed (ruling R33)', () => {
+  const TX = 'ac'.repeat(32);
+  const TX2 = 'ad'.repeat(32);
+  /** A Submitted escrow whose Accept, valid until `validTo`, the run saw neither land nor fail. */
+  async function pendingAccept(validTo: number) {
+    const s = setup();
+    const entry = await s.post();
+    s.chain.markClaimed(entry.escrow_ref);
+    s.chain.markSubmitted(entry.escrow_ref, RECEIPT_HASH);
+    s.store.update(entry.escrow_ref, { accept_pending: { tx_hash: TX, valid_to: validTo, by: 'run' } });
+    let accepts = 0;
+    const counted = (accept: JanitorChain['accept']): JanitorChain => ({ escrowState: (r) => s.chain.escrowState(r), reclaim: (r) => s.chain.reclaim(r), accept: (r) => { accepts += 1; return accept(r); } });
+    return { ...s, entry, counted, accepts: () => accepts };
+  }
+
+  it('is looked at at once, not from deliver_by, and kept while its Accept may still land', async () => {
+    const { chain, store, entry, passAt } = await pendingAccept(T0 + 60_000);
+    expect(await passAt(T0 + 10_000)).toStrictEqual([{ escrow_ref: entry.escrow_ref, action: 'kept', note: `Submitted: its Accept ${TX} may still land until ${new Date(T0 + 60_000).toISOString()}` }]);
+    expect(await chain.escrowState(entry.escrow_ref)).toBe('Submitted');
+    expect(store.list()).toHaveLength(1);
+  });
+
+  it('is dropped once its Accept landed: spent on two passes in a row', async () => {
+    const { chain, store, entry, passAt } = await pendingAccept(T0 + 60_000);
+    await chain.accept(entry.escrow_ref);
+    expect(await passAt(T0 + 10_000)).toMatchObject([{ action: 'kept', note: 'spent (first read): read again on the next pass before it is dropped' }]);
+    expect(await passAt(T0 + 20_000)).toMatchObject([{ action: 'dropped', note: 'spent on two passes in a row' }]);
+    expect(store.list()).toStrictEqual([]);
+  });
+
+  it('is accepted once more when its Accept can no longer land and the window is still open, and removed once that Accept is confirmed', async () => {
+    const { chain, store, entry, passAt, counted, accepts } = await pendingAccept(T0 + 60_000);
+    let made = '';
+    const on = counted(async (r) => { const accepted = await chain.accept(r); made = accepted.txHash; return accepted; });
+    // At validTo itself the Accept can no longer land: a transaction lands only in the slots before the end of its validity.
+    expect(await passAt(T0 + 60_000, on)).toStrictEqual([{
+      escrow_ref: entry.escrow_ref, action: 'accepted', note: `Submitted: its Accept ${TX} did not land by ${new Date(T0 + 60_000).toISOString()}; accepted again in ${made}`,
+    }]);
+    expect(made).toMatch(/^[0-9a-f]{64}$/);
+    expect(accepts()).toBe(1);
+    expect(await chain.escrowState(entry.escrow_ref)).toBe('spent');
+    expect(store.list()).toStrictEqual([]);
+  });
+
+  it('is recorded as lost when its Accept can no longer land and posted_at + 600 s has passed: no Accept is made', async () => {
+    const { chain, store, entry, passAt, counted, accepts } = await pendingAccept(T0 + 60_000);
+    const on = counted((r) => chain.accept(r));
+    const lostAfter = entry.deliver_by + 600_000;
+    expect(await passAt(T0 + 600_000, on)).toStrictEqual([{
+      escrow_ref: entry.escrow_ref, action: 'kept', note: `Submitted: its Accept ${TX} did not land by ${new Date(T0 + 60_000).toISOString()} and the accept window may be over; lost to its supplier's release from ${new Date(lostAfter).toISOString()} at the latest`,
+    }]);
+    expect(accepts()).toBe(0);
+    expect(await chain.escrowState(entry.escrow_ref)).toBe('Submitted');
+    expect(store.list()).toStrictEqual([{ ...entry, lost_to_release_after: lostAfter }]);
+  });
+
+  it('makes one more Accept and no more: when that one may land too, it is waited for, and if it does not land the escrow is lost', async () => {
+    const { chain, store, entry, passAt, counted, accepts } = await pendingAccept(T0 + 60_000);
+    const notSeen = new TxNotConfirmedError(`The Accept ${TX2} of escrow ${entry.escrow_ref} was submitted, but Koios did not report it confirmed.`, {
+      txHash: TX2, escrowRef: entry.escrow_ref, deliverBy: null, validTo: T0 + 120_000, mayLand: true,
+    });
+    const on = counted(async () => { throw notSeen; });
+    expect(await passAt(T0 + 60_001, on)).toMatchObject([{ action: 'kept', note: `Submitted: its Accept ${TX} did not land by ${new Date(T0 + 60_000).toISOString()}; accepted again in ${TX2}, which may land until ${new Date(T0 + 120_000).toISOString()}` }]);
+    expect(store.list()).toStrictEqual([{ ...entry, accept_pending: { tx_hash: TX2, valid_to: T0 + 120_000, by: 'janitor' } }]);
+    expect(await passAt(T0 + 90_000, on)).toMatchObject([{ action: 'kept', note: `Submitted: its Accept ${TX2} may still land until ${new Date(T0 + 120_000).toISOString()}` }]);
+    expect(await passAt(T0 + 120_000, on)).toMatchObject([{ action: 'kept', note: expect.stringMatching(/did not land .* lost to its supplier's release/) }]);
+    expect(accepts()).toBe(1);
+    expect(store.list()).toStrictEqual([{ ...entry, lost_to_release_after: entry.deliver_by + 600_000 }]);
+  });
+
+  it('records the escrow as lost when the one more Accept fails outright', async () => {
+    const { store, entry, passAt, counted, accepts } = await pendingAccept(T0 + 60_000);
+    const on = counted(async () => { throw new Error('Accept window closed'); });
+    expect(await passAt(T0 + 60_000, on)).toMatchObject([{ action: 'kept', note: expect.stringMatching(/the Accept could not be made again \(Accept window closed\); lost to its supplier's release/) }]);
+    expect(accepts()).toBe(1);
+    expect(store.list()).toStrictEqual([{ ...entry, lost_to_release_after: entry.deliver_by + 600_000 }]);
+  });
+
+  it('reads Open or Claimed for an escrow it accepted as an indexer that lags the Submit: kept as it is, never reclaimed', async () => {
+    const { chain, store, entry, passAt } = await pendingAccept(T0 + 60_000);
+    const lagging = readsAs(chain, 'Claimed');
+    expect(await passAt(entry.deliver_by + 5_000, lagging)).toMatchObject([{ action: 'kept', note: 'Claimed: an escrow whose Accept was sent reads Claimed while the indexer lags its Submit; read again on the next pass' }]);
+    expect(store.list()).toStrictEqual([{ ...entry, accept_pending: { tx_hash: TX, valid_to: T0 + 60_000, by: 'run' } }]);
+    expect(await chain.escrowState(entry.escrow_ref)).toBe('Submitted');
+  });
+});
+
 describe('StrandedStore', () => {
-  const entry: StrandedEntry = { escrow_ref: `${'ab'.repeat(32)}#0`, deliver_by: T0 + 480_000, posted_at: T0, kind: 'ocr' };
+  const entry: StrandedEntry ={ escrow_ref: `${'ab'.repeat(32)}#0`, deliver_by: T0 + 480_000, posted_at: T0, kind: 'ocr' };
 
   it('survives a reload: a new store on the same directory has the same entries, with what the janitor noted', () => {
     const dir = stateDir();
@@ -248,6 +340,27 @@ describe('StrandedStore', () => {
     expect(() => store.add({ ...entry, deliver_by: Number.NaN })).toThrow(/deliver_by/);
     expect(store.list()).toStrictEqual([]);
   });
+
+  it('refuses a field it does not know, on add and in the file, instead of dropping it: a marker it dropped could cost an escrow', () => {
+    const store = new StrandedStore(stateDir());
+    expect(() => store.add({ ...entry, note: 'x' } as StrandedEntry)).toThrow(/unknown field "note"/);
+    expect(() => store.add({ ...entry, accept_pending: { tx_hash: 'ac'.repeat(32), valid_to: T0, by: 'run', extra: 1 } } as StrandedEntry)).toThrow(/unknown field "extra"/);
+    expect(store.list()).toStrictEqual([]);
+    const dir = stateDir();
+    writeFileSync(join(dir, 'stranded.json'), JSON.stringify([{ ...entry, retries: 2 }]));
+    expect(() => new StrandedStore(dir)).toThrow(/stranded\.json is not a list of stranded escrows \(unknown field "retries"/);
+  });
+
+  it('keeps the marker of an Accept that may land, and refuses one that is malformed', () => {
+    const dir = stateDir();
+    const store = new StrandedStore(dir);
+    const marker = { tx_hash: 'ac'.repeat(32), valid_to: T0 + 606_000, by: 'run' as const };
+    store.add({ ...entry, accept_pending: marker });
+    expect(new StrandedStore(dir).list()).toStrictEqual([{ ...entry, accept_pending: marker }]);
+    for (const bad of [{ ...marker, tx_hash: 'xyz' }, { ...marker, valid_to: 1.5 }, { ...marker, by: 'someone' }, { tx_hash: marker.tx_hash, by: 'run' }]) {
+      expect(() => store.add({ ...entry, accept_pending: bad } as StrandedEntry), JSON.stringify(bad)).toThrow(/accept_pending/);
+    }
+  });
 });
 
 describe('startJanitor', () => {
@@ -275,7 +388,7 @@ describe('startJanitor', () => {
     clock.now = entry.deliver_by + 5_000;
     const lines: string[] = [];
     let calls = 0;
-    const broken: Pick<Chain, 'escrowState' | 'reclaim'> = { escrowState: async () => { calls += 1; return 'Open'; }, reclaim: async () => { throw new Error('no node'); } };
+    const broken: JanitorChain = { escrowState: async () => { calls += 1; return 'Open'; }, reclaim: async () => { throw new Error('no node'); }, accept: async () => { throw new Error('no node'); } };
     const janitor = startJanitor(store, broken, 5, { clock: () => clock.now, log: (line) => lines.push(line) });
     await expect.poll(() => calls).toBeGreaterThanOrEqual(2);
     await janitor.stop();

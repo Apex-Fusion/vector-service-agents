@@ -7,10 +7,12 @@
 // RequestError of the intake passes through unchanged, ruling R28); each page's base64 must fit the OCR supplier's 12000000 characters (page_too_large,
 // ruling R27); the OCR supplier must be found and checked (ocr_supplier_unavailable, 503). Its advert is the one free advert of the allowlisted key the
 // indexer lists, read again on chain, where it must be an active OCR advert of that very key: the indexer is a guide, the chain is what an escrow pays.
-// Its /capability must serve the key of that advert, or no receipt of it could verify. The endpoint a job is sent to is the one on chain.
+// Its /capability must serve the key of that advert, or no receipt of it could verify. The endpoint a job is sent to is the one on chain. The chat
+// supplier is chosen then too, before any page is paid for (ruling R35): the cheapest free allowlisted supplier, probed live (selectLlmSupplier),
+// whose advert is read on chain as well (llm_supplier_unavailable, 503).
 //
-// Then the pages in order, none started with less than 480 s left before the deadline, and the chat job, not started with less than 300 s left: the
-// cheapest free allowlisted supplier, probed live (selectLlmSupplier), whose advert is read on chain too. The chat body is {input} and nothing else
+// Then the pages in order, none started with less than 660 s left before the deadline, and the chat job, not started with less than 420 s left
+// (ruling R40): its supplier is chosen again first when the first choice is more than 10 minutes old. The chat body is {input} and nothing else
 // (ruling R12). Its answer must be a completed response: one that is not is still verified and accepted (the supplier delivered), and the job fails
 // with llm_incomplete (ruling R11). Every escrow a failure leaves behind is in the stranded store, for the janitor.
 import {
@@ -18,9 +20,11 @@ import {
   responsesResponseHash, selectLlmSupplier, sendOcrJob, sendResponsesJob,
 } from '@vsa/buyer-core';
 import type { Chain, SupplierCapability } from '@vsa/buyer-core';
-import { blake2b224Hex, formatOutRef, parseOutRef } from '@vsa/vector-read';
+import { blake2b224Hex } from '@vsa/vector-read';
 import type { AdvertDatum } from '@vsa/vector-read';
-import { LLM_MIN_LEFT_MS, OCR_IMAGE_B64_MAX, PAGE_MIN_LEFT_MS, assertTimeLeft, floatNeeded } from './budget.ts';
+import { LLM_MIN_LEFT_MS, LLM_SELECTION_MAX_AGE_MS, OCR_IMAGE_B64_MAX, PAGE_MIN_LEFT_MS, assertTimeLeft, floatNeeded } from './budget.ts';
+import { answerResult, compileExtractionSchema } from './extract.ts';
+import { canonicalRef, errorText } from './format.ts';
 import { hire } from './hire.ts';
 import type { Supplier } from './hire.ts';
 import type { StrandedStore } from './janitor.ts';
@@ -28,7 +32,7 @@ import { llmInput } from './llm-prompt.ts';
 import { pagesOf } from './render.ts';
 import type { Renderer } from './render.ts';
 import type { PipelineRequest } from './request.ts';
-import { Accounting, PipelineError, RESULT_SCHEMA, answerResult, compileExtractionSchema, errorText } from './result.ts';
+import { Accounting, PipelineError, RESULT_SCHEMA } from './result.ts';
 import type { PipelineResult } from './result.ts';
 import { loadSource } from './source.ts';
 
@@ -58,7 +62,6 @@ const OCR_CAPABILITY = 'ocr.page.extract.chandra-ocr-2.v1';
 const LLM_CAPABILITY = 'llm.text.generate.v1';
 const OUTPUT_FORMAT = 'markdown';
 const PUB_KEY = /^[0-9a-f]{64}$/i;
-const canonicalRef = (ref: string): string => { const { txHash, outputIndex } = parseOutRef(ref); return formatOutRef(txHash, outputIndex); };
 const withoutSlash = (url: string): string => url.replace(/\/+$/, '');
 /** Does the key a supplier's /capability serves hash to the supplier key of its advert? */
 const keyOfAdvert = (capability: SupplierCapability, advert: AdvertDatum): boolean =>
@@ -78,6 +81,9 @@ export async function runPipeline(req: PipelineRequest, deps: Deps): Promise<Pip
     }
   }
   const ocr = await ocrSupplier(deps);
+  const label = req.task === 'summary' ? 'the summary' : 'the extraction';
+  let llm = await llmSupplier(deps, label);
+  const chosenAt = deps.clock();
   const accounting = new Accounting();
 
   const pagesRead: PipelineResult['pages'] = [];
@@ -99,10 +105,11 @@ export async function runPipeline(req: PipelineRequest, deps: Deps): Promise<Pip
     pagesRead.push({ index: image.index, text: hired.value, sub_job: hired.subJob });
   }
 
-  const label = req.task === 'summary' ? 'the summary' : 'the extraction';
   assertTimeLeft(deps, LLM_MIN_LEFT_MS, label);
-  const llm = await llmSupplier(deps, label);
-  assertTimeLeft(deps, LLM_MIN_LEFT_MS, label);
+  if (deps.clock() - chosenAt > LLM_SELECTION_MAX_AGE_MS) {
+    llm = await llmSupplier(deps, label);
+    assertTimeLeft(deps, LLM_MIN_LEFT_MS, label);
+  }
   // A schema rides only with an extraction: parseRequest refuses one with a summary, and a request made another way is not failed for it after the pages are paid.
   const input = llmInput({ task: req.task, language: req.language, schema: req.task === 'extract' ? req.schema : undefined, pages: pagesRead });
   const answer = await hire(deps, llm, {

@@ -138,6 +138,19 @@ function chainWith(m: Marketplace, over: Partial<Chain>): Chain {
   };
 }
 
+/** The chain of `run`, whose clock jumps to `time` once the `n`-th Accept is confirmed. */
+function jumpAt(run: Run, n: number, time: number): Chain {
+  let accepts = 0;
+  return chainWith(run.m, {
+    accept: async (r) => {
+      const done = await run.m.chain.accept(r);
+      accepts += 1;
+      if (accepts === n) run.m.clock.now = time;
+      return done;
+    },
+  });
+}
+
 /** The PipelineError a run rejects with, checked for its code and status. */
 async function failure(run: Promise<unknown>, code: string, status = 422): Promise<PipelineError> {
   const error = await run.then(() => { throw new Error(`the run succeeded; expected ${code}`); }, (e: unknown) => e);
@@ -164,16 +177,14 @@ describe('runPipeline: the golden run', () => {
     expect((await run.m.chain.wallet()).floatLovelace).toBe(50_000_000n - 3n * 2_200_000n);
   });
 
-  it('speaks the fleet protocol: the indexer, /capability before the first Post, one send per escrow with exactly the committed body, polls 3 s apart', async () => {
+  it('speaks the fleet protocol: both suppliers found and checked before the first Post, one send per escrow with exactly the committed body, polls 3 s apart', async () => {
     const run = setup();
     await runPipeline(request(), run.deps);
     expect(calls(run.m)).toStrictEqual([
-      `GET ${INDEXER}/suppliers`,
-      `GET ${OCR_ENDPOINT}/capability`,
+      `GET ${INDEXER}/suppliers`, `GET ${OCR_ENDPOINT}/capability`,
+      `GET ${INDEXER}/suppliers`, `GET ${LLM_ENDPOINT}/capability`, `GET ${LLM_ENDPOINT}/status`,
       `POST ${OCR_ENDPOINT}/v1/ocr/extract`, `GET ${OCR_ENDPOINT}/v1/ocr/extract/extract-job-1`, `GET ${OCR_ENDPOINT}/v1/ocr/extract/extract-job-1`,
       `POST ${OCR_ENDPOINT}/v1/ocr/extract`, `GET ${OCR_ENDPOINT}/v1/ocr/extract/extract-job-2`, `GET ${OCR_ENDPOINT}/v1/ocr/extract/extract-job-2`,
-      `GET ${INDEXER}/suppliers`,
-      `GET ${LLM_ENDPOINT}/capability`, `GET ${LLM_ENDPOINT}/status`,
       `POST ${LLM_ENDPOINT}/v1/responses`, `GET ${LLM_ENDPOINT}/v1/responses/responses-job-1`, `GET ${LLM_ENDPOINT}/v1/responses/responses-job-1`,
     ]);
     expect(run.m.ocr.sends.map((s) => [s.escrowRef, JSON.parse(s.body)])).toStrictEqual([
@@ -216,7 +227,7 @@ describe('runPipeline: a request not made by parseRequest', () => {
 
   it('an extraction without a schema is refused before anything is fetched or posted', async () => {
     const run = setup();
-    await failure(runPipeline(request({ task: 'extract' }), run.deps), 'schema_invalid');
+    await failure(runPipeline(request({ task: 'extract' }), run.deps), 'schema_invalid', 400);
     expect(run.m.calls).toStrictEqual([]);
   });
 });
@@ -259,6 +270,16 @@ describe('runPipeline: task extract', () => {
     const run = setup();
     run.m.llm.answer = '{"title":"```json {} ```"}';
     expect((await runPipeline(extract, run.deps)).result).toStrictEqual({ extraction: { title: '```json {} ```' }, schema_valid: true });
+  });
+
+  it('an answer nested past the stack against a recursive schema is not valid, and nothing crashes: the job succeeds with the raw text', async () => {
+    const run = setup();
+    const depth = 100_000;
+    run.m.llm.answer = `${'['.repeat(depth)}${']'.repeat(depth)}`;
+    const recursive = { $ref: '#/definitions/node', definitions: { node: { type: 'array', items: { $ref: '#/definitions/node' } } } };
+    const result = await runPipeline(request({ task: 'extract', schema: recursive }), run.deps);
+    expect(result.result).toStrictEqual({ extraction: null, schema_valid: false, raw_text: run.m.llm.answer });
+    expect(await states(run.m, escrowNo(1), escrowNo(2), escrowNo(3))).toStrictEqual(['spent', 'spent', 'spent']);
   });
 });
 
@@ -330,6 +351,39 @@ describe('runPipeline: sending a job', () => {
     await failure(runPipeline(request(), { ...run.deps, chain }), 'ocr_refused');
     expect(run.m.ocr.sends).toHaveLength(2);
     expect(reads).toBe(2);
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['Open']);
+    expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
+  });
+
+  it('a supplier that does not see the escrow yet (404 escrow_not_found) is sent the job again every 15 s like a busy one: twice, then 202, one escrow and three sends (ruling R32)', async () => {
+    const run = setup();
+    run.m.ocr.notFound = 2;
+    const result = await runPipeline(request(), run.deps);
+    expect(result).toStrictEqual(GOLDEN);
+    expect(run.m.ocr.sends.map((s) => s.escrowRef)).toStrictEqual([escrowNo(1), escrowNo(1), escrowNo(1), escrowNo(2)]);
+    expect(run.sleeps.slice(0, 2)).toStrictEqual([15_000, 15_000]);
+  });
+
+  it('a supplier that never sees the escrow is sent the job until 90 s before deliver_by, then ocr_refused, naming the state the escrow is in (ruling R32)', async () => {
+    const run = setup();
+    run.m.ocr.notFound = 1_000;
+    const error = await failure(runPipeline(request(), run.deps), 'ocr_refused');
+    expect(error.message).toMatch(/404 escrow_not_found/);
+    expect(error.message).toMatch(/is Open and goes to the janitor/);
+    expect(run.m.ocr.sends).toHaveLength(27);
+    expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
+  });
+
+  it('a 4xx after a send whose outcome was unknown reads the escrow and says its real state: Claimed by a supplier that took the first send after all (ruling R32)', async () => {
+    const run = setup();
+    run.m.ocr.lose = ['before-claim'];
+    run.m.ocr.refuse = { status: 409, reason: 'escrow_not_claimable', claim: true };
+    const error = await failure(runPipeline(request(), run.deps), 'ocr_refused');
+    expect(error.message).toMatch(/409 escrow_not_claimable/);
+    expect(error.message).toMatch(/is Claimed and goes to the janitor/);
+    expect(run.m.ocr.sends).toHaveLength(2);
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['Claimed']);
+    expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
   });
 });
 
@@ -351,6 +405,32 @@ describe('runPipeline: polling a job', () => {
     expect(read).toStrictEqual(['Submitted']);
   });
 
+  it('the supplier failing its own Submit step (submit_timeout, submit_failed) with the escrow Submitted fails the page at once with ocr_receipt_unavailable (ruling R34)', async () => {
+    for (const fail of ['submit_timeout', 'submit_failed']) {
+      const run = setup();
+      run.m.ocr.plans = [[{ fail, submitted: true }]];
+      const error = await failure(runPipeline(request(), run.deps), 'ocr_receipt_unavailable');
+      expect(error.message).toMatch(new RegExp(fail));
+      expect(run.m.ocr.polls).toBe(1);
+      expect(await states(run.m, escrowNo(1))).toStrictEqual(['Submitted']);
+      expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
+    }
+  });
+
+  it('submit_failed with the escrow still Claimed is the supplier failing the job: ocr_failed (ruling R23)', async () => {
+    const run = setup();
+    run.m.ocr.plans = [[{ fail: 'submit_failed', submitted: false }]];
+    await failure(runPipeline(request(), run.deps), 'ocr_failed');
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['Claimed']);
+  });
+
+  it('any other failure of the supplier with the escrow Submitted is not terminal: polling goes on (rulings R23, R34)', async () => {
+    const run = setup();
+    run.m.ocr.plans = [[{ fail: 'upstream_failure', submitted: true }, 'done']];
+    expect(await runPipeline(request(), run.deps)).toStrictEqual(GOLDEN);
+    expect(run.m.ocr.polls).toBe(2 + 2);
+  });
+
   it("the supplier's own failure, with the escrow Claimed, fails the page with ocr_failed and its reason; the escrow goes to the janitor", async () => {
     const run = setup();
     run.m.ocr.plans = [['running', 'failed']];
@@ -363,7 +443,10 @@ describe('runPipeline: polling a job', () => {
   it('a job the supplier no longer knows (404), with the escrow Claimed, fails the page with ocr_failed', async () => {
     const run = setup();
     run.m.ocr.plans = [['gone']];
-    await failure(runPipeline(request(), run.deps), 'ocr_failed');
+    const error = await failure(runPipeline(request(), run.deps), 'ocr_failed');
+    expect(error.message).toMatch(/no longer knows the job/);
+    expect(await states(run.m, escrowNo(1), escrowNo(2))).toStrictEqual(['Claimed', 'unknown']);
+    expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
   });
 
   it('a failure while the state of the escrow cannot be read is not terminal either: polling goes on until deliver_by', async () => {
@@ -452,6 +535,36 @@ describe('runPipeline: the sub-receipt', () => {
     expect(error.message).toMatch(/refused and cannot land/);
     expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
   });
+
+  it('an Accept that was submitted but not seen confirmed does not fail the run: the result stands, its fee is not booked, and the escrow is left to the janitor marked accept_pending (ruling R33)', async () => {
+    for (const landed of [false, true]) {
+      const run = setup();
+      let accepts = 0;
+      const unseen = (ref: string) => new TxNotConfirmedError(`The Accept ${'ac'.repeat(32)} of escrow ${ref} was submitted, but Koios did not report it confirmed within 180000 ms.`, {
+        txHash: 'ac'.repeat(32), escrowRef: ref, deliverBy: null, validTo: T0 + 606_000, mayLand: true,
+      });
+      const chain = chainWith(run.m, {
+        accept: async (r) => {
+          accepts += 1;
+          if (accepts !== 1) return run.m.chain.accept(r);
+          if (landed) await run.m.chain.accept(r);
+          throw unseen(r);
+        },
+      });
+      const result = await runPipeline(request(), { ...run.deps, chain });
+      expect(result).toStrictEqual({ ...GOLDEN, accounting: { ...GOLDEN.accounting, fees_total_lovelace: '2500000' } });
+      expect(run.stranded.list()).toStrictEqual([{ ...entry(escrowNo(1), T0), accept_pending: { tx_hash: 'ac'.repeat(32), valid_to: T0 + 606_000, by: 'run' } }]);
+      expect(await states(run.m, escrowNo(1), escrowNo(2), escrowNo(3))).toStrictEqual([landed ? 'spent' : 'Submitted', 'spent', 'spent']);
+    }
+  });
+
+  it('an Accept refused outright still fails the page with ocr_accept_failed, the escrow unmarked for the janitor', async () => {
+    const run = setup();
+    const refused = new TxNotConfirmedError('The Accept was refused and cannot land (400).', { txHash: 'ac'.repeat(32), escrowRef: escrowNo(1), deliverBy: null, validTo: T0 + 606_000, mayLand: false });
+    const chain = chainWith(run.m, { accept: async () => { throw refused; } });
+    await failure(runPipeline(request(), { ...run.deps, chain }), 'ocr_accept_failed');
+    expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
+  });
 });
 
 // --- The chat answer --------------------------------------------------------------------------------------------------------------------
@@ -488,59 +601,78 @@ describe('runPipeline: the chat answer', () => {
     expect(await states(run.m, escrowNo(3))).toStrictEqual(['Submitted']);
   });
 
-  it('no allowlisted chat supplier is free: llm_supplier_unavailable (503), after the pages were read and accepted', async () => {
+  it('no allowlisted chat supplier is free: llm_supplier_unavailable (503) before anything is posted, so no page is paid for (ruling R35)', async () => {
     const run = setup();
     run.m.rows[1] = indexerRow(LLM_ADVERT_REF, { ...LLM_ADVERT, model: 'some/other-model' });
     const error = await failure(runPipeline(request(), run.deps), 'llm_supplier_unavailable', 503);
     expect(error.message).toMatch(/allowlist/);
-    expect(await states(run.m, escrowNo(1), escrowNo(2), escrowNo(3))).toStrictEqual(['spent', 'spent', 'unknown']);
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
+    expect(run.m.ocr.sends).toHaveLength(0);
     expect(run.m.llm.sends).toHaveLength(0);
+    expect((await run.m.chain.wallet()).floatLovelace).toBe(50_000_000n);
+    expect(run.stranded.list()).toStrictEqual([]);
+  });
+
+  it('a chat supplier chosen more than 10 minutes before the pages were done is chosen again before its Post; one chosen exactly 10 minutes before is not (ruling R35)', async () => {
+    const llmCalls = (m: Marketplace) => calls(m).filter((c) => c.startsWith(`GET ${LLM_ENDPOINT}/`));
+    const stale = setup();
+    expect(await runPipeline(request(), { ...stale.deps, chain: jumpAt(stale, 2, T0 + 600_001) })).toStrictEqual(GOLDEN);
+    expect(llmCalls(stale.m)).toStrictEqual([`GET ${LLM_ENDPOINT}/capability`, `GET ${LLM_ENDPOINT}/status`, `GET ${LLM_ENDPOINT}/capability`, `GET ${LLM_ENDPOINT}/status`, `GET ${LLM_ENDPOINT}/v1/responses/responses-job-1`, `GET ${LLM_ENDPOINT}/v1/responses/responses-job-1`]);
+    const fresh = setup();
+    expect(await runPipeline(request(), { ...fresh.deps, chain: jumpAt(fresh, 2, T0 + 600_000) })).toStrictEqual(GOLDEN);
+    expect(llmCalls(fresh.m)).toStrictEqual([`GET ${LLM_ENDPOINT}/capability`, `GET ${LLM_ENDPOINT}/status`, `GET ${LLM_ENDPOINT}/v1/responses/responses-job-1`, `GET ${LLM_ENDPOINT}/v1/responses/responses-job-1`]);
+  });
+
+  it('a chat supplier that is gone when it is chosen again fails the job with llm_supplier_unavailable, the pages paid', async () => {
+    const run = setup();
+    let accepts = 0;
+    const chain = chainWith(run.m, {
+      accept: async (r) => {
+        const done = await run.m.chain.accept(r);
+        accepts += 1;
+        if (accepts === 2) { run.m.clock.now = T0 + 700_000; run.m.rows.splice(1, 1); }
+        return done;
+      },
+    });
+    await failure(runPipeline(request(), { ...run.deps, chain }), 'llm_supplier_unavailable', 503);
+    expect(await states(run.m, escrowNo(1), escrowNo(2), escrowNo(3))).toStrictEqual(['spent', 'spent', 'unknown']);
   });
 });
 
 // --- The deadline -------------------------------------------------------------------------------------------------------------------------
 describe('runPipeline: the deadline', () => {
-  /** The chain of `run`, whose clock jumps to `deadline - left` once the `n`-th Accept is confirmed. */
-  const jumpAfterAccept = (run: Run, n: number, left: number): Chain => {
-    let accepts = 0;
-    return chainWith(run.m, {
-      accept: async (r) => {
-        const done = await run.m.chain.accept(r);
-        accepts += 1;
-        if (accepts === n) run.m.clock.now = run.deps.deadlineMs - left;
-        return done;
-      },
-    });
-  };
+  /** The chain of `run`, whose clock jumps to `left` ms before the deadline once the `n`-th Accept is confirmed. */
+  const jumpAfterAccept = (run: Run, n: number, left: number): Chain => jumpAt(run, n, run.deps.deadlineMs - left);
 
-  it('no page starts with less than 480 s left: deadline, page 1 accepted, nothing posted for page 2', async () => {
+  it('no page starts with less than 660 s left (ruling R40): deadline, page 1 accepted, nothing posted for page 2', async () => {
     const run = setup();
-    const error = await failure(runPipeline(request(), { ...run.deps, chain: jumpAfterAccept(run, 1, 479_999) }), 'deadline');
+    const error = await failure(runPipeline(request(), { ...run.deps, chain: jumpAfterAccept(run, 1, 659_999) }), 'deadline');
     expect(error.message).toMatch(/page 2/);
     expect(await states(run.m, escrowNo(1), escrowNo(2))).toStrictEqual(['spent', 'unknown']);
     expect(run.m.ocr.sends).toHaveLength(1);
     expect(run.stranded.list()).toStrictEqual([]);
   });
 
-  it('a page starts with exactly 480 s left', async () => {
+  it('a page starts with exactly 660 s left', async () => {
     const run = setup();
-    expect(await runPipeline(request(), { ...run.deps, chain: jumpAfterAccept(run, 1, 480_000) })).toStrictEqual(GOLDEN);
+    expect(await runPipeline(request(), { ...run.deps, chain: jumpAfterAccept(run, 1, 660_000) })).toStrictEqual(GOLDEN);
   });
 
-  it('no chat job starts with less than 300 s left: deadline, both pages accepted, nothing posted for the summary', async () => {
+  it('no chat job starts with less than 420 s left (ruling R40): deadline, both pages accepted, nothing posted for the summary and no second selection', async () => {
     const run = setup();
-    await failure(runPipeline(request(), { ...run.deps, chain: jumpAfterAccept(run, 2, 299_999) }), 'deadline');
+    await failure(runPipeline(request(), { ...run.deps, chain: jumpAfterAccept(run, 2, 419_999) }), 'deadline');
     expect(await states(run.m, escrowNo(1), escrowNo(2), escrowNo(3))).toStrictEqual(['spent', 'spent', 'unknown']);
     expect(run.m.llm.sends).toHaveLength(0);
+    expect(calls(run.m).filter((c) => c === `GET ${INDEXER}/suppliers`)).toHaveLength(2);
   });
 
   it('nothing waits past the deadline: a chat job still running when it comes fails with deadline, its escrow with the janitor', async () => {
     const run = setup();
     run.m.llm.steps = ['running'];
-    const posted = run.deps.deadlineMs - 300_000;
-    await failure(runPipeline(request(), { ...run.deps, chain: jumpAfterAccept(run, 2, 300_000) }), 'deadline');
+    const posted = run.deps.deadlineMs - 420_000;
+    await failure(runPipeline(request(), { ...run.deps, chain: jumpAfterAccept(run, 2, 420_000) }), 'deadline');
     expect(run.m.clock.now).toBe(run.deps.deadlineMs);
-    expect(run.m.llm.polls).toBe(100);
+    expect(run.m.llm.polls).toBe(140);
     expect(run.stranded.list()).toStrictEqual([entry(escrowNo(3), posted, 'llm')]);
   });
 });
@@ -571,10 +703,15 @@ describe('runPipeline: refusals before anything is posted', () => {
     expect(error.message).toMatch(/could not be read/);
   });
 
-  it('an extraction schema that does not compile: schema_invalid, before anything is fetched or posted (ruling R27)', async () => {
-    for (const schema of [{ type: 'objekt' }, { type: 'object', requird: ['title'] }, { $ref: 'https://203.0.113.9/schema.json' }]) {
+  it('an extraction schema that does not compile, is asynchronous or uses pattern, patternProperties or format: schema_invalid (400), before anything is fetched or posted (rulings R27, R36)', async () => {
+    const schemas = [
+      { type: 'objekt' }, { type: 'object', requird: ['title'] }, { $ref: 'https://203.0.113.9/schema.json' }, { $async: true, type: 'object' },
+      { type: 'object', properties: { title: { type: 'string', pattern: '^(a+)+$' } } }, { type: 'object', patternProperties: { '^t': { type: 'string' } } },
+      { type: 'object', properties: { date: { type: 'string', format: 'date' } } },
+    ];
+    for (const schema of schemas) {
       const run = setup();
-      await failure(runPipeline(request({ task: 'extract', schema }), run.deps), 'schema_invalid');
+      await failure(runPipeline(request({ task: 'extract', schema }), run.deps), 'schema_invalid', 400);
       expect(run.m.calls).toStrictEqual([]);
     }
   });
@@ -668,6 +805,8 @@ describe('runPipeline: a Post that fails', () => {
     let posts = 0;
     const chain = chainWith(run.m, { postEscrow: async (a) => { posts += 1; if (posts === 3) throw new Error('no node'); return run.m.chain.postEscrow(a); } });
     await failure(runPipeline(request(), { ...run.deps, chain }), 'llm_post_failed');
+    expect(await states(run.m, escrowNo(1), escrowNo(2), escrowNo(3))).toStrictEqual(['spent', 'spent', 'unknown']);
+    expect(run.stranded.list()).toStrictEqual([]);
   });
 });
 
@@ -677,5 +816,42 @@ describe('PipelineError', () => {
     expect(error).toBeInstanceOf(Error);
     expect([error.name, error.code, error.message, error.status]).toStrictEqual(['PipelineError', 'ocr_failed', 'The page failed.', 422]);
     expect(new PipelineError('insufficient_float', 'Not enough.', 503).status).toBe(503);
+  });
+});
+
+describe('runPipeline: the stranded store cannot be written', () => {
+  it('after a Post: store_write_failed (500), naming the escrow that holds funds the janitor does not know of; nothing is sent', async () => {
+    const run = setup();
+    run.stranded.add = () => { throw new Error('ENOSPC: no space left on device'); };
+    const error = await failure(runPipeline(request(), run.deps), 'store_write_failed', 500);
+    expect(error.message).toMatch(new RegExp(`${escrowNo(1)}.*ENOSPC`));
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['Open']);
+    expect(run.m.ocr.sends).toHaveLength(0);
+  });
+
+  it('after an Accept: store_write_failed (500), the escrow accepted', async () => {
+    const run = setup();
+    run.stranded.remove = () => { throw new Error('EIO: i/o error'); };
+    const error = await failure(runPipeline(request(), run.deps), 'store_write_failed', 500);
+    expect(error.message).toMatch(new RegExp(`${escrowNo(1)}.*EIO`));
+    expect(await states(run.m, escrowNo(1), escrowNo(2))).toStrictEqual(['spent', 'unknown']);
+  });
+
+  it('after an Accept that may land: store_write_failed (500), since the store cannot say the Accept is pending', async () => {
+    const run = setup();
+    const unseen = new TxNotConfirmedError('The Accept was submitted, but Koios did not report it confirmed.', { txHash: 'ac'.repeat(32), escrowRef: escrowNo(1), deliverBy: null, validTo: T0 + 606_000, mayLand: true });
+    const chain = chainWith(run.m, { accept: async () => { throw unseen; } });
+    run.stranded.update = () => { throw new Error('ENOSPC: no space left on device'); };
+    const error = await failure(runPipeline(request(), { ...run.deps, chain }), 'store_write_failed', 500);
+    expect(error.message).toMatch(new RegExp(`${escrowNo(1)}.*ENOSPC.*${'ac'.repeat(32)}`));
+  });
+
+  it('after a Post that may land: store_write_failed (500), not ocr_post_failed', async () => {
+    const run = setup();
+    const lost = 'ee'.repeat(32);
+    run.m.chain.failNextPost(new TxNotConfirmedError('The Post was submitted, but Koios did not report it confirmed.', { txHash: lost, escrowRef: `${lost}#0`, deliverBy: T0 + 480_000, validTo: T0 + 180_000, mayLand: true }));
+    run.stranded.add = () => { throw new Error('EROFS: read-only file system'); };
+    const error = await failure(runPipeline(request(), run.deps), 'store_write_failed', 500);
+    expect(error.message).toMatch(new RegExp(`${lost}#0.*EROFS`));
   });
 });

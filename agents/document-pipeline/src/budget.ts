@@ -1,18 +1,25 @@
 // agents/document-pipeline/src/budget.ts
 // The time and money rules of a run, in one place. The deadline is the orchestrator's own: the server sets it 1620000 ms after the request arrives,
-// 60 s inside the runtime's SERVICE_TIMEOUT_MS, so that a run answers, with a result or a refusal, before the runtime gives up on it. Every wait of a
-// run (a busy supplier, a poll, the hash on chain) ends at the deadline at the latest; no page starts without the 480 s a page can take, and no chat
-// job without 300 s. What a run may lock is checked before the first Post: the collateral output, and a float for every sub-job it could post.
+// 60 s inside the runtime's SERVICE_TIMEOUT_MS, so that a run answers, with a result or a refusal, before the runtime gives up on it.
+//
+// What one hire waits for, part by part (ruling R40): its Post confirmed (up to 180 s, the chain's own wait), the supplier's Claim (up to 60 s, before
+// it answers the send), the work (up to 240 s for an OCR page, 180 s for the chat job), the supplier's Submit (about 30 s), the hash of the receipt
+// showing on chain (up to 120 s) and the Accept confirmed (up to 180 s). No page is started with less than 660 s left before the deadline and no chat
+// job with less than 420 s. For a page the Claim, the work, the Submit and the hash wait take up to 450 s, which leaves its Post and its Accept 210 s
+// between them; for the chat job those four take up to 390 s and leave its two transactions 30 s. The minimums are not the sum of every worst case
+// (810 s for a page, 750 s for the chat job): every wait of a run is cut at the deadline as well, so a slower run still answers in time, and the
+// escrows it leaves behind go to the janitor.
+//
+// What a run may lock is checked before the first Post: the collateral output, and a float for every sub-job it could post.
 import { PipelineError } from './result.ts';
 
-/**
- * No page starts with less than this left before the deadline: a page can take until the deliver_by of its escrow, 480 s after its Post (the OCR
- * advert's 300 s window and the 180 s buffer every Post adds).
- */
-export const PAGE_MIN_LEFT_MS = 480_000;
-/** No chat job starts with less than this left before the deadline. */
-export const LLM_MIN_LEFT_MS = 300_000;
-/** A busy supplier is sent the same job again this often, on the same escrow... */
+/** No page is started with less than this left before the deadline (ruling R40; see the head of this file). */
+export const PAGE_MIN_LEFT_MS = 660_000;
+/** No chat job is started with less than this left before the deadline (ruling R40). */
+export const LLM_MIN_LEFT_MS = 420_000;
+/** A chat supplier chosen longer ago than this when the pages are done is chosen again before its Post (ruling R35). */
+export const LLM_SELECTION_MAX_AGE_MS = 600_000;
+/** A busy supplier, or one that does not see the escrow yet, is sent the same job again this often, on the same escrow... */
 export const BUSY_RETRY_MS = 15_000;
 /** ...until this long before the escrow's deliver_by: a send waits up to 75 s for the supplier's Claim, so the last one ends 15 s before deliver_by. */
 export const SEND_CUTOFF_MS = 90_000;
@@ -31,6 +38,9 @@ export const floatNeeded = (maxPages: number): bigint => BigInt(maxPages + 1) * 
 /** What the rules read: the run's clock, its sleep, and its deadline (POSIX milliseconds). */
 export interface Clocked { clock: () => number; sleep: (ms: number) => Promise<void>; deadlineMs: number }
 
+/** The refusal of a run whose deadline came while it was `doing` something. */
+export const deadlineError = (doing: string): PipelineError => new PipelineError('deadline', `The deadline of the job came while ${doing}.`);
+
 /** Throws `deadline` unless at least `minLeftMs` is left before the deadline, for `what` (page 2, the summary), which is then not started. */
 export function assertTimeLeft(t: Clocked, minLeftMs: number, what: string): void {
   const left = t.deadlineMs - t.clock();
@@ -40,13 +50,20 @@ export function assertTimeLeft(t: Clocked, minLeftMs: number, what: string): voi
 }
 
 /**
- * Throws when `at` is past `limit` or past the deadline, the error of whichever ends first (`deadline` when they are the same moment); returns when it
- * is neither. `onLimit` makes the error of the limit, `doing` says what the run was doing for the deadline's message. A moment equal to a limit is in time.
+ * Where the moment `at` stands: in time for `limit` and the deadline, or past whichever of the two ends first (the deadline when they are the same
+ * moment). A moment equal to a limit is in time.
  */
-export function checkWithin(t: Clocked, at: number, limit: number, onLimit: () => PipelineError, doing: string): void {
+export function fit(t: Clocked, at: number, limit: number): 'in time' | 'past the limit' | 'past the deadline' {
   const end = Math.min(limit, t.deadlineMs);
-  if (at <= end) return;
-  throw end === t.deadlineMs ? new PipelineError('deadline', `The deadline of the job came while ${doing}.`) : onLimit();
+  if (at <= end) return 'in time';
+  return end === t.deadlineMs ? 'past the deadline' : 'past the limit';
+}
+
+/** Throws when `at` is past `limit` (the error `onLimit` makes) or past the deadline (`deadline`, saying what the run was `doing`); returns otherwise. */
+export function checkWithin(t: Clocked, at: number, limit: number, onLimit: () => PipelineError, doing: string): void {
+  const where = fit(t, at, limit);
+  if (where === 'past the deadline') throw deadlineError(doing);
+  if (where === 'past the limit') throw onLimit();
 }
 
 /** Sleeps `ms` when the attempt after the sleep still starts within `limit` and the deadline (checkWithin); otherwise throws, without sleeping. */
