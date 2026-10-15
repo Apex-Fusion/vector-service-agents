@@ -210,8 +210,8 @@ test('env example: the chain values and the advert terms are the design and the 
 });
 
 test('env example: the status word is the spec status, and the manifest it produces is the default manifest', () => {
-  assert.ok(section(SPEC, 'Status').includes(`${example.AGENT_STATUS_CHIP.toUpperCase()} (built, not yet advertised). Since ${example.AGENT_STATUS_SINCE}.`));
-  assert.equal(example.AGENT_STATUS_CHIP, 'proposed', 'nothing is advertised, so nothing may claim more');
+  assert.ok(section(SPEC, 'Status').includes(`${example.AGENT_STATUS_CHIP.toUpperCase()} (advertised on 2026-10-14, no job settled). Since ${example.AGENT_STATUS_SINCE}.`));
+  assert.equal(example.AGENT_STATUS_CHIP, 'proposed', 'the advert is posted and no job has settled, so nothing may claim more');
   // The service takes an empty string as given, so an empty AGENT_STATUS_SINCE would put since "" into the manifest.
   assert.notEqual(example.AGENT_STATUS_SINCE, '');
   // Placeholders are unset, and the one setting with no default is supplied for both.
@@ -290,6 +290,16 @@ test('README and RUNBOOK: PROPOSED, no LIVE or DEPLOYED claim, no dash, no unit 
   for (const rel of ['deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md']) assert.ok(read(rel).includes('Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED.'), rel);
   assert.match(read('deploy/apex-web/docker-compose.agent-history.yml'), /PROPOSED/);
   assert.match(snippet, /PROPOSED/);
+});
+
+test('RUNBOOK: the status line says that steps 1 to 14 were run on the box on 2026-10-14 and the rest was not, and the step texts stay instructions', () => {
+  const status = runbook.split('\n')[2];
+  assert.ok(status.startsWith('Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED.'));
+  assert.ok(status.endsWith('Steps 1 to 14 were run on the box on 2026-10-14. The rest has not been run.'));
+  assert.equal(runbook.match(/Steps 1 to 9 were run/), null);
+  // Step 14 ends on the advert being Active with PROPOSED still standing, and steps 15 to 17 are ahead. Step 12 still tells the operator what to record: it is an instruction, so it still quotes the words it replaces.
+  assert.ok(section(runbook, '14. Check the advert on the indexer').includes('From here the agent is advertised and PROPOSED still stands: no job has settled.'));
+  assert.ok(section(runbook, '12. Post the advert').includes('Record the advert in the repository.'));
 });
 
 test('no individual name, and no personal address, on any public surface: the manifest template, the service source, the specs, the guides, both READMEs and the planning documents', () => {
