@@ -1,0 +1,153 @@
+# Vendored from Apex-Fusion/mcp-server
+
+The files under `src/vendored/` and the four files under `test/fixtures/` are copies of files of Apex-Fusion/mcp-server at commit `651ae93` (`651ae93115661c198539f7d087fb4494b2b135ac`, the merge of PR #24 into main on 2026-10-14).
+
+Each copy was taken from the blob at that commit, `git -C <mcp-server> cat-file blob 651ae93:<path>`, not from a checkout's working tree. The checkout it was copied from runs with `core.autocrlf=true`, so its working files are CRLF, while the blobs are LF and so is every checkout of this repository (`.gitattributes` says `eol=lf`). A `cp` of the working file would have recorded a sha256 that no checkout of this repository reproduces. Each working file was checked to equal its blob once CR is stripped.
+
+## Why vendored
+
+The mcp-server packages are not published to a registry. The Document Pipeline agent posts escrows, signs and submits transactions, reads escrow lineage and verifies receipts, and it does so with the same code the hosted keyless MCP server uses: the same datum codecs, the same builders, the same lineage resolver, the same receipt verifier and the same signer.
+
+The datum codecs are not copied a second time. `@vsa/vector-read` carries `marketplace-datum.ts` (at `94b8f41`), and the copies here import it from there. Drift is caught twice: by `packages/vector-read/test/datum.test.ts` (the golden datum tests, the same as the source's) and by the sha256 column below, which `test/vendored.test.ts` checks against every copy.
+
+## Files
+
+| destination | source | commit | sha256 |
+|---|---|---|---|
+| `src/vendored/mcp/marketplace-constants.ts` | `mcp-server:packages/builder/src/vector/marketplace-constants.ts` | `651ae93` | `94f025040f07d5eac19d93601922effd679aa4de515c25211db915b429a9d1ba` |
+| `src/vendored/mcp/marketplace-shared.ts` | `mcp-server:packages/builder/src/vector/marketplace-shared.ts` | `651ae93` | `5d5b6c7bc297467d7f6cfb8cae20d3d7d0342a9655809900a730f488b977cbd6` |
+| `src/vendored/mcp/marketplace-indexer.ts` | `mcp-server:packages/builder/src/vector/marketplace-indexer.ts` | `651ae93` | `636c451d492b07f05aa6908ce89240dfb0a1988cf9f4d976a2155f8d58cf813e` |
+| `src/vendored/mcp/marketplace-lineage.ts` | `mcp-server:packages/builder/src/vector/marketplace-lineage.ts` | `651ae93` | `bbbcd0b62329741b8fff815db05ec363e2e1a7c2a3af86ef0cc2d633f3a8d3c3` |
+| `src/vendored/mcp/marketplace-build.ts` | `mcp-server:packages/builder/src/vector/marketplace-build.ts` | `651ae93` | `6c031ce94ab1532f954ef38188a45a970daae51ecaf2d0088dc1ec01032087a6` |
+| `src/vendored/mcp/marketplace-verify.ts` | `mcp-server:packages/builder/src/vector/marketplace-verify.ts` | `651ae93` | `3e6ed2dc48572fbc2a7b58fb9a58e43e9d1e7e42e0b96dae06b91ac023113cdb` |
+| `src/vendored/mcp/marketplace-transport.ts` | `mcp-server:packages/builder/src/vector/marketplace-transport.ts` | `651ae93` | `f0e0679bfaf546f3a4328e06bd4260f2572baddbc558dde10bf5bbe16f3e0172` |
+| `src/vendored/mcp/marketplace-supplier.ts` | `mcp-server:packages/builder/src/vector/marketplace-supplier.ts` | `651ae93` | `ba7fce947cda895e1beab9e85a9ebc5a4149a3377cb2dc1108f4b91abb4a727c` |
+| `src/vendored/mcp/gov-build.ts` | `mcp-server:packages/builder/src/vector/gov-build.ts` excerpt, lines 1-13, 85-135, 151-175 | `651ae93` | `a76357abf1138210e7f3b871c75ba1ac8b67c138debaf6eb4dd195dc1a599f8d` |
+| `src/vendored/mcp/build.ts` | `mcp-server:packages/builder/src/vector/build.ts` excerpt, lines 1-48 | `651ae93` | `73cdbd0d5a6c35c54b89452d0d4b1b2e062d898acbfc0443e993f3b2fd281a5e` |
+| `src/vendored/mcp/rate-limiter.ts` | `mcp-server:packages/builder/src/vector/rate-limiter.ts` | `651ae93` | `4290366f2f28b2ea3229a1c1bd4c69b068453a1d7b8d7f168a801964e61e3e7b` |
+| `src/vendored/mcp/env.ts` | `mcp-server:packages/builder/src/env.ts` | `651ae93` | `061feb39a1466bf6b984da8f2e17ca53acfc9deef9b404f6815663c94b9db67c` |
+| `src/vendored/mcp-shared/provider.ts` | `mcp-server:packages/shared/src/provider.ts` | `651ae93` | `c7dc7f39af96498d984b6519eaccd55b0c8fc8d07bfdc37071a790df876f3689` |
+| `src/vendored/mcp-shared/config.ts` | `mcp-server:packages/shared/src/config.ts` | `651ae93` | `4e1961be29545ff23978f51189c0ed47ca023e63af4ba2652e6ee89d00a4e089` |
+| `src/vendored/mcp-shared/types.ts` | `mcp-server:packages/shared/src/types.ts` | `651ae93` | `9f46880afa0a792fee827c9e375bb93988fb5a6a5b1c4301e428a48fa31b551c` |
+| `src/vendored/mcp-shared/tx.ts` | `mcp-server:packages/shared/src/tx.ts` excerpt, lines 1-2, 46-54 | `651ae93` | `99c38573e690fb26ea9bf13f7f630ce77277b773c8712a4ba7b6731e286acc72` |
+| `src/vendored/signer/sign.ts` | `mcp-server:packages/signer/src/sign.ts` | `651ae93` | `aa97a7254fded5f6b6ac84e298e2aa5e0b3c7dd052731a295ae831a4f6f6f572` |
+| `test/fixtures/escrow-koios.fixture.ts` | `mcp-server:packages/builder/test/fixtures/escrow-koios.fixture.ts` | `651ae93` | `a23549963e4c0c3832c7588bbacf49557fd79fb7833cd159b5484039b673cdc0` |
+| `test/fixtures/marketplace.fixture.ts` | `mcp-server:packages/builder/test/fixtures/marketplace.fixture.ts` | `651ae93` | `883054c0ecf5b4e24401423236598d14a9ced2ae0a3ec0f6742db589972dc92d` |
+| `test/fixtures/fixture-provider.ts` | `mcp-server:packages/builder/test/fixtures/fixture-provider.ts` | `651ae93` | `b47af52aa798cbab072c140e21cf1bd341728503d835b2285af6996f8a30fd8b` |
+| `test/fixtures/protocol-params.fixture.json` | `mcp-server:packages/builder/test/fixtures/protocol-params.fixture.json` | `651ae93` | `13d850d95193029ed0c21d6cb1394d690fb882a8491250e751c3dc4dd27dba02` |
+
+Byte-identical to the blob (no edit at all): `marketplace-constants.ts`, `marketplace-shared.ts`, `env.ts`, `provider.ts`, `types.ts`, `sign.ts`, `marketplace.fixture.ts`, `fixture-provider.ts`, `protocol-params.fixture.json`. The excerpts `gov-build.ts` and `tx.ts` are byte-identical to their line ranges. Every other copy differs from its blob only on the lines listed below.
+
+The header comments inside the copies still name their source paths, and a comment may speak of code the copy does not carry (the excerpts below). They are kept so that a diff against the source shows only the rewritten lines.
+
+## Rewritten lines
+
+Only import lines change, one line for one line, so a copy keeps the line numbers of its source (and a stack trace points at the same line in both). The kinds of rewrite:
+
+- `@apexfusion/vector-mcp-shared/config`, `/types`, `/tx` become `../mcp-shared/config.js`, `../mcp-shared/types.js`, `../mcp-shared/tx.js`.
+- `./marketplace-datum.js` (and the fixture's `../../src/vector/marketplace-datum.ts`) becomes `@vsa/vector-read`. Every name imported that way is exported by `packages/vector-read/src/datum.ts`; the one that is not, `sha256BytesHex`, comes from `src/hashes.ts`.
+- `./safe-fetch.js` becomes `@vsa/vector-read`. The mcp-server's `safe-fetch.ts` at `651ae93` is vector-read's `src/safe-fetch.ts` (the mcp-server vendored it from this repository) plus one provenance comment line.
+
+Per file (the line numbers are the same in the source and the copy):
+
+`src/vendored/mcp/marketplace-indexer.ts`
+- line 4: `import { VECTOR_KOIOS_URL } from '@apexfusion/vector-mcp-shared/config';` becomes `import { VECTOR_KOIOS_URL } from '../mcp-shared/config.js';`
+- line 6: `import { decodeAdvertDatum, formatOutRef, parseOutRef } from './marketplace-datum.js';` becomes `import { decodeAdvertDatum, formatOutRef, parseOutRef } from '@vsa/vector-read';`
+- line 7: `import type { AdvertDatum } from './marketplace-datum.js';` becomes `import type { AdvertDatum } from '@vsa/vector-read';`
+
+`src/vendored/mcp/marketplace-lineage.ts`
+- line 7: `import { decodeEscrowDatum, encodeEscrowDatum, parseOutRef, formatOutRef } from './marketplace-datum.js';` becomes `import { decodeEscrowDatum, encodeEscrowDatum, parseOutRef, formatOutRef } from '@vsa/vector-read';`
+- line 8: `import type { EscrowDatum, EscrowState } from './marketplace-datum.js';` becomes `import type { EscrowDatum, EscrowState } from '@vsa/vector-read';`
+
+`src/vendored/mcp/marketplace-build.ts`
+- line 7: `import { VECTOR_KOIOS_URL } from '@apexfusion/vector-mcp-shared/config';` becomes `import { VECTOR_KOIOS_URL } from '../mcp-shared/config.js';`
+- line 8: `import type { VectorUnsignedBuildResult } from '@apexfusion/vector-mcp-shared/types';` becomes `import type { VectorUnsignedBuildResult } from '../mcp-shared/types.js';`
+- line 19 (the end of the import that starts on line 16): `} from './marketplace-datum.js';` becomes `} from '@vsa/vector-read';`
+- line 20: `import type { AdvertDatum, EscrowDatum } from './marketplace-datum.js';` becomes `import type { AdvertDatum, EscrowDatum } from '@vsa/vector-read';`
+
+`src/vendored/mcp/marketplace-verify.ts`
+- line 8: `import { safeFetch } from './safe-fetch.js';` becomes `import { safeFetch } from '@vsa/vector-read';`
+- line 10: `import { canonicalize, formatOutRef, sha256Utf8Hex } from './marketplace-datum.js';` becomes `import { canonicalize, formatOutRef, sha256Utf8Hex } from '@vsa/vector-read';`
+- line 11: `import type { EscrowDatum } from './marketplace-datum.js';` becomes `import type { EscrowDatum } from '@vsa/vector-read';`
+
+`src/vendored/mcp/marketplace-transport.ts`
+- line 48: `import { safeFetch } from './safe-fetch.js';` becomes `import { safeFetch } from '@vsa/vector-read';`
+- line 50: `import { promptHashForPayload, sha256BytesHex } from './marketplace-datum.js';` becomes `import { promptHashForPayload } from '@vsa/vector-read'; import { sha256BytesHex } from '../../hashes.js';` (two statements on the one line, so the line numbers stay those of the source)
+- line 51: `import type { EscrowDatum } from './marketplace-datum.js';` becomes `import type { EscrowDatum } from '@vsa/vector-read';`
+
+`src/vendored/mcp/marketplace-supplier.ts`
+- line 18: `import { formatOutRef, parseOutRef, wirePayloadFor } from './marketplace-datum.js';` becomes `import { formatOutRef, parseOutRef, wirePayloadFor } from '@vsa/vector-read';`
+- line 19: `import type { AdvertDatum, EscrowDatum } from './marketplace-datum.js';` becomes `import type { AdvertDatum, EscrowDatum } from '@vsa/vector-read';`
+
+`src/vendored/mcp/build.ts` (an excerpt, see below)
+- line 13: `import { lovelaceToAda, apexToLovelace } from '@apexfusion/vector-mcp-shared/tx';` becomes `import { lovelaceToAda } from '../mcp-shared/tx.js';` (the one rewrite that also drops a name: `apexToLovelace` is used only by the builders after line 48, which the excerpt leaves out, and the `tx.ts` excerpt does not carry it)
+- line 16 (the end of the import that starts on line 14): `} from '@apexfusion/vector-mcp-shared/types';` becomes `} from '../mcp-shared/types.js';`
+
+`src/vendored/mcp/rate-limiter.ts`
+- line 3: `import { intEnv } from '../env.js';` becomes `import { intEnv } from './env.js';` (`env.ts` sits next to it here; in the source it is one folder up, `packages/builder/src/env.ts`)
+
+`test/fixtures/escrow-koios.fixture.ts`
+- line 16: `import { ESCROW_ADDRESS, ESCROW_SCRIPT_HASH } from '../../src/vector/marketplace-constants.ts';` becomes `import { ESCROW_ADDRESS, ESCROW_SCRIPT_HASH } from '../../src/vendored/mcp/marketplace-constants.ts';`
+- line 17: `import { encodeEscrowDatum } from '../../src/vector/marketplace-datum.ts';` becomes `import { encodeEscrowDatum } from '@vsa/vector-read';`
+- line 18: `import type { EscrowDatum } from '../../src/vector/marketplace-datum.ts';` becomes `import type { EscrowDatum } from '@vsa/vector-read';`
+
+`src/vendored/mcp-shared/config.ts`: not an import rewrite, the listed deviation below.
+
+## Deviation: config.ts defaults to Vector mainnet
+
+The source defaults to Vector testnet. In this copy the three endpoint defaults are mainnet, and each is still overridden by its environment variable. The mainnet values are those of the mainnet table in the mcp-server README at the same commit.
+
+- line 2: `VECTOR_OGMIOS_URL` default `https://ogmios.vector.testnet.apexfusion.org` becomes `https://ogmios.vector.mainnet.apexfusion.org`
+- line 3: `VECTOR_SUBMIT_URL` default `https://submit.vector.testnet.apexfusion.org/api/submit/tx` becomes `https://submit.vector.mainnet.apexfusion.org/api/submit/tx`
+- line 4: `VECTOR_KOIOS_URL` default `https://v2.koios.vector.testnet.apexfusion.org/` becomes `https://v2.koios.vector.mainnet.apexfusion.org/`
+
+Two lines stay as the source has them: the comment on line 1 still says that the defaults target testnet, and `VECTOR_EXPLORER_URL` (line 5) still defaults to the testnet explorer. Nothing in buyer-core reads `VECTOR_EXPLORER_URL` or calls `explorerTxLink`, and `src/index.ts` does not export either.
+
+The Koios base excludes `/api/v1`. The vendored indexer (`koiosPostList`) and `OgmiosProvider` strip trailing slashes from the base and append `/api/v1/<route>` themselves; that is the vendored expectation, kept. `@vsa/vector-read` reads another variable, `KOIOS_URL`, whose default includes `/api/v1` (`https://v2.koios.vector.mainnet.apexfusion.org/api/v1`). Never hand vector-read's `KOIOS_URL` to a buyer-core function that takes a Koios base, or the reverse: the request would go to `/api/v1/api/v1/<route>`. The marketplace indexer is configured the same way twice: buyer-core reads `VECTOR_MARKETPLACE_INDEXER_URL`, vector-read reads `INDEXER_URL`, and both default to `https://mp-indexer.vector.apexfusion.org`.
+
+## Deviation: three excerpts
+
+Three copies are excerpts: whole lines of the source, byte for byte and in their order, with the rest left out. Nothing inside a kept line changes except the two `build.ts` import lines above.
+
+- `src/vendored/mcp/gov-build.ts`: lines 1-13 (the header and the Lucid imports), 85-135 (the slot clock: `SlotClockProvider`, `slotClockOf`, `ChainClockError`, `ensureSlotConfig` and its module-global cache) and 151-175 (`paymentKeyHashOf`) of 821. The whole file imports `@aws-sdk/client-s3` at the top (the IPFS upload of the governance family), `registry-build.ts` and the shared `tx.ts`, and names the ledger unit in four lines. The copies need only the slot clock and the key hash, and buyer-core carries no AWS SDK. The comment above `paymentKeyHashOf` speaks of `buildProposalSpend` "below": that is in the part left out.
+- `src/vendored/mcp/build.ts`: lines 1-48 of 196, `lucidForAddress` and `toBuildResult`. The rest are the send, deploy and interact builders, which use `apexToLovelace`.
+- `src/vendored/mcp-shared/tx.ts`: lines 1-2 (the header comment) and 46-54 (a blank line and `lovelaceToAda`) of 113. The rest (`apexToLovelace`, the metadata, CBOR and NFT-name helpers) is not used by the copies, and `apexToLovelace` names the ledger unit in its comments and in its error text, which `scripts/specs.test.mjs` refuses anywhere in this repository but `docs/HIRE.md`.
+
+## Files the copies need that the plan's table did not list
+
+- `src/vendored/mcp/rate-limiter.ts` and `src/vendored/mcp/env.ts`: `marketplace-shared.ts` imports the type `RateLimiter` (a type import, erased at runtime, but the type check resolves it), and `rate-limiter.ts` imports `intEnv`. Whole files, no dependencies.
+- `src/vendored/mcp-shared/tx.ts`: `build.ts` imports `lovelaceToAda` from it.
+- `test/fixtures/marketplace.fixture.ts`, `test/fixtures/fixture-provider.ts` and `test/fixtures/protocol-params.fixture.json`: `escrow-koios.fixture.ts` imports the first two, and the fixture provider reads the JSON when a test asks it for protocol parameters. `marketplace.fixture.ts` is the same file as `packages/vector-read/test/fixtures/marketplace.fixture.ts` (it did not change between `94b8f41` and `651ae93`).
+
+## Not copied
+
+- `packages/builder/src/vector/marketplace-datum.ts` and `packages/builder/src/vector/safe-fetch.ts`: imported from `@vsa/vector-read` (above). Between `94b8f41` and `651ae93` the datum module gained only `sha256BytesHex`.
+- The rest of `gov-build.ts`, and `registry-build.ts`: they need `@aws-sdk/client-s3`.
+- The MCP tool modules (`marketplace.ts` and `marketplace-*-tools.ts`): they need `@modelcontextprotocol/sdk` and `zod`. buyer-core calls the functions those tools call.
+- Everything of the signer but `sign.ts` (its key loading, key generation, policy, audit log and tools). The agent's key comes from its env file as raw hex; `src/signing.ts` turns it into the bech32 that `signTransaction` takes.
+
+## Local files
+
+- `src/hashes.ts`: `sha256BytesHex`. Its code lines are the source's, appended from the blob: line 9 (the `createHash` import) and lines 193-194 of `packages/builder/src/vector/marketplace-datum.ts` at `651ae93`, under a header comment. Tested in `test/hashes.test.ts`.
+- `src/signing.ts`: `rawHexToBech32`, a raw 64-hex Ed25519 key as the bech32 `signTransaction` takes. Tested in `test/signing.test.ts`.
+- `src/index.ts`: the public surface.
+
+## Checking the copies against the pin
+
+From the repository root, with `<mcp-server>` a checkout that has `651ae93`:
+
+```bash
+# A whole file: no output for the byte-identical copies, the listed lines for the rewritten ones.
+git -C <mcp-server> cat-file blob 651ae93:packages/builder/src/vector/marketplace-build.ts | diff - packages/buyer-core/src/vendored/mcp/marketplace-build.ts
+# The excerpts.
+git -C <mcp-server> cat-file blob 651ae93:packages/builder/src/vector/gov-build.ts | sed -n '1,13p;85,135p;151,175p' | cmp - packages/buyer-core/src/vendored/mcp/gov-build.ts
+git -C <mcp-server> cat-file blob 651ae93:packages/shared/src/tx.ts | sed -n '1,2p;46,54p' | cmp - packages/buyer-core/src/vendored/mcp-shared/tx.ts
+git -C <mcp-server> cat-file blob 651ae93:packages/builder/src/vector/build.ts | sed -n '1,48p' | diff - packages/buyer-core/src/vendored/mcp/build.ts
+```
+
+## Re-vendoring
+
+1. Take the new pin (a commit of Apex-Fusion/mcp-server).
+2. For each row, take the blob at the pin with `git cat-file blob` (never a working file of a CRLF checkout), cut the excerpts again after checking that the line ranges still hold the same code, and apply the rewrites listed above, one line for one line.
+3. If the datum module changed after `94b8f41` in more than `sha256BytesHex`, re-vendor `packages/vector-read/src/datum.ts` first (see `packages/vector-read/VENDORED-FROM.md`).
+4. Recompute the sha256 column (`sha256sum`), update the commit column and this file, and run `pnpm --filter @vsa/buyer-core test` and `pnpm typecheck`.
