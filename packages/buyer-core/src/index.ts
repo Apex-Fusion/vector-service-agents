@@ -4,7 +4,9 @@
 // Apex-Fusion/mcp-server at 651ae93 (see VENDORED-FROM.md). Endpoint defaults are Vector mainnet. The commitments of the fleet jobs (OCR and
 // Responses) come from commitments.ts, which composes the Responses code vendored from Apex-Fusion/agents-marketplace at e847a55. The chain
 // layer is buyer-core's own: the fleet Post (fleet-build.ts), the Chain interface with RealChain behind createRealChain (chain.ts), the
-// in-memory FakeChain the service tests run against (fake-chain.ts), and the fee of a signed transaction (fees.ts).
+// in-memory FakeChain the service tests run against (fake-chain.ts), and the fee of a signed transaction (fees.ts). So is the HTTP side of a fleet hire:
+// the clients that send a job to a supplier once its Post is made, poll it, and read /capability and /status (fleet-clients.ts), and the choice of the
+// chat supplier and the OCR advert from the marketplace indexer (select-supplier.ts). Suppliers are reached only through safeFetch.
 export { planPostEscrow, buildPostEscrow, planAccept, buildAccept, planReclaim, buildReclaim, reserveCollateralInputs } from './vendored/mcp/marketplace-build.ts';
 export { lucidForAddress } from './vendored/mcp/build.ts';
 export { resolveEscrowLineage, readEscrowOutput, readSubmittedOutput, submittedRefsOf } from './vendored/mcp/marketplace-lineage.ts';
@@ -24,3 +26,6 @@ export type { Chain, ChainEscrowState, PostResult, RealChainOptions } from './ch
 export { FakeChain } from './fake-chain.ts';
 export type { FakeChainOptions } from './fake-chain.ts';
 export { feeOfSignedTx } from './fees.ts';
+export { readCapability, probeStatus, sendOcrJob, sendResponsesJob, pollOcrJob, pollResponsesJob } from './fleet-clients.ts';
+export type { FetchLike, SupplierCapability, Receipt, SendResult, PollResult } from './fleet-clients.ts';
+export { selectLlmSupplier, findOcrAdvert } from './select-supplier.ts';
