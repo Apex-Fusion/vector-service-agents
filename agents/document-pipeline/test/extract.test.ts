@@ -5,7 +5,8 @@
 // of references makes the check of a short answer take time and memory exponential in the schema; no asynchronous schema (its validator answers with
 // a promise that an invalid answer rejects); none of pattern, patternProperties or format (a regular expression from the request would run against
 // the answer, and format is not checked here); and bounds on the schema itself: 32 levels of nesting, 16384 bytes of canonical JSON, 16 entries in an
-// anyOf, oneOf or allOf. The check of an answer never throws and never answers anything but a synchronous true for a valid one. The answer is read
+// anyOf, oneOf or allOf, the bytes counted on the raw JSON the prompt carries; no own __proto__ key anywhere, which Ajv ignores and the prompt would
+// carry. The check of an answer never throws and never answers anything but a synchronous true for a valid one. The answer is read
 // as JSON as it is, and only when that fails is the first fenced block looked for, without a regular expression.
 import { describe, it, expect } from 'vitest';
 import Ajv from 'ajv';
@@ -14,6 +15,8 @@ import { answerResult, checkOf, compileExtractionSchema, extractionAjv } from '.
 import { PipelineError } from '../src/result.ts';
 
 const TITLE = { type: 'object', required: ['title'], properties: { title: { type: 'string' } } };
+/** The bytes the bound counts: the raw JSON of the schema, every own key as written. */
+const rawBytes = (schema: unknown): number => Buffer.byteLength(JSON.stringify(schema), 'utf8');
 
 /** The schema_invalid refusal of compiling `schema`, its message checked against `message`. */
 function refused(schema: Record<string, unknown> | undefined, message: RegExp): void {
@@ -114,7 +117,7 @@ describe('compileExtractionSchema: references refused and the schema bounded (ru
 
   it('refuses the reference chain of the review (23 levels, about 1.8 KB) at once', () => {
     const schema = chain(23);
-    expect(Buffer.byteLength(canonicalize(schema))).toBeGreaterThan(1_500);
+    expect(rawBytes(schema)).toBeGreaterThan(1_500);
     const started = performance.now();
     refused(schema, /\$ref at # \(/);
     expect(performance.now() - started).toBeLessThan(200);
@@ -132,6 +135,31 @@ describe('compileExtractionSchema: references refused and the schema bounded (ru
     refused({ type: 'array', items: { $dynamicRef: '#node' } }, /\$dynamicRef at #\/items \(/);
     refused({ anyOf: [{ type: 'string' }, { $recursiveRef: '#' }] }, /\$recursiveRef at #\/anyOf\/1 \(/);
     refused({ type: 'object', properties: { a: { type: 'object', properties: { b: { $ref: 'https://203.0.113.9/other.json' } } } } }, /\$ref at #\/properties\/a\/properties\/b \(/);
+  });
+
+  // Every place the walk descends to, pinned: a reference and a regular expression placed there are both refused, naming the place.
+  const positions: Array<[string, (inner: Record<string, unknown>) => Record<string, unknown>, string]> = [
+    ['not', (x) => ({ not: x }), '#/not'],
+    ['anyOf', (x) => ({ anyOf: [{ type: 'string' }, x] }), '#/anyOf/1'],
+    ['oneOf', (x) => ({ oneOf: [{ type: 'string' }, x] }), '#/oneOf/1'],
+    ['allOf', (x) => ({ allOf: [{ type: 'string' }, x] }), '#/allOf/1'],
+    ['if', (x) => ({ if: x, then: { type: 'string' } }), '#/if'],
+    ['then', (x) => ({ if: { type: 'string' }, then: x }), '#/then'],
+    ['else', (x) => ({ if: { type: 'string' }, else: x }), '#/else'],
+    ['propertyNames', (x) => ({ type: 'object', propertyNames: x }), '#/propertyNames'],
+    ['additionalProperties', (x) => ({ type: 'object', additionalProperties: x }), '#/additionalProperties'],
+    ['dependencies', (x) => ({ type: 'object', dependencies: { a: x } }), '#/dependencies/a'],
+    ['properties', (x) => ({ type: 'object', properties: { a: x } }), '#/properties/a'],
+    ['additionalItems', (x) => ({ type: 'array', items: [{ type: 'string' }], additionalItems: x }), '#/additionalItems'],
+    ['items, one schema', (x) => ({ type: 'array', items: x }), '#/items'],
+    ['items, a list', (x) => ({ type: 'array', items: [{ type: 'string' }, x] }), '#/items/1'],
+    ['contains', (x) => ({ type: 'array', contains: x }), '#/contains'],
+    ['contentSchema', (x) => ({ type: 'string', contentMediaType: 'application/json', contentSchema: x }), '#/contentSchema'],
+  ];
+  it.each(positions)('refuses a $ref and a pattern placed under %s', (_name, place, pointer) => {
+    const at = pointer.replaceAll('/', '\\/');
+    refused(place({ $ref: '#' }), new RegExp(`\\$ref at ${at} \\(`));
+    refused(place({ type: 'string', pattern: 'a+' }), new RegExp(`pattern at ${at} \\(`));
   });
 
   it('takes the same words as property names and in data, where they refer to nothing', () => {
@@ -155,12 +183,63 @@ describe('compileExtractionSchema: references refused and the schema bounded (ru
     refused(nested(100_000), /deeper than 32 levels/);
   });
 
-  it('takes a schema of 16384 bytes of canonical JSON and refuses one of 16385', () => {
+  it('takes a schema of 16384 bytes of raw JSON and refuses one of 16385', () => {
     const sized = (bytes: number): Record<string, unknown> => ({ type: 'object', description: 'x'.repeat(bytes - 34) });
-    expect(Buffer.byteLength(canonicalize(sized(16_384)))).toBe(16_384);
+    expect(rawBytes(sized(16_384))).toBe(16_384);
     expect(compileExtractionSchema(sized(16_384))({})).toBe(true);
-    expect(Buffer.byteLength(canonicalize(sized(16_385)))).toBe(16_385);
-    refused(sized(16_385), /16385 bytes of canonical JSON, more than 16384/);
+    expect(rawBytes(sized(16_385))).toBe(16_385);
+    refused(sized(16_385), /16385 bytes of JSON, more than 16384/);
+  });
+
+  it('takes a dense schema, hundreds of properties, of exactly 16384 raw bytes, and refuses it one byte longer', () => {
+    const dense = (bytes: number): Record<string, unknown> => {
+      const properties: Record<string, unknown> = {};
+      const schema: Record<string, unknown> = { type: 'object', properties };
+      for (let i = 0; rawBytes(schema) < bytes - 120; i++) properties[`field${i}`] = { type: 'string', maxLength: 40 };
+      // The description goes last: `,"description":""` adds 17 bytes and the padding the rest.
+      schema.description = 'd'.repeat(bytes - rawBytes(schema) - 17);
+      return schema;
+    };
+    const atEdge = dense(16_384);
+    expect(rawBytes(atEdge)).toBe(16_384);
+    expect(Object.keys(atEdge.properties as object).length).toBeGreaterThan(300);
+    const started = performance.now();
+    const check = compileExtractionSchema(atEdge);
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(check({ field0: 'a', field1: 'b' })).toBe(true);
+    expect(check({ field0: 7 })).toBe(false);
+    expect(rawBytes(dense(16_385))).toBe(16_385);
+    refused(dense(16_385), /16385 bytes of JSON, more than 16384/);
+  });
+
+  it('counts every key as it is written: keys that are one key once normalised (NFC) are measured each, and refused past the bound', () => {
+    // A nine-letter key of e-acute, each letter either precomposed (U+00E9) or e and a combining acute (U+0301): 512 spellings, one key under NFC.
+    const properties: Record<string, unknown> = {};
+    for (let mask = 0; mask < 512; mask++) {
+      let key = '';
+      for (let bit = 0; bit < 9; bit++) key += (mask >> bit) & 1 ? 'e\u0301' : '\u00e9';
+      properties[key] = { type: 'string', description: 'x'.repeat(1_500) };
+    }
+    const schema = { type: 'object', properties };
+    expect(Object.keys(properties)).toHaveLength(512);
+    // The canonical form merges them, which is why the bound is not measured on it: some 1.6 KB there, near 800 KB as written (the size of the review).
+    expect(Buffer.byteLength(canonicalize(schema))).toBeLessThan(1_700);
+    expect(rawBytes(schema)).toBeGreaterThan(780_000);
+    const started = performance.now();
+    refused(schema, new RegExp(`${rawBytes(schema)} bytes of JSON, more than 16384`));
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+
+  it('refuses an own __proto__ key anywhere in the schema, which Ajv ignores and the prompt would carry, however small', () => {
+    // Only JSON.parse makes __proto__ an own key, as parseRequest does; an object literal would set the prototype instead.
+    const payload = JSON.parse(`{"type":"object","properties":{"__proto__":{"type":"string","description":"${'x'.repeat(200_000)}"}}}`) as Record<string, unknown>;
+    expect(Object.hasOwn(payload.properties as object, '__proto__')).toBe(true);
+    expect(canonicalize(payload)).not.toContain('__proto__');
+    refused(payload, /own __proto__ key at #\/properties\/__proto__ /);
+    refused(JSON.parse('{"type":"object","properties":{"__proto__":{"type":"string"}}}'), /own __proto__ key at #\/properties\/__proto__ /);
+    refused(JSON.parse('{"type":"object","__proto__":{"type":"string"}}'), /own __proto__ key at #\/__proto__ /);
+    refused(JSON.parse('{"type":"array","items":{"anyOf":[{"type":"string"},{"__proto__":{}}]}}'), /own __proto__ key at #\/items\/anyOf\/1\/__proto__ /);
+    refused(JSON.parse('{"type":"object","default":{"__proto__":1}}'), /own __proto__ key at #\/default\/__proto__ /);
   });
 
   it('takes 16 entries in an anyOf, a oneOf or an allOf and refuses 17, at any depth', () => {

@@ -2,8 +2,11 @@
 // The schema of an `extract` job and the reading of the model's answer against it. The schema comes from the person who hired the Pipeline, and the
 // check it compiles to runs against what a model wrote after every sub-escrow is paid, in the process that runs every other job. So it is held to
 // what can be checked safely and at once, before anything is fetched or posted (ruling R27); anything else is schema_invalid (400). In this order:
-//   - its JSON nesting is at most 32 levels (the root object is level 1, and every object or array inside one is a level deeper, data included), and
-//     its canonical JSON at most 16384 bytes (ruling R42);
+//   - the document as a whole (ruling R42): its JSON nesting is at most 32 levels (the root object is level 1, and every object or array inside one is
+//     a level deeper, data included); no object anywhere in it has an own __proto__ key, which Ajv ignores and the prompt would carry; and its raw
+//     JSON, JSON.stringify of the schema as parsed, every own key as written and nothing merged, is at most 16384 bytes, which is what the prompt to
+//     the chat supplier carries. (Not its canonical form: that merges keys that are one key once normalised (NFC) and drops an own __proto__, so a
+//     large schema could measure small there.)
 //   - no $async at the root, true or false: an asynchronous validator answers with a promise, which an invalid answer rejects;
 //   - a walk of the schema, in every place a keyword Ajv's draft-07 vocabulary knows holds a subschema (additionalItems, additionalProperties,
 //     contains, propertyNames, if, then, else, not, contentSchema; items, one schema or a list; allOf, anyOf, oneOf; and the maps properties and
@@ -26,7 +29,6 @@
 // reading any answer is linear in its length. One that is not JSON, or does not validate, is kept as raw_text with schema_valid false: the job still
 // succeeds, the supplier delivered.
 import Ajv from 'ajv';
-import { canonicalize } from '@vsa/vector-read';
 import { errorText } from './format.ts';
 import type { Task } from './request.ts';
 import { PipelineError } from './result.ts';
@@ -39,7 +41,7 @@ export type Validator = ((value: unknown) => unknown) & { $async?: unknown };
 
 /** The most levels of JSON nesting an extraction schema may have (ruling R42). */
 export const SCHEMA_MAX_DEPTH = 32;
-/** The most bytes the canonical JSON of an extraction schema may have (ruling R42). */
+/** The most bytes the raw JSON of an extraction schema may have (ruling R42). */
 export const SCHEMA_MAX_BYTES = 16_384;
 /** The most entries an allOf, anyOf or oneOf may have (ruling R42). */
 export const COMBINATION_MAX_ENTRIES = 16;
@@ -62,18 +64,20 @@ const below = (at: string, step: string | number): string => `${at}/${String(ste
 /** A place as a refusal names it: at most 200 characters of its pointer. */
 const place = (at: string): string => (at.length > PLACE_MAX_CHARACTERS ? `${at.slice(0, PLACE_MAX_CHARACTERS)}...` : at);
 
-/** Whether the JSON nesting of `value` goes deeper than `max` levels. Keeps its own stack and stops at the first level too deep. */
-function deeperThan(value: unknown, max: number): boolean {
-  const stack: Array<{ node: unknown; depth: number }> = [{ node: value, depth: 1 }];
+/**
+ * Why the document as a whole is refused, or null: nested deeper than 32 levels, or an own __proto__ key in any object of it. One pass that keeps its own
+ * stack and stops at the first refusal, so a document nested past the call stack is refused without a crash.
+ */
+function documentRefusal(schema: Record<string, unknown>): string | null {
+  const stack: Array<{ node: object; depth: number; at: string }> = [{ node: schema, depth: 1, at: '#' }];
   for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
-    if (next.depth > max) return true;
-    const { node, depth } = next;
-    if (node === null || typeof node !== 'object') continue;
-    for (const child of Array.isArray(node) ? node : Object.values(node)) {
-      if (child !== null && typeof child === 'object') stack.push({ node: child, depth: depth + 1 });
-    }
+    const { node, depth, at } = next;
+    if (depth > SCHEMA_MAX_DEPTH) return `its JSON is nested deeper than ${SCHEMA_MAX_DEPTH} levels`;
+    if (!Array.isArray(node) && Object.hasOwn(node, '__proto__')) return `it has an own __proto__ key at ${place(below(at, '__proto__'))} (Ajv ignores it, and the prompt would carry it)`;
+    const children: Array<[string | number, unknown]> = Array.isArray(node) ? node.map((child, i) => [i, child]) : Object.entries(node);
+    for (const [step, child] of children) if (child !== null && typeof child === 'object') stack.push({ node: child, depth: depth + 1, at: below(at, step) });
   }
-  return false;
+  return null;
 }
 
 /** Why the walk refuses `schema` (see the head of this file), or null. The walk keeps its own stack. */
@@ -136,9 +140,10 @@ export function checkOf(validate: Validator): ExtractionCheck {
 /** Compiles the schema of an extract request, before anything is fetched or posted (see the head of this file). Throws schema_invalid (400). */
 export function compileExtractionSchema(schema: Record<string, unknown> | undefined): ExtractionCheck {
   if (schema === undefined) throw invalid('task "extract" needs a schema');
-  if (deeperThan(schema, SCHEMA_MAX_DEPTH)) throw invalid(`its JSON is nested deeper than ${SCHEMA_MAX_DEPTH} levels`);
-  const bytes = Buffer.byteLength(canonicalize(schema), 'utf8');
-  if (bytes > SCHEMA_MAX_BYTES) throw invalid(`it is ${bytes} bytes of canonical JSON, more than ${SCHEMA_MAX_BYTES}`);
+  const document = documentRefusal(schema);
+  if (document !== null) throw invalid(document);
+  const bytes = Buffer.byteLength(JSON.stringify(schema), 'utf8');
+  if (bytes > SCHEMA_MAX_BYTES) throw invalid(`it is ${bytes} bytes of JSON, more than ${SCHEMA_MAX_BYTES}`);
   if (Object.hasOwn(schema, '$async')) throw invalid('it declares $async at the root, and an asynchronous validator answers with a promise that an invalid answer rejects');
   const refusal = walkRefusal(schema);
   if (refusal !== null) throw invalid(refusal);

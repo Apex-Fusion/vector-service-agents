@@ -286,6 +286,14 @@ describe('runPipeline: task extract', () => {
     }
   });
 
+  it('a schema with an own __proto__ key is refused before anything is fetched or posted, so the prompt never carries it', async () => {
+    const run = setup();
+    const schema = JSON.parse(`{"type":"object","properties":{"title":{"type":"string"},"__proto__":{"type":"string","description":"${'x'.repeat(10_000)}"}}}`) as Record<string, unknown>;
+    const error = await failure(runPipeline(request({ task: 'extract', schema }), run.deps), 'schema_invalid', 400);
+    expect(error.message).toMatch(/own __proto__ key at #\/properties\/__proto__ /);
+    expect(run.m.calls).toStrictEqual([]);
+  });
+
   it('a plain object schema with nested properties checks a nested answer at every level', async () => {
     const schema = {
       type: 'object', required: ['title', 'sender'],
