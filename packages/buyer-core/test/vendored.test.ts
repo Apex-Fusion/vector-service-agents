@@ -34,8 +34,8 @@ describe('vendored files', () => {
   });
   // The import below is the first load of Lucid's WASM in this file: about 2.3 s on its own, 4.3 s measured while `pnpm -r test`
   // runs the packages side by side, against vitest's 5 s default. Hence the explicit timeout.
-  it('the public surface re-exports the builders, the lineage, the verifier, the provider and the signer', async () => {
+  it('the public surface re-exports the builders, the lineage, the verifier, the provider, the signer and the fleet commitments', async () => {
     const m = await import('../src/index.ts');
-    for (const name of ['planPostEscrow', 'buildPostEscrow', 'buildAccept', 'buildReclaim', 'resolveEscrowLineage', 'verifyReceipt', 'OgmiosProvider', 'signTransaction', 'rawHexToBech32', 'ESCROW_REF_UTXO', 'ACCEPT_WINDOW_MS', 'DELIVER_BY_BUFFER_MS']) expect(typeof (m as Record<string, unknown>)[name], name).not.toBe('undefined');
+    for (const name of ['planPostEscrow', 'buildPostEscrow', 'buildAccept', 'buildReclaim', 'resolveEscrowLineage', 'verifyReceipt', 'OgmiosProvider', 'signTransaction', 'rawHexToBech32', 'ESCROW_REF_UTXO', 'ACCEPT_WINDOW_MS', 'DELIVER_BY_BUFFER_MS', 'ocrPromptHash', 'ocrResponseHash', 'responsesPromptHash', 'responsesResponseHash', 'responsesOutputText', 'requestSpecHash']) expect(typeof (m as Record<string, unknown>)[name], name).not.toBe('undefined');
   }, 30_000);
 });
