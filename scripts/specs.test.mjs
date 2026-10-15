@@ -238,7 +238,9 @@ test('docs/HIRE.md: the ledger unit is named once, in section 3, and nowhere els
   assert.ok(section(guide, '3. We fund it').includes("the ledger's native unit, " + UNIT_NAME.source));
   // Every other file of the repo says "unit" or prints lovelace. The planning documents and the recorded ledger data are not part of this rule.
   const root = fileURLToPath(new URL('../', import.meta.url));
-  const skip = (rel) => /(^|[\\/])(node_modules|\.git|\.superpowers)([\\/]|$)/.test(rel) || /(^|[\\/])test[\\/]fixtures([\\/]|$)/.test(rel) || rel.startsWith(join('docs', 'superpowers')) || rel === 'pnpm-lock.yaml';
+  // The run outputs of docs/E2E.md (git-ignored, repository root) are an operator's files, not the repository: skipped.
+  const runOutput = (rel) => /^(evidence\.json(\.tmp)?|e2e-state[^\/]*\.json[^\/]*)$/.test(rel);
+  const skip = (rel) => runOutput(rel) || /(^|[\\/])(node_modules|\.git|\.superpowers)([\\/]|$)/.test(rel) || /(^|[\\/])test[\\/]fixtures([\\/]|$)/.test(rel) || rel.startsWith(join('docs', 'superpowers')) || rel === 'pnpm-lock.yaml';
   const walk = (dir, out = []) => { for (const e of readdirSync(dir, { withFileTypes: true })) { const p = join(dir, e.name); if (skip(relative(root, p))) continue; e.isDirectory() ? walk(p, out) : out.push(relative(root, p)); } return out; };
   const hits = walk(root).filter((rel) => /\.(ts|mjs|json|md|yml|yaml|template)$/.test(rel) && rel !== join('docs', 'HIRE.md')).filter((rel) => readFileSync(join(root, rel), 'utf8').match(UNIT_NAME));
   assert.deepEqual(hits, []);
@@ -668,7 +670,9 @@ test('the first advert is history: its reference is in the Links of the spec and
   const root = fileURLToPath(new URL('../', import.meta.url));
   // A path from relative() has the separator of the platform; the walk turns it into forward slashes before anything else looks at it (\x5c is the backslash).
   const slashes = (rel) => rel.split('\x5c').join('/');
-  const skip = (rel) => /(^|\/)(node_modules|\.git|\.superpowers)(\/|$)/.test(rel) || /(^|\/)test\/fixtures(\/|$)/.test(rel) || rel.startsWith('docs/superpowers') || rel === 'pnpm-lock.yaml' || /\.test\.(mjs|ts)$/.test(rel);
+  // The run outputs of docs/E2E.md (git-ignored, repository root) are an operator's files, not the repository: skipped.
+  const runOutput = (rel) => /^(evidence\.json(\.tmp)?|e2e-state[^\/]*\.json[^\/]*)$/.test(rel);
+  const skip = (rel) => runOutput(rel) || /(^|\/)(node_modules|\.git|\.superpowers)(\/|$)/.test(rel) || /(^|\/)test\/fixtures(\/|$)/.test(rel) || rel.startsWith('docs/superpowers') || rel === 'pnpm-lock.yaml' || /\.test\.(mjs|ts)$/.test(rel);
   const walk = (dir, out = []) => { for (const e of readdirSync(dir, { withFileTypes: true })) { const p = join(dir, e.name); if (skip(slashes(relative(root, p)))) continue; e.isDirectory() ? walk(p, out) : out.push(slashes(relative(root, p))); } return out; };
   const files = walk(root).filter((rel) => /\.(ts|js|mjs|json|md|yml|yaml|sh|snippet|example|template)$/.test(rel));
   assert.ok(files.length >= 40 && files.includes('scripts/run-e2e-from-keyfile.sh') && files.includes('docs/HIRE.md'), `the walk reaches the repository, found ${files.length} files`);
