@@ -1,6 +1,6 @@
 # Runbook: Agent History on apex-web
 
-Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED. This runbook says what will happen, in order. Steps 1 to 14 were run on the box on 2026-10-14. The rest has not been run.
+Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED. This runbook says what will happen, in order. Steps 1 to 15 were run on 2026-10-14 and 2026-10-15. The rest has not been run.
 
 The operator holds the keys and does every step except three. Step 2 (the registry login and the service image) and step 10 (DNS and Caddy) are the host administrator's, see [README.md](README.md). Step 6 (funding the supplier wallet) is the Foundation's. Every run of the agent is first-party until a payer outside our control appears. A first-party run shows that the path works. It is not demand and it counts as no revenue.
 
@@ -302,7 +302,7 @@ It must print `Active free identity.history.report.v1` and the hash of step 11. 
 
 ## 15. The first-party run
 
-Operator. Follow [E2E.md](../../docs/E2E.md) with `ADVERT_REF` from step 12 and the funded test buyer key. This is the step that proves the path, and nothing before it settles a job. As of 2026-10-14 the nine marketplace tools the script needs are merged into `main` of Apex-Fusion/mcp-server (PR 1 as [#20](https://github.com/Apex-Fusion/mcp-server/pull/20), PR 2 as [#21](https://github.com/Apex-Fusion/mcp-server/pull/21) and PR 3 as [#23](https://github.com/Apex-Fusion/mcp-server/pull/23) with PR 2) and are on the hosted mainnet MCP server, which lists 33 tools. PR 4 ([#22](https://github.com/Apex-Fusion/mcp-server/pull/22)), the signer package with its `keygen` command, is merged too, and the package is not published. The default `BUILDER_URL` of the script is the hosted mainnet MCP server, so the run needs no local builder. E2E.md keeps the local build of `main` as the fallback for a builder that lacks the tools. Add the run to the Results table in E2E.md. Only a run that ends in the printed evidence counts.
+Operator. Follow [E2E.md](../../docs/E2E.md) with `ADVERT_REF` from step 12 and the funded test buyer key. This is the step that proves the path, and nothing before it settles a job. As of 2026-10-14 the nine marketplace tools the script needs are merged into `main` of Apex-Fusion/mcp-server (PR 1 as [#20](https://github.com/Apex-Fusion/mcp-server/pull/20), PR 2 as [#21](https://github.com/Apex-Fusion/mcp-server/pull/21) and PR 3 as [#23](https://github.com/Apex-Fusion/mcp-server/pull/23) with PR 2) and are on the hosted mainnet MCP server, which lists 33 tools. PR 4 ([#22](https://github.com/Apex-Fusion/mcp-server/pull/22)), the signer package with its `keygen` command, is merged too, and the package is not published. The default `BUILDER_URL` of the script is the hosted mainnet MCP server, so the run needs no local builder. E2E.md keeps the local build of `main` as the fallback for a builder that lacks the tools. Add the run to the Results table in E2E.md. Only a run that ends in the printed evidence counts. The first run, made on 2026-10-15, is recorded in E2E.md.
 
 ## 16. Wallet monitor
 

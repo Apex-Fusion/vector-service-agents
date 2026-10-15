@@ -210,8 +210,8 @@ test('env example: the chain values and the advert terms are the design and the 
 });
 
 test('env example: the status word is the spec status, and the manifest it produces is the default manifest', () => {
-  assert.ok(section(SPEC, 'Status').includes(`${example.AGENT_STATUS_CHIP.toUpperCase()} (advertised on 2026-10-14, no job settled). Since ${example.AGENT_STATUS_SINCE}.`));
-  assert.equal(example.AGENT_STATUS_CHIP, 'proposed', 'the advert is posted and no job has settled, so nothing may claim more');
+  assert.ok(section(SPEC, 'Status').includes(`${example.AGENT_STATUS_CHIP.toUpperCase()} (advertised on 2026-10-14; one first-party job settled on 2026-10-15). Since ${example.AGENT_STATUS_SINCE}.`));
+  assert.equal(example.AGENT_STATUS_CHIP, 'proposed', 'the advert is posted and one first-party job has settled, which is not demand, so nothing may claim more until step 17');
   // The service takes an empty string as given, so an empty AGENT_STATUS_SINCE would put since "" into the manifest.
   assert.notEqual(example.AGENT_STATUS_SINCE, '');
   // Placeholders are unset, and the one setting with no default is supplied for both.
@@ -289,15 +289,16 @@ test('README and RUNBOOK: PROPOSED, no LIVE or DEPLOYED claim, no dash, no unit 
   }
   for (const rel of ['deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md']) assert.ok(read(rel).includes('Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED.'), rel);
   assert.match(read('deploy/apex-web/docker-compose.agent-history.yml'), /PROPOSED/);
+  assert.ok(read('deploy/apex-web/docker-compose.agent-history.yml').split('\n')[1].startsWith('# PROPOSED: running on the box since 2026-10-14; one first-party job settled on 2026-10-15. '), 'the header of the compose file says what happened on the box');
   assert.match(snippet, /PROPOSED/);
 });
 
-test('RUNBOOK: the status line says that steps 1 to 14 were run on the box on 2026-10-14 and the rest was not, and the step texts stay instructions', () => {
+test('RUNBOOK: the status line says that steps 1 to 15 were run on 2026-10-14 and 2026-10-15 and the rest was not, and the step texts stay instructions', () => {
   const status = runbook.split('\n')[2];
   assert.ok(status.startsWith('Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED.'));
-  assert.ok(status.endsWith('Steps 1 to 14 were run on the box on 2026-10-14. The rest has not been run.'));
-  assert.equal(runbook.match(/Steps 1 to 9 were run/), null);
-  // Step 14 ends on the advert being Active with PROPOSED still standing, and steps 15 to 17 are ahead. Step 12 still tells the operator what to record: it is an instruction, so it still quotes the words it replaces.
+  assert.ok(status.endsWith('Steps 1 to 15 were run on 2026-10-14 and 2026-10-15. The rest has not been run.'));
+  assert.equal(runbook.match(/Steps 1 to (9|14) were run/), null);
+  // Step 14 ends, in the order of the runbook, on the advert being Active with PROPOSED still standing and no job settled yet: steps 15 to 17 come after it. Step 12 still tells the operator what to record: it is an instruction, so it still quotes the words it replaces.
   assert.ok(section(runbook, '14. Check the advert on the indexer').includes('From here the agent is advertised and PROPOSED still stands: no job has settled.'));
   assert.ok(section(runbook, '12. Post the advert').includes('Record the advert in the repository.'));
 });
@@ -522,6 +523,7 @@ test('RUNBOOK: the key is never sent anywhere, the registry login block is bash,
   assert.ok(s15.includes('PR 4 ([#22](https://github.com/Apex-Fusion/mcp-server/pull/22)), the signer package with its `keygen` command, is merged too, and the package is not published.'));
   assert.doesNotMatch(s15, /and PR 4 as/, 'PR 4 is the signer, not one of the nine marketplace tools');
   assert.ok(s15.includes('The default `BUILDER_URL` of the script is the hosted mainnet MCP server, so the run needs no local builder. E2E.md keeps the local build of `main` as the fallback for a builder that lacks the tools.'));
+  assert.ok(s15.includes('Add the run to the Results table in E2E.md. Only a run that ends in the printed evidence counts. The first run, made on 2026-10-15, is recorded in E2E.md.'));
   assert.doesNotMatch(s15, /PR 2 is open|PR 3 and PR 4 follow|PRs 2 and 3 follow|are deployed|PR 3 branch/);
   assert.doesNotMatch(s15, /cutover|cuts it over|24 tools|none of them a marketplace tool|awaiting the|still serves/i, 'nothing waits for a cutover any more');
   const s16 = section(runbook, '16. Wallet monitor');

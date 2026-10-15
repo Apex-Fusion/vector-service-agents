@@ -2,7 +2,7 @@
 
 Before any working-group member is invited, the operator hires Agent History itself, through the same tools a member will use. Every run in this runbook is first-party: the buyer key is held by the operator, and so is the supplier. A first-party run shows that the path works. It is not ignition, it is not demand, and it counts as no revenue.
 
-**Status: PROPOSED.** The script `scripts/e2e-hire.mjs` is written and is tested against fake servers. It has not completed a live run yet. The nine marketplace tools are merged into `main` of Apex-Fusion/mcp-server and are on the hosted mainnet server as of 2026-10-14: an MCP `initialize` and `tools/list` handshake that day listed 33 tools, the nine among them. The Agent History advert was posted on 2026-10-14, reference `13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c#0`. The first-party run has not been made yet. Against the hosted mainnet server the script now passes its first check, the tool list of the builder. The check that `ADVERT_REF` is among the free suppliers can pass with that reference: the marketplace indexer listed the advert as Active and free on 2026-10-14.
+**Status: PROPOSED.** The script `scripts/e2e-hire.mjs` is written and is tested against fake servers. The nine marketplace tools are merged into `main` of Apex-Fusion/mcp-server and are on the hosted mainnet server as of 2026-10-14: an MCP `initialize` and `tools/list` handshake that day listed 33 tools, the nine among them. The Agent History advert was posted on 2026-10-14, reference `13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c#0`. The first first-party run settled on 2026-10-15 (verdict VERIFIED, see [Results](#results)). Against the hosted mainnet server the script now passes its first check, the tool list of the builder. The check that `ADVERT_REF` is among the free suppliers can pass with that reference: the marketplace indexer listed the advert as Active and free on 2026-10-14.
 
 ## What the script needs
 
@@ -43,6 +43,10 @@ node scripts/e2e-hire.mjs
 ```
 
 `--dry-run` is the only argument the script takes. Anything else stops it with exit code 2 and the usage line. The steps go to stderr. The evidence of a finished run is one JSON object on stdout, so `node scripts/e2e-hire.mjs > evidence.json` keeps it apart.
+
+### Running it from a key file
+
+`scripts/run-e2e-from-keyfile.sh KEYFILE [--dry-run]` runs the same script with the buyer key read from a file instead of from the `read -rs` prompt above. `KEYFILE` holds two lines, `VECTOR_SIGNER_PRIVATE_KEY=<key>` and `VECTOR_SIGNER_ADDRESS=<address>`, the `NAME=value` lines that `keygen` prints. The wrapper sources the file into its own environment and never prints it. It accepts a UTF-16 file with its byte-order mark, a UTF-8 file with a byte-order mark, and CRLF line endings, as an editor or PowerShell may leave them. Its messages and the dry run go through a filter that blanks key-shaped strings, a second guard: the script and the signer print no setting. A finished run writes its evidence to `evidence.json` in the repository root, and the state file is `e2e-state.json`, as above. `--dry-run` is the rehearsal described above. `SIGNER_ENTRY` and `ADVERT_REF` come from the environment, as the table says. The wrapper has a default for each: the advert is the Agent History advert, and the signer path is one machine's, so set `SIGNER_ENTRY` on yours. The key file is as secret as the key. Run the wrapper in your own terminal, and keep the file and the key out of any chat.
 
 ## What the script does
 
@@ -102,4 +106,6 @@ Add one row for each run. The Run column says first-party in every row.
 
 | Date | Run | Escrow reference | Post transaction | Accept transaction | Verdict |
 |---|---|---|---|---|---|
-| none yet | first-party | | | | not run |
+| 2026-10-15 | first-party | `5248c71eb5eb65f8bfa865a837f34cc85e6d18fe07b01f14cc2ca22660176765#0` | [`5248c71eb5eb65f8bfa865a837f34cc85e6d18fe07b01f14cc2ca22660176765`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/5248c71eb5eb65f8bfa865a837f34cc85e6d18fe07b01f14cc2ca22660176765) | [`902df222e6e1ab76d2d7f1085963b4dbf3a9b4b88353b82481c57a92fbc5c03c`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/902df222e6e1ab76d2d7f1085963b4dbf3a9b4b88353b82481c57a92fbc5c03c) | VERIFIED |
+
+The evidence of this run is [docs/evidence/2026-10-15-agent-history-run-1.json](evidence/2026-10-15-agent-history-run-1.json), the object the script printed, unchanged. It holds the receipt, its signature, the report text and the links, and no key. To repeat the check, call `vector_marketplace_verify_receipt` with `receipt`, `receipt_signature`, `escrow_ref` and the untouched `result` from that file: read the file with a JSON parser and pass `result` as it decodes. The check needs no key and no funds. Both keys were ours. A first-party run shows that the path works. It is not demand.
