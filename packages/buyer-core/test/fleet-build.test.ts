@@ -112,8 +112,20 @@ describe('buildFleetPostEscrow over the fixture provider (offline)', () => {
     expect(decodeEscrowDatum(escrow.datum()!.as_datum()!.to_cbor_hex()).prompt_hash).toBe(PROMPT);
     expect(r.escrowRef).toBe(`${CML.hash_transaction(body).to_hex()}#0`);
     expect(r.datum).toStrictEqual(plan.datum);
-    expect(r).toMatchObject({ lockLovelace: 2_261_030n, deliverBy: NOW + 300_000 + DELIVER_BY_BUFFER_MS, postedAt: NOW });
+    expect(r).toMatchObject({ lockLovelace: 2_261_030n, deliverBy: NOW + 300_000 + DELIVER_BY_BUFFER_MS, postedAt: NOW, collateralKept: true });
     await expect(buildPostEscrow(lucid, provider, { changeAddress: OWN_ADDRESS, advertRef: ADVERT_REF, payload: 'x', nowMs: NOW }, advertKoios().f)).rejects.toThrow(/a fleet capability/);
+  }, 30_000);
+
+  it('says collateralKept false when only the whole wallet, 5-unit output included, can fund the Post (the vendored fallback)', async () => {
+    // 5 units and 3: without the 5-unit output, 3 units cannot pay the lock, the fee and a change output.
+    const tight = new FixtureProvider([
+      { txHash: FIXTURE_TXHASH, outputIndex: 0, address: OWN_ADDRESS, assets: { lovelace: 5_000_000n } },
+      { txHash: FIXTURE_TXHASH, outputIndex: 1, address: OWN_ADDRESS, assets: { lovelace: 3_000_000n } },
+    ]);
+    const tightLucid = await lucidForAddress(tight, OWN_ADDRESS);
+    const r = await buildFleetPostEscrow(tightLucid, tight, { changeAddress: OWN_ADDRESS, advertRef: ADVERT_REF, promptHash: PROMPT, nowMs: NOW }, advertKoios().f);
+    expect(r.collateralKept).toBe(false);
+    expect(inputRefs(r.unsignedCborHex)).toContain(`${FIXTURE_TXHASH}#0`);
   }, 30_000);
 
   it('signs for the buyer key, is valid from now - 60 s to now + the buffer in slots of the Vector clock, pays at least the marketplace fee, and keeps the 5-unit output as collateral', async () => {

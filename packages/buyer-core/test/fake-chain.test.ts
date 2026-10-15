@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import { decodeAdvertDatum, sha256Utf8Hex } from '@vsa/vector-read';
 import { FakeChain, DELIVER_BY_BUFFER_MS } from '../src/index.ts';
-import type { Chain, PostResult } from '../src/index.ts';
+import type { Chain, FakeChainOptions, PostResult } from '../src/index.ts';
 import { ADVERT_REF, ADVERT_DATUM_HEX, ADVERT_EXPECTED } from './fixtures/marketplace.fixture.ts';
 
 const advert = decodeAdvertDatum(ADVERT_DATUM_HEX);
@@ -13,11 +13,14 @@ const RECEIPT_HASH = 'cd'.repeat(32);
 const T0 = 1_790_000_000_000;
 const LOCK = 2_261_030n;
 const FEE = 500_000n;
+/** The vendored planReclaim's opening: the first whole second strictly after deliver_by (marketplace-build.ts). */
+const reclaimOpens = (deliverBy: number): number => Math.ceil((deliverBy + 1) / 1000) * 1000;
 
 /** A FakeChain over the live ChandraOCR advert with a clock the test moves. */
-function setup(opts: { floatLovelace?: bigint } = {}) {
-  const clock = { now: T0 };
-  const chain = new FakeChain({ adverts: { [ADVERT_REF]: advert }, clock: () => clock.now, prefix: 'pipeline-test/', ...opts });
+function setup(opts: Pick<FakeChainOptions, 'floatLovelace' | 'collateralLovelace'> & { start?: number } = {}) {
+  const { start = T0, ...rest } = opts;
+  const clock = { now: start };
+  const chain = new FakeChain({ adverts: { [ADVERT_REF]: advert }, clock: () => clock.now, prefix: 'pipeline-test/', ...rest });
   const post = (promptHash = PROMPT): Promise<PostResult> => chain.postEscrow({ advertRef: ADVERT_REF, promptHash });
   return { chain, clock, post };
 }
@@ -36,6 +39,7 @@ describe('FakeChain', () => {
       escrowRef: `${sha256Utf8Hex('pipeline-test/1')}#0`, txHash: sha256Utf8Hex('pipeline-test/1'),
       lockLovelace: LOCK, feeLovelace: FEE,
       deliverBy: T0 + ADVERT_EXPECTED.max_processing_ms + DELIVER_BY_BUFFER_MS, postedAt: T0, supplierPkh: ADVERT_EXPECTED.supplier_pkh,
+      collateralKept: true,
     });
     expect(await chain.escrowState(first.escrowRef)).toBe('Open');
     expect(await chain.onChainReceiptHash(first.escrowRef)).toBeNull();
@@ -80,7 +84,7 @@ describe('FakeChain', () => {
     await expect(chain.accept(escrowRef)).rejects.toThrow(/spent; Accept needs Submitted/);
   });
 
-  it('reclaim only Open or Claimed, and only from deliver_by on', async () => {
+  it('reclaim only Open or Claimed, and only from the first whole second strictly after deliver_by, as the vendored planReclaim opens it', async () => {
     const { chain, clock, post } = setup();
     const open = await post();
     const claimed = await post();
@@ -88,10 +92,15 @@ describe('FakeChain', () => {
     chain.markClaimed(claimed.escrowRef);
     chain.markClaimed(submitted.escrowRef);
     chain.markSubmitted(submitted.escrowRef, RECEIPT_HASH);
-    clock.now = open.deliverBy - 1;
-    await expect(chain.reclaim(open.escrowRef)).rejects.toThrow(/opens at deliver_by/);
-    await expect(chain.reclaim(claimed.escrowRef)).rejects.toThrow(/opens at deliver_by/);
-    clock.now = open.deliverBy;
+    // deliver_by falls on a whole second here, so the Reclaim opens one second after it, not at it.
+    expect(open.deliverBy).toBe(T0 + 480_000);
+    expect(reclaimOpens(open.deliverBy)).toBe(T0 + 481_000);
+    for (const now of [open.deliverBy - 1, open.deliverBy, reclaimOpens(open.deliverBy) - 1]) {
+      clock.now = now;
+      await expect(chain.reclaim(open.escrowRef), String(now)).rejects.toThrow(`opens at ${T0 + 481_000}, the first whole second after deliver_by ${T0 + 480_000}`);
+      await expect(chain.reclaim(claimed.escrowRef), String(now)).rejects.toThrow(/the first whole second after deliver_by/);
+    }
+    clock.now = reclaimOpens(open.deliverBy);
     expect(await chain.reclaim(open.escrowRef)).toStrictEqual({ txHash: sha256Utf8Hex(`pipeline-test/reclaim/${open.escrowRef}`), feeLovelace: FEE });
     expect(await chain.reclaim(claimed.escrowRef)).toMatchObject({ feeLovelace: FEE });
     expect([await chain.escrowState(open.escrowRef), await chain.escrowState(claimed.escrowRef)]).toStrictEqual(['spent', 'spent']);
@@ -139,9 +148,35 @@ describe('FakeChain', () => {
     expect((await chain.wallet()).floatLovelace).toBe(0n);
     await expect(post()).rejects.toThrow(/cannot pay the lock and the fee/);
     expect((await chain.wallet()).floatLovelace).toBe(0n);
-    clock.now = deliverBy;
+    clock.now = reclaimOpens(deliverBy);
     await chain.reclaim(escrowRef);
     expect((await chain.wallet()).floatLovelace).toBe(LOCK - FEE);
+  });
+
+  it('a deliver_by off the whole second opens the Reclaim at the next whole second', async () => {
+    const { chain, clock, post } = setup({ start: T0 + 123 });
+    const { escrowRef, deliverBy } = await post();
+    expect(deliverBy).toBe(T0 + 480_123);
+    clock.now = T0 + 480_999;
+    await expect(chain.reclaim(escrowRef)).rejects.toThrow(`opens at ${T0 + 481_000}`);
+    clock.now = T0 + 481_000;
+    expect(await chain.reclaim(escrowRef)).toMatchObject({ feeLovelace: FEE });
+  });
+
+  it('refuses a Post against an advert whose price and bonds exceed the constant lock, and moves neither the float nor the ref counter', async () => {
+    const dear = { ...advert, price_lovelace: 5_000_000n };
+    const dearRef = `${'0a'.repeat(32)}#0`;
+    const clock = { now: T0 };
+    const chain = new FakeChain({ adverts: { [ADVERT_REF]: advert, [dearRef]: dear }, clock: () => clock.now, prefix: 'pipeline-test/' });
+    await expect(chain.postEscrow({ advertRef: dearRef, promptHash: PROMPT })).rejects.toThrow(`FakeChain locks ${LOCK} lovelace on every Post, less than the 7000000 advert ${dearRef} asks for.`);
+    expect((await chain.wallet()).floatLovelace).toBe(50_000_000n);
+    expect((await chain.postEscrow({ advertRef: ADVERT_REF, promptHash: PROMPT })).escrowRef).toBe(`${sha256Utf8Hex('pipeline-test/1')}#0`);
+  });
+
+  it('says collateralKept false on a wallet without a collateral output, which it never spends either way', async () => {
+    const { chain, post } = setup({ collateralLovelace: null });
+    expect((await post()).collateralKept).toBe(false);
+    expect((await chain.wallet()).collateralLovelace).toBeNull();
   });
 
   it('posts only against an advert it knows, under the checks of the real Post (prompt hash shape, the buyer as supplier)', async () => {

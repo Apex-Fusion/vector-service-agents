@@ -36,9 +36,13 @@ export interface FleetPostPlan {
   postedAt: number;
 }
 
-/** The unsigned fleet Post and what it locks; `escrowRef` is `<txHash>#0`, checked to be the escrow (assertEscrowIsOutputZero). */
+/**
+ * The unsigned fleet Post and what it locks; `escrowRef` is `<txHash>#0`, checked to be the escrow (assertEscrowIsOutputZero).
+ * `collateralKept` is the vendored builder's flag: true when the wallet's smallest pure output of at least 5 units was held back, so it is
+ * still there as collateral for the Accept and the Reclaim; false on the fallback to the whole wallet, when that output may be spent.
+ */
 export interface FleetPostBuild {
-  unsignedCborHex: string; escrowRef: string; lockLovelace: bigint; deliverBy: number; postedAt: number; datum: EscrowDatum;
+  unsignedCborHex: string; escrowRef: string; lockLovelace: bigint; deliverBy: number; postedAt: number; datum: EscrowDatum; collateralKept: boolean;
 }
 
 /** The vendored planPostEscrow refuses an advert whose endpoint is not a usable URL with a host (endpointHostOf, private there); so does this. */
@@ -140,6 +144,7 @@ export async function buildFleetPostEscrow(
   if (inputs) {
     try { completed = await assemble().complete({ presetWalletInputs: inputs }); } catch (err) { reservedFailure = err; /* retried below with the whole wallet */ }
   }
+  const collateralKept = completed !== undefined;
   if (!completed) {
     try { completed = await assemble().complete({}); } catch (err) {
       // The whole-wallet attempt is the one whose words the caller gets; why the reserved selection was given up on stays attached.
@@ -148,5 +153,8 @@ export async function buildFleetPostEscrow(
   }
   const built = toBuildResult(completed);
   assertEscrowIsOutputZero(built.txCbor, { datumHex: escrowDatumHex, lockLovelace: plan.lockLovelace });
-  return { unsignedCborHex: built.txCbor, escrowRef: formatOutRef(built.txHash, 0), lockLovelace: plan.lockLovelace, deliverBy: plan.deliverBy, postedAt: plan.postedAt, datum: plan.datum };
+  return {
+    unsignedCborHex: built.txCbor, escrowRef: formatOutRef(built.txHash, 0), lockLovelace: plan.lockLovelace, deliverBy: plan.deliverBy, postedAt: plan.postedAt,
+    datum: plan.datum, collateralKept,
+  };
 }

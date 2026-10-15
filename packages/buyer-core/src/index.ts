@@ -20,6 +20,7 @@ export { ocrPromptHash, ocrResponseHash, responsesPromptHash, responsesResponseH
 export { planFleetPostEscrow, buildFleetPostEscrow } from './fleet-build.ts';
 export type { FleetPostPlan } from './fleet-build.ts';
 export { createRealChain, TxNotConfirmedError } from './chain.ts';
-export type { Chain, PostResult } from './chain.ts';
+export type { Chain, ChainEscrowState, PostResult, RealChainOptions } from './chain.ts';
 export { FakeChain } from './fake-chain.ts';
+export type { FakeChainOptions } from './fake-chain.ts';
 export { feeOfSignedTx } from './fees.ts';

@@ -5,7 +5,8 @@
 // Claim and Submit, are test hooks (markClaimed, markSubmitted) that a stub supplier calls. Refs are deterministic: the n-th Post (from 1)
 // opens `${sha256(prefix + n)}#0`. Every transaction pays the fee out of the wallet float: a Post takes the lock and its fee; an Accept
 // returns the buyer bond and the lock-floor excess and pays its fee; a Reclaim returns the whole lock and pays its fee. The collateral is
-// never spent. Not modelled: the accept window after a Submit and the supplier's Release.
+// never spent. A Reclaim opens where the vendored planReclaim opens it, at the first whole second strictly after deliver_by. Not modelled:
+// the accept window after a Submit and the supplier's Release.
 import { formatOutRef, parseOutRef, sha256Utf8Hex } from '@vsa/vector-read';
 import type { AdvertDatum, EscrowDatum } from '@vsa/vector-read';
 import type { Chain, ChainEscrowState, PostResult } from './chain.ts';
@@ -75,7 +76,10 @@ export class FakeChain implements Chain {
     const txHash = sha256Utf8Hex(`${this.#prefix}${++this.#posts}`);
     const escrowRef = formatOutRef(txHash, 0);
     this.#escrows.set(escrowRef, { datum: plan.datum, state: 'Open', resultReceiptHash: null });
-    return { escrowRef, txHash, lockLovelace: FakeChain.LOCK_LOVELACE, feeLovelace: FakeChain.FEE_LOVELACE, deliverBy: plan.deliverBy, postedAt: plan.postedAt, supplierPkh: plan.datum.supplier_pkh };
+    return {
+      escrowRef, txHash, lockLovelace: FakeChain.LOCK_LOVELACE, feeLovelace: FakeChain.FEE_LOVELACE, deliverBy: plan.deliverBy, postedAt: plan.postedAt,
+      supplierPkh: plan.datum.supplier_pkh, collateralKept: this.#collateral !== null,
+    };
   }
 
   async accept(escrowRef: string): Promise<{ txHash: string; feeLovelace: bigint }> {
@@ -92,7 +96,10 @@ export class FakeChain implements Chain {
     const [ref, escrow] = this.#escrow(escrowRef);
     if (escrow.state !== 'Open' && escrow.state !== 'Claimed') throw new Error(`FakeChain: escrow ${ref} is ${escrow.state}; Reclaim needs Open or Claimed.`);
     const now = this.#clock();
-    if (now < escrow.datum.deliver_by) throw new Error(`FakeChain: the Reclaim of escrow ${ref} opens at deliver_by ${escrow.datum.deliver_by}; the clock says ${now}.`);
+    // The vendored planReclaim's opening (marketplace-build.ts): the validator wants the validity range to start at or after deliver_by, and
+    // a range starts on a whole second, so the first that can is the first whole second strictly after it.
+    const opens = Math.ceil((escrow.datum.deliver_by + 1) / 1000) * 1000;
+    if (now < opens) throw new Error(`FakeChain: the Reclaim of escrow ${ref} opens at ${opens}, the first whole second after deliver_by ${escrow.datum.deliver_by}; the clock says ${now}.`);
     escrow.state = 'spent';
     this.#float += FakeChain.LOCK_LOVELACE - FakeChain.FEE_LOVELACE;
     return { txHash: sha256Utf8Hex(`${this.#prefix}reclaim/${ref}`), feeLovelace: FakeChain.FEE_LOVELACE };

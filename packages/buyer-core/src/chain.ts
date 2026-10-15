@@ -2,21 +2,23 @@
 // The chain-writing side of a buyer, behind one interface, so that an orchestrator runs against FakeChain (fake-chain.ts) in its tests and
 // against RealChain in production. RealChain builds every transaction keyless, the way the hosted mcp-server builds them (lucidForAddress
 // over the provider and the vendored builders, the fleet Post from fleet-build.ts), signs the unsigned CBOR locally with the vendored signer
-// and the buyer key, submits it through the provider, and returns once Koios reports it confirmed. Its reads go through the vendored
+// and the buyer key, submits it through the provider, and returns once Koios reports it confirmed. Every failure after the signature is a
+// TxNotConfirmedError that carries what a caller needs to keep track of an escrow that may still land. Its reads go through the vendored
 // lineage resolver and advert reader. The key never leaves this module: it is held in a private field, used only by signTransaction, and
 // no message carries it.
-import { CML } from '@lucid-evolution/lucid';
+import { CML, slotToUnixTime } from '@lucid-evolution/lucid';
 import type { Provider, UTxO } from '@lucid-evolution/lucid';
 import { formatOutRef, parseOutRef } from '@vsa/vector-read';
 import type { AdvertDatum } from '@vsa/vector-read';
 import { buildAccept, buildReclaim } from './vendored/mcp/marketplace-build.ts';
 import { lucidForAddress } from './vendored/mcp/build.ts';
+import { ensureSlotConfig } from './vendored/mcp/gov-build.ts';
 import type { SlotClockProvider } from './vendored/mcp/gov-build.ts';
 import { koiosFailure, resolveEscrowLineage } from './vendored/mcp/marketplace-lineage.ts';
 import type { EscrowLineage } from './vendored/mcp/marketplace-lineage.ts';
 import { koiosUtxoInfo, readAdvert as readAdvertOutput } from './vendored/mcp/marketplace-indexer.ts';
 import type { KoiosUtxo } from './vendored/mcp/marketplace-indexer.ts';
-import { COLLATERAL_MIN_LOVELACE } from './vendored/mcp/marketplace-constants.ts';
+import { COLLATERAL_MIN_LOVELACE, DELIVER_BY_BUFFER_MS } from './vendored/mcp/marketplace-constants.ts';
 import { OgmiosProvider } from './vendored/mcp-shared/provider.ts';
 import { VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from './vendored/mcp-shared/config.ts';
 import { signTransaction } from './vendored/signer/sign.ts';
@@ -24,47 +26,67 @@ import { rawHexToBech32 } from './signing.ts';
 import { buildFleetPostEscrow } from './fleet-build.ts';
 import { feeOfSignedTx } from './fees.ts';
 
-/** A confirmed Post. Times are POSIX milliseconds, amounts lovelace. */
-export interface PostResult { escrowRef: string; txHash: string; lockLovelace: bigint; feeLovelace: bigint; deliverBy: number; postedAt: number; supplierPkh: string; }
+/**
+ * A confirmed Post. Times are POSIX milliseconds, amounts lovelace. `collateralKept` is the vendored builder's flag: true when the Post was
+ * funded without the wallet's smallest pure output of at least 5 units, so it is still there as collateral for the next Accept or Reclaim;
+ * false when that output may have been spent, and then the wallet has collateral only if another such output remains (wallet() says).
+ */
+export interface PostResult { escrowRef: string; txHash: string; lockLovelace: bigint; feeLovelace: bigint; deliverBy: number; postedAt: number; supplierPkh: string; collateralKept: boolean; }
 
 /**
- * Where an escrow is. Open, Claimed and Submitted are the states of its live output. `spent`: no live output carries it on any more (it was
- * accepted, reclaimed or released; on RealChain also, for as long as Koios lags, a continuation Koios has not listed yet, which the vendored
- * resolver cannot tell apart, so read again before treating it as final). `unknown`: there is no escrow at that ref at all.
+ * Where an escrow is. Open, Claimed and Submitted are the states of its live output.
+ * `spent`: no live output carries it on any more: it was accepted, reclaimed or released. On RealChain also, for as long as Koios lags, a
+ * continuation Koios has not listed yet, which the vendored resolver cannot tell apart: read again before treating it as final.
+ * `unknown`: Koios lists no output at the ref. On RealChain that is final only once the transaction that would create the output can no
+ * longer land (its Post's validTo has passed, see TxNotConfirmedError) and Koios has caught up: until then a Post that was submitted and is
+ * not indexed yet reads unknown too. On FakeChain it means the ref was never posted.
  */
 export type ChainEscrowState = 'Open' | 'Claimed' | 'Submitted' | 'spent' | 'unknown';
 
 export interface Chain {
   /** The buyer's address and key hash, the pure output of at least 5 units kept as collateral for Accept and Reclaim (null if none), and the lovelace outside it. */
   wallet(): Promise<{ address: string; buyerPkh: string; collateralLovelace: bigint | null; floatLovelace: bigint }>;
-  /** Builds, signs, submits and awaits the confirmation of a Post that commits to `promptHash`. */
+  /** Builds, signs, submits and awaits the confirmation of a Post that commits to `promptHash`. A failure after the signature is a TxNotConfirmedError. */
   postEscrow(args: { advertRef: string; promptHash: string }): Promise<PostResult>;
   /** Accepts a Submitted escrow (pays the supplier the price and its bond, returns the buyer bond); returns once confirmed. */
   accept(escrowRef: string): Promise<{ txHash: string; feeLovelace: bigint }>;
-  /** Reclaims an Open or Claimed escrow from its deliver_by on (everything locked comes back); returns once confirmed. */
+  /** Reclaims an Open or Claimed escrow from the first whole second after its deliver_by on (everything locked comes back); returns once confirmed. */
   reclaim(escrowRef: string): Promise<{ txHash: string; feeLovelace: bigint }>;
-  /** Where the escrow is (ChainEscrowState). Throws, and never answers `unknown`, when it cannot tell (an indexer or node unreachable or behind). */
+  /**
+   * Where the escrow is (ChainEscrowState). Throws, and never answers `unknown`, when it cannot tell (an indexer or node unreachable or
+   * behind). It also throws, and keeps throwing, for an output Koios lists that is no escrow (not at the escrow credential, no escrow datum)
+   * or an escrow whose output holds less than its datum owes: neither can happen for a ref postEscrow returned.
+   */
   escrowState(escrowRef: string): Promise<ChainEscrowState>;
   /** The result_receipt_hash of the escrow's live Submitted output, or null when its live output is not Submitted (or it has none). Throws when it cannot tell. */
   onChainReceiptHash(escrowRef: string): Promise<string | null>;
+  /** The advert's datum, spent or not: the vendored reader's `spent` flag is dropped here, and a Post reads the advert again and refuses a spent one. */
   readAdvert(advertRef: string): Promise<AdvertDatum>;
 }
 
 /**
- * A transaction was submitted and Koios did not report it confirmed within the await budget. It may still land. For a Post that means an
- * escrow under `escrowRef` the buyer can Reclaim from `deliverBy` on if nobody delivers, so a caller records it before giving up on the job.
- * For an Accept or a Reclaim, `escrowRef` is the escrow it spends and `deliverBy` is null.
+ * A transaction failed after it was signed: it was refused, it may not have been submitted, or it was submitted and not confirmed in time.
+ * `mayLand` is false only when it certainly never reached the node: it was not sent, or the submit API refused it with an HTTP 4xx (the
+ * API's or the ledger's verdict on the transaction itself). Otherwise it may land, and only before `validTo` (POSIX ms), the start of the
+ * first slot its validity interval excludes. For a Post, `escrowRef` is the escrow it opens and `deliverBy` that escrow's deliver_by: a
+ * caller that gives up on the job records both with `validTo`, so that the escrow is reclaimed if it lands, and drops the record only once
+ * `validTo` has passed and Koios still lists nothing at the ref. For an Accept or a Reclaim, `escrowRef` is the escrow it spends and
+ * `deliverBy` is null.
  */
 export class TxNotConfirmedError extends Error {
   readonly txHash: string;
   readonly escrowRef: string;
   readonly deliverBy: number | null;
-  constructor(what: string, txHash: string, escrowRef: string, deliverBy: number | null, awaitTimeoutMs: number) {
-    super(`${what} ${txHash} of escrow ${escrowRef} was submitted, but Koios did not report it confirmed within ${awaitTimeoutMs} ms; it may still land. Read the escrow before acting on it again.`);
+  readonly validTo: number;
+  readonly mayLand: boolean;
+  constructor(message: string, facts: { txHash: string; escrowRef: string; deliverBy: number | null; validTo: number; mayLand: boolean }, options?: { cause?: unknown }) {
+    super(message, options);
     this.name = 'TxNotConfirmedError';
-    this.txHash = txHash;
-    this.escrowRef = escrowRef;
-    this.deliverBy = deliverBy;
+    this.txHash = facts.txHash;
+    this.escrowRef = facts.escrowRef;
+    this.deliverBy = facts.deliverBy;
+    this.validTo = facts.validTo;
+    this.mayLand = facts.mayLand;
   }
 }
 
@@ -80,16 +102,25 @@ export interface RealChainOptions {
   submitUrl?: string;
   /** Stands in for fetch in the Koios reads of the builders and the lineage. The provider's own calls (Ogmios, the submit API, tx_status) use the global fetch. */
   fetchImpl?: typeof fetch;
-  /** How long to wait for Koios to report a submitted transaction confirmed, in all (default 180000). */
+  /**
+   * How long, in all, to wait for Koios to report a submitted transaction confirmed. At least DELIVER_BY_BUFFER_MS (180000), the default: a
+   * Post is valid for at most that long after it is built, so a Post the wait gave up on can no longer land.
+   */
   awaitTimeoutMs?: number;
 }
 
 /** OgmiosProvider.awaitTx polls Koios tx_status this many times, one interval apart (vendored/mcp-shared/provider.ts); the interval is set from awaitTimeoutMs. */
 const AWAIT_TX_POLLS = 60;
-/** 60 polls 3 s apart: the vendored awaitTx with its own default interval. */
-const DEFAULT_AWAIT_TIMEOUT_MS = 180_000;
 const LIVE_STATES = new Set<ChainEscrowState>(['Open', 'Claimed', 'Submitted']);
 const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/**
+ * Did the submit API refuse the transaction outright? The vendored OgmiosProvider.submitTx says `Transaction submission rejected (<status> ...`
+ * for an HTTP answer that is not OK (formatSubmitRejection). A 4xx refuses the request itself, the ledger's verdict included (the submit API
+ * answers 400 with the ledger's reason): the transaction was not taken. Anything else leaves open whether the node has it: a network error
+ * after the request may have gone out, a 5xx a gateway can answer after forwarding it, a 200 whose body is not a transaction hash.
+ */
+const refusedOutright = (err: unknown): boolean => /^Transaction submission rejected \(4\d\d\b/.test(errorText(err));
 
 /** The output reserveCollateralInputs holds back from a Post: the smallest pure-lovelace output of at least 5 units. */
 function collateralOf(utxos: UTxO[]): bigint | null {
@@ -101,6 +132,7 @@ function collateralOf(utxos: UTxO[]): bigint | null {
  * The production Chain over a node (createRealChain gives it the vendored OgmiosProvider). The address is the mainnet enterprise address
  * of the key (header 0x61 and the key hash), the address gen-keypair prints for it. Transactions run one at a time, each built only after
  * the one before it is confirmed or has failed: they spend the same wallet, and a build that ran beside another could pick the same inputs.
+ * The wait for each is bounded by awaitTimeoutMs in all, so a transaction queued behind another waits at most that long for it.
  */
 export class RealChain implements Chain {
   readonly address: string;
@@ -118,8 +150,10 @@ export class RealChain implements Chain {
     const keyHash = CML.PrivateKey.from_bech32(this.#signingKey).to_public().hash();
     this.buyerPkh = keyHash.to_hex();
     this.address = CML.EnterpriseAddress.new(1, CML.Credential.new_pub_key(keyHash)).to_address().to_bech32();
-    const awaitTimeoutMs = opts.awaitTimeoutMs ?? DEFAULT_AWAIT_TIMEOUT_MS;
-    if (!Number.isSafeInteger(awaitTimeoutMs) || awaitTimeoutMs <= 0) throw new Error('awaitTimeoutMs must be a positive whole number of milliseconds');
+    const awaitTimeoutMs = opts.awaitTimeoutMs ?? DELIVER_BY_BUFFER_MS;
+    if (!Number.isSafeInteger(awaitTimeoutMs) || awaitTimeoutMs < DELIVER_BY_BUFFER_MS) {
+      throw new Error(`awaitTimeoutMs must be a whole number of milliseconds of at least ${DELIVER_BY_BUFFER_MS} (DELIVER_BY_BUFFER_MS), so that the wait outlasts the validity of a Post`);
+    }
     this.#awaitTimeoutMs = awaitTimeoutMs;
     this.#pollIntervalMs = Math.ceil(awaitTimeoutMs / AWAIT_TX_POLLS);
     this.#provider = provider;
@@ -139,7 +173,10 @@ export class RealChain implements Chain {
       const lucid = await lucidForAddress(this.#provider, this.address);
       const built = await buildFleetPostEscrow(lucid, this.#provider, { changeAddress: this.address, advertRef: args.advertRef, promptHash: args.promptHash, koiosUrl: this.#koiosUrl }, this.#fetchImpl);
       const { txHash, feeLovelace } = await this.#signSubmitAwait('The Post', built.unsignedCborHex, parseOutRef(built.escrowRef).txHash, built.escrowRef, built.deliverBy);
-      return { escrowRef: built.escrowRef, txHash, lockLovelace: built.lockLovelace, feeLovelace, deliverBy: built.deliverBy, postedAt: built.postedAt, supplierPkh: built.datum.supplier_pkh };
+      return {
+        escrowRef: built.escrowRef, txHash, lockLovelace: built.lockLovelace, feeLovelace, deliverBy: built.deliverBy, postedAt: built.postedAt,
+        supplierPkh: built.datum.supplier_pkh, collateralKept: built.collateralKept,
+      };
     });
   }
 
@@ -194,16 +231,62 @@ export class RealChain implements Chain {
     return resolveEscrowLineage(this.#provider, this.#koiosUrl, canonical, this.#fetchImpl);
   }
 
-  /** Signs with the buyer key, submits, and waits for Koios to report the transaction confirmed. */
+  /**
+   * Signs with the buyer key, submits, and waits for Koios to report the transaction confirmed. Before the signature nothing is sent, and a
+   * failure is a plain Error. After it, every failure is a TxNotConfirmedError with the transaction's hash, its escrow, the Post's
+   * deliver_by and the end of its validity, and whether it may still land.
+   */
   async #signSubmitAwait(what: string, unsignedCborHex: string, builtTxHash: string, escrowRef: string, deliverBy: number | null): Promise<{ txHash: string; feeLovelace: bigint }> {
+    const validTo = await this.#validToOf(what, unsignedCborHex, escrowRef);
     const { signedCborHex, txHashHex } = signTransaction(unsignedCborHex, this.#signingKey);
-    // Signing never changes the body; a different hash would mean the escrow ref the caller is given names another transaction.
-    if (txHashHex !== builtTxHash) throw new Error(`${what} of escrow ${escrowRef} signed as ${txHashHex}, not as the ${builtTxHash} it was built as; nothing was submitted.`);
-    const feeLovelace = feeOfSignedTx(signedCborHex);
-    try { await this.#provider.submitTx(signedCborHex); } catch (err) { throw new Error(`${what} ${txHashHex} of escrow ${escrowRef} was not submitted: ${errorText(err)}`); }
+    const facts = { txHash: txHashHex, escrowRef, deliverBy, validTo };
+    const subject = `${what} ${txHashHex} of escrow ${escrowRef}`;
+    const until = `It may land, but only before ${new Date(validTo).toISOString()}: read the escrow before acting on it again.`;
+    let feeLovelace: bigint;
+    try {
+      // Signing never changes the body; a different hash would mean the escrow ref the caller is given names another transaction.
+      if (txHashHex !== builtTxHash) throw new Error(`it signed as ${txHashHex}, not as the ${builtTxHash} it was built as`);
+      feeLovelace = feeOfSignedTx(signedCborHex);
+    } catch (err) {
+      throw new TxNotConfirmedError(`${subject} was not submitted and cannot land (${errorText(err)}).`, { ...facts, mayLand: false }, { cause: err });
+    }
+    try { await this.#provider.submitTx(signedCborHex); } catch (err) {
+      if (refusedOutright(err)) throw new TxNotConfirmedError(`${subject} was refused and cannot land (${errorText(err)}).`, { ...facts, mayLand: false }, { cause: err });
+      throw new TxNotConfirmedError(`${subject} may not have been submitted (${errorText(err)}). ${until}`, { ...facts, mayLand: true }, { cause: err });
+    }
     // The hash awaited is the one of the bytes sent, whatever the submit API echoed.
-    if (!(await this.#provider.awaitTx(txHashHex, this.#pollIntervalMs))) throw new TxNotConfirmedError(what, txHashHex, escrowRef, deliverBy, this.#awaitTimeoutMs);
+    let confirmed: boolean;
+    try { confirmed = await this.#awaitConfirmation(txHashHex); } catch (err) {
+      throw new TxNotConfirmedError(`${subject} was submitted, but its confirmation could not be read (${errorText(err)}). ${until}`, { ...facts, mayLand: true }, { cause: err });
+    }
+    if (!confirmed) throw new TxNotConfirmedError(`${subject} was submitted, but Koios did not report it confirmed within ${this.#awaitTimeoutMs} ms. ${until}`, { ...facts, mayLand: true });
     return { txHash: txHashHex, feeLovelace };
+  }
+
+  /**
+   * The first moment the transaction can no longer land: the start of the slot its validity interval ends at (Lucid turns the plan's validTo
+   * into that slot, rounding down, and the ledger takes the transaction only in earlier slots). Read from the unsigned body, which signing
+   * leaves as it is; the slot clock is the one the builder that just ran set (ensureSlotConfig caches it).
+   */
+  async #validToOf(what: string, unsignedCborHex: string, escrowRef: string): Promise<number> {
+    const ttl = CML.Transaction.from_cbor_hex(unsignedCborHex).body().ttl();
+    if (ttl === undefined) throw new Error(`${what} of escrow ${escrowRef} has no end to its validity, so it could land at any time; it was not signed.`);
+    await ensureSlotConfig(this.#provider);
+    return slotToUnixTime('Mainnet', Number(ttl));
+  }
+
+  /**
+   * The provider's awaitTx against a timer of awaitTimeoutMs, whichever answers first. The vendored awaitTx polls 60 times one interval
+   * apart, but its fetches carry no timeout, so only the timer bounds the wait. A poll loop left behind ends on its own.
+   */
+  async #awaitConfirmation(txHash: string): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), this.#awaitTimeoutMs); });
+    try {
+      return await Promise.race([this.#provider.awaitTx(txHash, this.#pollIntervalMs), budget]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** Runs `work` after every transaction queued before it has settled, whatever its outcome. */
@@ -216,8 +299,8 @@ export class RealChain implements Chain {
 
 /**
  * The production Chain: RealChain over the vendored OgmiosProvider, with the vendored mainnet endpoints (each overridable by its
- * environment variable, see vendored/mcp-shared/config.ts) unless others are given. No network call is made here; a key that is not 64
- * lowercase hex characters, or an await budget that is not a positive whole number, is refused without being echoed.
+ * environment variable, see vendored/mcp-shared/config.ts) unless others are given. No network call is made here. A key that is not 64
+ * lowercase hex characters is refused without being echoed, and so is an await budget shorter than DELIVER_BY_BUFFER_MS.
  */
 export async function createRealChain(opts: RealChainOptions): Promise<Chain> {
   const koiosUrl = opts.koiosUrl ?? VECTOR_KOIOS_URL;
