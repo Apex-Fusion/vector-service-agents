@@ -6,9 +6,9 @@ Each copy was taken from the blob at that commit, `git -C <mcp-server> cat-file 
 
 ## Why vendored
 
-The mcp-server packages are not published to a registry. The Document Pipeline agent posts escrows, signs and submits transactions, reads escrow lineage and verifies receipts, and it does so with the same code the hosted keyless MCP server uses: the same datum codecs, the same builders, the same lineage resolver, the same receipt verifier and the same signer.
+The mcp-server packages are not published to a registry. The Document Pipeline agent (not built yet) will post escrows, sign and submit transactions, read escrow lineage and verify receipts. It will build, read and verify with the same code the hosted keyless MCP server uses: the same datum codecs, the same builders, the same lineage resolver and the same receipt verifier. It will sign with `sign.ts` of the member's local signer package (`packages/signer`). The hosted server never signs: it returns unsigned transactions, and the member's local signer signs them.
 
-The datum codecs are not copied a second time. `@vsa/vector-read` carries `marketplace-datum.ts` (at `94b8f41`), and the copies here import it from there. Drift is caught twice: by `packages/vector-read/test/datum.test.ts` (the golden datum tests, the same as the source's) and by the sha256 column below, which `test/vendored.test.ts` checks against every copy.
+The datum codecs are not copied a second time. `@vsa/vector-read` carries `marketplace-datum.ts` (at `94b8f41`), and the copies here import it from there. Drift is caught twice: by `packages/vector-read/test/datum.test.ts` (the golden datum tests, the same as the source's) and by the sha256 column below, which `test/vendored.test.ts` checks in both directions: every row names a file whose sha256 matches, and every file under `src/vendored/` and `test/fixtures/` has a row.
 
 ## Files
 
@@ -80,7 +80,7 @@ Per file (the line numbers are the same in the source and the copy):
 - line 19: `import type { AdvertDatum, EscrowDatum } from './marketplace-datum.js';` becomes `import type { AdvertDatum, EscrowDatum } from '@vsa/vector-read';`
 
 `src/vendored/mcp/build.ts` (an excerpt, see below)
-- line 13: `import { lovelaceToAda, apexToLovelace } from '@apexfusion/vector-mcp-shared/tx';` becomes `import { lovelaceToAda } from '../mcp-shared/tx.js';` (the one rewrite that also drops a name: `apexToLovelace` is used only by the builders after line 48, which the excerpt leaves out, and the `tx.ts` excerpt does not carry it)
+- line 13: `import { lovelaceToAda, apexToLovelace } from '@apexfusion/vector-mcp-shared/tx';` becomes `import { lovelaceToAda } from '../mcp-shared/tx.js';` (the one rewrite that also drops a name: `apexToLovelace` is used only by the builders after line 48, which the excerpt leaves out, and the `tx.ts` excerpt does not carry it; signed off under ruling R5 of Plan C)
 - line 16 (the end of the import that starts on line 14): `} from '@apexfusion/vector-mcp-shared/types';` becomes `} from '../mcp-shared/types.js';`
 
 `src/vendored/mcp/rate-limiter.ts`
@@ -103,6 +103,8 @@ The source defaults to Vector testnet. In this copy the three endpoint defaults 
 
 Two lines stay as the source has them: the comment on line 1 still says that the defaults target testnet, and `VECTOR_EXPLORER_URL` (line 5) still defaults to the testnet explorer. Nothing in buyer-core reads `VECTOR_EXPLORER_URL` or calls `explorerTxLink`, and `src/index.ts` does not export either.
 
+`test/config-and-fixtures.test.ts` pins the three defaults (with the variables unset) and the override (with them set), so a re-vendor that brings the testnet defaults back fails there.
+
 The Koios base excludes `/api/v1`. The vendored indexer (`koiosPostList`) and `OgmiosProvider` strip trailing slashes from the base and append `/api/v1/<route>` themselves; that is the vendored expectation, kept. `@vsa/vector-read` reads another variable, `KOIOS_URL`, whose default includes `/api/v1` (`https://v2.koios.vector.mainnet.apexfusion.org/api/v1`). Never hand vector-read's `KOIOS_URL` to a buyer-core function that takes a Koios base, or the reverse: the request would go to `/api/v1/api/v1/<route>`. The marketplace indexer is configured the same way twice: buyer-core reads `VECTOR_MARKETPLACE_INDEXER_URL`, vector-read reads `INDEXER_URL`, and both default to `https://mp-indexer.vector.apexfusion.org`.
 
 ## Deviation: three excerpts
@@ -110,8 +112,16 @@ The Koios base excludes `/api/v1`. The vendored indexer (`koiosPostList`) and `O
 Three copies are excerpts: whole lines of the source, byte for byte and in their order, with the rest left out. Nothing inside a kept line changes except the two `build.ts` import lines above.
 
 - `src/vendored/mcp/gov-build.ts`: lines 1-13 (the header and the Lucid imports), 85-135 (the slot clock: `SlotClockProvider`, `slotClockOf`, `ChainClockError`, `ensureSlotConfig` and its module-global cache) and 151-175 (`paymentKeyHashOf`) of 821. The whole file imports `@aws-sdk/client-s3` at the top (the IPFS upload of the governance family), `registry-build.ts` and the shared `tx.ts`, and names the ledger unit in four lines. The copies need only the slot clock and the key hash, and buyer-core carries no AWS SDK. The comment above `paymentKeyHashOf` speaks of `buildProposalSpend` "below": that is in the part left out.
-- `src/vendored/mcp/build.ts`: lines 1-48 of 196, `lucidForAddress` and `toBuildResult`. The rest are the send, deploy and interact builders, which use `apexToLovelace`.
+- `src/vendored/mcp/build.ts`: lines 1-48 of 196, `lucidForAddress` (exported by `src/index.ts`) and `toBuildResult`. The rest are the send, deploy and interact builders, which use `apexToLovelace`; line 13 drops that name from its import (see Rewritten lines).
 - `src/vendored/mcp-shared/tx.ts`: lines 1-2 (the header comment) and 46-54 (a blank line and `lovelaceToAda`) of 113. The rest (`apexToLovelace`, the metadata, CBOR and NFT-name helpers) is not used by the copies, and `apexToLovelace` names the ledger unit in its comments and in its error text, which `scripts/specs.test.mjs` refuses anywhere in this repository but `docs/HIRE.md`.
+
+## Verbatim exceptions to the repository's writing rules
+
+The copies keep the source's wording where it breaks a writing rule of this repository: the copy stays byte-identical and the exception is declared here, never rewritten (ruling R9 of Plan C).
+
+- `test/fixtures/fixture-provider.ts`, lines 78, 81, 84, 87, 90, 93 and 96: one em dash (U+2014) each, between `offline` and the method name in the error strings of the seven methods the offline provider refuses (`getUtxosWithUnit`, `getUtxoByUnit`, `getDelegation`, `getDatum`, `awaitTx`, `submitTx`, `evaluateTx`). This repository writes hyphens only. The dash check of `scripts/specs.test.mjs` does not read this file.
+
+No other copy holds an en or em dash, and no copy names the ledger unit (the excerpts leave out the lines that do).
 
 ## Files the copies need that the plan's table did not list
 
@@ -123,14 +133,16 @@ Three copies are excerpts: whole lines of the source, byte for byte and in their
 
 - `packages/builder/src/vector/marketplace-datum.ts` and `packages/builder/src/vector/safe-fetch.ts`: imported from `@vsa/vector-read` (above). Between `94b8f41` and `651ae93` the datum module gained only `sha256BytesHex`.
 - The rest of `gov-build.ts`, and `registry-build.ts`: they need `@aws-sdk/client-s3`.
-- The MCP tool modules (`marketplace.ts` and `marketplace-*-tools.ts`): they need `@modelcontextprotocol/sdk` and `zod`. buyer-core calls the functions those tools call.
-- Everything of the signer but `sign.ts` (its key loading, key generation, policy, audit log and tools). The agent's key comes from its env file as raw hex; `src/signing.ts` turns it into the bech32 that `signTransaction` takes.
+- The MCP tool modules (`marketplace.ts` and `marketplace-*-tools.ts`): they need `@modelcontextprotocol/sdk` and `zod`. buyer-core exports the functions those tools call.
+- Everything of the signer but `sign.ts` (its key loading, key generation, policy, audit log and tools). The Document Pipeline's key will come from its env file as raw hex; `src/signing.ts` turns such a key into the bech32 that `signTransaction` takes.
 
 ## Local files
 
 - `src/hashes.ts`: `sha256BytesHex`. Its code lines are the source's, appended from the blob: line 9 (the `createHash` import) and lines 193-194 of `packages/builder/src/vector/marketplace-datum.ts` at `651ae93`, under a header comment. Tested in `test/hashes.test.ts`.
 - `src/signing.ts`: `rawHexToBech32`, a raw 64-hex Ed25519 key as the bech32 `signTransaction` takes. Tested in `test/signing.test.ts`.
 - `src/index.ts`: the public surface.
+
+The tests: `test/vendored.test.ts` (this manifest, both ways, and the public surface), `test/signing.test.ts`, `test/hashes.test.ts`, and `test/config-and-fixtures.test.ts` (the mainnet defaults, and the vendored fixtures driving `planPostEscrow`, `resolveEscrowLineage` and `lucidForAddress`).
 
 ## Checking the copies against the pin
 
@@ -149,5 +161,7 @@ git -C <mcp-server> cat-file blob 651ae93:packages/builder/src/vector/build.ts |
 
 1. Take the new pin (a commit of Apex-Fusion/mcp-server).
 2. For each row, take the blob at the pin with `git cat-file blob` (never a working file of a CRLF checkout), cut the excerpts again after checking that the line ranges still hold the same code, and apply the rewrites listed above, one line for one line.
-3. If the datum module changed after `94b8f41` in more than `sha256BytesHex`, re-vendor `packages/vector-read/src/datum.ts` first (see `packages/vector-read/VENDORED-FROM.md`).
-4. Recompute the sha256 column (`sha256sum`), update the commit column and this file, and run `pnpm --filter @vsa/buyer-core test` and `pnpm typecheck`.
+3. Apply the config.ts deviation again: the source's `config.ts` defaults to testnet, so set the defaults of lines 2-4 to the mainnet values above. A fresh blob brings the testnet defaults back, and `test/config-and-fixtures.test.ts` fails until they are mainnet again.
+4. Check the verbatim exceptions above against the new copies (the em dash lines of `fixture-provider.ts`, and any new one), and update their line numbers here.
+5. If the datum module changed after `94b8f41` in more than `sha256BytesHex`, re-vendor `packages/vector-read/src/datum.ts` first (see `packages/vector-read/VENDORED-FROM.md`).
+6. Recompute the sha256 column (`sha256sum`), update the commit column and this file, and run `pnpm --filter @vsa/buyer-core test` and `pnpm typecheck`. `test/vendored.test.ts` fails on a copy without a row, a row without a copy, and a sha256 that no longer matches.
