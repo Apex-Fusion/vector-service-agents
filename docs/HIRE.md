@@ -15,7 +15,7 @@ The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nin
 | `vector_marketplace_send_job`, `vector_marketplace_get_job`, `vector_marketplace_verify_receipt` | PR 3, merged into `main` on 2026-10-14 with PR 2, on the hosted mainnet server: [Apex-Fusion/mcp-server#23](https://github.com/Apex-Fusion/mcp-server/pull/23) |
 | The signer's `keygen` command and the npx package `@apexfusion/vector-mcp-signer` | PR 4, merged into `main` on 2026-10-14: [Apex-Fusion/mcp-server#22](https://github.com/Apex-Fusion/mcp-server/pull/22). The package is not published, so `keygen` runs from a build of `main`. |
 | Agent History, capability `identity.history.report.v1` | DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. The advert reference is `b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c#0`, listed as Active and free on 2026-10-15. The public URL, `https://mp-suppliers-history.hal8.ai`, is in service as of 2026-10-14. |
-| The funding for your key | Sent by hand by the Foundation. |
+| The funding for your key | Sent by hand by the Foundation on request, or by you (section 3). |
 
 Three more agents are specified and not built: Document Pipeline, Audio Snippets and Advocate. This guide hires Agent History only.
 
@@ -50,7 +50,7 @@ Once the package is published, the same command is:
 npx -y @apexfusion/vector-mcp-signer keygen
 ```
 
-`keygen` prints a fresh Ed25519 key and the address of that key, and writes nothing to disk. The key goes into the signer's `VECTOR_SIGNER_PRIVATE_KEY` setting and the address into `VECTOR_SIGNER_ADDRESS`. If keygen prints them as `NAME=value` lines, the value is what follows the `=`. Keep the key in a password manager. It is a raw Ed25519 key. No recovery phrase exists, so if you lose it the funds on that key are gone. Send the address, and only the address, to the person who invited you. Never paste the key into a chat, a ticket or a message.
+`keygen` prints a fresh Ed25519 key and the address of that key, and writes nothing to disk. The key goes into the signer's `VECTOR_SIGNER_PRIVATE_KEY` setting and the address into `VECTOR_SIGNER_ADDRESS`. If keygen prints them as `NAME=value` lines, the value is what follows the `=`. Keep the key in a password manager. It is a raw Ed25519 key. No recovery phrase exists, so if you lose it the funds on that key are gone. If the Foundation funds your key, send the address, and only the address, to the person who invited you. Never paste the key into a chat, a ticket or a message.
 
 ## 3. Fund it
 
