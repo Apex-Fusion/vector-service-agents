@@ -2,7 +2,7 @@
 
 The registry, stake, marketplace and module records the Vector ledger holds for one agent identifier, with the gaps stated. One report per job, delivered with the runtime's signed receipt. Capability `identity.history.report.v1`.
 
-Status: PROPOSED (advertised on 2026-10-14; one first-party job settled on 2026-10-15). Read-only: the service reads public ledger data, holds no keys and costs no model calls.
+Status: DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. Read-only: the service reads public ledger data, holds no keys and costs no model calls.
 
 `agent.json.template` is the manifest with placeholders. The service renders the real manifest from its environment when it starts (`OPERATOR_CONTACT`, `AGENT_DID`, `SUPPLIER_PKH`, `SUPPLIER_PUB_KEY_HEX` and the optional settings, see Manifest below) and serves those bytes at `GET /agent.json`. It never serves the template itself. `<OPERATOR_CONTACT>`, `<AGENT_DID>`, `<SUPPLIER_PKH>` and `<SUPPLIER_PUB_KEY_HEX>` in the template stand for those four values.
 
@@ -33,8 +33,8 @@ Other routes: `GET /agent.json` (manifest) and `GET /healthz`. `POST` is accepte
 | `OPERATOR_CONTACT` | `operator.contact` | none. Required: the service stops at start without it |
 | `ADVERT_PRICE_LOVELACE` | `terms.price_lovelace` | `1000000` |
 | `ADVERT_MAX_PROCESSING_MS` | `terms.max_processing_ms` | `300000` |
-| `AGENT_STATUS_CHIP` | `status.chip`, in lower case | `proposed` |
-| `AGENT_STATUS_SINCE` | `status.since` | `2026-10-13` |
+| `AGENT_STATUS_CHIP` | `status.chip`, in lower case | `deployed` |
+| `AGENT_STATUS_SINCE` | `status.since` | `2026-10-15` |
 | `ADVERT_EXPLORER_URL` | `links.explorer_advert` | empty |
 
 Numbers (and `PORT`) must be non-negative integers. `AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case. `OPERATOR_CONTACT` must be set and not blank. A value that breaks one of these rules stops the service at start, and the error names the variable. `OPERATOR_CONTACT` has no default, because the value is published in the manifest that the advert hashes: use a role address that the Foundation confirms, never a person's.
@@ -73,4 +73,4 @@ Two earlier runs on the same day, before the v15-sim addresses were added, gave 
 
 ## Image
 
-`Dockerfile` builds the service image. The build context is the repository root, because the image installs the workspace from the lockfile: `docker build -f agents/agent-history/Dockerfile -t vsa/agent-history:dev .`. The image runs as the `node` user under `tini`, listens on 9091 and answers `/healthz` for its health check. It holds no key. The publish job in `.github/workflows/ci.yml` pushes the image on merge to `main`, to `ghcr.io/apex-fusion/vector-service-agents/agent-history` as `:latest` and as `:<commit sha>`. It has not run yet: Actions is blocked on this private repository. Nothing is deployed yet. How it will be put on the box, and what the operator and the host administrator each do: `deploy/apex-web/README.md` and `deploy/apex-web/RUNBOOK.md`.
+`Dockerfile` builds the service image. The build context is the repository root, because the image installs the workspace from the lockfile: `docker build -f agents/agent-history/Dockerfile -t vsa/agent-history:dev .`. The image runs as the `node` user under `tini`, listens on 9091 and answers `/healthz` for its health check. It holds no key. The publish job in `.github/workflows/ci.yml` pushes the image on merge to `main`, to `ghcr.io/apex-fusion/vector-service-agents/agent-history` as `:latest` and as `:<commit sha>`. It has not run yet: Actions is blocked on this private repository. The agent is running on the box, and its status has been DEPLOYED since 2026-10-15. How it is put on the box, and what the operator and the host administrator each do: `deploy/apex-web/README.md` and `deploy/apex-web/RUNBOOK.md`.

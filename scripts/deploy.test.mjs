@@ -210,15 +210,19 @@ test('env example: the chain values and the advert terms are the design and the 
 });
 
 test('env example: the status word is the spec status, and the manifest it produces is the default manifest', () => {
-  assert.ok(section(SPEC, 'Status').includes(`${example.AGENT_STATUS_CHIP.toUpperCase()} (advertised on 2026-10-14; one first-party job settled on 2026-10-15). Since ${example.AGENT_STATUS_SINCE}.`));
-  assert.equal(example.AGENT_STATUS_CHIP, 'proposed', 'the advert is posted and one first-party job has settled, which is not demand, so nothing may claim more until step 17');
+  assert.ok(section(SPEC, 'Status').includes(`${example.AGENT_STATUS_CHIP.toUpperCase()} (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since ${example.AGENT_STATUS_SINCE}.`));
+  assert.equal(example.AGENT_STATUS_CHIP, 'deployed', 'the advert is Active and one first-party job has settled (step 17), which shows that the path works and is not demand, so nothing may claim live');
+  assert.equal(example.AGENT_STATUS_SINCE, '2026-10-15');
+  // The comment says what the word is, who changes it, and what a first run starts with.
+  assert.match(exampleText, /^# The status word the manifest carries, and since when: deployed since 2026-10-15, after the advert was Active and a first-party job had settled \(RUNBOOK\.md step 17, "Flip the status"\)\. A first-party run is not demand, so the word is not live\.$/m);
+  assert.match(exampleText, /^# On a first run, before any job has settled, set proposed and today's date here; step 17 changes them\.$/m);
   // The service takes an empty string as given, so an empty AGENT_STATUS_SINCE would put since "" into the manifest.
   assert.notEqual(example.AGENT_STATUS_SINCE, '');
   // Placeholders are unset, and the one setting with no default is supplied for both.
   const [withExample, withNothing] = renderManifests([{ ...withoutPlaceholders(example), OPERATOR_CONTACT: TEST_CONTACT }, { OPERATOR_CONTACT: TEST_CONTACT }]);
   assert.deepEqual(withExample, withNothing, 'the example changes nothing in the manifest the advert will hash');
   assert.equal(withExample.operator.contact, TEST_CONTACT);
-  assert.equal(withExample.status.chip, 'proposed');
+  assert.deepEqual(withExample.status, { chip: 'deployed', since: '2026-10-15' });
   assert.equal(withExample.links.explorer_advert, '');
 });
 
@@ -279,28 +283,42 @@ test('CI: the publish job runs on a push to main after the tests, logs in with G
   assert.equal(ci.jobs.test.steps.at(-1).run, 'pnpm test');
 });
 
-test('README and RUNBOOK: PROPOSED, no LIVE or DEPLOYED claim, no dash, no unit name, no person named', () => {
+test('README, RUNBOOK, compose file and Caddy snippet: DEPLOYED since 2026-10-15 and never LIVE, no dash, no unit name, no person named', () => {
+  const STATUS = 'Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE.';
+  // The second line of the compose file and of the Caddy snippet says what happened on the box.
+  const HEADER = {
+    'deploy/apex-web/docker-compose.agent-history.yml': '# DEPLOYED since 2026-10-15: installed and running on the box since 2026-10-14; one first-party job settled on 2026-10-15. ',
+    'deploy/apex-web/Caddyfile.snippet': '# DEPLOYED since 2026-10-15: installed and running on the box. It was installed on 2026-10-14 by ',
+  };
   for (const rel of PUBLIC_FILES) {
     const text = read(rel);
     assert.doesNotMatch(text, DASHES, `${rel}: no em or en dash`);
     assert.doesNotMatch(text, UNIT_NAME, `${rel}: the unit is called units`);
     assert.doesNotMatch(text, NAMES, `${rel}: roles, not people`);
-    assert.doesNotMatch(text.replace('Nothing in this folder is LIVE or DEPLOYED.', ''), /\b(LIVE|DEPLOYED)\b/, `${rel}: no status claim`);
+    // LIVE is never claimed. DEPLOYED is said in the status line of the README and the RUNBOOK and in the second line of the compose file and the Caddy snippet, and nowhere else.
+    assert.doesNotMatch(text.replace(STATUS, '').replace(HEADER[rel] ?? '', ''), /\b(LIVE|DEPLOYED)\b/, `${rel}: no status claim beyond the status line`);
   }
-  for (const rel of ['deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md']) assert.ok(read(rel).includes('Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED.'), rel);
-  assert.match(read('deploy/apex-web/docker-compose.agent-history.yml'), /PROPOSED/);
-  assert.ok(read('deploy/apex-web/docker-compose.agent-history.yml').split('\n')[1].startsWith('# PROPOSED: running on the box since 2026-10-14; one first-party job settled on 2026-10-15. '), 'the header of the compose file says what happened on the box');
-  assert.match(snippet, /PROPOSED/);
+  for (const rel of ['deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md']) assert.ok(read(rel).includes(STATUS), rel);
+  assert.equal(readme.split('\n')[2], `${STATUS} Steps 1 to 17 of the runbook were run on 2026-10-14 and 2026-10-15.`);
+  for (const [rel, header] of Object.entries(HEADER)) assert.ok(read(rel).split('\n')[1].startsWith(header), `${rel}: the second line says what happened on the box`);
+  assert.doesNotMatch(read('deploy/apex-web/docker-compose.agent-history.yml') + snippet, /PROPOSED/);
 });
 
-test('RUNBOOK: the status line says that steps 1 to 15 were run on 2026-10-14 and 2026-10-15 and the rest was not, and the step texts stay instructions', () => {
+test('RUNBOOK: the status line says that steps 1 to 17 were run on 2026-10-14 and 2026-10-15, the step texts stay instructions, and a first run is told to start with the earlier word', () => {
   const status = runbook.split('\n')[2];
-  assert.ok(status.startsWith('Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED.'));
-  assert.ok(status.endsWith('Steps 1 to 15 were run on 2026-10-14 and 2026-10-15. The rest has not been run.'));
-  assert.equal(runbook.match(/Steps 1 to (9|14) were run/), null);
-  // Step 14 ends, in the order of the runbook, on the advert being Active with PROPOSED still standing and no job settled yet: steps 15 to 17 come after it. Step 12 still tells the operator what to record: it is an instruction, so it still quotes the words it replaces.
-  assert.ok(section(runbook, '14. Check the advert on the indexer').includes('From here the agent is advertised and PROPOSED still stands: no job has settled.'));
+  assert.equal(status, 'Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE. This runbook says what happens, in order. Steps 1 to 17 were run on 2026-10-14 and 2026-10-15.');
+  assert.equal(runbook.match(/Steps 1 to (9|14|15) were run|The rest has not been run|what will happen/), null);
+  // Step 14 ends, in the order of the runbook, on the advert being Active: the status word stays as it was until step 17. It names no word, so it stays right after the flip too.
+  // Step 12 still tells the operator what to record: it is an instruction, so it still quotes the words it replaces.
+  const fourteen = section(runbook, '14. Check the advert on the indexer');
+  assert.ok(fourteen.includes('From here the agent is advertised and the status word stays as it was until step 17.'));
+  assert.doesNotMatch(fourteen, /PROPOSED|no job has settled/);
   assert.ok(section(runbook, '12. Post the advert').includes('Record the advert in the repository.'));
+  // The example carries the word of today (the test of the env example pins it). A first run, before any job has settled, is told in step 4 to start with the earlier word, and step 9 pins no word.
+  assert.ok(section(runbook, '4. Make the env file and generate the supplier key').includes('The example also carries the current status word and its date in `AGENT_STATUS_CHIP` and `AGENT_STATUS_SINCE`. On a first run, before any job has settled, set them to `proposed` and today\'s date: the status can honestly change only in step 17.'));
+  const nine = section(runbook, '9. Start the service');
+  assert.ok(nine.includes('`status.chip` and `status.since` as the env file sets them (step 4), and an empty `links.explorer_advert`.'));
+  assert.doesNotMatch(nine, /status\.chip` `proposed`|2026-10-13/);
 });
 
 test('no individual name, and no personal address, on any public surface: the manifest template, the service source, the specs, the guides, both READMEs and the planning documents', () => {
@@ -464,21 +482,51 @@ function repoFiles(dir = '', out = []) {
   return out;
 }
 
-test('RUNBOOK step 17: the last item names every file that says PROPOSED about Agent History, and only files that exist', () => {
+test('RUNBOOK step 17: the last item names the files that said PROPOSED about Agent History before the flip, the code that carried the word, the advert reference, and only files that exist', () => {
   const s17 = section(runbook, '17. Flip the status');
   const item8 = s17.slice(s17.indexOf('8. In the repository'));
-  const OTHER_AGENTS = ['specs/document-pipeline.md', 'specs/audio-snippets.md', 'specs/advocate.md'];
-  const carriers = repoFiles().filter((f) => /(\.md|\.yml|Caddyfile\.snippet|\.example)$/.test(f) && !OTHER_AGENTS.includes(f))
-    .filter((f) => /\bPROPOSED\b/.test(read(f)) || /^AGENT_STATUS_CHIP=proposed$/m.test(read(f)));
-  assert.ok(carriers.length >= 10, `the walk found the files: ${carriers.join(', ')}`);
-  for (const f of carriers) assert.ok(item8.includes('`' + f + '`'), `item 8 names ${f}`);
-  // The code says `proposed` too: the service default, the manifest template and the tests that pin it. Every file of the agent that carries the word as a value is named.
-  const codeSide = [...sourceFiles('agents/agent-history/src'), ...sourceFiles('agents/agent-history/test'), 'agents/agent-history/agent.json.template'].filter((f) => /(['"])proposed\1/.test(read(f)));
-  for (const must of ['agents/agent-history/src/server.ts', 'agents/agent-history/agent.json.template', 'agents/agent-history/test/server.test.ts']) assert.ok(codeSide.includes(must), `${must} carries the word as a value`);
-  for (const f of codeSide) assert.ok(item8.includes('`' + f + '`'), `item 8 names ${f}`);
+  // The files that said PROPOSED about Agent History, or carried the word as a value, until the flip of 2026-10-15. After the flip they no longer say it, so the list is pinned here; the test below finds a word that comes back.
+  const FILES = ['specs/agent-history.md', 'agents/agent-history/README.md', 'README.md', 'docs/HIRE.md', 'docs/E2E.md', 'deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md', 'deploy/apex-web/docker-compose.agent-history.yml', 'deploy/apex-web/Caddyfile.snippet', 'deploy/apex-web/.env.agent-history.example'];
+  const CODE = ['agents/agent-history/src/server.ts', 'agents/agent-history/agent.json.template', 'agents/agent-history/test/server.test.ts', 'agents/agent-history/test/spec.test.ts', 'scripts/specs.test.mjs', 'scripts/deploy.test.mjs'];
+  for (const f of [...FILES, ...CODE]) {
+    assert.ok(item8.includes('`' + f + '`'), `item 8 names ${f}`);
+    assert.ok(existsSync(join(root, f)), `${f} exists`);
+  }
   assert.match(item8, /regenerate it from the code, never by hand/);
   assert.match(item8, /The Identity and Links sections of the spec .* were refreshed after steps 7 and 12; check that they are still true\./);
+  // The advert is posted again at the flip, so its reference changes: the runbook says where the new one goes and that the old one stays in the Links as history.
+  assert.ok(item8.includes('The new advert has a new reference: replace the old one wherever it is given as the current advert (`specs/agent-history.md`, `docs/HIRE.md`, `docs/E2E.md` and the default of `ADVERT_REF` in `scripts/run-e2e-from-keyfile.sh`), and keep it in the Links section of the spec as the retired advert.'));
+  assert.ok(existsSync(join(root, 'scripts/run-e2e-from-keyfile.sh')), 'the wrapper that item 8 names exists');
   for (const [, named] of item8.matchAll(/`([A-Za-z0-9_.\/-]+\.(?:md|yml|snippet|example|ts|mjs|template))`/g)) assert.ok(existsSync(join(root, named)), `item 8 names a file that exists: ${named}`);
+});
+
+// ---- The status words after the flip of 2026-10-15 ----
+// Agent History is DEPLOYED. The three agents that are not built are PROPOSED. Nothing here is LIVE.
+// A line that says PROPOSED has to be one of the lines below, so the word cannot come back for Agent History; a line that says LIVE has to deny it.
+test('status words: no file says PROPOSED about Agent History, and no file says LIVE except to deny it', () => {
+  const OTHER_AGENTS = ['specs/document-pipeline.md', 'specs/audio-snippets.md', 'specs/advocate.md'];
+  // What may still say PROPOSED outside the specs of the agents that are not built: their rows in the table of the root README, the rule that lists the three words,
+  // the marketplace tools in the Interface section of the spec (the tools, not the agent), and two instructions of the runbook that speak for the order of a first run.
+  const PROPOSED_OK = {
+    'README.md': [/^\| (Document Pipeline|Audio Snippets|Advocate) \| `[a-z.0-9-]+` \| PROPOSED \|$/],
+    'agents/agent-history/README.md': [/`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./],
+    'specs/agent-history.md': [/^The marketplace MCP tools \(PROPOSED\) and the template's buyer, /],
+    'deploy/apex-web/RUNBOOK.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about Agent History/],
+  };
+  // What may say LIVE: the sentence that denies it, and the rule that lists the three words.
+  const LIVE_OK = [/Nothing (on this page|in this guide|in this folder) is LIVE( or DEPLOYED)?\./, /`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./];
+  const files = repoFiles().filter((f) => /(\.md|\.yml|Caddyfile\.snippet|\.example|\.template)$/.test(f));
+  for (const f of ['specs/agent-history.md', 'specs/advocate.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md', 'deploy/apex-web/RUNBOOK.md', 'deploy/apex-web/README.md', 'deploy/apex-web/docker-compose.agent-history.yml', 'deploy/apex-web/Caddyfile.snippet', 'deploy/apex-web/.env.agent-history.example', 'agents/agent-history/agent.json.template']) assert.ok(files.includes(f), `${f} is walked`);
+  for (const f of files) {
+    const lines = read(f).split('\n');
+    if (!OTHER_AGENTS.includes(f)) for (const line of lines.filter((l) => /\bPROPOSED\b/.test(l))) assert.ok((PROPOSED_OK[f] ?? []).some((re) => re.test(line)), `${f} says PROPOSED: ${line.slice(0, 110)}`);
+    for (const line of lines.filter((l) => /\bLIVE\b/.test(l))) assert.ok(LIVE_OK.some((re) => re.test(line)), `${f} says LIVE: ${line.slice(0, 110)}`);
+  }
+  // The values the manifest and the env example carry are neither proposed nor live.
+  assert.match(exampleText, /^AGENT_STATUS_CHIP=deployed$/m);
+  assert.deepEqual(JSON.parse(read('agents/agent-history/agent.json.template')).status, { chip: 'deployed', since: '2026-10-15' });
+  // The three agents that are not built are still PROPOSED, each in its own spec.
+  for (const f of OTHER_AGENTS) assert.match(read(f), /^PROPOSED \(not built\)\. Since 2026-10-13\.$/m, f);
 });
 
 test('RUNBOOK: Back out retires the advert first with the supplier key, then stops the services, then the host administrator removes the Caddy block', () => {
@@ -531,11 +579,12 @@ test('RUNBOOK: the key is never sent anywhere, the registry login block is bash,
   assert.doesNotMatch(s16, /upstream repository/);
 });
 
-test('agent README: the Image section says the publish job pushes on merge to main, that it has not run yet, and that nothing is deployed', () => {
+test('agent README: the Image section says the publish job pushes on merge to main, that it has not run yet, and that the agent is running on the box with the status DEPLOYED since 2026-10-15', () => {
   const image = section(read('agents/agent-history/README.md'), 'Image');
   assert.ok(image.length > 300, 'the section exists');
   assert.ok(image.includes('docker build -f agents/agent-history/Dockerfile'));
   assert.ok(image.includes('pushes the image on merge to `main`'));
   assert.ok(image.includes('It has not run yet: Actions is blocked on this private repository.'));
-  assert.ok(image.includes('Nothing is deployed yet.'));
+  assert.ok(image.includes('The agent is running on the box, and its status has been DEPLOYED since 2026-10-15.'));
+  assert.equal(image.includes('Nothing is deployed yet.'), false);
 });

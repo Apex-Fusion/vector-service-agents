@@ -295,9 +295,9 @@ describe('manifest', () => {
     expect(blank.stderr).toMatch(/environment variable OPERATOR_CONTACT is required/);
     expect(blank.stdout).not.toMatch(/listening/);
   });
-  test('defaults: proposed, one unit price and two bonds in lovelace, 300 s, the request limit of the wire check', () => {
+  test('defaults: deployed since 2026-10-15, one unit price and two bonds in lovelace, 300 s, the request limit of the wire check', () => {
     const m = manifestFromEnv(TEST_ENV);
-    expect(m).toMatchObject({ capability_id: 'identity.history.report.v1', status: { chip: 'proposed' }, terms: { price_lovelace: 1_000_000, supplier_bond_lovelace: 1_000_000, buyer_bond_lovelace: 1_000_000, max_processing_ms: 300_000, input_limits: { request_bytes: 65_536 } } });
+    expect(m).toMatchObject({ capability_id: 'identity.history.report.v1', status: { chip: 'deployed', since: '2026-10-15' }, terms: { price_lovelace: 1_000_000, supplier_bond_lovelace: 1_000_000, buyer_bond_lovelace: 1_000_000, max_processing_ms: 300_000, input_limits: { request_bytes: 65_536 } } });
   });
   test('numeric settings: absent or empty means the default, a number is used', () => {
     expect(manifestFromEnv({ ...TEST_ENV, ADVERT_PRICE_LOVELACE: '' }).terms.price_lovelace).toBe(1_000_000);
@@ -313,9 +313,11 @@ describe('manifest', () => {
     expect(envInt('PORT', undefined, 9091)).toBe(9091);
     expect(envInt('PORT', '0', 9091)).toBe(0);
   });
-  test('AGENT_STATUS_CHIP must be LIVE, DEPLOYED or PROPOSED in any case; the manifest carries it in lower case', () => {
-    expect(manifestFromEnv(TEST_ENV).status.chip).toBe('proposed');
-    expect(manifestFromEnv({ ...TEST_ENV, AGENT_STATUS_CHIP: '' }).status.chip).toBe('proposed');
+  test('AGENT_STATUS_CHIP must be LIVE, DEPLOYED or PROPOSED in any case; the manifest carries it in lower case, and the default is deployed, never live', () => {
+    expect(manifestFromEnv(TEST_ENV).status).toEqual({ chip: 'deployed', since: '2026-10-15' });
+    expect(manifestFromEnv({ ...TEST_ENV, AGENT_STATUS_CHIP: '' }).status.chip).toBe('deployed');
+    expect(manifestFromEnv({ ...TEST_ENV, AGENT_STATUS_SINCE: '2027-01-02' }).status).toEqual({ chip: 'deployed', since: '2027-01-02' });
+    expect(manifestFromEnv({ ...TEST_ENV, AGENT_STATUS_CHIP: 'Proposed' }).status.chip).toBe('proposed'); // a first run, before any job has settled, starts with this word (RUNBOOK step 4)
     expect(manifestFromEnv({ ...TEST_ENV, AGENT_STATUS_CHIP: 'LIVE' }).status.chip).toBe('live');
     expect(manifestFromEnv({ ...TEST_ENV, AGENT_STATUS_CHIP: 'Deployed' }).status.chip).toBe('deployed');
     for (const bad of ['launched', 'live!', 'prod', 'PROPOSED ']) {

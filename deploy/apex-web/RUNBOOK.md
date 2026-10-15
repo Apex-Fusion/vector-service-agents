@@ -1,6 +1,6 @@
 # Runbook: Agent History on apex-web
 
-Status: PROPOSED. Nothing in this folder is LIVE or DEPLOYED. This runbook says what will happen, in order. Steps 1 to 15 were run on 2026-10-14 and 2026-10-15. The rest has not been run.
+Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE. This runbook says what happens, in order. Steps 1 to 17 were run on 2026-10-14 and 2026-10-15.
 
 The operator holds the keys and does every step except three. Step 2 (the registry login and the service image) and step 10 (DNS and Caddy) are the host administrator's, see [README.md](README.md). Step 6 (funding the supplier wallet) is the Foundation's. Every run of the agent is first-party until a payer outside our control appears. A first-party run shows that the path works. It is not demand and it counts as no revenue.
 
@@ -95,6 +95,8 @@ grep -c '^OPERATOR_CONTACT=[^<[:space:]]' .env.agent-history
 
 It must print 1: a value that does not start with an angle bracket.
 
+The example also carries the current status word and its date in `AGENT_STATUS_CHIP` and `AGENT_STATUS_SINCE`. On a first run, before any job has settled, set them to `proposed` and today's date: the status can honestly change only in step 17.
+
 The key is a raw keypair and this file is the only copy until step 7. There is no recovery phrase, and nothing can derive it again. Copy `.env.agent-history` to the operator's encrypted offline store now, before the address receives anything. A wallet whose key is lost is gone, whatever the ledger shows for it. Step 7 writes a second plaintext copy of the key to `/opt/agent-history/ops/wallet`: from then on the key is in two files on the box, and both are protected the same way.
 
 ## 5. Adapt the ops scripts
@@ -184,7 +186,7 @@ docker exec agent-history-service wget -qO- http://127.0.0.1:9091/healthz
 docker exec agent-history-service wget -qO- http://127.0.0.1:9091/agent.json
 ```
 
-`/healthz` answers `{"ok":true}`. The manifest must show the role address of step 4 in `operator.contact`, the new DID in `identity.did`, the key hash in `identity.controller_pkh` and `keys.supplier_pkh`, the public key in `keys.pub_key_hex`, `status.chip` `proposed`, `status.since` `2026-10-13` and an empty `links.explorer_advert`. The advert's hash will cover exactly these bytes.
+`/healthz` answers `{"ok":true}`. The manifest must show the role address of step 4 in `operator.contact`, the new DID in `identity.did`, the key hash in `identity.controller_pkh` and `keys.supplier_pkh`, the public key in `keys.pub_key_hex`, `status.chip` and `status.since` as the env file sets them (step 4), and an empty `links.explorer_advert`. The advert's hash will cover exactly these bytes.
 
 The service can report on itself. This shows what a buyer will get, including the registration of step 7 and the stake of step 8. Koios can take a minute to show a new registration:
 
@@ -298,7 +300,7 @@ for r in json.load(sys.stdin):
 
 The fetch uses `curl` on purpose: the indexer answers 403 to the default user agent of Python's `urllib`.
 
-It must print `Active free identity.history.report.v1` and the hash of step 11. From here the agent is advertised and PROPOSED still stands: no job has settled.
+It must print `Active free identity.history.report.v1` and the hash of step 11. From here the agent is advertised and the status word stays as it was until step 17.
 
 ## 15. The first-party run
 
@@ -321,7 +323,7 @@ The status is in the manifest, so changing it changes the bytes the advert hashe
 5. Hash the new manifest (step 11).
 6. Post the new advert (step 12). The new `ADVERT_REF` replaces the old one in the env file.
 7. `docker compose -f docker-compose.agent-history.yml up -d --force-recreate agent`, then steps 13 and 14 again.
-8. In the repository, in a pull request, change every file that says PROPOSED about Agent History, and the tests that pin the word: `specs/agent-history.md` (Status), `agents/agent-history/README.md`, `README.md` (the table), `docs/HIRE.md`, `docs/E2E.md`, `deploy/apex-web/README.md`, `deploy/apex-web/RUNBOOK.md` (its first paragraph and step 14), the first lines of `deploy/apex-web/docker-compose.agent-history.yml` and `deploy/apex-web/Caddyfile.snippet`, and `deploy/apex-web/.env.agent-history.example`. The code carries the word as a default too: the `proposed` default in `agents/agent-history/src/server.ts`, the manifest template `agents/agent-history/agent.json.template` (regenerate it from the code, never by hand) and the pins in `agents/agent-history/test/server.test.ts`. The tests are `agents/agent-history/test/spec.test.ts`, `scripts/specs.test.mjs` and `scripts/deploy.test.mjs`. They fail until all of the files agree. The Identity and Links sections of the spec (the DID, the stake, the public URL, the advert and its explorer link) were refreshed after steps 7 and 12; check that they are still true.
+8. In the repository, in a pull request, change every file that says PROPOSED about Agent History, and the tests that pin the word: `specs/agent-history.md` (Status), `agents/agent-history/README.md`, `README.md` (the table), `docs/HIRE.md`, `docs/E2E.md`, `deploy/apex-web/README.md`, `deploy/apex-web/RUNBOOK.md` (its first paragraph and step 14), the first lines of `deploy/apex-web/docker-compose.agent-history.yml` and `deploy/apex-web/Caddyfile.snippet`, and `deploy/apex-web/.env.agent-history.example`. The code carries the word as a default too: the `proposed` default in `agents/agent-history/src/server.ts`, the manifest template `agents/agent-history/agent.json.template` (regenerate it from the code, never by hand) and the pins in `agents/agent-history/test/server.test.ts`. The tests are `agents/agent-history/test/spec.test.ts`, `scripts/specs.test.mjs` and `scripts/deploy.test.mjs`. They fail until all of the files agree. The Identity and Links sections of the spec (the DID, the stake, the public URL, the advert and its explorer link) were refreshed after steps 7 and 12; check that they are still true. The new advert has a new reference: replace the old one wherever it is given as the current advert (`specs/agent-history.md`, `docs/HIRE.md`, `docs/E2E.md` and the default of `ADVERT_REF` in `scripts/run-e2e-from-keyfile.sh`), and keep it in the Links section of the spec as the retired advert.
 
 ## Back out
 

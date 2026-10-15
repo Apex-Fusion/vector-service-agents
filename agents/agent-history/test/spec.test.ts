@@ -56,8 +56,8 @@ describe('specs/agent-history.md', () => {
   test('the capability id, the status line and the one Response heading the manifest links to', () => {
     const m = manifestFromEnv(TEST_ENV);
     expect(section('Capability id')).toContain(`\`${m.capability_id}\``);
-    expect(section('Status')).toContain('PROPOSED (advertised on 2026-10-14; one first-party job settled on 2026-10-15). Since 2026-10-13.');
-    expect(m.status).toEqual({ chip: 'proposed', since: '2026-10-13' });
+    expect(section('Status')).toContain('DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15.');
+    expect(m.status).toEqual({ chip: 'deployed', since: '2026-10-15' });
     expect(m.interface.response_schema.$ref).toBe('https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/agent-history.md#response');
     expect(spec.match(/^#{1,6} Response$/gm)).toEqual(['### Response']); // one heading, so the anchor is #response
   });

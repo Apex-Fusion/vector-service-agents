@@ -20,9 +20,9 @@ export function requiredEnv(name: string, v: string | undefined): string {
   return v.trim();
 }
 const CHIPS = ['LIVE', 'DEPLOYED', 'PROPOSED'];
-// The status word: LIVE, DEPLOYED or PROPOSED in any case, carried in the manifest in lower case. Absent or empty means proposed.
+// The status word: LIVE, DEPLOYED or PROPOSED in any case, carried in the manifest in lower case. Absent or empty means deployed (the word since 2026-10-15, RUNBOOK step 17).
 function statusChip(v: string | undefined): string {
-  if (v === undefined || v === '') return 'proposed';
+  if (v === undefined || v === '') return 'deployed';
   if (!CHIPS.includes(v.toUpperCase())) throw new Error(`environment variable AGENT_STATUS_CHIP must be one of ${CHIPS.join(', ')}, got "${v}"`);
   return v.toLowerCase();
 }
@@ -36,7 +36,7 @@ export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
     interface: { request_schema: { type: 'object', required: ['subject'], properties: { subject: { type: 'string', description: 'DID, registry asset name (64 hex) or key hash (56 hex)' }, include: { type: 'array', items: { enum: ['identity', 'marketplace', 'reputation', 'dispute', 'self_improvement'] } } } }, response_schema: { $ref: 'https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/agent-history.md#response' }, routes: { job: '/v1/job', status: '/status', capability: '/capability' } },
     terms: { price_lovelace: envInt('ADVERT_PRICE_LOVELACE', env.ADVERT_PRICE_LOVELACE, 1_000_000), supplier_bond_lovelace: 1_000_000, buyer_bond_lovelace: 1_000_000, max_processing_ms: envInt('ADVERT_MAX_PROCESSING_MS', env.ADVERT_MAX_PROCESSING_MS, 300_000), input_limits: { request_bytes: MAX_BODY } },
     behaviour: { data_handling: 'Reads public ledger data only; the request subject is held in memory, and a report is served from cache for at most 60 s (expired entries are purged lazily).', third_parties: ['Koios (Vector mainnet indexer)', 'marketplace indexer', "the subject agent's own endpoint (one GET /capability, 64 KiB cap, 20 s budget)"] },
-    status: { chip: statusChip(env.AGENT_STATUS_CHIP), since: env.AGENT_STATUS_SINCE ?? '2026-10-13' },
+    status: { chip: statusChip(env.AGENT_STATUS_CHIP), since: env.AGENT_STATUS_SINCE ?? '2026-10-15' },
     gaps: [ESCROW_ROWS_GAP, `${DISPUTE_MODULE_GAP} ${GENERIC_MATCH_GAP}`, CURRENT_STATE_GAP],
     links: { spec: 'https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/agent-history.md', source: 'https://github.com/Apex-Fusion/vector-service-agents/tree/main/agents/agent-history', explorer_advert: env.ADVERT_EXPLORER_URL ?? '' },
   };

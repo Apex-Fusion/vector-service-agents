@@ -69,8 +69,8 @@
     ]
   },
   "status": {
-    "chip": "proposed",
-    "since": "2026-10-13"
+    "chip": "deployed",
+    "since": "2026-10-15"
   },
   "gaps": [
     "Escrow rows come from the marketplace indexer, one per escrow UTxO version: a job appears once for each state it reached (Open, Claimed, Submitted), so up to three times, and never as Accepted, Released or Reclaimed. The report gives by_indexer_state counts and, for the latest 50 rows per side, how many are spent on the ledger (latest_checked, latest_spent). It gives no outcome counts: Accept, Release and Reclaim are not told apart.",
