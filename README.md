@@ -4,7 +4,7 @@ Service agents that anyone can hire on the Vector agents marketplace, with the g
 
 | Agent | Capability id | Status |
 |---|---|---|
-| Agent History | `identity.history.report.v1` | PROPOSED |
+| Agent History | `identity.history.report.v1` | DEPLOYED |
 | Document Pipeline | `document.pipeline.ocr-summary.v1` | PROPOSED |
 | Audio Snippets | `audio.transcript.snippets.v1` | PROPOSED |
 | Advocate | `research.advocate.onesided.v1` | PROPOSED |

@@ -1,5 +1,5 @@
 # Agent History on apex-web: template runtime (pinned) + this repo's service. Pattern: chandra-supplier.
-# PROPOSED: running on the box since 2026-10-14; one first-party job settled on 2026-10-15. The order of work is RUNBOOK.md. The host administrator's part is README.md.
+# DEPLOYED since 2026-10-15: installed and running on the box since 2026-10-14; one first-party job settled on 2026-10-15. The order of work is RUNBOOK.md. The host administrator's part is README.md.
 # The env file sits next to this file, is made from .env.agent-history.example, holds the supplier key and never enters git.
 # After any change to it, recreate the containers: docker compose -f docker-compose.agent-history.yml up -d --force-recreate <service>. restart does not re-read it.
 # Both containers join umami_default, which other stacks share, and every agent here has a service named "service". The alias

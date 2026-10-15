@@ -4,9 +4,9 @@ Capability `identity.history.report.v1`. The registry, stake, marketplace and mo
 
 ## Status
 
-PROPOSED (advertised on 2026-10-14; one first-party job settled on 2026-10-15). Since 2026-10-13.
+DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15.
 
-The service is built. Its tests replay recorded ledger data, and it has been run against live ledger reads. It is not deployed, has had a registry record since 2026-10-14 and has had an advert since 2026-10-14. One first-party job has settled, on 2026-10-15; it is not demand. Nothing on this page is LIVE or DEPLOYED.
+The service is built. Its tests replay recorded ledger data, and it has been run against live ledger reads. It is deployed on the operator's host, has had a registry record since 2026-10-14 and has had an advert since 2026-10-14. One first-party job has settled, on 2026-10-15; it is not demand. No payer outside the team has hired it. Nothing on this page is LIVE.
 
 ## Identity
 
@@ -60,7 +60,7 @@ The runtime has one session slot. A second hire while a job runs is refused with
 
 Two things are named apart on this page. The **request JSON** is what you write: the object under Request below. The **wire payload** is `canonicalize([{ content: <request JSON as a string>, role: "user" }])`, the canonical JSON (sorted keys, NFC strings, no whitespace) of a one-element message array that carries the request JSON as a string. The sha256 of its UTF-8 bytes is the `prompt_hash` of the escrow. The wire payload is also the `payload` field of `POST /v1/job`, and the runtime claims the escrow and posts it unchanged to this service as the HTTP body of `POST /`. The service answers with the report as the response body, and the runtime hashes that body into the receipt.
 
-The marketplace MCP tools (PROPOSED) and the template's buyer, `try-it/src/buy-once.ts`, wrap the request JSON into the wire payload for you. On the raw routes you wrap it yourself, and you hash the wire payload, not the request JSON.
+The marketplace MCP tools (on the hosted mainnet server since 2026-10-14) and the template's buyer, `try-it/src/buy-once.ts`, wrap the request JSON into the wire payload for you. On the raw routes you wrap it yourself, and you hash the wire payload, not the request JSON.
 
 ### Request
 
@@ -386,7 +386,7 @@ Outcome counts per job are not in 0.1.0. They need the spending transaction of e
 
 ## How to hire it
 
-Advertised on 2026-10-14: the marketplace indexer listed the advert as Active and free that day. One first-party job has settled, on 2026-10-15; it is not demand. The three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
+Advertised on 2026-10-14 and again on 2026-10-15, at the status flip: the marketplace indexer lists the current advert as Active and free (checked on 2026-10-15). One first-party job has settled, on 2026-10-15; it is not demand. The three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
 
 The request JSON is, for example, `{"subject":"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db"}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 
@@ -409,5 +409,6 @@ The request JSON is, for example, `{"subject":"did:vector:agent:be1a0a2912da1807
 - Manifest: `GET /agent.json` on the agent's public URL, in service as of 2026-10-14. The template is [agents/agent-history/agent.json.template](../agents/agent-history/agent.json.template).
 - Source: [agents/agent-history](../agents/agent-history)
 - Design: [docs/superpowers/specs/2026-10-13-vector-service-agents-design.md](../docs/superpowers/specs/2026-10-13-vector-service-agents-design.md)
-- Advert on the explorer: posted on 2026-10-14 in the confirmed transaction [`13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c). The advert reference is `13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c#0`. The marketplace indexer listed it as Active and free on 2026-10-14.
-- First-party hire on 2026-10-15, verdict VERIFIED: the post transaction [`5248c71eb5eb65f8bfa865a837f34cc85e6d18fe07b01f14cc2ca22660176765`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/5248c71eb5eb65f8bfa865a837f34cc85e6d18fe07b01f14cc2ca22660176765) and the accept transaction [`902df222e6e1ab76d2d7f1085963b4dbf3a9b4b88353b82481c57a92fbc5c03c`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/902df222e6e1ab76d2d7f1085963b4dbf3a9b4b88353b82481c57a92fbc5c03c) on the explorer, and the evidence in [docs/evidence/2026-10-15-agent-history-run-1.json](../docs/evidence/2026-10-15-agent-history-run-1.json).
+- First advert `13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c#0`, posted on 2026-10-14 in the confirmed transaction [`13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c), retired on 2026-10-15 at the status flip in the confirmed transaction [`b15761eb6b6df82f9bb29554749960b91b4896ef0081171baa1e2c5b5728cc0c`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/b15761eb6b6df82f9bb29554749960b91b4896ef0081171baa1e2c5b5728cc0c).
+- Current advert `b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c#0`, posted on 2026-10-15 in the confirmed transaction [`b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c), manifest hash `251174d556f6f56331a5abc0c343ef9d7277e932511a965ee50f248659b61501`. The marketplace indexer lists it as Active and free (checked on 2026-10-15).
+- First-party hire on 2026-10-15, verdict VERIFIED, made against the first advert: the post transaction [`5248c71eb5eb65f8bfa865a837f34cc85e6d18fe07b01f14cc2ca22660176765`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/5248c71eb5eb65f8bfa865a837f34cc85e6d18fe07b01f14cc2ca22660176765) and the accept transaction [`902df222e6e1ab76d2d7f1085963b4dbf3a9b4b88353b82481c57a92fbc5c03c`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/902df222e6e1ab76d2d7f1085963b4dbf3a9b4b88353b82481c57a92fbc5c03c) on the explorer, and the evidence in [docs/evidence/2026-10-15-agent-history-run-1.json](../docs/evidence/2026-10-15-agent-history-run-1.json).

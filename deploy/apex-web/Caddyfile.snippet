@@ -1,5 +1,5 @@
 # deploy/apex-web/Caddyfile.snippet - site block for the shared Caddy on apex-web (container umami-caddy-1, file /opt/umami/Caddyfile).
-# PROPOSED: installed on the box on 2026-10-14 by /opt/agent-history/ops/install-caddy-route.sh, which merges it and reloads Caddy (README.md). The hostname must be DNS only (grey cloud),
+# DEPLOYED since 2026-10-15: installed and running on the box. It was installed on 2026-10-14 by /opt/agent-history/ops/install-caddy-route.sh, which merges it and reloads Caddy (README.md). The hostname must be DNS only (grey cloud),
 # or Caddy cannot get its certificate. The block must stay the last thing in this file: the install script of the chandra stack
 # takes everything from the hostname line to the end.
 # The runtime does not serve /agent.json, and the advert's detail_uri points at it, so that one path goes to the service.
