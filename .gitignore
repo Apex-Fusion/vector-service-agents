@@ -7,3 +7,6 @@ build
 *.log
 vector-signer-audit-log.json
 e2e-state*.json*
+# E2E run outputs (docs/E2E.md); the evidence of a recorded run is copied into docs/evidence/ by hand
+evidence.json
+evidence.json.tmp

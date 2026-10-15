@@ -7,12 +7,14 @@
 # The file is sourced into the environment of this shell and never printed. Only the signer process reads the key.
 # Every line of output is passed through a redaction filter that blanks anything shaped like a signer key, as a belt
 # and braces measure: the script and the signer print no settings, but a stack trace could.
-# The evidence of a finished run goes to evidence.json in the repository root (git-ignored); the state file is e2e-state.json.
+# The evidence of a finished run goes to evidence.json in the repository root; it and the state file e2e-state.json are git-ignored.
+# SIGNER_ENTRY (the built signer) is required; ADVERT_REF defaults to the Agent History advert and can be overridden.
 set -euo pipefail
 KEYFILE="${1:?usage: run-e2e-from-keyfile.sh KEYFILE [--dry-run]}"
 MODE="${2:-}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export SIGNER_ENTRY="${SIGNER_ENTRY:-C:/Users/Filip/Documents/Claude/vector-agentic-framework/mcp-server/wt-main/packages/signer/build/index.js}"
+: "${SIGNER_ENTRY:?set SIGNER_ENTRY to the built signer, <mcp-server checkout>/packages/signer/build/index.js}"
+export SIGNER_ENTRY
 export ADVERT_REF="${ADVERT_REF:-13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c#0}"
 [ -f "$KEYFILE" ] || { echo "key file not found: $KEYFILE" >&2; exit 2; }
 [ -f "$SIGNER_ENTRY" ] || { echo "signer build not found: $SIGNER_ENTRY" >&2; exit 2; }
@@ -38,8 +40,8 @@ if [ "$MODE" = "--dry-run" ]; then
   node scripts/e2e-hire.mjs --dry-run 2>&1 | redact
   exit "${PIPESTATUS[0]}"
 fi
-node scripts/e2e-hire.mjs 2> >(redact >&2) > evidence.json.tmp
-rc=$?
+rc=0
+node scripts/e2e-hire.mjs 2> >(redact >&2) > evidence.json.tmp || rc=$?
 if [ "$rc" -eq 0 ] && [ -s evidence.json.tmp ]; then
   mv evidence.json.tmp evidence.json
   echo "evidence written to evidence.json"
