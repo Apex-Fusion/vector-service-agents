@@ -1034,8 +1034,12 @@ test('Pipeline README section: the second stack beside Agent History, with its t
   assert.ok(!pSection.includes('retire-advert.ts'), 'the retire command lives in one place, the runbook');
   assert.doesNotMatch(pSection, /no authentication|was shipped/i, 'the sentences of before R50 and before the Pipeline was said to be proposed: nothing has been shipped yet');
   // The part of the note that is about Agent History points at the second stack, so that a reader who opens it for the Pipeline finds the section.
-  assert.ok(readme.includes('The Document Pipeline is a second stack on the same box. It has its own section at the end of this note and its own runbook, [RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md).'));
+  assert.ok(readme.includes('The Document Pipeline is a second stack on the same box. It has its own section after the Agent History part of this note and its own runbook, [RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md).'));
   assert.ok(readme.indexOf('The Document Pipeline is a second stack on the same box.') < readme.indexOf('\n## What will land on the box\n'), 'said at the top, before the Agent History tables');
+  // The Pipeline's section follows the Agent History part of the note and the section of Audio Snippets is the last, so "at the end of this note" is true of Audio Snippets only.
+  assert.ok(readme.includes('`mp-suppliers-pipeline.hal8.ai`, and its own section after the Agent History part of this note. The advert will carry the first name'), 'point 1 of the list of the host administrator');
+  for (const sentence of readme.split(/(?<=\.)\s+/).filter((s) => s.includes('at the end of this note'))) assert.match(sentence, /Audio Snippets|mp-suppliers-snippets/, `said of a section that is not the last: ${sentence.slice(0, 100)}`);
+  assert.deepEqual([...readme.matchAll(/^## (.+)$/gm)].map((m) => m[1]).slice(-2), ['Document Pipeline on the same box', 'Audio Snippets on the same host'], 'the Pipeline section, then the last one');
   // The Agent History part of the README is told the second name is no longer "later", and it still names the three others.
   assert.ok(!readme.includes('Three more come later'), 'the sentence of before the Pipeline');
   for (const host of ['mp-suppliers-snippets.hal8.ai', 'mp-suppliers-advocate.hal8.ai']) assert.ok(readme.slice(0, readme.indexOf('\n## Document Pipeline on the same box\n')).includes(`\`${host}\``), host);
@@ -2264,7 +2268,7 @@ test('Snippets README section: the third stack, with its two containers, the loo
     '[RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md), under "Back out"',
   ]) assert.ok(sSection.includes(part), `the section says: ${part}`);
   assert.ok(!sSection.includes('retire-advert.ts'), 'the retire command lives in one place, the runbook');
-  assert.ok(readme.includes("Audio Snippets is a third, built and not deployed, with its own section after the Pipeline's and its own runbook, [RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md)."));
+  assert.ok(readme.includes("Audio Snippets is a third, built and not deployed, with its own section at the end of this note, after the Pipeline's, and its own runbook, [RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md)."));
   assert.ok(readme.includes('`mp-suppliers-snippets.hal8.ai` for Audio Snippets, which is built and has its own section at the end of this note, and `mp-suppliers-advocate.hal8.ai` for Advocate, which is not built yet.'));
   assert.ok(sSection.includes(`\`mem_limit: ${sService.mem_limit}\``) && sSection.includes(`\`stop_grace_period: ${sService.stop_grace_period}\``));
 });
@@ -2291,6 +2295,10 @@ test('Snippets RUNBOOK: the twenty-one sections in order, the seventeen steps ke
     '| Containers | `audio-snippets-agent` (the runtime), `audio-snippets-service` |',
     '| Ports | the runtime on `127.0.0.1:8085`, loopback only; the service on 9093, never published |', '| Public name | `mp-suppliers-snippets.hal8.ai` |',
     "| Network | the external network of the host's reverse proxy, named by `PROXY_NETWORK` in `.env` in this folder (step 1) |",
+    'Set both again in every new shell on the host, before the commands below:',
+    'Each block that works in a folder starts with its own `cd` to it, so that it also runs alone in a new shell once the two variables are set there.',
+    'The `docker compose` commands in the running text (step 17, Back out, the table at the end) run in `$BASE/repo/deploy/host`.',
+    'The few values that a block takes from an earlier one, the functions of step 4 and `DETAIL_HASH` in step 12, are named where they matter.',
   ]) assert.ok(head.includes(part), `the head says: ${part}`);
   // The paths on the host go through the two base paths, set once at the top, before the first command that uses them.
   const block = '```sh\nBASE=/opt/audio-snippets\nPIPELINE_BASE=/opt/document-pipeline\n```';
@@ -2316,7 +2324,7 @@ test('Snippets RUNBOOK collateral and float: one key, 5 alone then 50, and the k
 test('Snippets RUNBOOK steps 1 to 3: the bundle into $BASE and .env with the network, the image built and checked on the host with the real model, the runtime built', () => {
   const one = section(sRunbook, '1. Put the files on the host');
   for (const part of ['git bundle create vector-service-agents.bundle main', 'scp vector-service-agents.bundle <user>@<host>:/tmp/', 'mkdir -p "$BASE" && cd "$BASE"', 'git clone --branch main /tmp/vector-service-agents.bundle repo', 'cd repo/deploy/host']) assert.ok(one.includes(part), part);
-  assert.ok(one.includes("```sh\necho 'PROXY_NETWORK=<the network the host administrator names>' > .env\ndocker network inspect --format '{{.Name}}' \"$(sed -n 's/^PROXY_NETWORK=//p' .env)\"\n```"), 'step 1 writes .env and checks that the network exists, as the other runbooks do');
+  assert.ok(one.includes("```sh\ncd \"$BASE/repo/deploy/host\"\necho 'PROXY_NETWORK=<the network the host administrator names>' > .env\ndocker network inspect --format '{{.Name}}' \"$(sed -n 's/^PROXY_NETWORK=//p' .env)\"\n```"), 'step 1 writes .env in this folder and checks that the network exists, as the other runbooks do, with the cd of a block that may run in a new shell');
   assert.ok(one.includes('The second line must print the name back. An error means that this host has no network of that name.'));
   assert.ok(sRunbook.indexOf("' > .env\n") < sRunbook.indexOf('docker compose -f '), '.env before the first compose command');
   const two = section(sRunbook, '2. Build the service image and pin it');
@@ -2327,6 +2335,7 @@ test('Snippets RUNBOOK steps 1 to 3: the bundle into $BASE and .env with the net
   ]) assert.ok(two.includes(part), `step 2 says: ${part}`);
   for (const file of ['agents/audio-snippets/test/worker-contract.test.ts', 'agents/audio-snippets/test/asr-real.test.ts', 'agents/audio-snippets/asr/worker.py']) assert.ok(existsSync(join(root, file)), file);
   assert.ok(two.indexOf('--check /app/asr/models/base') < two.indexOf('docker image inspect'), 'checked before it is pinned');
+  assert.ok(two.includes('```sh\ncd "$BASE/repo/deploy/host"\nIMAGE=ghcr.io/apex-fusion/vector-service-agents/audio-snippets\n'), 'the block that pins starts in this folder: it may run in a new shell');
   const three = section(sRunbook, '3. Build the runtime image');
   assert.ok(three.includes(`${DC} build agent`) && three.includes('It ends with `Image audio-snippets-agent Built`.'));
 });
@@ -2341,8 +2350,8 @@ test('Snippets RUNBOOK step 4: the env file once, the key and the token only int
   assert.ok(head.endsWith('if [ -e .env.audio-snippets ]; then\n  echo "refusing: the env file exists, and it is kept as it is" >&2\nelse\n  cp .env.audio-snippets.example .env.audio-snippets && chmod 600 .env.audio-snippets\nfi\n'));
   assert.equal(supplier, 'cd "$BASE/repo/deploy/host"\nkeypair_into SUPPLIER\n');
   assert.equal(token, 'cd "$BASE/repo/deploy/host"\ntoken_into\n');
-  assert.ok(lengths.startsWith("awk -F= '/^SUPPLIER_(PRIV_KEY_HEX|PUB_KEY_HEX|PKH|ADDRESS)=|^SERVICE_AUTH_HEADER=/"));
-  assert.equal(contact, "grep -c '^OPERATOR_CONTACT=[^<[:space:]]' .env.audio-snippets\n");
+  assert.ok(lengths.startsWith("cd \"$BASE/repo/deploy/host\"\nawk -F= '/^SUPPLIER_(PRIV_KEY_HEX|PUB_KEY_HEX|PKH|ADDRESS)=|^SERVICE_AUTH_HEADER=/"));
+  assert.equal(contact, "cd \"$BASE/repo/deploy/host\"\ngrep -c '^OPERATOR_CONTACT=[^<[:space:]]' .env.audio-snippets\n");
   for (const line of ['SUPPLIER_PRIV_KEY_HEX 64', 'SUPPLIER_PUB_KEY_HEX 64', 'SUPPLIER_PKH 56', 'SUPPLIER_ADDRESS 58', 'SERVICE_AUTH_HEADER 71']) assert.ok(four.includes('`' + line + '`'), line);
   assert.ok(four.includes("Copy `.env.audio-snippets` to the operator's encrypted offline store now, before the address receives anything"));
   assert.ok(four.includes('Step 7 writes a second plaintext copy of the supplier key to the directory `$BASE/ops/wallet`'));
@@ -2426,6 +2435,8 @@ test('Snippets RUNBOOK step 5: the ops scripts are copied from the adapted set o
     "-e 's#^ \"endpoint\":\"https://mp-suppliers-pipeline.hal8.ai\"}# \"endpoint\":\"https://mp-suppliers-snippets.hal8.ai\"}#'",
     "sed -i 's#^CAPABILITIES = \\[.*\\]#CAPABILITIES = [\"audio.transcript.snippets.v1\"]#' m3-self-stake.py", "grep -il 'pipeline\\|agent.history' *.sh *.py",
   ]) assert.ok(five.includes(part), `step 5 says: ${part}`);
+  const [, venv] = [...five.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1]);
+  assert.ok(venv.startsWith('cd "$BASE/ops"\npython3 -m venv venv\n'), 'the block of the Python environment starts in the ops folder: it may run in a new shell');
   // What the copy of the Pipeline holds is what this copy looks for: the label, the record and the capability its step 5 wrote.
   const p5 = section(pRunbook, '5. Adapt the ops scripts');
   for (const left of ['document-pipeline supplier#g', '# "name":"Document Pipeline",#\'', '# "endpoint":"https://mp-suppliers-pipeline.hal8.ai"}#\'', 'CAPABILITIES = ["document.pipeline.ocr-summary.v1"]#\'']) assert.ok(p5.includes(left), `the copy of the Pipeline is made with: ${left}`);
@@ -2480,6 +2491,7 @@ test('Snippets RUNBOOK steps 6 to 9: the one wallet supplied and checked, the id
     'A `POST /` with no `authorization` header prints `401 {"error":"unauthorized"}`', 'nor with an empty `SUPPLIER_PUB_KEY_HEX` or one that is not the public key of `SUPPLIER_PKH`',
   ]) assert.ok(nine.includes(part), `step 9 says: ${part}`);
   assert.equal(3072 * 1024 * 1024, 3221225472);
+  assert.ok(nine.includes('```sh\ncd "$BASE/repo/deploy/host"\n' + `${DC} up -d service\ndocker logs audio-snippets-service\n`), 'the block that starts the service starts in this folder: it may run in a new shell');
   assert.ok(S_START.includes('listening on ${config.host}:${port}; speech model ${config.model} (faster-whisper ${versions.faster_whisper}, ctranslate2 ${versions.ctranslate2}, ${config.asr.threads} threads)'), 'the line of the code');
 });
 
@@ -2491,6 +2503,11 @@ test('Snippets RUNBOOK steps 10 to 14: the copy of the install script with the v
     "grep -in 'pipeline\\|history' install-caddy-route.sh", 'curl -fsS https://mp-suppliers-snippets.hal8.ai/agent.json', 'It must return the manifest of step 9, byte for byte.',
   ]) assert.ok(ten.includes(part), `step 10 says: ${part}`);
   assert.ok(section(pRunbook, '10. DNS and Caddy').includes('"$HISTORY_BASE/ops/install-caddy-route.sh" > install-caddy-route.sh'), 'the Pipeline made its copy in its ops folder');
+  // The two sentences on the last line the script printed are the Pipeline's own, for the host: the poll before step 13 is the expected end, and a record that is not there yet means run it again.
+  const LAST_LINE = 'Read the last line it printed: if it is about the `/healthz` poll, that is the expected end, and the route to check is `/agent.json`, which goes to the service and answers now. If it says the name does not resolve to the host, the record is not there yet: wait for it and run the script again.';
+  assert.ok(ten.includes(LAST_LINE), 'step 10 tells the operator what to read in the last line of the script');
+  assert.ok(section(pRunbook, '10. DNS and Caddy').includes(LAST_LINE.replace('to the host', 'to the box')), 'and the sentences are those of step 10 of the Pipeline');
+  assert.ok(ten.indexOf(LAST_LINE) < ten.indexOf('Check from any machine:'), 'before the check from outside');
   assert.match(section(sRunbook, '11. Hash the manifest'), /```sh\ncd "\$BASE\/repo"\nnode scripts\/manifest-hash\.mjs https:\/\/mp-suppliers-snippets\.hal8\.ai\n```/);
   const blocks = [...sRunbook.matchAll(/post-advert\.ts( --dry-run)? \x5c\n((?:  --[^\n]+\n)+)/g)];
   assert.equal(blocks.length, 2, 'a dry run and the real run');
@@ -2501,10 +2518,37 @@ test('Snippets RUNBOOK steps 10 to 14: the copy of the install script with the v
     'capability-id': sExample.ADVERT_CAPABILITY_ID, model: sExample.ADVERT_MODEL, 'max-output-tokens': '8192', 'price-lovelace': sExample.ADVERT_PRICE_LOVELACE,
     'max-processing-ms': sExample.ADVERT_MAX_PROCESSING_MS, 'endpoint-url': sExample.ADVERT_ENDPOINT_URL, 'detail-uri': sExample.ADVERT_DETAIL_URI, 'detail-hash': '$DETAIL_HASH',
   });
-  assert.ok(section(sRunbook, '12. Post the advert').includes('The status word stays PROPOSED until step 17.'));
+  const twelve = section(sRunbook, '12. Post the advert');
+  assert.ok(twelve.includes('The status word stays PROPOSED until step 17.'));
+  assert.ok(twelve.includes('```sh\ncd "$BASE/repo/deploy/host"\nprintf \'%s\' "$DETAIL_HASH" | grep -Eq \'^[0-9a-f]{64}$\' || echo "not a sha256 hash"\nADVERT_REF=$(' + `${DC} run --rm --no-deps -T agent \\\n`), 'the real run starts in this folder and checks the hash it takes from the block above: it may run in a new shell');
+  assert.ok(twelve.includes('In a new shell, set `BASE` and `DETAIL_HASH` again first.'));
   const thirteen = section(sRunbook, '13. Start the runtime');
   for (const part of [`${DC} up -d --force-recreate agent`, 'curl -s http://127.0.0.1:8085/status', 'for c in audio-snippets-agent audio-snippets-service; do', '`0 e3b0c44298fc`', 'writes an interim `102 Processing` line every 60 s']) assert.ok(thirteen.includes(part), part);
   assert.ok(section(sRunbook, '14. Check the advert on the indexer').includes('It must print `Active free audio.transcript.snippets.v1` and the hash of step 11.'));
+});
+
+test('Snippets RUNBOOK: every block that works in a folder starts with its own cd to it, so that it runs alone in a new shell once BASE is set again; the few blocks that name no folder are listed', () => {
+  // The fenced sh blocks of the runbook, those in the list of Back out too (indented), with the indent taken off.
+  const blocks = [...sRunbook.matchAll(/^( *)```sh\n([\s\S]*?)^\1```$/gm)].map((m) => m[2].split('\n').map((l) => (l.startsWith(m[1]) ? l.slice(m[1].length) : l)).join('\n'));
+  assert.equal(blocks.length, 31, 'a block added or taken away is seen here');
+  // What names no folder and no file of one: the two variables, the bundle made on the operator's machine, the two checks in the image, the public check of the manifest, the comparison of the tokens, the log of the first run.
+  const NO_FOLDER = [
+    'BASE=/opt/audio-snippets\n', 'git bundle create ', 'docker run --rm --entrypoint python3 ', 'curl -fsS https://mp-suppliers-snippets.hal8.ai/agent.json\n',
+    'for c in audio-snippets-agent audio-snippets-service; do\n', 'docker logs --tail 20 audio-snippets-service\n',
+  ];
+  // A cd to the repository, to this folder or to the ops folder, or the mkdir of the one that does not exist yet and the cd into it.
+  const IN_A_FOLDER = /^(cd "\$BASE\/(repo\/deploy\/host|repo|ops)"|mkdir -p "\$BASE(\/ops)?" && cd "\$BASE(\/ops)?")\n/;
+  const listed = new Set();
+  for (const b of blocks) {
+    const free = NO_FOLDER.find((start) => b.startsWith(start));
+    if (free === undefined) { assert.match(b, IN_A_FOLDER, `a block that works in a folder starts with its cd: ${b.split('\n')[0]}`); continue; }
+    listed.add(free);
+    assert.doesNotMatch(b, /\$BASE|\.env\.audio-snippets|docker-compose\.audio-snippets\.yml|(^|\s)\.\//m, `a block of the list names no folder: ${free.trim()}`);
+  }
+  assert.equal(listed.size, NO_FOLDER.length, 'every block of the list is there');
+  // The blocks the rule was written for are among those that start with the cd.
+  const cdBlocks = blocks.filter((b) => b.startsWith('cd "$BASE/'));
+  for (const needle of ["echo 'PROXY_NETWORK=", 'IMAGE=ghcr.io/', 'awk -F= ', "grep -c '^OPERATOR_CONTACT=", 'python3 -m venv venv', `${DC} up -d service`, 'ADVERT_REF=$(', 'retire-advert.ts']) assert.ok(cdBlocks.some((b) => b.includes(needle)), `the block with ${needle} starts with a cd`);
 });
 
 test('Snippets RUNBOOK: every compose command names this agent\'s compose file, every up -d names a service, and nothing uses a port or a container of the other stacks', () => {
@@ -2544,6 +2588,7 @@ test('Snippets RUNBOOK step 17 and Back out: the old advert retired before the r
   const places = order.map(at);
   assert.deepEqual([...places].sort((a, b) => a - b), places);
   assert.ok(back.includes('`shred -u "$BASE/ops/wallet/payment.skey" "$BASE/ops/wallet/payment.vkey"`, then `rmdir "$BASE/ops/wallet"`'));
+  assert.ok(back.includes('   ```sh\n   cd "$BASE/repo/deploy/host"\n   ' + `${DC} run --rm --no-deps -T agent \\\n     node_modules/.bin/tsx agent/src/cli/retire-advert.ts \\\n`), 'the block that retires the advert starts in this folder: it may run in a new shell');
 });
 
 test('Snippets RUNBOOK failure table: the refusals at start, the codes of a job, the network and the health check, each as the code words it', () => {

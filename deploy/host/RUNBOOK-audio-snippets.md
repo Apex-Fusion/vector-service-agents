@@ -27,14 +27,14 @@ The names used below:
 | Public name | `mp-suppliers-snippets.hal8.ai` |
 | Network | the external network of the host's reverse proxy, named by `PROXY_NETWORK` in `.env` in this folder (step 1) |
 
-The commands use the two base paths as variables. Set both in every new shell on the host before the commands below:
+The commands use the two base paths as variables. Set both again in every new shell on the host, before the commands below:
 
 ```sh
 BASE=/opt/audio-snippets
 PIPELINE_BASE=/opt/document-pipeline
 ```
 
-Both values are examples: `BASE` is the folder the operator chooses for this agent, and `PIPELINE_BASE` the one the operator chose for the Pipeline.
+Both values are examples: `BASE` is the folder the operator chooses for this agent, and `PIPELINE_BASE` the one the operator chose for the Pipeline. Each block that works in a folder starts with its own `cd` to it, so that it also runs alone in a new shell once the two variables are set there. The `docker compose` commands in the running text (step 17, Back out, the table at the end) run in `$BASE/repo/deploy/host`. The few values that a block takes from an earlier one, the functions of step 4 and `DETAIL_HASH` in step 12, are named where they matter.
 
 The operator holds the key and does every step except two. Step 6 (the collateral and float of the supplier wallet) is the Foundation's. Step 10 (DNS and Caddy) is the host administrator's, see [README.md](README.md). Step 2 is the operator's here, because nothing is pulled from a registry. Every run of the agent is first-party until a buyer outside our control appears. A first-party run shows that the path works. It is not demand.
 
@@ -76,6 +76,7 @@ git log -1 --oneline
 Then name the network, as in step 1 of the Pipeline's runbook: compose reads `PROXY_NETWORK`, the external network of the host's reverse proxy, from `.env` in this folder for every compose command (the first is in step 3), and stops while it has no value. It is the network the Pipeline is on, and the host administrator gives the name ([README.md](README.md)). In this folder:
 
 ```sh
+cd "$BASE/repo/deploy/host"
 echo 'PROXY_NETWORK=<the network the host administrator names>' > .env
 docker network inspect --format '{{.Name}}' "$(sed -n 's/^PROXY_NETWORK=//p' .env)"
 ```
@@ -106,6 +107,7 @@ The first prints `{"ok":true,"faster_whisper":"1.2.1","ctranslate2":"4.8.2"}`. T
 Then pin the image, as in step 2 of the Pipeline's runbook. The manifest that the service renders is hashed into the advert (step 12), and `:latest` moves, so the compose file names the image by digest. It ships with the placeholder `@sha256:<digest>`, and compose refuses to start the service (`invalid reference format`) until the placeholder is replaced. This takes the digest where Docker keeps one for the image, and the image ID where it keeps none (an image built on the host by a Docker that keeps no digest for local images), and writes it into the `image:` line:
 
 ```sh
+cd "$BASE/repo/deploy/host"
 IMAGE=ghcr.io/apex-fusion/vector-service-agents/audio-snippets
 PIN=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE:latest" 2>/dev/null || docker image inspect --format '{{.Id}}' "$IMAGE:latest")
 if printf '%s\n' "$PIN" | grep -Eq "^($IMAGE@sha256:|sha256:)[0-9a-f]{64}\$"; then
@@ -188,6 +190,7 @@ token_into
 Check the lengths of what was written:
 
 ```sh
+cd "$BASE/repo/deploy/host"
 awk -F= '/^SUPPLIER_(PRIV_KEY_HEX|PUB_KEY_HEX|PKH|ADDRESS)=|^SERVICE_AUTH_HEADER=/ { v = $2; gsub(/"/, "", v); print $1, length(v) }' .env.audio-snippets
 ```
 
@@ -196,6 +199,7 @@ The last command must print `SUPPLIER_PRIV_KEY_HEX 64`, `SUPPLIER_PUB_KEY_HEX 64
 Then set the contact address, the one value in the file that is not generated. `OPERATOR_CONTACT` is required: the service stops at start without it, and the address is published in the manifest that the advert hashes, so it is final before step 11. Use the role address that the Foundation confirms, never a person's address. The line holds a placeholder in angle brackets from the example. Edit it in place, then check:
 
 ```sh
+cd "$BASE/repo/deploy/host"
 grep -c '^OPERATOR_CONTACT=[^<[:space:]]' .env.audio-snippets
 ```
 
@@ -235,6 +239,7 @@ grep -l 'env\.audio-snippets' *.sh *.py
 The first two `grep` lines must show the Audio Snippets values and nothing of the Pipeline, the third must print nothing, and the fourth names every script that reads the env file. A line the third prints is a path, a name or a message of another agent: change it by hand to this agent's before any script runs, because it would act on the wrong stack. The framework line is the same as for the Pipeline, `vector-service-agents`. The description is the manifest's, and the registry takes at most 256 characters of it (this one is 144). Then the Python environment, made first with `cbor2` pinned, as in step 5 of the Pipeline's runbook, then completed by `setup-venv.sh`, which clones the Module-3 SDK into `$BASE/ops`:
 
 ```sh
+cd "$BASE/ops"
 python3 -m venv venv
 ./venv/bin/pip -q install 'cbor2==5.6.5'
 ./setup-venv.sh
@@ -296,6 +301,7 @@ grep -E '^    image: (ghcr[.]io/apex-fusion/vector-service-agents/audio-snippets
 It prints that line. Then start the service and read it:
 
 ```sh
+cd "$BASE/repo/deploy/host"
 docker compose -f docker-compose.audio-snippets.yml up -d service
 docker logs audio-snippets-service
 docker exec audio-snippets-service node -e "fetch('http://127.0.0.1:9093/healthz').then(async (r) => console.log(r.status, await r.text()))"
@@ -321,7 +327,7 @@ grep -nE '^(VHOST|SNIPPET|MARKER)=' install-caddy-route.sh
 grep -in 'pipeline\|history' install-caddy-route.sh
 ```
 
-The first `grep` must show the vhost, the snippet and the marker of Audio Snippets, and the second must print nothing. A line it prints is a path, a name or a message of another stack: change it by hand to this agent's before the script runs, because it would act on the wrong stack. Run `./install-caddy-route.sh` once the record resolves to the host. The copy may poll `/healthz` on the public name after it has reloaded Caddy, and that route goes to the runtime, which does not exist before step 13. So before step 13 the script can wait on that poll, or end with exit code 2, with the block already in place: the route to check now is `/agent.json`, which goes to the service. Check from any machine:
+The first `grep` must show the vhost, the snippet and the marker of Audio Snippets, and the second must print nothing. A line it prints is a path, a name or a message of another stack: change it by hand to this agent's before the script runs, because it would act on the wrong stack. Run `./install-caddy-route.sh` once the record resolves to the host. The copy may poll `/healthz` on the public name after it has reloaded Caddy, and that route goes to the runtime, which does not exist before step 13. So before step 13 the script can wait on that poll, or end with exit code 2, with the block already in place. Read the last line it printed: if it is about the `/healthz` poll, that is the expected end, and the route to check is `/agent.json`, which goes to the service and answers now. If it says the name does not resolve to the host, the record is not there yet: wait for it and run the script again. Check from any machine:
 
 ```sh
 curl -fsS https://mp-suppliers-snippets.hal8.ai/agent.json
@@ -360,9 +366,11 @@ docker compose -f docker-compose.audio-snippets.yml run --rm --no-deps -T agent 
   --detail-hash "$DETAIL_HASH"
 ```
 
-Then the same command without `--dry-run`, which posts the advert. It locks about 2 units, returned when the advert is retired, and costs a fee:
+Then the same command without `--dry-run`, which posts the advert. It locks about 2 units, returned when the advert is retired, and costs a fee. In a new shell, set `BASE` and `DETAIL_HASH` again first.
 
 ```sh
+cd "$BASE/repo/deploy/host"
+printf '%s' "$DETAIL_HASH" | grep -Eq '^[0-9a-f]{64}$' || echo "not a sha256 hash"
 ADVERT_REF=$(docker compose -f docker-compose.audio-snippets.yml run --rm --no-deps -T agent \
   node_modules/.bin/tsx agent/src/cli/post-advert.ts \
   --capability-id audio.transcript.snippets.v1 \
@@ -493,6 +501,7 @@ To stop the agent, and as the first move of step 17. The order matters: the adve
 1. Retire the advert. Skip this point when `ADVERT_REF` in the env file is empty: no advert was posted, and there is nothing to retire (go on with point 2). Operator: the transaction is signed with the supplier key in the env file. If the runtime runs, check that `curl -s http://127.0.0.1:8085/status` says `free` (`working` means a job is in flight: wait for it). Without the runtime, from step 12 to step 13, no job can run. From `$BASE/repo/deploy/host`:
 
    ```sh
+   cd "$BASE/repo/deploy/host"
    docker compose -f docker-compose.audio-snippets.yml run --rm --no-deps -T agent \
      node_modules/.bin/tsx agent/src/cli/retire-advert.ts \
      --advert-ref "$(sed -n 's/^ADVERT_REF=//p' .env.audio-snippets)"
