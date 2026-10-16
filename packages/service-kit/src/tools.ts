@@ -1,12 +1,13 @@
 // packages/service-kit/src/tools.ts
 // Programs a service runs on what a caller sent (a PDF, a media file): started with an argument list (execFile), never through a shell, with a time limit and an
-// output limit, on files in a directory that only this process can read, which is removed whatever happened. What a tool prints is the operator's: a caller is
-// told a sentence of the service's own.
+// output limit, without the secrets of the service in their environment (childEnv), on files in a directory that only this process can read, which is removed
+// whatever happened. What a tool prints is the operator's: a caller is told a sentence of the service's own.
 import { execFile } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { childEnv } from './env.ts';
 
 /**
  * How a tool is run. It resolves with what the tool printed when it exited 0 and rejects with the error of node's execFile otherwise: a numeric `code` is an exit
@@ -16,7 +17,7 @@ export type RunTool = (file: string, args: readonly string[], options: { timeout
 
 const execFileAsync = promisify(execFile);
 export const runTool: RunTool = async (file, args, { timeoutMs, maxBuffer }) => {
-  const { stdout, stderr } = await execFileAsync(file, [...args], { timeout: timeoutMs, maxBuffer, encoding: 'utf8', windowsHide: true });
+  const { stdout, stderr } = await execFileAsync(file, [...args], { timeout: timeoutMs, maxBuffer, encoding: 'utf8', windowsHide: true, env: childEnv(process.env) });
   return { stdout, stderr };
 };
 

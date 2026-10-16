@@ -1,11 +1,12 @@
 // agents/audio-snippets/src/asr.ts
 // The bridge to the speech model (ruling R-D2): one Python process per job, `<python> -I <worker>`, the request as JSON on its stdin and the transcript as
 // JSON on its stdout, with a hard time limit and an output limit. -I is Python's isolated mode: no PYTHON* variable, no user site-packages, no folder of the
-// script on the path. The model runs on the operator's host from files built into the image, so nothing is fetched while a job runs. What the worker writes on
-// stderr goes to the log, flat and bounded; the log carries job outcomes and never a transcript, and the worker writes none there.
+// script on the path. Its environment is the service's without the token and without any name that holds a key, a token, a secret or a password (childEnv
+// of packages/service-kit). The model runs on the operator's host from files built into the image, so nothing is fetched while a job runs. What the worker
+// writes on stderr goes to the log, flat and bounded; the log carries job outcomes and never a transcript, and the worker writes none there.
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { errorText, flatText } from '@vsa/service-kit';
+import { childEnv, errorText, flatText } from '@vsa/service-kit';
 
 /** The worker of this repository. The image runs its copy at /app/asr/worker.py (ASR_WORKER). */
 export const WORKER_PATH = fileURLToPath(new URL('../asr/worker.py', import.meta.url));
@@ -52,7 +53,7 @@ interface Run { code: number | null; stdout: string; stderr: string; timedOut: b
 function runWorker(settings: AsrSettings, args: readonly string[], input: string, timeoutMs: number, spawnImpl: typeof spawn): Promise<Run> {
   return new Promise((resolve, reject) => {
     let settled = false;
-    const child = spawnImpl(settings.python, [...(settings.pythonArgs ?? ['-I']), settings.worker, ...args], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawnImpl(settings.python, [...(settings.pythonArgs ?? ['-I']), settings.worker, ...args], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: childEnv(process.env) });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let outBytes = 0;

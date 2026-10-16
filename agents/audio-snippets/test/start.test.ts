@@ -33,12 +33,13 @@ describe('loadConfig', () => {
     expect(loadConfig({ ...FULL_ENV, WHISPER_MODEL: '', WHISPER_THREADS: '', ASR_PYTHON: '', ASR_WORKER: '', WHISPER_MODEL_DIR: '', PORT: '', HOST: '' })).toStrictEqual(loadConfig(FULL_ENV));
   });
 
-  test('three settings are required, checked in this order, and the error names the variable', () => {
-    const { OPERATOR_CONTACT, SUPPLIER_PKH, SERVICE_AUTH_HEADER, ...rest } = FULL_ENV;
+  test('four settings are required, checked in this order, and the error names the variable', () => {
+    const { OPERATOR_CONTACT, SUPPLIER_PKH, SERVICE_AUTH_HEADER, SUPPLIER_PUB_KEY_HEX, ...rest } = FULL_ENV;
     expect(message(() => loadConfig({ ...rest }))).toMatch(/^environment variable OPERATOR_CONTACT is required/);
     expect(message(() => loadConfig({ ...rest, OPERATOR_CONTACT }))).toMatch(/^environment variable SUPPLIER_PKH is required \(the key hash of the supplier key, published in the manifest\) and is not set$/);
     expect(message(() => loadConfig({ ...rest, OPERATOR_CONTACT, SUPPLIER_PKH, SERVICE_AUTH_HEADER: ' ' }))).toMatch(/^environment variable SERVICE_AUTH_HEADER is required \(the value the template runtime sends as the authorization header of every call, which POST \/ requires\) and is not set$/);
-    expect(loadConfig({ ...rest, OPERATOR_CONTACT, SUPPLIER_PKH, SERVICE_AUTH_HEADER }).authHeader).toBe(TEST_AUTH);
+    expect(message(() => loadConfig({ ...rest, OPERATOR_CONTACT, SUPPLIER_PKH, SERVICE_AUTH_HEADER, SUPPLIER_PUB_KEY_HEX: ' ' }))).toMatch(/^environment variable SUPPLIER_PUB_KEY_HEX is required \(the public key of the supplier key, published in the manifest\) and is not set$/);
+    expect(loadConfig({ ...rest, OPERATOR_CONTACT, SUPPLIER_PKH, SERVICE_AUTH_HEADER, SUPPLIER_PUB_KEY_HEX }).authHeader).toBe(TEST_AUTH);
   });
 
   test('WHISPER_MODEL is base or small, WHISPER_THREADS a whole number from 1 to 64, and the error names the variable', () => {
@@ -48,11 +49,21 @@ describe('loadConfig', () => {
     expect(loadConfig({ ...FULL_ENV, WHISPER_THREADS: '64' }).asr.threads).toBe(64);
   });
 
-  test('the supplier key hash is 56 hex characters, published in lower case; a public key, when given, must be the key of that hash', () => {
+  test('the supplier key hash is 56 hex characters, published in lower case; the public key is required and must be the key of that hash', () => {
     expect(loadConfig({ ...FULL_ENV, SUPPLIER_PKH: SUPPLIER.pkh.toUpperCase(), SUPPLIER_PUB_KEY_HEX: SUPPLIER.pubKeyHex.toUpperCase() }).manifest.keys).toStrictEqual({ supplier_pkh: SUPPLIER.pkh, pub_key_hex: SUPPLIER.pubKeyHex });
     expect(message(() => loadConfig({ ...FULL_ENV, SUPPLIER_PKH: 'ab'.repeat(27) }))).toBe('environment variable SUPPLIER_PKH must be 56 hex characters, and it has 54 characters');
     expect(message(() => loadConfig({ ...FULL_ENV, SUPPLIER_PUB_KEY_HEX: 'cd'.repeat(32) }))).toMatch(/^environment variable SUPPLIER_PUB_KEY_HEX is not the public key of SUPPLIER_PKH/);
-    expect(loadConfig({ ...FULL_ENV, SUPPLIER_PUB_KEY_HEX: '' }).manifest.keys.pub_key_hex).toBe('');
+    expect(message(() => loadConfig({ ...FULL_ENV, SUPPLIER_PUB_KEY_HEX: '' }))).toMatch(/^environment variable SUPPLIER_PUB_KEY_HEX is required \(the public key of the supplier key, published in the manifest\) and is not set$/);
+  });
+
+  test('a public key that is not the key of SUPPLIER_PKH stops the start, naming the two settings and showing neither value: a key of another pair, or a private key in its line (R-D21)', () => {
+    for (const wrong of ['cd'.repeat(32), [...SUPPLIER.pubKeyHex].reverse().join(''), SUPPLIER.pubKeyHex.slice(2) + SUPPLIER.pubKeyHex.slice(0, 2)]) {
+      const text = message(() => loadConfig({ ...FULL_ENV, SUPPLIER_PUB_KEY_HEX: wrong }));
+      expect(text).toBe('environment variable SUPPLIER_PUB_KEY_HEX is not the public key of SUPPLIER_PKH: the key hash of the one is not the other. Both are published, so they must come from the same key pair, and the public key line must not hold a private key');
+      expect(text).not.toMatch(/[0-9a-f]{16}/i);
+    }
+    // A public key that is not hex, or not 32 bytes, is refused by its shape first, with its length only.
+    expect(message(() => loadConfig({ ...FULL_ENV, SUPPLIER_PUB_KEY_HEX: SUPPLIER.pubKeyHex.slice(2) }))).toBe('environment variable SUPPLIER_PUB_KEY_HEX must be 64 hex characters, and it has 62 characters');
   });
 
   describe('the service token', () => {
@@ -124,6 +135,19 @@ describe('startService', () => {
     const { SERVICE_AUTH_HEADER: _token, ...withoutToken } = env;
     await expect(startService(withoutToken, { tools: fakeTools(), asr: stubAsr(GOLDEN_TRANSCRIPT), log })).rejects.toThrow(/^environment variable SERVICE_AUTH_HEADER is required/);
     expect(asked).toStrictEqual([]);
+  });
+
+  test('a start without the public key of the supplier is refused before anything is asked, and the manifest a start serves carries it (R-D21)', async () => {
+    const { SUPPLIER_PUB_KEY_HEX: _pub, ...withoutPub } = env;
+    await expect(startService(withoutPub, { tools: fakeTools(), asr: stubAsr(GOLDEN_TRANSCRIPT), log })).rejects.toThrow(/^environment variable SUPPLIER_PUB_KEY_HEX is required/);
+    expect(asked).toStrictEqual([]);
+    const service = await startService(env, { tools: fakeTools(), asr: stubAsr(GOLDEN_TRANSCRIPT), log, scratchRoot: tempDir() });
+    try {
+      const served = await (await fetch(`http://127.0.0.1:${service.port}/agent.json`)).json();
+      expect(served.keys).toStrictEqual({ supplier_pkh: SUPPLIER.pkh, pub_key_hex: SUPPLIER.pubKeyHex });
+    } finally {
+      await service.stop();
+    }
   });
 
   test('a shutdown with no job running finishes at once and closes the port; the wait is 300 s by default', async () => {

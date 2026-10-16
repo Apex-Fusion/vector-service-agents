@@ -3,10 +3,11 @@
 // and the speech model asked whether they are there, and the server. And how it stops: shutdown, and the signals that call it. The settings helpers, the stop
 // and the signals are packages/service-kit's.
 //
-// Three settings are required, and the service stops at start without them, naming the variable: OPERATOR_CONTACT (published in the manifest, so with no
-// default), SUPPLIER_PKH (the supplier key hash, published in the manifest; the supplier key itself is the runtime's and never reaches this service) and
+// Four settings are required, and the service stops at start without them, naming the variable: OPERATOR_CONTACT (published in the manifest, so with no
+// default), SUPPLIER_PKH (the supplier key hash, published in the manifest; the supplier key itself is the runtime's and never reaches this service),
 // SERVICE_AUTH_HEADER (the value the template runtime sends as the authorization header of every call, which POST / requires: a service without it would
-// answer anyone who can reach its port). A SUPPLIER_PUB_KEY_HEX that is not the public key of SUPPLIER_PKH stops the start too. A token put in the wrong
+// answer anyone who can reach its port) and SUPPLIER_PUB_KEY_HEX (the public key of the supplier key, published beside its key hash, so that the manifest
+// never publishes an empty one: ruling R-D21). A SUPPLIER_PUB_KEY_HEX that is not the public key of SUPPLIER_PKH stops the start too. A token put in the wrong
 // line of an env file is the mistake this guards against: the token is looked for in every other setting before any check can print the line that holds it,
 // no message shows a value that is hex-shaped or long, and the manifest is searched for it last. ffmpeg, ffprobe and the speech model are asked for
 // before the service listens, because an image without them would answer /healthz ok and fail every job.
@@ -54,7 +55,7 @@ export interface ServiceConfig {
 
 /**
  * The configuration of the service from its environment; throws, naming the variable, for one that is required and missing or that is given and wrong. The
- * token is looked for in every other setting first, when it is given, before any check of another line can print that line; then the three required settings,
+ * token is looked for in every other setting first, when it is given, before any check of another line can print that line; then the four required settings,
  * in the order the operator is likely to meet them; the manifest, and the last look at it, at the end. `makeManifest` is a seam for a test of that last look.
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (env: NodeJS.ProcessEnv) => AgentManifest = manifestFromEnv): ServiceConfig {
@@ -64,9 +65,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (
   const authHeader = requiredEnv('SERVICE_AUTH_HEADER', env.SERVICE_AUTH_HEADER, 'the value the template runtime sends as the authorization header of every call, which POST / requires');
   // It is compared with a header, so it is printable ASCII (a space to a tilde). Never shown in a message, only its length: it is a secret.
   assertHeaderValue('SERVICE_AUTH_HEADER', authHeader);
-  const supplierPubKey = given(env.SUPPLIER_PUB_KEY_HEX) === '' ? '' : hexOf('SUPPLIER_PUB_KEY_HEX', given(env.SUPPLIER_PUB_KEY_HEX), 32);
+  // The public key of the supplier key, never the key itself: required (R-D21), so that the manifest never publishes an empty one.
+  const supplierPubKey = hexOf('SUPPLIER_PUB_KEY_HEX', requiredEnv('SUPPLIER_PUB_KEY_HEX', env.SUPPLIER_PUB_KEY_HEX, 'the public key of the supplier key, published in the manifest'), 32);
   // The two are published side by side. A private key in the line of the public one is a likely slip (the env file has both lines), and this is what stops it.
-  if (supplierPubKey !== '' && blake2b224Hex(supplierPubKey) !== supplierPkh) {
+  if (blake2b224Hex(supplierPubKey) !== supplierPkh) {
     throw new Error('environment variable SUPPLIER_PUB_KEY_HEX is not the public key of SUPPLIER_PKH: the key hash of the one is not the other. Both are published, so they must come from the same key pair, and the public key line must not hold a private key');
   }
   const size = whisperSize(env.WHISPER_MODEL);

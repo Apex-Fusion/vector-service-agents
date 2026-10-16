@@ -6,7 +6,8 @@
 export { clip, errorText, flatText } from './text.ts';
 export { OutOfTime, within } from './time.ts';
 export {
-  STATUS_CHIPS, TOKEN_SEARCH_MIN, assertHeaderValue, assertNoTokenIn, envInt, given, hexOf, refuseSecretIn, refuseTokenIn, requiredEnv, shown, statusChip, statusSince, tokenForms,
+  STATUS_CHIPS, TOKEN_SEARCH_MIN, assertHeaderValue, assertNoTokenIn, childEnv, envInt, given, hexOf, refuseSecretIn, refuseTokenIn, requiredEnv, shown, statusChip, statusSince,
+  tokenForms,
 } from './env.ts';
 export type { StatusChip } from './env.ts';
 export { MAX_BODY, WireError, parseWire, readBody } from './wire.ts';
