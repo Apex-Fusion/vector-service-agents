@@ -4,6 +4,8 @@
 # Env files are ignored at any depth: a key left in a .env anywhere in the tree must never reach the build context.
 node_modules
 **/node_modules
+**/.models
+**/__pycache__
 .git
 .github
 .superpowers
