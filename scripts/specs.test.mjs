@@ -415,7 +415,7 @@ test('docs/HIRE.md: the ledger unit is named once, in section 3, and nowhere els
   const guide = hire();
   assert.equal(guide.match(UNIT_NAME)?.length, 1);
   assert.ok(section(guide, '3. What the key must hold').includes("the ledger's native unit, " + UNIT_NAME.source));
-  // Every other file of the repo says "unit" or prints lovelace. The planning documents and the recorded ledger data are not part of this rule.
+  // Every other file of the repo says "unit" or prints lovelace. The design spec (docs/superpowers), which quotes the guide's one naming, and the recorded ledger data are not part of this rule.
   const root = fileURLToPath(new URL('../', import.meta.url));
   // The run outputs of docs/E2E.md (git-ignored, repository root) are an operator's files, not the repository: skipped.
   const runOutput = (rel) => /^(evidence\.json(\.tmp)?|e2e-state[^\/]*\.json[^\/]*)$/.test(rel);

@@ -337,24 +337,22 @@ test('RUNBOOK: the status line says that steps 1 to 17 were run on 2026-10-14 an
   assert.doesNotMatch(nine, /status\.chip` `proposed`|2026-10-13/);
 });
 
-test('no individual name, and no personal address, on any public surface: the manifest template, the service source, the specs, the guides, both READMEs and the planning documents', () => {
-  // The planning documents (docs/superpowers) are tracked and go public with the repository, so they are held to the same rule.
-  const planning = readdirSync(join(root, 'docs/superpowers'), { recursive: true }).filter((f) => f.endsWith('.md')).map((f) => `docs/superpowers/${f.split(sep).join('/')}`);
-  assert.equal(planning.length, 4, `the design spec and the three plans: ${planning.join(', ')}`);
+test('no individual name, and no personal address, on any public surface: the manifest template, the service source, the specs, the guides, both READMEs and the design spec', () => {
+  // The design spec is tracked and goes public with the repository, so it is held to the same rule. The planning documents were archived outside the
+  // repository before it went public; the design spec is the one document of docs/superpowers.
+  const DESIGN_SPEC = 'docs/superpowers/specs/2026-10-13-vector-service-agents-design.md';
   const files = [
     ...PUBLIC_FILES, 'agents/agent-history/agent.json.template', 'agents/agent-history/README.md', 'README.md', 'docs/HIRE.md', 'docs/E2E.md',
     ...sourceFiles('agents/agent-history/src'),
     ...readdirSync(join(root, 'specs')).map((f) => `specs/${f}`),
-    ...planning,
+    DESIGN_SPEC,
   ];
   assert.ok(files.length >= 23 && new Set(files).size === files.length, `the list reaches every surface, found ${files.length}`);
-  for (const must of ['agents/agent-history/agent.json.template', 'agents/agent-history/src/server.ts', 'specs/agent-history.md', 'specs/document-pipeline.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md', ...planning]) assert.ok(files.includes(must), `${must} is scanned`);
+  for (const must of ['agents/agent-history/agent.json.template', 'agents/agent-history/src/server.ts', 'specs/agent-history.md', 'specs/document-pipeline.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md', DESIGN_SPEC]) assert.ok(files.includes(must), `${must} is scanned`);
   for (const rel of files) assert.doesNotMatch(read(rel), NAMES, `${rel}: roles, not people`);
   // A path into someone's home folder names its owner too, and a reviewer's handle is a name.
-  for (const rel of planning) {
-    assert.doesNotMatch(read(rel), HOME_PATH, `${rel}: no path into a home folder`);
-    assert.doesNotMatch(read(rel), /--reviewer [a-z0-9]+-[a-z]+\b/, `${rel}: no reviewer handle`);
-  }
+  assert.doesNotMatch(read(DESIGN_SPEC), HOME_PATH, `${DESIGN_SPEC}: no path into a home folder`);
+  assert.doesNotMatch(read(DESIGN_SPEC), /--reviewer [a-z0-9]+-[a-z]+\b/, `${DESIGN_SPEC}: no reviewer handle`);
 });
 
 test('the name guard: it finds a name in any case, inside an address too, and not a longer word', () => {
@@ -490,7 +488,7 @@ test('RUNBOOK step 17: the old advert is retired before the service restarts and
   assert.match(s17, /no Active advert carries a stale `detail_hash` while the service restarts/);
 });
 
-// Every file of the repository, as a path with forward slashes, without the folders that hold other people's files or planning notes.
+// Every file of the repository, as a path with forward slashes, without the folders that hold other people's files or the design spec.
 function repoFiles(dir = '', out = []) {
   for (const e of readdirSync(join(root, dir), { withFileTypes: true })) {
     const rel = dir === '' ? e.name : `${dir}/${e.name}`;
