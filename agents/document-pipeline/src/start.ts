@@ -9,8 +9,8 @@
 // hash and the mainnet address of the buyer key are derived from the key (ruling R44), so the buyer key hash the manifest publishes is the key that
 // signs, and a PIPELINE_BUYER_PKH or PIPELINE_BUYER_ADDRESS the operator wrote down that is not the key's stops the start too, as does a
 // SUPPLIER_PUB_KEY_HEX that is not the public key of SUPPLIER_PKH. A secret put in the wrong line of an env file is the mistake this guards against:
-// the key is looked for in every other setting before any check can print the line that holds it, no message shows a value that is hex-shaped or long,
-// and the manifest is searched for the key and for the token last. Everything is checked before anything is made: no directory is created and no chain is built for an
+// the key and the service token are looked for in every other setting before any check can print the line that holds them, no message shows a value
+// that is hex-shaped or long, and the manifest is searched for the key and for the token last. Everything is checked before anything is made: no directory is created and no chain is built for an
 // environment that is refused. The state directory is proved writable before the first job could depend on it, because a job records each escrow it
 // posts there and must not find out only then, and the poppler tools are asked for their version for the same reason: an image without them would
 // answer /healthz ok.
@@ -47,6 +47,11 @@ export const JANITOR_INTERVAL_MS = 60_000;
  * for the janitor of the next start). The compose file's stop_grace_period must be at least this, or the container is killed before the wait is over.
  */
 export const SHUTDOWN_WAIT_MS = 300_000;
+/**
+ * How long a stop waits for a pass of the janitor that is in flight (ruling R61). A pass that hangs on a node call is abandoned then, with a log line: the
+ * entries it was looking at are still in the state directory, for the janitor of the next start.
+ */
+export const JANITOR_STOP_WAIT_MS = 30_000;
 /** How often a stopping service closes the connections that have become idle (a keep-alive connection is idle once its answer is sent). */
 const SWEEP_MS = 100;
 
@@ -110,15 +115,22 @@ function hexOf(name: string, value: string, bytes: number): string {
   return value.toLowerCase();
 }
 
+/**
+ * Throws `refusal(name)`, which names the variable and not the secret, when one of `forms` (lower case) is in any setting but `own`, the secret's own line: in
+ * any case, inside a longer value too.
+ */
+function refuseSecretIn(env: NodeJS.ProcessEnv, forms: readonly string[], own: string, refusal: (name: string) => string): void {
+  for (const name of [...OTHER_SETTINGS, ...CHAIN_SETTINGS]) {
+    if (name === own) continue;
+    const value = (env[name] ?? '').toLowerCase();
+    if (forms.some((form) => value.includes(form))) throw new Error(refusal(name));
+  }
+}
+
 /** Throws, naming the variable and not printing the key, when `key` is in any setting but its own: in either of its forms, in any case, inside a longer value too. */
 function refuseKeyIn(env: NodeJS.ProcessEnv, key: string): void {
-  const forms = [key, rawHexToBech32(key)];
-  for (const name of [...OTHER_SETTINGS, ...CHAIN_SETTINGS]) {
-    const value = (env[name] ?? '').toLowerCase();
-    if (forms.some((form) => value.includes(form))) {
-      throw new Error(`environment variable ${name} holds the buyer key, which belongs in PIPELINE_BUYER_PRIV_KEY_HEX alone: it would be printed or published. Take it out of ${name}`);
-    }
-  }
+  refuseSecretIn(env, [key, rawHexToBech32(key)], 'PIPELINE_BUYER_PRIV_KEY_HEX', (name) =>
+    `environment variable ${name} holds the buyer key, which belongs in PIPELINE_BUYER_PRIV_KEY_HEX alone: it would be printed or published. Take it out of ${name}`);
 }
 
 /** Throws, without printing it, when `text` (the manifest about to be published) holds the buyer key in either of its forms, in any case. The last line of defence. */
@@ -129,8 +141,23 @@ export function assertNoKeyIn(text: string, key: string): void {
   }
 }
 
-/** A token or credential shorter than this is no secret worth a search of the manifest: it would be found in any text by chance. */
+/** A token or credential shorter than this is no secret worth a search: it would be found in any text by chance. */
 const TOKEN_SEARCH_MIN = 16;
+
+/** The forms of the service token that are looked for, in lower case: the token whole and its credential, the part after the last space, each when long enough. */
+function tokenForms(token: string): string[] {
+  const credential = token.slice(token.lastIndexOf(' ') + 1);
+  return [token, credential].filter((secret) => secret.length >= TOKEN_SEARCH_MIN).map((secret) => secret.toLowerCase());
+}
+
+/**
+ * Throws, naming the variable and not printing the token, when the service token (SERVICE_AUTH_HEADER) is in any other setting, whole or by its credential,
+ * in any case, inside a longer value too: a setting is published (the manifest), logged (the host, the state directory) or said in an answer (the models).
+ */
+function refuseTokenIn(env: NodeJS.ProcessEnv, token: string): void {
+  refuseSecretIn(env, tokenForms(token), 'SERVICE_AUTH_HEADER', (name) =>
+    `environment variable ${name} holds the service token, which belongs in SERVICE_AUTH_HEADER alone: it would be printed or published. Take it out of ${name}`);
+}
 
 /**
  * Throws, without printing it, when `text` (the manifest about to be published) holds the service token (SERVICE_AUTH_HEADER) whole or its credential, the part
@@ -138,18 +165,16 @@ const TOKEN_SEARCH_MIN = 16;
  */
 export function assertNoTokenIn(text: string, token: string): void {
   const lower = text.toLowerCase();
-  const credential = token.slice(token.lastIndexOf(' ') + 1);
-  for (const secret of [token, credential]) {
-    if (secret.length >= TOKEN_SEARCH_MIN && lower.includes(secret.toLowerCase())) {
-      throw new Error('the manifest would publish the service token: a value that goes into it holds the token of SERVICE_AUTH_HEADER, and the service does not start with it');
-    }
+  if (tokenForms(token).some((form) => lower.includes(form))) {
+    throw new Error('the manifest would publish the service token: a value that goes into it holds the token of SERVICE_AUTH_HEADER, and the service does not start with it');
   }
 }
 
 /**
  * The configuration of the service from its environment; throws, naming the variable, for one that is required and missing or that is given and wrong. The
  * order of the checks is fixed: the four required settings first, in the order the operator is likely to meet them, with the key looked for in every other line
- * as soon as it is known; the manifest, and the last look at it, at the end. `makeManifest` is a seam for a test of that last look; the service uses the real one.
+ * as soon as it is known, and the service token too, as soon as the key has been (before any check of another line can print that line); the manifest, and
+ * the last look at it, at the end. `makeManifest` is a seam for a test of that last look; the service uses the real one.
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (env: NodeJS.ProcessEnv) => AgentManifest = manifestFromEnv): ServiceConfig {
   requiredEnv('OPERATOR_CONTACT', env.OPERATOR_CONTACT, "the operator's contact address, published in the manifest");
@@ -157,6 +182,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (
   // Never shown in a message: it is the one secret the service holds.
   if (!/^[0-9a-f]{64}$/.test(privateKeyHex)) throw new Error('environment variable PIPELINE_BUYER_PRIV_KEY_HEX must be 64 lowercase hex characters (a raw Ed25519 key)');
   refuseKeyIn(env, privateKeyHex);
+  // The token is required after SUPPLIER_PKH, but looked for now, when it is given: the check of SUPPLIER_PKH, and every one after it, could print a line.
+  if (given(env.SERVICE_AUTH_HEADER) !== '') refuseTokenIn(env, given(env.SERVICE_AUTH_HEADER));
   const supplierPkh = hexOf('SUPPLIER_PKH', requiredEnv('SUPPLIER_PKH', env.SUPPLIER_PKH, 'the key hash of the supplier key, published in the manifest'), 28);
   const authHeader = requiredEnv('SERVICE_AUTH_HEADER', env.SERVICE_AUTH_HEADER, 'the value the template runtime sends as the authorization header of every call, which POST / requires');
   // It is compared with a header, so it is printable ASCII (a space to a tilde). Never shown in a message, only its length: it is a secret.
@@ -216,19 +243,25 @@ export interface StartOptions {
   sleep?: (ms: number) => Promise<void>;
   log?: (line: string) => void;
   janitorIntervalMs?: number;
+  /** How long a stop waits for the janitor's pass in flight: JANITOR_STOP_WAIT_MS by default. */
+  janitorStopWaitMs?: number;
 }
+/** How a shutdown ended: the job that was running, if any, ended in time, or it was abandoned when the wait was over. */
+export type ShutdownOutcome = 'finished' | 'abandoned';
 export interface RunningService {
   server: Server;
   /** The port it listens on, which is the one asked for unless that was 0. */
   port: number;
-  /** Stops the janitor and closes the server and its connections, at once. Safe to call twice. */
+  /** Stops the janitor (a pass in flight has up to JANITOR_STOP_WAIT_MS) and closes the server and its connections. Safe to call twice. */
   stop: () => Promise<void>;
   /**
-   * The stop of a restart: takes no new job and no new connection, waits up to `waitMs` (SHUTDOWN_WAIT_MS by default) for the job that is running to be
-   * answered, then stops. Past the wait the connection of that job is closed and the escrows it posted are left to the janitor of the next start. Safe to call
-   * twice.
+   * The stop of a restart (ruling R61): takes no new job and no new connection, stops the janitor at once (a pass in flight has up to JANITOR_STOP_WAIT_MS), and
+   * waits up to `waitMs` (SHUTDOWN_WAIT_MS by default) for the job that is running to end, its Accept included. The wait is on the job slot, not on the
+   * connection of the job, which ends at once when the caller hangs up. A job that ends in time is answered, if its caller is still there, and the shutdown
+   * says 'finished'. Past the wait the job is abandoned: its connection is closed, the log names the escrows the state directory holds for the janitor of the
+   * next start, and the shutdown says 'abandoned'. Safe to call twice.
    */
-  shutdown: (waitMs?: number) => Promise<void>;
+  shutdown: (waitMs?: number) => Promise<ShutdownOutcome>;
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
@@ -272,7 +305,7 @@ export async function startService(env: NodeJS.ProcessEnv = process.env, options
     deps: {
       chain, fetchImpl: options.fetchImpl ?? globalThis.fetch, renderer, clock, sleep: options.sleep ?? defaultSleep,
       ocrAllowlistPkh: config.ocrAllowlistPkh, llmAllowlist: config.llmAllowlist, ocrMaxPriceLovelace: config.ocrMaxPriceLovelace, llmMaxPriceLovelace: config.llmMaxPriceLovelace,
-      ...(config.indexerUrl === undefined ? {} : { indexerUrl: config.indexerUrl }), stranded,
+      ...(config.indexerUrl === undefined ? {} : { indexerUrl: config.indexerUrl }), stranded, log,
     },
   });
   await listen(server, config.port, config.host);
@@ -288,37 +321,66 @@ export async function startService(env: NodeJS.ProcessEnv = process.env, options
     server.closeAllConnections();
     throw err;
   }
+  const janitorStopWaitMs = options.janitorStopWaitMs ?? JANITOR_STOP_WAIT_MS;
+  let janitorStopped: Promise<void> | undefined;
+  // The janitor stopped with a bound (ruling R61): no pass starts again, and one in flight that hangs on a node call is abandoned when the bound is over.
+  const stopJanitor = (): Promise<void> => (janitorStopped ??= (async () => {
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<'late'>((resolve) => { timer = setTimeout(() => resolve('late'), janitorStopWaitMs); });
+    try {
+      if ((await Promise.race([janitor.stop().then(() => 'ended' as const), late])) === 'late') {
+        log(`stopping: the janitor's pass did not end within ${janitorStopWaitMs / 1000} s and is abandoned; the janitor of the next start reads the state directory again`);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  })());
   let stopped: Promise<void> | undefined;
   const stop = (): Promise<void> => (stopped ??= (async () => {
-    await janitor.stop();
+    await stopJanitor();
     await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
   })());
-  let shuttingDown: Promise<void> | undefined;
-  const shutdown = (waitMs: number = SHUTDOWN_WAIT_MS): Promise<void> => (shuttingDown ??= (async () => {
+  let shuttingDown: Promise<ShutdownOutcome> | undefined;
+  const shutdown = (waitMs: number = SHUTDOWN_WAIT_MS): Promise<ShutdownOutcome> => (shuttingDown ??= (async () => {
     slot.drain(); // no new job, not even on a connection that is still open
-    // No new connection either. The connection of the job that is running is not idle, so it stays; the others are closed as they fall idle (a connection that has
-    // just been answered is idle, and the server's own close() looks at the connections only once).
+    // The janitor is stopped now, beside the wait: no pass starts while the service stops, and the bound of a pass in flight runs within the wait for the job.
+    const janitorDone = stopJanitor();
+    // No new connection either. The others are closed as they fall idle (a connection that has just been answered is idle, and the server's own close() looks at
+    // the connections only once).
     const closed = new Promise<'closed'>((resolve) => { server.close(() => resolve('closed')); });
     if (slot.busy) log(`stopping: waiting up to ${waitMs} ms for the job that is running`);
     const sweep = setInterval(() => server.closeIdleConnections(), SWEEP_MS);
     let timer: NodeJS.Timeout | undefined;
     const late = new Promise<'late'>((resolve) => { timer = setTimeout(() => resolve('late'), waitMs); });
+    let outcome: ShutdownOutcome = 'finished';
     try {
-      if ((await Promise.race([closed, late])) === 'late') {
-        log('stopping: the job that is running did not finish in time; the escrows it posted are in the state directory for the janitor');
+      // What is waited for is the job, which holds the slot until its run has ended, its Accept included. Its connection is no measure of it: that ends at once
+      // when the caller hangs up, while the job goes on paying (ruling R61).
+      if ((await Promise.race([slot.idle().then(() => 'idle' as const), late])) === 'late') {
+        outcome = 'abandoned';
+        const refs = stranded.list().map((entry) => entry.escrow_ref);
+        log(`stopping: the job that is running did not finish within ${waitMs} ms and is abandoned; the state directory holds ${refs.length} ${refs.length === 1 ? 'escrow' : 'escrows'} `
+          + `for the janitor of the next start${refs.length === 0 ? '' : `: ${refs.join(', ')}`}`);
+      } else {
+        // The answer of the job, if it has one, has been handed to its connection, which the sweep closes once it is written: that is waited for too, within
+        // what is left of the wait, so that the close of the server does not cut it.
+        await Promise.race([closed, late]);
       }
     } finally {
       clearInterval(sweep);
       clearTimeout(timer);
     }
+    await janitorDone;
     await stop();
+    return outcome;
   })());
   return { server, port, stop, shutdown };
 }
 
 /**
- * Stops the service on SIGTERM and SIGINT (`docker stop` sends the first): no new job, up to `waitMs` for the job that is running, then exit 0 (1 if the stop
- * failed). The first signal takes both handlers off, so a second signal of either kind is the default action and ends the process at once.
+ * Stops the service on SIGTERM and SIGINT (`docker stop` sends the first): no new job, up to `waitMs` for the job that is running, then exit 0, or 1 when that
+ * job had to be abandoned (ruling R61) or the stop failed. The first signal takes both handlers off, so a second signal of either kind is the default action and
+ * ends the process at once.
  */
 export function stopOnSignals(
   service: Pick<RunningService, 'shutdown'>,
@@ -333,7 +395,7 @@ export function stopOnSignals(
     const handler = (): void => {
       for (const [name, other] of handlers) target.off(name, other);
       log(`${signal}: stopping; no new job, and up to ${waitMs / 1000} s for the one that is running`);
-      service.shutdown(waitMs).then(() => exit(0), (err: unknown) => { log(`stopping failed: ${errorText(err)}`); exit(1); });
+      service.shutdown(waitMs).then((outcome) => exit(outcome === 'abandoned' ? 1 : 0), (err: unknown) => { log(`stopping failed: ${errorText(err)}`); exit(1); });
     };
     handlers.set(signal, handler);
     target.on(signal, handler);

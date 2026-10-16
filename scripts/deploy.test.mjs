@@ -518,15 +518,15 @@ test('status words: no file says PROPOSED about Agent History, and no file says 
   const PROPOSED_OK = {
     'README.md': [/^\| (Document Pipeline|Audio Snippets|Advocate) \| `[a-z.0-9-]+` \| PROPOSED \|$/],
     'agents/agent-history/README.md': [/`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./],
-    'agents/document-pipeline/README.md': [/^Status: PROPOSED \(built, not deployed\)\. Since 2026-10-15\. /],
+    'agents/document-pipeline/README.md': [/^Status: PROPOSED \(built, not deployed\)\. Since 2026-10-13\. /],
     'specs/agent-history.md': [/^The marketplace MCP tools \(PROPOSED\) and the template's buyer, /],
     'deploy/apex-web/RUNBOOK.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about Agent History/],
-    // The second stack of the box, the Document Pipeline: built, not deployed, since 2026-10-15. Its section of the README, its four files and nothing else.
-    'deploy/apex-web/README.md': [/^Status: PROPOSED \(built, not deployed\)\. Since 2026-10-15\. /],
-    'deploy/apex-web/RUNBOOK-document-pipeline.md': [/^Status: PROPOSED \(built, not deployed\)\. Since 2026-10-15\. /, /The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about the Document Pipeline/],
-    'deploy/apex-web/docker-compose.document-pipeline.yml': [/^# PROPOSED \(built, not deployed\)\. Since 2026-10-15\. /],
-    'deploy/apex-web/Caddyfile.document-pipeline.snippet': [/^# PROPOSED \(built, not deployed\)\. Since 2026-10-15\. /],
-    'deploy/apex-web/.env.document-pipeline.example': [/^# Status: PROPOSED \(built, not deployed\)\. Since 2026-10-15\. /],
+    // The second stack of the box, the Document Pipeline: PROPOSED (built, not deployed) since 2026-10-13. Its section of the README, its four files and nothing else.
+    'deploy/apex-web/README.md': [/^Status: PROPOSED \(built, not deployed\)\. Since 2026-10-13\. /],
+    'deploy/apex-web/RUNBOOK-document-pipeline.md': [/^Status: PROPOSED \(built, not deployed\)\. Since 2026-10-13\. /, /The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about the Document Pipeline/],
+    'deploy/apex-web/docker-compose.document-pipeline.yml': [/^# PROPOSED \(built, not deployed\)\. Since 2026-10-13\. /],
+    'deploy/apex-web/Caddyfile.document-pipeline.snippet': [/^# PROPOSED \(built, not deployed\)\. Since 2026-10-13\. /],
+    'deploy/apex-web/.env.document-pipeline.example': [/^# Status: PROPOSED \(built, not deployed\)\. Since 2026-10-13\. /],
   };
   // What may say LIVE: the sentence that denies it, and the rule that lists the three words.
   const LIVE_OK = [/Nothing (on this page|in this guide|in this folder) is LIVE( or DEPLOYED)?\./, /`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./];
@@ -610,7 +610,7 @@ test('agent README: the Image section says the publish job pushes on merge to ma
 
 // ======================================================================================================================================
 // The Document Pipeline (PROPOSED): the second stack on the same box.
-// Built, not deployed, since 2026-10-15. Nothing here has run on the box. The four files, the section of the README and the CI lines are held to each other,
+// PROPOSED (built, not deployed) since 2026-10-13. Nothing here has run on the box. The four files, the section of the README and the CI lines are held to each other,
 // to the service code, to the spec, and to the Agent History files they follow. docker compose config, docker build and caddy validate are run by hand.
 // ======================================================================================================================================
 const PSPEC = read('specs/document-pipeline.md');
@@ -649,7 +649,7 @@ const P_ADVERT = ['ADVERT_REF', 'ADVERT_CAPABILITY_ID', 'ADVERT_MODEL', 'ADVERT_
 const P_MANIFEST = ['OPERATOR_CONTACT', 'AGENT_DID', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_EXPLORER_URL'];
 const P_HIRES = ['OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST'];
 const P_STEPS = ['Put the files on the box', 'Build the service image and pin it', 'Build the runtime image', 'Make the env file and generate the two keys', 'Adapt the ops scripts', 'Fund the two wallets', 'Register the identity', 'Stake in Module-3', 'Start the service', 'DNS and Caddy', 'Hash the manifest', 'Post the advert', 'Start the runtime', 'Check the advert on the indexer', 'The first-party run', 'Wallet monitor', 'Flip the status'];
-const P_STATUS = 'PROPOSED (built, not deployed). Since 2026-10-15. ';
+const P_STATUS = 'PROPOSED (built, not deployed). Since 2026-10-13. ';
 
 test('Pipeline compose: the project and two containers have fixed names, the runtime is on loopback port 8084, the service is published nowhere, both are on the shared network and need the env file', () => {
   assert.equal(pCompose.name, 'document-pipeline');
@@ -734,7 +734,8 @@ test('Pipeline compose: the token between the containers (R50) is blanked in nei
   assert.ok(pComposeText.includes('    # The service answers POST / only to a call that carries SERVICE_AUTH_HEADER, which the runtime sends, and no port is published: the network is shared with other stacks, and a job spends from the buyer wallet.'));
   assert.doesNotMatch(pComposeText, /no authentication/i, 'the comment of before R50');
   // After any change to the env file the containers are recreated, and only while no job runs: a stop during a job is the one thing that can cut a paid job.
-  assert.ok(pComposeText.includes("# After any change to it, recreate the containers, and only when the runtime's /status says free (curl -s http://127.0.0.1:8084/status): a stop during a job can cut a paid job."));
+  // The runtime's /status exists from step 13 of the runbook: before it no job can run, and the precondition says so (C4).
+  assert.ok(pComposeText.includes('# After any change to it, recreate the containers. Once the runtime runs (step 13 of RUNBOOK-document-pipeline.md), recreate only when its /status says free (curl -s http://127.0.0.1:8084/status): a stop during a job can cut a paid job. Before step 13 no job can run.'));
   assert.ok(pComposeText.includes('docker compose -f docker-compose.document-pipeline.yml up -d --force-recreate <service>. restart does not re-read it.'));
   assert.ok(pComposeText.includes('A change to SERVICE_AUTH_HEADER needs both containers recreated.'));
   // The runtime sends the header only when its setting is not empty (the template's executor), so a service started without a token would refuse every call, or, if it did not check, answer anyone:
@@ -903,15 +904,15 @@ test('Pipeline env example: the chain values are those of Agent History, the adv
   assert.ok(PREADME.includes(`| \`OCR_ALLOWLIST_SUPPLIER_PKH\` | the key hash of the one OCR supplier the Pipeline hires | \`${OCR_DEFAULT}\` |`), 'the README of the agent gives the same default');
 });
 
-test('Pipeline env example: the status word is proposed since 2026-10-15, and the manifest it produces is the default manifest of the service', () => {
+test('Pipeline env example: the status word is proposed since 2026-10-13, and the manifest it produces is the default manifest of the service', () => {
   assert.equal(pExample.AGENT_STATUS_CHIP, 'proposed');
-  assert.equal(pExample.AGENT_STATUS_SINCE, '2026-10-15');
+  assert.equal(pExample.AGENT_STATUS_SINCE, '2026-10-13');
   assert.notEqual(pExample.AGENT_STATUS_SINCE, '', 'an empty AGENT_STATUS_SINCE is refused by the service');
-  assert.match(pExampleText, /^# The status word the manifest carries, and since when: proposed since 2026-10-15, built and not deployed\. It changes only after the advert is Active and a first-party job has settled \(RUNBOOK-document-pipeline\.md step 17, "Flip the status"\)\. A first-party run is not demand, so the word is not live on that account\.$/m);
+  assert.match(pExampleText, /^# The status word the manifest carries, and since when: proposed since 2026-10-13, built and not deployed\. It changes only after the advert is Active and a first-party job has settled \(RUNBOOK-document-pipeline\.md step 17, "Flip the status"\)\. A first-party run is not demand, so the word is not live on that account\.$/m);
   const [withExample, withNothing] = renderManifests([{ ...withoutPlaceholders(pExample), OPERATOR_CONTACT: TEST_CONTACT }, { OPERATOR_CONTACT: TEST_CONTACT }], 'agents/document-pipeline');
   assert.deepEqual(withExample, withNothing, 'the example changes nothing in the manifest the advert will hash');
   assert.equal(withExample.operator.contact, TEST_CONTACT);
-  assert.deepEqual(withExample.status, { chip: 'proposed', since: '2026-10-15' });
+  assert.deepEqual(withExample.status, { chip: 'proposed', since: '2026-10-13' });
   assert.equal(withExample.links.explorer_advert, '');
   assert.equal(withExample.terms.price_lovelace, P_TERMS.price);
   assert.equal(withExample.terms.max_processing_ms, P_TERMS.window);
@@ -954,7 +955,7 @@ test('Pipeline Caddy snippet: the site block is the second endpoint host, the ma
   assert.doesNotMatch(block, /history/);
 });
 
-test('Pipeline files: each says PROPOSED (built, not deployed), since 2026-10-15, in its own first lines, and the compose file, the snippet, the runbook and the README section say that nothing is installed or run', () => {
+test('Pipeline files: each says PROPOSED (built, not deployed), since 2026-10-13, in its own first lines, and the compose file, the snippet, the runbook and the README section say that nothing is installed or run', () => {
   assert.ok(pComposeText.split('\n')[1].startsWith(`# ${P_STATUS}Nothing of it is installed or running on the box. The order of work is RUNBOOK-document-pipeline.md. The host administrator's part is README.md.`));
   assert.ok(pSnippet.split('\n')[1].startsWith(`# ${P_STATUS}Not installed: the block is merged at step 10 of RUNBOOK-document-pipeline.md by a copy of /opt/agent-history/ops/install-caddy-route.sh, which merges it and reloads Caddy (README.md).`));
   assert.equal(pExampleText.split('\n')[2], `# Status: ${P_STATUS}The status word the manifest carries is AGENT_STATUS_CHIP below.`);
@@ -982,12 +983,13 @@ test('Pipeline README section: the second stack beside Agent History, with its t
     'The runtime holds the supplier key. The service holds a second, separate key, the buyer key',
     '- **A token on the service.** The service answers `POST /` only to a call whose `authorization` header is the token in `SERVICE_AUTH_HEADER`, which the runtime sends with every call (ruling R50).',
     'Both containers read it from the env file, and the operator makes it in step 4 of the runbook.',
-    'Any other call gets 401 before its body is read, and `GET /healthz` and `GET /agent.json` need no header.',
+    'A `POST /` without that header, or with another value, gets 401 before its body is read. `GET /healthz` and `GET /agent.json` need no header, and any other path gets 404.',
     'Port 9092 is never published to the host all the same.',
     'reachable over `umami_default` by every container on that network, so the host administrator keeps `umami_default` to stacks that are trusted',
     'the token is the second lock, and anything that holds it can start a job that spends from the buyer wallet',
     'and while `PIPELINE_BUYER_PRIV_KEY_HEX`, `SUPPLIER_PKH` or `SERVICE_AUTH_HEADER` is not set',
-    'After any change, recreate, when `curl -s http://127.0.0.1:8084/status` says `free` (a stop during a job can cut a paid job): ',
+    'After any change, recreate: once the runtime runs (step 13 of the runbook), only when `curl -s http://127.0.0.1:8084/status` says `free` (a stop during a job can cut a paid job), and before step 13 at once, since no job can run: ',
+    'kills a paid job, so, once the runtime runs (step 13 of the runbook), restarts wait for `/status` on `127.0.0.1:8084` to say `free`. Before step 13 no job can run, and there is nothing to wait for.',
     'A change to `SERVICE_AUTH_HEADER` needs both containers recreated.',
     '`document-pipeline-state`, mounted at `/data`',
     '`docker compose down` keeps it, and `down -v` or `docker volume rm` would delete it',
@@ -1045,7 +1047,7 @@ test('Pipeline RUNBOOK: the differences from Agent History are listed in one pla
   const head = pRunbook.slice(0, pRunbook.indexOf('\n## Funds\n'));
   for (const part of [
     '- **Two keys.** The runtime holds the supplier key. The service holds a second, separate key, the buyer key,',
-    '- **The service spends.** Every job posts escrows from the buyer wallet. The service answers `POST /` only to a call that carries the token the runtime sends (`SERVICE_AUTH_HEADER`, made in step 4, ruling R50) and gives any other call 401, because the network is shared with other stacks. Its port 9092 is never published all the same, and a job is refused up front, spending nothing, when the buyer wallet cannot fund it.',
+    '- **The service spends.** Every job posts escrows from the buyer wallet. The service answers `POST /` only to a call that carries the token the runtime sends (`SERVICE_AUTH_HEADER`, made in step 4, ruling R50) and gives a `POST /` without it 401, because the network is shared with other stacks; any other path but `/healthz` and `/agent.json` gets 404. Its port 9092 is never published all the same, and a job is refused up front, spending nothing, when the buyer wallet cannot fund it.',
     '- **A window of 30 min, not 5.**', '`max_processing_ms` is 1800000', '`SERVICE_TIMEOUT_MS` is 1680000', 'up to 27 min', 'an interim `102 Processing` line to the runtime every 60 s',
     '- **State and a clean stop.**', '`stranded.json`', '`document-pipeline-state`', '`stop_grace_period: 300s`', 'a memory limit of 1536m',
     '- **No registry.**', 'the box has no GitHub credentials',
@@ -1120,7 +1122,7 @@ test('Pipeline RUNBOOK step 4: the env file is made once and never over a file t
     'privateKeyHex:${1}_PRIV_KEY_HEX publicKeyHex:${1}_PUB_KEY_HEX pubKeyHash:${1}_PKH address:${1}_ADDRESS',
     "awk -F= '/^(SUPPLIER|PIPELINE_BUYER)_(PRIV_KEY_HEX|PUB_KEY_HEX|PKH|ADDRESS)=|^SERVICE_AUTH_HEADER=/ { v = $2; gsub(/\"/, \"\", v); print $1, length(v) }' .env.document-pipeline",
     "grep -c '^OPERATOR_CONTACT=[^<[:space:]]' .env.document-pipeline", "never a person's address", '`OPERATOR_CONTACT` is required',
-    'The example already carries `AGENT_STATUS_CHIP=proposed` and `AGENT_STATUS_SINCE=2026-10-15`',
+    'The example already carries `AGENT_STATUS_CHIP=proposed` and `AGENT_STATUS_SINCE=2026-10-13`',
     'this file is the only copy of either until step 7. There is no recovery phrase',
     "Copy `.env.document-pipeline` to the operator's encrypted offline store now, before either address receives anything, and copy it again after any regeneration of a key or of the token: a copy made before holds the old key, and the new one has no copy at all.",
     'Step 7 writes a second plaintext copy of the supplier key to the directory `/opt/document-pipeline/ops/wallet`',
@@ -1279,6 +1281,34 @@ test('Pipeline RUNBOOK step 4 in bash: the buyer key is made again alone, after 
   });
 });
 
+// C4: the supplier block refuses lines that have a value, so the failure table does not ask for the four supplier values to be filled again over them: a
+// wrong line is restored from the offline copy, or, while the supplier address has received nothing, the four lines are emptied and the block made again.
+test('Pipeline RUNBOOK step 4 in bash: the supplier block refuses while the supplier lines have values, and makes the key again alone after the command of the failure table emptied them', NEEDS_BASH, () => {
+  const { head, supplier, buyer, token } = step4Blocks();
+  const table = section(pRunbook, 'If something goes wrong');
+  const emptySupplier = String.raw`sed -i 's/^\(SUPPLIER_[A-Z_]*\)=.*/\1=/' .env.document-pipeline`;
+  assert.ok(table.includes('`' + emptySupplier + '`'), 'the failure table gives the command that empties the supplier lines');
+  withStep4Folder((dir) => {
+    runBash(`${STUBS}${head}${supplier}${buyer}${token}`, dir);
+    const before = parseEnv(envOf(dir));
+    const refused = runBash(`${STUBS}${head}${supplier}`, dir);
+    assert.match(refused.stderr, /refusing: SUPPLIER_PRIV_KEY_HEX already has a value, and a key that may be funded is never replaced/);
+    assert.deepEqual(parseEnv(envOf(dir)), before, 'the refused block changed nothing');
+    const emptied = runBash(`${emptySupplier}\n`, dir);
+    assert.equal(emptied.status, 0);
+    const blank = parseEnv(envOf(dir));
+    for (const name of P_SUPPLIER) assert.equal(blank[name], '', `${name} emptied`);
+    for (const name of [...P_BUYER, ...P_TOKEN]) assert.equal(blank[name], before[name], `${name} untouched by the command`);
+    const redo = runBash(`${STUBS}${head}${supplier}`, dir);
+    assert.equal(redo.status, 0);
+    const after = parseEnv(envOf(dir));
+    for (const name of P_SUPPLIER) assert.match(after[name], /^[0-9a-z]+$/, `${name} made again`);
+    for (const name of P_SUPPLIER) assert.notEqual(after[name], before[name], `${name} is a new value`);
+    for (const name of [...P_BUYER, ...P_TOKEN]) assert.equal(after[name], before[name], `${name} untouched`);
+    assert.equal(apartFromTheNine(envOf(dir)), apartFromTheNine(pExampleText));
+  });
+});
+
 test('Pipeline RUNBOOK step 4 in bash: the token is made again alone after its line was emptied with the command of the failure table, and only while it is empty; the supplier key is the same', NEEDS_BASH, () => {
   const { head, supplier, buyer, token } = step4Blocks();
   const table = section(pRunbook, 'If something goes wrong');
@@ -1411,6 +1441,8 @@ test('Pipeline RUNBOOK step 9: the service is started by name after the pin is c
   const startup = START.match(/listening on \$\{config\.host\}:\$\{port\}; buyer address \$\{config\.buyer\.address\}; state directory \$\{config\.stateDir\}/);
   assert.ok(startup, 'the start line of the code');
   assert.ok(nine.includes('[document-pipeline] listening on 0.0.0.0:9092; buyer address <the buyer address of step 4>; state directory /data'));
+  // The status the manifest must show is the example's: proposed since 2026-10-13 (ruling R52).
+  assert.ok(nine.includes(`\`status.chip\` \`proposed\` and \`status.since\` \`${pExample.AGENT_STATUS_SINCE}\` as the env file sets them (step 4)`));
   assert.ok(read('agents/document-pipeline/src/server.ts').includes('console.log(`[document-pipeline] ${line}`)'));
   const [m] = renderManifests([{ OPERATOR_CONTACT: TEST_CONTACT }], 'agents/document-pipeline');
   for (const path of ['operator.contact', 'identity.did', 'identity.controller_pkh', 'keys.supplier_pkh', 'keys.pub_key_hex', 'keys.buyer_pkh', 'status.chip', 'status.since', 'links.explorer_advert']) assert.ok(path.split('.').reduce((o, k) => o?.[k], m) !== undefined, `the manifest has ${path}`);
@@ -1427,12 +1459,14 @@ test('Pipeline RUNBOOK steps 10 to 14: the Caddy script copy with the vhost and 
     "curl -fsS https://mp-suppliers-pipeline.hal8.ai/agent.json", 'It must return the manifest of step 9, byte for byte.',
     '`/healthz` on the public name answers only after step 13, because every other path goes to the runtime.',
     // Nothing of the other stack may be left in the copy, and what a wait or an exit code 2 before step 13 means.
-    'Then check that nothing of Agent History is left in the copy:', '```sh\ngrep -n history install-caddy-route.sh\n```',
+    'Then check that nothing of Agent History is left in the copy:', '```sh\ngrep -in history install-caddy-route.sh\n```',
     "It must print nothing. A line it prints is a path, a name or a message of the other stack: change it by hand to this agent's before the script runs, because it would act on the wrong stack.",
     'The copy may poll `/healthz` on the public name after it has reloaded Caddy, and that route goes to the runtime, which does not exist before step 13. So before step 13 the script can wait on that poll, or end with exit code 2, with the block already in place.',
     'Read the last line it printed: if it is about the `/healthz` poll, that is the expected end, and the route to check is `/agent.json`, which goes to the service and answers now. If it says the name does not resolve to the box, the record is not there yet: wait for it and run the script again.',
   ]) assert.ok(ten.includes(part), `step 10 says: ${part}`);
-  assert.ok(ten.indexOf("sed -i '/^MARKER=/s#agent-history#document-pipeline#g'") < ten.indexOf('grep -n history install-caddy-route.sh') && ten.indexOf('grep -n history install-caddy-route.sh') < ten.indexOf('Run `./install-caddy-route.sh` once the record resolves to the box.'), 'the leftover check comes after the corrections and before the run');
+  // In any case (C4): the other stack calls itself "Agent History" in its messages and comments, and a case-sensitive search would not see that.
+  assert.equal(ten.includes('grep -n history'), false);
+  assert.ok(ten.indexOf("sed -i '/^MARKER=/s#agent-history#document-pipeline#g'") < ten.indexOf('grep -in history install-caddy-route.sh') && ten.indexOf('grep -in history install-caddy-route.sh') < ten.indexOf('Run `./install-caddy-route.sh` once the record resolves to the box.'), 'the leftover check comes after the corrections and before the run');
   assert.ok(ten.indexOf('Run `./install-caddy-route.sh` once the record resolves to the box.') < ten.indexOf('The copy may poll `/healthz`') && ten.indexOf('The copy may poll `/healthz`') < ten.indexOf('curl -fsS https://mp-suppliers-pipeline.hal8.ai/agent.json'), 'the wait is explained between the run and the check from outside');
   assert.ok(existsSync(join(root, 'deploy/apex-web/Caddyfile.document-pipeline.snippet')), 'the snippet the script merges exists');
   assert.ok(ten.includes('/opt/document-pipeline/repo/deploy/apex-web/Caddyfile.document-pipeline.snippet'));
@@ -1546,8 +1580,10 @@ test('Pipeline RUNBOOK step 15: the settings of the first-party run, a request J
 test('Pipeline RUNBOOK "Watch the first stop": one stop of the idle service is watched before step 17, and what to read is what the code logs', () => {
   const stop = section(pRunbook, 'Watch the first stop');
   for (const part of [
-    'Operator, after step 15 and while no job is running.', 'On SIGTERM (`docker stop` sends it) the service takes no new job and waits up to 300 s for the one that is running, then exits 0.',
-    "through the image's `tini` and `tsx`", 'before step 17 stops the service for real',
+    'Operator, after step 15 and while no job is running.', 'On SIGTERM (`docker stop` sends it) the service takes no new job and waits up to 300 s for the one that is running, its Accept included, then exits 0, or 1 if it had to abandon that job.',
+    // Ruling R61: the image runs node itself, with tsx as a hook, so there is no child that relays the signal.
+    "That works only if the signal reaches the service through the image's `tini`, which runs it as one process, `node --import tsx`, with no child to relay the signal",
+    'before step 17 stops the service for real',
     'curl -s http://127.0.0.1:8084/status', 'time docker compose -f docker-compose.document-pipeline.yml stop service', 'docker logs --tail 5 document-pipeline-service',
     "docker inspect --format '{{.State.ExitCode}}' document-pipeline-service", 'docker compose -f docker-compose.document-pipeline.yml up -d service',
     '`/status` must say `free`', 'With nothing running the stop returns in a few seconds.',
@@ -1555,10 +1591,13 @@ test('Pipeline RUNBOOK "Watch the first stop": one stop of the idle service is w
     "Any other code but 0 fails the check too (143 would mean the signal ended the process before the service's own handling of it).",
     'do not go on to step 17', 'When a job is running at a stop, the log also says `stopping: waiting up to 300000 ms for the job that is running`.',
     // What this check proves, and what it leaves open.
-    'This proves that the signal is delivered to an idle service and handled. It does not prove the 300 s wait for a job that is running under the signal relay of `tsx` (the image runs the service through it): that is still to be confirmed on the first real stop that finds a job running, and until it is, a stop is made only when `/status` says `free`.',
+    'This proves that the signal is delivered to an idle service and handled. The wait for a job that is running is tested offline (`agents/document-pipeline/test/start.test.ts`), not yet on the box: until the first real stop that finds a job running shows it, a stop is made only when `/status` says `free`.',
+    'A stop that had to abandon a job exits 1, and its log names the escrows the state directory holds for the janitor of the next start.',
   ]) assert.ok(stop.includes(part), `the first stop says: ${part}`);
+  assert.equal(stop.includes('signal relay of `tsx`'), false, 'the caveat of the image that ran the tsx binary');
   assert.ok(stop.indexOf('When a job is running at a stop') < stop.indexOf('This proves that the signal is delivered to an idle service'), 'said after the reading of the log');
-  assert.ok(read('agents/document-pipeline/Dockerfile').includes('tsx'), 'the image does run the service through tsx, as the caveat says');
+  assert.ok(read('agents/document-pipeline/Dockerfile').includes('CMD ["node", "--import", "tsx", "agents/document-pipeline/src/index.ts"]'), 'the image runs the service as one node process, as the text says');
+  assert.ok(START.includes('did not finish within ${waitMs} ms and is abandoned; the state directory holds ${refs.length}'), 'the line of an abandoned job is the code\'s');
   assert.ok(stop.indexOf('stop service') < stop.indexOf('docker logs --tail 5') && stop.indexOf('docker logs --tail 5') < stop.indexOf('{{.State.ExitCode}}') && stop.indexOf('{{.State.ExitCode}}') < stop.indexOf('up -d service'), 'stop, read the log, read the exit code, start again');
   // The lines are the code's.
   assert.ok(START.includes('log(`${signal}: stopping; no new job, and up to ${waitMs / 1000} s for the one that is running`);'));
@@ -1610,6 +1649,8 @@ test('Pipeline RUNBOOK Back out: the advert first with the supplier key, then th
   const places = order.map(at);
   assert.deepEqual([...places].sort((a, b) => a - b), places);
   assert.match(back, /signed with the supplier key in the env file/);
+  // The runtime's /status exists from step 13; an advert of step 12 with no runtime has no job to wait for (C4).
+  assert.ok(back.includes('If the runtime runs, check that `curl -s http://127.0.0.1:8084/status` says `free` (`working` means a job is in flight: wait for it). Without the runtime, from step 12 to step 13, no job can run.'));
   for (const part of [
     'docker exec document-pipeline-service cat /data/stranded.json', 'the janitor reclaims each one 5 s after its `deliver_by`', 'janitor: reclaimed <escrow>: ...',
     'Never add `-v`, and never run `docker volume rm document-pipeline-state`', 'the volume holds `stranded.json`, the escrows that still hold the buyer\'s funds, and the janitor of the next start reads it. `down` keeps it.', 'The stop waits up to 300 s for a job that is running.',
@@ -1670,6 +1711,7 @@ test('Pipeline RUNBOOK failure table: the start-up refusals, the pipeline codes 
     ['must be printable ASCII', 'start', 'must be printable ASCII (it is sent as an HTTP header)'],
     ['`request refused: unauthorized (<n> since the last line of this kind)`', 'server', 'request refused: unauthorized (${refusals} since the last line of this kind)'],
     ['`holds the buyer key, which belongs in PIPELINE_BUYER_PRIV_KEY_HEX alone`', 'start', 'holds the buyer key, which belongs in PIPELINE_BUYER_PRIV_KEY_HEX alone'],
+    ['`holds the service token, which belongs in SERVICE_AUTH_HEADER alone`', 'start', 'holds the service token, which belongs in SERVICE_AUTH_HEADER alone'],
     ['`is not the public key of SUPPLIER_PKH`', 'start', 'is not the public key of SUPPLIER_PKH'],
     ['`is not the key hash of the key in PIPELINE_BUYER_PRIV_KEY_HEX`', 'start', 'is not the key hash of the key in PIPELINE_BUYER_PRIV_KEY_HEX'],
     ['`poppler-utils (pdfinfo and pdftoppm) must be installed and on PATH`', 'render', 'poppler-utils (pdfinfo and pdftoppm) must be installed and on PATH'],
@@ -1683,6 +1725,8 @@ test('Pipeline RUNBOOK failure table: the start-up refusals, the pipeline codes 
     ['`janitor: the pass failed`', 'janitor', 'janitor: the pass failed'],
     // Ruling R56: an advert above its price ceiling.
     ['`above the ceiling of`', 'orchestrate', 'above the ceiling of ${ceiling} lovelace (${setting})'],
+    // A buyer wallet in one output: that output is the collateral, and the float outside it is 0.
+    ['`wallet check failed: The buyer wallet holds 0 lovelace outside its collateral`', 'orchestrate', 'The buyer wallet holds ${wallet.floatLovelace} lovelace outside its collateral, less than the ${needed} that ${jobs} need.'],
   ]) {
     assert.ok(table.includes(row), `the table quotes ${row}`);
     assert.ok(sources[where].includes(quote), `${where} prints ${quote}`);
@@ -1693,6 +1737,10 @@ test('Pipeline RUNBOOK failure table: the start-up refusals, the pipeline codes 
     '| The env file changed and nothing happened |', '| `network umami_default declared as external, but could not be found` |', '| `invalid reference format` for the service image |',
     '| `No such image: sha256:...` for the service image |', "| The served `/agent.json` hashes differently from the advert's `detail_hash` |",
     '(max_pages + 1) * 4.5', '27 for five pages', 'No script of this pack signs with the buyer key',
+    // The collateral is the smallest pure output of at least 5 units (collateralOf in packages/buyer-core/src/chain.ts), so a wallet in one output has no float.
+    '| `/healthz` of the service answers 503 `insufficient_float` though the buyer wallet holds enough, and the log says `wallet check failed: The buyer wallet holds 0 lovelace outside its collateral` |',
+    'The buyer wallet is in one output: it was funded in one transfer, or a transaction gathered its outputs into one. The service takes the smallest pure output of at least 5 units as the collateral and counts only what is outside it as the float, so a single output, however large, leaves a float of 0.',
+    'Add an output of exactly 5 units: ask the Foundation to send 5 units alone, as in step 6, or send 5 units from the buyer wallet to its own address, signed with the buyer key by the manual means of the `store_write_failed` row. The 5 units become the collateral and the rest is float again. The log says `wallet check passed again` within a minute.',
     'While it lasts, `docker ps` shows the service as unhealthy, because its health check is `/healthz`.',
     // R50 and the step that never replaces a key.
     '| Jobs fail with `service_http_401`, and the log of the service says ',
@@ -1707,7 +1755,12 @@ test('Pipeline RUNBOOK failure table: the start-up refusals, the pipeline codes 
     'Run only the buyer key block of step 4 (the first block of that step first, in a new shell, to define the function; it leaves the file alone).',
     'while the address has received nothing',
     'Never run the whole step again, and never copy the example over the env file: that replaces funded keys. Then refresh the offline copy and recreate.',
-    '| The env file changed and nothing happened | `restart` does not re-read it. | Check that `curl -s http://127.0.0.1:8084/status` says `free`: a recreate stops the container, and a stop during a job can cut a paid job. Then `up -d --force-recreate <service>`, and both containers after a change to `SERVICE_AUTH_HEADER`. |',
+    '| The env file changed and nothing happened | `restart` does not re-read it. | Once the runtime runs (step 13), check first that `curl -s http://127.0.0.1:8084/status` says `free`: a recreate stops the container, and a stop during a job can cut a paid job. Before step 13 no job can run. Then `up -d --force-recreate <service>`, and both containers after a change to `SERVICE_AUTH_HEADER`. |',
+    // The supplier block of step 4 refuses a line that has a value (C4): a wrong supplier line is restored from the offline copy, or, while the supplier
+    // address has received nothing, emptied with its three companions and made again by that block alone.
+    '| `/capability` shows an empty public key, or claims fail with `wrong_supplier` | `SUPPLIER_PUB_KEY_HEX` or `SUPPLIER_PKH` is empty in the env file. | Restore the four supplier lines from the offline copy of the env file (step 4), which holds them from one key, then recreate. Without a good copy, and only while the supplier address has received nothing, empty the four lines with `'
+      + String.raw`sed -i 's/^\(SUPPLIER_[A-Z_]*\)=.*/\1=/' .env.document-pipeline` + '` and run only the supplier block of step 4 (the first block of that step first, in a new shell, to define the function). The block refuses a line that has a value, so it never replaces a funded key. Then refresh the offline copy and recreate. |',
+    '| The same, and the log says `is not the public key of SUPPLIER_PKH` | The line of the supplier public key holds another value, a private key by mistake. | Restore the four supplier lines from the offline copy of the env file, as in the `/capability` row above, then recreate. |',
   ]) assert.ok(table.includes(part), `the table has: ${part}`);
   assert.doesNotMatch(table, /Finish step 4/, 'the row that invited a second run of step 4 over funded keys');
   // The commands that empty a key or the token by hand are in the table, and are the ones the tests of step 4 run.
@@ -1728,7 +1781,8 @@ test('CI: the test job installs poppler-utils before the tests and sets REQUIRE_
   assert.ok(install < tests, 'before the tests');
   assert.equal(tests, steps.length - 1, 'pnpm test is the last step');
   assert.equal(String(steps[tests].env?.REQUIRE_POPPLER), '1');
-  assert.match(read('agents/document-pipeline/test/render.test.ts'), /test\.skipIf\(!process\.env\.REQUIRE_POPPLER\)\('REQUIRE_POPPLER is set: pdftoppm and pdfinfo are installed'/);
+  // Only the value CI sets requires the tools: a REQUIRE_POPPLER of 0 or of an empty string asks for nothing.
+  assert.match(read('agents/document-pipeline/test/render.test.ts'), /test\.skipIf\(process\.env\.REQUIRE_POPPLER !== '1'\)\('REQUIRE_POPPLER is set: pdftoppm and pdfinfo are installed'/);
   assert.ok(steps.findIndex((s) => s.run === 'pnpm typecheck') < tests);
 });
 

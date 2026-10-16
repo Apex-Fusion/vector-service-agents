@@ -15,10 +15,11 @@ export const RECEIPTS_GAP = 'The Pipeline checks receipts, not truth: a summary 
 export const SUBSIDY_GAP = 'At five pages the Pipeline spends about 19 in locks and fees to earn 5, where 5 is the price of 5000000 lovelace and the 19 holds at today\'s fleet price of 0.2 per sub-job. '
   + 'The Foundation subsidises this on purpose while the fee floor stands.';
 
-// Stated by the built service.
+// Stated by the built service. The deadline cuts the start of a hire and the waits of a hire (src/budget.ts), not an Accept under way (ruling R53).
 export const DEADLINE_GAP = `A job has a deadline of its own, ${JOB_DEADLINE_MS} ms after its request arrives: a page is not started with less than ${PAGE_MIN_LEFT_MS / 1000} s left, `
-  + `nor the summary or extraction with less than ${LLM_MIN_LEFT_MS / 1000} s. A job that cannot finish in time fails with the code deadline and returns no bundle, `
-  + 'and the sub-jobs it had already paid for are not refunded.';
+  + `nor the summary or extraction with less than ${LLM_MIN_LEFT_MS / 1000} s. A job that cannot start its next hire in time, or whose hire would have to wait again on its `
+  + 'supplier or on the ledger after the deadline, fails with the code deadline and returns no bundle, and the sub-jobs it had already paid for are not refunded. '
+  + 'A hire in its Accept at the deadline is not cut: it finishes late, and the chat job may then answer after the runtime has given up on the job.';
 export const SCHEMA_INVALID_GAP = 'An extraction whose answer is not JSON, or does not validate against the schema, still succeeds and is paid for: '
   + 'the result has schema_valid false and extraction null, and the answer is kept as raw_text.';
 

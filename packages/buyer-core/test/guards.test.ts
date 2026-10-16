@@ -1,7 +1,24 @@
 // packages/buyer-core/test/guards.test.ts
-// The two checks on untrusted values that fleet-clients.ts, select-supplier.ts and fleet-verify.ts share: is it a JSON object, and do two refs name the same output.
+// The checks on untrusted values that fleet-clients.ts, select-supplier.ts and fleet-verify.ts share: is it a JSON object, and do two refs name the same output;
+// and the one way text a supplier sent is made fit for a log line or an answer (flatText).
 import { describe, it, expect } from 'vitest';
-import { isRecord, sameRef } from '../src/guards.ts';
+import { flatText, isRecord, sameRef } from '../src/guards.ts';
+
+// Ruling R64: a supplier's message reaches log lines and the body of a refusal. A line break in it would forge a log line, an escape would steer a terminal.
+describe('flatText', () => {
+  it('turns every control character into a space, line breaks and escapes included, and keeps the rest as it is', () => {
+    expect(flatText('one\ntwo\r\nthree\tfour\u001b[31mred\u001b[0m\u0000\u007f end', 500)).toBe('one two  three four [31mred [0m   end');
+    for (let code = 0; code < 0x20; code++) expect(flatText(`a${String.fromCharCode(code)}b`, 10), String(code)).toBe('a b');
+    expect(flatText('a\u007fb', 10)).toBe('a b');
+    expect(flatText('Pr\u00e9cis \u2713 text', 100)).toBe('Pr\u00e9cis \u2713 text');
+  });
+
+  it('cuts the text at the length it is given', () => {
+    expect(flatText('x'.repeat(600), 500)).toBe('x'.repeat(500));
+    expect(flatText('short', 500)).toBe('short');
+    expect(flatText('\n'.repeat(10), 3)).toBe('   ');
+  });
+});
 
 const TX = 'ab'.repeat(32);
 

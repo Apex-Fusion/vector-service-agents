@@ -26,7 +26,7 @@
 import { safeFetch } from '@vsa/vector-read';
 import { ROUTES, callFailure, canonicalRef, jsonObject, trim } from './vendored/mcp/marketplace-supplier.ts';
 import type { Call, Route } from './vendored/mcp/marketplace-supplier.ts';
-import { isRecord } from './guards.ts';
+import { flatText, isRecord } from './guards.ts';
 
 /** The fetch safeFetch calls for each request, once it has vetted the host. Production passes the platform fetch; tests pass a fake. */
 export type FetchLike = typeof fetch;
@@ -68,11 +68,14 @@ const POLL_CALL: Call = { maxResponseBytes: ANSWER_BYTES, timeoutMs: 20_000 };
 const JOB_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const READ_HEADERS = { accept: 'application/json' } as const;
 
-/** What a supplier said about a failure, as the reason and the message of its envelope, bounded; the status stands in for a missing reason. */
+/**
+ * What a supplier said about a failure, as the reason and the message of its envelope, flat and bounded (flatText, ruling R64); the status stands in for a
+ * missing reason.
+ */
 function said(status: number, body: Record<string, unknown>): { reason: string; message: string } {
   return {
-    reason: typeof body.reason === 'string' && body.reason !== '' ? body.reason.slice(0, 100) : `http_${status}`,
-    message: typeof body.message === 'string' ? body.message.slice(0, 500) : '',
+    reason: typeof body.reason === 'string' && body.reason !== '' ? flatText(body.reason, 100) : `http_${status}`,
+    message: typeof body.message === 'string' ? flatText(body.message, 500) : '',
   };
 }
 
@@ -189,7 +192,7 @@ function pollResult(jobId: string, escrowRef: string, status: number, text: stri
     throw lost(answer === null ? 'no JSON object' : 'a JSON object that is no envelope of its own');
   }
   // A 202 says the job is not finished whatever else the body says.
-  if (status === 202) return { kind: 'running', status: typeof answer?.status === 'string' && answer.status !== '' ? answer.status.slice(0, 100) : 'running' };
+  if (status === 202) return { kind: 'running', status: typeof answer?.status === 'string' && answer.status !== '' ? flatText(answer.status, 100) : 'running' };
   if (status === 200) {
     if (answer === null) throw lost('no JSON object');
     const { receipt, receipt_signature: signature } = answer;

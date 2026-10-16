@@ -13,12 +13,15 @@
 // remembers. It has no say, and nothing it keeps is used unless safeFetch returned.
 import { createHash } from 'node:crypto';
 import { safeFetch } from '@vsa/vector-read';
+import { sniffMime } from './mime.ts';
+import type { Mime } from './mime.ts';
 import { RequestError } from './request.ts';
 import type { PipelineRequest } from './request.ts';
+import { clip } from './text.ts';
 
 export interface SourceBytes {
   bytes: Uint8Array;
-  mime: 'application/pdf' | 'image/png' | 'image/jpeg';
+  mime: Mime;
   sha256: string;
   origin: 'url' | 'inline';
 }
@@ -35,24 +38,8 @@ export interface SourceDeps {
 export const MAX_SOURCE_BYTES = 20 * 1024 * 1024;
 export const SOURCE_FETCH_TIMEOUT_MS = 60_000;
 
-type Mime = SourceBytes['mime'];
 const MIMES: readonly string[] = ['application/pdf', 'image/png', 'image/jpeg'];
-// The type of a document is what its first bytes say, at byte 0. A PDF with anything in front of its header is refused: the check is the same one for
-// every type, and a file that is two things at once is the one to be suspicious of.
-const SIGNATURES: ReadonlyArray<{ mime: Mime; magic: readonly number[] }> = [
-  { mime: 'application/pdf', magic: [0x25, 0x50, 0x44, 0x46, 0x2d] }, // %PDF-
-  { mime: 'image/png', magic: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
-  { mime: 'image/jpeg', magic: [0xff, 0xd8, 0xff] },
-];
-
-/** The type named by the first bytes, or null when they are none of the three. */
-export function sniffMime(bytes: Uint8Array): Mime | null {
-  for (const { mime, magic } of SIGNATURES) if (bytes.length >= magic.length && magic.every((byte, i) => bytes[i] === byte)) return mime;
-  return null;
-}
-
-// Text that comes from the far end goes into a message cut short.
-const clip = (s: string, max = 200) => (s.length > max ? `${s.slice(0, max)}...` : s);
+// The type of a document is what its first bytes say (src/mime.ts); a header or a declaration that says otherwise is refused.
 
 /**
  * A fetch that behaves as `inner` does and remembers the body of a 200. The body it hands on is pulled only when the reader asks (no read ahead), a
@@ -106,7 +93,7 @@ function fetchFailure(error: unknown, maxBytes: number): RequestError {
   const message = error instanceof Error ? error.message : '';
   if (OVER_THE_CAP.test(message)) return new RequestError('source_too_large', `the source is larger than ${maxBytes} bytes`);
   if (name === 'TimeoutError' || name === 'AbortError') return new RequestError('source_fetch_failed', 'could not fetch the source: the server did not finish answering within the time limit');
-  if (message.startsWith(SAFE_FETCH_PREFIX)) return new RequestError('source_fetch_failed', `could not fetch the source: ${clip(message.slice(SAFE_FETCH_PREFIX.length))}`);
+  if (message.startsWith(SAFE_FETCH_PREFIX)) return new RequestError('source_fetch_failed', `could not fetch the source: ${clip(message.slice(SAFE_FETCH_PREFIX.length), 200)}`);
   return new RequestError('source_fetch_failed', 'could not fetch the source: network error');
 }
 

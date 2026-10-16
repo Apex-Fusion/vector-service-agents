@@ -46,7 +46,7 @@ describe('agents/document-pipeline/README.md', () => {
     expect(row('ADVERT_PRICE_LOVELACE')).toContain('`5000000`');
     expect(row('ADVERT_MAX_PROCESSING_MS')).toContain('`1800000`');
     expect(row('AGENT_STATUS_CHIP')).toContain('`proposed`');
-    expect(row('AGENT_STATUS_SINCE')).toContain('`2026-10-15`');
+    expect(row('AGENT_STATUS_SINCE')).toContain('`2026-10-13`');
     expect(row('AGENT_VERSION')).toContain('`0.1.0`');
     // The price ceilings of ruling R56.
     for (const name of ['OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE']) expect(row(name), name).toContain(`\`${PRICE_CEILING_DEFAULT_LOVELACE}\``);
@@ -89,6 +89,11 @@ describe('agents/document-pipeline/README.md', () => {
     expect(readme).toContain("The service could not do this job (<code>). The operator's log has the detail.");
     expect(readme).toMatch(/SIGTERM/);
     expect(readme).toMatch(/stop_grace_period/);
+    // Ruling R61: what a stop waits for, and what it does when the wait is over, as src/start.ts does it.
+    expect(section('Stopping')).toContain('On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and no new connection, stops its janitor, and waits up to 300 s for the job that is running to end, its Accept included.');
+    expect(section('Stopping')).toContain('The wait is on the job itself, so a caller that hangs up does not cut it short. A pass of the janitor still in flight after 30 s is abandoned, with a log line.');
+    expect(section('Stopping')).toContain('A job that ends in time is answered, if its caller is still there, and the service exits 0. One still running after 300 s is abandoned: its connection is closed, the log names the escrows the state directory holds for the janitor of the next start, and the service exits 1.');
+    expect(section('Stopping')).not.toContain('to be answered, and exits 0');
     expect(readme).toContain(`${SHUTDOWN_WAIT_MS / 1000} s`);
     expect(readme).toMatch(/asks `pdfinfo` and `pdftoppm` \(poppler-utils\) for their version/);
     expect(readme).toMatch(/at least 1800000/);
@@ -113,15 +118,19 @@ describe('agents/document-pipeline/README.md', () => {
     expect(run).toContain('export SERVICE_AUTH_HEADER="Bearer $(openssl rand -hex 32)"');
     expect(run).toContain('when `OPERATOR_CONTACT`, `PIPELINE_BUYER_PRIV_KEY_HEX`, `SUPPLIER_PKH` or `SERVICE_AUTH_HEADER` is not set');
     expect(readme).not.toMatch(/SERVICE_AUTH_HEADER=["']?Bearer [0-9a-f]/); // no token in the page
+    // C4: the token is looked for in every other setting at start (src/start.ts, refuseTokenIn), which is what makes "no message, no log line" true.
+    expect(readme).toContain('The service token is a secret of the same kind. It is looked for in every other setting too, whole or by its credential (the part after `Bearer `), each when it is 16 characters or more, and found there it stops the start, naming the variable and not showing the token. So it is in no message, no log line and no answer, and the manifest is searched for it once more.');
     const row = section('Manifest').split('\n').find((line) => line.startsWith('| `SERVICE_AUTH_HEADER`')) ?? '';
     expect(row).toContain('the `authorization` header the runtime sends with every call');
     expect(row).toContain('Required: the service stops at start without it');
     expect(row).toContain('Never published, never logged');
     expect(section('Routes')).toContain('| `POST /` | the wire message and nothing else, with the `authorization` header of the runtime. Without it, 401 |');
+    // The two open routes are matched on their path and answer HEAD (src/server.ts).
+    expect(section('Routes')).toContain('`GET /healthz` and `GET /agent.json` are matched on their path, whatever the query string, and a `HEAD` of either gets the headers of the `GET`, its `content-length` included, and no body.');
   });
 
   test('it says the status the manifest and the code give, and nothing in it is a dash, a unit name or a key', () => {
-    expect(readme).toContain('Status: PROPOSED (built, not deployed). Since 2026-10-15.');
+    expect(readme).toContain('Status: PROPOSED (built, not deployed). Since 2026-10-13.');
     expect(readme).not.toMatch(/[\u{2013}\u{2014}]/u);
     expect(readme).not.toMatch(UNIT_NAME);
     expect(readme).not.toMatch(/[0-9a-f]{64}/); // no key, no 64-hex value of any kind

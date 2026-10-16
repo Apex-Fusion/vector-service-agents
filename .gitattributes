@@ -1,1 +1,4 @@
 * text=auto eol=lf
+# The test fixtures are binary files written byte for byte by a script: no line ending of theirs is ever converted.
+*.pdf binary
+*.png binary

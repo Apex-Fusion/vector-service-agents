@@ -32,4 +32,5 @@ export { readCapability, probeStatus, sendOcrJob, sendResponsesJob, pollOcrJob, 
 export type { FetchLike, SupplierCapability, Receipt, SendResult, PollResult } from './fleet-clients.ts';
 export { selectLlmSupplier, findOcrAdvert, LLM_SELECTION_BUDGET_MS, LLM_SELECTION_MAX_CANDIDATES } from './select-supplier.ts';
 export { verifyFleetReceipt } from './fleet-verify.ts';
+export { flatText } from './guards.ts';
 export type { FleetVerifyInput, FleetVerification } from './fleet-verify.ts';

@@ -1,8 +1,7 @@
 // packages/buyer-core/test/commitments.test.ts
 import { describe, it, expect } from 'vitest';
 import { canonicalize, sha256Utf8Hex, requestSpecHash } from '@vsa/vector-read';
-import * as commitments from '../src/commitments.ts';
-import { ocrPromptHash, ocrResponseHash, responsesPromptHash, responsesResponseHash, responsesOutputText } from '../src/commitments.ts';
+import { ocrPromptHash, ocrResponseHash, requestSpecHash as reexported, responsesPromptHash, responsesResponseHash, responsesOutputText } from '../src/commitments.ts';
 import { normalizeResponseRequest, responseRequestCommitment } from '../src/vendored/fleet/responses.ts';
 
 describe('commitments', () => {
@@ -34,7 +33,7 @@ describe('commitments', () => {
 
 describe('commitments, the edges of the pinned values', () => {
   it('re-exports requestSpecHash of @vsa/vector-read, the one function behind the on-chain value', () => {
-    expect(commitments.requestSpecHash).toBe(requestSpecHash);
+    expect(reexported).toBe(requestSpecHash);
   });
   it('the OCR prompt hash covers {image_b64, mime, output_format} and nothing else', () => {
     const req = { image_b64: 'iVBORw0KGgo=', mime: 'image/png' as const, output_format: 'markdown' as const };

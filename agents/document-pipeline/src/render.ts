@@ -1,8 +1,14 @@
 // agents/document-pipeline/src/render.ts
 // From the source to the pages that are read: an image is one page as it is, a PDF is rendered to PNG at 150 dpi by poppler (pdfinfo for the page
-// count, pdftoppm for the pages). Like src/source.ts it runs before any escrow is posted, and a PDF that cannot be read is refused here
-// (unreadable_source, 422) while it has cost nothing: locked with a password, damaged, cut short, with no pages, or so slow to open that the
-// tool is stopped.
+// count and the size of the pages, pdftoppm for the pages). Like src/source.ts it runs before any escrow is posted, and a PDF that cannot be read is
+// refused here (unreadable_source, 422) while it has cost nothing: locked with a password, damaged, cut short, with no pages, or so slow to open that
+// the tool is stopped.
+//
+// pdftoppm allocates the whole page before it draws it, so a page of 200 by 200 inches is 900 megapixels at 150 dpi and takes the container down, for
+// every hirer (ruling R66). So before pdftoppm runs, `pdfinfo -box -f 1 -l <pages>` says how large each page is that would be rendered, and a page over
+// MAX_PAGE_PIXELS at the render dpi is refused (page_too_large, 422), naming the page and its size. pdfinfo's "Page N size" line is the crop box of the
+// page (getPageCropWidth in poppler's utils/pdfinfo.cc) and pdftoppm renders the media box unless it is told -cropbox (getPageMediaWidth in
+// utils/pdftoppm.cc), so the media box that -box prints counts too, and the larger of the two decides.
 //
 // The PDF is the caller's and poppler parses it, so it never meets a shell: the tools are started with an argument list (execFile), on a file in a
 // directory that only this process can read (mkdtemp), and the directory is removed whatever happened. What the tools print is not passed on:
@@ -15,8 +21,9 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { sniffMime } from './mime.ts';
 import { RequestError } from './request.ts';
-import { sniffMime } from './source.ts';
+import { PipelineError } from './result.ts';
 import type { SourceBytes } from './source.ts';
 
 /** One page, as the image the OCR agent is sent. For a PNG or a rendered PDF page the bytes are a PNG; for a JPEG source they are the JPEG's own (see `mime` of pagesOf). */
@@ -43,6 +50,11 @@ export interface PopplerOptions { pdftoppm?: string; pdfinfo?: string; dpi?: num
 export type RunTool = (file: string, args: readonly string[], options: { timeoutMs: number; maxBuffer: number }) => Promise<{ stdout: string; stderr: string }>;
 
 const DEFAULT_DPI = 150;
+/**
+ * The most pixels a rendered page may have (ruling R66): 50 megapixels, 150 MB of RGB for pdftoppm to hold. An A0 page is 34.8 megapixels at 150 dpi
+ * and renders; a larger plan is refused before it is drawn.
+ */
+export const MAX_PAGE_PIXELS = 50_000_000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 // pdfinfo prints about twenty short lines; anything near this size is a document whose metadata is trying to say something.
 const INFO_OUTPUT_LIMIT = 256 * 1024;
@@ -78,16 +90,20 @@ async function inPrivateDir<T>(work: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
+/** The document could not be opened or rendered by the tool, said once for every way it fails. */
+const damaged = (action: 'open' | 'render'): RequestError =>
+  new RequestError('unreadable_source', `the PDF could not be ${action === 'open' ? 'opened' : 'rendered'} (it is damaged, or not a PDF)`);
+
 /** What a failed tool run means. `action` is the verb of the tool's job, for the message. */
 function toolFailure(binary: string, action: 'open' | 'render', error: unknown): Error {
   const e = (typeof error === 'object' && error !== null ? error : {}) as { code?: unknown; killed?: unknown; stderr?: unknown };
   // Over the output limit, or a numeric exit status, or a crash, or the time limit: the tool ran and the document is the trouble.
-  if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return new RequestError('unreadable_source', `the PDF could not be ${action === 'open' ? 'opened' : 'rendered'} (it is damaged, or not a PDF)`);
+  if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return damaged(action);
   // Any other word for a code is the system saying the tool could not be started.
   if (typeof e.code === 'string') return new Error(`${binary} could not be run (${e.code}): poppler-utils must be installed and on PATH`, { cause: error });
   if (e.killed === true) return new RequestError('unreadable_source', `the PDF took too long to ${action}`);
   if (typeof e.stderr === 'string' && /incorrect password/i.test(e.stderr)) return new RequestError('unreadable_source', 'the PDF is password protected and cannot be read');
-  return new RequestError('unreadable_source', `the PDF could not be ${action === 'open' ? 'opened' : 'rendered'} (it is damaged, or not a PDF)`);
+  return damaged(action);
 }
 
 /**
@@ -98,6 +114,70 @@ function pagesInfo(stdout: string): number | null {
   let last: string | undefined;
   for (const match of stdout.matchAll(/^Pages:\s+(\d+)\s*$/gm)) last = match[1];
   return last === undefined ? null : Number(last);
+}
+
+/** The size of a page in points: its width and its height. */
+export interface PageSize { width: number; height: number }
+
+const PAGES_LINE = /^Pages:\s+(\d+)\s*$/;
+// "Page %4d size:  %g x %g pts", then a paper name or nothing. %g writes a large or a small size with an exponent (1e+06).
+const SIZE_LINE = /^Page\s+(\d+) size:\s+(\S+) x (\S+) pts(?: \(.*\))?\s*$/;
+// With -box: "Page %4d MediaBox:  " and four "%8.2f", the corners x1 y1 x2 y2.
+const MEDIA_BOX_LINE = /^Page\s+(\d+) MediaBox:\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$/;
+
+/**
+ * The page count and the size of each page in what `pdfinfo -box -f 1 -l <pages>` prints. Only the lines after the last "Pages:" line are read: the lines
+ * above it include fields the document fills in itself (Title, Subject, Keywords, Author), which can hold a line break and lines of their own, and the
+ * lines after it are the tool's. A page's size is the larger, side by side, of its size line (the crop box) and its media box (what pdftoppm renders). A
+ * side that is no number stays NaN, for the caller to refuse. Exported for its tests.
+ */
+export function pageSizesOf(stdout: string): { total: number | null; sizes: Map<number, PageSize> } {
+  const lines = stdout.split(/\r?\n/);
+  let at = -1;
+  for (const [i, line] of lines.entries()) if (PAGES_LINE.test(line)) at = i;
+  const sizes = new Map<number, PageSize>();
+  if (at < 0) return { total: null, sizes };
+  const grow = (page: number, width: number, height: number): void => {
+    const known = sizes.get(page);
+    sizes.set(page, known === undefined ? { width, height } : { width: Math.max(known.width, width), height: Math.max(known.height, height) });
+  };
+  for (const line of lines.slice(at + 1)) {
+    const size = SIZE_LINE.exec(line);
+    if (size !== null) { grow(Number(size[1]), Number(size[2]), Number(size[3])); continue; }
+    const box = MEDIA_BOX_LINE.exec(line);
+    if (box !== null) grow(Number(box[1]), Math.abs(Number(box[4]) - Number(box[2])), Math.abs(Number(box[5]) - Number(box[3])));
+  }
+  return { total: Number(PAGES_LINE.exec(lines[at])?.[1]), sizes };
+}
+
+/** The image pdftoppm makes of a page at `dpi`: each side is ceil(points / 72 x dpi) pixels, as utils/pdftoppm.cc sizes it. */
+export function renderedPixels(size: PageSize, dpi: number): { width: number; height: number; pixels: number } {
+  const width = Math.ceil((size.width * dpi) / 72);
+  const height = Math.ceil((size.height * dpi) / 72);
+  return { width, height, pixels: width * height };
+}
+
+/** A number of points as a person reads it: at most two decimals. */
+const points = (n: number): string => String(Math.round(n * 100) / 100);
+
+/**
+ * Refuses the document unless every page that would be rendered, the first `maxPages` of it, has a size that pdfinfo printed and renders at `dpi` to at
+ * most MAX_PAGE_PIXELS (ruling R66). A size that is missing or no number is unreadable_source; a page over the bound is page_too_large, naming it.
+ */
+function assertPagesFit(stdout: string, maxPages: number, dpi: number): void {
+  const { total, sizes } = pageSizesOf(stdout);
+  if (total === null || !Number.isSafeInteger(total) || total < 1) throw new RequestError('unreadable_source', 'the PDF has no pages');
+  for (let page = 1; page <= Math.min(total, maxPages); page += 1) {
+    const size = sizes.get(page);
+    if (size === undefined || !Number.isFinite(size.width) || !Number.isFinite(size.height)) {
+      throw new RequestError('unreadable_source', `the size of page ${page} of the PDF could not be read`);
+    }
+    const image = renderedPixels(size, dpi);
+    if (image.pixels > MAX_PAGE_PIXELS) {
+      throw new PipelineError('page_too_large', `Page ${page} of the PDF is ${points(size.width)} by ${points(size.height)} points, ${image.width} by ${image.height} pixels at ${dpi} dpi, `
+        + `over the ${MAX_PAGE_PIXELS} pixels a page may have. Nothing was spent.`);
+    }
+  }
 }
 
 async function readPages(dir: string): Promise<Page[]> {
@@ -155,6 +235,14 @@ export function popplerRendererWith(run: RunTool, opts: PopplerOptions = {}): Re
       return inPrivateDir(async (dir) => {
         const file = join(dir, PDF_FILE);
         await writeFile(file, pdf);
+        // The size of every page that would be rendered, before pdftoppm allocates one (ruling R66).
+        let sizes: string;
+        try {
+          ({ stdout: sizes } = await run(pdfinfo, ['-box', '-f', '1', '-l', String(maxPages), file], { timeoutMs, maxBuffer: INFO_OUTPUT_LIMIT }));
+        } catch (error) {
+          throw toolFailure(pdfinfo, 'open', error);
+        }
+        assertPagesFit(sizes, maxPages, dpi);
         try {
           await run(pdftoppm, ['-r', String(dpi), '-png', '-f', '1', '-l', String(maxPages), file, join(dir, PAGE_PREFIX)], { timeoutMs, maxBuffer: RENDER_OUTPUT_LIMIT });
         } catch (error) {

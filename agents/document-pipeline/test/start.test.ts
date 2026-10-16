@@ -42,7 +42,7 @@ describe('loadConfig', () => {
     const config = loadConfig(FULL_ENV);
     expect(config).toMatchObject({ host: '0.0.0.0', port: 9092, stateDir: '/data', ocrAllowlistPkh: OCR_DEFAULT, llmAllowlist: MODELS_DEFAULT, privateKeyHex: BUYER.privateKeyHex });
     expect(config.indexerUrl).toBeUndefined();
-    expect(config.manifest.status).toStrictEqual({ chip: 'proposed', since: '2026-10-15' });
+    expect(config.manifest.status).toStrictEqual({ chip: 'proposed', since: '2026-10-13' });
   });
 
   test('every setting is read: the OCR supplier key hash, the chat models in order, the state directory, the indexer, the port and the host', () => {
@@ -148,10 +148,31 @@ describe('loadConfig', () => {
       }
       // A short credential is no secret worth a search: it would be in any text by chance.
       expect(() => assertNoTokenIn(JSON.stringify(manifest), 'Bearer ab')).not.toThrow();
-      // And loadConfig does it: the token pasted into the contact line, which is published, is caught.
-      const error = thrown(() => loadConfig({ ...FULL_ENV, OPERATOR_CONTACT: TOKEN }));
-      expect(error.message).toMatch(/^the manifest would publish the service token/);
-      expect(error.message).not.toContain(CREDENTIAL);
+      // And loadConfig makes that last look at the manifest it builds: a manifest field that came from somewhere else is caught, whole or by its credential.
+      for (const leaked of [TOKEN, CREDENTIAL.toUpperCase()]) {
+        const error = thrown(() => loadConfig(FULL_ENV, (e) => ({ ...manifestFromEnv(e), description: `from somewhere else: ${leaked}` })));
+        expect(error.message).toMatch(/^the manifest would publish the service token/);
+        expect(error.message).not.toContain(CREDENTIAL);
+      }
+    });
+
+    // C4: the token is looked for in every other line as soon as it is known, as the buyer key is, so that no check of another setting and no log line can
+    // print it: the contact line is published, the host and the state directory are logged, the model list goes into an answer of the service.
+    test.each([...OTHER_SETTINGS.filter((name) => name !== 'SERVICE_AUTH_HEADER'), ...CHAIN_SETTINGS].map((name) => [name]))('the token in %s: refused at start, the variable named, the token not in the message', (name) => {
+      for (const value of [TOKEN, TOKEN.toLowerCase(), CREDENTIAL, CREDENTIAL.toUpperCase(), `prefix-${CREDENTIAL}-suffix`, `https://${CREDENTIAL}.example`]) {
+        const error = thrown(() => loadConfig({ ...FULL_ENV, [name]: value }));
+        expect(error.message, `${name} = ${value.slice(0, 12)}`).toMatch(new RegExp(`^environment variable ${name} holds the service token, which belongs in SERVICE_AUTH_HEADER alone: it would be printed or published\. Take it out of ${name}$`));
+        for (let at = 0; at + 16 <= CREDENTIAL.length; at += 4) expect(error.message, name).not.toContain(CREDENTIAL.slice(at, at + 16));
+      }
+    });
+
+    test('the token is looked for before the checks that could print a line, and not when it is too short to be found by anything but chance', () => {
+      // SUPPLIER_PKH is checked before the token is required, and its message gives a length; the search comes first all the same.
+      expect(thrown(() => loadConfig({ ...FULL_ENV, SUPPLIER_PKH: CREDENTIAL })).message).toMatch(/^environment variable SUPPLIER_PKH holds the service token/);
+      // A token whose whole and whose credential are under 16 characters is not looked for: the operator's choice stands, and the line is read as it is.
+      expect(loadConfig({ ...FULL_ENV, SERVICE_AUTH_HEADER: 'Bearer abc', AGENT_DID: 'did:vector:agent:abc' }).authHeader).toBe('Bearer abc');
+      // The buyer key is still looked for first.
+      expect(thrown(() => loadConfig({ ...FULL_ENV, AGENT_DID: `${BUYER.privateKeyHex} ${CREDENTIAL}` })).message).toMatch(/^environment variable AGENT_DID holds the buyer key/);
     });
   });
 
@@ -541,8 +562,8 @@ describe('startService', () => {
   describe('shutdown: no new job, wait for the one that is running, then stop', () => {
     const REQUEST = { source: { pdf_b64: toBase64(TWO_PAGES_PDF), mime: 'application/pdf' }, task: 'summary' };
     const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-    /** A service on the in-memory marketplace whose job stops at its first sleep until `release` is called. */
-    async function holdingService() {
+    /** A service on the in-memory marketplace whose job stops at its first sleep until `release` is called. `signal` lets the caller hang up. */
+    async function holdingService(opts: { signal?: AbortSignal } = {}) {
       const m = marketplace();
       let sleeping = false;
       let release!: () => void;
@@ -553,7 +574,7 @@ describe('startService', () => {
         sleep: async (ms) => { sleeping = true; await gate; m.clock.now += ms; },
       });
       const url = `http://127.0.0.1:${service.port}`;
-      const job = fetch(`${url}/`, { method: 'POST', headers: AUTH, body: wire(REQUEST) }).then(async (r) => ({ status: r.status, json: await r.json() }));
+      const job = fetch(`${url}/`, { method: 'POST', headers: AUTH, body: wire(REQUEST), signal: opts.signal }).then(async (r) => ({ status: r.status, json: await r.json() }));
       job.catch(() => undefined); // a test that closes the connection reads the failure itself
       await until(() => sleeping, 'the job is running');
       return { service, m, url, job, release };
@@ -562,8 +583,8 @@ describe('startService', () => {
     test('an idle service shuts down at once, and shutdown can be called twice', async () => {
       const service = await start(envIn(tempDir()));
       const began = Date.now();
-      await service.shutdown(30_000);
-      await service.shutdown(30_000);
+      expect(await service.shutdown(30_000)).toBe('finished');
+      expect(await service.shutdown(30_000)).toBe('finished');
       expect(Date.now() - began).toBeLessThan(2000);
       await expect(fetch(`http://127.0.0.1:${service.port}/healthz`)).rejects.toThrow();
     });
@@ -571,7 +592,8 @@ describe('startService', () => {
     test('shutdown waits for the job that is running, takes no new connection meanwhile, delivers the answer whole, and then closes', async () => {
       const { service, m, url, job, release } = await holdingService();
       let finished = false;
-      const done = service.shutdown(30_000).then(() => { finished = true; });
+      let outcome: string | undefined;
+      const done = service.shutdown(30_000).then((ended) => { finished = true; outcome = ended; });
       await pause(250); // two rounds of the sweep that closes idle connections: the connection of the job is not idle
       expect(finished).toBe(false);
       await expect(fetch(`${url}/healthz`)).rejects.toThrow();
@@ -584,9 +606,46 @@ describe('startService', () => {
       await done;
       expect(Date.now() - answered).toBeLessThan(1500); // the connection that has just been answered is closed by the sweep, not left for its keep-alive timeout
       expect(finished).toBe(true);
+      expect(outcome).toBe('finished');
       await expect(m.chain.escrowState(escrowNo(3))).resolves.toBe('spent');
       expect(logs.join('\n')).toMatch(/stopping: waiting up to 30000 ms for the job that is running/);
       expect(logs.join('\n')).not.toMatch(/did not finish/);
+    });
+
+    // Ruling R61: the stop waits on the job slot, which the job holds until it has its answer, its Accept included. A wait on the connections ended as soon as
+    // the caller hung up, and the process then stopped a job that was still paying.
+    test('a caller that hangs up does not end the wait: the stop waits for the job itself, its Accept included, and then says finished (ruling R61)', async () => {
+      const abort = new AbortController();
+      const { service, m, job, release } = await holdingService({ signal: abort.signal });
+      let ended = false;
+      let outcome: string | undefined;
+      const done = service.shutdown(30_000).then((said) => { ended = true; outcome = said; });
+      abort.abort(); // the runtime gives up on the job: its connection is gone
+      await expect(job).rejects.toThrow();
+      await pause(300); // three rounds of the sweep: no connection is left open
+      expect(ended).toBe(false); // the job still holds the slot
+      release();
+      await done;
+      expect(outcome).toBe('finished');
+      await expect(m.chain.escrowState(escrowNo(3))).resolves.toBe('spent'); // the chat job was accepted before the stop ended
+      expect(logs.join('\n')).not.toMatch(/did not finish/);
+    });
+
+    test('the janitor is stopped with a bound: a pass still in flight after the bound is abandoned, with a log line, and the stop goes on (ruling R61)', async () => {
+      const dir = tempDir();
+      // An escrow long past its deliver_by, so that the first pass of the janitor reads its state, and a chain whose read never answers.
+      writeFileSync(join(dir, 'stranded.json'), JSON.stringify([{ escrow_ref: escrowNo(9), deliver_by: 1, posted_at: 0, kind: 'ocr' }]), 'utf8');
+      const chain = new FakeChain({ buyerPkh: BUYER.pkh });
+      let reads = 0;
+      chain.escrowState = () => { reads += 1; return new Promise(() => undefined); };
+      const service = await start(envIn(dir), { createChain: async () => chain, janitorIntervalMs: 60_000, janitorStopWaitMs: 200 });
+      await until(() => reads > 0, 'the janitor reads the state of the escrow');
+      const began = Date.now();
+      expect(await service.shutdown(30_000)).toBe('finished'); // no job was running: the job wait is not what was abandoned
+      expect(Date.now() - began).toBeGreaterThanOrEqual(190);
+      expect(Date.now() - began).toBeLessThan(5000);
+      expect(logs.join('\n')).toContain("stopping: the janitor's pass did not end within 0.2 s and is abandoned; the janitor of the next start reads the state directory again");
+      await expect(fetch(`http://127.0.0.1:${service.port}/healthz`)).rejects.toThrow();
     });
 
     test('shutdown drains the slot: a request that was still being uploaded when the stop began is refused with 503 shutting_down when it is complete, not with 409 busy', async () => {
@@ -607,14 +666,15 @@ describe('startService', () => {
       }
     });
 
-    test('shutdown does not wait for ever: past its limit it closes the connection of the job and says where the escrows are', async () => {
+    test('shutdown does not wait for ever: past its limit it abandons the job, closes its connection, names the escrows the state directory holds, and says abandoned', async () => {
       const { service, m, job, release } = await holdingService();
       const began = Date.now();
-      await service.shutdown(150);
+      expect(await service.shutdown(150)).toBe('abandoned');
       expect(Date.now() - began).toBeGreaterThanOrEqual(140);
       expect(Date.now() - began).toBeLessThan(5000);
       await expect(job).rejects.toThrow();
-      expect(logs.join('\n')).toMatch(/the job that is running did not finish in time; the escrows it posted are in the state directory for the janitor/);
+      // The job stopped at its first poll, so the Post of its first page is the escrow in flight.
+      expect(logs.join('\n')).toContain(`stopping: the job that is running did not finish within 150 ms and is abandoned; the state directory holds 1 escrow for the janitor of the next start: ${escrowNo(1)}`);
       release(); // let the job end, so that nothing of it is still running when the directory of the test goes
       for (let i = 0; i < 600 && (await m.chain.escrowState(escrowNo(3))) !== 'spent'; i++) await pause(5);
       await expect(m.chain.escrowState(escrowNo(3))).resolves.toBe('spent');
@@ -648,6 +708,21 @@ describe('stopOnSignals', () => {
       expect(waits).toHaveLength(1);
     }
     expect(SHUTDOWN_WAIT_MS).toBe(300_000);
+  });
+
+  test('a stop that had to abandon the job that was running exits 1, so that the stop is not mistaken for a clean one (ruling R61)', async () => {
+    const target = new EventEmitter();
+    const exits: number[] = [];
+    stopOnSignals({ shutdown: async () => 'abandoned' } as unknown as RunningService, { target, exit: (code) => { exits.push(code); }, log });
+    target.emit('SIGTERM');
+    await until(() => exits.length === 1, 'the process exits');
+    expect(exits).toStrictEqual([1]);
+    const finished: number[] = [];
+    const other = new EventEmitter();
+    stopOnSignals({ shutdown: async () => 'finished' } as unknown as RunningService, { target: other, exit: (code) => { finished.push(code); }, log });
+    other.emit('SIGTERM');
+    await until(() => finished.length === 1, 'the process exits');
+    expect(finished).toStrictEqual([0]);
   });
 
   test('a shutdown that fails is logged and the exit is 1', async () => {

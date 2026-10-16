@@ -561,6 +561,11 @@ test('docs/E2E.md and scripts/run-e2e-from-keyfile.sh: the runbook opens for eve
   assert.equal(wrapper.includes('(state kept in e2e-state.json)'), false);
   assert.ok(wrapper.includes('it and the state file (e2e-state.json, or the file E2E_STATE names) are git-ignored.'));
   assert.ok(wrapper.includes('CAPABILITY_ID, E2E_STATE, E2E_POLL_MS and PAYLOAD pass through from the environment'));
+  // The wrapper has a default for ADVERT_REF and none for SIGNER_ENTRY: it stops when SIGNER_ENTRY is not set, and when it names no file.
+  assert.ok(wrapper.includes(': "${SIGNER_ENTRY:?set SIGNER_ENTRY to the built signer,'));
+  assert.ok(wrapper.includes('[ -f "$SIGNER_ENTRY" ] || { echo "signer build not found: $SIGNER_ENTRY" >&2; exit 2; }'));
+  assert.ok(e2e.includes('`SIGNER_ENTRY` and `ADVERT_REF` come from the environment, as the table says. The wrapper has a default for `ADVERT_REF`, the Agent History advert, and none for `SIGNER_ENTRY`: it stops when `SIGNER_ENTRY` is not set, and with exit code 2 when it names no file.'));
+  assert.equal(e2e.includes('The wrapper has a default for each'), false, 'the sentence of before, which gave SIGNER_ENTRY a default');
   // The default in the message is the script's own, and git ignores both files, the state file of the Pipeline run included.
   assert.ok(e2eScript().includes("env.E2E_STATE ?? 'e2e-state.json'"));
   const ignored = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8').split('\n');

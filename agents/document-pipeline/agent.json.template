@@ -184,11 +184,11 @@
   },
   "status": {
     "chip": "proposed",
-    "since": "2026-10-15"
+    "since": "2026-10-13"
   },
   "gaps": [
     "v1 reads at most 5 pages, renders PDFs at 150 dpi and reads pages one after another, hence the 30 min window.",
-    "A job has a deadline of its own, 1620000 ms after its request arrives: a page is not started with less than 660 s left, nor the summary or extraction with less than 420 s. A job that cannot finish in time fails with the code deadline and returns no bundle, and the sub-jobs it had already paid for are not refunded.",
+    "A job has a deadline of its own, 1620000 ms after its request arrives: a page is not started with less than 660 s left, nor the summary or extraction with less than 420 s. A job that cannot start its next hire in time, or whose hire would have to wait again on its supplier or on the ledger after the deadline, fails with the code deadline and returns no bundle, and the sub-jobs it had already paid for are not refunded. A hire in its Accept at the deadline is not cut: it finishes late, and the chat job may then answer after the runtime has given up on the job.",
     "The OCR hop is first-party only. A third-party OCR path needs the Datalab terms to allow it.",
     "Every supplier it can hire today is first-party.",
     "The Pipeline checks receipts, not truth: a summary is as good as the model that wrote it.",

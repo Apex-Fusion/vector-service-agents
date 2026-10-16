@@ -6,6 +6,7 @@
 //   GET  /healthz     {ok: true}, or 503 {ok: false, reason: "insufficient_float"} once the last check of the buyer wallet failed. The check is made at most
 //                     once a minute, in the background: a request is answered from the last one and never waits for the next.
 //   GET  /agent.json  the manifest, the bytes JSON.stringify gives, which the advert hashes.
+//                     These two are matched on their path, whatever the query, and a HEAD of either gets the headers of the GET and no body.
 //   POST /            the wire message only, and only from the runtime: the authorization header must be exactly the token the service was given
 //                     (SERVICE_AUTH_HEADER, which the template runtime sends with every call, ruling R50), or the answer is 401 {error: "unauthorized"}
 //                     with no detail, before the body is read and before the job slot is taken. At most 1 MB, one job at a time: a second one gets 409
@@ -15,7 +16,7 @@
 //                     take a job now) or 500 (store_write_failed) for a failure on this side, whose message is fixed text for the buyer and whole in the
 //                     log (PipelineError); anything else is 500 {error: "internal"} with no detail, and the cause goes to the log, by message only,
 //                     never the request.
-//   anything else     404.
+//   anything else     404, POST / with a query among them.
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer as httpServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
@@ -58,9 +59,9 @@ function statusChip(v: string | undefined): string {
   if (!CHIPS.includes(v.toUpperCase())) throw new Error(`environment variable AGENT_STATUS_CHIP must be one of ${CHIPS.join(', ')}, got ${shown(v)}`);
   return v.toLowerCase();
 }
-// The date the status word began, YYYY-MM-DD; absent or empty means the day the service was built.
+// The date the status word began, YYYY-MM-DD; absent or empty means 2026-10-13, the day the word PROPOSED began (ruling R52).
 function statusSince(v: string | undefined): string {
-  if (v === undefined || v.trim() === '') return '2026-10-15';
+  if (v === undefined || v.trim() === '') return '2026-10-13';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(v.trim())) throw new Error(`environment variable AGENT_STATUS_SINCE must be a date as YYYY-MM-DD, got ${shown(v)}`);
   return v.trim();
 }
@@ -301,6 +302,7 @@ function startHeartbeat(req: IncomingMessage, res: ServerResponse, everyMs: numb
 export class JobSlot {
   #busy = false;
   #draining = false;
+  #waiting: Array<() => void> = [];
   /** 'taken' when the caller now holds the slot; otherwise why not. Draining outranks busy: it is the answer that will not change. */
   take(): 'taken' | 'busy' | 'draining' {
     if (this.#draining) return 'draining';
@@ -308,11 +310,22 @@ export class JobSlot {
     this.#busy = true;
     return 'taken';
   }
-  release(): void { this.#busy = false; }
+  release(): void {
+    this.#busy = false;
+    for (const resolve of this.#waiting.splice(0)) resolve();
+  }
   /** From now on no job is taken. */
   drain(): void { this.#draining = true; }
   /** Does a job hold the slot? */
   get busy(): boolean { return this.#busy; }
+  /**
+   * Resolves once no job holds the slot: at once when none does, else when the job releases it, which is when its run has ended, its Accept included. A
+   * stopping service waits on this and not on the connection of the job, which ends at once when the caller hangs up (ruling R61).
+   */
+  idle(): Promise<void> {
+    if (!this.#busy) return Promise.resolve();
+    return new Promise((resolve) => { this.#waiting.push(resolve); });
+  }
 }
 
 export interface ServerOptions {
@@ -382,19 +395,26 @@ export function createServer(opts: ServerOptions): Server {
   monitor.poke(); // the first check, at start
   return httpServer(async (req, res) => {
     const arrivedAt = deps.clock();
-    // The body is serialised before anything is written, so a body that cannot be serialised can still be answered with a 500.
+    const head = req.method === 'HEAD';
+    // The body is serialised before anything is written, so a body that cannot be serialised can still be answered with a 500. A HEAD gets the headers a GET
+    // would, its content-length included, and no body.
     const sendText = (status: number, text: string) => {
       // A 400 and a 401 may be answered before the body has been read to its end (too large, or not read at all), so the connection is closed after them.
-      res.writeHead(status, { 'content-type': 'application/json', ...(status === 400 || status === 401 ? { connection: 'close' } : {}) });
-      res.end(text);
+      res.writeHead(status, {
+        'content-type': 'application/json', ...(head ? { 'content-length': Buffer.byteLength(text, 'utf8') } : {}), ...(status === 400 || status === 401 ? { connection: 'close' } : {}),
+      });
+      if (head) res.end(); else res.end(text);
     };
     const send = (status: number, body: unknown) => sendText(status, JSON.stringify(body));
     try {
-      if (req.method === 'GET' && req.url === '/healthz') {
+      // The two open routes are matched on their path, whatever the query, and answer HEAD as they answer GET.
+      const path = (req.url ?? '').split('?', 1)[0];
+      const read = req.method === 'GET' || head;
+      if (read && path === '/healthz') {
         monitor.poke();
         return monitor.healthy ? send(200, { ok: true }) : send(503, { ok: false, reason: 'insufficient_float' });
       }
-      if (req.method === 'GET' && req.url === '/agent.json') return sendText(200, manifestText);
+      if (read && path === '/agent.json') return sendText(200, manifestText);
       if (req.method !== 'POST' || req.url !== '/') return send(404, { error: 'not_found' });
       // R50: only the runtime posts a job. The check comes before the body is read and before the slot is taken, so a stranger neither makes the service read a
       // megabyte nor learns that a job is running (a 409 would say so), and what the answer says is the same for a missing header and a wrong one.

@@ -6,6 +6,8 @@
 // base64_too_large, language_bad. A request that is well formed but names a document the service cannot use is 422: source_fetch_failed,
 // source_mime_mismatch, source_unsupported, source_too_large (thrown by src/source.ts) and unreadable_source (thrown by src/render.ts).
 // RequestError lives here so that the server maps one class to a status.
+import { clip } from './text.ts';
+
 export type Task = 'summary' | 'extract';
 
 export interface PipelineRequest {
@@ -57,8 +59,7 @@ const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 const bad = (message: string) => new RequestError('bad_shape', message);
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const has = (o: Record<string, unknown>, key: string) => Object.hasOwn(o, key);
-// Text that comes from the caller goes into a message cut short.
-const clip = (s: string, max = 80) => (s.length > max ? `${s.slice(0, max)}...` : s);
+
 
 /** The size of the bytes behind a base64 text, without decoding it: three bytes for every four characters, less the padding. */
 function rawBytes(base64: string): number {

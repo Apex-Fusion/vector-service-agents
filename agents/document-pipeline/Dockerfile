@@ -24,4 +24,6 @@ ENV NODE_ENV=production PORT=9092 HOST=0.0.0.0
 EXPOSE 9092
 HEALTHCHECK --interval=20s --timeout=5s --retries=3 CMD wget -qO- http://127.0.0.1:9092/healthz >/dev/null || exit 1
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["node_modules/.bin/tsx", "agents/document-pipeline/src/index.ts"]
+# node runs the service itself, with tsx loaded as a hook, so a stop's SIGTERM reaches the service process through tini. The tsx binary would run it as a
+# child and relay the signal, and its relay may kill a child that does not answer within 30 ms (ruling R61). tsx resolves from /repo/node_modules.
+CMD ["node", "--import", "tsx", "agents/document-pipeline/src/index.ts"]

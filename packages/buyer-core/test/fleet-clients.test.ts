@@ -102,6 +102,11 @@ describe.each(SENDERS)('$name', ({ path, send, wire }) => {
     expect(await send(ENDPOINT, ESCROW, f.fetchImpl)).toStrictEqual({ kind: 'refused', status: 503, reason: 'http_503', message: '' });
   });
 
+  it('flattens what a supplier says about a refusal: every control character of its reason and its message becomes a space (ruling R64)', async () => {
+    const f = route(json(409, { reason: 'prompt\nmismatch', message: 'line one\nline two \u001b[31mred\u001b[0m' }));
+    expect(await send(ENDPOINT, ESCROW, f.fetchImpl)).toStrictEqual({ kind: 'refused', status: 409, reason: 'prompt mismatch', message: 'line one line two  [31mred [0m' });
+  });
+
   it('bounds what a supplier says about a refusal: 100 characters of reason, 500 of message', async () => {
     const f = route(json(400, { reason: 'r'.repeat(300), message: 'm'.repeat(2000) }));
     const result = await send(ENDPOINT, ESCROW, f.fetchImpl);
@@ -228,6 +233,12 @@ describe.each(POLLERS)('$name', ({ path, pollFor, done }) => {
     expect(f.calls).toHaveLength(1);
     expect([f.calls[0].method, f.calls[0].url, f.calls[0].body]).toStrictEqual(['GET', url, undefined]);
     expect(f.calls[0].headers.accept).toBe('application/json');
+  });
+
+  it('flattens what a supplier says on a poll: the status of a running job and the reason and message of a failed one (ruling R64)', async () => {
+    expect(await poll(ENDPOINT, JOB, route(json(202, { status: 'running\n\u001b[2Kforged', escrow_ref: ESCROW })).fetchImpl)).toStrictEqual({ kind: 'running', status: 'running  [2Kforged' });
+    const failed = await poll(ENDPOINT, JOB, route(json(502, { status: 'failed', reason: 'up\nstream', message: 'a\r\nb', escrow_ref: ESCROW })).fetchImpl);
+    expect(failed).toStrictEqual({ kind: 'failed', reason: 'up stream', message: 'a  b' });
   });
 
   it('a 202 whose body says nothing usable is still running: the status code is the answer', async () => {

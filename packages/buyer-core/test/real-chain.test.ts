@@ -115,6 +115,12 @@ describe('RealChain wallet', () => {
     expect(await several.wallet()).toMatchObject({ collateralLovelace: 6_000_000n, floatLovelace: 36_500_000n });
     const none = new RealChain(new SubmittingProvider([at(0, 4_000_000n), at(1, 9_000_000n, { [FIXTURE_TOKEN_UNIT]: 1n })]), { privateKeyHex: hex });
     expect(await none.wallet()).toMatchObject({ collateralLovelace: null, floatLovelace: 13_000_000n });
+    // A wallet in one output: that output is the collateral and the float is 0, however large it is, until a second output of at least 5 units is added
+    // (the row of the runbook's failure table for a buyer wallet consolidated into one output).
+    const lump = new RealChain(new SubmittingProvider([at(0, 105_000_000n)]), { privateKeyHex: hex });
+    expect(await lump.wallet()).toMatchObject({ collateralLovelace: 105_000_000n, floatLovelace: 0n });
+    const split = new RealChain(new SubmittingProvider([at(0, 105_000_000n), at(1, 5_000_000n)]), { privateKeyHex: hex });
+    expect(await split.wallet()).toMatchObject({ collateralLovelace: 5_000_000n, floatLovelace: 105_000_000n });
   });
 });
 

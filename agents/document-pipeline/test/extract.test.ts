@@ -1,13 +1,14 @@
 // agents/document-pipeline/test/extract.test.ts
 // The extraction schema and the reading of the model's answer against it. The schema comes from the person who hired the Pipeline and runs against
-// what a model wrote, after every sub-escrow is paid, so it is held to what can be checked safely and at once (rulings R27, R36, R42): draft-07,
+// what a model wrote, after every sub-escrow is paid, so it is held to what can be checked safely and at once (rulings R27, R36, R42, R43): draft-07,
 // compiled in strict mode; no reference of any kind ($ref and the keywords that name or hold what a reference points at), because a chain or a cycle
 // of references makes the check of a short answer take time and memory exponential in the schema; no asynchronous schema (its validator answers with
 // a promise that an invalid answer rejects); none of pattern, patternProperties or format (a regular expression from the request would run against
-// the answer, and format is not checked here); and bounds on the schema itself: 32 levels of nesting, 16384 bytes of canonical JSON, 16 entries in an
-// anyOf, oneOf or allOf, the bytes counted on the raw JSON the prompt carries; no own __proto__ key anywhere, which Ajv ignores and the prompt would
-// carry. The check of an answer never throws and never answers anything but a synchronous true for a valid one. The answer is read
-// as JSON as it is, and only when that fails is the first fenced block looked for, without a regular expression.
+// the answer, and format is not checked here); and bounds on the schema itself: 32 levels of nesting, 16384 bytes of raw JSON (JSON.stringify of the
+// schema as parsed, every own key as written, the JSON the prompt carries), 16 entries in an anyOf, oneOf or allOf; no own __proto__ key anywhere, which
+// Ajv ignores and the prompt would carry. The check of an answer never throws and never answers anything but a synchronous true for a valid one, and an
+// answer nested deeper than a schema may be is no extraction (ruling R62). The answer is read as JSON as it is, and only when that fails is the first
+// fenced block looked for, without a regular expression.
 import { describe, it, expect } from 'vitest';
 import Ajv from 'ajv';
 import { canonicalize } from '@vsa/vector-read';
@@ -252,6 +253,15 @@ describe('compileExtractionSchema: references refused and the schema bounded (ru
   });
 });
 
+describe('extractionAjv: own properties only', () => {
+  it('reads only the own properties of an answer: a key it inherits is no key of the answer, so a required one is missing', () => {
+    expect(extractionAjv().opts.ownProperties).toBe(true);
+    const check = compileExtractionSchema(TITLE);
+    expect(check({ title: 'A letter' })).toBe(true);
+    expect(check(Object.create({ title: 'A letter' }))).toBe(false);
+  });
+});
+
 describe('extractionAjv: the second guard, Ajv itself', () => {
   it('knows no pattern, no patternProperties and no format, so it refuses them in every schema it compiles, whatever the walk saw', () => {
     expect(() => extractionAjv().compile({ type: 'string', pattern: '^(a+)+$' })).toThrow(/unknown keyword: "pattern"/);
@@ -317,6 +327,21 @@ describe('answerResult', () => {
     const answer = `Here it is:\n\`\`\`json\n${' \t'.repeat(25_000)}`;
     const started = performance.now();
     expect(answerResult('extract', answer, check)).toStrictEqual({ extraction: null, schema_valid: false, raw_text: answer });
-    expect(performance.now() - started).toBeLessThan(200);
+    // A generous bound: CI machines are slower than the one the bound was first set on, and linear work of this size takes a few milliseconds.
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  // Ruling R62: the answer is serialised into the result after every sub-escrow is paid, and JSON.stringify recurses; an answer nested past what it can
+  // walk would throw there and answer 500. The value is held to the depth a schema may have, with the walk the schema is held to.
+  it('takes an answer nested 32 levels deep and gives one of 33 levels as schema_valid false with its raw text, a value that a schema of any depth would take included', () => {
+    const anyArray = compileExtractionSchema({ type: 'array' });
+    const nestedArray = (levels: number): string => `${'['.repeat(levels)}${']'.repeat(levels)}`;
+    expect(answerResult('extract', nestedArray(32), anyArray)).toMatchObject({ schema_valid: true });
+    expect(answerResult('extract', nestedArray(33), anyArray)).toStrictEqual({ extraction: null, schema_valid: false, raw_text: nestedArray(33) });
+    const deep = nestedArray(100_000);
+    expect(answerResult('extract', deep, anyArray)).toStrictEqual({ extraction: null, schema_valid: false, raw_text: deep });
+    // Objects count as arrays do, and a fenced block is held to the same depth.
+    const deepObject = `${'{"a":'.repeat(33)}1${'}'.repeat(33)}`;
+    expect(answerResult('extract', `\`\`\`json\n${deepObject}\n\`\`\``, compileExtractionSchema({ type: 'object' }))).toMatchObject({ extraction: null, schema_valid: false });
   });
 });

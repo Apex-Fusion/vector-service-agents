@@ -1,6 +1,7 @@
 // Generates the binary fixtures of the document-pipeline tests, byte for byte the same on every run:
 //   two-pages.pdf  a real two-page PDF ("Page one of the test document." and "Page two of the test document.")
 //   encrypted.pdf  one page, locked with a user password, so poppler cannot open it without that password
+//   huge-page.pdf  one page of 14400 by 14400 points (200 by 200 inches), which src/render.ts refuses before rendering (ruling R66)
 //   page-0.png, page-1.png  8 by 8 pixel PNGs that the fake renderer of the tests hands out as rendered pages
 // Run it once with `node test/fixtures/make-pdf.mjs` from agents/document-pipeline and check the output in. test/render.test.ts rebuilds
 // every file from this module and compares, so the script and the checked-in bytes cannot drift apart. It has no dependencies on purpose:
@@ -14,6 +15,8 @@ import { fileURLToPath } from 'node:url';
 export const PAGE_TEXTS = ['Page one of the test document.', 'Page two of the test document.'];
 // 576 by 720 points: at 150 dpi that is exactly 1200 by 1500 pixels, so a test can check the resolution without rounding.
 export const MEDIA_BOX = [0, 0, 576, 720];
+// 14400 by 14400 points: at 150 dpi that is 30000 by 30000 pixels, 900 megapixels, far over the 50 megapixels a page may have.
+export const HUGE_MEDIA_BOX = [0, 0, 14400, 14400];
 export const USER_PASSWORD = 'secret';
 
 const latin1 = (s) => Buffer.from(s, 'latin1');
@@ -42,12 +45,17 @@ const catalogAndPages = (pageCount) => [
   latin1('<< /Type /Catalog /Pages 2 0 R >>'),
   latin1(`<< /Type /Pages /Kids [${Array.from({ length: pageCount }, (_, i) => `${3 + i} 0 R`).join(' ')}] /Count ${pageCount} >>`),
 ];
-const pageObject = (contentsRef, fontRef) => latin1(`<< /Type /Page /Parent 2 0 R /MediaBox [${MEDIA_BOX.join(' ')}] /Resources << /Font << /F1 ${fontRef} 0 R >> >> /Contents ${contentsRef} 0 R >>`);
+const pageObject = (contentsRef, fontRef, mediaBox = MEDIA_BOX) => latin1(`<< /Type /Page /Parent 2 0 R /MediaBox [${mediaBox.join(' ')}] /Resources << /Font << /F1 ${fontRef} 0 R >> >> /Contents ${contentsRef} 0 R >>`);
 const FONT = latin1('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
 
 export function twoPagePdf() {
   // 1 catalog, 2 page tree, 3 and 4 pages, 5 font, 6 and 7 page contents
   return pdfFile([...catalogAndPages(2), pageObject(6, 5), pageObject(7, 5), FONT, stream(pageContent(PAGE_TEXTS[0])), stream(pageContent(PAGE_TEXTS[1]))], '');
+}
+
+export function hugePagePdf() {
+  // 1 catalog, 2 page tree, 3 the page, 4 font, 5 page content
+  return pdfFile([...catalogAndPages(1), pageObject(5, 4, HUGE_MEDIA_BOX), FONT, stream(pageContent(PAGE_TEXTS[0]))], '');
 }
 
 // --- Encryption: the standard security handler, version 1, revision 2 (RC4 with a 40-bit key), algorithms 2 to 4 of ISO 32000-1 ---
@@ -115,6 +123,7 @@ export function buildFixtures() {
   return {
     'two-pages.pdf': twoPagePdf(),
     'encrypted.pdf': encryptedPdf(),
+    'huge-page.pdf': hugePagePdf(),
     'page-0.png': png8x8((x, y) => [x * 32, y * 32, 0]), // red and green gradients
     'page-1.png': png8x8((x, y) => [0, 255 - x * 32, y * 32]), // green and blue gradients, the other way round
   };

@@ -1,7 +1,9 @@
 // packages/buyer-core/src/select-supplier.ts
 // Supplier discovery: which chat supplier to hire for the summary (selectLlmSupplier) and which OCR advert to hire for a page (findOcrAdvert). Both read the
-// marketplace indexer with the vendored fetchSuppliers, which lists the adverts of one capability and keeps the free ones. The indexer is the operator's
-// own configuration, read with the injected fetch as it is. The suppliers it lists are reached only through safeFetch (see fleet-clients.ts).
+// marketplace indexer with the vendored fetchSuppliers, which lists the adverts of one capability, and keep the Active adverts whatever the indexer says of
+// their supplier at the moment (free, working, offline): that word is a moment's and must not fail a job before it spends, and the send of a job waits for a
+// supplier that is busy (ruling R60). The indexer is the operator's own configuration, read with the injected fetch as it is. The suppliers it lists are
+// reached only through safeFetch (see fleet-clients.ts).
 //
 // The indexer's row names the advert's UTxO `utxo_ref`: it is the `advert_ref` that the supplier's own /capability serves, and the ref the escrow's Post is
 // made against. So `advertRef` below is the row's `utxo_ref`.
@@ -52,6 +54,11 @@ function limitOf(value: number | undefined, fallback: number, name: string): num
 const byPrice = (a: bigint, b: bigint): number => (a < b ? -1 : a > b ? 1 : 0);
 /** Is the row priced at `max` or under it? Without a ceiling, every row is. */
 const withinCeiling = (max: bigint | undefined) => (row: { price_lovelace: bigint }): boolean => max === undefined || row.price_lovelace <= max;
+/** The Active adverts of one capability the indexer lists, priced at `max` or under it, whatever the indexer says of their supplier (ruling R60). */
+async function listedAdverts(capabilityId: string, indexerUrl: string | undefined, fetchImpl: FetchLike, max: bigint | undefined) {
+  const rows = await fetchSuppliers({ capability_id: capabilityId, onlyFree: false, fetchImpl: aimedAt(indexerUrl, fetchImpl) });
+  return rows.filter((row) => row.advert_status === 'Active').filter(withinCeiling(max));
+}
 /** When a supplier was last seen, as a number to compare; a supplier never seen, or seen at a time that is no date, is the least recent. */
 const seenAt = (iso: string | null): number => {
   const time = iso === null ? Number.NaN : Date.parse(iso);
@@ -61,11 +68,12 @@ const newerFirst = (a: number, b: number): number => (a === b ? 0 : a > b ? -1 :
 
 /**
  * The chat supplier to hire, or null when none is fit. An advert priced above `maxPriceLovelace` (when given) is taken out before anything else. The
- * candidates are the free `llm.text.generate.v1` adverts whose model is on `allowlist`, in this
+ * candidates are the Active `llm.text.generate.v1` adverts whose model is on `allowlist`, whatever the indexer says of their supplier (ruling R60), in this
  * order: the position of the model on the allowlist, then the price (lowest first), then when the supplier was last seen (latest first; a supplier never seen,
  * or seen at a time that is no date, last). At most `maxCandidates` (LLM_SELECTION_MAX_CANDIDATES, 6 by default) are asked, each in turn for its /capability, which must carry
- * `inference_api: "responses"` and the very `advert_ref` the indexer lists for it, and, when `probe` is true, for its /status, which must be `free`. The first
- * that passes is the answer, so the candidates after it are not contacted. A candidate whose /capability or /status cannot be read is skipped, not an error.
+ * `inference_api: "responses"` and the very `advert_ref` the indexer lists for it, and, when `probe` is true, for its /status, which must answer with a status
+ * word of the supplier's (free, working or offline: a busy supplier is waited for by the send). The first that passes is the answer, so the candidates after
+ * it are not contacted. A candidate whose /capability cannot be read or does not match, or whose /status cannot be read, is skipped, not an error.
  * The whole selection has `budgetMs` (LLM_SELECTION_BUDGET_MS, 120 s by default) from the moment it is called, the read of the indexer included: when that runs out before a
  * candidate has passed, the call in flight is cancelled and the answer is null, and a candidate that answers after that is not used. Infinity lifts either limit.
  * Rejects when the indexer cannot be read, and when a limit is not a number.
@@ -78,7 +86,7 @@ export async function selectLlmSupplier(args: {
   const startedAt = performance.now();
   const budgetMs = limitOf(args.budgetMs, LLM_SELECTION_BUDGET_MS, 'budgetMs');
   const maxCandidates = limitOf(args.maxCandidates, LLM_SELECTION_MAX_CANDIDATES, 'maxCandidates');
-  const rows = (await fetchSuppliers({ capability_id: LLM_CAPABILITY, onlyFree: true, fetchImpl: aimedAt(args.indexerUrl, args.fetchImpl) })).filter(withinCeiling(args.maxPriceLovelace));
+  const rows = await listedAdverts(LLM_CAPABILITY, args.indexerUrl, args.fetchImpl, args.maxPriceLovelace);
   const candidates = rows
     .map((row) => ({ row, rank: args.allowlist.indexOf(row.model) }))
     .filter((candidate) => candidate.rank >= 0)
@@ -95,7 +103,7 @@ export async function selectLlmSupplier(args: {
     let capability: SupplierCapability;
     try { capability = await readCapability(row.endpoint_url, reach); } catch { return null; }
     if (capability.inference_api !== 'responses' || !sameRef(capability.advert_ref, row.utxo_ref)) return null;
-    if (args.probe === true && (await probeStatus(row.endpoint_url, reach)) !== 'free') return null;
+    if (args.probe === true && (await probeStatus(row.endpoint_url, reach)) === 'unreachable') return null;
     return { advertRef: row.utxo_ref, endpoint: row.endpoint_url, model: row.model, supplierPkh: row.supplier_pkh, priceLovelace: row.price_lovelace, capability };
   };
   for (const { row } of candidates) {
@@ -107,14 +115,14 @@ export async function selectLlmSupplier(args: {
 }
 
 /**
- * The OCR advert to hire: the free `ocr.page.extract.chandra-ocr-2.v1` advert of the supplier key `supplierPkh`, priced at `maxPriceLovelace` or under it when
- * that is given. Exactly one is expected; none (it is not listed, or it is busy or offline, or it is priced above the ceiling) and more than one (the choice is
- * not made here) are both null. No supplier is contacted. Rejects when the indexer cannot be read.
+ * The OCR advert to hire: the Active `ocr.page.extract.chandra-ocr-2.v1` advert of the supplier key `supplierPkh`, whatever the indexer says of the supplier
+ * (ruling R60), priced at `maxPriceLovelace` or under it when that is given. Exactly one is expected; none (it is not listed, or not Active, or priced above
+ * the ceiling) and more than one (the choice is not made here) are both null. No supplier is contacted. Rejects when the indexer cannot be read.
  */
 export async function findOcrAdvert(args: { fetchImpl: FetchLike; indexerUrl?: string; supplierPkh: string; maxPriceLovelace?: bigint }): Promise<{
   advertRef: string; endpoint: string; priceLovelace: bigint; maxProcessingMs: number;
 } | null> {
-  const rows = (await fetchSuppliers({ capability_id: OCR_CAPABILITY, onlyFree: true, fetchImpl: aimedAt(args.indexerUrl, args.fetchImpl) })).filter(withinCeiling(args.maxPriceLovelace));
+  const rows = await listedAdverts(OCR_CAPABILITY, args.indexerUrl, args.fetchImpl, args.maxPriceLovelace);
   const wanted = args.supplierPkh.toLowerCase();
   const ours = rows.filter((row) => row.supplier_pkh.toLowerCase() === wanted);
   if (ours.length !== 1) return null;

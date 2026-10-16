@@ -2,7 +2,7 @@
 // The schema of an `extract` job and the reading of the model's answer against it. The schema comes from the person who hired the Pipeline, and the
 // check it compiles to runs against what a model wrote after every sub-escrow is paid, in the process that runs every other job. So it is held to
 // what can be checked safely and at once, before anything is fetched or posted (ruling R27); anything else is schema_invalid (400). In this order:
-//   - the document as a whole (ruling R42): its JSON nesting is at most 32 levels (the root object is level 1, and every object or array inside one is
+//   - the document as a whole (rulings R42 and R43): its JSON nesting is at most 32 levels (the root object is level 1, and every object or array inside one is
 //     a level deeper, data included); no object anywhere in it has an own __proto__ key, which Ajv ignores and the prompt would carry; and its raw
 //     JSON, JSON.stringify of the schema as parsed, every own key as written and nothing merged, is at most 16384 bytes, which is what the prompt to
 //     the chat supplier carries. (Not its canonical form: that merges keys that are one key once normalised (NFC) and drops an own __proto__, so a
@@ -65,20 +65,39 @@ const below = (at: string, step: string | number): string => `${at}/${String(ste
 const place = (at: string): string => (at.length > PLACE_MAX_CHARACTERS ? `${at.slice(0, PLACE_MAX_CHARACTERS)}...` : at);
 
 /**
- * Why the document as a whole is refused, or null: nested deeper than 32 levels, or an own __proto__ key in any object of it. One pass that keeps its own
- * stack and stops at the first refusal, so a document nested past the call stack is refused without a crash.
+ * One pass over a JSON value that keeps its own stack, so a value nested past the call stack is walked without a crash: `visit` sees every object and
+ * array with its level (the root is level 1, every object or array inside one a level deeper) and its place, a JSON pointer it builds only when asked,
+ * and the walk stops at the first refusal `visit` gives.
  */
-function documentRefusal(schema: Record<string, unknown>): string | null {
-  const stack: Array<{ node: object; depth: number; at: string }> = [{ node: schema, depth: 1, at: '#' }];
-  for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
-    const { node, depth, at } = next;
-    if (depth > SCHEMA_MAX_DEPTH) return `its JSON is nested deeper than ${SCHEMA_MAX_DEPTH} levels`;
-    if (!Array.isArray(node) && Object.hasOwn(node, '__proto__')) return `it has an own __proto__ key at ${place(below(at, '__proto__'))} (Ajv ignores it, and the prompt would carry it)`;
-    const children: Array<[string | number, unknown]> = Array.isArray(node) ? node.map((child, i) => [i, child]) : Object.entries(node);
-    for (const [step, child] of children) if (child !== null && typeof child === 'object') stack.push({ node: child, depth: depth + 1, at: below(at, step) });
+function walkJson(root: object, visit: (node: object, depth: number, at: () => string) => string | null): string | null {
+  type Frame = { node: object; depth: number; up: Frame | null; step: string | number | null };
+  const placeOf = (frame: Frame): string => {
+    const steps: Array<string | number> = [];
+    for (let f: Frame | null = frame; f !== null && f.step !== null; f = f.up) steps.push(f.step);
+    return steps.reverse().reduce<string>((at, step) => below(at, step), '#');
+  };
+  const stack: Frame[] = [{ node: root, depth: 1, up: null, step: null }];
+  for (let frame = stack.pop(); frame !== undefined; frame = stack.pop()) {
+    const here = frame;
+    const refusal = visit(here.node, here.depth, () => placeOf(here));
+    if (refusal !== null) return refusal;
+    const children: Array<[string | number, unknown]> = Array.isArray(here.node) ? here.node.map((child, i) => [i, child]) : Object.entries(here.node);
+    for (const [step, child] of children) if (child !== null && typeof child === 'object') stack.push({ node: child, depth: here.depth + 1, up: here, step });
   }
   return null;
 }
+
+/** Why the document as a whole is refused, or null: nested deeper than 32 levels, or an own __proto__ key in any object of it. */
+function documentRefusal(schema: Record<string, unknown>): string | null {
+  return walkJson(schema, (node, depth, at) => {
+    if (depth > SCHEMA_MAX_DEPTH) return `its JSON is nested deeper than ${SCHEMA_MAX_DEPTH} levels`;
+    if (!Array.isArray(node) && Object.hasOwn(node, '__proto__')) return `it has an own __proto__ key at ${place(below(at(), '__proto__'))} (Ajv ignores it, and the prompt would carry it)`;
+    return null;
+  });
+}
+
+/** Is a value of an answer nested deeper than the 32 levels a schema may have (ruling R62)? The walk of documentRefusal, with its bound. */
+const nestedTooDeep = (value: unknown): boolean => value !== null && typeof value === 'object' && walkJson(value, (_node, depth) => (depth > SCHEMA_MAX_DEPTH ? 'deep' : null)) !== null;
 
 /** Why the walk refuses `schema` (see the head of this file), or null. The walk keeps its own stack. */
 function walkRefusal(schema: Record<string, unknown>): string | null {
@@ -112,11 +131,12 @@ function walkRefusal(schema: Record<string, unknown>): string | null {
 }
 
 /**
- * The Ajv every extraction schema is compiled with: draft-07, stopping at the first error, strict, silent, without pattern and patternProperties
- * (strict mode refuses them as unknown keywords) and with no format defined (any format is refused as unknown). The second guard of the head of this file.
+ * The Ajv every extraction schema is compiled with: draft-07, stopping at the first error, strict, silent, reading only the own properties of the answer
+ * (ownProperties: a key the answer inherits, from its prototype, is no key of the answer), without pattern and patternProperties (strict mode refuses
+ * them as unknown keywords) and with no format defined (any format is refused as unknown). The second guard of the head of this file.
  */
 export function extractionAjv(): Ajv {
-  const ajv = new Ajv({ allErrors: false, logger: false });
+  const ajv = new Ajv({ allErrors: false, logger: false, ownProperties: true });
   ajv.removeKeyword('pattern');
   ajv.removeKeyword('patternProperties');
   return ajv;
@@ -175,13 +195,15 @@ function parsedJson(text: string): { value: unknown } | null {
 
 /**
  * The `result` of a run from the chat answer. A summary is the answer text. An extraction is the answer's JSON value (the whole answer, else its first
- * fenced block) when it validates against the schema; otherwise it is null, with schema_valid false and the answer kept as raw_text exactly as received.
+ * fenced block) when it is nested no deeper than a schema may be (32 levels, ruling R62: the result is serialised after every sub-escrow is paid, and a
+ * value nested past what JSON.stringify can walk would throw there) and validates against the schema; otherwise it is null, with schema_valid false and
+ * the answer kept as raw_text exactly as received.
  */
 export function answerResult(task: Task, text: string, check: ExtractionCheck | null): PipelineAnswer {
   if (task === 'summary') return { summary: text };
   if (check === null) throw new Error('An extraction is read with the check of its schema.');
   const block = (): { value: unknown } | null => { const inner = fencedBlock(text); return inner === null ? null : parsedJson(inner); };
   const json = parsedJson(text.trim()) ?? block();
-  if (json !== null && check(json.value)) return { extraction: json.value, schema_valid: true };
+  if (json !== null && !nestedTooDeep(json.value) && check(json.value)) return { extraction: json.value, schema_valid: true };
   return { extraction: null, schema_valid: false, raw_text: text };
 }

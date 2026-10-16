@@ -5,7 +5,9 @@
 // The URLs are https IP literals of the documentation range 203.0.113.0/24 (public for safeFetch, no host lookup, so no test depends on DNS).
 import { describe, test, expect } from 'vitest';
 import { createHash } from 'node:crypto';
-import { loadSource, sniffMime, MAX_SOURCE_BYTES, SOURCE_FETCH_TIMEOUT_MS } from '../src/source.ts';
+import { readFileSync } from 'node:fs';
+import { sniffMime } from '../src/mime.ts';
+import { loadSource, MAX_SOURCE_BYTES, SOURCE_FETCH_TIMEOUT_MS } from '../src/source.ts';
 import { RequestError } from '../src/request.ts';
 import type { PipelineRequest } from '../src/request.ts';
 import { boom, hang, redirect, reply, routedFetch, stallsAfter, streamed } from './fake-fetch.ts';
@@ -33,6 +35,14 @@ describe('the constants', () => {
 });
 
 describe('sniffMime: the first bytes decide', () => {
+  test('lives in src/mime.ts, a module with no imports, which src/source.ts and src/render.ts both import: the renderer does not load the fetch of a source', () => {
+    const src = (name: string) => readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8');
+    expect(src('mime.ts')).not.toMatch(/^import /m);
+    expect(src('render.ts')).toMatch(/^import \{ sniffMime \} from '\.\/mime\.ts';$/m);
+    expect(src('render.ts')).not.toMatch(/^import \{[^}]*\} from '\.\/source\.ts';$/m);
+    expect(src('source.ts')).toMatch(/^import \{ sniffMime \} from '\.\/mime\.ts';$/m);
+  });
+
   test.each([
     ['%PDF-', text('%PDF-1.4\n'), 'application/pdf'],
     ['the PNG signature', PAGE_0_PNG, 'image/png'],

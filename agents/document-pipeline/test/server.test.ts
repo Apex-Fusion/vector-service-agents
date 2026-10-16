@@ -83,7 +83,7 @@ describe('manifest', () => {
           + 'The service writes only the bookkeeping of the escrows it posts (references, times, the hop, a transaction hash) to its state directory, and its log carries job outcomes, never a request or a document.',
         third_parties: ['the host of the source URL', 'the ChandraOCR agent, and Datalab behind it', 'the LLM supplier it hires, and its model provider', 'Koios (Vector mainnet indexer)', 'marketplace indexer'],
       },
-      status: { chip: 'proposed', since: '2026-10-15' },
+      status: { chip: 'proposed', since: '2026-10-13' },
       gaps: [...GAPS],
       links: { spec: SPEC_URL, source: 'https://github.com/Apex-Fusion/vector-service-agents/tree/main/agents/document-pipeline', explorer_advert: '' },
     });
@@ -126,10 +126,10 @@ describe('manifest', () => {
     for (const file of ['server.ts', 'start.ts', 'gaps.ts', 'index.ts']) expect(readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8'), file).not.toMatch(/[A-Za-z0-9._-]+@[A-Za-z0-9-]+\.[A-Za-z]/);
   });
 
-  test('defaults: proposed since 2026-10-15, price 5 units, both bonds 1 unit, a 30 min window, the limits of the intake', () => {
+  test('defaults: proposed since 2026-10-13, price 5 units, both bonds 1 unit, a 30 min window, the limits of the intake', () => {
     const m = manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT });
     expect(m).toMatchObject({
-      version: '0.1.0', status: { chip: 'proposed', since: '2026-10-15' },
+      version: '0.1.0', status: { chip: 'proposed', since: '2026-10-13' },
       terms: { price_lovelace: 5_000_000, supplier_bond_lovelace: 1_000_000, buyer_bond_lovelace: 1_000_000, max_processing_ms: 1_800_000 },
     });
     // The limits are the numbers the intake enforces, not copies of them.
@@ -193,8 +193,8 @@ describe('manifest', () => {
     for (const bad of ['launched', 'live!', 'prod', 'proposed ']) expect(() => chip(bad), bad).toThrow(/AGENT_STATUS_CHIP/);
     expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: '2027-01-02' }).status).toStrictEqual({ chip: 'proposed', since: '2027-01-02' });
     // The date is published in a manifest that is hashed into the advert: blank means the default, and anything that is not a date is refused.
-    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: ' ' }).status.since).toBe('2026-10-15');
-    for (const bad of ['yesterday', '2026-10-1', '15-10-2026', '20261015', '2026-10-15T00:00:00Z']) expect(() => manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: bad }), bad).toThrow(/AGENT_STATUS_SINCE/);
+    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: ' ' }).status.since).toBe('2026-10-13');
+    for (const bad of ['yesterday', '2026-10-1', '15-10-2026', '20261015', '2026-10-13T00:00:00Z']) expect(() => manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: bad }), bad).toThrow(/AGENT_STATUS_SINCE/);
     expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_VERSION: '0.2.0', ADVERT_EXPLORER_URL: 'https://explorer.example.test/tx' })).toMatchObject({ version: '0.2.0', links: { explorer_advert: 'https://explorer.example.test/tx' } });
   });
 
@@ -820,6 +820,23 @@ describe('JobSlot and a service that is stopping', () => {
     expect(slot.take()).toBe('taken');
   });
 
+  test('idle() resolves at once when no job holds the slot, and when the job that holds it releases it, not before (ruling R61)', async () => {
+    const slot = new JobSlot();
+    await slot.idle(); // nothing holds it
+    expect(slot.take()).toBe('taken');
+    let idle = false;
+    const waits = [slot.idle(), slot.idle()].map((wait) => wait.then(() => { idle = true; }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(idle).toBe(false);
+    slot.drain();
+    expect(idle).toBe(false); // draining takes no job, but the one that runs still holds the slot
+    slot.release();
+    await Promise.all(waits);
+    expect(idle).toBe(true);
+    expect(slot.take()).toBe('draining');
+    await slot.idle();
+  });
+
   test('once draining, no job is taken; the job that holds the slot still releases it', () => {
     const slot = new JobSlot();
     expect(slot.take()).toBe('taken');
@@ -866,16 +883,45 @@ describe('JobSlot and a service that is stopping', () => {
 });
 
 describe('routes', () => {
-  test('anything but GET /healthz, GET /agent.json and POST / is a 404', async () => {
+  test('anything but GET (or HEAD) of /healthz and /agent.json, and POST /, is a 404', async () => {
     const run = fakeRun();
     await serve(options({ runPipeline: run }), async (api) => {
-      for (const [method, path] of [['PUT', '/'], ['DELETE', '/'], ['GET', '/'], ['GET', '/nope'], ['GET', '/healthz/'], ['GET', '/healthz?x=1'], ['GET', '/agent.json/x'], ['POST', '/healthz'], ['POST', '/agent.json'], ['POST', '/v1/job'], ['POST', '/status'], ['POST', '/x'], ['HEAD', '/healthz'], ['OPTIONS', '/']] as const) {
+      for (const [method, path] of [['PUT', '/'], ['DELETE', '/'], ['GET', '/'], ['GET', '/nope'], ['GET', '/healthz/'], ['GET', '/agent.json/x'], ['GET', '/agent.jsonx'], ['POST', '/healthz'], ['POST', '/agent.json'], ['POST', '/v1/job'], ['POST', '/status'], ['POST', '/x'], ['POST', '/?x=1'], ['HEAD', '/nope'], ['OPTIONS', '/']] as const) {
         const r = await api.request(method, path, method === 'POST' ? wire(REQUEST) : undefined);
         expect(r.status, `${method} ${path}`).toBe(404);
         if (method !== 'HEAD') expect(r.json, `${method} ${path}`).toStrictEqual({ error: 'not_found' });
       }
     });
     expect(run).not.toHaveBeenCalled();
+  });
+
+  test('the two open routes are matched on their path: a query does not change the answer', async () => {
+    await serve(options(), async (api) => {
+      for (const path of ['/agent.json?x=1', '/agent.json?', '/agent.json?detail=1&b=2']) {
+        const r = await api.get(path);
+        expect(r.status, path).toBe(200);
+        expect(r.text, path).toBe(JSON.stringify(MANIFEST));
+      }
+      for (const path of ['/healthz?x=1', '/healthz?']) {
+        const r = await api.get(path);
+        expect(r.status, path).toBe(200);
+        expect(r.json, path).toStrictEqual({ ok: true });
+      }
+    });
+  });
+
+  test('HEAD of the two open routes answers as GET does, with the same status and headers and no body', async () => {
+    await serve(options(), async (api) => {
+      for (const path of ['/agent.json', '/healthz', '/agent.json?x=1']) {
+        const get = await fetch(`${api.url}${path}`);
+        const getBody = await get.text();
+        const head = await fetch(`${api.url}${path}`, { method: 'HEAD' });
+        expect(head.status, path).toBe(get.status);
+        expect(head.headers.get('content-type'), path).toBe('application/json');
+        expect(head.headers.get('content-length'), path).toBe(String(Buffer.byteLength(getBody, 'utf8')));
+        expect(await head.text(), path).toBe('');
+      }
+    });
   });
 });
 
@@ -1229,5 +1275,20 @@ describe('the real pipeline over HTTP', () => {
     });
     expect(m.calls).toStrictEqual([]);
     expect((await m.chain.wallet()).floatLovelace).toBe(50_000_000n);
+  });
+
+  // Ruling R64: the words of a supplier reach the body of a 422 and could reach a log line; a line break or an escape in them arrives as a space.
+  test('a refusal of a supplier whose message holds a line break and an escape arrives flat in the 422 body, and no log line carries a control character', async () => {
+    const m = marketplace();
+    m.ocr.refuse = { status: 409, reason: 'prompt_mismatch', message: 'line one\nline two \u001b[31mred\u001b[0m' };
+    await serve(options({ deps: { ...depsOn(m), log: (line: string) => { logs.push(line); } }, runPipeline }), async (api) => {
+      const r = await api.post(wire(TWO_PAGES));
+      expect(r.status).toBe(422);
+      expect(r.json.error).toBe('ocr_refused');
+      expect(r.json.message).toContain('(409 prompt_mismatch: line one line two  [31mred [0m)');
+      expect(r.json.message).not.toMatch(/[\u0000-\u001f\u007f]/);
+    });
+    expect(logs.length).toBeGreaterThan(0);
+    for (const line of logs) expect(line).not.toMatch(/[\u0000-\u001f\u007f]/);
   });
 });

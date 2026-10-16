@@ -1,8 +1,10 @@
 // packages/buyer-core/test/select-supplier.test.ts
 // Supplier discovery over the marketplace indexer, through a fake fetch: which chat supplier to hire (selectLlmSupplier: allowlist order, then price,
-// then the most recently seen; the supplier itself must serve the Responses API for the advert the indexer lists, and be free) and which OCR advert
-// (findOcrAdvert: the one free advert of the allowlisted key, or none). The indexer is read with the vendored fetchSuppliers. The suppliers are reached
-// through safeFetch, so their endpoints are IP literals of the documentation range 203.0.113.0/24: public for safeFetch, and no host lookup.
+// then the most recently seen; the supplier itself must serve the Responses API for the advert the indexer lists, and answer at /status) and which OCR
+// advert (findOcrAdvert: the one Active advert of the allowlisted key, or none), whatever the indexer says of the supplier at the moment (ruling R60).
+// The indexer is read with the vendored fetchSuppliers. The suppliers are reached through safeFetch, so their endpoints are IP literals of the
+// documentation range 203.0.113.0/24: public for safeFetch, and no host lookup. The budgets of the selection are at least 500 ms wherever a test needs
+// a call to start inside one, so that a slow machine does not change what a test sees.
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { findOcrAdvert, selectLlmSupplier } from '../src/select-supplier.ts';
 import { INDEXER_URL } from '../src/vendored/mcp/marketplace-constants.ts';
@@ -139,7 +141,8 @@ describe('selectLlmSupplier', () => {
       llm(5, DEEPSEEK, { row: seen(null), capability: down }),
     ]);
     expect(await select(f)).toBeNull();
-    // The text "sometime last week" comes after every date in a descending sort of strings, which is how the vendored list is ordered: here it is last with the others.
+    // As text, "sometime last week" is greater than every date, so a descending sort of strings, which is how the vendored list is ordered, would put it
+    // first. Here it is last, with the others that have no date.
     expect(askedOf(f, '/capability')).toStrictEqual([4, 2, 1, 3, 5].map((n) => hostOf(endpointOf(n))));
   });
 
@@ -150,16 +153,29 @@ describe('selectLlmSupplier', () => {
     expect((await select(network([cheap(1, '09'), cheap(2, '11', { capability: down }), cheap(3, '10', { capability: down })])))?.advertRef).toBe(advertOf(1));
   });
 
-  it('ignores a model outside the allowlist, another capability and a supplier that is not free, and never contacts them', async () => {
+  it('ignores a model outside the allowlist, another capability and an advert that is not Active, and never contacts them', async () => {
     const f = network([
       llm(1, 'kimi-k3', { row: { price_lovelace: '100000' } }),
       llm(2, DEEPSEEK, { row: { capability_id: 'llm.chat.v1', price_lovelace: '100000' } }),
-      llm(3, DEEPSEEK, { row: { status: 'working', price_lovelace: '100000' } }),
-      llm(4, DEEPSEEK, { row: { status: 'offline', price_lovelace: '100000' } }),
+      llm(3, DEEPSEEK, { row: { advert_status: 'Retired', price_lovelace: '100000' } }),
       llm(5, QWEN, { row: { price_lovelace: '900000' } }),
     ]);
     expect((await select(f))?.advertRef).toBe(advertOf(5));
     expect([...new Set(f.calls.map((c) => hostOf(c.url)))].sort()).toStrictEqual(['203.0.113.5', 'indexer.test']);
+  });
+
+  // Ruling R60: the indexer's word on whether a supplier is busy is a moment's, and must not fail a job before it spends; the send loop waits for a
+  // supplier that is busy. An Active advert is a candidate whatever the indexer says of its supplier, in the same order as ever.
+  it('takes an Active advert whatever the indexer says of its supplier: one listed as working or offline is a candidate in its place in the order', async () => {
+    const f = network([
+      llm(3, DEEPSEEK, { row: { status: 'working', price_lovelace: '100000' } }),
+      llm(4, DEEPSEEK, { row: { status: 'offline', price_lovelace: '150000' } }),
+      llm(5, QWEN, { row: { price_lovelace: '900000' } }),
+    ]);
+    expect((await select(f))?.advertRef).toBe(advertOf(3));
+    const second = network([llm(3, DEEPSEEK, { row: { status: 'working', price_lovelace: '100000' }, capability: down }), llm(4, DEEPSEEK, { row: { status: 'offline', price_lovelace: '150000' } })]);
+    expect((await select(second))?.advertRef).toBe(advertOf(4));
+    expect(askedOf(second, '/capability')).toStrictEqual([3, 4].map((n) => hostOf(endpointOf(n))));
   });
 
   it('skips a supplier whose /capability does not carry inference_api "responses": a build that does not serve /v1/responses cannot take the job', async () => {
@@ -192,20 +208,25 @@ describe('selectLlmSupplier', () => {
     }
   });
 
-  it('with probe true a supplier must be free on /status too: working, offline and unreachable are skipped', async () => {
-    const notFree: Array<[string, string | Answer]> = [['working', 'working'], ['offline', 'offline'], ['a status word of nobody', 'busy'], ['an error status', down], ['a network error', boom]];
-    for (const [name, status] of notFree) {
+  it('with probe true a supplier whose /status cannot be read is skipped; one that answers working or offline stays a candidate (ruling R60)', async () => {
+    const unreadable: Array<[string, Answer]> = [['a status word of nobody', live('busy')], ['an error status', down], ['a network error', boom], ['a page', text(200, '<html>status</html>', 'text/html')]];
+    for (const [name, status] of unreadable) {
       const f = network([llm(1, DEEPSEEK, { row: { price_lovelace: '100000' }, live: status }), llm(2, DEEPSEEK, { live: 'free' })]);
       expect((await select(f, { probe: true }))?.advertRef, name).toBe(advertOf(2));
     }
-    expect(await select(network([llm(1, DEEPSEEK, { live: 'working' })]), { probe: true })).toBeNull();
+    for (const word of ['working', 'offline', 'free']) {
+      const f = network([llm(1, DEEPSEEK, { row: { price_lovelace: '100000' }, live: word }), llm(2, DEEPSEEK, { live: 'free' })]);
+      expect((await select(f, { probe: true }))?.advertRef, word).toBe(advertOf(1));
+    }
+    expect((await select(network([llm(1, DEEPSEEK, { live: 'working' })]), { probe: true }))?.advertRef).toBe(advertOf(1));
+    expect(await select(network([llm(1, DEEPSEEK, { live: boom })]), { probe: true })).toBeNull();
   });
 
   it('asks /capability before /status, and /status only of a supplier whose /capability passed', async () => {
     const f = network([
       llm(1, DEEPSEEK, { row: { price_lovelace: '100000' }, capability: down }),
       llm(2, DEEPSEEK, { row: { price_lovelace: '150000' }, capability: { inference_api: undefined } }),
-      llm(3, DEEPSEEK, { row: { price_lovelace: '200000' }, live: 'working' }),
+      llm(3, DEEPSEEK, { row: { price_lovelace: '200000' }, live: down }),
       llm(4, DEEPSEEK, { row: { price_lovelace: '250000' } }),
     ]);
     expect((await select(f, { probe: true }))?.advertRef).toBe(advertOf(4));
@@ -214,7 +235,7 @@ describe('selectLlmSupplier', () => {
     ]);
   });
 
-  it('without probe it never asks /status: the indexer saying free is enough', async () => {
+  it('without probe it never asks /status: what the indexer lists is enough', async () => {
     for (const over of [{}, { probe: false }]) {
       const f = network([llm(1, DEEPSEEK, { live: 'working' })]);
       expect((await select(f, over))?.advertRef).toBe(advertOf(1));
@@ -257,8 +278,9 @@ describe('selectLlmSupplier', () => {
     it('stops when the budget runs out: a supplier that does not answer is cancelled, and the ones after it are not asked', async () => {
       const f = network([llm(1, DEEPSEEK, { row: { price_lovelace: '100000' }, capability: hang }), llm(2, DEEPSEEK, { row: { price_lovelace: '200000' } })]);
       const started = performance.now();
-      expect(await select(f, { budgetMs: 50 })).toBeNull();
+      expect(await select(f, { budgetMs: 500 })).toBeNull();
       // The budget ended the call, not the 20 s that /capability may take.
+      expect(performance.now() - started).toBeGreaterThanOrEqual(490);
       expect(performance.now() - started).toBeLessThan(5000);
       expect(askedOf(f, '/capability')).toStrictEqual([hostOf(endpointOf(1))]);
       expect(f.calls.find((c) => c.url === `${endpointOf(1)}/capability`)?.signal?.aborted).toBe(true);
@@ -266,7 +288,7 @@ describe('selectLlmSupplier', () => {
 
     it('the budget also cancels a /status call that is in flight', async () => {
       const f = network([llm(1, DEEPSEEK, { live: hang })]);
-      expect(await select(f, { probe: true, budgetMs: 50 })).toBeNull();
+      expect(await select(f, { probe: true, budgetMs: 500 })).toBeNull();
       expect(f.calls.find((c) => c.url === `${endpointOf(1)}/status`)?.signal?.aborted).toBe(true);
     });
 
@@ -285,14 +307,15 @@ describe('selectLlmSupplier', () => {
         return json(200, capabilityOf(1, DEEPSEEK));
       };
       const f = network([llm(1, DEEPSEEK, { capability: late })]);
-      // Nothing releases the supplier until the selection has returned, so only the budget can have ended the call.
-      expect(await select(f, { budgetMs: 40 })).toBeNull();
+      // Nothing releases the supplier until the selection has returned, so only the budget can have ended the call, and the supplier was asked.
+      expect(await select(f, { budgetMs: 500 })).toBeNull();
+      expect(askedOf(f, '/capability')).toStrictEqual([hostOf(endpointOf(1))]);
       release();
     });
 
     it('the budget runs from the call, the read of the indexer included: a slow indexer leaves nothing for the suppliers', async () => {
-      const f = network([llm(1, DEEPSEEK)], { indexerDelayMs: 80 });
-      expect(await select(f, { budgetMs: 40 })).toBeNull();
+      const f = network([llm(1, DEEPSEEK)], { indexerDelayMs: 600 });
+      expect(await select(f, { budgetMs: 500 })).toBeNull();
       expect(f.calls.map((c) => hostOf(c.url))).toStrictEqual(['indexer.test']);
     });
 
@@ -305,6 +328,14 @@ describe('selectLlmSupplier', () => {
     it('a supplier that answers within the budget is used', async () => {
       const f = network([llm(1, DEEPSEEK, { capability: delayed(30, json(200, capabilityOf(1, DEEPSEEK))) })]);
       expect((await select(f, { budgetMs: 5000 }))?.advertRef).toBe(advertOf(1));
+    });
+
+    it('a budget of Infinity lifts the limit: the timer of the selection is the longest Node keeps, not one that Node would cut to a millisecond', async () => {
+      const spy = vi.spyOn(AbortSignal, 'timeout');
+      const f = network([llm(1, DEEPSEEK, { capability: delayed(30, json(200, capabilityOf(1, DEEPSEEK))) })]);
+      expect((await select(f, { budgetMs: Number.POSITIVE_INFINITY }))?.advertRef).toBe(advertOf(1));
+      expect(spy.mock.calls.map(([ms]) => ms)).toContain(2_147_483_647);
+      expect(spy.mock.calls.every(([ms]) => ms <= 2_147_483_647)).toBe(true);
     });
 
     it('the budget is 120 s by default, from the call', async () => {
@@ -402,18 +433,21 @@ describe('findOcrAdvert', () => {
     expect(await find(indexerOf([]))).toBeNull();
   });
 
-  it.each(['working', 'offline'])('is null when the advert is %s: only a free advert is hired', async (status) => {
-    expect(await find(indexerOf([{ ...CHANDRA, status }]))).toBeNull();
+  // Ruling R60: the indexer's word on whether the supplier is busy is a moment's; the advert is hired whatever it says, and the send loop waits.
+  it.each(['working', 'offline'])('is the advert when the indexer lists its supplier as %s', async (status) => {
+    expect((await find(indexerOf([{ ...CHANDRA, status }])))?.advertRef).toBe(CHANDRA.utxo_ref);
   });
 
-  it('is null when the key has more than one free OCR advert: exactly one is expected, and the choice is not made here', async () => {
+  it('is null when the key has more than one Active OCR advert, whatever the indexer says of each: exactly one is expected, and the choice is not made here', async () => {
     const second = { ...CHANDRA, utxo_ref: advertOf(8), endpoint_url: endpointOf(8) };
     expect(await find(indexerOf([CHANDRA, second]))).toBeNull();
+    expect(await find(indexerOf([{ ...second, status: 'working' }, CHANDRA]))).toBeNull();
   });
 
-  it('is the free advert when the key has a second one that is busy', async () => {
-    const busy = { ...CHANDRA, utxo_ref: advertOf(8), endpoint_url: endpointOf(8), status: 'working' };
-    expect((await find(indexerOf([busy, CHANDRA])))?.advertRef).toBe(CHANDRA.utxo_ref);
+  it('is the Active advert when the key has a second one that is retired', async () => {
+    const retired = { ...CHANDRA, utxo_ref: advertOf(8), endpoint_url: endpointOf(8), advert_status: 'Retired' };
+    expect((await find(indexerOf([retired, CHANDRA])))?.advertRef).toBe(CHANDRA.utxo_ref);
+    expect(await find(indexerOf([retired]))).toBeNull();
   });
 
   it('compares the key without regard to case', async () => {

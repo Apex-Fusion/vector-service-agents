@@ -26,6 +26,13 @@ describe('vendored files', () => {
       expect(actual, `${dest} changed since it was vendored`).toBe(sha);
     }
   });
+  it('says what the Document Pipeline is today, and what verifyFleetReceipt does with the on-chain row of a receipt that cannot be walked', () => {
+    // The Pipeline is PROPOSED (built, not deployed): the sentence of before it was built is gone.
+    expect(manifest).toContain('The Document Pipeline agent (built, not deployed) posts escrows, signs and submits transactions, reads escrow lineage and verifies receipts.');
+    expect(manifest).not.toContain('not built yet');
+    // src/fleet-verify.ts: on a throw the four rows fail, but the on-chain row is skipped when there was no hash on chain to compare.
+    expect(manifest).toContain('so it runs inside a `try` and its four rows fail on a throw, the on-chain row being skipped only when there was no hash to compare.');
+  });
   it('every file under src/vendored/ and test/fixtures/ has a row, so a file added without one fails', () => {
     const named = new Set(manifest.split('\n').filter((l) => l.startsWith('| `src/vendored/') || l.startsWith('| `test/fixtures/')).map((row) => row.split('|')[1].trim().replace(/^`|`$/g, '')));
     const onDisk = [...filesUnder('src/vendored'), ...filesUnder('test/fixtures')];

@@ -1,6 +1,6 @@
 // agents/document-pipeline/test/render.test.ts
-// Turning the source into pages: pagesOf (an image is one page, a PDF is rendered through a Renderer) and popplerRenderer (pdfinfo for the count,
-// pdftoppm at 150 dpi for the pages). Four groups:
+// Turning the source into pages: pagesOf (an image is one page, a PDF is rendered through a Renderer) and popplerRenderer (pdfinfo for the count and
+// for the size of the pages, pdftoppm at 150 dpi for the pages). Four groups:
 //   - the checked-in fixtures, which must be what test/fixtures/make-pdf.mjs makes;
 //   - pagesOf, with a fake renderer;
 //   - popplerRenderer over a fake process runner, which pins the command lines, the page files and the failures without poppler;
@@ -15,12 +15,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inflateSync } from 'node:zlib';
-import { pagesOf, popplerRenderer, popplerRendererWith } from '../src/render.ts';
+import { pageSizesOf, pagesOf, popplerRenderer, popplerRendererWith } from '../src/render.ts';
 import type { RunTool } from '../src/render.ts';
 import { RequestError } from '../src/request.ts';
+import { PipelineError } from '../src/result.ts';
 import type { SourceBytes } from '../src/source.ts';
 import { fakeRenderer } from './fake-renderer.ts';
-import { ENCRYPTED_PDF, ENCRYPTED_PDF_PASSWORD, JPEG, PAGE_0_PNG, PAGE_1_PNG, TWO_PAGES_PDF, fixture, text } from './support.ts';
+import { ENCRYPTED_PDF, HUGE_PAGE_PDF, JPEG, PAGE_0_PNG, PAGE_1_PNG, TWO_PAGES_PDF, fixture, text } from './support.ts';
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const sourceOf = (bytes: Uint8Array, mime: SourceBytes['mime']): SourceBytes => ({ bytes, mime, sha256: createHash('sha256').update(bytes).digest('hex'), origin: 'inline' });
@@ -51,7 +52,7 @@ describe('the fixtures', () => {
   test('every file is what test/fixtures/make-pdf.mjs makes: the script and the checked-in bytes cannot drift apart', async () => {
     const { buildFixtures } = await import(new URL('./fixtures/make-pdf.mjs', import.meta.url).href) as { buildFixtures: () => Record<string, Buffer> };
     const built = buildFixtures();
-    expect(Object.keys(built).sort()).toStrictEqual(['encrypted.pdf', 'page-0.png', 'page-1.png', 'two-pages.pdf']);
+    expect(Object.keys(built).sort()).toStrictEqual(['encrypted.pdf', 'huge-page.pdf', 'page-0.png', 'page-1.png', 'two-pages.pdf']);
     for (const [name, bytes] of Object.entries(built)) expect(fixture(name), name).toStrictEqual(new Uint8Array(bytes));
   });
 
@@ -67,6 +68,23 @@ describe('the fixtures', () => {
     expect(entries).toHaveLength(7);
     entries.forEach((offset, i) => expect(pdf.slice(offset, offset + `${i + 1} 0 obj`.length)).toBe(`${i + 1} 0 obj`));
     expect(Number(/startxref\n(\d+)\n/.exec(pdf)?.[1])).toBe(pdf.indexOf('xref\n0 8'));
+  });
+
+  test('huge-page.pdf is one page of 14400 by 14400 points, 200 by 200 inches: 900 megapixels at 150 dpi, which is what the size guard refuses (ruling R66)', () => {
+    const pdf = Buffer.from(HUGE_PAGE_PDF).toString('latin1');
+    expect(HUGE_PAGE_PDF.length).toBeLessThan(10 * 1024);
+    expect(pdf.startsWith('%PDF-1.4\n')).toBe(true);
+    expect(pdf.match(/\/MediaBox \[0 0 14400 14400\]/g)).toHaveLength(1);
+    expect(pdf).toContain('/Count 1');
+    const entries = [...pdf.matchAll(/^(\d{10}) 00000 n $/gm)].map((m) => Number(m[1]));
+    entries.forEach((offset, i) => expect(pdf.slice(offset, offset + `${i + 1} 0 obj`.length)).toBe(`${i + 1} 0 obj`));
+    expect(Number(/startxref\n(\d+)\n/.exec(pdf)?.[1])).toBe(pdf.indexOf('xref\n'));
+  });
+
+  test('git keeps every PDF and PNG as it is: they are marked binary, so no line ending of theirs is converted on a checkout', async () => {
+    const attributes = (await readFile(new URL('../../../.gitattributes', import.meta.url), 'utf8')).split('\n');
+    expect(attributes).toContain('*.pdf binary');
+    expect(attributes).toContain('*.png binary');
   });
 
   test('encrypted.pdf asks for a password: it has an encryption dictionary and its page text is not readable in the file', () => {
@@ -165,18 +183,37 @@ describe('pagesOf', () => {
 // --- popplerRenderer over a fake process runner -------------------------------------------------------------------------------
 interface ToolCall { file: string; args: readonly string[]; timeoutMs: number; maxBuffer: number; dir: string; pdf: Uint8Array | null }
 type Handler = (call: ToolCall) => Promise<{ stdout?: string; stderr?: string } | void> | { stdout?: string; stderr?: string } | void;
-/** A process runner that records each call (with the PDF as the tool would find it on disk) and lets the test play the tool. */
-function fakeTools(handle: Handler) {
+/** Plays the size query of render, `pdfinfo -box -f 1 -l <n>`, as poppler prints it: a document of n pages of 576 by 720 points, the fixture's size. */
+const sizesOf = (call: ToolCall): { stdout: string } => {
+  const last = Number(call.args[call.args.indexOf('-l') + 1]);
+  const pages = Array.from({ length: last }, (_, i) => String(i + 1).padStart(4));
+  return {
+    stdout: [
+      `Pages:           ${last}`, 'Encrypted:       no', ...pages.flatMap((n) => [`Page ${n} size:  576 x 720 pts`, `Page ${n} rot:   0`]),
+      ...pages.map((n) => `Page ${n} MediaBox:      0.00     0.00   576.00   720.00`), 'File size:       9 bytes', '',
+    ].join('\n'),
+  };
+};
+/**
+ * A process runner that records each call (with the PDF as the tool would find it on disk) and lets the test play the tool. The size query that render
+ * makes before pdftoppm (ruling R66) is played by `sizes` (every page 576 by 720 points unless a test says otherwise) and recorded apart, in `sizeCalls`;
+ * `order` is every call in turn.
+ */
+function fakeTools(handle: Handler, sizes: Handler = sizesOf) {
   const calls: ToolCall[] = [];
+  const sizeCalls: ToolCall[] = [];
+  const order: string[] = [];
   const run: RunTool = async (file, args, options) => {
     const dir = dirname(args[args.length - 1]); // pdfinfo's last argument is <dir>/in.pdf and pdftoppm's is <dir>/page
     const pdf = existsSync(join(dir, 'in.pdf')) ? new Uint8Array(await readFile(join(dir, 'in.pdf'))) : null;
     const call: ToolCall = { file, args, timeoutMs: options.timeoutMs, maxBuffer: options.maxBuffer, dir, pdf };
-    calls.push(call);
-    const out = await handle(call);
+    const query = args.includes('-box');
+    (query ? sizeCalls : calls).push(call);
+    order.push(query ? 'sizes' : file);
+    const out = await (query ? sizes : handle)(call);
     return { stdout: out?.stdout ?? '', stderr: out?.stderr ?? '' };
   };
-  return { run, calls };
+  return { run, calls, sizeCalls, order };
 }
 const exited = (code: number, stderr = '') => Object.assign(new Error(`Command failed: exit code ${code}`), { code, killed: false, signal: null, stderr });
 const timedOut = () => Object.assign(new Error('Command failed'), { code: null, killed: true, signal: 'SIGTERM', stderr: '' });
@@ -359,6 +396,69 @@ describe('popplerRenderer over a fake runner: render', () => {
   test('the resolution must be a positive whole number', () => {
     for (const dpi of [0, -150, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) expect(() => popplerRendererWith(fakeTools(() => undefined).run, { dpi }), String(dpi)).toThrow(RangeError);
   });
+
+  // Ruling R66: pdftoppm allocates the whole page, so the size of every page that would be rendered is read first, and a page over MAX_PAGE_PIXELS at
+  // the render dpi is refused before anything is drawn.
+  test('before pdftoppm, pdfinfo -box -f 1 -l maxPages is asked for the size of every page that would be rendered, on the same file', async () => {
+    const tools = fakeTools(writesPages(numbered(3, 1)));
+    await popplerRendererWith(tools.run, { pdfinfo: '/opt/poppler/bin/pdfinfo', timeoutMs: 7000 }).render(TWO_PAGES_PDF, 3);
+    expect(tools.order).toStrictEqual(['sizes', 'pdftoppm']);
+    const [query] = tools.sizeCalls;
+    expect(query.file).toBe('/opt/poppler/bin/pdfinfo');
+    expect(query.args).toStrictEqual(['-box', '-f', '1', '-l', '3', join(query.dir, 'in.pdf')]);
+    expect(query.dir).toBe(tools.calls[0].dir);
+    expect(query.pdf).toStrictEqual(TWO_PAGES_PDF);
+    expect(query.timeoutMs).toBe(7000);
+  });
+
+  test('a page over 50000000 pixels at the render dpi is page_too_large, naming the page and its size; pdftoppm is never run, and the directory goes', async () => {
+    const huge: Handler = (call) => ({ stdout: sizesOf(call).stdout.replace('Page    2 MediaBox:      0.00     0.00   576.00   720.00', 'Page    2 MediaBox:      0.00     0.00 14400.00 14400.00') });
+    const tools = fakeTools(writesPages(numbered(3, 1)), huge);
+    const error = await refusal(popplerRendererWith(tools.run).render(TWO_PAGES_PDF, 3));
+    expect(error).toBeInstanceOf(PipelineError);
+    expect(error).toMatchObject({
+      code: 'page_too_large', status: 422,
+      message: 'Page 2 of the PDF is 14400 by 14400 points, 30000 by 30000 pixels at 150 dpi, over the 50000000 pixels a page may have. Nothing was spent.',
+    });
+    expect(tools.calls).toHaveLength(0);
+    expect(existsSync(tools.sizeCalls[0].dir)).toBe(false);
+  });
+
+  test('the bound is the rendered size, so the resolution counts: 3000 by 3000 points render at 150 dpi (6250 by 6250 pixels) and not at 200 (8334 by 8334)', async () => {
+    const square: Handler = (call) => ({ stdout: sizesOf(call).stdout.replaceAll('576 x 720 pts', '3000 x 3000 pts').replaceAll('576.00   720.00', '3000.00  3000.00') });
+    expect(await popplerRendererWith(fakeTools(writesPages(numbered(1, 1)), square).run).render(TWO_PAGES_PDF, 1)).toHaveLength(1);
+    const error = await refusal(popplerRendererWith(fakeTools(writesPages(numbered(1, 1)), square).run, { dpi: 200 }).render(TWO_PAGES_PDF, 1));
+    expect(error).toMatchObject({ code: 'page_too_large', message: expect.stringContaining('Page 1 of the PDF is 3000 by 3000 points, 8334 by 8334 pixels at 200 dpi') });
+  });
+
+  test('a page whose crop box is small and whose media box is not is measured by its media box, which is the box pdftoppm renders', async () => {
+    const cropped: Handler = (call) => ({ stdout: sizesOf(call).stdout.replace('Page    1 MediaBox:      0.00     0.00   576.00   720.00', 'Page    1 MediaBox:      0.00     0.00 14400.00 14400.00') });
+    expect(await refusal(popplerRendererWith(fakeTools(writesPages(numbered(1, 1)), cropped).run).render(TWO_PAGES_PDF, 1))).toMatchObject({ code: 'page_too_large' });
+  });
+
+  test('a size answer without a page that would be rendered, with a size that is no number, or without its Pages line, is unreadable_source, and pdftoppm is not run', async () => {
+    const without2: Handler = (call) => ({ stdout: sizesOf(call).stdout.split('\n').filter((line) => !line.startsWith('Page    2')).join('\n') });
+    const notANumber: Handler = () => ({ stdout: 'Pages:           1\nEncrypted:       no\nPage    1 size:  nan x nan pts\n' });
+    const noPages: Handler = () => ({ stdout: 'Encrypted:       no\nPage    1 size:  576 x 720 pts\n' });
+    for (const [name, sizes] of [['a page left out', without2], ['a size that is no number', notANumber], ['no Pages line', noPages]] as const) {
+      const tools = fakeTools(writesPages(numbered(2, 1)), sizes);
+      expect(await refusal(popplerRendererWith(tools.run).render(TWO_PAGES_PDF, 2)), name).toMatchObject({ code: 'unreadable_source', status: 422 });
+      expect(tools.calls, name).toHaveLength(0);
+    }
+    // Pages past the end of the document are not asked for: a budget of 5 on a document of 2 pages needs the two sizes it has.
+    const short: Handler = () => ({ stdout: 'Pages:           2\nPage    1 size:  576 x 720 pts\nPage    2 size:  576 x 720 pts\n' });
+    expect(await popplerRendererWith(fakeTools(writesPages(numbered(2, 1)), short).run).render(TWO_PAGES_PDF, 5)).toHaveLength(2);
+  });
+
+  test('the size query fails as pdfinfo fails: a locked PDF says password, a damaged one could not be opened, a pdfinfo that cannot start is the deployment\'s', async () => {
+    const locked = await refusal(popplerRendererWith(fakeTools(writesPages([]), () => { throw exited(1, 'Command Line Error: Incorrect password\n'); }).run).render(ENCRYPTED_PDF, 1));
+    expect(locked).toMatchObject({ code: 'unreadable_source', message: expect.stringMatching(/password/i) });
+    const damaged = await refusal(popplerRendererWith(fakeTools(writesPages([]), () => { throw exited(1, 'Syntax Error: Couldn\'t read xref table\n'); }).run).render(TWO_PAGES_PDF, 1));
+    expect(damaged).toMatchObject({ code: 'unreadable_source', message: 'the PDF could not be opened (it is damaged, or not a PDF)' });
+    const missing = await refusal(popplerRendererWith(fakeTools(writesPages([]), () => { throw cannotStart('ENOENT'); }).run, { pdfinfo: 'pdfinfo-here' }).render(TWO_PAGES_PDF, 1));
+    expect(missing).not.toBeInstanceOf(RequestError);
+    expect((missing as Error).message).toMatch(/pdfinfo-here/);
+  });
 });
 
 describe('popplerRenderer with the real executables', () => {
@@ -366,9 +466,11 @@ describe('popplerRenderer with the real executables', () => {
     const error = await refusal(popplerRenderer({ pdfinfo: 'pdfinfo-that-is-not-installed' }).pageCount(TWO_PAGES_PDF));
     expect(error).not.toBeInstanceOf(RequestError);
     expect((error as Error).message).toMatch(/pdfinfo-that-is-not-installed/);
-    const error2 = await refusal(popplerRenderer({ pdftoppm: 'pdftoppm-that-is-not-installed' }).render(TWO_PAGES_PDF, 1));
+    // render asks pdfinfo for the size of the pages before pdftoppm runs (ruling R66), so a pdfinfo that is not there is named by render too. A pdftoppm
+    // that is not there is the case of the suite below, where pdfinfo is installed.
+    const error2 = await refusal(popplerRenderer({ pdfinfo: 'pdfinfo-that-is-not-installed' }).render(TWO_PAGES_PDF, 1));
     expect(error2).not.toBeInstanceOf(RequestError);
-    expect((error2 as Error).message).toMatch(/pdftoppm-that-is-not-installed/);
+    expect((error2 as Error).message).toMatch(/pdfinfo-that-is-not-installed/);
   });
 });
 
@@ -387,10 +489,39 @@ function withPlantedPagesLine(pdf: Uint8Array): Uint8Array {
 const onPath = (tool: string) => spawnSync(tool, ['-v'], { stdio: 'ignore' }).error === undefined;
 const POPPLER = onPath('pdftoppm') && onPath('pdfinfo');
 
-describe('popplerRenderer with the real pdfinfo and pdftoppm (needs poppler-utils on PATH)', () => {
-  // CI installs poppler-utils and sets REQUIRE_POPPLER, so a step that failed to install it fails here instead of skipping everything below.
-  test.skipIf(!process.env.REQUIRE_POPPLER)('REQUIRE_POPPLER is set: pdftoppm and pdfinfo are installed', () => {
+// Each test here runs the real tools, which a busy CI machine can make slow: 30 s each, against the 5 s that vitest gives by default.
+describe('popplerRenderer with the real pdfinfo and pdftoppm (needs poppler-utils on PATH)', { timeout: 30_000 }, () => {
+  // CI installs poppler-utils and sets REQUIRE_POPPLER to 1, so a step that failed to install it fails here instead of skipping everything below.
+  test.skipIf(process.env.REQUIRE_POPPLER !== '1')('REQUIRE_POPPLER is set: pdftoppm and pdfinfo are installed', () => {
     expect(POPPLER).toBe(true);
+  });
+
+  test.skipIf(!POPPLER)('with pdfinfo installed, a pdftoppm that is not installed is a plain Error that names it', async () => {
+    const error = await refusal(popplerRenderer({ pdftoppm: 'pdftoppm-that-is-not-installed' }).render(TWO_PAGES_PDF, 1));
+    expect(error).not.toBeInstanceOf(RequestError);
+    expect((error as Error).message).toMatch(/pdftoppm-that-is-not-installed/);
+  });
+
+  test.skipIf(!POPPLER)('the real pdfinfo -box -f 1 -l <pages> prints what the size parser reads: the two pages of the fixture are 576 by 720 points', () => {
+    const file = fileURLToPath(new URL('./fixtures/two-pages.pdf', import.meta.url));
+    const out = spawnSync('pdfinfo', ['-box', '-f', '1', '-l', '5', file], { encoding: 'utf8' });
+    expect(out.status).toBe(0);
+    const { total, sizes } = pageSizesOf(out.stdout);
+    expect(total).toBe(2);
+    expect([...sizes.entries()]).toStrictEqual([[1, { width: 576, height: 720 }], [2, { width: 576, height: 720 }]]);
+  });
+
+  // Ruling R66: a page of 200 by 200 inches is 900 megapixels at 150 dpi. It is refused from what pdfinfo says, and pdftoppm never allocates it.
+  test.skipIf(!POPPLER)('a page of 14400 by 14400 points is page_too_large before it is rendered, and the message names the page and its size', async () => {
+    const before = leftovers();
+    expect(await popplerRenderer().pageCount(HUGE_PAGE_PDF)).toBe(1);
+    const error = await refusal(pagesOf(sourceOf(HUGE_PAGE_PDF, 'application/pdf'), 5, popplerRenderer()));
+    expect(error).toBeInstanceOf(PipelineError);
+    expect(error).toMatchObject({
+      code: 'page_too_large', status: 422,
+      message: 'Page 1 of the PDF is 14400 by 14400 points, 30000 by 30000 pixels at 150 dpi, over the 50000000 pixels a page may have. Nothing was spent.',
+    });
+    expect(leftovers()).toStrictEqual(before);
   });
 
   test.skipIf(!POPPLER)('pageCount reads the pages of the PDF', async () => {
@@ -436,10 +567,12 @@ describe('popplerRenderer with the real pdfinfo and pdftoppm (needs poppler-util
     expect(error).toMatchObject({ code: 'unreadable_source', status: 422, message: expect.stringMatching(/password/i) });
   });
 
-  test.skipIf(!POPPLER)('the locked fixture opens with its password, so it is the missing password that stops it above and not a broken file', () => {
+  test.skipIf(!POPPLER)('the locked fixture opens with its password, so it is the missing password that stops it above and not a broken file', async () => {
+    // The password is the one the script that writes the fixture used, read from it: one constant, in one place.
+    const { USER_PASSWORD } = await import(new URL('./fixtures/make-pdf.mjs', import.meta.url).href) as { USER_PASSWORD: string };
     const file = fileURLToPath(new URL('./fixtures/encrypted.pdf', import.meta.url));
     expect(spawnSync('pdfinfo', [file], { stdio: 'ignore' }).status).not.toBe(0);
-    const unlocked = spawnSync('pdfinfo', ['-upw', ENCRYPTED_PDF_PASSWORD, file], { encoding: 'utf8' });
+    const unlocked = spawnSync('pdfinfo', ['-upw', USER_PASSWORD, file], { encoding: 'utf8' });
     expect(unlocked.status).toBe(0);
     expect(unlocked.stdout).toMatch(/^Pages:\s+1\s*$/m);
     expect(unlocked.stdout).toMatch(/^Encrypted:\s+yes/m);

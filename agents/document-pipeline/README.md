@@ -2,7 +2,7 @@
 
 Reads a document: OCR for each page, then a summary or a structured extraction, with every sub-receipt checked and one receipt over the whole bundle. Capability `document.pipeline.ocr-summary.v1`.
 
-Status: PROPOSED (built, not deployed). Since 2026-10-15. The service is built and its tests replay an in-memory marketplace. It has no registry record and no advert, and no job has run on the ledger. `specs/document-pipeline.md` at the repository root is the specification; this page and the manifest describe the code.
+Status: PROPOSED (built, not deployed). Since 2026-10-13. The service is built and its tests replay an in-memory marketplace. It has no registry record and no advert, and no job has run on the ledger. `specs/document-pipeline.md` at the repository root is the specification; this page and the manifest describe the code.
 
 The service sits behind the template runtime (`vector-agent-template`, `CAPABILITY_KIND=custom`). The runtime holds the supplier key, claims the escrow of the hirer and posts the job to this service as the body of `POST /`. The service buys the sub-jobs and answers with the bundle, which the runtime hashes into the one receipt it signs. The service holds the buyer key and no other. It is a separate key, so that the service's Posts and the supplier key's Claims never contend for the same outputs. For each page it posts an escrow to the allowlisted ChandraOCR advert, sends the page, polls, verifies the sub-receipt and accepts it. Then it does the same with one chat supplier from the model allowlist, for the summary or the extraction. An escrow that a run leaves behind is settled later by a janitor.
 
@@ -22,7 +22,7 @@ OPERATOR_CONTACT=ops@example.test SUPPLIER_PKH=<56 hex> PIPELINE_STATE_DIR=/tmp/
 
 The service logs the buyer address it derived from the key; that is the address to fund. It stops at start, with the variable named, when `OPERATOR_CONTACT`, `PIPELINE_BUYER_PRIV_KEY_HEX`, `SUPPLIER_PKH` or `SERVICE_AUTH_HEADER` is not set, when a setting is not well formed, when `ADVERT_MAX_PROCESSING_MS` is below 30 min, or when it cannot write to its state directory. It also asks `pdfinfo` and `pdftoppm` (poppler-utils) for their version before it listens, and does not start if either cannot be run, so that an image without them cannot answer `/healthz` ok and then fail every PDF. The image has them; a machine you run the service on needs them on the path.
 
-A secret in the wrong line of an env file is the mistake the start guards against. The buyer key is looked for in every other setting the service reads, before any check can print that line, and found there it stops the start, naming the variable and not showing the value (a value that is published, such as `AGENT_DID`, would otherwise go out in `/agent.json`). No message of the service shows a setting that is hex-shaped or long, only its length. `SUPPLIER_PUB_KEY_HEX` must be the public key of `SUPPLIER_PKH`, which catches a private key put in its line. The manifest is searched for the buyer key once more before the service listens. The service token is a secret of the same kind: it is in no message, no log line and no answer, and the manifest is searched for it too, whole or by its credential (the part after `Bearer `).
+A secret in the wrong line of an env file is the mistake the start guards against. The buyer key is looked for in every other setting the service reads, before any check can print that line, and found there it stops the start, naming the variable and not showing the value (a value that is published, such as `AGENT_DID`, would otherwise go out in `/agent.json`). No message of the service shows a setting that is hex-shaped or long, only its length. `SUPPLIER_PUB_KEY_HEX` must be the public key of `SUPPLIER_PKH`, which catches a private key put in its line. The manifest is searched for the buyer key once more before the service listens. The service token is a secret of the same kind. It is looked for in every other setting too, whole or by its credential (the part after `Bearer `), each when it is 16 characters or more, and found there it stops the start, naming the variable and not showing the token. So it is in no message, no log line and no answer, and the manifest is searched for it once more.
 
 ## Routes
 
@@ -32,6 +32,8 @@ A secret in the wrong line of an env file is the mistake the start guards agains
 | `GET /agent.json` | the manifest, the bytes `JSON.stringify` gives |
 | `POST /` | the wire message and nothing else, with the `authorization` header of the runtime. Without it, 401 |
 | any other route | 404 `{"error":"not_found"}` |
+
+`GET /healthz` and `GET /agent.json` are matched on their path, whatever the query string, and a `HEAD` of either gets the headers of the `GET`, its `content-length` included, and no body.
 
 The body of `POST /` is the wire message: a one-element array whose `content` is the request JSON as a string, and whose `role` is `user`. It is read up to 1000000 bytes. The request JSON is `{ "source": ..., "task": "summary" | "extract", "schema": {...}, "language": "en", "max_pages": 5 }`; the manifest publishes its schema under `interface.request_schema`, and the rules for an extraction schema under `interface.notes`. The answer to a job is `JSON.stringify(result)`, serialised once, exactly the bytes the runtime hashes.
 
@@ -65,7 +67,7 @@ Every escrow a job posts is written to `stranded.json` in `PIPELINE_STATE_DIR` (
 
 ## Stopping
 
-On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and no new connection, waits up to 300 s for the job that is running to be answered, and exits 0. A job that is still running then has its connection closed, and the escrows it posted are in the state directory for the janitor of the next start. The container is killed when its grace period ends, so set `stop_grace_period` in the compose file to at least 300 s. A second signal ends the process at once.
+On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and no new connection, stops its janitor, and waits up to 300 s for the job that is running to end, its Accept included. The wait is on the job itself, so a caller that hangs up does not cut it short. A pass of the janitor still in flight after 30 s is abandoned, with a log line. A job that ends in time is answered, if its caller is still there, and the service exits 0. One still running after 300 s is abandoned: its connection is closed, the log names the escrows the state directory holds for the janitor of the next start, and the service exits 1. The container is killed when its grace period ends, so set `stop_grace_period` in the compose file to at least 300 s. A second signal ends the process at once.
 
 ## Manifest
 
@@ -85,7 +87,7 @@ On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and n
 | `ADVERT_PRICE_LOVELACE` | `terms.price_lovelace` | `5000000` |
 | `ADVERT_MAX_PROCESSING_MS` | `terms.max_processing_ms`; at least 1800000, because the deadline of a job assumes the 30 min window | `1800000` |
 | `AGENT_STATUS_CHIP` | `status.chip`, in lower case | `proposed` |
-| `AGENT_STATUS_SINCE` | `status.since`, as YYYY-MM-DD | `2026-10-15` |
+| `AGENT_STATUS_SINCE` | `status.since`, as YYYY-MM-DD | `2026-10-13` |
 | `ADVERT_EXPLORER_URL` | `links.explorer_advert` | empty |
 | `OCR_ALLOWLIST_SUPPLIER_PKH` | the key hash of the one OCR supplier the Pipeline hires | `401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9` |
 | `LLM_MODEL_ALLOWLIST` | the chat models it may hire, comma separated, in order of preference | `deepseek/deepseek-v4-flash,deepseek-v4-pro,moonshotai/kimi-k2.6,Qwen/Qwen3.6-35B-A3B-FP8` |

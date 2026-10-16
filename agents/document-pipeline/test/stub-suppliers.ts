@@ -148,8 +148,8 @@ abstract class StubSupplier {
   lose: Array<'after-claim' | 'before-claim'> = [];
   /** Answer the next N sends with 404 escrow_not_found, as a supplier whose view of the chain does not show the Post yet; the escrow stays Open. */
   notFound = 0;
-  /** Answer every send with this refusal: before any claim, or, with `claim`, after claiming the escrow (it took the job from an earlier send). */
-  refuse: { status: number; reason: string; claim?: boolean } | null = null;
+  /** Answer every send with this refusal: before any claim, or, with `claim`, after claiming the escrow (it took the job from an earlier send). `message` replaces its words. */
+  refuse: { status: number; reason: string; claim?: boolean; message?: string } | null = null;
   /** Answer the next sends with an HTML page of each of these statuses, as a proxy in front of the supplier would; the supplier never sees them. */
   pages: number[] = [];
   /** The poll steps of every new job, unless `plans` holds one for it. */
@@ -162,6 +162,8 @@ abstract class StubSupplier {
   answerText: ((finished: Record<string, unknown>) => string) | null = null;
   /** Fields that replace those of the /capability answer. */
   capabilityOverride: Record<string, unknown> = {};
+  /** The status word its /status answers with. */
+  statusWord = 'free';
   /** Every send, with the X-Escrow-Ref header and the body exactly as received. */
   readonly sends: Array<{ escrowRef: string; body: string }> = [];
   readonly jobs = new Map<string, StubJob>();
@@ -177,7 +179,7 @@ abstract class StubSupplier {
 
   handle(method: string, path: string, escrowRef: string | null, body: string): Response {
     if (method === 'GET' && path === '/capability') return json(200, { ...this.capability(), ...this.capabilityOverride });
-    if (method === 'GET' && path === '/status') return json(200, { status: 'free', last_seen: '2026-10-15T09:00:00.000Z', active_sessions: 0, max_sessions: 1 });
+    if (method === 'GET' && path === '/status') return json(200, { status: this.statusWord, last_seen: '2026-10-15T09:00:00.000Z', active_sessions: 0, max_sessions: 1 });
     if (method === 'POST' && path === this.route) return this.post(escrowRef ?? '', body);
     if (method === 'GET' && path.startsWith(`${this.route}/`)) return this.poll(decodeURIComponent(path.slice(this.route.length + 1)));
     return json(404, { reason: 'no_route', message: `nothing at ${method} ${path}` });
@@ -202,7 +204,7 @@ abstract class StubSupplier {
     }
     if (this.refuse !== null) {
       if (this.refuse.claim === true) this.chain.markClaimed(escrowRef);
-      return json(this.refuse.status, { reason: this.refuse.reason, message: `the supplier refused the job (${this.refuse.reason})` });
+      return json(this.refuse.status, { reason: this.refuse.reason, message: this.refuse.message ?? `the supplier refused the job (${this.refuse.reason})` });
     }
     let request: unknown;
     try { request = JSON.parse(body); } catch { return json(400, { reason: 'bad_request', message: 'the body is not JSON' }); }
@@ -264,8 +266,8 @@ export class StubOcrSupplier extends StubSupplier {
 export class StubChatSupplier extends StubSupplier {
   /** The text of the answer. */
   answer = SUMMARY;
-  /** The status of the response: `incomplete` is a model that stopped at its output limit. */
-  status: 'completed' | 'incomplete' = 'completed';
+  /** The status of the response: `incomplete` is a model that stopped at its output limit; any other text is a supplier that says something else. */
+  status = 'completed';
   constructor(chain: FakeChain) { super(LLM_ENDPOINT, LLM_KEY, LLM_ADVERT_REF, LLM_ADVERT, chain, '/v1/responses'); }
   protected capability(): Record<string, unknown> {
     return {

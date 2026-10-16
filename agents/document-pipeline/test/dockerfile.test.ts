@@ -71,9 +71,18 @@ describe('agents/document-pipeline/Dockerfile', () => {
 
   test('it starts the file that is the entry of the service, with a tsx that is a dependency of the package, on the port and the state directory the code defaults to', () => {
     const cmd = instructions[instructions.length - 1];
-    expect(cmd).toBe('CMD ["node_modules/.bin/tsx", "agents/document-pipeline/src/index.ts"]');
+    // Ruling R61: node itself runs the service, with tsx loaded as a hook (`--import tsx`), so the signal of a stop reaches the service process. The tsx
+    // binary would run it as a child and relay the signal, and its relay may kill a child that does not answer within 30 ms.
+    expect(cmd).toBe('CMD ["node", "--import", "tsx", "agents/document-pipeline/src/index.ts"]');
     expect(existsSync(join(root, 'agents/document-pipeline/src/index.ts'))).toBe(true);
     expect(packageJson('agents/document-pipeline').dependencies).toHaveProperty('tsx');
+    // `--import tsx` is resolved from the working directory, /repo: the root package has tsx too, so the install puts it in /repo/node_modules. The lockfile
+    // pins one tsx, of major version 4, which supports `--import tsx`.
+    expect(dockerfile).toMatch(/^WORKDIR \/repo$/m);
+    expect((JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { devDependencies?: Record<string, string> }).devDependencies).toHaveProperty('tsx');
+    const locked = [...new Set([...readFileSync(join(root, 'pnpm-lock.yaml'), 'utf8').matchAll(/^ {2}tsx@(\d+)\.(\d+)\.(\d+):$/gm)].map((m) => m[0].trim()))];
+    expect(locked).toHaveLength(1);
+    expect(Number(/^tsx@(\d+)\./.exec(locked[0])?.[1])).toBe(4);
     expect(dockerfile).toMatch(new RegExp(`^ENV NODE_ENV=production PORT=${PORT_DEFAULT} HOST=0\\.0\\.0\\.0$`, 'm'));
     expect(dockerfile).toMatch(new RegExp(`^EXPOSE ${PORT_DEFAULT}$`, 'm'));
     expect(dockerfile).toMatch(new RegExp(`^HEALTHCHECK .*http://127\\.0\\.0\\.1:${PORT_DEFAULT}/healthz`, 'm'));

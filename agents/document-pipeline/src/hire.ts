@@ -4,7 +4,8 @@
 // PipelineError <hop>_<what>, and the escrow is left in the stranded store for the janitor (src/janitor.ts), which reclaims it after its deliver_by
 // when it is Open or Claimed and keeps it when it is Submitted. The supplier's own endpoint, key and model were established before the Post
 // (src/orchestrate.ts); nothing a supplier says here moves money but its signed receipt, checked against the hash its Submit put on chain. A write of
-// the stranded store that fails after money moved is store_write_failed (500), naming the escrow, never a plain error.
+// the stranded store that fails after money moved is store_write_failed (500), naming the escrow, never a plain error; the one exception is the removal
+// of an entry after its Accept is confirmed, which is logged and does not fail a job that is paid and verified (ruling R62).
 //
 // The Post. Confirmed: it is recorded in the stranded store before anything else. Failed after its signature: recorded too, with the end of its
 // validity, whether it may still land or the submit API refused it (ruling R59), and <hop>_post_failed. Failed before its signature: nothing was locked.
@@ -82,7 +83,7 @@ export interface Job<T> {
   read: (body: Record<string, unknown>) => { responseHash: string; value: T };
 }
 
-export interface HireDeps extends Clocked { chain: Chain; stranded: StrandedStore }
+export interface HireDeps extends Clocked { chain: Chain; stranded: StrandedStore; log?: (line: string) => void }
 
 type Done = Extract<PollResult, { kind: 'done' }>;
 /** The reasons a fleet supplier fails a job with when its own Submit went wrong (agents-marketplace supplier/src/jobRunner.ts). */
@@ -300,5 +301,9 @@ async function accept<T>(deps: HireDeps, supplier: Supplier, job: Job<T>, post: 
     }
   }
   accounting.accepted(accepted);
-  recorded(() => deps.stranded.remove(post.escrowRef), post.escrowRef, `it was accepted for ${job.label} in ${accepted.txHash}, and the store may still list it; the janitor drops it once it reads it spent.`);
+  // The one write of the store that does not fail the run (ruling R62): the job is paid and verified, and an entry the remove left behind reads spent, which
+  // the janitor drops on its own. Every other write after money moved fails closed (recorded).
+  try { deps.stranded.remove(post.escrowRef); } catch (err) {
+    deps.log?.(`escrow ${post.escrowRef} was accepted for ${job.label} in ${accepted.txHash} and could not be removed from the stranded store (${errorText(err)}); the janitor drops it once it reads it spent`);
+  }
 }

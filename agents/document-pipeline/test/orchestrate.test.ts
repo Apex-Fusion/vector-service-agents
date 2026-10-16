@@ -126,6 +126,16 @@ describe('runPipeline: the golden run', () => {
     expect(run.sleeps).toStrictEqual([3_000, 3_000, 3_000, 3_000, 3_000, 3_000]);
   });
 
+  it('logs the supplier chosen for each hop when it is chosen: its advert, the model of the chat supplier, its price and the host of its endpoint, never the whole URL (ruling R65)', async () => {
+    const run = setup();
+    const lines: string[] = [];
+    expect(await runPipeline(request(), { ...run.deps, log: (line) => { lines.push(line); } })).toStrictEqual(GOLDEN);
+    expect(lines).toStrictEqual([
+      `chosen OCR supplier: advert ${OCR_ADVERT_REF}, price 200000 lovelace, endpoint host 203.0.113.21`,
+      `chosen chat supplier: advert ${LLM_ADVERT_REF}, model ${LLM_ADVERT.model}, price 200000 lovelace, endpoint host 203.0.113.31`,
+    ]);
+  });
+
   it('reports source.pages as the page count of the document and reads only max_pages of them, accounting two sub-jobs', async () => {
     const run = setup();
     const result = await runPipeline(request({ max_pages: 1 }), run.deps);
@@ -220,6 +230,16 @@ describe('runPipeline: task extract', () => {
     const error = await failure(runPipeline(request({ task: 'extract', schema }), run.deps), 'schema_invalid', 400);
     expect(error.message).toMatch(/own __proto__ key at #\/properties\/__proto__ /);
     expect(run.m.calls).toStrictEqual([]);
+  });
+
+  it('an answer nested deeper than a schema may be (100000 levels) is no extraction: schema_valid false and the raw text, the job paid and answered, never a throw (ruling R62)', async () => {
+    const run = setup();
+    const depth = 100_000;
+    run.m.llm.answer = `${'['.repeat(depth)}${']'.repeat(depth)}`;
+    const result = await runPipeline(request({ task: 'extract', schema: { type: 'array' } }), run.deps);
+    expect(result.result).toStrictEqual({ extraction: null, schema_valid: false, raw_text: run.m.llm.answer });
+    expect(() => JSON.stringify(result)).not.toThrow();
+    expect(await states(run.m, escrowNo(1), escrowNo(2), escrowNo(3))).toStrictEqual(['spent', 'spent', 'spent']);
   });
 
   it('a plain object schema with nested properties checks a nested answer at every level', async () => {
@@ -687,6 +707,14 @@ describe('runPipeline: the chat answer', () => {
     expect(run.stranded.list()).toStrictEqual([]);
   });
 
+  it('the status a supplier gives an answer that is not completed arrives flat in the message of llm_incomplete (ruling R64)', async () => {
+    const run = setup();
+    run.m.llm.status = 'cut\nshort\u001b[0m';
+    const error = await failure(runPipeline(request(), run.deps), 'llm_incomplete');
+    expect(error.message).toContain('the status "cut short [0m"');
+    expect(error.message).not.toMatch(/[\u0000-\u001f\u007f]/);
+  });
+
   it('a response whose output is not an array fails the job with llm_bad_result, with no Accept (ruling R25)', async () => {
     const run = setup();
     run.m.llm.answerText = (finished) => JSON.stringify({ ...finished, output: 'A summary.' });
@@ -710,7 +738,24 @@ describe('runPipeline: the chat answer', () => {
     expect(await states(run.m, escrowNo(3))).toStrictEqual(['Submitted']);
   });
 
-  it('no allowlisted chat supplier is free: llm_supplier_unavailable (503) before anything is posted, so no page is paid for (ruling R35)', async () => {
+  // Ruling R60: what the indexer says of a supplier at the moment, and a /status that says it is busy, do not fail a job before it spends: the send waits.
+  it('an OCR advert the indexer lists as working, and a chat supplier listed offline whose /status says working, are hired all the same (ruling R60)', async () => {
+    const run = setup();
+    run.m.rows[0] = indexerRow(OCR_ADVERT_REF, OCR_ADVERT, { status: 'working' });
+    run.m.rows[1] = indexerRow(LLM_ADVERT_REF, LLM_ADVERT, { status: 'offline' });
+    run.m.llm.statusWord = 'working';
+    expect(await runPipeline(request(), run.deps)).toStrictEqual(GOLDEN);
+  });
+
+  it('a chat supplier whose /status cannot be read is skipped, and with no other the job is llm_supplier_unavailable (503) before anything is posted', async () => {
+    const run = setup();
+    run.m.llm.statusWord = 'asleep';
+    const error = await failure(runPipeline(request(), run.deps), 'llm_supplier_unavailable', 503);
+    expect(error.message).toContain('or none of the first 6 such suppliers answered its /capability with the Responses API for its own advert and its /status, or the selection ran out of its 120 s');
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
+  });
+
+  it('no allowlisted chat supplier is listed: llm_supplier_unavailable (503) before anything is posted, so no page is paid for (ruling R35)', async () => {
     const run = setup();
     run.m.rows[1] = indexerRow(LLM_ADVERT_REF, { ...LLM_ADVERT, model: 'some/other-model' });
     const error = await failure(runPipeline(request(), run.deps), 'llm_supplier_unavailable', 503);
@@ -988,11 +1033,20 @@ describe('runPipeline: refusals before anything is posted', () => {
     expect(run.m.ocr.sends).toHaveLength(0);
   });
 
-  it('the allowlisted OCR supplier is not listed free: ocr_supplier_unavailable (503), nothing posted', async () => {
+  it('the allowlisted OCR supplier has no Active advert the indexer lists: ocr_supplier_unavailable (503), nothing posted', async () => {
     const run = setup();
     run.m.rows.splice(0, 1);
     const error = await failure(runPipeline(request(), run.deps), 'ocr_supplier_unavailable', 503);
     expect(error.message).toMatch(new RegExp(run.m.ocr.key.pkh));
+    expect(error.message).toContain('the marketplace indexer lists no single Active ocr.page.extract.chandra-ocr-2.v1 advert of it');
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
+  });
+
+  it('an OCR advert the indexer lists as retired is not hired, whatever its supplier says: ocr_supplier_unavailable (503), nothing posted (ruling R60)', async () => {
+    const run = setup();
+    run.m.rows[0] = indexerRow(OCR_ADVERT_REF, OCR_ADVERT, { advert_status: 'Retired' });
+    await failure(runPipeline(request(), run.deps), 'ocr_supplier_unavailable', 503);
+    expect(run.m.ocr.sends).toHaveLength(0);
     expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
   });
 
@@ -1078,12 +1132,18 @@ describe('runPipeline: the stranded store cannot be written', () => {
     expect(run.m.ocr.sends).toHaveLength(0);
   });
 
-  it('after an Accept: store_write_failed (500), the escrow accepted', async () => {
+  // Ruling R62: a paid, verified result is not lost to bookkeeping. The entry the remove left behind reads spent, and the janitor drops it on its own.
+  it('after a confirmed Accept: a remove that fails is logged, naming the escrow, and the run goes on; the result stands', async () => {
     const run = setup();
-    run.stranded.remove = () => { throw new Error('EIO: i/o error'); };
-    const error = await failure(runPipeline(request(), run.deps), 'store_write_failed', 500);
-    expect(error.message).toMatch(new RegExp(`${escrowNo(1)}.*EIO`));
-    expect(await states(run.m, escrowNo(1), escrowNo(2))).toStrictEqual(['spent', 'unknown']);
+    const removes: string[] = [];
+    run.stranded.remove = (ref: string) => { removes.push(ref); throw new Error('EIO: i/o error'); };
+    const lines: string[] = [];
+    expect(await runPipeline(request(), { ...run.deps, log: (line) => { lines.push(line); } })).toStrictEqual(GOLDEN);
+    expect(removes).toStrictEqual([escrowNo(1), escrowNo(2), escrowNo(3)]);
+    expect(await states(run.m, escrowNo(1), escrowNo(2), escrowNo(3))).toStrictEqual(['spent', 'spent', 'spent']);
+    const failed = lines.filter((line) => line.includes('could not be removed from the stranded store'));
+    expect(failed).toHaveLength(3);
+    expect(failed[0]).toMatch(new RegExp(`^escrow ${escrowNo(1)} was accepted for page 1 in [0-9a-f]{64} and could not be removed from the stranded store \\(EIO: i/o error\\); the janitor drops it once it reads it spent$`));
   });
 
   it('after an Accept that may land: store_write_failed (500), since the store cannot say the Accept is pending', async () => {
