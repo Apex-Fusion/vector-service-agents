@@ -724,8 +724,10 @@ test('docs/HIRE.md: the signer is published on npm and section 2 says so; keygen
   assert.ok(four.includes('If you built the signer from source, replace `command` and `args` with `"command": "node"` and `"args": ["<path to mcp-server>/packages/signer/build/index.js"]`.'));
   assert.ok(four.indexOf('```json') < four.indexOf('If you built the signer from source'), 'after the config');
   // Every npx command that names the package names the version too, in the three documents a reader starts from.
-  const unversioned = new RegExp('npx -y ' + SIGNER_PACKAGE.replace(/[/]/g, '\\/') + '(?!@' + SIGNER_VERSION.replace(/[.]/g, '\\.') + ')');
-  for (const [name, text] of [['README.md', readFileSync(new URL('../README.md', import.meta.url), 'utf8')], ['docs/HIRE.md', guide], ['docs/E2E.md', doc('E2E.md')]]) assert.equal(text.match(unversioned), null, `${name}: every npx command names the version`);
+  const afterEachCommand = (text) => text.split('npx -y ' + SIGNER_PACKAGE).slice(1);
+  for (const [name, text] of [['README.md', readFileSync(new URL('../README.md', import.meta.url), 'utf8')], ['docs/HIRE.md', guide], ['docs/E2E.md', doc('E2E.md')]]) {
+    assert.ok(afterEachCommand(text).every((rest) => rest.startsWith('@' + SIGNER_VERSION)), `${name}: every npx command names the version`);
+  }
 });
 
 // The signer is published on npm, so no document that once said it was not, or told the reader to build it as the only way, says so any more. The manifest of the vendored files names the exception.
