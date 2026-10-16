@@ -4,9 +4,9 @@ Capability `document.pipeline.ocr-summary.v1`. Reads a document: OCR for each pa
 
 ## Status
 
-PROPOSED (built, not deployed). Since 2026-10-13.
+DEPLOYED (registered and staked 2026-10-16, advertised 2026-10-16, re-advertised 2026-10-16 at the status flip, one first-party job settled 2026-10-16). Since 2026-10-16.
 
-The service is built. Its tests replay a stub marketplace and a fake chain. It is not deployed, has had a registry record since 2026-10-16 and has had an advert since 2026-10-16. Nothing on this page is LIVE or DEPLOYED.
+The service is built. Its tests replay a stub marketplace and a fake chain. It is deployed on the operator's host, has had a registry record since 2026-10-16 and has had an advert since 2026-10-16. One first-party job has settled, on 2026-10-16; it is not demand. No payer outside the team has hired it. Nothing on this page is LIVE.
 
 ## Identity
 
@@ -369,7 +369,7 @@ The manifest states the first seven of these, in this order, word for word. A te
 
 ## How to hire it
 
-Advertised on 2026-10-16: the marketplace indexer lists the advert (checked on 2026-10-16). The service is built and waits for its deployment. The three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
+Advertised on 2026-10-16, and again the same day at the status flip: the marketplace indexer lists the current advert as Active and free (checked on 2026-10-16). One first-party job has settled, on 2026-10-16; it is not demand. The three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
 
 The request JSON is, for example, `{"source":{"url":"https://example.org/letter.pdf"},"task":"summary","language":"en","max_pages":1}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 
@@ -386,4 +386,6 @@ The request JSON is, for example, `{"source":{"url":"https://example.org/letter.
 - Manifest: `GET /agent.json` on the agent's public URL, in service as of 2026-10-16. The service renders it from its environment when it starts. The template is [agents/document-pipeline/agent.json.template](../agents/document-pipeline/agent.json.template).
 - Source: [agents/document-pipeline](../agents/document-pipeline)
 - Design: [docs/superpowers/specs/2026-10-13-vector-service-agents-design.md](../docs/superpowers/specs/2026-10-13-vector-service-agents-design.md)
-- Advert on the explorer: posted on 2026-10-16 in the confirmed transaction [`4fe706e06652342a83b68a1caf691373418d63a34431a66bcf284106af5f41df`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/4fe706e06652342a83b68a1caf691373418d63a34431a66bcf284106af5f41df). The advert reference is `4fe706e06652342a83b68a1caf691373418d63a34431a66bcf284106af5f41df#0`. The marketplace indexer lists it (checked on 2026-10-16).
+- First advert `4fe706e06652342a83b68a1caf691373418d63a34431a66bcf284106af5f41df#0`, posted on 2026-10-16 in the confirmed transaction [`4fe706e06652342a83b68a1caf691373418d63a34431a66bcf284106af5f41df`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/4fe706e06652342a83b68a1caf691373418d63a34431a66bcf284106af5f41df), retired on 2026-10-16 at the status flip in the confirmed transaction [`02f755ac6b07d3a1ecc839186ed3a296a8cf384e50f9a5b1fc1a1ac7efb5b141`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/02f755ac6b07d3a1ecc839186ed3a296a8cf384e50f9a5b1fc1a1ac7efb5b141).
+- Current advert `d2709262e001022ea68c0222474f9bebc74f8bfc31dcddd24dc89debcc6dda16#0`, posted on 2026-10-16 in the confirmed transaction [`d2709262e001022ea68c0222474f9bebc74f8bfc31dcddd24dc89debcc6dda16`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/d2709262e001022ea68c0222474f9bebc74f8bfc31dcddd24dc89debcc6dda16), manifest hash `f2dca80ac2b1685b956a9e0d2687d076aaa25e565637d69c58ebf0feb2127729`. The marketplace indexer lists it as Active and free (checked on 2026-10-16).
+- First-party hire on 2026-10-16, verdict VERIFIED, made against the first advert: the post transaction [`4a86037e68c497f94d1e16b8a97a43f756b3611f428809b284b5295e5916acd5`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/4a86037e68c497f94d1e16b8a97a43f756b3611f428809b284b5295e5916acd5) and the accept transaction [`b9cc53fbfd1e6c0a6c624f4ce6f9a4868d16b5380fe5c3b259e6e663a4638ead`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/b9cc53fbfd1e6c0a6c624f4ce6f9a4868d16b5380fe5c3b259e6e663a4638ead) on the explorer, and the evidence in [docs/evidence/2026-10-16-document-pipeline-run-1.json](../docs/evidence/2026-10-16-document-pipeline-run-1.json).

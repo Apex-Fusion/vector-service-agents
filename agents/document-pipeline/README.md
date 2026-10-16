@@ -2,7 +2,7 @@
 
 Reads a document: OCR for each page, then a summary or a structured extraction, with every sub-receipt checked and one receipt over the whole bundle. Capability `document.pipeline.ocr-summary.v1`.
 
-Status: PROPOSED (built, not deployed). Since 2026-10-13. The service is built and its tests replay an in-memory marketplace. It has no registry record and no advert, and no job has run on the ledger. `specs/document-pipeline.md` at the repository root is the specification; this page and the manifest describe the code.
+Status: DEPLOYED (registered and staked 2026-10-16, advertised 2026-10-16, re-advertised 2026-10-16 at the status flip, one first-party job settled 2026-10-16). Since 2026-10-16. The service is built and its tests replay an in-memory marketplace. It runs on the operator's host, and the one job it has settled is first-party, which is not demand. `specs/document-pipeline.md` at the repository root is the specification; this page and the manifest describe the code.
 
 The service sits behind the template runtime (`vector-agent-template`, `CAPABILITY_KIND=custom`). The runtime holds the supplier key, claims the escrow of the hirer and posts the job to this service as the body of `POST /`. The service buys the sub-jobs and answers with the bundle, which the runtime hashes into the one receipt it signs. The service holds the buyer key and no other. It is a separate key, so that the service's Posts and the supplier key's Claims never contend for the same outputs. For each page it posts an escrow to the allowlisted ChandraOCR advert, sends the page, polls, verifies the sub-receipt and accepts it. Then it does the same with one chat supplier from the model allowlist, for the summary or the extraction. An escrow that a run leaves behind is settled later by a janitor.
 
@@ -86,8 +86,8 @@ On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and n
 | `AGENT_VERSION` | `version` | `0.1.0` |
 | `ADVERT_PRICE_LOVELACE` | `terms.price_lovelace` | `5000000` |
 | `ADVERT_MAX_PROCESSING_MS` | `terms.max_processing_ms`; at least 1800000, because the deadline of a job assumes the 30 min window | `1800000` |
-| `AGENT_STATUS_CHIP` | `status.chip`, in lower case | `proposed` |
-| `AGENT_STATUS_SINCE` | `status.since`, as YYYY-MM-DD | `2026-10-13` |
+| `AGENT_STATUS_CHIP` | `status.chip`, in lower case | `deployed` |
+| `AGENT_STATUS_SINCE` | `status.since`, as YYYY-MM-DD | `2026-10-16` |
 | `ADVERT_EXPLORER_URL` | `links.explorer_advert` | empty |
 | `OCR_ALLOWLIST_SUPPLIER_PKH` | the key hash of the one OCR supplier the Pipeline hires | `401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9` |
 | `LLM_MODEL_ALLOWLIST` | the chat models it may hire, comma separated, in order of preference | `deepseek/deepseek-v4-flash,deepseek-v4-pro,moonshotai/kimi-k2.6,Qwen/Qwen3.6-35B-A3B-FP8` |

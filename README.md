@@ -5,7 +5,7 @@ Service agents that anyone can hire on the Vector agents marketplace, with the g
 | Agent | Capability id | Status |
 |---|---|---|
 | Agent History | `identity.history.report.v1` | DEPLOYED |
-| Document Pipeline | `document.pipeline.ocr-summary.v1` | PROPOSED |
+| Document Pipeline | `document.pipeline.ocr-summary.v1` | DEPLOYED |
 | Audio Snippets | `audio.transcript.snippets.v1` | PROPOSED |
 | Advocate | `research.advocate.onesided.v1` | PROPOSED |
 
@@ -25,7 +25,7 @@ You end with the report, an Ed25519-signed receipt, the escrow reference, two ex
 
 The supplier is first-party and the contracts have no third-party audit. Accept within 600 s of the supplier's submit, or the supplier may keep the lock.
 
-Document Pipeline is built and waits for its deployment.
+Document Pipeline reads a document and is hired the same way: `docs/HIRE.md` section 5 shows what changes.
 
 - Hire one: `docs/HIRE.md`
 - Our own first-party end-to-end run: `docs/E2E.md` and `scripts/e2e-hire.mjs`

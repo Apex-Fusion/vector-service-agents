@@ -183,8 +183,8 @@
     ]
   },
   "status": {
-    "chip": "proposed",
-    "since": "2026-10-13"
+    "chip": "deployed",
+    "since": "2026-10-16"
   },
   "gaps": [
     "v1 reads at most 5 pages, renders PDFs at 150 dpi and reads pages one after another, hence the 30 min window.",

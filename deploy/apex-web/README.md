@@ -67,7 +67,7 @@ The registry identity and the Module-3 stake stay on the ledger until the operat
 
 ## Document Pipeline on the same box
 
-Status: PROPOSED (built, not deployed). Since 2026-10-13. Nothing in this section is installed on the box. The files are `docker-compose.document-pipeline.yml`, `.env.document-pipeline.example`, `Caddyfile.document-pipeline.snippet` and [RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md), which is the operator's order of work and follows [RUNBOOK.md](RUNBOOK.md) step for step. This section says what the Pipeline adds to the box and what the host administrator does for it. It is a second stack beside Agent History, in the same shape.
+Status: DEPLOYED since 2026-10-16. Nothing in this section is LIVE. Steps 1 to 15 and 17 of its runbook were run on 2026-10-16. Step 16, the wallet monitor, is not used for this agent, as for Agent History. The files are `docker-compose.document-pipeline.yml`, `.env.document-pipeline.example`, `Caddyfile.document-pipeline.snippet` and [RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md), which is the operator's order of work and follows [RUNBOOK.md](RUNBOOK.md) step for step. This section says what the Pipeline adds to the box and what the host administrator does for it. It is a second stack beside Agent History, in the same shape.
 
 | Container | Image | Listens on | Reachable from |
 |---|---|---|---|

@@ -42,7 +42,7 @@ describe('loadConfig', () => {
     const config = loadConfig(FULL_ENV);
     expect(config).toMatchObject({ host: '0.0.0.0', port: 9092, stateDir: '/data', ocrAllowlistPkh: OCR_DEFAULT, llmAllowlist: MODELS_DEFAULT, privateKeyHex: BUYER.privateKeyHex });
     expect(config.indexerUrl).toBeUndefined();
-    expect(config.manifest.status).toStrictEqual({ chip: 'proposed', since: '2026-10-13' });
+    expect(config.manifest.status).toStrictEqual({ chip: 'deployed', since: '2026-10-16' });
   });
 
   test('every setting is read: the OCR supplier key hash, the chat models in order, the state directory, the indexer, the port and the host', () => {
