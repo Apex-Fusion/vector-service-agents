@@ -136,6 +136,11 @@ function sendResult(status: number, text: string): SendResult {
     return refused(202, 'bad_response', 'The supplier answered 202 without the status accepted and a usable job_id.');
   }
   if (status === 409 && answer.reason === 'supplier_busy') return { kind: 'busy' };
+  // The supplier's own envelope always carries a reason (agents-marketplace e847a55, jsonError): a JSON object without a string one is a gateway's or a
+  // proxy's in front of it, and is no more its verdict than a page is (ruling R57).
+  if (typeof answer.reason !== 'string' || answer.reason === '') {
+    return refused(status, 'bad_response', `The supplier answered ${status} with a JSON object that is not its envelope (no reason).`);
+  }
   return { kind: 'refused', status, ...said(status, answer) };
 }
 

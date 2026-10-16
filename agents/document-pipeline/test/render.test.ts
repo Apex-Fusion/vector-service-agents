@@ -21,7 +21,7 @@ import { RequestError } from '../src/request.ts';
 import { PipelineError } from '../src/result.ts';
 import type { SourceBytes } from '../src/source.ts';
 import { fakeRenderer } from './fake-renderer.ts';
-import { ENCRYPTED_PDF, HUGE_PAGE_PDF, JPEG, PAGE_0_PNG, PAGE_1_PNG, TWO_PAGES_PDF, fixture, text } from './support.ts';
+import { CROPPED_HUGE_PAGE_PDF, ENCRYPTED_PDF, HUGE_PAGE_PDF, JPEG, PAGE_0_PNG, PAGE_1_PNG, TWO_PAGES_PDF, fixture, text } from './support.ts';
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const sourceOf = (bytes: Uint8Array, mime: SourceBytes['mime']): SourceBytes => ({ bytes, mime, sha256: createHash('sha256').update(bytes).digest('hex'), origin: 'inline' });
@@ -52,7 +52,7 @@ describe('the fixtures', () => {
   test('every file is what test/fixtures/make-pdf.mjs makes: the script and the checked-in bytes cannot drift apart', async () => {
     const { buildFixtures } = await import(new URL('./fixtures/make-pdf.mjs', import.meta.url).href) as { buildFixtures: () => Record<string, Buffer> };
     const built = buildFixtures();
-    expect(Object.keys(built).sort()).toStrictEqual(['encrypted.pdf', 'huge-page.pdf', 'page-0.png', 'page-1.png', 'two-pages.pdf']);
+    expect(Object.keys(built).sort()).toStrictEqual(['cropped-huge-page.pdf', 'encrypted.pdf', 'huge-page.pdf', 'page-0.png', 'page-1.png', 'two-pages.pdf']);
     for (const [name, bytes] of Object.entries(built)) expect(fixture(name), name).toStrictEqual(new Uint8Array(bytes));
   });
 
@@ -85,6 +85,15 @@ describe('the fixtures', () => {
     const attributes = (await readFile(new URL('../../../.gitattributes', import.meta.url), 'utf8')).split('\n');
     expect(attributes).toContain('*.pdf binary');
     expect(attributes).toContain('*.png binary');
+  });
+
+  test('cropped-huge-page.pdf is the same page with a crop box of 576 by 720 points: pdfinfo\'s size line says 576 by 720, and pdftoppm would render the media box', () => {
+    const pdf = Buffer.from(CROPPED_HUGE_PAGE_PDF).toString('latin1');
+    expect(CROPPED_HUGE_PAGE_PDF.length).toBeLessThan(10 * 1024);
+    expect(pdf).toContain('/MediaBox [0 0 14400 14400] /CropBox [0 0 576 720]');
+    const entries = [...pdf.matchAll(/^(\d{10}) 00000 n $/gm)].map((m) => Number(m[1]));
+    entries.forEach((offset, i) => expect(pdf.slice(offset, offset + `${i + 1} 0 obj`.length)).toBe(`${i + 1} 0 obj`));
+    expect(Number(/startxref\n(\d+)\n/.exec(pdf)?.[1])).toBe(pdf.indexOf('xref\n'));
   });
 
   test('encrypted.pdf asks for a password: it has an encryption dictionary and its page text is not readable in the file', () => {
@@ -440,14 +449,28 @@ describe('popplerRenderer over a fake runner: render', () => {
     const without2: Handler = (call) => ({ stdout: sizesOf(call).stdout.split('\n').filter((line) => !line.startsWith('Page    2')).join('\n') });
     const notANumber: Handler = () => ({ stdout: 'Pages:           1\nEncrypted:       no\nPage    1 size:  nan x nan pts\n' });
     const noPages: Handler = () => ({ stdout: 'Encrypted:       no\nPage    1 size:  576 x 720 pts\n' });
-    for (const [name, sizes] of [['a page left out', without2], ['a size that is no number', notANumber], ['no Pages line', noPages]] as const) {
+    // The media box is what pdftoppm renders, so a page whose media box is missing, or does not read as four numbers, is not measured by its crop box alone.
+    const noMediaBox: Handler = (call) => ({ stdout: sizesOf(call).stdout.split('\n').filter((line) => !line.startsWith('Page    1 MediaBox:')).join('\n') });
+    const badMediaBox: Handler = (call) => ({ stdout: sizesOf(call).stdout.replace('Page    1 MediaBox:      0.00     0.00   576.00   720.00', 'Page    1 MediaBox:      0.00     0.00   wide   720.00') });
+    const shortMediaBox: Handler = (call) => ({ stdout: sizesOf(call).stdout.replace('Page    1 MediaBox:      0.00     0.00   576.00   720.00', 'Page    1 MediaBox:      0.00     0.00   576.00') });
+    for (const [name, sizes] of [
+      ['a page left out', without2], ['a size that is no number', notANumber], ['no Pages line', noPages],
+      ['no media box for page 1', noMediaBox], ['a media box that is no number', badMediaBox], ['a media box of three numbers', shortMediaBox],
+    ] as const) {
       const tools = fakeTools(writesPages(numbered(2, 1)), sizes);
       expect(await refusal(popplerRendererWith(tools.run).render(TWO_PAGES_PDF, 2)), name).toMatchObject({ code: 'unreadable_source', status: 422 });
       expect(tools.calls, name).toHaveLength(0);
     }
-    // Pages past the end of the document are not asked for: a budget of 5 on a document of 2 pages needs the two sizes it has.
-    const short: Handler = () => ({ stdout: 'Pages:           2\nPage    1 size:  576 x 720 pts\nPage    2 size:  576 x 720 pts\n' });
+    // Pages past the end of the document are not asked for: a budget of 5 on a document of 2 pages needs the two pages it has.
+    const short: Handler = () => ({ stdout: 'Pages:           2\nPage    1 size:  576 x 720 pts\nPage    2 size:  576 x 720 pts\nPage    1 MediaBox:      0.00     0.00   576.00   720.00\nPage    2 MediaBox:      0.00     0.00   576.00   720.00\n' });
     expect(await popplerRendererWith(fakeTools(writesPages(numbered(2, 1)), short).run).render(TWO_PAGES_PDF, 5)).toHaveLength(2);
+  });
+
+  test('a turned page is measured as the page it is: a 36 by 48 inch drawing with /Rotate 90 renders (38.9 megapixels at 150 dpi), its size line turned or not', async () => {
+    const turned: Handler = () => ({ stdout: 'Pages:           1\nPage    1 size:  3456 x 2592 pts\nPage    1 rot:   90\nPage    1 MediaBox:      0.00     0.00  2592.00  3456.00\n' });
+    const tools = fakeTools(writesPages(numbered(1, 1)), turned);
+    expect(await popplerRendererWith(tools.run).render(TWO_PAGES_PDF, 1)).toHaveLength(1);
+    expect(tools.calls).toHaveLength(1);
   });
 
   test('the size query fails as pdfinfo fails: a locked PDF says password, a damaged one could not be opened, a pdfinfo that cannot start is the deployment\'s', async () => {
@@ -508,7 +531,24 @@ describe('popplerRenderer with the real pdfinfo and pdftoppm (needs poppler-util
     expect(out.status).toBe(0);
     const { total, sizes } = pageSizesOf(out.stdout);
     expect(total).toBe(2);
-    expect([...sizes.entries()]).toStrictEqual([[1, { width: 576, height: 720 }], [2, { width: 576, height: 720 }]]);
+    const page = { size: { width: 576, height: 720 }, mediaBox: { width: 576, height: 720 } };
+    expect([...sizes.entries()]).toStrictEqual([[1, page], [2, page]]);
+    // The fixture with a crop box: the size line is the crop box and the media box line is the media box, as the guard reads them.
+    const cropped = spawnSync('pdfinfo', ['-box', '-f', '1', '-l', '5', fileURLToPath(new URL('./fixtures/cropped-huge-page.pdf', import.meta.url))], { encoding: 'utf8' });
+    expect(cropped.status).toBe(0);
+    expect(pageSizesOf(cropped.stdout).sizes.get(1)).toStrictEqual({ size: { width: 576, height: 720 }, mediaBox: { width: 14400, height: 14400 } });
+  });
+
+  // The guard must read the media box: pdfinfo's size line says 576 by 720 for this page, and pdftoppm would render 14400 by 14400.
+  test.skipIf(!POPPLER)('a page whose crop box is 576 by 720 points and whose media box is 14400 by 14400 is page_too_large before it is rendered', async () => {
+    const before = leftovers();
+    const error = await refusal(pagesOf(sourceOf(CROPPED_HUGE_PAGE_PDF, 'application/pdf'), 5, popplerRenderer()));
+    expect(error).toBeInstanceOf(PipelineError);
+    expect(error).toMatchObject({
+      code: 'page_too_large', status: 422,
+      message: 'Page 1 of the PDF is 14400 by 14400 points, 30000 by 30000 pixels at 150 dpi, over the 50000000 pixels a page may have. Nothing was spent.',
+    });
+    expect(leftovers()).toStrictEqual(before);
   });
 
   // Ruling R66: a page of 200 by 200 inches is 900 megapixels at 150 dpi. It is refused from what pdfinfo says, and pdftoppm never allocates it.

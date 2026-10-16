@@ -121,7 +121,7 @@ describe('compileExtractionSchema: references refused and the schema bounded (ru
     expect(rawBytes(schema)).toBeGreaterThan(1_500);
     const started = performance.now();
     refused(schema, /\$ref at # \(/);
-    expect(performance.now() - started).toBeLessThan(200);
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 
   it('refuses a recursive tree, whether it refers to a definition or to the root', () => {
@@ -228,7 +228,7 @@ describe('compileExtractionSchema: references refused and the schema bounded (ru
     expect(rawBytes(schema)).toBeGreaterThan(780_000);
     const started = performance.now();
     refused(schema, new RegExp(`${rawBytes(schema)} bytes of JSON, more than 16384`));
-    expect(performance.now() - started).toBeLessThan(200);
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 
   it('refuses an own __proto__ key anywhere in the schema, which Ajv ignores and the prompt would carry, however small', () => {

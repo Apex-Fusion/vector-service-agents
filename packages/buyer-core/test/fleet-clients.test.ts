@@ -97,9 +97,12 @@ describe.each(SENDERS)('$name', ({ path, send, wire }) => {
     expect(await send(ENDPOINT, ESCROW, f.fetchImpl)).toStrictEqual({ kind: 'refused', status, reason, message: `message of ${reason}` });
   });
 
-  it('an envelope without a reason is refused as http_<status>, with an empty message', async () => {
-    const f = route(json(503, { detail: 'down for maintenance' }));
-    expect(await send(ENDPOINT, ESCROW, f.fetchImpl)).toStrictEqual({ kind: 'refused', status: 503, reason: 'http_503', message: '' });
+  // The residual round of R57: the supplier's envelope always has a string reason, so a JSON object without one is a gateway's or a proxy's, as a page is.
+  it.each([
+    [503, { detail: 'down for maintenance' }], [403, { error: 'gateway' }], [400, { reason: 42, message: 'not a word' }], [409, { reason: '' }],
+  ])('a %i with a JSON object without a string reason is no envelope of the supplier: bad_response', async (status, body) => {
+    const sent = await send(ENDPOINT, ESCROW, route(json(status, body)).fetchImpl);
+    expect(sent).toStrictEqual({ kind: 'refused', status, reason: 'bad_response', message: `The supplier answered ${status} with a JSON object that is not its envelope (no reason).` });
   });
 
   it('flattens what a supplier says about a refusal: every control character of its reason and its message becomes a space (ruling R64)', async () => {
@@ -142,7 +145,7 @@ describe.each(SENDERS)('$name', ({ path, send, wire }) => {
 
   it('a status that is not an answer to a send (a 200) is refused with its status, not accepted', async () => {
     const f = route(json(200, { job_id: JOB, status: 'accepted' }));
-    expect(await send(ENDPOINT, ESCROW, f.fetchImpl)).toStrictEqual({ kind: 'refused', status: 200, reason: 'http_200', message: '' });
+    expect(await send(ENDPOINT, ESCROW, f.fetchImpl)).toMatchObject({ kind: 'refused', status: 200, reason: 'bad_response' });
   });
 
   it('a call that outlasts its budget is a timeout, and the fetch itself was told to stop; the client never sends again by itself', async () => {

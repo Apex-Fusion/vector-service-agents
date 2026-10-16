@@ -44,7 +44,8 @@ export const PRICE_CEILING_DEFAULT_LOVELACE = 1_000_000n;
 export const JANITOR_INTERVAL_MS = 60_000;
 /**
  * How long a stopping service waits for the job that is running before it closes the connection and exits (the escrows of that job are in the state directory,
- * for the janitor of the next start). The compose file's stop_grace_period must be at least this, or the container is killed before the wait is over.
+ * for the janitor of the next start). The compose file's stop_grace_period is longer, 330 s: a container killed at the end of the wait would never log the
+ * job it abandoned, nor exit 1.
  */
 export const SHUTDOWN_WAIT_MS = 300_000;
 /**

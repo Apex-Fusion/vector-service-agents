@@ -57,7 +57,7 @@ A refusal is `{"error": "<code>", "message": "<words>"}` with the status in the 
 | 503, the service cannot take a job now | `insufficient_float`, `ocr_supplier_unavailable`, `llm_supplier_unavailable`, and `shutting_down` (the service is stopping) |
 | 500, the service | `store_write_failed`, and `internal` |
 
-A 400, a 401, a 422 for the document and a 503 are all given before the first escrow is posted, so they spend nothing; the one exception is `llm_supplier_unavailable` when the chat supplier is chosen again after the pages were paid (`src/result.ts` says so). The other 422s come from a hire and may follow money that has moved: `src/hire.ts` says when each of them is thrown.
+A 400, a 401, a 422 for the document and a 503 are all given before the first escrow is posted, so they spend nothing; the two exceptions are `llm_supplier_unavailable` and `insufficient_float` when the chat supplier is chosen again after the pages were paid (`src/result.ts` says so). The other 422s come from a hire and may follow money that has moved: `src/hire.ts` says when each of them is thrown.
 
 ## Funds, state and the janitor
 
@@ -67,7 +67,7 @@ Every escrow a job posts is written to `stranded.json` in `PIPELINE_STATE_DIR` (
 
 ## Stopping
 
-On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and no new connection, stops its janitor, and waits up to 300 s for the job that is running to end, its Accept included. The wait is on the job itself, so a caller that hangs up does not cut it short. A pass of the janitor still in flight after 30 s is abandoned, with a log line. A job that ends in time is answered, if its caller is still there, and the service exits 0. One still running after 300 s is abandoned: its connection is closed, the log names the escrows the state directory holds for the janitor of the next start, and the service exits 1. The container is killed when its grace period ends, so set `stop_grace_period` in the compose file to at least 300 s. A second signal ends the process at once.
+On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and no new connection, stops its janitor, and waits up to 300 s for the job that is running to end, its Accept included. The wait is on the job itself, so a caller that hangs up does not cut it short. A pass of the janitor still in flight after 30 s is abandoned, with a log line. A job that ends in time is answered, if its caller is still there, and the service exits 0. One still running after 300 s is abandoned: its connection is closed, the log names the escrows the state directory holds for the janitor of the next start, and the service exits 1. The container is killed when its grace period ends, so `stop_grace_period` in the compose file is 330 s: the 300 s of the wait and 30 s more, for the log line and the exit code of a job the service had to abandon. A second signal ends the process at once.
 
 ## Manifest
 

@@ -21,7 +21,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer as httpServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { REGISTRY_ADDRESS } from '@vsa/vector-read';
-import { JOB_DEADLINE_MS } from './budget.ts';
+import { JOB_DEADLINE_MS, WALLET_READ_TIMEOUT_MS } from './budget.ts';
 import { COMBINATION_MAX_ENTRIES, SCHEMA_MAX_BYTES, SCHEMA_MAX_DEPTH } from './extract.ts';
 import { errorText } from './format.ts';
 import { GAPS } from './gaps.ts';
@@ -218,7 +218,7 @@ function readBody(req: IncomingMessage): Promise<string> {
 /** How long the answer of a wallet check stands. */
 export const FLOAT_TTL_MS = 60_000;
 /** How long a wallet check may take before it counts as failed: the provider's own calls carry no time limit. */
-export const FLOAT_TIMEOUT_MS = 30_000;
+export const FLOAT_TIMEOUT_MS = WALLET_READ_TIMEOUT_MS;
 
 function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -429,9 +429,11 @@ export function createServer(opts: ServerOptions): Server {
         log('job refused: the service is stopping');
         return send(503, { error: 'shutting_down', message: STOPPING_TEXT });
       }
-      const heartbeat = startHeartbeat(req, res, heartbeatMs);
+      // The heartbeat starts inside the try whose finally releases the slot: a heartbeat that cannot start must not hold the slot for ever.
+      let heartbeat: NodeJS.Timeout | undefined;
       let result: PipelineResult;
       try {
+        heartbeat = startHeartbeat(req, res, heartbeatMs);
         result = await run(request, { ...deps, deadlineMs: arrivedAt + JOB_DEADLINE_MS });
       } finally {
         clearInterval(heartbeat);

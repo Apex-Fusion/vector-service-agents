@@ -201,8 +201,8 @@ async function handOver<T>(deps: HireDeps, supplier: Supplier, job: Job<T>, post
         ? failure(supplier, 'refused', `${named(supplier)} kept answering ${answer}, as if the escrow were not on chain: ${tried}; ${await leftTo()}.`)
         : failure(supplier, 'busy', `${named(supplier)} stayed busy: ${tried}; ${await leftTo()}.`);
     }
-    // A 4xx in the supplier's own envelope is the supplier turning the job down. A 4xx whose body is no JSON object (bad_response) is a page of something in
-    // front of the supplier, and is handled like no answer (ruling R57).
+    // A 4xx in the supplier's own envelope is the supplier turning the job down. A 4xx whose body is no JSON object, or a JSON object without a string
+    // reason (bad_response), is something in front of the supplier, and is handled like no answer (ruling R57).
     if (sent.kind === 'refused' && sent.status >= 400 && sent.status < 500 && sent.reason !== 'bad_response') {
       throw failure(supplier, 'refused', `${named(supplier)} refused ${job.label} (${answer}); ${await leftTo()}.`);
     }

@@ -47,8 +47,9 @@ services:
     volumes: ["document-pipeline-state:/data"]
     # pdftoppm renders every page at 150 dpi whatever its size, so the memory is bounded here and not in the image.
     mem_limit: 1536m
-    # On SIGTERM the service takes no new job and waits up to 300 s for the one that is running. A shorter grace period kills a paid job mid-run.
-    stop_grace_period: 300s
+    # On SIGTERM the service takes no new job and waits up to 300 s for the one that is running; the 30 s more than that are for it to log a job it
+    # abandoned, with its escrows, and to exit 1. A grace period of 300 s or less kills a paid job mid-run, or the service before it can say what it left.
+    stop_grace_period: 330s
     networks: [umami_default]
     logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
 networks:

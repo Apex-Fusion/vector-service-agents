@@ -273,9 +273,10 @@ describe('specs/document-pipeline.md', () => {
     // The failures on the service's side are the 500 and 503 rows but for internal and shutting_down, which have their own words.
     const serviceSide = pairs(errors).filter((p) => /^(500|503) /.test(p)).map((p) => p.split(' ')[1]).filter((code) => code !== 'internal' && code !== 'shutting_down').sort();
     expect(serviceSide).toStrictEqual(['insufficient_float', 'llm_supplier_unavailable', 'ocr_supplier_unavailable', 'store_write_failed']);
-    expect(errors).toContain('A 400, a 401, a 422 for the document and a 503 are given before the first escrow is posted, so they spend nothing. The exception is `llm_supplier_unavailable` when the chat supplier is chosen again after the pages were paid.');
+    // The second choice of the chat supplier comes after the pages are paid, and is held to the ceiling and to the float (rulings R35, R56).
+    expect(errors).toContain('A 400, a 401, a 422 for the document and a 503 are given before the first escrow is posted, so they spend nothing. The exceptions are `llm_supplier_unavailable` and `insufficient_float` when the chat supplier is chosen again after the pages were paid.');
     expect(readme).toContain("The service could not do this job (<code>). The operator's log has the detail.");
-    expect(readme).toContain('A 400, a 401, a 422 for the document and a 503 are all given before the first escrow is posted, so they spend nothing; the one exception is `llm_supplier_unavailable`');
+    expect(readme).toContain('A 400, a 401, a 422 for the document and a 503 are all given before the first escrow is posted, so they spend nothing; the two exceptions are `llm_supplier_unavailable` and `insufficient_float` when the chat supplier is chosen again after the pages were paid (`src/result.ts` says so).');
     expect(MAX_BODY).toBe(1_000_000);
     expect(errors).toContain('`request_too_large` (over 1000000 bytes)');
   });
@@ -294,6 +295,8 @@ describe('specs/document-pipeline.md', () => {
     expect(buys).toContain(`The allowlist holds, by default and in this order of preference, ${models} (\`LLM_MODEL_ALLOWLIST\` sets it).`);
     for (const name of ['OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST']) expect(readme, name).toContain(`| \`${name}\` |`);
     expect(buys).toContain(`if the first choice is more than ${LLM_SELECTION_MAX_AGE_MS / 60_000} minutes old`);
+    // The residual round of R56: the second choice is held to the float again, after the pages are paid.
+    expect(buys).toContain('minutes old, and the new choice is held to the float again: its lock and the fees of its Post and its Accept against the float then (`insufficient_float`, the pages paid).');
     // The Pipeline uses selectLlmSupplier as it stands, so it asks the first six within 120 s: the defaults of buyer-core.
     const count = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'][LLM_SELECTION_MAX_CANDIDATES];
     expect(buys).toContain(`The first ${count} are asked in turn, within ${LLM_SELECTION_BUDGET_MS / 1000} s.`);

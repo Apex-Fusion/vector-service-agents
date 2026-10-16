@@ -8,7 +8,8 @@
 // every hirer (ruling R66). So before pdftoppm runs, `pdfinfo -box -f 1 -l <pages>` says how large each page is that would be rendered, and a page over
 // MAX_PAGE_PIXELS at the render dpi is refused (page_too_large, 422), naming the page and its size. pdfinfo's "Page N size" line is the crop box of the
 // page (getPageCropWidth in poppler's utils/pdfinfo.cc) and pdftoppm renders the media box unless it is told -cropbox (getPageMediaWidth in
-// utils/pdftoppm.cc), so the media box that -box prints counts too, and the larger of the two decides.
+// utils/pdftoppm.cc), so the media box that -box prints is required too. Each box is counted in pixels on its own and the larger count decides: a size
+// line printed turned, for a page with /Rotate 90, is the same page and not a larger one.
 //
 // The PDF is the caller's and poppler parses it, so it never meets a shell: the tools are started with an argument list (execFile), on a file in a
 // directory that only this process can read (mkdtemp), and the directory is removed whatever happened. What the tools print is not passed on:
@@ -118,6 +119,8 @@ function pagesInfo(stdout: string): number | null {
 
 /** The size of a page in points: its width and its height. */
 export interface PageSize { width: number; height: number }
+/** What pdfinfo says of one page: its size line (the crop box) and its media box (with -box), each in points, and absent when pdfinfo printed none. */
+export interface PageBoxes { size?: PageSize; mediaBox?: PageSize }
 
 const PAGES_LINE = /^Pages:\s+(\d+)\s*$/;
 // "Page %4d size:  %g x %g pts", then a paper name or nothing. %g writes a large or a small size with an exponent (1e+06).
@@ -126,26 +129,24 @@ const SIZE_LINE = /^Page\s+(\d+) size:\s+(\S+) x (\S+) pts(?: \(.*\))?\s*$/;
 const MEDIA_BOX_LINE = /^Page\s+(\d+) MediaBox:\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$/;
 
 /**
- * The page count and the size of each page in what `pdfinfo -box -f 1 -l <pages>` prints. Only the lines after the last "Pages:" line are read: the lines
+ * The page count and the boxes of each page in what `pdfinfo -box -f 1 -l <pages>` prints. Only the lines after the last "Pages:" line are read: the lines
  * above it include fields the document fills in itself (Title, Subject, Keywords, Author), which can hold a line break and lines of their own, and the
- * lines after it are the tool's. A page's size is the larger, side by side, of its size line (the crop box) and its media box (what pdftoppm renders). A
- * side that is no number stays NaN, for the caller to refuse. Exported for its tests.
+ * lines after it are the tool's. Each page has its size line (the crop box) and its media box (what pdftoppm renders), read apart and never merged: a size
+ * line can be printed turned for a turned page while the media box is not. A side that is no number stays NaN, and a box pdfinfo printed no line for is
+ * absent, for the caller to refuse. Exported for its tests.
  */
-export function pageSizesOf(stdout: string): { total: number | null; sizes: Map<number, PageSize> } {
+export function pageSizesOf(stdout: string): { total: number | null; sizes: Map<number, PageBoxes> } {
   const lines = stdout.split(/\r?\n/);
   let at = -1;
   for (const [i, line] of lines.entries()) if (PAGES_LINE.test(line)) at = i;
-  const sizes = new Map<number, PageSize>();
+  const sizes = new Map<number, PageBoxes>();
   if (at < 0) return { total: null, sizes };
-  const grow = (page: number, width: number, height: number): void => {
-    const known = sizes.get(page);
-    sizes.set(page, known === undefined ? { width, height } : { width: Math.max(known.width, width), height: Math.max(known.height, height) });
-  };
+  const boxesOf = (page: number): PageBoxes => { const known = sizes.get(page) ?? {}; sizes.set(page, known); return known; };
   for (const line of lines.slice(at + 1)) {
     const size = SIZE_LINE.exec(line);
-    if (size !== null) { grow(Number(size[1]), Number(size[2]), Number(size[3])); continue; }
+    if (size !== null) { boxesOf(Number(size[1])).size = { width: Number(size[2]), height: Number(size[3]) }; continue; }
     const box = MEDIA_BOX_LINE.exec(line);
-    if (box !== null) grow(Number(box[1]), Math.abs(Number(box[4]) - Number(box[2])), Math.abs(Number(box[5]) - Number(box[3])));
+    if (box !== null) boxesOf(Number(box[1])).mediaBox = { width: Math.abs(Number(box[4]) - Number(box[2])), height: Math.abs(Number(box[5]) - Number(box[3])) };
   }
   return { total: Number(PAGES_LINE.exec(lines[at])?.[1]), sizes };
 }
@@ -157,24 +158,35 @@ export function renderedPixels(size: PageSize, dpi: number): { width: number; he
   return { width, height, pixels: width * height };
 }
 
+/**
+ * The image of the page that counts: each box counted in pixels at `dpi` on its own, and the larger count, the media box's on a tie (it is what pdftoppm
+ * renders). With `box`, the box it measured. Exported for its tests.
+ */
+export function largestImage(boxes: Required<PageBoxes>, dpi: number): { box: PageSize; width: number; height: number; pixels: number } {
+  const crop = renderedPixels(boxes.size, dpi);
+  const media = renderedPixels(boxes.mediaBox, dpi);
+  return crop.pixels > media.pixels ? { box: boxes.size, ...crop } : { box: boxes.mediaBox, ...media };
+}
+
 /** A number of points as a person reads it: at most two decimals. */
 const points = (n: number): string => String(Math.round(n * 100) / 100);
+/** A box with two sides that are numbers. */
+const readable = (box: PageSize | undefined): box is PageSize => box !== undefined && Number.isFinite(box.width) && Number.isFinite(box.height);
 
 /**
- * Refuses the document unless every page that would be rendered, the first `maxPages` of it, has a size that pdfinfo printed and renders at `dpi` to at
- * most MAX_PAGE_PIXELS (ruling R66). A size that is missing or no number is unreadable_source; a page over the bound is page_too_large, naming it.
+ * Refuses the document unless every page that would be rendered, the first `maxPages` of it, has a size line and a media box that pdfinfo printed, and
+ * renders at `dpi` to at most MAX_PAGE_PIXELS by the larger of the two (ruling R66). A box that is missing or no number is unreadable_source, so that a
+ * page is never measured by its crop box alone; a page over the bound is page_too_large, naming it and the box measured.
  */
 function assertPagesFit(stdout: string, maxPages: number, dpi: number): void {
   const { total, sizes } = pageSizesOf(stdout);
   if (total === null || !Number.isSafeInteger(total) || total < 1) throw new RequestError('unreadable_source', 'the PDF has no pages');
   for (let page = 1; page <= Math.min(total, maxPages); page += 1) {
-    const size = sizes.get(page);
-    if (size === undefined || !Number.isFinite(size.width) || !Number.isFinite(size.height)) {
-      throw new RequestError('unreadable_source', `the size of page ${page} of the PDF could not be read`);
-    }
-    const image = renderedPixels(size, dpi);
+    const boxes = sizes.get(page);
+    if (!readable(boxes?.size) || !readable(boxes?.mediaBox)) throw new RequestError('unreadable_source', `the size of page ${page} of the PDF could not be read`);
+    const image = largestImage({ size: boxes.size, mediaBox: boxes.mediaBox }, dpi);
     if (image.pixels > MAX_PAGE_PIXELS) {
-      throw new PipelineError('page_too_large', `Page ${page} of the PDF is ${points(size.width)} by ${points(size.height)} points, ${image.width} by ${image.height} pixels at ${dpi} dpi, `
+      throw new PipelineError('page_too_large', `Page ${page} of the PDF is ${points(image.box.width)} by ${points(image.box.height)} points, ${image.width} by ${image.height} pixels at ${dpi} dpi, `
         + `over the ${MAX_PAGE_PIXELS} pixels a page may have. Nothing was spent.`);
     }
   }

@@ -23,7 +23,8 @@
 //
 // What a run may lock is checked before the first Post: the collateral output, and a float for every sub-job it could post. The gate needs no supplier
 // (the health check makes it too): FLOAT_PER_SUB_JOB_LOVELACE assumes adverts priced at or under the price ceilings of the service (1000000 lovelace
-// each by default, src/start.ts) with bonds of 1000000 and 1000000, so a lock of at most 3000000 and two fees of at most 500000 each, under 4500000. Once
+// each by default, src/start.ts) with bonds of 1000000 and 1000000, so a lock of at most 3000000 and two fees at the floor of 500000, which these
+// transactions pay today; an Accept whose script execution cost more would exceed it. That is under 4500000. Once
 // both suppliers are chosen, a second look checks the float against the locks their adverts really take (src/orchestrate.ts): larger bonds, or a
 // ceiling raised above that, are caught there.
 import { PipelineError } from './result.ts';
@@ -42,6 +43,25 @@ export const BUSY_RETRY_MS = 15_000;
 export const SEND_CUTOFF_MS = 90_000;
 /** A job is polled this often, and the hash of the receipt on chain is read again this often while the indexer catches up. */
 export const POLL_INTERVAL_MS = 3_000;
+/** An OCR supplier whose /status could not be read is asked once more this long after, before the job is refused (each ask has the 2 s of a /status call). */
+export const STATUS_RETRY_MS = 3_000;
+/** How long a read of the buyer wallet may take, a job's as the health check's (src/server.ts): a read that has not answered then is abandoned. */
+export const WALLET_READ_TIMEOUT_MS = 30_000;
+
+/** The rejection of `within`: the work did not answer in time. */
+export class OutOfTime extends Error {}
+
+/**
+ * `work`, or an OutOfTime rejection after `ms`, whichever comes first. The work is abandoned then and not cancelled: an answer it gives later is ignored.
+ * The timer is unref'd, so that it never keeps the process alive.
+ */
+export function within<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new OutOfTime(`no answer within ${ms} ms`)), ms);
+    timer.unref();
+    work.then((value) => { clearTimeout(timer); resolve(value); }, (err: unknown) => { clearTimeout(timer); reject(err); });
+  });
+}
 /** How long the hash of the supplier's Submit may take to show on chain once the supplier has answered with the receipt (Koios lag, ruling R16). */
 export const RECEIPT_HASH_WAIT_MS = 120_000;
 /**

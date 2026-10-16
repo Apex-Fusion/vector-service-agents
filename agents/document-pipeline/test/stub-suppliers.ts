@@ -152,6 +152,8 @@ abstract class StubSupplier {
   refuse: { status: number; reason: string; claim?: boolean; message?: string } | null = null;
   /** Answer the next sends with an HTML page of each of these statuses, as a proxy in front of the supplier would; the supplier never sees them. */
   pages: number[] = [];
+  /** Answer the next sends with these JSON bodies and statuses, as a gateway in front of the supplier would: objects that are not the supplier's envelope. */
+  oddAnswers: Array<{ status: number; body: unknown }> = [];
   /** The poll steps of every new job, unless `plans` holds one for it. */
   steps: PollStep[] = ['running', 'done'];
   /** The poll steps of the next jobs, one list per job, in order. */
@@ -164,6 +166,8 @@ abstract class StubSupplier {
   capabilityOverride: Record<string, unknown> = {};
   /** The status word its /status answers with. */
   statusWord = 'free';
+  /** Answer the next /status calls with a 503 page, then with the status word again. */
+  statusFailures = 0;
   /** Every send, with the X-Escrow-Ref header and the body exactly as received. */
   readonly sends: Array<{ escrowRef: string; body: string }> = [];
   readonly jobs = new Map<string, StubJob>();
@@ -179,7 +183,10 @@ abstract class StubSupplier {
 
   handle(method: string, path: string, escrowRef: string | null, body: string): Response {
     if (method === 'GET' && path === '/capability') return json(200, { ...this.capability(), ...this.capabilityOverride });
-    if (method === 'GET' && path === '/status') return json(200, { status: this.statusWord, last_seen: '2026-10-15T09:00:00.000Z', active_sessions: 0, max_sessions: 1 });
+    if (method === 'GET' && path === '/status') {
+      if (this.statusFailures > 0) { this.statusFailures -= 1; return new Response('<html><body><h1>503</h1></body></html>', { status: 503, headers: { 'content-type': 'text/html' } }); }
+      return json(200, { status: this.statusWord, last_seen: '2026-10-15T09:00:00.000Z', active_sessions: 0, max_sessions: 1 });
+    }
     if (method === 'POST' && path === this.route) return this.post(escrowRef ?? '', body);
     if (method === 'GET' && path.startsWith(`${this.route}/`)) return this.poll(decodeURIComponent(path.slice(this.route.length + 1)));
     return json(404, { reason: 'no_route', message: `nothing at ${method} ${path}` });
@@ -189,6 +196,8 @@ abstract class StubSupplier {
     this.sends.push({ escrowRef, body });
     const page = this.pages.shift();
     if (page !== undefined) return new Response(`<html><body><h1>${page}</h1></body></html>`, { status: page, headers: { 'content-type': 'text/html' } });
+    const odd = this.oddAnswers.shift();
+    if (odd !== undefined) return json(odd.status, odd.body);
     const lost = this.lose.shift();
     if (lost !== undefined) {
       if (lost === 'after-claim') this.chain.markClaimed(escrowRef);

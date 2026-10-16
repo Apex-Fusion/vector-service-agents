@@ -766,9 +766,12 @@ test('Pipeline compose: the state is a named volume at /data, memory is limited,
   assert.ok(START.includes("export const STATE_DIR_DEFAULT = '/data';"));
   assert.equal(pService.mem_limit, '1536m');
   assert.equal(WAIT_S, 300, 'the service waits up to 300 s for the job that is running');
-  assert.equal(pService.stop_grace_period, '300s');
-  assert.ok(Number(/^(\d+)s$/.exec(pService.stop_grace_period)?.[1]) >= WAIT_S, 'a grace period below the wait kills a paid job');
-  assert.match(pComposeText, /A shorter grace period kills a paid job mid-run\./);
+  // The residual round: Docker allows 30 s more than the service waits, so that a job abandoned at the end of the wait is logged with its escrows and the
+  // exit code is the service's 1, not Docker's 137.
+  assert.equal(pService.stop_grace_period, '330s');
+  assert.equal(Number(/^(\d+)s$/.exec(pService.stop_grace_period)?.[1]), WAIT_S + 30, 'the grace period is the wait and 30 s more');
+  assert.ok(pComposeText.includes('# On SIGTERM the service takes no new job and waits up to 300 s for the one that is running; the 30 s more than that are for it to log a job it'));
+  assert.match(pComposeText, /A grace period of 300 s or less kills a paid job mid-run, or the service before it can say what it left\./);
   assert.match(pComposeText, /renders every page at 150 dpi whatever its size/);
 });
 
@@ -993,7 +996,8 @@ test('Pipeline README section: the second stack beside Agent History, with its t
     'A change to `SERVICE_AUTH_HEADER` needs both containers recreated.',
     '`document-pipeline-state`, mounted at `/data`',
     '`docker compose down` keeps it, and `down -v` or `docker volume rm` would delete it',
-    '`mem_limit: 1536m`', '`stop_grace_period: 300s`',
+    '`mem_limit: 1536m`', '`stop_grace_period: 330s`',
+    'because on a stop it waits up to 300 s for the job that is running, and Docker must leave it 30 s more to log a job it had to abandon and to exit with its own code',
     '`mp-suppliers-pipeline.hal8.ai`', 'DNS only (grey cloud)',
     'There is no registry login and no image to pull',
     'validate and reload', 'caddy validate --config /etc/caddy/Caddyfile', 'caddy reload --config /etc/caddy/Caddyfile',
@@ -1049,7 +1053,8 @@ test('Pipeline RUNBOOK: the differences from Agent History are listed in one pla
     '- **Two keys.** The runtime holds the supplier key. The service holds a second, separate key, the buyer key,',
     '- **The service spends.** Every job posts escrows from the buyer wallet. The service answers `POST /` only to a call that carries the token the runtime sends (`SERVICE_AUTH_HEADER`, made in step 4, ruling R50) and gives a `POST /` without it 401, because the network is shared with other stacks; any other path but `/healthz` and `/agent.json` gets 404. Its port 9092 is never published all the same, and a job is refused up front, spending nothing, when the buyer wallet cannot fund it.',
     '- **A window of 30 min, not 5.**', '`max_processing_ms` is 1800000', '`SERVICE_TIMEOUT_MS` is 1680000', 'up to 27 min', 'an interim `102 Processing` line to the runtime every 60 s',
-    '- **State and a clean stop.**', '`stranded.json`', '`document-pipeline-state`', '`stop_grace_period: 300s`', 'a memory limit of 1536m',
+    '- **State and a clean stop.**', '`stranded.json`', '`document-pipeline-state`', '`stop_grace_period: 330s`', 'a memory limit of 1536m',
+    'A stop gives the service up to 300 s to finish the job that is running, and Docker 30 s more for it to log a job it abandoned and exit (`stop_grace_period: 330s`)',
     '- **No registry.**', 'the box has no GitHub credentials',
     '- **Price 5.**', 'The Foundation subsidises the sub-jobs on purpose',
     '| Base path on the box | `/opt/document-pipeline`: the repository in `repo`, the ops scripts in `ops` |',
@@ -1422,7 +1427,8 @@ test('Pipeline RUNBOOK step 9: the service is started by name after the pin is c
     'Start `service` by name. A bare `docker compose up -d` also starts the runtime, which exits at boot while `ADVERT_REF` is empty.',
     'docker compose -f docker-compose.document-pipeline.yml up -d service', 'docker logs document-pipeline-service',
     "docker exec document-pipeline-service node -e \"fetch('http://127.0.0.1:9092/healthz')", "fetch('http://127.0.0.1:9092/agent.json')",
-    "docker inspect --format '{{.HostConfig.Memory}} {{.Config.StopTimeout}}' document-pipeline-service", '`1610612736 300`',
+    "docker inspect --format '{{.HostConfig.Memory}} {{.Config.StopTimeout}}' document-pipeline-service", '`1610612736 330`',
+    'the memory limit of 1536m in bytes and the stop timeout of 330 s, 30 s more than the service waits for a job',
     "docker exec document-pipeline-service sh -c 'pdfinfo -v 2>&1 | head -1; pdftoppm -v 2>&1 | head -1'",
     '`200 {"ok":true}`', '`503 {"ok":false,"reason":"insufficient_float"}`',
     'the role address of step 4 in `operator.contact`', 'the new DID in `identity.did`', 'the key hash in `identity.controller_pkh` and `keys.supplier_pkh`', 'the public key in `keys.pub_key_hex`',
@@ -1581,6 +1587,7 @@ test('Pipeline RUNBOOK "Watch the first stop": one stop of the idle service is w
   const stop = section(pRunbook, 'Watch the first stop');
   for (const part of [
     'Operator, after step 15 and while no job is running.', 'On SIGTERM (`docker stop` sends it) the service takes no new job and waits up to 300 s for the one that is running, its Accept included, then exits 0, or 1 if it had to abandon that job.',
+    'Docker allows 30 s more than the service waits (`stop_grace_period: 330s`), so that a job abandoned at the end of the wait is logged and the exit code is the service\'s.',
     // Ruling R61: the image runs node itself, with tsx as a hook, so there is no child that relays the signal.
     "That works only if the signal reaches the service through the image's `tini`, which runs it as one process, `node --import tsx`, with no child to relay the signal",
     'before step 17 stops the service for real',
@@ -1653,7 +1660,7 @@ test('Pipeline RUNBOOK Back out: the advert first with the supplier key, then th
   assert.ok(back.includes('If the runtime runs, check that `curl -s http://127.0.0.1:8084/status` says `free` (`working` means a job is in flight: wait for it). Without the runtime, from step 12 to step 13, no job can run.'));
   for (const part of [
     'docker exec document-pipeline-service cat /data/stranded.json', 'the janitor reclaims each one 5 s after its `deliver_by`', 'janitor: reclaimed <escrow>: ...',
-    'Never add `-v`, and never run `docker volume rm document-pipeline-state`', 'the volume holds `stranded.json`, the escrows that still hold the buyer\'s funds, and the janitor of the next start reads it. `down` keeps it.', 'The stop waits up to 300 s for a job that is running.',
+    'Never add `-v`, and never run `docker volume rm document-pipeline-state`', 'the volume holds `stranded.json`, the escrows that still hold the buyer\'s funds, and the janitor of the next start reads it. `down` keeps it.', 'The stop waits up to 300 s for a job that is running, and Docker 30 s more for the service to log what it left and exit.',
     'two files of a directory: `shred -u /opt/document-pipeline/ops/wallet/payment.skey /opt/document-pipeline/ops/wallet/payment.vkey`, then `rmdir /opt/document-pipeline/ops/wallet` (`shred` does not take a directory, and `rmdir` refuses one that holds anything else)',
     'The env file still holds both keys, and so does the operator\'s offline store: keep both until both wallets are empty, because a wallet whose key is gone is gone.',
     'The buyer wallet is emptied last, with the buyer key, once `stranded.json` is empty (or was never written): its float and its collateral go back to the Foundation.',
@@ -1742,6 +1749,8 @@ test('Pipeline RUNBOOK failure table: the start-up refusals, the pipeline codes 
     'The buyer wallet is in one output: it was funded in one transfer, or a transaction gathered its outputs into one. The service takes the smallest pure output of at least 5 units as the collateral and counts only what is outside it as the float, so a single output, however large, leaves a float of 0.',
     'Add an output of exactly 5 units: ask the Foundation to send 5 units alone, as in step 6, or send 5 units from the buyer wallet to its own address, signed with the buyer key by the manual means of the `store_write_failed` row. The 5 units become the collateral and the rest is float again. The log says `wallet check passed again` within a minute.',
     'While it lasts, `docker ps` shows the service as unhealthy, because its health check is `/healthz`.',
+    // The second choice of the chat supplier is held to the float as well, after the pages are paid (the residual round of R56).
+    'Nothing was spent, unless the message says `The pages are paid`: then the chat supplier was chosen again after the pages, and its advert takes more than the float held then.',
     // R50 and the step that never replaces a key.
     '| Jobs fail with `service_http_401`, and the log of the service says ',
     'The runtime did not send the token the service holds: the two containers were created from different versions of the env file, or the line was changed after one of them started.',

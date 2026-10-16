@@ -631,6 +631,26 @@ describe('POST /: one job at a time', () => {
       expect((await api.post(wire(REQUEST))).status).toBe(200);
     });
   });
+
+  // The residual round: the heartbeat of a job is started inside the try whose finally releases the slot, so that a throw there cannot hold it.
+  test('a heartbeat that cannot be started does not hold the slot: that job is a 500, and the next one runs', async () => {
+    await serve(options(), async (api) => {
+      // Installed once the server listens, so that the interval this throws for is the one of the heartbeat of the first job.
+      const real = globalThis.setInterval;
+      let refused = 0;
+      const spy = vi.spyOn(globalThis, 'setInterval').mockImplementation(((handler: () => void, ms?: number) => {
+        if (refused === 0) { refused += 1; throw new Error('no timer for the heartbeat'); }
+        return real(handler, ms);
+      }) as typeof setInterval);
+      try {
+        expect((await api.post(wire(REQUEST))).status).toBe(500);
+        expect(refused).toBe(1);
+        expect((await api.post(wire(REQUEST))).status).toBe(200);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
 });
 
 // ---- R47: the runtime's fetch gives up after 300 s of silence ------------------------------------------------------------------------
@@ -1298,6 +1318,21 @@ describe('the real pipeline over HTTP', () => {
       expect(r.json.message).not.toMatch(/[\u0000-\u001f\u007f]/);
     });
     expect(logs.length).toBeGreaterThan(0);
+    for (const line of logs) expect(line).not.toMatch(/[\u0000-\u001f\u007f]/);
+  });
+
+  // The residual round of R64: an error of the vendored normaliser echoes a key or a type the supplier chose, and reaches the answer through errorText,
+  // which makes it flat too.
+  test('an answer the vendored normaliser refuses, with a line break and an escape in the type it echoes, arrives flat in the 422 body of llm_bad_result', async () => {
+    const m = marketplace();
+    m.llm.answerText = (finished) => JSON.stringify({ ...finished, output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text\n\u001b[31m', text: 'x' }] }] });
+    await serve(options({ deps: { ...depsOn(m), log: (line: string) => { logs.push(line); } }, runPipeline }), async (api) => {
+      const r = await api.post(wire(TWO_PAGES));
+      expect(r.status).toBe(422);
+      expect(r.json.error).toBe('llm_bad_result');
+      expect(r.json.message).toContain('(unsupported content type: output_text  [31m)');
+      expect(r.json.message).not.toMatch(/[\u0000-\u001f\u007f]/);
+    });
     for (const line of logs) expect(line).not.toMatch(/[\u0000-\u001f\u007f]/);
   });
 });

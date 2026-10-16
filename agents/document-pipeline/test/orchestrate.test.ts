@@ -6,7 +6,7 @@
 //
 // The golden run pins the whole result byte for byte. The result is test/golden.ts: its values were computed from the stubs alone (what each supplier signs
 // for the request the Pipeline must send), not from a run of the code under test, and test/spec.test.ts holds the example of specs/document-pipeline.md to it.
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -329,6 +329,14 @@ describe('runPipeline: sending a job', () => {
     expect(await runPipeline(request(), { ...run.deps, chain })).toStrictEqual(GOLDEN);
     expect(run.m.ocr.sends.map((s) => s.escrowRef)).toStrictEqual([escrowNo(1), escrowNo(1), escrowNo(2)]);
     expect(reads).toBe(1);
+  });
+
+  // The residual round of R57: a JSON object without a string reason is not the supplier's envelope either, and is handled like a page.
+  it('a 4xx whose body is a JSON object without a reason ({"error":"gateway"}) is no refusal of the supplier: the job is sent once more and finishes', async () => {
+    const run = setup();
+    run.m.ocr.oddAnswers = [{ status: 403, body: { error: 'gateway' } }];
+    expect(await runPipeline(request(), run.deps)).toStrictEqual(GOLDEN);
+    expect(run.m.ocr.sends.map((s) => s.escrowRef)).toStrictEqual([escrowNo(1), escrowNo(1), escrowNo(2)]);
   });
 
   it('a 403 page twice is ocr_refused, as a 5xx answered twice is', async () => {
@@ -788,6 +796,33 @@ describe('runPipeline: the chat answer', () => {
     expect(llmCalls(fresh.m)).toStrictEqual([`GET ${LLM_ENDPOINT}/capability`, `GET ${LLM_ENDPOINT}/status`, `GET ${LLM_ENDPOINT}/v1/responses/responses-job-1`, `GET ${LLM_ENDPOINT}/v1/responses/responses-job-1`]);
   });
 
+  // The residual round of R56: the second choice is held to the float too, its lock and two fees against the float read then.
+  it('a chat supplier chosen again whose lock and fees are more than the float holds then: insufficient_float (503), the pages paid, the chat escrow never posted', async () => {
+    const run = setup();
+    const dear = { ...LLM_ADVERT, supplier_bond_lovelace: 60_000_000n };
+    let accepts = 0;
+    let changed = false;
+    const chain = chainWith(run.m, {
+      accept: async (r) => {
+        const done = await run.m.chain.accept(r);
+        accepts += 1;
+        if (accepts === 2) { run.m.clock.now = T0 + 700_000; run.m.rows[1] = indexerRow(LLM_ADVERT_REF, dear); changed = true; }
+        return done;
+      },
+      readAdvert: async (r) => (changed && r.toLowerCase() === LLM_ADVERT_REF.toLowerCase() ? dear : run.m.chain.readAdvert(r)),
+    });
+    const error = await failure(runPipeline(request(), { ...run.deps, chain }), 'insufficient_float', 503);
+    const float = (await run.m.chain.wallet()).floatLovelace;
+    expect(error.message).toMatch(new RegExp(`^The buyer wallet holds ${float} lovelace outside its collateral, less than the \\d+ that the chat job takes at the price of the supplier chosen again: a lock of \\d+ lovelace and two fees of 500000\\. The pages are paid; nothing was posted for the chat job\\.$`));
+    expect(await states(run.m, escrowNo(1), escrowNo(2), escrowNo(3))).toStrictEqual(['spent', 'spent', 'unknown']);
+    expect(run.m.llm.sends).toHaveLength(0);
+  });
+
+  it('a chat supplier chosen again whose lock and fees the float covers is hired as the first choice would be: the golden result', async () => {
+    const stale = setup();
+    expect(await runPipeline(request(), { ...stale.deps, chain: jumpAt(stale, 2, T0 + 600_001) })).toStrictEqual(GOLDEN);
+  });
+
   it('a chat supplier that is gone when it is chosen again fails the job with llm_supplier_unavailable, the pages paid', async () => {
     const run = setup();
     let accepts = 0;
@@ -1044,6 +1079,25 @@ describe('runPipeline: refusals before anything is posted', () => {
     expect(run.m.ocr.sends).toHaveLength(0);
   });
 
+  // The residual round: the read of the wallet is bounded as the health check's is, so a node that never answers does not hold the job for undici's 300 s.
+  it('a read of the buyer wallet that never answers is abandoned after 30 s: insufficient_float (503), could not be read within 30 s, nothing posted', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const run = setup();
+      const job = runPipeline(request(), { ...run.deps, chain: chainWith(run.m, { wallet: () => new Promise(() => undefined) }) });
+      let settled = false;
+      job.then(() => { settled = true; }, () => { settled = true; });
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const error = await failure(job, 'insufficient_float', 503);
+      expect(error.message).toBe('The buyer wallet could not be read within 30 s, so its float of 27000000 lovelace for the 6 sub-jobs of a run of 5 pages cannot be confirmed. Nothing was spent.');
+      expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('the allowlisted OCR supplier has no Active advert the indexer lists: ocr_supplier_unavailable (503), nothing posted', async () => {
     const run = setup();
     run.m.rows.splice(0, 1);
@@ -1066,14 +1120,41 @@ describe('runPipeline: refusals before anything is posted', () => {
     expect((await run.m.chain.wallet()).floatLovelace).toBe(before);
   });
 
-  it('an OCR supplier whose /status cannot be read, or says a word that is not a status of a supplier, refuses the job the same way, saying it could not be read', async () => {
+  it('an OCR supplier whose /status cannot be read, or says a word that is not a status of a supplier, refuses the job the same way, asked twice 3 s apart', async () => {
     for (const word of ['asleep', '']) {
       const run = setup();
       run.m.ocr.statusWord = word;
       const error = await failure(runPipeline(request(), run.deps), 'ocr_supplier_unavailable', 503);
-      expect(error.message, word).toMatch(/its \/status could not be read \(no answer, an error, or no status word of a supplier\)\. Nothing was spent\.$/);
+      expect(error.message, word).toMatch(/its \/status could not be read \(no answer, an error, or no status word of a supplier\), asked twice 3 s apart\. Nothing was spent\.$/);
       expect(await states(run.m, escrowNo(1)), word).toStrictEqual(['unknown']);
     }
+  });
+
+  // The residual round of R60: a /status that cannot be read is asked once more, 3 s later, before the job is refused; offline refuses at once.
+  it('an OCR /status that cannot be read once is asked again 3 s later, and the job is hired when it answers free: the golden result', async () => {
+    const run = setup();
+    run.m.ocr.statusFailures = 1;
+    expect(await runPipeline(request(), run.deps)).toStrictEqual(GOLDEN);
+    expect(run.sleeps[0]).toBe(3_000);
+    expect(calls(run.m).filter((c) => c === `GET ${OCR_ENDPOINT}/status`)).toHaveLength(2);
+  });
+
+  it('an OCR /status that cannot be read twice, 3 s apart, refuses the job: ocr_supplier_unavailable (503), no escrow posted', async () => {
+    const run = setup();
+    run.m.ocr.statusFailures = 2;
+    const error = await failure(runPipeline(request(), run.deps), 'ocr_supplier_unavailable', 503);
+    expect(error.message).toMatch(/its \/status could not be read \(no answer, an error, or no status word of a supplier\), asked twice 3 s apart\. Nothing was spent\.$/);
+    expect(run.sleeps).toStrictEqual([3_000]);
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
+    expect(run.m.ocr.sends).toHaveLength(0);
+  });
+
+  it('an OCR supplier that says offline is not asked again: it refuses the job at once', async () => {
+    const run = setup();
+    run.m.ocr.statusWord = 'offline';
+    await failure(runPipeline(request(), run.deps), 'ocr_supplier_unavailable', 503);
+    expect(run.sleeps).toStrictEqual([]);
+    expect(calls(run.m).filter((c) => c === `GET ${OCR_ENDPOINT}/status`)).toHaveLength(1);
   });
 
   it('an OCR advert the indexer lists as retired is not hired, whatever its supplier says: ocr_supplier_unavailable (503), nothing posted (ruling R60)', async () => {

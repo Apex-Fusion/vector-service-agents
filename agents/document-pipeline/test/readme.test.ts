@@ -94,6 +94,8 @@ describe('agents/document-pipeline/README.md', () => {
     expect(section('Stopping')).toContain('The wait is on the job itself, so a caller that hangs up does not cut it short. A pass of the janitor still in flight after 30 s is abandoned, with a log line.');
     expect(section('Stopping')).toContain('A job that ends in time is answered, if its caller is still there, and the service exits 0. One still running after 300 s is abandoned: its connection is closed, the log names the escrows the state directory holds for the janitor of the next start, and the service exits 1.');
     expect(section('Stopping')).not.toContain('to be answered, and exits 0');
+    // The residual round: the grace period is the wait and 30 s more, so that the path of an abandoned job can run before Docker kills the container.
+    expect(section('Stopping')).toContain('The container is killed when its grace period ends, so `stop_grace_period` in the compose file is 330 s: the 300 s of the wait and 30 s more, for the log line and the exit code of a job the service had to abandon.');
     expect(readme).toContain(`${SHUTDOWN_WAIT_MS / 1000} s`);
     expect(readme).toMatch(/asks `pdfinfo` and `pdftoppm` \(poppler-utils\) for their version/);
     expect(readme).toMatch(/at least 1800000/);

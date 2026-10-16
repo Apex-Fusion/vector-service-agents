@@ -1,12 +1,13 @@
 // agents/document-pipeline/test/page-size.test.ts
-// The size guard of src/render.ts (ruling R66): what `pdfinfo -box -f 1 -l <pages>` prints, read into the size of each page, and the pages that would
+// The size guard of src/render.ts (ruling R66): what `pdfinfo -box -f 1 -l <pages>` prints, read into the boxes of each page, and the pages that would
 // render over MAX_PAGE_PIXELS refused before pdftoppm allocates them. The output below is written with the formats of poppler's utils/pdfinfo.cc
 // (24.04): "Page %4d size:  %g x %g pts" with an optional paper name, "Page %4d rot:   %d", and with -box "Page %4d MediaBox:  " followed by four
 // "%8.2f". pdfinfo's size line is the crop box of the page (getPageCropWidth); pdftoppm renders the media box unless it is told -cropbox
-// (utils/pdftoppm.cc, getPageMediaWidth), so the media box counts too. The real tool is run on the fixtures in test/render.test.ts, where poppler is
-// installed (CI).
+// (utils/pdftoppm.cc, getPageMediaWidth), so the media box counts too. Each box is counted in pixels on its own and the larger count decides: a size line
+// printed turned for a page with /Rotate 90 is the same page, not a larger one. The real tool is run on the fixtures in test/render.test.ts, where poppler
+// is installed (CI).
 import { describe, test, expect } from 'vitest';
-import { MAX_PAGE_PIXELS, pageSizesOf, renderedPixels } from '../src/render.ts';
+import { MAX_PAGE_PIXELS, largestImage, pageSizesOf, renderedPixels } from '../src/render.ts';
 
 /** `pdfinfo -box -f 1 -l 2` on a twelve-page document whose first page is letter and whose second is A4, turned. */
 const CAPTURED = [
@@ -43,40 +44,39 @@ const CAPTURED = [
 ].join('\n');
 
 describe('pageSizesOf: the output of pdfinfo -box -f 1 -l <pages>', () => {
-  test('reads the page count of the document and, for each page it describes, the larger of its size line and its media box', () => {
+  test('reads the page count of the document and, for each page it describes, its size line and its media box apart', () => {
     const { total, sizes } = pageSizesOf(CAPTURED);
     expect(total).toBe(12);
     expect([...sizes.keys()]).toStrictEqual([1, 2]);
-    expect(sizes.get(1)).toStrictEqual({ width: 612, height: 792 });
-    expect(sizes.get(2)).toStrictEqual({ width: 595.28, height: 841.89 });
+    expect(sizes.get(1)).toStrictEqual({ size: { width: 612, height: 792 }, mediaBox: { width: 612, height: 792 } });
+    expect(sizes.get(2)).toStrictEqual({ size: { width: 595.276, height: 841.89 }, mediaBox: { width: 595.28, height: 841.89 } });
   });
 
-  test('a media box larger than the crop box decides: that is the box pdftoppm renders', () => {
-    const stdout = CAPTURED.replace('Page    1 MediaBox:      0.00     0.00   612.00   792.00', 'Page    1 MediaBox:      0.00     0.00 14400.00 14400.00');
-    expect(pageSizesOf(stdout).sizes.get(1)).toStrictEqual({ width: 14400, height: 14400 });
-    // A box written from its far corner is the same box.
+  test('a media box larger than the crop box is read as it is, and a box written from its far corner is the same box', () => {
+    const larger = CAPTURED.replace('Page    1 MediaBox:      0.00     0.00   612.00   792.00', 'Page    1 MediaBox:      0.00     0.00 14400.00 14400.00');
+    expect(pageSizesOf(larger).sizes.get(1)).toStrictEqual({ size: { width: 612, height: 792 }, mediaBox: { width: 14400, height: 14400 } });
     const reversed = CAPTURED.replace('Page    1 MediaBox:      0.00     0.00   612.00   792.00', 'Page    1 MediaBox:    612.00   792.00     0.00     0.00');
-    expect(pageSizesOf(reversed).sizes.get(1)).toStrictEqual({ width: 612, height: 792 });
+    expect(pageSizesOf(reversed).sizes.get(1)?.mediaBox).toStrictEqual({ width: 612, height: 792 });
   });
 
-  test('a size line alone is enough, and %g writes large and small sizes with an exponent', () => {
+  test('a size line without its media box is read as it is, for the caller to refuse, and %g writes large and small sizes with an exponent', () => {
     const stdout = 'Pages:           3\nEncrypted:       no\nPage    1 size:  1e+06 x 792 pts\nPage    1 rot:   0\nPage    2 size:  1.23457e+06 x 2.5e-05 pts\nPage    3 size:  14400 x 14400 pts\nFile size:       9 bytes\n';
     const { total, sizes } = pageSizesOf(stdout);
     expect(total).toBe(3);
-    expect(sizes.get(1)).toStrictEqual({ width: 1_000_000, height: 792 });
-    expect(sizes.get(2)).toStrictEqual({ width: 1_234_570, height: 0.000025 });
-    expect(sizes.get(3)).toStrictEqual({ width: 14400, height: 14400 });
+    expect(sizes.get(1)).toStrictEqual({ size: { width: 1_000_000, height: 792 } });
+    expect(sizes.get(2)).toStrictEqual({ size: { width: 1_234_570, height: 0.000025 } });
+    expect(sizes.get(3)).toStrictEqual({ size: { width: 14400, height: 14400 } });
   });
 
   test('Windows line endings are fine', () => {
-    expect(pageSizesOf(CAPTURED.replaceAll('\n', '\r\n')).sizes.get(2)).toStrictEqual({ width: 595.28, height: 841.89 });
+    expect(pageSizesOf(CAPTURED.replaceAll('\n', '\r\n')).sizes.get(2)).toStrictEqual({ size: { width: 595.276, height: 841.89 }, mediaBox: { width: 595.28, height: 841.89 } });
   });
 
   test('lines planted in the document\'s own metadata, above the tool\'s last "Pages:" line, do not count', () => {
     const planted = CAPTURED.replace('Title:           Quarterly report', 'Title:           x\nPages: 1\nPage    1 size:  1 x 1 pts\nPage    1 MediaBox:      0.00     0.00     1.00     1.00\nPage    3 size:  1 x 1 pts');
     const { total, sizes } = pageSizesOf(planted);
     expect(total).toBe(12);
-    expect(sizes.get(1)).toStrictEqual({ width: 612, height: 792 });
+    expect(sizes.get(1)).toStrictEqual({ size: { width: 612, height: 792 }, mediaBox: { width: 612, height: 792 } });
     expect(sizes.has(3)).toBe(false);
   });
 
@@ -87,8 +87,29 @@ describe('pageSizesOf: the output of pdfinfo -box -f 1 -l <pages>', () => {
   });
 
   test('a size that is no number is kept as not a number, for the caller to refuse', () => {
-    const { sizes } = pageSizesOf('Pages:           1\nPage    1 size:  inf x nan pts\n');
-    expect(Number.isNaN(sizes.get(1)?.width)).toBe(true);
+    const { sizes } = pageSizesOf('Pages:           1\nPage    1 size:  inf x nan pts\nPage    1 MediaBox:      nan     0.00     1.00     1.00\n');
+    expect(Number.isNaN(sizes.get(1)?.size?.width)).toBe(true);
+    expect(Number.isNaN(sizes.get(1)?.mediaBox?.width)).toBe(true);
+  });
+});
+
+describe('largestImage: each box counted on its own, the larger count deciding', () => {
+  // A drawing of 36 by 48 inches with /Rotate 90: its size line may come out turned while its media box does not. Measured side by side across the two
+  // lines it would be 7200 by 7200 pixels at 150 dpi, 51.8 megapixels and refused; it is 5400 by 7200, 38.9 megapixels.
+  test('a turned page is measured as the page it is: 38.9 megapixels at 150 dpi, under the bound, and not 51.8', () => {
+    const turned = pageSizesOf(['Pages:           1', 'Page    1 size:  3456 x 2592 pts', 'Page    1 rot:   90', 'Page    1 MediaBox:      0.00     0.00  2592.00  3456.00', ''].join('\n'));
+    const boxes = turned.sizes.get(1);
+    expect(boxes).toStrictEqual({ size: { width: 3456, height: 2592 }, mediaBox: { width: 2592, height: 3456 } });
+    const image = largestImage({ size: boxes!.size!, mediaBox: boxes!.mediaBox! }, 150);
+    expect(image.pixels).toBe(5400 * 7200);
+    expect(image.pixels).toBeLessThanOrEqual(MAX_PAGE_PIXELS);
+    expect(renderedPixels({ width: 3456, height: 3456 }, 150).pixels).toBeGreaterThan(MAX_PAGE_PIXELS);
+  });
+
+  test('the box with more pixels decides, the media box on a tie, and the answer names the box it measured', () => {
+    expect(largestImage({ size: { width: 576, height: 720 }, mediaBox: { width: 14400, height: 14400 } }, 150)).toStrictEqual({ box: { width: 14400, height: 14400 }, width: 30000, height: 30000, pixels: 900_000_000 });
+    expect(largestImage({ size: { width: 2000, height: 2000 }, mediaBox: { width: 576, height: 720 } }, 150)).toStrictEqual({ box: { width: 2000, height: 2000 }, width: 4167, height: 4167, pixels: 4167 * 4167 });
+    expect(largestImage({ size: { width: 720, height: 576 }, mediaBox: { width: 576, height: 720 } }, 150).box).toStrictEqual({ width: 576, height: 720 });
   });
 });
 
