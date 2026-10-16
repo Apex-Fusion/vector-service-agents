@@ -287,6 +287,8 @@ describe('manifest', () => {
     vi.stubEnv('OPERATOR_CONTACT', TEST_CONTACT);
     createServer().close(); // building the server does not listen
   });
+  // The child loads tsx and the whole service before it exits, which a busy CI machine can make slow: the test has the 60 s its spawnSync has,
+  // not the 5 s that vitest gives by default.
   test('the process exits at start with the variable named when OPERATOR_CONTACT is not set', () => {
     const cwd = fileURLToPath(new URL('..', import.meta.url));
     const run = (contact: string) => spawnSync(process.execPath, ['--import', 'tsx', 'src/index.ts'], { cwd, encoding: 'utf8', timeout: 60_000, env: { ...process.env, OPERATOR_CONTACT: contact, PORT: '0', HOST: '127.0.0.1' } });
@@ -294,7 +296,7 @@ describe('manifest', () => {
     expect(blank.status).toBe(1);
     expect(blank.stderr).toMatch(/environment variable OPERATOR_CONTACT is required/);
     expect(blank.stdout).not.toMatch(/listening/);
-  });
+  }, 60_000);
   test('defaults: deployed since 2026-10-15, one unit price and two bonds in lovelace, 300 s, the request limit of the wire check', () => {
     const m = manifestFromEnv(TEST_ENV);
     expect(m).toMatchObject({ capability_id: 'identity.history.report.v1', status: { chip: 'deployed', since: '2026-10-15' }, terms: { price_lovelace: 1_000_000, supplier_bond_lovelace: 1_000_000, buyer_bond_lovelace: 1_000_000, max_processing_ms: 300_000, input_limits: { request_bytes: 65_536 } } });
