@@ -161,10 +161,15 @@ const DP = {
   firstAdvertTx: '4fe706e06652342a83b68a1caf691373418d63a34431a66bcf284106af5f41df',
   firstAdvertRef: '4fe706e06652342a83b68a1caf691373418d63a34431a66bcf284106af5f41df#0',
   retireTx: '02f755ac6b07d3a1ecc839186ed3a296a8cf384e50f9a5b1fc1a1ac7efb5b141',
-  // The current advert, posted and confirmed on 2026-10-16 with the manifest of the status flip (step 17, item 6) and listed Active and free by the marketplace indexer. A reference is the transaction id and the output index.
-  advertTx: 'd2709262e001022ea68c0222474f9bebc74f8bfc31dcddd24dc89debcc6dda16',
-  advertRef: 'd2709262e001022ea68c0222474f9bebc74f8bfc31dcddd24dc89debcc6dda16#0',
-  manifestHash: 'f2dca80ac2b1685b956a9e0d2687d076aaa25e565637d69c58ebf0feb2127729',
+  // The second advert, posted on 2026-10-16 at the status flip (step 17, item 6) and retired the same day when the content pass changed the manifest text; the current advert followed it on the rebuilt image.
+  secondAdvertTx: 'd2709262e001022ea68c0222474f9bebc74f8bfc31dcddd24dc89debcc6dda16',
+  secondAdvertRef: 'd2709262e001022ea68c0222474f9bebc74f8bfc31dcddd24dc89debcc6dda16#0',
+  secondManifestHash: 'f2dca80ac2b1685b956a9e0d2687d076aaa25e565637d69c58ebf0feb2127729',
+  secondRetireTx: 'f9e9670e8da4fc423e371ab8cee20219c3f13c38ede12cd0208589a24edd9591',
+  // The current advert, posted and confirmed on 2026-10-16 after the content pass changed the manifest text (the advert of the status flip was retired the same day) and listed Active and free by the marketplace indexer. A reference is the transaction id and the output index.
+  advertTx: '16a5da8726cab90949da2c0c92e025af276027715a5d854861c683d7d9341ca3',
+  advertRef: '16a5da8726cab90949da2c0c92e025af276027715a5d854861c683d7d9341ca3#0',
+  manifestHash: '2d647f2ab239ce6f04c37f0eaf5d39a6240a305f020039880d05e47e1d3a67d7',
 };
 // The first first-party run of Document Pipeline (step 15, 2026-10-16): the object the script printed is docs/evidence/2026-10-16-document-pipeline-run-1.json, copied byte for byte.
 const DP_RUN = {
@@ -211,8 +216,8 @@ test('specs/document-pipeline.md: the DID, the registry record and the reputatio
   const stake = row('Reputation stake');
   for (const part of ['a Module-3 self-stake of 10000000 lovelace (10.000000) on the capability', 'made on 2026-10-16 in transaction', `[\`${DP.stakeTx}\`](${EXPLORER_TX}${DP.stakeTx})`]) assert.ok(stake.includes(part), `the Reputation stake row says: ${part}`);
   assert.match(DP.controllerPkh, /^[0-9a-f]{56}$/);
-  for (const hex of [DP.registerTx, DP.stakeTx, DP.firstAdvertTx, DP.retireTx, DP.advertTx, DP.manifestHash]) assert.match(hex, /^[0-9a-f]{64}$/);
-  assert.equal(new Set([DP.registerTx, DP.stakeTx, DP.firstAdvertTx, DP.retireTx, DP.advertTx]).size, 5, 'five transactions: the registration, the stake, the first advert, its retirement, the current advert');
+  for (const hex of [DP.registerTx, DP.stakeTx, DP.firstAdvertTx, DP.retireTx, DP.secondAdvertTx, DP.secondRetireTx, DP.secondManifestHash, DP.advertTx, DP.manifestHash]) assert.match(hex, /^[0-9a-f]{64}$/);
+  assert.equal(new Set([DP.registerTx, DP.stakeTx, DP.firstAdvertTx, DP.retireTx, DP.secondAdvertTx, DP.secondRetireTx, DP.advertTx]).size, 7, 'seven transactions: the registration, the stake, the first advert, its retirement, the second advert, its retirement, the current advert');
   // The URL is in service since 2026-10-16 (steps 10 to 14), so no row is "planned" any more. The first advert was retired and the current one posted the same day (step 17): the Links keep the first as history and give the current one with its manifest hash. One first-party job settled on 2026-10-16 (step 15).
   assert.equal(row('Public URL'), '| Public URL | `https://mp-suppliers-pipeline.hal8.ai` (in service as of 2026-10-16) |');
   for (const label of ['Registry record, planned', 'Public URL, planned', 'Reputation stake, planned']) assert.equal(row(label), '', `${label} is gone`);
@@ -223,6 +228,7 @@ test('specs/document-pipeline.md: the DID, the registry record and the reputatio
   const links = section(text, 'Links');
   assert.ok(links.includes(`- First advert \`${DP.firstAdvertRef}\`, posted on 2026-10-16 in the confirmed transaction [\`${DP.firstAdvertTx}\`](${EXPLORER_TX}${DP.firstAdvertTx}), retired on 2026-10-16 at the status flip in the confirmed transaction [\`${DP.retireTx}\`](${EXPLORER_TX}${DP.retireTx}).`));
   assert.ok(links.includes(`- Current advert \`${DP.advertRef}\`, posted on 2026-10-16 in the confirmed transaction [\`${DP.advertTx}\`](${EXPLORER_TX}${DP.advertTx}), manifest hash \`${DP.manifestHash}\`. The marketplace indexer lists it as Active and free (checked on 2026-10-16).`));
+  assert.ok(links.includes(`- Second advert \`${DP.secondAdvertRef}\`, posted on 2026-10-16 at the status flip in the confirmed transaction [\`${DP.secondAdvertTx}\`](${EXPLORER_TX}${DP.secondAdvertTx}), manifest hash \`${DP.secondManifestHash}\`, retired on 2026-10-16 in the confirmed transaction [\`${DP.secondRetireTx}\`](${EXPLORER_TX}${DP.secondRetireTx}) when the manifest text changed.`), 'the second advert and its retirement are in the Links');
   assert.ok(links.includes("- Manifest: `GET /agent.json` on the agent's public URL, in service as of 2026-10-16."));
   assert.ok(section(text, 'How to hire it').includes('Advertised on 2026-10-16, and again the same day at the status flip: the marketplace indexer lists the current advert as Active and free (checked on 2026-10-16). One first-party job has settled, on 2026-10-16; it is not demand. The three ways below apply.'));
   // The words of before the advert do not come back. The two specs that are not built keep theirs, and the runbooks quote them as instructions.
