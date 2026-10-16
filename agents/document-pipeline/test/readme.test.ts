@@ -45,8 +45,8 @@ describe('agents/document-pipeline/README.md', () => {
     expect(row('PORT')).toContain(`\`${PORT_DEFAULT}\``);
     expect(row('ADVERT_PRICE_LOVELACE')).toContain('`5000000`');
     expect(row('ADVERT_MAX_PROCESSING_MS')).toContain('`1800000`');
-    expect(row('AGENT_STATUS_CHIP')).toContain('`proposed`');
-    expect(row('AGENT_STATUS_SINCE')).toContain('`2026-10-13`');
+    expect(row('AGENT_STATUS_CHIP')).toContain('`deployed`');
+    expect(row('AGENT_STATUS_SINCE')).toContain('`2026-10-16`');
     expect(row('AGENT_VERSION')).toContain('`0.1.0`');
     // The price ceilings of ruling R56.
     for (const name of ['OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE']) expect(row(name), name).toContain(`\`${PRICE_CEILING_DEFAULT_LOVELACE}\``);
@@ -132,10 +132,13 @@ describe('agents/document-pipeline/README.md', () => {
   });
 
   test('it says the status the manifest and the code give, and nothing in it is a dash, a unit name or a key', () => {
-    expect(readme).toContain('Status: PROPOSED (built, not deployed). Since 2026-10-13.');
+    // DEPLOYED since the flip of 2026-10-16 (RUNBOOK-document-pipeline step 17): the facts in one line, as the page of the spec gives them. Never live: a first-party run is not demand.
+    const STATUS = 'Status: DEPLOYED (registered and staked 2026-10-16, advertised 2026-10-16, re-advertised 2026-10-16 at the status flip, one first-party job settled 2026-10-16). Since 2026-10-16.';
+    expect(readme).toContain(`${STATUS} The service is built and its tests replay an in-memory marketplace.`);
+    expect(readme).not.toMatch(/no registry record|no advert|no job has run/i);
     expect(readme).not.toMatch(/[\u{2013}\u{2014}]/u);
     expect(readme).not.toMatch(UNIT_NAME);
     expect(readme).not.toMatch(/[0-9a-f]{64}/); // no key, no 64-hex value of any kind
-    expect(readme.match(/\b(LIVE|DEPLOYED)\b/g)).toBeNull(); // the words are only ever said in lower case here, as the values the manifest carries
+    expect(readme.replace(STATUS, '').match(/\b(LIVE|DEPLOYED)\b/g)).toBeNull(); // DEPLOYED is said in the status line only; elsewhere the words are in lower case, as the values the manifest carries
   });
 });

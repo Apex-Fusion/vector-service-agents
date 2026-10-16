@@ -83,7 +83,7 @@ describe('manifest', () => {
           + 'The service writes only the bookkeeping of the escrows it posts (references, times, the hop, a transaction hash) to its state directory, and its log carries job outcomes, never a request or a document.',
         third_parties: ['the host of the source URL', 'the ChandraOCR agent, and Datalab behind it', 'the LLM supplier it hires, and its model provider', 'Koios (Vector mainnet indexer)', 'marketplace indexer'],
       },
-      status: { chip: 'proposed', since: '2026-10-13' },
+      status: { chip: 'deployed', since: '2026-10-16' },
       gaps: [...GAPS],
       links: { spec: SPEC_URL, source: 'https://github.com/Apex-Fusion/vector-service-agents/tree/main/agents/document-pipeline', explorer_advert: '' },
     });
@@ -126,10 +126,10 @@ describe('manifest', () => {
     for (const file of ['server.ts', 'start.ts', 'gaps.ts', 'index.ts']) expect(readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8'), file).not.toMatch(/[A-Za-z0-9._-]+@[A-Za-z0-9-]+\.[A-Za-z]/);
   });
 
-  test('defaults: proposed since 2026-10-13, price 5 units, both bonds 1 unit, a 30 min window, the limits of the intake', () => {
+  test('defaults: deployed since 2026-10-16, price 5 units, both bonds 1 unit, a 30 min window, the limits of the intake', () => {
     const m = manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT });
     expect(m).toMatchObject({
-      version: '0.1.0', status: { chip: 'proposed', since: '2026-10-13' },
+      version: '0.1.0', status: { chip: 'deployed', since: '2026-10-16' },
       terms: { price_lovelace: 5_000_000, supplier_bond_lovelace: 1_000_000, buyer_bond_lovelace: 1_000_000, max_processing_ms: 1_800_000 },
     });
     // The limits are the numbers the intake enforces, not copies of them.
@@ -183,17 +183,17 @@ describe('manifest', () => {
     expect(() => envInt('PORT', key, 9092)).toThrow(/PORT.*64 characters/);
   });
 
-  test('AGENT_STATUS_CHIP must be live, deployed or proposed in any case and the manifest carries it in lower case; the default is proposed, never live', () => {
+  test('AGENT_STATUS_CHIP must be live, deployed or proposed in any case and the manifest carries it in lower case; the default is deployed, never live', () => {
     const chip = (value: string | undefined) => manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ...(value === undefined ? {} : { AGENT_STATUS_CHIP: value }) }).status.chip;
-    expect(chip(undefined)).toBe('proposed');
-    expect(chip('')).toBe('proposed');
-    expect(chip('Proposed')).toBe('proposed');
+    expect(chip(undefined)).toBe('deployed');
+    expect(chip('')).toBe('deployed');
+    expect(chip('Proposed')).toBe('proposed'); // a first run, before any job has settled, starts with this word (RUNBOOK-document-pipeline step 4)
     expect(chip('DEPLOYED')).toBe('deployed');
     expect(chip('live')).toBe('live');
     for (const bad of ['launched', 'live!', 'prod', 'proposed ']) expect(() => chip(bad), bad).toThrow(/AGENT_STATUS_CHIP/);
-    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: '2027-01-02' }).status).toStrictEqual({ chip: 'proposed', since: '2027-01-02' });
+    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: '2027-01-02' }).status).toStrictEqual({ chip: 'deployed', since: '2027-01-02' });
     // The date is published in a manifest that is hashed into the advert: blank means the default, and anything that is not a date is refused.
-    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: ' ' }).status.since).toBe('2026-10-13');
+    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: ' ' }).status.since).toBe('2026-10-16');
     for (const bad of ['yesterday', '2026-10-1', '15-10-2026', '20261015', '2026-10-13T00:00:00Z']) expect(() => manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: bad }), bad).toThrow(/AGENT_STATUS_SINCE/);
     expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_VERSION: '0.2.0', ADVERT_EXPLORER_URL: 'https://explorer.example.test/tx' })).toMatchObject({ version: '0.2.0', links: { explorer_advert: 'https://explorer.example.test/tx' } });
   });

@@ -6,7 +6,7 @@ Each copy was taken from the blob at its commit, `git -C <checkout> cat-file blo
 
 ## Why vendored
 
-The mcp-server packages are not published to a registry. The Document Pipeline agent (built, not deployed) posts escrows, signs and submits transactions, reads escrow lineage and verifies receipts. It builds, reads and verifies with the same code the hosted keyless MCP server uses: the same datum codecs, the same builders, the same lineage resolver and the same receipt verifier. It signs with `sign.ts` of the member's local signer package (`packages/signer`). The hosted server never signs: it returns unsigned transactions, and the member's local signer signs them.
+The mcp-server packages are not published to a registry. The Document Pipeline agent (deployed since 2026-10-16) posts escrows, signs and submits transactions, reads escrow lineage and verifies receipts. It builds, reads and verifies with the same code the hosted keyless MCP server uses: the same datum codecs, the same builders, the same lineage resolver and the same receipt verifier. It signs with `sign.ts` of the member's local signer package (`packages/signer`). The hosted server never signs: it returns unsigned transactions, and the member's local signer signs them.
 
 The datum codecs are not copied a second time. `@vsa/vector-read` carries `marketplace-datum.ts` (at `94b8f41`), and the copies here import it from there. Drift is caught twice: by `packages/vector-read/test/datum.test.ts` (the golden datum tests, the same as the source's) and by the sha256 column below, which `test/vendored.test.ts` checks in both directions: every row names a file whose sha256 matches, and every file under `src/vendored/` and `test/fixtures/` has a row.
 

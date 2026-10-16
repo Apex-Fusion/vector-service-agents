@@ -52,16 +52,17 @@ export function requiredEnv(name: string, v: string | undefined, what: string): 
   return v.trim();
 }
 const CHIPS = ['LIVE', 'DEPLOYED', 'PROPOSED'];
-// The status word: live, deployed or proposed in any case, carried in the manifest in lower case. Absent or empty means proposed: the Pipeline is built and
-// not yet deployed. A word above that is the operator's to set, by this variable, once it is true.
+// The status word: live, deployed or proposed in any case, carried in the manifest in lower case. Absent or empty means deployed: the word since 2026-10-16
+// (RUNBOOK-document-pipeline step 17). A first run, before any job has settled, sets proposed in the env file (step 4). A word above deployed is the
+// operator's to set, by this variable, once it is true.
 function statusChip(v: string | undefined): string {
-  if (v === undefined || v === '') return 'proposed';
+  if (v === undefined || v === '') return 'deployed';
   if (!CHIPS.includes(v.toUpperCase())) throw new Error(`environment variable AGENT_STATUS_CHIP must be one of ${CHIPS.join(', ')}, got ${shown(v)}`);
   return v.toLowerCase();
 }
-// The date the status word began, YYYY-MM-DD; absent or empty means 2026-10-13, the day the word PROPOSED began (ruling R52).
+// The date the status word began, YYYY-MM-DD; absent or empty means 2026-10-16, the day the word DEPLOYED began (ruling R52).
 function statusSince(v: string | undefined): string {
-  if (v === undefined || v.trim() === '') return '2026-10-13';
+  if (v === undefined || v.trim() === '') return '2026-10-16';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(v.trim())) throw new Error(`environment variable AGENT_STATUS_SINCE must be a date as YYYY-MM-DD, got ${shown(v)}`);
   return v.trim();
 }

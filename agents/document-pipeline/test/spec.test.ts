@@ -79,8 +79,10 @@ describe('specs/document-pipeline.md', () => {
     expect(spec.split('\n')[2]).toContain(m.description);
   });
 
-  test('the status word is the manifest\'s', () => {
+  test('the status word is the manifest\'s, and so is its date', () => {
     expect(section('Status').trimStart().startsWith(`${m.status.chip.toUpperCase()} (`)).toBe(true);
+    expect(section('Status')).toContain(`). Since ${m.status.since}.\n`); // the status line ends with the date the manifest carries
+    expect(m.status).toStrictEqual({ chip: 'deployed', since: '2026-10-16' });
   });
 
   test('the identity: the registry address, and both key hashes under keys', () => {

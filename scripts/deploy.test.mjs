@@ -10,7 +10,7 @@ import { parse as parseYaml } from 'yaml';
 // The deployment files of Agent History (Dockerfile, compose, env example, Caddy snippet, README, RUNBOOK, CI publish job) are read by a
 // host administrator and an operator who act on them. Docker is not needed here: these tests parse the files and keep them equal to each
 // other, to the service code, to the spec and to the design. docker compose config, docker build and caddy validate were run by hand.
-// The Document Pipeline (PROPOSED, built and not deployed) is held the same way: its four files, its section of the README and its CI lines are pinned in the
+// The Document Pipeline (DEPLOYED since 2026-10-16) is held the same way: its four files, its section of the README and its CI lines are pinned in the
 // last block of this file, and the walks above (names, dashes, the unit name, the status words) reach its files too.
 const root = fileURLToPath(new URL('../', import.meta.url));
 const read = (rel) => readFileSync(join(root, rel), 'utf8');
@@ -78,7 +78,7 @@ const UNIT_NAME = new RegExp('AP' + '3X', 'i');
 const NAMES = /\b(Filip|Blagojevi\w*|David|Cejtlin|Chris|Jerry|Armando|Andrej|Casl\w+|Nikola|Danielle|Tom Flynn)\b/i;
 // A path into someone's home folder names its owner too. Either separator: C:\Users\x is as much a path as C:/Users/x.
 const HOME_PATH = /C:[\\/]Users[\\/]|[\\/](Users|home)[\\/][A-Za-z]/;
-// The Document Pipeline is PROPOSED (built, not deployed), so its files say neither LIVE nor DEPLOYED anywhere. They sit in this list so that they get every rule below.
+// The Document Pipeline is DEPLOYED since 2026-10-16, so its files say DEPLOYED in their status lines and headers and LIVE nowhere. They sit in this list so that they get every rule below.
 const PIPELINE_FILES = ['deploy/apex-web/docker-compose.document-pipeline.yml', 'deploy/apex-web/.env.document-pipeline.example', 'deploy/apex-web/Caddyfile.document-pipeline.snippet', 'deploy/apex-web/RUNBOOK-document-pipeline.md'];
 const PUBLIC_FILES = ['deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md', 'deploy/apex-web/docker-compose.agent-history.yml', 'deploy/apex-web/.env.agent-history.example', 'deploy/apex-web/Caddyfile.snippet', 'agents/agent-history/Dockerfile', '.dockerignore', ...PIPELINE_FILES, 'agents/document-pipeline/Dockerfile'];
 
@@ -289,25 +289,35 @@ test('CI: the publish job runs on a push to main after the tests, logs in with G
   assert.equal(ci.jobs.test.steps.at(-1).run, 'pnpm test');
 });
 
-test('README, RUNBOOK, compose file and Caddy snippet: Agent History is DEPLOYED since 2026-10-15 and nothing is LIVE; the Pipeline files say neither word; no dash, no unit name, no person named', () => {
+test('README, RUNBOOK, compose file and Caddy snippet: Agent History is DEPLOYED since 2026-10-15 and the Document Pipeline since 2026-10-16, nothing is LIVE; no dash, no unit name, no person named', () => {
   const STATUS = 'Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE.';
-  // The second line of the compose file and of the Caddy snippet says what happened on the box.
+  // The Pipeline is the second stack of the box: its section of the README and its runbook carry its own status line, DEPLOYED since 2026-10-16 (RUNBOOK-document-pipeline.md step 17).
+  const P_README_STATUS = 'Status: DEPLOYED since 2026-10-16. Nothing in this section is LIVE.';
+  const P_RUNBOOK_STATUS = 'Status: DEPLOYED since 2026-10-16. Nothing in this folder is LIVE.';
+  const STATUS_LINES = { 'deploy/apex-web/README.md': [STATUS, P_README_STATUS], 'deploy/apex-web/RUNBOOK.md': [STATUS], 'deploy/apex-web/RUNBOOK-document-pipeline.md': [P_RUNBOOK_STATUS] };
+  // The second line of each compose file and Caddy snippet says what happened on the box, and so does the third line of the Pipeline's env example.
   const HEADER = {
     'deploy/apex-web/docker-compose.agent-history.yml': '# DEPLOYED since 2026-10-15: installed and running on the box since 2026-10-14; one first-party job settled on 2026-10-15. ',
     'deploy/apex-web/Caddyfile.snippet': '# DEPLOYED since 2026-10-15: installed and running on the box. It was installed on 2026-10-14 by ',
+    'deploy/apex-web/docker-compose.document-pipeline.yml': '# DEPLOYED since 2026-10-16: installed and running on the box since 2026-10-16; one first-party job settled on 2026-10-16. ',
+    'deploy/apex-web/Caddyfile.document-pipeline.snippet': '# DEPLOYED since 2026-10-16: installed and running on the box. It was installed on 2026-10-16, at step 10 of RUNBOOK-document-pipeline.md, by ',
+    'deploy/apex-web/.env.document-pipeline.example': '# Status: DEPLOYED since 2026-10-16. ',
   };
   for (const rel of PUBLIC_FILES) {
     const text = read(rel);
     assert.doesNotMatch(text, DASHES, `${rel}: no em or en dash`);
     assert.doesNotMatch(text, UNIT_NAME, `${rel}: the unit is called units`);
     assert.doesNotMatch(text, NAMES, `${rel}: roles, not people`);
-    // LIVE is never claimed. DEPLOYED is said in the status line of the README and the RUNBOOK and in the second line of the compose file and the Caddy snippet, and nowhere else.
-    assert.doesNotMatch(text.replace(STATUS, '').replace(HEADER[rel] ?? '', ''), /\b(LIVE|DEPLOYED)\b/, `${rel}: no status claim beyond the status line`);
+    // LIVE is never claimed. DEPLOYED is said in the status lines of the READMEs and the RUNBOOKs, in the second line of each compose file and Caddy snippet and in the third line of the Pipeline's env example, and nowhere else.
+    const rest = (STATUS_LINES[rel] ?? []).reduce((acc, line) => acc.replace(line, ''), text).replace(HEADER[rel] ?? '', '');
+    assert.doesNotMatch(rest, /\b(LIVE|DEPLOYED)\b/, `${rel}: no status claim beyond the status line`);
   }
   for (const rel of ['deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md']) assert.ok(read(rel).includes(STATUS), rel);
+  assert.ok(read('deploy/apex-web/README.md').includes(`\n## Document Pipeline on the same box\n\n${P_README_STATUS} `), 'the section of the Pipeline opens with its own status line');
+  assert.ok(read('deploy/apex-web/RUNBOOK-document-pipeline.md').split('\n')[2].startsWith(`${P_RUNBOOK_STATUS} `), 'the runbook of the Pipeline opens with its status line');
   assert.equal(readme.split('\n')[2], `${STATUS} Steps 1 to 15 and 17 of the runbook were run on 2026-10-14 and 2026-10-15. Step 16, the wallet monitor, is not used for this agent (operator's decision, 2026-10-15).`);
-  for (const [rel, header] of Object.entries(HEADER)) assert.ok(read(rel).split('\n')[1].startsWith(header), `${rel}: the second line says what happened on the box`);
-  assert.doesNotMatch(read('deploy/apex-web/docker-compose.agent-history.yml') + snippet, /PROPOSED/);
+  for (const [rel, header] of Object.entries(HEADER)) assert.ok(read(rel).split('\n')[rel.endsWith('.example') ? 2 : 1].startsWith(header), `${rel}: the line says what happened on the box`);
+  assert.doesNotMatch(read('deploy/apex-web/docker-compose.agent-history.yml') + snippet + read('deploy/apex-web/docker-compose.document-pipeline.yml') + read('deploy/apex-web/Caddyfile.document-pipeline.snippet'), /PROPOSED/);
 });
 
 test('RUNBOOK: the status line says that steps 1 to 17 were run on 2026-10-14 and 2026-10-15, the step texts stay instructions, and a first run is told to start with the earlier word', () => {
@@ -330,7 +340,7 @@ test('RUNBOOK: the status line says that steps 1 to 17 were run on 2026-10-14 an
 test('no individual name, and no personal address, on any public surface: the manifest template, the service source, the specs, the guides, both READMEs and the planning documents', () => {
   // The planning documents (docs/superpowers) are tracked and go public with the repository, so they are held to the same rule.
   const planning = readdirSync(join(root, 'docs/superpowers'), { recursive: true }).filter((f) => f.endsWith('.md')).map((f) => `docs/superpowers/${f.split(sep).join('/')}`);
-  assert.equal(planning.length, 3, `the design spec and the two plans: ${planning.join(', ')}`);
+  assert.equal(planning.length, 4, `the design spec and the three plans: ${planning.join(', ')}`);
   const files = [
     ...PUBLIC_FILES, 'agents/agent-history/agent.json.template', 'agents/agent-history/README.md', 'README.md', 'docs/HIRE.md', 'docs/E2E.md',
     ...sourceFiles('agents/agent-history/src'),
@@ -507,29 +517,22 @@ test('RUNBOOK step 17: the last item names the files that said PROPOSED about Ag
   for (const [, named] of item8.matchAll(/`([A-Za-z0-9_.\/-]+\.(?:md|yml|snippet|example|ts|mjs|template))`/g)) assert.ok(existsSync(join(root, named)), `item 8 names a file that exists: ${named}`);
 });
 
-// ---- The status words after the flip of 2026-10-15 ----
-// Agent History is DEPLOYED. Document Pipeline (built, not deployed) and the two agents that are not built are PROPOSED. Nothing here is LIVE.
-// A line that says PROPOSED has to be one of the lines below, so the word cannot come back for Agent History; a line that says LIVE has to deny it.
-test('status words: no file says PROPOSED about Agent History, and no file says LIVE except to deny it', () => {
-  const OTHER_AGENTS = ['specs/document-pipeline.md', 'specs/audio-snippets.md', 'specs/advocate.md'];
+// ---- The status words after the flips of 2026-10-15 and 2026-10-16 ----
+// Agent History and Document Pipeline are DEPLOYED. The two agents that are not built are PROPOSED. Nothing here is LIVE.
+// A line that says PROPOSED has to be one of the lines below, so the word cannot come back for Agent History or Document Pipeline; a line that says LIVE has to deny it.
+test('status words: no file says PROPOSED about Agent History or Document Pipeline, and no file says LIVE except to deny it', () => {
+  const OTHER_AGENTS = ['specs/audio-snippets.md', 'specs/advocate.md'];
   // What may still say PROPOSED outside the specs of the agents that are not built: their rows in the table of the root README, the rule that lists the three words,
-  // the marketplace tools in the Interface section of the spec (the tools, not the agent), the status line of the README of the Document Pipeline (built, not
-  // deployed), and two instructions of the runbook that speak for the order of a first run.
+  // the marketplace tools in the Interface section of the spec (the tools, not the agent), and the instructions of the two runbooks that speak for the order of a first run.
   const PROPOSED_OK = {
-    'README.md': [/^\| (Document Pipeline|Audio Snippets|Advocate) \| `[a-z.0-9-]+` \| PROPOSED \|$/],
+    'README.md': [/^\| (Audio Snippets|Advocate) \| `[a-z.0-9-]+` \| PROPOSED \|$/],
     'agents/agent-history/README.md': [/`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./],
-    'agents/document-pipeline/README.md': [/^Status: PROPOSED \(built, not deployed\)\. Since 2026-10-13\. /],
     'specs/agent-history.md': [/^The marketplace MCP tools \(PROPOSED\) and the template's buyer, /],
     'deploy/apex-web/RUNBOOK.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about Agent History/],
-    // The second stack of the box, the Document Pipeline: PROPOSED (built, not deployed) since 2026-10-13. Its section of the README, its four files and nothing else.
-    'deploy/apex-web/README.md': [/^Status: PROPOSED \(built, not deployed\)\. Since 2026-10-13\. /],
-    'deploy/apex-web/RUNBOOK-document-pipeline.md': [/^Status: PROPOSED \(built, not deployed\)\. Since 2026-10-13\. /, /The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about the Document Pipeline/],
-    'deploy/apex-web/docker-compose.document-pipeline.yml': [/^# PROPOSED \(built, not deployed\)\. Since 2026-10-13\. /],
-    'deploy/apex-web/Caddyfile.document-pipeline.snippet': [/^# PROPOSED \(built, not deployed\)\. Since 2026-10-13\. /],
-    'deploy/apex-web/.env.document-pipeline.example': [/^# Status: PROPOSED \(built, not deployed\)\. Since 2026-10-13\. /],
+    'deploy/apex-web/RUNBOOK-document-pipeline.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about the Document Pipeline/],
   };
   // What may say LIVE: the sentence that denies it, and the rule that lists the three words.
-  const LIVE_OK = [/Nothing (on this page|in this guide|in this folder) is LIVE( or DEPLOYED)?\./, /`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./];
+  const LIVE_OK = [/Nothing (on this page|in this guide|in this folder|in this section) is LIVE( or DEPLOYED)?\./, /`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./];
   const files = repoFiles().filter((f) => /(\.md|\.yml|Caddyfile\.snippet|Caddyfile\.[a-z-]+\.snippet|\.example|\.template)$/.test(f));
   for (const f of ['specs/agent-history.md', 'specs/advocate.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md', 'deploy/apex-web/RUNBOOK.md', 'deploy/apex-web/README.md', 'deploy/apex-web/docker-compose.agent-history.yml', 'deploy/apex-web/Caddyfile.snippet', 'deploy/apex-web/.env.agent-history.example', 'agents/agent-history/agent.json.template', ...PIPELINE_FILES]) assert.ok(files.includes(f), `${f} is walked`);
   for (const f of files) {
@@ -540,12 +543,14 @@ test('status words: no file says PROPOSED about Agent History, and no file says 
   // The values the manifest and the env example carry are neither proposed nor live.
   assert.match(exampleText, /^AGENT_STATUS_CHIP=deployed$/m);
   assert.deepEqual(JSON.parse(read('agents/agent-history/agent.json.template')).status, { chip: 'deployed', since: '2026-10-15' });
-  // Audio Snippets and Advocate are not built and are PROPOSED, each in its own spec. Document Pipeline is built and not deployed: PROPOSED too, with the qualifier in its line.
+  assert.match(read('deploy/apex-web/.env.document-pipeline.example'), /^AGENT_STATUS_CHIP=deployed$/m);
+  assert.deepEqual(JSON.parse(read('agents/document-pipeline/agent.json.template')).status, { chip: 'deployed', since: '2026-10-16' });
+  // Audio Snippets and Advocate are not built and are PROPOSED, each in its own spec. Document Pipeline is DEPLOYED since 2026-10-16, in the line of its spec.
   for (const f of ['specs/audio-snippets.md', 'specs/advocate.md']) assert.match(read(f), /^PROPOSED \(not built\)\. Since 2026-10-13\.$/m, f);
-  assert.match(read('specs/document-pipeline.md'), /^PROPOSED \(built, not deployed\)\. Since 2026-10-13\.$/m);
-  // The specs that open a line with PROPOSED are the three this test lets say it anywhere: read from the specs folder, so that a fourth spec, or a spec that drops the word, is seen.
+  assert.match(read('specs/document-pipeline.md'), /^DEPLOYED \(registered and staked 2026-10-16, advertised 2026-10-16, re-advertised 2026-10-16 at the status flip, one first-party job settled 2026-10-16\)\. Since 2026-10-16\.$/m);
+  // The specs that open a line with PROPOSED are the two this test lets say it anywhere: read from the specs folder, so that a third spec, or a spec that drops the word, is seen.
   const proposed = readdirSync(join(root, 'specs')).filter((f) => /^PROPOSED \(/m.test(read(`specs/${f}`))).map((f) => `specs/${f}`).sort();
-  assert.deepEqual(proposed, [...OTHER_AGENTS].sort(), 'the specs that say PROPOSED are the three that may say it anywhere');
+  assert.deepEqual(proposed, [...OTHER_AGENTS].sort(), 'the specs that say PROPOSED are the two that may say it anywhere');
 });
 
 test('RUNBOOK: Back out retires the advert first with the supplier key, then stops the services, then the host administrator removes the Caddy block', () => {
@@ -609,8 +614,8 @@ test('agent README: the Image section says the publish job pushes on merge to ma
 });
 
 // ======================================================================================================================================
-// The Document Pipeline (PROPOSED): the second stack on the same box.
-// PROPOSED (built, not deployed) since 2026-10-13. Nothing here has run on the box. The four files, the section of the README and the CI lines are held to each other,
+// The Document Pipeline (DEPLOYED since 2026-10-16): the second stack on the same box.
+// Built on 2026-10-15; steps 1 to 15 and 17 of its runbook were run on 2026-10-16. The four files, the section of the README and the CI lines are held to each other,
 // to the service code, to the spec, and to the Agent History files they follow. docker compose config, docker build and caddy validate are run by hand.
 // ======================================================================================================================================
 const PSPEC = read('specs/document-pipeline.md');
@@ -649,7 +654,7 @@ const P_ADVERT = ['ADVERT_REF', 'ADVERT_CAPABILITY_ID', 'ADVERT_MODEL', 'ADVERT_
 const P_MANIFEST = ['OPERATOR_CONTACT', 'AGENT_DID', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_EXPLORER_URL'];
 const P_HIRES = ['OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST'];
 const P_STEPS = ['Put the files on the box', 'Build the service image and pin it', 'Build the runtime image', 'Make the env file and generate the two keys', 'Adapt the ops scripts', 'Fund the two wallets', 'Register the identity', 'Stake in Module-3', 'Start the service', 'DNS and Caddy', 'Hash the manifest', 'Post the advert', 'Start the runtime', 'Check the advert on the indexer', 'The first-party run', 'Wallet monitor', 'Flip the status'];
-const P_STATUS = 'PROPOSED (built, not deployed). Since 2026-10-13. ';
+const P_STATUS = 'DEPLOYED since 2026-10-16';
 
 test('Pipeline compose: the project and two containers have fixed names, the runtime is on loopback port 8084, the service is published nowhere, both are on the shared network and need the env file', () => {
   assert.equal(pCompose.name, 'document-pipeline');
@@ -907,15 +912,17 @@ test('Pipeline env example: the chain values are those of Agent History, the adv
   assert.ok(PREADME.includes(`| \`OCR_ALLOWLIST_SUPPLIER_PKH\` | the key hash of the one OCR supplier the Pipeline hires | \`${OCR_DEFAULT}\` |`), 'the README of the agent gives the same default');
 });
 
-test('Pipeline env example: the status word is proposed since 2026-10-13, and the manifest it produces is the default manifest of the service', () => {
-  assert.equal(pExample.AGENT_STATUS_CHIP, 'proposed');
-  assert.equal(pExample.AGENT_STATUS_SINCE, '2026-10-13');
+test('Pipeline env example: the status word is deployed since 2026-10-16, and the manifest it produces is the default manifest of the service', () => {
+  assert.equal(pExample.AGENT_STATUS_CHIP, 'deployed', 'the advert is Active and one first-party job has settled (step 17), which shows that the path works and is not demand, so nothing may claim live');
+  assert.equal(pExample.AGENT_STATUS_SINCE, '2026-10-16');
   assert.notEqual(pExample.AGENT_STATUS_SINCE, '', 'an empty AGENT_STATUS_SINCE is refused by the service');
-  assert.match(pExampleText, /^# The status word the manifest carries, and since when: proposed since 2026-10-13, built and not deployed\. It changes only after the advert is Active and a first-party job has settled \(RUNBOOK-document-pipeline\.md step 17, "Flip the status"\)\. A first-party run is not demand, so the word is not live on that account\.$/m);
+  // The comment says what the word is, who changes it, and what a first run starts with.
+  assert.match(pExampleText, /^# The status word the manifest carries, and since when: deployed since 2026-10-16, after the advert was Active and a first-party job had settled \(RUNBOOK-document-pipeline\.md step 17, "Flip the status"\)\. A first-party run is not demand, so the word is not live\.$/m);
+  assert.match(pExampleText, /^# On a first run, before any job has settled, set proposed and today's date here; step 17 changes them\.$/m);
   const [withExample, withNothing] = renderManifests([{ ...withoutPlaceholders(pExample), OPERATOR_CONTACT: TEST_CONTACT }, { OPERATOR_CONTACT: TEST_CONTACT }], 'agents/document-pipeline');
   assert.deepEqual(withExample, withNothing, 'the example changes nothing in the manifest the advert will hash');
   assert.equal(withExample.operator.contact, TEST_CONTACT);
-  assert.deepEqual(withExample.status, { chip: 'proposed', since: '2026-10-13' });
+  assert.deepEqual(withExample.status, { chip: 'deployed', since: '2026-10-16' });
   assert.equal(withExample.links.explorer_advert, '');
   assert.equal(withExample.terms.price_lovelace, P_TERMS.price);
   assert.equal(withExample.terms.max_processing_ms, P_TERMS.window);
@@ -958,17 +965,20 @@ test('Pipeline Caddy snippet: the site block is the second endpoint host, the ma
   assert.doesNotMatch(block, /history/);
 });
 
-test('Pipeline files: each says PROPOSED (built, not deployed), since 2026-10-13, in its own first lines, and the compose file, the snippet, the runbook and the README section say that nothing is installed or run', () => {
-  assert.ok(pComposeText.split('\n')[1].startsWith(`# ${P_STATUS}Nothing of it is installed or running on the box. The order of work is RUNBOOK-document-pipeline.md. The host administrator's part is README.md.`));
-  assert.ok(pSnippet.split('\n')[1].startsWith(`# ${P_STATUS}Not installed: the block is merged at step 10 of RUNBOOK-document-pipeline.md by a copy of /opt/agent-history/ops/install-caddy-route.sh, which merges it and reloads Caddy (README.md).`));
-  assert.equal(pExampleText.split('\n')[2], `# Status: ${P_STATUS}The status word the manifest carries is AGENT_STATUS_CHIP below.`);
-  assert.equal(pRunbook.split('\n')[2], `Status: ${P_STATUS}This runbook says what will happen, in order. No step of it has been run.`);
-  assert.ok(pSection.split('\n')[1].startsWith(`Status: ${P_STATUS}Nothing in this section is installed on the box.`));
+test('Pipeline files: each says DEPLOYED since 2026-10-16 in its own first lines, the compose file and the snippet say that the stack is installed and running, the runbook and the README section say which steps were run, and none says LIVE or that nothing is installed', () => {
+  assert.ok(pComposeText.split('\n')[1].startsWith(`# ${P_STATUS}: installed and running on the box since 2026-10-16; one first-party job settled on 2026-10-16. The order of work is RUNBOOK-document-pipeline.md. The host administrator's part is README.md.`));
+  assert.ok(pSnippet.split('\n')[1].startsWith(`# ${P_STATUS}: installed and running on the box. It was installed on 2026-10-16, at step 10 of RUNBOOK-document-pipeline.md, by a copy of /opt/agent-history/ops/install-caddy-route.sh, which merges it and reloads Caddy (README.md).`));
+  assert.equal(pExampleText.split('\n')[2], `# Status: ${P_STATUS}. The status word the manifest carries is AGENT_STATUS_CHIP below.`);
+  assert.equal(pRunbook.split('\n')[2], `Status: ${P_STATUS}. Nothing in this folder is LIVE. This runbook says what happens, in order. Steps 1 to 15 and 17 were run on 2026-10-16, and the first stop was watched the same day (the service was idle, the stop took 1 s, the exit code was 0). Step 16, the wallet monitor, is not used for this agent, as for Agent History.`);
+  assert.ok(pSection.split('\n')[1].startsWith(`Status: ${P_STATUS}. Nothing in this section is LIVE. Steps 1 to 15 and 17 of its runbook were run on 2026-10-16. Step 16, the wallet monitor, is not used for this agent, as for Agent History. The files are `));
+  // DEPLOYED is said in those lines and nowhere else (the test of the status lines of the folder holds that); LIVE is only ever denied, and the words of before the flip are gone.
   for (const rel of PIPELINE_FILES) {
     const text = read(rel);
-    assert.doesNotMatch(text, /\b(LIVE|DEPLOYED)\b/, `${rel}: the Pipeline is neither`);
+    assert.doesNotMatch(text.replace('Nothing in this folder is LIVE.', ''), /\bLIVE\b/, `${rel}: the Pipeline is never live`);
+    assert.doesNotMatch(text, /Nothing of it is installed|Not installed:|No step of it has been run|built, not deployed|what will happen/, `${rel}: the words of before the flip`);
   }
-  assert.doesNotMatch(pSection, /\b(LIVE|DEPLOYED)\b/);
+  assert.doesNotMatch(pSection.replace('Nothing in this section is LIVE.', ''), /\bLIVE\b/);
+  assert.doesNotMatch(pSection, /Nothing in this section is installed|built, not deployed/);
 });
 
 test('Pipeline README section: the second stack beside Agent History, with its two containers, the loopback port, the unpublished service port, the volume, the limits, the second hostname, the Caddy block and the way back', () => {
@@ -1127,7 +1137,7 @@ test('Pipeline RUNBOOK step 4: the env file is made once and never over a file t
     'privateKeyHex:${1}_PRIV_KEY_HEX publicKeyHex:${1}_PUB_KEY_HEX pubKeyHash:${1}_PKH address:${1}_ADDRESS',
     "awk -F= '/^(SUPPLIER|PIPELINE_BUYER)_(PRIV_KEY_HEX|PUB_KEY_HEX|PKH|ADDRESS)=|^SERVICE_AUTH_HEADER=/ { v = $2; gsub(/\"/, \"\", v); print $1, length(v) }' .env.document-pipeline",
     "grep -c '^OPERATOR_CONTACT=[^<[:space:]]' .env.document-pipeline", "never a person's address", '`OPERATOR_CONTACT` is required',
-    'The example already carries `AGENT_STATUS_CHIP=proposed` and `AGENT_STATUS_SINCE=2026-10-13`',
+    'The example also carries the current status word and its date in `AGENT_STATUS_CHIP` and `AGENT_STATUS_SINCE`. On a first run, before any job has settled, set them to `proposed` and today\'s date: the status can honestly change only in step 17.',
     'this file is the only copy of either until step 7. There is no recovery phrase',
     "Copy `.env.document-pipeline` to the operator's encrypted offline store now, before either address receives anything, and copy it again after any regeneration of a key or of the token: a copy made before holds the old key, and the new one has no copy at all.",
     'Step 7 writes a second plaintext copy of the supplier key to the directory `/opt/document-pipeline/ops/wallet`',
@@ -1434,7 +1444,7 @@ test('Pipeline RUNBOOK step 9: the service is started by name after the pin is c
     "docker exec document-pipeline-service sh -c 'pdfinfo -v 2>&1 | head -1; pdftoppm -v 2>&1 | head -1'",
     '`200 {"ok":true}`', '`503 {"ok":false,"reason":"insufficient_float"}`',
     'the role address of step 4 in `operator.contact`', 'the new DID in `identity.did`', 'the key hash in `identity.controller_pkh` and `keys.supplier_pkh`', 'the public key in `keys.pub_key_hex`',
-    'the key hash of the buyer key in `keys.buyer_pkh`', '`status.chip` `proposed`', 'an empty `links.explorer_advert`', "The advert's hash will cover exactly these bytes.",
+    'the key hash of the buyer key in `keys.buyer_pkh`', '`status.chip` and `status.since`', 'an empty `links.explorer_advert`', "The advert's hash will cover exactly these bytes.",
     'asks `pdfinfo` and `pdftoppm` for their version before it listens', 'a `listening on` line means both ran',
     // R50: a call without the token is refused before its body is read, and the service does not start without a token.
     "docker exec document-pipeline-service node -e \"fetch('http://127.0.0.1:9092/', { method: 'POST', body: 'x' }).then(async (r) => console.log(r.status, await r.text()))\"",
@@ -1449,8 +1459,9 @@ test('Pipeline RUNBOOK step 9: the service is started by name after the pin is c
   const startup = START.match(/listening on \$\{config\.host\}:\$\{port\}; buyer address \$\{config\.buyer\.address\}; state directory \$\{config\.stateDir\}/);
   assert.ok(startup, 'the start line of the code');
   assert.ok(nine.includes('[document-pipeline] listening on 0.0.0.0:9092; buyer address <the buyer address of step 4>; state directory /data'));
-  // The status the manifest must show is the example's: proposed since 2026-10-13 (ruling R52).
-  assert.ok(nine.includes(`\`status.chip\` \`proposed\` and \`status.since\` \`${pExample.AGENT_STATUS_SINCE}\` as the env file sets them (step 4)`));
+  // The status the manifest must show is the env file's, whatever word it holds (a first run starts with proposed and step 17 flips it, ruling R52): step 9 pins no word and no date.
+  assert.ok(nine.includes('`status.chip` and `status.since` as the env file sets them (step 4), and an empty `links.explorer_advert`.'));
+  assert.doesNotMatch(nine, /status\.chip` `proposed`|2026-10-13/);
   assert.ok(read('agents/document-pipeline/src/server.ts').includes('console.log(`[document-pipeline] ${line}`)'));
   const [m] = renderManifests([{ OPERATOR_CONTACT: TEST_CONTACT }], 'agents/document-pipeline');
   for (const path of ['operator.contact', 'identity.did', 'identity.controller_pkh', 'keys.supplier_pkh', 'keys.pub_key_hex', 'keys.buyer_pkh', 'status.chip', 'status.since', 'links.explorer_advert']) assert.ok(path.split('.').reduce((o, k) => o?.[k], m) !== undefined, `the manifest has ${path}`);
@@ -1647,8 +1658,27 @@ test('Pipeline RUNBOOK step 17: the old advert is retired before the service res
   assert.ok(item8.includes('change every file that says PROPOSED about the Document Pipeline'));
   assert.ok(item8.includes('and leave the other three agents\' lines alone'));
   for (const [, named] of item8.matchAll(/`([A-Za-z0-9_.\/-]+\.(?:md|yml|snippet|example|ts|mjs|template))`/g)) assert.ok(existsSync(join(root, named)), `item 8 names a file that exists: ${named}`);
-  // The word is carried as a default by the code, as the item says.
-  assert.ok(read('agents/document-pipeline/src/server.ts').includes("return 'proposed';"));
+  // The word is carried as a default by the code, as the item says: deployed since the flip of 2026-10-16.
+  assert.ok(read('agents/document-pipeline/src/server.ts').includes("return 'deployed';") && read('agents/document-pipeline/src/server.ts').includes("return '2026-10-16';"));
+  assert.equal(read('agents/document-pipeline/src/server.ts').includes("return 'proposed';"), false);
+});
+
+test('Pipeline RUNBOOK: steps 1 to 15 and 17 were run on 2026-10-16 and step 16 is not used, the step texts stay instructions (step 7 quotes no row that is gone), and a first run is told to start with the earlier word', () => {
+  assert.equal(pRunbook.match(/No step of it has been run|what will happen/), null);
+  // The first stop was watched the same day (the section "Watch the first stop" says what to expect: the log line, and the exit code 0).
+  assert.ok(pRunbook.split('\n')[2].includes('and the first stop was watched the same day (the service was idle, the stop took 1 s, the exit code was 0).'));
+  assert.ok(section(pRunbook, 'Watch the first stop').includes('and the exit code is `0`.'));
+  // Step 7 asks for the pull request that records the identity: it names the rows as they are after it (the Registry record row, and the sentence that says the agent has a registry record).
+  const seven = section(pRunbook, '7. Register the identity');
+  assert.ok(seven.includes('(the DID row, the "Registry record" row and the sentence that says the agent has a registry record)'));
+  assert.equal(seven.includes('Registry record, planned') || seven.includes('no registry record yet'), false);
+  // Step 12 asks for the explorer link of the advert and for the rows that still say "planned" or "not in service": an instruction, so it still names them. The status word stays PROPOSED until step 17.
+  const twelve = section(pRunbook, '12. Post the advert');
+  assert.ok(twelve.includes('refresh the rows of the Identity table that still say "planned" or "not in service"'));
+  assert.ok(twelve.includes('The status word stays PROPOSED until step 17.'));
+  assert.ok(section(pRunbook, '16. Wallet monitor').startsWith('\nNot used for this agent, as for Agent History'));
+  // Step 14 names no word and no job, so it stays right after the flip too.
+  assert.doesNotMatch(section(pRunbook, '14. Check the advert on the indexer'), /PROPOSED|no job has settled/);
 });
 
 test('Pipeline RUNBOOK Back out: the advert first with the supplier key, then the service finishes what it holds, then the containers stop with the state volume kept, then the Caddy block, then the keys', () => {
