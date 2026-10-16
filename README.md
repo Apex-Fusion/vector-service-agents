@@ -27,6 +27,8 @@ The supplier is first-party and the contracts have no third-party audit. Accept 
 
 Document Pipeline reads a document and is hired the same way: `docs/HIRE.md` section 5 shows what changes.
 
+Audio Snippets is built and waits for its deployment.
+
 - Hire one: `docs/HIRE.md`
 - Our own first-party end-to-end run: `docs/E2E.md` and `scripts/e2e-hire.mjs`
 - Putting Agent History on the deployment host: `deploy/host/README.md` (host administrator) and `deploy/host/RUNBOOK.md` (operator)

@@ -69,6 +69,26 @@ export E2E_STATE=./e2e-state-pipeline.json
 
 Then run the rehearsal and the run as above. With the key-file wrapper, export these settings in the shell first: it passes the environment on, and its default `ADVERT_REF` is the Agent History advert. The `capability_id` of the evidence is the Pipeline's, and its `result` is the bundle of the Pipeline as JSON text, which the receipt check takes untouched, as for Agent History. Add the run to the Results table with Document Pipeline in the Agent column. It is first-party and it is not demand.
 
+## Hiring Audio Snippets
+
+Audio Snippets is built and has no advert: its runbook, [deploy/host/RUNBOOK-audio-snippets.md](../deploy/host/RUNBOOK-audio-snippets.md), posts one in step 12 and makes this run in step 15. A first-party run of it uses these settings in place of the advert and the request of Agent History, in the shell that holds the key.
+
+```bash
+export CAPABILITY_ID=audio.transcript.snippets.v1
+export ADVERT_REF=<txid>#<index>
+export PAYLOAD='{"source":{"url":"<https URL of a short public-domain mp3>"},"language":"en","quotes":["All LibriVox recordings are in the public domain."]}'
+export E2E_POLL_MS=10000
+export E2E_STATE=./e2e-state-snippets.json
+```
+
+- `CAPABILITY_ID` is the capability of the advert of Audio Snippets. Without it the script looks for the advert among the free suppliers of Agent History's capability and stops before it posts anything.
+- `PAYLOAD` is the request JSON for a short public-domain recording. A LibriVox recording says that sentence in its preamble, so the run shows a match. The service fetches the URL itself and refuses a redirect: a download link of archive.org redirects to the server that holds the file, so give the address it redirects to. The request asks for no clips, so that the answer stays under the 1000000 bytes the hosted server reads of it.
+- `E2E_POLL_MS=10000`: a job can take far longer than the seconds of Agent History's, up to the 25 min window, and the default pause of 5 s would ask the hosted server about 300 times in 25 minutes.
+- `E2E_STATE=./e2e-state-snippets.json`: a state file belongs to one run, and the script refuses one that belongs to another, so this run does not use the file of an earlier run.
+- The script polls until `deliver_by`, which is 28 minutes after the Post (the 25 min window and 180 s).
+
+Then run the rehearsal and the run as above, and add the run to the Results table with Audio Snippets in the Agent column. It is first-party and it is not demand.
+
 ## What the script does
 
 1. Connects to the builder and the signer and lists the tools of both. It stops with exit code 3 and names what is missing. It needs the nine marketplace tools, `vector_submit_transaction` and `vector_await_transaction` on the builder, and `vector_signer_get_address` and `vector_signer_sign` on the signer. All nine marketplace tools are required, because a hire without the reclaim tool can strand the lock of an escrow. Every argument it sends is checked against the schema the tool publishes: an argument the server would drop without a word, or one the server requires and the script does not send, stops the run instead. A fresh run holds every call it will make against those schemas before it builds the first transaction, so a tool whose arguments have changed stops the run before any value moves.

@@ -528,7 +528,7 @@ test('RUNBOOK step 17: the last item names the files that said PROPOSED about Ag
 test('status words: no file says PROPOSED about Agent History or Document Pipeline, and no file says LIVE except to deny it', () => {
   const OTHER_AGENTS = ['specs/audio-snippets.md', 'specs/advocate.md'];
   // Audio Snippets is built and PROPOSED until step 17 of its runbook: its four files say the word in their status lines and their instructions.
-  const SNIPPETS_FILES = ['deploy/host/docker-compose.audio-snippets.yml', 'deploy/host/.env.audio-snippets.example', 'deploy/host/Caddyfile.audio-snippets.snippet', 'deploy/host/RUNBOOK-audio-snippets.md'];
+  const SNIPPETS_FILES = ['deploy/host/docker-compose.audio-snippets.yml', 'deploy/host/.env.audio-snippets.example', 'deploy/host/Caddyfile.audio-snippets.snippet', 'deploy/host/RUNBOOK-audio-snippets.md', 'agents/audio-snippets/README.md'];
   // What may still say PROPOSED outside the specs of the agents that are not built: their rows in the table of the root README, the rule that lists the three words,
   // the marketplace tools in the Interface section of the spec (the tools, not the agent), and the instructions of the two runbooks that speak for the order of a first run.
   const PROPOSED_OK = {
@@ -553,8 +553,10 @@ test('status words: no file says PROPOSED about Agent History or Document Pipeli
   assert.deepEqual(JSON.parse(read('agents/agent-history/agent.json.template')).status, { chip: 'deployed', since: '2026-10-15' });
   assert.match(read('deploy/host/.env.document-pipeline.example'), /^AGENT_STATUS_CHIP=deployed$/m);
   assert.deepEqual(JSON.parse(read('agents/document-pipeline/agent.json.template')).status, { chip: 'deployed', since: '2026-10-16' });
-  // Audio Snippets and Advocate are not built and are PROPOSED, each in its own spec. Document Pipeline is DEPLOYED since 2026-10-16, in the line of its spec.
-  for (const f of ['specs/audio-snippets.md', 'specs/advocate.md']) assert.match(read(f), /^PROPOSED \(not built\)\. Since 2026-10-13\.$/m, f);
+  // Advocate is not built and is PROPOSED, and so is Audio Snippets, which is built; each in its own spec. Document Pipeline is DEPLOYED since 2026-10-16, in the line of its spec.
+  assert.match(read('specs/advocate.md'), /^PROPOSED \(not built\)\. Since 2026-10-13\.$/m);
+  // Audio Snippets is built, and PROPOSED until step 17 of its runbook.
+  assert.match(read('specs/audio-snippets.md'), /^PROPOSED \(built, not deployed\)\. Since 2026-10-13\.$/m);
   assert.match(read('specs/document-pipeline.md'), /^DEPLOYED \(registered and staked 2026-10-16, advertised 2026-10-16, re-advertised 2026-10-16 at the status flip, one first-party job settled 2026-10-16\)\. Since 2026-10-16\.$/m);
   // The specs that open a line with PROPOSED are the two this test lets say it anywhere: read from the specs folder, so that a third spec, or a spec that drops the word, is seen.
   const proposed = readdirSync(join(root, 'specs')).filter((f) => /^PROPOSED \(/m.test(read(`specs/${f}`))).map((f) => `specs/${f}`).sort();
@@ -2569,6 +2571,9 @@ test('Snippets RUNBOOK step 15 and the first stop: a request the service accepts
   assert.deepEqual(parsed, { source: { url: 'https://example.org/preamble.mp3' }, language: 'en', quotes: ['All LibriVox recordings are in the public domain.'], return_clips: false, clip_format: 'mp3' });
   for (const part of ['- `CAPABILITY_ID=audio.transcript.snippets.v1`.', '- `E2E_POLL_MS=10000`.', '- `E2E_STATE=./e2e-state-snippets.json`.', 'its section "Hiring Audio Snippets" lists them', '`[audio-snippets] job done in <ms> ms: <s> s of media; matches 1, unmatched 0, clips 0`']) assert.ok(s15.includes(part), part);
   assert.ok(S_SERVER.includes('log(`job done in ${deps.clock() - arrivedAt} ms: ${result.source.duration_s} s of media; matches ${result.matches.length}, unmatched ${result.unmatched.length}, clips ${result.clips.length}`);'));
+  // docs/E2E.md carries the same settings: the request JSON, the pause and the state file are written alike in both.
+  const e2e = section(read('docs/E2E.md'), 'Hiring Audio Snippets');
+  for (const setting of [m[1], 'export CAPABILITY_ID=audio.transcript.snippets.v1', 'export E2E_POLL_MS=10000', 'export E2E_STATE=./e2e-state-snippets.json']) assert.ok(e2e.includes(setting), `docs/E2E.md has the setting: ${setting}`);
   const stop = section(sRunbook, 'Watch the first stop');
   for (const part of [`time ${DC} stop service`, 'docker logs --tail 5 audio-snippets-service', "docker inspect --format '{{.State.ExitCode}}' audio-snippets-service", 'The log ends with `SIGTERM: stopping; no new job, and up to 300 s for the one that is running`, and the exit code is `0`.']) assert.ok(stop.includes(part), part);
   assert.ok(read('packages/service-kit/src/lifecycle.ts').includes('opts.log(`${signal}: stopping; no new job, and up to ${waitMs / 1000} s for the one that is running`);'));
@@ -2580,6 +2585,7 @@ test('Snippets RUNBOOK step 17 and Back out: the old advert retired before the r
   const item8 = s17.slice(s17.indexOf('8. In the repository'));
   for (const f of ['specs/audio-snippets.md', 'agents/audio-snippets/README.md', 'README.md', 'docs/HIRE.md', 'docs/E2E.md', ...['README.md', 'RUNBOOK-audio-snippets.md', 'docker-compose.audio-snippets.yml', 'Caddyfile.audio-snippets.snippet', '.env.audio-snippets.example'].map((f) => `deploy/host/${f}`), 'agents/audio-snippets/src/server.ts', 'agents/audio-snippets/agent.json.template', 'agents/audio-snippets/test/server.test.ts', 'agents/audio-snippets/test/spec.test.ts', 'scripts/specs.test.mjs', 'scripts/deploy.test.mjs']) {
     assert.ok(item8.includes('`' + f + '`'), `item 8 names ${f}`);
+    assert.ok(existsSync(join(root, f)), `${f} exists`);
   }
   assert.ok(S_SERVER.includes("statusChip(env.AGENT_STATUS_CHIP, 'proposed')") && S_SERVER.includes("statusSince(env.AGENT_STATUS_SINCE, '2026-10-13')"), 'the code carries the word as a default, as the item says');
   const back = section(sRunbook, 'Back out');
