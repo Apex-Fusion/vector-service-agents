@@ -148,7 +148,7 @@ describe('specs/document-pipeline.md', () => {
   test('the deadline gap narrows to what the code does: the next hire not started, a hire that would wait again cut, a hire in its Accept finishing late (ruling R53)', () => {
     expect(DEADLINE_GAP).toBe(`A job has a deadline of its own, ${JOB_DEADLINE_MS} ms after its request arrives: a page is not started with less than ${PAGE_MIN_LEFT_MS / 1000} s left, `
       + `nor the summary or extraction with less than ${LLM_MIN_LEFT_MS / 1000} s. A job that cannot start its next hire in time, or whose hire would have to wait again on its `
-      + 'supplier or on the ledger after the deadline, fails with the code deadline and returns no bundle, and the sub-jobs it had already paid for are not refunded. '
+      + 'supplier or on the ledger after the deadline, fails with the code deadline and returns no bundle, and the sub-jobs it had already settled stay settled. '
       + 'A hire in its Accept at the deadline is not cut: it finishes late, and the chat job may then answer after the runtime has given up on the job.');
     expect(section('Known gaps')).not.toContain('A job that cannot finish in time');
   });
@@ -157,8 +157,8 @@ describe('specs/document-pipeline.md', () => {
     const gaps = section('Known gaps');
     const own = [
       '- A process exit between signing a Post and its confirmation leaves a sub-escrow that is in no record, so the janitor never sees it. It can be reclaimed by hand after its `deliver_by`, and it holds the lock of one sub-job.',
-      "- The runtime's budget for a job is the smaller of `SERVICE_TIMEOUT_MS` and `deliver_by` less the start time less 30 s, and the wire carries no budget, so the service cannot see it. A job that the runtime claims late can be abandoned by the runtime while the service goes on hiring and paying until its own deadline. The hirer then reclaims after `deliver_by`.",
-      "- The service answers `POST /` only when the call carries the token the runtime sends as its `authorization` header. A `POST /` without it gets 401 `unauthorized`, with no detail, before its body is read, so that nothing else on the host's network can make the service spend. `GET /healthz` and `GET /agent.json` need no header, and neither does a `HEAD` of either; any other route gets 404.",
+      "- The runtime's budget for a job is the smaller of `SERVICE_TIMEOUT_MS` and `deliver_by` less the start time less 30 s, and the wire carries no budget, so the service cannot see it. A job that the runtime claims late can be abandoned by the runtime while the service goes on hiring and settling sub-jobs until its own deadline. The hirer then reclaims after `deliver_by`.",
+      "- The service answers `POST /` only when the call carries the token the runtime sends as its `authorization` header. A `POST /` without it gets 401 `unauthorized`, with no detail, before its body is read, so that nothing else on the host's network can make the service post escrows. `GET /healthz` and `GET /agent.json` need no header, and neither does a `HEAD` of either; any other route gets 404.",
       "- While a job runs the service writes an interim `102 Processing` line every 60 s, ahead of the answer, because the runtime's fetch gives up on a response that has not begun after 300 s of silence and a job takes up to 27 minutes. The answer is the same 200 with the same body.",
       '- The instructions the chat supplier gets are in English and name the requested language by its code. There is no translation table, so whether the answer is in that language is up to the model.',
     ];
@@ -199,9 +199,9 @@ describe('specs/document-pipeline.md', () => {
     expect(rows['`language`']).toContain(`Default \`${DEFAULT_LANGUAGE}\`. 2 to ${language.maxLength} characters: a language code of 2 to 8 letters, then any number of hyphen-separated subtags of 1 to 8 letters or digits`);
     expect(rows['`max_pages`']).toContain(`A whole number from 1 to ${MAX_PAGES}, default ${MAX_PAGES}.`);
     // Only the shape rules are said to run before anything is fetched. The rules for the document run once it is loaded, still before an escrow is posted.
-    expect(request).toContain('The shape of a request is checked first. A request that breaks a shape rule is refused before anything is fetched or posted, so it spends nothing.');
+    expect(request).toContain('The shape of a request is checked first. A request that breaks a shape rule is refused before anything is fetched or posted, so it locks nothing.');
     expect(request).not.toContain('A request that breaks one is refused before anything is fetched or posted');
-    const loaded = request.split('Then the document is loaded, fetched or decoded, and checked. That is still before any escrow is posted, so a refusal here spends nothing either:\n')[1] ?? '';
+    const loaded = request.split('Then the document is loaded, fetched or decoded, and checked. That is still before any escrow is posted, so a refusal here locks nothing either:\n')[1] ?? '';
     expect(loaded.split('\n').filter((l) => l.startsWith('- '))).toStrictEqual([
       `- A document that cannot be fetched is refused (\`source_fetch_failed\`), and so is a fetched one over ${m.terms.input_limits.source_bytes / (1024 * 1024)} MB (\`source_too_large\`).`,
       '- Once the document is loaded, its type is read from its first bytes. A type that is not PDF, PNG or JPEG is refused (`source_unsupported`), and so is a type that differs from the one the request declared or the server served (`source_mime_mismatch`).',
@@ -275,10 +275,10 @@ describe('specs/document-pipeline.md', () => {
     // The failures on the service's side are the 500 and 503 rows but for internal and shutting_down, which have their own words.
     const serviceSide = pairs(errors).filter((p) => /^(500|503) /.test(p)).map((p) => p.split(' ')[1]).filter((code) => code !== 'internal' && code !== 'shutting_down').sort();
     expect(serviceSide).toStrictEqual(['insufficient_float', 'llm_supplier_unavailable', 'ocr_supplier_unavailable', 'store_write_failed']);
-    // The second choice of the chat supplier comes after the pages are paid, and is held to the ceiling and to the float (rulings R35, R56).
-    expect(errors).toContain('A 400, a 401, a 422 for the document and a 503 are given before the first escrow is posted, so they spend nothing. The exceptions are `llm_supplier_unavailable` and `insufficient_float` when the chat supplier is chosen again after the pages were paid.');
+    // The second choice of the chat supplier comes after the page escrows are settled, and is held to the ceiling and to the float (rulings R35, R56).
+    expect(errors).toContain('A 400, a 401, a 422 for the document and a 503 are given before the first escrow is posted, so they lock nothing. The exceptions are `llm_supplier_unavailable` and `insufficient_float` when the chat supplier is chosen again after the page escrows were settled.');
     expect(readme).toContain("The service could not do this job (<code>). The operator's log has the detail.");
-    expect(readme).toContain('A 400, a 401, a 422 for the document and a 503 are all given before the first escrow is posted, so they spend nothing; the two exceptions are `llm_supplier_unavailable` and `insufficient_float` when the chat supplier is chosen again after the pages were paid (`src/result.ts` says so).');
+    expect(readme).toContain('A 400, a 401, a 422 for the document and a 503 are all given before the first escrow is posted, so they lock nothing; the two exceptions are `llm_supplier_unavailable` and `insufficient_float` when the chat supplier is chosen again after the page escrows were settled (`src/result.ts` says so).');
     expect(MAX_BODY).toBe(1_000_000);
     expect(errors).toContain('`request_too_large` (over 1000000 bytes)');
   });
@@ -290,15 +290,15 @@ describe('specs/document-pipeline.md', () => {
     // Ruling R60: the indexer's word for a supplier at the moment does not rule an advert out, and a chat supplier at work is hired and waited for.
     expect(buys).toContain('The candidates are the Active adverts whose model is on the allowlist, whatever the indexer says of their supplier at the moment.');
     // Ruling R60, refined: free or working keeps a supplier; offline, another word or no answer passes a chat candidate over and refuses an OCR supplier.
-    expect(buys).toContain('and checks that the key the supplier serves at `/capability` is the key of the advert, and that its `/status` says `free` or `working`: one at work is hired all the same, and the send waits for it, while one that says `offline`, or whose `/status` cannot be read, refuses the job with `ocr_supplier_unavailable` before anything is spent.');
+    expect(buys).toContain('and checks that the key the supplier serves at `/capability` is the key of the advert, and that its `/status` says `free` or `working`: one at work is hired all the same, and the send waits for it, while one that says `offline`, or whose `/status` cannot be read, refuses the job with `ocr_supplier_unavailable` before anything is locked.');
     expect(buys).toContain(`and a \`/status\` that says \`free\` or \`working\`; one that says \`offline\`, or whose \`/status\` cannot be read, is passed over for the next. The first that passes is hired, and its advert is read again on the ledger. A supplier at work is hired all the same: the send is made again every ${BUSY_RETRY_MS / 1000} s while it answers that it is busy, until ${SEND_CUTOFF_MS / 1000} s before the \`deliver_by\` of the escrow, and only then does the hop fail with \`llm_busy\`.`);
     expect(buys).not.toContain('`working` or `offline`');
     const models = `${LLM_MODELS_DEFAULT.slice(0, -1).map(tick).join(', ')} and ${tick(LLM_MODELS_DEFAULT[LLM_MODELS_DEFAULT.length - 1])}`;
     expect(buys).toContain(`The allowlist holds, by default and in this order of preference, ${models} (\`LLM_MODEL_ALLOWLIST\` sets it).`);
     for (const name of ['OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST']) expect(readme, name).toContain(`| \`${name}\` |`);
     expect(buys).toContain(`if the first choice is more than ${LLM_SELECTION_MAX_AGE_MS / 60_000} minutes old`);
-    // The residual round of R56: the second choice is held to the float again, after the pages are paid.
-    expect(buys).toContain('minutes old, and the new choice is held to the float again: its lock and the fees of its Post and its Accept against the float then (`insufficient_float`, the pages paid).');
+    // The residual round of R56: the second choice is held to the float again, after the page escrows are settled.
+    expect(buys).toContain('minutes old, and the new choice is held to the float again: its lock and the fees of its Post and its Accept against the float then (`insufficient_float`, the page escrows settled).');
     // The Pipeline uses selectLlmSupplier as it stands, so it asks the first six within 120 s: the defaults of buyer-core.
     const count = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'][LLM_SELECTION_MAX_CANDIDATES];
     expect(buys).toContain(`The first ${count} are asked in turn, within ${LLM_SELECTION_BUDGET_MS / 1000} s.`);
@@ -317,7 +317,7 @@ describe('specs/document-pipeline.md', () => {
       `- One hire waits for its Post to confirm (up to ${DELIVER_BY_BUFFER_MS / 1000} s), the supplier's Claim (up to 60 s), the work (up to 240 s for a page and 180 s for the chat job), the supplier's Submit (about 30 s), the hash of the receipt on the ledger (up to ${RECEIPT_HASH_WAIT_MS / 1000} s) and its own Accept to confirm (up to ${DELIVER_BY_BUFFER_MS / 1000} s). That is ${page} s for a page and ${chat} s for the chat job in the worst case.`,
       '- The minimums are below those worst cases: they are a typical hire plus a margin.',
       '- The deadline cuts what the service waits for on its own: the repeats of a send, the polls, the repeats of a read of the receipt hash, and the pauses between them. Past the deadline none of them starts again.',
-      '- A hire that the deadline cuts fails the job with `deadline`, after payment. The sub-jobs it had already paid for are not refunded, and the escrow of the hire in progress goes to the janitor.',
+      '- A hire that the deadline cuts fails the job with `deadline`, after escrows were posted. The sub-jobs it had already settled stay settled, and the escrow of the hire in progress goes to the janitor.',
       `- The deadline does not cut the confirmation of a Post or of an Accept. The chain waits for each of them, up to ${DELIVER_BY_BUFFER_MS / 1000} s, whatever the time.`,
       '- A hire that is in its Accept when the deadline passes runs on, its retries included: the Accept completes, is left `accept_pending`, or fails with `accept_failed` once its retries are over. A page is then followed by `deadline` at the next hop. The chat job still returns its result, which can come after the runtime has given up on the job, 60 s after the deadline at the latest.',
     ]);
@@ -364,7 +364,7 @@ describe('specs/document-pipeline.md', () => {
     expect(kept).toContain('state directory');
     expect(handling).toContain(held);
     expect(handling).toContain(kept);
-    expect(handling.toLowerCase()).toContain('on the ledger the sub-escrows carry hashes, not the document or its text');
+    expect(handling.toLowerCase()).toContain('on the ledger the sub-escrows carry hashes only, and the document and its text stay off the ledger');
     expect(handling).toContain('| the page texts, the task and, for an extraction, the schema |'); // the manifest: "the page texts, the task and any schema to the LLM supplier"
     expect(m.behaviour.data_handling).toContain('the page texts, the task and any schema to the LLM supplier');
     expect(handling).toContain('The service holds the buyer key (a separate key from the supplier key) and no other.');

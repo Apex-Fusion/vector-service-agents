@@ -385,15 +385,15 @@ test('RUNBOOK: the contact address is set in step 4 and checked in step 9, and t
 });
 
 test('RUNBOOK: the seventeen steps in order, and the step numbers the other files quote are the right steps', () => {
-  const STEPS = ['Put the files on the box', 'Log in to the registry and get the service image', 'Build the runtime image', 'Make the env file and generate the supplier key', 'Adapt the ops scripts', 'Fund the supplier wallet', 'Register the identity', 'Stake in Module-3', 'Start the service', 'DNS and Caddy', 'Hash the manifest', 'Post the advert', 'Start the runtime', 'Check the advert on the indexer', 'The first-party run', 'Wallet monitor', 'Flip the status'];
+  const STEPS = ['Put the files on the box', 'Log in to the registry and get the service image', 'Build the runtime image', 'Make the env file and generate the supplier key', 'Adapt the ops scripts', 'Supply the supplier wallet with its collateral and float', 'Register the identity', 'Stake in Module-3', 'Start the service', 'DNS and Caddy', 'Hash the manifest', 'Post the advert', 'Start the runtime', 'Check the advert on the indexer', 'The first-party run', 'Wallet monitor', 'Flip the status'];
   assert.deepEqual([...runbook.matchAll(/^## (\d+)\. (.+)$/gm)].map((m) => [Number(m[1]), m[2]]), STEPS.map((title, i) => [i + 1, title]));
   for (const m of runbook.matchAll(/\bsteps? (\d+)/g)) assert.ok(Number(m[1]) >= 1 && Number(m[1]) <= STEPS.length, `step ${m[1]}`);
   const quoted = [...exampleText.matchAll(/RUNBOOK\.md step (\d+), "([^"]+)"/g)];
   assert.equal(quoted.length, 3, 'the example names steps 4, 7 and 17');
   for (const m of quoted) assert.equal(STEPS[Number(m[1]) - 1], m[2], `the example quotes step ${m[1]}`);
-  assert.match(runbook, /does every step except three\. Step 2 \(the registry login and the service image\) and step 10 \(DNS and Caddy\) are the host administrator's, see \[README\.md\]\(README\.md\)\. Step 6 \(funding the supplier wallet\) is the Foundation's\./);
+  assert.match(runbook, /does every step except three\. Step 2 \(the registry login and the service image\) and step 10 \(DNS and Caddy\) are the host administrator's, see \[README\.md\]\(README\.md\)\. Step 6 \(the collateral and float of the supplier wallet\) is the Foundation's\./);
   assert.match(section(runbook, '2. Log in to the registry and get the service image'), /^\nHost administrator\. /);
-  assert.match(section(runbook, '6. Fund the supplier wallet'), /^\nThe Foundation\. /);
+  assert.match(section(runbook, '6. Supply the supplier wallet with its collateral and float'), /^\nThe Foundation\. /);
   assert.match(section(runbook, '10. DNS and Caddy'), /^\nHost administrator, from/);
 });
 
@@ -432,7 +432,7 @@ test('RUNBOOK: the registry record is the manifest description, the spec capabil
   assert.ok(runbook.includes(`(this one is ${desc.length})`), 'the length the runbook quotes');
 });
 
-test('RUNBOOK: funding is two transfers (5 alone, then 50), and the key is generated on the box and is the only copy', () => {
+test('RUNBOOK: the collateral and float come in two transfers (5 alone, then 50), and the key is generated on the box and is the only copy', () => {
   assert.match(runbook, /exactly 5 units alone/);
   assert.match(runbook, /then 50 units/);
   assert.match(runbook, /this file is the only copy until step 7\. There is no recovery phrase/);
@@ -462,7 +462,7 @@ test('RUNBOOK: ends with the two gotchas of the chandra ops README, word for wor
     'the genesis constant to `1756485600`, or `StakeDatum.last_updated` lands ~51',
     'days off, fails Rule 6 of `validate_create_stake`, and the script aborts with',
     'an opaque "terminated with error". `m3-self-stake.py` patches it and asserts',
-    'the result against wall clock before spending anything.',
+    'the result against wall clock before locking anything.',
   ].join('\n');
   assert.ok(runbook.trimEnd().endsWith(GOTCHAS), 'the gotchas are the last thing in the runbook');
 });
@@ -579,7 +579,7 @@ test('RUNBOOK: the spec is refreshed in a pull request after the identity (step 
   assert.match(section(runbook, '17. Flip the status'), /refreshed after steps 7 and 12/);
   const nine = section(runbook, '9. Start the service');
   assert.ok(nine.includes("KEY=$(sed -n 's/^SUPPLIER_PKH=//p' .env.agent-history)"), 'the key hash comes from the env file');
-  assert.ok(nine.includes('`subject.kind` is `pkh`, `subject.candidates` lists the record of step 7, and `marketplace` is an object, not null.'));
+  assert.ok(nine.includes('`subject.kind` is `pkh`, `subject.candidates` lists the record of step 7, and `marketplace` is an object.'));
   assert.ok(nine.includes('docs/HIRE.md') && nine.includes('section 7 invites members to use'), 'why the key-hash query is asked');
   assert.ok(nine.indexOf('"$KEY"') > nine.indexOf('"$DID"'), 'after the query by DID');
   assert.ok(runbook.indexOf('"$KEY"') < runbook.indexOf('## 12.'), 'before the advert is posted');
@@ -653,7 +653,7 @@ const P_CHAIN = ['NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN'
 const P_ADVERT = ['ADVERT_REF', 'ADVERT_CAPABILITY_ID', 'ADVERT_MODEL', 'ADVERT_PRICE_LOVELACE', 'ADVERT_SUPPLIER_BOND_LOVELACE', 'ADVERT_BUYER_BOND_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_ENDPOINT_URL', 'ADVERT_DETAIL_URI', 'ADVERT_DETAIL_HASH'];
 const P_MANIFEST = ['OPERATOR_CONTACT', 'AGENT_DID', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_EXPLORER_URL'];
 const P_HIRES = ['OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST'];
-const P_STEPS = ['Put the files on the box', 'Build the service image and pin it', 'Build the runtime image', 'Make the env file and generate the two keys', 'Adapt the ops scripts', 'Fund the two wallets', 'Register the identity', 'Stake in Module-3', 'Start the service', 'DNS and Caddy', 'Hash the manifest', 'Post the advert', 'Start the runtime', 'Check the advert on the indexer', 'The first-party run', 'Wallet monitor', 'Flip the status'];
+const P_STEPS = ['Put the files on the box', 'Build the service image and pin it', 'Build the runtime image', 'Make the env file and generate the two keys', 'Adapt the ops scripts', 'Supply the two wallets with their collateral and float', 'Register the identity', 'Stake in Module-3', 'Start the service', 'DNS and Caddy', 'Hash the manifest', 'Post the advert', 'Start the runtime', 'Check the advert on the indexer', 'The first-party run', 'Wallet monitor', 'Flip the status'];
 const P_STATUS = 'DEPLOYED since 2026-10-16';
 
 test('Pipeline compose: the project and two containers have fixed names, the runtime is on loopback port 8084, the service is published nowhere, both are on the shared network and need the env file', () => {
@@ -663,7 +663,7 @@ test('Pipeline compose: the project and two containers have fixed names, the run
   assert.equal(pService.container_name, 'document-pipeline-service');
   assert.deepEqual(pAgent.ports, ['127.0.0.1:8084:8080']);
   assert.notDeepEqual(pAgent.ports, agent.ports, 'not the port of Agent History');
-  assert.equal(pService.ports, undefined, 'the service answers POST / only with the token of the runtime (R50), and no port is published all the same: the token is the second lock, and anything that holds it can spend from the buyer wallet');
+  assert.equal(pService.ports, undefined, 'the service answers POST / only with the token of the runtime (R50), and no port is published all the same: the token is the second lock, and anything that holds it can post escrows from the buyer wallet');
   assert.deepEqual(pAgent.networks, ['umami_default']);
   assert.deepEqual(pService.networks, ['umami_default']);
   assert.deepEqual(pCompose.networks.umami_default, { external: true, name: 'umami_default' });
@@ -736,11 +736,11 @@ test('Pipeline compose: the token between the containers (R50) is blanked in nei
   assert.ok(!('SERVICE_AUTH_HEADER' in pService.environment), 'the service reads the token from the env file: a blank here would stop the start');
   assert.ok('SERVICE_AUTH_HEADER' in pExample, 'the env file has the line, so both containers get it');
   assert.ok(pComposeText.includes('# SERVICE_AUTH_HEADER is the one value both need, so neither blanks it: the runtime sends it as the authorization header of every call to the service (SERVICE_URL below), and the service requires it on POST / (ruling R50).'));
-  assert.ok(pComposeText.includes('    # The service answers POST / only to a call that carries SERVICE_AUTH_HEADER, which the runtime sends, and no port is published: the network is shared with other stacks, and a job spends from the buyer wallet.'));
+  assert.ok(pComposeText.includes('    # The service answers POST / only to a call that carries SERVICE_AUTH_HEADER, which the runtime sends, and no port is published: the network is shared with other stacks, and a job posts escrows from the buyer wallet.'));
   assert.doesNotMatch(pComposeText, /no authentication/i, 'the comment of before R50');
-  // After any change to the env file the containers are recreated, and only while no job runs: a stop during a job is the one thing that can cut a paid job.
+  // After any change to the env file the containers are recreated, and only while no job runs: a stop during a job is the one thing that can cut a job under escrow.
   // The runtime's /status exists from step 13 of the runbook: before it no job can run, and the precondition says so (C4).
-  assert.ok(pComposeText.includes('# After any change to it, recreate the containers. Once the runtime runs (step 13 of RUNBOOK-document-pipeline.md), recreate only when its /status says free (curl -s http://127.0.0.1:8084/status): a stop during a job can cut a paid job. Before step 13 no job can run.'));
+  assert.ok(pComposeText.includes('# After any change to it, recreate the containers. Once the runtime runs (step 13 of RUNBOOK-document-pipeline.md), recreate only when its /status says free (curl -s http://127.0.0.1:8084/status): a stop during a job can cut a job under escrow. Before step 13 no job can run.'));
   assert.ok(pComposeText.includes('docker compose -f docker-compose.document-pipeline.yml up -d --force-recreate <service>. restart does not re-read it.'));
   assert.ok(pComposeText.includes('A change to SERVICE_AUTH_HEADER needs both containers recreated.'));
   // The runtime sends the header only when its setting is not empty (the template's executor), so a service started without a token would refuse every call, or, if it did not check, answer anyone:
@@ -776,7 +776,7 @@ test('Pipeline compose: the state is a named volume at /data, memory is limited,
   assert.equal(pService.stop_grace_period, '330s');
   assert.equal(Number(/^(\d+)s$/.exec(pService.stop_grace_period)?.[1]), WAIT_S + 30, 'the grace period is the wait and 30 s more');
   assert.ok(pComposeText.includes('# On SIGTERM the service takes no new job and waits up to 300 s for the one that is running; the 30 s more than that are for it to log a job it'));
-  assert.match(pComposeText, /A grace period of 300 s or less kills a paid job mid-run, or the service before it can say what it left\./);
+  assert.match(pComposeText, /A grace period of 300 s or less kills a job under escrow mid-run, or the service before it can say what it left\./);
   assert.match(pComposeText, /renders every page at 150 dpi whatever its size/);
 });
 
@@ -999,10 +999,10 @@ test('Pipeline README section: the second stack beside Agent History, with its t
     'A `POST /` without that header, or with another value, gets 401 before its body is read. `GET /healthz` and `GET /agent.json` need no header, and any other path gets 404.',
     'Port 9092 is never published to the host all the same.',
     'reachable over `umami_default` by every container on that network, so the host administrator keeps `umami_default` to stacks that are trusted',
-    'the token is the second lock, and anything that holds it can start a job that spends from the buyer wallet',
+    'the token is the second lock, and anything that holds it can start a job that posts escrows from the buyer wallet',
     'and while `PIPELINE_BUYER_PRIV_KEY_HEX`, `SUPPLIER_PKH` or `SERVICE_AUTH_HEADER` is not set',
-    'After any change, recreate: once the runtime runs (step 13 of the runbook), only when `curl -s http://127.0.0.1:8084/status` says `free` (a stop during a job can cut a paid job), and before step 13 at once, since no job can run: ',
-    'kills a paid job, so, once the runtime runs (step 13 of the runbook), restarts wait for `/status` on `127.0.0.1:8084` to say `free`. Before step 13 no job can run, and there is nothing to wait for.',
+    'After any change, recreate: once the runtime runs (step 13 of the runbook), only when `curl -s http://127.0.0.1:8084/status` says `free` (a stop during a job can cut a job under escrow), and before step 13 at once, since no job can run: ',
+    'kills a job under escrow, so, once the runtime runs (step 13 of the runbook), restarts wait for `/status` on `127.0.0.1:8084` to say `free`. Before step 13 no job can run, and there is nothing to wait for.',
     'A change to `SERVICE_AUTH_HEADER` needs both containers recreated.',
     '`document-pipeline-state`, mounted at `/data`',
     '`docker compose down` keeps it, and `down -v` or `docker volume rm` would delete it',
@@ -1033,7 +1033,7 @@ test('Pipeline README section: the second stack beside Agent History, with its t
 
 test('Pipeline RUNBOOK: the twenty-one sections in order, the seventeen steps keep the numbers of the Agent History runbook, three titles differ, and "Watch the first stop" sits between steps 15 and 16', () => {
   const numbered = P_STEPS.map((title, i) => `${i + 1}. ${title}`);
-  assert.deepEqual([...pRunbook.matchAll(/^## (.+)$/gm)].map((m) => m[1]), ['Funds', ...numbered.slice(0, 15), 'Watch the first stop', ...numbered.slice(15), 'Back out', 'If something goes wrong']);
+  assert.deepEqual([...pRunbook.matchAll(/^## (.+)$/gm)].map((m) => m[1]), ['Collateral and float', ...numbered.slice(0, 15), 'Watch the first stop', ...numbered.slice(15), 'Back out', 'If something goes wrong']);
   assert.deepEqual([...pRunbook.matchAll(/^## (\d+)\. (.+)$/gm)].map((m) => [Number(m[1]), m[2]]), P_STEPS.map((title, i) => [i + 1, title]));
   const history = [...runbook.matchAll(/^## (\d+)\. (.+)$/gm)].map((m) => m[2]);
   assert.equal(history.length, P_STEPS.length, 'the same number of steps as the runbook it follows');
@@ -1043,9 +1043,9 @@ test('Pipeline RUNBOOK: the twenty-one sections in order, the seventeen steps ke
   const quoted = [...pExampleText.matchAll(/RUNBOOK-document-pipeline\.md step (\d+), "([^"]+)"/g)];
   assert.equal(quoted.length, 3, 'the example names steps 4, 7 and 17');
   for (const m of quoted) assert.equal(P_STEPS[Number(m[1]) - 1], m[2], `the example quotes step ${m[1]}`);
-  assert.match(pRunbook, /The operator holds the keys and does every step except two\. Step 6 \(funding the two wallets\) is the Foundation's\. Step 10 \(DNS and Caddy\) is the host administrator's, see \[README\.md\]\(README\.md\)\. Step 2 is the operator's here, because nothing is pulled from a registry\./);
+  assert.match(pRunbook, /The operator holds the keys and does every step except two\. Step 6 \(the collateral and float of the two wallets\) is the Foundation's\. Step 10 \(DNS and Caddy\) is the host administrator's, see \[README\.md\]\(README\.md\)\. Step 2 is the operator's here, because nothing is pulled from a registry\./);
   assert.match(section(pRunbook, '2. Build the service image and pin it'), /^\nOperator\. /);
-  assert.match(section(pRunbook, '6. Fund the two wallets'), /^\nThe Foundation\. /);
+  assert.match(section(pRunbook, '6. Supply the two wallets with their collateral and float'), /^\nThe Foundation\. /);
   assert.match(section(pRunbook, '10. DNS and Caddy'), /^\nHost administrator, from/);
   // It follows the runbook of Agent History and says so, and it points at its gotchas instead of copying them.
   assert.ok(pRunbook.includes('This is [RUNBOOK.md](RUNBOOK.md), the runbook of Agent History, written for the Document Pipeline.'));
@@ -1058,11 +1058,11 @@ test('Pipeline RUNBOOK: the twenty-one sections in order, the seventeen steps ke
 });
 
 test('Pipeline RUNBOOK: the differences from Agent History are listed in one place, with the names table', () => {
-  const head = pRunbook.slice(0, pRunbook.indexOf('\n## Funds\n'));
+  const head = pRunbook.slice(0, pRunbook.indexOf('\n## Collateral and float\n'));
   for (const part of [
     '- **Two keys.** The runtime holds the supplier key. The service holds a second, separate key, the buyer key,',
-    '- **The service spends.** Every job posts escrows from the buyer wallet. The service answers `POST /` only to a call that carries the token the runtime sends (`SERVICE_AUTH_HEADER`, made in step 4, ruling R50) and gives a `POST /` without it 401, because the network is shared with other stacks; any other path but `/healthz` and `/agent.json` gets 404. Its port 9092 is never published all the same, and a job is refused up front, spending nothing, when the buyer wallet cannot fund it.',
-    '- **A window of 30 min, not 5.**', '`max_processing_ms` is 1800000', '`SERVICE_TIMEOUT_MS` is 1680000', 'up to 27 min', 'an interim `102 Processing` line to the runtime every 60 s',
+    '- **The service locks value.** Every job posts escrows from the buyer wallet. The service answers `POST /` only to a call that carries the token the runtime sends (`SERVICE_AUTH_HEADER`, made in step 4, ruling R50) and gives a `POST /` without it 401, because the network is shared with other stacks; any other path but `/healthz` and `/agent.json` gets 404. Its port 9092 is never published all the same, and a job is refused up front, locking nothing, when the buyer wallet cannot cover it.',
+    '- **A window of 30 min where Agent History has 5.**', '`max_processing_ms` is 1800000', '`SERVICE_TIMEOUT_MS` is 1680000', 'up to 27 min', 'an interim `102 Processing` line to the runtime every 60 s',
     '- **State and a clean stop.**', '`stranded.json`', '`document-pipeline-state`', '`stop_grace_period: 330s`', 'a memory limit of 1536m',
     'A stop gives the service up to 300 s to finish the job that is running, and Docker 30 s more for it to log a job it abandoned and exit (`stop_grace_period: 330s`)',
     '- **No registry.**', 'the box has no GitHub credentials',
@@ -1084,15 +1084,15 @@ test('Pipeline RUNBOOK: the differences from Agent History are listed in one pla
   assert.ok(PREADME.includes('the runtime\'s fetch gives up after 300 s of silence'));
 });
 
-test('Pipeline RUNBOOK funds: two keys, 5 alone then 50 for the supplier and 5 alone then 100 for the buyer, what the buyer float covers, and the third key of step 15', () => {
-  const funds = section(pRunbook, 'Funds');
+test('Pipeline RUNBOOK collateral and float: two keys, 5 alone then 50 for the supplier and 5 alone then 100 for the buyer, what the buyer float covers, and the third key of step 15', () => {
+  const funds = section(pRunbook, 'Collateral and float');
   const rows = funds.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| Key |'));
   assert.equal(rows.length, 2, 'two keys');
   const [supplier, buyer] = rows;
   assert.ok(supplier.startsWith("| Supplier key (the runtime's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral, never touched), then 50 units | As for Agent History:"));
   assert.ok(buyer.startsWith("| Buyer key (the service's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral for the Accept and the Reclaim of the sub-jobs, never touched), then 100 units |"));
-  assert.ok(funds.includes('The Foundation funds two keys. Nobody pastes either key into a chat.'));
-  assert.ok(funds.includes('Two transfers, because a wallet funded in one lump can have its collateral spent as change by an ordinary transaction.'));
+  assert.ok(funds.includes('The Foundation supplies two keys with their collateral and float. Nobody pastes either key into a chat.'));
+  assert.ok(funds.includes('Two transfers, because a wallet supplied in one transfer can have its collateral spent as change by an ordinary transaction.'));
   assert.ok(buyer.includes('the OCR hops at about 2.2 net per page (price 0.2, supplier bond 1, fees about 1) plus the chat hop, about 19 gross for a job of five pages'));
   // Ruling R56: the figures are the ones of today's fleet price, and the ceilings bound what an advert may cost.
   assert.ok(buyer.includes("These figures hold at today's fleet price of 0.2 per sub-job; the service hires no advert priced above `OCR_MAX_PRICE_LOVELACE` or `LLM_MAX_PRICE_LOVELACE`"));
@@ -1100,13 +1100,13 @@ test('Pipeline RUNBOOK funds: two keys, 5 alone then 50 for the supplier and 5 a
   assert.doesNotMatch(buyer, /2\.3 net/, 'the figure of before it was given with its parts');
   assert.ok(buyer.includes('(max_pages + 1) x 4.5') && buyer.includes('27 for five pages') && buyer.includes('`insufficient_float` (503)'));
   // The figures are the spec's and the code's.
-  assert.ok(PSPEC.includes('at five pages the Pipeline spends about 19 in locks and fees to earn 5'));
+  assert.ok(PSPEC.includes('at five pages the Pipeline locks about 19 in sub-job escrows and fees for a job priced at 5'));
   assert.ok(read('agents/document-pipeline/src/budget.ts').includes('export const FLOAT_PER_SUB_JOB_LOVELACE = 4_500_000n;'));
   assert.ok(PREADME.includes('a float outside it of `(max_pages + 1) x 4500000` lovelace'));
   assert.ok(read('docs/HIRE.md').includes('| 5 (Document Pipeline) | 7 | 6 | 1 | about 1 | about 7 | 7 |'), 'what a job costs the hirer');
   // The supplier row is the Agent History row, and the third key is told apart.
   assert.ok(supplier.includes('the registry deposit (10 units), the stake (10), the advert (about 2 locked) and fees of about 0.5 a transaction. The setup uses about 25 with fees.'));
-  assert.ok(funds.includes('The key of the first-party run (step 15) is a third key and is not funded here'));
+  assert.ok(funds.includes('The key of the first-party run (step 15) is a third key and gets no collateral or float here'));
   assert.ok(funds.includes('A job of the Pipeline costs the hirer about 7 (`docs/HIRE.md`, section 3)'));
 });
 
@@ -1176,7 +1176,7 @@ test('Pipeline RUNBOOK step 4: the env file is made once and never over a file t
   // The functions write into an empty place only, and look before they make anything: a key is not made, and openssl not called, for a line that has a value.
   for (const guard of [
     'refusing: there is no .env.document-pipeline in this folder',
-    'refusing: ${1}_PRIV_KEY_HEX already has a value, and a key that may be funded is never replaced',
+    'refusing: ${1}_PRIV_KEY_HEX already has a value, and a key that may hold units is never replaced',
     'refusing: SERVICE_AUTH_HEADER already has a value; to replace it, empty the line first',
   ]) assert.ok(head.includes(guard), `the functions say: ${guard}`);
   assert.ok(head.indexOf('${1}_PRIV_KEY_HEX already has a value') < head.indexOf('gen-keypair.ts'), 'the key is looked for before gen-keypair is called');
@@ -1260,8 +1260,8 @@ test('Pipeline RUNBOOK step 4 in bash: run again, in a new shell, nothing is mad
     assert.equal(again.stdout, '');
     for (const refusal of [
       'refusing: the env file exists, and it is kept as it is',
-      'refusing: SUPPLIER_PRIV_KEY_HEX already has a value, and a key that may be funded is never replaced',
-      'refusing: PIPELINE_BUYER_PRIV_KEY_HEX already has a value, and a key that may be funded is never replaced',
+      'refusing: SUPPLIER_PRIV_KEY_HEX already has a value, and a key that may hold units is never replaced',
+      'refusing: PIPELINE_BUYER_PRIV_KEY_HEX already has a value, and a key that may hold units is never replaced',
       'refusing: SERVICE_AUTH_HEADER already has a value; to replace it, empty the line first',
     ]) assert.ok(again.stderr.includes(refusal), refusal);
     assert.doesNotMatch(again.stdout + again.stderr, /[0-9a-f]{16}|Bearer/);
@@ -1307,7 +1307,7 @@ test('Pipeline RUNBOOK step 4 in bash: the supplier block refuses while the supp
     runBash(`${STUBS}${head}${supplier}${buyer}${token}`, dir);
     const before = parseEnv(envOf(dir));
     const refused = runBash(`${STUBS}${head}${supplier}`, dir);
-    assert.match(refused.stderr, /refusing: SUPPLIER_PRIV_KEY_HEX already has a value, and a key that may be funded is never replaced/);
+    assert.match(refused.stderr, /refusing: SUPPLIER_PRIV_KEY_HEX already has a value, and a key that may hold units is never replaced/);
     assert.deepEqual(parseEnv(envOf(dir)), before, 'the refused block changed nothing');
     const emptied = runBash(`${emptySupplier}\n`, dir);
     assert.equal(emptied.status, 0);
@@ -1406,8 +1406,8 @@ test('Pipeline RUNBOOK step 5: the ops scripts are copied from the adapted set o
   assert.ok(five.includes('Only the six scripts are copied; the venv and the wallet directory of Agent History stay where they are:'), 'nothing secret and nothing built is copied');
 });
 
-test('Pipeline RUNBOOK steps 6 to 8: two wallets funded and checked, the identity of the supplier key registered and recorded in the repository, the stake on the one capability', () => {
-  const six = section(pRunbook, '6. Fund the two wallets');
+test('Pipeline RUNBOOK steps 6 to 8: two wallets supplied and checked, the identity of the supplier key registered and recorded in the repository, the stake on the one capability', () => {
+  const six = section(pRunbook, '6. Supply the two wallets with their collateral and float');
   for (const part of [
     "grep -E '^(SUPPLIER|PIPELINE_BUYER)_ADDRESS=' /opt/document-pipeline/repo/deploy/apex-web/.env.document-pipeline",
     'The first is exactly 5 units, alone.', '50 units to the supplier address, 100 units to the buyer address',
@@ -1564,7 +1564,7 @@ test('Pipeline RUNBOOK step 15: the settings of the first-party run, a request J
   const [parsed] = inPipeline("import { parseRequest } from './src/request.ts'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((j) => parseRequest(j))));", [requestJson]);
   assert.deepEqual(parsed, { source: { url: 'https://example.org/one-page.pdf' }, task: 'summary', language: 'en', max_pages: 1 });
   for (const part of [
-    "Operator, on the operator's own machine, with the test buyer key (Funds).", 'The mechanics are those of step 15 of RUNBOOK.md and of [docs/E2E.md](../../docs/E2E.md)',
+    "Operator, on the operator's own machine, with the test buyer key (Collateral and float).", 'The mechanics are those of step 15 of RUNBOOK.md and of [docs/E2E.md](../../docs/E2E.md)',
     '- `ADVERT_REF` is the Pipeline\'s advert from step 12.', 'Use a document that anyone may read: its page goes to the OCR agent, and Datalab behind it, and its text to the chat supplier and that supplier\'s model provider.',
     '- `E2E_POLL_MS=15000`.', 'about 120 times in 10 minutes', '- `E2E_STATE=./e2e-state-pipeline.json`.', 'so this run does not use the file of the Agent History run',
     '- Expect up to 10 minutes for one page.', 'Five pages take up to 27 min.',
@@ -1607,11 +1607,11 @@ test('Pipeline RUNBOOK "Watch the first stop": one stop of the idle service is w
     'curl -s http://127.0.0.1:8084/status', 'time docker compose -f docker-compose.document-pipeline.yml stop service', 'docker logs --tail 5 document-pipeline-service',
     "docker inspect --format '{{.State.ExitCode}}' document-pipeline-service", 'docker compose -f docker-compose.document-pipeline.yml up -d service',
     '`/status` must say `free`', 'With nothing running the stop returns in a few seconds.',
-    'The log ends with `SIGTERM: stopping; no new job, and up to 300 s for the one that is running`, and the exit code is `0`.', 'An exit code of 137 means the container was killed, not stopped.',
+    'The log ends with `SIGTERM: stopping; no new job, and up to 300 s for the one that is running`, and the exit code is `0`.', 'An exit code of 137 means the container was killed.',
     "Any other code but 0 fails the check too (143 would mean the signal ended the process before the service's own handling of it).",
     'do not go on to step 17', 'When a job is running at a stop, the log also says `stopping: waiting up to 300000 ms for the job that is running`.',
     // What this check proves, and what it leaves open.
-    'This proves that the signal is delivered to an idle service and handled. The wait for a job that is running is tested offline (`agents/document-pipeline/test/start.test.ts`), not yet on the box: until the first real stop that finds a job running shows it, a stop is made only when `/status` says `free`.',
+    'This proves that the signal is delivered to an idle service and handled. The wait for a job that is running is tested offline (`agents/document-pipeline/test/start.test.ts`), and the box has not shown it yet: until the first real stop that finds a job running shows it, a stop is made only when `/status` says `free`.',
     'A stop that had to abandon a job exits 1, and its log names the escrows the state directory holds for the janitor of the next start.',
   ]) assert.ok(stop.includes(part), `the first stop says: ${part}`);
   assert.equal(stop.includes('signal relay of `tsx`'), false, 'the caveat of the image that ran the tsx binary');
@@ -1692,7 +1692,7 @@ test('Pipeline RUNBOOK Back out: the advert first with the supplier key, then th
   assert.ok(back.includes('If the runtime runs, check that `curl -s http://127.0.0.1:8084/status` says `free` (`working` means a job is in flight: wait for it). Without the runtime, from step 12 to step 13, no job can run.'));
   for (const part of [
     'docker exec document-pipeline-service cat /data/stranded.json', 'the janitor reclaims each one 5 s after its `deliver_by`', 'janitor: reclaimed <escrow>: ...',
-    'Never add `-v`, and never run `docker volume rm document-pipeline-state`', 'the volume holds `stranded.json`, the escrows that still hold the buyer\'s funds, and the janitor of the next start reads it. `down` keeps it.', 'The stop waits up to 300 s for a job that is running, and Docker 30 s more for the service to log what it left and exit.',
+    'Never add `-v`, and never run `docker volume rm document-pipeline-state`', 'the volume holds `stranded.json`, the escrows that still lock the buyer\'s units, and the janitor of the next start reads it. `down` keeps it.', 'The stop waits up to 300 s for a job that is running, and Docker 30 s more for the service to log what it left and exit.',
     'two files of a directory: `shred -u /opt/document-pipeline/ops/wallet/payment.skey /opt/document-pipeline/ops/wallet/payment.vkey`, then `rmdir /opt/document-pipeline/ops/wallet` (`shred` does not take a directory, and `rmdir` refuses one that holds anything else)',
     'The env file still holds both keys, and so does the operator\'s offline store: keep both until both wallets are empty, because a wallet whose key is gone is gone.',
     'The buyer wallet is emptied last, with the buyer key, once `stranded.json` is empty (or was never written): its float and its collateral go back to the Foundation.',
@@ -1778,11 +1778,11 @@ test('Pipeline RUNBOOK failure table: the start-up refusals, the pipeline codes 
     '(max_pages + 1) * 4.5', '27 for five pages', 'No script of this pack signs with the buyer key',
     // The collateral is the smallest pure output of at least 5 units (collateralOf in packages/buyer-core/src/chain.ts), so a wallet in one output has no float.
     '| `/healthz` of the service answers 503 `insufficient_float` though the buyer wallet holds enough, and the log says `wallet check failed: The buyer wallet holds 0 lovelace outside its collateral` |',
-    'The buyer wallet is in one output: it was funded in one transfer, or a transaction gathered its outputs into one. The service takes the smallest pure output of at least 5 units as the collateral and counts only what is outside it as the float, so a single output, however large, leaves a float of 0.',
+    'The buyer wallet is in one output: it was supplied in one transfer, or a transaction gathered its outputs into one. The service takes the smallest pure output of at least 5 units as the collateral and counts only what is outside it as the float, so a single output, however large, leaves a float of 0.',
     'Add an output of exactly 5 units: ask the Foundation to send 5 units alone, as in step 6, or send 5 units from the buyer wallet to its own address, signed with the buyer key by the manual means of the `store_write_failed` row. The 5 units become the collateral and the rest is float again. The log says `wallet check passed again` within a minute.',
     'While it lasts, `docker ps` shows the service as unhealthy, because its health check is `/healthz`.',
-    // The second choice of the chat supplier is held to the float as well, after the pages are paid (the residual round of R56).
-    'Nothing was spent, unless the message says `The pages are paid`: then the chat supplier was chosen again after the pages, and its advert takes more than the float held then.',
+    // The second choice of the chat supplier is held to the float as well, after the page escrows are settled (the residual round of R56).
+    'Nothing was locked, unless the message says `The page escrows are settled`: then the chat supplier was chosen again after the pages, and its advert takes more than the float held then.',
     // R50 and the step that never replaces a key.
     '| Jobs fail with `service_http_401`, and the log of the service says ',
     'The runtime did not send the token the service holds: the two containers were created from different versions of the env file, or the line was changed after one of them started.',
@@ -1795,18 +1795,18 @@ test('Pipeline RUNBOOK failure table: the start-up refusals, the pipeline codes 
     '| The same, and the log says `environment variable PIPELINE_BUYER_PRIV_KEY_HEX is required` | The buyer lines of the env file are empty: the buyer key block of step 4 was not run, or did not finish. |',
     'Run only the buyer key block of step 4 (the first block of that step first, in a new shell, to define the function; it leaves the file alone).',
     'while the address has received nothing',
-    'Never run the whole step again, and never copy the example over the env file: that replaces funded keys. Then refresh the offline copy and recreate.',
+    'Never run the whole step again, and never copy the example over the env file: that replaces keys that hold units. Then refresh the offline copy and recreate.',
     // Ruling R60, refined: what each 503 of a supplier says about its /status.
-    '| Jobs fail with `ocr_supplier_unavailable` (503) | The allowlisted OCR supplier has no single Active advert that the indexer lists and the ledger confirms, or its `/capability` cannot be read or serves another key, or its `/status` says `offline` or cannot be read (the message says which). A supplier at work is hired: the send waits for it. Nothing was spent. |',
-    '| Jobs fail with `llm_supplier_unavailable` (503) | No Active advert of a model on `LLM_MODEL_ALLOWLIST` has a supplier that serves the Responses API at `/capability` and says `free` or `working` at `/status`, within the 120 s of the selection. A supplier at work counts, and the send waits for it; an offline one does not. Usually nothing was spent:',
-    '| The env file changed and nothing happened | `restart` does not re-read it. | Once the runtime runs (step 13), check first that `curl -s http://127.0.0.1:8084/status` says `free`: a recreate stops the container, and a stop during a job can cut a paid job. Before step 13 no job can run. Then `up -d --force-recreate <service>`, and both containers after a change to `SERVICE_AUTH_HEADER`. |',
+    '| Jobs fail with `ocr_supplier_unavailable` (503) | The allowlisted OCR supplier has no single Active advert that the indexer lists and the ledger confirms, or its `/capability` cannot be read or serves another key, or its `/status` says `offline` or cannot be read (the message says which). A supplier at work is hired: the send waits for it. Nothing was locked. |',
+    '| Jobs fail with `llm_supplier_unavailable` (503) | No Active advert of a model on `LLM_MODEL_ALLOWLIST` has a supplier that serves the Responses API at `/capability` and says `free` or `working` at `/status`, within the 120 s of the selection. A supplier at work counts, and the send waits for it; an offline one does not. Usually nothing was locked:',
+    '| The env file changed and nothing happened | `restart` does not re-read it. | Once the runtime runs (step 13), check first that `curl -s http://127.0.0.1:8084/status` says `free`: a recreate stops the container, and a stop during a job can cut a job under escrow. Before step 13 no job can run. Then `up -d --force-recreate <service>`, and both containers after a change to `SERVICE_AUTH_HEADER`. |',
     // The supplier block of step 4 refuses a line that has a value (C4): a wrong supplier line is restored from the offline copy, or, while the supplier
     // address has received nothing, emptied with its three companions and made again by that block alone.
     '| `/capability` shows an empty public key, or claims fail with `wrong_supplier` | `SUPPLIER_PUB_KEY_HEX` or `SUPPLIER_PKH` is empty in the env file. | Restore the four supplier lines from the offline copy of the env file (step 4), which holds them from one key, then recreate. Without a good copy, and only while the supplier address has received nothing, empty the four lines with `'
-      + String.raw`sed -i 's/^\(SUPPLIER_[A-Z_]*\)=.*/\1=/' .env.document-pipeline` + '` and run only the supplier block of step 4 (the first block of that step first, in a new shell, to define the function). The block refuses a line that has a value, so it never replaces a funded key. Then refresh the offline copy and recreate. |',
+      + String.raw`sed -i 's/^\(SUPPLIER_[A-Z_]*\)=.*/\1=/' .env.document-pipeline` + '` and run only the supplier block of step 4 (the first block of that step first, in a new shell, to define the function). The block refuses a line that has a value, so it never replaces a key that holds units. Then refresh the offline copy and recreate. |',
     '| The same, and the log says `is not the public key of SUPPLIER_PKH` | The line of the supplier public key holds another value, a private key by mistake. | Restore the four supplier lines from the offline copy of the env file, as in the `/capability` row above, then recreate. |',
   ]) assert.ok(table.includes(part), `the table has: ${part}`);
-  assert.doesNotMatch(table, /Finish step 4/, 'the row that invited a second run of step 4 over funded keys');
+  assert.doesNotMatch(table, /Finish step 4/, 'the row that invited a second run of step 4 over keys that hold units');
   // The commands that empty a key or the token by hand are in the table, and are the ones the tests of step 4 run.
   for (const command of [String.raw`sed -i 's/^\(PIPELINE_BUYER_[A-Z_]*\)=.*/\1=/' .env.document-pipeline`, `sed -i 's/^SERVICE_AUTH_HEADER=.*/SERVICE_AUTH_HEADER=""/' .env.document-pipeline`]) assert.ok(table.includes('`' + command + '`'), command);
   // The codes are those the README of the agent lists, with the statuses it gives.

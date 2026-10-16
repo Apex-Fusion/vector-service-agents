@@ -3,8 +3,8 @@
 // fee of the live ChandraOCR Post as constants. Posts are planned by planFleetPostEscrow, so they get the real deliver_by and the real
 // refusals (a retired advert, the buyer as its own supplier, a prompt hash that is not a sha256). The two transitions only a supplier makes,
 // Claim and Submit, are test hooks (markClaimed, markSubmitted) that a stub supplier calls. Refs are deterministic: the n-th Post (from 1)
-// opens `${sha256(prefix + n)}#0`. Every transaction pays the fee out of the wallet float: a Post takes the lock and its fee; an Accept
-// returns the buyer bond and the lock-floor excess and pays its fee; a Reclaim returns the whole lock and pays its fee. The collateral is
+// opens `${sha256(prefix + n)}#0`. Every transaction takes its fee out of the wallet float: a Post takes the lock and its fee; an Accept
+// returns the buyer bond and the lock-floor excess and takes its fee; a Reclaim returns the whole lock and takes its fee. The collateral is
 // never spent. A Reclaim opens where the vendored planReclaim opens it, at the first whole second strictly after deliver_by. A third hook,
 // failNextPost, makes the next Post fail the way RealChain's fails after the signature (a TxNotConfirmedError), for the caller that must keep
 // track of an escrow that may still land. Two more steer the Accept (ruling R54): failNextAccepts makes the next Accepts fail as a build that did not
@@ -29,7 +29,7 @@ export interface FakeChainOptions {
   prefix?: string;
   /** Default 'bb' repeated: any key hash that is not a supplier's. The address is its mainnet enterprise address. */
   buyerPkh?: string;
-  /** Default 50000000 lovelace, the float of the funding the guide describes. */
+  /** Default 50000000 lovelace, the float the guide describes. */
   floatLovelace?: bigint;
   /** Default 5000000 lovelace, the 5-unit output sent alone; null for a wallet without collateral. */
   collateralLovelace?: bigint | null;
@@ -78,7 +78,7 @@ export class FakeChain implements Chain {
     const owed = advert.price_lovelace + advert.buyer_bond_lovelace + advert.supplier_bond_lovelace;
     if (owed > FakeChain.LOCK_LOVELACE) throw new Error(`FakeChain locks ${FakeChain.LOCK_LOVELACE} lovelace on every Post, less than the ${owed} advert ${advertRef} asks for.`);
     const cost = FakeChain.LOCK_LOVELACE + FakeChain.FEE_LOVELACE;
-    if (this.#float < cost) throw new Error(`FakeChain: the float of ${this.#float} lovelace cannot pay the lock and the fee (${cost}).`);
+    if (this.#float < cost) throw new Error(`FakeChain: the float of ${this.#float} lovelace cannot cover the lock and the fee (${cost}).`);
     const failure = this.#failNextPost;
     if (failure !== null) {
       this.#failNextPost = null;

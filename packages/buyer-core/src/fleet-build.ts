@@ -67,7 +67,7 @@ export function planFleetPostEscrow(advert: AdvertDatum, advertRef: string, buye
   const ref = parseOutRef(advertRef);
   const window = advert.max_processing_ms;
   if (!Number.isInteger(window) || window < 0) throw new Error(`Advert ${advertRef} has an unusable processing window (${window} ms).`);
-  if (window > MAX_PROCESSING_MS_CEILING) throw new Error(`Advert ${advertRef} advertises a processing window of ${window} ms, longer than the ${MAX_PROCESSING_MS_CEILING} ms (24 h) a Post will lock funds for.`);
+  if (window > MAX_PROCESSING_MS_CEILING) throw new Error(`Advert ${advertRef} advertises a processing window of ${window} ms, longer than the ${MAX_PROCESSING_MS_CEILING} ms (24 h) a Post will hold a lock for.`);
   assertEndpointHost(advert.endpoint_url, advertRef);
   const deliverBy = nowMs + window + DELIVER_BY_BUFFER_MS;
   if (!Number.isSafeInteger(deliverBy)) throw new Error(`deliver_by must leave the supplier its full window of ${window} ms`);
@@ -101,7 +101,7 @@ async function assertAdvertAuthor(koiosUrl: string, advertRef: string, creatingT
 /**
  * Builds the unsigned fleet Post: locks price and both bonds in a new escrow at output 0 for the advert, committing to `promptHash`. Mirrors
  * the vendored buildPostEscrow but for the fleet refusal and the payload: reads the advert from Koios (readAdvert) and refuses one that is
- * spent, not reported unspent, not valid UTF-8 or not created by its supplier key; plans the Post (planFleetPostEscrow); funds it without
+ * spent, not reported unspent, not valid UTF-8 or not created by its supplier key; plans the Post (planFleetPostEscrow); builds it without
  * the wallet's smallest pure 5-unit output when it can, so that output stays as collateral for the Accept and the Reclaim, and from the
  * whole wallet otherwise; checks that the escrow is output 0. `koiosUrl` is the Koios base without /api/v1 (default VECTOR_KOIOS_URL), an
  * addition to the vendored arguments so that one chain reads from one Koios; `fetchImpl` stands in for fetch in the two Koios calls.
@@ -137,7 +137,7 @@ export async function buildFleetPostEscrow(
     .validTo(plan.validTo)
     .setMinFee(MARKETPLACE_MIN_FEE);
   // The Post runs no script. Accept and Reclaim spend one and need a pure output of at least 5 units as collateral, so the smallest such
-  // output is held back when the rest can pay; when it cannot, or the reserved selection does not complete, the whole wallet funds it.
+  // output is held back when the rest can cover the Post; when it cannot, or the reserved selection does not complete, the Post draws on the whole wallet.
   const inputs = reserveCollateralInputs(await lucid.wallet().getUtxos(), plan.lockLovelace);
   let completed: TxSignBuilder | undefined;
   let reservedFailure: unknown;

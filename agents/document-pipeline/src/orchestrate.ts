@@ -8,22 +8,22 @@
 // each page's base64 must fit the OCR supplier's 12000000 characters (page_too_large,
 // ruling R27); the OCR supplier must be found and checked (ocr_supplier_unavailable, 503). Its advert is the one Active advert of the allowlisted key the
 // indexer lists, whatever the indexer says of the supplier at the moment (ruling R60), at a price at or under OCR_MAX_PRICE_LOVELACE, read again on chain,
-// where it must be an active OCR advert of that very key at such a price: the indexer is a guide, the chain is what an escrow pays. Its /capability must
+// where it must be an active OCR advert of that very key at such a price: the indexer is a guide, the chain is what an escrow settles against. Its /capability must
 // serve the key of that advert, or no receipt of it could verify, and its /status must say free or working (ruling R60): one at work is waited for by the
 // send, and one that says offline, another word, or nothing refuses the job. The endpoint a job is sent to is the one on chain. The chat supplier is chosen
-// then too, before any page is paid for (ruling R35): the cheapest allowlisted supplier at a price at or under LLM_MAX_PRICE_LOVELACE whose /capability
+// then too, before any page escrow is posted (ruling R35): the cheapest allowlisted supplier at a price at or under LLM_MAX_PRICE_LOVELACE whose /capability
 // serves the Responses API for its advert and whose /status says free or working (selectLlmSupplier; one at work is waited for by the send, ruling R60),
 // whose advert is read on chain as well (llm_supplier_unavailable, 503). Once both are known, and still before the first Post, the float is looked at
 // again with the locks their adverts take and the fees of a Post and an Accept for each sub-job (insufficient_float, 503, ruling R56).
 //
 // The first look at the float is a gate that needs no supplier, the one /healthz makes too: (max_pages + 1) x 4500000 assumes adverts priced at or under
-// the ceilings (1000000 each by default) with bonds of 1000000 and 1000000, whose lock is at most 3000000 and whose Post and Accept pay two fees at the
-// floor of 500000, which these transactions pay today; an Accept whose script execution cost more would exceed it. That is under the 4500000 a sub-job is
+// the ceilings (1000000 each by default) with bonds of 1000000 and 1000000, whose lock is at most 3000000 and whose Post and Accept cost two fees at the
+// floor of 500000, which these transactions cost today; an Accept whose script execution cost more would exceed it. That is under the 4500000 a sub-job is
 // given. An advert with larger bonds, or a ceiling raised above that, is caught by the second look.
 //
 // Then the pages in order, none started with less than 660 s left before the deadline, and the chat job, not started with less than 420 s left
 // (ruling R40): its supplier is chosen again first when the first choice is more than 10 minutes old, and the new choice is held to its ceiling and to
-// the float again, its lock and two fees against the float read then (insufficient_float, 503, after the pages are paid). The chat body is {input} and nothing else
+// the float again, its lock and two fees against the float read then (insufficient_float, 503, after the page escrows are settled). The chat body is {input} and nothing else
 // (ruling R12). Its answer must be a completed response: one that is not is still verified and accepted (the supplier delivered), and the job fails
 // with llm_incomplete (ruling R11). Every escrow a failure leaves behind is in the stranded store, for the janitor.
 import {
@@ -96,7 +96,7 @@ export async function runPipeline(req: PipelineRequest, deps: Deps): Promise<Pip
   const images = pages.map((page) => ({ index: page.index, base64: Buffer.from(page.png).toString('base64') }));
   for (const image of images) {
     if (image.base64.length > OCR_IMAGE_B64_MAX) {
-      throw new PipelineError('page_too_large', `Page ${image.index + 1} is ${image.base64.length} characters of base64, over the ${OCR_IMAGE_B64_MAX} the OCR supplier takes. Nothing was spent.`);
+      throw new PipelineError('page_too_large', `Page ${image.index + 1} is ${image.base64.length} characters of base64, over the ${OCR_IMAGE_B64_MAX} the OCR supplier takes. Nothing was locked.`);
     }
   }
   const ocr = await ocrSupplier(deps);
@@ -131,14 +131,14 @@ export async function runPipeline(req: PipelineRequest, deps: Deps): Promise<Pip
     await assertChatFloatCovers(deps, llm);
     assertTimeLeft(deps, LLM_MIN_LEFT_MS, label);
   }
-  // A schema rides only with an extraction: parseRequest refuses one with a summary, and a request made another way is not failed for it after the pages are paid.
+  // A schema rides only with an extraction: parseRequest refuses one with a summary, and a request made another way is not failed for it after the page escrows are settled.
   const input = llmInput({ task: req.task, language: req.language, schema: req.task === 'extract' ? req.schema : undefined, pages: pagesRead });
   const answer = await hire(deps, llm, {
     label,
     promptHash: responsesPromptHash({ input }),
     send: (escrowRef) => sendResponsesJob(llm.endpoint, escrowRef, { input }, deps.fetchImpl),
     poll: (jobId, escrowRef) => pollResponsesJob(llm.endpoint, jobId, deps.fetchImpl, escrowRef),
-    // Hashed as received (ruling R10), and the answer text read before the Accept, so a body without one is not paid for (ruling R12).
+    // Hashed as received (ruling R10), and the answer text read before the Accept, so the escrow of a body without one is never accepted (ruling R12).
     read: (body) => {
       if (!Array.isArray(body.output)) throw new Error('its output is not a list');
       return { responseHash: responsesResponseHash(body), value: { text: responsesOutputText(body), status: body.status } };
@@ -172,13 +172,13 @@ export async function assertFunded(chain: Chain, maxPages: number): Promise<Wall
   let wallet: Wallet;
   try { wallet = await within(chain.wallet(), WALLET_READ_TIMEOUT_MS); } catch (err) {
     const why = err instanceof OutOfTime ? `could not be read within ${WALLET_READ_TIMEOUT_MS / 1000} s` : `could not be read (${errorText(err)})`;
-    throw new PipelineError('insufficient_float', `The buyer wallet ${why}, so its float of ${needed} lovelace for ${jobs} cannot be confirmed. Nothing was spent.`, 503);
+    throw new PipelineError('insufficient_float', `The buyer wallet ${why}, so its float of ${needed} lovelace for ${jobs} cannot be confirmed. Nothing was locked.`, 503);
   }
   if (wallet.collateralLovelace === null) {
-    throw new PipelineError('insufficient_float', 'The buyer wallet has no collateral output (a pure output of at least 5000000 lovelace that the Accept and the Reclaim need). Nothing was spent.', 503);
+    throw new PipelineError('insufficient_float', 'The buyer wallet has no collateral output (a pure output of at least 5000000 lovelace that the Accept and the Reclaim need). Nothing was locked.', 503);
   }
   if (wallet.floatLovelace < needed) {
-    throw new PipelineError('insufficient_float', `The buyer wallet holds ${wallet.floatLovelace} lovelace outside its collateral, less than the ${needed} that ${jobs} need. Nothing was spent.`, 503);
+    throw new PipelineError('insufficient_float', `The buyer wallet holds ${wallet.floatLovelace} lovelace outside its collateral, less than the ${needed} that ${jobs} need. Nothing was locked.`, 503);
   }
   return wallet;
 }
@@ -192,14 +192,14 @@ function plannedLock(supplier: Supplier, buyerPkh: string, nowMs: number): bigin
     return planFleetPostEscrow(supplier.advert, supplier.advertRef, buyerPkh, PLANNING_PROMPT_HASH, nowMs).lockLovelace;
   } catch (err) {
     const who = supplier.hop === 'ocr' ? 'The OCR supplier' : 'The chat supplier';
-    throw new PipelineError(`${supplier.hop}_supplier_unavailable`, `${who} cannot be hired: no Post can be planned on its advert ${supplier.advertRef} (${errorText(err)}). Nothing was spent.`, 503);
+    throw new PipelineError(`${supplier.hop}_supplier_unavailable`, `${who} cannot be hired: no Post can be planned on its advert ${supplier.advertRef} (${errorText(err)}). Nothing was locked.`, 503);
   }
 }
 
 /**
  * The second look at the float (ruling R56), once both suppliers are known and before the first Post: the lock of each sub-job as its advert plans it,
  * `pages` times the OCR advert's and once the chat advert's, and the fee of a Post and of an Accept for each (TX_FEE_BUDGET_LOVELACE), against the float
- * of the wallet the first look read. insufficient_float (503) when it does not cover them; nothing was spent then.
+ * of the wallet the first look read. insufficient_float (503) when it does not cover them; nothing was locked then.
  */
 function assertFloatCovers(wallet: Wallet, ocr: Supplier, llm: Supplier, pages: number, nowMs: number): void {
   const fees = 2n * TX_FEE_BUDGET_LOVELACE;
@@ -208,17 +208,17 @@ function assertFloatCovers(wallet: Wallet, ocr: Supplier, llm: Supplier, pages: 
   const needed = BigInt(pages) * (ocrLock + fees) + llmLock + fees;
   if (wallet.floatLovelace < needed) {
     throw new PipelineError('insufficient_float', `The buyer wallet holds ${wallet.floatLovelace} lovelace outside its collateral, less than the ${needed} that the ${pages + 1} sub-jobs of this job take at the prices of the suppliers chosen: `
-      + `a lock of ${ocrLock} lovelace and two fees of ${TX_FEE_BUDGET_LOVELACE} for each of the ${pages} page${pages === 1 ? '' : 's'}, and a lock of ${llmLock} and two fees for the chat job. Nothing was spent.`, 503);
+      + `a lock of ${ocrLock} lovelace and two fees of ${TX_FEE_BUDGET_LOVELACE} for each of the ${pages} page${pages === 1 ? '' : 's'}, and a lock of ${llmLock} and two fees for the chat job. Nothing was locked.`, 503);
   }
 }
 
 /**
  * The same arithmetic for the chat job alone, when its supplier is chosen again after the pages (rulings R35, R56): the lock its advert plans and the fee of
  * a Post and of an Accept, against the float the wallet holds then, read within WALLET_READ_TIMEOUT_MS. insufficient_float (503) when it does not cover
- * them: the pages are paid by then, and the chat escrow is never posted.
+ * them: the page escrows are settled by then, and the chat escrow is never posted.
  */
 async function assertChatFloatCovers(deps: Deps, llm: Supplier): Promise<void> {
-  const unfunded = (why: string) => new PipelineError('insufficient_float', `${why}. The pages are paid; nothing was posted for the chat job.`, 503);
+  const unfunded = (why: string) => new PipelineError('insufficient_float', `${why}. The page escrows are settled; nothing was posted for the chat job.`, 503);
   let wallet: Wallet;
   try { wallet = await within(deps.chain.wallet(), WALLET_READ_TIMEOUT_MS); } catch (err) {
     throw unfunded(`The buyer wallet ${err instanceof OutOfTime ? `could not be read within ${WALLET_READ_TIMEOUT_MS / 1000} s` : `could not be read (${errorText(err)})`} before the Post of the chat job, whose supplier was chosen again`);
@@ -262,7 +262,7 @@ const aboveCeiling = (advertRef: string, price: bigint, ceiling: bigint, setting
 async function ocrSupplier(deps: Deps): Promise<Supplier> {
   const pkh = deps.ocrAllowlistPkh.toLowerCase();
   const ceiling = deps.ocrMaxPriceLovelace;
-  const unavailable = (why: string) => new PipelineError('ocr_supplier_unavailable', `The allowlisted OCR supplier ${pkh} cannot be hired: ${why}. Nothing was spent.`, 503);
+  const unavailable = (why: string) => new PipelineError('ocr_supplier_unavailable', `The allowlisted OCR supplier ${pkh} cannot be hired: ${why}. Nothing was locked.`, 503);
   const find = (maxPriceLovelace?: bigint) => findOcrAdvert({ fetchImpl: deps.fetchImpl, indexerUrl: deps.indexerUrl, supplierPkh: pkh, ...(maxPriceLovelace === undefined ? {} : { maxPriceLovelace }) });
   let listed: Awaited<ReturnType<typeof findOcrAdvert>>;
   try { listed = await find(ceiling); } catch (err) {

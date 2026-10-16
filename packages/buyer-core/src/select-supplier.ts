@@ -1,7 +1,7 @@
 // packages/buyer-core/src/select-supplier.ts
 // Supplier discovery: which chat supplier to hire for the summary (selectLlmSupplier) and which OCR advert to hire for a page (findOcrAdvert). Both read the
 // marketplace indexer with the vendored fetchSuppliers, which lists the adverts of one capability, and keep the Active adverts whatever the indexer says of
-// their supplier at the moment (free, working, offline): that word is a moment's and must not fail a job before it spends, and the send of a job waits for a
+// their supplier at the moment (free, working, offline): that word is a moment's and must not fail a job before it locks anything, and the send of a job waits for a
 // supplier that is busy (ruling R60). A chat candidate is then asked for its own word at /status, which must be free or working: offline, another word or
 // no answer passes it over for the next. The indexer is the operator's own configuration, read with the injected fetch as it is. The suppliers it lists are
 // reached only through safeFetch (see fleet-clients.ts).

@@ -79,7 +79,7 @@ describe('manifest', () => {
       },
       behaviour: {
         data_handling: 'The document, its page images, the task and the schema are held in memory while a job runs; a PDF is also written to a private temporary directory while its pages are rendered, and removed after. '
-          + 'Pages go to the OCR agent as images, the page texts, the task and any schema to the LLM supplier, and escrow identifiers to Koios and the marketplace indexer; on the ledger the sub-escrows carry hashes, not the document or its text. '
+          + 'Pages go to the OCR agent as images, the page texts, the task and any schema to the LLM supplier, and escrow identifiers to Koios and the marketplace indexer; on the ledger the sub-escrows carry hashes only, and the document and its text stay off the ledger. '
           + 'The service writes only the bookkeeping of the escrows it posts (references, times, the hop, a transaction hash) to its state directory, and its log carries job outcomes, never a request or a document.',
         third_parties: ['the host of the source URL', 'the ChandraOCR agent, and Datalab behind it', 'the LLM supplier it hires, and its model provider', 'Koios (Vector mainnet indexer)', 'marketplace indexer'],
       },
@@ -1290,7 +1290,7 @@ describe('the real pipeline over HTTP', () => {
       expect(r.status).toBe(503);
       expect(r.json).toStrictEqual({ error: 'insufficient_float', message: "The service could not do this job (insufficient_float). The operator's log has the detail." });
     });
-    expect(logs.join('\n')).toMatch(/job failed after \d+ ms: insufficient_float \(503\): .*Nothing was spent/); // the detail is the operator's
+    expect(logs.join('\n')).toMatch(/job failed after \d+ ms: insufficient_float \(503\): .*Nothing was locked/); // the detail is the operator's
     expect(m.calls.filter((c) => c.method === 'POST')).toStrictEqual([]);
   });
 

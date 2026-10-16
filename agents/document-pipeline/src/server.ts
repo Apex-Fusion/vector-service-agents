@@ -127,8 +127,8 @@ const NOTES = [
   'The schema, which goes with task extract and with no other task, is a JSON Schema of draft-07 read in strict mode: a keyword the validator does not know is refused.',
   'The schema may not use $ref, $dynamicRef, $recursiveRef, $id, $defs, definitions, pattern, patternProperties or format, have a __proto__ key, or declare $async at the root. '
     + `It is at most ${SCHEMA_MAX_BYTES} bytes of JSON and ${SCHEMA_MAX_DEPTH} levels deep, and each of its anyOf, oneOf and allOf has at most ${COMBINATION_MAX_ENTRIES} entries. `
-    + 'A schema that breaks a rule is refused with the code schema_invalid (400) before anything is spent.',
-  'An extraction whose answer is not JSON, or does not validate against the schema, is not an error: the result has schema_valid false and extraction null, and the answer is kept as raw_text.',
+    + 'A schema that breaks a rule is refused with the code schema_invalid (400) before anything is locked.',
+  'An extraction whose answer is not JSON, or does not validate against the schema, still succeeds: the result has schema_valid false and extraction null, and the answer is kept as raw_text.',
 ];
 
 export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
@@ -151,7 +151,7 @@ export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
     },
     behaviour: {
       data_handling: 'The document, its page images, the task and the schema are held in memory while a job runs; a PDF is also written to a private temporary directory while its pages are rendered, and removed after. '
-        + 'Pages go to the OCR agent as images, the page texts, the task and any schema to the LLM supplier, and escrow identifiers to Koios and the marketplace indexer; on the ledger the sub-escrows carry hashes, not the document or its text. '
+        + 'Pages go to the OCR agent as images, the page texts, the task and any schema to the LLM supplier, and escrow identifiers to Koios and the marketplace indexer; on the ledger the sub-escrows carry hashes only, and the document and its text stay off the ledger. '
         + 'The service writes only the bookkeeping of the escrows it posts (references, times, the hop, a transaction hash) to its state directory, and its log carries job outcomes, never a request or a document.',
       third_parties: ['the host of the source URL', 'the ChandraOCR agent, and Datalab behind it', 'the LLM supplier it hires, and its model provider', 'Koios (Vector mainnet indexer)', 'marketplace indexer'],
     },
@@ -230,7 +230,7 @@ function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
 }
 
 /**
- * Whether the buyer wallet can fund a job: the last answer of a check, with the check made again in the background when that answer is older than the TTL.
+ * Whether the buyer wallet can cover a job: the last answer of a check, with the check made again in the background when that answer is older than the TTL.
  * A request asks `poke` to start a check if one is due and reads `healthy` at once, so it never waits for the node. One check runs at a time. Nothing is
  * known before the first check has answered, and until then the wallet counts as fine.
  */
@@ -275,7 +275,7 @@ class FloatMonitor {
  * How often, while a job runs, the server writes an interim "102 Processing" line (ruling R47). The template runtime calls this service with the global fetch
  * and only AbortSignal.timeout(budget). Behind fetch, undici gives up on a response that has not begun after 300 s (its headers timeout), and a job takes up
  * to 27 minutes: without a line now and then the runtime would report service_unreachable at the five minute mark while the service goes on hiring and
- * paying, and holds its slot. Undici counts an interim response as life and keeps waiting for the final one, so a line a minute is plenty, and the option
+ * settling sub-jobs, and holds its slot. Undici counts an interim response as life and keeps waiting for the final one, so a line a minute is plenty, and the option
  * may not be longer. The final answer is what it was: the same 200 with the same body.
  */
 export const HEARTBEAT_MS = 60_000;
@@ -296,7 +296,7 @@ function startHeartbeat(req: IncomingMessage, res: ServerResponse, everyMs: numb
 }
 
 /**
- * The one place a job runs: one at a time, because the money of a job is the buyer wallet's and the wallet is one. A request takes the slot once it has been
+ * The one place a job runs: one at a time, because every escrow of a job comes from the buyer wallet and the wallet is one. A request takes the slot once it has been
  * read and found to be a request, not while its upload is under way, so that a client that stalls cannot hold it. A service that is stopping drains the slot:
  * the job that holds it goes on, and no other is taken.
  */
@@ -333,7 +333,7 @@ export interface ServerOptions {
   manifest: AgentManifest;
   /**
    * The token the runtime sends as the authorization header of every call (SERVICE_AUTH_HEADER, ruling R50), which POST / requires. A server is never made
-   * without one: a service that answered anyone would spend from the buyer wallet for anyone who can reach its port.
+   * without one: a service that answered anyone would post escrows from the buyer wallet for anyone who can reach its port.
    */
   authHeader: string;
   /** Everything a run is given but its deadline, which the server sets for each request. */
@@ -374,7 +374,7 @@ export function createServer(opts: ServerOptions): Server {
     throw new RangeError(`heartbeatMs must be more than 0 and at most ${HEARTBEAT_MS}, for the runtime's fetch gives up after 300 s of silence, got ${heartbeatMs}`);
   }
   if (typeof opts.authHeader !== 'string' || opts.authHeader === '') {
-    throw new RangeError('authHeader must be the value of SERVICE_AUTH_HEADER and not empty: a service that answered anyone would spend from the buyer wallet for anyone who can reach its port');
+    throw new RangeError('authHeader must be the value of SERVICE_AUTH_HEADER and not empty: a service that answered anyone would post escrows from the buyer wallet for anyone who can reach its port');
   }
   const expectedAuth = digest(opts.authHeader);
   // The header of the call against the token: both digested, so the two buffers are of one length, and compared with timingSafeEqual. Nothing here is logged or answered.

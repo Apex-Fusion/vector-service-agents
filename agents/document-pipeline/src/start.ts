@@ -5,7 +5,7 @@
 // Four settings are required, and the service stops at start without them, naming the variable: OPERATOR_CONTACT (published in the manifest, so with no
 // default), PIPELINE_BUYER_PRIV_KEY_HEX (the buyer key), SUPPLIER_PKH (the supplier key hash, published in the manifest; the supplier key itself is the
 // runtime's and never reaches this service) and SERVICE_AUTH_HEADER (the value the template runtime sends as the authorization header of every call,
-// which POST / requires, ruling R50: a service without it would answer anyone who can reach its port, and a job spends from the buyer wallet). The key
+// which POST / requires, ruling R50: a service without it would answer anyone who can reach its port, and a job posts escrows from the buyer wallet). The key
 // hash and the mainnet address of the buyer key are derived from the key (ruling R44), so the buyer key hash the manifest publishes is the key that
 // signs, and a PIPELINE_BUYER_PKH or PIPELINE_BUYER_ADDRESS the operator wrote down that is not the key's stops the start too, as does a
 // SUPPLIER_PUB_KEY_HEX that is not the public key of SUPPLIER_PKH. A secret put in the wrong line of an env file is the mistake this guards against:
@@ -356,7 +356,7 @@ export async function startService(env: NodeJS.ProcessEnv = process.env, options
     let outcome: ShutdownOutcome = 'finished';
     try {
       // What is waited for is the job, which holds the slot until its run has ended, its Accept included. Its connection is no measure of it: that ends at once
-      // when the caller hangs up, while the job goes on paying (ruling R61).
+      // when the caller hangs up, while the job goes on settling sub-jobs (ruling R61).
       if ((await Promise.race([slot.idle().then(() => 'idle' as const), late])) === 'late') {
         outcome = 'abandoned';
         const refs = stranded.list().map((entry) => entry.escrow_ref);

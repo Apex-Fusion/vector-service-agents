@@ -3,9 +3,9 @@
 // the supplier, poll it, read and check what it returns, accept, and only then forget the escrow. Every way it can end before the Accept is a
 // PipelineError <hop>_<what>, and the escrow is left in the stranded store for the janitor (src/janitor.ts), which reclaims it after its deliver_by
 // when it is Open or Claimed and keeps it when it is Submitted. The supplier's own endpoint, key and model were established before the Post
-// (src/orchestrate.ts); nothing a supplier says here moves money but its signed receipt, checked against the hash its Submit put on chain. A write of
-// the stranded store that fails after money moved is store_write_failed (500), naming the escrow, never a plain error; the one exception is the removal
-// of an entry after its Accept is confirmed, which is logged and does not fail a job that is paid and verified (ruling R62).
+// (src/orchestrate.ts); nothing a supplier says here moves value but its signed receipt, checked against the hash its Submit put on chain. A write of
+// the stranded store that fails after an escrow was posted is store_write_failed (500), naming the escrow, never a plain error; the one exception is the removal
+// of an entry after its Accept is confirmed, which is logged and does not fail a job that is settled and verified (ruling R62).
 //
 // The Post. Confirmed: it is recorded in the stranded store before anything else. Failed after its signature: recorded too, with the end of its
 // validity, whether it may still land or the submit API refused it (ruling R59), and <hop>_post_failed. Failed before its signature: nothing was locked.
@@ -60,7 +60,7 @@ export interface Supplier {
   hop: Hop;
   /** Canonical. */
   advertRef: string;
-  /** The advert's datum as read on chain before the Post (ruling R31): what the escrow is planned from and pays. */
+  /** The advert's datum as read on chain before the Post (ruling R31): what the escrow is planned from and settles against. */
   advert: AdvertDatum;
   capabilityId: string;
   /** The advert's model: the receipt must name it. */
@@ -96,7 +96,7 @@ async function stateOf(chain: Chain, escrowRef: string): Promise<ChainEscrowStat
 }
 const said = (state: ChainEscrowState | null): string => (state === null ? 'in a state that could not be read' : state);
 
-/** A write of the stranded store after money moved; one that fails is store_write_failed (500), whose message starts with the escrow and says what follows. */
+/** A write of the stranded store after an escrow was posted; one that fails is store_write_failed (500), whose message starts with the escrow and says what follows. */
 function recorded(write: () => void, escrowRef: string, consequence: string): void {
   try { write(); } catch (err) {
     throw new PipelineError('store_write_failed', `Escrow ${escrowRef} could not be recorded in the stranded store (${errorText(err)}): ${consequence}`, 500);
@@ -301,8 +301,8 @@ async function accept<T>(deps: HireDeps, supplier: Supplier, job: Job<T>, post: 
     }
   }
   accounting.accepted(accepted);
-  // The one write of the store that does not fail the run (ruling R62): the job is paid and verified, and an entry the remove left behind reads spent, which
-  // the janitor drops on its own. Every other write after money moved fails closed (recorded).
+  // The one write of the store that does not fail the run (ruling R62): the job is settled and verified, and an entry the remove left behind reads spent, which
+  // the janitor drops on its own. Every other write after an escrow was posted fails closed (recorded).
   try { deps.stranded.remove(post.escrowRef); } catch (err) {
     deps.log?.(`escrow ${post.escrowRef} was accepted for ${job.label} in ${accepted.txHash} and could not be removed from the stranded store (${errorText(err)}); the janitor drops it once it reads it spent`);
   }
