@@ -1,6 +1,6 @@
 // agents/document-pipeline/src/request.ts
 // The request JSON of the spec (specs/document-pipeline.md, Request), read strictly: the documented shape and nothing else. Anything outside it is
-// refused here, with a RequestError, before the service fetches a byte or posts an escrow, because after that every mistake costs money.
+// refused here, with a RequestError, before the service fetches a byte or posts an escrow, because after that every mistake costs fees or a stranded lock.
 //
 // Which errors are 400 and which are 422. A request that is malformed is 400: bad_json, bad_shape, schema_required, max_pages_range,
 // base64_too_large, language_bad. A request that is well formed but names a document the service cannot use is 422: source_fetch_failed,

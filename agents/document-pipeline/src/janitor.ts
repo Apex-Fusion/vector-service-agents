@@ -134,7 +134,7 @@ function flushDirectory(dir: string): void {
 /**
  * The stranded escrows, in memory and in `<stateDir>/stranded.json`. Every change is written at once, whole: to a temporary file, every byte of it,
  * flushed, renamed over the old one, and the directory flushed after the rename, so the file is always one complete list. A file that is there and is
- * not such a list is refused when the store is made: starting empty would forget escrows that hold funds. Refs are kept in canonical form, and found
+ * not such a list is refused when the store is made: starting empty would forget escrows that still hold a lock. Refs are kept in canonical form, and found
  * however they are written. Known gap (ruling R39): an escrow is written here once its Post is confirmed or has failed after its signature, so a
  * process that exits between signing a Post and either of those leaves an escrow this store never saw; the Chain has no hook before the submit yet.
  */

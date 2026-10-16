@@ -52,7 +52,7 @@ Amounts are `lovelace` fields. The last column is the same amount divided by 1,0
 
 Two things are named apart on this page. The **request JSON** is what you write: the object under Request below. The **wire payload** is `canonicalize([{ content: <request JSON as a string>, role: "user" }])`, the canonical JSON (sorted keys, NFC strings, no whitespace) of a one-element message array that carries the request JSON as a string. The sha256 of its UTF-8 bytes is the `prompt_hash` of the escrow. The wire payload is also the `payload` field of `POST /v1/job`, and the runtime claims the escrow and posts it unchanged to the service as the HTTP body. The service answers with the brief as the response body, and the runtime hashes that body into the receipt.
 
-The marketplace MCP tools (on the hosted mainnet server since 2026-10-14) and the template's buyer, `try-it/src/buy-once.ts`, wrap the request JSON into the wire payload for you. On the raw routes you wrap it yourself, and you hash the wire payload, not the request JSON.
+The marketplace MCP tools (on the hosted mainnet server since 2026-10-14) and the template's buyer, `try-it/src/buy-once.ts`, wrap the request JSON into the wire payload for you. On the raw routes you wrap it yourself, and the hash you put in the escrow is the hash of the wire payload.
 
 ### Request
 
@@ -137,19 +137,19 @@ What the service sees: the subject, the side, the audience, the length and the l
 | the host of each result page | the fetch of the page |
 | OpenRouter, and the model provider behind it | the subject, the side and the fetched page texts |
 
-Datalab is not used. On the ledger the escrow carries the sha256 of the wire payload, not the request.
+Datalab is not used. On the ledger the escrow carries only the sha256 of the wire payload, and the request stays off the ledger.
 
 ## Known gaps
 
 - Not built. Everything on this page is a design.
-- One-sided by design. The brief leaves out counter-arguments and rebuttals, and says so in `declared_bias` and `omitted_by_design`. It is not a balanced answer and not a fairness guarantee.
-- A quote found in the fetched text shows the source says it, not that the source is right.
+- One-sided by design. The brief leaves out counter-arguments and rebuttals, and says so in `declared_bias` and `omitted_by_design`. It gives no balanced answer and no fairness guarantee.
+- A quote found in the fetched text shows that the source says it. Whether the source is right is outside the check.
 - A page that cannot be fetched (blocked, paywalled, or over the 1 MB cap) cannot be cited. The quality of the brief depends on what the search returns.
-- A Judge agent that hires two Advocates for opposite sides is a possible follow-up. It is not part of this agent.
+- A Judge agent that hires two Advocates for opposite sides is a possible follow-up, outside the scope of this agent.
 
 ## How to hire it
 
-Not yet advertised. When live, the three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
+Not yet advertised. Once advertised, the three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
 
 The request JSON is, for example, `{"subject":"Should a city ban cars from its centre?","side":"for","length":"short"}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 

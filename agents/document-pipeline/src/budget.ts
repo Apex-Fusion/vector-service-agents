@@ -1,5 +1,5 @@
 // agents/document-pipeline/src/budget.ts
-// The time and money rules of a run, in one place. The deadline is the orchestrator's own: the server sets it 1620000 ms after the request arrives,
+// The time and float rules of a run, in one place. The deadline is the orchestrator's own: the server sets it 1620000 ms after the request arrives,
 // 60 s inside the runtime's SERVICE_TIMEOUT_MS, so that a run answers, with a result or a refusal, before the runtime gives up on it. It does so
 // except where something the deadline does not cut is still under way when it comes: a Post or an Accept confirming, the repeats of an Accept, a send,
 // a poll or a read of the chain in flight (see below).
@@ -24,7 +24,7 @@
 // What a run may lock is checked before the first Post: the collateral output, and a float for every sub-job it could post. The gate needs no supplier
 // (the health check makes it too): FLOAT_PER_SUB_JOB_LOVELACE assumes adverts priced at or under the price ceilings of the service (1000000 lovelace
 // each by default, src/start.ts) with bonds of 1000000 and 1000000, so a lock of at most 3000000 and two fees at the floor of 500000, which these
-// transactions pay today; an Accept whose script execution cost more would exceed it. That is under 4500000. Once
+// transactions cost today; an Accept whose script execution cost more would exceed it. That is under 4500000. Once
 // both suppliers are chosen, a second look checks the float against the locks their adverts really take (src/orchestrate.ts): larger bonds, or a
 // ceiling raised above that, are caught there.
 import { PipelineError } from './result.ts';

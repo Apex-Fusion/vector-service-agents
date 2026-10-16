@@ -1,4 +1,4 @@
-// Vitest port of packages/builder/test/safe-fetch.test.ts (Plan A Task 7 Step 1; node:test -> vitest).
+// Vitest port of packages/builder/test/safe-fetch.test.ts (from the build-time specification text; node:test -> vitest).
 import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { assertSafeUrl, isPrivateAddress, safeFetch } from '../src/safe-fetch.ts';
@@ -24,7 +24,7 @@ describe('safeFetch policy', () => {
     const f = (async () => new Response('', { status: 302, headers: { location: 'http://evil.example/' } })) as any;
     await expect(safeFetch('https://ok.example/', {}, { lookup, fetchImpl: f })).rejects.toThrow(/redirect/);
   });
-  // Local additions: the Plan A suite has no success-path test and never checks that redirect: 'manual' reaches fetch.
+  // Local additions: the source suite has no success-path test and never checks that redirect: 'manual' reaches fetch.
   test('passes the caller init through with redirect: manual and returns status, headers and text', async () => {
     const lookup = async () => [{ address: '8.8.8.8', family: 4 }];
     let seen: RequestInit | undefined;

@@ -28,7 +28,7 @@ import { feeOfSignedTx } from './fees.ts';
 
 /**
  * A confirmed Post. Times are POSIX milliseconds, amounts lovelace. `collateralKept` is the vendored builder's flag: true when the Post was
- * funded without the wallet's smallest pure output of at least 5 units, so it is still there as collateral for the next Accept or Reclaim;
+ * built without the wallet's smallest pure output of at least 5 units, so it is still there as collateral for the next Accept or Reclaim;
  * false when that output may have been spent, and then the wallet has collateral only if another such output remains (wallet() says).
  */
 export interface PostResult { escrowRef: string; txHash: string; lockLovelace: bigint; feeLovelace: bigint; deliverBy: number; postedAt: number; supplierPkh: string; collateralKept: boolean; }
@@ -49,7 +49,7 @@ export interface Chain {
   /** Builds, signs, submits and awaits the confirmation of a Post that commits to `promptHash`. A failure after the signature is a TxNotConfirmedError. */
   postEscrow(args: { advertRef: string; promptHash: string }): Promise<PostResult>;
   /**
-   * Accepts a Submitted escrow (pays the supplier the price and its bond, returns the buyer bond); returns once confirmed. An AcceptWindowClosedError
+   * Accepts a Submitted escrow (settles the price and its bond to the supplier, returns the buyer bond); returns once confirmed. An AcceptWindowClosedError
    * says that no Accept of the escrow can be made any more.
    */
   accept(escrowRef: string): Promise<{ txHash: string; feeLovelace: bigint }>;

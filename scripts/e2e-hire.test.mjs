@@ -306,7 +306,7 @@ test('a full run: post, send, poll, verify, accept, each transaction signed, sub
   ]);
   const byName = (n) => builder.calls.filter((c) => c.name === n);
   assert.deepEqual(byName('vector_build_marketplace_post_escrow')[0].args, { changeAddress: ADDRESS, advert_ref: ADVERT_REF, payload: PAYLOAD });
-  assert.deepEqual(byName('vector_marketplace_send_job')[0].args, { escrow_ref: ESCROW_REF, payload: PAYLOAD, buyerAddress: ADDRESS }, 'the buyer is the wallet that posted and funded the escrow: the signer address');
+  assert.deepEqual(byName('vector_marketplace_send_job')[0].args, { escrow_ref: ESCROW_REF, payload: PAYLOAD, buyerAddress: ADDRESS }, 'the buyer is the wallet that posted the escrow and locked its value: the signer address');
   const poll = { escrow_ref: ESCROW_REF, job_id: 'job-1', buyerAddress: ADDRESS };
   assert.deepEqual(byName('vector_marketplace_get_job').map((c) => c.args), [poll, poll], 'every poll names the buyer, like the send');
   assert.deepEqual(byName('vector_marketplace_verify_receipt')[0].args, { escrow_ref: ESCROW_REF, receipt: { ...RECEIPT, escrow_ref: ESCROW_REF }, receipt_signature: SIGNATURE, result: REPORT });

@@ -187,7 +187,7 @@ function assertPagesFit(stdout: string, maxPages: number, dpi: number): void {
     const image = largestImage({ size: boxes.size, mediaBox: boxes.mediaBox }, dpi);
     if (image.pixels > MAX_PAGE_PIXELS) {
       throw new PipelineError('page_too_large', `Page ${page} of the PDF is ${points(image.box.width)} by ${points(image.box.height)} points, ${image.width} by ${image.height} pixels at ${dpi} dpi, `
-        + `over the ${MAX_PAGE_PIXELS} pixels a page may have. Nothing was spent.`);
+        + `over the ${MAX_PAGE_PIXELS} pixels a page may have. Nothing was locked.`);
     }
   }
 }

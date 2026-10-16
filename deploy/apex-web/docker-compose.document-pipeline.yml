@@ -1,7 +1,7 @@
 # Document Pipeline on apex-web: template runtime (pinned) + this repo's service. Pattern: Agent History.
 # DEPLOYED since 2026-10-16: installed and running on the box since 2026-10-16; one first-party job settled on 2026-10-16. The order of work is RUNBOOK-document-pipeline.md. The host administrator's part is README.md.
 # The env file sits next to this file, is made from .env.document-pipeline.example, holds two keys (the supplier key for the runtime, the buyer key for the service) and the token between the two, and never enters git.
-# After any change to it, recreate the containers. Once the runtime runs (step 13 of RUNBOOK-document-pipeline.md), recreate only when its /status says free (curl -s http://127.0.0.1:8084/status): a stop during a job can cut a paid job. Before step 13 no job can run.
+# After any change to it, recreate the containers. Once the runtime runs (step 13 of RUNBOOK-document-pipeline.md), recreate only when its /status says free (curl -s http://127.0.0.1:8084/status): a stop during a job can cut a job under escrow. Before step 13 no job can run.
 # docker compose -f docker-compose.document-pipeline.yml up -d --force-recreate <service>. restart does not re-read it. A change to SERVICE_AUTH_HEADER needs both containers recreated.
 # Both containers join umami_default, which other stacks share, and every agent here has a service named "service". The alias
 # "service" would resolve to all of them, so SERVICE_URL names the container, which is unique. The path is /, the only path the service accepts POST on.
@@ -40,15 +40,15 @@ services:
     container_name: document-pipeline-service
     restart: unless-stopped
     env_file: [ { path: ./.env.document-pipeline, required: true } ]
-    # This service holds the buyer key, which pays for the sub-jobs, and not the supplier key, which is the runtime's: that one is blanked here.
-    # The service answers POST / only to a call that carries SERVICE_AUTH_HEADER, which the runtime sends, and no port is published: the network is shared with other stacks, and a job spends from the buyer wallet.
+    # This service holds the buyer key, which posts the escrows of the sub-jobs, and not the supplier key, which is the runtime's: that one is blanked here.
+    # The service answers POST / only to a call that carries SERVICE_AUTH_HEADER, which the runtime sends, and no port is published: the network is shared with other stacks, and a job posts escrows from the buyer wallet.
     environment: { PORT: "9092", HOST: "0.0.0.0", SUPPLIER_PRIV_KEY_HEX: "", PIPELINE_STATE_DIR: /data }
     # stranded.json, the escrows a job left behind for the janitor, lives here and outlives the container. docker compose down keeps the volume.
     volumes: ["document-pipeline-state:/data"]
     # pdftoppm renders every page at 150 dpi whatever its size, so the memory is bounded here and not in the image.
     mem_limit: 1536m
     # On SIGTERM the service takes no new job and waits up to 300 s for the one that is running; the 30 s more than that are for it to log a job it
-    # abandoned, with its escrows, and to exit 1. A grace period of 300 s or less kills a paid job mid-run, or the service before it can say what it left.
+    # abandoned, with its escrows, and to exit 1. A grace period of 300 s or less kills a job under escrow mid-run, or the service before it can say what it left.
     stop_grace_period: 330s
     networks: [umami_default]
     logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }

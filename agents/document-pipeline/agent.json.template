@@ -156,8 +156,8 @@
     },
     "notes": [
       "The schema, which goes with task extract and with no other task, is a JSON Schema of draft-07 read in strict mode: a keyword the validator does not know is refused.",
-      "The schema may not use $ref, $dynamicRef, $recursiveRef, $id, $defs, definitions, pattern, patternProperties or format, have a __proto__ key, or declare $async at the root. It is at most 16384 bytes of JSON and 32 levels deep, and each of its anyOf, oneOf and allOf has at most 16 entries. A schema that breaks a rule is refused with the code schema_invalid (400) before anything is spent.",
-      "An extraction whose answer is not JSON, or does not validate against the schema, is not an error: the result has schema_valid false and extraction null, and the answer is kept as raw_text."
+      "The schema may not use $ref, $dynamicRef, $recursiveRef, $id, $defs, definitions, pattern, patternProperties or format, have a __proto__ key, or declare $async at the root. It is at most 16384 bytes of JSON and 32 levels deep, and each of its anyOf, oneOf and allOf has at most 16 entries. A schema that breaks a rule is refused with the code schema_invalid (400) before anything is locked.",
+      "An extraction whose answer is not JSON, or does not validate against the schema, still succeeds: the result has schema_valid false and extraction null, and the answer is kept as raw_text."
     ]
   },
   "terms": {
@@ -173,7 +173,7 @@
     }
   },
   "behaviour": {
-    "data_handling": "The document, its page images, the task and the schema are held in memory while a job runs; a PDF is also written to a private temporary directory while its pages are rendered, and removed after. Pages go to the OCR agent as images, the page texts, the task and any schema to the LLM supplier, and escrow identifiers to Koios and the marketplace indexer; on the ledger the sub-escrows carry hashes, not the document or its text. The service writes only the bookkeeping of the escrows it posts (references, times, the hop, a transaction hash) to its state directory, and its log carries job outcomes, never a request or a document.",
+    "data_handling": "The document, its page images, the task and the schema are held in memory while a job runs; a PDF is also written to a private temporary directory while its pages are rendered, and removed after. Pages go to the OCR agent as images, the page texts, the task and any schema to the LLM supplier, and escrow identifiers to Koios and the marketplace indexer; on the ledger the sub-escrows carry hashes only, and the document and its text stay off the ledger. The service writes only the bookkeeping of the escrows it posts (references, times, the hop, a transaction hash) to its state directory, and its log carries job outcomes, never a request or a document.",
     "third_parties": [
       "the host of the source URL",
       "the ChandraOCR agent, and Datalab behind it",
@@ -188,12 +188,12 @@
   },
   "gaps": [
     "v1 reads at most 5 pages, renders PDFs at 150 dpi and reads pages one after another, hence the 30 min window.",
-    "A job has a deadline of its own, 1620000 ms after its request arrives: a page is not started with less than 660 s left, nor the summary or extraction with less than 420 s. A job that cannot start its next hire in time, or whose hire would have to wait again on its supplier or on the ledger after the deadline, fails with the code deadline and returns no bundle, and the sub-jobs it had already paid for are not refunded. A hire in its Accept at the deadline is not cut: it finishes late, and the chat job may then answer after the runtime has given up on the job.",
+    "A job has a deadline of its own, 1620000 ms after its request arrives: a page is not started with less than 660 s left, nor the summary or extraction with less than 420 s. A job that cannot start its next hire in time, or whose hire would have to wait again on its supplier or on the ledger after the deadline, fails with the code deadline and returns no bundle, and the sub-jobs it had already settled stay settled. A hire in its Accept at the deadline is not cut: it finishes late, and the chat job may then answer after the runtime has given up on the job.",
     "The OCR hop is first-party only. A third-party OCR path needs the Datalab terms to allow it.",
     "Every supplier it can hire today is first-party.",
-    "The Pipeline checks receipts, not truth: a summary is as good as the model that wrote it.",
-    "An extraction whose answer is not JSON, or does not validate against the schema, still succeeds and is paid for: the result has schema_valid false and extraction null, and the answer is kept as raw_text.",
-    "At five pages the Pipeline spends about 19 in locks and fees to earn 5, where 5 is the price of 5000000 lovelace and the 19 holds at today's fleet price of 0.2 per sub-job. The Foundation subsidises this on purpose while the fee floor stands."
+    "The Pipeline checks receipts and leaves truth to the model: a summary is as good as the model that wrote it.",
+    "An extraction whose answer is not JSON, or does not validate against the schema, still succeeds and settles: the result has schema_valid false and extraction null, and the answer is kept as raw_text.",
+    "At five pages the Pipeline's six sub-jobs cost it about 13 net at today's fleet price of 0.2 per sub-job (each sub-job: the price, the supplier bond of 1 and about 1 in fees), against a job price of 5; the locks and fees in flight come to about 19, of which the buyer bonds and the lock excess return on Accept. The Foundation carries that gap on purpose while the fee floor stands."
   ],
   "links": {
     "spec": "https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/document-pipeline.md",

@@ -53,7 +53,7 @@ Amounts are `lovelace` fields. The last column is the same amount divided by 1,0
 
 Two things are named apart on this page. The **request JSON** is what you write: the object under Request below. The **wire payload** is `canonicalize([{ content: <request JSON as a string>, role: "user" }])`, the canonical JSON (sorted keys, NFC strings, no whitespace) of a one-element message array that carries the request JSON as a string. The sha256 of its UTF-8 bytes is the `prompt_hash` of the escrow. The wire payload is also the `payload` field of `POST /v1/job`, and the runtime claims the escrow and posts it unchanged to the service as the HTTP body. The service answers with the result as the response body, and the runtime hashes that body into the receipt.
 
-The marketplace MCP tools (on the hosted mainnet server since 2026-10-14) and the template's buyer, `try-it/src/buy-once.ts`, wrap the request JSON into the wire payload for you. On the raw routes you wrap it yourself, and you hash the wire payload, not the request JSON.
+The marketplace MCP tools (on the hosted mainnet server since 2026-10-14) and the template's buyer, `try-it/src/buy-once.ts`, wrap the request JSON into the wire payload for you. On the raw routes you wrap it yourself, and the hash you put in the escrow is the hash of the wire payload.
 
 Media inputs are an https URL, or base64 under 600,000 bytes of raw media: chat clients cannot carry media in a tool call, and the hosted MCP server caps requests at 1 MB. The wire payload is capped at 900,000 bytes: the runtime's `/v1/job` takes 1 MB of JSON that holds it escaped, and the template's buyer refuses a larger one. Base64 adds a third, so 600,000 raw bytes become 800,000 characters and leave 100,000 bytes for the rest of the request. The service fetches a URL itself, with the same rules as the MCP server (https only, private and reserved addresses refused) and a 50 MB cap, and writes `source.sha256` and `source.bytes` into its output, so the signed receipt commits to the exact media.
 
@@ -140,7 +140,7 @@ Operator: Apex Fusion Foundation. The contact is `operator.contact` in the manif
 
 What the service sees: the media, the language, the query, the quotes and the ranges. Transcription and cutting run on the Foundation's box. The only thing that leaves is the fetch of the media, which goes to the host of the source URL.
 
-Datalab, OpenRouter and Brave are not used. On the ledger the escrow carries the sha256 of the wire payload, not the media.
+Datalab, OpenRouter and Brave are not used. On the ledger the escrow carries only the sha256 of the wire payload, and the media stays off the ledger.
 
 ## Known gaps
 
@@ -151,7 +151,7 @@ Datalab, OpenRouter and Brave are not used. On the ledger the escrow carries the
 
 ## How to hire it
 
-Not yet advertised. When live, the three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
+Not yet advertised. Once advertised, the three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
 
 The request JSON is, for example, `{"source":{"url":"https://example.org/talk.mp3"},"quotes":["a quote that was said in the talk"]}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 

@@ -34,7 +34,7 @@ const DRY = argv.includes('--dry-run');
 const DEFAULT_CAPABILITY = 'identity.history.report.v1';
 const DEFAULT_PAYLOAD = '{"subject":"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db"}';
 // The nine marketplace tools and the PR of Apex-Fusion/mcp-server that brought each (all merged into main on 2026-10-14). All nine are
-// required: a hire without the reclaim tool can strand funds, so a builder that lacks it is not ready for an outside member either.
+// required: a hire without the reclaim tool can strand the lock of an escrow, so a builder that lacks it is not ready for an outside member either.
 const PR_OF = {
   vector_marketplace_list_capabilities: 'PR 1 (read tools)', vector_marketplace_list_suppliers: 'PR 1 (read tools)', vector_marketplace_get_supplier: 'PR 1 (read tools)',
   vector_build_marketplace_post_escrow: 'PR 2 (build tools)', vector_build_marketplace_accept: 'PR 2 (build tools)', vector_build_marketplace_reclaim: 'PR 2 (build tools)',
@@ -270,7 +270,7 @@ async function main(builder, signer) {
     if (ver.json?.verified === true) break;
     if (tries < VERIFY_TRIES) { log(`not verified (try ${tries} of ${VERIFY_TRIES}); the ledger may lag the supplier's Submit`); await sleep(POLL_MS); }
   }
-  if (ver.json?.verified !== true) throw new Fail(`NOT accepting: the receipt did not verify (${JSON.stringify(ver.json?.checks ?? firstLine(ver.text))}). The funds stay in the escrow; the supplier may Release after 600000 ms`);
+  if (ver.json?.verified !== true) throw new Fail(`NOT accepting: the receipt did not verify (${JSON.stringify(ver.json?.checks ?? firstLine(ver.text))}). The lock stays in the escrow; the supplier may Release after 600000 ms`);
   state.verify = { verified: true, checks: ver.json.checks }; save();
 
   // 4. Accept: build, sign, submit, wait.

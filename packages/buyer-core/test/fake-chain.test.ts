@@ -141,12 +141,12 @@ describe('FakeChain', () => {
     expect(afterAccept.collateralLovelace).toBe(5_000_000n);
   });
 
-  it('a Reclaim returns the whole lock less its fee, and a Post the float cannot pay is refused and moves nothing', async () => {
+  it('a Reclaim returns the whole lock less its fee, and a Post the float cannot cover is refused and moves nothing', async () => {
     const { chain, clock, post } = setup({ floatLovelace: 2n * (LOCK + FEE) });
     const { escrowRef, deliverBy } = await post();
     await post();
     expect((await chain.wallet()).floatLovelace).toBe(0n);
-    await expect(post()).rejects.toThrow(/cannot pay the lock and the fee/);
+    await expect(post()).rejects.toThrow(/cannot cover the lock and the fee/);
     expect((await chain.wallet()).floatLovelace).toBe(0n);
     clock.now = reclaimOpens(deliverBy);
     await chain.reclaim(escrowRef);

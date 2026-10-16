@@ -797,7 +797,7 @@ describe('runPipeline: the chat answer', () => {
   });
 
   // The residual round of R56: the second choice is held to the float too, its lock and two fees against the float read then.
-  it('a chat supplier chosen again whose lock and fees are more than the float holds then: insufficient_float (503), the pages paid, the chat escrow never posted', async () => {
+  it('a chat supplier chosen again whose lock and fees are more than the float holds then: insufficient_float (503), the page escrows settled, the chat escrow never posted', async () => {
     const run = setup();
     const dear = { ...LLM_ADVERT, supplier_bond_lovelace: 60_000_000n };
     let accepts = 0;
@@ -813,7 +813,7 @@ describe('runPipeline: the chat answer', () => {
     });
     const error = await failure(runPipeline(request(), { ...run.deps, chain }), 'insufficient_float', 503);
     const float = (await run.m.chain.wallet()).floatLovelace;
-    expect(error.message).toMatch(new RegExp(`^The buyer wallet holds ${float} lovelace outside its collateral, less than the \\d+ that the chat job takes at the price of the supplier chosen again: a lock of \\d+ lovelace and two fees of 500000\\. The pages are paid; nothing was posted for the chat job\\.$`));
+    expect(error.message).toMatch(new RegExp(`^The buyer wallet holds ${float} lovelace outside its collateral, less than the \\d+ that the chat job takes at the price of the supplier chosen again: a lock of \\d+ lovelace and two fees of 500000\\. The page escrows are settled; nothing was posted for the chat job\\.$`));
     expect(await states(run.m, escrowNo(1), escrowNo(2), escrowNo(3))).toStrictEqual(['spent', 'spent', 'unknown']);
     expect(run.m.llm.sends).toHaveLength(0);
   });
@@ -823,7 +823,7 @@ describe('runPipeline: the chat answer', () => {
     expect(await runPipeline(request(), { ...stale.deps, chain: jumpAt(stale, 2, T0 + 600_001) })).toStrictEqual(GOLDEN);
   });
 
-  it('a chat supplier that is gone when it is chosen again fails the job with llm_supplier_unavailable, the pages paid', async () => {
+  it('a chat supplier that is gone when it is chosen again fails the job with llm_supplier_unavailable, the page escrows settled', async () => {
     const run = setup();
     let accepts = 0;
     const chain = chainWith(run.m, {
@@ -993,12 +993,12 @@ describe('runPipeline: refusals before anything is posted', () => {
     const run = setup({ ocrAdvert: { ...OCR_ADVERT, price_lovelace: 1_500_000n } });
     const error = await failure(runPipeline(request(), run.deps), 'ocr_supplier_unavailable', 503);
     expect(error.message).toContain(`its advert ${OCR_ADVERT_REF} is priced 1500000 lovelace, above the ceiling of 1000000 lovelace (OCR_MAX_PRICE_LOVELACE)`);
-    expect(error.message).toMatch(/Nothing was spent\.$/);
+    expect(error.message).toMatch(/Nothing was locked\.$/);
     expect(run.m.ocr.sends).toHaveLength(0);
     expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
   });
 
-  it('an OCR advert the indexer lists under the ceiling but the chain prices above it: ocr_supplier_unavailable, as the chain is what an escrow pays', async () => {
+  it('an OCR advert the indexer lists under the ceiling but the chain prices above it: ocr_supplier_unavailable, as the chain is what an escrow settles against', async () => {
     const run = setup({ ocrAdvert: { ...OCR_ADVERT, price_lovelace: 1_500_000n } });
     run.m.rows[0] = indexerRow(OCR_ADVERT_REF, OCR_ADVERT);
     const error = await failure(runPipeline(request(), run.deps), 'ocr_supplier_unavailable', 503);
@@ -1020,7 +1020,7 @@ describe('runPipeline: refusals before anything is posted', () => {
     const run = setup({ floatLovelace: 9_000_000n, llmAdvert: { ...LLM_ADVERT, price_lovelace: 5_000_000n } });
     const error = await failure(runPipeline(request({ max_pages: 1 }), { ...run.deps, llmMaxPriceLovelace: 5_000_000n }), 'insufficient_float', 503);
     expect(error.message).toContain('The buyer wallet holds 9000000 lovelace outside its collateral, less than the 11261030');
-    expect(error.message).toMatch(/Nothing was spent\.$/);
+    expect(error.message).toMatch(/Nothing was locked\.$/);
     expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
     expect(run.m.ocr.sends).toHaveLength(0);
     expect((await run.m.chain.wallet()).floatLovelace).toBe(9_000_000n);
@@ -1075,7 +1075,7 @@ describe('runPipeline: refusals before anything is posted', () => {
     const run = setup();
     run.m.ocr.capabilityOverride = { pub_key_hex: undefined };
     const error = await failure(runPipeline(request(), run.deps), 'ocr_supplier_unavailable', 503);
-    expect(error.message).toMatch(/its \/capability could not be read \(Could not read the capability: pub_key_hex is missing or is not a string\.\)\. Nothing was spent\.$/);
+    expect(error.message).toMatch(/its \/capability could not be read \(Could not read the capability: pub_key_hex is missing or is not a string\.\)\. Nothing was locked\.$/);
     expect(run.m.ocr.sends).toHaveLength(0);
   });
 
@@ -1091,7 +1091,7 @@ describe('runPipeline: refusals before anything is posted', () => {
       expect(settled).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
       const error = await failure(job, 'insufficient_float', 503);
-      expect(error.message).toBe('The buyer wallet could not be read within 30 s, so its float of 27000000 lovelace for the 6 sub-jobs of a run of 5 pages cannot be confirmed. Nothing was spent.');
+      expect(error.message).toBe('The buyer wallet could not be read within 30 s, so its float of 27000000 lovelace for the 6 sub-jobs of a run of 5 pages cannot be confirmed. Nothing was locked.');
       expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
     } finally {
       vi.useRealTimers();
@@ -1114,7 +1114,7 @@ describe('runPipeline: refusals before anything is posted', () => {
     const before = (await run.m.chain.wallet()).floatLovelace;
     run.m.ocr.statusWord = 'offline';
     const error = await failure(runPipeline(request(), run.deps), 'ocr_supplier_unavailable', 503);
-    expect(error.message).toMatch(/its \/status says it is offline\. Nothing was spent\.$/);
+    expect(error.message).toMatch(/its \/status says it is offline\. Nothing was locked\.$/);
     expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
     expect(run.m.ocr.sends).toHaveLength(0);
     expect((await run.m.chain.wallet()).floatLovelace).toBe(before);
@@ -1125,7 +1125,7 @@ describe('runPipeline: refusals before anything is posted', () => {
       const run = setup();
       run.m.ocr.statusWord = word;
       const error = await failure(runPipeline(request(), run.deps), 'ocr_supplier_unavailable', 503);
-      expect(error.message, word).toMatch(/its \/status could not be read \(no answer, an error, or no status word of a supplier\), asked twice 3 s apart\. Nothing was spent\.$/);
+      expect(error.message, word).toMatch(/its \/status could not be read \(no answer, an error, or no status word of a supplier\), asked twice 3 s apart\. Nothing was locked\.$/);
       expect(await states(run.m, escrowNo(1)), word).toStrictEqual(['unknown']);
     }
   });
@@ -1143,7 +1143,7 @@ describe('runPipeline: refusals before anything is posted', () => {
     const run = setup();
     run.m.ocr.statusFailures = 2;
     const error = await failure(runPipeline(request(), run.deps), 'ocr_supplier_unavailable', 503);
-    expect(error.message).toMatch(/its \/status could not be read \(no answer, an error, or no status word of a supplier\), asked twice 3 s apart\. Nothing was spent\.$/);
+    expect(error.message).toMatch(/its \/status could not be read \(no answer, an error, or no status word of a supplier\), asked twice 3 s apart\. Nothing was locked\.$/);
     expect(run.sleeps).toStrictEqual([3_000]);
     expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
     expect(run.m.ocr.sends).toHaveLength(0);

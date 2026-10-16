@@ -427,7 +427,7 @@ describe('popplerRenderer over a fake runner: render', () => {
     expect(error).toBeInstanceOf(PipelineError);
     expect(error).toMatchObject({
       code: 'page_too_large', status: 422,
-      message: 'Page 2 of the PDF is 14400 by 14400 points, 30000 by 30000 pixels at 150 dpi, over the 50000000 pixels a page may have. Nothing was spent.',
+      message: 'Page 2 of the PDF is 14400 by 14400 points, 30000 by 30000 pixels at 150 dpi, over the 50000000 pixels a page may have. Nothing was locked.',
     });
     expect(tools.calls).toHaveLength(0);
     expect(existsSync(tools.sizeCalls[0].dir)).toBe(false);
@@ -546,7 +546,7 @@ describe('popplerRenderer with the real pdfinfo and pdftoppm (needs poppler-util
     expect(error).toBeInstanceOf(PipelineError);
     expect(error).toMatchObject({
       code: 'page_too_large', status: 422,
-      message: 'Page 1 of the PDF is 14400 by 14400 points, 30000 by 30000 pixels at 150 dpi, over the 50000000 pixels a page may have. Nothing was spent.',
+      message: 'Page 1 of the PDF is 14400 by 14400 points, 30000 by 30000 pixels at 150 dpi, over the 50000000 pixels a page may have. Nothing was locked.',
     });
     expect(leftovers()).toStrictEqual(before);
   });
@@ -559,7 +559,7 @@ describe('popplerRenderer with the real pdfinfo and pdftoppm (needs poppler-util
     expect(error).toBeInstanceOf(PipelineError);
     expect(error).toMatchObject({
       code: 'page_too_large', status: 422,
-      message: 'Page 1 of the PDF is 14400 by 14400 points, 30000 by 30000 pixels at 150 dpi, over the 50000000 pixels a page may have. Nothing was spent.',
+      message: 'Page 1 of the PDF is 14400 by 14400 points, 30000 by 30000 pixels at 150 dpi, over the 50000000 pixels a page may have. Nothing was locked.',
     });
     expect(leftovers()).toStrictEqual(before);
   });

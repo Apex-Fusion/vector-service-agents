@@ -1,6 +1,6 @@
 // agents/document-pipeline/src/extract.ts
 // The schema of an `extract` job and the reading of the model's answer against it. The schema comes from the person who hired the Pipeline, and the
-// check it compiles to runs against what a model wrote after every sub-escrow is paid, in the process that runs every other job. So it is held to
+// check it compiles to runs against what a model wrote after every sub-escrow is settled, in the process that runs every other job. So it is held to
 // what can be checked safely and at once, before anything is fetched or posted (ruling R27); anything else is schema_invalid (400). In this order:
 //   - the document as a whole (rulings R42 and R43): its JSON nesting is at most 32 levels (the root object is level 1, and every object or array inside one is
 //     a level deeper, data included); no object anywhere in it has an own __proto__ key, which Ajv ignores and the prompt would carry; and its raw
@@ -57,7 +57,7 @@ const ONE = ['additionalItems', 'additionalProperties', 'contains', 'propertyNam
 const MAPS = ['properties', 'dependencies'];
 const LISTS = ['allOf', 'anyOf', 'oneOf'];
 
-const invalid = (why: string): PipelineError => new PipelineError('schema_invalid', `The schema cannot be used: ${why}. Nothing was spent.`, 400);
+const invalid = (why: string): PipelineError => new PipelineError('schema_invalid', `The schema cannot be used: ${why}. Nothing was locked.`, 400);
 const isSchemaObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 /** The JSON pointer of `step` below `at`, escaped as RFC 6901 writes it. */
 const below = (at: string, step: string | number): string => `${at}/${String(step).replaceAll('~', '~0').replaceAll('/', '~1')}`;
@@ -195,7 +195,7 @@ function parsedJson(text: string): { value: unknown } | null {
 
 /**
  * The `result` of a run from the chat answer. A summary is the answer text. An extraction is the answer's JSON value (the whole answer, else its first
- * fenced block) when it is nested no deeper than a schema may be (32 levels, ruling R62: the result is serialised after every sub-escrow is paid, and a
+ * fenced block) when it is nested no deeper than a schema may be (32 levels, ruling R62: the result is serialised after every sub-escrow is settled, and a
  * value nested past what JSON.stringify can walk would throw there) and validates against the schema; otherwise it is null, with schema_valid false and
  * the answer kept as raw_text exactly as received.
  */

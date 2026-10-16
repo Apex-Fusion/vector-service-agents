@@ -102,7 +102,7 @@ const EXPLORER_TX = 'https://explorer.vector.mainnet.apexfusion.org/transaction/
 test('specs/agent-history.md: the Status line says DEPLOYED since 2026-10-15, the Status paragraph and the Identity sentence say the registry record and the advert exist since 2026-10-14 and one first-party job has settled on 2026-10-15, nothing is LIVE, and the words of before do not come back', () => {
   const text = read('agent-history');
   assert.ok(section(text, 'Status').includes(`\n${AH_STATUS}\n`), 'the status line, alone on its line');
-  assert.ok(section(text, 'Status').includes("It is deployed on the operator's host, has had a registry record since 2026-10-14 and has had an advert since 2026-10-14. One first-party job has settled, on 2026-10-15; it is not demand. No payer outside the team has hired it. Nothing on this page is LIVE."));
+  assert.ok(section(text, 'Status').includes("It is deployed on the operator's host, has had a registry record since 2026-10-14 and has had an advert since 2026-10-14. One first-party job has settled, on 2026-10-15; it is not demand. No buyer outside the team has hired it. Nothing on this page is LIVE."));
   assert.equal(section(text, 'Status').match(/PROPOSED|not deployed/), null, 'the words of before the flip do not come back');
   assert.equal(text.match(/no job (has )?settled/i), null, 'the spec does not say that no job settled');
   assert.equal(section(text, 'Status').match(/has no advert|not yet advertised/i), null, 'the Status paragraph and line do not say that the agent has no advert');
@@ -182,7 +182,7 @@ const DP_RUN = {
 test('specs/document-pipeline.md: the Status line says DEPLOYED since 2026-10-16, the Status paragraph and the Identity sentence say the registry record and the advert exist since 2026-10-16 and one first-party job has settled on 2026-10-16, nothing is LIVE, and the words of before do not come back', () => {
   const text = read('document-pipeline');
   assert.ok(section(text, 'Status').includes(`\n${DP_STATUS}\n`), 'the status line, alone on its line');
-  assert.ok(section(text, 'Status').includes("It is deployed on the operator's host, has had a registry record since 2026-10-16 and has had an advert since 2026-10-16. One first-party job has settled, on 2026-10-16; it is not demand. No payer outside the team has hired it. Nothing on this page is LIVE."));
+  assert.ok(section(text, 'Status').includes("It is deployed on the operator's host, has had a registry record since 2026-10-16 and has had an advert since 2026-10-16. One first-party job has settled, on 2026-10-16; it is not demand. No buyer outside the team has hired it. Nothing on this page is LIVE."));
   assert.equal(section(text, 'Status').match(/PROPOSED|not deployed/), null, 'the words of before the flip do not come back');
   assert.equal(text.match(/no job (has )?settled/i), null, 'the spec does not say that no job settled');
   assert.equal(section(text, 'Status').match(/has no advert|not yet advertised|no registry record/i), null, 'the Status paragraph does not say that the agent has no record or no advert');
@@ -230,7 +230,7 @@ test('specs/document-pipeline.md: the DID, the registry record and the reputatio
 });
 
 test('the two specs that are not built have no advert and say so under How to hire it; they say that nothing is built, and the Pipeline, which is built and advertised since 2026-10-16, gives its release', () => {
-  const NOT_YET = 'Not yet advertised. When live, the three ways below apply.';
+  const NOT_YET = 'Not yet advertised. Once advertised, the three ways below apply.';
   for (const name of ['audio-snippets', 'advocate']) assert.ok(section(read(name), 'How to hire it').includes(NOT_YET), name);
   for (const name of ['audio-snippets', 'advocate']) assert.ok(section(read(name), 'Changelog').includes('Nothing is built.'), name);
   // The Pipeline was built on 2026-10-15, advertised on 2026-10-16 and is DEPLOYED since that day: its Changelog names the release and the day, and no word of the design is left.
@@ -268,8 +268,10 @@ test('the design spec gives the registry endpoint as the public URL, the one the
 
 test('the Pipeline states its economics and the first-party OCR hop; the Advocate states its declared bias verbatim', () => {
   const pipeline = read('document-pipeline');
-  assert.match(section(pipeline, 'Terms'), /at five pages the Pipeline spends about 19 in locks and fees to earn 5/);
-  assert.match(section(pipeline, 'Terms'), /subsidises this on purpose while the fee floor stands/);
+  // The real net of the sub-jobs (about 2.2 each, the first live run's 4.41 for two), the price it is set against, and what returns of the 19 in flight.
+  assert.ok(section(pipeline, 'Terms').includes("at five pages the Pipeline's six sub-jobs cost it about 13 net at today's fleet price of 0.2 per sub-job (each sub-job: the price, the supplier bond of 1 and about 1 in fees), against a job price of 5;"));
+  assert.ok(section(pipeline, 'Terms').includes('the locks and fees in flight come to about 19, of which the buyer bonds and the lock excess return on Accept. The Foundation carries that gap on purpose while the fee floor stands.'));
+  assert.equal(pipeline.match(/subsidises the difference|locks about 19 in sub-job escrows|to earn 5/), null, 'the economics of before');
   assert.match(section(pipeline, 'Operator and data handling'), /The OCR hop is first-party/);
   // The ChandraOCR registry record says HAL8-operated: the Pipeline's buyer key is the Foundation's, the OCR agent's supplier key is HAL8's.
   assert.match(section(pipeline, 'Operator and data handling'), /the Pipeline's buyer key is Foundation-operated and the OCR agent's supplier key is HAL8-operated/);
@@ -289,7 +291,7 @@ test('the Pipeline states its economics and the first-party OCR hop; the Advocat
 // The service is built and its tests replay a stub marketplace and a fake chain. It has had a registry record, a stake and an advert since 2026-10-16, runs on the operator's host and has settled one first-party job, so the word is DEPLOYED, never LIVE.
 // The page says what is built and what is not, and the words of the design that it was before the build do not come back. agents/document-pipeline/test/spec.test.ts holds the rest of the
 // page to the code and the manifest: the gap sentences, the numbers, the response example, the error codes.
-const DP_PARAGRAPH = "The service is built. Its tests replay a stub marketplace and a fake chain. It is deployed on the operator's host, has had a registry record since 2026-10-16 and has had an advert since 2026-10-16. One first-party job has settled, on 2026-10-16; it is not demand. No payer outside the team has hired it. Nothing on this page is LIVE.";
+const DP_PARAGRAPH = "The service is built. Its tests replay a stub marketplace and a fake chain. It is deployed on the operator's host, has had a registry record since 2026-10-16 and has had an advert since 2026-10-16. One first-party job has settled, on 2026-10-16; it is not demand. No buyer outside the team has hired it. Nothing on this page is LIVE.";
 
 test('specs/document-pipeline.md: the Status line is DEPLOYED since 2026-10-16, the paragraph says what is built, what runs and that nothing is LIVE, and the words of the design do not come back', () => {
   const text = read('document-pipeline');
@@ -320,13 +322,13 @@ test('specs/document-pipeline.md: the extraction schema rules name the keywords 
   assert.deepEqual([extractNumber('SCHEMA_MAX_BYTES'), extractNumber('SCHEMA_MAX_DEPTH'), extractNumber('COMBINATION_MAX_ENTRIES')], [16384, 32, 16]);
   for (const part of [
     'a JSON Schema of draft-07, read in strict mode: a keyword the validator does not know is refused.',
-    'refused with `schema_invalid` (400), before anything is fetched or posted, so it spends nothing.',
+    'refused with `schema_invalid` (400), before anything is fetched or posted, so it locks nothing.',
     '- A name is not a keyword. A property called `format` or `pattern` under `properties` is fine, and so are those words inside `const`, `enum`, `default` and `examples`.',
     '- An own `__proto__` key is refused anywhere in the schema, `const`, `enum`, `default` and `examples` included.',
     '- `$async` at the root is refused, `true` or `false`.',
     '- At most 16384 bytes of JSON (the schema as parsed, written out again) and 32 levels of nesting, data included. At most 16 entries in each `anyOf`, `oneOf` and `allOf`.',
     'The cost of a check still grows with the size of the answer times the size of the schema, and `uniqueItems` compares items pairwise.',
-    'An answer that is not JSON, or that does not validate against the schema, is not an error. The job succeeds and is paid for, and the result is `{ "extraction": null, "schema_valid": false, "raw_text": "<the answer as received>" }`.',
+    'When the answer is not JSON, or does not validate against the schema, the job still succeeds and settles like any other, and the result is `{ "extraction": null, "schema_valid": false, "raw_text": "<the answer as received>" }`.',
   ]) assert.ok(rules.includes(part), `the schema rules say: ${part}`);
 });
 
@@ -349,7 +351,7 @@ test('the four specs, the guide and the README agree on what is built: Agent His
 const doc = (name) => readFileSync(new URL(`../docs/${name}`, import.meta.url), 'utf8');
 const hire = () => doc('HIRE.md');
 const e2eScript = () => readFileSync(new URL('./e2e-hire.mjs', import.meta.url), 'utf8');
-const HIRE_SECTIONS = ['What you will end up with', 'Get a key', 'Fund it', 'Two lines of config', 'The chat script', 'Read your receipt', 'Register your own identifier (optional)', 'The terminal path', 'When it goes wrong', 'Honesty box'];
+const HIRE_SECTIONS = ['What you will end up with', 'Get a key', 'What the key must hold', 'Two lines of config', 'The chat script', 'Read your receipt', 'Register your own identifier (optional)', 'The terminal path', 'When it goes wrong', 'Honesty box'];
 const CHAT_SCRIPT = [
   '1. "List the marketplace capabilities on Vector."',
   '2. "Show me free suppliers for identity.history.report.v1."',
@@ -408,14 +410,14 @@ test('docs/HIRE.md: says that Audio Snippets and Advocate are not built and send
   // The wait is the advert's window in the spec, and the reclaim time is that window plus the 180 s of every deliver_by.
   assert.match(section(read('document-pipeline'), 'Terms'), /Processing window, advert `max_processing_ms` \| 1800000 ms \(30 min/);
   assert.ok(sub.indexOf('document.pipeline.ocr-summary.v1') > sub.indexOf('It has had an advert since 2026-10-16.'), 'the capability is asked for after the line that says it is advertised');
-  assert.ok(section(hire(), '3. Fund it').split('\n').some((l) => l.startsWith('| 5 (Document Pipeline) | 7 | 6 | 1 | about 1 | about 7 | 7 |')), 'the cost table row the subsection points to');
+  assert.ok(section(hire(), '3. What the key must hold').split('\n').some((l) => l.startsWith('| 5 (Document Pipeline) | 7 | 6 | 1 | about 1 | about 7 | 7 |')), 'the cost table row the subsection points to');
 });
 
 test('docs/HIRE.md: the ledger unit is named once, in section 3, and nowhere else in the repo', () => {
   const guide = hire();
   assert.equal(guide.match(UNIT_NAME)?.length, 1);
-  assert.ok(section(guide, '3. Fund it').includes("the ledger's native unit, " + UNIT_NAME.source));
-  // Every other file of the repo says "unit" or prints lovelace. The planning documents and the recorded ledger data are not part of this rule.
+  assert.ok(section(guide, '3. What the key must hold').includes("the ledger's native unit, " + UNIT_NAME.source));
+  // Every other file of the repo says "unit" or prints lovelace. The design spec (docs/superpowers), which quotes the guide's one naming, and the recorded ledger data are not part of this rule.
   const root = fileURLToPath(new URL('../', import.meta.url));
   // The run outputs of docs/E2E.md (git-ignored, repository root) are an operator's files, not the repository: skipped.
   const runOutput = (rel) => /^(evidence\.json(\.tmp)?|e2e-state[^\/]*\.json[^\/]*)$/.test(rel);
@@ -425,19 +427,19 @@ test('docs/HIRE.md: the ledger unit is named once, in section 3, and nowhere els
   assert.deepEqual(hits, []);
 });
 
-// Section 3 of the guide has two ways to fund the key since 2026-10-15. The Foundation's way is the text of before, kept word for word (the one sentence that names the unit is in it). The reader's own way says what a key funded by hand needs.
-const FOUNDATION_WAY = "The Foundation funds working-group experiments. It sends your address two separate transfers: 5 units alone, then a float of 50. They stay separate on purpose. The Accept and the Reclaim are script spends, and each needs a pure 5-unit output as collateral. The Post keeps a pure 5-unit output aside when your wallet has one. A single lump sum lets your wallet spend it. Fees and bonds are paid in the ledger's native unit, " + UNIT_NAME.source + '. The name appears once, here. The rest of this guide calls it a unit.';
+// Section 3 of the guide has two ways to get the collateral and the float onto the key since 2026-10-15. The Foundation's way is held word for word (the one sentence that names the unit is in it), in the brand's vocabulary since 2026-10-16. The reader's own way says what a key supplied by hand needs.
+const FOUNDATION_WAY = "The Foundation supplies collateral and float for working-group experiments. It sends your address two separate transfers: 5 units alone, then a float of 50. They stay separate on purpose. The Accept and the Reclaim run the escrow script, and each needs a pure 5-unit output as collateral. The Post keeps a pure 5-unit output aside when your wallet has one. A single transfer of the whole amount lets your wallet consume the collateral with the rest. Bonds are posted and fees are consumed in the ledger's native unit, " + UNIT_NAME.source + '. The name appears once, here. The rest of this guide calls it a unit.';
 
-test('docs/HIRE.md section 3: two ways to fund the key, the Foundation way kept word for word, the own way says Vector mainnet, a key from keygen only and 5 alone before the float; the cost table and the check come after both', () => {
-  const three = section(hire(), '3. Fund it');
+test('docs/HIRE.md section 3: two ways to get the collateral and the float onto the key, the Foundation way kept word for word, the own way says Vector mainnet, a key from keygen only and 5 alone before the float; the cost table and the check come after both', () => {
+  const three = section(hire(), '3. What the key must hold');
   const at = (needle) => { const i = three.indexOf(needle); assert.ok(i >= 0, `section 3 says: ${needle}`); return i; };
-  const order = ['There are two ways to fund your key. The cost table and the check below apply to both.', "**(a) The Foundation funds a working-group member's key, on request.**", FOUNDATION_WAY, '**(b) Or fund it yourself.**', 'What one job costs you.', '| Price (agent) |', 'Check the funding before you go on.', '(`vector_get_utxos`)'];
+  const order = ['There are two ways to get the collateral and the float onto your key. The cost table and the check below apply to both.', "**(a) The Foundation sends a working-group member's key its collateral and float, on request.**", FOUNDATION_WAY, '**(b) Or send them yourself.**', 'What one job costs you.', '| Price (agent) |', 'Check the collateral and the float before you go on.', '(`vector_get_utxos`)'];
   const positions = order.map(at);
   assert.deepEqual(positions, [...positions].sort((a, b) => a - b), 'the intro, the Foundation way, the own way, the cost, the table and the check: in this order');
-  const own = three.slice(at('**(b) Or fund it yourself.**'), at('What one job costs you.'));
+  const own = three.slice(at('**(b) Or send them yourself.**'), at('What one job costs you.'));
   for (const part of [
     'The units must be on Vector mainnet.',
-    'Units on Prime, on Nexus or in a bridged form elsewhere cannot fund your key.',
+    "Units on Prime, on Nexus or in a bridged form elsewhere cannot serve as your key's collateral or float.",
     'The Reactor bridge moves units from Prime to Vector.',
     "The signer accepts only a key made by `keygen`. It does not take a wallet's recovery phrase, so a wallet's balance has to be sent to the address `keygen` printed.",
     'Send 5 alone first, then the float of 50. That is two transfers, for the reason given in (a).',
@@ -478,7 +480,7 @@ test('docs/HIRE.md: the request JSON and the wire payload are named apart, as in
 const BONDS_RETURN = /both bonds (return|come back|are returned)|bonds? (are )?returned|returned on accept|bonds back|own bond|its bond back/i;
 
 test('docs/HIRE.md: who receives what on Accept, Release and Reclaim', () => {
-  const three = section(hire(), '3. Fund it');
+  const three = section(hire(), '3. What the key must hold');
   assert.ok(three.includes('On Accept the supplier receives the price and the supplier bond, and your bond returns to you.'));
   // One sentence, one unit: the Accept window is 600 s, and a Release hands the supplier everything that is locked, the buyer bond included.
   assert.ok(three.includes("If you do not accept within 600 s of the supplier's Submit, the supplier may Release the escrow and keep everything that is locked: the price and both bonds, your buyer bond included."));
@@ -499,12 +501,12 @@ test('the guide, the four specs and the E2E runbook never say that both bonds re
 test('specs/agent-history.md: on Accept the supplier receives the price and the supplier bond, and the buyer bond returns to the buyer', () => {
   const terms = section(read('agent-history'), 'Terms');
   assert.ok(terms.includes("On Accept the supplier receives the price and the supplier bond, and the buyer's bond returns to the buyer."));
-  assert.ok(terms.includes('the supplier may Release the escrow and take the payment and both bonds'));
+  assert.ok(terms.includes('the supplier may Release the escrow and take the price and both bonds'));
   assert.ok(terms.includes('If the supplier never submits, the buyer reclaims after `deliver_by`.'));
 });
 
 test('docs/HIRE.md: the cost table is the escrow arithmetic, with the prices of the four specs', () => {
-  const rows = [...section(hire(), '3. Fund it').matchAll(/^\| (\d+) \(([^)]+)\) \| (\d+) \| (\d+) \| (\d+) \| about (\d+) \| about (\d+) \| (\d+) \|$/gm)];
+  const rows = [...section(hire(), '3. What the key must hold').matchAll(/^\| (\d+) \(([^)]+)\) \| (\d+) \| (\d+) \| (\d+) \| about (\d+) \| about (\d+) \| (\d+) \|$/gm)];
   assert.deepEqual(rows.map((m) => m[2]).sort(), Object.keys(AGENT_SPEC).sort(), 'one row for each agent');
   for (const [, price, agent, lock, supplier, back, fees, pay, jobs] of rows) {
     const terms = section(read(AGENT_SPEC[agent]), 'Terms');
@@ -675,7 +677,7 @@ test('docs/HIRE.md: the status box says what runs today and that there is no aud
   assert.ok(guide.indexOf('**Status: DEPLOYED.**') < guide.indexOf(line) && guide.indexOf(line) < guide.indexOf('| Piece |'), 'inside the status box, above the table');
   const four = section(guide, '4. Two lines of config');
   assert.ok(four.includes('The client config file now holds the raw signer key in plain text.'));
-  assert.match(four, /can sign with the key and spend what it holds/);
+  assert.match(four, /can sign with the key and move what it holds/);
   assert.ok(four.indexOf('in plain text') > four.indexOf('```json') && four.indexOf('in plain text') < four.indexOf('The two limits'), 'after the config, before the limits');
 });
 
@@ -695,7 +697,7 @@ test('docs/HIRE.md: the keygen output format is not pinned; the escrow minimum i
   const guide = hire();
   assert.equal(guide.match(/VECTOR_SIGNER_PRIVATE_KEY=\.\.\./), null, 'no NAME=... line is promised from keygen');
   assert.ok(guide.includes('If keygen prints them as `NAME=value` lines, the value is what follows the `=`.'));
-  assert.ok(section(guide, '3. Fund it').includes('between 2.2 and 2.3 in an escrow output of this size, depending on the length of the agent'));
+  assert.ok(section(guide, '3. What the key must hold').includes('between 2.2 and 2.3 in an escrow output of this size, depending on the length of the agent'));
   const timeouts = guide.split('\n').find((l) => l.startsWith('| A tool call times out near 100 s')) ?? '';
   assert.ok(timeouts.includes('The PR 3 tools that call a supplier (send job, poll job, verify receipt) stop at 90 s on their own'));
   assert.ok(timeouts.includes('`vector_await_transaction` waits as long as it is asked, up to 300 s'));
@@ -733,7 +735,7 @@ test('docs/HIRE.md: PR 2 is merged and its tools are on the hosted mainnet serve
   const row = (needle) => guide.split('\n').find((l) => l.startsWith('|') && l.includes(needle)) ?? '';
   assert.ok(row('vector_build_marketplace_post_escrow').includes('PR 2, merged into `main` on 2026-10-14, on the hosted mainnet server: [Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21)'));
   assert.match(row('| Reads back what it already has |'), /^\| 6 \| .* You hold the report text, the receipt, the signature, the escrow reference and two links\./);
-  assert.ok(section(guide, '3. Fund it').includes('the supplier may Release the escrow and keep everything that is locked: the price and both bonds, your buyer bond included.'));
+  assert.ok(section(guide, '3. What the key must hold').includes('the supplier may Release the escrow and keep everything that is locked: the price and both bonds, your buyer bond included.'));
 });
 
 test('docs/E2E.md and scripts/e2e-hire.mjs: the recovery text reads the escrow by its reference and closes a Submitted first-party escrow in one way', () => {
@@ -765,7 +767,7 @@ test('docs/HIRE.md: the receipt check is described as the merged tool answers it
   assert.ok(six.includes('check 2 is skipped and the verdict reads INCOMPLETE, which is never a pass'));
   assert.equal(guide.match(/can still read as a pass|as pass or fail:/), null, 'the wording of before the tool had a skipped state');
   const five = section(guide, '5. The chat script');
-  assert.ok(five.includes('`buyerAddress` must be the wallet that posted and funded the escrow, which is your signer address.'), 'the table of message 4 says what buyerAddress is');
+  assert.ok(five.includes('`buyerAddress` must be the wallet that posted the escrow and locked its value, which is your signer address.'), 'the table of message 4 says what buyerAddress is');
   const two = section(guide, '2. Get a key');
   assert.ok(two.includes("Run `keygen` in your own terminal, never through your assistant's shell tool."));
   assert.ok(two.includes('so the only copy of the key would reach your model provider'));
@@ -778,7 +780,7 @@ test('docs/E2E.md and scripts/e2e-hire.mjs: buyerAddress, the skipped and incomp
   assert.ok(e2e.includes("The send and every poll pass the signer's address as `buyerAddress`"));
   assert.equal((script.match(/buyerAddress: address/g) ?? []).length, 4, 'the send and the poll, in the calls and in the plan');
   assert.ok(e2e.includes('check 2 is skipped, and a skipped row makes the verdict `incomplete`, never a pass'));
-  assert.ok(e2e.includes('stops the run before any money moves') && script.includes('if (!state.post?.signed_cbor) for (const [name, args] of stepsOf('), 'a fresh run checks its arguments first');
+  assert.ok(e2e.includes('stops the run before any value moves') && script.includes('if (!state.post?.signed_cbor) for (const [name, args] of stepsOf('), 'a fresh run checks its arguments first');
   const row = e2e.split('\n').find((l) => l.startsWith('| Exit code 1 | A step failed.')) ?? '';
   assert.doesNotMatch(row, /If the job failed or `deliver_by` passed, reclaim/);
   for (const word of ["the supplier's Submit may still land", 'vector_build_marketplace_accept', '`seconds_left`', '600 s', 'Open or Claimed']) assert.ok(row.includes(word), `the runbook row says ${word}`);
@@ -786,7 +788,7 @@ test('docs/E2E.md and scripts/e2e-hire.mjs: buyerAddress, the skipped and incomp
   assert.ok(fromScript.length > 400, 'the check-the-escrow text was found in the script');
   for (const word of ["the supplier's Submit may still land", 'vector_build_marketplace_accept', 'seconds_left', '600 s', 'Open or Claimed', 'vector_build_marketplace_reclaim']) assert.ok(fromScript.includes(word), `the script says ${word}`);
   assert.doesNotMatch(script, /Reclaim the escrow/, 'the script never tells the operator to simply reclaim');
-  // The row for a lost state file names the Submitted case too, and the funded-key paragraph says where keygen is run.
+  // The row for a lost state file names the Submitted case too, and the paragraph on the buyer key says where keygen is run.
   const lost = e2e.split('\n').find((l) => l.startsWith('| Exit code 2 |')) ?? '';
   for (const text of ['find it through the indexer rows of the buyer key', 'as in the first row of this table', 'vector_build_marketplace_accept', '`seconds_left`', 'If it is Submitted, accept within 600 s of the Submit', 'If it is Open or Claimed, reclaim it with `vector_build_marketplace_reclaim` after `deliver_by`']) assert.ok(lost.includes(text), `the lost-state row says ${text}`);
   assert.equal(lost.includes('reclaim it after `deliver_by` before you start a new run'), false, 'no bare reclaim');
@@ -812,7 +814,7 @@ test('the marketplace tools are said to be on the hosted mainnet server (33 tool
   assert.ok(script.includes('They are merged into main of Apex-Fusion/mcp-server and on the hosted mainnet server as of 2026-10-14, so a builder that lacks them is some other builder.'));
   assert.equal(script.match(/three PRs|PR 3 branch/), null);
   const wayOne = section(read('agent-history'), 'How to hire it').split('\n').find((l) => l.startsWith('1. **Chat client via MCP.**')) ?? '';
-  assert.ok(wayOne.includes('The send and every poll also take your signer address as `buyerAddress`, the wallet that posted and funded the escrow.'));
+  assert.ok(wayOne.includes('The send and every poll also take your signer address as `buyerAddress`, the wallet that posted the escrow and locked its value.'));
   assert.ok(wayOne.includes('The marketplace tools are on the hosted mainnet server, which lists 33 tools as of 2026-10-14.'));
   for (const name of ['document-pipeline', 'audio-snippets', 'advocate']) {
     const how = section(read(name), 'How to hire it');
@@ -884,7 +886,7 @@ test('README: the section "Hire Agent History" sits between the status table and
   assert.equal(lines.at(-1), 'Document Pipeline reads a document and is hired the same way: `docs/HIRE.md` section 5 shows what changes.');
   // What the section says is what the guide says: the two commands, the 5 alone, the cost of a job, the six messages and the 600 s.
   assert.ok(section(hire(), '2. Get a key').includes('npm ci && npm run build\nnode packages/signer/build/index.js keygen'), 'the commands of the guide');
-  const three = section(hire(), '3. Fund it');
+  const three = section(hire(), '3. What the key must hold');
   assert.ok(three.includes('Send 5 alone first, then the float of 50.'), 'the guide sends 5 alone first');
   assert.ok(three.split('\n').some((l) => l.startsWith('| 1 (Agent History) | 3 | ') && l.endsWith(' | about 3 | 16 |')), 'one job costs about 3');
   assert.ok(three.includes("If you do not accept within 600 s of the supplier's Submit, the supplier may Release the escrow and keep everything that is locked"), 'the 600 s line');
@@ -956,11 +958,11 @@ test('docs/E2E.md, specs/agent-history.md and the guide record the first-party r
   assert.ok(e2e.includes('**Status: DEPLOYED.**'), 'the status word since the flip of 2026-10-15');
   assert.ok(e2e.includes('The first first-party run settled on 2026-10-15 (verdict VERIFIED, see [Results](#results)); it was made against the first advert, which was retired that day at the status flip.'));
   assert.equal(e2e.match(/none yet|has not completed a live run|first-party run has not been made/i), null, 'the words of before the run');
-  // The paragraph under the table names the evidence file and how to repeat the check, which needs no key and no funds.
+  // The paragraph under the table names the evidence file and how to repeat the check, which needs no key and no units.
   const results = section(e2e, 'Results');
   assert.ok(results.includes(`[${RUN1.evidence}](${RUN1.evidence.replace(/^docs\//, '')})`), 'a link from docs/E2E.md to the evidence file');
   const repeat = results.split('\n').find((l) => l.includes('vector_marketplace_verify_receipt')) ?? '';
-  for (const part of ['`receipt`', '`receipt_signature`', '`escrow_ref`', 'the untouched `result`', 'needs no key and no funds', 'It is not demand.']) assert.ok(repeat.includes(part), `the paragraph under the table says ${part}`);
+  for (const part of ['`receipt`', '`receipt_signature`', '`escrow_ref`', 'the untouched `result`', 'needs no key and no units', 'It is not demand.']) assert.ok(repeat.includes(part), `the paragraph under the table says ${part}`);
   assert.ok(existsSync(new URL(`../${RUN1.evidence}`, import.meta.url)), 'the evidence file the docs name exists');
   // The spec says it in the Status line and paragraph and in How to hire it, and its Links point at the evidence and at the two transactions.
   const spec = read('agent-history');

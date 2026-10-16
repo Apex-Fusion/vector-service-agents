@@ -26,7 +26,7 @@ export interface FleetVerifyInput {
   promptHashHex: string;
   /** The supplier's public key as its GET /capability serves it: 32 bytes of hex. The supplier's word, held to `supplierPkhExpected` by the key check. */
   supplierPubKeyHex: string;
-  /** The key hash the buyer paid against: the supplier_pkh of the escrow's datum. */
+  /** The key hash the buyer's escrow names: the supplier_pkh of the escrow's datum. */
   supplierPkhExpected: string;
   /** The model the advert names. The receipt must name the same one, exactly. */
   model: string;
@@ -45,7 +45,7 @@ export interface FleetVerification {
     escrow_ref_matches: 'pass' | 'fail';
     /** (2) receipt.response_hash is the recomputed envelope hash. */
     response_hash_matches: 'pass' | 'fail';
-    /** (3) the supplier's public key hashes to receipt.supplier_pkh AND to the key hash the buyer paid against. */
+    /** (3) the supplier's public key hashes to receipt.supplier_pkh AND to the key hash the buyer's escrow names. */
     supplier_key_matches: 'pass' | 'fail';
     /** (4) the Ed25519 signature verifies over utf8(canonicalize(receipt)) under that key. */
     signature_valid: 'pass' | 'fail';
