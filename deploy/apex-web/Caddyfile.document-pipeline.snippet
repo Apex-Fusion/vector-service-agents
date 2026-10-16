@@ -1,0 +1,14 @@
+# deploy/apex-web/Caddyfile.document-pipeline.snippet - site block for the shared Caddy on apex-web (container umami-caddy-1, file /opt/umami/Caddyfile).
+# PROPOSED (built, not deployed). Since 2026-10-15. Not installed: the block is merged at step 10 of RUNBOOK-document-pipeline.md by a copy of /opt/agent-history/ops/install-caddy-route.sh, which merges it and reloads Caddy (README.md). The hostname must be DNS only (grey cloud),
+# or Caddy cannot get its certificate. The block must stay the last thing in this file: the install script of the chandra stack
+# takes everything from the hostname line to the end.
+# The runtime does not serve /agent.json, and the advert's detail_uri points at it, so that one path goes to the service.
+# Everything else goes to the runtime.
+mp-suppliers-pipeline.hal8.ai {
+    handle /agent.json {
+        reverse_proxy document-pipeline-service:9092
+    }
+    handle {
+        reverse_proxy document-pipeline-agent:8080
+    }
+}
