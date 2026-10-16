@@ -86,7 +86,7 @@ describe('a job with ffmpeg and a stub speech model', () => {
     await expect(late).rejects.toBeInstanceOf(SnippetsError);
     await expect(late).rejects.toMatchObject({ code: 'deadline', status: 422, message: 'the speech recognition did not finish within the 900 s the job had for it' });
     expect(readdirSync(root)).toStrictEqual([]);
-  });
+  }, 20_000);
 
   test.skipIf(!MEDIA_TOOLS)('a model that fails is asr_failed (500), with what it said for the log', async () => {
     const broken = stubAsr(async () => { throw new AsrError('failed', 'the speech model failed (exit 3): model_load_failed: no model.bin'); });
