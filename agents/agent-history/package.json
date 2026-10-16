@@ -2,5 +2,5 @@
   "name": "@vsa/agent-history", "version": "0.1.0", "private": true, "type": "module",
   "scripts": { "start": "tsx src/index.ts", "test": "vitest run", "typecheck": "tsc --noEmit", "record-fixtures": "node --import tsx scripts/record-fixtures.mjs" },
   "dependencies": { "@vsa/vector-read": "workspace:*", "@lucid-evolution/lucid": "^0.4.29", "tsx": "^4.21.0" },
-  "devDependencies": { "vitest": "^3.2.4", "typescript": "^5.7.3", "@types/node": "^22.13.1" }
+  "devDependencies": { "vitest": "^5.0.5", "typescript": "^5.7.3", "@types/node": "^22.13.1" }
 }
