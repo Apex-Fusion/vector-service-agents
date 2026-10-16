@@ -1,0 +1,11 @@
+# The speech model of Audio Snippets (asr/worker.py), pinned (ruling R-D2): faster-whisper 1.2.1 and ctranslate2 4.8.2, and the libraries they need, at the
+# versions the implementers' machine runs them with. pip resolves the rest, which huggingface-hub needs to download the model at build time.
+faster-whisper==1.2.1
+ctranslate2==4.8.2
+numpy==2.0.2
+tokenizers==0.22.2
+onnxruntime==1.19.2
+av==15.1.0
+huggingface-hub==1.8.0
+pyyaml==6.0.3
+tqdm==4.70.1

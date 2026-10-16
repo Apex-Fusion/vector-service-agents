@@ -10,3 +10,6 @@ e2e-state*.json*
 # E2E run outputs (docs/E2E.md); the evidence of a recorded run is copied into docs/evidence/ by hand
 evidence.json
 evidence.json.tmp
+# The speech model of a developer's machine (agents/audio-snippets/asr/fetch_model.py, about 148 MB), and the bytecode Python writes when a test imports asr/worker.py
+agents/audio-snippets/.models/
+__pycache__/
