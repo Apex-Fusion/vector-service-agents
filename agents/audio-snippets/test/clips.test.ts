@@ -91,7 +91,11 @@ describe('with ffmpeg (needs it on PATH)', () => {
     writeFileSync(back, bytes);
     const found = await probe({ path: back, family: 'mp3' }, tools);
     expect(found.hasAudio).toBe(true);
-    expect(Math.abs((found.duration ?? 0) - 2)).toBeLessThan(0.1);
+    // An MP3 clip runs a little past its cut: LAME starts it with its encoder delay and pads its last frame, and with -write_xing 0 no header tells a decoder
+    // to trim either, so the padding stays in what a decoder plays, and a cut of 2 s probes at about 2.088 s here (58 frames of 576 samples). [2.0, 2.2] leaves
+    // room for a frame of 36 ms more from another LAME or ffmpeg build. A WAV clip stays sample-exact (the test above).
+    expect(found.duration ?? 0).toBeGreaterThanOrEqual(2);
+    expect(found.duration ?? 0).toBeLessThanOrEqual(2.2);
     expect(readFileSync(wav.path).length).toBe(96_044);
   });
 });

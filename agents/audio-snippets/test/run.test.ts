@@ -40,6 +40,8 @@ describe('a job with ffmpeg and a stub speech model', () => {
     const asr = stubAsr(GOLDEN_TRANSCRIPT);
     const result = await runSnippets(request({}), deps({ asr }));
     expect(result).toStrictEqual(GOLDEN_RESULT);
+    // The runtime hashes JSON.stringify(result) into the receipt, so the body is held character for character, the order of every key with it.
+    expect(JSON.stringify(result)).toBe(JSON.stringify(GOLDEN_RESULT));
     expect(asr.calls).toStrictEqual([{ language: 'en', timeoutMs: 900_000 }]);
     expect(readdirSync(root)).toStrictEqual([]);
   });
@@ -122,10 +124,29 @@ describe('a job with ffmpeg and a stub speech model', () => {
 });
 
 describe('before anything is fetched', () => {
-  test('less free space than a job needs is low_disk (503), and nothing is fetched', async () => {
+  test('less free space than a job needs is low_disk (503), and nothing is fetched or made; exactly 256 MiB is enough, and the job goes on to its fetch', async () => {
     const { fetchImpl, calls } = routedFetch({});
     const refused = runSnippets(parseRequest(JSON.stringify({ source: { url: 'https://203.0.113.10/a.mp3' }, quotes: ['anything'] })), deps({ fetchImpl, freeBytes: async () => 268_435_455 }));
     await expect(refused).rejects.toMatchObject({ code: 'low_disk', status: 503 });
+    expect(calls).toStrictEqual([]);
+    expect(readdirSync(root)).toStrictEqual([]);
+    // The other side of the line: with 268435456 bytes free the job fetches its source, which this fetch answers with a 404.
+    const enough = routedFetch({});
+    const fetched = runSnippets(parseRequest(JSON.stringify({ source: { url: 'https://203.0.113.10/a.mp3' }, quotes: ['anything'] })), deps({ fetchImpl: enough.fetchImpl, freeBytes: async () => 268_435_456 }));
+    await expect(fetched).rejects.toMatchObject({ code: 'source_fetch_failed', status: 422 });
+    expect(enough.calls.map((call) => call.url)).toStrictEqual(['https://203.0.113.10/a.mp3']);
+    expect(readdirSync(root)).toStrictEqual([]);
+  });
+
+  test('a free-space probe that rejects passes its own error on unchanged, a plain error with no code of a refusal; nothing is fetched and no directory is made', async () => {
+    const { fetchImpl, calls } = routedFetch({});
+    const job = (over: Partial<RunDeps>) => runSnippets(parseRequest(JSON.stringify({ source: { url: 'https://203.0.113.10/a.mp3' }, quotes: ['anything'] })), deps({ fetchImpl, ...over }));
+    const broken = new Error('the free space could not be read');
+    await expect(job({ freeBytes: async () => { throw broken; } })).rejects.toBe(broken);
+    // The probe of the service itself, statfs, on a temporary directory that is not there.
+    const missing = job({ scratchRoot: join(root, 'missing'), freeBytes: undefined });
+    await expect(missing).rejects.not.toBeInstanceOf(SnippetsError);
+    await expect(missing).rejects.toMatchObject({ code: 'ENOENT' });
     expect(calls).toStrictEqual([]);
     expect(readdirSync(root)).toStrictEqual([]);
   });
