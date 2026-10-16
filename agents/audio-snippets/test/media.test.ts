@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import { DURATION_SLACK_S, MAX_DURATION_S, MAX_SOURCE_BYTES, checkTools, decode, familyOf, loadSource, mediaTools, mimeOf, prepareMedia, probe, wavSamples } from '../src/media.ts';
 import { RequestError } from '../src/request.ts';
 import { reply, routedFetch } from './fake-fetch.ts';
-import { MEDIA_TOOLS, REQUIRE_ASR, SPEECH_MP3, TONE_WAV, makeMedia, skipUntilSpeech, text, toBase64 } from './support.ts';
+import { MEDIA_TOOLS, REQUIRE_ASR, SPEECH_MP3, TONE_WAV, makeMedia, text, toBase64 } from './support.ts';
 
 const URL_A = 'https://203.0.113.7/talk.mp3';
 const dirs: string[] = [];
@@ -27,10 +27,8 @@ describe('familyOf: the first bytes decide', () => {
     ['an ID3 tag', bytes('ID3', 4, 0), 'mp3'], ['an MPEG-1 layer III frame', bytes(0xff, 0xfb, 0x90), 'mp3'], ['an MPEG-2 layer III frame', bytes(0xff, 0xf3), 'mp3'],
     ['an MPEG-2.5 layer III frame', bytes(0xff, 0xe3), 'mp3'], ['an MPEG-1 layer II frame', bytes(0xff, 0xfd), 'mp3'], ['RIFF and WAVE', bytes('RIFF', 1, 2, 3, 4, 'WAVE'), 'wav'],
     ['OggS', bytes('OggS', 0), 'ogg'], ['fLaC', bytes('fLaC'), 'flac'], ['EBML', bytes(0x1a, 0x45, 0xdf, 0xa3), 'webm'], ['an ftyp box', bytes(0, 0, 0, 0x20, 'ftypisom'), 'mp4'],
-    ['a QuickTime moov box first', bytes(0, 0, 1, 0, 'moov'), 'mp4'], ['the tone fixture', TONE_WAV, 'wav'],
+    ['a QuickTime moov box first', bytes(0, 0, 1, 0, 'moov'), 'mp4'], ['the tone fixture', TONE_WAV, 'wav'], ['the speech fixture', SPEECH_MP3, 'mp3'],
   ])('%s', (_name, b, family) => { expect(familyOf(b)).toBe(family); });
-  // The speech fixture was a row of the table above. Its file waits for approval (ruling R-D14), so this one test is skipped, with the reason, until it is made.
-  test('the speech fixture', (ctx) => { skipUntilSpeech(ctx); expect(familyOf(SPEECH_MP3)).toBe('mp3'); });
   test.each([
     ['nothing', bytes()], ['RIFF of an AVI', bytes('RIFF', 1, 2, 3, 4, 'AVI ')], ['ADTS AAC', bytes(0xff, 0xf1, 0x50)], ['a reserved MPEG version', bytes(0xff, 0xeb)],
     ['a UTF-16 byte-order mark', bytes(0xff, 0xfe, 0x41, 0)], ['a JPEG', bytes(0xff, 0xd8, 0xff)], ['a PDF', bytes('%PDF-1.4')], ['text', text('All LibriVox recordings')], ['an ftyp too early', bytes(0, 0, 'ftyp')],
@@ -38,8 +36,7 @@ describe('familyOf: the first bytes decide', () => {
 });
 
 describe('loadSource', () => {
-  test('by URL: the bytes as served, their sha256, written to the directory of the job; a Content-Type of the allowlist must agree with the bytes, another claims nothing', async (ctx) => {
-    skipUntilSpeech(ctx);
+  test('by URL: the bytes as served, their sha256, written to the directory of the job; a Content-Type of the allowlist must agree with the bytes, another claims nothing', async () => {
     const dir = tempDir();
     const media = await loadSource({ url: URL_A }, dir, { fetchImpl: serving(SPEECH_MP3, { 'content-type': 'audio/mpeg' }).fetchImpl });
     expect(media).toStrictEqual({ path: join(dir, 'source.mp3'), bytes: SPEECH_MP3.length, sha256: createHash('sha256').update(SPEECH_MP3).digest('hex'), family: 'mp3', claimed: 'audio/mpeg' });
@@ -96,8 +93,7 @@ describe('with ffprobe and ffmpeg (needs them on PATH)', { timeout: 60_000 }, ()
     expect(new Uint8Array(readFileSync(wav.path))).toStrictEqual(TONE_WAV);
   });
 
-  test.skipIf(!MEDIA_TOOLS)('the speech fixture: MPEG audio of about 25 s, mono 16 kHz once decoded', async (ctx) => {
-    skipUntilSpeech(ctx);
+  test.skipIf(!MEDIA_TOOLS)('the speech fixture: MPEG audio of about 25 s, mono 16 kHz once decoded', async () => {
     const prepared = await prepareMedia({ audio_b64: toBase64(SPEECH_MP3), mime: 'audio/mpeg' }, tempDir(), { fetchImpl: routedFetch({}).fetchImpl, tools });
     expect(prepared.source.mime).toBe('audio/mpeg');
     expect(prepared.source.duration_s).toBeGreaterThan(24.5);

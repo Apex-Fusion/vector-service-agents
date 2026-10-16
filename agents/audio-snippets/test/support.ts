@@ -4,20 +4,13 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { TestContext } from 'vitest';
 
 export const fixture = (name: string): Uint8Array => new Uint8Array(readFileSync(new URL(`./fixtures/${name}`, import.meta.url)));
 export const fixturePath = (name: string): string => fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url));
 /** 3 s of a 440 Hz sine, 16 kHz mono 16-bit PCM WAV: 96044 bytes. */
 export const TONE_WAV = fixture('tone-3s.wav');
-/** test/fixtures/speech-20s.mp3 is there. It is cut from a download that waits for approval (ruling R-D14), so it may be absent: the tests that need it skip until it is made. */
-export const SPEECH_READY = existsSync(fixturePath('speech-20s.mp3'));
-/** Why a test that needs the speech fixture is skipped while the file is absent. */
-export const SPEECH_PENDING = 'speech fixture not yet made (download pending approval)';
-/** The first 25 s of a public-domain LibriVox recording, mono 16 kHz MP3 (test/fixtures/make-fixtures.mjs). Empty while the file is absent: see SPEECH_READY. */
-export const SPEECH_MP3 = SPEECH_READY ? fixture('speech-20s.mp3') : new Uint8Array(0);
-/** Called first in a test that needs the speech fixture: skips that test, with its reason, while the file is absent. Nothing else of the test changes when the file comes. */
-export const skipUntilSpeech = (ctx: TestContext): void => { if (!SPEECH_READY) ctx.skip(SPEECH_PENDING); };
+/** The first 25 s of a public-domain LibriVox recording, mono 16 kHz MP3 (test/fixtures/make-fixtures.mjs). */
+export const SPEECH_MP3 = fixture('speech-20s.mp3');
 export const toBase64 = (bytes: Uint8Array): string => Buffer.from(bytes).toString('base64');
 export const text = (s: string): Uint8Array => new TextEncoder().encode(s);
 

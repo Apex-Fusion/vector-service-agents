@@ -1,0 +1,8 @@
+{
+  "fixture": "speech-20s.mp3",
+  "sha256": "635d7e7d83708591e5cf7e915f9d5ba9d05bb7a3bdecbedc5519c63f9c4c03ec",
+  "sentence": "All LibriVox recordings are in the public domain.",
+  "onset_s": 3.288,
+  "offset_s": 5.579,
+  "measured_by": "ffmpeg silencedetect=noise=-35dB:d=0.2 on the decoded 16 kHz audio: the pause before the sentence ends at onset_s, the pause after it starts at offset_s"
+}
