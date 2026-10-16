@@ -230,7 +230,7 @@ test('specs/document-pipeline.md: the DID, the registry record and the reputatio
 });
 
 test('the two specs that are not built have no advert and say so under How to hire it; they say that nothing is built, and the Pipeline, which is built and advertised since 2026-10-16, gives its release', () => {
-  const NOT_YET = 'Not yet advertised. When live, the three ways below apply.';
+  const NOT_YET = 'Not yet advertised. Once advertised, the three ways below apply.';
   for (const name of ['audio-snippets', 'advocate']) assert.ok(section(read(name), 'How to hire it').includes(NOT_YET), name);
   for (const name of ['audio-snippets', 'advocate']) assert.ok(section(read(name), 'Changelog').includes('Nothing is built.'), name);
   // The Pipeline was built on 2026-10-15, advertised on 2026-10-16 and is DEPLOYED since that day: its Changelog names the release and the day, and no word of the design is left.
@@ -268,8 +268,10 @@ test('the design spec gives the registry endpoint as the public URL, the one the
 
 test('the Pipeline states its economics and the first-party OCR hop; the Advocate states its declared bias verbatim', () => {
   const pipeline = read('document-pipeline');
-  assert.match(section(pipeline, 'Terms'), /at five pages the Pipeline locks about 19 in sub-job escrows and fees for a job priced at 5/);
-  assert.match(section(pipeline, 'Terms'), /subsidises the difference on purpose while the fee floor stands/);
+  // The real net of the sub-jobs (about 2.2 each, the first live run's 4.41 for two), the price it is set against, and what returns of the 19 in flight.
+  assert.ok(section(pipeline, 'Terms').includes("at five pages the Pipeline's six sub-jobs cost it about 13 net at today's fleet price of 0.2 per sub-job (each sub-job: the price, the supplier bond of 1 and about 1 in fees), against a job price of 5;"));
+  assert.ok(section(pipeline, 'Terms').includes('the locks and fees in flight come to about 19, of which the buyer bonds and the lock excess return on Accept. The Foundation carries that gap on purpose while the fee floor stands.'));
+  assert.equal(pipeline.match(/subsidises the difference|locks about 19 in sub-job escrows|to earn 5/), null, 'the economics of before');
   assert.match(section(pipeline, 'Operator and data handling'), /The OCR hop is first-party/);
   // The ChandraOCR registry record says HAL8-operated: the Pipeline's buyer key is the Foundation's, the OCR agent's supplier key is HAL8's.
   assert.match(section(pipeline, 'Operator and data handling'), /the Pipeline's buyer key is Foundation-operated and the OCR agent's supplier key is HAL8-operated/);

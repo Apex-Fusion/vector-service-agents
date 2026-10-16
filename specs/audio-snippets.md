@@ -151,7 +151,7 @@ Datalab, OpenRouter and Brave are not used. On the ledger the escrow carries onl
 
 ## How to hire it
 
-Not yet advertised. When live, the three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
+Not yet advertised. Once advertised, the three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
 
 The request JSON is, for example, `{"source":{"url":"https://example.org/talk.mp3"},"quotes":["a quote that was said in the talk"]}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 

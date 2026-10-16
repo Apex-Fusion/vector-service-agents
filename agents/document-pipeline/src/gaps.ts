@@ -12,8 +12,9 @@ export const OCR_FIRST_PARTY_GAP = 'The OCR hop is first-party only. A third-par
 export const SUPPLIERS_FIRST_PARTY_GAP = 'Every supplier it can hire today is first-party.';
 export const RECEIPTS_GAP = 'The Pipeline checks receipts and leaves truth to the model: a summary is as good as the model that wrote it.';
 /** The "Economics" lines of the Terms of the page, without their label. */
-export const SUBSIDY_GAP = 'At five pages the Pipeline locks about 19 in sub-job escrows and fees for a job priced at 5, where 5 is the price of 5000000 lovelace and the 19 holds at today\'s fleet price of 0.2 per sub-job. '
-  + 'The Foundation subsidises the difference on purpose while the fee floor stands.';
+export const SUBSIDY_GAP = 'At five pages the Pipeline\'s six sub-jobs cost it about 13 net at today\'s fleet price of 0.2 per sub-job (each sub-job: the price, the supplier bond of 1 and about 1 in fees), '
+  + 'against a job price of 5; the locks and fees in flight come to about 19, of which the buyer bonds and the lock excess return on Accept. '
+  + 'The Foundation carries that gap on purpose while the fee floor stands.';
 
 // Stated by the built service. The deadline cuts the start of a hire and the waits of a hire (src/budget.ts), not an Accept under way (ruling R53).
 export const DEADLINE_GAP = `A job has a deadline of its own, ${JOB_DEADLINE_MS} ms after its request arrives: a page is not started with less than ${PAGE_MIN_LEFT_MS / 1000} s left, `

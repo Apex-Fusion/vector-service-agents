@@ -99,7 +99,7 @@ The runtime fails the job on any non-2xx answer, and the buyer reclaims after `d
 
 ### Response
 
-`schema` is `vector.agent-history.report.v1`. The report below is a real answer for the ChandraOCR agent from a live run on 2026-10-13, at block 8728604. `generated_by.did` is shown as a placeholder because the run was made before this agent was registered on 2026-10-14. A section that was not in `include` has no key in the report.
+`schema` is `vector.agent-history.report.v1`. The report below is a real answer for the ChandraOCR agent from a live run on 2026-10-13, at block 8728604. Its supplier escrows, 3,436 indexer rows for 1,160 jobs, are first-party, as all marketplace activity to date. `generated_by.did` is shown as a placeholder because the run was made before this agent was registered on 2026-10-14. A section that was not in `include` has no key in the report.
 
 ```json
 {

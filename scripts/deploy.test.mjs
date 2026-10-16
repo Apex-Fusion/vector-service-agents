@@ -1064,7 +1064,7 @@ test('Pipeline RUNBOOK: the differences from Agent History are listed in one pla
     '- **State and a clean stop.**', '`stranded.json`', '`document-pipeline-state`', '`stop_grace_period: 330s`', 'a memory limit of 1536m',
     'A stop gives the service up to 300 s to finish the job that is running, and Docker 30 s more for it to log a job it abandoned and exit (`stop_grace_period: 330s`)',
     '- **No registry.**', 'the box has no GitHub credentials',
-    '- **Price 5.**', 'The Foundation subsidises the sub-jobs on purpose',
+    '- **Price 5.**', 'The Foundation carries the gap between what the sub-jobs cost and that price on purpose',
     '| Base path on the box | `/opt/document-pipeline`: the repository in `repo`, the ops scripts in `ops` |',
     '| "This folder" | `/opt/document-pipeline/repo/deploy/apex-web` |',
     '| Compose file, env file | `docker-compose.document-pipeline.yml`, `.env.document-pipeline` |',
@@ -1091,14 +1091,15 @@ test('Pipeline RUNBOOK collateral and float: two keys, 5 alone then 50 for the s
   assert.ok(buyer.startsWith("| Buyer key (the service's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral for the Accept and the Reclaim of the sub-jobs, never touched), then 100 units |"));
   assert.ok(funds.includes('The Foundation supplies two keys with their collateral and float. Nobody pastes either key into a chat.'));
   assert.ok(funds.includes('Two transfers, because a wallet supplied in one transfer can have its collateral spent as change by an ordinary transaction.'));
-  assert.ok(buyer.includes('the OCR hops at about 2.2 net per page (price 0.2, supplier bond 1, fees about 1) plus the chat hop, about 19 gross for a job of five pages'));
+  assert.ok(buyer.includes('the OCR hops at about 2.2 net per page (price 0.2, supplier bond 1, fees about 1) plus the chat hop at about the same, so about 13 net for a job of five pages, against its price of 5.'));
+  assert.ok(buyer.includes('The locks and fees in flight for such a job come to about 19, of which the buyer bonds and the lock excess return on Accept'));
   // Ruling R56: the figures are the ones of today's fleet price, and the ceilings bound what an advert may cost.
   assert.ok(buyer.includes("These figures hold at today's fleet price of 0.2 per sub-job; the service hires no advert priced above `OCR_MAX_PRICE_LOVELACE` or `LLM_MAX_PRICE_LOVELACE`"));
-  assert.ok(PSPEC.includes("and the 19 holds at today's fleet price of 0.2 per sub-job"));
+  assert.ok(PSPEC.includes("cost it about 13 net at today's fleet price of 0.2 per sub-job"));
   assert.doesNotMatch(buyer, /2\.3 net/, 'the figure of before it was given with its parts');
   assert.ok(buyer.includes('(max_pages + 1) x 4.5') && buyer.includes('27 for five pages') && buyer.includes('`insufficient_float` (503)'));
   // The figures are the spec's and the code's.
-  assert.ok(PSPEC.includes('at five pages the Pipeline locks about 19 in sub-job escrows and fees for a job priced at 5'));
+  assert.ok(PSPEC.includes("at five pages the Pipeline's six sub-jobs cost it about 13 net") && PSPEC.includes('the locks and fees in flight come to about 19'));
   assert.ok(read('agents/document-pipeline/src/budget.ts').includes('export const FLOAT_PER_SUB_JOB_LOVELACE = 4_500_000n;'));
   assert.ok(PREADME.includes('a float outside it of `(max_pages + 1) x 4500000` lovelace'));
   assert.ok(read('docs/HIRE.md').includes('| 5 (Document Pipeline) | 7 | 6 | 1 | about 1 | about 7 | 7 |'), 'what a job costs the hirer');

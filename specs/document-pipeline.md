@@ -50,7 +50,7 @@ Amounts are `lovelace` fields. The last column is the same amount divided by 1,0
 | `max_pages` | 5 in v1 |
 | PDF pages | rendered to PNG at 150 dpi |
 
-Economics: at five pages the Pipeline locks about 19 in sub-job escrows and fees for a job priced at 5, where 5 is the price of 5000000 lovelace and the 19 holds at today's fleet price of 0.2 per sub-job. The Foundation subsidises the difference on purpose while the fee floor stands.
+Economics: at five pages the Pipeline's six sub-jobs cost it about 13 net at today's fleet price of 0.2 per sub-job (each sub-job: the price, the supplier bond of 1 and about 1 in fees), against a job price of 5; the locks and fees in flight come to about 19, of which the buyer bonds and the lock excess return on Accept. The Foundation carries that gap on purpose while the fee floor stands.
 
 ## Interface
 
@@ -360,7 +360,7 @@ The manifest states the first seven of these, in this order, word for word. A te
 - Every supplier it can hire today is first-party.
 - The Pipeline checks receipts and leaves truth to the model: a summary is as good as the model that wrote it.
 - An extraction whose answer is not JSON, or does not validate against the schema, still succeeds and settles: the result has schema_valid false and extraction null, and the answer is kept as raw_text.
-- At five pages the Pipeline locks about 19 in sub-job escrows and fees for a job priced at 5, where 5 is the price of 5000000 lovelace and the 19 holds at today's fleet price of 0.2 per sub-job. The Foundation subsidises the difference on purpose while the fee floor stands.
+- At five pages the Pipeline's six sub-jobs cost it about 13 net at today's fleet price of 0.2 per sub-job (each sub-job: the price, the supplier bond of 1 and about 1 in fees), against a job price of 5; the locks and fees in flight come to about 19, of which the buyer bonds and the lock excess return on Accept. The Foundation carries that gap on purpose while the fee floor stands.
 - A process exit between signing a Post and its confirmation leaves a sub-escrow that is in no record, so the janitor never sees it. It can be reclaimed by hand after its `deliver_by`, and it holds the lock of one sub-job.
 - The runtime's budget for a job is the smaller of `SERVICE_TIMEOUT_MS` and `deliver_by` less the start time less 30 s, and the wire carries no budget, so the service cannot see it. A job that the runtime claims late can be abandoned by the runtime while the service goes on hiring and settling sub-jobs until its own deadline. The hirer then reclaims after `deliver_by`.
 - The service answers `POST /` only when the call carries the token the runtime sends as its `authorization` header. A `POST /` without it gets 401 `unauthorized`, with no detail, before its body is read, so that nothing else on the host's network can make the service post escrows. `GET /healthz` and `GET /agent.json` need no header, and neither does a `HEAD` of either; any other route gets 404.

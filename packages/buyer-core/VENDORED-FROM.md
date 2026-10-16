@@ -10,7 +10,7 @@ The mcp-server packages are not published to a registry. The Document Pipeline a
 
 The datum codecs are not copied a second time. `@vsa/vector-read` carries `marketplace-datum.ts` (at `94b8f41`), and the copies here import it from there. Drift is caught twice: by `packages/vector-read/test/datum.test.ts` (the golden datum tests, the same as the source's) and by the sha256 column below, which `test/vendored.test.ts` checks in both directions: every row names a file whose sha256 matches, and every file under `src/vendored/` and `test/fixtures/` has a row.
 
-The fleet is not published to a registry either. The Pipeline commits to the request of a fleet job and to its answer with the fleet's own Responses code, `responses.ts`: the normalisation of the request, the request commitment, the result commitment and the normalisation of the output. A copy of that code is what makes the hash computed here the hash a fleet supplier computes; a re-implementation could drift with no test noticing. `fleet/types.ts` is the one type that file imports, `ChatMessage`, with the one type `ChatMessage` refers to, `ToolCall` (see Deviation: four excerpts). The repository Apex-Fusion/agents-marketplace carries no LICENSE file (none at the root or anywhere else in its tree at `e847a55`). Ruling R3 of Plan C: this is code of the same organisation's public repository, copied unchanged but for one import line, and the missing licence is flagged to the operator as a licence-hygiene item.
+The fleet is not published to a registry either. The Pipeline commits to the request of a fleet job and to its answer with the fleet's own Responses code, `responses.ts`: the normalisation of the request, the request commitment, the result commitment and the normalisation of the output. A copy of that code is what makes the hash computed here the hash a fleet supplier computes; a re-implementation could drift with no test noticing. `fleet/types.ts` is the one type that file imports, `ChatMessage`, with the one type `ChatMessage` refers to, `ToolCall` (see Deviation: four excerpts). The repository Apex-Fusion/agents-marketplace carries no LICENSE file (none at the root or anywhere else in its tree at `e847a55`). A build-time ruling: this is code of the same organisation's public repository, copied unchanged but for one import line, and the missing licence is flagged to the operator as a licence-hygiene item.
 
 ## Files
 
@@ -85,7 +85,7 @@ Per file (the line numbers are the same in the source and the copy):
 - line 19: `import type { AdvertDatum, EscrowDatum } from './marketplace-datum.js';` becomes `import type { AdvertDatum, EscrowDatum } from '@vsa/vector-read';`
 
 `src/vendored/mcp/build.ts` (an excerpt, see below)
-- line 13: `import { lovelaceToAda, apexToLovelace } from '@apexfusion/vector-mcp-shared/tx';` becomes `import { lovelaceToAda } from '../mcp-shared/tx.js';` (the one rewrite that also drops a name: `apexToLovelace` is used only by the builders after line 48, which the excerpt leaves out, and the `tx.ts` excerpt does not carry it; signed off under ruling R5 of Plan C)
+- line 13: `import { lovelaceToAda, apexToLovelace } from '@apexfusion/vector-mcp-shared/tx';` becomes `import { lovelaceToAda } from '../mcp-shared/tx.js';` (the one rewrite that also drops a name: `apexToLovelace` is used only by the builders after line 48, which the excerpt leaves out, and the `tx.ts` excerpt does not carry it; a build-time ruling signed off this one rewrite)
 - line 16 (the end of the import that starts on line 14): `} from '@apexfusion/vector-mcp-shared/types';` becomes `} from '../mcp-shared/types.js';`
 
 `src/vendored/mcp/rate-limiter.ts`
@@ -126,13 +126,13 @@ Four copies are excerpts: whole lines of the source, byte for byte and in their 
 
 ## Verbatim exceptions to the repository's writing rules
 
-The copies keep the source's wording where it breaks a writing rule of this repository: the copy stays byte-identical and the exception is declared here, never rewritten (ruling R9 of Plan C).
+The copies keep the source's wording where it breaks a writing rule of this repository. A build-time ruling: the copy stays byte-identical and the exception is declared here, never rewritten.
 
 - `test/fixtures/fixture-provider.ts`, lines 78, 81, 84, 87, 90, 93 and 96: one em dash (U+2014) each, between `offline` and the method name in the error strings of the seven methods the offline provider refuses (`getUtxosWithUnit`, `getUtxoByUnit`, `getDelegation`, `getDatum`, `awaitTx`, `submitTx`, `evaluateTx`). This repository writes hyphens only. The dash check of `scripts/specs.test.mjs` does not read this file.
 
 No other copy holds an en or em dash (the comment of `ToolCall` in the source of `fleet/types.ts` does, and lies outside the excerpt), and no copy names the ledger unit (the excerpts leave out the lines that do).
 
-## Files the copies need that the plan's table did not list
+## Files the copies need beyond the set first planned
 
 - `src/vendored/mcp/rate-limiter.ts` and `src/vendored/mcp/env.ts`: `marketplace-shared.ts` imports the type `RateLimiter` (a type import, erased at runtime, but the type check resolves it), and `rate-limiter.ts` imports `intEnv`. Whole files, no dependencies.
 - `src/vendored/mcp-shared/tx.ts`: `build.ts` imports `lovelaceToAda` from it.

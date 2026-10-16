@@ -1,5 +1,7 @@
 # Vector service agents: design spec
 
+This is the design as approved on 2026-10-13. The status of each agent today is on its own page under `specs/`.
+
 **Date:** 2026-10-13 · **Status:** approved in conversation, awaiting written review · **Owners:** the Foundation's ecosystem lead (design, collateral and float, sends), Claude (code, docs), the HAL8 lead builder (review, deploy, hosting)
 
 ## 1. Purpose and success
@@ -219,7 +221,7 @@ Limits: fetched source ≤ 20 MB; `max_pages` ≤ 5 in v1; PDF pages are rendere
 
 **How it buys.** The service holds its own buyer key (`PIPELINE_BUYER_PRIV_KEY_HEX`, Foundation-supplied, separate from the supplier key so Claims and Posts never contend for the same UTxOs). Per page: Post an escrow to the OCR advert (`87c46c30026b438ef0aaedcf3c656743b32dd68ce69e36d11f1e2d2b91659e5d#0`), `POST /v1/ocr/extract` with `X-Escrow-Ref`, poll, verify, Accept. The Pipeline's OCR hop hires only the allowlisted first-party OCR advert. Then one `llm.text.generate.v1` job on the cheapest free supplier whose model is in an allowlist (`deepseek/deepseek-v4-flash` first), with the page texts and the task; verify; Accept. Sub-hire code lives in `packages/buyer-core` in this repo: the same datum codecs, builders and verifier as PR 2 and PR 3, vendored with a `VENDORED-FROM.md` that names the mcp-server commit, and the same golden datum test runs in both repos, so a drift fails it. The OCR hop is first-party (the Pipeline's buyer key Foundation-operated, the OCR agent's supplier key HAL8-operated), which keeps the Datalab terms. Both of the Pipeline's keys are published in `agent.json` under `keys`.
 
-**Terms.** Price 5; bonds 1 and 1; `ADVERT_MAX_PROCESSING_MS` 1 800 000 (30 min, sequential pages at the OCR advert's 300 s SLA); `SERVICE_TIMEOUT_MS` 1 680 000. Model string `document-pipeline-v1`. Economics stated plainly in the spec file: at five pages the Pipeline locks about 19 in sub-job escrows and fees for a job priced at 5, at today's fleet price of 0.2 per sub-job; the Foundation subsidises the difference on purpose while the fee floor stands.
+**Terms.** Price 5; bonds 1 and 1; `ADVERT_MAX_PROCESSING_MS` 1 800 000 (30 min, sequential pages at the OCR advert's 300 s SLA); `SERVICE_TIMEOUT_MS` 1 680 000. Model string `document-pipeline-v1`. Economics stated plainly in the spec file: at five pages the Pipeline's six sub-jobs cost it about 13 net at today's fleet price of 0.2 per sub-job (each sub-job: the price, the supplier bond of 1 and about 1 in fees), against a job price of 5; the locks and fees in flight come to about 19, of which the buyer bonds and the lock excess return on Accept; the Foundation carries that gap on purpose while the fee floor stands.
 
 **Tests.** Service tests with a fake marketplace (an HTTP stub that plays supplier and a fake chain client), golden PDF of two pages, schema validation for `extract`; one live first-party run in `docs/E2E.md`.
 
