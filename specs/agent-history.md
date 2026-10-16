@@ -6,7 +6,7 @@ Capability `identity.history.report.v1`. The registry, stake, marketplace and mo
 
 DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15.
 
-The service is built. Its tests replay recorded ledger data, and it has been run against live ledger reads. It is deployed on the operator's host, has had a registry record since 2026-10-14 and has had an advert since 2026-10-14. One first-party job has settled, on 2026-10-15; it is not demand. No payer outside the team has hired it. Nothing on this page is LIVE.
+The service is built. Its tests replay recorded ledger data, and it has been run against live ledger reads. It is deployed on the operator's host, has had a registry record since 2026-10-14 and has had an advert since 2026-10-14. One first-party job has settled, on 2026-10-15; it is not demand. No buyer outside the team has hired it. Nothing on this page is LIVE.
 
 ## Identity
 
@@ -50,7 +50,7 @@ Amounts are `lovelace` fields. The last column is the same amount divided by 1,0
 | Jobs at a time | 1 |
 | Report cache | 60 s per subject and section list |
 
-The buyer locks the price and both bonds. On Accept the supplier receives the price and the supplier bond, and the buyer's bond returns to the buyer. If the buyer does not Accept within the accept window, the supplier may Release the escrow and take the payment and both bonds. If the supplier never submits, the buyer reclaims after `deliver_by`. The escrow contract has no dispute action. The fee floor is 500000 lovelace per transaction, paid on top by whoever builds it.
+The buyer locks the price and both bonds. On Accept the supplier receives the price and the supplier bond, and the buyer's bond returns to the buyer. If the buyer does not Accept within the accept window, the supplier may Release the escrow and take the price and both bonds. If the supplier never submits, the buyer reclaims after `deliver_by`. The escrow contract has no dispute action. The fee floor is 500000 lovelace per transaction, and the fee comes on top, from whoever builds the transaction.
 
 The whole report is built inside the report time budget, 30000 ms under the service timeout, so the runtime never has to give up on a report that can degrade. A section that has not finished by then is reported as `{ "error": "time budget exceeded" }`, the other sections are answered, and a report with a failed section is not kept in the cache. A subject lookup that has not finished by then is a 500.
 
@@ -60,7 +60,7 @@ The runtime has one session slot. A second hire while a job runs is refused with
 
 Two things are named apart on this page. The **request JSON** is what you write: the object under Request below. The **wire payload** is `canonicalize([{ content: <request JSON as a string>, role: "user" }])`, the canonical JSON (sorted keys, NFC strings, no whitespace) of a one-element message array that carries the request JSON as a string. The sha256 of its UTF-8 bytes is the `prompt_hash` of the escrow. The wire payload is also the `payload` field of `POST /v1/job`, and the runtime claims the escrow and posts it unchanged to this service as the HTTP body of `POST /`. The service answers with the report as the response body, and the runtime hashes that body into the receipt.
 
-The marketplace MCP tools (on the hosted mainnet server since 2026-10-14) and the template's buyer, `try-it/src/buy-once.ts`, wrap the request JSON into the wire payload for you. On the raw routes you wrap it yourself, and you hash the wire payload, not the request JSON.
+The marketplace MCP tools (on the hosted mainnet server since 2026-10-14) and the template's buyer, `try-it/src/buy-once.ts`, wrap the request JSON into the wire payload for you. On the raw routes you wrap it yourself, and the hash you put in the escrow is the hash of the wire payload.
 
 ### Request
 
@@ -99,7 +99,7 @@ The runtime fails the job on any non-2xx answer, and the buyer reclaims after `d
 
 ### Response
 
-`schema` is `vector.agent-history.report.v1`. The report below is a real answer for the ChandraOCR agent from a live run on 2026-10-13, at block 8728604. `generated_by.did` is shown as a placeholder because the run was made before this agent was registered on 2026-10-14. Sections that were not in `include` are absent, not null.
+`schema` is `vector.agent-history.report.v1`. The report below is a real answer for the ChandraOCR agent from a live run on 2026-10-13, at block 8728604. `generated_by.did` is shown as a placeholder because the run was made before this agent was registered on 2026-10-14. A section that was not in `include` has no key in the report.
 
 ```json
 {
@@ -288,7 +288,7 @@ Times named `time` are Unix seconds. `registered_at`, `last_updated`, `advertise
 | `identity.deregistered` | `tx`, `block` and `time` of the transaction that spent the token without posting a record at the registry address, or null |
 | `marketplace` | null when no controller key is known: the subject has no live registry record and the identity timeline shows no earlier owner. Otherwise `as_supplier` and `as_buyer`, each with `adverts[]` and `escrows`, and `outcome_verification`, a sentence that says how the counts were checked. A subject with no live record but a known history is read with the last known controller key (the last `to_pkh` of `identity.updates`, else the owner at registration), and the first blind-spot line names that key. `as_buyer.adverts` is always empty |
 | `marketplace.*.adverts[]` | the adverts the marketplace indexer lists for the controller key |
-| `marketplace.*.escrows` | `total` is the number of indexer rows, which are escrow UTxO versions and not jobs. `by_indexer_state` counts rows per state label. `latest_checked` is how many of the newest rows (by `posted_at`, at most 50) were looked up on the ledger, and `latest_spent` how many of those are spent. `first` and `last` are the oldest and newest row exactly as the indexer returns it, or null. There are no outcome counts |
+| `marketplace.*.escrows` | `total` is the number of indexer rows, which are escrow UTxO versions: a job has a row for each state it reached. `by_indexer_state` counts rows per state label. `latest_checked` is how many of the newest rows (by `posted_at`, at most 50) were looked up on the ledger, and `latest_spent` how many of those are spent. `first` and `last` are the oldest and newest row exactly as the indexer returns it, or null. There are no outcome counts |
 | `reputation.stakes[]` | Module-3 stakes: `utxo`, `agent_asset_name`, `owner_pkh`, `stake_lovelace`, `capabilities[]`, `last_updated`, `history_points`. Which stakes are kept depends on the kind of subject, see Known gaps |
 | `reputation.endorsements[]` | Module-3 endorsement datums that name the subject: `utxo`, `block`, and `fields[]`, the datum's bytes fields in hex. A datum names the subject when one of its bytes fields is the asset name, for a subject given as a DID or asset name, or the key hash, for a subject given as a key hash. Whether the subject is the endorser or the endorsed is not decoded |
 | `dispute` | `claim[]`, `challenge[]` and `jury_pool[]` from the Module-1 v14 addresses, and `claim_v15_sim[]`, `challenge_v15_sim[]` and `jury_pool_v15_sim[]` from the v15-sim addresses: the datums that name the subject (as for endorsements), each entry shaped like an endorsement |
@@ -342,9 +342,9 @@ The service signs nothing. The runtime builds and signs the receipt, and submits
 | `prompt_tokens`, `completion_tokens` | 0 and 0, there is no model |
 | `wallclock_ms` | how long the service call took |
 
-The signature is Ed25519 over the canonical JSON of the receipt (sorted keys, no whitespace). The sha256 of the canonical JSON of `{ receipt, signature }` is the `result_receipt_hash` in the Submitted escrow datum. The poll route returns the report as the string `choices[0].message.content`: hash that string, not a re-serialised copy.
+The signature is Ed25519 over the canonical JSON of the receipt (sorted keys, no whitespace). The sha256 of the canonical JSON of `{ receipt, signature }` is the `result_receipt_hash` in the Submitted escrow datum. The poll route returns the report as the string `choices[0].message.content`: hash that string as it is: a re-serialised copy has other bytes and another hash.
 
-The receipt commits to who answered, with which exact bytes, to which request, for which escrow. It does not commit to the report being complete or correct: the report is what the sources returned at `as_of`, and the sources are listed but not hashed. It names keys, not registry identifiers. The join between a registry identifier and a marketplace record is by key hash.
+The receipt commits to who answered, with which exact bytes, to which request, for which escrow. It does not commit to the report being complete or correct: the report is what the sources returned at `as_of`, and the sources are listed but not hashed. It names keys. The join between a registry identifier and a marketplace record is by key hash.
 
 ## Operator and data handling
 
@@ -390,11 +390,11 @@ Advertised on 2026-10-14 and again on 2026-10-15, at the status flip: the market
 
 The request JSON is, for example, `{"subject":"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db"}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 
-1. **Chat client via MCP.** The hosted keyless MCP server builds the transactions and your local signer signs them, so your own key is the buyer. Ask your assistant to list the suppliers for `identity.history.report.v1`, post an escrow to the advert, send the job, poll for the result, verify the receipt and accept. You give the assistant the request JSON, and the tools wrap it into the wire payload. The send and every poll also take your signer address as `buyerAddress`, the wallet that posted and funded the escrow. The tools are `vector_marketplace_list_suppliers`, `vector_build_marketplace_post_escrow`, `vector_marketplace_send_job`, `vector_marketplace_get_job`, `vector_marketplace_verify_receipt` and `vector_build_marketplace_accept`, with `vector_signer_sign`, `vector_submit_transaction` and `vector_await_transaction` to sign and submit. The marketplace tools are on the hosted mainnet server, which lists 33 tools as of 2026-10-14.
+1. **Chat client via MCP.** The hosted keyless MCP server builds the transactions and your local signer signs them, so your own key is the buyer. Ask your assistant to list the suppliers for `identity.history.report.v1`, post an escrow to the advert, send the job, poll for the result, verify the receipt and accept. You give the assistant the request JSON, and the tools wrap it into the wire payload. The send and every poll also take your signer address as `buyerAddress`, the wallet that posted the escrow and locked its value. The tools are `vector_marketplace_list_suppliers`, `vector_build_marketplace_post_escrow`, `vector_marketplace_send_job`, `vector_marketplace_get_job`, `vector_marketplace_verify_receipt` and `vector_build_marketplace_accept`, with `vector_signer_sign`, `vector_submit_transaction` and `vector_await_transaction` to sign and submit. The marketplace tools are on the hosted mainnet server, which lists 33 tools as of 2026-10-14.
 2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `c4c378a`), with `--advert-ref`, `--endpoint` and `--payload-file`, and your own key. The file named by `--payload-file` holds the request JSON, and the buyer wraps it into the wire payload.
 3. **Developers, the raw routes.** You wrap the request JSON yourself and hash the wire payload. On the agent's public URL:
    1. `GET /agent.json` and compare its sha256 with the `detail_hash` of the advert.
-   2. Build the wire payload from your request JSON as shown under Request, and post an escrow for the advert with the price and both bonds. The escrow's `prompt_hash` is the sha256 of the wire payload's UTF-8 bytes, not of the request JSON.
+   2. Build the wire payload from your request JSON as shown under Request, and post an escrow for the advert with the price and both bonds. The escrow's `prompt_hash` is the sha256 of the UTF-8 bytes of the whole wire payload.
    3. `POST /v1/job` with `{ "escrow_ref": "<txid>#<index>", "payload": "<the wire payload>" }`. The runtime answers 202 with a `job_id` once its Claim has confirmed, which can take up to 60 s.
    4. `GET /v1/job/<job_id>` until it answers 200. The body has the report in `choices[0].message.content`, the `receipt` and the `receipt_signature`.
    5. `GET /capability` returns `pub_key_hex`. Verify the receipt against it, offline and against the chain, with `try-it/src/verify-receipt.ts`.

@@ -2,7 +2,7 @@
 
 A guide for anyone with a chat client and a key. It was written for a working-group member first. You use a chat client that has two MCP servers connected: the hosted Vector server, and a signer on your own machine. With them you hire Agent History, which writes a report about one agent identifier. You finish with a signed receipt that you can check yourself.
 
-**Status: DEPLOYED.** Agent History is DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. Nothing in this guide is LIVE. It was written on 2026-10-13, and its status table was brought up to date on 2026-10-16. You can finish it only when the tools, the signer and the agent in this table are in service and your key is funded.
+**Status: DEPLOYED.** Agent History is DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. Nothing in this guide is LIVE. It was written on 2026-10-13, and its status table was brought up to date on 2026-10-16. You can finish it only when the tools, the signer and the agent in this table are in service and your key holds its collateral and float.
 
 The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nine marketplace tools are on it. No third-party audit of the marketplace contracts exists.
 
@@ -16,7 +16,7 @@ The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nin
 | The signer's `keygen` command and the npx package `@apexfusion/vector-mcp-signer` | PR 4, merged into `main` on 2026-10-14: [Apex-Fusion/mcp-server#22](https://github.com/Apex-Fusion/mcp-server/pull/22). The package is not published, so `keygen` runs from a build of `main`. |
 | Agent History, capability `identity.history.report.v1` | DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. The advert reference is `b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c#0`, listed as Active and free on 2026-10-15. The public URL, `https://mp-suppliers-history.hal8.ai`, is in service as of 2026-10-14. |
 | Document Pipeline, capability `document.pipeline.ocr-summary.v1` | DEPLOYED (registered and staked 2026-10-16, advertised 2026-10-16, re-advertised 2026-10-16 at the status flip, one first-party job settled 2026-10-16). Since 2026-10-16. The advert reference is `d2709262e001022ea68c0222474f9bebc74f8bfc31dcddd24dc89debcc6dda16#0`, listed as Active and free on 2026-10-16. The public URL, `https://mp-suppliers-pipeline.hal8.ai`, is in service as of 2026-10-16. |
-| The funding for your key | Sent by hand by the Foundation on request, or by you (section 3). |
+| The collateral and float of your key | Sent by hand by the Foundation on request, or by you (section 3). |
 
 Audio Snippets and Advocate are specified and not built. This guide hires Agent History, and section 5 shows what changes for Document Pipeline.
 
@@ -26,7 +26,7 @@ Audio Snippets and Advocate are specified and not built. This guide hires Agent 
 - The receipt: eight fields as JSON, and its Ed25519 signature.
 - The escrow reference of your job, `<txid>#<index>`.
 - Two explorer links: the transaction that posted your escrow and the transaction that accepted the job. The pattern is `https://explorer.vector.mainnet.apexfusion.org/transaction/hash/<txid>`.
-- The check anyone can repeat: `vector_marketplace_verify_receipt` with the receipt, the signature, the escrow reference and the report text (`result` in the answer of `vector_marketplace_get_job`). It needs no key and no funds.
+- The check anyone can repeat: `vector_marketplace_verify_receipt` with the receipt, the signature, the escrow reference and the report text (`result` in the answer of `vector_marketplace_get_job`). It needs no key and no units.
 
 ## 2. Get a key
 
@@ -51,23 +51,23 @@ Once the package is published, the same command is:
 npx -y @apexfusion/vector-mcp-signer keygen
 ```
 
-`keygen` prints a fresh Ed25519 key and the address of that key, and writes nothing to disk. The key goes into the signer's `VECTOR_SIGNER_PRIVATE_KEY` setting and the address into `VECTOR_SIGNER_ADDRESS`. If keygen prints them as `NAME=value` lines, the value is what follows the `=`. Keep the key in a password manager. It is a raw Ed25519 key. No recovery phrase exists, so if you lose it the funds on that key are gone. If the Foundation funds your key, send the address, and only the address, to the person who invited you. Never paste the key into a chat, a ticket or a message.
+`keygen` prints a fresh Ed25519 key and the address of that key, and writes nothing to disk. The key goes into the signer's `VECTOR_SIGNER_PRIVATE_KEY` setting and the address into `VECTOR_SIGNER_ADDRESS`. If keygen prints them as `NAME=value` lines, the value is what follows the `=`. Keep the key in a password manager. It is a raw Ed25519 key. No recovery phrase exists, so if you lose it the units on that key are gone. If the Foundation sends your key its collateral and float, send the address, and only the address, to the person who invited you. Never paste the key into a chat, a ticket or a message.
 
-## 3. Fund it
+## 3. What the key must hold
 
-There are two ways to fund your key. The cost table and the check below apply to both.
+There are two ways to get the collateral and the float onto your key. The cost table and the check below apply to both.
 
-**(a) The Foundation funds a working-group member's key, on request.**
+**(a) The Foundation sends a working-group member's key its collateral and float, on request.**
 
-The Foundation funds working-group experiments. It sends your address two separate transfers: 5 units alone, then a float of 50. They stay separate on purpose. The Accept and the Reclaim are script spends, and each needs a pure 5-unit output as collateral. The Post keeps a pure 5-unit output aside when your wallet has one. A single lump sum lets your wallet spend it. Fees and bonds are paid in the ledger's native unit, AP3X. The name appears once, here. The rest of this guide calls it a unit.
+The Foundation supplies collateral and float for working-group experiments. It sends your address two separate transfers: 5 units alone, then a float of 50. They stay separate on purpose. The Accept and the Reclaim run the escrow script, and each needs a pure 5-unit output as collateral. The Post keeps a pure 5-unit output aside when your wallet has one. A single transfer of the whole amount lets your wallet consume the collateral with the rest. Bonds are posted and fees are consumed in the ledger's native unit, AP3X. The name appears once, here. The rest of this guide calls it a unit.
 
-**(b) Or fund it yourself.**
+**(b) Or send them yourself.**
 
-The units must be on Vector mainnet. Units on Prime, on Nexus or in a bridged form elsewhere cannot fund your key. The Reactor bridge moves units from Prime to Vector. The signer accepts only a key made by `keygen`. It does not take a wallet's recovery phrase, so a wallet's balance has to be sent to the address `keygen` printed. Send 5 alone first, then the float of 50. That is two transfers, for the reason given in (a).
+The units must be on Vector mainnet. Units on Prime, on Nexus or in a bridged form elsewhere cannot serve as your key's collateral or float. The Reactor bridge moves units from Prime to Vector. The signer accepts only a key made by `keygen`. It does not take a wallet's recovery phrase, so a wallet's balance has to be sent to the address `keygen` printed. Send 5 alone first, then the float of 50. That is two transfers, for the reason given in (a).
 
 What one job costs you. The price is set by the agent. Both bonds are 1. You lock the price and both bonds when you post the escrow. On Accept the supplier receives the price and the supplier bond, and your bond returns to you. If you do not accept within 600 s of the supplier's Submit, the supplier may Release the escrow and keep everything that is locked: the price and both bonds, your buyer bond included. If the supplier never submits, you reclaim the price and both bonds after `deliver_by`. Fees are about 1 across the Post and the Accept, because the fee floor is 0.5 per transaction.
 
-| Price (agent) | You lock at Post | The supplier receives on Accept | Back to you on Accept | Fees, Post and Accept | You pay for an accepted job | Accepted jobs per float of 50 |
+| Price (agent) | You lock at Post | The supplier receives on Accept | Back to you on Accept | Fees, Post and Accept | An accepted job costs you | Accepted jobs per float of 50 |
 |---|---|---|---|---|---|---|
 | 1 (Agent History) | 3 | 2 | 1 | about 1 | about 3 | 16 |
 | 2 (Audio Snippets) | 4 | 3 | 1 | about 1 | about 4 | 12 |
@@ -76,7 +76,7 @@ What one job costs you. The price is set by the agent. Both bonds are 1. You loc
 
 The lock is exactly the price plus both bonds. The ledger needs between 2.2 and 2.3 in an escrow output of this size, depending on the length of the agent's capability id. That is below every lock in the table.
 
-Check the funding before you go on. Ask your assistant to show the UTxOs of your signer address (`vector_get_utxos`). You should see one output of exactly 5 and one of 50.
+Check the collateral and the float before you go on. Ask your assistant to show the UTxOs of your signer address (`vector_get_utxos`). You should see one output of exactly 5 and one of 50.
 
 ## 4. Two lines of config
 
@@ -102,11 +102,11 @@ Add two servers to your MCP client: the hosted server and your signer. The hoste
 
 Once the package is published, replace `command` and `args` with `"command": "npx"` and `"args": ["-y", "@apexfusion/vector-mcp-signer"]`.
 
-The client config file now holds the raw signer key in plain text. Anyone who can read that file, or a backup or synced copy of it, can sign with the key and spend what it holds, which is 55 units. Keep the file out of repositories, shared folders and screen shares, let only your own account read it, and use the key for this guide only. The limits below bound a loss. They do not protect the key.
+The client config file now holds the raw signer key in plain text. Anyone who can read that file, or a backup or synced copy of it, can sign with the key and move what it holds, which is 55 units. Keep the file out of repositories, shared folders and screen shares, let only your own account read it, and use the key for this guide only. The limits below bound a loss. They do not protect the key.
 
 The two limits are in lovelace, and 1 unit is 1000000 lovelace. The values above are the defaults: 100 units per transaction and 500 per day. The signer refuses any transaction whose net outflow is above them. Your key will hold 55 units, so lower them if you want a tighter bound.
 
-Restart your client, then ask "What is my signer address?" The answer must be the address you sent for funding.
+Restart your client, then ask "What is my signer address?" The answer must be the address that received the collateral and the float.
 
 ## 5. The chat script
 
@@ -128,7 +128,7 @@ What you write in message 3 is the request JSON. The tools wrap the request JSON
 | 1 | `vector_marketplace_list_capabilities` | `identity.history.report.v1` is in the list. |
 | 2 | `vector_marketplace_list_suppliers` | The Agent History advert shows price 1, bonds 1 and 1, model `agent-history-v1` and a window of 300 s. |
 | 3 | `vector_signer_get_address`, `vector_build_marketplace_post_escrow`, `vector_signer_sign`, `vector_submit_transaction`, `vector_await_transaction` | The tool prints your escrow reference and a lock of 3. The wait ends with "Transaction Confirmed". |
-| 4 | `vector_marketplace_send_job`, then `vector_marketplace_get_job` until the job is done. Both take your signer address as `buyerAddress`. | The supplier claims the escrow on chain first, which takes up to 60 s. Then the report comes back with the receipt. `buyerAddress` must be the wallet that posted and funded the escrow, which is your signer address. |
+| 4 | `vector_marketplace_send_job`, then `vector_marketplace_get_job` until the job is done. Both take your signer address as `buyerAddress`. | The supplier claims the escrow on chain first, which takes up to 60 s. Then the report comes back with the receipt. `buyerAddress` must be the wallet that posted the escrow and locked its value, which is your signer address. |
 | 5 | `vector_marketplace_verify_receipt`, then `vector_build_marketplace_accept` and the same sign, submit and wait | The verdict reads VERIFIED and every row of the check table says pass, including the one for `response_hash`. A row that says skipped makes the verdict INCOMPLETE, which is not a pass. For `response_hash` it means your assistant left the report text out of the check, so ask it to run the check again with the `result` string from the poll. The Accept must land within 600 s of the supplier's Submit, and the accept tool warns when under 120 s remain. |
 | 6 | Reads back what it already has | You hold the report text, the receipt, the signature, the escrow reference and two links. |
 
@@ -155,7 +155,7 @@ The receipt has eight fields. The supplier's runtime builds and signs it. The se
 | `escrow_ref` | The escrow, `<txid>#<index>`, that the receipt belongs to. |
 | `supplier_pkh` | The key hash of the supplier key that signed. For Agent History it is also the controller key of the agent's registry record. |
 | `prompt_hash` | sha256 of the wire payload, the same hash that is in your escrow datum. |
-| `response_hash` | sha256 of the exact bytes of the report. Hash the string as returned, not a re-serialised copy. |
+| `response_hash` | sha256 of the exact bytes of the report. Hash the string as returned: a re-serialised copy has other bytes and another hash. |
 | `model` | `agent-history-v1`. |
 | `prompt_tokens`, `completion_tokens` | 0 and 0. Agent History has no model. |
 | `wallclock_ms` | How long the service call took. |
@@ -230,7 +230,7 @@ The body holds the report in `choices[0].message.content`, the `receipt` and the
 | A tool call times out near 100 s | The hosted server sits behind a proxy that cuts any call at about 100 s. The PR 3 tools that call a supplier (send job, poll job, verify receipt) stop at 90 s on their own: poll again with `vector_marketplace_get_job`, and the job keeps running. `vector_await_transaction` waits as long as it is asked, up to 300 s, so the proxy can cut a long wait: ask again for 90 s or less. The transaction itself is not affected. |
 | The check table says `response_hash` fails | The text that was checked is not the exact string the supplier returned. The readable view of `vector_marketplace_get_job` is cut when the report is long, and an assistant may re-format or shorten what it copies. Pass `result` from the JSON block of that answer, untouched. |
 | `vector_await_transaction` says "Not Confirmed Yet" | The transaction may still be pending. Ask again before you rebuild anything. Posting twice locks twice. |
-| The signer says REFUSED | Read the reason. A spend limit, a transaction it cannot read, or an audit log it cannot write stops signing. Nothing was signed. |
+| The signer says REFUSED | Read the reason. An outflow limit, a transaction it cannot read, or an audit log it cannot write stops signing. Nothing was signed. |
 | Rate limit exceeded | Wait for the time the tool names, then repeat the message. |
 | Stranded escrow: the supplier never claimed, or claimed and never submitted | Reclaim after `deliver_by`. Ask: "Reclaim escrow <escrow reference>. Use my signer address as changeAddress, sign, submit and wait for confirmation." `vector_build_marketplace_reclaim` returns the price and both bonds to you. Reclaim opens at the first whole second after `deliver_by`. For Agent History, `deliver_by` is your Post time plus 300000 ms plus 180000 ms, which is 8 minutes. For an absent or hostile supplier with a long window, you wait for that window plus 180 s, at most 24 hours plus 180 s with the current ceiling. |
 | You verified and did not accept in time | After 600 s from the Submit, the supplier may Release. You cannot reclaim a Submitted escrow. Accept as soon as the checks pass. |
@@ -241,7 +241,7 @@ The body holds the report in `choices[0].message.content`, the `receipt` and the
 - All suppliers are first-party today. The Foundation or HAL8 runs each one. A hire proves the path works. It does not show a market.
 - The marketplace contracts have no third-party audit.
 - The escrow has Accept, Reclaim and Release. It has no dispute action. Nothing in this guide promises a dispute process.
-- Receipts name keys, not identities. A registry identifier and a receipt are joined through the key hash, and every Agent History report says so.
+- Receipts name keys. A registry identifier and a receipt are joined through the key hash, and every Agent History report says so.
 - A report is what its sources returned at `as_of`. The sources are listed and not hashed, so the receipt does not vouch that the report is complete.
-- Text that suppliers write into adverts is untrusted input to your assistant. The signer's limits bound what a misled assistant can spend. They do not make a bad transaction good.
+- Text that suppliers write into adverts is untrusted input to your assistant. The signer's limits bound what a misled assistant can move out of the wallet. They do not make a bad transaction good.
 - No run of this path by someone outside the team is recorded yet. The first-party runs are in [docs/E2E.md](E2E.md).

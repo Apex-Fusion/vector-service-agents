@@ -2,20 +2,20 @@
 
 Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE. This runbook says what happens, in order. Steps 1 to 15 and 17 were run on 2026-10-14 and 2026-10-15. Step 16, the wallet monitor, is not used for this agent (operator's decision, 2026-10-15).
 
-The operator holds the keys and does every step except three. Step 2 (the registry login and the service image) and step 10 (DNS and Caddy) are the host administrator's, see [README.md](README.md). Step 6 (funding the supplier wallet) is the Foundation's. Every run of the agent is first-party until a payer outside our control appears. A first-party run shows that the path works. It is not demand and it counts as no revenue.
+The operator holds the keys and does every step except three. Step 2 (the registry login and the service image) and step 10 (DNS and Caddy) are the host administrator's, see [README.md](README.md). Step 6 (the collateral and float of the supplier wallet) is the Foundation's. Every run of the agent is first-party until a buyer outside our control appears. A first-party run shows that the path works. It is not demand and it counts as no revenue.
 
 One thing about the order. The advert carries the sha256 of the manifest the service serves at `/agent.json`, and adverts are immutable. So everything the manifest contains (the agent identifier, the keys, the status word) has to be final before the hash is taken. That is why the identity is registered (steps 7 and 8) before the advert (step 12), and why changing the status afterwards costs a new advert (step 17).
 
-## Funds
+## Collateral and float
 
-The Foundation funds two keys. Nobody pastes either key into a chat.
+The Foundation supplies two keys with their collateral and float. Nobody pastes either key into a chat.
 
-| Key | Funded with | Covers |
+| Key | Supplied with | Covers |
 |---|---|---|
-| Supplier key, generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral, never touched), then 50 units | The registry deposit (10 units), the stake (10), the advert (about 2 locked) and fees of about 0.5 a transaction. The setup uses about 25 with fees. The rest pays the supplier's claim and submit fees. 25 would leave almost nothing for those, so fund 50. |
+| Supplier key, generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral, never touched), then 50 units | The registry deposit (10 units), the stake (10), the advert (about 2 locked) and fees of about 0.5 a transaction. The setup uses about 25 with fees. The rest covers the supplier's claim and submit fees. 25 would leave almost nothing for those, so send 50. |
 | Test buyer key, generated on the operator's own machine | Two transfers: 5 units alone, then 50 | The first-party run of step 15. A run costs about 3 units of the float. |
 
-Two transfers, because a wallet funded in one lump can have its collateral spent as change by an ordinary transaction.
+Two transfers, because a wallet supplied in one transfer can have its collateral spent as change by an ordinary transaction.
 
 ## 1. Put the files on the box
 
@@ -128,7 +128,7 @@ grep -n '^CAPABILITIES' m3-self-stake.py
 
 The `grep` lines must show the Agent History values and nothing of ChandraOCR. The description is the manifest's, and the registry takes at most 256 characters of it (this one is 214). `setup-venv.sh` builds the Python environment and clones the Module-3 SDK into `/opt/agent-history/ops`. It ends with `venv ok`.
 
-## 6. Fund the supplier wallet
+## 6. Supply the supplier wallet with its collateral and float
 
 The Foundation. Read the address with `grep '^SUPPLIER_ADDRESS=' /opt/agent-history/repo/deploy/apex-web/.env.agent-history`, then send two separate transfers to it. The first is exactly 5 units, alone. Send the second, 50 units, only after the first has confirmed. Check:
 
@@ -165,13 +165,13 @@ cd /opt/agent-history/ops
 ./venv/bin/python m3-self-stake.py
 ```
 
-The staked capabilities must be a subset of the registry record's, and here both are the one capability `identity.history.report.v1`. The script patches the SDK's testnet genesis constant and asserts it against the wall clock before it spends anything (second gotcha). It appends `M3_STAKE_TX`, `M3_SEED_UTXO` and `M3_STAKE_DFM` to the env file.
+The staked capabilities must be a subset of the registry record's, and here both are the one capability `identity.history.report.v1`. The script patches the SDK's testnet genesis constant and asserts it against the wall clock before it locks anything (second gotcha). It appends `M3_STAKE_TX`, `M3_SEED_UTXO` and `M3_STAKE_DFM` to the env file.
 
 ## 9. Start the service
 
 Operator. Start `service` by name. A bare `docker compose up -d` also starts the runtime, which exits at boot while `ADVERT_REF` is empty.
 
-First check the pin of step 2. The `image:` line of `service` must name a digest of 64 hex digits (or an image ID), not the placeholder, or compose stops with `invalid reference format`:
+First check the pin of step 2. The `image:` line of `service` must name a digest of 64 hex digits (or an image ID) in place of the placeholder, or compose stops with `invalid reference format`:
 
 ```sh
 cd /opt/agent-history/repo/deploy/apex-web
@@ -204,7 +204,7 @@ printf '[{"content":"{\\"subject\\":\\"%s\\"}","role":"user"}]' "$KEY" \
   | docker exec -i agent-history-service wget -qO- --header='content-type: application/json' --post-file=/dev/stdin http://127.0.0.1:9091/ | head -c 700
 ```
 
-`subject.kind` is `pkh`, `subject.candidates` lists the record of step 7, and `marketplace` is an object, not null.
+`subject.kind` is `pkh`, `subject.candidates` lists the record of step 7, and `marketplace` is an object.
 
 ## 10. DNS and Caddy
 
@@ -304,7 +304,7 @@ It must print `Active free identity.history.report.v1` and the hash of step 11. 
 
 ## 15. The first-party run
 
-Operator. Follow [E2E.md](../../docs/E2E.md) with `ADVERT_REF` from step 12 and the funded test buyer key. This is the step that proves the path, and nothing before it settles a job. As of 2026-10-14 the nine marketplace tools the script needs are merged into `main` of Apex-Fusion/mcp-server (PR 1 as [#20](https://github.com/Apex-Fusion/mcp-server/pull/20), PR 2 as [#21](https://github.com/Apex-Fusion/mcp-server/pull/21) and PR 3 as [#23](https://github.com/Apex-Fusion/mcp-server/pull/23) with PR 2) and are on the hosted mainnet MCP server, which lists 33 tools. PR 4 ([#22](https://github.com/Apex-Fusion/mcp-server/pull/22)), the signer package with its `keygen` command, is merged too, and the package is not published. The default `BUILDER_URL` of the script is the hosted mainnet MCP server, so the run needs no local builder. E2E.md keeps the local build of `main` as the fallback for a builder that lacks the tools. Add the run to the Results table in E2E.md. Only a run that ends in the printed evidence counts. The first run, made on 2026-10-15, is recorded in E2E.md.
+Operator. Follow [E2E.md](../../docs/E2E.md) with `ADVERT_REF` from step 12 and the test buyer key with its collateral and float. This is the step that proves the path, and nothing before it settles a job. As of 2026-10-14 the nine marketplace tools the script needs are merged into `main` of Apex-Fusion/mcp-server (PR 1 as [#20](https://github.com/Apex-Fusion/mcp-server/pull/20), PR 2 as [#21](https://github.com/Apex-Fusion/mcp-server/pull/21) and PR 3 as [#23](https://github.com/Apex-Fusion/mcp-server/pull/23) with PR 2) and are on the hosted mainnet MCP server, which lists 33 tools. PR 4 ([#22](https://github.com/Apex-Fusion/mcp-server/pull/22)), the signer package with its `keygen` command, is merged too, and the package is not published. The default `BUILDER_URL` of the script is the hosted mainnet MCP server, so the run needs no local builder. E2E.md keeps the local build of `main` as the fallback for a builder that lacks the tools. Add the run to the Results table in E2E.md. Only a run that ends in the printed evidence counts. The first run, made on 2026-10-15, is recorded in E2E.md.
 
 ## 16. Wallet monitor
 
@@ -376,5 +376,5 @@ submit URLs. On mainnet you must pass mainnet endpoints explicitly AND patch
 the genesis constant to `1756485600`, or `StakeDatum.last_updated` lands ~51
 days off, fails Rule 6 of `validate_create_stake`, and the script aborts with
 an opaque "terminated with error". `m3-self-stake.py` patches it and asserts
-the result against wall clock before spending anything.
+the result against wall clock before locking anything.
 

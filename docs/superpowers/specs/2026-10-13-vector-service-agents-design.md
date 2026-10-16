@@ -1,6 +1,6 @@
 # Vector service agents: design spec
 
-**Date:** 2026-10-13 · **Status:** approved in conversation, awaiting written review · **Owners:** the Foundation's ecosystem lead (design, funding, sends), Claude (code, docs), the HAL8 lead builder (review, deploy, hosting)
+**Date:** 2026-10-13 · **Status:** approved in conversation, awaiting written review · **Owners:** the Foundation's ecosystem lead (design, collateral and float, sends), Claude (code, docs), the HAL8 lead builder (review, deploy, hosting)
 
 ## 1. Purpose and success
 
@@ -187,13 +187,13 @@ The registry, stake, marketplace and module records the Vector ledger holds for 
 
 **Tests.** Golden fixtures recorded from Koios for ChandraOCR (registration at block 7,275,113, the Module-3 stake `05563e75…#0`, the 12 August job `1f1566b4…`), replayed offline; the report for that subject is asserted field by field, including `counts_by_outcome.accepted >= 1` and `receipt_signer_match: true`.
 
-**Gaps stated in the spec file.** Module-3 and Module-6 datum layouts beyond the stake datum are read from the activity-api decoder and the module docs, not from a local clone of `vector-agent-modules`; the first live report against each module is checked by hand before the advert is posted.
+**Gaps stated in the spec file.** Module-3 and Module-6 datum layouts beyond the stake datum are read from the activity-api decoder and the module docs, without a local clone of `vector-agent-modules`; the first live report against each module is checked by hand before the advert is posted.
 
 Field names are normative in specs/agent-history.md (written from the implementation).
 
 ### 7.3 Document Pipeline · `document.pipeline.ocr-summary.v1` · PROPOSED
 
-An orchestrator: it buys OCR per page from the live OCR agent and a summary or extraction from an LLM supplier, verifies each sub-receipt, and signs one receipt over the whole bundle. For the working group it demonstrates a delegation chain made visible by receipts, with accountability staying on the Pipeline's key; the parties it hires are independent agents, not sub-agents, by the group's own distinction.
+An orchestrator: it buys OCR per page from the live OCR agent and a summary or extraction from an LLM supplier, verifies each sub-receipt, and signs one receipt over the whole bundle. For the working group it demonstrates a delegation chain made visible by receipts, with accountability staying on the Pipeline's key; by the group's own distinction between independent agents and sub-agents, the parties it hires are independent agents.
 
 **Request**
 
@@ -217,9 +217,9 @@ Limits: fetched source ≤ 20 MB; `max_pages` ≤ 5 in v1; PDF pages are rendere
   "accounting": { "sub_jobs": 6, "locked_total_lovelace", "fees_total_lovelace" } }
 ```
 
-**How it buys.** The service holds its own buyer key (`PIPELINE_BUYER_PRIV_KEY_HEX`, Foundation-funded, separate from the supplier key so Claims and Posts never contend for the same UTxOs). Per page: Post an escrow to the OCR advert (`87c46c30026b438ef0aaedcf3c656743b32dd68ce69e36d11f1e2d2b91659e5d#0`), `POST /v1/ocr/extract` with `X-Escrow-Ref`, poll, verify, Accept. The Pipeline's OCR hop hires only the allowlisted first-party OCR advert. Then one `llm.text.generate.v1` job on the cheapest free supplier whose model is in an allowlist (`deepseek/deepseek-v4-flash` first), with the page texts and the task; verify; Accept. Sub-hire code lives in `packages/buyer-core` in this repo: the same datum codecs, builders and verifier as PR 2 and PR 3, vendored with a `VENDORED-FROM.md` that names the mcp-server commit, and the same golden datum test runs in both repos so drift is caught, not assumed. The OCR hop is first-party (the Pipeline's buyer key Foundation-operated, the OCR agent's supplier key HAL8-operated), which keeps the Datalab terms. Both of the Pipeline's keys are published in `agent.json` under `keys`.
+**How it buys.** The service holds its own buyer key (`PIPELINE_BUYER_PRIV_KEY_HEX`, Foundation-supplied, separate from the supplier key so Claims and Posts never contend for the same UTxOs). Per page: Post an escrow to the OCR advert (`87c46c30026b438ef0aaedcf3c656743b32dd68ce69e36d11f1e2d2b91659e5d#0`), `POST /v1/ocr/extract` with `X-Escrow-Ref`, poll, verify, Accept. The Pipeline's OCR hop hires only the allowlisted first-party OCR advert. Then one `llm.text.generate.v1` job on the cheapest free supplier whose model is in an allowlist (`deepseek/deepseek-v4-flash` first), with the page texts and the task; verify; Accept. Sub-hire code lives in `packages/buyer-core` in this repo: the same datum codecs, builders and verifier as PR 2 and PR 3, vendored with a `VENDORED-FROM.md` that names the mcp-server commit, and the same golden datum test runs in both repos, so a drift fails it. The OCR hop is first-party (the Pipeline's buyer key Foundation-operated, the OCR agent's supplier key HAL8-operated), which keeps the Datalab terms. Both of the Pipeline's keys are published in `agent.json` under `keys`.
 
-**Terms.** Price 5; bonds 1 and 1; `ADVERT_MAX_PROCESSING_MS` 1 800 000 (30 min, sequential pages at the OCR advert's 300 s SLA); `SERVICE_TIMEOUT_MS` 1 680 000. Model string `document-pipeline-v1`. Economics stated plainly in the spec file: at five pages the Pipeline spends about 19 in locks and fees to earn 5, at today's fleet price of 0.2 per sub-job; the Foundation subsidises this on purpose while the fee floor stands.
+**Terms.** Price 5; bonds 1 and 1; `ADVERT_MAX_PROCESSING_MS` 1 800 000 (30 min, sequential pages at the OCR advert's 300 s SLA); `SERVICE_TIMEOUT_MS` 1 680 000. Model string `document-pipeline-v1`. Economics stated plainly in the spec file: at five pages the Pipeline locks about 19 in sub-job escrows and fees for a job priced at 5, at today's fleet price of 0.2 per sub-job; the Foundation subsidises the difference on purpose while the fee floor stands.
 
 **Tests.** Service tests with a fake marketplace (an HTTP stub that plays supplier and a fake chain client), golden PDF of two pages, schema validation for `extract`; one live first-party run in `docs/E2E.md`.
 
@@ -304,7 +304,7 @@ Order of the document, as the member will do it:
 
 1. **What you'll end up with:** a receipt JSON, its signature, an escrow reference, two explorer links, and the one command anyone can run to verify it.
 2. **Get a key:** `npx -y @apexfusion/vector-mcp-signer keygen` (until PR 4 lands: clone `mcp-server`, `npm ci && npm run build`, run the signer from `packages/signer`). Send us the address only.
-3. **We fund it.** The Foundation funds working-group experiments: a 5 collateral output and a float of 50. Fees and bonds are paid in the ledger's native unit, AP3X; the name appears once, here. What one job does: locks price plus two bonds of 1. On accept the supplier receives the price and the supplier bond, your bond of 1 returns to you, and about 1 burns in fees across Post and Accept, so an accepted job costs you the price plus 1 plus about 1. A float of 50 is roughly seven to sixteen accepted jobs depending on the agent.
+3. **What the key must hold.** The Foundation supplies working-group experiments with a 5 collateral output and a float of 50. Bonds are posted and fees are consumed in the ledger's native unit, AP3X; the name appears once, here. What one job does: locks price plus two bonds of 1. On accept the supplier receives the price and the supplier bond, your bond of 1 returns to you, and about 1 burns in fees across Post and Accept, so an accepted job costs you the price plus 1 plus about 1. A float of 50 is roughly seven to sixteen accepted jobs depending on the agent.
 4. **Two lines of config:** the hosted server URL (already listed in the MCP Registry as `io.github.Apex-Fusion/vector`) and the local signer with its caps (100 per transaction, 500 per day by default).
 5. **The chat script,** verbatim: list capabilities; show suppliers for `identity.history.report.v1`; hire that one with this payload; when the receipt verifies, accept. The assistant makes about a dozen tool calls; the member reads three results.
 6. **Read your receipt:** the eight fields, what each hash is, and `vector_marketplace_verify_receipt` as the offline check anyone can repeat.
@@ -321,7 +321,7 @@ Order of the document, as the member will do it:
 | mcp-server smoke | nine new tool schemas in `tool-schemas.snapshot.json`, derived count | `npm run test:smoke` in CI |
 | mcp-server boundary | no key or mnemonic words in new sources | existing `boundary.test.ts` |
 | agents, service level | golden input → exact JSON; fixtures recorded from Koios (History), stub marketplace (Pipeline), 20 s clip (Snippets), stubbed search and model (Advocate) | `pnpm test` per agent in CI |
-| end to end, mainnet, first-party | `scripts/e2e-hire.mjs`: a scripted MCP client against a locally run builder plus signer, then against the deployed server; hires Agent History with our funded buyer key; asserts the verdict and the Accept confirmation | run by hand before each rollout step; documented in `docs/E2E.md` |
+| end to end, mainnet, first-party | `scripts/e2e-hire.mjs`: a scripted MCP client against a locally run builder plus signer, then against the deployed server; hires Agent History with our test buyer key and its float; asserts the verdict and the Accept confirmation | run by hand before each rollout step; documented in `docs/E2E.md` |
 
 Tests are written before the code they test, per the repos' existing practice.
 
@@ -329,7 +329,7 @@ Tests are written before the code they test, per the repos' existing practice.
 
 1. Spec approved in writing → implementation plan (writing-plans) → work in git worktrees, one branch per PR.
 2. **PR 1** opened; **PR 2** branch with the golden datum test passing; **Agent History** service running locally against Koios. (Today.)
-3. The Foundation's ecosystem lead funds: our test buyer key; four agent wallets (collateral plus float). The Foundation's ecosystem lead executes every transfer; Claude never sees a key.
+3. The Foundation's ecosystem lead supplies collateral plus float to: our test buyer key; four agent wallets. The Foundation's ecosystem lead executes every transfer; Claude never sees a key.
 4. The note to the HAL8 lead builder goes out first (section 12), naming the gateway `/mcp` overlap. The HAL8 lead builder reviews PRs 1 to 4, dispatches the mainnet deploy (`deploy-mainnet.yml`, manual), adds four DNS names and Caddy blocks, pulls the images.
 5. Agents register DIDs and self-stake via the existing ops scripts; adverts posted with `detail_uri` set; manifests frozen.
 6. Our own first-party hire of Agent History through the deployed server succeeds → the receipt and the guide draft go to internal Discord → the Foundation CEO signs off → issue in `aaif/wg-identity-and-trust` → one member (a working-group ally first) walks the guide with us on a call → first outside receipt → docs-site page.
@@ -340,7 +340,7 @@ Tests are written before the code they test, per the repos' existing practice.
 |---|---|
 | Success criterion | a person we do not control hires an agent and holds the receipt |
 | First hirer | a WG member, by hand, from a chat client |
-| Funding | Foundation-funded key the member holds; their key is the buyer |
+| Collateral and float | Foundation-supplied key the member holds; their key is the buyer |
 | Channel | extend the hosted keyless MCP server; local signer signs; several PRs, the HAL8 lead builder approves |
 | Agents | Agent History, Document Pipeline, Audio Snippets, Advocate; ChandraOCR out of scope as a direct hire, used inside the Pipeline |
 | Prices | 1 / 5 / 2 / 3; bonds 1 and 1 everywhere |
@@ -353,7 +353,7 @@ Tests are written before the code they test, per the repos' existing practice.
 
 | Item | Who |
 |---|---|
-| Fund the test buyer key and four agent wallets | the Foundation's ecosystem lead |
+| Supply the collateral and float of the test buyer key and four agent wallets | the Foundation's ecosystem lead |
 | Brave Search API key for Advocate; confirm OpenRouter key reuse | the Foundation's ecosystem lead |
 | `@apexfusion` npm scope ownership for the signer publish | the Foundation's ecosystem lead or the HAL8 lead builder |
 | apex-web CPU and memory check for whisper model size | the HAL8 lead builder (or the Foundation's ecosystem lead over SSH) |
@@ -367,9 +367,9 @@ Tests are written before the code they test, per the repos' existing practice.
 |---|---|
 | Two marketplace-over-MCP efforts (the HAL8 lead builder's gateway `/mcp`, this) | Note to the HAL8 lead builder first; the two are complementary (custodial convenience vs identity-grade keyless) and share no code paths |
 | SSRF through on-chain `endpoint_url` and `detail_uri` | `safeFetch` rules, applied on the server and inside every service |
-| Fee floor makes every job cost about 1 in fees plus the lock | Stated in the guide; Foundation funds; the Pipeline's subsidy named in its spec |
+| Fee floor makes every job cost about 1 in fees plus the lock | Stated in the guide; the Foundation supplies the collateral and float; the Pipeline's subsidy named in its spec |
 | Whisper on an unmeasured CPU box | model size decided after the check; 10-minute input cap; long SLA |
 | Fleet route changed upstream (`/v1/responses`) | route table read from origin/main at port time and pinned in a test |
-| Member strands funds on a supplier that never claims | `vector_build_marketplace_reclaim` ships in PR 2, before any outsider is invited |
+| Member strands a lock on a supplier that never claims | `vector_build_marketplace_reclaim` ships in PR 2, before any outsider is invited |
 | Snapshot test blocks PRs | regen script fixed in PR 1; count derived |
 | Public wording drifts from canon | the Foundation CEO sign-off gate; status chips on every surface |

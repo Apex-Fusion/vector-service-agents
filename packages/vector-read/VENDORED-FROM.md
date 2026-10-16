@@ -32,7 +32,7 @@ The header comments inside the vendored files still name their source paths. The
 4. Run `pnpm --filter @vsa/vector-read test` here and the builder tests there. Both must pass.
 5. Update the pin column above.
 
-Check that the vendored part is still byte-identical to its pin (bash; the pin is `94b8f41` today). The cut is at the marker comment, not at a line count: `sed` drops the marker and everything below it, and the second `sed` drops the one blank separator line above the marker.
+Check that the vendored part is still byte-identical to its pin (bash; the pin is `94b8f41` today). The cut is at the marker comment, whatever the line count: `sed` drops the marker and everything below it, and the second `sed` drops the one blank separator line above the marker.
 `git -C <mcp-server> show 94b8f41:packages/builder/src/vector/marketplace-datum.ts | cmp - <(sed '/^\/\/ ---- Local additions/,$d' packages/vector-read/src/datum.ts | sed '$d')`
 
 The fixture is checked the same way: `git -C <mcp-server> show 94b8f41:packages/builder/test/fixtures/marketplace.fixture.ts | cmp - packages/vector-read/test/fixtures/marketplace.fixture.ts`.
