@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 // The four agent specs share one structure and one set of public-wording rules (docs/superpowers/specs/2026-10-13-vector-service-agents-design.md, section 8).
 // The member guide and the E2E runbook are pinned against the same specs and the design at the end of this file.
 const HEADINGS = ['Status', 'Identity', 'Capability id', 'Terms', 'Interface', 'What the receipt commits to', 'Operator and data handling', 'Known gaps', 'How to hire it', 'Changelog', 'Links'];
-// The sentence under "Identity" in each spec. The two designs have no registry record. Agent History was registered on 2026-10-14 (RUNBOOK step 7) and Document Pipeline on 2026-10-16 (step 7 of RUNBOOK-document-pipeline), and each says so.
+// The sentence under "Identity" in each spec. The two that are PROPOSED, Audio Snippets (built) and Advocate (not built), have no registry record. Agent History was registered on 2026-10-14 (RUNBOOK step 7) and Document Pipeline on 2026-10-16 (step 7 of RUNBOOK-document-pipeline), and each says so.
 const NO_RECORD = 'This agent has no registry record yet.';
 const HAS_RECORD = 'This agent has had a registry record since 2026-10-14.';
 const DP_HAS_RECORD = 'This agent has had a registry record since 2026-10-16.';
@@ -1208,6 +1208,8 @@ test('docs/HIRE.md and docs/E2E.md: Audio Snippets has a subsection of section 5
   assert.ok(sub.includes('Ask for `audio.transcript.snippets.v1` in message 2'));
   assert.ok(sub.includes('```json\n{"source":{"url":"https://example.org/talk.mp3"},"language":"en","quotes":["a quote that was said in the talk"]}\n```'));
   assert.ok(sub.includes('the hosted server reads at most 1000000 bytes of the answer of a job, and clips can be larger'));
+  assert.ok(sub.includes('A request can also carry a `query` and `ranges`, and the answer holds the transcript, the matches with their cut points and the clips: [specs/audio-snippets.md](../specs/audio-snippets.md) gives every field, under Request and Response.'), 'the page gives the rest of the request and the result');
+  for (const heading of ['Request', 'Response']) assert.ok(read('audio-snippets').includes(`\n### ${heading}\n`), heading);
   assert.ok(sub.includes('which is your Post time plus 25 min plus 180 s. The price is 2 and a job costs about 4 (the cost table in section 3).'));
   const e2e = section(doc('E2E.md'), 'Hiring Audio Snippets');
   for (const part of ['export CAPABILITY_ID=audio.transcript.snippets.v1', 'export E2E_POLL_MS=10000', 'export E2E_STATE=./e2e-state-snippets.json', '[deploy/host/RUNBOOK-audio-snippets.md](../deploy/host/RUNBOOK-audio-snippets.md)', 'which is 28 minutes after the Post (the 25 min window and 180 s)']) assert.ok(e2e.includes(part), part);
@@ -1229,4 +1231,13 @@ test('docs/HIRE.md and docs/E2E.md: the recording of the guide is within the Ter
   assert.equal(pause, 5000);
   assert.equal(25 * 60 * 1000 / pause, 300);
   assert.ok(section(doc('E2E.md'), 'Hiring Audio Snippets').includes("- `E2E_POLL_MS=10000`: a job can take far longer than the seconds of Agent History's, up to the 25 min window, and the default pause of 5 s would ask the hosted server about 300 times in 25 minutes."));
+});
+
+// Ruling R-D25: the E2E runbook says what a first-party run shows and what it is not, and the word a clause of it added is on no page. The word is spelled in two
+// parts, as the unit name is, so that a search for it finds no file.
+test('docs/E2E.md: a first-party run shows that the path works and is neither ignition nor demand; no spec, guide or README holds the word the clause added', () => {
+  const e2e = doc('E2E.md');
+  assert.ok(e2e.includes('A first-party run shows that the path works. It is not ignition, and it is not demand.'));
+  assert.ok(e2e.includes('One fill is not a market, and a first-party run is never counted as demand.'));
+  for (const text of [e2e, hire(), readFileSync(new URL('../README.md', import.meta.url), 'utf8'), ...Object.keys(AGENTS).map((name) => read(name))]) assert.doesNotMatch(text, new RegExp('reve' + 'nue', 'i'));
 });

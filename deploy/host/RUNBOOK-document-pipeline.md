@@ -34,7 +34,7 @@ BASE=/opt/document-pipeline
 HISTORY_BASE=/opt/agent-history
 ```
 
-The operator holds the keys and does every step except two. Step 6 (the collateral and float of the two wallets) is the Foundation's. Step 10 (DNS and Caddy) is the host administrator's, see [README.md](README.md). Step 2 is the operator's here, because nothing is pulled from a registry. Every run of the agent is first-party until a buyer outside our control appears. A first-party run shows that the path works. It is not demand and it counts as no revenue.
+The operator holds the keys and does every step except two. Step 6 (the collateral and float of the two wallets) is the Foundation's. Step 10 (DNS and Caddy) is the host administrator's, see [README.md](README.md). Step 2 is the operator's here, because nothing is pulled from a registry. Every run of the agent is first-party until a buyer outside our control appears. A first-party run shows that the path works. It is not demand.
 
 One thing about the order, as for Agent History. The advert carries the sha256 of the manifest the service serves at `/agent.json`, and adverts are immutable, so everything the manifest contains (the agent identifier, the keys, the status word) has to be final before the hash is taken. That is why the identity is registered (steps 7 and 8) before the advert (step 12), and why changing the status afterwards costs a new advert (step 17).
 

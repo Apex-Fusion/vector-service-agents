@@ -84,6 +84,8 @@ const NAMES = /\b(Filip|Blagojevi\w*|David|Cejtlin|Chris|Jerry|Armando|Andrej|Ca
 const HOME_PATH = /C:[\\/]Users[\\/]|[\\/](Users|home)[\\/][A-Za-z]/;
 // The Document Pipeline is DEPLOYED since 2026-10-16, so its files say DEPLOYED in their status lines and headers and LIVE nowhere. They sit in this list so that they get every rule below.
 const PIPELINE_FILES = ['deploy/host/docker-compose.document-pipeline.yml', 'deploy/host/.env.document-pipeline.example', 'deploy/host/Caddyfile.document-pipeline.snippet', 'deploy/host/RUNBOOK-document-pipeline.md'];
+// Audio Snippets is built and PROPOSED (built, not deployed) since 2026-10-13: its four deploy files, read by the tests of the status words and of its stack.
+const S_FILES = ['deploy/host/docker-compose.audio-snippets.yml', 'deploy/host/.env.audio-snippets.example', 'deploy/host/Caddyfile.audio-snippets.snippet', 'deploy/host/RUNBOOK-audio-snippets.md'];
 const PUBLIC_FILES = ['deploy/host/README.md', 'deploy/host/RUNBOOK.md', 'deploy/host/docker-compose.agent-history.yml', 'deploy/host/.env.agent-history.example', 'deploy/host/Caddyfile.snippet', 'agents/agent-history/Dockerfile', '.dockerignore', ...PIPELINE_FILES, 'agents/document-pipeline/Dockerfile'];
 
 test('compose: two containers with fixed names, the runtime on loopback only, the service unpublished, both on the shared network', () => {
@@ -293,7 +295,7 @@ test('CI: the publish job runs on a push to main after the tests, logs in with G
   assert.equal(ci.jobs.test.steps.at(-1).run, 'pnpm test');
 });
 
-test('README, RUNBOOK, compose file and Caddy snippet: Agent History is DEPLOYED since 2026-10-15 and the Document Pipeline since 2026-10-16, nothing is LIVE; no dash, no unit name, no person named', () => {
+test('README, RUNBOOK, compose file and Caddy snippet: Agent History is DEPLOYED since 2026-10-15, the Document Pipeline since 2026-10-16 and Audio Snippets PROPOSED (built, not deployed) since 2026-10-13, nothing is LIVE; no dash, no unit name, no person named', () => {
   const STATUS = 'Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE.';
   // The Pipeline is the second stack of the box: its section of the README and its runbook carry its own status line, DEPLOYED since 2026-10-16 (RUNBOOK-document-pipeline.md step 17).
   const P_README_STATUS = 'Status: DEPLOYED since 2026-10-16. Nothing in this section is LIVE.';
@@ -324,6 +326,17 @@ test('README, RUNBOOK, compose file and Caddy snippet: Agent History is DEPLOYED
   assert.equal(readme.split('\n')[2], `${STATUS} Steps 1 to 15 and 17 of the runbook were run on 2026-10-14 and 2026-10-15. Step 16, the wallet monitor, is not used for this agent (operator's decision, 2026-10-15).`);
   for (const [rel, header] of Object.entries(HEADER)) assert.ok(read(rel).split('\n')[rel.endsWith('.example') ? 2 : 1].startsWith(header), `${rel}: the line says what happened on the box`);
   assert.doesNotMatch(read('deploy/host/docker-compose.agent-history.yml') + snippet + read('deploy/host/docker-compose.document-pipeline.yml') + read('deploy/host/Caddyfile.document-pipeline.snippet'), /PROPOSED/);
+});
+
+// Ruling R-D25: a first-party run shows that the path works and is not demand, and nothing more is claimed of it; the vocabulary of the plan bans the word that a
+// clause of the sentence used to add.
+// The word is spelled in two parts, as the unit name is, so that a search for it finds no file.
+const BANNED_CLAUSE = new RegExp('reve' + 'nue', 'i');
+test('the first-party sentence: the README says it for each of the three stacks and both runbooks of the deployed agents say it, and no deploy file holds the word the clause added', () => {
+  const SENTENCE = 'A first-party run shows that the path works. It is not demand.';
+  assert.equal(readme.split(SENTENCE).length - 1, 3, 'the README, once for each stack');
+  for (const rel of ['deploy/host/RUNBOOK.md', 'deploy/host/RUNBOOK-document-pipeline.md']) assert.ok(read(rel).includes(SENTENCE), rel);
+  for (const rel of [...PUBLIC_FILES, ...S_FILES, 'agents/audio-snippets/Dockerfile']) assert.doesNotMatch(read(rel), BANNED_CLAUSE, rel);
 });
 
 test('RUNBOOK: the status line says that steps 1 to 17 were run on 2026-10-14 and 2026-10-15, the step texts stay instructions, and a first run is told to start with the earlier word', () => {
@@ -523,13 +536,13 @@ test('RUNBOOK step 17: the last item names the files that said PROPOSED about Ag
 });
 
 // ---- The status words after the flips of 2026-10-15 and 2026-10-16 ----
-// Agent History and Document Pipeline are DEPLOYED. The two agents that are not built are PROPOSED. Nothing here is LIVE.
+// Agent History and Document Pipeline are DEPLOYED. Audio Snippets, which is built, and Advocate, which is not, are PROPOSED. Nothing here is LIVE.
 // A line that says PROPOSED has to be one of the lines below, so the word cannot come back for Agent History or Document Pipeline; a line that says LIVE has to deny it.
 test('status words: no file says PROPOSED about Agent History or Document Pipeline, and no file says LIVE except to deny it', () => {
   const OTHER_AGENTS = ['specs/audio-snippets.md', 'specs/advocate.md'];
-  // Audio Snippets is built and PROPOSED until step 17 of its runbook: its four files say the word in their status lines and their instructions.
-  const SNIPPETS_FILES = ['deploy/host/docker-compose.audio-snippets.yml', 'deploy/host/.env.audio-snippets.example', 'deploy/host/Caddyfile.audio-snippets.snippet', 'deploy/host/RUNBOOK-audio-snippets.md', 'agents/audio-snippets/README.md'];
-  // What may still say PROPOSED outside the specs of the agents that are not built: their rows in the table of the root README, the rule that lists the three words,
+  // Audio Snippets is built and PROPOSED until step 17 of its runbook: its four deploy files and its README say the word in their status lines and their instructions.
+  const SNIPPETS_FILES = [...S_FILES, 'agents/audio-snippets/README.md'];
+  // What may still say PROPOSED outside the specs and the files of the two agents that are PROPOSED: their rows in the table of the root README, the rule that lists the three words,
   // the marketplace tools in the Interface section of the spec (the tools, not the agent), and the instructions of the two runbooks that speak for the order of a first run.
   const PROPOSED_OK = {
     'README.md': [/^\| (Audio Snippets|Advocate) \| `[a-z.0-9-]+` \| PROPOSED \|$/],
@@ -2075,7 +2088,6 @@ const S_TERMS = {
   price: sSpecNumber(/\| Price \| (\d+) \|/), supplierBond: sSpecNumber(/\| Supplier bond \| (\d+) \|/), buyerBond: sSpecNumber(/\| Buyer bond \| (\d+) \|/),
   window: sSpecNumber(/advert `max_processing_ms` \| (\d+) ms/), timeout: sSpecNumber(/Service timeout, `SERVICE_TIMEOUT_MS` \| (\d+) ms/),
 };
-const S_FILES = ['deploy/host/docker-compose.audio-snippets.yml', 'deploy/host/.env.audio-snippets.example', 'deploy/host/Caddyfile.audio-snippets.snippet', 'deploy/host/RUNBOOK-audio-snippets.md'];
 const S_SUPPLIER = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS'];
 const S_TOKEN = ['SERVICE_AUTH_HEADER'];
 const S_CHAIN = ['NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO'];
@@ -2271,6 +2283,7 @@ test('Snippets README section: the third stack, with its two containers, the loo
     'docker exec <caddy container> caddy validate --config /etc/caddy/Caddyfile', 'docker exec <caddy container> caddy reload --config /etc/caddy/Caddyfile',
     `\`${DC} up -d --force-recreate <service>\``, 'A change to `SERVICE_AUTH_HEADER` needs both containers recreated.',
     'The service refuses to start while `OPERATOR_CONTACT`, `SUPPLIER_PKH`, `SUPPLIER_PUB_KEY_HEX` or `SERVICE_AUTH_HEADER` is not set, when `SUPPLIER_PUB_KEY_HEX` is not the public key of `SUPPLIER_PKH`',
+    'It also refuses to start when its temporary directory cannot be written.',
     '[RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md), under "Back out"',
   ]) assert.ok(sSection.includes(part), `the section says: ${part}`);
   assert.ok(!sSection.includes('retire-advert.ts'), 'the retire command lives in one place, the runbook');
@@ -2362,6 +2375,7 @@ test('Snippets RUNBOOK step 4: the env file once, the key and the token only int
   assert.ok(four.includes("Copy `.env.audio-snippets` to the operator's encrypted offline store now, before the address receives anything"));
   assert.ok(four.includes('Step 7 writes a second plaintext copy of the supplier key to the directory `$BASE/ops/wallet`'));
   assert.ok(four.includes('and the service stops at start without the token, without the public key, and with a public key that is not the one of the key hash, because it publishes both.'), 'R-D21');
+  assert.ok(four.includes('It must print 1: a value that does not start with an angle bracket. The ops scripts read this file with the shell\'s `.`, which cannot read the placeholder of the example, `OPERATOR_CONTACT=<...>`, until it is replaced: its angle brackets are redirections to the shell, which stops at that line, so the check must print 1 before step 6.'));
 });
 
 // The blocks of step 4, run as they stand in bash (the cd lines are the host's, so they are taken out and the temporary folder is the working directory), with
@@ -2425,6 +2439,95 @@ test('Snippets RUNBOOK step 4 in bash: run again, nothing is made again and noth
     const after = parseEnv(sEnvOf(dir));
     for (const name of S_SUPPLIER) assert.notEqual(after[name], parseEnv(before)[name], `${name} is a new value`);
     assert.equal(after.SERVICE_AUTH_HEADER, parseEnv(before).SERVICE_AUTH_HEADER, 'the token is untouched');
+  });
+});
+
+test('Snippets RUNBOOK step 4 in bash: run again, in a new shell, nothing is made again and nothing is replaced: the file is the same bytes, no keypair is asked for, and every guard says so', NEEDS_BASH, () => {
+  const { head, supplier, token } = sStep4();
+  withSnippetsFolder((dir) => {
+    assert.equal(runBash(`${S_STUBS}${head}${supplier}${token}`, dir).status, 0);
+    const before = sEnvOf(dir);
+    const again = runBash(`${S_STUBS}${head}${supplier}${token}`, dir);
+    assert.equal(sEnvOf(dir), before, 'byte for byte');
+    assert.equal(countOf(dir), 2, 'gen-keypair once and openssl once, both in the first run');
+    assert.equal(again.stdout, '');
+    for (const refusal of [
+      'refusing: the env file exists, and it is kept as it is',
+      'refusing: SUPPLIER_PRIV_KEY_HEX already has a value, and a key that may hold units is never replaced',
+      'refusing: SERVICE_AUTH_HEADER already has a value; to replace it, empty the line first',
+    ]) assert.ok(again.stderr.includes(refusal), refusal);
+    assert.doesNotMatch(again.stdout + again.stderr, /[0-9a-f]{16}|Bearer/);
+    // The first block on its own is only the file and the functions, and it leaves a file that is there.
+    const alone = runBash(`${S_STUBS}${head}`, dir);
+    assert.equal(sEnvOf(dir), before);
+    assert.match(alone.stderr, /^refusing: the env file exists, and it is kept as it is\n$/);
+  });
+});
+
+test('Snippets RUNBOOK step 4 in bash: the token is made again alone after its line was emptied with the command of the failure table, and only while it is empty; the supplier key is the same', NEEDS_BASH, () => {
+  const { head, supplier, token } = sStep4();
+  const emptyToken = `sed -i 's/^SERVICE_AUTH_HEADER=.*/SERVICE_AUTH_HEADER=""/' .env.audio-snippets`;
+  assert.ok(section(sRunbook, 'If something goes wrong').includes('`' + emptyToken + '`'), 'the failure table gives the command that empties the token line');
+  withSnippetsFolder((dir) => {
+    runBash(`${S_STUBS}${head}${supplier}${token}`, dir);
+    const before = parseEnv(sEnvOf(dir));
+    assert.equal(runBash(`${emptyToken}\n`, dir).status, 0);
+    assert.equal(parseEnv(sEnvOf(dir)).SERVICE_AUTH_HEADER, '""', 'empty, in quotes, as in the example');
+    assert.equal(runBash(`${S_STUBS}${head}${token}`, dir).status, 0);
+    const after = parseEnv(sEnvOf(dir));
+    assert.match(after.SERVICE_AUTH_HEADER, /^"Bearer [0-9a-f]{64}"$/);
+    assert.notEqual(after.SERVICE_AUTH_HEADER, before.SERVICE_AUTH_HEADER, 'a new token');
+    for (const name of S_SUPPLIER) assert.equal(after[name], before[name], `${name} untouched`);
+    // Once it has a value, the token block refuses again.
+    const refused = runBash(`${S_STUBS}${head}${token}`, dir);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /refusing: SERVICE_AUTH_HEADER already has a value; to replace it, empty the line first/);
+    assert.equal(parseEnv(sEnvOf(dir)).SERVICE_AUTH_HEADER, after.SERVICE_AUTH_HEADER);
+  });
+});
+
+test('Snippets RUNBOOK step 4 in bash: the functions make nothing where there is no env file, and say so', NEEDS_BASH, () => {
+  const { head } = sStep4();
+  const functionsOnly = head.slice(0, head.indexOf('if [ -e .env.audio-snippets ]; then'));
+  assert.ok(functionsOnly.includes('keypair_into() {') && functionsOnly.includes('token_into() {') && !functionsOnly.includes('cp .env'));
+  withSnippetsFolder((dir) => {
+    const missing = runBash(`${S_STUBS}${functionsOnly}keypair_into SUPPLIER\nrc1=$?\ntoken_into\nrc2=$?\necho "rc $rc1 $rc2"\n`, dir);
+    assert.equal(missing.stdout.trim(), 'rc 1 1');
+    assert.equal(missing.stderr.match(/refusing: there is no \.env\.audio-snippets in this folder/g)?.length, 2);
+    assert.equal(existsSync(join(dir, '.env.audio-snippets')), false, 'the functions do not make the file');
+    assert.equal(existsSync(join(dir, '.stub-n')), false, 'and call neither gen-keypair nor openssl');
+  });
+});
+
+test('Snippets RUNBOOK step 4 in bash: a gen-keypair that fails writes nothing and the block can be run again, and an openssl that gives too little writes no token', NEEDS_BASH, () => {
+  const { head, supplier, token } = sStep4();
+  withSnippetsFolder((dir) => {
+    const failed = runBash(`${S_STUBS}docker() { return 1; }\n${head}${supplier}echo "rc $?"\n`, dir);
+    assert.equal(failed.stdout.trim(), 'rc 1');
+    assert.match(failed.stderr, /gen-keypair failed/);
+    for (const name of S_SUPPLIER) assert.equal(parseEnv(sEnvOf(dir))[name], '', `${name} is still empty`);
+    assert.equal(runBash(`${S_STUBS}${head}${supplier}`, dir).status, 0, 'run again, it makes the key');
+    assert.match(parseEnv(sEnvOf(dir)).SUPPLIER_PRIV_KEY_HEX, /^[0-9a-f]{64}$/);
+    const bad = runBash(`${S_STUBS}openssl() { echo abc; }\n${head}${token}echo "rc $?"\n`, dir);
+    assert.equal(bad.stdout.trim(), 'rc 1');
+    assert.match(bad.stderr, /openssl rand failed/);
+    assert.equal(parseEnv(sEnvOf(dir)).SERVICE_AUTH_HEADER, '""');
+  });
+});
+
+test('Snippets RUNBOOK step 4 in bash: the ops scripts cannot read the env file with the shell\'s "." while OPERATOR_CONTACT holds the placeholder of the example, and can once the check of the step prints 1', NEEDS_BASH, () => {
+  const { head } = sStep4();
+  withSnippetsFolder((dir) => {
+    runBash(`${S_STUBS}${head}`, dir);
+    // The ops scripts run with set -e and read the file with ".", as the Pipeline's test of the quoted token has it.
+    const read = runBash('set -e\n. ./.env.audio-snippets\necho "read $OPERATOR_CONTACT"\n', dir);
+    assert.notEqual(read.status, 0, 'the shell stops at the placeholder');
+    assert.equal(read.stdout, '');
+    assert.match(read.stderr, /syntax error/);
+    writeFileSync(join(dir, '.env.audio-snippets'), sEnvOf(dir).replace(/^OPERATOR_CONTACT=.*$/m, 'OPERATOR_CONTACT=ops@example.test'));
+    assert.equal(runBash("grep -c '^OPERATOR_CONTACT=[^<[:space:]]' .env.audio-snippets\n", dir).stdout.trim(), '1', 'the check of step 4 prints 1');
+    const filled = runBash('set -e\n. ./.env.audio-snippets\necho "read $OPERATOR_CONTACT"\n', dir);
+    assert.deepEqual([filled.status, filled.stdout.trim()], [0, 'read ops@example.test']);
   });
 });
 
@@ -2575,6 +2678,9 @@ test('Snippets RUNBOOK step 15 and the first stop: a request the service accepts
   assert.deepEqual(parsed, { source: { url: 'https://example.org/preamble.mp3' }, language: 'en', quotes: ['All LibriVox recordings are in the public domain.'], return_clips: false, clip_format: 'mp3' });
   for (const part of ['- `CAPABILITY_ID=audio.transcript.snippets.v1`.', '- `E2E_POLL_MS=10000`.', '- `E2E_STATE=./e2e-state-snippets.json`.', 'its section "Hiring Audio Snippets" lists them', '`[audio-snippets] job done in <ms> ms: <s> s of media; matches 1, unmatched 0, clips 0`']) assert.ok(s15.includes(part), part);
   assert.ok(S_SERVER.includes('log(`job done in ${deps.clock() - arrivedAt} ms: ${result.source.duration_s} s of media; matches ${result.matches.length}, unmatched ${result.unmatched.length}, clips ${result.clips.length}`);'));
+  // What a job takes is said as it was measured: the fixture on the implementers' machine, and nothing of the host.
+  assert.ok(s15.includes("- `E2E_POLL_MS=10000`. A job takes longer than Agent History's: allow minutes for a ten-minute file. The speech recognition of the 25 s test fixture took 2.4 s on the implementers' machine; the host is not measured."));
+  assert.doesNotMatch(sRunbook, /a minute or more/);
   // docs/E2E.md carries the same settings: the request JSON, the pause and the state file are written alike in both.
   const e2e = section(read('docs/E2E.md'), 'Hiring Audio Snippets');
   for (const setting of [m[1], 'export CAPABILITY_ID=audio.transcript.snippets.v1', 'export E2E_POLL_MS=10000', 'export E2E_STATE=./e2e-state-snippets.json']) assert.ok(e2e.includes(setting), `docs/E2E.md has the setting: ${setting}`);
@@ -2621,6 +2727,7 @@ test('Snippets RUNBOOK failure table: the refusals at start, the codes of a job,
     ['`is not the public key of SUPPLIER_PKH`', 'start', 'is not the public key of SUPPLIER_PKH'],
     ['`ffmpeg and ffprobe must be installed and on PATH`', 'media', 'ffmpeg and ffprobe must be installed and on PATH'],
     ['`the speech model is not ready`', 'asr', 'the speech model is not ready'],
+    ['`cannot be written` and names the temporary directory', 'start', 'the temporary directory ${dir} cannot be written'],
     ['`environment variable WHISPER_MODEL must be one of base, small`', 'model', "environment variable WHISPER_MODEL must be one of ${WHISPER_SIZES.join(', ')}"],
     ['`disk check failed: ...`', 'server', 'disk check failed: ${failure}'], ['`disk check passed again`', 'server', "'disk check passed again'"],
     ['`low_disk`', 'disk', "new SnippetsError('low_disk'"], ['`deadline` (422)', 'result', 'deadline: 422'], ['`asr_failed` (500)', 'result', 'asr_failed: 500'], ['`clip_failed` (500)', 'result', 'clip_failed: 500'],
@@ -2654,7 +2761,8 @@ test('Snippets compose in docker compose config: with PROXY_NETWORK in .env the 
     const model = parseYaml(run.stdout);
     assert.deepEqual(model.networks, { proxy: { name: 'test_proxy_network', external: true } });
     for (const [name, s] of Object.entries(model.services)) assert.deepEqual(Object.keys(s.networks), ['proxy'], name);
-    assert.equal(model.services.service.mem_limit !== undefined || model.services.service.deploy !== undefined, true, 'the memory limit is there');
+    assert.equal(String(model.services.service.mem_limit), String(3072 * 1024 * 1024), 'the 3072m of the compose file, as compose renders it, in bytes');
+    assert.equal(model.services.service.stop_grace_period, '5m30s', 'the 330s of the compose file');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

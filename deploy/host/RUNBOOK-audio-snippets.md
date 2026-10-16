@@ -203,7 +203,7 @@ cd "$BASE/repo/deploy/host"
 grep -c '^OPERATOR_CONTACT=[^<[:space:]]' .env.audio-snippets
 ```
 
-It must print 1: a value that does not start with an angle bracket.
+It must print 1: a value that does not start with an angle bracket. The ops scripts read this file with the shell's `.`, which cannot read the placeholder of the example, `OPERATOR_CONTACT=<...>`, until it is replaced: its angle brackets are redirections to the shell, which stops at that line, so the check must print 1 before step 6.
 
 The example carries the status word and its date in `AGENT_STATUS_CHIP` and `AGENT_STATUS_SINCE`: `proposed` since 2026-10-13. They stay so until step 17, which is the only place that changes them.
 
@@ -444,7 +444,7 @@ Operator, on the operator's own machine, with the test buyer key (Collateral and
 - `CAPABILITY_ID=audio.transcript.snippets.v1`. The script looks the advert up among the free suppliers of this capability, and its default is the capability of Agent History, so without this setting it stops before it posts anything, with "is not among the free suppliers".
 - `ADVERT_REF` is the advert of Audio Snippets from step 12.
 - `PAYLOAD` is the request JSON for a short public-domain recording: `{"source":{"url":"<https URL of a short public-domain mp3>"},"language":"en","quotes":["All LibriVox recordings are in the public domain."]}`. A LibriVox recording says that sentence in its preamble, so the run shows a match. The service fetches the URL itself and refuses a redirect: a download link of archive.org redirects to the server that holds the file, so give the address it redirects to (`curl -sI <link>` shows it in its `location` line).
-- `E2E_POLL_MS=10000`. A job takes a minute or more where Agent History's took seconds.
+- `E2E_POLL_MS=10000`. A job takes longer than Agent History's: allow minutes for a ten-minute file. The speech recognition of the 25 s test fixture took 2.4 s on the implementers' machine; the host is not measured.
 - `E2E_STATE=./e2e-state-snippets.json`. A state file belongs to one run, and the script refuses one that belongs to another, so this run does not use the file of an earlier run.
 - No clips: the request leaves `return_clips` out, so that the result stays small. The hosted MCP server reads at most 1000000 bytes of a job's answer.
 
@@ -531,6 +531,7 @@ The registry identity and the Module-3 stake stay on the ledger until the operat
 | The same, and the log says `is not the public key of SUPPLIER_PKH` | The line of the supplier public key holds another value than the key of `SUPPLIER_PKH`: a private key by mistake, or lines from two keys. The message names both settings and shows no value. | Restore the four supplier lines from the offline copy of the env file, or, only while the supplier address has received nothing, make the key again, as in the `/capability` row above, then recreate. |
 | The same, and the log says `ffmpeg and ffprobe must be installed and on PATH` | The image has no `ffmpeg` or `ffprobe`: it was not built from the Dockerfile of this repository. | Build the image again and pin it (step 2). |
 | The same, and the log says `the speech model is not ready` | faster-whisper does not import, or the model files are not where the service looks: the image was built with another size than `WHISPER_MODEL` names, or not from this Dockerfile. | Run the two checks of step 2 on the pinned image. Build it again with the size of the env file, or take `WHISPER_MODEL` out of the env file so that the image's own value holds, then recreate. |
+| The same, and the log says `cannot be written` and names the temporary directory | The temporary directory of the container cannot be written: a job makes its private directory there, so the service does not start without it. | The image and the compose file leave `/tmp` of the container writable: check that neither was changed, then recreate the service (step 9). |
 | The same, and the log says `environment variable WHISPER_MODEL must be one of base, small` | The env file sets `WHISPER_MODEL` to a size the image cannot be built with. | Take the line out of the env file: the image sets the size it was built with. |
 | `/healthz` of the service answers 503 `low_disk`, and the log says `disk check failed: ...` | The temporary directory of the container has less than 256 MiB free; a job would be refused with `low_disk` (503) before it fetched a byte. While it lasts, `docker ps` shows the service as unhealthy, because its health check is `/healthz`. | Free space on the host's disk (`df -h`, `docker system df`). The log says `disk check passed again` within a minute of there being room. |
 | Jobs fail with `deadline` (422) | The job ran out of its time: the speech recognition did not finish within the 900 s it had, or too little was left to start it or a clip. | Read the log line of the job. One that ran for about 900 s means the host is too slow for the length of the media: check its load, and keep media to the 10 min the job takes. |

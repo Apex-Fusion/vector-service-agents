@@ -46,6 +46,7 @@ Amounts are `lovelace` fields. The last column is the same amount divided by 1,0
 | Service timeout, `SERVICE_TIMEOUT_MS` | 1380000 ms |
 | Job deadline, set by the service when a request arrives | 1320000 ms (60 s inside the service timeout) |
 | Speech recognition | the smaller of 900000 ms and the time the job has left (60000 ms less of it when clips are asked for), and not started when that is under 30000 ms |
+| Intake of the media, before the speech recognition | the fetch 120 s, the probe 30 s, the decode 120 s |
 | Duration | 10 min (600 s, with 0.5 s more for the padding an encoder adds) |
 | Fetched file | 50 MB (52428800 bytes) |
 | Inline media | 600000 bytes |
@@ -291,7 +292,7 @@ A refusal is `{ "error": "<code>", "message": "<words>" }` with the status in th
 | 400, the message | `bad_wire` (not the one-element message array), `request_too_large` (over 1000000 bytes) |
 | 400, the request | `bad_json`, `bad_shape`, `base64_too_large`, `language_bad`, `language_unsupported`, `nothing_to_find`, `range_bad` |
 | 401, the caller | `unauthorized` (the call has no authorization header, or one that is not the token of the service) |
-| 422, the media | `source_fetch_failed`, `source_too_large`, `source_unsupported`, `source_mime_mismatch`, `media_unreadable`, `media_no_audio`, `media_too_long`, `range_out_of_media` |
+| 422, the media | `source_fetch_failed` (a URL that is not https among them, refused with "could not fetch the source: only https URLs are allowed", though the schema the manifest publishes already asks for https), `source_too_large`, `source_unsupported`, `source_mime_mismatch`, `media_unreadable`, `media_no_audio`, `media_too_long`, `range_out_of_media` |
 | 422, the job | `deadline` (the job ran out of its time) |
 | 503, the service cannot take a job now | `low_disk` (less than 256 MiB free in the temporary directory), and `shutting_down` (the service is stopping) |
 | 500, the service | `asr_failed` (the speech model failed or wrote no transcript), `clip_failed` (ffmpeg could not cut a clip), and `internal` |
@@ -300,7 +301,7 @@ The service holds no key and posts nothing, so no refusal locks anything of the 
 
 ### The speech model
 
-faster-whisper 1.2.1 with ctranslate2 4.8.2 on the CPU, model `base` with `compute_type` int8, built into the image at a pinned revision, and ffmpeg for decoding and cutting. The model runs in a process of its own for each job, with word timestamps on, voice-activity filtering off, `beam_size` 5 and `temperature` 0.0, so that the same audio gives the same transcript. Nothing is fetched while a job runs but the media.
+faster-whisper 1.2.1 with ctranslate2 4.8.2 on the CPU, model `base` with `compute_type` int8, built into the image at a pinned revision, and ffmpeg for decoding and cutting. The model runs in a process of its own for each job, with word timestamps on, voice-activity filtering off, `beam_size` 5 and `temperature` 0.0, so that the same audio gives the same transcript on the same host. Nothing is fetched while a job runs but the media.
 
 ## What the receipt commits to
 

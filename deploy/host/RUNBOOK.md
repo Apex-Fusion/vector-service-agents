@@ -2,7 +2,7 @@
 
 Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE. This runbook says what happens, in order. Steps 1 to 15 and 17 were run on 2026-10-14 and 2026-10-15. Step 16, the wallet monitor, is not used for this agent (operator's decision, 2026-10-15).
 
-The operator holds the keys and does every step except three. Step 2 (the registry login and the service image) and step 10 (DNS and Caddy) are the host administrator's, see [README.md](README.md). Step 6 (the collateral and float of the supplier wallet) is the Foundation's. Every run of the agent is first-party until a buyer outside our control appears. A first-party run shows that the path works. It is not demand and it counts as no revenue.
+The operator holds the keys and does every step except three. Step 2 (the registry login and the service image) and step 10 (DNS and Caddy) are the host administrator's, see [README.md](README.md). Step 6 (the collateral and float of the supplier wallet) is the Foundation's. Every run of the agent is first-party until a buyer outside our control appears. A first-party run shows that the path works. It is not demand.
 
 One thing about the order. The advert carries the sha256 of the manifest the service serves at `/agent.json`, and adverts are immutable. So everything the manifest contains (the agent identifier, the keys, the status word) has to be final before the hash is taken. That is why the identity is registered (steps 7 and 8) before the advert (step 12), and why changing the status afterwards costs a new advert (step 17).
 

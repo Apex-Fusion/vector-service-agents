@@ -155,7 +155,7 @@ Audio Snippets gives a word-timed transcript of an audio or video file and the c
 {"source":{"url":"https://example.org/talk.mp3"},"language":"en","quotes":["a quote that was said in the talk"]}
 ```
 
-That URL is only an example. Use the https URL of a recording that anyone may hear, of at most 10 minutes and 50 MB: the service fetches it itself, so it must be public and must not redirect. Leave `return_clips` out in a chat: the hosted server reads at most 1000000 bytes of the answer of a job, and clips can be larger. On the terminal path of section 8, `curl` fetches the whole answer, clips included.
+That URL is only an example. Use the https URL of a recording that anyone may hear, of at most 10 minutes and 50 MB: the service fetches it itself, so it must be public and must not redirect. Leave `return_clips` out in a chat: the hosted server reads at most 1000000 bytes of the answer of a job, and clips can be larger. On the terminal path of section 8, `curl` fetches the whole answer, clips included. A request can also carry a `query` and `ranges`, and the answer holds the transcript, the matches with their cut points and the clips: [specs/audio-snippets.md](../specs/audio-snippets.md) gives every field, under Request and Response.
 
 How long a job takes depends on the length of the recording and on the operator's CPU, because the service transcribes the whole of it before it looks for the quotes. Its processing window is 25 min, so message 4 can wait that long: ask your assistant to poll again whenever a call is cut near 100 s, as in section 9. If the job fails, you reclaim after `deliver_by`, which is your Post time plus 25 min plus 180 s. The price is 2 and a job costs about 4 (the cost table in section 3).
 

@@ -3,27 +3,24 @@
 // numbers of the terms and the limits, the status, the identity, the request fields of the schema the manifest publishes, the example result (the golden job
 // of the suite), the gap sentences word for word, the error codes with their statuses, and the third parties.
 import { describe, test, expect } from 'vitest';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { REGISTRY_ADDRESS } from '@vsa/vector-read';
-import { gapsFor } from '../src/gaps.ts';
-import { parseRequest } from '../src/request.ts';
-import { manifestFromEnv } from '../src/server.ts';
-import { GOLDEN_RESULT } from './golden.ts';
-// For the pins beyond the brief at the end of this file (R-D20).
-import { createHash } from 'node:crypto';
 import { ASR_MAX_MS, ASR_MIN_MS, CLIPS_RESERVE_MS, JOB_DEADLINE_MS, asrBudgetMs } from '../src/budget.ts';
 import { MIN_FREE_BYTES } from '../src/disk.ts';
+import { gapsFor } from '../src/gaps.ts';
 import { WHISPER_LANGUAGES } from '../src/languages.ts';
 import { PAD_S, QUERY_MAX_MATCHES, QUERY_MIN_SCORE, QUOTE_MIN_SCORE, bestQuoteWindow, round3, tokenStream } from '../src/match.ts';
-import { DURATION_SLACK_S, MAX_DURATION_S } from '../src/media.ts';
+import { DECODE_TIMEOUT_MS, DURATION_SLACK_S, MAX_DURATION_S, PROBE_TIMEOUT_MS, SOURCE_FETCH_TIMEOUT_MS, loadSource } from '../src/media.ts';
 import { modelName, whisperSize } from '../src/model.ts';
-import { MAX_INLINE_BYTES, MAX_QUERY_CHARS, MAX_QUOTES, MAX_QUOTE_CHARS, MAX_RANGES, MIMES } from '../src/request.ts';
+import { MAX_INLINE_BYTES, MAX_QUERY_CHARS, MAX_QUOTES, MAX_QUOTE_CHARS, MAX_RANGES, MIMES, parseRequest } from '../src/request.ts';
 import { SnippetsError } from '../src/result.ts';
 import type { SnippetsErrorCode } from '../src/result.ts';
-import { HEARTBEAT_MS, MAX_BODY, MIN_PROCESSING_WINDOW_MS } from '../src/server.ts';
+import { HEARTBEAT_MS, MAX_BODY, MIN_PROCESSING_WINDOW_MS, WireError, manifestFromEnv } from '../src/server.ts';
 import { loadConfig } from '../src/start.ts';
-import { GOLDEN_TRANSCRIPT } from './golden.ts';
+import { noFetch } from './fake-fetch.ts';
+import { GOLDEN_RESULT, GOLDEN_TRANSCRIPT } from './golden.ts';
 import { FULL_ENV, SUPPLIER } from './server-support.ts';
 import { TONE_WAV } from './support.ts';
 
@@ -118,6 +115,9 @@ describe('specs/audio-snippets.md, pinned further', () => {
     expect(limits['Job deadline, set by the service when a request arrives']).toBe(`${JOB_DEADLINE_MS} ms (60 s inside the service timeout)`);
     expect(limits['Speech recognition']).toBe(`the smaller of ${ASR_MAX_MS} ms and the time the job has left (${CLIPS_RESERVE_MS} ms less of it when clips are asked for), and not started when that is under ${ASR_MIN_MS} ms`);
     expect(limits['Duration']).toBe(`${MAX_DURATION_S / 60} min (${MAX_DURATION_S} s, with ${DURATION_SLACK_S} s more for the padding an encoder adds)`);
+    // The three limits of the intake, each its own, from src/media.ts.
+    expect([SOURCE_FETCH_TIMEOUT_MS, PROBE_TIMEOUT_MS, DECODE_TIMEOUT_MS]).toStrictEqual([120_000, 30_000, 120_000]);
+    expect(limits['Intake of the media, before the speech recognition']).toBe(`the fetch ${SOURCE_FETCH_TIMEOUT_MS / 1000} s, the probe ${PROBE_TIMEOUT_MS / 1000} s, the decode ${DECODE_TIMEOUT_MS / 1000} s`);
     expect(manifest.terms.input_limits.duration_s).toBe(MAX_DURATION_S);
     expect(limits['Request']).toBe('at least one of `query`, `quotes`, `ranges`');
     // The row says what asrBudgetMs does: the smaller of the cap and the time left, less 60 s of it with clips, and nothing under 30 s.
@@ -195,13 +195,40 @@ describe('specs/audio-snippets.md, pinned further', () => {
     expect(errors).toContain('A refusal is `{ "error": "<code>", "message": "<words>" }` with the status in the table.');
   });
 
+  test('a URL that is not https is refused as source_fetch_failed (422) with the sentence the Errors tables quote, though the published schema already asks for https', async () => {
+    const clause = '`source_fetch_failed` (a URL that is not https among them, refused with "could not fetch the source: only https URLs are allowed", though the schema the manifest publishes already asks for https)';
+    expect(sub('Errors')).toContain(`| 422, the media | ${clause}, `);
+    expect(readme).toContain(`| 422, the media | ${clause}, `);
+    const refused = await loadSource({ url: 'http://203.0.113.7/a.mp3' }, 'a folder that is never written', { fetchImpl: noFetch }).catch((error: unknown) => error);
+    expect(refused).toMatchObject({ code: 'source_fetch_failed', status: 422, message: 'could not fetch the source: only https URLs are allowed' });
+    const byUrl = manifest.interface.request_schema.properties.source.oneOf[0] as { properties: { url: { pattern: string } } };
+    expect(byUrl.properties.url.pattern).toBe('^https://');
+  });
+
+  test('the statuses the page gives the codes of the kit are the kit\'s, read from packages/service-kit', () => {
+    const kitServer = readFileSync(new URL('../../../packages/service-kit/src/server.ts', import.meta.url), 'utf8');
+    const sent = (code: string): number => Number(new RegExp(`send\\((\\d{3}), \\{ error: '${code}'`).exec(kitServer)?.[1]);
+    const statuses: Record<string, number> = {
+      bad_wire: new WireError('bad_wire', 'x').status, request_too_large: new WireError('request_too_large', 'x').status, unauthorized: sent('unauthorized'),
+      shutting_down: sent('shutting_down'), internal: sent('internal'), busy: sent('busy'), not_found: sent('not_found'),
+    };
+    expect(statuses).toStrictEqual({ bad_wire: 400, request_too_large: 400, unauthorized: 401, shutting_down: 503, internal: 500, busy: 409, not_found: 404 });
+    const errors = sub('Errors');
+    const rows = errors.split('\n').filter((line) => /^\| \d{3}, /.test(line));
+    for (const code of ['bad_wire', 'request_too_large', 'unauthorized', 'shutting_down', 'internal']) {
+      expect(rows.find((line) => line.split('|')[2].includes(`\`${code}\``)), code).toMatch(new RegExp(`^\\| ${statuses[code]}, `));
+    }
+    expect(errors).toContain(`gets ${statuses.busy} \`{"error":"busy"}\``);
+    expect(errors).toContain(`gets ${statuses.not_found} \`{"error":"not_found"}\``);
+  });
+
   test('The speech model section names what worker.py and requirements.txt hold: the versions, the CPU, int8, the settings of the run, the model fetched at a pinned revision', () => {
     const text = sub('The speech model');
     expect(here('asr/requirements.txt')).toContain('faster-whisper==1.2.1');
     expect(here('asr/requirements.txt')).toContain('ctranslate2==4.8.2');
     expect(text).toContain('faster-whisper 1.2.1 with ctranslate2 4.8.2 on the CPU, model `base` with `compute_type` int8, built into the image at a pinned revision');
     for (const setting of ['device="cpu"', 'compute_type must be int8', 'beam_size=5', 'temperature=0.0', 'word_timestamps=True', 'vad_filter=False']) expect(here('asr/worker.py'), setting).toContain(setting);
-    expect(text).toContain('with word timestamps on, voice-activity filtering off, `beam_size` 5 and `temperature` 0.0, so that the same audio gives the same transcript');
+    expect(text).toContain('with word timestamps on, voice-activity filtering off, `beam_size` 5 and `temperature` 0.0, so that the same audio gives the same transcript on the same host.');
     expect(here('asr/fetch_model.py')).toMatch(/"base": \("[0-9a-f]{40}"/);
     expect(here('Dockerfile')).toContain('fetch_model.py');
     expect(modelName(whisperSize(undefined))).toBe('faster-whisper-base-int8');

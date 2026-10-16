@@ -3,23 +3,22 @@
 // parting: a variable read in src/ that the table does not name fails, so does a name in the table that no code reads, and so does a code with the wrong
 // status or one that no source file knows.
 import { describe, test, expect } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
-import { RequestError } from '../src/request.ts';
-import type { RequestErrorCode } from '../src/request.ts';
-import { SnippetsError } from '../src/result.ts';
-import type { SnippetsErrorCode } from '../src/result.ts';
-import { ASR_PYTHON_DEFAULT, PORT_DEFAULT, SETTINGS, SHUTDOWN_WAIT_MS, WHISPER_THREADS_DEFAULT } from '../src/start.ts';
-// For the pins beyond the brief at the end of this file (R-D20).
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { TOKEN_SEARCH_MIN } from '@vsa/service-kit';
+import { WORKER_PATH } from '../src/asr.ts';
 import { ASR_MAX_MS, ASR_MIN_MS, CLIPS_RESERVE_MS, JOB_DEADLINE_MS } from '../src/budget.ts';
 import { INLINE_CLIPS_BYTES, MP3_BITRATE } from '../src/clips.ts';
 import { MIN_FREE_BYTES } from '../src/disk.ts';
 import { PAD_S, QUERY_MAX_MATCHES, QUERY_MIN_SCORE, QUOTE_MIN_SCORE } from '../src/match.ts';
-import { DISK_TTL_MS, HEARTBEAT_MS, MAX_BODY, MIN_PROCESSING_WINDOW_MS, TEMPLATE_ENV } from '../src/server.ts';
-import { loadConfig } from '../src/start.ts';
+import { RequestError } from '../src/request.ts';
+import type { RequestErrorCode } from '../src/request.ts';
+import { SnippetsError } from '../src/result.ts';
+import type { SnippetsErrorCode } from '../src/result.ts';
+import { DISK_TTL_MS, HEARTBEAT_MS, MAX_BODY, MIN_PROCESSING_WINDOW_MS, TEMPLATE_ENV, WireError } from '../src/server.ts';
+import { ASR_PYTHON_DEFAULT, PORT_DEFAULT, SETTINGS, SHUTDOWN_WAIT_MS, WHISPER_THREADS_DEFAULT, loadConfig } from '../src/start.ts';
 import { FULL_ENV } from './server-support.ts';
 
-const readme =readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 // The ledger's native unit is named once in the repository, in docs/HIRE.md. Spelled in two parts, so that a search for the name finds only the guide.
 const UNIT_NAME = new RegExp('AP' + '3X', 'i');
 const read = (dir: URL) => readdirSync(dir).filter((file) => file.endsWith('.ts')).map((file) => ({ file, text: readFileSync(new URL(file, dir), 'utf8') }));
@@ -94,6 +93,7 @@ describe('agents/audio-snippets/README.md', () => {
     expect(section('Stopping')).toContain('so `stop_grace_period` in the compose file is 330 s');
     expect(readme).toContain(`${SHUTDOWN_WAIT_MS / 1000} s`);
     expect(readme).toContain('asks `ffprobe` and `ffmpeg` for their version and the worker of the speech model to check itself');
+    expect(readme).toContain('It also proves that the temporary directory can be written, and asks');
     expect(readme).toMatch(/at least 1500000/);
     expect(section('Run it')).toContain('export SERVICE_AUTH_HEADER="Bearer $(openssl rand -hex 32)"');
     expect(readme).not.toMatch(/SERVICE_AUTH_HEADER=["']?Bearer [0-9a-f]/);
@@ -200,7 +200,7 @@ describe('agents/audio-snippets/README.md, pinned further', () => {
     const speech = section('The speech model');
     expect(speech).toContain("as `python3 -I <worker>` (Python's isolated mode)");
     expect(speech).toContain('flat and at most 20 lines');
-    expect(speech).toContain('`beam_size` 5 and `temperature` 0.0 alone');
+    expect(speech).toContain('`beam_size` 5 and `temperature` 0.0 alone, so that the same audio gives the same transcript on the same host.');
     const worker = textOf('asr/worker.py');
     for (const part of ['device="cpu"', 'beam_size=5', 'temperature=0.0', 'word_timestamps=True', 'vad_filter=False']) expect(worker, part).toContain(part);
     expect(worker).toContain('Python 3.9 or later');
@@ -220,6 +220,47 @@ describe('agents/audio-snippets/README.md, pinned further', () => {
     expect(section('Tests')).toContain('default `.models/base` of this folder');
     expect(textOf('asr/fetch_model.py')).toContain('python3 -I fetch_model.py SIZE DEST');
     expect(section('Run it')).toContain('python3 -I asr/fetch_model.py base .models/base');
+  });
+
+  test('the statuses of the codes the kit answers with are the kit\'s, read from packages/service-kit: the wire message, the token, the stop, a failure with no refusal, the slot, a route that is not there', () => {
+    const kitServer = kitSources.find(({ file }) => file === 'server.ts')?.text ?? '';
+    const sent = (code: string): number => Number(new RegExp(`send\\((\\d{3}), \\{ error: '${code}'`).exec(kitServer)?.[1]);
+    const statuses: Record<string, number> = {
+      bad_wire: new WireError('bad_wire', 'x').status, request_too_large: new WireError('request_too_large', 'x').status, unauthorized: sent('unauthorized'),
+      shutting_down: sent('shutting_down'), internal: sent('internal'), busy: sent('busy'), not_found: sent('not_found'),
+    };
+    expect(statuses).toStrictEqual({ bad_wire: 400, request_too_large: 400, unauthorized: 401, shutting_down: 503, internal: 500, busy: 409, not_found: 404 });
+    const rows = section('Errors').split('\n').filter((line) => /^\| \d{3}, /.test(line));
+    for (const code of ['bad_wire', 'request_too_large', 'unauthorized', 'shutting_down', 'internal']) {
+      expect(rows.find((line) => ticks(line.split('|')[2]).includes(code)), code).toMatch(new RegExp(`^\\| ${statuses[code]}, `));
+    }
+    expect(section('Routes')).toContain(`gets ${statuses.busy} \`{"error":"busy"}\``);
+    expect(section('Routes')).toContain(`| any other route | ${statuses.not_found} \`{"error":"not_found"}\` |`);
+    expect(section('Routes')).toContain(`gets ${statuses.unauthorized} \`{"error":"unauthorized"}\``);
+  });
+
+  test('the values the README gives are the code\'s: the pinned versions of the speech model, the host and the worker by default, and the length from which the token is looked for', () => {
+    const requirements = textOf('asr/requirements.txt');
+    const pinned = (name: string): string => new RegExp(`^${name}==(\\S+)$`, 'm').exec(requirements)?.[1] ?? '';
+    expect([pinned('faster-whisper'), pinned('ctranslate2')]).toStrictEqual(['1.2.1', '4.8.2']);
+    expect(section('Run it')).toContain(`\`asr/requirements.txt\` pins faster-whisper ${pinned('faster-whisper')} and ctranslate2 ${pinned('ctranslate2')}`);
+    const config = loadConfig(FULL_ENV);
+    const row = (name: string): string => section('Manifest').split('\n').find((line) => line.startsWith(`| \`${name}\``)) ?? '';
+    expect(row('PORT')).toContain(`| \`${config.port}\`, \`${config.host}\` |`);
+    expect(config.asr.worker).toBe(WORKER_PATH);
+    expect(WORKER_PATH.replace(/\\/g, '/')).toMatch(/\/agents\/audio-snippets\/asr\/worker\.py$/);
+    expect(row('ASR_WORKER')).toContain('the image sets `/app/asr/worker.py` | `asr/worker.py` of this folder |');
+    expect(textOf('Dockerfile')).toContain(' ASR_WORKER=/app/asr/worker.py ');
+    expect(TOKEN_SEARCH_MIN).toBe(16);
+    expect(section('Run it')).toContain(`each when it is ${TOKEN_SEARCH_MIN} characters or more`);
+  });
+
+  test('Run it says where a matching key pair comes from, and those places make one', () => {
+    expect(section('Run it')).toContain("`SUPPLIER_PKH` and `SUPPLIER_PUB_KEY_HEX` must be the key hash and the public key of one key pair, or the service does not start: on the host, step 4 of `deploy/host/RUNBOOK-audio-snippets.md` makes the pair with `gen-keypair`; the tests make theirs in `test/server-support.ts`, a public key from a label and its blake2b-224 as the key hash, and `test/start.test.ts` starts the service with it.");
+    const runbook = textOf('../../deploy/host/RUNBOOK-audio-snippets.md');
+    expect((runbook.split('\n## 4. ')[1] ?? '').split('\n## ')[0]).toContain('agent/src/cli/gen-keypair.ts');
+    expect(textOf('test/server-support.ts')).toContain('export const SUPPLIER = { pubKeyHex, pkh: blake2b224Hex(pubKeyHex) };');
+    expect(textOf('test/start.test.ts')).toContain("from './server-support.ts'");
   });
 
   test('the Manifest section names the four placeholders of the template and the script that renders it', () => {

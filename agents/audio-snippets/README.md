@@ -21,7 +21,9 @@ export SERVICE_AUTH_HEADER="Bearer $(openssl rand -hex 32)"           # the toke
 OPERATOR_CONTACT=ops@example.test SUPPLIER_PKH=<56 hex> SUPPLIER_PUB_KEY_HEX=<64 hex> WHISPER_MODEL_DIR=.models/base PORT=9093 pnpm start
 ```
 
-It stops at start, with the variable named, when `OPERATOR_CONTACT`, `SUPPLIER_PKH`, `SUPPLIER_PUB_KEY_HEX` or `SERVICE_AUTH_HEADER` is not set, when a setting is not well formed, when `SUPPLIER_PUB_KEY_HEX` is not the public key of `SUPPLIER_PKH`, or when `ADVERT_MAX_PROCESSING_MS` is below 25 min. It also asks `ffprobe` and `ffmpeg` for their version and the worker of the speech model to check itself (faster-whisper imports, and the files of the model are there) before it listens, and does not start if one of them fails, so that a service without them cannot answer `/healthz` ok and then fail every job.
+`SUPPLIER_PKH` and `SUPPLIER_PUB_KEY_HEX` must be the key hash and the public key of one key pair, or the service does not start: on the host, step 4 of `deploy/host/RUNBOOK-audio-snippets.md` makes the pair with `gen-keypair`; the tests make theirs in `test/server-support.ts`, a public key from a label and its blake2b-224 as the key hash, and `test/start.test.ts` starts the service with it.
+
+It stops at start, with the variable named, when `OPERATOR_CONTACT`, `SUPPLIER_PKH`, `SUPPLIER_PUB_KEY_HEX` or `SERVICE_AUTH_HEADER` is not set, when a setting is not well formed, when `SUPPLIER_PUB_KEY_HEX` is not the public key of `SUPPLIER_PKH`, or when `ADVERT_MAX_PROCESSING_MS` is below 25 min. It also proves that the temporary directory can be written, and asks `ffprobe` and `ffmpeg` for their version and the worker of the speech model to check itself (faster-whisper imports, and the files of the model are there), before it listens, and does not start if one of them fails, so that a service without them cannot answer `/healthz` ok and then fail every job.
 
 A secret in the wrong line of an env file is the mistake the start guards against. The service token is looked for in every other setting the service reads, whole or by its credential (the part after `Bearer `), each when it is 16 characters or more, and found there it stops the start, naming the variable and not showing the token. So it is in no message, no log line and no answer, and the manifest is searched for it once more before the service listens. No message of the service shows a setting that is hex-shaped or long, only its length. `SUPPLIER_PUB_KEY_HEX` must be the public key of `SUPPLIER_PKH`, which catches a private key put in its line.
 
@@ -53,7 +55,7 @@ A refusal is `{"error": "<code>", "message": "<words>"}` with the status in the 
 | 400, the message | `bad_wire` (not the one-element message array), `request_too_large` (over 1000000 bytes) |
 | 400, the request | `bad_json`, `bad_shape`, `base64_too_large`, `language_bad`, `language_unsupported`, `nothing_to_find`, `range_bad` |
 | 401, the caller | `unauthorized` (the call has no authorization header, or one that is not the token of the service) |
-| 422, the media | `source_fetch_failed`, `source_too_large`, `source_unsupported`, `source_mime_mismatch`, `media_unreadable`, `media_no_audio`, `media_too_long`, `range_out_of_media` |
+| 422, the media | `source_fetch_failed` (a URL that is not https among them, refused with "could not fetch the source: only https URLs are allowed", though the schema the manifest publishes already asks for https), `source_too_large`, `source_unsupported`, `source_mime_mismatch`, `media_unreadable`, `media_no_audio`, `media_too_long`, `range_out_of_media` |
 | 422, the job | `deadline` (the job ran out of its time) |
 | 503, the service cannot take a job now | `low_disk`, and `shutting_down` (the service is stopping) |
 | 500, the service | `asr_failed` (the speech model failed or wrote no transcript), `clip_failed` (ffmpeg could not cut a clip), and `internal` |
@@ -62,7 +64,7 @@ Every refusal locks nothing of the service's: it holds no key and posts nothing.
 
 ## The speech model
 
-`asr/worker.py` runs one job: it reads one JSON request on stdin, runs faster-whisper on the WAV it names, writes one JSON answer on stdout and exits. `src/asr.ts` starts it with an argument list, as `python3 -I <worker>` (Python's isolated mode), bounds it in time and in output, logs what it writes on stderr, flat and at most 20 lines, and holds what it writes on stdout to the contract. The model runs on the CPU with `compute_type` int8, `WHISPER_THREADS` threads, word timestamps on and voice-activity filtering off, `beam_size` 5 and `temperature` 0.0 alone, so that the same audio gives the same transcript. The language of the request is passed through; `auto` lets the model detect it from the first 30 s, and the result says which. The result names the model `faster-whisper-<size>-int8`; the receipt names `audio-snippets-v1`.
+`asr/worker.py` runs one job: it reads one JSON request on stdin, runs faster-whisper on the WAV it names, writes one JSON answer on stdout and exits. `src/asr.ts` starts it with an argument list, as `python3 -I <worker>` (Python's isolated mode), bounds it in time and in output, logs what it writes on stderr, flat and at most 20 lines, and holds what it writes on stdout to the contract. The model runs on the CPU with `compute_type` int8, `WHISPER_THREADS` threads, word timestamps on and voice-activity filtering off, `beam_size` 5 and `temperature` 0.0 alone, so that the same audio gives the same transcript on the same host. The language of the request is passed through; `auto` lets the model detect it from the first 30 s, and the result says which. The result names the model `faster-whisper-<size>-int8`; the receipt names `audio-snippets-v1`.
 
 ## Matching
 
