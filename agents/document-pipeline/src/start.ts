@@ -2,15 +2,18 @@
 // How the service starts: the environment read into a configuration (loadConfig), and the real parts put together and started (startService): the buyer
 // chain from the buyer key, the stranded store in the state directory, the janitor on it, and the server. And how it stops: shutdown, and the signals that call it.
 //
-// Three settings are required, and the service stops at start without them, naming the variable: OPERATOR_CONTACT (published in the manifest, so with no
-// default), PIPELINE_BUYER_PRIV_KEY_HEX (the buyer key) and SUPPLIER_PKH (the supplier key hash, published in the manifest; the supplier key itself is the
-// runtime's and never reaches this service). The key hash and the mainnet address of the buyer key are derived from the key (ruling R44), so the buyer key hash
-// the manifest publishes is the key that signs, and a PIPELINE_BUYER_PKH or PIPELINE_BUYER_ADDRESS the operator wrote down that is not the key's stops the
-// start too, as does a SUPPLIER_PUB_KEY_HEX that is not the public key of SUPPLIER_PKH. A secret put in the wrong line of an env file is the mistake this
-// guards against: the key is looked for in every other setting before any check can print the line that holds it, no message shows a value that is hex-shaped
-// or long, and the manifest is searched for the key last. Everything is checked before anything is made: no directory is created and no chain is built for an
-// environment that is refused. The state directory is proved writable before the first job could depend on it, because a job records each escrow it posts there
-// and must not find out only then, and the poppler tools are asked for their version for the same reason: an image without them would answer /healthz ok.
+// Four settings are required, and the service stops at start without them, naming the variable: OPERATOR_CONTACT (published in the manifest, so with no
+// default), PIPELINE_BUYER_PRIV_KEY_HEX (the buyer key), SUPPLIER_PKH (the supplier key hash, published in the manifest; the supplier key itself is the
+// runtime's and never reaches this service) and SERVICE_AUTH_HEADER (the value the template runtime sends as the authorization header of every call,
+// which POST / requires, ruling R50: a service without it would answer anyone who can reach its port, and a job spends from the buyer wallet). The key
+// hash and the mainnet address of the buyer key are derived from the key (ruling R44), so the buyer key hash the manifest publishes is the key that
+// signs, and a PIPELINE_BUYER_PKH or PIPELINE_BUYER_ADDRESS the operator wrote down that is not the key's stops the start too, as does a
+// SUPPLIER_PUB_KEY_HEX that is not the public key of SUPPLIER_PKH. A secret put in the wrong line of an env file is the mistake this guards against:
+// the key is looked for in every other setting before any check can print the line that holds it, no message shows a value that is hex-shaped or long,
+// and the manifest is searched for the key and for the token last. Everything is checked before anything is made: no directory is created and no chain is built for an
+// environment that is refused. The state directory is proved writable before the first job could depend on it, because a job records each escrow it
+// posts there and must not find out only then, and the poppler tools are asked for their version for the same reason: an image without them would
+// answer /healthz ok.
 import { rmSync, writeFileSync } from 'node:fs';
 import type { EventEmitter } from 'node:events';
 import type { Server } from 'node:http';
@@ -44,11 +47,12 @@ const SWEEP_MS = 100;
 
 /**
  * Every setting the service reads but the buyer key itself. The key belongs in its own variable alone: in any of these it would be printed by a check that finds
- * fault with the line, or published (OPERATOR_CONTACT, AGENT_DID, AGENT_VERSION, ADVERT_EXPLORER_URL and the rest that go into the manifest the advert hashes).
+ * fault with the line, or published (OPERATOR_CONTACT, AGENT_DID, AGENT_VERSION, ADVERT_EXPLORER_URL and the rest that go into the manifest the advert hashes), or
+ * handed to the runtime to send in a header with every call (SERVICE_AUTH_HEADER).
  */
 export const OTHER_SETTINGS = [
   'OPERATOR_CONTACT', 'AGENT_DID', 'AGENT_VERSION', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_PRICE_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_EXPLORER_URL',
-  'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'PIPELINE_BUYER_PKH', 'PIPELINE_BUYER_ADDRESS', 'OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST', 'PIPELINE_STATE_DIR',
+  'SERVICE_AUTH_HEADER', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'PIPELINE_BUYER_PKH', 'PIPELINE_BUYER_ADDRESS', 'OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST', 'PIPELINE_STATE_DIR',
   'VECTOR_MARKETPLACE_INDEXER_URL', 'PORT', 'HOST',
 ] as const;
 /** The settings that packages/buyer-core reads, and prints in its errors. */
@@ -56,6 +60,11 @@ export const CHAIN_SETTINGS = ['VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_
 
 export interface ServiceConfig {
   manifest: AgentManifest;
+  /**
+   * The token POST / requires as its authorization header: the value of SERVICE_AUTH_HEADER, which the runtime sends with every call (ruling R50). A secret, like
+   * the buyer key: it is in no message, no log line and no manifest.
+   */
+  authHeader: string;
   /** The buyer key, 64 lowercase hex characters. It goes to the chain and nowhere else. */
   privateKeyHex: string;
   /** What the key derives to: the key hash and the mainnet enterprise address. */
@@ -102,9 +111,26 @@ export function assertNoKeyIn(text: string, key: string): void {
   }
 }
 
+/** A token or credential shorter than this is no secret worth a search of the manifest: it would be found in any text by chance. */
+const TOKEN_SEARCH_MIN = 16;
+
+/**
+ * Throws, without printing it, when `text` (the manifest about to be published) holds the service token (SERVICE_AUTH_HEADER) whole or its credential, the part
+ * after the last space ("Bearer <credential>"), in any case. The buyer key has its own look (assertNoKeyIn); this one is for the secret the runtime forwards.
+ */
+export function assertNoTokenIn(text: string, token: string): void {
+  const lower = text.toLowerCase();
+  const credential = token.slice(token.lastIndexOf(' ') + 1);
+  for (const secret of [token, credential]) {
+    if (secret.length >= TOKEN_SEARCH_MIN && lower.includes(secret.toLowerCase())) {
+      throw new Error('the manifest would publish the service token: a value that goes into it holds the token of SERVICE_AUTH_HEADER, and the service does not start with it');
+    }
+  }
+}
+
 /**
  * The configuration of the service from its environment; throws, naming the variable, for one that is required and missing or that is given and wrong. The
- * order of the checks is fixed: the three required settings first, in the order the operator is likely to meet them, with the key looked for in every other line
+ * order of the checks is fixed: the four required settings first, in the order the operator is likely to meet them, with the key looked for in every other line
  * as soon as it is known; the manifest, and the last look at it, at the end. `makeManifest` is a seam for a test of that last look; the service uses the real one.
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (env: NodeJS.ProcessEnv) => AgentManifest = manifestFromEnv): ServiceConfig {
@@ -114,6 +140,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (
   if (!/^[0-9a-f]{64}$/.test(privateKeyHex)) throw new Error('environment variable PIPELINE_BUYER_PRIV_KEY_HEX must be 64 lowercase hex characters (a raw Ed25519 key)');
   refuseKeyIn(env, privateKeyHex);
   const supplierPkh = hexOf('SUPPLIER_PKH', requiredEnv('SUPPLIER_PKH', env.SUPPLIER_PKH, 'the key hash of the supplier key, published in the manifest'), 28);
+  const authHeader = requiredEnv('SERVICE_AUTH_HEADER', env.SERVICE_AUTH_HEADER, 'the value the template runtime sends as the authorization header of every call, which POST / requires');
+  // It is compared with a header, so it is printable ASCII (a space to a tilde). Never shown in a message, only its length: it is a secret.
+  if (!/^[ -~]+$/.test(authHeader)) {
+    throw new Error(`environment variable SERVICE_AUTH_HEADER must be printable ASCII (it is sent as an HTTP header), and it has ${authHeader.length} characters`);
+  }
   const supplierPubKey = given(env.SUPPLIER_PUB_KEY_HEX) === '' ? '' : hexOf('SUPPLIER_PUB_KEY_HEX', given(env.SUPPLIER_PUB_KEY_HEX), 32);
   // The two are published side by side. A private key in the line of the public one is a likely slip (the env file has both lines), and this is what stops it.
   if (supplierPubKey !== '' && blake2b224Hex(supplierPubKey) !== supplierPkh) {
@@ -147,7 +178,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (
     PIPELINE_BUYER_PKH: buyer.buyerPkh,
   });
   assertNoKeyIn(JSON.stringify(manifest), privateKeyHex);
-  return { manifest, privateKeyHex, buyer, host, port, stateDir, ocrAllowlistPkh, llmAllowlist, ...(indexerUrl === undefined ? {} : { indexerUrl }) };
+  assertNoTokenIn(JSON.stringify(manifest), authHeader);
+  return { manifest, authHeader, privateKeyHex, buyer, host, port, stateDir, ocrAllowlistPkh, llmAllowlist, ...(indexerUrl === undefined ? {} : { indexerUrl }) };
 }
 
 /** The parts of the service a test replaces; the service itself uses the real ones. */
@@ -213,7 +245,7 @@ export async function startService(env: NodeJS.ProcessEnv = process.env, options
   const clock = options.clock ?? Date.now;
   const slot = new JobSlot();
   const server = createServer({
-    manifest: config.manifest, log, slot,
+    manifest: config.manifest, authHeader: config.authHeader, log, slot,
     deps: {
       chain, fetchImpl: options.fetchImpl ?? globalThis.fetch, renderer, clock, sleep: options.sleep ?? defaultSleep,
       ocrAllowlistPkh: config.ocrAllowlistPkh, llmAllowlist: config.llmAllowlist, ...(config.indexerUrl === undefined ? {} : { indexerUrl: config.indexerUrl }), stranded,

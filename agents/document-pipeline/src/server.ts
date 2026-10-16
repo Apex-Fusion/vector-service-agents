@@ -6,13 +6,17 @@
 //   GET  /healthz     {ok: true}, or 503 {ok: false, reason: "insufficient_float"} once the last check of the buyer wallet failed. The check is made at most
 //                     once a minute, in the background: a request is answered from the last one and never waits for the next.
 //   GET  /agent.json  the manifest, the bytes JSON.stringify gives, which the advert hashes.
-//   POST /            the wire message only, at most 1 MB, one job at a time: a second one gets 409 {error: "busy"}. While the job runs the server writes
-//                     "102 Processing" every minute, so that the runtime's fetch does not give up on the silence (HEARTBEAT_MS). The answer is
-//                     JSON.stringify(result), serialised once. A refusal is {error: code, message} with its status: 400 for a request the intake refuses
-//                     (RequestError), 422 for a document or a hire that failed, and 503 (the service cannot take a job now) or 500 (store_write_failed) for
-//                     a failure on this side, whose message is fixed text for the buyer and whole in the log (PipelineError); anything else is 500
-//                     {error: "internal"} with no detail, and the cause goes to the log, by message only, never the request.
+//   POST /            the wire message only, and only from the runtime: the authorization header must be exactly the token the service was given
+//                     (SERVICE_AUTH_HEADER, which the template runtime sends with every call, ruling R50), or the answer is 401 {error: "unauthorized"}
+//                     with no detail, before the body is read and before the job slot is taken. At most 1 MB, one job at a time: a second one gets 409
+//                     {error: "busy"}. While the job runs the server writes "102 Processing" every minute, so that the runtime's fetch does not give up
+//                     on the silence (HEARTBEAT_MS). The answer is JSON.stringify(result), serialised once. A refusal is {error: code, message} with its
+//                     status: 400 for a request the intake refuses (RequestError), 422 for a document or a hire that failed, and 503 (the service cannot
+//                     take a job now) or 500 (store_write_failed) for a failure on this side, whose message is fixed text for the buyer and whole in the
+//                     log (PipelineError); anything else is 500 {error: "internal"} with no detail, and the cause goes to the log, by message only,
+//                     never the request.
 //   anything else     404.
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer as httpServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { REGISTRY_ADDRESS } from '@vsa/vector-read';
@@ -313,6 +317,11 @@ export class JobSlot {
 
 export interface ServerOptions {
   manifest: AgentManifest;
+  /**
+   * The token the runtime sends as the authorization header of every call (SERVICE_AUTH_HEADER, ruling R50), which POST / requires. A server is never made
+   * without one: a service that answered anyone would spend from the buyer wallet for anyone who can reach its port.
+   */
+  authHeader: string;
   /** Everything a run is given but its deadline, which the server sets for each request. */
   deps: Omit<Deps, 'deadlineMs'>;
   /** Test seam: a test injects its own run; the service always runs the real one. */
@@ -335,6 +344,12 @@ export const defaultLog = (line: string): void => { console.log(`[document-pipel
 const operatorsLog = (code: string): string => `The service could not do this job (${code}). The operator's log has the detail.`;
 const STOPPING_TEXT = 'The service is stopping and takes no new job. Try again shortly.';
 
+// --- Who may post a job --------------------------------------------------------------------------------------------------------------------
+// The sha256 digest of a value: 32 bytes whatever its length, so that two of them can be compared in constant time without leaking the content or the length.
+const digest = (value: string): Buffer => createHash('sha256').update(value, 'utf8').digest();
+// A call refused for want of the token is logged once a minute at most, with the count since the last line: a caller that cannot authenticate must not fill the log.
+const REFUSAL_LOG_MS = 60_000;
+
 export function createServer(opts: ServerOptions): Server {
   const { deps } = opts;
   const run = opts.runPipeline ?? realRunPipeline;
@@ -344,6 +359,24 @@ export function createServer(opts: ServerOptions): Server {
   if (!(heartbeatMs > 0 && heartbeatMs <= HEARTBEAT_MS)) {
     throw new RangeError(`heartbeatMs must be more than 0 and at most ${HEARTBEAT_MS}, for the runtime's fetch gives up after 300 s of silence, got ${heartbeatMs}`);
   }
+  if (typeof opts.authHeader !== 'string' || opts.authHeader === '') {
+    throw new RangeError('authHeader must be the value of SERVICE_AUTH_HEADER and not empty: a service that answered anyone would spend from the buyer wallet for anyone who can reach its port');
+  }
+  const expectedAuth = digest(opts.authHeader);
+  // The header of the call against the token: both digested, so the two buffers are of one length, and compared with timingSafeEqual. Nothing here is logged or answered.
+  const authorised = (req: IncomingMessage): boolean => {
+    const given = req.headers.authorization;
+    return typeof given === 'string' && timingSafeEqual(digest(given), expectedAuth);
+  };
+  let refusals = 0; // calls refused since the last line of this kind
+  let lastRefusalLine: number | undefined;
+  const noteRefusal = (at: number): void => {
+    refusals++;
+    if (lastRefusalLine !== undefined && at >= lastRefusalLine && at - lastRefusalLine < REFUSAL_LOG_MS) return; // a clock that was set back logs again, it does not go silent
+    log(`request refused: unauthorized (${refusals} since the last line of this kind)`);
+    lastRefusalLine = at;
+    refusals = 0;
+  };
   const manifestText = JSON.stringify(opts.manifest);
   const monitor = new FloatMonitor(() => assertFunded(deps.chain, MAX_PAGES), deps.clock, opts.floatTtlMs ?? FLOAT_TTL_MS, opts.floatTimeoutMs ?? FLOAT_TIMEOUT_MS, log);
   monitor.poke(); // the first check, at start
@@ -351,7 +384,8 @@ export function createServer(opts: ServerOptions): Server {
     const arrivedAt = deps.clock();
     // The body is serialised before anything is written, so a body that cannot be serialised can still be answered with a 500.
     const sendText = (status: number, text: string) => {
-      res.writeHead(status, { 'content-type': 'application/json', ...(status === 400 ? { connection: 'close' } : {}) });
+      // A 400 and a 401 may be answered before the body has been read to its end (too large, or not read at all), so the connection is closed after them.
+      res.writeHead(status, { 'content-type': 'application/json', ...(status === 400 || status === 401 ? { connection: 'close' } : {}) });
       res.end(text);
     };
     const send = (status: number, body: unknown) => sendText(status, JSON.stringify(body));
@@ -362,6 +396,12 @@ export function createServer(opts: ServerOptions): Server {
       }
       if (req.method === 'GET' && req.url === '/agent.json') return sendText(200, manifestText);
       if (req.method !== 'POST' || req.url !== '/') return send(404, { error: 'not_found' });
+      // R50: only the runtime posts a job. The check comes before the body is read and before the slot is taken, so a stranger neither makes the service read a
+      // megabyte nor learns that a job is running (a 409 would say so), and what the answer says is the same for a missing header and a wrong one.
+      if (!authorised(req)) {
+        noteRefusal(arrivedAt);
+        return send(401, { error: 'unauthorized' });
+      }
       const request = parseRequest(parseWire(await readBody(req)));
       const taken = slot.take();
       if (taken === 'busy') return send(409, { error: 'busy' });

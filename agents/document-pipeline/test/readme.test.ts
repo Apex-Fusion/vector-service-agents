@@ -52,7 +52,7 @@ describe('agents/document-pipeline/README.md', () => {
 
   test('the Errors table gives each code of the intake its status, and every code it names is one the sources know', () => {
     const rows = section('Errors').split('\n').filter((line) => /^\| \d{3}, /.test(line));
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(7);
     const intake: RequestErrorCode[] = [
       'bad_json', 'bad_shape', 'schema_required', 'max_pages_range', 'base64_too_large', 'language_bad',
       'source_fetch_failed', 'source_mime_mismatch', 'source_unsupported', 'source_too_large', 'unreadable_source',
@@ -71,6 +71,7 @@ describe('agents/document-pipeline/README.md', () => {
     for (const code of intake) expect(documented.has(code), code).toBe(true);
     for (const code of ['insufficient_float', 'ocr_supplier_unavailable', 'llm_supplier_unavailable', 'shutting_down']) expect(rows.find((row) => row.includes(`\`${code}\``)), code).toMatch(/^\| 503, /);
     expect(rows.find((row) => row.includes('`store_write_failed`'))).toMatch(/^\| 500, /);
+    expect(rows.find((row) => row.includes('`unauthorized`'))).toMatch(/^\| 401, /); // R50: a call without the token of the runtime
     expect(rows.find((row) => row.includes('`schema_invalid`'))).toMatch(/^\| 400, /);
     for (const code of ['bad_wire', 'request_too_large']) expect(rows.find((row) => row.includes(`\`${code}\``))).toMatch(/^\| 400, /);
   });
@@ -94,6 +95,27 @@ describe('agents/document-pipeline/README.md', () => {
   test('the example reads the key from a file and never writes it on a command line', () => {
     expect(readme).toContain('PIPELINE_BUYER_PRIV_KEY_HEX="$(cat ');
     expect(readme).not.toMatch(/PIPELINE_BUYER_PRIV_KEY_HEX=[<0-9a-f]/);
+  });
+
+  // R50: the service shares a network with other stacks and a job spends from the buyer wallet, so it answers only the runtime, which sends its
+  // SERVICE_AUTH_HEADER as the authorization header of every call (vector-agent-template c4c378a, agent/src/executor/httpCallout.ts).
+  test('it says that POST / needs the authorization header the runtime sends, the 401 without it, the routes that stay open, and that the token is made, not typed (R50)', () => {
+    expect(readme).toContain('`POST /` requires the `authorization` header to be exactly the value of `SERVICE_AUTH_HEADER`');
+    expect(readme).toContain('the value the template runtime sends with every call to a custom service');
+    expect(readme).toContain('401 `{"error":"unauthorized"}`, with no detail');
+    expect(readme).toMatch(/before the body is read and before a job slot is taken/);
+    expect(readme).toMatch(/in constant time \(`crypto\.timingSafeEqual` on their sha256 digests/);
+    expect(readme).toContain('`GET /healthz` and `GET /agent.json` need no header: the image\'s health check sends none, and the manifest is public');
+    expect(readme).not.toMatch(/does not authenticate/);
+    const run = section('Run it');
+    expect(run).toContain('export SERVICE_AUTH_HEADER="Bearer $(openssl rand -hex 32)"');
+    expect(run).toContain('when `OPERATOR_CONTACT`, `PIPELINE_BUYER_PRIV_KEY_HEX`, `SUPPLIER_PKH` or `SERVICE_AUTH_HEADER` is not set');
+    expect(readme).not.toMatch(/SERVICE_AUTH_HEADER=["']?Bearer [0-9a-f]/); // no token in the page
+    const row = section('Manifest').split('\n').find((line) => line.startsWith('| `SERVICE_AUTH_HEADER`')) ?? '';
+    expect(row).toContain('the `authorization` header the runtime sends with every call');
+    expect(row).toContain('Required: the service stops at start without it');
+    expect(row).toContain('Never published, never logged');
+    expect(section('Routes')).toContain('| `POST /` | the wire message and nothing else, with the `authorization` header of the runtime. Without it, 401 |');
   });
 
   test('it says the status the manifest and the code give, and nothing in it is a dash, a unit name or a key', () => {

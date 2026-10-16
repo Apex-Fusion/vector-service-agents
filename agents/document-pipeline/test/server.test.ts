@@ -19,7 +19,7 @@ import { HEARTBEAT_MS, JobSlot, MAX_BODY, WireError, createServer, envInt, manif
 import type { ServerOptions } from '../src/server.ts';
 import { MAX_SOURCE_BYTES } from '../src/source.ts';
 import { fakeRenderer } from './fake-renderer.ts';
-import { BUYER, FULL_ENV, SUPPLIER, T0, TEST_CONTACT, baseDeps, cleanDirs, rawClient, serve, settle, until, walletChain, wire } from './server-support.ts';
+import { AUTH, BUYER, FULL_ENV, SUPPLIER, T0, TEST_AUTH, TEST_CONTACT, baseDeps, cleanDirs, rawClient, serve, settle, until, walletChain, wire } from './server-support.ts';
 import { ALLOWLIST, INDEXER, SUMMARY, marketplace } from './stub-suppliers.ts';
 import { TWO_PAGES_PDF, toBase64 } from './support.ts';
 
@@ -51,7 +51,7 @@ const fakeRun = (impl: Run = async () => RESULT) => vi.fn<Run>(impl);
 const logs: string[] = [];
 const log = (line: string): void => { logs.push(line); };
 afterEach(() => { logs.length = 0; });
-const options = (over: Partial<ServerOptions> = {}): ServerOptions => ({ manifest: MANIFEST, deps: baseDeps(), runPipeline: fakeRun(), log, ...over });
+const options = (over: Partial<ServerOptions> = {}): ServerOptions => ({ manifest: MANIFEST, authHeader: TEST_AUTH, deps: baseDeps(), runPipeline: fakeRun(), log, ...over });
 
 // ---- The manifest -------------------------------------------------------------------------------------------------------------------
 describe('manifest', () => {
@@ -469,7 +469,7 @@ describe('POST /: the wire contract over HTTP', () => {
     const expected = Buffer.from(JSON.stringify(RESULT), 'utf8');
     const stringify = vi.spyOn(JSON, 'stringify');
     await serve(options({ runPipeline: fakeRun(async () => RESULT) }), async (api) => {
-      const res = await fetch(`${api.url}/`, { method: 'POST', body: wire(REQUEST) });
+      const res = await fetch(`${api.url}/`, { method: 'POST', headers: AUTH, body: wire(REQUEST) });
       const bytes = Buffer.from(await res.arrayBuffer());
       expect(res.status).toBe(200);
       expect(res.headers.get('content-type')).toBe('application/json');
@@ -637,7 +637,7 @@ describe('POST /: a long job keeps its answer alive with 102 Processing (R47)', 
   const latch = () => { let release!: () => void; const open = new Promise<void>((resolve) => { release = resolve; }); return { open, release }; };
   const request = wire(REQUEST);
   const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  const makeRequest = (): EventEmitter => Object.assign(new EventEmitter(), { method: 'POST', url: '/', httpVersionMajor: 1, httpVersionMinor: 1 });
+  const makeRequest = (): EventEmitter => Object.assign(new EventEmitter(), { method: 'POST', url: '/', headers: { ...AUTH }, httpVersionMajor: 1, httpVersionMinor: 1 });
   const makeResponse = () => Object.assign(new EventEmitter(), { headersSent: false, destroyed: false, writeProcessing: vi.fn(), writeHead: vi.fn(), end: vi.fn(), destroy: vi.fn() });
 
   test('while a job runs the server writes "102 Processing" on its interval, and the answer that ends the job is the same 200 bytes as without any', async () => {
@@ -871,6 +871,178 @@ describe('routes', () => {
       }
     });
     expect(run).not.toHaveBeenCalled();
+  });
+});
+
+// ---- R50: the service answers only the runtime --------------------------------------------------------------------------------------
+// The service shares a network with other stacks, and a job spends from the buyer wallet, so a port nobody publishes is not enough. The template runtime
+// (c4c378a, agent/src/executor/httpCallout.ts) sends the value of its SERVICE_AUTH_HEADER as the authorization header of every call to a custom service.
+// POST / answers 401 to a call whose header is not exactly the value the service was given, before the body is read and before a job slot is taken.
+// GET /healthz and GET /agent.json need no header: the image's health check sends none, and the manifest is public.
+describe('POST /: the authorization header of the runtime (R50)', () => {
+  const UNAUTHORIZED = { error: 'unauthorized' };
+  const gate = () => { let release!: () => void; const open = new Promise<void>((resolve) => { release = resolve; }); return { open, release }; };
+
+  test('a call without the header is a 401 {error: "unauthorized"}, nothing else in the body, the connection is closed, and no job starts', async () => {
+    const run = fakeRun();
+    await serve(options({ runPipeline: run }), async (api) => {
+      const r = await api.request('POST', '/', wire(REQUEST), { authorization: null });
+      expect(r.status).toBe(401);
+      expect(r.text).toBe('{"error":"unauthorized"}'); // no message, no hint, no list of what would have worked
+      expect(r.headers.get('content-type')).toBe('application/json');
+      expect(r.headers.get('connection')).toBe('close');
+      expect(r.headers.get('www-authenticate')).toBeNull();
+    });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test('a call with another value is the same 401: another token, the token in another case or a character longer or shorter, a scheme alone, an empty value, a very long one', async () => {
+    const run = fakeRun();
+    const wrong = ['Bearer wrong', TEST_AUTH.toLowerCase(), TEST_AUTH.toUpperCase(), `${TEST_AUTH}0`, TEST_AUTH.slice(0, -1), TEST_AUTH.slice(7), `Bearer  ${TEST_AUTH.slice(7)}`, 'Bearer', '', 'x', 'x'.repeat(8000)];
+    await serve(options({ runPipeline: run }), async (api) => {
+      for (const value of wrong) {
+        const r = await api.request('POST', '/', wire(REQUEST), { authorization: value });
+        expect(r.status, `${value.length} characters`).toBe(401);
+        expect(r.json).toStrictEqual(UNAUTHORIZED);
+      }
+      expect((await api.get('/healthz')).status).toBe(200); // a value of any length is refused, and none of them upset the server
+    });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test('a call with the token is answered as it always was: the same 200, the same bytes', async () => {
+    const run = fakeRun();
+    await serve(options({ runPipeline: run }), async (api) => {
+      const r = await api.post(wire(REQUEST));
+      expect(r.status).toBe(200);
+      expect(r.text).toBe(JSON.stringify(RESULT));
+      expect(r.headers.get('content-type')).toBe('application/json');
+      expect(r.headers.get('connection')).not.toBe('close');
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  test('the token is the one the server is given: the token of another server is a 401, its own is a 200', async () => {
+    await serve(options({ authHeader: 'Bearer the-token-of-this-server' }), async (api) => {
+      expect((await api.post(wire(REQUEST))).status).toBe(401); // TEST_AUTH, which `serve` sends unless told otherwise, is not this server's
+      expect((await api.request('POST', '/', wire(REQUEST), { authorization: 'Bearer the-token-of-this-server' })).status).toBe(200);
+    });
+  });
+
+  test('GET /healthz and GET /agent.json stay open: with the token, with another, with none, the answer is the same', async () => {
+    await serve(options(), async (api) => {
+      for (const authorization of [null, 'Bearer wrong', TEST_AUTH]) {
+        const health = await api.request('GET', '/healthz', undefined, { authorization });
+        expect(health.status, String(authorization)).toBe(200);
+        expect(health.json).toStrictEqual({ ok: true });
+        const manifest = await api.request('GET', '/agent.json', undefined, { authorization });
+        expect(manifest.status, String(authorization)).toBe(200);
+        expect(manifest.text).toBe(JSON.stringify(MANIFEST));
+      }
+    });
+  });
+
+  test('a route that is none of the three is a 404 for everyone: no 401 says that a route is there', async () => {
+    await serve(options(), async (api) => {
+      for (const [method, path] of [['POST', '/x'], ['POST', '/healthz'], ['POST', '/agent.json'], ['POST', '/v1/job'], ['GET', '/'], ['PUT', '/']] as const) {
+        for (const authorization of [null, 'Bearer wrong', TEST_AUTH]) {
+          const r = await api.request(method, path, method === 'POST' ? wire(REQUEST) : undefined, { authorization });
+          expect(r.status, `${method} ${path} ${authorization}`).toBe(404);
+          expect(r.json).toStrictEqual({ error: 'not_found' });
+        }
+      }
+    });
+  });
+
+  test('the check comes before the body is read: a call without the token is answered while its upload is still under way, and the connection is closed', async () => {
+    const run = fakeRun();
+    await serve(options({ runPipeline: run }), async (api) => {
+      const client = rawClient(api.port, { body: wire(REQUEST), holdBack: 5, authorization: null }); // the last 5 bytes of the body are never sent
+      try {
+        const answer = await client.answer(1500); // had the body to be read first, this would wait for bytes that do not come
+        expect(answer.status).toBe(401);
+        expect(JSON.parse(answer.body!.toString('utf8'))).toStrictEqual(UNAUTHORIZED);
+        expect(answer.headers.connection).toBe('close');
+      } finally {
+        client.close();
+      }
+    });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test('a call without the token does not take the slot: a job that runs is not disturbed, the answer is a 401 and not a 409 that would tell a stranger a job is running, and the slot is free when the job ends', async () => {
+    const { open, release } = gate();
+    const slot = new JobSlot();
+    const run = fakeRun(async () => { await open; return RESULT; });
+    await serve(options({ runPipeline: run, slot }), async (api) => {
+      expect((await api.request('POST', '/', wire(REQUEST), { authorization: null })).status).toBe(401);
+      expect(slot.busy).toBe(false); // idle: a refused call leaves the slot as it was
+      const first = api.post(wire(REQUEST));
+      await until(() => run.mock.calls.length === 1, 'the first job is running');
+      expect(slot.busy).toBe(true);
+      const refused = await api.request('POST', '/', wire(REQUEST), { authorization: 'Bearer wrong' });
+      expect(refused.status).toBe(401);
+      expect(refused.json).toStrictEqual(UNAUTHORIZED);
+      expect(slot.busy).toBe(true); // still the first job's
+      release();
+      expect((await first).status).toBe(200);
+      expect(slot.busy).toBe(false);
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  test('a service that is stopping answers a call without the token with 401 and a call with it with 503 shutting_down', async () => {
+    const slot = new JobSlot();
+    slot.drain();
+    await serve(options({ slot }), async (api) => {
+      expect((await api.request('POST', '/', wire(REQUEST), { authorization: null })).status).toBe(401);
+      const stopping = await api.post(wire(REQUEST));
+      expect(stopping.status).toBe(503);
+      expect(stopping.json.error).toBe('shutting_down');
+    });
+  });
+
+  test('the token is never echoed: not in the answer, not in a header of it, not in the log; nor is what the caller sent', async () => {
+    const presented = 'Bearer presented-by-a-stranger-9f3c1e';
+    await serve(options(), async (api) => {
+      const r = await api.request('POST', '/', wire(REQUEST), { authorization: presented });
+      const everything = `${r.text}\n${JSON.stringify([...r.headers.entries()])}`;
+      for (const secret of [TEST_AUTH, TEST_AUTH.slice(7), presented, presented.slice(7)]) expect(everything).not.toContain(secret);
+    });
+    const written = logs.join('\n');
+    for (const secret of [TEST_AUTH, TEST_AUTH.slice(7), presented, presented.slice(7)]) expect(written).not.toContain(secret);
+    expect(logs.filter((line) => /^request refused: unauthorized \(1 since the last line of this kind\)$/.test(line))).toHaveLength(1);
+  });
+
+  test('a refusal is logged once a minute at most, with the count since the last line, so that a caller that cannot authenticate cannot fill the log', async () => {
+    let now = T0;
+    await serve(options({ deps: baseDeps({ clock: () => now }) }), async (api) => {
+      const refuse = () => api.request('POST', '/', wire(REQUEST), { authorization: null });
+      const lines = () => logs.filter((line) => line.startsWith('request refused: unauthorized'));
+      for (let i = 0; i < 5; i++) await refuse();
+      expect(lines()).toStrictEqual(['request refused: unauthorized (1 since the last line of this kind)']);
+      now += 59_999;
+      await refuse();
+      expect(lines()).toHaveLength(1);
+      now += 1;
+      await refuse(); // 60 s after the first line: the next one, counting the five that were not logged and this one
+      expect(lines()).toStrictEqual(['request refused: unauthorized (1 since the last line of this kind)', 'request refused: unauthorized (6 since the last line of this kind)']);
+      now -= 1_000_000; // a clock that was set back does not silence the log for good
+      await refuse();
+      expect(lines()).toHaveLength(3);
+    });
+  });
+
+  test('a server cannot be made without a token, so that a service is never open by mistake', () => {
+    for (const bad of ['', undefined as unknown as string, null as unknown as string]) expect(() => createServer(options({ authHeader: bad })), String(bad)).toThrow(RangeError);
+    createServer(options({ authHeader: 'x' })).close();
+  });
+
+  test('the comparison is of two sha256 digests, which are of equal length whatever the values are, with timingSafeEqual; it is not a comparison of the strings', () => {
+    const source = readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8');
+    expect(source).toMatch(/timingSafeEqual\(/);
+    expect(source).toMatch(/createHash\('sha256'\)/);
+    expect(source).not.toMatch(/authorization\s*(===|!==|==|!=)|(===|!==|==|!=)\s*[\w.]*authHeader/);
   });
 });
 

@@ -16,12 +16,13 @@ A run spends real funds: it posts escrows on Vector mainnet from the buyer key. 
 pnpm install
 cd agents/document-pipeline
 export PIPELINE_BUYER_PRIV_KEY_HEX="$(cat /path/to/buyer-key.hex)"   # read from a file: a key typed on a command line stays in the shell's history
+export SERVICE_AUTH_HEADER="Bearer $(openssl rand -hex 32)"           # the token a caller must send: made, not typed
 OPERATOR_CONTACT=ops@example.test SUPPLIER_PKH=<56 hex> PIPELINE_STATE_DIR=/tmp/pipeline-state PORT=9092 pnpm start
 ```
 
-The service logs the buyer address it derived from the key; that is the address to fund. It stops at start, with the variable named, when `OPERATOR_CONTACT`, `PIPELINE_BUYER_PRIV_KEY_HEX` or `SUPPLIER_PKH` is not set, when a setting is not well formed, when `ADVERT_MAX_PROCESSING_MS` is below 30 min, or when it cannot write to its state directory. It also asks `pdfinfo` and `pdftoppm` (poppler-utils) for their version before it listens, and does not start if either cannot be run, so that an image without them cannot answer `/healthz` ok and then fail every PDF. The image has them; a machine you run the service on needs them on the path.
+The service logs the buyer address it derived from the key; that is the address to fund. It stops at start, with the variable named, when `OPERATOR_CONTACT`, `PIPELINE_BUYER_PRIV_KEY_HEX`, `SUPPLIER_PKH` or `SERVICE_AUTH_HEADER` is not set, when a setting is not well formed, when `ADVERT_MAX_PROCESSING_MS` is below 30 min, or when it cannot write to its state directory. It also asks `pdfinfo` and `pdftoppm` (poppler-utils) for their version before it listens, and does not start if either cannot be run, so that an image without them cannot answer `/healthz` ok and then fail every PDF. The image has them; a machine you run the service on needs them on the path.
 
-A secret in the wrong line of an env file is the mistake the start guards against. The buyer key is looked for in every other setting the service reads, before any check can print that line, and found there it stops the start, naming the variable and not showing the value (a value that is published, such as `AGENT_DID`, would otherwise go out in `/agent.json`). No message of the service shows a setting that is hex-shaped or long, only its length. `SUPPLIER_PUB_KEY_HEX` must be the public key of `SUPPLIER_PKH`, which catches a private key put in its line. The manifest is searched for the buyer key once more before the service listens.
+A secret in the wrong line of an env file is the mistake the start guards against. The buyer key is looked for in every other setting the service reads, before any check can print that line, and found there it stops the start, naming the variable and not showing the value (a value that is published, such as `AGENT_DID`, would otherwise go out in `/agent.json`). No message of the service shows a setting that is hex-shaped or long, only its length. `SUPPLIER_PUB_KEY_HEX` must be the public key of `SUPPLIER_PKH`, which catches a private key put in its line. The manifest is searched for the buyer key once more before the service listens. The service token is a secret of the same kind: it is in no message, no log line and no answer, and the manifest is searched for it too, whole or by its credential (the part after `Bearer `).
 
 ## Routes
 
@@ -29,12 +30,12 @@ A secret in the wrong line of an env file is the mistake the start guards agains
 |---|---|
 | `GET /healthz` | `{"ok":true}`, or 503 `{"ok":false,"reason":"insufficient_float"}` when the last check of the buyer wallet found that it cannot fund a job of the most pages (a pure output of at least 5000000 lovelace for collateral and 27000000 lovelace outside it) or could not read it. The check is made at most once a minute, in the background: a request is answered from the last one and never waits. Before the first check has answered it is `ok`. |
 | `GET /agent.json` | the manifest, the bytes `JSON.stringify` gives |
-| `POST /` | the wire message and nothing else |
+| `POST /` | the wire message and nothing else, with the `authorization` header of the runtime. Without it, 401 |
 | any other route | 404 `{"error":"not_found"}` |
 
 The body of `POST /` is the wire message: a one-element array whose `content` is the request JSON as a string, and whose `role` is `user`. It is read up to 1000000 bytes. The request JSON is `{ "source": ..., "task": "summary" | "extract", "schema": {...}, "language": "en", "max_pages": 5 }`; the manifest publishes its schema under `interface.request_schema`, and the rules for an extraction schema under `interface.notes`. The answer to a job is `JSON.stringify(result)`, serialised once, exactly the bytes the runtime hashes.
 
-The service does not authenticate its callers. It is meant to be reached only by the runtime, over a private network, and its port is not published: anything that can post to it can start a job that spends from the buyer wallet.
+`POST /` requires the `authorization` header to be exactly the value of `SERVICE_AUTH_HEADER`, the value the template runtime sends with every call to a custom service (`agent/src/executor/httpCallout.ts` of `vector-agent-template`). The runtime and the service read it from the same env file, and neither blanks it. A call without the header, or with another value, gets 401 `{"error":"unauthorized"}`, with no detail, before the body is read and before a job slot is taken: a stranger neither makes the service read a megabyte nor learns, from a 409, that a job is running. The two values are compared in constant time (`crypto.timingSafeEqual` on their sha256 digests, which are of one length whatever the values are), and a refusal is logged once a minute at most, with a count and nothing the caller sent. `GET /healthz` and `GET /agent.json` need no header: the image's health check sends none, and the manifest is public. The port is not published and the service is meant to be reached only by the runtime, over a private network, but other stacks share that network and a job spends from the buyer wallet, so the token is the second lock. It is made, not typed (`openssl rand -hex 32`), and kept in the env file and nowhere else.
 
 One job runs at a time, because the money of a job is the one buyer wallet's. A second job that arrives while one runs gets 409 `{"error":"busy"}` and nothing is started. A job has its own deadline, 1620000 ms after its request arrives, 60 s inside the runtime's `SERVICE_TIMEOUT_MS` of 1680000.
 
@@ -42,18 +43,19 @@ While a job runs, the server writes an interim `102 Processing` line every 60 s 
 
 ## Errors
 
-A refusal is `{"error": "<code>", "message": "<words>"}` with the status in the table. A failure on the service's side (the 500 and the 503 rows) gets a fixed message, `The service could not do this job (<code>). The operator's log has the detail.`, because the runtime copies the first 200 characters of a failure to the buyer and the detail (a path, an escrow, the text of a provider) is the operator's: the whole message is in the log. Anything else is 500 `{"error":"internal"}` with no detail; the cause is in the log, by message only.
+A refusal is `{"error": "<code>", "message": "<words>"}` with the status in the table. A failure on the service's side (the 500 and the 503 rows) gets a fixed message, `The service could not do this job (<code>). The operator's log has the detail.`, because the runtime copies the first 200 characters of a failure to the buyer and the detail (a path, an escrow, the text of a provider) is the operator's: the whole message is in the log. Anything else is 500 `{"error":"internal"}` with no detail; the cause is in the log, by message only. The 401 has no message at all: it says only that the call was not the runtime's.
 
 | Status | Codes |
 |---|---|
 | 400, the message | `bad_wire` (not the one-element message array), `request_too_large` (over 1000000 bytes) |
 | 400, the request | `bad_json`, `bad_shape`, `schema_required`, `max_pages_range`, `base64_too_large`, `language_bad`, and `schema_invalid` (the extraction schema breaks a rule) |
+| 401, the caller | `unauthorized` (the call has no authorization header, or one that is not the token of the service) |
 | 422, the document | `source_fetch_failed`, `source_mime_mismatch`, `source_unsupported`, `source_too_large`, `unreadable_source`, `page_too_large` |
 | 422, the hires | `deadline`, `llm_incomplete`, and for each of the two hops, `ocr_` and `llm_` followed by `post_failed`, `busy`, `refused`, `send_lost`, `failed`, `timeout`, `bad_result`, `receipt_failed`, `receipt_unavailable` or `accept_failed` |
 | 503, the service cannot take a job now | `insufficient_float`, `ocr_supplier_unavailable`, `llm_supplier_unavailable`, and `shutting_down` (the service is stopping) |
 | 500, the service | `store_write_failed`, and `internal` |
 
-A 400, a 422 for the document and a 503 are all given before the first escrow is posted, so they spend nothing; the one exception is `llm_supplier_unavailable` when the chat supplier is chosen again after the pages were paid (`src/result.ts` says so). The other 422s come from a hire and may follow money that has moved: `src/hire.ts` says when each of them is thrown.
+A 400, a 401, a 422 for the document and a 503 are all given before the first escrow is posted, so they spend nothing; the one exception is `llm_supplier_unavailable` when the chat supplier is chosen again after the pages were paid (`src/result.ts` says so). The other 422s come from a hire and may follow money that has moved: `src/hire.ts` says when each of them is thrown.
 
 ## Funds, state and the janitor
 
@@ -74,6 +76,7 @@ On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and n
 | `OPERATOR_CONTACT` | `operator.contact` | none. Required: the service stops at start without it |
 | `PIPELINE_BUYER_PRIV_KEY_HEX` | the buyer key, 64 lowercase hex characters. Never published, never logged | none. Required |
 | `SUPPLIER_PKH` | `identity.controller_pkh` and `keys.supplier_pkh`, 56 hex characters | none. Required |
+| `SERVICE_AUTH_HEADER` | the `authorization` header the runtime sends with every call, which `POST /` requires: `Bearer ` and 64 hex characters, made with `openssl rand -hex 32`. Never published, never logged | none. Required: the service stops at start without it |
 | `SUPPLIER_PUB_KEY_HEX` | `keys.pub_key_hex`, 64 hex characters | empty |
 | `AGENT_DID` | `identity.did` | empty |
 | `PIPELINE_BUYER_PKH` | optional. `keys.buyer_pkh` is always the key hash derived from the buyer key; a value here that is not that hash stops the service at start | derived |

@@ -1,5 +1,5 @@
 // agents/document-pipeline/test/start.test.ts
-// How the service starts. loadConfig reads the environment (three settings are required, the rest have defaults), derives the buyer key hash and the
+// How the service starts. loadConfig reads the environment (four settings are required, the rest have defaults), derives the buyer key hash and the
 // mainnet enterprise address from the key and refuses a PIPELINE_BUYER_PKH or PIPELINE_BUYER_ADDRESS that is not the key's (ruling R44), so that the buyer
 // key hash the manifest publishes is the key that signs. startService puts the real parts together (the chain from the key, the stranded store in the state
 // directory, the janitor on it, the server) and is run here with the parts a test can replace. The last tests run src/index.ts as a process: the exit at
@@ -15,10 +15,10 @@ import { FakeChain, rawHexToBech32 } from '@vsa/buyer-core';
 import { StrandedStore } from '../src/janitor.ts';
 import { popplerRenderer } from '../src/render.ts';
 import { manifestFromEnv } from '../src/server.ts';
-import { CHAIN_SETTINGS, OTHER_SETTINGS, SHUTDOWN_WAIT_MS, WRITE_PROBE, assertNoKeyIn, loadConfig, startService, stopOnSignals } from '../src/start.ts';
+import { CHAIN_SETTINGS, OTHER_SETTINGS, SHUTDOWN_WAIT_MS, WRITE_PROBE, assertNoKeyIn, assertNoTokenIn, loadConfig, startService, stopOnSignals } from '../src/start.ts';
 import type { RunningService, StartOptions } from '../src/start.ts';
 import { fakeRenderer } from './fake-renderer.ts';
-import { BUYER, BUYER_ADDRESS, FULL_ENV, SUPPLIER, TEST_CONTACT, cleanDirs, fakePopplerDir, inFront, keyOf, noFetch, pathOf, rawClient, tempDir, until, wire, withPath } from './server-support.ts';
+import { AUTH, BUYER, BUYER_ADDRESS, FULL_ENV, SUPPLIER, TEST_AUTH, TEST_CONTACT, cleanDirs, fakePopplerDir, inFront, keyOf, noFetch, pathOf, rawClient, tempDir, until, wire, withPath } from './server-support.ts';
 import { ALLOWLIST, INDEXER, SUMMARY, escrowNo, marketplace } from './stub-suppliers.ts';
 import { TWO_PAGES_PDF, toBase64 } from './support.ts';
 
@@ -59,17 +59,85 @@ describe('loadConfig', () => {
     expect(config.indexerUrl).toBeUndefined();
   });
 
-  test('three settings are required, checked in this order, and the error names the variable', () => {
+  test('four settings are required, checked in this order, and the error names the variable', () => {
     expect(thrown(() => loadConfig({})).message).toMatch(/environment variable OPERATOR_CONTACT is required/);
     expect(thrown(() => loadConfig({ OPERATOR_CONTACT: TEST_CONTACT })).message).toMatch(/environment variable PIPELINE_BUYER_PRIV_KEY_HEX is required/);
     expect(thrown(() => loadConfig({ OPERATOR_CONTACT: TEST_CONTACT, PIPELINE_BUYER_PRIV_KEY_HEX: BUYER.privateKeyHex })).message).toMatch(/environment variable SUPPLIER_PKH is required/);
+    expect(thrown(() => loadConfig({ OPERATOR_CONTACT: TEST_CONTACT, PIPELINE_BUYER_PRIV_KEY_HEX: BUYER.privateKeyHex, SUPPLIER_PKH: SUPPLIER.pkh })).message).toMatch(/environment variable SERVICE_AUTH_HEADER is required/);
     for (const blank of ['', ' ', '\t\n']) {
       expect(thrown(() => loadConfig({ ...FULL_ENV, OPERATOR_CONTACT: blank })).message, JSON.stringify(blank)).toMatch(/OPERATOR_CONTACT/);
       expect(thrown(() => loadConfig({ ...FULL_ENV, PIPELINE_BUYER_PRIV_KEY_HEX: blank })).message, JSON.stringify(blank)).toMatch(/PIPELINE_BUYER_PRIV_KEY_HEX/);
       expect(thrown(() => loadConfig({ ...FULL_ENV, SUPPLIER_PKH: blank })).message, JSON.stringify(blank)).toMatch(/SUPPLIER_PKH/);
+      expect(thrown(() => loadConfig({ ...FULL_ENV, SERVICE_AUTH_HEADER: blank })).message, JSON.stringify(blank)).toMatch(/^environment variable SERVICE_AUTH_HEADER is required/);
     }
     // A line break at the end of a value from a file is not part of it.
     expect(loadConfig({ ...FULL_ENV, PIPELINE_BUYER_PRIV_KEY_HEX: `${BUYER.privateKeyHex}\r\n`, SUPPLIER_PKH: ` ${SUPPLIER.pkh}\n` }).privateKeyHex).toBe(BUYER.privateKeyHex);
+  });
+
+  // R50: the value the runtime sends as the authorization header of every call is the token the service requires on POST /. Without it the service would
+  // answer anyone who can reach its port, so an empty one stops the start; and it is a secret, so no message of the start shows it.
+  describe('the service token (SERVICE_AUTH_HEADER, ruling R50)', () => {
+    const TOKEN = TEST_AUTH;
+    const CREDENTIAL = TOKEN.slice('Bearer '.length);
+
+    test('is read as given, without the space or line break a file leaves around it, and is what the server will require', () => {
+      expect(loadConfig(FULL_ENV).authHeader).toBe(TOKEN);
+      expect(loadConfig({ ...FULL_ENV, SERVICE_AUTH_HEADER: `  ${TOKEN}\r\n` }).authHeader).toBe(TOKEN);
+      expect(loadConfig({ ...FULL_ENV, SERVICE_AUTH_HEADER: 'x' }).authHeader).toBe('x'); // the service does not judge the strength of the operator's choice
+    });
+
+    test('an unset, empty or blank token stops the start with the variable named: a service made without one would answer anyone', () => {
+      for (const blank of [undefined, '', ' ', '\t\n', '\r\n']) {
+        const env: Record<string, string | undefined> = { ...FULL_ENV, SERVICE_AUTH_HEADER: blank };
+        const error = thrown(() => loadConfig(env));
+        expect(error.message, JSON.stringify(blank)).toMatch(/^environment variable SERVICE_AUTH_HEADER is required \(.+\) and is not set$/);
+      }
+    });
+
+    test('a token that cannot travel as a header value is refused with the variable named and the number of characters: it is compared with the header the runtime sends, byte for byte', () => {
+      const bad = [`Bearer ${String.fromCodePoint(0xe9)}`, `Bearer a${String.fromCodePoint(0x2713)}b`, 'Bearer a\tb', 'Bearer a\nb', `Bearer a${String.fromCodePoint(0)}b`];
+      for (const value of bad) {
+        const error = thrown(() => loadConfig({ ...FULL_ENV, SERVICE_AUTH_HEADER: value }));
+        expect(error.message, JSON.stringify(value)).toMatch(new RegExp(`^environment variable SERVICE_AUTH_HEADER must be printable ASCII \\(it is sent as an HTTP header\\), and it has ${value.length} characters`));
+        expect(error.message).not.toContain(value);
+      }
+      expect(loadConfig({ ...FULL_ENV, SERVICE_AUTH_HEADER: 'Bearer a b ~!"#$%&' }).authHeader).toBe('Bearer a b ~!"#$%&');
+    });
+
+    test('no message of the start shows it, whatever else is wrong: not whole, not its credential', () => {
+      const wrong: Array<Record<string, string>> = [
+        { OPERATOR_CONTACT: '' }, { PIPELINE_BUYER_PRIV_KEY_HEX: 'abc' }, { SUPPLIER_PKH: 'abc' }, { SUPPLIER_PUB_KEY_HEX: 'abc' }, { PIPELINE_BUYER_PKH: 'cd'.repeat(28) }, { PIPELINE_BUYER_ADDRESS: 'addr1x' },
+        { OCR_ALLOWLIST_SUPPLIER_PKH: 'abc' }, { LLM_MODEL_ALLOWLIST: ' , ' }, { PORT: 'ninety' }, { ADVERT_PRICE_LOVELACE: 'x' }, { ADVERT_MAX_PROCESSING_MS: '1' }, { AGENT_STATUS_CHIP: 'launched' }, { AGENT_STATUS_SINCE: 'soon' },
+        { AGENT_DID: BUYER.privateKeyHex }, { SERVICE_AUTH_HEADER: `${TOKEN}${String.fromCodePoint(0)}` },
+      ];
+      for (const change of wrong) {
+        const error = thrown(() => loadConfig({ ...FULL_ENV, ...change }));
+        expect(error.message, JSON.stringify(Object.keys(change))).not.toContain(CREDENTIAL);
+        expect(error.message).not.toContain(TOKEN);
+      }
+      // The token put in the line of another setting is not echoed by the message about that setting either.
+      for (const name of ['SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'PIPELINE_BUYER_PKH', 'PIPELINE_BUYER_ADDRESS', 'OCR_ALLOWLIST_SUPPLIER_PKH', 'PORT', 'ADVERT_PRICE_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE']) {
+        const error = thrown(() => loadConfig({ ...FULL_ENV, [name]: TOKEN }));
+        expect(error.message, name).not.toContain(CREDENTIAL);
+        expect(error.message, name).not.toContain(TOKEN);
+      }
+    });
+
+    test('the manifest is looked at for it too: a token in a value that is published stops the start, unprinted, whole or by its credential', () => {
+      const manifest = loadConfig(FULL_ENV).manifest;
+      expect(() => assertNoTokenIn(JSON.stringify(manifest), TOKEN)).not.toThrow();
+      for (const leaked of [TOKEN, CREDENTIAL, `see ${TOKEN} please`]) {
+        const error = thrown(() => assertNoTokenIn(JSON.stringify({ ...manifest, description: leaked }), TOKEN));
+        expect(error.message, leaked).toMatch(/^the manifest would publish the service token/);
+        expect(error.message).not.toContain(CREDENTIAL);
+      }
+      // A short credential is no secret worth a search: it would be in any text by chance.
+      expect(() => assertNoTokenIn(JSON.stringify(manifest), 'Bearer ab')).not.toThrow();
+      // And loadConfig does it: the token pasted into the contact line, which is published, is caught.
+      const error = thrown(() => loadConfig({ ...FULL_ENV, OPERATOR_CONTACT: TOKEN }));
+      expect(error.message).toMatch(/^the manifest would publish the service token/);
+      expect(error.message).not.toContain(CREDENTIAL);
+    });
   });
 
   test('a key that is not 64 lowercase hex characters is refused with the variable named, and what it was given is never echoed', () => {
@@ -176,6 +244,7 @@ describe('loadConfig', () => {
       expect(OTHER_SETTINGS).toContain('OPERATOR_CONTACT');
       expect(OTHER_SETTINGS).toContain('AGENT_DID');
       expect(OTHER_SETTINGS).toContain('SUPPLIER_PUB_KEY_HEX');
+      expect(OTHER_SETTINGS).toContain('SERVICE_AUTH_HEADER'); // the buyer key must not be handed to the runtime in the line of the token
       expect(OTHER_SETTINGS).not.toContain('PIPELINE_BUYER_PRIV_KEY_HEX');
       expect(new Set(OTHER_SETTINGS).size).toBe(OTHER_SETTINGS.length);
     });
@@ -259,6 +328,41 @@ describe('startService', () => {
     expect(logs.join('\n')).toContain(`listening on 127.0.0.1:${service.port}`);
   });
 
+  test('answers a call without the token of the runtime with 401 and reads one with it; the open routes stay open; the token is not in the log (R50)', async () => {
+    const service = await start(envIn(tempDir()));
+    const base = `http://127.0.0.1:${service.port}`;
+    const job = wire({ source: { url: 'https://example.org/a.pdf' }, task: 'summary' });
+    for (const headers of [{}, { authorization: 'Bearer wrong' }] as Array<Record<string, string>>) {
+      const denied = await fetch(`${base}/`, { method: 'POST', headers, body: job });
+      expect(denied.status).toBe(401);
+      expect(await denied.json()).toStrictEqual({ error: 'unauthorized' });
+    }
+    // With the token the call is read: a body that is not the wire message is a 400, which spends nothing and is not a 401.
+    const read = await fetch(`${base}/`, { method: 'POST', headers: AUTH, body: 'not the wire message' });
+    expect(read.status).toBe(400);
+    expect((await read.json()).error).toBe('bad_wire');
+    expect((await fetch(`${base}/healthz`)).status).toBe(200);
+    expect((await fetch(`${base}/agent.json`)).status).toBe(200);
+    expect(logs.join('\n')).not.toContain(TEST_AUTH.slice('Bearer '.length));
+  });
+
+  test('the token the server requires is the one of the environment: with another token in it, that one works and the usual one does not', async () => {
+    const service = await start(envIn(tempDir(), { SERVICE_AUTH_HEADER: 'Bearer the-token-of-this-environment' }));
+    const url = `http://127.0.0.1:${service.port}/`;
+    expect((await fetch(url, { method: 'POST', headers: AUTH, body: 'x' })).status).toBe(401);
+    expect((await fetch(url, { method: 'POST', headers: { authorization: 'Bearer the-token-of-this-environment' }, body: 'x' })).status).toBe(400);
+  });
+
+  test('a start without the token is refused before anything is made: no chain, no state directory, no listener (R50)', async () => {
+    const dir = join(tempDir(), 'state');
+    let made = 0;
+    for (const SERVICE_AUTH_HEADER of ['', '   ']) {
+      await expect(startService(envIn(dir, { SERVICE_AUTH_HEADER }), optionsWith({ createChain: async () => { made += 1; return new FakeChain(); } }))).rejects.toThrow(/^environment variable SERVICE_AUTH_HEADER is required/);
+    }
+    expect(made).toBe(0);
+    expect(existsSync(dir)).toBe(false);
+  });
+
   test('makes the chain from the key of the environment, and logs the address to fund but never a key', async () => {
     const keys: string[] = [];
     await start(envIn(tempDir()), { createChain: async ({ privateKeyHex }) => { keys.push(privateKeyHex); return new FakeChain({ buyerPkh: BUYER.pkh }); } });
@@ -283,7 +387,7 @@ describe('startService', () => {
     const parts: StartOptions = { createChain: async () => m.chain, fetchImpl: m.fetchImpl, renderer: fakeRenderer({ total: 2 }), clock: () => m.clock.now, sleep: async (ms) => { m.clock.now += ms; } };
     const request = { source: { pdf_b64: toBase64(TWO_PAGES_PDF), mime: 'application/pdf' }, task: 'summary' };
     const service = await start(env, parts);
-    const reply = await fetch(`http://127.0.0.1:${service.port}/`, { method: 'POST', body: wire(request) });
+    const reply = await fetch(`http://127.0.0.1:${service.port}/`, { method: 'POST', headers: AUTH, body: wire(request) });
     const result = await reply.json();
     expect(reply.status).toBe(200);
     expect(result.result).toStrictEqual({ summary: SUMMARY });
@@ -292,7 +396,7 @@ describe('startService', () => {
     expect(JSON.parse(readFileSync(join(dir, 'stranded.json'), 'utf8'))).toStrictEqual([]); // the store is there, and everything was accepted
     // The next job: the OCR supplier signs with a key that is not its own, the receipt fails, and the escrow it left is in the state directory.
     m.ocr.forge = true;
-    const failed = await fetch(`http://127.0.0.1:${service.port}/`, { method: 'POST', body: wire(request) });
+    const failed = await fetch(`http://127.0.0.1:${service.port}/`, { method: 'POST', headers: AUTH, body: wire(request) });
     expect(failed.status).toBe(422);
     expect((await failed.json()).error).toBe('ocr_receipt_failed');
     const kept = JSON.parse(readFileSync(join(dir, 'stranded.json'), 'utf8')) as Array<{ escrow_ref: string; kind: string }>;
@@ -352,7 +456,7 @@ describe('startService', () => {
     const hang = (async () => { asked = true; return new Promise<Response>(() => {}); }) as typeof fetch; // the indexer never answers
     const service = await start(envIn(tempDir()), { fetchImpl: hang });
     const request = { source: { pdf_b64: toBase64(TWO_PAGES_PDF), mime: 'application/pdf' }, task: 'summary' };
-    const job = fetch(`http://127.0.0.1:${service.port}/`, { method: 'POST', body: wire(request) }).then(() => 'answered', () => 'closed');
+    const job = fetch(`http://127.0.0.1:${service.port}/`, { method: 'POST', headers: AUTH, body: wire(request) }).then(() => 'answered', () => 'closed');
     await until(() => asked, 'the job has reached the indexer');
     await service.stop();
     expect(await job).toBe('closed');
@@ -404,7 +508,7 @@ describe('startService', () => {
         sleep: async (ms) => { sleeping = true; await gate; m.clock.now += ms; },
       });
       const url = `http://127.0.0.1:${service.port}`;
-      const job = fetch(`${url}/`, { method: 'POST', body: wire(REQUEST) }).then(async (r) => ({ status: r.status, json: await r.json() }));
+      const job = fetch(`${url}/`, { method: 'POST', headers: AUTH, body: wire(REQUEST) }).then(async (r) => ({ status: r.status, json: await r.json() }));
       job.catch(() => undefined); // a test that closes the connection reads the failure itself
       await until(() => sleeping, 'the job is running');
       return { service, m, url, job, release };
@@ -540,7 +644,7 @@ describe('src/index.ts as a process', () => {
   const cwd = fileURLToPath(new URL('..', import.meta.url));
   // What the service reads, taken out of the environment the tests run in, so that nothing an operator has set can change what a test sees.
   const READ = [
-    'OPERATOR_CONTACT', 'PIPELINE_BUYER_PRIV_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'AGENT_DID', 'AGENT_VERSION', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE',
+    'OPERATOR_CONTACT', 'PIPELINE_BUYER_PRIV_KEY_HEX', 'SUPPLIER_PKH', 'SERVICE_AUTH_HEADER', 'SUPPLIER_PUB_KEY_HEX', 'AGENT_DID', 'AGENT_VERSION', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE',
     'ADVERT_PRICE_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_EXPLORER_URL', 'PIPELINE_BUYER_PKH', 'PIPELINE_BUYER_ADDRESS', 'OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST',
     'PIPELINE_STATE_DIR', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', 'PORT', 'HOST',
   ];
@@ -567,6 +671,9 @@ describe('src/index.ts as a process', () => {
       { label: 'OPERATOR_CONTACT is blank', env: { OPERATOR_CONTACT: '  ', PIPELINE_BUYER_PRIV_KEY_HEX, SUPPLIER_PKH }, message: /environment variable OPERATOR_CONTACT is required/ },
       { label: 'PIPELINE_BUYER_PRIV_KEY_HEX is not set', env: { OPERATOR_CONTACT, SUPPLIER_PKH }, message: /environment variable PIPELINE_BUYER_PRIV_KEY_HEX is required/ },
       { label: 'SUPPLIER_PKH is not set', env: { OPERATOR_CONTACT, PIPELINE_BUYER_PRIV_KEY_HEX }, message: /environment variable SUPPLIER_PKH is required/ },
+      { label: 'SERVICE_AUTH_HEADER is not set', env: { OPERATOR_CONTACT, PIPELINE_BUYER_PRIV_KEY_HEX, SUPPLIER_PKH }, message: /environment variable SERVICE_AUTH_HEADER is required/ },
+      { label: 'SERVICE_AUTH_HEADER is empty', env: { ...FULL_ENV, SERVICE_AUTH_HEADER: '' }, message: /environment variable SERVICE_AUTH_HEADER is required/ },
+      { label: 'the buyer key is in SERVICE_AUTH_HEADER, where the runtime would have it', env: { ...FULL_ENV, SERVICE_AUTH_HEADER: `Bearer ${BUYER.privateKeyHex}` }, message: /environment variable SERVICE_AUTH_HEADER holds the buyer key/ },
       { label: 'PIPELINE_BUYER_PKH is not the key\'s', env: { ...FULL_ENV, PIPELINE_BUYER_PKH: 'cd'.repeat(28) }, message: /environment variable PIPELINE_BUYER_PKH/ },
       { label: 'PIPELINE_BUYER_ADDRESS is not the key\'s', env: { ...FULL_ENV, PIPELINE_BUYER_ADDRESS: new FakeChain({ buyerPkh: SUPPLIER.pkh }).address }, message: /environment variable PIPELINE_BUYER_ADDRESS/ },
       { label: 'the buyer key is in AGENT_DID, where it would be published', env: { ...FULL_ENV, AGENT_DID: BUYER.privateKeyHex }, message: /environment variable AGENT_DID holds the buyer key/ },
@@ -582,6 +689,7 @@ describe('src/index.ts as a process', () => {
       expect(r.stderr, label).toMatch(message);
       expect(r.stdout, label).not.toMatch(/listening/);
       expect(r.stderr + r.stdout, label).not.toContain(BUYER.privateKeyHex);
+      expect(r.stderr + r.stdout, label).not.toContain(TEST_AUTH.slice('Bearer '.length));
     });
   }, 120_000);
 
@@ -604,6 +712,13 @@ describe('src/index.ts as a process', () => {
       expect(manifest.keys.supplier_pkh).toBe(SUPPLIER.pkh);
       expect(stdout).toContain(BUYER_ADDRESS);
       expect(stdout.trim().split('\n').every((line) => line.startsWith('[document-pipeline] '))).toBe(true); // the log is the service's, one line each
+      // The real process requires the token of its environment on POST /, and logs the refusal without it.
+      const denied = await fetch(`http://127.0.0.1:${port}/`, { method: 'POST', body: 'x' });
+      expect(denied.status).toBe(401);
+      expect(await denied.json()).toStrictEqual({ error: 'unauthorized' });
+      expect((await fetch(`http://127.0.0.1:${port}/`, { method: 'POST', headers: AUTH, body: 'x' })).status).toBe(400);
+      await until(() => /request refused: unauthorized/.test(stdout), `the refusal is logged (stdout: ${stdout})`, 10_000);
+      expect(stdout + stderr).not.toContain(TEST_AUTH.slice('Bearer '.length));
       // The first wallet check goes to the node, which is not there: from then on the service says so.
       let status = 200;
       for (let i = 0; i < 300 && status === 200; i++) {

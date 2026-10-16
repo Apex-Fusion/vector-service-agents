@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { readFileSync, readdirSync, existsSync, mkdtempSync, writeFileSync, copyFileSync, rmSync, statSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join, sep } from 'node:path';
 import { parse as parseYaml } from 'yaml';
@@ -427,7 +429,8 @@ test('RUNBOOK: funding is two transfers (5 alone, then 50), and the key is gener
   // Step 7 writes a second plaintext copy of the key, and the runbook says so where it happens, where the key is generated and in Back out.
   assert.match(section(runbook, '4. Make the env file and generate the supplier key'), /Step 7 writes a second plaintext copy of the key to `\/opt\/agent-history\/ops\/wallet`/);
   assert.match(section(runbook, '7. Register the identity'), /That file is a second plaintext copy of the supplier key, next to the one in the env file\./);
-  assert.match(section(runbook, 'Back out'), /4\. Operator: remove the second plaintext copy of the supplier key that step 7 wrote: `shred -u \/opt\/agent-history\/ops\/wallet`/);
+  assert.match(section(runbook, 'Back out'), /4\. Operator: remove the second plaintext copy of the supplier key that step 7 wrote, two files in a directory: `shred -u \/opt\/agent-history\/ops\/wallet\/payment\.skey \/opt\/agent-history\/ops\/wallet\/payment\.vkey`, then `rmdir \/opt\/agent-history\/ops\/wallet` \(`shred` does not take a directory\)\./);
+  assert.doesNotMatch(section(runbook, 'Back out'), /shred -u \/opt\/agent-history\/ops\/wallet`/, 'shred does not take a directory');
   assert.match(runbook, /gen-keypair\.ts --network 1/);
   assert.match(runbook, /chmod 600 \.env\.agent-history/);
   assert.match(runbook, /read -rs GHCR_TOKEN/);
@@ -612,7 +615,10 @@ const START = read('agents/document-pipeline/src/start.ts');
 const pComposeText = read('deploy/apex-web/docker-compose.document-pipeline.yml');
 const pCompose = parseYaml(pComposeText);
 const pExampleText = read('deploy/apex-web/.env.document-pipeline.example');
-const pExample = parseEnv(pExampleText);
+// The one quoted value in the Pipeline example is SERVICE_AUTH_HEADER="" : the value that step 4 writes in its place has a space in it, and the ops scripts read the file with
+// the shell's ".", so it is quoted. The map the checks below read has the quotes off a quoted value, as the shell and Docker Compose take them off.
+const pExampleRaw = parseEnv(pExampleText);
+const pExample = Object.fromEntries(Object.entries(pExampleRaw).map(([name, value]) => [name, /^"(.*)"$/.exec(value)?.[1] ?? value]));
 const pRunbook = read('deploy/apex-web/RUNBOOK-document-pipeline.md');
 const pSnippet = read('deploy/apex-web/Caddyfile.document-pipeline.snippet');
 const pDockerfile = read('agents/document-pipeline/Dockerfile');
@@ -633,6 +639,7 @@ function inPipeline(code, arg) {
 }
 const P_SUPPLIER = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS'];
 const P_BUYER = ['PIPELINE_BUYER_PRIV_KEY_HEX', 'PIPELINE_BUYER_PUB_KEY_HEX', 'PIPELINE_BUYER_PKH', 'PIPELINE_BUYER_ADDRESS'];
+const P_TOKEN = ['SERVICE_AUTH_HEADER']; // the token between the two containers (ruling R50)
 const P_CHAIN = ['NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO'];
 const P_ADVERT = ['ADVERT_REF', 'ADVERT_CAPABILITY_ID', 'ADVERT_MODEL', 'ADVERT_PRICE_LOVELACE', 'ADVERT_SUPPLIER_BOND_LOVELACE', 'ADVERT_BUYER_BOND_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_ENDPOINT_URL', 'ADVERT_DETAIL_URI', 'ADVERT_DETAIL_HASH'];
 const P_MANIFEST = ['OPERATOR_CONTACT', 'AGENT_DID', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_EXPLORER_URL'];
@@ -647,7 +654,7 @@ test('Pipeline compose: the project and two containers have fixed names, the run
   assert.equal(pService.container_name, 'document-pipeline-service');
   assert.deepEqual(pAgent.ports, ['127.0.0.1:8084:8080']);
   assert.notDeepEqual(pAgent.ports, agent.ports, 'not the port of Agent History');
-  assert.equal(pService.ports, undefined, 'the service has no authentication: anything that can post to it can spend from the buyer wallet, so no port is published');
+  assert.equal(pService.ports, undefined, 'the service answers POST / only with the token of the runtime (R50), and no port is published all the same: the token is the second lock, and anything that holds it can spend from the buyer wallet');
   assert.deepEqual(pAgent.networks, ['umami_default']);
   assert.deepEqual(pService.networks, ['umami_default']);
   assert.deepEqual(pCompose.networks.umami_default, { external: true, name: 'umami_default' });
@@ -714,6 +721,23 @@ test('Pipeline compose: each container gets only its own key, the other one is b
   assert.ok(!('PIPELINE_BUYER_PRIV_KEY_HEX' in pService.environment), 'the service reads the buyer key from the env file');
 });
 
+test('Pipeline compose: the token between the containers (R50) is blanked in neither, so that both read the one value from the env file, and the comments say what each side does with it and when to recreate', () => {
+  // The runtime sends SERVICE_AUTH_HEADER as the authorization header of every call (vector-agent-template c4c378a, agent/src/executor/httpCallout.ts), and the service requires it on POST /.
+  assert.ok(!('SERVICE_AUTH_HEADER' in pAgent.environment), 'the runtime reads the token from the env file: a blank here would send no header');
+  assert.ok(!('SERVICE_AUTH_HEADER' in pService.environment), 'the service reads the token from the env file: a blank here would stop the start');
+  assert.ok('SERVICE_AUTH_HEADER' in pExample, 'the env file has the line, so both containers get it');
+  assert.ok(pComposeText.includes('# SERVICE_AUTH_HEADER is the one value both need, so neither blanks it: the runtime sends it as the authorization header of every call to the service (SERVICE_URL below), and the service requires it on POST / (ruling R50).'));
+  assert.ok(pComposeText.includes('    # The service answers POST / only to a call that carries SERVICE_AUTH_HEADER, which the runtime sends, and no port is published: the network is shared with other stacks, and a job spends from the buyer wallet.'));
+  assert.doesNotMatch(pComposeText, /no authentication/i, 'the comment of before R50');
+  // After any change to the env file the containers are recreated, and only while no job runs: a stop during a job is the one thing that can cut a paid job.
+  assert.ok(pComposeText.includes("# After any change to it, recreate the containers, and only when the runtime's /status says free (curl -s http://127.0.0.1:8084/status): a stop during a job can cut a paid job."));
+  assert.ok(pComposeText.includes('docker compose -f docker-compose.document-pipeline.yml up -d --force-recreate <service>. restart does not re-read it.'));
+  assert.ok(pComposeText.includes('A change to SERVICE_AUTH_HEADER needs both containers recreated.'));
+  // The runtime sends the header only when its setting is not empty (the template's executor), so a service started without a token would refuse every call, or, if it did not check, answer anyone:
+  // the service reads it as a required setting and stops at start without it.
+  assert.ok(START.includes("requiredEnv('SERVICE_AUTH_HEADER', env.SERVICE_AUTH_HEADER,"), 'the service refuses to start without the token');
+});
+
 test('Pipeline compose: the processing window and the service timeout are the spec terms and nest as the runtime requires; the ports are the ones of the image', () => {
   assert.equal(Number(pAgent.environment.ADVERT_MAX_PROCESSING_MS), P_TERMS.window);
   assert.equal(Number(pAgent.environment.SERVICE_TIMEOUT_MS), P_TERMS.timeout);
@@ -743,13 +767,13 @@ test('Pipeline compose: the state is a named volume at /data, memory is limited,
   assert.match(pComposeText, /renders every page at 150 dpi whatever its size/);
 });
 
-test('Pipeline env example: the blocks in order (supplier, buyer, chain, advert, manifest, hires), known names only, each once; every secret is empty and nothing looks like key material but the public key hash of the OCR supplier', () => {
-  assert.deepEqual(Object.keys(pExample), [...P_SUPPLIER, ...P_BUYER, ...P_CHAIN, ...P_ADVERT, ...P_MANIFEST, ...P_HIRES]);
+test('Pipeline env example: the blocks in order (supplier, buyer, token, chain, advert, manifest, hires), known names only, each once; every secret is empty and nothing looks like key material but the public key hash of the OCR supplier', () => {
+  assert.deepEqual(Object.keys(pExample), [...P_SUPPLIER, ...P_BUYER, ...P_TOKEN, ...P_CHAIN, ...P_ADVERT, ...P_MANIFEST, ...P_HIRES]);
   const { OCR_ALLOWLIST_SUPPLIER_PKH, ...rest } = pExample;
   assert.deepEqual(keyProblems(rest), []);
   assert.deepEqual(keyProblems(pAgent.environment), [], 'the compose environment of the runtime');
   assert.deepEqual(keyProblems(pService.environment), [], 'the compose environment of the service');
-  for (const name of [...P_SUPPLIER, ...P_BUYER, 'ADVERT_REF', 'ADVERT_DETAIL_HASH', 'AGENT_DID', 'ADVERT_EXPLORER_URL']) assert.equal(pExample[name], '', `${name} is filled by the runbook`);
+  for (const name of [...P_SUPPLIER, ...P_BUYER, ...P_TOKEN, 'ADVERT_REF', 'ADVERT_DETAIL_HASH', 'AGENT_DID', 'ADVERT_EXPLORER_URL']) assert.equal(pExample[name], '', `${name} is filled by the runbook`);
   // The one key-shaped value is the key hash of the OCR supplier the Pipeline hires, which is public and not ours.
   assert.match(OCR_ALLOWLIST_SUPPLIER_PKH, /^[0-9a-f]{56}$/);
   assert.match(pExampleText, /^# The OCR supplier is one first-party key hash, which is public and not ours\./m);
@@ -759,14 +783,68 @@ test('Pipeline env example: the blocks in order (supplier, buyer, chain, advert,
   assert.match(pExampleText, /^# OPERATOR_CONTACT is required: the service stops at start without it/m);
 });
 
-test('Pipeline env example: the header says the copy holds two keys and never enters git, and the .gitignore of the repository covers it', () => {
+test('Pipeline env example: the header says the copy holds two keys and the token and never enters git, and the .gitignore of the repository covers it', () => {
   const [first, second] = pExampleText.split('\n');
-  assert.equal(first, '# Copy to .env.document-pipeline next to the compose file (mode 600). Names and placeholders only: this example holds no key, token or secret.');
-  assert.equal(second, "# The copy holds two keys, the supplier key (the runtime's) and the buyer key (the service's), and it never enters git: the repository's .gitignore covers .env.* except *.example.");
+  assert.equal(first, '# Copy to .env.document-pipeline next to the compose file (mode 600). Names and placeholders only: this example holds no key, no secret and no usable token (SERVICE_AUTH_HEADER is empty here).');
+  assert.equal(second, "# The copy holds two keys, the supplier key (the runtime's) and the buyer key (the service's), and the token between the two containers, and it never enters git: the repository's .gitignore covers .env.* except *.example.");
   const ignore = read('.gitignore').split('\n');
   assert.ok(ignore.includes('.env.*') && ignore.includes('!.env.*.example'), 'the rule the header quotes');
   // A file named .env.document-pipeline matches .env.*, and the example matches the exception.
   assert.ok(/^\.env\..*$/.test('.env.document-pipeline') && /^\.env\..*\.example$/.test('.env.document-pipeline.example'));
+});
+
+// The runbook's shell is run here, in bash, against stand-ins for docker and openssl. A machine without bash and GNU sed skips these tests; CI has both.
+const HAVE_BASH = (() => { try { return execFileSync('bash', ['-c', 'sed --version | grep -q "GNU sed" && echo yes'], { encoding: 'utf8' }).trim() === 'yes'; } catch { return false; } })();
+const NEEDS_BASH = { skip: HAVE_BASH ? false : 'needs bash and GNU sed' };
+const runBash = (script, cwd) => { const r = spawnSync('bash', ['-s'], { input: script, cwd, encoding: 'utf8' }); return { status: r.status, stdout: r.stdout, stderr: r.stderr }; };
+
+test('Pipeline env example: the token line (R50) is empty and in quotes, sits between the buyer block and the chain block, and its comments say who sends it, who requires it, why it is quoted and why it is empty', () => {
+  const lines = pExampleText.split('\n');
+  const at = lines.indexOf('SERVICE_AUTH_HEADER=""');
+  assert.ok(at > 0, 'the line is there, empty, in quotes');
+  assert.equal(lines.filter((l) => l.startsWith('SERVICE_AUTH_HEADER=')).length, 1);
+  assert.equal(pExampleRaw.SERVICE_AUTH_HEADER, '""');
+  assert.equal(pExample.SERVICE_AUTH_HEADER, '', 'taken off its quotes it is empty: the service stops at start with an empty token, so a step that was forgotten leaves no open service');
+  assert.equal(lines[at - 5], 'PIPELINE_BUYER_ADDRESS=', 'after the buyer block');
+  assert.equal(lines[at + 1], '# Chain', 'before the chain block');
+  assert.deepEqual(lines.slice(at - 4, at), [
+    '# The token between the two containers (ruling R50). The runtime sends this value, as it stands, as the authorization header of every call to the service, and the service answers POST / only to a call that carries it.',
+    '# Both containers read it from this file and neither blanks it. Step 4 makes it with openssl rand -hex 32, in the form SERVICE_AUTH_HEADER="Bearer <64 hex>" (71 characters).',
+    '# The quotes are needed: the ops scripts read this file with the shell\'s ".", and an unquoted value with a space in it would run the hex as a command and stop with exit 127. Docker Compose takes the quotes off.',
+    '# Empty here on purpose: the service stops at start without it (environment variable SERVICE_AUTH_HEADER is required), so a step that was forgotten cannot leave a service that answers anyone.',
+  ]);
+  assert.equal('Bearer '.length + 64, 71, 'the length the runbook checks');
+  // The example holds no token-shaped value anywhere: the one line is empty, and the form is only in a comment.
+  assert.doesNotMatch(pExampleText, /^SERVICE_AUTH_HEADER="?Bearer/m);
+  assert.doesNotMatch(pExampleText, /Bearer [0-9a-f]{16}/);
+});
+
+test('Pipeline env example: the quotes are what lets the ops scripts read the file with ".": a quoted token reads as one value, an unquoted one runs the hex as a command and stops with exit 127', NEEDS_BASH, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dp-token-'));
+  try {
+    const hex = 'ab'.repeat(32);
+    writeFileSync(join(dir, 'quoted.env'), `FIRST=1\nSERVICE_AUTH_HEADER="Bearer ${hex}"\nLAST=2\n`);
+    writeFileSync(join(dir, 'unquoted.env'), `FIRST=1\nSERVICE_AUTH_HEADER=Bearer ${hex}\nLAST=2\n`);
+    // The ops scripts run with set -e, so a line of the file that fails ends them.
+    const quoted = runBash('set -e\n. ./quoted.env\necho "length ${#SERVICE_AUTH_HEADER} last $LAST"\n', dir);
+    assert.deepEqual([quoted.status, quoted.stdout.trim()], [0, 'length 71 last 2']);
+    const unquoted = runBash('set -e\n. ./unquoted.env\necho reached\n', dir);
+    assert.equal(unquoted.status, 127, 'the shell took "Bearer" for an assignment before a command that the hex names');
+    assert.equal(unquoted.stdout, '', 'and went no further');
+    assert.match(unquoted.stderr, /command not found/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Pipeline env example: a token of the form the runbook makes (Bearer and 64 hex digits, 71 characters) is accepted by the service at start, and an empty one is refused with the variable named', () => {
+  const base = { OPERATOR_CONTACT: TEST_CONTACT, PIPELINE_BUYER_PRIV_KEY_HEX: '01'.repeat(32), SUPPLIER_PKH: 'a'.repeat(56) };
+  const token = `Bearer ${'ab'.repeat(32)}`;
+  const code = "import { loadConfig } from './src/start.ts'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((env) => { try { return { length: loadConfig(env).authHeader.length }; } catch (e) { return { error: e.message }; } })));";
+  const [accepted, empty, absent] = inPipeline(code, [{ ...base, SERVICE_AUTH_HEADER: token }, { ...base, SERVICE_AUTH_HEADER: '' }, base]);
+  assert.deepEqual(accepted, { length: 71 });
+  for (const refused of [empty, absent]) assert.match(refused.error, /^environment variable SERVICE_AUTH_HEADER is required \(.+\) and is not set$/);
+  assert.ok(!JSON.stringify([accepted, empty, absent]).includes(token), 'no answer shows the token');
 });
 
 test('Pipeline env example: every name the service code reads is in the example, in the compose environment, or has a default in the code', () => {
@@ -779,13 +857,14 @@ test('Pipeline env example: every name the service code reads is in the example,
   const DEFAULT_IN_CODE = ['AGENT_VERSION', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_KOIOS_URL', 'VECTOR_EXPLORER_URL', 'KOIOS_URL', 'INDEXER_URL'];
   assert.deepEqual([...names].filter((n) => !(n in pExample) && !(n in pService.environment) && !DEFAULT_IN_CODE.includes(n)), []);
   for (const n of DEFAULT_IN_CODE) assert.ok(!(n in pExample), `${n} stays unset in the example`);
-  for (const n of ['OPERATOR_CONTACT', 'PIPELINE_BUYER_PRIV_KEY_HEX', 'SUPPLIER_PKH', 'OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST', 'PIPELINE_STATE_DIR']) assert.ok(names.has(n), `the service reads ${n}`);
+  for (const n of ['OPERATOR_CONTACT', 'PIPELINE_BUYER_PRIV_KEY_HEX', 'SUPPLIER_PKH', 'SERVICE_AUTH_HEADER', 'OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST', 'PIPELINE_STATE_DIR']) assert.ok(names.has(n), `the service reads ${n}`);
   assert.ok(!names.has('SUPPLIER_PRIV_KEY_HEX'), "no source of the service reads the supplier key: it is the runtime's");
 });
 
 test('Pipeline env example: the runtime gets every name the pinned template lists for CAPABILITY_KIND=custom', () => {
   // The same list as for Agent History: from .env.example of vector-agent-template at c4c378a.
-  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'PORT'];
+  // SERVICE_AUTH_HEADER is optional in the template ("" sends no header); this pack sets it, so that the runtime sends the token the service requires (R50).
+  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'SERVICE_AUTH_HEADER', 'PORT'];
   assert.deepEqual(NEEDED.filter((n) => !(n in pExample) && !(n in pAgent.environment)), []);
   assert.equal(pExample.NETWORK_ID, '1');
   assert.equal(pExample.LIVE_CHAIN, '1');
@@ -827,6 +906,21 @@ test('Pipeline env example: the status word is proposed since 2026-10-15, and th
   assert.equal(withExample.terms.max_processing_ms, P_TERMS.window);
   assert.equal(withExample.capability_id, pExample.ADVERT_CAPABILITY_ID);
   assert.match(pExampleText, /^# Stays empty: the advert's own transaction id cannot be inside the manifest the advert hashes\.$/m);
+});
+
+test('Pipeline env example: the note on the manifest block names the two advert terms among the values that must be final before the hash, and they are in the manifest', () => {
+  assert.ok(pExampleText.includes(
+    '# Manifest (service). What the service serves at /agent.json is hashed into the advert, so every line in this block, ADVERT_PRICE_LOVELACE and ADVERT_MAX_PROCESSING_MS above (the manifest publishes both as its terms),\n'
+    + '# and the identity lines above (the supplier key hash and public key, the buyer key hash), must be final before the hash is taken. A change afterwards means a retired advert and a new one.\n',
+  ));
+  // True to the code: each of the two values changes the bytes that are hashed.
+  const [base, priced, windowed] = renderManifests([{ OPERATOR_CONTACT: TEST_CONTACT }, { OPERATOR_CONTACT: TEST_CONTACT, ADVERT_PRICE_LOVELACE: '7000000' }, { OPERATOR_CONTACT: TEST_CONTACT, ADVERT_MAX_PROCESSING_MS: '1900000' }], 'agents/document-pipeline');
+  assert.equal(priced.terms.price_lovelace, 7_000_000);
+  assert.equal(windowed.terms.max_processing_ms, 1_900_000);
+  assert.notEqual(JSON.stringify(priced), JSON.stringify(base));
+  assert.notEqual(JSON.stringify(windowed), JSON.stringify(base));
+  // The note comes before the values it speaks of are read as part of the advert: the terms are in the advert block, above it.
+  assert.ok(pExampleText.indexOf('ADVERT_PRICE_LOVELACE=') < pExampleText.indexOf('# Manifest (service).') && pExampleText.indexOf('ADVERT_MAX_PROCESSING_MS=') < pExampleText.indexOf('# Manifest (service).'));
 });
 
 test('Pipeline Caddy snippet: the site block is the second endpoint host, the manifest goes to the service, everything else to the runtime, and it is last in the file; the README shows the same block', () => {
@@ -873,10 +967,17 @@ test('Pipeline README section: the second stack beside Agent History, with its t
   for (const part of [
     'The working directory on the box is `/opt/document-pipeline/repo/deploy/apex-web`',
     'The compose project is `document-pipeline`.',
-    'shipped to the box as a git bundle',
+    'inside a checkout of this repository that is shipped to the box as a git bundle, because the box has no GitHub credentials',
     'The runtime holds the supplier key. The service holds a second, separate key, the buyer key',
-    'The service has no authentication, so port 9092 is never published',
+    '- **A token on the service.** The service answers `POST /` only to a call whose `authorization` header is the token in `SERVICE_AUTH_HEADER`, which the runtime sends with every call (ruling R50).',
+    'Both containers read it from the env file, and the operator makes it in step 4 of the runbook.',
+    'Any other call gets 401 before its body is read, and `GET /healthz` and `GET /agent.json` need no header.',
+    'Port 9092 is never published to the host all the same.',
     'reachable over `umami_default` by every container on that network, so the host administrator keeps `umami_default` to stacks that are trusted',
+    'the token is the second lock, and anything that holds it can start a job that spends from the buyer wallet',
+    'and while `PIPELINE_BUYER_PRIV_KEY_HEX`, `SUPPLIER_PKH` or `SERVICE_AUTH_HEADER` is not set',
+    'After any change, recreate, when `curl -s http://127.0.0.1:8084/status` says `free` (a stop during a job can cut a paid job): ',
+    'A change to `SERVICE_AUTH_HEADER` needs both containers recreated.',
     '`document-pipeline-state`, mounted at `/data`',
     '`docker compose down` keeps it, and `down -v` or `docker volume rm` would delete it',
     '`mem_limit: 1536m`', '`stop_grace_period: 300s`',
@@ -889,6 +990,7 @@ test('Pipeline README section: the second stack beside Agent History, with its t
     '[RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md), under "Back out"',
   ]) assert.ok(pSection.includes(part), `the section says: ${part}`);
   assert.ok(!pSection.includes('retire-advert.ts'), 'the retire command lives in one place, the runbook');
+  assert.doesNotMatch(pSection, /no authentication|was shipped/i, 'the sentences of before R50 and before the Pipeline was said to be proposed: nothing has been shipped yet');
   // The part of the note that is about Agent History points at the second stack, so that a reader who opens it for the Pipeline finds the section.
   assert.ok(readme.includes('The Document Pipeline is a second stack on the same box. It has its own section at the end of this note and its own runbook, [RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md).'));
   assert.ok(readme.indexOf('The Document Pipeline is a second stack on the same box.') < readme.indexOf('\n## What will land on the box\n'), 'said at the top, before the Agent History tables');
@@ -932,7 +1034,7 @@ test('Pipeline RUNBOOK: the differences from Agent History are listed in one pla
   const head = pRunbook.slice(0, pRunbook.indexOf('\n## Funds\n'));
   for (const part of [
     '- **Two keys.** The runtime holds the supplier key. The service holds a second, separate key, the buyer key,',
-    '- **The service spends.**', 'its port 9092 is never published',
+    '- **The service spends.** Every job posts escrows from the buyer wallet. The service answers `POST /` only to a call that carries the token the runtime sends (`SERVICE_AUTH_HEADER`, made in step 4, ruling R50) and gives any other call 401, because the network is shared with other stacks. Its port 9092 is never published all the same, and a job is refused up front, spending nothing, when the buyer wallet cannot fund it.',
     '- **A window of 30 min, not 5.**', '`max_processing_ms` is 1800000', '`SERVICE_TIMEOUT_MS` is 1680000', 'up to 27 min', 'an interim `102 Processing` line to the runtime every 60 s',
     '- **State and a clean stop.**', '`stranded.json`', '`document-pipeline-state`', '`stop_grace_period: 300s`', 'a memory limit of 1536m',
     '- **No registry.**', 'the box has no GitHub credentials',
@@ -946,6 +1048,7 @@ test('Pipeline RUNBOOK: the differences from Agent History are listed in one pla
     '| State volume | `document-pipeline-state`, mounted at `/data` |',
     'adverts are immutable, so everything the manifest contains',
   ]) assert.ok(head.includes(part), `the head says: ${part}`);
+  assert.doesNotMatch(head, /no authentication/i, 'the sentence of before R50');
   // The facts it quotes are the code's.
   const server = read('agents/document-pipeline/src/server.ts');
   assert.ok(server.includes('export const HEARTBEAT_MS = 60_000;'));
@@ -962,7 +1065,8 @@ test('Pipeline RUNBOOK funds: two keys, 5 alone then 50 for the supplier and 5 a
   assert.ok(buyer.startsWith("| Buyer key (the service's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral for the Accept and the Reclaim of the sub-jobs, never touched), then 100 units |"));
   assert.ok(funds.includes('The Foundation funds two keys. Nobody pastes either key into a chat.'));
   assert.ok(funds.includes('Two transfers, because a wallet funded in one lump can have its collateral spent as change by an ordinary transaction.'));
-  assert.ok(buyer.includes('the OCR hops at about 2.3 net per page plus the chat hop, about 19 gross for a job of five pages'));
+  assert.ok(buyer.includes('the OCR hops at about 2.2 net per page (price 0.2, supplier bond 1, fees about 1) plus the chat hop, about 19 gross for a job of five pages'));
+  assert.doesNotMatch(buyer, /2\.3 net/, 'the figure of before it was given with its parts');
   assert.ok(buyer.includes('(max_pages + 1) x 4.5') && buyer.includes('27 for five pages') && buyer.includes('`insufficient_float` (503)'));
   // The figures are the spec's and the code's.
   assert.ok(PSPEC.includes('at five pages the Pipeline spends about 19 in locks and fees to earn 5'));
@@ -990,36 +1094,223 @@ test('Pipeline RUNBOOK steps 1 to 3: the repository goes over as a git bundle an
   assert.ok(three.includes('It ends with `Image document-pipeline-agent Built`.'));
 });
 
-test('Pipeline RUNBOOK step 4: gen-keypair runs twice on the box, the second set goes into the buyer block, nothing secret is printed, the lengths and the difference of the two keys are checked, and the contact is set', () => {
+test('Pipeline RUNBOOK step 4: the env file is made once and never over a file that is there, each key and the token go only into an empty line, the buyer key has a block of its own, nothing secret is printed, the lengths and the difference of the two keys are checked, the offline copy is refreshed after a regeneration, and the contact is set', () => {
   const four = section(pRunbook, '4. Make the env file and generate the two keys');
   for (const part of [
-    'The two keys are generated on the box and are never sent anywhere.', 'Nothing secret is printed',
+    'The two keys and the token between the two containers are generated on the box and are never sent anywhere.', 'Nothing secret is printed',
+    'This step makes things once and replaces nothing.', 'A block that is run a second time says `refusing:` and changes nothing',
+    'a copy of the example over the env file would replace both keys at once',
+    'empty its four lines by hand (the failure table says how) and run only the block of that key',
     'umask 077', 'cp .env.document-pipeline.example .env.document-pipeline', 'chmod 600 .env.document-pipeline',
     'docker compose -f docker-compose.document-pipeline.yml run --rm --no-deps -T agent \\\n    node_modules/.bin/tsx agent/src/cli/gen-keypair.ts --network 1',
     'privateKeyHex:${1}_PRIV_KEY_HEX publicKeyHex:${1}_PUB_KEY_HEX pubKeyHash:${1}_PKH address:${1}_ADDRESS',
-    'keypair_into SUPPLIER && keypair_into PIPELINE_BUYER',
-    "awk -F= '/^(SUPPLIER|PIPELINE_BUYER)_(PRIV_KEY_HEX|PUB_KEY_HEX|PKH|ADDRESS)=/ { print $1, length($2) }' .env.document-pipeline",
+    "awk -F= '/^(SUPPLIER|PIPELINE_BUYER)_(PRIV_KEY_HEX|PUB_KEY_HEX|PKH|ADDRESS)=|^SERVICE_AUTH_HEADER=/ { v = $2; gsub(/\"/, \"\", v); print $1, length(v) }' .env.document-pipeline",
     "grep -c '^OPERATOR_CONTACT=[^<[:space:]]' .env.document-pipeline", "never a person's address", '`OPERATOR_CONTACT` is required',
     'The example already carries `AGENT_STATUS_CHIP=proposed` and `AGENT_STATUS_SINCE=2026-10-15`',
     'this file is the only copy of either until step 7. There is no recovery phrase',
+    "Copy `.env.document-pipeline` to the operator's encrypted offline store now, before either address receives anything, and copy it again after any regeneration of a key or of the token: a copy made before holds the old key, and the new one has no copy at all.",
     'Step 7 writes a second plaintext copy of the supplier key to the directory `/opt/document-pipeline/ops/wallet`',
     'The buyer key never has a second copy on the box.',
+    // The token: what it is, who sends it, who requires it, and why it is written in quotes.
+    'The token is the value of `SERVICE_AUTH_HEADER`. The runtime sends it as the `authorization` header of every call to the service, and the service answers `POST /` only to a call that carries exactly that value (ruling R50)',
+    'Both containers read it from the env file, and neither blanks it.',
+    'It is written in quotes, `SERVICE_AUTH_HEADER="Bearer <64 hex>"`: the ops scripts read the file with the shell\'s `.`, and without the quotes the shell would run the hex as a command and stop with exit 127.',
+    'Docker Compose takes the quotes off, so the containers see `Bearer ` and the 64 hex digits, 71 characters.',
+    'openssl rand -hex 32',
   ]) assert.ok(four.includes(part), `step 4 says: ${part}`);
-  assert.equal(four.split('gen-keypair.ts --network 1').length - 1, 1, 'one call, inside the function that runs twice');
-  for (const line of ['SUPPLIER_PRIV_KEY_HEX 64', 'SUPPLIER_PUB_KEY_HEX 64', 'SUPPLIER_PKH 56', 'SUPPLIER_ADDRESS 58', 'PIPELINE_BUYER_PRIV_KEY_HEX 64', 'PIPELINE_BUYER_PUB_KEY_HEX 64', 'PIPELINE_BUYER_PKH 56', 'PIPELINE_BUYER_ADDRESS 58']) assert.ok(four.includes('`' + line + '`'), `the lengths: ${line}`);
-  // The names the function writes are exactly the names of the two blocks of the example, in the order the blocks have them.
+  assert.equal(four.split('gen-keypair.ts --network 1').length - 1, 1, 'one call, inside the function that runs once for each key');
+  for (const line of ['SUPPLIER_PRIV_KEY_HEX 64', 'SUPPLIER_PUB_KEY_HEX 64', 'SUPPLIER_PKH 56', 'SUPPLIER_ADDRESS 58', 'PIPELINE_BUYER_PRIV_KEY_HEX 64', 'PIPELINE_BUYER_PUB_KEY_HEX 64', 'PIPELINE_BUYER_PKH 56', 'PIPELINE_BUYER_ADDRESS 58', 'SERVICE_AUTH_HEADER 71']) assert.ok(four.includes('`' + line + '`'), `the lengths: ${line}`);
+  assert.ok(four.includes('All nine are needed.'));
+  // The names the function writes are exactly the names of the two key blocks of the example, in the order the blocks have them.
   const written = ['SUPPLIER', 'PIPELINE_BUYER'].flatMap((p) => [`${p}_PRIV_KEY_HEX`, `${p}_PUB_KEY_HEX`, `${p}_PKH`, `${p}_ADDRESS`]);
   assert.deepEqual(written, [...P_SUPPLIER, ...P_BUYER]);
-  // The two keys must differ, and the runbook checks it from the public key hashes.
+  // The two keys must differ, and the runbook checks it from the public key hashes. If they do not, the way out is the buyer block alone, not step 4 again.
   assert.ok(four.includes("\"$(sed -n 's/^SUPPLIER_PKH=//p' .env.document-pipeline)\" != \"$(sed -n 's/^PIPELINE_BUYER_PKH=//p' .env.document-pipeline)\""));
-  assert.ok(four.includes('THE TWO KEYS ARE THE SAME'));
-  // The function does not echo what it reads: no echo, printf or cat of the key variables in the block.
-  const block = [...four.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1]).find((b) => b.includes('keypair_into() {'));
-  assert.ok(block, 'the block that makes the keys');
-  assert.doesNotMatch(block, /\b(echo|printf)\b[^\n]*\$(json|value)\b(?![^\n]*\|)/, 'nothing prints the keypair or a value except into sed');
-  assert.match(block, /printf '%s\\n' "\$json" \| sed -n /);
-  assert.ok(block.indexOf('chmod 600') < block.indexOf('keypair_into SUPPLIER'), 'the file is private before a key is written into it');
+  assert.ok(four.includes('THE TWO KEYS ARE THE SAME: stop, empty the four buyer lines and run the buyer block again'));
+  // The blocks, in order: the file and the functions; the supplier key; the buyer key; the token; the lengths; the difference; the contact.
+  const blocks = [...four.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1]);
+  assert.equal(blocks.length, 7);
+  const [head, supplier, buyer, token, lengths, distinct, contact] = blocks;
+  assert.ok(head.includes('keypair_into() {') && head.includes('token_into() {'));
+  assert.equal(supplier, 'cd /opt/document-pipeline/repo/deploy/apex-web\nkeypair_into SUPPLIER\n');
+  assert.equal(buyer, 'cd /opt/document-pipeline/repo/deploy/apex-web\nkeypair_into PIPELINE_BUYER\n', 'the buyer key has a block of its own, so that it can be made again alone');
+  assert.equal(token, 'cd /opt/document-pipeline/repo/deploy/apex-web\ntoken_into\n');
+  assert.ok(lengths.startsWith("awk -F= '") && distinct.startsWith('[ "$(sed -n') && contact.startsWith("grep -c '^OPERATOR_CONTACT="));
+  assert.doesNotMatch(four, /keypair_into SUPPLIER &&|&& keypair_into PIPELINE_BUYER/, 'no chain that makes both keys in one go');
+  assert.equal(four.split('keypair_into PIPELINE_BUYER').length - 1, 1, 'the buyer key is made in one place');
+  // The file is made only when there is none, after umask 077, and nowhere else: one cp, in the else of the test.
+  assert.equal(four.split('cp .env.document-pipeline.example').length - 1, 1);
+  assert.ok(head.endsWith('if [ -e .env.document-pipeline ]; then\n  echo "refusing: the env file exists, and it is kept as it is" >&2\nelse\n  cp .env.document-pipeline.example .env.document-pipeline && chmod 600 .env.document-pipeline\nfi\n'));
+  assert.ok(head.indexOf('umask 077') < head.indexOf('cp .env.document-pipeline.example'), 'private from the first byte');
+  // The functions write into an empty place only, and look before they make anything: a key is not made, and openssl not called, for a line that has a value.
+  for (const guard of [
+    'refusing: there is no .env.document-pipeline in this folder',
+    'refusing: ${1}_PRIV_KEY_HEX already has a value, and a key that may be funded is never replaced',
+    'refusing: SERVICE_AUTH_HEADER already has a value; to replace it, empty the line first',
+  ]) assert.ok(head.includes(guard), `the functions say: ${guard}`);
+  assert.ok(head.indexOf('${1}_PRIV_KEY_HEX already has a value') < head.indexOf('gen-keypair.ts'), 'the key is looked for before gen-keypair is called');
+  assert.ok(head.indexOf('SERVICE_AUTH_HEADER already has a value') < head.indexOf('openssl rand -hex 32'), 'the token is looked for before openssl is called');
+  assert.ok(head.includes('sed -i "s|^SERVICE_AUTH_HEADER=.*|SERVICE_AUTH_HEADER=\\"Bearer $value\\"|" .env.document-pipeline'), 'the token is written in quotes');
+  assert.ok(head.includes('[ "${#value}" = 64 ]'), 'and only if openssl gave 64 characters');
+  // Nothing prints the keypair or a value except into sed.
+  assert.doesNotMatch(head, /\b(echo|printf)\b[^\n]*\$(json|value)\b(?![^\n]*\|)/, 'nothing prints the keypair or a value except into sed');
+  assert.match(head, /printf '%s\\n' "\$json" \| sed -n /);
   assert.ok(four.indexOf('keypair_into SUPPLIER') < four.indexOf("grep -c '^OPERATOR_CONTACT="), 'the contact comes after the keys');
+  assert.ok(four.indexOf('token_into\n') < four.indexOf("awk -F= '"), 'the lengths come after the keys and the token');
+  // The contact: a role address, and no word about whose address another agent used.
+  assert.doesNotMatch(four, /agent-history\/repo\/deploy\/apex-web\/\.env\.agent-history|first candidate/);
+});
+
+// ---- Step 4 run in bash ----
+// The blocks of step 4 are run as they stand (the cd lines are the box's, so they are taken out and the temporary folder is the working directory) with stand-ins for docker and openssl,
+// which check the arguments they are called with. What is checked is what the step promises: it makes what is missing, it fills nothing that is filled, and it prints no secret.
+const STUBS = String.raw`STUB_N="$PWD/.stub-n"
+docker() {
+  [ "$*" = "compose -f docker-compose.document-pipeline.yml run --rm --no-deps -T agent node_modules/.bin/tsx agent/src/cli/gen-keypair.ts --network 1" ] || { echo "unexpected docker call: $*" >&2; return 9; }
+  n=$(( $(cat "$STUB_N" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STUB_N"
+  printf '{\n  "privateKeyHex": "%064x",\n  "publicKeyHex": "%064x",\n  "pubKeyHash": "%056x",\n  "address": "addr1%053x"\n}\n' $((n * 1000003)) $((n * 7919)) $((n * 104729)) "$n"
+}
+openssl() {
+  [ "$*" = "rand -hex 32" ] || { echo "unexpected openssl call: $*" >&2; return 9; }
+  n=$(( $(cat "$STUB_N" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STUB_N"
+  printf '%064x\n' $((n * 15485863))
+}
+`;
+function step4Blocks() {
+  const four = section(pRunbook, '4. Make the env file and generate the two keys');
+  const [head, supplier, buyer, token, lengths, distinct] = [...four.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1].replace(/^cd \/opt\/document-pipeline\/repo\/deploy\/apex-web\n/, ''));
+  return { head, supplier, buyer, token, lengths, distinct };
+}
+function withStep4Folder(fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'dp-step4-'));
+  try {
+    copyFileSync(join(root, 'deploy/apex-web/.env.document-pipeline.example'), join(dir, '.env.document-pipeline.example'));
+    return fn(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+const envOf = (dir) => readFileSync(join(dir, '.env.document-pipeline'), 'utf8');
+const countOf = (dir) => Number(readFileSync(join(dir, '.stub-n'), 'utf8'));
+const FILLED = /^(SUPPLIER_(PRIV_KEY_HEX|PUB_KEY_HEX|PKH|ADDRESS)|PIPELINE_BUYER_(PRIV_KEY_HEX|PUB_KEY_HEX|PKH|ADDRESS)|SERVICE_AUTH_HEADER)=/;
+const apartFromTheNine = (text) => text.split('\n').filter((l) => !FILLED.test(l)).join('\n');
+
+test('Pipeline RUNBOOK step 4 in bash: the blocks make the env file, the two keys and the token, print only names and lengths, and leave every other line of the example as it was', NEEDS_BASH, () => {
+  const { head, supplier, buyer, token, lengths, distinct } = step4Blocks();
+  withStep4Folder((dir) => {
+    const run = runBash(`${STUBS}${head}${supplier}${buyer}${token}${lengths}${distinct}`, dir);
+    assert.equal(run.stderr, '', 'nothing refused and nothing failed');
+    assert.equal(run.status, 0);
+    assert.equal(run.stdout, [
+      'SUPPLIER_PRIV_KEY_HEX 64', 'SUPPLIER_PUB_KEY_HEX 64', 'SUPPLIER_PKH 56', 'SUPPLIER_ADDRESS 58',
+      'PIPELINE_BUYER_PRIV_KEY_HEX 64', 'PIPELINE_BUYER_PUB_KEY_HEX 64', 'PIPELINE_BUYER_PKH 56', 'PIPELINE_BUYER_ADDRESS 58',
+      'SERVICE_AUTH_HEADER 71', 'two different keys', '',
+    ].join('\n'));
+    assert.doesNotMatch(run.stdout + run.stderr, /[0-9a-f]{16}|Bearer/, 'no key, no hash and no token is printed');
+    assert.equal(countOf(dir), 3, 'gen-keypair twice and openssl once');
+    const written = parseEnv(envOf(dir));
+    assert.match(written.SERVICE_AUTH_HEADER, /^"Bearer [0-9a-f]{64}"$/, 'in quotes, Bearer and 64 hex digits');
+    assert.notEqual(written.SUPPLIER_PKH, written.PIPELINE_BUYER_PKH);
+    for (const name of [...P_SUPPLIER, ...P_BUYER]) assert.notEqual(written[name], '', name);
+    assert.equal(apartFromTheNine(envOf(dir)), apartFromTheNine(pExampleText), 'every other line is the example\'s');
+    if (process.platform !== 'win32') assert.equal(statSync(join(dir, '.env.document-pipeline')).mode & 0o777, 0o600, 'mode 600');
+  });
+});
+
+test('Pipeline RUNBOOK step 4 in bash: run again, in a new shell, nothing is made again and nothing is replaced: the file is the same bytes, no keypair is asked for, and every guard says so', NEEDS_BASH, () => {
+  const { head, supplier, buyer, token } = step4Blocks();
+  withStep4Folder((dir) => {
+    const first = runBash(`${STUBS}${head}${supplier}${buyer}${token}`, dir);
+    assert.equal(first.status, 0);
+    const before = envOf(dir);
+    const again = runBash(`${STUBS}${head}${supplier}${buyer}${token}`, dir);
+    assert.equal(envOf(dir), before, 'byte for byte');
+    assert.equal(countOf(dir), 3, 'no further call to gen-keypair or openssl');
+    assert.equal(again.stdout, '');
+    for (const refusal of [
+      'refusing: the env file exists, and it is kept as it is',
+      'refusing: SUPPLIER_PRIV_KEY_HEX already has a value, and a key that may be funded is never replaced',
+      'refusing: PIPELINE_BUYER_PRIV_KEY_HEX already has a value, and a key that may be funded is never replaced',
+      'refusing: SERVICE_AUTH_HEADER already has a value; to replace it, empty the line first',
+    ]) assert.ok(again.stderr.includes(refusal), refusal);
+    assert.doesNotMatch(again.stdout + again.stderr, /[0-9a-f]{16}|Bearer/);
+    // A block on its own does the same: the first block is only the file and the functions, and it leaves a file that is there.
+    const alone = runBash(`${STUBS}${head}`, dir);
+    assert.equal(envOf(dir), before);
+    assert.match(alone.stderr, /^refusing: the env file exists, and it is kept as it is\n$/);
+  });
+});
+
+test('Pipeline RUNBOOK step 4 in bash: the buyer key is made again alone, after its four lines were emptied by hand with the command of the failure table, and nothing else in the file moves', NEEDS_BASH, () => {
+  const { head, supplier, buyer, token } = step4Blocks();
+  const table = section(pRunbook, 'If something goes wrong');
+  const emptyBuyer = String.raw`sed -i 's/^\(PIPELINE_BUYER_[A-Z_]*\)=.*/\1=/' .env.document-pipeline`;
+  assert.ok(table.includes('`' + emptyBuyer + '`'), 'the failure table gives the command that empties the buyer lines');
+  withStep4Folder((dir) => {
+    runBash(`${STUBS}${head}${supplier}${buyer}${token}`, dir);
+    const before = parseEnv(envOf(dir));
+    const emptied = runBash(`${emptyBuyer}\n`, dir);
+    assert.equal(emptied.status, 0);
+    const blank = parseEnv(envOf(dir));
+    for (const name of P_BUYER) assert.equal(blank[name], '', `${name} emptied`);
+    for (const name of [...P_SUPPLIER, ...P_TOKEN]) assert.equal(blank[name], before[name], `${name} untouched by the command`);
+    const redo = runBash(`${STUBS}${head}${buyer}`, dir);
+    assert.equal(redo.status, 0);
+    assert.match(redo.stderr, /^refusing: the env file exists, and it is kept as it is\n$/, 'the first block, pasted to define the functions again, leaves the file alone');
+    const after = parseEnv(envOf(dir));
+    for (const name of P_BUYER) assert.match(after[name], /^[0-9a-z]+$/, `${name} made again`);
+    for (const name of P_BUYER) assert.notEqual(after[name], before[name], `${name} is a new value`);
+    for (const name of [...P_SUPPLIER, ...P_TOKEN]) assert.equal(after[name], before[name], `${name} untouched`);
+    assert.equal(apartFromTheNine(envOf(dir)), apartFromTheNine(pExampleText));
+  });
+});
+
+test('Pipeline RUNBOOK step 4 in bash: the token is made again alone after its line was emptied with the command of the failure table, and only while it is empty; the supplier key is the same', NEEDS_BASH, () => {
+  const { head, supplier, buyer, token } = step4Blocks();
+  const table = section(pRunbook, 'If something goes wrong');
+  const emptyToken = `sed -i 's/^SERVICE_AUTH_HEADER=.*/SERVICE_AUTH_HEADER=""/' .env.document-pipeline`;
+  assert.ok(table.includes('`' + emptyToken + '`'), 'the failure table gives the command that empties the token line');
+  withStep4Folder((dir) => {
+    runBash(`${STUBS}${head}${supplier}${buyer}${token}`, dir);
+    const before = parseEnv(envOf(dir));
+    assert.equal(runBash(`${emptyToken}\n`, dir).status, 0);
+    assert.equal(parseEnv(envOf(dir)).SERVICE_AUTH_HEADER, '""', 'empty, in quotes, as in the example');
+    assert.equal(runBash(`${STUBS}${head}${token}`, dir).status, 0);
+    const after = parseEnv(envOf(dir));
+    assert.match(after.SERVICE_AUTH_HEADER, /^"Bearer [0-9a-f]{64}"$/);
+    assert.notEqual(after.SERVICE_AUTH_HEADER, before.SERVICE_AUTH_HEADER, 'a new token');
+    for (const name of [...P_SUPPLIER, ...P_BUYER]) assert.equal(after[name], before[name], `${name} untouched`);
+    // The supplier key is refused while it has a value, whatever else is run.
+    const refused = runBash(`${STUBS}${head}${supplier}`, dir);
+    assert.equal(refused.status, 1);
+    assert.equal(parseEnv(envOf(dir)).SUPPLIER_PRIV_KEY_HEX, before.SUPPLIER_PRIV_KEY_HEX);
+  });
+});
+
+test('Pipeline RUNBOOK step 4 in bash: the functions make nothing where there is no env file and when gen-keypair fails, and say so', NEEDS_BASH, () => {
+  const { head, supplier, token } = step4Blocks();
+  const functionsOnly = head.slice(0, head.indexOf('if [ -e .env.document-pipeline ]; then'));
+  assert.ok(functionsOnly.includes('keypair_into() {') && functionsOnly.includes('token_into() {') && !functionsOnly.includes('cp .env'));
+  withStep4Folder((dir) => {
+    const missing = runBash(`${STUBS}${functionsOnly}keypair_into SUPPLIER\nrc1=$?\ntoken_into\nrc2=$?\necho "rc $rc1 $rc2"\n`, dir);
+    assert.equal(missing.stdout.trim(), 'rc 1 1');
+    assert.equal(missing.stderr.match(/refusing: there is no \.env\.document-pipeline in this folder/g)?.length, 2);
+    assert.equal(existsSync(join(dir, '.env.document-pipeline')), false, 'the functions do not make the file');
+    assert.equal(existsSync(join(dir, '.stub-n')), false, 'and call neither gen-keypair nor openssl');
+    // gen-keypair fails: nothing is written, and the block can be run again.
+    const failing = 'docker() { return 1; }\n';
+    const failed = runBash(`${STUBS}${failing}${head}${supplier}echo "rc $?"\n`, dir);
+    assert.equal(failed.stdout.trim(), 'rc 1');
+    assert.match(failed.stderr, /gen-keypair failed/);
+    assert.equal(parseEnv(envOf(dir)).SUPPLIER_PRIV_KEY_HEX, '', 'the line is still empty');
+    assert.equal(runBash(`${STUBS}${head}${supplier}`, dir).status, 0, 'run again, it makes the key');
+    // openssl gives too little: nothing is written, and the line stays empty.
+    const short = 'openssl() { echo abc; }\n';
+    const bad = runBash(`${STUBS}${short}${head}${token}echo "rc $?"\n`, dir);
+    assert.equal(bad.stdout.trim(), 'rc 1');
+    assert.match(bad.stderr, /openssl rand failed/);
+    assert.equal(parseEnv(envOf(dir)).SERVICE_AUTH_HEADER, '""');
+  });
 });
 
 test('Pipeline RUNBOOK step 5: the ops scripts are copied from the adapted set of Agent History with the paths replaced; the registry record is the manifest description, the capability, the framework and the public URL', () => {
@@ -1093,7 +1384,12 @@ test('Pipeline RUNBOOK step 9: the service is started by name after the pin is c
     'the role address of step 4 in `operator.contact`', 'the new DID in `identity.did`', 'the key hash in `identity.controller_pkh` and `keys.supplier_pkh`', 'the public key in `keys.pub_key_hex`',
     'the key hash of the buyer key in `keys.buyer_pkh`', '`status.chip` `proposed`', 'an empty `links.explorer_advert`', "The advert's hash will cover exactly these bytes.",
     'asks `pdfinfo` and `pdftoppm` for their version before it listens', 'a `listening on` line means both ran',
+    // R50: a call without the token is refused before its body is read, and the service does not start without a token.
+    "docker exec document-pipeline-service node -e \"fetch('http://127.0.0.1:9092/', { method: 'POST', body: 'x' }).then(async (r) => console.log(r.status, await r.text()))\"",
+    'A `POST /` with no `authorization` header prints `401 {"error":"unauthorized"}`: the service refuses a call that does not carry the token of step 4 before it reads the body.',
+    'The service does not start without that token (`environment variable SERVICE_AUTH_HEADER is required`, in the table at the end).',
   ]) assert.ok(nine.includes(part), `step 9 says: ${part}`);
+  assert.ok(nine.indexOf("fetch('http://127.0.0.1:9092/agent.json')") < nine.indexOf("method: 'POST'") && nine.indexOf("method: 'POST'") < nine.indexOf('docker inspect --format'), 'the 401 check sits between the manifest and the limits');
   // 1536m is 1536 MiB; the first answer of /healthz is given before the first check of the wallet has finished.
   assert.equal(1536 * 1024 * 1024, 1610612736);
   assert.ok(nine.includes('before the first check of the buyer wallet has finished'));
@@ -1116,7 +1412,14 @@ test('Pipeline RUNBOOK steps 10 to 14: the Caddy script copy with the vhost and 
     'refuses while the name does not resolve to the box', 'If a line does not show, the copy of Agent History names them differently: read the script, and change its vhost and its snippet path by hand.',
     "curl -fsS https://mp-suppliers-pipeline.hal8.ai/agent.json", 'It must return the manifest of step 9, byte for byte.',
     '`/healthz` on the public name answers only after step 13, because every other path goes to the runtime.',
+    // Nothing of the other stack may be left in the copy, and what a wait or an exit code 2 before step 13 means.
+    'Then check that nothing of Agent History is left in the copy:', '```sh\ngrep -n history install-caddy-route.sh\n```',
+    "It must print nothing. A line it prints is a path, a name or a message of the other stack: change it by hand to this agent's before the script runs, because it would act on the wrong stack.",
+    'The copy may poll `/healthz` on the public name after it has reloaded Caddy, and that route goes to the runtime, which does not exist before step 13. So before step 13 the script can wait on that poll, or end with exit code 2, with the block already in place.',
+    'Read the last line it printed: if it is about the `/healthz` poll, that is the expected end, and the route to check is `/agent.json`, which goes to the service and answers now. If it says the name does not resolve to the box, the record is not there yet: wait for it and run the script again.',
   ]) assert.ok(ten.includes(part), `step 10 says: ${part}`);
+  assert.ok(ten.indexOf("sed -i '/^MARKER=/s#agent-history#document-pipeline#g'") < ten.indexOf('grep -n history install-caddy-route.sh') && ten.indexOf('grep -n history install-caddy-route.sh') < ten.indexOf('Run `./install-caddy-route.sh` once the record resolves to the box.'), 'the leftover check comes after the corrections and before the run');
+  assert.ok(ten.indexOf('Run `./install-caddy-route.sh` once the record resolves to the box.') < ten.indexOf('The copy may poll `/healthz`') && ten.indexOf('The copy may poll `/healthz`') < ten.indexOf('curl -fsS https://mp-suppliers-pipeline.hal8.ai/agent.json'), 'the wait is explained between the run and the check from outside');
   assert.ok(existsSync(join(root, 'deploy/apex-web/Caddyfile.document-pipeline.snippet')), 'the snippet the script merges exists');
   assert.ok(ten.includes('/opt/document-pipeline/repo/deploy/apex-web/Caddyfile.document-pipeline.snippet'));
   const eleven = section(pRunbook, '11. Hash the manifest');
@@ -1146,7 +1449,22 @@ test('Pipeline RUNBOOK steps 10 to 14: the Caddy script copy with the vhost and 
     '`/capability` shows the advert, with `document.pipeline.ocr-summary.v1` and the public key', '`/status` says `free`', '`advert_unavailable`', 'on `https://mp-suppliers-pipeline.hal8.ai`',
     'the runtime calls the service with a plain `fetch` that gives up on a response that has not begun after 300 s', 'writes an interim `102 Processing` line every 60 s while a job runs',
     'A job that fails as `service_unreachable` at about the five-minute mark means those lines are not arriving',
+    // R50: the runtime and the service hold one token, compared without printing it.
+    'The runtime and the service must hold the same token. Compare them without printing it: the first figure is the length (71) and the second the first twelve hex digits of the sha256 of the value.',
+    'for c in document-pipeline-agent document-pipeline-service; do\n  docker exec "$c" node -e "const v = process.env.SERVICE_AUTH_HEADER ?? \'\'; console.log(v.length, require(\'node:crypto\').createHash(\'sha256\').update(v).digest(\'hex\').slice(0, 12))"\ndone',
+    'The two lines must be the same. `0 e3b0c44298fc` is an empty token, and two lines that differ mean that one container was created from another version of the env file (the table at the end, `service_http_401`).',
   ]) assert.ok(thirteen.includes(part), `step 13 says: ${part}`);
+  assert.ok(thirteen.indexOf('curl -s http://127.0.0.1:8084/status') < thirteen.indexOf('The runtime and the service must hold the same token.') && thirteen.indexOf('The runtime and the service must hold the same token.') < thirteen.indexOf('One difference matters from here on.'), 'after the runtime answers, before the note on the long jobs');
+  // The one-liner is run here, as the containers would run it: the length and twelve digits of the sha256, and never the value.
+  const compare = /node -e "(const v = [^"]+)"/.exec(thirteen)?.[1];
+  assert.ok(compare, 'the comparison');
+  const token = `Bearer ${'ab'.repeat(32)}`;
+  const printed = execFileSync(process.execPath, ['-e', compare], { env: { ...process.env, SERVICE_AUTH_HEADER: token }, encoding: 'utf8' });
+  assert.equal(printed, `71 ${createHash('sha256').update(token).digest('hex').slice(0, 12)}\n`);
+  assert.ok(!printed.includes(token) && !printed.includes('Bearer'), 'the value itself is not printed');
+  const { SERVICE_AUTH_HEADER: _unset, ...withoutToken } = process.env;
+  assert.equal(execFileSync(process.execPath, ['-e', compare], { env: withoutToken, encoding: 'utf8' }), `0 ${createHash('sha256').update('').digest('hex').slice(0, 12)}\n`);
+  assert.equal(createHash('sha256').update('').digest('hex').slice(0, 12), 'e3b0c44298fc', 'the digest of an empty token, as the runbook says');
   const fourteen = section(pRunbook, '14. Check the advert on the indexer');
   assert.ok(fourteen.includes("ADVERT_REF=$(sed -n 's/^ADVERT_REF=//p' .env.document-pipeline) python3 -c '"));
   assert.ok(fourteen.includes('It must print `Active free document.pipeline.ocr-summary.v1` and the hash of step 11.'));
@@ -1214,7 +1532,11 @@ test('Pipeline RUNBOOK "Watch the first stop": one stop of the idle service is w
     'The log ends with `SIGTERM: stopping; no new job, and up to 300 s for the one that is running`, and the exit code is `0`.', 'An exit code of 137 means the container was killed, not stopped.',
     "Any other code but 0 fails the check too (143 would mean the signal ended the process before the service's own handling of it).",
     'do not go on to step 17', 'When a job is running at a stop, the log also says `stopping: waiting up to 300000 ms for the job that is running`.',
+    // What this check proves, and what it leaves open.
+    'This proves that the signal is delivered to an idle service and handled. It does not prove the 300 s wait for a job that is running under the signal relay of `tsx` (the image runs the service through it): that is still to be confirmed on the first real stop that finds a job running, and until it is, a stop is made only when `/status` says `free`.',
   ]) assert.ok(stop.includes(part), `the first stop says: ${part}`);
+  assert.ok(stop.indexOf('When a job is running at a stop') < stop.indexOf('This proves that the signal is delivered to an idle service'), 'said after the reading of the log');
+  assert.ok(read('agents/document-pipeline/Dockerfile').includes('tsx'), 'the image does run the service through tsx, as the caveat says');
   assert.ok(stop.indexOf('stop service') < stop.indexOf('docker logs --tail 5') && stop.indexOf('docker logs --tail 5') < stop.indexOf('{{.State.ExitCode}}') && stop.indexOf('{{.State.ExitCode}}') < stop.indexOf('up -d service'), 'stop, read the log, read the exit code, start again');
   // The lines are the code's.
   assert.ok(START.includes('log(`${signal}: stopping; no new job, and up to ${waitMs / 1000} s for the one that is running`);'));
@@ -1269,13 +1591,44 @@ test('Pipeline RUNBOOK Back out: the advert first with the supplier key, then th
   for (const part of [
     'docker exec document-pipeline-service cat /data/stranded.json', 'the janitor reclaims each one 5 s after its `deliver_by`', 'janitor: reclaimed <escrow>: ...',
     'Never add `-v`, and never run `docker volume rm document-pipeline-state`', 'the volume holds `stranded.json`, the escrows that still hold the buyer\'s funds, and the janitor of the next start reads it. `down` keeps it.', 'The stop waits up to 300 s for a job that is running.',
-    'shred -u /opt/document-pipeline/ops/wallet/payment.skey', 'rm -r /opt/document-pipeline/ops/wallet', 'The env file still holds both keys, and so does the operator\'s offline store: keep both until both wallets are empty, because a wallet whose key is gone is gone.',
-    'The buyer wallet is emptied last, with the buyer key, once `stranded.json` is empty',
+    'two files of a directory: `shred -u /opt/document-pipeline/ops/wallet/payment.skey /opt/document-pipeline/ops/wallet/payment.vkey`, then `rmdir /opt/document-pipeline/ops/wallet` (`shred` does not take a directory, and `rmdir` refuses one that holds anything else)',
+    'The env file still holds both keys, and so does the operator\'s offline store: keep both until both wallets are empty, because a wallet whose key is gone is gone.',
+    'The buyer wallet is emptied last, with the buyer key, once `stranded.json` is empty (or was never written): its float and its collateral go back to the Foundation.',
+    'No script of this pack does that: none signs with the buyer key, so the float stays in the wallet until the operator signs the transfer with the buyer key by other means (the byte-preserving signer pointed at a signing-key file made from the buyer key and shredded afterwards, as in the `store_write_failed` row of the table at the end).',
+    'If `cat` says `No such file or directory`, no job has ever recorded an escrow and there is nothing to wait for.',
   ]) assert.ok(back.includes(part), `Back out says: ${part}`);
+  assert.doesNotMatch(back, /rm -r /, 'the directory is removed with rmdir, after its two files are shredded');
+  // The janitor's file is created by the first escrow a job records, so a missing file means there never was one.
+  assert.ok(read('agents/document-pipeline/src/janitor.ts').includes("if (codeOf(err) === 'ENOENT') return;"), 'a store with no file starts empty and writes the file with its first entry');
   assert.ok(pRunbook.indexOf('\n## Back out\n') > pRunbook.indexOf('\n## 17.') && pRunbook.indexOf('\n## Back out\n') < pRunbook.indexOf('\n## If something goes wrong\n'), 'after step 17, before the failure table');
   // The janitor reclaims 5 s after deliver_by, as the code says.
   assert.ok(read('agents/document-pipeline/src/janitor.ts').includes('export const JANITOR_GRACE_MS = 5_000;'));
   assert.ok(back.includes('The registry identity and the Module-3 stake stay on the ledger until the operator withdraws them.'));
+});
+
+test('Back out of both runbooks: the second plaintext copy of the supplier key is shredded as two files and the directory is removed with rmdir; run as written, it leaves nothing, and shred on the directory itself fails', { skip: HAVE_BASH && spawnSync('bash', ['-c', 'command -v shred'], { encoding: 'utf8' }).status === 0 ? false : 'needs bash and shred' }, () => {
+  for (const [name, text, base] of [['Agent History', section(runbook, 'Back out'), '/opt/agent-history/ops/wallet'], ['Document Pipeline', section(pRunbook, 'Back out'), '/opt/document-pipeline/ops/wallet']]) {
+    const m = new RegExp(`\`(shred -u ${base}/payment\\.skey ${base}/payment\\.vkey)\`, then \`(rmdir ${base})\``).exec(text);
+    assert.ok(m, `${name}: the two shreds and the rmdir`);
+    const dir = mkdtempSync(join(tmpdir(), 'dp-wallet-'));
+    try {
+      const wallet = join(dir, 'wallet');
+      const forBash = (command) => command.replaceAll(base, wallet.split(sep).join('/'));
+      const make = () => { runBash(`mkdir -p "${wallet.split(sep).join('/')}" && echo skey > "${wallet.split(sep).join('/')}/payment.skey" && echo vkey > "${wallet.split(sep).join('/')}/payment.vkey"\n`, dir); };
+      make();
+      assert.ok(existsSync(join(wallet, 'payment.skey')), `${name}: the directory with its two files`);
+      const done = runBash(`set -e\n${forBash(m[1])}\n${forBash(m[2])}\n`, dir);
+      assert.equal(done.status, 0, `${name}: ${done.stderr}`);
+      assert.equal(existsSync(wallet), false, `${name}: nothing is left`);
+      // The form that was there before fails, and leaves the files: shred does not take a directory.
+      make();
+      const old = runBash(`shred -u "${wallet.split(sep).join('/')}"\n`, dir);
+      assert.notEqual(old.status, 0, `${name}: shred on a directory fails`);
+      assert.ok(existsSync(join(wallet, 'payment.skey')), `${name}: and the key file is still there`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
 });
 
 test('Pipeline RUNBOOK failure table: the start-up refusals, the pipeline codes and the janitor lines, each as the code words it', () => {
@@ -1291,6 +1644,9 @@ test('Pipeline RUNBOOK failure table: the start-up refusals, the pipeline codes 
   for (const [row, where, quote] of [
     ['`environment variable OPERATOR_CONTACT is required`', 'server', 'environment variable ${name} is required'],
     ['`environment variable PIPELINE_BUYER_PRIV_KEY_HEX is required`', 'server', 'environment variable ${name} is required'],
+    ['`environment variable SERVICE_AUTH_HEADER is required`', 'server', 'environment variable ${name} is required'],
+    ['must be printable ASCII', 'start', 'must be printable ASCII (it is sent as an HTTP header)'],
+    ['`request refused: unauthorized (<n> since the last line of this kind)`', 'server', 'request refused: unauthorized (${refusals} since the last line of this kind)'],
     ['`holds the buyer key, which belongs in PIPELINE_BUYER_PRIV_KEY_HEX alone`', 'start', 'holds the buyer key, which belongs in PIPELINE_BUYER_PRIV_KEY_HEX alone'],
     ['`is not the public key of SUPPLIER_PKH`', 'start', 'is not the public key of SUPPLIER_PKH'],
     ['`is not the key hash of the key in PIPELINE_BUYER_PRIV_KEY_HEX`', 'start', 'is not the key hash of the key in PIPELINE_BUYER_PRIV_KEY_HEX'],
@@ -1314,7 +1670,24 @@ test('Pipeline RUNBOOK failure table: the start-up refusals, the pipeline codes 
     '| `No such image: sha256:...` for the service image |', "| The served `/agent.json` hashes differently from the advert's `detail_hash` |",
     '(max_pages + 1) * 4.5', '27 for five pages', 'No script of this pack signs with the buyer key',
     'While it lasts, `docker ps` shows the service as unhealthy, because its health check is `/healthz`.',
+    // R50 and the step that never replaces a key.
+    '| Jobs fail with `service_http_401`, and the log of the service says ',
+    'The runtime did not send the token the service holds: the two containers were created from different versions of the env file, or the line was changed after one of them started.',
+    'Run the comparison at the end of step 13: its two lines must be the same.',
+    'The service logs this refusal once a minute at most, with the count since the last line, and never what the caller sent.',
+    '| The same, and the log says `environment variable SERVICE_AUTH_HEADER is required`, or says that it must be printable ASCII |',
+    'The service does not start without a token, so that it can never answer anyone.',
+    'Run the token block of step 4 (the first block of that step first, in a new shell, to define the function). It refuses while the line has a value',
+    'Then refresh the offline copy of the env file, and recreate the service, and the runtime too if it is running (with `/status` saying `free`), so that both hold the same value.',
+    '| The same, and the log says `environment variable PIPELINE_BUYER_PRIV_KEY_HEX is required` | The buyer lines of the env file are empty: the buyer key block of step 4 was not run, or did not finish. |',
+    'Run only the buyer key block of step 4 (the first block of that step first, in a new shell, to define the function; it leaves the file alone).',
+    'while the address has received nothing',
+    'Never run the whole step again, and never copy the example over the env file: that replaces funded keys. Then refresh the offline copy and recreate.',
+    '| The env file changed and nothing happened | `restart` does not re-read it. | Check that `curl -s http://127.0.0.1:8084/status` says `free`: a recreate stops the container, and a stop during a job can cut a paid job. Then `up -d --force-recreate <service>`, and both containers after a change to `SERVICE_AUTH_HEADER`. |',
   ]) assert.ok(table.includes(part), `the table has: ${part}`);
+  assert.doesNotMatch(table, /Finish step 4/, 'the row that invited a second run of step 4 over funded keys');
+  // The commands that empty a key or the token by hand are in the table, and are the ones the tests of step 4 run.
+  for (const command of [String.raw`sed -i 's/^\(PIPELINE_BUYER_[A-Z_]*\)=.*/\1=/' .env.document-pipeline`, `sed -i 's/^SERVICE_AUTH_HEADER=.*/SERVICE_AUTH_HEADER=""/' .env.document-pipeline`]) assert.ok(table.includes('`' + command + '`'), command);
   // The codes are those the README of the agent lists, with the statuses it gives.
   for (const code of ['insufficient_float', 'ocr_supplier_unavailable', 'llm_supplier_unavailable', 'store_write_failed']) assert.ok(PREADME.includes('`' + code + '`'), `${code} is in the README of the agent`);
   assert.ok(PREADME.includes('| 503, the service cannot take a job now | `insufficient_float`, `ocr_supplier_unavailable`, `llm_supplier_unavailable`, and `shutting_down`'));

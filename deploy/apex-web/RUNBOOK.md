@@ -340,7 +340,7 @@ To stop the agent, and as the first move of step 17. The order matters: the adve
    Wait for it to confirm. The units it locked come back.
 2. Stop the containers, operator or host administrator: `docker compose -f docker-compose.agent-history.yml down`. The external network `umami_default` is not touched.
 3. Host administrator: remove the Caddy block from `/opt/umami/Caddyfile`, validate and reload ([README.md](README.md), point 4), and remove the DNS record if it will not be reused.
-4. Operator: remove the second plaintext copy of the supplier key that step 7 wrote: `shred -u /opt/agent-history/ops/wallet`. The env file still holds the key. When the identity or the stake is withdrawn later, `python3 make-skey.py` writes the file again from the env file for that signing, and the file is removed again afterwards.
+4. Operator: remove the second plaintext copy of the supplier key that step 7 wrote, two files in a directory: `shred -u /opt/agent-history/ops/wallet/payment.skey /opt/agent-history/ops/wallet/payment.vkey`, then `rmdir /opt/agent-history/ops/wallet` (`shred` does not take a directory). The env file still holds the key. When the identity or the stake is withdrawn later, `python3 make-skey.py` writes the files again from the env file for that signing, and they are removed again afterwards.
 
 The registry identity and the Module-3 stake stay on the ledger until the operator withdraws them. The deposit returns on deregistration and the stake after its cooldown.
 

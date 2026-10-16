@@ -31,9 +31,18 @@ export const SUPPLIER = keyOf('document-pipeline service test: the supplier');
 /** The mainnet enterprise address of the buyer key hash. */
 export const BUYER_ADDRESS = new FakeChain({ buyerPkh: BUYER.pkh }).address;
 
+/**
+ * The value the runtime sends as the authorization header of every call to the service, and the service requires (SERVICE_AUTH_HEADER, ruling R50): the shape the
+ * runbook gives it, "Bearer " and 64 hex characters. Made from a label like the keys, so that no token is written in the repository.
+ */
+export const TEST_AUTH = `Bearer ${createHash('sha256').update('document-pipeline service test: the token of the runtime').digest('hex')}`;
+/** The headers of a call that has the token, for a test that sends its own request. */
+export const AUTH = { authorization: TEST_AUTH };
+
 /** What an operator sets for a full deployment, and nothing else: every other setting has a default. */
 export const FULL_ENV = {
   OPERATOR_CONTACT: TEST_CONTACT, AGENT_DID: 'did:test', SUPPLIER_PKH: SUPPLIER.pkh, SUPPLIER_PUB_KEY_HEX: SUPPLIER.pubKeyHex, PIPELINE_BUYER_PRIV_KEY_HEX: BUYER.privateKeyHex,
+  SERVICE_AUTH_HEADER: TEST_AUTH,
 };
 
 // --- Directories ---------------------------------------------------------------------------------------------------------------------
@@ -73,22 +82,29 @@ export interface Api {
   /** The base URL of the server, without a trailing slash, and its port. */
   url: string;
   port: number;
+  /** A POST that carries the token of the runtime, as the runtime's call does. */
   post: (body: string, path?: string) => Promise<Reply>;
   get: (path: string) => Promise<Reply>;
-  request: (method: string, path: string, body?: string) => Promise<Reply>;
+  /** Any request. It carries the token unless `headers` says otherwise: a value replaces the token, null sends no authorization header at all. */
+  request: (method: string, path: string, body?: string, headers?: Record<string, string | null>) => Promise<Reply>;
 }
 
 /** A message in the wire form the runtime posts: a one-element array whose content is the request JSON as a string. */
 export const wire = (request: unknown): string => JSON.stringify([{ content: typeof request === 'string' ? request : JSON.stringify(request), role: 'user' }]);
 
-/** Runs `fn` against a server made from `options` on a port the system picks, and shuts it down, its connections included, whatever `fn` does. */
-export async function serve<T>(options: ServerOptions, fn: (api: Api) => Promise<T>): Promise<T> {
-  const server = createServer(options);
+/**
+ * Runs `fn` against a server made from `options` on a port the system picks, and shuts it down, its connections included, whatever `fn` does. The server
+ * requires TEST_AUTH unless the options name another token, and the requests `fn` makes carry TEST_AUTH unless it says otherwise.
+ */
+export async function serve<T>(options: Omit<ServerOptions, 'authHeader'> & { authHeader?: string }, fn: (api: Api) => Promise<T>): Promise<T> {
+  const server = createServer({ ...options, authHeader: options.authHeader ?? TEST_AUTH });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as { port: number }).port;
   const base = `http://127.0.0.1:${port}`;
-  const request = async (method: string, path: string, body?: string): Promise<Reply> => {
-    const res = await fetch(`${base}${path}`, { method, body });
+  const request = async (method: string, path: string, body?: string, headers: Record<string, string | null> = {}): Promise<Reply> => {
+    const sent: Record<string, string> = { ...AUTH };
+    for (const [name, value] of Object.entries(headers)) { if (value === null) delete sent[name]; else sent[name] = value; }
+    const res = await fetch(`${base}${path}`, { method, body, headers: sent });
     const text = await res.text();
     let json: any;
     try { json = JSON.parse(text); } catch { json = undefined; }
@@ -185,8 +201,11 @@ export interface RawClient {
   close: () => void;
 }
 
-/** Sends one request over a socket of its own and reads whatever comes back, byte for byte. The caller closes it. */
-export function rawClient(port: number, request: { body?: string; method?: string; path?: string; version?: '1.0' | '1.1'; close?: boolean; holdBack?: number }): RawClient {
+/**
+ * Sends one request over a socket of its own and reads whatever comes back, byte for byte. The caller closes it. The request carries TEST_AUTH as its
+ * authorization header unless `authorization` is another value, or null for no header at all.
+ */
+export function rawClient(port: number, request: { body?: string; method?: string; path?: string; version?: '1.0' | '1.1'; close?: boolean; holdBack?: number; authorization?: string | null }): RawClient {
   const socket = connect(port, '127.0.0.1');
   const chunks: Buffer[] = [];
   let closed = false;
@@ -194,8 +213,10 @@ export function rawClient(port: number, request: { body?: string; method?: strin
   socket.on('close', () => { closed = true; });
   socket.on('error', () => undefined); // a test that closes its socket early must not fail on the reset
   const body = Buffer.from(request.body ?? '', 'utf8');
+  const authorization = request.authorization === undefined ? TEST_AUTH : request.authorization;
   const head = [
     `${request.method ?? 'POST'} ${request.path ?? '/'} HTTP/${request.version ?? '1.1'}`, 'Host: 127.0.0.1', 'Content-Type: application/json', `Content-Length: ${body.length}`,
+    ...(authorization === null ? [] : [`Authorization: ${authorization}`]),
     ...(request.close === true ? ['Connection: close'] : []), '', '',
   ].join('\r\n');
   // `holdBack` bytes of the body are kept back until finish(): a request whose upload is still under way.
