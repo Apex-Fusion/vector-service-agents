@@ -14,7 +14,11 @@ export const modelGap = (size: WhisperSize): string =>
 export const LANGUAGE_GAP = 'The language is taken as asked: audio in another language is transcribed as if it were in the one asked for, and its quotes go to unmatched. With auto the model detects the language from the first 30 s.';
 export const QUERY_GAP = 'A query is matched by keyword overlap at segment level, and the result says so in match_method: a question worded otherwise than the speech finds nothing, and no embedding model is installed.';
 export const QUOTE_GAP = 'A quote is matched once: a quote said twice gives one match, where it is said first.';
-export const CLIPS_GAP = `Clips carry their bytes inline only while their total stays at or under ${INLINE_CLIPS_BYTES} bytes: past that, a clip carries its sha256, its size and its cut points, and clips_truncated is true.`;
+// Its second sentence is ruling R-D18: faster-whisper starts the first word after a pause up to about 0.7 s before it is said, and ends a word within a few
+// hundredths of a second of its end (measured on the recording the speech fixture is cut from; test/asr-real.test.ts holds the bound), so the cut point
+// before such a word is early by as much.
+export const CLIPS_GAP = `Clips carry their bytes inline only while their total stays at or under ${INLINE_CLIPS_BYTES} bytes: past that, a clip carries its sha256, its size and its cut points, and clips_truncated is true. `
+  + 'A cut point after a pause may begin up to about 0.7 s early, so a clip may start with a little silence before its first word.';
 export const DEADLINE_GAP = `A job has a deadline of its own, ${JOB_DEADLINE_MS} ms after its request arrives, and the speech recognition gets at most ${ASR_MAX_MS} ms of it: a job cut at the deadline fails with the code deadline and returns no result.`;
 
 /** In the order the manifest states them. */

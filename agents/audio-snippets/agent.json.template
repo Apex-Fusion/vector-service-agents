@@ -242,7 +242,7 @@
     "The language is taken as asked: audio in another language is transcribed as if it were in the one asked for, and its quotes go to unmatched. With auto the model detects the language from the first 30 s.",
     "A query is matched by keyword overlap at segment level, and the result says so in match_method: a question worded otherwise than the speech finds nothing, and no embedding model is installed.",
     "A quote is matched once: a quote said twice gives one match, where it is said first.",
-    "Clips carry their bytes inline only while their total stays at or under 2000000 bytes: past that, a clip carries its sha256, its size and its cut points, and clips_truncated is true.",
+    "Clips carry their bytes inline only while their total stays at or under 2000000 bytes: past that, a clip carries its sha256, its size and its cut points, and clips_truncated is true. A cut point after a pause may begin up to about 0.7 s early, so a clip may start with a little silence before its first word.",
     "A job has a deadline of its own, 1320000 ms after its request arrives, and the speech recognition gets at most 900000 ms of it: a job cut at the deadline fails with the code deadline and returns no result."
   ],
   "links": {

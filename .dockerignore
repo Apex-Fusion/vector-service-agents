@@ -1,7 +1,8 @@
-# Build context for agents/agent-history/Dockerfile and agents/document-pipeline/Dockerfile is the repo root.
+# Build context for agents/agent-history/Dockerfile, agents/document-pipeline/Dockerfile and agents/audio-snippets/Dockerfile is the repo root.
 # node_modules is the entry that matters. A copy installed on the host carries host-specific pnpm links, and COPY would lay it over
 # the image's own install. The image installs its own from the lockfile.
 # Env files are ignored at any depth: a key left in a .env anywhere in the tree must never reach the build context.
+# The model files a developer fetched into agents/audio-snippets/.models (about 150 MB) stay out too: the image fetches its own at build time.
 node_modules
 **/node_modules
 **/.models

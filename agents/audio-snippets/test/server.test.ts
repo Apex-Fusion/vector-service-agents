@@ -357,3 +357,62 @@ describe('GET /healthz: the free space of the temporary directory', () => {
     expect([DISK_TTL_MS, DISK_TIMEOUT_MS]).toStrictEqual([60_000, 5_000]);
   });
 });
+
+// Beyond the brief (ruling R-D20): what the reviews of Tasks 3 and 5 carried to the service, pinned here. The brief's text above is kept as it is.
+describe('carried from the earlier tasks', () => {
+  const body = wire({ source: { url: 'https://example.org/a.mp3' }, quotes: ['x'] });
+  /** The deps of baseDeps with the real probe of free space (src/disk.ts) in place of the stub. */
+  const realProbe = (over: Partial<Omit<RunDeps, 'deadlineMs'>> = {}): Omit<RunDeps, 'deadlineMs'> => {
+    const { freeBytes: _stub, ...deps } = baseDeps(over);
+    return deps;
+  };
+
+  test('the clips gap says that a cut point after a pause may begin up to about 0.7 s early (R-D18), and the manifest states it in its place', () => {
+    expect(CLIPS_GAP.endsWith(' A cut point after a pause may begin up to about 0.7 s early, so a clip may start with a little silence before its first word.')).toBe(true);
+    expect(MANIFEST.gaps[5]).toBe(CLIPS_GAP);
+  });
+
+  test('a second job while one runs is refused with 409 busy and never queued: the run is called once, with the deadline of its own arrival', async () => {
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let now = T0;
+    const seen: number[] = [];
+    const run = vi.fn<Run>(async (_req, deps: RunDeps) => { seen.push(deps.deadlineMs); await held; return GOLDEN_RESULT as never; });
+    await serve(options({ runSnippets: run, deps: baseDeps({ clock: () => now }) }), async (api) => {
+      const first = api.post(body);
+      await until(() => run.mock.calls.length === 1, 'the first job runs');
+      now += 7_000;
+      const second = await api.post(body);
+      expect([second.status, second.json]).toStrictEqual([409, { error: 'busy' }]);
+      release();
+      const done = await first;
+      expect([done.status, done.text]).toStrictEqual([200, JSON.stringify(GOLDEN_RESULT)]);
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(seen).toStrictEqual([T0 + JOB_DEADLINE_MS]);
+  });
+
+  test('the probe of the service is the real one: on an existing directory it reads a free space above 0, which a check that asks for more than any disk has reports', async () => {
+    await serve(options({ deps: realProbe({ minFreeBytes: Number.MAX_SAFE_INTEGER }) }), async (api) => {
+      await until(async () => (await api.get('/healthz')).status === 503, 'the check has answered');
+    });
+    const line = logs.find((l) => l.startsWith('disk check failed: ')) ?? '';
+    const free = Number(/ has (\d+) bytes free, less than the 9007199254740991 a job needs$/.exec(line)?.[1]);
+    expect(free, line).toBeGreaterThan(0);
+  });
+
+  test('a scratch directory that does not exist: /healthz says 503 low_disk with the cause in the log, and a job fails as a plain 500 internal, its cause in the log, before any fetch', async () => {
+    const missing = `${baseDeps().scratchRoot}/gone`;
+    await serve(options({ deps: realProbe({ scratchRoot: missing }) }), async (api) => {
+      await until(async () => (await api.get('/healthz')).status === 503, 'the check has failed');
+      expect((await api.get('/healthz')).json).toStrictEqual({ ok: false, reason: 'low_disk' });
+      // A fetch would have failed as source_fetch_failed (422): the job ends before it.
+      const r = await api.post(body);
+      expect([r.status, r.json]).toStrictEqual([500, { error: 'internal' }]);
+    });
+    expect(logs.filter((l) => l.startsWith('disk check failed: '))).toHaveLength(1);
+    expect(logs.find((l) => l.startsWith('disk check failed: '))).toMatch(/^disk check failed: ENOENT/);
+    expect(logs.filter((l) => /^job failed after \d+ ms: internal error: ENOENT/.test(l))).toHaveLength(1);
+    expect(logs.join('\n')).not.toMatch(/low_disk \(503\)/);
+  });
+});
