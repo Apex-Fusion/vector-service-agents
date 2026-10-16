@@ -1,14 +1,17 @@
 // agents/document-pipeline/test/server-support.ts
 // Shared by the service tests (test/server.test.ts, test/start.test.ts): the environment of a full deployment, the buyer key and the identity the service
-// must derive from it, the deps a server is given, and a real HTTP server on a port the system picks.
+// must derive from it, the deps a server is given, a real HTTP server on a port the system picks, a raw client for what fetch hides, and a stand-in for
+// the poppler tools.
 //
 // The keys are made at run time from a label, as test/stub-suppliers.ts makes its own, so no key is written in the repository. The identity the service
 // must derive from the buyer key is worked out here by other routes than the code under test uses: node:crypto and blake2b-224 for the key hash, and
 // FakeChain (Lucid's address of a key hash) for the address; buyer-core derives both with CML.
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, linkSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { connect } from 'node:net';
+import type { Socket } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { FakeChain } from '@vsa/buyer-core';
 import type { Chain } from '@vsa/buyer-core';
 import { StrandedStore } from '../src/janitor.ts';
@@ -67,8 +70,9 @@ export function walletChain(wallet: () => ReturnType<Chain['wallet']>): Chain {
 // --- HTTP ----------------------------------------------------------------------------------------------------------------------------
 export interface Reply { status: number; text: string; json: any; headers: Headers }
 export interface Api {
-  /** The base URL of the server, without a trailing slash. */
+  /** The base URL of the server, without a trailing slash, and its port. */
   url: string;
+  port: number;
   post: (body: string, path?: string) => Promise<Reply>;
   get: (path: string) => Promise<Reply>;
   request: (method: string, path: string, body?: string) => Promise<Reply>;
@@ -81,7 +85,8 @@ export const wire = (request: unknown): string => JSON.stringify([{ content: typ
 export async function serve<T>(options: ServerOptions, fn: (api: Api) => Promise<T>): Promise<T> {
   const server = createServer(options);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const port = (server.address() as { port: number }).port;
+  const base = `http://127.0.0.1:${port}`;
   const request = async (method: string, path: string, body?: string): Promise<Reply> => {
     const res = await fetch(`${base}${path}`, { method, body });
     const text = await res.text();
@@ -89,7 +94,7 @@ export async function serve<T>(options: ServerOptions, fn: (api: Api) => Promise
     try { json = JSON.parse(text); } catch { json = undefined; }
     return { status: res.status, text, json, headers: res.headers };
   };
-  const api: Api = { url: base, post: (body, path = '/') => request('POST', path, body), get: (path) => request('GET', path), request };
+  const api: Api = { url: base, port, post: (body, path = '/') => request('POST', path, body), get: (path) => request('GET', path), request };
   try {
     return await fn(api);
   } finally {
@@ -108,3 +113,125 @@ export async function until(condition: () => boolean, what: string, ms = 3000): 
 }
 /** Lets every promise that is already settled run its continuation, and the timers due now. */
 export const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+// --- A raw client --------------------------------------------------------------------------------------------------------------------
+// fetch hides the interim responses a server writes before its answer, and a test of those needs the bytes. This client reads them off a socket.
+const INTERIM_LINE = 'HTTP/1.1 102 Processing\r\n\r\n';
+
+/** What a raw client has read, parsed as far as it goes: the interim lines, then the status, the headers and the body once the answer is complete. */
+export interface RawResponse {
+  /** How many "102 Processing" lines came before the answer, or before this point of it. */
+  interim: number;
+  status: number | null;
+  headers: Record<string, string>;
+  /** The body, once all of it has been read; null before that. */
+  body: Buffer | null;
+  /** The bytes after the end of the answer: none, for a server that has said all it has to say. */
+  trailing: number;
+}
+
+/** The body of a chunked message and the bytes it took, or null while it is not all there. */
+function dechunk(bytes: Buffer): { body: Buffer; used: number } | null {
+  const parts: Buffer[] = [];
+  let at = 0;
+  for (;;) {
+    const eol = bytes.indexOf('\r\n', at, 'latin1');
+    if (eol < 0) return null;
+    const size = Number.parseInt(bytes.toString('latin1', at, eol), 16);
+    if (!Number.isInteger(size) || size < 0) throw new Error('a chunk size that is not a number');
+    at = eol + 2;
+    if (size === 0) {
+      const end = bytes.indexOf('\r\n', at, 'latin1'); // no trailer: the line break that ends the message follows the last chunk
+      return end < 0 ? null : { body: Buffer.concat(parts), used: end + 2 };
+    }
+    if (bytes.length < at + size + 2) return null;
+    parts.push(bytes.subarray(at, at + size));
+    at += size + 2;
+  }
+}
+
+export function parseRaw(received: Buffer, closed: boolean): RawResponse {
+  let at = 0;
+  let interim = 0;
+  while (received.toString('latin1', at, at + INTERIM_LINE.length) === INTERIM_LINE) { interim += 1; at += INTERIM_LINE.length; }
+  const headEnd = received.indexOf('\r\n\r\n', at, 'latin1');
+  if (headEnd < 0) return { interim, status: null, headers: {}, body: null, trailing: 0 };
+  const [statusLine, ...fields] = received.toString('latin1', at, headEnd).split('\r\n');
+  const status = Number(/^HTTP\/1\.[01] (\d{3})/.exec(statusLine)?.[1]);
+  const headers = Object.fromEntries(fields.map((field) => { const colon = field.indexOf(':'); return [field.slice(0, colon).toLowerCase(), field.slice(colon + 1).trim()]; }));
+  const rest = received.subarray(headEnd + 4);
+  const incomplete = { interim, status, headers, body: null, trailing: 0 };
+  if (headers['transfer-encoding']?.toLowerCase() === 'chunked') {
+    const chunked = dechunk(rest);
+    return chunked === null ? incomplete : { interim, status, headers, body: chunked.body, trailing: rest.length - chunked.used };
+  }
+  if (headers['content-length'] !== undefined) {
+    const length = Number(headers['content-length']);
+    return rest.length < length ? incomplete : { interim, status, headers, body: rest.subarray(0, length), trailing: rest.length - length };
+  }
+  return closed ? { interim, status, headers, body: rest, trailing: 0 } : incomplete; // neither: the body runs to the end of the connection
+}
+
+export interface RawClient {
+  socket: Socket;
+  /** Everything read so far. */
+  received: () => Buffer;
+  /** The response as far as it has come. */
+  response: () => RawResponse;
+  /** Waits until the answer is complete (or the connection is closed), and returns it. */
+  answer: (ms?: number) => Promise<RawResponse>;
+  /** Sends the last bytes of the body, when the request was made with `holdBack`. */
+  finish: () => void;
+  close: () => void;
+}
+
+/** Sends one request over a socket of its own and reads whatever comes back, byte for byte. The caller closes it. */
+export function rawClient(port: number, request: { body?: string; method?: string; path?: string; version?: '1.0' | '1.1'; close?: boolean; holdBack?: number }): RawClient {
+  const socket = connect(port, '127.0.0.1');
+  const chunks: Buffer[] = [];
+  let closed = false;
+  socket.on('data', (chunk: Buffer) => { chunks.push(chunk); });
+  socket.on('close', () => { closed = true; });
+  socket.on('error', () => undefined); // a test that closes its socket early must not fail on the reset
+  const body = Buffer.from(request.body ?? '', 'utf8');
+  const head = [
+    `${request.method ?? 'POST'} ${request.path ?? '/'} HTTP/${request.version ?? '1.1'}`, 'Host: 127.0.0.1', 'Content-Type: application/json', `Content-Length: ${body.length}`,
+    ...(request.close === true ? ['Connection: close'] : []), '', '',
+  ].join('\r\n');
+  // `holdBack` bytes of the body are kept back until finish(): a request whose upload is still under way.
+  const whole = Buffer.concat([Buffer.from(head, 'latin1'), body]);
+  const held = Math.min(request.holdBack ?? 0, body.length);
+  socket.write(whole.subarray(0, whole.length - held));
+  const received = () => Buffer.concat(chunks);
+  const response = () => parseRaw(received(), closed);
+  const answer = async (ms = 5000) => { await until(() => response().body !== null || closed, 'the answer is complete', ms); return response(); };
+  return { socket, received, response, answer, finish: () => { if (held > 0) socket.write(whole.subarray(whole.length - held)); }, close: () => socket.destroy() };
+}
+
+// --- The poppler tools ---------------------------------------------------------------------------------------------------------------
+/**
+ * A directory with a pdfinfo and a pdftoppm in it that, asked for their version, print one and exit 0: node's own executable under those names (a link where
+ * the platform has one, a copy where it does not). For a test of a start that needs the tools to be there and reads no PDF.
+ */
+export function fakePopplerDir(): string {
+  const dir = tempDir();
+  for (const tool of ['pdfinfo', 'pdftoppm']) {
+    if (process.platform === 'win32') {
+      const file = join(dir, `${tool}.exe`);
+      try { linkSync(process.execPath, file); } catch { copyFileSync(process.execPath, file); }
+    } else {
+      symlinkSync(process.execPath, join(dir, tool));
+    }
+  }
+  return dir;
+}
+
+const pathName = (env: Record<string, string | undefined>): string => Object.keys(env).find((key) => key.toLowerCase() === 'path') ?? 'PATH';
+/** The directories searched for programs, whatever the case of the variable's name (it is Path on Windows). */
+export const pathOf = (env: Record<string, string | undefined>): string | undefined => env[pathName(env)];
+/** `env` with `path` as those directories. */
+export function withPath<T extends Record<string, string | undefined>>(env: T, path: string): T {
+  return { ...env, [pathName(env)]: path };
+}
+/** The same path with `dir` in front of it. */
+export const inFront = (dir: string, path: string | undefined): string => (path === undefined || path === '' ? dir : `${dir}${delimiter}${path}`);

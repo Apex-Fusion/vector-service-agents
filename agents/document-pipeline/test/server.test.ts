@@ -4,6 +4,7 @@
 // the body cap, the one-job-at-a-time rule, the error mapping, the health check, the bytes of the answer. Three tests run the real pipeline against the
 // in-memory marketplace of test/stub-suppliers.ts, so that the whole path from the HTTP body to the HTTP body is exercised once.
 import { describe, test, expect, vi, afterEach } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import Ajv from 'ajv';
 import { FakeChain } from '@vsa/buyer-core';
@@ -14,11 +15,11 @@ import { GAPS } from '../src/gaps.ts';
 import { PipelineError, runPipeline } from '../src/orchestrate.ts';
 import type { Deps, PipelineResult } from '../src/orchestrate.ts';
 import { DEFAULT_LANGUAGE, MAX_INLINE_BYTES, MAX_PAGES, RequestError, parseRequest } from '../src/request.ts';
-import { MAX_BODY, WireError, createServer, envInt, manifestFromEnv, parseWire, renderTemplate } from '../src/server.ts';
+import { HEARTBEAT_MS, JobSlot, MAX_BODY, WireError, createServer, envInt, manifestFromEnv, parseWire, renderTemplate } from '../src/server.ts';
 import type { ServerOptions } from '../src/server.ts';
 import { MAX_SOURCE_BYTES } from '../src/source.ts';
 import { fakeRenderer } from './fake-renderer.ts';
-import { BUYER, FULL_ENV, SUPPLIER, T0, TEST_CONTACT, baseDeps, cleanDirs, serve, settle, until, walletChain, wire } from './server-support.ts';
+import { BUYER, FULL_ENV, SUPPLIER, T0, TEST_CONTACT, baseDeps, cleanDirs, rawClient, serve, settle, until, walletChain, wire } from './server-support.ts';
 import { ALLOWLIST, INDEXER, SUMMARY, marketplace } from './stub-suppliers.ts';
 import { TWO_PAGES_PDF, toBase64 } from './support.ts';
 
@@ -141,7 +142,7 @@ describe('manifest', () => {
 
   test('numeric settings: absent or empty means the default, a number is used, anything else is refused with the variable named', () => {
     expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ADVERT_PRICE_LOVELACE: '' }).terms.price_lovelace).toBe(5_000_000);
-    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ADVERT_PRICE_LOVELACE: '6000000', ADVERT_MAX_PROCESSING_MS: '1200000' }).terms).toMatchObject({ price_lovelace: 6_000_000, max_processing_ms: 1_200_000 });
+    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ADVERT_PRICE_LOVELACE: '6000000', ADVERT_MAX_PROCESSING_MS: '2400000' }).terms).toMatchObject({ price_lovelace: 6_000_000, max_processing_ms: 2_400_000 });
     expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ADVERT_PRICE_LOVELACE: '0' }).terms.price_lovelace).toBe(0);
     for (const bad of ['one', '-1', '1.5', '1e6', ' 5', '0x10', '99999999999999999999']) {
       expect(() => manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ADVERT_PRICE_LOVELACE: bad }), bad).toThrow(/ADVERT_PRICE_LOVELACE/);
@@ -150,6 +151,36 @@ describe('manifest', () => {
     expect(() => envInt('PORT', 'ninety', 9092)).toThrow(/PORT/);
     expect(envInt('PORT', undefined, 9092)).toBe(9092);
     expect(envInt('PORT', '0', 9092)).toBe(0);
+  });
+
+  test('the processing window is at least 30 min: the deadline of a job assumes it, so a smaller ADVERT_MAX_PROCESSING_MS is refused with the variable named', () => {
+    for (const bad of ['0', '300000', '1200000', '1799999']) {
+      expect(() => manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ADVERT_MAX_PROCESSING_MS: bad }), bad).toThrow(/environment variable ADVERT_MAX_PROCESSING_MS must be at least 1800000/);
+    }
+    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ADVERT_MAX_PROCESSING_MS: '1800000' }).terms.max_processing_ms).toBe(1_800_000);
+    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ADVERT_MAX_PROCESSING_MS: '1800001' }).terms.max_processing_ms).toBe(1_800_001);
+    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ADVERT_MAX_PROCESSING_MS: '' }).terms.max_processing_ms).toBe(1_800_000);
+    // The deadline of a job and the service timeout of the runtime, 60 s later, fit inside the smallest window that is allowed.
+    expect(JOB_DEADLINE_MS + 60_000).toBeLessThanOrEqual(1_800_000);
+  });
+
+  test('a value that is long or looks like a key is never shown in the message of a numeric or status setting, only its length; a short plain one is', () => {
+    const key = BUYER.privateKeyHex;
+    const message = (name: string, value: string): string => {
+      try { manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, [name]: value }); } catch (e) { return (e as Error).message; }
+      throw new Error(`${name} was accepted`);
+    };
+    for (const name of ['ADVERT_PRICE_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE']) {
+      const text = message(name, key);
+      expect(text, name).toContain(name);
+      expect(text, name).toContain('64 characters');
+      expect(text, name).not.toContain(key.slice(0, 16));
+      expect(text, name).not.toContain(key.slice(-16));
+    }
+    expect(message('ADVERT_PRICE_LOVELACE', 'one')).toContain('"one"');
+    expect(message('AGENT_STATUS_CHIP', 'launched')).toContain('"launched"');
+    expect(message('AGENT_STATUS_SINCE', 'yesterday')).toContain('"yesterday"');
+    expect(() => envInt('PORT', key, 9092)).toThrow(/PORT.*64 characters/);
   });
 
   test('AGENT_STATUS_CHIP must be live, deployed or proposed in any case and the manifest carries it in lower case; the default is proposed, never live', () => {
@@ -469,17 +500,41 @@ describe('POST /: errors', () => {
     expect(logs.join('\n')).toMatch(/request refused after \d+ ms: bad_shape \(400\)/);
   });
 
-  test('a PipelineError answers with its status and {error: code, message}: 422 by default, 400, 503 and 500 as it says', async () => {
+  // What a buyer is told when the service fails on its side: the code, and where the detail is. The runtime copies the first 200 characters of a failure to the buyer.
+  const FIXED = (code: string) => `The service could not do this job (${code}). The operator's log has the detail.`;
+
+  test('a PipelineError answers with its status and {error: code, message}: 422 by default, 400 as it says, and 503 and 500 with a fixed text', async () => {
     expect(await reply(new PipelineError('ocr_failed', 'page 1 failed'))).toMatchObject({ status: 422, json: { error: 'ocr_failed', message: 'page 1 failed' } });
     expect(await reply(new PipelineError('deadline', 'late'))).toMatchObject({ status: 422, json: { error: 'deadline' } });
-    expect(await reply(new PipelineError('schema_invalid', 'bad schema', 400))).toMatchObject({ status: 400, json: { error: 'schema_invalid' } });
+    expect(await reply(new PipelineError('schema_invalid', 'bad schema', 400))).toMatchObject({ status: 400, json: { error: 'schema_invalid', message: 'bad schema' } });
     for (const code of ['insufficient_float', 'ocr_supplier_unavailable', 'llm_supplier_unavailable'] as const) {
-      expect(await reply(new PipelineError(code, 'cannot take a job now', 503))).toMatchObject({ status: 503, json: { error: code, message: 'cannot take a job now' } });
+      expect(await reply(new PipelineError(code, 'cannot take a job now', 503))).toMatchObject({ status: 503, json: { error: code, message: FIXED(code) } });
     }
-    expect(await reply(new PipelineError('store_write_failed', 'the store could not be written', 500))).toMatchObject({ status: 500, json: { error: 'store_write_failed', message: 'the store could not be written' } });
+    expect(await reply(new PipelineError('store_write_failed', 'the store could not be written', 500))).toMatchObject({ status: 500, json: { error: 'store_write_failed', message: FIXED('store_write_failed') } });
     // The body is exactly {error, message}.
     expect((await reply(new PipelineError('ocr_failed', 'm'))).json).toStrictEqual({ error: 'ocr_failed', message: 'm' });
     expect(logs.join('\n')).toMatch(/job failed after \d+ ms: ocr_failed \(422\)/);
+  });
+
+  test('a failure on the service side (5xx) tells the buyer only the code and where the detail is, and puts the whole message in the log', async () => {
+    const detail = (code: string) => `${code}: could not write /var/lib/pipeline/stranded.json.tmp (EACCES) for escrow ${'ab'.repeat(32)}#0; the provider said "Ogmios network error"`;
+    for (const [code, status] of [['store_write_failed', 500], ['insufficient_float', 503], ['ocr_supplier_unavailable', 503], ['llm_supplier_unavailable', 503]] as const) {
+      logs.length = 0;
+      const r = await reply(new PipelineError(code, detail(code), status));
+      expect(r.status, code).toBe(status);
+      expect(r.json, code).toStrictEqual({ error: code, message: FIXED(code) });
+      expect(r.text, code).not.toContain('/var/lib');
+      expect(r.text, code).not.toContain('ab'.repeat(32));
+      expect(r.json.message.length, code).toBeLessThan(200);
+      expect(logs.join('\n'), code).toContain(`job failed after 0 ms: ${code} (${status}): ${detail(code)}`);
+    }
+  });
+
+  test('a failure the buyer can act on (400, 422) keeps its message, and the log names its code and status only', async () => {
+    const r = await reply(new PipelineError('ocr_failed', 'page 3 failed: the supplier said it was busy'));
+    expect(r.json).toStrictEqual({ error: 'ocr_failed', message: 'page 3 failed: the supplier said it was busy' });
+    expect(logs.join('\n')).toContain('job failed after 0 ms: ocr_failed (422)');
+    expect(logs.join('\n')).not.toContain('the supplier said it was busy');
   });
 
   test('anything else is a 500 {error: "internal"} with no detail, logged by message only, and the server keeps answering', async () => {
@@ -569,6 +624,238 @@ describe('POST /: one job at a time', () => {
     await serve(options({ runPipeline: run }), async (api) => {
       expect((await api.post(wire(REQUEST))).status).toBe(500);
       expect((await api.post(wire(REQUEST))).status).toBe(200);
+    });
+  });
+});
+
+// ---- R47: the runtime's fetch gives up after 300 s of silence ------------------------------------------------------------------------
+// The template runtime calls this service with the global fetch and only AbortSignal.timeout(budget). Behind fetch, undici gives up on a response that
+// has not begun after 300 s (its headers timeout), and a job takes up to 27 minutes: the runtime would report service_unreachable while the service goes on
+// hiring and paying, and holds its slot. So while a job runs the server writes "102 Processing" now and then; undici counts an interim response as life
+// and keeps waiting for the final one. fetch hides those lines, so these tests read the socket.
+describe('POST /: a long job keeps its answer alive with 102 Processing (R47)', () => {
+  const latch = () => { let release!: () => void; const open = new Promise<void>((resolve) => { release = resolve; }); return { open, release }; };
+  const request = wire(REQUEST);
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const makeRequest = (): EventEmitter => Object.assign(new EventEmitter(), { method: 'POST', url: '/', httpVersionMajor: 1, httpVersionMinor: 1 });
+  const makeResponse = () => Object.assign(new EventEmitter(), { headersSent: false, destroyed: false, writeProcessing: vi.fn(), writeHead: vi.fn(), end: vi.fn(), destroy: vi.fn() });
+
+  test('while a job runs the server writes "102 Processing" on its interval, and the answer that ends the job is the same 200 bytes as without any', async () => {
+    const { open, release } = latch();
+    await serve(options({ runPipeline: fakeRun(async () => { await open; return RESULT; }), heartbeatMs: 20 }), async (api) => {
+      const client = rawClient(api.port, { body: request });
+      try {
+        await until(() => client.response().interim >= 3, 'three interim lines have come');
+        expect(client.response().status).toBeNull(); // no answer yet: the interim lines are all there is
+        expect(client.received().toString('latin1')).toBe('HTTP/1.1 102 Processing\r\n\r\n'.repeat(client.response().interim));
+        release();
+        const answer = await client.answer();
+        expect(answer.interim).toBeGreaterThanOrEqual(3);
+        expect(answer.status).toBe(200);
+        expect(answer.headers['content-type']).toBe('application/json');
+        expect(answer.body!.equals(Buffer.from(JSON.stringify(RESULT), 'utf8'))).toBe(true);
+        expect(answer.trailing).toBe(0);
+      } finally {
+        client.close();
+      }
+    });
+  });
+
+  test('fetch itself, the client of the runtime, reads past the interim lines and gets the answer whole', async () => {
+    const run = fakeRun(async () => { await pause(150); return RESULT; });
+    await serve(options({ runPipeline: run, heartbeatMs: 15 }), async (api) => {
+      const r = await api.post(request); // about ten interim lines come before the answer
+      expect(r.status).toBe(200);
+      expect(r.text).toBe(JSON.stringify(RESULT));
+    });
+  });
+
+  test('no 102 is written once the job has ended, whether it ended with an answer or with a failure', async () => {
+    for (const outcome of ['answer', 'failure'] as const) {
+      const { open, release } = latch();
+      const run = fakeRun(async () => { await open; if (outcome === 'failure') throw new PipelineError('ocr_failed', 'page 1 failed'); return RESULT; });
+      await serve(options({ runPipeline: run, heartbeatMs: 15 }), async (api) => {
+        const client = rawClient(api.port, { body: request }); // keep-alive: the socket stays open after the answer, where a late line would show
+        try {
+          await until(() => client.response().interim >= 2, 'two interim lines have come');
+          release();
+          const answer = await client.answer();
+          expect(answer.status, outcome).toBe(outcome === 'answer' ? 200 : 422);
+          const settled = client.received().length;
+          await pause(15 * 8); // eight intervals
+          expect(client.received().length, outcome).toBe(settled);
+          expect(client.response().trailing, outcome).toBe(0);
+        } finally {
+          client.close();
+        }
+      });
+    }
+  });
+
+  test('a job that is quicker than the interval gets no 102 at all', async () => {
+    await serve(options({ runPipeline: fakeRun(async () => RESULT), heartbeatMs: 5000 }), async (api) => {
+      const client = rawClient(api.port, { body: request, close: true });
+      try {
+        const answer = await client.answer();
+        expect(answer.interim).toBe(0);
+        expect(answer.status).toBe(200);
+      } finally {
+        client.close();
+      }
+    });
+  });
+
+  test('a client that speaks HTTP/1.0 gets none: an interim line is for HTTP/1.1 clients', async () => {
+    const { open, release } = latch();
+    await serve(options({ runPipeline: fakeRun(async () => { await open; return RESULT; }), heartbeatMs: 15 }), async (api) => {
+      const client = rawClient(api.port, { body: request, version: '1.0' });
+      try {
+        await pause(15 * 6);
+        expect(client.received().length).toBe(0); // six intervals, not a byte
+        release();
+        const answer = await client.answer();
+        expect(answer).toMatchObject({ interim: 0, status: 200 });
+        expect(answer.body!.equals(Buffer.from(JSON.stringify(RESULT), 'utf8'))).toBe(true);
+      } finally {
+        client.close();
+      }
+    });
+  });
+
+  test('a 102 is skipped for a response whose headers are out or that is gone, and the timer is cleared with the slot', async () => {
+    const { open, release } = latch();
+    const run = fakeRun(async () => { await open; return RESULT; });
+    const server = createServer(options({ runPipeline: run, heartbeatMs: 10 }));
+    const req = makeRequest();
+    const res = makeResponse();
+    server.emit('request', req, res);
+    req.emit('data', Buffer.from(request, 'utf8'));
+    req.emit('end');
+    await until(() => run.mock.calls.length === 1, 'the job is running');
+    await until(() => res.writeProcessing.mock.calls.length >= 2, 'the interim lines are being written');
+    const stays = async (why: string) => {
+      const before = res.writeProcessing.mock.calls.length;
+      await pause(60);
+      expect(res.writeProcessing.mock.calls.length, why).toBe(before);
+    };
+    res.destroyed = true;
+    await stays('the response is destroyed');
+    res.destroyed = false;
+    res.headersSent = true;
+    await stays('the headers are out');
+    res.headersSent = false;
+    release();
+    await until(() => res.end.mock.calls.length === 1, 'the answer is sent');
+    await stays('the job has ended');
+    server.close();
+  });
+
+  test('a write that throws does not take the process down: the socket is gone and the job goes on', async () => {
+    const { open, release } = latch();
+    const run = fakeRun(async () => { await open; return RESULT; });
+    const server = createServer(options({ runPipeline: run, heartbeatMs: 10 }));
+    const req = makeRequest();
+    const res = makeResponse();
+    res.writeProcessing = vi.fn(() => { throw new Error('write after end'); });
+    server.emit('request', req, res);
+    req.emit('data', Buffer.from(request, 'utf8'));
+    req.emit('end');
+    await until(() => res.writeProcessing.mock.calls.length >= 2, 'the interim lines have been tried');
+    release();
+    await until(() => res.end.mock.calls.length === 1, 'the answer is sent');
+    expect(res.writeHead).toHaveBeenCalledWith(200, expect.anything());
+    server.close();
+  });
+
+  test('with no option the interval is 60 s: one 102 is due after 60 s of a job, none before, and none after the job', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      const { open, release } = latch();
+      const run = fakeRun(async () => { await open; return RESULT; });
+      const server = createServer(options({ runPipeline: run }));
+      const req = makeRequest();
+      const res = makeResponse();
+      server.emit('request', req, res);
+      req.emit('data', Buffer.from(request, 'utf8'));
+      req.emit('end');
+      await until(() => run.mock.calls.length === 1, 'the job is running');
+      vi.advanceTimersByTime(59_999);
+      expect(res.writeProcessing).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(res.writeProcessing).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(60_000);
+      expect(res.writeProcessing).toHaveBeenCalledTimes(2);
+      release();
+      await until(() => res.end.mock.calls.length === 1, 'the answer is sent');
+      vi.advanceTimersByTime(600_000);
+      expect(res.writeProcessing).toHaveBeenCalledTimes(2);
+      server.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('the interval is an option that may not be longer than 60 s (the runtime gives up after 300 s of silence), or zero, or not a number', () => {
+    expect(HEARTBEAT_MS).toBe(60_000);
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 60_001, 300_000]) expect(() => createServer(options({ heartbeatMs: bad })), String(bad)).toThrow(RangeError);
+    createServer(options({ heartbeatMs: 60_000 })).close();
+    createServer(options({ heartbeatMs: 1 })).close();
+  });
+});
+
+describe('JobSlot and a service that is stopping', () => {
+  test('one job holds the slot at a time; it is free again when the job releases it', () => {
+    const slot = new JobSlot();
+    expect(slot.busy).toBe(false);
+    expect(slot.take()).toBe('taken');
+    expect(slot.busy).toBe(true);
+    expect(slot.take()).toBe('busy');
+    slot.release();
+    expect(slot.busy).toBe(false);
+    expect(slot.take()).toBe('taken');
+  });
+
+  test('once draining, no job is taken; the job that holds the slot still releases it', () => {
+    const slot = new JobSlot();
+    expect(slot.take()).toBe('taken');
+    slot.drain();
+    expect(slot.take()).toBe('draining'); // draining outranks busy: it is the answer that will not change
+    slot.release();
+    expect(slot.busy).toBe(false);
+    expect(slot.take()).toBe('draining');
+  });
+
+  test('a service that is stopping takes no new job: 503 shutting_down with a fixed text, and every other route answers as before', async () => {
+    const slot = new JobSlot();
+    const run = fakeRun();
+    await serve(options({ slot, runPipeline: run }), async (api) => {
+      expect((await api.post(wire(REQUEST))).status).toBe(200);
+      slot.drain();
+      const refused = await api.post(wire(REQUEST));
+      expect(refused.status).toBe(503);
+      expect(refused.json).toStrictEqual({ error: 'shutting_down', message: 'The service is stopping and takes no new job. Try again shortly.' });
+      expect(run).toHaveBeenCalledTimes(1);
+      expect((await api.get('/healthz')).status).toBe(200);
+      expect((await api.get('/agent.json')).status).toBe(200);
+      expect((await api.post('not json')).status).toBe(400); // a request that is no request is still refused as one
+    });
+    expect(logs.join('\n')).toMatch(/job refused: the service is stopping/);
+  });
+
+  test('a job that is running when the service starts to stop finishes and is answered', async () => {
+    const slot = new JobSlot();
+    let release!: () => void;
+    const open = new Promise<void>((resolve) => { release = resolve; });
+    const run = fakeRun(async () => { await open; return RESULT; });
+    await serve(options({ slot, runPipeline: run }), async (api) => {
+      const job = api.post(wire(REQUEST));
+      await until(() => run.mock.calls.length === 1, 'the job is running');
+      slot.drain();
+      release();
+      const done = await job;
+      expect(done.status).toBe(200);
+      expect(done.text).toBe(JSON.stringify(RESULT));
+      expect(slot.busy).toBe(false);
     });
   });
 });
@@ -749,8 +1036,9 @@ describe('the real pipeline over HTTP', () => {
     await serve(options({ deps: depsOn(m), runPipeline }), async (api) => {
       const r = await api.post(wire(TWO_PAGES));
       expect(r.status).toBe(503);
-      expect(r.json).toStrictEqual({ error: 'insufficient_float', message: expect.stringMatching(/Nothing was spent/) });
+      expect(r.json).toStrictEqual({ error: 'insufficient_float', message: "The service could not do this job (insufficient_float). The operator's log has the detail." });
     });
+    expect(logs.join('\n')).toMatch(/job failed after \d+ ms: insufficient_float \(503\): .*Nothing was spent/); // the detail is the operator's
     expect(m.calls.filter((c) => c.method === 'POST')).toStrictEqual([]);
   });
 

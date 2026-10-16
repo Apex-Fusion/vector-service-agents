@@ -26,6 +26,11 @@ export interface Renderer {
   pageCount(pdf: Uint8Array): Promise<number>;
   /** The first `maxPages` pages (fewer when the document is shorter), index 0 first. */
   render(pdf: Uint8Array, maxPages: number): Promise<Page[]>;
+  /**
+   * Optional, and made once at start by a service that has a renderer to prove: resolves when the programs this renderer needs can be run, and rejects with the
+   * reason when they cannot. A renderer of a test has none. It reads no document.
+   */
+  check?(): Promise<void>;
 }
 
 export interface PopplerOptions { pdftoppm?: string; pdfinfo?: string; dpi?: number; timeoutMs?: number }
@@ -42,6 +47,8 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 // pdfinfo prints about twenty short lines; anything near this size is a document whose metadata is trying to say something.
 const INFO_OUTPUT_LIMIT = 256 * 1024;
 const RENDER_OUTPUT_LIMIT = 1024 * 1024;
+// A tool asked for its version answers at once; this is long enough for a machine that is busy and short enough for a start that waits for it.
+const CHECK_TIMEOUT_MS = 20_000;
 const PDF_FILE = 'in.pdf';
 const PAGE_PREFIX = 'page';
 // pdftoppm writes <prefix>-<n>.png, with n padded with zeros to the digits of the page count of the whole document: page-1.png, page-01.png, page-001.png.
@@ -116,6 +123,20 @@ export function popplerRendererWith(run: RunTool, opts: PopplerOptions = {}): Re
   if (!Number.isInteger(dpi) || dpi < 1) throw new RangeError('dpi must be a whole number of at least 1');
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new RangeError('timeoutMs must be a positive number');
   return {
+    // Each tool is asked for its version. Poppler's -v does not always exit 0, so an exit with a status counts as a tool that is there; a tool that cannot be
+    // started at all (not installed, not executable) or that does not answer in time does not.
+    check: async () => {
+      for (const tool of [pdfinfo, pdftoppm]) {
+        try {
+          await run(tool, ['-v'], { timeoutMs: CHECK_TIMEOUT_MS, maxBuffer: INFO_OUTPUT_LIMIT });
+        } catch (error) {
+          const e = (typeof error === 'object' && error !== null ? error : {}) as { code?: unknown; killed?: unknown; signal?: unknown };
+          if (typeof e.code === 'number') continue;
+          const reason = typeof e.code === 'string' ? e.code : e.killed === true ? `it did not answer within ${CHECK_TIMEOUT_MS / 1000} s` : String(e.signal ?? 'unknown');
+          throw new Error(`${tool} cannot be run (${reason}): poppler-utils (pdfinfo and pdftoppm) must be installed and on PATH, and a PDF cannot be read without them`, { cause: error });
+        }
+      }
+    },
     pageCount: (pdf) => inPrivateDir(async (dir) => {
       const file = join(dir, PDF_FILE);
       await writeFile(file, pdf);

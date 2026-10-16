@@ -6,13 +6,15 @@
 //   GET  /healthz     {ok: true}, or 503 {ok: false, reason: "insufficient_float"} once the last check of the buyer wallet failed. The check is made at most
 //                     once a minute, in the background: a request is answered from the last one and never waits for the next.
 //   GET  /agent.json  the manifest, the bytes JSON.stringify gives, which the advert hashes.
-//   POST /            the wire message only, at most 1 MB, one job at a time: a second one gets 409 {error: "busy"}. The answer is JSON.stringify(result),
-//                     serialised once. A refusal is {error: code, message} with its status: 400 for a request the intake refuses (RequestError), 422 for a
-//                     document or a hire that failed, 503 when the service cannot take a job now, 500 for store_write_failed (PipelineError); anything else
-//                     is 500 {error: "internal"} with no detail, and the cause goes to the log, by message only, never the request.
+//   POST /            the wire message only, at most 1 MB, one job at a time: a second one gets 409 {error: "busy"}. While the job runs the server writes
+//                     "102 Processing" every minute, so that the runtime's fetch does not give up on the silence (HEARTBEAT_MS). The answer is
+//                     JSON.stringify(result), serialised once. A refusal is {error: code, message} with its status: 400 for a request the intake refuses
+//                     (RequestError), 422 for a document or a hire that failed, and 503 (the service cannot take a job now) or 500 (store_write_failed) for
+//                     a failure on this side, whose message is fixed text for the buyer and whole in the log (PipelineError); anything else is 500
+//                     {error: "internal"} with no detail, and the cause goes to the log, by message only, never the request.
 //   anything else     404.
 import { createServer as httpServer } from 'node:http';
-import type { IncomingMessage, Server } from 'node:http';
+import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { REGISTRY_ADDRESS } from '@vsa/vector-read';
 import { JOB_DEADLINE_MS } from './budget.ts';
 import { COMBINATION_MAX_ENTRIES, SCHEMA_MAX_BYTES, SCHEMA_MAX_DEPTH } from './extract.ts';
@@ -26,11 +28,16 @@ import { PipelineError } from './result.ts';
 import { MAX_SOURCE_BYTES } from './source.ts';
 
 // --- The environment -----------------------------------------------------------------------------------------------------------------
+// A value as a message may show it: short and plain, or only its length. A key put in the wrong line of an env file must not be printed because a check on
+// that line found fault with it.
+function shown(value: string): string {
+  return value.length <= 24 && !/[0-9a-fA-F]{20}/.test(value) ? JSON.stringify(value) : `${value.length} characters`;
+}
 // A number from the environment: absent or empty means the default (an empty string must not become 0); anything else must be a non-negative integer,
 // and the error names the variable.
 export function envInt(name: string, v: string | undefined, fallback: number): number {
   if (v === undefined || v === '') return fallback;
-  if (!/^\d+$/.test(v) || !Number.isSafeInteger(Number(v))) throw new Error(`environment variable ${name} must be a non-negative integer, got "${v}"`);
+  if (!/^\d+$/.test(v) || !Number.isSafeInteger(Number(v))) throw new Error(`environment variable ${name} must be a non-negative integer, got ${shown(v)}`);
   return Number(v);
 }
 // A setting the service cannot start without. Absent, empty and blank all mean it was not given, and the error names the variable. What it is for goes in
@@ -44,14 +51,26 @@ const CHIPS = ['LIVE', 'DEPLOYED', 'PROPOSED'];
 // not yet deployed. A word above that is the operator's to set, by this variable, once it is true.
 function statusChip(v: string | undefined): string {
   if (v === undefined || v === '') return 'proposed';
-  if (!CHIPS.includes(v.toUpperCase())) throw new Error(`environment variable AGENT_STATUS_CHIP must be one of ${CHIPS.join(', ')}, got "${v}"`);
+  if (!CHIPS.includes(v.toUpperCase())) throw new Error(`environment variable AGENT_STATUS_CHIP must be one of ${CHIPS.join(', ')}, got ${shown(v)}`);
   return v.toLowerCase();
 }
 // The date the status word began, YYYY-MM-DD; absent or empty means the day the service was built.
 function statusSince(v: string | undefined): string {
   if (v === undefined || v.trim() === '') return '2026-10-15';
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(v.trim())) throw new Error(`environment variable AGENT_STATUS_SINCE must be a date as YYYY-MM-DD, got "${v}"`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v.trim())) throw new Error(`environment variable AGENT_STATUS_SINCE must be a date as YYYY-MM-DD, got ${shown(v)}`);
   return v.trim();
+}
+/**
+ * The window the advert gives a job, at least 30 min: the deadline of a job (JOB_DEADLINE_MS) and the service timeout of the runtime, 60 s later, are fixed
+ * for it, and a window below them would be a promise the service cannot keep.
+ */
+export const MIN_PROCESSING_WINDOW_MS = 1_800_000;
+function processingWindow(v: string | undefined): number {
+  const ms = envInt('ADVERT_MAX_PROCESSING_MS', v, MIN_PROCESSING_WINDOW_MS);
+  if (ms < MIN_PROCESSING_WINDOW_MS) {
+    throw new Error(`environment variable ADVERT_MAX_PROCESSING_MS must be at least ${MIN_PROCESSING_WINDOW_MS} (the window of 30 min that the deadline of a job, ${JOB_DEADLINE_MS} ms, assumes), got ${ms}`);
+  }
+  return ms;
 }
 
 // --- The manifest --------------------------------------------------------------------------------------------------------------------
@@ -121,7 +140,7 @@ export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
     },
     terms: {
       price_lovelace: envInt('ADVERT_PRICE_LOVELACE', env.ADVERT_PRICE_LOVELACE, 5_000_000), supplier_bond_lovelace: 1_000_000, buyer_bond_lovelace: 1_000_000,
-      max_processing_ms: envInt('ADVERT_MAX_PROCESSING_MS', env.ADVERT_MAX_PROCESSING_MS, 1_800_000),
+      max_processing_ms: processingWindow(env.ADVERT_MAX_PROCESSING_MS),
       input_limits: { request_bytes: WIRE_PAYLOAD_BYTES, source_bytes: MAX_SOURCE_BYTES, inline_media_bytes: MAX_INLINE_BYTES, max_pages: MAX_PAGES },
     },
     behaviour: {
@@ -246,6 +265,52 @@ class FloatMonitor {
 }
 
 // --- The server ----------------------------------------------------------------------------------------------------------------------
+/**
+ * How often, while a job runs, the server writes an interim "102 Processing" line (ruling R47). The template runtime calls this service with the global fetch
+ * and only AbortSignal.timeout(budget). Behind fetch, undici gives up on a response that has not begun after 300 s (its headers timeout), and a job takes up
+ * to 27 minutes: without a line now and then the runtime would report service_unreachable at the five minute mark while the service goes on hiring and
+ * paying, and holds its slot. Undici counts an interim response as life and keeps waiting for the final one, so a line a minute is plenty, and the option
+ * may not be longer. The final answer is what it was: the same 200 with the same body.
+ */
+export const HEARTBEAT_MS = 60_000;
+
+/**
+ * Starts the interim lines of one job: a timer, unref'd so that it never keeps the process alive, which writes "102 Processing" to the response unless its
+ * headers are out or it is gone. Only an HTTP/1.1 client is sent one (an interim response is not for HTTP/1.0). A write that fails changes nothing for the
+ * job: the client is gone. The caller clears the timer in the same place it frees the slot.
+ */
+function startHeartbeat(req: IncomingMessage, res: ServerResponse, everyMs: number): NodeJS.Timeout | undefined {
+  if (!(req.httpVersionMajor === 1 && req.httpVersionMinor >= 1)) return undefined;
+  const timer = setInterval(() => {
+    if (res.headersSent || res.destroyed) return;
+    try { res.writeProcessing(); } catch { /* the socket is gone; the job goes on */ }
+  }, everyMs);
+  timer.unref();
+  return timer;
+}
+
+/**
+ * The one place a job runs: one at a time, because the money of a job is the buyer wallet's and the wallet is one. A request takes the slot once it has been
+ * read and found to be a request, not while its upload is under way, so that a client that stalls cannot hold it. A service that is stopping drains the slot:
+ * the job that holds it goes on, and no other is taken.
+ */
+export class JobSlot {
+  #busy = false;
+  #draining = false;
+  /** 'taken' when the caller now holds the slot; otherwise why not. Draining outranks busy: it is the answer that will not change. */
+  take(): 'taken' | 'busy' | 'draining' {
+    if (this.#draining) return 'draining';
+    if (this.#busy) return 'busy';
+    this.#busy = true;
+    return 'taken';
+  }
+  release(): void { this.#busy = false; }
+  /** From now on no job is taken. */
+  drain(): void { this.#draining = true; }
+  /** Does a job hold the slot? */
+  get busy(): boolean { return this.#busy; }
+}
+
 export interface ServerOptions {
   manifest: AgentManifest;
   /** Everything a run is given but its deadline, which the server sets for each request. */
@@ -257,20 +322,31 @@ export interface ServerOptions {
   /** How long a wallet check stands (FLOAT_TTL_MS), and how long it may take (FLOAT_TIMEOUT_MS). */
   floatTtlMs?: number;
   floatTimeoutMs?: number;
+  /** How often a job that is running is sent an interim line: HEARTBEAT_MS by default, and no more than that. */
+  heartbeatMs?: number;
+  /** The slot jobs run in; a service that wants to stop drains it. A new one by default. */
+  slot?: JobSlot;
 }
 /** The log of the process: one line each on stdout, with the name of the service. */
 export const defaultLog = (line: string): void => { console.log(`[document-pipeline] ${line}`); };
+
+// What a buyer is told when the service fails on its side. The runtime copies the first 200 characters of a failure to the buyer, and the detail of a failure on
+// this side (a path, an escrow, the text of a provider) is the operator's.
+const operatorsLog = (code: string): string => `The service could not do this job (${code}). The operator's log has the detail.`;
+const STOPPING_TEXT = 'The service is stopping and takes no new job. Try again shortly.';
 
 export function createServer(opts: ServerOptions): Server {
   const { deps } = opts;
   const run = opts.runPipeline ?? realRunPipeline;
   const log = opts.log ?? defaultLog;
+  const slot = opts.slot ?? new JobSlot();
+  const heartbeatMs = opts.heartbeatMs ?? HEARTBEAT_MS;
+  if (!(heartbeatMs > 0 && heartbeatMs <= HEARTBEAT_MS)) {
+    throw new RangeError(`heartbeatMs must be more than 0 and at most ${HEARTBEAT_MS}, for the runtime's fetch gives up after 300 s of silence, got ${heartbeatMs}`);
+  }
   const manifestText = JSON.stringify(opts.manifest);
   const monitor = new FloatMonitor(() => assertFunded(deps.chain, MAX_PAGES), deps.clock, opts.floatTtlMs ?? FLOAT_TTL_MS, opts.floatTimeoutMs ?? FLOAT_TIMEOUT_MS, log);
   monitor.poke(); // the first check, at start
-  // One job at a time: the money of a job is the buyer wallet's, and the wallet is one. A request takes the slot once it has been read and found to be a
-  // request, not while its upload is under way, so that a client that stalls cannot hold it.
-  let busy = false;
   return httpServer(async (req, res) => {
     const arrivedAt = deps.clock();
     // The body is serialised before anything is written, so a body that cannot be serialised can still be answered with a 500.
@@ -287,13 +363,19 @@ export function createServer(opts: ServerOptions): Server {
       if (req.method === 'GET' && req.url === '/agent.json') return sendText(200, manifestText);
       if (req.method !== 'POST' || req.url !== '/') return send(404, { error: 'not_found' });
       const request = parseRequest(parseWire(await readBody(req)));
-      if (busy) return send(409, { error: 'busy' });
-      busy = true;
+      const taken = slot.take();
+      if (taken === 'busy') return send(409, { error: 'busy' });
+      if (taken === 'draining') {
+        log('job refused: the service is stopping');
+        return send(503, { error: 'shutting_down', message: STOPPING_TEXT });
+      }
+      const heartbeat = startHeartbeat(req, res, heartbeatMs);
       let result: PipelineResult;
       try {
         result = await run(request, { ...deps, deadlineMs: arrivedAt + JOB_DEADLINE_MS });
       } finally {
-        busy = false;
+        clearInterval(heartbeat);
+        slot.release();
       }
       const text = JSON.stringify(result);
       log(`job done in ${deps.clock() - arrivedAt} ms: ${result.accounting.sub_jobs} sub-jobs`);
@@ -302,7 +384,13 @@ export function createServer(opts: ServerOptions): Server {
       // Headers already out: nothing more can be said on this response. Log why, then cut it.
       if (res.headersSent) { log(`response failed after the headers were sent: ${errorText(e)}`); res.destroy(); return; }
       if (e instanceof WireError || e instanceof RequestError || e instanceof PipelineError) {
-        log(`${e instanceof PipelineError ? 'job failed' : 'request refused'} after ${deps.clock() - arrivedAt} ms: ${e.code} (${e.status})`);
+        const took = deps.clock() - arrivedAt;
+        if (e.status >= 500) {
+          // A failure on this side: the whole message is for the operator's log, and the buyer gets the code.
+          log(`job failed after ${took} ms: ${e.code} (${e.status}): ${errorText(e.message, 1000)}`);
+          return send(e.status, { error: e.code, message: operatorsLog(e.code) });
+        }
+        log(`${e instanceof PipelineError ? 'job failed' : 'request refused'} after ${took} ms: ${e.code} (${e.status})`);
         return send(e.status, { error: e.code, message: e.message });
       }
       log(`job failed after ${deps.clock() - arrivedAt} ms: internal error: ${errorText(e)}`); // the message only, never the request

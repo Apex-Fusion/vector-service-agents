@@ -4,20 +4,25 @@
 // key hash the manifest publishes is the key that signs. startService puts the real parts together (the chain from the key, the stranded store in the state
 // directory, the janitor on it, the server) and is run here with the parts a test can replace. The last tests run src/index.ts as a process: the exit at
 // start with the variable named, and one start against a node that is not there.
-import { describe, test, expect, afterEach } from 'vitest';
+import { describe, test, expect, afterEach, beforeEach } from 'vitest';
 import { execFile, spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer as netServer } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FakeChain } from '@vsa/buyer-core';
+import { FakeChain, rawHexToBech32 } from '@vsa/buyer-core';
 import { StrandedStore } from '../src/janitor.ts';
-import { WRITE_PROBE, loadConfig, startService } from '../src/start.ts';
-import type { StartOptions } from '../src/start.ts';
+import { popplerRenderer } from '../src/render.ts';
+import { manifestFromEnv } from '../src/server.ts';
+import { CHAIN_SETTINGS, OTHER_SETTINGS, SHUTDOWN_WAIT_MS, WRITE_PROBE, assertNoKeyIn, loadConfig, startService, stopOnSignals } from '../src/start.ts';
+import type { RunningService, StartOptions } from '../src/start.ts';
 import { fakeRenderer } from './fake-renderer.ts';
-import { BUYER, BUYER_ADDRESS, FULL_ENV, SUPPLIER, TEST_CONTACT, cleanDirs, noFetch, tempDir, until, wire } from './server-support.ts';
+import { BUYER, BUYER_ADDRESS, FULL_ENV, SUPPLIER, TEST_CONTACT, cleanDirs, fakePopplerDir, inFront, keyOf, noFetch, pathOf, rawClient, tempDir, until, wire, withPath } from './server-support.ts';
 import { ALLOWLIST, INDEXER, SUMMARY, escrowNo, marketplace } from './stub-suppliers.ts';
 import { TWO_PAGES_PDF, toBase64 } from './support.ts';
+
+afterEach(() => { cleanDirs(); });
 
 const OCR_DEFAULT = '401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9';
 const MODELS_DEFAULT = ['deepseek/deepseek-v4-flash', 'deepseek-v4-pro', 'moonshotai/kimi-k2.6', 'Qwen/Qwen3.6-35B-A3B-FP8'];
@@ -113,13 +118,14 @@ describe('loadConfig', () => {
       expect(loadConfig({ ...FULL_ENV, PIPELINE_BUYER_ADDRESS: BUYER_ADDRESS.toUpperCase() }).buyer.address).toBe(BUYER_ADDRESS);
     });
 
-    test('a hash that is not the key\'s is refused at start, naming the variable and the key hash it was checked against, and never the key', () => {
+    test('a hash that is not the key\'s is refused at start, naming the variable, the length of what was written and the key hash it was checked against; never the value, never the key', () => {
       for (const wrong of ['cd'.repeat(28), SUPPLIER.pkh, '<PIPELINE_BUYER_PKH>', 'abc']) {
         const error = thrown(() => loadConfig({ ...FULL_ENV, PIPELINE_BUYER_PKH: wrong }));
-        expect(error.message, wrong).toMatch(/environment variable PIPELINE_BUYER_PKH/);
+        expect(error.message, wrong).toMatch(new RegExp(`^environment variable PIPELINE_BUYER_PKH \\(${wrong.length} characters\\) is not the key hash`));
         expect(error.message).toContain(BUYER.pkh);
         expect(error.message).toMatch(/PIPELINE_BUYER_PRIV_KEY_HEX/);
         expect(error.message).not.toContain(BUYER.privateKeyHex);
+        if (wrong.length > 20) expect(error.message, 'the value written is not shown').not.toContain(wrong);
       }
     });
 
@@ -127,10 +133,103 @@ describe('loadConfig', () => {
       const other = new FakeChain({ buyerPkh: SUPPLIER.pkh }).address;
       for (const wrong of [other, 'addr1not-an-address', `${BUYER_ADDRESS}0`]) {
         const error = thrown(() => loadConfig({ ...FULL_ENV, PIPELINE_BUYER_ADDRESS: wrong }));
-        expect(error.message, wrong).toMatch(/environment variable PIPELINE_BUYER_ADDRESS/);
+        expect(error.message, wrong).toMatch(new RegExp(`^environment variable PIPELINE_BUYER_ADDRESS \\(${wrong.length} characters\\) is not the address`));
         expect(error.message).toContain(BUYER_ADDRESS);
         expect(error.message).not.toContain(BUYER.privateKeyHex);
+        expect(error.message, 'the value written is not shown').not.toContain(wrong);
       }
+    });
+  });
+
+  test('a processing window below 30 min stops the start with ADVERT_MAX_PROCESSING_MS named: the deadline of a job assumes it', () => {
+    expect(thrown(() => loadConfig({ ...FULL_ENV, ADVERT_MAX_PROCESSING_MS: '1799999' })).message).toMatch(/^environment variable ADVERT_MAX_PROCESSING_MS must be at least 1800000/);
+    expect(thrown(() => loadConfig({ ...FULL_ENV, ADVERT_MAX_PROCESSING_MS: '300000' })).message).toMatch(/ADVERT_MAX_PROCESSING_MS/);
+    expect(loadConfig({ ...FULL_ENV, ADVERT_MAX_PROCESSING_MS: '1800000' }).manifest.terms.max_processing_ms).toBe(1_800_000);
+    expect(loadConfig({ ...FULL_ENV, ADVERT_MAX_PROCESSING_MS: '' }).manifest.terms.max_processing_ms).toBe(1_800_000);
+  });
+
+  // A secret in the wrong line of an env file is a common mistake and a costly one: the shape checks print what they were given, and a value that is
+  // published goes out in /agent.json, which the advert hashes and anyone can read. So the key is looked for in every line the service reads, before any
+  // other check can print it, and the hex settings give a length, not a value.
+  describe('a secret in the wrong line is never printed and never published', () => {
+    const KEY = BUYER.privateKeyHex;
+    // 64 hex characters, as a private key is, but not the buyer key.
+    const OTHER_SECRET = keyOf('document-pipeline service test: a secret that is not the buyer key').privateKeyHex;
+    /** Is a stretch of 16 characters of `secret` in `text`? */
+    const holds = (text: string, secret: string): boolean => {
+      for (let at = 0; at + 16 <= secret.length; at += 4) if (text.includes(secret.slice(at, at + 16))) return true;
+      return false;
+    };
+
+    test.each([...OTHER_SETTINGS, ...CHAIN_SETTINGS].map((name) => [name]))('the buyer key in %s: refused at start, the variable named, the key not in the message', (name) => {
+      const forms = [KEY, KEY.toUpperCase(), `prefix-${KEY}-suffix`, rawHexToBech32(KEY), `did:vector:agent:${KEY}`];
+      for (const value of forms) {
+        const error = thrown(() => loadConfig({ ...FULL_ENV, [name]: value }));
+        expect(error.message, `${name} = ${value.slice(0, 12)}`).toMatch(new RegExp(`^environment variable ${name} holds the buyer key`));
+        expect(holds(error.message, KEY), name).toBe(false);
+        expect(error.message, name).not.toContain(rawHexToBech32(KEY).slice(0, 24));
+      }
+    });
+
+    test('the settings it looks in are every one the service reads but the key itself, and the ones the chain code reads and prints', () => {
+      expect([...CHAIN_SETTINGS]).toStrictEqual(['VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL']);
+      expect(OTHER_SETTINGS).toContain('OPERATOR_CONTACT');
+      expect(OTHER_SETTINGS).toContain('AGENT_DID');
+      expect(OTHER_SETTINGS).toContain('SUPPLIER_PUB_KEY_HEX');
+      expect(OTHER_SETTINGS).not.toContain('PIPELINE_BUYER_PRIV_KEY_HEX');
+      expect(new Set(OTHER_SETTINGS).size).toBe(OTHER_SETTINGS.length);
+    });
+
+    test('any other secret put in the line of a hex setting is not printed either: the message gives a length, never the value', () => {
+      const cases: Array<[string, Record<string, string>, RegExp]> = [
+        ['SUPPLIER_PKH', { SUPPLIER_PKH: OTHER_SECRET }, /^environment variable SUPPLIER_PKH must be 56 hex characters, and it has 64 characters/],
+        ['OCR_ALLOWLIST_SUPPLIER_PKH', { OCR_ALLOWLIST_SUPPLIER_PKH: OTHER_SECRET }, /^environment variable OCR_ALLOWLIST_SUPPLIER_PKH must be 56 hex characters, and it has 64 characters/],
+        ['SUPPLIER_PUB_KEY_HEX', { SUPPLIER_PUB_KEY_HEX: `${OTHER_SECRET}00` }, /^environment variable SUPPLIER_PUB_KEY_HEX must be 64 hex characters, and it has 66 characters/],
+        ['PIPELINE_BUYER_PKH', { PIPELINE_BUYER_PKH: OTHER_SECRET }, /^environment variable PIPELINE_BUYER_PKH \(64 characters\) is not the key hash/],
+        ['PIPELINE_BUYER_ADDRESS', { PIPELINE_BUYER_ADDRESS: OTHER_SECRET }, /^environment variable PIPELINE_BUYER_ADDRESS \(64 characters\) is not the address/],
+      ];
+      for (const [name, set, message] of cases) {
+        const error = thrown(() => loadConfig({ ...FULL_ENV, ...set }));
+        expect(error.message, name).toMatch(message);
+        expect(holds(error.message, OTHER_SECRET), name).toBe(false);
+      }
+      const notHex = thrown(() => loadConfig({ ...FULL_ENV, SUPPLIER_PKH: `<${OTHER_SECRET.slice(0, 54)}>` }));
+      expect(notHex.message).toMatch(/must be 56 hex characters, and some of its 56 characters are not hex/);
+      expect(holds(notHex.message, OTHER_SECRET)).toBe(false);
+    });
+
+    test('SUPPLIER_PUB_KEY_HEX must be the public key of SUPPLIER_PKH: a private key put there by mistake, or the key of another pair, stops the start unprinted', () => {
+      expect(loadConfig(FULL_ENV).manifest.keys).toMatchObject({ supplier_pkh: SUPPLIER.pkh, pub_key_hex: SUPPLIER.pubKeyHex }); // the pair of FULL_ENV agrees
+      expect(loadConfig({ ...FULL_ENV, SUPPLIER_PUB_KEY_HEX: SUPPLIER.pubKeyHex.toUpperCase() }).manifest.keys.pub_key_hex).toBe(SUPPLIER.pubKeyHex);
+      expect(loadConfig({ ...FULL_ENV, SUPPLIER_PUB_KEY_HEX: '' }).manifest.keys.pub_key_hex).toBe(''); // not given: nothing to compare
+      for (const [what, wrong] of [['the supplier private key', SUPPLIER.privateKeyHex], ['the public key of another pair', BUYER.pubKeyHex], ['an unrelated secret', OTHER_SECRET]] as const) {
+        const error = thrown(() => loadConfig({ ...FULL_ENV, SUPPLIER_PUB_KEY_HEX: wrong }));
+        expect(error.message, what).toMatch(/^environment variable SUPPLIER_PUB_KEY_HEX is not the public key of SUPPLIER_PKH/);
+        expect(holds(error.message, wrong), what).toBe(false);
+      }
+      expect(thrown(() => loadConfig({ ...FULL_ENV, SUPPLIER_PKH: BUYER.pkh })).message).toMatch(/SUPPLIER_PUB_KEY_HEX is not the public key of SUPPLIER_PKH/);
+    });
+
+    test('the manifest is checked last, for the key in both its forms and in any case: whatever put it in a value that is published, the start stops, unprinted', () => {
+      const manifest = loadConfig(FULL_ENV).manifest;
+      expect(() => assertNoKeyIn(JSON.stringify(manifest), KEY)).not.toThrow();
+      for (const leaked of [KEY, KEY.toUpperCase(), rawHexToBech32(KEY)]) {
+        const error = thrown(() => assertNoKeyIn(JSON.stringify({ ...manifest, description: `leaked ${leaked}` }), KEY));
+        expect(error.message).toMatch(/would publish the buyer key/);
+        expect(holds(error.message, KEY)).toBe(false);
+        expect(error.message).not.toContain(rawHexToBech32(KEY).slice(0, 24));
+      }
+    });
+
+    test('and loadConfig makes that last look at the manifest it builds, whatever the settings say: a manifest field that came from somewhere else is caught', () => {
+      // The settings are clean, so the look at every line finds nothing; the manifest function is the one that leaks.
+      const leaking = (leaked: string) => (e: NodeJS.ProcessEnv) => ({ ...manifestFromEnv(e), description: `from somewhere else: ${leaked}` });
+      for (const leaked of [KEY, KEY.toUpperCase(), rawHexToBech32(KEY)]) {
+        const error = thrown(() => loadConfig(FULL_ENV, leaking(leaked)));
+        expect(error.message).toMatch(/^the manifest would publish the buyer key/);
+        expect(holds(error.message, KEY)).toBe(false);
+      }
+      expect(loadConfig(FULL_ENV, manifestFromEnv).manifest).toStrictEqual(loadConfig(FULL_ENV).manifest);
     });
   });
 });
@@ -259,6 +358,181 @@ describe('startService', () => {
     expect(await job).toBe('closed');
   });
 
+  // A service whose image lost its poppler tools would answer /healthz ok and fail every PDF. It asks each tool for its version before it listens.
+  describe('the poppler tools are asked for at start', () => {
+    let tools = '';
+    beforeEach(() => { tools = fakePopplerDir(); }); // made for each test: the directories of a test are removed when it ends
+    const tool = (name: string) => join(tools, process.platform === 'win32' ? `${name}.exe` : name);
+    const missing = (name: string) => `${name}-that-is-not-installed`;
+
+    test('a tool that cannot be run stops the start before a chain is made, and the message names it', async () => {
+      let made = 0;
+      const makeChain = async () => { made += 1; return new FakeChain(); };
+      for (const [name, renderer] of [
+        ['pdfinfo', popplerRenderer({ pdfinfo: missing('pdfinfo'), pdftoppm: tool('pdftoppm') })],
+        ['pdftoppm', popplerRenderer({ pdfinfo: tool('pdfinfo'), pdftoppm: missing('pdftoppm') })],
+      ] as const) {
+        await expect(startService(envIn(tempDir()), optionsWith({ createChain: makeChain, renderer })), name).rejects.toThrow(new RegExp(`${missing(name)} cannot be run.*poppler-utils \\(pdfinfo and pdftoppm\\) must be installed`));
+      }
+      expect(made).toBe(0);
+    });
+
+    test('with both tools answering the start goes on, and the check reads no PDF: the tools are asked for their version only', async () => {
+      const service = await start(envIn(tempDir()), { renderer: popplerRenderer({ pdfinfo: tool('pdfinfo'), pdftoppm: tool('pdftoppm') }) });
+      expect((await fetch(`http://127.0.0.1:${service.port}/healthz`)).status).toBe(200);
+    });
+
+    test('a renderer that has no check (a fake) starts as it did', async () => {
+      const service = await start(envIn(tempDir()), { renderer: fakeRenderer() });
+      expect((await fetch(`http://127.0.0.1:${service.port}/healthz`)).status).toBe(200);
+    });
+  });
+
+  // A restart must not cut the answer of a job that is running (SIGTERM from `docker stop`, then SIGKILL after the grace period of the compose file).
+  describe('shutdown: no new job, wait for the one that is running, then stop', () => {
+    const REQUEST = { source: { pdf_b64: toBase64(TWO_PAGES_PDF), mime: 'application/pdf' }, task: 'summary' };
+    const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    /** A service on the in-memory marketplace whose job stops at its first sleep until `release` is called. */
+    async function holdingService() {
+      const m = marketplace();
+      let sleeping = false;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const env = envIn(tempDir(), { OCR_ALLOWLIST_SUPPLIER_PKH: m.ocr.key.pkh, LLM_MODEL_ALLOWLIST: ALLOWLIST.join(','), VECTOR_MARKETPLACE_INDEXER_URL: INDEXER });
+      const service = await start(env, {
+        createChain: async () => m.chain, fetchImpl: m.fetchImpl, renderer: fakeRenderer({ total: 2 }), clock: () => m.clock.now,
+        sleep: async (ms) => { sleeping = true; await gate; m.clock.now += ms; },
+      });
+      const url = `http://127.0.0.1:${service.port}`;
+      const job = fetch(`${url}/`, { method: 'POST', body: wire(REQUEST) }).then(async (r) => ({ status: r.status, json: await r.json() }));
+      job.catch(() => undefined); // a test that closes the connection reads the failure itself
+      await until(() => sleeping, 'the job is running');
+      return { service, m, url, job, release };
+    }
+
+    test('an idle service shuts down at once, and shutdown can be called twice', async () => {
+      const service = await start(envIn(tempDir()));
+      const began = Date.now();
+      await service.shutdown(30_000);
+      await service.shutdown(30_000);
+      expect(Date.now() - began).toBeLessThan(2000);
+      await expect(fetch(`http://127.0.0.1:${service.port}/healthz`)).rejects.toThrow();
+    });
+
+    test('shutdown waits for the job that is running, takes no new connection meanwhile, delivers the answer whole, and then closes', async () => {
+      const { service, m, url, job, release } = await holdingService();
+      let finished = false;
+      const done = service.shutdown(30_000).then(() => { finished = true; });
+      await pause(250); // two rounds of the sweep that closes idle connections: the connection of the job is not idle
+      expect(finished).toBe(false);
+      await expect(fetch(`${url}/healthz`)).rejects.toThrow();
+      release();
+      const answer = await job;
+      expect(answer.status).toBe(200);
+      expect(answer.json.result).toStrictEqual({ summary: SUMMARY });
+      expect(answer.json.accounting.sub_jobs).toBe(3);
+      const answered = Date.now();
+      await done;
+      expect(Date.now() - answered).toBeLessThan(1500); // the connection that has just been answered is closed by the sweep, not left for its keep-alive timeout
+      expect(finished).toBe(true);
+      await expect(m.chain.escrowState(escrowNo(3))).resolves.toBe('spent');
+      expect(logs.join('\n')).toMatch(/stopping: waiting up to 30000 ms for the job that is running/);
+      expect(logs.join('\n')).not.toMatch(/did not finish/);
+    });
+
+    test('shutdown drains the slot: a request that was still being uploaded when the stop began is refused with 503 shutting_down when it is complete, not with 409 busy', async () => {
+      const { service, release } = await holdingService();
+      const late = rawClient(service.port, { body: wire(REQUEST), holdBack: 5 });
+      try {
+        await pause(150); // the head and most of the body are in: the request is under way, so its connection is not idle
+        const done = service.shutdown(30_000);
+        await pause(250); // the sweep has run: this connection is still open
+        late.finish();
+        const answer = await late.answer();
+        expect(answer.status).toBe(503);
+        expect(JSON.parse(answer.body!.toString('utf8'))).toStrictEqual({ error: 'shutting_down', message: 'The service is stopping and takes no new job. Try again shortly.' });
+        release();
+        await done;
+      } finally {
+        late.close();
+      }
+    });
+
+    test('shutdown does not wait for ever: past its limit it closes the connection of the job and says where the escrows are', async () => {
+      const { service, m, job, release } = await holdingService();
+      const began = Date.now();
+      await service.shutdown(150);
+      expect(Date.now() - began).toBeGreaterThanOrEqual(140);
+      expect(Date.now() - began).toBeLessThan(5000);
+      await expect(job).rejects.toThrow();
+      expect(logs.join('\n')).toMatch(/the job that is running did not finish in time; the escrows it posted are in the state directory for the janitor/);
+      release(); // let the job end, so that nothing of it is still running when the directory of the test goes
+      for (let i = 0; i < 600 && (await m.chain.escrowState(escrowNo(3))) !== 'spent'; i++) await pause(5);
+      await expect(m.chain.escrowState(escrowNo(3))).resolves.toBe('spent');
+    });
+  });
+});
+
+// ---- Signals ------------------------------------------------------------------------------------------------------------------------
+describe('stopOnSignals', () => {
+  const lines: string[] = [];
+  const log = (line: string): void => { lines.push(line); };
+  afterEach(() => { lines.length = 0; });
+  const serviceThatStopsAs = (shutdown: (waitMs?: number) => Promise<void>) => ({ shutdown } as unknown as RunningService);
+
+  test('SIGTERM and SIGINT start the shutdown with the default wait, then exit 0; after the first signal the handlers are gone, so a second one is the default action', async () => {
+    for (const signal of ['SIGTERM', 'SIGINT']) {
+      const target = new EventEmitter();
+      const exits: number[] = [];
+      const waits: Array<number | undefined> = [];
+      stopOnSignals(serviceThatStopsAs(async (waitMs) => { waits.push(waitMs); }), { target, exit: (code) => { exits.push(code); }, log });
+      expect(target.listenerCount('SIGTERM')).toBe(1);
+      expect(target.listenerCount('SIGINT')).toBe(1);
+      target.emit(signal);
+      await until(() => exits.length === 1, 'the process exits');
+      expect(waits).toStrictEqual([SHUTDOWN_WAIT_MS]);
+      expect(exits).toStrictEqual([0]);
+      expect(lines.join('\n')).toContain(signal);
+      expect(target.listenerCount('SIGTERM')).toBe(0);
+      expect(target.listenerCount('SIGINT')).toBe(0);
+      target.emit('SIGTERM'); // nobody listens: nothing runs again
+      expect(waits).toHaveLength(1);
+    }
+    expect(SHUTDOWN_WAIT_MS).toBe(300_000);
+  });
+
+  test('a shutdown that fails is logged and the exit is 1', async () => {
+    const target = new EventEmitter();
+    const exits: number[] = [];
+    stopOnSignals(serviceThatStopsAs(async () => { throw new Error('the port would not close'); }), { target, exit: (code) => { exits.push(code); }, log });
+    target.emit('SIGTERM');
+    await until(() => exits.length === 1, 'the process exits');
+    expect(exits).toStrictEqual([1]);
+    expect(lines.join('\n')).toContain('the port would not close');
+  });
+
+  test('the wait is the option when one is given', async () => {
+    const target = new EventEmitter();
+    const waits: Array<number | undefined> = [];
+    stopOnSignals(serviceThatStopsAs(async (waitMs) => { waits.push(waitMs); }), { target, exit: () => undefined, log, waitMs: 1234 });
+    target.emit('SIGINT');
+    await until(() => waits.length === 1, 'the shutdown starts');
+    expect(waits).toStrictEqual([1234]);
+  });
+
+  test('on the real process object the handlers are put on SIGTERM and SIGINT, and taken off again when one comes', async () => {
+    const before = [process.listenerCount('SIGTERM'), process.listenerCount('SIGINT')];
+    const exits: number[] = [];
+    stopOnSignals(serviceThatStopsAs(async () => undefined), { exit: (code) => { exits.push(code); }, log });
+    try {
+      expect([process.listenerCount('SIGTERM'), process.listenerCount('SIGINT')]).toStrictEqual([before[0] + 1, before[1] + 1]);
+      process.emit('SIGTERM');
+      await until(() => exits.length === 1, 'the process exits');
+      expect([process.listenerCount('SIGTERM'), process.listenerCount('SIGINT')]).toStrictEqual(before);
+    } finally {
+      process.removeAllListeners('SIGINT').removeAllListeners('SIGTERM'); // only if the test failed half way; the signals are not listened for in a test run
+    }
+  });
 });
 
 // ---- The process --------------------------------------------------------------------------------------------------------------------
@@ -276,27 +550,35 @@ describe('src/index.ts as a process', () => {
     return env;
   };
   const NODE_ARGS = ['--import', 'tsx', 'src/index.ts'];
-  const run = (env: Record<string, string>) => new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
-    execFile(process.execPath, NODE_ARGS, { cwd, env: { ...baseEnv(), ...env, PORT: '0', HOST: '127.0.0.1' }, encoding: 'utf8', timeout: 60_000 }, (error, stdout, stderr) => {
+  /** Starts src/index.ts on `env` and waits for it to end. `path` replaces the directories searched for programs, where a test needs that. */
+  const run = (env: Record<string, string>, path?: string) => new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
+    const full = { ...baseEnv(), ...env, PORT: '0', HOST: '127.0.0.1' };
+    execFile(process.execPath, NODE_ARGS, { cwd, env: path === undefined ? full : withPath(full, path), encoding: 'utf8', timeout: 60_000 }, (error, stdout, stderr) => {
       const code = (error as { code?: unknown } | null)?.code;
       resolve({ status: error === null ? 0 : typeof code === 'number' ? code : null, stdout, stderr });
     });
   });
 
-  test('exits 1 at start with the variable named, and listens on nothing, when a required setting is missing or the buyer hash is not the key\'s', async () => {
+  test('exits 1 at start with the variable named, and listens on nothing, when a required setting is missing, a setting is wrong, or the buyer key is in the wrong line', async () => {
     const { OPERATOR_CONTACT, PIPELINE_BUYER_PRIV_KEY_HEX, SUPPLIER_PKH } = FULL_ENV;
-    const cases: Array<[string, Record<string, string>, RegExp]> = [
-      ['OPERATOR_CONTACT is not set', { PIPELINE_BUYER_PRIV_KEY_HEX, SUPPLIER_PKH }, /environment variable OPERATOR_CONTACT is required/],
-      ['OPERATOR_CONTACT is blank', { OPERATOR_CONTACT: '  ', PIPELINE_BUYER_PRIV_KEY_HEX, SUPPLIER_PKH }, /environment variable OPERATOR_CONTACT is required/],
-      ['PIPELINE_BUYER_PRIV_KEY_HEX is not set', { OPERATOR_CONTACT, SUPPLIER_PKH }, /environment variable PIPELINE_BUYER_PRIV_KEY_HEX is required/],
-      ['SUPPLIER_PKH is not set', { OPERATOR_CONTACT, PIPELINE_BUYER_PRIV_KEY_HEX }, /environment variable SUPPLIER_PKH is required/],
-      ['PIPELINE_BUYER_PKH is not the key\'s', { ...FULL_ENV, PIPELINE_BUYER_PKH: 'cd'.repeat(28) }, /environment variable PIPELINE_BUYER_PKH/],
-      ['PIPELINE_BUYER_ADDRESS is not the key\'s', { ...FULL_ENV, PIPELINE_BUYER_ADDRESS: new FakeChain({ buyerPkh: SUPPLIER.pkh }).address }, /environment variable PIPELINE_BUYER_ADDRESS/],
+    const state = { PIPELINE_STATE_DIR: tempDir() };
+    const cases: Array<{ label: string; env: Record<string, string>; message: RegExp; path?: string }> = [
+      { label: 'OPERATOR_CONTACT is not set', env: { PIPELINE_BUYER_PRIV_KEY_HEX, SUPPLIER_PKH }, message: /environment variable OPERATOR_CONTACT is required/ },
+      { label: 'OPERATOR_CONTACT is blank', env: { OPERATOR_CONTACT: '  ', PIPELINE_BUYER_PRIV_KEY_HEX, SUPPLIER_PKH }, message: /environment variable OPERATOR_CONTACT is required/ },
+      { label: 'PIPELINE_BUYER_PRIV_KEY_HEX is not set', env: { OPERATOR_CONTACT, SUPPLIER_PKH }, message: /environment variable PIPELINE_BUYER_PRIV_KEY_HEX is required/ },
+      { label: 'SUPPLIER_PKH is not set', env: { OPERATOR_CONTACT, PIPELINE_BUYER_PRIV_KEY_HEX }, message: /environment variable SUPPLIER_PKH is required/ },
+      { label: 'PIPELINE_BUYER_PKH is not the key\'s', env: { ...FULL_ENV, PIPELINE_BUYER_PKH: 'cd'.repeat(28) }, message: /environment variable PIPELINE_BUYER_PKH/ },
+      { label: 'PIPELINE_BUYER_ADDRESS is not the key\'s', env: { ...FULL_ENV, PIPELINE_BUYER_ADDRESS: new FakeChain({ buyerPkh: SUPPLIER.pkh }).address }, message: /environment variable PIPELINE_BUYER_ADDRESS/ },
+      { label: 'the buyer key is in AGENT_DID, where it would be published', env: { ...FULL_ENV, AGENT_DID: BUYER.privateKeyHex }, message: /environment variable AGENT_DID holds the buyer key/ },
+      { label: 'the buyer key is in SUPPLIER_PKH, where it would be printed', env: { ...FULL_ENV, SUPPLIER_PKH: BUYER.privateKeyHex }, message: /environment variable SUPPLIER_PKH holds the buyer key/ },
+      { label: 'the processing window is below 30 min', env: { ...FULL_ENV, ADVERT_MAX_PROCESSING_MS: '600000' }, message: /environment variable ADVERT_MAX_PROCESSING_MS must be at least 1800000/ },
+      // The tools are looked for on a path that holds nothing, so that a machine with poppler installed does not change the answer.
+      { label: 'pdfinfo and pdftoppm are not on the path', env: { ...FULL_ENV, ...state }, message: /pdfinfo cannot be run \(ENOENT\).*poppler-utils \(pdfinfo and pdftoppm\) must be installed/, path: tempDir() },
     ];
-    const results = await Promise.all(cases.map(([, env]) => run(env)));
-    cases.forEach(([label, , message], i) => {
+    const results = await Promise.all(cases.map(({ env, path }) => run(env, path)));
+    cases.forEach(({ label, message }, i) => {
       const r = results[i];
-      expect(r.status, label).toBe(1);
+      expect(r.status, `${label}: ${r.stderr}`).toBe(1);
       expect(r.stderr, label).toMatch(message);
       expect(r.stdout, label).not.toMatch(/listening/);
       expect(r.stderr + r.stdout, label).not.toContain(BUYER.privateKeyHex);
@@ -307,10 +589,9 @@ describe('src/index.ts as a process', () => {
     const closed = await closedPort();
     const node = `http://127.0.0.1:${closed}`;
     const dir = tempDir();
-    const child = spawn(process.execPath, NODE_ARGS, {
-      cwd, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...baseEnv(), ...FULL_ENV, PORT: '0', HOST: '127.0.0.1', PIPELINE_STATE_DIR: dir, VECTOR_OGMIOS_URL: node, VECTOR_KOIOS_URL: `${node}/`, VECTOR_SUBMIT_URL: `${node}/api/submit/tx`, VECTOR_MARKETPLACE_INDEXER_URL: node },
-    });
+    // The start asks pdfinfo and pdftoppm for their version: stand-ins that do, put first on the path, so that the test needs no poppler.
+    const base = { ...baseEnv(), ...FULL_ENV, PORT: '0', HOST: '127.0.0.1', PIPELINE_STATE_DIR: dir, VECTOR_OGMIOS_URL: node, VECTOR_KOIOS_URL: `${node}/`, VECTOR_SUBMIT_URL: `${node}/api/submit/tx`, VECTOR_MARKETPLACE_INDEXER_URL: node };
+    const child = spawn(process.execPath, NODE_ARGS, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: withPath(base, inFront(fakePopplerDir(), pathOf(base))) });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk) => { stdout += chunk; });

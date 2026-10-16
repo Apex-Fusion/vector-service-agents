@@ -15,11 +15,13 @@ A run spends real funds: it posts escrows on Vector mainnet from the buyer key. 
 ```bash
 pnpm install
 cd agents/document-pipeline
-OPERATOR_CONTACT=ops@example.test SUPPLIER_PKH=<56 hex> PIPELINE_BUYER_PRIV_KEY_HEX=<64 hex, from your key file> \
-  PIPELINE_STATE_DIR=/tmp/pipeline-state PORT=9092 pnpm start
+export PIPELINE_BUYER_PRIV_KEY_HEX="$(cat /path/to/buyer-key.hex)"   # read from a file: a key typed on a command line stays in the shell's history
+OPERATOR_CONTACT=ops@example.test SUPPLIER_PKH=<56 hex> PIPELINE_STATE_DIR=/tmp/pipeline-state PORT=9092 pnpm start
 ```
 
-The service logs the buyer address it derived from the key; that is the address to fund. It stops at start, with the variable named, when `OPERATOR_CONTACT`, `PIPELINE_BUYER_PRIV_KEY_HEX` or `SUPPLIER_PKH` is not set, when a setting is not well formed, or when it cannot write to its state directory. A PDF source needs poppler-utils (`pdfinfo`, `pdftoppm`) on the path; the image has it.
+The service logs the buyer address it derived from the key; that is the address to fund. It stops at start, with the variable named, when `OPERATOR_CONTACT`, `PIPELINE_BUYER_PRIV_KEY_HEX` or `SUPPLIER_PKH` is not set, when a setting is not well formed, when `ADVERT_MAX_PROCESSING_MS` is below 30 min, or when it cannot write to its state directory. It also asks `pdfinfo` and `pdftoppm` (poppler-utils) for their version before it listens, and does not start if either cannot be run, so that an image without them cannot answer `/healthz` ok and then fail every PDF. The image has them; a machine you run the service on needs them on the path.
+
+A secret in the wrong line of an env file is the mistake the start guards against. The buyer key is looked for in every other setting the service reads, before any check can print that line, and found there it stops the start, naming the variable and not showing the value (a value that is published, such as `AGENT_DID`, would otherwise go out in `/agent.json`). No message of the service shows a setting that is hex-shaped or long, only its length. `SUPPLIER_PUB_KEY_HEX` must be the public key of `SUPPLIER_PKH`, which catches a private key put in its line. The manifest is searched for the buyer key once more before the service listens.
 
 ## Routes
 
@@ -36,9 +38,11 @@ The service does not authenticate its callers. It is meant to be reached only by
 
 One job runs at a time, because the money of a job is the one buyer wallet's. A second job that arrives while one runs gets 409 `{"error":"busy"}` and nothing is started. A job has its own deadline, 1620000 ms after its request arrives, 60 s inside the runtime's `SERVICE_TIMEOUT_MS` of 1680000.
 
+While a job runs, the server writes an interim `102 Processing` line every 60 s to a client that speaks HTTP/1.1, ahead of the answer, which is the same 200 with the same body as it would be without them. The reason is that the runtime's fetch gives up after 300 s of silence (the headers timeout of undici, behind fetch) and a job takes up to 27 minutes: without the lines the runtime would report `service_unreachable` at the five minute mark while the service goes on hiring and paying, and holds its slot. An interim response counts as life, and a client reads past it. The lines stop when the job ends.
+
 ## Errors
 
-A refusal is `{"error": "<code>", "message": "<words>"}` with the status in the table. Anything else is 500 `{"error":"internal"}` with no detail; the cause is in the log, by message only.
+A refusal is `{"error": "<code>", "message": "<words>"}` with the status in the table. A failure on the service's side (the 500 and the 503 rows) gets a fixed message, `The service could not do this job (<code>). The operator's log has the detail.`, because the runtime copies the first 200 characters of a failure to the buyer and the detail (a path, an escrow, the text of a provider) is the operator's: the whole message is in the log. Anything else is 500 `{"error":"internal"}` with no detail; the cause is in the log, by message only.
 
 | Status | Codes |
 |---|---|
@@ -46,7 +50,7 @@ A refusal is `{"error": "<code>", "message": "<words>"}` with the status in the 
 | 400, the request | `bad_json`, `bad_shape`, `schema_required`, `max_pages_range`, `base64_too_large`, `language_bad`, and `schema_invalid` (the extraction schema breaks a rule) |
 | 422, the document | `source_fetch_failed`, `source_mime_mismatch`, `source_unsupported`, `source_too_large`, `unreadable_source`, `page_too_large` |
 | 422, the hires | `deadline`, `llm_incomplete`, and for each of the two hops, `ocr_` and `llm_` followed by `post_failed`, `busy`, `refused`, `send_lost`, `failed`, `timeout`, `bad_result`, `receipt_failed`, `receipt_unavailable` or `accept_failed` |
-| 503, the service cannot take a job now | `insufficient_float`, `ocr_supplier_unavailable`, `llm_supplier_unavailable` |
+| 503, the service cannot take a job now | `insufficient_float`, `ocr_supplier_unavailable`, `llm_supplier_unavailable`, and `shutting_down` (the service is stopping) |
 | 500, the service | `store_write_failed`, and `internal` |
 
 A 400, a 422 for the document and a 503 are all given before the first escrow is posted, so they spend nothing; the one exception is `llm_supplier_unavailable` when the chat supplier is chosen again after the pages were paid (`src/result.ts` says so). The other 422s come from a hire and may follow money that has moved: `src/hire.ts` says when each of them is thrown.
@@ -56,6 +60,10 @@ A 400, a 422 for the document and a 503 are all given before the first escrow is
 Before it posts anything a job checks the buyer wallet: a pure output of at least 5000000 lovelace kept as collateral, and a float outside it of `(max_pages + 1) x 4500000` lovelace. A job that cannot be funded is refused with `insufficient_float` and spends nothing.
 
 Every escrow a job posts is written to `stranded.json` in `PIPELINE_STATE_DIR` (default `/data`, a volume in the image) the moment its Post is confirmed, and removed once its Accept is confirmed. The janitor starts with the service and looks at the file every minute: from 5 s after an escrow's `deliver_by` it reclaims an Open or Claimed escrow, and it keeps a Submitted one that its supplier may release. A file that is not a list stops the start and is left as it is, because starting without it would forget escrows that hold funds. The file holds the bookkeeping of the escrows (references, times, the hop, a transaction hash), never a document or its text.
+
+## Stopping
+
+On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and no new connection, waits up to 300 s for the job that is running to be answered, and exits 0. A job that is still running then has its connection closed, and the escrows it posted are in the state directory for the janitor of the next start. The container is killed when its grace period ends, so set `stop_grace_period` in the compose file to at least 300 s. A second signal ends the process at once.
 
 ## Manifest
 
@@ -72,7 +80,7 @@ Every escrow a job posts is written to `stranded.json` in `PIPELINE_STATE_DIR` (
 | `PIPELINE_BUYER_ADDRESS` | optional, as above, for the mainnet enterprise address of the buyer key | derived |
 | `AGENT_VERSION` | `version` | `0.1.0` |
 | `ADVERT_PRICE_LOVELACE` | `terms.price_lovelace` | `5000000` |
-| `ADVERT_MAX_PROCESSING_MS` | `terms.max_processing_ms` | `1800000` |
+| `ADVERT_MAX_PROCESSING_MS` | `terms.max_processing_ms`; at least 1800000, because the deadline of a job assumes the 30 min window | `1800000` |
 | `AGENT_STATUS_CHIP` | `status.chip`, in lower case | `proposed` |
 | `AGENT_STATUS_SINCE` | `status.since`, as YYYY-MM-DD | `2026-10-15` |
 | `ADVERT_EXPLORER_URL` | `links.explorer_advert` | empty |
@@ -92,7 +100,7 @@ The advert `detail_uri` points at `GET /agent.json` and its `detail_hash` is the
 pnpm --filter @vsa/document-pipeline test
 ```
 
-The tests need no network and no key: the pipeline runs against the in-memory marketplace of `test/stub-suppliers.ts`, the keys of the service tests are made at run time, and the process tests start `src/index.ts` against a node that is not there. The tests that render a real PDF run only when `pdftoppm` and `pdfinfo` (poppler-utils) are on the path, and are skipped otherwise.
+The tests need no network and no key: the pipeline runs against the in-memory marketplace of `test/stub-suppliers.ts`, the keys of the service tests are made at run time, and the process tests start `src/index.ts` against a node that is not there, with stand-ins for `pdfinfo` and `pdftoppm` first on the path (the start asks them for their version). The tests that render a real PDF, and the one that runs the check on the real tools, run only when `pdftoppm` and `pdfinfo` (poppler-utils) are on the path, and are skipped otherwise. The interim lines of a long job are read off a raw socket, because fetch hides them; a real SIGTERM cannot be sent to a child process on Windows, so the signal handling is tested through the `process` object.
 
 ## Image
 

@@ -6,7 +6,7 @@ import { describe, test, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { RequestError } from '../src/request.ts';
 import type { RequestErrorCode } from '../src/request.ts';
-import { LLM_MODELS_DEFAULT, OCR_SUPPLIER_PKH_DEFAULT, PORT_DEFAULT, STATE_DIR_DEFAULT } from '../src/start.ts';
+import { CHAIN_SETTINGS, LLM_MODELS_DEFAULT, OCR_SUPPLIER_PKH_DEFAULT, OTHER_SETTINGS, PORT_DEFAULT, SHUTDOWN_WAIT_MS, STATE_DIR_DEFAULT } from '../src/start.ts';
 
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 // The ledger's native unit is named once in the repository, in docs/HIRE.md. Spelled in two parts, so that a search for the name finds only the guide.
@@ -69,10 +69,31 @@ describe('agents/document-pipeline/README.md', () => {
       }
     }
     for (const code of intake) expect(documented.has(code), code).toBe(true);
-    for (const code of ['insufficient_float', 'ocr_supplier_unavailable', 'llm_supplier_unavailable']) expect(rows.find((row) => row.includes(`\`${code}\``)), code).toMatch(/^\| 503, /);
+    for (const code of ['insufficient_float', 'ocr_supplier_unavailable', 'llm_supplier_unavailable', 'shutting_down']) expect(rows.find((row) => row.includes(`\`${code}\``)), code).toMatch(/^\| 503, /);
     expect(rows.find((row) => row.includes('`store_write_failed`'))).toMatch(/^\| 500, /);
     expect(rows.find((row) => row.includes('`schema_invalid`'))).toMatch(/^\| 400, /);
     for (const code of ['bad_wire', 'request_too_large']) expect(rows.find((row) => row.includes(`\`${code}\``))).toMatch(/^\| 400, /);
+  });
+
+  test('the settings the service looks in for a buyer key put in the wrong line are the ones it reads, all but the key itself', () => {
+    expect([...OTHER_SETTINGS, 'PIPELINE_BUYER_PRIV_KEY_HEX'].sort()).toStrictEqual(namesRead());
+    expect([...CHAIN_SETTINGS].sort()).toStrictEqual(READ_BY_BUYER_CORE);
+  });
+
+  test('it explains why a long job is kept alive with 102 Processing, what a 5xx tells the buyer, how the service stops, and what it checks at start', () => {
+    expect(readme).toContain('102 Processing');
+    expect(readme).toMatch(/runtime's fetch gives up after 300 s of silence/);
+    expect(readme).toContain("The service could not do this job (<code>). The operator's log has the detail.");
+    expect(readme).toMatch(/SIGTERM/);
+    expect(readme).toMatch(/stop_grace_period/);
+    expect(readme).toContain(`${SHUTDOWN_WAIT_MS / 1000} s`);
+    expect(readme).toMatch(/asks `pdfinfo` and `pdftoppm` \(poppler-utils\) for their version/);
+    expect(readme).toMatch(/at least 1800000/);
+  });
+
+  test('the example reads the key from a file and never writes it on a command line', () => {
+    expect(readme).toContain('PIPELINE_BUYER_PRIV_KEY_HEX="$(cat ');
+    expect(readme).not.toMatch(/PIPELINE_BUYER_PRIV_KEY_HEX=[<0-9a-f]/);
   });
 
   test('it says the status the manifest and the code give, and nothing in it is a dash, a unit name or a key', () => {
