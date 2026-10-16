@@ -28,6 +28,7 @@
 // both suppliers are chosen, a second look checks the float against the locks their adverts really take (src/orchestrate.ts): larger bonds, or a
 // ceiling raised above that, are caught there.
 import { PipelineError } from './result.ts';
+export { OutOfTime, within } from '@vsa/service-kit';
 
 /** How long after its request arrived a run must be over: the server sets the deadline of each request to its arrival plus this (see the head of this file). */
 export const JOB_DEADLINE_MS = 1_620_000;
@@ -48,20 +49,6 @@ export const STATUS_RETRY_MS = 3_000;
 /** How long a read of the buyer wallet may take, a job's as the health check's (src/server.ts): a read that has not answered then is abandoned. */
 export const WALLET_READ_TIMEOUT_MS = 30_000;
 
-/** The rejection of `within`: the work did not answer in time. */
-export class OutOfTime extends Error {}
-
-/**
- * `work`, or an OutOfTime rejection after `ms`, whichever comes first. The work is abandoned then and not cancelled: an answer it gives later is ignored.
- * The timer is unref'd, so that it never keeps the process alive.
- */
-export function within<T>(work: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new OutOfTime(`no answer within ${ms} ms`)), ms);
-    timer.unref();
-    work.then((value) => { clearTimeout(timer); resolve(value); }, (err: unknown) => { clearTimeout(timer); reject(err); });
-  });
-}
 /** How long the hash of the supplier's Submit may take to show on chain once the supplier has answered with the receipt (Koios lag, ruling R16). */
 export const RECEIPT_HASH_WAIT_MS = 120_000;
 /**

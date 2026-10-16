@@ -54,6 +54,9 @@ importers:
       '@vsa/buyer-core':
         specifier: workspace:*
         version: link:../../packages/buyer-core
+      '@vsa/service-kit':
+        specifier: workspace:*
+        version: link:../../packages/service-kit
       '@vsa/vector-read':
         specifier: workspace:*
         version: link:../../packages/vector-read

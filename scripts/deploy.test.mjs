@@ -869,7 +869,7 @@ test('Pipeline env example: a token of the form the runbook makes (Bearer and 64
 });
 
 test('Pipeline env example: every name the service code reads is in the example, in the compose environment, or has a default in the code', () => {
-  const files = [...sourceFiles('agents/document-pipeline/src'), ...sourceFiles('packages/buyer-core/src'), ...sourceFiles('packages/vector-read/src')];
+  const files = [...sourceFiles('agents/document-pipeline/src'), ...sourceFiles('packages/service-kit/src'), ...sourceFiles('packages/buyer-core/src'), ...sourceFiles('packages/vector-read/src')];
   assert.ok(files.length >= 40, `the scan reaches every source file, found ${files.length}`);
   for (const f of ['agents/document-pipeline/src/start.ts', 'agents/document-pipeline/src/server.ts', 'packages/buyer-core/src/vendored/mcp-shared/config.ts', 'packages/vector-read/src/constants.ts']) assert.ok(files.includes(f), `the scan includes ${f}`);
   const names = new Set(files.flatMap((f) => [...envNamesIn(read(f))]));
@@ -1091,7 +1091,7 @@ test('Pipeline RUNBOOK: the differences from Agent History are listed in one pla
   ]) assert.ok(head.includes(part), `the head says: ${part}`);
   assert.doesNotMatch(head, /no authentication/i, 'the sentence of before R50');
   // The facts it quotes are the code's.
-  const server = read('agents/document-pipeline/src/server.ts');
+  const server = read('packages/service-kit/src/server.ts'); // the heartbeat is the shared server's since packages/service-kit
   assert.ok(server.includes('export const HEARTBEAT_MS = 60_000;'));
   assert.ok(read('agents/document-pipeline/src/budget.ts').includes('export const JOB_DEADLINE_MS = 1_620_000;'), '27 min');
   assert.ok(PREADME.includes('the runtime\'s fetch gives up after 300 s of silence'));
@@ -1639,9 +1639,10 @@ test('Pipeline RUNBOOK "Watch the first stop": one stop of the idle service is w
   assert.ok(START.includes('did not finish within ${waitMs} ms and is abandoned; the state directory holds ${refs.length}'), 'the line of an abandoned job is the code\'s');
   assert.ok(stop.indexOf('stop service') < stop.indexOf('docker logs --tail 5') && stop.indexOf('docker logs --tail 5') < stop.indexOf('{{.State.ExitCode}}') && stop.indexOf('{{.State.ExitCode}}') < stop.indexOf('up -d service'), 'stop, read the log, read the exit code, start again');
   // The lines are the code's.
-  assert.ok(START.includes('log(`${signal}: stopping; no new job, and up to ${waitMs / 1000} s for the one that is running`);'));
-  assert.ok(START.includes('log(`stopping: waiting up to ${waitMs} ms for the job that is running`);'));
-  assert.ok(START.includes("const SIGNALS") || START.includes("for (const signal of ['SIGTERM', 'SIGINT'])"));
+  const lifecycle = read('packages/service-kit/src/lifecycle.ts'); // the stop and the signals are the shared code's since packages/service-kit
+  assert.ok(lifecycle.includes('log(`${signal}: stopping; no new job, and up to ${waitMs / 1000} s for the one that is running`);'));
+  assert.ok(lifecycle.includes('log(`stopping: waiting up to ${waitMs} ms for the job that is running`);'));
+  assert.ok(lifecycle.includes("const SIGNALS") || lifecycle.includes("for (const signal of ['SIGTERM', 'SIGINT'])"));
   assert.ok(pRunbook.indexOf('\n## Watch the first stop\n') > pRunbook.indexOf('\n## 15. ') && pRunbook.indexOf('\n## Watch the first stop\n') < pRunbook.indexOf('\n## 16. '));
   assert.ok(section(pRunbook, '17. Flip the status').includes('and the first stop has been watched'), 'step 17 waits for it');
 });
@@ -1762,16 +1763,17 @@ test('Pipeline RUNBOOK failure table: the start-up refusals, the pipeline codes 
   const sources = {
     start: read('agents/document-pipeline/src/start.ts'), server: read('agents/document-pipeline/src/server.ts'), orchestrate: read('agents/document-pipeline/src/orchestrate.ts'),
     janitor: read('agents/document-pipeline/src/janitor.ts'), render: read('agents/document-pipeline/src/render.ts'), result: read('agents/document-pipeline/src/result.ts'),
+    kitEnv: read('packages/service-kit/src/env.ts'), kitServer: read('packages/service-kit/src/server.ts'),
   };
   // Each message the table quotes is in the code that prints it; a reworded message breaks this pin before it breaks an operator's search.
   for (const [row, where, quote] of [
-    ['`environment variable OPERATOR_CONTACT is required`', 'server', 'environment variable ${name} is required'],
-    ['`environment variable PIPELINE_BUYER_PRIV_KEY_HEX is required`', 'server', 'environment variable ${name} is required'],
-    ['`environment variable SERVICE_AUTH_HEADER is required`', 'server', 'environment variable ${name} is required'],
-    ['must be printable ASCII', 'start', 'must be printable ASCII (it is sent as an HTTP header)'],
-    ['`request refused: unauthorized (<n> since the last line of this kind)`', 'server', 'request refused: unauthorized (${refusals} since the last line of this kind)'],
+    ['`environment variable OPERATOR_CONTACT is required`', 'kitEnv', 'environment variable ${name} is required'],
+    ['`environment variable PIPELINE_BUYER_PRIV_KEY_HEX is required`', 'kitEnv', 'environment variable ${name} is required'],
+    ['`environment variable SERVICE_AUTH_HEADER is required`', 'kitEnv', 'environment variable ${name} is required'],
+    ['must be printable ASCII', 'kitEnv', 'must be printable ASCII (it is sent as an HTTP header)'],
+    ['`request refused: unauthorized (<n> since the last line of this kind)`', 'kitServer', 'request refused: unauthorized (${refusals} since the last line of this kind)'],
     ['`holds the buyer key, which belongs in PIPELINE_BUYER_PRIV_KEY_HEX alone`', 'start', 'holds the buyer key, which belongs in PIPELINE_BUYER_PRIV_KEY_HEX alone'],
-    ['`holds the service token, which belongs in SERVICE_AUTH_HEADER alone`', 'start', 'holds the service token, which belongs in SERVICE_AUTH_HEADER alone'],
+    ['`holds the service token, which belongs in SERVICE_AUTH_HEADER alone`', 'kitEnv', 'holds the service token, which belongs in SERVICE_AUTH_HEADER alone'],
     ['`is not the public key of SUPPLIER_PKH`', 'start', 'is not the public key of SUPPLIER_PKH'],
     ['`is not the key hash of the key in PIPELINE_BUYER_PRIV_KEY_HEX`', 'start', 'is not the key hash of the key in PIPELINE_BUYER_PRIV_KEY_HEX'],
     ['`poppler-utils (pdfinfo and pdftoppm) must be installed and on PATH`', 'render', 'poppler-utils (pdfinfo and pdftoppm) must be installed and on PATH'],

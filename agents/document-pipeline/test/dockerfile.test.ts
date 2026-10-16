@@ -37,7 +37,7 @@ describe('agents/document-pipeline/Dockerfile', () => {
 
   test('it installs the service and every workspace package the service depends on: the manifests, then the install from the lockfile, then the sources', () => {
     const closure = workspaceClosure('agents/document-pipeline');
-    expect(closure).toStrictEqual(['agents/document-pipeline', 'packages/buyer-core', 'packages/vector-read']);
+    expect(closure).toStrictEqual(['agents/document-pipeline', 'packages/buyer-core', 'packages/service-kit', 'packages/vector-read']);
     const install = instructions.findIndex((line) => /^RUN pnpm install /.test(line));
     expect(install).toBeGreaterThan(0);
     expect(instructions[install]).toMatch(/--frozen-lockfile/);

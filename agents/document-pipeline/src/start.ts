@@ -1,6 +1,7 @@
 // agents/document-pipeline/src/start.ts
 // How the service starts: the environment read into a configuration (loadConfig), and the real parts put together and started (startService): the buyer
 // chain from the buyer key, the stranded store in the state directory, the janitor on it, and the server. And how it stops: shutdown, and the signals that call it.
+// The settings helpers, the stop and the signals are packages/service-kit's.
 //
 // Four settings are required, and the service stops at start without them, naming the variable: OPERATOR_CONTACT (published in the manifest, so with no
 // default), PIPELINE_BUYER_PRIV_KEY_HEX (the buyer key), SUPPLIER_PKH (the supplier key hash, published in the manifest; the supplier key itself is the
@@ -21,6 +22,8 @@ import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { buyerIdentityOf, createRealChain, rawHexToBech32 } from '@vsa/buyer-core';
 import type { Chain } from '@vsa/buyer-core';
+import { assertHeaderValue, assertNoTokenIn, given, hexOf, lifecycle, listen, refuseSecretIn, refuseTokenIn, stopOnSignals as stopServiceOnSignals } from '@vsa/service-kit';
+import type { ShutdownOutcome } from '@vsa/service-kit';
 import { blake2b224Hex } from '@vsa/vector-read';
 import { errorText } from './format.ts';
 import { StrandedStore, startJanitor } from './janitor.ts';
@@ -28,6 +31,9 @@ import { popplerRenderer } from './render.ts';
 import type { Renderer } from './render.ts';
 import { JobSlot, createServer, defaultLog, envInt, manifestFromEnv, requiredEnv } from './server.ts';
 import type { AgentManifest } from './server.ts';
+
+export { assertNoTokenIn } from '@vsa/service-kit';
+export type { ShutdownOutcome } from '@vsa/service-kit';
 
 /** The ChandraOCR supplier the Pipeline hires for its pages: its supplier key hash. */
 export const OCR_SUPPLIER_PKH_DEFAULT = '401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9';
@@ -53,8 +59,6 @@ export const SHUTDOWN_WAIT_MS = 300_000;
  * entries it was looking at are still in the state directory, for the janitor of the next start.
  */
 export const JANITOR_STOP_WAIT_MS = 30_000;
-/** How often a stopping service closes the connections that have become idle (a keep-alive connection is idle once its answer is sent). */
-const SWEEP_MS = 100;
 
 /**
  * Every setting the service reads but the buyer key itself. The key belongs in its own variable alone: in any of these it would be printed by a check that finds
@@ -68,6 +72,8 @@ export const OTHER_SETTINGS = [
 ] as const;
 /** The settings that packages/buyer-core reads, and prints in its errors. */
 export const CHAIN_SETTINGS = ['VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL'] as const;
+/** The settings the secrets are looked for in: every one the service reads but a secret's own line. */
+const SEARCHED: readonly string[] = [...OTHER_SETTINGS, ...CHAIN_SETTINGS];
 
 export interface ServiceConfig {
   manifest: AgentManifest;
@@ -91,9 +97,6 @@ export interface ServiceConfig {
   indexerUrl?: string;
 }
 
-/** A setting as the operator wrote it: without the space or line break a file leaves around it; absent and empty are the same. */
-const given = (value: string | undefined): string => (value ?? '').trim();
-
 /**
  * A price in lovelace: a whole number of at least 0, or `fallback` when the setting is absent or empty. Anything else is refused with the variable
  * named and the length of what was written, never with the value: a value that is no number may be a secret in the wrong line.
@@ -104,33 +107,9 @@ function lovelaceOf(name: string, value: string, fallback: bigint): bigint {
   return BigInt(value);
 }
 
-/**
- * `value` as lower-case hex of `bytes` bytes. One that is not that is refused with its length and never with itself: a hex-shaped value in the wrong line may be a
- * secret, and this message would print it.
- */
-function hexOf(name: string, value: string, bytes: number): string {
-  if (!new RegExp(`^[0-9a-fA-F]{${bytes * 2}}$`).test(value)) {
-    const what = /^[0-9a-fA-F]*$/.test(value) ? `it has ${value.length} characters` : `some of its ${value.length} characters are not hex`;
-    throw new Error(`environment variable ${name} must be ${bytes * 2} hex characters, and ${what}`);
-  }
-  return value.toLowerCase();
-}
-
-/**
- * Throws `refusal(name)`, which names the variable and not the secret, when one of `forms` (lower case) is in any setting but `own`, the secret's own line: in
- * any case, inside a longer value too.
- */
-function refuseSecretIn(env: NodeJS.ProcessEnv, forms: readonly string[], own: string, refusal: (name: string) => string): void {
-  for (const name of [...OTHER_SETTINGS, ...CHAIN_SETTINGS]) {
-    if (name === own) continue;
-    const value = (env[name] ?? '').toLowerCase();
-    if (forms.some((form) => value.includes(form))) throw new Error(refusal(name));
-  }
-}
-
 /** Throws, naming the variable and not printing the key, when `key` is in any setting but its own: in either of its forms, in any case, inside a longer value too. */
 function refuseKeyIn(env: NodeJS.ProcessEnv, key: string): void {
-  refuseSecretIn(env, [key, rawHexToBech32(key)], 'PIPELINE_BUYER_PRIV_KEY_HEX', (name) =>
+  refuseSecretIn(env, SEARCHED, [key, rawHexToBech32(key)], 'PIPELINE_BUYER_PRIV_KEY_HEX', (name) =>
     `environment variable ${name} holds the buyer key, which belongs in PIPELINE_BUYER_PRIV_KEY_HEX alone: it would be printed or published. Take it out of ${name}`);
 }
 
@@ -139,35 +118,6 @@ export function assertNoKeyIn(text: string, key: string): void {
   const lower = text.toLowerCase();
   if (lower.includes(key) || lower.includes(rawHexToBech32(key))) {
     throw new Error('the manifest would publish the buyer key: a value that goes into it holds the key, and the service does not start with it');
-  }
-}
-
-/** A token or credential shorter than this is no secret worth a search: it would be found in any text by chance. */
-const TOKEN_SEARCH_MIN = 16;
-
-/** The forms of the service token that are looked for, in lower case: the token whole and its credential, the part after the last space, each when long enough. */
-function tokenForms(token: string): string[] {
-  const credential = token.slice(token.lastIndexOf(' ') + 1);
-  return [token, credential].filter((secret) => secret.length >= TOKEN_SEARCH_MIN).map((secret) => secret.toLowerCase());
-}
-
-/**
- * Throws, naming the variable and not printing the token, when the service token (SERVICE_AUTH_HEADER) is in any other setting, whole or by its credential,
- * in any case, inside a longer value too: a setting is published (the manifest), logged (the host, the state directory) or said in an answer (the models).
- */
-function refuseTokenIn(env: NodeJS.ProcessEnv, token: string): void {
-  refuseSecretIn(env, tokenForms(token), 'SERVICE_AUTH_HEADER', (name) =>
-    `environment variable ${name} holds the service token, which belongs in SERVICE_AUTH_HEADER alone: it would be printed or published. Take it out of ${name}`);
-}
-
-/**
- * Throws, without printing it, when `text` (the manifest about to be published) holds the service token (SERVICE_AUTH_HEADER) whole or its credential, the part
- * after the last space ("Bearer <credential>"), in any case. The buyer key has its own look (assertNoKeyIn); this one is for the secret the runtime forwards.
- */
-export function assertNoTokenIn(text: string, token: string): void {
-  const lower = text.toLowerCase();
-  if (tokenForms(token).some((form) => lower.includes(form))) {
-    throw new Error('the manifest would publish the service token: a value that goes into it holds the token of SERVICE_AUTH_HEADER, and the service does not start with it');
   }
 }
 
@@ -184,13 +134,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (
   if (!/^[0-9a-f]{64}$/.test(privateKeyHex)) throw new Error('environment variable PIPELINE_BUYER_PRIV_KEY_HEX must be 64 lowercase hex characters (a raw Ed25519 key)');
   refuseKeyIn(env, privateKeyHex);
   // The token is required after SUPPLIER_PKH, but looked for now, when it is given: the check of SUPPLIER_PKH, and every one after it, could print a line.
-  if (given(env.SERVICE_AUTH_HEADER) !== '') refuseTokenIn(env, given(env.SERVICE_AUTH_HEADER));
+  if (given(env.SERVICE_AUTH_HEADER) !== '') refuseTokenIn(env, SEARCHED, given(env.SERVICE_AUTH_HEADER));
   const supplierPkh = hexOf('SUPPLIER_PKH', requiredEnv('SUPPLIER_PKH', env.SUPPLIER_PKH, 'the key hash of the supplier key, published in the manifest'), 28);
   const authHeader = requiredEnv('SERVICE_AUTH_HEADER', env.SERVICE_AUTH_HEADER, 'the value the template runtime sends as the authorization header of every call, which POST / requires');
   // It is compared with a header, so it is printable ASCII (a space to a tilde). Never shown in a message, only its length: it is a secret.
-  if (!/^[ -~]+$/.test(authHeader)) {
-    throw new Error(`environment variable SERVICE_AUTH_HEADER must be printable ASCII (it is sent as an HTTP header), and it has ${authHeader.length} characters`);
-  }
+  assertHeaderValue('SERVICE_AUTH_HEADER', authHeader);
   const supplierPubKey = given(env.SUPPLIER_PUB_KEY_HEX) === '' ? '' : hexOf('SUPPLIER_PUB_KEY_HEX', given(env.SUPPLIER_PUB_KEY_HEX), 32);
   // The two are published side by side. A private key in the line of the public one is a likely slip (the env file has both lines), and this is what stops it.
   if (supplierPubKey !== '' && blake2b224Hex(supplierPubKey) !== supplierPkh) {
@@ -247,8 +195,6 @@ export interface StartOptions {
   /** How long a stop waits for the janitor's pass in flight: JANITOR_STOP_WAIT_MS by default. */
   janitorStopWaitMs?: number;
 }
-/** How a shutdown ended: the job that was running, if any, ended in time, or it was abandoned when the wait was over. */
-export type ShutdownOutcome = 'finished' | 'abandoned';
 export interface RunningService {
   server: Server;
   /** The port it listens on, which is the one asked for unless that was 0. */
@@ -278,13 +224,6 @@ function assertWritable(dir: string): void {
   } catch (err) {
     throw new Error(`environment variable PIPELINE_STATE_DIR names ${dir}, which cannot be written (${errorText(err)}): a job records every escrow it posts there, so the service does not start without a place to keep them`);
   }
-}
-
-function listen(server: Server, port: number, host: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(port, host, () => { server.off('error', reject); resolve(); });
-  });
 }
 
 /**
@@ -336,69 +275,27 @@ export async function startService(env: NodeJS.ProcessEnv = process.env, options
       clearTimeout(timer);
     }
   })());
-  let stopped: Promise<void> | undefined;
-  const stop = (): Promise<void> => (stopped ??= (async () => {
-    await stopJanitor();
-    await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
-  })());
-  let shuttingDown: Promise<ShutdownOutcome> | undefined;
-  const shutdown = (waitMs: number = SHUTDOWN_WAIT_MS): Promise<ShutdownOutcome> => (shuttingDown ??= (async () => {
-    slot.drain(); // no new job, not even on a connection that is still open
-    // The janitor is stopped now, beside the wait: no pass starts while the service stops, and the bound of a pass in flight runs within the wait for the job.
-    const janitorDone = stopJanitor();
-    // No new connection either. The others are closed as they fall idle (a connection that has just been answered is idle, and the server's own close() looks at
-    // the connections only once).
-    const closed = new Promise<'closed'>((resolve) => { server.close(() => resolve('closed')); });
-    if (slot.busy) log(`stopping: waiting up to ${waitMs} ms for the job that is running`);
-    const sweep = setInterval(() => server.closeIdleConnections(), SWEEP_MS);
-    let timer: NodeJS.Timeout | undefined;
-    const late = new Promise<'late'>((resolve) => { timer = setTimeout(() => resolve('late'), waitMs); });
-    let outcome: ShutdownOutcome = 'finished';
-    try {
-      // What is waited for is the job, which holds the slot until its run has ended, its Accept included. Its connection is no measure of it: that ends at once
-      // when the caller hangs up, while the job goes on settling sub-jobs (ruling R61).
-      if ((await Promise.race([slot.idle().then(() => 'idle' as const), late])) === 'late') {
-        outcome = 'abandoned';
-        const refs = stranded.list().map((entry) => entry.escrow_ref);
-        log(`stopping: the job that is running did not finish within ${waitMs} ms and is abandoned; the state directory holds ${refs.length} ${refs.length === 1 ? 'escrow' : 'escrows'} `
-          + `for the janitor of the next start${refs.length === 0 ? '' : `: ${refs.join(', ')}`}`);
-      } else {
-        // The answer of the job, if it has one, has been handed to its connection, which the sweep closes once it is written: that is waited for too, within
-        // what is left of the wait, so that the close of the server does not cut it.
-        await Promise.race([closed, late]);
-      }
-    } finally {
-      clearInterval(sweep);
-      clearTimeout(timer);
-    }
-    await janitorDone;
-    await stop();
-    return outcome;
-  })());
-  return { server, port, stop, shutdown };
+  // The stop of a restart (ruling R61), from packages/service-kit: no new job and no new connection, the janitor stopped at once, and up to the wait for the job
+  // that is running, its Accept included. An abandoned job leaves its escrows in the state directory, and the line names them for the janitor of the next start.
+  const { stop, shutdown } = lifecycle({
+    server, slot, log, stopWork: stopJanitor,
+    abandonedLine: (waitMs) => {
+      const refs = stranded.list().map((entry) => entry.escrow_ref);
+      return `stopping: the job that is running did not finish within ${waitMs} ms and is abandoned; the state directory holds ${refs.length} ${refs.length === 1 ? 'escrow' : 'escrows'} `
+        + `for the janitor of the next start${refs.length === 0 ? '' : `: ${refs.join(', ')}`}`;
+    },
+  });
+  return { server, port, stop, shutdown: (waitMs: number = SHUTDOWN_WAIT_MS) => shutdown(waitMs) };
 }
 
 /**
  * Stops the service on SIGTERM and SIGINT (`docker stop` sends the first): no new job, up to `waitMs` for the job that is running, then exit 0, or 1 when that
  * job had to be abandoned (ruling R61) or the stop failed. The first signal takes both handlers off, so a second signal of either kind is the default action and
- * ends the process at once.
+ * ends the process at once. The handling is packages/service-kit's, with the log of this service and its wait.
  */
 export function stopOnSignals(
   service: Pick<RunningService, 'shutdown'>,
   opts: { target?: EventEmitter; exit?: (code: number) => void; log?: (line: string) => void; waitMs?: number } = {},
 ): void {
-  const target = opts.target ?? process;
-  const exit = opts.exit ?? ((code: number) => process.exit(code));
-  const log = opts.log ?? defaultLog;
-  const waitMs = opts.waitMs ?? SHUTDOWN_WAIT_MS;
-  const handlers = new Map<string, () => void>();
-  for (const signal of ['SIGTERM', 'SIGINT']) {
-    const handler = (): void => {
-      for (const [name, other] of handlers) target.off(name, other);
-      log(`${signal}: stopping; no new job, and up to ${waitMs / 1000} s for the one that is running`);
-      service.shutdown(waitMs).then((outcome) => exit(outcome === 'abandoned' ? 1 : 0), (err: unknown) => { log(`stopping failed: ${errorText(err)}`); exit(1); });
-    };
-    handlers.set(signal, handler);
-    target.on(signal, handler);
-  }
+  stopServiceOnSignals(service, { ...opts, log: opts.log ?? defaultLog, waitMs: opts.waitMs ?? SHUTDOWN_WAIT_MS });
 }

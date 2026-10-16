@@ -5,10 +5,12 @@ RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json ./
 COPY packages/vector-read/package.json ./packages/vector-read/package.json
 COPY packages/buyer-core/package.json ./packages/buyer-core/package.json
+COPY packages/service-kit/package.json ./packages/service-kit/package.json
 COPY agents/document-pipeline/package.json ./agents/document-pipeline/package.json
 RUN pnpm install --frozen-lockfile --filter '@vsa/document-pipeline...'
 COPY packages/vector-read ./packages/vector-read
 COPY packages/buyer-core ./packages/buyer-core
+COPY packages/service-kit ./packages/service-kit
 COPY agents/document-pipeline ./agents/document-pipeline
 FROM node:22-alpine
 WORKDIR /repo

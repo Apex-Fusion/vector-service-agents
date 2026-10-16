@@ -1110,10 +1110,11 @@ describe('POST /: the authorization header of the runtime (R50)', () => {
   });
 
   test('the comparison is of two sha256 digests, which are of equal length whatever the values are, with timingSafeEqual; it is not a comparison of the strings', () => {
-    const source = readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8');
+    const source = readFileSync(new URL('../../../packages/service-kit/src/server.ts', import.meta.url), 'utf8');
     expect(source).toMatch(/timingSafeEqual\(/);
     expect(source).toMatch(/createHash\('sha256'\)/);
     expect(source).not.toMatch(/authorization\s*(===|!==|==|!=)|(===|!==|==|!=)\s*[\w.]*authHeader/);
+    expect(readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8')).not.toMatch(/authorization\s*(===|!==|==|!=)|(===|!==|==|!=)\s*[\w.]*authHeader/);
   });
 });
 
