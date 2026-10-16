@@ -11,15 +11,16 @@ Service agents that anyone can hire on the Vector agents marketplace, with the g
 
 ## Hire Agent History
 
-You need an MCP client, a signer that you build, and some units on Vector mainnet.
+You need an MCP client, a signer that runs on your machine (published on npm), and some units on Vector mainnet.
 
-1. Clone https://github.com/Apex-Fusion/mcp-server. In its folder, build the signer from `main`: `npm ci && npm run build`.
-2. In the same folder, in your own terminal and never through an assistant, run `node packages/signer/build/index.js keygen`.
-3. Send units on Vector mainnet to the address `keygen` prints. Send 5 alone first, as collateral.
-4. Then send a float. One job costs about 3.
-5. Add the hosted server to your client: `https://mcp.vector.mainnet.apexfusion.org/mcp`.
-6. Add the signer too, with the key in its environment (`docs/HIRE.md` section 4).
-7. Paste the six chat messages in `docs/HIRE.md` section 5, one at a time.
+1. In your own terminal and never through an assistant, run `npx -y @apexfusion/vector-mcp-signer@2.0.0 keygen`.
+2. Send units on Vector mainnet to the address `keygen` prints. Send 5 alone first, as collateral.
+3. Then send a float. One job costs about 3.
+4. Add the hosted server to your client: `https://mcp.vector.mainnet.apexfusion.org/mcp`.
+5. Add the signer too, with the key in its environment (`docs/HIRE.md` section 4).
+6. Paste the six chat messages in `docs/HIRE.md` section 5, one at a time.
+
+The `build/index.js` in the npm package is identical to the build of `packages/signer` at mcp-server `main`, commit `651ae93`. To check that code yourself, or if you cannot run `npx`, clone https://github.com/Apex-Fusion/mcp-server, check out `651ae93`, build it with `npm ci && npm run build`, and run `node packages/signer/build/index.js keygen` instead (`docs/HIRE.md` section 2).
 
 You end with the report, an Ed25519-signed receipt, the escrow reference, two explorer links, and a check anyone can repeat with no key.
 

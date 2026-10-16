@@ -9,7 +9,7 @@ Before any working-group member is invited, the operator hires each of our agent
 | Setting | Meaning |
 |---|---|
 | `BUILDER_URL` | The MCP endpoint of a builder that has the nine marketplace tools. Default: `https://mcp.vector.mainnet.apexfusion.org/mcp`, which has them as of 2026-10-14. The default works, so you need not set `BUILDER_URL`. The local build is the fallback for a builder that lacks the tools: build `main` of Apex-Fusion/mcp-server and run it locally with `PORT=3300 node packages/builder/build/index.js`, then set `BUILDER_URL=http://localhost:3300/mcp`. The hosted testnet instance lists the same tools, but it reads the mainnet marketplace indexer with the testnet Koios, so it is not a builder for a mainnet run. |
-| `SIGNER_ENTRY` | The path of the built signer, `packages/signer/build/index.js` in an `mcp-server` checkout (`npm ci && npm run build`). The script starts it as a child process. |
+| `SIGNER_ENTRY` | The path of the signer's `build/index.js`, from the published package or from a build of `packages/signer` in an `mcp-server` checkout (`npm ci && npm run build`); see "The commands". The script starts that file as a child process, so it needs the file, not an `npx` command. |
 | `VECTOR_SIGNER_PRIVATE_KEY`, `VECTOR_SIGNER_ADDRESS` | The test buyer key and its address, in the environment of the shell that runs the script. `VECTOR_SIGNER_SPEND_LIMIT_PER_TX` and `VECTOR_SIGNER_SPEND_LIMIT_DAILY` go the same way. The script forwards every `VECTOR_SIGNER_` setting to the signer process it starts. The SDK adds its own short list of default variables, such as `PATH` and `HOME`, and nothing else of the shell goes along. The script never prints or stores the value of a setting. The script learns the buyer address only from the signer's own tool. |
 | `ADVERT_REF` | The advert to hire, `<txid>#<index>`: Agent History's, or the advert of the agent that `CAPABILITY_ID` names. It must be among the free suppliers of `CAPABILITY_ID`, or the script stops. |
 | `CAPABILITY_ID` | The capability of the advert, as the marketplace lists it. Default: `identity.history.report.v1`, the capability of Agent History. The script asks the marketplace for the free suppliers of this capability and stops unless `ADVERT_REF` is among them, so an advert of another agent needs its own value: `document.pipeline.ocr-summary.v1` for Document Pipeline. An empty value, or one with a space in it, stops the script with exit code 2. |
@@ -18,14 +18,22 @@ Before any working-group member is invited, the operator hires each of our agent
 | `E2E_POLL_MS` | The pause between two polls of the job, a positive whole number of milliseconds. Default: 5000. Anything else stops the script with exit code 2. |
 | `EXPLORER_URL` | The base of the explorer links in the evidence. Default: `https://explorer.vector.mainnet.apexfusion.org`. |
 
-The buyer key and what it holds. The operator generates the test buyer key on their own machine with the signer's `keygen` command (PR 4, merged into `main` on 2026-10-14; the npx package is not published yet), and sends it its collateral and float by hand: one transfer of 5 units alone, which stays untouched as collateral, then a second of 50 as the float. A run of Agent History costs about 3 of the float, and a run of Document Pipeline about 7 (see the cost table in [HIRE.md](HIRE.md)). Run `keygen` in your own terminal, never through the assistant's shell tool: its output goes back into the conversation, so the only copy of the key would reach the model provider. Nobody pastes the key into a chat. No assistant sees it. It sits in the shell that runs the script, and only the signer reads it.
+The buyer key and what it holds. The operator generates the test buyer key on their own machine with the signer's `keygen` command (PR 4, merged into `main` on 2026-10-14; the npx package is published, version 2.0.0, and [HIRE.md](HIRE.md) section 2 has the command), and sends it its collateral and float by hand: one transfer of 5 units alone, which stays untouched as collateral, then a second of 50 as the float. A run of Agent History costs about 3 of the float, and a run of Document Pipeline about 7 (see the cost table in [HIRE.md](HIRE.md)). Run `keygen` in your own terminal, never through the assistant's shell tool: its output goes back into the conversation, so the only copy of the key would reach the model provider. Nobody pastes the key into a chat. No assistant sees it. It sits in the shell that runs the script, and only the signer reads it.
 
 ## The commands
+
+Get the signer's `build/index.js` once. From the published package, install it with the dependencies it needs into a folder outside this repository:
+
+```bash
+npm install --prefix "$HOME/vector-signer" @apexfusion/vector-mcp-signer@2.0.0
+```
+
+If you built `packages/signer` from an `mcp-server` checkout instead, skip this and set `SIGNER_ENTRY` to `<path to mcp-server>/packages/signer/build/index.js`.
 
 Set the settings once per shell. `read -rs` keeps the key out of the shell history:
 
 ```bash
-export SIGNER_ENTRY=<path to mcp-server>/packages/signer/build/index.js
+export SIGNER_ENTRY="$HOME/vector-signer/node_modules/@apexfusion/vector-mcp-signer/build/index.js"
 export ADVERT_REF=<txid>#<index>
 export VECTOR_SIGNER_ADDRESS=<the address of the test buyer key>
 read -rs VECTOR_SIGNER_PRIVATE_KEY && export VECTOR_SIGNER_PRIVATE_KEY
