@@ -85,6 +85,10 @@ describe('agents/audio-snippets/README.md', () => {
     expect(readme).toContain('401 `{"error":"unauthorized"}`, with no detail, before the body is read and before the job slot is taken');
     expect(readme).toContain('102 Processing');
     expect(readme).toMatch(/runtime's fetch gives up after 300 s of silence/);
+    // Ruling R-D24: a job whose caller hangs up is stopped, so the stop of a restart waits for a job that may end that way, and a job the runtime gave up on is lost.
+    expect(section('Routes')).toContain('A job whose caller hangs up, as the runtime does when its own budget for the job runs out, is stopped: the worker of the speech model is killed, the private directory is removed, nothing of the job is kept, and the slot is free for the next one.');
+    expect(section('Stopping')).toContain('The wait is on the job itself: it ends when the job has its answer, or when the job has been stopped because its caller hung up.');
+    expect(readme).not.toMatch(/does not cut it short|goes on with the job/);
     expect(readme).toContain("The service could not do this job (<code>). The operator's log has the detail.");
     expect(section('Stopping')).toContain('On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and no new connection, and waits up to 300 s for the job that is running to end.');
     expect(section('Stopping')).toContain('so `stop_grace_period` in the compose file is 330 s');

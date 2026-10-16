@@ -2,10 +2,17 @@
 // The manifest the service publishes and what is the service's own on the HTTP surface of packages/service-kit: the request schema held to the intake, the
 // refusals of the intake and of a job with their statuses, the disk check of /healthz, the deadline set on arrival, the log of a job, and one real job over
 // HTTP. The generic behaviour of the surface (the token, the slot, the heartbeat, the routes, the body cap) is tested in packages/service-kit.
-import { readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
+import { readFileSync, readdirSync } from 'node:fs';
+import { connect } from 'node:net';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Ajv from 'ajv';
 import { afterEach, describe, test, expect, vi } from 'vitest';
 import { REGISTRY_ADDRESS } from '@vsa/vector-read';
+import { workerAsr } from '../src/asr.ts';
+import type { Asr } from '../src/asr.ts';
 import { ASR_MAX_MS, JOB_DEADLINE_MS } from '../src/budget.ts';
 import { INLINE_CLIPS_BYTES } from '../src/clips.ts';
 import { CLIPS_GAP, DEADLINE_GAP, LANGUAGE_GAP, LIMITS_GAP, QUERY_GAP, QUOTE_GAP, gapsFor, modelGap } from '../src/gaps.ts';
@@ -14,11 +21,11 @@ import { MAX_DURATION_S, MAX_SOURCE_BYTES } from '../src/media.ts';
 import { DEFAULT_LANGUAGE, MAX_INLINE_BYTES, MAX_QUERY_CHARS, MAX_QUOTES, MAX_QUOTE_CHARS, MAX_RANGES, MIMES, RequestError, parseRequest } from '../src/request.ts';
 import { SnippetsError } from '../src/result.ts';
 import type { RunDeps } from '../src/run.ts';
-import { DISK_TIMEOUT_MS, DISK_TTL_MS, MIN_PROCESSING_WINDOW_MS, TEMPLATE_ENV, manifestFromEnv, renderTemplate } from '../src/server.ts';
+import { DISK_TIMEOUT_MS, DISK_TTL_MS, JobSlot, MIN_PROCESSING_WINDOW_MS, TEMPLATE_ENV, manifestFromEnv, renderTemplate } from '../src/server.ts';
 import type { ServerOptions } from '../src/server.ts';
 import { GOLDEN_REQUEST, GOLDEN_RESULT } from './golden.ts';
 import { FULL_ENV, SUPPLIER, T0, TEST_AUTH, TEST_CONTACT, baseDeps, cleanDirs, serve, until, wire } from './server-support.ts';
-import { MEDIA_TOOLS, text, toBase64 } from './support.ts';
+import { MEDIA_TOOLS, TONE_WAV, text, toBase64 } from './support.ts';
 
 afterEach(() => { cleanDirs(); vi.restoreAllMocks(); });
 
@@ -332,6 +339,39 @@ describe('POST /: the job and its refusals', () => {
     expect(run).not.toHaveBeenCalled();
     expect(TEST_AUTH).toMatch(/^Bearer [0-9a-f]{64}$/);
   });
+});
+
+// Ruling R-D24: the runtime aborts its call at its own budget and frees the escrow; the service stops the job and frees its one slot for the next hirer.
+describe('POST /: a caller that hangs up', () => {
+  test.skipIf(!MEDIA_TOOLS)('stops the job: the worker of the speech model is killed, the slot is free within a second, the private directory is removed, and the log says why', async () => {
+    // The worker is the stand-in of test/asr.test.ts, which sleeps 10 s on a WAV named slow.wav: the job asks it for its own audio under that name.
+    const standIn = fileURLToPath(new URL('./fixtures/stand-in-worker.mjs', import.meta.url));
+    const children: ChildProcess[] = [];
+    const spawnImpl = ((file: string, args: readonly string[], opts: object) => { const child = spawn(file, args, opts); children.push(child); return child; }) as unknown as typeof spawn;
+    const worker = workerAsr({ python: process.execPath, pythonArgs: [], worker: standIn, modelDir: '/app/asr/models/base', threads: 1, computeType: 'int8' }, { spawnImpl });
+    const asr: Asr = { transcribe: (wav, language, timeoutMs, signal) => worker.transcribe(join(dirname(wav), 'slow.wav'), language, timeoutMs, signal), check: worker.check };
+    const slot = new JobSlot();
+    const deps = baseDeps({ asr });
+    await serve(options({ slot, deps }), async (api) => {
+      const body = wire({ source: { audio_b64: toBase64(TONE_WAV), mime: 'audio/wav' }, quotes: ['all LibriVox recordings are in the public domain'] });
+      const caller = connect(Number(new URL(api.url).port), '127.0.0.1');
+      caller.on('error', () => undefined);
+      caller.write(['POST / HTTP/1.1', 'Host: 127.0.0.1', 'Content-Type: application/json', `Content-Length: ${Buffer.byteLength(body)}`, `Authorization: ${TEST_AUTH}`, '', ''].join('\r\n') + body);
+      await until(() => children.length === 1, 'the worker runs', 20_000);
+      expect(slot.busy).toBe(true);
+      caller.destroy(); // the caller hangs up, as the runtime does at its budget
+      await until(() => !slot.busy, 'the slot is free', 1000);
+      await until(() => children[0].exitCode !== null || children[0].signalCode !== null, 'the worker has exited', 1000);
+      expect(children[0].signalCode).toBe('SIGKILL');
+      expect(readdirSync(deps.scratchRoot ?? '')).toStrictEqual([]);
+      // The next job takes the slot (it fails at its fetch, which this test does not make), where a busy slot would answer 409.
+      const next = await api.post(wire({ source: { url: 'https://203.0.113.10/a.mp3' }, quotes: ['x'] }));
+      expect([next.status, next.json.error]).toStrictEqual([422, 'source_fetch_failed']);
+    });
+    expect(logs.filter((line) => /^job abandoned by the caller after \d+ ms$/.test(line))).toHaveLength(1);
+    expect(logs.filter((line) => /^job failed after \d+ ms: aborted \(499\)$/.test(line))).toHaveLength(1);
+    expect(logs.join('\n')).not.toMatch(/LibriVox|public domain/);
+  }, 60_000);
 });
 
 describe('GET /healthz: the free space of the temporary directory', () => {

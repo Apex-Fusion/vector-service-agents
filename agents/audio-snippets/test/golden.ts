@@ -70,14 +70,16 @@ export const GOLDEN_RESULT = {
   clips_truncated: false,
 };
 
-/** A speech model that answers what it is given, and records every call. */
-export function stubAsr(answer: AsrTranscript | ((wav: string, language: string | null, timeoutMs: number) => Promise<AsrTranscript>)): Asr & { calls: Array<{ language: string | null; timeoutMs: number }> } {
+/** A speech model that answers what it is given, and records every call. A function as the answer is given the signal of the job too. */
+export function stubAsr(
+  answer: AsrTranscript | ((wav: string, language: string | null, timeoutMs: number, signal?: AbortSignal) => Promise<AsrTranscript>),
+): Asr & { calls: Array<{ language: string | null; timeoutMs: number }> } {
   const calls: Array<{ language: string | null; timeoutMs: number }> = [];
   return {
     calls,
-    async transcribe(wav, language, timeoutMs) {
+    async transcribe(wav, language, timeoutMs, signal) {
       calls.push({ language, timeoutMs });
-      return typeof answer === 'function' ? answer(wav, language, timeoutMs) : structuredClone(answer);
+      return typeof answer === 'function' ? answer(wav, language, timeoutMs, signal) : structuredClone(answer);
     },
     async check() { return { faster_whisper: '1.2.1', ctranslate2: '4.8.2' }; },
   };

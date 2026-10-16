@@ -4,7 +4,7 @@
 // end the same way, so a WAV clip is the samples of the decoded audio between its cut points under a header of 44 bytes. Every clip carries its sha256 and its
 // size, and its bytes, as base64, only while the total of the clips that carry them stays at or under 2000000 bytes. From the first clip that would cross that
 // line on, no clip carries its bytes and clips_truncated is true: a hirer who wants the rest cuts them from the media at the cut points. Each clip is read and
-// removed before the next one is cut, so a job holds one clip on disk at a time.
+// removed before the next one is cut, so a job holds one clip on disk at a time. A job whose caller hangs up cuts no other clip (ruling R-D24).
 import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { sha256Hex, toolFailure } from '@vsa/service-kit';
@@ -54,13 +54,23 @@ export function inlineBudget(limit: number = INLINE_CLIPS_BYTES): { take: (size:
   };
 }
 
-export interface ClipDeps { tools: MediaTools; clock: () => number; deadlineMs: number }
+export interface ClipDeps {
+  tools: MediaTools;
+  clock: () => number;
+  deadlineMs: number;
+  /** Aborts when the caller of the job hangs up: it is looked at before each clip, and a clip that is being cut is let finish. */
+  signal?: AbortSignal;
+}
 
-/** The clips of `matches`, cut in `dir` from `wav`. Refused with deadline when the time of the job runs out first, and with clip_failed when ffmpeg fails on a clip. */
+/**
+ * The clips of `matches`, cut in `dir` from `wav`. Refused with deadline when the time of the job runs out first, with clip_failed when ffmpeg fails on a
+ * clip, and with aborted when the signal has aborted before a clip.
+ */
 export async function cutClips(matches: readonly Match[], wav: string, dir: string, format: ClipFormat, deps: ClipDeps): Promise<{ clips: Clip[]; truncated: boolean }> {
   const budget = inlineBudget();
   const clips: Clip[] = [];
   for (const [index, match] of matches.entries()) {
+    if (deps.signal?.aborted === true) throw new SnippetsError('aborted', `the caller hung up after ${index} of the ${matches.length} clips were cut`);
     const left = deps.deadlineMs - deps.clock();
     if (left <= 0) throw new SnippetsError('deadline', `the job ran out of its time after ${index} of its ${matches.length} clips`);
     const out = join(dir, `clip-${index}.${format}`);

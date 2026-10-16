@@ -20,6 +20,11 @@ export interface UrlFetchOptions {
   timeoutMs: number;
   /** Makes the service's refusal for a code and its words. */
   refuse: (code: SourceRefusal, message: string) => Error;
+  /**
+   * Stops the fetch when it aborts, the host lookup excepted (that is cut by the budget alone): safeFetch takes it beside its own budget. The fetch then
+   * rejects with the signal's own reason, the caller's abort, which is no refusal of the source. None by default.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -78,8 +83,9 @@ export async function fetchUrlBytes(url: string, opts: UrlFetchOptions): Promise
   const tap = tapBody(opts.fetchImpl);
   let res: Awaited<ReturnType<typeof safeFetch>>;
   try {
-    res = await safeFetch(url, {}, { fetchImpl: tap.fetch, maxResponseBytes: opts.maxBytes, timeoutMs: opts.timeoutMs });
+    res = await safeFetch(url, opts.signal === undefined ? {} : { signal: opts.signal }, { fetchImpl: tap.fetch, maxResponseBytes: opts.maxBytes, timeoutMs: opts.timeoutMs });
   } catch (error) {
+    if (opts.signal?.aborted === true) throw opts.signal.reason; // the caller stopped it: its abort, not a failure of the source
     throw fetchFailure(error, opts.maxBytes, opts.refuse);
   }
   if (res.status !== 200) throw opts.refuse('source_fetch_failed', `could not fetch the source: the server answered ${res.status}`);

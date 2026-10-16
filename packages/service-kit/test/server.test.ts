@@ -3,6 +3,7 @@
 // same surface under its own manifest and pipeline; these tests hold the seams it does not use.
 import { describe, test, expect } from 'vitest';
 import { connect } from 'node:net';
+import type { Socket } from 'node:net';
 import { HealthMonitor } from '../src/health.ts';
 import { HEARTBEAT_MS, STOPPING_TEXT, createJobServer, operatorsText } from '../src/server.ts';
 import type { JobServerOptions, Refusal } from '../src/server.ts';
@@ -40,6 +41,13 @@ async function serve<T>(opts: JobServerOptions<Echo, Said>, fn: (base: string, p
 }
 const post = (base: string, body: string, authorization: string | null = TOKEN) =>
   fetch(`${base}/`, { method: 'POST', body, headers: authorization === null ? {} : { authorization } });
+/** One POST over a socket of its own, left open: the caller of a job that can hang up by destroying the socket. */
+function openPost(port: number, body: string): Socket {
+  const socket = connect(port, '127.0.0.1');
+  socket.on('error', () => undefined);
+  socket.write(['POST / HTTP/1.1', 'Host: 127.0.0.1', 'Content-Type: application/json', `Content-Length: ${Buffer.byteLength(body)}`, `Authorization: ${TOKEN}`, '', ''].join('\r\n') + body);
+  return socket;
+}
 /** One POST over a socket of its own with Connection: close, and everything the server wrote, interim lines included. */
 function rawPost(port: number, body: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -185,6 +193,61 @@ describe('createJobServer', () => {
       expect(interim.at(-1)).toMatch(/^HTTP\/1\.1 200 OK\r\n/);
       expect(interim.at(-1)).toContain('{"said":"slow"}');
     });
+  });
+
+  // Ruling R-D24: a job whose caller hangs up is stopped when the service asks for it (abortOnClose), and the slot is free for the next job; without it the
+  // job runs to its end, as the Document Pipeline needs (its sub-escrows must settle).
+  test('with abortOnClose, a caller that hangs up mid-job stops it: the run\'s signal aborts, its promise rejects with the abort, the line is logged once, and the next job gets 200, not 409', async () => {
+    const slot = new JobSlot();
+    const logs: string[] = [];
+    const runs: Array<{ promise: Promise<Said>; signal: AbortSignal | undefined }> = [];
+    const run: JobServerOptions<Echo, Said>['run'] = (request, _arrivedAt, signal) => {
+      const promise = request.say === 'hold'
+        ? new Promise<Said>((_resolve, reject) => { signal?.addEventListener('abort', () => { reject(signal.reason); }, { once: true }); })
+        : Promise.resolve({ said: request.say });
+      promise.catch(() => undefined);
+      runs.push({ promise, signal });
+      return promise;
+    };
+    await serve(options({ abortOnClose: true, slot, run }, logs), async (base, port) => {
+      const caller = openPost(port, wire({ say: 'hold' }));
+      await until(() => runs.length === 1, 'the job runs');
+      expect(runs[0].signal).toBeInstanceOf(AbortSignal);
+      expect(runs[0].signal?.aborted).toBe(false);
+      expect((await post(base, wire({ say: 'meanwhile' }))).status).toBe(409);
+      caller.destroy(); // the caller hangs up
+      await expect(runs[0].promise).rejects.toMatchObject({ name: 'AbortError' });
+      await until(() => !slot.busy, 'the slot is free');
+      const next = await post(base, wire({ say: 'next' }));
+      expect([next.status, await next.json()]).toStrictEqual([200, { said: 'next' }]);
+      expect(runs.length, 'the job refused with 409 never ran').toBe(2);
+      expect(runs[1].signal?.aborted, 'a job that is answered is not aborted').toBe(false);
+    });
+    expect(logs.filter((line) => /^job abandoned by the caller after \d+ ms$/.test(line))).toHaveLength(1);
+    expect(logs.filter((line) => line.startsWith('job abandoned'))).toHaveLength(1);
+  });
+
+  test('without abortOnClose, the default and the Pipeline\'s configuration, a caller that hangs up does not stop the job: its run gets no signal and runs to its end, holding the slot until then', async () => {
+    const slot = new JobSlot();
+    const logs: string[] = [];
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const signals: Array<AbortSignal | undefined> = [];
+    let ended = 0;
+    const run: JobServerOptions<Echo, Said>['run'] = async (request, _arrivedAt, signal) => { signals.push(signal); await gate; ended += 1; return { said: request.say }; };
+    await serve(options({ slot, run }, logs), async (base, port) => {
+      const caller = openPost(port, wire({ say: 'held' }));
+      await until(() => signals.length === 1, 'the job runs');
+      caller.destroy(); // the caller hangs up
+      await pause(200);
+      expect([slot.busy, ended]).toStrictEqual([true, 0]);
+      expect((await post(base, wire({ say: 'meanwhile' }))).status).toBe(409);
+      release();
+      await until(() => ended === 1 && !slot.busy, 'the job ran to its end');
+    });
+    expect(signals).toStrictEqual([undefined]);
+    expect(logs.some((line) => line.startsWith('job abandoned'))).toBe(false);
+    expect(logs.filter((line) => /^job done in \d+ ms$/.test(line))).toHaveLength(1);
   });
 
   test('heartbeatMs must be more than 0 and at most HEARTBEAT_MS, and a server is never made without a token', () => {

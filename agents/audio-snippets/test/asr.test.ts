@@ -3,6 +3,7 @@
 // time limit, the output limit, and what a failure says. The real worker and model are test/asr-real.test.ts.
 import { describe, test, expect } from 'vitest';
 import { spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { AsrError, STDOUT_LIMIT, WORKER_PATH, parseTranscript, workerAsr } from '../src/asr.ts';
 import type { AsrSettings } from '../src/asr.ts';
@@ -12,6 +13,20 @@ const settings = (over: Partial<AsrSettings> = {}): AsrSettings => ({ python: pr
 async function failure(p: Promise<unknown>): Promise<AsrError> {
   try { await p; } catch (e) { expect(e).toBeInstanceOf(AsrError); return e as AsrError; }
   throw new Error('the recognition did not fail');
+}
+/** A spawn that keeps every child it starts, for a test that watches or kills one. */
+function keeping(): { spawnImpl: typeof spawn; children: ChildProcess[] } {
+  const children: ChildProcess[] = [];
+  const spawnImpl = ((file: string, args: readonly string[], opts: object) => { const child = spawn(file, args, opts); children.push(child); return child; }) as unknown as typeof spawn;
+  return { spawnImpl, children };
+}
+const exited = (child: ChildProcess): boolean => child.exitCode !== null || child.signalCode !== null;
+async function until(condition: () => boolean, what: string, ms = 5000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!condition()) {
+    if (Date.now() > end) throw new Error(`gave up waiting until ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 describe('workerAsr', () => {
@@ -74,6 +89,50 @@ describe('workerAsr', () => {
     expect(lines).toHaveLength(20);
     expect(lines[0]).toBe('asr: warning 0 [31m');
     expect(lines.every((l) => !/[\u0000-\u001f]/.test(l))).toBe(true);
+  });
+  // Ruling R-D24: a caller that hangs up stops the job, and the worker with it.
+  test('a signal that aborts kills the worker with SIGKILL at once, and the recognition rejects with reason aborted', async () => {
+    const { spawnImpl, children } = keeping();
+    const controller = new AbortController();
+    const began = Date.now();
+    const recognised = workerAsr(settings(), { spawnImpl }).transcribe('/tmp/slow.wav', 'en', 60_000, controller.signal);
+    recognised.catch(() => undefined);
+    await until(() => children.length === 1, 'the worker runs');
+    controller.abort();
+    const e = await failure(recognised);
+    expect([e.reason, e.message]).toStrictEqual(['aborted', 'the speech recognition was stopped: its caller hung up']);
+    expect(children[0].signalCode).toBe('SIGKILL');
+    expect(Date.now() - began).toBeLessThan(5000);
+  });
+  test('a signal that has aborted already starts no worker', async () => {
+    const { spawnImpl, children } = keeping();
+    const controller = new AbortController();
+    controller.abort();
+    expect((await failure(workerAsr(settings(), { spawnImpl }).transcribe('/tmp/ok.wav', 'en', 10_000, controller.signal))).reason).toBe('aborted');
+    expect(children).toHaveLength(0);
+  });
+  test('a worker killed from outside, as the kernel kills one that runs out of memory, is reported with the signal that ended it, not as exit null', async () => {
+    const { spawnImpl, children } = keeping();
+    const recognised = workerAsr(settings(), { spawnImpl }).transcribe('/tmp/slow.wav', 'en', 60_000);
+    recognised.catch(() => undefined);
+    await until(() => children.length === 1, 'the worker runs');
+    children[0].kill('SIGKILL');
+    expect(await failure(recognised)).toMatchObject({ reason: 'failed', message: 'the speech model failed (killed by SIGKILL): no message' });
+  });
+  test('the workers that run are taken with the service when it exits by one listener on the exit of the process, not one for each job', async () => {
+    const { spawnImpl, children } = keeping();
+    const before = process.listenerCount('exit');
+    const controller = new AbortController();
+    const asr = workerAsr(settings(), { spawnImpl });
+    const jobs = [0, 1, 2].map(() => asr.transcribe('/tmp/slow.wav', 'en', 60_000, controller.signal));
+    for (const job of jobs) job.catch(() => undefined);
+    await until(() => children.length === 3, 'three workers run');
+    expect(process.listenerCount('exit')).toBeLessThanOrEqual(before + 1);
+    const during = process.listenerCount('exit');
+    controller.abort();
+    for (const job of jobs) expect((await failure(job)).reason).toBe('aborted');
+    await until(() => children.every(exited), 'every worker has exited');
+    expect(process.listenerCount('exit')).toBe(during);
   });
   test('check answers the versions, and a model that is not there or a Python that cannot be run stops it with the reason', async () => {
     expect(await workerAsr(settings()).check()).toStrictEqual({ faster_whisper: 'stand-in', ctranslate2: 'stand-in' });

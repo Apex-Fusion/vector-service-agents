@@ -6,6 +6,7 @@
 //
 // The codes and their status:
 //   422  deadline (the job ran out of its time: the speech recognition did not finish within what it had, or too little was left to start it or a clip)
+//   499  aborted (the caller hung up and the job was stopped, ruling R-D24: never answered, for the connection is gone, and logged)
 //   500  asr_failed (the speech model failed or wrote no transcript), clip_failed (ffmpeg could not cut a clip)
 //   503  low_disk (the temporary directory has less free space than a job needs)
 import type { AsrSegment } from './asr.ts';
@@ -32,13 +33,16 @@ export interface SnippetsResult {
   clips_truncated: boolean;
 }
 
-export type SnippetsErrorCode = 'deadline' | 'asr_failed' | 'clip_failed' | 'low_disk';
-const STATUS: Record<SnippetsErrorCode, 422 | 500 | 503> = { deadline: 422, asr_failed: 500, clip_failed: 500, low_disk: 503 };
+export type SnippetsErrorCode = 'deadline' | 'aborted' | 'asr_failed' | 'clip_failed' | 'low_disk';
+const STATUS: Record<SnippetsErrorCode, 422 | 499 | 500 | 503> = { deadline: 422, aborted: 499, asr_failed: 500, clip_failed: 500, low_disk: 503 };
 
-/** A job that failed: a stable `code` to branch on, a `message` (for the buyer at 422, for the operator's log at 500 and 503), and the HTTP `status`. */
+/**
+ * A job that failed: a stable `code` to branch on, a `message` (for the buyer at 422, for the operator's log at 500 and 503, and for the log alone at 499, which
+ * no caller is there to read), and the HTTP `status`.
+ */
 export class SnippetsError extends Error {
   readonly code: SnippetsErrorCode;
-  readonly status: 422 | 500 | 503;
+  readonly status: 422 | 499 | 500 | 503;
   constructor(code: SnippetsErrorCode, message: string) {
     super(message);
     this.name = 'SnippetsError';

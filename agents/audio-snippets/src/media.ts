@@ -89,14 +89,22 @@ function claimedByHeader(header: string | null): Mime | null {
   return (MIMES as readonly string[]).includes(type) ? (type as Mime) : null;
 }
 
-/** The bytes of a source, fetched or decoded and written to `dir`. Their kind must be one of the six, and the one the request or the server claimed, if either did. */
-export async function loadSource(source: SnippetsRequest['source'], dir: string, deps: { fetchImpl: typeof fetch; timeoutMs?: number; maxBytes?: number }): Promise<SourceMedia> {
+/**
+ * The bytes of a source, fetched or decoded and written to `dir`. Their kind must be one of the six, and the one the request or the server claimed, if either
+ * did. `signal` cuts a fetch that is still running, which then rejects with the signal's own reason.
+ */
+export async function loadSource(
+  source: SnippetsRequest['source'], dir: string, deps: { fetchImpl: typeof fetch; timeoutMs?: number; maxBytes?: number; signal?: AbortSignal },
+): Promise<SourceMedia> {
   const maxBytes = deps.maxBytes ?? MAX_SOURCE_BYTES;
   let bytes: Uint8Array;
   let claimed: Mime | null;
   let claim: 'served as' | 'declared as';
   if ('url' in source) {
-    const got = await fetchUrlBytes(source.url, { fetchImpl: deps.fetchImpl, maxBytes, timeoutMs: deps.timeoutMs ?? SOURCE_FETCH_TIMEOUT_MS, refuse: (code, message) => new RequestError(code, message) });
+    const got = await fetchUrlBytes(source.url, {
+      fetchImpl: deps.fetchImpl, maxBytes, timeoutMs: deps.timeoutMs ?? SOURCE_FETCH_TIMEOUT_MS, refuse: (code, message) => new RequestError(code, message),
+      ...(deps.signal === undefined ? {} : { signal: deps.signal }),
+    });
     bytes = got.bytes;
     claimed = claimedByHeader(got.contentType);
     claim = 'served as';
@@ -221,9 +229,11 @@ const tooLong = () => new RequestError('media_too_long', `the media is longer th
 export interface Prepared { source: { sha256: string; bytes: number; mime: Mime; duration_s: number }; wav: string; samples: number }
 export async function prepareMedia(
   source: SnippetsRequest['source'], dir: string,
-  deps: { fetchImpl: typeof fetch; tools: MediaTools; fetchTimeoutMs?: number; probeTimeoutMs?: number; decodeTimeoutMs?: number },
+  deps: { fetchImpl: typeof fetch; tools: MediaTools; fetchTimeoutMs?: number; probeTimeoutMs?: number; decodeTimeoutMs?: number; signal?: AbortSignal },
 ): Promise<Prepared> {
-  const media = await loadSource(source, dir, { fetchImpl: deps.fetchImpl, ...(deps.fetchTimeoutMs === undefined ? {} : { timeoutMs: deps.fetchTimeoutMs }) });
+  const media = await loadSource(source, dir, {
+    fetchImpl: deps.fetchImpl, ...(deps.fetchTimeoutMs === undefined ? {} : { timeoutMs: deps.fetchTimeoutMs }), ...(deps.signal === undefined ? {} : { signal: deps.signal }),
+  });
   const found = await probe(media, deps.tools, deps.probeTimeoutMs);
   if (!found.hasAudio) throw new RequestError('media_no_audio', 'the file has no audio stream: there is nothing to transcribe');
   if (found.duration !== null && found.duration > MAX_DURATION_S + DURATION_SLACK_S) throw tooLong();

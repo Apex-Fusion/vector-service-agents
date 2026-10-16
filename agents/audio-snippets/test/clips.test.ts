@@ -14,6 +14,24 @@ import { MEDIA_TOOLS, TONE_WAV, fixturePath } from './support.ts';
 
 const match = (start_s: number, end_s: number) => ({ from: 'range' as const, start_s, end_s, text: '', score: 1 });
 
+describe('a job whose caller hangs up (ruling R-D24)', () => {
+  test('the signal is looked at before each clip: once it has aborted no other clip is cut, and the job fails with aborted (499)', async () => {
+    const controller = new AbortController();
+    const cut: string[] = [];
+    const dir = mkdtempSync(join(tmpdir(), 'snippets-abort-'));
+    try {
+      // A stand-in for ffmpeg that writes the clip it is asked for, and the caller hangs up while the first one is cut.
+      const tools = { ffmpeg: 'ffmpeg', ffprobe: 'ffprobe', run: async (_file: string, args: readonly string[]) => { cut.push(args.at(-1) ?? ''); writeFileSync(args.at(-1) ?? '', 'clip'); controller.abort(); return { stdout: '', stderr: '' }; } };
+      const job = cutClips([match(0, 1), match(1, 2), match(2, 3)], join(dir, 'audio.wav'), dir, 'wav', { tools, clock: Date.now, deadlineMs: Date.now() + 60_000, signal: controller.signal });
+      await expect(job).rejects.toBeInstanceOf(SnippetsError);
+      await expect(job).rejects.toMatchObject({ code: 'aborted', status: 499, message: 'the caller hung up after 1 of the 3 clips were cut' });
+      expect(cut).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('the inline budget (Review Focus 5)', () => {
   const plan = (sizes: number[]) => { const budget = inlineBudget(); return { inline: sizes.map((size) => budget.take(size)), truncated: budget.truncated() }; };
   test('2 MB in all, and clips of exactly 2000000 bytes in all are all inline', () => {

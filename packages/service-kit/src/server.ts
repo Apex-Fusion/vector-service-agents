@@ -15,6 +15,12 @@
 //                     is 400; anything refusalOf reads is its refusal, and one of 500 or more gets a fixed text for the buyer and its whole message in the
 //                     log. Anything else is 500 {error: "internal"} with no detail, and the cause goes to the log, by message only, never the request.
 //   anything else     404 {error: "not_found"}, POST / with a query among them.
+//
+// A caller that hangs up (ruling R-D24). The runtime aborts its call at its own budget, min(SERVICE_TIMEOUT_MS, deliver_by - send time - 30 s), and frees the
+// escrow. By default the job runs to its end whatever its connection does, and holds the slot until then: a service whose job must settle what it started (the
+// Document Pipeline's sub-escrows) needs that. A service that keeps nothing of a job sets abortOnClose: when the connection of a job ends before its answer
+// has been written, the server logs "job abandoned by the caller after <ms> ms" once and aborts the signal it gave the run, and the slot is free as soon as
+// the run has settled, as for any job. The response's own 'close' is what says so; the request's says nothing, for it comes as soon as its body has been read.
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer as httpServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
@@ -48,8 +54,8 @@ export interface JobServerOptions<Req, Res> {
   authHeader: string;
   /** The request JSON (the content of the wire message) as the request of the job; throws what refusalOf reads for a request it refuses. */
   parse: (requestJson: string) => Req;
-  /** Runs one job, which arrived at `arrivedAt` (the clock's time). */
-  run: (request: Req, arrivedAt: number) => Promise<Res>;
+  /** Runs one job, which arrived at `arrivedAt` (the clock's time). With abortOnClose it is given `signal`, which aborts when the caller hangs up. */
+  run: (request: Req, arrivedAt: number, signal?: AbortSignal) => Promise<Res>;
   /** The answer's body: JSON.stringify(result) by default, made once, exactly the bytes the runtime hashes. */
   serialize?: (result: Res) => string;
   /** Called with a result that is about to be answered: the service writes its own line ("job done in <ms> ms" by default). */
@@ -64,6 +70,11 @@ export interface JobServerOptions<Req, Res> {
   heartbeatMs?: number;
   /** The slot jobs run in; a service that wants to stop drains it. A new one by default. */
   slot?: JobSlot;
+  /**
+   * Stop a job whose caller hangs up before its answer has been written: the run is given a signal that aborts then (see the head of this file). False by
+   * default, for a job that must run to its end whatever its caller does.
+   */
+  abortOnClose?: boolean;
 }
 
 /**
@@ -155,11 +166,23 @@ export function createJobServer<Req, Res>(opts: JobServerOptions<Req, Res>): Ser
       // The heartbeat starts inside the try whose finally releases the slot: a heartbeat that cannot start must not hold the slot for ever.
       let heartbeat: NodeJS.Timeout | undefined;
       let result: Res;
+      // With abortOnClose, the end of the connection before the answer is written stops the job, once (see the head of this file).
+      const abort = opts.abortOnClose === true ? new AbortController() : undefined;
+      const abandoned = (): void => {
+        if (abort === undefined || abort.signal.aborted || res.writableEnded) return;
+        log(`job abandoned by the caller after ${clock() - arrivedAt} ms`);
+        abort.abort();
+      };
       try {
         heartbeat = startHeartbeat(req, res, heartbeatMs);
-        result = await opts.run(request, arrivedAt);
+        if (abort !== undefined) {
+          res.on('close', abandoned);
+          if (res.destroyed) abandoned(); // gone before the job began
+        }
+        result = await opts.run(request, arrivedAt, abort?.signal);
       } finally {
         clearInterval(heartbeat);
+        if (abort !== undefined) res.off('close', abandoned);
         slot.release();
       }
       const text = serialize(result);

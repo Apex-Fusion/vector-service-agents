@@ -5,6 +5,7 @@ import { describe, test, expect } from 'vitest';
 import { createHash } from 'node:crypto';
 import { fetchUrlBytes, sha256Hex } from '../src/source.ts';
 import type { SourceRefusal } from '../src/source.ts';
+import { until } from './support.ts';
 
 const URL_A = 'https://203.0.113.7/a.bin';
 class Refusal extends Error { constructor(readonly code: SourceRefusal, message: string) { super(message); } }
@@ -74,6 +75,20 @@ describe('fetchUrlBytes', () => {
       expect(e.code, url).toBe('source_fetch_failed');
       expect(calls, url).toHaveLength(0);
     }
+  });
+
+  test('a signal of the caller stops the fetch (ruling R-D24): the fetch is cut, and the caller gets its own abort back, not a refusal of the source', async () => {
+    const hang = fetching((init) => new Promise<Response>((_resolve, reject) => { init.signal?.addEventListener('abort', () => { reject(init.signal?.reason); }, { once: true }); }));
+    const controller = new AbortController();
+    const fetched = fetchUrlBytes(URL_A, { ...opts(hang.fetchImpl), signal: controller.signal });
+    fetched.catch(() => undefined);
+    await until(() => hang.calls.length === 1, 'the fetch has begun');
+    const reason = new Error('the caller hung up');
+    controller.abort(reason);
+    await expect(fetched).rejects.toBe(reason);
+    // Without a signal the fetch is the one of before: safeFetch's own budget alone.
+    const plain = fetching(() => new Response(Uint8Array.from([1, 2]), { status: 200 }));
+    expect((await fetchUrlBytes(URL_A, opts(plain.fetchImpl))).bytes).toStrictEqual(Uint8Array.from([1, 2]));
   });
 
   test('sha256Hex is the hex digest of the bytes', () => {

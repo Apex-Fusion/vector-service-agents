@@ -2,9 +2,12 @@
 // The bridge to the speech model (ruling R-D2): one Python process per job, `<python> -I <worker>`, the request as JSON on its stdin and the transcript as
 // JSON on its stdout, with a hard time limit and an output limit. -I is Python's isolated mode: no PYTHON* variable, no user site-packages, no folder of the
 // script on the path. Its environment is the service's without the token and without any name that holds a key, a token, a secret, a password, an API key
-// or an access key (childEnv of packages/service-kit). The model runs on the operator's host from files built into the image, so nothing is fetched while a job runs. What the worker
-// writes on stderr goes to the log, flat and bounded; the log carries job outcomes and never a transcript, and the worker writes none there.
+// or an access key (childEnv of packages/service-kit). The model runs on the operator's host from files built into the image, so nothing is fetched while a
+// job runs. What the worker writes on stderr goes to the log, flat and bounded; the log carries job outcomes and never a transcript, and the worker writes
+// none there. A job whose caller hangs up is stopped (ruling R-D24): its signal kills the worker with SIGKILL, and a service that exits takes every worker
+// that runs with it.
 import { spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { childEnv, errorText, flatText } from '@vsa/service-kit';
 
@@ -31,10 +34,13 @@ export interface AsrSettings {
   computeType: 'int8';
 }
 
-/** Why a recognition failed: it ran out of time, the worker failed or could not be started, or what it wrote is no transcript of the contract. */
+/**
+ * Why a recognition failed: it ran out of time, the worker failed or could not be started, what it wrote is no transcript of the contract, or it was stopped
+ * because its caller hung up.
+ */
 export class AsrError extends Error {
-  readonly reason: 'timeout' | 'failed' | 'bad_output';
-  constructor(reason: 'timeout' | 'failed' | 'bad_output', message: string) {
+  readonly reason: 'timeout' | 'failed' | 'bad_output' | 'aborted';
+  constructor(reason: 'timeout' | 'failed' | 'bad_output' | 'aborted', message: string) {
     super(message);
     this.name = 'AsrError';
     this.reason = reason;
@@ -42,33 +48,52 @@ export class AsrError extends Error {
 }
 
 export interface Asr {
-  /** The transcript of the WAV, in `language` (null: the model detects it from the first 30 s), within `timeoutMs`. */
-  transcribe(wav: string, language: string | null, timeoutMs: number): Promise<AsrTranscript>;
+  /**
+   * The transcript of the WAV, in `language` (null: the model detects it from the first 30 s), within `timeoutMs`. `signal` stops it: the worker is killed,
+   * and the recognition rejects with aborted.
+   */
+  transcribe(wav: string, language: string | null, timeoutMs: number, signal?: AbortSignal): Promise<AsrTranscript>;
   /** Made once at start: resolves with the versions when faster-whisper imports and the model files are there, and rejects with the reason otherwise. */
   check(): Promise<{ faster_whisper: string; ctranslate2: string }>;
 }
 
-interface Run { code: number | null; stdout: string; stderr: string; timedOut: boolean; tooLong: boolean }
+/** How a run of the worker ended: its exit status, or the signal that ended it (`code` null), what it wrote, and whether this side stopped it. */
+interface Run { code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; timedOut: boolean; tooLong: boolean; aborted: boolean }
 
-function runWorker(settings: AsrSettings, args: readonly string[], input: string, timeoutMs: number, spawnImpl: typeof spawn): Promise<Run> {
+const killed = (child: ChildProcess): void => { try { child.kill('SIGKILL'); } catch { /* gone already */ } };
+/** The workers that run. A service that exits takes them with it, by one listener on the exit of the process for all of them, added with the first worker. */
+const live = new Set<ChildProcess>();
+let exitListened = false;
+
+function runWorker(settings: AsrSettings, args: readonly string[], input: string, timeoutMs: number, spawnImpl: typeof spawn, signal?: AbortSignal): Promise<Run> {
   return new Promise((resolve, reject) => {
+    // A job whose caller has hung up already starts no worker.
+    if (signal?.aborted === true) { resolve({ code: null, signal: null, stdout: '', stderr: '', timedOut: false, tooLong: false, aborted: true }); return; }
     let settled = false;
     const child = spawnImpl(settings.python, [...(settings.pythonArgs ?? ['-I']), settings.worker, ...args], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: childEnv(process.env) });
+    live.add(child);
+    if (!exitListened) {
+      exitListened = true;
+      process.once('exit', () => { for (const worker of live) killed(worker); });
+    }
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let outBytes = 0;
     let errBytes = 0;
     let timedOut = false;
     let tooLong = false;
-    const kill = (): void => { try { child.kill('SIGKILL'); } catch { /* gone already */ } };
-    process.once('exit', kill); // a service that exits takes its worker with it
+    let aborted = false;
+    const kill = (): void => { killed(child); };
+    const onAbort = (): void => { aborted = true; kill(); };
+    signal?.addEventListener('abort', onAbort, { once: true });
     const timer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
     timer.unref();
     const settle = (): boolean => {
       if (settled) return false;
       settled = true;
       clearTimeout(timer);
-      process.off('exit', kill);
+      live.delete(child);
+      signal?.removeEventListener('abort', onAbort);
       return true;
     };
     child.stdout?.on('data', (chunk: Buffer) => {
@@ -77,7 +102,9 @@ function runWorker(settings: AsrSettings, args: readonly string[], input: string
     });
     child.stderr?.on('data', (chunk: Buffer) => { if (errBytes < STDERR_KEPT) { err.push(chunk); errBytes += chunk.length; } });
     child.on('error', (error) => { if (settle()) reject(error); }); // it could not be started
-    child.on('close', (code) => { if (settle()) resolve({ code, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8'), timedOut, tooLong }); });
+    child.on('close', (code, ended) => {
+      if (settle()) resolve({ code, signal: ended, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8'), timedOut, tooLong, aborted });
+    });
     child.stdin?.on('error', () => undefined); // a worker that exits before it reads its input
     child.stdin?.end(input);
   });
@@ -122,18 +149,21 @@ export function workerAsr(settings: AsrSettings, opts: { spawnImpl?: typeof spaw
     for (const line of stderr.split(/\r?\n/).filter((l) => l.trim() !== '').slice(0, LOG_LINES)) opts.log(`asr: ${flatText(line, 300)}`);
   };
   return {
-    async transcribe(wav, language, timeoutMs) {
+    async transcribe(wav, language, timeoutMs, signal) {
       const request = JSON.stringify({ wav, language, model_dir: settings.modelDir, threads: settings.threads, compute_type: settings.computeType });
       let run: Run;
       try {
-        run = await runWorker(settings, [], request, timeoutMs, spawnImpl);
+        run = await runWorker(settings, [], request, timeoutMs, spawnImpl, signal);
       } catch (error) {
         throw new AsrError('failed', `the speech model could not be started: ${errorText(error)}`);
       }
       logLines(run.stderr);
+      if (run.aborted) throw new AsrError('aborted', 'the speech recognition was stopped: its caller hung up');
       if (run.timedOut) throw new AsrError('timeout', `the speech model did not finish within ${timeoutMs} ms`);
       if (run.tooLong) throw new AsrError('bad_output', `the speech model wrote more than ${STDOUT_LIMIT} bytes`);
-      if (run.code !== 0) throw new AsrError('failed', `the speech model failed (exit ${run.code}): ${failureOf(run)}`);
+      // A worker that ended on a signal this side did not send was killed from outside: by the kernel, when the container runs out of memory.
+      const ended = run.code === null ? `killed by ${run.signal ?? 'a signal'}` : `exit ${run.code}`;
+      if (run.code !== 0) throw new AsrError('failed', `the speech model failed (${ended}): ${failureOf(run)}`);
       return parseTranscript(run.stdout);
     },
     async check() {

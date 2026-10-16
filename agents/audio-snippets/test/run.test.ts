@@ -19,6 +19,13 @@ import { GOLDEN_REQUEST, GOLDEN_RESULT, GOLDEN_TRANSCRIPT, stubAsr, wavSlice } f
 import { MEDIA_TOOLS, makeMedia } from './support.ts';
 
 const EMPTY: AsrTranscript = { language: 'en', language_probability: 0.5, duration: 0, segments: [] };
+async function until(condition: () => boolean, what: string, ms = 3000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!condition()) {
+    if (Date.now() > end) throw new Error(`gave up waiting until ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
 const request = (overrides: Record<string, unknown>) => parseRequest(JSON.stringify({ ...GOLDEN_REQUEST, ...overrides }));
 let root: string;
 let media: string;
@@ -149,6 +156,59 @@ describe('before anything is fetched', () => {
     await expect(missing).rejects.toMatchObject({ code: 'ENOENT' });
     expect(calls).toStrictEqual([]);
     expect(readdirSync(root)).toStrictEqual([]);
+  });
+});
+
+// Ruling R-D24: a job whose caller hangs up is stopped. The server aborts the signal of the job (abortOnClose); the job fails with aborted (499), which is never
+// answered because the connection is gone, and its private directory is removed as after any failure.
+describe('a job whose caller hangs up', () => {
+  const ABORTED = { code: 'aborted', status: 499, message: 'the caller hung up, and the job was stopped' };
+
+  test('while the source is fetched: the fetch is cut, the job fails with aborted, and nothing is left on disk', async () => {
+    const url = 'https://203.0.113.10/a.mp3';
+    const seen: Array<AbortSignal | undefined> = [];
+    const fetchImpl = (async (_input: RequestInfo | URL, init: RequestInit = {}) => {
+      seen.push(init.signal ?? undefined);
+      return new Promise<Response>((_resolve, reject) => { init.signal?.addEventListener('abort', () => { reject(init.signal?.reason); }, { once: true }); });
+    }) as typeof fetch;
+    const controller = new AbortController();
+    const job = runSnippets(parseRequest(JSON.stringify({ source: { url }, quotes: ['anything'] })), deps({ fetchImpl, signal: controller.signal }));
+    job.catch(() => undefined);
+    await until(() => seen.length === 1, 'the fetch has begun');
+    controller.abort();
+    await expect(job).rejects.toBeInstanceOf(SnippetsError);
+    await expect(job).rejects.toMatchObject(ABORTED);
+    expect(seen[0]?.aborted).toBe(true);
+    expect(readdirSync(root)).toStrictEqual([]);
+  });
+
+  test.skipIf(!MEDIA_TOOLS)('while the model runs: the model is given the signal and stops, the job fails with aborted, and nothing is left on disk', async () => {
+    const controller = new AbortController();
+    const asked: Array<AbortSignal | undefined> = [];
+    const stopping = stubAsr((_wav, _language, _timeoutMs, signal) => {
+      asked.push(signal);
+      controller.abort(); // the caller hangs up while the model runs
+      return Promise.reject(new AsrError('aborted', 'the speech recognition was stopped: its caller hung up'));
+    });
+    const job = runSnippets(request({}), deps({ asr: stopping, signal: controller.signal }));
+    await expect(job).rejects.toMatchObject(ABORTED);
+    expect(asked).toStrictEqual([controller.signal]);
+    expect(readdirSync(root)).toStrictEqual([]);
+  });
+
+  test.skipIf(!MEDIA_TOOLS)('after the model, before the clips: no clip is cut, the job fails with aborted, and nothing is left on disk', async () => {
+    const controller = new AbortController();
+    const done = stubAsr(async () => { controller.abort(); return structuredClone(GOLDEN_TRANSCRIPT); });
+    const real = mediaTools();
+    const cuts: string[][] = [];
+    const tools: RunDeps['tools'] = { ...real, run: async (file, args, options) => { if (args.some((arg) => arg.startsWith('atrim='))) cuts.push([...args]); return real.run(file, args, options); } };
+    await expect(runSnippets(request({}), deps({ asr: done, tools, signal: controller.signal }))).rejects.toMatchObject(ABORTED);
+    expect(cuts).toStrictEqual([]);
+    expect(readdirSync(root)).toStrictEqual([]);
+  });
+
+  test.skipIf(!MEDIA_TOOLS)('a signal that never aborts changes nothing: the golden job answers the golden result', async () => {
+    expect(await runSnippets(request({}), deps({ signal: new AbortController().signal }))).toStrictEqual(GOLDEN_RESULT);
   });
 });
 

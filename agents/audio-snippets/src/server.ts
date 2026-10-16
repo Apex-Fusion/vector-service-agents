@@ -9,7 +9,9 @@
 //   POST /            the request JSON read by parseRequest (src/request.ts) and run by runSnippets, with the deadline of the job set on its arrival. A refusal
 //                     is {error: code, message} with its status: 400 for a request the intake refuses and 422 for media it cannot use (RequestError), 422
 //                     for a job cut at its deadline, and 500 (asr_failed, clip_failed) or 503 (low_disk) for a failure on this side, whose message is fixed
-//                     text for the buyer and whole in the log (SnippetsError).
+//                     text for the buyer and whole in the log (SnippetsError). A job whose caller hangs up is stopped (abortOnClose, ruling R-D24): the
+//                     runtime aborts its call at its own budget and frees the escrow, and a job nobody receives would hold the one slot for nothing. It
+//                     fails with aborted (499), which the log keeps and no caller reads.
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { HealthMonitor, JobSlot, createJobServer, envInt, requiredEnv, statusChip, statusSince } from '@vsa/service-kit';
@@ -192,8 +194,8 @@ export function createServer(opts: ServerOptions): Server {
     onChange: (healthy, failure) => { if (healthy) log('disk check passed again'); else log(`disk check failed: ${failure}`); },
   });
   return createJobServer<SnippetsRequest, SnippetsResult>({
-    manifestText: JSON.stringify(opts.manifest), authHeader: opts.authHeader, parse: parseRequest,
-    run: (request, arrivedAt) => run(request, { ...deps, deadlineMs: arrivedAt + JOB_DEADLINE_MS }),
+    manifestText: JSON.stringify(opts.manifest), authHeader: opts.authHeader, parse: parseRequest, abortOnClose: true,
+    run: (request, arrivedAt, signal) => run(request, { ...deps, deadlineMs: arrivedAt + JOB_DEADLINE_MS, ...(signal === undefined ? {} : { signal }) }),
     done: (result, arrivedAt) => {
       log(`job done in ${deps.clock() - arrivedAt} ms: ${result.source.duration_s} s of media; matches ${result.matches.length}, unmatched ${result.unmatched.length}, clips ${result.clips.length}`);
     },
