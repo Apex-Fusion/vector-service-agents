@@ -14,7 +14,7 @@ describe('asr/worker.py', () => {
   test.skipIf(!PYTHON_READY)('asr/test_worker.py passes: the contract of the worker, with a stubbed model', () => {
     const run = spawnSync(ASR_PYTHON, ['-I', fileURLToPath(new URL('../asr/test_worker.py', import.meta.url))], { encoding: 'utf8' });
     expect(run.status, run.stderr).toBe(0);
-    expect(run.stderr).toMatch(/Ran 8 tests[\s\S]*OK/);
+    expect(run.stderr).toMatch(/Ran 9 tests[\s\S]*OK/);
   });
   // Python 3.9 is proven by running this file there: the implementers' machine runs the contract test with Python 3.9, the image and CI with 3.11.
   test('the worker prints ASCII only and carries the fixed options of the model, and the file itself is ASCII', () => {

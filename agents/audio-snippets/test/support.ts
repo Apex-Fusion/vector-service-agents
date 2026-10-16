@@ -9,7 +9,7 @@ export const fixture = (name: string): Uint8Array => new Uint8Array(readFileSync
 export const fixturePath = (name: string): string => fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url));
 /** 3 s of a 440 Hz sine, 16 kHz mono 16-bit PCM WAV: 96044 bytes. */
 export const TONE_WAV = fixture('tone-3s.wav');
-/** The first 25 s of a public-domain LibriVox recording, mono 16 kHz MP3 (test/fixtures/make-fixtures.mjs). */
+/** 25 s of a public-domain LibriVox recording, mono 16 kHz MP3: two stretches of it joined at pauses, with the reader's spoken credit left out (test/fixtures/make-fixtures.mjs). */
 export const SPEECH_MP3 = fixture('speech-20s.mp3');
 export const toBase64 = (bytes: Uint8Array): string => Buffer.from(bytes).toString('base64');
 export const text = (s: string): Uint8Array => new TextEncoder().encode(s);

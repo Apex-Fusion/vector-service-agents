@@ -42,11 +42,22 @@ def check_request(request):
         raise ValueError("compute_type must be int8")
 
 
+def missing_files(model_dir):
+    """The files of the model that are not in model_dir: all of them when it is no directory."""
+    if not os.path.isdir(model_dir):
+        return list(MODEL_FILES)
+    return [name for name in MODEL_FILES if not os.path.isfile(os.path.join(model_dir, name))]
+
+
 def load_model(model_dir, threads, compute_type):
+    # faster-whisper is asked for a model only in a directory that holds its four files (ruled 2026-10-16; R-D2: nothing is fetched while a job runs). It
+    # would take a model_dir that is no directory for the name of a model on the hub and fetch it, and it fetches a tokenizer from the hub when
+    # tokenizer.json is missing; a refusal here is model_load_failed, naming the missing files. local_files_only stays as a second guard.
+    missing = missing_files(model_dir)
+    if missing:
+        raise RuntimeError("the model directory lacks " + ", ".join(missing))
     from faster_whisper import WhisperModel  # imported here, so that the contract test runs without it
 
-    # local_files_only: a model_dir that is no directory is taken by faster-whisper for the name of a model on the hub, which it would fetch; it is looked
-    # up on the disk only, and a model that is not there is model_load_failed (ruled 2026-10-16; R-D2: nothing is fetched while a job runs).
     return WhisperModel(model_dir, device="cpu", compute_type=compute_type, cpu_threads=threads, local_files_only=True)
 
 
@@ -82,7 +93,7 @@ def check(model_dir, stdout):
     import ctranslate2
     import faster_whisper
 
-    missing = [name for name in MODEL_FILES if not os.path.isfile(os.path.join(model_dir, name))]
+    missing = missing_files(model_dir)
     if missing:
         answer(stdout, {"ok": False, "error": "model_missing", "message": "the model directory lacks " + ", ".join(missing)})
         return 1

@@ -59,6 +59,38 @@ def run(request, loader):
     return status, json.loads(stdout.getvalue())
 
 
+def without_network(action):
+    """Runs action() with every connection refused and counted and, when the hub client is installed, its cache an empty folder and its offline switch off.
+
+    Answers what action() answered, the connections it tried and the seconds it took.
+    """
+    try:
+        from huggingface_hub import constants
+    except ImportError:
+        constants = None
+    attempts = []
+
+    def refuse(*args, **kwargs):
+        attempts.append(args[:1])
+        raise OSError("this test reaches no network")
+
+    saved = (socket.create_connection, socket.getaddrinfo)
+    saved_hub = (constants.HF_HUB_CACHE, constants.HF_HUB_OFFLINE) if constants is not None else None
+    with tempfile.TemporaryDirectory() as empty:
+        socket.create_connection, socket.getaddrinfo = refuse, refuse
+        if constants is not None:
+            constants.HF_HUB_CACHE, constants.HF_HUB_OFFLINE = empty, False
+        try:
+            began = time.monotonic()
+            result = action()
+            took = time.monotonic() - began
+        finally:
+            socket.create_connection, socket.getaddrinfo = saved
+            if constants is not None:
+                constants.HF_HUB_CACHE, constants.HF_HUB_OFFLINE = saved_hub
+    return result, attempts, took
+
+
 class Contract(unittest.TestCase):
     def test_a_job_answers_the_segments_and_the_words_stripped_with_the_language_and_exits_0(self):
         model = StubModel(SEGMENTS)
@@ -127,34 +159,23 @@ class Contract(unittest.TestCase):
 
     def test_a_model_dir_that_is_no_directory_is_model_load_failed_and_nothing_is_fetched(self):
         # Ruled 2026-10-16 (R-D2: nothing is fetched while a job runs). faster-whisper takes a model_dir that is no directory for the name of a model on the
-        # hub ("base" is Systran/faster-whisper-base, 148 MB), and load_model asks for local files only. The real loader runs here with every connection
-        # refused and counted, the cache of the hub an empty folder and its offline switch off, so only local_files_only keeps the loader off the network.
-        try:
-            import faster_whisper  # noqa: F401
-            from huggingface_hub import constants
-        except ImportError:
-            self.skipTest("faster-whisper is not installed here; the image and CI have it")
+        # hub ("base" is Systran/faster-whisper-base, 148 MB); the worker refuses it before faster-whisper is asked, with every connection refused and counted.
         self.assertFalse(os.path.isdir("base"))
-        attempts = []
-
-        def refuse(*args, **kwargs):
-            attempts.append(args[:1])
-            raise OSError("this test reaches no network")
-
-        saved = (socket.create_connection, socket.getaddrinfo, constants.HF_HUB_CACHE, constants.HF_HUB_OFFLINE)
-        with tempfile.TemporaryDirectory() as empty:
-            socket.create_connection, socket.getaddrinfo = refuse, refuse
-            constants.HF_HUB_CACHE, constants.HF_HUB_OFFLINE = empty, False
-            try:
-                began = time.monotonic()
-                status, out = run(dict(REQUEST, model_dir="base"), worker.load_model)
-                took = time.monotonic() - began
-            finally:
-                socket.create_connection, socket.getaddrinfo, constants.HF_HUB_CACHE, constants.HF_HUB_OFFLINE = saved
+        (status, out), attempts, took = without_network(lambda: run(dict(REQUEST, model_dir="base"), worker.load_model))
         self.assertEqual(attempts, [])
         self.assertEqual((status, out["ok"], out["error"]), (3, False, "model_load_failed"))
+        self.assertIn("model.bin", out["message"])
         self.assertLess(took, 5)
 
+    def test_a_model_dir_without_all_four_files_is_model_load_failed_naming_the_missing_ones_and_nothing_is_fetched(self):
+        # faster-whisper fetches a tokenizer from the hub when tokenizer.json is missing, in code that no socket patch here can see: the worker asks it for
+        # a model only when the directory holds model.bin, config.json, tokenizer.json and vocabulary.txt.
+        with tempfile.TemporaryDirectory() as folder:
+            open(os.path.join(folder, "model.bin"), "wb").close()
+            (status, out), attempts, took = without_network(lambda: run(dict(REQUEST, model_dir=folder), worker.load_model))
+        self.assertEqual(attempts, [])
+        self.assertEqual((status, out["error"], out["message"]), (3, "model_load_failed", "the model directory lacks config.json, tokenizer.json, vocabulary.txt"))
+        self.assertLess(took, 5)
 
 if __name__ == "__main__":
     unittest.main()

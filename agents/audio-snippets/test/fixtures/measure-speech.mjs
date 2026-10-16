@@ -1,5 +1,6 @@
 // agents/audio-snippets/test/fixtures/measure-speech.mjs
-// Measures the times of the pinned sentence of speech-20s.mp3 and writes speech-20s.expected.json beside it. Run once, when the fixture is made, from the
+// Measures the times of the pinned sentence of speech-20s.mp3 and, when they are within the bounds below, writes speech-20s.expected.json beside it; out of
+// the bounds it prints its line, writes nothing and exits 1. Run once, when the fixture is made, from the
 // repository root (Git Bash, the implementers' machine):
 //   ASR_PYTHON=python WHISPER_MODEL_DIR=agents/audio-snippets/.models/base node --import tsx agents/audio-snippets/test/fixtures/measure-speech.mjs
 // The times come from the audio itself: ffmpeg's silencedetect on the decoded 16 kHz audio, with the pause before the sentence ending at its onset and the pause
@@ -48,12 +49,14 @@ try {
     onset_s: round3(onset), offset_s: round3(offset),
     measured_by: `ffmpeg ${SILENCE} on the decoded 16 kHz audio: the pause before the sentence ends at onset_s, the pause after it starts at offset_s`,
   };
-  writeFileSync(here('speech-20s.expected.json'), `${JSON.stringify(expected, null, 2)}\n`, 'utf8');
   const differences = [round3(first.start - onset), round3(last.end - offset)];
   // Ruling R-D18: the first word after a pause may start up to 1.0 s early and at most 0.3 s late; the last word ends within 0.3 s of the pause after it.
   const bounds = { onset: [-1, 0.3], offset: [-0.3, 0.3] };
   const within = differences[0] >= bounds.onset[0] && differences[0] <= bounds.onset[1] && differences[1] >= bounds.offset[0] && differences[1] <= bounds.offset[1];
   console.log(JSON.stringify({ ...expected, model_first_start: first.start, model_last_end: last.end, differences_s: differences, bounds_s: bounds, within_bounds: within }));
+  // Times out of the bounds are never written: the line above is the report, and the file keeps the times it had.
+  if (within) writeFileSync(here('speech-20s.expected.json'), `${JSON.stringify(expected, null, 2)}\n`, 'utf8');
+  else process.exitCode = 1;
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
