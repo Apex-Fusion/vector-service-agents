@@ -358,6 +358,11 @@ const doc = (name) => readFileSync(new URL(`../docs/${name}`, import.meta.url), 
 const hire = () => doc('HIRE.md');
 const e2eScript = () => readFileSync(new URL('./e2e-hire.mjs', import.meta.url), 'utf8');
 const HIRE_SECTIONS = ['What you will end up with', 'Get a key', 'What the key must hold', 'Two lines of config', 'The chat script', 'Read your receipt', 'Register your own identifier (optional)', 'The terminal path', 'When it goes wrong', 'Honesty box'];
+// The signer is published on npm (2026-10-16): version 2.0.0, whose build/index.js is identical to the build of packages/signer at mcp-server main, commit 651ae93. Every npx command of the guide, the runbook and the README pins that version, so that a later release cannot change what a reader runs.
+const SIGNER_PACKAGE = '@apexfusion/vector-mcp-signer';
+const SIGNER_VERSION = '2.0.0';
+const SIGNER_COMMIT = '651ae93';
+const SIGNER_NPX = `npx -y ${SIGNER_PACKAGE}@${SIGNER_VERSION}`;
 const CHAT_SCRIPT = [
   '1. "List the marketplace capabilities on Vector."',
   '2. "Show me free suppliers for identity.history.report.v1."',
@@ -549,7 +554,10 @@ test('docs/HIRE.md: says what is and is not in service, tool by tool', () => {
   assert.ok(row('vector_marketplace_list_capabilities').includes('PR 1, ' + onServer + '[Apex-Fusion/mcp-server#20](https://github.com/Apex-Fusion/mcp-server/pull/20)'));
   assert.ok(row('vector_build_marketplace_post_escrow').includes('PR 2, ' + onServer + '[Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21)'));
   assert.ok(row('vector_marketplace_send_job').includes('PR 3, merged into `main` on 2026-10-14 with PR 2, on the hosted mainnet server: [Apex-Fusion/mcp-server#23](https://github.com/Apex-Fusion/mcp-server/pull/23)'));
-  assert.match(row('@apexfusion/vector-mcp-signer'), /PR 4, merged into `main` on 2026-10-14: \[Apex-Fusion\/mcp-server#22\]\(https:\/\/github.com\/Apex-Fusion\/mcp-server\/pull\/22\)\. The package is not published/);
+  // PR 4 (the signer with its keygen command) is merged into main (2026-10-14) and the package is published on npm (2026-10-16). The row gives the version, the day, who published it and what its build is identical to, and no more.
+  const signerRow = row('@apexfusion/vector-mcp-signer');
+  assert.ok(signerRow.includes('PR 4, merged into `main` on 2026-10-14: [Apex-Fusion/mcp-server#22](https://github.com/Apex-Fusion/mcp-server/pull/22). The package is published on npm as version 2.0.0, on 2026-10-16, by the Foundation\'s maintainers. Its `build/index.js` is identical to the build of `packages/signer` at `main` commit `651ae93`.'));
+  assert.equal(signerRow.match(/not published/), null, 'the words of before the publication');
   // Agent History is DEPLOYED since 2026-10-15 (RUNBOOK step 17): the row gives the facts and the current advert reference in full, and says the URL is in service. It does not name the retired advert.
   const agentRow = row('identity.history.report.v1');
   assert.ok(agentRow.includes(`| ${AH_STATUS} The advert reference is \`${AH.advertRef}\`, listed as Active and free on 2026-10-15.`));
@@ -687,16 +695,65 @@ test('docs/HIRE.md: the status box says what runs today and that there is no aud
   assert.ok(four.indexOf('in plain text') > four.indexOf('```json') && four.indexOf('in plain text') < four.indexOf('The two limits'), 'after the config, before the limits');
 });
 
-test('docs/HIRE.md: the npx package is called not published before the first npx command, and the client config runs the signer with node', () => {
+test('docs/HIRE.md: the signer is published on npm and section 2 says so; keygen and the client config run version 2.0.0 with npx, and building from source is the alternative, after the npx command', () => {
   const guide = hire();
-  const caveat = guide.indexOf('The npx package is not published yet');
-  const firstNpx = guide.search(/^npx -y /m);
-  assert.ok(caveat > 0 && firstNpx > caveat, 'the caveat comes first');
+  const two = section(guide, '2. Get a key');
+  const four = section(guide, '4. Two lines of config');
+  // The facts in one paragraph: the package, the version, the day, who published it, what its build is identical to, and that anyone can rebuild and compare. No other claim about the package.
+  assert.ok(two.includes(`The signer is published on npm as \`${SIGNER_PACKAGE}\`, version ${SIGNER_VERSION}, on 2026-10-16, by the Foundation's maintainers. Its \`build/index.js\` is identical to the build of \`packages/signer\` at Apex-Fusion/mcp-server \`main\`, commit \`${SIGNER_COMMIT}\`, which anyone can rebuild and compare.`));
+  const signerRow = guide.split('\n').find((l) => l.startsWith('|') && l.includes(SIGNER_PACKAGE)) ?? '';
+  assert.equal([signerRow, two, four].join('\n').match(/\b(secure|audited|safe)\b/i), null, 'no claim of security, audit or safety about the package');
+  // The command pins the version, and the note about the name is one line after it.
+  const command = '```bash\n' + SIGNER_NPX + ' keygen\n```';
+  assert.ok(two.includes(command), 'the npx command of the guide');
+  assert.equal(two.match(/^npx /gm)?.length, 1, 'one npx command in the section');
+  const note = 'The name is now claimed by the Foundation and the version is pinned, so `npx -y` runs 2.0.0 and no later release.';
+  assert.ok(two.includes('\n' + note + '\n'), 'the note, in one line');
+  assert.ok(two.indexOf(command) < two.indexOf(note), 'the note follows the command');
+  // The alternative: one paragraph and one block, after the npx command, at the commit the package was built from. The comparison is with the tarball of the package.
+  const alternative = 'To check the code yourself, or if you cannot run `npx`, build commit `651ae93` from source and run `keygen` from the build. To compare it with the package, run `npm pack @apexfusion/vector-mcp-signer@2.0.0` in an empty folder, unpack the tarball, and compare its `build/index.js` with `packages/signer/build/index.js` of the build:';
+  assert.ok(two.includes(alternative + '\n\n```bash\ngit clone https://github.com/Apex-Fusion/mcp-server.git\ncd mcp-server\ngit checkout 651ae93\nnpm ci && npm run build\nnode packages/signer/build/index.js keygen\n```'), 'the build from source, at the commit of the package');
+  assert.ok(two.indexOf(note) < two.indexOf(alternative), 'the alternative comes after the npx command and its note');
+  // The client config runs the same version with npx; the build from source gets one sentence after the config.
   const config = JSON.parse(guide.match(/```json\n([\s\S]*?)\n```/)[1]);
-  assert.equal(config.mcpServers['vector-signer'].command, 'node');
+  assert.equal(config.mcpServers['vector-signer'].command, 'npx');
+  assert.deepEqual(config.mcpServers['vector-signer'].args, ['-y', `${SIGNER_PACKAGE}@${SIGNER_VERSION}`]);
   assert.equal(config.mcpServers.vector.url, designEndpoint('MCP'));
   assert.deepEqual(Object.keys(config.mcpServers['vector-signer'].env), ['VECTOR_SIGNER_PRIVATE_KEY', 'VECTOR_SIGNER_ADDRESS', 'VECTOR_SIGNER_SPEND_LIMIT_PER_TX', 'VECTOR_SIGNER_SPEND_LIMIT_DAILY']);
-  assert.ok(guide.includes('replace `command` and `args` with `"command": "npx"`'));
+  assert.ok(four.includes('The signer entry runs the published package with `npx`, at the version pinned in section 2:'));
+  assert.ok(four.includes('If you built the signer from source, replace `command` and `args` with `"command": "node"` and `"args": ["<path to mcp-server>/packages/signer/build/index.js"]`.'));
+  assert.ok(four.indexOf('```json') < four.indexOf('If you built the signer from source'), 'after the config');
+  // Every npx command that names the package names the version too, in the three documents a reader starts from.
+  const unversioned = new RegExp('npx -y ' + SIGNER_PACKAGE.replace(/[/]/g, '\\/') + '(?!@' + SIGNER_VERSION.replace(/[.]/g, '\\.') + ')');
+  for (const [name, text] of [['README.md', readFileSync(new URL('../README.md', import.meta.url), 'utf8')], ['docs/HIRE.md', guide], ['docs/E2E.md', doc('E2E.md')]]) assert.equal(text.match(unversioned), null, `${name}: every npx command names the version`);
+});
+
+// The signer is published on npm, so no document that once said it was not, or told the reader to build it as the only way, says so any more. The manifest of the vendored files names the exception.
+test('the signer is published on npm: no document says it is not, tells the reader to wait for it or to build it as the only way; the manifest of the vendored files names the exception', () => {
+  const text = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8');
+  for (const rel of ['README.md', 'docs/HIRE.md', 'docs/E2E.md', 'deploy/host/RUNBOOK.md', 'deploy/host/RUNBOOK-document-pipeline.md', 'packages/buyer-core/VENDORED-FROM.md']) {
+    assert.equal(text(rel).match(/(npx )?package is not published|until the (npx )?package is published|once the package is published|do not run an `npx` command|build the signer from source:|a signer that you build/i), null, `${rel}: the words of before the publication`);
+  }
+  assert.equal(text('README.md').match(/Clone https:\/\/github.com\/Apex-Fusion\/mcp-server\. In its folder/), null, 'the README no longer opens with the clone');
+  assert.ok(text('packages/buyer-core/VENDORED-FROM.md').includes('Apart from the signer, the mcp-server packages are not published to a registry. The signer is published on npm as `@apexfusion/vector-mcp-signer` (version 2.0.0, 2026-10-16), but as a command, with four files: `build/index.js`, `README.md`, `LICENSE.md` and `package.json`. `src/sign.ts` is not among them.'));
+});
+
+test('docs/E2E.md: SIGNER_ENTRY is the build/index.js of the signer, from the published package (installed with its dependencies, outside the repository) or from a build of packages/signer; the script starts the file with node', () => {
+  const e2e = doc('E2E.md');
+  const row = e2e.split('\n').find((l) => l.startsWith('| `SIGNER_ENTRY` |')) ?? '';
+  for (const part of [
+    'The path of the signer\'s `build/index.js`, from the published package or from a build of `packages/signer` in an `mcp-server` checkout (`npm ci && npm run build`); see "The commands".',
+    'The script starts that file as a child process, so it needs the file, not an `npx` command.',
+  ]) assert.ok(row.includes(part), `the SIGNER_ENTRY row says: ${part}`);
+  const commands = section(e2e, 'The commands');
+  assert.equal([row, commands].join('\n').match(/\b(secure|audited|safe)\b/i), null, 'no claim of security, audit or safety about the package');
+  const install = `npm install --prefix "$HOME/vector-signer" ${SIGNER_PACKAGE}@${SIGNER_VERSION}`;
+  const entry = `export SIGNER_ENTRY="$HOME/vector-signer/node_modules/${SIGNER_PACKAGE}/build/index.js"`;
+  assert.ok(commands.includes('From the published package, install it with the dependencies it needs into a folder outside this repository:\n\n```bash\n' + install + '\n```'));
+  assert.ok(commands.includes('If you built `packages/signer` from an `mcp-server` checkout instead, skip this and set `SIGNER_ENTRY` to `<path to mcp-server>/packages/signer/build/index.js`.'));
+  assert.ok(commands.indexOf(install) < commands.indexOf(entry) && commands.indexOf(entry) < commands.indexOf('node scripts/e2e-hire.mjs --dry-run'), 'install, then the setting, then the rehearsal');
+  // The script starts the file it is given with node, so an npx command cannot stand in for it.
+  assert.match(e2eScript(), /new StdioClientTransport\(\{ command: process\.execPath, args: \[SIGNER_ENTRY\]/);
 });
 
 test('docs/HIRE.md: the keygen output format is not pinned; the escrow minimum is a range; the 90 s limit belongs to the PR 3 tools, not to the wait', () => {
@@ -729,7 +786,7 @@ test('docs/E2E.md and scripts/e2e-hire.mjs agree on the send step, the signer se
   assert.equal(freeRow.includes('follow the next row'), false, 'the row carries its own way out');
   assert.equal(e2e.match(/never reads/), null, 'the script reads the settings it forwards; it never prints or stores them');
   assert.ok(e2e.includes('The script forwards every `VECTOR_SIGNER_` setting to the signer process it starts.') && e2e.includes('The script never prints or stores the value of a setting.'));
-  assert.match(e2e, /`keygen` command \(PR 4, merged into `main` on 2026-10-14; the npx package is not published yet\)/);
+  assert.match(e2e, /`keygen` command \(PR 4, merged into `main` on 2026-10-14; the npx package is published, version 2\.0\.0, and \[HIRE\.md\]\(HIRE\.md\) section 2 has the command\)/);
   assert.ok(e2e.includes('`--dry-run` is the only argument the script takes.'));
   assert.ok(e2e.includes('asks `vector_await_transaction` to wait 90 s at a time, up to four times'));
   assert.match(script, /const AWAIT_SLICE_S = 90;/);
@@ -777,7 +834,7 @@ test('docs/HIRE.md: the receipt check is described as the merged tool answers it
   const two = section(guide, '2. Get a key');
   assert.ok(two.includes("Run `keygen` in your own terminal, never through your assistant's shell tool."));
   assert.ok(two.includes('so the only copy of the key would reach your model provider'));
-  assert.ok(two.indexOf('never through your assistant') < two.indexOf('node packages/signer/build/index.js keygen'), 'said before the first command');
+  assert.ok(two.indexOf('never through your assistant') < two.indexOf(SIGNER_NPX + ' keygen'), 'said before the first command');
 });
 
 test('docs/E2E.md and scripts/e2e-hire.mjs: buyerAddress, the skipped and incomplete wording, and a failed or stalled job checked before it is reclaimed', () => {
@@ -865,7 +922,7 @@ test('the READMEs: Agent History is DEPLOYED since 2026-10-15, Document Pipeline
 });
 
 // The root README tells a newcomer how to hire Agent History in one short section (2026-10-15). Its commands, its server URL and its figures are the guide's and the design's, so they are held against both here.
-test('README: the section "Hire Agent History" sits between the status table and the link list in eight to twelve short lines, with the commands, the hosted server, the 5-alone rule, the end state, the honesty line and one line that points at Document Pipeline; it names no unit, no dash and no status', () => {
+test('README: the section "Hire Agent History" sits between the status table and the link list in eight to twelve short lines, with the npx command first and the build from source as the alternative, the hosted server, the 5-alone rule, the end state, the honesty line and one line that points at Document Pipeline; it names no unit, no dash and no status', () => {
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
   const heading = '\n## Hire Agent History\n';
   assert.equal(readme.split(heading).length - 1, 1, 'one such section');
@@ -877,13 +934,14 @@ test('README: the section "Hire Agent History" sits between the status table and
   const lines = body.split('\n').filter((l) => l.trim() !== '');
   assert.ok(lines.length >= 8 && lines.length <= 12, `eight to twelve lines, found ${lines.length}`);
   for (const part of [
-    '1. Clone https://github.com/Apex-Fusion/mcp-server. In its folder, build the signer from `main`: `npm ci && npm run build`.',
-    '2. In the same folder, in your own terminal and never through an assistant, run `node packages/signer/build/index.js keygen`.',
-    '3. Send units on Vector mainnet to the address `keygen` prints. Send 5 alone first, as collateral.',
-    '4. Then send a float. One job costs about 3.',
-    `5. Add the hosted server to your client: \`${designEndpoint('MCP')}\`.`,
-    '6. Add the signer too, with the key in its environment (`docs/HIRE.md` section 4).',
-    '7. Paste the six chat messages in `docs/HIRE.md` section 5, one at a time.',
+    'You need an MCP client, a signer that runs on your machine (published on npm), and some units on Vector mainnet.',
+    `1. In your own terminal and never through an assistant, run \`${SIGNER_NPX} keygen\`.`,
+    '2. Send units on Vector mainnet to the address `keygen` prints. Send 5 alone first, as collateral.',
+    '3. Then send a float. One job costs about 3.',
+    `4. Add the hosted server to your client: \`${designEndpoint('MCP')}\`.`,
+    '5. Add the signer too, with the key in its environment (`docs/HIRE.md` section 4).',
+    '6. Paste the six chat messages in `docs/HIRE.md` section 5, one at a time.',
+    `The \`build/index.js\` in the npm package is identical to the build of \`packages/signer\` at mcp-server \`main\`, commit \`${SIGNER_COMMIT}\`. To check that code yourself, or if you cannot run \`npx\`, clone https://github.com/Apex-Fusion/mcp-server, check out \`${SIGNER_COMMIT}\`, build it with \`npm ci && npm run build\`, and run \`node packages/signer/build/index.js keygen\` instead (\`docs/HIRE.md\` section 2).`,
     'You end with the report, an Ed25519-signed receipt, the escrow reference, two explorer links, and a check anyone can repeat with no key.',
     "The supplier is first-party and the contracts have no third-party audit. Accept within 600 s of the supplier's submit, or the supplier may keep the lock.",
     'Document Pipeline reads a document and is hired the same way: `docs/HIRE.md` section 5 shows what changes.',
@@ -891,7 +949,8 @@ test('README: the section "Hire Agent History" sits between the status table and
   // The line about Document Pipeline is the last of the section, after the honesty line. The status of each agent is in the table above, not here.
   assert.equal(lines.at(-1), 'Document Pipeline reads a document and is hired the same way: `docs/HIRE.md` section 5 shows what changes.');
   // What the section says is what the guide says: the two commands, the 5 alone, the cost of a job, the six messages and the 600 s.
-  assert.ok(section(hire(), '2. Get a key').includes('npm ci && npm run build\nnode packages/signer/build/index.js keygen'), 'the commands of the guide');
+  const getKey = section(hire(), '2. Get a key');
+  assert.ok(getKey.includes(SIGNER_NPX + ' keygen') && getKey.includes('npm ci && npm run build\nnode packages/signer/build/index.js keygen'), 'the commands of the guide: npx first, the build from source as the alternative');
   const three = section(hire(), '3. What the key must hold');
   assert.ok(three.includes('Send 5 alone first, then the float of 50.'), 'the guide sends 5 alone first');
   assert.ok(three.split('\n').some((l) => l.startsWith('| 1 (Agent History) | 3 | ') && l.endsWith(' | about 3 | 16 |')), 'one job costs about 3');

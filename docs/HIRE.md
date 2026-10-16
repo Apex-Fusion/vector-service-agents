@@ -13,7 +13,7 @@ The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nin
 | `vector_marketplace_list_capabilities`, `vector_marketplace_list_suppliers`, `vector_marketplace_get_supplier` | PR 1, merged into `main` on 2026-10-14, on the hosted mainnet server: [Apex-Fusion/mcp-server#20](https://github.com/Apex-Fusion/mcp-server/pull/20) |
 | `vector_build_marketplace_post_escrow`, `vector_build_marketplace_accept`, `vector_build_marketplace_reclaim` | PR 2, merged into `main` on 2026-10-14, on the hosted mainnet server: [Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21) |
 | `vector_marketplace_send_job`, `vector_marketplace_get_job`, `vector_marketplace_verify_receipt` | PR 3, merged into `main` on 2026-10-14 with PR 2, on the hosted mainnet server: [Apex-Fusion/mcp-server#23](https://github.com/Apex-Fusion/mcp-server/pull/23) |
-| The signer's `keygen` command and the npx package `@apexfusion/vector-mcp-signer` | PR 4, merged into `main` on 2026-10-14: [Apex-Fusion/mcp-server#22](https://github.com/Apex-Fusion/mcp-server/pull/22). The package is not published, so `keygen` runs from a build of `main`. |
+| The signer's `keygen` command and the npx package `@apexfusion/vector-mcp-signer` | PR 4, merged into `main` on 2026-10-14: [Apex-Fusion/mcp-server#22](https://github.com/Apex-Fusion/mcp-server/pull/22). The package is published on npm as version 2.0.0, on 2026-10-16, by the Foundation's maintainers. Its `build/index.js` is identical to the build of `packages/signer` at `main` commit `651ae93`. |
 | Agent History, capability `identity.history.report.v1` | DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. The advert reference is `b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c#0`, listed as Active and free on 2026-10-15. The public URL, `https://mp-suppliers-history.hal8.ai`, is in service as of 2026-10-14. |
 | Document Pipeline, capability `document.pipeline.ocr-summary.v1` | DEPLOYED (registered and staked 2026-10-16, advertised 2026-10-16, re-advertised 2026-10-16 at the status flip, one first-party job settled 2026-10-16). Since 2026-10-16. The advert reference is `16a5da8726cab90949da2c0c92e025af276027715a5d854861c683d7d9341ca3#0`, listed as Active and free on 2026-10-16. The public URL, `https://mp-suppliers-pipeline.hal8.ai`, is in service as of 2026-10-16. |
 | The collateral and float of your key | Sent by hand by the Foundation on request, or by you (section 3). |
@@ -34,21 +34,22 @@ Make a key for this guide. Do not reuse a key that holds anything else.
 
 Run `keygen` in your own terminal, never through your assistant's shell tool. The output of a shell tool goes back into the conversation, so the only copy of the key would reach your model provider.
 
-The npx package is not published yet, and `npx -y` runs whatever the registry returns for a name. Do not run an `npx` command with this name until the Foundation says the package is published. Until then, build the signer from source:
+The signer is published on npm as `@apexfusion/vector-mcp-signer`, version 2.0.0, on 2026-10-16, by the Foundation's maintainers. Its `build/index.js` is identical to the build of `packages/signer` at Apex-Fusion/mcp-server `main`, commit `651ae93`, which anyone can rebuild and compare. The command to make a key is:
+
+```bash
+npx -y @apexfusion/vector-mcp-signer@2.0.0 keygen
+```
+
+The name is now claimed by the Foundation and the version is pinned, so `npx -y` runs 2.0.0 and no later release.
+
+To check the code yourself, or if you cannot run `npx`, build commit `651ae93` from source and run `keygen` from the build. To compare it with the package, run `npm pack @apexfusion/vector-mcp-signer@2.0.0` in an empty folder, unpack the tarball, and compare its `build/index.js` with `packages/signer/build/index.js` of the build:
 
 ```bash
 git clone https://github.com/Apex-Fusion/mcp-server.git
 cd mcp-server
+git checkout 651ae93
 npm ci && npm run build
 node packages/signer/build/index.js keygen
-```
-
-`keygen` and the npx package came in the same PR, PR 4, merged into `main` on 2026-10-14. The package is not published, so run `keygen` from a build of `main`, as above.
-
-Once the package is published, the same command is:
-
-```bash
-npx -y @apexfusion/vector-mcp-signer keygen
 ```
 
 `keygen` prints a fresh Ed25519 key and the address of that key, and writes nothing to disk. The key goes into the signer's `VECTOR_SIGNER_PRIVATE_KEY` setting and the address into `VECTOR_SIGNER_ADDRESS`. If keygen prints them as `NAME=value` lines, the value is what follows the `=`. Keep the key in a password manager. It is a raw Ed25519 key. No recovery phrase exists, so if you lose it the units on that key are gone. If the Foundation sends your key its collateral and float, send the address, and only the address, to the person who invited you. Never paste the key into a chat, a ticket or a message.
@@ -80,15 +81,15 @@ Check the collateral and the float before you go on. Ask your assistant to show 
 
 ## 4. Two lines of config
 
-Add two servers to your MCP client: the hosted server and your signer. The hosted server is listed in the MCP Registry as `io.github.Apex-Fusion/vector`. In a client that reads a JSON file, the entries look like this. The file name, and the way a client takes a remote server, differ from client to client. Some take the URL on a settings screen. Until the npx package is published, the signer entry runs the build from section 2 with `node`:
+Add two servers to your MCP client: the hosted server and your signer. The hosted server is listed in the MCP Registry as `io.github.Apex-Fusion/vector`. In a client that reads a JSON file, the entries look like this. The file name, and the way a client takes a remote server, differ from client to client. Some take the URL on a settings screen. The signer entry runs the published package with `npx`, at the version pinned in section 2:
 
 ```json
 {
   "mcpServers": {
     "vector": { "url": "https://mcp.vector.mainnet.apexfusion.org/mcp" },
     "vector-signer": {
-      "command": "node",
-      "args": ["<path to mcp-server>/packages/signer/build/index.js"],
+      "command": "npx",
+      "args": ["-y", "@apexfusion/vector-mcp-signer@2.0.0"],
       "env": {
         "VECTOR_SIGNER_PRIVATE_KEY": "<the key from keygen>",
         "VECTOR_SIGNER_ADDRESS": "<the address from keygen>",
@@ -100,7 +101,7 @@ Add two servers to your MCP client: the hosted server and your signer. The hoste
 }
 ```
 
-Once the package is published, replace `command` and `args` with `"command": "npx"` and `"args": ["-y", "@apexfusion/vector-mcp-signer"]`.
+If you built the signer from source, replace `command` and `args` with `"command": "node"` and `"args": ["<path to mcp-server>/packages/signer/build/index.js"]`.
 
 The client config file now holds the raw signer key in plain text. Anyone who can read that file, or a backup or synced copy of it, can sign with the key and move what it holds, which is 55 units. Keep the file out of repositories, shared folders and screen shares, let only your own account read it, and use the key for this guide only. The limits below bound a loss. They do not protect the key.
 
