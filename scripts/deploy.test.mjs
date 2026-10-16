@@ -2779,11 +2779,16 @@ test('CI: the test job installs ffmpeg and the speech model of Audio Snippets be
   const fetch = at((s) => s.run === 'python -I agents/audio-snippets/asr/fetch_model.py base agents/audio-snippets/.models/base');
   assert.ok(steps[apt].run.split(' ').includes('ffmpeg'), 'ffmpeg and ffprobe');
   assert.deepEqual(steps[python].with, { 'python-version': '3.11' });
-  assert.ok(apt < tests && python < pip && pip < tests && cache < fetch && fetch < tests, 'all of it before the tests');
-  // The key of the cache is the revision the fetch script pins, so a new revision fetches anew; a hit skips the fetch.
+  // In this order, each step needing the one before it: the tools, Python, the requirements, the cache, the fetch, then the tests (ruling R-D26).
+  assert.ok([apt, python, pip, cache, fetch].every((at) => at >= 0), 'every step is there');
+  assert.ok(apt < python && python < pip && pip < cache && cache < fetch && fetch < tests, 'apt, python, pip, the cache, the fetch, the tests');
+  // The key of the cache is the revision the fetch script pins, so a new revision fetches anew. The fetch runs every time, with no condition: on a hit it checks
+  // the size and the sha256 of each of the four files and fetches nothing, and a cache that holds something else is fetched again before the tests.
   const revision = /"base": \("([0-9a-f]{40})"/.exec(read('agents/audio-snippets/asr/fetch_model.py'))?.[1];
   assert.deepEqual(steps[cache].with, { path: 'agents/audio-snippets/.models/base', key: `whisper-base-${revision}` });
-  assert.equal(steps[fetch].if, `steps.${steps[cache].id}.outputs.cache-hit != 'true'`);
+  assert.equal(steps[fetch].if, undefined, 'the fetch has no condition');
+  assert.equal(steps[cache].id, undefined, 'nothing reads the outcome of the cache');
+  assert.ok(read('agents/audio-snippets/asr/fetch_model.py').includes('if not wrong_files(dest, files):'), 'the script leaves a folder that is as pinned as it is');
   assert.ok(existsSync(join(root, 'agents/audio-snippets/asr/requirements.txt')));
   assert.equal(String(steps[tests].env?.REQUIRE_ASR), '1');
   assert.equal(String(steps[tests].env?.REQUIRE_POPPLER), '1');
@@ -2802,8 +2807,42 @@ test('CI: the publish job also pushes the Audio Snippets image under :latest and
   assert.deepEqual(snippets.with.tags.trim().split('\n'), [`${image}:latest`, `${image}:\${{ github.sha }}`]);
   assert.equal(snippets.with.context, '.');
   assert.equal(snippets.with.push, true);
+  assert.equal(snippets.with.labels, builds.find((s) => s.with.file === 'agents/agent-history/Dockerfile')?.with.labels, 'the labels of the other two');
   assert.equal(snippets.if, undefined, 'no condition of its own');
   assert.equal(builds.indexOf(snippets), 2, 'after the other two');
   assert.ok(job.steps.indexOf(snippets) > job.steps.findIndex((s) => s.uses === 'docker/login-action@v3'), 'after the login');
   assert.ok(sSection.includes('`ghcr.io/apex-fusion/vector-service-agents/audio-snippets`') && sSection.includes('`:latest`') && sSection.includes('`:<full git commit sha>`'));
+});
+
+// Ruling R-D26: a stage of a Dockerfile that no longer builds fails on the push or the pull request that broke it, before main, with no registry login.
+test('CI: the build job builds the three images of the publish job on every push and pull request, and pushes none and logs in nowhere', () => {
+  assert.deepEqual(ci.on, ['push', 'pull_request']);
+  assert.deepEqual(ci.permissions, { contents: 'read' });
+  const job = ci.jobs.build;
+  assert.ok(job, 'a build job');
+  assert.equal(job['runs-on'], 'ubuntu-24.04');
+  assert.equal(job.if, undefined, 'on every event of the workflow');
+  assert.equal(job.needs, undefined, 'beside the tests, not after them');
+  assert.equal(job.permissions, undefined, 'the read-only permissions of the workflow');
+  assert.equal(job.steps[0].uses, 'actions/checkout@v4');
+  assert.equal(job.steps.some((s) => typeof s.uses === 'string' && s.uses.startsWith('docker/login-action')), false, 'no registry login');
+  const builds = job.steps.filter((s) => s.uses === 'docker/build-push-action@v6');
+  assert.equal(builds.length, 3);
+  const published = ci.jobs.publish.steps.filter((s) => s.uses === 'docker/build-push-action@v6').map((s) => s.with.file);
+  assert.deepEqual(builds.map((s) => s.with.file), published, 'the Dockerfiles of the publish job, in its order');
+  for (const step of builds) {
+    assert.deepEqual(step.with, { context: '.', file: step.with.file, push: false }, step.with.file);
+    assert.equal(step.if, undefined, step.with.file);
+    assert.ok(existsSync(join(root, step.with.file)), step.with.file);
+  }
+});
+
+// The image of each agent is published by CI on every merge to main, and the host builds the one it runs (ruling R-D26).
+test('the deploy notes and the runbooks: CI publishes each image on every merge to main and the host still builds its own; none waits for Actions to run', () => {
+  assert.ok(pSection.includes('The CI job publishes `ghcr.io/apex-fusion/vector-service-agents/document-pipeline` on every merge to `main`, tagged `:latest` and `:<full git commit sha>`, as it does for Agent History, and the box still builds its own.'));
+  assert.ok(sSection.includes('The CI job publishes `ghcr.io/apex-fusion/vector-service-agents/audio-snippets` on every merge to `main`, tagged `:latest` and `:<full git commit sha>`, as it does for the other two, and the host still builds its own.'));
+  assert.ok(section(pRunbook, '2. Build the service image and pin it').includes('CI publishes the same image under `:latest` and `:<full git commit sha>` on every merge to `main`; the box still builds its own.'));
+  assert.ok(section(sRunbook, '2. Build the service image and pin it').includes('CI publishes the same image under `:latest` and `:<full git commit sha>` on every merge to `main`; the host still builds its own.'));
+  for (const rel of [...PUBLIC_FILES, ...S_FILES]) assert.doesNotMatch(read(rel), /once Actions can run|until it has, the (box|host) uses/, rel);
+  assert.deepEqual(ci.jobs.publish.if, "github.event_name == 'push' && github.ref == 'refs/heads/main'");
 });

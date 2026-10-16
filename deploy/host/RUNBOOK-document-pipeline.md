@@ -91,7 +91,7 @@ docker build -f agents/document-pipeline/Dockerfile -t ghcr.io/apex-fusion/vecto
 cd deploy/host
 ```
 
-The build installs the workspace from the lockfile and `poppler-utils` with a base font, and takes a few minutes. CI publishes the same image under `:latest` and `:<full git commit sha>` once Actions can run; until it has, the box uses its own build.
+The build installs the workspace from the lockfile and `poppler-utils` with a base font, and takes a few minutes. CI publishes the same image under `:latest` and `:<full git commit sha>` on every merge to `main`; the box still builds its own.
 
 Then pin the image, as in step 2 of RUNBOOK.md. The manifest that the service renders is hashed into the advert (step 12), and `:latest` moves, so the compose file names the image by digest. It ships with the placeholder `@sha256:<digest>`, and compose refuses to start the service (`invalid reference format`) until the placeholder is replaced. This takes the digest where Docker keeps one for the image, and the image ID where it keeps none (an image built on the box by a Docker that keeps no digest for local images), and writes it into the `image:` line:
 
