@@ -17,7 +17,7 @@ Four service agents run on the Vector marketplace, hireable by anyone, with a gu
 **In scope**
 
 - Nine marketplace tools on the hosted keyless MCP server, in three PRs, plus a fourth PR that makes the local signer installable with `npx`.
-- Four agents: Agent History, Document Pipeline, Audio Snippets, Advocate. Each ships as a spec, a manifest, a service, a compose file for apex-web, and a registry identity with a Module-3 self-stake.
+- Four agents: Agent History, Document Pipeline, Audio Snippets, Advocate. Each ships as a spec, a manifest, a service, a compose file for the deployment host, and a registry identity with a Module-3 self-stake.
 - The member guide `docs/HIRE.md`, the per-agent specs, the note to the HAL8 lead builder, the internal Discord post.
 
 **Out of scope for this spec** (named so nobody waits for them): reputation and dispute tools on the MCP server (next slice); a supplier-side "post advert" tool; the docs-site page (after the first outside receipt); direct hire of the OCR agent by outsiders (Datalab terms); a Judge agent that hires two Advocates; Meeting Minutes; any change to the escrow contract.
@@ -42,7 +42,7 @@ docs/E2E.md               our own end-to-end runbook (first-party)
 docs/superpowers/         specs and plans
 specs/<agent>.md          one human-readable spec per agent
 agents/<agent>/           service code, Dockerfile, agent.json, tests, fixtures
-deploy/apex-web/          one compose file + env example + Caddy snippet per agent
+deploy/host/              one compose file + env example + Caddy snippet per agent
 scripts/                  e2e-hire client, manifest hash, fixture recorder
 ```
 
@@ -55,7 +55,7 @@ member's chat client ──▶ hosted keyless MCP server ──▶ Koios v2 / in
         │                        │
         │ unsigned tx (CBOR)     │ safeFetch (PR 3 only)
         ▼                        ▼
- local signer (stdio MCP)   supplier endpoint on apex-web: template runtime ──▶ our service
+ local signer (stdio MCP)   supplier endpoint on the host: template runtime ──▶ our service
         │                                   │
         └── signed tx ──▶ submit API        └── Claim / Submit on chain, receipt back to buyer
 ```
@@ -66,7 +66,7 @@ member's chat client ──▶ hosted keyless MCP server ──▶ Koios v2 / in
 - **Local signer** (`packages/signer`, `@apexfusion/vector-mcp-signer`, stdio). Signs CBOR passed tool-to-tool; per-transaction cap 100, daily cap 500. Today it is `private: true` and installed by clone and build; PR 4 publishes it.
 - **Marketplace contracts** (PlutusV3, mainnet): advert and escrow scripts, reference scripts on chain. Constants in section 6.
 - **Public indexes:** marketplace indexer `mp-indexer.vector.apexfusion.org`, Koios v2 `v2.koios.vector.mainnet.apexfusion.org/api/v1`, activity-api `activity-api.vector.apexfusion.org`.
-- **Agents:** each is two containers on apex-web behind the shared Caddy: the template runtime (`vector-agent-template`, `CAPABILITY_KIND=custom`) and our service process reachable at `SERVICE_URL`. The runtime claims the escrow, calls the service, signs the receipt, submits the receipt hash. The service never touches a key.
+- **Agents:** each is two containers on the deployment host behind the shared Caddy: the template runtime (`vector-agent-template`, `CAPABILITY_KIND=custom`) and our service process reachable at `SERVICE_URL`. The runtime claims the escrow, calls the service, signs the receipt, submits the receipt hash. The service never touches a key.
 
 **A hire, end to end** (the sequence the guide's chat script walks)
 
@@ -147,15 +147,15 @@ The cross-module key is the registry asset name (Modules 1, 3, 6 store it in the
 
 ### 7.1 Common runtime
 
-- Template runtime at the pinned commit `c4c378a` (`vector-agent-template`, MIT, mainnet-proven 2026-08-19), `CAPABILITY_KIND=custom`, `SERVICE_URL=http://agent-history-service:9091/` (shown for Agent History: the service's container name, because the alias `service` is shared by every agent on `umami_default`; the path `/` is the only one the service accepts POST on), `SERVICE_CONTENT_TYPE=application/json`.
+- Template runtime at the pinned commit `c4c378a` (`vector-agent-template`, MIT, mainnet-proven 2026-08-19), `CAPABILITY_KIND=custom`, `SERVICE_URL=http://agent-history-service:9091/` (shown for Agent History: the service's container name, because the alias `service` is shared by every agent on the external network of the host's Caddy; the path `/` is the only one the service accepts POST on), `SERVICE_CONTENT_TYPE=application/json`.
 - **Wire contract.** The runtime POSTs the canonical one-element message array to the service: `[{"content": "<payload string>", "role": "user"}]`. Every service parses `JSON.parse(body)[0].content` and then parses that string as JSON. The service's response body becomes the output payload; the runtime hashes it into `response_hash`, signs the eight-field receipt and submits the hash.
 - **Timing.** `SERVICE_TIMEOUT_MS <= ADVERT_MAX_PROCESSING_MS - 60 000`; the runtime also keeps 30 s to land the Submit. Values per agent below.
 - **Inputs by URL.** Chat clients cannot carry media in a tool call and the hosted server caps requests at 1 MB, so media inputs are an https URL; base64 is accepted under 600,000 bytes of raw media. The wire payload is capped at 900,000 bytes: the runtime's `/v1/job` takes 1 MB of JSON that holds it escaped, and the template's buyer refuses a larger one. Base64 adds a third, so 600,000 raw bytes become 800,000 characters and leave 100,000 bytes for the rest of the request. Each service fetches through its own `safeFetch` (same rules as the server's, larger size caps as stated per agent) and writes `source.sha256` and `source.bytes` into its output, so the signed receipt still commits to the exact media.
-- **Keys.** The runtime holds the supplier key (`SUPPLIER_PRIV_KEY_HEX`). Services hold no chain keys, with one exception: the Pipeline's buyer key (7.3). Keys are generated on the box by the runtime image's `gen-keypair`, straight into the env file (`deploy/apex-web/RUNBOOK.md`, step 4); nobody pastes keys into chat.
+- **Keys.** The runtime holds the supplier key (`SUPPLIER_PRIV_KEY_HEX`). Services hold no chain keys, with one exception: the Pipeline's buyer key (7.3). Keys are generated on the box by the runtime image's `gen-keypair`, straight into the env file (`deploy/host/RUNBOOK.md`, step 4); nobody pastes keys into chat.
 - **Identity.** Each agent registers a DID (`register-did.sh`, byte-preserving `sign-tx.py`) with name, description, capabilities equal to its capability id, framework `vector-service-agents`, endpoint = its public URL (the advert's `endpoint_url`); then self-stakes 10 in Module-3 on that capability (`m3-self-stake.py`, mainnet genesis patched). Staked capabilities must be a subset of registry capabilities.
 - **Wallets.** One pure collateral output of 5 plus a float: 25 to 50 for History, Snippets and Advocate; 100 for the Pipeline. `wallet-monitor` gets each address.
 - **Manifest.** Each service serves `GET /agent.json` (section 8). The advert's `detail_uri` points at it and `detail_hash` is the sha256 of the bytes at post time. Adverts are immutable; a changed manifest means a retired advert and a new one.
-- **Containers.** Two per agent on `umami_default`: `agent` (runtime image built from the template at the pinned commit) and `service` (image from this repo, `ghcr.io/apex-fusion/vector-service-agents/<agent>`), loopback-published for drills, public through Caddy. Hostnames: `mp-suppliers-history.hal8.ai`, `mp-suppliers-pipeline.hal8.ai`, `mp-suppliers-snippets.hal8.ai`, `mp-suppliers-advocate.hal8.ai`.
+- **Containers.** Two per agent on the external network of the host's Caddy: `agent` (runtime image built from the template at the pinned commit) and `service` (image from this repo, `ghcr.io/apex-fusion/vector-service-agents/<agent>`), loopback-published for drills, public through Caddy. Hostnames: `mp-suppliers-history.hal8.ai`, `mp-suppliers-pipeline.hal8.ai`, `mp-suppliers-snippets.hal8.ai`, `mp-suppliers-advocate.hal8.ai`.
 
 ### 7.2 Agent History · `identity.history.report.v1` · PROPOSED
 
@@ -250,7 +250,7 @@ Limits: duration ≤ 10 min, fetched file ≤ 50 MB; at least one of `query`, `q
 
 Matching: quotes by normalised fuzzy match over the word stream (score = ratio); `query` by sentence-level embedding similarity with a small local model, or by keyword overlap when the embedding model is not installed (the output says which). Cut points snap to word boundaries with 150 ms padding.
 
-**Backend.** faster-whisper on CPU, model `small` int8 by default; ffmpeg for decode and cutting. Model size is decided after a one-line check of apex-web (`nproc`, memory): `base` if under 4 cores or 8 GB free. **Terms.** Price 2; bonds 1 and 1; `ADVERT_MAX_PROCESSING_MS` 1 500 000; `SERVICE_TIMEOUT_MS` 1 380 000. Model string `audio-snippets-v1`.
+**Backend.** faster-whisper on CPU, model `small` int8 by default; ffmpeg for decode and cutting. Model size is decided after a one-line check of the deployment host (`nproc`, memory): `base` if under 4 cores or 8 GB free. **Terms.** Price 2; bonds 1 and 1; `ADVERT_MAX_PROCESSING_MS` 1 500 000; `SERVICE_TIMEOUT_MS` 1 380 000. Model string `audio-snippets-v1`.
 
 **Tests.** A 20-second public-domain clip as fixture; transcript words and a known quote's cut points asserted within 300 ms; clip sha256 stable.
 
@@ -346,7 +346,7 @@ Tests are written before the code they test, per the repos' existing practice.
 | Channel | extend the hosted keyless MCP server; local signer signs; several PRs, the HAL8 lead builder approves |
 | Agents | Agent History, Document Pipeline, Audio Snippets, Advocate; ChandraOCR out of scope as a direct hire, used inside the Pipeline |
 | Prices | 1 / 5 / 2 / 3; bonds 1 and 1 everywhere |
-| Hosting | apex-web, chandra-supplier pattern, the HAL8 lead builder hosts |
+| Hosting | the deployment host, on the pattern of an earlier supplier stack, the HAL8 lead builder hosts |
 | Media inputs | https URL, base64 under 600,000 bytes of raw media (wire payload capped at 900,000 bytes), source hash in the output |
 | Publication | internal Discord → the Foundation CEO → WG GitHub issue → docs site after the first outside receipt |
 | Unit name | once in the guide, "unit" elsewhere |
@@ -358,7 +358,7 @@ Tests are written before the code they test, per the repos' existing practice.
 | Supply the collateral and float of the test buyer key and four agent wallets | the Foundation's ecosystem lead |
 | Brave Search API key for Advocate; confirm OpenRouter key reuse | the Foundation's ecosystem lead |
 | `@apexfusion` npm scope ownership for the signer publish | the Foundation's ecosystem lead or the HAL8 lead builder |
-| apex-web CPU and memory check for whisper model size | the HAL8 lead builder (or the Foundation's ecosystem lead over SSH) |
+| CPU and memory check of the deployment host for whisper model size | the HAL8 lead builder (or the Foundation's ecosystem lead over SSH) |
 | DNS names, Caddy blocks, mainnet deploy dispatch | the HAL8 lead builder |
 | Alignment on the gateway `/mcp` overlap | the Foundation's ecosystem lead sends the note, the HAL8 lead builder answers |
 | Sign-off on public wording | the Foundation CEO |

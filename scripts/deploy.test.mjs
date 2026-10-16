@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, existsSync, mkdtempSync, writeFileSync, copyFileSync, rmSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, copyFileSync, rmSync, statSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -9,7 +9,8 @@ import { join, sep } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 // The deployment files of Agent History (Dockerfile, compose, env example, Caddy snippet, README, RUNBOOK, CI publish job) are read by a
 // host administrator and an operator who act on them. Docker is not needed here: these tests parse the files and keep them equal to each
-// other, to the service code, to the spec and to the design. docker compose config, docker build and caddy validate were run by hand.
+// other, to the service code, to the spec and to the design. docker build and caddy validate were run by hand. docker compose config runs here
+// when docker compose is on the PATH, for the one variable of the compose files, and the text pins hold the same without it.
 // The Document Pipeline (DEPLOYED since 2026-10-16) is held the same way: its four files, its section of the README and its CI lines are pinned in the
 // last block of this file, and the walks above (names, dashes, the unit name, the status words) reach its files too.
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -17,14 +18,17 @@ const read = (rel) => readFileSync(join(root, rel), 'utf8');
 const section = (text, heading) => (text.split(`\n## ${heading}\n`)[1] ?? '').split('\n## ')[0];
 const DESIGN = read('docs/superpowers/specs/2026-10-13-vector-service-agents-design.md');
 const SPEC = read('specs/agent-history.md');
-const compose = parseYaml(read('deploy/apex-web/docker-compose.agent-history.yml'));
-const exampleText = read('deploy/apex-web/.env.agent-history.example');
-const readme = read('deploy/apex-web/README.md');
-const runbook = read('deploy/apex-web/RUNBOOK.md');
-const snippet = read('deploy/apex-web/Caddyfile.snippet');
+const compose = parseYaml(read('deploy/host/docker-compose.agent-history.yml'));
+const exampleText = read('deploy/host/.env.agent-history.example');
+const readme = read('deploy/host/README.md');
+const runbook = read('deploy/host/RUNBOOK.md');
+const snippet = read('deploy/host/Caddyfile.snippet');
 const dockerfile = read('agents/agent-history/Dockerfile');
 const ci = parseYaml(read('.github/workflows/ci.yml'));
 const { agent, service } = compose.services;
+// The external network of the host's reverse proxy is named nowhere in the repository: both compose files take its name from PROXY_NETWORK, which compose
+// reads from .env next to them, and the :? form stops every compose command, the build of step 3 included, while it is unset or empty.
+const PROXY_NETWORK_NAME = "${PROXY_NETWORK:?set PROXY_NETWORK in .env next to this compose file: the external network of the host's reverse proxy}";
 // The example as a name to value map. A name listed twice is a mistake, not an override.
 function parseEnv(text) {
   const env = {};
@@ -79,8 +83,8 @@ const NAMES = /\b(Filip|Blagojevi\w*|David|Cejtlin|Chris|Jerry|Armando|Andrej|Ca
 // A path into someone's home folder names its owner too. Either separator: C:\Users\x is as much a path as C:/Users/x.
 const HOME_PATH = /C:[\\/]Users[\\/]|[\\/](Users|home)[\\/][A-Za-z]/;
 // The Document Pipeline is DEPLOYED since 2026-10-16, so its files say DEPLOYED in their status lines and headers and LIVE nowhere. They sit in this list so that they get every rule below.
-const PIPELINE_FILES = ['deploy/apex-web/docker-compose.document-pipeline.yml', 'deploy/apex-web/.env.document-pipeline.example', 'deploy/apex-web/Caddyfile.document-pipeline.snippet', 'deploy/apex-web/RUNBOOK-document-pipeline.md'];
-const PUBLIC_FILES = ['deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md', 'deploy/apex-web/docker-compose.agent-history.yml', 'deploy/apex-web/.env.agent-history.example', 'deploy/apex-web/Caddyfile.snippet', 'agents/agent-history/Dockerfile', '.dockerignore', ...PIPELINE_FILES, 'agents/document-pipeline/Dockerfile'];
+const PIPELINE_FILES = ['deploy/host/docker-compose.document-pipeline.yml', 'deploy/host/.env.document-pipeline.example', 'deploy/host/Caddyfile.document-pipeline.snippet', 'deploy/host/RUNBOOK-document-pipeline.md'];
+const PUBLIC_FILES = ['deploy/host/README.md', 'deploy/host/RUNBOOK.md', 'deploy/host/docker-compose.agent-history.yml', 'deploy/host/.env.agent-history.example', 'deploy/host/Caddyfile.snippet', 'agents/agent-history/Dockerfile', '.dockerignore', ...PIPELINE_FILES, 'agents/document-pipeline/Dockerfile'];
 
 test('compose: two containers with fixed names, the runtime on loopback only, the service unpublished, both on the shared network', () => {
   assert.equal(compose.name, 'agent-history');
@@ -89,9 +93,9 @@ test('compose: two containers with fixed names, the runtime on loopback only, th
   assert.equal(service.container_name, 'agent-history-service');
   assert.deepEqual(agent.ports, ['127.0.0.1:8083:8080']);
   assert.equal(service.ports, undefined);
-  assert.deepEqual(agent.networks, ['umami_default']);
-  assert.deepEqual(service.networks, ['umami_default']);
-  assert.deepEqual(compose.networks.umami_default, { external: true, name: 'umami_default' });
+  assert.deepEqual(agent.networks, ['proxy']);
+  assert.deepEqual(service.networks, ['proxy']);
+  assert.deepEqual(compose.networks, { proxy: { external: true, name: PROXY_NETWORK_NAME } }, 'one network, external, named by PROXY_NETWORK');
   assert.deepEqual(agent.depends_on, ['service']);
   for (const s of [agent, service]) assert.deepEqual(s.env_file, [{ path: './.env.agent-history', required: true }]);
 });
@@ -105,7 +109,7 @@ test('compose: the runtime is built from the pinned template commit, written in 
 test('compose: SERVICE_URL names the service container, its port and the path /, and is not the shared alias "service"', () => {
   const url = new URL(agent.environment.SERVICE_URL);
   assert.equal(url.protocol, 'http:');
-  assert.equal(url.hostname, service.container_name, 'the container name is unique on umami_default; the alias "service" would match every agent');
+  assert.equal(url.hostname, service.container_name, 'the container name is unique on the shared network; the alias "service" would match every agent');
   assert.equal(url.port, service.environment.PORT);
   assert.equal(url.pathname, '/', 'the service accepts POST on / only');
   assert.ok(agent.environment.SERVICE_URL.endsWith('/'), 'with the trailing slash');
@@ -117,7 +121,7 @@ test('compose: the service image is named by digest (a placeholder in the reposi
   // The manifest the service renders is hashed into the advert; a tag that moves would change the bytes behind the hash. A real digest is accepted too.
   assert.match(service.image, /^ghcr\.io\/apex-fusion\/vector-service-agents\/agent-history@sha256:(<digest>|[0-9a-f]{64})$/);
   assert.doesNotMatch(service.image, /:latest/);
-  assert.match(read('deploy/apex-web/docker-compose.agent-history.yml'), /# Pinned by digest, not by tag\./);
+  assert.match(read('deploy/host/docker-compose.agent-history.yml'), /# Pinned by digest, not by tag\./);
   const two = section(runbook, '2. Log in to the registry and get the service image');
   assert.ok(two.includes("docker image inspect --format '{{index .RepoDigests 0}}' ghcr.io/apex-fusion/vector-service-agents/agent-history:latest"));
   assert.ok(two.includes('`@sha256:<digest>`') && two.includes('`invalid reference format`'), 'the placeholder, and what compose says while it is there');
@@ -294,14 +298,14 @@ test('README, RUNBOOK, compose file and Caddy snippet: Agent History is DEPLOYED
   // The Pipeline is the second stack of the box: its section of the README and its runbook carry its own status line, DEPLOYED since 2026-10-16 (RUNBOOK-document-pipeline.md step 17).
   const P_README_STATUS = 'Status: DEPLOYED since 2026-10-16. Nothing in this section is LIVE.';
   const P_RUNBOOK_STATUS = 'Status: DEPLOYED since 2026-10-16. Nothing in this folder is LIVE.';
-  const STATUS_LINES = { 'deploy/apex-web/README.md': [STATUS, P_README_STATUS], 'deploy/apex-web/RUNBOOK.md': [STATUS], 'deploy/apex-web/RUNBOOK-document-pipeline.md': [P_RUNBOOK_STATUS] };
+  const STATUS_LINES = { 'deploy/host/README.md': [STATUS, P_README_STATUS], 'deploy/host/RUNBOOK.md': [STATUS], 'deploy/host/RUNBOOK-document-pipeline.md': [P_RUNBOOK_STATUS] };
   // The second line of each compose file and Caddy snippet says what happened on the box, and so does the third line of the Pipeline's env example.
   const HEADER = {
-    'deploy/apex-web/docker-compose.agent-history.yml': '# DEPLOYED since 2026-10-15: installed and running on the box since 2026-10-14; one first-party job settled on 2026-10-15. ',
-    'deploy/apex-web/Caddyfile.snippet': '# DEPLOYED since 2026-10-15: installed and running on the box. It was installed on 2026-10-14 by ',
-    'deploy/apex-web/docker-compose.document-pipeline.yml': '# DEPLOYED since 2026-10-16: installed and running on the box since 2026-10-16; one first-party job settled on 2026-10-16. ',
-    'deploy/apex-web/Caddyfile.document-pipeline.snippet': '# DEPLOYED since 2026-10-16: installed and running on the box. It was installed on 2026-10-16, at step 10 of RUNBOOK-document-pipeline.md, by ',
-    'deploy/apex-web/.env.document-pipeline.example': '# Status: DEPLOYED since 2026-10-16. ',
+    'deploy/host/docker-compose.agent-history.yml': '# DEPLOYED since 2026-10-15: installed and running on the box since 2026-10-14; one first-party job settled on 2026-10-15. ',
+    'deploy/host/Caddyfile.snippet': '# DEPLOYED since 2026-10-15: installed and running on the box. It was installed on 2026-10-14 by ',
+    'deploy/host/docker-compose.document-pipeline.yml': '# DEPLOYED since 2026-10-16: installed and running on the box since 2026-10-16; one first-party job settled on 2026-10-16. ',
+    'deploy/host/Caddyfile.document-pipeline.snippet': '# DEPLOYED since 2026-10-16: installed and running on the box. It was installed on 2026-10-16, at step 10 of RUNBOOK-document-pipeline.md, by ',
+    'deploy/host/.env.document-pipeline.example': '# Status: DEPLOYED since 2026-10-16. ',
   };
   for (const rel of PUBLIC_FILES) {
     const text = read(rel);
@@ -312,12 +316,12 @@ test('README, RUNBOOK, compose file and Caddy snippet: Agent History is DEPLOYED
     const rest = (STATUS_LINES[rel] ?? []).reduce((acc, line) => acc.replace(line, ''), text).replace(HEADER[rel] ?? '', '');
     assert.doesNotMatch(rest, /\b(LIVE|DEPLOYED)\b/, `${rel}: no status claim beyond the status line`);
   }
-  for (const rel of ['deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md']) assert.ok(read(rel).includes(STATUS), rel);
-  assert.ok(read('deploy/apex-web/README.md').includes(`\n## Document Pipeline on the same box\n\n${P_README_STATUS} `), 'the section of the Pipeline opens with its own status line');
-  assert.ok(read('deploy/apex-web/RUNBOOK-document-pipeline.md').split('\n')[2].startsWith(`${P_RUNBOOK_STATUS} `), 'the runbook of the Pipeline opens with its status line');
+  for (const rel of ['deploy/host/README.md', 'deploy/host/RUNBOOK.md']) assert.ok(read(rel).includes(STATUS), rel);
+  assert.ok(read('deploy/host/README.md').includes(`\n## Document Pipeline on the same box\n\n${P_README_STATUS} `), 'the section of the Pipeline opens with its own status line');
+  assert.ok(read('deploy/host/RUNBOOK-document-pipeline.md').split('\n')[2].startsWith(`${P_RUNBOOK_STATUS} `), 'the runbook of the Pipeline opens with its status line');
   assert.equal(readme.split('\n')[2], `${STATUS} Steps 1 to 15 and 17 of the runbook were run on 2026-10-14 and 2026-10-15. Step 16, the wallet monitor, is not used for this agent (operator's decision, 2026-10-15).`);
   for (const [rel, header] of Object.entries(HEADER)) assert.ok(read(rel).split('\n')[rel.endsWith('.example') ? 2 : 1].startsWith(header), `${rel}: the line says what happened on the box`);
-  assert.doesNotMatch(read('deploy/apex-web/docker-compose.agent-history.yml') + snippet + read('deploy/apex-web/docker-compose.document-pipeline.yml') + read('deploy/apex-web/Caddyfile.document-pipeline.snippet'), /PROPOSED/);
+  assert.doesNotMatch(read('deploy/host/docker-compose.agent-history.yml') + snippet + read('deploy/host/docker-compose.document-pipeline.yml') + read('deploy/host/Caddyfile.document-pipeline.snippet'), /PROPOSED/);
 });
 
 test('RUNBOOK: the status line says that steps 1 to 17 were run on 2026-10-14 and 2026-10-15, the step texts stay instructions, and a first run is told to start with the earlier word', () => {
@@ -435,16 +439,17 @@ test('RUNBOOK: the collateral and float come in two transfers (5 alone, then 50)
   assert.match(runbook, /then 50 units/);
   assert.match(runbook, /this file is the only copy until step 7\. There is no recovery phrase/);
   // Step 7 writes a second plaintext copy of the key, and the runbook says so where it happens, where the key is generated and in Back out.
-  assert.match(section(runbook, '4. Make the env file and generate the supplier key'), /Step 7 writes a second plaintext copy of the key to `\/opt\/agent-history\/ops\/wallet`/);
+  assert.ok(section(runbook, '4. Make the env file and generate the supplier key').includes('Step 7 writes a second plaintext copy of the key to `$BASE/ops/wallet`'));
   assert.match(section(runbook, '7. Register the identity'), /That file is a second plaintext copy of the supplier key, next to the one in the env file\./);
-  assert.match(section(runbook, 'Back out'), /4\. Operator: remove the second plaintext copy of the supplier key that step 7 wrote, two files in a directory: `shred -u \/opt\/agent-history\/ops\/wallet\/payment\.skey \/opt\/agent-history\/ops\/wallet\/payment\.vkey`, then `rmdir \/opt\/agent-history\/ops\/wallet` \(`shred` does not take a directory\)\./);
-  assert.doesNotMatch(section(runbook, 'Back out'), /shred -u \/opt\/agent-history\/ops\/wallet`/, 'shred does not take a directory');
+  assert.ok(section(runbook, 'Back out').includes('4. Operator: remove the second plaintext copy of the supplier key that step 7 wrote, two files in a directory: `shred -u "$BASE/ops/wallet/payment.skey" "$BASE/ops/wallet/payment.vkey"`, then `rmdir "$BASE/ops/wallet"` (`shred` does not take a directory).'));
+  assert.doesNotMatch(section(runbook, 'Back out'), /shred -u "\$BASE\/ops\/wallet"`/, 'shred does not take a directory');
   assert.match(runbook, /gen-keypair\.ts --network 1/);
   assert.match(runbook, /chmod 600 \.env\.agent-history/);
   assert.match(runbook, /read -rs GHCR_TOKEN/);
 });
 
-test('RUNBOOK: ends with the two gotchas of the chandra ops README, word for word', () => {
+test('RUNBOOK: ends with the two gotchas of the README of the existing identity scripts, word for word', () => {
+  assert.ok(runbook.includes("\n## Two gotchas that cost real transactions\n\nCopied from the README of the operator's existing identity scripts. Do not re-learn them.\n"), 'where they come from, without a stack or a path');
   const GOTCHAS = [
     '**1. Never re-serialize an MCP-built transaction.** `sign-tx.py` splices the',
     'signature in while preserving every original byte of both the body and the',
@@ -501,7 +506,7 @@ test('RUNBOOK step 17: the last item names the files that said PROPOSED about Ag
   const s17 = section(runbook, '17. Flip the status');
   const item8 = s17.slice(s17.indexOf('8. In the repository'));
   // The files that said PROPOSED about Agent History, or carried the word as a value, until the flip of 2026-10-15. After the flip they no longer say it, so the list is pinned here; the test below finds a word that comes back.
-  const FILES = ['specs/agent-history.md', 'agents/agent-history/README.md', 'README.md', 'docs/HIRE.md', 'docs/E2E.md', 'deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md', 'deploy/apex-web/docker-compose.agent-history.yml', 'deploy/apex-web/Caddyfile.snippet', 'deploy/apex-web/.env.agent-history.example'];
+  const FILES = ['specs/agent-history.md', 'agents/agent-history/README.md', 'README.md', 'docs/HIRE.md', 'docs/E2E.md', 'deploy/host/README.md', 'deploy/host/RUNBOOK.md', 'deploy/host/docker-compose.agent-history.yml', 'deploy/host/Caddyfile.snippet', 'deploy/host/.env.agent-history.example'];
   const CODE = ['agents/agent-history/src/server.ts', 'agents/agent-history/agent.json.template', 'agents/agent-history/test/server.test.ts', 'agents/agent-history/test/spec.test.ts', 'scripts/specs.test.mjs', 'scripts/deploy.test.mjs'];
   for (const f of [...FILES, ...CODE]) {
     assert.ok(item8.includes('`' + f + '`'), `item 8 names ${f}`);
@@ -526,13 +531,13 @@ test('status words: no file says PROPOSED about Agent History or Document Pipeli
     'README.md': [/^\| (Audio Snippets|Advocate) \| `[a-z.0-9-]+` \| PROPOSED \|$/],
     'agents/agent-history/README.md': [/`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./],
     'specs/agent-history.md': [/^The marketplace MCP tools \(PROPOSED\) and the template's buyer, /],
-    'deploy/apex-web/RUNBOOK.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about Agent History/],
-    'deploy/apex-web/RUNBOOK-document-pipeline.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about the Document Pipeline/],
+    'deploy/host/RUNBOOK.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about Agent History/],
+    'deploy/host/RUNBOOK-document-pipeline.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about the Document Pipeline/],
   };
   // What may say LIVE: the sentence that denies it, and the rule that lists the three words.
   const LIVE_OK = [/Nothing (on this page|in this guide|in this folder|in this section) is LIVE( or DEPLOYED)?\./, /`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./];
   const files = repoFiles().filter((f) => /(\.md|\.yml|Caddyfile\.snippet|Caddyfile\.[a-z-]+\.snippet|\.example|\.template)$/.test(f));
-  for (const f of ['specs/agent-history.md', 'specs/advocate.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md', 'deploy/apex-web/RUNBOOK.md', 'deploy/apex-web/README.md', 'deploy/apex-web/docker-compose.agent-history.yml', 'deploy/apex-web/Caddyfile.snippet', 'deploy/apex-web/.env.agent-history.example', 'agents/agent-history/agent.json.template', ...PIPELINE_FILES]) assert.ok(files.includes(f), `${f} is walked`);
+  for (const f of ['specs/agent-history.md', 'specs/advocate.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md', 'deploy/host/RUNBOOK.md', 'deploy/host/README.md', 'deploy/host/docker-compose.agent-history.yml', 'deploy/host/Caddyfile.snippet', 'deploy/host/.env.agent-history.example', 'agents/agent-history/agent.json.template', ...PIPELINE_FILES]) assert.ok(files.includes(f), `${f} is walked`);
   for (const f of files) {
     const lines = read(f).split('\n');
     if (!OTHER_AGENTS.includes(f)) for (const line of lines.filter((l) => /\bPROPOSED\b/.test(l))) assert.ok((PROPOSED_OK[f] ?? []).some((re) => re.test(line)), `${f} says PROPOSED: ${line.slice(0, 110)}`);
@@ -541,7 +546,7 @@ test('status words: no file says PROPOSED about Agent History or Document Pipeli
   // The values the manifest and the env example carry are neither proposed nor live.
   assert.match(exampleText, /^AGENT_STATUS_CHIP=deployed$/m);
   assert.deepEqual(JSON.parse(read('agents/agent-history/agent.json.template')).status, { chip: 'deployed', since: '2026-10-15' });
-  assert.match(read('deploy/apex-web/.env.document-pipeline.example'), /^AGENT_STATUS_CHIP=deployed$/m);
+  assert.match(read('deploy/host/.env.document-pipeline.example'), /^AGENT_STATUS_CHIP=deployed$/m);
   assert.deepEqual(JSON.parse(read('agents/document-pipeline/agent.json.template')).status, { chip: 'deployed', since: '2026-10-16' });
   // Audio Snippets and Advocate are not built and are PROPOSED, each in its own spec. Document Pipeline is DEPLOYED since 2026-10-16, in the line of its spec.
   for (const f of ['specs/audio-snippets.md', 'specs/advocate.md']) assert.match(read(f), /^PROPOSED \(not built\)\. Since 2026-10-13\.$/m, f);
@@ -587,7 +592,7 @@ test('RUNBOOK: the key is never sent anywhere, the registry login block is bash,
   assert.match(section(runbook, '4. Make the env file and generate the supplier key'), /is never sent anywhere\./);
   assert.doesNotMatch(runbook, /never leaves/);
   assert.match(section(runbook, '2. Log in to the registry and get the service image'), /```bash\nread -rs GHCR_TOKEN/);
-  assert.match(section(runbook, '11. Hash the manifest'), /```sh\ncd \/opt\/agent-history\/repo\nnode scripts\/manifest-hash\.mjs /);
+  assert.match(section(runbook, '11. Hash the manifest'), /```sh\ncd "\$BASE\/repo"\nnode scripts\/manifest-hash\.mjs /);
   const s15 = section(runbook, '15. The first-party run');
   assert.ok(s15.includes('As of 2026-10-14 the nine marketplace tools the script needs are merged into `main` of Apex-Fusion/mcp-server (PR 1 as [#20](https://github.com/Apex-Fusion/mcp-server/pull/20), PR 2 as [#21](https://github.com/Apex-Fusion/mcp-server/pull/21) and PR 3 as [#23](https://github.com/Apex-Fusion/mcp-server/pull/23) with PR 2) and are on the hosted mainnet MCP server, which lists 33 tools.'));
   assert.ok(s15.includes('PR 4 ([#22](https://github.com/Apex-Fusion/mcp-server/pull/22)), the signer package with its `keygen` command, is merged too, and the package is not published.'));
@@ -601,12 +606,17 @@ test('RUNBOOK: the key is never sent anywhere, the registry login block is bash,
   assert.doesNotMatch(s16, /upstream repository/);
 });
 
-test('agent README: the Image section says the publish job pushes on merge to main, that it has not run yet, and that the agent is running on the box with the status DEPLOYED since 2026-10-15', () => {
+test('agent README: the Image section says the publish job pushes on merge to main, that it has run since the repository went public on 2026-10-16 and the image is public, that the box still builds its own, and that the agent is running on the box with the status DEPLOYED since 2026-10-15', () => {
   const image = section(read('agents/agent-history/README.md'), 'Image');
   assert.ok(image.length > 300, 'the section exists');
   assert.ok(image.includes('docker build -f agents/agent-history/Dockerfile'));
   assert.ok(image.includes('pushes the image on merge to `main`'));
-  assert.ok(image.includes('It has not run yet: Actions is blocked on this private repository.'));
+  assert.ok(image.includes('It has run on each merge to `main` since the repository went public on 2026-10-16, and the image is public; the box still builds the image itself.'));
+  // The repository and the images on ghcr.io are public since 2026-10-16. The places that said private say what is true now, and no deploy file says private again.
+  assert.ok(readme.includes('2. **Registry login.** The package is public since 2026-10-16, so the login is optional, and the host still builds the image itself (point 3).'));
+  assert.ok(section(runbook, '1. Put the files on the box').includes('The repository is public since 2026-10-16, so the box needs no GitHub credentials to clone it.'));
+  assert.ok(section(runbook, '2. Log in to the registry and get the service image').includes('The package is public since 2026-10-16: the login is optional, and its token needs `read:packages`. The host still builds the image itself (below).'));
+  for (const rel of [...PUBLIC_FILES, 'agents/agent-history/README.md']) assert.doesNotMatch(read(rel), /repository is private|private repository|package is private/i, rel);
   assert.ok(image.includes('The agent is running on the box, and its status has been DEPLOYED since 2026-10-15.'));
   assert.equal(image.includes('Nothing is deployed yet.'), false);
 });
@@ -619,15 +629,15 @@ test('agent README: the Image section says the publish job pushes on merge to ma
 const PSPEC = read('specs/document-pipeline.md');
 const PREADME = read('agents/document-pipeline/README.md');
 const START = read('agents/document-pipeline/src/start.ts');
-const pComposeText = read('deploy/apex-web/docker-compose.document-pipeline.yml');
+const pComposeText = read('deploy/host/docker-compose.document-pipeline.yml');
 const pCompose = parseYaml(pComposeText);
-const pExampleText = read('deploy/apex-web/.env.document-pipeline.example');
+const pExampleText = read('deploy/host/.env.document-pipeline.example');
 // The one quoted value in the Pipeline example is SERVICE_AUTH_HEADER="" : the value that step 4 writes in its place has a space in it, and the ops scripts read the file with
 // the shell's ".", so it is quoted. The map the checks below read has the quotes off a quoted value, as the shell and Docker Compose take them off.
 const pExampleRaw = parseEnv(pExampleText);
 const pExample = Object.fromEntries(Object.entries(pExampleRaw).map(([name, value]) => [name, /^"(.*)"$/.exec(value)?.[1] ?? value]));
-const pRunbook = read('deploy/apex-web/RUNBOOK-document-pipeline.md');
-const pSnippet = read('deploy/apex-web/Caddyfile.document-pipeline.snippet');
+const pRunbook = read('deploy/host/RUNBOOK-document-pipeline.md');
+const pSnippet = read('deploy/host/Caddyfile.document-pipeline.snippet');
 const pDockerfile = read('agents/document-pipeline/Dockerfile');
 const { agent: pAgent, service: pService } = pCompose.services;
 const pSection = readme.split('\n## Document Pipeline on the same box\n')[1]?.split('\n## ')[0] ?? '';
@@ -662,9 +672,9 @@ test('Pipeline compose: the project and two containers have fixed names, the run
   assert.deepEqual(pAgent.ports, ['127.0.0.1:8084:8080']);
   assert.notDeepEqual(pAgent.ports, agent.ports, 'not the port of Agent History');
   assert.equal(pService.ports, undefined, 'the service answers POST / only with the token of the runtime (R50), and no port is published all the same: the token is the second lock, and anything that holds it can post escrows from the buyer wallet');
-  assert.deepEqual(pAgent.networks, ['umami_default']);
-  assert.deepEqual(pService.networks, ['umami_default']);
-  assert.deepEqual(pCompose.networks.umami_default, { external: true, name: 'umami_default' });
+  assert.deepEqual(pAgent.networks, ['proxy']);
+  assert.deepEqual(pService.networks, ['proxy']);
+  assert.deepEqual(pCompose.networks, { proxy: { external: true, name: PROXY_NETWORK_NAME } }, 'the network of Agent History, named the same way');
   assert.deepEqual(pAgent.depends_on, ['service']);
   for (const [name, s, history] of [['agent', pAgent, agent], ['service', pService, service]]) {
     assert.deepEqual(s.env_file, [{ path: './.env.document-pipeline', required: true }], name);
@@ -683,7 +693,7 @@ test('Pipeline compose: the runtime is built from the template commit of Agent H
 test('Pipeline compose: SERVICE_URL names the service container, port 9092 and the path /, and is not the shared alias "service"', () => {
   const url = new URL(pAgent.environment.SERVICE_URL);
   assert.equal(url.protocol, 'http:');
-  assert.equal(url.hostname, pService.container_name, 'the container name is unique on umami_default; the alias "service" would match every agent');
+  assert.equal(url.hostname, pService.container_name, 'the container name is unique on the shared network; the alias "service" would match every agent');
   assert.equal(url.port, pService.environment.PORT);
   assert.equal(url.pathname, '/', 'the service accepts POST on / only');
   assert.equal(pAgent.environment.SERVICE_URL, 'http://document-pipeline-service:9092/');
@@ -955,7 +965,7 @@ test('Pipeline Caddy snippet: the site block is the second endpoint host, the ma
   assert.ok(lines.slice(0, first).every((l) => l.startsWith('#') || l.trim() === ''), 'only comments before the block');
   const comments = lines.slice(0, first).join('\n');
   assert.ok(comments.includes('The hostname must be DNS only (grey cloud),'), 'the DNS-only rule');
-  assert.ok(comments.includes('The block must stay the last thing in this file: the install script of the chandra stack\n# takes everything from the hostname line to the end.'));
+  assert.ok(comments.includes("The block must stay the last thing in this file: the host administrator's install script\n# takes everything from the hostname line to the end."));
   assert.ok(comments.includes("The runtime does not serve /agent.json, and the advert's detail_uri points at it, so that one path goes to the service."));
   assert.ok(block.indexOf('handle /agent.json') < block.indexOf('    handle {'), 'the /agent.json route goes first so that the default one does not catch it');
   assert.ok(pSection.split('\n').map((l) => l.replace(/^ {3}/, '')).join('\n').includes('```\n' + block + '\n```'), 'the README shows the same block');
@@ -965,7 +975,7 @@ test('Pipeline Caddy snippet: the site block is the second endpoint host, the ma
 
 test('Pipeline files: each says DEPLOYED since 2026-10-16 in its own first lines, the compose file and the snippet say that the stack is installed and running, the runbook and the README section say which steps were run, and none says LIVE or that nothing is installed', () => {
   assert.ok(pComposeText.split('\n')[1].startsWith(`# ${P_STATUS}: installed and running on the box since 2026-10-16; one first-party job settled on 2026-10-16. The order of work is RUNBOOK-document-pipeline.md. The host administrator's part is README.md.`));
-  assert.ok(pSnippet.split('\n')[1].startsWith(`# ${P_STATUS}: installed and running on the box. It was installed on 2026-10-16, at step 10 of RUNBOOK-document-pipeline.md, by a copy of /opt/agent-history/ops/install-caddy-route.sh, which merges it and reloads Caddy (README.md).`));
+  assert.ok(pSnippet.split('\n')[1].startsWith(`# ${P_STATUS}: installed and running on the box. It was installed on 2026-10-16, at step 10 of RUNBOOK-document-pipeline.md, by a copy of the host administrator's install script (install-caddy-route.sh, from the ops folder of Agent History), which merges it and reloads Caddy (README.md).`));
   assert.equal(pExampleText.split('\n')[2], `# Status: ${P_STATUS}. The status word the manifest carries is AGENT_STATUS_CHIP below.`);
   assert.equal(pRunbook.split('\n')[2], `Status: ${P_STATUS}. Nothing in this folder is LIVE. This runbook says what happens, in order. Steps 1 to 15 and 17 were run on 2026-10-16, and the first stop was watched the same day (the service was idle, the stop took 1 s, the exit code was 0). Step 16, the wallet monitor, is not used for this agent, as for Agent History.`);
   assert.ok(pSection.split('\n')[1].startsWith(`Status: ${P_STATUS}. Nothing in this section is LIVE. Steps 1 to 15 and 17 of its runbook were run on 2026-10-16. Step 16, the wallet monitor, is not used for this agent, as for Agent History. The files are `));
@@ -985,10 +995,12 @@ test('Pipeline README section: the second stack beside Agent History, with its t
   assert.ok(pSection.includes('[RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md), which is the operator\'s order of work and follows [RUNBOOK.md](RUNBOOK.md) step for step'));
   const rows = pSection.split('\n').filter((l) => l.startsWith('| `'));
   assert.equal(rows.length, 2, 'the second table has the two containers');
-  assert.ok(rows[0].startsWith(`| \`${pAgent.container_name}\` | built on the box from \`https://github.com/Apex-Fusion/vector-agent-template.git\` at the same pinned commit \`c4c378a\` (\`CAPABILITY_KIND=custom\`) | 8080 | Caddy, over \`umami_default\`. The host, on \`127.0.0.1:8084\` only |`));
-  assert.ok(rows[1].startsWith(`| \`${pService.container_name}\` | \`ghcr.io/apex-fusion/vector-service-agents/document-pipeline\`, built on the box and pinned by digest (\`@sha256:<digest>\`, a placeholder in the repository), or by image ID | 9092 | The runtime and Caddy, over \`umami_default\`. Nothing on the host: 9092 is never published |`));
+  assert.ok(rows[0].startsWith(`| \`${pAgent.container_name}\` | built on the box from \`https://github.com/Apex-Fusion/vector-agent-template.git\` at the same pinned commit \`c4c378a\` (\`CAPABILITY_KIND=custom\`) | 8080 | Caddy, over the external network of the host's reverse proxy. The host, on \`127.0.0.1:8084\` only |`));
+  assert.ok(rows[1].startsWith(`| \`${pService.container_name}\` | \`ghcr.io/apex-fusion/vector-service-agents/document-pipeline\`, built on the box and pinned by digest (\`@sha256:<digest>\`, a placeholder in the repository), or by image ID | 9092 | The runtime and Caddy, over the external network of the host's reverse proxy. Nothing on the host: 9092 is never published |`));
   for (const part of [
-    'The working directory on the box is `/opt/document-pipeline/repo/deploy/apex-web`',
+    'The working directory on the box is `<base path>/repo/deploy/host`',
+    'the base path is the folder the operator chose for this agent (`BASE` in its runbook)',
+    "Both containers join the external network of the host's reverse proxy (`PROXY_NETWORK` in `.env`, written in step 1 of its runbook, as for Agent History).",
     'The compose project is `document-pipeline`.',
     'inside a checkout of this repository that is shipped to the box as a git bundle, because the box has no GitHub credentials',
     'The runtime holds the supplier key. The service holds a second, separate key, the buyer key',
@@ -996,7 +1008,7 @@ test('Pipeline README section: the second stack beside Agent History, with its t
     'Both containers read it from the env file, and the operator makes it in step 4 of the runbook.',
     'A `POST /` without that header, or with another value, gets 401 before its body is read. `GET /healthz` and `GET /agent.json` need no header, and any other path gets 404.',
     'Port 9092 is never published to the host all the same.',
-    'reachable over `umami_default` by every container on that network, so the host administrator keeps `umami_default` to stacks that are trusted',
+    "reachable over the external network of the host's reverse proxy by every container on that network, so the host administrator keeps that network to stacks that are trusted",
     'the token is the second lock, and anything that holds it can start a job that posts escrows from the buyer wallet',
     'and while `PIPELINE_BUYER_PRIV_KEY_HEX`, `SUPPLIER_PKH` or `SERVICE_AUTH_HEADER` is not set',
     'After any change, recreate: once the runtime runs (step 13 of the runbook), only when `curl -s http://127.0.0.1:8084/status` says `free` (a stop during a job can cut a job under escrow), and before step 13 at once, since no job can run: ',
@@ -1048,7 +1060,7 @@ test('Pipeline RUNBOOK: the twenty-one sections in order, the seventeen steps ke
   // It follows the runbook of Agent History and says so, and it points at its gotchas instead of copying them.
   assert.ok(pRunbook.includes('This is [RUNBOOK.md](RUNBOOK.md), the runbook of Agent History, written for the Document Pipeline.'));
   assert.ok(pRunbook.includes('step N here is step N there'));
-  assert.ok(pRunbook.includes('`/opt/agent-history/DEPLOY-NOTES.md`'));
+  assert.ok(pRunbook.includes('`$HISTORY_BASE/DEPLOY-NOTES.md`'));
   assert.ok(section(pRunbook, '7. Register the identity').includes('Read the first gotcha at the end of RUNBOOK.md'));
   assert.ok(section(pRunbook, '8. Stake in Module-3').includes('Read the second gotcha at the end of RUNBOOK.md'));
   assert.ok(runbook.includes('**1. Never re-serialize an MCP-built transaction.**') && runbook.includes('**2. The Module-3 SDK is testnet-pinned.**'), 'the gotchas it points at exist');
@@ -1065,8 +1077,11 @@ test('Pipeline RUNBOOK: the differences from Agent History are listed in one pla
     'A stop gives the service up to 300 s to finish the job that is running, and Docker 30 s more for it to log a job it abandoned and exit (`stop_grace_period: 330s`)',
     '- **No registry.**', 'the box has no GitHub credentials',
     '- **Price 5.**', 'The Foundation carries the gap between what the sub-jobs cost and that price on purpose',
-    '| Base path on the box | `/opt/document-pipeline`: the repository in `repo`, the ops scripts in `ops` |',
-    '| "This folder" | `/opt/document-pipeline/repo/deploy/apex-web` |',
+    '| Base path on the box | `$BASE`, the folder the operator chose for this agent (any path works): the repository in `repo`, the ops scripts in `ops` |',
+    '| Base path of Agent History | `$HISTORY_BASE`, the `BASE` of RUNBOOK.md: its ops scripts, its install script and the notes of its deployment |',
+    '| "This folder" | `$BASE/repo/deploy/host` |',
+    "| Network | the external network of the host's reverse proxy, named by `PROXY_NETWORK` in `.env` in this folder (step 1) |",
+    '```sh\nBASE=/opt/document-pipeline\nHISTORY_BASE=/opt/agent-history\n```',
     '| Compose file, env file | `docker-compose.document-pipeline.yml`, `.env.document-pipeline` |',
     '| Containers | `document-pipeline-agent` (the runtime), `document-pipeline-service` |',
     '| Ports | the runtime on `127.0.0.1:8084`, loopback only; the service on 9092, never published |',
@@ -1112,10 +1127,10 @@ test('Pipeline RUNBOOK collateral and float: two keys, 5 alone then 50 for the s
 test('Pipeline RUNBOOK steps 1 to 3: the repository goes over as a git bundle and is cloned with --branch main; the image is built on the box; the runtime is built from the pinned template', () => {
   const one = section(pRunbook, '1. Put the files on the box');
   for (const part of [
-    'The box has no GitHub credentials, and the repository is private, so the repository goes over as a git bundle.',
+    'The box has no GitHub credentials, so the repository goes over as a git bundle.',
     'git bundle create vector-service-agents.bundle main', 'git bundle verify vector-service-agents.bundle', 'scp vector-service-agents.bundle <user>@<box>:/tmp/',
-    'mkdir -p /opt/document-pipeline && cd /opt/document-pipeline', 'git clone --branch main /tmp/vector-service-agents.bundle repo', 'cd repo/deploy/apex-web', 'git log -1 --oneline',
-    'a bundle of `main` alone has no `HEAD`', 'Check that the commit is the one that was reviewed.', '"This folder" below means `/opt/document-pipeline/repo/deploy/apex-web`.',
+    'mkdir -p "$BASE" && cd "$BASE"', 'git clone --branch main /tmp/vector-service-agents.bundle repo', 'cd repo/deploy/host', 'git log -1 --oneline',
+    'a bundle of `main` alone has no `HEAD`', 'Check that the commit is the one that was reviewed.', '"This folder" below means `$BASE/repo/deploy/host`.',
   ]) assert.ok(one.includes(part), `step 1 says: ${part}`);
   assert.doesNotMatch(one, /git clone https:/, 'no clone from GitHub: the box has no credentials');
   const three = section(pRunbook, '3. Build the runtime image');
@@ -1139,7 +1154,7 @@ test('Pipeline RUNBOOK step 4: the env file is made once and never over a file t
     'The example also carries the current status word and its date in `AGENT_STATUS_CHIP` and `AGENT_STATUS_SINCE`. On a first run, before any job has settled, set them to `proposed` and today\'s date: the status can honestly change only in step 17.',
     'this file is the only copy of either until step 7. There is no recovery phrase',
     "Copy `.env.document-pipeline` to the operator's encrypted offline store now, before either address receives anything, and copy it again after any regeneration of a key or of the token: a copy made before holds the old key, and the new one has no copy at all.",
-    'Step 7 writes a second plaintext copy of the supplier key to the directory `/opt/document-pipeline/ops/wallet`',
+    'Step 7 writes a second plaintext copy of the supplier key to the directory `$BASE/ops/wallet`',
     'The buyer key never has a second copy on the box.',
     // The token: what it is, who sends it, who requires it, and why it is written in quotes.
     'The token is the value of `SERVICE_AUTH_HEADER`. The runtime sends it as the `authorization` header of every call to the service, and the service answers `POST /` only to a call that carries exactly that value (ruling R50)',
@@ -1162,9 +1177,9 @@ test('Pipeline RUNBOOK step 4: the env file is made once and never over a file t
   assert.equal(blocks.length, 7);
   const [head, supplier, buyer, token, lengths, distinct, contact] = blocks;
   assert.ok(head.includes('keypair_into() {') && head.includes('token_into() {'));
-  assert.equal(supplier, 'cd /opt/document-pipeline/repo/deploy/apex-web\nkeypair_into SUPPLIER\n');
-  assert.equal(buyer, 'cd /opt/document-pipeline/repo/deploy/apex-web\nkeypair_into PIPELINE_BUYER\n', 'the buyer key has a block of its own, so that it can be made again alone');
-  assert.equal(token, 'cd /opt/document-pipeline/repo/deploy/apex-web\ntoken_into\n');
+  assert.equal(supplier, 'cd "$BASE/repo/deploy/host"\nkeypair_into SUPPLIER\n');
+  assert.equal(buyer, 'cd "$BASE/repo/deploy/host"\nkeypair_into PIPELINE_BUYER\n', 'the buyer key has a block of its own, so that it can be made again alone');
+  assert.equal(token, 'cd "$BASE/repo/deploy/host"\ntoken_into\n');
   assert.ok(lengths.startsWith("awk -F= '") && distinct.startsWith('[ "$(sed -n') && contact.startsWith("grep -c '^OPERATOR_CONTACT="));
   assert.doesNotMatch(four, /keypair_into SUPPLIER &&|&& keypair_into PIPELINE_BUYER/, 'no chain that makes both keys in one go');
   assert.equal(four.split('keypair_into PIPELINE_BUYER').length - 1, 1, 'the buyer key is made in one place');
@@ -1188,7 +1203,7 @@ test('Pipeline RUNBOOK step 4: the env file is made once and never over a file t
   assert.ok(four.indexOf('keypair_into SUPPLIER') < four.indexOf("grep -c '^OPERATOR_CONTACT="), 'the contact comes after the keys');
   assert.ok(four.indexOf('token_into\n') < four.indexOf("awk -F= '"), 'the lengths come after the keys and the token');
   // The contact: a role address, and no word about whose address another agent used.
-  assert.doesNotMatch(four, /agent-history\/repo\/deploy\/apex-web\/\.env\.agent-history|first candidate/);
+  assert.doesNotMatch(four, /agent-history\/repo\/deploy\/host\/\.env\.agent-history|HISTORY_BASE|first candidate/);
 });
 
 // ---- Step 4 run in bash ----
@@ -1208,13 +1223,13 @@ openssl() {
 `;
 function step4Blocks() {
   const four = section(pRunbook, '4. Make the env file and generate the two keys');
-  const [head, supplier, buyer, token, lengths, distinct] = [...four.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1].replace(/^cd \/opt\/document-pipeline\/repo\/deploy\/apex-web\n/, ''));
+  const [head, supplier, buyer, token, lengths, distinct] = [...four.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1].replace(/^cd "\$BASE\/repo\/deploy\/host"\n/, ''));
   return { head, supplier, buyer, token, lengths, distinct };
 }
 function withStep4Folder(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'dp-step4-'));
   try {
-    copyFileSync(join(root, 'deploy/apex-web/.env.document-pipeline.example'), join(dir, '.env.document-pipeline.example'));
+    copyFileSync(join(root, 'deploy/host/.env.document-pipeline.example'), join(dir, '.env.document-pipeline.example'));
     return fn(dir);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -1379,11 +1394,11 @@ test('Pipeline RUNBOOK step 5: the ops scripts are copied from the adapted set o
   assert.ok(desc.length <= 256, 'the registry takes 256 characters of description');
   assert.ok(five.includes(`(this one is ${desc.length})`), 'the length the runbook quotes');
   for (const part of [
-    'mkdir -p /opt/document-pipeline/ops && cd /opt/document-pipeline/ops',
+    'mkdir -p "$BASE/ops" && cd "$BASE/ops"',
     'for f in setup-venv.sh make-skey.py mcp-call.sh sign-tx.py register-did.sh m3-self-stake.py; do',
-    "sed -e 's#/opt/agent-history/repo/deploy/apex-web/\\.env\\.agent-history#/opt/document-pipeline/repo/deploy/apex-web/.env.document-pipeline#g' \\",
-    "-e 's#/opt/agent-history/ops#/opt/document-pipeline/ops#g' \\",
-    '"/opt/agent-history/ops/$f" > "$f"',
+    'sed -e "s#$HISTORY_BASE/repo/deploy/host/\\.env\\.agent-history#$BASE/repo/deploy/host/.env.document-pipeline#g" \\',
+    '-e "s#$HISTORY_BASE/ops#$BASE/ops#g" \\',
+    '"$HISTORY_BASE/ops/$f" > "$f"',
     "sed -i 's#agent-history supplier#document-pipeline supplier#g' make-skey.py",
     "-e 's#^ \"name\":\"Agent History\",# \"name\":\"Document Pipeline\",#'",
     "-e 's#^ \"capabilities\":\\[.*\\],# \"capabilities\":[\"document.pipeline.ocr-summary.v1\"],#'",
@@ -1396,10 +1411,15 @@ test('Pipeline RUNBOOK step 5: the ops scripts are copied from the adapted set o
   // Each pattern the sed lines look for is what step 5 of the Agent History runbook leaves in the copies it made, so the second adaptation finds the first one's output.
   const h5 = section(runbook, '5. Adapt the ops scripts');
   for (const left of [
-    String.raw`#/opt/agent-history/repo/deploy/apex-web/.env.agent-history#g`, String.raw`s#/opt/chandra-supplier/ops#/opt/agent-history/ops#g`, String.raw`#agent-history supplier#g`,
+    String.raw`#$BASE/repo/deploy/host/.env.agent-history#g"`, String.raw`-e "s#$SRC#$BASE/ops#g"`, String.raw`#agent-history supplier#g"`,
     String.raw`# "name":"Agent History",#'`, String.raw`# \"description\":\"$DESC\",#"`, String.raw`# "capabilities":["identity.history.report.v1"],#'`,
     String.raw`# "endpoint":"https://mp-suppliers-history.hal8.ai"}#'`, String.raw`CAPABILITIES = ["identity.history.report.v1"]#'`,
   ]) assert.ok(h5.includes(left), `the copy of Agent History is made with: ${left}`);
+  // The two adaptations are one chain: what the copy of Agent History writes under its BASE is what this copy looks for under HISTORY_BASE.
+  for (const written of ['$BASE/repo/deploy/host/.env.agent-history', '$BASE/ops']) {
+    assert.ok(h5.includes(`#${written}#g"`), `the copy of Agent History writes ${written}`);
+    assert.ok(five.includes(`"s#${written.replace('$BASE', '$HISTORY_BASE').replaceAll('.', '\\.')}#`), `this copy looks for it under HISTORY_BASE: ${written}`);
+  }
   assert.ok(five.includes(String.raw`-e "s#^ \"description\":\".*\",# \"description\":\"$DESC\",#"`), 'the description line is rewritten with the same pattern');
   assert.ok(runbook.includes('"framework":"vector-service-agents"') && PSPEC.includes('framework `vector-service-agents`'), 'the framework is the one the history copy already carries, and the spec');
   assert.ok(five.includes('Only the six scripts are copied; the venv and the wallet directory of Agent History stay where they are:'), 'nothing secret and nothing built is copied');
@@ -1408,18 +1428,18 @@ test('Pipeline RUNBOOK step 5: the ops scripts are copied from the adapted set o
 test('Pipeline RUNBOOK steps 6 to 8: two wallets supplied and checked, the identity of the supplier key registered and recorded in the repository, the stake on the one capability', () => {
   const six = section(pRunbook, '6. Supply the two wallets with their collateral and float');
   for (const part of [
-    "grep -E '^(SUPPLIER|PIPELINE_BUYER)_ADDRESS=' /opt/document-pipeline/repo/deploy/apex-web/.env.document-pipeline",
+    `grep -E '^(SUPPLIER|PIPELINE_BUYER)_ADDRESS=' "$BASE/repo/deploy/host/.env.document-pipeline"`,
     'The first is exactly 5 units, alone.', '50 units to the supplier address, 100 units to the buyer address',
-    'for name in SUPPLIER_ADDRESS PIPELINE_BUYER_ADDRESS; do', '/opt/document-pipeline/ops/mcp-call.sh vector_get_utxos',
+    'for name in SUPPLIER_ADDRESS PIPELINE_BUYER_ADDRESS; do', '"$BASE/ops/mcp-call.sh" vector_get_utxos',
     'Each address must list two outputs: one of exactly 5 units and one for the second transfer.',
   ]) assert.ok(six.includes(part), `step 6 says: ${part}`);
   const seven = section(pRunbook, '7. Register the identity');
   for (const part of [
-    "sed -i '/^AGENT_DID=$/d' /opt/document-pipeline/repo/deploy/apex-web/.env.document-pipeline", 'python3 make-skey.py', './register-did.sh',
-    'the directory `/opt/document-pipeline/ops/wallet` (`payment.skey` and `payment.vkey`, mode 600)', '`payment.skey` is a second plaintext copy of the supplier key, next to the one in the env file',
+    `sed -i '/^AGENT_DID=$/d' "$BASE/repo/deploy/host/.env.document-pipeline"`, 'python3 make-skey.py', './register-did.sh',
+    'the directory `$BASE/ops/wallet` (`payment.skey` and `payment.vkey`, mode 600)', '`payment.skey` is a second plaintext copy of the supplier key, next to the one in the env file',
     'remove it in Back out (point 5)', 'The buyer key is not touched by any step here and has no second copy on the box.',
     'The record has the name `Document Pipeline`, the capability `document.pipeline.ocr-summary.v1`, the framework `vector-service-agents`, the endpoint `https://mp-suppliers-pipeline.hal8.ai` and the manifest\'s description.',
-    "grep -c '^AGENT_DID=did:vector:agent:' /opt/document-pipeline/repo/deploy/apex-web/.env.document-pipeline", 'If it ends with `NOT CONFIRMED`',
+    `grep -c '^AGENT_DID=did:vector:agent:' "$BASE/repo/deploy/host/.env.document-pipeline"`, 'If it ends with `NOT CONFIRMED`',
     'Record the identity in the repository.', 'into the Identity section of `specs/document-pipeline.md`', '`scripts/specs.test.mjs`', 'The status word does not change here. Step 17 is the only place that flips it.',
   ]) assert.ok(seven.includes(part), `step 7 says: ${part}`);
   assert.ok(seven.indexOf('Record the identity in the repository.') > seven.indexOf("grep -c '^AGENT_DID=did:vector:agent:'"), 'after the identity is checked');
@@ -1427,7 +1447,7 @@ test('Pipeline RUNBOOK steps 6 to 8: two wallets supplied and checked, the ident
   assert.ok(PSPEC.includes('\nThis agent has had a registry record since 2026-10-16.\n') && PSPEC.includes('\n| DID | `did:vector:agent:') && PSPEC.includes('\n| Registry record | name `Document Pipeline`;'), 'the spec rows the pull request changed carry the record');
   assert.equal(PSPEC.includes('This agent has no registry record yet.') || PSPEC.includes('| Registry record, planned |'), false, 'and the words of before are gone');
   const eight = section(pRunbook, '8. Stake in Module-3');
-  assert.ok(eight.includes('cd /opt/document-pipeline/ops\n./venv/bin/python m3-self-stake.py'));
+  assert.ok(eight.includes('cd "$BASE/ops"\n./venv/bin/python m3-self-stake.py'));
   assert.ok(eight.includes('here both are the one capability `document.pipeline.ocr-summary.v1`'));
   assert.ok(eight.includes('`M3_STAKE_TX`, `M3_SEED_UTXO` and `M3_STAKE_DFM`'));
 });
@@ -1470,8 +1490,8 @@ test('Pipeline RUNBOOK step 9: the service is started by name after the pin is c
 test('Pipeline RUNBOOK steps 10 to 14: the Caddy script copy with the vhost and the snippet changed, the hash, the advert with the terms of the example and the spec, the runtime on 8084 with the heartbeat explained, the indexer', () => {
   const ten = section(pRunbook, '10. DNS and Caddy');
   for (const part of [
-    "sed -e 's#^VHOST=.*#VHOST=mp-suppliers-pipeline.hal8.ai#' \\", "-e 's#^SNIPPET=.*#SNIPPET=/opt/document-pipeline/repo/deploy/apex-web/Caddyfile.document-pipeline.snippet#' \\",
-    '/opt/agent-history/ops/install-caddy-route.sh > install-caddy-route.sh', 'chmod 755 install-caddy-route.sh', "grep -nE '^(VHOST|SNIPPET|MARKER)=' install-caddy-route.sh",
+    "sed -e 's#^VHOST=.*#VHOST=mp-suppliers-pipeline.hal8.ai#' \\", '-e "s#^SNIPPET=.*#SNIPPET=$BASE/repo/deploy/host/Caddyfile.document-pipeline.snippet#" \\',
+    '"$HISTORY_BASE/ops/install-caddy-route.sh" > install-caddy-route.sh', 'chmod 755 install-caddy-route.sh', "grep -nE '^(VHOST|SNIPPET|MARKER)=' install-caddy-route.sh",
     "sed -i '/^MARKER=/s#agent-history#document-pipeline#g' install-caddy-route.sh",
     'refuses while the name does not resolve to the box', 'If a line does not show, the copy of Agent History names them differently: read the script, and change its vhost and its snippet path by hand.',
     "curl -fsS https://mp-suppliers-pipeline.hal8.ai/agent.json", 'It must return the manifest of step 9, byte for byte.',
@@ -1486,10 +1506,10 @@ test('Pipeline RUNBOOK steps 10 to 14: the Caddy script copy with the vhost and 
   assert.equal(ten.includes('grep -n history'), false);
   assert.ok(ten.indexOf("sed -i '/^MARKER=/s#agent-history#document-pipeline#g'") < ten.indexOf('grep -in history install-caddy-route.sh') && ten.indexOf('grep -in history install-caddy-route.sh') < ten.indexOf('Run `./install-caddy-route.sh` once the record resolves to the box.'), 'the leftover check comes after the corrections and before the run');
   assert.ok(ten.indexOf('Run `./install-caddy-route.sh` once the record resolves to the box.') < ten.indexOf('The copy may poll `/healthz`') && ten.indexOf('The copy may poll `/healthz`') < ten.indexOf('curl -fsS https://mp-suppliers-pipeline.hal8.ai/agent.json'), 'the wait is explained between the run and the check from outside');
-  assert.ok(existsSync(join(root, 'deploy/apex-web/Caddyfile.document-pipeline.snippet')), 'the snippet the script merges exists');
-  assert.ok(ten.includes('/opt/document-pipeline/repo/deploy/apex-web/Caddyfile.document-pipeline.snippet'));
+  assert.ok(existsSync(join(root, 'deploy/host/Caddyfile.document-pipeline.snippet')), 'the snippet the script merges exists');
+  assert.ok(ten.includes('$BASE/repo/deploy/host/Caddyfile.document-pipeline.snippet'));
   const eleven = section(pRunbook, '11. Hash the manifest');
-  assert.match(eleven, /```sh\ncd \/opt\/document-pipeline\/repo\nnode scripts\/manifest-hash\.mjs https:\/\/mp-suppliers-pipeline\.hal8\.ai\n```/);
+  assert.match(eleven, /```sh\ncd "\$BASE\/repo"\nnode scripts\/manifest-hash\.mjs https:\/\/mp-suppliers-pipeline\.hal8\.ai\n```/);
   assert.ok(eleven.includes('curl -fsS https://mp-suppliers-pipeline.hal8.ai/agent.json | sha256sum'));
   // Step 12: the dry run and the real run are the same flags, and the flags are the terms of the example and the spec.
   const blocks = [...pRunbook.matchAll(/post-advert\.ts( --dry-run)? \x5c\n((?:  --[^\n]+\n)+)/g)];
@@ -1589,7 +1609,7 @@ test('Pipeline RUNBOOK step 15: the settings of the first-party run, a request J
   // docs/E2E.md carries the same settings: the request JSON, the pause and the state file are written alike in both.
   const e2eSection = section(read('docs/E2E.md'), 'Hiring Document Pipeline');
   for (const setting of [m[1], 'export CAPABILITY_ID=document.pipeline.ocr-summary.v1', 'export E2E_POLL_MS=15000', 'export E2E_STATE=./e2e-state-pipeline.json']) assert.ok(e2eSection.includes(setting), `docs/E2E.md has the setting: ${setting}`);
-  assert.ok(e2eSection.includes('[deploy/apex-web/RUNBOOK-document-pipeline.md](../deploy/apex-web/RUNBOOK-document-pipeline.md) step 15'));
+  assert.ok(e2eSection.includes('[deploy/host/RUNBOOK-document-pipeline.md](../deploy/host/RUNBOOK-document-pipeline.md) step 15'));
   // The log line it quotes is the code's.
   assert.ok(read('agents/document-pipeline/src/server.ts').includes('log(`job done in ${deps.clock() - arrivedAt} ms: ${result.accounting.sub_jobs} sub-jobs`);'));
   assert.ok(read('agents/document-pipeline/src/janitor.ts').includes("export const STRANDED_FILE = 'stranded.json';"));
@@ -1645,7 +1665,7 @@ test('Pipeline RUNBOOK step 17: the old advert is retired before the service res
   assert.ok(s17.includes('`curl -s http://127.0.0.1:8084/status` says `free`'));
   assert.ok(s17.includes('waits up to 300 s for a job that is running'));
   const item8 = s17.slice(s17.indexOf('8. In the repository'));
-  const FILES = ['specs/document-pipeline.md', 'agents/document-pipeline/README.md', 'README.md', 'docs/HIRE.md', 'docs/E2E.md', 'deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK-document-pipeline.md', 'deploy/apex-web/docker-compose.document-pipeline.yml', 'deploy/apex-web/Caddyfile.document-pipeline.snippet', 'deploy/apex-web/.env.document-pipeline.example'];
+  const FILES = ['specs/document-pipeline.md', 'agents/document-pipeline/README.md', 'README.md', 'docs/HIRE.md', 'docs/E2E.md', 'deploy/host/README.md', 'deploy/host/RUNBOOK-document-pipeline.md', 'deploy/host/docker-compose.document-pipeline.yml', 'deploy/host/Caddyfile.document-pipeline.snippet', 'deploy/host/.env.document-pipeline.example'];
   const CODE = ['agents/document-pipeline/src/server.ts', 'agents/document-pipeline/agent.json.template', 'agents/document-pipeline/test/server.test.ts', 'agents/document-pipeline/test/spec.test.ts', 'scripts/specs.test.mjs', 'scripts/deploy.test.mjs'];
   for (const f of [...FILES, ...CODE]) {
     assert.ok(item8.includes('`' + f + '`'), `item 8 names ${f}`);
@@ -1692,7 +1712,7 @@ test('Pipeline RUNBOOK Back out: the advert first with the supplier key, then th
   for (const part of [
     'docker exec document-pipeline-service cat /data/stranded.json', 'the janitor reclaims each one 5 s after its `deliver_by`', 'janitor: reclaimed <escrow>: ...',
     'Never add `-v`, and never run `docker volume rm document-pipeline-state`', 'the volume holds `stranded.json`, the escrows that still lock the buyer\'s units, and the janitor of the next start reads it. `down` keeps it.', 'The stop waits up to 300 s for a job that is running, and Docker 30 s more for the service to log what it left and exit.',
-    'two files of a directory: `shred -u /opt/document-pipeline/ops/wallet/payment.skey /opt/document-pipeline/ops/wallet/payment.vkey`, then `rmdir /opt/document-pipeline/ops/wallet` (`shred` does not take a directory, and `rmdir` refuses one that holds anything else)',
+    'two files of a directory: `shred -u "$BASE/ops/wallet/payment.skey" "$BASE/ops/wallet/payment.vkey"`, then `rmdir "$BASE/ops/wallet"` (`shred` does not take a directory, and `rmdir` refuses one that holds anything else)',
     'The env file still holds both keys, and so does the operator\'s offline store: keep both until both wallets are empty, because a wallet whose key is gone is gone.',
     'The buyer wallet is emptied last, with the buyer key, once `stranded.json` is empty (or was never written): its float and its collateral go back to the Foundation.',
     'No script of this pack does that: none signs with the buyer key, so the float stays in the wallet until the operator signs the transfer with the buyer key by other means (the byte-preserving signer pointed at a signing-key file made from the buyer key and shredded afterwards, as in the `store_write_failed` row of the table at the end).',
@@ -1708,22 +1728,24 @@ test('Pipeline RUNBOOK Back out: the advert first with the supplier key, then th
 });
 
 test('Back out of both runbooks: the second plaintext copy of the supplier key is shredded as two files and the directory is removed with rmdir; run as written, it leaves nothing, and shred on the directory itself fails', { skip: HAVE_BASH && spawnSync('bash', ['-c', 'command -v shred'], { encoding: 'utf8' }).status === 0 ? false : 'needs bash and shred' }, () => {
-  for (const [name, text, base] of [['Agent History', section(runbook, 'Back out'), '/opt/agent-history/ops/wallet'], ['Document Pipeline', section(pRunbook, 'Back out'), '/opt/document-pipeline/ops/wallet']]) {
-    const m = new RegExp(`\`(shred -u ${base}/payment\\.skey ${base}/payment\\.vkey)\`, then \`(rmdir ${base})\``).exec(text);
+  const SHRED = /`(shred -u "\$BASE\/ops\/wallet\/payment\.skey" "\$BASE\/ops\/wallet\/payment\.vkey")`, then `(rmdir "\$BASE\/ops\/wallet")`/;
+  for (const [name, text] of [['Agent History', section(runbook, 'Back out')], ['Document Pipeline', section(pRunbook, 'Back out')]]) {
+    const m = SHRED.exec(text);
     assert.ok(m, `${name}: the two shreds and the rmdir`);
     const dir = mkdtempSync(join(tmpdir(), 'dp-wallet-'));
     try {
-      const wallet = join(dir, 'wallet');
-      const forBash = (command) => command.replaceAll(base, wallet.split(sep).join('/'));
-      const make = () => { runBash(`mkdir -p "${wallet.split(sep).join('/')}" && echo skey > "${wallet.split(sep).join('/')}/payment.skey" && echo vkey > "${wallet.split(sep).join('/')}/payment.vkey"\n`, dir); };
+      // BASE is the folder the operator chose; here it is the temporary folder, and the commands run as the runbook gives them.
+      const base = dir.split(sep).join('/');
+      const wallet = join(dir, 'ops', 'wallet');
+      const make = () => { runBash(`mkdir -p "${base}/ops/wallet" && echo skey > "${base}/ops/wallet/payment.skey" && echo vkey > "${base}/ops/wallet/payment.vkey"\n`, dir); };
       make();
       assert.ok(existsSync(join(wallet, 'payment.skey')), `${name}: the directory with its two files`);
-      const done = runBash(`set -e\n${forBash(m[1])}\n${forBash(m[2])}\n`, dir);
+      const done = runBash(`set -e\nBASE='${base}'\n${m[1]}\n${m[2]}\n`, dir);
       assert.equal(done.status, 0, `${name}: ${done.stderr}`);
       assert.equal(existsSync(wallet), false, `${name}: nothing is left`);
       // The form that was there before fails, and leaves the files: shred does not take a directory.
       make();
-      const old = runBash(`shred -u "${wallet.split(sep).join('/')}"\n`, dir);
+      const old = runBash(`shred -u "${base}/ops/wallet"\n`, dir);
       assert.notEqual(old.status, 0, `${name}: shred on a directory fails`);
       assert.ok(existsSync(join(wallet, 'payment.skey')), `${name}: and the key file is still there`);
     } finally {
@@ -1772,7 +1794,7 @@ test('Pipeline RUNBOOK failure table: the start-up refusals, the pipeline codes 
   for (const part of [
     '| The runtime restarts and its log says `missing required env var ADVERT_REF` |', '| `/capability` shows an empty public key, or claims fail with `wrong_supplier` |', '| Jobs fail with `service_unreachable` |',
     "`docker exec document-pipeline-agent printenv SERVICE_URL` must print `http://document-pipeline-service:9092/`", 'the interim `102 Processing` lines of step 13 are not arriving',
-    '| The env file changed and nothing happened |', '| `network umami_default declared as external, but could not be found` |', '| `invalid reference format` for the service image |',
+    '| The env file changed and nothing happened |', '| `network <name> declared as external, but could not be found` |', '| `required variable PROXY_NETWORK is missing a value` |', '| `invalid reference format` for the service image |',
     '| `No such image: sha256:...` for the service image |', "| The served `/agent.json` hashes differently from the advert's `detail_hash` |",
     '(max_pages + 1) * 4.5', '27 for five pages', 'No script of this pack signs with the buyer key',
     // The collateral is the smallest pure output of at least 5 units (collateralOf in packages/buyer-core/src/chain.ts), so a wallet in one output has no float.
@@ -1852,4 +1874,163 @@ test('CI: the publish job also pushes the Document Pipeline image under :latest 
   assert.ok(job.steps.indexOf(history) < job.steps.indexOf(pipeline), 'Agent History first, as before');
   assert.deepEqual(job.permissions, { contents: 'read', packages: 'write' });
   assert.ok(readme.includes('`ghcr.io/apex-fusion/vector-service-agents/document-pipeline`') && pSection.includes('`:latest`') && pSection.includes('`:<full git commit sha>`'), 'the host administrator is told the two tags');
+});
+
+// ======================================================================================================================================
+// The deployment host is not named. Its name, the stack of its reverse proxy and the other stacks it runs stay out of the repository: the folder is
+// deploy/host, the external network is PROXY_NETWORK in .env next to the compose files, the paths on the box are BASE (and HISTORY_BASE) of the runbooks,
+// and the existing identity scripts are named by the operator in step 5 of RUNBOOK.md.
+// ======================================================================================================================================
+
+test('the network: both compose files name it by PROXY_NETWORK, compose reads it from .env and not from the env files of the stacks, and both runbooks write .env in step 1, before the first compose command', () => {
+  assert.match(PROXY_NETWORK_NAME, /^\$\{PROXY_NETWORK:\?[^{}]+\}$/, 'the required form: unset or empty stops every command with the message');
+  for (const [rel, model] of [['deploy/host/docker-compose.agent-history.yml', compose], ['deploy/host/docker-compose.document-pipeline.yml', pCompose]]) {
+    const text = read(rel);
+    assert.deepEqual(model.networks, { proxy: { external: true, name: PROXY_NETWORK_NAME } }, rel);
+    for (const s of Object.values(model.services)) assert.deepEqual(s.networks, ['proxy'], rel);
+    assert.deepEqual(text.match(/\$\{[^}]*\}?/g), [PROXY_NETWORK_NAME], `${rel}: the one interpolation in the file`);
+    assert.ok(text.includes('The name of that network is not in the repository: compose reads PROXY_NETWORK from .env next to this file'), `${rel}: the comment says where the name comes from`);
+  }
+  // Compose fills ${...} from the shell and from .env in the folder of the compose file. The env files of the stacks only fill the containers, and the
+  // env file does not exist before step 4, while step 3 builds with compose: so the name is in .env, and the examples say so instead of carrying it.
+  for (const [name, text, book, file] of [['Agent History', exampleText, runbook, 'RUNBOOK.md'], ['Document Pipeline', pExampleText, pRunbook, 'RUNBOOK-document-pipeline.md']]) {
+    assert.equal(/^PROXY_NETWORK=/m.test(text), false, `${name}: the env example does not carry the name, compose would not read it there`);
+    assert.ok(text.includes(`\n# The external network of the host's reverse proxy is not named here: compose reads PROXY_NETWORK from .env next to the compose file (${file} step 1).\n`), `${name}: the example points at .env`);
+    const one = section(book, '1. Put the files on the box');
+    assert.ok(one.includes("```sh\necho 'PROXY_NETWORK=<the network the host administrator names>' > .env\ndocker network inspect --format '{{.Name}}' \"$(sed -n 's/^PROXY_NETWORK=//p' .env)\"\n```"), `${name}: step 1 writes .env and checks that the network exists`);
+    assert.ok(one.includes('The second line must print the name back. An error means that this host has no network of that name.'), name);
+    assert.ok(book.indexOf("' > .env\n") > 0 && book.indexOf("' > .env\n") < book.indexOf('docker compose -f '), `${name}: before the first compose command`);
+    assert.ok(section(book, 'If something goes wrong').includes('| `required variable PROXY_NETWORK is missing a value` | There is no `.env` in this folder, or it gives `PROXY_NETWORK` no value. | Write it as in step 1. |'), `${name}: the failure table has the refusal`);
+    assert.doesNotMatch(book, /`network [a-z0-9_.-]+ declared as external/, `${name}: the failure table names no network`);
+  }
+  // .env holds no secret, but it is the host's: it never enters git or a build context.
+  assert.ok(read('.gitignore').split('\n').includes('.env'));
+  assert.ok(read('.dockerignore').split('\n').includes('**/.env'));
+  assert.ok(readme.includes('Its name is not in the repository: compose reads it as `PROXY_NETWORK` from `.env` next to the compose file, which the operator writes in step 1 of the runbook with the name the host administrator gives, and compose stops while it has no value.'));
+});
+
+const HAVE_COMPOSE = (() => { try { execFileSync('docker', ['compose', 'version'], { stdio: 'ignore', timeout: 30_000 }); return true; } catch { return false; } })();
+test('the network in docker compose config: with PROXY_NETWORK in .env the external network has that name, and with no .env or an empty value compose stops and says where to set it', { skip: HAVE_COMPOSE ? false : 'needs docker compose' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'compose-network-'));
+  // A PROXY_NETWORK of the shell would win over .env, so the runs here have none.
+  const { PROXY_NETWORK: _shell, ...env } = process.env;
+  try {
+    for (const f of ['docker-compose.agent-history.yml', 'docker-compose.document-pipeline.yml']) copyFileSync(join(root, 'deploy/host', f), join(dir, f));
+    // Both compose files require their env file; the examples stand in for them, since compose reads them for the containers only.
+    copyFileSync(join(root, 'deploy/host/.env.agent-history.example'), join(dir, '.env.agent-history'));
+    copyFileSync(join(root, 'deploy/host/.env.document-pipeline.example'), join(dir, '.env.document-pipeline'));
+    const config = (file) => spawnSync('docker', ['compose', '-f', file, 'config'], { cwd: dir, env, encoding: 'utf8', timeout: 120_000 });
+    for (const file of ['docker-compose.agent-history.yml', 'docker-compose.document-pipeline.yml']) {
+      rmSync(join(dir, '.env'), { force: true });
+      for (const dotenv of [null, 'PROXY_NETWORK=\n']) {
+        if (dotenv !== null) writeFileSync(join(dir, '.env'), dotenv);
+        const refused = config(file);
+        assert.notEqual(refused.status, 0, `${file}: compose stops with ${dotenv === null ? 'no .env' : 'an empty value'}`);
+        assert.ok(refused.stderr.includes('set PROXY_NETWORK in .env next to this compose file'), `${file}: and says where to set it: ${refused.stderr}`);
+      }
+      writeFileSync(join(dir, '.env'), 'PROXY_NETWORK=test_proxy_network\n');
+      const run = config(file);
+      assert.equal(run.status, 0, `${file}: ${run.stderr}`);
+      const model = parseYaml(run.stdout);
+      assert.deepEqual(model.networks, { proxy: { name: 'test_proxy_network', external: true } }, file);
+      for (const [name, s] of Object.entries(model.services)) assert.deepEqual(Object.keys(s.networks), ['proxy'], `${file}: ${name}`);
+      assert.equal(run.stdout.includes('PROXY_NETWORK'), false, `${file}: the name goes to the network, not into a container`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- Step 5 of both runbooks, run in bash ----
+// The copy of Agent History is made from the operator's existing identity scripts, which the repository does not name: its block opens with three settings
+// for them. Stand-ins for the six scripts carry the folder, the env file, the label and the registry record of the agent they were written for. The copy of
+// Agent History is made from them by the block of RUNBOOK.md, the copy of the Pipeline from that copy by the block of RUNBOOK-document-pipeline.md, and each
+// copy must hold its own paths and values and nothing of what it was made from.
+test('step 5 of both runbooks in bash: the copy of Agent History is made from stand-ins for the existing identity scripts, the copy of the Pipeline from it, and each holds only its own paths and values', NEEDS_BASH, () => {
+  const ahBlock = /```sh\n([\s\S]*?)```/.exec(section(runbook, '5. Adapt the ops scripts'))?.[1] ?? '';
+  const dpBlock = /```sh\n([\s\S]*?)```/.exec(section(pRunbook, '5. Adapt the ops scripts'))?.[1] ?? '';
+  const SETTINGS = ['SRC=<the folder of the existing identity scripts>\n', 'SRC_ENV=<the env file those scripts read>\n', 'SRC_LABEL=<the supplier name in make-skey.py>\n'];
+  assert.ok(ahBlock.startsWith(SETTINGS.join('')), 'the block of Agent History opens with the three settings the operator fills');
+  assert.ok(dpBlock.startsWith('mkdir -p "$BASE/ops" && cd "$BASE/ops"\n'), 'the block of the Pipeline needs only BASE and HISTORY_BASE');
+  const dir = mkdtempSync(join(tmpdir(), 'ops-step5-'));
+  try {
+    const at = (...parts) => [dir.split(sep).join('/'), ...parts].join('/');
+    // The base paths have the shape the runbooks give them, so that the check of the Pipeline for a name of Agent History left in its copy has something to find.
+    const AH = at('opt', 'agent-history');
+    const DP = at('opt', 'document-pipeline');
+    const SRC = at('existing', 'ops');
+    const SRC_ENV = at('existing', 'supplier', '.env.existing');
+    const LABEL = 'existing supplier';
+    mkdirSync(join(dir, 'existing', 'ops'), { recursive: true });
+    const header = `# the scripts of ${SRC}, for the env file ${SRC_ENV}\n`;
+    const stand = {
+      'setup-venv.sh': `#!/bin/sh\n${header}echo "venv ok"\n`,
+      'make-skey.py': `${header}KEY_DESCRIPTION = "${LABEL} payment key"\nWALLET = "${SRC}/wallet"\n`,
+      'mcp-call.sh': `#!/bin/sh\n${header}`,
+      'sign-tx.py': header,
+      'register-did.sh': `#!/bin/sh\n${header}. ${SRC_ENV}\nBODY='{\n "name":"Existing Agent",\n "description":"What the existing agent does.",\n "capabilities":["existing.capability.v1"],\n "framework":"existing-framework",\n "endpoint":"https://existing.example"}'\n`,
+      'm3-self-stake.py': `${header}CAPABILITIES = ["existing.capability.v1"]\n`,
+    };
+    for (const [name, text] of Object.entries(stand)) writeFileSync(join(dir, 'existing', 'ops', name), text);
+    const copyOf = (base) => Object.fromEntries(Object.keys(stand).map((name) => [name, readFileSync(`${base}/ops/${name}`, 'utf8')]));
+    const descOf = (book) => /^DESC="(.+)"$/m.exec(section(book, '5. Adapt the ops scripts'))[1];
+    const record = (copy, values) => { for (const line of values) assert.ok(copy['register-did.sh'].includes(line + '\n') || copy['register-did.sh'].includes(line + "'"), `register-did.sh has ${line}`); };
+
+    const filled = ahBlock.replace(SETTINGS[0], `SRC='${SRC}'\n`).replace(SETTINGS[1], `SRC_ENV='${SRC_ENV}'\n`).replace(SETTINGS[2], `SRC_LABEL='${LABEL}'\n`);
+    const ah = runBash(`set -e\nBASE='${AH}'\n${filled}`, dir);
+    assert.equal(ah.status, 0, ah.stderr);
+    assert.match(ah.stdout, /venv ok/, 'setup-venv.sh of the copy ran');
+    const ahCopy = copyOf(AH);
+    const ahText = Object.values(ahCopy).join('\n');
+    for (const gone of [SRC, SRC_ENV, LABEL, 'Existing Agent', 'What the existing agent does.', 'existing.capability.v1', 'existing-framework', 'https://existing.example']) assert.equal(ahText.includes(gone), false, `the copy of Agent History keeps nothing of the scripts it was made from: ${gone}`);
+    record(ahCopy, [' "name":"Agent History",', ` "description":"${descOf(runbook)}",`, ' "capabilities":["identity.history.report.v1"],', ' "framework":"vector-service-agents",', ' "endpoint":"https://mp-suppliers-history.hal8.ai"}']);
+    assert.ok(ahCopy['m3-self-stake.py'].includes('CAPABILITIES = ["identity.history.report.v1"]\n'));
+    assert.ok(ahCopy['make-skey.py'].includes('KEY_DESCRIPTION = "agent-history supplier payment key"\n') && ahCopy['make-skey.py'].includes(`WALLET = "${AH}/ops/wallet"\n`));
+    assert.ok(ahCopy['register-did.sh'].includes(`. ${AH}/repo/deploy/host/.env.agent-history\n`), 'the scripts read the env file of Agent History');
+
+    const dp = runBash(`BASE='${DP}'\nHISTORY_BASE='${AH}'\n${dpBlock}`, dir);
+    assert.equal(dp.stderr, '');
+    assert.equal(dp.status, 1, 'the last grep, for a name of Agent History, finds nothing');
+    assert.doesNotMatch(dp.stdout, /^[\w-]+\.(sh|py)$/m, 'and prints no file');
+    const dpCopy = copyOf(DP);
+    assert.equal(/agent.history/i.test(Object.values(dpCopy).join('\n')), false, 'nothing of Agent History is left in the copy of the Pipeline');
+    record(dpCopy, [' "name":"Document Pipeline",', ` "description":"${descOf(pRunbook)}",`, ' "capabilities":["document.pipeline.ocr-summary.v1"],', ' "framework":"vector-service-agents",', ' "endpoint":"https://mp-suppliers-pipeline.hal8.ai"}']);
+    assert.ok(dpCopy['m3-self-stake.py'].includes('CAPABILITIES = ["document.pipeline.ocr-summary.v1"]\n'));
+    assert.ok(dpCopy['make-skey.py'].includes('KEY_DESCRIPTION = "document-pipeline supplier payment key"\n') && dpCopy['make-skey.py'].includes(`WALLET = "${DP}/ops/wallet"\n`));
+    assert.ok(dpCopy['register-did.sh'].includes(`. ${DP}/repo/deploy/host/.env.document-pipeline\n`), 'the scripts read the env file of the Pipeline');
+    assert.deepEqual(copyOf(AH), ahCopy, 'the copy of Agent History is left as it was');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the paths on the box: each runbook sets its base paths once, at the top, as folders the operator chooses, and every path on the box below goes through them', () => {
+  for (const [name, book, block] of [['Agent History', runbook, '```sh\nBASE=/opt/agent-history\n```'], ['Document Pipeline', pRunbook, '```sh\nBASE=/opt/document-pipeline\nHISTORY_BASE=/opt/agent-history\n```']]) {
+    const top = book.slice(0, book.indexOf('\n## Collateral and float\n'));
+    assert.ok(top.includes(block), `${name}: the variables are set at the top`);
+    assert.equal(book.split('/opt/').length, block.split('/opt/').length, `${name}: no other absolute path on the box`);
+    assert.ok(book.indexOf(block) < book.indexOf('"$BASE'), `${name}: before the first command that uses them`);
+  }
+  assert.ok(runbook.includes('The commands on the box use `BASE`: the folder the operator chose for this agent, with the checkout of this repository in `repo` and the ops scripts in `ops`. Any path works. Set it in every new shell on the box before the commands below:'));
+  assert.ok(pRunbook.includes('The commands use the two base paths as variables. Set both in every new shell on the box before the commands below:'));
+  // The note of the host administrator gives the folder as a placeholder, and the copy of Agent History names its source in three settings that the operator fills.
+  assert.equal(readme.includes('/opt/'), false);
+  assert.ok(section(runbook, '5. Adapt the ops scripts').includes("Operator. The identity steps use the operator's existing identity scripts (registration, stake, signing), kept outside the repository."));
+});
+
+// The host, the stack of its reverse proxy, the other stacks it runs (the activity decoder by its container on the host), a login and a key file.
+// Built from parts, so that this file does not hold them either. No public hostname is among them: not the adverts', the indexer's or the hosted
+// server's, and not the public hostname of the activity decoder, which the design spec names. Its container on the host is.
+const HOST_WORDS = new RegExp(['apex' + '-web', 'uma' + 'mi', 'chandra' + '-supplier', 'activity' + '-api-mainnet', 'vector-agent' + '-dashboard', 'module3' + '-', 'module6' + '-', 'hetz' + 'ner', 'root' + '@', 'id_' + 'ed25519'].join('|'), 'i');
+const TRACKED = (() => { try { return execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean); } catch { return null; } })();
+test('the deployment host is not named: no tracked file names it, the stack of its reverse proxy, its other stacks, a login or a key file', { skip: TRACKED ? false : 'needs a git checkout' }, () => {
+  const files = TRACKED.filter((f) => f !== 'pnpm-lock.yaml' && !/\.(pdf|png)$/.test(f) && existsSync(join(root, f)));
+  assert.ok(files.length > 150 && files.includes('deploy/host/RUNBOOK.md') && files.includes('docs/superpowers/specs/2026-10-13-vector-service-agents-design.md'), `the walk reaches every tracked file, found ${files.length}`);
+  assert.deepEqual(files.filter((f) => HOST_WORDS.test(read(f))), []);
+  for (const hit of ['the apex' + '-web box', 'uma' + 'mi_default', '/opt/chandra' + '-supplier/ops', 'docker logs activity' + '-api-mainnet']) assert.match(hit, HOST_WORDS, hit);
+  for (const miss of ['mp-suppliers-history.hal8.ai', 'mp-suppliers-chandra.hal8.ai', 'ChandraOCR', 'mp-indexer.vector.apexfusion.org', 'https://activity' + '-api.vector.apexfusion.org', 'deploy/host']) assert.doesNotMatch(miss, HOST_WORDS, miss);
+  // No public hostname that a tracked file names trips a pattern.
+  const hostnames = new Set(files.flatMap((f) => read(f).match(/\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.(?:org|ai|io|com|net|dev|xyz)\b/gi) ?? []));
+  assert.ok(hostnames.has('activity' + '-api.vector.apexfusion.org') && hostnames.has('mp-indexer.vector.apexfusion.org'), 'the scan finds the public hostnames');
+  assert.deepEqual([...hostnames].filter((name) => HOST_WORDS.test(name)), []);
 });

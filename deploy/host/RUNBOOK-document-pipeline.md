@@ -1,8 +1,8 @@
-# Runbook: Document Pipeline on apex-web
+# Runbook: Document Pipeline on the deployment host
 
 Status: DEPLOYED since 2026-10-16. Nothing in this folder is LIVE. This runbook says what happens, in order. Steps 1 to 15 and 17 were run on 2026-10-16, and the first stop was watched the same day (the service was idle, the stop took 1 s, the exit code was 0). Step 16, the wallet monitor, is not used for this agent, as for Agent History.
 
-This is [RUNBOOK.md](RUNBOOK.md), the runbook of Agent History, written for the Document Pipeline. Agent History ran its runbook in full on 2026-10-14 and 2026-10-15, so the mechanics are proven, and this runbook keeps its structure and its numbers: step N here is step N there. Where a step is the same, it gives the commands with this agent's names, and RUNBOOK.md explains them. Where the Pipeline differs, the step says how. The notes of that deployment, with no secrets in them, are in `/opt/agent-history/DEPLOY-NOTES.md` on the box: read them before step 1.
+This is [RUNBOOK.md](RUNBOOK.md), the runbook of Agent History, written for the Document Pipeline. Agent History ran its runbook in full on 2026-10-14 and 2026-10-15, so the mechanics are proven, and this runbook keeps its structure and its numbers: step N here is step N there. Where a step is the same, it gives the commands with this agent's names, and RUNBOOK.md explains them. Where the Pipeline differs, the step says how. The notes of that deployment, with no secrets in them, are in `$HISTORY_BASE/DEPLOY-NOTES.md` on the box (the names table below says what `HISTORY_BASE` is): read them before step 1.
 
 What differs from Agent History, in one place:
 
@@ -17,13 +17,22 @@ The names used below:
 
 | Thing | Here |
 |---|---|
-| Base path on the box | `/opt/document-pipeline`: the repository in `repo`, the ops scripts in `ops` |
-| "This folder" | `/opt/document-pipeline/repo/deploy/apex-web` |
+| Base path on the box | `$BASE`, the folder the operator chose for this agent (any path works): the repository in `repo`, the ops scripts in `ops` |
+| Base path of Agent History | `$HISTORY_BASE`, the `BASE` of RUNBOOK.md: its ops scripts, its install script and the notes of its deployment |
+| "This folder" | `$BASE/repo/deploy/host` |
 | Compose file, env file | `docker-compose.document-pipeline.yml`, `.env.document-pipeline` |
 | Containers | `document-pipeline-agent` (the runtime), `document-pipeline-service` |
 | Ports | the runtime on `127.0.0.1:8084`, loopback only; the service on 9092, never published |
 | Public name | `mp-suppliers-pipeline.hal8.ai` |
 | State volume | `document-pipeline-state`, mounted at `/data` |
+| Network | the external network of the host's reverse proxy, named by `PROXY_NETWORK` in `.env` in this folder (step 1) |
+
+The commands use the two base paths as variables. Set both in every new shell on the box before the commands below:
+
+```sh
+BASE=/opt/document-pipeline
+HISTORY_BASE=/opt/agent-history
+```
 
 The operator holds the keys and does every step except two. Step 6 (the collateral and float of the two wallets) is the Foundation's. Step 10 (DNS and Caddy) is the host administrator's, see [README.md](README.md). Step 2 is the operator's here, because nothing is pulled from a registry. Every run of the agent is first-party until a buyer outside our control appears. A first-party run shows that the path works. It is not demand and it counts as no revenue.
 
@@ -44,7 +53,7 @@ The key of the first-party run (step 15) is a third key and gets no collateral o
 
 ## 1. Put the files on the box
 
-Operator. The box has no GitHub credentials, and the repository is private, so the repository goes over as a git bundle. On the operator's machine, in a checkout of `main` at the commit that was reviewed:
+Operator. The box has no GitHub credentials, so the repository goes over as a git bundle. On the operator's machine, in a checkout of `main` at the commit that was reviewed:
 
 ```sh
 git bundle create vector-service-agents.bundle main
@@ -55,22 +64,31 @@ scp vector-service-agents.bundle <user>@<box>:/tmp/
 On the box, as the user that runs Docker:
 
 ```sh
-mkdir -p /opt/document-pipeline && cd /opt/document-pipeline
+mkdir -p "$BASE" && cd "$BASE"
 git clone --branch main /tmp/vector-service-agents.bundle repo
-cd repo/deploy/apex-web
+cd repo/deploy/host
 git log -1 --oneline
 ```
 
-`--branch main` is needed: a bundle of `main` alone has no `HEAD`, and a plain clone of it checks nothing out. Check that the commit is the one that was reviewed. "This folder" below means `/opt/document-pipeline/repo/deploy/apex-web`.
+`--branch main` is needed: a bundle of `main` alone has no `HEAD`, and a plain clone of it checks nothing out. Check that the commit is the one that was reviewed. "This folder" below means `$BASE/repo/deploy/host`.
+
+Then name the network, as in step 1 of RUNBOOK.md: compose reads `PROXY_NETWORK`, the external network of the host's reverse proxy, from `.env` in this folder for every compose command (the first is in step 3), and stops while it has no value. It is the network Agent History is on, and the host administrator gives the name ([README.md](README.md)). In this folder:
+
+```sh
+echo 'PROXY_NETWORK=<the network the host administrator names>' > .env
+docker network inspect --format '{{.Name}}' "$(sed -n 's/^PROXY_NETWORK=//p' .env)"
+```
+
+The second line must print the name back. An error means that this host has no network of that name. `.env` holds no secret and is covered by the repository's `.gitignore`.
 
 ## 2. Build the service image and pin it
 
 Operator. Nothing is pulled from a registry for this agent, so there is no login. Build the image from the repository root, which is the build context:
 
 ```sh
-cd /opt/document-pipeline/repo
+cd "$BASE/repo"
 docker build -f agents/document-pipeline/Dockerfile -t ghcr.io/apex-fusion/vector-service-agents/document-pipeline:latest .
-cd deploy/apex-web
+cd deploy/host
 ```
 
 The build installs the workspace from the lockfile and `poppler-utils` with a base font, and takes a few minutes. CI publishes the same image under `:latest` and `:<full git commit sha>` once Actions can run; until it has, the box uses its own build.
@@ -102,16 +120,16 @@ This clones `vector-agent-template` at the pinned commit `c4c378a`, the commit o
 
 ## 4. Make the env file and generate the two keys
 
-Operator. The two keys and the token between the two containers are generated on the box and are never sent anywhere. Nothing secret is printed: each value is written into the env file, and only the lengths are shown. From here on the compose commands need the external network `umami_default`, which exists on the box.
+Operator. The two keys and the token between the two containers are generated on the box and are never sent anywhere. Nothing secret is printed: each value is written into the env file, and only the lengths are shown. From here on the compose commands need the external network of the host's reverse proxy (`PROXY_NETWORK` in `.env`, step 1), which exists on the box.
 
 This step makes things once and replaces nothing. The env file is made from the example only when there is none, and each key and the token are written only into an empty line. A block that is run a second time says `refusing:` and changes nothing, and that is the point: once a wallet holds units, a new key in its place is a lost wallet, and a copy of the example over the env file would replace both keys at once. To make a key again while its address has received nothing, empty its four lines by hand (the failure table says how) and run only the block of that key.
 
-The token is the value of `SERVICE_AUTH_HEADER`. The runtime sends it as the `authorization` header of every call to the service, and the service answers `POST /` only to a call that carries exactly that value (ruling R50), because other stacks share `umami_default` and a job posts escrows from the buyer wallet. Both containers read it from the env file, and neither blanks it. It is written in quotes, `SERVICE_AUTH_HEADER="Bearer <64 hex>"`: the ops scripts read the file with the shell's `.`, and without the quotes the shell would run the hex as a command and stop with exit 127. Docker Compose takes the quotes off, so the containers see `Bearer ` and the 64 hex digits, 71 characters.
+The token is the value of `SERVICE_AUTH_HEADER`. The runtime sends it as the `authorization` header of every call to the service, and the service answers `POST /` only to a call that carries exactly that value (ruling R50), because other stacks share the external network of the host's reverse proxy and a job posts escrows from the buyer wallet. Both containers read it from the env file, and neither blanks it. It is written in quotes, `SERVICE_AUTH_HEADER="Bearer <64 hex>"`: the ops scripts read the file with the shell's `.`, and without the quotes the shell would run the hex as a command and stop with exit 127. Docker Compose takes the quotes off, so the containers see `Bearer ` and the 64 hex digits, 71 characters.
 
 The first block makes the env file and defines the two functions that the next blocks use. It is safe to paste again, in any new shell: it makes the file only if there is none.
 
 ```sh
-cd /opt/document-pipeline/repo/deploy/apex-web
+cd "$BASE/repo/deploy/host"
 umask 077
 # keypair_into PREFIX makes one keypair with gen-keypair and writes its four values into the env file, as PREFIX_PRIV_KEY_HEX, PREFIX_PUB_KEY_HEX, PREFIX_PKH and PREFIX_ADDRESS.
 # It writes into an empty place only: it refuses when the file is not here or when the key already has a value, so a key that may hold units is never replaced.
@@ -147,17 +165,17 @@ fi
 Then the supplier key, the buyer key and the token, one block each. The buyer key has a block of its own, so that it can be made again alone, and no block touches a line that already has a value:
 
 ```sh
-cd /opt/document-pipeline/repo/deploy/apex-web
+cd "$BASE/repo/deploy/host"
 keypair_into SUPPLIER
 ```
 
 ```sh
-cd /opt/document-pipeline/repo/deploy/apex-web
+cd "$BASE/repo/deploy/host"
 keypair_into PIPELINE_BUYER
 ```
 
 ```sh
-cd /opt/document-pipeline/repo/deploy/apex-web
+cd "$BASE/repo/deploy/host"
 token_into
 ```
 
@@ -183,18 +201,18 @@ It must print 1: a value that does not start with an angle bracket.
 
 The example also carries the current status word and its date in `AGENT_STATUS_CHIP` and `AGENT_STATUS_SINCE`. On a first run, before any job has settled, set them to `proposed` and today's date: the status can honestly change only in step 17.
 
-Both keys are raw keypairs, and this file is the only copy of either until step 7. There is no recovery phrase, and nothing can derive a key again. Copy `.env.document-pipeline` to the operator's encrypted offline store now, before either address receives anything, and copy it again after any regeneration of a key or of the token: a copy made before holds the old key, and the new one has no copy at all. A wallet whose key is lost is gone, whatever the ledger shows for it. Step 7 writes a second plaintext copy of the supplier key to the directory `/opt/document-pipeline/ops/wallet`: from then on the supplier key is in two files on the box, and both are protected the same way. The buyer key never has a second copy on the box.
+Both keys are raw keypairs, and this file is the only copy of either until step 7. There is no recovery phrase, and nothing can derive a key again. Copy `.env.document-pipeline` to the operator's encrypted offline store now, before either address receives anything, and copy it again after any regeneration of a key or of the token: a copy made before holds the old key, and the new one has no copy at all. A wallet whose key is lost is gone, whatever the ledger shows for it. Step 7 writes a second plaintext copy of the supplier key to the directory `$BASE/ops/wallet`: from then on the supplier key is in two files on the box, and both are protected the same way. The buyer key never has a second copy on the box.
 
 ## 5. Adapt the ops scripts
 
-Operator. The identity steps use the ops scripts that Agent History already adapted from the chandra set, in `/opt/agent-history/ops` (RUNBOOK.md, step 5, says why they are not in this repository and why the signer is the byte-preserving one). Make a second adapted copy for the Pipeline, outside the git checkout, so that nothing they write can be committed. Only the six scripts are copied; the venv and the wallet directory of Agent History stay where they are:
+Operator. The identity steps use the ops scripts that Agent History already adapted from the operator's existing identity scripts, in `$HISTORY_BASE/ops` (RUNBOOK.md, step 5, says why they are not in this repository and why the signer is the byte-preserving one). Make a second adapted copy for the Pipeline, outside the git checkout, so that nothing they write can be committed. Only the six scripts are copied; the venv and the wallet directory of Agent History stay where they are:
 
 ```sh
-mkdir -p /opt/document-pipeline/ops && cd /opt/document-pipeline/ops
+mkdir -p "$BASE/ops" && cd "$BASE/ops"
 for f in setup-venv.sh make-skey.py mcp-call.sh sign-tx.py register-did.sh m3-self-stake.py; do
-  sed -e 's#/opt/agent-history/repo/deploy/apex-web/\.env\.agent-history#/opt/document-pipeline/repo/deploy/apex-web/.env.document-pipeline#g' \
-      -e 's#/opt/agent-history/ops#/opt/document-pipeline/ops#g' \
-      "/opt/agent-history/ops/$f" > "$f"
+  sed -e "s#$HISTORY_BASE/repo/deploy/host/\.env\.agent-history#$BASE/repo/deploy/host/.env.document-pipeline#g" \
+      -e "s#$HISTORY_BASE/ops#$BASE/ops#g" \
+      "$HISTORY_BASE/ops/$f" > "$f"
   chmod 755 "$f"
 done
 sed -i 's#agent-history supplier#document-pipeline supplier#g' make-skey.py
@@ -211,7 +229,7 @@ grep -n '^CAPABILITIES' m3-self-stake.py
 grep -il 'agent.history' *.sh *.py
 ```
 
-The first two `grep` lines must show the Document Pipeline values and nothing of Agent History, and the third must print nothing. The framework line is the same as for Agent History, `vector-service-agents`. The description is the manifest's, and the registry takes at most 256 characters of it (this one is 149). Then the Python environment. It is made first and `cbor2` pinned, because on 2026-10-14 pip resolved `cbor2` 6.1.5 for Agent History, which breaks `cbor2pure`, and its venv runs 5.6.5. `setup-venv.sh` then builds the rest of the environment and clones the Module-3 SDK into `/opt/document-pipeline/ops`:
+The first two `grep` lines must show the Document Pipeline values and nothing of Agent History, and the third must print nothing. The framework line is the same as for Agent History, `vector-service-agents`. The description is the manifest's, and the registry takes at most 256 characters of it (this one is 149). Then the Python environment. It is made first and `cbor2` pinned, because on 2026-10-14 pip resolved `cbor2` 6.1.5 for Agent History, which breaks `cbor2pure`, and its venv runs 5.6.5. `setup-venv.sh` then builds the rest of the environment and clones the Module-3 SDK into `$BASE/ops`:
 
 ```sh
 python3 -m venv venv
@@ -224,13 +242,13 @@ python3 -m venv venv
 
 ## 6. Supply the two wallets with their collateral and float
 
-The Foundation. Read the two addresses with `grep -E '^(SUPPLIER|PIPELINE_BUYER)_ADDRESS=' /opt/document-pipeline/repo/deploy/apex-web/.env.document-pipeline`, then send two separate transfers to each. The first is exactly 5 units, alone. Send the second only after the first has confirmed: 50 units to the supplier address, 100 units to the buyer address. Check both:
+The Foundation. Read the two addresses with `grep -E '^(SUPPLIER|PIPELINE_BUYER)_ADDRESS=' "$BASE/repo/deploy/host/.env.document-pipeline"`, then send two separate transfers to each. The first is exactly 5 units, alone. Send the second only after the first has confirmed: 50 units to the supplier address, 100 units to the buyer address. Check both:
 
 ```sh
-cd /opt/document-pipeline/repo/deploy/apex-web
+cd "$BASE/repo/deploy/host"
 for name in SUPPLIER_ADDRESS PIPELINE_BUYER_ADDRESS; do
   echo "== $name"
-  /opt/document-pipeline/ops/mcp-call.sh vector_get_utxos "{\"address\":\"$(sed -n "s/^$name=//p" .env.document-pipeline)\"}"
+  "$BASE/ops/mcp-call.sh" vector_get_utxos "{\"address\":\"$(sed -n "s/^$name=//p" .env.document-pipeline)\"}"
 done
 ```
 
@@ -241,15 +259,15 @@ Each address must list two outputs: one of exactly 5 units and one for the secon
 Operator. The same as step 7 of RUNBOOK.md, for the supplier key only. This costs a deposit of 10 units, refundable on deregistration, and a fee. Read the first gotcha at the end of RUNBOOK.md before the first run.
 
 ```sh
-cd /opt/document-pipeline/ops
-sed -i '/^AGENT_DID=$/d' /opt/document-pipeline/repo/deploy/apex-web/.env.document-pipeline
+cd "$BASE/ops"
+sed -i '/^AGENT_DID=$/d' "$BASE/repo/deploy/host/.env.document-pipeline"
 python3 make-skey.py
 ./register-did.sh
 ```
 
-The first line removes the empty `AGENT_DID=` line that came with the example: the script refuses to run when the name is already in the file, and it appends the real value. `make-skey.py` writes the signing key of the supplier, in the form the signer reads, into the directory `/opt/document-pipeline/ops/wallet` (`payment.skey` and `payment.vkey`, mode 600). `payment.skey` is a second plaintext copy of the supplier key, next to the one in the env file. Keep it as private as the env file, and remove it in Back out (point 5). The buyer key is not touched by any step here and has no second copy on the box. `register-did.sh` builds the registration on the hosted keyless MCP server, signs it locally with the byte-preserving signer, submits it, waits for it, and appends `AGENT_DID` and `AGENT_REGISTER_TX` to the env file. The record has the name `Document Pipeline`, the capability `document.pipeline.ocr-summary.v1`, the framework `vector-service-agents`, the endpoint `https://mp-suppliers-pipeline.hal8.ai` and the manifest's description.
+The first line removes the empty `AGENT_DID=` line that came with the example: the script refuses to run when the name is already in the file, and it appends the real value. `make-skey.py` writes the signing key of the supplier, in the form the signer reads, into the directory `$BASE/ops/wallet` (`payment.skey` and `payment.vkey`, mode 600). `payment.skey` is a second plaintext copy of the supplier key, next to the one in the env file. Keep it as private as the env file, and remove it in Back out (point 5). The buyer key is not touched by any step here and has no second copy on the box. `register-did.sh` builds the registration on the hosted keyless MCP server, signs it locally with the byte-preserving signer, submits it, waits for it, and appends `AGENT_DID` and `AGENT_REGISTER_TX` to the env file. The record has the name `Document Pipeline`, the capability `document.pipeline.ocr-summary.v1`, the framework `vector-service-agents`, the endpoint `https://mp-suppliers-pipeline.hal8.ai` and the manifest's description.
 
-Check: `grep -c '^AGENT_DID=did:vector:agent:' /opt/document-pipeline/repo/deploy/apex-web/.env.document-pipeline` prints 1. If the script stops with an error, read the first gotcha at the end of RUNBOOK.md before running it again. If it ends with `NOT CONFIRMED`, look at the explorer before running it again: the transaction may still land.
+Check: `grep -c '^AGENT_DID=did:vector:agent:' "$BASE/repo/deploy/host/.env.document-pipeline"` prints 1. If the script stops with an error, read the first gotcha at the end of RUNBOOK.md before running it again. If it ends with `NOT CONFIRMED`, look at the explorer before running it again: the transaction may still land.
 
 Record the identity in the repository. Once the check above prints 1, open a pull request that puts the DID and the registration transaction into the Identity section of `specs/document-pipeline.md` (the DID row, the "Registry record" row and the sentence that says the agent has a registry record), together with the test that pins them in `scripts/specs.test.mjs`. The status word does not change here. Step 17 is the only place that flips it.
 
@@ -258,7 +276,7 @@ Record the identity in the repository. Once the check above prints 1, open a pul
 Operator. The same as step 8 of RUNBOOK.md: this locks 10 units on the capability, refundable under the stake's own rules (a cooldown applies). Read the second gotcha at the end of RUNBOOK.md before the run.
 
 ```sh
-cd /opt/document-pipeline/ops
+cd "$BASE/ops"
 ./venv/bin/python m3-self-stake.py
 ```
 
@@ -271,7 +289,7 @@ Operator. Start `service` by name. A bare `docker compose up -d` also starts the
 First check the pin of step 2. The `image:` line of `service` must name a digest or an image ID of 64 hex digits in place of the placeholder, or compose stops with `invalid reference format`:
 
 ```sh
-cd /opt/document-pipeline/repo/deploy/apex-web
+cd "$BASE/repo/deploy/host"
 grep -E '^    image: (ghcr[.]io/apex-fusion/vector-service-agents/document-pipeline@sha256:|sha256:)[0-9a-f]{64}$' docker-compose.document-pipeline.yml
 ```
 
@@ -294,10 +312,10 @@ The log shows `[document-pipeline] listening on 0.0.0.0:9092; buyer address <the
 Host administrator, from [README.md](README.md) (the Document Pipeline section): the DNS record for `mp-suppliers-pipeline.hal8.ai`, DNS only, and the Caddy block, validated and reloaded. The block is merged by a copy of the install script of Agent History, which is idempotent and refuses while the name does not resolve to the box. The copy has this agent's vhost and snippet. Make it once, on the box:
 
 ```sh
-cd /opt/document-pipeline/ops
+cd "$BASE/ops"
 sed -e 's#^VHOST=.*#VHOST=mp-suppliers-pipeline.hal8.ai#' \
-    -e 's#^SNIPPET=.*#SNIPPET=/opt/document-pipeline/repo/deploy/apex-web/Caddyfile.document-pipeline.snippet#' \
-    /opt/agent-history/ops/install-caddy-route.sh > install-caddy-route.sh
+    -e "s#^SNIPPET=.*#SNIPPET=$BASE/repo/deploy/host/Caddyfile.document-pipeline.snippet#" \
+    "$HISTORY_BASE/ops/install-caddy-route.sh" > install-caddy-route.sh
 chmod 755 install-caddy-route.sh
 grep -nE '^(VHOST|SNIPPET|MARKER)=' install-caddy-route.sh
 ```
@@ -318,10 +336,10 @@ It must return the manifest of step 9, byte for byte. `/healthz` on the public n
 
 ## 11. Hash the manifest
 
-Operator. As in step 11 of RUNBOOK.md. Run it from the root of the repository checkout, on any machine with Node 22; the script only fetches public bytes. On the box the root is `/opt/document-pipeline/repo`:
+Operator. As in step 11 of RUNBOOK.md. Run it from the root of the repository checkout, on any machine with Node 22; the script only fetches public bytes. On the box the root is `$BASE/repo`:
 
 ```sh
-cd /opt/document-pipeline/repo
+cd "$BASE/repo"
 node scripts/manifest-hash.mjs https://mp-suppliers-pipeline.hal8.ai
 ```
 
@@ -332,7 +350,7 @@ It prints one JSON line with `detail_uri`, `detail_hash` and `bytes`. Cross-chec
 Operator. From this folder. As in step 12 of RUNBOOK.md, with the terms of the Pipeline. Set the hash, then run once with `--dry-run` and read the datum it prints: the capability, the model `document-pipeline-v1`, `max_processing_ms` 1800000, the price 5000000 and both bonds at 1000000, the endpoint, the detail URI, the hash and `status` Active. A dry run sends nothing.
 
 ```sh
-cd /opt/document-pipeline/repo/deploy/apex-web
+cd "$BASE/repo/deploy/host"
 DETAIL_HASH=<the 64 hex digits from step 11>
 printf '%s' "$DETAIL_HASH" | grep -Eq '^[0-9a-f]{64}$' || echo "not a sha256 hash"
 docker compose -f docker-compose.document-pipeline.yml run --rm --no-deps -T agent \
@@ -443,7 +461,7 @@ Add the run to the Results table in docs/E2E.md and keep the evidence of the run
 Operator, after step 15 and while no job is running. On SIGTERM (`docker stop` sends it) the service takes no new job and waits up to 300 s for the one that is running, its Accept included, then exits 0, or 1 if it had to abandon that job. Docker allows 30 s more than the service waits (`stop_grace_period: 330s`), so that a job abandoned at the end of the wait is logged and the exit code is the service's. That works only if the signal reaches the service through the image's `tini`, which runs it as one process, `node --import tsx`, with no child to relay the signal, and a stop that kills a running job strands the escrows it posted for the janitor. So watch one stop now, with nothing at stake, before step 17 stops the service for real:
 
 ```sh
-cd /opt/document-pipeline/repo/deploy/apex-web
+cd "$BASE/repo/deploy/host"
 curl -s http://127.0.0.1:8084/status
 time docker compose -f docker-compose.document-pipeline.yml stop service
 docker logs --tail 5 document-pipeline-service
@@ -470,13 +488,13 @@ The status is in the manifest, so changing it changes the bytes the advert hashe
 5. Hash the new manifest (step 11).
 6. Post the new advert (step 12). The new `ADVERT_REF` replaces the old one in the env file.
 7. `docker compose -f docker-compose.document-pipeline.yml up -d --force-recreate agent`, then steps 13 and 14 again.
-8. In the repository, in a pull request, change every file that says PROPOSED about the Document Pipeline, and the tests that pin the word, and leave the other three agents' lines alone (their rows in the table of `README.md` and their specs). Find them with `grep -rIl PROPOSED --exclude-dir=node_modules --exclude-dir=.git .`. They are `specs/document-pipeline.md` (Status), `agents/document-pipeline/README.md`, `README.md` (the table), `docs/HIRE.md` and `docs/E2E.md` where they say it, `deploy/apex-web/README.md` (the Document Pipeline section), `deploy/apex-web/RUNBOOK-document-pipeline.md` (its first paragraph), the first lines of `deploy/apex-web/docker-compose.document-pipeline.yml` and `deploy/apex-web/Caddyfile.document-pipeline.snippet`, and `deploy/apex-web/.env.document-pipeline.example`. The code carries the word as a default too: the `proposed` default in `agents/document-pipeline/src/server.ts` and the manifest template `agents/document-pipeline/agent.json.template` (regenerate it from the code with `pnpm --filter @vsa/document-pipeline template`, never by hand), and the pins in `agents/document-pipeline/test/server.test.ts`. The tests are `agents/document-pipeline/test/spec.test.ts`, `scripts/specs.test.mjs` and `scripts/deploy.test.mjs`. They fail until all of the files agree. The new advert has a new reference: replace the old one wherever it is given as the current advert, and keep it in the Links section of the spec as the retired advert.
+8. In the repository, in a pull request, change every file that says PROPOSED about the Document Pipeline, and the tests that pin the word, and leave the other three agents' lines alone (their rows in the table of `README.md` and their specs). Find them with `grep -rIl PROPOSED --exclude-dir=node_modules --exclude-dir=.git .`. They are `specs/document-pipeline.md` (Status), `agents/document-pipeline/README.md`, `README.md` (the table), `docs/HIRE.md` and `docs/E2E.md` where they say it, `deploy/host/README.md` (the Document Pipeline section), `deploy/host/RUNBOOK-document-pipeline.md` (its first paragraph), the first lines of `deploy/host/docker-compose.document-pipeline.yml` and `deploy/host/Caddyfile.document-pipeline.snippet`, and `deploy/host/.env.document-pipeline.example`. The code carries the word as a default too: the `proposed` default in `agents/document-pipeline/src/server.ts` and the manifest template `agents/document-pipeline/agent.json.template` (regenerate it from the code with `pnpm --filter @vsa/document-pipeline template`, never by hand), and the pins in `agents/document-pipeline/test/server.test.ts`. The tests are `agents/document-pipeline/test/spec.test.ts`, `scripts/specs.test.mjs` and `scripts/deploy.test.mjs`. They fail until all of the files agree. The new advert has a new reference: replace the old one wherever it is given as the current advert, and keep it in the Links section of the spec as the retired advert.
 
 ## Back out
 
 To stop the agent, and as the first move of step 17. The order matters: the advert goes first, so that nobody can post an escrow against an agent that is about to stop. Then the service gets to finish what it holds, and only then do the containers stop.
 
-1. Retire the advert. Skip this point when `ADVERT_REF` in the env file is empty: no advert was posted, and there is nothing to retire (go on with point 2). Operator: the transaction is signed with the supplier key in the env file. If the runtime runs, check that `curl -s http://127.0.0.1:8084/status` says `free` (`working` means a job is in flight: wait for it). Without the runtime, from step 12 to step 13, no job can run. From `/opt/document-pipeline/repo/deploy/apex-web`:
+1. Retire the advert. Skip this point when `ADVERT_REF` in the env file is empty: no advert was posted, and there is nothing to retire (go on with point 2). Operator: the transaction is signed with the supplier key in the env file. If the runtime runs, check that `curl -s http://127.0.0.1:8084/status` says `free` (`working` means a job is in flight: wait for it). Without the runtime, from step 12 to step 13, no job can run. From `$BASE/repo/deploy/host`:
 
    ```sh
    docker compose -f docker-compose.document-pipeline.yml run --rm --no-deps -T agent \
@@ -486,9 +504,9 @@ To stop the agent, and as the first move of step 17. The order matters: the adve
 
    Wait for it to confirm. The units it locked come back.
 2. Let the service finish what it holds. Operator: `docker exec document-pipeline-service cat /data/stranded.json` prints `[]`, or lists only escrows whose `deliver_by` has not come yet: the janitor reclaims each one 5 s after its `deliver_by` and logs `janitor: reclaimed <escrow>: ...`. If `cat` says `No such file or directory`, no job has ever recorded an escrow and there is nothing to wait for. Stop the containers once the list is empty, or leave the rest for the next start of the service, which point 3 allows.
-3. Stop the containers, operator or host administrator: `docker compose -f docker-compose.document-pipeline.yml down`. The stop waits up to 300 s for a job that is running, and Docker 30 s more for the service to log what it left and exit. Never add `-v`, and never run `docker volume rm document-pipeline-state`: the volume holds `stranded.json`, the escrows that still lock the buyer's units, and the janitor of the next start reads it. `down` keeps it. The external network `umami_default` is not touched.
-4. Host administrator: remove the Caddy block from `/opt/umami/Caddyfile`, validate and reload ([README.md](README.md), the Document Pipeline section), and remove the DNS record if it will not be reused.
-5. Operator: the keys. The supplier key has a second plaintext copy that step 7 wrote, in two files of a directory: `shred -u /opt/document-pipeline/ops/wallet/payment.skey /opt/document-pipeline/ops/wallet/payment.vkey`, then `rmdir /opt/document-pipeline/ops/wallet` (`shred` does not take a directory, and `rmdir` refuses one that holds anything else). The env file still holds both keys, and so does the operator's offline store: keep both until both wallets are empty, because a wallet whose key is gone is gone. The buyer wallet is emptied last, with the buyer key, once `stranded.json` is empty (or was never written): its float and its collateral go back to the Foundation. No script of this pack does that: none signs with the buyer key, so the float stays in the wallet until the operator signs the transfer with the buyer key by other means (the byte-preserving signer pointed at a signing-key file made from the buyer key and shredded afterwards, as in the `store_write_failed` row of the table at the end). When the identity or the stake is withdrawn later, `python3 make-skey.py` writes the directory again from the env file for that signing, and it is removed again afterwards.
+3. Stop the containers, operator or host administrator: `docker compose -f docker-compose.document-pipeline.yml down`. The stop waits up to 300 s for a job that is running, and Docker 30 s more for the service to log what it left and exit. Never add `-v`, and never run `docker volume rm document-pipeline-state`: the volume holds `stranded.json`, the escrows that still lock the buyer's units, and the janitor of the next start reads it. `down` keeps it. The external network of the host's reverse proxy is not touched.
+4. Host administrator: remove the Caddy block from the host's Caddy configuration, validate and reload ([README.md](README.md), the Document Pipeline section), and remove the DNS record if it will not be reused.
+5. Operator: the keys. The supplier key has a second plaintext copy that step 7 wrote, in two files of a directory: `shred -u "$BASE/ops/wallet/payment.skey" "$BASE/ops/wallet/payment.vkey"`, then `rmdir "$BASE/ops/wallet"` (`shred` does not take a directory, and `rmdir` refuses one that holds anything else). The env file still holds both keys, and so does the operator's offline store: keep both until both wallets are empty, because a wallet whose key is gone is gone. The buyer wallet is emptied last, with the buyer key, once `stranded.json` is empty (or was never written): its float and its collateral go back to the Foundation. No script of this pack does that: none signs with the buyer key, so the float stays in the wallet until the operator signs the transfer with the buyer key by other means (the byte-preserving signer pointed at a signing-key file made from the buyer key and shredded afterwards, as in the `store_write_failed` row of the table at the end). When the identity or the stake is withdrawn later, `python3 make-skey.py` writes the directory again from the env file for that signing, and it is removed again afterwards.
 
 The registry identity and the Module-3 stake stay on the ledger until the operator withdraws them. The deposit returns on deregistration and the stake after its cooldown.
 
@@ -498,7 +516,7 @@ The registry identity and the Module-3 stake stay on the ledger until the operat
 |---|---|---|
 | The runtime restarts and its log says `missing required env var ADVERT_REF` | It was started before the advert existed. | `docker compose -f docker-compose.document-pipeline.yml stop agent`, finish step 12, then step 13. |
 | `/capability` shows an empty public key, or claims fail with `wrong_supplier` | `SUPPLIER_PUB_KEY_HEX` or `SUPPLIER_PKH` is empty in the env file. | Restore the four supplier lines from the offline copy of the env file (step 4), which holds them from one key, then recreate. Without a good copy, and only while the supplier address has received nothing, empty the four lines with `sed -i 's/^\(SUPPLIER_[A-Z_]*\)=.*/\1=/' .env.document-pipeline` and run only the supplier block of step 4 (the first block of that step first, in a new shell, to define the function). The block refuses a line that has a value, so it never replaces a key that holds units. Then refresh the offline copy and recreate. |
-| Jobs fail with `service_unreachable` | The runtime cannot reach the service, or its fetch gave up on silence. | `docker exec document-pipeline-agent printenv SERVICE_URL` must print `http://document-pipeline-service:9092/`. Check that both containers run and sit on `umami_default`. A failure at about 300 s into a job is the silence limit: the interim `102 Processing` lines of step 13 are not arriving. Report it with the logs of both containers. |
+| Jobs fail with `service_unreachable` | The runtime cannot reach the service, or its fetch gave up on silence. | `docker exec document-pipeline-agent printenv SERVICE_URL` must print `http://document-pipeline-service:9092/`. Check that both containers run and sit on the external network of the host's reverse proxy. A failure at about 300 s into a job is the silence limit: the interim `102 Processing` lines of step 13 are not arriving. Report it with the logs of both containers. |
 | Jobs fail with `service_http_401`, and the log of the service says `request refused: unauthorized (<n> since the last line of this kind)` | The runtime did not send the token the service holds: the two containers were created from different versions of the env file, or the line was changed after one of them started. | Run the comparison at the end of step 13: its two lines must be the same. If they differ, check that `/status` says `free`, then `up -d --force-recreate service` and `up -d --force-recreate agent`, and run the comparison again. The service logs this refusal once a minute at most, with the count since the last line, and never what the caller sent. |
 | The service container keeps restarting and `docker logs document-pipeline-service` says `environment variable OPERATOR_CONTACT is required` | The contact line in the env file is empty or missing. | Set it as in step 4, then `up -d --force-recreate service`. |
 | The same, and the log says `environment variable PIPELINE_BUYER_PRIV_KEY_HEX is required` | The buyer lines of the env file are empty: the buyer key block of step 4 was not run, or did not finish. | Run only the buyer key block of step 4 (the first block of that step first, in a new shell, to define the function; it leaves the file alone). It makes the key from a second `gen-keypair`, never from a copy of the supplier key, and it refuses while the buyer key line has a value. If it stopped half way, empty the four buyer lines while the address has received nothing, with `sed -i 's/^\(PIPELINE_BUYER_[A-Z_]*\)=.*/\1=/' .env.document-pipeline`, and run the block again. Never run the whole step again, and never copy the example over the env file: that replaces keys that hold units. Then refresh the offline copy and recreate. |
@@ -520,7 +538,8 @@ The registry identity and the Module-3 stake stay on the ledger until the operat
 | `janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest` | The supplier submitted a receipt that the job did not accept (it failed a check, or the job ran out of time). A Submitted escrow cannot be reclaimed, and the lock goes to the supplier when it releases. | Nothing brings it back. Read the log of that job for why it was not accepted. |
 | `janitor: the pass failed` or `janitor: kept <escrow>` with "its state could not be read" | The node or the indexer did not answer, or `stranded.json` could not be written. The janitor tries again every minute. | If it goes on for more than a few minutes, look at the disk and at the volume: a service that cannot write the file cannot record the escrows it posts. |
 | The env file changed and nothing happened | `restart` does not re-read it. | Once the runtime runs (step 13), check first that `curl -s http://127.0.0.1:8084/status` says `free`: a recreate stops the container, and a stop during a job can cut a job under escrow. Before step 13 no job can run. Then `up -d --force-recreate <service>`, and both containers after a change to `SERVICE_AUTH_HEADER`. |
-| `network umami_default declared as external, but could not be found` | Wrong host, or the umami stack is down. | Start the umami stack. |
+| `network <name> declared as external, but could not be found` | Wrong host, a wrong name in `.env`, or the stack of the host's reverse proxy is down. | Check the name in `.env` (step 1). If it is right, start the stack of the host's reverse proxy. |
+| `required variable PROXY_NETWORK is missing a value` | There is no `.env` in this folder, or it gives `PROXY_NETWORK` no value. | Write it as in step 1. |
 | `invalid reference format` for the service image | The placeholder `@sha256:<digest>` is still in the `image:` line of the compose file. | Pin the image, step 2. |
 | `No such image: sha256:...` for the service image | The pinned image is not on the box: it was pruned, or the pin came from another machine. | Build the image again (step 2). A new build has a new ID and can change the manifest, so take the hash of step 11 again and compare it with the advert's. |
 | The served `/agent.json` hashes differently from the advert's `detail_hash` | The manifest changed after the advert was posted: the env file, or a service image other than the one the advert was hashed with. | Retire the advert (Back out, point 1), then repeat steps 11, 12 and 13. |

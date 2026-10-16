@@ -829,7 +829,7 @@ test('the marketplace tools are said to be on the hosted mainnet server (33 tool
   }
   assert.equal(read('agent-history').match(/not on the hosted server/), null);
   // No file that once said it waits for a cutover says it now.
-  const waited = [['docs/HIRE.md', hire()], ['docs/E2E.md', e2e], ['deploy/apex-web/RUNBOOK.md', readFileSync(new URL('../deploy/apex-web/RUNBOOK.md', import.meta.url), 'utf8')], ['scripts/e2e-hire.mjs', script], ...Object.keys(AGENTS).map((name) => ['specs/' + name + '.md', read(name)])];
+  const waited = [['docs/HIRE.md', hire()], ['docs/E2E.md', e2e], ['deploy/host/RUNBOOK.md', readFileSync(new URL('../deploy/host/RUNBOOK.md', import.meta.url), 'utf8')], ['scripts/e2e-hire.mjs', script], ...Object.keys(AGENTS).map((name) => ['specs/' + name + '.md', read(name)])];
   assert.equal(waited.length, 8);
   for (const [name, text] of waited) assert.equal(text.match(WAITS_FOR_CUTOVER), null, name + ' still waits for a cutover');
 });
@@ -976,7 +976,7 @@ test('docs/E2E.md, specs/agent-history.md and the guide record the first-party r
   for (const heading of ['Status', 'How to hire it']) assert.ok(section(spec, heading).includes('One first-party job has settled, on 2026-10-15; it is not demand.'), heading);
   assert.ok(section(spec, 'Links').includes(`- First-party hire on 2026-10-15, verdict VERIFIED, made against the first advert: the post transaction ${explorerLink(RUN1.postTx)} and the accept transaction ${explorerLink(RUN1.acceptTx)} on the explorer, and the evidence in [${RUN1.evidence}](../${RUN1.evidence}).`));
   // Nothing that states where the agent stands says that no job settled or that no first-party run is recorded. Step 14 of the runbook is in the list too: since the flip of 2026-10-15 it names no word and no job.
-  const files = ['specs/agent-history.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md', 'deploy/apex-web/docker-compose.agent-history.yml', 'deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK.md'];
+  const files = ['specs/agent-history.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md', 'deploy/host/docker-compose.agent-history.yml', 'deploy/host/README.md', 'deploy/host/RUNBOOK.md'];
   for (const file of files) assert.equal(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8').match(/no job (has )?settled|no first-party run of the path is recorded/i), null, file);
   // The honesty box of the guide stays true: nobody outside the team has run the path.
   assert.ok(section(hire(), '10. Honesty box').includes('- No run of this path by someone outside the team is recorded yet. The first-party runs are in [docs/E2E.md](E2E.md).'));
@@ -1115,6 +1115,6 @@ test('docs/E2E.md, specs/document-pipeline.md and the guide record the first-par
   for (const heading of ['Status', 'How to hire it']) assert.ok(section(spec, heading).includes('One first-party job has settled, on 2026-10-16; it is not demand.'), heading);
   assert.ok(section(spec, 'Links').includes(`- First-party hire on 2026-10-16, verdict VERIFIED, made against the first advert: the post transaction ${explorerLink(DP_RUN.postTx)} and the accept transaction ${explorerLink(DP_RUN.acceptTx)} on the explorer, and the evidence in [${DP_RUN.evidence}](../${DP_RUN.evidence}).`));
   // Nothing that states where the agent stands says that no job settled or that no first-party run is recorded.
-  const files = ['specs/document-pipeline.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/document-pipeline/README.md', 'deploy/apex-web/docker-compose.document-pipeline.yml', 'deploy/apex-web/README.md', 'deploy/apex-web/RUNBOOK-document-pipeline.md'];
+  const files = ['specs/document-pipeline.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/document-pipeline/README.md', 'deploy/host/docker-compose.document-pipeline.yml', 'deploy/host/README.md', 'deploy/host/RUNBOOK-document-pipeline.md'];
   for (const file of files) assert.equal(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8').match(/no job (has )?settled|no first-party run of the path is recorded/i), null, file);
 });

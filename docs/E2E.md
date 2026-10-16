@@ -51,7 +51,7 @@ node scripts/e2e-hire.mjs
 
 ## Hiring Document Pipeline
 
-The script hires any agent whose advert is among the free suppliers of `CAPABILITY_ID`, with the same steps. Document Pipeline has been advertised since 2026-10-16, and its first first-party run settled that day (see [Results](#results)). A first-party run of it uses these settings in place of the advert and the request of Agent History, in the shell that holds the key. [deploy/apex-web/RUNBOOK-document-pipeline.md](../deploy/apex-web/RUNBOOK-document-pipeline.md) step 15 is the operator's order of work.
+The script hires any agent whose advert is among the free suppliers of `CAPABILITY_ID`, with the same steps. Document Pipeline has been advertised since 2026-10-16, and its first first-party run settled that day (see [Results](#results)). A first-party run of it uses these settings in place of the advert and the request of Agent History, in the shell that holds the key. [deploy/host/RUNBOOK-document-pipeline.md](../deploy/host/RUNBOOK-document-pipeline.md) step 15 is the operator's order of work.
 
 ```bash
 export CAPABILITY_ID=document.pipeline.ocr-summary.v1
