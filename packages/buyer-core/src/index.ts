@@ -23,11 +23,11 @@ export { VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from './vendor
 export { ocrPromptHash, ocrResponseHash, responsesPromptHash, responsesResponseHash, responsesOutputText, requestSpecHash } from './commitments.ts';
 export { planFleetPostEscrow, buildFleetPostEscrow } from './fleet-build.ts';
 export type { FleetPostPlan } from './fleet-build.ts';
-export { createRealChain, TxNotConfirmedError } from './chain.ts';
+export { createRealChain, AcceptWindowClosedError, TxBuildTimeoutError, TxNotConfirmedError, BUILD_TIMEOUT_MS, AWAIT_TIMEOUT_MAX_MS } from './chain.ts';
 export type { Chain, ChainEscrowState, PostResult, RealChainOptions } from './chain.ts';
 export { FakeChain } from './fake-chain.ts';
 export type { FakeChainOptions } from './fake-chain.ts';
-export { feeOfSignedTx } from './fees.ts';
+export { feeOfSignedTx, TX_FEE_BUDGET_LOVELACE } from './fees.ts';
 export { readCapability, probeStatus, sendOcrJob, sendResponsesJob, pollOcrJob, pollResponsesJob } from './fleet-clients.ts';
 export type { FetchLike, SupplierCapability, Receipt, SendResult, PollResult } from './fleet-clients.ts';
 export { selectLlmSupplier, findOcrAdvert, LLM_SELECTION_BUDGET_MS, LLM_SELECTION_MAX_CANDIDATES } from './select-supplier.ts';

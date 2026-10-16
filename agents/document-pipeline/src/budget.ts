@@ -1,7 +1,8 @@
 // agents/document-pipeline/src/budget.ts
 // The time and money rules of a run, in one place. The deadline is the orchestrator's own: the server sets it 1620000 ms after the request arrives,
 // 60 s inside the runtime's SERVICE_TIMEOUT_MS, so that a run answers, with a result or a refusal, before the runtime gives up on it. It does so
-// except where a Post or an Accept is confirming, which the deadline does not cut (see below).
+// except where something the deadline does not cut is still under way when it comes: a Post or an Accept confirming, the repeats of an Accept, a send,
+// a poll or a read of the chain in flight (see below).
 //
 // What one hire waits for, part by part (ruling R40): its Post confirmed (up to 180 s, the chain's own wait), the supplier's Claim (up to 60 s, before
 // it answers the send), the work (up to 240 s for an OCR page, 180 s for the chat job), the supplier's Submit (about 30 s), the hash of the receipt
@@ -13,11 +14,18 @@
 // What the deadline cuts is what the run waits for on its own: the repeats of a send, the polls, the repeats of a read of the receipt hash, and the
 // pauses between them (fit, checkWithin and waitWithin below). Past the deadline none of them starts again, and the run fails with `deadline`, the escrows it
 // leaves behind going to the janitor. The deadline does not cut the confirmation of a Post or of an Accept: Chain.postEscrow and Chain.accept take no
-// deadline, and RealChain waits up to 180 s for each (awaitTimeoutMs). So a hire in its Accept at the deadline runs on, and its Accept completes or is
-// left accept_pending; the next hop then fails with `deadline` (assertTimeLeft), or, after the chat job, the run still answers, which can be after
-// the runtime has given up on it (60 s after the deadline at the latest). The tests of "the deadline" in test/orchestrate.test.ts show each of these.
+// deadline, and RealChain gives each up to 60 s to build and 180 s to submit and confirm. Nor does it cut the repeats of an Accept that failed in a way
+// that cannot land, every 15 s for up to 600 s after the supplier's answer (ruling R54). So a hire in its Accept at the deadline runs on, and its Accept
+// completes, is left accept_pending or fails accept_failed; the next hop then fails with `deadline` (assertTimeLeft), or, after the chat job, the run
+// still answers, which can be after the runtime has given up on it (60 s after the deadline at the latest). A call already under way when the deadline
+// comes is not cut either: a send in flight (up to 75 s), a poll in flight (up to 20 s) and a read of the chain each end when they end. The tests of
+// "the deadline" in test/orchestrate.test.ts show the waits that are cut and the transactions that are not.
 //
-// What a run may lock is checked before the first Post: the collateral output, and a float for every sub-job it could post.
+// What a run may lock is checked before the first Post: the collateral output, and a float for every sub-job it could post. The gate needs no supplier
+// (the health check makes it too): FLOAT_PER_SUB_JOB_LOVELACE assumes adverts priced at or under the price ceilings of the service (1000000 lovelace
+// each by default, src/start.ts) with bonds of 1000000 and 1000000, so a lock of at most 3000000 and two fees of at most 500000 each, under 4500000. Once
+// both suppliers are chosen, a second look checks the float against the locks their adverts really take (src/orchestrate.ts): larger bonds, or a
+// ceiling raised above that, are caught there.
 import { PipelineError } from './result.ts';
 
 /** How long after its request arrived a run must be over: the server sets the deadline of each request to its arrival plus this (see the head of this file). */
@@ -36,7 +44,10 @@ export const SEND_CUTOFF_MS = 90_000;
 export const POLL_INTERVAL_MS = 3_000;
 /** How long the hash of the supplier's Submit may take to show on chain once the supplier has answered with the receipt (Koios lag, ruling R16). */
 export const RECEIPT_HASH_WAIT_MS = 120_000;
-/** The float a run needs for each sub-job it could post, outside the collateral output; a run of `max_pages` posts up to max_pages + 1 of them. */
+/**
+ * The float a run needs for each sub-job it could post, outside the collateral output; a run of `max_pages` posts up to max_pages + 1 of them. It holds for
+ * adverts at or under the price ceilings with bonds of 1000000 each (see the head of this file); the second look of src/orchestrate.ts covers the rest.
+ */
 export const FLOAT_PER_SUB_JOB_LOVELACE = 4_500_000n;
 /** The most base64 the OCR supplier takes for one page. */
 export const OCR_IMAGE_B64_MAX = 12_000_000;

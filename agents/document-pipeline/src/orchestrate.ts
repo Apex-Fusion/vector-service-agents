@@ -6,18 +6,24 @@
 // output and a float of (max_pages + 1) x 4500000 lovelace outside it (insufficient_float, 503); the document is loaded and its pages rendered (a
 // RequestError of the intake passes through unchanged, ruling R28); each page's base64 must fit the OCR supplier's 12000000 characters (page_too_large,
 // ruling R27); the OCR supplier must be found and checked (ocr_supplier_unavailable, 503). Its advert is the one free advert of the allowlisted key the
-// indexer lists, read again on chain, where it must be an active OCR advert of that very key: the indexer is a guide, the chain is what an escrow pays.
-// Its /capability must serve the key of that advert, or no receipt of it could verify. The endpoint a job is sent to is the one on chain. The chat
-// supplier is chosen then too, before any page is paid for (ruling R35): the cheapest free allowlisted supplier, probed live (selectLlmSupplier),
-// whose advert is read on chain as well (llm_supplier_unavailable, 503).
+// indexer lists at a price at or under OCR_MAX_PRICE_LOVELACE, read again on chain, where it must be an active OCR advert of that very key at such a
+// price: the indexer is a guide, the chain is what an escrow pays. Its /capability must serve the key of that advert, or no receipt of it could verify.
+// The endpoint a job is sent to is the one on chain. The chat supplier is chosen then too, before any page is paid for (ruling R35): the cheapest free
+// allowlisted supplier at a price at or under LLM_MAX_PRICE_LOVELACE, probed live (selectLlmSupplier), whose advert is read on chain as well
+// (llm_supplier_unavailable, 503). Once both are known, and still before the first Post, the float is looked at again with the locks their adverts take
+// and the fees of a Post and an Accept for each sub-job (insufficient_float, 503, ruling R56).
+//
+// The first look at the float is a gate that needs no supplier, the one /healthz makes too: (max_pages + 1) x 4500000 assumes adverts priced at or under
+// the ceilings (1000000 each by default) with bonds of 1000000 and 1000000, whose lock is at most 3000000 and whose Post and Accept pay two fees of at
+// most 500000 each, under the 4500000 a sub-job is given. An advert with larger bonds, or a ceiling raised above that, is caught by the second look.
 //
 // Then the pages in order, none started with less than 660 s left before the deadline, and the chat job, not started with less than 420 s left
 // (ruling R40): its supplier is chosen again first when the first choice is more than 10 minutes old. The chat body is {input} and nothing else
 // (ruling R12). Its answer must be a completed response: one that is not is still verified and accepted (the supplier delivered), and the job fails
 // with llm_incomplete (ruling R11). Every escrow a failure leaves behind is in the stranded store, for the janitor.
 import {
-  findOcrAdvert, ocrPromptHash, ocrResponseHash, pollOcrJob, pollResponsesJob, readCapability, responsesOutputText, responsesPromptHash,
-  responsesResponseHash, selectLlmSupplier, sendOcrJob, sendResponsesJob,
+  findOcrAdvert, ocrPromptHash, ocrResponseHash, planFleetPostEscrow, pollOcrJob, pollResponsesJob, readCapability, responsesOutputText, responsesPromptHash,
+  responsesResponseHash, selectLlmSupplier, sendOcrJob, sendResponsesJob, LLM_SELECTION_BUDGET_MS, LLM_SELECTION_MAX_CANDIDATES, TX_FEE_BUDGET_LOVELACE,
 } from '@vsa/buyer-core';
 import type { Chain, SupplierCapability } from '@vsa/buyer-core';
 import { blake2b224Hex } from '@vsa/vector-read';
@@ -53,6 +59,10 @@ export interface Deps {
   llmAllowlist: readonly string[];
   /** The marketplace indexer; the configured one when absent. */
   indexerUrl?: string;
+  /** The most an OCR page may be priced at, in lovelace (OCR_MAX_PRICE_LOVELACE, ruling R56): an advert above it is not hired. */
+  ocrMaxPriceLovelace: bigint;
+  /** The most the chat job may be priced at, in lovelace (LLM_MAX_PRICE_LOVELACE, ruling R56). */
+  llmMaxPriceLovelace: bigint;
   stranded: StrandedStore;
   /** The moment (POSIX ms) the run must be over by: the server sets it 1620000 ms after the request arrived. */
   deadlineMs: number;
@@ -70,7 +80,7 @@ const keyOfAdvert = (capability: SupplierCapability, advert: AdvertDatum): boole
 /** Runs one job: see the head of this file. Resolves with the result bundle, or rejects with a PipelineError, a RequestError of the intake, or an Error of the machine (a renderer that cannot run, a store that cannot be written). */
 export async function runPipeline(req: PipelineRequest, deps: Deps): Promise<PipelineResult> {
   const check = req.task === 'extract' ? compileExtractionSchema(req.schema) : null;
-  await assertFunded(deps.chain, req.max_pages);
+  const wallet = await assertFunded(deps.chain, req.max_pages);
   const source = await loadSource(req, { fetchImpl: deps.fetchImpl });
   const { total, pages, mime } = await pagesOf(source, req.max_pages, deps.renderer);
   const imageMime = ocrMime(mime);
@@ -83,6 +93,7 @@ export async function runPipeline(req: PipelineRequest, deps: Deps): Promise<Pip
   const ocr = await ocrSupplier(deps);
   const label = req.task === 'summary' ? 'the summary' : 'the extraction';
   let llm = await llmSupplier(deps, label);
+  assertFloatCovers(wallet, ocr, llm, images.length, deps.clock());
   const chosenAt = deps.clock();
   const accounting = new Accounting();
 
@@ -138,14 +149,17 @@ export async function runPipeline(req: PipelineRequest, deps: Deps): Promise<Pip
   };
 }
 
+type Wallet = Awaited<ReturnType<Chain['wallet']>>;
+
 /**
- * The wallet pre-flight: a collateral output, and a float of (max_pages + 1) x 4500000 outside it. A wallet that cannot be read is not confirmed.
- * Exported for the server's health check, which asks it for a run of the most pages, so that /healthz and a job are held to the same rule.
+ * The wallet pre-flight: a collateral output, and a float of (max_pages + 1) x 4500000 outside it, the gate the head of this file explains. A wallet that
+ * cannot be read is not confirmed. Gives back the wallet it read, for the second look (assertFloatCovers). Exported for the server's health check, which
+ * asks it for a run of the most pages, so that /healthz and a job are held to the same gate.
  */
-export async function assertFunded(chain: Chain, maxPages: number): Promise<void> {
+export async function assertFunded(chain: Chain, maxPages: number): Promise<Wallet> {
   const needed = floatNeeded(maxPages);
   const jobs = `the ${maxPages + 1} sub-jobs of a run of ${maxPages} page${maxPages === 1 ? '' : 's'}`;
-  let wallet: Awaited<ReturnType<Chain['wallet']>>;
+  let wallet: Wallet;
   try { wallet = await chain.wallet(); } catch (err) {
     throw new PipelineError('insufficient_float', `The buyer wallet could not be read (${errorText(err)}), so its float of ${needed} lovelace for ${jobs} cannot be confirmed. Nothing was spent.`, 503);
   }
@@ -154,6 +168,36 @@ export async function assertFunded(chain: Chain, maxPages: number): Promise<void
   }
   if (wallet.floatLovelace < needed) {
     throw new PipelineError('insufficient_float', `The buyer wallet holds ${wallet.floatLovelace} lovelace outside its collateral, less than the ${needed} that ${jobs} need. Nothing was spent.`, 503);
+  }
+  return wallet;
+}
+
+/** The prompt hash a lock is planned with: the lock depends on the size of the escrow datum, and every prompt hash is 32 bytes of it. */
+const PLANNING_PROMPT_HASH = '0'.repeat(64);
+
+/** The lock a Post on the supplier's advert takes, planned as the Post plans it (planFleetPostEscrow); an advert no Post can be planned on is not hired. */
+function plannedLock(supplier: Supplier, buyerPkh: string, nowMs: number): bigint {
+  try {
+    return planFleetPostEscrow(supplier.advert, supplier.advertRef, buyerPkh, PLANNING_PROMPT_HASH, nowMs).lockLovelace;
+  } catch (err) {
+    const who = supplier.hop === 'ocr' ? 'The OCR supplier' : 'The chat supplier';
+    throw new PipelineError(`${supplier.hop}_supplier_unavailable`, `${who} cannot be hired: no Post can be planned on its advert ${supplier.advertRef} (${errorText(err)}). Nothing was spent.`, 503);
+  }
+}
+
+/**
+ * The second look at the float (ruling R56), once both suppliers are known and before the first Post: the lock of each sub-job as its advert plans it,
+ * `pages` times the OCR advert's and once the chat advert's, and the fee of a Post and of an Accept for each (TX_FEE_BUDGET_LOVELACE), against the float
+ * of the wallet the first look read. insufficient_float (503) when it does not cover them; nothing was spent then.
+ */
+function assertFloatCovers(wallet: Wallet, ocr: Supplier, llm: Supplier, pages: number, nowMs: number): void {
+  const fees = 2n * TX_FEE_BUDGET_LOVELACE;
+  const ocrLock = plannedLock(ocr, wallet.buyerPkh, nowMs);
+  const llmLock = plannedLock(llm, wallet.buyerPkh, nowMs);
+  const needed = BigInt(pages) * (ocrLock + fees) + llmLock + fees;
+  if (wallet.floatLovelace < needed) {
+    throw new PipelineError('insufficient_float', `The buyer wallet holds ${wallet.floatLovelace} lovelace outside its collateral, less than the ${needed} that the ${pages + 1} sub-jobs of this job take at the prices of the suppliers chosen: `
+      + `a lock of ${ocrLock} lovelace and two fees of ${TX_FEE_BUDGET_LOVELACE} for each of the ${pages} page${pages === 1 ? '' : 's'}, and a lock of ${llmLock} and two fees for the chat job. Nothing was spent.`, 503);
   }
 }
 
@@ -167,43 +211,61 @@ async function advertOnChain(chain: Chain, advertRef: string, unavailable: (why:
   try { return await chain.readAdvert(advertRef); } catch (err) { throw unavailable(`its advert ${advertRef} could not be read on chain (${errorText(err)})`); }
 }
 
-/** The OCR supplier: the allowlisted key's one free advert, checked on chain, and the key its /capability serves. ocr_supplier_unavailable (503) otherwise. */
+/** What an advert above its ceiling is said to be: its price, the ceiling, and the setting that holds it. */
+const aboveCeiling = (advertRef: string, price: bigint, ceiling: bigint, setting: string): string =>
+  `its advert ${advertRef} is priced ${price} lovelace, above the ceiling of ${ceiling} lovelace (${setting})`;
+
+/**
+ * The OCR supplier: the allowlisted key's one free advert at a price at or under the ceiling, checked on chain, and the key its /capability serves.
+ * ocr_supplier_unavailable (503) otherwise. When the indexer lists no such advert, it is read once more without the ceiling, so that an advert priced
+ * above it is named with its price rather than said not to be listed.
+ */
 async function ocrSupplier(deps: Deps): Promise<Supplier> {
   const pkh = deps.ocrAllowlistPkh.toLowerCase();
+  const ceiling = deps.ocrMaxPriceLovelace;
   const unavailable = (why: string) => new PipelineError('ocr_supplier_unavailable', `The allowlisted OCR supplier ${pkh} cannot be hired: ${why}. Nothing was spent.`, 503);
+  const find = (maxPriceLovelace?: bigint) => findOcrAdvert({ fetchImpl: deps.fetchImpl, indexerUrl: deps.indexerUrl, supplierPkh: pkh, ...(maxPriceLovelace === undefined ? {} : { maxPriceLovelace }) });
   let listed: Awaited<ReturnType<typeof findOcrAdvert>>;
-  try { listed = await findOcrAdvert({ fetchImpl: deps.fetchImpl, indexerUrl: deps.indexerUrl, supplierPkh: pkh }); } catch (err) {
+  try { listed = await find(ceiling); } catch (err) {
     throw unavailable(`the marketplace indexer could not be read (${errorText(err)})`);
   }
-  if (listed === null) throw unavailable(`the marketplace indexer lists no single free ${OCR_CAPABILITY} advert of it`);
+  if (listed === null) {
+    const priced = await find().catch(() => null);
+    if (priced !== null && priced.priceLovelace > ceiling) throw unavailable(aboveCeiling(canonicalRef(priced.advertRef), priced.priceLovelace, ceiling, 'OCR_MAX_PRICE_LOVELACE'));
+    throw unavailable(`the marketplace indexer lists no single free ${OCR_CAPABILITY} advert of it`);
+  }
   const advertRef = canonicalRef(listed.advertRef);
   const advert = await advertOnChain(deps.chain, advertRef, unavailable);
   if (advert.supplier_pkh !== pkh || advert.capability_id !== OCR_CAPABILITY || advert.status !== 'Active') {
     throw unavailable(`the advert ${advertRef} the indexer lists for it is not, on chain, an active ${OCR_CAPABILITY} advert of that key`);
   }
+  if (advert.price_lovelace > ceiling) throw unavailable(`on chain, ${aboveCeiling(advertRef, advert.price_lovelace, ceiling, 'OCR_MAX_PRICE_LOVELACE')}`);
   let capability: SupplierCapability;
   try { capability = await readCapability(advert.endpoint_url, deps.fetchImpl); } catch (err) { throw unavailable(`its /capability could not be read (${errorText(err)})`); }
   if (!keyOfAdvert(capability, advert)) throw unavailable('the key its /capability serves is not the key of its advert, so no receipt of it could verify');
-  return { hop: 'ocr', advertRef, capabilityId: advert.capability_id, model: advert.model, endpoint: advert.endpoint_url, pubKeyHex: capability.pub_key_hex, windowMs: advert.max_processing_ms };
+  return { hop: 'ocr', advertRef, advert, capabilityId: advert.capability_id, model: advert.model, endpoint: advert.endpoint_url, pubKeyHex: capability.pub_key_hex, windowMs: advert.max_processing_ms };
 }
 
-/** The chat supplier: the selection's choice, its advert checked on chain against it. llm_supplier_unavailable (503) otherwise. */
+/** The chat supplier: the selection's choice at a price at or under the ceiling, its advert checked on chain against it. llm_supplier_unavailable (503) otherwise. */
 async function llmSupplier(deps: Deps, label: string): Promise<Supplier> {
+  const ceiling = deps.llmMaxPriceLovelace;
   const unavailable = (why: string) => new PipelineError('llm_supplier_unavailable', `No chat supplier can be hired for ${label}: ${why}.`, 503);
   let chosen: Awaited<ReturnType<typeof selectLlmSupplier>>;
-  try { chosen = await selectLlmSupplier({ fetchImpl: deps.fetchImpl, indexerUrl: deps.indexerUrl, allowlist: deps.llmAllowlist, probe: true }); } catch (err) {
+  try { chosen = await selectLlmSupplier({ fetchImpl: deps.fetchImpl, indexerUrl: deps.indexerUrl, allowlist: deps.llmAllowlist, probe: true, maxPriceLovelace: ceiling }); } catch (err) {
     throw unavailable(`the marketplace indexer could not be read (${errorText(err)})`);
   }
   if (chosen === null) {
     // Null says none passed in time, not that none exists (ruling R22): the reasons are the selection's three.
-    throw unavailable(`the indexer lists no free ${LLM_CAPABILITY} advert whose model is on the allowlist (${deps.llmAllowlist.join(', ')}), or none of the first six such suppliers answered its /capability with the Responses API for its own advert and its /status with free, or the selection ran out of its 120 s`);
+    throw unavailable(`the indexer lists no free ${LLM_CAPABILITY} advert whose model is on the allowlist (${deps.llmAllowlist.join(', ')}) at a price at or under the ceiling of ${ceiling} lovelace (LLM_MAX_PRICE_LOVELACE), `
+      + `or none of the first ${LLM_SELECTION_MAX_CANDIDATES} such suppliers answered its /capability with the Responses API for its own advert and its /status with free, or the selection ran out of its ${LLM_SELECTION_BUDGET_MS / 1000} s`);
   }
   const advertRef = canonicalRef(chosen.advertRef);
   const advert = await advertOnChain(deps.chain, advertRef, unavailable);
   if (advert.capability_id !== LLM_CAPABILITY || advert.status !== 'Active' || advert.supplier_pkh !== chosen.supplierPkh.toLowerCase() || !deps.llmAllowlist.includes(advert.model)) {
     throw unavailable(`the advert ${advertRef} the selection chose is not, on chain, an active ${LLM_CAPABILITY} advert of the supplier the indexer names with a model on the allowlist`);
   }
+  if (advert.price_lovelace > ceiling) throw unavailable(`on chain, ${aboveCeiling(advertRef, advert.price_lovelace, ceiling, 'LLM_MAX_PRICE_LOVELACE')}`);
   if (withoutSlash(advert.endpoint_url) !== withoutSlash(chosen.endpoint)) throw unavailable(`the advert ${advertRef} names another endpoint on chain than the one the selection asked`);
   if (!keyOfAdvert(chosen.capability, advert)) throw unavailable(`the key the supplier of ${advertRef} serves is not the key of its advert, so no receipt of it could verify`);
-  return { hop: 'llm', advertRef, capabilityId: advert.capability_id, model: advert.model, endpoint: advert.endpoint_url, pubKeyHex: chosen.capability.pub_key_hex, windowMs: advert.max_processing_ms };
+  return { hop: 'llm', advertRef, advert, capabilityId: advert.capability_id, model: advert.model, endpoint: advert.endpoint_url, pubKeyHex: chosen.capability.pub_key_hex, windowMs: advert.max_processing_ms };
 }

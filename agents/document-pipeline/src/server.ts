@@ -378,7 +378,7 @@ export function createServer(opts: ServerOptions): Server {
     refusals = 0;
   };
   const manifestText = JSON.stringify(opts.manifest);
-  const monitor = new FloatMonitor(() => assertFunded(deps.chain, MAX_PAGES), deps.clock, opts.floatTtlMs ?? FLOAT_TTL_MS, opts.floatTimeoutMs ?? FLOAT_TIMEOUT_MS, log);
+  const monitor = new FloatMonitor(async () => { await assertFunded(deps.chain, MAX_PAGES); }, deps.clock, opts.floatTtlMs ?? FLOAT_TTL_MS, opts.floatTimeoutMs ?? FLOAT_TIMEOUT_MS, log);
   monitor.poke(); // the first check, at start
   return httpServer(async (req, res) => {
     const arrivedAt = deps.clock();

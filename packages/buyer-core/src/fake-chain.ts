@@ -7,9 +7,12 @@
 // returns the buyer bond and the lock-floor excess and pays its fee; a Reclaim returns the whole lock and pays its fee. The collateral is
 // never spent. A Reclaim opens where the vendored planReclaim opens it, at the first whole second strictly after deliver_by. A third hook,
 // failNextPost, makes the next Post fail the way RealChain's fails after the signature (a TxNotConfirmedError), for the caller that must keep
-// track of an escrow that may still land. Not modelled: the accept window after a Submit and the supplier's Release.
+// track of an escrow that may still land. Two more steer the Accept (ruling R54): failNextAccepts makes the next Accepts fail as a build that did not
+// complete fails (a plain Error, nothing sent) or with an error the test gives, and closeAcceptWindow makes every later Accept fail the way the vendored
+// planner refuses one after the window (AcceptWindowClosedError). Not modelled: the clock of the accept window after a Submit and the supplier's Release.
 import { formatOutRef, parseOutRef, sha256Utf8Hex } from '@vsa/vector-read';
 import type { AdvertDatum, EscrowDatum } from '@vsa/vector-read';
+import { AcceptWindowClosedError } from './chain.ts';
 import type { Chain, ChainEscrowState, PostResult, TxNotConfirmedError } from './chain.ts';
 import { planFleetPostEscrow } from './fleet-build.ts';
 import { enterpriseAddressOf } from './vendored/mcp/marketplace-build.ts';
@@ -51,6 +54,8 @@ export class FakeChain implements Chain {
   #float: bigint;
   #posts = 0;
   #failNextPost: TxNotConfirmedError | null = null;
+  #failingAccepts: Array<Error | null> = [];
+  #acceptWindowClosed = false;
 
   constructor(opts: FakeChainOptions = {}) {
     for (const [ref, advert] of Object.entries(opts.adverts ?? {})) this.#adverts.set(canonical(ref), advert);
@@ -92,6 +97,13 @@ export class FakeChain implements Chain {
   async accept(escrowRef: string): Promise<{ txHash: string; feeLovelace: bigint }> {
     const [ref, escrow] = this.#escrow(escrowRef);
     if (escrow.state !== 'Submitted') throw new Error(`FakeChain: escrow ${ref} is ${escrow.state}; Accept needs Submitted.`);
+    if (this.#acceptWindowClosed) {
+      throw new AcceptWindowClosedError(`Accept window closed at ${new Date(this.#clock()).toISOString()}; the supplier may now Release. (escrow ${ref})`);
+    }
+    if (this.#failingAccepts.length > 0) {
+      const failure = this.#failingAccepts.shift() ?? null;
+      throw failure ?? new Error(`FakeChain: the Accept of escrow ${ref} could not be built (test hook).`);
+    }
     escrow.state = 'spent';
     const d = escrow.datum;
     const excess = FakeChain.LOCK_LOVELACE - (d.payment_lovelace + d.buyer_bond_lovelace + d.supplier_bond_lovelace);
@@ -133,6 +145,21 @@ export class FakeChain implements Chain {
    */
   failNextPost(error: TxNotConfirmedError): void {
     this.#failNextPost = error;
+  }
+
+  /**
+   * Test hook, Accepts that fail: the next `times` Accepts of a Submitted escrow throw `error`, or, without one, a plain Error as a build that did not
+   * complete throws (nothing was sent). They change nothing: the escrow stays Submitted and the float does not move. The Accept after them is an
+   * ordinary one.
+   */
+  failNextAccepts(times: number, error?: Error): void {
+    if (!Number.isSafeInteger(times) || times < 1) throw new RangeError('FakeChain: failNextAccepts takes a whole number of at least 1.');
+    for (let i = 0; i < times; i++) this.#failingAccepts.push(error ?? null);
+  }
+
+  /** Test hook, the end of the accept window: from now on every Accept of a Submitted escrow throws AcceptWindowClosedError, as the vendored planner does. */
+  closeAcceptWindow(): void {
+    this.#acceptWindowClosed = true;
   }
 
   /** Test hook, the supplier's Claim: Open becomes Claimed. */

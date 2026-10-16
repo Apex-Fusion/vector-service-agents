@@ -315,9 +315,18 @@ describe.each(POLLERS)('$name', ({ path, pollFor, done }) => {
     expect(f.calls).toHaveLength(0);
   });
 
-  it('a 404 is gone: the supplier restarted or evicted the job', async () => {
-    expect(await poll(ENDPOINT, JOB, route(json(404, { reason: 'job_not_found', message: `no job found with id ${JOB}` })).fetchImpl)).toStrictEqual({ kind: 'gone' });
-    expect(await poll(ENDPOINT, JOB, route(text(404, 'not found')).fetchImpl)).toStrictEqual({ kind: 'gone' });
+  it('a 404 with the envelope of the supplier, reason job_not_found, is gone: the supplier restarted or evicted the job', async () => {
+    // The fleet's own answer: {reason, message, error: {reason, message}} (agents-marketplace supplier/src/server.ts at e847a55).
+    const envelope = { reason: 'job_not_found', message: `no job found with id ${JOB}`, error: { reason: 'job_not_found', message: `no job found with id ${JOB}` } };
+    expect(await poll(ENDPOINT, JOB, route(json(404, envelope)).fetchImpl)).toStrictEqual({ kind: 'gone' });
+  });
+
+  // Ruling R57: a 404 from anything in front of the supplier is no word of the supplier's that the job is gone, and the caller polls again.
+  it.each([
+    ['a page', text(404, '<html><body>Not Found</body></html>', 'text/html')], ['plain text', text(404, 'not found')], ['an empty body', text(404, '')],
+    ['a JSON object of a gateway', json(404, { error: 'not found' })], ['an envelope with another reason', json(404, { reason: 'no_route', message: 'nothing here' })], ['a JSON array', json(404, [])],
+  ])('a 404 with %s is no answer of the supplier: the poll rejects, so the caller asks again', async (_name, answer) => {
+    await expect(poll(ENDPOINT, JOB, route(answer).fetchImpl)).rejects.toThrow(new RegExp(`^Could not poll job ${JOB}: the supplier answered 404 with (no JSON object|a JSON object that is no envelope of its own)`));
   });
 
   it.each([502, 503, 504, 500, 400])('a %i with the failed envelope is failed with the reason and the message of the supplier', async (status) => {

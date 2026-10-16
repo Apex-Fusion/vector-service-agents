@@ -50,6 +50,8 @@ function limitOf(value: number | undefined, fallback: number, name: string): num
 }
 
 const byPrice = (a: bigint, b: bigint): number => (a < b ? -1 : a > b ? 1 : 0);
+/** Is the row priced at `max` or under it? Without a ceiling, every row is. */
+const withinCeiling = (max: bigint | undefined) => (row: { price_lovelace: bigint }): boolean => max === undefined || row.price_lovelace <= max;
 /** When a supplier was last seen, as a number to compare; a supplier never seen, or seen at a time that is no date, is the least recent. */
 const seenAt = (iso: string | null): number => {
   const time = iso === null ? Number.NaN : Date.parse(iso);
@@ -58,7 +60,8 @@ const seenAt = (iso: string | null): number => {
 const newerFirst = (a: number, b: number): number => (a === b ? 0 : a > b ? -1 : 1);
 
 /**
- * The chat supplier to hire, or null when none is fit. The candidates are the free `llm.text.generate.v1` adverts whose model is on `allowlist`, in this
+ * The chat supplier to hire, or null when none is fit. An advert priced above `maxPriceLovelace` (when given) is taken out before anything else. The
+ * candidates are the free `llm.text.generate.v1` adverts whose model is on `allowlist`, in this
  * order: the position of the model on the allowlist, then the price (lowest first), then when the supplier was last seen (latest first; a supplier never seen,
  * or seen at a time that is no date, last). At most `maxCandidates` (LLM_SELECTION_MAX_CANDIDATES, 6 by default) are asked, each in turn for its /capability, which must carry
  * `inference_api: "responses"` and the very `advert_ref` the indexer lists for it, and, when `probe` is true, for its /status, which must be `free`. The first
@@ -67,13 +70,15 @@ const newerFirst = (a: number, b: number): number => (a === b ? 0 : a > b ? -1 :
  * candidate has passed, the call in flight is cancelled and the answer is null, and a candidate that answers after that is not used. Infinity lifts either limit.
  * Rejects when the indexer cannot be read, and when a limit is not a number.
  */
-export async function selectLlmSupplier(args: { fetchImpl: FetchLike; indexerUrl?: string; allowlist: readonly string[]; probe?: boolean; budgetMs?: number; maxCandidates?: number }): Promise<{
+export async function selectLlmSupplier(args: {
+  fetchImpl: FetchLike; indexerUrl?: string; allowlist: readonly string[]; probe?: boolean; budgetMs?: number; maxCandidates?: number; maxPriceLovelace?: bigint;
+}): Promise<{
   advertRef: string; endpoint: string; model: string; supplierPkh: string; priceLovelace: bigint; capability: SupplierCapability;
 } | null> {
   const startedAt = performance.now();
   const budgetMs = limitOf(args.budgetMs, LLM_SELECTION_BUDGET_MS, 'budgetMs');
   const maxCandidates = limitOf(args.maxCandidates, LLM_SELECTION_MAX_CANDIDATES, 'maxCandidates');
-  const rows = await fetchSuppliers({ capability_id: LLM_CAPABILITY, onlyFree: true, fetchImpl: aimedAt(args.indexerUrl, args.fetchImpl) });
+  const rows = (await fetchSuppliers({ capability_id: LLM_CAPABILITY, onlyFree: true, fetchImpl: aimedAt(args.indexerUrl, args.fetchImpl) })).filter(withinCeiling(args.maxPriceLovelace));
   const candidates = rows
     .map((row) => ({ row, rank: args.allowlist.indexOf(row.model) }))
     .filter((candidate) => candidate.rank >= 0)
@@ -102,14 +107,14 @@ export async function selectLlmSupplier(args: { fetchImpl: FetchLike; indexerUrl
 }
 
 /**
- * The OCR advert to hire: the free `ocr.page.extract.chandra-ocr-2.v1` advert of the supplier key `supplierPkh`. Exactly one is expected; none (it is not
- * listed, or it is busy or offline) and more than one (the choice is not made here) are both null. No supplier is contacted. Rejects when the indexer
- * cannot be read.
+ * The OCR advert to hire: the free `ocr.page.extract.chandra-ocr-2.v1` advert of the supplier key `supplierPkh`, priced at `maxPriceLovelace` or under it when
+ * that is given. Exactly one is expected; none (it is not listed, or it is busy or offline, or it is priced above the ceiling) and more than one (the choice is
+ * not made here) are both null. No supplier is contacted. Rejects when the indexer cannot be read.
  */
-export async function findOcrAdvert(args: { fetchImpl: FetchLike; indexerUrl?: string; supplierPkh: string }): Promise<{
+export async function findOcrAdvert(args: { fetchImpl: FetchLike; indexerUrl?: string; supplierPkh: string; maxPriceLovelace?: bigint }): Promise<{
   advertRef: string; endpoint: string; priceLovelace: bigint; maxProcessingMs: number;
 } | null> {
-  const rows = await fetchSuppliers({ capability_id: OCR_CAPABILITY, onlyFree: true, fetchImpl: aimedAt(args.indexerUrl, args.fetchImpl) });
+  const rows = (await fetchSuppliers({ capability_id: OCR_CAPABILITY, onlyFree: true, fetchImpl: aimedAt(args.indexerUrl, args.fetchImpl) })).filter(withinCeiling(args.maxPriceLovelace));
   const wanted = args.supplierPkh.toLowerCase();
   const ours = rows.filter((row) => row.supplier_pkh.toLowerCase() === wanted);
   if (ours.length !== 1) return null;

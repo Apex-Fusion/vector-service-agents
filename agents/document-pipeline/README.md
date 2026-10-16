@@ -59,7 +59,7 @@ A 400, a 401, a 422 for the document and a 503 are all given before the first es
 
 ## Funds, state and the janitor
 
-Before it posts anything a job checks the buyer wallet: a pure output of at least 5000000 lovelace kept as collateral, and a float outside it of `(max_pages + 1) x 4500000` lovelace. A job that cannot be funded is refused with `insufficient_float` and spends nothing.
+Before it posts anything a job checks the buyer wallet: a pure output of at least 5000000 lovelace kept as collateral, and a float outside it of `(max_pages + 1) x 4500000` lovelace. That gate assumes adverts priced at or under the two ceilings with bonds of 1000000 each. Once both suppliers are chosen, and still before the first Post, the job looks at the float again: the lock each sub-job takes at the prices of the adverts chosen, and a Post and an Accept fee for each. A job that cannot be funded is refused with `insufficient_float` and spends nothing.
 
 Every escrow a job posts is written to `stranded.json` in `PIPELINE_STATE_DIR` (default `/data`, a volume in the image) the moment its Post is confirmed, and removed once its Accept is confirmed. The janitor starts with the service and looks at the file every minute: from 5 s after an escrow's `deliver_by` it reclaims an Open or Claimed escrow, and it keeps a Submitted one that its supplier may release. A file that is not a list stops the start and is left as it is, because starting without it would forget escrows that hold funds. The file holds the bookkeeping of the escrows (references, times, the hop, a transaction hash), never a document or its text.
 
@@ -89,6 +89,8 @@ On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and n
 | `ADVERT_EXPLORER_URL` | `links.explorer_advert` | empty |
 | `OCR_ALLOWLIST_SUPPLIER_PKH` | the key hash of the one OCR supplier the Pipeline hires | `401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9` |
 | `LLM_MODEL_ALLOWLIST` | the chat models it may hire, comma separated, in order of preference | `deepseek/deepseek-v4-flash,deepseek-v4-pro,moonshotai/kimi-k2.6,Qwen/Qwen3.6-35B-A3B-FP8` |
+| `OCR_MAX_PRICE_LOVELACE` | the most an OCR page may be priced at, in lovelace: an advert priced above it is not hired, and the job is refused with `ocr_supplier_unavailable` (503) before it spends anything | `1000000` |
+| `LLM_MAX_PRICE_LOVELACE` | the most the chat job may be priced at, in lovelace, the same way (`llm_supplier_unavailable`) | `1000000` |
 | `PIPELINE_STATE_DIR` | where `stranded.json` is kept | `/data` |
 | `VECTOR_MARKETPLACE_INDEXER_URL` | the marketplace indexer the suppliers are found in | the default of `packages/buyer-core` |
 | `PORT`, `HOST` | where the service listens | `9092`, `0.0.0.0` |

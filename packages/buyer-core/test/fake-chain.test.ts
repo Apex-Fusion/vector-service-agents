@@ -3,7 +3,7 @@
 // hooks, Accept, Reclaim), deterministic refs, the lock and fee constants, and the wallet float those transactions move.
 import { describe, it, expect } from 'vitest';
 import { decodeAdvertDatum, sha256Utf8Hex } from '@vsa/vector-read';
-import { FakeChain, DELIVER_BY_BUFFER_MS, TxNotConfirmedError } from '../src/index.ts';
+import { AcceptWindowClosedError, FakeChain, DELIVER_BY_BUFFER_MS, TxNotConfirmedError } from '../src/index.ts';
 import type { Chain, FakeChainOptions, PostResult } from '../src/index.ts';
 import { ADVERT_REF, ADVERT_DATUM_HEX, ADVERT_EXPECTED } from './fixtures/marketplace.fixture.ts';
 
@@ -200,6 +200,44 @@ describe('FakeChain', () => {
     await expect(post('not a hash')).rejects.toThrow(/prompt hash must be 64 lowercase hex characters/);
     await expect(post()).rejects.toBe(error);
     expect((await post()).escrowRef).toBe(`${sha256Utf8Hex('pipeline-test/1')}#0`);
+  });
+
+  // Ruling R54: the run retries a failed Accept. Its tests need an Accept that fails the way RealChain's build does (a plain Error, nothing sent) and
+  // one the vendored planner refuses because the window has closed.
+  it('failNextAccepts: the next Accepts throw the given error, or a plain Error, and change nothing; the one after them is an ordinary Accept', async () => {
+    const { chain, post } = setup();
+    const { escrowRef } = await post();
+    chain.markClaimed(escrowRef);
+    chain.markSubmitted(escrowRef, RECEIPT_HASH);
+    const float = (await chain.wallet()).floatLovelace;
+    chain.failNextAccepts(2);
+    for (let i = 0; i < 2; i++) {
+      const err = await chain.accept(escrowRef).then(() => null, (e: unknown) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(TxNotConfirmedError);
+      expect((err as Error).message).toMatch(/^FakeChain: the Accept of escrow [0-9a-f]{64}#0 could not be built \(test hook\)\.$/);
+    }
+    expect(await chain.escrowState(escrowRef)).toBe('Submitted');
+    expect((await chain.wallet()).floatLovelace).toBe(float);
+    const refused = new TxNotConfirmedError('The Accept was refused and cannot land (400).', { txHash: 'ac'.repeat(32), escrowRef, deliverBy: null, validTo: T0 + 600_000, mayLand: false });
+    chain.failNextAccepts(1, refused);
+    await expect(chain.accept(escrowRef)).rejects.toBe(refused);
+    expect((await chain.accept(escrowRef)).feeLovelace).toBe(FEE);
+    expect(await chain.escrowState(escrowRef)).toBe('spent');
+  });
+
+  it('closeAcceptWindow: from then on every Accept throws AcceptWindowClosedError, the message the vendored planner gives, and the escrow stays Submitted', async () => {
+    const { chain, post } = setup();
+    const { escrowRef } = await post();
+    chain.markClaimed(escrowRef);
+    chain.markSubmitted(escrowRef, RECEIPT_HASH);
+    chain.closeAcceptWindow();
+    for (let i = 0; i < 2; i++) {
+      const err = await chain.accept(escrowRef).then(() => null, (e: unknown) => e);
+      expect(err).toBeInstanceOf(AcceptWindowClosedError);
+      expect((err as Error).message).toMatch(new RegExp(`^Accept window closed at \\d{4}-\\d{2}-\\d{2}T[0-9:.]+Z; the supplier may now Release\\. \\(escrow ${escrowRef}\\)$`));
+    }
+    expect(await chain.escrowState(escrowRef)).toBe('Submitted');
   });
 
   it('posts only against an advert it knows, under the checks of the real Post (prompt hash shape, the buyer as supplier)', async () => {

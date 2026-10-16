@@ -131,12 +131,13 @@ const json = (status: number, body: unknown): Response => new Response(JSON.stri
  *   failed                the supplier's own failure envelope on a 502; nothing is submitted
  *   gone                  404: the supplier no longer knows the job
  *   proxy                 a 502 HTML page of a proxy, no answer of the supplier's
+ *   proxy-404             a 404 HTML page of a proxy, no answer of the supplier's either (ruling R57)
  *   no-receipt            a 200 without the receipt and its signature, no answer of the supplier's
  *   gateway-after-submit  finishes the job, then a gateway's JSON error with a reason on a 504, which the client reads as `failed`
  *   { fail, submitted }   the supplier's own failure envelope with the reason `fail` on a 502, after its Submit landed when `submitted` (as the real one
  *                         answers submit_timeout when it could not see its Submit confirmed) and with nothing submitted otherwise
  */
-export type PollStep = 'running' | 'done' | 'failed' | 'gone' | 'proxy' | 'no-receipt' | 'gateway-after-submit' | { fail: string; submitted: boolean };
+export type PollStep = 'running' | 'done' | 'failed' | 'gone' | 'proxy' | 'proxy-404' | 'no-receipt' | 'gateway-after-submit' | { fail: string; submitted: boolean };
 
 interface StubJob { id: string; escrowRef: string; request: Record<string, unknown>; steps: PollStep[]; finished?: Record<string, unknown> }
 
@@ -149,6 +150,8 @@ abstract class StubSupplier {
   notFound = 0;
   /** Answer every send with this refusal: before any claim, or, with `claim`, after claiming the escrow (it took the job from an earlier send). */
   refuse: { status: number; reason: string; claim?: boolean } | null = null;
+  /** Answer the next sends with an HTML page of each of these statuses, as a proxy in front of the supplier would; the supplier never sees them. */
+  pages: number[] = [];
   /** The poll steps of every new job, unless `plans` holds one for it. */
   steps: PollStep[] = ['running', 'done'];
   /** The poll steps of the next jobs, one list per job, in order. */
@@ -182,6 +185,8 @@ abstract class StubSupplier {
 
   private post(escrowRef: string, body: string): Response {
     this.sends.push({ escrowRef, body });
+    const page = this.pages.shift();
+    if (page !== undefined) return new Response(`<html><body><h1>${page}</h1></body></html>`, { status: page, headers: { 'content-type': 'text/html' } });
     const lost = this.lose.shift();
     if (lost !== undefined) {
       if (lost === 'after-claim') this.chain.markClaimed(escrowRef);
@@ -226,6 +231,7 @@ abstract class StubSupplier {
       case 'failed': return json(502, { status: 'failed', reason: 'upstream_failure', message: 'the upstream model did not answer', escrow_ref: job.escrowRef });
       case 'gone': return json(404, { reason: 'job_not_found', message: `no job found with id ${id}` });
       case 'proxy': return new Response('<html><body><h1>502 Bad Gateway</h1></body></html>', { status: 502, headers: { 'content-type': 'text/html' } });
+      case 'proxy-404': return new Response('<html><body><h1>404 Not Found</h1></body></html>', { status: 404, headers: { 'content-type': 'text/html' } });
       case 'no-receipt': return json(200, { status: 'done', escrow_ref: job.escrowRef });
       case 'gateway-after-submit': finished(); return json(504, { reason: 'gateway_timeout', message: 'the upstream did not answer in time' });
       case 'done': {
@@ -292,13 +298,17 @@ export interface Marketplace {
   fetchImpl: typeof fetch;
 }
 
-/** The FakeChain (the two adverts, the clock at T0), the indexer listing both adverts free, and the two suppliers behind one fetch. */
-export function marketplace(opts: Pick<FakeChainOptions, 'floatLovelace' | 'collateralLovelace'> = {}): Marketplace {
+/**
+ * The FakeChain (the two adverts, the clock at T0), the indexer listing both adverts free, and the two suppliers behind one fetch. `ocrAdvert` and
+ * `llmAdvert` replace the datum of an advert, on the chain and in the indexer's row alike (a test of a price, for one).
+ */
+export function marketplace(opts: Pick<FakeChainOptions, 'floatLovelace' | 'collateralLovelace'> & { ocrAdvert?: AdvertDatum; llmAdvert?: AdvertDatum } = {}): Marketplace {
+  const { ocrAdvert = OCR_ADVERT, llmAdvert = LLM_ADVERT, ...chainOpts } = opts;
   const clock = { now: T0 };
-  const chain = new FakeChain({ adverts: { [OCR_ADVERT_REF]: OCR_ADVERT, [LLM_ADVERT_REF]: LLM_ADVERT }, clock: () => clock.now, prefix: PREFIX, ...opts });
+  const chain = new FakeChain({ adverts: { [OCR_ADVERT_REF]: ocrAdvert, [LLM_ADVERT_REF]: llmAdvert }, clock: () => clock.now, prefix: PREFIX, ...chainOpts });
   const ocr = new StubOcrSupplier(chain);
   const llm = new StubChatSupplier(chain);
-  const rows = [indexerRow(OCR_ADVERT_REF, OCR_ADVERT), indexerRow(LLM_ADVERT_REF, LLM_ADVERT)];
+  const rows = [indexerRow(OCR_ADVERT_REF, ocrAdvert), indexerRow(LLM_ADVERT_REF, llmAdvert)];
   const calls: Marketplace['calls'] = [];
   const fetchImpl = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = new URL(String(input));

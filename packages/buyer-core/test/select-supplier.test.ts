@@ -90,6 +90,29 @@ describe('selectLlmSupplier', () => {
     expect(flash?.model).toBe(DEEPSEEK);
   });
 
+  // Ruling R56: the adverts are read at run time and nothing else bounds what they cost, so a ceiling takes the dearer ones out before anything else.
+  it('a price ceiling takes out every advert priced above it before anything else; a cheaper advert of a later model is hired only then, and the order is otherwise the same', async () => {
+    const dear = () => network([llm(1, DEEPSEEK, { row: { price_lovelace: '1500000' } }), llm(2, QWEN, { row: { price_lovelace: '200000' } })]);
+    // Without a ceiling the allowlist order decides, whatever the price.
+    expect((await select(dear()))?.model).toBe(DEEPSEEK);
+    const f = dear();
+    expect((await select(f, { maxPriceLovelace: 1_000_000n }))?.model).toBe(QWEN);
+    expect(askedOf(f, '/capability')).toStrictEqual([hostOf(endpointOf(2))]); // the dearer one is never contacted
+    // A price at the ceiling is in.
+    const atCeiling = network([llm(1, DEEPSEEK, { row: { price_lovelace: '1000000' } }), llm(2, QWEN, { row: { price_lovelace: '200000' } })]);
+    expect((await select(atCeiling, { maxPriceLovelace: 1_000_000n }))?.model).toBe(DEEPSEEK);
+    // Nothing at or under the ceiling: null, and no supplier is contacted.
+    const none = network([llm(1, DEEPSEEK, { row: { price_lovelace: '1000001' } })]);
+    expect(await select(none, { maxPriceLovelace: 1_000_000n })).toBeNull();
+    expect(none.calls.map((c) => hostOf(c.url))).toStrictEqual(['indexer.test']);
+  });
+
+  it('the adverts the ceiling takes out take no place among the six that are asked', async () => {
+    const f = network([...[1, 2, 3, 4, 5, 6].map((n) => llm(n, DEEPSEEK, { row: { price_lovelace: '5000000' } })), llm(7, QWEN, { row: { price_lovelace: '200000' } })]);
+    expect((await select(f, { maxPriceLovelace: 1_000_000n }))?.advertRef).toBe(advertOf(7));
+    expect(askedOf(f, '/capability')).toStrictEqual([hostOf(endpointOf(7))]);
+  });
+
   it('tries the candidates in order: allowlist index, then price ascending, then the most recently seen, a supplier never seen last', async () => {
     const seen = (hour: string) => ({ last_seen_iso: `2026-10-13T${hour}:00:00.000Z` });
     const f = network([
@@ -395,6 +418,13 @@ describe('findOcrAdvert', () => {
 
   it('compares the key without regard to case', async () => {
     expect((await find(indexerOf([CHANDRA]), OCR_PKH.toUpperCase()))?.advertRef).toBe(CHANDRA.utxo_ref);
+  });
+
+  it('is null when the advert is priced above maxPriceLovelace, and the advert when it is priced at it or under it (ruling R56)', async () => {
+    const at = (maxPriceLovelace: bigint) => findOcrAdvert({ fetchImpl: indexerOf([CHANDRA]).fetchImpl, indexerUrl: INDEXER, supplierPkh: OCR_PKH, maxPriceLovelace });
+    expect(await at(199_999n)).toBeNull();
+    expect((await at(200_000n))?.advertRef).toBe(CHANDRA.utxo_ref);
+    expect((await at(1_000_000n))?.priceLovelace).toBe(200_000n);
   });
 
   it('reads the indexer at indexerUrl, or at the vendored base when none is given, and contacts no supplier', async () => {

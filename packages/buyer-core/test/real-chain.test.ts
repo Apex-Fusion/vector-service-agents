@@ -12,8 +12,8 @@ import type { Address, Credential, ProtocolParameters, UTxO } from '@lucid-evolu
 import { blake2b224Hex, decodeAdvertDatum, decodeEscrowDatum, encodeEscrowDatum } from '@vsa/vector-read';
 import type { EscrowDatum } from '@vsa/vector-read';
 import {
-  createRealChain, feeOfSignedTx, ocrPromptHash, planFleetPostEscrow, rawHexToBech32, signTransaction, OgmiosProvider, TxNotConfirmedError,
-  DELIVER_BY_BUFFER_MS, ESCROW_REF_UTXO, VECTOR_OGMIOS_URL,
+  createRealChain, feeOfSignedTx, ocrPromptHash, planFleetPostEscrow, rawHexToBech32, signTransaction, AcceptWindowClosedError, OgmiosProvider, TxBuildTimeoutError,
+  TxNotConfirmedError, AWAIT_TIMEOUT_MAX_MS, BUILD_TIMEOUT_MS, DELIVER_BY_BUFFER_MS, ESCROW_REF_UTXO, VECTOR_OGMIOS_URL,
 } from '../src/index.ts';
 import type { ChainEscrowState, RealChainOptions } from '../src/index.ts';
 import { RealChain } from '../src/chain.ts';
@@ -189,7 +189,8 @@ describe('RealChain postEscrow', () => {
     // The Post is valid for the buffer after it was built, in whole slots: its validity ends at most 1 s before posted_at + 180 s.
     expect(facts.validTo).toBeLessThanOrEqual(facts.deliverBy - 300_000);
     expect(facts.validTo).toBeGreaterThan(facts.deliverBy - 300_000 - 1_000);
-    expect((err as Error).message).toBe(`The Post ${facts.txHash} of escrow ${facts.escrowRef} was submitted, but Koios did not report it confirmed within 180000 ms. It may land, but only before ${new Date(facts.validTo).toISOString()}: read the escrow before acting on it again.`);
+    // Submitted and not yet seen confirmed: it may have landed already, so the escrow is read before anything else is done with it.
+    expect((err as Error).message).toBe(`The Post ${facts.txHash} of escrow ${facts.escrowRef} was submitted and is not yet seen confirmed: Koios did not report it confirmed within 180000 ms. It may land, but only before ${new Date(facts.validTo).toISOString()}: read the escrow before acting on it again.`);
   }, 30_000);
 
   it('throws TxNotConfirmedError, may land, when the confirmation cannot be read', async () => {
@@ -281,6 +282,68 @@ describe('RealChain postEscrow', () => {
     expect(next.escrowRef).toBe(factsOf(node.submitted[1]).escrowRef);
     expect(vi.getTimerCount()).toBe(0); // the second wait's timer was cleared once it was confirmed
   }, 30_000);
+
+  // Ruling R55: the vendored reads of a build carry no time limit, so a node that does not answer would hold the queue (and a job's Accept behind it)
+  // for as long as the platform's fetch waits. The build, everything before the signature, has BUILD_TIMEOUT_MS; nothing is signed from a build given up on.
+  it('bounds the build of a transaction by BUILD_TIMEOUT_MS: a node whose wallet read never answers fails the Post with TxBuildTimeoutError, nothing is signed or sent, and the transaction queued behind it runs then', async () => {
+    const { hex, address } = generatedKey();
+    const node = new SubmittingProvider(walletAt(address));
+    let reads = 0;
+    let stuck: () => void = () => {};
+    const firstReadStuck = new Promise<void>((resolve) => { stuck = resolve; });
+    const read = node.getUtxos.bind(node);
+    node.getUtxos = (at: Address | Credential) => { reads += 1; if (reads > 1) return read(at); stuck(); return new Promise<UTxO[]>(() => {}); };
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const chain = new RealChain(node, { privateKeyHex: hex, fetchImpl: advertKoios().f });
+    const first = chain.postEscrow({ advertRef: ADVERT_REF, promptHash: PROMPT });
+    const second = chain.postEscrow({ advertRef: ADVERT_REF, promptHash: OTHER_PROMPT });
+    let firstSettled = false;
+    const firstOutcome = first.then(() => null, (e: unknown) => e).finally(() => { firstSettled = true; });
+    await firstReadStuck;
+    expect(BUILD_TIMEOUT_MS).toBe(60_000);
+    await vi.advanceTimersByTimeAsync(BUILD_TIMEOUT_MS - 1);
+    expect(firstSettled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(firstSettled).toBe(true);
+    const err = await firstOutcome;
+    expect(err).toBeInstanceOf(TxBuildTimeoutError);
+    expect(err).not.toBeInstanceOf(TxNotConfirmedError);
+    expect(err).toMatchObject({ name: 'TxBuildTimeoutError' });
+    expect('mayLand' in (err as object)).toBe(false);
+    expect((err as Error).message).toBe('The Post was not built within 60000 ms (BUILD_TIMEOUT_MS): the node or the indexer it reads did not answer in time. Nothing was signed or sent.');
+    const next = await second;
+    expect(node.submitted).toHaveLength(1); // the second Post only: nothing of the first was signed or sent
+    expect(next.escrowRef).toBe(factsOf(node.submitted[0]).escrowRef);
+    expect(vi.getTimerCount()).toBe(0);
+  }, 30_000);
+
+  it('gives the submit and the confirmation one budget, awaitTimeoutMs from the start of the submit: a submit API that never answers fails the Post as one that may land, and the transaction queued behind it runs then', async () => {
+    const { hex, address } = generatedKey();
+    const node = new SubmittingProvider(walletAt(address));
+    let submits = 0;
+    let sent: () => void = () => {};
+    const firstSent = new Promise<void>((resolve) => { sent = resolve; });
+    const submit = node.submitTx.bind(node);
+    node.submitTx = (tx: string) => { submits += 1; if (submits > 1) return submit(tx); node.submitted.push(tx); sent(); return new Promise<string>(() => {}); };
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const chain = new RealChain(node, { privateKeyHex: hex, fetchImpl: advertKoios().f });
+    const first = chain.postEscrow({ advertRef: ADVERT_REF, promptHash: PROMPT });
+    const second = chain.postEscrow({ advertRef: ADVERT_REF, promptHash: OTHER_PROMPT });
+    let firstSettled = false;
+    const firstOutcome = first.then(() => null, (e: unknown) => e).finally(() => { firstSettled = true; });
+    await firstSent;
+    await vi.advanceTimersByTimeAsync(DELIVER_BY_BUFFER_MS - 1);
+    expect(firstSettled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(firstSettled).toBe(true);
+    const err = await firstOutcome;
+    expect(err).toBeInstanceOf(TxNotConfirmedError);
+    expect(err).toMatchObject({ ...factsOf(node.submitted[0]), mayLand: true });
+    expect((err as Error).message).toMatch(/^The Post [0-9a-f]{64} of escrow [0-9a-f]{64}#0 may not have been submitted: the submit API did not answer within 180000 ms\. It may land, but only before /);
+    const next = await second;
+    expect(node.awaited.map((a) => a.txHash)).toStrictEqual([next.txHash]); // the first was never waited for
+    expect(vi.getTimerCount()).toBe(0);
+  }, 30_000);
 });
 
 describe('RealChain accept and reclaim (offline, refused before anything is submitted)', () => {
@@ -318,6 +381,29 @@ describe('RealChain accept and reclaim (offline, refused before anything is subm
     });
     await expect(chain.accept(ESCROW_REF)).rejects.toThrow(referenceScriptMissing);
     expect(node.submitted).toStrictEqual([]);
+  }, 30_000);
+
+  // Ruling R54: the vendored planner refuses an Accept once submitted_at + 600 s has passed (marketplace-build.ts, planAccept), and RealChain says so with a
+  // type of its own, so that a caller that retries a failed Accept knows when to stop. Every other refusal stays the plain Error it was.
+  it('an Accept of its own Submitted escrow whose accept window has closed is an AcceptWindowClosedError with the message of the vendored planner; nothing is submitted', async () => {
+    const { chain, node } = chainWith((buyerPkh) => {
+      const ours: EscrowDatum = { ...posted, buyer_pkh: buyerPkh };
+      const late: EscrowDatum = { ...ours, submitted_at: Date.now() - 700_000, result_receipt_hash: 'cd'.repeat(32), state: 'Submitted' };
+      return { escrows: [escrowAt(SUBMIT_TX, late)], koios: { datumHex: encodeEscrowDatum(ours) } };
+    });
+    const err = await chain.accept(ESCROW_REF).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(AcceptWindowClosedError);
+    expect(err).not.toBeInstanceOf(TxNotConfirmedError);
+    expect(err).toMatchObject({ name: 'AcceptWindowClosedError' });
+    expect((err as Error).message).toMatch(new RegExp(`^Accept window closed at \\d{4}-\\d{2}-\\d{2}T[0-9:.]+Z; the supplier may now Release\\. \\(escrow ${ESCROW_REF}\\)$`));
+    expect((err as Error).cause).toBeInstanceOf(Error);
+    expect(node.submitted).toStrictEqual([]);
+    // Another refusal of the planner is not the closed window: the escrow of another key stays a plain Error.
+    const { chain: other } = chainWith(() => ({ escrows: [escrowAt(SUBMIT_TX, { ...submittedNow(posted), submitted_at: Date.now() - 700_000 })] }));
+    const refused = await other.accept(ESCROW_REF).then(() => null, (e: unknown) => e);
+    expect(refused).toBeInstanceOf(Error);
+    expect(refused).not.toBeInstanceOf(AcceptWindowClosedError);
+    expect((refused as Error).message).toMatch(/^This escrow was posted by another key/);
   }, 30_000);
 
   it('a Reclaim of its own Open escrow past deliver_by passes the planner, the wallet binding and the collateral check, and stops at the reference script', async () => {
@@ -379,12 +465,14 @@ describe('createRealChain', () => {
     }
   });
 
-  it('refuses an await budget shorter than DELIVER_BY_BUFFER_MS, or not a whole number of milliseconds', async () => {
+  it('refuses an await budget shorter than DELIVER_BY_BUFFER_MS or longer than AWAIT_TIMEOUT_MAX_MS (600 s), or not a whole number of milliseconds', async () => {
     const { hex } = generatedKey();
-    for (const awaitTimeoutMs of [DELIVER_BY_BUFFER_MS - 1, 0, -1, 1.5, Number.NaN]) {
-      await expect(createRealChain({ privateKeyHex: hex, awaitTimeoutMs }), String(awaitTimeoutMs)).rejects.toThrow(/awaitTimeoutMs must be a whole number of milliseconds of at least 180000/);
+    expect(AWAIT_TIMEOUT_MAX_MS).toBe(600_000);
+    for (const awaitTimeoutMs of [DELIVER_BY_BUFFER_MS - 1, 0, -1, 1.5, Number.NaN, AWAIT_TIMEOUT_MAX_MS + 1, Number.POSITIVE_INFINITY]) {
+      await expect(createRealChain({ privateKeyHex: hex, awaitTimeoutMs }), String(awaitTimeoutMs)).rejects.toThrow(/^awaitTimeoutMs must be a whole number of milliseconds from 180000 \(DELIVER_BY_BUFFER_MS\), .* to 600000 \(AWAIT_TIMEOUT_MAX_MS\)/);
     }
     await expect(createRealChain({ privateKeyHex: hex, awaitTimeoutMs: DELIVER_BY_BUFFER_MS })).resolves.toBeDefined();
+    await expect(createRealChain({ privateKeyHex: hex, awaitTimeoutMs: AWAIT_TIMEOUT_MAX_MS })).resolves.toBeDefined();
   });
 
   it('reads the wallet over the vendored OgmiosProvider, from the Ogmios endpoint it is given (the vendored mainnet default otherwise), at the address of the key', async () => {

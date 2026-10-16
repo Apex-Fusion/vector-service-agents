@@ -19,10 +19,10 @@
 //             may have reached the supplier, which may have claimed the escrow, so the caller reads the escrow's state before it does anything else, and
 //             never sends again blindly. Neither does this client: whatever the outcome, a send makes one POST.
 // What a poll says. running (202), done (200 with the receipt and its signature, for the escrow the poll was made for), failed (the supplier's own word: its
-// failed or error envelope on an error status), gone (404: the supplier restarted or evicted the job). A poll that gets no answer of the supplier's at all
-// rejects instead of saying failed: the call fails, a proxy answers with a page or a body of its own, or a 200 comes without the receipt and its signature
-// (the supplier answers 200 for a done job only, always with both, and sends a failed job with its own envelope on an error status). The job may well be
-// running, and the caller asks again on its next tick.
+// failed or error envelope on an error status), gone (a 404 with the supplier's own envelope, reason job_not_found: the supplier restarted or evicted the
+// job). A poll that gets no answer of the supplier's at all rejects instead of saying failed or gone: the call fails, a proxy answers with a page or a body
+// of its own (a 404 among them, ruling R57), or a 200 comes without the receipt and its signature (the supplier answers 200 for a done job only, always with
+// both, and sends a failed job with its own envelope on an error status). The job may well be running, and the caller asks again on its next tick.
 import { safeFetch } from '@vsa/vector-read';
 import { ROUTES, callFailure, canonicalRef, jsonObject, trim } from './vendored/mcp/marketplace-supplier.ts';
 import type { Call, Route } from './vendored/mcp/marketplace-supplier.ts';
@@ -180,8 +180,14 @@ function submittedRefOf(value: unknown): string | undefined {
  */
 function pollResult(jobId: string, escrowRef: string, status: number, text: string): PollResult {
   const lost = (why: string) => new Error(`Could not poll job ${jobId}: the supplier answered ${status} with ${why}.`);
-  if (status === 404) return { kind: 'gone' };
   const answer = jsonObject(text);
+  // A 404 says the supplier no longer knows the job only in the supplier's own envelope, with the reason job_not_found: agents-marketplace
+  // supplier/src/server.ts at e847a55, lines 631, 878 and 1177, jsonError(res, 404, "job_not_found", ...). Any other 404 (a page, the body of a gateway,
+  // another reason) is no word of the supplier's, and the poll rejects like every other answer that is not its own (ruling R57).
+  if (status === 404) {
+    if (answer?.reason === 'job_not_found') return { kind: 'gone' };
+    throw lost(answer === null ? 'no JSON object' : 'a JSON object that is no envelope of its own');
+  }
   // A 202 says the job is not finished whatever else the body says.
   if (status === 202) return { kind: 'running', status: typeof answer?.status === 'string' && answer.status !== '' ? answer.status.slice(0, 100) : 'running' };
   if (status === 200) {

@@ -193,7 +193,7 @@
     "Every supplier it can hire today is first-party.",
     "The Pipeline checks receipts, not truth: a summary is as good as the model that wrote it.",
     "An extraction whose answer is not JSON, or does not validate against the schema, still succeeds and is paid for: the result has schema_valid false and extraction null, and the answer is kept as raw_text.",
-    "At five pages the Pipeline spends about 19 in locks and fees to earn 5, where 5 is the price of 5000000 lovelace. The Foundation subsidises this on purpose while the fee floor stands."
+    "At five pages the Pipeline spends about 19 in locks and fees to earn 5, where 5 is the price of 5000000 lovelace and the 19 holds at today's fleet price of 0.2 per sub-job. The Foundation subsidises this on purpose while the fee floor stands."
   ],
   "links": {
     "spec": "https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/document-pipeline.md",

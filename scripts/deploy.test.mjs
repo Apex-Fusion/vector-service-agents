@@ -857,10 +857,17 @@ test('Pipeline env example: every name the service code reads is in the example,
   for (const f of ['agents/document-pipeline/src/start.ts', 'agents/document-pipeline/src/server.ts', 'packages/buyer-core/src/vendored/mcp-shared/config.ts', 'packages/vector-read/src/constants.ts']) assert.ok(files.includes(f), `the scan includes ${f}`);
   const names = new Set(files.flatMap((f) => [...envNamesIn(read(f))]));
   assert.ok(names.size >= 20, 'the scan found the settings');
-  // Left unset on purpose: a value here would pin a default that the code owns (the chain endpoints of buyer-core are Vector mainnet's).
-  const DEFAULT_IN_CODE = ['AGENT_VERSION', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_KOIOS_URL', 'VECTOR_EXPLORER_URL', 'KOIOS_URL', 'INDEXER_URL'];
+  // Left unset on purpose: a value here would pin a default that the code owns (the chain endpoints of buyer-core are Vector mainnet's, the price
+  // ceilings of ruling R56 are 1000000 lovelace each in agents/document-pipeline/src/start.ts).
+  const DEFAULT_IN_CODE = ['AGENT_VERSION', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_KOIOS_URL', 'VECTOR_EXPLORER_URL', 'KOIOS_URL', 'INDEXER_URL', 'OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE'];
   assert.deepEqual([...names].filter((n) => !(n in pExample) && !(n in pService.environment) && !DEFAULT_IN_CODE.includes(n)), []);
   for (const n of DEFAULT_IN_CODE) assert.ok(!(n in pExample), `${n} stays unset in the example`);
+  // The two ceilings are in the example all the same, commented, with the default of the code.
+  assert.ok(START.includes('export const PRICE_CEILING_DEFAULT_LOVELACE = 1_000_000n;'));
+  for (const name of ['OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE']) {
+    assert.ok(names.has(name), `the service reads ${name}`);
+    assert.match(pExampleText, new RegExp(`^# ${name}=1000000$`, 'm'), `${name} is in the example, commented, at its default`);
+  }
   for (const n of ['OPERATOR_CONTACT', 'PIPELINE_BUYER_PRIV_KEY_HEX', 'SUPPLIER_PKH', 'SERVICE_AUTH_HEADER', 'OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST', 'PIPELINE_STATE_DIR']) assert.ok(names.has(n), `the service reads ${n}`);
   assert.ok(!names.has('SUPPLIER_PRIV_KEY_HEX'), "no source of the service reads the supplier key: it is the runtime's");
 });
@@ -1070,6 +1077,9 @@ test('Pipeline RUNBOOK funds: two keys, 5 alone then 50 for the supplier and 5 a
   assert.ok(funds.includes('The Foundation funds two keys. Nobody pastes either key into a chat.'));
   assert.ok(funds.includes('Two transfers, because a wallet funded in one lump can have its collateral spent as change by an ordinary transaction.'));
   assert.ok(buyer.includes('the OCR hops at about 2.2 net per page (price 0.2, supplier bond 1, fees about 1) plus the chat hop, about 19 gross for a job of five pages'));
+  // Ruling R56: the figures are the ones of today's fleet price, and the ceilings bound what an advert may cost.
+  assert.ok(buyer.includes("These figures hold at today's fleet price of 0.2 per sub-job; the service hires no advert priced above `OCR_MAX_PRICE_LOVELACE` or `LLM_MAX_PRICE_LOVELACE`"));
+  assert.ok(PSPEC.includes("and the 19 holds at today's fleet price of 0.2 per sub-job"));
   assert.doesNotMatch(buyer, /2\.3 net/, 'the figure of before it was given with its parts');
   assert.ok(buyer.includes('(max_pages + 1) x 4.5') && buyer.includes('27 for five pages') && buyer.includes('`insufficient_float` (503)'));
   // The figures are the spec's and the code's.
@@ -1671,6 +1681,8 @@ test('Pipeline RUNBOOK failure table: the start-up refusals, the pipeline codes 
     ['`janitor: reclaimed <escrow>: ...`', 'janitor', 'janitor: ${action.action} ${action.escrow_ref}: ${action.note}'],
     ['`janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest`', 'janitor', 'Submitted: it cannot be reclaimed, and its supplier may release it from ${iso(lostAfter)} at the latest'],
     ['`janitor: the pass failed`', 'janitor', 'janitor: the pass failed'],
+    // Ruling R56: an advert above its price ceiling.
+    ['`above the ceiling of`', 'orchestrate', 'above the ceiling of ${ceiling} lovelace (${setting})'],
   ]) {
     assert.ok(table.includes(row), `the table quotes ${row}`);
     assert.ok(sources[where].includes(quote), `${where} prints ${quote}`);

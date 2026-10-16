@@ -66,7 +66,7 @@ export const noFetch = (async () => { throw new Error('this test makes no outbou
 export function baseDeps(over: Partial<Omit<Deps, 'deadlineMs'>> = {}): Omit<Deps, 'deadlineMs'> {
   return {
     chain: new FakeChain(), fetchImpl: noFetch, renderer: fakeRenderer(), clock: () => T0, sleep: async () => {},
-    ocrAllowlistPkh: '11'.repeat(28), llmAllowlist: ['model-a'], stranded: new StrandedStore(tempDir()), ...over,
+    ocrAllowlistPkh: '11'.repeat(28), llmAllowlist: ['model-a'], ocrMaxPriceLovelace: 1_000_000n, llmMaxPriceLovelace: 1_000_000n, stranded: new StrandedStore(tempDir()), ...over,
   };
 }
 

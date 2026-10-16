@@ -6,36 +6,47 @@
 // (src/orchestrate.ts); nothing a supplier says here moves money but its signed receipt, checked against the hash its Submit put on chain. A write of
 // the stranded store that fails after money moved is store_write_failed (500), naming the escrow, never a plain error.
 //
+// The Post. Confirmed: it is recorded in the stranded store before anything else. Failed after its signature: recorded too, with the end of its
+// validity, whether it may still land or the submit API refused it (ruling R59), and <hop>_post_failed. Failed before its signature: nothing was locked.
+//
 // The send (75 s at most each). Accepted: there is a job id to poll. Busy (409 supplier_busy): sent again every 15 s, on the same escrow, until 90 s
 // before its deliver_by (<hop>_busy). Not found (404 escrow_not_found, ruling R32): the supplier looks the Post output up before anything else, and
 // does not find it either because it does not see the Post yet or because its own Claim, after an earlier send whose answer was lost, has spent it.
-// So the escrow is read: Open, and the job is sent again like a busy one (<hop>_refused for a supplier that never sees it); anything else, or a state
-// that cannot be read, means the supplier may hold the job with no job id to ask it for (<hop>_send_lost). Only a 404 is a not-found: the same reason
-// on a 5xx is handled as any 5xx. Any other 4xx is the supplier turning the job down (<hop>_refused). No answer, a 5xx, or a 202 without a
-// job id may come after the supplier's Claim, so the escrow is read before anything else: Open allows one more send (a second unknown outcome is
-// <hop>_send_lost, a second 5xx <hop>_refused); anything else, or a state that cannot be read, means the supplier may hold the escrow with no job id to
-// ask it for (<hop>_send_lost). A send is never repeated blindly, and every message that gives the escrow up says the state it was read in.
+// So the escrow is read: Open, and the job is sent again like a busy one (<hop>_refused for a supplier that never sees it); anything else means the
+// supplier may hold the job with no job id to ask it for (<hop>_send_lost). Only a 404 is a not-found: the same reason on a 5xx is handled as any 5xx.
+// Any other 4xx in the supplier's own envelope is the supplier turning the job down (<hop>_refused); a 4xx whose body is no JSON object (bad_response)
+// is a page of something in front of the supplier and is handled like no answer (ruling R57). No answer, a 5xx, a 4xx page, or a 202 without a job id
+// may come after the supplier's Claim, so the escrow is read before anything else: Open allows one more send (a second unknown outcome is
+// <hop>_send_lost, a second 5xx or page <hop>_refused); anything else means the supplier may hold the escrow with no job id to ask it for
+// (<hop>_send_lost). A state that cannot be read is no verdict: it is read again every 15 s, until 90 s before the deliver_by, and only a state still
+// unreadable then is <hop>_send_lost (ruling R58). A send is never repeated blindly, and every message that gives the escrow up says the state it was
+// read in.
 //
-// The poll, every 3 s until deliver_by (<hop>_timeout). A poll that gets no answer of the supplier's own rejects and is made again (ruling R21). A
-// failed or gone answer is final only when the escrow is not Submitted: a gateway can answer a JSON error with a reason, and a supplier can fail its
-// job after its Submit landed (ruling R23). So the escrow is read: Submitted, or a state that cannot be read, and the polls go on; anything else is
-// <hop>_failed. One case is final at once (ruling R34): a supplier that failed its own Submit step (submit_timeout, submit_failed) while the escrow
-// reads Submitted has put the receipt on chain and will not hand it over, which no poll changes (<hop>_receipt_unavailable).
+// The poll, every 3 s until deliver_by (<hop>_timeout). A poll that gets no answer of the supplier's own rejects and is made again (ruling R21); a 404
+// is gone only in the supplier's own envelope, with the reason job_not_found (ruling R57, packages/buyer-core/src/fleet-clients.ts). A failed or gone answer
+// is final only when the escrow is not Submitted: a gateway can answer a JSON error with a reason, and a supplier can fail its job after its Submit
+// landed (ruling R23). So the escrow is read: Submitted, or a state that cannot be read, and the polls go on; anything else is <hop>_failed. One case is
+// final at once (ruling R34): a supplier that failed its own Submit step (submit_timeout, submit_failed) while the escrow reads Submitted has put the
+// receipt on chain and will not hand it over, which no poll changes (<hop>_receipt_unavailable).
 //
 // The answer. The hop's `read` checks the shape of the finished body and recomputes the response hash; a body it cannot use, and a hash that throws
 // on it (a body nested past the stack), is <hop>_bad_result (ruling R25). The receipt is checked twice: first without the chain, where a failed check
 // is final (<hop>_receipt_failed) and the chain is not asked; then with the hash on chain, read again every 3 s for up to 120 s while it is not
 // listed or cannot be read (ruling R16; the supplier answers only after its Submit, but the indexer can lag). Only VERIFIED is accepted.
 //
-// The Accept. Confirmed: its fee is booked and the escrow leaves the store. Refused, or failed in a way that cannot land: <hop>_accept_failed. Sent
-// but not seen confirmed, so that it may still land (ruling R33): the job stands, verified, its fee is not booked, and the escrow stays in the store
-// marked accept_pending, for the janitor to confirm.
+// The Accept. Confirmed: its fee is booked and the escrow leaves the store. Sent but not seen confirmed, so that it may still land (ruling R33): the job
+// stands, verified, its fee is not booked, and the escrow stays in the store marked accept_pending, for the janitor to confirm. Failed in a way that
+// cannot land (a build that did not complete, a submit the API refused): made again every 15 s, until the planner says the accept window has closed or
+// 600 s have passed since the supplier's answer, and only then <hop>_accept_failed (ruling R54).
 //
 // The deadline of the run (`deadline`) cuts the waits of this file that are its own: the repeats of a send, the polls, the repeats of a read of the receipt
-// hash, and the pauses between them. It does not cut the confirmation of a Post or of an Accept, which the chain waits for (up to 180 s each; no
-// deadline is passed to it): a hire in its Accept at the deadline runs on. See the head of src/budget.ts.
-import { DELIVER_BY_BUFFER_MS, TxNotConfirmedError, verifyFleetReceipt } from '@vsa/buyer-core';
+// hash, the reads of an escrow state that could not be read, and the pauses between them. It does not cut the confirmation of a Post or of an Accept,
+// which the chain waits for (up to 180 s each; no deadline is passed to it), nor the repeats of an Accept (ruling R54): a hire in its Accept at the
+// deadline runs on. Nor does it cut a call already under way: a send in flight (up to 75 s), a poll in flight (up to 20 s) and a read of the chain
+// each end when they end, after the deadline if it came meanwhile. See the head of src/budget.ts.
+import { ACCEPT_WINDOW_MS, AcceptWindowClosedError, DELIVER_BY_BUFFER_MS, TxNotConfirmedError, verifyFleetReceipt } from '@vsa/buyer-core';
 import type { Chain, ChainEscrowState, FleetVerification, FleetVerifyInput, PollResult, PostResult, SendResult } from '@vsa/buyer-core';
+import type { AdvertDatum } from '@vsa/vector-read';
 import { BUSY_RETRY_MS, POLL_INTERVAL_MS, RECEIPT_HASH_WAIT_MS, SEND_CUTOFF_MS, checkWithin, deadlineError, fit, waitWithin } from './budget.ts';
 import type { Clocked } from './budget.ts';
 import { errorText, iso } from './format.ts';
@@ -48,6 +59,8 @@ export interface Supplier {
   hop: Hop;
   /** Canonical. */
   advertRef: string;
+  /** The advert's datum as read on chain before the Post (ruling R31): what the escrow is planned from and pays. */
+  advert: AdvertDatum;
   capabilityId: string;
   /** The advert's model: the receipt must name it. */
   model: string;
@@ -94,12 +107,14 @@ export async function hire<T>(deps: HireDeps, supplier: Supplier, job: Job<T>, a
   const post = await postEscrow(deps, supplier, job, accounting);
   const jobId = await handOver(deps, supplier, job, post);
   const done = await finished(deps, supplier, job, post, jobId);
+  // The moment the supplier handed over its result: its Submit was confirmed before it answered, so the accept window ends 600 s from then at the latest.
+  const answeredAt = deps.clock();
   let read: { responseHash: string; value: T };
   try { read = job.read(done.body); } catch (err) {
     throw failure(supplier, 'bad_result', `${named(supplier)}'s answer for ${job.label} cannot be used (${errorText(err)}); its escrow ${post.escrowRef} is not accepted and stays with the janitor.`);
   }
   const verification = await verified(deps, supplier, job, post, done, read.responseHash);
-  await accept(deps, supplier, job, post, accounting);
+  await accept(deps, supplier, job, post, accounting, answeredAt);
   return {
     subJob: {
       capability_id: supplier.capabilityId, advert_ref: supplier.advertRef, escrow_ref: post.escrowRef, supplier_pkh: post.supplierPkh,
@@ -109,16 +124,23 @@ export async function hire<T>(deps: HireDeps, supplier: Supplier, job: Job<T>, a
   };
 }
 
-/** The Post, recorded as stranded once it is confirmed; one that failed after its signature and may still land is recorded with its validity. */
+/**
+ * The Post, recorded as stranded once it is confirmed. One that failed after its signature is recorded with its validity, whether it may still land or
+ * the submit API refused it (ruling R59: an API can answer 4xx for a transaction it forwarded); the janitor drops an entry the chain never shows once that
+ * validity has passed. A Post that failed before its signature locked nothing and is not recorded.
+ */
 async function postEscrow<T>(deps: HireDeps, supplier: Supplier, job: Job<T>, accounting: Accounting): Promise<PostResult> {
   let post: PostResult;
   try {
     post = await deps.chain.postEscrow({ advertRef: supplier.advertRef, promptHash: job.promptHash });
   } catch (err) {
-    if (err instanceof TxNotConfirmedError && err.mayLand && err.deliverBy !== null) {
-      const { escrowRef, deliverBy, validTo } = err;
+    if (err instanceof TxNotConfirmedError && err.deliverBy !== null) {
+      const { escrowRef, deliverBy, validTo, mayLand } = err;
       recorded(() => deps.stranded.add({ escrow_ref: escrowRef, deliver_by: deliverBy, posted_at: deliverBy - supplier.windowMs - DELIVER_BY_BUFFER_MS, kind: supplier.hop, valid_to: validTo }),
-        escrowRef, `its Post for ${job.label} was not seen confirmed and may land until ${iso(validTo)}, and then the janitor does not know of it. Read it after its deliver_by (${iso(deliverBy)}) and reclaim it by hand if it landed.`);
+        escrowRef, `its Post for ${job.label} was ${mayLand ? 'not seen confirmed and may land' : 'refused by the submit API after it was signed, and could land all the same if the API had forwarded it,'} until ${iso(validTo)}, and then the janitor does not know of it. Read it after its deliver_by (${iso(deliverBy)}) and reclaim it by hand if it landed.`);
+      if (!mayLand) {
+        throw failure(supplier, 'post_failed', `The submit API refused the Post for ${job.label} after it was signed (${errorText(err)}). Nothing should have been locked, but its escrow ${escrowRef} is recorded for the janitor in case it landed anyway: the janitor drops the record once the Post's validity has ended (${iso(validTo)}) and the ledger shows nothing at it, and reclaims the escrow after its deliver_by if it is there.`);
+      }
       throw failure(supplier, 'post_failed', `The Post for ${job.label} was not confirmed (${errorText(err)}). It may still land until ${iso(validTo)}: its escrow ${escrowRef} is recorded for the janitor, which reclaims it after its deliver_by if it did.`);
     }
     throw failure(supplier, 'post_failed', `The Post for ${job.label} failed (${errorText(err)}). Nothing was locked for it.`);
@@ -135,6 +157,23 @@ async function handOver<T>(deps: HireDeps, supplier: Supplier, job: Job<T>, post
   const escrow = `its escrow ${post.escrowRef}`;
   /** What becomes of the escrow, in the words of the state it is read in now. */
   const leftTo = async (): Promise<string> => `${escrow} is ${said(await stateOf(deps.chain, post.escrowRef))} and goes to the janitor`;
+  /**
+   * The state of the escrow after a send that did not hand the job over (ruling R58): a state that cannot be read is no verdict, so it is read again
+   * every 15 s until the send cutoff. Still unreadable then, the supplier may hold the job with no job id to ask it for: <hop>_send_lost.
+   */
+  const stateAfter = async (answer: string): Promise<ChainEscrowState> => {
+    for (;;) {
+      const state = await stateOf(deps.chain, post.escrowRef);
+      if (state !== null) return state;
+      const next = fit(deps, deps.clock() + BUSY_RETRY_MS, sendUntil);
+      if (next === 'past the deadline') throw deadlineError(`${job.label} waited to read the state of its escrow`);
+      if (next === 'past the limit') {
+        throw failure(supplier, 'send_lost', `The send of ${job.label} got ${answer === '' ? 'no answer' : `the answer ${answer}`}, and the state of ${escrow} could not be read until ${SEND_CUTOFF_MS / 1000} s before its deliver_by: `
+          + 'the supplier may hold the job, but there is no job id to ask it for the result. The escrow goes to the janitor.');
+      }
+      await deps.sleep(BUSY_RETRY_MS);
+    }
+  };
   let sends = 0;
   let unknownOutcomes = 0;
   for (;;) {
@@ -144,9 +183,9 @@ async function handOver<T>(deps: HireDeps, supplier: Supplier, job: Job<T>, post
     const answer = sent.kind === 'refused' ? `${sent.status} ${sent.reason}${sent.message === '' ? '' : `: ${sent.message}`}` : '';
     const notFound = sent.kind === 'refused' && sent.status === 404 && sent.reason === 'escrow_not_found';
     if (notFound) {
-      const state = await stateOf(deps.chain, post.escrowRef);
+      const state = await stateAfter(answer);
       if (state !== 'Open') {
-        throw failure(supplier, 'send_lost', `${named(supplier)} answered ${answer}, and ${escrow} is ${said(state)}: the supplier may hold the job from an earlier send whose answer was lost, and there is no job id to ask it for the result. The escrow goes to the janitor.`);
+        throw failure(supplier, 'send_lost', `${named(supplier)} answered ${answer}, and ${escrow} is ${state}: the supplier may hold the job from an earlier send whose answer was lost, and there is no job id to ask it for the result. The escrow goes to the janitor.`);
       }
     }
     if (sent.kind === 'busy' || notFound) {
@@ -161,11 +200,13 @@ async function handOver<T>(deps: HireDeps, supplier: Supplier, job: Job<T>, post
         ? failure(supplier, 'refused', `${named(supplier)} kept answering ${answer}, as if the escrow were not on chain: ${tried}; ${await leftTo()}.`)
         : failure(supplier, 'busy', `${named(supplier)} stayed busy: ${tried}; ${await leftTo()}.`);
     }
-    if (sent.kind === 'refused' && sent.status >= 400 && sent.status < 500) {
+    // A 4xx in the supplier's own envelope is the supplier turning the job down. A 4xx whose body is no JSON object (bad_response) is a page of something in
+    // front of the supplier, and is handled like no answer (ruling R57).
+    if (sent.kind === 'refused' && sent.status >= 400 && sent.status < 500 && sent.reason !== 'bad_response') {
       throw failure(supplier, 'refused', `${named(supplier)} refused ${job.label} (${answer}); ${await leftTo()}.`);
     }
-    // No answer, a 5xx, or a 202 without a job id: the supplier may have claimed the escrow. Its state says whether the job can be sent again.
-    const state = await stateOf(deps.chain, post.escrowRef);
+    // No answer, a 5xx, a 4xx page, or a 202 without a job id: the supplier may have claimed the escrow. Its state says whether the job can be sent again.
+    const state = await stateAfter(answer);
     if (state === 'Open' && unknownOutcomes === 0) {
       unknownOutcomes += 1;
       checkWithin(deps, deps.clock(), sendUntil, () => failure(supplier, 'send_lost', `The send of ${job.label} got no answer and there is no time to send it again; ${escrow} is Open and goes to the janitor.`), `${job.label} was being sent`);
@@ -230,19 +271,33 @@ async function verified<T>(deps: HireDeps, supplier: Supplier, job: Job<T>, post
   }
 }
 
-/** The Accept of a verified job: confirmed, booked and forgotten; sent but not seen confirmed, marked for the janitor (ruling R33); refused, a failure. */
-async function accept<T>(deps: HireDeps, supplier: Supplier, job: Job<T>, post: PostResult, accounting: Accounting): Promise<void> {
-  let accepted: { txHash: string; feeLovelace: bigint };
-  try {
-    accepted = await deps.chain.accept(post.escrowRef);
-  } catch (err) {
-    if (!(err instanceof TxNotConfirmedError && err.mayLand)) {
-      throw failure(supplier, 'accept_failed', `The Accept of ${job.label} failed (${errorText(err)}); its escrow ${post.escrowRef} stays recorded for the janitor.`);
+/**
+ * The Accept of a verified job (ruling R54): confirmed, booked and forgotten; sent but not seen confirmed, marked for the janitor (ruling R33). Any
+ * other failure cannot land (a build that did not complete, a submit the API refused), so the Accept is made again every 15 s, with fresh inputs and a
+ * fresh validity range, until the planner says the accept window has closed or 600 s have passed since `answeredAt`, the moment the supplier handed
+ * over its result (its Submit came before it, so the window ends then at the latest). Only then is it <hop>_accept_failed. The deadline of the run
+ * is not asked: a hire in its Accept finishes late (ruling R53).
+ */
+async function accept<T>(deps: HireDeps, supplier: Supplier, job: Job<T>, post: PostResult, accounting: Accounting, answeredAt: number): Promise<void> {
+  const lastChance = answeredAt + ACCEPT_WINDOW_MS;
+  let accepted: { txHash: string; feeLovelace: bigint } | undefined;
+  for (let attempts = 1; accepted === undefined; attempts += 1) {
+    try {
+      accepted = await deps.chain.accept(post.escrowRef);
+    } catch (err) {
+      if (err instanceof TxNotConfirmedError && err.mayLand) {
+        const { txHash, validTo } = err;
+        recorded(() => deps.stranded.update(post.escrowRef, { accept_pending: { tx_hash: txHash, valid_to: validTo, by: 'run' } }),
+          post.escrowRef, `its Accept ${txHash} for ${job.label} may land until ${iso(validTo)}, and the store does not say so: the janitor takes it for a Submitted escrow it cannot accept.`);
+        return;
+      }
+      const closed = err instanceof AcceptWindowClosedError;
+      if (closed || deps.clock() + BUSY_RETRY_MS > lastChance) {
+        const why = closed ? 'the accept window has closed' : `the next one would start more than ${ACCEPT_WINDOW_MS / 1000} s after the supplier's answer, when the accept window may be over`;
+        throw failure(supplier, 'accept_failed', `The Accept of ${job.label} was made ${attempts} ${attempts === 1 ? 'time' : 'times'}, ${BUSY_RETRY_MS / 1000} s apart, and the last attempt failed (${errorText(err)}); ${why}. Its escrow ${post.escrowRef} stays recorded for the janitor.`);
+      }
+      await deps.sleep(BUSY_RETRY_MS);
     }
-    const { txHash, validTo } = err;
-    recorded(() => deps.stranded.update(post.escrowRef, { accept_pending: { tx_hash: txHash, valid_to: validTo, by: 'run' } }),
-      post.escrowRef, `its Accept ${txHash} for ${job.label} may land until ${iso(validTo)}, and the store does not say so: the janitor takes it for a Submitted escrow it cannot accept.`);
-    return;
   }
   accounting.accepted(accepted);
   recorded(() => deps.stranded.remove(post.escrowRef), post.escrowRef, `it was accepted for ${job.label} in ${accepted.txHash}, and the store may still list it; the janitor drops it once it reads it spent.`);

@@ -15,11 +15,11 @@ import { FakeChain, rawHexToBech32 } from '@vsa/buyer-core';
 import { StrandedStore } from '../src/janitor.ts';
 import { popplerRenderer } from '../src/render.ts';
 import { manifestFromEnv } from '../src/server.ts';
-import { CHAIN_SETTINGS, OTHER_SETTINGS, SHUTDOWN_WAIT_MS, WRITE_PROBE, assertNoKeyIn, assertNoTokenIn, loadConfig, startService, stopOnSignals } from '../src/start.ts';
+import { CHAIN_SETTINGS, OTHER_SETTINGS, PRICE_CEILING_DEFAULT_LOVELACE, SHUTDOWN_WAIT_MS, WRITE_PROBE, assertNoKeyIn, assertNoTokenIn, loadConfig, startService, stopOnSignals } from '../src/start.ts';
 import type { RunningService, StartOptions } from '../src/start.ts';
 import { fakeRenderer } from './fake-renderer.ts';
 import { AUTH, BUYER, BUYER_ADDRESS, FULL_ENV, SUPPLIER, TEST_AUTH, TEST_CONTACT, cleanDirs, fakePopplerDir, inFront, keyOf, noFetch, pathOf, rawClient, tempDir, until, wire, withPath } from './server-support.ts';
-import { ALLOWLIST, INDEXER, SUMMARY, escrowNo, marketplace } from './stub-suppliers.ts';
+import { ALLOWLIST, INDEXER, OCR_ADVERT_REF, SUMMARY, T0, escrowNo, marketplace } from './stub-suppliers.ts';
 import { TWO_PAGES_PDF, toBase64 } from './support.ts';
 
 afterEach(() => { cleanDirs(); });
@@ -51,6 +51,21 @@ describe('loadConfig', () => {
       PORT: '9100', HOST: '127.0.0.1',
     });
     expect(config).toMatchObject({ ocrAllowlistPkh: 'ab'.repeat(28), llmAllowlist: ['model-a', 'model-b', 'model-c'], stateDir: '/var/pipeline', indexerUrl: 'https://indexer.example.test/', port: 9100, host: '127.0.0.1' });
+  });
+
+  // Ruling R56: a ceiling on the price of each hop, so that an advert priced at run time cannot cost more than the operator allows.
+  test('the price ceilings OCR_MAX_PRICE_LOVELACE and LLM_MAX_PRICE_LOVELACE: 1000000 lovelace each unless set, a whole number of at least 0 when set, and anything else stops the start, naming the setting and never showing the value', () => {
+    expect(PRICE_CEILING_DEFAULT_LOVELACE).toBe(1_000_000n);
+    expect(loadConfig(FULL_ENV)).toMatchObject({ ocrMaxPriceLovelace: 1_000_000n, llmMaxPriceLovelace: 1_000_000n });
+    expect(loadConfig({ ...FULL_ENV, OCR_MAX_PRICE_LOVELACE: '', LLM_MAX_PRICE_LOVELACE: ' ' })).toMatchObject({ ocrMaxPriceLovelace: 1_000_000n, llmMaxPriceLovelace: 1_000_000n });
+    expect(loadConfig({ ...FULL_ENV, OCR_MAX_PRICE_LOVELACE: '250000', LLM_MAX_PRICE_LOVELACE: '0' })).toMatchObject({ ocrMaxPriceLovelace: 250_000n, llmMaxPriceLovelace: 0n });
+    expect(loadConfig({ ...FULL_ENV, LLM_MAX_PRICE_LOVELACE: ' 5000000\n' }).llmMaxPriceLovelace).toBe(5_000_000n);
+    for (const name of ['OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE']) {
+      for (const bad of ['one', '-1', '1.5', '1e6', '0x10', '99999999999999999999', 'secret-value']) {
+        const error = thrown(() => loadConfig({ ...FULL_ENV, [name]: bad }));
+        expect(error.message, `${name} = ${bad}`).toBe(`environment variable ${name} must be a whole number of lovelace of at least 0, and it has ${bad.length} characters`);
+      }
+    }
   });
 
   test('a setting that is set and empty means its default', () => {
@@ -380,6 +395,36 @@ describe('startService', () => {
     expect(logs.find((line) => line.includes(`janitor: kept ${ref}`))).toMatch(/unknown/);
   });
 
+  // Ruling R55: a transaction of the janitor would hold the chain's queue in front of a job's Post or Accept, so the janitor is given the job slot.
+  test('the janitor is given the job slot: a pass while a job runs defers the Reclaim of a due escrow, and the first pass after the job reclaims it (ruling R55)', async () => {
+    const m = marketplace();
+    // An escrow an earlier run left behind, posted 400 s before T0 on the marketplace's chain: its deliver_by is 80 s after T0, so it is not due at start.
+    m.clock.now = T0 - 400_000;
+    const left = await m.chain.postEscrow({ advertRef: OCR_ADVERT_REF, promptHash: 'ab'.repeat(32) });
+    m.clock.now = T0;
+    const dir = tempDir();
+    new StrandedStore(dir).add({ escrow_ref: left.escrowRef, deliver_by: left.deliverBy, posted_at: left.postedAt, kind: 'ocr' });
+    let sleeping = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const env = envIn(dir, { OCR_ALLOWLIST_SUPPLIER_PKH: m.ocr.key.pkh, LLM_MODEL_ALLOWLIST: ALLOWLIST.join(','), VECTOR_MARKETPLACE_INDEXER_URL: INDEXER });
+    const service = await start(env, {
+      createChain: async () => m.chain, fetchImpl: m.fetchImpl, renderer: fakeRenderer({ total: 2 }), clock: () => m.clock.now, janitorIntervalMs: 20,
+      sleep: async (ms) => { sleeping = true; await gate; m.clock.now += ms; },
+    });
+    const request = { source: { pdf_b64: toBase64(TWO_PAGES_PDF), mime: 'application/pdf' }, task: 'summary' };
+    const job = fetch(`http://127.0.0.1:${service.port}/`, { method: 'POST', headers: AUTH, body: wire(request) }).then((r) => r.status, () => 'closed');
+    await until(() => sleeping, 'the job is running');
+    m.clock.now = T0 + 100_000; // the escrow left behind is due now, 5 s after its deliver_by and more
+    await until(() => logs.some((line) => line.startsWith('janitor: 1 transaction deferred: a job is running')), 'a pass has deferred the Reclaim');
+    expect(await m.chain.escrowState(left.escrowRef)).toBe('Open');
+    expect(logs.some((line) => line.startsWith(`janitor: reclaimed ${left.escrowRef}`))).toBe(false);
+    release();
+    expect(await job).toBe(200);
+    await until(() => logs.some((line) => line.startsWith(`janitor: reclaimed ${left.escrowRef}`)), 'the first pass after the job has reclaimed it');
+    expect(await m.chain.escrowState(left.escrowRef)).toBe('spent');
+  });
+
   test('a job runs on the settings of the environment: the OCR supplier key, the models and the indexer it names, and the stranded store in its state directory', async () => {
     const m = marketplace();
     const dir = tempDir();
@@ -646,7 +691,7 @@ describe('src/index.ts as a process', () => {
   const READ = [
     'OPERATOR_CONTACT', 'PIPELINE_BUYER_PRIV_KEY_HEX', 'SUPPLIER_PKH', 'SERVICE_AUTH_HEADER', 'SUPPLIER_PUB_KEY_HEX', 'AGENT_DID', 'AGENT_VERSION', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE',
     'ADVERT_PRICE_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_EXPLORER_URL', 'PIPELINE_BUYER_PKH', 'PIPELINE_BUYER_ADDRESS', 'OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST',
-    'PIPELINE_STATE_DIR', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', 'PORT', 'HOST',
+    'OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE', 'PIPELINE_STATE_DIR', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', 'PORT', 'HOST',
   ];
   const baseEnv = (): Record<string, string | undefined> => {
     const env: Record<string, string | undefined> = { ...process.env };

@@ -23,6 +23,11 @@
 // A note on the one more Accept. The vendored planAccept makes every Accept valid until submitted_at + 600 s, the end of the window itself, so on
 // RealChain an Accept that can no longer land leaves no window for another, and the escrow is recorded as lost once that Accept's validity has passed.
 // The one more Accept is made only for an Accept whose validity ends before the window does (a Chain that builds it so, and FakeChain in the tests).
+//
+// While a job runs (ruling R55). Every transaction of the janitor holds the chain's queue for its build and its confirmation, and a job's Post or Accept
+// queued behind it waits that long; a Reclaim has no closing deadline on chain and an Accept has one. So a pass is given `busy`, and a transaction it
+// would make while busy() says a job is running is deferred: nothing is sent, and the entry is looked at again on the next pass. The reads go on
+// (the state of each entry, the drop of an entry read spent or unknown twice), and the pass logs one line with the count of what it deferred.
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { ACCEPT_WINDOW_MS, TxNotConfirmedError } from '@vsa/buyer-core';
@@ -49,8 +54,15 @@ export interface StrandedEntry {
   accept_pending?: AcceptPending;
 }
 export type JanitorChain = Pick<Chain, 'escrowState' | 'reclaim' | 'accept'>;
-/** What a pass did with an entry: `waiting` (not due yet), `reclaimed`, `accepted`, `kept` (looked at and left), `dropped` (removed without a transaction). */
-export interface JanitorAction { escrow_ref: string; action: 'waiting' | 'reclaimed' | 'accepted' | 'kept' | 'dropped'; note: string }
+/**
+ * What a pass did with an entry: `waiting` (not due yet), `reclaimed`, `accepted`, `kept` (looked at and left), `dropped` (removed without a
+ * transaction), `deferred` (its transaction waits for the next pass: a job is running).
+ */
+export interface JanitorAction { escrow_ref: string; action: 'waiting' | 'reclaimed' | 'accepted' | 'kept' | 'dropped' | 'deferred'; note: string }
+/** Is a job running now? The service passes its job slot; without one, never. */
+export type Busy = () => boolean;
+const NEVER_BUSY: Busy = () => false;
+const A_JOB_IS_RUNNING = 'a job is running';
 
 export const STRANDED_FILE = 'stranded.json';
 /** The janitor takes an entry this long after its deliver_by: a Reclaim opens at the first whole second after it. */
@@ -204,8 +216,8 @@ export class StrandedStore {
   }
 }
 
-/** What one pass does with one entry at `now`. */
-async function tend(store: StrandedStore, chain: JanitorChain, entry: StrandedEntry, now: number): Promise<JanitorAction> {
+/** What one pass does with one entry at `now`; a transaction it would make while `busy()` is deferred. */
+async function tend(store: StrandedStore, chain: JanitorChain, entry: StrandedEntry, now: number, busy: Busy): Promise<JanitorAction> {
   const ref = entry.escrow_ref;
   const did = (action: JanitorAction['action'], note: string): JanitorAction => ({ escrow_ref: ref, action, note });
   if (entry.accept_pending === undefined) {
@@ -227,17 +239,21 @@ async function tend(store: StrandedStore, chain: JanitorChain, entry: StrandedEn
   }
   // A live read ends a run of spent or unknown reads.
   if (entry.gone_reads !== undefined) store.update(ref, { gone_reads: undefined });
-  if (entry.accept_pending !== undefined) return tendAccept(store, chain, entry, entry.accept_pending, state, now);
+  if (entry.accept_pending !== undefined) return tendAccept(store, chain, entry, entry.accept_pending, state, now, busy);
   if (state === 'Submitted') {
     const lostAfter = entry.lost_to_release_after ?? entry.deliver_by + ACCEPT_WINDOW_MS;
     if (entry.lost_to_release_after === undefined) store.update(ref, { lost_to_release_after: lostAfter });
     return did('kept', `Submitted: it cannot be reclaimed, and its supplier may release it from ${iso(lostAfter)} at the latest`);
   }
-  return reclaimed(store, chain, ref, state);
+  return reclaimed(store, chain, ref, state, busy);
 }
 
-/** The Reclaim of an Open or Claimed escrow, and the entry removed once it is confirmed; one that fails keeps the entry for the next pass. */
-async function reclaimed(store: StrandedStore, chain: JanitorChain, ref: string, state: 'Open' | 'Claimed'): Promise<JanitorAction> {
+/**
+ * The Reclaim of an Open or Claimed escrow, and the entry removed once it is confirmed; one that fails keeps the entry for the next pass, and so does
+ * one deferred while a job runs (busy() is asked at the moment the Reclaim would be made).
+ */
+async function reclaimed(store: StrandedStore, chain: JanitorChain, ref: string, state: 'Open' | 'Claimed', busy: Busy): Promise<JanitorAction> {
+  if (busy()) return { escrow_ref: ref, action: 'deferred', note: `${state}: its Reclaim waits, ${A_JOB_IS_RUNNING}` };
   let txHash: string;
   try { ({ txHash } = await chain.reclaim(ref)); } catch (err) { return { escrow_ref: ref, action: 'kept', note: `${state}: the Reclaim failed (${errorText(err)})` }; }
   store.remove(ref);
@@ -245,12 +261,12 @@ async function reclaimed(store: StrandedStore, chain: JanitorChain, ref: string,
 }
 
 /** An escrow whose Accept may still land, read live (ruling R33). */
-async function tendAccept(store: StrandedStore, chain: JanitorChain, entry: StrandedEntry, pending: AcceptPending, state: 'Open' | 'Claimed' | 'Submitted', now: number): Promise<JanitorAction> {
+async function tendAccept(store: StrandedStore, chain: JanitorChain, entry: StrandedEntry, pending: AcceptPending, state: 'Open' | 'Claimed' | 'Submitted', now: number, busy: Busy): Promise<JanitorAction> {
   const ref = entry.escrow_ref;
   const did = (action: JanitorAction['action'], note: string): JanitorAction => ({ escrow_ref: ref, action, note });
   if (state !== 'Submitted') {
     // Lag behind the Submit, until the Accept can no longer land and deliver_by + 5 s has passed: then the rule of any entry, the Reclaim.
-    if (now >= pending.valid_to && now >= entry.deliver_by + JANITOR_GRACE_MS) return reclaimed(store, chain, ref, state);
+    if (now >= pending.valid_to && now >= entry.deliver_by + JANITOR_GRACE_MS) return reclaimed(store, chain, ref, state, busy);
     return did('kept', `${state}: an escrow whose Accept was sent reads ${state} while the indexer lags its Submit; read again on the next pass`);
   }
   if (now < pending.valid_to) return did('kept', `Submitted: its Accept ${pending.tx_hash} may still land until ${iso(pending.valid_to)}`);
@@ -263,6 +279,7 @@ async function tendAccept(store: StrandedStore, chain: JanitorChain, entry: Stra
   if (pending.by !== 'run') return lost(', and one more Accept was already made');
   // The window runs 600 s from the Submit. The Chain gives no submitted_at, and the Submit came after the Post: posted_at + 600 s is the earliest it ends.
   if (now >= entry.posted_at + ACCEPT_WINDOW_MS) return lost(' and the accept window may be over');
+  if (busy()) return did('deferred', `Submitted: its one more Accept waits, ${A_JOB_IS_RUNNING}`);
   let accepted: { txHash: string };
   try {
     accepted = await chain.accept(ref);
@@ -277,27 +294,37 @@ async function tendAccept(store: StrandedStore, chain: JanitorChain, entry: Stra
   return did('accepted', `${notLanded}; accepted again in ${accepted.txHash}`);
 }
 
-/** One pass over the store at `now` (POSIX ms), entry by entry, in the order they were added. Rejects only when the store cannot be written. */
-export async function runJanitorOnce(store: StrandedStore, chain: JanitorChain, now: number): Promise<JanitorAction[]> {
+/**
+ * One pass over the store at `now` (POSIX ms), entry by entry, in the order they were added. A transaction it would make while `busy()` says a job is
+ * running is deferred (see the head of this file). Rejects only when the store cannot be written.
+ */
+export async function runJanitorOnce(store: StrandedStore, chain: JanitorChain, now: number, busy: Busy = NEVER_BUSY): Promise<JanitorAction[]> {
   const actions: JanitorAction[] = [];
-  for (const entry of store.list()) actions.push(await tend(store, chain, entry, now));
+  for (const entry of store.list()) actions.push(await tend(store, chain, entry, now, busy));
   return actions;
 }
 
 /**
- * Runs a pass at once and then one every `intervalMs` after the last one ended, until stopped; logs every action but `waiting`, and a pass that
- * failed, as one line each. The timer does not keep the process alive. `stop` resolves once the pass in flight, if any, has ended.
+ * Runs a pass at once and then one every `intervalMs` after the last one ended, until stopped; logs every action but `waiting` and `deferred`, and a
+ * pass that failed, as one line each, and the transactions a pass deferred while a job ran (`busy`) as one line with their count. The timer does not
+ * keep the process alive. `stop` resolves once the pass in flight, if any, has ended.
  */
-export function startJanitor(store: StrandedStore, chain: JanitorChain, intervalMs: number, opts: { clock?: () => number; log?: (line: string) => void } = {}): { stop: () => Promise<void> } {
+export function startJanitor(
+  store: StrandedStore, chain: JanitorChain, intervalMs: number, opts: { clock?: () => number; log?: (line: string) => void; busy?: Busy } = {},
+): { stop: () => Promise<void> } {
   if (typeof intervalMs !== 'number' || !Number.isFinite(intervalMs) || intervalMs <= 0) throw new RangeError('The janitor interval must be a positive number of milliseconds.');
   const clock = opts.clock ?? Date.now;
   const log = opts.log ?? ((line: string) => { console.log(line); });
+  const busy = opts.busy ?? NEVER_BUSY;
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let inFlight: Promise<void> = Promise.resolve();
   const pass = async (): Promise<void> => {
     try {
-      for (const action of await runJanitorOnce(store, chain, clock())) if (action.action !== 'waiting') log(`janitor: ${action.action} ${action.escrow_ref}: ${action.note}`);
+      const actions = await runJanitorOnce(store, chain, clock(), busy);
+      for (const action of actions) if (action.action !== 'waiting' && action.action !== 'deferred') log(`janitor: ${action.action} ${action.escrow_ref}: ${action.note}`);
+      const deferred = actions.filter((action) => action.action === 'deferred').length;
+      if (deferred > 0) log(`janitor: ${deferred} ${deferred === 1 ? 'transaction' : 'transactions'} deferred: ${A_JOB_IS_RUNNING}; ${deferred === 1 ? 'it is' : 'they are'} made on the next pass after it`);
     } catch (err) {
       log(`janitor: the pass failed (${errorText(err)})`);
     }

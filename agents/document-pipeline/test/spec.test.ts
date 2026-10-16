@@ -296,8 +296,10 @@ describe('specs/document-pipeline.md', () => {
       '- The deadline cuts what the service waits for on its own: the repeats of a send, the polls, the repeats of a read of the receipt hash, and the pauses between them. Past the deadline none of them starts again.',
       '- A hire that the deadline cuts fails the job with `deadline`, after payment. The sub-jobs it had already paid for are not refunded, and the escrow of the hire in progress goes to the janitor.',
       `- The deadline does not cut the confirmation of a Post or of an Accept. The chain waits for each of them, up to ${DELIVER_BY_BUFFER_MS / 1000} s, whatever the time.`,
-      '- A hire that is in its Accept when the deadline passes runs on: the Accept completes, or is left `accept_pending`. A page is then followed by `deadline` at the next hop. The chat job still returns its result, which can come after the runtime has given up on the job, 60 s after the deadline at the latest.',
+      '- A hire that is in its Accept when the deadline passes runs on, its retries included: the Accept completes, is left `accept_pending`, or fails with `accept_failed` once its retries are over. A page is then followed by `deadline` at the next hop. The chat job still returns its result, which can come after the runtime has given up on the job, 60 s after the deadline at the latest.',
     ]);
+    // Ruling R54: the Accept is made again, every 15 s, until the window closes or 600 s after the answer of the supplier.
+    expect(buys).toContain('An Accept that fails in a way that cannot land, a build that did not complete or a submit that was refused, is made again every 15 s, until the accept window has closed or 600 s have passed since the supplier\'s answer. Only then does the hop fail with `accept_failed`.');
     expect(POLL_INTERVAL_MS / 1000).toBe(3);
     // Before anything is posted.
     expect(buys).toContain(`a page image over ${OCR_IMAGE_B64_MAX} base64 characters is refused with \`page_too_large\``);

@@ -24,7 +24,7 @@ import { fakeRenderer } from './fake-renderer.ts';
 import { ALL_PASS, GOLDEN } from './golden.ts';
 import { PAGE_0_PNG, PAGE_1_PNG, TWO_PAGES_PDF, text, toBase64 } from './support.ts';
 import {
-  ALLOWLIST, INDEXER, LLM_ADVERT, LLM_ADVERT_REF, LLM_ENDPOINT, OCR_ADVERT, OCR_ENDPOINT, T0, escrowNo, indexerRow, marketplace,
+  ALLOWLIST, INDEXER, LLM_ADVERT, LLM_ADVERT_REF, LLM_ENDPOINT, OCR_ADVERT, OCR_ADVERT_REF, OCR_ENDPOINT, T0, escrowNo, indexerRow, marketplace,
 } from './stub-suppliers.ts';
 import type { Marketplace } from './stub-suppliers.ts';
 
@@ -50,9 +50,12 @@ function setup(opts: Parameters<typeof marketplace>[0] = {}): Run {
     chain: m.chain, fetchImpl: m.fetchImpl, renderer: fakeRenderer({ total: 2 }), clock: () => m.clock.now,
     sleep: async (ms) => { sleeps.push(ms); m.clock.now += ms; },
     ocrAllowlistPkh: m.ocr.key.pkh, llmAllowlist: ALLOWLIST, indexerUrl: INDEXER, stranded, deadlineMs: T0 + DEADLINE_MS,
+    ocrMaxPriceLovelace: CEILING, llmMaxPriceLovelace: CEILING,
   };
   return { m, deps, stranded, sleeps };
 }
+/** The default price ceiling of both hops (OCR_MAX_PRICE_LOVELACE and LLM_MAX_PRICE_LOVELACE, ruling R56). */
+const CEILING = 1_000_000n;
 
 /** The FakeChain of `m` behind a plain Chain object whose methods `over` replaces. */
 function chainWith(m: Marketplace, over: Partial<Chain>): Chain {
@@ -295,6 +298,27 @@ describe('runPipeline: sending a job', () => {
     expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
   });
 
+  // Ruling R57: a 4xx whose body is no JSON object (bad_response) is a page of something in front of the supplier, not the supplier turning the job down,
+  // and it is handled like no answer: the state of the escrow decides, and the job is sent once more while it is Open.
+  it('a 403 page in answer to the first send is no refusal of the supplier: the escrow is read once, the job is sent once more, and it finishes (ruling R57)', async () => {
+    const run = setup();
+    run.m.ocr.pages = [403];
+    let reads = 0;
+    const chain = chainWith(run.m, { escrowState: (r) => { reads += 1; return run.m.chain.escrowState(r); } });
+    expect(await runPipeline(request(), { ...run.deps, chain })).toStrictEqual(GOLDEN);
+    expect(run.m.ocr.sends.map((s) => s.escrowRef)).toStrictEqual([escrowNo(1), escrowNo(1), escrowNo(2)]);
+    expect(reads).toBe(1);
+  });
+
+  it('a 403 page twice is ocr_refused, as a 5xx answered twice is', async () => {
+    const run = setup();
+    run.m.ocr.pages = [403, 403];
+    const error = await failure(runPipeline(request(), run.deps), 'ocr_refused');
+    expect(error.message).toMatch(/refused page 1 twice \(403 bad_response/);
+    expect(run.m.ocr.sends).toHaveLength(2);
+    expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
+  });
+
   it('a 5xx refusal may come after a claim: the escrow is read, sent once more while it is Open, then ocr_refused', async () => {
     const run = setup();
     run.m.ocr.refuse = { status: 503, reason: 'evidence_unavailable' };
@@ -335,13 +359,40 @@ describe('runPipeline: sending a job', () => {
     expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
   });
 
-  it('a not-found answer while the state of the escrow cannot be read is not sent again either: ocr_send_lost', async () => {
+  // Ruling R58: a state that cannot be read is no verdict on the escrow. In the send loop it is read again every 15 s, until the send cutoff.
+  it('a not-found answer while the state of the escrow cannot be read: it is read again 15 s later, and once it reads Open the job is sent again and finishes (ruling R58)', async () => {
     const run = setup();
     run.m.ocr.notFound = 1;
-    const chain = chainWith(run.m, { escrowState: async () => { throw new Error('Could not read escrow: Koios answered 503'); } });
+    let reads = 0;
+    const chain = chainWith(run.m, { escrowState: async (r) => { reads += 1; if (reads === 1) throw new Error('Could not read escrow: Koios answered 503'); return run.m.chain.escrowState(r); } });
+    expect(await runPipeline(request(), { ...run.deps, chain })).toStrictEqual(GOLDEN);
+    expect(run.m.ocr.sends.map((s) => s.escrowRef)).toStrictEqual([escrowNo(1), escrowNo(1), escrowNo(2)]);
+    expect(reads).toBe(2);
+    expect(run.sleeps.slice(0, 2)).toStrictEqual([15_000, 15_000]); // the read again, then the send again
+  });
+
+  it('a not-found answer while the state of the escrow stays unreadable until the send cutoff: ocr_send_lost, saying the state could not be read; it is never sent again (ruling R58)', async () => {
+    const run = setup();
+    run.m.ocr.notFound = 1;
+    let reads = 0;
+    const chain = chainWith(run.m, { escrowState: async () => { reads += 1; throw new Error('Could not read escrow: Koios answered 503'); } });
     const error = await failure(runPipeline(request(), { ...run.deps, chain }), 'ocr_send_lost');
-    expect(error.message).toMatch(/could not be read/);
+    expect(error.message).toMatch(/the state of its escrow [0-9a-f]{64}#0 could not be read until 90 s before its deliver_by/);
     expect(run.m.ocr.sends).toHaveLength(1);
+    // Reads at T0, T0 + 15 s, ... T0 + 390 s, the send cutoff (deliver_by - 90 s): the next one would be past it.
+    expect(reads).toBe(27);
+    expect(run.m.clock.now).toBe(T0 + 390_000);
+    expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
+  });
+
+  it('a send with no answer while the state of the escrow cannot be read: it is read again, and once it reads Open the job is sent once more (ruling R58)', async () => {
+    const run = setup();
+    run.m.ocr.lose = ['before-claim'];
+    let reads = 0;
+    const chain = chainWith(run.m, { escrowState: async (r) => { reads += 1; if (reads === 1) throw new Error('Could not read escrow: Koios answered 503'); return run.m.chain.escrowState(r); } });
+    expect(await runPipeline(request(), { ...run.deps, chain })).toStrictEqual(GOLDEN);
+    expect(run.m.ocr.sends.map((s) => s.escrowRef)).toStrictEqual([escrowNo(1), escrowNo(1), escrowNo(2)]);
+    expect(run.sleeps[0]).toBe(15_000);
   });
 
   it('only a 404 is a not-found: a 5xx that names escrow_not_found is an answer that may come after a claim, handled as any 5xx (ruling R32)', async () => {
@@ -427,6 +478,16 @@ describe('runPipeline: polling a job', () => {
     expect(error.message).toMatch(/upstream_failure/);
     expect(await states(run.m, escrowNo(1))).toStrictEqual(['Claimed']);
     expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
+  });
+
+  it('a 404 page on a poll is no word of the supplier that the job is gone: it is polled again, and the job finishes when the supplier answers (ruling R57)', async () => {
+    const run = setup();
+    run.m.ocr.plans = [['proxy-404', 'running', 'done']];
+    let reads = 0;
+    const chain = chainWith(run.m, { escrowState: (r) => { reads += 1; return run.m.chain.escrowState(r); } });
+    expect(await runPipeline(request(), { ...run.deps, chain })).toStrictEqual(GOLDEN);
+    expect(run.m.ocr.polls).toBe(3 + 2);
+    expect(reads).toBe(0); // no verdict was read into it, so the escrow was not even asked about
   });
 
   it('a job the supplier no longer knows (404), with the escrow Claimed, fails the page with ocr_failed', async () => {
@@ -517,12 +578,70 @@ describe('runPipeline: the sub-receipt', () => {
     expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
   });
 
-  it('an Accept that fails fails the page with ocr_accept_failed, and the escrow stays with the janitor', async () => {
+  // Ruling R54: the Accept of a verified sub-job is made again every 15 s on any failure that cannot land, until the planner says the accept window has
+  // closed or 600 s have passed since the supplier's answer (its Submit came before it, so the window cannot last longer). The loop runs past the job's
+  // deadline on purpose (ruling R53). A one-shot Accept would lose a paid, verified page to the supplier's Release.
+  it('an Accept that fails once is made again 15 s later: the result is the golden one, one extra pause of 15 s, the fee of the Accept booked once (ruling R54)', async () => {
     const run = setup();
-    const chain = chainWith(run.m, { accept: async () => { throw new Error('The Accept was refused and cannot land (400).'); } });
+    run.m.chain.failNextAccepts(1);
+    const result = await runPipeline(request(), run.deps);
+    expect(result).toStrictEqual(GOLDEN);
+    expect(run.sleeps).toStrictEqual([3_000, 3_000, 15_000, 3_000, 3_000, 3_000, 3_000]);
+    expect(await states(run.m, escrowNo(1), escrowNo(2), escrowNo(3))).toStrictEqual(['spent', 'spent', 'spent']);
+    expect(run.stranded.list()).toStrictEqual([]);
+  });
+
+  it('an Accept refused outright (it cannot land) once is made again too: a rebuild takes fresh inputs and a fresh validity range (ruling R54)', async () => {
+    const run = setup();
+    run.m.chain.failNextAccepts(1, new TxNotConfirmedError('The Accept was refused and cannot land (400 BadInputsUTxO).', { txHash: 'ac'.repeat(32), escrowRef: escrowNo(1), deliverBy: null, validTo: T0 + 606_000, mayLand: false }));
+    expect(await runPipeline(request(), run.deps)).toStrictEqual(GOLDEN);
+    expect(run.sleeps.filter((ms) => ms === 15_000)).toHaveLength(1);
+  });
+
+  it('an Accept that keeps failing is made every 15 s until 600 s after the answer of the supplier, then ocr_accept_failed, saying how often and why the last failed; the escrow stays with the janitor', async () => {
+    const run = setup();
+    let accepts = 0;
+    const chain = chainWith(run.m, { accept: async () => { accepts += 1; throw new Error('Could not read the escrow reference script from the node: network error'); } });
     const error = await failure(runPipeline(request(), { ...run.deps, chain }), 'ocr_accept_failed');
-    expect(error.message).toMatch(/refused and cannot land/);
+    // The answer came at T0 + 6 s: attempts at 6 s, 21 s, ... 606 s, the last one exactly 600 s after it.
+    expect(accepts).toBe(41);
+    expect(run.m.clock.now).toBe(T0 + 6_000 + 600_000);
+    expect(error.message).toMatch(/^The Accept of page 1 was made 41 times, 15 s apart, and the last attempt failed \(Could not read the escrow reference script from the node: network error\)/);
+    expect(error.message).toMatch(/600 s/);
     expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['Submitted']);
+  });
+
+  it('an Accept the planner says is too late is not made again: ocr_accept_failed as soon as the window has closed (ruling R54)', async () => {
+    const run = setup();
+    let accepts = 0;
+    const chain = chainWith(run.m, { accept: (r) => { accepts += 1; if (accepts === 2) run.m.chain.closeAcceptWindow(); return run.m.chain.accept(r); } });
+    run.m.chain.failNextAccepts(1);
+    const error = await failure(runPipeline(request(), { ...run.deps, chain }), 'ocr_accept_failed');
+    expect(accepts).toBe(2);
+    expect(run.sleeps.filter((ms) => ms === 15_000)).toHaveLength(1);
+    expect(error.message).toMatch(/^The Accept of page 1 was made 2 times, 15 s apart, and the last attempt failed \(Accept window closed at /);
+    expect(error.message).toMatch(/the accept window has closed/);
+    expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
+  });
+
+  it('the retries of an Accept run past the deadline of the job (rulings R53, R54): a chat Accept that fails once after the deadline is made again, and the job returns its result', async () => {
+    const run = setup();
+    let accepts = 0;
+    const chain = chainWith(run.m, {
+      accept: async (r) => {
+        accepts += 1;
+        // The pages are accepted with 420 s left, so the chat job starts then; its first Accept is made 1 s after the deadline, well inside 600 s of its answer.
+        if (accepts === 3) { run.m.clock.now = run.deps.deadlineMs + 1_000; run.m.chain.failNextAccepts(1); }
+        const done = await run.m.chain.accept(r);
+        if (accepts === 2) run.m.clock.now = run.deps.deadlineMs - 420_000;
+        return done;
+      },
+    });
+    expect(await runPipeline(request(), { ...run.deps, chain })).toStrictEqual(GOLDEN);
+    expect(accepts).toBe(4);
+    expect(run.m.clock.now).toBe(run.deps.deadlineMs + 1_000 + 15_000);
+    expect(run.stranded.list()).toStrictEqual([]);
   });
 
   it('an Accept that was submitted but not seen confirmed does not fail the run: the result stands, its fee is not booked, and the escrow is left to the janitor marked accept_pending (ruling R33)', async () => {
@@ -547,11 +666,12 @@ describe('runPipeline: the sub-receipt', () => {
     }
   });
 
-  it('an Accept refused outright still fails the page with ocr_accept_failed, the escrow unmarked for the janitor', async () => {
+  it('an Accept refused outright every time still fails the page with ocr_accept_failed once its retries are over, the escrow unmarked for the janitor', async () => {
     const run = setup();
     const refused = new TxNotConfirmedError('The Accept was refused and cannot land (400).', { txHash: 'ac'.repeat(32), escrowRef: escrowNo(1), deliverBy: null, validTo: T0 + 606_000, mayLand: false });
     const chain = chainWith(run.m, { accept: async () => { throw refused; } });
-    await failure(runPipeline(request(), { ...run.deps, chain }), 'ocr_accept_failed');
+    const error = await failure(runPipeline(request(), { ...run.deps, chain }), 'ocr_accept_failed');
+    expect(error.message).toMatch(/refused and cannot land/);
     expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), T0)]);
   });
 });
@@ -776,6 +896,48 @@ describe('runPipeline: refusals before anything is posted', () => {
     expect((await runPipeline(request({ max_pages: 1 }), exact.deps)).accounting.sub_jobs).toBe(2);
   });
 
+  // Ruling R56: the adverts are read at run time and nothing else bounds what they cost. A ceiling for each hop, and a second look at the float once both
+  // suppliers are known, with the locks they will really take, before the first Post.
+  it('the OCR advert priced above OCR_MAX_PRICE_LOVELACE: ocr_supplier_unavailable (503), saying its price and the ceiling, and nothing is posted (ruling R56)', async () => {
+    const run = setup({ ocrAdvert: { ...OCR_ADVERT, price_lovelace: 1_500_000n } });
+    const error = await failure(runPipeline(request(), run.deps), 'ocr_supplier_unavailable', 503);
+    expect(error.message).toContain(`its advert ${OCR_ADVERT_REF} is priced 1500000 lovelace, above the ceiling of 1000000 lovelace (OCR_MAX_PRICE_LOVELACE)`);
+    expect(error.message).toMatch(/Nothing was spent\.$/);
+    expect(run.m.ocr.sends).toHaveLength(0);
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
+  });
+
+  it('an OCR advert the indexer lists under the ceiling but the chain prices above it: ocr_supplier_unavailable, as the chain is what an escrow pays', async () => {
+    const run = setup({ ocrAdvert: { ...OCR_ADVERT, price_lovelace: 1_500_000n } });
+    run.m.rows[0] = indexerRow(OCR_ADVERT_REF, OCR_ADVERT);
+    const error = await failure(runPipeline(request(), run.deps), 'ocr_supplier_unavailable', 503);
+    expect(error.message).toContain(`on chain, its advert ${OCR_ADVERT_REF} is priced 1500000 lovelace, above the ceiling of 1000000 lovelace (OCR_MAX_PRICE_LOVELACE)`);
+    expect(run.m.ocr.sends).toHaveLength(0);
+  });
+
+  it('no chat advert at or under LLM_MAX_PRICE_LOVELACE: llm_supplier_unavailable (503), naming the ceiling and the setting, before any page is paid for (ruling R56)', async () => {
+    const run = setup({ llmAdvert: { ...LLM_ADVERT, price_lovelace: 1_500_000n } });
+    const error = await failure(runPipeline(request(), run.deps), 'llm_supplier_unavailable', 503);
+    expect(error.message).toContain('at a price at or under the ceiling of 1000000 lovelace (LLM_MAX_PRICE_LOVELACE)');
+    expect(run.m.llm.sends).toHaveLength(0);
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
+  });
+
+  it('the second look at the float, with the locks of the suppliers chosen: a one-page job whose chat advert is priced 5 is refused with a float of 9, before any Post (ruling R56)', async () => {
+    // 9 passes the gate of (max_pages + 1) x 4.5 for one page, which assumes prices at or under the ceilings. At a chat price of 5 the locks and fees are
+    // 2.261030 + 1 for the page and 7 + 1 for the chat job: 11.261030 in all.
+    const run = setup({ floatLovelace: 9_000_000n, llmAdvert: { ...LLM_ADVERT, price_lovelace: 5_000_000n } });
+    const error = await failure(runPipeline(request({ max_pages: 1 }), { ...run.deps, llmMaxPriceLovelace: 5_000_000n }), 'insufficient_float', 503);
+    expect(error.message).toContain('The buyer wallet holds 9000000 lovelace outside its collateral, less than the 11261030');
+    expect(error.message).toMatch(/Nothing was spent\.$/);
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
+    expect(run.m.ocr.sends).toHaveLength(0);
+    expect((await run.m.chain.wallet()).floatLovelace).toBe(9_000_000n);
+    // With a float that covers them, the same two suppliers pass the check: the one-page job of the golden adverts needs 6.522060 of a float of 9.
+    const enough = setup({ floatLovelace: 9_000_000n });
+    expect((await runPipeline(request({ max_pages: 1 }), enough.deps)).accounting.sub_jobs).toBe(2);
+  });
+
   it('a wallet that cannot be read: insufficient_float (503), the float cannot be confirmed', async () => {
     const run = setup();
     const chain = chainWith(run.m, { wallet: async () => { throw new Error('Ogmios answered 502'); } });
@@ -865,11 +1027,18 @@ describe('runPipeline: a Post that fails', () => {
     expect(run.stranded.list()).toStrictEqual([{ ...entry(`${lost}#0`, T0), valid_to: T0 + 180_000 }]);
   });
 
-  it('one that cannot land is not recorded', async () => {
+  // Ruling R59: a submit API can answer 4xx for a transaction it forwarded. A refused Post is recorded too, and the janitor drops the entry once its validity
+  // has passed and the chain shows nothing at the ref (the rule of janitor.ts): a phantom entry costs nothing, an unrecorded lock could.
+  it('one the submit API refused after its signature is recorded too, with its validity, in case it landed anyway (ruling R59): ocr_post_failed says so', async () => {
     const run = setup();
-    run.m.chain.failNextPost(notConfirmed(false));
-    await failure(runPipeline(request(), run.deps), 'ocr_post_failed');
-    expect(run.stranded.list()).toStrictEqual([]);
+    run.m.chain.failNextPost(new TxNotConfirmedError(`The Post ${lost} of escrow ${lost}#0 was refused and cannot land (Transaction submission rejected (400 Bad Request): BadInputsUTxO).`, {
+      txHash: lost, escrowRef: `${lost}#0`, deliverBy: T0 + 480_000, validTo: T0 + 180_000, mayLand: false,
+    }));
+    const error = await failure(runPipeline(request(), run.deps), 'ocr_post_failed');
+    expect(error.message).toMatch(/^The submit API refused the Post for page 1 after it was signed \(.*BadInputsUTxO.*\)\./);
+    expect(error.message).toMatch(new RegExp(`its escrow ${lost}#0 is recorded for the janitor in case it landed anyway`));
+    expect(run.stranded.list()).toStrictEqual([{ ...entry(`${lost}#0`, T0), valid_to: T0 + 180_000 }]);
+    expect(run.m.ocr.sends).toHaveLength(0);
   });
 
   it('one that fails before it is signed is not recorded either', async () => {
@@ -926,12 +1095,14 @@ describe('runPipeline: the stranded store cannot be written', () => {
     expect(error.message).toMatch(new RegExp(`${escrowNo(1)}.*ENOSPC.*${'ac'.repeat(32)}`));
   });
 
-  it('after a Post that may land: store_write_failed (500), not ocr_post_failed', async () => {
-    const run = setup();
-    const lost = 'ee'.repeat(32);
-    run.m.chain.failNextPost(new TxNotConfirmedError('The Post was submitted, but Koios did not report it confirmed.', { txHash: lost, escrowRef: `${lost}#0`, deliverBy: T0 + 480_000, validTo: T0 + 180_000, mayLand: true }));
-    run.stranded.add = () => { throw new Error('EROFS: read-only file system'); };
-    const error = await failure(runPipeline(request(), run.deps), 'store_write_failed', 500);
-    expect(error.message).toMatch(new RegExp(`${lost}#0.*EROFS`));
+  it('after a Post that may land, or that the submit API refused after its signature: store_write_failed (500), not ocr_post_failed', async () => {
+    for (const mayLand of [true, false]) {
+      const run = setup();
+      const lost = 'ee'.repeat(32);
+      run.m.chain.failNextPost(new TxNotConfirmedError('The Post was submitted, but Koios did not report it confirmed.', { txHash: lost, escrowRef: `${lost}#0`, deliverBy: T0 + 480_000, validTo: T0 + 180_000, mayLand }));
+      run.stranded.add = () => { throw new Error('EROFS: read-only file system'); };
+      const error = await failure(runPipeline(request(), run.deps), 'store_write_failed', 500);
+      expect(error.message, String(mayLand)).toMatch(new RegExp(`${lost}#0.*EROFS`));
+    }
   });
 });

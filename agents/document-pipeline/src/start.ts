@@ -35,6 +35,11 @@ export const OCR_SUPPLIER_PKH_DEFAULT = '401af418a7e6fb106277292881fcdeaa1cc15b5
 export const LLM_MODELS_DEFAULT: readonly string[] = ['deepseek/deepseek-v4-flash', 'deepseek-v4-pro', 'moonshotai/kimi-k2.6', 'Qwen/Qwen3.6-35B-A3B-FP8'];
 export const PORT_DEFAULT = 9092;
 export const STATE_DIR_DEFAULT = '/data';
+/**
+ * The most an OCR page and the chat job may each be priced at, unless OCR_MAX_PRICE_LOVELACE or LLM_MAX_PRICE_LOVELACE says otherwise (ruling R56): an
+ * advert above its ceiling is not hired. The float gate of a run, (max_pages + 1) x 4500000, assumes prices at or under it (src/orchestrate.ts).
+ */
+export const PRICE_CEILING_DEFAULT_LOVELACE = 1_000_000n;
 /** How often the janitor looks at the escrows a run left behind. */
 export const JANITOR_INTERVAL_MS = 60_000;
 /**
@@ -53,7 +58,7 @@ const SWEEP_MS = 100;
 export const OTHER_SETTINGS = [
   'OPERATOR_CONTACT', 'AGENT_DID', 'AGENT_VERSION', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_PRICE_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_EXPLORER_URL',
   'SERVICE_AUTH_HEADER', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'PIPELINE_BUYER_PKH', 'PIPELINE_BUYER_ADDRESS', 'OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST', 'PIPELINE_STATE_DIR',
-  'VECTOR_MARKETPLACE_INDEXER_URL', 'PORT', 'HOST',
+  'OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE', 'VECTOR_MARKETPLACE_INDEXER_URL', 'PORT', 'HOST',
 ] as const;
 /** The settings that packages/buyer-core reads, and prints in its errors. */
 export const CHAIN_SETTINGS = ['VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL'] as const;
@@ -74,11 +79,24 @@ export interface ServiceConfig {
   stateDir: string;
   ocrAllowlistPkh: string;
   llmAllowlist: string[];
+  /** The price ceilings of the two hops, in lovelace (ruling R56). */
+  ocrMaxPriceLovelace: bigint;
+  llmMaxPriceLovelace: bigint;
   indexerUrl?: string;
 }
 
 /** A setting as the operator wrote it: without the space or line break a file leaves around it; absent and empty are the same. */
 const given = (value: string | undefined): string => (value ?? '').trim();
+
+/**
+ * A price in lovelace: a whole number of at least 0, or `fallback` when the setting is absent or empty. Anything else is refused with the variable
+ * named and the length of what was written, never with the value: a value that is no number may be a secret in the wrong line.
+ */
+function lovelaceOf(name: string, value: string, fallback: bigint): bigint {
+  if (value === '') return fallback;
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error(`environment variable ${name} must be a whole number of lovelace of at least 0, and it has ${value.length} characters`);
+  return BigInt(value);
+}
 
 /**
  * `value` as lower-case hex of `bytes` bytes. One that is not that is refused with its length and never with itself: a hex-shaped value in the wrong line may be a
@@ -157,6 +175,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (
     llmAllowlist = given(env.LLM_MODEL_ALLOWLIST).split(',').map((model) => model.trim()).filter((model) => model !== '');
     if (llmAllowlist.length === 0) throw new Error('environment variable LLM_MODEL_ALLOWLIST must name at least one model, as a comma-separated list');
   }
+  const ocrMaxPriceLovelace = lovelaceOf('OCR_MAX_PRICE_LOVELACE', given(env.OCR_MAX_PRICE_LOVELACE), PRICE_CEILING_DEFAULT_LOVELACE);
+  const llmMaxPriceLovelace = lovelaceOf('LLM_MAX_PRICE_LOVELACE', given(env.LLM_MAX_PRICE_LOVELACE), PRICE_CEILING_DEFAULT_LOVELACE);
   const port = envInt('PORT', given(env.PORT), PORT_DEFAULT);
   const host = given(env.HOST) || '0.0.0.0';
   const stateDir = given(env.PIPELINE_STATE_DIR) || STATE_DIR_DEFAULT;
@@ -179,7 +199,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (
   });
   assertNoKeyIn(JSON.stringify(manifest), privateKeyHex);
   assertNoTokenIn(JSON.stringify(manifest), authHeader);
-  return { manifest, authHeader, privateKeyHex, buyer, host, port, stateDir, ocrAllowlistPkh, llmAllowlist, ...(indexerUrl === undefined ? {} : { indexerUrl }) };
+  return {
+    manifest, authHeader, privateKeyHex, buyer, host, port, stateDir, ocrAllowlistPkh, llmAllowlist, ocrMaxPriceLovelace, llmMaxPriceLovelace,
+    ...(indexerUrl === undefined ? {} : { indexerUrl }),
+  };
 }
 
 /** The parts of the service a test replaces; the service itself uses the real ones. */
@@ -248,14 +271,16 @@ export async function startService(env: NodeJS.ProcessEnv = process.env, options
     manifest: config.manifest, authHeader: config.authHeader, log, slot,
     deps: {
       chain, fetchImpl: options.fetchImpl ?? globalThis.fetch, renderer, clock, sleep: options.sleep ?? defaultSleep,
-      ocrAllowlistPkh: config.ocrAllowlistPkh, llmAllowlist: config.llmAllowlist, ...(config.indexerUrl === undefined ? {} : { indexerUrl: config.indexerUrl }), stranded,
+      ocrAllowlistPkh: config.ocrAllowlistPkh, llmAllowlist: config.llmAllowlist, ocrMaxPriceLovelace: config.ocrMaxPriceLovelace, llmMaxPriceLovelace: config.llmMaxPriceLovelace,
+      ...(config.indexerUrl === undefined ? {} : { indexerUrl: config.indexerUrl }), stranded,
     },
   });
   await listen(server, config.port, config.host);
   const port = (server.address() as AddressInfo).port;
   let janitor: ReturnType<typeof startJanitor>;
   try {
-    janitor = startJanitor(stranded, chain, options.janitorIntervalMs ?? JANITOR_INTERVAL_MS, { clock, log });
+    // The janitor makes no transaction while a job holds the slot (ruling R55): its Reclaim would hold the chain's queue in front of the job's Post or Accept.
+    janitor = startJanitor(stranded, chain, options.janitorIntervalMs ?? JANITOR_INTERVAL_MS, { clock, log, busy: () => slot.busy });
     log(`listening on ${config.host}:${port}; buyer address ${config.buyer.address}; state directory ${config.stateDir}`);
   } catch (err) {
     // A start that fails after the port is open must not leave the server open: it would keep the process alive with nothing behind it.

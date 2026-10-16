@@ -6,7 +6,7 @@ import { describe, test, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { RequestError } from '../src/request.ts';
 import type { RequestErrorCode } from '../src/request.ts';
-import { CHAIN_SETTINGS, LLM_MODELS_DEFAULT, OCR_SUPPLIER_PKH_DEFAULT, OTHER_SETTINGS, PORT_DEFAULT, SHUTDOWN_WAIT_MS, STATE_DIR_DEFAULT } from '../src/start.ts';
+import { CHAIN_SETTINGS, LLM_MODELS_DEFAULT, OCR_SUPPLIER_PKH_DEFAULT, OTHER_SETTINGS, PORT_DEFAULT, PRICE_CEILING_DEFAULT_LOVELACE, SHUTDOWN_WAIT_MS, STATE_DIR_DEFAULT } from '../src/start.ts';
 
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 // The ledger's native unit is named once in the repository, in docs/HIRE.md. Spelled in two parts, so that a search for the name finds only the guide.
@@ -48,6 +48,8 @@ describe('agents/document-pipeline/README.md', () => {
     expect(row('AGENT_STATUS_CHIP')).toContain('`proposed`');
     expect(row('AGENT_STATUS_SINCE')).toContain('`2026-10-15`');
     expect(row('AGENT_VERSION')).toContain('`0.1.0`');
+    // The price ceilings of ruling R56.
+    for (const name of ['OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE']) expect(row(name), name).toContain(`\`${PRICE_CEILING_DEFAULT_LOVELACE}\``);
   });
 
   test('the Errors table gives each code of the intake its status, and every code it names is one the sources know', () => {

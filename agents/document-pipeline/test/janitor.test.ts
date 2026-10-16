@@ -298,6 +298,59 @@ describe('runJanitorOnce: an Accept the run could not see confirmed (ruling R33)
   });
 });
 
+// Ruling R55: a transaction of the janitor holds the chain's queue for its build and its confirmation, and a job's Accept queued behind it waits.
+// A Reclaim has no closing deadline on chain and an Accept does, so while a job runs a pass makes only its reads and defers every transaction.
+describe('runJanitorOnce while a job runs (ruling R55)', () => {
+  it('defers a due Reclaim while busy() says a job runs, sends nothing, and reclaims it on the next pass once the job is over', async () => {
+    const { chain, store, post, clock } = setup();
+    const entry = await post();
+    clock.now = entry.deliver_by + 5_000;
+    let reclaims = 0;
+    const counting: JanitorChain = { escrowState: (r) => chain.escrowState(r), reclaim: (r) => { reclaims += 1; return chain.reclaim(r); }, accept: (r) => chain.accept(r) };
+    let busy = true;
+    expect(await runJanitorOnce(store, counting, clock.now, () => busy)).toStrictEqual([{ escrow_ref: entry.escrow_ref, action: 'deferred', note: 'Open: its Reclaim waits, a job is running' }]);
+    expect(reclaims).toBe(0);
+    expect(await chain.escrowState(entry.escrow_ref)).toBe('Open');
+    expect(store.list()).toStrictEqual([entry]);
+    busy = false;
+    expect(await runJanitorOnce(store, counting, clock.now + 60_000, () => busy)).toMatchObject([{ action: 'reclaimed' }]);
+    expect(reclaims).toBe(1);
+    expect(store.list()).toStrictEqual([]);
+  });
+
+  it('goes on reading while busy: a spent entry is dropped on two passes in a row, and an entry that is not due yet waits as before', async () => {
+    const { chain, store, post, clock } = setup();
+    const spent = await post();
+    chain.markClaimed(spent.escrow_ref);
+    chain.markSubmitted(spent.escrow_ref, RECEIPT_HASH);
+    await chain.accept(spent.escrow_ref);
+    clock.now = spent.deliver_by + 5_000;
+    const later = await post();
+    const busy = () => true;
+    expect((await runJanitorOnce(store, chain, clock.now, busy)).map((a) => a.action)).toStrictEqual(['kept', 'waiting']);
+    expect((await runJanitorOnce(store, chain, clock.now + 1, busy)).map((a) => a.action)).toStrictEqual(['dropped', 'waiting']);
+    expect(store.list()).toStrictEqual([later]);
+  });
+
+  it('defers the one more Accept of an entry marked accept_pending as well', async () => {
+    const { chain, store, post, clock } = setup();
+    const entry = await post();
+    chain.markClaimed(entry.escrow_ref);
+    chain.markSubmitted(entry.escrow_ref, RECEIPT_HASH);
+    store.update(entry.escrow_ref, { accept_pending: { tx_hash: 'ac'.repeat(32), valid_to: T0 + 60_000, by: 'run' } });
+    clock.now = T0 + 60_000;
+    expect(await runJanitorOnce(store, chain, clock.now, () => true)).toStrictEqual([{ escrow_ref: entry.escrow_ref, action: 'deferred', note: 'Submitted: its one more Accept waits, a job is running' }]);
+    expect(await chain.escrowState(entry.escrow_ref)).toBe('Submitted');
+    expect(await runJanitorOnce(store, chain, clock.now + 1, () => false)).toMatchObject([{ action: 'accepted' }]);
+  });
+
+  it('without a busy() it is the pass it always was', async () => {
+    const { store, post, passAt } = setup();
+    const entry = await post();
+    expect(await passAt(entry.deliver_by + 5_000)).toMatchObject([{ action: 'reclaimed' }]);
+  });
+});
+
 describe('StrandedStore', () => {
   const entry: StrandedEntry = { escrow_ref: `${'ab'.repeat(32)}#0`, deliver_by: T0 + 480_000, posted_at: T0, kind: 'ocr' };
 
@@ -434,6 +487,25 @@ describe('startJanitor', () => {
     await expect.poll(() => writes).toBeGreaterThanOrEqual(2);
     await janitor.stop();
     expect(lines[0]).toBe('janitor: the pass failed (disk full)');
+  });
+
+  it('logs one line a pass for the transactions it deferred while a job ran, with their count, and none for each entry; the next idle pass reclaims them', async () => {
+    const { chain, store, post, clock } = setup();
+    const first = await post();
+    const second = await post();
+    clock.now = second.deliver_by + 5_000;
+    const lines: string[] = [];
+    let busy = true;
+    const janitor = startJanitor(store, chain, 5, { clock: () => clock.now, log: (line) => lines.push(line), busy: () => busy });
+    await expect.poll(() => lines.length).toBeGreaterThanOrEqual(2); // two passes while the job runs
+    expect(store.list()).toHaveLength(2);
+    expect(new Set(lines)).toStrictEqual(new Set(['janitor: 2 transactions deferred: a job is running; they are made on the next pass after it']));
+    busy = false;
+    await expect.poll(() => store.list().length).toBe(0);
+    await janitor.stop();
+    expect(lines.filter((l) => l.startsWith('janitor: reclaimed '))).toStrictEqual([
+      expect.stringMatching(new RegExp(`^janitor: reclaimed ${first.escrow_ref}: `)), expect.stringMatching(new RegExp(`^janitor: reclaimed ${second.escrow_ref}: `)),
+    ]);
   });
 
   it('refuses an interval that is not a positive number of milliseconds', () => {
