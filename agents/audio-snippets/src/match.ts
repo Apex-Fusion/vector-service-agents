@@ -11,7 +11,8 @@
 // score is the higher. A query that no segment reaches is listed in unmatched with its best score.
 // Ranges. Taken as given, with the words inside, score 1.
 // Cut points. A match runs from the start of its first word to the end of its last; an end that falls inside a word (a range's can) moves out to that word's
-// boundary; then 150 ms of padding on each side, clamped to the duration. Every number is rounded to 3 decimals.
+// boundary; then 150 ms of padding on each side, each cut point clamped to [0, duration] (a word or a range past the end gives the end twice). Every number is
+// rounded to 3 decimals.
 import type { AsrSegment } from './asr.ts';
 import { tokensOf } from './normalize.ts';
 import type { SnippetsRequest } from './request.ts';
@@ -60,8 +61,9 @@ export function bestQuoteWindow(quote: string, tokens: readonly Token[]): { scor
   const q = Array.from(quoteTokens.join(' '));
   const n = quoteTokens.length;
   if (n === 0 || tokens.length === 0) return null;
-  const lo = Math.max(1, Math.floor(n * 0.7));
-  const hi = Math.max(lo, Math.ceil(n * 1.3));
+  // The bounds are worked in integers: 90 x 0.7 is 62.99999999999999 in floating point, which floors to 62 where the bound is 63.
+  const lo = Math.max(1, Math.floor((n * 7) / 10));
+  const hi = Math.max(lo, Math.ceil((n * 13) / 10));
   const m = q.length;
   const prev = new Uint32Array(m + 1);
   const cur = new Uint32Array(m + 1);
@@ -104,7 +106,10 @@ export function jaccard(a: ReadonlySet<string>, b: ReadonlySet<string>): number 
   return both / (a.size + b.size - both);
 }
 
-/** The cut points of the interval [a, b]: an end inside a word moves out to that word's boundary, then PAD_S on each side, clamped to [0, duration], rounded. */
+/**
+ * The cut points of the interval [a, b]: an end inside a word moves out to that word's boundary, then PAD_S on each side, and each cut point is clamped to
+ * [0, duration] and rounded. Both ends are clamped on both sides, so the function is total: a word or a range past the end of the media gives the end twice.
+ */
 export function cutPoints(a: number, b: number, words: readonly FlatWord[], duration: number): { from: number; to: number; start_s: number; end_s: number } {
   let from = a;
   let to = b;
@@ -112,7 +117,8 @@ export function cutPoints(a: number, b: number, words: readonly FlatWord[], dura
     if (word.start < from && from < word.end) from = word.start;
     if (word.start < to && to < word.end) to = word.end;
   }
-  return { from, to, start_s: round3(Math.max(0, from - PAD_S)), end_s: round3(Math.min(duration, to + PAD_S)) };
+  const within = (x: number): number => round3(Math.min(duration, Math.max(0, x)));
+  return { from, to, start_s: within(from - PAD_S), end_s: within(to + PAD_S) };
 }
 
 const breathe = (): Promise<void> => new Promise((resolve) => { setImmediate(resolve); });

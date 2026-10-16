@@ -127,6 +127,68 @@ describe('findMatches', () => {
   test('without a query the method is null', async () => {
     expect((await findMatches({ ranges: [{ start_s: 0, end_s: 1 }] }, GOLDEN, 3)).match_method).toBeNull();
   });
+
+  // Fix round 1: inputs the first review found unpinned. Each passes on the code as it is and fails on a plausible wrong one.
+  test('a quote that scores exactly 0.55 is a match: the threshold is at or over', async () => {
+    // Twenty letters a against eleven a and nine b: nine substitutions in 20, so 1 - 9/20, which is the double 0.55 itself.
+    const word = 'a'.repeat(11) + 'b'.repeat(9);
+    expect(bestQuoteWindow('a'.repeat(20), tokenStream(flatWords([seg(word, 0)])))?.score).toBe(QUOTE_MIN_SCORE);
+    expect(await findMatches({ quotes: ['a'.repeat(20)] }, [seg(word, 0)], 3)).toStrictEqual({
+      matches: [{ from: 'quote', start_s: 0, end_s: 0.4, text: word, score: 0.55 }], unmatched: [], match_method: null,
+    });
+  });
+
+  test('a query segment that scores exactly 0.2 is a match: one content word of five', async () => {
+    const text = 'alpha beta gamma delta epsilon';
+    expect(jaccard(contentWords('alpha'), contentWords(text))).toBe(QUERY_MIN_SCORE);
+    expect(await findMatches({ query: 'alpha' }, [seg(text, 0)], 3)).toStrictEqual({
+      matches: [{ from: 'query', start_s: 0, end_s: 1.6, text, score: 0.2 }], unmatched: [], match_method: 'keyword',
+    });
+  });
+
+  test('the edit distance counts code points, not UTF-16 units: a letter outside the BMP is one character', async () => {
+    // U+10400 is one code point and two UTF-16 units. The quote and the word differ in their last letter: 1 of 3 code points is 0.667; in units it would be 1 of 4, 0.75.
+    const word = 'a\u{10400}c';
+    expect(await findMatches({ quotes: ['a\u{10400}b'] }, [seg(word, 0)], 3)).toStrictEqual({
+      matches: [{ from: 'quote', start_s: 0, end_s: 0.4, text: word, score: 0.667 }], unmatched: [], match_method: null,
+    });
+  });
+
+  test('the matches of quotes come in the order of the quotes of the request, not in the order they are said', async () => {
+    const t = [seg('apple', 0), seg('pear', 1)];
+    expect((await findMatches({ quotes: ['pear', 'apple'] }, t, 3)).matches).toStrictEqual([
+      { from: 'quote', start_s: 0.85, end_s: 1.4, text: 'pear', score: 1 },
+      { from: 'quote', start_s: 0, end_s: 0.4, text: 'apple', score: 1 },
+    ]);
+  });
+
+  test('four query segments with the same score: the earliest three are kept', async () => {
+    // Segments 0, 2, 4 and 6 each score 0.5 against "domain" (one of two content words); the segments between them score 0, so no two of them merge.
+    const t = [seg('domain law', 0), seg('x y', 1), seg('domain law', 2), seg('x y', 3), seg('domain law', 4), seg('x y', 5), seg('domain law', 6)];
+    expect((await findMatches({ query: 'domain' }, t, 10)).matches).toStrictEqual([
+      { from: 'query', start_s: 0, end_s: 0.7, text: 'domain law', score: 0.5 },
+      { from: 'query', start_s: 1.85, end_s: 2.7, text: 'domain law', score: 0.5 },
+      { from: 'query', start_s: 3.85, end_s: 4.7, text: 'domain law', score: 0.5 },
+    ]);
+  });
+
+  test('the search yields to the event loop after each quote: a timer that is due fires between two quotes', async () => {
+    // The loop reads index 1 of the list of quotes only when the first quote is done, so what is in `order` before 'second quote' happened between the two.
+    // The test starts from a check-phase callback: the yield of findMatches is then an immediate of the next turn, which comes after the timers, and the order is certain.
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    const order: string[] = [];
+    const quotes = new Proxy(['the cat sat', 'and then'], {
+      get(target, key, receiver) {
+        if (key === '0') { const until = Date.now() + 5; while (Date.now() < until) { /* 5 ms of work, so that the 1 ms timer below is due when the loop turns */ } }
+        if (key === '1') order.push('second quote');
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    setTimeout(() => { order.push('timer'); }, 1);
+    const found = await findMatches({ quotes }, [seg('the cat sat and then', 0)], 3);
+    expect(order).toStrictEqual(['timer', 'second quote']);
+    expect(found.matches).toHaveLength(2);
+  });
 });
 
 describe('the parts', () => {
@@ -137,11 +199,24 @@ describe('the parts', () => {
     expect(bestQuoteWindow('a', [])).toBeNull();
   });
   test('the windows of a quote of n tokens are floor(0.7 n) to ceil(1.3 n) tokens long', () => {
-    // Ten words of the transcript are the quote with three words more: a window of 13 tokens (ceil(1.3 x 10)) holds it all, so the ratio is the one of the extra words.
+    // The quote has ten tokens and so has the transcript: the one window of ten holds it all (score 1). A quote of fifteen tokens has floor(0.7 x 15) = 10 as its shortest
+    // window, so the same ten tokens are still a window for it (to = 9). This pins the lower bound; the upper bound and the denominator are pinned by the next test, and the
+    // lower bound at n = 90, where floating point rounds it down by one, by the one after that.
     const quote = 'one two three four five six seven eight nine ten';
     const t = tokenStream(flatWords([seg('one two three four five six seven eight nine ten', 0)]));
     expect(bestQuoteWindow(quote, t)).toStrictEqual({ score: 1, from: 0, to: 9 });
     expect(bestQuoteWindow('one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen', t)?.to).toBe(9);
+  });
+  test('the longest window of a quote of 2 tokens is 3 tokens, and the ratio is over the longer length: sunflower seeds in sun flower seeds is 1 - 1/16', () => {
+    // 15 characters against 16, one space inserted: 0.9375. Windows of 2 tokens at most would give 0.8 (flower seeds); dividing by the 15 of the quote would give 0.9333.
+    const tokens = tokenStream(flatWords([seg('sun flower seeds', 0)]));
+    expect(bestQuoteWindow('sunflower seeds', tokens)).toStrictEqual({ score: 0.9375, from: 0, to: 2 });
+  });
+  test('the shortest window of a quote of 90 tokens is 63 tokens: 0.7 x 90 is 62.99999999999999 in floating point, so the bounds are computed in integers', () => {
+    const letters = (count: number) => Array.from({ length: count }, (_v, i) => String.fromCharCode(97 + (i % 26))).join(' ');
+    const quote = letters(90);
+    expect(bestQuoteWindow(quote, tokenStream(flatWords([seg(letters(62), 0)])))).toBeNull();
+    expect(bestQuoteWindow(quote, tokenStream(flatWords([seg(letters(63), 0)])))).toStrictEqual({ score: 1 - 54 / 179, from: 0, to: 62 });
   });
   test('contentWords and jaccard', () => {
     expect([...contentWords('What is the public domain?')]).toStrictEqual(['public', 'domain']);
@@ -153,6 +228,11 @@ describe('the parts', () => {
     expect(cutPoints(0.1, 0.4, words, 3)).toStrictEqual({ from: 0, to: 0.55, start_s: 0, end_s: 0.7 });
     expect(cutPoints(0.25, 0.26, words, 3)).toStrictEqual({ from: 0.25, to: 0.26, start_s: 0.1, end_s: 0.41 });
     expect(cutPoints(0, 0.85, words, 0.9)).toStrictEqual({ from: 0, to: 0.85, start_s: 0, end_s: 0.9 });
+  });
+  test('cutPoints is total: both cut points are clamped to [0, duration] on both sides, so a word or a range past the end of the media gives the end twice', () => {
+    expect(cutPoints(3.4, 3.8, [{ w: 'late', start: 3.4, end: 3.8, segment: 0 }], 3)).toStrictEqual({ from: 3.4, to: 3.8, start_s: 3, end_s: 3 });
+    expect(cutPoints(5, 6, [], 3)).toStrictEqual({ from: 5, to: 6, start_s: 3, end_s: 3 });
+    expect(cutPoints(-2, -1, [], 3)).toStrictEqual({ from: -2, to: -1, start_s: 0, end_s: 0 });
   });
   test('a 300-character quote over 2000 words is found within the budget of a job (it takes a few seconds)', async () => {
     const names = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf'];
