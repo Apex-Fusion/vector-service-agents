@@ -11,14 +11,47 @@ jobs:
         with: { version: 10.33.2 }
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
-      # poppler-utils gives pdfinfo and pdftoppm, which the Document Pipeline renders PDFs with. REQUIRE_POPPLER makes a failed install fail the tests
-      # that need them instead of skipping them.
-      - run: sudo apt-get update && sudo apt-get install -y poppler-utils
+      # poppler-utils gives pdfinfo and pdftoppm, which the Document Pipeline renders PDFs with, and ffmpeg gives ffmpeg and ffprobe, which Audio Snippets
+      # reads and cuts media with. REQUIRE_POPPLER and REQUIRE_ASR make a failed install fail the tests that need them instead of skipping them.
+      - run: sudo apt-get update && sudo apt-get install -y poppler-utils ffmpeg
+      # The speech model of Audio Snippets: Python 3.11 with the pinned requirements, and the files of the model at the revision asr/fetch_model.py pins. The
+      # cache, under that revision, saves the download; the fetch runs every time all the same, because it checks the size and the sha256 of each of the four
+      # files and fetches only when one is not as pinned, so a cache that holds something else is caught before the tests.
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: python -m pip install --disable-pip-version-check -r agents/audio-snippets/asr/requirements.txt
+      - uses: actions/cache@v4
+        with:
+          path: agents/audio-snippets/.models/base
+          key: whisper-base-ebe41f70d5b6dfa9166e2c581c45c9c0cfc57b66
+      - run: python -I agents/audio-snippets/asr/fetch_model.py base agents/audio-snippets/.models/base
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
         env:
           REQUIRE_POPPLER: "1"
+          REQUIRE_ASR: "1"
+  # Every push and pull request builds the three images, with no push and no registry login, so that a stage that no longer builds fails before it reaches
+  # main. The publish job builds them again on main, and pushes them.
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agents/agent-history/Dockerfile
+          push: false
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agents/document-pipeline/Dockerfile
+          push: false
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agents/audio-snippets/Dockerfile
+          push: false
   publish:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -50,4 +83,13 @@ jobs:
           tags: |
             ghcr.io/apex-fusion/vector-service-agents/document-pipeline:latest
             ghcr.io/apex-fusion/vector-service-agents/document-pipeline:${{ github.sha }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agents/audio-snippets/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/apex-fusion/vector-service-agents/audio-snippets:latest
+            ghcr.io/apex-fusion/vector-service-agents/audio-snippets:${{ github.sha }}
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}

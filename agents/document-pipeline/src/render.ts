@@ -12,8 +12,10 @@
 // line printed turned, for a page with /Rotate 90, is the same page and not a larger one.
 //
 // The PDF is the caller's and poppler parses it, so it never meets a shell: the tools are started with an argument list (execFile), on a file in a
-// directory that only this process can read (mkdtemp), and the directory is removed whatever happened. What the tools print is not passed on:
-// their messages can name paths and offsets, and the person who sent the document gets a sentence of ours.
+// directory that only this process can read (mkdtemp), and the directory is removed whatever happened. They are started without the secrets of the
+// service in their environment (ruling R-D23): childEnv of packages/service-kit, from @vsa/service-kit/env, which loads nothing else, leaves out the buyer
+// key and the token of the runtime. What the tools print is not passed on: their messages can name paths and offsets, and the person who sent the
+// document gets a sentence of ours.
 //
 // A tool that cannot be started at all (not installed, not executable) is not a verdict on the document. That is a plain Error, which the
 // server reports as a failure of its own, not as a RequestError.
@@ -22,6 +24,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { childEnv } from '@vsa/service-kit/env';
 import { sniffMime } from './mime.ts';
 import { RequestError } from './request.ts';
 import { PipelineError } from './result.ts';
@@ -68,8 +71,9 @@ const PAGE_PREFIX = 'page';
 const PAGE_FILE = /^page-(\d+)\.png$/;
 
 const execFileAsync = promisify(execFile);
-const execFileRunner: RunTool = async (file, args, { timeoutMs, maxBuffer }) => {
-  const { stdout, stderr } = await execFileAsync(file, [...args], { timeout: timeoutMs, maxBuffer, encoding: 'utf8', windowsHide: true });
+/** How the service starts the tools: execFile with an argument list, without the secrets of the service in their environment. Exported for its tests. */
+export const execFileRunner: RunTool = async (file, args, { timeoutMs, maxBuffer }) => {
+  const { stdout, stderr } = await execFileAsync(file, [...args], { timeout: timeoutMs, maxBuffer, encoding: 'utf8', windowsHide: true, env: childEnv(process.env) });
   return { stdout, stderr };
 };
 

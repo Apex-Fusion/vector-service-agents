@@ -13,6 +13,10 @@ const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 const UNIT_NAME = new RegExp('AP' + '3X', 'i');
 const srcDir = new URL('../src/', import.meta.url);
 const sources = readdirSync(srcDir).filter((file) => file.endsWith('.ts')).map((file) => ({ file, text: readFileSync(new URL(file, srcDir), 'utf8') }));
+// The codes the shared server answers with (bad_wire, request_too_large, unauthorized, busy, shutting_down, internal) are in packages/service-kit, which the
+// service runs on: the Errors table may name them, and namesRead does not look there (the kit reads no setting).
+const kitDir = new URL('../../../packages/service-kit/src/', import.meta.url);
+const kitSources = readdirSync(kitDir).filter((file) => file.endsWith('.ts')).map((file) => ({ file, text: readFileSync(new URL(file, kitDir), 'utf8') }));
 const section = (heading: string): string => (readme.split(`\n## ${heading}\n`)[1] ?? '').split('\n## ')[0];
 const ticks = (text: string): string[] => [...text.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
 
@@ -59,7 +63,7 @@ describe('agents/document-pipeline/README.md', () => {
       'bad_json', 'bad_shape', 'schema_required', 'max_pages_range', 'base64_too_large', 'language_bad',
       'source_fetch_failed', 'source_mime_mismatch', 'source_unsupported', 'source_too_large', 'unreadable_source',
     ];
-    const all = sources.map(({ text }) => text).join('\n');
+    const all = [...sources, ...kitSources].map(({ text }) => text).join('\n');
     const documented = new Set<string>();
     for (const row of rows) {
       const status = Number(/^\| (\d{3}), /.exec(row)?.[1]);

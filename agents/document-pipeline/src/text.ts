@@ -1,6 +1,4 @@
 // agents/document-pipeline/src/text.ts
-// Text from the far end (a caller, a server a source is fetched from, a tool, an error) goes into a message cut short. Defined once, in a module with no
-// imports, so that the intake, the loading of a source and the formatting of errors share it without loading one another.
-
-/** `s` cut to its first `max` characters, with "..." after a cut. */
-export const clip = (s: string, max: number): string => (s.length > max ? `${s.slice(0, max)}...` : s);
+// clip, from the one module of packages/service-kit that has no imports: src/request.ts takes it from here, src/render.ts loads src/request.ts (its
+// RequestError), and the renderer must not load the fetch of a source (test/source.test.ts).
+export { clip } from '@vsa/service-kit/text';

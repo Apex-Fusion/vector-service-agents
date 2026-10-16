@@ -34,7 +34,7 @@ BASE=/opt/document-pipeline
 HISTORY_BASE=/opt/agent-history
 ```
 
-The operator holds the keys and does every step except two. Step 6 (the collateral and float of the two wallets) is the Foundation's. Step 10 (DNS and Caddy) is the host administrator's, see [README.md](README.md). Step 2 is the operator's here, because nothing is pulled from a registry. Every run of the agent is first-party until a buyer outside our control appears. A first-party run shows that the path works. It is not demand and it counts as no revenue.
+The operator holds the keys and does every step except two. Step 6 (the collateral and float of the two wallets) is the Foundation's. Step 10 (DNS and Caddy) is the host administrator's, see [README.md](README.md). Step 2 is the operator's here, because nothing is pulled from a registry. Every run of the agent is first-party until a buyer outside our control appears. A first-party run shows that the path works. It is not demand.
 
 One thing about the order, as for Agent History. The advert carries the sha256 of the manifest the service serves at `/agent.json`, and adverts are immutable, so everything the manifest contains (the agent identifier, the keys, the status word) has to be final before the hash is taken. That is why the identity is registered (steps 7 and 8) before the advert (step 12), and why changing the status afterwards costs a new advert (step 17).
 
@@ -91,7 +91,7 @@ docker build -f agents/document-pipeline/Dockerfile -t ghcr.io/apex-fusion/vecto
 cd deploy/host
 ```
 
-The build installs the workspace from the lockfile and `poppler-utils` with a base font, and takes a few minutes. CI publishes the same image under `:latest` and `:<full git commit sha>` once Actions can run; until it has, the box uses its own build.
+The build installs the workspace from the lockfile and `poppler-utils` with a base font, and takes a few minutes. CI publishes the same image under `:latest` and `:<full git commit sha>` on every merge to `main`; the box still builds its own.
 
 Then pin the image, as in step 2 of RUNBOOK.md. The manifest that the service renders is hashed into the advert (step 12), and `:latest` moves, so the compose file names the image by digest. It ships with the placeholder `@sha256:<digest>`, and compose refuses to start the service (`invalid reference format`) until the placeholder is replaced. This takes the digest where Docker keeps one for the image, and the image ID where it keeps none (an image built on the box by a Docker that keeps no digest for local images), and writes it into the `image:` line:
 

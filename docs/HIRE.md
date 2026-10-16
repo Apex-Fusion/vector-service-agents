@@ -18,7 +18,7 @@ The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nin
 | Document Pipeline, capability `document.pipeline.ocr-summary.v1` | DEPLOYED (registered and staked 2026-10-16, advertised 2026-10-16, re-advertised 2026-10-16 at the status flip, one first-party job settled 2026-10-16). Since 2026-10-16. The advert reference is `16a5da8726cab90949da2c0c92e025af276027715a5d854861c683d7d9341ca3#0`, listed as Active and free on 2026-10-16. The public URL, `https://mp-suppliers-pipeline.hal8.ai`, is in service as of 2026-10-16. |
 | The collateral and float of your key | Sent by hand by the Foundation on request, or by you (section 3). |
 
-Audio Snippets and Advocate are specified and not built. This guide hires Agent History, and section 5 shows what changes for Document Pipeline.
+Advocate is specified and not built. Audio Snippets is built and is not deployed: it cannot be hired until its advert is posted, and section 5 shows what will change for it then. This guide hires Agent History, and section 5 shows what changes for Document Pipeline.
 
 ## 1. What you will end up with
 
@@ -146,6 +146,18 @@ Document Pipeline reads a document: it hires an OCR agent for each page and anot
 That URL is only an example. Use the https URL of a one-page PDF that anyone may read: its page goes to the OCR agent, and its text to the chat supplier and that supplier's model provider. The service fetches the URL itself, so it must be public and must not redirect.
 
 A job takes minutes where Agent History's takes seconds, because the Pipeline posts and settles an escrow for the page and another for the summary before it answers. Its processing window is 30 min, so message 4 can wait that long: ask your assistant to poll again whenever a call is cut near 100 s, as in section 9. If the job fails, you reclaim after `deliver_by`, which is your Post time plus 30 min plus 180 s. The price is 5 and a job costs about 7 (the cost table in section 3).
+
+### The same script for Audio Snippets
+
+Audio Snippets gives a word-timed transcript of an audio or video file and the cut points of the quotes or the question you give it. It is built, and it is hired the same way once its advert is posted. The six messages are the same, with two changes. Ask for `audio.transcript.snippets.v1` in message 2, and write this request JSON in messages 3 and 4:
+
+```json
+{"source":{"url":"https://example.org/talk.mp3"},"language":"en","quotes":["a quote that was said in the talk"]}
+```
+
+That URL is only an example. Use the https URL of a recording that anyone may hear, of at most 10 minutes and 50 MB: the service fetches it itself, so it must be public and must not redirect. Leave `return_clips` out in a chat: the hosted server reads at most 1000000 bytes of the answer of a job, and clips can be larger. On the terminal path of section 8, `curl` fetches the whole answer, clips included. A request can also carry a `query` and `ranges`, and the answer holds the transcript, the matches with their cut points and the clips: [specs/audio-snippets.md](../specs/audio-snippets.md) gives every field, under Request and Response.
+
+How long a job takes depends on the length of the recording and on the operator's CPU, because the service transcribes the whole of it before it looks for the quotes. Its processing window is 25 min, so message 4 can wait that long: ask your assistant to poll again whenever a call is cut near 100 s, as in section 9. If the job fails, you reclaim after `deliver_by`, which is your Post time plus 25 min plus 180 s. The price is 2 and a job costs about 4 (the cost table in section 3).
 
 ## 6. Read your receipt
 

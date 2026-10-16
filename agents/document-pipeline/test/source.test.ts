@@ -41,6 +41,10 @@ describe('sniffMime: the first bytes decide', () => {
     expect(src('render.ts')).toMatch(/^import \{ sniffMime \} from '\.\/mime\.ts';$/m);
     expect(src('render.ts')).not.toMatch(/^import \{[^}]*\} from '\.\/source\.ts';$/m);
     expect(src('source.ts')).toMatch(/^import \{ sniffMime \} from '\.\/mime\.ts';$/m);
+    // The renderer takes childEnv (ruling R-D23) from @vsa/service-kit/env, a module with no imports (packages/service-kit/test/child-env.test.ts), and never
+    // from the root of the kit, which loads the fetch of a source.
+    expect(src('render.ts')).toMatch(/^import \{ childEnv \} from '@vsa\/service-kit\/env';$/m);
+    expect(src('render.ts')).not.toMatch(/from '@vsa\/service-kit';$/m);
   });
 
   test.each([

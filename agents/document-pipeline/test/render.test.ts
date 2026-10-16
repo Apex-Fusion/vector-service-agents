@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inflateSync } from 'node:zlib';
-import { pageSizesOf, pagesOf, popplerRenderer, popplerRendererWith } from '../src/render.ts';
+import { execFileRunner, pageSizesOf, pagesOf, popplerRenderer, popplerRendererWith } from '../src/render.ts';
 import type { RunTool } from '../src/render.ts';
 import { RequestError } from '../src/request.ts';
 import { PipelineError } from '../src/result.ts';
@@ -494,6 +494,29 @@ describe('popplerRenderer with the real executables', () => {
     const error2 = await refusal(popplerRenderer({ pdfinfo: 'pdfinfo-that-is-not-installed' }).render(TWO_PAGES_PDF, 1));
     expect(error2).not.toBeInstanceOf(RequestError);
     expect((error2 as Error).message).toMatch(/pdfinfo-that-is-not-installed/);
+  });
+
+  // Ruling R-D23: poppler parses the hirer's PDF, so the runner of the renderer starts the tools without the secrets of the service (childEnv of
+  // packages/service-kit, through @vsa/service-kit/env): the buyer key and the token of the runtime are not in their environment.
+  test('the runner of the renderer starts a tool without the secrets of the service: a child that prints its environment lacks the token and every PRIV_KEY name, and has the rest', async () => {
+    const token = `Bearer ${'ef'.repeat(32)}`;
+    const key = 'cd'.repeat(32);
+    const set: Record<string, string> = { SERVICE_AUTH_HEADER: token, PIPELINE_BUYER_PRIV_KEY_HEX: key, RENDER_TEST_PRIV_KEY_HEX: 'a key', RENDER_TEST_KEPT: 'kept' };
+    const saved = Object.fromEntries(Object.keys(set).map((name) => [name, process.env[name]]));
+    Object.assign(process.env, set);
+    try {
+      const out = await execFileRunner(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], { timeoutMs: 10_000, maxBuffer: 1024 * 1024 });
+      const seen = JSON.parse(out.stdout) as Record<string, string>;
+      const names = Object.keys(seen).map((name) => name.toUpperCase());
+      expect(names.filter((name) => name === 'SERVICE_AUTH_HEADER' || name.includes('PRIV_KEY'))).toStrictEqual([]);
+      expect(out.stdout).not.toContain('ef'.repeat(32));
+      expect(out.stdout).not.toContain(key);
+      expect([seen.RENDER_TEST_KEPT, names.includes('PATH')]).toStrictEqual(['kept', true]);
+      // The service's own environment is left as it is.
+      expect([process.env.SERVICE_AUTH_HEADER, process.env.PIPELINE_BUYER_PRIV_KEY_HEX]).toStrictEqual([token, key]);
+    } finally {
+      for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    }
   });
 });
 
