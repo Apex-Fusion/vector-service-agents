@@ -6,21 +6,21 @@ Capability `document.pipeline.ocr-summary.v1`. Reads a document: OCR for each pa
 
 PROPOSED (built, not deployed). Since 2026-10-13.
 
-The service is built. Its tests replay a stub marketplace and a fake chain. It is not deployed, has no registry record and has no advert. Nothing on this page is LIVE or DEPLOYED.
+The service is built. Its tests replay a stub marketplace and a fake chain. It is not deployed, has had a registry record since 2026-10-16 and has had an advert since 2026-10-16. Nothing on this page is LIVE or DEPLOYED.
 
 ## Identity
 
-This agent has no registry record yet.
+This agent has had a registry record since 2026-10-16.
 
 | Field | Value |
 |---|---|
-| DID | not registered. When registered: `did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:<asset name>` |
+| DID | `did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:b8599ec7f66a389dab40a963cce31a0e2e05c61e47f0b002fa39d59acf5932f5` |
 | Controller | the supplier key, the key that signs the receipt over the bundle |
 | Second key | a separate buyer key that pays for the sub-jobs, so its Posts and the supplier key's Claims never contend for the same UTxOs. Both key hashes are published in the manifest under `keys` (`supplier_pkh`, `buyer_pkh`) |
 | Registry address | `addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42` |
-| Registry record, planned | name `Document Pipeline`; capabilities `document.pipeline.ocr-summary.v1`; framework `vector-service-agents`; endpoint the agent's public URL |
-| Public URL, planned | `https://mp-suppliers-pipeline.hal8.ai` (not in service) |
-| Reputation stake, planned | a Module-3 self-stake of 10000000 lovelace (10.000000) on the capability |
+| Registry record | name `Document Pipeline`; capabilities `document.pipeline.ocr-summary.v1`; framework `vector-service-agents`; endpoint the agent's public URL; controller key hash `5750aa8006bdc4f16f7950f54b89c2efb1d11091718d0db32a4863fc` (the supplier key hash). Registered on 2026-10-16 in the confirmed transaction [`195028d86ee9735084ce648779a673da5bf76977b10bc52b3d10dbfb57ef86dd`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/195028d86ee9735084ce648779a673da5bf76977b10bc52b3d10dbfb57ef86dd). The deposit is 10000000 lovelace (10.000000), refundable on deregistration |
+| Public URL | `https://mp-suppliers-pipeline.hal8.ai` (in service as of 2026-10-16) |
+| Reputation stake | a Module-3 self-stake of 10000000 lovelace (10.000000) on the capability, made on 2026-10-16 in transaction [`6a41f59d0925b70583d0272fdddf9fedbc5dcac2d4af2c9484c452e2a5fb2830`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/6a41f59d0925b70583d0272fdddf9fedbc5dcac2d4af2c9484c452e2a5fb2830) |
 
 ## Capability id
 
@@ -369,7 +369,7 @@ The manifest states the first seven of these, in this order, word for word. A te
 
 ## How to hire it
 
-Not yet advertised. When live, the three ways below apply. The service is built and waits for its deployment. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
+Advertised on 2026-10-16: the marketplace indexer lists the advert (checked on 2026-10-16). The service is built and waits for its deployment. The three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
 
 The request JSON is, for example, `{"source":{"url":"https://example.org/letter.pdf"},"task":"summary","language":"en","max_pages":1}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 
@@ -383,7 +383,7 @@ The request JSON is, for example, `{"source":{"url":"https://example.org/letter.
 
 ## Links
 
-- Manifest: none until deployed. The service renders it from its environment when it starts and serves it at `GET /agent.json`. The template is [agents/document-pipeline/agent.json.template](../agents/document-pipeline/agent.json.template).
+- Manifest: `GET /agent.json` on the agent's public URL, in service as of 2026-10-16. The service renders it from its environment when it starts. The template is [agents/document-pipeline/agent.json.template](../agents/document-pipeline/agent.json.template).
 - Source: [agents/document-pipeline](../agents/document-pipeline)
 - Design: [docs/superpowers/specs/2026-10-13-vector-service-agents-design.md](../docs/superpowers/specs/2026-10-13-vector-service-agents-design.md)
-- Advert on the explorer: none yet. The advert is not posted.
+- Advert on the explorer: posted on 2026-10-16 in the confirmed transaction [`4fe706e06652342a83b68a1caf691373418d63a34431a66bcf284106af5f41df`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/4fe706e06652342a83b68a1caf691373418d63a34431a66bcf284106af5f41df). The advert reference is `4fe706e06652342a83b68a1caf691373418d63a34431a66bcf284106af5f41df#0`. The marketplace indexer lists it (checked on 2026-10-16).
