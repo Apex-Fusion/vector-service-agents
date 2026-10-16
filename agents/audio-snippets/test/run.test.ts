@@ -130,3 +130,75 @@ describe('before anything is fetched', () => {
     expect(readdirSync(root)).toStrictEqual([]);
   });
 });
+
+// What the tests above hold only in the parts, held here at the level of a job: the time checked again once the model and the matching are done, before the
+// first clip is cut; the private directory removed after a failure past the model; the transcript clamped before the matching reads it; and the rest of
+// Review Focus 2 (600.4 s, an MP3 encoded from 600 s, 600.6 s).
+describe('a job after the model: the time, the failures, the clamp and the 600 s edge', () => {
+  /** The tools of a job with every cut recorded; each cut fails, saying `cutFails`, when that is given. */
+  const cutting = (cutFails?: string) => {
+    const real = mediaTools();
+    const cuts: string[][] = [];
+    const tools: RunDeps['tools'] = {
+      ...real,
+      run: async (file, args, options) => {
+        if (args.some((arg) => arg.startsWith('atrim='))) {
+          cuts.push([...args]);
+          if (cutFails !== undefined) throw Object.assign(new Error('exit 1'), { code: 1, stderr: `${cutFails}\n` });
+        }
+        return real.run(file, args, options);
+      },
+    };
+    return { tools, cuts };
+  };
+
+  test.skipIf(!MEDIA_TOOLS)('the time runs out while the model or the matching runs: deadline (422) before the first clip is cut, and nothing is left on disk', async () => {
+    let now = Date.now();
+    const deadlineMs = now + JOB_DEADLINE_MS;
+    const slow = stubAsr(async () => { now = deadlineMs; return structuredClone(GOLDEN_TRANSCRIPT); });
+    const { tools, cuts } = cutting();
+    await expect(runSnippets(request({}), deps({ asr: slow, tools, clock: () => now, deadlineMs }))).rejects.toMatchObject({ code: 'deadline', status: 422, message: 'the job ran out of its time after 0 of its 3 clips' });
+    expect(slow.calls).toStrictEqual([{ language: 'en', timeoutMs: 900_000 }]);
+    expect(cuts).toStrictEqual([]);
+    expect(readdirSync(root)).toStrictEqual([]);
+  });
+
+  test.skipIf(!MEDIA_TOOLS)('a cut that fails is clip_failed (500), and a model that writes no transcript is asr_failed (500); neither leaves anything on disk', async () => {
+    const { tools, cuts } = cutting('the cut broke');
+    await expect(runSnippets(request({}), deps({ tools }))).rejects.toMatchObject({ code: 'clip_failed', status: 500, message: 'ffmpeg could not cut clip 0 (the cut broke)' });
+    expect(cuts).toHaveLength(1);
+    expect(readdirSync(root)).toStrictEqual([]);
+    const garbled = stubAsr(async () => { throw new AsrError('bad_output', 'the speech model wrote something that is not JSON'); });
+    await expect(runSnippets(request({}), deps({ asr: garbled }))).rejects.toMatchObject({ code: 'asr_failed', status: 500, message: 'the speech model wrote something that is not JSON' });
+    expect(readdirSync(root)).toStrictEqual([]);
+  });
+
+  test.skipIf(!MEDIA_TOOLS)('a word the model times past the end of the media is clamped before the matching reads it: the transcript and the cut agree, inside the media', async () => {
+    const past = stubAsr({ ...GOLDEN_TRANSCRIPT, segments: [...GOLDEN_TRANSCRIPT.segments, { start: 2.95, end: 3.4, text: 'Thanks.', words: [{ w: 'Thanks.', start: 3.1, end: 3.4 }] }] });
+    const result = await runSnippets(request({ quotes: ['thanks'], query: undefined, ranges: undefined }), deps({ asr: past }));
+    expect(result.transcript[2]).toStrictEqual({ start: 2.95, end: 3, text: 'Thanks.', words: [{ w: 'Thanks.', start: 3, end: 3 }] });
+    expect(result.matches).toStrictEqual([{ from: 'quote', start_s: 2.85, end_s: 3, text: 'Thanks.', score: 1 }]);
+    expect(result.clips.map((clip) => clip.bytes)).toStrictEqual([44 + 2 * 2_400]);
+  });
+
+  test.skipIf(!MEDIA_TOOLS)('the rest of the 600 s edge (Review Focus 2): 600.4 s and an MP3 encoded from 600 s answer, their ranges held to the duration of the decoded audio; 600.6 s is media_too_long (422) before the model runs, and nothing is left on disk', async () => {
+    const silence = (name: string, seconds: string, codec: string[], format: string) => makeMedia(media, name, ['-f', 'lavfi', '-i', 'anullsrc=r=16000:cl=mono', '-t', seconds, ...codec, '-f', format]);
+    const url = 'https://203.0.113.10/media';
+    const job = (path: string, type: string, ranges: Array<{ start_s: number; end_s: number }>, asr = stubAsr(EMPTY)) => runSnippets(
+      parseRequest(JSON.stringify({ source: { url }, ranges })),
+      deps({ fetchImpl: routedFetch({ [`GET ${url}`]: () => reply(200, new Uint8Array(readFileSync(path)), { 'content-type': type }) }).fetchImpl, asr }),
+    );
+    const longer = await job(silence('b.wav', '600.4', ['-c:a', 'pcm_s16le', '-bitexact'], 'wav'), 'audio/wav', [{ start_s: 600, end_s: 600.4 }]);
+    expect([longer.source.duration_s, longer.matches]).toStrictEqual([600.4, [{ from: 'range', start_s: 599.85, end_s: 600.4, text: '', score: 1 }]]);
+    const mp3 = await job(silence('d.mp3', '600', ['-c:a', 'libmp3lame', '-b:a', '32k'], 'mp3'), 'audio/mpeg', [{ start_s: 599, end_s: 599.5 }]);
+    expect(mp3.source.duration_s).toBeGreaterThanOrEqual(599.9);
+    expect(mp3.source.duration_s).toBeLessThanOrEqual(600.5);
+    expect(mp3.matches).toStrictEqual([{ from: 'range', start_s: 598.85, end_s: 599.65, text: '', score: 1 }]);
+    const asr = stubAsr(EMPTY);
+    const refused = job(silence('c.wav', '600.6', ['-c:a', 'pcm_s16le', '-bitexact'], 'wav'), 'audio/wav', [{ start_s: 0, end_s: 1 }], asr);
+    await expect(refused).rejects.toBeInstanceOf(RequestError);
+    await expect(refused).rejects.toMatchObject({ code: 'media_too_long', status: 422, message: 'the media is longer than the 600 s (10 min) a job may have' });
+    expect(asr.calls).toStrictEqual([]);
+    expect(readdirSync(root)).toStrictEqual([]);
+  }, 60_000);
+});
