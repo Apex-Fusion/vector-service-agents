@@ -298,7 +298,9 @@ test('README, RUNBOOK, compose file and Caddy snippet: Agent History is DEPLOYED
   // The Pipeline is the second stack of the box: its section of the README and its runbook carry its own status line, DEPLOYED since 2026-10-16 (RUNBOOK-document-pipeline.md step 17).
   const P_README_STATUS = 'Status: DEPLOYED since 2026-10-16. Nothing in this section is LIVE.';
   const P_RUNBOOK_STATUS = 'Status: DEPLOYED since 2026-10-16. Nothing in this folder is LIVE.';
-  const STATUS_LINES = { 'deploy/host/README.md': [STATUS, P_README_STATUS], 'deploy/host/RUNBOOK.md': [STATUS], 'deploy/host/RUNBOOK-document-pipeline.md': [P_RUNBOOK_STATUS] };
+  // Audio Snippets is the third stack of the host, PROPOSED (built, not deployed): its section of the README carries its own status line, which denies LIVE (RUNBOOK-audio-snippets.md step 17 changes it).
+  const S_README_STATUS = 'Status: PROPOSED (built, not deployed) since 2026-10-13. Nothing in this section is LIVE.';
+  const STATUS_LINES = { 'deploy/host/README.md': [STATUS, P_README_STATUS, S_README_STATUS], 'deploy/host/RUNBOOK.md': [STATUS], 'deploy/host/RUNBOOK-document-pipeline.md': [P_RUNBOOK_STATUS] };
   // The second line of each compose file and Caddy snippet says what happened on the box, and so does the third line of the Pipeline's env example.
   const HEADER = {
     'deploy/host/docker-compose.agent-history.yml': '# DEPLOYED since 2026-10-15: installed and running on the box since 2026-10-14; one first-party job settled on 2026-10-15. ',
@@ -525,10 +527,13 @@ test('RUNBOOK step 17: the last item names the files that said PROPOSED about Ag
 // A line that says PROPOSED has to be one of the lines below, so the word cannot come back for Agent History or Document Pipeline; a line that says LIVE has to deny it.
 test('status words: no file says PROPOSED about Agent History or Document Pipeline, and no file says LIVE except to deny it', () => {
   const OTHER_AGENTS = ['specs/audio-snippets.md', 'specs/advocate.md'];
+  // Audio Snippets is built and PROPOSED until step 17 of its runbook: its four files say the word in their status lines and their instructions.
+  const SNIPPETS_FILES = ['deploy/host/docker-compose.audio-snippets.yml', 'deploy/host/.env.audio-snippets.example', 'deploy/host/Caddyfile.audio-snippets.snippet', 'deploy/host/RUNBOOK-audio-snippets.md'];
   // What may still say PROPOSED outside the specs of the agents that are not built: their rows in the table of the root README, the rule that lists the three words,
   // the marketplace tools in the Interface section of the spec (the tools, not the agent), and the instructions of the two runbooks that speak for the order of a first run.
   const PROPOSED_OK = {
     'README.md': [/^\| (Audio Snippets|Advocate) \| `[a-z.0-9-]+` \| PROPOSED \|$/],
+    'deploy/host/README.md': [/^Status: PROPOSED \(built, not deployed\) since 2026-10-13\. Nothing in this section is LIVE\. No step of its runbook has been run\. /],
     'agents/agent-history/README.md': [/`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./],
     'specs/agent-history.md': [/^The marketplace MCP tools \(PROPOSED\) and the template's buyer, /],
     'deploy/host/RUNBOOK.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about Agent History/],
@@ -537,10 +542,10 @@ test('status words: no file says PROPOSED about Agent History or Document Pipeli
   // What may say LIVE: the sentence that denies it, and the rule that lists the three words.
   const LIVE_OK = [/Nothing (on this page|in this guide|in this folder|in this section) is LIVE( or DEPLOYED)?\./, /`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./];
   const files = repoFiles().filter((f) => /(\.md|\.yml|Caddyfile\.snippet|Caddyfile\.[a-z-]+\.snippet|\.example|\.template)$/.test(f));
-  for (const f of ['specs/agent-history.md', 'specs/advocate.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md', 'deploy/host/RUNBOOK.md', 'deploy/host/README.md', 'deploy/host/docker-compose.agent-history.yml', 'deploy/host/Caddyfile.snippet', 'deploy/host/.env.agent-history.example', 'agents/agent-history/agent.json.template', ...PIPELINE_FILES]) assert.ok(files.includes(f), `${f} is walked`);
+  for (const f of ['specs/agent-history.md', 'specs/advocate.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md', 'deploy/host/RUNBOOK.md', 'deploy/host/README.md', 'deploy/host/docker-compose.agent-history.yml', 'deploy/host/Caddyfile.snippet', 'deploy/host/.env.agent-history.example', 'agents/agent-history/agent.json.template', ...PIPELINE_FILES, ...SNIPPETS_FILES]) assert.ok(files.includes(f), `${f} is walked`);
   for (const f of files) {
     const lines = read(f).split('\n');
-    if (!OTHER_AGENTS.includes(f)) for (const line of lines.filter((l) => /\bPROPOSED\b/.test(l))) assert.ok((PROPOSED_OK[f] ?? []).some((re) => re.test(line)), `${f} says PROPOSED: ${line.slice(0, 110)}`);
+    if (!OTHER_AGENTS.includes(f) && !SNIPPETS_FILES.includes(f)) for (const line of lines.filter((l) => /\bPROPOSED\b/.test(l))) assert.ok((PROPOSED_OK[f] ?? []).some((re) => re.test(line)), `${f} says PROPOSED: ${line.slice(0, 110)}`);
     for (const line of lines.filter((l) => /\bLIVE\b/.test(l))) assert.ok(LIVE_OK.some((re) => re.test(line)), `${f} says LIVE: ${line.slice(0, 110)}`);
   }
   // The values the manifest and the env example carry are neither proposed nor live.
@@ -2035,4 +2040,567 @@ test('the deployment host is not named: no tracked file names it, the stack of i
   const hostnames = new Set(files.flatMap((f) => read(f).match(/\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.(?:org|ai|io|com|net|dev|xyz)\b/gi) ?? []));
   assert.ok(hostnames.has('activity' + '-api.vector.apexfusion.org') && hostnames.has('mp-indexer.vector.apexfusion.org'), 'the scan finds the public hostnames');
   assert.deepEqual([...hostnames].filter((name) => HOST_WORDS.test(name)), []);
+});
+
+// ======================================================================================================================================
+// Audio Snippets (PROPOSED, built and not deployed, since 2026-10-13): the third stack on the same host.
+// The four files and the section of the README are held to each other, to the service code, to the spec, and to the files of the Document Pipeline they
+// follow. docker build and caddy validate are run by hand at deployment. The files name no host and no other stack (HOST_WORDS above).
+// ======================================================================================================================================
+const SSPEC = read('specs/audio-snippets.md');
+const S_START = read('agents/audio-snippets/src/start.ts');
+const S_SERVER = read('agents/audio-snippets/src/server.ts');
+const sComposeText = read('deploy/host/docker-compose.audio-snippets.yml');
+const sCompose = parseYaml(sComposeText);
+const sExampleText = read('deploy/host/.env.audio-snippets.example');
+const sExampleRaw = parseEnv(sExampleText);
+const sExample = Object.fromEntries(Object.entries(sExampleRaw).map(([name, value]) => [name, /^"(.*)"$/.exec(value)?.[1] ?? value]));
+const sRunbook = read('deploy/host/RUNBOOK-audio-snippets.md');
+const sSnippet = read('deploy/host/Caddyfile.audio-snippets.snippet');
+const sDockerfile = read('agents/audio-snippets/Dockerfile');
+const { agent: sAgent, service: sService } = sCompose.services;
+const sSection = readme.split('\n## Audio Snippets on the same host\n')[1]?.split('\n## ')[0] ?? '';
+const sSpecNumber = (re) => Number(re.exec(SSPEC)?.[1]);
+const S_TERMS = {
+  price: sSpecNumber(/\| Price \| (\d+) \|/), supplierBond: sSpecNumber(/\| Supplier bond \| (\d+) \|/), buyerBond: sSpecNumber(/\| Buyer bond \| (\d+) \|/),
+  window: sSpecNumber(/advert `max_processing_ms` \| (\d+) ms/), timeout: sSpecNumber(/Service timeout, `SERVICE_TIMEOUT_MS` \| (\d+) ms/),
+};
+const S_FILES = ['deploy/host/docker-compose.audio-snippets.yml', 'deploy/host/.env.audio-snippets.example', 'deploy/host/Caddyfile.audio-snippets.snippet', 'deploy/host/RUNBOOK-audio-snippets.md'];
+const S_SUPPLIER = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS'];
+const S_TOKEN = ['SERVICE_AUTH_HEADER'];
+const S_CHAIN = ['NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO'];
+const S_ADVERT = ['ADVERT_REF', 'ADVERT_CAPABILITY_ID', 'ADVERT_MODEL', 'ADVERT_PRICE_LOVELACE', 'ADVERT_SUPPLIER_BOND_LOVELACE', 'ADVERT_BUYER_BOND_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_ENDPOINT_URL', 'ADVERT_DETAIL_URI', 'ADVERT_DETAIL_HASH'];
+const S_MANIFEST = ['OPERATOR_CONTACT', 'AGENT_DID', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_EXPLORER_URL'];
+const S_STEPS = ['Put the files on the host', 'Build the service image and pin it', 'Build the runtime image', 'Make the env file and generate the supplier key', 'Adapt the ops scripts', 'Supply the supplier wallet with its collateral and float', 'Register the identity', 'Stake in Module-3', 'Start the service', 'DNS and Caddy', 'Hash the manifest', 'Post the advert', 'Start the runtime', 'Check the advert on the indexer', 'The first-party run', 'Wallet monitor', 'Flip the status'];
+const S_STATUS = 'PROPOSED (built, not deployed) since 2026-10-13';
+const DC = 'docker compose -f docker-compose.audio-snippets.yml';
+// A snippet run through the real code of Audio Snippets (tsx), with its argument passed as JSON, so that nothing here re-implements the service.
+function inSnippets(code, arg) {
+  return JSON.parse(execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code, JSON.stringify(arg)], { cwd: join(root, 'agents/audio-snippets'), encoding: 'utf8' }));
+}
+
+test('Snippets compose: the project and two containers have fixed names, the runtime is on loopback port 8085, the service is published nowhere, both are on the network that PROXY_NETWORK names', () => {
+  assert.equal(sCompose.name, 'audio-snippets');
+  assert.deepEqual(Object.keys(sCompose.services), ['agent', 'service']);
+  assert.equal(sAgent.container_name, 'audio-snippets-agent');
+  assert.equal(sService.container_name, 'audio-snippets-service');
+  assert.deepEqual(sAgent.ports, ['127.0.0.1:8085:8080']);
+  assert.equal(sService.ports, undefined);
+  assert.deepEqual(sCompose.networks, { proxy: { external: true, name: PROXY_NETWORK_NAME } }, 'the network of the other two, named the same way');
+  for (const [name, s] of [['agent', sAgent], ['service', sService]]) {
+    assert.deepEqual(s.networks, ['proxy'], name);
+    assert.deepEqual(s.env_file, [{ path: './.env.audio-snippets', required: true }], name);
+    assert.equal(s.restart, 'unless-stopped', name);
+    assert.deepEqual(s.logging, pAgent.logging, `${name}: the log rotation of the other two`);
+  }
+  assert.deepEqual(sAgent.depends_on, ['service']);
+  assert.deepEqual(sComposeText.match(/\$\{[^}]*\}?/g), [PROXY_NETWORK_NAME], 'the one interpolation in the file');
+  assert.ok(sComposeText.includes('# The name of that network is not in the repository: compose reads PROXY_NETWORK from .env next to this file (RUNBOOK-audio-snippets.md step 1), and stops while it has no value.'));
+});
+
+test('Snippets compose: the runtime is the pinned template commit, SERVICE_URL names the service container on 9093 at /, the service holds no key, and the token is blanked in neither', () => {
+  assert.equal(sAgent.build.context, pAgent.build.context, 'the template commit of the other two');
+  assert.equal(sAgent.build.dockerfile, 'agent/Dockerfile');
+  assert.deepEqual(sAgent.environment, {
+    CAPABILITY_KIND: 'custom', SERVICE_URL: 'http://audio-snippets-service:9093/', SERVICE_CONTENT_TYPE: 'application/json', SERVICE_TIMEOUT_MS: '1380000', ADVERT_MAX_PROCESSING_MS: '1500000', PORT: '8080',
+  });
+  assert.deepEqual(sService.environment, { PORT: '9093', HOST: '0.0.0.0', SUPPLIER_PRIV_KEY_HEX: '' }, "the supplier key is the runtime's and is blanked for the service, which reads no other key");
+  assert.equal(new URL(sAgent.environment.SERVICE_URL).hostname, sService.container_name);
+  assert.ok(!('SERVICE_AUTH_HEADER' in sAgent.environment) && !('SERVICE_AUTH_HEADER' in sService.environment), 'both read the token from the env file');
+  assert.ok(S_START.includes("requiredEnv('SERVICE_AUTH_HEADER', env.SERVICE_AUTH_HEADER,"), 'the service refuses to start without the token');
+  assert.ok(S_START.includes('export const PORT_DEFAULT = 9093;'));
+  assert.match(sDockerfile, /^ENV NODE_ENV=production PORT=9093 HOST=0\.0\.0\.0 /m);
+  assert.match(sDockerfile, /^EXPOSE 9093$/m);
+});
+
+test('Snippets compose: the window and the timeout are the spec terms and nest as the runtime requires; the memory limit and the grace period; no volume', () => {
+  assert.deepEqual([S_TERMS.window, S_TERMS.timeout], [1_500_000, 1_380_000]);
+  assert.equal(Number(sAgent.environment.ADVERT_MAX_PROCESSING_MS), S_TERMS.window);
+  assert.equal(Number(sAgent.environment.SERVICE_TIMEOUT_MS), S_TERMS.timeout);
+  assert.ok(S_TERMS.timeout <= S_TERMS.window - 60_000, 'the runtime refuses to boot otherwise');
+  assert.ok(read('agents/audio-snippets/src/budget.ts').includes('export const JOB_DEADLINE_MS = 1_320_000;'), 'the deadline is 60 s inside the timeout');
+  assert.ok(S_SERVER.includes('export const MIN_PROCESSING_WINDOW_MS = 1_500_000;'));
+  assert.equal(sService.mem_limit, '3072m');
+  assert.equal(sService.stop_grace_period, '330s');
+  assert.ok(read('packages/service-kit/src/lifecycle.ts').includes('export const SHUTDOWN_WAIT_MS = 300_000;'), 'the grace period is the wait of the service and 30 s more');
+  assert.equal(sService.volumes, undefined);
+  assert.equal(sCompose.volumes, undefined);
+  assert.doesNotMatch(sDockerfile, /^VOLUME /m);
+});
+
+test('Snippets compose: the service image is named by digest (a placeholder in the repository), on one line that step 2 rewrites and step 9 checks', () => {
+  assert.match(sService.image, /^ghcr\.io\/apex-fusion\/vector-service-agents\/audio-snippets@sha256:(<digest>|[0-9a-f]{64})$/);
+  assert.equal(sComposeText.split('\n').filter((l) => /^    image: /.test(l)).length, 1);
+  assert.equal(parseYaml(sComposeText.replace(/^    image: .*$/m, `    image: sha256:${'ab'.repeat(32)}`)).services.service.image, `sha256:${'ab'.repeat(32)}`);
+  const two = section(sRunbook, '2. Build the service image and pin it');
+  for (const part of [
+    'docker build -f agents/audio-snippets/Dockerfile -t ghcr.io/apex-fusion/vector-service-agents/audio-snippets:latest .',
+    "docker image inspect --format '{{index .RepoDigests 0}}' \"$IMAGE:latest\" 2>/dev/null || docker image inspect --format '{{.Id}}' \"$IMAGE:latest\"",
+    'sed -i "s|^    image: .*|    image: $PIN|" docker-compose.audio-snippets.yml', '`invalid reference format`', '`docker image prune -a`',
+  ]) assert.ok(two.includes(part), `step 2 says: ${part}`);
+  assert.ok(section(sRunbook, '9. Start the service').includes("grep -E '^    image: (ghcr[.]io/apex-fusion/vector-service-agents/audio-snippets@sha256:|sha256:)[0-9a-f]{64}$' docker-compose.audio-snippets.yml"));
+});
+
+test('Snippets env example: the blocks in order (supplier, token, chain, advert, manifest), known names only, each once; every secret empty, nothing key-shaped; the header says one key and a token, and where the network is named', () => {
+  assert.deepEqual(Object.keys(sExample), [...S_SUPPLIER, ...S_TOKEN, ...S_CHAIN, ...S_ADVERT, ...S_MANIFEST]);
+  assert.deepEqual(keyProblems(sExample), []);
+  assert.deepEqual(keyProblems(sAgent.environment), []);
+  assert.deepEqual(keyProblems(sService.environment), []);
+  for (const name of [...S_SUPPLIER, ...S_TOKEN, 'ADVERT_REF', 'ADVERT_DETAIL_HASH', 'AGENT_DID', 'ADVERT_EXPLORER_URL']) assert.equal(sExample[name], '', `${name} is filled by the runbook`);
+  assert.equal(sExampleRaw.SERVICE_AUTH_HEADER, '""', 'empty and in quotes');
+  assert.match(sExample.OPERATOR_CONTACT, PLACEHOLDER);
+  assert.equal(sExample.OPERATOR_CONTACT, example.OPERATOR_CONTACT, 'the same placeholder as the other two');
+  const [first, second, third, fourth] = sExampleText.split('\n');
+  assert.equal(first, '# Copy to .env.audio-snippets next to the compose file (mode 600). Names and placeholders only: this example holds no key, no secret and no usable token (SERVICE_AUTH_HEADER is empty here).');
+  assert.equal(second, "# The copy holds one key, the supplier key (the runtime's), and the token between the two containers, and it never enters git: the repository's .gitignore covers .env.* except *.example.");
+  assert.equal(third, `# Status: ${S_STATUS}. The status word the manifest carries is AGENT_STATUS_CHIP below.`);
+  assert.equal(fourth, "# The external network of the host's reverse proxy is not named here: compose reads PROXY_NETWORK from .env next to the compose file (RUNBOOK-audio-snippets.md step 1).");
+  assert.equal(/^PROXY_NETWORK=/m.test(sExampleText), false, 'compose would not read it here');
+  assert.ok(sExampleText.includes('The service reads the public key and the key hash, publishes both in the manifest, and stops at start when the public key is empty or is not the one of the key hash.'), 'R-D21');
+});
+
+test('Snippets env example: every name the service code reads is in the example, in the compose environment, or has a default in the code; the runtime gets every name the template lists', () => {
+  const files = [...sourceFiles('agents/audio-snippets/src'), ...sourceFiles('packages/service-kit/src'), ...sourceFiles('packages/vector-read/src')];
+  const names = new Set(files.flatMap((f) => [...envNamesIn(read(f))]));
+  // Left unset on purpose: the defaults of the code, and the four the image sets (ENV of agents/audio-snippets/Dockerfile).
+  const DEFAULT_IN_CODE = ['AGENT_VERSION', 'KOIOS_URL', 'INDEXER_URL', 'WHISPER_MODEL', 'WHISPER_THREADS', 'WHISPER_MODEL_DIR', 'ASR_PYTHON', 'ASR_WORKER'];
+  assert.deepEqual([...names].filter((n) => !(n in sExample) && !(n in sService.environment) && !DEFAULT_IN_CODE.includes(n)), []);
+  for (const n of DEFAULT_IN_CODE) assert.ok(!(n in sExample), `${n} stays unset in the example`);
+  for (const n of ['OPERATOR_CONTACT', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'SERVICE_AUTH_HEADER', 'WHISPER_MODEL', 'WHISPER_THREADS']) assert.ok(names.has(n), `the service reads ${n}`);
+  assert.ok(!names.has('SUPPLIER_PRIV_KEY_HEX'), "no source of the service reads the supplier key: it is the runtime's");
+  assert.match(sDockerfile, /ASR_WORKER=\/app\/asr\/worker\.py WHISPER_MODEL=\$WHISPER_MODEL PATH=\/app\/asr\/venv\/bin:\$PATH$/m, 'the image sets what the example leaves out');
+  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'SERVICE_AUTH_HEADER', 'PORT'];
+  assert.deepEqual(NEEDED.filter((n) => !(n in sExample) && !(n in sAgent.environment)), []);
+});
+
+test('Snippets env example: the chain values are those of the Pipeline, the advert terms are the spec, the endpoint is the third hostname, the status word is proposed since 2026-10-13, and the manifest it produces is the default one', () => {
+  for (const name of S_CHAIN) assert.equal(sExample[name], pExample[name], name);
+  assert.deepEqual([sExample.ADVERT_CAPABILITY_ID, sExample.ADVERT_MODEL], ['audio.transcript.snippets.v1', 'audio-snippets-v1']);
+  assert.ok(SSPEC.includes(`The model string in the advert and in every receipt is \`${sExample.ADVERT_MODEL}\`.`));
+  assert.deepEqual([sExample.ADVERT_PRICE_LOVELACE, sExample.ADVERT_SUPPLIER_BOND_LOVELACE, sExample.ADVERT_BUYER_BOND_LOVELACE, sExample.ADVERT_MAX_PROCESSING_MS].map(Number), [S_TERMS.price, S_TERMS.supplierBond, S_TERMS.buyerBond, S_TERMS.window]);
+  assert.deepEqual([S_TERMS.price, S_TERMS.supplierBond, S_TERMS.buyerBond], [2_000_000, 1_000_000, 1_000_000]);
+  assert.equal(sExample.ADVERT_ENDPOINT_URL, 'https://mp-suppliers-snippets.hal8.ai');
+  assert.equal(sExample.ADVERT_DETAIL_URI, `${sExample.ADVERT_ENDPOINT_URL}/agent.json`);
+  assert.ok(DESIGN.includes('`mp-suppliers-snippets.hal8.ai`'));
+  assert.deepEqual([sExample.AGENT_STATUS_CHIP, sExample.AGENT_STATUS_SINCE], ['proposed', '2026-10-13']);
+  const [withExample, withNothing] = inSnippets(
+    "import { manifestFromEnv } from './src/server.ts'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((env) => manifestFromEnv(env))));",
+    [{ ...withoutPlaceholders(sExample), OPERATOR_CONTACT: TEST_CONTACT }, { OPERATOR_CONTACT: TEST_CONTACT }],
+  );
+  assert.deepEqual(withExample, withNothing, 'the example changes nothing in the manifest the advert will hash');
+  assert.deepEqual(withExample.status, { chip: 'proposed', since: '2026-10-13' });
+  assert.equal(withExample.terms.price_lovelace, S_TERMS.price);
+  assert.equal(withExample.terms.max_processing_ms, S_TERMS.window);
+});
+
+test('Snippets env example: a token of the form the runbook makes is accepted by the service at start, an empty one is refused with the variable named, and so are an empty public key and one that is not the key of SUPPLIER_PKH (R-D21)', () => {
+  // The supplier lines are from one key, as gen-keypair makes them: the key hash is the blake2b-224 of the public key, computed here by the code of the service. The 64 hex
+  // digits of the token are other digits than the key's, because the service refuses a token that it finds in any other setting.
+  const publicKey = 'ab'.repeat(32);
+  const [keyHash] = inSnippets("import { blake2b224Hex } from '@vsa/vector-read'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((hex) => blake2b224Hex(hex))));", [publicKey]);
+  assert.match(keyHash, /^[0-9a-f]{56}$/);
+  const base = { OPERATOR_CONTACT: TEST_CONTACT, SUPPLIER_PKH: keyHash, SUPPLIER_PUB_KEY_HEX: publicKey };
+  const token = `Bearer ${'cd'.repeat(32)}`;
+  const code = "import { loadConfig } from './src/start.ts'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((env) => { try { return { length: loadConfig(env).authHeader.length }; } catch (e) { return { error: e.message }; } })));";
+  const [accepted, empty, noKey, otherKey] = inSnippets(code, [
+    { ...base, SERVICE_AUTH_HEADER: token }, { ...base, SERVICE_AUTH_HEADER: '' },
+    { ...base, SERVICE_AUTH_HEADER: token, SUPPLIER_PUB_KEY_HEX: '' }, { ...base, SERVICE_AUTH_HEADER: token, SUPPLIER_PUB_KEY_HEX: 'ef'.repeat(32) },
+  ]);
+  assert.deepEqual(accepted, { length: 71 });
+  assert.match(empty.error, /^environment variable SERVICE_AUTH_HEADER is required \(.+\) and is not set$/);
+  assert.match(noKey.error, /^environment variable SUPPLIER_PUB_KEY_HEX is required \(.+\) and is not set$/);
+  assert.match(otherKey.error, /^environment variable SUPPLIER_PUB_KEY_HEX is not the public key of SUPPLIER_PKH: /);
+  assert.doesNotMatch(JSON.stringify([noKey, otherKey]), /[0-9a-f]{16}/, 'a refusal names the settings and prints no value');
+});
+
+test('Snippets Caddy snippet: the site block is the third endpoint host, the manifest goes to the service and everything else to the runtime, the block is last, and the README shows the same block', () => {
+  const lines = sSnippet.split('\n');
+  const first = lines.findIndex((l) => !l.startsWith('#') && l.trim() !== '');
+  const block = lines.slice(first).join('\n').trimEnd();
+  assert.equal(block, 'mp-suppliers-snippets.hal8.ai {\n    handle /agent.json {\n        reverse_proxy audio-snippets-service:9093\n    }\n    handle {\n        reverse_proxy audio-snippets-agent:8080\n    }\n}');
+  assert.equal(block.split('\n')[0], `${new URL(sExample.ADVERT_ENDPOINT_URL).hostname} {`);
+  const comments = lines.slice(0, first).join('\n');
+  assert.ok(lines.slice(0, first).every((l) => l.startsWith('#')), 'only comments before the block');
+  assert.ok(comments.includes("The block must stay the last thing in this file: the host administrator's install script\n# takes everything from the hostname line to the end."));
+  assert.ok(comments.includes("The runtime does not serve /agent.json, and the advert's detail_uri points at it, so that one path goes to the service."));
+  assert.ok(sSection.split('\n').map((l) => l.replace(/^ {3}/, '')).join('\n').includes('```\n' + block + '\n```'), 'the README shows the same block');
+});
+
+test('Snippets files: each says PROPOSED (built, not deployed) since 2026-10-13 in its own first lines and that no step has been run; none says LIVE or DEPLOYED, names the host or another stack, or holds a dash, the unit name, a person or a home path', () => {
+  assert.equal(sComposeText.split('\n')[1], `# ${S_STATUS}. Not installed: no step of RUNBOOK-audio-snippets.md has been run. The host administrator's part is README.md.`);
+  assert.ok(sSnippet.split('\n')[1].startsWith(`# ${S_STATUS}. Not installed: step 10 of RUNBOOK-audio-snippets.md has not been run.`));
+  assert.equal(sRunbook.split('\n')[2], `Status: ${S_STATUS}. Nothing in this folder is LIVE. This runbook says what will happen, in order. No step of it has been run.`);
+  assert.ok(sSection.split('\n')[1].startsWith(`Status: ${S_STATUS}. Nothing in this section is LIVE. No step of its runbook has been run. The files are `));
+  for (const rel of [...S_FILES, 'agents/audio-snippets/Dockerfile']) {
+    const text = read(rel);
+    assert.doesNotMatch(text.replace('Nothing in this folder is LIVE.', ''), /\b(LIVE|DEPLOYED)\b/, `${rel}: no status claim beyond the status line`);
+    assert.doesNotMatch(text, HOST_WORDS, `${rel}: names no host and no other stack`);
+    assert.doesNotMatch(text, DASHES, `${rel}: no em or en dash`);
+    assert.doesNotMatch(text, UNIT_NAME, `${rel}: the unit is called units`);
+    assert.doesNotMatch(text, NAMES, `${rel}: roles, not people`);
+    assert.doesNotMatch(text, HOME_PATH, `${rel}: no path into a home folder`);
+    assert.match(text, /^[\x09\x0a\x20-\x7e]*$/, `${rel}: ASCII`);
+  }
+  assert.doesNotMatch(sSection, HOST_WORDS);
+  assert.doesNotMatch(sSection.replace('Nothing in this section is LIVE.', ''), /\b(LIVE|DEPLOYED)\b/);
+});
+
+test('Snippets README section: the third stack, with its two containers, the loopback port, the unpublished service port, the network of .env, the limits, the hostname, the Caddy block and the way back', () => {
+  assert.ok(sSection.length > 2500, 'the section exists');
+  assert.ok(readme.indexOf('\n## Audio Snippets on the same host\n') > readme.indexOf('\n## Rollback\n') && readme.indexOf('\n## Audio Snippets on the same host\n') > readme.indexOf('\n### What the host administrator does for the Pipeline\n'), "after the Pipeline's section");
+  const rows = sSection.split('\n').filter((l) => l.startsWith('| `'));
+  assert.deepEqual(rows.map((r) => r.split(' | ')[0]), ['| `audio-snippets-agent`', '| `audio-snippets-service`']);
+  for (const part of [
+    "[RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md), which is the operator's order of work and follows [RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md) step for step",
+    'The compose project is `audio-snippets`.', "Both containers join the external network of the host's reverse proxy (`PROXY_NETWORK` in `.env`, written in step 1 of its runbook, as for the other two).",
+    'the base path is the folder the operator chose for this agent (`BASE` in its runbook)',
+    '- **One key.**', 'The service holds no key and posts nothing',
+    '- **A token on the service, as for the Pipeline.**', 'gets 401 before its body is read', 'Port 9093 is never published to the host all the same.',
+    '`mem_limit: 3072m`', '`stop_grace_period: 330s`', '`127.0.0.1:8085`', 'ss -ltnp', 'a clash on 8085',
+    '`mp-suppliers-snippets.hal8.ai`', 'DNS only (grey cloud)', 'There is no registry login and no image to pull',
+    'docker exec <caddy container> caddy validate --config /etc/caddy/Caddyfile', 'docker exec <caddy container> caddy reload --config /etc/caddy/Caddyfile',
+    `\`${DC} up -d --force-recreate <service>\``, 'A change to `SERVICE_AUTH_HEADER` needs both containers recreated.',
+    'The service refuses to start while `OPERATOR_CONTACT`, `SUPPLIER_PKH`, `SUPPLIER_PUB_KEY_HEX` or `SERVICE_AUTH_HEADER` is not set, when `SUPPLIER_PUB_KEY_HEX` is not the public key of `SUPPLIER_PKH`',
+    '[RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md), under "Back out"',
+  ]) assert.ok(sSection.includes(part), `the section says: ${part}`);
+  assert.ok(!sSection.includes('retire-advert.ts'), 'the retire command lives in one place, the runbook');
+  assert.ok(readme.includes("Audio Snippets is a third, built and not deployed, with its own section after the Pipeline's and its own runbook, [RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md)."));
+  assert.ok(readme.includes('`mp-suppliers-snippets.hal8.ai` for Audio Snippets, which is built and has its own section at the end of this note, and `mp-suppliers-advocate.hal8.ai` for Advocate, which is not built yet.'));
+  assert.ok(sSection.includes(`\`mem_limit: ${sService.mem_limit}\``) && sSection.includes(`\`stop_grace_period: ${sService.stop_grace_period}\``));
+});
+
+test('Snippets RUNBOOK: the twenty-one sections in order, the seventeen steps keep the numbers of the other runbooks, and the head lists what differs with the names table and the two base paths', () => {
+  const numbered = S_STEPS.map((title, i) => `${i + 1}. ${title}`);
+  assert.deepEqual([...sRunbook.matchAll(/^## (.+)$/gm)].map((m) => m[1]), ['Collateral and float', ...numbered.slice(0, 15), 'Watch the first stop', ...numbered.slice(15), 'Back out', 'If something goes wrong']);
+  assert.equal([...pRunbook.matchAll(/^## (\d+)\. /gm)].length, S_STEPS.length, 'as many steps as the runbook it follows');
+  for (const m of sRunbook.matchAll(/\bsteps? (\d+)/g)) assert.ok(Number(m[1]) >= 1 && Number(m[1]) <= S_STEPS.length, `step ${m[1]}`);
+  const quoted = [...sExampleText.matchAll(/RUNBOOK-audio-snippets\.md step (\d+), "([^"]+)"/g)];
+  assert.ok(quoted.length >= 2, 'the example names steps of the runbook');
+  for (const m of quoted) assert.equal(S_STEPS[Number(m[1]) - 1], m[2], `the example quotes step ${m[1]}`);
+  assert.match(sRunbook, /The operator holds the key and does every step except two\. Step 6 \(the collateral and float of the supplier wallet\) is the Foundation's\. Step 10 \(DNS and Caddy\) is the host administrator's, see \[README\.md\]\(README\.md\)\./);
+  assert.match(section(sRunbook, '6. Supply the supplier wallet with its collateral and float'), /^\nThe Foundation\. /);
+  assert.match(section(sRunbook, '10. DNS and Caddy'), /^\nHost administrator, from/);
+  const head = sRunbook.slice(0, sRunbook.indexOf('\n## Collateral and float\n'));
+  for (const part of [
+    'This is [RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md), the runbook of the Document Pipeline, written for Audio Snippets.', 'step N here is step N there',
+    '- **One key.**', '- **A token on the service, as for the Pipeline.**', '- **A window of 25 min.**', '`max_processing_ms` is 1500000', '`SERVICE_TIMEOUT_MS` is 1380000', '1320000 ms (22 min)', 'at most 900 s of it',
+    '- **The speech model in the image.**', '- **No state, and a clean stop.**', '`low_disk`', '- **The network, as for the other two.**', '- **Price 2.**',
+    '| Base path on the host | `$BASE`, the folder the operator chooses for this agent (any path works): the repository in `repo`, the ops scripts in `ops` |',
+    '| Base path of the Pipeline | `$PIPELINE_BASE`, the `BASE` of RUNBOOK-document-pipeline.md: its ops scripts and its install script |',
+    '| "This folder" | `$BASE/repo/deploy/host` |', '| Compose file, env file | `docker-compose.audio-snippets.yml`, `.env.audio-snippets` |',
+    '| Containers | `audio-snippets-agent` (the runtime), `audio-snippets-service` |',
+    '| Ports | the runtime on `127.0.0.1:8085`, loopback only; the service on 9093, never published |', '| Public name | `mp-suppliers-snippets.hal8.ai` |',
+    "| Network | the external network of the host's reverse proxy, named by `PROXY_NETWORK` in `.env` in this folder (step 1) |",
+  ]) assert.ok(head.includes(part), `the head says: ${part}`);
+  // The paths on the host go through the two base paths, set once at the top, before the first command that uses them.
+  const block = '```sh\nBASE=/opt/audio-snippets\nPIPELINE_BASE=/opt/document-pipeline\n```';
+  assert.ok(head.includes(block));
+  assert.equal(sRunbook.split('/opt/').length, block.split('/opt/').length, 'no other absolute path on the host');
+  assert.ok(sRunbook.indexOf(block) < sRunbook.indexOf('"$BASE'));
+  // The facts it quotes are the code's.
+  assert.ok(read('packages/service-kit/src/server.ts').includes('export const HEARTBEAT_MS = 60_000;'));
+  assert.ok(read('agents/audio-snippets/src/budget.ts').includes('export const ASR_MAX_MS = 900_000;'));
+  assert.ok(read('agents/audio-snippets/src/disk.ts').includes('export const MIN_FREE_BYTES = 268_435_456;'));
+});
+
+test('Snippets RUNBOOK collateral and float: one key, 5 alone then 50, and the key of step 15 with the cost of a job from the guide', () => {
+  const collateral = section(sRunbook, 'Collateral and float');
+  const rows = collateral.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| Key |'));
+  assert.equal(rows.length, 1, 'one key');
+  assert.ok(rows[0].startsWith("| Supplier key (the runtime's), generated on the host in step 4 | Two transfers to its address: exactly 5 units alone (collateral, never touched), then 50 units |"));
+  assert.ok(collateral.includes('The service holds no key, so there is no second wallet.'));
+  assert.ok(collateral.includes('A job of Audio Snippets costs the hirer about 4 (`docs/HIRE.md`, section 3)'));
+  assert.ok(read('docs/HIRE.md').includes('| 2 (Audio Snippets) | 4 | 3 | 1 | about 1 | about 4 | 12 |'), 'what a job costs the hirer');
+});
+
+test('Snippets RUNBOOK steps 1 to 3: the bundle into $BASE and .env with the network, the image built and checked on the host with the real model, the runtime built', () => {
+  const one = section(sRunbook, '1. Put the files on the host');
+  for (const part of ['git bundle create vector-service-agents.bundle main', 'scp vector-service-agents.bundle <user>@<host>:/tmp/', 'mkdir -p "$BASE" && cd "$BASE"', 'git clone --branch main /tmp/vector-service-agents.bundle repo', 'cd repo/deploy/host']) assert.ok(one.includes(part), part);
+  assert.ok(one.includes("```sh\necho 'PROXY_NETWORK=<the network the host administrator names>' > .env\ndocker network inspect --format '{{.Name}}' \"$(sed -n 's/^PROXY_NETWORK=//p' .env)\"\n```"), 'step 1 writes .env and checks that the network exists, as the other runbooks do');
+  assert.ok(one.includes('The second line must print the name back. An error means that this host has no network of that name.'));
+  assert.ok(sRunbook.indexOf("' > .env\n") < sRunbook.indexOf('docker compose -f '), '.env before the first compose command');
+  const two = section(sRunbook, '2. Build the service image and pin it');
+  for (const part of [
+    'docker run --rm --entrypoint python3 ghcr.io/apex-fusion/vector-service-agents/audio-snippets:latest -I /app/asr/worker.py --check /app/asr/models/base',
+    "docker run --rm --entrypoint sh -e REQUIRE_ASR=1 -e WHISPER_MODEL_DIR=/app/asr/models/base -w /repo/agents/audio-snippets ghcr.io/apex-fusion/vector-service-agents/audio-snippets:latest -c 'node_modules/.bin/vitest run test/worker-contract.test.ts test/asr-real.test.ts'",
+    '`{"ok":true,"faster_whisper":"1.2.1","ctranslate2":"4.8.2"}`', '`--build-arg WHISPER_MODEL=small`',
+  ]) assert.ok(two.includes(part), `step 2 says: ${part}`);
+  for (const file of ['agents/audio-snippets/test/worker-contract.test.ts', 'agents/audio-snippets/test/asr-real.test.ts', 'agents/audio-snippets/asr/worker.py']) assert.ok(existsSync(join(root, file)), file);
+  assert.ok(two.indexOf('--check /app/asr/models/base') < two.indexOf('docker image inspect'), 'checked before it is pinned');
+  const three = section(sRunbook, '3. Build the runtime image');
+  assert.ok(three.includes(`${DC} build agent`) && three.includes('It ends with `Image audio-snippets-agent Built`.'));
+});
+
+test('Snippets RUNBOOK step 4: the env file once, the key and the token only into empty lines, the lengths, the contact, and the offline copy', () => {
+  const four = section(sRunbook, '4. Make the env file and generate the supplier key');
+  const blocks = [...four.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1]);
+  assert.equal(blocks.length, 5);
+  const [head, supplier, token, lengths, contact] = blocks;
+  assert.ok(head.includes('keypair_into() {') && head.includes('token_into() {') && head.includes('umask 077'));
+  assert.ok(head.includes(`json=$(${DC} run --rm --no-deps -T agent \\\n    node_modules/.bin/tsx agent/src/cli/gen-keypair.ts --network 1)`));
+  assert.ok(head.endsWith('if [ -e .env.audio-snippets ]; then\n  echo "refusing: the env file exists, and it is kept as it is" >&2\nelse\n  cp .env.audio-snippets.example .env.audio-snippets && chmod 600 .env.audio-snippets\nfi\n'));
+  assert.equal(supplier, 'cd "$BASE/repo/deploy/host"\nkeypair_into SUPPLIER\n');
+  assert.equal(token, 'cd "$BASE/repo/deploy/host"\ntoken_into\n');
+  assert.ok(lengths.startsWith("awk -F= '/^SUPPLIER_(PRIV_KEY_HEX|PUB_KEY_HEX|PKH|ADDRESS)=|^SERVICE_AUTH_HEADER=/"));
+  assert.equal(contact, "grep -c '^OPERATOR_CONTACT=[^<[:space:]]' .env.audio-snippets\n");
+  for (const line of ['SUPPLIER_PRIV_KEY_HEX 64', 'SUPPLIER_PUB_KEY_HEX 64', 'SUPPLIER_PKH 56', 'SUPPLIER_ADDRESS 58', 'SERVICE_AUTH_HEADER 71']) assert.ok(four.includes('`' + line + '`'), line);
+  assert.ok(four.includes("Copy `.env.audio-snippets` to the operator's encrypted offline store now, before the address receives anything"));
+  assert.ok(four.includes('Step 7 writes a second plaintext copy of the supplier key to the directory `$BASE/ops/wallet`'));
+  assert.ok(four.includes('and the service stops at start without the token, without the public key, and with a public key that is not the one of the key hash, because it publishes both.'), 'R-D21');
+});
+
+// The blocks of step 4, run as they stand in bash (the cd lines are the host's, so they are taken out and the temporary folder is the working directory), with
+// stand-ins for docker and openssl that check the arguments they are called with.
+const S_STUBS = String.raw`STUB_N="$PWD/.stub-n"
+docker() {
+  [ "$*" = "compose -f docker-compose.audio-snippets.yml run --rm --no-deps -T agent node_modules/.bin/tsx agent/src/cli/gen-keypair.ts --network 1" ] || { echo "unexpected docker call: $*" >&2; return 9; }
+  n=$(( $(cat "$STUB_N" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STUB_N"
+  printf '{\n  "privateKeyHex": "%064x",\n  "publicKeyHex": "%064x",\n  "pubKeyHash": "%056x",\n  "address": "addr1%053x"\n}\n' $((n * 1000003)) $((n * 7919)) $((n * 104729)) "$n"
+}
+openssl() {
+  [ "$*" = "rand -hex 32" ] || { echo "unexpected openssl call: $*" >&2; return 9; }
+  n=$(( $(cat "$STUB_N" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$STUB_N"
+  printf '%064x\n' $((n * 15485863))
+}
+`;
+function sStep4() {
+  const four = section(sRunbook, '4. Make the env file and generate the supplier key');
+  const [head, supplier, token, lengths] = [...four.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1].replace(/^cd "\$BASE\/repo\/deploy\/host"\n/, ''));
+  return { head, supplier, token, lengths };
+}
+function withSnippetsFolder(fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'snippets-step4-'));
+  try {
+    copyFileSync(join(root, 'deploy/host/.env.audio-snippets.example'), join(dir, '.env.audio-snippets.example'));
+    return fn(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+const sEnvOf = (dir) => readFileSync(join(dir, '.env.audio-snippets'), 'utf8');
+const S_FILLED = /^(SUPPLIER_(PRIV_KEY_HEX|PUB_KEY_HEX|PKH|ADDRESS)|SERVICE_AUTH_HEADER)=/;
+const apartFromTheFive = (text) => text.split('\n').filter((l) => !S_FILLED.test(l)).join('\n');
+
+test('Snippets RUNBOOK step 4 in bash: the blocks make the env file, the key and the token, print only names and lengths, and leave every other line of the example as it was', NEEDS_BASH, () => {
+  const { head, supplier, token, lengths } = sStep4();
+  withSnippetsFolder((dir) => {
+    const run = runBash(`${S_STUBS}${head}${supplier}${token}${lengths}`, dir);
+    assert.equal(run.stderr, '', 'nothing refused and nothing failed');
+    assert.equal(run.stdout, ['SUPPLIER_PRIV_KEY_HEX 64', 'SUPPLIER_PUB_KEY_HEX 64', 'SUPPLIER_PKH 56', 'SUPPLIER_ADDRESS 58', 'SERVICE_AUTH_HEADER 71', ''].join('\n'));
+    assert.doesNotMatch(run.stdout + run.stderr, /[0-9a-f]{16}|Bearer/, 'no key, no hash and no token is printed');
+    assert.match(parseEnv(sEnvOf(dir)).SERVICE_AUTH_HEADER, /^"Bearer [0-9a-f]{64}"$/);
+    assert.equal(apartFromTheFive(sEnvOf(dir)), apartFromTheFive(sExampleText), "every other line is the example's");
+  });
+});
+
+test('Snippets RUNBOOK step 4 in bash: run again, nothing is made again and nothing is replaced; the key is made again alone after the command of the failure table emptied its lines', NEEDS_BASH, () => {
+  const { head, supplier, token } = sStep4();
+  const table = section(sRunbook, 'If something goes wrong');
+  const emptySupplier = String.raw`sed -i 's/^\(SUPPLIER_[A-Z_]*\)=.*/\1=/' .env.audio-snippets`;
+  const emptyToken = `sed -i 's/^SERVICE_AUTH_HEADER=.*/SERVICE_AUTH_HEADER=""/' .env.audio-snippets`;
+  for (const command of [emptySupplier, emptyToken]) assert.ok(table.includes('`' + command + '`'), command);
+  withSnippetsFolder((dir) => {
+    assert.equal(runBash(`${S_STUBS}${head}${supplier}${token}`, dir).status, 0);
+    const before = sEnvOf(dir);
+    const again = runBash(`${S_STUBS}${head}${supplier}${token}`, dir);
+    assert.equal(sEnvOf(dir), before, 'byte for byte');
+    for (const refusal of ['refusing: the env file exists, and it is kept as it is', 'refusing: SUPPLIER_PRIV_KEY_HEX already has a value, and a key that may hold units is never replaced', 'refusing: SERVICE_AUTH_HEADER already has a value; to replace it, empty the line first']) assert.ok(again.stderr.includes(refusal), refusal);
+    assert.equal(runBash(`${emptySupplier}\n`, dir).status, 0);
+    assert.equal(runBash(`${S_STUBS}${head}${supplier}`, dir).status, 0);
+    const after = parseEnv(sEnvOf(dir));
+    for (const name of S_SUPPLIER) assert.notEqual(after[name], parseEnv(before)[name], `${name} is a new value`);
+    assert.equal(after.SERVICE_AUTH_HEADER, parseEnv(before).SERVICE_AUTH_HEADER, 'the token is untouched');
+  });
+});
+
+test('Snippets RUNBOOK step 5: the ops scripts are copied from the adapted set of the Pipeline; the registry record is the manifest description, the capability, the framework and the public URL', () => {
+  const five = section(sRunbook, '5. Adapt the ops scripts');
+  const desc = /^DESC="(.+)"$/m.exec(five)[1];
+  const [manifest] = inSnippets("import { manifestFromEnv } from './src/server.ts'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((env) => manifestFromEnv(env))));", [{ OPERATOR_CONTACT: TEST_CONTACT }]);
+  assert.equal(desc, manifest.description);
+  assert.ok(five.includes(`(this one is ${desc.length})`) && desc.length <= 256);
+  for (const part of [
+    'mkdir -p "$BASE/ops" && cd "$BASE/ops"',
+    'sed -e "s#[^\\"\' =]*/\\.env\\.document-pipeline#$BASE/repo/deploy/host/.env.audio-snippets#g" \\', '-e "s#$PIPELINE_BASE/ops#$BASE/ops#g" \\', '"$PIPELINE_BASE/ops/$f" > "$f"',
+    "sed -i 's#document-pipeline supplier#audio-snippets supplier#g' make-skey.py", "-e 's#^ \"name\":\"Document Pipeline\",# \"name\":\"Audio Snippets\",#'",
+    "-e 's#^ \"endpoint\":\"https://mp-suppliers-pipeline.hal8.ai\"}# \"endpoint\":\"https://mp-suppliers-snippets.hal8.ai\"}#'",
+    "sed -i 's#^CAPABILITIES = \\[.*\\]#CAPABILITIES = [\"audio.transcript.snippets.v1\"]#' m3-self-stake.py", "grep -il 'pipeline\\|agent.history' *.sh *.py",
+  ]) assert.ok(five.includes(part), `step 5 says: ${part}`);
+  // What the copy of the Pipeline holds is what this copy looks for: the label, the record and the capability its step 5 wrote.
+  const p5 = section(pRunbook, '5. Adapt the ops scripts');
+  for (const left of ['document-pipeline supplier#g', '# "name":"Document Pipeline",#\'', '# "endpoint":"https://mp-suppliers-pipeline.hal8.ai"}#\'', 'CAPABILITIES = ["document.pipeline.ocr-summary.v1"]#\'']) assert.ok(p5.includes(left), `the copy of the Pipeline is made with: ${left}`);
+});
+
+test('Snippets RUNBOOK step 5 in bash: the copy is made from a copy of the Pipeline whose env file sits in any folder of its checkout, and holds only the paths and values of Audio Snippets', NEEDS_BASH, () => {
+  const block = /```sh\n([\s\S]*?)```/.exec(section(sRunbook, '5. Adapt the ops scripts'))?.[1] ?? '';
+  assert.ok(block.startsWith('mkdir -p "$BASE/ops" && cd "$BASE/ops"\n'), 'the block needs only BASE and PIPELINE_BASE');
+  const dir = mkdtempSync(join(tmpdir(), 'snippets-step5-'));
+  try {
+    const at = (...parts) => [dir.split(sep).join('/'), ...parts].join('/');
+    const DP = at('opt', 'document-pipeline');
+    const AS = at('opt', 'audio-snippets');
+    mkdirSync(join(dir, 'opt', 'document-pipeline', 'ops'), { recursive: true });
+    // A copy of the Pipeline as its step 5 left it, its env file in the folder of the checkout it was made from.
+    const env = `${DP}/repo/deploy/older/.env.document-pipeline`;
+    const header = `# the scripts of ${DP}/ops, for the env file ${env}\n`;
+    const stand = {
+      'setup-venv.sh': `#!/bin/sh\n${header}echo "venv ok"\n`,
+      'make-skey.py': `${header}KEY_DESCRIPTION = "document-pipeline supplier payment key"\nWALLET = "${DP}/ops/wallet"\n`,
+      'mcp-call.sh': `#!/bin/sh\n${header}. "${env}"\n`,
+      'sign-tx.py': header,
+      'register-did.sh': `#!/bin/sh\n${header}. ${env}\nBODY='{\n "name":"Document Pipeline",\n "description":"Reads a document.",\n "capabilities":["document.pipeline.ocr-summary.v1"],\n "framework":"vector-service-agents",\n "endpoint":"https://mp-suppliers-pipeline.hal8.ai"}'\n`,
+      'm3-self-stake.py': `${header}CAPABILITIES = ["document.pipeline.ocr-summary.v1"]\n`,
+    };
+    for (const [name, text] of Object.entries(stand)) writeFileSync(join(dir, 'opt', 'document-pipeline', 'ops', name), text);
+    const run = runBash(`BASE='${AS}'\nPIPELINE_BASE='${DP}'\n${block}`, dir);
+    assert.equal(run.stderr, '');
+    assert.match(run.stdout, /^register-did\.sh$/m, 'the last grep names the scripts that read the env file of Audio Snippets');
+    const copy = Object.fromEntries(Object.keys(stand).map((name) => [name, readFileSync(`${AS}/ops/${name}`, 'utf8')]));
+    const all = Object.values(copy).join('\n');
+    assert.equal(/pipeline|agent.history/i.test(all), false, 'nothing of the Pipeline is left in the copy');
+    assert.ok(copy['register-did.sh'].includes(`. ${AS}/repo/deploy/host/.env.audio-snippets\n`) && copy['mcp-call.sh'].includes(`. "${AS}/repo/deploy/host/.env.audio-snippets"\n`), 'the scripts read the env file of Audio Snippets');
+    assert.ok(copy['make-skey.py'].includes('KEY_DESCRIPTION = "audio-snippets supplier payment key"\n') && copy['make-skey.py'].includes(`WALLET = "${AS}/ops/wallet"\n`));
+    for (const line of [' "name":"Audio Snippets",', ' "capabilities":["audio.transcript.snippets.v1"],', ' "framework":"vector-service-agents",', ' "endpoint":"https://mp-suppliers-snippets.hal8.ai"}']) assert.ok(copy['register-did.sh'].includes(line), line);
+    assert.ok(copy['m3-self-stake.py'].includes('CAPABILITIES = ["audio.transcript.snippets.v1"]\n'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Snippets RUNBOOK steps 6 to 9: the one wallet supplied and checked, the identity and the stake, the service started by name and read, with the model, the limits and the 401', () => {
+  const six = section(sRunbook, '6. Supply the supplier wallet with its collateral and float');
+  assert.ok(six.includes('"$BASE/ops/mcp-call.sh" vector_get_utxos') && six.includes('one of exactly 5 units and one of 50'));
+  const seven = section(sRunbook, '7. Register the identity');
+  for (const part of ["sed -i '/^AGENT_DID=$/d' \"$BASE/repo/deploy/host/.env.audio-snippets\"", 'python3 make-skey.py', './register-did.sh', 'The record has the name `Audio Snippets`, the capability `audio.transcript.snippets.v1`, the framework `vector-service-agents`, the endpoint `https://mp-suppliers-snippets.hal8.ai`', 'into the Identity section of `specs/audio-snippets.md`', 'remove it in Back out (point 4)']) assert.ok(seven.includes(part), part);
+  assert.ok(section(sRunbook, '8. Stake in Module-3').includes('here both are the one capability `audio.transcript.snippets.v1`'));
+  const nine = section(sRunbook, '9. Start the service');
+  for (const part of [
+    `${DC} up -d service`, 'docker logs audio-snippets-service', "fetch('http://127.0.0.1:9093/healthz')", "fetch('http://127.0.0.1:9093/agent.json')", "fetch('http://127.0.0.1:9093/', { method: 'POST', body: 'x' })",
+    '[audio-snippets] listening on 0.0.0.0:9093; speech model faster-whisper-base-int8 (faster-whisper 1.2.1, ctranslate2 4.8.2, 4 threads)', '`3221225472 330`', '`503 {"ok":false,"reason":"low_disk"}`',
+    'A `POST /` with no `authorization` header prints `401 {"error":"unauthorized"}`', 'nor with an empty `SUPPLIER_PUB_KEY_HEX` or one that is not the public key of `SUPPLIER_PKH`',
+  ]) assert.ok(nine.includes(part), `step 9 says: ${part}`);
+  assert.equal(3072 * 1024 * 1024, 3221225472);
+  assert.ok(S_START.includes('listening on ${config.host}:${port}; speech model ${config.model} (faster-whisper ${versions.faster_whisper}, ctranslate2 ${versions.ctranslate2}, ${config.asr.threads} threads)'), 'the line of the code');
+});
+
+test('Snippets RUNBOOK steps 10 to 14: the copy of the install script with the vhost, the snippet and the marker of Audio Snippets, the hash, the advert with the terms of the example and the spec, the runtime on 8085, the indexer', () => {
+  const ten = section(sRunbook, '10. DNS and Caddy');
+  for (const part of [
+    "sed -e 's#^VHOST=.*#VHOST=mp-suppliers-snippets.hal8.ai#' \\", '-e "s#^SNIPPET=.*#SNIPPET=$BASE/repo/deploy/host/Caddyfile.audio-snippets.snippet#" \\',
+    '"$PIPELINE_BASE/ops/install-caddy-route.sh" > install-caddy-route.sh', "sed -i '/^MARKER=/s#document-pipeline#audio-snippets#g' install-caddy-route.sh",
+    "grep -in 'pipeline\\|history' install-caddy-route.sh", 'curl -fsS https://mp-suppliers-snippets.hal8.ai/agent.json', 'It must return the manifest of step 9, byte for byte.',
+  ]) assert.ok(ten.includes(part), `step 10 says: ${part}`);
+  assert.ok(section(pRunbook, '10. DNS and Caddy').includes('"$HISTORY_BASE/ops/install-caddy-route.sh" > install-caddy-route.sh'), 'the Pipeline made its copy in its ops folder');
+  assert.match(section(sRunbook, '11. Hash the manifest'), /```sh\ncd "\$BASE\/repo"\nnode scripts\/manifest-hash\.mjs https:\/\/mp-suppliers-snippets\.hal8\.ai\n```/);
+  const blocks = [...sRunbook.matchAll(/post-advert\.ts( --dry-run)? \x5c\n((?:  --[^\n]+\n)+)/g)];
+  assert.equal(blocks.length, 2, 'a dry run and the real run');
+  const flags = (body) => Object.fromEntries([...body.matchAll(/--([a-z-]+) (\S+?)(?: \x5c)?(?: \| tail -1\))?$/gm)].map((m) => [m[1], m[2].replace(/^"|"$/g, '')]));
+  const [dry, real] = blocks.map((m) => flags(m[2]));
+  assert.deepEqual(dry, real);
+  assert.deepEqual(real, {
+    'capability-id': sExample.ADVERT_CAPABILITY_ID, model: sExample.ADVERT_MODEL, 'max-output-tokens': '8192', 'price-lovelace': sExample.ADVERT_PRICE_LOVELACE,
+    'max-processing-ms': sExample.ADVERT_MAX_PROCESSING_MS, 'endpoint-url': sExample.ADVERT_ENDPOINT_URL, 'detail-uri': sExample.ADVERT_DETAIL_URI, 'detail-hash': '$DETAIL_HASH',
+  });
+  assert.ok(section(sRunbook, '12. Post the advert').includes('The status word stays PROPOSED until step 17.'));
+  const thirteen = section(sRunbook, '13. Start the runtime');
+  for (const part of [`${DC} up -d --force-recreate agent`, 'curl -s http://127.0.0.1:8085/status', 'for c in audio-snippets-agent audio-snippets-service; do', '`0 e3b0c44298fc`', 'writes an interim `102 Processing` line every 60 s']) assert.ok(thirteen.includes(part), part);
+  assert.ok(section(sRunbook, '14. Check the advert on the indexer').includes('It must print `Active free audio.transcript.snippets.v1` and the hash of step 11.'));
+});
+
+test('Snippets RUNBOOK: every compose command names this agent\'s compose file, every up -d names a service, and nothing uses a port or a container of the other stacks', () => {
+  for (const m of sRunbook.matchAll(/docker compose ([^\n`]*)/g)) assert.match(m[1], /^-f docker-compose\.audio-snippets\.yml( |$)/, m[0]);
+  const ups = sRunbook.match(/docker compose [^\n`]* up -d[^\n`]*/g);
+  assert.ok(ups.length >= 5);
+  for (const cmd of ups) assert.match(cmd, / up -d (--force-recreate )?(service|agent)$/, cmd);
+  assert.doesNotMatch(sRunbook, /docker compose [^\n]*\brestart\b/);
+  assert.doesNotMatch(sRunbook, /8083|8084|9091|9092|agent-history-(agent|service)|document-pipeline-(agent|service)/);
+});
+
+test('Snippets RUNBOOK step 15 and the first stop: a request the service accepts, the settings of the script, the log line of the code; the stop watched before step 17', () => {
+  const s15 = section(sRunbook, '15. The first-party run');
+  const m = /`PAYLOAD` is the request JSON for a short public-domain recording: `(\{[^`]+\})`/.exec(s15);
+  assert.ok(m, 'the PAYLOAD line');
+  const requestJson = m[1].replace('<https URL of a short public-domain mp3>', 'https://example.org/preamble.mp3');
+  const [parsed] = inSnippets("import { parseRequest } from './src/request.ts'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((j) => parseRequest(j))));", [requestJson]);
+  assert.deepEqual(parsed, { source: { url: 'https://example.org/preamble.mp3' }, language: 'en', quotes: ['All LibriVox recordings are in the public domain.'], return_clips: false, clip_format: 'mp3' });
+  for (const part of ['- `CAPABILITY_ID=audio.transcript.snippets.v1`.', '- `E2E_POLL_MS=10000`.', '- `E2E_STATE=./e2e-state-snippets.json`.', 'its section "Hiring Audio Snippets" lists them', '`[audio-snippets] job done in <ms> ms: <s> s of media; matches 1, unmatched 0, clips 0`']) assert.ok(s15.includes(part), part);
+  assert.ok(S_SERVER.includes('log(`job done in ${deps.clock() - arrivedAt} ms: ${result.source.duration_s} s of media; matches ${result.matches.length}, unmatched ${result.unmatched.length}, clips ${result.clips.length}`);'));
+  const stop = section(sRunbook, 'Watch the first stop');
+  for (const part of [`time ${DC} stop service`, 'docker logs --tail 5 audio-snippets-service', "docker inspect --format '{{.State.ExitCode}}' audio-snippets-service", 'The log ends with `SIGTERM: stopping; no new job, and up to 300 s for the one that is running`, and the exit code is `0`.']) assert.ok(stop.includes(part), part);
+  assert.ok(read('packages/service-kit/src/lifecycle.ts').includes('opts.log(`${signal}: stopping; no new job, and up to ${waitMs / 1000} s for the one that is running`);'));
+  assert.ok(sRunbook.indexOf('\n## Watch the first stop\n') > sRunbook.indexOf('\n## 15. ') && sRunbook.indexOf('\n## Watch the first stop\n') < sRunbook.indexOf('\n## 16. '));
+});
+
+test('Snippets RUNBOOK step 17 and Back out: the old advert retired before the restart, the last item names the files that carry the word; the advert first, then the containers, then Caddy, then the key', () => {
+  const s17 = section(sRunbook, '17. Flip the status');
+  const item8 = s17.slice(s17.indexOf('8. In the repository'));
+  for (const f of ['specs/audio-snippets.md', 'agents/audio-snippets/README.md', 'README.md', 'docs/HIRE.md', 'docs/E2E.md', ...['README.md', 'RUNBOOK-audio-snippets.md', 'docker-compose.audio-snippets.yml', 'Caddyfile.audio-snippets.snippet', '.env.audio-snippets.example'].map((f) => `deploy/host/${f}`), 'agents/audio-snippets/src/server.ts', 'agents/audio-snippets/agent.json.template', 'agents/audio-snippets/test/server.test.ts', 'agents/audio-snippets/test/spec.test.ts', 'scripts/specs.test.mjs', 'scripts/deploy.test.mjs']) {
+    assert.ok(item8.includes('`' + f + '`'), `item 8 names ${f}`);
+  }
+  assert.ok(S_SERVER.includes("statusChip(env.AGENT_STATUS_CHIP, 'proposed')") && S_SERVER.includes("statusSince(env.AGENT_STATUS_SINCE, '2026-10-13')"), 'the code carries the word as a default, as the item says');
+  const back = section(sRunbook, 'Back out');
+  const at = (needle) => { const i = back.indexOf(needle); assert.ok(i >= 0, needle); return i; };
+  const order = ['1. Retire the advert.', 'agent/src/cli/retire-advert.ts', '2. Stop the containers', `${DC} down`, '3. Host administrator: remove the Caddy block of this agent', '4. Operator: the key.'];
+  const places = order.map(at);
+  assert.deepEqual([...places].sort((a, b) => a - b), places);
+  assert.ok(back.includes('`shred -u "$BASE/ops/wallet/payment.skey" "$BASE/ops/wallet/payment.vkey"`, then `rmdir "$BASE/ops/wallet"`'));
+});
+
+test('Snippets RUNBOOK failure table: the refusals at start, the codes of a job, the network and the health check, each as the code words it', () => {
+  const table = section(sRunbook, 'If something goes wrong');
+  const rows = table.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| What you see |'));
+  assert.ok(rows.length >= 20, `${rows.length} rows`);
+  for (const row of rows) assert.equal(row.split(' | ').length, 3, `three columns: ${row.slice(0, 60)}`);
+  const sources = {
+    kitEnv: read('packages/service-kit/src/env.ts'), kitServer: read('packages/service-kit/src/server.ts'), start: S_START, server: S_SERVER, model: read('agents/audio-snippets/src/model.ts'),
+    media: read('agents/audio-snippets/src/media.ts'), asr: read('agents/audio-snippets/src/asr.ts'), disk: read('agents/audio-snippets/src/disk.ts'), result: read('agents/audio-snippets/src/result.ts'),
+  };
+  for (const [row, where, quote] of [
+    ['`environment variable OPERATOR_CONTACT is required`', 'kitEnv', 'environment variable ${name} is required'],
+    ['`environment variable SUPPLIER_PKH is required`', 'kitEnv', 'environment variable ${name} is required'],
+    ['`environment variable SUPPLIER_PUB_KEY_HEX is required`', 'kitEnv', 'environment variable ${name} is required'],
+    ['`environment variable SERVICE_AUTH_HEADER is required`', 'kitEnv', 'environment variable ${name} is required'],
+    ['must be printable ASCII', 'kitEnv', 'must be printable ASCII (it is sent as an HTTP header)'],
+    ['`request refused: unauthorized (<n> since the last line of this kind)`', 'kitServer', 'request refused: unauthorized (${refusals} since the last line of this kind)'],
+    ['`holds the service token, which belongs in SERVICE_AUTH_HEADER alone`', 'kitEnv', 'holds the service token, which belongs in SERVICE_AUTH_HEADER alone'],
+    ['`is not the public key of SUPPLIER_PKH`', 'start', 'is not the public key of SUPPLIER_PKH'],
+    ['`ffmpeg and ffprobe must be installed and on PATH`', 'media', 'ffmpeg and ffprobe must be installed and on PATH'],
+    ['`the speech model is not ready`', 'asr', 'the speech model is not ready'],
+    ['`environment variable WHISPER_MODEL must be one of base, small`', 'model', "environment variable WHISPER_MODEL must be one of ${WHISPER_SIZES.join(', ')}"],
+    ['`disk check failed: ...`', 'server', 'disk check failed: ${failure}'], ['`disk check passed again`', 'server', "'disk check passed again'"],
+    ['`low_disk`', 'disk', "new SnippetsError('low_disk'"], ['`deadline` (422)', 'result', 'deadline: 422'], ['`asr_failed` (500)', 'result', 'asr_failed: 500'], ['`clip_failed` (500)', 'result', 'clip_failed: 500'],
+  ]) {
+    assert.ok(table.includes(row), `the table quotes ${row}`);
+    assert.ok(sources[where].includes(quote), `${where} prints ${quote}`);
+  }
+  for (const part of [
+    '| `required variable PROXY_NETWORK is missing a value` | There is no `.env` in this folder, or it gives `PROXY_NETWORK` no value. | Write it as in step 1. |',
+    '| `network <name> declared as external, but could not be found` |', '| The runtime restarts and its log says `missing required env var ADVERT_REF` |',
+    '`docker exec audio-snippets-agent printenv SERVICE_URL` must print `http://audio-snippets-service:9093/`', '| `invalid reference format` for the service image |',
+    '| `/capability` shows an empty public key, claims fail with `wrong_supplier`, or the service stops at start with `environment variable SUPPLIER_PUB_KEY_HEX is required` |',
+    '| The same, and the log says `is not the public key of SUPPLIER_PKH` |',
+  ]) assert.ok(table.includes(part), `the table has: ${part}`);
+  assert.doesNotMatch(table, /`network [a-z0-9_.-]+ declared as external/, 'the table names no network');
+});
+
+test('Snippets compose in docker compose config: with PROXY_NETWORK in .env the network has that name, and without it compose stops and says where to set it', { skip: HAVE_COMPOSE ? false : 'needs docker compose' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'compose-snippets-'));
+  const { PROXY_NETWORK: _shell, ...env } = process.env;
+  try {
+    copyFileSync(join(root, 'deploy/host/docker-compose.audio-snippets.yml'), join(dir, 'docker-compose.audio-snippets.yml'));
+    copyFileSync(join(root, 'deploy/host/.env.audio-snippets.example'), join(dir, '.env.audio-snippets'));
+    const config = () => spawnSync('docker', ['compose', '-f', 'docker-compose.audio-snippets.yml', 'config'], { cwd: dir, env, encoding: 'utf8', timeout: 120_000 });
+    const refused = config();
+    assert.notEqual(refused.status, 0, 'compose stops with no .env');
+    assert.ok(refused.stderr.includes('set PROXY_NETWORK in .env next to this compose file'), refused.stderr);
+    writeFileSync(join(dir, '.env'), 'PROXY_NETWORK=test_proxy_network\n');
+    const run = config();
+    assert.equal(run.status, 0, run.stderr);
+    const model = parseYaml(run.stdout);
+    assert.deepEqual(model.networks, { proxy: { name: 'test_proxy_network', external: true } });
+    for (const [name, s] of Object.entries(model.services)) assert.deepEqual(Object.keys(s.networks), ['proxy'], name);
+    assert.equal(model.services.service.mem_limit !== undefined || model.services.service.deploy !== undefined, true, 'the memory limit is there');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
