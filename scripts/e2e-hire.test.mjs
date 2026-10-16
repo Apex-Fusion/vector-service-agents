@@ -52,7 +52,7 @@ const UNSIGNED = { post: 'ab'.repeat(80), accept: 'cd'.repeat(80) };
 const TX = { post: sha(UNSIGNED.post), accept: sha(UNSIGNED.accept) };
 const ESCROW_REF = `${TX.post}#0`;
 
-// opts (read at call time, so a test can change them between two runs): tools, schemas, listed, pending, verified, verifyFailures,
+// opts (read at call time, so a test can change them between two runs): tools, schemas, listed, capability, pending, verified, verifyFailures,
 // notConfirmed, slowConfirm, submitHash, deliverBy, sendFails, sendAnswer, hangSend, dropSend, onSend, jobFailed.
 const builders = [];
 async function fakeBuilder(opts = {}) {
@@ -62,7 +62,13 @@ async function fakeBuilder(opts = {}) {
   const asked = {};
   const handlers = {
     vector_marketplace_list_capabilities: () => withJson('# Marketplace capabilities', [{ capability_id: CAPABILITY, supplier_count: 1 }]),
-    vector_marketplace_list_suppliers: () => (opts.listed === false ? 'No suppliers found for identity.history.report.v1 with status free.' : withJson('# Marketplace suppliers', [{ advert_ref: ADVERT_REF, capability_id: CAPABILITY, model: 'agent-history-v1', price_lovelace: '1000000' }])),
+    // The list the marketplace gives for the capability asked for: the advert is listed under opts.capability (Agent History's by default) and under no other.
+    vector_marketplace_list_suppliers: (args) => {
+      const served = opts.capability ?? CAPABILITY;
+      return opts.listed === false || args.capability_id !== served
+        ? `No suppliers found for ${args.capability_id} with status free.`
+        : withJson('# Marketplace suppliers', [{ advert_ref: ADVERT_REF, capability_id: served, model: 'agent-history-v1', price_lovelace: '1000000' }]);
+    },
     vector_build_marketplace_post_escrow: () => withJson(`# Unsigned Escrow Post Built (Not Submitted)\n\n**Unsigned TX CBOR:**\n\`\`\`\n${UNSIGNED.post}\n\`\`\``, { escrow_ref: ESCROW_REF, lock_lovelace: '3000000', deliver_by: opts.deliverBy ?? Date.now() + 480_000, tx_hash: TX.post, fee: '500000' }),
     vector_build_marketplace_accept: () => withJson(`# Unsigned Accept Built (Not Submitted)\n\n**Unsigned TX CBOR:**\n\`\`\`\n${UNSIGNED.accept}\n\`\`\``, { escrow_ref: ESCROW_REF, tx_hash: TX.accept, supplier_lovelace: '2000000', buyer_lovelace: '1000000', seconds_left: 540 }),
     vector_submit_transaction: ({ signedTxCbor }) => {
@@ -139,7 +145,7 @@ function setup(overrides = {}) {
   const files = { state: join(dir, 'state.json'), signerLog: join(dir, 'signer.log') };
   const signerCalls = () => (existsSync(files.signerLog) ? readFileSync(files.signerLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
   const env = (builder, extra = {}) => ({
-    ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(VECTOR_|BUILDER_URL|SIGNER_ENTRY|ADVERT_REF|PAYLOAD|E2E_|EXPLORER_URL)/.test(k))),
+    ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(VECTOR_|BUILDER_URL|SIGNER_ENTRY|ADVERT_REF|CAPABILITY_ID|PAYLOAD|E2E_|EXPLORER_URL)/.test(k))),
     BUILDER_URL: builder.url, SIGNER_ENTRY: FAKE_SIGNER, ADVERT_REF, PAYLOAD, E2E_STATE: files.state, E2E_POLL_MS: '10', VECTOR_SIGNER_AUDIT_LOG_PATH: files.signerLog, ...overrides, ...extra,
   });
   return { dir, files, signerCalls, env, state: () => JSON.parse(readFileSync(files.state, 'utf8')) };
@@ -310,6 +316,7 @@ test('a full run: post, send, poll, verify, accept, each transaction signed, sub
   const evidence = JSON.parse(r.stdout);
   assert.equal(evidence.run, 'first-party');
   assert.equal(evidence.verdict, 'VERIFIED');
+  assert.equal(evidence.capability_id, CAPABILITY, "without CAPABILITY_ID the evidence names Agent History's capability");
   assert.deepEqual({ escrow_ref: evidence.escrow_ref, post_tx: evidence.post_tx, accept_tx: evidence.accept_tx }, { escrow_ref: ESCROW_REF, post_tx: TX.post, accept_tx: TX.accept });
   assert.equal(evidence.explorer.post, `https://explorer.vector.mainnet.apexfusion.org/transaction/hash/${TX.post}`);
   assert.equal(evidence.explorer.accept, `https://explorer.vector.mainnet.apexfusion.org/transaction/hash/${TX.accept}`);
@@ -668,6 +675,58 @@ test('a receipt check that stays incomplete is not a pass: the run does not acce
   assert.equal(builder.names().includes('vector_build_marketplace_accept'), false);
   assert.equal(signs(t.signerCalls()), 1, 'only the post was signed');
   assert.equal(r.stdout, '');
+});
+
+// ---- CAPABILITY_ID (ruling R49): one audited hire path for every agent ----
+// The script looked the advert up under Agent History's capability only, so it stopped before it posted anything for the advert of another agent, the Pipeline's included.
+const PIPELINE_CAPABILITY = 'document.pipeline.ocr-summary.v1';
+// The settings of docs/E2E.md for Document Pipeline: a request JSON for one page of a PDF by URL (and a pause of 15 s, which nothing here waits for).
+const PIPELINE_PAYLOAD = '{"source":{"url":"https://example.org/letter.pdf"},"task":"summary","language":"en","max_pages":1}';
+
+test("CAPABILITY_ID is the capability the free list is asked for and the stop names, and its default is Agent History's", async () => {
+  const builder = await fakeBuilder({ listed: false });
+  const byDefault = await run(setup().env(builder));
+  assert.equal(byDefault.code, 1);
+  assert.deepEqual(builder.calls.map((c) => [c.name, c.args]), [['vector_marketplace_list_suppliers', { capability_id: 'identity.history.report.v1', limit: 50 }]]);
+  assert.ok(byDefault.stderr.includes(`${ADVERT_REF} is not among the free suppliers for identity.history.report.v1.`));
+
+  builder.calls.length = 0;
+  const named = await run(setup().env(builder, { CAPABILITY_ID: PIPELINE_CAPABILITY }));
+  assert.equal(named.code, 1);
+  assert.deepEqual(builder.calls.map((c) => [c.name, c.args]), [['vector_marketplace_list_suppliers', { capability_id: PIPELINE_CAPABILITY, limit: 50 }]]);
+  assert.ok(named.stderr.includes(`${ADVERT_REF} is not among the free suppliers for ${PIPELINE_CAPABILITY}.`));
+  assert.equal(named.stderr.includes('identity.history.report.v1'), false, 'the stop names the capability that was asked for, and no other');
+});
+
+test("the Pipeline's settings hire an advert of its capability and the evidence names that capability; without CAPABILITY_ID the same run stops before anything is built", async () => {
+  const builder = await fakeBuilder({ capability: PIPELINE_CAPABILITY, pending: 0 });
+  const stopped = await run(setup().env(builder, { PAYLOAD: PIPELINE_PAYLOAD }));
+  assert.equal(stopped.code, 1);
+  assert.match(stopped.stderr, /is not among the free suppliers for identity[.]history[.]report[.]v1/);
+  assert.deepEqual(builder.names(), ['vector_marketplace_list_suppliers'], 'nothing was built');
+
+  builder.calls.length = 0;
+  const r = await run(setup().env(builder, { CAPABILITY_ID: PIPELINE_CAPABILITY, PAYLOAD: PIPELINE_PAYLOAD, E2E_POLL_MS: '15000' }));
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(builder.calls[0], { name: 'vector_marketplace_list_suppliers', args: { capability_id: PIPELINE_CAPABILITY, limit: 50 } });
+  assert.deepEqual(builder.calls.find((c) => c.name === 'vector_build_marketplace_post_escrow').args, { changeAddress: ADDRESS, advert_ref: ADVERT_REF, payload: PIPELINE_PAYLOAD });
+  assert.deepEqual(builder.calls.find((c) => c.name === 'vector_marketplace_send_job').args, { escrow_ref: ESCROW_REF, payload: PIPELINE_PAYLOAD, buyerAddress: ADDRESS });
+  const evidence = JSON.parse(r.stdout);
+  assert.equal(evidence.capability_id, PIPELINE_CAPABILITY);
+  assert.equal(evidence.run, 'first-party');
+  assert.equal(evidence.verdict, 'VERIFIED');
+});
+
+test('a CAPABILITY_ID that is empty or has a space in it exits 2, before anything is connected', async () => {
+  const builder = await fakeBuilder();
+  const t = setup();
+  for (const bad of ['', ' ', 'two words', `${PIPELINE_CAPABILITY} `]) {
+    const r = await run(t.env(builder, { CAPABILITY_ID: bad }));
+    assert.equal(r.code, 2, JSON.stringify(bad));
+    assert.ok(r.stderr.includes(`CAPABILITY_ID must be a capability id such as identity.history.report.v1, got "${bad}"`), JSON.stringify(bad));
+  }
+  assert.deepEqual(builder.calls, []);
+  assert.deepEqual(t.signerCalls(), []);
 });
 
 test('key material: the signer gets the VECTOR_SIGNER_ settings and nothing else of this shell, and no setting value is printed or stored', async () => {

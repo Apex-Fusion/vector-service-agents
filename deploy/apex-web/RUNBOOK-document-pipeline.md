@@ -418,13 +418,14 @@ It must print `Active free document.pipeline.ocr-summary.v1` and the hash of ste
 
 Operator, on the operator's own machine, with the test buyer key (Funds). The mechanics are those of step 15 of RUNBOOK.md and of [docs/E2E.md](../../docs/E2E.md); this step lists what differs for the Pipeline. The hosted mainnet server has the nine marketplace tools, as it had for Agent History.
 
+- `CAPABILITY_ID=document.pipeline.ocr-summary.v1`. The script looks the advert up among the free suppliers of this capability, and its default is the capability of Agent History, so without this setting it stops before it posts anything, with "is not among the free suppliers".
 - `ADVERT_REF` is the Pipeline's advert from step 12.
 - `PAYLOAD` is the request JSON for one page of a public PDF: `{"source":{"url":"<https URL of a one-page public PDF>"},"task":"summary","language":"en","max_pages":1}`. Use a document that anyone may read: its page goes to the OCR agent, and Datalab behind it, and its text to the chat supplier and that supplier's model provider.
 - `E2E_POLL_MS=15000`. A job takes minutes where Agent History's took seconds, and the default pause of 5 s would ask the hosted server about 120 times in 10 minutes.
 - `E2E_STATE=./e2e-state-pipeline.json`. A state file belongs to one run, and the script refuses one that belongs to another, so this run does not use the file of the Agent History run.
 - Expect up to 10 minutes for one page. The OCR hop and the chat hop each wait for a supplier's Claim, its work and its Submit, and for two transactions of the Pipeline's own. Five pages take up to 27 min.
 
-The script's capability. `scripts/e2e-hire.mjs` fixes the capability it looks the advert up under, `identity.history.report.v1`, in its `CAPABILITY` constant, and it stops before it posts anything, with "is not among the free suppliers", for an advert of another capability, which the Pipeline's is. Until the script takes the capability as a setting, make this run with the chat script of [docs/HIRE.md](../../docs/HIRE.md) section 5, which is the member's own path: ask for the free suppliers of `document.pipeline.ocr-summary.v1` in message 2, carry the request JSON above in messages 3 and 4, and allow message 4 up to 10 minutes. The checks below are the same.
+Run `node scripts/e2e-hire.mjs --dry-run` first, then `node scripts/e2e-hire.mjs`, with these settings, as in [docs/E2E.md](../../docs/E2E.md); its section "Hiring Document Pipeline" lists them. The checks below are the same.
 
 Then, on the box, look at what the run left behind:
 
@@ -435,7 +436,7 @@ docker exec document-pipeline-service cat /data/stranded.json
 
 The log has a line `[document-pipeline] job done in <ms> ms: 2 sub-jobs`: one page and one summary. `stranded.json` prints `[]`: a clean run leaves nothing for the janitor, because each Accept removes its own entry. The janitor writes a line only when it acts on an escrow (the table at the end), so a clean run has none.
 
-Add the run to the Results table in docs/E2E.md and keep the evidence of the run in docs/evidence/. Only a run that ends in the printed evidence counts. A first-party run is not demand.
+Add the run to the Results table in docs/E2E.md and keep the evidence of the run in docs/evidence/. Its Agent column says Document Pipeline. Only a run that ends in the printed evidence counts. A first-party run is not demand.
 
 ## Watch the first stop
 

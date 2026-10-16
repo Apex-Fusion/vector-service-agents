@@ -1,4 +1,4 @@
-// scripts/e2e-hire.mjs - our own first-party hire of Agent History through the MCP tools. See docs/E2E.md.
+// scripts/e2e-hire.mjs - our own first-party hire of a service agent through the MCP tools: Agent History by default, the advert of another agent with CAPABILITY_ID. See docs/E2E.md.
 //
 // It drives two MCP servers with the official SDK. The builder (the hosted server, or a local build of main of Apex-Fusion/mcp-server) reads
 // the ledger and builds unsigned transactions. The signer holds the key and signs. This script holds no key and prints none: it forwards
@@ -9,7 +9,8 @@
 //   BUILDER_URL   the builder's MCP endpoint (default: the hosted server)
 //   SIGNER_ENTRY  path of the signer's build/index.js (required)
 //   ADVERT_REF    the advert to hire, <txid>#<index> (required)
-//   PAYLOAD       the request JSON (default: the ChandraOCR subject of the guide)
+//   CAPABILITY_ID the capability of that advert, as the marketplace lists it (default identity.history.report.v1, Agent History's). The advert must be among the free suppliers of it
+//   PAYLOAD       the request JSON (default: the ChandraOCR subject of the guide, a request for Agent History)
 //   E2E_STATE     the state file (default ./e2e-state.json). A rerun continues where the last run stopped
 //   E2E_POLL_MS   pause between two polls of the job, a positive whole number of milliseconds (default 5000)
 //   EXPLORER_URL  base of the explorer links in the evidence (default: the mainnet explorer)
@@ -30,7 +31,7 @@ const argv = process.argv.slice(2);
 const strayArgs = argv.filter((a) => a !== '--dry-run');
 if (strayArgs.length) { log(`e2e-hire: unknown argument ${strayArgs.join(' ')}\n${USAGE}`); process.exit(2); }
 const DRY = argv.includes('--dry-run');
-const CAPABILITY = 'identity.history.report.v1';
+const DEFAULT_CAPABILITY = 'identity.history.report.v1';
 const DEFAULT_PAYLOAD = '{"subject":"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db"}';
 // The nine marketplace tools and the PR of Apex-Fusion/mcp-server that brought each (all merged into main on 2026-10-14). All nine are
 // required: a hire without the reclaim tool can strand funds, so a builder that lacks it is not ready for an outside member either.
@@ -53,6 +54,7 @@ const need = (k) => { if (!env[k]) missing.push(k); return env[k]; };
 const BUILDER_URL = env.BUILDER_URL ?? 'https://mcp.vector.mainnet.apexfusion.org/mcp';
 const SIGNER_ENTRY = need('SIGNER_ENTRY');
 const ADVERT_REF = need('ADVERT_REF');
+const CAPABILITY = env.CAPABILITY_ID ?? DEFAULT_CAPABILITY;
 const PAYLOAD = env.PAYLOAD ?? DEFAULT_PAYLOAD;
 const STATE_PATH = env.E2E_STATE ?? 'e2e-state.json';
 const POLL_MS = env.E2E_POLL_MS === undefined ? 5000 : /^[1-9]\d*$/.test(env.E2E_POLL_MS) ? Number(env.E2E_POLL_MS) : Number.NaN;
@@ -60,6 +62,7 @@ const EXPLORER_URL = (env.EXPLORER_URL ?? 'https://explorer.vector.mainnet.apexf
 const INDEXER_URL = 'https://mp-indexer.vector.apexfusion.org'; // for the recovery text only
 if (missing.length) refuse(`set ${missing.join(' and ')} (see docs/E2E.md)`);
 if (!/^[0-9a-f]{64}#\d+$/i.test(ADVERT_REF)) refuse(`ADVERT_REF must be <txid>#<index>, got "${ADVERT_REF}"`);
+if (!/^\S{1,128}$/.test(CAPABILITY)) refuse(`CAPABILITY_ID must be a capability id such as ${DEFAULT_CAPABILITY}, got "${CAPABILITY}"`);
 try { JSON.parse(PAYLOAD); } catch { refuse('PAYLOAD must be the request JSON, a JSON document'); }
 if (Number.isNaN(POLL_MS)) refuse(`E2E_POLL_MS must be a positive whole number of milliseconds, got "${env.E2E_POLL_MS}"`);
 

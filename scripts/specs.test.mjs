@@ -10,11 +10,13 @@ const HEADINGS = ['Status', 'Identity', 'Capability id', 'Terms', 'Interface', '
 // The sentence under "Identity" in each spec. The three designs have no registry record. Agent History was registered on 2026-10-14 (RUNBOOK step 7) and says so.
 const NO_RECORD = 'This agent has no registry record yet.';
 const HAS_RECORD = 'This agent has had a registry record since 2026-10-14.';
-// The status line of Agent History since the flip of 2026-10-15 (RUNBOOK step 17): the facts in one line, as every file that has a status line gives them. The three agents that are not built stay PROPOSED.
+// The status line of Agent History since the flip of 2026-10-15 (RUNBOOK step 17): the facts in one line, as every file that has a status line gives them. Audio Snippets and Advocate stay PROPOSED (not built).
 const AH_STATUS = 'DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15.';
+// Document Pipeline is built since 2026-10-15 and not deployed: no registry record, no advert. It is PROPOSED with the qualifier in the line, and the word has stood since 2026-10-13.
+const DP_STATUS = 'PROPOSED (built, not deployed). Since 2026-10-13.';
 const AGENTS = {
   'agent-history': { capability: 'identity.history.report.v1', model: 'agent-history-v1', status: AH_STATUS, record: HAS_RECORD },
-  'document-pipeline': { capability: 'document.pipeline.ocr-summary.v1', model: 'document-pipeline-v1', status: 'PROPOSED (not built). Since 2026-10-13.', record: NO_RECORD },
+  'document-pipeline': { capability: 'document.pipeline.ocr-summary.v1', model: 'document-pipeline-v1', status: DP_STATUS, record: NO_RECORD },
   'audio-snippets': { capability: 'audio.transcript.snippets.v1', model: 'audio-snippets-v1', status: 'PROPOSED (not built). Since 2026-10-13.', record: NO_RECORD },
   advocate: { capability: 'research.advocate.onesided.v1', model: 'advocate-v1', status: 'PROPOSED (not built). Since 2026-10-13.', record: NO_RECORD },
 };
@@ -45,7 +47,7 @@ for (const [name, { capability, status, record }] of Object.entries(AGENTS)) {
   test(`${name}: LIVE and DEPLOYED are said under Status and nowhere else, as the status line and the sentence that denies LIVE; no em or en dash, no native unit name`, () => {
     const text = read(name);
     const under = section(text, 'Status');
-    // Agent History is DEPLOYED since 2026-10-15 and says that nothing on its page is LIVE. The three agents that are not built say that nothing is LIVE or DEPLOYED.
+    // Agent History is DEPLOYED since 2026-10-15 and says that nothing on its page is LIVE. The other three, the Pipeline (built, not deployed) among them, say that nothing is LIVE or DEPLOYED.
     const denial = name === 'agent-history' ? 'Nothing on this page is LIVE.' : 'Nothing on this page is LIVE or DEPLOYED.';
     assert.ok(under.includes(denial), `the Status section says "${denial}"`);
     assert.equal(text.replace(under, '').match(/\b(LIVE|DEPLOYED)\b/g), null, 'not outside the Status section');
@@ -143,15 +145,19 @@ test('specs/agent-history.md: the DID, the registry record and the reputation st
   assert.ok(links.includes(`- Current advert \`${AH.advertRef}\`, posted on 2026-10-15 in the confirmed transaction [\`${AH.advertTx}\`](${EXPLORER_TX}${AH.advertTx}), manifest hash \`${AH.manifestHash}\`. The marketplace indexer lists it as Active and free (checked on 2026-10-15).`));
   assert.ok(links.includes("- Manifest: `GET /agent.json` on the agent's public URL, in service as of 2026-10-14."));
   assert.ok(section(text, 'How to hire it').includes('Advertised on 2026-10-14 and again on 2026-10-15, at the status flip: the marketplace indexer lists the current advert as Active and free (checked on 2026-10-15). One first-party job has settled, on 2026-10-15; it is not demand. The three ways below apply.'));
-  // The words of before the advert do not come back. The three specs that are not built keep theirs, and the runbook quotes them as instructions.
+  // The words of before the advert do not come back. The three specs that have no advert keep theirs, and the runbooks quote them as instructions.
   assert.equal(text.match(/none yet|not posted|not in service|not yet advertised|once it is in service/i), null);
 });
 
-test('the three specs that are not built say so under How to hire it', () => {
-  for (const name of ['document-pipeline', 'audio-snippets', 'advocate']) {
-    assert.ok(section(read(name), 'How to hire it').includes('Not yet advertised. When live, the three ways below apply.'), name);
-    assert.ok(section(read(name), 'Changelog').includes('Nothing is built.'), name);
-  }
+test('the three specs that have no advert say so under How to hire it; the two that are not built say that nothing is built, and the Pipeline, which is built, gives its release', () => {
+  const NOT_YET = 'Not yet advertised. When live, the three ways below apply.';
+  for (const name of ['document-pipeline', 'audio-snippets', 'advocate']) assert.ok(section(read(name), 'How to hire it').includes(NOT_YET), name);
+  for (const name of ['audio-snippets', 'advocate']) assert.ok(section(read(name), 'Changelog').includes('Nothing is built.'), name);
+  // The Pipeline was built on 2026-10-15 and waits for its deployment: its Changelog names the release and the day, and no word of the design is left.
+  const pipeline = read('document-pipeline');
+  assert.ok(section(pipeline, 'How to hire it').includes(`${NOT_YET} The service is built and waits for its deployment.`));
+  assert.equal(section(pipeline, 'Changelog').trim(), '- 0.1.0, 2026-10-15: built');
+  assert.equal(pipeline.match(/Nothing is built|None of this is built/), null);
   assert.equal(section(read('agent-history'), 'How to hire it').includes('Not yet advertised'), false, 'Agent History is advertised since 2026-10-14');
   assert.ok(section(read('agent-history'), 'Changelog').trim() === '- 0.1.0 first build');
 });
@@ -199,6 +205,65 @@ test('the Pipeline states its economics and the first-party OCR hop; the Advocat
   assert.equal(read('advocate').split('This brief argues one side only, by design, and omits counter-arguments.').length - 1, 3); // the rule, the shape and the example
 });
 
+// ---- Document Pipeline: built on 2026-10-15, not deployed ----
+// The service is built and its tests replay a stub marketplace and a fake chain. It has no registry record and no advert, so the word is PROPOSED, with the qualifier in the line.
+// The page says what is built and what is not, and the words of the design that it was before the build do not come back. agents/document-pipeline/test/spec.test.ts holds the rest of the
+// page to the code and the manifest: the gap sentences, the numbers, the response example, the error codes.
+const DP_PARAGRAPH = 'The service is built. Its tests replay a stub marketplace and a fake chain. It is not deployed, has no registry record and has no advert. Nothing on this page is LIVE or DEPLOYED.';
+
+test('specs/document-pipeline.md: the Status line is PROPOSED (built, not deployed) since 2026-10-13, the paragraph says what is built and what is not, and the words of the design do not come back', () => {
+  const text = read('document-pipeline');
+  assert.equal(section(text, 'Status').trim(), `${DP_STATUS}\n\n${DP_PARAGRAPH}`);
+  assert.equal(text.match(/PROPOSED \(not built\)|This page is a design|There is no code|None of this is built|Illustrative|How it buys \(design\)|No releases|The planned folder|Not built\. Everything/), null, 'the words of before the build do not come back');
+  assert.ok(section(text, 'Identity').includes(`\n${NO_RECORD}\n`), 'the agent has no registry record yet');
+  const links = section(text, 'Links').split('\n');
+  for (const line of [
+    '- Manifest: none until deployed. The service renders it from its environment when it starts and serves it at `GET /agent.json`. The template is [agents/document-pipeline/agent.json.template](../agents/document-pipeline/agent.json.template).',
+    '- Source: [agents/document-pipeline](../agents/document-pipeline)',
+    '- Advert on the explorer: none yet. The advert is not posted.',
+  ]) assert.ok(links.includes(line), line);
+  for (const path of ['agents/document-pipeline', 'agents/document-pipeline/agent.json.template']) assert.ok(existsSync(new URL(`../${path}`, import.meta.url)), `${path} exists`);
+});
+
+// The rules for the extraction schema are the code's (agents/document-pipeline/src/extract.ts): the keywords it refuses, the three bounds, the root $async and the own __proto__.
+const EXTRACT_SRC = readFileSync(new URL('../agents/document-pipeline/src/extract.ts', import.meta.url), 'utf8');
+const extractNumber = (name) => Number((new RegExp('export const ' + name + ' = ([0-9_]+);').exec(EXTRACT_SRC)?.[1] ?? 'NaN').replaceAll('_', ''));
+const extractList = (name) => [...(EXTRACT_SRC.split('\n').find((l) => l.startsWith(`const ${name} = [`)) ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1]);
+
+test('specs/document-pipeline.md: the extraction schema rules name the keywords the code refuses and the bounds it holds, strict draft-07, the cost that is not bounded, and what a schema_valid false result keeps', () => {
+  const rules = section(read('document-pipeline'), 'Interface').split('\n### The extraction schema\n')[1]?.split('\n### ')[0] ?? '';
+  assert.ok(rules.length > 1500, 'the subsection exists');
+  const refused = [...extractList('REFERENCES'), ...extractList('EXPRESSIONS')];
+  assert.deepEqual(refused, ['$ref', '$dynamicRef', '$recursiveRef', '$id', '$defs', 'definitions', 'pattern', 'patternProperties', 'format'], 'the keywords of the code');
+  const refusedLine = rules.split('\n').find((l) => l.startsWith('- Refused anywhere in the schema:')) ?? '';
+  for (const keyword of refused) assert.ok(refusedLine.includes('`' + keyword + '`'), `${keyword} is refused on the page`);
+  assert.deepEqual([extractNumber('SCHEMA_MAX_BYTES'), extractNumber('SCHEMA_MAX_DEPTH'), extractNumber('COMBINATION_MAX_ENTRIES')], [16384, 32, 16]);
+  for (const part of [
+    'a JSON Schema of draft-07, read in strict mode: a keyword the validator does not know is refused.',
+    'refused with `schema_invalid` (400), before anything is fetched or posted, so it spends nothing.',
+    '- A name is not a keyword. A property called `format` or `pattern` under `properties` is fine, and so are those words inside `const`, `enum`, `default` and `examples`.',
+    '- An own `__proto__` key is refused anywhere in the schema, `const`, `enum`, `default` and `examples` included.',
+    '- `$async` at the root is refused, `true` or `false`.',
+    '- At most 16384 bytes of JSON (the schema as parsed, written out again) and 32 levels of nesting, data included. At most 16 entries in each `anyOf`, `oneOf` and `allOf`.',
+    'The cost of a check still grows with the size of the answer times the size of the schema, and `uniqueItems` compares items pairwise.',
+    'An answer that is not JSON, or that does not validate against the schema, is not an error. The job succeeds and is paid for, and the result is `{ "extraction": null, "schema_valid": false, "raw_text": "<the answer as received>" }`.',
+  ]) assert.ok(rules.includes(part), `the schema rules say: ${part}`);
+});
+
+test('the four specs, the guide and the README agree on what is built: Agent History DEPLOYED, Document Pipeline built and PROPOSED, Audio Snippets and Advocate PROPOSED and not built', () => {
+  const byStatus = (re) => Object.entries(AGENTS).filter(([, a]) => re.test(a.status)).map(([name]) => name).sort();
+  assert.deepEqual(byStatus(/^DEPLOYED \(/), ['agent-history']);
+  assert.deepEqual(byStatus(/^PROPOSED \(built, not deployed\)\./), ['document-pipeline']);
+  assert.deepEqual(byStatus(/^PROPOSED \(not built\)\./), ['advocate', 'audio-snippets']);
+  // Each spec carries its own status line in its Status section, alone on a line, and the two that are not built keep the line they had.
+  for (const [name, { status }] of Object.entries(AGENTS)) assert.ok(section(read(name), 'Status').split('\n').includes(status), `${name}: the status line, alone on its line`);
+  for (const name of ['audio-snippets', 'advocate']) assert.equal(section(read(name), 'Status').split('\n').filter((l) => l.startsWith('PROPOSED')).join(''), 'PROPOSED (not built). Since 2026-10-13.', `${name} keeps its line`);
+  // The guide says it in a sentence, and the root README keeps its table: DEPLOYED for Agent History, PROPOSED for the other three.
+  assert.ok(hire().includes('Document Pipeline is built and waits for its deployment. Audio Snippets and Advocate are specified and not built.'));
+  const tableRows = readFileSync(new URL('../README.md', import.meta.url), 'utf8').split('\n');
+  for (const [name, { capability }] of Object.entries(AGENTS)) assert.ok(tableRows.some((l) => l.endsWith(`| \`${capability}\` | ${name === 'agent-history' ? 'DEPLOYED' : 'PROPOSED'} |`)), `${name}: its row of the README table`);
+});
+
 // ---- The member guide (docs/HIRE.md) and the E2E runbook (docs/E2E.md) ----
 // They are read by people who act on them, so their numbers, tool names and wording are pinned here against the specs and the design.
 const doc = (name) => readFileSync(new URL(`../docs/${name}`, import.meta.url), 'utf8');
@@ -232,6 +297,35 @@ test('docs/HIRE.md: the ten sections of the design, numbered, in the order the m
 test('docs/HIRE.md: the chat script is verbatim, six lines in one block, inside section 5', () => {
   const five = section(hire(), '5. The chat script');
   assert.ok(five.includes('```text\n' + CHAT_SCRIPT.join('\n') + '\n```'), 'the six lines, in order, in one fenced block');
+});
+
+// The guide has two request JSONs: message 3 of the chat script (Agent History's, a subject) and the one for Document Pipeline in the subsection of section 5 (a one-page PDF by URL).
+test('docs/HIRE.md: says that Document Pipeline is built and waits for its deployment; section 5 gives it a second request JSON, the 30 min wait and the time to reclaim', () => {
+  const guide = hire();
+  assert.ok(guide.includes('Document Pipeline is built and waits for its deployment. Audio Snippets and Advocate are specified and not built. This guide hires Agent History, and section 5 shows what changes for Document Pipeline once it has an advert.'));
+  assert.equal(guide.match(/Three more agents are specified and not built/), null, 'the sentence of before the build');
+  const five = section(guide, '5. The chat script');
+  const heading = '\n### The same script for Document Pipeline\n';
+  assert.ok(five.indexOf(heading) > five.indexOf('If a check fails, do not accept.'), 'a subsection at the end of section 5');
+  const sub = five.split(heading)[1] ?? '';
+  const first = JSON.parse(/Payload: (\{"subject":"[^"]+"\})\./.exec(CHAT_SCRIPT[2])[1]);
+  const blocks = [...sub.matchAll(/```json\n([\s\S]*?)\n```/g)].map((m) => m[1]);
+  assert.equal(blocks.length, 1, 'one request JSON in the subsection');
+  const second = JSON.parse(blocks[0]);
+  assert.deepEqual(Object.keys(first), ['subject']);
+  assert.deepEqual(second, { source: { url: 'https://example.org/letter.pdf' }, task: 'summary', language: 'en', max_pages: 1 });
+  for (const part of [
+    'It has no advert yet, so message 2 shows no supplier for it until the operator posts one.',
+    'Ask for `document.pipeline.ocr-summary.v1` in message 2, and write this request JSON in messages 3 and 4:',
+    'That URL is only an example. Use the https URL of a one-page PDF that anyone may read: its page goes to the OCR agent, and its text to the chat supplier and that supplier\'s model provider. The service fetches the URL itself, so it must be public and must not redirect.',
+    'Its processing window is 30 min, so message 4 can wait that long: ask your assistant to poll again whenever a call is cut near 100 s, as in section 9.',
+    'If the job fails, you reclaim after `deliver_by`, which is your Post time plus 30 min plus 180 s.',
+    'The price is 5 and a job costs about 7 (the cost table in section 3).',
+  ]) assert.ok(sub.includes(part), `the subsection says: ${part}`);
+  // The wait is the advert's window in the spec, and the reclaim time is that window plus the 180 s of every deliver_by.
+  assert.match(section(read('document-pipeline'), 'Terms'), /Processing window, advert `max_processing_ms` \| 1800000 ms \(30 min/);
+  assert.ok(sub.indexOf('document.pipeline.ocr-summary.v1') > sub.indexOf('It has no advert yet'), 'the capability is asked for after the honest line');
+  assert.ok(section(hire(), '3. Fund it').split('\n').some((l) => l.startsWith('| 5 (Document Pipeline) | 7 | 6 | 1 | about 1 | about 7 | 7 |')), 'the cost table row the subsection points to');
 });
 
 test('docs/HIRE.md: the ledger unit is named once, in section 3, and nowhere else in the repo', () => {
@@ -391,11 +485,66 @@ test('docs/E2E.md: every run is marked first-party, the commands are exact, and 
   assert.ok(e2e.includes('node scripts/e2e-hire.mjs --dry-run') && e2e.includes('node scripts/e2e-hire.mjs\n'));
   const table = e2e.split('\n').filter((l) => l.startsWith('|'));
   const results = table.slice(table.findIndex((l) => l.startsWith('| Date |')));
-  assert.equal(results[0], '| Date | Run | Escrow reference | Post transaction | Accept transaction | Verdict |');
-  for (const row of results.slice(2)) assert.equal(row.split('|')[2].trim(), 'first-party', `a run row says first-party: ${row}`);
+  assert.equal(results[0], '| Date | Agent | Run | Escrow reference | Post transaction | Accept transaction | Verdict |');
+  for (const row of results.slice(2)) {
+    assert.equal(row.split('|')[3].trim(), 'first-party', `a run row says first-party: ${row}`);
+    assert.ok(Object.keys(AGENT_SPEC).includes(row.split('|')[2].trim()), `a run row names the agent that was hired: ${row}`);
+  }
   const settings = [...new Set([...e2eScript().matchAll(/\benv\.([A-Z][A-Z0-9_]+)/g), ...e2eScript().matchAll(/need\('([A-Z][A-Z0-9_]+)'\)/g)].map((m) => m[1]))];
   assert.ok(settings.length >= 5, 'the script reads its settings from the environment');
   for (const name of settings) assert.ok(e2e.includes('`' + name + '`'), `docs/E2E.md explains ${name}`);
+});
+
+// The script takes the capability as a setting (ruling R49), so the first-party run of Document Pipeline uses the same script as Agent History's: docs/E2E.md says which settings change.
+test('docs/E2E.md: CAPABILITY_ID is a setting with its default and the Pipeline\'s value, step 3 names it, and the Results table has an Agent column', () => {
+  const e2e = doc('E2E.md');
+  const script = e2eScript();
+  assert.ok(script.includes("const DEFAULT_CAPABILITY = 'identity.history.report.v1';") && script.includes('const CAPABILITY = env.CAPABILITY_ID ?? DEFAULT_CAPABILITY;'), 'the default and the setting');
+  assert.ok(script.includes('is not among the free suppliers for ${CAPABILITY}') && script.includes("capability_id: CAPABILITY, limit: 50"), 'the free list and the stop use it');
+  const rows = e2e.split('\n').filter((l) => l.startsWith('| `'));
+  const names = rows.map((l) => l.split('`')[1]);
+  assert.equal(names.indexOf('CAPABILITY_ID'), names.indexOf('ADVERT_REF') + 1, 'the row follows ADVERT_REF');
+  assert.equal(names.indexOf('PAYLOAD'), names.indexOf('CAPABILITY_ID') + 1, 'and the row of PAYLOAD follows it');
+  const row = rows.find((l) => l.startsWith('| `CAPABILITY_ID` |')) ?? '';
+  for (const part of [
+    'The capability of the advert, as the marketplace lists it. Default: `identity.history.report.v1`, the capability of Agent History.',
+    'stops unless `ADVERT_REF` is among them, so an advert of another agent needs its own value: `document.pipeline.ocr-summary.v1` for Document Pipeline.',
+    'An empty value, or one with a space in it, stops the script with exit code 2.',
+  ]) assert.ok(row.includes(part), `the CAPABILITY_ID row says: ${part}`);
+  assert.ok(rows.find((l) => l.startsWith('| `ADVERT_REF` |')).includes('It must be among the free suppliers of `CAPABILITY_ID`, or the script stops.'));
+  assert.ok(rows.find((l) => l.startsWith('| `PAYLOAD` |')).includes('For Document Pipeline, a request for one page of a PDF by URL, as under "Hiring Document Pipeline".'));
+  assert.ok(e2e.includes('3. Reads the free suppliers of `CAPABILITY_ID` (default `identity.history.report.v1`) with `vector_marketplace_list_suppliers`, and stops unless `ADVERT_REF` is among them.'));
+  assert.equal(e2e.includes('3. Reads the free suppliers of `identity.history.report.v1` with'), false, 'step 3 of before');
+  assert.ok(e2e.includes('The Agent column names the agent that was hired, and the Run column says first-party in every row.'));
+});
+
+test('docs/E2E.md: the section "Hiring Document Pipeline" gives the settings of its first-party run: its capability, a request for one page of a PDF by URL, a pause of 15 s, a state file of its own, up to 10 minutes', () => {
+  const e2e = doc('E2E.md');
+  const sec = section(e2e, 'Hiring Document Pipeline');
+  assert.ok(sec.length > 900, 'the section exists');
+  assert.ok(e2e.indexOf('\n## Hiring Document Pipeline\n') > e2e.indexOf('\n## The commands\n') && e2e.indexOf('\n## Hiring Document Pipeline\n') < e2e.indexOf('\n## What the script does\n'), 'after the commands, before the steps');
+  const exported = Object.fromEntries((/```bash\n([\s\S]*?)\n```/.exec(sec)?.[1] ?? '').split('\n').map((l) => /^export ([A-Z0-9_]+)=(.*)$/.exec(l)).map((m) => [m[1], m[2]]));
+  assert.deepEqual(Object.keys(exported), ['CAPABILITY_ID', 'ADVERT_REF', 'PAYLOAD', 'E2E_POLL_MS', 'E2E_STATE']);
+  assert.equal(exported.CAPABILITY_ID, AGENTS['document-pipeline'].capability);
+  assert.equal(exported.E2E_POLL_MS, '15000');
+  assert.equal(exported.E2E_STATE, './e2e-state-pipeline.json');
+  assert.equal(exported.ADVERT_REF, '<txid>#<index>');
+  assert.ok(exported.PAYLOAD.startsWith("'") && exported.PAYLOAD.endsWith("'"), 'the request JSON is quoted for the shell');
+  assert.deepEqual(JSON.parse(exported.PAYLOAD.slice(1, -1).replace('<https URL of a one-page public PDF>', 'https://example.org/letter.pdf')), { source: { url: 'https://example.org/letter.pdf' }, task: 'summary', language: 'en', max_pages: 1 });
+  for (const part of [
+    'The script hires any agent whose advert is among the free suppliers of `CAPABILITY_ID`, with the same steps. Document Pipeline has no advert yet.',
+    'Use a document that anyone may read: its page goes to the OCR agent, and Datalab behind it, and its text to the chat supplier and that supplier\'s model provider.',
+    'a job takes minutes where Agent History\'s takes seconds, and the default pause of 5 s would ask the hosted server about 120 times in 10 minutes.',
+    'a state file belongs to one run, and the script refuses one that belongs to another, so this run does not use the file of the Agent History run.',
+    'Expect up to 10 minutes for one page. The script polls until `deliver_by`, which is 33 minutes after the Post (the 30 min window and 180 s). Five pages take up to 27 min.',
+    'Then run the rehearsal and the run as above. With the key-file wrapper, export these settings in the shell first: it passes the environment on, and its default `ADVERT_REF` is the Agent History advert.',
+    'Add the run to the Results table with Document Pipeline in the Agent column. It is first-party and it is not demand.',
+  ]) assert.ok(sec.includes(part), `the section says: ${part}`);
+  // The wrapper does what the section says: it exports a default for ADVERT_REF only, and the script inherits the rest of the environment.
+  const wrapper = readFileSync(new URL('./run-e2e-from-keyfile.sh', import.meta.url), 'utf8');
+  assert.ok(wrapper.includes('export ADVERT_REF="${ADVERT_REF:-'));
+  assert.equal(wrapper.includes('CAPABILITY_ID'), false, 'the wrapper sets no capability of its own');
+  assert.equal(10 * 60 * 1000 / 5000, 120);
 });
 
 test('docs/HIRE.md and docs/E2E.md: every place that lists what the receipt check takes lists the report text', () => {
@@ -592,7 +741,7 @@ test('both READMEs: Agent History is DEPLOYED since 2026-10-15 and the other thr
 });
 
 // The root README tells a newcomer how to hire Agent History in one short section (2026-10-15). Its commands, its server URL and its figures are the guide's and the design's, so they are held against both here.
-test('README: the section "Hire Agent History" sits between the status table and the link list in eight to twelve short lines, with the commands, the hosted server, the 5-alone rule, the end state and the honesty line; it names no unit, no dash and no status', () => {
+test('README: the section "Hire Agent History" sits between the status table and the link list in eight to twelve short lines, with the commands, the hosted server, the 5-alone rule, the end state, the honesty line and one line that Document Pipeline is built and waits; it names no unit, no dash and no status', () => {
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
   const heading = '\n## Hire Agent History\n';
   assert.equal(readme.split(heading).length - 1, 1, 'one such section');
@@ -613,7 +762,10 @@ test('README: the section "Hire Agent History" sits between the status table and
     '7. Paste the six chat messages in `docs/HIRE.md` section 5, one at a time.',
     'You end with the report, an Ed25519-signed receipt, the escrow reference, two explorer links, and a check anyone can repeat with no key.',
     "The supplier is first-party and the contracts have no third-party audit. Accept within 600 s of the supplier's submit, or the supplier may keep the lock.",
+    'Document Pipeline is built and waits for its deployment.',
   ]) assert.ok(lines.includes(part), `the section has the line: ${part}`);
+  // The line about Document Pipeline is the last of the section, after the honesty line, and the table above keeps the Pipeline PROPOSED.
+  assert.equal(lines.at(-1), 'Document Pipeline is built and waits for its deployment.');
   // What the section says is what the guide says: the two commands, the 5 alone, the cost of a job, the six messages and the 600 s.
   assert.ok(section(hire(), '2. Get a key').includes('npm ci && npm run build\nnode packages/signer/build/index.js keygen'), 'the commands of the guide');
   const three = section(hire(), '3. Fund it');
@@ -681,7 +833,7 @@ test('docs/evidence: the evidence of the first-party run of 2026-10-15 parses, i
 test('docs/E2E.md, specs/agent-history.md and the guide record the first-party run of 2026-10-15 with the same references, and the status word is DEPLOYED, not LIVE', () => {
   const e2e = doc('E2E.md');
   // The Results table has one row: first-party, the escrow reference, the two transactions as explorer links, VERIFIED.
-  assert.deepEqual(e2e.split('\n').filter((l) => /^\| 20\d\d-/.test(l)), [`| 2026-10-15 | first-party | \`${RUN1.escrowRef}\` | ${explorerLink(RUN1.postTx)} | ${explorerLink(RUN1.acceptTx)} | VERIFIED |`]);
+  assert.deepEqual(e2e.split('\n').filter((l) => /^\| 20\d\d-/.test(l)), [`| 2026-10-15 | Agent History | first-party | \`${RUN1.escrowRef}\` | ${explorerLink(RUN1.postTx)} | ${explorerLink(RUN1.acceptTx)} | VERIFIED |`]);
   assert.ok(e2e.includes('**Status: DEPLOYED.**'), 'the status word since the flip of 2026-10-15');
   assert.ok(e2e.includes('The first first-party run settled on 2026-10-15 (verdict VERIFIED, see [Results](#results)); it was made against the first advert, which was retired that day at the status flip.'));
   assert.equal(e2e.match(/none yet|has not completed a live run|first-party run has not been made/i), null, 'the words of before the run');

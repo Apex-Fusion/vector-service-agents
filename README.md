@@ -25,6 +25,8 @@ You end with the report, an Ed25519-signed receipt, the escrow reference, two ex
 
 The supplier is first-party and the contracts have no third-party audit. Accept within 600 s of the supplier's submit, or the supplier may keep the lock.
 
+Document Pipeline is built and waits for its deployment.
+
 - Hire one: `docs/HIRE.md`
 - Our own first-party end-to-end run: `docs/E2E.md` and `scripts/e2e-hire.mjs`
 - Putting Agent History on the apex-web box: `deploy/apex-web/README.md` (host administrator) and `deploy/apex-web/RUNBOOK.md` (operator)

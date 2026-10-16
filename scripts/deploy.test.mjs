@@ -508,7 +508,7 @@ test('RUNBOOK step 17: the last item names the files that said PROPOSED about Ag
 });
 
 // ---- The status words after the flip of 2026-10-15 ----
-// Agent History is DEPLOYED. The three agents that are not built are PROPOSED. Nothing here is LIVE.
+// Agent History is DEPLOYED. Document Pipeline (built, not deployed) and the two agents that are not built are PROPOSED. Nothing here is LIVE.
 // A line that says PROPOSED has to be one of the lines below, so the word cannot come back for Agent History; a line that says LIVE has to deny it.
 test('status words: no file says PROPOSED about Agent History, and no file says LIVE except to deny it', () => {
   const OTHER_AGENTS = ['specs/document-pipeline.md', 'specs/audio-snippets.md', 'specs/advocate.md'];
@@ -540,8 +540,10 @@ test('status words: no file says PROPOSED about Agent History, and no file says 
   // The values the manifest and the env example carry are neither proposed nor live.
   assert.match(exampleText, /^AGENT_STATUS_CHIP=deployed$/m);
   assert.deepEqual(JSON.parse(read('agents/agent-history/agent.json.template')).status, { chip: 'deployed', since: '2026-10-15' });
-  // The three agents that are not built are still PROPOSED, each in its own spec.
-  for (const f of OTHER_AGENTS) assert.match(read(f), /^PROPOSED \(not built\)\. Since 2026-10-13\.$/m, f);
+  // Audio Snippets and Advocate are not built and are PROPOSED, each in its own spec. Document Pipeline is built and not deployed: PROPOSED too, with the qualifier in its line.
+  for (const f of ['specs/audio-snippets.md', 'specs/advocate.md']) assert.match(read(f), /^PROPOSED \(not built\)\. Since 2026-10-13\.$/m, f);
+  assert.match(read('specs/document-pipeline.md'), /^PROPOSED \(built, not deployed\)\. Since 2026-10-13\.$/m);
+  assert.deepEqual(OTHER_AGENTS, ['specs/document-pipeline.md', 'specs/audio-snippets.md', 'specs/advocate.md'], 'the three specs that may say PROPOSED anywhere');
 });
 
 test('RUNBOOK: Back out retires the advert first with the supplier key, then stops the services, then the host administrator removes the Caddy block', () => {
@@ -1487,7 +1489,7 @@ test('Pipeline RUNBOOK: the commands run in order (identity, stake, service, has
   assert.doesNotMatch(pRunbook, /8083|9091|agent-history-(agent|service)/, 'no port and no container of the Agent History stack is used here');
 });
 
-test('Pipeline RUNBOOK step 15: the settings of the first-party run, a request JSON the service accepts for one page, a poll pause for a job of minutes, a state file apart from Agent History\'s, and the capability the script is fixed to', () => {
+test('Pipeline RUNBOOK step 15: the settings of the first-party run, a request JSON the service accepts for one page, a poll pause for a job of minutes, a state file apart from Agent History\'s, and the capability the script takes as a setting', () => {
   const s15 = section(pRunbook, '15. The first-party run');
   const m = /`PAYLOAD` is the request JSON for one page of a public PDF: `(\{[^`]+\})`/.exec(s15);
   assert.ok(m, 'the PAYLOAD line');
@@ -1510,12 +1512,20 @@ test('Pipeline RUNBOOK step 15: the settings of the first-party run, a request J
   assert.ok(script.includes('E2E_POLL_MS') && script.includes('E2E_STATE'));
   assert.match(script, /POLL_MS = env\.E2E_POLL_MS === undefined \? 5000 :/, 'the default pause is 5 s');
   assert.equal(10 * 60 * 1000 / 5000, 120);
-  // The script as it stands is for one capability, Agent History's, and refuses an advert of another before it posts anything. The runbook says so and names the way round.
-  assert.match(script, /^const CAPABILITY = 'identity\.history\.report\.v1';$/m, 'when the script takes the capability as a setting, this step and this pin change with it');
+  // The script takes the capability as a setting (ruling R49), the capability of Agent History by default, and the step names the value for the Pipeline: the capability of its spec and its env example.
+  assert.match(script, /^const DEFAULT_CAPABILITY = 'identity\.history\.report\.v1';$/m);
+  assert.match(script, /^const CAPABILITY = env\.CAPABILITY_ID \?\? DEFAULT_CAPABILITY;$/m);
   assert.ok(script.includes('is not among the free suppliers for ${CAPABILITY}'));
-  assert.ok(s15.includes("`scripts/e2e-hire.mjs` fixes the capability it looks the advert up under, `identity.history.report.v1`, in its `CAPABILITY` constant, and it stops before it posts anything, with \"is not among the free suppliers\", for an advert of another capability, which the Pipeline's is."));
-  assert.ok(s15.includes('Until the script takes the capability as a setting, make this run with the chat script of [docs/HIRE.md](../../docs/HIRE.md) section 5, which is the member\'s own path: ask for the free suppliers of `document.pipeline.ocr-summary.v1` in message 2, carry the request JSON above in messages 3 and 4, and allow message 4 up to 10 minutes.'));
-  assert.ok(read('docs/HIRE.md').includes('## 5. The chat script'), 'the chat script the step sends the operator to');
+  const capabilityBullet = s15.split('\n').find((l) => l.startsWith('- `CAPABILITY_ID=')) ?? '';
+  assert.ok(capabilityBullet.startsWith(`- \`CAPABILITY_ID=${pExample.ADVERT_CAPABILITY_ID}\`. The script looks the advert up among the free suppliers of this capability`), 'the setting, with the capability of the env example');
+  assert.ok(capabilityBullet.includes('its default is the capability of Agent History, so without this setting it stops before it posts anything, with "is not among the free suppliers".'));
+  assert.equal(s15.includes('Until the script takes the capability as a setting'), false, 'the workaround of before the setting is gone');
+  assert.equal(s15.includes('in its `CAPABILITY` constant'), false);
+  assert.ok(s15.includes('Run `node scripts/e2e-hire.mjs --dry-run` first, then `node scripts/e2e-hire.mjs`, with these settings, as in [docs/E2E.md](../../docs/E2E.md); its section "Hiring Document Pipeline" lists them. The checks below are the same.'));
+  // docs/E2E.md carries the same settings: the request JSON, the pause and the state file are written alike in both.
+  const e2eSection = section(read('docs/E2E.md'), 'Hiring Document Pipeline');
+  for (const setting of [m[1], 'export CAPABILITY_ID=document.pipeline.ocr-summary.v1', 'export E2E_POLL_MS=15000', 'export E2E_STATE=./e2e-state-pipeline.json']) assert.ok(e2eSection.includes(setting), `docs/E2E.md has the setting: ${setting}`);
+  assert.ok(e2eSection.includes('[deploy/apex-web/RUNBOOK-document-pipeline.md](../deploy/apex-web/RUNBOOK-document-pipeline.md) step 15'));
   // The log line it quotes is the code's.
   assert.ok(read('agents/document-pipeline/src/server.ts').includes('log(`job done in ${deps.clock() - arrivedAt} ms: ${result.accounting.sub_jobs} sub-jobs`);'));
   assert.ok(read('agents/document-pipeline/src/janitor.ts').includes("export const STRANDED_FILE = 'stranded.json';"));
