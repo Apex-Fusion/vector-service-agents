@@ -1855,7 +1855,7 @@ test('CI: the test job installs poppler-utils before the tests and sets REQUIRE_
   const install = steps.findIndex((s) => typeof s.run === 'string' && /apt-get install -y poppler-utils/.test(s.run));
   const tests = steps.findIndex((s) => s.run === 'pnpm test');
   assert.ok(install >= 0, 'a step installs poppler-utils');
-  assert.equal(steps[install].run, 'sudo apt-get update && sudo apt-get install -y poppler-utils');
+  assert.equal(steps[install].run, 'sudo apt-get update && sudo apt-get install -y poppler-utils ffmpeg');
   assert.ok(install < tests, 'before the tests');
   assert.equal(tests, steps.length - 1, 'pnpm test is the last step');
   assert.equal(String(steps[tests].env?.REQUIRE_POPPLER), '1');
@@ -1870,7 +1870,7 @@ test('CI: the publish job also pushes the Document Pipeline image under :latest 
   assert.match(job.if, /github\.event_name == 'push'/);
   assert.match(job.if, /github\.ref == 'refs\/heads\/main'/);
   const builds = job.steps.filter((s) => s.uses === 'docker/build-push-action@v6');
-  assert.equal(builds.length, 2, 'one image for each agent');
+  assert.equal(builds.length, 3, 'one image for each agent that is built');
   const history = builds.find((s) => s.with.file === 'agents/agent-history/Dockerfile');
   const pipeline = builds.find((s) => s.with.file === 'agents/document-pipeline/Dockerfile');
   assert.ok(history && pipeline);
@@ -2654,4 +2654,44 @@ test('Snippets compose in docker compose config: with PROXY_NETWORK in .env the 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('CI: the test job installs ffmpeg and the speech model of Audio Snippets before the tests, the model fetched once at its pinned revision, and sets REQUIRE_ASR, so that a missing piece fails the tests of the real model instead of skipping them', () => {
+  const steps = ci.jobs.test.steps;
+  const at = (find) => steps.findIndex(find);
+  const tests = at((s) => s.run === 'pnpm test');
+  const apt = at((s) => typeof s.run === 'string' && s.run.includes('apt-get install'));
+  const python = at((s) => s.uses === 'actions/setup-python@v5');
+  const pip = at((s) => s.run === 'python -m pip install --disable-pip-version-check -r agents/audio-snippets/asr/requirements.txt');
+  const cache = at((s) => s.uses === 'actions/cache@v4');
+  const fetch = at((s) => s.run === 'python -I agents/audio-snippets/asr/fetch_model.py base agents/audio-snippets/.models/base');
+  assert.ok(steps[apt].run.split(' ').includes('ffmpeg'), 'ffmpeg and ffprobe');
+  assert.deepEqual(steps[python].with, { 'python-version': '3.11' });
+  assert.ok(apt < tests && python < pip && pip < tests && cache < fetch && fetch < tests, 'all of it before the tests');
+  // The key of the cache is the revision the fetch script pins, so a new revision fetches anew; a hit skips the fetch.
+  const revision = /"base": \("([0-9a-f]{40})"/.exec(read('agents/audio-snippets/asr/fetch_model.py'))?.[1];
+  assert.deepEqual(steps[cache].with, { path: 'agents/audio-snippets/.models/base', key: `whisper-base-${revision}` });
+  assert.equal(steps[fetch].if, `steps.${steps[cache].id}.outputs.cache-hit != 'true'`);
+  assert.ok(existsSync(join(root, 'agents/audio-snippets/asr/requirements.txt')));
+  assert.equal(String(steps[tests].env?.REQUIRE_ASR), '1');
+  assert.equal(String(steps[tests].env?.REQUIRE_POPPLER), '1');
+  // The default model directory of the tests is the one the fetch writes, and the model files stay out of git.
+  assert.ok(read('agents/audio-snippets/test/support.ts').includes("new URL('../.models/base', import.meta.url)"));
+  assert.ok(read('.gitignore').split('\n').includes('agents/audio-snippets/.models/'));
+});
+
+test('CI: the publish job also pushes the Audio Snippets image under :latest and :<sha>, in the same job and after the same login', () => {
+  const job = ci.jobs.publish;
+  const builds = job.steps.filter((s) => s.uses === 'docker/build-push-action@v6');
+  const snippets = builds.find((s) => s.with.file === 'agents/audio-snippets/Dockerfile');
+  assert.ok(snippets && existsSync(join(root, snippets.with.file)));
+  const image = sService.image.replace(/@sha256:.*$/, '');
+  assert.equal(image, 'ghcr.io/apex-fusion/vector-service-agents/audio-snippets');
+  assert.deepEqual(snippets.with.tags.trim().split('\n'), [`${image}:latest`, `${image}:\${{ github.sha }}`]);
+  assert.equal(snippets.with.context, '.');
+  assert.equal(snippets.with.push, true);
+  assert.equal(snippets.if, undefined, 'no condition of its own');
+  assert.equal(builds.indexOf(snippets), 2, 'after the other two');
+  assert.ok(job.steps.indexOf(snippets) > job.steps.findIndex((s) => s.uses === 'docker/login-action@v3'), 'after the login');
+  assert.ok(sSection.includes('`ghcr.io/apex-fusion/vector-service-agents/audio-snippets`') && sSection.includes('`:latest`') && sSection.includes('`:<full git commit sha>`'));
 });
