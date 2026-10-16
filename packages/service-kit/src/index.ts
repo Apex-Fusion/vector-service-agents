@@ -5,8 +5,9 @@
 // them, so that agents/audio-snippets runs on the same code.
 export { clip, errorText, flatText } from './text.ts';
 export { OutOfTime, within } from './time.ts';
+export { childEnv } from './child-env.ts';
 export {
-  STATUS_CHIPS, TOKEN_SEARCH_MIN, assertHeaderValue, assertNoTokenIn, childEnv, envInt, given, hexOf, refuseSecretIn, refuseTokenIn, requiredEnv, shown, statusChip, statusSince,
+  STATUS_CHIPS, TOKEN_SEARCH_MIN, assertHeaderValue, assertNoTokenIn, envInt, given, hexOf, refuseSecretIn, refuseTokenIn, requiredEnv, shown, statusChip, statusSince,
   tokenForms,
 } from './env.ts';
 export type { StatusChip } from './env.ts';

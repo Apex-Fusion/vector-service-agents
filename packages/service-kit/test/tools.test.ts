@@ -20,16 +20,19 @@ describe('tools', () => {
     expect(await failureOf(runTool(node, ['-e', 'process.stdout.write("x".repeat(5000))'], { timeoutMs: 10_000, maxBuffer: 100 }))).toStrictEqual({ kind: 'output' });
     expect(await failureOf(runTool(node, ['-e', 'process.stderr.write("broken"); process.exit(3)'], { timeoutMs: 10_000, maxBuffer: 1024 }))).toStrictEqual({ kind: 'exit', stderr: 'broken' });
   });
-  test('runTool starts a program without the secrets of the service: a child that prints its environment lacks the token and every name that holds a key, a token, a secret or a password, and has the rest', async () => {
+  test('runTool starts a program without the secrets of the service: a child that prints its environment lacks the token and every name that holds a key, a token, a secret, a password, an API key or an access key, and has the rest', async () => {
     const token = `Bearer ${'ef'.repeat(32)}`;
-    const set: Record<string, string> = { SERVICE_AUTH_HEADER: token, KIT_TEST_PRIV_KEY_HEX: 'a key', KIT_TEST_TOKEN: 'a token', KIT_TEST_SECRET: 'a secret', KIT_TEST_PASSWORD: 'a password', KIT_TEST_KEPT: 'kept' };
+    const set: Record<string, string> = {
+      SERVICE_AUTH_HEADER: token, KIT_TEST_PRIV_KEY_HEX: 'a key', KIT_TEST_TOKEN: 'a token', KIT_TEST_SECRET: 'a secret', KIT_TEST_PASSWORD: 'a password',
+      KIT_TEST_API_KEY: 'an api key', KIT_TEST_ACCESS_KEY_ID: 'an access key', KIT_TEST_KEPT: 'kept',
+    };
     const saved = Object.fromEntries(Object.keys(set).map((name) => [name, process.env[name]]));
     Object.assign(process.env, set);
     try {
       const out = await runTool(node, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], { timeoutMs: 10_000, maxBuffer: 1024 * 1024 });
       const seen = JSON.parse(out.stdout) as Record<string, string>;
       const names = Object.keys(seen).map((name) => name.toUpperCase());
-      expect(names.filter((name) => name === 'SERVICE_AUTH_HEADER' || /PRIV_KEY|TOKEN|SECRET|PASSWORD/.test(name))).toStrictEqual([]);
+      expect(names.filter((name) => name === 'SERVICE_AUTH_HEADER' || /PRIV_KEY|TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY/.test(name))).toStrictEqual([]);
       expect(out.stdout).not.toContain('ef'.repeat(32));
       expect([seen.KIT_TEST_KEPT, names.includes('PATH')]).toStrictEqual(['kept', true]);
       // The service's own environment is left as it is.

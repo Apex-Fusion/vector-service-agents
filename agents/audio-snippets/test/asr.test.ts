@@ -29,9 +29,12 @@ describe('workerAsr', () => {
     expect(seen).toStrictEqual([['python3', '-I', WORKER_PATH]]);
     expect(WORKER_PATH.replace(/\\/g, '/')).toMatch(/agents\/audio-snippets\/asr\/worker\.py$/);
   });
-  test('the worker is started without the secrets of the service: its environment lacks the token and every name that holds a key, a token, a secret or a password, and has the rest', async () => {
+  test('the worker is started without the secrets of the service: its environment lacks the token and every name that holds a key, a token, a secret, a password, an API key or an access key, and has the rest', async () => {
     const token = `Bearer ${'ef'.repeat(32)}`;
-    const set: Record<string, string> = { SERVICE_AUTH_HEADER: token, ASR_TEST_PRIV_KEY_HEX: 'a key', ASR_TEST_TOKEN: 'a token', ASR_TEST_SECRET: 'a secret', ASR_TEST_PASSWORD: 'a password', ASR_TEST_KEPT: 'kept' };
+    const set: Record<string, string> = {
+      SERVICE_AUTH_HEADER: token, ASR_TEST_PRIV_KEY_HEX: 'a key', ASR_TEST_TOKEN: 'a token', ASR_TEST_SECRET: 'a secret', ASR_TEST_PASSWORD: 'a password',
+      ASR_TEST_API_KEY: 'an api key', ASR_TEST_ACCESS_KEY: 'an access key', ASR_TEST_KEPT: 'kept',
+    };
     const saved = Object.fromEntries(Object.keys(set).map((name) => [name, process.env[name]]));
     Object.assign(process.env, set);
     try {
@@ -41,7 +44,7 @@ describe('workerAsr', () => {
       const transcript = await workerAsr(settings(), { spawnImpl }).transcribe('/tmp/job/ok.wav', 'en', 10_000);
       const seen = JSON.parse(transcript.segments[0].text) as Record<string, string>;
       const names = Object.keys(seen).map((name) => name.toUpperCase());
-      expect(names.filter((name) => name === 'SERVICE_AUTH_HEADER' || /PRIV_KEY|TOKEN|SECRET|PASSWORD/.test(name))).toStrictEqual([]);
+      expect(names.filter((name) => name === 'SERVICE_AUTH_HEADER' || /PRIV_KEY|TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY/.test(name))).toStrictEqual([]);
       expect(transcript.segments[0].text).not.toContain('ef'.repeat(32));
       expect([seen.ASR_TEST_KEPT, names.includes('PATH')]).toStrictEqual(['kept', true]);
     } finally {

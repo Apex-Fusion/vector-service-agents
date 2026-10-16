@@ -101,18 +101,4 @@ export function assertHeaderValue(name: string, value: string): void {
   if (!/^[ -~]+$/.test(value)) throw new Error(`environment variable ${name} must be printable ASCII (it is sent as an HTTP header), and it has ${value.length} characters`);
 }
 
-/** The names a program that a service starts is not given, in any case: every name that holds a key, a token, a secret or a password. */
-const HIDDEN_FROM_CHILDREN = /PRIV_KEY|TOKEN|SECRET|PASSWORD/i;
-
-/**
- * The environment of a program a service starts (a tool, the worker of a model): a copy of `env` without SERVICE_AUTH_HEADER and without any name that holds
- * PRIV_KEY, TOKEN, SECRET or PASSWORD, in any case. Everything else is kept, so that PATH, the venv and the locale reach the program as they are. Such a
- * program parses what a caller sent, so it is given none of the secrets of the service: what it cannot read, it cannot leak. `env` itself is left as it is.
- */
-export function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const kept: NodeJS.ProcessEnv = {};
-  for (const [name, value] of Object.entries(env)) {
-    if (name.toUpperCase() !== 'SERVICE_AUTH_HEADER' && !HIDDEN_FROM_CHILDREN.test(name)) kept[name] = value;
-  }
-  return kept;
-}
+// The environment of a program a service starts (childEnv) is in src/child-env.ts, a module with no imports that @vsa/service-kit/env exports alone.

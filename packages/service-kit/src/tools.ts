@@ -7,7 +7,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { childEnv } from './env.ts';
+import { childEnv } from './child-env.ts';
 
 /**
  * How a tool is run. It resolves with what the tool printed when it exited 0 and rejects with the error of node's execFile otherwise: a numeric `code` is an exit

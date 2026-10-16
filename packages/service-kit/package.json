@@ -1,6 +1,6 @@
 {
   "name": "@vsa/service-kit", "version": "0.1.0", "private": true, "type": "module",
-  "exports": { ".": "./src/index.ts", "./text": "./src/text.ts" },
+  "exports": { ".": "./src/index.ts", "./text": "./src/text.ts", "./env": "./src/child-env.ts" },
   "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit" },
   "dependencies": { "@vsa/vector-read": "workspace:*" },
   "devDependencies": { "vitest": "^5.0.5", "typescript": "^5.7.3", "@types/node": "^22.13.1" }

@@ -1,7 +1,7 @@
 // packages/service-kit/test/env.test.ts
 import { describe, test, expect } from 'vitest';
 import {
-  STATUS_CHIPS, assertHeaderValue, assertNoTokenIn, childEnv, envInt, given, hexOf, refuseSecretIn, refuseTokenIn, requiredEnv, shown, statusChip, statusSince, tokenForms,
+  STATUS_CHIPS, assertHeaderValue, assertNoTokenIn, envInt, given, hexOf, refuseSecretIn, refuseTokenIn, requiredEnv, shown, statusChip, statusSince, tokenForms,
 } from '../src/env.ts';
 
 const TOKEN = `Bearer ${'ab'.repeat(32)}`;
@@ -57,20 +57,5 @@ describe('settings that never print a secret', () => {
   test('assertHeaderValue: printable ASCII passes; anything else is refused with the length only', () => {
     expect(() => assertHeaderValue('SERVICE_AUTH_HEADER', TOKEN)).not.toThrow();
     expect(() => assertHeaderValue('SERVICE_AUTH_HEADER', 'Bearer a\nb')).toThrow('environment variable SERVICE_AUTH_HEADER must be printable ASCII (it is sent as an HTTP header), and it has 10 characters');
-  });
-  test('childEnv: a copy without SERVICE_AUTH_HEADER and without any name that holds PRIV_KEY, TOKEN, SECRET or PASSWORD, in any case; everything else kept', () => {
-    const kept = {
-      PATH: '/app/asr/venv/bin:/usr/local/bin:/usr/bin', Path: 'the same on Windows', VIRTUAL_ENV: '/app/asr/venv', LANG: 'C.UTF-8', HOME: '/home/node', NODE_ENV: 'production',
-      OPERATOR_CONTACT: 'ops@example.test', SUPPLIER_PKH: 'ab'.repeat(28), SUPPLIER_PUB_KEY_HEX: 'cd'.repeat(32), ASR_WORKER: '/app/asr/worker.py', KEYS_DIR: '/keys',
-    };
-    const hidden = {
-      SERVICE_AUTH_HEADER: TOKEN, service_auth_header: TOKEN, SUPPLIER_PRIV_KEY_HEX: 'a key', PIPELINE_BUYER_PRIV_KEY_HEX: 'a key', priv_key: 'a key',
-      GITHUB_TOKEN: 'a token', hf_token: 'a token', TOKENIZERS_PARALLELISM: 'false', CLIENT_SECRET: 'a secret', AppSecret: 'a secret', DB_PASSWORD: 'a password', password: 'a password',
-    };
-    const env = { ...kept, ...hidden };
-    const before = { ...env };
-    expect(childEnv(env)).toStrictEqual(kept);
-    expect(env, 'the environment of the service is left as it is').toStrictEqual(before);
-    expect(childEnv({})).toStrictEqual({});
   });
 });
