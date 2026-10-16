@@ -32,7 +32,7 @@ const spec = readFileSync(new URL('../../../specs/document-pipeline.md', import.
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 const hire = readFileSync(new URL('../../../docs/HIRE.md', import.meta.url), 'utf8');
 const e2e = readFileSync(new URL('../../../docs/E2E.md', import.meta.url), 'utf8');
-const runbook = readFileSync(new URL('../../../deploy/apex-web/RUNBOOK-document-pipeline.md', import.meta.url), 'utf8');
+const runbook = readFileSync(new URL('../../../deploy/host/RUNBOOK-document-pipeline.md', import.meta.url), 'utf8');
 const m = manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT });
 // The text of one "## heading" section, up to the next "## " heading.
 const textOf = (text: string, heading: string): string => { const rest = text.split(`\n## ${heading}\n`)[1]; return rest === undefined ? '' : rest.split('\n## ')[0]; };

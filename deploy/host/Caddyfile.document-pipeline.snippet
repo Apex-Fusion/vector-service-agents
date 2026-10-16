@@ -1,0 +1,14 @@
+# deploy/host/Caddyfile.document-pipeline.snippet - site block for the shared Caddy of the host, merged into the host's Caddy configuration.
+# DEPLOYED since 2026-10-16: installed and running on the box. It was installed on 2026-10-16, at step 10 of RUNBOOK-document-pipeline.md, by a copy of the host administrator's install script (install-caddy-route.sh, from the ops folder of Agent History), which merges it and reloads Caddy (README.md). The hostname must be DNS only (grey cloud),
+# or Caddy cannot get its certificate. The block must stay the last thing in this file: the host administrator's install script
+# takes everything from the hostname line to the end.
+# The runtime does not serve /agent.json, and the advert's detail_uri points at it, so that one path goes to the service.
+# Everything else goes to the runtime.
+mp-suppliers-pipeline.hal8.ai {
+    handle /agent.json {
+        reverse_proxy document-pipeline-service:9092
+    }
+    handle {
+        reverse_proxy document-pipeline-agent:8080
+    }
+}

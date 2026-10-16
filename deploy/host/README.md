@@ -1,4 +1,4 @@
-# Agent History on apex-web: note for the host administrator
+# Agent History on the deployment host: note for the host administrator
 
 Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE. Steps 1 to 15 and 17 of the runbook were run on 2026-10-14 and 2026-10-15. Step 16, the wallet monitor, is not used for this agent (operator's decision, 2026-10-15).
 
@@ -10,10 +10,10 @@ The Document Pipeline is a second stack on the same box. It has its own section 
 
 | Container | Image | Listens on | Reachable from |
 |---|---|---|---|
-| `agent-history-agent` | built on the box from `https://github.com/Apex-Fusion/vector-agent-template.git` at the pinned commit `c4c378a` (`CAPABILITY_KIND=custom`) | 8080 | Caddy, over `umami_default`. The host, on `127.0.0.1:8083` only |
-| `agent-history-service` | `ghcr.io/apex-fusion/vector-service-agents/agent-history`, pinned by digest | 9091 | The runtime and Caddy, over `umami_default`. Nothing on the host |
+| `agent-history-agent` | built on the box from `https://github.com/Apex-Fusion/vector-agent-template.git` at the pinned commit `c4c378a` (`CAPABILITY_KIND=custom`) | 8080 | Caddy, over the external network of the host's reverse proxy. The host, on `127.0.0.1:8083` only |
+| `agent-history-service` | `ghcr.io/apex-fusion/vector-service-agents/agent-history`, pinned by digest | 9091 | The runtime and Caddy, over the external network of the host's reverse proxy. Nothing on the host |
 
-The working directory on the box is `/opt/agent-history/repo/deploy/apex-web`, inside a checkout of this repository. The compose project is `agent-history`. Both containers join the existing external network `umami_default`, which the umami stack created. The runtime claims jobs, calls the service, signs the receipt and submits its hash. The service reads public ledger data and holds no key: it reads the same env file as the runtime, and the compose file blanks the one secret in it for the service.
+The working directory on the box is `<base path>/repo/deploy/host`, inside a checkout of this repository; the base path is the folder the operator chose (`BASE` in the runbook). The compose project is `agent-history`. Both containers join the existing external network of the host's reverse proxy, which the stack of that proxy created. Its name is not in the repository: compose reads it as `PROXY_NETWORK` from `.env` next to the compose file, which the operator writes in step 1 of the runbook with the name the host administrator gives, and compose stops while it has no value. The runtime claims jobs, calls the service, signs the receipt and submits its hash. The service reads public ledger data and holds no key: it reads the same env file as the runtime, and the compose file blanks the one secret in it for the service.
 
 ## What the host administrator does
 
@@ -29,7 +29,7 @@ The working directory on the box is `/opt/agent-history/repo/deploy/apex-web`, i
 
    The digest (or, where Docker keeps none for a local image, the image ID) of that local build is the one to record. Compose does not pull an image that it already has, so `up -d` then runs the local build.
 
-4. **Caddy.** Merge the block below into `/opt/umami/Caddyfile` (it is the block in `Caddyfile.snippet`, which also carries comments), validate and reload:
+4. **Caddy.** Merge the block below into the host's Caddy configuration (it is the block in `Caddyfile.snippet`, which also carries comments), validate and reload. `<caddy container>` is the container of the host's Caddy:
 
    ```
    mp-suppliers-history.hal8.ai {
@@ -43,8 +43,8 @@ The working directory on the box is `/opt/agent-history/repo/deploy/apex-web`, i
    ```
 
    ```sh
-   docker exec umami-caddy-1 caddy validate --config /etc/caddy/Caddyfile
-   docker exec umami-caddy-1 caddy reload --config /etc/caddy/Caddyfile
+   docker exec <caddy container> caddy validate --config /etc/caddy/Caddyfile
+   docker exec <caddy container> caddy reload --config /etc/caddy/Caddyfile
    ```
 
    The second route matters. The advert's `detail_uri` is `https://mp-suppliers-history.hal8.ai/agent.json`, and the template runtime does not serve that path. Without the route the manifest cannot be fetched and the hash in the advert cannot be checked. The `/agent.json` route goes first so that it is not caught by the default one. Everything else goes to the runtime.
@@ -61,7 +61,7 @@ The working directory on the box is `/opt/agent-history/repo/deploy/apex-web`, i
 
 ## Rollback
 
-The order and the commands are in [RUNBOOK.md](RUNBOOK.md), under "Back out". The operator retires the advert first, so that nobody can post an escrow against an agent that is about to stop. That transaction is signed with the supplier key in the env file, so it is not the host administrator's. Then the containers stop. The host administrator's part comes last: remove the Caddy block from `/opt/umami/Caddyfile`, validate and reload, and remove the DNS record if it will not be reused.
+The order and the commands are in [RUNBOOK.md](RUNBOOK.md), under "Back out". The operator retires the advert first, so that nobody can post an escrow against an agent that is about to stop. That transaction is signed with the supplier key in the env file, so it is not the host administrator's. Then the containers stop. The host administrator's part comes last: remove the Caddy block from the host's Caddy configuration, validate and reload, and remove the DNS record if it will not be reused.
 
 The registry identity and the Module-3 stake stay on the ledger until the operator withdraws them.
 
@@ -71,13 +71,13 @@ Status: DEPLOYED since 2026-10-16. Nothing in this section is LIVE. Steps 1 to 1
 
 | Container | Image | Listens on | Reachable from |
 |---|---|---|---|
-| `document-pipeline-agent` | built on the box from `https://github.com/Apex-Fusion/vector-agent-template.git` at the same pinned commit `c4c378a` (`CAPABILITY_KIND=custom`) | 8080 | Caddy, over `umami_default`. The host, on `127.0.0.1:8084` only |
-| `document-pipeline-service` | `ghcr.io/apex-fusion/vector-service-agents/document-pipeline`, built on the box and pinned by digest (`@sha256:<digest>`, a placeholder in the repository), or by image ID | 9092 | The runtime and Caddy, over `umami_default`. Nothing on the host: 9092 is never published |
+| `document-pipeline-agent` | built on the box from `https://github.com/Apex-Fusion/vector-agent-template.git` at the same pinned commit `c4c378a` (`CAPABILITY_KIND=custom`) | 8080 | Caddy, over the external network of the host's reverse proxy. The host, on `127.0.0.1:8084` only |
+| `document-pipeline-service` | `ghcr.io/apex-fusion/vector-service-agents/document-pipeline`, built on the box and pinned by digest (`@sha256:<digest>`, a placeholder in the repository), or by image ID | 9092 | The runtime and Caddy, over the external network of the host's reverse proxy. Nothing on the host: 9092 is never published |
 
-The working directory on the box is `/opt/document-pipeline/repo/deploy/apex-web`, inside a checkout of this repository that is shipped to the box as a git bundle, because the box has no GitHub credentials. The compose project is `document-pipeline`. Both containers join the external network `umami_default`. What differs from Agent History:
+The working directory on the box is `<base path>/repo/deploy/host`, inside a checkout of this repository that is shipped to the box as a git bundle, because the box has no GitHub credentials; the base path is the folder the operator chose for this agent (`BASE` in its runbook). The compose project is `document-pipeline`. Both containers join the external network of the host's reverse proxy (`PROXY_NETWORK` in `.env`, written in step 1 of its runbook, as for Agent History). What differs from Agent History:
 
 - **Two keys.** The runtime holds the supplier key. The service holds a second, separate key, the buyer key, and every job posts escrows from that wallet. The compose file blanks each key in the container that does not need it. The env file holds both.
-- **A token on the service.** The service answers `POST /` only to a call whose `authorization` header is the token in `SERVICE_AUTH_HEADER`, which the runtime sends with every call (ruling R50). Both containers read it from the env file, and the operator makes it in step 4 of the runbook. A `POST /` without that header, or with another value, gets 401 before its body is read. `GET /healthz` and `GET /agent.json` need no header, and any other path gets 404. Port 9092 is never published to the host all the same. It is reachable over `umami_default` by every container on that network, so the host administrator keeps `umami_default` to stacks that are trusted: the token is the second lock, and anything that holds it can start a job that posts escrows from the buyer wallet.
+- **A token on the service.** The service answers `POST /` only to a call whose `authorization` header is the token in `SERVICE_AUTH_HEADER`, which the runtime sends with every call (ruling R50). Both containers read it from the env file, and the operator makes it in step 4 of the runbook. A `POST /` without that header, or with another value, gets 401 before its body is read. `GET /healthz` and `GET /agent.json` need no header, and any other path gets 404. Port 9092 is never published to the host all the same. It is reachable over the external network of the host's reverse proxy by every container on that network, so the host administrator keeps that network to stacks that are trusted: the token is the second lock, and anything that holds it can start a job that posts escrows from the buyer wallet.
 - **The state volume.** `document-pipeline-state`, mounted at `/data`, holds `stranded.json`, the list of escrows a job left behind that the janitor of the service settles. `docker compose down` keeps it, and `down -v` or `docker volume rm` would delete it. Neither is run while the file lists an escrow.
 - **Memory and the stop.** The service has `mem_limit: 1536m`, because `pdftoppm` renders every page at 150 dpi whatever its size, and `stop_grace_period: 330s`, because on a stop it waits up to 300 s for the job that is running, and Docker must leave it 30 s more to log a job it had to abandon and to exit with its own code. A shorter timeout (`docker stop -t`, a host that shuts down faster) kills a job under escrow, so, once the runtime runs (step 13 of the runbook), restarts wait for `/status` on `127.0.0.1:8084` to say `free`. Before step 13 no job can run, and there is nothing to wait for.
 - **A window of 30 min.** The advert gives a job 30 min, so one job can hold the runtime for up to 27 min.
@@ -88,7 +88,7 @@ The working directory on the box is `/opt/document-pipeline/repo/deploy/apex-web
 
 2. **The image.** There is no registry login and no image to pull for this agent: the service image is built on the box from a checkout of this repository (step 2 of the runbook) and pinned there. The CI job that publishes `ghcr.io/apex-fusion/vector-service-agents/document-pipeline` tags `:latest` and `:<full git commit sha>`, as it does for Agent History, once Actions can run. The compose file uses neither tag. It names the image by digest (`@sha256:<digest>`, a placeholder in the repository), or by image ID where Docker keeps no digest for a local build.
 
-3. **Caddy.** Merge the block below into `/opt/umami/Caddyfile` (it is the block in `Caddyfile.document-pipeline.snippet`, which also carries comments), validate and reload. The operator's runbook does this at step 10 with a copy of the install script of Agent History; by hand it is:
+3. **Caddy.** Merge the block below into the host's Caddy configuration (it is the block in `Caddyfile.document-pipeline.snippet`, which also carries comments), validate and reload. The operator's runbook does this at step 10 with a copy of the install script of Agent History; by hand it is, with `<caddy container>` the container of the host's Caddy:
 
    ```
    mp-suppliers-pipeline.hal8.ai {
@@ -102,8 +102,8 @@ The working directory on the box is `/opt/document-pipeline/repo/deploy/apex-web
    ```
 
    ```sh
-   docker exec umami-caddy-1 caddy validate --config /etc/caddy/Caddyfile
-   docker exec umami-caddy-1 caddy reload --config /etc/caddy/Caddyfile
+   docker exec <caddy container> caddy validate --config /etc/caddy/Caddyfile
+   docker exec <caddy container> caddy reload --config /etc/caddy/Caddyfile
    ```
 
    The second route matters for the reason it matters for Agent History: the advert's `detail_uri` is `https://mp-suppliers-pipeline.hal8.ai/agent.json`, and the template runtime does not serve that path. The `/agent.json` route goes first so that it is not caught by the default one.
@@ -120,4 +120,4 @@ The working directory on the box is `/opt/document-pipeline/repo/deploy/apex-web
 
 ### Rollback
 
-The order and the commands are in [RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md), under "Back out". The operator retires the advert first, so that nobody can post an escrow against an agent that is about to stop, and lets the service finish what it holds. That transaction is signed with the supplier key in the env file, so it is not the host administrator's. Then the containers stop, and the state volume stays. The host administrator's part comes last: remove the Caddy block from `/opt/umami/Caddyfile`, validate and reload, and remove the DNS record if it will not be reused.
+The order and the commands are in [RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md), under "Back out". The operator retires the advert first, so that nobody can post an escrow against an agent that is about to stop, and lets the service finish what it holds. That transaction is signed with the supplier key in the env file, so it is not the host administrator's. Then the containers stop, and the state volume stays. The host administrator's part comes last: remove the Caddy block from the host's Caddy configuration, validate and reload, and remove the DNS record if it will not be reused.

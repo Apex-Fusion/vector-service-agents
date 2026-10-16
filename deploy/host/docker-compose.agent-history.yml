@@ -1,9 +1,10 @@
-# Agent History on apex-web: template runtime (pinned) + this repo's service. Pattern: chandra-supplier.
+# Agent History on the deployment host: template runtime (pinned) + this repo's service. Pattern: an earlier supplier stack of the operator.
 # DEPLOYED since 2026-10-15: installed and running on the box since 2026-10-14; one first-party job settled on 2026-10-15. The order of work is RUNBOOK.md. The host administrator's part is README.md.
 # The env file sits next to this file, is made from .env.agent-history.example, holds the supplier key and never enters git.
 # After any change to it, recreate the containers: docker compose -f docker-compose.agent-history.yml up -d --force-recreate <service>. restart does not re-read it.
-# Both containers join umami_default, which other stacks share, and every agent here has a service named "service". The alias
+# Both containers join proxy, the external network of the host's reverse proxy, which other stacks share, and every agent here has a service named "service". The alias
 # "service" would resolve to all of them, so SERVICE_URL names the container, which is unique. The path is /, the only path the service accepts POST on.
+# The name of that network is not in the repository: compose reads PROXY_NETWORK from .env next to this file (RUNBOOK.md step 1), and stops while it has no value.
 name: agent-history
 services:
   agent:
@@ -23,7 +24,7 @@ services:
       PORT: "8080"
     ports: ["127.0.0.1:8083:8080"]
     depends_on: [service]
-    networks: [umami_default]
+    networks: [proxy]
     logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
   service:
     # Pinned by digest, not by tag. The manifest this service renders is hashed into the advert, and :latest moves with every merge to main, so a later
@@ -35,7 +36,7 @@ services:
     env_file: [ { path: ./.env.agent-history, required: true } ]
     # The service holds no key. It reads the same file as the runtime, so the one secret in that file is blanked here.
     environment: { PORT: "9091", HOST: "0.0.0.0", SUPPLIER_PRIV_KEY_HEX: "" }
-    networks: [umami_default]
+    networks: [proxy]
     logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
 networks:
-  umami_default: { external: true, name: umami_default }
+  proxy: { external: true, name: "${PROXY_NETWORK:?set PROXY_NETWORK in .env next to this compose file: the external network of the host's reverse proxy}" }

@@ -1,10 +1,11 @@
-# Document Pipeline on apex-web: template runtime (pinned) + this repo's service. Pattern: Agent History.
+# Document Pipeline on the deployment host: template runtime (pinned) + this repo's service. Pattern: Agent History.
 # DEPLOYED since 2026-10-16: installed and running on the box since 2026-10-16; one first-party job settled on 2026-10-16. The order of work is RUNBOOK-document-pipeline.md. The host administrator's part is README.md.
 # The env file sits next to this file, is made from .env.document-pipeline.example, holds two keys (the supplier key for the runtime, the buyer key for the service) and the token between the two, and never enters git.
 # After any change to it, recreate the containers. Once the runtime runs (step 13 of RUNBOOK-document-pipeline.md), recreate only when its /status says free (curl -s http://127.0.0.1:8084/status): a stop during a job can cut a job under escrow. Before step 13 no job can run.
 # docker compose -f docker-compose.document-pipeline.yml up -d --force-recreate <service>. restart does not re-read it. A change to SERVICE_AUTH_HEADER needs both containers recreated.
-# Both containers join umami_default, which other stacks share, and every agent here has a service named "service". The alias
+# Both containers join proxy, the external network of the host's reverse proxy, which other stacks share, and every agent here has a service named "service". The alias
 # "service" would resolve to all of them, so SERVICE_URL names the container, which is unique. The path is /, the only path the service accepts POST on.
+# The name of that network is not in the repository: compose reads PROXY_NETWORK from .env next to this file (RUNBOOK-document-pipeline.md step 1), and stops while it has no value.
 # Both containers read the same file and each gets only its own key: the other one is blanked in its environment below (an empty string overrides the value from env_file).
 # SERVICE_AUTH_HEADER is the one value both need, so neither blanks it: the runtime sends it as the authorization header of every call to the service (SERVICE_URL below), and the service requires it on POST / (ruling R50).
 name: document-pipeline
@@ -30,7 +31,7 @@ services:
       PIPELINE_BUYER_PRIV_KEY_HEX: ""
     ports: ["127.0.0.1:8084:8080"]
     depends_on: [service]
-    networks: [umami_default]
+    networks: [proxy]
     logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
   service:
     # Pinned by digest, not by tag. The manifest this service renders is hashed into the advert, and :latest moves with every merge to main, so a later
@@ -50,9 +51,9 @@ services:
     # On SIGTERM the service takes no new job and waits up to 300 s for the one that is running; the 30 s more than that are for it to log a job it
     # abandoned, with its escrows, and to exit 1. A grace period of 300 s or less kills a job under escrow mid-run, or the service before it can say what it left.
     stop_grace_period: 330s
-    networks: [umami_default]
+    networks: [proxy]
     logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
 networks:
-  umami_default: { external: true, name: umami_default }
+  proxy: { external: true, name: "${PROXY_NETWORK:?set PROXY_NETWORK in .env next to this compose file: the external network of the host's reverse proxy}" }
 volumes:
   document-pipeline-state: { name: document-pipeline-state }
