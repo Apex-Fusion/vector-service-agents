@@ -1,0 +1,58 @@
+# Document Pipeline on apex-web: template runtime (pinned) + this repo's service. Pattern: Agent History.
+# PROPOSED (built, not deployed). Since 2026-10-13. Nothing of it is installed or running on the box. The order of work is RUNBOOK-document-pipeline.md. The host administrator's part is README.md.
+# The env file sits next to this file, is made from .env.document-pipeline.example, holds two keys (the supplier key for the runtime, the buyer key for the service) and the token between the two, and never enters git.
+# After any change to it, recreate the containers. Once the runtime runs (step 13 of RUNBOOK-document-pipeline.md), recreate only when its /status says free (curl -s http://127.0.0.1:8084/status): a stop during a job can cut a paid job. Before step 13 no job can run.
+# docker compose -f docker-compose.document-pipeline.yml up -d --force-recreate <service>. restart does not re-read it. A change to SERVICE_AUTH_HEADER needs both containers recreated.
+# Both containers join umami_default, which other stacks share, and every agent here has a service named "service". The alias
+# "service" would resolve to all of them, so SERVICE_URL names the container, which is unique. The path is /, the only path the service accepts POST on.
+# Both containers read the same file and each gets only its own key: the other one is blanked in its environment below (an empty string overrides the value from env_file).
+# SERVICE_AUTH_HEADER is the one value both need, so neither blanks it: the runtime sends it as the authorization header of every call to the service (SERVICE_URL below), and the service requires it on POST / (ruling R50).
+name: document-pipeline
+services:
+  agent:
+    # The pin is the full commit c4c378a. BuildKit does not resolve the abbreviated form (repository does not contain ref).
+    build:
+      context: https://github.com/Apex-Fusion/vector-agent-template.git#c4c378abdf2eb507ad454cbeb62b4f48bd5b46a6
+      dockerfile: agent/Dockerfile
+    container_name: document-pipeline-agent
+    restart: unless-stopped
+    env_file: [ { path: ./.env.document-pipeline, required: true } ]
+    # The runtime holds the supplier key and signs the receipt. The buyer key is the service's, so it is blanked here.
+    # SERVICE_TIMEOUT_MS sits 120 s inside the 30 min window of the advert (the runtime refuses to boot unless it is at least 60 s inside), and the
+    # service answers a job within 1620000 ms of its arrival, so a job ends with a result or a refusal before the runtime gives up on it.
+    environment:
+      CAPABILITY_KIND: custom
+      SERVICE_URL: http://document-pipeline-service:9092/
+      SERVICE_CONTENT_TYPE: application/json
+      SERVICE_TIMEOUT_MS: "1680000"
+      ADVERT_MAX_PROCESSING_MS: "1800000"
+      PORT: "8080"
+      PIPELINE_BUYER_PRIV_KEY_HEX: ""
+    ports: ["127.0.0.1:8084:8080"]
+    depends_on: [service]
+    networks: [umami_default]
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+  service:
+    # Pinned by digest, not by tag. The manifest this service renders is hashed into the advert, and :latest moves with every merge to main, so a later
+    # pull or build could change the bytes behind that hash. The placeholder below is replaced on the box with the digest of the image that is there
+    # (RUNBOOK-document-pipeline.md step 2); compose refuses to start the service until it is (invalid reference format).
+    image: ghcr.io/apex-fusion/vector-service-agents/document-pipeline@sha256:<digest>
+    container_name: document-pipeline-service
+    restart: unless-stopped
+    env_file: [ { path: ./.env.document-pipeline, required: true } ]
+    # This service holds the buyer key, which pays for the sub-jobs, and not the supplier key, which is the runtime's: that one is blanked here.
+    # The service answers POST / only to a call that carries SERVICE_AUTH_HEADER, which the runtime sends, and no port is published: the network is shared with other stacks, and a job spends from the buyer wallet.
+    environment: { PORT: "9092", HOST: "0.0.0.0", SUPPLIER_PRIV_KEY_HEX: "", PIPELINE_STATE_DIR: /data }
+    # stranded.json, the escrows a job left behind for the janitor, lives here and outlives the container. docker compose down keeps the volume.
+    volumes: ["document-pipeline-state:/data"]
+    # pdftoppm renders every page at 150 dpi whatever its size, so the memory is bounded here and not in the image.
+    mem_limit: 1536m
+    # On SIGTERM the service takes no new job and waits up to 300 s for the one that is running; the 30 s more than that are for it to log a job it
+    # abandoned, with its escrows, and to exit 1. A grace period of 300 s or less kills a paid job mid-run, or the service before it can say what it left.
+    stop_grace_period: 330s
+    networks: [umami_default]
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+networks:
+  umami_default: { external: true, name: umami_default }
+volumes:
+  document-pipeline-state: { name: document-pipeline-state }

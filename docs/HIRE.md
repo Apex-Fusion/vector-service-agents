@@ -17,7 +17,7 @@ The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nin
 | Agent History, capability `identity.history.report.v1` | DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. The advert reference is `b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c#0`, listed as Active and free on 2026-10-15. The public URL, `https://mp-suppliers-history.hal8.ai`, is in service as of 2026-10-14. |
 | The funding for your key | Sent by hand by the Foundation on request, or by you (section 3). |
 
-Three more agents are specified and not built: Document Pipeline, Audio Snippets and Advocate. This guide hires Agent History only.
+Document Pipeline is built and waits for its deployment. Audio Snippets and Advocate are specified and not built. This guide hires Agent History, and section 5 shows what changes for Document Pipeline once it has an advert.
 
 ## 1. What you will end up with
 
@@ -132,6 +132,18 @@ What you write in message 3 is the request JSON. The tools wrap the request JSON
 | 6 | Reads back what it already has | You hold the report text, the receipt, the signature, the escrow reference and two links. |
 
 If a check fails, do not accept. Declining does not refund you. Once the supplier has submitted you cannot reclaim, and after 600 s the supplier may Release and take the price and both bonds. What declining keeps is your signature: your key never signs an Accept for work you could not verify. Tell the working group which check failed.
+
+### The same script for Document Pipeline
+
+Document Pipeline reads a document: it hires an OCR agent for each page and another agent for the summary, and gives you one signed receipt over the whole bundle. It has no advert yet, so message 2 shows no supplier for it until the operator posts one. When it does, the six messages are the same, with two changes. Ask for `document.pipeline.ocr-summary.v1` in message 2, and write this request JSON in messages 3 and 4:
+
+```json
+{"source":{"url":"https://example.org/letter.pdf"},"task":"summary","language":"en","max_pages":1}
+```
+
+That URL is only an example. Use the https URL of a one-page PDF that anyone may read: its page goes to the OCR agent, and its text to the chat supplier and that supplier's model provider. The service fetches the URL itself, so it must be public and must not redirect.
+
+A job takes minutes where Agent History's takes seconds, because the Pipeline posts and settles an escrow for the page and another for the summary before it answers. Its processing window is 30 min, so message 4 can wait that long: ask your assistant to poll again whenever a call is cut near 100 s, as in section 9. If the job fails, you reclaim after `deliver_by`, which is your Post time plus 30 min plus 180 s. The price is 5 and a job costs about 7 (the cost table in section 3).
 
 ## 6. Read your receipt
 

@@ -1,0 +1,203 @@
+{
+  "schema": "vector.agent-manifest.v1",
+  "name": "Document Pipeline",
+  "capability_id": "document.pipeline.ocr-summary.v1",
+  "version": "0.1.0",
+  "description": "Reads a document: OCR for each page, then a summary or a structured extraction, with every sub-receipt checked and one receipt over the whole bundle.",
+  "operator": {
+    "name": "Apex Fusion Foundation",
+    "contact": "<OPERATOR_CONTACT>"
+  },
+  "identity": {
+    "did": "<AGENT_DID>",
+    "controller_pkh": "<SUPPLIER_PKH>",
+    "registry_address": "addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42"
+  },
+  "keys": {
+    "supplier_pkh": "<SUPPLIER_PKH>",
+    "pub_key_hex": "<SUPPLIER_PUB_KEY_HEX>",
+    "buyer_pkh": "<PIPELINE_BUYER_PKH>"
+  },
+  "interface": {
+    "request_schema": {
+      "type": "object",
+      "required": [
+        "source",
+        "task"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "description": "The document: an https URL of a PDF, PNG or JPEG (at most 20971520 bytes), or a PDF or an image as base64",
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "url"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "url": {
+                  "type": "string",
+                  "minLength": 9,
+                  "pattern": "^https://",
+                  "description": "An https URL; the service fetches it itself"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "pdf_b64",
+                "mime"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "pdf_b64": {
+                  "type": "string",
+                  "minLength": 4,
+                  "maxLength": 800000,
+                  "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+                  "description": "A PDF as standard base64 text, padded, with no line breaks; at most 600000 bytes of media"
+                },
+                "mime": {
+                  "const": "application/pdf"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "image_b64",
+                "mime"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "image_b64": {
+                  "type": "string",
+                  "minLength": 4,
+                  "maxLength": 800000,
+                  "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+                  "description": "A PNG or JPEG image as standard base64 text, padded, with no line breaks; at most 600000 bytes of media"
+                },
+                "mime": {
+                  "enum": [
+                    "image/png",
+                    "image/jpeg"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "task": {
+          "enum": [
+            "summary",
+            "extract"
+          ],
+          "description": "summary: a plain-text summary of the pages. extract: one JSON object valid against schema"
+        },
+        "schema": {
+          "type": "object",
+          "description": "A JSON Schema for the extraction: required with task extract, refused with task summary; the rules it must keep are in notes"
+        },
+        "language": {
+          "type": "string",
+          "maxLength": 16,
+          "pattern": "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$",
+          "default": "en",
+          "description": "The language code of the answer, such as en or en-GB: 2 to 8 letters and optional hyphen-separated subtags of up to 8 letters or digits, at most 16 characters"
+        },
+        "max_pages": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 5,
+          "description": "The most pages read, from the first; a longer document is read in part"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "task": {
+                "const": "extract"
+              }
+            },
+            "required": [
+              "task"
+            ]
+          },
+          "then": {
+            "properties": {
+              "schema": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "schema"
+            ]
+          },
+          "else": {
+            "properties": {
+              "schema": false
+            }
+          }
+        }
+      ]
+    },
+    "response_schema": {
+      "$ref": "https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/document-pipeline.md#response"
+    },
+    "routes": {
+      "job": "/v1/job",
+      "status": "/status",
+      "capability": "/capability"
+    },
+    "notes": [
+      "The schema, which goes with task extract and with no other task, is a JSON Schema of draft-07 read in strict mode: a keyword the validator does not know is refused.",
+      "The schema may not use $ref, $dynamicRef, $recursiveRef, $id, $defs, definitions, pattern, patternProperties or format, have a __proto__ key, or declare $async at the root. It is at most 16384 bytes of JSON and 32 levels deep, and each of its anyOf, oneOf and allOf has at most 16 entries. A schema that breaks a rule is refused with the code schema_invalid (400) before anything is spent.",
+      "An extraction whose answer is not JSON, or does not validate against the schema, is not an error: the result has schema_valid false and extraction null, and the answer is kept as raw_text."
+    ]
+  },
+  "terms": {
+    "price_lovelace": 5000000,
+    "supplier_bond_lovelace": 1000000,
+    "buyer_bond_lovelace": 1000000,
+    "max_processing_ms": 1800000,
+    "input_limits": {
+      "request_bytes": 900000,
+      "source_bytes": 20971520,
+      "inline_media_bytes": 600000,
+      "max_pages": 5
+    }
+  },
+  "behaviour": {
+    "data_handling": "The document, its page images, the task and the schema are held in memory while a job runs; a PDF is also written to a private temporary directory while its pages are rendered, and removed after. Pages go to the OCR agent as images, the page texts, the task and any schema to the LLM supplier, and escrow identifiers to Koios and the marketplace indexer; on the ledger the sub-escrows carry hashes, not the document or its text. The service writes only the bookkeeping of the escrows it posts (references, times, the hop, a transaction hash) to its state directory, and its log carries job outcomes, never a request or a document.",
+    "third_parties": [
+      "the host of the source URL",
+      "the ChandraOCR agent, and Datalab behind it",
+      "the LLM supplier it hires, and its model provider",
+      "Koios (Vector mainnet indexer)",
+      "marketplace indexer"
+    ]
+  },
+  "status": {
+    "chip": "proposed",
+    "since": "2026-10-13"
+  },
+  "gaps": [
+    "v1 reads at most 5 pages, renders PDFs at 150 dpi and reads pages one after another, hence the 30 min window.",
+    "A job has a deadline of its own, 1620000 ms after its request arrives: a page is not started with less than 660 s left, nor the summary or extraction with less than 420 s. A job that cannot start its next hire in time, or whose hire would have to wait again on its supplier or on the ledger after the deadline, fails with the code deadline and returns no bundle, and the sub-jobs it had already paid for are not refunded. A hire in its Accept at the deadline is not cut: it finishes late, and the chat job may then answer after the runtime has given up on the job.",
+    "The OCR hop is first-party only. A third-party OCR path needs the Datalab terms to allow it.",
+    "Every supplier it can hire today is first-party.",
+    "The Pipeline checks receipts, not truth: a summary is as good as the model that wrote it.",
+    "An extraction whose answer is not JSON, or does not validate against the schema, still succeeds and is paid for: the result has schema_valid false and extraction null, and the answer is kept as raw_text.",
+    "At five pages the Pipeline spends about 19 in locks and fees to earn 5, where 5 is the price of 5000000 lovelace and the 19 holds at today's fleet price of 0.2 per sub-job. The Foundation subsidises this on purpose while the fee floor stands."
+  ],
+  "links": {
+    "spec": "https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/document-pipeline.md",
+    "source": "https://github.com/Apex-Fusion/vector-service-agents/tree/main/agents/document-pipeline",
+    "explorer_advert": ""
+  }
+}
