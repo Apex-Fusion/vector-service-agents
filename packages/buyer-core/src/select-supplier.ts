@@ -2,7 +2,8 @@
 // Supplier discovery: which chat supplier to hire for the summary (selectLlmSupplier) and which OCR advert to hire for a page (findOcrAdvert). Both read the
 // marketplace indexer with the vendored fetchSuppliers, which lists the adverts of one capability, and keep the Active adverts whatever the indexer says of
 // their supplier at the moment (free, working, offline): that word is a moment's and must not fail a job before it spends, and the send of a job waits for a
-// supplier that is busy (ruling R60). The indexer is the operator's own configuration, read with the injected fetch as it is. The suppliers it lists are
+// supplier that is busy (ruling R60). A chat candidate is then asked for its own word at /status, which must be free or working: offline, another word or
+// no answer passes it over for the next. The indexer is the operator's own configuration, read with the injected fetch as it is. The suppliers it lists are
 // reached only through safeFetch (see fleet-clients.ts).
 //
 // The indexer's row names the advert's UTxO `utxo_ref`: it is the `advert_ref` that the supplier's own /capability serves, and the ref the escrow's Post is
@@ -19,6 +20,8 @@ const OCR_CAPABILITY = 'ocr.page.extract.chandra-ocr-2.v1';
 export const LLM_SELECTION_BUDGET_MS = 120_000;
 /** The most suppliers the selection asks, in order, before it gives up. */
 export const LLM_SELECTION_MAX_CANDIDATES = 6;
+/** The words of a supplier's /status that keep it a candidate (ruling R60): free, or working, which the send waits for. */
+const HIRABLE: ReadonlySet<string> = new Set(['free', 'working']);
 /** The longest delay a timer takes: Node cuts a longer one to a millisecond. */
 const MAX_TIMER_MS = 2_147_483_647;
 const EXPIRED = Symbol('the budget of the selection ran out');
@@ -71,9 +74,9 @@ const newerFirst = (a: number, b: number): number => (a === b ? 0 : a > b ? -1 :
  * candidates are the Active `llm.text.generate.v1` adverts whose model is on `allowlist`, whatever the indexer says of their supplier (ruling R60), in this
  * order: the position of the model on the allowlist, then the price (lowest first), then when the supplier was last seen (latest first; a supplier never seen,
  * or seen at a time that is no date, last). At most `maxCandidates` (LLM_SELECTION_MAX_CANDIDATES, 6 by default) are asked, each in turn for its /capability, which must carry
- * `inference_api: "responses"` and the very `advert_ref` the indexer lists for it, and, when `probe` is true, for its /status, which must answer with a status
- * word of the supplier's (free, working or offline: a busy supplier is waited for by the send). The first that passes is the answer, so the candidates after
- * it are not contacted. A candidate whose /capability cannot be read or does not match, or whose /status cannot be read, is skipped, not an error.
+ * `inference_api: "responses"` and the very `advert_ref` the indexer lists for it, and, when `probe` is true, for its /status, which must say free or working
+ * (ruling R60: a supplier at work is waited for by the send). The first that passes is the answer, so the candidates after it are not contacted. A candidate
+ * whose /capability cannot be read or does not match, or whose /status says offline, says another word or cannot be read, is passed over, not an error.
  * The whole selection has `budgetMs` (LLM_SELECTION_BUDGET_MS, 120 s by default) from the moment it is called, the read of the indexer included: when that runs out before a
  * candidate has passed, the call in flight is cancelled and the answer is null, and a candidate that answers after that is not used. Infinity lifts either limit.
  * Rejects when the indexer cannot be read, and when a limit is not a number.
@@ -103,7 +106,7 @@ export async function selectLlmSupplier(args: {
     let capability: SupplierCapability;
     try { capability = await readCapability(row.endpoint_url, reach); } catch { return null; }
     if (capability.inference_api !== 'responses' || !sameRef(capability.advert_ref, row.utxo_ref)) return null;
-    if (args.probe === true && (await probeStatus(row.endpoint_url, reach)) === 'unreachable') return null;
+    if (args.probe === true && !HIRABLE.has(await probeStatus(row.endpoint_url, reach))) return null;
     return { advertRef: row.utxo_ref, endpoint: row.endpoint_url, model: row.model, supplierPkh: row.supplier_pkh, priceLovelace: row.price_lovelace, capability };
   };
   for (const { row } of candidates) {

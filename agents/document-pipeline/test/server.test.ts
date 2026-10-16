@@ -1192,21 +1192,30 @@ describe('GET /healthz', () => {
     });
   });
 
+  // The timeout of a check is a timer, so the timers are faked here and moved by hand; the requests are real. With a real 30 ms timer the test once failed in
+  // a full run (the first /healthz answered 503, not 200): the first check starts when the server is made, and under load its timer fired before the first
+  // request was answered. Only setTimeout and clearTimeout are faked, and Date is not, so a request takes as long as it takes.
   test('a check that never answers is cut off at the timeout and counts as failed, and the TTL starts a new one', async () => {
-    const t = { now: T0 };
-    let reads = 0;
-    const chain = walletChain(() => { reads += 1; return new Promise(() => {}); });
-    await serve(options({ deps: baseDeps({ chain, clock: () => t.now }), floatTimeoutMs: 30 }), async (api) => {
-      expect((await api.get('/healthz')).status).toBe(200); // nothing is known yet
-      const end = Date.now() + 3000;
-      let status = 200;
-      while (status === 200 && Date.now() < end) { await new Promise((resolve) => setTimeout(resolve, 10)); status = (await api.get('/healthz')).status; }
-      expect(status).toBe(503);
-      expect(reads).toBe(1);
-      t.now += 60_000;
-      await api.get('/healthz');
-      expect(reads).toBe(2); // the first check is still pending forever, and does not hold the second back
-    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const t = { now: T0 };
+      let reads = 0;
+      const chain = walletChain(() => { reads += 1; return new Promise(() => {}); });
+      await serve(options({ deps: baseDeps({ chain, clock: () => t.now }), floatTimeoutMs: 30 }), async (api) => {
+        expect((await api.get('/healthz')).status).toBe(200); // nothing is known yet: the first check runs, however long the request took
+        expect(reads).toBe(1);
+        await vi.advanceTimersByTimeAsync(29);
+        expect((await api.get('/healthz')).status).toBe(200); // not cut off before its timeout
+        await vi.advanceTimersByTimeAsync(1);
+        expect((await api.get('/healthz')).status).toBe(503); // cut off at its timeout, and counted as failed
+        expect(reads).toBe(1);
+        t.now += 60_000;
+        await api.get('/healthz');
+        expect(reads).toBe(2); // the first check is still pending forever, and does not hold the second back
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('a change of state is logged once, with its reason, and a repeat is not', async () => {

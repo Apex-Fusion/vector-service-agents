@@ -9,10 +9,11 @@
 // ruling R27); the OCR supplier must be found and checked (ocr_supplier_unavailable, 503). Its advert is the one Active advert of the allowlisted key the
 // indexer lists, whatever the indexer says of the supplier at the moment (ruling R60), at a price at or under OCR_MAX_PRICE_LOVELACE, read again on chain,
 // where it must be an active OCR advert of that very key at such a price: the indexer is a guide, the chain is what an escrow pays. Its /capability must
-// serve the key of that advert, or no receipt of it could verify. The endpoint a job is sent to is the one on chain. The chat supplier is chosen then too,
-// before any page is paid for (ruling R35): the cheapest allowlisted supplier at a price at or under LLM_MAX_PRICE_LOVELACE whose /capability and /status
-// answer (selectLlmSupplier; a supplier that says it is working is waited for by the send, ruling R60), whose advert is read on chain as well
-// (llm_supplier_unavailable, 503). Once both are known, and still before the first Post, the float is looked at again with the locks their adverts take
+// serve the key of that advert, or no receipt of it could verify, and its /status must say free or working (ruling R60): one at work is waited for by the
+// send, and one that says offline, another word, or nothing refuses the job. The endpoint a job is sent to is the one on chain. The chat supplier is chosen
+// then too, before any page is paid for (ruling R35): the cheapest allowlisted supplier at a price at or under LLM_MAX_PRICE_LOVELACE whose /capability
+// serves the Responses API for its advert and whose /status says free or working (selectLlmSupplier; one at work is waited for by the send, ruling R60),
+// whose advert is read on chain as well (llm_supplier_unavailable, 503). Once both are known, and still before the first Post, the float is looked at again with the locks their adverts take
 // and the fees of a Post and an Accept for each sub-job (insufficient_float, 503, ruling R56).
 //
 // The first look at the float is a gate that needs no supplier, the one /healthz makes too: (max_pages + 1) x 4500000 assumes adverts priced at or under
@@ -24,7 +25,7 @@
 // (ruling R12). Its answer must be a completed response: one that is not is still verified and accepted (the supplier delivered), and the job fails
 // with llm_incomplete (ruling R11). Every escrow a failure leaves behind is in the stranded store, for the janitor.
 import {
-  findOcrAdvert, ocrPromptHash, ocrResponseHash, planFleetPostEscrow, pollOcrJob, pollResponsesJob, readCapability, responsesOutputText, responsesPromptHash,
+  findOcrAdvert, ocrPromptHash, ocrResponseHash, planFleetPostEscrow, pollOcrJob, pollResponsesJob, probeStatus, readCapability, responsesOutputText, responsesPromptHash,
   responsesResponseHash, selectLlmSupplier, sendOcrJob, sendResponsesJob, flatText, LLM_SELECTION_BUDGET_MS, LLM_SELECTION_MAX_CANDIDATES, TX_FEE_BUDGET_LOVELACE,
 } from '@vsa/buyer-core';
 import type { Chain, SupplierCapability } from '@vsa/buyer-core';
@@ -229,8 +230,8 @@ const aboveCeiling = (advertRef: string, price: bigint, ceiling: bigint, setting
   `its advert ${advertRef} is priced ${price} lovelace, above the ceiling of ${ceiling} lovelace (${setting})`;
 
 /**
- * The OCR supplier: the allowlisted key's one Active advert at a price at or under the ceiling, checked on chain, and the key its /capability serves.
- * ocr_supplier_unavailable (503) otherwise. When the indexer lists no such advert, it is read once more without the ceiling, so that an advert priced
+ * The OCR supplier: the allowlisted key's one Active advert at a price at or under the ceiling, checked on chain, the key its /capability serves, and its
+ * /status free or working (ruling R60). ocr_supplier_unavailable (503) otherwise. When the indexer lists no such advert, it is read once more without the ceiling, so that an advert priced
  * above it is named with its price rather than said not to be listed.
  */
 async function ocrSupplier(deps: Deps): Promise<Supplier> {
@@ -256,6 +257,10 @@ async function ocrSupplier(deps: Deps): Promise<Supplier> {
   let capability: SupplierCapability;
   try { capability = await readCapability(advert.endpoint_url, deps.fetchImpl); } catch (err) { throw unavailable(`its /capability could not be read (${errorText(err)})`); }
   if (!keyOfAdvert(capability, advert)) throw unavailable('the key its /capability serves is not the key of its advert, so no receipt of it could verify');
+  // Its own word, asked as a chat candidate's is (ruling R60): free or working hires it, and the send waits for one at work.
+  const status = await probeStatus(advert.endpoint_url, deps.fetchImpl);
+  if (status === 'offline') throw unavailable('its /status says it is offline');
+  if (status === 'unreachable') throw unavailable('its /status could not be read (no answer, an error, or no status word of a supplier)');
   const supplier: Supplier = { hop: 'ocr', advertRef, advert, capabilityId: advert.capability_id, model: advert.model, endpoint: advert.endpoint_url, pubKeyHex: capability.pub_key_hex, windowMs: advert.max_processing_ms };
   logChoice(deps, supplier);
   return supplier;
@@ -272,7 +277,8 @@ async function llmSupplier(deps: Deps, label: string): Promise<Supplier> {
   if (chosen === null) {
     // Null says none passed in time, not that none exists (ruling R22): the reasons are the selection's three.
     throw unavailable(`the indexer lists no Active ${LLM_CAPABILITY} advert whose model is on the allowlist (${deps.llmAllowlist.join(', ')}) at a price at or under the ceiling of ${ceiling} lovelace (LLM_MAX_PRICE_LOVELACE), `
-      + `or none of the first ${LLM_SELECTION_MAX_CANDIDATES} such suppliers answered its /capability with the Responses API for its own advert and its /status, or the selection ran out of its ${LLM_SELECTION_BUDGET_MS / 1000} s`);
+      + `or none of the first ${LLM_SELECTION_MAX_CANDIDATES} such suppliers answered its /capability with the Responses API for its own advert and its /status with free or working, `
+      + `or the selection ran out of its ${LLM_SELECTION_BUDGET_MS / 1000} s`);
   }
   const advertRef = canonicalRef(chosen.advertRef);
   const advert = await advertOnChain(deps.chain, advertRef, unavailable);

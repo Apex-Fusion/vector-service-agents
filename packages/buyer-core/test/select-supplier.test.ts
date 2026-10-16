@@ -208,17 +208,23 @@ describe('selectLlmSupplier', () => {
     }
   });
 
-  it('with probe true a supplier whose /status cannot be read is skipped; one that answers working or offline stays a candidate (ruling R60)', async () => {
-    const unreadable: Array<[string, Answer]> = [['a status word of nobody', live('busy')], ['an error status', down], ['a network error', boom], ['a page', text(200, '<html>status</html>', 'text/html')]];
-    for (const [name, status] of unreadable) {
+  // Ruling R60, refined: free and working keep a candidate (the send waits for one at work); offline, any other word, and a /status that cannot be read
+  // pass it over for the next.
+  it('with probe true a supplier whose /status says offline, or cannot be read, is passed over for the next; one that answers working or free stays a candidate (ruling R60)', async () => {
+    const passedOver: Array<[string, Answer]> = [
+      ['offline', live('offline')], ['a status word of nobody', live('busy')], ['an error status', down], ['a network error', boom], ['a page', text(200, '<html>status</html>', 'text/html')],
+    ];
+    for (const [name, status] of passedOver) {
       const f = network([llm(1, DEEPSEEK, { row: { price_lovelace: '100000' }, live: status }), llm(2, DEEPSEEK, { live: 'free' })]);
       expect((await select(f, { probe: true }))?.advertRef, name).toBe(advertOf(2));
+      expect(askedOf(f, '/status'), name).toStrictEqual([1, 2].map((n) => hostOf(endpointOf(n))));
     }
-    for (const word of ['working', 'offline', 'free']) {
+    for (const word of ['working', 'free']) {
       const f = network([llm(1, DEEPSEEK, { row: { price_lovelace: '100000' }, live: word }), llm(2, DEEPSEEK, { live: 'free' })]);
       expect((await select(f, { probe: true }))?.advertRef, word).toBe(advertOf(1));
     }
     expect((await select(network([llm(1, DEEPSEEK, { live: 'working' })]), { probe: true }))?.advertRef).toBe(advertOf(1));
+    expect(await select(network([llm(1, DEEPSEEK, { live: 'offline' })]), { probe: true })).toBeNull();
     expect(await select(network([llm(1, DEEPSEEK, { live: boom })]), { probe: true })).toBeNull();
   });
 

@@ -109,7 +109,8 @@ describe('runPipeline: the golden run', () => {
     const run = setup();
     await runPipeline(request(), run.deps);
     expect(calls(run.m)).toStrictEqual([
-      `GET ${INDEXER}/suppliers`, `GET ${OCR_ENDPOINT}/capability`,
+      // The OCR supplier is asked for its /status too, after its /capability, as a chat candidate is (ruling R60).
+      `GET ${INDEXER}/suppliers`, `GET ${OCR_ENDPOINT}/capability`, `GET ${OCR_ENDPOINT}/status`,
       `GET ${INDEXER}/suppliers`, `GET ${LLM_ENDPOINT}/capability`, `GET ${LLM_ENDPOINT}/status`,
       `POST ${OCR_ENDPOINT}/v1/ocr/extract`, `GET ${OCR_ENDPOINT}/v1/ocr/extract/extract-job-1`, `GET ${OCR_ENDPOINT}/v1/ocr/extract/extract-job-1`,
       `POST ${OCR_ENDPOINT}/v1/ocr/extract`, `GET ${OCR_ENDPOINT}/v1/ocr/extract/extract-job-2`, `GET ${OCR_ENDPOINT}/v1/ocr/extract/extract-job-2`,
@@ -739,19 +740,29 @@ describe('runPipeline: the chat answer', () => {
   });
 
   // Ruling R60: what the indexer says of a supplier at the moment, and a /status that says it is busy, do not fail a job before it spends: the send waits.
-  it('an OCR advert the indexer lists as working, and a chat supplier listed offline whose /status says working, are hired all the same (ruling R60)', async () => {
+  it('an OCR supplier and a chat supplier whose /status says working are hired all the same, whatever the indexer lists them as: the golden result (ruling R60)', async () => {
     const run = setup();
     run.m.rows[0] = indexerRow(OCR_ADVERT_REF, OCR_ADVERT, { status: 'working' });
     run.m.rows[1] = indexerRow(LLM_ADVERT_REF, LLM_ADVERT, { status: 'offline' });
+    run.m.ocr.statusWord = 'working';
     run.m.llm.statusWord = 'working';
     expect(await runPipeline(request(), run.deps)).toStrictEqual(GOLDEN);
+  });
+
+  it('a chat supplier whose /status says offline is passed over, and with no other the job is llm_supplier_unavailable (503) before anything is posted (ruling R60)', async () => {
+    const run = setup();
+    run.m.llm.statusWord = 'offline';
+    const error = await failure(runPipeline(request(), run.deps), 'llm_supplier_unavailable', 503);
+    expect(error.message).toContain('and its /status with free or working, or the selection ran out of its 120 s');
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
+    expect(run.m.ocr.sends).toHaveLength(0);
   });
 
   it('a chat supplier whose /status cannot be read is skipped, and with no other the job is llm_supplier_unavailable (503) before anything is posted', async () => {
     const run = setup();
     run.m.llm.statusWord = 'asleep';
     const error = await failure(runPipeline(request(), run.deps), 'llm_supplier_unavailable', 503);
-    expect(error.message).toContain('or none of the first 6 such suppliers answered its /capability with the Responses API for its own advert and its /status, or the selection ran out of its 120 s');
+    expect(error.message).toContain('or none of the first 6 such suppliers answered its /capability with the Responses API for its own advert and its /status with free or working, or the selection ran out of its 120 s');
     expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
   });
 
@@ -1040,6 +1051,29 @@ describe('runPipeline: refusals before anything is posted', () => {
     expect(error.message).toMatch(new RegExp(run.m.ocr.key.pkh));
     expect(error.message).toContain('the marketplace indexer lists no single Active ocr.page.extract.chandra-ocr-2.v1 advert of it');
     expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
+  });
+
+  // Ruling R60, refined: the OCR supplier is asked for its /status too, before the first Post, as a chat candidate is. Free or working hires it (the send
+  // waits for one at work); offline, another word, or no answer refuses the job before anything is spent.
+  it('an OCR supplier whose /status says offline refuses the job: ocr_supplier_unavailable (503), saying what it answered; no escrow is posted and the float is whole', async () => {
+    const run = setup();
+    const before = (await run.m.chain.wallet()).floatLovelace;
+    run.m.ocr.statusWord = 'offline';
+    const error = await failure(runPipeline(request(), run.deps), 'ocr_supplier_unavailable', 503);
+    expect(error.message).toMatch(/its \/status says it is offline\. Nothing was spent\.$/);
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
+    expect(run.m.ocr.sends).toHaveLength(0);
+    expect((await run.m.chain.wallet()).floatLovelace).toBe(before);
+  });
+
+  it('an OCR supplier whose /status cannot be read, or says a word that is not a status of a supplier, refuses the job the same way, saying it could not be read', async () => {
+    for (const word of ['asleep', '']) {
+      const run = setup();
+      run.m.ocr.statusWord = word;
+      const error = await failure(runPipeline(request(), run.deps), 'ocr_supplier_unavailable', 503);
+      expect(error.message, word).toMatch(/its \/status could not be read \(no answer, an error, or no status word of a supplier\)\. Nothing was spent\.$/);
+      expect(await states(run.m, escrowNo(1)), word).toStrictEqual(['unknown']);
+    }
   });
 
   it('an OCR advert the indexer lists as retired is not hired, whatever its supplier says: ocr_supplier_unavailable (503), nothing posted (ruling R60)', async () => {
