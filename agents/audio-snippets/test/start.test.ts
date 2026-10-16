@@ -3,6 +3,8 @@
 // kept out of every other line and out of the manifest, the stop of the kit with this service's log, and src/index.ts run as a process.
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, test, expect } from 'vitest';
 import { WORKER_PATH } from '../src/asr.ts';
@@ -129,6 +131,22 @@ describe('startService', () => {
     const notReady = { ...stubAsr(GOLDEN_TRANSCRIPT), check: async () => { throw new Error('the speech model is not ready (model_missing: the model directory lacks model.bin)'); } };
     await expect(startService(env, { tools: fakeTools(), asr: notReady, log })).rejects.toThrow(/^the speech model is not ready/);
     expect(logs.filter((l) => l.startsWith('listening on'))).toStrictEqual([]);
+  });
+
+  test('a scratch root that cannot be written stops the start before the tools are asked, naming the directory; one that can be written is left as it was', async () => {
+    // The Pipeline proves its state directory the same way (its assertWritable): a job writes its media, its decode and its clips under the scratch root.
+    const missing = join(tempDir(), 'missing');
+    await expect(startService(env, { tools: fakeTools(), asr: stubAsr(GOLDEN_TRANSCRIPT), log, scratchRoot: missing })).rejects.toThrow(`the temporary directory ${missing} cannot be written (ENOENT`);
+    await expect(startService(env, { tools: fakeTools(), asr: stubAsr(GOLDEN_TRANSCRIPT), log, scratchRoot: missing })).rejects.toThrow(/\): a job writes its media, its decoded audio and its clips there, so the service does not start without it$/);
+    expect(asked).toStrictEqual([]);
+    expect(logs.filter((l) => l.startsWith('listening on'))).toStrictEqual([]);
+    const root = tempDir();
+    const service = await startService(env, { tools: fakeTools(), asr: stubAsr(GOLDEN_TRANSCRIPT), log, scratchRoot: root });
+    try {
+      expect(readdirSync(root)).toStrictEqual([]);
+    } finally {
+      await service.stop();
+    }
   });
 
   test('a start without the token is refused before anything is asked', async () => {

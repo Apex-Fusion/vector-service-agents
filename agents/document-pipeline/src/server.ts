@@ -11,7 +11,7 @@
 //                     that failed, and 503 (the service cannot take a job now) or 500 (store_write_failed) for a failure on this side, whose message is fixed
 //                     text for the buyer and whole in the log (PipelineError).
 import type { Server } from 'node:http';
-import { HealthMonitor, JobSlot, createJobServer, envInt, requiredEnv, shown } from '@vsa/service-kit';
+import { HealthMonitor, JobSlot, createJobServer, envInt, requiredEnv, statusChip, statusSince } from '@vsa/service-kit';
 import type { Refusal } from '@vsa/service-kit';
 import { REGISTRY_ADDRESS } from '@vsa/vector-read';
 import { JOB_DEADLINE_MS, WALLET_READ_TIMEOUT_MS } from './budget.ts';
@@ -27,21 +27,10 @@ import { MAX_SOURCE_BYTES } from './source.ts';
 export { HEARTBEAT_MS, JobSlot, MAX_BODY, WireError, envInt, parseWire, requiredEnv } from '@vsa/service-kit';
 
 // --- The environment -----------------------------------------------------------------------------------------------------------------
-const CHIPS = ['LIVE', 'DEPLOYED', 'PROPOSED'];
-// The status word: live, deployed or proposed in any case, carried in the manifest in lower case. Absent or empty means deployed: the word since 2026-10-16
+// The status word and its date are read by statusChip and statusSince of packages/service-kit, the rules and the messages the Pipeline had. The word is
+// live, deployed or proposed in any case, carried in the manifest in lower case; absent or empty means deployed, the word since 2026-10-16
 // (RUNBOOK-document-pipeline step 17). A first run, before any job has settled, sets proposed in the env file (step 4). A word above deployed is the
-// operator's to set, by this variable, once it is true.
-function statusChip(v: string | undefined): string {
-  if (v === undefined || v === '') return 'deployed';
-  if (!CHIPS.includes(v.toUpperCase())) throw new Error(`environment variable AGENT_STATUS_CHIP must be one of ${CHIPS.join(', ')}, got ${shown(v)}`);
-  return v.toLowerCase();
-}
-// The date the status word began, YYYY-MM-DD; absent or empty means 2026-10-16, the day the word DEPLOYED began (ruling R52).
-function statusSince(v: string | undefined): string {
-  if (v === undefined || v.trim() === '') return '2026-10-16';
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(v.trim())) throw new Error(`environment variable AGENT_STATUS_SINCE must be a date as YYYY-MM-DD, got ${shown(v)}`);
-  return v.trim();
-}
+// operator's to set, by this variable, once it is true. The date is YYYY-MM-DD; absent or empty means 2026-10-16, the day the word DEPLOYED began (ruling R52).
 /**
  * The window the advert gives a job, at least 30 min: the deadline of a job (JOB_DEADLINE_MS) and the service timeout of the runtime, 60 s later, are fixed
  * for it, and a window below them would be a promise the service cannot keep.
@@ -131,7 +120,7 @@ export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
         + 'The service writes only the bookkeeping of the escrows it posts (references, times, the hop, a transaction hash) to its state directory, and its log carries job outcomes, never a request or a document.',
       third_parties: ['the host of the source URL', 'the ChandraOCR agent, and Datalab behind it', 'the LLM supplier it hires, and its model provider', 'Koios (Vector mainnet indexer)', 'marketplace indexer'],
     },
-    status: { chip: statusChip(env.AGENT_STATUS_CHIP), since: statusSince(env.AGENT_STATUS_SINCE) },
+    status: { chip: statusChip(env.AGENT_STATUS_CHIP, 'deployed'), since: statusSince(env.AGENT_STATUS_SINCE, '2026-10-16') },
     gaps: [...GAPS],
     links: { spec: SPEC_URL, source: SOURCE_URL, explorer_advert: env.ADVERT_EXPLORER_URL ?? '' },
   };

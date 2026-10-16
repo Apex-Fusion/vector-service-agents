@@ -8,7 +8,8 @@ Answer, exit 0: {"ok": true, "language": code, "language_probability": float, "d
 Answer, exit 2, 3 or 4: {"ok": false, "error": "bad_request" | "model_load_failed" | "transcribe_failed", "message": text}
 
 `python3 -I worker.py --check MODEL_DIR` imports faster-whisper, looks for the model files and prints the versions, for the start of the service.
-Everything it prints is ASCII (json.dumps escapes the rest), so the code page of a console cannot change it. Python 3.9 or later.
+Everything it prints is ASCII (json.dumps escapes the rest), so the code page of a console cannot change it. While the model loads and decodes, sys.stdout
+points at stderr, so that what the model or its libraries print goes to the log and stdout carries the answer alone. Python 3.9 or later.
 """
 import json
 import os
@@ -111,14 +112,25 @@ def main(argv, stdin, stdout, loader=load_model):
         check_request(request)
     except (ValueError, UnicodeDecodeError) as error:
         return failure(stdout, "bad_request", error, 2)
+    # What the model or its libraries print while it loads and decodes goes to stderr, the log, and never into the answer: sys.stdout points there until
+    # the work is done, and is restored before any answer is written.
+    result, failed = None, None
+    saved = sys.stdout
+    sys.stdout = sys.stderr
     try:
-        model = loader(request["model_dir"], request["threads"], request["compute_type"])
-    except Exception as error:  # noqa: BLE001 - a failure to load is reported, never raised
-        return failure(stdout, "model_load_failed", error, 3)
-    try:
-        result = transcribe(model, request)
-    except Exception as error:  # noqa: BLE001
-        return failure(stdout, "transcribe_failed", error, 4)
+        try:
+            model = loader(request["model_dir"], request["threads"], request["compute_type"])
+        except Exception as error:  # noqa: BLE001 - a failure to load is reported, never raised
+            failed = ("model_load_failed", error, 3)
+        if failed is None:
+            try:
+                result = transcribe(model, request)
+            except Exception as error:  # noqa: BLE001
+                failed = ("transcribe_failed", error, 4)
+    finally:
+        sys.stdout = saved
+    if failed is not None:
+        return failure(stdout, *failed)
     answer(stdout, result)
     return 0
 

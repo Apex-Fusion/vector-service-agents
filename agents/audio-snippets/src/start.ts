@@ -9,12 +9,15 @@
 // answer anyone who can reach its port) and SUPPLIER_PUB_KEY_HEX (the public key of the supplier key, published beside its key hash, so that the manifest
 // never publishes an empty one: ruling R-D21). A SUPPLIER_PUB_KEY_HEX that is not the public key of SUPPLIER_PKH stops the start too. A token put in the wrong
 // line of an env file is the mistake this guards against: the token is looked for in every other setting before any check can print the line that holds it,
-// no message shows a value that is hex-shaped or long, and the manifest is searched for it last. ffmpeg, ffprobe and the speech model are asked for
-// before the service listens, because an image without them would answer /healthz ok and fail every job.
+// no message shows a value that is hex-shaped or long, and the manifest is searched for it last. The temporary directory is proved writable, and ffmpeg,
+// ffprobe and the speech model are asked for, before the service listens, because an image without them would answer /healthz ok and fail every job.
+import { rmSync, writeFileSync } from 'node:fs';
 import type { EventEmitter } from 'node:events';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { assertHeaderValue, assertNoTokenIn, envInt, given, hexOf, lifecycle, listen, refuseTokenIn, requiredEnv, stopOnSignals as stopServiceOnSignals } from '@vsa/service-kit';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { assertHeaderValue, assertNoTokenIn, envInt, errorText, given, hexOf, lifecycle, listen, refuseTokenIn, requiredEnv, stopOnSignals as stopServiceOnSignals } from '@vsa/service-kit';
 import type { ShutdownOutcome } from '@vsa/service-kit';
 import { blake2b224Hex } from '@vsa/vector-read';
 import { WORKER_PATH, workerAsr } from './asr.ts';
@@ -107,10 +110,30 @@ export interface RunningService {
   shutdown: (waitMs?: number) => Promise<ShutdownOutcome>;
 }
 
-/** Starts the service on its environment: loadConfig, the tools and the model asked for, the server. Rejects with the reason when it cannot; nothing keeps running then. */
+/** The file that proves the temporary directory can be written, named for this process: the directory is the system's, and other programs use it too. */
+export const WRITE_PROBE = '.audio-snippets-write-probe';
+/**
+ * Throws, naming the directory, unless a file can be made in `dir` and removed again: a job makes its private directory there for the media, its decode and its
+ * clips (the Pipeline proves its state directory the same way).
+ */
+function assertWritable(dir: string): void {
+  const probe = join(dir, `${WRITE_PROBE}-${process.pid}`);
+  try {
+    writeFileSync(probe, '');
+    rmSync(probe);
+  } catch (err) {
+    throw new Error(`the temporary directory ${dir} cannot be written (${errorText(err)}): a job writes its media, its decoded audio and its clips there, so the service does not start without it`);
+  }
+}
+
+/**
+ * Starts the service on its environment: loadConfig, the temporary directory proved writable, the tools and the model asked for, the server. Rejects with the
+ * reason when it cannot; nothing keeps running then.
+ */
 export async function startService(env: NodeJS.ProcessEnv = process.env, options: StartOptions = {}): Promise<RunningService> {
   const config = loadConfig(env);
   const log = options.log ?? defaultLog;
+  assertWritable(options.scratchRoot ?? tmpdir());
   const tools = options.tools ?? mediaTools();
   await checkTools(tools);
   const asr = options.asr ?? workerAsr(config.asr, { log });

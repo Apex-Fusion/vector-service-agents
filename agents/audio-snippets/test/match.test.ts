@@ -3,7 +3,8 @@ import { describe, test, expect } from 'vitest';
 import {
   PAD_S, QUERY_MAX_MATCHES, QUERY_MIN_SCORE, QUOTE_MIN_SCORE, STOP_WORDS, bestQuoteWindow, contentWords, cutPoints, findMatches, flatWords, jaccard, round3, tokenStream,
 } from '../src/match.ts';
-import type { TranscriptSegment } from '../src/match.ts';
+import type { Token, TranscriptSegment } from '../src/match.ts';
+import { tokensOf } from '../src/normalize.ts';
 
 const W = (w: string, start: number, end: number) => ({ w, start, end });
 /** A segment whose words are 0.3 s apart and 0.25 s long, from `start`. */
@@ -162,6 +163,19 @@ describe('findMatches', () => {
     ]);
   });
 
+  test('a merged query group whose first segment has text but no words starts at that segment, and one whose last segment has none ends with it', async () => {
+    // Each segment holds both content words of the query and one other: 2 of 3, so all three are kept, and the three adjacent ones are one match.
+    const noWords = (text: string, start: number, end: number): TranscriptSegment => ({ start, end, text, words: [] });
+    const first = await findMatches({ query: 'public domain' }, [noWords('Public domain books.', 0, 1), seg('public domain law', 1.2)], 3);
+    expect(first.matches).toStrictEqual([{ from: 'query', start_s: 0, end_s: 2.2, text: 'Public domain books. public domain law', score: 0.667 }]);
+    const last = await findMatches({ query: 'public domain' }, [seg('public domain law', 0.5), noWords('Public domain notes.', 1.5, 2.5)], 3);
+    expect(last.matches).toStrictEqual([{ from: 'query', start_s: 0.35, end_s: 2.65, text: 'public domain law Public domain notes.', score: 0.667 }]);
+    // A group of segments that all have words is cut at its first and last word, as before.
+    expect((await findMatches({ query: 'public domain' }, [seg('public domain law', 0.5), seg('public domain court', 1.5)], 3)).matches).toStrictEqual([
+      { from: 'query', start_s: 0.35, end_s: 2.5, text: 'public domain law public domain court', score: 0.667 },
+    ]);
+  });
+
   test('four query segments with the same score: the earliest three are kept', async () => {
     // Segments 0, 2, 4 and 6 each score 0.5 against "domain" (one of two content words); the segments between them score 0, so no two of them merge.
     const t = [seg('domain law', 0), seg('x y', 1), seg('domain law', 2), seg('x y', 3), seg('domain law', 4), seg('x y', 5), seg('domain law', 6)];
@@ -179,7 +193,7 @@ describe('findMatches', () => {
     const order: string[] = [];
     const quotes = new Proxy(['the cat sat', 'and then'], {
       get(target, key, receiver) {
-        if (key === '0') { const until = Date.now() + 5; while (Date.now() < until) { /* 5 ms of work, so that the 1 ms timer below is due when the loop turns */ } }
+        if (key === '0') { const until = performance.now() + 5; while (performance.now() < until) { /* 5 ms of work, so that the 1 ms timer below is due when the loop turns */ } }
         if (key === '1') order.push('second quote');
         return Reflect.get(target, key, receiver);
       },
@@ -189,6 +203,73 @@ describe('findMatches', () => {
     expect(order).toStrictEqual(['timer', 'second quote']);
     expect(found.matches).toHaveLength(2);
   });
+});
+
+// The search for the best window of a quote (bestQuoteWindow) against a reference written the plain way: every window built as a string, its full table of
+// edit distances, the same tie rule. 4000 cases from a seeded generator, so the same cases on every run: a vocabulary with repeats and near-misses, words of
+// two tokens, accented, CJK and astral-plane letters, and quotes of punctuation alone. The pruning of the search (a window whose length alone makes a better
+// score impossible is skipped) must leave every answer as it is.
+describe('bestQuoteWindow against a plain reference', () => {
+  /** mulberry32: a small seeded generator of numbers in [0, 1). */
+  function generator(seed: number): () => number {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  /** The edit distance of two lists of code points, by the whole table. */
+  function levenshtein(a: string[], b: string[]): number {
+    let row = Array.from({ length: b.length + 1 }, (_v, j) => j);
+    for (let i = 1; i <= a.length; i += 1) {
+      const next = [i];
+      for (let j = 1; j <= b.length; j += 1) next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      row = next;
+    }
+    return row[b.length];
+  }
+  function reference(quote: string, tokens: readonly Token[]): { score: number; from: number; to: number } | null {
+    const quoteTokens = tokensOf(quote);
+    const q = Array.from(quoteTokens.join(' '));
+    const n = quoteTokens.length;
+    if (n === 0 || tokens.length === 0) return null;
+    const lo = Math.max(1, Math.floor((n * 7) / 10));
+    const hi = Math.max(lo, Math.ceil((n * 13) / 10));
+    let best: { score: number; from: number; to: number } | null = null;
+    for (let i = 0; i < tokens.length; i += 1) {
+      for (let k = lo; k <= hi && i + k <= tokens.length; k += 1) {
+        const window = Array.from(tokens.slice(i, i + k).map((t) => t.text).join(' '));
+        const score = 1 - levenshtein(q, window) / Math.max(q.length, window.length);
+        if (best === null || score > best.score) best = { score, from: i, to: i + k - 1 };
+      }
+    }
+    return best;
+  }
+  const VOCABULARY = [
+    'the', 'cat', 'cats', 'cast', 'sat', 'mat', 'public', 'publik', 'domain', 'domains', 'recording', 'recordings', 'record', 'librivox', 'librevox', 'all', 'are', 'in',
+    'well-known', 'sun-flower', 'sunflower', 'flower', 'seeds', 'caf\u00e9', 'cafe', 'na\u00efve', 'naive', '\u6771\u4eac', '\u6771', '\u4eac\u90fd', '\u{10400}\u{10401}', '\u{10400}', 'zz', 'a', 'b', 'ab',
+  ];
+  test('4000 seeded cases: the search answers what the reference answers, window for window', () => {
+    const random = generator(20261017);
+    const pick = <T,>(list: readonly T[]): T => list[Math.floor(random() * list.length)];
+    let found = 0;
+    for (let c = 0; c < 4000; c += 1) {
+      const words = Array.from({ length: 1 + Math.floor(random() * 30) }, () => pick(VOCABULARY));
+      const tokens = tokenStream(flatWords([{ start: 0, end: 1, text: 'x', words: words.map((w, i) => ({ w, start: i, end: i + 0.5 })) }]));
+      const length = 1 + Math.floor(random() * 8);
+      const at = Math.floor(random() * words.length);
+      // Half the quotes are said in the transcript (some of them changed a little), the others are made of the vocabulary, and a few are punctuation.
+      const said = words.slice(at, at + length).map((w) => (random() < 0.2 ? pick(VOCABULARY) : w));
+      const quote = random() < 0.05 ? '... !' : (random() < 0.5 ? said : Array.from({ length }, () => pick(VOCABULARY))).join(' ');
+      const answer = bestQuoteWindow(quote, tokens);
+      expect(answer, `case ${c}: "${quote}" in "${words.join(' ')}"`).toStrictEqual(reference(quote, tokens));
+      if (answer !== null) found += 1;
+    }
+    expect(found).toBeGreaterThan(3000); // the cases are mostly real searches, not empty ones
+  }, 60_000); // about 2 s alone; the reference is the slow part, and a busy machine runs the suites side by side
 });
 
 describe('the parts', () => {

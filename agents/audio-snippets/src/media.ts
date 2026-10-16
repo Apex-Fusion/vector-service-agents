@@ -5,8 +5,9 @@
 //
 // The media is the caller's, and ffprobe and ffmpeg parse it, so it never meets a shell: the tools are started with an argument list, the demuxer is forced
 // (-f) to the one the first bytes name, so that no file is read as a playlist or as a list of other files, and -protocol_whitelist file keeps them to the file
-// they are given. What they print stays in the operator's log, and the caller is told a sentence of ours. A tool that cannot be started at all is no verdict on
-// the media: that is a plain Error, a failure on the service's side (500), and the start of the service runs both tools before it listens (checkTools).
+// they are given. What they print is not kept: the caller is told a sentence of ours, and the operator's log has the code of the refusal and how long the job
+// took. A tool that cannot be started at all is no verdict on the media: that is a plain Error, a failure on the service's side (500) that the log names with
+// the error of the system, and the start of the service runs both tools before it listens (checkTools).
 import { open, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ascii, fetchUrlBytes, runTool, sha256Hex, sniffBy, toolFailure } from '@vsa/service-kit';
@@ -42,8 +43,9 @@ export const DEMUXERS: Readonly<Record<Family, string>> = { mp3: 'mp3', wav: 'wa
 const FAMILY_NAMES: Readonly<Record<Family, string>> = { mp3: 'MPEG audio', wav: 'WAV', ogg: 'Ogg', flac: 'FLAC', webm: 'WebM or Matroska', mp4: 'MP4 or QuickTime' };
 
 // The first bytes of each kind. An MPEG audio file starts with an ID3 tag or with a frame header: eleven bits of sync, then a version that is not reserved and a
-// layer III or II (the second byte under the mask 0xfe). Layer I is left out: its header, FF FE, is also the byte-order mark of a UTF-16 text. ADTS AAC, whose
-// layer bits are 00, is none of them. A WAV file is RIFF with WAVE at byte 8. An MP4, M4A or QuickTime file has a box type at byte 4.
+// layer III or II (the second byte under the mask 0xfe, the magic given masked). Layer I is left out: its header, FF FE, is also the byte-order mark of a UTF-16
+// text. ADTS AAC, whose layer bits are 00, is none of them. A WAV file is RIFF with WAVE at byte 8. An MP4, M4A or QuickTime file has a box type at byte 4. The
+// ID3v2 tags at the start of a file are skipped first (afterId3), as ffmpeg skips them before any demuxer: a FLAC file with a tag in front of it is FLAC.
 const FRAME_SYNC = [0xe2, 0xe4, 0xf2, 0xf4, 0xfa, 0xfc];
 const SIGNATURES: readonly Signature[] = [
   { type: 'mp3', magic: ascii('ID3') },
@@ -55,9 +57,29 @@ const SIGNATURES: readonly Signature[] = [
   ...['ftyp', 'moov', 'mdat', 'wide', 'free'].map((box): Signature => ({ type: 'mp4', at: 4, magic: ascii(box) })),
 ];
 
-/** The kind of a file by its first bytes, or null when they name none of the six. */
+/**
+ * The bytes after the ID3v2 tags at the start of `bytes`, skipped as ffmpeg skips them: each tag is "ID3", a version and a revision that are not FF, flags, and
+ * its size in four synchsafe bytes (bytes 6 to 9, seven bits each), which counts what follows its 10-byte header; a tag of version 4 with the footer flag (0x10)
+ * has 10 bytes more. A header whose size is not synchsafe is no tag, and what follows it is not looked at.
+ */
+function afterId3(bytes: Uint8Array): Uint8Array {
+  let at = 0;
+  for (;;) {
+    const tag = bytes.subarray(at, at + 10);
+    if (tag.length < 10 || tag[0] !== 0x49 || tag[1] !== 0x44 || tag[2] !== 0x33 || tag[3] === 0xff || tag[4] === 0xff || (tag[6] | tag[7] | tag[8] | tag[9]) >= 0x80) break;
+    at += 10 + ((tag[6] << 21) | (tag[7] << 14) | (tag[8] << 7) | tag[9]) + (tag[3] === 4 && (tag[5] & 0x10) !== 0 ? 10 : 0);
+  }
+  return bytes.subarray(Math.min(at, bytes.length));
+}
+
+/**
+ * The kind of a file by its first bytes, or null when they name none of the six. A file that starts with ID3v2 tags is the kind of what follows them, and MPEG
+ * audio when that names none of the six, as the tag alone says.
+ */
 export function familyOf(bytes: Uint8Array): Family | null {
-  return sniffBy(bytes, SIGNATURES) as Family | null;
+  const rest = afterId3(bytes);
+  const behindTags = rest.length < bytes.length ? (sniffBy(rest, SIGNATURES) as Family | null) : null;
+  return behindTags ?? (sniffBy(bytes, SIGNATURES) as Family | null);
 }
 
 /** The two tools and how they are run: execFile by default, a stand-in in a test. */

@@ -22,7 +22,9 @@ import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { buyerIdentityOf, createRealChain, rawHexToBech32 } from '@vsa/buyer-core';
 import type { Chain } from '@vsa/buyer-core';
-import { assertHeaderValue, assertNoTokenIn, given, hexOf, lifecycle, listen, refuseSecretIn, refuseTokenIn, stopOnSignals as stopServiceOnSignals } from '@vsa/service-kit';
+import {
+  SHUTDOWN_WAIT_MS, assertHeaderValue, assertNoTokenIn, given, hexOf, lifecycle, listen, refuseSecretIn, refuseTokenIn, stopOnSignals as stopServiceOnSignals,
+} from '@vsa/service-kit';
 import type { ShutdownOutcome } from '@vsa/service-kit';
 import { blake2b224Hex } from '@vsa/vector-read';
 import { errorText } from './format.ts';
@@ -49,11 +51,11 @@ export const PRICE_CEILING_DEFAULT_LOVELACE = 1_000_000n;
 /** How often the janitor looks at the escrows a run left behind. */
 export const JANITOR_INTERVAL_MS = 60_000;
 /**
- * How long a stopping service waits for the job that is running before it closes the connection and exits (the escrows of that job are in the state directory,
- * for the janitor of the next start). The compose file's stop_grace_period is longer, 330 s: a container killed at the end of the wait would never log the
- * job it abandoned, nor exit 1.
+ * SHUTDOWN_WAIT_MS, the 300 s of packages/service-kit (src/lifecycle.ts), re-exported: how long a stopping service waits for the job that is running before it
+ * closes the connection and exits (the escrows of that job are in the state directory, for the janitor of the next start). The compose file's
+ * stop_grace_period is longer, 330 s: a container killed at the end of the wait would never log the job it abandoned, nor exit 1.
  */
-export const SHUTDOWN_WAIT_MS = 300_000;
+export { SHUTDOWN_WAIT_MS } from '@vsa/service-kit';
 /**
  * How long a stop waits for a pass of the janitor that is in flight (ruling R61). A pass that hangs on a node call is abandoned then, with a log line: the
  * entries it was looking at are still in the state directory, for the janitor of the next start.

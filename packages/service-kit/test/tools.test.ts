@@ -1,6 +1,8 @@
 // packages/service-kit/test/tools.test.ts
 import { describe, test, expect } from 'vitest';
-import { existsSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { runTool, toolFailure, withPrivateDir } from '../src/tools.ts';
 
 const node = process.execPath;
@@ -47,5 +49,17 @@ describe('tools', () => {
     expect(existsSync(seen)).toBe(false);
     await expect(withPrivateDir('kit-test-', async (dir) => { seen = dir; throw new Error('the work failed'); })).rejects.toThrow('the work failed');
     expect(existsSync(seen)).toBe(false);
+  });
+  test('withPrivateDir makes the directory under the root it is given, and removes it and nothing else of that root', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'kit-root-'));
+    try {
+      writeFileSync(join(root, 'kept'), 'x');
+      let seen = '';
+      await withPrivateDir('kit-test-', async (dir) => { seen = dir; expect(dirname(dir)).toBe(root); }, root);
+      expect(existsSync(seen)).toBe(false);
+      expect(readdirSync(root)).toStrictEqual(['kept']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

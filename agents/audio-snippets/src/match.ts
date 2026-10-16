@@ -8,7 +8,8 @@
 // under 0.55 is listed in unmatched with its best score. One match per quote: a quote said twice is matched where it is said first.
 // The query. Keyword overlap at segment level (match_method keyword): its content words (its tokens less the stop words) against those of each segment, by
 // Jaccard; the segments at or over 0.2, at most 3 by score (ties to the earlier), given in the order they are said, adjacent ones merged into one match whose
-// score is the higher. A query that no segment reaches is listed in unmatched with its best score.
+// score is the higher. A match runs from the first word of its first segment to the last word of its last, and an end segment that has text but no words gives
+// its own start or end. A query that no segment reaches is listed in unmatched with its best score.
 // Ranges. Taken as given, with the words inside, score 1.
 // Cut points. A match runs from the start of its first word to the end of its last; an end that falls inside a word (a range's can) moves out to that word's
 // boundary; then 150 ms of padding on each side, each cut point clamped to [0, duration] (a word or a range past the end gives the end twice). Every number is
@@ -53,8 +54,13 @@ export function tokenStream(words: readonly FlatWord[]): Token[] {
 
 /**
  * The best window of `tokens` for the quote, by the ratio above. For each start the window grows a token at a time, and one column of the edit-distance table is
- * added for each character, so a start costs (quote length) x (characters of its longest window), and the whole search about 2.5 s for a quote of 300
- * characters over 2000 words.
+ * added for each character, so a start costs (quote length) x (characters of its longest window) cells of the table: hundreds of millions in all for a quote of
+ * 300 characters over 2000 words, before the pruning below.
+ *
+ * The pruning cannot change the answer. The edit distance of two texts is at least the difference of their lengths, so a window of c characters scores at most
+ * 1 - |m - c| / max(m, c) for a quote of m, computed as the score is, and a window that cannot score more than the best so far is never chosen (a tie keeps the
+ * earlier window). So a start none of whose windows can, by their lengths, is skipped, and the windows of a start stop growing once they are longer than the
+ * quote and that bound, which only falls as they grow, cannot beat the best.
  */
 export function bestQuoteWindow(quote: string, tokens: readonly Token[]): { score: number; from: number; to: number } | null {
   const quoteTokens = tokensOf(quote);
@@ -67,11 +73,28 @@ export function bestQuoteWindow(quote: string, tokens: readonly Token[]): { scor
   const m = q.length;
   const prev = new Uint32Array(m + 1);
   const cur = new Uint32Array(m + 1);
+  // The characters of each token, in code points, as the table counts them.
+  const sizes = tokens.map((token) => Array.from(token.text).length);
+  /** The most a window of `col` characters can score against the quote: its edit distance is at least the difference of the two lengths. */
+  const bound = (col: number): number => 1 - Math.abs(m - col) / Math.max(m, col);
+  /** Can a window of the start `i` beat `score`, by its length alone? A window longer than the quote only gets a lower bound as it grows. */
+  const canBeat = (i: number, score: number): boolean => {
+    let col = -1;
+    for (let k = 1; k <= hi && i + k <= tokens.length; k += 1) {
+      col += 1 + sizes[i + k - 1];
+      if (k >= lo && bound(col) > score) return true;
+      if (col >= m && bound(col) <= score) return false;
+    }
+    return false;
+  };
   let best: { score: number; from: number; to: number } | null = null;
   for (let i = 0; i < tokens.length; i += 1) {
+    if (best !== null && !canBeat(i, best.score)) continue;
     for (let r = 0; r <= m; r += 1) prev[r] = r;
     let col = 0;
     for (let k = 1; k <= hi && i + k <= tokens.length; k += 1) {
+      const grown = col + (k === 1 ? 0 : 1) + sizes[i + k - 1];
+      if (best !== null && grown >= m && bound(grown) <= best.score) break; // no longer window of this start can beat the best
       const piece = (k === 1 ? '' : ' ') + tokens[i + k - 1].text;
       for (const c of piece) {
         col += 1;
@@ -154,9 +177,11 @@ export async function findMatches(req: Pick<SnippetsRequest, 'query' | 'quotes' 
     }
     for (const group of groups) {
       const segments = group.map((s) => transcript[s.index]);
-      const inside = segments.flatMap((s) => s.words);
-      const a = inside.length > 0 ? inside[0].start : segments[0].start;
-      const b = inside.length > 0 ? inside[inside.length - 1].end : segments[segments.length - 1].end;
+      // Each end is its own segment's: the first word of the first segment, the last word of the last, or the segment's own time when it has no words.
+      const first = segments[0];
+      const last = segments[segments.length - 1];
+      const a = first.words.length > 0 ? first.words[0].start : first.start;
+      const b = last.words.length > 0 ? last.words[last.words.length - 1].end : last.end;
       const cut = cutPoints(a, b, words, duration);
       matches.push({ from: 'query', start_s: cut.start_s, end_s: cut.end_s, text: segments.map((s) => s.text).join(' '), score: round3(Math.max(...group.map((s) => s.score))) });
     }

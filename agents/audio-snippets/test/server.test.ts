@@ -412,6 +412,33 @@ describe('carried from the earlier tasks', () => {
     expect(MANIFEST.gaps[5]).toBe(CLIPS_GAP);
   });
 
+  test('the deadline is set when the request arrives, its headers read, and not when its body has come: a body that comes 7 s later does not move it', async () => {
+    let now = T0;
+    const seen: number[] = [];
+    const run = vi.fn<Run>(async (_req, deps: RunDeps) => { seen.push(deps.deadlineMs); return GOLDEN_RESULT as never; });
+    await serve(options({ runSnippets: run, deps: baseDeps({ clock: () => now }) }), async (api) => {
+      const socket = connect(Number(new URL(api.url).port), '127.0.0.1');
+      let received = '';
+      socket.on('data', (chunk: Buffer) => { received += chunk.toString('latin1'); });
+      const closed = new Promise<void>((resolve) => { socket.on('close', () => { resolve(); }); });
+      // With Expect: 100-continue the server writes 100 Continue as it begins the request, its arrival taken, and only then is the body sent.
+      socket.write(['POST / HTTP/1.1', 'Host: 127.0.0.1', 'Content-Type: application/json', `Content-Length: ${Buffer.byteLength(body)}`, `Authorization: ${TEST_AUTH}`, 'Expect: 100-continue', 'Connection: close', '', ''].join('\r\n'));
+      await until(() => received.includes('HTTP/1.1 100 Continue'), 'the server has begun the request');
+      now += 7_000;
+      socket.write(body);
+      await closed;
+      expect(received).toContain('HTTP/1.1 200 OK');
+    });
+    expect(seen).toStrictEqual([T0 + JOB_DEADLINE_MS]);
+  });
+
+  test('AGENT_VERSION that is empty or blank is not set, and the version is 0.1.0; a value is published without the space around it', () => {
+    for (const v of [undefined, '', ' ', '\n']) {
+      expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ...(v === undefined ? {} : { AGENT_VERSION: v }) }).version, JSON.stringify(v)).toBe('0.1.0');
+    }
+    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_VERSION: ' 0.2.0\n' }).version).toBe('0.2.0');
+  });
+
   test('a second job while one runs is refused with 409 busy and never queued: the run is called once, with the deadline of its own arrival', async () => {
     let release = (): void => undefined;
     const held = new Promise<void>((resolve) => { release = resolve; });

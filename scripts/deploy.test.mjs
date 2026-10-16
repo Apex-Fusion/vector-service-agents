@@ -657,7 +657,8 @@ const P_TERMS = {
 // What the code of the service holds as its defaults: the example writes the same values, so that a change is visible and reviewed.
 const OCR_DEFAULT = /export const OCR_SUPPLIER_PKH_DEFAULT = '([0-9a-f]{56})';/.exec(START)?.[1];
 const LLM_DEFAULT = /export const LLM_MODELS_DEFAULT: readonly string\[\] = \[([^\]]+)\];/.exec(START)?.[1].split(',').map((m) => m.trim().slice(1, -1));
-const WAIT_S = Number(/export const SHUTDOWN_WAIT_MS = ([\d_]+);/.exec(START)?.[1].replaceAll('_', '')) / 1000;
+// The stop wait is packages/service-kit's (src/lifecycle.ts), and the Pipeline's start.ts re-exports it (the test of the grace period below holds both).
+const WAIT_S = Number(/export const SHUTDOWN_WAIT_MS = ([\d_]+);/.exec(read('packages/service-kit/src/lifecycle.ts'))?.[1].replaceAll('_', '')) / 1000;
 // A snippet run through the real code of the Pipeline (tsx), with its argument passed as JSON, so that nothing here re-implements the service.
 function inPipeline(code, arg) {
   return JSON.parse(execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code, JSON.stringify(arg)], { cwd: join(root, 'agents/document-pipeline'), encoding: 'utf8' }));
@@ -787,6 +788,7 @@ test('Pipeline compose: the state is a named volume at /data, memory is limited,
   assert.ok(START.includes("export const STATE_DIR_DEFAULT = '/data';"));
   assert.equal(pService.mem_limit, '1536m');
   assert.equal(WAIT_S, 300, 'the service waits up to 300 s for the job that is running');
+  assert.match(START, /^export \{ SHUTDOWN_WAIT_MS \} from '@vsa\/service-kit';$/m, 'the wait of the kit, re-exported by the Pipeline');
   // The residual round: Docker allows 30 s more than the service waits, so that a job abandoned at the end of the wait is logged with its escrows and the
   // exit code is the service's 1, not Docker's 137.
   assert.equal(pService.stop_grace_period, '330s');
@@ -1690,9 +1692,10 @@ test('Pipeline RUNBOOK step 17: the old advert is retired before the service res
   assert.ok(item8.includes('change every file that says PROPOSED about the Document Pipeline'));
   assert.ok(item8.includes('and leave the other three agents\' lines alone'));
   for (const [, named] of item8.matchAll(/`([A-Za-z0-9_.\/-]+\.(?:md|yml|snippet|example|ts|mjs|template))`/g)) assert.ok(existsSync(join(root, named)), `item 8 names a file that exists: ${named}`);
-  // The word is carried as a default by the code, as the item says: deployed since the flip of 2026-10-16.
-  assert.ok(read('agents/document-pipeline/src/server.ts').includes("return 'deployed';") && read('agents/document-pipeline/src/server.ts').includes("return '2026-10-16';"));
-  assert.equal(read('agents/document-pipeline/src/server.ts').includes("return 'proposed';"), false);
+  // The word is carried as a default by the code, as the item says: deployed since the flip of 2026-10-16, given to the status rules of packages/service-kit.
+  const pServer = read('agents/document-pipeline/src/server.ts');
+  assert.ok(pServer.includes("statusChip(env.AGENT_STATUS_CHIP, 'deployed')") && pServer.includes("statusSince(env.AGENT_STATUS_SINCE, '2026-10-16')"));
+  assert.equal(pServer.includes("'proposed'"), false);
 });
 
 test('Pipeline RUNBOOK: steps 1 to 15 and 17 were run on 2026-10-16 and step 16 is not used, the step texts stay instructions (step 7 quotes no row that is gone), and a first run is told to start with the earlier word', () => {

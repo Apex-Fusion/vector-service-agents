@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, test, expect } from 'vitest';
 import { AsrError } from '../src/asr.ts';
 import type { AsrTranscript } from '../src/asr.ts';
 import { JOB_DEADLINE_MS } from '../src/budget.ts';
+import { freeBytes } from '../src/disk.ts';
 import { mediaTools } from '../src/media.ts';
 import { RequestError, parseRequest } from '../src/request.ts';
 import { SnippetsError } from '../src/result.ts';
@@ -153,7 +154,7 @@ describe('before anything is fetched', () => {
     // The probe of the service itself, statfs, on a temporary directory that is not there.
     const missing = job({ scratchRoot: join(root, 'missing'), freeBytes: undefined });
     await expect(missing).rejects.not.toBeInstanceOf(SnippetsError);
-    await expect(missing).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(missing).rejects.toMatchObject({ code: 'ENOENT', syscall: 'statfs' });
     expect(calls).toStrictEqual([]);
     expect(readdirSync(root)).toStrictEqual([]);
   });
@@ -209,6 +210,14 @@ describe('a job whose caller hangs up', () => {
 
   test.skipIf(!MEDIA_TOOLS)('a signal that never aborts changes nothing: the golden job answers the golden result', async () => {
     expect(await runSnippets(request({}), deps({ signal: new AbortController().signal }))).toStrictEqual(GOLDEN_RESULT);
+  });
+});
+
+describe('the free space', () => {
+  test('the real probe reads a finite number of bytes above 0 on a directory that exists', async () => {
+    const free = await freeBytes(root);
+    expect(Number.isFinite(free)).toBe(true);
+    expect(free).toBeGreaterThan(0);
   });
 });
 

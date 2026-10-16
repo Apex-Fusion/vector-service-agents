@@ -96,6 +96,21 @@ describe('agents/audio-snippets/Dockerfile', () => {
     expect(packageJson('agents/audio-snippets').dependencies).toHaveProperty('tsx');
   });
 
+  test('the tsx the image runs is the devDependency of the root package.json: node --import tsx runs in WORKDIR /repo and resolves /repo/node_modules/tsx', () => {
+    expect(final).toContain('WORKDIR /repo');
+    const rootManifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { devDependencies?: Record<string, string> };
+    expect(rootManifest.devDependencies?.tsx).toBe('^4.21.0');
+    expect(packageJson('agents/audio-snippets').dependencies?.tsx, 'the agent asks for the same range').toBe(rootManifest.devDependencies?.tsx);
+    // The lockfile, from which the image installs, resolves both to one version.
+    const lock = readFileSync(join(root, 'pnpm-lock.yaml'), 'utf8');
+    const resolved = (importer: string): string | undefined => {
+      const block = (lock.split(`\n  ${importer}:\n`)[1] ?? '').split(/\n  \S/)[0];
+      return /\n      tsx:\n        specifier: \S+\n        version: (\S+)/.exec(block)?.[1];
+    };
+    expect(resolved('.')).toMatch(/^4\.\d+\.\d+$/);
+    expect(resolved('agents/audio-snippets')).toBe(resolved('.'));
+  });
+
   test('the build context leaves out the model files of a developer machine and every env file', () => {
     const ignored = readFileSync(join(root, '.dockerignore'), 'utf8').split('\n');
     for (const entry of ['**/.models', '**/__pycache__', '**/.env', '**/.env.*', '**/node_modules']) expect(ignored, entry).toContain(entry);

@@ -28,6 +28,23 @@ describe('HealthMonitor', () => {
     await until(() => m.healthy, 'the third check passed');
     expect(changes).toStrictEqual([[false, 'the disk is full'], [true, null]]);
   });
+  test('an answer from the future, after the clock was set back, is not a fresh one: the next poke checks again', async () => {
+    let now = 100_000;
+    let checks = 0;
+    const m = new HealthMonitor({ check: async () => { checks += 1; }, reason: 'low_disk', clock: () => now, ttlMs: 60_000, timeoutMs: 1000 });
+    m.poke();
+    await until(() => checks === 1, 'the first check ran');
+    await pause(20); // its answer is in, stamped 100000
+    now += 1;
+    m.poke(); // within the TTL: no new check
+    await pause(20);
+    expect(checks).toBe(1);
+    now = 40_000; // the clock is set back by a minute
+    m.poke();
+    await until(() => checks === 2, 'the second check ran');
+    expect(m.healthy).toBe(true);
+  });
+
   test('one check at a time, however many pokes; a check that does not answer in time counts as failed', async () => {
     let checks = 0;
     const failures: Array<string | null> = [];

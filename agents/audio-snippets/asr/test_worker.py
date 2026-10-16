@@ -140,6 +140,35 @@ class Contract(unittest.TestCase):
         self.assertTrue(all(ord(ch) < 128 for ch in text))
         self.assertEqual(json.loads(text)["segments"][0]["text"], "Qu\u00e9 \u2014 caf\u00e9")
 
+    def test_what_the_model_prints_while_it_loads_and_decodes_goes_to_stderr_and_stdout_carries_the_answer_alone(self):
+        class Noisy(StubModel):
+            def transcribe(self, audio, **options):
+                print("decoding")
+                return StubModel.transcribe(self, audio, **options)
+
+        def loader(d, t, c):
+            print("loading")
+            return Noisy(SEGMENTS)
+
+        def broken(d, t, c):
+            print("loading")
+            raise RuntimeError("no model.bin")
+
+        for load, status_wanted, said in ((loader, 0, "loading\ndecoding\n"), (broken, 3, "loading\n")):
+            saved_out, saved_err = sys.stdout, sys.stderr
+            out, err = io.StringIO(), io.StringIO()
+            sys.stdout, sys.stderr = out, err
+            try:
+                # As the service runs it: the answer goes to the stream that is sys.stdout.
+                status = worker.main([], io.BytesIO(json.dumps(REQUEST).encode()), out, loader=load)
+                restored = sys.stdout
+            finally:
+                sys.stdout, sys.stderr = saved_out, saved_err
+            self.assertEqual(status, status_wanted)
+            self.assertEqual(json.loads(out.getvalue())["ok"], status_wanted == 0)
+            self.assertIs(restored, out)
+            self.assertEqual(err.getvalue(), said)
+
     def test_arguments_other_than_check_are_refused(self):
         stdout = io.StringIO()
         self.assertEqual(worker.main(["--other"], io.BytesIO(b""), stdout), 2)

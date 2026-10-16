@@ -2,6 +2,7 @@
 import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { childEnv } from '../src/child-env.ts';
+import { EXPORT_FROM, IMPORT_LINE } from './support.ts';
 
 const TOKEN = `Bearer ${'ab'.repeat(32)}`;
 
@@ -24,8 +25,8 @@ describe('childEnv', () => {
   });
   test('src/child-env.ts has no imports and re-exports nothing, so @vsa/service-kit/env loads nothing else (the renderer of the Document Pipeline uses it)', () => {
     const source = readFileSync(new URL('../src/child-env.ts', import.meta.url), 'utf8');
-    expect(source).not.toMatch(/^import\b/m);
-    expect(source).not.toMatch(/^export\b[^;]*\bfrom\b/m);
+    expect(source).not.toMatch(IMPORT_LINE);
+    expect(source).not.toMatch(EXPORT_FROM);
     const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { exports: Record<string, string> };
     expect(manifest.exports['./env']).toBe('./src/child-env.ts');
   });

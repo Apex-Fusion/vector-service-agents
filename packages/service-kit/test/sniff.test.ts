@@ -3,6 +3,7 @@ import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { ascii, sniffBy } from '../src/sniff.ts';
 import type { Signature } from '../src/sniff.ts';
+import { EXPORT_FROM, IMPORT_LINE } from './support.ts';
 
 // The three signatures of agents/document-pipeline/src/mime.ts, which keeps its own copy (its test pins that module free of imports): the generic form gives
 // the answers of the Pipeline's table.
@@ -33,7 +34,15 @@ describe('sniffBy', () => {
     expect(sniffBy(bytes(0xff, 0xfb), sigs)).toBe('frame');
     expect(sniffBy(bytes(0xff, 0xf3), sigs)).toBeNull();
   });
-  test('src/sniff.ts has no imports', () => {
-    expect(readFileSync(new URL('../src/sniff.ts', import.meta.url), 'utf8')).not.toMatch(/^import /m);
+  test('the mask is applied to the bytes of the file and not to the magic: a magic byte with a bit outside its mask never matches, so the magic is given masked', () => {
+    // 0xfb under the mask 0xfe is 0xfa: a signature that names 0xfb for that byte matches no file, and the one that names 0xfa matches both 0xfa and 0xfb.
+    expect(sniffBy(bytes(0xff, 0xfb), [{ type: 'unmasked', magic: [0xff, 0xfb], mask: [0xff, 0xfe] }])).toBeNull();
+    expect(sniffBy(bytes(0xff, 0xfb), [{ type: 'masked', magic: [0xff, 0xfa], mask: [0xff, 0xfe] }])).toBe('masked');
+    expect(sniffBy(bytes(0xff, 0xfa), [{ type: 'masked', magic: [0xff, 0xfa], mask: [0xff, 0xfe] }])).toBe('masked');
+  });
+  test('src/sniff.ts has no imports and re-exports nothing', () => {
+    const source = readFileSync(new URL('../src/sniff.ts', import.meta.url), 'utf8');
+    expect(source).not.toMatch(IMPORT_LINE);
+    expect(source).not.toMatch(EXPORT_FROM);
   });
 });

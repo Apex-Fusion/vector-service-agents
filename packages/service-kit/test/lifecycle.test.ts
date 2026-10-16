@@ -1,6 +1,7 @@
 // packages/service-kit/test/lifecycle.test.ts
 import { describe, test, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { createServer } from 'node:http';
 import { SHUTDOWN_WAIT_MS, lifecycle, listen, stopOnSignals } from '../src/lifecycle.ts';
 import { createJobServer } from '../src/server.ts';
 import { JobSlot } from '../src/slot.ts';
@@ -19,6 +20,24 @@ async function gated(logs: string[]) {
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   return { server, slot, release, base };
 }
+
+describe('listen', () => {
+  test('resolves once the server listens, and leaves no listener of its own behind; rejects with the error of a port that is taken', async () => {
+    const first = createServer();
+    await listen(first, 0, '127.0.0.1');
+    expect(first.listenerCount('error')).toBe(0);
+    const port = (first.address() as { port: number }).port;
+    const second = createServer();
+    try {
+      await expect(listen(second, port, '127.0.0.1')).rejects.toMatchObject({ code: 'EADDRINUSE' });
+      expect(second.listening).toBe(false);
+      expect(second.listenerCount('error')).toBe(0);
+    } finally {
+      first.close();
+      second.close();
+    }
+  });
+});
 
 describe('lifecycle', () => {
   test('an idle service shuts down at once and says finished; a second call gives the same promise', async () => {

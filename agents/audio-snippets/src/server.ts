@@ -14,7 +14,7 @@
 //                     fails with aborted (499), which the log keeps and no caller reads.
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
-import { HealthMonitor, JobSlot, createJobServer, envInt, requiredEnv, statusChip, statusSince } from '@vsa/service-kit';
+import { HealthMonitor, JobSlot, createJobServer, envInt, given, requiredEnv, statusChip, statusSince } from '@vsa/service-kit';
 import type { Refusal } from '@vsa/service-kit';
 import { REGISTRY_ADDRESS } from '@vsa/vector-read';
 import { JOB_DEADLINE_MS } from './budget.ts';
@@ -111,7 +111,8 @@ const NOTES = [
 
 export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
   return {
-    schema: 'vector.agent-manifest.v1', name: 'Audio Snippets', capability_id: 'audio.transcript.snippets.v1', version: env.AGENT_VERSION ?? '0.1.0',
+    // An AGENT_VERSION that is empty or blank is not set (given): an empty version would be published in the manifest the advert hashes.
+    schema: 'vector.agent-manifest.v1', name: 'Audio Snippets', capability_id: 'audio.transcript.snippets.v1', version: given(env.AGENT_VERSION) || '0.1.0',
     description: 'A word-timed transcript of an audio or video file, plus the cut points for the quotes or the question you give it, and optionally the cut clips.',
     operator: { name: 'Apex Fusion Foundation', contact: requiredEnv('OPERATOR_CONTACT', env.OPERATOR_CONTACT, "the operator's contact address, published in the manifest") },
     identity: { did: env.AGENT_DID ?? '', controller_pkh: env.SUPPLIER_PKH ?? '', registry_address: REGISTRY_ADDRESS },

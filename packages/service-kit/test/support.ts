@@ -16,6 +16,12 @@ export function close(server: Server): void {
   server.closeAllConnections();
 }
 export const pause = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
+/**
+ * The two ways a module loads another, for the guards of the modules with no imports: an import line, and an export that re-exports from another module
+ * (export { a } from, export type { T } from, export * from, export * as x from), on one line or over several.
+ */
+export const IMPORT_LINE = /^import\b/m;
+export const EXPORT_FROM = /^export\s+(?:type\s+)?(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s*from\s*['"]/m;
 export async function until(condition: () => boolean, what: string, ms = 3000): Promise<void> {
   const end = Date.now() + ms;
   while (!condition()) {
