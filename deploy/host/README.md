@@ -19,7 +19,7 @@ The working directory on the box is `<base path>/repo/deploy/host`, inside a che
 
 1. **DNS.** One name is needed now: `mp-suppliers-history.hal8.ai`, an A record to the box, DNS only (grey cloud), or Caddy cannot get its certificate. Two more come later, one for each agent that is not built yet: `mp-suppliers-snippets.hal8.ai` and `mp-suppliers-advocate.hal8.ai`. The Document Pipeline has its own name, `mp-suppliers-pipeline.hal8.ai`, and its own section at the end of this note. The advert will carry the first name as its endpoint, so the operator waits for it before posting the advert.
 
-2. **Registry login.** The package is private. On the box: `docker login ghcr.io -u <user> --password-stdin`, with a token that has `read:packages`.
+2. **Registry login.** The package is public since 2026-10-16, so the login is optional, and the host still builds the image itself (point 3). To log in, on the box: `docker login ghcr.io -u <user> --password-stdin`, with a token that has `read:packages`.
 
 3. **The image.** The CI job that publishes `ghcr.io/apex-fusion/vector-service-agents/agent-history` tags two names: `:latest` and `:<full git commit sha>`. The compose file does not use either tag. It names the image by digest (`@sha256:<digest>`, a placeholder in the repository), so that a later pull cannot change the bytes behind the advert's `detail_hash`. After the pull, the host administrator records the digest and hands it to the operator, who puts it in the `image:` line before the service starts ([RUNBOOK.md](RUNBOOK.md), step 2). Until CI can publish, build the image on the box from a checkout of this repository and let compose use it:
 

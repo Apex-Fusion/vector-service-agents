@@ -606,12 +606,17 @@ test('RUNBOOK: the key is never sent anywhere, the registry login block is bash,
   assert.doesNotMatch(s16, /upstream repository/);
 });
 
-test('agent README: the Image section says the publish job pushes on merge to main, that it has not run yet, and that the agent is running on the box with the status DEPLOYED since 2026-10-15', () => {
+test('agent README: the Image section says the publish job pushes on merge to main, that it has run since the repository went public on 2026-10-16 and the image is public, that the box still builds its own, and that the agent is running on the box with the status DEPLOYED since 2026-10-15', () => {
   const image = section(read('agents/agent-history/README.md'), 'Image');
   assert.ok(image.length > 300, 'the section exists');
   assert.ok(image.includes('docker build -f agents/agent-history/Dockerfile'));
   assert.ok(image.includes('pushes the image on merge to `main`'));
-  assert.ok(image.includes('It has not run yet: Actions is blocked on this private repository.'));
+  assert.ok(image.includes('It has run on each merge to `main` since the repository went public on 2026-10-16, and the image is public; the box still builds the image itself.'));
+  // The repository and the images on ghcr.io are public since 2026-10-16. The places that said private say what is true now, and no deploy file says private again.
+  assert.ok(readme.includes('2. **Registry login.** The package is public since 2026-10-16, so the login is optional, and the host still builds the image itself (point 3).'));
+  assert.ok(section(runbook, '1. Put the files on the box').includes('The repository is public since 2026-10-16, so the box needs no GitHub credentials to clone it.'));
+  assert.ok(section(runbook, '2. Log in to the registry and get the service image').includes('The package is public since 2026-10-16: the login is optional, and its token needs `read:packages`. The host still builds the image itself (below).'));
+  for (const rel of [...PUBLIC_FILES, 'agents/agent-history/README.md']) assert.doesNotMatch(read(rel), /repository is private|private repository|package is private/i, rel);
   assert.ok(image.includes('The agent is running on the box, and its status has been DEPLOYED since 2026-10-15.'));
   assert.equal(image.includes('Nothing is deployed yet.'), false);
 });
@@ -1122,7 +1127,7 @@ test('Pipeline RUNBOOK collateral and float: two keys, 5 alone then 50 for the s
 test('Pipeline RUNBOOK steps 1 to 3: the repository goes over as a git bundle and is cloned with --branch main; the image is built on the box; the runtime is built from the pinned template', () => {
   const one = section(pRunbook, '1. Put the files on the box');
   for (const part of [
-    'The box has no GitHub credentials, and the repository is private, so the repository goes over as a git bundle.',
+    'The box has no GitHub credentials, so the repository goes over as a git bundle.',
     'git bundle create vector-service-agents.bundle main', 'git bundle verify vector-service-agents.bundle', 'scp vector-service-agents.bundle <user>@<box>:/tmp/',
     'mkdir -p "$BASE" && cd "$BASE"', 'git clone --branch main /tmp/vector-service-agents.bundle repo', 'cd repo/deploy/host', 'git log -1 --oneline',
     'a bundle of `main` alone has no `HEAD`', 'Check that the commit is the one that was reviewed.', '"This folder" below means `$BASE/repo/deploy/host`.',
@@ -2013,14 +2018,19 @@ test('the paths on the box: each runbook sets its base paths once, at the top, a
   assert.ok(section(runbook, '5. Adapt the ops scripts').includes("Operator. The identity steps use the operator's existing identity scripts (registration, stake, signing), kept outside the repository."));
 });
 
-// The host, the stack of its reverse proxy, the other stacks it runs, a login and a key file, in the forms they had in the repository before it went public.
-// Built from parts, so that this file does not hold them either. The public hostnames of the adverts, of the indexer and of the hosted server are not here.
-const HOST_WORDS = new RegExp(['apex' + '-web', 'uma' + 'mi', 'chandra' + '-supplier', 'activity' + '-api', 'vector-agent' + '-dashboard', 'module3' + '-', 'module6' + '-', 'hetz' + 'ner', 'root' + '@', 'id_' + 'ed25519'].join('|'), 'i');
+// The host, the stack of its reverse proxy, the other stacks it runs (the activity decoder by its container on the host), a login and a key file.
+// Built from parts, so that this file does not hold them either. No public hostname is among them: not the adverts', the indexer's or the hosted
+// server's, and not the public hostname of the activity decoder, which the design spec names. Its container on the host is.
+const HOST_WORDS = new RegExp(['apex' + '-web', 'uma' + 'mi', 'chandra' + '-supplier', 'activity' + '-api-mainnet', 'vector-agent' + '-dashboard', 'module3' + '-', 'module6' + '-', 'hetz' + 'ner', 'root' + '@', 'id_' + 'ed25519'].join('|'), 'i');
 const TRACKED = (() => { try { return execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean); } catch { return null; } })();
 test('the deployment host is not named: no tracked file names it, the stack of its reverse proxy, its other stacks, a login or a key file', { skip: TRACKED ? false : 'needs a git checkout' }, () => {
   const files = TRACKED.filter((f) => f !== 'pnpm-lock.yaml' && !/\.(pdf|png)$/.test(f) && existsSync(join(root, f)));
   assert.ok(files.length > 150 && files.includes('deploy/host/RUNBOOK.md') && files.includes('docs/superpowers/specs/2026-10-13-vector-service-agents-design.md'), `the walk reaches every tracked file, found ${files.length}`);
   assert.deepEqual(files.filter((f) => HOST_WORDS.test(read(f))), []);
-  for (const hit of ['the apex' + '-web box', 'uma' + 'mi_default', '/opt/chandra' + '-supplier/ops']) assert.match(hit, HOST_WORDS, hit);
-  for (const miss of ['mp-suppliers-history.hal8.ai', 'mp-suppliers-chandra.hal8.ai', 'ChandraOCR', 'mp-indexer.vector.apexfusion.org', 'deploy/host']) assert.doesNotMatch(miss, HOST_WORDS, miss);
+  for (const hit of ['the apex' + '-web box', 'uma' + 'mi_default', '/opt/chandra' + '-supplier/ops', 'docker logs activity' + '-api-mainnet']) assert.match(hit, HOST_WORDS, hit);
+  for (const miss of ['mp-suppliers-history.hal8.ai', 'mp-suppliers-chandra.hal8.ai', 'ChandraOCR', 'mp-indexer.vector.apexfusion.org', 'https://activity' + '-api.vector.apexfusion.org', 'deploy/host']) assert.doesNotMatch(miss, HOST_WORDS, miss);
+  // No public hostname that a tracked file names trips a pattern.
+  const hostnames = new Set(files.flatMap((f) => read(f).match(/\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.(?:org|ai|io|com|net|dev|xyz)\b/gi) ?? []));
+  assert.ok(hostnames.has('activity' + '-api.vector.apexfusion.org') && hostnames.has('mp-indexer.vector.apexfusion.org'), 'the scan finds the public hostnames');
+  assert.deepEqual([...hostnames].filter((name) => HOST_WORDS.test(name)), []);
 });

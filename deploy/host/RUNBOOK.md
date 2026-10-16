@@ -34,7 +34,7 @@ cd repo/deploy/host
 git log -1 --oneline
 ```
 
-The repository is private, so the box needs read access to it. Copying `deploy/host` and `agents/agent-history` over `scp` also works if the layout stays the same. Check that the commit is the one that was reviewed. "This folder" below means `$BASE/repo/deploy/host`.
+The repository is public since 2026-10-16, so the box needs no GitHub credentials to clone it. Copying `deploy/host` and `agents/agent-history` over `scp` also works if the layout stays the same. Check that the commit is the one that was reviewed. "This folder" below means `$BASE/repo/deploy/host`.
 
 Then name the network. Both containers join the external network of the host's reverse proxy, and its name is not in the repository: compose reads it as `PROXY_NETWORK` from `.env` in this folder for every compose command (the first is in step 3), and stops while it has no value. The host administrator gives the name ([README.md](README.md)). In this folder:
 
@@ -47,7 +47,7 @@ The second line must print the name back. An error means that this host has no n
 
 ## 2. Log in to the registry and get the service image
 
-Host administrator. The package is private; the token needs `read:packages`.
+Host administrator. The package is public since 2026-10-16: the login is optional, and its token needs `read:packages`. The host still builds the image itself (below).
 
 ```bash
 read -rs GHCR_TOKEN

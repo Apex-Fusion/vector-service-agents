@@ -53,7 +53,7 @@ The key of the first-party run (step 15) is a third key and gets no collateral o
 
 ## 1. Put the files on the box
 
-Operator. The box has no GitHub credentials, and the repository is private, so the repository goes over as a git bundle. On the operator's machine, in a checkout of `main` at the commit that was reviewed:
+Operator. The box has no GitHub credentials, so the repository goes over as a git bundle. On the operator's machine, in a checkout of `main` at the commit that was reviewed:
 
 ```sh
 git bundle create vector-service-agents.bundle main

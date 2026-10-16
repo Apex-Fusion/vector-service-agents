@@ -65,7 +65,7 @@ member's chat client ──▶ hosted keyless MCP server ──▶ Koios v2 / in
 - **Hosted keyless MCP server** (`mcp.vector.mainnet.apexfusion.org/mcp`, v2.0.0, 24 tools today). Reads chain state, builds unsigned transactions, never holds a key. Our tools follow its conventions: `server.tool(name, description, zodRawShape, handler)` with `zod/v4`, `checkRateLimit()` first, one markdown text block back, errors as text.
 - **Local signer** (`packages/signer`, `@apexfusion/vector-mcp-signer`, stdio). Signs CBOR passed tool-to-tool; per-transaction cap 100, daily cap 500. Today it is `private: true` and installed by clone and build; PR 4 publishes it.
 - **Marketplace contracts** (PlutusV3, mainnet): advert and escrow scripts, reference scripts on chain. Constants in section 6.
-- **Public indexes:** marketplace indexer `mp-indexer.vector.apexfusion.org`, Koios v2 `v2.koios.vector.mainnet.apexfusion.org/api/v1`, and a public decoder of module activity.
+- **Public indexes:** marketplace indexer `mp-indexer.vector.apexfusion.org`, Koios v2 `v2.koios.vector.mainnet.apexfusion.org/api/v1`, activity-api `activity-api.vector.apexfusion.org`.
 - **Agents:** each is two containers on the deployment host behind the shared Caddy: the template runtime (`vector-agent-template`, `CAPABILITY_KIND=custom`) and our service process reachable at `SERVICE_URL`. The runtime claims the escrow, calls the service, signs the receipt, submits the receipt hash. The service never touches a key.
 
 **A hire, end to end** (the sequence the guide's chat script walks)
@@ -139,7 +139,7 @@ This PR introduces `safeFetch`, the only code path on the public server that cal
 | Module-3 stake datum (observed on chain) | Constr 0 [agent_asset_name, Constr 0 [owner_pkh], stake_amount, [capabilities], last_updated_ms, history_points]; token prefix `rstk_` |
 | Module-1 v14 claim / challenge / jury_pool | `addr1wx5ayt5tq8fg905qq7udnclg4a2g42jk78p7gv7qahwcwcqjd9tzq` / `addr1wyf8qr6240wk8j4t8zklk5z9tkj55njtcpqz5jcat2gdr7cazrd0t` / `addr1wy4sr34nzeprwatleqhxg7qvv0k0c826wv7wjxdrutn472q7yn6fa` (plus the v15-sim set `6c7a075f…`, `a28a2a36…`, `7135ee94…`) |
 | Module-6 v8 proposal / critique / endorsement spend addresses | `addr1wxvtvyx9jkt7jprdhm0g6wxkl8pvvc63vlwumju8f5uatzgnjjjcr` / `addr1w9gas5jxfye79d7g87lddu5p3lhvt67ku4ptfvgyqn4rp6stn80z3` / `addr1w8t3qgtthdpznyaw5vtdh87tlekzg5f5rdcav20ghwf7pms2mfltj` |
-| Endpoints | Ogmios `https://ogmios.vector.mainnet.apexfusion.org`, submit `https://submit.vector.mainnet.apexfusion.org/api/submit/tx`, Koios v2 `https://v2.koios.vector.mainnet.apexfusion.org/api/v1`, indexer `https://mp-indexer.vector.apexfusion.org`, MCP `https://mcp.vector.mainnet.apexfusion.org/mcp` |
+| Endpoints | Ogmios `https://ogmios.vector.mainnet.apexfusion.org`, submit `https://submit.vector.mainnet.apexfusion.org/api/submit/tx`, Koios v2 `https://v2.koios.vector.mainnet.apexfusion.org/api/v1`, indexer `https://mp-indexer.vector.apexfusion.org`, activity-api `https://activity-api.vector.apexfusion.org`, MCP `https://mcp.vector.mainnet.apexfusion.org/mcp` |
 
 The cross-module key is the registry asset name (Modules 1, 3, 6 store it in their `*_did` fields); the marketplace stores key hashes only. Attribution between the two is by key hash, and Agent History says so in every report.
 
@@ -189,7 +189,7 @@ The registry, stake, marketplace and module records the Vector ledger holds for 
 
 **Tests.** Golden fixtures recorded from Koios for ChandraOCR (registration at block 7,275,113, the Module-3 stake `05563e75…#0`, the 12 August job `1f1566b4…`), replayed offline; the report for that subject is asserted field by field, including `counts_by_outcome.accepted >= 1` and `receipt_signer_match: true`.
 
-**Gaps stated in the spec file.** Module-3 and Module-6 datum layouts beyond the stake datum are read from a public decoder of module activity and the module docs, without a local clone of `vector-agent-modules`; the first live report against each module is checked by hand before the advert is posted.
+**Gaps stated in the spec file.** Module-3 and Module-6 datum layouts beyond the stake datum are read from the activity-api decoder and the module docs, without a local clone of `vector-agent-modules`; the first live report against each module is checked by hand before the advert is posted.
 
 Field names are normative in specs/agent-history.md (written from the implementation).
 
