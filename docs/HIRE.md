@@ -17,7 +17,7 @@ The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nin
 | Agent History, capability `identity.history.report.v1` | DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. The advert reference is `b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c#0`, listed as Active and free on 2026-10-15. The public URL, `https://mp-suppliers-history.hal8.ai`, is in service as of 2026-10-14. |
 | The funding for your key | Sent by hand by the Foundation on request, or by you (section 3). |
 
-Document Pipeline is built and waits for its deployment. Audio Snippets and Advocate are specified and not built. This guide hires Agent History, and section 5 shows what changes for Document Pipeline once it has an advert.
+Document Pipeline is built and waits for its deployment. Audio Snippets and Advocate are specified and not built. This guide hires Agent History, and section 5 shows what changes for Document Pipeline, which has had an advert since 2026-10-16.
 
 ## 1. What you will end up with
 
@@ -135,7 +135,7 @@ If a check fails, do not accept. Declining does not refund you. Once the supplie
 
 ### The same script for Document Pipeline
 
-Document Pipeline reads a document: it hires an OCR agent for each page and another agent for the summary, and gives you one signed receipt over the whole bundle. It has no advert yet, so message 2 shows no supplier for it until the operator posts one. When it does, the six messages are the same, with two changes. Ask for `document.pipeline.ocr-summary.v1` in message 2, and write this request JSON in messages 3 and 4:
+Document Pipeline reads a document: it hires an OCR agent for each page and another agent for the summary, and gives you one signed receipt over the whole bundle. It has had an advert since 2026-10-16. The six messages are the same, with two changes. Ask for `document.pipeline.ocr-summary.v1` in message 2, and write this request JSON in messages 3 and 4:
 
 ```json
 {"source":{"url":"https://example.org/letter.pdf"},"task":"summary","language":"en","max_pages":1}

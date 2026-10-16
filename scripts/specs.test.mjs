@@ -7,16 +7,17 @@ import { fileURLToPath } from 'node:url';
 // The four agent specs share one structure and one set of public-wording rules (docs/superpowers/specs/2026-10-13-vector-service-agents-design.md, section 8).
 // The member guide and the E2E runbook are pinned against the same specs and the design at the end of this file.
 const HEADINGS = ['Status', 'Identity', 'Capability id', 'Terms', 'Interface', 'What the receipt commits to', 'Operator and data handling', 'Known gaps', 'How to hire it', 'Changelog', 'Links'];
-// The sentence under "Identity" in each spec. The three designs have no registry record. Agent History was registered on 2026-10-14 (RUNBOOK step 7) and says so.
+// The sentence under "Identity" in each spec. The two designs have no registry record. Agent History was registered on 2026-10-14 (RUNBOOK step 7) and Document Pipeline on 2026-10-16 (step 7 of RUNBOOK-document-pipeline), and each says so.
 const NO_RECORD = 'This agent has no registry record yet.';
 const HAS_RECORD = 'This agent has had a registry record since 2026-10-14.';
+const DP_HAS_RECORD = 'This agent has had a registry record since 2026-10-16.';
 // The status line of Agent History since the flip of 2026-10-15 (RUNBOOK step 17): the facts in one line, as every file that has a status line gives them. Audio Snippets and Advocate stay PROPOSED (not built).
 const AH_STATUS = 'DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15.';
-// Document Pipeline is built since 2026-10-15 and not deployed: no registry record, no advert. It is PROPOSED with the qualifier in the line, and the word has stood since 2026-10-13.
+// Document Pipeline is built since 2026-10-15 and not deployed. It has had a registry record, a stake and an advert since 2026-10-16 (steps 7, 8 and 12 of RUNBOOK-document-pipeline), which does not change the word: it is PROPOSED with the qualifier in the line, and the word has stood since 2026-10-13. Step 17 is the only place that flips it.
 const DP_STATUS = 'PROPOSED (built, not deployed). Since 2026-10-13.';
 const AGENTS = {
   'agent-history': { capability: 'identity.history.report.v1', model: 'agent-history-v1', status: AH_STATUS, record: HAS_RECORD },
-  'document-pipeline': { capability: 'document.pipeline.ocr-summary.v1', model: 'document-pipeline-v1', status: DP_STATUS, record: NO_RECORD },
+  'document-pipeline': { capability: 'document.pipeline.ocr-summary.v1', model: 'document-pipeline-v1', status: DP_STATUS, record: DP_HAS_RECORD },
   'audio-snippets': { capability: 'audio.transcript.snippets.v1', model: 'audio-snippets-v1', status: 'PROPOSED (not built). Since 2026-10-13.', record: NO_RECORD },
   advocate: { capability: 'research.advocate.onesided.v1', model: 'advocate-v1', status: 'PROPOSED (not built). Since 2026-10-13.', record: NO_RECORD },
 };
@@ -60,7 +61,7 @@ for (const [name, { capability, status, record }] of Object.entries(AGENTS)) {
     const text = read(name);
     const identity = section(text, 'Identity');
     assert.ok(identity.includes(`\n${record}\n`), `the Identity section says "${record}"`);
-    assert.equal(identity.includes(record === HAS_RECORD ? NO_RECORD : HAS_RECORD), false, 'and not the other sentence');
+    for (const other of [NO_RECORD, HAS_RECORD, DP_HAS_RECORD].filter((sentence) => sentence !== record)) assert.equal(identity.includes(other), false, `and not "${other}"`);
     assert.equal(text.match(/Nothing in this table/), null); // the registry address row does exist
   });
 
@@ -149,13 +150,70 @@ test('specs/agent-history.md: the DID, the registry record and the reputation st
   assert.equal(text.match(/none yet|not posted|not in service|not yet advertised|once it is in service/i), null);
 });
 
-test('the three specs that have no advert say so under How to hire it; the two that are not built say that nothing is built, and the Pipeline, which is built, gives its release', () => {
+// Document Pipeline has a registry record and a Module-3 self-stake since 2026-10-16 (RUNBOOK-document-pipeline steps 7 and 8), and a public URL in service and an advert since the same day (steps 10 to 14), all run on the box.
+// The spec and the guide record them and claim nothing more: the status word is PROPOSED (built, not deployed), as since 2026-10-13, and step 17 is the only place that flips it. The values are the ones the ledger holds for that registration, that stake and that advert.
+const DP = {
+  did: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:b8599ec7f66a389dab40a963cce31a0e2e05c61e47f0b002fa39d59acf5932f5',
+  registerTx: '195028d86ee9735084ce648779a673da5bf76977b10bc52b3d10dbfb57ef86dd',
+  stakeTx: '6a41f59d0925b70583d0272fdddf9fedbc5dcac2d4af2c9484c452e2a5fb2830',
+  controllerPkh: '5750aa8006bdc4f16f7950f54b89c2efb1d11091718d0db32a4863fc',
+  // The advert, posted and confirmed on 2026-10-16 (step 12) and listed by the marketplace indexer (step 14). A reference is the transaction id and the output index.
+  advertTx: '4fe706e06652342a83b68a1caf691373418d63a34431a66bcf284106af5f41df',
+  advertRef: '4fe706e06652342a83b68a1caf691373418d63a34431a66bcf284106af5f41df#0',
+};
+
+test('specs/document-pipeline.md: the Status paragraph and the Identity sentence say the registry record and the advert exist since 2026-10-16, the Status line is as it was, nothing is LIVE or DEPLOYED, and the words of before do not come back', () => {
+  const text = read('document-pipeline');
+  assert.ok(section(text, 'Status').includes(`\n${DP_STATUS}\n`), 'the status line, alone on its line, is as it was since 2026-10-13');
+  assert.ok(section(text, 'Status').includes('It is not deployed, has had a registry record since 2026-10-16 and has had an advert since 2026-10-16. Nothing on this page is LIVE or DEPLOYED.'));
+  assert.equal(section(text, 'Status').match(/has no advert|not yet advertised|no registry record/i), null, 'the Status paragraph does not say that the agent has no record or no advert');
+  assert.ok(section(text, 'Identity').includes(`\n${DP_HAS_RECORD}\n`));
+  // The words of before the registration.
+  assert.equal(text.match(/no registry record yet|has no DID yet/i), null);
+  assert.equal(section(text, 'Identity').match(/not registered|When registered|Registry record, planned|Public URL, planned|Reputation stake, planned/), null);
+});
+
+test('specs/document-pipeline.md: the DID, the registry record and the reputation stake of 2026-10-16 are in the Identity table with their transactions, the URL and the manifest are in service since 2026-10-16, and the advert is recorded in the Links and under How to hire it', () => {
+  const text = read('document-pipeline');
+  const row = (label) => section(text, 'Identity').split('\n').find((l) => l.startsWith(`| ${label} |`)) ?? '';
+  // The DID has the registry policy that every DID of the registry has (the one in the Request example of Agent History) and an asset name of 64 hex of its own. The explorer link has the pattern the member guide gives.
+  const policy = /did:vector:agent:([0-9a-f]{56}):/.exec(section(read('agent-history'), 'Interface'))?.[1] ?? '';
+  assert.match(policy, /^[0-9a-f]{56}$/);
+  assert.match(DP.did, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
+  assert.notEqual(DP.did, AH.did, 'its own asset name');
+  assert.ok(readFileSync(new URL('../docs/HIRE.md', import.meta.url), 'utf8').includes(`${EXPLORER_TX}<txid>`), 'the explorer link pattern');
+  assert.equal(row('DID'), `| DID | \`${DP.did}\` |`);
+  const record = row('Registry record');
+  for (const part of [
+    'name `Document Pipeline`', 'capabilities `document.pipeline.ocr-summary.v1`', 'framework `vector-service-agents`', "endpoint the agent's public URL",
+    `controller key hash \`${DP.controllerPkh}\` (the supplier key hash)`, 'Registered on 2026-10-16 in the confirmed transaction', `[\`${DP.registerTx}\`](${EXPLORER_TX}${DP.registerTx})`,
+    'The deposit is 10000000 lovelace (10.000000), refundable on deregistration',
+  ]) assert.ok(record.includes(part), `the Registry record row says: ${part}`);
+  const stake = row('Reputation stake');
+  for (const part of ['a Module-3 self-stake of 10000000 lovelace (10.000000) on the capability', 'made on 2026-10-16 in transaction', `[\`${DP.stakeTx}\`](${EXPLORER_TX}${DP.stakeTx})`]) assert.ok(stake.includes(part), `the Reputation stake row says: ${part}`);
+  assert.match(DP.controllerPkh, /^[0-9a-f]{56}$/);
+  for (const hex of [DP.registerTx, DP.stakeTx, DP.advertTx]) assert.match(hex, /^[0-9a-f]{64}$/);
+  assert.equal(new Set([DP.registerTx, DP.stakeTx, DP.advertTx]).size, 3, 'three transactions: the registration, the stake, the advert');
+  // The URL is in service since 2026-10-16 (steps 10 to 14), so no row is "planned" any more. The advert is posted: it has its explorer link and its reference. The status word is as it was.
+  assert.equal(row('Public URL'), '| Public URL | `https://mp-suppliers-pipeline.hal8.ai` (in service as of 2026-10-16) |');
+  for (const label of ['Registry record, planned', 'Public URL, planned', 'Reputation stake, planned']) assert.equal(row(label), '', `${label} is gone`);
+  assert.equal(DP.advertRef.split('#')[0], DP.advertTx, 'the transaction id is the reference up to the #');
+  assert.match(DP.advertRef, /^[0-9a-f]{64}#0$/);
+  const links = section(text, 'Links');
+  assert.ok(links.includes(`- Advert on the explorer: posted on 2026-10-16 in the confirmed transaction [\`${DP.advertTx}\`](${EXPLORER_TX}${DP.advertTx}). The advert reference is \`${DP.advertRef}\`. The marketplace indexer lists it (checked on 2026-10-16).`));
+  assert.ok(links.includes("- Manifest: `GET /agent.json` on the agent's public URL, in service as of 2026-10-16."));
+  assert.ok(section(text, 'How to hire it').includes('Advertised on 2026-10-16: the marketplace indexer lists the advert (checked on 2026-10-16). The service is built and waits for its deployment. The three ways below apply.'));
+  // The words of before the advert do not come back. The two specs that are not built keep theirs, and the runbooks quote them as instructions.
+  assert.equal(text.match(/none yet|not posted|not in service|not yet advertised|none until deployed|once it is in service/i), null);
+});
+
+test('the two specs that are not built have no advert and say so under How to hire it; they say that nothing is built, and the Pipeline, which is built and advertised since 2026-10-16, gives its release', () => {
   const NOT_YET = 'Not yet advertised. When live, the three ways below apply.';
-  for (const name of ['document-pipeline', 'audio-snippets', 'advocate']) assert.ok(section(read(name), 'How to hire it').includes(NOT_YET), name);
+  for (const name of ['audio-snippets', 'advocate']) assert.ok(section(read(name), 'How to hire it').includes(NOT_YET), name);
   for (const name of ['audio-snippets', 'advocate']) assert.ok(section(read(name), 'Changelog').includes('Nothing is built.'), name);
-  // The Pipeline was built on 2026-10-15 and waits for its deployment: its Changelog names the release and the day, and no word of the design is left.
+  // The Pipeline was built on 2026-10-15 and advertised on 2026-10-16, and it waits for its deployment: its Changelog names the release and the day, and no word of the design is left.
   const pipeline = read('document-pipeline');
-  assert.ok(section(pipeline, 'How to hire it').includes(`${NOT_YET} The service is built and waits for its deployment.`));
+  assert.equal(section(pipeline, 'How to hire it').includes('Not yet advertised'), false, 'the Pipeline is advertised since 2026-10-16');
   assert.equal(section(pipeline, 'Changelog').trim(), '- 0.1.0, 2026-10-15: built');
   assert.equal(pipeline.match(/Nothing is built|None of this is built/), null);
   assert.equal(section(read('agent-history'), 'How to hire it').includes('Not yet advertised'), false, 'Agent History is advertised since 2026-10-14');
@@ -205,22 +263,22 @@ test('the Pipeline states its economics and the first-party OCR hop; the Advocat
   assert.equal(read('advocate').split('This brief argues one side only, by design, and omits counter-arguments.').length - 1, 3); // the rule, the shape and the example
 });
 
-// ---- Document Pipeline: built on 2026-10-15, not deployed ----
-// The service is built and its tests replay a stub marketplace and a fake chain. It has no registry record and no advert, so the word is PROPOSED, with the qualifier in the line.
+// ---- Document Pipeline: built on 2026-10-15, registered, staked and advertised on 2026-10-16, not deployed ----
+// The service is built and its tests replay a stub marketplace and a fake chain. It has had a registry record, a stake and an advert since 2026-10-16 and is not deployed, so the word is PROPOSED, with the qualifier in the line.
 // The page says what is built and what is not, and the words of the design that it was before the build do not come back. agents/document-pipeline/test/spec.test.ts holds the rest of the
 // page to the code and the manifest: the gap sentences, the numbers, the response example, the error codes.
-const DP_PARAGRAPH = 'The service is built. Its tests replay a stub marketplace and a fake chain. It is not deployed, has no registry record and has no advert. Nothing on this page is LIVE or DEPLOYED.';
+const DP_PARAGRAPH = 'The service is built. Its tests replay a stub marketplace and a fake chain. It is not deployed, has had a registry record since 2026-10-16 and has had an advert since 2026-10-16. Nothing on this page is LIVE or DEPLOYED.';
 
 test('specs/document-pipeline.md: the Status line is PROPOSED (built, not deployed) since 2026-10-13, the paragraph says what is built and what is not, and the words of the design do not come back', () => {
   const text = read('document-pipeline');
   assert.equal(section(text, 'Status').trim(), `${DP_STATUS}\n\n${DP_PARAGRAPH}`);
   assert.equal(text.match(/PROPOSED \(not built\)|This page is a design|There is no code|None of this is built|Illustrative|How it buys \(design\)|No releases|The planned folder|Not built\. Everything/), null, 'the words of before the build do not come back');
-  assert.ok(section(text, 'Identity').includes(`\n${NO_RECORD}\n`), 'the agent has no registry record yet');
+  assert.ok(section(text, 'Identity').includes(`\n${DP_HAS_RECORD}\n`), 'the agent has had a registry record since 2026-10-16');
+  // The Advert line of the Links is pinned above, with the registration and the advert. The Manifest line (with the link to the template) and the Source line are here.
   const links = section(text, 'Links').split('\n');
   for (const line of [
-    '- Manifest: none until deployed. The service renders it from its environment when it starts and serves it at `GET /agent.json`. The template is [agents/document-pipeline/agent.json.template](../agents/document-pipeline/agent.json.template).',
+    '- Manifest: `GET /agent.json` on the agent\'s public URL, in service as of 2026-10-16. The service renders it from its environment when it starts. The template is [agents/document-pipeline/agent.json.template](../agents/document-pipeline/agent.json.template).',
     '- Source: [agents/document-pipeline](../agents/document-pipeline)',
-    '- Advert on the explorer: none yet. The advert is not posted.',
   ]) assert.ok(links.includes(line), line);
   for (const path of ['agents/document-pipeline', 'agents/document-pipeline/agent.json.template']) assert.ok(existsSync(new URL(`../${path}`, import.meta.url)), `${path} exists`);
 });
@@ -302,7 +360,8 @@ test('docs/HIRE.md: the chat script is verbatim, six lines in one block, inside 
 // The guide has two request JSONs: message 3 of the chat script (Agent History's, a subject) and the one for Document Pipeline in the subsection of section 5 (a one-page PDF by URL).
 test('docs/HIRE.md: says that Document Pipeline is built and waits for its deployment; section 5 gives it a second request JSON, the 30 min wait and the time to reclaim', () => {
   const guide = hire();
-  assert.ok(guide.includes('Document Pipeline is built and waits for its deployment. Audio Snippets and Advocate are specified and not built. This guide hires Agent History, and section 5 shows what changes for Document Pipeline once it has an advert.'));
+  assert.ok(guide.includes('Document Pipeline is built and waits for its deployment. Audio Snippets and Advocate are specified and not built. This guide hires Agent History, and section 5 shows what changes for Document Pipeline, which has had an advert since 2026-10-16.'));
+  assert.equal(guide.match(/once it has an advert|no advert yet|until the operator posts one/i), null, 'the words of before the advert');
   assert.equal(guide.match(/Three more agents are specified and not built/), null, 'the sentence of before the build');
   const five = section(guide, '5. The chat script');
   const heading = '\n### The same script for Document Pipeline\n';
@@ -315,7 +374,7 @@ test('docs/HIRE.md: says that Document Pipeline is built and waits for its deplo
   assert.deepEqual(Object.keys(first), ['subject']);
   assert.deepEqual(second, { source: { url: 'https://example.org/letter.pdf' }, task: 'summary', language: 'en', max_pages: 1 });
   for (const part of [
-    'It has no advert yet, so message 2 shows no supplier for it until the operator posts one.',
+    'It has had an advert since 2026-10-16. The six messages are the same, with two changes.',
     'Ask for `document.pipeline.ocr-summary.v1` in message 2, and write this request JSON in messages 3 and 4:',
     'That URL is only an example. Use the https URL of a one-page PDF that anyone may read: its page goes to the OCR agent, and its text to the chat supplier and that supplier\'s model provider. The service fetches the URL itself, so it must be public and must not redirect.',
     'Its processing window is 30 min, so message 4 can wait that long: ask your assistant to poll again whenever a call is cut near 100 s, as in section 9.',
@@ -324,7 +383,7 @@ test('docs/HIRE.md: says that Document Pipeline is built and waits for its deplo
   ]) assert.ok(sub.includes(part), `the subsection says: ${part}`);
   // The wait is the advert's window in the spec, and the reclaim time is that window plus the 180 s of every deliver_by.
   assert.match(section(read('document-pipeline'), 'Terms'), /Processing window, advert `max_processing_ms` \| 1800000 ms \(30 min/);
-  assert.ok(sub.indexOf('document.pipeline.ocr-summary.v1') > sub.indexOf('It has no advert yet'), 'the capability is asked for after the honest line');
+  assert.ok(sub.indexOf('document.pipeline.ocr-summary.v1') > sub.indexOf('It has had an advert since 2026-10-16.'), 'the capability is asked for after the line that says it is advertised');
   assert.ok(section(hire(), '3. Fund it').split('\n').some((l) => l.startsWith('| 5 (Document Pipeline) | 7 | 6 | 1 | about 1 | about 7 | 7 |')), 'the cost table row the subsection points to');
 });
 

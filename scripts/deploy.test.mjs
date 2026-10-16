@@ -1414,7 +1414,9 @@ test('Pipeline RUNBOOK steps 6 to 8: two wallets funded and checked, the identit
     'Record the identity in the repository.', 'into the Identity section of `specs/document-pipeline.md`', '`scripts/specs.test.mjs`', 'The status word does not change here. Step 17 is the only place that flips it.',
   ]) assert.ok(seven.includes(part), `step 7 says: ${part}`);
   assert.ok(seven.indexOf('Record the identity in the repository.') > seven.indexOf("grep -c '^AGENT_DID=did:vector:agent:'"), 'after the identity is checked');
-  assert.ok(PSPEC.includes('This agent has no registry record yet.') && PSPEC.includes('| Registry record, planned |'), 'the spec rows the pull request changes exist');
+  // Step 7 was run on 2026-10-16 and the pull request it asks for changed those rows: the sentence says that the record exists, and the row is no longer "planned". The runbook still quotes the old words, as the instruction it was.
+  assert.ok(PSPEC.includes('\nThis agent has had a registry record since 2026-10-16.\n') && PSPEC.includes('\n| DID | `did:vector:agent:') && PSPEC.includes('\n| Registry record | name `Document Pipeline`;'), 'the spec rows the pull request changed carry the record');
+  assert.equal(PSPEC.includes('This agent has no registry record yet.') || PSPEC.includes('| Registry record, planned |'), false, 'and the words of before are gone');
   const eight = section(pRunbook, '8. Stake in Module-3');
   assert.ok(eight.includes('cd /opt/document-pipeline/ops\n./venv/bin/python m3-self-stake.py'));
   assert.ok(eight.includes('here both are the one capability `document.pipeline.ocr-summary.v1`'));
