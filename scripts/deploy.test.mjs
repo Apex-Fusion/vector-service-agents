@@ -543,7 +543,9 @@ test('status words: no file says PROPOSED about Agent History, and no file says 
   // Audio Snippets and Advocate are not built and are PROPOSED, each in its own spec. Document Pipeline is built and not deployed: PROPOSED too, with the qualifier in its line.
   for (const f of ['specs/audio-snippets.md', 'specs/advocate.md']) assert.match(read(f), /^PROPOSED \(not built\)\. Since 2026-10-13\.$/m, f);
   assert.match(read('specs/document-pipeline.md'), /^PROPOSED \(built, not deployed\)\. Since 2026-10-13\.$/m);
-  assert.deepEqual(OTHER_AGENTS, ['specs/document-pipeline.md', 'specs/audio-snippets.md', 'specs/advocate.md'], 'the three specs that may say PROPOSED anywhere');
+  // The specs that open a line with PROPOSED are the three this test lets say it anywhere: read from the specs folder, so that a fourth spec, or a spec that drops the word, is seen.
+  const proposed = readdirSync(join(root, 'specs')).filter((f) => /^PROPOSED \(/m.test(read(`specs/${f}`))).map((f) => `specs/${f}`).sort();
+  assert.deepEqual(proposed, [...OTHER_AGENTS].sort(), 'the specs that say PROPOSED are the three that may say it anywhere');
 });
 
 test('RUNBOOK: Back out retires the advert first with the supplier key, then stops the services, then the host administrator removes the Caddy block', () => {

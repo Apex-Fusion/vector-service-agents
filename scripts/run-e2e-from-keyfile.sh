@@ -7,8 +7,8 @@
 # The file is sourced into the environment of this shell and never printed. Only the signer process reads the key.
 # Every line of output is passed through a redaction filter that blanks anything shaped like a signer key, as a belt
 # and braces measure: the script and the signer print no settings, but a stack trace could.
-# The evidence of a finished run goes to evidence.json in the repository root; it and the state file e2e-state.json are git-ignored.
-# SIGNER_ENTRY (the built signer) is required; ADVERT_REF defaults to the Agent History advert and can be overridden.
+# The evidence of a finished run goes to evidence.json in the repository root; it and the state file (e2e-state.json, or the file E2E_STATE names) are git-ignored.
+# SIGNER_ENTRY (the built signer) is required; ADVERT_REF defaults to the Agent History advert and can be overridden. CAPABILITY_ID, E2E_STATE, E2E_POLL_MS and PAYLOAD pass through from the environment (docs/E2E.md, "Hiring Document Pipeline").
 set -euo pipefail
 KEYFILE="${1:?usage: run-e2e-from-keyfile.sh KEYFILE [--dry-run]}"
 MODE="${2:-}"
@@ -47,6 +47,6 @@ if [ "$rc" -eq 0 ] && [ -s evidence.json.tmp ]; then
   echo "evidence written to evidence.json"
 else
   rm -f evidence.json.tmp
-  echo "run stopped with exit code $rc (state kept in e2e-state.json)" >&2
+  echo "run stopped with exit code $rc (state kept in ${E2E_STATE:-e2e-state.json})" >&2
 fi
 exit "$rc"

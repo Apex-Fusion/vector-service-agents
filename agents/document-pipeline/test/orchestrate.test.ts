@@ -8,7 +8,7 @@
 // for the request the Pipeline must send), not from a run of the code under test, and test/spec.test.ts holds the example of specs/document-pipeline.md to it.
 import { describe, it, expect, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { responsesPromptHash, TxNotConfirmedError } from '@vsa/buyer-core';
@@ -655,7 +655,7 @@ describe('runPipeline: the deadline', () => {
     expect(calls(run.m).filter((c) => c === `GET ${INDEXER}/suppliers`)).toHaveLength(2);
   });
 
-  it('nothing waits past the deadline: a chat job still running when it comes fails with deadline, its escrow with the janitor', async () => {
+  it('the polls of a hire stop at the deadline: a chat job still running when it comes fails with deadline, its escrow with the janitor', async () => {
     const run = setup();
     run.m.llm.steps = ['running'];
     const posted = run.deps.deadlineMs - 420_000;
@@ -663,6 +663,97 @@ describe('runPipeline: the deadline', () => {
     expect(run.m.clock.now).toBe(run.deps.deadlineMs);
     expect(run.m.llm.polls).toBe(140);
     expect(run.stranded.list()).toStrictEqual([entry(escrowNo(3), posted, 'llm')]);
+  });
+
+  it('the repeats of a send stop at the deadline: a supplier that stays busy fails the page with deadline once the next send would start after it, the escrow with the janitor', async () => {
+    const run = setup();
+    run.m.ocr.busy = 100;
+    // The Post is made 100 s before the deadline, so its deliver_by is later than the deadline and the deadline is the first limit of the sends.
+    const posted = run.deps.deadlineMs - 100_000;
+    const chain = chainWith(run.m, { postEscrow: async (a) => { run.m.clock.now = posted; return run.m.chain.postEscrow(a); } });
+    const error = await failure(runPipeline(request(), { ...run.deps, chain }), 'deadline');
+    expect(error.message).toMatch(/page 1 waited for its supplier/);
+    expect(run.m.ocr.sends).toHaveLength(7); // 100, 85, 70, 55, 40, 25 and 10 s before the deadline: the next send would be 5 s after it
+    expect(run.m.clock.now).toBe(run.deps.deadlineMs - 10_000);
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['Open']);
+    expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1), posted)]);
+  });
+
+  it('the repeated reads of the receipt hash stop at the deadline: a chat receipt whose hash does not show in time fails the job with deadline, its escrow Submitted and with the janitor', async () => {
+    const run = setup();
+    // 119 polls of 3 s from 420 s before the deadline bring the answer to 63 s before it, and the hash of the chat receipt is never listed.
+    run.m.llm.steps = [...Array.from({ length: 118 }, () => 'running' as const), 'done'];
+    const posted = run.deps.deadlineMs - 420_000;
+    let accepts = 0;
+    const chain = chainWith(run.m, {
+      accept: async (r) => { const done = await run.m.chain.accept(r); accepts += 1; if (accepts === 2) run.m.clock.now = posted; return done; },
+      onChainReceiptHash: (r) => (accepts < 2 ? run.m.chain.onChainReceiptHash(r) : Promise.resolve(null)),
+    });
+    await failure(runPipeline(request(), { ...run.deps, chain }), 'deadline');
+    expect(run.m.llm.polls).toBe(119);
+    expect(run.m.clock.now).toBe(run.deps.deadlineMs);
+    expect(await states(run.m, escrowNo(3))).toStrictEqual(['Submitted']);
+    expect(run.stranded.list()).toStrictEqual([entry(escrowNo(3), posted, 'llm')]);
+  });
+
+  it('the confirmation of a Post is not cut at the deadline: one confirmed after it stands, the job is sent once, and the hire stops with deadline at its first poll, its escrow with the janitor', async () => {
+    const run = setup();
+    const posted = run.deps.deadlineMs - 420_000;
+    let accepts = 0;
+    let posts = 0;
+    const chain = chainWith(run.m, {
+      accept: async (r) => { const done = await run.m.chain.accept(r); accepts += 1; if (accepts === 2) run.m.clock.now = posted; return done; },
+      postEscrow: async (a) => { const post = await run.m.chain.postEscrow(a); posts += 1; if (posts === 3) run.m.clock.now = run.deps.deadlineMs + 1_000; return post; },
+    });
+    await failure(runPipeline(request(), { ...run.deps, chain }), 'deadline');
+    expect(posts).toBe(3);
+    expect(run.m.llm.sends).toHaveLength(1);
+    expect(run.m.llm.polls).toBe(0);
+    expect(await states(run.m, escrowNo(3))).toStrictEqual(['Claimed']);
+    expect(run.stranded.list()).toStrictEqual([entry(escrowNo(3), posted, 'llm')]);
+  });
+
+  it('the confirmation of an Accept is not cut at the deadline: one in flight when it comes is confirmed and booked, and the job then fails with deadline before the next hop', async () => {
+    const run = setup();
+    let accepts = 0;
+    const chain = chainWith(run.m, { accept: async (r) => { accepts += 1; if (accepts === 1) run.m.clock.now = run.deps.deadlineMs + 1_000; return run.m.chain.accept(r); } });
+    const error = await failure(runPipeline(request(), { ...run.deps, chain }), 'deadline');
+    expect(error.message).toMatch(/page 2/);
+    expect(await states(run.m, escrowNo(1), escrowNo(2))).toStrictEqual(['spent', 'unknown']);
+    expect(run.m.ocr.sends).toHaveLength(1);
+    expect(run.stranded.list()).toStrictEqual([]);
+  });
+
+  it('the heads of budget.ts and hire.ts say what the deadline cuts and what it does not, as the tests above show it', () => {
+    for (const file of ['budget.ts', 'hire.ts']) {
+      const head = readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8').split('\nimport ')[0].replace(/\n\/\/ ?/g, ' ');
+      expect(head, file).not.toMatch(/every wait of a run is cut at the deadline|nothing waits past the deadline/);
+      expect(head, file).toContain('does not cut the confirmation of a Post or of an Accept');
+      expect(head, file).toContain('the repeats of a send, the polls, the repeats of a read of the receipt hash');
+      expect(head, file).toContain('runs on');
+    }
+  });
+
+  it('the Accept of the chat job is not cut either: confirmed after the deadline the job still returns its result, and unseen it is left accept_pending with the result standing', async () => {
+    const late = setup();
+    let accepts = 0;
+    const confirmedLate = chainWith(late.m, { accept: async (r) => { accepts += 1; if (accepts === 3) late.m.clock.now = late.deps.deadlineMs + 1_000; return late.m.chain.accept(r); } });
+    expect(await runPipeline(request(), { ...late.deps, chain: confirmedLate })).toStrictEqual(GOLDEN);
+    expect(late.stranded.list()).toStrictEqual([]);
+
+    const unseen = setup();
+    let n = 0;
+    const validTo = unseen.deps.deadlineMs + 100_000;
+    const notSeen = chainWith(unseen.m, {
+      accept: async (r) => {
+        n += 1;
+        if (n < 3) return unseen.m.chain.accept(r);
+        unseen.m.clock.now = unseen.deps.deadlineMs + 1_000;
+        throw new TxNotConfirmedError(`The Accept ${'ac'.repeat(32)} of escrow ${r} was submitted, but Koios did not report it confirmed within 180000 ms.`, { txHash: 'ac'.repeat(32), escrowRef: r, deliverBy: null, validTo, mayLand: true });
+      },
+    });
+    expect(await runPipeline(request(), { ...unseen.deps, chain: notSeen })).toStrictEqual({ ...GOLDEN, accounting: { ...GOLDEN.accounting, fees_total_lovelace: '2500000' } });
+    expect(unseen.stranded.list()).toStrictEqual([{ ...entry(escrowNo(3), T0 + 12_000, 'llm'), accept_pending: { tx_hash: 'ac'.repeat(32), valid_to: validTo, by: 'run' } }]);
   });
 });
 

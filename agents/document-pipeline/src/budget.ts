@@ -1,14 +1,21 @@
 // agents/document-pipeline/src/budget.ts
 // The time and money rules of a run, in one place. The deadline is the orchestrator's own: the server sets it 1620000 ms after the request arrives,
-// 60 s inside the runtime's SERVICE_TIMEOUT_MS, so that a run answers, with a result or a refusal, before the runtime gives up on it.
+// 60 s inside the runtime's SERVICE_TIMEOUT_MS, so that a run answers, with a result or a refusal, before the runtime gives up on it. It does so
+// except where a Post or an Accept is confirming, which the deadline does not cut (see below).
 //
 // What one hire waits for, part by part (ruling R40): its Post confirmed (up to 180 s, the chain's own wait), the supplier's Claim (up to 60 s, before
 // it answers the send), the work (up to 240 s for an OCR page, 180 s for the chat job), the supplier's Submit (about 30 s), the hash of the receipt
 // showing on chain (up to 120 s) and the Accept confirmed (up to 180 s). No page is started with less than 660 s left before the deadline and no chat
 // job with less than 420 s. For a page the Claim, the work, the Submit and the hash wait take up to 450 s, which leaves its Post and its Accept 210 s
 // between them; for the chat job those four take up to 390 s and leave its two transactions 30 s. The minimums are not the sum of every worst case
-// (810 s for a page, 750 s for the chat job): every wait of a run is cut at the deadline as well, so a slower run still answers in time, and the
-// escrows it leaves behind go to the janitor.
+// (810 s for a page, 750 s for the chat job).
+//
+// What the deadline cuts is what the run waits for on its own: the repeats of a send, the polls, the repeats of a read of the receipt hash, and the
+// pauses between them (fit, checkWithin and waitWithin below). Past the deadline none of them starts again, and the run fails with `deadline`, the escrows it
+// leaves behind going to the janitor. The deadline does not cut the confirmation of a Post or of an Accept: Chain.postEscrow and Chain.accept take no
+// deadline, and RealChain waits up to 180 s for each (awaitTimeoutMs). So a hire in its Accept at the deadline runs on, and its Accept completes or is
+// left accept_pending; the next hop then fails with `deadline` (assertTimeLeft), or, after the chat job, the run still answers, which can be after
+// the runtime has given up on it (60 s after the deadline at the latest). The tests of "the deadline" in test/orchestrate.test.ts show each of these.
 //
 // What a run may lock is checked before the first Post: the collateral output, and a float for every sub-job it could post.
 import { PipelineError } from './result.ts';

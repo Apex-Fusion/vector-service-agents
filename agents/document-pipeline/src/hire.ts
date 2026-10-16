@@ -29,7 +29,11 @@
 //
 // The Accept. Confirmed: its fee is booked and the escrow leaves the store. Refused, or failed in a way that cannot land: <hop>_accept_failed. Sent
 // but not seen confirmed, so that it may still land (ruling R33): the job stands, verified, its fee is not booked, and the escrow stays in the store
-// marked accept_pending, for the janitor to confirm. Throughout, nothing waits past the deadline of the run (`deadline`).
+// marked accept_pending, for the janitor to confirm.
+//
+// The deadline of the run (`deadline`) cuts the waits of this file that are its own: the repeats of a send, the polls, the repeats of a read of the receipt
+// hash, and the pauses between them. It does not cut the confirmation of a Post or of an Accept, which the chain waits for (up to 180 s each; no
+// deadline is passed to it): a hire in its Accept at the deadline runs on. See the head of src/budget.ts.
 import { DELIVER_BY_BUFFER_MS, TxNotConfirmedError, verifyFleetReceipt } from '@vsa/buyer-core';
 import type { Chain, ChainEscrowState, FleetVerification, FleetVerifyInput, PollResult, PostResult, SendResult } from '@vsa/buyer-core';
 import { BUSY_RETRY_MS, POLL_INTERVAL_MS, RECEIPT_HASH_WAIT_MS, SEND_CUTOFF_MS, checkWithin, deadlineError, fit, waitWithin } from './budget.ts';

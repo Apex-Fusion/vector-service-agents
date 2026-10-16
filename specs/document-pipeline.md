@@ -76,15 +76,24 @@ Example:
 { "source": { "url": "https://example.org/letter.pdf" }, "task": "summary", "language": "en", "max_pages": 1 }
 ```
 
-The rules. A request that breaks one is refused before anything is fetched or posted, so it spends nothing. The request is a JSON object with these keys and no other:
+The shape of a request is checked first. A request that breaks a shape rule is refused before anything is fetched or posted, so it spends nothing. The request is a JSON object with these keys and no other:
 
 | Field | Rule |
 |---|---|
-| `source`, required | Exactly one of three forms, with no other key in it. `{ "url": "<https URL>" }`: the service fetches the document. `{ "pdf_b64": "<base64>", "mime": "application/pdf" }` or `{ "image_b64": "<base64>", "mime": "image/png" }`, with `image/jpeg` for a JPEG: the document inline. Inline base64 is standard base64, padded, with no whitespace or line breaks, and holds at most 600000 bytes of raw media; a larger document goes by URL. The type of a document is read from its first bytes. A type that is not PDF, PNG or JPEG is refused, and so is a type that differs from the one the request declared or the server served |
+| `source`, required | Exactly one of three forms, with no other key in it. |
+| `source` by URL | `{ "url": "<https URL>" }`. The service fetches the document. |
+| `source` inline | `{ "pdf_b64": "<base64>", "mime": "application/pdf" }`, or `{ "image_b64": "<base64>", "mime": "image/png" }` with `image/jpeg` for a JPEG. The document travels in the request. |
+| Inline base64 | Standard base64, padded, with no whitespace or line breaks. At most 600000 bytes of raw media. A larger document goes by URL. |
 | `task`, required | `summary` or `extract` |
 | `schema` | A JSON Schema object. Required with `task` `extract` and refused with `task` `summary`. The rules for it are below |
 | `language` | Default `en`. 2 to 16 characters: a language code of 2 to 8 letters, then any number of hyphen-separated subtags of 1 to 8 letters or digits, such as `en`, `en-GB`, `zh-Hant-TW` or `es-419` |
 | `max_pages` | A whole number from 1 to 5, default 5. The first pages are read, and the rest of a longer document is not |
+
+Then the document is loaded, fetched or decoded, and checked. That is still before any escrow is posted, so a refusal here spends nothing either:
+
+- A document that cannot be fetched is refused (`source_fetch_failed`), and so is a fetched one over 20 MB (`source_too_large`).
+- Once the document is loaded, its type is read from its first bytes. A type that is not PDF, PNG or JPEG is refused (`source_unsupported`), and so is a type that differs from the one the request declared or the server served (`source_mime_mismatch`).
+- A PDF is rendered to PNG pages. One that cannot be rendered, because it is locked, damaged or has no pages, is refused (`unreadable_source`), and so is a page image over 12000000 base64 characters (`page_too_large`).
 
 ### The extraction schema
 
@@ -239,7 +248,14 @@ The example is from the stub marketplace of the test suite; hashes, references a
 
 ### Errors
 
-A refusal is `{ "error": "<code>", "message": "<words>" }` with the status in the table. The 401 and `internal` have the code and no message. The runtime fails the job on any non-2xx answer and copies the first 200 characters of the failure to the buyer, and the buyer reclaims after `deliver_by`. For `store_write_failed`, `insufficient_float`, `ocr_supplier_unavailable` and `llm_supplier_unavailable`, the failures on the service's side, the message is fixed, `The service could not do this job (<code>). The operator's log has the detail.`, because a path, an escrow or the text of a provider is the operator's. `shutting_down` says that the service is stopping. One job runs at a time: a second request while one runs gets 409 `{"error":"busy"}` and nothing is started. Any other route gets 404 `{"error":"not_found"}`.
+A refusal is `{ "error": "<code>", "message": "<words>" }` with the status in the table.
+
+- The 401 and `internal` have the code and no message.
+- The runtime fails the job on any non-2xx answer and copies the first 200 characters of the failure to the buyer. The buyer reclaims after `deliver_by`.
+- `store_write_failed`, `insufficient_float`, `ocr_supplier_unavailable` and `llm_supplier_unavailable` are failures on the service's side. Their message is fixed: `The service could not do this job (<code>). The operator's log has the detail.` A path, an escrow or the text of a provider is the operator's.
+- `shutting_down` says that the service is stopping.
+- One job runs at a time. A second request while one runs gets 409 `{"error":"busy"}`, and nothing is started.
+- Any route but `POST /`, `GET /healthz` and `GET /agent.json` gets 404 `{"error":"not_found"}`.
 
 | Status | Codes |
 |---|---|
@@ -257,7 +273,7 @@ A 400, a 401, a 422 for the document and a 503 are given before the first escrow
 
 The service holds its own buyer key and pays every sub-job from it. Before it posts anything, a job checks what it can. The extraction schema is held to the rules above. The buyer wallet must hold a pure output of at least 5000000 lovelace as collateral and a float outside it of `(max_pages + 1) x 4500000` lovelace, or the job is refused with `insufficient_float`. The document is loaded, its type is read from its first bytes, and a PDF is rendered to PNG pages at 150 dpi; a page image over 12000000 base64 characters is refused with `page_too_large`. The OCR advert and the chat supplier are found and checked. A job that fails in this part spends nothing.
 
-**The OCR hop.** The Pipeline's OCR hop hires only the allowlisted first-party OCR advert. It is the free advert for `ocr.page.extract.chandra-ocr-2.v1` of the supplier key hash `401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9`. The service resolves it from the marketplace indexer at run time, reads it again on the ledger, and checks that the key the supplier serves at `/capability` is the key of the advert. The advert's price is 200000 lovelace (0.200000) and its processing window is 300 s. For each page, in order, the Pipeline:
+**The OCR hop.** The Pipeline's OCR hop hires only the allowlisted first-party OCR advert. By default that is the free advert for `ocr.page.extract.chandra-ocr-2.v1` of the supplier key hash `401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9` (the operator's `OCR_ALLOWLIST_SUPPLIER_PKH` sets it). The service resolves it from the marketplace indexer at run time, reads it again on the ledger, and checks that the key the supplier serves at `/capability` is the key of the advert. The advert's price is 200000 lovelace (0.200000) and its processing window is 300 s. For each page, in order, the Pipeline:
 
 1. posts an escrow on that advert,
 2. sends the page: `POST /v1/ocr/extract` with the escrow in the `X-Escrow-Ref` header, and the page image as base64 with its `mime` and `output_format` `markdown` as the body,
@@ -266,7 +282,7 @@ The service holds its own buyer key and pays every sub-job from it. Before it po
 
 **The chat hop.** Then it hires one `llm.text.generate.v1` supplier for the summary or the extraction.
 
-The choice of supplier is made before any page escrow is posted, so a job with no usable chat supplier fails before it spends. It is made again, just before the chat escrow, if the first choice is more than 10 minutes old. The candidates are the free adverts whose model is on the allowlist, in this order of preference: `deepseek/deepseek-v4-flash`, `deepseek-v4-pro`, `moonshotai/kimi-k2.6` and `Qwen/Qwen3.6-35B-A3B-FP8`. Of one model the cheapest comes first, then the one seen most recently. The first six are asked in turn, within 120 s. Each must serve a `/capability` that names the Responses API and the very advert the indexer lists, and a `/status` that says `free`. The first that passes is hired, and its advert is read again on the ledger.
+The choice of supplier is made before any page escrow is posted, so a job with no usable chat supplier fails before it spends. It is made again, just before the chat escrow, if the first choice is more than 10 minutes old. The candidates are the free adverts whose model is on the allowlist. The allowlist holds, by default and in this order of preference, `deepseek/deepseek-v4-flash`, `deepseek-v4-pro`, `moonshotai/kimi-k2.6` and `Qwen/Qwen3.6-35B-A3B-FP8` (`LLM_MODEL_ALLOWLIST` sets it). Of one model the cheapest comes first, then the one seen most recently. The first six are asked in turn, within 120 s. Each must serve a `/capability` that names the Responses API and the very advert the indexer lists, and a `/status` that says `free`. The first that passes is hired, and its advert is read again on the ledger.
 
 The Pipeline posts an escrow on it and sends `POST /v1/responses` with the escrow in `X-Escrow-Ref` and the body `{ "input": "<text>" }` and nothing else, so that the prompt hash the escrow commits to is the hash of the request the supplier gets. The input is the instructions, in English, naming the language of the request by its code; for an extraction, a line `JSON Schema:` and the schema as compact JSON; then the text of each page after a line `=== page N ===`, N counting from 1. The Pipeline polls, runs the seven checks and accepts, as for a page. An answer whose `status` is not `completed`, a cut answer, fails the job with `llm_incomplete`, after its receipt is verified and its escrow accepted, since the supplier delivered.
 
@@ -284,7 +300,16 @@ The seven checks of a sub-receipt, in the order of the `verification` object. Th
 
 The hash on the ledger can lag the supplier's answer, so the Pipeline reads it again every 3 s, for up to 120 s, before it gives up on a receipt that is otherwise sound.
 
-**Time.** A job has a deadline of its own, 1620000 ms after its request arrives. No page is started with less than 660 s left before the deadline, and the chat hop is not started with less than 420 s left. One hire waits for its Post to confirm (up to 180 s), the supplier's Claim (up to 60 s), the work (up to 240 s for a page and 180 s for the chat job), the supplier's Submit (about 30 s), the hash of the receipt on the ledger (up to 120 s) and its own Accept to confirm (up to 180 s). That is 810 s for a page and 750 s for the chat job in the worst case. The minimums are below those worst cases: they are a typical hire plus a margin. Every wait is cut at the deadline, so a hire that meets its worst case after a start near the minimum does not finish: the job fails with `deadline`, after payment, and the sub-jobs it had paid for are not refunded.
+**Time.**
+
+- A job has a deadline of its own, 1620000 ms after its request arrives.
+- No page is started with less than 660 s left before the deadline, and the chat hop is not started with less than 420 s left.
+- One hire waits for its Post to confirm (up to 180 s), the supplier's Claim (up to 60 s), the work (up to 240 s for a page and 180 s for the chat job), the supplier's Submit (about 30 s), the hash of the receipt on the ledger (up to 120 s) and its own Accept to confirm (up to 180 s). That is 810 s for a page and 750 s for the chat job in the worst case.
+- The minimums are below those worst cases: they are a typical hire plus a margin.
+- The deadline cuts what the service waits for on its own: the repeats of a send, the polls, the repeats of a read of the receipt hash, and the pauses between them. Past the deadline none of them starts again.
+- A hire that the deadline cuts fails the job with `deadline`, after payment. The sub-jobs it had already paid for are not refunded, and the escrow of the hire in progress goes to the janitor.
+- The deadline does not cut the confirmation of a Post or of an Accept. The chain waits for each of them, up to 180 s, whatever the time.
+- A hire that is in its Accept when the deadline passes runs on: the Accept completes, or is left `accept_pending`. A page is then followed by `deadline` at the next hop. The chat job still returns its result, which can come after the runtime has given up on the job, 60 s after the deadline at the latest.
 
 **What a job leaves behind.** Every sub-escrow is written to a record in the service's state directory, `stranded.json`, as soon as its Post is confirmed, and removed as soon as its Accept is confirmed. A sub-escrow that was posted and not accepted stays in the record, whatever ended the job: a refusal, the deadline, a failed receipt, a stop of the service. A janitor looks at the record every minute. From 5 s after an escrow's `deliver_by` it reclaims an Open or Claimed escrow, which returns everything the escrow locked. An entry is dropped once its Reclaim is confirmed, or once the output reads spent, or unknown, on two passes in a row. A Submitted escrow that was not accepted cannot be reclaimed: the janitor keeps it, and its supplier may Release it once the 600 s accept window after its Submit has passed. An Accept that was sent and not seen confirmed does not fail the job: the sub-job stands, the record marks the escrow, and the janitor follows it until it lands, which is when the output reads spent, or the 600 s window has passed. The record holds references, times, the hop and a transaction hash, and never a document or its text.
 
@@ -336,7 +361,7 @@ The manifest states the first seven of these, in this order, word for word. A te
 - At five pages the Pipeline spends about 19 in locks and fees to earn 5, where 5 is the price of 5000000 lovelace. The Foundation subsidises this on purpose while the fee floor stands.
 - A process exit between signing a Post and its confirmation leaves a sub-escrow that is in no record, so the janitor never sees it. It can be reclaimed by hand after its `deliver_by`, and it holds the lock of one sub-job.
 - The runtime's budget for a job is the smaller of `SERVICE_TIMEOUT_MS` and `deliver_by` less the start time less 30 s, and the wire carries no budget, so the service cannot see it. A job that the runtime claims late can be abandoned by the runtime while the service goes on hiring and paying until its own deadline. The hirer then reclaims after `deliver_by`.
-- The service answers `POST /` only when the call carries the token the runtime sends as its `authorization` header. Any other call gets 401 `unauthorized`, with no detail, before its body is read, so that nothing else on the host's network can make the service spend. `GET /healthz` and `GET /agent.json` need no header.
+- The service answers `POST /` only when the call carries the token the runtime sends as its `authorization` header. A `POST /` without it gets 401 `unauthorized`, with no detail, before its body is read, so that nothing else on the host's network can make the service spend. `GET /healthz` and `GET /agent.json` need no header, and any other route gets 404.
 - While a job runs the service writes an interim `102 Processing` line every 60 s, ahead of the answer, because the runtime's fetch gives up on a response that has not begun after 300 s of silence and a job takes up to 27 minutes. The answer is the same 200 with the same body.
 - The instructions the chat supplier gets are in English and name the requested language by its code. There is no translation table, so whether the answer is in that language is up to the model.
 

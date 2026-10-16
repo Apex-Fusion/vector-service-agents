@@ -338,6 +338,11 @@ describe('manifest: notes state the rules for an extraction schema', () => {
     expect(refused(JSON.parse('{"type":"object","properties":{"x":{"type":"string","__proto__":{}}}}'))).toMatchObject({ code: 'schema_invalid', status: 400 });
   });
 
+  test('the notes say that $async at the root is refused, and it is, true or false (schema_invalid, 400)', () => {
+    expect(text).toContain('declare $async at the root');
+    for (const value of [true, false]) expect(refused({ $async: value, type: 'object' }), String(value)).toMatchObject({ code: 'schema_invalid', status: 400 });
+  });
+
   test('the numbers in the notes are the limits of the code: bytes of JSON, levels, entries of anyOf, oneOf and allOf', () => {
     expect([SCHEMA_MAX_BYTES, SCHEMA_MAX_DEPTH, COMBINATION_MAX_ENTRIES]).toStrictEqual([16_384, 32, 16]);
     for (const n of [SCHEMA_MAX_BYTES, SCHEMA_MAX_DEPTH, COMBINATION_MAX_ENTRIES]) expect(text).toContain(String(n));

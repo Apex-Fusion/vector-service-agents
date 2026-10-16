@@ -9,7 +9,7 @@
 // four specs together: scripts/specs.test.mjs holds those, and it cannot import the TypeScript of the service.
 import { describe, test, expect } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
-import { DELIVER_BY_BUFFER_MS } from '@vsa/buyer-core';
+import { DELIVER_BY_BUFFER_MS, LLM_SELECTION_BUDGET_MS, LLM_SELECTION_MAX_CANDIDATES } from '@vsa/buyer-core';
 import { REGISTRY_ADDRESS } from '@vsa/vector-read';
 import { JOB_DEADLINE_MS, LLM_MIN_LEFT_MS, LLM_SELECTION_MAX_AGE_MS, OCR_IMAGE_B64_MAX, PAGE_MIN_LEFT_MS, POLL_INTERVAL_MS, RECEIPT_HASH_WAIT_MS } from '../src/budget.ts';
 import { COMBINATION_MAX_ENTRIES, SCHEMA_MAX_BYTES, SCHEMA_MAX_DEPTH, compileExtractionSchema } from '../src/extract.ts';
@@ -19,9 +19,11 @@ import { llmInput } from '../src/llm-prompt.ts';
 import { DEFAULT_LANGUAGE, MAX_INLINE_BYTES, MAX_PAGES, parseRequest } from '../src/request.ts';
 import { PipelineError } from '../src/result.ts';
 import { HEARTBEAT_MS, MAX_BODY, manifestFromEnv } from '../src/server.ts';
+import { loadSource } from '../src/source.ts';
 import { JANITOR_INTERVAL_MS, LLM_MODELS_DEFAULT, OCR_SUPPLIER_PKH_DEFAULT } from '../src/start.ts';
 import { GOLDEN } from './golden.ts';
 import { TEST_CONTACT } from './server-support.ts';
+import { PAGE_0_PNG, text, toBase64 } from './support.ts';
 
 const spec = readFileSync(new URL('../../../specs/document-pipeline.md', import.meta.url), 'utf8');
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
@@ -142,7 +144,7 @@ describe('specs/document-pipeline.md', () => {
     const own = [
       '- A process exit between signing a Post and its confirmation leaves a sub-escrow that is in no record, so the janitor never sees it. It can be reclaimed by hand after its `deliver_by`, and it holds the lock of one sub-job.',
       "- The runtime's budget for a job is the smaller of `SERVICE_TIMEOUT_MS` and `deliver_by` less the start time less 30 s, and the wire carries no budget, so the service cannot see it. A job that the runtime claims late can be abandoned by the runtime while the service goes on hiring and paying until its own deadline. The hirer then reclaims after `deliver_by`.",
-      "- The service answers `POST /` only when the call carries the token the runtime sends as its `authorization` header. Any other call gets 401 `unauthorized`, with no detail, before its body is read, so that nothing else on the host's network can make the service spend. `GET /healthz` and `GET /agent.json` need no header.",
+      "- The service answers `POST /` only when the call carries the token the runtime sends as its `authorization` header. A `POST /` without it gets 401 `unauthorized`, with no detail, before its body is read, so that nothing else on the host's network can make the service spend. `GET /healthz` and `GET /agent.json` need no header, and any other route gets 404.",
       "- While a job runs the service writes an interim `102 Processing` line every 60 s, ahead of the answer, because the runtime's fetch gives up on a response that has not begun after 300 s of silence and a job takes up to 27 minutes. The answer is the same 200 with the same body.",
       '- The instructions the chat supplier gets are in English and name the requested language by its code. There is no translation table, so whether the answer is in that language is up to the model.',
     ];
@@ -169,20 +171,28 @@ describe('specs/document-pipeline.md', () => {
     expect(response).toContain('| { "extraction": null, "schema_valid": false, "raw_text": "..." },');
   });
 
-  test('the request rules are the intake\'s: the three forms of source, 600000 raw bytes of padded base64, schema only with extract, the language rule and max_pages from 1 to 5', () => {
+  test('the shape rules of the request are the intake\'s: three forms of source, 600000 raw bytes of padded base64, schema only with extract, the language rule and max_pages from 1 to 5', () => {
     const request = sub('Request');
-    const rows = Object.fromEntries(request.split('\n').filter((l) => l.startsWith('| `')).map((l) => [l.split('`')[1], l]));
-    expect(Object.keys(rows)).toStrictEqual(['source', 'task', 'schema', 'language', 'max_pages']);
-    expect(rows.source).toContain('Exactly one of three forms, with no other key in it.');
-    for (const form of ['{ "url": "<https URL>" }', '{ "pdf_b64": "<base64>", "mime": "application/pdf" }', '{ "image_b64": "<base64>", "mime": "image/png" }', 'with `image/jpeg` for a JPEG']) expect(rows.source, form).toContain(form);
-    expect(rows.source).toContain(`Inline base64 is standard base64, padded, with no whitespace or line breaks, and holds at most ${MAX_INLINE_BYTES} bytes of raw media`);
-    expect(rows.source).toContain('The type of a document is read from its first bytes.');
-    expect(rows.task).toContain('`summary` or `extract`');
-    expect(rows.schema).toContain('Required with `task` `extract` and refused with `task` `summary`.');
+    const rows = Object.fromEntries(request.split('\n').filter((l) => /^\| .+ \| .+ \|$/.test(l) && !l.startsWith('| Field |')).map((l) => [l.split('|')[1].trim(), l.split('|')[2].trim()]));
+    expect(Object.keys(rows)).toStrictEqual(['`source`, required', '`source` by URL', '`source` inline', 'Inline base64', '`task`, required', '`schema`', '`language`', '`max_pages`']);
+    expect(rows['`source`, required']).toBe('Exactly one of three forms, with no other key in it.');
+    expect(rows['`source` by URL']).toBe('`{ "url": "<https URL>" }`. The service fetches the document.');
+    expect(rows['`source` inline']).toBe('`{ "pdf_b64": "<base64>", "mime": "application/pdf" }`, or `{ "image_b64": "<base64>", "mime": "image/png" }` with `image/jpeg` for a JPEG. The document travels in the request.');
+    expect(rows['Inline base64']).toBe(`Standard base64, padded, with no whitespace or line breaks. At most ${MAX_INLINE_BYTES} bytes of raw media. A larger document goes by URL.`);
+    expect(rows['`task`, required']).toBe('`summary` or `extract`');
+    expect(rows['`schema`']).toContain('Required with `task` `extract` and refused with `task` `summary`.');
     const language = m.interface.request_schema.properties.language;
-    expect(rows.language).toContain(`Default \`${DEFAULT_LANGUAGE}\`. 2 to ${language.maxLength} characters: a language code of 2 to 8 letters, then any number of hyphen-separated subtags of 1 to 8 letters or digits`);
-    expect(rows.max_pages).toContain(`A whole number from 1 to ${MAX_PAGES}, default ${MAX_PAGES}.`);
-    expect(request).toContain('A request that breaks one is refused before anything is fetched or posted, so it spends nothing.');
+    expect(rows['`language`']).toContain(`Default \`${DEFAULT_LANGUAGE}\`. 2 to ${language.maxLength} characters: a language code of 2 to 8 letters, then any number of hyphen-separated subtags of 1 to 8 letters or digits`);
+    expect(rows['`max_pages`']).toContain(`A whole number from 1 to ${MAX_PAGES}, default ${MAX_PAGES}.`);
+    // Only the shape rules are said to run before anything is fetched. The rules for the document run once it is loaded, still before an escrow is posted.
+    expect(request).toContain('The shape of a request is checked first. A request that breaks a shape rule is refused before anything is fetched or posted, so it spends nothing.');
+    expect(request).not.toContain('A request that breaks one is refused before anything is fetched or posted');
+    const loaded = request.split('Then the document is loaded, fetched or decoded, and checked. That is still before any escrow is posted, so a refusal here spends nothing either:\n')[1] ?? '';
+    expect(loaded.split('\n').filter((l) => l.startsWith('- '))).toStrictEqual([
+      `- A document that cannot be fetched is refused (\`source_fetch_failed\`), and so is a fetched one over ${m.terms.input_limits.source_bytes / (1024 * 1024)} MB (\`source_too_large\`).`,
+      '- Once the document is loaded, its type is read from its first bytes. A type that is not PDF, PNG or JPEG is refused (`source_unsupported`), and so is a type that differs from the one the request declared or the server served (`source_mime_mismatch`).',
+      `- A PDF is rendered to PNG pages. One that cannot be rendered, because it is locked, damaged or has no pages, is refused (\`unreadable_source\`), and so is a page image over ${OCR_IMAGE_B64_MAX} base64 characters (\`page_too_large\`).`,
+    ]);
     // The intake takes the examples of the language rule and its bound of 16 characters, and refuses what the rule leaves out.
     const asked = (extra: Record<string, unknown>): string => JSON.stringify({ source: { url: 'https://example.org/letter.pdf' }, task: 'summary', ...extra });
     for (const code of ['en', 'en-GB', 'zh-Hant-TW', 'es-419', 'en-abcdefgh-abcd']) expect(parseRequest(asked({ language: code })).language, code).toBe(code);
@@ -190,6 +200,14 @@ describe('specs/document-pipeline.md', () => {
     expect(() => parseRequest(asked({ schema: { type: 'object' } }))).toThrow(/only accepted with task "extract"/);
     expect(() => parseRequest(asked({ task: 'extract' }))).toThrow(/needs a schema/);
     for (const pages of [0, MAX_PAGES + 1]) expect(() => parseRequest(asked({ max_pages: pages })), String(pages)).toThrow(/from 1 to 5/);
+  });
+
+  test('the intake reads the shape and not the bytes: a request whose document is no document passes it, and the type rules refuse it once the document is loaded (422, src/source.ts)', async () => {
+    const inline = (bytes: Uint8Array, mime: string): string => JSON.stringify({ source: { pdf_b64: toBase64(bytes), mime }, task: 'summary' });
+    const notADocument = parseRequest(inline(text('plain text, not a document'), 'application/pdf'));
+    await expect(loadSource(notADocument, { fetchImpl: fetch })).rejects.toMatchObject({ name: 'RequestError', code: 'source_unsupported', status: 422 });
+    const pngAsPdf = parseRequest(inline(PAGE_0_PNG, 'application/pdf'));
+    await expect(loadSource(pngAsPdf, { fetchImpl: fetch })).rejects.toMatchObject({ name: 'RequestError', code: 'source_mime_mismatch', status: 422 });
   });
 
   // The rules for the extraction schema (rulings R36, R42, R43) are the manifest's notes and the code's: what the page lists as refused is refused, and the bounds are the constants.
@@ -215,6 +233,7 @@ describe('specs/document-pipeline.md', () => {
     const notes = m.interface.notes.join(' ');
     for (const keyword of Object.keys(samples)) expect(notes, keyword).toContain(keyword);
     expect(notes).toContain(`${SCHEMA_MAX_BYTES} bytes of JSON and ${SCHEMA_MAX_DEPTH} levels deep, and each of its anyOf, oneOf and allOf has at most ${COMBINATION_MAX_ENTRIES} entries`);
+    expect(notes).toContain('declare $async at the root');
     expect(notes).toContain('schema_invalid (400)');
     expect(rules).toContain('refused with `schema_invalid` (400)');
   });
@@ -229,13 +248,20 @@ describe('specs/document-pipeline.md', () => {
     expect(pairs(readmeErrors).length).toBeGreaterThan(30);
     expect(pairs(errors)).toStrictEqual(pairs(readmeErrors));
     for (const must of ['400 schema_invalid', '401 unauthorized', '422 source_fetch_failed', '422 unreadable_source', '422 llm_incomplete', '503 insufficient_float', '503 ocr_supplier_unavailable', '503 llm_supplier_unavailable', '500 store_write_failed']) expect(pairs(errors), must).toContain(must);
-    for (const part of [
-      'A refusal is `{ "error": "<code>", "message": "<words>" }` with the status in the table.',
-      'The 401 and `internal` have the code and no message.',
-      "the failures on the service's side, the message is fixed, `The service could not do this job (<code>). The operator's log has the detail.`, because a path, an escrow or the text of a provider is the operator's. `shutting_down` says that the service is stopping.",
-      'One job runs at a time: a second request while one runs gets 409 `{"error":"busy"}` and nothing is started. Any other route gets 404 `{"error":"not_found"}`.',
-      'A 400, a 401, a 422 for the document and a 503 are given before the first escrow is posted, so they spend nothing. The exception is `llm_supplier_unavailable` when the chat supplier is chosen again after the pages were paid.',
-    ]) expect(errors, part.slice(0, 50)).toContain(part);
+    const lead = errors.split('\n| Status | Codes |\n')[0];
+    expect(lead).toContain('A refusal is `{ "error": "<code>", "message": "<words>" }` with the status in the table.');
+    expect(lead.split('\n').filter((l) => l.startsWith('- '))).toStrictEqual([
+      '- The 401 and `internal` have the code and no message.',
+      '- The runtime fails the job on any non-2xx answer and copies the first 200 characters of the failure to the buyer. The buyer reclaims after `deliver_by`.',
+      "- `store_write_failed`, `insufficient_float`, `ocr_supplier_unavailable` and `llm_supplier_unavailable` are failures on the service's side. Their message is fixed: `The service could not do this job (<code>). The operator's log has the detail.` A path, an escrow or the text of a provider is the operator's.",
+      '- `shutting_down` says that the service is stopping.',
+      '- One job runs at a time. A second request while one runs gets 409 `{"error":"busy"}`, and nothing is started.',
+      '- Any route but `POST /`, `GET /healthz` and `GET /agent.json` gets 404 `{"error":"not_found"}`.',
+    ]);
+    // The failures on the service's side are the 500 and 503 rows but for internal and shutting_down, which have their own words.
+    const serviceSide = pairs(errors).filter((p) => /^(500|503) /.test(p)).map((p) => p.split(' ')[1]).filter((code) => code !== 'internal' && code !== 'shutting_down').sort();
+    expect(serviceSide).toStrictEqual(['insufficient_float', 'llm_supplier_unavailable', 'ocr_supplier_unavailable', 'store_write_failed']);
+    expect(errors).toContain('A 400, a 401, a 422 for the document and a 503 are given before the first escrow is posted, so they spend nothing. The exception is `llm_supplier_unavailable` when the chat supplier is chosen again after the pages were paid.');
     expect(readme).toContain("The service could not do this job (<code>). The operator's log has the detail.");
     expect(readme).toContain('A 400, a 401, a 422 for the document and a 503 are all given before the first escrow is posted, so they spend nothing; the one exception is `llm_supplier_unavailable`');
     expect(MAX_BODY).toBe(1_000_000);
@@ -245,19 +271,34 @@ describe('specs/document-pipeline.md', () => {
   test('How it buys states the code\'s own numbers and names: the OCR supplier key, the allowlist in order, the budgets, the seven checks, the janitor, and the endpoints of the fleet', () => {
     const buys = sub('How it buys');
     expect(buys.length).toBeGreaterThan(5000);
-    expect(buys).toContain(`of the supplier key hash \`${OCR_SUPPLIER_PKH_DEFAULT}\``);
+    expect(buys).toContain(`By default that is the free advert for \`ocr.page.extract.chandra-ocr-2.v1\` of the supplier key hash \`${OCR_SUPPLIER_PKH_DEFAULT}\` (the operator's \`OCR_ALLOWLIST_SUPPLIER_PKH\` sets it).`);
     const models = `${LLM_MODELS_DEFAULT.slice(0, -1).map(tick).join(', ')} and ${tick(LLM_MODELS_DEFAULT[LLM_MODELS_DEFAULT.length - 1])}`;
-    expect(buys).toContain(`in this order of preference: ${models}.`);
+    expect(buys).toContain(`The allowlist holds, by default and in this order of preference, ${models} (\`LLM_MODEL_ALLOWLIST\` sets it).`);
+    for (const name of ['OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST']) expect(readme, name).toContain(`| \`${name}\` |`);
     expect(buys).toContain(`if the first choice is more than ${LLM_SELECTION_MAX_AGE_MS / 60_000} minutes old`);
-    expect(buys).toContain(`A job has a deadline of its own, ${JOB_DEADLINE_MS} ms after its request arrives. No page is started with less than ${PAGE_MIN_LEFT_MS / 1000} s left before the deadline, and the chat hop is not started with less than ${LLM_MIN_LEFT_MS / 1000} s left.`);
-    // The worst case of one hire: its Post (180 s), the Claim (60), the work (240 for a page, 180 for the chat job), the Submit (30), the hash on the ledger (120) and its Accept (180).
-    expect(RECEIPT_HASH_WAIT_MS / 1000).toBe(120);
+    // The Pipeline uses selectLlmSupplier as it stands, so it asks the first six within 120 s: the defaults of buyer-core.
+    const count = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'][LLM_SELECTION_MAX_CANDIDATES];
+    expect(buys).toContain(`The first ${count} are asked in turn, within ${LLM_SELECTION_BUDGET_MS / 1000} s.`);
+    // Time: the bullets, with the numbers of the code and, for the waits that no constant holds, the words of the head of src/budget.ts.
+    const head = readFileSync(new URL('../src/budget.ts', import.meta.url), 'utf8').split('\nimport ')[0].replace(/\n\/\/ ?/g, ' ');
+    const [page, chat] = (/\((\d+) s for a page, (\d+) s for the chat job\)/.exec(head) ?? []).slice(1).map(Number);
+    for (const part of [
+      "its Post confirmed (up to 180 s, the chain's own wait)", "the supplier's Claim (up to 60 s", 'the work (up to 240 s for an OCR page, 180 s for the chat job)', "the supplier's Submit (about 30 s)",
+      'the hash of the receipt showing on chain (up to 120 s)', 'and the Accept confirmed (up to 180 s)',
+    ]) expect(head, part).toContain(part);
+    expect([page, chat]).toStrictEqual([810, 750]);
+    const time = (buys.split('\n**Time.**\n')[1] ?? '').split('\n\n**')[0].split('\n').filter((l) => l.startsWith('- '));
+    expect(time).toStrictEqual([
+      `- A job has a deadline of its own, ${JOB_DEADLINE_MS} ms after its request arrives.`,
+      `- No page is started with less than ${PAGE_MIN_LEFT_MS / 1000} s left before the deadline, and the chat hop is not started with less than ${LLM_MIN_LEFT_MS / 1000} s left.`,
+      `- One hire waits for its Post to confirm (up to ${DELIVER_BY_BUFFER_MS / 1000} s), the supplier's Claim (up to 60 s), the work (up to 240 s for a page and 180 s for the chat job), the supplier's Submit (about 30 s), the hash of the receipt on the ledger (up to ${RECEIPT_HASH_WAIT_MS / 1000} s) and its own Accept to confirm (up to ${DELIVER_BY_BUFFER_MS / 1000} s). That is ${page} s for a page and ${chat} s for the chat job in the worst case.`,
+      '- The minimums are below those worst cases: they are a typical hire plus a margin.',
+      '- The deadline cuts what the service waits for on its own: the repeats of a send, the polls, the repeats of a read of the receipt hash, and the pauses between them. Past the deadline none of them starts again.',
+      '- A hire that the deadline cuts fails the job with `deadline`, after payment. The sub-jobs it had already paid for are not refunded, and the escrow of the hire in progress goes to the janitor.',
+      `- The deadline does not cut the confirmation of a Post or of an Accept. The chain waits for each of them, up to ${DELIVER_BY_BUFFER_MS / 1000} s, whatever the time.`,
+      '- A hire that is in its Accept when the deadline passes runs on: the Accept completes, or is left `accept_pending`. A page is then followed by `deadline` at the next hop. The chat job still returns its result, which can come after the runtime has given up on the job, 60 s after the deadline at the latest.',
+    ]);
     expect(POLL_INTERVAL_MS / 1000).toBe(3);
-    expect(180 + 60 + 240 + 30 + RECEIPT_HASH_WAIT_MS / 1000 + 180).toBe(810);
-    expect(180 + 60 + 180 + 30 + RECEIPT_HASH_WAIT_MS / 1000 + 180).toBe(750);
-    expect(buys).toContain('That is 810 s for a page and 750 s for the chat job in the worst case.');
-    expect(buys).toContain('the supplier\'s Claim (up to 60 s), the work (up to 240 s for a page and 180 s for the chat job), the supplier\'s Submit (about 30 s), the hash of the receipt on the ledger (up to 120 s) and its own Accept to confirm (up to 180 s)');
-    expect(buys).toContain('the job fails with `deadline`, after payment, and the sub-jobs it had paid for are not refunded.');
     // Before anything is posted.
     expect(buys).toContain(`a page image over ${OCR_IMAGE_B64_MAX} base64 characters is refused with \`page_too_large\``);
     expect(buys).toContain('a pure output of at least 5000000 lovelace as collateral and a float outside it of `(max_pages + 1) x 4500000` lovelace');

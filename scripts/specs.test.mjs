@@ -543,8 +543,30 @@ test('docs/E2E.md: the section "Hiring Document Pipeline" gives the settings of 
   // The wrapper does what the section says: it exports a default for ADVERT_REF only, and the script inherits the rest of the environment.
   const wrapper = readFileSync(new URL('./run-e2e-from-keyfile.sh', import.meta.url), 'utf8');
   assert.ok(wrapper.includes('export ADVERT_REF="${ADVERT_REF:-'));
-  assert.equal(wrapper.includes('CAPABILITY_ID'), false, 'the wrapper sets no capability of its own');
-  assert.equal(10 * 60 * 1000 / 5000, 120);
+  assert.equal(/^\s*(export\s+)?CAPABILITY_ID=/m.test(wrapper), false, 'the wrapper sets no capability of its own: CAPABILITY_ID comes from the environment');
+  // The pause that the section calls the default is the one the script has, read from it: 10 minutes at that pause ask the hosted server about 120 times.
+  const pause = Number(/POLL_MS = env\.E2E_POLL_MS === undefined \? (\d+) :/.exec(e2eScript())?.[1]);
+  assert.equal(Math.round(10 * 60 * 1000 / pause), 120);
+});
+
+test('docs/E2E.md and scripts/run-e2e-from-keyfile.sh: the runbook opens for every agent, the state file is the one E2E_STATE names, and the wrapper says so when a run stops', () => {
+  const e2e = doc('E2E.md');
+  const wrapper = readFileSync(new URL('./run-e2e-from-keyfile.sh', import.meta.url), 'utf8');
+  assert.ok(e2e.split('\n')[2].startsWith('Before any working-group member is invited, the operator hires each of our agents itself, through the same tools a member will use. Agent History comes first, and Document Pipeline follows when it has an advert (see "Hiring Document Pipeline").'));
+  assert.equal(e2e.split('\n')[2].includes('hires Agent History itself'), false, 'the opening of before the second agent');
+  assert.ok(e2e.includes('A run of Agent History costs about 3 of the float, and a run of Document Pipeline about 7 (see the cost table in [HIRE.md](HIRE.md)).'));
+  assert.ok(e2e.includes('and the state file is the one `E2E_STATE` names (`e2e-state.json` by default), as above.'));
+  assert.equal(e2e.includes('and the state file is `e2e-state.json`, as above'), false, 'the Pipeline run names a state file of its own');
+  assert.ok(wrapper.includes('echo "run stopped with exit code $rc (state kept in ${E2E_STATE:-e2e-state.json})" >&2'));
+  assert.equal(wrapper.includes('(state kept in e2e-state.json)'), false);
+  assert.ok(wrapper.includes('it and the state file (e2e-state.json, or the file E2E_STATE names) are git-ignored.'));
+  assert.ok(wrapper.includes('CAPABILITY_ID, E2E_STATE, E2E_POLL_MS and PAYLOAD pass through from the environment'));
+  // The default in the message is the script's own, and git ignores both files, the state file of the Pipeline run included.
+  assert.ok(e2eScript().includes("env.E2E_STATE ?? 'e2e-state.json'"));
+  const ignored = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8').split('\n');
+  const glob = (pattern) => new RegExp('^' + pattern.split('*').map((s) => s.replace(/[.]/g, '[.]')).join('.*') + '$');
+  assert.ok(ignored.includes('evidence.json') && ignored.includes('e2e-state*.json*'));
+  for (const file of ['e2e-state.json', 'e2e-state-pipeline.json']) assert.ok(glob('e2e-state*.json*').test(file), `${file} is ignored`);
 });
 
 test('docs/HIRE.md and docs/E2E.md: every place that lists what the receipt check takes lists the report text', () => {
