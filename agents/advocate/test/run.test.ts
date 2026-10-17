@@ -6,7 +6,7 @@
 // failures of the search and of the pages passed on as they are; a caller that hangs up before the job, during the search, during the pages and during the
 // call of the model; and the log lines of a job, which carry counts and statuses only.
 import { beforeEach, describe, test, expect, vi } from 'vitest';
-import { JOB_DEADLINE_MS, modelBudgetMs } from '../src/budget.ts';
+import { FETCH_CONCURRENCY, JOB_DEADLINE_MS, modelBudgetMs } from '../src/budget.ts';
 import { AdvocateError } from '../src/errors.ts';
 import { DEFAULT_MODEL } from '../src/model.ts';
 import { messagesFor } from '../src/prompt.ts';
@@ -118,6 +118,17 @@ describe('the golden job', () => {
     expect(spy.model.at(-1)).toStrictEqual({ timeoutMs: 90_000, maxTokens: 4500, model: 'openai/gpt-4o-mini' });
   });
 
+  test('the brief names the model the job called, and the search is given the side of the request', async () => {
+    const { fetchImpl, seen } = goldenFetch();
+    const outcome = await runAdvocate(request(), deps({ fetchImpl, model: 'openai/gpt-4o-mini' }));
+    expect([outcome.result.model, seen.models.map((m) => (m.body as { model: string }).model)]).toStrictEqual(['openai/gpt-4o-mini via OpenRouter', ['openai/gpt-4o-mini']]);
+    // A job against: every query is answered, whatever it asks, so that the test reads the two queries the search was given.
+    const anyQuery: Route = { match: (url) => url.searchParams.has('q'), respond: () => braveAnswer([{ title: 'T', url: PAGE_1, description: 'd' }]) };
+    const against = routedFetch([anyQuery, ...PAGE_ROUTES, modelRoute(() => goldenAnswer())]);
+    await runAdvocate(request({ side: 'against' }), deps({ fetchImpl: against }));
+    expect(against.calls.slice(0, 2).map((call) => new URL(call.url).searchParams.get('q'))).toStrictEqual([GOLDEN_QUERIES[0], `${GOLDEN_QUERIES[0]} arguments against`]);
+  });
+
   test('the log lines of a job carry counts and statuses only: no subject, no side, no URL, no quote and no key', async () => {
     const lines: string[] = [];
     await runAdvocate(request(), deps({ log: (line) => lines.push(line) }));
@@ -163,6 +174,12 @@ describe('the time of a job (Review Focus 5)', () => {
     expect(spy.model.map((m) => m.timeoutMs)).toStrictEqual([86_000, 90_000]);
   });
 
+  test('a clock with a fraction of a millisecond: the model is given whole milliseconds', async () => {
+    const now = { t: GOLDEN_T0 };
+    const outcome = await runAdvocate(request(), deps({ fetchImpl: slowPages(now, GOLDEN_T0 + 59_000.5).fetchImpl, clock: () => now.t }));
+    expect([spy.model, outcome.pagesKept]).toStrictEqual([[{ timeoutMs: 85_999, maxTokens: 2000, model: DEFAULT_MODEL }], 1]);
+  });
+
   test('20 s or less left after the search is deadline before any page is fetched (R-E20); the search then has the time left, under 10 s a query', async () => {
     const { fetchImpl, seen } = goldenFetch();
     const e = await failureOf(runAdvocate(request(), deps({ fetchImpl, deadlineMs: GOLDEN_T0 + 8_000 })));
@@ -171,6 +188,19 @@ describe('the time of a job (Review Focus 5)', () => {
     expect([spy.pages, seen.pages, spy.model, seen.models]).toStrictEqual([[], [], [], []]);
     const edge = await failureOf(runAdvocate(request(), deps({ deadlineMs: GOLDEN_T0 + 20_000 })));
     expect([edge.code, spy.search.at(-1), spy.pages]).toStrictEqual(['deadline', { timeoutMs: 10_000, phaseEndMs: GOLDEN_T0 + 15_000, wait: noWait }, []]);
+  });
+
+  test('the pages are timed from the end of the search: 45 s after a search of 5 s, and 20 s left after it in a job of 25 s is deadline', async () => {
+    const slowSearch = (now: { t: number }): typeof fetch => routedFetch([
+      ...braveAnswers(() => { now.t = GOLDEN_T0 + 5_000; return braveAnswer(RESULT_URLS.map((url) => ({ title: 'Car-free centres: what the evidence says', url, description: 'd' }))); }),
+      ...PAGE_ROUTES, modelRoute(() => goldenAnswer()),
+    ]);
+    const full = { t: GOLDEN_T0 };
+    await runAdvocate(request(), deps({ fetchImpl: slowSearch(full), clock: () => full.t }));
+    expect(spy.pages).toStrictEqual([{ deadlineMs: GOLDEN_T0 + 50_000, lookup: publicLookup }]);
+    const short = { t: GOLDEN_T0 };
+    const e = await failureOf(runAdvocate(request(), deps({ fetchImpl: slowSearch(short), clock: () => short.t, deadlineMs: GOLDEN_T0 + 25_000 })));
+    expect([e.code, e.detail]).toStrictEqual(['deadline', 'the job had 20000 ms of its time left after the search, too little to fetch a page and still start the model']);
   });
 
   test('a job whose deadline has passed before it begins is deadline, and nothing is called', async () => {
@@ -228,6 +258,17 @@ describe('a caller that hangs up', () => {
     expect([e.code, e.status, pages, models, spy.pages]).toStrictEqual(['aborted', 499, [], 0, []]);
   });
 
+  test('a hang-up while the first query answers: the second is never sent, and the job is stopped with the words of the job', async () => {
+    const caller = new AbortController();
+    const queries: string[] = [];
+    const fetchImpl = routedFetch([
+      ...recorded(braveAnswers(() => { caller.abort(); return braveAnswer([{ title: 'T', url: PAGE_1, description: 'd' }]); }), queries),
+      ...PAGE_ROUTES, modelRoute(() => goldenAnswer()),
+    ]);
+    const e = await failureOf(runAdvocate(request(), deps({ fetchImpl, signal: caller.signal })));
+    expect([e.code, e.detail, queries.length]).toStrictEqual(['aborted', 'the caller hung up, and the job was stopped', 1]);
+  });
+
   test('while the pages are fetched: aborted, and the model is not called', async () => {
     const caller = new AbortController();
     let models = 0;
@@ -241,10 +282,36 @@ describe('a caller that hangs up', () => {
     expect([e.code, e.status, models, spy.model]).toStrictEqual(['aborted', 499, 0, []]);
   });
 
+  test('a hang-up while the pages are fetched: no page fetch starts after it', async () => {
+    const caller = new AbortController();
+    const pages: string[] = [];
+    const fetchImpl = routedFetch([
+      ...found(RESULT_URLS),
+      ...recorded([{ match: at(PAGE_1), respond: () => { caller.abort(); return reply(200, fixture('page-1.html'), { 'content-type': 'text/html' }); } }, ...PAGE_ROUTES], pages),
+      modelRoute(() => goldenAnswer()),
+    ]);
+    const e = await failureOf(runAdvocate(request(), deps({ fetchImpl, signal: caller.signal })));
+    expect(e.code).toBe('aborted');
+    expect(pages.length).toBeLessThanOrEqual(FETCH_CONCURRENCY);
+  });
+
   test('while the model writes: its call is cut, and the job is aborted', async () => {
     const caller = new AbortController();
     const { fetchImpl, seen } = goldenFetch((url, init) => { const waiting = never(url, init); caller.abort(); return waiting; });
     const e = await failureOf(runAdvocate(request(), deps({ fetchImpl, signal: caller.signal })));
     expect([e.code, e.status, seen.models.length]).toStrictEqual(['aborted', 499, 1]);
+  });
+
+  test('a hang-up as the model answers: the answer is read, and the job is stopped all the same', async () => {
+    const caller = new AbortController();
+    const { fetchImpl } = goldenFetch(() => { caller.abort(); return goldenAnswer(); });
+    const e = await failureOf(runAdvocate(request(), deps({ fetchImpl, signal: caller.signal })));
+    expect([e.code, e.status]).toStrictEqual(['aborted', 499]);
+  });
+
+  test('an AbortError on the way is aborted, even when the caller is still there', async () => {
+    const abortError = async (): Promise<void> => { throw new DOMException('This operation was aborted', 'AbortError'); };
+    const e = await failureOf(runAdvocate(request(), deps({ wait: abortError })));
+    expect([e.code, e.status]).toStrictEqual(['aborted', 499]);
   });
 });

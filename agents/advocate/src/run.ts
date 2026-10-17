@@ -86,7 +86,8 @@ async function runJob(req: AdvocateRequest, deps: RunDeps): Promise<RunOutcome> 
   stopIfAbandoned();
 
   // The model: min(90 s, the time left less 5 s), and not started with less than 15 s. callModel answers deadline itself when that time runs out under 90 s.
-  const left = deadlineMs - clock();
+  // The time left is floored to whole milliseconds, for AbortSignal.timeout takes no fraction of one, which a clock that reads fractions would give it.
+  const left = Math.floor(deadlineMs - clock());
   const budget = modelBudgetMs(left);
   if (budget === null) throw new AdvocateError('deadline', `the job had ${left} ms of its time left for the model, too little to start it`);
   const { content, usage } = await callModel(messagesFor(req, pages), {

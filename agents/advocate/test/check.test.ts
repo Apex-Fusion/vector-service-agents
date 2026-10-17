@@ -135,4 +135,9 @@ describe('the sources of the brief', () => {
     const checked = checkCitations(brief([[1, Q1], [1, 'according to the council\u{2019}s own count']]), PAGES);
     expect(checked.sources).toStrictEqual([source(1, Q1), source(1, 'according to the council\u{2019}s own count')]);
   });
+
+  test('one quote found in two pages is two sources, for the list is unique by URL and quote', () => {
+    const both = PAGES[1].excerpt;
+    expect(checkCitations(brief([[1, Q2], [2, Q2]]), [page(1, both), page(2, both)]).sources).toStrictEqual([source(1, Q2), source(2, Q2)]);
+  });
 });
