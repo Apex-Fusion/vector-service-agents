@@ -1134,7 +1134,7 @@ test('Pipeline RUNBOOK collateral and float: two keys, 5 alone then 50 for the s
   const rows = funds.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| Key |'));
   assert.equal(rows.length, 2, 'two keys');
   const [supplier, buyer] = rows;
-  assert.ok(supplier.startsWith("| Supplier key (the runtime's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral, never touched), then 50 units | As for Agent History:"));
+  assert.ok(supplier.startsWith("| Supplier key (the runtime's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral), then 50 units | As for Agent History:"));
   assert.ok(buyer.startsWith("| Buyer key (the service's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral for the Accept and the Reclaim of the sub-jobs, never touched), then 100 units |"));
   assert.ok(funds.includes('The Foundation supplies two keys with their collateral and float. Nobody pastes either key into a chat.'));
   assert.ok(funds.includes('Two transfers, because a wallet supplied in one transfer can have its collateral spent as change by an ordinary transaction.'));
@@ -1437,7 +1437,7 @@ test('Pipeline RUNBOOK step 5: the ops scripts are copied from the adapted set o
     "-e 's#^ \"endpoint\":\"https://mp-suppliers-history.hal8.ai\"}# \"endpoint\":\"https://mp-suppliers-pipeline.hal8.ai\"}#'",
     "sed -i 's#^CAPABILITIES = \\[.*\\]#CAPABILITIES = [\"document.pipeline.ocr-summary.v1\"]#' m3-self-stake.py",
     "grep -il 'agent.history' *.sh *.py",
-    "python3 -m venv venv", "./venv/bin/pip -q install 'cbor2==5.6.5'", './setup-venv.sh', "./venv/bin/pip show cbor2 | grep '^Version'", '`setup-venv.sh` does not end with `venv ok` on this box', '`Version: 5.6.5`', 'breaks `cbor2pure`',
+    "python3 -m venv venv", "./venv/bin/pip -q install 'cbor2==5.6.5'", './setup-venv.sh', "./venv/bin/pip show cbor2 | grep '^Version'", './venv/bin/python -c "import pycardano, reputation_staking"', '`setup-venv.sh` does not end with `venv ok` on this box', '`Version: 5.6.5`', 'breaks `cbor2pure`',
   ]) assert.ok(five.includes(part), `step 5 says: ${part}`);
   assert.ok(five.indexOf('python3 -m venv venv') < five.indexOf('./setup-venv.sh'), 'the venv is made and pinned before setup-venv.sh runs');
   // Each pattern the sed lines look for is what step 5 of the Agent History runbook leaves in the copies it made, so the second adaptation finds the first one's output.
@@ -2350,7 +2350,7 @@ test('Snippets RUNBOOK collateral and float: one key, 5 alone then 50, and the k
   const collateral = section(sRunbook, 'Collateral and float');
   const rows = collateral.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| Key |'));
   assert.equal(rows.length, 1, 'one key');
-  assert.ok(rows[0].startsWith("| Supplier key (the runtime's), generated on the host in step 4 | Two transfers to its address: exactly 5 units alone (collateral, never touched), then 50 units |"));
+  assert.ok(rows[0].startsWith("| Supplier key (the runtime's), generated on the host in step 4 | Two transfers to its address: exactly 5 units alone (collateral), then 50 units |"));
   assert.ok(collateral.includes('The service holds no key, so there is no second wallet.'));
   assert.ok(collateral.includes('A job of Audio Snippets costs the hirer about 4 (`docs/HIRE.md`, section 3)'));
   assert.ok(read('docs/HIRE.md').includes('| 2 (Audio Snippets) | 4 | 3 | 1 | about 1 | about 4 | 12 |'), 'what a job costs the hirer');
@@ -2562,6 +2562,7 @@ test('Snippets RUNBOOK step 5: the ops scripts are copied from the adapted set o
   ]) assert.ok(five.includes(part), `step 5 says: ${part}`);
   const [, venv] = [...five.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1]);
   assert.ok(venv.startsWith('cd "$BASE/ops"\npython3 -m venv venv\n'), 'the block of the Python environment starts in the ops folder: it may run in a new shell');
+  assert.ok(venv.endsWith("./venv/bin/pip show cbor2 | grep '^Version'\n./venv/bin/python -c \"import pycardano, reputation_staking\"\n"), 'and ends with the two checks of the prose');
   // What the copy of the Pipeline holds is what this copy looks for: the label, the record and the capability its step 5 wrote.
   const p5 = section(pRunbook, '5. Adapt the ops scripts');
   for (const left of ['document-pipeline supplier#g', '# "name":"Document Pipeline",#\'', '# "endpoint":"https://mp-suppliers-pipeline.hal8.ai"}#\'', 'CAPABILITIES = ["document.pipeline.ocr-summary.v1"]#\'']) assert.ok(p5.includes(left), `the copy of the Pipeline is made with: ${left}`);
@@ -2695,8 +2696,12 @@ test('Snippets RUNBOOK step 15 and the first stop: a request the service accepts
   assert.deepEqual(parsed, { source: { url: 'https://example.org/preamble.mp3' }, language: 'en', quotes: ['All LibriVox recordings are in the public domain.'], return_clips: false, clip_format: 'mp3' });
   for (const part of ['- `CAPABILITY_ID=audio.transcript.snippets.v1`.', '- `E2E_POLL_MS=10000`.', '- `E2E_STATE=./e2e-state-snippets.json`.', 'its section "Hiring Audio Snippets" lists them', '`[audio-snippets] job done in <ms> ms: <s> s of media; matches 1, unmatched 0, clips 0`']) assert.ok(s15.includes(part), part);
   assert.ok(S_SERVER.includes('log(`job done in ${deps.clock() - arrivedAt} ms: ${result.source.duration_s} s of media; matches ${result.matches.length}, unmatched ${result.unmatched.length}, clips ${result.clips.length}`);'));
-  // What a job takes is said as it was measured: the fixture on the implementers' machine, and nothing of the host.
-  assert.ok(s15.includes("- `E2E_POLL_MS=10000`. A job takes longer than Agent History's: allow minutes for a ten-minute file. The speech recognition of the 25 s test fixture took 2.4 s on the implementers' machine; the host is not measured."));
+  // What a job takes is said as it was measured: the fixture on the implementers' machine, and the first-party run of 2026-10-17 on the host, whose wall clock and length of media are
+  // those of the receipt and of the result in its evidence file. The 68469 ms are the service's own log line of that job, which the evidence does not carry.
+  assert.ok(s15.includes("- `E2E_POLL_MS=10000`. A job takes longer than Agent History's: allow minutes for a ten-minute file. The speech recognition of the 25 s test fixture took 2.4 s on the implementers' machine. On the host, the first-party run of 2026-10-17 took a supplier wall clock of 68485 ms for 364.303 s of media (fetch, decode, speech recognition and matching; the service's own log line said 68469 ms)."));
+  const run = JSON.parse(read('docs/evidence/2026-10-17-audio-snippets-run-1.json'));
+  assert.ok(s15.includes(`a supplier wall clock of ${run.receipt.wallclock_ms} ms for ${JSON.parse(run.result).source.duration_s} s of media`), 'the numbers are those of the evidence');
+  assert.doesNotMatch(sRunbook, /the host is not measured/, 'the words of before the run');
   assert.doesNotMatch(sRunbook, /a minute or more/);
   // docs/E2E.md carries the same settings: the request JSON, the pause and the state file are written alike in both.
   const e2e = section(read('docs/E2E.md'), 'Hiring Audio Snippets');
@@ -2906,12 +2911,12 @@ test('the four corrections of the run of Audio Snippets: the hash script runs on
   // 2. Step 5. setup-venv.sh ends with a traceback from its last line after everything is installed, and the venv is complete all the same: the two checks that hold. RUNBOOK.md has no such sentence.
   const TRACE = '`setup-venv.sh` does not end with `venv ok` on this ';
   const REST = ": it ends with a traceback from its last line, `module 'pycardano' has no attribute '__version__'`, after everything is installed, and the venv is complete all the same (";
-  const CHECK = "). The check that holds: `./venv/bin/pip show cbor2 | grep '^Version'`, the last command, prints `Version: 5.6.5`, and `./venv/bin/python -c \"import pycardano, reputation_staking\"` exits 0.";
+  const CHECK = "). The check that holds is the last two lines of the block: `./venv/bin/pip show cbor2 | grep '^Version'` prints `Version: 5.6.5`, and `./venv/bin/python -c \"import pycardano, reputation_staking\"` exits 0.";
   assert.ok(section(sRunbook, '5. Adapt the ops scripts').includes(`${TRACE}host${REST}its packages are identical to the Pipeline's, and steps 7 and 8 ran on it${CHECK}`));
   assert.ok(section(pRunbook, '5. Adapt the ops scripts').includes(`${TRACE}box${REST}it ended so for Audio Snippets on 2026-10-16, whose venv has the same packages as this one, and steps 7 and 8 of RUNBOOK-audio-snippets.md ran on that venv${CHECK}`));
   for (const book of [sRunbook, pRunbook]) assert.equal(book.includes('`setup-venv.sh` ends with `venv ok`, and the last command must print `Version: 5.6.5`.'), false, 'the sentence of before');
-  // The last command of the block is still the version of cbor2.
-  for (const book of [sRunbook, pRunbook]) assert.match(section(book, '5. Adapt the ops scripts'), /\.\/setup-venv\.sh\n\.\/venv\/bin\/pip show cbor2 \| grep '\^Version'\n```/);
+  // The block ends with the two checks the prose names: the version of cbor2, then the import of pycardano and of the SDK of Module-3.
+  for (const book of [sRunbook, pRunbook]) assert.match(section(book, '5. Adapt the ops scripts'), /\.\/setup-venv\.sh\n\.\/venv\/bin\/pip show cbor2 \| grep '\^Version'\n\.\/venv\/bin\/python -c "import pycardano, reputation_staking"\n```/);
   // 3. Step 10. The grep that looks for the other stacks prints the first comment line of the copy, which names the Pipeline: a comment line is expected, and a path, a name or a message must not appear.
   assert.ok(section(sRunbook, '10. DNS and Caddy').includes("The first `grep` must show the vhost, the snippet and the marker of Audio Snippets. The second prints the first comment line of the copy, which names the Pipeline: a comment line is expected there, and is edited to this agent's or left as it is. A line that is a path, a name or a message of another stack is what must not appear: change it by hand to this agent's before the script runs, because it would act on the wrong stack."));
   assert.ok(section(pRunbook, '10. DNS and Caddy').includes("It may print a comment line of the copy: a comment line is expected there, and is edited to this agent's or left as it is. A line that is a path, a name or a message of the other stack is what must not appear: change it by hand to this agent's before the script runs, because it would act on the wrong stack."));
@@ -2922,7 +2927,9 @@ test('the four corrections of the run of Audio Snippets: the hash script runs on
   assert.ok(section(sRunbook, 'Collateral and float').includes(`by an ordinary transaction.\n\nOn 2026-10-17 ${USED}\n`));
   for (const book of [runbook, pRunbook]) assert.ok(section(book, 'Collateral and float').includes(`by an ordinary transaction.\n\nOn 2026-10-17, for Audio Snippets, ${USED}\n`));
   for (const book of Object.values(books)) {
-    assert.ok(section(book, 'Collateral and float').includes('exactly 5 units alone (collateral, never touched), then 50 units'), 'the instruction of the two transfers stays');
+    // The cell of the supplier key says collateral, and no longer that the 5 is never touched: the setup transactions of 2026-10-17 used it as an input.
+    assert.ok(section(book, 'Collateral and float').includes('exactly 5 units alone (collateral), then 50 units'), 'the instruction of the two transfers stays');
+    assert.equal(section(book, 'Collateral and float').includes('(collateral, never touched)'), false, 'the words of before the run');
     assert.ok(section(book, 'Collateral and float').includes('Two transfers, because a wallet supplied in one transfer can have its collateral '), 'and so does its reason');
   }
 });

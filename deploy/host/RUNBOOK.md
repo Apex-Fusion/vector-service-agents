@@ -18,7 +18,7 @@ The Foundation supplies two keys with their collateral and float. Nobody pastes 
 
 | Key | Supplied with | Covers |
 |---|---|---|
-| Supplier key, generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral, never touched), then 50 units | The registry deposit (10 units), the stake (10), the advert (about 2 locked) and fees of about 0.5 a transaction. The setup uses about 25 with fees. The rest covers the supplier's claim and submit fees. 25 would leave almost nothing for those, so send 50. |
+| Supplier key, generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral), then 50 units | The registry deposit (10 units), the stake (10), the advert (about 2 locked) and fees of about 0.5 a transaction. The setup uses about 25 with fees. The rest covers the supplier's claim and submit fees. 25 would leave almost nothing for those, so send 50. |
 | Test buyer key, generated on the operator's own machine | Two transfers: 5 units alone, then 50 | The first-party run of step 15. A run costs about 3 units of the float. |
 
 Two transfers, because a wallet supplied in one transfer can have its collateral spent as change by an ordinary transaction.

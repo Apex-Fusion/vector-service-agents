@@ -46,7 +46,7 @@ The Foundation supplies one key with its collateral and float. Nobody pastes the
 
 | Key | Supplied with | Covers |
 |---|---|---|
-| Supplier key (the runtime's), generated on the host in step 4 | Two transfers to its address: exactly 5 units alone (collateral, never touched), then 50 units | As for Agent History and the Pipeline: the registry deposit (10 units), the stake (10), the advert (about 2 locked) and fees of about 0.5 a transaction. The setup uses about 25 with fees. The rest covers the supplier's claim and submit fees. |
+| Supplier key (the runtime's), generated on the host in step 4 | Two transfers to its address: exactly 5 units alone (collateral), then 50 units | As for Agent History and the Pipeline: the registry deposit (10 units), the stake (10), the advert (about 2 locked) and fees of about 0.5 a transaction. The setup uses about 25 with fees. The rest covers the supplier's claim and submit fees. |
 
 The service holds no key, so there is no second wallet. Two transfers, because a wallet supplied in one transfer can have its collateral spent as change by an ordinary transaction.
 
@@ -246,9 +246,10 @@ python3 -m venv venv
 ./venv/bin/pip -q install 'cbor2==5.6.5'
 ./setup-venv.sh
 ./venv/bin/pip show cbor2 | grep '^Version'
+./venv/bin/python -c "import pycardano, reputation_staking"
 ```
 
-`setup-venv.sh` does not end with `venv ok` on this host: it ends with a traceback from its last line, `module 'pycardano' has no attribute '__version__'`, after everything is installed, and the venv is complete all the same (its packages are identical to the Pipeline's, and steps 7 and 8 ran on it). The check that holds: `./venv/bin/pip show cbor2 | grep '^Version'`, the last command, prints `Version: 5.6.5`, and `./venv/bin/python -c "import pycardano, reputation_staking"` exits 0.
+`setup-venv.sh` does not end with `venv ok` on this host: it ends with a traceback from its last line, `module 'pycardano' has no attribute '__version__'`, after everything is installed, and the venv is complete all the same (its packages are identical to the Pipeline's, and steps 7 and 8 ran on it). The check that holds is the last two lines of the block: `./venv/bin/pip show cbor2 | grep '^Version'` prints `Version: 5.6.5`, and `./venv/bin/python -c "import pycardano, reputation_staking"` exits 0.
 
 ## 6. Supply the supplier wallet with its collateral and float
 
@@ -445,7 +446,7 @@ Operator, on the operator's own machine, with the test buyer key (Collateral and
 - `CAPABILITY_ID=audio.transcript.snippets.v1`. The script looks the advert up among the free suppliers of this capability, and its default is the capability of Agent History, so without this setting it stops before it posts anything, with "is not among the free suppliers".
 - `ADVERT_REF` is the advert of Audio Snippets from step 12.
 - `PAYLOAD` is the request JSON for a short public-domain recording: `{"source":{"url":"<https URL of a short public-domain mp3>"},"language":"en","quotes":["All LibriVox recordings are in the public domain."]}`. A LibriVox recording says that sentence in its preamble, so the run shows a match. The service fetches the URL itself and refuses a redirect: a download link of archive.org redirects to the server that holds the file, so give the address it redirects to (`curl -sI <link>` shows it in its `location` line).
-- `E2E_POLL_MS=10000`. A job takes longer than Agent History's: allow minutes for a ten-minute file. The speech recognition of the 25 s test fixture took 2.4 s on the implementers' machine; the host is not measured.
+- `E2E_POLL_MS=10000`. A job takes longer than Agent History's: allow minutes for a ten-minute file. The speech recognition of the 25 s test fixture took 2.4 s on the implementers' machine. On the host, the first-party run of 2026-10-17 took a supplier wall clock of 68485 ms for 364.303 s of media (fetch, decode, speech recognition and matching; the service's own log line said 68469 ms).
 - `E2E_STATE=./e2e-state-snippets.json`. A state file belongs to one run, and the script refuses one that belongs to another, so this run does not use the file of an earlier run.
 - No clips: the request leaves `return_clips` out, so that the result stays small. The hosted MCP server reads at most 1000000 bytes of a job's answer.
 

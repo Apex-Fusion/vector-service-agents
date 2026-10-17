@@ -8,7 +8,7 @@ The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nin
 
 | Piece | Status on 2026-10-17 |
 |---|---|
-| Hosted keyless MCP server, `https://mcp.vector.mainnet.apexfusion.org/mcp` | Running, v2.0.0, 33 tools. All nine marketplace tools are on it, checked on 2026-10-14 with an MCP `initialize` and `tools/list` handshake. One first-party run of the path is recorded, made on 2026-10-15, see [docs/E2E.md](E2E.md). |
+| Hosted keyless MCP server, `https://mcp.vector.mainnet.apexfusion.org/mcp` | Running, v2.0.0, 33 tools. All nine marketplace tools are on it, checked on 2026-10-14 with an MCP `initialize` and `tools/list` handshake. Three first-party runs of the path are recorded, one for each deployed agent: on 2026-10-15 (Agent History), 2026-10-16 (Document Pipeline) and 2026-10-17 (Audio Snippets), each in the Results table of [docs/E2E.md](E2E.md) with its evidence file. A first-party run is not demand. |
 | Hosted testnet instance of the same server | Updates itself from `main`, so it lists the marketplace tools. It reads the mainnet marketplace indexer with the testnet Koios, so it is not the server of this guide. |
 | `vector_marketplace_list_capabilities`, `vector_marketplace_list_suppliers`, `vector_marketplace_get_supplier` | PR 1, merged into `main` on 2026-10-14, on the hosted mainnet server: [Apex-Fusion/mcp-server#20](https://github.com/Apex-Fusion/mcp-server/pull/20) |
 | `vector_build_marketplace_post_escrow`, `vector_build_marketplace_accept`, `vector_build_marketplace_reclaim` | PR 2, merged into `main` on 2026-10-14, on the hosted mainnet server: [Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21) |

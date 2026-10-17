@@ -610,7 +610,15 @@ test('docs/HIRE.md: says what is and is not in service, tool by tool', () => {
   assert.ok(agentRow.includes('The public URL, `https://mp-suppliers-history.hal8.ai`, is in service as of 2026-10-14.'));
   assert.equal(agentRow.includes(AH.firstAdvertTx), false, 'the retired advert is not the one the guide gives');
   assert.equal(guide.match(/<ADVERT_REF>|placeholder|not yet advertised|not in service/i), null, 'the words of before the advert');
-  assert.ok(row('mcp.vector.mainnet.apexfusion.org').includes('Running, v2.0.0, 33 tools. All nine marketplace tools are on it, checked on 2026-10-14 with an MCP `initialize` and `tools/list` handshake. One first-party run of the path is recorded, made on 2026-10-15, see [docs/E2E.md](E2E.md).'));
+  // The first-party runs of the path: one for each deployed agent, each a row of the Results table of docs/E2E.md with its evidence file. A first-party run is not demand.
+  const serverRow = row('mcp.vector.mainnet.apexfusion.org');
+  assert.ok(serverRow.includes('Running, v2.0.0, 33 tools. All nine marketplace tools are on it, checked on 2026-10-14 with an MCP `initialize` and `tools/list` handshake. Three first-party runs of the path are recorded, one for each deployed agent: on 2026-10-15 (Agent History), 2026-10-16 (Document Pipeline) and 2026-10-17 (Audio Snippets), each in the Results table of [docs/E2E.md](E2E.md) with its evidence file. A first-party run is not demand.'));
+  const runs = doc('E2E.md').split('\n').filter((l) => /^\| 20\d\d-/.test(l)).map((l) => l.split(' | ').slice(0, 2).map((cell) => cell.replace(/^\| /, '')));
+  assert.deepEqual(runs, [['2026-10-15', 'Agent History'], ['2026-10-16', 'Document Pipeline'], ['2026-10-17', 'Audio Snippets']], 'the runs the row counts are the rows of the Results table');
+  assert.equal(runs.length, Object.values(AGENTS).filter((a) => a.status.startsWith('DEPLOYED ')).length, 'one run for each deployed agent');
+  for (const [date, agent] of runs) assert.ok(serverRow.includes(`${date} (${agent})`), `the row names the run of ${agent}`);
+  assert.deepEqual(readdirSync(new URL('../docs/evidence/', import.meta.url)).sort(), ['2026-10-15-agent-history-run-1.json', '2026-10-16-document-pipeline-run-1.json', '2026-10-17-audio-snippets-run-1.json'], 'and each run has its evidence file');
+  assert.equal(serverRow.match(/One first-party run of the path is recorded/), null, 'the count of before');
   assert.match(row('Hosted testnet instance'), /Updates itself from `main`, so it lists the marketplace tools\. It reads the mainnet marketplace indexer with the testnet Koios/);
   assert.equal(guide.match(/Open PR 1|PR 2 open|PR 3, planned|PR 4, planned|stacked on #20/), null, 'the statuses of before the merge');
   assert.equal(guide.match(WAITS_FOR_CUTOVER), null, 'nothing in the guide waits for a cutover');
@@ -655,7 +663,7 @@ test('docs/E2E.md: CAPABILITY_ID is a setting with its default and the Pipeline\
   const row = rows.find((l) => l.startsWith('| `CAPABILITY_ID` |')) ?? '';
   for (const part of [
     'The capability of the advert, as the marketplace lists it. Default: `identity.history.report.v1`, the capability of Agent History.',
-    'stops unless `ADVERT_REF` is among them, so an advert of another agent needs its own value: `document.pipeline.ocr-summary.v1` for Document Pipeline.',
+    'stops unless `ADVERT_REF` is among them, so an advert of another agent needs its own value: `document.pipeline.ocr-summary.v1` for Document Pipeline, `audio.transcript.snippets.v1` for Audio Snippets.',
     'An empty value, or one with a space in it, stops the script with exit code 2.',
   ]) assert.ok(row.includes(part), `the CAPABILITY_ID row says: ${part}`);
   assert.ok(rows.find((l) => l.startsWith('| `ADVERT_REF` |')).includes('It must be among the free suppliers of `CAPABILITY_ID`, or the script stops.'));
@@ -699,7 +707,8 @@ test('docs/E2E.md: the section "Hiring Document Pipeline" gives the settings of 
 test('docs/E2E.md and scripts/run-e2e-from-keyfile.sh: the runbook opens for every agent, the state file is the one E2E_STATE names, and the wrapper says so when a run stops', () => {
   const e2e = doc('E2E.md');
   const wrapper = readFileSync(new URL('./run-e2e-from-keyfile.sh', import.meta.url), 'utf8');
-  assert.ok(e2e.split('\n')[2].startsWith('Before any working-group member is invited, the operator hires each of our agents itself, through the same tools a member will use. Agent History comes first, and Document Pipeline follows (see "Hiring Document Pipeline").'));
+  assert.ok(e2e.split('\n')[2].startsWith('Before any working-group member is invited, the operator hires each of our agents itself, through the same tools a member will use. Agent History comes first, and Document Pipeline and Audio Snippets follow (see "Hiring Document Pipeline" and "Hiring Audio Snippets").'));
+  for (const heading of ['Hiring Document Pipeline', 'Hiring Audio Snippets']) assert.ok(e2e.includes(`\n## ${heading}\n`), `the section the opening names: ${heading}`);
   assert.equal(e2e.split('\n')[2].includes('hires Agent History itself'), false, 'the opening of before the second agent');
   assert.ok(e2e.includes('A run of Agent History costs about 3 of the float, and a run of Document Pipeline about 7 (see the cost table in [HIRE.md](HIRE.md)).'));
   assert.ok(e2e.includes('and the state file is the one `E2E_STATE` names (`e2e-state.json` by default), as above.'));
@@ -1280,7 +1289,11 @@ test('specs/audio-snippets.md: the DID, the supplier key, the registry record an
   for (const part of [
     'name `Audio Snippets`', 'description as in the manifest', 'capabilities `audio.transcript.snippets.v1`', 'framework `vector-service-agents`', "endpoint the agent's public URL",
     `controller key hash \`${AS.controllerPkh}\` (the supplier key hash)`, `Registered on 2026-10-17 in the confirmed transaction ${explorerLink(AS.registerTx)}`,
+    'The deposit is 10000000 lovelace (10.000000), refundable on deregistration',
   ]) assert.ok(record.includes(part), `the Registry record row says: ${part}`);
+  // The deposit closes the row, as in the rows of the other two (step 7 of the runbook names the deposit of 10 units).
+  assert.ok(record.endsWith(`${explorerLink(AS.registerTx)}. The deposit is 10000000 lovelace (10.000000), refundable on deregistration |`));
+  assert.ok(section(readFileSync(new URL('../deploy/host/RUNBOOK-audio-snippets.md', import.meta.url), 'utf8'), '7. Register the identity').includes('This costs a deposit of 10 units, refundable on deregistration'));
   assert.equal(row('Reputation stake'), `| Reputation stake | a Module-3 self-stake of 10000000 lovelace (10.000000) on the capability, made on 2026-10-17 in transaction ${explorerLink(AS.stakeTx)} |`);
   // The URL is in service since 2026-10-17 (steps 10 to 14), so no row is "planned" any more.
   assert.equal(row('Public URL'), '| Public URL | `https://mp-suppliers-snippets.hal8.ai` (in service as of 2026-10-17) |');

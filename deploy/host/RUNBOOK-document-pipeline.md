@@ -44,7 +44,7 @@ The Foundation supplies two keys with their collateral and float. Nobody pastes 
 
 | Key | Supplied with | Covers |
 |---|---|---|
-| Supplier key (the runtime's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral, never touched), then 50 units | As for Agent History: the registry deposit (10 units), the stake (10), the advert (about 2 locked) and fees of about 0.5 a transaction. The setup uses about 25 with fees. The rest covers the supplier's claim and submit fees. |
+| Supplier key (the runtime's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral), then 50 units | As for Agent History: the registry deposit (10 units), the stake (10), the advert (about 2 locked) and fees of about 0.5 a transaction. The setup uses about 25 with fees. The rest covers the supplier's claim and submit fees. |
 | Buyer key (the service's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral for the Accept and the Reclaim of the sub-jobs, never touched), then 100 units | The sub-jobs the service hires: the OCR hops at about 2.2 net per page (price 0.2, supplier bond 1, fees about 1) plus the chat hop at about the same, so about 13 net for a job of five pages, against its price of 5. The locks and fees in flight for such a job come to about 19, of which the buyer bonds and the lock excess return on Accept (`specs/document-pipeline.md`, Terms). These figures hold at today's fleet price of 0.2 per sub-job; the service hires no advert priced above `OCR_MAX_PRICE_LOVELACE` or `LLM_MAX_PRICE_LOVELACE` (1 unit each unless the env file says otherwise). A job is refused with `insufficient_float` (503), and `/healthz` of the service turns 503, when the float outside the collateral is under (max_pages + 1) x 4.5, which is 27 for five pages; a job is also refused, before its first Post, when the float does not cover the locks and fees at the prices of the adverts it chose. 100 covers several jobs of five pages at about 19 each in flight, and the buyer bonds and the lock excess come back as the Accepts land. |
 
 Two transfers, because a wallet supplied in one transfer can have its collateral spent as change by an ordinary transaction.
@@ -238,9 +238,10 @@ python3 -m venv venv
 ./venv/bin/pip -q install 'cbor2==5.6.5'
 ./setup-venv.sh
 ./venv/bin/pip show cbor2 | grep '^Version'
+./venv/bin/python -c "import pycardano, reputation_staking"
 ```
 
-`setup-venv.sh` does not end with `venv ok` on this box: it ends with a traceback from its last line, `module 'pycardano' has no attribute '__version__'`, after everything is installed, and the venv is complete all the same (it ended so for Audio Snippets on 2026-10-16, whose venv has the same packages as this one, and steps 7 and 8 of RUNBOOK-audio-snippets.md ran on that venv). The check that holds: `./venv/bin/pip show cbor2 | grep '^Version'`, the last command, prints `Version: 5.6.5`, and `./venv/bin/python -c "import pycardano, reputation_staking"` exits 0.
+`setup-venv.sh` does not end with `venv ok` on this box: it ends with a traceback from its last line, `module 'pycardano' has no attribute '__version__'`, after everything is installed, and the venv is complete all the same (it ended so for Audio Snippets on 2026-10-16, whose venv has the same packages as this one, and steps 7 and 8 of RUNBOOK-audio-snippets.md ran on that venv). The check that holds is the last two lines of the block: `./venv/bin/pip show cbor2 | grep '^Version'` prints `Version: 5.6.5`, and `./venv/bin/python -c "import pycardano, reputation_staking"` exits 0.
 
 ## 6. Supply the two wallets with their collateral and float
 
