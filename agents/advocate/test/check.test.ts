@@ -1,0 +1,138 @@
+// agents/advocate/test/check.test.ts
+// The post-check (ruling R-E6, Review Focus 2): the golden answer, whose true quote is kept and whose made-up quote, wrong page number and short quote are
+// dropped; a quote read only against the page it names; the bounds of a quote, counted after normalisation; the normalisation of apostrophes, quotation
+// marks, dashes, whitespace, case and compatibility forms, and what it does not forgive; an argument left without a quote dropped; no argument left is
+// no_supported_claims, so that the thesis never answers alone; and the list of sources, each once, in the order of first use.
+import { describe, test, expect } from 'vitest';
+import { checkCitations, quoteFound } from '../src/check.ts';
+import { AdvocateError } from '../src/errors.ts';
+import { parseBriefAnswer } from '../src/model.ts';
+import type { ModelBrief } from '../src/model.ts';
+import type { Page } from '../src/pages.ts';
+import { QUOTE_MAX_CHARS, QUOTE_MIN_CHARS } from '../src/prompt.ts';
+import { GOLDEN_MODEL_BRIEF, GOLDEN_PAGES, GOLDEN_RESULT, MODEL_ANSWER } from './golden.ts';
+
+const AT = '2026-10-17T09:00:00.000Z';
+const page = (n: number, excerpt: string): Page => ({ n, title: `Page ${n}`, url: `https://example.org/page-${n}`, retrieved_at: AT, excerpt });
+const Q1 = 'retail footfall rise by eleven percent within two years';
+const Q2 = 'fell by a third in the first year';
+const PAGES = [
+  page(1, 'Cities that closed their centres to cars saw retail footfall rise by eleven percent within two years, according to the council\u{2019}s own count.'),
+  page(2, 'Nitrogen dioxide at the school gate fell by a third in the first year after the street was closed to through traffic.'),
+];
+const source = (n: number, quote: string) => ({ title: `Page ${n}`, url: `https://example.org/page-${n}`, retrieved_at: AT, quote });
+/** A brief whose arguments cite these [n, quote] pairs, one list for each argument. */
+const brief = (...cited: Array<Array<[number, string]>>): ModelBrief => ({
+  thesis: 'A thesis.', arguments: cited.map((list, i) => ({ claim: `Claim ${i}.`, support: `Support ${i}.`, sources: list.map(([n, quote]) => ({ n, quote })) })),
+});
+function refusalOf(fn: () => unknown): AdvocateError {
+  try { fn(); } catch (e) { if (e instanceof AdvocateError) return e; throw e; }
+  throw new Error('it was accepted');
+}
+
+describe('the golden answer (Review Focus 2)', () => {
+  test('the brief of the fixture is the golden one, word for word', () => {
+    const content = (JSON.parse(MODEL_ANSWER) as { choices: Array<{ message: { content: string } }> }).choices[0].message.content;
+    expect(parseBriefAnswer(content)).toStrictEqual(GOLDEN_MODEL_BRIEF);
+  });
+
+  test('the true quote is kept; the made-up quote, the wrong page number and the short quote are dropped, and so is the argument they leave with none', () => {
+    expect(checkCitations(GOLDEN_MODEL_BRIEF, GOLDEN_PAGES)).toStrictEqual({
+      arguments: GOLDEN_RESULT.arguments, sources: GOLDEN_RESULT.sources, droppedQuotes: 3, droppedArguments: 1,
+    });
+  });
+
+  test('each bad citation of the fixture fails for its own reason', () => {
+    const [, page2, page3] = GOLDEN_PAGES;
+    expect(quoteFound('the street became a river of bicycles overnight', page2.excerpt)).toBe(false); // made up
+    expect(quoteFound('the number of vans in the centre at noon halved', page3.excerpt)).toBe(true); // true of page 3, cited as page 9
+    expect(GOLDEN_PAGES.map((p) => p.n)).not.toContain(9);
+    expect(GOLDEN_PAGES[0].excerpt).toContain('footfall r'); // in the page, and too short
+    expect(quoteFound('footfall r', GOLDEN_PAGES[0].excerpt)).toBe(false);
+  });
+});
+
+describe('a quote is read against the page it names', () => {
+  test('a true quote of another page is dropped, and a number with no page is dropped', () => {
+    const checked = checkCitations(brief([[2, Q1]], [[3, Q1]], [[1, Q1]]), PAGES);
+    expect(checked).toStrictEqual({
+      arguments: [{ claim: 'Claim 2.', support: 'Support 2.', sources: [source(1, Q1)] }], sources: [source(1, Q1)], droppedQuotes: 2, droppedArguments: 2,
+    });
+  });
+
+  test('a source carries the title, the URL and the time of retrieval of its page and the quote as the model wrote it, in that order', () => {
+    const [kept] = checkCitations(brief([[2, 'FELL BY A THIRD IN THE FIRST YEAR']]), PAGES).arguments[0].sources;
+    expect(Object.keys(kept)).toStrictEqual(['title', 'url', 'retrieved_at', 'quote']);
+    expect(kept).toStrictEqual(source(2, 'FELL BY A THIRD IN THE FIRST YEAR'));
+  });
+});
+
+describe('the bounds of a quote: 20 to 300 characters after normalisation', () => {
+  const text = 'abcdefghij'.repeat(40);
+  test('20 and 300 are kept, 19 and 301 dropped', () => {
+    expect([QUOTE_MIN_CHARS, QUOTE_MAX_CHARS]).toStrictEqual([20, 300]);
+    expect([20, 19, 300, 301].map((length) => quoteFound(text.slice(0, length), text))).toStrictEqual([true, false, true, false]);
+  });
+
+  test('the space around a quote and the runs of space inside it do not count toward the bounds', () => {
+    expect(quoteFound(`   ${text.slice(0, 19)}   `, text)).toBe(false);
+    expect(quoteFound(`fell by a third ${' '.repeat(10)}`, PAGES[1].excerpt)).toBe(false);
+    expect(quoteFound(`  ${Q2}  `, PAGES[1].excerpt)).toBe(true);
+  });
+
+  test('the bounds count characters, so a quote of 20 characters outside the BMP is kept', () => {
+    const wide = '\u{1F600}'.repeat(25);
+    expect(quoteFound(wide.slice(0, 40), `before ${wide} after`)).toBe(true);
+    expect(quoteFound(wide.slice(0, 38), `before ${wide} after`)).toBe(false);
+  });
+});
+
+describe('the normalisation (R-E6)', () => {
+  test('curly apostrophes and quotation marks, the dashes, whitespace and case are read as the page reads them, either way round', () => {
+    const excerpt = 'They called it \u{201C}the best year\u{201D} \u{2014} and the council\u{2BC}s count agreed, in every   street\nof the centre.';
+    expect(quoteFound('"the best year" - and the council\'s count agreed, in every street of the centre', excerpt)).toBe(true);
+    expect(quoteFound('THE BEST YEAR\u{201D} \u{2013} AND THE COUNCIL\u{2019}S COUNT', excerpt)).toBe(true);
+    expect(quoteFound('the council\u{2019}s own count', PAGES[0].excerpt)).toBe(true);
+    expect(quoteFound("according to the council's own count", PAGES[0].excerpt)).toBe(true);
+  });
+
+  test('the compatibility forms of NFKC: a ligature and full-width letters match their plain letters', () => {
+    expect(quoteFound('fell in the first year after the closure', 'It fell in the \u{FB01}rst year after the closure.')).toBe(true);
+    expect(quoteFound('\u{FF46}\u{FF45}\u{FF4C}\u{FF4C} by a third in the first year', PAGES[1].excerpt)).toBe(true);
+  });
+
+  test('what it does not forgive: another word, a comma left out, a word left out', () => {
+    for (const quote of ['fell by a half in the first year', 'within two years according to the council', 'retail footfall rise by eleven percent in two years']) {
+      expect(quoteFound(quote, PAGES[0].excerpt + ' ' + PAGES[1].excerpt), quote).toBe(false);
+    }
+  });
+});
+
+describe('the arguments', () => {
+  test('an argument that cites nothing, or whose every quote fails, is dropped; the others are kept in their order, and the thesis is not checked', () => {
+    const checked = checkCitations(brief([], [[1, 'not in the page at all, not even close']], [[2, Q2]], [[1, Q1], [5, Q1]]), PAGES);
+    expect(checked.arguments.map((a) => a.claim)).toStrictEqual(['Claim 2.', 'Claim 3.']);
+    expect(checked.arguments[1].sources).toStrictEqual([source(1, Q1)]);
+    expect([checked.droppedQuotes, checked.droppedArguments]).toStrictEqual([2, 2]);
+  });
+
+  test('no argument left is no_supported_claims (502): the thesis never answers alone', () => {
+    const e = refusalOf(() => checkCitations(brief([[1, 'footfall r']], [[9, Q1]], []), PAGES));
+    expect([e.code, e.status, e.detail]).toStrictEqual(['no_supported_claims', 502, 'no argument of the brief kept a quote found in the page it names: 2 quotes and 3 arguments dropped']);
+    expect(() => checkCitations(GOLDEN_MODEL_BRIEF, [])).toThrow(expect.objectContaining({ code: 'no_supported_claims' }));
+  });
+});
+
+describe('the sources of the brief', () => {
+  test('a quote cited by two arguments is kept in both and listed once; the list is unique by page and quote, in the order of first use', () => {
+    const checked = checkCitations(brief([[2, Q2]], [[1, Q1], [2, Q2]], [[1, Q1]], [[2, Q2.toUpperCase()]]), PAGES);
+    expect(checked.arguments.map((a) => a.sources)).toStrictEqual([[source(2, Q2)], [source(1, Q1), source(2, Q2)], [source(1, Q1)], [source(2, Q2.toUpperCase())]]);
+    expect(checked.sources).toStrictEqual([source(2, Q2), source(1, Q1)]);
+    expect([checked.droppedQuotes, checked.droppedArguments]).toStrictEqual([0, 0]);
+  });
+
+  test('two quotes of one page are two sources', () => {
+    const checked = checkCitations(brief([[1, Q1], [1, 'according to the council\u{2019}s own count']]), PAGES);
+    expect(checked.sources).toStrictEqual([source(1, Q1), source(1, 'according to the council\u{2019}s own count')]);
+  });
+});
