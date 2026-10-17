@@ -23,6 +23,8 @@ The Foundation supplies two keys with their collateral and float. Nobody pastes 
 
 Two transfers, because a wallet supplied in one transfer can have its collateral spent as change by an ordinary transaction.
 
+On 2026-10-17, for Audio Snippets, the setup transactions (steps 7, 8 and 12) used the 5-unit output as an input, so it did not stay alone; the supplier's Claim and Submit still found collateral in the change.
+
 ## 1. Put the files on the box
 
 Operator. On the box, as the user that runs Docker:
@@ -236,14 +238,13 @@ It must return the manifest of step 9, byte for byte. `/healthz` on the public n
 
 ## 11. Hash the manifest
 
-Operator. Run it from the root of the repository checkout, on any machine with Node 22; the script only fetches public bytes. On the box the root is `$BASE/repo`:
+Operator. The script runs on the operator's machine, from the root of a checkout of the repository, with Node 22: the box has no Node. It only fetches public bytes:
 
 ```sh
-cd "$BASE/repo"
 node scripts/manifest-hash.mjs https://mp-suppliers-history.hal8.ai
 ```
 
-It prints one JSON line with `detail_uri`, `detail_hash` and `bytes`. Cross-check on the box with `curl -fsS https://mp-suppliers-history.hal8.ai/agent.json | sha256sum`: the 64 hex digits must be the same. If they differ, stop. Something between the box and the client rewrites the bytes.
+It prints one JSON line with `detail_uri`, `detail_hash` and `bytes`. The box cross-checks the raw bytes with `curl -fsS https://mp-suppliers-history.hal8.ai/agent.json | sha256sum`: the two must agree. If they differ, stop. Something between the box and the client rewrites the bytes.
 
 ## 12. Post the advert
 

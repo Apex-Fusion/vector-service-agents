@@ -49,6 +49,8 @@ The Foundation supplies two keys with their collateral and float. Nobody pastes 
 
 Two transfers, because a wallet supplied in one transfer can have its collateral spent as change by an ordinary transaction.
 
+On 2026-10-17, for Audio Snippets, the setup transactions (steps 7, 8 and 12) used the 5-unit output as an input, so it did not stay alone; the supplier's Claim and Submit still found collateral in the change.
+
 The key of the first-party run (step 15) is a third key and gets no collateral or float here: it is the operator's own test buyer key, the kind that hired Agent History in step 15 of RUNBOOK.md. A job of the Pipeline costs the hirer about 7 (`docs/HIRE.md`, section 3), so that key needs its 5 alone and a float of at least 9 for the run, the lock of 7 and about 2 more (`docs/HIRE.md`, section 8). The float left from the Agent History run may be enough: the operator checks it before step 15, and asks the Foundation for a top-up if it is not.
 
 ## 1. Put the files on the box
@@ -238,7 +240,7 @@ python3 -m venv venv
 ./venv/bin/pip show cbor2 | grep '^Version'
 ```
 
-`setup-venv.sh` ends with `venv ok`, and the last command must print `Version: 5.6.5`.
+`setup-venv.sh` does not end with `venv ok` on this box: it ends with a traceback from its last line, `module 'pycardano' has no attribute '__version__'`, after everything is installed, and the venv is complete all the same (it ended so for Audio Snippets on 2026-10-16, whose venv has the same packages as this one, and steps 7 and 8 of RUNBOOK-audio-snippets.md ran on that venv). The check that holds: `./venv/bin/pip show cbor2 | grep '^Version'`, the last command, prints `Version: 5.6.5`, and `./venv/bin/python -c "import pycardano, reputation_staking"` exits 0.
 
 ## 6. Supply the two wallets with their collateral and float
 
@@ -326,7 +328,7 @@ The `grep` must show the vhost and the snippet of the Pipeline. If a line does n
 grep -in history install-caddy-route.sh
 ```
 
-It must print nothing. A line it prints is a path, a name or a message of the other stack: change it by hand to this agent's before the script runs, because it would act on the wrong stack. Run `./install-caddy-route.sh` once the record resolves to the box. The copy may poll `/healthz` on the public name after it has reloaded Caddy, and that route goes to the runtime, which does not exist before step 13. So before step 13 the script can wait on that poll, or end with exit code 2, with the block already in place. Read the last line it printed: if it is about the `/healthz` poll, that is the expected end, and the route to check is `/agent.json`, which goes to the service and answers now. If it says the name does not resolve to the box, the record is not there yet: wait for it and run the script again. Check from any machine:
+It may print a comment line of the copy: a comment line is expected there, and is edited to this agent's or left as it is. A line that is a path, a name or a message of the other stack is what must not appear: change it by hand to this agent's before the script runs, because it would act on the wrong stack. Run `./install-caddy-route.sh` once the record resolves to the box. The copy may poll `/healthz` on the public name after it has reloaded Caddy, and that route goes to the runtime, which does not exist before step 13. So before step 13 the script can wait on that poll, or end with exit code 2, with the block already in place. Read the last line it printed: if it is about the `/healthz` poll, that is the expected end, and the route to check is `/agent.json`, which goes to the service and answers now. If it says the name does not resolve to the box, the record is not there yet: wait for it and run the script again. Check from any machine:
 
 ```sh
 curl -fsS https://mp-suppliers-pipeline.hal8.ai/agent.json
@@ -336,14 +338,13 @@ It must return the manifest of step 9, byte for byte. `/healthz` on the public n
 
 ## 11. Hash the manifest
 
-Operator. As in step 11 of RUNBOOK.md. Run it from the root of the repository checkout, on any machine with Node 22; the script only fetches public bytes. On the box the root is `$BASE/repo`:
+Operator. As in step 11 of RUNBOOK.md. The script runs on the operator's machine, from the root of a checkout of the repository, with Node 22: the box has no Node. It only fetches public bytes:
 
 ```sh
-cd "$BASE/repo"
 node scripts/manifest-hash.mjs https://mp-suppliers-pipeline.hal8.ai
 ```
 
-It prints one JSON line with `detail_uri`, `detail_hash` and `bytes`. Cross-check on the box with `curl -fsS https://mp-suppliers-pipeline.hal8.ai/agent.json | sha256sum`: the 64 hex digits must be the same. If they differ, stop. Something between the box and the client rewrites the bytes.
+It prints one JSON line with `detail_uri`, `detail_hash` and `bytes`. The box cross-checks the raw bytes with `curl -fsS https://mp-suppliers-pipeline.hal8.ai/agent.json | sha256sum`: the two must agree. If they differ, stop. Something between the box and the client rewrites the bytes.
 
 ## 12. Post the advert
 

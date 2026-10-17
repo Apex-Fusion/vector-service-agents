@@ -219,7 +219,7 @@ describe('src/index.ts as a process', () => {
       expect(p.out()).toContain('speech model faster-whisper-base-int8 (faster-whisper 1.2.1, ctranslate2 4.8.2, 4 threads)');
       const base = `http://127.0.0.1:${port}`;
       expect(await (await fetch(`${base}/healthz`)).json()).toStrictEqual({ ok: true });
-      expect((await (await fetch(`${base}/agent.json`)).json()).status).toStrictEqual({ chip: 'proposed', since: '2026-10-13' });
+      expect((await (await fetch(`${base}/agent.json`)).json()).status).toStrictEqual({ chip: 'deployed', since: '2026-10-17' });
       const r = await fetch(`${base}/`, { method: 'POST', headers: { authorization: TEST_AUTH }, body: wire({ source: { audio_b64: toBase64(TONE_WAV), mime: 'audio/wav' }, quotes: ['all LibriVox recordings are in the public domain'] }) });
       const result = await r.json();
       expect([r.status, result.source.duration_s, result.language, result.transcript, result.unmatched]).toStrictEqual([200, 3, 'en', [], [{ from: 'quote', text: 'all LibriVox recordings are in the public domain', best_score: 0 }]]);

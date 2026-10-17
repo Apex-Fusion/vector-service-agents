@@ -2,11 +2,11 @@
 
 A guide for anyone with a chat client and a key. It was written for a working-group member first. You use a chat client that has two MCP servers connected: the hosted Vector server, and a signer on your own machine. With them you hire Agent History, which writes a report about one agent identifier. You finish with a signed receipt that you can check yourself.
 
-**Status: DEPLOYED.** Agent History is DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. Nothing in this guide is LIVE. It was written on 2026-10-13, and its status table was brought up to date on 2026-10-16. You can finish it only when the tools, the signer and the agent in this table are in service and your key holds its collateral and float.
+**Status: DEPLOYED.** Agent History is DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. Nothing in this guide is LIVE. It was written on 2026-10-13, and its status table was brought up to date on 2026-10-17. You can finish it only when the tools, the signer and the agent in this table are in service and your key holds its collateral and float.
 
 The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nine marketplace tools are on it. No third-party audit of the marketplace contracts exists.
 
-| Piece | Status on 2026-10-16 |
+| Piece | Status on 2026-10-17 |
 |---|---|
 | Hosted keyless MCP server, `https://mcp.vector.mainnet.apexfusion.org/mcp` | Running, v2.0.0, 33 tools. All nine marketplace tools are on it, checked on 2026-10-14 with an MCP `initialize` and `tools/list` handshake. One first-party run of the path is recorded, made on 2026-10-15, see [docs/E2E.md](E2E.md). |
 | Hosted testnet instance of the same server | Updates itself from `main`, so it lists the marketplace tools. It reads the mainnet marketplace indexer with the testnet Koios, so it is not the server of this guide. |
@@ -16,9 +16,10 @@ The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nin
 | The signer's `keygen` command and the npx package `@apexfusion/vector-mcp-signer` | PR 4, merged into `main` on 2026-10-14: [Apex-Fusion/mcp-server#22](https://github.com/Apex-Fusion/mcp-server/pull/22). The package is published on npm as version 2.0.0, on 2026-10-16, by the Foundation's maintainers. Its `build/index.js` is identical to the build of `packages/signer` at `main` commit `651ae93`. |
 | Agent History, capability `identity.history.report.v1` | DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. The advert reference is `b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c#0`, listed as Active and free on 2026-10-15. The public URL, `https://mp-suppliers-history.hal8.ai`, is in service as of 2026-10-14. |
 | Document Pipeline, capability `document.pipeline.ocr-summary.v1` | DEPLOYED (registered and staked 2026-10-16, advertised 2026-10-16, re-advertised 2026-10-16 at the status flip, one first-party job settled 2026-10-16). Since 2026-10-16. The advert reference is `16a5da8726cab90949da2c0c92e025af276027715a5d854861c683d7d9341ca3#0`, listed as Active and free on 2026-10-16. The public URL, `https://mp-suppliers-pipeline.hal8.ai`, is in service as of 2026-10-16. |
+| Audio Snippets, capability `audio.transcript.snippets.v1` | DEPLOYED (registered and staked 2026-10-17, advertised 2026-10-17, re-advertised 2026-10-17 at the status flip, one first-party job settled 2026-10-17). Since 2026-10-17. The advert reference is `7dee930257e3d48d16fa267280899042e1619fe57d881c24dd9a332487212b2c#0`, listed as Active and free on 2026-10-17. The public URL, `https://mp-suppliers-snippets.hal8.ai`, is in service as of 2026-10-17. |
 | The collateral and float of your key | Sent by hand by the Foundation on request, or by you (section 3). |
 
-Advocate is specified and not built. Audio Snippets is built and is not deployed: it cannot be hired until its advert is posted, and section 5 shows what will change for it then. This guide hires Agent History, and section 5 shows what changes for Document Pipeline.
+Advocate is specified and not built. This guide hires Agent History, and section 5 shows what changes for Document Pipeline and for Audio Snippets.
 
 ## 1. What you will end up with
 
@@ -149,7 +150,7 @@ A job takes minutes where Agent History's takes seconds, because the Pipeline po
 
 ### The same script for Audio Snippets
 
-Audio Snippets gives a word-timed transcript of an audio or video file and the cut points of the quotes or the question you give it. It is built, and it is hired the same way once its advert is posted. The six messages are the same, with two changes. Ask for `audio.transcript.snippets.v1` in message 2, and write this request JSON in messages 3 and 4:
+Audio Snippets gives a word-timed transcript of an audio or video file and the cut points of the quotes or the question you give it. It has had an advert since 2026-10-17, and the current one is `7dee930257e3d48d16fa267280899042e1619fe57d881c24dd9a332487212b2c#0`. The six messages are the same, with two changes. Ask for `audio.transcript.snippets.v1` in message 2, and write this request JSON in messages 3 and 4:
 
 ```json
 {"source":{"url":"https://example.org/talk.mp3"},"language":"en","quotes":["a quote that was said in the talk"]}

@@ -233,8 +233,8 @@
     ]
   },
   "status": {
-    "chip": "proposed",
-    "since": "2026-10-13"
+    "chip": "deployed",
+    "since": "2026-10-17"
   },
   "gaps": [
     "At most 10 min and 50 MB per file, and one of query, quotes, ranges is required.",

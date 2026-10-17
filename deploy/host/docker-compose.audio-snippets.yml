@@ -1,5 +1,5 @@
 # Audio Snippets on the deployment host: template runtime (pinned) + this repo's service. Pattern: Document Pipeline, with one key.
-# PROPOSED (built, not deployed) since 2026-10-13. Not installed: no step of RUNBOOK-audio-snippets.md has been run. The host administrator's part is README.md.
+# DEPLOYED since 2026-10-17: installed on the host since 2026-10-16 and running since 2026-10-17; one first-party job settled on 2026-10-17. The order of work is RUNBOOK-audio-snippets.md. The host administrator's part is README.md.
 # The env file sits next to this file, is made from .env.audio-snippets.example, holds the supplier key (the runtime's) and the token between the two containers, and never enters git.
 # After any change to it, recreate the containers. Once the runtime runs (step 13 of RUNBOOK-audio-snippets.md), recreate only when its /status says free (curl -s http://127.0.0.1:8085/status): a stop during a job can cut a job under escrow. Before step 13 no job can run.
 # docker compose -f docker-compose.audio-snippets.yml up -d --force-recreate <service>. restart does not re-read it. A change to SERVICE_AUTH_HEADER needs both containers recreated.
