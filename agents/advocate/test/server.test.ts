@@ -75,7 +75,7 @@ describe('manifest', () => {
         third_parties: [
           'Brave Search API (the two search queries)',
           'the hosts of the result pages (the fetch of each page)',
-          'OpenRouter and the model provider behind it (the subject, the side, the audience and the excerpts of the fetched pages)',
+          'OpenRouter and the model provider behind it (the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages)',
         ],
       },
       status: { chip: 'proposed', since: '2026-10-13' },
@@ -157,6 +157,12 @@ describe('manifest', () => {
       expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ...(v === undefined ? {} : { AGENT_VERSION: v }) }).version, JSON.stringify(v)).toBe('0.1.0');
     }
     expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_VERSION: ' 0.2.0\n' }).version).toBe('0.2.0');
+  });
+
+  test('ADVERT_EXPLORER_URL is published as the link of the advert, and that link is empty while it is not set', () => {
+    const url = 'https://explorer.example.test/advert/1';
+    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ADVERT_EXPLORER_URL: url }).links.explorer_advert).toBe(url);
+    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT }).links.explorer_advert).toBe('');
   });
 
   test('the gaps: six sentences in order, word for word, each one line of plain text whose numbers are the code\'s, the fifth naming the model of OPENROUTER_MODEL', () => {
@@ -242,7 +248,7 @@ describe('manifest: request_schema is what the intake accepts', () => {
     ...['long', 'Short', 'STANDARD', '', 3, null].map((l): [string, unknown] => [`length ${JSON.stringify(l)}`, req({ length: l })]),
     // the language
     ...['en', 'EN', 'de', 'hr', 'en-GB', 'zh-Hant-TW', 'es-419', 'yue', 'haw', 'abcdefgh', 'zh-Hant-TW-abcde'].map((l): [string, unknown] => [`language ${l}`, req({ language: l })]),
-    ...['', 'e', 'abcdefghi', 'en_GB', '1en', 'en-', 'en-abcdefghi', 'zh-Hant-TW-abcdef', 5, null].map((l): [string, unknown] => [`language ${JSON.stringify(l)}`, req({ language: l })]),
+    ...['', 'e', 'abcdefghi', 'en_GB', '1en', 'en-', 'en-abcdefghi', 'zh-Hant-TW-abcdef', 'auto', 'AUTO', 5, null].map((l): [string, unknown] => [`language ${JSON.stringify(l)}`, req({ language: l })]),
   ];
 
   test("the schema compiles in strict mode, and its defaults are the intake's", () => {
@@ -340,6 +346,15 @@ describe('POST /: the job and its refusals', () => {
     expect(logs.filter((l) => l.startsWith('job done'))).toStrictEqual(['job done in 0 ms: results 7, pages 3, arguments 2 (dropped 1), quotes dropped 3, tokens -/-']);
   });
 
+  test('the line of a job gives the time it took on the clock of the service', async () => {
+    let now = T0;
+    const run = vi.fn<Run>(async () => { now += 4_321; return GOLDEN_OUTCOME; });
+    await serve(options({ runAdvocate: run, deps: baseDeps({ clock: () => now, log }) }), async (api) => {
+      expect((await api.post(wire(GOLDEN_REQUEST))).status).toBe(200);
+    });
+    expect(logs.filter((l) => l.startsWith('job done'))).toStrictEqual(['job done in 4321 ms: results 7, pages 3, arguments 2 (dropped 1), quotes dropped 3, tokens 4321/512']);
+  });
+
   test('the deadline is set on the arrival of each request, JOB_DEADLINE_MS after it, and the job is given the signal of its caller and the deps of the service', async () => {
     let now = T0;
     const seen: Array<{ deadlineMs: number; signal: unknown }> = [];
@@ -353,6 +368,17 @@ describe('POST /: the job and its refusals', () => {
     expect(run.mock.calls[0][0]).toStrictEqual(parseRequest(JSON.stringify(GOLDEN_REQUEST)));
     const given = run.mock.calls[0][1];
     expect([given.braveApiKey, given.openRouterApiKey, given.model]).toStrictEqual([TEST_BRAVE_KEY, TEST_OPENROUTER_KEY, DEFAULT_MODEL]);
+  });
+
+  test('the deadline counts from the arrival of the request, even when the run begins later on the clock', async () => {
+    let calls = 0;
+    const clock = (): number => (calls++ === 0 ? T0 : T0 + 7_000);
+    const seen: number[] = [];
+    const run = vi.fn<Run>(async (_req, deps: RunDeps) => { seen.push(deps.deadlineMs); return GOLDEN_OUTCOME; });
+    await serve(options({ runAdvocate: run, deps: baseDeps({ clock, log }) }), async (api) => {
+      expect((await api.post(wire(GOLDEN_REQUEST))).status).toBe(200);
+    });
+    expect(seen).toStrictEqual([T0 + JOB_DEADLINE_MS]);
   });
 
   test("a request the intake refuses is a 400 bad_shape with the intake's words, and a body that is not the wire message the kit's 400; no job runs", async () => {

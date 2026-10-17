@@ -81,8 +81,9 @@ const REQUEST_SCHEMA = {
       enum: [...LENGTHS], default: DEFAULT_LENGTH,
       description: `short: a thesis and exactly ${SHAPES.short.minArguments} arguments; standard: a thesis and ${SHAPES.standard.minArguments} to ${SHAPES.standard.maxArguments} arguments`,
     },
+    // auto has the form of a code and names no language: the intake refuses it in any case, and so does the schema (R-E25).
     language: {
-      type: 'string', maxLength: LANGUAGE_MAX_CHARS, pattern: LANGUAGE_PATTERN, default: DEFAULT_LANGUAGE,
+      type: 'string', maxLength: LANGUAGE_MAX_CHARS, pattern: LANGUAGE_PATTERN, not: { pattern: '^[Aa][Uu][Tt][Oo]$' }, default: DEFAULT_LANGUAGE,
       description: 'The language of the brief: a code such as en or en-GB, 2 to 8 letters and optional hyphen-separated subtags of up to 8 letters or digits, at most 16 characters',
     },
   },
@@ -99,7 +100,7 @@ const DATA_HANDLING = 'The subject, the side, the audience, the length and the l
 const THIRD_PARTIES = [
   'Brave Search API (the two search queries)',
   'the hosts of the result pages (the fetch of each page)',
-  'OpenRouter and the model provider behind it (the subject, the side, the audience and the excerpts of the fetched pages)',
+  'OpenRouter and the model provider behind it (the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages)',
 ];
 
 export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {

@@ -56,6 +56,9 @@
           "type": "string",
           "maxLength": 16,
           "pattern": "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$",
+          "not": {
+            "pattern": "^[Aa][Uu][Tt][Oo]$"
+          },
           "default": "en",
           "description": "The language of the brief: a code such as en or en-GB, 2 to 8 letters and optional hyphen-separated subtags of up to 8 letters or digits, at most 16 characters"
         }
@@ -101,7 +104,7 @@
     "third_parties": [
       "Brave Search API (the two search queries)",
       "the hosts of the result pages (the fetch of each page)",
-      "OpenRouter and the model provider behind it (the subject, the side, the audience and the excerpts of the fetched pages)"
+      "OpenRouter and the model provider behind it (the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages)"
     ]
   },
   "status": {

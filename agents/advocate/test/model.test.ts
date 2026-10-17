@@ -4,11 +4,12 @@
 // deadline when the deadline had cut the time of the call, model_failed at the full 90 s, ruling R-E19) with its log line; and the reading of the content into
 // a brief (Review Focus 3, ruling R-E20): code fences and prose around the JSON, what is left out as blank, and every shape that is refused. No log line and
 // no error carries the key, even when the far end echoes it. The request is sent with redirect 'error', and the body of an answer is read through its stream
-// under a cap of 4 MiB, an answer past it being a failed call (ruling R-E23).
+// under a cap of 4 MiB, an answer past it being a failed call (ruling R-E23). No log line and no detail carries the text of an answer of status 200, which may
+// quote a page: they give its length and the reason only, and only an answer that is not 200, the provider's error, shows the start of its body (ruling R-E26).
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, test, expect } from 'vitest';
-import { errorText } from '@vsa/service-kit';
+import { operatorsText } from '@vsa/service-kit';
 import { MODEL_MAX_MS } from '../src/budget.ts';
 import { AdvocateError } from '../src/errors.ts';
 import { ANSWER_MAX_BYTES, DEFAULT_MODEL, OPENROUTER_ENDPOINT, callModel, modelLabel, openRouterModel, parseBriefAnswer } from '../src/model.ts';
@@ -158,7 +159,7 @@ describe('callModel: what fails, with its log line, and never the key', () => {
     }
   });
 
-  test('a body that is not JSON, or an answer without a string at choices[0].message.content, is model_failed, with the body in the log', async () => {
+  test('a body that is not JSON, or an answer without a string at choices[0].message.content, is model_failed; the log line gives the length of the body, never its text (R-E26)', async () => {
     const noContent = 'the answer of OpenRouter has no choices[0].message.content';
     const cases: Array<[string, string]> = [
       ['not json at all', 'the answer of OpenRouter is not JSON'],
@@ -174,7 +175,7 @@ describe('callModel: what fails, with its log line, and never the key', () => {
       const { result, lines } = call(fetchImpl);
       const e = await failureOf(result);
       expect([e.code, e.status, e.detail], body).toStrictEqual(['model_failed', 502, detail]);
-      expect(lines).toStrictEqual([`model: ${detail} (HTTP 200): ${body}`]);
+      expect(lines).toStrictEqual([`model: ${detail} (HTTP 200, a body of ${[...body].length} characters)`]);
     }
   });
 
@@ -257,13 +258,21 @@ describe('callModel: the size of the answer (R-E23)', () => {
     expect(lines).toHaveLength(1);
   });
 
-  test('an answer over the cap is model_failed whatever its status; the log line has the status and the start of the body, the key cut out of it', async () => {
+  test('an answer over the cap is model_failed whatever its status; the log line has the status, then the start of the body with the key cut out when it is not 200, and only how much was read when it is (R-E26)', async () => {
+    const body = `${KEY} ${'x'.repeat(CAP)}`;
     for (const status of [200, 503]) {
-      const { fetchImpl } = fakeFetch(() => respond(status, `${KEY} ${'x'.repeat(CAP)}`));
+      const { fetchImpl } = fakeFetch(() => respond(status, body));
       const { result, lines } = call(fetchImpl);
       const e = await failureOf(result);
       expect([e.code, e.status, e.detail], String(status)).toStrictEqual(['model_failed', 502, OVER]);
-      expect(lines, String(status)).toStrictEqual([`model: ${OVER} (HTTP ${status}): [the key] ${'x'.repeat(190)}...`]);
+      if (status === 200) {
+        // The count is of what was read, which passes the cap and holds at most the whole body, however the stream cut it into chunks.
+        const read = Number(/^model: the answer of OpenRouter is over the cap of 4194304 bytes \(HTTP 200, (\d+) characters read\)$/.exec(lines.join('\n'))?.[1]);
+        expect(read).toBeGreaterThan(CAP);
+        expect(read).toBeLessThanOrEqual(body.length);
+      } else {
+        expect(lines).toStrictEqual([`model: ${OVER} (HTTP 503): [the key] ${'x'.repeat(190)}...`]);
+      }
       expect(showsKey(`${lines.join('\n')} ${e.detail} ${e.message}`), String(status)).toBe(false);
     }
   });
@@ -286,6 +295,31 @@ describe('callModel: the size of the answer (R-E23)', () => {
     expect(pulled).toBeGreaterThan(CAP / CHUNK);
     expect(pulled).toBeLessThanOrEqual(CAP / CHUNK + 2);
     expect(cancelled).toBe(true);
+  });
+});
+
+describe('no text of an answer reaches the log (R-E26)', () => {
+  test('an answer of status 200 that quotes a page and echoes the key, in each way it can fail, leaves the reason and its length in the log, and none of its text', async () => {
+    const said = `retail footfall rise by eleven percent within two years, says the page, and the key is ${KEY}`;
+    const bodies = [said, JSON.stringify({ error: { message: said } }), `${said} ${'x'.repeat(4_194_304)}`];
+    const lines: string[] = [];
+    const details: string[] = [];
+    for (const body of bodies) {
+      const failed = call(fakeFetch(() => respond(200, body)).fetchImpl);
+      details.push((await failureOf(failed.result)).detail);
+      lines.push(...failed.lines);
+    }
+    details.push(refusalOf(() => parseBriefAnswer(said)).detail);
+    expect(lines).toStrictEqual([
+      `model: the answer of OpenRouter is not JSON (HTTP 200, a body of ${[...bodies[0]].length} characters)`,
+      `model: the answer of OpenRouter has no choices[0].message.content (HTTP 200, a body of ${[...bodies[1]].length} characters)`,
+      expect.stringMatching(/^model: the answer of OpenRouter is over the cap of 4194304 bytes \(HTTP 200, \d+ characters read\)$/),
+    ]);
+    expect(details.at(-1)).toBe(`the answer of the model holds no JSON object (a content of ${[...said].length} characters)`);
+    for (const text of [...lines, ...details]) {
+      expect(text).not.toContain('footfall');
+      expect(showsKey(text)).toBe(false);
+    }
   });
 });
 
@@ -377,13 +411,16 @@ describe('parseBriefAnswer', () => {
     ['a citation whose quote is not text', of({ thesis: 'T.', arguments: [{ ...ok, sources: [{ n: 1, quote: 5 }] }] }), 'has a citation (0 of argument 0) without a whole number n and a quote'],
     ['a citation that is a number', of({ thesis: 'T.', arguments: [{ ...ok, sources: [1] }] }), 'has a citation (0 of argument 0) without a whole number n and a quote'],
   ];
-  test.each(REFUSED)('refuses %s: model_output_invalid (502), the first 200 characters of the content in its detail', (_label, content, what) => {
+  test.each(REFUSED)('refuses %s: model_output_invalid (502), with the reason and the length of the content in its detail, never its text (R-E26)', (_label, content, what) => {
     const e = refusalOf(() => parseBriefAnswer(content));
-    expect([e.code, e.status, e.detail]).toStrictEqual(['model_output_invalid', 502, `the answer of the model ${what}: ${errorText(content, 200)}`]);
+    expect([e.code, e.status, e.detail]).toStrictEqual(['model_output_invalid', 502, `the answer of the model ${what} (a content of ${[...content].length} characters)`]);
   });
 
-  test('the detail shows the content flat and cut at 200 characters, for the log; the buyer is never shown it', () => {
-    const e = refusalOf(() => parseBriefAnswer(`Sorry.\n${'x'.repeat(400)}`));
-    expect(e.detail).toBe(`the answer of the model holds no JSON object: Sorry. ${'x'.repeat(193)}...`);
+  test('the detail, which the log carries, counts the content in characters, a face outside the BMP as one, and shows none of it (R-E26); the buyer gets fixed text', () => {
+    const content = `Sorry. \u{1F600}\n${'x'.repeat(400)}`;
+    const e = refusalOf(() => parseBriefAnswer(content));
+    expect(content.length).toBe(410); // in UTF-16 units the face is two
+    expect(e.detail).toBe('the answer of the model holds no JSON object (a content of 409 characters)');
+    expect(e.message).toBe(operatorsText('model_output_invalid'));
   });
 });

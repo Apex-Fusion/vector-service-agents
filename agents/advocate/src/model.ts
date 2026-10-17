@@ -4,17 +4,23 @@
 // for as the answer; then that answer read into a brief (parseBriefAnswer), which the post-check (src/check.ts) holds to the pages. The model is
 // OPENROUTER_MODEL, deepseek/deepseek-v4-flash by default, and every brief names it as "<model> via OpenRouter".
 //
-// The key goes into the Authorization header of that call and nowhere else: no message, no log line and no error carries it, and a body that echoes it is
-// logged with the key cut out, in any case. No redirect is followed (redirect 'error', ruling R-E23), for a followed redirect could carry the header on to
-// another host: an answer that redirects is a failed call like any other. The body of the answer is read through its stream and no further than
-// ANSWER_MAX_BYTES, 4 MiB (ruling R-E23): once the cap is passed the stream is cancelled and the call has failed. What can fail, and how:
+// The key goes into the Authorization header of that call and nowhere else: no message, no log line and no error carries it, and an error body that echoes
+// it is logged with the key cut out, in any case. No redirect is followed (redirect 'error', ruling R-E23), for a followed redirect could carry the header on
+// to another host: an answer that redirects is a failed call like any other. The body of the answer is read through its stream and no further than
+// ANSWER_MAX_BYTES, 4 MiB (ruling R-E23): once the cap is passed the stream is cancelled and the call has failed.
+//
+// No text of an answer reaches the log (ruling R-E26). A body of status 200 is an answer of the model, and an answer can quote a page or restate the request;
+// the log carries job outcomes and counts, never a request, a page or a quote. So a line about a 200 gives the reason and the length of the body in characters
+// (Unicode code points), never its text, and so does the detail of a content that cannot be read. Only an answer that is not 200 shows the start of its body,
+// for that is the provider's error text, which says what went wrong. What can fail, and how:
 //   model_failed (502)          an answer that is not 200, a body over the cap, a body that is not JSON or has no choices[0].message.content string, no answer
 //                               within the full MODEL_MAX_MS, or a network failure (a refused redirect among them). One log line says which, with the HTTP
-//                               status and the first 200 characters of the body when there is one; the error carries a short detail for the line of the job.
+//                               status; then the first 200 characters of the body when the status is not 200, or the length of the body when it is 200. The
+//                               error carries a short detail for the line of the job.
 //   deadline (422)              no answer within a time the deadline of the job had cut under MODEL_MAX_MS (ruling R-E19): the job ran out of its time. The
 //                               log line is the one of a call with no answer.
-//   model_output_invalid (502)  content that holds no JSON object of the shape the prompt asks for, or none with an argument that says something. The detail
-//                               carries the first 200 characters of the content, for the log: the buyer gets fixed text.
+//   model_output_invalid (502)  content that holds no JSON object of the shape the prompt asks for, or none with an argument that says something. The detail,
+//                               which the log carries, says why and gives the length of the content in characters, never its text: the buyer gets fixed text.
 //   aborted (499)               the caller hung up while the call ran (the signal of the job): the call is cut, and no line of a failure is written.
 // usage.prompt_tokens and usage.completion_tokens are given back for the line of the job and go nowhere else.
 import { errorText, given, shown } from '@vsa/service-kit';
@@ -29,7 +35,7 @@ export const modelLabel = (model: string): string => `${model} via OpenRouter`;
 /** The two headers OpenRouter reads to name the application that calls it. */
 const REFERER = 'https://github.com/Apex-Fusion/vector-service-agents';
 const TITLE = 'Advocate (vector-service-agents)';
-/** How much of a body or of a content a log line or a detail shows. */
+/** How much a log line or a detail shows of the error text of the provider (the body of an answer that is not 200) or of a network error; of an answer, nothing (R-E26). */
 const SHOWN_CHARS = 200;
 /** The most of an answer that is read: 4 MiB (R-E23). A chat completion is a few KB of JSON; a body that goes past this is no answer, and is not read to its end. */
 export const ANSWER_MAX_BYTES = 4_194_304;
@@ -57,6 +63,13 @@ export function openRouterModel(v: string | undefined): string {
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
+
+/** The length of a text in characters, Unicode code points, counted without copying it: what a line or a detail says of an answer instead of its text (R-E26). */
+function charsOf(text: string): number {
+  let count = 0;
+  for (const _codePoint of text) count += 1;
+  return count;
+}
 
 /** `text` with every occurrence of `key` replaced, in any case: what a log line or a detail may show of a text that came from the far end. */
 function withoutKey(text: string, key: string): string {
@@ -112,8 +125,10 @@ async function readCapped(res: Response, max: number): Promise<{ text: string; o
 export async function callModel(messages: readonly ChatMessage[], opts: ModelOptions): Promise<{ content: string; usage: Usage | null }> {
   const timeout = AbortSignal.timeout(opts.timeoutMs);
   const signal = opts.signal === undefined ? timeout : AbortSignal.any([opts.signal, timeout]);
-  /** The body of an answer as a log line shows it: flat, without the key, its first 200 characters. */
+  /** The body of an answer that is not 200, the provider's error text, as a log line shows it: flat, without the key, its first 200 characters. */
   const bodyOf = (text: string): string => (text === '' ? '(no body)' : errorText(withoutKey(text, opts.apiKey), SHOWN_CHARS));
+  /** A body of status 200, which is an answer of the model and may quote a page, as a log line shows it: its length, never its text (R-E26). */
+  const sizeOf = (text: string): string => `a body of ${charsOf(text)} characters`;
   /** A failure of the call: its line in the log, and the error with the short detail that the line of the job carries. */
   const failed = (detail: string, line: string): AdvocateError => {
     opts.log(`model: ${line}`);
@@ -150,20 +165,21 @@ export async function callModel(messages: readonly ChatMessage[], opts: ModelOpt
   };
   const { status, text, over } = await send();
   if (over) {
-    // R-E23: a body past the cap is no answer, whatever its status; the detail says the cap, and the line says the status and the start of what was read.
+    // R-E23: a body past the cap is no answer, whatever its status; the detail says the cap. The line says the status, then the start of what was read when
+    // that is an error of the provider (not 200), or only how much was read when it is an answer (200, R-E26).
     const big = `the answer of OpenRouter is over the cap of ${ANSWER_MAX_BYTES} bytes`;
-    throw failed(big, `${big} (HTTP ${status}): ${bodyOf(text)}`);
+    throw failed(big, status === 200 ? `${big} (HTTP 200, ${charsOf(text)} characters read)` : `${big} (HTTP ${status}): ${bodyOf(text)}`);
   }
   if (status !== 200) throw failed(`OpenRouter answered HTTP ${status}`, `OpenRouter answered HTTP ${status}: ${bodyOf(text)}`);
   let answer: unknown;
   try {
     answer = JSON.parse(text);
   } catch {
-    throw failed('the answer of OpenRouter is not JSON', `the answer of OpenRouter is not JSON (HTTP 200): ${bodyOf(text)}`);
+    throw failed('the answer of OpenRouter is not JSON', `the answer of OpenRouter is not JSON (HTTP 200, ${sizeOf(text)})`);
   }
   const content = contentOf(answer);
   if (content === undefined) {
-    throw failed('the answer of OpenRouter has no choices[0].message.content', `the answer of OpenRouter has no choices[0].message.content (HTTP 200): ${bodyOf(text)}`);
+    throw failed('the answer of OpenRouter has no choices[0].message.content', `the answer of OpenRouter has no choices[0].message.content (HTTP 200, ${sizeOf(text)})`);
   }
   return { content, usage: usageOf(answer) };
 }
@@ -179,10 +195,11 @@ function unfenced(content: string): string {
  * to the shape the prompt asks for: a thesis that is not blank, and a list of arguments, each with a claim and a support that are strings and a list of
  * citations, each { n: a whole number, quote: a string }. An argument whose claim or support is blank, and a citation whose quote is blank, say nothing and
  * are left out (ruling R-E20); at least one argument must be left. Keys beyond the shape are left out too; the strings are kept as the model wrote them.
- * Anything else is AdvocateError model_output_invalid (502), whose detail ends with the first 200 characters of the content.
+ * Anything else is AdvocateError model_output_invalid (502), whose detail says why and gives the length of the content in characters, never its text: the
+ * detail goes to the log, and the content may quote a page (R-E26).
  */
 export function parseBriefAnswer(content: string): ModelBrief {
-  const invalid = (what: string): AdvocateError => new AdvocateError('model_output_invalid', `the answer of the model ${what}: ${errorText(content, SHOWN_CHARS)}`);
+  const invalid = (what: string): AdvocateError => new AdvocateError('model_output_invalid', `the answer of the model ${what} (a content of ${charsOf(content)} characters)`);
   const text = unfenced(content);
   const first = text.indexOf('{');
   const last = text.lastIndexOf('}');

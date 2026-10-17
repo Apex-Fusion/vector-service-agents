@@ -11,7 +11,7 @@ import { DEFAULT_MODEL } from '../src/model.ts';
 import { manifestFromEnv } from '../src/server.ts';
 import { PORT_DEFAULT, SETTINGS, SHUTDOWN_WAIT_MS, loadConfig, startService, stopOnSignals } from '../src/start.ts';
 import { GOLDEN_REQUEST, TEST_BRAVE_KEY, TEST_OPENROUTER_KEY } from './golden.ts';
-import { FULL_ENV, SUPPLIER, TEST_AUTH, TEST_CONTACT, wire } from './server-support.ts';
+import { FULL_ENV, SUPPLIER, T0, TEST_AUTH, TEST_CONTACT, wire } from './server-support.ts';
 
 const message = (fn: () => unknown): string => { try { fn(); } catch (e) { return (e as Error).message; } throw new Error('it was accepted'); };
 /** The two keys of the third parties: the line of each, the key the tests use, and its name in a message. */
@@ -37,6 +37,10 @@ describe('loadConfig', () => {
     const config = loadConfig({ ...FULL_ENV, OPENROUTER_MODEL: 'openai/gpt-4o-mini', PORT: '9100', HOST: '127.0.0.1' });
     expect([config.model, config.port, config.host, config.manifest.gaps[4]]).toStrictEqual(['openai/gpt-4o-mini', 9100, '127.0.0.1', modelGap('openai/gpt-4o-mini')]);
     expect(loadConfig({ ...FULL_ENV, OPENROUTER_MODEL: '', PORT: '', HOST: '' })).toStrictEqual(loadConfig(FULL_ENV));
+  });
+
+  test('the DID is published without the space a file leaves around it', () => {
+    expect(loadConfig({ ...FULL_ENV, AGENT_DID: ' did:test\n' }).manifest.identity.did).toBe('did:test');
   });
 
   test('six settings are required, checked in this order, each error naming its variable; then the model, the window and the manifest, in that order', () => {
@@ -209,6 +213,38 @@ describe('startService', () => {
     expect(SHUTDOWN_WAIT_MS).toBe(300_000);
   });
 
+  /** A fetch that records each call and answers as the Brave Search API answers a key it refuses: a job on it ends at its first query, before any page is looked up. */
+  const refusing = (urls: string[]): typeof fetch =>
+    (async (input: RequestInfo | URL) => { urls.push(String(input)); return new Response('{"error":"refused"}', { status: 401 }); }) as typeof fetch;
+  /** The golden request, with the token of the runtime, to a service that is running. */
+  const postJob = (port: number): Promise<Response> => fetch(`http://127.0.0.1:${port}/`, { method: 'POST', body: wire(GOLDEN_REQUEST), headers: { authorization: TEST_AUTH } });
+
+  test('a job runs on the fetch the start is given: a key refused at the first query is search_failed (502), and the log says why', async () => {
+    const urls: string[] = [];
+    const service = await startService(env, { fetchImpl: refusing(urls), log });
+    try {
+      const r = await postJob(service.port);
+      expect([r.status, (await r.json()).error]).toStrictEqual([502, 'search_failed']);
+    } finally {
+      await service.stop();
+    }
+    expect(urls).toHaveLength(1);
+    expect(urls[0].startsWith('https://api.search.brave.com/res/v1/web/search?')).toBe(true);
+    expect(logs).toContain('search: the key was refused (HTTP 401)');
+  });
+
+  test('a job runs on the clock the start is given: the line of its failure gives its time on that clock', async () => {
+    let calls = 0;
+    const clock = (): number => (calls++ === 0 ? T0 : T0 + 7_000);
+    const service = await startService(env, { fetchImpl: refusing([]), clock, log });
+    try {
+      expect((await postJob(service.port)).status).toBe(502);
+    } finally {
+      await service.stop();
+    }
+    expect(logs.filter((l) => l.startsWith('job failed'))).toStrictEqual(['job failed after 7000 ms: search_failed (502): the Brave Search API refused the key (HTTP 401)']);
+  });
+
   test('SIGTERM starts the shutdown with the log of this service and exits 0; the second signal finds no handler', async () => {
     const target = new EventEmitter();
     const exits: number[] = [];
@@ -254,6 +290,22 @@ describe('src/index.ts as a process', () => {
       expect((await fetch(`${base}/`, { method: 'POST', body: wire(GOLDEN_REQUEST) })).status).toBe(401);
       for (const secret of [TEST_AUTH, TEST_BRAVE_KEY, TEST_OPENROUTER_KEY]) expect(shows(p.out() + p.err(), secret)).toBe(false);
       expect(TEST_CONTACT).toBe('ops@example.test');
+    } finally {
+      p.child.kill();
+      await p.exited;
+    }
+  }, 60_000);
+
+  // A signal reaches a handler only on POSIX (on Windows kill() ends the process at once, whatever the signal), so CI on Linux runs this and Windows skips it.
+  test.skipIf(process.platform === 'win32')('SIGTERM stops it the way a restart should: the line of the stop, and exit 0', async () => {
+    const p = run({ ...FULL_ENV, PORT: '0', HOST: '127.0.0.1', OPENROUTER_MODEL: '' });
+    try {
+      const end = Date.now() + 30_000;
+      while (!/listening on 127\.0\.0\.1:\d+/.test(p.out()) && Date.now() < end && p.child.exitCode === null) await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(p.out(), p.err()).toMatch(/listening on 127\.0\.0\.1:\d+/);
+      p.child.kill('SIGTERM');
+      expect(await p.exited).toBe(0);
+      expect(p.out()).toContain('[advocate] SIGTERM: stopping; no new job, and up to 300 s for the one that is running');
     } finally {
       p.child.kill();
       await p.exited;
