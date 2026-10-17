@@ -89,7 +89,7 @@ const REQUEST_SCHEMA = {
 };
 const NOTES = [
   `The side is for, against, or a position in words of at most ${MAX_SIDE_CHARS} characters, and the brief argues that side alone; the subject and the side must each hold at least one letter or digit, and a request that breaks a rule of the intake is refused with bad_shape (400).`,
-  `The language is a code such as en or en-GB, 2 to 8 letters and optional hyphen-separated subtags of up to 8 letters or digits, at most ${LANGUAGE_MAX_CHARS} characters, en by default: the model is asked to write the brief in it, and the search asks for results in it when its first part has two letters.`,
+  `The language is a code such as en or en-GB, 2 to 8 letters and optional hyphen-separated subtags of up to 8 letters or digits, at most ${LANGUAGE_MAX_CHARS} characters, en by default: the model is asked to write the brief in it, and the search is not told it.`,
   `The service runs the search and fetches the result pages itself, at most ${MAX_RESULTS} pages of at most ${PAGE_MAX_BYTES} bytes each, and cites only what it could fetch: a quote that is not in the text of the page it names is dropped, and so is an argument left without one.`,
 ];
 const DATA_HANDLING = 'The subject, the side, the audience, the length and the language are held in memory while a job runs, with the pages the service fetches; nothing is written to disk and nothing is kept after the job. '

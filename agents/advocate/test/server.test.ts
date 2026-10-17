@@ -183,7 +183,7 @@ describe('manifest', () => {
   test('the notes say what the schema cannot: the side, a letter or digit in the subject and the side, the language rule, and the pages the service fetches itself', () => {
     expect(MANIFEST.interface.notes).toStrictEqual([
       'The side is for, against, or a position in words of at most 120 characters, and the brief argues that side alone; the subject and the side must each hold at least one letter or digit, and a request that breaks a rule of the intake is refused with bad_shape (400).',
-      'The language is a code such as en or en-GB, 2 to 8 letters and optional hyphen-separated subtags of up to 8 letters or digits, at most 16 characters, en by default: the model is asked to write the brief in it, and the search asks for results in it when its first part has two letters.',
+      'The language is a code such as en or en-GB, 2 to 8 letters and optional hyphen-separated subtags of up to 8 letters or digits, at most 16 characters, en by default: the model is asked to write the brief in it, and the search is not told it.',
       'The service runs the search and fetches the result pages itself, at most 12 pages of at most 1048576 bytes each, and cites only what it could fetch: a quote that is not in the text of the page it names is dropped, and so is an argument left without one.',
     ]);
     for (const note of MANIFEST.interface.notes) expect(note).not.toMatch(/[\r\n\u{2013}\u{2014}]/u);
