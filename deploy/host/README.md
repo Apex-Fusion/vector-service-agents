@@ -230,7 +230,7 @@ The working directory on the host is `<base path>/repo/deploy/host`, inside a ch
 
 5. **Ports.** `127.0.0.1:8086` on the host is the runtime's `/healthz`, `/capability` and `/status`, for the operator's checks before DNS and as a probe afterwards. It is loopback only. The service is not published. Check `ss -ltnp` for a clash on 8086 before the first start.
 
-6. **Outbound https.** The service calls `api.search.brave.com`, `openrouter.ai` and the hosts of the result pages, all on port 443. Where the host filters outbound traffic, it lets the service out to any host on 443: a list of allowed hosts would drop most pages, and a job would then fail with `no_sources` (502).
+6. **Outbound https.** The service calls `api.search.brave.com`, `openrouter.ai` and the hosts of the result pages, all over https, on port 443 or the port that a result names. Where the host filters outbound traffic, it lets the service out to any host on 443: a list of allowed hosts would drop most pages, and a job would then fail with `no_sources` (502).
 
 ### What to know before starting anything
 

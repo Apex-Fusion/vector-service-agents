@@ -2999,6 +2999,27 @@ function aFullEnv() {
   }
   return aEnvMade;
 }
+// The seconds that the failure table states about the time the model is given (src/budget.ts): the last second of the job gone with which it still gets the full time,
+// the least it gets when the search and the pages took their caps, and the least of the job that must be left to start it.
+const A_MODEL_TIME = { fullUntil: 55, least: 85, startWith: 20 };
+// The numbers of the code that the pack states in its text, read once through tsx from the files that own them, so that no test here holds a copy of them. The time the model
+// is given is asked of the real function at the edges the table states.
+let aLimitsRead;
+function aLimits() {
+  if (aLimitsRead === undefined) {
+    [aLimitsRead] = inAdvocate(
+      "import * as budget from './src/budget.ts'; import { MIN_PAGE_CHARS } from './src/html.ts'; import { PAGE_MAX_BYTES } from './src/pages.ts'; " +
+      "import { ANSWER_MAX_BYTES, OPENROUTER_ENDPOINT } from './src/model.ts'; import { BRAVE_ENDPOINT, MAX_RESULTS, dedupeResults } from './src/search.ts'; import { assertSafeUrl } from '@vsa/vector-read'; " +
+      "const claim = JSON.parse(process.argv[1]); const { modelBudgetMs, fetchDeadlineMs, ...times } = budget; const left = (gone) => times.JOB_DEADLINE_MS - gone; " +
+      "const result = (url) => ({ title: '', url, description: '' }); const endpoint = (e) => { const u = new URL(e); return { protocol: u.protocol, host: u.host, port: u.port }; }; " +
+      "console.log(JSON.stringify([{ ...times, MIN_PAGE_CHARS, PAGE_MAX_BYTES, MAX_RESULTS, ANSWER_MAX_BYTES, " +
+      "model: { full: modelBudgetMs(left(claim.fullUntil * 1000)), lessAfter: modelBudgetMs(left(claim.fullUntil * 1000 + 1)), atTheCaps: modelBudgetMs(left(times.SEARCH_MAX_MS + times.FETCH_PHASE_MAX_MS)), " +
+      "none: modelBudgetMs(claim.startWith * 1000 - 1), started: modelBudgetMs(claim.startWith * 1000) }, " +
+      "kept: dedupeResults([result('http://example.org/a'), result('https://example.org/b')]).map((r) => r.url), " +
+      "endpoints: [endpoint(BRAVE_ENDPOINT), endpoint(OPENROUTER_ENDPOINT)], resultPort: assertSafeUrl('https://example.org:8443/page').port }]));", A_MODEL_TIME);
+  }
+  return aLimitsRead;
+}
 
 test('Advocate compose: the project and two containers have fixed names, the runtime is on loopback port 8086, the service is published nowhere, both are on the network that PROXY_NETWORK names', () => {
   assert.equal(aCompose.name, 'advocate');
@@ -3052,6 +3073,9 @@ test('Advocate compose: the window and the timeout are the spec terms and nest a
   assert.equal(aService.stop_grace_period, '330s');
   assert.equal(Number(/^(\d+)s$/.exec(aService.stop_grace_period)?.[1]), wait / 1000 + 30, 'the grace period is the wait of the service and 30 s more');
   assert.ok(aComposeText.includes('# On SIGTERM the service takes no new job and waits up to 300 s for the one that is running, which ends within 150 s of its arrival; the 30 s more than'));
+  // The memory the comment accounts for is the code's: the pages a job holds (the results it keeps) and the most of each.
+  const L = aLimits();
+  assert.ok(aComposeText.includes(`# One job at a time holds at most ${L.MAX_RESULTS} pages of at most ${L.PAGE_MAX_BYTES / 1_048_576} MB each and their text in memory`));
   assert.equal(aService.volumes, undefined);
   assert.equal(aCompose.volumes, undefined);
   assert.doesNotMatch(aDockerfile, /^VOLUME /m);
@@ -3231,6 +3255,15 @@ test('Advocate README section: the fourth stack, with its two containers, the lo
   ]) assert.ok(aSection.includes(part), `the section says: ${part}`);
   assert.ok(!aSection.includes('retire-advert.ts'), 'the retire command lives in one place, the runbook');
   assert.ok(aSection.includes(`\`mem_limit: ${aService.mem_limit}\``) && aSection.includes(`\`stop_grace_period: ${aService.stop_grace_period}\``));
+  // The numbers and names the section states are the code's: the pages a job holds, the two endpoints it calls (https, on the default port, 443), and the port a page is fetched on
+  // (the one its URL names).
+  const L = aLimits();
+  assert.ok(aSection.includes(`because one job holds at most ${L.MAX_RESULTS} pages of at most ${L.PAGE_MAX_BYTES / 1_048_576} MB each and their text`));
+  assert.deepEqual(L.endpoints.map((e) => [e.protocol, e.port]), [['https:', ''], ['https:', '']]);
+  const [braveHost, openRouterHost] = L.endpoints.map((e) => e.host);
+  assert.equal(L.resultPort, '8443');
+  assert.ok(aSection.includes(`The service calls \`${braveHost}\`, \`${openRouterHost}\` and the hosts of the result pages, all over https, on port 443 or the port that a result names.`));
+  assert.equal(aSection.includes('all on port 443'), false, 'the sentence of before');
   // The opening of the note and point 1 of the list of the host administrator name the fourth stack and say which section is the last.
   assert.ok(readme.includes('Advocate is a fourth, built and not deployed, with its own section at the end of this note, after that of Audio Snippets, and its own runbook, [RUNBOOK-advocate.md](RUNBOOK-advocate.md).'));
   assert.ok(readme.includes('One more comes later: `mp-suppliers-advocate.hal8.ai` for Advocate, which is built and has its own section at the end of this note.'));
@@ -3440,6 +3473,15 @@ test('Advocate RUNBOOK step 4 in bash: a value under 20 characters, or one with 
     const good = runBashReading(`${head}${apiKeys}`, `${A_BRAVE_KEY}\n`, dir);
     assert.equal(good.stdout, `BRAVE_SEARCH_API_KEY ${A_BRAVE_KEY.length}\nOPENROUTER_API_KEY ${A_OPENROUTER_KEY.length}\n`);
     assert.deepEqual([parseEnv(aEnvOf(dir)).BRAVE_SEARCH_API_KEY, parseEnv(aEnvOf(dir)).OPENROUTER_API_KEY], [A_BRAVE_KEY, A_OPENROUTER_KEY]);
+  });
+  // The least a key may have, 20 characters, is held at its edge, in a folder of its own: 19 of the right kind are refused and nothing is written, 20 are written.
+  withAdvocateFolder((dir) => {
+    const nineteen = runBashReading(`${head}${apiKeys}`, `${'k'.repeat(19)}\n`, dir);
+    assert.match(nineteen.stderr, /refusing: what was pasted for BRAVE_SEARCH_API_KEY has 19 characters, or one that is not a letter/);
+    assert.equal(parseEnv(aEnvOf(dir)).BRAVE_SEARCH_API_KEY, '', 'nineteen: nothing is written');
+    const twenty = runBashReading(`${head}${apiKeys}`, `${'k'.repeat(20)}\n`, dir);
+    assert.equal(parseEnv(aEnvOf(dir)).BRAVE_SEARCH_API_KEY, 'k'.repeat(20), 'twenty: written');
+    assert.ok(twenty.stdout.startsWith('BRAVE_SEARCH_API_KEY 20\n'));
   });
 });
 
@@ -3675,12 +3717,17 @@ test('Advocate RUNBOOK step 15 and the first stop: the request of the spec, whic
 test('Advocate RUNBOOK step 17 and Back out: the old advert retired before the restart, the last item names the files that carry the word; the advert first, then the containers, then Caddy, then the key and the API keys', () => {
   const s17 = section(aRunbook, '17. Flip the status');
   const item8 = s17.slice(s17.indexOf('8. In the repository'));
-  for (const f of ['specs/advocate.md', 'agents/advocate/README.md', 'README.md', 'docs/HIRE.md', 'docs/E2E.md', ...['README.md', 'RUNBOOK-advocate.md', 'docker-compose.advocate.yml', 'Caddyfile.advocate.snippet', '.env.advocate.example'].map((f) => `deploy/host/${f}`), 'agents/advocate/src/server.ts', 'agents/advocate/agent.json.template', 'agents/advocate/test/server.test.ts', 'agents/advocate/test/spec.test.ts', 'scripts/specs.test.mjs', 'scripts/deploy.test.mjs']) {
+  for (const f of ['specs/advocate.md', 'agents/advocate/README.md', 'README.md', 'docs/HIRE.md', 'docs/E2E.md', ...['README.md', 'RUNBOOK-advocate.md', 'docker-compose.advocate.yml', 'Caddyfile.advocate.snippet', '.env.advocate.example'].map((f) => `deploy/host/${f}`), 'agents/advocate/src/server.ts', 'agents/advocate/agent.json.template', 'agents/advocate/test/server.test.ts', 'agents/advocate/test/start.test.ts', 'agents/advocate/test/spec.test.ts', 'agents/advocate/test/readme.test.ts', 'scripts/specs.test.mjs', 'scripts/deploy.test.mjs']) {
     assert.ok(item8.includes('`' + f + '`'), `item 8 names ${f}`);
   }
   assert.ok(item8.includes('`pnpm --filter @vsa/advocate template`') && JSON.parse(read('agents/advocate/package.json')).scripts.template === 'node --import tsx scripts/render-template.mjs');
   // The word is carried as a default by the code, as the item says: proposed since 2026-10-13, in the manifest the template holds.
   assert.deepEqual(JSON.parse(read('agents/advocate/agent.json.template')).status, { chip: 'proposed', since: '2026-10-13' });
+  // Every test of the agent that pins the default word is named, so that the flip is not found out by a test that fails: server.test.ts and start.test.ts hold it (the status of
+  // /agent.json of a service started with no AGENT_STATUS_CHIP), and a test written later that holds it is found here and has to be named too.
+  const pinning = sourceFiles('agents/advocate/test').filter((f) => read(f).includes("chip: 'proposed'"));
+  assert.ok(pinning.includes('agents/advocate/test/server.test.ts') && pinning.includes('agents/advocate/test/start.test.ts'), `the files that pin the default word: ${pinning}`);
+  for (const f of pinning) assert.ok(item8.includes('`' + f + '`'), `item 8 names ${f}, which pins the default word`);
   const back = section(aRunbook, 'Back out');
   const at = (needle) => { const i = back.indexOf(needle); assert.ok(i >= 0, needle); return i; };
   const order = ['1. Retire the advert.', 'agent/src/cli/retire-advert.ts', '2. Stop the containers', `${ADC} down`, '3. Host administrator: remove the Caddy block of this agent', '4. Operator: the key.', 'The two API keys stay valid on their accounts until the operator revokes them there'];
@@ -3713,7 +3760,7 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
   }
   // The wait before a query that answered 429 is asked again, and the time of the model call, are the code's (src/search.ts, src/budget.ts).
   assert.ok(table.includes('a query that answers 429 is asked once more, 1100 ms later') && A_SRC.includes('export const QUERY_SPACING_MS = 1_100;'));
-  assert.ok(table.includes('gave no answer within 90 s, or could not be made') && A_SRC.includes('export const MODEL_MAX_MS = 90_000;'));
+  assert.ok(table.includes('gave no answer within the full 90 s (with less time left, the job fails as `deadline`), or could not be made') && A_SRC.includes('export const MODEL_MAX_MS = 90_000;'));
   // The codes of a job, with the status each answers with, are those of src/errors.ts.
   const [statuses] = inAdvocate("import { JOB_STATUS } from './src/errors.ts'; console.log(JSON.stringify([JOB_STATUS]));", null);
   for (const code of ['search_failed', 'search_empty', 'no_sources', 'model_failed', 'model_output_invalid', 'no_supported_claims', 'deadline']) {
@@ -3737,6 +3784,49 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
   assert.ok(refusedLine.endsWith(`HTTP 503: busy ${'x'.repeat(195)}...`), 'a status other than 200: the first 200 characters of the answer');
   assert.ok(notJsonLine.includes('HTTP 200') && notJsonLine.includes(`a body of ${bodies.notJson.length} characters`) && !notJsonLine.includes('ANSWER-TEXT'), 'a 200: the reason and the length, never the text');
   assert.ok(invalidDetail.includes(`a content of ${bodies.content.length} characters`) && !invalidDetail.includes('CONTENT-TEXT'), 'a content that is no brief: the reason and the length, never the text');
+  // The rows say all that makes a job fail, and every number in them is the code's, read from it (aLimits), with the lines they quote.
+  const L = aLimits();
+  const rowOf = (code) => rows.find((r) => r.startsWith(`| Jobs fail with \`${code}\``)) ?? '';
+  const sec = (ms) => ms / 1000;
+  const MiB = 1_048_576;
+  const REMINDER = '(the first block of that step first, in a new shell, to define the function';
+  // Every row that sends the operator to a block of step 4 says to define the function first, in the words of the other runbooks: in a new shell the blocks need it.
+  const toBlocks = rows.filter((r) => /block of the two API keys of step 4|supplier block of step 4|token block of step 4/.test(r));
+  assert.ok(toBlocks.length >= 6, `${toBlocks.length} rows send the operator to a block of step 4`);
+  for (const r of toBlocks) assert.ok(r.includes(REMINDER), `the row says to define the function first: ${r.slice(0, 90)}`);
+  // deadline: the time the model is given is the time left less 5 s, 90 s at most, and the model is not started with under 15 s. 55 s of the job gone is the last with the full 90 s,
+  // 85 s is what the search and the pages at their caps leave it, and with under 20 s left it is not started.
+  assert.deepEqual(L.model, { full: L.MODEL_MAX_MS, lessAfter: L.MODEL_MAX_MS - 1, atTheCaps: A_MODEL_TIME.least * 1000, none: null, started: L.MODEL_MIN_MS });
+  const deadline = rowOf('deadline');
+  assert.ok(deadline.includes(`The job ran out of its time: ${L.JOB_DEADLINE_MS} ms after its request arrived.`));
+  assert.ok(deadline.includes(`the time left less ${sec(L.RESULT_RESERVE_MS)} s: ${A_MODEL_TIME.least} to ${sec(L.MODEL_MAX_MS)} s when the search and the pages have taken more than ${A_MODEL_TIME.fullUntil} s (when they took ${A_MODEL_TIME.fullUntil} s or less, the model gets the full ${sec(L.MODEL_MAX_MS)} s and the same silence is \`model_failed\`).`));
+  assert.ok(deadline.includes(`The job also fails this way when it has under ${A_MODEL_TIME.startWith} s left at the time the model was to start.`));
+  assert.ok(deadline.includes(`\`model: OpenRouter did not answer within <n> ms\` before \`job failed after <ms> ms: deadline (422)\` is the silent model, with an \`<n>\` under ${L.MODEL_MAX_MS} (with ${L.MODEL_MAX_MS} the job fails as \`model_failed\`).`));
+  for (const part of ['const late = `OpenRouter did not answer within ${opts.timeoutMs} ms`;', 'if (opts.timeoutMs < MODEL_MAX_MS) {', 'opts.log(`model: ${late}`);']) assert.ok(A_SRC.includes(part), `the code writes: ${part}`);
+  assert.ok(sources.kitServer.includes("log(`${refusal.kind === 'job' ? 'job failed' : 'request refused'} after ${took} ms: ${refusal.code} (${refusal.status})`);"), 'a 422 is logged with its code and status, and no detail');
+  assert.ok(sources.kitServer.includes('log(`job failed after ${took} ms: ${refusal.code} (${refusal.status}): ${errorText(refusal.message, 1000)}`);'), 'a 502 is logged with its detail');
+  // no_sources: what the phase of the pages drops, with the limits of the code, and the line that counts the pages by reason.
+  const noSources = rowOf('no_sources');
+  assert.ok(noSources.includes('No result page was kept: each one redirected, answered with a status other than 200, was not HTML or plain text, '));
+  assert.ok(noSources.includes(`was over ${L.PAGE_MAX_BYTES / MiB} MB, had under ${L.MIN_PAGE_CHARS} characters of text, was refused or could not be reached (a host that resolves to a private or reserved address, a network error), did not answer within ${sec(L.PAGE_TIMEOUT_MS)} s, or was still being fetched when the phase ended, ${sec(L.FETCH_PHASE_MAX_MS)} s after it began.`));
+  assert.ok(noSources.includes('Read the log line `pages: 0 kept of <m> (redirect <a>, status <b>, type <c>, thin <d>, failed <e>)` first: a high `status` count means that the sites refuse the service or lack the pages, and a high `failed` count points at the network. Then check that the service reaches the web over https:'));
+  for (const part of ['opts.log(`pages: ${pages.length} kept of ${results.length} (${why})`);', 'const why = `redirect ${counts.redirect}, status ${counts.status}, type ${counts.type}, thin ${counts.thin}, failed ${counts.failed}`;']) assert.ok(A_SRC.includes(part), `the code writes: ${part}`);
+  // search_empty and no_supported_claims.
+  assert.deepEqual(L.kept, ['https://example.org/b'], 'only a result with an https URL is kept');
+  assert.ok(rowOf('search_empty').includes('The two queries gave no usable result: none with an https URL.'));
+  assert.ok(rowOf('no_supported_claims').includes('The check dropped every argument: no quote the model gave was found in the text of the page it names.'));
+  // search_failed: the two rows, the reasons of a failed query and what to do for each.
+  assert.equal(rows.filter((r) => r.startsWith('| Jobs fail with `search_failed` (502)')).length, 2);
+  const bothFailed = rows.find((r) => r.startsWith('| Jobs fail with `search_failed` (502), with no such line')) ?? '';
+  for (const part of [
+    'gave no answer within its time, could not be made (a network error, or a redirect, which is not followed), could not start before the end of the search,',
+    'Read the log line of the job, `job failed after <ms> ms: search_failed (502): both Brave queries failed: query 1 <why>, query 2 <why>`, which gives the reason of each query.',
+    'A 429 or a 5xx: wait and let the next job try. A network error on both: check that the service reaches the web over https, as in the `no_sources` row. Another status of 400 to 499 on both: check the key and the account of the Brave Search API (the row above replaces the key).',
+  ]) assert.ok(bothFailed.includes(part), `the row has: ${part}`);
+  for (const part of ['both Brave queries failed: query 1 ${whyOf(first)}, query 2 ${whyOf(second)}', "'a network error'", "redirect: 'error',", "if (res.status === 401 || res.status === 403) return { kind: 'refused', status: res.status };"]) assert.ok(sources.search.includes(part), `search.ts has: ${part}`);
+  // model_failed: everything the code maps to it, and a step for the statuses that no other step covers.
+  assert.ok(failedRow.includes(`gave a body over ${L.ANSWER_MAX_BYTES / MiB} MiB, gave a body that is not JSON or has no content, gave no answer within the full ${sec(L.MODEL_MAX_MS)} s (with less time left, the job fails as \`deadline\`), or could not be made (a network error, or a redirect, which is not followed).`));
+  assert.ok(failedRow.includes('Any other status: read the text of the provider in the log line, its first 200 characters, and report it.'));
   for (const part of [
     '| `required variable PROXY_NETWORK is missing a value` | There is no `.env` in this folder, or it gives `PROXY_NETWORK` no value. | Write it as in step 1. |',
     '| `network <name> declared as external, but could not be found` |', '| The runtime restarts and its log says `missing required env var ADVERT_REF` |',
