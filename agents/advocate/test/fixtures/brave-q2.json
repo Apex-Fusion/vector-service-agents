@@ -1,0 +1,12 @@
+{
+  "query": { "original": "Should a city ban cars from its centre? arguments in favour" },
+  "web": {
+    "results": [
+      { "title": "Car-free centres: what the evidence says", "url": "https://example.org/car-free-centres", "description": "What happened to footfall, air and deliveries after centres closed to cars." },
+      { "title": "This page has moved", "url": "https://example.org/moved", "description": "A page that answers with a redirect." },
+      { "title": "Clean air and the school run", "url": "https://example.net/clean-air", "description": "Nitrogen dioxide at a school gate before and after a street closed." },
+      { "title": "An insecure copy", "url": "http://example.org/insecure", "description": "A page served over plain http." },
+      { "title": "Car-free centres, the full report", "url": "https://example.org/report.pdf", "description": "The report as a PDF." }
+    ]
+  }
+}

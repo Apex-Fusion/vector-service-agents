@@ -1,0 +1,30 @@
+<!-- agents/advocate/test/fixtures/page-1.html: page 1 of the golden fixtures, written by hand, served as text/html; charset=utf-8. Its head, style, scripts, comments and noscript never reach the text; the sentence of the golden quote does. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Car-free centres: what the evidence says</title>
+<style>
+body { font-family: serif; margin: 0; }
+.lede::after { content: "this rule must never reach the excerpt"; }
+</style>
+<script>window.counter = "this script must never reach the excerpt";</script>
+</head>
+<body>
+<header>
+<nav><a href="/">Home</a> <a href="/research" title="Research &gt; Streets">Research</a></nav>
+</header>
+<main>
+<article>
+<h1>Car-free centres: what the evidence says</h1>
+<p class="lede">Over the last two decades a number of European cities have closed their historic centres to private cars, and the results have been counted closely.</p>
+<p>Cities that closed their centres to cars saw retail footfall rise by eleven percent within two years, according to the council's own count.</p>
+<script type="text/javascript">document.write("<p>a paragraph written by a script, which is never part of the text</p>");</script>
+<!-- a comment that must never reach the excerpt -->
+<p>Shopkeepers who had feared the change reported that customers stayed longer once the traffic had gone.<br>Deliveries, they said, were the one thing that took time to settle.</p>
+<noscript><p>Turn on scripts to see the map of the closed streets.</p></noscript>
+</article>
+</main>
+<footer><p>Published by the urban mobility desk.</p></footer>
+</body>
+</html>
