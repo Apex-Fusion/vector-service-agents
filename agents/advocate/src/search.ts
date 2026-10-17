@@ -2,8 +2,8 @@
 // The search of a job (rulings R-E3 and R-E15 to R-E17): two queries to the Brave Web Search API, the subject alone and the subject with the words of its
 // side, each kept within Brave's limits of 400 characters and 50 words; their web results, the second query's first, deduped and held to https, at most
 // MAX_RESULTS of them. Of a result only its title, its url and its description are read. The key of the API goes in the X-Subscription-Token header and
-// nowhere else: never in a URL, a log line or a message. No language and no country is sent: Brave's codes are a list of its own, and the request's language
-// shapes the brief only.
+// nowhere else: never in a URL, a log line or a message, and no redirect is followed (redirect 'error'), for a followed redirect would send the header on to
+// another host. No language and no country is sent: Brave's codes are a list of its own, and the request's language shapes the brief only.
 //
 // The queries run one after the other, for the free plan allows about one request a second: every request starts at least QUERY_SPACING_MS after the start of
 // the one before it, and none starts at or after the end of the search (phaseEndMs). A request has min(timeoutMs, the time left in the search), its answer read
@@ -129,13 +129,15 @@ function resultsOf(answer: Record<string, unknown>): SearchResult[] {
   return results;
 }
 
-/** One request, to its outcome: it never rejects. */
+/** One request, to its outcome: a failure of the request or of its answer is an outcome, not a rejection. */
 async function request(query: string, opts: SearchOptions, timeoutMs: number): Promise<Outcome> {
   const timeout = AbortSignal.timeout(timeoutMs);
   const signal = opts.signal === undefined ? timeout : AbortSignal.any([opts.signal, timeout]);
   try {
+    // redirect 'error': a followed redirect would send the key, a header of this request, on to another host. A redirect is a failed query like any other.
     const res = await opts.fetchImpl(queryUrl(query), {
       headers: { 'X-Subscription-Token': opts.apiKey, Accept: 'application/json', 'Accept-Encoding': 'gzip' },
+      redirect: 'error',
       signal,
     });
     if (res.status !== 200) {
@@ -182,13 +184,15 @@ export async function searchWeb(queries: readonly [string, string], opts: Search
     lastStart = opts.clock();
     return request(query, opts, Math.min(opts.timeoutMs, left));
   };
-  // A query is one request, and one more after a 429.
+  // A query is one request, and one more after a 429. The line that says it was sent again is written once it has been, not before: a second sending that cannot
+  // start before the end of the search is not sent, and its query has failed as any request that cannot start has; a hang-up in the wait before it ends the search.
   const ask = async (query: string, index: number): Promise<Outcome> => {
     const outcome = await send(query, 0);
     if (outcome.kind !== 'busy') return outcome;
-    opts.log(`search: query ${index} answered HTTP 429, sent again after ${QUERY_SPACING_MS} ms`);
     const again = await send(query, QUERY_SPACING_MS);
-    return again.kind === 'late' ? outcome : again;
+    if (again.kind === 'late') return again;
+    opts.log(`search: query ${index} answered HTTP 429, sent again after ${QUERY_SPACING_MS} ms`);
+    return again;
   };
   const outcomes: Outcome[] = [];
   try {

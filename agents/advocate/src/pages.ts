@@ -54,7 +54,7 @@ const chars = (s: string): number => [...s].length;
 /** The media type of a Content-Type header: before its parameters, trimmed, in lower case. */
 const mediaType = (header: string | null): string => (header ?? '').split(';')[0].trim().toLowerCase();
 
-/** One page, to its outcome: it never rejects. */
+/** One page, to its outcome: a failure of the page, its host or the network is an outcome, not a rejection. */
 async function fetchOne(result: SearchResult, opts: FetchPagesOptions, signal: AbortSignal, timeoutMs: number): Promise<Outcome> {
   let res: Awaited<ReturnType<typeof safeFetch>>;
   try {
@@ -88,8 +88,8 @@ export async function fetchPages(results: readonly SearchResult[], opts: FetchPa
   let resolveEnd: (value: null) => void = () => undefined;
   const end = new Promise<null>((resolve) => { resolveEnd = resolve; });
   const endPhase = (): void => { ended = true; stop.abort(); resolveEnd(null); };
+  // The timer is not unref'd: it is what ends the phase, so it holds the process open until the phase is over (it is cleared on every path, below).
   const timer = setTimeout(endPhase, Math.min(MAX_TIMER_MS, Math.max(0, opts.deadlineMs - opts.clock())));
-  timer.unref();
   opts.signal?.addEventListener('abort', endPhase, { once: true });
   const signal = opts.signal === undefined ? stop.signal : AbortSignal.any([stop.signal, opts.signal]);
   let next = 0;

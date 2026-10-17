@@ -2,8 +2,9 @@
 // The pages (ruling R-E4) through safeFetch and a fake fetch: the golden results give pages 1 to 3, their texts word for word, and drop the redirect, the
 // PDF, the 404 and the thin page; each way a page is dropped, counted; the bounds of a page (200 characters, 1 MB, the excerpt); the headers sent; a page cut
 // at the deadline; the pool of four. Every host is looked up by publicLookup, so no test touches DNS. Characters outside ASCII are written as escapes.
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { operatorsText } from '@vsa/service-kit';
+import { PAGE_TIMEOUT_MS } from '../src/budget.ts';
 import { AdvocateError } from '../src/errors.ts';
 import { EXCERPT_CHARS, MIN_PAGE_CHARS } from '../src/html.ts';
 import { ACCEPTED_TYPES, PAGE_MAX_BYTES, USER_AGENT, fetchPages } from '../src/pages.ts';
@@ -161,6 +162,17 @@ describe('what a kept page holds', () => {
     const [page] = await fetchPages([result(OK_URL)], opts);
     expect(page.retrieved_at).toBe('2026-10-17T09:30:03.250Z');
   });
+
+  test('a media type with a space before its parameters is read; a result url keeps its case; 150 characters of two UTF-16 units are thin', async () => {
+    const mixed = 'https://example.org/Case/Sensitive?Q=1';
+    const { opts } = setup([
+      serve(mixed, () => reply(200, `<p>${plain(210)}</p>`, { 'content-type': 'text/html ; charset=utf-8' })),
+      serve('https://example.org/emoji', () => reply(200, String.fromCodePoint(0x1f600).repeat(150), { 'content-type': 'text/plain' })),
+    ]);
+    const pages = await fetchPages([result(mixed), result('https://example.org/emoji')], opts);
+    expect(pages.map((page) => page.url)).toStrictEqual([mixed]);
+    expect(pages[0].excerpt).toBe(plain(210));
+  });
 });
 
 describe('the deadline', () => {
@@ -193,6 +205,18 @@ describe('the deadline', () => {
     expect((await failure(fetchPages([result(OK_URL)], opts))).code).toBe('no_sources');
     expect(fetchImpl.calls).toStrictEqual([]);
     expect(lines).toStrictEqual([line(0, 1, { failed: 1 })]);
+  });
+
+  test('each page has min(15 s, the time left to the deadline) of its own, in whole milliseconds', async () => {
+    const seen: number[] = [];
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    const spy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => { seen.push(ms); return real(ms); });
+    try {
+      await fetchPages([result(OK_URL)], setup([OK_ROUTE]).opts);
+      await fetchPages([result(OK_URL)], setup([OK_ROUTE], { deadlineMs: NOW + 4_000 }).opts);
+      await fetchPages([result(OK_URL)], setup([OK_ROUTE], { deadlineMs: NOW + 4_000.9 }).opts);
+    } finally { spy.mockRestore(); }
+    expect(seen).toStrictEqual([PAGE_TIMEOUT_MS, 4_000, 4_000]);
   });
 });
 
@@ -235,7 +259,22 @@ describe('the pool', () => {
     expect(during.lines).toStrictEqual([]);
   });
 
+  test('the caller hanging up ends the phase at once even when a fetch ignores its signal', async () => {
+    const caller = new AbortController();
+    const { opts } = setup([serve('https://example.org/stuck', stuck)], { signal: caller.signal });
+    setTimeout(() => { caller.abort(); }, 20);
+    const started = Date.now();
+    let error: unknown;
+    try { await fetchPages([result('https://example.org/stuck')], opts); } catch (e) { error = e; }
+    expect((error as AdvocateError).code).toBe('aborted');
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
   test('a concurrency that is not a whole number of 1 or more is refused', async () => {
     await expect(fetchPages([result(OK_URL)], setup([OK_ROUTE], { concurrency: 0 }).opts)).rejects.toThrow(RangeError);
+  });
+
+  test('concurrency must be a whole number: 1.5 is refused as 0 is', async () => {
+    await expect(fetchPages([result(OK_URL)], setup([OK_ROUTE], { concurrency: 1.5 }).opts)).rejects.toThrow(RangeError);
   });
 });

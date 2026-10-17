@@ -36,6 +36,7 @@ async function failure(p: Promise<unknown>): Promise<AdvocateError> {
   throw new Error('the search did not fail');
 }
 const answer = (status: number, body: unknown) => (): Response => reply(status, typeof body === 'string' ? body : JSON.stringify(body), { 'content-type': 'application/json' });
+const json = { 'content-type': 'application/json' };
 const q1 = (respond: Route['respond']): Route => ({ match: braveQuery(Q1), respond });
 const q2 = (respond: Route['respond']): Route => ({ match: braveQuery(Q2), respond });
 const urls = (results: readonly SearchResult[]): string[] => results.map((r) => r.url);
@@ -106,6 +107,30 @@ describe('the requests (R-E15, R-E17)', () => {
     }
   });
 
+  test('the key is in the X-Subscription-Token header and in no other header', async () => {
+    const { fetchImpl, opts } = setup(BRAVE_ROUTES);
+    await searchWeb(GOLDEN_QUERIES, opts);
+    for (const call of fetchImpl.calls) {
+      const headers = new Headers(call.init?.headers);
+      expect([...headers.keys()].sort()).toStrictEqual(['accept', 'accept-encoding', 'x-subscription-token']);
+      expect([...headers].filter(([, value]) => value.includes(KEY)).map(([name]) => name)).toStrictEqual(['x-subscription-token']);
+      expect(call.init?.body).toBeUndefined();
+    }
+  });
+
+  test('no redirect is followed, for it would carry the key to another host: every request says so, and an answer that redirects is a failed query like any other', async () => {
+    const moved = (): Response => reply(302, null, { location: 'https://elsewhere.example/search' });
+    const one = setup([q1(moved), BRAVE_ROUTES[1]]);
+    expect(urls(await searchWeb(GOLDEN_QUERIES, one.opts))).toStrictEqual(SECOND_ONLY);
+    expect(one.lines).toStrictEqual(['search: query 1 failed (HTTP 302)', 'search: 0 and 5 results, 4 kept']);
+    expect(sent(one.fetchImpl.calls)).toStrictEqual([Q1, Q2]);
+    expect(one.fetchImpl.calls.map((call) => call.init?.redirect)).toStrictEqual(['error', 'error']);
+    const both = setup([q1(moved), q2(moved)]);
+    const e = await failure(searchWeb(GOLDEN_QUERIES, both.opts));
+    expect([e.code, e.status, e.message, e.detail]).toStrictEqual(['search_failed', 502, operatorsText('search_failed'), 'both Brave queries failed: query 1 HTTP 302, query 2 HTTP 302']);
+    expect(both.lines).toStrictEqual([]);
+  });
+
   test('the second query is sent only once the first has answered', async () => {
     let answerFirst: (res: Response) => void = () => undefined;
     const held: Route = { match: braveQuery(Q1), respond: () => new Promise<Response>((resolve) => { answerFirst = resolve; }) };
@@ -156,6 +181,30 @@ describe('the requests (R-E15, R-E17)', () => {
     expect(other.lines).toStrictEqual(['search: query 1 failed (HTTP 503)', 'search: 0 and 5 results, 4 kept']);
   });
 
+  test('a 429 that took 700 ms to come is sent again 1100 ms after it came, not 1100 ms after it started', async () => {
+    const time = fakeTime();
+    const starts: number[] = [];
+    let first = true;
+    const slow429 = q1(() => {
+      starts.push(time.clock());
+      if (first) { first = false; time.advance(700); return reply(429, '{}', json); }
+      return reply(200, fixture('brave-q1.json'), json);
+    });
+    const { opts } = setup([slow429, BRAVE_ROUTES[1]], {}, time);
+    expect(await searchWeb(GOLDEN_QUERIES, opts)).toStrictEqual(GOLDEN_RESULTS);
+    expect(time.waits[0]).toBe(1_100);
+    expect(starts).toStrictEqual([T0, T0 + 700 + 1_100]);
+  });
+
+  test('a 429 whose resend cannot start before the end of the search sends nothing and says nothing of a resend: its query has failed as not started', async () => {
+    const time = fakeTime();
+    const late429 = q1(() => { time.advance(14_500); return reply(429, '{}', json); });
+    const { fetchImpl, lines, opts } = setup([late429, BRAVE_ROUTES[1]], {}, time);
+    await searchWeb(GOLDEN_QUERIES, opts);
+    expect(sent(fetchImpl.calls)).toStrictEqual([Q1, Q2]);
+    expect(lines).toStrictEqual(['search: query 1 failed (not started: no time left in the search)', 'search: 0 and 5 results, 4 kept']);
+  });
+
   test('the end of the search: a request has the time left in it at most, and none starts at or after it', async () => {
     const cut = setup([q1(never), BRAVE_ROUTES[1]], { phaseEndMs: T0 + 50 });
     const e = await failure(searchWeb(GOLDEN_QUERIES, cut.opts));
@@ -169,6 +218,11 @@ describe('the requests (R-E15, R-E17)', () => {
     const none = await failure(searchWeb(GOLDEN_QUERIES, over.opts));
     expect(none.detail).toBe('both Brave queries failed: query 1 not started: no time left in the search, query 2 not started: no time left in the search');
     expect(over.fetchImpl.calls).toStrictEqual([]);
+  });
+
+  test('a clock with fractions of a millisecond: the time of a request is whole milliseconds', async () => {
+    const { opts } = setup(BRAVE_ROUTES, { clock: () => T0 + 0.5, phaseEndMs: T0 + 5_000.25 });
+    expect(await searchWeb(GOLDEN_QUERIES, opts)).toStrictEqual(GOLDEN_RESULTS);
   });
 
   test('the wait by default: a timer that resolves after its time, and rejects at once with the reason of its signal when that aborts', async () => {
@@ -191,6 +245,16 @@ describe('the requests (R-E15, R-E17)', () => {
     expect([e.code, e.status, e.detail]).toStrictEqual(['aborted', 499, 'the caller hung up during the search']);
     expect(performance.now() - started).toBeLessThan(1_000);
     expect(sent(fetchImpl.calls)).toStrictEqual([Q1]);
+  });
+
+  test('the caller hanging up during the wait before a resend: no resend, and no line that says one was made', async () => {
+    const caller = new AbortController();
+    const { fetchImpl, lines, opts } = setup([q1(() => reply(429, '{}', json)), BRAVE_ROUTES[1]],
+      { signal: caller.signal, clock: Date.now, phaseEndMs: Date.now() + SEARCH_MAX_MS, wait: undefined });
+    setTimeout(() => { caller.abort(); }, 50);
+    await expect(searchWeb(GOLDEN_QUERIES, opts)).rejects.toMatchObject({ code: 'aborted' });
+    expect(sent(fetchImpl.calls)).toStrictEqual([Q1]);
+    expect(lines).toStrictEqual([]);
   });
 });
 
