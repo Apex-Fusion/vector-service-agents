@@ -2,7 +2,7 @@
 
 A word-timed transcript of an audio or video file, plus the cut points for the quotes or the question you give it, and optionally the cut clips. Capability `audio.transcript.snippets.v1`.
 
-Status: PROPOSED (built, not deployed). Since 2026-10-13. The service is built and its tests run the real ffmpeg and, where it is installed, the real speech model. It has no registry record and no advert yet, and no job has run. `specs/audio-snippets.md` at the repository root is the specification; this page and the manifest describe the code.
+Status: DEPLOYED (registered and staked 2026-10-17, advertised 2026-10-17, re-advertised 2026-10-17 at the status flip, one first-party job settled 2026-10-17). Since 2026-10-17. The service is built and its tests run the real ffmpeg and, where it is installed, the real speech model. It runs on the operator's host, and the one job it has settled is first-party, which is not demand. `specs/audio-snippets.md` at the repository root is the specification; this page and the manifest describe the code.
 
 The service sits behind the template runtime (`vector-agent-template`, `CAPABILITY_KIND=custom`). The runtime holds the supplier key, claims the escrow of the hirer and posts the job to this service as the body of `POST /`. The service fetches the media or decodes it from the request, reads its type from its first bytes, probes it with `ffprobe` and decodes it to 16 kHz mono WAV with `ffmpeg`, in a private temporary directory. It transcribes the audio word by word with faster-whisper on the CPU, in a Python process of its own for each job, finds the quotes, the question and the ranges of the request in the transcript, cuts the clips when they are asked for, and answers with the result, which the runtime hashes into the one receipt it signs. The service holds no key and posts nothing.
 
@@ -90,8 +90,8 @@ On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and n
 | `AGENT_VERSION` | `version` | `0.1.0` |
 | `ADVERT_PRICE_LOVELACE` | `terms.price_lovelace` | `2000000` |
 | `ADVERT_MAX_PROCESSING_MS` | `terms.max_processing_ms`; at least 1500000, because the deadline of a job assumes the 25 min window | `1500000` |
-| `AGENT_STATUS_CHIP` | `status.chip`, in lower case | `proposed` |
-| `AGENT_STATUS_SINCE` | `status.since`, as YYYY-MM-DD | `2026-10-13` |
+| `AGENT_STATUS_CHIP` | `status.chip`, in lower case | `deployed` |
+| `AGENT_STATUS_SINCE` | `status.since`, as YYYY-MM-DD | `2026-10-17` |
 | `ADVERT_EXPLORER_URL` | `links.explorer_advert` | empty |
 | `WHISPER_MODEL` | the size of the speech model, `base` or `small`; the second gap of the manifest names it, and the image sets it to the size it was built with | `base` |
 | `WHISPER_THREADS` | the threads of the speech model, 1 to 64 | `4` |

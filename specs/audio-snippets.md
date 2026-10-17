@@ -4,22 +4,22 @@ Capability `audio.transcript.snippets.v1`. A word-timed transcript of an audio o
 
 ## Status
 
-PROPOSED (built, not deployed). Since 2026-10-13.
+DEPLOYED (registered and staked 2026-10-17, advertised 2026-10-17, re-advertised 2026-10-17 at the status flip, one first-party job settled 2026-10-17). Since 2026-10-17.
 
-The service is built. Its tests run the real ffmpeg and, on a machine that has it, the real speech model. It is not deployed yet: it has no registry record and no advert, and no job has run. Nothing on this page is LIVE or DEPLOYED.
+The service is built. Its tests run the real ffmpeg and, on a machine that has it, the real speech model. It is deployed on the operator's host, has had a registry record since 2026-10-17 and has had an advert since 2026-10-17. One first-party job has settled, on 2026-10-17; it is not demand. No buyer outside the team has hired it. Nothing on this page is LIVE.
 
 ## Identity
 
-This agent has no registry record yet.
+This agent has had a registry record since 2026-10-17.
 
 | Field | Value |
 |---|---|
-| DID | not registered. When registered: `did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:<asset name>` |
-| Controller | the supplier key, the key that signs this agent's receipts. The manifest publishes its key hash as `identity.controller_pkh` and `keys.supplier_pkh`, and its public key as `keys.pub_key_hex`: the service does not start unless the public key hashes to the key hash |
+| DID | `did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:1532506e54fa79cdfca6bef566ff1a5e7af9fceb332ffb7414d9923334b9d1ee` |
+| Controller | the supplier key, the only key of this agent and the key that signs its receipts. Its public key is `ef5a57f333b87f74e14c66145c7e3e5fa44ac7b69974cd6396cab1ca0ad54365`. The manifest publishes its key hash as `identity.controller_pkh` and `keys.supplier_pkh`, and its public key as `keys.pub_key_hex`: the service does not start unless the public key hashes to the key hash |
 | Registry address | `addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42` |
-| Registry record, planned | name `Audio Snippets`; capabilities `audio.transcript.snippets.v1`; framework `vector-service-agents`; endpoint the agent's public URL |
-| Public URL, planned | `https://mp-suppliers-snippets.hal8.ai` (not in service) |
-| Reputation stake, planned | a Module-3 self-stake of 10000000 lovelace (10.000000) on the capability |
+| Registry record | name `Audio Snippets`; description as in the manifest; capabilities `audio.transcript.snippets.v1`; framework `vector-service-agents`; endpoint the agent's public URL; controller key hash `609cd71929d168a0c12bf6fa3d6743e91f6026c6c902abc728e8b9b8` (the supplier key hash). Registered on 2026-10-17 in the confirmed transaction [`c101d9dd20a82d573bbb4d8d0155c89de403de29a73f1a68f1afa642542dc83b`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/c101d9dd20a82d573bbb4d8d0155c89de403de29a73f1a68f1afa642542dc83b). The deposit is 10000000 lovelace (10.000000), refundable on deregistration |
+| Public URL | `https://mp-suppliers-snippets.hal8.ai` (in service as of 2026-10-17) |
+| Reputation stake | a Module-3 self-stake of 10000000 lovelace (10.000000) on the capability, made on 2026-10-17 in transaction [`a23857f97c9197dd1051ef291decb06ee9cf5818339ac67ea120d0810720f3a3`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/a23857f97c9197dd1051ef291decb06ee9cf5818339ac67ea120d0810720f3a3) |
 
 ## Capability id
 
@@ -351,7 +351,7 @@ The manifest states the first seven of these, in this order, word for word. A te
 
 ## How to hire it
 
-Not yet advertised. Once advertised, the three ways below apply. The service is built and waits for its deployment. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
+Advertised on 2026-10-17, and again the same day at the status flip: the marketplace indexer lists the current advert as Active and free (checked on 2026-10-17). One first-party job has settled, on 2026-10-17; it is not demand. The three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
 
 The request JSON is, for example, `{"source":{"url":"https://example.org/talk.mp3"},"quotes":["a quote that was said in the talk"]}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 
@@ -365,7 +365,9 @@ The request JSON is, for example, `{"source":{"url":"https://example.org/talk.mp
 
 ## Links
 
-- Manifest: not served yet. The service renders it from its environment when it starts and serves it at `GET /agent.json` on the agent's public URL once it is in service. The template is [agents/audio-snippets/agent.json.template](../agents/audio-snippets/agent.json.template).
+- Manifest: `GET /agent.json` on the agent's public URL, in service as of 2026-10-17. The service renders it from its environment when it starts. The template is [agents/audio-snippets/agent.json.template](../agents/audio-snippets/agent.json.template).
 - Source: [agents/audio-snippets](../agents/audio-snippets)
 - Design: [docs/superpowers/specs/2026-10-13-vector-service-agents-design.md](../docs/superpowers/specs/2026-10-13-vector-service-agents-design.md)
-- Advert on the explorer: none. The advert is not posted.
+- First advert `6cc1a8a7776ff6202a95ef6496a73dd521970bb7fa252b8a265c6e204e7ec489#0`, posted on 2026-10-17 in the confirmed transaction [`6cc1a8a7776ff6202a95ef6496a73dd521970bb7fa252b8a265c6e204e7ec489`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/6cc1a8a7776ff6202a95ef6496a73dd521970bb7fa252b8a265c6e204e7ec489), manifest hash `84a9b9dfc8109be1144e9e70cedc5bbf2be3942ca7f6d7fd0570729037de843c` (the manifest before the status flip), retired on 2026-10-17 at the status flip in the confirmed transaction [`998499f2826dc80639e6606893f49568fa8c3fb3f3b001138b67637ba58f2374`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/998499f2826dc80639e6606893f49568fa8c3fb3f3b001138b67637ba58f2374).
+- Current advert `7dee930257e3d48d16fa267280899042e1619fe57d881c24dd9a332487212b2c#0`, posted on 2026-10-17 at the status flip in the confirmed transaction [`7dee930257e3d48d16fa267280899042e1619fe57d881c24dd9a332487212b2c`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/7dee930257e3d48d16fa267280899042e1619fe57d881c24dd9a332487212b2c), manifest hash `059b0f6f9826eec89cfd4f7e3177152403983b926d2892bf2a472145daef879b`. The marketplace indexer lists it as Active and free (checked on 2026-10-17).
+- First-party hire on 2026-10-17, verdict VERIFIED, made against the first advert: the post transaction [`1bd01982aea06e39c6cd56eab0f49156ac202d06153f91492975d597e4d78c69`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/1bd01982aea06e39c6cd56eab0f49156ac202d06153f91492975d597e4d78c69) and the accept transaction [`9f1e1aa9ea89bc2d2a91b6ed96bd429dd2d930e9dbccc204e5a50bedf58ebc61`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/9f1e1aa9ea89bc2d2a91b6ed96bd429dd2d930e9dbccc204e5a50bedf58ebc61) on the explorer, and the evidence in [docs/evidence/2026-10-17-audio-snippets-run-1.json](../docs/evidence/2026-10-17-audio-snippets-run-1.json).

@@ -55,8 +55,8 @@ describe('agents/audio-snippets/README.md', () => {
     expect(row('WHISPER_MODEL_DIR')).toContain('`/app/asr/models/<size>`');
     expect(row('ADVERT_PRICE_LOVELACE')).toContain('`2000000`');
     expect(row('ADVERT_MAX_PROCESSING_MS')).toContain('`1500000`');
-    expect(row('AGENT_STATUS_CHIP')).toContain('`proposed`');
-    expect(row('AGENT_STATUS_SINCE')).toContain('`2026-10-13`');
+    expect(row('AGENT_STATUS_CHIP')).toContain('`deployed`');
+    expect(row('AGENT_STATUS_SINCE')).toContain('`2026-10-17`');
     expect(row('AGENT_VERSION')).toContain('`0.1.0`');
   });
 
@@ -100,12 +100,15 @@ describe('agents/audio-snippets/README.md', () => {
   });
 
   test('it says the status the manifest and the code give, and nothing in it is a dash, a unit name or a key', () => {
-    const STATUS = 'Status: PROPOSED (built, not deployed). Since 2026-10-13.';
+    // DEPLOYED since the flip of 2026-10-17 (RUNBOOK-audio-snippets step 17): the facts in one line, as the page of the spec gives them. Never live: a first-party run is not demand.
+    const STATUS = 'Status: DEPLOYED (registered and staked 2026-10-17, advertised 2026-10-17, re-advertised 2026-10-17 at the status flip, one first-party job settled 2026-10-17). Since 2026-10-17.';
     expect(readme).toContain(`${STATUS} The service is built and its tests run the real ffmpeg`);
+    expect(readme).toContain("It runs on the operator's host, and the one job it has settled is first-party, which is not demand.");
+    expect(readme).not.toMatch(/no registry record|no advert|no job has run|not deployed/i);
     expect(readme).not.toMatch(/[\u{2013}\u{2014}]/u);
     expect(readme).not.toMatch(UNIT_NAME);
     expect(readme).not.toMatch(/[0-9a-f]{64}/);
-    expect(readme.match(/\b(LIVE|DEPLOYED)\b/g)).toBeNull();
+    expect(readme.replace(STATUS, '').match(/\b(LIVE|DEPLOYED|PROPOSED)\b/g)).toBeNull(); // DEPLOYED is said in the status line only; elsewhere the words are in lower case, as the values the manifest carries
   });
 });
 

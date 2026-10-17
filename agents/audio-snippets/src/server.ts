@@ -137,7 +137,9 @@ export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
         + 'The log carries job outcomes, never a request, a transcript or the media.',
       third_parties: ['the host of the source URL'],
     },
-    status: { chip: statusChip(env.AGENT_STATUS_CHIP, 'proposed'), since: statusSince(env.AGENT_STATUS_SINCE, '2026-10-13') },
+    // Absent or empty means deployed since 2026-10-17, the word and the day of RUNBOOK-audio-snippets step 17. A first run, before any job has settled, sets
+    // proposed in the env file (step 4). A word above deployed is the operator's to set, by AGENT_STATUS_CHIP, once it is true.
+    status: { chip: statusChip(env.AGENT_STATUS_CHIP, 'deployed'), since: statusSince(env.AGENT_STATUS_SINCE, '2026-10-17') },
     gaps: [...gapsFor(whisperSize(env.WHISPER_MODEL))],
     links: { spec: SPEC_URL, source: SOURCE_URL, explorer_advert: env.ADVERT_EXPLORER_URL ?? '' },
   };

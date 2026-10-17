@@ -6,7 +6,7 @@ import { describe, test, expect } from 'vitest';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { REGISTRY_ADDRESS } from '@vsa/vector-read';
+import { REGISTRY_ADDRESS, blake2b224Hex } from '@vsa/vector-read';
 import { ASR_MAX_MS, ASR_MIN_MS, CLIPS_RESERVE_MS, JOB_DEADLINE_MS, asrBudgetMs } from '../src/budget.ts';
 import { MIN_FREE_BYTES } from '../src/disk.ts';
 import { gapsFor } from '../src/gaps.ts';
@@ -48,8 +48,11 @@ describe('specs/audio-snippets.md', () => {
     expect(section('Capability id').split('\n')[1]).toBe(`\`${manifest.capability_id}\``);
     expect(section('Capability id')).toContain('The model string in the advert and in every receipt is `audio-snippets-v1`.');
     expect(page.split('\n')[2]).toBe(`Capability \`${manifest.capability_id}\`. ${manifest.description}`);
-    expect(manifest.status).toStrictEqual({ chip: 'proposed', since: '2026-10-13' });
-    expect(section('Status').split('\n')).toContain('PROPOSED (built, not deployed). Since 2026-10-13.');
+    expect(manifest.status).toStrictEqual({ chip: 'deployed', since: '2026-10-17' });
+    // The status line of the page opens with the word the manifest carries and ends with its date: DEPLOYED since the flip of 2026-10-17, never LIVE.
+    expect(section('Status').trimStart().startsWith(`${manifest.status.chip.toUpperCase()} (`)).toBe(true);
+    expect(section('Status')).toContain(`). Since ${manifest.status.since}.\n`);
+    expect(section('Status').split('\n')).toContain('DEPLOYED (registered and staked 2026-10-17, advertised 2026-10-17, re-advertised 2026-10-17 at the status flip, one first-party job settled 2026-10-17). Since 2026-10-17.');
     expect(row(section('Identity'), 'Registry address')).toBe(`| Registry address | \`${REGISTRY_ADDRESS}\` |`);
   });
 
@@ -269,6 +272,16 @@ describe('specs/audio-snippets.md, pinned further', () => {
     expect([config.manifest.identity.controller_pkh, config.manifest.keys]).toStrictEqual([SUPPLIER.pkh, { supplier_pkh: SUPPLIER.pkh, pub_key_hex: SUPPLIER.pubKeyHex }]);
     expect(() => loadConfig({ ...FULL_ENV, SUPPLIER_PUB_KEY_HEX: 'cd'.repeat(32) })).toThrow(/is not the public key of SUPPLIER_PKH/);
     expect(row(section('What the receipt commits to'), '`supplier_pkh`')).toContain('which is also the controller key');
+  });
+
+  // Registered on 2026-10-17 (RUNBOOK-audio-snippets step 7): the page gives the public key of the supplier key in the Controller row and its key hash in the
+  // Registry record row. They are one key, as the service requires of SUPPLIER_PUB_KEY_HEX and SUPPLIER_PKH at start (R-D21).
+  test('the identity of 2026-10-17: the public key of the Controller row hashes to the controller key hash of the Registry record row', () => {
+    const publicKey = /Its public key is `([0-9a-f]{64})`\./.exec(row(section('Identity'), 'Controller'))?.[1] ?? '';
+    const keyHash = /; controller key hash `([0-9a-f]{56})` \(the supplier key hash\)\./.exec(row(section('Identity'), 'Registry record'))?.[1] ?? '';
+    expect(publicKey).toMatch(/^[0-9a-f]{64}$/);
+    expect(keyHash).toMatch(/^[0-9a-f]{56}$/);
+    expect(blake2b224Hex(publicKey)).toBe(keyHash);
   });
 
   test('the four gaps of the page\'s own are on the page word for word after the manifest\'s seven, and the numbers they and the clips gap state are the code\'s', () => {

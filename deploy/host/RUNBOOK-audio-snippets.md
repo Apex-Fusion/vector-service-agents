@@ -1,6 +1,6 @@
 # Runbook: Audio Snippets on the deployment host
 
-Status: PROPOSED (built, not deployed) since 2026-10-13. Nothing in this folder is LIVE. This runbook says what will happen, in order. No step of it has been run.
+Status: DEPLOYED since 2026-10-17. Nothing in this folder is LIVE. This runbook says what happens, in order. Steps 1 to 5, 9 and 10 were run on 2026-10-16 and steps 6 to 15 and 17 on 2026-10-17, and the first stop was watched on 2026-10-17 (the service was idle, the stop took 1 s, the log ended with the SIGTERM line and the exit code was 0). Step 6 was the Foundation's, and step 9 was first run as a smoke start before the wallet was supplied; the service was recreated after steps 7 and 8. Step 16, the wallet monitor, is not used for this agent, as for the other two.
 
 This is [RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md), the runbook of the Document Pipeline, written for Audio Snippets. The Pipeline ran its runbook in full on 2026-10-16, so the mechanics are proven, and this runbook keeps its structure and its numbers: step N here is step N there, and step N of [RUNBOOK.md](RUNBOOK.md), the runbook of Agent History. Where a step is the same, it gives the commands with this agent's names, and the runbook of the Pipeline explains them. Where Audio Snippets differs, the step says how. The operator keeps the notes of the earlier deployments, with no secrets in them, outside this repository: read them before step 1.
 
@@ -46,9 +46,11 @@ The Foundation supplies one key with its collateral and float. Nobody pastes the
 
 | Key | Supplied with | Covers |
 |---|---|---|
-| Supplier key (the runtime's), generated on the host in step 4 | Two transfers to its address: exactly 5 units alone (collateral, never touched), then 50 units | As for Agent History and the Pipeline: the registry deposit (10 units), the stake (10), the advert (about 2 locked) and fees of about 0.5 a transaction. The setup uses about 25 with fees. The rest covers the supplier's claim and submit fees. |
+| Supplier key (the runtime's), generated on the host in step 4 | Two transfers to its address: exactly 5 units alone (collateral), then 50 units | As for Agent History and the Pipeline: the registry deposit (10 units), the stake (10), the advert (about 2 locked) and fees of about 0.5 a transaction. The setup uses about 25 with fees. The rest covers the supplier's claim and submit fees. |
 
 The service holds no key, so there is no second wallet. Two transfers, because a wallet supplied in one transfer can have its collateral spent as change by an ordinary transaction.
+
+On 2026-10-17 the setup transactions (steps 7, 8 and 12) used the 5-unit output as an input, so it did not stay alone; the supplier's Claim and Submit still found collateral in the change.
 
 The key of the first-party run (step 15) is a second key and gets no collateral or float here: it is the operator's own test buyer key, the kind that hired the Pipeline in its step 15. A job of Audio Snippets costs the hirer about 4 (`docs/HIRE.md`, section 3), so that key needs its 5 alone and a float of at least 6 for the run, the lock of 4 and about 2 more (`docs/HIRE.md`, section 8). The float left from the earlier runs may be enough: the operator checks it before step 15, and asks the Foundation for a top-up if it is not.
 
@@ -205,7 +207,7 @@ grep -c '^OPERATOR_CONTACT=[^<[:space:]]' .env.audio-snippets
 
 It must print 1: a value that does not start with an angle bracket. The ops scripts read this file with the shell's `.`, which cannot read the placeholder of the example, `OPERATOR_CONTACT=<...>`, until it is replaced: its angle brackets are redirections to the shell, which stops at that line, so the check must print 1 before step 6.
 
-The example carries the status word and its date in `AGENT_STATUS_CHIP` and `AGENT_STATUS_SINCE`: `proposed` since 2026-10-13. They stay so until step 17, which is the only place that changes them.
+The example also carries the current status word and its date in `AGENT_STATUS_CHIP` and `AGENT_STATUS_SINCE`. On a first run, before any job has settled, set them to `proposed` and today's date: the status can honestly change only in step 17.
 
 The key is a raw keypair, and this file is its only copy until step 7. There is no recovery phrase, and nothing can derive the key again. Copy `.env.audio-snippets` to the operator's encrypted offline store now, before the address receives anything, and copy it again after any regeneration of the key or of the token: a copy made before holds the old key, and the new one has no copy at all. A wallet whose key is lost is gone, whatever the ledger shows for it. Step 7 writes a second plaintext copy of the supplier key to the directory `$BASE/ops/wallet`: from then on the key is in two files on the host, and both are protected the same way.
 
@@ -244,9 +246,10 @@ python3 -m venv venv
 ./venv/bin/pip -q install 'cbor2==5.6.5'
 ./setup-venv.sh
 ./venv/bin/pip show cbor2 | grep '^Version'
+./venv/bin/python -c "import pycardano, reputation_staking"
 ```
 
-`setup-venv.sh` ends with `venv ok`, and the last command must print `Version: 5.6.5`.
+`setup-venv.sh` does not end with `venv ok` on this host: it ends with a traceback from its last line, `module 'pycardano' has no attribute '__version__'`, after everything is installed, and the venv is complete all the same (its packages are identical to the Pipeline's, and steps 7 and 8 ran on it). The check that holds is the last two lines of the block: `./venv/bin/pip show cbor2 | grep '^Version'` prints `Version: 5.6.5`, and `./venv/bin/python -c "import pycardano, reputation_staking"` exits 0.
 
 ## 6. Supply the supplier wallet with its collateral and float
 
@@ -274,7 +277,7 @@ The first line removes the empty `AGENT_DID=` line that came with the example: t
 
 Check: `grep -c '^AGENT_DID=did:vector:agent:' "$BASE/repo/deploy/host/.env.audio-snippets"` prints 1. If the script stops with an error, read the first gotcha at the end of RUNBOOK.md before running it again. If it ends with `NOT CONFIRMED`, look at the explorer before running it again: the transaction may still land.
 
-Record the identity in the repository. Once the check above prints 1, open a pull request that puts the DID and the registration transaction into the Identity section of `specs/audio-snippets.md` (the DID row, the "Registry record, planned" row and the sentence that says the agent has no registry record yet), together with the test that pins them in `scripts/specs.test.mjs`. The status word does not change here. Step 17 is the only place that flips it.
+Record the identity in the repository. Once the check above prints 1, open a pull request that puts the DID and the registration transaction into the Identity section of `specs/audio-snippets.md` (the DID row, the "Registry record" row and the sentence that says the agent has a registry record), together with the test that pins them in `scripts/specs.test.mjs`. The status word does not change here. Step 17 is the only place that flips it.
 
 ## 8. Stake in Module-3
 
@@ -327,7 +330,7 @@ grep -nE '^(VHOST|SNIPPET|MARKER)=' install-caddy-route.sh
 grep -in 'pipeline\|history' install-caddy-route.sh
 ```
 
-The first `grep` must show the vhost, the snippet and the marker of Audio Snippets, and the second must print nothing. A line it prints is a path, a name or a message of another stack: change it by hand to this agent's before the script runs, because it would act on the wrong stack. Run `./install-caddy-route.sh` once the record resolves to the host. The copy may poll `/healthz` on the public name after it has reloaded Caddy, and that route goes to the runtime, which does not exist before step 13. So before step 13 the script can wait on that poll, or end with exit code 2, with the block already in place. Read the last line it printed: if it is about the `/healthz` poll, that is the expected end, and the route to check is `/agent.json`, which goes to the service and answers now. If it says the name does not resolve to the host, the record is not there yet: wait for it and run the script again. Check from any machine:
+The first `grep` must show the vhost, the snippet and the marker of Audio Snippets. The second prints the first comment line of the copy, which names the Pipeline: a comment line is expected there, and is edited to this agent's or left as it is. A line that is a path, a name or a message of another stack is what must not appear: change it by hand to this agent's before the script runs, because it would act on the wrong stack. Run `./install-caddy-route.sh` once the record resolves to the host. The copy may poll `/healthz` on the public name after it has reloaded Caddy, and that route goes to the runtime, which does not exist before step 13. So before step 13 the script can wait on that poll, or end with exit code 2, with the block already in place. Read the last line it printed: if it is about the `/healthz` poll, that is the expected end, and the route to check is `/agent.json`, which goes to the service and answers now. If it says the name does not resolve to the host, the record is not there yet: wait for it and run the script again. Check from any machine:
 
 ```sh
 curl -fsS https://mp-suppliers-snippets.hal8.ai/agent.json
@@ -337,14 +340,13 @@ It must return the manifest of step 9, byte for byte. `/healthz` on the public n
 
 ## 11. Hash the manifest
 
-Operator. As in step 11 of RUNBOOK.md. Run it from the root of the repository checkout, on any machine with Node 22; the script only fetches public bytes. On the host the root is `$BASE/repo`:
+Operator. As in step 11 of RUNBOOK.md. The script runs on the operator's machine, from the root of a checkout of the repository, with Node 22: the host has no Node. It only fetches public bytes:
 
 ```sh
-cd "$BASE/repo"
 node scripts/manifest-hash.mjs https://mp-suppliers-snippets.hal8.ai
 ```
 
-It prints one JSON line with `detail_uri`, `detail_hash` and `bytes`. Cross-check on the host with `curl -fsS https://mp-suppliers-snippets.hal8.ai/agent.json | sha256sum`: the 64 hex digits must be the same. If they differ, stop. Something between the host and the client rewrites the bytes.
+It prints one JSON line with `detail_uri`, `detail_hash` and `bytes`. The host cross-checks the raw bytes with `curl -fsS https://mp-suppliers-snippets.hal8.ai/agent.json | sha256sum`: the two must agree. On 2026-10-17 both gave `84a9b9dfc8109be1144e9e70cedc5bbf2be3942ca7f6d7fd0570729037de843c` before the flip and `059b0f6f9826eec89cfd4f7e3177152403983b926d2892bf2a472145daef879b` after it. If they differ, stop. Something between the host and the client rewrites the bytes.
 
 ## 12. Post the advert
 
@@ -444,7 +446,7 @@ Operator, on the operator's own machine, with the test buyer key (Collateral and
 - `CAPABILITY_ID=audio.transcript.snippets.v1`. The script looks the advert up among the free suppliers of this capability, and its default is the capability of Agent History, so without this setting it stops before it posts anything, with "is not among the free suppliers".
 - `ADVERT_REF` is the advert of Audio Snippets from step 12.
 - `PAYLOAD` is the request JSON for a short public-domain recording: `{"source":{"url":"<https URL of a short public-domain mp3>"},"language":"en","quotes":["All LibriVox recordings are in the public domain."]}`. A LibriVox recording says that sentence in its preamble, so the run shows a match. The service fetches the URL itself and refuses a redirect: a download link of archive.org redirects to the server that holds the file, so give the address it redirects to (`curl -sI <link>` shows it in its `location` line).
-- `E2E_POLL_MS=10000`. A job takes longer than Agent History's: allow minutes for a ten-minute file. The speech recognition of the 25 s test fixture took 2.4 s on the implementers' machine; the host is not measured.
+- `E2E_POLL_MS=10000`. A job takes longer than Agent History's: allow minutes for a ten-minute file. The speech recognition of the 25 s test fixture took 2.4 s on the implementers' machine. On the host, the first-party run of 2026-10-17 took a supplier wall clock of 68485 ms for 364.303 s of media (fetch, decode, speech recognition and matching; the service's own log line said 68469 ms).
 - `E2E_STATE=./e2e-state-snippets.json`. A state file belongs to one run, and the script refuses one that belongs to another, so this run does not use the file of an earlier run.
 - No clips: the request leaves `return_clips` out, so that the result stays small. The hosted MCP server reads at most 1000000 bytes of a job's answer.
 

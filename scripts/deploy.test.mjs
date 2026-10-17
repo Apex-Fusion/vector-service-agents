@@ -84,7 +84,7 @@ const NAMES = /\b(Filip|Blagojevi\w*|David|Cejtlin|Chris|Jerry|Armando|Andrej|Ca
 const HOME_PATH = /C:[\\/]Users[\\/]|[\\/](Users|home)[\\/][A-Za-z]/;
 // The Document Pipeline is DEPLOYED since 2026-10-16, so its files say DEPLOYED in their status lines and headers and LIVE nowhere. They sit in this list so that they get every rule below.
 const PIPELINE_FILES = ['deploy/host/docker-compose.document-pipeline.yml', 'deploy/host/.env.document-pipeline.example', 'deploy/host/Caddyfile.document-pipeline.snippet', 'deploy/host/RUNBOOK-document-pipeline.md'];
-// Audio Snippets is built and PROPOSED (built, not deployed) since 2026-10-13: its four deploy files, read by the tests of the status words and of its stack.
+// Audio Snippets is DEPLOYED since 2026-10-17: its four deploy files, read by the tests of the status words and of its stack.
 const S_FILES = ['deploy/host/docker-compose.audio-snippets.yml', 'deploy/host/.env.audio-snippets.example', 'deploy/host/Caddyfile.audio-snippets.snippet', 'deploy/host/RUNBOOK-audio-snippets.md'];
 const PUBLIC_FILES = ['deploy/host/README.md', 'deploy/host/RUNBOOK.md', 'deploy/host/docker-compose.agent-history.yml', 'deploy/host/.env.agent-history.example', 'deploy/host/Caddyfile.snippet', 'agents/agent-history/Dockerfile', '.dockerignore', ...PIPELINE_FILES, 'agents/document-pipeline/Dockerfile'];
 
@@ -295,13 +295,13 @@ test('CI: the publish job runs on a push to main after the tests, logs in with G
   assert.equal(ci.jobs.test.steps.at(-1).run, 'pnpm test');
 });
 
-test('README, RUNBOOK, compose file and Caddy snippet: Agent History is DEPLOYED since 2026-10-15, the Document Pipeline since 2026-10-16 and Audio Snippets PROPOSED (built, not deployed) since 2026-10-13, nothing is LIVE; no dash, no unit name, no person named', () => {
+test('README, RUNBOOK, compose file and Caddy snippet: Agent History is DEPLOYED since 2026-10-15, the Document Pipeline since 2026-10-16 and Audio Snippets since 2026-10-17, nothing is LIVE; no dash, no unit name, no person named', () => {
   const STATUS = 'Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE.';
   // The Pipeline is the second stack of the box: its section of the README and its runbook carry its own status line, DEPLOYED since 2026-10-16 (RUNBOOK-document-pipeline.md step 17).
   const P_README_STATUS = 'Status: DEPLOYED since 2026-10-16. Nothing in this section is LIVE.';
   const P_RUNBOOK_STATUS = 'Status: DEPLOYED since 2026-10-16. Nothing in this folder is LIVE.';
-  // Audio Snippets is the third stack of the host, PROPOSED (built, not deployed): its section of the README carries its own status line, which denies LIVE (RUNBOOK-audio-snippets.md step 17 changes it).
-  const S_README_STATUS = 'Status: PROPOSED (built, not deployed) since 2026-10-13. Nothing in this section is LIVE.';
+  // Audio Snippets is the third stack of the host, DEPLOYED since 2026-10-17 (RUNBOOK-audio-snippets.md step 17): its section of the README carries its own status line, which denies LIVE.
+  const S_README_STATUS = 'Status: DEPLOYED since 2026-10-17. Nothing in this section is LIVE.';
   const STATUS_LINES = { 'deploy/host/README.md': [STATUS, P_README_STATUS, S_README_STATUS], 'deploy/host/RUNBOOK.md': [STATUS], 'deploy/host/RUNBOOK-document-pipeline.md': [P_RUNBOOK_STATUS] };
   // The second line of each compose file and Caddy snippet says what happened on the box, and so does the third line of the Pipeline's env example.
   const HEADER = {
@@ -323,6 +323,7 @@ test('README, RUNBOOK, compose file and Caddy snippet: Agent History is DEPLOYED
   for (const rel of ['deploy/host/README.md', 'deploy/host/RUNBOOK.md']) assert.ok(read(rel).includes(STATUS), rel);
   assert.ok(read('deploy/host/README.md').includes(`\n## Document Pipeline on the same box\n\n${P_README_STATUS} `), 'the section of the Pipeline opens with its own status line');
   assert.ok(read('deploy/host/RUNBOOK-document-pipeline.md').split('\n')[2].startsWith(`${P_RUNBOOK_STATUS} `), 'the runbook of the Pipeline opens with its status line');
+  assert.ok(read('deploy/host/README.md').includes(`\n## Audio Snippets on the same host\n\n${S_README_STATUS} `), 'the section of Audio Snippets opens with its own status line');
   assert.equal(readme.split('\n')[2], `${STATUS} Steps 1 to 15 and 17 of the runbook were run on 2026-10-14 and 2026-10-15. Step 16, the wallet monitor, is not used for this agent (operator's decision, 2026-10-15).`);
   for (const [rel, header] of Object.entries(HEADER)) assert.ok(read(rel).split('\n')[rel.endsWith('.example') ? 2 : 1].startsWith(header), `${rel}: the line says what happened on the box`);
   assert.doesNotMatch(read('deploy/host/docker-compose.agent-history.yml') + snippet + read('deploy/host/docker-compose.document-pipeline.yml') + read('deploy/host/Caddyfile.document-pipeline.snippet'), /PROPOSED/);
@@ -332,10 +333,10 @@ test('README, RUNBOOK, compose file and Caddy snippet: Agent History is DEPLOYED
 // clause of the sentence used to add.
 // The word is spelled in two parts, as the unit name is, so that a search for it finds no file.
 const BANNED_CLAUSE = new RegExp('reve' + 'nue', 'i');
-test('the first-party sentence: the README says it for each of the three stacks and both runbooks of the deployed agents say it, and no deploy file holds the word the clause added', () => {
+test('the first-party sentence: the README says it for each of the three stacks and the runbooks of the three deployed agents say it, and no deploy file holds the word the clause added', () => {
   const SENTENCE = 'A first-party run shows that the path works. It is not demand.';
   assert.equal(readme.split(SENTENCE).length - 1, 3, 'the README, once for each stack');
-  for (const rel of ['deploy/host/RUNBOOK.md', 'deploy/host/RUNBOOK-document-pipeline.md']) assert.ok(read(rel).includes(SENTENCE), rel);
+  for (const rel of ['deploy/host/RUNBOOK.md', 'deploy/host/RUNBOOK-document-pipeline.md', 'deploy/host/RUNBOOK-audio-snippets.md']) assert.ok(read(rel).includes(SENTENCE), rel);
   for (const rel of [...PUBLIC_FILES, ...S_FILES, 'agents/audio-snippets/Dockerfile']) assert.doesNotMatch(read(rel), BANNED_CLAUSE, rel);
 });
 
@@ -535,22 +536,22 @@ test('RUNBOOK step 17: the last item names the files that said PROPOSED about Ag
   for (const [, named] of item8.matchAll(/`([A-Za-z0-9_.\/-]+\.(?:md|yml|snippet|example|ts|mjs|template))`/g)) assert.ok(existsSync(join(root, named)), `item 8 names a file that exists: ${named}`);
 });
 
-// ---- The status words after the flips of 2026-10-15 and 2026-10-16 ----
-// Agent History and Document Pipeline are DEPLOYED. Audio Snippets, which is built, and Advocate, which is not, are PROPOSED. Nothing here is LIVE.
-// A line that says PROPOSED has to be one of the lines below, so the word cannot come back for Agent History or Document Pipeline; a line that says LIVE has to deny it.
-test('status words: no file says PROPOSED about Agent History or Document Pipeline, and no file says LIVE except to deny it', () => {
-  const OTHER_AGENTS = ['specs/audio-snippets.md', 'specs/advocate.md'];
-  // Audio Snippets is built and PROPOSED until step 17 of its runbook: its four deploy files and its README say the word in their status lines and their instructions.
+// ---- The status words after the flips of 2026-10-15, 2026-10-16 and 2026-10-17 ----
+// Agent History, Document Pipeline and Audio Snippets are DEPLOYED. Advocate, which is not built, is PROPOSED. Nothing here is LIVE.
+// A line that says PROPOSED has to be one of the lines below, so the word cannot come back for the three that are deployed; a line that says LIVE has to deny it.
+test('status words: no file says PROPOSED about Agent History, Document Pipeline or Audio Snippets, and no file says LIVE except to deny it', () => {
+  const OTHER_AGENTS = ['specs/advocate.md'];
+  // The four deploy files of Audio Snippets and its README: since the flip of 2026-10-17 they are held to the rule as the files of the other two are.
   const SNIPPETS_FILES = [...S_FILES, 'agents/audio-snippets/README.md'];
-  // What may still say PROPOSED outside the specs and the files of the two agents that are PROPOSED: their rows in the table of the root README, the rule that lists the three words,
-  // the marketplace tools in the Interface section of the spec (the tools, not the agent), and the instructions of the two runbooks that speak for the order of a first run.
+  // What may still say PROPOSED outside the spec of the agent that is PROPOSED: its row in the table of the root README, the rule that lists the three words,
+  // the marketplace tools in the Interface section of the spec (the tools, not the agent), and the instructions of the three runbooks that speak for the order of a first run.
   const PROPOSED_OK = {
-    'README.md': [/^\| (Audio Snippets|Advocate) \| `[a-z.0-9-]+` \| PROPOSED \|$/],
-    'deploy/host/README.md': [/^Status: PROPOSED \(built, not deployed\) since 2026-10-13\. Nothing in this section is LIVE\. No step of its runbook has been run\. /],
+    'README.md': [/^\| Advocate \| `[a-z.0-9-]+` \| PROPOSED \|$/],
     'agents/agent-history/README.md': [/`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./],
     'specs/agent-history.md': [/^The marketplace MCP tools \(PROPOSED\) and the template's buyer, /],
     'deploy/host/RUNBOOK.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about Agent History/],
     'deploy/host/RUNBOOK-document-pipeline.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about the Document Pipeline/],
+    'deploy/host/RUNBOOK-audio-snippets.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about Audio Snippets/],
   };
   // What may say LIVE: the sentence that denies it, and the rule that lists the three words.
   const LIVE_OK = [/Nothing (on this page|in this guide|in this folder|in this section) is LIVE( or DEPLOYED)?\./, /`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./];
@@ -558,7 +559,7 @@ test('status words: no file says PROPOSED about Agent History or Document Pipeli
   for (const f of ['specs/agent-history.md', 'specs/advocate.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md', 'deploy/host/RUNBOOK.md', 'deploy/host/README.md', 'deploy/host/docker-compose.agent-history.yml', 'deploy/host/Caddyfile.snippet', 'deploy/host/.env.agent-history.example', 'agents/agent-history/agent.json.template', ...PIPELINE_FILES, ...SNIPPETS_FILES]) assert.ok(files.includes(f), `${f} is walked`);
   for (const f of files) {
     const lines = read(f).split('\n');
-    if (!OTHER_AGENTS.includes(f) && !SNIPPETS_FILES.includes(f)) for (const line of lines.filter((l) => /\bPROPOSED\b/.test(l))) assert.ok((PROPOSED_OK[f] ?? []).some((re) => re.test(line)), `${f} says PROPOSED: ${line.slice(0, 110)}`);
+    if (!OTHER_AGENTS.includes(f)) for (const line of lines.filter((l) => /\bPROPOSED\b/.test(l))) assert.ok((PROPOSED_OK[f] ?? []).some((re) => re.test(line)), `${f} says PROPOSED: ${line.slice(0, 110)}`);
     for (const line of lines.filter((l) => /\bLIVE\b/.test(l))) assert.ok(LIVE_OK.some((re) => re.test(line)), `${f} says LIVE: ${line.slice(0, 110)}`);
   }
   // The values the manifest and the env example carry are neither proposed nor live.
@@ -566,14 +567,15 @@ test('status words: no file says PROPOSED about Agent History or Document Pipeli
   assert.deepEqual(JSON.parse(read('agents/agent-history/agent.json.template')).status, { chip: 'deployed', since: '2026-10-15' });
   assert.match(read('deploy/host/.env.document-pipeline.example'), /^AGENT_STATUS_CHIP=deployed$/m);
   assert.deepEqual(JSON.parse(read('agents/document-pipeline/agent.json.template')).status, { chip: 'deployed', since: '2026-10-16' });
-  // Advocate is not built and is PROPOSED, and so is Audio Snippets, which is built; each in its own spec. Document Pipeline is DEPLOYED since 2026-10-16, in the line of its spec.
+  assert.match(read('deploy/host/.env.audio-snippets.example'), /^AGENT_STATUS_CHIP=deployed$/m);
+  assert.deepEqual(JSON.parse(read('agents/audio-snippets/agent.json.template')).status, { chip: 'deployed', since: '2026-10-17' });
+  // Advocate is not built and is PROPOSED, in its own spec. Document Pipeline is DEPLOYED since 2026-10-16 and Audio Snippets since 2026-10-17, each in the line of its spec.
   assert.match(read('specs/advocate.md'), /^PROPOSED \(not built\)\. Since 2026-10-13\.$/m);
-  // Audio Snippets is built, and PROPOSED until step 17 of its runbook.
-  assert.match(read('specs/audio-snippets.md'), /^PROPOSED \(built, not deployed\)\. Since 2026-10-13\.$/m);
+  assert.match(read('specs/audio-snippets.md'), /^DEPLOYED \(registered and staked 2026-10-17, advertised 2026-10-17, re-advertised 2026-10-17 at the status flip, one first-party job settled 2026-10-17\)\. Since 2026-10-17\.$/m);
   assert.match(read('specs/document-pipeline.md'), /^DEPLOYED \(registered and staked 2026-10-16, advertised 2026-10-16, re-advertised 2026-10-16 at the status flip, one first-party job settled 2026-10-16\)\. Since 2026-10-16\.$/m);
-  // The specs that open a line with PROPOSED are the two this test lets say it anywhere: read from the specs folder, so that a third spec, or a spec that drops the word, is seen.
+  // The specs that open a line with PROPOSED are the one this test lets say it anywhere: read from the specs folder, so that a second spec, or a spec that drops the word, is seen.
   const proposed = readdirSync(join(root, 'specs')).filter((f) => /^PROPOSED \(/m.test(read(`specs/${f}`))).map((f) => `specs/${f}`).sort();
-  assert.deepEqual(proposed, [...OTHER_AGENTS].sort(), 'the specs that say PROPOSED are the two that may say it anywhere');
+  assert.deepEqual(proposed, [...OTHER_AGENTS].sort(), 'the spec that says PROPOSED is the one that may say it anywhere');
 });
 
 test('RUNBOOK: Back out retires the advert first with the supplier key, then stops the services, then the host administrator removes the Caddy block', () => {
@@ -608,11 +610,14 @@ test('RUNBOOK: the spec is refreshed in a pull request after the identity (step 
   assert.ok(runbook.indexOf('"$KEY"') < runbook.indexOf('## 12.'), 'before the advert is posted');
 });
 
-test('RUNBOOK: the key is never sent anywhere, the registry login block is bash, the hash script runs from the repository root, the marketplace tools are on the hosted mainnet server, the wallet monitor is named', () => {
+test('RUNBOOK: the key is never sent anywhere, the registry login block is bash, the hash script runs on the machine of the operator from the root of a checkout, the marketplace tools are on the hosted mainnet server, the wallet monitor is named', () => {
   assert.match(section(runbook, '4. Make the env file and generate the supplier key'), /is never sent anywhere\./);
   assert.doesNotMatch(runbook, /never leaves/);
   assert.match(section(runbook, '2. Log in to the registry and get the service image'), /```bash\nread -rs GHCR_TOKEN/);
-  assert.match(section(runbook, '11. Hash the manifest'), /```sh\ncd "\$BASE\/repo"\nnode scripts\/manifest-hash\.mjs /);
+  // The box has no Node (2026-10-17): the script runs on the operator's machine, from the root of a checkout, and the box cross-checks the raw bytes with curl and sha256sum.
+  assert.match(section(runbook, '11. Hash the manifest'), /```sh\nnode scripts\/manifest-hash\.mjs /);
+  assert.ok(section(runbook, '11. Hash the manifest').includes("Operator. The script runs on the operator's machine, from the root of a checkout of the repository, with Node 22: the box has no Node. It only fetches public bytes:"));
+  assert.ok(section(runbook, '11. Hash the manifest').includes('The box cross-checks the raw bytes with `curl -fsS https://mp-suppliers-history.hal8.ai/agent.json | sha256sum`: the two must agree.'));
   const s15 = section(runbook, '15. The first-party run');
   assert.ok(s15.includes('As of 2026-10-14 the nine marketplace tools the script needs are merged into `main` of Apex-Fusion/mcp-server (PR 1 as [#20](https://github.com/Apex-Fusion/mcp-server/pull/20), PR 2 as [#21](https://github.com/Apex-Fusion/mcp-server/pull/21) and PR 3 as [#23](https://github.com/Apex-Fusion/mcp-server/pull/23) with PR 2) and are on the hosted mainnet MCP server, which lists 33 tools.'));
   assert.ok(s15.includes('PR 4 ([#22](https://github.com/Apex-Fusion/mcp-server/pull/22)), the signer package with its `keygen` command, is merged too, and the package is published on npm (`@apexfusion/vector-mcp-signer`, version 2.0.0, on 2026-10-16).'));
@@ -1129,7 +1134,7 @@ test('Pipeline RUNBOOK collateral and float: two keys, 5 alone then 50 for the s
   const rows = funds.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| Key |'));
   assert.equal(rows.length, 2, 'two keys');
   const [supplier, buyer] = rows;
-  assert.ok(supplier.startsWith("| Supplier key (the runtime's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral, never touched), then 50 units | As for Agent History:"));
+  assert.ok(supplier.startsWith("| Supplier key (the runtime's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral), then 50 units | As for Agent History:"));
   assert.ok(buyer.startsWith("| Buyer key (the service's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral for the Accept and the Reclaim of the sub-jobs, never touched), then 100 units |"));
   assert.ok(funds.includes('The Foundation supplies two keys with their collateral and float. Nobody pastes either key into a chat.'));
   assert.ok(funds.includes('Two transfers, because a wallet supplied in one transfer can have its collateral spent as change by an ordinary transaction.'));
@@ -1432,7 +1437,7 @@ test('Pipeline RUNBOOK step 5: the ops scripts are copied from the adapted set o
     "-e 's#^ \"endpoint\":\"https://mp-suppliers-history.hal8.ai\"}# \"endpoint\":\"https://mp-suppliers-pipeline.hal8.ai\"}#'",
     "sed -i 's#^CAPABILITIES = \\[.*\\]#CAPABILITIES = [\"document.pipeline.ocr-summary.v1\"]#' m3-self-stake.py",
     "grep -il 'agent.history' *.sh *.py",
-    "python3 -m venv venv", "./venv/bin/pip -q install 'cbor2==5.6.5'", './setup-venv.sh', "./venv/bin/pip show cbor2 | grep '^Version'", '`setup-venv.sh` ends with `venv ok`', '`Version: 5.6.5`', 'breaks `cbor2pure`',
+    "python3 -m venv venv", "./venv/bin/pip -q install 'cbor2==5.6.5'", './setup-venv.sh', "./venv/bin/pip show cbor2 | grep '^Version'", './venv/bin/python -c "import pycardano, reputation_staking"', '`setup-venv.sh` does not end with `venv ok` on this box', '`Version: 5.6.5`', 'breaks `cbor2pure`',
   ]) assert.ok(five.includes(part), `step 5 says: ${part}`);
   assert.ok(five.indexOf('python3 -m venv venv') < five.indexOf('./setup-venv.sh'), 'the venv is made and pinned before setup-venv.sh runs');
   // Each pattern the sed lines look for is what step 5 of the Agent History runbook leaves in the copies it made, so the second adaptation finds the first one's output.
@@ -1525,7 +1530,7 @@ test('Pipeline RUNBOOK steps 10 to 14: the Caddy script copy with the vhost and 
     '`/healthz` on the public name answers only after step 13, because every other path goes to the runtime.',
     // Nothing of the other stack may be left in the copy, and what a wait or an exit code 2 before step 13 means.
     'Then check that nothing of Agent History is left in the copy:', '```sh\ngrep -in history install-caddy-route.sh\n```',
-    "It must print nothing. A line it prints is a path, a name or a message of the other stack: change it by hand to this agent's before the script runs, because it would act on the wrong stack.",
+    "It may print a comment line of the copy: a comment line is expected there, and is edited to this agent's or left as it is. A line that is a path, a name or a message of the other stack is what must not appear: change it by hand to this agent's before the script runs, because it would act on the wrong stack.",
     'The copy may poll `/healthz` on the public name after it has reloaded Caddy, and that route goes to the runtime, which does not exist before step 13. So before step 13 the script can wait on that poll, or end with exit code 2, with the block already in place.',
     'Read the last line it printed: if it is about the `/healthz` poll, that is the expected end, and the route to check is `/agent.json`, which goes to the service and answers now. If it says the name does not resolve to the box, the record is not there yet: wait for it and run the script again.',
   ]) assert.ok(ten.includes(part), `step 10 says: ${part}`);
@@ -1536,7 +1541,7 @@ test('Pipeline RUNBOOK steps 10 to 14: the Caddy script copy with the vhost and 
   assert.ok(existsSync(join(root, 'deploy/host/Caddyfile.document-pipeline.snippet')), 'the snippet the script merges exists');
   assert.ok(ten.includes('$BASE/repo/deploy/host/Caddyfile.document-pipeline.snippet'));
   const eleven = section(pRunbook, '11. Hash the manifest');
-  assert.match(eleven, /```sh\ncd "\$BASE\/repo"\nnode scripts\/manifest-hash\.mjs https:\/\/mp-suppliers-pipeline\.hal8\.ai\n```/);
+  assert.match(eleven, /```sh\nnode scripts\/manifest-hash\.mjs https:\/\/mp-suppliers-pipeline\.hal8\.ai\n```/);
   assert.ok(eleven.includes('curl -fsS https://mp-suppliers-pipeline.hal8.ai/agent.json | sha256sum'));
   // Step 12: the dry run and the real run are the same flags, and the flags are the terms of the example and the spec.
   const blocks = [...pRunbook.matchAll(/post-advert\.ts( --dry-run)? \x5c\n((?:  --[^\n]+\n)+)/g)];
@@ -2066,7 +2071,8 @@ test('the deployment host is not named: no tracked file names it, the stack of i
 });
 
 // ======================================================================================================================================
-// Audio Snippets (PROPOSED, built and not deployed, since 2026-10-13): the third stack on the same host.
+// Audio Snippets (DEPLOYED since 2026-10-17): the third stack on the same host.
+// Built on 2026-10-16; steps 1 to 5, 9 and 10 of its runbook were run on 2026-10-16 and steps 6 to 15 and 17 on 2026-10-17 (step 16 is not used).
 // The four files and the section of the README are held to each other, to the service code, to the spec, and to the files of the Document Pipeline they
 // follow. docker build and caddy validate are run by hand at deployment. The files name no host and no other stack (HOST_WORDS above).
 // ======================================================================================================================================
@@ -2094,7 +2100,7 @@ const S_CHAIN = ['NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN'
 const S_ADVERT = ['ADVERT_REF', 'ADVERT_CAPABILITY_ID', 'ADVERT_MODEL', 'ADVERT_PRICE_LOVELACE', 'ADVERT_SUPPLIER_BOND_LOVELACE', 'ADVERT_BUYER_BOND_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_ENDPOINT_URL', 'ADVERT_DETAIL_URI', 'ADVERT_DETAIL_HASH'];
 const S_MANIFEST = ['OPERATOR_CONTACT', 'AGENT_DID', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_EXPLORER_URL'];
 const S_STEPS = ['Put the files on the host', 'Build the service image and pin it', 'Build the runtime image', 'Make the env file and generate the supplier key', 'Adapt the ops scripts', 'Supply the supplier wallet with its collateral and float', 'Register the identity', 'Stake in Module-3', 'Start the service', 'DNS and Caddy', 'Hash the manifest', 'Post the advert', 'Start the runtime', 'Check the advert on the indexer', 'The first-party run', 'Wallet monitor', 'Flip the status'];
-const S_STATUS = 'PROPOSED (built, not deployed) since 2026-10-13';
+const S_STATUS = 'DEPLOYED since 2026-10-17';
 const DC = 'docker compose -f docker-compose.audio-snippets.yml';
 // A snippet run through the real code of Audio Snippets (tsx), with its argument passed as JSON, so that nothing here re-implements the service.
 function inSnippets(code, arg) {
@@ -2195,7 +2201,7 @@ test('Snippets env example: every name the service code reads is in the example,
   assert.deepEqual(NEEDED.filter((n) => !(n in sExample) && !(n in sAgent.environment)), []);
 });
 
-test('Snippets env example: the chain values are those of the Pipeline, the advert terms are the spec, the endpoint is the third hostname, the status word is proposed since 2026-10-13, and the manifest it produces is the default one', () => {
+test('Snippets env example: the chain values are those of the Pipeline, the advert terms are the spec, the endpoint is the third hostname, the status word is deployed since 2026-10-17, and the manifest it produces is the default one', () => {
   for (const name of S_CHAIN) assert.equal(sExample[name], pExample[name], name);
   assert.deepEqual([sExample.ADVERT_CAPABILITY_ID, sExample.ADVERT_MODEL], ['audio.transcript.snippets.v1', 'audio-snippets-v1']);
   assert.ok(SSPEC.includes(`The model string in the advert and in every receipt is \`${sExample.ADVERT_MODEL}\`.`));
@@ -2204,13 +2210,16 @@ test('Snippets env example: the chain values are those of the Pipeline, the adve
   assert.equal(sExample.ADVERT_ENDPOINT_URL, 'https://mp-suppliers-snippets.hal8.ai');
   assert.equal(sExample.ADVERT_DETAIL_URI, `${sExample.ADVERT_ENDPOINT_URL}/agent.json`);
   assert.ok(DESIGN.includes('`mp-suppliers-snippets.hal8.ai`'));
-  assert.deepEqual([sExample.AGENT_STATUS_CHIP, sExample.AGENT_STATUS_SINCE], ['proposed', '2026-10-13']);
+  assert.deepEqual([sExample.AGENT_STATUS_CHIP, sExample.AGENT_STATUS_SINCE], ['deployed', '2026-10-17'], 'the advert is Active, one first-party job has settled and the first stop was watched (step 17), which shows that the path works and is not demand, so nothing may claim live');
+  // The comment says what the word is, who changes it, and what a first run starts with.
+  assert.match(sExampleText, /^# The status word the manifest carries, and since when: deployed since 2026-10-17, after the advert was Active, a first-party job had settled and the first stop had been watched \(RUNBOOK-audio-snippets\.md step 17, "Flip the status"\)\. A first-party run is not demand, so the word is not live\.$/m);
+  assert.match(sExampleText, /^# On a first run, before any job has settled, set proposed and today's date here; step 17 changes them\.$/m);
   const [withExample, withNothing] = inSnippets(
     "import { manifestFromEnv } from './src/server.ts'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((env) => manifestFromEnv(env))));",
     [{ ...withoutPlaceholders(sExample), OPERATOR_CONTACT: TEST_CONTACT }, { OPERATOR_CONTACT: TEST_CONTACT }],
   );
   assert.deepEqual(withExample, withNothing, 'the example changes nothing in the manifest the advert will hash');
-  assert.deepEqual(withExample.status, { chip: 'proposed', since: '2026-10-13' });
+  assert.deepEqual(withExample.status, { chip: 'deployed', since: '2026-10-17' });
   assert.equal(withExample.terms.price_lovelace, S_TERMS.price);
   assert.equal(withExample.terms.max_processing_ms, S_TERMS.window);
 });
@@ -2248,14 +2257,19 @@ test('Snippets Caddy snippet: the site block is the third endpoint host, the man
   assert.ok(sSection.split('\n').map((l) => l.replace(/^ {3}/, '')).join('\n').includes('```\n' + block + '\n```'), 'the README shows the same block');
 });
 
-test('Snippets files: each says PROPOSED (built, not deployed) since 2026-10-13 in its own first lines and that no step has been run; none says LIVE or DEPLOYED, names the host or another stack, or holds a dash, the unit name, a person or a home path', () => {
-  assert.equal(sComposeText.split('\n')[1], `# ${S_STATUS}. Not installed: no step of RUNBOOK-audio-snippets.md has been run. The host administrator's part is README.md.`);
-  assert.ok(sSnippet.split('\n')[1].startsWith(`# ${S_STATUS}. Not installed: step 10 of RUNBOOK-audio-snippets.md has not been run.`));
-  assert.equal(sRunbook.split('\n')[2], `Status: ${S_STATUS}. Nothing in this folder is LIVE. This runbook says what will happen, in order. No step of it has been run.`);
-  assert.ok(sSection.split('\n')[1].startsWith(`Status: ${S_STATUS}. Nothing in this section is LIVE. No step of its runbook has been run. The files are `));
+test('Snippets files: each says DEPLOYED since 2026-10-17 in its own first lines, the compose file and the snippet say that the stack is installed and running, the runbook and the README section say which steps were run; none says LIVE or the words of before the flip, names the host or another stack, or holds a dash, the unit name, a person or a home path', () => {
+  assert.equal(sComposeText.split('\n')[1], `# ${S_STATUS}: installed on the host since 2026-10-16 and running since 2026-10-17; one first-party job settled on 2026-10-17. The order of work is RUNBOOK-audio-snippets.md. The host administrator's part is README.md.`);
+  assert.ok(sSnippet.split('\n')[1].startsWith(`# ${S_STATUS}: installed and running on the host. It was installed on 2026-10-16, at step 10 of RUNBOOK-audio-snippets.md, by a copy of the host administrator's install script (install-caddy-route.sh, from the ops folder of the Pipeline), which merges it and reloads Caddy (README.md).`));
+  assert.equal(sRunbook.split('\n')[2], `Status: ${S_STATUS}. Nothing in this folder is LIVE. This runbook says what happens, in order. Steps 1 to 5, 9 and 10 were run on 2026-10-16 and steps 6 to 15 and 17 on 2026-10-17, and the first stop was watched on 2026-10-17 (the service was idle, the stop took 1 s, the log ended with the SIGTERM line and the exit code was 0). Step 6 was the Foundation's, and step 9 was first run as a smoke start before the wallet was supplied; the service was recreated after steps 7 and 8. Step 16, the wallet monitor, is not used for this agent, as for the other two.`);
+  assert.ok(sSection.split('\n')[1].startsWith(`Status: ${S_STATUS}. Nothing in this section is LIVE. Steps 1 to 5, 9 and 10 of its runbook were run on 2026-10-16 and steps 6 to 15 and 17 on 2026-10-17. Step 16, the wallet monitor, is not used for this agent, as for the other two. The files are `));
+  // The first stop the status line reports is the one the section "Watch the first stop" asks for: the SIGTERM line in the log, and the exit code 0.
+  assert.ok(section(sRunbook, 'Watch the first stop').includes('The log ends with `SIGTERM: stopping; no new job, and up to 300 s for the one that is running`, and the exit code is `0`.'));
+  // DEPLOYED is said in those lines and nowhere else (the third line of the env example and of the runbook, the second line of the compose file and of the snippet), and LIVE is only ever denied.
+  const STATUS_AT = { 'deploy/host/docker-compose.audio-snippets.yml': `# ${S_STATUS}:`, 'deploy/host/Caddyfile.audio-snippets.snippet': `# ${S_STATUS}:`, 'deploy/host/.env.audio-snippets.example': `# Status: ${S_STATUS}.`, 'deploy/host/RUNBOOK-audio-snippets.md': `Status: ${S_STATUS}.` };
   for (const rel of [...S_FILES, 'agents/audio-snippets/Dockerfile']) {
     const text = read(rel);
-    assert.doesNotMatch(text.replace('Nothing in this folder is LIVE.', ''), /\b(LIVE|DEPLOYED)\b/, `${rel}: no status claim beyond the status line`);
+    assert.doesNotMatch(text.replace(STATUS_AT[rel] ?? '', '').replace('Nothing in this folder is LIVE.', ''), /\b(LIVE|DEPLOYED)\b/, `${rel}: no status claim beyond the status line`);
+    assert.doesNotMatch(text, /Not installed:|No step of it has been run|no step of RUNBOOK-audio-snippets\.md has been run|has not been run|built, not deployed|what will happen/, `${rel}: the words of before the flip`);
     assert.doesNotMatch(text, HOST_WORDS, `${rel}: names no host and no other stack`);
     assert.doesNotMatch(text, DASHES, `${rel}: no em or en dash`);
     assert.doesNotMatch(text, UNIT_NAME, `${rel}: the unit is called units`);
@@ -2264,7 +2278,8 @@ test('Snippets files: each says PROPOSED (built, not deployed) since 2026-10-13 
     assert.match(text, /^[\x09\x0a\x20-\x7e]*$/, `${rel}: ASCII`);
   }
   assert.doesNotMatch(sSection, HOST_WORDS);
-  assert.doesNotMatch(sSection.replace('Nothing in this section is LIVE.', ''), /\b(LIVE|DEPLOYED)\b/);
+  assert.doesNotMatch(sSection.replace(`Status: ${S_STATUS}.`, '').replace('Nothing in this section is LIVE.', ''), /\b(LIVE|DEPLOYED)\b/);
+  assert.doesNotMatch(sSection, /No step of its runbook has been run|built, not deployed/, 'the words of before the flip');
 });
 
 test('Snippets README section: the third stack, with its two containers, the loopback port, the unpublished service port, the network of .env, the limits, the hostname, the Caddy block and the way back', () => {
@@ -2287,8 +2302,9 @@ test('Snippets README section: the third stack, with its two containers, the loo
     '[RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md), under "Back out"',
   ]) assert.ok(sSection.includes(part), `the section says: ${part}`);
   assert.ok(!sSection.includes('retire-advert.ts'), 'the retire command lives in one place, the runbook');
-  assert.ok(readme.includes("Audio Snippets is a third, built and not deployed, with its own section at the end of this note, after the Pipeline's, and its own runbook, [RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md)."));
-  assert.ok(readme.includes('`mp-suppliers-snippets.hal8.ai` for Audio Snippets, which is built and has its own section at the end of this note, and `mp-suppliers-advocate.hal8.ai` for Advocate, which is not built yet.'));
+  assert.ok(readme.includes("Audio Snippets is a third, with its own section at the end of this note, after the Pipeline's, and its own runbook, [RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md)."));
+  assert.ok(readme.includes('One more comes later: `mp-suppliers-advocate.hal8.ai` for Advocate, which is not built yet. Audio Snippets has its own name, `mp-suppliers-snippets.hal8.ai`, and its own section at the end of this note.'));
+  assert.equal(readme.match(/built and not deployed|Two more come later/), null, 'the words of before the flip of Audio Snippets');
   assert.ok(sSection.includes(`\`mem_limit: ${sService.mem_limit}\``) && sSection.includes(`\`stop_grace_period: ${sService.stop_grace_period}\``));
 });
 
@@ -2334,7 +2350,7 @@ test('Snippets RUNBOOK collateral and float: one key, 5 alone then 50, and the k
   const collateral = section(sRunbook, 'Collateral and float');
   const rows = collateral.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| Key |'));
   assert.equal(rows.length, 1, 'one key');
-  assert.ok(rows[0].startsWith("| Supplier key (the runtime's), generated on the host in step 4 | Two transfers to its address: exactly 5 units alone (collateral, never touched), then 50 units |"));
+  assert.ok(rows[0].startsWith("| Supplier key (the runtime's), generated on the host in step 4 | Two transfers to its address: exactly 5 units alone (collateral), then 50 units |"));
   assert.ok(collateral.includes('The service holds no key, so there is no second wallet.'));
   assert.ok(collateral.includes('A job of Audio Snippets costs the hirer about 4 (`docs/HIRE.md`, section 3)'));
   assert.ok(read('docs/HIRE.md').includes('| 2 (Audio Snippets) | 4 | 3 | 1 | about 1 | about 4 | 12 |'), 'what a job costs the hirer');
@@ -2546,6 +2562,7 @@ test('Snippets RUNBOOK step 5: the ops scripts are copied from the adapted set o
   ]) assert.ok(five.includes(part), `step 5 says: ${part}`);
   const [, venv] = [...five.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1]);
   assert.ok(venv.startsWith('cd "$BASE/ops"\npython3 -m venv venv\n'), 'the block of the Python environment starts in the ops folder: it may run in a new shell');
+  assert.ok(venv.endsWith("./venv/bin/pip show cbor2 | grep '^Version'\n./venv/bin/python -c \"import pycardano, reputation_staking\"\n"), 'and ends with the two checks of the prose');
   // What the copy of the Pipeline holds is what this copy looks for: the label, the record and the capability its step 5 wrote.
   const p5 = section(pRunbook, '5. Adapt the ops scripts');
   for (const left of ['document-pipeline supplier#g', '# "name":"Document Pipeline",#\'', '# "endpoint":"https://mp-suppliers-pipeline.hal8.ai"}#\'', 'CAPABILITIES = ["document.pipeline.ocr-summary.v1"]#\'']) assert.ok(p5.includes(left), `the copy of the Pipeline is made with: ${left}`);
@@ -2617,7 +2634,7 @@ test('Snippets RUNBOOK steps 10 to 14: the copy of the install script with the v
   assert.ok(ten.includes(LAST_LINE), 'step 10 tells the operator what to read in the last line of the script');
   assert.ok(section(pRunbook, '10. DNS and Caddy').includes(LAST_LINE.replace('to the host', 'to the box')), 'and the sentences are those of step 10 of the Pipeline');
   assert.ok(ten.indexOf(LAST_LINE) < ten.indexOf('Check from any machine:'), 'before the check from outside');
-  assert.match(section(sRunbook, '11. Hash the manifest'), /```sh\ncd "\$BASE\/repo"\nnode scripts\/manifest-hash\.mjs https:\/\/mp-suppliers-snippets\.hal8\.ai\n```/);
+  assert.match(section(sRunbook, '11. Hash the manifest'), /```sh\nnode scripts\/manifest-hash\.mjs https:\/\/mp-suppliers-snippets\.hal8\.ai\n```/);
   const blocks = [...sRunbook.matchAll(/post-advert\.ts( --dry-run)? \x5c\n((?:  --[^\n]+\n)+)/g)];
   assert.equal(blocks.length, 2, 'a dry run and the real run');
   const flags = (body) => Object.fromEntries([...body.matchAll(/--([a-z-]+) (\S+?)(?: \x5c)?(?: \| tail -1\))?$/gm)].map((m) => [m[1], m[2].replace(/^"|"$/g, '')]));
@@ -2640,9 +2657,10 @@ test('Snippets RUNBOOK: every block that works in a folder starts with its own c
   // The fenced sh blocks of the runbook, those in the list of Back out too (indented), with the indent taken off.
   const blocks = [...sRunbook.matchAll(/^( *)```sh\n([\s\S]*?)^\1```$/gm)].map((m) => m[2].split('\n').map((l) => (l.startsWith(m[1]) ? l.slice(m[1].length) : l)).join('\n'));
   assert.equal(blocks.length, 31, 'a block added or taken away is seen here');
-  // What names no folder and no file of one: the two variables, the bundle made on the operator's machine, the two checks in the image, the public check of the manifest, the comparison of the tokens, the log of the first run.
+  // What names no folder and no file of one: the two variables, the bundle made and the manifest hashed on the operator's machine (the host has no Node), the two checks in the image, the public check
+  // of the manifest, the comparison of the tokens, the log of the first run.
   const NO_FOLDER = [
-    'BASE=/opt/audio-snippets\n', 'git bundle create ', 'docker run --rm --entrypoint python3 ', 'curl -fsS https://mp-suppliers-snippets.hal8.ai/agent.json\n',
+    'BASE=/opt/audio-snippets\n', 'git bundle create ', 'node scripts/manifest-hash.mjs ', 'docker run --rm --entrypoint python3 ', 'curl -fsS https://mp-suppliers-snippets.hal8.ai/agent.json\n',
     'for c in audio-snippets-agent audio-snippets-service; do\n', 'docker logs --tail 20 audio-snippets-service\n',
   ];
   // A cd to the repository, to this folder or to the ops folder, or the mkdir of the one that does not exist yet and the cd into it.
@@ -2678,8 +2696,12 @@ test('Snippets RUNBOOK step 15 and the first stop: a request the service accepts
   assert.deepEqual(parsed, { source: { url: 'https://example.org/preamble.mp3' }, language: 'en', quotes: ['All LibriVox recordings are in the public domain.'], return_clips: false, clip_format: 'mp3' });
   for (const part of ['- `CAPABILITY_ID=audio.transcript.snippets.v1`.', '- `E2E_POLL_MS=10000`.', '- `E2E_STATE=./e2e-state-snippets.json`.', 'its section "Hiring Audio Snippets" lists them', '`[audio-snippets] job done in <ms> ms: <s> s of media; matches 1, unmatched 0, clips 0`']) assert.ok(s15.includes(part), part);
   assert.ok(S_SERVER.includes('log(`job done in ${deps.clock() - arrivedAt} ms: ${result.source.duration_s} s of media; matches ${result.matches.length}, unmatched ${result.unmatched.length}, clips ${result.clips.length}`);'));
-  // What a job takes is said as it was measured: the fixture on the implementers' machine, and nothing of the host.
-  assert.ok(s15.includes("- `E2E_POLL_MS=10000`. A job takes longer than Agent History's: allow minutes for a ten-minute file. The speech recognition of the 25 s test fixture took 2.4 s on the implementers' machine; the host is not measured."));
+  // What a job takes is said as it was measured: the fixture on the implementers' machine, and the first-party run of 2026-10-17 on the host, whose wall clock and length of media are
+  // those of the receipt and of the result in its evidence file. The 68469 ms are the service's own log line of that job, which the evidence does not carry.
+  assert.ok(s15.includes("- `E2E_POLL_MS=10000`. A job takes longer than Agent History's: allow minutes for a ten-minute file. The speech recognition of the 25 s test fixture took 2.4 s on the implementers' machine. On the host, the first-party run of 2026-10-17 took a supplier wall clock of 68485 ms for 364.303 s of media (fetch, decode, speech recognition and matching; the service's own log line said 68469 ms)."));
+  const run = JSON.parse(read('docs/evidence/2026-10-17-audio-snippets-run-1.json'));
+  assert.ok(s15.includes(`a supplier wall clock of ${run.receipt.wallclock_ms} ms for ${JSON.parse(run.result).source.duration_s} s of media`), 'the numbers are those of the evidence');
+  assert.doesNotMatch(sRunbook, /the host is not measured/, 'the words of before the run');
   assert.doesNotMatch(sRunbook, /a minute or more/);
   // docs/E2E.md carries the same settings: the request JSON, the pause and the state file are written alike in both.
   const e2e = section(read('docs/E2E.md'), 'Hiring Audio Snippets');
@@ -2697,7 +2719,9 @@ test('Snippets RUNBOOK step 17 and Back out: the old advert retired before the r
     assert.ok(item8.includes('`' + f + '`'), `item 8 names ${f}`);
     assert.ok(existsSync(join(root, f)), `${f} exists`);
   }
-  assert.ok(S_SERVER.includes("statusChip(env.AGENT_STATUS_CHIP, 'proposed')") && S_SERVER.includes("statusSince(env.AGENT_STATUS_SINCE, '2026-10-13')"), 'the code carries the word as a default, as the item says');
+  // The word is carried as a default by the code, as the item says: deployed since the flip of 2026-10-17.
+  assert.ok(S_SERVER.includes("statusChip(env.AGENT_STATUS_CHIP, 'deployed')") && S_SERVER.includes("statusSince(env.AGENT_STATUS_SINCE, '2026-10-17')"), 'the code carries the word as a default, as the item says');
+  assert.equal(S_SERVER.includes("statusChip(env.AGENT_STATUS_CHIP, 'proposed')") || S_SERVER.includes("'2026-10-13'"), false, 'the default of before the flip');
   const back = section(sRunbook, 'Back out');
   const at = (needle) => { const i = back.indexOf(needle); assert.ok(i >= 0, needle); return i; };
   const order = ['1. Retire the advert.', 'agent/src/cli/retire-advert.ts', '2. Stop the containers', `${DC} down`, '3. Host administrator: remove the Caddy block of this agent', '4. Operator: the key.'];
@@ -2845,4 +2869,67 @@ test('the deploy notes and the runbooks: CI publishes each image on every merge 
   assert.ok(section(sRunbook, '2. Build the service image and pin it').includes('CI publishes the same image under `:latest` and `:<full git commit sha>` on every merge to `main`; the host still builds its own.'));
   for (const rel of [...PUBLIC_FILES, ...S_FILES]) assert.doesNotMatch(read(rel), /once Actions can run|until it has, the (box|host) uses/, rel);
   assert.deepEqual(ci.jobs.publish.if, "github.event_name == 'push' && github.ref == 'refs/heads/main'");
+});
+
+// ---- The run of RUNBOOK-audio-snippets.md, 2026-10-16 and 2026-10-17 ----
+// The status line of the runbook says what was run (the Snippets files test above pins it). The step texts stay instructions for a first run, as those of the Pipeline's runbook do after its flip.
+test('Snippets RUNBOOK: the step texts stay instructions after the run (step 7 quotes no row that is gone, step 9 pins no word), and a first run is told to start with the earlier word', () => {
+  assert.equal(sRunbook.match(/No step of it has been run|what will happen/), null);
+  const four = section(sRunbook, '4. Make the env file and generate the supplier key');
+  assert.ok(four.includes("The example also carries the current status word and its date in `AGENT_STATUS_CHIP` and `AGENT_STATUS_SINCE`. On a first run, before any job has settled, set them to `proposed` and today's date: the status can honestly change only in step 17."));
+  assert.doesNotMatch(four, /`proposed` since 2026-10-13|They stay so until step 17/, 'the words of before the flip');
+  // Step 7 asks for the pull request that records the identity: it names the rows as they are after it.
+  const seven = section(sRunbook, '7. Register the identity');
+  assert.ok(seven.includes('(the DID row, the "Registry record" row and the sentence that says the agent has a registry record)'));
+  assert.equal(seven.includes('Registry record, planned') || seven.includes('no registry record yet'), false);
+  // Step 9 reads the word and the date the env file sets, whatever they are; step 12 still names the rows of the Identity table that say "planned" or "not in service", as the instruction it is.
+  const nine = section(sRunbook, '9. Start the service');
+  assert.ok(nine.includes('`status.chip` and `status.since` as the env file sets them (step 4)'));
+  assert.doesNotMatch(nine, /status\.chip` `proposed`|2026-10-13/);
+  const twelve = section(sRunbook, '12. Post the advert');
+  assert.ok(twelve.includes('refresh the rows of the Identity table that still say "planned" or "not in service"') && twelve.includes('The status word stays PROPOSED until step 17.'));
+  // Step 14 names no word and no job, and step 16 is not used for this agent.
+  assert.doesNotMatch(section(sRunbook, '14. Check the advert on the indexer'), /PROPOSED|no job has settled/);
+  assert.ok(section(sRunbook, '16. Wallet monitor').startsWith('\nNot used for this agent, as for Agent History and the Pipeline'));
+});
+
+// ---- Four corrections of the runbooks, learned from the run of Audio Snippets ----
+// Each is made in the sentence of RUNBOOK-audio-snippets.md that the run showed wrong, and in the same words where RUNBOOK-document-pipeline.md or RUNBOOK.md carries the same sentence.
+test('the four corrections of the run of Audio Snippets: the hash script runs on the machine of the operator and the host cross-checks; setup-venv.sh ends with a traceback and two checks hold; a comment line of the copied install script is expected; the setup transactions used the 5 alone as an input', () => {
+  const books = { 'Agent History': runbook, 'Document Pipeline': pRunbook, 'Audio Snippets': sRunbook };
+  // 1. Step 11. The host has no Node: the script runs on the operator's machine, from the root of a checkout, and the host cross-checks the raw bytes. On 2026-10-17 the two agreed before the flip and after it.
+  for (const [name, book] of Object.entries(books)) {
+    const eleven = section(book, '11. Hash the manifest');
+    const host = name === 'Audio Snippets' ? 'host' : 'box';
+    assert.ok(eleven.includes(`The script runs on the operator's machine, from the root of a checkout of the repository, with Node 22: the ${host} has no Node. It only fetches public bytes:\n\n\`\`\`sh\nnode scripts/manifest-hash.mjs https://mp-suppliers-`), `${name}: step 11 runs on the machine of the operator`);
+    assert.ok(eleven.includes(`It prints one JSON line with \`detail_uri\`, \`detail_hash\` and \`bytes\`. The ${host} cross-checks the raw bytes with \`curl -fsS https://mp-suppliers-`), `${name}: the ${host} cross-checks the raw bytes`);
+    assert.ok(eleven.includes(' | sha256sum`: the two must agree.'), `${name}: the two must agree`);
+    assert.doesNotMatch(eleven, /on any machine with Node 22|the root is `\$BASE\/repo`|cd "\$BASE\/repo"/, `${name}: the words of before`);
+  }
+  assert.ok(section(sRunbook, '11. Hash the manifest').includes('On 2026-10-17 both gave `84a9b9dfc8109be1144e9e70cedc5bbf2be3942ca7f6d7fd0570729037de843c` before the flip and `059b0f6f9826eec89cfd4f7e3177152403983b926d2892bf2a472145daef879b` after it.'));
+  assert.ok(SSPEC.includes('manifest hash `84a9b9dfc8109be1144e9e70cedc5bbf2be3942ca7f6d7fd0570729037de843c` (the manifest before the status flip)') && SSPEC.includes('manifest hash `059b0f6f9826eec89cfd4f7e3177152403983b926d2892bf2a472145daef879b`. The marketplace indexer lists it'), 'the two hashes are those of the two adverts in the spec');
+  // 2. Step 5. setup-venv.sh ends with a traceback from its last line after everything is installed, and the venv is complete all the same: the two checks that hold. RUNBOOK.md has no such sentence.
+  const TRACE = '`setup-venv.sh` does not end with `venv ok` on this ';
+  const REST = ": it ends with a traceback from its last line, `module 'pycardano' has no attribute '__version__'`, after everything is installed, and the venv is complete all the same (";
+  const CHECK = "). The check that holds is the last two lines of the block: `./venv/bin/pip show cbor2 | grep '^Version'` prints `Version: 5.6.5`, and `./venv/bin/python -c \"import pycardano, reputation_staking\"` exits 0.";
+  assert.ok(section(sRunbook, '5. Adapt the ops scripts').includes(`${TRACE}host${REST}its packages are identical to the Pipeline's, and steps 7 and 8 ran on it${CHECK}`));
+  assert.ok(section(pRunbook, '5. Adapt the ops scripts').includes(`${TRACE}box${REST}it ended so for Audio Snippets on 2026-10-16, whose venv has the same packages as this one, and steps 7 and 8 of RUNBOOK-audio-snippets.md ran on that venv${CHECK}`));
+  for (const book of [sRunbook, pRunbook]) assert.equal(book.includes('`setup-venv.sh` ends with `venv ok`, and the last command must print `Version: 5.6.5`.'), false, 'the sentence of before');
+  // The block ends with the two checks the prose names: the version of cbor2, then the import of pycardano and of the SDK of Module-3.
+  for (const book of [sRunbook, pRunbook]) assert.match(section(book, '5. Adapt the ops scripts'), /\.\/setup-venv\.sh\n\.\/venv\/bin\/pip show cbor2 \| grep '\^Version'\n\.\/venv\/bin\/python -c "import pycardano, reputation_staking"\n```/);
+  // 3. Step 10. The grep that looks for the other stacks prints the first comment line of the copy, which names the Pipeline: a comment line is expected, and a path, a name or a message must not appear.
+  assert.ok(section(sRunbook, '10. DNS and Caddy').includes("The first `grep` must show the vhost, the snippet and the marker of Audio Snippets. The second prints the first comment line of the copy, which names the Pipeline: a comment line is expected there, and is edited to this agent's or left as it is. A line that is a path, a name or a message of another stack is what must not appear: change it by hand to this agent's before the script runs, because it would act on the wrong stack."));
+  assert.ok(section(pRunbook, '10. DNS and Caddy').includes("It may print a comment line of the copy: a comment line is expected there, and is edited to this agent's or left as it is. A line that is a path, a name or a message of the other stack is what must not appear: change it by hand to this agent's before the script runs, because it would act on the wrong stack."));
+  for (const book of [sRunbook, pRunbook]) assert.doesNotMatch(section(book, '10. DNS and Caddy'), /must print nothing/, 'the instruction of before');
+  // 4. Collateral and float. The two transfers stay, word for word, and a paragraph after them says that the setup transactions of 2026-10-17 used the 5 alone as an input and that the
+  // supplier's Claim and Submit still found collateral, so that an operator who sees the 5 gone knows that nothing went wrong.
+  const USED = "the setup transactions (steps 7, 8 and 12) used the 5-unit output as an input, so it did not stay alone; the supplier's Claim and Submit still found collateral in the change.";
+  assert.ok(section(sRunbook, 'Collateral and float').includes(`by an ordinary transaction.\n\nOn 2026-10-17 ${USED}\n`));
+  for (const book of [runbook, pRunbook]) assert.ok(section(book, 'Collateral and float').includes(`by an ordinary transaction.\n\nOn 2026-10-17, for Audio Snippets, ${USED}\n`));
+  for (const book of Object.values(books)) {
+    // The cell of the supplier key says collateral, and no longer that the 5 is never touched: the setup transactions of 2026-10-17 used it as an input.
+    assert.ok(section(book, 'Collateral and float').includes('exactly 5 units alone (collateral), then 50 units'), 'the instruction of the two transfers stays');
+    assert.equal(section(book, 'Collateral and float').includes('(collateral, never touched)'), false, 'the words of before the run');
+    assert.ok(section(book, 'Collateral and float').includes('Two transfers, because a wallet supplied in one transfer can have its collateral '), 'and so does its reason');
+  }
 });

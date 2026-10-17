@@ -67,7 +67,7 @@ describe('manifest', () => {
           + 'The log carries job outcomes, never a request, a transcript or the media.',
         third_parties: ['the host of the source URL'],
       },
-      status: { chip: 'proposed', since: '2026-10-13' },
+      status: { chip: 'deployed', since: '2026-10-17' },
       gaps: [...gapsFor('base')],
       links: { spec: SPEC_URL, source: 'https://github.com/Apex-Fusion/vector-service-agents/tree/main/agents/audio-snippets', explorer_advert: '' },
     });
@@ -113,9 +113,9 @@ describe('manifest', () => {
     for (const file of ['server.ts', 'start.ts', 'gaps.ts', 'index.ts', 'model.ts']) expect(readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8'), file).not.toMatch(/[A-Za-z0-9._-]+@[A-Za-z0-9-]+\.[A-Za-z]/);
   });
 
-  test('defaults: proposed since 2026-10-13, price 2 units, both bonds 1 unit, a 25 min window; a smaller window is refused, a larger one is used', () => {
+  test('defaults: deployed since 2026-10-17, price 2 units, both bonds 1 unit, a 25 min window; a smaller window is refused, a larger one is used', () => {
     const m = manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT });
-    expect([m.status, m.terms.price_lovelace, m.terms.max_processing_ms]).toStrictEqual([{ chip: 'proposed', since: '2026-10-13' }, 2_000_000, 1_500_000]);
+    expect([m.status, m.terms.price_lovelace, m.terms.max_processing_ms]).toStrictEqual([{ chip: 'deployed', since: '2026-10-17' }, 2_000_000, 1_500_000]);
     for (const bad of ['0', '300000', '1499999']) {
       expect(() => manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ADVERT_MAX_PROCESSING_MS: bad }), bad).toThrow(/^environment variable ADVERT_MAX_PROCESSING_MS must be at least 1500000 \(the window of 25 min that the deadline of a job, 1320000 ms, assumes\), got \d+$/);
     }
@@ -123,11 +123,13 @@ describe('manifest', () => {
     for (const bad of ['two', '-1', '1.5']) expect(() => manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ADVERT_PRICE_LOVELACE: bad }), bad).toThrow(/ADVERT_PRICE_LOVELACE/);
   });
 
-  test('AGENT_STATUS_CHIP: live, deployed or proposed in any case, carried in lower case, proposed by default; AGENT_STATUS_SINCE a date, 2026-10-13 by default', () => {
+  test('AGENT_STATUS_CHIP: live, deployed or proposed in any case, carried in lower case, deployed by default and never live; AGENT_STATUS_SINCE a date, 2026-10-17 by default', () => {
     const chip = (value?: string) => manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ...(value === undefined ? {} : { AGENT_STATUS_CHIP: value }) }).status.chip;
-    expect([chip(), chip(''), chip('Deployed'), chip('LIVE'), chip('proposed')]).toStrictEqual(['proposed', 'proposed', 'deployed', 'live', 'proposed']);
+    // The default is the word of the flip of 2026-10-17 (RUNBOOK-audio-snippets step 17). A first run, before any job has settled, starts with proposed (step 4).
+    expect([chip(), chip(''), chip('Deployed'), chip('LIVE'), chip('proposed')]).toStrictEqual(['deployed', 'deployed', 'deployed', 'live', 'proposed']);
     for (const bad of ['built', 'proposed ', 'up']) expect(() => chip(bad), bad).toThrow(/AGENT_STATUS_CHIP/);
     expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: '2026-11-02' }).status.since).toBe('2026-11-02');
+    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: ' ' }).status.since).toBe('2026-10-17');
     for (const bad of ['yesterday', '2026-10-1']) expect(() => manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: bad }), bad).toThrow(/AGENT_STATUS_SINCE/);
   });
 

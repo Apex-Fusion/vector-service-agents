@@ -4,7 +4,7 @@ Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE. Steps 1 to 15
 
 This note says what will be installed on the box and what the host administrator does. The operator's part (keys, collateral and float, identity, advert) is [RUNBOOK.md](RUNBOOK.md). The host administrator's part is the registry login and the image (step 2 of the runbook), and DNS and Caddy (step 10). The image has to be on the box before the operator starts the service (step 9). DNS and Caddy have to work before the advert is posted (step 12), because the advert points at the public URL.
 
-The Document Pipeline is a second stack on the same box. It has its own section after the Agent History part of this note and its own runbook, [RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md). Audio Snippets is a third, built and not deployed, with its own section at the end of this note, after the Pipeline's, and its own runbook, [RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md).
+The Document Pipeline is a second stack on the same box. It has its own section after the Agent History part of this note and its own runbook, [RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md). Audio Snippets is a third, with its own section at the end of this note, after the Pipeline's, and its own runbook, [RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md).
 
 ## What will land on the box
 
@@ -17,7 +17,7 @@ The working directory on the box is `<base path>/repo/deploy/host`, inside a che
 
 ## What the host administrator does
 
-1. **DNS.** One name is needed now: `mp-suppliers-history.hal8.ai`, an A record to the box, DNS only (grey cloud), or Caddy cannot get its certificate. Two more come later: `mp-suppliers-snippets.hal8.ai` for Audio Snippets, which is built and has its own section at the end of this note, and `mp-suppliers-advocate.hal8.ai` for Advocate, which is not built yet. The Document Pipeline has its own name, `mp-suppliers-pipeline.hal8.ai`, and its own section after the Agent History part of this note. The advert will carry the first name as its endpoint, so the operator waits for it before posting the advert.
+1. **DNS.** One name is needed now: `mp-suppliers-history.hal8.ai`, an A record to the box, DNS only (grey cloud), or Caddy cannot get its certificate. One more comes later: `mp-suppliers-advocate.hal8.ai` for Advocate, which is not built yet. Audio Snippets has its own name, `mp-suppliers-snippets.hal8.ai`, and its own section at the end of this note. The Document Pipeline has its own name, `mp-suppliers-pipeline.hal8.ai`, and its own section after the Agent History part of this note. The advert will carry the first name as its endpoint, so the operator waits for it before posting the advert.
 
 2. **Registry login.** The package is public since 2026-10-16, so the login is optional, and the host still builds the image itself (point 3). To log in, on the box: `docker login ghcr.io -u <user> --password-stdin`, with a token that has `read:packages`.
 
@@ -124,7 +124,7 @@ The order and the commands are in [RUNBOOK-document-pipeline.md](RUNBOOK-documen
 
 ## Audio Snippets on the same host
 
-Status: PROPOSED (built, not deployed) since 2026-10-13. Nothing in this section is LIVE. No step of its runbook has been run. The files are `docker-compose.audio-snippets.yml`, `.env.audio-snippets.example`, `Caddyfile.audio-snippets.snippet` and [RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md), which is the operator's order of work and follows [RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md) step for step. This section says what Audio Snippets adds to the host and what the host administrator does for it. It is a third stack beside Agent History and the Pipeline, in the same shape.
+Status: DEPLOYED since 2026-10-17. Nothing in this section is LIVE. Steps 1 to 5, 9 and 10 of its runbook were run on 2026-10-16 and steps 6 to 15 and 17 on 2026-10-17. Step 16, the wallet monitor, is not used for this agent, as for the other two. The files are `docker-compose.audio-snippets.yml`, `.env.audio-snippets.example`, `Caddyfile.audio-snippets.snippet` and [RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md), which is the operator's order of work and follows [RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md) step for step. This section says what Audio Snippets adds to the host and what the host administrator does for it. It is a third stack beside Agent History and the Pipeline, in the same shape.
 
 | Container | Image | Listens on | Reachable from |
 |---|---|---|---|

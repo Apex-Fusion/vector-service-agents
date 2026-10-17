@@ -44,10 +44,12 @@ The Foundation supplies two keys with their collateral and float. Nobody pastes 
 
 | Key | Supplied with | Covers |
 |---|---|---|
-| Supplier key (the runtime's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral, never touched), then 50 units | As for Agent History: the registry deposit (10 units), the stake (10), the advert (about 2 locked) and fees of about 0.5 a transaction. The setup uses about 25 with fees. The rest covers the supplier's claim and submit fees. |
+| Supplier key (the runtime's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral), then 50 units | As for Agent History: the registry deposit (10 units), the stake (10), the advert (about 2 locked) and fees of about 0.5 a transaction. The setup uses about 25 with fees. The rest covers the supplier's claim and submit fees. |
 | Buyer key (the service's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral for the Accept and the Reclaim of the sub-jobs, never touched), then 100 units | The sub-jobs the service hires: the OCR hops at about 2.2 net per page (price 0.2, supplier bond 1, fees about 1) plus the chat hop at about the same, so about 13 net for a job of five pages, against its price of 5. The locks and fees in flight for such a job come to about 19, of which the buyer bonds and the lock excess return on Accept (`specs/document-pipeline.md`, Terms). These figures hold at today's fleet price of 0.2 per sub-job; the service hires no advert priced above `OCR_MAX_PRICE_LOVELACE` or `LLM_MAX_PRICE_LOVELACE` (1 unit each unless the env file says otherwise). A job is refused with `insufficient_float` (503), and `/healthz` of the service turns 503, when the float outside the collateral is under (max_pages + 1) x 4.5, which is 27 for five pages; a job is also refused, before its first Post, when the float does not cover the locks and fees at the prices of the adverts it chose. 100 covers several jobs of five pages at about 19 each in flight, and the buyer bonds and the lock excess come back as the Accepts land. |
 
 Two transfers, because a wallet supplied in one transfer can have its collateral spent as change by an ordinary transaction.
+
+On 2026-10-17, for Audio Snippets, the setup transactions (steps 7, 8 and 12) used the 5-unit output as an input, so it did not stay alone; the supplier's Claim and Submit still found collateral in the change.
 
 The key of the first-party run (step 15) is a third key and gets no collateral or float here: it is the operator's own test buyer key, the kind that hired Agent History in step 15 of RUNBOOK.md. A job of the Pipeline costs the hirer about 7 (`docs/HIRE.md`, section 3), so that key needs its 5 alone and a float of at least 9 for the run, the lock of 7 and about 2 more (`docs/HIRE.md`, section 8). The float left from the Agent History run may be enough: the operator checks it before step 15, and asks the Foundation for a top-up if it is not.
 
@@ -236,9 +238,10 @@ python3 -m venv venv
 ./venv/bin/pip -q install 'cbor2==5.6.5'
 ./setup-venv.sh
 ./venv/bin/pip show cbor2 | grep '^Version'
+./venv/bin/python -c "import pycardano, reputation_staking"
 ```
 
-`setup-venv.sh` ends with `venv ok`, and the last command must print `Version: 5.6.5`.
+`setup-venv.sh` does not end with `venv ok` on this box: it ends with a traceback from its last line, `module 'pycardano' has no attribute '__version__'`, after everything is installed, and the venv is complete all the same (it ended so for Audio Snippets on 2026-10-16, whose venv has the same packages as this one, and steps 7 and 8 of RUNBOOK-audio-snippets.md ran on that venv). The check that holds is the last two lines of the block: `./venv/bin/pip show cbor2 | grep '^Version'` prints `Version: 5.6.5`, and `./venv/bin/python -c "import pycardano, reputation_staking"` exits 0.
 
 ## 6. Supply the two wallets with their collateral and float
 
@@ -326,7 +329,7 @@ The `grep` must show the vhost and the snippet of the Pipeline. If a line does n
 grep -in history install-caddy-route.sh
 ```
 
-It must print nothing. A line it prints is a path, a name or a message of the other stack: change it by hand to this agent's before the script runs, because it would act on the wrong stack. Run `./install-caddy-route.sh` once the record resolves to the box. The copy may poll `/healthz` on the public name after it has reloaded Caddy, and that route goes to the runtime, which does not exist before step 13. So before step 13 the script can wait on that poll, or end with exit code 2, with the block already in place. Read the last line it printed: if it is about the `/healthz` poll, that is the expected end, and the route to check is `/agent.json`, which goes to the service and answers now. If it says the name does not resolve to the box, the record is not there yet: wait for it and run the script again. Check from any machine:
+It may print a comment line of the copy: a comment line is expected there, and is edited to this agent's or left as it is. A line that is a path, a name or a message of the other stack is what must not appear: change it by hand to this agent's before the script runs, because it would act on the wrong stack. Run `./install-caddy-route.sh` once the record resolves to the box. The copy may poll `/healthz` on the public name after it has reloaded Caddy, and that route goes to the runtime, which does not exist before step 13. So before step 13 the script can wait on that poll, or end with exit code 2, with the block already in place. Read the last line it printed: if it is about the `/healthz` poll, that is the expected end, and the route to check is `/agent.json`, which goes to the service and answers now. If it says the name does not resolve to the box, the record is not there yet: wait for it and run the script again. Check from any machine:
 
 ```sh
 curl -fsS https://mp-suppliers-pipeline.hal8.ai/agent.json
@@ -336,14 +339,13 @@ It must return the manifest of step 9, byte for byte. `/healthz` on the public n
 
 ## 11. Hash the manifest
 
-Operator. As in step 11 of RUNBOOK.md. Run it from the root of the repository checkout, on any machine with Node 22; the script only fetches public bytes. On the box the root is `$BASE/repo`:
+Operator. As in step 11 of RUNBOOK.md. The script runs on the operator's machine, from the root of a checkout of the repository, with Node 22: the box has no Node. It only fetches public bytes:
 
 ```sh
-cd "$BASE/repo"
 node scripts/manifest-hash.mjs https://mp-suppliers-pipeline.hal8.ai
 ```
 
-It prints one JSON line with `detail_uri`, `detail_hash` and `bytes`. Cross-check on the box with `curl -fsS https://mp-suppliers-pipeline.hal8.ai/agent.json | sha256sum`: the 64 hex digits must be the same. If they differ, stop. Something between the box and the client rewrites the bytes.
+It prints one JSON line with `detail_uri`, `detail_hash` and `bytes`. The box cross-checks the raw bytes with `curl -fsS https://mp-suppliers-pipeline.hal8.ai/agent.json | sha256sum`: the two must agree. If they differ, stop. Something between the box and the client rewrites the bytes.
 
 ## 12. Post the advert
 
