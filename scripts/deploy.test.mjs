@@ -548,8 +548,8 @@ test('status words: no file says PROPOSED about Agent History, Document Pipeline
   const OTHER_AGENTS = ['specs/advocate.md'];
   // The four deploy files of Audio Snippets and its README: since the flip of 2026-10-17 they are held to the rule as the files of the other two are.
   const SNIPPETS_FILES = [...S_FILES, 'agents/audio-snippets/README.md'];
-  // Advocate is built and PROPOSED until step 17 of its runbook: its four deploy files say the word in their status lines and their instructions.
-  const ADVOCATE_FILES = [...A_FILES];
+  // Advocate is built and PROPOSED until step 17 of its runbook: its four deploy files and its README say the word in their status lines and their instructions.
+  const ADVOCATE_FILES = [...A_FILES, 'agents/advocate/README.md'];
   // What may still say PROPOSED outside the spec of the agent that is PROPOSED: its row in the table of the root README, the rule that lists the three words,
   // the marketplace tools in the Interface section of the spec (the tools, not the agent), and the instructions of the three runbooks that speak for the order of a first run.
   const PROPOSED_OK = {
@@ -577,8 +577,8 @@ test('status words: no file says PROPOSED about Agent History, Document Pipeline
   assert.deepEqual(JSON.parse(read('agents/document-pipeline/agent.json.template')).status, { chip: 'deployed', since: '2026-10-16' });
   assert.match(read('deploy/host/.env.audio-snippets.example'), /^AGENT_STATUS_CHIP=deployed$/m);
   assert.deepEqual(JSON.parse(read('agents/audio-snippets/agent.json.template')).status, { chip: 'deployed', since: '2026-10-17' });
-  // Advocate is PROPOSED, in its own spec, and its env example and its manifest carry the word proposed since 2026-10-13. Document Pipeline is DEPLOYED since 2026-10-16 and Audio Snippets since 2026-10-17, each in the line of its spec.
-  assert.match(read('specs/advocate.md'), /^PROPOSED \(not built\)\. Since 2026-10-13\.$/m);
+  // Advocate is built and PROPOSED until step 17 of its runbook, in its spec, and its env example and its manifest carry the word proposed since 2026-10-13. Document Pipeline is DEPLOYED since 2026-10-16 and Audio Snippets since 2026-10-17, each in the line of its spec.
+  assert.match(read('specs/advocate.md'), /^PROPOSED \(built, not deployed\)\. Since 2026-10-13\.$/m);
   assert.match(read('deploy/host/.env.advocate.example'), /^AGENT_STATUS_CHIP=proposed$/m);
   assert.deepEqual(JSON.parse(read('agents/advocate/agent.json.template')).status, { chip: 'proposed', since: '2026-10-13' });
   assert.match(read('specs/audio-snippets.md'), /^DEPLOYED \(registered and staked 2026-10-17, advertised 2026-10-17, re-advertised 2026-10-17 at the status flip, one first-party job settled 2026-10-17\)\. Since 2026-10-17\.$/m);
@@ -3708,6 +3708,9 @@ test('Advocate RUNBOOK step 15 and the first stop: the request of the spec, whic
   // The line of the log is the code's: each of its parts is written by a source of the service, and a job is first-party.
   for (const part of ['job done in ', ' ms: results ', ', pages ', ', arguments ', ' (dropped ', '), quotes dropped ', ', tokens ', '-/-']) assert.ok(A_SRC.includes(part), `the code writes: ${part}`);
   assert.ok(s15.includes('A first-party run is not demand.'));
+  // docs/E2E.md carries the same settings: the request JSON, the pause and the state file are written alike in both.
+  const e2e = section(read('docs/E2E.md'), 'Hiring Advocate');
+  for (const setting of [m[1], 'export CAPABILITY_ID=research.advocate.onesided.v1', 'export E2E_POLL_MS=10000', 'export E2E_STATE=./e2e-state-advocate.json']) assert.ok(e2e.includes(setting), `docs/E2E.md has the setting: ${setting}`);
   const stop = section(aRunbook, 'Watch the first stop');
   for (const part of [`time ${ADC} stop service`, 'docker logs --tail 5 advocate-service', "docker inspect --format '{{.State.ExitCode}}' advocate-service", 'The log ends with `SIGTERM: stopping; no new job, and up to 300 s for the one that is running`, and the exit code is `0`.']) assert.ok(stop.includes(part), part);
   assert.ok(read('packages/service-kit/src/lifecycle.ts').includes('opts.log(`${signal}: stopping; no new job, and up to ${waitMs / 1000} s for the one that is running`);'));
@@ -3719,6 +3722,7 @@ test('Advocate RUNBOOK step 17 and Back out: the old advert retired before the r
   const item8 = s17.slice(s17.indexOf('8. In the repository'));
   for (const f of ['specs/advocate.md', 'agents/advocate/README.md', 'README.md', 'docs/HIRE.md', 'docs/E2E.md', ...['README.md', 'RUNBOOK-advocate.md', 'docker-compose.advocate.yml', 'Caddyfile.advocate.snippet', '.env.advocate.example'].map((f) => `deploy/host/${f}`), 'agents/advocate/src/server.ts', 'agents/advocate/agent.json.template', 'agents/advocate/test/server.test.ts', 'agents/advocate/test/start.test.ts', 'agents/advocate/test/spec.test.ts', 'agents/advocate/test/readme.test.ts', 'scripts/specs.test.mjs', 'scripts/deploy.test.mjs']) {
     assert.ok(item8.includes('`' + f + '`'), `item 8 names ${f}`);
+    assert.ok(existsSync(join(root, f)), `${f} exists`);
   }
   assert.ok(item8.includes('`pnpm --filter @vsa/advocate template`') && JSON.parse(read('agents/advocate/package.json')).scripts.template === 'node --import tsx scripts/render-template.mjs');
   // The word is carried as a default by the code, as the item says: proposed since 2026-10-13, in the manifest the template holds.
