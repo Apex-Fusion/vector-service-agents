@@ -84,13 +84,13 @@ The request is a JSON object with these keys and no other. A request that breaks
 | `side`, required | `for` or `against`, in any case, or a position in words of 1 to 120 characters with at least one letter or digit. `for` and `against` are kept in lower case and a position as given, without the spaces around it; the side is returned in `declared_bias.side`. |
 | `audience` | 1 to 200 characters: who the brief is for. The model is told it. |
 | `length` | `short` or `standard`, default `standard`. |
-| `language` | Default `en`. A language code of 2 to 16 characters: 2 to 8 letters, then any number of hyphen-separated subtags of 1 to 8 letters or digits, such as `en`, `en-GB` or `zh-Hant-TW`. The brief is written in it. The search is not told it. `auto` is refused, for it names no language. |
+| `language` | Default `en`. A language code of 2 to 16 characters: 2 to 8 letters, then any number of hyphen-separated subtags of 1 to 8 letters or digits, such as `en`, `en-GB` or `zh-Hant-TW`. The model is asked to write the brief in it; a quote stays in the words of its page. The search is not told it. `auto` is refused, for it names no language. |
 
 Then the job runs in this order, under its deadline:
 
-- The search: two queries to the Brave Search API, made from the subject and the side, with no language parameter and no country, one after the other, the second at least 1100 ms after the first: the subject alone, and the subject followed by the words of the side (`arguments in favour` for `for`, `arguments against` for `against`, the position itself for a position in words), each cut at a word boundary to at most 400 characters and 50 words, 10 results each. A query that answers 429 is asked once more, 1100 ms later. The results of the second query come first; a result is kept once, by its scheme, host and path, and only when its URL is https; at most 12 are kept. One query that fails is enough to go on with the other. Both failing is `search_failed` (502), and so is a key that the Brave Search API refuses. No usable result is `search_empty` (502).
+- The search: two queries to the Brave Search API, made from the subject and the side, with no language parameter and no country, one after the other, the second at least 1100 ms after the first: the subject alone, and the subject followed by the words of the side (`arguments in favour` for `for`, `arguments against` for `against`, the position itself for a position in words), each cut at a word boundary to at most 400 characters and 50 words, 10 results each. A query that answers 429 is asked once more, 1100 ms later. The results of the second query come first; a result is kept once, by its scheme, host and path, and only when its URL is https; at most 12 are kept. When one query fails, the search goes on with the results of the other. Both failing is `search_failed` (502), and so is a key that the Brave Search API refuses. No usable result is `search_empty` (502).
 - The pages: each result is fetched by the service, four at a time. A page is kept only when it answers within 15 s with no redirect and no error, is HTML or plain text, is at most 1 MB and has at least 200 characters of text; its first 12000 characters are its excerpt, and the kept pages are numbered from 1 in the order of the results. No page kept is `no_sources` (502).
-- The model: one call through OpenRouter with a fixed prompt, which asks for the strongest brief for the side, with no counter-argument, no rebuttal and no concession, every claim citing the numbered pages, each with a quote of 20 to 300 characters copied from that page. A call that fails is `model_failed` (502), and an answer that is not the JSON of a brief is `model_output_invalid` (502). With under 15 s left the model is not called, and the job fails with `deadline` (422).
+- The model: one call through OpenRouter with a fixed prompt, which asks for the strongest brief for the side, with no counter-argument, no rebuttal and no concession, every claim citing the numbered pages, each with a quote of 20 to 300 characters copied from that page. The call gets the smaller of 90 s and the time the job has left less 5 s, and is not made when that is under 15 s, which is with under 20 s of the job left: the job then fails with `deadline` (422). The fetch of the pages ends 20 s before the deadline at the latest, so that the model has its 15 s and the check and the result 5 s. A call that runs out of a time that the deadline of the job cut under 90 s is `deadline` (422); any other call that fails, a call that runs out of the whole 90 s among them, is `model_failed` (502). An answer that is not the JSON of a brief is `model_output_invalid` (502).
 - The check: see Check below. No argument left is `no_supported_claims` (502).
 
 ### Response
@@ -106,7 +106,7 @@ Then the job runs in this order, under its deadline:
   "search": "Brave Search API", "model": "deepseek/deepseek-v4-flash via OpenRouter" }
 ```
 
-The declared-bias statement is always present and always reads: "This brief argues one side only, by design, and omits counter-arguments." The manifest carries the same declaration in `behaviour.declared_bias`, and the registry description, which is the manifest's, declares the bias too.
+The declared-bias statement is always present and always reads: "This brief argues one side only, by design, and omits counter-arguments." The manifest carries the same declaration in `behaviour.declared_bias`, and the description of the planned registry record, which is the manifest's, declares the bias too.
 
 Example, for the request above. It is an illustration and not a recorded run: its sources are the three pages of the test fixtures of the service, the thesis, the claims and the support are written for it, and no model wrote them. Every quote in it is found in the text of its page, as the check requires. The `model` field reads as the service names its default model, `deepseek/deepseek-v4-flash via OpenRouter`.
 
@@ -187,7 +187,7 @@ Example, for the request above. It is an illustration and not a recorded run: it
 | `schema` | `vector.advocate.brief.v1` |
 | `declared_bias` | `side`, the side the request gave, as the intake keeps it, and `statement`, the fixed sentence above |
 | `thesis` | the thesis of the brief, as the model wrote it |
-| `arguments[]` | the arguments the check kept, in the order the model gave them, each with its `claim`, its `support` and its `sources`: for each source the `title` and the `url` of the page, `retrieved_at`, the time the service fetched it (ISO 8601, UTC), and the `quote` that was found in its text |
+| `arguments[]` | the arguments the check kept, in the order the model gave them, each with its `claim`, its `support` and its `sources`: for each source the `title` the search gave for the page, its `url`, `retrieved_at`, the time the service fetched it (ISO 8601, UTC), and the `quote` that was found in its text |
 | `sources[]` | every source that the kept arguments cite, once for each page and quote, in the order they are first cited |
 | `omitted_by_design` | always `counter-arguments and rebuttals` |
 | `search` | always `Brave Search API` |
@@ -214,7 +214,7 @@ A refusal is `{ "error": "<code>", "message": "<words>" }` with the status in th
 | 400, the request | `bad_shape` (a request JSON that does not parse, or one that breaks a rule of Request) |
 | 401, the caller | `unauthorized` (the call has no authorization header, or one that is not the token of the service) |
 | 422, the job | `deadline` (the job ran out of its time, or too little of it was left to call the model) |
-| 499, the caller hung up | `aborted` (the job was stopped when its caller hung up; nobody reads this answer, and the log keeps it) |
+| 499, the caller hung up | `aborted` (the job was stopped when its caller hung up; nobody reads this answer, and the log keeps its code and the time the job took, not its words) |
 | 502, a third party or the check | `search_failed` (both queries failed, or the Brave Search API refused the key), `search_empty` (no usable result), `no_sources` (no page kept), `model_failed` (the call to OpenRouter failed), `model_output_invalid` (the answer is not the JSON of a brief), `no_supported_claims` (the check dropped every argument) |
 | 503, the service cannot take a job now | `shutting_down` (the service is stopping) |
 | 500, the service | `internal` |
@@ -251,7 +251,7 @@ What the service sees: the subject, the side, the audience, the length and the l
 |---|---|
 | Brave Search API (the two search queries) | the two queries the service makes from the subject and the side, with no language parameter, and the API key of the service; the language of the request is not sent |
 | the hosts of the result pages (the fetch of each page) | a GET of the page, with the user agent `vector-service-agents/advocate (+https://github.com/Apex-Fusion/vector-service-agents)`; nothing of the hirer's request is sent to them |
-| OpenRouter and the model provider behind it (the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages) | one chat completion: the fixed prompt, which holds the language code and the shape of the length asked for, and a message with the subject, the side, the audience when there is one, and the numbered pages, each with its title, its URL and its excerpt |
+| OpenRouter and the model provider behind it (the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages) | one chat completion: the fixed prompt, which holds the language code and the shape of the length asked for, and a message with the subject, the side, the audience when there is one, and the numbered pages, each with the title the search gave it, its URL and its excerpt |
 
 Datalab is not used, and no model runs on the operator's host. On the ledger the escrow carries only the sha256 of the wire payload, and the request stays off the ledger.
 

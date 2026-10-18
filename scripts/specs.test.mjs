@@ -1507,11 +1507,21 @@ test('docs/HIRE.md and docs/E2E.md: Advocate has a subsection of section 5 and a
   for (const part of [
     '[specs/advocate.md](../specs/advocate.md) gives every field, under Request and Response.',
     '`declared_bias` says which side the brief argues and that it leaves out the other side by design, and `omitted_by_design` names what it leaves out',
-    'Every argument cites its sources, each with a `quote`: the service found that quote in the text it fetched from the page the source names, and dropped any claim whose quote it did not find.',
+    'Every argument cites its sources, each with a `quote`: the service found that quote in the text it fetched from the page the source names, and dropped every quote it did not find, and any claim left with none.',
+    'The model is asked to write the brief in the `language` you ask for; a quote stays in the words of its page.',
     '`length` is `short`, a thesis and 3 arguments asked for, or `standard`, a thesis and 5 to 7 asked for, and the check can leave fewer.',
+    'Advocate writes the strongest one-sided brief for a position, with citations: it argues one side only, by design, and says so in every brief.',
+    'The six messages are the same, with two changes.',
+    '`side` is `for`, `against` or a position in your own words.',
+    'The service searches the web for the subject itself, reads the pages it finds and asks one model for the brief.',
+    'Read two things in the answer before you use it.',
+    'A quote shows that the page says it; whether the page is right is yours to judge, and the `url` of each source lets you read the page itself.',
     'which is your Post time plus 5 min plus 180 s. The price is 3 and a job costs about 5 (the cost table in section 3).',
   ]) assert.ok(sub.includes(part), `the subsection says: ${part}`);
   for (const heading of ['Request', 'Response', 'Check']) assert.ok(read('advocate').includes(`\n### ${heading}\n`), heading);
+  // What the guide says of the quotes and of the language is what the page says: a quote that fails is dropped, an argument left with none is dropped, and the model is asked for the language.
+  assert.ok(read('advocate').includes('A quote that fails is dropped. An argument left with no quote is dropped, and the thesis stays.'), 'the Check of the page');
+  assert.ok(read('advocate').includes('The model is asked to write the brief in it; a quote stays in the words of its page.'), 'the language row of the page');
   assert.ok(section(guide, '3. What the key must hold').split('\n').includes('| 3 (Advocate) | 5 | 4 | 1 | about 1 | about 5 | 10 |'), 'the cost table row the subsection points to');
   const e2e = section(doc('E2E.md'), 'Hiring Advocate');
   for (const part of [
@@ -1520,6 +1530,14 @@ test('docs/HIRE.md and docs/E2E.md: Advocate has a subsection of section 5 and a
     'which is 8 minutes after the Post (the 5 min window and 180 s)', 'add the run to the Results table with Advocate in the Agent column. Its `result` is the brief as JSON text',
   ]) assert.ok(e2e.includes(part), part);
   assert.equal((300_000 + 180_000) / 60_000, 8);
+  // The three settings the section explains are the script's: the capability of the advert, the request JSON of the page, and the state file of one run.
+  for (const part of [
+    "- `CAPABILITY_ID` is the capability of the advert of Advocate. Without it the script looks for the advert among the free suppliers of Agent History's capability and stops before it posts anything.",
+    '- `PAYLOAD` is the request JSON of the example of [specs/advocate.md](../specs/advocate.md).',
+    '- `E2E_STATE=./e2e-state-advocate.json`: a state file belongs to one run, and the script refuses one that belongs to another, so this run does not use the file of an earlier run.',
+  ]) assert.ok(e2e.includes(part), part);
+  for (const part of ["const DEFAULT_CAPABILITY = 'identity.history.report.v1';", 'const CAPABILITY = env.CAPABILITY_ID ?? DEFAULT_CAPABILITY;', 'is not among the free suppliers for ${CAPABILITY}', 'belongs to another run']) assert.ok(e2eScript().includes(part), part);
+  assert.ok(e2eScript().indexOf('is not among the free suppliers for') < e2eScript().indexOf("'vector_build_marketplace_post_escrow'"), 'the advert is looked for before the escrow is posted');
   // What the mutation of the subsection and of the section found unheld: the messages the request goes in, the 100 s of a call, the first-party label and the search of the E2E run.
   assert.ok(sub.includes('and write this request JSON in messages 3 and 4:'));
   assert.ok(sub.includes('ask your assistant to poll again whenever a call is cut near 100 s, as in section 9.'));

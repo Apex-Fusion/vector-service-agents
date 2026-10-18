@@ -50,7 +50,7 @@
             "standard"
           ],
           "default": "standard",
-          "description": "short: a thesis and exactly 3 arguments; standard: a thesis and 5 to 7 arguments"
+          "description": "The prompt asks for a thesis and 3 arguments (short) or 5 to 7 arguments (standard), and the check can leave fewer"
         },
         "language": {
           "type": "string",

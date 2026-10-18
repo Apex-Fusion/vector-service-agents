@@ -58,7 +58,7 @@ A refusal is `{"error": "<code>", "message": "<words>"}` with the status in the 
 | 400, the request | `bad_shape` (a request JSON that does not parse, or one that breaks a rule of the request) |
 | 401, the caller | `unauthorized` (the call has no authorization header, or one that is not the token of the service) |
 | 422, the job | `deadline` (the job ran out of its time, or too little of it was left to call the model) |
-| 499, the caller hung up | `aborted` (the job was stopped when its caller hung up; nobody reads this answer, and the log keeps it) |
+| 499, the caller hung up | `aborted` (the job was stopped when its caller hung up; nobody reads this answer, and the log keeps its code and the time the job took, not its words) |
 | 502, a third party or the check | `search_failed` (both queries failed, or the Brave Search API refused the key), `search_empty` (no usable result), `no_sources` (no page kept), `model_failed` (the call to OpenRouter failed), `model_output_invalid` (the answer is not the JSON of a brief), `no_supported_claims` (the check dropped every argument) |
 | 503, the service cannot take a job now | `shutting_down` (the service is stopping) |
 | 500, the service | `internal` |
@@ -67,7 +67,7 @@ Every refusal locks nothing of the service's: it holds no chain key and posts no
 
 ## The search, the pages and the model
 
-The search makes two queries to the Brave Search API, one after the other, the second at least 1100 ms after the first, since a plan of the Brave Search API may take about one query a second: the subject alone, and the subject followed by the words of the side (`arguments in favour` for `for`, `arguments against` for `against`, the position itself otherwise), each cut at a word boundary to at most 400 characters and 50 words, 10 results each. The queries are made from the subject and the side, with no language parameter and no country. A query that answers 429 is asked once more, 1100 ms later. The language of the request is not sent: it is the language of the brief. The results of the second query come first; a result is kept once, by its scheme, host and path, and only with an https URL; at most 12 are kept.
+The search makes two queries to the Brave Search API, one after the other, the second at least 1100 ms after the first, since a plan of the Brave Search API may take about one query a second: the subject alone, and the subject followed by the words of the side (`arguments in favour` for `for`, `arguments against` for `against`, the position itself otherwise), each cut at a word boundary to at most 400 characters and 50 words, 10 results each. The queries are made from the subject and the side, with no language parameter and no country. A query that answers 429 is asked once more, 1100 ms later. The language of the request is not sent: it is the language the model is asked to write the brief in. The results of the second query come first; a result is kept once, by its scheme, host and path, and only with an https URL; at most 12 are kept.
 
 Each result page is fetched by the service, four at a time, through the same safe fetch as the MCP server's (https only, no redirect followed, private and reserved addresses refused), at most 1048576 bytes and 15000 ms a page, with the user agent `vector-service-agents/advocate (+https://github.com/Apex-Fusion/vector-service-agents)`. A page is kept when it is HTML or plain text and its text, its tags and scripts taken out, has at least 200 characters; its first 12000 characters are what the model reads and what the check searches.
 

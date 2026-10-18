@@ -10,14 +10,14 @@ import { FETCH_CONCURRENCY, FETCH_PHASE_MAX_MS, FETCH_RESERVE_MS, JOB_DEADLINE_M
 import { AdvocateError, JOB_STATUS } from '../src/errors.ts';
 import type { JobCode } from '../src/errors.ts';
 import { EXCERPT_CHARS, MIN_PAGE_CHARS } from '../src/html.ts';
-import { DEFAULT_MODEL } from '../src/model.ts';
+import { DEFAULT_MODEL, callModel } from '../src/model.ts';
 import { PAGE_MAX_BYTES, USER_AGENT } from '../src/pages.ts';
 import { DECLARED_BIAS_STATEMENT, OMITTED_BY_DESIGN, QUOTE_MAX_CHARS, QUOTE_MIN_CHARS, SHAPES } from '../src/prompt.ts';
 import { RequestError } from '../src/request.ts';
-import { MAX_QUERY_CHARS, MAX_QUERY_WORDS, MAX_RESULTS, QUERY_SPACING_MS, RESULTS_PER_QUERY } from '../src/search.ts';
+import { MAX_QUERY_CHARS, MAX_QUERY_WORDS, MAX_RESULTS, QUERY_SPACING_MS, RESULTS_PER_QUERY, queriesFor, searchWeb } from '../src/search.ts';
 import { JobSlot, MIN_PROCESSING_WINDOW_MS, TEMPLATE_ENV, manifestFromEnv } from '../src/server.ts';
 import { PORT_DEFAULT, SETTINGS, loadConfig } from '../src/start.ts';
-import { GOLDEN_REQUEST } from './golden.ts';
+import { GOLDEN_OUTCOME, GOLDEN_REQUEST } from './golden.ts';
 import { baseDeps, serve, wire } from './server-support.ts';
 
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
@@ -86,7 +86,7 @@ describe('agents/advocate/README.md', () => {
       '| 400, the request | `bad_shape` (a request JSON that does not parse, or one that breaks a rule of the request) |',
       '| 401, the caller | `unauthorized` (the call has no authorization header, or one that is not the token of the service) |',
       '| 422, the job | `deadline` (the job ran out of its time, or too little of it was left to call the model) |',
-      '| 499, the caller hung up | `aborted` (the job was stopped when its caller hung up; nobody reads this answer, and the log keeps it) |',
+      '| 499, the caller hung up | `aborted` (the job was stopped when its caller hung up; nobody reads this answer, and the log keeps its code and the time the job took, not its words) |',
       '| 502, a third party or the check | `search_failed` (both queries failed, or the Brave Search API refused the key), `search_empty` (no usable result), `no_sources` (no page kept), `model_failed` (the call to OpenRouter failed), `model_output_invalid` (the answer is not the JSON of a brief), `no_supported_claims` (the check dropped every argument) |',
       '| 503, the service cannot take a job now | `shutting_down` (the service is stopping) |',
       '| 500, the service | `internal` |',
@@ -158,7 +158,7 @@ describe('agents/advocate/README.md, pinned further', () => {
       const env: Record<string, string> = { ...FULL_ENV };
       delete env[name];
       expect(() => loadConfig(env), name).toThrow(new RegExp(`^environment variable ${name} is required`));
-      expect(row(name), name).toMatch(/\bRequired\b/);
+      expect(row(name), name).toMatch(/ \| none\. Required/);
     }
     expect(() => loadConfig({ ...FULL_ENV, SUPPLIER_PUB_KEY_HEX: 'ef'.repeat(32) })).toThrow(/^environment variable SUPPLIER_PUB_KEY_HEX is not the public key of SUPPLIER_PKH/);
     // The lengths the table gives: the key hash is 56 hex characters and the public key 64. The word of the status is one of three, in any case.
@@ -194,6 +194,7 @@ describe('agents/advocate/README.md, pinned further', () => {
     const run = section('Run it');
     expect(run).toContain('export SUPPLIER_PUB_KEY_HEX=$(openssl rand -hex 32)');
     expect(run).toContain('The service needs Node 22 or later');
+    expect(run).toContain('On a machine with the repository:\n\n```bash\n');
     expect(JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')).engines.node).toBe('>=22');
     expect(run).toContain('a public key and its blake2b-224');
     expect(run).toContain("export SUPPLIER_PKH=$(node --import tsx --input-type=module -e \"import { blake2b224Hex } from '@vsa/vector-read'; console.log(blake2b224Hex(process.env.SUPPLIER_PUB_KEY_HEX))\")");
@@ -235,7 +236,7 @@ describe('agents/advocate/README.md, pinned further', () => {
     expect(text).toContain(`one after the other, the second at least ${QUERY_SPACING_MS} ms after the first`);
     expect(text).toContain(`each cut at a word boundary to at most ${MAX_QUERY_CHARS} characters and ${MAX_QUERY_WORDS} words`);
     expect(text).toContain(`A query that answers 429 is asked once more, ${QUERY_SPACING_MS} ms later.`);
-    expect(text).toContain('The language of the request is not sent: it is the language of the brief.');
+    expect(text).toContain('The language of the request is not sent: it is the language the model is asked to write the brief in.');
     expect(text).toContain('The queries are made from the subject and the side, with no language parameter and no country.');
     expect(readme).toContain('sends two queries to the Brave Search API, made from the subject and the side, with no language parameter');
     expect(text).toContain(`four at a time`);
@@ -278,6 +279,20 @@ describe('agents/advocate/README.md, pinned further', () => {
     for (const code of Object.keys(JOB_STATUS) as JobCode[]) {
       const answer = await answerTo(new AdvocateError(code, `the words of ${code}`));
       expect([answer.status, answer.json], code).toStrictEqual([JOB_STATUS[code], { error: code, message: JOB_STATUS[code] === 502 ? operatorsText(code) : `the words of ${code}` }]);
+    }
+    // What the log keeps of each: the whole detail for the 502 row, and for the 422 and the 499 the code, the status and the time, not the words (the 499 row says so).
+    const logOf = (error: Error): Promise<string[]> => {
+      const lines: string[] = [];
+      return serve({ manifest, deps: baseDeps(), log: (line) => { lines.push(line); }, runAdvocate: async () => { throw error; } }, async (api) => {
+        await api.post(wire(GOLDEN_REQUEST));
+        return lines.filter((line) => line.startsWith('job failed after '));
+      });
+    };
+    for (const code of Object.keys(JOB_STATUS) as JobCode[]) {
+      const status = JOB_STATUS[code];
+      const logged = await logOf(new AdvocateError(code, `the words of ${code}`));
+      expect(logged, code).toHaveLength(1);
+      expect(logged[0].replace(/after \d+ ms/, 'after N ms'), code).toBe(`job failed after N ms: ${code} (${status})${status >= 500 ? `: the words of ${code}` : ''}`);
     }
     expect(errors).toContain('`shutting_down` says in words that the service is stopping.');
     expect(errors).toContain('Anything else is 500 `{"error":"internal"}` with no detail');
@@ -364,5 +379,100 @@ describe('agents/advocate/README.md, pinned further', () => {
       expect(section('Tests'), path).toContain(path);
       expect(existsSync(here(path)), path).toBe(true);
     }
+  });
+
+  test('the other sentences of the README that state a claim are held word for word, and to the code or the file that has the claim where there is one', async () => {
+    const holds = (text: string, sentences: readonly string[]): void => { for (const sentence of sentences) expect(text, sentence).toContain(sentence); };
+    const manifest = manifestFromEnv({ OPERATOR_CONTACT: 'ops@example.test' });
+    const quiet = { manifest, deps: baseDeps(), log: () => undefined };
+    // The head: what is built and what is not, who holds the key, which keys the service holds, and what the template is for.
+    holds(readme, [
+      'It has no registry record and no advert yet, and no job has run.',
+      '`specs/advocate.md` at the repository root is the specification; this page and the manifest describe the code.',
+      'The service sits behind the template runtime (`vector-agent-template`, `CAPABILITY_KIND=custom`).',
+      'The runtime holds the supplier key, claims the escrow of the hirer and posts the job to this service as the body of `POST /`.',
+      'The service holds no chain key and posts nothing. It holds two API keys of third parties, `BRAVE_SEARCH_API_KEY` and `OPENROUTER_API_KEY`.',
+      '`agent.json.template` is the manifest with placeholders. The service renders the real manifest from its environment when it starts and serves those bytes at `GET /agent.json`. It never serves the template itself.',
+    ]);
+    expect(existsSync(here('../../specs/advocate.md'))).toBe(true);
+    expect(textOf('../../deploy/host/docker-compose.advocate.yml')).toContain('CAPABILITY_KIND: custom');
+    expect(SETTINGS.filter((name) => /PRIV|SEED|SECRET|SKEY/.test(name))).toStrictEqual([]);
+    const served = await serve(quiet, async (api) => (await api.request('GET', '/agent.json', undefined, { authorization: null })).text);
+    expect(served).toBe(JSON.stringify(manifest));
+    expect(served).not.toMatch(/<[A-Z_]+>/);
+    // Run it: no other program and no model of its own, and the guards against a secret in the wrong place, to the line of the log of a key that was refused.
+    holds(section('Run it'), [
+      'It needs no other program and no model of its own.',
+      'A secret in the wrong line of an env file is the mistake the start guards against.',
+      'Each of the two API keys is looked for in every other setting the same way.',
+      'So none of the three is in a message, a log line or an answer, and the manifest is searched for all three once more before the service listens.',
+      'No message of the service shows a setting that is hex-shaped or long, only its length, and a line of the log about a key that a third party refused gives its HTTP status and never the key.',
+      '`SUPPLIER_PUB_KEY_HEX` must be the public key of `SUPPLIER_PKH`, which catches a private key put in its line.',
+    ]);
+    const lines: string[] = [];
+    const braveKey = FULL_ENV.BRAVE_SEARCH_API_KEY;
+    const routerKey = FULL_ENV.OPENROUTER_API_KEY;
+    const refused = (async () => new Response(null, { status: 401 })) as typeof fetch;
+    await expect(searchWeb(queriesFor('Cars in the centre', 'for'), {
+      fetchImpl: refused, apiKey: braveKey, clock: Date.now, timeoutMs: 1000, phaseEndMs: Date.now() + 60_000, wait: async () => undefined, log: (line) => { lines.push(line); },
+    })).rejects.toMatchObject({ code: 'search_failed' });
+    const echoing = (async () => new Response(JSON.stringify({ error: { message: `No auth credentials found for ${routerKey}` } }), { status: 401 })) as typeof fetch;
+    await expect(callModel([], { fetchImpl: echoing, apiKey: routerKey, model: DEFAULT_MODEL, maxTokens: 2000, timeoutMs: 1000, log: (line) => { lines.push(line); } })).rejects.toMatchObject({ code: 'model_failed' });
+    expect(lines.filter((line) => line.includes('HTTP 401'))).toHaveLength(2);
+    for (const key of [braveKey, routerKey]) expect(lines.join('\n').toLowerCase().includes(key.toLowerCase()), 'a key in the log').toBe(false);
+    // Routes: the manifest, the wire message, the request JSON and its schema, the answer as the bytes the runtime hashes, the one job at a time, the lines that stop.
+    holds(section('Routes'), [
+      '| `GET /agent.json` | the manifest, the bytes `JSON.stringify` gives |',
+      '| `POST /` | the wire message and nothing else, with the `authorization` header of the runtime. Without it, 401 `{"error":"unauthorized"}` |',
+      'The body of `POST /` is the wire message: a one-element array whose `content` is the request JSON as a string, and whose `role` is `user`.',
+      'The request JSON is `{ "subject": "...", "side": "for", "audience": "...", "length": "standard", "language": "en" }`, with `subject` and `side` required; the manifest publishes its schema under `interface.request_schema`, and what a schema cannot say under `interface.notes`.',
+      'The answer to a job is `JSON.stringify(result)`, serialised once, exactly the bytes the runtime hashes.',
+      'The runtime and the service read it from the same env file, and neither blanks it.',
+      "`GET /healthz` and `GET /agent.json` need no header: the image's health check sends none, and the manifest is public.",
+      'One job runs at a time.',
+      'The lines stop when the job ends.',
+    ]);
+    expect(manifest.interface.request_schema.required).toStrictEqual(['subject', 'side']);
+    expect(manifest.interface.notes.length).toBeGreaterThan(0);
+    const slot = new JobSlot();
+    expect([slot.take(), slot.take()]).toStrictEqual(['taken', 'busy']);
+    expect(await serve({ ...quiet, runAdvocate: async () => GOLDEN_OUTCOME }, async (api) => (await api.post(wire(GOLDEN_REQUEST))).text)).toBe(JSON.stringify(GOLDEN_OUTCOME.result));
+    // Errors: the form of a refusal, and what a refusal leaves of the service's.
+    holds(section('Errors'), [
+      'A refusal is `{"error": "<code>", "message": "<words>"}` with the status in the table.',
+      "Every refusal locks nothing of the service's: it holds no chain key and posts nothing. The runtime fails the job, and the hirer reclaims the escrow after its `deliver_by`.",
+    ]);
+    // The check, the stop, the manifest settings, the tests and the image.
+    holds(section('The check'), ['The sources of the result are the surviving ones, once for each page and quote, in the order they are first cited.']);
+    holds(section('Stopping'), ['A second signal ends the process at once.']);
+    holds(section('Manifest'), [
+      'Numbers (and `PORT`) must be non-negative integers.',
+      'A value that breaks a rule stops the service at start, and the error names the variable.',
+      'Adverts are immutable, so a changed manifest means a retired advert and a new one: `OPENROUTER_MODEL` is in it, through the gap that names the model.',
+    ]);
+    expect(() => loadConfig({ ...FULL_ENV, ADVERT_PRICE_LOVELACE: '-1' })).toThrow(/^environment variable ADVERT_PRICE_LOVELACE must be a non-negative integer/);
+    expect(() => loadConfig({ ...FULL_ENV, PORT: 'x' })).toThrow(/^environment variable PORT must be a non-negative integer/);
+    const other = manifestFromEnv({ OPERATOR_CONTACT: 'ops@example.test', OPENROUTER_MODEL: 'example/another-model' });
+    expect(other.gaps[4]).toContain('example/another-model');
+    expect(JSON.stringify(other)).not.toBe(JSON.stringify(manifest));
+    holds(section('Tests'), ['The tests need no network and no key.', 'The pages of the fixtures are written by hand, and nothing is downloaded.']);
+    holds(section('Image'), ['The build context is the repository root, because the image installs the workspace from the lockfile: `docker build -f agents/advocate/Dockerfile -t vsa/advocate:dev .`.']);
+    expect(textOf('Dockerfile')).toContain('build context is the repo root');
+    expect(existsSync(here('../../pnpm-lock.yaml'))).toBe(true);
+    // The claims about the check, the receipt, the signing and the log, whole where a clause of them was held only in part.
+    holds(readme, [
+      'drops each quote it does not find in the text of its page and each argument left with none, and answers with the brief, which the runtime hashes into the one receipt it signs.',
+      'which is all the service checks, since it signs nothing.',
+      'with a count and nothing the caller sent.',
+      'the whole message is in the log.',
+      'A job cut at its deadline (`deadline`, 422) keeps its words, which are about the time the job had and hold nothing of the request.',
+      'Anything else is 500 `{"error":"internal"}` with no detail; the cause is in the log, by message only.',
+    ]);
+    const internal: string[] = [];
+    await serve({ ...quiet, log: (line) => { internal.push(line); }, runAdvocate: async () => { throw new Error('a fault of the code'); } }, async (api) => { await api.post(wire(GOLDEN_REQUEST)); });
+    expect(internal.filter((line) => line.startsWith('job failed after ')).map((line) => line.replace(/after \d+ ms/, 'after N ms'))).toStrictEqual(['job failed after N ms: internal error: a fault of the code']);
+    // The structure: the header row of every table.
+    const readmeLines = readme.split('\n');
+    expect(readmeLines.filter((l, i) => l.startsWith('| ') && /^[|][-| ]+[|]$/.test(readmeLines[i + 1] ?? ''))).toStrictEqual(['| Route | Answer |', '| Status | Codes |', '| Variable | Use | Default |']);
   });
 });

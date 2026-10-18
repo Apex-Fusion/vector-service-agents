@@ -79,7 +79,7 @@ const REQUEST_SCHEMA = {
     audience: { type: 'string', minLength: 1, maxLength: MAX_AUDIENCE_CHARS, description: `Who the brief is written for, in words: 1 to ${MAX_AUDIENCE_CHARS} characters; optional` },
     length: {
       enum: [...LENGTHS], default: DEFAULT_LENGTH,
-      description: `short: a thesis and exactly ${SHAPES.short.minArguments} arguments; standard: a thesis and ${SHAPES.standard.minArguments} to ${SHAPES.standard.maxArguments} arguments`,
+      description: `The prompt asks for a thesis and ${SHAPES.short.minArguments} arguments (short) or ${SHAPES.standard.minArguments} to ${SHAPES.standard.maxArguments} arguments (standard), and the check can leave fewer`,
     },
     // auto has the form of a code and names no language: the intake refuses it in any case, and so does the schema (R-E25).
     language: {

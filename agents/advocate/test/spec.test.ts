@@ -17,18 +17,20 @@ import { AdvocateError, JOB_STATUS } from '../src/errors.ts';
 import type { JobCode } from '../src/errors.ts';
 import { gapsFor } from '../src/gaps.ts';
 import { EXCERPT_CHARS, MIN_PAGE_CHARS, collapseWhitespace, extractText } from '../src/html.ts';
-import { DEFAULT_MODEL, modelLabel } from '../src/model.ts';
+import { DEFAULT_MODEL, callModel, modelLabel } from '../src/model.ts';
 import type { ModelBrief } from '../src/model.ts';
 import { normalizeText } from '../src/normalize.ts';
-import { PAGE_MAX_BYTES, USER_AGENT } from '../src/pages.ts';
+import { ACCEPTED_TYPES, PAGE_MAX_BYTES, USER_AGENT, fetchPages } from '../src/pages.ts';
 import type { Page } from '../src/pages.ts';
 import { DECLARED_BIAS_STATEMENT, OMITTED_BY_DESIGN, QUOTE_MAX_CHARS, QUOTE_MIN_CHARS, SHAPES, systemPrompt, userMessage } from '../src/prompt.ts';
 import { LANGUAGE_PATTERN, MAX_AUDIENCE_CHARS, MAX_SIDE_CHARS, MAX_SUBJECT_CHARS, RequestError, parseRequest } from '../src/request.ts';
-import { SCHEMA, SEARCH_NAME, buildResult } from '../src/result.ts';
-import { MAX_QUERY_CHARS, MAX_QUERY_WORDS, MAX_RESULTS, QUERY_SPACING_MS, RESULTS_PER_QUERY, queriesFor, searchWeb } from '../src/search.ts';
+import { SCHEMA, SEARCH_NAME, buildResult, serializeResult } from '../src/result.ts';
+import { MAX_QUERY_CHARS, MAX_QUERY_WORDS, MAX_RESULTS, QUERY_SPACING_MS, RESULTS_PER_QUERY, dedupeResults, queriesFor, searchWeb } from '../src/search.ts';
+import type { SearchResult } from '../src/search.ts';
 import { JobSlot, MIN_PROCESSING_WINDOW_MS, manifestFromEnv } from '../src/server.ts';
-import { loadConfig } from '../src/start.ts';
-import { GOLDEN_REQUEST } from './golden.ts';
+import { SETTINGS, loadConfig } from '../src/start.ts';
+import { at, publicLookup, reply, routedFetch } from './fake-fetch.ts';
+import { GOLDEN_OUTCOME, GOLDEN_REQUEST } from './golden.ts';
 import { baseDeps, serve, wire } from './server-support.ts';
 
 const page = readFileSync(new URL('../../../specs/advocate.md', import.meta.url), 'utf8');
@@ -101,6 +103,14 @@ describe('specs/advocate.md', () => {
     expect(manifest.status).toStrictEqual({ chip: 'proposed', since: '2026-10-13' });
     expect(section('Status').split('\n')).toContain('PROPOSED (built, not deployed). Since 2026-10-13.');
     expect(row(section('Identity'), 'Registry address')).toBe(`| Registry address | \`${REGISTRY_ADDRESS}\` |`);
+    // The planned public URL is the one the advert will carry, and nothing is in service at it: the runbook and the example file of the host name the same URL.
+    expect(row(section('Identity'), 'Public URL, planned')).toBe('| Public URL, planned | `https://mp-suppliers-advocate.hal8.ai` (not in service) |');
+    expect(readFileSync(new URL('../../../deploy/host/RUNBOOK-advocate.md', import.meta.url), 'utf8')).toContain('| Public name | `mp-suppliers-advocate.hal8.ai` |');
+    expect(readFileSync(new URL('../../../deploy/host/.env.advocate.example', import.meta.url), 'utf8')).toContain('ADVERT_ENDPOINT_URL=https://mp-suppliers-advocate.hal8.ai\n');
+    // The service holds no chain key: the runtime holds the supplier key and signs, and the settings of the service name no private key and no seed.
+    expect(section('Capability id')).toContain('The runtime claims the escrow, calls this service, signs the receipt and submits the receipt hash. The service holds no chain key.');
+    expect(SETTINGS.filter((name) => /PRIV|SEED|SECRET|SKEY/.test(name))).toStrictEqual([]);
+    expect(Object.keys(manifest.keys)).toStrictEqual(['supplier_pkh', 'pub_key_hex']);
     // The stake the page plans is the 10 units the runbook of the host names: 10000000 lovelace, printed with six decimals.
     expect(row(section('Identity'), 'Reputation stake, planned')).toBe('| Reputation stake, planned | a Module-3 self-stake of 10000000 lovelace (10.000000) on the capability |');
     expect(readFileSync(new URL('../../../deploy/host/RUNBOOK-advocate.md', import.meta.url), 'utf8')).toContain('the stake (10)');
@@ -109,6 +119,8 @@ describe('specs/advocate.md', () => {
     expect(row(receipt, '`prompt_hash`')).toContain('sha256 of the UTF-8 bytes of the wire payload');
     expect(row(receipt, '`response_hash`')).toContain('sha256 of the UTF-8 bytes of the brief exactly as the service returned them');
     expect(row(receipt, '`prompt_tokens`, `completion_tokens`')).toContain('0 and 0, the runtime counts none. The service writes the tokens of its model call in its log and in no output');
+    // What the receipt commits to and what it does not, in the words of the page: the brief is the committed output; the page text, the truth of the claims and the balance of the brief are not.
+    expect(receipt).toContain('The brief is the committed output, so the receipt commits the declared-bias block, the thesis, every argument and its sources with their quotes and the times the pages were fetched. A quote in the brief was found in the text the service fetched from the page it names. The receipt does not commit to the page text itself, to the claims being true, or to the brief being balanced: it omits the other side by design.');
     expect(receipt).toContain('The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of the canonical JSON of `{ receipt, signature }` is the `result_receipt_hash` in the Submitted escrow datum.');
   });
 
@@ -118,6 +130,10 @@ describe('specs/advocate.md', () => {
     expect(parseRequest(exampleRequest())).toStrictEqual(THE_REQUEST);
     const inline = /The request JSON is, for example, `([^`]+)`/.exec(section('How to hire it'))?.[1] ?? '';
     expect(parseRequest(inline)).toStrictEqual(THE_REQUEST);
+    // The manifest says of the length what the page says (ruling R-E28): the prompt asks for 3 arguments (short) or 5 to 7 (standard), and the check can leave fewer.
+    const lengthDescription = manifest.interface.request_schema.properties.length.description;
+    expect(lengthDescription).toBe(`The prompt asks for a thesis and ${SHAPES.short.minArguments} arguments (short) or ${SHAPES.standard.minArguments} to ${SHAPES.standard.maxArguments} arguments (standard), and the check can leave fewer`);
+    expect(lengthDescription).not.toMatch(/exactly/);
   });
 
   test('the response: one Response heading, the anchor the manifest links to, and its example is what the check and the result of the service make of the pages of the fixtures and the brief of the example', () => {
@@ -140,6 +156,50 @@ describe('specs/advocate.md', () => {
     for (const a of shown.arguments as Array<{ sources: Array<{ quote: string }> }>) for (const s of a.sources) expect(normalizeText(s.quote).length).toBeGreaterThanOrEqual(QUOTE_MIN_CHARS);
     // A short brief has the arguments of its shape.
     expect(shown.arguments).toHaveLength(SHAPES.short.maxArguments);
+  });
+
+  test('the Response example is the result as it is serialised, the keys of it and of the Shape come in the order of the result at every level, and the rows of the fields say what the check does', () => {
+    const checked = checkCitations(BRIEF, PAGES);
+    const built = buildResult(parseRequest(exampleRequest()), BRIEF.thesis, checked, DEFAULT_MODEL);
+    const result = { ...built, model: modelLabel(DEFAULT_MODEL) };
+    const response = sub('Response');
+    // The example is JSON.stringify(result, null, 2) byte for byte, so the keys of every object stand in the order the result has them (toStrictEqual does not see the order).
+    expect(/```json\n([\s\S]*?)\n```/.exec(response)?.[1]).toBe(JSON.stringify(result, null, 2));
+    // The Shape names the keys in the same order: the names in it, read as they stand, are the keys of the result depth first, the first element of a list standing for the list.
+    const walk = (value: unknown): string[] => {
+      if (Array.isArray(value)) return walk(value[0]);
+      if (value === null || typeof value !== 'object') return [];
+      return Object.entries(value).flatMap(([key, inner]) => [key, ...walk(inner)]);
+    };
+    const shape = /```text\n([\s\S]*?)\n```/.exec(response)?.[1] ?? '';
+    const names = (shape.match(/"[a-z_]+"/g) ?? []).map((name) => name.slice(1, -1));
+    expect(names).toStrictEqual(walk(result));
+    expect(names).toHaveLength(21);
+    // The receipt hashes this body: it holds the declared-bias block, the thesis, every argument and its sources with their quotes and the times the pages were fetched, and no text of a page.
+    for (const key of ['declared_bias', 'thesis', 'arguments', 'sources', 'quote', 'retrieved_at']) expect(names, key).toContain(key);
+    expect(names).not.toContain('excerpt');
+    // The rows of the fields: the thesis as the model wrote it; the arguments the check kept, in the order the model gave them, each source with the title the search gave; the sources of the kept arguments, once for each page and quote, in the order they are first cited.
+    expect(row(response, '`thesis`')).toBe('| `thesis` | the thesis of the brief, as the model wrote it |');
+    expect(row(response, '`arguments[]`')).toBe('| `arguments[]` | the arguments the check kept, in the order the model gave them, each with its `claim`, its `support` and its `sources`: for each source the `title` the search gave for the page, its `url`, `retrieved_at`, the time the service fetched it (ISO 8601, UTC), and the `quote` that was found in its text |');
+    expect(row(response, '`sources[]`')).toBe('| `sources[]` | every source that the kept arguments cite, once for each page and quote, in the order they are first cited |');
+    expect(built.thesis).toBe(BRIEF.thesis);
+    expect(built.arguments.map((a) => a.claim)).toStrictEqual(BRIEF.arguments.map((a) => a.claim));
+    expect(built.arguments[0].sources[0].title).toBe(PAGES[0].title);
+    const [first, second] = BRIEF.arguments;
+    const swapped = checkCitations({ thesis: BRIEF.thesis, arguments: [second, first] }, PAGES);
+    expect(swapped.arguments.map((a) => a.claim)).toStrictEqual([second.claim, first.claim]);
+    expect(swapped.sources.map((s) => s.url)).toStrictEqual([PAGES[1].url, PAGES[0].url]);
+    // Only the sources of the kept arguments are listed, not every page that was fetched; two quotes of one page are two sources.
+    const lost = checkCitations({ thesis: 't', arguments: [{ claim: 'a', support: 's', sources: [{ n: 2, quote: 'fell by a third in the first year' }] }, { claim: 'b', support: 's', sources: [{ n: 1, quote: 'a quote that is nowhere in the page it names' }] }] }, PAGES);
+    expect([lost.arguments.length, lost.sources.map((s) => s.url)]).toStrictEqual([1, [PAGES[1].url]]);
+    const quotes = ['retail footfall rise by eleven percent within two years', 'customers stayed longer once the traffic had gone'];
+    const both = checkCitations({ thesis: 't', arguments: [{ claim: 'a', support: 's', sources: quotes.map((quote) => ({ n: 1, quote })) }] }, PAGES);
+    expect(both.sources.map((s) => s.quote)).toStrictEqual(quotes);
+    // The bias is declared in the manifest too, and the planned registry record carries the manifest's description, which declares it: no record exists yet.
+    expect(response).toContain("The manifest carries the same declaration in `behaviour.declared_bias`, and the description of the planned registry record, which is the manifest's, declares the bias too.");
+    expect(section('Identity')).toContain('This agent has no registry record yet.');
+    expect(row(section('Identity'), 'Registry record, planned')).toContain('description as in the manifest, which declares the bias');
+    expect(manifest.description).toContain('argues one side only, by design');
   });
 
   test('the declared bias is the manifest\'s and the result\'s, word for word, and the page states it three times: the rule, the shape and the example', () => {
@@ -233,7 +293,7 @@ describe('specs/advocate.md, pinned further', () => {
     expect(rows['`language`']).toContain('`auto` is refused');
     expect(rows['`side`, required']).toContain('`for` and `against` are kept in lower case and a position as given, without the spaces around it; the side is returned in `declared_bias.side`');
     expect(rows['`audience`']).toContain('The model is told it.');
-    expect(rows['`language`']).toContain('The brief is written in it.');
+    expect(rows['`language`']).toContain('The model is asked to write the brief in it; a quote stays in the words of its page.');
     expect(rows['`language`']).toContain('such as `en`, `en-GB` or `zh-Hant-TW`');
     const asked = (fields: Record<string, unknown>): string => JSON.stringify({ subject: 'Should a city ban cars from its centre?', side: 'for', ...fields });
     const refused = (fields: Record<string, unknown>): unknown => { try { parseRequest(asked(fields)); return null; } catch (e) { return e; } };
@@ -256,6 +316,7 @@ describe('specs/advocate.md, pinned further', () => {
     // The audience and the language are put to the model: the user message carries the audience, the system prompt the code of the language.
     expect(userMessage(parseRequest(asked({ audience: 'the council' })), [])).toContain('Audience: the council');
     expect(systemPrompt(parseRequest(asked({ language: 'de' })))).toContain('in the language with the code de');
+    expect(systemPrompt(parseRequest(asked({ language: 'de' })))).toContain('A quote stays in the words of its source.');
     expect(sub('Request')).toContain("A request that breaks a rule is refused with `bad_shape` (400) before anything is searched or fetched, so it locks nothing of the service's.");
   });
 
@@ -286,12 +347,15 @@ describe('specs/advocate.md, pinned further', () => {
     const moved = async () => new Response(null, { status: 302, headers: { location: 'https://example.org/b' } });
     await expect(safeFetch('https://example.org/a', {}, { ...fetchRules, lookup: async () => [{ address: '93.184.216.34', family: 4 }], fetchImpl: moved as typeof fetch })).rejects.toThrow('redirects are not followed');
     // What the mutation of the page found unheld: a code that the Errors and the Check text repeat, the megabyte of a page, the numbering, and two sentences the specs share.
-    expect(text).toContain('the job fails with `deadline` (422)');
     expect(text).toContain('No argument left is `no_supported_claims` (502).');
     expect(text).toContain(`is at most ${PAGE_MAX_BYTES / 1_048_576} MB and has at least ${MIN_PAGE_CHARS} characters of text`);
     expect(text).toContain(`at most ${PAGE_MAX_BYTES / 1_048_576} MB a page`);
     expect(text).toContain(`the kept pages are numbered from ${PAGES[0].n} in the order of the results`);
     expect(text).toContain('The sha256 of its UTF-8 bytes is the `prompt_hash` of the escrow.');
+    // The wire payload is the payload field of the body that the runtime takes at POST /v1/job, as the raw steps of the page of Agent History have it.
+    expect(text).toContain('The wire payload is also the `payload` field of `POST /v1/job`, and the runtime claims the escrow and posts it unchanged to the service as the HTTP body.');
+    expect(manifest.interface.routes.job).toBe('/v1/job');
+    expect(readFileSync(new URL('../../../specs/agent-history.md', import.meta.url), 'utf8')).toContain('`POST /v1/job` with `{ "escrow_ref": "<txid>#<index>", "payload": "<the wire payload>" }`');
     expect(text).toContain('(on the hosted mainnet server since 2026-10-14)');
     expect(text).toContain('the service finds the pages with the Brave Search API and fetches them itself');
     expect(text).toContain('Both failing is `search_failed` (502), and so is a key that the Brave Search API refuses.');
@@ -301,7 +365,20 @@ describe('specs/advocate.md, pinned further', () => {
     expect(text).toContain('four at a time');
     expect(text).toContain(`answers within ${PAGE_TIMEOUT_MS / 1000} s`);
     expect(text).toContain(`has at least ${MIN_PAGE_CHARS} characters of text`);
-    expect(text).toContain(`With under ${MODEL_MIN_MS / 1000} s left the model is not called`);
+    // The model gets the smaller of 90 s and the time the job has left less 5 s, and is not called when that is under 15 s, which is with under 20 s of the job left. The fetch of the pages ends 20 s before the deadline at the latest, which is the 15 s of the model and the 5 s of the check and the result.
+    expect(FETCH_RESERVE_MS).toBe(MODEL_MIN_MS + RESULT_RESERVE_MS);
+    expect([modelBudgetMs(FETCH_RESERVE_MS - 1), modelBudgetMs(FETCH_RESERVE_MS)]).toStrictEqual([null, MODEL_MIN_MS]);
+    expect(text).toContain(`The call gets the smaller of ${MODEL_MAX_MS / 1000} s and the time the job has left less ${RESULT_RESERVE_MS / 1000} s, and is not made when that is under ${MODEL_MIN_MS / 1000} s, which is with under ${FETCH_RESERVE_MS / 1000} s of the job left: the job then fails with ${tick('deadline')} (422).`);
+    expect(text).toContain(`The fetch of the pages ends ${FETCH_RESERVE_MS / 1000} s before the deadline at the latest, so that the model has its ${MODEL_MIN_MS / 1000} s and the check and the result ${RESULT_RESERVE_MS / 1000} s.`);
+    // The code of a call that runs out of its time (ruling R-E19): deadline (422) when the time was cut under the whole of it, model_failed (502) when it had the whole of it.
+    expect(text).toContain(`A call that runs out of a time that the deadline of the job cut under ${MODEL_MAX_MS / 1000} s is ${tick('deadline')} (422); any other call that fails, a call that runs out of the whole ${MODEL_MAX_MS / 1000} s among them, is ${tick('model_failed')} (502). An answer that is not the JSON of a brief is ${tick('model_output_invalid')} (502).`);
+    const timedOut = async (timeoutMs: number): Promise<AdvocateError> => {
+      const fetchImpl = (async () => { throw new DOMException('The operation was aborted due to timeout', 'TimeoutError'); }) as typeof fetch;
+      try { await callModel([], { fetchImpl, apiKey: 'a-key-for-this-test', model: DEFAULT_MODEL, maxTokens: 2000, timeoutMs, log: () => undefined }); } catch (e) { return e as AdvocateError; }
+      throw new Error('the call returned');
+    };
+    const [cut, whole] = [await timedOut(MODEL_MAX_MS - 1), await timedOut(MODEL_MAX_MS)];
+    expect([cut.code, cut.status, whole.code, whole.status]).toStrictEqual(['deadline', 422, 'model_failed', 502]);
     // The search is not told the language (ruling R-E15): the page says so, and the two requests to the Brave Search API carry a query, a count, the safe search and the plain texts, and nothing else.
     expect(text).toContain('two queries to the Brave Search API, made from the subject and the side, with no language parameter and no country');
     const urls: string[] = [];
@@ -316,6 +393,25 @@ describe('specs/advocate.md, pinned further', () => {
     // The results of the second query come first, as the page says.
     expect(text).toContain('The results of the second query come first');
     expect(found.map((result) => result.url)).toStrictEqual(['https://example.org/answer-2', 'https://example.org/answer-1']);
+    // A result is kept once by its scheme, host and path, in lower case: its query and its fragment are not part of it, and an http one is not kept.
+    expect(text).toContain('a result is kept once, by its scheme, host and path, and only when its URL is https');
+    const hit = (url: string): SearchResult => ({ title: 'T', url, description: 'D' });
+    expect(dedupeResults([hit('https://Example.org/Page?a=1'), hit('https://example.org/page?b=2#top'), hit('http://example.org/other'), hit('https://example.org/other')]).map((result) => result.url))
+      .toStrictEqual(['https://Example.org/Page?a=1', 'https://example.org/other']);
+    // When one query fails, the search goes on with the results of the other; both failing is search_failed (502).
+    expect(text).toContain('When one query fails, the search goes on with the results of the other.');
+    const searchAnswering = (answers: Array<number | 'ok'>) => {
+      let call = 0;
+      const fetchImpl = (async () => {
+        const answer = answers[call];
+        call += 1;
+        return answer === 'ok' ? new Response(JSON.stringify({ web: { results: [{ title: 'T', url: `https://example.org/answer-${call}`, description: 'D' }] } }), { status: 200 }) : new Response(null, { status: answer });
+      }) as typeof fetch;
+      return searchWeb(queriesFor('Should a city ban cars from its centre?', 'for'), { fetchImpl, apiKey: 'a-key-for-this-test', clock: Date.now, timeoutMs: 1000, phaseEndMs: Date.now() + 60_000, wait: async () => undefined, log: () => undefined });
+    };
+    expect((await searchAnswering([500, 'ok'])).map((result) => result.url)).toStrictEqual(['https://example.org/answer-2']);
+    expect((await searchAnswering(['ok', 500])).map((result) => result.url)).toStrictEqual(['https://example.org/answer-1']);
+    await expect(searchAnswering([500, 500])).rejects.toMatchObject({ code: 'search_failed', status: 502 });
   });
 
   test('the Check section states the normalisation of the code, the bounds of a quote, and what is dropped', () => {
@@ -362,6 +458,21 @@ describe('specs/advocate.md, pinned further', () => {
       const answer = await answerTo(new AdvocateError(code, `the words of ${code}`));
       expect([answer.status, answer.json], code).toStrictEqual([JOB_STATUS[code], { error: code, message: JOB_STATUS[code] === 502 ? operatorsText(code) : `the words of ${code}` }]);
     }
+    // What the log keeps of each: the whole detail for the 502 row, and for the 422 and the 499 the code, the status and the time, not the words (the answer carries those).
+    const logOf = (error: Error): Promise<string[]> => {
+      const lines: string[] = [];
+      return serve({ manifest, deps: baseDeps(), log: (line) => { lines.push(line); }, runAdvocate: async () => { throw error; } }, async (api) => {
+        await api.post(wire(GOLDEN_REQUEST));
+        return lines.filter((line) => line.startsWith('job failed after '));
+      });
+    };
+    for (const code of Object.keys(JOB_STATUS) as JobCode[]) {
+      const status = JOB_STATUS[code];
+      const logged = await logOf(new AdvocateError(code, `the words of ${code}`));
+      expect(logged, code).toHaveLength(1);
+      expect(logged[0].replace(/after \d+ ms/, 'after N ms'), code).toBe(`job failed after N ms: ${code} (${status})${status >= 500 ? `: the words of ${code}` : ''}`);
+    }
+    expect(row(errors, '499, the caller hung up')).toBe('| 499, the caller hung up | `aborted` (the job was stopped when its caller hung up; nobody reads this answer, and the log keeps its code and the time the job took, not its words) |');
     // The 500 and the 401 have the code and no message; the 503 says in words that the service is stopping.
     expect(await answerTo(new Error('a fault of the code'))).toStrictEqual({ status: 500, json: { error: 'internal' } });
     expect(await serve({ manifest, deps: baseDeps(), log: () => undefined }, async (api) => {
@@ -384,7 +495,9 @@ describe('specs/advocate.md, pinned further', () => {
       expect((await api.request('POST', '/?x=1', wire(GOLDEN_REQUEST))).status).toBe(404);
     });
     expect(errors).toContain('are matched on their path, whatever the query string, and a `HEAD` of either gets the headers of the `GET` and no body');
-    expect(errors).toContain('copies the first 200 characters of the failure to the buyer');
+    // The runtime fails the job on any answer that is not 2xx, and the buyer reclaims after deliver_by, as the guide says.
+    expect(errors).toContain('The runtime fails the job on any non-2xx answer and copies the first 200 characters of the failure to the buyer. The buyer reclaims after `deliver_by`.');
+    expect(readFileSync(new URL('../../../docs/HIRE.md', import.meta.url), 'utf8')).toContain('If the job fails, you reclaim after `deliver_by`, which is your Post time plus 5 min plus 180 s.');
     expect(errors).toContain('The codes of the 502 row are failures at a third party or of the check.');
     expect(errors).toContain('`aborted` (499) is the answer to a caller that has hung up, which nobody reads.');
     expect(errors).toContain('`shutting_down` says that the service is stopping.');
@@ -395,6 +508,8 @@ describe('specs/advocate.md, pinned further', () => {
       shutting_down: sent('shutting_down'), internal: sent('internal'), busy: sent('busy'), not_found: sent('not_found'),
     };
     expect(statuses).toStrictEqual({ bad_wire: 400, request_too_large: 400, unauthorized: 401, shutting_down: 503, internal: 500, busy: 409, not_found: 404 });
+    // Every refusal has a status of 400 or more, so the runtime fails the job on each.
+    expect([...Object.values(JOB_STATUS), ...Object.values(statuses)].every((status) => status >= 400)).toBe(true);
     for (const code of ['bad_wire', 'request_too_large', 'unauthorized', 'shutting_down', 'internal']) {
       expect(rows.find((l) => l.split('|')[2].includes(tick(code))), code).toMatch(new RegExp(`^\\| ${statuses[code]}, `));
     }
@@ -407,13 +522,16 @@ describe('specs/advocate.md, pinned further', () => {
     expect(errors).toContain('The 400s and the 401 come before anything is searched or fetched.');
   });
 
-  test('Operator and data handling says what the manifest says the service holds, sends and logs, and names the user agent of the code', () => {
+  test('Operator and data handling says what the manifest says the service holds, sends and logs, and names the user agent of the code', async () => {
     const handling = section('Operator and data handling');
     for (const part of ['held in memory while a job runs', 'nothing is written to disk and nothing is kept after the job', 'the escrow carries only the sha256 of the wire payload, and the request stays off the ledger', 'never a request, a page, a quote or a key']) {
       expect(handling, part).toContain(part);
       expect(manifest.behaviour.data_handling, part).toContain(part);
     }
     expect(handling).toContain(tick(USER_AGENT));
+    // What the service sees: the five fields of the request, and the pages it fetches.
+    expect(handling).toContain('What the service sees: the subject, the side, the audience, the length and the language, and the pages it fetches.');
+    expect(Object.keys(parseRequest(exampleRequest()))).toStrictEqual(['subject', 'side', 'audience', 'length', 'language']);
     expect(handling).toContain('the language of the request is not sent');
     expect(handling).toContain('with no language parameter');
     // The sentences of the manifest that the page repeats are repeated word for word: what the ledger holds, and what the log carries.
@@ -424,6 +542,27 @@ describe('specs/advocate.md, pinned further', () => {
     // The model is sent the language code and the shape of the length in its prompt, and the titles and the URLs of the pages in its message, as the third-parties sentence says.
     expect(row(handling, manifest.behaviour.third_parties[2])).toContain('the fixed prompt, which holds the language code and the shape of the length asked for');
     expect(handling).toContain("Datalab is not used, and no model runs on the operator's host.");
+    // The hosts of the result pages are sent a GET of the page and nothing of the request: the one call of a page carries the URL of the result, the user agent and the accept type, no body, and not a word of the subject.
+    expect(row(handling, manifest.behaviour.third_parties[1])).toBe(`| ${manifest.behaviour.third_parties[1]} | a GET of the page, with the user agent ${tick(USER_AGENT)}; nothing of the hirer's request is sent to them |`);
+    const pageRoutes = routedFetch([{ match: at('https://example.org/car-free-centres'), respond: () => reply(200, fixture('page-1.html'), { 'content-type': 'text/html' }) }]);
+    const fetchedAt = Date.parse(RETRIEVED_AT);
+    const [kept] = await fetchPages([{ title: 'A title that only the search gave', url: 'https://example.org/car-free-centres', description: 'D' }], {
+      fetchImpl: pageRoutes, clock: () => fetchedAt, deadlineMs: fetchedAt + 45_000, log: () => undefined, lookup: publicLookup,
+    });
+    expect(pageRoutes.calls).toHaveLength(1);
+    const [call] = pageRoutes.calls;
+    const headers = new Headers(call.init?.headers);
+    expect([call.url, [...headers.keys()].sort(), call.init?.method ?? 'GET', call.init?.body ?? null]).toStrictEqual(['https://example.org/car-free-centres', ['accept', 'user-agent'], 'GET', null]);
+    expect(headers.get('user-agent')).toBe(USER_AGENT);
+    expect(JSON.stringify([call.url, [...headers.values()]])).not.toMatch(/city ban/i);
+    // The title of a source is the one the search gave for the page, not the page's own (the fixture page is titled otherwise).
+    expect(kept.title).toBe('A title that only the search gave');
+    // The model is sent the subject, the side, the audience when there is one, and the numbered pages, each with the title the search gave it, its URL and its excerpt.
+    expect(row(handling, manifest.behaviour.third_parties[2])).toBe(`| ${manifest.behaviour.third_parties[2]} | one chat completion: the fixed prompt, which holds the language code and the shape of the length asked for, and a message with the subject, the side, the audience when there is one, and the numbered pages, each with the title the search gave it, its URL and its excerpt |`);
+    const withAudience = userMessage(parseRequest(JSON.stringify({ subject: 'Cars in the centre', side: 'against', audience: 'the council' })), PAGES);
+    expect(withAudience.split('\n\n')[0]).toBe('Subject: Cars in the centre\nSide: against\nAudience: the council');
+    expect(userMessage(parseRequest(exampleRequest()), PAGES).split('\n\n')[0]).toBe('Subject: Should a city ban cars from its centre?\nSide: for');
+    expect(withAudience).toContain(`[1] ${PAGES[0].title} ${PAGES[0].url}\n${PAGES[0].excerpt}`);
   });
 
   test('the Controller row names the three fields of the manifest and the check at start, and the code does it', () => {
@@ -442,5 +581,123 @@ describe('specs/advocate.md, pinned further', () => {
     expect(() => loadConfig({ ...env, SUPPLIER_PUB_KEY_HEX: 'ef'.repeat(32) })).toThrow(/is not the public key of SUPPLIER_PKH/);
     expect(row(section('What the receipt commits to'), '`supplier_pkh`')).toContain('which is also the controller key');
     expect(section('Capability id')).toContain('It holds the two API keys of its third parties, `BRAVE_SEARCH_API_KEY` and `OPENROUTER_API_KEY`. Each is sent only to its own party, and neither reaches an answer, a log line or the manifest.');
+  });
+
+  test('the other sentences of the page that state a claim are held word for word, and to the code or the file that has the claim where there is one', async () => {
+    const holds = (text: string, sentences: readonly string[]): void => { for (const sentence of sentences) expect(text, sentence).toContain(sentence); };
+    const deploy = (file: string): string => readFileSync(new URL(`../../../deploy/host/${file}`, import.meta.url), 'utf8');
+    const identity = section('Identity');
+    const interfaceText = section('Interface');
+    const built = buildResult(parseRequest(exampleRequest()), BRIEF.thesis, checkCitations(BRIEF, PAGES), DEFAULT_MODEL);
+    // Identity: the DID is the registry policy of the three agents that have one, then the name of the asset; the supplier key is the one that signs the receipts.
+    const policy = /did:vector:agent:([0-9a-f]{56}):/.exec(identity)?.[1] ?? '';
+    expect(row(identity, 'DID')).toBe(`| DID | not registered. When registered: ${tick(`did:vector:agent:${policy}:<asset name>`)} |`);
+    for (const other of ['agent-history', 'audio-snippets', 'document-pipeline']) expect(readFileSync(new URL(`../../../specs/${other}.md`, import.meta.url), 'utf8'), other).toContain(`did:vector:agent:${policy}:`);
+    holds(row(identity, 'Controller'), ["the supplier key, the key that signs this agent's receipts."]);
+    // Capability id: the runtime, its pinned commit and its kind are the compose file's; the model string is the one of the example file of the host.
+    holds(section('Capability id'), [
+      'The result names the model the service asked separately, under `model`.',
+      'The agent runs behind the template runtime (`vector-agent-template`, pinned commit `c4c378a`, `CAPABILITY_KIND=custom`).',
+    ]);
+    expect(deploy('docker-compose.advocate.yml')).toContain('c4c378a');
+    expect(deploy('docker-compose.advocate.yml')).toContain('CAPABILITY_KIND: custom');
+    expect(deploy('.env.advocate.example')).toContain('ADVERT_MODEL=advocate-v1');
+    holds(section('Terms'), ['Amounts are `lovelace` fields. The last column is the same amount divided by 1,000,000, with six decimals.']);
+    // Interface: the two names, the answer and what the runtime hashes, the keys of a request, the order of a job, the check and the refusal.
+    holds(interfaceText, [
+      'Two things are named apart on this page. The **request JSON** is what you write: the object under Request below.',
+      'The service answers with the brief as the response body, and the runtime hashes that body into the receipt.',
+      'On the raw routes you wrap it yourself, and the hash you put in the escrow is the hash of the wire payload.',
+      'The request is a JSON object with these keys and no other.',
+      'Then the job runs in this order, under its deadline:',
+      '- The check: see Check below. No argument left is `no_supported_claims` (502).',
+      'A refusal is `{ "error": "<code>", "message": "<words>" }` with the status in the table.',
+    ]);
+    expect(() => parseRequest(JSON.stringify({ subject: 'Cars in the centre', side: 'for', extra: 1 }))).toThrow(RequestError);
+    // Response: the body of the answer is the result serialised once, in the order of the spec; every quote of the example is in the excerpt of its page.
+    holds(interfaceText, [
+      `${tick('schema')} is ${tick(SCHEMA)}. A job that succeeds returns this result as the body of the answer, serialised once, with its keys in this order. A job that fails returns an error (see Errors) and no result. Shape:`,
+    ]);
+    const body = await serve({ manifest, deps: baseDeps(), log: () => undefined, runAdvocate: async () => GOLDEN_OUTCOME }, async (api) => (await api.post(wire(GOLDEN_REQUEST))).text);
+    expect([body, serializeResult(GOLDEN_OUTCOME.result)]).toStrictEqual([JSON.stringify(GOLDEN_OUTCOME.result), JSON.stringify(GOLDEN_OUTCOME.result)]);
+    for (const source of built.sources) expect(quoteFound(source.quote, PAGES.find((p) => p.url === source.url)?.excerpt ?? ''), source.url).toBe(true);
+    expect(row(interfaceText, '`declared_bias`')).toBe('| `declared_bias` | `side`, the side the request gave, as the intake keeps it, and `statement`, the fixed sentence above |');
+    expect(buildResult(parseRequest(JSON.stringify({ subject: 'Cars in the centre', side: ' FOR ' })), BRIEF.thesis, checkCitations(BRIEF, PAGES), DEFAULT_MODEL).declared_bias).toStrictEqual({ side: 'for', statement: DECLARED_BIAS_STATEMENT });
+    // The receipt: the service signs nothing, the runtime does; the rows of the escrow, the model string and the time.
+    const receipt = section('What the receipt commits to');
+    holds(receipt, ['The service signs nothing. The runtime builds and signs the receipt, and submits its hash in the Submit transaction.']);
+    expect(row(receipt, '`escrow_ref`')).toBe('| `escrow_ref` | the escrow UTxO, `<txid>#<index>` |');
+    expect(row(receipt, '`model`')).toBe('| `model` | `advocate-v1` |');
+    expect(row(receipt, '`wallclock_ms`')).toBe('| `wallclock_ms` | how long the service call took |');
+    // The operator, the third parties lead-in, the guide that exists, the design link.
+    holds(section('Operator and data handling'), ['Operator: Apex Fusion Foundation. The contact is `operator.contact` in the manifest.', 'The log carries job outcomes and counts, never a request, a page, a quote or a key. What leaves to third parties:']);
+    expect([manifest.operator.name, Object.keys(manifest.operator)]).toStrictEqual(['Apex Fusion Foundation', ['name', 'contact']]);
+    expect(existsSync(fileURLToPath(new URL('../../../docs/HIRE.md', import.meta.url)))).toBe(true);
+    expect(section('Links').split('\n')).toContain('- Design: [docs/superpowers/specs/2026-10-13-vector-service-agents-design.md](../docs/superpowers/specs/2026-10-13-vector-service-agents-design.md)');
+    // The structure: the header row of every table, and the label before each of the two shapes.
+    const lines = page.split('\n');
+    expect(lines.filter((l, i) => l.startsWith('| ') && /^[|][-| ]+[|]$/.test(lines[i + 1] ?? ''))).toStrictEqual([
+      '| Field | Value |', '| Term | `lovelace` | Printed |', '| Limit | Value |', '| Field | Rule |', '| Field | Content |', '| Status | Codes |', '| Receipt field | Value for this agent |', '| Party | What it receives |',
+    ]);
+    for (const heading of ['Request', 'Response']) expect(sub(heading)).toContain('Shape:\n\n```text\n');
+  });
+
+  test('the bullets, rows and paragraphs of the page that the tests above hold in part are held whole, with the numbers of the code, and the claims about the prompt and the registry record are held to the code and the runbook', () => {
+    const lineOf = (text: string, start: string): string => text.split('\n').find((l) => l.startsWith(start)) ?? '';
+    const interfaceText = section('Interface');
+    const identity = section('Identity');
+    const request = sub('Request');
+    const deploy = (file: string): string => readFileSync(new URL(`../../../deploy/host/${file}`, import.meta.url), 'utf8');
+    const sibling = (name: string): string => readFileSync(new URL(`../../../specs/${name}.md`, import.meta.url), 'utf8');
+    // The registry record that is planned: its name, capability and description are the manifest's and the runbook's, and its framework is the one of the other three pages.
+    expect(row(identity, 'Registry record, planned')).toBe(`| Registry record, planned | name ${tick(manifest.name)}; description as in the manifest, which declares the bias; capabilities ${tick(manifest.capability_id)}; framework ${tick('vector-service-agents')}; endpoint the agent's public URL |`);
+    expect(sibling('audio-snippets')).toContain("framework `vector-service-agents`; endpoint the agent's public URL");
+    expect(deploy('RUNBOOK-advocate.md')).toContain(`DESC="${manifest.description}"`);
+    expect(deploy('RUNBOOK-advocate.md')).toContain('"name":"Advocate"');
+    // The Interface: the wire payload and what is done with it, the page-less request, and the fetch rules of the MCP server.
+    expect(interfaceText).toContain('The **wire payload** is `canonicalize([{ content: <request JSON as a string>, role: "user" }])`, the canonical JSON (sorted keys, NFC strings, no whitespace) of a one-element message array that carries the request JSON as a string. The sha256 of its UTF-8 bytes is the `prompt_hash` of the escrow. The wire payload is also the `payload` field of `POST /v1/job`, and the runtime claims the escrow and posts it unchanged to the service as the HTTP body.');
+    expect(interfaceText).toContain("The marketplace MCP tools (on the hosted mainnet server since 2026-10-14) and the template's buyer, `try-it/src/buy-once.ts`, wrap the request JSON into the wire payload for you.");
+    expect(interfaceText).toContain('A request names no page: the service finds the pages with the Brave Search API and fetches them itself, with the same rules as the MCP server (https only, no credentials in the URL, private and reserved addresses refused, redirects refused), at most 1 MB a page, so the brief can cite only what the service could fetch.');
+    // The rows of the fields of a request.
+    expect(row(request, '`subject`, required')).toBe(`| ${tick('subject')}, required | 1 to ${MAX_SUBJECT_CHARS} characters, with at least one letter or digit: the question or the position the brief is about. |`);
+    expect(row(request, '`side`, required')).toBe(`| ${tick('side')}, required | ${tick('for')} or ${tick('against')}, in any case, or a position in words of 1 to ${MAX_SIDE_CHARS} characters with at least one letter or digit. ${tick('for')} and ${tick('against')} are kept in lower case and a position as given, without the spaces around it; the side is returned in ${tick('declared_bias.side')}. |`);
+    expect(row(request, '`audience`')).toBe(`| ${tick('audience')} | 1 to ${MAX_AUDIENCE_CHARS} characters: who the brief is for. The model is told it. |`);
+    expect(row(request, '`language`')).toBe(`| ${tick('language')} | Default ${tick('en')}. A language code of 2 to ${manifest.interface.request_schema.properties.language.maxLength} characters: 2 to 8 letters, then any number of hyphen-separated subtags of 1 to 8 letters or digits, such as ${tick('en')}, ${tick('en-GB')} or ${tick('zh-Hant-TW')}. The model is asked to write the brief in it; a quote stays in the words of its page. The search is not told it. ${tick('auto')} is refused, for it names no language. |`);
+    // The three bullets of the job, whole. The model is asked for the brief the prompt describes.
+    expect(lineOf(interfaceText, '- The search:')).toBe(`- The search: two queries to the Brave Search API, made from the subject and the side, with no language parameter and no country, one after the other, the second at least ${QUERY_SPACING_MS} ms after the first: the subject alone, and the subject followed by the words of the side (${tick('arguments in favour')} for ${tick('for')}, ${tick('arguments against')} for ${tick('against')}, the position itself for a position in words), each cut at a word boundary to at most ${MAX_QUERY_CHARS} characters and ${MAX_QUERY_WORDS} words, ${RESULTS_PER_QUERY} results each. A query that answers 429 is asked once more, ${QUERY_SPACING_MS} ms later. The results of the second query come first; a result is kept once, by its scheme, host and path, and only when its URL is https; at most ${MAX_RESULTS} are kept. When one query fails, the search goes on with the results of the other. Both failing is ${tick('search_failed')} (502), and so is a key that the Brave Search API refuses. No usable result is ${tick('search_empty')} (502).`);
+    expect(lineOf(interfaceText, '- The pages:')).toBe(`- The pages: each result is fetched by the service, four at a time. A page is kept only when it answers within ${PAGE_TIMEOUT_MS / 1000} s with no redirect and no error, is HTML or plain text, is at most ${PAGE_MAX_BYTES / 1_048_576} MB and has at least ${MIN_PAGE_CHARS} characters of text; its first ${EXCERPT_CHARS} characters are its excerpt, and the kept pages are numbered from ${PAGES[0].n} in the order of the results. No page kept is ${tick('no_sources')} (502).`);
+    expect(lineOf(interfaceText, '- The model:')).toBe(`- The model: one call through OpenRouter with a fixed prompt, which asks for the strongest brief for the side, with no counter-argument, no rebuttal and no concession, every claim citing the numbered pages, each with a quote of ${QUOTE_MIN_CHARS} to ${QUOTE_MAX_CHARS} characters copied from that page. The call gets the smaller of ${MODEL_MAX_MS / 1000} s and the time the job has left less ${RESULT_RESERVE_MS / 1000} s, and is not made when that is under ${MODEL_MIN_MS / 1000} s, which is with under ${FETCH_RESERVE_MS / 1000} s of the job left: the job then fails with ${tick('deadline')} (422). The fetch of the pages ends ${FETCH_RESERVE_MS / 1000} s before the deadline at the latest, so that the model has its ${MODEL_MIN_MS / 1000} s and the check and the result ${RESULT_RESERVE_MS / 1000} s. A call that runs out of a time that the deadline of the job cut under ${MODEL_MAX_MS / 1000} s is ${tick('deadline')} (422); any other call that fails, a call that runs out of the whole ${MODEL_MAX_MS / 1000} s among them, is ${tick('model_failed')} (502). An answer that is not the JSON of a brief is ${tick('model_output_invalid')} (502).`);
+    const prompt = systemPrompt(parseRequest(exampleRequest()));
+    for (const part of ['You write the strongest one-sided brief for a position', 'Give no counter-argument, no rebuttal and no concession', 'Every claim cites one or more of them by number']) expect(prompt, part).toContain(part);
+    expect(ACCEPTED_TYPES).toStrictEqual(['text/html', 'application/xhtml+xml', 'text/plain']);
+    // The example and the check, whole.
+    expect(lineOf(interfaceText, 'Example, for the request above.')).toBe(`Example, for the request above. It is an illustration and not a recorded run: its sources are the three pages of the test fixtures of the service, the thesis, the claims and the support are written for it, and no model wrote them. Every quote in it is found in the text of its page, as the check requires. The ${tick('model')} field reads as the service names its default model, ${tick(modelLabel(DEFAULT_MODEL))}.`);
+    expect(sub('Check').trim()).toBe(`A source the model cites is a page number and a quote. The quote is kept when the number names a page the service kept, and the quote, normalised, is ${QUOTE_MIN_CHARS} to ${QUOTE_MAX_CHARS} characters long and is found in the normalised excerpt of that page. To normalise a text, the service takes its Unicode NFKC form in lower case, makes the apostrophes U+2019 and U+02BC into U+0027, the double quotes U+201C and U+201D into U+0022 and the dashes U+2013 and U+2014 into U+002D, and makes every run of whitespace one space, without the spaces at either end. A quote that fails is dropped. An argument left with no quote is dropped, and the thesis stays. A job whose every argument is dropped fails with ${tick('no_supported_claims')} (502): the thesis never answers alone. A quote may be cited by more than one argument.`);
+    // The Errors: the bullets, whole, and the two paragraphs under the table.
+    const errors = sub('Errors');
+    expect(lineOf(errors, '- A job that fails with a code of the 502 row')).toBe(`- A job that fails with a code of the 502 row answers with a fixed message: ${tick("The service could not do this job (<code>). The operator's log has the detail.")} The codes of the 502 row are failures at a third party or of the check. ${tick('deadline')} (422) keeps its words, which are about the time the job had and hold nothing of the request. ${tick('aborted')} (499) is the answer to a caller that has hung up, which nobody reads.`);
+    expect(lineOf(errors, '- The runtime fails the job')).toBe(`- The runtime fails the job on any non-2xx answer and copies the first 200 characters of the failure to the buyer. The buyer reclaims after ${tick('deliver_by')}.`);
+    expect(lineOf(errors, '- `GET /healthz`')).toBe(`- ${tick('GET /healthz')} and ${tick('GET /agent.json')} are matched on their path, whatever the query string, and a ${tick('HEAD')} of either gets the headers of the ${tick('GET')} and no body. Any other route gets 404 ${tick('{"error":"not_found"}')}, a ${tick('POST /')} with a query string among them.`);
+    expect(lineOf(errors, '- One job runs at a time.')).toBe(`- One job runs at a time. A second request while one runs gets 409 ${tick('{"error":"busy"}')}, and nothing is started.`);
+    expect(lineOf(errors, 'The service holds no chain key')).toBe("The service holds no chain key and posts nothing, so no refusal locks anything of the service's. The 400s and the 401 come before anything is searched or fetched.");
+    expect(lineOf(errors, 'While a job runs')).toBe(`While a job runs the service writes an interim ${tick('102 Processing')} line every ${HEARTBEAT_MS / 1000} s, ahead of the answer, because the runtime's fetch gives up on a response that has not begun after 300 s of silence; a job ends within ${JOB_DEADLINE_MS / 1000} s, so the answer comes well before that. A job whose caller hangs up is stopped: its fetches and its call to the model are aborted, and nothing of it is kept.`);
+    // The receipt rows the escrow and the brief give, whole.
+    const receipt = section('What the receipt commits to');
+    expect(row(receipt, '`supplier_pkh`')).toBe(`| ${tick('supplier_pkh')} | the key hash of the supplier key, which is also the controller key |`);
+    expect(row(receipt, '`prompt_hash`')).toBe(`| ${tick('prompt_hash')} | sha256 of the UTF-8 bytes of the wire payload, as the buyer committed it in the escrow datum |`);
+    expect(row(receipt, '`response_hash`')).toBe(`| ${tick('response_hash')} | sha256 of the UTF-8 bytes of the brief exactly as the service returned them |`);
+    expect(row(receipt, '`prompt_tokens`, `completion_tokens`')).toBe(`| ${tick('prompt_tokens')}, ${tick('completion_tokens')} | 0 and 0, the runtime counts none. The service writes the tokens of its model call in its log and in no output |`);
+    // The row of the Brave Search API, whole; the gaps lead-in; the three ways to hire it.
+    expect(row(section('Operator and data handling'), manifest.behaviour.third_parties[0])).toBe(`| ${manifest.behaviour.third_parties[0]} | the two queries the service makes from the subject and the side, with no language parameter, and the API key of the service; the language of the request is not sent |`);
+    expect(section('Known gaps')).toContain(`The manifest states these six, in this order, word for word. A test keeps them equal to ${tick('gapsFor')} in ${tick('agents/advocate/src/gaps.ts')}, with the default model of the service, ${tick(DEFAULT_MODEL)}.`);
+    expect(existsSync(fileURLToPath(new URL('../src/gaps.ts', import.meta.url)))).toBe(true);
+    const how = section('How to hire it');
+    for (const part of [
+      'Not yet advertised. Once advertised, the three ways below apply. The service is built and waits for its deployment. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).',
+      '1. **Chat client via MCP.** Same tools and same steps as for [Agent History](agent-history.md): list suppliers for `research.advocate.onesided.v1`, post an escrow, send the job, poll, verify the receipt, accept. You give the assistant the request JSON, and the tools wrap it into the wire payload. The marketplace tools are on the hosted mainnet server as of 2026-10-14.',
+      "2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `c4c378a`), with your own key. The file named by `--payload-file` holds the request JSON, and the buyer wraps it into the wire payload. Allow for the 5 min processing window.",
+      "3. **Developers, the raw routes.** You wrap the request JSON yourself and hash the wire payload, as described under Interface. Then the six steps in [Agent History](agent-history.md#how-to-hire-it), with this request JSON and this agent's public URL: its step 2 posts the escrow with the sha256 of the wire payload as `prompt_hash`.",
+    ]) expect(how, part).toContain(part);
+    expect(((sibling('agent-history').split('\n## How to hire it\n')[1] ?? '').split('\n')).filter((l) => /^ {3}[1-6][.] /.test(l))).toHaveLength(6);
   });
 });
