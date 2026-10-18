@@ -31,7 +31,7 @@ jobs:
         env:
           REQUIRE_POPPLER: "1"
           REQUIRE_ASR: "1"
-  # Every push and pull request builds the three images, with no push and no registry login, so that a stage that no longer builds fails before it reaches
+  # Every push and pull request builds the four images, with no push and no registry login, so that a stage that no longer builds fails before it reaches
   # main. The publish job builds them again on main, and pushes them.
   build:
     runs-on: ubuntu-24.04
@@ -51,6 +51,11 @@ jobs:
         with:
           context: .
           file: agents/audio-snippets/Dockerfile
+          push: false
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agents/advocate/Dockerfile
           push: false
   publish:
     needs: test
@@ -92,4 +97,13 @@ jobs:
           tags: |
             ghcr.io/apex-fusion/vector-service-agents/audio-snippets:latest
             ghcr.io/apex-fusion/vector-service-agents/audio-snippets:${{ github.sha }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agents/advocate/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/apex-fusion/vector-service-agents/advocate:latest
+            ghcr.io/apex-fusion/vector-service-agents/advocate:${{ github.sha }}
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
