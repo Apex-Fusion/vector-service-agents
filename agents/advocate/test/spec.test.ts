@@ -88,7 +88,7 @@ describe('specs/advocate.md', () => {
     expect(row(terms, 'Request')).toBe(`| Request | at most ${limits.request_bytes} bytes of wire payload; \`subject\` 1 to ${limits.subject_chars} characters, \`side\` 1 to ${limits.side_chars}, \`audience\` 1 to ${limits.audience_chars} |`);
     expect(row(terms, 'Search results')).toBe(`| Search results | at most ${limits.results}, https only |`);
     expect(row(terms, 'Page')).toBe(`| Page | at most 1 MB (${limits.page_bytes} bytes) fetched and at least ${MIN_PAGE_CHARS} characters of text; the first ${limits.excerpt_chars} characters are read |`);
-    expect(row(terms, 'Quote')).toBe(`| Quote | ${limits.quote_chars_min} to ${limits.quote_chars_max} characters |`);
+    expect(row(terms, 'Quote')).toBe(`| Quote | ${limits.quote_chars_min} to ${limits.quote_chars_max} characters, once normalised (see Check) |`);
     expect(terms).toContain('The last column is the same amount divided by 1,000,000, with six decimals.');
   });
 
@@ -180,7 +180,7 @@ describe('specs/advocate.md', () => {
     expect(names).not.toContain('excerpt');
     // The rows of the fields: the thesis as the model wrote it; the arguments the check kept, in the order the model gave them, each source with the title the search gave; the sources of the kept arguments, once for each page and quote, in the order they are first cited.
     expect(row(response, '`thesis`')).toBe('| `thesis` | the thesis of the brief, as the model wrote it |');
-    expect(row(response, '`arguments[]`')).toBe('| `arguments[]` | the arguments the check kept, in the order the model gave them, each with its `claim`, its `support` and its `sources`: for each source the `title` the search gave for the page, its `url`, `retrieved_at`, the time the service fetched it (ISO 8601, UTC), and the `quote` that was found in its text |');
+    expect(row(response, '`arguments[]`')).toBe('| `arguments[]` | the arguments the check kept, in the order the model gave them, each with its `claim`, its `support` and its `sources`: for each source the `title` the search gave for the page, its `url`, `retrieved_at`, the time the service fetched it (ISO 8601, UTC), and the `quote` that was found in its text, in the words of the page (see Check) |');
     expect(row(response, '`sources[]`')).toBe('| `sources[]` | every source that the kept arguments cite, once for each page and quote, in the order they are first cited |');
     expect(built.thesis).toBe(BRIEF.thesis);
     expect(built.arguments.map((a) => a.claim)).toStrictEqual(BRIEF.arguments.map((a) => a.claim));
@@ -419,8 +419,13 @@ describe('specs/advocate.md, pinned further', () => {
     expect(check).toContain('the service takes its Unicode NFKC form in lower case');
     expect(normalizeText(String.fromCharCode(0xfb01))).toBe('fi');
     expect(check).toContain(`is ${QUOTE_MIN_CHARS} to ${QUOTE_MAX_CHARS} characters long and is found in the normalised excerpt of that page`);
-    expect(normalizeText('Don\u2019t \u201cstop\u201d \u2013 now\u2014then    it\u02bcs OK ')).toBe('don\'t "stop" - now-then it\'s ok');
-    expect(check).toContain('makes the apostrophes U+2019 and U+02BC into U+0027, the double quotes U+201C and U+201D into U+0022 and the dashes U+2013 and U+2014 into U+002D');
+    expect(normalizeText('\u2018Don\u2019t \u201cstop\u201d \u2013 now\u2014then    it\u02bcs OK ')).toBe('\'don\'t "stop" - now-then it\'s ok');
+    expect(check).toContain('makes the left single quote U+2018 and the apostrophes U+2019 and U+02BC into U+0027, the double quotes U+201C and U+201D into U+0022 and the dashes U+2013 and U+2014 into U+002D');
+    // A kept quote is given in the words of its page (R-E36), and an argument lists a page and a quote once (R-E35).
+    expect(check).toContain('A quote that is kept is given in the words of its page: the part of the excerpt that the normalised quote was found in, with the case, the marks and the characters of the page, whatever form the model wrote it in, so a brief shows only text its page holds.');
+    const upper = checkCitations({ thesis: 't', arguments: [{ claim: 'a', support: 's', sources: [{ n: 1, quote: 'CITIES THAT CLOSED THEIR CENTRES TO CARS' }, { n: 1, quote: 'cities that closed their centres to cars' }] }] }, PAGES);
+    expect(upper.arguments[0].sources.map((s) => s.quote)).toStrictEqual(['Cities that closed their centres to cars']);
+    expect(check).toContain('An argument lists a page and a quote once, however often the model cites them in it.');
     const excerpt = PAGES[0].excerpt;
     const quote = 'retail footfall rise by eleven percent within two years';
     expect([quoteFound(quote, excerpt), quoteFound(quote.toUpperCase(), excerpt), quoteFound(`  ${quote}  `, excerpt)]).toStrictEqual([true, true, true]);
@@ -541,6 +546,11 @@ describe('specs/advocate.md, pinned further', () => {
     expect(handling).toContain(logged);
     // The model is sent the language code and the shape of the length in its prompt, and the titles and the URLs of the pages in its message, as the third-parties sentence says.
     expect(row(handling, manifest.behaviour.third_parties[2])).toContain('the fixed prompt, which holds the language code and the shape of the length asked for');
+    // The data handling of the manifest names what reaches OpenRouter with the list of the third parties (R-E32), which the page gives in its row of OpenRouter.
+    const toTheModel = /[(](.+)[)]$/.exec(manifest.behaviour.third_parties[2])?.[1] ?? '';
+    expect(toTheModel).toBe('the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages');
+    expect(manifest.behaviour.data_handling).toContain(`, and ${toTheModel} to OpenRouter and the model provider behind it.`);
+    expect(handling).toContain(`| OpenRouter and the model provider behind it (${toTheModel}) | one chat completion:`);
     expect(handling).toContain("Datalab is not used, and no model runs on the operator's host.");
     // The hosts of the result pages are sent a GET of the page and nothing of the request: the one call of a page carries the URL of the result, the user agent and the accept type, no body, and not a word of the subject.
     expect(row(handling, manifest.behaviour.third_parties[1])).toBe(`| ${manifest.behaviour.third_parties[1]} | a GET of the page, with the user agent ${tick(USER_AGENT)}; nothing of the hirer's request is sent to them |`);
@@ -672,7 +682,7 @@ describe('specs/advocate.md, pinned further', () => {
     expect(ACCEPTED_TYPES).toStrictEqual(['text/html', 'application/xhtml+xml', 'text/plain']);
     // The example and the check, whole.
     expect(lineOf(interfaceText, 'Example, for the request above.')).toBe(`Example, for the request above. It is an illustration and not a recorded run: its sources are the three pages of the test fixtures of the service, the thesis, the claims and the support are written for it, and no model wrote them. Every quote in it is found in the text of its page, as the check requires. The ${tick('model')} field reads as the service names its default model, ${tick(modelLabel(DEFAULT_MODEL))}.`);
-    expect(sub('Check').trim()).toBe(`A source the model cites is a page number and a quote. The quote is kept when the number names a page the service kept, and the quote, normalised, is ${QUOTE_MIN_CHARS} to ${QUOTE_MAX_CHARS} characters long and is found in the normalised excerpt of that page. To normalise a text, the service takes its Unicode NFKC form in lower case, makes the apostrophes U+2019 and U+02BC into U+0027, the double quotes U+201C and U+201D into U+0022 and the dashes U+2013 and U+2014 into U+002D, and makes every run of whitespace one space, without the spaces at either end. A quote that fails is dropped. An argument left with no quote is dropped, and the thesis stays. A job whose every argument is dropped fails with ${tick('no_supported_claims')} (502): the thesis never answers alone. A quote may be cited by more than one argument.`);
+    expect(sub('Check').trim()).toBe(`A source the model cites is a page number and a quote. The quote is kept when the number names a page the service kept, and the quote, normalised, is ${QUOTE_MIN_CHARS} to ${QUOTE_MAX_CHARS} characters long and is found in the normalised excerpt of that page. To normalise a text, the service takes its Unicode NFKC form in lower case, makes the left single quote U+2018 and the apostrophes U+2019 and U+02BC into U+0027, the double quotes U+201C and U+201D into U+0022 and the dashes U+2013 and U+2014 into U+002D, and makes every run of whitespace one space, without the spaces at either end. A quote that is kept is given in the words of its page: the part of the excerpt that the normalised quote was found in, with the case, the marks and the characters of the page, whatever form the model wrote it in, so a brief shows only text its page holds. A quote that fails is dropped. An argument left with no quote is dropped, and the thesis stays. A job whose every argument is dropped fails with ${tick('no_supported_claims')} (502): the thesis never answers alone. An argument lists a page and a quote once, however often the model cites them in it. A quote may be cited by more than one argument.`);
     // The Errors: the bullets, whole, and the two paragraphs under the table.
     const errors = sub('Errors');
     expect(lineOf(errors, '- A job that fails with a code of the 502 row')).toBe(`- A job that fails with a code of the 502 row answers with a fixed message: ${tick("The service could not do this job (<code>). The operator's log has the detail.")} The codes of the 502 row are failures at a third party or of the check. ${tick('deadline')} (422) keeps its words, which are about the time the job had and hold nothing of the request. ${tick('aborted')} (499) is the answer to a caller that has hung up, which nobody reads.`);

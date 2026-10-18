@@ -1,11 +1,12 @@
 // agents/advocate/src/html.ts
 // The text of a fetched page (rulings R-E4 and R-E18), by a hand-written extractor on regular expressions, with no dependency. In HTML the comments and the
-// elements a reader never sees as text (script, style, noscript, template, svg and head) are dropped with all they hold; the tags that start or end a block,
-// and br, become line breaks; every other tag is stripped; the entities are decoded, after the tags, so that an encoded < stays text: the twenty named ones of
-// the two rulings (&amp; &lt; &gt; &quot; &apos; &nbsp;, the typographic quotes, the two dashes, the ellipsis, the copyright, registered and trade mark
-// signs, the guillemets, the euro and the pound) and every numeric one, decimal and hex; and the white space is collapsed. Plain text goes through
-// collapseWhitespace only. The excerpt a brief may cite is the first EXCERPT_CHARS characters of that text, and a page with fewer than MIN_PAGE_CHARS
-// characters of it is not kept (src/pages.ts).
+// elements a reader never sees as text (script, style, noscript, template, svg and head) are dropped with all they hold, the comments and the first five in
+// one pass from left to right (ruling R-E37), so that a <!-- inside a script is text of the script and a <script> inside a comment is text of the comment, as
+// a browser reads them; the tags that start or end a block, and br, become line breaks; every other tag is stripped; the entities are decoded, after the tags,
+// so that an encoded < stays text: the twenty named ones of the two rulings (&amp; &lt; &gt; &quot; &apos; &nbsp;, the typographic quotes, the two dashes,
+// the ellipsis, the copyright, registered and trade mark signs, the guillemets, the euro and the pound) and every numeric one, decimal and hex; and the white
+// space is collapsed. Plain text goes through collapseWhitespace only. The excerpt a brief may cite is the first EXCERPT_CHARS characters of that text, and a
+// page with fewer than MIN_PAGE_CHARS characters of it is not kept (src/pages.ts).
 //
 // A page is a third party's, up to 1 MB of it, so every pattern here runs in time linear in its length however the page is made: no part of a tag may hold a <,
 // so the scan of a tag ends at the next <; a comment or a dropped element left open runs to the end of the page, as a browser reads it, in one pass. The page's
@@ -23,6 +24,8 @@ const ATTRIBUTES = String.raw`[^<>"']*(?:(?:"[^"<]*"|'[^'<]*')[^<>"']*)*`;
 const COMMENT = /<!--[\s\S]*?(?:-->|$)/g;
 // An element whose content is no text, with that content: to its end tag, or to the end of the page when it has none.
 const DROPPED = new RegExp(String.raw`<(script|style|noscript|template|svg)(?=[\s/>])${ATTRIBUTES}>[\s\S]*?(?:<\/\1\s*>|$)`, 'gi');
+// The two in one pass (R-E37): at each place the one that begins there is taken whole, so the one that begins first holds whatever the other would begin in it.
+const COMMENT_OR_DROPPED = new RegExp(`${COMMENT.source}|${DROPPED.source}`, 'gi');
 // The head: to its end tag, to the start tag of the body (HTML lets a page leave out </head>), or to the end of the page.
 const HEAD = new RegExp(String.raw`<head(?=[\s/>])${ATTRIBUTES}>[\s\S]*?(?:<\/head\s*>|(?=<body[\s/>])|$)`, 'gi');
 // The start and end tags of a block, and br: each is a line break.
@@ -72,6 +75,6 @@ export function collapseWhitespace(s: string): string {
 
 /** The text of an HTML page (R-E4): what is never text dropped, each block on a line of its own, the other tags stripped, the entities decoded, the white space collapsed. */
 export function extractText(html: string): string {
-  const text = html.replace(COMMENT, '').replace(DROPPED, '').replace(HEAD, '').replace(BLOCK, '\n').replace(TAG, '');
+  const text = html.replace(COMMENT_OR_DROPPED, '').replace(HEAD, '').replace(BLOCK, '\n').replace(TAG, '');
   return collapseWhitespace(decodeEntities(text));
 }

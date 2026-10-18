@@ -1,8 +1,9 @@
 // agents/advocate/test/check.test.ts
 // The post-check (ruling R-E6, Review Focus 2): the golden answer, whose true quote is kept and whose made-up quote, wrong page number and short quote are
 // dropped; a quote read only against the page it names; the bounds of a quote, counted after normalisation; the normalisation of apostrophes, quotation
-// marks, dashes, whitespace, case and compatibility forms, and what it does not forgive; an argument left without a quote dropped; no argument left is
-// no_supported_claims, so that the thesis never answers alone; and the list of sources, each once, in the order of first use.
+// marks, dashes, whitespace, case and compatibility forms, and what it does not forgive; the quote of a source given in the words of its page, whatever form
+// the model wrote it in (ruling R-E36); an argument left without a quote dropped; no argument left is no_supported_claims, so that the thesis never answers
+// alone; a page and a quote once in an argument (ruling R-E35); and the list of sources, each once, in the order of first use.
 import { describe, test, expect } from 'vitest';
 import { checkCitations, quoteFound } from '../src/check.ts';
 import { AdvocateError } from '../src/errors.ts';
@@ -60,10 +61,58 @@ describe('a quote is read against the page it names', () => {
     });
   });
 
-  test('a source carries the title, the URL and the time of retrieval of its page and the quote as the model wrote it, in that order', () => {
+  test('a source carries the title, the URL and the time of retrieval of its page and the quote in the words of the page (R-E36), in that order', () => {
     const [kept] = checkCitations(brief([[2, 'FELL BY A THIRD IN THE FIRST YEAR']]), PAGES).arguments[0].sources;
     expect(Object.keys(kept)).toStrictEqual(['title', 'url', 'retrieved_at', 'quote']);
-    expect(kept).toStrictEqual(source(2, 'FELL BY A THIRD IN THE FIRST YEAR'));
+    expect(kept).toStrictEqual(source(2, Q2));
+  });
+});
+
+describe('the quote of a source is the words of its page (R-E36)', () => {
+  /** The quote the brief gives when the model cites `quote` from a page whose excerpt is `excerpt`. */
+  const given = (excerpt: string, quote: string): string => checkCitations(brief([[1, quote]]), [page(1, excerpt)]).sources[0].quote;
+
+  test('the model writes plain quotation marks, apostrophes and dashes, and the page has typographic ones: the brief gives the marks of the page', () => {
+    const excerpt = 'They called it \u{201C}the best year\u{201D} \u{2014} and the council\u{2019}s count agreed, as the \u{2018}first\u{2019} count had.';
+    expect(given(excerpt, '"the best year" - and the council\'s count agreed')).toBe('\u{201C}the best year\u{201D} \u{2014} and the council\u{2019}s count agreed');
+    expect(given(excerpt, "the council's count agreed, as the 'first' count had")).toBe('the council\u{2019}s count agreed, as the \u{2018}first\u{2019} count had');
+  });
+
+  test('the model writes in lower case or in capitals, and the brief gives the case of the page', () => {
+    expect(given(PAGES[0].excerpt, 'cities that closed their centres to cars')).toBe('Cities that closed their centres to cars');
+    expect(given(PAGES[1].excerpt, 'NITROGEN DIOXIDE AT THE SCHOOL GATE')).toBe('Nitrogen dioxide at the school gate');
+  });
+
+  test('the model writes a compatibility character in its plain form, and the brief gives the character of the page: a superscript stays one, so the brief never shows a number the page does not', () => {
+    const excerpt = 'Density rose to 10\u{B3} people per km\u{B2} in the old town, and it fell in the \u{FB01}rst year after the closure.';
+    expect(given(excerpt, 'Density rose to 103 people per km2')).toBe('Density rose to 10\u{B3} people per km\u{B2}');
+    expect(given(excerpt, 'it fell in the first year after the closure')).toBe('it fell in the \u{FB01}rst year after the closure');
+    // A quote that begins inside the two letters the ligature stands for: the brief gives the whole character.
+    expect(given(excerpt, 'irst year after the closure')).toBe('\u{FB01}rst year after the closure');
+  });
+
+  test('the space around the quote of the model and the runs of space in it are not the page\'s: the brief gives the page\'s, a line break of its text among them', () => {
+    expect(given(PAGES[0].excerpt, `${' '.repeat(400)}retail   footfall rise\tby eleven percent  `)).toBe('retail footfall rise by eleven percent');
+    expect(given('They walk in every street\nof the centre now.', 'in every street of the centre')).toBe('in every street\nof the centre');
+  });
+
+  test('a letter whose accent the page writes apart, and capital letters of Greek with a sigma at the end of a word: the brief gives the letters of the page', () => {
+    expect(given('The cafe\u{301} on the corner kept its terrace all year.', 'the caf\u{E9} on the corner kept its terrace')).toBe('The cafe\u{301} on the corner kept its terrace');
+    const greek = '\u{397} \u{39F}\u{394}\u{39F}\u{3A3} \u{395}\u{39A}\u{39B}\u{395}\u{399}\u{3A3}\u{395} \u{393}\u{399}\u{391} \u{3A4}\u{391} \u{391}\u{3A5}\u{3A4}\u{39F}\u{39A}\u{399}\u{39D}\u{397}\u{3A4}\u{391}.';
+    const quote = '\u{3B7} \u{3BF}\u{3B4}\u{3BF}\u{3C2} \u{3B5}\u{3BA}\u{3BB}\u{3B5}\u{3B9}\u{3C3}\u{3B5} \u{3B3}\u{3B9}\u{3B1} \u{3C4}\u{3B1} \u{3B1}\u{3C5}\u{3C4}\u{3BF}\u{3BA}\u{3B9}\u{3BD}\u{3B7}\u{3C4}\u{3B1}';
+    expect(given(greek, quote)).toBe(greek.slice(0, -1));
+  });
+
+  test('the words are those of the first place the quote is found, and every quote the brief gives is found again in its page', () => {
+    expect(given('Retail footfall rose. Later, retail footfall rose again in the centre.', 'RETAIL FOOTFALL ROSE')).toBe('Retail footfall rose');
+    const { sources } = checkCitations(GOLDEN_MODEL_BRIEF, GOLDEN_PAGES);
+    for (const s of sources) expect(quoteFound(s.quote, GOLDEN_PAGES.find((p) => p.url === s.url)?.excerpt ?? ''), s.quote).toBe(true);
+  });
+
+  test('the bounds are those of the normalised quote: 300 characters of it are kept, whatever the length of the words of the page, and 301 are not', () => {
+    const apart = 'e\u{301}';
+    expect(given(`x ${apart.repeat(300)} y`, '\u{E9}'.repeat(300))).toBe(apart.repeat(300));
+    expect(() => given(`x ${apart.repeat(301)} y`, '\u{E9}'.repeat(301))).toThrow(expect.objectContaining({ code: 'no_supported_claims' }));
   });
 });
 
@@ -126,8 +175,15 @@ describe('the arguments', () => {
 describe('the sources of the brief', () => {
   test('a quote cited by two arguments is kept in both and listed once; the list is unique by page and quote, in the order of first use', () => {
     const checked = checkCitations(brief([[2, Q2]], [[1, Q1], [2, Q2]], [[1, Q1]], [[2, Q2.toUpperCase()]]), PAGES);
-    expect(checked.arguments.map((a) => a.sources)).toStrictEqual([[source(2, Q2)], [source(1, Q1), source(2, Q2)], [source(1, Q1)], [source(2, Q2.toUpperCase())]]);
+    expect(checked.arguments.map((a) => a.sources)).toStrictEqual([[source(2, Q2)], [source(1, Q1), source(2, Q2)], [source(1, Q1)], [source(2, Q2)]]);
     expect(checked.sources).toStrictEqual([source(2, Q2), source(1, Q1)]);
+    expect([checked.droppedQuotes, checked.droppedArguments]).toStrictEqual([0, 0]);
+  });
+
+  test('a page and a quote that an argument cites twice are one source of it, in whatever form the model gave the quote again, and no quote is dropped for it (R-E35)', () => {
+    const checked = checkCitations(brief([[1, Q1], [1, Q1.toUpperCase()], [2, Q2], [1, `  ${Q1} `]], [[1, Q1]]), PAGES);
+    expect(checked.arguments.map((a) => a.sources)).toStrictEqual([[source(1, Q1), source(2, Q2)], [source(1, Q1)]]);
+    expect(checked.sources).toStrictEqual([source(1, Q1), source(2, Q2)]);
     expect([checked.droppedQuotes, checked.droppedArguments]).toStrictEqual([0, 0]);
   });
 

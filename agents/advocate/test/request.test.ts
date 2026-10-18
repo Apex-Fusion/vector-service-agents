@@ -81,8 +81,8 @@ describe('parseRequest', () => {
     ['a language of 17 characters', 'language', { subject: SUBJECT, side: 'for', language: 'zh-Hant-TW-abcdef' }, LANGUAGE_RULE],
     ['a language that is a number', 'language', { subject: SUBJECT, side: 'for', language: 7 }, LANGUAGE_RULE],
     ['a language that is null', 'language', { subject: SUBJECT, side: 'for', language: null }, LANGUAGE_RULE],
-    ['the language auto', 'language', { subject: SUBJECT, side: 'for', language: 'auto' }, `${LANGUAGE_RULE}; auto is not one, for the brief is written in the language the request names, en by default`],
-    ['the language auto in capitals', 'language', { subject: SUBJECT, side: 'for', language: ' AUTO ' }, `${LANGUAGE_RULE}; auto is not one, for the brief is written in the language the request names, en by default`],
+    ['the language auto', 'language', { subject: SUBJECT, side: 'for', language: 'auto' }, `${LANGUAGE_RULE}; auto is not one: the request names the language the model is asked to write the brief in, en by default`],
+    ['the language auto in capitals', 'language', { subject: SUBJECT, side: 'for', language: ' AUTO ' }, `${LANGUAGE_RULE}; auto is not one: the request names the language the model is asked to write the brief in, en by default`],
   ])('refuses %s, naming %s', (_name, field, request, message) => {
     const e = refusal(request);
     expect([e.name, e.code, e.status]).toStrictEqual(['RequestError', 'bad_shape', 400]);

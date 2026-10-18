@@ -76,7 +76,11 @@ const REQUEST_SCHEMA = {
       type: 'string', minLength: 1, maxLength: MAX_SIDE_CHARS,
       description: `The side the brief argues: for, against, or a position in words, 1 to ${MAX_SIDE_CHARS} characters with at least one letter or digit`,
     },
-    audience: { type: 'string', minLength: 1, maxLength: MAX_AUDIENCE_CHARS, description: `Who the brief is written for, in words: 1 to ${MAX_AUDIENCE_CHARS} characters; optional` },
+    // A blank audience is refused by the intake, and by the schema too (R-E34): a pattern is found anywhere in the text, and \S of ECMA is what trim() keeps.
+    audience: {
+      type: 'string', minLength: 1, maxLength: MAX_AUDIENCE_CHARS, pattern: '\\S',
+      description: `Who the brief is written for, in words: 1 to ${MAX_AUDIENCE_CHARS} characters; optional`,
+    },
     length: {
       enum: [...LENGTHS], default: DEFAULT_LENGTH,
       description: `The prompt asks for a thesis and ${SHAPES.short.minArguments} arguments (short) or ${SHAPES.standard.minArguments} to ${SHAPES.standard.maxArguments} arguments (standard), and the check can leave fewer`,
@@ -93,14 +97,16 @@ const NOTES = [
   `The language is a code such as en or en-GB, 2 to 8 letters and optional hyphen-separated subtags of up to 8 letters or digits, at most ${LANGUAGE_MAX_CHARS} characters, en by default: the model is asked to write the brief in it, and the search is not told it.`,
   `The service runs the search and fetches the result pages itself, at most ${MAX_RESULTS} pages of at most ${PAGE_MAX_BYTES} bytes each, and cites only what it could fetch: a quote that is not in the text of the page it names is dropped, and so is an argument left without one.`,
 ];
+/** What reaches OpenRouter and the model provider behind it (R-E27), in one list that the data handling and the third parties both give (R-E32). */
+const TO_THE_MODEL = 'the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages';
 const DATA_HANDLING = 'The subject, the side, the audience, the length and the language are held in memory while a job runs, with the pages the service fetches; nothing is written to disk and nothing is kept after the job. '
-  + 'The two search queries go to the Brave Search API, each page fetch to the host of that page, and the subject, the side, the audience and the page excerpts to OpenRouter and the model provider behind it. '
+  + `The two search queries go to the Brave Search API, each page fetch to the host of that page, and ${TO_THE_MODEL} to OpenRouter and the model provider behind it. `
   + 'On the ledger the escrow carries only the sha256 of the wire payload, and the request stays off the ledger. '
   + 'The log carries job outcomes and counts, never a request, a page, a quote or a key.';
 const THIRD_PARTIES = [
   'Brave Search API (the two search queries)',
   'the hosts of the result pages (the fetch of each page)',
-  'OpenRouter and the model provider behind it (the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages)',
+  `OpenRouter and the model provider behind it (${TO_THE_MODEL})`,
 ];
 
 export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
@@ -166,7 +172,8 @@ export const defaultLog = (line: string): void => { console.log(`[advocate] ${li
 /** A refusal of the intake (RequestError, the request's) or of a job (AdvocateError, the job's), as the shared server answers it; null for anything else. */
 function refusalOf(e: unknown): Refusal | null {
   if (e instanceof RequestError) return { code: e.code, status: e.status, message: e.message, kind: 'request' };
-  // The detail of a job's failure: the buyer reads it at 422 (deadline); at 502 the server gives the buyer fixed text and the log the detail.
+  // The detail of a job's failure: the buyer reads it at 422 (deadline) and 499 (aborted, which nobody receives); at 502 the server gives the buyer fixed text
+  // and the log the detail.
   if (e instanceof AdvocateError) return { code: e.code, status: e.status, message: e.detail, kind: 'job' };
   return null;
 }

@@ -11,12 +11,14 @@
 //
 // No text of an answer reaches the log (ruling R-E26). A body of status 200 is an answer of the model, and an answer can quote a page or restate the request;
 // the log carries job outcomes and counts, never a request, a page or a quote. So a line about a 200 gives the reason and the length of the body in characters
-// (Unicode code points), never its text, and so does the detail of a content that cannot be read. Only an answer that is not 200 shows the start of its body,
-// for that is the provider's error text, which says what went wrong. What can fail, and how:
+// (Unicode code points), never its text, and so does the detail of a content that cannot be read. Only an answer that is not 200 shows words of its body, for
+// that is the provider's error, which says what went wrong, and of it only what says so (ruling R-E30): when the body is the JSON of an error, its code and the
+// first 200 characters of its message, never its metadata, which can hold a part of the request (the flagged input of a moderation error); else the first 200
+// characters of the body. What can fail, and how:
 //   model_failed (502)          an answer that is not 200, a body over the cap, a body that is not JSON or has no choices[0].message.content string, no answer
 //                               within the full MODEL_MAX_MS, or a network failure (a refused redirect among them). One log line says which, with the HTTP
-//                               status; then the first 200 characters of the body when the status is not 200, or the length of the body when it is 200. The
-//                               error carries a short detail for the line of the job.
+//                               status; then, when the status is not 200, the code and the message of the provider's error or the first 200 characters of the
+//                               body, and when it is 200, the length of the body. The error carries a short detail for the line of the job.
 //   deadline (422)              no answer within a time the deadline of the job had cut under MODEL_MAX_MS (ruling R-E19): the job ran out of its time. The
 //                               log line is the one of a call with no answer.
 //   model_output_invalid (502)  content that holds no JSON object of the shape the prompt asks for, or none with an argument that says something. The detail,
@@ -35,7 +37,7 @@ export const modelLabel = (model: string): string => `${model} via OpenRouter`;
 /** The two headers OpenRouter reads to name the application that calls it. */
 const REFERER = 'https://github.com/Apex-Fusion/vector-service-agents';
 const TITLE = 'Advocate (vector-service-agents)';
-/** How much a log line or a detail shows of the error text of the provider (the body of an answer that is not 200) or of a network error; of an answer, nothing (R-E26). */
+/** How much a log line or a detail shows of the error of the provider (R-E30: the message of its error, or the body of an answer that is not 200) or of a network error; of an answer, nothing (R-E26). */
 const SHOWN_CHARS = 200;
 /** The most of an answer that is read: 4 MiB (R-E23). A chat completion is a few KB of JSON; a body that goes past this is no answer, and is not read to its end. */
 export const ANSWER_MAX_BYTES = 4_194_304;
@@ -75,6 +77,17 @@ function charsOf(text: string): number {
 function withoutKey(text: string, key: string): string {
   if (key === '') return text;
   return text.replace(new RegExp(key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '[the key]');
+}
+
+/** The error of a body that is the JSON of an error of OpenRouter, { "error": { "code", "message", "metadata" } }; null for any other body. */
+function providerError(text: string): Record<string, unknown> | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  return isObject(value) && isObject(value.error) ? value.error : null;
 }
 
 /** The content of the first choice, when it is a string. */
@@ -125,8 +138,20 @@ async function readCapped(res: Response, max: number): Promise<{ text: string; o
 export async function callModel(messages: readonly ChatMessage[], opts: ModelOptions): Promise<{ content: string; usage: Usage | null }> {
   const timeout = AbortSignal.timeout(opts.timeoutMs);
   const signal = opts.signal === undefined ? timeout : AbortSignal.any([opts.signal, timeout]);
-  /** The body of an answer that is not 200, the provider's error text, as a log line shows it: flat, without the key, its first 200 characters. */
-  const bodyOf = (text: string): string => (text === '' ? '(no body)' : errorText(withoutKey(text, opts.apiKey), SHOWN_CHARS));
+  /** A text of the far end as a line or a detail shows it: without the key, flat, its first 200 characters. */
+  const shownText = (text: string): string => errorText(withoutKey(text, opts.apiKey), SHOWN_CHARS);
+  /**
+   * What the line of an answer that is not 200 shows after its status (R-E30): the code and the first 200 characters of the message of the provider's error
+   * when the body is the JSON of one, and never its metadata; else the first 200 characters of the body; (no body) for none.
+   */
+  const errorOf = (text: string): string => {
+    if (text === '') return ': (no body)';
+    const error = providerError(text);
+    if (error === null) return `: ${shownText(text)}`;
+    const { code, message } = error;
+    const shownCode = typeof code === 'number' || (typeof code === 'string' && code !== '') ? shownText(String(code)) : '(none)';
+    return ` with the error code ${shownCode}: ${typeof message === 'string' && message !== '' ? shownText(message) : '(no message)'}`;
+  };
   /** A body of status 200, which is an answer of the model and may quote a page, as a log line shows it: its length, never its text (R-E26). */
   const sizeOf = (text: string): string => `a body of ${charsOf(text)} characters`;
   /** A failure of the call: its line in the log, and the error with the short detail that the line of the job carries. */
@@ -159,18 +184,18 @@ export async function callModel(messages: readonly ChatMessage[], opts: ModelOpt
         }
         throw failed(late, late);
       }
-      const why = `the call to OpenRouter failed: ${errorText(withoutKey(error instanceof Error ? error.message : String(error), opts.apiKey), SHOWN_CHARS)}`;
+      const why = `the call to OpenRouter failed: ${shownText(error instanceof Error ? error.message : String(error))}`;
       throw failed(why, why);
     }
   };
   const { status, text, over } = await send();
   if (over) {
-    // R-E23: a body past the cap is no answer, whatever its status; the detail says the cap. The line says the status, then the start of what was read when
-    // that is an error of the provider (not 200), or only how much was read when it is an answer (200, R-E26).
+    // R-E23: a body past the cap is no answer, whatever its status; the detail says the cap. The line says the status, then what an error of the provider
+    // shows of what was read (not 200, R-E30), or only how much was read when it is an answer (200, R-E26).
     const big = `the answer of OpenRouter is over the cap of ${ANSWER_MAX_BYTES} bytes`;
-    throw failed(big, status === 200 ? `${big} (HTTP 200, ${charsOf(text)} characters read)` : `${big} (HTTP ${status}): ${bodyOf(text)}`);
+    throw failed(big, status === 200 ? `${big} (HTTP 200, ${charsOf(text)} characters read)` : `${big} (HTTP ${status})${errorOf(text)}`);
   }
-  if (status !== 200) throw failed(`OpenRouter answered HTTP ${status}`, `OpenRouter answered HTTP ${status}: ${bodyOf(text)}`);
+  if (status !== 200) throw failed(`OpenRouter answered HTTP ${status}`, `OpenRouter answered HTTP ${status}${errorOf(text)}`);
   let answer: unknown;
   try {
     answer = JSON.parse(text);

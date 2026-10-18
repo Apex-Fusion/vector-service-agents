@@ -39,7 +39,7 @@ export interface AdvocateRequest {
   /** Who the brief is written for, or null when the request names no one. */
   audience: string | null;
   length: Length;
-  /** The code of the language the brief is written in, as it was given once trimmed. */
+  /** The code of the language the model is asked to write the brief in, as it was given once trimmed. */
   language: string;
 }
 
@@ -89,9 +89,9 @@ function parseLength(value: unknown): Length {
 function parseLanguage(value: unknown): string {
   if (typeof value !== 'string') throw new RequestError(`language must be ${LANGUAGE_RULE}`);
   const language = value.trim();
-  // auto is made of letters, but it names no language: the brief is written in the language the request names, en by default.
+  // auto is made of letters, but it names no language: the request names the language the model is asked to write the brief in, en by default.
   if (/^auto$/i.test(language)) {
-    throw new RequestError(`language must be ${LANGUAGE_RULE}; auto is not one, for the brief is written in the language the request names, ${DEFAULT_LANGUAGE} by default`);
+    throw new RequestError(`language must be ${LANGUAGE_RULE}; auto is not one: the request names the language the model is asked to write the brief in, ${DEFAULT_LANGUAGE} by default`);
   }
   if (language.length > MAX_LANGUAGE_CHARS || !LANGUAGE.test(language)) throw new RequestError(`language must be ${LANGUAGE_RULE}`);
   return language;

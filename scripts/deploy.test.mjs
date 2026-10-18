@@ -3573,7 +3573,7 @@ test('Advocate RUNBOOK step 5 in bash: the copy is made from a copy of Audio Sni
     const header = `# the scripts of ${AS}/ops, for the env file ${env}\n`;
     const stand = {
       'setup-venv.sh': `#!/bin/sh\n${header}echo "venv ok"\n`,
-      'make-skey.py': `${header}KEY_DESCRIPTION = "audio-snippets supplier payment key"\nWALLET = "${AS}/ops/wallet"\n`,
+      'make-skey.py': `${header}KEY_DESCRIPTION = "audio-snippets supplier key"\nWALLET = "${AS}/ops/wallet"\n`,
       'mcp-call.sh': `#!/bin/sh\n${header}. "${env}"\n`,
       'sign-tx.py': header,
       'register-did.sh': `#!/bin/sh\n${header}. ${env}\nBODY='{\n "name":"Audio Snippets",\n "description":"A word-timed transcript.",\n "capabilities":["audio.transcript.snippets.v1"],\n "framework":"vector-service-agents",\n "endpoint":"https://mp-suppliers-snippets.hal8.ai"}'\n`,
@@ -3587,7 +3587,7 @@ test('Advocate RUNBOOK step 5 in bash: the copy is made from a copy of Audio Sni
     const all = Object.values(copy).join('\n');
     assert.equal(/snippets|pipeline|agent.history/i.test(all), false, 'nothing of Audio Snippets or of the other two is left in the copy');
     assert.ok(copy['register-did.sh'].includes(`. ${AD}/repo/deploy/host/.env.advocate\n`) && copy['mcp-call.sh'].includes(`. "${AD}/repo/deploy/host/.env.advocate"\n`), 'the scripts read the env file of Advocate');
-    assert.ok(copy['make-skey.py'].includes('KEY_DESCRIPTION = "advocate supplier payment key"\n') && copy['make-skey.py'].includes(`WALLET = "${AD}/ops/wallet"\n`));
+    assert.ok(copy['make-skey.py'].includes('KEY_DESCRIPTION = "advocate supplier key"\n') && copy['make-skey.py'].includes(`WALLET = "${AD}/ops/wallet"\n`));
     const desc = /^DESC="(.+)"$/m.exec(section(aRunbook, '5. Adapt the ops scripts'))[1];
     for (const line of [' "name":"Advocate",', ` "description":"${desc}",`, ' "capabilities":["research.advocate.onesided.v1"],', ' "framework":"vector-service-agents",', ' "endpoint":"https://mp-suppliers-advocate.hal8.ai"}']) assert.ok(copy['register-did.sh'].includes(line), line);
     assert.ok(copy['m3-self-stake.py'].includes('CAPABILITIES = ["research.advocate.onesided.v1"]\n'));
@@ -3772,22 +3772,27 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
   for (const code of ['search_failed', 'search_empty', 'no_sources', 'model_failed', 'model_output_invalid', 'no_supported_claims', 'deadline']) {
     assert.ok(rows.some((r) => r.startsWith(`| Jobs fail with \`${code}\` (${statuses[code]})`)), `a row for ${code} (${statuses[code]})`);
   }
-  // Ruling R-E26: the log shows the first 200 characters of an answer only when its status is not 200. A 200 is an answer of the model, which can quote a page or the request,
-  // so for a 200 whose body or content cannot be read the line gives the reason and the length, never the text. The two rows say so, and the code does it (a call to the
-  // real code with stand-ins for OpenRouter, whose answers hold a text that must not reach the log).
+  // Ruling R-E26: the log shows words of an answer only when its status is not 200. A 200 is an answer of the model, which can quote a page or the request, so for a
+  // 200 whose body or content cannot be read the line gives the reason and the length, never the text. Ruling R-E30: of an answer that is not 200 the line shows the
+  // code and the first 200 characters of the message when it is the JSON of an error, never its metadata, and otherwise the first 200 characters of the answer. The
+  // two rows say so, and the code does it (a call to the real code with stand-ins for OpenRouter, whose answers hold a text that must not reach the log).
   const failedRow = rows.find((r) => r.startsWith('| Jobs fail with `model_failed` (502)')) ?? '';
   const invalidRow = rows.find((r) => r.startsWith('| Jobs fail with `model_output_invalid` (502)')) ?? '';
-  assert.ok(failedRow.includes('the first 200 characters of the answer only when the status is not 200 (the error text of the provider), and, for a 200 whose body is not JSON or has no content, the reason and the length of the body in characters, never its text. Never the key.'));
+  assert.ok(failedRow.includes('The log says which, with the HTTP status when there is one. When the status is not 200 it shows the error of the provider: its code and the first 200 characters of its message when the answer is the JSON of an error, never its metadata, which can hold a part of the request, and the first 200 characters of the answer when it is not. For a 200 whose body is not JSON or has no content it gives the reason and the length of the body in characters, never its text. Never the key.'));
   assert.ok(invalidRow.includes('The log line of the job gives the reason and the length of the content in characters, never its text.'));
-  assert.doesNotMatch(table, /with the HTTP status and the first 200 characters of the answer|has the first 200 characters of it/, 'the words of before the ruling');
-  const bodies = { refused: `busy ${'x'.repeat(400)}`, notJson: `AN-ANSWER-TEXT ${'y'.repeat(100)}`, content: 'A-CONTENT-TEXT, no object' };
+  assert.doesNotMatch(table, /with the HTTP status and the first 200 characters of the answer|has the first 200 characters of it|only when the status is not 200 \(the error text of the provider\)/, 'the words of before the rulings');
+  const bodies = {
+    refused: `busy ${'x'.repeat(400)}`, notJson: `AN-ANSWER-TEXT ${'y'.repeat(100)}`, content: 'A-CONTENT-TEXT, no object',
+    flagged: JSON.stringify({ error: { metadata: { flagged_input: 'A-REQUEST-TEXT' }, code: 403, message: `flagged ${'w'.repeat(300)}` } }),
+  };
   const [logged] = inAdvocate(
     "import { callModel, parseBriefAnswer } from './src/model.ts'; const bodies = JSON.parse(process.argv[1]); const lines = []; " +
     "const call = async (status, body) => { lines.length = 0; try { await callModel([], { fetchImpl: async () => new Response(body, { status }), apiKey: 'k'.repeat(30), model: 'a/b', maxTokens: 10, timeoutMs: 5000, log: (l) => lines.push(l) }); } catch {} return lines.join(' | '); }; " +
     "let invalid = ''; try { parseBriefAnswer(bodies.content); } catch (e) { invalid = e.detail; } " +
-    "console.log(JSON.stringify([[await call(503, bodies.refused), await call(200, bodies.notJson), invalid]]));", bodies);
-  const [refusedLine, notJsonLine, invalidDetail] = logged;
+    "console.log(JSON.stringify([[await call(503, bodies.refused), await call(200, bodies.notJson), invalid, await call(403, bodies.flagged)]]));", bodies);
+  const [refusedLine, notJsonLine, invalidDetail, flaggedLine] = logged;
   assert.ok(refusedLine.endsWith(`HTTP 503: busy ${'x'.repeat(195)}...`), 'a status other than 200: the first 200 characters of the answer');
+  assert.ok(flaggedLine.endsWith(`HTTP 403 with the error code 403: flagged ${'w'.repeat(192)}...`) && !/A-REQUEST-TEXT|metadata|flagged_input/.test(flaggedLine), 'the JSON of an error: its code and the first 200 characters of its message, never its metadata');
   assert.ok(notJsonLine.includes('HTTP 200') && notJsonLine.includes(`a body of ${bodies.notJson.length} characters`) && !notJsonLine.includes('ANSWER-TEXT'), 'a 200: the reason and the length, never the text');
   assert.ok(invalidDetail.includes(`a content of ${bodies.content.length} characters`) && !invalidDetail.includes('CONTENT-TEXT'), 'a content that is no brief: the reason and the length, never the text');
   // The rows say all that makes a job fail, and every number in them is the code's, read from it (aLimits), with the lines they quote.

@@ -89,10 +89,18 @@ describe('loadConfig', () => {
   });
 
   describe('the two API keys', () => {
-    test('a key is printable ASCII without spaces, and one that is not is refused with its length only; the space a file leaves around it is not part of it', () => {
-      for (const [name, bad] of [['BRAVE_SEARCH_API_KEY', 'BSA one two three four'], ['OPENROUTER_API_KEY', `sk-or-v1-${'ab'.repeat(30)}\u{e9}`]] as const) {
-        expect(message(() => loadConfig({ ...FULL_ENV, [name]: bad }))).toBe(`environment variable ${name} must be printable ASCII without spaces (it is sent as an HTTP header), and it has ${bad.length} characters`);
+    test('a key is at least 20 characters of letters, digits, dots, hyphens and underscores (R-E31), and one that is not is refused with its length only; the space a file leaves around it is not part of it', () => {
+      const refused = [
+        ['BRAVE_SEARCH_API_KEY', 'BSA one two three four'], ['OPENROUTER_API_KEY', `sk-or-v1-${'ab'.repeat(30)}\u{e9}`], ['BRAVE_SEARCH_API_KEY', `BSA${'a'.repeat(16)}`],
+        ['OPENROUTER_API_KEY', `sk-or-v1-${'ab'.repeat(10)}/x`], ['OPENROUTER_API_KEY', `sk-or-v1-${'ab'.repeat(10)}"x`], ['BRAVE_SEARCH_API_KEY', `BSA${'a'.repeat(20)}\\x`],
+        ['BRAVE_SEARCH_API_KEY', `BSA${'a'.repeat(20)}+x`], ['OPENROUTER_API_KEY', `sk-or-v1-${'ab'.repeat(10)}(x)`],
+      ] as const;
+      for (const [name, bad] of refused) {
+        const text = message(() => loadConfig({ ...FULL_ENV, [name]: bad }));
+        expect(text, bad).toBe(`environment variable ${name} must be at least 20 characters of letters, digits, dots, hyphens and underscores, and it has ${bad.length} characters`);
+        expect(text, bad).not.toContain(bad.slice(0, 12));
       }
+      for (const good of [`BSA${'a'.repeat(17)}`, `sk-or-v1-${'0123456789abcdef'.repeat(4)}`, 'a.b-c_d'.repeat(3)]) expect(loadConfig({ ...FULL_ENV, BRAVE_SEARCH_API_KEY: good }).braveApiKey, good).toBe(good);
       expect(loadConfig({ ...FULL_ENV, BRAVE_SEARCH_API_KEY: ` ${TEST_BRAVE_KEY}\n` }).braveApiKey).toBe(TEST_BRAVE_KEY);
     });
 

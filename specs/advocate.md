@@ -51,7 +51,7 @@ Amounts are `lovelace` fields. The last column is the same amount divided by 1,0
 | Request | at most 900000 bytes of wire payload; `subject` 1 to 300 characters, `side` 1 to 120, `audience` 1 to 200 |
 | Search results | at most 12, https only |
 | Page | at most 1 MB (1048576 bytes) fetched and at least 200 characters of text; the first 12000 characters are read |
-| Quote | 20 to 300 characters |
+| Quote | 20 to 300 characters, once normalised (see Check) |
 | Length | `short`, a thesis and 3 arguments asked for, or `standard`, a thesis and 5 to 7 arguments asked for; the check can leave fewer; `standard` by default |
 
 ## Interface
@@ -187,7 +187,7 @@ Example, for the request above. It is an illustration and not a recorded run: it
 | `schema` | `vector.advocate.brief.v1` |
 | `declared_bias` | `side`, the side the request gave, as the intake keeps it, and `statement`, the fixed sentence above |
 | `thesis` | the thesis of the brief, as the model wrote it |
-| `arguments[]` | the arguments the check kept, in the order the model gave them, each with its `claim`, its `support` and its `sources`: for each source the `title` the search gave for the page, its `url`, `retrieved_at`, the time the service fetched it (ISO 8601, UTC), and the `quote` that was found in its text |
+| `arguments[]` | the arguments the check kept, in the order the model gave them, each with its `claim`, its `support` and its `sources`: for each source the `title` the search gave for the page, its `url`, `retrieved_at`, the time the service fetched it (ISO 8601, UTC), and the `quote` that was found in its text, in the words of the page (see Check) |
 | `sources[]` | every source that the kept arguments cite, once for each page and quote, in the order they are first cited |
 | `omitted_by_design` | always `counter-arguments and rebuttals` |
 | `search` | always `Brave Search API` |
@@ -195,7 +195,7 @@ Example, for the request above. It is an illustration and not a recorded run: it
 
 ### Check
 
-A source the model cites is a page number and a quote. The quote is kept when the number names a page the service kept, and the quote, normalised, is 20 to 300 characters long and is found in the normalised excerpt of that page. To normalise a text, the service takes its Unicode NFKC form in lower case, makes the apostrophes U+2019 and U+02BC into U+0027, the double quotes U+201C and U+201D into U+0022 and the dashes U+2013 and U+2014 into U+002D, and makes every run of whitespace one space, without the spaces at either end. A quote that fails is dropped. An argument left with no quote is dropped, and the thesis stays. A job whose every argument is dropped fails with `no_supported_claims` (502): the thesis never answers alone. A quote may be cited by more than one argument.
+A source the model cites is a page number and a quote. The quote is kept when the number names a page the service kept, and the quote, normalised, is 20 to 300 characters long and is found in the normalised excerpt of that page. To normalise a text, the service takes its Unicode NFKC form in lower case, makes the left single quote U+2018 and the apostrophes U+2019 and U+02BC into U+0027, the double quotes U+201C and U+201D into U+0022 and the dashes U+2013 and U+2014 into U+002D, and makes every run of whitespace one space, without the spaces at either end. A quote that is kept is given in the words of its page: the part of the excerpt that the normalised quote was found in, with the case, the marks and the characters of the page, whatever form the model wrote it in, so a brief shows only text its page holds. A quote that fails is dropped. An argument left with no quote is dropped, and the thesis stays. A job whose every argument is dropped fails with `no_supported_claims` (502): the thesis never answers alone. An argument lists a page and a quote once, however often the model cites them in it. A quote may be cited by more than one argument.
 
 ### Errors
 
@@ -262,7 +262,7 @@ The manifest states these six, in this order, word for word. A test keeps them e
 - The brief argues one side only, by design: it leaves out counter-arguments and rebuttals, says so in declared_bias and omitted_by_design, and gives no balanced answer and no fairness guarantee.
 - A quote in the brief was found in the text the service fetched from the source it names, which shows that the source says it, not that it is right; the receipt commits to the brief, not to the page text.
 - Only pages the service could fetch can be cited: a page that redirects, is not HTML or plain text, is over 1 MB, has under 200 characters of text, or does not answer within 15 s is dropped, and only the first 12000 characters of a page are read.
-- The sources are what two Brave Search queries return, at most 12 pages: a subject the search covers thinly gives a thin brief, and a job that gets no usable page or no claim that survives the check fails with no_sources or no_supported_claims and returns no brief.
+- The sources are what two Brave Search queries return, at most 12 pages: a subject the search covers thinly gives a thin brief, and a job that gets no usable page or no claim that survives the check fails with search_empty, no_sources or no_supported_claims and returns no brief.
 - The model is deepseek/deepseek-v4-flash through OpenRouter: its claims can be wrong even when their quotes are real, and the check reads quotes, not reasoning.
 - A job has a deadline of its own, 150000 ms after its request arrives: a job cut at the deadline fails with the code deadline and returns no result.
 

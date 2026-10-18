@@ -25,6 +25,13 @@ describe('extractText: what is never text is dropped', () => {
   test('a tag that only begins like a dropped one is not dropped', () => {
     expect(extractText('<header>the header</header><div><scripts>kept</scripts></div><svgs>kept too</svgs>')).toBe('the header\nkept\nkept too');
   });
+
+  test('comments and dropped elements go in one pass from left to right (R-E37): a <!-- inside a script is the script\'s, and a <script> inside a comment is the comment\'s', () => {
+    expect(extractText('<p>before</p><script>if (h.indexOf("<!--") >= 0) x();</script><p>the article text that matters</p><footer>end</footer>')).toBe('before\nthe article text that matters\nend');
+    expect(extractText('<style>/* <!-- */ p { color: red }</style><p>kept</p><!-- c --><p>tail</p>')).toBe('kept\ntail');
+    expect(extractText('<p>before</p><!-- <script> --><p>after</p>')).toBe('before\nafter');
+    expect(extractText('<p>before</p><!-- <style>never</style> --><p>after</p><script>x</script><p>end</p>')).toBe('before\nafter\nend');
+  });
 });
 
 describe('extractText: blocks and tags', () => {
@@ -32,6 +39,24 @@ describe('extractText: blocks and tags', () => {
     expect(extractText('<div><h1>Title</h1><p>One <b>bold</b> and <a href="/x">a link</a>.</p><ul><li>first</li><li>second</li></ul>tail<br>after<BR/>end<br />last</div>'))
       .toBe('Title\nOne bold and a link.\nfirst\nsecond\ntail\nafter\nend\nlast');
     expect(extractText('<span>glued</span><span>together</span> and <i>apart</i>')).toBe('gluedtogether and apart');
+  });
+
+  // The 48 names of a block, br among them, as src/html.ts lists them (h1 to h6 as one entry there).
+  const BLOCKS = [
+    'address', 'article', 'aside', 'blockquote', 'body', 'br', 'caption', 'center', 'dd', 'details', 'dialog', 'div', 'dl', 'dt', 'fieldset', 'figcaption', 'figure',
+    'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hgroup', 'hr', 'html', 'legend', 'li', 'main', 'menu', 'nav', 'ol', 'option', 'p', 'pre',
+    'section', 'summary', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'ul',
+  ];
+  test('every tag of a block is a line break, start or end tag, in lower case or in capitals, with an attribute or self-closed; a name that only begins like one is not', () => {
+    expect(BLOCKS).toHaveLength(48);
+    const wrong: string[] = [];
+    for (const name of BLOCKS) {
+      for (const tag of [`<${name}>`, `<${name.toUpperCase()}>`, `<${name} class="x">`, `<${name}/>`, `</${name}>`, `<${name}\n>`]) {
+        if (extractText(`one${tag}two`) !== 'one\ntwo') wrong.push(tag);
+      }
+    }
+    expect(wrong).toStrictEqual([]);
+    for (const tag of ['<param>', '<bro>', '<lix>', '<divx>', '<h7>', '<tables>', '<prefix>', '<dlx>']) expect(extractText(`one${tag}two`), tag).toBe('onetwo');
   });
 
   test('a quoted attribute may hold a >; a tag whose quote is left open ends at its first >; a < that starts no tag is text', () => {
@@ -50,6 +75,10 @@ describe('decodeEntities', () => {
     expect(decodeEntities('&lsquo;a&rsquo; &ldquo;b&rdquo; 1&ndash;2 &mdash; &hellip; &copy; &reg; &trade; &laquo;c&raquo; &euro;5 &pound;6 x&nbsp;y'))
       .toBe('\u2018a\u2019 \u201cb\u201d 1\u20132 \u2014 \u2026 \u00a9 \u00ae \u2122 \u00abc\u00bb \u20ac5 \u00a36 x y');
     expect(extractText('<p>the council&rsquo;s count &mdash; eleven&nbsp;percent&hellip;</p>')).toBe('the council\u2019s count \u2014 eleven percent\u2026');
+  });
+
+  test('a hex entity in lower case, as real pages write the typographic quotes', () => {
+    expect(decodeEntities('&#x201c;quoted&#x201d; caf&#xe9; &#xfb01;')).toBe('\u201cquoted\u201d caf\u00e9 \ufb01');
   });
 
   test('a null, a surrogate and a code point past U+10FFFF are U+FFFD', () => {
@@ -95,6 +124,8 @@ describe('a page made to slow the extractor down: about 1 MB of it in well under
     ['quotes that never close', '<a href="'.repeat(111_112)],
     ['comments that never close', '<!--'.repeat(250_000)],
     ['scripts that never close', '<script>'.repeat(125_000)],
+    ['scripts that open comments, and never close', '<script><!--'.repeat(83_334)],
+    ['comments that open scripts, and never close', '<!--<script>'.repeat(83_334)],
     ['heads that never close', '<head>'.repeat(166_667)],
     ['blocks that never close', '<div '.repeat(200_000)],
     ['entities that never end', '&#x'.repeat(333_334)],

@@ -5,7 +5,8 @@
 // a brief (Review Focus 3, ruling R-E20): code fences and prose around the JSON, what is left out as blank, and every shape that is refused. No log line and
 // no error carries the key, even when the far end echoes it. The request is sent with redirect 'error', and the body of an answer is read through its stream
 // under a cap of 4 MiB, an answer past it being a failed call (ruling R-E23). No log line and no detail carries the text of an answer of status 200, which may
-// quote a page: they give its length and the reason only, and only an answer that is not 200, the provider's error, shows the start of its body (ruling R-E26).
+// quote a page: they give its length and the reason only, and only an answer that is not 200, the provider's error, shows words of its body (ruling R-E26):
+// the code and the message of the JSON of an error and never its metadata, or else the start of the body (ruling R-E30).
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, test, expect } from 'vitest';
@@ -141,11 +142,11 @@ describe('callModel: the answer', () => {
 });
 
 describe('callModel: what fails, with its log line, and never the key', () => {
-  test('an answer that is not 200 is model_failed (502); the log line has the status and the first 200 characters of the body, with the key cut out', async () => {
+  test('an answer that is not 200 is model_failed (502); the log line has the status, then the code and the message of an error of the provider, or else the first 200 characters of the body, with the key cut out (R-E30)', async () => {
     const echo = JSON.stringify({ error: { message: `No auth credentials found for ${KEY} or ${KEY.toUpperCase()}`, code: 401 } });
     const long = `{"error":"${'x'.repeat(600)}"}`;
     const cases: Array<[number, string, string]> = [
-      [401, echo, `model: OpenRouter answered HTTP 401: {"error":{"message":"No auth credentials found for [the key] or [the key]","code":401}}`],
+      [401, echo, 'model: OpenRouter answered HTTP 401 with the error code 401: No auth credentials found for [the key] or [the key]'],
       [500, long, `model: OpenRouter answered HTTP 500: ${long.slice(0, 200)}...`],
       [503, '', 'model: OpenRouter answered HTTP 503: (no body)'],
     ];
@@ -186,6 +187,26 @@ describe('callModel: what fails, with its log line, and never the key', () => {
     expect([e.code, e.status, e.detail]).toStrictEqual(['deadline', 422, 'the model did not answer within the 50 ms the deadline of the job left it']);
     expect(lines).toStrictEqual(['model: OpenRouter did not answer within 50 ms']);
     expect(sent[0].init.signal?.aborted).toBe(true);
+  });
+
+  test('a caller who has not hung up leaves the call its time, the shape the service runs it in: with a caller signal and 50 ms, no answer is deadline (422), and the call is cut, not the caller', async () => {
+    const caller = new AbortController();
+    const { fetchImpl, sent } = fakeFetch(untilAborted);
+    const { result, lines } = call(fetchImpl, { timeoutMs: 50, signal: caller.signal });
+    const e = await failureOf(result);
+    expect([e.code, e.status, e.detail]).toStrictEqual(['deadline', 422, 'the model did not answer within the 50 ms the deadline of the job left it']);
+    expect(lines).toStrictEqual(['model: OpenRouter did not answer within 50 ms']);
+    expect([sent[0].init.signal?.aborted, caller.signal.aborted]).toStrictEqual([true, false]);
+  });
+
+  test('an answer that is not 200 is model_failed whatever other 2xx it is (R-E5)', async () => {
+    for (const status of [201, 202, 206]) {
+      const { fetchImpl } = fakeFetch(() => respond(status, FIXTURE));
+      const { result, lines } = call(fetchImpl);
+      const e = await failureOf(result);
+      expect([e.code, e.status, e.detail], String(status)).toStrictEqual(['model_failed', 502, `OpenRouter answered HTTP ${status}`]);
+      expect(lines, String(status)).toHaveLength(1);
+    }
   });
 
   test('no answer within the full 90 s is model_failed (502): the model had all the time a call gets', async () => {
@@ -295,6 +316,57 @@ describe('callModel: the size of the answer (R-E23)', () => {
     expect(pulled).toBeGreaterThan(CAP / CHUNK);
     expect(pulled).toBeLessThanOrEqual(CAP / CHUNK + 2);
     expect(cancelled).toBe(true);
+  });
+});
+
+describe('callModel: what the log shows of the error of the provider (R-E30)', () => {
+  /** The log lines of a call answered with `status` and `body`, and the detail of its failure. */
+  const failing = async (status: number, body: string, apiKey = KEY): Promise<{ lines: string[]; detail: string }> => {
+    const { result, lines } = call(fakeFetch(() => respond(status, body)).fetchImpl, { apiKey });
+    return { lines, detail: (await failureOf(result)).detail };
+  };
+
+  test('the JSON of an error: its code and the first 200 characters of its message, and never its metadata, which can hold a part of the request', async () => {
+    // A moderation error of OpenRouter: its metadata hold the flagged input, a part of the request, and come first in this body.
+    const flagged = 'Should a city ban cars from its centre? retail footfall rise by eleven percent within two years';
+    const message = `Your chosen model requires moderation and your input was flagged. ${'y'.repeat(300)}`;
+    const body = JSON.stringify({ error: { metadata: { reasons: ['harassment'], flagged_input: flagged, provider_name: 'A provider', model_slug: 'a/model' }, code: 403, message } });
+    expect(body.slice(0, 200)).toContain(flagged);
+    const { lines, detail } = await failing(403, body);
+    expect(lines).toStrictEqual([`model: OpenRouter answered HTTP 403 with the error code 403: ${message.slice(0, 200)}...`]);
+    expect(detail).toBe('OpenRouter answered HTTP 403');
+    for (const word of ['flagged_input', 'metadata', 'city ban', 'footfall', 'harassment', 'A provider', 'a/model']) expect(lines.join('\n'), word).not.toContain(word);
+  });
+
+  test('a code that is text is shown as it is; an error without a code or a message, or with ones of another kind, says so and shows nothing else', async () => {
+    expect((await failing(429, JSON.stringify({ error: { code: 'rate_limit_exceeded', message: 'Rate limit exceeded: free-models-per-day' } }))).lines)
+      .toStrictEqual(['model: OpenRouter answered HTTP 429 with the error code rate_limit_exceeded: Rate limit exceeded: free-models-per-day']);
+    for (const error of [{ metadata: { raw: 'Should a city ban cars' } }, { code: { raw: 'Should a city ban cars' }, message: 5 }, { code: '', message: '' }, {}]) {
+      expect((await failing(400, JSON.stringify({ error }))).lines, JSON.stringify(error)).toStrictEqual(['model: OpenRouter answered HTTP 400 with the error code (none): (no message)']);
+    }
+  });
+
+  test('a body that is not the JSON of an error, of an object with one: its first 200 characters', async () => {
+    for (const body of ['Bad gateway: the upstream did not answer', '{"message":"no route for this model"}', '{"error":"busy"}', '[{"error":{"message":"a list"}}]', '{"error":null}', '{"error":']) {
+      expect((await failing(502, body)).lines, body).toStrictEqual([`model: OpenRouter answered HTTP 502: ${body}`]);
+    }
+    const long = `<html>${'z'.repeat(400)}</html>`;
+    expect((await failing(504, long)).lines).toStrictEqual([`model: OpenRouter answered HTTP 504: ${long.slice(0, 200)}...`]);
+  });
+
+  test('the key is cut out of the code, the message and the body, in any case', async () => {
+    const shown = (await failing(401, JSON.stringify({ error: { code: `bad ${KEY}`, message: `no credentials for ${KEY.toUpperCase()}` } }))).lines;
+    expect(shown).toStrictEqual(['model: OpenRouter answered HTTP 401 with the error code bad [the key]: no credentials for [the key]']);
+    expect((await failing(401, `no credentials for ${KEY}`)).lines).toStrictEqual(['model: OpenRouter answered HTTP 401: no credentials for [the key]']);
+  });
+
+  test('the key is cut out as text, whatever characters it holds: a key with the characters of a pattern is found whole, in the message and in the body', async () => {
+    const odd = 'sk-or-v1-a+b.c(d)[e]{2}$^|?*z';
+    expect((await failing(401, JSON.stringify({ error: { message: `no credentials for ${odd}` } }), odd)).lines)
+      .toStrictEqual(['model: OpenRouter answered HTTP 401 with the error code (none): no credentials for [the key]']);
+    const plain = await failing(401, `no credentials for ${odd}`, odd);
+    expect(plain.lines).toStrictEqual(['model: OpenRouter answered HTTP 401: no credentials for [the key]']);
+    expect(plain.lines.join('\n')).not.toContain('a+b.c');
   });
 });
 

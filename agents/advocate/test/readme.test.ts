@@ -7,10 +7,12 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { HEARTBEAT_MS, MAX_BODY, SHUTDOWN_WAIT_MS, STOPPING_TEXT, TOKEN_SEARCH_MIN, WireError, operatorsText } from '@vsa/service-kit';
 import { blake2b224Hex } from '@vsa/vector-read';
 import { FETCH_CONCURRENCY, FETCH_PHASE_MAX_MS, FETCH_RESERVE_MS, JOB_DEADLINE_MS, MODEL_MAX_MS, MODEL_MIN_MS, PAGE_TIMEOUT_MS, RESULT_RESERVE_MS, SEARCH_MAX_MS, SEARCH_QUERY_TIMEOUT_MS } from '../src/budget.ts';
+import { checkCitations } from '../src/check.ts';
 import { AdvocateError, JOB_STATUS } from '../src/errors.ts';
 import type { JobCode } from '../src/errors.ts';
 import { EXCERPT_CHARS, MIN_PAGE_CHARS } from '../src/html.ts';
 import { DEFAULT_MODEL, callModel } from '../src/model.ts';
+import { normalizeText } from '../src/normalize.ts';
 import { PAGE_MAX_BYTES, USER_AGENT } from '../src/pages.ts';
 import { DECLARED_BIAS_STATEMENT, OMITTED_BY_DESIGN, QUOTE_MAX_CHARS, QUOTE_MIN_CHARS, SHAPES } from '../src/prompt.ts';
 import { RequestError } from '../src/request.ts';
@@ -244,6 +246,9 @@ describe('agents/advocate/README.md, pinned further', () => {
     expect(FETCH_CONCURRENCY).toBe(4);
     expect(text).toContain(`at most ${PAGE_MAX_BYTES} bytes and ${PAGE_TIMEOUT_MS} ms a page, with the user agent \`${USER_AGENT}\``);
     expect(text).toContain(`has at least ${MIN_PAGE_CHARS} characters; its first ${EXCERPT_CHARS} characters are what the model reads and what the check searches`);
+    // A page is kept only when it answers 200 (src/pages.ts drops every other status before it reads the type or the text).
+    expect(text).toContain('A page is kept when it answers 200 with HTML or plain text and its text, its tags and scripts taken out, has at least');
+    expect(textOf('src/pages.ts')).toContain("if (res.status !== 200) return { kind: 'dropped', why: 'status' };");
     expect(text).toContain(`at most ${SHAPES.short.maxTokens} tokens for \`short\` and ${SHAPES.standard.maxTokens} for \`standard\``);
     expect(text).toContain(`a thesis and ${SHAPES.short.maxArguments} arguments for \`short\` or ${SHAPES.standard.minArguments} to ${SHAPES.standard.maxArguments} for \`standard\``);
     expect(text).toContain(`each with a quote of ${QUOTE_MIN_CHARS} to ${QUOTE_MAX_CHARS} characters copied from that page`);
@@ -259,8 +264,19 @@ describe('agents/advocate/README.md, pinned further', () => {
     expect(check).toContain(`the statement \`${DECLARED_BIAS_STATEMENT}\`, and \`omitted_by_design\`, \`${OMITTED_BY_DESIGN}\``);
     expect(check).toContain('A job whose every argument is dropped fails with `no_supported_claims` (502).');
     expect(check).toContain('A quote that fails is dropped, an argument left with no quote is dropped, and the thesis stays.');
-    expect(check).toContain('(Unicode NFKC, lower case, the curly apostrophes and quotes made straight, the dashes U+2013 and U+2014 made hyphens, whitespace collapsed)');
+    // The marks are those the code maps (R-E29), by code point, as the spec page names them.
+    expect(check).toContain('(Unicode NFKC, lower case, the left single quote U+2018 and the apostrophes U+2019 and U+02BC made U+0027, the double quotes U+201C and U+201D made U+0022, the dashes U+2013 and U+2014 made U+002D, whitespace collapsed)');
+    const marks = (codes: number[]): string => String.fromCodePoint(...codes);
+    expect(normalizeText(`${marks([0x2018])}a${marks([0x2019])}b${marks([0x2bc])} ${marks([0x201c])}c${marks([0x201d])} 1${marks([0x2013])}2${marks([0x2014])}3`)).toBe('\'a\'b\' "c" 1-2-3');
     expect(check).toContain('with the side as the intake keeps it (`for` and `against` in lower case, a position as given)');
+    // The quote of a result is the words of its page (R-E36), and an argument lists a page and a quote once (R-E35): held to the check.
+    expect(check).toContain('The result gives a kept quote in the words of its page: the part of the excerpt it was found in, with the case, the marks and the characters of the page, whatever form the model wrote it in.');
+    expect(check).toContain('An argument lists a page and a quote once, however often the model cites them in it.');
+    const words = `The council${marks([0x2019])}s own count rose by eleven percent within two years.`;
+    const page = { n: 1, title: 'T', url: 'https://example.org/p', retrieved_at: '2026-10-17T09:00:00.000Z', excerpt: words };
+    const quote = "THE COUNCIL'S OWN COUNT ROSE BY ELEVEN PERCENT";
+    const checked = checkCitations({ thesis: 't', arguments: [{ claim: 'c', support: 's', sources: [{ n: 1, quote }, { n: 1, quote: quote.toLowerCase() }] }] }, [page]);
+    expect(checked.arguments[0].sources.map((s) => s.quote)).toStrictEqual([words.slice(0, words.indexOf(' within'))]);
   });
 
   test('Errors names the fixed message of a job that fails at a third party or in the check, and the server answers every code of a job as the README says', async () => {

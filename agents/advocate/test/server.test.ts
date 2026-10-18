@@ -69,7 +69,7 @@ describe('manifest', () => {
       behaviour: {
         declared_bias: { statement: 'This brief argues one side only, by design, and omits counter-arguments.', omitted: 'counter-arguments and rebuttals' },
         data_handling: 'The subject, the side, the audience, the length and the language are held in memory while a job runs, with the pages the service fetches; nothing is written to disk and nothing is kept after the job. '
-          + 'The two search queries go to the Brave Search API, each page fetch to the host of that page, and the subject, the side, the audience and the page excerpts to OpenRouter and the model provider behind it. '
+          + 'The two search queries go to the Brave Search API, each page fetch to the host of that page, and the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages to OpenRouter and the model provider behind it. '
           + 'On the ledger the escrow carries only the sha256 of the wire payload, and the request stays off the ledger. '
           + 'The log carries job outcomes and counts, never a request, a page, a quote or a key.',
         third_parties: [
@@ -83,6 +83,13 @@ describe('manifest', () => {
       links: { spec: SPEC_URL, source: 'https://github.com/Apex-Fusion/vector-service-agents/tree/main/agents/advocate', explorer_advert: '' },
     });
     expect(Object.keys(MANIFEST.behaviour)).toStrictEqual(['declared_bias', 'data_handling', 'third_parties']);
+  });
+
+  test('the data handling and the third parties name what reaches OpenRouter in one list (R-E32), the list of the third parties (R-E27)', () => {
+    const list = /^OpenRouter and the model provider behind it [(](.+)[)]$/.exec(MANIFEST.behaviour.third_parties[2])?.[1] ?? '';
+    expect(list).toBe('the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages');
+    expect(MANIFEST.behaviour.data_handling).toContain(`, and ${list} to OpenRouter and the model provider behind it. `);
+    expect(MANIFEST.behaviour.data_handling.split('OpenRouter')).toHaveLength(2);
   });
 
   test('the declared bias of the manifest is the one every brief carries, read from the code that writes it', () => {
@@ -170,7 +177,7 @@ describe('manifest', () => {
     expect(ONE_SIDED_GAP).toBe('The brief argues one side only, by design: it leaves out counter-arguments and rebuttals, says so in declared_bias and omitted_by_design, and gives no balanced answer and no fairness guarantee.');
     expect(QUOTE_GAP).toBe('A quote in the brief was found in the text the service fetched from the source it names, which shows that the source says it, not that it is right; the receipt commits to the brief, not to the page text.');
     expect(PAGES_GAP).toBe('Only pages the service could fetch can be cited: a page that redirects, is not HTML or plain text, is over 1 MB, has under 200 characters of text, or does not answer within 15 s is dropped, and only the first 12000 characters of a page are read.');
-    expect(SEARCH_GAP).toBe('The sources are what two Brave Search queries return, at most 12 pages: a subject the search covers thinly gives a thin brief, and a job that gets no usable page or no claim that survives the check fails with no_sources or no_supported_claims and returns no brief.');
+    expect(SEARCH_GAP).toBe('The sources are what two Brave Search queries return, at most 12 pages: a subject the search covers thinly gives a thin brief, and a job that gets no usable page or no claim that survives the check fails with search_empty, no_sources or no_supported_claims and returns no brief.');
     expect(modelGap(DEFAULT_MODEL)).toBe('The model is deepseek/deepseek-v4-flash through OpenRouter: its claims can be wrong even when their quotes are real, and the check reads quotes, not reasoning.');
     expect(DEADLINE_GAP).toBe('A job has a deadline of its own, 150000 ms after its request arrives: a job cut at the deadline fails with the code deadline and returns no result.');
     expect(PAGES_GAP).toContain(`is over ${PAGE_MAX_BYTES / 1_048_576} MB, has under ${MIN_PAGE_CHARS} characters of text, or does not answer within ${PAGE_TIMEOUT_MS / 1000} s`);
@@ -242,6 +249,9 @@ describe('manifest: request_schema is what the intake accepts', () => {
     ['an audience of 200 characters', req({ audience: 'a'.repeat(200) })],
     ['an audience of 201 characters', req({ audience: 'a'.repeat(201) })],
     ['an empty audience', req({ audience: '' })],
+    ['a blank audience', req({ audience: '   ' })],
+    ['an audience of white space of every kind', req({ audience: ' \t\n\r\u{a0}\u{3000}\u{feff}' })],
+    ['an audience of one mark', req({ audience: '?' })],
     ['an audience that is a number', req({ audience: 5 })],
     ['an audience that is null', req({ audience: null })],
     // the length
@@ -268,13 +278,13 @@ describe('manifest: request_schema is what the intake accepts', () => {
     expect(CASES.length - accepted).toBeGreaterThan(35);
   });
 
-  test('the space a hand leaves around a value: the intake reads the value trimmed, and the schema, which gives the language in its plain form, refuses it there and bounds free text by its length alone', () => {
+  test('the space a hand leaves around a value: the intake reads the value trimmed, and the schema, which gives the language in its plain form, refuses it there and takes it around free text', () => {
     for (const value of [req({ language: ' en' }), req({ language: 'en\n' })]) {
       expect(validate(value), JSON.stringify(value)).toBe(false);
       expect(intake(value), JSON.stringify(value)).toBe(true);
     }
-    // A side and an audience are free text, which the schema bounds by its length alone, as the table holds for a side of '  for  ' and the notes test for a
-    // side of spaces: the schema takes the space around them, and the intake reads them trimmed.
+    // A side and an audience are free text, which the schema bounds by its length (and an audience by one character that is not white space, R-E34), as the
+    // table holds for a side of '  for  ' and the notes test for a side of spaces: the schema takes the space around them, and the intake reads them trimmed.
     for (const value of [req({ side: ' against ' }), req({ audience: ' the council ' })]) {
       expect(validate(value), JSON.stringify(value)).toBe(true);
       expect(intake(value), JSON.stringify(value)).toBe(true);

@@ -42,6 +42,8 @@ export const SETTINGS = [
 const BRAVE_KEY = { name: 'BRAVE_SEARCH_API_KEY', what: 'the Brave Search API key', why: 'the key of the Brave Search API, which the two search queries of a job send' };
 const OPENROUTER_KEY = { name: 'OPENROUTER_API_KEY', what: 'the OpenRouter API key', why: 'the key of OpenRouter, which the model call of a job sends' };
 type ApiKey = typeof BRAVE_KEY;
+/** A key as the env example and step 4 of the runbook state it (ruling R-E31): at least 20 characters of letters, digits, dots, hyphens and underscores. */
+const API_KEY = /^[A-Za-z0-9._-]{20,}$/;
 
 export interface ServiceConfig {
   manifest: AgentManifest;
@@ -57,13 +59,14 @@ export interface ServiceConfig {
 }
 
 /**
- * A key of a third party: required; printable ASCII without spaces, since it is sent as an HTTP header (refused with its length only); and looked for in every
- * other setting, whole, in any case, inside a longer value too, the refusal naming the line that holds it and never the key. A key shorter than the kit's
- * TOKEN_SEARCH_MIN is not looked for, as for the token: it would be found in any text by chance.
+ * A key of a third party: required; at least 20 characters of letters, digits, dots, hyphens and underscores (API_KEY, refused with its length only), so that
+ * it can be sent as an HTTP header and a far end that echoes it, in a JSON text too, echoes it as it is written, which is the form the log cuts out; and looked
+ * for in every other setting, whole, in any case, inside a longer value too, the refusal naming the line that holds it and never the key. Every key it takes
+ * is longer than the kit's TOKEN_SEARCH_MIN, under which a secret is not looked for, so each is looked for.
  */
 function apiKey(env: NodeJS.ProcessEnv, key: ApiKey): string {
   const value = requiredEnv(key.name, env[key.name], key.why);
-  if (!/^[!-~]+$/.test(value)) throw new Error(`environment variable ${key.name} must be printable ASCII without spaces (it is sent as an HTTP header), and it has ${value.length} characters`);
+  if (!API_KEY.test(value)) throw new Error(`environment variable ${key.name} must be at least 20 characters of letters, digits, dots, hyphens and underscores, and it has ${value.length} characters`);
   refuseSecretIn(env, SETTINGS, tokenForms(value), key.name, (name) =>
     `environment variable ${name} holds ${key.what}, which belongs in ${key.name} alone: it would be printed or published. Take it out of ${name}`);
   return value;
