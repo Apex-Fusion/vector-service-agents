@@ -1,0 +1,11 @@
+NOTES ON URBAN FREIGHT
+
+  Deliveries moved to early-morning windows and the number of vans in the centre at noon halved.
+
+
+Shops in the closed streets now take their goods between six and ten in the morning,    while the streets are quiet.
+Couriers on cargo bikes carry the last stretch from a depot at the edge of the centre.
+
+
+
+A plain-text page is read as it is: <p> here is text, not a tag, and &amp; is not decoded.

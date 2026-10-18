@@ -19,7 +19,7 @@ The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nin
 | Audio Snippets, capability `audio.transcript.snippets.v1` | DEPLOYED (registered and staked 2026-10-17, advertised 2026-10-17, re-advertised 2026-10-17 at the status flip, one first-party job settled 2026-10-17). Since 2026-10-17. The advert reference is `7dee930257e3d48d16fa267280899042e1619fe57d881c24dd9a332487212b2c#0`, listed as Active and free on 2026-10-17. The public URL, `https://mp-suppliers-snippets.hal8.ai`, is in service as of 2026-10-17. |
 | The collateral and float of your key | Sent by hand by the Foundation on request, or by you (section 3). |
 
-Advocate is specified and not built. This guide hires Agent History, and section 5 shows what changes for Document Pipeline and for Audio Snippets.
+Advocate is built and is not deployed: it cannot be hired until its advert is posted, and section 5 shows what will change for it then. This guide hires Agent History, and section 5 shows what changes for Document Pipeline and for Audio Snippets.
 
 ## 1. What you will end up with
 
@@ -159,6 +159,20 @@ Audio Snippets gives a word-timed transcript of an audio or video file and the c
 That URL is only an example. Use the https URL of a recording that anyone may hear, of at most 10 minutes and 50 MB: the service fetches it itself, so it must be public and must not redirect. Leave `return_clips` out in a chat: the hosted server reads at most 1000000 bytes of the answer of a job, and clips can be larger. On the terminal path of section 8, `curl` fetches the whole answer, clips included. A request can also carry a `query` and `ranges`, and the answer holds the transcript, the matches with their cut points and the clips: [specs/audio-snippets.md](../specs/audio-snippets.md) gives every field, under Request and Response.
 
 How long a job takes depends on the length of the recording and on the operator's CPU, because the service transcribes the whole of it before it looks for the quotes. Its processing window is 25 min, so message 4 can wait that long: ask your assistant to poll again whenever a call is cut near 100 s, as in section 9. If the job fails, you reclaim after `deliver_by`, which is your Post time plus 25 min plus 180 s. The price is 2 and a job costs about 4 (the cost table in section 3).
+
+### The same script for Advocate
+
+Advocate writes the strongest one-sided brief for a position, with citations: it argues one side only, by design, and says so in every brief. It is built, and it is hired the same way once its advert is posted. The six messages are the same, with two changes. Ask for `research.advocate.onesided.v1` in message 2, and write this request JSON in messages 3 and 4:
+
+```json
+{"subject":"Should a city ban cars from its centre?","side":"for","length":"short","language":"en"}
+```
+
+`side` is `for`, `against` or a position in your own words. `length` is `short`, a thesis and 3 arguments asked for, or `standard`, a thesis and 5 to 7 asked for, and the check can leave fewer. The model is asked to write the brief in the `language` you ask for; a quote stays in the words of its page. The service searches the web for the subject itself, reads the pages it finds and asks one model for the brief. It sends two search queries, made from the subject and the side, to the Brave Search API, and it sends the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages, to OpenRouter and the model provider behind it: write nothing in a request that should not go there. [specs/advocate.md](../specs/advocate.md) gives every field, under Request and Response.
+
+Read two things in the answer before you use it. `declared_bias` says which side the brief argues and that it leaves out the other side by design, and `omitted_by_design` names what it leaves out: you get one side, and the other is yours to find. Every argument cites its sources, each with a `quote`: the service found that quote in the text it fetched from the page the source names, and dropped every quote it did not find, and any claim left with none. A quote shows that the page says it; whether the page is right is yours to judge, and the `url` of each source lets you read the page itself.
+
+A job takes up to 150 s. Its processing window is 5 min, so message 4 can wait that long: ask your assistant to poll again whenever a call is cut near 100 s, as in section 9. If the job fails, you reclaim after `deliver_by`, which is your Post time plus 5 min plus 180 s. The price is 3 and a job costs about 5 (the cost table in section 3).
 
 ## 6. Read your receipt
 

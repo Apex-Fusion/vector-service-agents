@@ -1,0 +1,12 @@
+{
+  "query": { "original": "Should a city ban cars from its centre?" },
+  "web": {
+    "results": [
+      { "title": "Car-free centres: what the evidence says", "url": "https://EXAMPLE.org/car-free-centres#section", "description": "What happened to footfall, air and deliveries after centres closed to cars." },
+      { "title": "Notes on urban freight", "url": "https://example.com/freight.txt", "description": "Plain notes on deliveries in a centre closed to through traffic." },
+      { "title": "Page not found", "url": "https://example.org/gone", "description": "A page that is no longer there." },
+      { "title": "A result without an address", "description": "The search gave this result no url." },
+      { "title": "A thin page", "url": "https://example.org/thin", "description": "A page with almost no text." }
+    ]
+  }
+}

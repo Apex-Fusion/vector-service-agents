@@ -1,0 +1,17 @@
+{
+  "id": "gen-1",
+  "model": "deepseek/deepseek-v4-flash",
+  "choices": [
+    {
+      "message": {
+        "role": "assistant",
+        "content": "{\"thesis\":\"A city should ban cars from its centre, because the centres that did so gained shoppers and cleaner air.\",\"arguments\":[{\"claim\":\"Shops gain visitors when the cars leave the centre.\",\"support\":\"The cities that closed their centres to cars counted more people in their shopping streets: by the council's own count, retail footfall rose by eleven percent within two years.\",\"sources\":[{\"n\":1,\"quote\":\"retail footfall rise by eleven percent within two years\"}]},{\"claim\":\"People switch to bicycles at once.\",\"support\":\"Once the street closed, people took to their bicycles straight away, and the vans that served the shops moved their rounds to the early morning.\",\"sources\":[{\"n\":2,\"quote\":\"the street became a river of bicycles overnight\"},{\"n\":9,\"quote\":\"the number of vans in the centre at noon halved\"}]},{\"claim\":\"Children breathe cleaner air on the way to school.\",\"support\":\"Where a street was closed to through traffic, nitrogen dioxide at the school gate fell by a third in the first year, so the school run itself became cleaner.\",\"sources\":[{\"n\":1,\"quote\":\"footfall r\"},{\"n\":2,\"quote\":\"fell by a third in the first year\"}]}]}"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 4321,
+    "completion_tokens": 512,
+    "total_tokens": 4833
+  }
+}

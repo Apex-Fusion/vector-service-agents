@@ -1,0 +1,14 @@
+# deploy/host/Caddyfile.advocate.snippet - site block for the shared Caddy of the host, merged into the host's Caddy configuration.
+# PROPOSED (built, not deployed) since 2026-10-13. Not installed: step 10 of RUNBOOK-advocate.md has not been run. The hostname must be DNS only (grey cloud),
+# or Caddy cannot get its certificate. The block must stay the last thing in this file: the host administrator's install script
+# takes everything from the hostname line to the end.
+# The runtime does not serve /agent.json, and the advert's detail_uri points at it, so that one path goes to the service.
+# Everything else goes to the runtime.
+mp-suppliers-advocate.hal8.ai {
+    handle /agent.json {
+        reverse_proxy advocate-service:9094
+    }
+    handle {
+        reverse_proxy advocate-agent:8080
+    }
+}

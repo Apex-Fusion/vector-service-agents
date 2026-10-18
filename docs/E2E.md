@@ -1,6 +1,6 @@
 # End-to-end runbook: our own hire of a service agent
 
-Before any working-group member is invited, the operator hires each of our agents itself, through the same tools a member will use. Agent History comes first, and Document Pipeline and Audio Snippets follow (see "Hiring Document Pipeline" and "Hiring Audio Snippets"). Every run in this runbook is first-party: the buyer key is held by the operator, and so is the supplier. A first-party run shows that the path works. It is not ignition, and it is not demand.
+Before any working-group member is invited, the operator hires each of our agents itself, through the same tools a member will use. Agent History comes first, and Document Pipeline, Audio Snippets and Advocate follow (see "Hiring Document Pipeline", "Hiring Audio Snippets" and "Hiring Advocate"). Every run in this runbook is first-party: the buyer key is held by the operator, and so is the supplier. A first-party run shows that the path works. It is not ignition, and it is not demand.
 
 **Status: DEPLOYED.** Agent History is DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. The path is proven first-party, which is not demand. Document Pipeline is DEPLOYED (registered and staked 2026-10-16, advertised 2026-10-16, re-advertised 2026-10-16 at the status flip, one first-party job settled 2026-10-16). Since 2026-10-16. Audio Snippets is DEPLOYED (registered and staked 2026-10-17, advertised 2026-10-17, re-advertised 2026-10-17 at the status flip, one first-party job settled 2026-10-17). Since 2026-10-17. The script `scripts/e2e-hire.mjs` is written and is tested against fake servers. The nine marketplace tools are merged into `main` of Apex-Fusion/mcp-server and are on the hosted mainnet server as of 2026-10-14: an MCP `initialize` and `tools/list` handshake that day listed 33 tools, the nine among them. The current Agent History advert was posted on 2026-10-15, reference `b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c#0`. The first first-party run settled on 2026-10-15 (verdict VERIFIED, see [Results](#results)); it was made against the first advert, which was retired that day at the status flip. Against the hosted mainnet server the script now passes its first check, the tool list of the builder. The check that `ADVERT_REF` is among the free suppliers can pass with that reference: the marketplace indexer lists the advert as Active and free as of 2026-10-15. The current Document Pipeline advert was posted on 2026-10-16, reference `16a5da8726cab90949da2c0c92e025af276027715a5d854861c683d7d9341ca3#0`. Its first first-party run settled on 2026-10-16 (verdict VERIFIED, see [Results](#results)); it was made against the first advert, which was retired that day at the status flip. The marketplace indexer lists the current advert as Active and free as of 2026-10-16. The current Audio Snippets advert was posted on 2026-10-17, reference `7dee930257e3d48d16fa267280899042e1619fe57d881c24dd9a332487212b2c#0`. Its first first-party run settled on 2026-10-17 (verdict VERIFIED, see [Results](#results)); it was made against the first advert, which was retired that day at the status flip. The marketplace indexer lists the current advert as Active and free as of 2026-10-17.
 
@@ -12,7 +12,7 @@ Before any working-group member is invited, the operator hires each of our agent
 | `SIGNER_ENTRY` | The path of the signer's `build/index.js`, from the published package or from a build of `packages/signer` in an `mcp-server` checkout (`npm ci && npm run build`); see "The commands". The script starts that file as a child process, so it needs the file, not an `npx` command. |
 | `VECTOR_SIGNER_PRIVATE_KEY`, `VECTOR_SIGNER_ADDRESS` | The test buyer key and its address, in the environment of the shell that runs the script. `VECTOR_SIGNER_SPEND_LIMIT_PER_TX` and `VECTOR_SIGNER_SPEND_LIMIT_DAILY` go the same way. The script forwards every `VECTOR_SIGNER_` setting to the signer process it starts. The SDK adds its own short list of default variables, such as `PATH` and `HOME`, and nothing else of the shell goes along. The script never prints or stores the value of a setting. The script learns the buyer address only from the signer's own tool. |
 | `ADVERT_REF` | The advert to hire, `<txid>#<index>`: Agent History's, or the advert of the agent that `CAPABILITY_ID` names. It must be among the free suppliers of `CAPABILITY_ID`, or the script stops. |
-| `CAPABILITY_ID` | The capability of the advert, as the marketplace lists it. Default: `identity.history.report.v1`, the capability of Agent History. The script asks the marketplace for the free suppliers of this capability and stops unless `ADVERT_REF` is among them, so an advert of another agent needs its own value: `document.pipeline.ocr-summary.v1` for Document Pipeline, `audio.transcript.snippets.v1` for Audio Snippets. An empty value, or one with a space in it, stops the script with exit code 2. |
+| `CAPABILITY_ID` | The capability of the advert, as the marketplace lists it. Default: `identity.history.report.v1`, the capability of Agent History. The script asks the marketplace for the free suppliers of this capability and stops unless `ADVERT_REF` is among them, so an advert of another agent needs its own value: `document.pipeline.ocr-summary.v1` for Document Pipeline, `audio.transcript.snippets.v1` for Audio Snippets, `research.advocate.onesided.v1` for Advocate. An empty value, or one with a space in it, stops the script with exit code 2. |
 | `PAYLOAD` | The request JSON. Default: the ChandraOCR subject used in the guide. For Document Pipeline, a request for one page of a PDF by URL, as under "Hiring Document Pipeline". |
 | `E2E_STATE` | The state file. Default: `./e2e-state.json`. It is git-ignored. See below. |
 | `E2E_POLL_MS` | The pause between two polls of the job, a positive whole number of milliseconds. Default: 5000. Anything else stops the script with exit code 2. |
@@ -96,6 +96,26 @@ export E2E_STATE=./e2e-state-snippets.json
 - The script polls until `deliver_by`, which is 28 minutes after the Post (the 25 min window and 180 s).
 
 Then run the rehearsal and the run as above, and add the run to the Results table with Audio Snippets in the Agent column. It is first-party and it is not demand.
+
+## Hiring Advocate
+
+Advocate is built and has no advert: its runbook, [deploy/host/RUNBOOK-advocate.md](../deploy/host/RUNBOOK-advocate.md), posts one in step 12 and makes this run in step 15. A first-party run of it uses these settings in place of the advert and the request of Agent History, in the shell that holds the key.
+
+```bash
+export CAPABILITY_ID=research.advocate.onesided.v1
+export ADVERT_REF=<txid>#<index>
+export PAYLOAD='{"subject":"Should a city ban cars from its centre?","side":"for","length":"short","language":"en"}'
+export E2E_POLL_MS=10000
+export E2E_STATE=./e2e-state-advocate.json
+```
+
+- `CAPABILITY_ID` is the capability of the advert of Advocate. Without it the script looks for the advert among the free suppliers of Agent History's capability and stops before it posts anything.
+- `PAYLOAD` is the request JSON of the example of [specs/advocate.md](../specs/advocate.md). The service sends its two search queries to the Brave Search API, fetches the pages they find, and sends the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages, to OpenRouter and the model provider behind it, so the subject is one that may go to all three.
+- `E2E_POLL_MS=10000`: a job takes up to 150 s, its deadline, where Agent History's takes seconds, and the default pause of 5 s would ask the hosted server about 60 times in the 5 min window.
+- `E2E_STATE=./e2e-state-advocate.json`: a state file belongs to one run, and the script refuses one that belongs to another, so this run does not use the file of an earlier run.
+- The script polls until `deliver_by`, which is 8 minutes after the Post (the 5 min window and 180 s).
+
+Then run the rehearsal and the run as above, and add the run to the Results table with Advocate in the Agent column. Its `result` is the brief as JSON text, which the receipt check takes untouched, as for the other agents. It is first-party and it is not demand.
 
 ## What the script does
 
