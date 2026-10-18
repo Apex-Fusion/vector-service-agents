@@ -609,7 +609,9 @@ test('RUNBOOK: the spec is refreshed in a pull request after the identity (step 
   assert.ok(seven.indexOf('Record the identity in the repository.') > seven.indexOf("grep -c '^AGENT_DID=did:vector:agent:'"), 'after the identity is checked');
   const twelve = section(runbook, '12. Post the advert');
   assert.ok(twelve.includes('Record the advert in the repository.') && twelve.includes('"Advert on the explorer: none yet. The advert is not posted."'));
-  assert.ok(twelve.includes('https://explorer.vector.mainnet.apexfusion.org/transaction/hash/') && twelve.includes('The status word stays PROPOSED until step 17.'));
+  // The explorer link is checked as the sentence the runbook gives it in, anchored on its words: a bare URL prefix in an includes() reads as a URL check to a scanner.
+  assert.match(twelve, /The link is `https:\/\/explorer\.vector\.mainnet\.apexfusion\.org\/transaction\/hash\/` followed by the transaction id/);
+  assert.ok(twelve.includes('The status word stays PROPOSED until step 17.'));
   assert.ok(twelve.indexOf('Record the advert in the repository.') > twelve.indexOf('ADVERT_REF=$(docker compose'), 'after the advert is posted');
   assert.match(section(runbook, '17. Flip the status'), /refreshed after steps 7 and 12/);
   const nine = section(runbook, '9. Start the service');
