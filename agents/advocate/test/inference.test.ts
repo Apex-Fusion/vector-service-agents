@@ -120,6 +120,17 @@ describe('the marketplace path (rulings R-F3, R-F9)', () => {
     expect(s.openRouter).toStrictEqual([]);
   });
 
+  test('a store that cannot remove the entry of an escrow whose Accept is confirmed: the job stands on the marketplace path, the line of the kit says so, and the path stays on (ruling R62 of the Pipeline)', async () => {
+    const s = setup();
+    let acceptTx = '';
+    s.deps.chain = chainWith(s.m, { accept: async (r) => { const accepted = await s.m.chain.accept(r); acceptTx = accepted.txHash; return accepted; } });
+    s.stranded.remove = () => { throw new Error('ENOSPC: no space left on device'); };
+    const inference = await run(s);
+    expect([inference.path, inference.accepted, inference.fallbackFrom, inference.subJob, s.deps.marketplace]).toStrictEqual(['marketplace', 'confirmed', null, GOLDEN_SUB_JOB, { on: true }]);
+    expect([await states(s.m, escrowNo(1)), s.stranded.list(), s.openRouter]).toStrictEqual([['spent'], [entry(escrowNo(1), GOLDEN_T0)], []]);
+    expect(s.lines).toStrictEqual([CHOSEN, `escrow ${escrowNo(1)} was accepted for the brief in ${acceptTx} and could not be removed from the stranded store (ENOSPC: no space left on device); the janitor drops it once it reads it spent`]);
+  });
+
   test('a receipt whose token counts are not whole numbers of 0 or more: the usage is null and the job is settled all the same, for no check of a receipt reads them (rulings R-F8, R-E26)', async () => {
     const counts: Array<{ prompt_tokens: unknown; completion_tokens: unknown }> = [
       { prompt_tokens: 'words', completion_tokens: 512 }, { prompt_tokens: -1, completion_tokens: 512 }, { prompt_tokens: 1.5, completion_tokens: 512 }, { prompt_tokens: 4321, completion_tokens: 'words' },

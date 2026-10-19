@@ -141,7 +141,8 @@ describe('agents/advocate/README.md', () => {
     expect(readme).toContain('401 `{"error":"unauthorized"}`, with no detail, before the body is read and before the job slot is taken');
     expect(readme).toContain('102 Processing');
     expect(readme).toMatch(/runtime's fetch gives up after 300 s of silence/);
-    expect(section('Routes')).toContain('A job whose caller hangs up, as the runtime does when its own budget for the job runs out, is stopped: its fetches and its call to OpenRouter are aborted, nothing of the job is kept, and the slot is free for the next one; a hire of a chat supplier that has begun first ends on its own terms, its escrow accepted or recorded for the janitor.');
+    expect(section('Routes')).toContain('A job whose caller hangs up, as the runtime does when its own budget for the job runs out, is stopped: its fetches and its call to OpenRouter are aborted, and nothing of the job is kept; a hire of a chat supplier that has begun first ends on its own terms, its escrow accepted or recorded for the janitor, and the slot is free for the next one once that hire has ended.');
+    expect(kitSources.find(({ file }) => file === 'server.ts')?.text).toContain('the run has settled, as for any job.');
     expect(section('Stopping')).toContain('The wait is on the job itself: it ends when the job has its answer, or when the job has been stopped because its caller hung up.');
     expect(readme).toContain("The service could not do this job (<code>). The operator's log has the detail.");
     expect(section('Stopping')).toContain('stops its janitor, and waits up to 300 s for the job that is running to end, its Accept included.');
@@ -227,6 +228,19 @@ describe('agents/advocate/README.md, pinned further', () => {
     }
   });
 
+  test('The buyer wallet, the state and the janitor: the escrow no record holds (ruling R39) and the one write after a Post that fails no job (ruling R62), as the kit has them; and the characters of an allowlist entry, as the start takes them', () => {
+    const state = section('The buyer wallet, the state and the janitor');
+    expect(state).toContain('A process exit between signing a Post and its confirmation leaves an escrow that is in no record, so the janitor never sees it: it can be reclaimed by hand after its `deliver_by`, and it holds the lock of one sub-job.');
+    expect(textOf('../../packages/hire-kit/src/janitor.ts')).toContain('Known gap (ruling R39): an escrow is written here once its Post is confirmed or has failed after its signature, so a');
+    expect(state).toContain('A write of the file that fails after a Post fails the job with `store_write_failed` (500), all but the removal of an entry once its Accept is confirmed, which is logged and leaves an entry the janitor drops once it reads spent; after a write that fails its job, the service posts no escrow again until it restarts');
+    const hire = textOf('../../packages/hire-kit/src/hire.ts');
+    expect(hire).toContain('// The one write of the store that does not fail the run (ruling R62)');
+    expect(hire).toContain('and could not be removed from the stranded store (${errorText(err)}); the janitor drops it once it reads it spent`);');
+    expect(row('LLM_MODEL_ALLOWLIST')).toContain('in order of preference, each of letters, digits, dots, underscores, colons, slashes and hyphens, as an advert names it, or the service stops at start;');
+    expect(loadConfig({ ...FULL_ENV, LLM_MODEL_ALLOWLIST: 'deepseek/deepseek-v4-flash:free' }).allowlist).toStrictEqual(['deepseek/deepseek-v4-flash:free']);
+    expect(() => loadConfig({ ...FULL_ENV, LLM_MODEL_ALLOWLIST: 'deepseek/deepseek-v4-flash free' })).toThrow('each of letters, digits, dots, underscores, colons, slashes and hyphens only');
+  });
+
   test('Run it: the recipe of a key pair for a run on a machine of one\'s own makes settings the service takes, and Run it says where a pair comes from on the host', () => {
     const run = section('Run it');
     expect(run).toContain('export SUPPLIER_PUB_KEY_HEX=$(openssl rand -hex 32)');
@@ -252,7 +266,7 @@ describe('agents/advocate/README.md, pinned further', () => {
     const routes = section('Routes');
     expect(routes).toContain(`It is read up to ${MAX_BODY} bytes.`);
     expect(routes).toContain(`A job has its own deadline, ${JOB_DEADLINE_MS} ms after its request arrives, 60 s inside the runtime's \`SERVICE_TIMEOUT_MS\` of ${JOB_DEADLINE_MS + 60_000}.`);
-    expect(routes).toContain(`the hire of a chat supplier ends ${FALLBACK_RESERVE_MS} ms before the deadline;`);
+    expect(routes).toContain(`the waits of the hire of a chat supplier stop ${FALLBACK_RESERVE_MS} ms before the deadline;`);
     expect(routes).toContain(`The search gets at most ${SEARCH_MAX_MS} ms of it, for two queries one after the other, each at most ${SEARCH_QUERY_TIMEOUT_MS} ms;`);
     expect(routes).toContain(`the fetch of the pages ends ${FETCH_PHASE_MAX_MS} ms after it begins, or ${FETCH_RESERVE_MS} ms before the deadline when that comes first;`);
     expect(routes).toContain(`the call through OpenRouter, when that hire fails, gets the smaller of ${MODEL_MAX_MS} ms and the time the job has left less ${RESULT_RESERVE_MS} ms, and is not made when that comes to under ${MODEL_MIN_MS} ms.`);

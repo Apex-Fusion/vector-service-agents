@@ -1,7 +1,9 @@
 // agents/advocate/test/budget.test.ts
 // The time of a job (rulings R-E8 and R-F2): the constants, the end of the fetch phase, the time of the call through OpenRouter, the hop deadline and the end of
-// the reads of a receipt, and the arithmetic of the head of src/budget.ts, each phase at its worst, which ends inside the deadline.
+// the reads of a receipt, and the arithmetic of the head of src/budget.ts, each phase at its worst, which ends inside the deadline, and a call under way at the
+// hop deadline, which is not cut.
 import { describe, expect, test } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   CHOICE_BUDGET_MS, CHOICE_MAX_CANDIDATES, CHOICE_WITHIN_MS, FALLBACK_RESERVE_MS, FETCH_CONCURRENCY, FETCH_PHASE_MAX_MS, FETCH_RESERVE_MS, HOP_MIN_MS, JOB_DEADLINE_MS,
   MODEL_MAX_MS, MODEL_MIN_MS, PAGE_TIMEOUT_MS, RESULT_RESERVE_MS, SEARCH_MAX_MS, SEARCH_QUERY_TIMEOUT_MS, WALLET_READ_MS, fetchDeadlineMs, hopDeadlineMs, modelBudgetMs,
@@ -49,6 +51,16 @@ describe('the time of a job (R-E8, R-F2)', () => {
     expect(modelBudgetMs(19_999)).toBeNull();
     expect(modelBudgetMs(0)).toBeNull();
     expect(modelBudgetMs(-5)).toBeNull();
+  });
+
+  test('a call under way at the hop deadline is not cut: a send begun then waits up to 75 s, so a hire can fail as late as about 280 s, which leaves the call through OpenRouter its least time, as the head says', () => {
+    const head = readFileSync(new URL('../src/budget.ts', import.meta.url), 'utf8').split('\n').filter((l) => l.startsWith('//')).map((l) => l.slice(3)).join(' ');
+    expect(head).toContain('A call already under way at the hop deadline is not cut (a send up to 75 s, a poll up to 20 s, a read of the chain), so a hire can fail as late as about 280, and the call through OpenRouter then has what is left, or the job answers deadline.');
+    // The 75 s of a send and the 20 s of a poll are those of the fleet clients (packages/buyer-core/src/fleet-clients.ts), which the hire calls with no other time.
+    const fleetClients = readFileSync(new URL('../../../packages/buyer-core/src/fleet-clients.ts', import.meta.url), 'utf8');
+    expect([fleetClients.includes('const SEND_TIMEOUT_MS = 75_000;'), fleetClients.includes('const POLL_CALL: Call = { maxResponseBytes: ANSWER_BYTES, timeoutMs: 20_000 };')]).toStrictEqual([true, true]);
+    const latest = hopDeadlineMs(JOB_DEADLINE_MS) + 75_000;
+    expect([latest, receiptByMs(JOB_DEADLINE_MS), modelBudgetMs(JOB_DEADLINE_MS - latest), modelBudgetMs(JOB_DEADLINE_MS - latest - 1)]).toStrictEqual([280_000, 280_000, MODEL_MIN_MS, null]);
   });
 
   test('at the worst the phases end inside the deadline: the search by 15 s, the pages by 60, the choice by 85, the wallet by 95, the hop by 205, the fallback by 295', () => {

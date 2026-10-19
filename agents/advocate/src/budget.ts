@@ -13,10 +13,12 @@
 // The arithmetic, in seconds after the request arrives, each phase at its worst. The search ends by 15 and the pages by 60; the choice ends by 85 and the read
 // of the wallet by 95, so the Post starts by 95, well before the latest start the hop allows, 205 - 60 = 145. From the Post to the hop deadline at 205 there are
 // 110 s for the Post, the supplier's Claim, its work and its Submit. A hire that ends well is verified and accepted by about 215, and the check and the result
-// follow. A hire that fails by 205 leaves the call through OpenRouter its full 90 s, to 295, and the check and the result their 5 s, to 300. The receipt of a
-// supplier that has answered is read on chain until 280 (receiptByMs: the deadline less MODEL_MIN_MS and RESULT_RESERVE_MS), so a receipt that fails then
-// leaves OpenRouter 15 s, and one that fails later leaves too little and the job answers deadline. Past 300 only a Post or an Accept that is being confirmed
-// runs on, as a hire in its Accept at the deadline is not cut; the 60 s to the runtime's timeout cover a normal confirmation.
+// follow. A hire that fails by 205 leaves the call through OpenRouter its full 90 s, to 295, and the check and the result their 5 s, to 300. A call already
+// under way at the hop deadline is not cut (a send up to 75 s, a poll up to 20 s, a read of the chain), so a hire can fail as late as about 280, and the call
+// through OpenRouter then has what is left, or the job answers deadline. The receipt of a supplier that has answered is read on chain until 280 (receiptByMs:
+// the deadline less MODEL_MIN_MS and RESULT_RESERVE_MS), so a receipt that fails then leaves OpenRouter 15 s, and one that fails later leaves too little and
+// the job answers deadline. Past 300 only a Post or an Accept that is being confirmed runs on, as a hire in its Accept at the deadline is not cut; the 60 s to
+// the runtime's timeout cover a normal confirmation.
 
 /** The deadline of a job, after its arrival: 300 s. */
 export const JOB_DEADLINE_MS = 300_000;

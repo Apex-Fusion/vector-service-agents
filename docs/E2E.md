@@ -111,7 +111,7 @@ export E2E_STATE=./e2e-state-advocate.json
 
 - `CAPABILITY_ID` is the capability of the advert of Advocate. Without it the script looks for the advert among the free suppliers of Agent History's capability and stops before it posts anything.
 - `PAYLOAD` is the request JSON of the example of [specs/advocate.md](../specs/advocate.md). The service sends its two search queries to the Brave Search API, fetches the pages they find, and sends the prompt (the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages) to the chat supplier it hires on the Vector marketplace and the model provider behind it, or, only when that hire fails, to OpenRouter and the model provider behind it, so the subject is one that may go to all of them.
-- `E2E_POLL_MS=10000`: a job takes up to 300 s, its deadline, where Agent History's takes seconds, and the default pause of 5 s would ask the hosted server about 96 times in the 8 min window.
+- `E2E_POLL_MS=10000`: a job takes up to 300 s, its deadline, and longer when the hire of its chat supplier is in its Accept then (the runtime gives up at 360 s), where Agent History's takes seconds, and the default pause of 5 s would ask the hosted server about 96 times in the 8 min window.
 - `E2E_STATE=./e2e-state-advocate.json`: a state file belongs to one run, and the script refuses one that belongs to another, so this run does not use the file of an earlier run.
 - The script polls until `deliver_by`, which is 11 minutes after the Post (the 8 min window and 180 s).
 

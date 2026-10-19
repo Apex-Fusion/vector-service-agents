@@ -1641,17 +1641,19 @@ test('docs/HIRE.md and docs/E2E.md: Advocate has a subsection of section 5 and a
   assert.ok(ignored.includes('e2e-state*.json*') && /^e2e-state.*\.json.*$/.test('e2e-state-advocate.json'));
 });
 
-test('docs/HIRE.md and docs/E2E.md: the window and the reclaim time of the guide are the Terms of the page, a job ends within its deadline, and the asks counted in the E2E section are the default pause of the script over the 8 min window', () => {
+test('docs/HIRE.md and docs/E2E.md: the window and the reclaim time of the guide are the Terms of the page, a job takes up to its deadline and longer only in the Accept of its hire, inside the service timeout, and the asks counted in the E2E section are the default pause of the script over the 8 min window', () => {
   const terms = section(read('advocate'), 'Terms');
   assert.match(terms, /\| Processing window, advert `max_processing_ms` \| 480000 ms \|/);
   assert.ok(terms.includes('| Job deadline, set by the service when a request arrives | 300000 ms (60 s inside the service timeout) |'));
   assert.ok(terms.includes('| Service timeout, `SERVICE_TIMEOUT_MS` | 360000 ms |'));
   const guide = section(hire(), '5. The chat script').split('\n### The same script for Advocate\n')[1] ?? '';
-  assert.ok(guide.includes('A job takes up to 300 s. Its processing window is 8 min, so message 4 can wait that long'));
+  assert.ok(guide.includes('A job takes up to 300 s, its deadline, and longer when the hire of its chat supplier is in its Accept then (the runtime gives up at 360 s). Its processing window is 8 min, so message 4 can wait that long'));
+  // The deadline does not cut a hire in its Accept, as the gap of the deadline on the page says, and the runtime gives up at its service timeout, the 360 s of the Terms.
+  assert.ok(read('advocate').includes('A hire in its Accept at the deadline runs on, as the Pipeline\'s does.'));
   assert.equal(480_000 / 60_000, 8);
   const pause = Number(/POLL_MS = env\.E2E_POLL_MS === undefined \? (\d+) :/.exec(e2eScript())?.[1]);
   assert.equal(pause, 5000);
   assert.equal(8 * 60 * 1000 / pause, 96);
-  assert.ok(section(doc('E2E.md'), 'Hiring Advocate').includes("- `E2E_POLL_MS=10000`: a job takes up to 300 s, its deadline, where Agent History's takes seconds, and the default pause of 5 s would ask the hosted server about 96 times in the 8 min window."));
+  assert.ok(section(doc('E2E.md'), 'Hiring Advocate').includes("- `E2E_POLL_MS=10000`: a job takes up to 300 s, its deadline, and longer when the hire of its chat supplier is in its Accept then (the runtime gives up at 360 s), where Agent History's takes seconds, and the default pause of 5 s would ask the hosted server about 96 times in the 8 min window."));
   assert.equal(guide.match(/up to 150 s|5 min plus 180 s/), null, 'the words of before the wider window');
 });

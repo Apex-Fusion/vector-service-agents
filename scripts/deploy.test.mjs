@@ -3316,7 +3316,7 @@ test('Advocate README section: the fourth stack, with its two containers, the lo
     '- **Calls out of the host.**', '`api.search.brave.com`', '`openrouter.ai`', '6. **Outbound https.**', 'a job would then fail with `no_sources` (502)',
     'It calls OpenRouter at `openrouter.ai` only when that hire fails.',
     'For the hire of a chat supplier it calls the marketplace indexer, Ogmios, Koios and the submit API of Vector mainnet, and the endpoint of the supplier it chose, all over https on port 443.',
-    '- **The state volume.** `advocate-state`, mounted at `/data`, holds `stranded.json`', '`docker compose down` keeps it, and `down -v` or `docker volume rm` would delete it. Neither is run while the file lists an escrow, except a Submitted one, which nothing can reclaim (the runbook\'s Back out, point 4).',
+    '- **The state volume.** `advocate-state`, mounted at `/data`, holds `stranded.json`', '`docker compose down` keeps it, and `down -v` or `docker volume rm` would delete it. `down -v` is never run. `docker volume rm` is run only when the agent will not come back, after the buyer wallet is emptied, and not while the file lists an escrow, except a Submitted one that nothing can settle (the runbook\'s Back out, point 4).',
     'because on a stop it waits up to 300 s for the job that is running, its Accept included,', '- **A window of 8 min.** The advert gives a job 8 min, and one job holds the runtime for up to 6 min.',
     'Then the containers stop, and the state volume stays.', 'It also refuses to start when `/data` cannot be written.',
     'and what the janitor of the service asks of the chain about the escrows a job left behind.', "when a buyer line is not the buyer key's or the buyer key is the supplier key",
@@ -3329,12 +3329,15 @@ test('Advocate README section: the fourth stack, with its two containers, the lo
     '[RUNBOOK-advocate.md](RUNBOOK-advocate.md), under "Back out"',
   ]) assert.ok(aSection.includes(part), `the section says: ${part}`);
   assert.ok(!aSection.includes('retire-advert.ts'), 'the retire command lives in one place, the runbook');
-  // The carve-out of the state volume is the one of point 4 of Back out, where the volume goes after the buyer wallet, and a Submitted entry is the one the janitor
-  // keeps and never reclaims (packages/hire-kit/src/janitor.ts), as the Back out pin holds it.
+  // The rule of the state volume is the one of Back out: point 2 never adds -v, and point 4 removes the volume after the buyer wallet, only when the agent will not
+  // come back, with an entry listed only when its janitor line is the one of a Submitted escrow that nothing can settle (packages/hire-kit/src/janitor.ts), as the
+  // Back out pin holds it.
   const point4 = section(aRunbook, 'Back out').split('\n').find((l) => l.startsWith('4. Operator: the keys and the state volume.')) ?? '';
-  assert.ok(point4.includes('once `stranded.json` is `[]` or lists only Submitted escrows') && point4.includes('`docker volume rm advocate-state`'), 'point 4 of Back out has the same carve-out');
+  assert.ok(point4.includes('once `stranded.json` is `[]` or lists only escrows whose janitor line reads `janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest`') && point4.includes('`docker volume rm advocate-state`'), 'point 4 of Back out has the same carve-out');
+  assert.ok(point4.includes('The volume goes after the buyer wallet, and only when the agent will not come back: `docker volume rm advocate-state`.') && section(aRunbook, 'Back out').includes('Never add `-v`'), 'down -v is never run, and the volume goes last');
   assert.ok(read('packages/hire-kit/src/janitor.ts').includes("return did('kept', `Submitted: it cannot be reclaimed, and its supplier may release it from ${iso(lostAfter)} at the latest`);"));
   assert.equal(aSection.includes('Neither is run while the file lists an escrow.'), false, 'the words of before the carve-out');
+  assert.equal(aSection.includes('Neither is run while'), false, 'the words that let down -v through');
   assert.ok(aSection.includes(`\`mem_limit: ${aService.mem_limit}\``) && aSection.includes(`\`stop_grace_period: ${aService.stop_grace_period}\``));
   // The numbers and names the section states are the code's: the pages a job holds, the two endpoints it calls (https, on the default port, 443), and the port a page is fetched on
   // (the one its URL names).
@@ -3380,7 +3383,7 @@ test('Advocate RUNBOOK: the twenty-one sections in order, the seventeen steps ke
   for (const part of [
     'This is [RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md), the runbook of Audio Snippets, written for Advocate.', 'step N here is step N there',
     '- **Two keys, and two API keys.**', '- **A token on the service, as for the Pipeline and Audio Snippets.**', '- **A window of 8 min.**', '`max_processing_ms` is 480000', '`SERVICE_TIMEOUT_MS` is 360000', '300000 ms (300 s)',
-    'the search gets at most 15 s of it and the pages at most 45 s; the hire of the chat supplier ends 95 s before the deadline, so that the call through OpenRouter still has its 90 s when the hire fails.',
+    'the search gets at most 15 s of it and the pages at most 45 s; the waits of the hire of the chat supplier stop 95 s before the deadline, so that the call through OpenRouter still has its 90 s when the hire fails by then; a send or a poll under way then is not cut and can end the hire as late as about 280 s.',
     'A hire in its Accept at the deadline runs on.', 'because a job can take as long as the runtime\'s fetch waits on silence, 300 s (step 13)',
     'because the network is shared with other stacks and a job posts an escrow from the buyer wallet',
     'The service holds a second, separate key, the buyer key, which posts the escrow of the one chat sub-job of a job, so that its Posts and the supplier key\'s Claims never contend for the same outputs',
@@ -3407,6 +3410,8 @@ test('Advocate RUNBOOK: the twenty-one sections in order, the seventeen steps ke
   // The facts it quotes are the code's.
   const [budget] = inAdvocate("import * as b from './src/budget.ts'; console.log(JSON.stringify([[b.JOB_DEADLINE_MS, b.SEARCH_MAX_MS, b.FETCH_PHASE_MAX_MS, b.MODEL_MAX_MS, b.FALLBACK_RESERVE_MS]]));", null);
   assert.deepEqual(budget, [300_000, 15_000, 45_000, 90_000, 95_000]);
+  // A send under way when the waits of the hire stop waits up to 75 s for the Claim (packages/buyer-core/src/fleet-clients.ts): 300 - 95 + 75 = 280 s.
+  assert.ok(read('packages/buyer-core/src/fleet-clients.ts').includes('const SEND_TIMEOUT_MS = 75_000;') && budget[0] - budget[4] + 75_000 === 280_000);
   assert.doesNotMatch(aRunbook, /holds no chain key|There is no volume|no second wallet|ends within 150 s|A window of 5 min/, 'the words of before the buyer key');
   assert.ok(read('packages/service-kit/src/server.ts').includes('export const HEARTBEAT_MS = 60_000;'));
 });
@@ -4076,7 +4081,7 @@ test('Advocate RUNBOOK step 15 and the first stop: the request of the spec, whic
     '`stranded.json` prints `[]`: the hire leaves nothing for the janitor, because its Accept removes its own entry.',
     'The hire costs the hirer about 5: the price, 3, and the supplier bond, 1, which the supplier receives on Accept, and fees of about 1; the buyer bond comes back to the buyer.',
     'The sub-job of the service costs its buyer key about 2.2 on the marketplace path: the price of the chat supplier, 0.2, and its supplier bond, 1, which that supplier receives on Accept, and fees of about 1; the buyer bond of the sub-job comes back to the buyer key.',
-    '- `E2E_POLL_MS=10000`. A job takes up to 300 s, its deadline, where Agent History\'s takes seconds.',
+    '- `E2E_POLL_MS=10000`. A job takes up to 300 s, its deadline, and longer when the hire of its chat supplier is in its Accept then (the runtime gives up at 360 s), where Agent History\'s takes seconds.',
   ]) assert.ok(s15.includes(part), part);
   // What the model is sent is said in the words of the third-parties entries of the manifest as built (rulings R-E27 and R-F12), read from the code: the prompt goes
   // to the chat supplier, and to OpenRouter only when that hire fails.
@@ -4143,20 +4148,25 @@ test('Advocate RUNBOOK step 17 and Back out: the old advert retired before the r
   assert.ok(back.includes('`shred -u "$BASE/ops/wallet/payment.skey" "$BASE/ops/wallet/payment.vkey"`, then `rmdir "$BASE/ops/wallet"`'));
   for (const part of [
     'Then the service gets to finish what it holds, and only then do the containers stop.',
-    '`docker exec advocate-service cat /data/stranded.json` prints `[]`, or lists only Submitted escrows, which nothing can reclaim (`janitor: kept <escrow>: Submitted: ...`, the table at the end).',
+    '`docker exec advocate-service cat /data/stranded.json` prints `[]`, or lists only escrows whose janitor line reads `janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest` (the table at the end), which nothing can settle.',
+    'An escrow whose line says `its Accept <tx> may still land until <time>` is waited for in the same way, or accepted again by hand (its row in the table at the end).',
     'An escrow whose `deliver_by` has not come yet is waited for: the janitor reclaims it 5 s after its `deliver_by`, logging `janitor: reclaimed <escrow>: ...`.',
-    'The buyer wallet is emptied last, with the buyer key, once `stranded.json` is `[]` or lists only Submitted escrows (or was never written;',
+    'The buyer wallet is emptied last, with the buyer key, once `stranded.json` is `[]` or lists only escrows whose janitor line reads `janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest` (or was never written;',
     'Never add `-v`: the volume `advocate-state` holds `stranded.json`, the escrows that still lock the buyer\'s units, and the janitor of the next start reads it. `down` keeps it.',
     'The env file still holds both keys, and so does the operator\'s offline store: keep both until both wallets are empty',
     'No script of this pack does that: none signs with the buyer key', 'docker run --rm -v advocate-state:/data alpine cat /data/stranded.json',
   ]) assert.ok(back.includes(part), `Back out says: ${part}`);
   assert.equal(back.includes('There is no volume to keep'), false, 'the words of before the state');
   assert.doesNotMatch(back, /once the service holds nothing|lists only escrows whose `deliver_by` has not come yet/, 'the words of before: a stop with escrows not yet due, and a wait for [] that a Submitted escrow never ends');
+  assert.doesNotMatch(back, /lists only Submitted escrows/, 'the words of before: an Accept that may still land also begins its janitor line with Submitted');
   // The two lines Back out quotes are the janitor's (packages/hire-kit/src/janitor.ts), where a Submitted escrow is kept and never reclaimed; the table at the end has its row.
   const janitor = read('packages/hire-kit/src/janitor.ts');
   assert.ok(janitor.includes("return did('kept', `Submitted: it cannot be reclaimed, and its supplier may release it from ${iso(lostAfter)} at the latest`);"));
   assert.ok(janitor.includes('log(`janitor: ${action.action} ${action.escrow_ref}: ${action.note}`)'));
   assert.ok(section(aRunbook, 'If something goes wrong').includes('| `janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest` |'));
+  // The line of an escrow whose Accept may still land is the janitor's too, and the table at the end has its row.
+  assert.ok(janitor.includes("if (now < pending.valid_to) return did('kept', `Submitted: its Accept ${pending.tx_hash} may still land until ${iso(pending.valid_to)}`);"));
+  assert.ok(section(aRunbook, 'If something goes wrong').includes('| `janitor: kept <escrow>: Submitted: its Accept <tx> may still land until <time>` |'));
   // The janitor reclaims 5 s after deliver_by, as the kit says.
   assert.ok(read('packages/hire-kit/src/janitor.ts').includes('export const JANITOR_GRACE_MS = 5_000;'));
   assert.ok(back.includes('   ```sh\n   cd "$BASE/repo/deploy/host"\n   ' + `${ADC} run --rm --no-deps -T agent \\\n     node_modules/.bin/tsx agent/src/cli/retire-advert.ts \\\n`), 'the block that retires the advert starts in this folder: it may run in a new shell');
@@ -4291,7 +4301,9 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
     ['`environment variable LLM_MODEL_ALLOWLIST must name at least one model`', 'server', 'environment variable LLM_MODEL_ALLOWLIST must name at least one model'],
     ['`inference: marketplace llm_supplier_unavailable at choice, falling back`', 'inference', "fallBack('llm_supplier_unavailable', 'choice')"],
     ['the stranded store could not mark the Accept of the chat sub-job', 'inference', 'the stranded store could not mark the Accept of the chat sub-job at accept'],
-    ['accept it by hand within 600 s of its Submit', 'inference', 'accept it again by hand at once, within 600 s of its Submit'],
+    ['accept it again by hand at once, within 600 s of its Submit', 'inference', 'accept it again by hand at once, within 600 s of its Submit'],
+    ['`janitor: kept <escrow>: Submitted: its Accept <tx> may still land until <time>`', 'janitor', 'Submitted: its Accept ${pending.tx_hash} may still land until ${iso(pending.valid_to)}'],
+    ['`escrow <escrow> was accepted for the brief in <tx> and could not be removed from the stranded store (<error>); ...`', 'hire', 'was accepted for ${job.label} in ${accepted.txHash} and could not be removed from the stranded store (${errorText(err)}); the janitor drops it once it reads it spent'],
     ['`janitor: reclaimed <escrow>: ...`', 'janitor', 'janitor: ${action.action} ${action.escrow_ref}: ${action.note}'],
     ['`janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest`', 'janitor', 'Submitted: it cannot be reclaimed, and its supplier may release it from ${iso(lostAfter)} at the latest'],
     ['`janitor: the pass failed`', 'janitor', 'janitor: the pass failed'],
@@ -4339,6 +4351,27 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
   assert.ok(sources.hire.includes('Its escrow ${post.escrowRef} stays recorded for the janitor.`, at());'), 'an Accept that could not be made leaves its escrow recorded');
   assert.ok(sources.hire.includes('and the store does not say so: the janitor takes it for a Submitted escrow it cannot accept.'), 'a mark that could not be written leaves it as a Submitted escrow');
   assert.ok(sources.inference.includes("const NO_FALLBACK: ReadonlySet<string> = new Set(['llm_accept_failed', 'store_write_failed']);"));
+  // An Accept that may still land: on the real chain it is valid to the end of the accept window (the vendored planAccept), so the operator does not wait for it to
+  // fail. The row of the janitor's line waits for it and has the escrow accepted again by hand while it reads Submitted, within the window, and so does the row of
+  // a mark that could not be written; after the window the janitor records it as lost (packages/hire-kit/src/janitor.ts).
+  const landing = rows.find((r) => r.startsWith('| `janitor: kept <escrow>: Submitted: its Accept <tx> may still land until <time>` |')) ?? '';
+  for (const part of [
+    'the end of its validity, which on the real chain is the end of the 600 s accept window after the Submit', 'Wait for it as for an escrow not yet due',
+    'If it has not landed with time left in the window, accept the escrow again by hand within 600 s of its Submit (`vector_build_marketplace_accept`, signed as the manual reclaim of the `store_write_failed` row is; an escrow is accepted once, so a second Accept fails if the first lands).',
+    'After `<time>`, if it is still Submitted, the janitor records it as lost and its supplier may release it.',
+  ]) assert.ok(landing.includes(part), `the row says: ${part}`);
+  const storeRow = rows.find((r) => r.startsWith('| A job fails with `store_write_failed` (500) |')) ?? '';
+  assert.ok(storeRow.includes('Submitted after a mark of its Accept that failed: that Accept may still land, so read it on chain now and, while it is still Submitted, accept it again by hand at once, within 600 s of its Submit (build the Accept with `vector_build_marketplace_accept`; an escrow is accepted once, so a second Accept fails if the first lands), after which its supplier may release it.'));
+  assert.ok(read('packages/buyer-core/src/vendored/mcp/marketplace-build.ts').includes('const validTo = datum.submitted_at + ACCEPT_WINDOW_MS;'), 'an Accept is valid to the end of the accept window');
+  assert.ok(sources.janitor.includes("if (now >= entry.posted_at + ACCEPT_WINDOW_MS) return lost(' and the accept window may be over');"), 'past its validity the janitor records it as lost');
+  assert.equal(table.includes('can no longer land'), false, 'the instruction that could not be followed: a wait for an Accept that is valid to the end of the window');
+  // The one write of the file after a Post that fails no job (ruling R62): the removal of an entry once its Accept is confirmed, in the words of the kit, for the brief.
+  const removal = rows.find((r) => r.startsWith('| `escrow <escrow> was accepted for the brief in <tx>')) ?? '';
+  assert.ok(removal.includes('It is the one write of the file after a Post that fails no job: the job stands, and the service goes on posting escrows.') && sources.hire.includes('// The one write of the store that does not fail the run (ruling R62)'));
+  assert.ok(sources.inference.includes("const BRIEF_LABEL = 'the brief';"), 'the job of the line is the brief');
+  // The characters of an entry of LLM_MODEL_ALLOWLIST are those the start takes (src/server.ts).
+  const allowRow = rows.find((r) => r.includes('`environment variable LLM_MODEL_ALLOWLIST must be a comma-separated list of models`')) ?? '';
+  assert.ok(allowRow.includes('or an entry that is not letters, digits, dots, underscores, colons, slashes and hyphens alone.') && sources.server.includes('each of letters, digits, dots, underscores, colons, slashes and hyphens only, and its entry'), 'the characters of an entry');
   assert.ok(sources.inference.includes("super(hopCode === 'store_write_failed' ? 'store_write_failed' : 'inference_failed', hopDetail(hopCode, facts));"));
   // Ruling R-E26: the log shows words of an answer only when its status is not 200. A 200 is an answer of the model, which can quote a page or the request, so for a
   // 200 whose body or content cannot be read the line gives the reason and the length, never the text. Ruling R-E30: of an answer that is not 200 the line shows the
@@ -4373,14 +4406,16 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
   const toBlocks = rows.filter((r) => /block of the two API keys of step 4|supplier block of step 4|token block of step 4/.test(r));
   assert.ok(toBlocks.length >= 6, `${toBlocks.length} rows send the operator to a block of step 4`);
   for (const r of toBlocks) assert.ok(r.includes(REMINDER), `the row says to define the function first: ${r.slice(0, 90)}`);
-  // deadline: the time OpenRouter is given is the time left less 5 s, 90 s at most, and it is not called with under 15 s. The hire ends FALLBACK_RESERVE_MS before the
-  // deadline, which leaves the whole 90 s and not a millisecond more; a receipt read until receiptByMs leaves 15 s; with under 20 s left it is not called.
+  // deadline: the time OpenRouter is given is the time left less 5 s, 90 s at most, and it is not called with under 15 s. The waits of the hire stop FALLBACK_RESERVE_MS
+  // before the deadline, which leaves the whole 90 s and not a millisecond more; a send under way then waits up to 75 s more (packages/buyer-core/src/fleet-clients.ts);
+  // a receipt read until receiptByMs leaves 15 s; with under 20 s left it is not called.
   assert.deepEqual(L.model, { full: L.MODEL_MAX_MS, lessAfter: L.MODEL_MAX_MS - 1, atReceiptBy: L.MODEL_MIN_MS, none: null, started: L.MODEL_MIN_MS });
   assert.deepEqual([L.hopEnd, L.FALLBACK_RESERVE_MS, L.receiptEnd], [L.MODEL_MAX_MS + L.RESULT_RESERVE_MS, L.MODEL_MAX_MS + L.RESULT_RESERVE_MS, L.MODEL_MIN_MS + L.RESULT_RESERVE_MS]);
   const deadline = rowOf('deadline');
   assert.ok(deadline.includes(`The job ran out of its time: ${L.JOB_DEADLINE_MS} ms after its request arrived.`));
   assert.ok(deadline.includes(`OpenRouter is given the time left less ${sec(L.RESULT_RESERVE_MS)} s, ${sec(L.MODEL_MAX_MS)} s at most, and when it was given the whole ${sec(L.MODEL_MAX_MS)} s the same silence is \`model_failed\`.`));
-  assert.ok(deadline.includes(`The hire of a chat supplier ends ${sec(L.hopEnd)} s before the deadline, so a fallback after it has its ${sec(L.MODEL_MAX_MS)} s, but a receipt that failed its check late, up to ${sec(L.receiptEnd)} s before the deadline, leaves the fallback ${sec(L.MODEL_MIN_MS)} s at the least.`));
+  assert.ok(read('packages/buyer-core/src/fleet-clients.ts').includes('const SEND_TIMEOUT_MS = 75_000;'));
+  assert.ok(deadline.includes(`The waits of the hire of a chat supplier stop ${sec(L.hopEnd)} s before the deadline, so a fallback after a hire that failed then has its ${sec(L.MODEL_MAX_MS)} s, but a send or a poll under way at that moment is not cut and can end the hire as late as about ${sec(L.JOB_DEADLINE_MS - L.hopEnd + 75_000)} s, and a receipt that failed its check late, up to ${sec(L.receiptEnd)} s before the deadline, leaves the fallback ${sec(L.MODEL_MIN_MS)} s at the least.`));
   assert.ok(deadline.includes(`The job also fails this way when it has under ${A_MODEL_TIME.startWith} s left at the time the model was to start.`));
   assert.ok(deadline.includes('`inference: marketplace <code> at <stage>, falling back` says where the hire ended'));
   assert.ok(deadline.includes(`\`model: OpenRouter did not answer within <n> ms\` before \`job failed after <ms> ms: deadline (422)\` is the silent model, with an \`<n>\` under ${L.MODEL_MAX_MS} (with ${L.MODEL_MAX_MS} the job fails as \`model_failed\`).`));
