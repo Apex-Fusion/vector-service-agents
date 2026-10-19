@@ -1,16 +1,21 @@
 # agents/advocate/Dockerfile - build context is the repo root. Two stages: the workspace installed from the lockfile (builder), and the final image. The
-# service runs no model and keeps no file: its image holds the workspace, node and tini, and nothing is fetched at run time but what a job asks of the Brave
-# Search API, of the hosts of the result pages and of OpenRouter. No Python, no model files, no volume.
+# service runs no model: its image holds the workspace, node and tini, and nothing is fetched at run time but what a job asks of the Brave Search API, of the
+# hosts of the result pages, of the Vector chain and the marketplace indexer, of a chat supplier on the marketplace and of OpenRouter. No Python, no model
+# files. One volume, /data, holds the bookkeeping of the escrows the service posts (stranded.json), so that it outlives the container.
 FROM node:22-bookworm-slim AS builder
 WORKDIR /repo
 RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json ./
 COPY packages/vector-read/package.json ./packages/vector-read/package.json
+COPY packages/buyer-core/package.json ./packages/buyer-core/package.json
 COPY packages/service-kit/package.json ./packages/service-kit/package.json
+COPY packages/hire-kit/package.json ./packages/hire-kit/package.json
 COPY agents/advocate/package.json ./agents/advocate/package.json
 RUN pnpm install --frozen-lockfile --filter '@vsa/advocate...'
 COPY packages/vector-read ./packages/vector-read
+COPY packages/buyer-core ./packages/buyer-core
 COPY packages/service-kit ./packages/service-kit
+COPY packages/hire-kit ./packages/hire-kit
 COPY agents/advocate ./agents/advocate
 
 FROM node:22-bookworm-slim
@@ -18,6 +23,10 @@ FROM node:22-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends tini && rm -rf /var/lib/apt/lists/*
 WORKDIR /repo
 COPY --from=builder --chown=node:node /repo /repo
+# The state directory holds the list of escrows the janitor still has to settle, so it is a volume and outlives the container. It is made and given to node
+# before VOLUME, so that a new volume starts with that owner.
+RUN mkdir -p /data && chown node:node /data
+VOLUME /data
 USER node
 # The memory limit is the compose file's.
 ENV NODE_ENV=production PORT=9094 HOST=0.0.0.0

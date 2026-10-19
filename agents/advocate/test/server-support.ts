@@ -1,13 +1,20 @@
 // agents/advocate/test/server-support.ts
-// Shared by the service tests (test/server.test.ts, test/start.test.ts): the environment of a full deployment, the supplier identity it publishes, the deps a
-// server is given, and a real HTTP server on a port the system picks. The token, the two API keys and the public key are made at run time from a label, so
-// none is written in the repository; the public key is any 32 bytes, and the key hash is its blake2b-224, as the ledger computes it.
+// Shared by the service tests (test/server.test.ts, test/start.test.ts): the environment of a full deployment, the supplier identity it publishes, the buyer
+// key and the identity the service must derive from it, the deps a server is given, and a real HTTP server on a port the system picks. The token, the two
+// API keys and the keys are made at run time from a label, so none is written in the repository; the key hash of the buyer key is worked out by node:crypto
+// and blake2b-224 (test/fake-chain-support.ts) and its address by FakeChain, other routes than the ones the code under test takes.
 import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { FakeChain } from '@vsa/buyer-core';
+import { StrandedStore } from '@vsa/hire-kit';
 import { blake2b224Hex } from '@vsa/vector-read';
 import { DEFAULT_MODEL } from '../src/model.ts';
 import type { RunDeps } from '../src/run.ts';
 import { createServer } from '../src/server.ts';
 import type { ServerOptions } from '../src/server.ts';
+import { stubKey } from './fake-chain-support.ts';
 import { publicLookup } from './fake-fetch.ts';
 import { TEST_BRAVE_KEY, TEST_OPENROUTER_KEY, noWait } from './golden.ts';
 
@@ -15,26 +22,44 @@ import { TEST_BRAVE_KEY, TEST_OPENROUTER_KEY, noWait } from './golden.ts';
 export const TEST_CONTACT = 'ops@example.test';
 const pubKeyHex = createHash('sha256').update('advocate service test: the supplier').digest('hex');
 export const SUPPLIER = { pubKeyHex, pkh: blake2b224Hex(pubKeyHex) };
+/** A key made from `label`: its 32 raw bytes are the sha256 of the label, which is also how stubKey makes the matching public key and key hash. */
+export const keyOf = (label: string) => ({ privateKeyHex: createHash('sha256').update(label).digest('hex'), ...stubKey(label) });
+export const BUYER = keyOf('advocate service test: the buyer');
+/** The mainnet enterprise address of the buyer key hash. */
+export const BUYER_ADDRESS = new FakeChain({ buyerPkh: BUYER.pkh }).address;
 /** The value the runtime sends as the authorization header of every call to the service: "Bearer " and 64 hex characters, as the runbook makes it. */
 export const TEST_AUTH = `Bearer ${createHash('sha256').update('advocate service test: the token of the runtime').digest('hex')}`;
 export const AUTH = { authorization: TEST_AUTH };
 /** What an operator sets for a full deployment, and nothing else: every other setting has a default. */
 export const FULL_ENV = {
   OPERATOR_CONTACT: TEST_CONTACT, AGENT_DID: 'did:test', SUPPLIER_PKH: SUPPLIER.pkh, SUPPLIER_PUB_KEY_HEX: SUPPLIER.pubKeyHex, SERVICE_AUTH_HEADER: TEST_AUTH,
-  BRAVE_SEARCH_API_KEY: TEST_BRAVE_KEY, OPENROUTER_API_KEY: TEST_OPENROUTER_KEY,
+  BRAVE_SEARCH_API_KEY: TEST_BRAVE_KEY, OPENROUTER_API_KEY: TEST_OPENROUTER_KEY, ADVOCATE_BUYER_PRIV_KEY_HEX: BUYER.privateKeyHex,
 };
 export const T0 = 1_760_000_000_000;
 export const noFetch = (async () => { throw new Error('this test makes no outbound call'); }) as typeof fetch;
 
+const dirs: string[] = [];
+/** A new empty directory, removed by cleanDirs. */
+export function tempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'advocate-service-'));
+  dirs.push(dir);
+  return dir;
+}
+export function cleanDirs(): void {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+}
+
 /**
- * The deps of a service in a test: no outbound call, a clock, the two keys of the tests, the default model, a log that keeps nothing, and the two seams the
- * service never sets: the public host lookup of test/fake-fetch.ts, so that no page is looked up in DNS, and a wait that returns at once, so that the two
- * queries of a search are not 1100 ms of real time apart.
+ * The deps of a service in a test: no outbound call, a clock, the two keys of the tests, the default model, a log that keeps nothing, a FakeChain of the buyer
+ * key and an empty stranded store in a directory of its own, the marketplace path off (so that a job goes to OpenRouter at once unless a test gives a
+ * marketplace), and the two seams the service never sets: the public host lookup of test/fake-fetch.ts, so that no page is looked up in DNS, and a wait that
+ * returns at once, so that the two queries of a search are not 1100 ms of real time apart.
  */
 export function baseDeps(over: Partial<Omit<RunDeps, 'deadlineMs' | 'signal'>> = {}): Omit<RunDeps, 'deadlineMs' | 'signal'> {
   return {
     fetchImpl: noFetch, clock: Date.now, braveApiKey: TEST_BRAVE_KEY, openRouterApiKey: TEST_OPENROUTER_KEY, model: DEFAULT_MODEL, log: () => undefined,
-    lookup: publicLookup, wait: noWait, ...over,
+    lookup: publicLookup, wait: noWait, chain: new FakeChain({ buyerPkh: BUYER.pkh }), stranded: new StrandedStore(tempDir()), sleep: async () => undefined,
+    allowlist: [DEFAULT_MODEL], maxPriceLovelace: 1_000_000n, buyerPkh: BUYER.pkh, marketplace: { on: false }, ...over,
   };
 }
 

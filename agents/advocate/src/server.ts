@@ -1,19 +1,22 @@
 // agents/advocate/src/server.ts
 // The service behind the template runtime: the manifest it publishes, on the HTTP surface of packages/service-kit (createJobServer: the three routes, the token
 // of the runtime on POST /, one job at a time, the 102 Processing heartbeat, the body cap, refusals as {error, message}). The runtime holds the supplier key,
-// claims the escrow of a hirer and posts the job to this service as the body of POST /; the service searches, fetches the pages, asks the model and checks
-// every quote (src/run.ts), and answers with the brief, which the runtime hashes into the one receipt it signs. The service holds no chain key; it holds the
-// two keys of its third parties, which reach no answer, no log line and no manifest. What is its own:
+// claims the escrow of a hirer and posts the job to this service as the body of POST /; the service searches, fetches the pages, buys the model call from a
+// chat supplier on the Vector marketplace or makes it through OpenRouter when that hire fails, and checks every quote (src/run.ts), and answers with the
+// brief, which the runtime hashes into the one receipt it signs. The service holds the buyer key (src/start.ts), which posts and accepts the escrow of the chat
+// sub-job of a job, and the two keys of its third parties; none of them reaches an answer, a log line or the manifest, which publishes the key hash of the
+// buyer key beside the supplier's. What is its own:
 //
-//   GET  /healthz     always {ok: true}: the service keeps nothing on disk and runs no model of its own, so it has no local state to watch, and a third
-//                     party that is down is the failure of a job (search_failed, model_failed), never a reason to stop taking jobs.
+//   GET  /healthz     always {ok: true}: the service runs no model of its own, and a third party that is down, or a buyer wallet too short for a hire, is
+//                     the failure or the fallback of a job (search_failed, model_failed, a job that goes to OpenRouter), never a reason to stop taking jobs.
 //   POST /            the request JSON read by parseRequest (src/request.ts) and run by runAdvocate, with the deadline of the job set on its arrival. A
 //                     refusal is {error: code, message} with its status: 400 for a request the intake refuses (RequestError, bad_shape); 422 for a job cut at
-//                     its deadline, which keeps its words; 502 for a failure of a third party or of the answer of the model, whose message is fixed text for
-//                     the buyer and whole in the log (AdvocateError); 499 for a job whose caller hung up. A job whose caller hangs up is stopped
-//                     (abortOnClose): the runtime aborts its call at its own budget and frees the escrow, and a job nobody receives would hold the one slot
-//                     for nothing.
-//   The line of a job names counts and nothing else: results, pages, arguments, dropped quotes and the tokens the model reported.
+//                     its deadline, which keeps its words; 502 for a failure of a third party, of the answer of the model or of the hire of the chat supplier,
+//                     and 500 for a stranded store that could not be written, each with fixed text for the buyer and whole in the log (AdvocateError,
+//                     HopFailed); 499 for a job whose caller hung up. A job whose caller hangs up is stopped (abortOnClose): the runtime aborts its call at
+//                     its own budget and frees the escrow, and a job nobody receives would hold the one slot for nothing. The hire of the chat supplier
+//                     is not stopped with it: it runs to its own end, and the job then fails with aborted (src/inference.ts).
+//   The line of a job names counts and codes and nothing else: results, pages, arguments, dropped quotes, the tokens of the model, and the path of the call.
 import type { Server } from 'node:http';
 import { JobSlot, createJobServer, envInt, given, requiredEnv, statusChip, statusSince } from '@vsa/service-kit';
 import type { Refusal } from '@vsa/service-kit';
@@ -37,11 +40,11 @@ export { HEARTBEAT_MS, JobSlot, MAX_BODY, WireError, envInt, parseWire, required
 
 // --- The environment -----------------------------------------------------------------------------------------------------------------
 /**
- * The window the advert gives a job, at least 5 min: the deadline of a job (JOB_DEADLINE_MS, 150 s after its arrival) and the service timeout of the
- * runtime (SERVICE_TIMEOUT_MS, 180 s, which the runtime holds at least 60 s inside the window) are fixed for it, and a window below them would be a promise
+ * The window the advert gives a job, at least 8 min: the deadline of a job (JOB_DEADLINE_MS, 300 s after its arrival) and the service timeout of the
+ * runtime (SERVICE_TIMEOUT_MS, 360 s, which the runtime holds at least 60 s inside the window) are fixed for it, and a window below them would be a promise
  * the service cannot keep.
  */
-export const MIN_PROCESSING_WINDOW_MS = 300_000;
+export const MIN_PROCESSING_WINDOW_MS = 480_000;
 /** The window of ADVERT_MAX_PROCESSING_MS, at least MIN_PROCESSING_WINDOW_MS; the manifest publishes it, and the start checks it in its order. */
 export function processingWindow(v: string | undefined): number {
   const ms = envInt('ADVERT_MAX_PROCESSING_MS', v, MIN_PROCESSING_WINDOW_MS);
@@ -49,6 +52,17 @@ export function processingWindow(v: string | undefined): number {
     throw new Error(`environment variable ADVERT_MAX_PROCESSING_MS must be at least ${MIN_PROCESSING_WINDOW_MS} (the window of ${MIN_PROCESSING_WINDOW_MS / 60_000} min that the deadline of a job, ${JOB_DEADLINE_MS} ms, assumes), got ${ms}`);
   }
   return ms;
+}
+/**
+ * The chat models a hire may buy, in the order of preference of LLM_MODEL_ALLOWLIST (a comma-separated list), or the model of OPENROUTER_MODEL alone when it
+ * is not set, so that both paths ask the same model. The first is the market model, which the gap of the model and the listening line name (ruling R-F19);
+ * the start checks it in its order.
+ */
+export function modelAllowlist(v: string | undefined, fallbackModel: string): string[] {
+  if (given(v) === '') return [fallbackModel];
+  const models = given(v).split(',').map((name) => name.trim()).filter((name) => name !== '');
+  if (models.length === 0) throw new Error('environment variable LLM_MODEL_ALLOWLIST must name at least one model, as a comma-separated list');
+  return models;
 }
 
 // --- The manifest --------------------------------------------------------------------------------------------------------------------
@@ -96,27 +110,32 @@ const NOTES = [
   `The side is for, against, or a position in words of at most ${MAX_SIDE_CHARS} characters, and the brief argues that side alone; the subject and the side must each hold at least one letter or digit, and a request that breaks a rule of the intake is refused with bad_shape (400).`,
   `The language is a code such as en or en-GB, 2 to 8 letters and optional hyphen-separated subtags of up to 8 letters or digits, at most ${LANGUAGE_MAX_CHARS} characters, en by default: the model is asked to write the brief in it, and the search is not told it.`,
   `The service runs the search and fetches the result pages itself, at most ${MAX_RESULTS} pages of at most ${PAGE_MAX_BYTES} bytes each, and cites only what it could fetch: a quote that is not in the text of the page it names is dropped, and so is an argument left without one.`,
+  "The model call is bought first from a chat supplier on the Vector marketplace: the service posts a bonded escrow with its own buyer key, sends the prompt, verifies the supplier's signed receipt and accepts; only when that hire fails is the call made through OpenRouter, and the result says which path it took.",
 ];
-/** What reaches OpenRouter and the model provider behind it (R-E27), in one list that the data handling and the third parties both give (R-E32). */
+/** What the prompt carries to the model, on either path (R-E27, R-F12), in one list that the data handling and the third parties both give (R-E32). */
 const TO_THE_MODEL = 'the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages';
-const DATA_HANDLING = 'The subject, the side, the audience, the length and the language are held in memory while a job runs, with the pages the service fetches; nothing is written to disk and nothing is kept after the job. '
-  + `The two search queries go to the Brave Search API, each page fetch to the host of that page, and ${TO_THE_MODEL} to OpenRouter and the model provider behind it. `
-  + 'On the ledger the escrow carries only the sha256 of the wire payload, and the request stays off the ledger. '
-  + 'The log carries job outcomes and counts, never a request, a page, a quote or a key.';
+const DATA_HANDLING = 'The subject, the side, the audience, the length and the language are held in memory while a job runs, with the pages the service fetches, and none of them is kept after the job. '
+  + 'The service writes only the bookkeeping of the escrows it posts (references, times, the hop, a transaction hash) to its state directory, and nothing else to disk. '
+  + `The two search queries go to the Brave Search API, each page fetch to the host of that page, and the prompt (${TO_THE_MODEL}) to the chat supplier the service hires on the Vector marketplace and the model provider behind it, or, only when that hire fails, to OpenRouter and the model provider behind it. `
+  + 'On the ledger the escrow of the job carries only the sha256 of the wire payload and the escrow of the chat sub-job only the sha256 of its input, and the request stays off the ledger. '
+  + 'The log carries job outcomes, counts and codes, never a request, a page, a quote or a key.';
 const THIRD_PARTIES = [
   'Brave Search API (the two search queries)',
   'the hosts of the result pages (the fetch of each page)',
-  `OpenRouter and the model provider behind it (${TO_THE_MODEL})`,
+  `a chat supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it (the prompt: ${TO_THE_MODEL})`,
+  'OpenRouter and the model provider behind it (the same prompt), only when that hire fails',
 ];
 
 export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
+  const fallbackModel = openRouterModel(env.OPENROUTER_MODEL);
+  const marketModel = modelAllowlist(env.LLM_MODEL_ALLOWLIST, fallbackModel)[0];
   return {
     // An AGENT_VERSION that is empty or blank is not set (given): an empty version would be published in the manifest the advert hashes.
     schema: 'vector.agent-manifest.v1', name: 'Advocate', capability_id: 'research.advocate.onesided.v1', version: given(env.AGENT_VERSION) || '0.1.0',
     description: 'The strongest one-sided brief for a position, with citations: it argues one side only, by design, omits counter-arguments, and says so in every output.',
     operator: { name: 'Apex Fusion Foundation', contact: requiredEnv('OPERATOR_CONTACT', env.OPERATOR_CONTACT, "the operator's contact address, published in the manifest") },
     identity: { did: env.AGENT_DID ?? '', controller_pkh: env.SUPPLIER_PKH ?? '', registry_address: REGISTRY_ADDRESS },
-    keys: { supplier_pkh: env.SUPPLIER_PKH ?? '', pub_key_hex: env.SUPPLIER_PUB_KEY_HEX ?? '' },
+    keys: { supplier_pkh: env.SUPPLIER_PKH ?? '', pub_key_hex: env.SUPPLIER_PUB_KEY_HEX ?? '', buyer_pkh: env.ADVOCATE_BUYER_PKH ?? '' },
     interface: {
       request_schema: REQUEST_SCHEMA,
       response_schema: { $ref: `${SPEC_URL}#response` },
@@ -139,14 +158,17 @@ export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
     // Absent or empty means proposed since 2026-10-13, the word and the day of the spec page. A word above proposed is the operator's to set, by
     // AGENT_STATUS_CHIP, once it is true.
     status: { chip: statusChip(env.AGENT_STATUS_CHIP, 'proposed'), since: statusSince(env.AGENT_STATUS_SINCE, '2026-10-13') },
-    gaps: [...gapsFor(openRouterModel(env.OPENROUTER_MODEL))],
+    gaps: [...gapsFor(marketModel, fallbackModel)],
     links: { spec: SPEC_URL, source: SOURCE_URL, explorer_advert: env.ADVERT_EXPLORER_URL ?? '' },
   };
 }
 export type AgentManifest = ReturnType<typeof manifestFromEnv>;
 
-/** The four fields the operator supplies, as the placeholders the template file shows. */
-export const TEMPLATE_ENV = { OPERATOR_CONTACT: '<OPERATOR_CONTACT>', AGENT_DID: '<AGENT_DID>', SUPPLIER_PKH: '<SUPPLIER_PKH>', SUPPLIER_PUB_KEY_HEX: '<SUPPLIER_PUB_KEY_HEX>' } as const;
+/** The five fields the operator supplies, as the placeholders the template file shows. */
+export const TEMPLATE_ENV = {
+  OPERATOR_CONTACT: '<OPERATOR_CONTACT>', AGENT_DID: '<AGENT_DID>', SUPPLIER_PKH: '<SUPPLIER_PKH>', SUPPLIER_PUB_KEY_HEX: '<SUPPLIER_PUB_KEY_HEX>',
+  ADVOCATE_BUYER_PKH: '<ADVOCATE_BUYER_PKH>',
+} as const;
 /** The text of agent.json.template: the manifest with the placeholders, indented, with a line break at the end. `pnpm --filter @vsa/advocate template` writes it. */
 export const renderTemplate = (): string => `${JSON.stringify(manifestFromEnv(TEMPLATE_ENV), null, 2)}\n`;
 
@@ -155,7 +177,10 @@ export interface ServerOptions {
   manifest: AgentManifest;
   /** The token the runtime sends as the authorization header of every call (SERVICE_AUTH_HEADER), which POST / requires. A server is never made without one. */
   authHeader: string;
-  /** Everything a run is given but its deadline and its signal, which the server sets for each request. Its lookup and wait are seams of the tests: the service sets neither. */
+  /**
+   * Everything a run is given but its deadline and its signal, which the server sets for each request: the chain of the buyer key, the stranded store, and one
+   * marketplace switch for the life of the service among them. Its lookup and wait are seams of the tests: the service sets neither.
+   */
   deps: Omit<RunDeps, 'deadlineMs' | 'signal'>;
   /** Test seam: a test injects its own run; the service always runs the real one. */
   runAdvocate?: typeof runAdvocate;
@@ -172,16 +197,17 @@ export const defaultLog = (line: string): void => { console.log(`[advocate] ${li
 /** A refusal of the intake (RequestError, the request's) or of a job (AdvocateError, the job's), as the shared server answers it; null for anything else. */
 function refusalOf(e: unknown): Refusal | null {
   if (e instanceof RequestError) return { code: e.code, status: e.status, message: e.message, kind: 'request' };
-  // The detail of a job's failure: the buyer reads it at 422 (deadline) and 499 (aborted, which nobody receives); at 502 the server gives the buyer fixed text
-  // and the log the detail.
+  // The detail of a job's failure: the buyer reads it at 422 (deadline) and 499 (aborted, which nobody receives); at 502 and 500 the server gives the buyer
+  // fixed text and the log the detail.
   if (e instanceof AdvocateError) return { code: e.code, status: e.status, message: e.detail, kind: 'job' };
   return null;
 }
 
-/** The line of a job that answered: its time and its counts, never a word of the request, of a page or of the brief. */
+/** The line of a job that answered: its time, its counts and the path of its model call, never a word of the request, of a page or of the brief. */
 function jobLine(ms: number, outcome: RunOutcome): string {
   const tokens = outcome.usage === null ? '-/-' : `${outcome.usage.prompt_tokens}/${outcome.usage.completion_tokens}`;
-  return `job done in ${ms} ms: results ${outcome.resultsFound}, pages ${outcome.pagesKept}, arguments ${outcome.result.arguments.length} (dropped ${outcome.dropped.arguments}), quotes dropped ${outcome.dropped.quotes}, tokens ${tokens}`;
+  const inference = outcome.inference.path === 'marketplace' ? 'marketplace' : `openrouter after ${outcome.inference.fallbackFrom ?? '-'}`;
+  return `job done in ${ms} ms: results ${outcome.resultsFound}, pages ${outcome.pagesKept}, arguments ${outcome.result.arguments.length} (dropped ${outcome.dropped.arguments}), quotes dropped ${outcome.dropped.quotes}, tokens ${tokens}; inference ${inference}`;
 }
 
 export function createServer(opts: ServerOptions): Server {

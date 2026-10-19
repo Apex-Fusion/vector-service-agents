@@ -15,7 +15,8 @@
   },
   "keys": {
     "supplier_pkh": "<SUPPLIER_PKH>",
-    "pub_key_hex": "<SUPPLIER_PUB_KEY_HEX>"
+    "pub_key_hex": "<SUPPLIER_PUB_KEY_HEX>",
+    "buyer_pkh": "<ADVOCATE_BUYER_PKH>"
   },
   "interface": {
     "request_schema": {
@@ -76,14 +77,15 @@
     "notes": [
       "The side is for, against, or a position in words of at most 120 characters, and the brief argues that side alone; the subject and the side must each hold at least one letter or digit, and a request that breaks a rule of the intake is refused with bad_shape (400).",
       "The language is a code such as en or en-GB, 2 to 8 letters and optional hyphen-separated subtags of up to 8 letters or digits, at most 16 characters, en by default: the model is asked to write the brief in it, and the search is not told it.",
-      "The service runs the search and fetches the result pages itself, at most 12 pages of at most 1048576 bytes each, and cites only what it could fetch: a quote that is not in the text of the page it names is dropped, and so is an argument left without one."
+      "The service runs the search and fetches the result pages itself, at most 12 pages of at most 1048576 bytes each, and cites only what it could fetch: a quote that is not in the text of the page it names is dropped, and so is an argument left without one.",
+      "The model call is bought first from a chat supplier on the Vector marketplace: the service posts a bonded escrow with its own buyer key, sends the prompt, verifies the supplier's signed receipt and accepts; only when that hire fails is the call made through OpenRouter, and the result says which path it took."
     ]
   },
   "terms": {
     "price_lovelace": 3000000,
     "supplier_bond_lovelace": 1000000,
     "buyer_bond_lovelace": 1000000,
-    "max_processing_ms": 300000,
+    "max_processing_ms": 480000,
     "input_limits": {
       "request_bytes": 900000,
       "subject_chars": 300,
@@ -101,11 +103,12 @@
       "statement": "This brief argues one side only, by design, and omits counter-arguments.",
       "omitted": "counter-arguments and rebuttals"
     },
-    "data_handling": "The subject, the side, the audience, the length and the language are held in memory while a job runs, with the pages the service fetches; nothing is written to disk and nothing is kept after the job. The two search queries go to the Brave Search API, each page fetch to the host of that page, and the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages to OpenRouter and the model provider behind it. On the ledger the escrow carries only the sha256 of the wire payload, and the request stays off the ledger. The log carries job outcomes and counts, never a request, a page, a quote or a key.",
+    "data_handling": "The subject, the side, the audience, the length and the language are held in memory while a job runs, with the pages the service fetches, and none of them is kept after the job. The service writes only the bookkeeping of the escrows it posts (references, times, the hop, a transaction hash) to its state directory, and nothing else to disk. The two search queries go to the Brave Search API, each page fetch to the host of that page, and the prompt (the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages) to the chat supplier the service hires on the Vector marketplace and the model provider behind it, or, only when that hire fails, to OpenRouter and the model provider behind it. On the ledger the escrow of the job carries only the sha256 of the wire payload and the escrow of the chat sub-job only the sha256 of its input, and the request stays off the ledger. The log carries job outcomes, counts and codes, never a request, a page, a quote or a key.",
     "third_parties": [
       "Brave Search API (the two search queries)",
       "the hosts of the result pages (the fetch of each page)",
-      "OpenRouter and the model provider behind it (the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages)"
+      "a chat supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it (the prompt: the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages)",
+      "OpenRouter and the model provider behind it (the same prompt), only when that hire fails"
     ]
   },
   "status": {
@@ -117,8 +120,10 @@
     "A quote in the brief was found in the text the service fetched from the source it names, which shows that the source says it, not that it is right; the receipt commits to the brief, not to the page text.",
     "Only pages the service could fetch can be cited: a page that redirects, is not HTML or plain text, is over 1 MB, has under 200 characters of text, or does not answer within 15 s is dropped, and only the first 12000 characters of a page are read.",
     "The sources are what two Brave Search queries return, at most 12 pages: a subject the search covers thinly gives a thin brief, and a job that gets no usable page or no claim that survives the check fails with search_empty, no_sources or no_supported_claims and returns no brief.",
-    "The model is deepseek/deepseek-v4-flash through OpenRouter: its claims can be wrong even when their quotes are real, and the check reads quotes, not reasoning.",
-    "A job has a deadline of its own, 150000 ms after its request arrives: a job cut at the deadline fails with the code deadline and returns no result."
+    "The model is deepseek/deepseek-v4-flash, bought from a chat supplier on the Vector marketplace, or through OpenRouter when that hire fails: its claims can be wrong even when their quotes are real, and the check reads quotes, not reasoning.",
+    "Every chat supplier on the Vector marketplace today is first-party, operated on the same side as this agent: a hire of one proves the path and is not an arm's-length transaction.",
+    "On the marketplace path the prompt is sent as one input string with no temperature, output-format or token-limit setting, so the shape of the answer depends on the supplier's model; the fallback path sets all three.",
+    "A job has a deadline of its own, 300000 ms after its request arrives: a job cut at the deadline fails with the code deadline and returns no result. A hire in its Accept at the deadline runs on, as the Pipeline's does."
   ],
   "links": {
     "spec": "https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/advocate.md",
