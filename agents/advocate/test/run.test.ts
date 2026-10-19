@@ -1,23 +1,34 @@
 // agents/advocate/test/run.test.ts
 // One job end to end, through the fake fetch of test/fake-fetch.ts with its public host lookup and a wait that returns at once, so that no test touches the
-// network or DNS or waits for the spacing of the queries, and a clock the test moves: the golden brief and its counts; what each phase is given of the
-// deadline (Review Focus 5), read from spies on the three modules that make the calls, with a clock that jumps while the pages are fetched; the deadline
-// answered before a phase that could not end in time, with nothing called after it; a call of the model that runs out of its time (ruling R-E19); the
-// failures of the search and of the pages passed on as they are; a caller that hangs up before the job, during the search, during the pages and during the
-// call of the model; and the log lines of a job, which carry counts and statuses only.
-import { beforeEach, describe, test, expect, vi } from 'vitest';
+// network or DNS or waits for the spacing of the queries, and a clock the test moves: the golden job on its two paths, the marketplace (the in-memory
+// marketplace of test/fake-chain-support.ts) and the fallback through OpenRouter, every value of the brief and the counts of the job; what each phase is given
+// of the deadline of 300 s (Review Focus 5 of Plan E), read from spies on the three modules that make the calls, with a clock that jumps while the pages are
+// fetched; the deadline answered before a phase that could not end in time, with nothing called after it; a call through OpenRouter that runs out of its
+// time (ruling R-E19); the failures of the search and of the pages passed on as they are; a marketplace brief whose every claim the check drops, which does not
+// fall back; a caller that hangs up before the job, during the search, during the pages, during the hop and during the call through OpenRouter; and the log
+// lines of a job, which carry counts, codes and statuses only. Every job of these tests whose marketplace path is not the subject runs with that path off, so
+// that its call goes to OpenRouter at once.
+import { afterEach, beforeEach, describe, test, expect, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { FakeChain } from '@vsa/buyer-core';
+import { StrandedStore } from '@vsa/hire-kit';
 import { FETCH_CONCURRENCY, JOB_DEADLINE_MS, modelBudgetMs } from '../src/budget.ts';
 import { AdvocateError } from '../src/errors.ts';
+import { marketplaceInput } from '../src/inference.ts';
 import { DEFAULT_MODEL } from '../src/model.ts';
 import { messagesFor } from '../src/prompt.ts';
 import { parseRequest } from '../src/request.ts';
 import { runAdvocate } from '../src/run.ts';
 import type { RunDeps } from '../src/run.ts';
+import { INDEXER, escrowNo } from './fake-chain-support.ts';
+import type { Market } from './fake-chain-support.ts';
 import { GOLDEN_QUERIES, PAGE_ROUTES, at, fixture, never, publicLookup, reply, routedFetch } from './fake-fetch.ts';
 import type { Route } from './fake-fetch.ts';
 import {
-  GOLDEN_OUTCOME, GOLDEN_PAGES, GOLDEN_REQUEST, GOLDEN_RESULT, GOLDEN_T0, RESULT_URLS, TEST_BRAVE_KEY, TEST_OPENROUTER_KEY, braveAnswer, braveAnswers, goldenAnswer,
-  goldenFetch, modelRoute, noWait, recorded,
+  GOLDEN_FALLBACK_OUTCOME, GOLDEN_FALLBACK_RESULT, GOLDEN_OUTCOME, GOLDEN_PAGES, GOLDEN_REQUEST, GOLDEN_RESULT, GOLDEN_T0, RESULT_URLS, TEST_BRAVE_KEY, TEST_OPENROUTER_KEY,
+  braveAnswer, braveAnswers, goldenAnswer, goldenFetch, goldenMarket, modelRoute, noWait, recorded,
 } from './golden.ts';
 
 // What the run gives each of its three calls, recorded on the way to the real one.
@@ -60,11 +71,26 @@ vi.mock('../src/model.ts', async (importOriginal) => {
   };
 });
 beforeEach(() => { spy.search.length = 0; spy.pages.length = 0; spy.model.length = 0; });
+const dirs: string[] = [];
+afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+/** An empty stranded store in a directory of its own. */
+function store(): StrandedStore {
+  const dir = mkdtempSync(join(tmpdir(), 'advocate-run-'));
+  dirs.push(dir);
+  return new StrandedStore(dir);
+}
 
 const request = (over: Record<string, unknown> = {}) => parseRequest(JSON.stringify({ ...GOLDEN_REQUEST, ...over }));
+/** The deps of a job whose marketplace path is off: its call goes to OpenRouter at once. */
 const deps = (over: Partial<RunDeps> = {}): RunDeps => ({
   fetchImpl: goldenFetch().fetchImpl, clock: () => GOLDEN_T0, braveApiKey: TEST_BRAVE_KEY, openRouterApiKey: TEST_OPENROUTER_KEY, model: DEFAULT_MODEL,
-  deadlineMs: GOLDEN_T0 + JOB_DEADLINE_MS, log: () => undefined, lookup: publicLookup, wait: noWait, ...over,
+  deadlineMs: GOLDEN_T0 + JOB_DEADLINE_MS, log: () => undefined, lookup: publicLookup, wait: noWait, chain: new FakeChain(), stranded: store(), sleep: async () => undefined,
+  allowlist: [DEFAULT_MODEL], maxPriceLovelace: 1_000_000n, buyerPkh: 'bb'.repeat(28), marketplace: { on: false }, ...over,
+});
+/** The deps of a job on the marketplace `m`: its chain, its clock and its sleep, its indexer, and the fetch of the golden job with the routes of `m`. */
+const onMarket = (m: Market, over: Partial<RunDeps> = {}): RunDeps => deps({
+  chain: m.chain, clock: () => m.clock.now, sleep: m.sleep, indexerUrl: INDEXER, buyerPkh: m.chain.buyerPkh, marketplace: { on: true },
+  fetchImpl: goldenFetch(goldenAnswer, m.routes).fetchImpl, ...over,
 });
 async function failureOf(work: Promise<unknown>): Promise<AdvocateError> {
   try { await work; } catch (e) { if (e instanceof AdvocateError) return e; throw e; }
@@ -93,21 +119,44 @@ function slowPages(now: { t: number }, to: number, model: Route['respond'] = gol
 }
 
 describe('the golden job', () => {
-  test('the brief, every value of it, and the counts of the job; the model is given the three pages kept, numbered in the order of the results', async () => {
-    const { fetchImpl, seen } = goldenFetch();
-    const outcome = await runAdvocate(request(), deps({ fetchImpl }));
+  test('on the marketplace: the brief, every value of it, the sub-job of the chat supplier, and the counts of the job; nothing is asked of OpenRouter', async () => {
+    const m = goldenMarket();
+    const { fetchImpl, seen } = goldenFetch(goldenAnswer, m.routes);
+    const outcome = await runAdvocate(request(), onMarket(m, { fetchImpl }));
     expect(outcome).toStrictEqual(GOLDEN_OUTCOME);
     // The runtime hashes JSON.stringify(result) into the receipt, so the body is held character for character, the order of every key with it.
     expect(JSON.stringify(outcome.result)).toBe(JSON.stringify(GOLDEN_RESULT));
     expect([...seen.queries].sort()).toStrictEqual([...GOLDEN_QUERIES].sort());
     expect(seen.braveKeys).toStrictEqual([TEST_BRAVE_KEY, TEST_BRAVE_KEY]);
     expect([...seen.pages].sort()).toStrictEqual([...RESULT_URLS].sort());
+    expect(seen.models).toStrictEqual([]);
+    // The chat supplier was sent the prompt of the three pages kept, as one input, and its escrow was accepted.
+    expect(m.supplier.sends).toStrictEqual([{ escrowRef: escrowNo(1), body: JSON.stringify({ input: marketplaceInput(messagesFor(request(), GOLDEN_PAGES)) }) }]);
+    expect(await m.chain.escrowState(escrowNo(1))).toBe('spent');
+  });
+
+  test('on the fallback: the indexer lists no chat supplier, and the brief comes from OpenRouter, with the counts of the job', async () => {
+    const m = goldenMarket();
+    m.rows.splice(0);
+    const { fetchImpl, seen } = goldenFetch(goldenAnswer, m.routes);
+    const outcome = await runAdvocate(request(), onMarket(m, { fetchImpl }));
+    expect(outcome).toStrictEqual(GOLDEN_FALLBACK_OUTCOME);
+    expect(JSON.stringify(outcome.result)).toBe(JSON.stringify(GOLDEN_FALLBACK_RESULT));
     expect(seen.models).toHaveLength(1);
     expect(seen.models[0].headers.get('authorization')).toBe(`Bearer ${TEST_OPENROUTER_KEY}`);
     expect(seen.models[0].body).toStrictEqual({ model: DEFAULT_MODEL, messages: messagesFor(request(), GOLDEN_PAGES), temperature: 0, max_tokens: 2000, response_format: { type: 'json_object' } });
+    expect(await m.chain.escrowState(escrowNo(1))).toBe('unknown');
   });
 
-  test('each phase is given its part of the time: the search a phase of 15 s with 10 s a query, the pages until 45 s after the search, the model 90 s and the token limit of the length', async () => {
+  test('a brief from the marketplace whose every claim the check drops is no_supported_claims (502): it was the answer of the job, and OpenRouter is not asked', async () => {
+    const m = goldenMarket();
+    m.supplier.answer = JSON.stringify({ thesis: 'T.', arguments: [{ claim: 'C.', support: 'S.', sources: [{ n: 1, quote: 'a sentence that no page of the job holds' }] }] });
+    const { fetchImpl, seen } = goldenFetch(goldenAnswer, m.routes);
+    const e = await failureOf(runAdvocate(request(), onMarket(m, { fetchImpl })));
+    expect([e.code, e.status, seen.models.length, await m.chain.escrowState(escrowNo(1))]).toStrictEqual(['no_supported_claims', 502, 0, 'spent']);
+  });
+
+  test('each phase is given its part of the time: the search a phase of 15 s with 10 s a query, the pages until 45 s after the search, OpenRouter 90 s and the token limit of the length', async () => {
     await runAdvocate(request(), deps());
     expect(spy).toStrictEqual({
       search: [{ timeoutMs: 10_000, phaseEndMs: GOLDEN_T0 + 15_000, wait: noWait }],
@@ -118,10 +167,11 @@ describe('the golden job', () => {
     expect(spy.model.at(-1)).toStrictEqual({ timeoutMs: 90_000, maxTokens: 4500, model: 'openai/gpt-4o-mini' });
   });
 
-  test('the brief names the model the job called, and the search is given the side of the request', async () => {
+  test('the brief names the model the job called and its path, and the search is given the side of the request', async () => {
     const { fetchImpl, seen } = goldenFetch();
     const outcome = await runAdvocate(request(), deps({ fetchImpl, model: 'openai/gpt-4o-mini' }));
-    expect([outcome.result.model, seen.models.map((m) => (m.body as { model: string }).model)]).toStrictEqual(['openai/gpt-4o-mini via OpenRouter', ['openai/gpt-4o-mini']]);
+    expect([outcome.result.model, outcome.result.inference.fallback_from, seen.models.map((m) => (m.body as { model: string }).model)])
+      .toStrictEqual(['openai/gpt-4o-mini via OpenRouter', 'marketplace_off', ['openai/gpt-4o-mini']]);
     // A job against: every query is answered, whatever it asks, so that the test reads the two queries the search was given.
     const anyQuery: Route = { match: (url) => url.searchParams.has('q'), respond: () => braveAnswer([{ title: 'T', url: PAGE_1, description: 'd' }]) };
     const against = routedFetch([anyQuery, ...PAGE_ROUTES, modelRoute(() => goldenAnswer())]);
@@ -129,44 +179,56 @@ describe('the golden job', () => {
     expect(against.calls.slice(0, 2).map((call) => new URL(call.url).searchParams.get('q'))).toStrictEqual([GOLDEN_QUERIES[0], `${GOLDEN_QUERIES[0]} arguments against`]);
   });
 
-  test('the log lines of a job carry counts and statuses only: no subject, no side, no URL, no quote and no key', async () => {
+  test('the log lines of a job carry counts, codes and statuses only: no subject, no side, no URL, no quote and no key', async () => {
     const lines: string[] = [];
+    const m = goldenMarket();
+    await runAdvocate(request(), onMarket(m, { log: (line) => lines.push(line) }));
     await runAdvocate(request(), deps({ log: (line) => lines.push(line) }));
     const refused = routedFetch(braveAnswers(() => reply(401, `{"message":"the token ${TEST_BRAVE_KEY} is not valid"}`)));
     await failureOf(runAdvocate(request(), deps({ fetchImpl: refused, log: (line) => lines.push(line) })));
     expect(lines).toContain('search: the key was refused (HTTP 401)');
+    expect(lines).toContain('inference: marketplace marketplace_off at start, falling back');
     const text = lines.join('\n');
     for (const word of ['Should a city', 'arguments in favour', 'example.', 'footfall', 'bicycles', TEST_BRAVE_KEY.slice(-16), TEST_OPENROUTER_KEY.slice(-16)]) expect(text, word).not.toContain(word);
   });
 });
 
-describe('the time of a job (Review Focus 5)', () => {
-  test('pages that take the clock to 59 s: the model gets the time left less 5 s, 86 s, so that its call ends 5 s before the deadline', async () => {
+describe('the time of a job (Review Focus 5 of Plan E, ruling R-F2)', () => {
+  test('pages that take the clock to 209 s: OpenRouter gets the time left less 5 s, 86 s, so that its call ends 5 s before the deadline', async () => {
     const now = { t: GOLDEN_T0 };
-    const { fetchImpl, models } = slowPages(now, GOLDEN_T0 + 59_000);
+    const { fetchImpl, models } = slowPages(now, GOLDEN_T0 + 209_000);
     const outcome = await runAdvocate(request(), deps({ fetchImpl, clock: () => now.t }));
     expect(spy.pages).toStrictEqual([{ deadlineMs: GOLDEN_T0 + 45_000, lookup: publicLookup }]);
     expect(spy.model).toStrictEqual([{ timeoutMs: 86_000, maxTokens: 2000, model: DEFAULT_MODEL }]);
-    expect(59_000 + 86_000 + 5_000).toBe(JOB_DEADLINE_MS);
-    expect([models, outcome.pagesKept, outcome.resultsFound]).toStrictEqual([[GOLDEN_T0 + 59_000], 1, 2]);
+    expect(209_000 + 86_000 + 5_000).toBe(JOB_DEADLINE_MS);
+    expect([models, outcome.pagesKept, outcome.resultsFound]).toStrictEqual([[GOLDEN_T0 + 209_000], 1, 2]);
   });
 
-  test('the model is not started with under 15 s: 19 s left is deadline (422) and the model is never called; 20 s left starts it with 15 s', async () => {
+  test('pages that leave less than 60 s before the hop deadline: the marketplace is not tried, and OpenRouter has the time left', async () => {
+    const m = goldenMarket();
+    const now = { t: GOLDEN_T0 };
+    const { fetchImpl } = slowPages(now, GOLDEN_T0 + 145_001);
+    const outcome = await runAdvocate(request(), onMarket(m, { fetchImpl, clock: () => now.t }));
+    expect([outcome.inference.path, outcome.inference.fallbackFrom, m.supplier.sends]).toStrictEqual(['openrouter', 'llm_out_of_time', []]);
+    expect(spy.model).toStrictEqual([{ timeoutMs: 90_000, maxTokens: 2000, model: DEFAULT_MODEL }]);
+  });
+
+  test('OpenRouter is not started with under 15 s: 19 s left is deadline (422) and it is never called; 20 s left starts it with 15 s', async () => {
     expect([modelBudgetMs(20_000), modelBudgetMs(19_999)]).toStrictEqual([15_000, null]);
     const late = { t: GOLDEN_T0 };
-    const refused = slowPages(late, GOLDEN_T0 + 131_000);
+    const refused = slowPages(late, GOLDEN_T0 + 281_000);
     const e = await failureOf(runAdvocate(request(), deps({ fetchImpl: refused.fetchImpl, clock: () => late.t })));
     expect([e.code, e.status, e.detail]).toStrictEqual(['deadline', 422, 'the job had 19000 ms of its time left for the model, too little to start it']);
     expect([spy.model, refused.models]).toStrictEqual([[], []]);
     const edge = { t: GOLDEN_T0 };
-    const started = slowPages(edge, GOLDEN_T0 + 130_000);
+    const started = slowPages(edge, GOLDEN_T0 + 280_000);
     await runAdvocate(request(), deps({ fetchImpl: started.fetchImpl, clock: () => edge.t }));
-    expect([spy.model, started.models]).toStrictEqual([[{ timeoutMs: 15_000, maxTokens: 2000, model: DEFAULT_MODEL }], [GOLDEN_T0 + 130_000]]);
+    expect([spy.model, started.models]).toStrictEqual([[{ timeoutMs: 15_000, maxTokens: 2000, model: DEFAULT_MODEL }], [GOLDEN_T0 + 280_000]]);
   });
 
-  test('a call of the model that runs out of its time: deadline (422) when the deadline had cut it to 86 s, model_failed (502) when it had the full 90 s (R-E19)', async () => {
+  test('a call through OpenRouter that runs out of its time: deadline (422) when the deadline had cut it to 86 s, model_failed (502) when it had the full 90 s (R-E19)', async () => {
     const now = { t: GOLDEN_T0 };
-    const cut = slowPages(now, GOLDEN_T0 + 59_000, timedOut);
+    const cut = slowPages(now, GOLDEN_T0 + 209_000, timedOut);
     const e = await failureOf(runAdvocate(request(), deps({ fetchImpl: cut.fetchImpl, clock: () => now.t })));
     expect([e.code, e.status, e.detail]).toStrictEqual(['deadline', 422, 'the model did not answer within the 86000 ms the deadline of the job left it']);
     const full = await failureOf(runAdvocate(request(), deps({ fetchImpl: goldenFetch(timedOut).fetchImpl })));
@@ -174,9 +236,9 @@ describe('the time of a job (Review Focus 5)', () => {
     expect(spy.model.map((m) => m.timeoutMs)).toStrictEqual([86_000, 90_000]);
   });
 
-  test('a clock with a fraction of a millisecond: the model is given whole milliseconds', async () => {
+  test('a clock with a fraction of a millisecond: OpenRouter is given whole milliseconds', async () => {
     const now = { t: GOLDEN_T0 };
-    const outcome = await runAdvocate(request(), deps({ fetchImpl: slowPages(now, GOLDEN_T0 + 59_000.5).fetchImpl, clock: () => now.t }));
+    const outcome = await runAdvocate(request(), deps({ fetchImpl: slowPages(now, GOLDEN_T0 + 209_000.5).fetchImpl, clock: () => now.t }));
     expect([spy.model, outcome.pagesKept]).toStrictEqual([[{ timeoutMs: 85_999, maxTokens: 2000, model: DEFAULT_MODEL }], 1]);
   });
 
@@ -227,7 +289,7 @@ describe('the failures of the search and of the pages, passed on as they are', (
     }
   });
 
-  test('a model answer in which no quote survives is no_supported_claims (502)', async () => {
+  test('an answer of OpenRouter in which no quote survives is no_supported_claims (502)', async () => {
     const madeUp = JSON.stringify({ thesis: 'T.', arguments: [{ claim: 'C.', support: 'S.', sources: [{ n: 1, quote: 'a sentence that no page of the job holds' }] }] });
     const { fetchImpl } = goldenFetch(() => reply(200, JSON.stringify({ choices: [{ message: { content: madeUp } }] }), { 'content-type': 'application/json' }));
     const e = await failureOf(runAdvocate(request(), deps({ fetchImpl })));
@@ -295,14 +357,35 @@ describe('a caller that hangs up', () => {
     expect(pages.length).toBeLessThanOrEqual(FETCH_CONCURRENCY);
   });
 
-  test('while the model writes: its call is cut, and the job is aborted', async () => {
+  test('during the hop of the marketplace: the escrow is accepted all the same, and the job is aborted (499), nothing asked of OpenRouter (ruling R-F7)', async () => {
+    const m = goldenMarket();
+    const caller = new AbortController();
+    m.supplier.onSend = () => { caller.abort(); };
+    const { fetchImpl, seen } = goldenFetch(goldenAnswer, m.routes);
+    const e = await failureOf(runAdvocate(request(), onMarket(m, { fetchImpl, signal: caller.signal })));
+    expect([e.code, e.status, seen.models.length, await m.chain.escrowState(escrowNo(1))]).toStrictEqual(['aborted', 499, 0, 'spent']);
+  });
+
+  test('a store that cannot be written after the Post stays store_write_failed (500) whatever the caller does, so that the log names the escrow', async () => {
+    const m = goldenMarket();
+    const caller = new AbortController();
+    const post = m.chain.postEscrow.bind(m.chain);
+    m.chain.postEscrow = async (args) => { const posted = await post(args); caller.abort(); return posted; };
+    const stranded = store();
+    stranded.add = () => { throw new Error('EIO: i/o error'); };
+    const e = await failureOf(runAdvocate(request(), onMarket(m, { stranded, signal: caller.signal })));
+    expect([e.code, e.status]).toStrictEqual(['store_write_failed', 500]);
+    expect(e.detail).toContain(escrowNo(1));
+  });
+
+  test('while OpenRouter writes: its call is cut, and the job is aborted', async () => {
     const caller = new AbortController();
     const { fetchImpl, seen } = goldenFetch((url, init) => { const waiting = never(url, init); caller.abort(); return waiting; });
     const e = await failureOf(runAdvocate(request(), deps({ fetchImpl, signal: caller.signal })));
     expect([e.code, e.status, seen.models.length]).toStrictEqual(['aborted', 499, 1]);
   });
 
-  test('a hang-up as the model answers: the answer is read, and the job is stopped all the same', async () => {
+  test('a hang-up as OpenRouter answers: the answer is read, and the job is stopped all the same', async () => {
     const caller = new AbortController();
     const { fetchImpl } = goldenFetch(() => { caller.abort(); return goldenAnswer(); });
     const e = await failureOf(runAdvocate(request(), deps({ fetchImpl, signal: caller.signal })));

@@ -1,24 +1,30 @@
 // agents/advocate/src/run.ts
-// One job, from the request to the brief (ruling R-E8): five phases under one deadline, the arrival of the request plus JOB_DEADLINE_MS, which the server
-// sets. The search (src/search.ts): the two queries one after the other, inside a phase that ends at the earlier of 15 s after it begins and the deadline,
-// which the search is given as phaseEndMs and keeps to, each query cut at min(10 s, the time left). The pages (src/pages.ts): fetched until the earlier of
-// 45 s after the phase begins and 20 s before the deadline; with 20 s or less left the model could not be started after any page, so the job answers deadline
-// before it fetches one (ruling R-E20). The model (src/model.ts): one call that gets min(90 s, the time left less 5 s), never started with less than 15 s; a
-// call that runs out of a time the deadline cut short is deadline too (ruling R-E19). The check (src/check.ts) and the brief (src/result.ts) take what is
-// left. So a job ends before its deadline: the call of the model ends at least 5 s before it, and nothing after the call waits on anything.
+// One job, from the request to the brief (rulings R-E8 and R-F2): five phases under one deadline, the arrival of the request plus JOB_DEADLINE_MS, which the
+// server sets. The search (src/search.ts): the two queries one after the other, inside a phase that ends at the earlier of 15 s after it begins and the
+// deadline, which the search is given as phaseEndMs and keeps to, each query cut at min(10 s, the time left). The pages (src/pages.ts): fetched until the
+// earlier of 45 s after the phase begins and 20 s before the deadline; with 20 s or less left the model could not be started after any page, so the job
+// answers deadline before it fetches one (ruling R-E20). The model (src/inference.ts): bought first from a chat supplier on the Vector marketplace, whose hire
+// stops its waits 95 s before the deadline, and made through OpenRouter only when that hire fails, with min(90 s, the time left less 5 s) and never with less
+// than 15 s (ruling R-E19 for a call cut short). The check (src/check.ts) and the brief (src/result.ts) take what is left. A brief from the marketplace whose
+// every claim the check drops is no_supported_claims: the brief was the answer of the job, and no second call is made on the same pages.
 //
-// A job whose caller hangs up is stopped: the server aborts the signal of the job, which every fetch of the job carries (the queries, the pages, the call of
-// the model), and which is looked at between the phases. Whatever the job then fails with on its way, it fails with aborted (499), and nothing of it is kept.
-// The service holds no chain key and posts nothing: a job that fails locks nothing of the service's, and the hirer reclaims the escrow after its deliver_by.
-// The run writes no log line of its own: its phases write theirs (counts and statuses, never a text of the job), and the server writes the line of the job.
+// A job whose caller hangs up is stopped: the server aborts the signal of the job, which every fetch of the search, of the pages and of the call through
+// OpenRouter carries, and which is looked at between the phases. Whatever the job then fails with on its way, it fails with aborted (499). The one exception
+// is a write of the stranded store that failed after the Post of the chat sub-job (store_write_failed, 500): it stays what it is, so that the log names the
+// escrow. The hire of the chat supplier never sees the signal (src/inference.ts): an escrow it posted ends on its own terms, accepted or recorded for the
+// janitor (src/start.ts), and a hirer whose job failed reclaims its own escrow after its deliver_by.
+// The run writes no log line of its own: its phases write theirs (counts, codes and statuses, never a text of the job), and the server writes the line of the
+// job.
+import type { Chain } from '@vsa/buyer-core';
+import type { StrandedStore } from '@vsa/hire-kit';
 import type { SafeFetchOpts } from '@vsa/vector-read';
-import { SEARCH_MAX_MS, SEARCH_QUERY_TIMEOUT_MS, fetchDeadlineMs, modelBudgetMs } from './budget.ts';
+import { SEARCH_MAX_MS, SEARCH_QUERY_TIMEOUT_MS, fetchDeadlineMs } from './budget.ts';
 import { checkCitations } from './check.ts';
 import { AdvocateError } from './errors.ts';
-import { callModel, parseBriefAnswer } from './model.ts';
+import { HopFailed, infer } from './inference.ts';
+import type { Inference } from './inference.ts';
 import type { Usage } from './model.ts';
 import { fetchPages } from './pages.ts';
-import { SHAPES, messagesFor } from './prompt.ts';
 import type { AdvocateRequest } from './request.ts';
 import { buildResult } from './result.ts';
 import type { AdvocateResult } from './result.ts';
@@ -29,9 +35,9 @@ export interface RunDeps {
   clock: () => number;
   /** The key of the Brave Search API (BRAVE_SEARCH_API_KEY): sent with the two queries of a job, and nowhere else. */
   braveApiKey: string;
-  /** The key of OpenRouter (OPENROUTER_API_KEY): sent with the call of the model, and nowhere else. */
+  /** The key of OpenRouter (OPENROUTER_API_KEY): sent with the call of the model through OpenRouter, and nowhere else. */
   openRouterApiKey: string;
-  /** The model of OpenRouter the job calls (OPENROUTER_MODEL). */
+  /** The model of OpenRouter the fallback calls (OPENROUTER_MODEL). */
   model: string;
   /** The deadline of the job on the clock: its arrival plus JOB_DEADLINE_MS, set by the server. */
   deadlineMs: number;
@@ -42,8 +48,26 @@ export interface RunDeps {
   lookup?: SafeFetchOpts['lookup'];
   /** The wait between the two queries of the search (its own timer by default), a test seam: a test gives one that returns at once. The service never sets it. */
   wait?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /** The chain of the buyer key, which posts and accepts the escrow of the chat sub-job. */
+  chain: Chain;
+  /** The escrows a hire posted and did not see accepted, in the state directory, for the janitor. */
+  stranded: StrandedStore;
+  /** The pause between the polls and the repeats of a hire. */
+  sleep: (ms: number) => Promise<void>;
+  /** The chat models the service hires (LLM_MODEL_ALLOWLIST) and the most an advert may be priced at (LLM_MAX_PRICE_LOVELACE). */
+  allowlist: readonly string[];
+  maxPriceLovelace: bigint;
+  /** The marketplace indexer; the configured one when absent (VECTOR_MARKETPLACE_INDEXER_URL). */
+  indexerUrl?: string;
+  /** The key hash of the buyer key. */
+  buyerPkh: string;
+  /** Whether the marketplace path is open, one object for the life of the service. */
+  marketplace: { on: boolean };
 }
-export interface RunOutcome { result: AdvocateResult; pagesKept: number; resultsFound: number; usage: Usage | null; dropped: { quotes: number; arguments: number } }
+export interface RunOutcome {
+  result: AdvocateResult; pagesKept: number; resultsFound: number; usage: Usage | null; dropped: { quotes: number; arguments: number };
+  inference: Pick<Inference, 'path' | 'model' | 'subJob' | 'accepted' | 'fallbackFrom'>;
+}
 
 /** The failure of a job that was stopped because its caller hung up. */
 const abandoned = (): AdvocateError => new AdvocateError('aborted', 'the caller hung up, and the job was stopped');
@@ -53,7 +77,9 @@ export async function runAdvocate(req: AdvocateRequest, deps: RunDeps): Promise<
   try {
     return await runJob(req, deps);
   } catch (error) {
-    // Whatever a job that was stopped fails with on its way (a cut query, a cut page, the cut call of the model), it failed because its caller hung up.
+    // A store that could not be written names an escrow the janitor does not know of: it stays a 500, whose line in the log names it.
+    if (error instanceof HopFailed && error.code === 'store_write_failed') throw error;
+    // Whatever else a job that was stopped fails with on its way (a cut query, a cut page, the cut call of the model), it failed because its caller hung up.
     if (deps.signal?.aborted === true || isAbortError(error)) throw abandoned();
     throw error;
   }
@@ -85,21 +111,18 @@ async function runJob(req: AdvocateRequest, deps: RunDeps): Promise<RunOutcome> 
   const pages = await fetchPages(results, { fetchImpl: deps.fetchImpl, clock, deadlineMs: fetchUntil, signal, log, lookup: deps.lookup });
   stopIfAbandoned();
 
-  // The model: min(90 s, the time left less 5 s), and not started with less than 15 s. callModel answers deadline itself when that time runs out under 90 s.
-  // The time left is floored to whole milliseconds, for AbortSignal.timeout takes no fraction of one, which a clock that reads fractions would give it.
-  const left = Math.floor(deadlineMs - clock());
-  const budget = modelBudgetMs(left);
-  if (budget === null) throw new AdvocateError('deadline', `the job had ${left} ms of its time left for the model, too little to start it`);
-  const { content, usage } = await callModel(messagesFor(req, pages), {
-    fetchImpl: deps.fetchImpl, apiKey: deps.openRouterApiKey, model: deps.model, maxTokens: SHAPES[req.length].maxTokens, timeoutMs: budget, signal, log,
+  // The model: the marketplace first, OpenRouter when that hire fails (src/inference.ts), each in its part of the time left.
+  const inference = await infer(req, pages, {
+    chain: deps.chain, stranded: deps.stranded, fetchImpl: deps.fetchImpl, clock, sleep: deps.sleep, allowlist: deps.allowlist, maxPriceLovelace: deps.maxPriceLovelace,
+    indexerUrl: deps.indexerUrl, buyerPkh: deps.buyerPkh, openRouterApiKey: deps.openRouterApiKey, openRouterModel: deps.model, marketplace: deps.marketplace,
+    deadlineMs, signal, log,
   });
-  stopIfAbandoned();
 
   // The check and the brief.
-  const brief = parseBriefAnswer(content);
-  const checked = checkCitations(brief, pages);
+  const checked = checkCitations(inference.brief, pages);
   return {
-    result: buildResult(req, brief.thesis, checked, deps.model), pagesKept: pages.length, resultsFound: results.length, usage,
+    result: buildResult(req, inference.brief.thesis, checked, inference), pagesKept: pages.length, resultsFound: results.length, usage: inference.usage,
     dropped: { quotes: checked.droppedQuotes, arguments: checked.droppedArguments },
+    inference: { path: inference.path, model: inference.model, subJob: inference.subJob, accepted: inference.accepted, fallbackFrom: inference.fallbackFrom },
   };
 }

@@ -1,8 +1,10 @@
 // agents/advocate/src/model.ts
-// The one model call of a job (ruling R-E5): a chat completion of OpenRouter, POST https://openrouter.ai/api/v1/chat/completions, with the key of
+// The fallback of the model call of a job (rulings R-E5 and R-F4): src/inference.ts first buys the call from a chat supplier on the Vector marketplace, and
+// only when that hire fails is it made here, as a chat completion of OpenRouter, POST https://openrouter.ai/api/v1/chat/completions, with the key of
 // OPENROUTER_API_KEY as a bearer token, the two messages of src/prompt.ts, temperature 0, the token limit of the length asked for, and one JSON object asked
-// for as the answer; then that answer read into a brief (parseBriefAnswer), which the post-check (src/check.ts) holds to the pages. The model is
-// OPENROUTER_MODEL, deepseek/deepseek-v4-flash by default, and every brief names it as "<model> via OpenRouter".
+// for as the answer. The answer of either path is read into a brief here (parseBriefAnswer), which the post-check (src/check.ts) holds to the pages. The model
+// is OPENROUTER_MODEL, deepseek/deepseek-v4-flash by default, and a brief names the model and its path: "<model> via the Vector marketplace" or "<model> via
+// OpenRouter" (modelLabel).
 //
 // The key goes into the Authorization header of that call and nowhere else: no message, no log line and no error carries it, and an error body that echoes
 // it is logged with the key cut out, in any case. No redirect is followed (redirect 'error', ruling R-E23), for a followed redirect could carry the header on
@@ -28,12 +30,13 @@
 import { errorText, given, shown } from '@vsa/service-kit';
 import { MODEL_MAX_MS } from './budget.ts';
 import { AdvocateError } from './errors.ts';
+import type { InferencePath } from './inference.ts';
 import type { ChatMessage } from './prompt.ts';
 
 export const OPENROUTER_ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
 export const DEFAULT_MODEL = 'deepseek/deepseek-v4-flash';
-/** The model as a brief names it: "<model> via OpenRouter". */
-export const modelLabel = (model: string): string => `${model} via OpenRouter`;
+/** The model as a brief names it, with the path the call took: "<model> via the Vector marketplace" or "<model> via OpenRouter". */
+export const modelLabel = (model: string, path: InferencePath): string => `${model} via ${path === 'marketplace' ? 'the Vector marketplace' : 'OpenRouter'}`;
 /** The two headers OpenRouter reads to name the application that calls it. */
 const REFERER = 'https://github.com/Apex-Fusion/vector-service-agents';
 const TITLE = 'Advocate (vector-service-agents)';

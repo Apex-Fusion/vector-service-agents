@@ -396,10 +396,11 @@ describe('no text of an answer reaches the log (R-E26)', () => {
 });
 
 describe('the model and its label', () => {
-  test('deepseek/deepseek-v4-flash by default, named "<model> via OpenRouter" in every brief', () => {
+  test('deepseek/deepseek-v4-flash by default, named with the path of the call in every brief: "<model> via the Vector marketplace" or "<model> via OpenRouter"', () => {
     expect(DEFAULT_MODEL).toBe('deepseek/deepseek-v4-flash');
-    expect(modelLabel(DEFAULT_MODEL)).toBe('deepseek/deepseek-v4-flash via OpenRouter');
-    expect(modelLabel('openai/gpt-4o-mini')).toBe('openai/gpt-4o-mini via OpenRouter');
+    expect(modelLabel(DEFAULT_MODEL, 'openrouter')).toBe('deepseek/deepseek-v4-flash via OpenRouter');
+    expect(modelLabel('openai/gpt-4o-mini', 'openrouter')).toBe('openai/gpt-4o-mini via OpenRouter');
+    expect(modelLabel(DEFAULT_MODEL, 'marketplace')).toBe('deepseek/deepseek-v4-flash via the Vector marketplace');
   });
 
   test('OPENROUTER_MODEL: absent or blank is the default, an id of OpenRouter is taken as written, and anything else is refused, naming the variable', () => {
