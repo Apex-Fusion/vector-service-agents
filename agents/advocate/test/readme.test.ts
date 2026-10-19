@@ -70,6 +70,12 @@ describe('agents/advocate/README.md', () => {
   test("the defaults the table gives are the code's", () => {
     expect(row('PORT')).toContain(`\`${PORT_DEFAULT}\``);
     expect(row('OPENROUTER_MODEL')).toContain(`| \`${DEFAULT_MODEL}\` |`);
+    // The fifth gap names the model of OPENROUTER_MODEL, and the `model` of a result names it on the OpenRouter path; on the marketplace path a result names the
+    // model of the advert hired (src/inference.ts), which is the model of OPENROUTER_MODEL only while the allowlist is that one model.
+    expect(row('OPENROUTER_MODEL')).toContain('the model the service asks through OpenRouter, as `<provider>/<name>`; the fifth gap of the manifest names it, and so does the `model` of a result on the OpenRouter path |');
+    expect(row('OPENROUTER_MODEL')).not.toContain('every result');
+    expect(textOf('src/inference.ts')).toContain("path: 'openrouter', model: deps.openRouterModel,");
+    expect(textOf('src/inference.ts')).toContain("path: 'marketplace', model: supplier.model,");
     expect(row('ADVERT_PRICE_LOVELACE')).toContain('`3000000`');
     expect(row('ADVERT_MAX_PROCESSING_MS')).toContain('`480000`');
     expect(row('ADVERT_MAX_PROCESSING_MS')).toContain(`at least ${MIN_PROCESSING_WINDOW_MS}, because the deadline of a job assumes the ${MIN_PROCESSING_WINDOW_MS / 60_000} min window`);
@@ -91,6 +97,10 @@ describe('agents/advocate/README.md', () => {
     expect(row('LLM_MODEL_ALLOWLIST')).toContain('| the model of `OPENROUTER_MODEL` |');
     expect(config.maxPriceLovelace).toBe(1_000_000n);
     expect(row('LLM_MAX_PRICE_LOVELACE')).toContain(`| \`${config.maxPriceLovelace}\` |`);
+    // The ceiling is the choice's (packages/hire-kit/src/select.ts), and a choice that finds no advert at or under it sends the job to OpenRouter (src/inference.ts).
+    expect(row('LLM_MAX_PRICE_LOVELACE')).toContain('| the most the chat job may be priced at, in lovelace: an advert priced above it is not hired, and when no advert at or under it can be, the job gets its brief from OpenRouter |');
+    expect(textOf('../../packages/hire-kit/src/select.ts')).toContain('allowlist: query.allowlist, probe: true, maxPriceLovelace: ceiling, budgetMs, maxCandidates })');
+    expect(textOf('src/inference.ts')).toContain("if (error instanceof HopFailed || error instanceof OutOfTime) return fallBack('llm_supplier_unavailable', 'choice');");
     const buyer = buyerIdentityOf(BUYER_KEY);
     expect([config.buyer.pkh, config.buyer.address, config.manifest.keys.buyer_pkh]).toStrictEqual([buyer.buyerPkh, buyer.address, buyer.buyerPkh]);
     for (const name of ['ADVOCATE_BUYER_PKH', 'ADVOCATE_BUYER_ADDRESS']) expect(row(name), name).toMatch(/ \| derived \|$/);

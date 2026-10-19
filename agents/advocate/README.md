@@ -104,7 +104,7 @@ On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and n
 | `SUPPLIER_PUB_KEY_HEX` | `keys.pub_key_hex`, 64 hex characters, the public key of `SUPPLIER_PKH`: the service stops at start unless its key hash is `SUPPLIER_PKH` | none. Required: the service stops at start without it |
 | `BRAVE_SEARCH_API_KEY` | the key of the Brave Search API, sent as `X-Subscription-Token` with each of the two queries. Never published, never logged | none. Required: the service stops at start without it |
 | `OPENROUTER_API_KEY` | the key of OpenRouter, sent as `Authorization: Bearer <key>` with the call to the model. Never published, never logged | none. Required: the service stops at start without it |
-| `OPENROUTER_MODEL` | the model the service asks through OpenRouter, as `<provider>/<name>`; the fifth gap of the manifest and the `model` of every result name it | `deepseek/deepseek-v4-flash` |
+| `OPENROUTER_MODEL` | the model the service asks through OpenRouter, as `<provider>/<name>`; the fifth gap of the manifest names it, and so does the `model` of a result on the OpenRouter path | `deepseek/deepseek-v4-flash` |
 | `ADVOCATE_BUYER_PUB_KEY_HEX` | optional. The public key of the buyer key, as step 4 of the runbook writes it; a value here that is not the key's stops the service at start | derived |
 | `ADVOCATE_BUYER_PKH` | optional. `keys.buyer_pkh` is always the key hash derived from the buyer key; a value here that is not that hash stops the service at start | derived |
 | `ADVOCATE_BUYER_ADDRESS` | optional, as above, for the mainnet enterprise address of the buyer key, which the log names at start | derived |

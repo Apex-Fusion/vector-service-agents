@@ -3208,7 +3208,14 @@ test('Advocate env example: the chain values are those of the other three, the a
   );
   assert.deepEqual(byDefault, { allowlist: [byDefault.model], ceiling: '1000000', model: 'deepseek/deepseek-v4-flash' });
   assert.deepEqual(byExample, byDefault, 'the line of the example is the default, written out');
-  assert.ok(aExampleText.includes('# The chat models it may hire for the brief on the Vector marketplace, comma separated, in order of preference. The default is the model of OPENROUTER_MODEL, so that the\n# chat supplier and OpenRouter are asked the same model: a change of OPENROUTER_MODEL takes the same change here. The manifest names the first model of the list in a\n# gap, beside the model of OPENROUTER_MODEL when the two differ, so a change of either changes the manifest the advert hashes.\n'));
+  // "with no space": the ops scripts read the file with the shell's ".", which runs what follows a space as a command (the test of it in bash is below).
+  assert.ok(aExampleText.includes('# The chat models it may hire for the brief on the Vector marketplace, comma separated with no space, in order of preference (the ops scripts read this file with the\n# shell\'s ".", and a space after a comma would make the rest a command). The default is the model of OPENROUTER_MODEL, so that the chat supplier and OpenRouter are asked\n# the same model: a change of OPENROUTER_MODEL takes the same change here. The manifest names the first model of the list in a gap, beside the model of OPENROUTER_MODEL\n# when the two differ, so a change of either changes the manifest the advert hashes.\n'));
+  // The ceiling: no advert above it is chosen or hired (the selection is given it, and the advert is checked against it on the ledger), and when the choice finds
+  // none the job falls back to OpenRouter before anything is posted.
+  assert.ok(aExampleText.includes('# The most the chat job may be priced at, in lovelace. An advert priced above it is not hired, and when no advert at or under it can be, the job gets its brief\n# from OpenRouter (llm_supplier_unavailable) and locks nothing.'));
+  const select = read('packages/hire-kit/src/select.ts');
+  assert.ok(select.includes('allowlist: query.allowlist, probe: true, maxPriceLovelace: ceiling, budgetMs, maxCandidates })') && select.includes('if (advert.price_lovelace > ceiling) throw unavailable('));
+  assert.ok(read('agents/advocate/src/inference.ts').includes("if (error instanceof HopFailed || error instanceof OutOfTime) return fallBack('llm_supplier_unavailable', 'choice');"));
   const [withExample, withNothing] = inAdvocate(
     "import { manifestFromEnv } from './src/server.ts'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((env) => manifestFromEnv(env))));",
     [{ ...withoutPlaceholders(aExample), OPERATOR_CONTACT: TEST_CONTACT }, { OPERATOR_CONTACT: TEST_CONTACT }],
@@ -3262,7 +3269,8 @@ test('Advocate files: each says PROPOSED (built, not deployed) since 2026-10-13 
   assert.equal(aComposeText.split('\n')[1], `# ${A_STATUS}. Steps 1 to 10 of RUNBOOK-advocate.md ran on 2026-10-18 and 2026-10-19 with the service image of ccbcb94; the image is rebuilt from this change before step 11. The host administrator's part is README.md.`);
   assert.ok(aSnippet.split('\n')[1].startsWith(`# ${A_STATUS}. Installed: steps 1 to 10 of RUNBOOK-advocate.md, step 10 among them, ran on 2026-10-18 and 2026-10-19.`));
   assert.equal(aExampleText.split('\n')[2], `# Status: ${A_STATUS}. The status word the manifest carries is AGENT_STATUS_CHIP below.`);
-  assert.equal(aRunbook.split('\n')[2], `Status: ${A_STATUS}. Nothing in this folder is LIVE. This runbook says what will happen, in order. Steps 1 to 10 were run on 2026-10-18 and 2026-10-19 with the service image of \`ccbcb94\` (the OpenRouter-only build), and the identity was registered and staked on 2026-10-19 (steps 7 and 8); no advert is posted. Before step 11 the service image is rebuilt from this change: steps 1 and 2 again for its files and its image, step 4 for the buyer key (it has a block for the env file of that run), step 6 for the buyer wallet, and step 9 to recreate the service.`);
+  assert.equal(aRunbook.split('\n')[2], `Status: ${A_STATUS}. Nothing in this folder is LIVE. This runbook says what will happen, in order. Steps 1 to 10 were run on 2026-10-18 and 2026-10-19 with the service image of \`ccbcb94\` (the OpenRouter-only build), and the identity was registered and staked on 2026-10-19 (steps 7 and 8); no advert is posted. Before step 11 the service image is rebuilt from this change. Step 1 runs again with a bundle of the new \`main\` in \`/tmp\`, but the checkout is there and is not cloned again: in this folder (\`$BASE/repo/deploy/host\`) \`git checkout docker-compose.advocate.yml\` sets aside the pin of step 2, the one local change, on which a pull would stop; then \`git pull --ff-only /tmp/vector-service-agents.bundle main\`, and \`git log -1 --oneline\` must show the reviewed commit. \`.env\` and \`.env.advocate\` are not in git and stay as they are: never remove the checkout to clone it again. Then step 2 for the new image and its pin, step 4 for the buyer key (it has a block for the env file of that run), step 6 for the buyer wallet alone (the supplier address lists what steps 7 and 8 left of its 55, and only the buyer address is held to its two outputs), and step 9 to recreate the service.`);
+  assert.doesNotMatch(aRunbook, /steps 1 and 2 again for its files and its image/, 'the words of before: step 1 cannot clone again on the checkout of the host');
   assert.ok(aSection.split('\n')[1].startsWith(`Status: ${A_STATUS}. Nothing in this section is LIVE. Steps 1 to 10 of its runbook were run on 2026-10-18 and 2026-10-19 with the service image of \`ccbcb94\`, and the identity was registered and staked on 2026-10-19; no advert is posted, and the image is rebuilt from this change before step 11. The files are `));
   for (const rel of [...A_FILES, 'agents/advocate/Dockerfile']) {
     const text = read(rel);
@@ -3335,8 +3343,9 @@ test('Advocate README section: the fourth stack, with its two containers, the lo
   assert.doesNotMatch(aSection, /holds no chain key|- \*\*No state\.\*\*|There is no volume|which ends within 150 s|A window of 5 min/, 'the words of before the buyer key');
   // The opening of the note and point 1 of the list of the host administrator name the fourth stack and say which section is the last.
   assert.ok(readme.includes('Advocate is a fourth, built and not deployed, with its own section at the end of this note, after that of Audio Snippets, and its own runbook, [RUNBOOK-advocate.md](RUNBOOK-advocate.md).'));
-  assert.ok(readme.includes('One more comes later: `mp-suppliers-advocate.hal8.ai` for Advocate, which is built and has its own section at the end of this note.'));
+  assert.ok(readme.includes('Advocate has its own name, `mp-suppliers-advocate.hal8.ai`, and its own section at the end of this note.'), 'point 1 of the list of the host administrator, in the form of the other two names: the name resolves since step 10');
   assert.equal(readme.match(/for Advocate, which is not built yet/), null, 'the words of before the build of Advocate');
+  assert.equal(readme.match(/One more comes later/), null, 'the words of before step 10');
 });
 
 test('Advocate RUNBOOK: the twenty-one sections in order, the seventeen steps keep the numbers of the other runbooks, and the head lists what differs with the names table and the two base paths', () => {
@@ -3395,7 +3404,12 @@ test('Advocate RUNBOOK collateral and float: two keys, 5 alone then 50 for the s
   assert.equal(rows.length, 2, 'two keys');
   const [supplier, buyer] = rows;
   assert.ok(supplier.startsWith("| Supplier key (the runtime's), generated on the host in step 4 | Two transfers to its address: exactly 5 units alone (collateral), then 50 units |"));
-  assert.ok(buyer.startsWith("| Buyer key (the service's), generated on the host in step 4 | Two transfers to its address: exactly 5 units alone (collateral for the Accept and the Reclaim of the chat sub-job, never touched), then 30 units |"));
+  assert.ok(buyer.startsWith("| Buyer key (the service's), generated on the host in step 4 | Two transfers to its address: exactly 5 units alone (collateral for the Accept and the Reclaim of the chat sub-job, held back from every Post while the rest of the wallet covers that Post and its change), then 30 units |"));
+  // The Post holds the collateral output back only while the rest of the wallet covers the lock, the minimum fee and a change output, and draws on the whole wallet
+  // otherwise (packages/buyer-core, vendored marketplace-build.ts and fleet-build.ts), so the 5 is not "never touched".
+  assert.ok(read('packages/buyer-core/src/vendored/mcp/marketplace-build.ts').includes('return total >= lockLovelace + MARKETPLACE_MIN_FEE + MIN_UTXO_LOVELACE ? rest : undefined;'));
+  assert.ok(read('packages/buyer-core/src/fleet-build.ts').includes('const inputs = reserveCollateralInputs(await lucid.wallet().getUtxos(), plan.lockLovelace);'));
+  assert.equal(buyer.includes('never touched'), false, 'the words of before');
   assert.ok(collateral.includes('The Foundation supplies two keys with their collateral and float. Nobody pastes either key into a chat.'));
   for (const part of [
     "The chat sub-job of each job: the price of the chat supplier, 0.2 at today's fleet price, its supplier bond of 1 and fees of about 1 (a Post and an Accept), so about 2.2 net a job.",
@@ -3436,6 +3450,93 @@ test('Advocate RUNBOOK steps 1 to 3: the bundle into $BASE and .env with the net
   assert.ok(two.includes('```sh\ncd "$BASE/repo/deploy/host"\nIMAGE=ghcr.io/apex-fusion/vector-service-agents/advocate\n'), 'the block that pins starts in this folder: it may run in a new shell');
   const three = section(aRunbook, '3. Build the runtime image');
   assert.ok(three.includes(`${ADC} build agent`) && three.includes('It ends with `Image advocate-agent Built`.'));
+});
+
+// The first paragraph sends the operator back to step 1 on the checkout of the host, which is there. Its git commands run here as the paragraph gives them, read from
+// its backticks, on scratch repositories in a folder of the OS temp directory and never in this repository: no GIT_ variable of the process reaches them, no
+// configuration of the machine is read, and git looks for no repository above that folder. A bundle of a first commit is cloned as step 1 clones it, the pin of
+// step 2 is made in the clone and the two env files are written next to it; a second commit that rewrites the compose file comes as a new bundle in the same place.
+const HAVE_GIT = (() => { try { execFileSync('git', ['--version'], { stdio: 'ignore' }); return true; } catch { return false; } })();
+test('Advocate RUNBOOK first paragraph in git: step 1 cannot clone again and a pull stops on the pin of step 2; the checkout of the compose file and the pull of the paragraph bring the new commit with its placeholder, and .env and .env.advocate stay as they are', { skip: HAVE_GIT ? false : 'needs git' }, () => {
+  const first = aRunbook.split('\n')[2];
+  const ticks = [...first.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+  const commands = ticks.filter((t) => t.startsWith('git '));
+  const [checkout, pull, log] = ['git checkout ', 'git pull ', 'git log '].map((verb) => commands.find((c) => c.startsWith(verb)));
+  assert.deepEqual(commands, [checkout, pull, log], 'three git commands, in the order they are run');
+  for (const command of commands) assert.match(command, /^git( [\w./-]+)+$/, `plain words, so that it runs here as it is split: ${command}`);
+  assert.ok(checkout.endsWith(' docker-compose.advocate.yml'), 'the checkout sets aside the compose file of this folder');
+  const folder = ticks.find((t) => t.startsWith('$BASE/'));
+  assert.equal(folder, '$BASE/repo/deploy/host', 'the commands run in this folder');
+  // The clone of step 1 and the bundle it reads, which the pull of the paragraph reads in the same place.
+  const clone = section(aRunbook, '1. Put the files on the host').split('\n').find((l) => l.startsWith('git clone ')) ?? '';
+  const bundleOnHost = clone.split(' ').find((word) => word.endsWith('.bundle'));
+  assert.ok(bundleOnHost !== undefined && pull.split(' ').includes(bundleOnHost), `the pull reads the bundle where step 1 puts it: ${bundleOnHost}`);
+  const scratch = mkdtempSync(join(tmpdir(), 'advocate-rerun-'));
+  try {
+    writeFileSync(join(scratch, 'gitconfig'), '');
+    const env = {
+      ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^GIT_/i.test(name))),
+      GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(scratch, 'gitconfig'), GIT_CEILING_DIRECTORIES: scratch, GIT_TERMINAL_PROMPT: '0',
+    };
+    const bundle = join(scratch, 'tmp', bundleOnHost.split('/').at(-1));
+    const run = (cwd, command) => spawnSync('git', command.split(' ').slice(1).map((word) => (word === bundleOnHost ? bundle : word)), { cwd, env, encoding: 'utf8' });
+    const git = (cwd, ...args) => {
+      const r = spawnSync('git', ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', ...args], { cwd, env, encoding: 'utf8' });
+      assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
+      return r.stdout;
+    };
+    const composeIn = (repo) => join(repo, 'deploy', 'host', 'docker-compose.advocate.yml');
+    // The origin: a first commit with a compose file and the .gitignore of this repository, which covers the two env files; its bundle, copied to the host.
+    const origin = join(scratch, 'origin');
+    mkdirSync(join(origin, 'deploy', 'host'), { recursive: true });
+    mkdirSync(join(scratch, 'tmp'));
+    writeFileSync(join(origin, '.gitignore'), read('.gitignore'));
+    writeFileSync(composeIn(origin), aComposeText.replace(aComposeText.split('\n')[1], '# the compose file of the commit the host runs'));
+    git(origin, 'init', '-b', 'main');
+    git(origin, 'add', '-A');
+    git(origin, 'commit', '-m', 'the commit the host runs');
+    const ran = git(origin, 'rev-parse', 'HEAD').trim();
+    git(origin, 'bundle', 'create', bundle, 'main');
+    // Step 1 on the host, then the pin of step 2 and the two env files of steps 1 and 4.
+    const base = join(scratch, 'base');
+    mkdirSync(base);
+    const cloned = run(base, clone);
+    assert.equal(cloned.status, 0, cloned.stderr);
+    const repo = join(base, 'repo');
+    const here = join(base, ...folder.slice('$BASE/'.length).split('/'));
+    const pinned = readFileSync(composeIn(repo), 'utf8').replace(/^    image: .*$/m, `    image: sha256:${'ab'.repeat(32)}`);
+    writeFileSync(composeIn(repo), pinned);
+    writeFileSync(join(here, '.env'), 'PROXY_NETWORK=test_proxy_network\n');
+    writeFileSync(join(here, '.env.advocate'), 'OPERATOR_CONTACT=ops@example.test\n');
+    assert.equal(git(repo, 'status', '--porcelain'), ' M deploy/host/docker-compose.advocate.yml\n', 'the pin of step 2 is the one local change: git ignores the two env files');
+    // The change that is reviewed: a second commit that rewrites the compose file, bundled in the same place.
+    writeFileSync(composeIn(origin), aComposeText);
+    git(origin, 'commit', '-a', '-m', 'the change that is reviewed');
+    const reviewed = git(origin, 'rev-parse', 'HEAD').trim();
+    git(origin, 'bundle', 'create', bundle, 'main');
+    // Step 1 as it stands refuses: the checkout is there. A pull without the checkout of the paragraph stops on the pin and moves nothing.
+    assert.notEqual(run(base, clone).status, 0, 'step 1 cannot clone into the checkout that is there');
+    const stopped = run(here, pull);
+    assert.notEqual(stopped.status, 0, 'a pull stops on the pin of step 2');
+    assert.match(stopped.stderr, /docker-compose\.advocate\.yml/, 'and names the compose file');
+    assert.equal(git(here, 'rev-parse', 'HEAD').trim(), ran);
+    assert.equal(readFileSync(composeIn(repo), 'utf8'), pinned, 'the pin is where it was');
+    // The two commands of the paragraph, in its order: the new commit, its compose file with the placeholder that step 2 pins again, and the env files as they were.
+    for (const command of [checkout, pull]) {
+      const r = run(here, command);
+      assert.equal(r.status, 0, `${command}: ${r.stderr}`);
+    }
+    assert.equal(git(here, 'rev-parse', 'HEAD').trim(), reviewed, 'the checkout is at the reviewed commit');
+    assert.equal(readFileSync(composeIn(repo), 'utf8'), aComposeText, "the compose file is the reviewed commit's");
+    assert.match(readFileSync(composeIn(repo), 'utf8'), /^    image: ghcr\.io\/apex-fusion\/vector-service-agents\/advocate@sha256:<digest>$/m, 'with the placeholder: step 2 pins the new image');
+    assert.equal(readFileSync(join(here, '.env'), 'utf8'), 'PROXY_NETWORK=test_proxy_network\n', '.env stays as it is');
+    assert.equal(readFileSync(join(here, '.env.advocate'), 'utf8'), 'OPERATOR_CONTACT=ops@example.test\n', '.env.advocate stays as it is');
+    const shown = run(here, log);
+    assert.equal(shown.status, 0, shown.stderr);
+    assert.ok(shown.stdout.startsWith(reviewed.slice(0, 7)) && shown.stdout.trim().endsWith('the change that is reviewed'), `the last command shows the reviewed commit: ${shown.stdout}`);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });
 
 test('Advocate RUNBOOK step 4: the env file once, the two keys, the token and the two API keys only into empty lines, the buyer key in a block of its own, the nine lengths and the two keys told apart, the contact, and the offline copy that holds both keys and the API keys', () => {
@@ -3734,6 +3835,22 @@ test('Advocate RUNBOOK step 4 in bash: the ops scripts cannot read the env file 
   });
 });
 
+test('Advocate env example in bash: the ops scripts read the allowlist with the shell\'s "." as the comment says to write it, with no space after a comma; after a space the rest is a command, and the shell stops there', NEEDS_BASH, () => {
+  withAdvocateFolder((dir) => {
+    const filled = aExampleText.replace(/^OPERATOR_CONTACT=.*$/m, 'OPERATOR_CONTACT=ops@example.test');
+    const sourced = (allowlist) => {
+      writeFileSync(join(dir, '.env.advocate'), filled.replace(/^LLM_MODEL_ALLOWLIST=.*$/m, `LLM_MODEL_ALLOWLIST=${allowlist}`));
+      return runBash('set -e\n. ./.env.advocate\necho "read $LLM_MODEL_ALLOWLIST"\n', dir);
+    };
+    const plain = sourced('deepseek/deepseek-v4-flash,example/another-model');
+    assert.deepEqual([plain.status, plain.stdout.trim()], [0, 'read deepseek/deepseek-v4-flash,example/another-model']);
+    const spaced = sourced('deepseek/deepseek-v4-flash, example/another-model');
+    assert.notEqual(spaced.status, 0, 'the shell runs example/another-model as a command, and stops');
+    assert.equal(spaced.stdout, '');
+    assert.match(spaced.stderr, /example\/another-model/);
+  });
+});
+
 test('Advocate RUNBOOK step 5: the ops scripts are copied from the adapted set of Audio Snippets; the registry record is the manifest description, the capability, the framework and the public URL', () => {
   const five = section(aRunbook, '5. Adapt the ops scripts');
   const desc = /^DESC="(.+)"$/m.exec(five)[1];
@@ -3798,11 +3915,11 @@ test('Advocate RUNBOOK steps 6 to 9: the two wallets supplied and checked, the i
     `grep -E '^(SUPPLIER|ADVOCATE_BUYER)_ADDRESS=' "$BASE/repo/deploy/host/.env.advocate"`,
     'The first is exactly 5 units, alone.', 'Send the second only after the first has confirmed: 50 units to the supplier address, 30 units to the buyer address.',
     'for name in SUPPLIER_ADDRESS ADVOCATE_BUYER_ADDRESS; do', '"$BASE/ops/mcp-call.sh" vector_get_utxos',
-    'Each address must list two outputs: one of exactly 5 units, and one of 50 at the supplier address or of 30 at the buyer address.',
+    'Each address must list two outputs: one of exactly 5 units, and one of 50 at the supplier address or of 30 at the buyer address. On the run before step 11 (the first paragraph), the supplier address lists what steps 7 and 8 left of its 55, and only the buyer address is held to its two outputs.',
   ]) assert.ok(six.includes(part), `step 6 says: ${part}`);
   // The two second transfers are the floats of the rows of Collateral and float.
   const collateral = section(aRunbook, 'Collateral and float');
-  assert.ok(collateral.includes('exactly 5 units alone (collateral), then 50 units') && collateral.includes('never touched), then 30 units'));
+  assert.ok(collateral.includes('exactly 5 units alone (collateral), then 50 units') && collateral.includes('held back from every Post while the rest of the wallet covers that Post and its change), then 30 units'));
   const seven = section(aRunbook, '7. Register the identity');
   for (const part of ["sed -i '/^AGENT_DID=$/d' \"$BASE/repo/deploy/host/.env.advocate\"", 'python3 make-skey.py', './register-did.sh', 'The record has the name `Advocate`, the capability `research.advocate.onesided.v1`, the framework `vector-service-agents`, the endpoint `https://mp-suppliers-advocate.hal8.ai`', 'into the Identity section of `specs/advocate.md`', '(the DID row, the "Registry record, planned" row and the sentence that says the agent has no registry record yet)', 'remove it in Back out (point 4)', 'Operator. The same as step 7 of RUNBOOK.md, for the supplier key only.', 'The buyer key is not touched by any step here and has no second copy on the host.']) assert.ok(seven.includes(part), part);
   // Step 7 was run on 2026-10-19 and this change records it, as the step asks: the sentence says that the record exists, and the rows are no longer planned. The runbook still
@@ -3815,7 +3932,11 @@ test('Advocate RUNBOOK steps 6 to 9: the two wallets supplied and checked, the i
     `${ADC} up -d service`, 'docker logs advocate-service', "fetch('http://127.0.0.1:9094/healthz')", "fetch('http://127.0.0.1:9094/agent.json')", "fetch('http://127.0.0.1:9094/', { method: 'POST', body: 'x' })",
     "docker exec advocate-service node -e \"for (const n of ['BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY']) console.log(n, (process.env[n] ?? '').length)\"",
     '[advocate] listening on 0.0.0.0:9094; search Brave Search API; model deepseek/deepseek-v4-flash from the Vector marketplace, OpenRouter as the fallback; buyer address <the buyer address of step 4>; state directory /data',
-    '`1073741824 330`', 'model_gap: m.gaps[4]',
+    '`1073741824 330 advocate-state:/data`', 'model_gap: m.gaps[4]',
+    "docker inspect --format '{{.HostConfig.Memory}} {{.Config.StopTimeout}} {{range .Mounts}}{{.Name}}:{{.Destination}}{{end}}' advocate-service",
+    'and the two API keys were all in the env file, and that `/data` is writable; that `/data` is the volume `advocate-state`, and not an anonymous volume of the image\'s `VOLUME /data`, is what the inspect line\'s last field shows.',
+    'The `inspect` line prints `1073741824 330 advocate-state:/data`: the memory limit of 1024m in bytes, the stop timeout of 330 s, 30 s more than the service waits for a job, and its one mount, the volume `advocate-state` at `/data`.',
+    'a key the Brave Search API refuses fails a job with `search_failed`, and one OpenRouter refuses fails the first job that falls back to it with `model_failed` (the table at the end).',
     'A `POST /` with no `authorization` header prints `401 {"error":"unauthorized"}`', 'nor with an empty `SUPPLIER_PUB_KEY_HEX` or one that is not the public key of `SUPPLIER_PKH`, nor without the buyer key or either API key, nor with the supplier key in the buyer lines (the same table).',
     'The service starts only once the buyer key and the two API keys are in the env file (step 4)', 'a smoke start works only once all three are in', 'An empty buyer wallet does not stop it: a job it cannot cover gets its brief from OpenRouter.',
     'the key hash of the buyer key in `keys.buyer_pkh` (the service derives it from the key, and it must equal `ADVOCATE_BUYER_PKH` in the env file)',
@@ -3823,6 +3944,20 @@ test('Advocate RUNBOOK steps 6 to 9: the two wallets supplied and checked, the i
     'When the first model of `LLM_MODEL_ALLOWLIST` is not the model of `OPENROUTER_MODEL`, the line names both, as the fifth gap of the manifest does.',
   ]) assert.ok(nine.includes(part), `step 9 says: ${part}`);
   assert.equal(1024 * 1024 * 1024, 1073741824);
+  // The last field of the inspect line: the one volume of the service, named in the compose file, at the state directory the service is given, which is the one
+  // VOLUME of the image. Without the mount of the compose file that VOLUME would be an anonymous volume, writable too, which the reads of Back out would not see.
+  assert.deepEqual([aService.volumes, aCompose.volumes['advocate-state'], aService.environment.ADVOCATE_STATE_DIR], [['advocate-state:/data'], { name: 'advocate-state' }, '/data']);
+  assert.deepEqual(aDockerfile.match(/^VOLUME .*$/gm), ['VOLUME /data']);
+  assert.deepEqual(['volumes', 'tmpfs', 'configs', 'secrets'].filter((key) => key in aService), ['volumes'], 'and the compose file gives the service no other mount');
+  assert.equal(nine.includes('can hold the record of the escrows the service posts'), false, 'the words of before: the listening line proves /data writable, not which volume it is');
+  // A key that OpenRouter refuses shows only in a job that falls back: the one call to OpenRouter is the fallback's (src/inference.ts), and a 401 is model_failed, 502.
+  assert.equal(A_SRC.split('await callModel(').length, 2, 'one call to OpenRouter in the code of the service');
+  const inference = read('agents/advocate/src/inference.ts');
+  assert.ok(inference.indexOf('await callModel(') > inference.indexOf('async function viaOpenRouter('), 'and it is the fallback');
+  const [refused] = inAdvocate(
+    "import { callModel } from './src/model.ts'; let code = null; try { await callModel([], { fetchImpl: async () => new Response(JSON.stringify({ error: { code: 401, message: 'No auth credentials found' } }), { status: 401 }), " +
+    "apiKey: 'k'.repeat(30), model: 'a/b', maxTokens: 10, timeoutMs: 5000, log: () => undefined }); } catch (e) { code = [e.code, e.status]; } console.log(JSON.stringify([code]));", null);
+  assert.deepEqual(refused, ['model_failed', 502], 'a key OpenRouter refuses fails the job with model_failed');
   assert.ok(nine.includes('```sh\ncd "$BASE/repo/deploy/host"\n' + `${ADC} up -d service\ndocker logs advocate-service\n`), 'the block that starts the service starts in this folder: it may run in a new shell');
   // The fifth gap is the one that names the model, and the line the log shows is the one the code writes, with the prefix of the log of the service.
   const [gaps] = inAdvocate("import { gapsFor } from './src/gaps.ts'; import { DEFAULT_MODEL } from './src/model.ts'; console.log(JSON.stringify([gapsFor(DEFAULT_MODEL, DEFAULT_MODEL)]));", null);
@@ -3835,6 +3970,8 @@ test('Advocate RUNBOOK steps 6 to 9: the two wallets supplied and checked, the i
     const listening = started.find((line) => line.startsWith('listening on ')) ?? '';
     const [buyer] = inAdvocate("import { buyerIdentityOf } from '@vsa/buyer-core'; console.log(JSON.stringify([buyerIdentityOf(JSON.parse(process.argv[1]))]));", A_BUYER_KEY);
     assert.equal(listening.replace(/:\d+;/, ':<port>;'), `listening on 127.0.0.1:<port>; search Brave Search API; model deepseek/deepseek-v4-flash from the Vector marketplace, OpenRouter as the fallback; buyer address ${buyer.address}; state directory ${stateDir}`);
+    // The start and the first pass of its janitor write no stranded.json: the file is made by the record of a Post (step 15, "No such file or directory").
+    assert.equal(existsSync(join(stateDir, 'stranded.json')), false, 'no file before an escrow is posted');
   } finally {
     rmSync(stateDir, { recursive: true, force: true });
   }
@@ -3983,7 +4120,8 @@ test('Advocate RUNBOOK step 17 and Back out: the old advert retired before the r
   const back = section(aRunbook, 'Back out');
   const at = (needle) => { const i = back.indexOf(needle); assert.ok(i >= 0, needle); return i; };
   const order = [
-    '1. Retire the advert.', 'agent/src/cli/retire-advert.ts', '2. Stop the containers, operator or host administrator, once the service holds nothing:', 'docker exec advocate-service cat /data/stranded.json', `${ADC} down`,
+    '1. Retire the advert.', 'agent/src/cli/retire-advert.ts', '2. Stop the containers, operator or host administrator, once the janitor has nothing left to settle:', 'docker exec advocate-service cat /data/stranded.json',
+    'An escrow whose `deliver_by` has not come yet is waited for', `${ADC} down`,
     '3. Host administrator: remove the Caddy block of this agent', '4. Operator: the keys and the state volume.', 'The buyer wallet is emptied last, with the buyer key, once `stranded.json` is `[]`',
     'The volume goes after the buyer wallet, and only when the agent will not come back: `docker volume rm advocate-state`.', 'The two API keys stay valid on their accounts until the operator revokes them there',
   ];
@@ -3991,15 +4129,120 @@ test('Advocate RUNBOOK step 17 and Back out: the old advert retired before the r
   assert.deepEqual([...places].sort((a, b) => a - b), places);
   assert.ok(back.includes('`shred -u "$BASE/ops/wallet/payment.skey" "$BASE/ops/wallet/payment.vkey"`, then `rmdir "$BASE/ops/wallet"`'));
   for (const part of [
-    'Then the service gets to finish what it holds, and only then do the containers stop.', 'the janitor reclaims 5 s after their `deliver_by`, logging `janitor: reclaimed <escrow>: ...` for each',
+    'Then the service gets to finish what it holds, and only then do the containers stop.',
+    '`docker exec advocate-service cat /data/stranded.json` prints `[]`, or lists only Submitted escrows, which nothing can reclaim (`janitor: kept <escrow>: Submitted: ...`, the table at the end).',
+    'An escrow whose `deliver_by` has not come yet is waited for: the janitor reclaims it 5 s after its `deliver_by`, logging `janitor: reclaimed <escrow>: ...`.',
+    'The buyer wallet is emptied last, with the buyer key, once `stranded.json` is `[]` or lists only Submitted escrows (or was never written;',
     'Never add `-v`: the volume `advocate-state` holds `stranded.json`, the escrows that still lock the buyer\'s units, and the janitor of the next start reads it. `down` keeps it.',
     'The env file still holds both keys, and so does the operator\'s offline store: keep both until both wallets are empty',
     'No script of this pack does that: none signs with the buyer key', 'docker run --rm -v advocate-state:/data alpine cat /data/stranded.json',
   ]) assert.ok(back.includes(part), `Back out says: ${part}`);
   assert.equal(back.includes('There is no volume to keep'), false, 'the words of before the state');
+  assert.doesNotMatch(back, /once the service holds nothing|lists only escrows whose `deliver_by` has not come yet/, 'the words of before: a stop with escrows not yet due, and a wait for [] that a Submitted escrow never ends');
+  // The two lines Back out quotes are the janitor's (packages/hire-kit/src/janitor.ts), where a Submitted escrow is kept and never reclaimed; the table at the end has its row.
+  const janitor = read('packages/hire-kit/src/janitor.ts');
+  assert.ok(janitor.includes("return did('kept', `Submitted: it cannot be reclaimed, and its supplier may release it from ${iso(lostAfter)} at the latest`);"));
+  assert.ok(janitor.includes('log(`janitor: ${action.action} ${action.escrow_ref}: ${action.note}`)'));
+  assert.ok(section(aRunbook, 'If something goes wrong').includes('| `janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest` |'));
   // The janitor reclaims 5 s after deliver_by, as the kit says.
   assert.ok(read('packages/hire-kit/src/janitor.ts').includes('export const JANITOR_GRACE_MS = 5_000;'));
   assert.ok(back.includes('   ```sh\n   cd "$BASE/repo/deploy/host"\n   ' + `${ADC} run --rm --no-deps -T agent \\\n     node_modules/.bin/tsx agent/src/cli/retire-advert.ts \\\n`), 'the block that retires the advert starts in this folder: it may run in a new shell');
+});
+
+test('Advocate RUNBOOK step 15 and Back out in the code: stranded.json is not there until an escrow is recorded, the janitor logs nothing for an empty store or an escrow not yet due, reclaims one 5 s after its deliver_by, and keeps a Submitted one with no Reclaim', () => {
+  const s15 = section(aRunbook, '15. The first-party run');
+  for (const part of [
+    'If `cat` says `No such file or directory`, no escrow has been posted from this volume yet, and the brief came from OpenRouter.',
+    'The janitor writes a line only when it acts on an escrow (the table at the end), so a clean run has none.',
+    'The check of step 6 shows the buyer wallet before and after.',
+  ]) assert.ok(s15.includes(part), `step 15 says: ${part}`);
+  // The check of step 6 reads the buyer address with the supplier's.
+  const six = section(aRunbook, '6. Supply the two wallets with their collateral and float');
+  assert.ok(six.includes('for name in SUPPLIER_ADDRESS ADVOCATE_BUYER_ADDRESS; do') && six.includes('"$BASE/ops/mcp-call.sh" vector_get_utxos'));
+  // The code the sentences state: the janitor logs every action but waiting and deferred; the store writes its file only when an entry is added, changed or removed;
+  // a brief of the marketplace comes only after a Post, whose record is the first write.
+  const janitor = read('packages/hire-kit/src/janitor.ts');
+  assert.ok(janitor.includes("for (const action of actions) if (action.action !== 'waiting' && action.action !== 'deferred') log(`janitor: ${action.action} ${action.escrow_ref}: ${action.note}`);"));
+  assert.ok(janitor.includes('if (this.#entries.delete(canonicalRef(escrowRef))) this.#write();'), 'a remove of an escrow the store does not hold writes nothing');
+  const hire = read('packages/hire-kit/src/hire.ts');
+  assert.ok(hire.includes('const post = await postEscrow(deps, supplier, job, ledger, errors);'), 'a hire posts first');
+  assert.ok(hire.includes("recorded(errors, factsOf('post', post.escrowRef, false), () => deps.stranded.add({ escrow_ref: post.escrowRef, deliver_by: post.deliverBy, posted_at: post.postedAt, kind: supplier.hop }),"), 'and records the Post once it is confirmed');
+  // And what they do, through the kit itself: a store in a folder of its own, and passes of the janitor at the moments that matter, against a stand-in of the chain.
+  const [seen] = inAdvocate(
+    "import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'; import { tmpdir } from 'node:os'; import { join } from 'node:path'; " +
+    "import { JANITOR_GRACE_MS, STRANDED_FILE, StrandedStore, startJanitor } from '@vsa/hire-kit'; " +
+    "const dir = mkdtempSync(join(tmpdir(), 'advocate-stranded-')); const file = join(dir, STRANDED_FILE); const ref = (d) => `${d.repeat(64)}#0`; const due = 1_000_000; " +
+    "try { const store = new StrandedStore(dir); const seen = { made: existsSync(file) }; const states = { [ref('1')]: 'Open', [ref('2')]: 'Submitted' }; const reclaims = []; " +
+    "const chain = { escrowState: async (r) => states[r] ?? 'Open', reclaim: async (r) => { reclaims.push(r); return { txHash: 'f'.repeat(64) }; }, accept: async () => { throw new Error('no Accept here'); } }; " +
+    "const pass = async (now) => { const lines = []; await startJanitor(store, chain, 60_000, { clock: () => now, log: (l) => lines.push(l) }).stop(); return lines; }; " +
+    "seen.empty = await pass(due + JANITOR_GRACE_MS); store.remove(ref('3')); seen.afterNothing = existsSync(file); " +
+    "store.add({ escrow_ref: ref('3'), deliver_by: due, posted_at: 0, kind: 'llm' }); seen.recorded = existsSync(file); seen.notDue = await pass(due + JANITOR_GRACE_MS - 1); " +
+    "store.remove(ref('3')); seen.accepted = readFileSync(file, 'utf8'); " +
+    "for (const d of ['1', '2']) store.add({ escrow_ref: ref(d), deliver_by: due, posted_at: 0, kind: 'llm' }); seen.due = await pass(due + JANITOR_GRACE_MS); seen.reclaims = reclaims; " +
+    "seen.left = JSON.parse(readFileSync(file, 'utf8')).map((e) => e.escrow_ref); seen.grace = JANITOR_GRACE_MS; console.log(JSON.stringify([seen])); } finally { rmSync(dir, { recursive: true, force: true }); }",
+    null,
+  );
+  const ref = (d) => `${d.repeat(64)}#0`;
+  assert.deepEqual([seen.made, seen.afterNothing, seen.recorded], [false, false, true], 'no file until an escrow is recorded: cat says No such file or directory');
+  assert.deepEqual([seen.empty, seen.notDue], [[], []], 'no line for an empty store, nor for an escrow before its deliver_by and 5 s: a clean run has none');
+  assert.equal(seen.accepted, '[]\n', 'the Accept removes its own entry: cat prints []');
+  assert.equal(seen.grace, 5_000, 'the 5 s of Back out');
+  assert.equal(seen.due.length, 2, seen.due.join('\n'));
+  assert.ok(seen.due[0].startsWith(`janitor: reclaimed ${ref('1')}: `), seen.due[0]);
+  assert.ok(seen.due[1].startsWith(`janitor: kept ${ref('2')}: Submitted: it cannot be reclaimed, and its supplier may release it from `), seen.due[1]);
+  assert.deepEqual(seen.reclaims, [ref('1')], 'the Submitted escrow gets no Reclaim');
+  assert.deepEqual(seen.left, [ref('2')], 'and stays listed: Back out stops the containers with it');
+});
+
+test('Advocate RUNBOOK step 16: the wallet monitor is not used for this agent either, both floats are read by hand, and the buyer float falls with every job on the marketplace path while /healthz stays ok', () => {
+  const s16 = section(aRunbook, '16. Wallet monitor');
+  for (const part of [
+    "Not used for this agent, as for the other three (step 16 of RUNBOOK.md): the fleet's wallet monitor does not watch these wallets, and this runbook does not change that.",
+    'Both floats are read by hand with the check of step 6.',
+    'The buyer float falls by about 2.2 with every job on the marketplace path, nothing tops it up, and the service does not say that it is low: its `/healthz` stays ok, and a job it cannot cover gets its brief from OpenRouter, its line ending `; inference openrouter after insufficient_float`.',
+    'So read the buyer wallet after the first-party run and whenever jobs fall back for that reason, and ask the Foundation for a top-up.',
+    '`Apex-Fusion/agents-marketplace`', '`wallet-monitor/wallets.json`', '"supplier-advocate"', '"buyer-advocate"', '<SUPPLIER_ADDRESS from the env file>', '<ADVOCATE_BUYER_ADDRESS from the env file>',
+    'The monitor posts to Slack when a wallet drops below its threshold.',
+  ]) assert.ok(s16.includes(part), `step 16 says: ${part}`);
+  assert.doesNotMatch(s16, /upstream repository|503|watched by the service itself/, "the words of the Pipeline's step 16, whose service watches its float");
+  // The 2.2 is the net of a job of the collateral row and of step 15.
+  assert.ok(section(aRunbook, 'Collateral and float').includes('so about 2.2 net a job.') && section(aRunbook, '15. The first-party run').includes('The sub-job of the service costs its buyer key about 2.2 on the marketplace path'));
+  // "does not say that it is low": the server of Advocate gives the kit no health check, and without one /healthz always answers ok; a job whose float is short
+  // falls back with insufficient_float, and its line names the code.
+  const server = read('agents/advocate/src/server.ts');
+  assert.equal(server.includes('health:') || server.includes('HealthMonitor'), false, 'no health check is given to the server');
+  assert.ok(read('packages/service-kit/src/server.ts').includes('if (health === undefined) return send(200, { ok: true });'));
+  assert.ok(read('agents/advocate/src/inference.ts').includes("if (wallet.collateralLovelace === null || wallet.floatLovelace < subJobFloat(lock)) return fallBack('insufficient_float', 'float');"));
+  assert.ok(server.includes("`openrouter after ${outcome.inference.fallbackFrom ?? '-'}`"));
+  const [health] = inAdvocate(
+    "import { once } from 'node:events'; import { createServer, manifestFromEnv } from './src/server.ts'; " +
+    "const server = createServer({ manifest: manifestFromEnv({ OPERATOR_CONTACT: 'ops@example.test' }), authHeader: 'Bearer test-token-of-sixteen', log: () => undefined, deps: { clock: () => 0 }, runAdvocate: async () => { throw new Error('no job here'); } }); " +
+    "server.listen(0, '127.0.0.1'); await once(server, 'listening'); const r = await fetch(`http://127.0.0.1:${server.address().port}/healthz`); const body = await r.text(); " +
+    "server.close(); server.closeAllConnections(); console.log(JSON.stringify([[r.status, body]]));",
+    null,
+  );
+  assert.deepEqual(health, [200, '{"ok":true}'], 'a service with no chain and no wallet at all answers /healthz ok');
+});
+
+test('Advocate RUNBOOK first stop: a stop during a job waits for it as long as the code waits, and a stop that kills a running job strands the escrow of its sub-job for the janitor of the next start', () => {
+  const stop = section(aRunbook, 'Watch the first stop');
+  const [wait] = inAdvocate("import { SHUTDOWN_WAIT_MS } from './src/start.ts'; console.log(JSON.stringify([SHUTDOWN_WAIT_MS]));", null);
+  assert.equal(wait, 300_000);
+  for (const part of [
+    `On SIGTERM (\`docker stop\` sends it) the service takes no new job and waits up to ${wait / 1000} s for the one that is running, its Accept included,`,
+    'and a stop that kills a running job fails it for the hirer and strands the escrow of its sub-job for the janitor.',
+    `\`/status\` must say \`free\`: a stop during a job waits for the job, up to ${wait / 1000} s, which is what the grace period is for;`,
+  ]) assert.ok(stop.includes(part), `the first stop says: ${part}`);
+  // The entry of the service stops on the signals with the wait of the kit, and the grace period of the compose file is that wait and 30 s more.
+  assert.ok(read('agents/advocate/src/index.ts').includes('stopOnSignals(await startService());'), 'with no wait of its own');
+  assert.ok(read('packages/service-kit/src/lifecycle.ts').includes('const waitMs = opts.waitMs ?? SHUTDOWN_WAIT_MS;'));
+  assert.equal(aService.stop_grace_period, `${wait / 1000 + 30}s`);
+  // The escrow of a sub-job is in the state directory from its Post until its Accept, and the start reads the file the last process left.
+  const hire = read('packages/hire-kit/src/hire.ts');
+  const recordedAt = hire.indexOf('() => deps.stranded.add({ escrow_ref: post.escrowRef, deliver_by: post.deliverBy, posted_at: post.postedAt, kind: supplier.hop })');
+  const removedAt = hire.indexOf('try { deps.stranded.remove(post.escrowRef); }');
+  assert.ok(recordedAt > 0 && removedAt > recordedAt, 'recorded when its Post is confirmed, removed after its Accept');
+  assert.ok(A_SRC.includes('const stranded = new StrandedStore(config.stateDir);'), 'the start reads stranded.json, for its janitor');
 });
 
 test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the codes of a job with their statuses, the network, each as the code words it', () => {
@@ -4076,6 +4319,14 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
     'A failure at about 300 s into a job is the silence limit: the interim `102 Processing` lines of step 13 are not arriving.',
     String.raw`with ` + "`" + String.raw`sed -i 's/^\(ADVOCATE_BUYER_[A-Z_]*\)=.*/\1=/' .env.advocate` + "`",
   ]) assert.ok(table.includes(part), `the table has: ${part}`);
+  // The row of a kept Submitted escrow names the two ways a job leaves one after its supplier answered: an Accept that could not be made (llm_accept_failed, the job
+  // fails inference_failed) and a mark of a sent Accept that could not be written (store_write_failed at accept), each in the words of the kit and of the service.
+  const keptRow = rows.find((r) => r.startsWith('| `janitor: kept <escrow>: Submitted:')) ?? '';
+  assert.ok(keptRow.includes('| The supplier submitted a receipt that the job did not accept (it failed a check, or the hire ran out of its time), or whose Accept did not land (the `inference_failed` row, and the failed mark of the `store_write_failed` row). A Submitted escrow cannot be reclaimed, and the lock goes to the supplier when it releases. |'));
+  assert.ok(sources.hire.includes('Its escrow ${post.escrowRef} stays recorded for the janitor.`, at());'), 'an Accept that could not be made leaves its escrow recorded');
+  assert.ok(sources.hire.includes('and the store does not say so: the janitor takes it for a Submitted escrow it cannot accept.'), 'a mark that could not be written leaves it as a Submitted escrow');
+  assert.ok(sources.inference.includes("const NO_FALLBACK: ReadonlySet<string> = new Set(['llm_accept_failed', 'store_write_failed']);"));
+  assert.ok(sources.inference.includes("super(hopCode === 'store_write_failed' ? 'store_write_failed' : 'inference_failed', hopDetail(hopCode, facts));"));
   // Ruling R-E26: the log shows words of an answer only when its status is not 200. A 200 is an answer of the model, which can quote a page or the request, so for a
   // 200 whose body or content cannot be read the line gives the reason and the length, never the text. Ruling R-E30: of an answer that is not 200 the line shows the
   // code and the first 200 characters of the message when it is the JSON of an error, never its metadata, and otherwise the first 200 characters of the answer. The

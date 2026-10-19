@@ -250,7 +250,15 @@ describe('specs/advocate.md', () => {
     expect(row(fields, '`schema`')).toBe(`| \`schema\` | \`${SCHEMA}\` |`);
     expect(row(fields, '`omitted_by_design`')).toBe(`| \`omitted_by_design\` | always \`${OMITTED_BY_DESIGN}\` |`);
     expect(row(fields, '`search`')).toBe(`| \`search\` | always \`${SEARCH_NAME}\` |`);
-    expect(row(fields, '`model`')).toBe(`| \`model\` | the model the service asked and the path it took: \`${modelLabel('<model>', 'marketplace')}\` when a chat supplier gave the brief, \`${modelLabel('<model>', 'openrouter')}\` when OpenRouter gave it after a hire that failed. \`<model>\` is \`${DEFAULT_MODEL}\` unless \`OPENROUTER_MODEL\` names another |`);
+    expect(row(fields, '`model`')).toBe(`| \`model\` | the model the service asked and the path it took: \`${modelLabel('<model>', 'marketplace')}\` when a chat supplier gave the brief, \`${modelLabel('<model>', 'openrouter')}\` when OpenRouter gave it after a hire that failed. \`<model>\` is the model of the advert hired, a model of \`LLM_MODEL_ALLOWLIST\`, on the marketplace path, and the model of \`OPENROUTER_MODEL\` on the OpenRouter path; both are \`${DEFAULT_MODEL}\` by default |`);
+    // The model of each path is the code's: the model of the advert hired on the marketplace path, which the choice holds to the allowlist (packages/hire-kit/src/select.ts),
+    // and OPENROUTER_MODEL on the OpenRouter path (src/inference.ts). The result names it with its path, so the hire of another model of the list names that model.
+    const inference = readFileSync(new URL('../src/inference.ts', import.meta.url), 'utf8');
+    expect(inference).toContain("path: 'marketplace', model: supplier.model,");
+    expect(inference).toContain("path: 'openrouter', model: deps.openRouterModel,");
+    expect(readFileSync(new URL('../../../packages/hire-kit/src/select.ts', import.meta.url), 'utf8')).toContain('|| !query.allowlist.includes(advert.model)) {');
+    const hired = buildResult(parseRequest(exampleRequest()), BRIEF.thesis, checkCitations(BRIEF, PAGES), { ...EXAMPLE_INFERENCE, model: 'example/second-model' });
+    expect(hired.model).toBe('example/second-model via the Vector marketplace');
     expect(row(fields, '`inference`')).toContain('how the model call was made: `path`, `marketplace` or `openrouter`; `fallback_from`, on the OpenRouter path the code that sent the job there, the code of the failed hire or `marketplace_off` (see How it buys), and `null` on the marketplace path; `sub_job`, the hire of the chat supplier whose answer the service verified and accepted');
     expect(row(fields, '`inference`')).toContain('`accepted`, `confirmed` when its Accept was seen confirmed, `pending` when it was sent and not yet seen, or `null` |');
   });

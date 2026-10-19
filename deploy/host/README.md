@@ -17,7 +17,7 @@ The working directory on the box is `<base path>/repo/deploy/host`, inside a che
 
 ## What the host administrator does
 
-1. **DNS.** One name is needed now: `mp-suppliers-history.hal8.ai`, an A record to the box, DNS only (grey cloud), or Caddy cannot get its certificate. One more comes later: `mp-suppliers-advocate.hal8.ai` for Advocate, which is built and has its own section at the end of this note. Audio Snippets has its own name, `mp-suppliers-snippets.hal8.ai`, and its own section after the Pipeline's. The Document Pipeline has its own name, `mp-suppliers-pipeline.hal8.ai`, and its own section after the Agent History part of this note. The advert will carry the first name as its endpoint, so the operator waits for it before posting the advert.
+1. **DNS.** One name is needed now: `mp-suppliers-history.hal8.ai`, an A record to the box, DNS only (grey cloud), or Caddy cannot get its certificate. Advocate has its own name, `mp-suppliers-advocate.hal8.ai`, and its own section at the end of this note. Audio Snippets has its own name, `mp-suppliers-snippets.hal8.ai`, and its own section after the Pipeline's. The Document Pipeline has its own name, `mp-suppliers-pipeline.hal8.ai`, and its own section after the Agent History part of this note. The advert will carry the first name as its endpoint, so the operator waits for it before posting the advert.
 
 2. **Registry login.** The package is public since 2026-10-16, so the login is optional, and the host still builds the image itself (point 3). To log in, on the box: `docker login ghcr.io -u <user> --password-stdin`, with a token that has `read:packages`.
 
