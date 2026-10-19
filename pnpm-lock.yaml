@@ -104,6 +104,9 @@ importers:
       '@vsa/buyer-core':
         specifier: workspace:*
         version: link:../../packages/buyer-core
+      '@vsa/hire-kit':
+        specifier: workspace:*
+        version: link:../../packages/hire-kit
       '@vsa/service-kit':
         specifier: workspace:*
         version: link:../../packages/service-kit

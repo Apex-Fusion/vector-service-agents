@@ -909,7 +909,7 @@ test('Pipeline env example: a token of the form the runbook makes (Bearer and 64
 });
 
 test('Pipeline env example: every name the service code reads is in the example, in the compose environment, or has a default in the code', () => {
-  const files = [...sourceFiles('agents/document-pipeline/src'), ...sourceFiles('packages/service-kit/src'), ...sourceFiles('packages/buyer-core/src'), ...sourceFiles('packages/vector-read/src')];
+  const files = [...sourceFiles('agents/document-pipeline/src'), ...sourceFiles('packages/hire-kit/src'), ...sourceFiles('packages/service-kit/src'), ...sourceFiles('packages/buyer-core/src'), ...sourceFiles('packages/vector-read/src')];
   assert.ok(files.length >= 40, `the scan reaches every source file, found ${files.length}`);
   for (const f of ['agents/document-pipeline/src/start.ts', 'agents/document-pipeline/src/server.ts', 'packages/buyer-core/src/vendored/mcp-shared/config.ts', 'packages/vector-read/src/constants.ts']) assert.ok(files.includes(f), `the scan includes ${f}`);
   const names = new Set(files.flatMap((f) => [...envNamesIn(read(f))]));
@@ -1656,7 +1656,7 @@ test('Pipeline RUNBOOK step 15: the settings of the first-party run, a request J
   assert.ok(e2eSection.includes('[deploy/host/RUNBOOK-document-pipeline.md](../deploy/host/RUNBOOK-document-pipeline.md) step 15'));
   // The log line it quotes is the code's.
   assert.ok(read('agents/document-pipeline/src/server.ts').includes('log(`job done in ${deps.clock() - arrivedAt} ms: ${result.accounting.sub_jobs} sub-jobs`);'));
-  assert.ok(read('agents/document-pipeline/src/janitor.ts').includes("export const STRANDED_FILE = 'stranded.json';"));
+  assert.ok(read('packages/hire-kit/src/janitor.ts').includes("export const STRANDED_FILE = 'stranded.json';")); // the stranded store is packages/hire-kit's since the extraction
 });
 
 test('Pipeline RUNBOOK "Watch the first stop": one stop of the idle service is watched before step 17, and what to read is what the code logs', () => {
@@ -1680,7 +1680,7 @@ test('Pipeline RUNBOOK "Watch the first stop": one stop of the idle service is w
   assert.equal(stop.includes('signal relay of `tsx`'), false, 'the caveat of the image that ran the tsx binary');
   assert.ok(stop.indexOf('When a job is running at a stop') < stop.indexOf('This proves that the signal is delivered to an idle service'), 'said after the reading of the log');
   assert.ok(read('agents/document-pipeline/Dockerfile').includes('CMD ["node", "--import", "tsx", "agents/document-pipeline/src/index.ts"]'), 'the image runs the service as one node process, as the text says');
-  assert.ok(START.includes('did not finish within ${waitMs} ms and is abandoned; the state directory holds ${refs.length}'), 'the line of an abandoned job is the code\'s');
+  assert.ok(read('packages/hire-kit/src/janitor.ts').includes('did not finish within ${waitMs} ms and is abandoned; the state directory holds ${refs.length}'), 'the line of an abandoned job is the code\'s'); // abandonedLine of packages/hire-kit
   assert.ok(stop.indexOf('stop service') < stop.indexOf('docker logs --tail 5') && stop.indexOf('docker logs --tail 5') < stop.indexOf('{{.State.ExitCode}}') && stop.indexOf('{{.State.ExitCode}}') < stop.indexOf('up -d service'), 'stop, read the log, read the exit code, start again');
   // The lines are the code's.
   const lifecycle = read('packages/service-kit/src/lifecycle.ts'); // the stop and the signals are the shared code's since packages/service-kit
@@ -1766,10 +1766,10 @@ test('Pipeline RUNBOOK Back out: the advert first with the supplier key, then th
   ]) assert.ok(back.includes(part), `Back out says: ${part}`);
   assert.doesNotMatch(back, /rm -r /, 'the directory is removed with rmdir, after its two files are shredded');
   // The janitor's file is created by the first escrow a job records, so a missing file means there never was one.
-  assert.ok(read('agents/document-pipeline/src/janitor.ts').includes("if (codeOf(err) === 'ENOENT') return;"), 'a store with no file starts empty and writes the file with its first entry');
+  assert.ok(read('packages/hire-kit/src/janitor.ts').includes("if (codeOf(err) === 'ENOENT') return;"), 'a store with no file starts empty and writes the file with its first entry');
   assert.ok(pRunbook.indexOf('\n## Back out\n') > pRunbook.indexOf('\n## 17.') && pRunbook.indexOf('\n## Back out\n') < pRunbook.indexOf('\n## If something goes wrong\n'), 'after step 17, before the failure table');
   // The janitor reclaims 5 s after deliver_by, as the code says.
-  assert.ok(read('agents/document-pipeline/src/janitor.ts').includes('export const JANITOR_GRACE_MS = 5_000;'));
+  assert.ok(read('packages/hire-kit/src/janitor.ts').includes('export const JANITOR_GRACE_MS = 5_000;'));
   assert.ok(back.includes('The registry identity and the Module-3 stake stay on the ledger until the operator withdraws them.'));
 });
 
@@ -1807,8 +1807,8 @@ test('Pipeline RUNBOOK failure table: the start-up refusals, the pipeline codes 
   for (const row of rows) assert.equal(row.split(' | ').length, 3, `three columns: ${row.slice(0, 60)}`);
   const sources = {
     start: read('agents/document-pipeline/src/start.ts'), server: read('agents/document-pipeline/src/server.ts'), orchestrate: read('agents/document-pipeline/src/orchestrate.ts'),
-    janitor: read('agents/document-pipeline/src/janitor.ts'), render: read('agents/document-pipeline/src/render.ts'), result: read('agents/document-pipeline/src/result.ts'),
-    kitEnv: read('packages/service-kit/src/env.ts'), kitServer: read('packages/service-kit/src/server.ts'),
+    janitor: read('packages/hire-kit/src/janitor.ts'), render: read('agents/document-pipeline/src/render.ts'), result: read('agents/document-pipeline/src/result.ts'),
+    kitEnv: read('packages/service-kit/src/env.ts'), kitServer: read('packages/service-kit/src/server.ts'), hireSelect: read('packages/hire-kit/src/select.ts'),
   };
   // Each message the table quotes is in the code that prints it; a reworded message breaks this pin before it breaks an operator's search.
   for (const [row, where, quote] of [
@@ -1831,7 +1831,7 @@ test('Pipeline RUNBOOK failure table: the start-up refusals, the pipeline codes 
     ['`janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest`', 'janitor', 'Submitted: it cannot be reclaimed, and its supplier may release it from ${iso(lostAfter)} at the latest'],
     ['`janitor: the pass failed`', 'janitor', 'janitor: the pass failed'],
     // Ruling R56: an advert above its price ceiling.
-    ['`above the ceiling of`', 'orchestrate', 'above the ceiling of ${ceiling} lovelace (${setting})'],
+    ['`above the ceiling of`', 'hireSelect', 'above the ceiling of ${ceiling} lovelace (${setting})'],
     // A buyer wallet in one output: that output is the collateral, and the float outside it is 0.
     ['`wallet check failed: The buyer wallet holds 0 lovelace outside its collateral`', 'orchestrate', 'The buyer wallet holds ${wallet.floatLovelace} lovelace outside its collateral, less than the ${needed} that ${jobs} need.'],
   ]) {

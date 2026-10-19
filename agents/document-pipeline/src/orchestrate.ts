@@ -1,6 +1,9 @@
 // agents/document-pipeline/src/orchestrate.ts
 // One Pipeline job, from the parsed request to the result bundle the runtime signs: OCR for each page from the allowlisted OCR supplier, then one
-// chat job for the summary or the extraction, every sub-receipt verified before its escrow is accepted (the hire itself is src/hire.ts).
+// chat job for the summary or the extraction, every sub-receipt verified before its escrow is accepted (the hire itself is src/hire.ts). The chat job, the
+// choice of the chat supplier and the checks of an advert on chain are packages/hire-kit's (chatJob, chooseChatSupplier and the helpers of its src/select.ts),
+// moved there from this file with their words; the Pipeline gives the choice its code and its words when there is no supplier, and keeps the OCR hop,
+// the floats and the order of a run.
 //
 // Before anything is posted, in this order: the extraction schema is compiled (schema_invalid, ruling R27); the buyer wallet, read within 30 s, must have
 // its collateral output and a float of (max_pages + 1) x 4500000 lovelace outside it (insufficient_float, 503); the document is loaded and its pages rendered (a
@@ -26,13 +29,9 @@
 // the float again, its lock and two fees against the float read then (insufficient_float, 503, after the page escrows are settled). The chat body is {input} and nothing else
 // (ruling R12). Its answer must be a completed response: one that is not is still verified and accepted (the supplier delivered), and the job fails
 // with llm_incomplete (ruling R11). Every escrow a failure leaves behind is in the stranded store, for the janitor.
-import {
-  findOcrAdvert, ocrPromptHash, ocrResponseHash, planFleetPostEscrow, pollOcrJob, pollResponsesJob, probeStatus, readCapability, responsesOutputText, responsesPromptHash,
-  responsesResponseHash, selectLlmSupplier, sendOcrJob, sendResponsesJob, flatText, LLM_SELECTION_BUDGET_MS, LLM_SELECTION_MAX_CANDIDATES, TX_FEE_BUDGET_LOVELACE,
-} from '@vsa/buyer-core';
+import { findOcrAdvert, ocrPromptHash, ocrResponseHash, pollOcrJob, probeStatus, readCapability, sendOcrJob, flatText, TX_FEE_BUDGET_LOVELACE } from '@vsa/buyer-core';
 import type { Chain, SupplierCapability } from '@vsa/buyer-core';
-import { blake2b224Hex } from '@vsa/vector-read';
-import type { AdvertDatum } from '@vsa/vector-read';
+import { aboveCeiling, advertOnChain, chatJob, chooseChatSupplier, choiceLine, keyOfAdvert, plannedLockOf } from '@vsa/hire-kit';
 import {
   LLM_MIN_LEFT_MS, LLM_SELECTION_MAX_AGE_MS, OCR_IMAGE_B64_MAX, OutOfTime, PAGE_MIN_LEFT_MS, STATUS_RETRY_MS, WALLET_READ_TIMEOUT_MS, assertTimeLeft, floatNeeded, within,
 } from './budget.ts';
@@ -78,13 +77,7 @@ export interface Deps {
 }
 
 const OCR_CAPABILITY = 'ocr.page.extract.chandra-ocr-2.v1';
-const LLM_CAPABILITY = 'llm.text.generate.v1';
 const OUTPUT_FORMAT = 'markdown';
-const PUB_KEY = /^[0-9a-f]{64}$/i;
-const withoutSlash = (url: string): string => url.replace(/\/+$/, '');
-/** Does the key a supplier's /capability serves hash to the supplier key of its advert? */
-const keyOfAdvert = (capability: SupplierCapability, advert: AdvertDatum): boolean =>
-  PUB_KEY.test(capability.pub_key_hex) && blake2b224Hex(capability.pub_key_hex.toLowerCase()) === advert.supplier_pkh.toLowerCase();
 
 /** Runs one job: see the head of this file. Resolves with the result bundle, or rejects with a PipelineError, a RequestError of the intake, or an Error of the machine (a renderer that cannot run, a store that cannot be written). */
 export async function runPipeline(req: PipelineRequest, deps: Deps): Promise<PipelineResult> {
@@ -133,17 +126,8 @@ export async function runPipeline(req: PipelineRequest, deps: Deps): Promise<Pip
   }
   // A schema rides only with an extraction: parseRequest refuses one with a summary, and a request made another way is not failed for it after the page escrows are settled.
   const input = llmInput({ task: req.task, language: req.language, schema: req.task === 'extract' ? req.schema : undefined, pages: pagesRead });
-  const answer = await hire(deps, llm, {
-    label,
-    promptHash: responsesPromptHash({ input }),
-    send: (escrowRef) => sendResponsesJob(llm.endpoint, escrowRef, { input }, deps.fetchImpl),
-    poll: (jobId, escrowRef) => pollResponsesJob(llm.endpoint, jobId, deps.fetchImpl, escrowRef),
-    // Hashed as received (ruling R10), and the answer text read before the Accept, so the escrow of a body without one is never accepted (ruling R12).
-    read: (body) => {
-      if (!Array.isArray(body.output)) throw new Error('its output is not a list');
-      return { responseHash: responsesResponseHash(body), value: { text: responsesOutputText(body), status: body.status } };
-    },
-  }, accounting);
+  // The chat job of the kit: the body {input} and nothing else (ruling R12), the answer hashed as received (ruling R10) and its text read before the Accept.
+  const answer = await hire(deps, llm, chatJob(llm.endpoint, input, label, deps.fetchImpl), accounting);
   if (answer.value.status !== 'completed') {
     const status = typeof answer.value.status === 'string' ? `the status "${flatText(answer.value.status, 40)}"` : 'no status';
     throw new PipelineError('llm_incomplete', `The chat supplier's answer for ${label} has ${status}, not "completed": it was verified and its escrow accepted, since the supplier delivered, but a cut answer is no result.`);
@@ -183,13 +167,10 @@ export async function assertFunded(chain: Chain, maxPages: number): Promise<Wall
   return wallet;
 }
 
-/** The prompt hash a lock is planned with: the lock depends on the size of the escrow datum, and every prompt hash is 32 bytes of it. */
-const PLANNING_PROMPT_HASH = '0'.repeat(64);
-
 /** The lock a Post on the supplier's advert takes, planned as the Post plans it (planFleetPostEscrow); an advert no Post can be planned on is not hired. */
 function plannedLock(supplier: Supplier, buyerPkh: string, nowMs: number): bigint {
   try {
-    return planFleetPostEscrow(supplier.advert, supplier.advertRef, buyerPkh, PLANNING_PROMPT_HASH, nowMs).lockLovelace;
+    return plannedLockOf(supplier, buyerPkh, nowMs);
   } catch (err) {
     const who = supplier.hop === 'ocr' ? 'The OCR supplier' : 'The chat supplier';
     throw new PipelineError(`${supplier.hop}_supplier_unavailable`, `${who} cannot be hired: no Post can be planned on its advert ${supplier.advertRef} (${errorText(err)}). Nothing was locked.`, 503);
@@ -237,23 +218,6 @@ function ocrMime(mime: string): 'image/png' | 'image/jpeg' {
   throw new Error(`The pages are ${mime}, which is not sent to the OCR supplier.`);
 }
 
-async function advertOnChain(chain: Chain, advertRef: string, unavailable: (why: string) => PipelineError): Promise<AdvertDatum> {
-  try { return await chain.readAdvert(advertRef); } catch (err) { throw unavailable(`its advert ${advertRef} could not be read on chain (${errorText(err)})`); }
-}
-
-/** The host of an endpoint, for a log line: the whole URL is the supplier's to write and stays out of the log (ruling R65). */
-const hostOf = (endpoint: string): string => { try { return new URL(endpoint).host; } catch { return 'unreadable'; } };
-
-/** The line a run logs for the supplier it chose (ruling R65): its advert, the model of the chat supplier, its price and the host of its endpoint. */
-function logChoice(deps: Deps, supplier: Supplier): void {
-  const model = supplier.hop === 'llm' ? `, model ${flatText(supplier.model, 100)}` : '';
-  deps.log?.(`chosen ${supplier.hop === 'ocr' ? 'OCR' : 'chat'} supplier: advert ${supplier.advertRef}${model}, price ${supplier.advert.price_lovelace} lovelace, endpoint host ${hostOf(supplier.endpoint)}`);
-}
-
-/** What an advert above its ceiling is said to be: its price, the ceiling, and the setting that holds it. */
-const aboveCeiling = (advertRef: string, price: bigint, ceiling: bigint, setting: string): string =>
-  `its advert ${advertRef} is priced ${price} lovelace, above the ceiling of ${ceiling} lovelace (${setting})`;
-
 /**
  * The OCR supplier: the allowlisted key's one Active advert at a price at or under the ceiling, checked on chain, the key its /capability serves, and its
  * /status free or working (ruling R60). ocr_supplier_unavailable (503) otherwise. When the indexer lists no such advert, it is read once more without the ceiling, so that an advert priced
@@ -292,33 +256,17 @@ async function ocrSupplier(deps: Deps): Promise<Supplier> {
   if (status === 'offline') throw unavailable('its /status says it is offline');
   if (status === 'unreachable') throw unavailable(`its /status could not be read (no answer, an error, or no status word of a supplier), asked twice ${STATUS_RETRY_MS / 1000} s apart`);
   const supplier: Supplier = { hop: 'ocr', advertRef, advert, capabilityId: advert.capability_id, model: advert.model, endpoint: advert.endpoint_url, pubKeyHex: capability.pub_key_hex, windowMs: advert.max_processing_ms };
-  logChoice(deps, supplier);
+  deps.log?.(choiceLine(supplier));
   return supplier;
 }
 
-/** The chat supplier: the selection's choice at a price at or under the ceiling, its advert checked on chain against it. llm_supplier_unavailable (503) otherwise. */
-async function llmSupplier(deps: Deps, label: string): Promise<Supplier> {
-  const ceiling = deps.llmMaxPriceLovelace;
+/**
+ * The chat supplier: the kit's choice (chooseChatSupplier), the allowlisted supplier at a price at or under LLM_MAX_PRICE_LOVELACE that answers its /capability
+ * and its /status, its advert checked on chain, the six candidates and 120 s of the selection. llm_supplier_unavailable (503) otherwise, with the kit's reason.
+ */
+function llmSupplier(deps: Deps, label: string): Promise<Supplier> {
   const unavailable = (why: string) => new PipelineError('llm_supplier_unavailable', `No chat supplier can be hired for ${label}: ${why}.`, 503);
-  let chosen: Awaited<ReturnType<typeof selectLlmSupplier>>;
-  try { chosen = await selectLlmSupplier({ fetchImpl: deps.fetchImpl, indexerUrl: deps.indexerUrl, allowlist: deps.llmAllowlist, probe: true, maxPriceLovelace: ceiling }); } catch (err) {
-    throw unavailable(`the marketplace indexer could not be read (${errorText(err)})`);
-  }
-  if (chosen === null) {
-    // Null says none passed in time, not that none exists (ruling R22): the reasons are the selection's three.
-    throw unavailable(`the indexer lists no Active ${LLM_CAPABILITY} advert whose model is on the allowlist (${deps.llmAllowlist.join(', ')}) at a price at or under the ceiling of ${ceiling} lovelace (LLM_MAX_PRICE_LOVELACE), `
-      + `or none of the first ${LLM_SELECTION_MAX_CANDIDATES} such suppliers answered its /capability with the Responses API for its own advert and its /status with free or working, `
-      + `or the selection ran out of its ${LLM_SELECTION_BUDGET_MS / 1000} s`);
-  }
-  const advertRef = canonicalRef(chosen.advertRef);
-  const advert = await advertOnChain(deps.chain, advertRef, unavailable);
-  if (advert.capability_id !== LLM_CAPABILITY || advert.status !== 'Active' || advert.supplier_pkh !== chosen.supplierPkh.toLowerCase() || !deps.llmAllowlist.includes(advert.model)) {
-    throw unavailable(`the advert ${advertRef} the selection chose is not, on chain, an active ${LLM_CAPABILITY} advert of the supplier the indexer names with a model on the allowlist`);
-  }
-  if (advert.price_lovelace > ceiling) throw unavailable(`on chain, ${aboveCeiling(advertRef, advert.price_lovelace, ceiling, 'LLM_MAX_PRICE_LOVELACE')}`);
-  if (withoutSlash(advert.endpoint_url) !== withoutSlash(chosen.endpoint)) throw unavailable(`the advert ${advertRef} names another endpoint on chain than the one the selection asked`);
-  if (!keyOfAdvert(chosen.capability, advert)) throw unavailable(`the key the supplier of ${advertRef} serves is not the key of its advert, so no receipt of it could verify`);
-  const supplier: Supplier = { hop: 'llm', advertRef, advert, capabilityId: advert.capability_id, model: advert.model, endpoint: advert.endpoint_url, pubKeyHex: chosen.capability.pub_key_hex, windowMs: advert.max_processing_ms };
-  logChoice(deps, supplier);
-  return supplier;
+  return chooseChatSupplier(deps.chain, {
+    fetchImpl: deps.fetchImpl, indexerUrl: deps.indexerUrl, allowlist: deps.llmAllowlist, maxPriceLovelace: deps.llmMaxPriceLovelace, ceilingSetting: 'LLM_MAX_PRICE_LOVELACE', log: deps.log,
+  }, unavailable);
 }
