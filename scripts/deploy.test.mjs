@@ -3165,7 +3165,14 @@ test('Advocate env example: the two API key lines are empty after the token, and
   ]);
   // OPENROUTER_MODEL is described and not set, not even as a commented line: the default of the code holds, and the manifest the advert hashes names it.
   assert.equal(/^#?\s*OPENROUTER_MODEL=/m.test(aExampleText), false);
-  assert.ok(aExampleText.includes('# Left unset on purpose: AGENT_VERSION (the service has its own default), VECTOR_MARKETPLACE_INDEXER_URL, VECTOR_OGMIOS_URL, VECTOR_KOIOS_URL and VECTOR_SUBMIT_URL (the defaults of the code are Vector mainnet\'s),\n# and OPENROUTER_MODEL, which is optional: the model the service asks, as <provider>/<name>, deepseek/deepseek-v4-flash while it is not set. The manifest names the model in a gap and every result names it,\n# so a value set here changes the manifest the advert hashes.\n'));
+  assert.ok(aExampleText.includes('# Left unset on purpose: AGENT_VERSION (the service has its own default), VECTOR_MARKETPLACE_INDEXER_URL, VECTOR_OGMIOS_URL, VECTOR_KOIOS_URL and VECTOR_SUBMIT_URL (the defaults of the code are Vector mainnet\'s),\n# and OPENROUTER_MODEL, which is optional: the model the service asks, as <provider>/<name>, deepseek/deepseek-v4-flash while it is not set. The manifest names it in a gap,\n# and so does the model of a result on the OpenRouter path, so a value set here changes the manifest the advert hashes.\n'));
+  // The gap of the model names OPENROUTER_MODEL (src/gaps.ts), and a result names it on the OpenRouter path; on the marketplace path a result names the model of the
+  // advert hired (src/inference.ts), so "every result" is not said.
+  assert.equal(aExampleText.includes('every result names it'), false, 'the words of before the model row of the spec');
+  const inferenceText = read('agents/advocate/src/inference.ts');
+  assert.ok(inferenceText.includes("path: 'openrouter', model: deps.openRouterModel,") && inferenceText.includes("path: 'marketplace', model: supplier.model,"));
+  const [modelGap] = inAdvocate("import { manifestFromEnv } from './src/server.ts'; console.log(JSON.stringify([manifestFromEnv({ OPERATOR_CONTACT: 'ops@example.test', OPENROUTER_MODEL: 'example/another-model' }).gaps[4]]));", null);
+  assert.ok(modelGap.includes('example/another-model'), `the gap of the model names it: ${modelGap}`);
   const [model] = inAdvocate("import { DEFAULT_MODEL } from './src/model.ts'; console.log(JSON.stringify([DEFAULT_MODEL]));", null);
   assert.equal(model, 'deepseek/deepseek-v4-flash');
 });
@@ -3309,7 +3316,7 @@ test('Advocate README section: the fourth stack, with its two containers, the lo
     '- **Calls out of the host.**', '`api.search.brave.com`', '`openrouter.ai`', '6. **Outbound https.**', 'a job would then fail with `no_sources` (502)',
     'It calls OpenRouter at `openrouter.ai` only when that hire fails.',
     'For the hire of a chat supplier it calls the marketplace indexer, Ogmios, Koios and the submit API of Vector mainnet, and the endpoint of the supplier it chose, all over https on port 443.',
-    '- **The state volume.** `advocate-state`, mounted at `/data`, holds `stranded.json`', '`docker compose down` keeps it, and `down -v` or `docker volume rm` would delete it. Neither is run while the file lists an escrow.',
+    '- **The state volume.** `advocate-state`, mounted at `/data`, holds `stranded.json`', '`docker compose down` keeps it, and `down -v` or `docker volume rm` would delete it. Neither is run while the file lists an escrow, except a Submitted one, which nothing can reclaim (the runbook\'s Back out, point 4).',
     'because on a stop it waits up to 300 s for the job that is running, its Accept included,', '- **A window of 8 min.** The advert gives a job 8 min, and one job holds the runtime for up to 6 min.',
     'Then the containers stop, and the state volume stays.', 'It also refuses to start when `/data` cannot be written.',
     'and what the janitor of the service asks of the chain about the escrows a job left behind.', "when a buyer line is not the buyer key's or the buyer key is the supplier key",
@@ -3322,6 +3329,12 @@ test('Advocate README section: the fourth stack, with its two containers, the lo
     '[RUNBOOK-advocate.md](RUNBOOK-advocate.md), under "Back out"',
   ]) assert.ok(aSection.includes(part), `the section says: ${part}`);
   assert.ok(!aSection.includes('retire-advert.ts'), 'the retire command lives in one place, the runbook');
+  // The carve-out of the state volume is the one of point 4 of Back out, where the volume goes after the buyer wallet, and a Submitted entry is the one the janitor
+  // keeps and never reclaims (packages/hire-kit/src/janitor.ts), as the Back out pin holds it.
+  const point4 = section(aRunbook, 'Back out').split('\n').find((l) => l.startsWith('4. Operator: the keys and the state volume.')) ?? '';
+  assert.ok(point4.includes('once `stranded.json` is `[]` or lists only Submitted escrows') && point4.includes('`docker volume rm advocate-state`'), 'point 4 of Back out has the same carve-out');
+  assert.ok(read('packages/hire-kit/src/janitor.ts').includes("return did('kept', `Submitted: it cannot be reclaimed, and its supplier may release it from ${iso(lostAfter)} at the latest`);"));
+  assert.equal(aSection.includes('Neither is run while the file lists an escrow.'), false, 'the words of before the carve-out');
   assert.ok(aSection.includes(`\`mem_limit: ${aService.mem_limit}\``) && aSection.includes(`\`stop_grace_period: ${aService.stop_grace_period}\``));
   // The numbers and names the section states are the code's: the pages a job holds, the two endpoints it calls (https, on the default port, 443), and the port a page is fetched on
   // (the one its URL names).
