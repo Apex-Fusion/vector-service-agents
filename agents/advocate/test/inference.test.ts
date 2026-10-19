@@ -20,7 +20,7 @@ import type { Inference, InferenceDeps } from '../src/inference.ts';
 import { DEFAULT_MODEL } from '../src/model.ts';
 import { messagesFor } from '../src/prompt.ts';
 import { parseRequest } from '../src/request.ts';
-import { CHAT_ADVERT_REF, INDEXER, WINDOW_MS, chatAdvert, escrowNo, indexerRow } from './fake-chain-support.ts';
+import { CHAT_ADVERT_REF, CHAT_KEY, INDEXER, WINDOW_MS, chatAdvert, escrowNo, indexerRow } from './fake-chain-support.ts';
 import type { Market } from './fake-chain-support.ts';
 import { reply, routedFetch } from './fake-fetch.ts';
 import type { RoutedFetch } from './fake-fetch.ts';
@@ -175,6 +175,25 @@ describe('the fallback rule: nothing locked (ruling R-F4)', () => {
     vi.useRealTimers();
     expect(await work).toStrictEqual(fellBack('llm_supplier_unavailable'));
     expect(await states(s.m, escrowNo(1))).toStrictEqual(['unknown']);
+  });
+
+  test('an advert the planner refuses to plan a Post on (the buyer is its supplier, or its window is over 24 h): llm_supplier_unavailable at the float, nothing posted', async () => {
+    const own = setup({}, { buyerPkh: CHAT_KEY.pkh });
+    expect(await run(own)).toStrictEqual(fellBack('llm_supplier_unavailable'));
+    expect([await states(own.m, escrowNo(1)), own.stranded.list(), own.lines]).toStrictEqual([['unknown'], [], [CHOSEN, line('llm_supplier_unavailable', 'float')]]);
+    const long = setup();
+    long.deps.chain = chainWith(long.m, { readAdvert: async () => chatAdvert({ max_processing_ms: 86_400_001 }) });
+    expect([await run(long), long.lines.at(-1)]).toStrictEqual([fellBack('llm_supplier_unavailable'), line('llm_supplier_unavailable', 'float')]);
+  });
+
+  test('a choice and a wallet read that leave less than 60 s before the hop deadline: llm_out_of_time at the Post, nothing posted; at exactly 60 s the escrow is posted', async () => {
+    const late = setup();
+    late.deps.chain = chainWith(late.m, { wallet: async () => { late.m.clock.now = HOP_DEADLINE - 59_999; return late.m.chain.wallet(); } });
+    expect(await run(late)).toStrictEqual(fellBack('llm_out_of_time'));
+    expect([await states(late.m, escrowNo(1)), late.stranded.list(), late.m.supplier.sends, late.lines, spy.model]).toStrictEqual([['unknown'], [], [], [CHOSEN, line('llm_out_of_time', 'post')], [MODEL_MAX_MS]]);
+    const edge = setup();
+    edge.deps.chain = chainWith(edge.m, { wallet: async () => { edge.m.clock.now = HOP_DEADLINE - 60_000; return edge.m.chain.wallet(); } });
+    expect((await run(edge)).path).toBe('marketplace');
   });
 });
 
@@ -427,6 +446,19 @@ describe('the fallback rule: where the job does not fall back (ruling R-F4)', ()
     expect(await run(s)).toStrictEqual(fellBack('marketplace_off'));
     expect(s.fetchImpl.calls.slice(calls).map((call) => new URL(call.url).host)).toStrictEqual(['openrouter.ai']);
     expect(s.lines.at(-1)).toBe(line('marketplace_off', 'start'));
+  });
+
+  test('a store that cannot mark an Accept sent and not seen confirmed: store_write_failed (500), the escrow Submitted with its entry unmarked, an Accept by hand within 600 s of its Submit, and the marketplace path off', async () => {
+    const s = setup();
+    s.deps.chain = chainWith(s.m, {
+      accept: async (r) => { throw new TxNotConfirmedError('The Accept was submitted, but Koios did not report it confirmed.', { txHash: 'ac'.repeat(32), escrowRef: r, deliverBy: null, validTo: GOLDEN_T0 + 606_000, mayLand: true }); },
+    });
+    s.stranded.update = () => { throw new Error('ENOSPC: no space left on device'); };
+    const e = await failureOf(run(s));
+    expect([e.code, e.status, (e as HopFailed).hopCode, (e as HopFailed).facts?.stage]).toStrictEqual(['store_write_failed', 500, 'store_write_failed', 'accept']);
+    expect(e.detail).toBe(`the stranded store could not mark the Accept of the chat sub-job at accept: its escrow ${escrowNo(1)} stays recorded as Submitted, and its Accept may still land; read it on chain now and, if it is still Submitted once that Accept can no longer land, accept it by hand within 600 s of its Submit, after which its supplier may release it; restart the service, whose marketplace path is off until then`);
+    expect([await states(s.m, escrowNo(1)), s.stranded.list(), s.openRouter, s.deps.marketplace]).toStrictEqual([['Submitted'], [entry(escrowNo(1), GOLDEN_T0)], [], { on: false }]);
+    expect(s.lines.at(-1)).toBe(line('store_write_failed', 'accept', false));
   });
 
   test('a marketplace path that is off, and a job with less than 60 s left before its hop deadline, go to OpenRouter at once', async () => {

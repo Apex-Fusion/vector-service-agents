@@ -71,10 +71,17 @@ export function marketplaceInput(messages: readonly [ChatMessage, ChatMessage]):
   return `${messages[0].content}\n\n${messages[1].content}`;
 }
 
-/** The detail of a failed hire, for the log at 500 and 502: its code, its stage and its escrow, never the words of the kit or of a supplier. */
+/**
+ * The detail of a failed hire, for the log at 500 and 502: its code, its stage and its escrow, never the words of the kit or of a supplier. A store that
+ * could not mark an Accept sent and not seen confirmed leaves a Submitted escrow, which cannot be reclaimed: if that Accept does not land, the escrow must
+ * be accepted by hand within 600 s of its Submit, after which its supplier may release it, so its detail says that and not the deliver_by of a Post.
+ */
 function hopDetail(hopCode: string, facts: HireFacts | null): string {
   const at = facts === null ? '' : ` at ${facts.stage}`;
   const ref = facts?.escrowRef ?? null;
+  if (hopCode === 'store_write_failed' && facts?.stage === 'accept') {
+    return `the stranded store could not mark the Accept of the chat sub-job at accept: its escrow ${ref} stays recorded as Submitted, and its Accept may still land; read it on chain now and, if it is still Submitted once that Accept can no longer land, accept it by hand within 600 s of its Submit, after which its supplier may release it; restart the service, whose marketplace path is off until then`;
+  }
   if (hopCode === 'store_write_failed') {
     return `the stranded store could not be written for the chat sub-job${at}: settle its escrow ${ref ?? '(none)'} by hand once its deliver_by has passed, and restart the service, whose marketplace path is off until then`;
   }
