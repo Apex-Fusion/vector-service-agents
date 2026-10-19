@@ -2,11 +2,12 @@
 // The README names every environment variable the service reads and every error code it answers with, and these tests keep the page and the code from
 // parting: a variable read in src/ that the table does not name fails, so does a name in the table that no code reads, and so does a code with the wrong
 // status or one that no source file knows.
-import { describe, test, expect } from 'vitest';
+import { afterEach, describe, test, expect } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { HEARTBEAT_MS, MAX_BODY, SHUTDOWN_WAIT_MS, STOPPING_TEXT, TOKEN_SEARCH_MIN, WireError, operatorsText } from '@vsa/service-kit';
 import { blake2b224Hex } from '@vsa/vector-read';
-import { FETCH_CONCURRENCY, FETCH_PHASE_MAX_MS, FETCH_RESERVE_MS, JOB_DEADLINE_MS, MODEL_MAX_MS, MODEL_MIN_MS, PAGE_TIMEOUT_MS, RESULT_RESERVE_MS, SEARCH_MAX_MS, SEARCH_QUERY_TIMEOUT_MS } from '../src/budget.ts';
+import { buyerIdentityOf } from '@vsa/buyer-core';
+import { FALLBACK_RESERVE_MS, FETCH_CONCURRENCY, FETCH_PHASE_MAX_MS, FETCH_RESERVE_MS, JOB_DEADLINE_MS, MODEL_MAX_MS, MODEL_MIN_MS, PAGE_TIMEOUT_MS, RESULT_RESERVE_MS, SEARCH_MAX_MS, SEARCH_QUERY_TIMEOUT_MS } from '../src/budget.ts';
 import { checkCitations } from '../src/check.ts';
 import { AdvocateError, JOB_STATUS } from '../src/errors.ts';
 import type { JobCode } from '../src/errors.ts';
@@ -18,9 +19,12 @@ import { DECLARED_BIAS_STATEMENT, OMITTED_BY_DESIGN, QUOTE_MAX_CHARS, QUOTE_MIN_
 import { RequestError } from '../src/request.ts';
 import { MAX_QUERY_CHARS, MAX_QUERY_WORDS, MAX_RESULTS, QUERY_SPACING_MS, RESULTS_PER_QUERY, queriesFor, searchWeb } from '../src/search.ts';
 import { JobSlot, MIN_PROCESSING_WINDOW_MS, TEMPLATE_ENV, manifestFromEnv } from '../src/server.ts';
-import { PORT_DEFAULT, SETTINGS, loadConfig } from '../src/start.ts';
+import { PORT_DEFAULT, SETTINGS, STATE_DIR_DEFAULT, loadConfig } from '../src/start.ts';
 import { GOLDEN_OUTCOME, GOLDEN_REQUEST } from './golden.ts';
-import { baseDeps, serve, wire } from './server-support.ts';
+import { baseDeps, cleanDirs, keyOf, serve, wire } from './server-support.ts';
+
+// baseDeps makes a chain and a stranded store in a temporary directory of its own; the directories of a test go after it.
+afterEach(() => { cleanDirs(); });
 
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 // The ledger's native unit is named once in the repository, in docs/HIRE.md. Spelled in two parts, so that a search for the name finds only the guide.
@@ -32,11 +36,12 @@ const kitSources = read(new URL('../../../packages/service-kit/src/', import.met
 const section = (heading: string): string => (readme.split(`\n## ${heading}\n`)[1] ?? '').split('\n## ')[0];
 const ticks = (text: string): string[] => [...text.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
 const row = (name: string): string => section('Manifest').split('\n').find((line) => line.startsWith(`| \`${name}\``)) ?? '';
-// The settings of a service that starts, made the way Run it makes them for a run on a machine of one's own: a public key and its blake2b-224.
+// The settings of a service that starts, made the way Run it makes them for a run on a machine of one's own: a public key and its blake2b-224, and a buyer key.
 const PUBLIC_KEY = 'ab'.repeat(32);
+const BUYER_KEY = '01'.repeat(32);
 const FULL_ENV: Record<string, string> = {
   OPERATOR_CONTACT: 'ops@example.test', SUPPLIER_PKH: blake2b224Hex(PUBLIC_KEY), SUPPLIER_PUB_KEY_HEX: PUBLIC_KEY, SERVICE_AUTH_HEADER: `Bearer ${'cd'.repeat(32)}`,
-  BRAVE_SEARCH_API_KEY: 'BSAtestkey0123456789abcdefghij', OPENROUTER_API_KEY: `sk-or-v1-${'0123456789abcdef'.repeat(4)}`,
+  BRAVE_SEARCH_API_KEY: 'BSAtestkey0123456789abcdefghij', OPENROUTER_API_KEY: `sk-or-v1-${'0123456789abcdef'.repeat(4)}`, ADVOCATE_BUYER_PRIV_KEY_HEX: BUYER_KEY,
 };
 
 /**
@@ -59,24 +64,47 @@ describe('agents/advocate/README.md', () => {
     const documented = table.flatMap((line) => ticks(line.split('|')[1])).sort();
     expect(documented).toStrictEqual(namesRead());
     expect([...SETTINGS].sort()).toStrictEqual(namesRead());
-    for (const name of ['BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY', 'OPENROUTER_MODEL']) expect(SETTINGS, name).toContain(name);
+    for (const name of ['BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'ADVOCATE_BUYER_PRIV_KEY_HEX', 'ADVOCATE_BUYER_PKH', 'ADVOCATE_BUYER_ADDRESS', 'ADVOCATE_STATE_DIR', 'LLM_MODEL_ALLOWLIST', 'LLM_MAX_PRICE_LOVELACE', 'VECTOR_MARKETPLACE_INDEXER_URL']) expect(SETTINGS, name).toContain(name);
   });
 
   test("the defaults the table gives are the code's", () => {
     expect(row('PORT')).toContain(`\`${PORT_DEFAULT}\``);
     expect(row('OPENROUTER_MODEL')).toContain(`| \`${DEFAULT_MODEL}\` |`);
+    // The fifth gap names the model of OPENROUTER_MODEL, and the `model` of a result names it on the OpenRouter path; on the marketplace path a result names the
+    // model of the advert hired (src/inference.ts), which is the model of OPENROUTER_MODEL only while the allowlist is that one model.
+    expect(row('OPENROUTER_MODEL')).toContain('the model the service asks through OpenRouter, as `<provider>/<name>`; the fifth gap of the manifest names it, and so does the `model` of a result on the OpenRouter path |');
+    expect(row('OPENROUTER_MODEL')).not.toContain('every result');
+    expect(textOf('src/inference.ts')).toContain("path: 'openrouter', model: deps.openRouterModel,");
+    expect(textOf('src/inference.ts')).toContain("path: 'marketplace', model: supplier.model,");
     expect(row('ADVERT_PRICE_LOVELACE')).toContain('`3000000`');
-    expect(row('ADVERT_MAX_PROCESSING_MS')).toContain('`300000`');
+    expect(row('ADVERT_MAX_PROCESSING_MS')).toContain('`480000`');
     expect(row('ADVERT_MAX_PROCESSING_MS')).toContain(`at least ${MIN_PROCESSING_WINDOW_MS}, because the deadline of a job assumes the ${MIN_PROCESSING_WINDOW_MS / 60_000} min window`);
     expect(row('AGENT_STATUS_CHIP')).toContain('`proposed`');
     expect(row('AGENT_STATUS_CHIP')).toContain('`status.chip`, in lower case');
     expect(row('AGENT_STATUS_SINCE')).toContain('`2026-10-13`');
     expect(row('AGENT_VERSION')).toContain('`0.1.0`');
     const manifest = manifestFromEnv({ OPERATOR_CONTACT: 'ops@example.test' });
-    expect([manifest.version, manifest.terms.price_lovelace, manifest.terms.max_processing_ms, manifest.status.chip, manifest.status.since]).toStrictEqual(['0.1.0', 3_000_000, 300_000, 'proposed', '2026-10-13']);
+    expect([manifest.version, manifest.terms.price_lovelace, manifest.terms.max_processing_ms, manifest.status.chip, manifest.status.since]).toStrictEqual(['0.1.0', 3_000_000, 480_000, 'proposed', '2026-10-13']);
     const config = loadConfig(FULL_ENV);
     expect([config.port, config.host, config.model]).toStrictEqual([PORT_DEFAULT, '0.0.0.0', DEFAULT_MODEL]);
     expect(row('PORT')).toContain(`| \`${config.port}\`, \`${config.host}\` |`);
+    // The new settings: the state directory, the allowlist (the model of OPENROUTER_MODEL unless it is set), the ceiling, and the buyer lines, derived from the key.
+    expect([config.stateDir, STATE_DIR_DEFAULT]).toStrictEqual(['/data', '/data']);
+    expect(row('ADVOCATE_STATE_DIR')).toContain(`| \`${STATE_DIR_DEFAULT}\` |`);
+    expect(config.allowlist).toStrictEqual([DEFAULT_MODEL]);
+    expect(loadConfig({ ...FULL_ENV, OPENROUTER_MODEL: 'example/another-model' }).allowlist).toStrictEqual(['example/another-model']);
+    expect(loadConfig({ ...FULL_ENV, LLM_MODEL_ALLOWLIST: 'a/one, b/two' }).allowlist).toStrictEqual(['a/one', 'b/two']);
+    expect(row('LLM_MODEL_ALLOWLIST')).toContain('| the model of `OPENROUTER_MODEL` |');
+    expect(config.maxPriceLovelace).toBe(1_000_000n);
+    expect(row('LLM_MAX_PRICE_LOVELACE')).toContain(`| \`${config.maxPriceLovelace}\` |`);
+    // The ceiling is the choice's (packages/hire-kit/src/select.ts), and a choice that finds no advert at or under it sends the job to OpenRouter (src/inference.ts).
+    expect(row('LLM_MAX_PRICE_LOVELACE')).toContain('| the most the chat job may be priced at, in lovelace: an advert priced above it is not hired, and when no advert at or under it can be, the job gets its brief from OpenRouter |');
+    expect(textOf('../../packages/hire-kit/src/select.ts')).toContain('allowlist: query.allowlist, probe: true, maxPriceLovelace: ceiling, budgetMs, maxCandidates })');
+    expect(textOf('src/inference.ts')).toContain("} catch { return fallBack('llm_supplier_unavailable', 'choice'); }");
+    const buyer = buyerIdentityOf(BUYER_KEY);
+    expect([config.buyer.pkh, config.buyer.address, config.manifest.keys.buyer_pkh]).toStrictEqual([buyer.buyerPkh, buyer.address, buyer.buyerPkh]);
+    for (const name of ['ADVOCATE_BUYER_PKH', 'ADVOCATE_BUYER_ADDRESS']) expect(row(name), name).toMatch(/ \| derived \|$/);
+    expect(row('ADVOCATE_BUYER_PRIV_KEY_HEX')).toMatch(/ \| none\. Required: the service stops at start without it \|$/);
   });
 
   test('the Errors table gives each code its status, and every code it names is one the sources know', () => {
@@ -89,9 +117,9 @@ describe('agents/advocate/README.md', () => {
       '| 401, the caller | `unauthorized` (the call has no authorization header, or one that is not the token of the service) |',
       '| 422, the job | `deadline` (the job ran out of its time, or too little of it was left to call the model) |',
       '| 499, the caller hung up | `aborted` (the job was stopped when its caller hung up; nobody reads this answer, and the log keeps its code and the time the job took, not its words) |',
-      '| 502, a third party or the check | `search_failed` (both queries failed, or the Brave Search API refused the key), `search_empty` (no usable result), `no_sources` (no page kept), `model_failed` (the call to OpenRouter failed), `model_output_invalid` (the answer is not the JSON of a brief), `no_supported_claims` (the check dropped every argument) |',
+      '| 502, a third party or the check | `search_failed` (both queries failed, or the Brave Search API refused the key), `search_empty` (no usable result), `no_sources` (no page kept), `inference_failed` (the answer of the chat supplier was verified and the Accept of its escrow could not land), `model_failed` (the call to OpenRouter failed), `model_output_invalid` (the answer is not the JSON of a brief), `no_supported_claims` (the check dropped every argument) |',
       '| 503, the service cannot take a job now | `shutting_down` (the service is stopping) |',
-      '| 500, the service | `internal` |',
+      '| 500, the service | `store_write_failed` (an escrow was posted and could not be recorded), and `internal` |',
     ]);
     const all = [...sources, ...kitSources].map(({ text }) => text).join('\n');
     const job = Object.keys(JOB_STATUS) as JobCode[];
@@ -113,18 +141,19 @@ describe('agents/advocate/README.md', () => {
     expect(readme).toContain('401 `{"error":"unauthorized"}`, with no detail, before the body is read and before the job slot is taken');
     expect(readme).toContain('102 Processing');
     expect(readme).toMatch(/runtime's fetch gives up after 300 s of silence/);
-    expect(section('Routes')).toContain('A job whose caller hangs up, as the runtime does when its own budget for the job runs out, is stopped: its fetches and its call to the model are aborted, nothing of the job is kept, and the slot is free for the next one.');
+    expect(section('Routes')).toContain('A job whose caller hangs up, as the runtime does when its own budget for the job runs out, is stopped: its fetches and its call to OpenRouter are aborted, and nothing of the job is kept; a hire of a chat supplier that has begun first ends on its own terms, its escrow accepted or recorded for the janitor, and the slot is free for the next one once that hire has ended.');
+    expect(kitSources.find(({ file }) => file === 'server.ts')?.text).toContain('the run has settled, as for any job.');
     expect(section('Stopping')).toContain('The wait is on the job itself: it ends when the job has its answer, or when the job has been stopped because its caller hung up.');
     expect(readme).toContain("The service could not do this job (<code>). The operator's log has the detail.");
-    expect(section('Stopping')).toContain('On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and no new connection, and waits up to 300 s for the job that is running to end.');
+    expect(section('Stopping')).toContain('stops its janitor, and waits up to 300 s for the job that is running to end, its Accept included.');
     expect(section('Stopping')).toContain('so `stop_grace_period` in the compose file is 330 s');
     expect(section('Stopping')).toContain('so the wait is that long at most in practice');
     // The outcomes of a stop: the exit code 0 when the job ended in time, 1 when it was abandoned after the wait, as the kit exits.
-    expect(section('Stopping')).toContain(`One still running after ${SHUTDOWN_WAIT_MS / 1000} s is abandoned: its connection is closed, the log says so, and the service exits 1.`);
+    expect(section('Stopping')).toContain(`One still running after ${SHUTDOWN_WAIT_MS / 1000} s is abandoned: its connection is closed, the log names the escrows the state directory holds for the janitor of the next start, and the service exits 1.`);
     expect(section('Stopping')).toContain('A job that ends in time is answered, if its caller is still there, and the service exits 0.');
     expect(kitSources.find(({ file }) => file === 'lifecycle.ts')?.text).toContain("exit(outcome === 'abandoned' ? 1 : 0)");
     expect(readme).toContain(`${SHUTDOWN_WAIT_MS / 1000} s`);
-    expect(readme).toMatch(/at least 300000/);
+    expect(readme).toMatch(/at least 480000/);
     expect(section('Run it')).toContain('export SERVICE_AUTH_HEADER="Bearer $(openssl rand -hex 32)"');
     for (const name of ['BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY']) expect(section('Run it')).toContain(`read -rs ${name} && export ${name}`);
     expect(section('Run it')).toContain('It calls neither the Brave Search API nor OpenRouter at start: the first job is the first use of the two keys.');
@@ -137,7 +166,7 @@ describe('agents/advocate/README.md', () => {
     expect(readme).toContain(`${STATUS} The service is built and its tests run the search, the pages, the model and the check`);
     // The first line is the description of the manifest, and the sentence that follows names the capability.
     expect(readme.split('\n')[2]).toBe(`${manifestFromEnv({ OPERATOR_CONTACT: 'ops@example.test' }).description} Capability \`research.advocate.onesided.v1\`.`);
-    expect(readme).toContain('against stand-ins for the Brave Search API, the result pages and OpenRouter, with no network');
+    expect(readme).toContain('against stand-ins for the Brave Search API, the result pages, a chat supplier of the marketplace, the chain and OpenRouter, with no network');
     expect(readme).not.toMatch(/[\u{2013}\u{2014}]/u);
     expect(readme).not.toMatch(UNIT_NAME);
     expect(readme).not.toMatch(/[0-9a-f]{64}/);
@@ -151,10 +180,17 @@ const here = (file: string): URL => new URL(`../${file}`, import.meta.url);
 const textOf = (file: string): string => readFileSync(here(file), 'utf8');
 
 describe('agents/advocate/README.md, pinned further', () => {
-  test('the six settings the service cannot start without are the ones the README names, each is refused naming it, and a public key that is not the key of the hash stops the start', () => {
-    const required = ['OPERATOR_CONTACT', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'SERVICE_AUTH_HEADER', 'BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY'];
+  test('the seven settings the service cannot start without are the ones the README names, each is refused naming it, and a public key that is not the key of the hash, or a buyer line that is not the key\'s, stops the start', () => {
+    const required = ['OPERATOR_CONTACT', 'ADVOCATE_BUYER_PRIV_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'SERVICE_AUTH_HEADER', 'BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY'];
     const run = section('Run it');
-    expect(run).toContain('when `OPERATOR_CONTACT`, `SUPPLIER_PKH`, `SUPPLIER_PUB_KEY_HEX`, `SERVICE_AUTH_HEADER`, `BRAVE_SEARCH_API_KEY` or `OPENROUTER_API_KEY` is not set');
+    expect(run).toContain('when `OPERATOR_CONTACT`, `ADVOCATE_BUYER_PRIV_KEY_HEX`, `SUPPLIER_PKH`, `SUPPLIER_PUB_KEY_HEX`, `SERVICE_AUTH_HEADER`, `BRAVE_SEARCH_API_KEY` or `OPENROUTER_API_KEY` is not set');
+    expect(run).toContain("when `ADVOCATE_BUYER_PKH`, `ADVOCATE_BUYER_ADDRESS` or `ADVOCATE_BUYER_PUB_KEY_HEX` is not the key's, when the buyer key is the key of `SUPPLIER_PKH`,");
+    expect(() => loadConfig({ ...FULL_ENV, ADVOCATE_BUYER_PUB_KEY_HEX: 'ef'.repeat(32) })).toThrow(/ADVOCATE_BUYER_PUB_KEY_HEX is not the public key of the key in ADVOCATE_BUYER_PRIV_KEY_HEX/);
+    const both = keyOf('advocate readme test: one key in both roles');
+    expect(() => loadConfig({ ...FULL_ENV, SUPPLIER_PKH: both.pkh, SUPPLIER_PUB_KEY_HEX: both.pubKeyHex, ADVOCATE_BUYER_PRIV_KEY_HEX: both.privateKeyHex })).toThrow(/ADVOCATE_BUYER_PRIV_KEY_HEX holds the key of SUPPLIER_PKH/);
+    expect(() => loadConfig({ ...FULL_ENV, ADVOCATE_BUYER_PKH: 'a'.repeat(56) })).toThrow(/ADVOCATE_BUYER_PKH.*is not the key hash of the key in ADVOCATE_BUYER_PRIV_KEY_HEX/);
+    expect(() => loadConfig({ ...FULL_ENV, ADVOCATE_BUYER_ADDRESS: 'addr1notthekey' })).toThrow(/ADVOCATE_BUYER_ADDRESS.*is not the address of the key in ADVOCATE_BUYER_PRIV_KEY_HEX/);
+    expect(run).toContain('or when it cannot write to its state directory');
     expect(run).toContain('when `SUPPLIER_PUB_KEY_HEX` is not the public key of `SUPPLIER_PKH`');
     for (const name of required) {
       const env: Record<string, string> = { ...FULL_ENV };
@@ -181,15 +217,28 @@ describe('agents/advocate/README.md, pinned further', () => {
     expect(loadConfig({ ...FULL_ENV, AGENT_STATUS_CHIP: 'Proposed' }).manifest.status.chip).toBe('proposed');
     expect(() => loadConfig({ ...FULL_ENV, AGENT_STATUS_CHIP: 'bogus' })).toThrow(/^environment variable AGENT_STATUS_CHIP must be one of /);
     expect(() => loadConfig({ ...FULL_ENV, ADVERT_MAX_PROCESSING_MS: String(MIN_PROCESSING_WINDOW_MS - 1) })).toThrow(/ADVERT_MAX_PROCESSING_MS/);
-    expect(MIN_PROCESSING_WINDOW_MS / 60_000).toBe(5);
-    expect(run).toContain('is below 5 min');
+    expect(MIN_PROCESSING_WINDOW_MS / 60_000).toBe(8);
+    expect(run).toContain('is below 8 min');
     // A secret in another line stops the start, naming that line and not showing the secret.
-    for (const name of ['BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY']) {
+    for (const name of ['BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY', 'ADVOCATE_BUYER_PRIV_KEY_HEX']) {
       let message = '';
       try { loadConfig({ ...FULL_ENV, AGENT_DID: `did:${FULL_ENV[name]}` }); } catch (e) { message = e instanceof Error ? e.message : String(e); }
       expect(message, name).toMatch(/\bAGENT_DID\b/);
       expect(message.toLowerCase().includes(FULL_ENV[name].toLowerCase()), name).toBe(false);
     }
+  });
+
+  test('The buyer wallet, the state and the janitor: the escrow no record holds (ruling R39) and the one write after a Post that fails no job (ruling R62), as the kit has them; and the characters of an allowlist entry, as the start takes them', () => {
+    const state = section('The buyer wallet, the state and the janitor');
+    expect(state).toContain('A process exit between signing a Post and its confirmation leaves an escrow that is in no record, so the janitor never sees it: it can be reclaimed by hand after its `deliver_by`, and it holds the lock of one sub-job.');
+    expect(textOf('../../packages/hire-kit/src/janitor.ts')).toContain('Known gap (ruling R39): an escrow is written here once its Post is confirmed or has failed after its signature, so a');
+    expect(state).toContain('A write of the file that fails after a Post fails the job with `store_write_failed` (500), all but the removal of an entry once its Accept is confirmed, which is logged and leaves an entry the janitor drops once it reads spent; after a write that fails its job, the service posts no escrow again until it restarts');
+    const hire = textOf('../../packages/hire-kit/src/hire.ts');
+    expect(hire).toContain('// The one write of the store that does not fail the run (ruling R62)');
+    expect(hire).toContain('and could not be removed from the stranded store (${errorText(err)}); the janitor drops it once it reads it spent`);');
+    expect(row('LLM_MODEL_ALLOWLIST')).toContain('in order of preference, each of letters, digits, dots, underscores, colons, slashes and hyphens, as an advert names it, or the service stops at start;');
+    expect(loadConfig({ ...FULL_ENV, LLM_MODEL_ALLOWLIST: 'deepseek/deepseek-v4-flash:free' }).allowlist).toStrictEqual(['deepseek/deepseek-v4-flash:free']);
+    expect(() => loadConfig({ ...FULL_ENV, LLM_MODEL_ALLOWLIST: 'deepseek/deepseek-v4-flash free' })).toThrow('each of letters, digits, dots, underscores, colons, slashes and hyphens only');
   });
 
   test('Run it: the recipe of a key pair for a run on a machine of one\'s own makes settings the service takes, and Run it says where a pair comes from on the host', () => {
@@ -200,7 +249,12 @@ describe('agents/advocate/README.md, pinned further', () => {
     expect(JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')).engines.node).toBe('>=22');
     expect(run).toContain('a public key and its blake2b-224');
     expect(run).toContain("export SUPPLIER_PKH=$(node --import tsx --input-type=module -e \"import { blake2b224Hex } from '@vsa/vector-read'; console.log(blake2b224Hex(process.env.SUPPLIER_PUB_KEY_HEX))\")");
-    expect(loadConfig(FULL_ENV).manifest.keys).toStrictEqual({ supplier_pkh: blake2b224Hex(PUBLIC_KEY), pub_key_hex: PUBLIC_KEY });
+    expect(loadConfig(FULL_ENV).manifest.keys).toStrictEqual({ supplier_pkh: blake2b224Hex(PUBLIC_KEY), pub_key_hex: PUBLIC_KEY, buyer_pkh: buyerIdentityOf(BUYER_KEY).buyerPkh });
+    expect(run).toContain('export ADVOCATE_BUYER_PRIV_KEY_HEX="$(cat /path/to/buyer-key.hex)"    # read from a file: a key typed on a command line stays in the shell\'s history');
+    expect(run).toContain('mkdir -p /tmp/advocate-state');
+    expect(run).toContain('OPERATOR_CONTACT=ops@example.test ADVOCATE_STATE_DIR=/tmp/advocate-state PORT=9094 pnpm start');
+    expect(run).toContain('The service logs the buyer address it derived from the key; that is the address that receives the collateral and the float.');
+    expect(run).toContain('A run locks real value: a job posts an escrow on Vector mainnet from the buyer key.');
     expect(run).toContain('on the host, step 4 of `deploy/host/RUNBOOK-advocate.md` makes the pair with `gen-keypair`');
     const runbook = textOf('../../deploy/host/RUNBOOK-advocate.md');
     expect((runbook.split('\n## 4. ')[1] ?? '').split('\n## ')[0]).toContain('agent/src/cli/gen-keypair.ts');
@@ -211,17 +265,18 @@ describe('agents/advocate/README.md, pinned further', () => {
   test('Routes states the numbers of the code: the 1000000 bytes of a message, the deadline 30 s inside the timeout, the budgets of the search, the pages and the model, the line every 60 s', () => {
     const routes = section('Routes');
     expect(routes).toContain(`It is read up to ${MAX_BODY} bytes.`);
-    expect(routes).toContain(`A job has its own deadline, ${JOB_DEADLINE_MS} ms after its request arrives, 30 s inside the runtime's \`SERVICE_TIMEOUT_MS\` of ${JOB_DEADLINE_MS + 30_000}.`);
+    expect(routes).toContain(`A job has its own deadline, ${JOB_DEADLINE_MS} ms after its request arrives, 60 s inside the runtime's \`SERVICE_TIMEOUT_MS\` of ${JOB_DEADLINE_MS + 60_000}.`);
+    expect(routes).toContain(`the waits of the hire of a chat supplier stop ${FALLBACK_RESERVE_MS} ms before the deadline;`);
     expect(routes).toContain(`The search gets at most ${SEARCH_MAX_MS} ms of it, for two queries one after the other, each at most ${SEARCH_QUERY_TIMEOUT_MS} ms;`);
     expect(routes).toContain(`the fetch of the pages ends ${FETCH_PHASE_MAX_MS} ms after it begins, or ${FETCH_RESERVE_MS} ms before the deadline when that comes first;`);
-    expect(routes).toContain(`the model gets the smaller of ${MODEL_MAX_MS} ms and the time the job has left less ${RESULT_RESERVE_MS} ms, and is not called when that comes to under ${MODEL_MIN_MS} ms.`);
+    expect(routes).toContain(`the call through OpenRouter, when that hire fails, gets the smaller of ${MODEL_MAX_MS} ms and the time the job has left less ${RESULT_RESERVE_MS} ms, and is not made when that comes to under ${MODEL_MIN_MS} ms.`);
     expect(HEARTBEAT_MS).toBe(60_000);
     expect(routes).toContain('Without it, 401 `{"error":"unauthorized"}`');
     expect(routes).toContain('the server writes an interim `102 Processing` line every 60 s');
     // The line goes to an HTTP/1.1 client only, the answer after it is the same 200, and a job of this service ends well inside the 300 s of silence.
     expect(routes).toContain('to a client that speaks HTTP/1.1, ahead of the answer, which is the same 200 with the same body as it would be without them');
     expect(kitSources.find(({ file }) => file === 'server.ts')?.text).toContain('req.httpVersionMajor === 1 && req.httpVersionMinor >= 1');
-    expect(routes).toContain(`A job of this service ends within ${JOB_DEADLINE_MS / 1000} s, well inside that`);
+    expect(routes).toContain(`a job of this service can take its whole deadline of ${JOB_DEADLINE_MS / 1000} s, and longer when a hire is in its Accept: without the lines the runtime would report \`service_unreachable\` at the five minute mark.`);
     expect(routes).toContain('| `GET /healthz` | `{"ok":true}` while the service runs: it has no check of its own beyond answering |');
   });
 
@@ -253,7 +308,10 @@ describe('agents/advocate/README.md, pinned further', () => {
     expect(text).toContain(`a thesis and ${SHAPES.short.maxArguments} arguments for \`short\` or ${SHAPES.standard.minArguments} to ${SHAPES.standard.maxArguments} for \`standard\``);
     expect(text).toContain(`each with a quote of ${QUOTE_MIN_CHARS} to ${QUOTE_MAX_CHARS} characters copied from that page`);
     expect(text).toContain('a fixed prompt that asks for the strongest brief for the side');
-    expect(text).toContain('The result names the model `<model> via OpenRouter`; the receipt names `advocate-v1`.');
+    expect(text).toContain('The result names the model `<model> via the Vector marketplace` or `<model> via OpenRouter`, and the path under `inference`; the receipt names `advocate-v1`.');
+    expect(text).toContain('The call is bought first from a chat supplier on the Vector marketplace: the service chooses an Active `llm.text.generate.v1` advert of a model on `LLM_MODEL_ALLOWLIST` priced at most `LLM_MAX_PRICE_LOVELACE`');
+    expect(text).toContain('When that hire fails, the call is one chat completion through OpenRouter');
+    expect(text).toContain('sends the prompt as one input string with no temperature, no JSON mode and no token limit');
     expect(text).toContain('with `temperature` 0, a JSON answer');
     expect(textOf('src/model.ts')).toContain('temperature: 0,');
     expect(textOf('src/model.ts')).toContain("response_format: { type: 'json_object' }");
@@ -281,7 +339,7 @@ describe('agents/advocate/README.md, pinned further', () => {
 
   test('Errors names the fixed message of a job that fails at a third party or in the check, and the server answers every code of a job as the README says', async () => {
     const errors = section('Errors');
-    expect(errors).toContain('A job that fails at a third party or in the check (the 502 row) gets a fixed message');
+    expect(errors).toContain('A job that fails at a third party, in the hire or in the check (the 502 row), or with `store_write_failed` (500), gets a fixed message');
     expect(errors).toContain('A job cut at its deadline (`deadline`, 422) keeps its words');
     expect(errors).toContain('`aborted` (499) is the answer to a caller that has hung up, which nobody reads.');
     expect(errors).toContain('because the runtime copies the first 200 characters of a failure to the buyer');
@@ -294,9 +352,9 @@ describe('agents/advocate/README.md, pinned further', () => {
     });
     for (const code of Object.keys(JOB_STATUS) as JobCode[]) {
       const answer = await answerTo(new AdvocateError(code, `the words of ${code}`));
-      expect([answer.status, answer.json], code).toStrictEqual([JOB_STATUS[code], { error: code, message: JOB_STATUS[code] === 502 ? operatorsText(code) : `the words of ${code}` }]);
+      expect([answer.status, answer.json], code).toStrictEqual([JOB_STATUS[code], { error: code, message: JOB_STATUS[code] >= 500 ? operatorsText(code) : `the words of ${code}` }]);
     }
-    // What the log keeps of each: the whole detail for the 502 row, and for the 422 and the 499 the code, the status and the time, not the words (the 499 row says so).
+    // What the log keeps of each: the whole detail for the 502 row and the 500, and for the 422 and the 499 the code, the status and the time, not the words (the 499 row says so).
     const logOf = (error: Error): Promise<string[]> => {
       const lines: string[] = [];
       return serve({ manifest, deps: baseDeps(), log: (line) => { lines.push(line); }, runAdvocate: async () => { throw error; } }, async (api) => {
@@ -353,13 +411,17 @@ describe('agents/advocate/README.md, pinned further', () => {
     expect(section('Image')).toContain(`listens on ${PORT_DEFAULT}`);
     expect(dockerfile).toContain('ENTRYPOINT ["/usr/bin/tini", "--"]');
     expect(dockerfile).toMatch(/^USER node$/m);
-    expect(dockerfile).not.toMatch(/^VOLUME /m);
+    expect(dockerfile).toMatch(/^VOLUME \/data$/m);
+    expect(section('Image')).toContain('`/data` is a volume owned by `node`.');
     expect(dockerfile).toMatch(/^HEALTHCHECK .*\/healthz/m);
     expect(section('Image')).toContain('answers `/healthz` for its health check');
     const instructions = dockerfile.split('\n').filter((line) => !line.startsWith('#')).join('\n');
     expect(instructions, 'its comments say what it has not; its instructions name none of it').not.toMatch(/python|whisper/i);
     expect(section('Image')).toContain('runs as the `node` user under `tini`');
-    expect(section('Image')).toContain('It has no volume, no Python and no model');
+    expect(section('Image')).toContain('The image has no Python and no model');
+    // The janitor reads the chain and reclaims at run time too, as the head of the Dockerfile says.
+    expect(section('Image')).toContain('and what the janitor asks of the Vector chain about the escrows a job left behind.');
+    expect(dockerfile).toContain('and what the janitor');
   });
 
   test("the statuses of the codes the kit answers with are the kit's, read from packages/service-kit", () => {
@@ -383,15 +445,16 @@ describe('agents/advocate/README.md, pinned further', () => {
   });
 
   test('the Manifest section names the four placeholders of the template and the script that renders it, and Tests names files that exist', () => {
-    expect(Object.values(TEMPLATE_ENV)).toStrictEqual(['<OPERATOR_CONTACT>', '<AGENT_DID>', '<SUPPLIER_PKH>', '<SUPPLIER_PUB_KEY_HEX>']);
+    expect(Object.values(TEMPLATE_ENV)).toStrictEqual(['<OPERATOR_CONTACT>', '<AGENT_DID>', '<SUPPLIER_PKH>', '<SUPPLIER_PUB_KEY_HEX>', '<ADVOCATE_BUYER_PKH>']);
     for (const placeholder of Object.values(TEMPLATE_ENV)) expect(readme, placeholder).toContain(`\`${placeholder}\``);
     expect(JSON.parse(textOf('package.json')).scripts.template).toBe('node --import tsx scripts/render-template.mjs');
     expect(section('Manifest')).toContain('`pnpm --filter @vsa/advocate template`');
     expect(section('Manifest')).toContain('The advert `detail_uri` points at `GET /agent.json` and its `detail_hash` is the sha256 of the bytes served there.');
     expect(existsSync(here('scripts/render-template.mjs'))).toBe(true);
-    expect(section('Manifest')).toContain('with the four placeholders');
-    expect(section('Tests')).toContain('The Brave Search API, the result pages and OpenRouter are stand-ins');
-    for (const path of ['test/fake-fetch.ts', 'test/fixtures']) {
+    expect(section('Manifest')).toContain('with the five placeholders');
+    expect(section('Tests')).toContain('The Brave Search API, the result pages, the chat supplier and OpenRouter are stand-ins');
+    expect(section('Tests')).toContain('the chain is the fake chain of `packages/buyer-core`');
+    for (const path of ['test/fake-fetch.ts', 'test/fixtures', 'test/fake-chain-support.ts']) {
       expect(section('Tests'), path).toContain(path);
       expect(existsSync(here(path)), path).toBe(true);
     }
@@ -403,16 +466,18 @@ describe('agents/advocate/README.md, pinned further', () => {
     const quiet = { manifest, deps: baseDeps(), log: () => undefined };
     // The head: what is built and what is not, who holds the key, which keys the service holds, and what the template is for.
     holds(readme, [
-      'It has no registry record and no advert yet, and no job has run.',
+      'It has had a registry record since 2026-10-19 and has no advert yet, and no job has run.',
       '`specs/advocate.md` at the repository root is the specification; this page and the manifest describe the code.',
       'The service sits behind the template runtime (`vector-agent-template`, `CAPABILITY_KIND=custom`).',
       'The runtime holds the supplier key, claims the escrow of the hirer and posts the job to this service as the body of `POST /`.',
-      'The service holds no chain key and posts nothing. It holds two API keys of third parties, `BRAVE_SEARCH_API_KEY` and `OPENROUTER_API_KEY`.',
+      'The service holds the buyer key and no other chain key. It holds two API keys of third parties, `BRAVE_SEARCH_API_KEY` and `OPENROUTER_API_KEY`.',
+      "It buys the model call first from a chat supplier on the Vector marketplace, through a bonded escrow it posts with a buyer key of its own, verifies the supplier's signed receipt and accepts it, and makes the call through OpenRouter only when that hire fails.",
+      'An escrow that a job leaves behind is settled later by a janitor.',
       '`agent.json.template` is the manifest with placeholders. The service renders the real manifest from its environment when it starts and serves those bytes at `GET /agent.json`. It never serves the template itself.',
     ]);
     expect(existsSync(here('../../specs/advocate.md'))).toBe(true);
     expect(textOf('../../deploy/host/docker-compose.advocate.yml')).toContain('CAPABILITY_KIND: custom');
-    expect(SETTINGS.filter((name) => /PRIV|SEED|SECRET|SKEY/.test(name))).toStrictEqual([]);
+    expect(SETTINGS.filter((name) => /PRIV|SEED|SECRET|SKEY/.test(name))).toStrictEqual(['ADVOCATE_BUYER_PRIV_KEY_HEX']);
     const served = await serve(quiet, async (api) => (await api.request('GET', '/agent.json', undefined, { authorization: null })).text);
     expect(served).toBe(JSON.stringify(manifest));
     expect(served).not.toMatch(/<[A-Z_]+>/);
@@ -421,7 +486,8 @@ describe('agents/advocate/README.md, pinned further', () => {
       'It needs no other program and no model of its own.',
       'A secret in the wrong line of an env file is the mistake the start guards against.',
       'Each of the two API keys is looked for in every other setting the same way.',
-      'So none of the three is in a message, a log line or an answer, and the manifest is searched for all three once more before the service listens.',
+      'So none of the four is in a message, a log line or an answer, and the manifest is searched for all four once more before the service listens.',
+      'The buyer key is looked for in every other setting the service reads, in its raw and its bech32 form, before any check can print that line',
       'No message of the service shows a setting that is hex-shaped or long, only its length, and a line of the log about a key that a third party refused gives its HTTP status and never the key.',
       '`SUPPLIER_PUB_KEY_HEX` must be the public key of `SUPPLIER_PKH`, which catches a private key put in its line.',
     ]);
@@ -445,7 +511,7 @@ describe('agents/advocate/README.md, pinned further', () => {
       'The answer to a job is `JSON.stringify(result)`, serialised once, exactly the bytes the runtime hashes.',
       'The runtime and the service read it from the same env file, and neither blanks it.',
       "`GET /healthz` and `GET /agent.json` need no header: the image's health check sends none, and the manifest is public.",
-      'One job runs at a time.',
+      'One job runs at a time, because the escrow of its chat sub-job comes from the one buyer wallet.',
       'The lines stop when the job ends.',
     ]);
     expect(manifest.interface.request_schema.required).toStrictEqual(['subject', 'side']);
@@ -456,7 +522,7 @@ describe('agents/advocate/README.md, pinned further', () => {
     // Errors: the form of a refusal, and what a refusal leaves of the service's.
     holds(section('Errors'), [
       'A refusal is `{"error": "<code>", "message": "<words>"}` with the status in the table.',
-      "Every refusal locks nothing of the service's: it holds no chain key and posts nothing. The runtime fails the job, and the hirer reclaims the escrow after its `deliver_by`.",
+      "No refusal locks anything of the service's before the Post of its chat sub-job, and a job that fails after that Post leaves its escrow to the janitor. The runtime fails the job, and the hirer reclaims the escrow after its `deliver_by`.",
     ]);
     // The check, the stop, the manifest settings, the tests and the image.
     holds(section('The check'), ['The sources of the result are the surviving ones, once for each page and quote, in the order they are first cited.']);
@@ -464,7 +530,7 @@ describe('agents/advocate/README.md, pinned further', () => {
     holds(section('Manifest'), [
       'Numbers (and `PORT`) must be non-negative integers.',
       'A value that breaks a rule stops the service at start, and the error names the variable.',
-      'Adverts are immutable, so a changed manifest means a retired advert and a new one: `OPENROUTER_MODEL` is in it, through the gap that names the model.',
+      'Adverts are immutable, so a changed manifest means a retired advert and a new one: `OPENROUTER_MODEL` and the first model of `LLM_MODEL_ALLOWLIST` are in it, through the gap that names the model.',
     ]);
     expect(() => loadConfig({ ...FULL_ENV, ADVERT_PRICE_LOVELACE: '-1' })).toThrow(/^environment variable ADVERT_PRICE_LOVELACE must be a non-negative integer/);
     expect(() => loadConfig({ ...FULL_ENV, PORT: 'x' })).toThrow(/^environment variable PORT must be a non-negative integer/);
@@ -478,7 +544,7 @@ describe('agents/advocate/README.md, pinned further', () => {
     // The claims about the check, the receipt, the signing and the log, whole where a clause of them was held only in part.
     holds(readme, [
       'drops each quote it does not find in the text of its page and each argument left with none, and answers with the brief, which the runtime hashes into the one receipt it signs.',
-      'which is all the service checks, since it signs nothing.',
+      'which is all the service checks of the supplier key, since it never signs with it.',
       'with a count and nothing the caller sent.',
       'the whole message is in the log.',
       'A job cut at its deadline (`deadline`, 422) keeps its words, which are about the time the job had and hold nothing of the request.',

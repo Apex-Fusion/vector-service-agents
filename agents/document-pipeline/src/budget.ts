@@ -12,7 +12,7 @@
 // (810 s for a page, 750 s for the chat job).
 //
 // What the deadline cuts is what the run waits for on its own: the repeats of a send, the polls, the repeats of a read of the receipt hash, and the
-// pauses between them (fit, checkWithin and waitWithin below). Past the deadline none of them starts again, and the run fails with `deadline`, the escrows it
+// pauses between them (fit, checkWithin and waitWithin of packages/hire-kit). Past the deadline none of them starts again, and the run fails with `deadline`, the escrows it
 // leaves behind going to the janitor. The deadline does not cut the confirmation of a Post or of an Accept: Chain.postEscrow and Chain.accept take no
 // deadline, and RealChain gives each up to 60 s to build and 180 s to submit and confirm. Nor does it cut the repeats of an Accept that failed in a way
 // that cannot land, every 15 s for up to 600 s after the supplier's answer (ruling R54). So a hire in its Accept at the deadline runs on, and its Accept
@@ -27,8 +27,12 @@
 // transactions cost today; an Accept whose script execution cost more would exceed it. That is under 4500000. Once
 // both suppliers are chosen, a second look checks the float against the locks their adverts really take (src/orchestrate.ts): larger bonds, or a
 // ceiling raised above that, are caught there.
+import type { Clocked } from '@vsa/hire-kit';
 import { PipelineError } from './result.ts';
 export { OutOfTime, within } from '@vsa/service-kit';
+/** The waits of one hire, moved to packages/hire-kit with the hire (its src/budget.ts says what each is for). */
+export { BUSY_RETRY_MS, POLL_INTERVAL_MS, RECEIPT_HASH_WAIT_MS, SEND_CUTOFF_MS } from '@vsa/hire-kit';
+export type { Clocked } from '@vsa/hire-kit';
 
 /** How long after its request arrived a run must be over: the server sets the deadline of each request to its arrival plus this (see the head of this file). */
 export const JOB_DEADLINE_MS = 1_620_000;
@@ -38,19 +42,10 @@ export const PAGE_MIN_LEFT_MS = 660_000;
 export const LLM_MIN_LEFT_MS = 420_000;
 /** A chat supplier chosen longer ago than this when the pages are done is chosen again before its Post (ruling R35). */
 export const LLM_SELECTION_MAX_AGE_MS = 600_000;
-/** A busy supplier, or one that does not see the escrow yet, is sent the same job again this often, on the same escrow... */
-export const BUSY_RETRY_MS = 15_000;
-/** ...until this long before the escrow's deliver_by: a send waits up to 75 s for the supplier's Claim, so the last one ends 15 s before deliver_by. */
-export const SEND_CUTOFF_MS = 90_000;
-/** A job is polled this often, and the hash of the receipt on chain is read again this often while the indexer catches up. */
-export const POLL_INTERVAL_MS = 3_000;
 /** An OCR supplier whose /status could not be read is asked once more this long after, before the job is refused (each ask has the 2 s of a /status call). */
 export const STATUS_RETRY_MS = 3_000;
 /** How long a read of the buyer wallet may take, a job's as the health check's (src/server.ts): a read that has not answered then is abandoned. */
 export const WALLET_READ_TIMEOUT_MS = 30_000;
-
-/** How long the hash of the supplier's Submit may take to show on chain once the supplier has answered with the receipt (Koios lag, ruling R16). */
-export const RECEIPT_HASH_WAIT_MS = 120_000;
 /**
  * The float a run needs for each sub-job it could post, outside the collateral output; a run of `max_pages` posts up to max_pages + 1 of them. It holds for
  * adverts at or under the price ceilings with bonds of 1000000 each (see the head of this file); the second look of src/orchestrate.ts covers the rest.
@@ -62,9 +57,6 @@ export const OCR_IMAGE_B64_MAX = 12_000_000;
 /** The float a run of `maxPages` pages needs before its first Post: (max_pages + 1) x 4500000 lovelace. */
 export const floatNeeded = (maxPages: number): bigint => BigInt(maxPages + 1) * FLOAT_PER_SUB_JOB_LOVELACE;
 
-/** What the rules read: the run's clock, its sleep, and its deadline (POSIX milliseconds). */
-export interface Clocked { clock: () => number; sleep: (ms: number) => Promise<void>; deadlineMs: number }
-
 /** The refusal of a run whose deadline came while it was `doing` something. */
 export const deadlineError = (doing: string): PipelineError => new PipelineError('deadline', `The deadline of the job came while ${doing}.`);
 
@@ -74,27 +66,4 @@ export function assertTimeLeft(t: Clocked, minLeftMs: number, what: string): voi
   if (left < minLeftMs) {
     throw new PipelineError('deadline', `${Math.max(0, Math.floor(left / 1000))} s are left before the deadline of the job, less than the ${minLeftMs / 1000} s that ${what} needs, so it was not started.`);
   }
-}
-
-/**
- * Where the moment `at` stands: in time for `limit` and the deadline, or past whichever of the two ends first (the deadline when they are the same
- * moment). A moment equal to a limit is in time.
- */
-export function fit(t: Clocked, at: number, limit: number): 'in time' | 'past the limit' | 'past the deadline' {
-  const end = Math.min(limit, t.deadlineMs);
-  if (at <= end) return 'in time';
-  return end === t.deadlineMs ? 'past the deadline' : 'past the limit';
-}
-
-/** Throws when `at` is past `limit` (the error `onLimit` makes) or past the deadline (`deadline`, saying what the run was `doing`); returns otherwise. */
-export function checkWithin(t: Clocked, at: number, limit: number, onLimit: () => PipelineError, doing: string): void {
-  const where = fit(t, at, limit);
-  if (where === 'past the deadline') throw deadlineError(doing);
-  if (where === 'past the limit') throw onLimit();
-}
-
-/** Sleeps `ms` when the attempt after the sleep still starts within `limit` and the deadline (checkWithin); otherwise throws, without sleeping. */
-export async function waitWithin(t: Clocked, ms: number, limit: number, onLimit: () => PipelineError, doing: string): Promise<void> {
-  checkWithin(t, t.clock() + ms, limit, onLimit, doing);
-  await t.sleep(ms);
 }

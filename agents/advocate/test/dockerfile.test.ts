@@ -1,13 +1,13 @@
 // agents/advocate/test/dockerfile.test.ts
 // The image is built from the repository root and cannot be built everywhere these tests run (the implementers' machine has no Docker daemon; the host builds
 // it at deployment), so the Dockerfile is held here to what it has to say: that it copies what exists and all of what the service imports, that the install
-// comes between the manifests and the sources, and that the final image is the workspace, node and tini, with no Python and no other package, run as node,
-// on the port of the code, and starts index.ts.
+// comes between the manifests and the sources, and that the final image is the workspace, node and tini, with no Python and no other package, a data volume
+// that node owns for the stranded store, run as node, on the port of the code, and starts index.ts.
 import { describe, test, expect } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PORT_DEFAULT } from '../src/start.ts';
+import { PORT_DEFAULT, STATE_DIR_DEFAULT } from '../src/start.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const dockerfile = readFileSync(new URL('../Dockerfile', import.meta.url), 'utf8');
@@ -38,14 +38,14 @@ describe('agents/advocate/Dockerfile', () => {
   });
 
   test('every path it copies from the build context exists in the repository, and the final stage copies nothing but the workspace of the builder', () => {
-    expect(copies).toHaveLength(7);
+    expect(copies).toHaveLength(11);
     for (const { line } of copies) for (const source of sourcesOf(line)) expect(existsSync(join(root, source)), `${source} (${line})`).toBe(true);
     expect(final.filter((line) => /^COPY /.test(line))).toStrictEqual(['COPY --from=builder --chown=node:node /repo /repo']);
   });
 
-  test('the builder installs the service and every workspace package it depends on: the manifests, then the install from the lockfile, then the sources', () => {
+  test('the builder installs the service and every workspace package it depends on, the chain and the hire among them: the manifests, then the install from the lockfile, then the sources', () => {
     const closure = workspaceClosure('agents/advocate');
-    expect(closure).toStrictEqual(['agents/advocate', 'packages/service-kit', 'packages/vector-read']);
+    expect(closure).toStrictEqual(['agents/advocate', 'packages/buyer-core', 'packages/hire-kit', 'packages/service-kit', 'packages/vector-read']);
     const install = instructions.findIndex((line) => /^RUN pnpm install /.test(line));
     expect(instructions[install]).toBe("RUN pnpm install --frozen-lockfile --filter '@vsa/advocate...'");
     for (const dir of closure) {
@@ -58,15 +58,18 @@ describe('agents/advocate/Dockerfile', () => {
     expect(builder).toContain('RUN corepack enable && corepack prepare pnpm@10.33.2 --activate');
   });
 
-  test('the final image: tini from Debian and no other package, no Python, no model, no volume, the workspace owned by node and run as node', () => {
+  test('the final image: tini from Debian and no other package, no Python, no model, the workspace owned by node, a data volume that node owns, run as node', () => {
     const at = (line: string) => final.indexOf(line);
     // A package of the system or of Python, in either stage: tini, and nothing else.
     expect(instructions.filter((line) => /apt-get|apk |pip3? /.test(line))).toStrictEqual(['RUN apt-get update && apt-get install -y --no-install-recommends tini && rm -rf /var/lib/apt/lists/*']);
     expect(at('RUN apt-get update && apt-get install -y --no-install-recommends tini && rm -rf /var/lib/apt/lists/*')).toBe(1);
     expect(instructions.join('\n')).not.toMatch(/python|venv|models?\//i);
-    expect(final.some((line) => /^VOLUME /.test(line))).toBe(false);
     expect(at('WORKDIR /repo')).toBeLessThan(at('COPY --from=builder --chown=node:node /repo /repo'));
-    expect(at('COPY --from=builder --chown=node:node /repo /repo')).toBeLessThan(at('USER node'));
+    // The state directory: made and given to node before VOLUME, so that a new volume starts with that owner, and before the image runs as node.
+    expect(final.filter((line) => /^VOLUME /.test(line))).toStrictEqual([`VOLUME ${STATE_DIR_DEFAULT}`]);
+    expect(at('COPY --from=builder --chown=node:node /repo /repo')).toBeLessThan(at('RUN mkdir -p /data && chown node:node /data'));
+    expect(at('RUN mkdir -p /data && chown node:node /data')).toBeLessThan(at('VOLUME /data'));
+    expect(at('VOLUME /data')).toBeLessThan(at('USER node'));
   });
 
   test('the environment, the port and the health check are the ones the code and the compose file use, and it starts index.ts with node and tsx under tini', () => {

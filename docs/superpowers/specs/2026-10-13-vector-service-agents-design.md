@@ -274,7 +274,7 @@ The strongest one-sided brief for a position, with citations. Its bias is declar
   "search": "Brave Search API", "model": "deepseek/deepseek-v4-flash via OpenRouter" }
 ```
 
-**Backend.** Brave Search API (`BRAVE_SEARCH_API_KEY`, free tier) for 8 to 12 results, page text fetched through `safeFetch` (≤ 1 MB each), one LLM call through OpenRouter (`OPENROUTER_API_KEY`) with a fixed system prompt that forbids counter-arguments and requires every claim to cite a fetched source; a post-check drops any claim whose quote is not found in the fetched text. **Terms.** Price 3; bonds 1 and 1; `ADVERT_MAX_PROCESSING_MS` 300 000; `SERVICE_TIMEOUT_MS` 180 000. Model string `advocate-v1`.
+**Backend.** Brave Search API (`BRAVE_SEARCH_API_KEY`, free tier) for 8 to 12 results, page text fetched through `safeFetch` (≤ 1 MB each), one LLM call with a fixed system prompt that forbids counter-arguments and requires every claim to cite a fetched source, bought first from a chat supplier on the Vector marketplace through a bonded escrow of the service's own buyer key, and made through OpenRouter (`OPENROUTER_API_KEY`) only when that hire fails (order of the operator, 2026-10-19); a post-check drops any claim whose quote is not found in the fetched text. **Terms.** Price 3; bonds 1 and 1; `ADVERT_MAX_PROCESSING_MS` 480 000; `SERVICE_TIMEOUT_MS` 360 000. Model string `advocate-v1`.
 
 **Why it is in the batch.** Declared behaviour in discovery metadata versus observed behaviour is the live thread in the Identity Primitives doc; this agent makes the declaration explicit and testable. A Judge agent that hires two Advocates for opposite sides is the natural follow-up and is out of scope here.
 

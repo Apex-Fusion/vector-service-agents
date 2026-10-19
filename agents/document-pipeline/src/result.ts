@@ -13,15 +13,18 @@
 //        escrows are settled
 //   422  every other: page_too_large, deadline, llm_incomplete, and for each hop (ocr, llm) <hop>_post_failed, _busy, _refused, _send_lost, _failed,
 //        _timeout, _bad_result, _receipt_failed, _receipt_unavailable and _accept_failed. src/hire.ts says when each one is thrown.
-import type { FleetVerification, Receipt } from '@vsa/buyer-core';
+//
+// A sub-job is the record of packages/hire-kit (HireRecord), which makes it in the key order below, and the ten words of a hire's failure are the kit's
+// (HireFailure), spelled out here as well: test/readme.test.ts looks for every code of the README in the sources of this service.
+import type { HireFailure, HireRecord } from '@vsa/hire-kit';
 
 export const RESULT_SCHEMA = 'vector.document-pipeline.result.v1';
 
-/** One hire: the advert and escrow it ran under, the receipt and its signature as the supplier gave them, and each check of verifyFleetReceipt. */
-export interface SubJob {
-  capability_id: string; advert_ref: string; escrow_ref: string; supplier_pkh: string;
-  receipt: Receipt; receipt_signature: string; verification: Record<string, boolean>;
-}
+/**
+ * One hire: the advert and escrow it ran under, the receipt and its signature as the supplier gave them, and each check of verifyFleetReceipt. The kit's
+ * record, keys in this order: capability_id, advert_ref, escrow_ref, supplier_pkh, receipt, receipt_signature, verification.
+ */
+export type SubJob = HireRecord;
 export type PipelineAnswer = { summary: string } | { extraction: unknown; schema_valid: boolean; raw_text?: string };
 export interface PipelineResult {
   schema: 'vector.document-pipeline.result.v1';
@@ -38,6 +41,9 @@ export interface PipelineResult {
 export type Hop = 'ocr' | 'llm';
 export type HopFailure =
   | 'post_failed' | 'busy' | 'refused' | 'send_lost' | 'failed' | 'timeout' | 'bad_result' | 'receipt_failed' | 'receipt_unavailable' | 'accept_failed';
+/** HopFailure is the kit's HireFailure, word for word: the type check fails at SameWords once the two part. */
+type Holds<T extends true> = T;
+type SameWords = Holds<[HopFailure, HireFailure] extends [HireFailure, HopFailure] ? true : false>;
 export type PipelineErrorCode =
   | 'schema_invalid' | 'insufficient_float' | 'page_too_large' | 'ocr_supplier_unavailable' | 'llm_supplier_unavailable' | 'deadline' | 'llm_incomplete'
   | 'store_write_failed' | `${Hop}_${HopFailure}`;
@@ -52,11 +58,6 @@ export class PipelineError extends Error {
     this.code = code;
     this.status = status;
   }
-}
-
-/** The seven checks of verifyFleetReceipt as true (pass) or false, in its order. */
-export function verificationOf(checks: FleetVerification['checks']): Record<string, boolean> {
-  return Object.fromEntries(Object.entries(checks).map(([check, state]) => [check, state === 'pass']));
 }
 
 /** What the hires of one run moved: the lock and the fee of every Post, the fee of every Accept seen confirmed. */

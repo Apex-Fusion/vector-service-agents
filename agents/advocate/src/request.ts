@@ -1,8 +1,8 @@
 // agents/advocate/src/request.ts
 // The request JSON of the spec (specs/advocate.md, Request), read strictly: the documented shape and nothing else (ruling R-E2). Anything outside it is
-// refused here, with a RequestError, before the service makes a search. The service holds no chain key and posts nothing, so a refusal locks nothing of the
-// service; the runtime fails the job, and the hirer reclaims the escrow after its deliver_by. Every refusal of the request is bad_shape (400), with a message
-// that names the field: there is no 422 in the intake.
+// refused here, with a RequestError, before the service makes a search. The service holds a buyer key and posts at most one escrow a job, for the chat
+// sub-job of its model call after the search, so a refusal locks nothing of the service: the runtime fails the job, and the hirer reclaims the escrow after
+// its deliver_by. Every refusal of the request is bad_shape (400), with a message that names the field: there is no 422 in the intake.
 //
 // A length is counted in characters, Unicode code points, as JSON Schema's maxLength counts them. The subject, the side, the audience and the language are
 // trimmed before they are checked; the length is short or standard exactly, as given (ruling R-E21). An optional field given as null is refused like any other

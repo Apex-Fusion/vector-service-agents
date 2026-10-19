@@ -6,9 +6,10 @@ import { AdvocateError, JOB_STATUS } from '../src/errors.ts';
 import type { JobCode } from '../src/errors.ts';
 
 describe('AdvocateError', () => {
-  test('deadline is 422, aborted 499, and every other code 502', () => {
+  test('deadline is 422, aborted 499, store_write_failed 500, and every other code 502, inference_failed among them (R-F10)', () => {
     expect(JOB_STATUS).toStrictEqual({
-      search_failed: 502, search_empty: 502, no_sources: 502, model_failed: 502, model_output_invalid: 502, no_supported_claims: 502, deadline: 422, aborted: 499,
+      search_failed: 502, search_empty: 502, no_sources: 502, model_failed: 502, model_output_invalid: 502, no_supported_claims: 502, inference_failed: 502,
+      store_write_failed: 500, deadline: 422, aborted: 499,
     });
   });
 
@@ -18,5 +19,6 @@ describe('AdvocateError', () => {
       expect([e instanceof Error, e.name, e.code, e.status, e.message, e.detail]).toStrictEqual([true, 'AdvocateError', code, JOB_STATUS[code], operatorsText(code), `what happened (${code})`]);
     }
     expect(new AdvocateError('search_failed', 'both Brave queries failed').message).toBe("The service could not do this job (search_failed). The operator's log has the detail.");
+    expect(new AdvocateError('store_write_failed', 'escrow x').message).toBe("The service could not do this job (store_write_failed). The operator's log has the detail.");
   });
 });

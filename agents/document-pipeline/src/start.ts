@@ -1,7 +1,8 @@
 // agents/document-pipeline/src/start.ts
 // How the service starts: the environment read into a configuration (loadConfig), and the real parts put together and started (startService): the buyer
 // chain from the buyer key, the stranded store in the state directory, the janitor on it, and the server. And how it stops: shutdown, and the signals that call it.
-// The settings helpers, the stop and the signals are packages/service-kit's.
+// The settings helpers, the stop and the signals are packages/service-kit's; the stranded store, the janitor, its bounded stop and the line of an abandoned job
+// are packages/hire-kit's.
 //
 // Four settings are required, and the service stops at start without them, naming the variable: OPERATOR_CONTACT (published in the manifest, so with no
 // default), PIPELINE_BUYER_PRIV_KEY_HEX (the buyer key), SUPPLIER_PKH (the supplier key hash, published in the manifest; the supplier key itself is the
@@ -26,6 +27,7 @@ import {
   SHUTDOWN_WAIT_MS, assertHeaderValue, assertNoTokenIn, given, hexOf, lifecycle, listen, refuseSecretIn, refuseTokenIn, stopOnSignals as stopServiceOnSignals,
 } from '@vsa/service-kit';
 import type { ShutdownOutcome } from '@vsa/service-kit';
+import { abandonedLine, stopJanitorWithin } from '@vsa/hire-kit';
 import { blake2b224Hex } from '@vsa/vector-read';
 import { errorText } from './format.ts';
 import { StrandedStore, startJanitor } from './janitor.ts';
@@ -266,26 +268,12 @@ export async function startService(env: NodeJS.ProcessEnv = process.env, options
   const janitorStopWaitMs = options.janitorStopWaitMs ?? JANITOR_STOP_WAIT_MS;
   let janitorStopped: Promise<void> | undefined;
   // The janitor stopped with a bound (ruling R61): no pass starts again, and one in flight that hangs on a node call is abandoned when the bound is over.
-  const stopJanitor = (): Promise<void> => (janitorStopped ??= (async () => {
-    let timer: NodeJS.Timeout | undefined;
-    const late = new Promise<'late'>((resolve) => { timer = setTimeout(() => resolve('late'), janitorStopWaitMs); });
-    try {
-      if ((await Promise.race([janitor.stop().then(() => 'ended' as const), late])) === 'late') {
-        log(`stopping: the janitor's pass did not end within ${janitorStopWaitMs / 1000} s and is abandoned; the janitor of the next start reads the state directory again`);
-      }
-    } finally {
-      clearTimeout(timer);
-    }
-  })());
+  const stopJanitor = (): Promise<void> => (janitorStopped ??= stopJanitorWithin(janitor, janitorStopWaitMs, log));
   // The stop of a restart (ruling R61), from packages/service-kit: no new job and no new connection, the janitor stopped at once, and up to the wait for the job
   // that is running, its Accept included. An abandoned job leaves its escrows in the state directory, and the line names them for the janitor of the next start.
   const { stop, shutdown } = lifecycle({
     server, slot, log, stopWork: stopJanitor,
-    abandonedLine: (waitMs) => {
-      const refs = stranded.list().map((entry) => entry.escrow_ref);
-      return `stopping: the job that is running did not finish within ${waitMs} ms and is abandoned; the state directory holds ${refs.length} ${refs.length === 1 ? 'escrow' : 'escrows'} `
-        + `for the janitor of the next start${refs.length === 0 ? '' : `: ${refs.join(', ')}`}`;
-    },
+    abandonedLine: (waitMs) => abandonedLine(stranded, waitMs),
   });
   return { server, port, stop, shutdown: (waitMs: number = SHUTDOWN_WAIT_MS) => shutdown(waitMs) };
 }

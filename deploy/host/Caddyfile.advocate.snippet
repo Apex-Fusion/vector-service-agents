@@ -1,5 +1,5 @@
 # deploy/host/Caddyfile.advocate.snippet - site block for the shared Caddy of the host, merged into the host's Caddy configuration.
-# PROPOSED (built, not deployed) since 2026-10-13. Not installed: step 10 of RUNBOOK-advocate.md has not been run. The hostname must be DNS only (grey cloud),
+# PROPOSED (built, not deployed) since 2026-10-13. Installed: steps 1 to 10 of RUNBOOK-advocate.md, step 10 among them, ran on 2026-10-18 and 2026-10-19. The hostname must be DNS only (grey cloud),
 # or Caddy cannot get its certificate. The block must stay the last thing in this file: the host administrator's install script
 # takes everything from the hostname line to the end.
 # The runtime does not serve /agent.json, and the advert's detail_uri points at it, so that one path goes to the service.

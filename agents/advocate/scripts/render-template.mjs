@@ -1,4 +1,4 @@
-// scripts/render-template.mjs - writes agents/advocate/agent.json.template from manifestFromEnv, with the placeholders for the four fields the operator
+// scripts/render-template.mjs - writes agents/advocate/agent.json.template from manifestFromEnv, with the placeholders for the five fields the operator
 // supplies. The template is never edited by hand: change the manifest in src/server.ts and run `pnpm --filter @vsa/advocate template`. A test
 // (test/server.test.ts) keeps the file equal to what this prints.
 import { writeFileSync } from 'node:fs';

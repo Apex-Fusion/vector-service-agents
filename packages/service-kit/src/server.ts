@@ -21,6 +21,8 @@
 // Document Pipeline's sub-escrows) needs that. A service that keeps nothing of a job sets abortOnClose: when the connection of a job ends before its answer
 // has been written, the server logs "job abandoned by the caller after <ms> ms" once and aborts the signal it gave the run, and the slot is free as soon as
 // the run has settled, as for any job. The response's own 'close' is what says so; the request's says nothing, for it comes as soon as its body has been read.
+// A service that sets abortOnClose and still commits value in a job (an escrow its run posts as a buyer, packages/hire-kit) looks at the signal before the
+// commitment and after it, and never passes the signal into it: a hire under way ends on its own terms, settled or recorded for its janitor.
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer as httpServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
