@@ -34,8 +34,8 @@ function keyWords(path, text) {
   const whole = new RegExp(`(?<!${ID})${name}(?!${ID})`, 'g');
   // The one read: the call that takes the value of the variable, and the name to report it by.
   const theRead = `requiredEnv('${name}', env.${name},`;
-  // Any other read of it: env.NAME, process.env.NAME, env['NAME'].
-  const otherRead = new RegExp(`\\benv\\s*(?:\\.\\s*${name}(?!${ID})|\\[\\s*['"\`]${name}['"\`]\\s*\\])`);
+  // Any other read of it: env.NAME, process.env.NAME, env['NAME'], and each of them through optional chaining, env?.NAME and env?.['NAME'].
+  const otherRead = new RegExp(`\\benv\\s*(?:\\??\\.\\s*${name}(?!${ID})|(?:\\?\\.\\s*)?\\[\\s*['"\`]${name}['"\`]\\s*\\])`);
   // The name used as a key or a binding, and not named in prose: NAME: NAME = NAME ??= NAME, NAME }
   const bound = new RegExp(`(?<!${ID})${name}(?!${ID})\\s*(?:\\?\\?=|\\|\\|=|&&=|[:=,}])`);
   if (text.split(theRead).length - 1 > 1) return true; // the read is in one place
@@ -74,6 +74,11 @@ test('the guard on service sources lets the start of the Document Pipeline and t
       `const key = env.${NAME};`, // read anywhere but in the one place
       `const key = process.env['${NAME}'];`,
       `const key = process.env["${NAME}"];`,
+      `const key = env["${NAME}"];`,
+      `const key = env?.${NAME};`, // read through optional chaining
+      `const key = process.env?.${NAME};`,
+      `const key = env?.['${NAME}'];`,
+      `const key = process.env?.["${NAME}"];`,
       `env.SUPPLIER_${NAME}`, // another name that ends in it
       `env.${NAME}S`, // another name that starts with it
       `env.${NAME}_COPY`,

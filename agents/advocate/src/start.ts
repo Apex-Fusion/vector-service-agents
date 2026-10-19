@@ -12,13 +12,14 @@
 // SUPPLIER_PUB_KEY_HEX (the public key of the supplier key, published beside its key hash), and the two keys of the third parties, BRAVE_SEARCH_API_KEY and
 // OPENROUTER_API_KEY. The buyer key, the token and the two API keys are the four secrets of the service. The key hash and the mainnet address of the buyer key
 // are derived from the key, so the buyer key hash the manifest publishes is the key that signs, and an ADVOCATE_BUYER_PKH, ADVOCATE_BUYER_ADDRESS or
-// ADVOCATE_BUYER_PUB_KEY_HEX the operator wrote down that is not the key's stops the start. A secret put in the wrong line of an env file is the mistake this
-// guards against: the buyer key is looked for in every other setting, and in those the chain code reads and prints, as soon as it is known, the token right
-// after it, and each API key after the checks that print no value, so before any check that could print the line that holds it; no message shows a value that
-// is hex-shaped or long; and the manifest is searched for all four last. Everything is checked before anything is made: no directory is created and no chain is
-// built for an environment that is refused. The state directory is proved writable before the first job could depend on it, because a job records the escrow
-// it posts there and must not find out only then. The start asks no third party anything: a call to check a key would send it, and use the quota of the
-// service, for nothing a job would not show.
+// ADVOCATE_BUYER_PUB_KEY_HEX the operator wrote down that is not the key's stops the start. So does a buyer key whose key hash is SUPPLIER_PKH: the supplier
+// key is the runtime's, and the buyer key a key of its own. A secret put in the wrong line of an env file is the mistake this guards against: the buyer key is
+// looked for in every other setting, and in those the chain code reads and prints, as soon as it is known, the token right after it, and each API key after
+// the checks that print no value, so before any check that could print the line that holds it; no message shows a value that is hex-shaped or long; and the
+// manifest is searched for all four last. Everything is checked before anything is made: no directory is created and no chain is built for an environment that
+// is refused. The state directory is proved writable before the first job could depend on it, because a job records the escrow it posts there and must not
+// find out only then. The start asks no third party anything but the janitor's first pass, which reads the chain for the escrows a run left behind in the
+// state directory and reclaims those that are due: a call to check a key would send it, and use the quota of the service, for nothing a job would not show.
 import { rmSync, writeFileSync } from 'node:fs';
 import type { EventEmitter } from 'node:events';
 import type { Server } from 'node:http';
@@ -151,8 +152,8 @@ function lovelaceOf(name: string, value: string, fallback: bigint): bigint {
  * this order: OPERATOR_CONTACT; the buyer key of ADVOCATE_BUYER_PRIV_KEY_HEX (its form, and the key looked for in every other setting); the token looked
  * for in every other setting, when it is given; SUPPLIER_PKH, SERVICE_AUTH_HEADER, SUPPLIER_PUB_KEY_HEX and its key hash; the two API keys, each checked and
  * looked for; OPENROUTER_MODEL; ADVERT_MAX_PROCESSING_MS; LLM_MODEL_ALLOWLIST and LLM_MAX_PRICE_LOVELACE; PORT, HOST, ADVOCATE_STATE_DIR and
- * VECTOR_MARKETPLACE_INDEXER_URL; the buyer key hash, address and public key the operator wrote down, each against the key; and the manifest last, searched
- * for the four secrets. `makeManifest` is a seam for a test of that last look.
+ * VECTOR_MARKETPLACE_INDEXER_URL; the buyer key apart from the supplier key; the buyer key hash, address and public key the operator wrote down, each against
+ * the key; and the manifest last, searched for the four secrets. `makeManifest` is a seam for a test of that last look.
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (env: NodeJS.ProcessEnv) => AgentManifest = manifestFromEnv): ServiceConfig {
   requiredEnv('OPERATOR_CONTACT', env.OPERATOR_CONTACT, "the operator's contact address, published in the manifest");
@@ -185,6 +186,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (
   const indexerUrl = given(env.VECTOR_MARKETPLACE_INDEXER_URL) || undefined;
 
   const buyer = buyerIdentityOf(privateKeyHex);
+  // The supplier key is the runtime's. With it in the buyer's line the service would hold it, publish one key hash as both, and post from the wallet the
+  // runtime claims and bonds from. The message shows no value.
+  if (buyer.buyerPkh === supplierPkh) {
+    throw new Error("environment variable ADVOCATE_BUYER_PRIV_KEY_HEX holds the key of SUPPLIER_PKH: the supplier key is the runtime's, and the buyer key must be a key of its own");
+  }
   // What was written is not shown, only how long it is: it may be a secret in the wrong line. What it is checked against is public.
   const writtenPkh = given(env.ADVOCATE_BUYER_PKH);
   if (writtenPkh !== '' && writtenPkh.toLowerCase() !== buyer.buyerPkh) {

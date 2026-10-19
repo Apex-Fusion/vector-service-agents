@@ -1,7 +1,8 @@
 # agents/advocate/Dockerfile - build context is the repo root. Two stages: the workspace installed from the lockfile (builder), and the final image. The
 # service runs no model: its image holds the workspace, node and tini, and nothing is fetched at run time but what a job asks of the Brave Search API, of the
-# hosts of the result pages, of the Vector chain and the marketplace indexer, of a chat supplier on the marketplace and of OpenRouter. No Python, no model
-# files. One volume, /data, holds the bookkeeping of the escrows the service posts (stranded.json), so that it outlives the container.
+# hosts of the result pages, of the Vector chain and the marketplace indexer, of a chat supplier on the marketplace and of OpenRouter, and what the janitor
+# asks of the Vector chain: the state of each escrow a job left behind, and the Reclaim of one that is due. No Python, no model files. One volume, /data,
+# holds the bookkeeping of the escrows the service posts (stranded.json), so that it outlives the container.
 FROM node:22-bookworm-slim AS builder
 WORKDIR /repo
 RUN corepack enable && corepack prepare pnpm@10.33.2 --activate

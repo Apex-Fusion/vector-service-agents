@@ -1,27 +1,29 @@
 // agents/advocate/test/start.test.ts
 // How the service starts and stops: the environment read into a configuration, its checks in their order, the buyer key, the token and the two API keys kept
-// out of every other line and out of the manifest, the buyer key hash, address and public key the operator wrote down held to the key (ruling R-F11), the model,
-// the window, the allowlist, the ceiling and the state directory read; the line it logs when it listens (it asks no third party anything at start); the chain
-// made from the key, the stranded store in the state directory and the janitor on it, whose first pass settles what a stranded file of the Document
-// Pipeline's format names; a job on the settings of the environment; the stop of the kit with this service's log and the bounded stop of the janitor; and
-// src/index.ts run as a process.
+// out of every other line and out of the manifest, the buyer key hash, address and public key the operator wrote down held to the key (ruling R-F11) and the
+// buyer key kept apart from the supplier key, the model, the window, the allowlist and the form of its entries, the ceiling and the state directory read; the
+// line it logs when it listens (it asks no third party anything at start but what its janitor reads of the chain); the chain made from the key, the stranded
+// store in the state directory and the janitor on it, whose first pass settles what a stranded file of the Document Pipeline's format names, with the interval
+// of its passes and the bound of its stop; a job on the settings of the environment, the allowlist the manifest names among them; a start that fails once its
+// port is open; the stop of the kit with this service's log and the bounded stop of the janitor; and src/index.ts run as a process, off the real chain.
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { createServer as netServer } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, test, expect } from 'vitest';
+import { afterEach, beforeAll, describe, test, expect, vi } from 'vitest';
 import { FakeChain, rawHexToBech32 } from '@vsa/buyer-core';
 import { sha256Utf8Hex } from '@vsa/vector-read';
 import { modelGap } from '../src/gaps.ts';
 import { DEFAULT_MODEL } from '../src/model.ts';
 import { manifestFromEnv } from '../src/server.ts';
 import {
-  CHAIN_SETTINGS, JANITOR_INTERVAL_MS, PORT_DEFAULT, PRICE_CEILING_DEFAULT_LOVELACE, SETTINGS, SHUTDOWN_WAIT_MS, STATE_DIR_DEFAULT, WRITE_PROBE, loadConfig, startService,
-  stopOnSignals,
+  CHAIN_SETTINGS, JANITOR_INTERVAL_MS, JANITOR_STOP_WAIT_MS, PORT_DEFAULT, PRICE_CEILING_DEFAULT_LOVELACE, SETTINGS, SHUTDOWN_WAIT_MS, STATE_DIR_DEFAULT, WRITE_PROBE, loadConfig,
+  startService, stopOnSignals,
 } from '../src/start.ts';
 import type { StartOptions } from '../src/start.ts';
-import { CHAT_ADVERT_REF, INDEXER, WINDOW_MS, escrowNo } from './fake-chain-support.ts';
+import { CHAT_ADVERT_REF, CHAT_MODEL, INDEXER, WINDOW_MS, escrowNo } from './fake-chain-support.ts';
 import type { Market } from './fake-chain-support.ts';
 import { at, fixture, reply, routedFetch } from './fake-fetch.ts';
 import { GOLDEN_REQUEST, GOLDEN_T0, TEST_BRAVE_KEY, TEST_OPENROUTER_KEY, braveAnswer, braveAnswers, goldenAnswer, goldenMarket, modelRoute } from './golden.ts';
@@ -43,6 +45,12 @@ const EARLIER: readonly string[] = ['ADVOCATE_BUYER_PRIV_KEY_HEX', 'SERVICE_AUTH
 /** Does `text` show a part of `secret` worth a search, in any case? */
 const shows = (text: string, secret: string): boolean => text.toLowerCase().includes(secret.slice(-16).toLowerCase());
 const KEY = BUYER.privateKeyHex;
+/** A loopback port where nothing listens: one the system gave a server that has closed again. */
+const closedPort = (): Promise<number> => new Promise<number>((resolve, reject) => {
+  const probe = netServer();
+  probe.once('error', reject);
+  probe.listen(0, '127.0.0.1', () => { const { port } = probe.address() as { port: number }; probe.close(() => resolve(port)); });
+});
 
 describe('loadConfig', () => {
   test('a full environment gives the defaults for everything the operator leaves out, and the buyer identity derived from the key', () => {
@@ -51,7 +59,8 @@ describe('loadConfig', () => {
       openRouterApiKey: TEST_OPENROUTER_KEY, model: DEFAULT_MODEL, buyer: { privateKeyHex: KEY, pkh: BUYER.pkh, address: BUYER_ADDRESS }, stateDir: '/data',
       allowlist: [DEFAULT_MODEL], maxPriceLovelace: 1_000_000n,
     });
-    expect([PORT_DEFAULT, STATE_DIR_DEFAULT, PRICE_CEILING_DEFAULT_LOVELACE, JANITOR_INTERVAL_MS]).toStrictEqual([9094, '/data', 1_000_000n, 60_000]);
+    // The janitor's interval and the bound of its stop are the Document Pipeline's (ruling R61).
+    expect([PORT_DEFAULT, STATE_DIR_DEFAULT, PRICE_CEILING_DEFAULT_LOVELACE, JANITOR_INTERVAL_MS, JANITOR_STOP_WAIT_MS]).toStrictEqual([9094, '/data', 1_000_000n, 60_000, 30_000]);
     expect(BUYER_ADDRESS.startsWith('addr1v')).toBe(true);
   });
 
@@ -70,6 +79,26 @@ describe('loadConfig', () => {
   test('the allowlist is the model of OPENROUTER_MODEL unless set, so that both paths ask the same model; a list that names none is refused (ruling R-F6)', () => {
     expect(loadConfig({ ...FULL_ENV, OPENROUTER_MODEL: 'openai/gpt-4o-mini' }).allowlist).toStrictEqual(['openai/gpt-4o-mini']);
     expect(message(() => loadConfig({ ...FULL_ENV, LLM_MODEL_ALLOWLIST: ' , ,' }))).toBe('environment variable LLM_MODEL_ALLOWLIST must name at least one model, as a comma-separated list');
+  });
+
+  test('each model of LLM_MODEL_ALLOWLIST is letters, digits, dots, underscores, slashes and hyphens, for the first is published: another entry is refused by its position alone, at the start and in the manifest in the same words', () => {
+    const refusal = (n: number): string => `environment variable LLM_MODEL_ALLOWLIST must be a comma-separated list of models, each of letters, digits, dots, underscores, slashes and hyphens only, and its entry ${n} is not`;
+    const dash = String.fromCodePoint(0x2013); // a dash that is not a hyphen, made from its code point so that this file holds none
+    const refused: Array<[string, number]> = [
+      ['deepseek/deepseek-v4-flash, openai/gpt 4o mini', 2], // a space inside a model
+      ['deepseek/deepseek-v4-flash\nopenai/gpt-4o-mini', 1], // one model a line, not comma-separated
+      ['deepseek/deepseek-v4-flash;openai/gpt-4o-mini', 1],
+      [`openai/gpt-4o-mini, deepseek/deepseek${dash}v4-flash`, 2],
+      ['a/one,, b/two, c three', 3], // counted among the models the list names, which an empty entry is not
+    ];
+    for (const [list, n] of refused) {
+      const text = message(() => loadConfig({ ...FULL_ENV, LLM_MODEL_ALLOWLIST: list }));
+      expect(text, JSON.stringify(list)).toBe(refusal(n));
+      expect(message(() => manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, LLM_MODEL_ALLOWLIST: list })), JSON.stringify(list)).toBe(text);
+    }
+    for (const list of ['Qwen/Qwen3.6-35B-A3B-FP8', 'deepseek-v4-pro, moonshotai/kimi-k2.6', 'org_a/model.b-c']) {
+      expect(loadConfig({ ...FULL_ENV, LLM_MODEL_ALLOWLIST: list }).allowlist, list).toStrictEqual(list.split(',').map((model) => model.trim()));
+    }
   });
 
   test('LLM_MAX_PRICE_LOVELACE: 1000000 unless set, a whole number of at least 0 when set, and anything else stops the start, naming the setting and never showing the value', () => {
@@ -148,6 +177,17 @@ describe('loadConfig', () => {
       for (const text of [pkh, address, pub]) expect(shows(text, KEY)).toBe(false);
       expect(pkh).not.toContain(other.pkh);
       expect(pub).not.toContain(other.pubKeyHex);
+    });
+
+    test("a buyer key whose key hash is SUPPLIER_PKH, the supplier key itself, is refused, naming the two settings and no value: the supplier key is the runtime's", () => {
+      const pair = keyOf('advocate service test: one key in both roles');
+      const both = { ...FULL_ENV, SUPPLIER_PKH: pair.pkh, SUPPLIER_PUB_KEY_HEX: pair.pubKeyHex, ADVOCATE_BUYER_PRIV_KEY_HEX: pair.privateKeyHex };
+      const text = message(() => loadConfig(both));
+      expect(text).toBe("environment variable ADVOCATE_BUYER_PRIV_KEY_HEX holds the key of SUPPLIER_PKH: the supplier key is the runtime's, and the buyer key must be a key of its own");
+      expect(message(() => loadConfig({ ...both, SUPPLIER_PKH: pair.pkh.toUpperCase() }))).toBe(text);
+      expect(text).not.toMatch(/[0-9a-f]{16}/i);
+      // The same buyer key beside a supplier key of its own starts.
+      expect(loadConfig({ ...both, SUPPLIER_PKH: SUPPLIER.pkh, SUPPLIER_PUB_KEY_HEX: SUPPLIER.pubKeyHex }).buyer.pkh).toBe(pair.pkh);
     });
 
     test('the manifest is looked at last for the key in both its forms and in any case: whatever put it in a value that is published, the start stops, unprinted', () => {
@@ -341,6 +381,12 @@ describe('startService', () => {
     expect(readdirSync(good)).toStrictEqual([]); // no probe left behind, and no stranded file until there is an escrow to put in it
   });
 
+  test('a start that fails once the port is open closes the port again', async () => {
+    const free = await closedPort();
+    await expect(startService(envIn(tempDir(), { PORT: String(free) }), optionsWith({ janitorIntervalMs: 0 }))).rejects.toThrow(/janitor interval/);
+    await expect(fetch(`http://127.0.0.1:${free}/healthz`)).rejects.toThrow();
+  });
+
   test("the janitor's first pass settles what a stranded file of the Document Pipeline's format names: the Open escrow is reclaimed, the Submitted one kept with the time from which its supplier may release it (Review Focus 1)", async () => {
     const m = goldenMarket();
     // Two escrows a job left behind: one Open (its send failed), one Submitted (its receipt failed a check); both long past their deliver_by.
@@ -405,6 +451,30 @@ describe('startService', () => {
     expect((await (await postJob(cheap.port)).json()).inference.fallback_from).toBe('llm_supplier_unavailable');
   });
 
+  test('the allowlist of LLM_MODEL_ALLOWLIST reaches the hire of a job and the manifest alike: the gap and the listening line name its first model, and the hire buys a model on it and no other (ruling R-F19)', async () => {
+    /** A service on the list `models` and a market of its own, and the answer of one job: the market's one chat supplier sells CHAT_MODEL. */
+    const jobOn = async (models: string) => {
+      const m = goldenMarket();
+      const openRouter: number[] = [];
+      const service = await start(envIn(tempDir(), { VECTOR_MARKETPLACE_INDEXER_URL: INDEXER, LLM_MODEL_ALLOWLIST: models }), {
+        createChain: async () => m.chain, fetchImpl: ipJob(m, openRouter), clock: () => m.clock.now, sleep: m.sleep,
+      });
+      const answer = await (await postJob(service.port)).json();
+      return { port: service.port, answer, openRouter };
+    };
+    // Another model alone: no supplier of it is listed, so nothing is hired and the brief comes from OpenRouter.
+    const alone = await jobOn('other/model');
+    expect([alone.answer.inference.path, alone.answer.inference.fallback_from, alone.openRouter]).toStrictEqual(['openrouter', 'llm_supplier_unavailable', [1]]);
+    // The model of the supplier second on the list: the hire buys it on the marketplace.
+    const second = await jobOn(`other/model, ${CHAT_MODEL}`);
+    expect([second.answer.inference.path, second.answer.model, second.openRouter]).toStrictEqual(['marketplace', `${CHAT_MODEL} via the Vector marketplace`, []]);
+    // Both manifests and both listening lines name the first model of the list each hire was given.
+    for (const { port } of [alone, second]) {
+      expect((await (await fetch(`http://127.0.0.1:${port}/agent.json`)).json()).gaps[4]).toBe(modelGap('other/model', DEFAULT_MODEL));
+      expect(logs.find((line) => line.startsWith(`listening on 127.0.0.1:${port};`))).toContain(`; model other/model from the Vector marketplace, OpenRouter ${DEFAULT_MODEL} as the fallback;`);
+    }
+  });
+
   test('the janitor is given the job slot: a pass while a job runs defers the Reclaim of a due escrow, and the first pass after the job reclaims it', async () => {
     const m = goldenMarket();
     // An escrow an earlier job left behind, posted so that its deliver_by is 10 s after the arrival of the job: due 5 s later.
@@ -455,6 +525,53 @@ describe('startService', () => {
     await expect(fetch(`http://127.0.0.1:${service.port}/healthz`)).rejects.toThrow();
   });
 
+  test("a start given neither seam of the janitor runs a pass every JANITOR_INTERVAL_MS and gives a pass in flight JANITOR_STOP_WAIT_MS at a stop: the Pipeline's 60 s and 30 s (ruling R61)", async () => {
+    const dir = tempDir();
+    // An escrow long past its deliver_by, so that every pass reads its state: the first two reads answer Submitted, and the third answers only when let go.
+    writeFileSync(join(dir, 'stranded.json'), JSON.stringify([{ escrow_ref: escrowNo(9), deliver_by: 1, posted_at: 0, kind: 'llm' }]), 'utf8');
+    const chain = new FakeChain({ buyerPkh: BUYER.pkh });
+    let reads = 0;
+    let letGo: (state: 'Submitted') => void = () => undefined;
+    chain.escrowState = async () => {
+      reads += 1;
+      if (reads < 3) return 'Submitted';
+      return new Promise((resolve) => { letGo = resolve; });
+    };
+    /** Lets what is due run on the real event loop: only the timers the janitor and its stop set are fake. */
+    const settle = async (): Promise<void> => { for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let service: Awaited<ReturnType<typeof startService>> | undefined;
+    try {
+      service = await startService(envIn(dir), { createChain: async () => chain, fetchImpl: noCall, log }); // no janitorIntervalMs, no janitorStopWaitMs
+      await settle();
+      expect(reads).toBe(1);
+      await vi.advanceTimersByTimeAsync(JANITOR_INTERVAL_MS - 1);
+      await settle();
+      expect(reads).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await settle();
+      expect(reads).toBe(2);
+      await vi.advanceTimersByTimeAsync(JANITOR_INTERVAL_MS);
+      await settle();
+      expect(reads).toBe(3); // a pass in flight, which the stop finds
+      let stopped = false;
+      const stopping = service.stop().then(() => { stopped = true; });
+      await vi.advanceTimersByTimeAsync(JANITOR_STOP_WAIT_MS - 1);
+      await settle();
+      expect([stopped, logs.filter((line) => line.startsWith('stopping:'))]).toStrictEqual([false, []]);
+      await vi.advanceTimersByTimeAsync(1);
+      await settle();
+      expect(logs).toContain("stopping: the janitor's pass did not end within 30 s and is abandoned; the janitor of the next start reads the state directory again");
+      vi.useRealTimers();
+      await stopping;
+      expect(stopped).toBe(true);
+    } finally {
+      letGo('Submitted'); // the pass ends, so that a stop after a failure here does not wait the 30 s on the real clock
+      vi.useRealTimers();
+      await service?.stop();
+    }
+  });
+
   test('a shutdown that has to abandon a job in its hop names the escrow the state directory holds for the janitor of the next start, and says abandoned', async () => {
     const m = goldenMarket();
     let sleeping = false;
@@ -503,8 +620,21 @@ describe('startService', () => {
 
 describe('src/index.ts as a process', () => {
   const cwd = fileURLToPath(new URL('../', import.meta.url));
+  /** The chain and the marketplace indexer at a loopback port where nothing listens. */
+  let offChain: Record<string, string> = {};
+  beforeAll(async () => {
+    const node = `http://127.0.0.1:${await closedPort()}`;
+    offChain = { VECTOR_OGMIOS_URL: node, VECTOR_KOIOS_URL: `${node}/`, VECTOR_SUBMIT_URL: `${node}/api/submit/tx`, VECTOR_MARKETPLACE_INDEXER_URL: node };
+  });
+  /**
+   * Starts src/index.ts on `env` over the environment the tests run in, less every setting the service and the chain code read, so that nothing an operator
+   * has set can change what a test sees (as the Document Pipeline's process tests do), and with the chain and the indexer off (offChain, last), so that no call
+   * of the real chain can leave the machine, whatever the state directory holds.
+   */
   const run = (env: NodeJS.ProcessEnv) => {
-    const child = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], { cwd, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const inherited: NodeJS.ProcessEnv = { ...process.env };
+    for (const name of [...SETTINGS, ...CHAIN_SETTINGS]) delete inherited[name];
+    const child = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], { cwd, env: { ...inherited, ...env, ...offChain }, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
     child.stdout.on('data', (chunk: Buffer) => { out += chunk.toString('utf8'); });
@@ -545,6 +675,24 @@ describe('src/index.ts as a process', () => {
       expect((await fetch(`${base}/`, { method: 'POST', body: wire(GOLDEN_REQUEST) })).status).toBe(401);
       for (const secret of [TEST_AUTH, TEST_BRAVE_KEY, TEST_OPENROUTER_KEY, KEY]) expect(shows(p.out() + p.err(), secret)).toBe(false);
       expect(TEST_CONTACT).toBe('ops@example.test');
+    } finally {
+      p.child.kill();
+      await p.exited;
+    }
+  }, 60_000);
+
+  test('started for real with an escrow in its state directory: its janitor asks the chain of the environment, where nothing answers, keeps the escrow, and leaves the file as it was', async () => {
+    const dir = tempDir();
+    const file = `${JSON.stringify([{ escrow_ref: escrowNo(9), deliver_by: 1, posted_at: 0, kind: 'llm' }], null, 2)}\n`;
+    writeFileSync(join(dir, 'stranded.json'), file, 'utf8');
+    const p = run({ ...FULL_ENV, PORT: '0', HOST: '127.0.0.1', ADVOCATE_STATE_DIR: dir });
+    const kept = `[advocate] janitor: kept ${escrowNo(9)}: its state could not be read (`;
+    try {
+      const end = Date.now() + 30_000;
+      while (!p.out().includes(kept) && Date.now() < end && p.child.exitCode === null) await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(p.out(), p.err()).toContain(kept);
+      expect(readFileSync(join(dir, 'stranded.json'), 'utf8')).toBe(file);
+      for (const secret of [TEST_AUTH, TEST_BRAVE_KEY, TEST_OPENROUTER_KEY, KEY]) expect(shows(p.out() + p.err(), secret)).toBe(false);
     } finally {
       p.child.kill();
       await p.exited;

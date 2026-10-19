@@ -53,15 +53,22 @@ export function processingWindow(v: string | undefined): number {
   }
   return ms;
 }
+/** A model of LLM_MODEL_ALLOWLIST, as an advert names it: letters, digits, dots, underscores, slashes and hyphens. */
+const MODEL_ENTRY = /^[A-Za-z0-9._\/-]+$/;
 /**
  * The chat models a hire may buy, in the order of preference of LLM_MODEL_ALLOWLIST (a comma-separated list), or the model of OPENROUTER_MODEL alone when it
  * is not set, so that both paths ask the same model. The first is the market model, which the gap of the model and the listening line name (ruling R-F19);
- * the start checks it in its order.
+ * the start checks it in its order. The first is published, so every entry is held to MODEL_ENTRY, and one that is not is refused by its position among the
+ * models the list names, never by what it holds.
  */
 export function modelAllowlist(v: string | undefined, fallbackModel: string): string[] {
   if (given(v) === '') return [fallbackModel];
   const models = given(v).split(',').map((name) => name.trim()).filter((name) => name !== '');
   if (models.length === 0) throw new Error('environment variable LLM_MODEL_ALLOWLIST must name at least one model, as a comma-separated list');
+  const wrong = models.findIndex((name) => !MODEL_ENTRY.test(name));
+  if (wrong !== -1) {
+    throw new Error(`environment variable LLM_MODEL_ALLOWLIST must be a comma-separated list of models, each of letters, digits, dots, underscores, slashes and hyphens only, and its entry ${wrong + 1} is not`);
+  }
   return models;
 }
 
