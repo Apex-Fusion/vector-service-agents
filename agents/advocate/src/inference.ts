@@ -25,7 +25,7 @@
 // The log (R-F8). A line about the hop carries its code and its stage and nothing else: `inference: marketplace <code> at <stage>, falling back` or
 // `..., not falling back`. The messages of the kit can hold the words of a supplier, and none of them reaches a line or a detail of this file. The kit's own
 // lines through `log` (the supplier chosen, a store entry it could not remove) carry references, a price and a host, and are let through.
-import { OutOfTime, within } from '@vsa/service-kit';
+import { within } from '@vsa/service-kit';
 import type { Chain } from '@vsa/buyer-core';
 import { chatJob, chooseChatSupplier, hireOne, plannedLockOf, subJobFloat } from '@vsa/hire-kit';
 import type { HireErrors, HireFacts, HireLedger, HireRecord, HireStage, HireSupplier, Hired, StrandedStore } from '@vsa/hire-kit';
@@ -73,14 +73,16 @@ export function marketplaceInput(messages: readonly [ChatMessage, ChatMessage]):
 
 /**
  * The detail of a failed hire, for the log at 500 and 502: its code, its stage and its escrow, never the words of the kit or of a supplier. A store that
- * could not mark an Accept sent and not seen confirmed leaves a Submitted escrow, which cannot be reclaimed: if that Accept does not land, the escrow must
- * be accepted by hand within 600 s of its Submit, after which its supplier may release it, so its detail says that and not the deliver_by of a Post.
+ * could not mark an Accept sent and not seen confirmed leaves a Submitted escrow, which cannot be reclaimed, and an Accept that may still land: on the real
+ * chain an Accept is valid to the end of the accept window, 600 s after the Submit, so a wait for that Accept to fail would end with the window. The escrow
+ * is read on chain at once and, while it is still Submitted, accepted again by hand within 600 s of its Submit (an escrow is accepted once, so a second
+ * Accept fails if the first lands), after which its supplier may release it; its detail says that and not the deliver_by of a Post.
  */
 function hopDetail(hopCode: string, facts: HireFacts | null): string {
   const at = facts === null ? '' : ` at ${facts.stage}`;
   const ref = facts?.escrowRef ?? null;
   if (hopCode === 'store_write_failed' && facts?.stage === 'accept') {
-    return `the stranded store could not mark the Accept of the chat sub-job at accept: its escrow ${ref} stays recorded as Submitted, and its Accept may still land; read it on chain now and, if it is still Submitted once that Accept can no longer land, accept it by hand within 600 s of its Submit, after which its supplier may release it; restart the service, whose marketplace path is off until then`;
+    return `the stranded store could not mark the Accept of the chat sub-job at accept: its escrow ${ref} stays recorded as Submitted, and its Accept may still land; read it on chain now and, while it is still Submitted, accept it again by hand at once, within 600 s of its Submit (an escrow is accepted once, so a second Accept fails if the first lands), after which its supplier may release it; the marketplace path of the service is off until it restarts`;
   }
   if (hopCode === 'store_write_failed') {
     return `the stranded store could not be written for the chat sub-job${at}: settle its escrow ${ref ?? '(none)'} by hand once its deliver_by has passed, and restart the service, whose marketplace path is off until then`;
@@ -141,24 +143,23 @@ export async function infer(req: AdvocateRequest, pages: readonly Page[], deps: 
 async function viaMarketplace(input: string, deps: InferenceDeps): Promise<Inference | Fallback> {
   const { clock, log, signal } = deps;
   const hopDeadline = hopDeadlineMs(deps.deadlineMs);
+  // A caller who has hung up gets no fallback: the job is aborted (viaOpenRouter looks first), and the line says so.
   const fallBack = (code: string, stage: Stage, settled?: { subJob: HireRecord; accepted: 'confirmed' | 'pending' }): Fallback => {
-    log(`inference: marketplace ${code} at ${stage}, falling back`);
+    log(`inference: marketplace ${code} at ${stage}, ${signal?.aborted === true ? 'not falling back' : 'falling back'}`);
     return { fallbackFrom: code, subJob: settled?.subJob ?? null, accepted: settled?.accepted ?? null };
   };
   if (!deps.marketplace.on) return fallBack(MARKETPLACE_OFF, 'start');
   if (hopDeadline - clock() < HOP_MIN_MS) return fallBack('llm_out_of_time', 'start');
 
-  // The choice: within 25 s, for chain.readAdvert has no time limit of its own. Nothing is locked yet, so whatever ends it falls back.
+  // The choice: within 25 s, for chain.readAdvert has no time limit of its own. Nothing is locked yet, so whatever ends it falls back: a supplier that does not
+  // pass, the 25 s that run out (OutOfTime), and an error of any other kind, such as an indexer row the choice cannot read.
   let supplier: HireSupplier;
   try {
     supplier = await within(chooseChatSupplier(deps.chain, {
       fetchImpl: deps.fetchImpl, indexerUrl: deps.indexerUrl, allowlist: deps.allowlist, maxPriceLovelace: deps.maxPriceLovelace, ceilingSetting: 'LLM_MAX_PRICE_LOVELACE',
       budgetMs: CHOICE_BUDGET_MS, maxCandidates: CHOICE_MAX_CANDIDATES, log,
     }, () => new HopFailed('llm_supplier_unavailable', null)), CHOICE_WITHIN_MS);
-  } catch (error) {
-    if (error instanceof HopFailed || error instanceof OutOfTime) return fallBack('llm_supplier_unavailable', 'choice');
-    throw error;
-  }
+  } catch { return fallBack('llm_supplier_unavailable', 'choice'); }
 
   // The float: a fresh read of the wallet, its collateral output, and the lock of this advert and two fees outside it.
   let wallet: Awaited<ReturnType<Chain['wallet']>>;

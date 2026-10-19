@@ -5,8 +5,8 @@
 // takes a job (markClaimed) and the Submit when it finishes one (markSubmitted, with the hash of the receipt it signed), and signs its receipts with the real
 // commitment functions and a key made from fixed bytes: Ed25519 signs deterministically, so every run gives the same receipt, and the golden sub-job of
 // test/golden.ts is pinned byte for byte. It can be told to misbehave the ways the tests of the fallback rule need: answer busy, answer that it does not see
-// the escrow, lose a send before or after its Claim, refuse, fail the job, fail its own Submit, sign with another key, answer with a body the service cannot
-// read, or an answer that is cut or is no brief. No test touches the network, DNS or a chain: the endpoint of the supplier is an https IP literal of the documentation range 203.0.113.0/24, which
+// the escrow, lose a send before or after its Claim, refuse, fail the job, forget the job, fail its own Submit, sign with another key, sign token counts that
+// are not counts, answer with a body the service cannot read, or an answer that is cut or is no brief. No test touches the network, DNS or a chain: the endpoint of the supplier is an https IP literal of the documentation range 203.0.113.0/24, which
 // safeFetch takes as public without a host lookup, and the indexer is read with the injected fetch as it is.
 import { createHash, createPrivateKey, createPublicKey, sign as ed25519Sign } from 'node:crypto';
 import { FakeChain, responsesPromptHash, responsesResponseHash } from '@vsa/buyer-core';
@@ -70,9 +70,10 @@ const json = (status: number, body: unknown): Response => new Response(JSON.stri
  *   running   202: the job is not finished
  *   done      finishes the job if it is not (the Submit on chain), then 200 with the response, the receipt and its signature
  *   failed    the supplier's own failure envelope on a 502; nothing is submitted
+ *   gone      404 job_not_found in the supplier's own envelope: it no longer knows the job, as after a restart; nothing is submitted
  *   { fail, submitted }  the supplier's own failure envelope with the reason `fail`, after its Submit landed when `submitted`
  */
-export type PollStep = 'running' | 'done' | 'failed' | { fail: string; submitted: boolean };
+export type PollStep = 'running' | 'done' | 'failed' | 'gone' | { fail: string; submitted: boolean };
 interface Job { id: string; escrowRef: string; input: string; steps: PollStep[]; finished?: Record<string, unknown> }
 
 /** The chat supplier of the advert, on the Responses API of the fleet. */
@@ -89,6 +90,8 @@ export class ChatSupplier {
   steps: PollStep[] = ['running', 'done'];
   /** Sign receipts with FORGER_KEY: the hash on chain is still the one of what was signed. */
   forge = false;
+  /** The token counts its receipts sign: RECEIPT_TOKENS unless a test sets others, which need not be counts at all, since no check of a receipt reads them. */
+  tokens: { prompt_tokens: unknown; completion_tokens: unknown } = { ...RECEIPT_TOKENS };
   /** The text of the answer, and the status of the response: `incomplete` is a model that stopped at its output limit. */
   answer = '';
   status = 'completed';
@@ -161,6 +164,7 @@ export class ChatSupplier {
     }
     if (step === 'running') return json(202, { status: 'running', escrow_ref: job.escrowRef });
     if (step === 'failed') return json(502, { status: 'failed', reason: 'upstream_failure', message: 'the upstream model did not answer', escrow_ref: job.escrowRef });
+    if (step === 'gone') return json(404, { reason: 'job_not_found', message: `no job found with id ${id}` });
     const done = finished();
     return new Response(this.answerText ? this.answerText(done) : JSON.stringify(done), { status: 200, headers: { 'content-type': 'application/json' } });
   }
@@ -174,7 +178,7 @@ export class ChatSupplier {
     };
     const receipt = {
       escrow_ref: job.escrowRef, supplier_pkh: this.key.pkh, prompt_hash: responsesPromptHash({ input: job.input }), response_hash: responsesResponseHash(response),
-      model: CHAT_MODEL, prompt_tokens: RECEIPT_TOKENS.prompt_tokens, completion_tokens: RECEIPT_TOKENS.completion_tokens, wallclock_ms: 1830,
+      model: CHAT_MODEL, prompt_tokens: this.tokens.prompt_tokens, completion_tokens: this.tokens.completion_tokens, wallclock_ms: 1830,
     };
     const receiptSignature = (this.forge ? FORGER_KEY : this.key).sign(receipt);
     this.chain.markSubmitted(job.escrowRef, sha256Utf8Hex(canonicalize({ receipt, signature: receiptSignature })));

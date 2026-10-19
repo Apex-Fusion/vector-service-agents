@@ -81,8 +81,8 @@ describe('loadConfig', () => {
     expect(message(() => loadConfig({ ...FULL_ENV, LLM_MODEL_ALLOWLIST: ' , ,' }))).toBe('environment variable LLM_MODEL_ALLOWLIST must name at least one model, as a comma-separated list');
   });
 
-  test('each model of LLM_MODEL_ALLOWLIST is letters, digits, dots, underscores, slashes and hyphens, for the first is published: another entry is refused by its position alone, at the start and in the manifest in the same words', () => {
-    const refusal = (n: number): string => `environment variable LLM_MODEL_ALLOWLIST must be a comma-separated list of models, each of letters, digits, dots, underscores, slashes and hyphens only, and its entry ${n} is not`;
+  test('each model of LLM_MODEL_ALLOWLIST is letters, digits, dots, underscores, colons, slashes and hyphens, for the first is published: another entry is refused by its position alone, at the start and in the manifest in the same words', () => {
+    const refusal = (n: number): string => `environment variable LLM_MODEL_ALLOWLIST must be a comma-separated list of models, each of letters, digits, dots, underscores, colons, slashes and hyphens only, and its entry ${n} is not`;
     const dash = String.fromCodePoint(0x2013); // a dash that is not a hyphen, made from its code point so that this file holds none
     const refused: Array<[string, number]> = [
       ['deepseek/deepseek-v4-flash, openai/gpt 4o mini', 2], // a space inside a model
@@ -90,15 +90,20 @@ describe('loadConfig', () => {
       ['deepseek/deepseek-v4-flash;openai/gpt-4o-mini', 1],
       [`openai/gpt-4o-mini, deepseek/deepseek${dash}v4-flash`, 2],
       ['a/one,, b/two, c three', 3], // counted among the models the list names, which an empty entry is not
+      ['deepseek/deepseek-v4-flash:free openai/gpt-4o-mini', 1], // a colon is taken, a space is not
     ];
     for (const [list, n] of refused) {
       const text = message(() => loadConfig({ ...FULL_ENV, LLM_MODEL_ALLOWLIST: list }));
       expect(text, JSON.stringify(list)).toBe(refusal(n));
       expect(message(() => manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, LLM_MODEL_ALLOWLIST: list })), JSON.stringify(list)).toBe(text);
     }
-    for (const list of ['Qwen/Qwen3.6-35B-A3B-FP8', 'deepseek-v4-pro, moonshotai/kimi-k2.6', 'org_a/model.b-c']) {
+    for (const list of ['Qwen/Qwen3.6-35B-A3B-FP8', 'deepseek-v4-pro, moonshotai/kimi-k2.6', 'org_a/model.b-c', 'deepseek/deepseek-v4-flash:free', 'qwen2.5:0.5b, qwen3.6:35b']) {
       expect(loadConfig({ ...FULL_ENV, LLM_MODEL_ALLOWLIST: list }).allowlist, list).toStrictEqual(list.split(',').map((model) => model.trim()));
     }
+    // A model of OPENROUTER_MODEL with a variant of OpenRouter, written out in the allowlist as the env example asks: the list of the default, and one model in the gap.
+    const free = 'deepseek/deepseek-v4-flash:free';
+    const written = loadConfig({ ...FULL_ENV, OPENROUTER_MODEL: free, LLM_MODEL_ALLOWLIST: free });
+    expect([written.allowlist, written.manifest.gaps[4]]).toStrictEqual([loadConfig({ ...FULL_ENV, OPENROUTER_MODEL: free }).allowlist, modelGap(free, free)]);
   });
 
   test('LLM_MAX_PRICE_LOVELACE: 1000000 unless set, a whole number of at least 0 when set, and anything else stops the start, naming the setting and never showing the value', () => {

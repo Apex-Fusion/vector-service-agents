@@ -75,8 +75,8 @@ async function failureOf(work: Promise<unknown>): Promise<AdvocateError> {
   throw new Error('it did not fail');
 }
 const states = (m: Market, ...refs: string[]): Promise<ChainEscrowState[]> => Promise.all(refs.map((r) => m.chain.escrowState(r)));
-/** The entry the store keeps for the escrow of a Post made at `postedAt` on the flash advert. */
-const entry = (ref: string, postedAt: number) => ({ escrow_ref: ref, deliver_by: postedAt + WINDOW_MS + 180_000, posted_at: postedAt, kind: 'llm' });
+/** The entry the store keeps for the escrow of a Post made at `postedAt` on the flash advert, or on an advert of the window `windowMs`. */
+const entry = (ref: string, postedAt: number, windowMs = WINDOW_MS) => ({ escrow_ref: ref, deliver_by: postedAt + windowMs + 180_000, posted_at: postedAt, kind: 'llm' });
 /** The inference of a job that fell back for `code`, its brief from OpenRouter. */
 const fellBack = (code: string): Inference => ({ brief: GOLDEN_MODEL_BRIEF, usage: USAGE, path: 'openrouter', model: DEFAULT_MODEL, subJob: null, accepted: null, fallbackFrom: code });
 const line = (code: string, stage: string, falling = true): string => `inference: marketplace ${code} at ${stage}, ${falling ? 'falling back' : 'not falling back'}`;
@@ -119,6 +119,22 @@ describe('the marketplace path (rulings R-F3, R-F9)', () => {
     expect(s.stranded.list()).toStrictEqual([{ ...entry(escrowNo(1), GOLDEN_T0), accept_pending: { tx_hash: 'ac'.repeat(32), valid_to: validTo, by: 'run' } }]);
     expect(s.openRouter).toStrictEqual([]);
   });
+
+  test('a receipt whose token counts are not whole numbers of 0 or more: the usage is null and the job is settled all the same, for no check of a receipt reads them (rulings R-F8, R-E26)', async () => {
+    const counts: Array<{ prompt_tokens: unknown; completion_tokens: unknown }> = [
+      { prompt_tokens: 'words', completion_tokens: 512 }, { prompt_tokens: -1, completion_tokens: 512 }, { prompt_tokens: 1.5, completion_tokens: 512 }, { prompt_tokens: 4321, completion_tokens: 'words' },
+    ];
+    for (const tokens of counts) {
+      const s = setup();
+      s.m.supplier.tokens = tokens;
+      const inference = await run(s);
+      expect([inference.path, inference.usage, inference.brief, inference.accepted, inference.fallbackFrom], JSON.stringify(tokens)).toStrictEqual(['marketplace', null, GOLDEN_MODEL_BRIEF, 'confirmed', null]);
+      // The sub-job carries the receipt as its supplier signed it, and the seven checks passed on it.
+      const receipt: Record<string, unknown> = { ...inference.subJob?.receipt };
+      expect([receipt.prompt_tokens, receipt.completion_tokens, Object.values(inference.subJob?.verification ?? {})], JSON.stringify(tokens)).toStrictEqual([tokens.prompt_tokens, tokens.completion_tokens, Array(7).fill(true)]);
+      expect([await states(s.m, escrowNo(1)), s.stranded.list(), s.openRouter, s.lines]).toStrictEqual([['spent'], [], [], [CHOSEN]]);
+    }
+  });
 });
 
 describe('the fallback rule: nothing locked (ruling R-F4)', () => {
@@ -145,6 +161,13 @@ describe('the fallback rule: nothing locked (ruling R-F4)', () => {
       expect(await states(s.m, escrowNo(1))).toStrictEqual(['unknown']);
       expect(s.lines.at(-1)).toBe(line('llm_supplier_unavailable', 'choice'));
     }
+  });
+
+  test('a choice that fails in a way of its own, on an indexer row whose supplier key is not text, falls back too, for nothing is locked yet: llm_supplier_unavailable at the choice, and the brief comes from OpenRouter', async () => {
+    const s = setup();
+    s.m.rows.splice(0, 1, indexerRow(CHAT_ADVERT_REF, chatAdvert(), { supplier_pkh: 42 }));
+    expect(await run(s)).toStrictEqual(fellBack('llm_supplier_unavailable'));
+    expect([await states(s.m, escrowNo(1)), s.stranded.list(), s.m.supplier.sends, s.lines, s.openRouter, spy.model]).toStrictEqual([['unknown'], [], [], [line('llm_supplier_unavailable', 'choice')], [0], [MODEL_MAX_MS]]);
   });
 
   test('an advert listed above LLM_MAX_PRICE_LOVELACE is not a candidate: the choice finds none', async () => {
@@ -347,6 +370,13 @@ describe('the fallback rule: the polls and the answer (ruling R-F4)', () => {
     expect([await states(s.m, escrowNo(1)), s.stranded.list(), s.lines.at(-1)]).toStrictEqual([['Claimed'], [entry(escrowNo(1), GOLDEN_T0)], line('llm_failed', 'poll')]);
   });
 
+  test("the supplier's word that it no longer knows the job (404 job_not_found) while the escrow is Claimed: llm_failed at the poll, as for its failure", async () => {
+    const s = setup();
+    s.m.supplier.steps = ['running', 'gone'];
+    expect(await run(s)).toStrictEqual(fellBack('llm_failed'));
+    expect([s.m.supplier.polls, await states(s.m, escrowNo(1)), s.stranded.list(), s.lines.at(-1)]).toStrictEqual([2, ['Claimed'], [entry(escrowNo(1), GOLDEN_T0)], line('llm_failed', 'poll')]);
+  });
+
   test('a supplier that failed its own Submit while the escrow reads Submitted: llm_receipt_unavailable, the Submitted escrow kept for the janitor', async () => {
     const s = setup();
     s.m.supplier.steps = [{ fail: 'submit_timeout', submitted: true }];
@@ -400,6 +430,33 @@ describe('the fallback rule: the polls and the answer (ruling R-F4)', () => {
   });
 });
 
+describe('the fallback rule: an advert whose window is short (ruling R-F4)', () => {
+  // On the flash adverts, of a window of 3600 s, the hop deadline always comes first. On an advert of a window of 10 s the limits of its escrow come first: its
+  // deliver_by is 190 s after the Post, the sends stop 90 s before it and the polls at it, so a hire on it ends with llm_busy or llm_timeout.
+  const SHORT_MS = 10_000;
+  const short = (): Setup => setup({ advert: chatAdvert({ max_processing_ms: SHORT_MS }) });
+
+  test('a supplier that stays busy until 90 s before the deliver_by of its escrow: llm_busy at the send, the Open escrow with the janitor, and OpenRouter has its 90 s', async () => {
+    const s = short();
+    s.m.supplier.busy = 1_000;
+    expect(await run(s)).toStrictEqual(fellBack('llm_busy'));
+    // Sends at 0, 15, ... 90 s: the next would be at 105 s, past 100 s, which is 90 s before the deliver_by at 190 s.
+    expect([s.m.supplier.sends.length, s.m.clock.now - GOLDEN_T0]).toStrictEqual([7, 90_000]);
+    expect([await states(s.m, escrowNo(1)), s.stranded.list(), s.openRouter, spy.model, s.lines.at(-1)])
+      .toStrictEqual([['Open'], [entry(escrowNo(1), GOLDEN_T0, SHORT_MS)], [90_000], [MODEL_MAX_MS], line('llm_busy', 'send')]);
+  });
+
+  test('polls that reach the deliver_by of the escrow: llm_timeout at the poll, the Claimed escrow with the janitor, and OpenRouter has its 90 s', async () => {
+    const s = short();
+    s.m.supplier.steps = ['running'];
+    expect(await run(s)).toStrictEqual(fellBack('llm_timeout'));
+    // Polls 3 s apart from 3 s to 189 s: the next would be at 192 s, past the deliver_by at 190 s.
+    expect([s.m.supplier.polls, s.m.clock.now - GOLDEN_T0]).toStrictEqual([63, 189_000]);
+    expect([await states(s.m, escrowNo(1)), s.stranded.list(), s.openRouter, spy.model, s.lines.at(-1)])
+      .toStrictEqual([['Claimed'], [entry(escrowNo(1), GOLDEN_T0, SHORT_MS)], [189_000], [MODEL_MAX_MS], line('llm_timeout', 'poll')]);
+  });
+});
+
 describe('the fallback rule: an answer that was settled and is no brief (Review Focus 2)', () => {
   test('an answer that is not a brief is verified and accepted all the same, and the brief comes from OpenRouter: model_output_invalid, the sub-job in the inference', async () => {
     const s = setup();
@@ -448,7 +505,7 @@ describe('the fallback rule: where the job does not fall back (ruling R-F4)', ()
     expect(s.lines.at(-1)).toBe(line('marketplace_off', 'start'));
   });
 
-  test('a store that cannot mark an Accept sent and not seen confirmed: store_write_failed (500), the escrow Submitted with its entry unmarked, an Accept by hand within 600 s of its Submit, and the marketplace path off', async () => {
+  test('a store that cannot mark an Accept sent and not seen confirmed: store_write_failed (500), the escrow Submitted with its entry unmarked, accepted again by hand at once while it reads Submitted, and the marketplace path off', async () => {
     const s = setup();
     s.deps.chain = chainWith(s.m, {
       accept: async (r) => { throw new TxNotConfirmedError('The Accept was submitted, but Koios did not report it confirmed.', { txHash: 'ac'.repeat(32), escrowRef: r, deliverBy: null, validTo: GOLDEN_T0 + 606_000, mayLand: true }); },
@@ -456,7 +513,7 @@ describe('the fallback rule: where the job does not fall back (ruling R-F4)', ()
     s.stranded.update = () => { throw new Error('ENOSPC: no space left on device'); };
     const e = await failureOf(run(s));
     expect([e.code, e.status, (e as HopFailed).hopCode, (e as HopFailed).facts?.stage]).toStrictEqual(['store_write_failed', 500, 'store_write_failed', 'accept']);
-    expect(e.detail).toBe(`the stranded store could not mark the Accept of the chat sub-job at accept: its escrow ${escrowNo(1)} stays recorded as Submitted, and its Accept may still land; read it on chain now and, if it is still Submitted once that Accept can no longer land, accept it by hand within 600 s of its Submit, after which its supplier may release it; restart the service, whose marketplace path is off until then`);
+    expect(e.detail).toBe(`the stranded store could not mark the Accept of the chat sub-job at accept: its escrow ${escrowNo(1)} stays recorded as Submitted, and its Accept may still land; read it on chain now and, while it is still Submitted, accept it again by hand at once, within 600 s of its Submit (an escrow is accepted once, so a second Accept fails if the first lands), after which its supplier may release it; the marketplace path of the service is off until it restarts`);
     expect([await states(s.m, escrowNo(1)), s.stranded.list(), s.openRouter, s.deps.marketplace]).toStrictEqual([['Submitted'], [entry(escrowNo(1), GOLDEN_T0)], [], { on: false }]);
     expect(s.lines.at(-1)).toBe(line('store_write_failed', 'accept', false));
   });
@@ -492,6 +549,22 @@ describe('a caller that hangs up (Review Focus 3, ruling R-F7)', () => {
     const e = await failureOf(run(s));
     expect([e.code, e.status]).toStrictEqual(['aborted', 499]);
     expect([await states(s.m, escrowNo(1)), s.stranded.list(), s.openRouter, s.lines.at(-1)]).toStrictEqual([['Submitted'], [entry(escrowNo(1), GOLDEN_T0)], [], line('llm_receipt_failed', 'receipt', false)]);
+  });
+
+  test('during the choice or the read of the wallet, which then fail: nothing is posted, the line of the hop says it does not fall back, and the job is aborted (499) with nothing sent to OpenRouter', async () => {
+    const choosing = setup();
+    const caller = new AbortController();
+    choosing.deps.signal = caller.signal;
+    choosing.deps.chain = chainWith(choosing.m, { readAdvert: async () => { caller.abort(); throw new Error('Could not read advert: Koios answered 503'); } });
+    const e = await failureOf(run(choosing));
+    expect([e.code, e.status, choosing.lines]).toStrictEqual(['aborted', 499, [line('llm_supplier_unavailable', 'choice', false)]]);
+    const reading = setup();
+    const gone = new AbortController();
+    reading.deps.signal = gone.signal;
+    reading.deps.chain = chainWith(reading.m, { wallet: async () => { gone.abort(); throw new Error('Ogmios answered 502'); } });
+    const f = await failureOf(run(reading));
+    expect([f.code, f.status, reading.lines]).toStrictEqual(['aborted', 499, [CHOSEN, line('insufficient_float', 'float', false)]]);
+    for (const s of [choosing, reading]) expect([await states(s.m, escrowNo(1)), s.stranded.list(), s.openRouter, spy.model]).toStrictEqual([['unknown'], [], [], []]);
   });
 
   test('before the Post: aborted, and nothing is posted', async () => {

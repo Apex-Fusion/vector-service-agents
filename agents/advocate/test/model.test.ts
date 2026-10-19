@@ -1,5 +1,5 @@
 // agents/advocate/test/model.test.ts
-// The one model call of a job (ruling R-E5), through a fake fetch that records what it is sent: the request (the URL, the headers with the key, the body in
+// The fallback model call of a job, through OpenRouter (rulings R-E5 and R-F4), through a fake fetch that records what it is sent: the request (the URL, the headers with the key, the body in
 // its order), the content and the usage of an answer, every failure (not 200, not JSON, no content, the network, the caller gone, and no answer in time:
 // deadline when the deadline had cut the time of the call, model_failed at the full 90 s, ruling R-E19) with its log line; and the reading of the content into
 // a brief (Review Focus 3, ruling R-E20): code fences and prose around the JSON, what is left out as blank, and every shape that is refused. No log line and

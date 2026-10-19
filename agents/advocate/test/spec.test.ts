@@ -7,8 +7,8 @@ import { afterEach, describe, test, expect } from 'vitest';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { ACCEPT_WINDOW_MS, DELIVER_BY_BUFFER_MS, TX_FEE_BUDGET_LOVELACE, buyerIdentityOf } from '@vsa/buyer-core';
-import { BUSY_RETRY_MS, JANITOR_GRACE_MS, POLL_INTERVAL_MS, RECEIPT_HASH_WAIT_MS, SEND_CUTOFF_MS, STRANDED_FILE } from '@vsa/hire-kit';
+import { ACCEPT_WINDOW_MS, DELIVER_BY_BUFFER_MS, TX_FEE_BUDGET_LOVELACE, buyerIdentityOf, responsesPromptHash } from '@vsa/buyer-core';
+import { BUSY_RETRY_MS, JANITOR_GRACE_MS, POLL_INTERVAL_MS, RECEIPT_HASH_WAIT_MS, SEND_CUTOFF_MS, STRANDED_FILE, chatJob } from '@vsa/hire-kit';
 import type { HireRecord } from '@vsa/hire-kit';
 import { HEARTBEAT_MS, MAX_BODY, STOPPING_TEXT, WireError, operatorsText } from '@vsa/service-kit';
 import { REGISTRY_ADDRESS, blake2b224Hex, safeFetch } from '@vsa/vector-read';
@@ -507,7 +507,7 @@ describe('specs/advocate.md, pinned further', () => {
     expect(how).toContain('or no Post can be planned on it |');
     // A mark of an Accept that cannot be written fails the job, and leaves the escrow to be accepted by hand within the accept window, as the detail of the log says.
     expect(how).toContain(`the operator accepts it by hand within ${ACCEPT_WINDOW_MS / 1000} s of its Submit`);
-    expect(readFileSync(new URL('../src/inference.ts', import.meta.url), 'utf8')).toContain(`accept it by hand within ${ACCEPT_WINDOW_MS / 1000} s of its Submit`);
+    expect(readFileSync(new URL('../src/inference.ts', import.meta.url), 'utf8')).toContain(`accept it again by hand at once, within ${ACCEPT_WINDOW_MS / 1000} s of its Submit`);
     // The seven checks of the table are those of buyer-core, in their order.
     expect(how.split('\n').filter((l) => /^\| `[a-z_]+` \|/.test(l)).map((l) => l.split(' | ')[0].slice(3, -1))).toStrictEqual(CHECKS);
     // Time: the end of the hire and its reserve, and the confirmations the deadline does not cut.
@@ -658,7 +658,12 @@ describe('specs/advocate.md, pinned further', () => {
     expect([held, ledger, logged].every((s) => s !== '')).toBe(true);
     expect(handling).toContain(ledger);
     expect(handling).toContain(logged);
-    expect(ledger).toContain('only the sha256 of its input');
+    expect(ledger).toContain('only a sha256 commitment to its input');
+    // A commitment, and not the sha256 of the input: the prompt hash of the chat job is the hash of the canonical request {input}, which the escrow commits to.
+    const input = marketplaceInput([{ role: 'system', content: 'the system prompt' }, { role: 'user', content: 'the message' }]);
+    const promptHash = chatJob('https://203.0.113.31', input, 'the brief', (async () => { throw new Error('nothing is sent'); }) as typeof fetch).promptHash;
+    expect(promptHash).toBe(responsesPromptHash({ input }));
+    expect(promptHash).not.toBe(createHash('sha256').update(input, 'utf8').digest('hex'));
     // The prompt holds the language code and the shape of the length, and the message the titles and the URLs of the pages, as the third-parties entries say.
     expect(row(handling, manifest.behaviour.third_parties[2])).toContain('the fixed prompt (which holds the language code and the shape of the length asked for)');
     expect(row(handling, manifest.behaviour.third_parties[3])).toContain('the fixed prompt, which holds the language code and the shape of the length asked for');

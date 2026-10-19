@@ -100,7 +100,7 @@ describe('agents/advocate/README.md', () => {
     // The ceiling is the choice's (packages/hire-kit/src/select.ts), and a choice that finds no advert at or under it sends the job to OpenRouter (src/inference.ts).
     expect(row('LLM_MAX_PRICE_LOVELACE')).toContain('| the most the chat job may be priced at, in lovelace: an advert priced above it is not hired, and when no advert at or under it can be, the job gets its brief from OpenRouter |');
     expect(textOf('../../packages/hire-kit/src/select.ts')).toContain('allowlist: query.allowlist, probe: true, maxPriceLovelace: ceiling, budgetMs, maxCandidates })');
-    expect(textOf('src/inference.ts')).toContain("if (error instanceof HopFailed || error instanceof OutOfTime) return fallBack('llm_supplier_unavailable', 'choice');");
+    expect(textOf('src/inference.ts')).toContain("} catch { return fallBack('llm_supplier_unavailable', 'choice'); }");
     const buyer = buyerIdentityOf(BUYER_KEY);
     expect([config.buyer.pkh, config.buyer.address, config.manifest.keys.buyer_pkh]).toStrictEqual([buyer.buyerPkh, buyer.address, buyer.buyerPkh]);
     for (const name of ['ADVOCATE_BUYER_PKH', 'ADVOCATE_BUYER_ADDRESS']) expect(row(name), name).toMatch(/ \| derived \|$/);

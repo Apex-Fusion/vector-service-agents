@@ -53,8 +53,11 @@ export function processingWindow(v: string | undefined): number {
   }
   return ms;
 }
-/** A model of LLM_MODEL_ALLOWLIST, as an advert names it: letters, digits, dots, underscores, slashes and hyphens. */
-const MODEL_ENTRY = /^[A-Za-z0-9._\/-]+$/;
+/**
+ * A model of LLM_MODEL_ALLOWLIST, as an advert names it: letters, digits, dots, underscores, colons, slashes and hyphens. The colon is for a variant of
+ * OpenRouter such as `:free`, which OPENROUTER_MODEL takes too, and for a fleet model such as `qwen2.5:0.5b`; the shell's "." of the ops scripts reads it as it is.
+ */
+const MODEL_ENTRY = /^[A-Za-z0-9._:\/-]+$/;
 /**
  * The chat models a hire may buy, in the order of preference of LLM_MODEL_ALLOWLIST (a comma-separated list), or the model of OPENROUTER_MODEL alone when it
  * is not set, so that both paths ask the same model. The first is the market model, which the gap of the model and the listening line name (ruling R-F19);
@@ -67,7 +70,7 @@ export function modelAllowlist(v: string | undefined, fallbackModel: string): st
   if (models.length === 0) throw new Error('environment variable LLM_MODEL_ALLOWLIST must name at least one model, as a comma-separated list');
   const wrong = models.findIndex((name) => !MODEL_ENTRY.test(name));
   if (wrong !== -1) {
-    throw new Error(`environment variable LLM_MODEL_ALLOWLIST must be a comma-separated list of models, each of letters, digits, dots, underscores, slashes and hyphens only, and its entry ${wrong + 1} is not`);
+    throw new Error(`environment variable LLM_MODEL_ALLOWLIST must be a comma-separated list of models, each of letters, digits, dots, underscores, colons, slashes and hyphens only, and its entry ${wrong + 1} is not`);
   }
   return models;
 }
@@ -124,7 +127,7 @@ const TO_THE_MODEL = 'the subject, the side, the audience, the language and the 
 const DATA_HANDLING = 'The subject, the side, the audience, the length and the language are held in memory while a job runs, with the pages the service fetches, and none of them is kept after the job. '
   + 'The service writes only the bookkeeping of the escrows it posts (references, times, the hop, a transaction hash) to its state directory, and nothing else to disk. '
   + `The two search queries go to the Brave Search API, each page fetch to the host of that page, and the prompt (${TO_THE_MODEL}) to the chat supplier the service hires on the Vector marketplace and the model provider behind it, or, only when that hire fails, to OpenRouter and the model provider behind it. `
-  + 'On the ledger the escrow of the job carries only the sha256 of the wire payload and the escrow of the chat sub-job only the sha256 of its input, and the request stays off the ledger. '
+  + 'On the ledger the escrow of the job carries only the sha256 of the wire payload and the escrow of the chat sub-job only a sha256 commitment to its input, and the request stays off the ledger. '
   + 'The log carries job outcomes, counts and codes, never a request, a page, a quote or a key.';
 const THIRD_PARTIES = [
   'Brave Search API (the two search queries)',

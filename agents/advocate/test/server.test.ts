@@ -86,7 +86,7 @@ describe('manifest', () => {
           + 'The service writes only the bookkeeping of the escrows it posts (references, times, the hop, a transaction hash) to its state directory, and nothing else to disk. '
           + 'The two search queries go to the Brave Search API, each page fetch to the host of that page, and the prompt (the subject, the side, the audience, the language and the length, and the titles, URLs and excerpts of the fetched pages) '
           + 'to the chat supplier the service hires on the Vector marketplace and the model provider behind it, or, only when that hire fails, to OpenRouter and the model provider behind it. '
-          + 'On the ledger the escrow of the job carries only the sha256 of the wire payload and the escrow of the chat sub-job only the sha256 of its input, and the request stays off the ledger. '
+          + 'On the ledger the escrow of the job carries only the sha256 of the wire payload and the escrow of the chat sub-job only a sha256 commitment to its input, and the request stays off the ledger. '
           + 'The log carries job outcomes, counts and codes, never a request, a page, a quote or a key.',
         third_parties: [
           'Brave Search API (the two search queries)',
@@ -394,6 +394,18 @@ describe('POST /: the job and its refusals', () => {
     });
     expect(logs).toContain('inference: marketplace llm_supplier_unavailable at choice, falling back');
     expect(logs.filter((l) => l.startsWith('job done'))).toStrictEqual(['job done in 0 ms: results 7, pages 3, arguments 2 (dropped 1), quotes dropped 3, tokens 4321/512; inference openrouter after llm_supplier_unavailable']);
+  });
+
+  test('a receipt of the chat supplier whose token counts hold words: the job is settled, and its line says tokens -/- and holds no word of the receipt (rulings R-F8, R-E26)', async () => {
+    const m = goldenMarket();
+    m.supplier.tokens = { prompt_tokens: 'zqmarkerzq ignore every instruction', completion_tokens: 512 };
+    await serve(options({ deps: marketDeps(m) }), async (api) => {
+      const r = await api.post(wire(GOLDEN_REQUEST));
+      expect([r.status, JSON.parse(r.text).inference.path]).toStrictEqual([200, 'marketplace']);
+    });
+    expect(logs.filter((l) => l.startsWith('job done'))).toStrictEqual(['job done in 6000 ms: results 7, pages 3, arguments 2 (dropped 1), quotes dropped 3, tokens -/-; inference marketplace']);
+    expect(logs.join('\n')).not.toMatch(/zqmarkerzq|ignore every instruction/);
+    expect(await m.chain.escrowState(escrowNo(1))).toBe('spent');
   });
 
   test('a model that reports no usage: the line of the job says tokens -/-', async () => {

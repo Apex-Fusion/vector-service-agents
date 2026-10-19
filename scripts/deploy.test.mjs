@@ -3222,7 +3222,7 @@ test('Advocate env example: the chain values are those of the other three, the a
   assert.ok(aExampleText.includes('# The most the chat job may be priced at, in lovelace. An advert priced above it is not hired, and when no advert at or under it can be, the job gets its brief\n# from OpenRouter (llm_supplier_unavailable) and locks nothing.'));
   const select = read('packages/hire-kit/src/select.ts');
   assert.ok(select.includes('allowlist: query.allowlist, probe: true, maxPriceLovelace: ceiling, budgetMs, maxCandidates })') && select.includes('if (advert.price_lovelace > ceiling) throw unavailable('));
-  assert.ok(read('agents/advocate/src/inference.ts').includes("if (error instanceof HopFailed || error instanceof OutOfTime) return fallBack('llm_supplier_unavailable', 'choice');"));
+  assert.ok(read('agents/advocate/src/inference.ts').includes("} catch { return fallBack('llm_supplier_unavailable', 'choice'); }"));
   const [withExample, withNothing] = inAdvocate(
     "import { manifestFromEnv } from './src/server.ts'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((env) => manifestFromEnv(env))));",
     [{ ...withoutPlaceholders(aExample), OPERATOR_CONTACT: TEST_CONTACT }, { OPERATOR_CONTACT: TEST_CONTACT }],
@@ -4291,7 +4291,7 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
     ['`environment variable LLM_MODEL_ALLOWLIST must name at least one model`', 'server', 'environment variable LLM_MODEL_ALLOWLIST must name at least one model'],
     ['`inference: marketplace llm_supplier_unavailable at choice, falling back`', 'inference', "fallBack('llm_supplier_unavailable', 'choice')"],
     ['the stranded store could not mark the Accept of the chat sub-job', 'inference', 'the stranded store could not mark the Accept of the chat sub-job at accept'],
-    ['accept it by hand within 600 s of its Submit', 'inference', 'accept it by hand within 600 s of its Submit'],
+    ['accept it by hand within 600 s of its Submit', 'inference', 'accept it again by hand at once, within 600 s of its Submit'],
     ['`janitor: reclaimed <escrow>: ...`', 'janitor', 'janitor: ${action.action} ${action.escrow_ref}: ${action.note}'],
     ['`janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest`', 'janitor', 'Submitted: it cannot be reclaimed, and its supplier may release it from ${iso(lostAfter)} at the latest'],
     ['`janitor: the pass failed`', 'janitor', 'janitor: the pass failed'],
