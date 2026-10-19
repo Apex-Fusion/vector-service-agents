@@ -7,11 +7,12 @@ import { fileURLToPath } from 'node:url';
 // The four agent specs share one structure and one set of public-wording rules (docs/superpowers/specs/2026-10-13-vector-service-agents-design.md, section 8).
 // The member guide and the E2E runbook are pinned against the same specs and the design at the end of this file.
 const HEADINGS = ['Status', 'Identity', 'Capability id', 'Terms', 'Interface', 'What the receipt commits to', 'Operator and data handling', 'Known gaps', 'How to hire it', 'Changelog', 'Links'];
-// The sentence under "Identity" in each spec. Advocate, which is PROPOSED (built, not deployed), has no registry record. Agent History was registered on 2026-10-14 (RUNBOOK step 7), Document Pipeline on 2026-10-16 (step 7 of RUNBOOK-document-pipeline) and Audio Snippets on 2026-10-17 (step 7 of RUNBOOK-audio-snippets), and each says so.
+// The sentence under "Identity" in each spec. Agent History was registered on 2026-10-14 (RUNBOOK step 7), Document Pipeline on 2026-10-16 (step 7 of RUNBOOK-document-pipeline), Audio Snippets on 2026-10-17 (step 7 of RUNBOOK-audio-snippets) and Advocate, which is PROPOSED (built, not deployed), on 2026-10-19 (step 7 of RUNBOOK-advocate), and each says so. No spec says that it has no record.
 const NO_RECORD = 'This agent has no registry record yet.';
 const HAS_RECORD = 'This agent has had a registry record since 2026-10-14.';
 const DP_HAS_RECORD = 'This agent has had a registry record since 2026-10-16.';
 const AS_HAS_RECORD = 'This agent has had a registry record since 2026-10-17.';
+const AD_HAS_RECORD = 'This agent has had a registry record since 2026-10-19.';
 // The status line of Agent History since the flip of 2026-10-15 (RUNBOOK step 17): the facts in one line, as every file that has a status line gives them. Advocate is PROPOSED (built, not deployed).
 const AH_STATUS = 'DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15.';
 // The status line of Document Pipeline since the flip of 2026-10-16 (RUNBOOK-document-pipeline step 17): the facts in one line, in the form of Agent History's. The Pipeline was built on 2026-10-15, registered, staked and advertised on 2026-10-16, and PROPOSED (built, not deployed) until step 17. It is DEPLOYED, never LIVE: a first-party run is not demand.
@@ -23,7 +24,7 @@ const AGENTS = {
   'agent-history': { capability: 'identity.history.report.v1', model: 'agent-history-v1', status: AH_STATUS, record: HAS_RECORD },
   'document-pipeline': { capability: 'document.pipeline.ocr-summary.v1', model: 'document-pipeline-v1', status: DP_STATUS, record: DP_HAS_RECORD },
   'audio-snippets': { capability: 'audio.transcript.snippets.v1', model: 'audio-snippets-v1', status: AS_STATUS, record: AS_HAS_RECORD },
-  advocate: { capability: 'research.advocate.onesided.v1', model: 'advocate-v1', status: 'PROPOSED (built, not deployed). Since 2026-10-13.', record: NO_RECORD },
+  advocate: { capability: 'research.advocate.onesided.v1', model: 'advocate-v1', status: 'PROPOSED (built, not deployed). Since 2026-10-13.', record: AD_HAS_RECORD },
 };
 // The ledger's native unit is named once, in docs/HIRE.md. Spelled in two parts, so a search for the name finds only the guide.
 const UNIT_NAME = new RegExp('AP' + '3X', 'gi');
@@ -65,7 +66,7 @@ for (const [name, { capability, status, record }] of Object.entries(AGENTS)) {
     const text = read(name);
     const identity = section(text, 'Identity');
     assert.ok(identity.includes(`\n${record}\n`), `the Identity section says "${record}"`);
-    for (const other of [NO_RECORD, HAS_RECORD, DP_HAS_RECORD, AS_HAS_RECORD].filter((sentence) => sentence !== record)) assert.equal(identity.includes(other), false, `and not "${other}"`);
+    for (const other of [NO_RECORD, HAS_RECORD, DP_HAS_RECORD, AS_HAS_RECORD, AD_HAS_RECORD].filter((sentence) => sentence !== record)) assert.equal(identity.includes(other), false, `and not "${other}"`);
     assert.equal(text.match(/Nothing in this table/), null); // the registry address row does exist
   });
 
@@ -1480,17 +1481,91 @@ test('docs/E2E.md: a first-party run shows that the path works and is neither ig
 // rest of the page to the code and the manifest: the gap sentences, the numbers, the response example, the error codes, the third parties.
 test('specs/advocate.md: the Status line is PROPOSED (built, not deployed), the paragraph says what is built and that it is not deployed, and the words of the design do not come back', () => {
   const text = read('advocate');
-  assert.equal(section(text, 'Status').trim(), 'PROPOSED (built, not deployed). Since 2026-10-13.\n\nThe service is built. Its tests run the search, the pages, the model and the check against stand-ins for the Brave Search API, the result pages and OpenRouter, with no network. It is not deployed yet: it has no registry record and no advert, and no job has run. Nothing on this page is LIVE or DEPLOYED.');
+  assert.equal(section(text, 'Status').trim(), 'PROPOSED (built, not deployed). Since 2026-10-13.\n\nThe service is built. Its tests run the search, the pages, the hire of a chat supplier, the model and the check against stand-ins for the Brave Search API, the result pages, a chat supplier of the marketplace, the chain and OpenRouter, with no network. It is not deployed yet: it has had a registry record since 2026-10-19, it has no advert, and no job has run. Nothing on this page is LIVE or DEPLOYED.');
   assert.equal(text.match(/PROPOSED \(not built\)|This page is a design|There is no code|None of this is built|Illustrative|Backend \(design\)|No releases|The planned folder|Not built\. Everything|8 to 12|A Judge agent|Nothing is built/), null, 'the words of before the build do not come back');
   const links = section(text, 'Links').split('\n');
   for (const line of [
-    '- Manifest: not served yet. The service renders it from its environment when it starts and serves it at `GET /agent.json` on the agent\'s public URL once it is in service. The template is [agents/advocate/agent.json.template](../agents/advocate/agent.json.template).',
+    '- Manifest: `GET /agent.json` on the agent\'s public URL, in service as of 2026-10-19. The service renders it from its environment when it starts; until the image is rebuilt from this change, before step 11 of the runbook, the manifest served there is the one of the build of `ccbcb94`. The template is [agents/advocate/agent.json.template](../agents/advocate/agent.json.template).',
     '- Source: [agents/advocate](../agents/advocate)', '- Advert on the explorer: none. The advert is not posted.',
   ]) assert.ok(links.includes(line), line);
   for (const path of ['agents/advocate', 'agents/advocate/agent.json.template', 'agents/advocate/src/gaps.ts']) assert.ok(existsSync(new URL(`../${path}`, import.meta.url)), `${path} exists`);
   // The declared bias is stated as the rule, in the shape and in the example (the test of the Pipeline's economics counts the three), and the check of the quotes has a section of its own.
   assert.ok(section(text, 'Interface').includes('\n### Check\n') && section(text, 'Interface').includes('the thesis never answers alone'));
-  assert.equal(section(text, 'Known gaps').split('\n').filter((l) => l.startsWith('- ')).length, 6, 'the six gaps of the manifest, and none of the page\'s own');
+  assert.equal(section(text, 'Known gaps').split('\n').filter((l) => l.startsWith('- ')).length, 8, 'the eight gaps of the manifest, and none of the page\'s own');
+});
+
+// ---- Advocate since Plan E2: the model call bought first on the marketplace, OpenRouter as the fallback ----
+// The page states the economics of the one chat sub-job in the form of the Pipeline's, the inference in one sentence of the job order, and how it buys in a
+// section of its own, with the rule of the fallback. agents/advocate/test/spec.test.ts holds the numbers of the section to the code.
+test('specs/advocate.md: the Economics line under Terms in the form of the Pipeline\'s, the inference in the job order, and How it buys with the first-party label and the rule of the fallback', () => {
+  const text = read('advocate');
+  const terms = section(text, 'Terms');
+  assert.ok(terms.includes("Economics: a job costs the hirer about 5 (the price of 3, the supplier bond of 1 and about 1 in fees; the buyer bond returns on Accept). Its one chat sub-job costs the service about 2.2 net at today's fleet price of 0.2 per sub-job (the price, the supplier bond of 1 and about 1 in fees), against a job price of 3;"));
+  assert.ok(terms.includes('the lock and fees in flight come to about 3.2 at that price, and up to 4.0 at the ceiling of 1 (`LLM_MAX_PRICE_LOVELACE`), of which the buyer bond and the lock excess return on Accept.'));
+  assert.ok(terms.includes('The Foundation carries that on purpose while the fee floor stands.'));
+  // The form of the Pipeline's line, which the design gives: what the sub-jobs cost at today's fleet price, each sub-job's parts, against the price of a job.
+  assert.ok(section(read('document-pipeline'), 'Terms').includes("cost it about 13 net at today's fleet price of 0.2 per sub-job (each sub-job: the price, the supplier bond of 1 and about 1 in fees), against a job price of 5;"));
+  assert.ok(section(hire(), '3. What the key must hold').split('\n').includes('| 3 (Advocate) | 5 | 4 | 1 | about 1 | about 5 | 10 |'), 'what a job costs the hirer, the cost table of the guide');
+  const inter = section(text, 'Interface');
+  assert.ok(inter.includes("The model call is bought first from a chat supplier on the Vector marketplace: the service posts a bonded escrow with its own buyer key, sends the prompt, verifies the supplier's signed receipt and accepts; only when that hire fails is the call made through OpenRouter, and the result says which path it took"));
+  assert.ok(inter.indexOf('\n### How it buys\n') > inter.indexOf('\n### Check\n') && inter.indexOf('\n### How it buys\n') < inter.indexOf('\n### Errors\n'), 'after Check, before Errors');
+  const how = (inter.split('\n### How it buys\n')[1] ?? '').split('\n### ')[0];
+  assert.ok(how.includes('Every chat supplier it can hire today is first-party: a brief bought on the marketplace shows that the path works, and it is not demand.'));
+  for (const head of ['**The choice.**', '**The hire.**', '**Time.**', '**The fallback.**', '**What a job leaves behind.**', '**Where the code is.**']) assert.ok(how.includes(head), head);
+  // The rule of the fallback: every row says what ends the hire, its code, where the escrow is left and whether the job falls back; the rows that do not fall back
+  // say what the job answers instead.
+  const rows = how.split('\n').filter((l) => /^\| /.test(l) && !/^[|][-| ]+[|]$/.test(l));
+  const fallback = rows.slice(rows.indexOf('| The hire ends | Code | The escrow then | Falls back |') + 1);
+  assert.equal(fallback.length, 19);
+  for (const row of fallback) assert.equal(row.split(' | ').length, 4, `four columns: ${row.slice(0, 60)}`);
+  // The first row is the path that is off: after a write of the record failed, every later job goes to OpenRouter until a restart, and the code says so.
+  assert.equal(fallback[0], '| the marketplace path is off: a write of the record failed in an earlier job, and the service has not restarted since | `marketplace_off` | none | yes |');
+  assert.ok(readFileSync(new URL('../agents/advocate/src/inference.ts', import.meta.url), 'utf8').includes("'marketplace_off'"), 'the code of the path that is off is the code\'s');
+  const no = fallback.filter((row) => / \| no[:|]/.test(row) || row.endsWith('| no |'));
+  assert.deepEqual(no.map((row) => row.split(' | ')[1]), ['none', '`llm_accept_failed`', '`store_write_failed`', '`aborted`', '`no_supported_claims`'], 'what never falls back: a verified answer, a failed Accept, a failed record, a caller that left, a brief the check empties');
+  assert.ok(how.includes('The job falls back to OpenRouter whenever the service holds no answer of the chat supplier that it could still verify and accept, never while it holds one, and never after a record could not be written or the caller left.'));
+  // The two codes a job of the service fails with besides those of before, with their statuses, in the Errors of the page.
+  const errors = (inter.split('\n### Errors\n')[1] ?? '');
+  assert.ok(errors.includes('`inference_failed` (the answer of the chat supplier was verified and the Accept of its escrow could not land)'));
+  assert.ok(errors.includes('| 500, the service | `store_write_failed` (an escrow was posted and could not be recorded), and `internal` |'));
+  // The words of before the hire do not come back.
+  assert.equal(text.match(/holds no chain key|posts nothing|nothing is written to disk|within 150 s|5 min processing window/), null);
+});
+
+// Advocate has a registry record and a Module-3 self-stake since 2026-10-19 (RUNBOOK-advocate steps 7 and 8). Steps 1 to 10 ran on the host on 2026-10-18 and 2026-10-19 with the
+// service image of ccbcb94; no advert is posted, and the status word stays PROPOSED (built, not deployed) until step 17. The values are the ones the ledger holds for that registration and that stake.
+const AD = {
+  did: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:c5e44677dadefc8a194d15293cad889b85e1ce5c839177f1955778ac4c63d01c',
+  registerTx: '0699bc56992695511fd3c55681deba4f9ad611cd5c526dcfe45758f203abe767',
+  stakeTx: '82fdc231932405c105f8b8b03cc56c37c702d03befc1830e85d0debeeeabbb15',
+  // The supplier key: its key hash is the controller of the registry record. The buyer key, the second key, is made when step 4 runs again for this change.
+  controllerPkh: '20d8167910dbd9801984fe539fa94d94e53f2224226c7838c2f02867',
+};
+test('specs/advocate.md: the DID, the registry record and the reputation stake of 2026-10-19 are in the Identity table with their transactions, the URL is in service as of 2026-10-19 with no advert, the buyer key is still planned, and the words of before the registration do not come back', () => {
+  const text = read('advocate');
+  const row = (label) => section(text, 'Identity').split('\n').find((l) => l.startsWith(`| ${label} |`)) ?? '';
+  const policy = /did:vector:agent:([0-9a-f]{56}):/.exec(section(read('agent-history'), 'Interface'))?.[1] ?? '';
+  assert.match(AD.did, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
+  for (const other of [AH.did, DP.did, AS.did]) assert.notEqual(AD.did, other, 'its own asset name');
+  assert.equal(row('DID'), `| DID | \`${AD.did}\` |`);
+  const record = row('Registry record');
+  for (const part of [
+    'name `Advocate`', 'description as in the manifest, which declares the bias', 'capabilities `research.advocate.onesided.v1`', 'framework `vector-service-agents`',
+    "endpoint the agent's public URL, `https://mp-suppliers-advocate.hal8.ai`", `controller key hash \`${AD.controllerPkh}\` (the supplier key hash)`,
+    'Registered on 2026-10-19 in the confirmed transaction', `[\`${AD.registerTx}\`](${EXPLORER_TX}${AD.registerTx})`, 'The deposit is 10000000 lovelace (10.000000), refundable on deregistration',
+  ]) assert.ok(record.includes(part), `the Registry record row says: ${part}`);
+  const stake = row('Reputation stake');
+  for (const part of ['a Module-3 self-stake of 10000000 lovelace (10.000000) on the capability', 'made on 2026-10-19 in transaction', `[\`${AD.stakeTx}\`](${EXPLORER_TX}${AD.stakeTx})`]) assert.ok(stake.includes(part), `the Reputation stake row says: ${part}`);
+  assert.match(AD.controllerPkh, /^[0-9a-f]{56}$/);
+  for (const hex of [AD.registerTx, AD.stakeTx]) assert.match(hex, /^[0-9a-f]{64}$/);
+  assert.notEqual(AD.registerTx, AD.stakeTx, 'two transactions: the registration and the stake');
+  // The URL is in service as of 2026-10-19 (step 10): the manifest answers there, and no advert is posted. The rows of the record are no longer planned; the buyer key's is, until step 4 runs again.
+  assert.equal(row('Public URL'), '| Public URL | `https://mp-suppliers-advocate.hal8.ai` (in service as of 2026-10-19: the manifest answers; no advert yet) |');
+  for (const label of ['Registry record, planned', 'Public URL, planned', 'Reputation stake, planned', 'Second key']) assert.equal(row(label), '', `${label} is gone`);
+  assert.ok(row('Second key, planned').endsWith('Step 4 of the runbook makes it on the host when it runs again for this change |'));
+  assert.ok(section(text, 'Status').includes('It is not deployed yet: it has had a registry record since 2026-10-19, it has no advert, and no job has run.'));
+  assert.ok(section(text, 'Links').includes('- Advert on the explorer: none. The advert is not posted.'), 'no advert');
+  assert.equal(text.match(/no registry record|not registered|When registered|planned registry record|not served yet|not in service/i), null, 'the words of before the registration do not come back');
 });
 
 test('docs/HIRE.md and docs/E2E.md: Advocate has a subsection of section 5 and a section of the E2E runbook, with the request of the spec, its window, the cost of a job and what to read in the answer', () => {
@@ -1516,7 +1591,8 @@ test('docs/HIRE.md and docs/E2E.md: Advocate has a subsection of section 5 and a
     'The service searches the web for the subject itself, reads the pages it finds and asks one model for the brief.',
     'Read two things in the answer before you use it.',
     'A quote shows that the page says it; whether the page is right is yours to judge, and the `url` of each source lets you read the page itself.',
-    'which is your Post time plus 5 min plus 180 s. The price is 3 and a job costs about 5 (the cost table in section 3).',
+    'which is your Post time plus 8 min plus 180 s. The price is 3 and a job costs about 5 (the cost table in section 3).',
+    'The answer also says how the model was asked: `model` names it with its path, and `inference` holds the receipt of the chat supplier the service hired, with the checks the service ran on it, or says that the call went through OpenRouter after a hire that failed. Every chat supplier the service hires today is first-party.',
   ]) assert.ok(sub.includes(part), `the subsection says: ${part}`);
   for (const heading of ['Request', 'Response', 'Check']) assert.ok(read('advocate').includes(`\n### ${heading}\n`), heading);
   // What the guide says of the quotes and of the language is what the page says: a quote that fails is dropped, an argument left with none is dropped, and the model is asked for the language.
@@ -1527,9 +1603,12 @@ test('docs/HIRE.md and docs/E2E.md: Advocate has a subsection of section 5 and a
   for (const part of [
     'export CAPABILITY_ID=research.advocate.onesided.v1', `export PAYLOAD='${requestJson}'`, 'export E2E_POLL_MS=10000', 'export E2E_STATE=./e2e-state-advocate.json', 'export ADVERT_REF=<txid>#<index>',
     '[deploy/host/RUNBOOK-advocate.md](../deploy/host/RUNBOOK-advocate.md), posts one in step 12 and makes this run in step 15',
-    'which is 8 minutes after the Post (the 5 min window and 180 s)', 'add the run to the Results table with Advocate in the Agent column. Its `result` is the brief as JSON text',
+    'which is 11 minutes after the Post (the 8 min window and 180 s)', 'add the run to the Results table with Advocate in the Agent column. Its `result` is the brief as JSON text',
+    'The run holds a second hire: the service hires a chat supplier of the fleet with its own buyer key, so both sides of that sub-job are first-party too.',
+    "its `inference` says whether the brief came from the chat supplier, whose sub-receipt it carries, or from OpenRouter. It is first-party and it is not demand.",
+    'On the host, the log of the service has the line of the job, which ends `; inference marketplace` when the brief came from that supplier, and `stranded.json` prints `[]` (step 15 of the runbook).',
   ]) assert.ok(e2e.includes(part), part);
-  assert.equal((300_000 + 180_000) / 60_000, 8);
+  assert.equal((480_000 + 180_000) / 60_000, 11);
   // The three settings the section explains are the script's: the capability of the advert, the request JSON of the page, and the state file of one run.
   for (const part of [
     "- `CAPABILITY_ID` is the capability of the advert of Advocate. Without it the script looks for the advert among the free suppliers of Agent History's capability and stops before it posts anything.",
@@ -1548,27 +1627,31 @@ test('docs/HIRE.md and docs/E2E.md: Advocate has a subsection of section 5 and a
   // The shape of a brief is what the prompt asks for (ruling R-E27): the page says "asked for" and that the check can leave fewer, and the guide says the same in the same numbers.
   const lengthRow = section(read('advocate'), 'Terms').split('\n').find((l) => l.startsWith('| Length |')) ?? '';
   assert.ok(lengthRow.includes('a thesis and 3 arguments asked for') && lengthRow.includes('a thesis and 5 to 7 arguments asked for') && lengthRow.includes('the check can leave fewer'), 'the Length row of the page');
-  // What goes to the third parties is said in the words of the manifest as built (ruling R-E27): the parenthesis of its third entry, read from the template, which agents/advocate/test/server.test.ts keeps equal to manifestFromEnv.
+  // What goes to the third parties is said in the words of the manifest as built (rulings R-E27 and R-F12): the prompt of its third entry, the chat supplier, and its
+  // fourth, OpenRouter only when that hire fails, read from the template, which agents/advocate/test/server.test.ts keeps equal to manifestFromEnv.
   const template = JSON.parse(readFileSync(new URL('../agents/advocate/agent.json.template', import.meta.url), 'utf8'));
-  const sent = /^OpenRouter and the model provider behind it [(](.+)[)]$/.exec(template.behaviour.third_parties[2])?.[1] ?? '';
+  const sent = /^a chat supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it [(]the prompt: (.+)[)]$/.exec(template.behaviour.third_parties[2])?.[1] ?? '';
   assert.ok(sent.startsWith('the subject, the side, the audience, the language and the length'), 'the sentence of the manifest, as built');
-  assert.ok(sub.includes(`It sends two search queries, made from the subject and the side, to the Brave Search API, and it sends ${sent}, to OpenRouter and the model provider behind it: write nothing in a request that should not go there.`), 'the guide says what goes to the third parties');
-  assert.ok(e2e.includes(`and sends ${sent}, to OpenRouter and the model provider behind it, so the subject is one that may go to all three.`), 'the runbook says what goes to the third parties');
+  assert.equal(template.behaviour.third_parties[3], 'OpenRouter and the model provider behind it (the same prompt), only when that hire fails');
+  assert.ok(sub.includes(`It sends two search queries, made from the subject and the side, to the Brave Search API, and it sends the prompt (${sent}) to a chat supplier it hires on the Vector marketplace and the model provider behind it, or, only when that hire fails, to OpenRouter and the model provider behind it: write nothing in a request that should not go there.`), 'the guide says what goes to the third parties');
+  assert.ok(e2e.includes(`and sends the prompt (${sent}) to the chat supplier it hires on the Vector marketplace and the model provider behind it, or, only when that hire fails, to OpenRouter and the model provider behind it, so the subject is one that may go to all of them.`), 'the runbook says what goes to the third parties');
   assert.ok(doc('E2E.md').indexOf('\n## Hiring Advocate\n') > doc('E2E.md').indexOf('\n## Hiring Audio Snippets\n') && doc('E2E.md').indexOf('\n## Hiring Advocate\n') < doc('E2E.md').indexOf('\n## What the script does\n'));
   // The state file of the run is ignored by git, as the others are.
   const ignored = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8').split('\n');
   assert.ok(ignored.includes('e2e-state*.json*') && /^e2e-state.*\.json.*$/.test('e2e-state-advocate.json'));
 });
 
-test('docs/HIRE.md and docs/E2E.md: the window and the reclaim time of the guide are the Terms of the page, a job ends within its deadline, and the asks counted in the E2E section are the default pause of the script over the 5 min window', () => {
+test('docs/HIRE.md and docs/E2E.md: the window and the reclaim time of the guide are the Terms of the page, a job ends within its deadline, and the asks counted in the E2E section are the default pause of the script over the 8 min window', () => {
   const terms = section(read('advocate'), 'Terms');
-  assert.match(terms, /\| Processing window, advert `max_processing_ms` \| 300000 ms \|/);
-  assert.ok(terms.includes('| Job deadline, set by the service when a request arrives | 150000 ms (30 s inside the service timeout) |'));
+  assert.match(terms, /\| Processing window, advert `max_processing_ms` \| 480000 ms \|/);
+  assert.ok(terms.includes('| Job deadline, set by the service when a request arrives | 300000 ms (60 s inside the service timeout) |'));
+  assert.ok(terms.includes('| Service timeout, `SERVICE_TIMEOUT_MS` | 360000 ms |'));
   const guide = section(hire(), '5. The chat script').split('\n### The same script for Advocate\n')[1] ?? '';
-  assert.ok(guide.includes('A job takes up to 150 s. Its processing window is 5 min, so message 4 can wait that long'));
-  assert.equal(300_000 / 60_000, 5);
+  assert.ok(guide.includes('A job takes up to 300 s. Its processing window is 8 min, so message 4 can wait that long'));
+  assert.equal(480_000 / 60_000, 8);
   const pause = Number(/POLL_MS = env\.E2E_POLL_MS === undefined \? (\d+) :/.exec(e2eScript())?.[1]);
   assert.equal(pause, 5000);
-  assert.equal(5 * 60 * 1000 / pause, 60);
-  assert.ok(section(doc('E2E.md'), 'Hiring Advocate').includes("- `E2E_POLL_MS=10000`: a job takes up to 150 s, its deadline, where Agent History's takes seconds, and the default pause of 5 s would ask the hosted server about 60 times in the 5 min window."));
+  assert.equal(8 * 60 * 1000 / pause, 96);
+  assert.ok(section(doc('E2E.md'), 'Hiring Advocate').includes("- `E2E_POLL_MS=10000`: a job takes up to 300 s, its deadline, where Agent History's takes seconds, and the default pause of 5 s would ask the hosted server about 96 times in the 8 min window."));
+  assert.equal(guide.match(/up to 150 s|5 min plus 180 s/), null, 'the words of before the wider window');
 });

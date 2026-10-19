@@ -554,7 +554,7 @@ test('status words: no file says PROPOSED about Agent History, Document Pipeline
   // the marketplace tools in the Interface section of the spec (the tools, not the agent), and the instructions of the three runbooks that speak for the order of a first run.
   const PROPOSED_OK = {
     'README.md': [/^\| Advocate \| `[a-z.0-9-]+` \| PROPOSED \|$/],
-    'deploy/host/README.md': [/^Status: PROPOSED \(built, not deployed\) since 2026-10-13\. Nothing in this section is LIVE\. No step of its runbook has been run\. /],
+    'deploy/host/README.md': [/^Status: PROPOSED \(built, not deployed\) since 2026-10-13\. Nothing in this section is LIVE\. Steps 1 to 10 of its runbook were run on 2026-10-18 and 2026-10-19 /],
     'agents/agent-history/README.md': [/`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./],
     'specs/agent-history.md': [/^The marketplace MCP tools \(PROPOSED\) and the template's buyer, /],
     'deploy/host/RUNBOOK.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about Agent History/],
@@ -2952,6 +2952,8 @@ test('the four corrections of the run of Audio Snippets: the hash script runs on
 // ======================================================================================================================================
 // Advocate (PROPOSED, built and not deployed, since 2026-10-13): the fourth stack on the same host.
 // The four files and the section of the README are held to each other, to the service code, to the spec, and to the files of Audio Snippets they follow.
+// Since Plan E2 the service buys its model call first from a chat supplier on the Vector marketplace, with a buyer key of its own and a state volume, as the
+// Pipeline does: the two-key parts are held as the Pipeline's are, above.
 // docker build and caddy validate are run by hand at deployment. The files name no host and no other stack (HOST_WORDS above).
 // ======================================================================================================================================
 const ASPEC = read('specs/advocate.md');
@@ -2973,12 +2975,14 @@ const A_TERMS = {
   window: aSpecNumber(/advert `max_processing_ms` \| (\d+) ms/), timeout: aSpecNumber(/Service timeout, `SERVICE_TIMEOUT_MS` \| (\d+) ms/),
 };
 const A_SUPPLIER = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS'];
+const A_BUYER = ['ADVOCATE_BUYER_PRIV_KEY_HEX', 'ADVOCATE_BUYER_PUB_KEY_HEX', 'ADVOCATE_BUYER_PKH', 'ADVOCATE_BUYER_ADDRESS'];
 const A_TOKEN = ['SERVICE_AUTH_HEADER'];
 const A_API_KEYS = ['BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY'];
 const A_CHAIN = ['NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO'];
 const A_ADVERT = ['ADVERT_REF', 'ADVERT_CAPABILITY_ID', 'ADVERT_MODEL', 'ADVERT_PRICE_LOVELACE', 'ADVERT_SUPPLIER_BOND_LOVELACE', 'ADVERT_BUYER_BOND_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_ENDPOINT_URL', 'ADVERT_DETAIL_URI', 'ADVERT_DETAIL_HASH'];
 const A_MANIFEST = ['OPERATOR_CONTACT', 'AGENT_DID', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_EXPLORER_URL'];
-const A_STEPS = ['Put the files on the host', 'Build the service image and pin it', 'Build the runtime image', 'Make the env file, generate the supplier key and enter the two API keys', 'Adapt the ops scripts', 'Supply the supplier wallet with its collateral and float', 'Register the identity', 'Stake in Module-3', 'Start the service', 'DNS and Caddy', 'Hash the manifest', 'Post the advert', 'Start the runtime', 'Check the advert on the indexer', 'The first-party run', 'Wallet monitor', 'Flip the status'];
+const A_HIRES = ['LLM_MODEL_ALLOWLIST'];
+const A_STEPS = ['Put the files on the host', 'Build the service image and pin it', 'Build the runtime image', 'Make the env file, generate the two keys and enter the two API keys', 'Adapt the ops scripts', 'Supply the two wallets with their collateral and float', 'Register the identity', 'Stake in Module-3', 'Start the service', 'DNS and Caddy', 'Hash the manifest', 'Post the advert', 'Start the runtime', 'Check the advert on the indexer', 'The first-party run', 'Wallet monitor', 'Flip the status'];
 const A_STATUS = 'PROPOSED (built, not deployed) since 2026-10-13';
 const ADC = 'docker compose -f docker-compose.advocate.yml';
 // The words of the content rules, built from parts so that this file does not hold them either. The two file names of the ops scripts that hold one of them
@@ -2989,23 +2993,24 @@ const withoutFileNames = (text) => text.replace(/payment\.[sv]key/g, '');
 function inAdvocate(code, arg) {
   return JSON.parse(execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code, JSON.stringify(arg)], { cwd: join(root, 'agents/advocate'), encoding: 'utf8' }));
 }
-// The settings of a service that starts: one key pair (the key hash is the blake2b-224 of the public key, computed by the code of the service), a token and two
-// API keys of the form step 4 writes, each made of other characters than the rest, because the service refuses a secret that it finds in another setting.
+// The settings of a service that starts: one key pair (the key hash is the blake2b-224 of the public key, computed by the code of the service), a buyer key, a
+// token and two API keys of the form step 4 writes, each made of other characters than the rest, because the service refuses a secret that it finds in another setting.
 const A_PUBLIC_KEY = 'ab'.repeat(32);
+const A_BUYER_KEY = '01'.repeat(32);
 let aEnvMade;
 function aFullEnv() {
   if (aEnvMade === undefined) {
     const [keyHash] = inAdvocate("import { blake2b224Hex } from '@vsa/vector-read'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((hex) => blake2b224Hex(hex))));", [A_PUBLIC_KEY]);
     aEnvMade = {
       OPERATOR_CONTACT: TEST_CONTACT, SUPPLIER_PKH: keyHash, SUPPLIER_PUB_KEY_HEX: A_PUBLIC_KEY, SERVICE_AUTH_HEADER: `Bearer ${'cd'.repeat(32)}`,
-      BRAVE_SEARCH_API_KEY: 'BSAtestkey0123456789abcdefghij', OPENROUTER_API_KEY: `sk-or-v1-${'0123456789abcdef'.repeat(4)}`,
+      BRAVE_SEARCH_API_KEY: 'BSAtestkey0123456789abcdefghij', OPENROUTER_API_KEY: `sk-or-v1-${'0123456789abcdef'.repeat(4)}`, ADVOCATE_BUYER_PRIV_KEY_HEX: A_BUYER_KEY,
     };
   }
   return aEnvMade;
 }
-// The seconds that the failure table states about the time the model is given (src/budget.ts): the last second of the job gone with which it still gets the full time,
-// the least it gets when the search and the pages took their caps, and the least of the job that must be left to start it.
-const A_MODEL_TIME = { fullUntil: 55, least: 85, startWith: 20 };
+// The seconds that the failure table states about the time the model is given (src/budget.ts): the least of the job that must be left to start it. The other edges
+// are the code's own: the hire ends FALLBACK_RESERVE_MS before the deadline, and the receipt is read until receiptByMs.
+const A_MODEL_TIME = { startWith: 20 };
 // The numbers of the code that the pack states in its text, read once through tsx from the files that own them, so that no test here holds a copy of them. The time the model
 // is given is asked of the real function at the edges the table states.
 let aLimitsRead;
@@ -3014,10 +3019,11 @@ function aLimits() {
     [aLimitsRead] = inAdvocate(
       "import * as budget from './src/budget.ts'; import { MIN_PAGE_CHARS } from './src/html.ts'; import { PAGE_MAX_BYTES } from './src/pages.ts'; " +
       "import { ANSWER_MAX_BYTES, OPENROUTER_ENDPOINT } from './src/model.ts'; import { BRAVE_ENDPOINT, MAX_RESULTS, dedupeResults } from './src/search.ts'; import { assertSafeUrl } from '@vsa/vector-read'; " +
-      "const claim = JSON.parse(process.argv[1]); const { modelBudgetMs, fetchDeadlineMs, ...times } = budget; const left = (gone) => times.JOB_DEADLINE_MS - gone; " +
+      "const claim = JSON.parse(process.argv[1]); const { modelBudgetMs, fetchDeadlineMs, hopDeadlineMs, receiptByMs, ...times } = budget; " +
       "const result = (url) => ({ title: '', url, description: '' }); const endpoint = (e) => { const u = new URL(e); return { protocol: u.protocol, host: u.host, port: u.port }; }; " +
       "console.log(JSON.stringify([{ ...times, MIN_PAGE_CHARS, PAGE_MAX_BYTES, MAX_RESULTS, ANSWER_MAX_BYTES, " +
-      "model: { full: modelBudgetMs(left(claim.fullUntil * 1000)), lessAfter: modelBudgetMs(left(claim.fullUntil * 1000 + 1)), atTheCaps: modelBudgetMs(left(times.SEARCH_MAX_MS + times.FETCH_PHASE_MAX_MS)), " +
+      "hopEnd: times.JOB_DEADLINE_MS - hopDeadlineMs(times.JOB_DEADLINE_MS), receiptEnd: times.JOB_DEADLINE_MS - receiptByMs(times.JOB_DEADLINE_MS), " +
+      "model: { full: modelBudgetMs(times.FALLBACK_RESERVE_MS), lessAfter: modelBudgetMs(times.FALLBACK_RESERVE_MS - 1), atReceiptBy: modelBudgetMs(times.JOB_DEADLINE_MS - receiptByMs(times.JOB_DEADLINE_MS)), " +
       "none: modelBudgetMs(claim.startWith * 1000 - 1), started: modelBudgetMs(claim.startWith * 1000) }, " +
       "kept: dedupeResults([result('http://example.org/a'), result('https://example.org/b')]).map((r) => r.url), " +
       "endpoints: [endpoint(BRAVE_ENDPOINT), endpoint(OPENROUTER_ENDPOINT)], resultPort: assertSafeUrl('https://example.org:8443/page').port }]));", A_MODEL_TIME);
@@ -3047,17 +3053,23 @@ test('Advocate compose: the project and two containers have fixed names, the run
   assert.deepEqual([service, pService, sService, aService].map((s) => s.environment.PORT), ['9091', '9092', '9093', '9094']);
 });
 
-test('Advocate compose: the runtime is the pinned template commit, SERVICE_URL names the service container on 9094 at /, the service holds no chain key, the runtime holds neither API key, and the token is blanked in neither', () => {
+test('Advocate compose: the runtime is the pinned template commit, SERVICE_URL names the service container on 9094 at /, the service holds the buyer key and not the supplier key, the runtime holds neither the buyer key nor either API key, and the token is blanked in neither', () => {
   assert.equal(aAgent.build.context, sAgent.build.context, 'the template commit of the other three');
   assert.equal(aAgent.build.dockerfile, 'agent/Dockerfile');
   assert.deepEqual(aAgent.environment, {
-    CAPABILITY_KIND: 'custom', SERVICE_URL: 'http://advocate-service:9094/', SERVICE_CONTENT_TYPE: 'application/json', SERVICE_TIMEOUT_MS: '180000', ADVERT_MAX_PROCESSING_MS: '300000', PORT: '8080',
-    BRAVE_SEARCH_API_KEY: '', OPENROUTER_API_KEY: '',
-  }, 'an empty string overrides the value from env_file: the runtime holds neither API key');
-  assert.deepEqual(aService.environment, { PORT: '9094', HOST: '0.0.0.0', SUPPLIER_PRIV_KEY_HEX: '' }, "the supplier key is the runtime's and is blanked for the service, which reads the token and the two API keys from the env file");
+    CAPABILITY_KIND: 'custom', SERVICE_URL: 'http://advocate-service:9094/', SERVICE_CONTENT_TYPE: 'application/json', SERVICE_TIMEOUT_MS: '360000', ADVERT_MAX_PROCESSING_MS: '480000', PORT: '8080',
+    ADVOCATE_BUYER_PRIV_KEY_HEX: '', BRAVE_SEARCH_API_KEY: '', OPENROUTER_API_KEY: '',
+  }, 'an empty string overrides the value from env_file: the runtime holds neither the buyer key nor either API key');
+  assert.deepEqual(aService.environment, { PORT: '9094', HOST: '0.0.0.0', SUPPLIER_PRIV_KEY_HEX: '', ADVOCATE_STATE_DIR: '/data' }, "the supplier key is the runtime's and is blanked for the service, which reads the buyer key, the token and the two API keys from the env file");
+  assert.ok(!('ADVOCATE_BUYER_PRIV_KEY_HEX' in aService.environment), 'the service reads the buyer key from the env file');
+  assert.ok(!('SUPPLIER_PRIV_KEY_HEX' in aAgent.environment), 'the runtime reads the supplier key from the env file');
   assert.equal(new URL(aAgent.environment.SERVICE_URL).hostname, aService.container_name);
   assert.ok(!('SERVICE_AUTH_HEADER' in aAgent.environment) && !('SERVICE_AUTH_HEADER' in aService.environment), 'both read the token from the env file');
+  assert.ok(aComposeText.includes('# Both containers read the same file and each gets only its own key: the other one is blanked in its environment below (an empty string overrides the value from env_file).'));
   assert.ok(aComposeText.includes('# The service holds the two API keys, BRAVE_SEARCH_API_KEY and OPENROUTER_API_KEY, and reads them from the env file. The runtime needs neither, so both are blanked in its environment below.'));
+  assert.ok(aComposeText.includes("    # This service holds the buyer key, which posts the escrow of the chat sub-job of a job, and not the supplier key, which is the runtime's: that one is blanked here."));
+  assert.ok(aComposeText.includes('the network is shared with other stacks, and a job posts an escrow from the buyer wallet.'));
+  assert.doesNotMatch(aComposeText, /holds no chain key|one key and two API keys/, 'the words of before the buyer key');
   const [port] = inAdvocate("import { PORT_DEFAULT } from './src/start.ts'; console.log(JSON.stringify([PORT_DEFAULT]));", null);
   assert.equal(port, 9094);
   assert.match(aDockerfile, /^ENV NODE_ENV=production PORT=9094 HOST=0\.0\.0\.0(?: |$)/m);
@@ -3065,24 +3077,34 @@ test('Advocate compose: the runtime is the pinned template commit, SERVICE_URL n
   assert.match(aDockerfile, /^HEALTHCHECK .*127\.0\.0\.1:9094\/healthz/m);
 });
 
-test('Advocate compose: the window and the timeout are the spec terms and nest as the runtime requires; the deadline of a job, the memory limit and the grace period; no volume', () => {
-  assert.deepEqual([A_TERMS.window, A_TERMS.timeout], [300_000, 180_000]);
+test('Advocate compose: the window and the timeout are the spec terms and nest as the runtime requires; the deadline of a job, the memory limit and the grace period; the state volume', () => {
+  assert.deepEqual([A_TERMS.window, A_TERMS.timeout], [480_000, 360_000]);
   assert.equal(Number(aAgent.environment.ADVERT_MAX_PROCESSING_MS), A_TERMS.window);
   assert.equal(Number(aAgent.environment.SERVICE_TIMEOUT_MS), A_TERMS.timeout);
   assert.ok(A_TERMS.timeout <= A_TERMS.window - 60_000, 'the runtime refuses to boot otherwise');
   const [deadline, minWindow, wait] = inAdvocate("import { JOB_DEADLINE_MS } from './src/budget.ts'; import { MIN_PROCESSING_WINDOW_MS } from './src/server.ts'; import { SHUTDOWN_WAIT_MS } from '@vsa/service-kit'; console.log(JSON.stringify([JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, SHUTDOWN_WAIT_MS]));", null);
-  assert.deepEqual([deadline, minWindow, wait], [150_000, 300_000, 300_000]);
-  assert.ok(deadline <= A_TERMS.timeout - 30_000, 'the deadline of a job is 30 s inside the service timeout');
+  assert.deepEqual([deadline, minWindow, wait], [300_000, 480_000, 300_000]);
+  assert.equal(minWindow, A_TERMS.window, 'the service refuses a window under the one of the spec');
+  assert.ok(deadline <= A_TERMS.timeout - 60_000, 'the deadline of a job is 60 s inside the service timeout, the margin of the Pipeline');
+  assert.ok(aComposeText.includes('# SERVICE_TIMEOUT_MS sits 120 s inside the 8 min window of the advert (the runtime refuses to boot unless it is at least 60 s inside), and the service'));
+  assert.ok(aComposeText.includes('# answers a job within 300000 ms of its arrival, so a job ends with a result or a refusal before the runtime gives up on it; a hire in its Accept at that'));
   assert.equal(aService.mem_limit, '1024m');
   assert.equal(aService.stop_grace_period, '330s');
   assert.equal(Number(/^(\d+)s$/.exec(aService.stop_grace_period)?.[1]), wait / 1000 + 30, 'the grace period is the wait of the service and 30 s more');
-  assert.ok(aComposeText.includes('# On SIGTERM the service takes no new job and waits up to 300 s for the one that is running, which ends within 150 s of its arrival; the 30 s more than'));
+  assert.ok(aComposeText.includes('# On SIGTERM the service takes no new job and waits up to 300 s for the one that is running, its Accept included; the 30 s more than that are for it to'));
+  assert.match(aComposeText, /A grace period of 300 s or less kills a job under escrow mid-run, or the service before it can say what it left\./);
   // The memory the comment accounts for is the code's: the pages a job holds (the results it keeps) and the most of each.
   const L = aLimits();
   assert.ok(aComposeText.includes(`# One job at a time holds at most ${L.MAX_RESULTS} pages of at most ${L.PAGE_MAX_BYTES / 1_048_576} MB each and their text in memory`));
-  assert.equal(aService.volumes, undefined);
-  assert.equal(aCompose.volumes, undefined);
-  assert.doesNotMatch(aDockerfile, /^VOLUME /m);
+  // The state: a named volume at /data, which ADVOCATE_STATE_DIR names, the default of the code, and which the image makes its own.
+  assert.deepEqual(aService.volumes, ['advocate-state:/data']);
+  assert.deepEqual(aCompose.volumes, { 'advocate-state': { name: 'advocate-state' } }, 'named, so that the volume has the name the runbook gives');
+  assert.equal(aAgent.volumes, undefined, 'the runtime keeps no state');
+  const [stateDirDefault] = inAdvocate("import { STATE_DIR_DEFAULT } from './src/start.ts'; console.log(JSON.stringify([STATE_DIR_DEFAULT]));", null);
+  assert.equal(aService.environment.ADVOCATE_STATE_DIR, stateDirDefault);
+  assert.match(aDockerfile, /^VOLUME \/data$/m);
+  assert.ok(aComposeText.includes('    # stranded.json, the escrows a job left behind for the janitor, lives here and outlives the container. docker compose down keeps the volume.'));
+  assert.equal(aComposeText.includes('there is no volume'), false, 'the words of before the state');
 });
 
 test('Advocate compose: the service image is named by digest (a placeholder in the repository), on one line that step 2 rewrites and step 9 checks', () => {
@@ -3098,24 +3120,34 @@ test('Advocate compose: the service image is named by digest (a placeholder in t
   assert.ok(section(aRunbook, '9. Start the service').includes("grep -E '^    image: (ghcr[.]io/apex-fusion/vector-service-agents/advocate@sha256:|sha256:)[0-9a-f]{64}$' docker-compose.advocate.yml"));
 });
 
-test('Advocate env example: the blocks in order (supplier, token, API keys, chain, advert, manifest), known names only, each once; every secret empty, nothing key-shaped; the header says one key, a token and two API keys, and where the network is named', () => {
-  assert.deepEqual(Object.keys(aExample), [...A_SUPPLIER, ...A_TOKEN, ...A_API_KEYS, ...A_CHAIN, ...A_ADVERT, ...A_MANIFEST]);
+test('Advocate env example: the blocks in order (supplier, buyer, token, API keys, chain, advert, manifest, hires), known names only, each once; every secret empty, nothing key-shaped; the header says two keys, a token and two API keys, and where the network is named', () => {
+  assert.deepEqual(Object.keys(aExample), [...A_SUPPLIER, ...A_BUYER, ...A_TOKEN, ...A_API_KEYS, ...A_CHAIN, ...A_ADVERT, ...A_MANIFEST, ...A_HIRES]);
   assert.deepEqual(keyProblems(aExample), []);
   assert.deepEqual(keyProblems(aAgent.environment), []);
   assert.deepEqual(keyProblems(aService.environment), []);
-  for (const name of [...A_SUPPLIER, ...A_TOKEN, ...A_API_KEYS, 'ADVERT_REF', 'ADVERT_DETAIL_HASH', 'AGENT_DID', 'ADVERT_EXPLORER_URL']) assert.equal(aExample[name], '', `${name} is filled by the runbook`);
+  for (const name of [...A_SUPPLIER, ...A_BUYER, ...A_TOKEN, ...A_API_KEYS, 'ADVERT_REF', 'ADVERT_DETAIL_HASH', 'AGENT_DID', 'ADVERT_EXPLORER_URL']) assert.equal(aExample[name], '', `${name} is filled by the runbook`);
   assert.equal(aExampleRaw.SERVICE_AUTH_HEADER, '""', 'empty and in quotes');
   for (const name of A_API_KEYS) assert.equal(aExampleRaw[name], '', `${name} is empty and has no quotes: a key is letters, digits, dots, hyphens and underscores`);
   assert.match(aExample.OPERATOR_CONTACT, PLACEHOLDER);
   assert.equal(aExample.OPERATOR_CONTACT, example.OPERATOR_CONTACT, 'the same placeholder as the other three');
   const [first, second, third, fourth] = aExampleText.split('\n');
   assert.equal(first, '# Copy to .env.advocate next to the compose file (mode 600). Names and placeholders only: this example holds no key, no secret and no usable token (SERVICE_AUTH_HEADER and the two API keys are empty here).');
-  assert.equal(second, "# The copy holds one key, the supplier key (the runtime's), the token between the two containers and the two API keys of the service, and it never enters git: the repository's .gitignore covers .env.* except *.example.");
+  assert.equal(second, "# The copy holds two keys, the supplier key (the runtime's) and the buyer key (the service's), the token between the two containers and the two API keys of the service, and it never enters git: the repository's .gitignore covers .env.* except *.example.");
   assert.equal(third, `# Status: ${A_STATUS}. The status word the manifest carries is AGENT_STATUS_CHIP below.`);
   assert.equal(fourth, "# The external network of the host's reverse proxy is not named here: compose reads PROXY_NETWORK from .env next to the compose file (RUNBOOK-advocate.md step 1).");
   assert.equal(/^PROXY_NETWORK=/m.test(aExampleText), false, 'compose would not read it here');
   assert.ok(aExampleText.includes('The service reads the public key and the key hash, publishes both in the manifest, and stops at start when the public key is empty or is not the one of the key hash.'));
   assert.ok(read('.gitignore').split('\n').includes('.env.*') && /^\.env\..*$/.test('.env.advocate') && /^\.env\..*\.example$/.test('.env.advocate.example'), 'the copy is covered by the rule the header quotes');
+  // The buyer block, in the words of the Pipeline's: what the key is for, why it is a key of its own, and what the start checks.
+  const lines = aExampleText.split('\n');
+  const at = lines.indexOf('ADVOCATE_BUYER_PRIV_KEY_HEX=');
+  assert.equal(lines[at - 3], 'SUPPLIER_ADDRESS=', 'right after the supplier block');
+  assert.deepEqual(lines.slice(at - 2, at), [
+    '# The buyer (from the second gen-keypair, same step). The service posts the escrow of the chat sub-job of a job with this key. It is a separate key, so that the service\'s Posts and the supplier key\'s Claims never contend for the same outputs, and it is never the buyer key of another agent: two services that hold one wallet would contend for its outputs.',
+    '# The runtime does not get it: the compose file blanks it there. The service derives the key hash and the address from the key and stops at start when ADVOCATE_BUYER_PKH or ADVOCATE_BUYER_ADDRESS says something else.',
+  ]);
+  assert.ok(pExampleText.includes('# The runtime does not get it: the compose file blanks it there. The service derives the key hash and the address from the key and stops at start when PIPELINE_BUYER_PKH or PIPELINE_BUYER_ADDRESS says something else.'), 'the words of the Pipeline, with the names of Advocate');
+  assert.ok(aExampleText.includes('# and the identity lines above (the supplier key hash and public key, the buyer key hash), must be final before the hash is taken.'));
 });
 
 test('Advocate env example: the two API key lines are empty after the token, and their comments say that the operator enters each by hand on the host in step 4, that neither is pasted into a chat or printed, and that the service does not start without them; OPENROUTER_MODEL is optional and left unset', () => {
@@ -3126,30 +3158,33 @@ test('Advocate env example: the two API key lines are empty after the token, and
   assert.equal(lines[at - 5], 'SERVICE_AUTH_HEADER=""', 'after the token');
   assert.equal(lines[at + 2], '# Chain', 'before the chain block');
   assert.deepEqual(lines.slice(at - 4, at), [
-    '# The two API keys of the service: the key of the Brave Search API, sent with its two search queries, and the key of OpenRouter, sent with its one model call. The compose file blanks both for the runtime.',
-    '# The operator enters each by hand on the host (RUNBOOK-advocate.md step 4, "Make the env file, generate the supplier key and enter the two API keys"), read with read -rs, so that it is on no screen and in no shell history.',
+    '# The two API keys of the service: the key of the Brave Search API, sent with its two search queries, and the key of OpenRouter, sent with its one model call when the hire of a chat supplier fails. The compose file blanks both for the runtime.',
+    '# The operator enters each by hand on the host (RUNBOOK-advocate.md step 4, "Make the env file, generate the two keys and enter the two API keys"), read with read -rs, so that it is on no screen and in no shell history.',
     '# Neither is ever pasted into a chat or printed. The service does not start without them (environment variable BRAVE_SEARCH_API_KEY is required, and the same for OPENROUTER_API_KEY).',
     '# Empty here on purpose. A key is letters, digits, dots, hyphens and underscores, so it needs no quotes; step 4 refuses any other character, and a value under 20 characters.',
   ]);
   // OPENROUTER_MODEL is described and not set, not even as a commented line: the default of the code holds, and the manifest the advert hashes names it.
   assert.equal(/^#?\s*OPENROUTER_MODEL=/m.test(aExampleText), false);
-  assert.ok(aExampleText.includes('# Left unset on purpose: AGENT_VERSION (the service has its own default), and OPENROUTER_MODEL, which is optional: the model the service asks through OpenRouter, as <provider>/<name>,\n# deepseek/deepseek-v4-flash while it is not set. The manifest names the model in a gap and every result names it, so a value set here changes the manifest the advert hashes.\n'));
+  assert.ok(aExampleText.includes('# Left unset on purpose: AGENT_VERSION (the service has its own default), VECTOR_MARKETPLACE_INDEXER_URL, VECTOR_OGMIOS_URL, VECTOR_KOIOS_URL and VECTOR_SUBMIT_URL (the defaults of the code are Vector mainnet\'s),\n# and OPENROUTER_MODEL, which is optional: the model the service asks, as <provider>/<name>, deepseek/deepseek-v4-flash while it is not set. The manifest names the model in a gap and every result names it,\n# so a value set here changes the manifest the advert hashes.\n'));
   const [model] = inAdvocate("import { DEFAULT_MODEL } from './src/model.ts'; console.log(JSON.stringify([DEFAULT_MODEL]));", null);
   assert.equal(model, 'deepseek/deepseek-v4-flash');
 });
 
 test('Advocate env example: every name the service code reads is in the example, in the compose environment, or has a default in the code; the runtime gets every name the template lists', () => {
-  const files = [...sourceFiles('agents/advocate/src'), ...sourceFiles('packages/service-kit/src'), ...sourceFiles('packages/vector-read/src')];
+  // The service hires through packages/hire-kit on packages/buyer-core, which read the chain endpoints: their names are read too.
+  const files = [...sourceFiles('agents/advocate/src'), ...sourceFiles('packages/service-kit/src'), ...sourceFiles('packages/vector-read/src'), ...sourceFiles('packages/buyer-core/src'), ...sourceFiles('packages/hire-kit/src')];
   const names = new Set(files.flatMap((f) => [...envNamesIn(read(f))]));
   // The start reads each API key through one function, as env[key.name], the name held by a constant of src/start.ts ({ name, what, why }): those names are read too.
   const keyNames = [...A_SRC.matchAll(/\{ name: '([A-Z][A-Z0-9_]*)', what: '/g)].map((m) => m[1]);
   assert.deepEqual(keyNames, A_API_KEYS, 'the constants of the two keys');
   for (const n of keyNames) names.add(n);
-  // Left unset on purpose: the defaults of the code. OPENROUTER_MODEL is optional, deepseek/deepseek-v4-flash by default (the test above).
-  const DEFAULT_IN_CODE = ['AGENT_VERSION', 'KOIOS_URL', 'INDEXER_URL', 'OPENROUTER_MODEL'];
+  // Left unset on purpose: the defaults of the code. OPENROUTER_MODEL is optional, deepseek/deepseek-v4-flash by default (the test above); the chain endpoints and the
+  // indexer are Vector mainnet's in packages/buyer-core; the ceiling of the chat job is 1000000 lovelace in the code, and the example carries it commented.
+  const DEFAULT_IN_CODE = ['AGENT_VERSION', 'KOIOS_URL', 'INDEXER_URL', 'OPENROUTER_MODEL', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_KOIOS_URL', 'VECTOR_EXPLORER_URL', 'LLM_MAX_PRICE_LOVELACE'];
   assert.deepEqual([...names].filter((n) => !(n in aExample) && !(n in aService.environment) && !DEFAULT_IN_CODE.includes(n)), []);
   for (const n of DEFAULT_IN_CODE) assert.ok(!(n in aExample), `${n} stays unset in the example`);
-  for (const n of ['OPERATOR_CONTACT', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'SERVICE_AUTH_HEADER', ...A_API_KEYS, 'OPENROUTER_MODEL']) assert.ok(names.has(n), `the service reads ${n}`);
+  assert.match(aExampleText, /^# LLM_MAX_PRICE_LOVELACE=1000000$/m, 'the ceiling is in the example, commented, at the default of the code');
+  for (const n of ['OPERATOR_CONTACT', 'ADVOCATE_BUYER_PRIV_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'SERVICE_AUTH_HEADER', ...A_API_KEYS, 'OPENROUTER_MODEL', 'ADVOCATE_STATE_DIR', 'LLM_MODEL_ALLOWLIST', 'LLM_MAX_PRICE_LOVELACE']) assert.ok(names.has(n), `the service reads ${n}`);
   assert.ok(!names.has('SUPPLIER_PRIV_KEY_HEX'), "no source of the service reads the supplier key: it is the runtime's");
   const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'SERVICE_AUTH_HEADER', 'PORT'];
   assert.deepEqual(NEEDED.filter((n) => !(n in aExample) && !(n in aAgent.environment)), []);
@@ -3166,6 +3201,14 @@ test('Advocate env example: the chain values are those of the other three, the a
   assert.ok(DESIGN.includes('`mp-suppliers-advocate.hal8.ai`'));
   assert.deepEqual([aExample.AGENT_STATUS_CHIP, aExample.AGENT_STATUS_SINCE], ['proposed', '2026-10-13']);
   assert.match(aExampleText, /^# The status word the manifest carries, and since when: proposed since 2026-10-13, the day the agent was specified\. Step 17 of RUNBOOK-advocate\.md \("Flip the status"\) changes both,$/m);
+  // The allowlist is the default of the code (ruling R-F6): the model of OPENROUTER_MODEL, so that both paths ask the same model; the start reads the example's line as that.
+  const [byDefault, byExample] = inAdvocate(
+    "import { loadConfig } from './src/start.ts'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((env) => { const c = loadConfig(env); return { allowlist: c.allowlist, ceiling: String(c.maxPriceLovelace), model: c.model }; })));",
+    [aFullEnv(), { ...aFullEnv(), LLM_MODEL_ALLOWLIST: aExample.LLM_MODEL_ALLOWLIST }],
+  );
+  assert.deepEqual(byDefault, { allowlist: [byDefault.model], ceiling: '1000000', model: 'deepseek/deepseek-v4-flash' });
+  assert.deepEqual(byExample, byDefault, 'the line of the example is the default, written out');
+  assert.ok(aExampleText.includes('# The chat models it may hire for the brief on the Vector marketplace, comma separated, in order of preference. The default is the model of OPENROUTER_MODEL, so that the\n# chat supplier and OpenRouter are asked the same model: a change of OPENROUTER_MODEL takes the same change here. The manifest names the first model of the list in a\n# gap, beside the model of OPENROUTER_MODEL when the two differ, so a change of either changes the manifest the advert hashes.\n'));
   const [withExample, withNothing] = inAdvocate(
     "import { manifestFromEnv } from './src/server.ts'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((env) => manifestFromEnv(env))));",
     [{ ...withoutPlaceholders(aExample), OPERATOR_CONTACT: TEST_CONTACT }, { OPERATOR_CONTACT: TEST_CONTACT }],
@@ -3177,23 +3220,29 @@ test('Advocate env example: the chain values are those of the other three, the a
   assert.equal(withExample.capability_id, aExample.ADVERT_CAPABILITY_ID);
 });
 
-test('Advocate env example: settings of the form step 4 writes start the service; each of the six it requires is refused, naming it, when it is not set; a public key that is not the key of SUPPLIER_PKH and an API key found in another setting are refused, and no refusal shows a value', () => {
+test('Advocate env example: settings of the form step 4 writes start the service; each of the seven it requires is refused, naming it, when it is not set; a public key that is not the key of SUPPLIER_PKH, a buyer key hash that is not the key\'s, and the buyer key or an API key found in another setting are refused, and no refusal shows a value', () => {
   const env = aFullEnv();
-  const code = "import { loadConfig } from './src/start.ts'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((env) => { try { const c = loadConfig(env); return { token: c.authHeader.length, brave: c.braveApiKey.length, openRouter: c.openRouterApiKey.length, model: c.model, port: c.port }; } catch (e) { return { error: e.message }; } })));";
-  const REQUIRED = ['OPERATOR_CONTACT', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'SERVICE_AUTH_HEADER', ...A_API_KEYS];
+  const code = "import { loadConfig } from './src/start.ts'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((env) => { try { const c = loadConfig(env); return { token: c.authHeader.length, brave: c.braveApiKey.length, openRouter: c.openRouterApiKey.length, model: c.model, port: c.port, buyer: c.buyer.pkh, address: c.buyer.address, stateDir: c.stateDir }; } catch (e) { return { error: e.message }; } })));";
+  const REQUIRED = ['OPERATOR_CONTACT', 'ADVOCATE_BUYER_PRIV_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'SERVICE_AUTH_HEADER', ...A_API_KEYS];
   const without = (name) => Object.fromEntries(Object.entries(env).filter(([n]) => n !== name));
+  const [buyer] = inAdvocate("import { buyerIdentityOf } from '@vsa/buyer-core'; console.log(JSON.stringify([buyerIdentityOf(JSON.parse(process.argv[1]))]));", A_BUYER_KEY);
   const [accepted, ...refused] = inAdvocate(code, [
-    env, ...REQUIRED.map(without), { ...env, SUPPLIER_PUB_KEY_HEX: 'ef'.repeat(32) },
-    { ...env, AGENT_DID: `did:${env.BRAVE_SEARCH_API_KEY}` }, { ...env, ADVERT_EXPLORER_URL: `https://example.test/${env.OPENROUTER_API_KEY}` },
+    env, ...REQUIRED.map(without), { ...env, SUPPLIER_PUB_KEY_HEX: 'ef'.repeat(32) }, { ...env, ADVOCATE_BUYER_PKH: 'a'.repeat(56) },
+    { ...env, AGENT_DID: `did:${env.BRAVE_SEARCH_API_KEY}` }, { ...env, ADVERT_EXPLORER_URL: `https://example.test/${env.OPENROUTER_API_KEY}` }, { ...env, AGENT_DID: `did:${A_BUYER_KEY}` },
   ]);
-  assert.deepEqual(accepted, { token: 71, brave: env.BRAVE_SEARCH_API_KEY.length, openRouter: env.OPENROUTER_API_KEY.length, model: 'deepseek/deepseek-v4-flash', port: 9094 });
+  assert.deepEqual(accepted, {
+    token: 71, brave: env.BRAVE_SEARCH_API_KEY.length, openRouter: env.OPENROUTER_API_KEY.length, model: 'deepseek/deepseek-v4-flash', port: 9094,
+    buyer: buyer.buyerPkh, address: buyer.address, stateDir: '/data',
+  });
   REQUIRED.forEach((name, i) => assert.match(refused[i].error ?? '', new RegExp(`^environment variable ${name} is required`), name));
-  const [otherKey, braveElsewhere, openRouterElsewhere] = refused.slice(REQUIRED.length);
+  const [otherKey, otherBuyer, braveElsewhere, openRouterElsewhere, buyerElsewhere] = refused.slice(REQUIRED.length);
   assert.match(otherKey.error ?? '', /is not the public key of SUPPLIER_PKH/);
+  assert.match(otherBuyer.error ?? '', /\bADVOCATE_BUYER_PKH\b.*is not the key hash of the key in ADVOCATE_BUYER_PRIV_KEY_HEX/);
   assert.match(braveElsewhere.error ?? '', /\bAGENT_DID\b/, 'the refusal names the setting that holds the key');
   assert.match(openRouterElsewhere.error ?? '', /\bADVERT_EXPLORER_URL\b/);
+  assert.match(buyerElsewhere.error ?? '', /\bAGENT_DID\b.*holds the buyer key, which belongs in ADVOCATE_BUYER_PRIV_KEY_HEX alone/);
   const said = JSON.stringify(refused).toLowerCase();
-  for (const secret of [env.SERVICE_AUTH_HEADER.slice('Bearer '.length), env.BRAVE_SEARCH_API_KEY, env.OPENROUTER_API_KEY, A_PUBLIC_KEY, 'ef'.repeat(32)]) assert.equal(said.includes(secret.toLowerCase()), false, 'a refusal names the settings and prints no value');
+  for (const secret of [env.SERVICE_AUTH_HEADER.slice('Bearer '.length), env.BRAVE_SEARCH_API_KEY, env.OPENROUTER_API_KEY, A_PUBLIC_KEY, 'ef'.repeat(32), A_BUYER_KEY]) assert.equal(said.includes(secret.toLowerCase()), false, 'a refusal names the settings and prints no value');
 });
 
 test('Advocate Caddy snippet: the site block is the fourth endpoint host, the manifest goes to the service and everything else to the runtime, the block is last, and the README shows the same block', () => {
@@ -3209,12 +3258,12 @@ test('Advocate Caddy snippet: the site block is the fourth endpoint host, the ma
   assert.ok(aSection.split('\n').map((l) => l.replace(/^ {3}/, '')).join('\n').includes('```\n' + block + '\n```'), 'the README shows the same block');
 });
 
-test('Advocate files: each says PROPOSED (built, not deployed) since 2026-10-13 in its own first lines and that no step has been run; none says LIVE or DEPLOYED, names the host or another stack, or holds a dash, the unit name, a person, a home path or a word the content rules ban', () => {
-  assert.equal(aComposeText.split('\n')[1], `# ${A_STATUS}. Not installed: no step of RUNBOOK-advocate.md has been run. The host administrator's part is README.md.`);
-  assert.ok(aSnippet.split('\n')[1].startsWith(`# ${A_STATUS}. Not installed: step 10 of RUNBOOK-advocate.md has not been run.`));
+test('Advocate files: each says PROPOSED (built, not deployed) since 2026-10-13 in its own first lines and what ran on the host, with the image of ccbcb94; none says LIVE or DEPLOYED, names the host or another stack, or holds a dash, the unit name, a person, a home path or a word the content rules ban', () => {
+  assert.equal(aComposeText.split('\n')[1], `# ${A_STATUS}. Steps 1 to 10 of RUNBOOK-advocate.md ran on 2026-10-18 and 2026-10-19 with the service image of ccbcb94; the image is rebuilt from this change before step 11. The host administrator's part is README.md.`);
+  assert.ok(aSnippet.split('\n')[1].startsWith(`# ${A_STATUS}. Installed: steps 1 to 10 of RUNBOOK-advocate.md, step 10 among them, ran on 2026-10-18 and 2026-10-19.`));
   assert.equal(aExampleText.split('\n')[2], `# Status: ${A_STATUS}. The status word the manifest carries is AGENT_STATUS_CHIP below.`);
-  assert.equal(aRunbook.split('\n')[2], `Status: ${A_STATUS}. Nothing in this folder is LIVE. This runbook says what will happen, in order. No step of it has been run.`);
-  assert.ok(aSection.split('\n')[1].startsWith(`Status: ${A_STATUS}. Nothing in this section is LIVE. No step of its runbook has been run. The files are `));
+  assert.equal(aRunbook.split('\n')[2], `Status: ${A_STATUS}. Nothing in this folder is LIVE. This runbook says what will happen, in order. Steps 1 to 10 were run on 2026-10-18 and 2026-10-19 with the service image of \`ccbcb94\` (the OpenRouter-only build), and the identity was registered and staked on 2026-10-19 (steps 7 and 8); no advert is posted. Before step 11 the service image is rebuilt from this change: steps 1 and 2 again for its files and its image, step 4 for the buyer key (it has a block for the env file of that run), step 6 for the buyer wallet, and step 9 to recreate the service.`);
+  assert.ok(aSection.split('\n')[1].startsWith(`Status: ${A_STATUS}. Nothing in this section is LIVE. Steps 1 to 10 of its runbook were run on 2026-10-18 and 2026-10-19 with the service image of \`ccbcb94\`, and the identity was registered and staked on 2026-10-19; no advert is posted, and the image is rebuilt from this change before step 11. The files are `));
   for (const rel of [...A_FILES, 'agents/advocate/Dockerfile']) {
     const text = read(rel);
     assert.doesNotMatch(text.replace('Nothing in this folder is LIVE.', ''), /\b(LIVE|DEPLOYED)\b/, `${rel}: no status claim beyond the status line`);
@@ -3235,7 +3284,7 @@ test('Advocate files: each says PROPOSED (built, not deployed) since 2026-10-13 
   for (const miss of ['payment.skey', 'payment.vkey', 'the PAYLOAD of step 15', 'merged into change', 'refundable', 'learned']) assert.doesNotMatch(withoutFileNames(miss), A_BANNED, miss);
 });
 
-test('Advocate README section: the fourth stack, with its two containers, the loopback port, the unpublished service port, the network of .env, the two API keys, the calls out of the host, the limits, the hostname, the Caddy block and the way back', () => {
+test('Advocate README section: the fourth stack, with its two containers, the loopback port, the unpublished service port, the network of .env, the two keys and the two API keys, the calls out of the host, the state volume, the limits, the hostname, the Caddy block and the way back', () => {
   assert.ok(aSection.length > 2500, 'the section exists');
   assert.ok(readme.indexOf('\n## Advocate on the same host\n') > readme.indexOf('\n## Audio Snippets on the same host\n'), "after the section of Audio Snippets, the last of the note");
   assert.deepEqual([...readme.matchAll(/^## (.+)$/gm)].map((m) => m[1]).at(-1), 'Advocate on the same host');
@@ -3245,16 +3294,23 @@ test('Advocate README section: the fourth stack, with its two containers, the lo
     "[RUNBOOK-advocate.md](RUNBOOK-advocate.md), which is the operator's order of work and follows [RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md) step for step",
     'The compose project is `advocate`.', "Both containers join the external network of the host's reverse proxy (`PROXY_NETWORK` in `.env`, written in step 1 of its runbook, as for the other three).",
     'the base path is the folder the operator chose for this agent (`BASE` in its runbook)',
-    '- **One key, and two API keys.**', 'The service holds no chain key and posts nothing', '`BRAVE_SEARCH_API_KEY` and `OPENROUTER_API_KEY`, which the operator enters by hand in step 4 of the runbook',
-    'The compose file blanks the supplier key in the service\'s environment and the two API keys in the runtime\'s.',
+    '- **Two keys, and two API keys.**', 'The service holds a second, separate key, the buyer key, which posts the escrow of the one chat sub-job of a job', '`BRAVE_SEARCH_API_KEY` and `OPENROUTER_API_KEY`, which the operator enters by hand in step 4 of the runbook',
+    "The compose file blanks the supplier key in the service's environment, and the buyer key and the two API keys in the runtime's. The env file holds both keys.",
     '- **A token on the service, as for the Pipeline and Audio Snippets.**', 'gets 401 before its body is read', 'Port 9094 is never published to the host all the same.',
+    'the token is the second lock, and anything that holds it can start a job that posts an escrow from the buyer wallet',
     '- **Calls out of the host.**', '`api.search.brave.com`', '`openrouter.ai`', '6. **Outbound https.**', 'a job would then fail with `no_sources` (502)',
+    'It calls OpenRouter at `openrouter.ai` only when that hire fails.',
+    'For the hire of a chat supplier it calls the marketplace indexer, Ogmios, Koios and the submit API of Vector mainnet, and the endpoint of the supplier it chose, all over https on port 443.',
+    '- **The state volume.** `advocate-state`, mounted at `/data`, holds `stranded.json`', '`docker compose down` keeps it, and `down -v` or `docker volume rm` would delete it. Neither is run while the file lists an escrow.',
+    'because on a stop it waits up to 300 s for the job that is running, its Accept included,', '- **A window of 8 min.** The advert gives a job 8 min, and one job holds the runtime for up to 6 min.',
+    'Then the containers stop, and the state volume stays.', 'It also refuses to start when `/data` cannot be written.',
+    'and what the janitor of the service asks of the chain about the escrows a job left behind.', "when a buyer line is not the buyer key's or the buyer key is the supplier key",
     '`mem_limit: 1024m`', '`stop_grace_period: 330s`', '`127.0.0.1:8086`', 'ss -ltnp', 'a clash on 8086',
     '`mp-suppliers-advocate.hal8.ai`', 'DNS only (grey cloud)', 'There is no registry login and no image to pull',
     'docker exec <caddy container> caddy validate --config /etc/caddy/Caddyfile', 'docker exec <caddy container> caddy reload --config /etc/caddy/Caddyfile',
     `\`${ADC} up -d --force-recreate <service>\``, 'A change to `SERVICE_AUTH_HEADER` needs both containers recreated, and a change to an API key the service alone.',
-    'The service refuses to start while `OPERATOR_CONTACT`, `SUPPLIER_PKH`, `SUPPLIER_PUB_KEY_HEX`, `SERVICE_AUTH_HEADER`, `BRAVE_SEARCH_API_KEY` or `OPENROUTER_API_KEY` is not set',
-    'The env file holds the supplier key, the token between the containers and the two API keys.',
+    'The service refuses to start while `OPERATOR_CONTACT`, `ADVOCATE_BUYER_PRIV_KEY_HEX`, `SUPPLIER_PKH`, `SUPPLIER_PUB_KEY_HEX`, `SERVICE_AUTH_HEADER`, `BRAVE_SEARCH_API_KEY` or `OPENROUTER_API_KEY` is not set',
+    'The env file holds both keys, the token between the containers and the two API keys.',
     '[RUNBOOK-advocate.md](RUNBOOK-advocate.md), under "Back out"',
   ]) assert.ok(aSection.includes(part), `the section says: ${part}`);
   assert.ok(!aSection.includes('retire-advert.ts'), 'the retire command lives in one place, the runbook');
@@ -3268,6 +3324,15 @@ test('Advocate README section: the fourth stack, with its two containers, the lo
   assert.equal(L.resultPort, '8443');
   assert.ok(aSection.includes(`The service calls \`${braveHost}\`, \`${openRouterHost}\` and the hosts of the result pages, all over https, on port 443 or the port that a result names.`));
   assert.equal(aSection.includes('all on port 443'), false, 'the sentence of before');
+  // The hosts of the hire the section names are the defaults of packages/buyer-core: Ogmios, Koios and the submit API of Vector mainnet, and the marketplace indexer.
+  const config = read('packages/buyer-core/src/vendored/mcp-shared/config.ts');
+  const constants = read('packages/buyer-core/src/vendored/mcp/marketplace-constants.ts');
+  for (const [name, url, where] of [['Ogmios', 'https://ogmios.vector.mainnet.apexfusion.org', config], ['Koios', 'https://v2.koios.vector.mainnet.apexfusion.org/', config], ['the submit API', 'https://submit.vector.mainnet.apexfusion.org/api/submit/tx', config], ['the marketplace indexer', 'https://mp-indexer.vector.apexfusion.org', constants]]) {
+    assert.ok(where.includes(`'${url}'`), `the default of ${name} in packages/buyer-core is ${url}`);
+    assert.ok(aSection.includes(`${name} at \`${new URL(url).host}\``), `the section names ${name} with its host`);
+  }
+  assert.ok(aSection.includes('(the chat suppliers of the fleet answer at `mp-suppliers-<name>.vector.apexfusion.org`)'));
+  assert.doesNotMatch(aSection, /holds no chain key|- \*\*No state\.\*\*|There is no volume|which ends within 150 s|A window of 5 min/, 'the words of before the buyer key');
   // The opening of the note and point 1 of the list of the host administrator name the fourth stack and say which section is the last.
   assert.ok(readme.includes('Advocate is a fourth, built and not deployed, with its own section at the end of this note, after that of Audio Snippets, and its own runbook, [RUNBOOK-advocate.md](RUNBOOK-advocate.md).'));
   assert.ok(readme.includes('One more comes later: `mp-suppliers-advocate.hal8.ai` for Advocate, which is built and has its own section at the end of this note.'));
@@ -3279,21 +3344,29 @@ test('Advocate RUNBOOK: the twenty-one sections in order, the seventeen steps ke
   assert.deepEqual([...aRunbook.matchAll(/^## (.+)$/gm)].map((m) => m[1]), ['Collateral and float', ...numbered.slice(0, 15), 'Watch the first stop', ...numbered.slice(15), 'Back out', 'If something goes wrong']);
   const snippets = [...sRunbook.matchAll(/^## (\d+)\. (.+)$/gm)].map((m) => m[2]);
   assert.equal(snippets.length, A_STEPS.length, 'as many steps as the runbook it follows');
-  // One title differs: step 4 enters the two API keys too.
-  A_STEPS.forEach((title, i) => { if (i === 3) assert.notEqual(title, snippets[i], 'step 4 is renamed'); else assert.equal(title, snippets[i], `step ${i + 1} keeps its title`); });
+  // Two titles differ: step 4 makes two keys and enters the two API keys too, and step 6 supplies two wallets, in the words of the Pipeline's step 6.
+  A_STEPS.forEach((title, i) => { if (i === 3 || i === 5) assert.notEqual(title, snippets[i], `step ${i + 1} is renamed`); else assert.equal(title, snippets[i], `step ${i + 1} keeps its title`); });
+  assert.equal(A_STEPS[5], P_STEPS[5], "step 6 is the Pipeline's, for two wallets");
   for (const m of aRunbook.matchAll(/\bsteps? (\d+)/g)) assert.ok(Number(m[1]) >= 1 && Number(m[1]) <= A_STEPS.length, `step ${m[1]}`);
   const quoted = [...aExampleText.matchAll(/RUNBOOK-advocate\.md step (\d+), "([^"]+)"/g)];
   assert.ok(quoted.length >= 3, 'the example names steps of the runbook');
   for (const m of quoted) assert.equal(A_STEPS[Number(m[1]) - 1], m[2], `the example quotes step ${m[1]}`);
-  assert.match(aRunbook, /The operator holds the key and does every step except two\. Step 6 \(the collateral and float of the supplier wallet\) is the Foundation's\. Step 10 \(DNS and Caddy\) is the host administrator's, see \[README\.md\]\(README\.md\)\./);
-  assert.match(section(aRunbook, '6. Supply the supplier wallet with its collateral and float'), /^\nThe Foundation\. /);
+  assert.match(aRunbook, /The operator holds the keys and does every step except two\. Step 6 \(the collateral and float of the two wallets\) is the Foundation's\. Step 10 \(DNS and Caddy\) is the host administrator's, see \[README\.md\]\(README\.md\)\./);
+  assert.match(section(aRunbook, '6. Supply the two wallets with their collateral and float'), /^\nThe Foundation\. /);
   assert.match(section(aRunbook, '10. DNS and Caddy'), /^\nHost administrator, from/);
   const head = aRunbook.slice(0, aRunbook.indexOf('\n## Collateral and float\n'));
   for (const part of [
     'This is [RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md), the runbook of Audio Snippets, written for Advocate.', 'step N here is step N there',
-    '- **One key, and two API keys.**', '- **A token on the service, as for the Pipeline and Audio Snippets.**', '- **A window of 5 min.**', '`max_processing_ms` is 300000', '`SERVICE_TIMEOUT_MS` is 180000', '150000 ms (150 s)',
-    'the search gets at most 15 s of it, the pages at most 45 s and the model at most 90 s', '- **Calls out of the host, and no model in the image.**', '- **No state, and a clean stop.**', 'a memory limit of 1024m',
+    '- **Two keys, and two API keys.**', '- **A token on the service, as for the Pipeline and Audio Snippets.**', '- **A window of 8 min.**', '`max_processing_ms` is 480000', '`SERVICE_TIMEOUT_MS` is 360000', '300000 ms (300 s)',
+    'the search gets at most 15 s of it and the pages at most 45 s; the hire of the chat supplier ends 95 s before the deadline, so that the call through OpenRouter still has its 90 s when the hire fails.',
+    'A hire in its Accept at the deadline runs on.', 'because a job can take as long as the runtime\'s fetch waits on silence, 300 s (step 13)',
+    'because the network is shared with other stacks and a job posts an escrow from the buyer wallet',
+    'The service holds a second, separate key, the buyer key, which posts the escrow of the one chat sub-job of a job, so that its Posts and the supplier key\'s Claims never contend for the same outputs',
+    "The compose file blanks the supplier key in the service's environment, and the buyer key and the two API keys in the runtime's.",
+    '- **Calls out of the host, and no model in the image.**', 'It calls OpenRouter only when that hire fails.', '- **State, and a clean stop.**', 'in the volume `advocate-state`, and its janitor settles them', 'its Accept included', 'a memory limit of 1024m',
     '- **The network, as for the other three.**', '- **Price 3.**', 'The advert\'s price is 3000000 lovelace and each bond 1000000.',
+    "The chat sub-job of a job costs the service about 2.2 on its buyer key at today's fleet price of 0.2, against the price of 3 its supplier key receives; nothing moves from the one wallet to the other by itself (Collateral and float).",
+    '| State volume | `advocate-state`, mounted at `/data` |',
     '| Base path on the host | `$BASE`, the folder the operator chooses for this agent (any path works): the repository in `repo`, the ops scripts in `ops` |',
     '| Base path of Audio Snippets | `$SNIPPETS_BASE`, the `BASE` of RUNBOOK-audio-snippets.md: its ops scripts and its install script |',
     '| "This folder" | `$BASE/repo/deploy/host` |', '| Compose file, env file | `docker-compose.advocate.yml`, `.env.advocate` |',
@@ -3310,19 +3383,37 @@ test('Advocate RUNBOOK: the twenty-one sections in order, the seventeen steps ke
   assert.equal(aRunbook.split('/opt/').length, block.split('/opt/').length, 'no other absolute path on the host');
   assert.ok(aRunbook.indexOf(block) < aRunbook.indexOf('"$BASE'));
   // The facts it quotes are the code's.
-  const [budget] = inAdvocate("import * as b from './src/budget.ts'; console.log(JSON.stringify([[b.JOB_DEADLINE_MS, b.SEARCH_MAX_MS, b.FETCH_PHASE_MAX_MS, b.MODEL_MAX_MS]]));", null);
-  assert.deepEqual(budget, [150_000, 15_000, 45_000, 90_000]);
+  const [budget] = inAdvocate("import * as b from './src/budget.ts'; console.log(JSON.stringify([[b.JOB_DEADLINE_MS, b.SEARCH_MAX_MS, b.FETCH_PHASE_MAX_MS, b.MODEL_MAX_MS, b.FALLBACK_RESERVE_MS]]));", null);
+  assert.deepEqual(budget, [300_000, 15_000, 45_000, 90_000, 95_000]);
+  assert.doesNotMatch(aRunbook, /holds no chain key|There is no volume|no second wallet|ends within 150 s|A window of 5 min/, 'the words of before the buyer key');
   assert.ok(read('packages/service-kit/src/server.ts').includes('export const HEARTBEAT_MS = 60_000;'));
 });
 
-test('Advocate RUNBOOK collateral and float: one key, 5 alone then 50, the paragraph on the run of Audio Snippets, the two API keys apart, and the key of step 15 with the cost of a job from the guide', () => {
+test('Advocate RUNBOOK collateral and float: two keys, 5 alone then 50 for the supplier and 5 alone then 30 for the buyer, what a sub-job costs and holds and what 30 covers, the paragraph on the run of Audio Snippets, the two API keys apart, and the third key of step 15 with the cost of a job from the guide', () => {
   const collateral = section(aRunbook, 'Collateral and float');
   const rows = collateral.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| Key |'));
-  assert.equal(rows.length, 1, 'one key');
-  assert.ok(rows[0].startsWith("| Supplier key (the runtime's), generated on the host in step 4 | Two transfers to its address: exactly 5 units alone (collateral), then 50 units |"));
-  assert.ok(collateral.includes('The service holds no chain key, so there is no second wallet.'));
+  assert.equal(rows.length, 2, 'two keys');
+  const [supplier, buyer] = rows;
+  assert.ok(supplier.startsWith("| Supplier key (the runtime's), generated on the host in step 4 | Two transfers to its address: exactly 5 units alone (collateral), then 50 units |"));
+  assert.ok(buyer.startsWith("| Buyer key (the service's), generated on the host in step 4 | Two transfers to its address: exactly 5 units alone (collateral for the Accept and the Reclaim of the chat sub-job, never touched), then 30 units |"));
+  assert.ok(collateral.includes('The Foundation supplies two keys with their collateral and float. Nobody pastes either key into a chat.'));
+  for (const part of [
+    "The chat sub-job of each job: the price of the chat supplier, 0.2 at today's fleet price, its supplier bond of 1 and fees of about 1 (a Post and an Accept), so about 2.2 net a job.",
+    'with the two fee budgets of 0.5 the service holds 3.2 to it in flight, and up to 4.0 for an advert priced at the ceiling of 1 (`LLM_MAX_PRICE_LOVELACE`, 1000000 lovelace unless the env file says otherwise)',
+    'a job it does not cover locks nothing, gets its brief from OpenRouter, and its line says `insufficient_float`',
+    '30 covers about 12 jobs before that happens, or one in flight and about 9 hires that failed after their Post (each with 2.2 locked and 0.5 consumed in fees) while they wait for their reclaim, 63 minutes after the Post for an advert with a window of 60 minutes.',
+  ]) assert.ok(buyer.includes(part), `the buyer row says: ${part}`);
+  // The figures: (30 - 3.2) / 2.2 jobs, (30 - 3.2) / (2.2 + 0.5) hires waiting for their reclaim, the fee budget of a transaction of packages/buyer-core, and the
+  // deliver_by of an advert of 60 minutes, which is its window and 180 s.
+  assert.deepEqual([Math.floor((30 - 3.2) / 2.2), Math.floor((30 - 3.2) / 2.7)], [12, 9]);
+  assert.ok(read('packages/buyer-core/src/fees.ts').includes('export const TX_FEE_BUDGET_LOVELACE: bigint = MARKETPLACE_MIN_FEE;') && read('packages/buyer-core/src/vendored/mcp/marketplace-constants.ts').includes('export const MARKETPLACE_MIN_FEE = 500_000n;'));
+  assert.ok(read('packages/buyer-core/src/vendored/mcp/marketplace-constants.ts').includes('export const DELIVER_BY_BUFFER_MS = 180_000;'));
+  assert.equal((3_600_000 + 180_000) / 60_000, 63);
+  assert.ok(ASPEC.includes("Its one chat sub-job costs the service about 2.2 net at today's fleet price of 0.2 per sub-job"), 'the Economics line of the page');
+  assert.equal(collateral.includes('there is no second wallet'), false, 'the words of before the buyer key');
   assert.ok(collateral.includes("by an ordinary transaction.\n\nOn 2026-10-17, for Audio Snippets, the setup transactions (steps 7, 8 and 12) used the 5-unit output as an input, so it did not stay alone; the supplier's Claim and Submit still found collateral in the change.\n"));
   assert.ok(collateral.includes('The two API keys are no part of the collateral and float'));
+  assert.ok(collateral.includes('The key of the first-party run (step 15) is a third key and gets no collateral or float here'));
   assert.ok(collateral.includes('A job of Advocate costs the hirer about 5 (`docs/HIRE.md`, section 3), so that key needs its 5 alone and a float of at least 7 for the run, the lock of 5 and about 2 more'));
   assert.ok(read('docs/HIRE.md').includes('| 3 (Advocate) | 5 | 4 | 1 | about 1 | about 5 | 10 |'), 'what a job costs the hirer');
   assert.equal(collateral.includes('(collateral, never touched)'), false, 'the words of before the run of Audio Snippets');
@@ -3347,17 +3438,33 @@ test('Advocate RUNBOOK steps 1 to 3: the bundle into $BASE and .env with the net
   assert.ok(three.includes(`${ADC} build agent`) && three.includes('It ends with `Image advocate-agent Built`.'));
 });
 
-test('Advocate RUNBOOK step 4: the env file once, the key, the token and the two API keys only into empty lines, the lengths, the contact, and the offline copy that holds the API keys too', () => {
-  const four = section(aRunbook, '4. Make the env file, generate the supplier key and enter the two API keys');
+test('Advocate RUNBOOK step 4: the env file once, the two keys, the token and the two API keys only into empty lines, the buyer key in a block of its own, the nine lengths and the two keys told apart, the contact, and the offline copy that holds both keys and the API keys', () => {
+  const four = section(aRunbook, '4. Make the env file, generate the two keys and enter the two API keys');
   const blocks = [...four.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1]);
-  assert.equal(blocks.length, 6);
-  const [head, supplier, token, lengths, apiKeys, contact] = blocks;
+  assert.equal(blocks.length, 9);
+  const [head, earlier, supplier, buyer, token, lengths, distinct, apiKeys, contact] = blocks;
+  // The block for an env file made from an earlier example comes after the first block and before the key blocks (ruling R-F20): it refuses a file whose supplier lines are
+  // empty, adds each line only when it is missing, and prints names and lengths of the buyer lines, never a value.
+  assert.ok(earlier.startsWith('cd "$BASE/repo/deploy/host"\nif [ ! -f .env.advocate ]; then\n'));
+  assert.ok(earlier.includes('echo "refusing: the supplier lines of .env.advocate are empty: this block is for an env file of an earlier example whose supplier key was made; a new one is made from the example" >&2'));
+  assert.ok(earlier.includes("sed -i 's/^ADVERT_MAX_PROCESSING_MS=.*/ADVERT_MAX_PROCESSING_MS=480000/' .env.advocate") && earlier.includes("echo 'LLM_MODEL_ALLOWLIST=deepseek/deepseek-v4-flash' >> .env.advocate"));
+  assert.ok(earlier.includes(`echo 'LLM_MODEL_ALLOWLIST=${aExample.LLM_MODEL_ALLOWLIST}'`), 'the line of the example');
+  assert.doesNotMatch(earlier, /keypair_into|token_into|apikey_into|gen-keypair/, 'it makes no key');
   assert.ok(head.includes('keypair_into() {') && head.includes('token_into() {') && head.includes('apikey_into() {') && head.includes('umask 077'));
   assert.ok(head.includes(`json=$(${ADC} run --rm --no-deps -T agent \\\n    node_modules/.bin/tsx agent/src/cli/gen-keypair.ts --network 1)`));
   assert.ok(head.endsWith('if [ -e .env.advocate ]; then\n  echo "refusing: the env file exists, and it is kept as it is" >&2\nelse\n  cp .env.advocate.example .env.advocate && chmod 600 .env.advocate\nfi\n'));
+  // The function writes a keypair only into the four lines of its prefix, and refuses a file that lacks one of them: sed would write nothing into a missing line without a word.
+  assert.ok(head.includes('  for part in PRIV_KEY_HEX PUB_KEY_HEX PKH ADDRESS; do\n    grep -q "^${1}_${part}=" .env.advocate || { echo "refusing: .env.advocate has no ${1}_${part} line: add the four ${1} lines of the example, empty, first" >&2; return 1; }\n  done\n'));
+  assert.ok(head.indexOf('for part in PRIV_KEY_HEX') < head.indexOf('gen-keypair.ts'), 'the lines are looked for before gen-keypair is called');
   assert.equal(supplier, 'cd "$BASE/repo/deploy/host"\nkeypair_into SUPPLIER\n');
+  assert.equal(buyer, 'cd "$BASE/repo/deploy/host"\nkeypair_into ADVOCATE_BUYER\n', 'the buyer key has a block of its own, so that it can be made again alone');
   assert.equal(token, 'cd "$BASE/repo/deploy/host"\ntoken_into\n');
-  assert.ok(lengths.startsWith("cd \"$BASE/repo/deploy/host\"\nawk -F= '/^SUPPLIER_(PRIV_KEY_HEX|PUB_KEY_HEX|PKH|ADDRESS)=|^SERVICE_AUTH_HEADER=/"));
+  assert.ok(lengths.startsWith("cd \"$BASE/repo/deploy/host\"\nawk -F= '/^(SUPPLIER|ADVOCATE_BUYER)_(PRIV_KEY_HEX|PUB_KEY_HEX|PKH|ADDRESS)=|^SERVICE_AUTH_HEADER=/"));
+  assert.equal(distinct, 'cd "$BASE/repo/deploy/host"\n[ "$(sed -n \'s/^SUPPLIER_PKH=//p\' .env.advocate)" != "$(sed -n \'s/^ADVOCATE_BUYER_PKH=//p\' .env.advocate)" ] && echo "two different keys" || echo "THE TWO KEYS ARE THE SAME: stop, empty the four buyer lines and run the buyer block again"\n');
+  // The names the function writes are the two key blocks of the example, in the order the blocks have them.
+  assert.deepEqual(['SUPPLIER', 'ADVOCATE_BUYER'].flatMap((p) => [`${p}_PRIV_KEY_HEX`, `${p}_PUB_KEY_HEX`, `${p}_PKH`, `${p}_ADDRESS`]), [...A_SUPPLIER, ...A_BUYER]);
+  assert.equal(four.split('keypair_into ADVOCATE_BUYER').length - 1, 1, 'the buyer key is made in one place');
+  assert.doesNotMatch(four, /keypair_into SUPPLIER &&|&& keypair_into ADVOCATE_BUYER/, 'no chain that makes both keys in one go');
   assert.equal(apiKeys, "cd \"$BASE/repo/deploy/host\"\napikey_into BRAVE_SEARCH_API_KEY\napikey_into OPENROUTER_API_KEY\nunset key\nawk -F= '/^(BRAVE_SEARCH|OPENROUTER)_API_KEY=/ { print $1, length($2) }' .env.advocate\n");
   assert.equal(contact, "cd \"$BASE/repo/deploy/host\"\ngrep -c '^OPERATOR_CONTACT=[^<[:space:]]' .env.advocate\n");
   // The function reads with read -rs, writes with sed into an empty line only, and refuses a value it could not write safely.
@@ -3367,16 +3474,25 @@ test('Advocate RUNBOOK step 4: the env file once, the key, the token and the two
   ]) assert.ok(head.includes(part), `the function of the API keys has: ${part}`);
   assert.ok(head.indexOf('${1} already has a value; to replace it') < head.indexOf('IFS= read -rs key'), 'the line is looked at before anything is read');
   assert.doesNotMatch(head, /\b(echo|printf)\b[^\n]*\$(json|value|key)\b(?![^\n]*\|)/, 'nothing prints the keypair, the token or an API key except into sed or tr');
-  for (const line of ['SUPPLIER_PRIV_KEY_HEX 64', 'SUPPLIER_PUB_KEY_HEX 64', 'SUPPLIER_PKH 56', 'SUPPLIER_ADDRESS 58', 'SERVICE_AUTH_HEADER 71']) assert.ok(four.includes('`' + line + '`'), line);
+  for (const line of ['SUPPLIER_PRIV_KEY_HEX 64', 'SUPPLIER_PUB_KEY_HEX 64', 'SUPPLIER_PKH 56', 'SUPPLIER_ADDRESS 58', 'ADVOCATE_BUYER_PRIV_KEY_HEX 64', 'ADVOCATE_BUYER_PUB_KEY_HEX 64', 'ADVOCATE_BUYER_PKH 56', 'ADVOCATE_BUYER_ADDRESS 58', 'SERVICE_AUTH_HEADER 71']) assert.ok(four.includes('`' + line + '`'), line);
+  assert.ok(four.includes('All nine are needed.') && four.includes('It must print `two different keys`.'));
   for (const part of [
     '`read -rs` reads it with nothing shown, so that it is on no screen and in no shell history, and `sed` writes it into its line.',
     'The block writes only into an empty line, and only a value of at least 20 characters made of letters, digits, dots, hyphens and underscores',
     'The last command must print `BRAVE_SEARCH_API_KEY` and `OPENROUTER_API_KEY`, each with a length of 20 or more.',
     '(`environment variable BRAVE_SEARCH_API_KEY is required`, and the same for `OPENROUTER_API_KEY`, in the table at the end), so step 9 can start it only once both are in the file.',
-    "Copy `.env.advocate` to the operator's encrypted offline store now, before the address receives anything, and copy it again after any regeneration of the key or of the token, and after either API key is entered again",
-    'The copy holds the two API keys too, so it is kept as the key is.',
+    "Copy `.env.advocate` to the operator's encrypted offline store now, before either address receives anything, and copy it again after any regeneration of a key or of the token, and after either API key is entered again",
+    'The copy holds the two API keys too, so it is kept as the keys are.',
     'Step 7 writes a second plaintext copy of the supplier key to the directory `$BASE/ops/wallet`',
-    'and the service stops at start without the token, without the public key, and with a public key that is not the one of the key hash, because it publishes both.',
+    'The buyer key never has a second copy on the host.',
+    'Both keys are raw keypairs, and this file is the only copy of either until step 7.',
+    'a buyer line that is not the key\'s stops the service at start, and the service stops at start without the token, without the public key, and with a public key that is not the one of the key hash, because it publishes both.',
+    'An env file made from an earlier example of this folder has no buyer lines, and the buyer block refuses it and writes nothing until the block for such a file, above, has added them.',
+    'For that file run the next block, then the buyer block and the two checks after it; the supplier, token and API key blocks refuse, since their lines have values.',
+    'It refuses a file whose supplier lines are empty: a new env file is made from the example, above, and needs no such block.',
+    'On the host\'s file it prints `ADVERT_MAX_PROCESSING_MS=480000`, the four buyer lines with a length of 0 and `LLM_MODEL_ALLOWLIST=deepseek/deepseek-v4-flash`, in the order of the file.',
+    'because other stacks share the network and a job posts an escrow from the buyer wallet',
+    'It must print `two different keys`. The service also refuses to start with the supplier key in the buyer lines (the table at the end).',
     'The example carries the status word and its date in `AGENT_STATUS_CHIP` and `AGENT_STATUS_SINCE`: `proposed` since 2026-10-13. They stay so until step 17, which is the only place that changes them.',
   ]) assert.ok(four.includes(part), `step 4 says: ${part}`);
   assert.ok(four.indexOf('token_into\n') < four.indexOf('apikey_into BRAVE_SEARCH_API_KEY'), 'the API keys after the key and the token');
@@ -3398,9 +3514,9 @@ openssl() {
 }
 `;
 function aStep4() {
-  const four = section(aRunbook, '4. Make the env file, generate the supplier key and enter the two API keys');
-  const [head, supplier, token, lengths, apiKeys] = [...four.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1].replace(/^cd "\$BASE\/repo\/deploy\/host"\n/, ''));
-  return { head, supplier, token, lengths, apiKeys };
+  const four = section(aRunbook, '4. Make the env file, generate the two keys and enter the two API keys');
+  const [head, earlier, supplier, buyer, token, lengths, distinct, apiKeys] = [...four.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1].replace(/^cd "\$BASE\/repo\/deploy\/host"\n/, ''));
+  return { head, earlier, supplier, buyer, token, lengths, distinct, apiKeys };
 }
 function withAdvocateFolder(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'advocate-step4-'));
@@ -3417,39 +3533,46 @@ const runBashReading = (script, input, cwd) => {
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 };
 const aEnvOf = (dir) => readFileSync(join(dir, '.env.advocate'), 'utf8');
-const A_FILLED = /^(SUPPLIER_(PRIV_KEY_HEX|PUB_KEY_HEX|PKH|ADDRESS)|SERVICE_AUTH_HEADER|BRAVE_SEARCH_API_KEY|OPENROUTER_API_KEY)=/;
-const apartFromTheSeven = (text) => text.split('\n').filter((l) => !A_FILLED.test(l)).join('\n');
+const A_FILLED = /^((SUPPLIER|ADVOCATE_BUYER)_(PRIV_KEY_HEX|PUB_KEY_HEX|PKH|ADDRESS)|SERVICE_AUTH_HEADER|BRAVE_SEARCH_API_KEY|OPENROUTER_API_KEY)=/;
+const apartFromTheEleven = (text) => text.split('\n').filter((l) => !A_FILLED.test(l)).join('\n');
 // Two keys of the form the accounts give: letters, digits and hyphens, longer than 20 characters.
 const A_BRAVE_KEY = 'BSAtestkey0123456789abcdefghij';
 const A_OPENROUTER_KEY = `sk-or-v1-${'0123456789abcdef'.repeat(4)}`;
 const A_PROMPTS = 'paste BRAVE_SEARCH_API_KEY and press Enter (nothing is shown): \npaste OPENROUTER_API_KEY and press Enter (nothing is shown): \n';
 
-test('Advocate RUNBOOK step 4 in bash: the blocks make the env file, the key, the token and the two API keys, print only names and lengths, and leave every other line of the example as it was', NEEDS_BASH, () => {
-  const { head, supplier, token, lengths, apiKeys } = aStep4();
+test('Advocate RUNBOOK step 4 in bash: the blocks make the env file, the two keys, the token and the two API keys, print only names and lengths, tell the two keys apart, and leave every other line of the example as it was', NEEDS_BASH, () => {
+  const { head, supplier, buyer, token, lengths, distinct, apiKeys } = aStep4();
   withAdvocateFolder((dir) => {
-    const run = runBashReading(`${A_STUBS}${head}${supplier}${token}${lengths}${apiKeys}`, `${A_BRAVE_KEY}\n${A_OPENROUTER_KEY}\n`, dir);
+    const run = runBashReading(`${A_STUBS}${head}${supplier}${buyer}${token}${lengths}${distinct}${apiKeys}`, `${A_BRAVE_KEY}\n${A_OPENROUTER_KEY}\n`, dir);
     assert.equal(run.stderr, A_PROMPTS, 'the two prompts, and nothing refused and nothing failed');
-    assert.equal(run.stdout, ['SUPPLIER_PRIV_KEY_HEX 64', 'SUPPLIER_PUB_KEY_HEX 64', 'SUPPLIER_PKH 56', 'SUPPLIER_ADDRESS 58', 'SERVICE_AUTH_HEADER 71', `BRAVE_SEARCH_API_KEY ${A_BRAVE_KEY.length}`, `OPENROUTER_API_KEY ${A_OPENROUTER_KEY.length}`, ''].join('\n'));
+    assert.equal(run.stdout, [
+      'SUPPLIER_PRIV_KEY_HEX 64', 'SUPPLIER_PUB_KEY_HEX 64', 'SUPPLIER_PKH 56', 'SUPPLIER_ADDRESS 58', 'ADVOCATE_BUYER_PRIV_KEY_HEX 64', 'ADVOCATE_BUYER_PUB_KEY_HEX 64', 'ADVOCATE_BUYER_PKH 56', 'ADVOCATE_BUYER_ADDRESS 58',
+      'SERVICE_AUTH_HEADER 71', 'two different keys', `BRAVE_SEARCH_API_KEY ${A_BRAVE_KEY.length}`, `OPENROUTER_API_KEY ${A_OPENROUTER_KEY.length}`, '',
+    ].join('\n'));
     assert.doesNotMatch(run.stdout + run.stderr, /[0-9a-f]{16}|Bearer|BSAtestkey|sk-or-v1/, 'no key, no hash, no token and no API key is printed');
+    assert.equal(countOf(dir), 3, 'gen-keypair twice and openssl once');
     const written = parseEnv(aEnvOf(dir));
     assert.match(written.SERVICE_AUTH_HEADER, /^"Bearer [0-9a-f]{64}"$/);
+    assert.notEqual(written.SUPPLIER_PKH, written.ADVOCATE_BUYER_PKH);
+    for (const name of [...A_SUPPLIER, ...A_BUYER]) assert.notEqual(written[name], '', name);
     assert.deepEqual([written.BRAVE_SEARCH_API_KEY, written.OPENROUTER_API_KEY], [A_BRAVE_KEY, A_OPENROUTER_KEY], 'each key in its line, as it was pasted, without quotes');
-    assert.equal(apartFromTheSeven(aEnvOf(dir)), apartFromTheSeven(aExampleText), "every other line is the example's");
+    assert.equal(apartFromTheEleven(aEnvOf(dir)), apartFromTheEleven(aExampleText), "every other line is the example's");
     if (process.platform !== 'win32') assert.equal(statSync(join(dir, '.env.advocate')).mode & 0o777, 0o600, 'mode 600');
   });
 });
 
 test('Advocate RUNBOOK step 4 in bash: run again, in a new shell, nothing is made again and nothing is replaced: the file is the same bytes, no keypair is asked for, nothing is read, and every guard says so', NEEDS_BASH, () => {
-  const { head, supplier, token, apiKeys } = aStep4();
+  const { head, supplier, buyer, token, apiKeys } = aStep4();
   withAdvocateFolder((dir) => {
-    assert.equal(runBashReading(`${A_STUBS}${head}${supplier}${token}${apiKeys}`, `${A_BRAVE_KEY}\n${A_OPENROUTER_KEY}\n`, dir).status, 0);
+    assert.equal(runBashReading(`${A_STUBS}${head}${supplier}${buyer}${token}${apiKeys}`, `${A_BRAVE_KEY}\n${A_OPENROUTER_KEY}\n`, dir).status, 0);
     const before = aEnvOf(dir);
-    const again = runBashReading(`${A_STUBS}${head}${supplier}${token}${apiKeys}`, 'another-key-that-is-long-enough\nyet-another-key-that-is-long\n', dir);
+    const again = runBashReading(`${A_STUBS}${head}${supplier}${buyer}${token}${apiKeys}`, 'another-key-that-is-long-enough\nyet-another-key-that-is-long\n', dir);
     assert.equal(aEnvOf(dir), before, 'byte for byte');
-    assert.equal(countOf(dir), 2, 'gen-keypair once and openssl once, both in the first run');
+    assert.equal(countOf(dir), 3, 'gen-keypair twice and openssl once, all in the first run');
     for (const refusal of [
       'refusing: the env file exists, and it is kept as it is',
       'refusing: SUPPLIER_PRIV_KEY_HEX already has a value, and a key that may hold units is never replaced',
+      'refusing: ADVOCATE_BUYER_PRIV_KEY_HEX already has a value, and a key that may hold units is never replaced',
       'refusing: SERVICE_AUTH_HEADER already has a value; to replace it, empty the line first',
       'refusing: BRAVE_SEARCH_API_KEY already has a value; to replace it, empty the line first',
       'refusing: OPENROUTER_API_KEY already has a value; to replace it, empty the line first',
@@ -3489,14 +3612,14 @@ test('Advocate RUNBOOK step 4 in bash: a value under 20 characters, or one with 
   });
 });
 
-test('Advocate RUNBOOK step 4 in bash: an API key is entered again alone after the command of the failure table emptied its line; the other key, the supplier key and the token stay as they were', NEEDS_BASH, () => {
-  const { head, supplier, token, apiKeys } = aStep4();
+test('Advocate RUNBOOK step 4 in bash: an API key is entered again alone after the command of the failure table emptied its line; the other key, the two keys and the token stay as they were', NEEDS_BASH, () => {
+  const { head, supplier, buyer, token, apiKeys } = aStep4();
   const table = section(aRunbook, 'If something goes wrong');
   const emptyBrave = `sed -i 's/^BRAVE_SEARCH_API_KEY=.*/BRAVE_SEARCH_API_KEY=/' .env.advocate`;
   const emptyOpenRouter = `sed -i 's/^OPENROUTER_API_KEY=.*/OPENROUTER_API_KEY=/' .env.advocate`;
   for (const command of [emptyBrave, emptyOpenRouter]) assert.ok(table.includes('`' + command + '`'), command);
   withAdvocateFolder((dir) => {
-    runBashReading(`${A_STUBS}${head}${supplier}${token}${apiKeys}`, `${A_BRAVE_KEY}\n${A_OPENROUTER_KEY}\n`, dir);
+    runBashReading(`${A_STUBS}${head}${supplier}${buyer}${token}${apiKeys}`, `${A_BRAVE_KEY}\n${A_OPENROUTER_KEY}\n`, dir);
     const before = parseEnv(aEnvOf(dir));
     assert.equal(runBash(`${emptyOpenRouter}\n`, dir).status, 0);
     assert.equal(parseEnv(aEnvOf(dir)).OPENROUTER_API_KEY, '', 'emptied');
@@ -3505,12 +3628,80 @@ test('Advocate RUNBOOK step 4 in bash: an API key is entered again alone after t
     assert.match(again.stderr, /refusing: BRAVE_SEARCH_API_KEY already has a value/);
     const after = parseEnv(aEnvOf(dir));
     assert.equal(after.OPENROUTER_API_KEY, newKey, 'the new key, read from the first line of the input');
-    for (const name of [...A_SUPPLIER, ...A_TOKEN, 'BRAVE_SEARCH_API_KEY']) assert.equal(after[name], before[name], `${name} untouched`);
+    for (const name of [...A_SUPPLIER, ...A_BUYER, ...A_TOKEN, 'BRAVE_SEARCH_API_KEY']) assert.equal(after[name], before[name], `${name} untouched`);
+  });
+});
+
+test('Advocate RUNBOOK step 4 in bash: the buyer key is made again alone, after its four lines were emptied by hand with the command of the failure table, and nothing else in the file moves', NEEDS_BASH, () => {
+  const { head, supplier, buyer, token, apiKeys } = aStep4();
+  const table = section(aRunbook, 'If something goes wrong');
+  const emptyBuyer = String.raw`sed -i 's/^\(ADVOCATE_BUYER_[A-Z_]*\)=.*/\1=/' .env.advocate`;
+  assert.ok(table.includes('`' + emptyBuyer + '`'), 'the failure table gives the command that empties the buyer lines');
+  withAdvocateFolder((dir) => {
+    runBashReading(`${A_STUBS}${head}${supplier}${buyer}${token}${apiKeys}`, `${A_BRAVE_KEY}\n${A_OPENROUTER_KEY}\n`, dir);
+    const before = parseEnv(aEnvOf(dir));
+    assert.equal(runBash(`${emptyBuyer}\n`, dir).status, 0);
+    const blank = parseEnv(aEnvOf(dir));
+    for (const name of A_BUYER) assert.equal(blank[name], '', `${name} emptied`);
+    for (const name of [...A_SUPPLIER, ...A_TOKEN, ...A_API_KEYS]) assert.equal(blank[name], before[name], `${name} untouched by the command`);
+    const redo = runBash(`${A_STUBS}${head}${buyer}`, dir);
+    assert.equal(redo.status, 0);
+    assert.match(redo.stderr, /^refusing: the env file exists, and it is kept as it is\n$/, 'the first block, pasted to define the functions again, leaves the file alone');
+    const after = parseEnv(aEnvOf(dir));
+    for (const name of A_BUYER) assert.match(after[name], /^[0-9a-z]+$/, `${name} made again`);
+    for (const name of A_BUYER) assert.notEqual(after[name], before[name], `${name} is a new value`);
+    for (const name of [...A_SUPPLIER, ...A_TOKEN, ...A_API_KEYS]) assert.equal(after[name], before[name], `${name} untouched`);
+    assert.equal(apartFromTheEleven(aEnvOf(dir)), apartFromTheEleven(aExampleText));
+  });
+});
+
+test('Advocate RUNBOOK step 4 in bash: an env file made from the example of before the buyer key has no buyer lines; the buyer block refuses it, names the line, asks for no keypair and changes nothing; the block for such a file adds the four buyer lines in the order of the example, the window of 480000 and the hires, once, and refuses a file whose supplier lines are empty; the buyer block then makes the key', NEEDS_BASH, () => {
+  const { head, earlier, buyer } = aStep4();
+  const table = section(aRunbook, 'If something goes wrong');
+  assert.ok(table.includes('| The buyer block of step 4 says `refusing: .env.advocate has no ADVOCATE_BUYER_PRIV_KEY_HEX line` | The env file was made from an earlier example of this folder, which had no buyer lines. | Run the block of step 4 for an env file made from an earlier example: it adds the four lines `ADVOCATE_BUYER_PRIV_KEY_HEX=`, `ADVOCATE_BUYER_PUB_KEY_HEX=`, `ADVOCATE_BUYER_PKH=` and `ADVOCATE_BUYER_ADDRESS=`, empty, sets `ADVERT_MAX_PROCESSING_MS=480000` and adds `LLM_MODEL_ALLOWLIST`. Then run the buyer block again'));
+  assert.ok(table.includes('| Run the block of step 4 for an env file made from an earlier example, which sets `ADVERT_MAX_PROCESSING_MS=480000` and adds what else that file lacks, then recreate.'), 'the row of the window points at the same block');
+  withAdvocateFolder((dir) => {
+    // The example of before, as the host has it: the supplier key written, no buyer lines, the window of 300000 and no line for the hires.
+    const supplier = { SUPPLIER_PRIV_KEY_HEX: '11'.repeat(32), SUPPLIER_PUB_KEY_HEX: '22'.repeat(32), SUPPLIER_PKH: '33'.repeat(28), SUPPLIER_ADDRESS: `addr1v${'q'.repeat(52)}` };
+    let older = aExampleText.split('\n').filter((l) => !/^ADVOCATE_BUYER_|^LLM_MODEL_ALLOWLIST=|^# LLM_MAX_PRICE_LOVELACE=/.test(l)).join('\n').replace(/^ADVERT_MAX_PROCESSING_MS=480000$/m, 'ADVERT_MAX_PROCESSING_MS=300000');
+    for (const [name, value] of Object.entries(supplier)) older = older.replace(new RegExp(`^${name}=$`, 'm'), `${name}=${value}`);
+    writeFileSync(join(dir, '.env.advocate'), older);
+    const refused = runBash(`${A_STUBS}${head}${buyer}`, dir);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /refusing: \.env\.advocate has no ADVOCATE_BUYER_PRIV_KEY_HEX line: add the four ADVOCATE_BUYER lines of the example, empty, first/);
+    assert.equal(existsSync(join(dir, '.stub-n')), false, 'no keypair is asked for');
+    assert.equal(aEnvOf(dir), older, 'nothing is written');
+    // The block for such a file: the four buyer lines, empty and in the order of the example, at the end; the window of 480000; the hires; every other line as it was.
+    const added = runBash(`${A_STUBS}${head}${earlier}`, dir);
+    assert.equal(added.status, 0);
+    assert.equal(added.stdout, ['ADVERT_MAX_PROCESSING_MS=480000', ...A_BUYER.map((name) => `${name} 0`), `LLM_MODEL_ALLOWLIST=${aExample.LLM_MODEL_ALLOWLIST}`, ''].join('\n'));
+    const after = aEnvOf(dir);
+    assert.equal(after, `${older.replace(/^ADVERT_MAX_PROCESSING_MS=300000$/m, 'ADVERT_MAX_PROCESSING_MS=480000')}${A_BUYER.map((name) => `${name}=`).join('\n')}\nLLM_MODEL_ALLOWLIST=${aExample.LLM_MODEL_ALLOWLIST}\n# LLM_MAX_PRICE_LOVELACE=1000000\n`);
+    assert.ok(aExampleText.includes('\n# LLM_MAX_PRICE_LOVELACE=1000000\n'), 'the commented ceiling of the example');
+    assert.equal(existsSync(join(dir, '.stub-n')), false, 'the block makes no key');
+    // Run again, it changes nothing.
+    assert.equal(runBash(`${A_STUBS}${head}${earlier}`, dir).status, 0);
+    assert.equal(aEnvOf(dir), after, 'byte for byte');
+    // The buyer block then makes the key, and nothing else moves.
+    assert.equal(runBash(`${A_STUBS}${head}${buyer}`, dir).status, 0);
+    const made = parseEnv(aEnvOf(dir));
+    for (const name of A_BUYER) assert.match(made[name], /^[0-9a-z]+$/, `${name} made`);
+    for (const [name, value] of Object.entries(supplier)) assert.equal(made[name], value, `${name} untouched`);
+    assert.equal(countOf(dir), 1, 'one keypair');
+  });
+  withAdvocateFolder((dir) => {
+    // A file whose supplier lines are empty is not the host's: the block refuses it and writes nothing, and a new env file is made from the example instead.
+    const blank = aExampleText.split('\n').filter((l) => !/^ADVOCATE_BUYER_/.test(l)).join('\n');
+    writeFileSync(join(dir, '.env.advocate'), blank);
+    const refused = runBash(`${A_STUBS}${head}${earlier}`, dir);
+    assert.match(refused.stderr, /refusing: the supplier lines of \.env\.advocate are empty: this block is for an env file of an earlier example whose supplier key was made/);
+    assert.equal(refused.stdout, '');
+    assert.equal(aEnvOf(dir), blank, 'nothing is written');
   });
 });
 
 test('Advocate RUNBOOK step 4 in bash: the functions make nothing where there is no env file, and say so; a gen-keypair that fails writes nothing', NEEDS_BASH, () => {
-  const { head, supplier } = aStep4();
+  const { head, supplier, buyer } = aStep4();
   const functionsOnly = head.slice(0, head.indexOf('if [ -e .env.advocate ]; then'));
   assert.ok(functionsOnly.includes('keypair_into() {') && functionsOnly.includes('token_into() {') && functionsOnly.includes('apikey_into() {') && !functionsOnly.includes('cp .env'));
   withAdvocateFolder((dir) => {
@@ -3523,6 +3714,9 @@ test('Advocate RUNBOOK step 4 in bash: the functions make nothing where there is
     assert.equal(failed.stdout.trim(), 'rc 1');
     assert.match(failed.stderr, /gen-keypair failed/);
     for (const name of A_SUPPLIER) assert.equal(parseEnv(aEnvOf(dir))[name], '', `${name} is still empty`);
+    const failedBuyer = runBash(`${A_STUBS}docker() { return 1; }\n${head}${buyer}echo "rc $?"\n`, dir);
+    assert.equal(failedBuyer.stdout.trim(), 'rc 1');
+    for (const name of A_BUYER) assert.equal(parseEnv(aEnvOf(dir))[name], '', `${name} is still empty`);
   });
 });
 
@@ -3598,30 +3792,52 @@ test('Advocate RUNBOOK step 5 in bash: the copy is made from a copy of Audio Sni
   }
 });
 
-test('Advocate RUNBOOK steps 6 to 9: the one wallet supplied and checked, the identity and the stake, the service started by name and read, with the model, the limits, the two API keys by length and the 401', () => {
-  const six = section(aRunbook, '6. Supply the supplier wallet with its collateral and float');
-  assert.ok(six.includes('"$BASE/ops/mcp-call.sh" vector_get_utxos') && six.includes('one of exactly 5 units and one of 50'));
+test('Advocate RUNBOOK steps 6 to 9: the two wallets supplied and checked, the identity of the supplier key and the stake, the service started by name and read, with the model and its fallback, the buyer address and the state directory, the limits, the two API keys by length and the 401', () => {
+  const six = section(aRunbook, '6. Supply the two wallets with their collateral and float');
+  for (const part of [
+    `grep -E '^(SUPPLIER|ADVOCATE_BUYER)_ADDRESS=' "$BASE/repo/deploy/host/.env.advocate"`,
+    'The first is exactly 5 units, alone.', 'Send the second only after the first has confirmed: 50 units to the supplier address, 30 units to the buyer address.',
+    'for name in SUPPLIER_ADDRESS ADVOCATE_BUYER_ADDRESS; do', '"$BASE/ops/mcp-call.sh" vector_get_utxos',
+    'Each address must list two outputs: one of exactly 5 units, and one of 50 at the supplier address or of 30 at the buyer address.',
+  ]) assert.ok(six.includes(part), `step 6 says: ${part}`);
+  // The two second transfers are the floats of the rows of Collateral and float.
+  const collateral = section(aRunbook, 'Collateral and float');
+  assert.ok(collateral.includes('exactly 5 units alone (collateral), then 50 units') && collateral.includes('never touched), then 30 units'));
   const seven = section(aRunbook, '7. Register the identity');
-  for (const part of ["sed -i '/^AGENT_DID=$/d' \"$BASE/repo/deploy/host/.env.advocate\"", 'python3 make-skey.py', './register-did.sh', 'The record has the name `Advocate`, the capability `research.advocate.onesided.v1`, the framework `vector-service-agents`, the endpoint `https://mp-suppliers-advocate.hal8.ai`', 'into the Identity section of `specs/advocate.md`', '(the DID row, the "Registry record, planned" row and the sentence that says the agent has no registry record yet)', 'remove it in Back out (point 4)']) assert.ok(seven.includes(part), part);
-  // The rows step 7 names are the rows the page has before the registration.
-  for (const row of ['| Registry record, planned |', '| DID | not registered.']) assert.ok(section(ASPEC, 'Identity').includes(row), row);
-  assert.ok(section(ASPEC, 'Identity').includes('\nThis agent has no registry record yet.\n'));
+  for (const part of ["sed -i '/^AGENT_DID=$/d' \"$BASE/repo/deploy/host/.env.advocate\"", 'python3 make-skey.py', './register-did.sh', 'The record has the name `Advocate`, the capability `research.advocate.onesided.v1`, the framework `vector-service-agents`, the endpoint `https://mp-suppliers-advocate.hal8.ai`', 'into the Identity section of `specs/advocate.md`', '(the DID row, the "Registry record, planned" row and the sentence that says the agent has no registry record yet)', 'remove it in Back out (point 4)', 'Operator. The same as step 7 of RUNBOOK.md, for the supplier key only.', 'The buyer key is not touched by any step here and has no second copy on the host.']) assert.ok(seven.includes(part), part);
+  // Step 7 was run on 2026-10-19 and this change records it, as the step asks: the sentence says that the record exists, and the rows are no longer planned. The runbook still
+  // quotes the old words, as the instruction it was.
+  assert.ok(ASPEC.includes('\nThis agent has had a registry record since 2026-10-19.\n') && ASPEC.includes('\n| DID | `did:vector:agent:') && ASPEC.includes('\n| Registry record | name `Advocate`;'), 'the spec rows step 7 names carry the record');
+  assert.equal(ASPEC.includes('This agent has no registry record yet.') || ASPEC.includes('| Registry record, planned |') || ASPEC.includes('| DID | not registered.'), false, 'and the words of before are gone');
   assert.ok(section(aRunbook, '8. Stake in Module-3').includes('here both are the one capability `research.advocate.onesided.v1`'));
   const nine = section(aRunbook, '9. Start the service');
   for (const part of [
     `${ADC} up -d service`, 'docker logs advocate-service', "fetch('http://127.0.0.1:9094/healthz')", "fetch('http://127.0.0.1:9094/agent.json')", "fetch('http://127.0.0.1:9094/', { method: 'POST', body: 'x' })",
     "docker exec advocate-service node -e \"for (const n of ['BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY']) console.log(n, (process.env[n] ?? '').length)\"",
-    '[advocate] listening on 0.0.0.0:9094; search Brave Search API; model deepseek/deepseek-v4-flash via OpenRouter', '`1073741824 330`', 'model_gap: m.gaps[4]',
-    'A `POST /` with no `authorization` header prints `401 {"error":"unauthorized"}`', 'nor with an empty `SUPPLIER_PUB_KEY_HEX` or one that is not the public key of `SUPPLIER_PKH`, nor without either API key',
-    'The service starts only once the two API keys are in the env file (step 4)', 'a smoke start works only once both keys are in',
+    '[advocate] listening on 0.0.0.0:9094; search Brave Search API; model deepseek/deepseek-v4-flash from the Vector marketplace, OpenRouter as the fallback; buyer address <the buyer address of step 4>; state directory /data',
+    '`1073741824 330`', 'model_gap: m.gaps[4]',
+    'A `POST /` with no `authorization` header prints `401 {"error":"unauthorized"}`', 'nor with an empty `SUPPLIER_PUB_KEY_HEX` or one that is not the public key of `SUPPLIER_PKH`, nor without the buyer key or either API key, nor with the supplier key in the buyer lines (the same table).',
+    'The service starts only once the buyer key and the two API keys are in the env file (step 4)', 'a smoke start works only once all three are in', 'An empty buyer wallet does not stop it: a job it cannot cover gets its brief from OpenRouter.',
+    'the key hash of the buyer key in `keys.buyer_pkh` (the service derives it from the key, and it must equal `ADVOCATE_BUYER_PKH` in the env file)',
+    'The service checks its settings and proves its state directory writable before it listens',
+    'When the first model of `LLM_MODEL_ALLOWLIST` is not the model of `OPENROUTER_MODEL`, the line names both, as the fifth gap of the manifest does.',
   ]) assert.ok(nine.includes(part), `step 9 says: ${part}`);
   assert.equal(1024 * 1024 * 1024, 1073741824);
   assert.ok(nine.includes('```sh\ncd "$BASE/repo/deploy/host"\n' + `${ADC} up -d service\ndocker logs advocate-service\n`), 'the block that starts the service starts in this folder: it may run in a new shell');
   // The fifth gap is the one that names the model, and the line the log shows is the one the code writes, with the prefix of the log of the service.
-  const [gaps] = inAdvocate("import { gapsFor } from './src/gaps.ts'; import { DEFAULT_MODEL } from './src/model.ts'; console.log(JSON.stringify([gapsFor(DEFAULT_MODEL)]));", null);
+  const [gaps] = inAdvocate("import { gapsFor } from './src/gaps.ts'; import { DEFAULT_MODEL } from './src/model.ts'; console.log(JSON.stringify([gapsFor(DEFAULT_MODEL, DEFAULT_MODEL)]));", null);
   assert.ok(gaps[4].includes('deepseek/deepseek-v4-flash'), 'm.gaps[4] is the gap of the model');
-  const started = JSON.parse(execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', "import { startService } from './src/start.ts'; const lines = []; const s = await startService({ ...JSON.parse(process.argv[1]), PORT: '0', HOST: '127.0.0.1' }, { log: (l) => lines.push(l) }); await s.stop(); console.log(JSON.stringify(lines));", JSON.stringify(aFullEnv())], { cwd: join(root, 'agents/advocate'), encoding: 'utf8' }));
-  assert.match(started[0], /^listening on 127\.0\.0\.1:\d+; search Brave Search API; model deepseek\/deepseek-v4-flash via OpenRouter$/);
+  // The line the log shows is the one the code writes, read from a start of the real service on a state directory of its own (the buyer chain makes no call
+  // to start, and the janitor's first pass finds nothing to do).
+  const stateDir = mkdtempSync(join(tmpdir(), 'advocate-state-'));
+  try {
+    const started = JSON.parse(execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', "import { startService } from './src/start.ts'; const lines = []; const s = await startService({ ...JSON.parse(process.argv[1]), PORT: '0', HOST: '127.0.0.1' }, { log: (l) => lines.push(l) }); await s.stop(); console.log(JSON.stringify(lines));", JSON.stringify({ ...aFullEnv(), ADVOCATE_STATE_DIR: stateDir })], { cwd: join(root, 'agents/advocate'), encoding: 'utf8' }));
+    const listening = started.find((line) => line.startsWith('listening on ')) ?? '';
+    const [buyer] = inAdvocate("import { buyerIdentityOf } from '@vsa/buyer-core'; console.log(JSON.stringify([buyerIdentityOf(JSON.parse(process.argv[1]))]));", A_BUYER_KEY);
+    assert.equal(listening.replace(/:\d+;/, ':<port>;'), `listening on 127.0.0.1:<port>; search Brave Search API; model deepseek/deepseek-v4-flash from the Vector marketplace, OpenRouter as the fallback; buyer address ${buyer.address}; state directory ${stateDir}`);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
   assert.ok(A_SRC.includes('[advocate] ${line}'), 'the prefix of every line of the log');
 });
 
@@ -3645,22 +3861,25 @@ test('Advocate RUNBOOK steps 10 to 14: the copy of the install script with the v
     'max-processing-ms': aExample.ADVERT_MAX_PROCESSING_MS, 'endpoint-url': aExample.ADVERT_ENDPOINT_URL, 'detail-uri': aExample.ADVERT_DETAIL_URI, 'detail-hash': '$DETAIL_HASH',
   });
   const twelve = section(aRunbook, '12. Post the advert');
-  assert.ok(twelve.includes('the model `advocate-v1`, `max_processing_ms` 300000, the price 3000000 and both bonds at 1000000'));
+  assert.ok(twelve.includes('the model `advocate-v1`, `max_processing_ms` 480000, the price 3000000 and both bonds at 1000000'));
   assert.ok(twelve.includes('The status word stays PROPOSED until step 17.') && twelve.includes('in the Links section of `specs/advocate.md`, in place of the line that says the advert is not posted'));
   assert.ok(section(ASPEC, 'Links').includes('- Advert on the explorer: none. The advert is not posted.'), 'the line step 12 replaces');
   assert.ok(twelve.includes('```sh\ncd "$BASE/repo/deploy/host"\nprintf \'%s\' "$DETAIL_HASH" | grep -Eq \'^[0-9a-f]{64}$\' || echo "not a sha256 hash"\nADVERT_REF=$(' + `${ADC} run --rm --no-deps -T agent \\\n`), 'the real run starts in this folder and checks the hash it takes from the block above');
   const thirteen = section(aRunbook, '13. Start the runtime');
   for (const part of [
     `${ADC} up -d --force-recreate agent`, 'curl -s http://127.0.0.1:8086/status', 'for c in advocate-agent advocate-service; do', '`0 e3b0c44298fc`',
-    "docker exec advocate-agent node -e \"for (const n of ['BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY']) console.log(n, (process.env[n] ?? '').length)\"", 'It prints both names with the length 0.',
-    'writes an interim `102 Processing` line every 60 s',
+    "docker exec advocate-agent node -e \"for (const n of ['ADVOCATE_BUYER_PRIV_KEY_HEX', 'BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY']) console.log(n, (process.env[n] ?? '').length)\"", 'It prints the three names with the length 0.',
+    'put its three blank lines back and recreate the runtime', 'writes an interim `102 Processing` line every 60 s',
+    'A job that fails as `service_unreachable` at about the five-minute mark means those lines are not arriving (the table at the end).',
   ]) assert.ok(thirteen.includes(part), part);
+  // The three names are the ones the compose file blanks for the runtime.
+  assert.deepEqual(Object.entries(aAgent.environment).filter(([, value]) => value === '').map(([name]) => name), ['ADVOCATE_BUYER_PRIV_KEY_HEX', 'BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY']);
   assert.ok(section(aRunbook, '14. Check the advert on the indexer').includes('It must print `Active free research.advocate.onesided.v1` and the hash of step 11.'));
 });
 
 test('Advocate RUNBOOK: every block that works in a folder starts with its own cd to it, so that it runs alone in a new shell once BASE is set again; the few blocks that name no folder are listed', () => {
   const blocks = [...aRunbook.matchAll(/^( *)```sh\n([\s\S]*?)^\1```$/gm)].map((m) => m[2].split('\n').map((l) => (l.startsWith(m[1]) ? l.slice(m[1].length) : l)).join('\n'));
-  assert.equal(blocks.length, 33, 'a block added or taken away is seen here');
+  assert.equal(blocks.length, 36, 'a block added or taken away is seen here');
   // What names no folder and no file of one: the two variables, the bundle made and the manifest hashed on the operator's machine, the check of the image, the public
   // check of the manifest, the comparison of the tokens, the API keys of the runtime, the log of the first run.
   const NO_FOLDER = [
@@ -3677,7 +3896,7 @@ test('Advocate RUNBOOK: every block that works in a folder starts with its own c
   }
   assert.equal(listed.size, NO_FOLDER.length, 'every block of the list is there');
   const cdBlocks = blocks.filter((b) => b.startsWith('cd "$BASE/'));
-  for (const needle of ["echo 'PROXY_NETWORK=", 'IMAGE=ghcr.io/', 'awk -F= ', 'apikey_into BRAVE_SEARCH_API_KEY', "grep -c '^OPERATOR_CONTACT=", 'python3 -m venv venv', `${ADC} up -d service`, 'ADVERT_REF=$(', 'retire-advert.ts']) assert.ok(cdBlocks.some((b) => b.includes(needle)), `the block with ${needle} starts with a cd`);
+  for (const needle of ["echo 'PROXY_NETWORK=", 'IMAGE=ghcr.io/', 'awk -F= ', 'keypair_into ADVOCATE_BUYER', 'echo "two different keys"', 'for name in SUPPLIER_ADDRESS ADVOCATE_BUYER_ADDRESS', 'apikey_into BRAVE_SEARCH_API_KEY', "grep -c '^OPERATOR_CONTACT=", 'python3 -m venv venv', `${ADC} up -d service`, 'ADVERT_REF=$(', 'retire-advert.ts']) assert.ok(cdBlocks.some((b) => b.includes(needle)), `the block with ${needle} starts with a cd`);
 });
 
 test('Advocate RUNBOOK: every compose command names this agent\'s compose file, every up -d names a service, and nothing uses a port or a container of the other stacks', () => {
@@ -3701,16 +3920,41 @@ test('Advocate RUNBOOK step 15 and the first stop: the request of the spec, whic
   assert.deepEqual(JSON.parse(example), JSON.parse(m[1]));
   for (const part of [
     '- `CAPABILITY_ID=research.advocate.onesided.v1`.', '- `E2E_POLL_MS=10000`.', '- `E2E_STATE=./e2e-state-advocate.json`.', 'its section "Hiring Advocate" lists them',
-    '`[advocate] job done in <ms> ms: results <n>, pages <k>, arguments <a> (dropped <d>), quotes dropped <q>, tokens <p>/<c>`', '(`tokens -/-` when OpenRouter gave no count)',
+    '`[advocate] job done in <ms> ms: results <n>, pages <k>, arguments <a> (dropped <d>), quotes dropped <q>, tokens <p>/<c>; inference marketplace`', 'as the receipt of the chat supplier counts them (`tokens -/-` when that receipt, or OpenRouter on the fallback, gave no count)',
+    '`chosen chat supplier: advert <ref>, model <m>, price <p> lovelace, endpoint host <h>`', 'A line that ends `; inference openrouter after <code>` instead means that the hire failed with `<code>` and the brief came from OpenRouter',
+    '`inference: marketplace <code> at <stage>, falling back`', '```sh\ndocker logs --tail 20 advocate-service\ndocker exec advocate-service cat /data/stranded.json\n```',
+    '`stranded.json` prints `[]`: the hire leaves nothing for the janitor, because its Accept removes its own entry.',
     'The hire costs the hirer about 5: the price, 3, and the supplier bond, 1, which the supplier receives on Accept, and fees of about 1; the buyer bond comes back to the buyer.',
+    'The sub-job of the service costs its buyer key about 2.2 on the marketplace path: the price of the chat supplier, 0.2, and its supplier bond, 1, which that supplier receives on Accept, and fees of about 1; the buyer bond of the sub-job comes back to the buyer key.',
+    '- `E2E_POLL_MS=10000`. A job takes up to 300 s, its deadline, where Agent History\'s takes seconds.',
   ]) assert.ok(s15.includes(part), part);
-  // What the model is sent is said in the words of the third-parties sentence of the manifest as built (ruling R-E27), read from the code.
+  // What the model is sent is said in the words of the third-parties entries of the manifest as built (rulings R-E27 and R-F12), read from the code: the prompt goes
+  // to the chat supplier, and to OpenRouter only when that hire fails.
   const [parties] = inAdvocate("import { manifestFromEnv } from './src/server.ts'; console.log(JSON.stringify([manifestFromEnv(JSON.parse(process.argv[1])).behaviour.third_parties]));", { OPERATOR_CONTACT: TEST_CONTACT });
-  const sent = /^OpenRouter and the model provider behind it \((.+)\)$/.exec(parties[2])?.[1] ?? '';
+  const sent = /^a chat supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it \(the prompt: (.+)\)$/.exec(parties[2])?.[1] ?? '';
   assert.ok(sent.startsWith('the subject, the side, the audience, the language and the length'), 'the sentence of the manifest, as built');
-  assert.ok(s15.includes(`and sends ${sent}, to OpenRouter and the model provider behind it.`), 'the step says what the manifest says');
-  // The line of the log is the code's: each of its parts is written by a source of the service, and a job is first-party.
-  for (const part of ['job done in ', ' ms: results ', ', pages ', ', arguments ', ' (dropped ', '), quotes dropped ', ', tokens ', '-/-']) assert.ok(A_SRC.includes(part), `the code writes: ${part}`);
+  assert.equal(parties[3], 'OpenRouter and the model provider behind it (the same prompt), only when that hire fails');
+  assert.ok(s15.includes(`and sends the prompt (${sent}) to the chat supplier it hires on the Vector marketplace and the model provider behind it, or, only when that hire fails, to OpenRouter and the model provider behind it.`), 'the step says what the manifest says');
+  // The line of a job is the one the real server writes, on the marketplace path and on the fallback (a run stood in for, its outcome in the shape of RunOutcome).
+  const [lines] = inAdvocate(
+    "import { once } from 'node:events'; import { createServer, manifestFromEnv } from './src/server.ts'; const outcomes = JSON.parse(process.argv[1]); const found = []; " +
+    "for (const outcome of outcomes) { const lines = []; const server = createServer({ manifest: manifestFromEnv({ OPERATOR_CONTACT: 'ops@example.test' }), authHeader: 'Bearer test-token-of-sixteen', log: (l) => lines.push(l), deps: { clock: () => 0 }, runAdvocate: async () => outcome }); " +
+    "server.listen(0, '127.0.0.1'); await once(server, 'listening'); const { port } = server.address(); " +
+    "await (await fetch(`http://127.0.0.1:${port}/`, { method: 'POST', headers: { authorization: 'Bearer test-token-of-sixteen', 'content-type': 'application/json' }, body: JSON.stringify([{ content: JSON.stringify({ subject: 'Cars in the centre', side: 'for' }), role: 'user' }]) })).text(); " +
+    "server.close(); server.closeAllConnections(); found.push(lines.find((l) => l.startsWith('job done in ')) ?? ''); } console.log(JSON.stringify([found]));",
+    ['marketplace', 'openrouter'].map((path) => ({
+      result: { schema: 'vector.advocate.brief.v1', arguments: [] }, pagesKept: 3, resultsFound: 7, usage: { prompt_tokens: 4321, completion_tokens: 512 }, dropped: { quotes: 3, arguments: 1 },
+      inference: { path, model: 'deepseek/deepseek-v4-flash', subJob: null, accepted: path === 'marketplace' ? 'confirmed' : null, fallbackFrom: path === 'marketplace' ? null : 'llm_send_lost' },
+    })),
+  );
+  assert.deepEqual(lines, [
+    'job done in 0 ms: results 7, pages 3, arguments 0 (dropped 1), quotes dropped 3, tokens 4321/512; inference marketplace',
+    'job done in 0 ms: results 7, pages 3, arguments 0 (dropped 1), quotes dropped 3, tokens 4321/512; inference openrouter after llm_send_lost',
+  ]);
+  // The lines of the hire are the code's: the choice of the kit, and the line of the service about where the hire ended.
+  assert.ok(read('packages/hire-kit/src/select.ts').includes('supplier: advert ${'), 'the kit writes the line of the choice');
+  for (const part of ['inference: marketplace ', 'falling back']) assert.ok(A_SRC.includes(part), `the code writes: ${part}`);
+  assert.ok(A_SRC.includes('usage: usageOf(hired.record.receipt)'), 'on the marketplace path the tokens of the line are the counts the receipt of the chat supplier names');
   assert.ok(s15.includes('A first-party run is not demand.'));
   // docs/E2E.md carries the same settings: the request JSON, the pause and the state file are written alike in both.
   const e2e = section(read('docs/E2E.md'), 'Hiring Advocate');
@@ -3721,7 +3965,7 @@ test('Advocate RUNBOOK step 15 and the first stop: the request of the spec, whic
   assert.ok(aRunbook.indexOf('\n## Watch the first stop\n') > aRunbook.indexOf('\n## 15. ') && aRunbook.indexOf('\n## Watch the first stop\n') < aRunbook.indexOf('\n## 16. '));
 });
 
-test('Advocate RUNBOOK step 17 and Back out: the old advert retired before the restart, the last item names the files that carry the word; the advert first, then the containers, then Caddy, then the key and the API keys', () => {
+test('Advocate RUNBOOK step 17 and Back out: the old advert retired before the restart, the last item names the files that carry the word; the advert first, then the service finishes what it holds and the containers stop with the volume kept, then Caddy, then the keys, the buyer wallet, the volume and the API keys', () => {
   const s17 = section(aRunbook, '17. Flip the status');
   const item8 = s17.slice(s17.indexOf('8. In the repository'));
   for (const f of ['specs/advocate.md', 'agents/advocate/README.md', 'README.md', 'docs/HIRE.md', 'docs/E2E.md', ...['README.md', 'RUNBOOK-advocate.md', 'docker-compose.advocate.yml', 'Caddyfile.advocate.snippet', '.env.advocate.example'].map((f) => `deploy/host/${f}`), 'agents/advocate/src/server.ts', 'agents/advocate/agent.json.template', 'agents/advocate/test/server.test.ts', 'agents/advocate/test/start.test.ts', 'agents/advocate/test/spec.test.ts', 'agents/advocate/test/readme.test.ts', 'scripts/specs.test.mjs', 'scripts/deploy.test.mjs']) {
@@ -3738,19 +3982,35 @@ test('Advocate RUNBOOK step 17 and Back out: the old advert retired before the r
   for (const f of pinning) assert.ok(item8.includes('`' + f + '`'), `item 8 names ${f}, which pins the default word`);
   const back = section(aRunbook, 'Back out');
   const at = (needle) => { const i = back.indexOf(needle); assert.ok(i >= 0, needle); return i; };
-  const order = ['1. Retire the advert.', 'agent/src/cli/retire-advert.ts', '2. Stop the containers', `${ADC} down`, '3. Host administrator: remove the Caddy block of this agent', '4. Operator: the key.', 'The two API keys stay valid on their accounts until the operator revokes them there'];
+  const order = [
+    '1. Retire the advert.', 'agent/src/cli/retire-advert.ts', '2. Stop the containers, operator or host administrator, once the service holds nothing:', 'docker exec advocate-service cat /data/stranded.json', `${ADC} down`,
+    '3. Host administrator: remove the Caddy block of this agent', '4. Operator: the keys and the state volume.', 'The buyer wallet is emptied last, with the buyer key, once `stranded.json` is `[]`',
+    'The volume goes after the buyer wallet, and only when the agent will not come back: `docker volume rm advocate-state`.', 'The two API keys stay valid on their accounts until the operator revokes them there',
+  ];
   const places = order.map(at);
   assert.deepEqual([...places].sort((a, b) => a - b), places);
   assert.ok(back.includes('`shred -u "$BASE/ops/wallet/payment.skey" "$BASE/ops/wallet/payment.vkey"`, then `rmdir "$BASE/ops/wallet"`'));
+  for (const part of [
+    'Then the service gets to finish what it holds, and only then do the containers stop.', 'the janitor reclaims 5 s after their `deliver_by`, logging `janitor: reclaimed <escrow>: ...` for each',
+    'Never add `-v`: the volume `advocate-state` holds `stranded.json`, the escrows that still lock the buyer\'s units, and the janitor of the next start reads it. `down` keeps it.',
+    'The env file still holds both keys, and so does the operator\'s offline store: keep both until both wallets are empty',
+    'No script of this pack does that: none signs with the buyer key', 'docker run --rm -v advocate-state:/data alpine cat /data/stranded.json',
+  ]) assert.ok(back.includes(part), `Back out says: ${part}`);
+  assert.equal(back.includes('There is no volume to keep'), false, 'the words of before the state');
+  // The janitor reclaims 5 s after deliver_by, as the kit says.
+  assert.ok(read('packages/hire-kit/src/janitor.ts').includes('export const JANITOR_GRACE_MS = 5_000;'));
   assert.ok(back.includes('   ```sh\n   cd "$BASE/repo/deploy/host"\n   ' + `${ADC} run --rm --no-deps -T agent \\\n     node_modules/.bin/tsx agent/src/cli/retire-advert.ts \\\n`), 'the block that retires the advert starts in this folder: it may run in a new shell');
 });
 
 test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the codes of a job with their statuses, the network, each as the code words it', () => {
   const table = section(aRunbook, 'If something goes wrong');
   const rows = table.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| What you see |'));
-  assert.ok(rows.length >= 25, `${rows.length} rows`);
+  assert.ok(rows.length >= 40, `${rows.length} rows`);
   for (const row of rows) assert.equal(row.split(' | ').length, 3, `three columns: ${row.slice(0, 60)}`);
-  const sources = { kitEnv: read('packages/service-kit/src/env.ts'), kitServer: read('packages/service-kit/src/server.ts'), search: read('agents/advocate/src/search.ts') };
+  const sources = {
+    kitEnv: read('packages/service-kit/src/env.ts'), kitServer: read('packages/service-kit/src/server.ts'), search: read('agents/advocate/src/search.ts'), start: read('agents/advocate/src/start.ts'),
+    server: read('agents/advocate/src/server.ts'), janitor: read('packages/hire-kit/src/janitor.ts'), inference: read('agents/advocate/src/inference.ts'), hire: read('packages/hire-kit/src/hire.ts'),
+  };
   for (const [row, where, quote] of [
     ['`environment variable OPERATOR_CONTACT is required`', 'kitEnv', 'environment variable ${name} is required'],
     ['`environment variable SUPPLIER_PKH is required`', 'kitEnv', 'environment variable ${name} is required'],
@@ -3762,18 +4022,60 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
     ['`request refused: unauthorized (<n> since the last line of this kind)`', 'kitServer', 'request refused: unauthorized (${refusals} since the last line of this kind)'],
     ['`holds the service token, which belongs in SERVICE_AUTH_HEADER alone`', 'kitEnv', 'holds the service token, which belongs in SERVICE_AUTH_HEADER alone'],
     ['`search: the key was refused (HTTP <status>)`', 'search', 'the key was refused (HTTP '],
+    ['`environment variable ADVOCATE_BUYER_PRIV_KEY_HEX is required`', 'kitEnv', 'environment variable ${name} is required'],
+    ['`holds the buyer key, which belongs in ADVOCATE_BUYER_PRIV_KEY_HEX alone`', 'start', 'holds the buyer key, which belongs in ADVOCATE_BUYER_PRIV_KEY_HEX alone'],
+    ['`is not the key hash of the key in ADVOCATE_BUYER_PRIV_KEY_HEX`', 'start', 'is not the key hash of the key in ADVOCATE_BUYER_PRIV_KEY_HEX'],
+    ['`is not the address of the key in ADVOCATE_BUYER_PRIV_KEY_HEX`', 'start', 'is not the address of the key in ADVOCATE_BUYER_PRIV_KEY_HEX'],
+    ['`environment variable ADVERT_MAX_PROCESSING_MS must be at least 480000`', 'server', 'environment variable ADVERT_MAX_PROCESSING_MS must be at least ${MIN_PROCESSING_WINDOW_MS}'],
+    ['`which cannot be written`', 'start', 'which cannot be written'],
+    ['`is not a list of stranded escrows`', 'janitor', 'is not a list of stranded escrows'],
+    ['`is not the public key of the key in ADVOCATE_BUYER_PRIV_KEY_HEX`', 'start', 'is not the public key of the key in ADVOCATE_BUYER_PRIV_KEY_HEX'],
+    ['`holds the key of SUPPLIER_PKH`', 'start', 'holds the key of SUPPLIER_PKH'],
+    ['`environment variable LLM_MODEL_ALLOWLIST must be a comma-separated list of models`', 'server', 'environment variable LLM_MODEL_ALLOWLIST must be a comma-separated list of models'],
+    ['`environment variable LLM_MODEL_ALLOWLIST must name at least one model`', 'server', 'environment variable LLM_MODEL_ALLOWLIST must name at least one model'],
+    ['`inference: marketplace llm_supplier_unavailable at choice, falling back`', 'inference', "fallBack('llm_supplier_unavailable', 'choice')"],
+    ['the stranded store could not mark the Accept of the chat sub-job', 'inference', 'the stranded store could not mark the Accept of the chat sub-job at accept'],
+    ['accept it by hand within 600 s of its Submit', 'inference', 'accept it by hand within 600 s of its Submit'],
+    ['`janitor: reclaimed <escrow>: ...`', 'janitor', 'janitor: ${action.action} ${action.escrow_ref}: ${action.note}'],
+    ['`janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest`', 'janitor', 'Submitted: it cannot be reclaimed, and its supplier may release it from ${iso(lostAfter)} at the latest'],
+    ['`janitor: the pass failed`', 'janitor', 'janitor: the pass failed'],
   ]) {
     assert.ok(table.includes(row), `the table quotes ${row}`);
     assert.ok(sources[where].includes(quote), `${where} prints ${quote}`);
   }
+  // A line of the service about a hire carries its code and its stage, never the reason the kit gave (ruling R-F8): the choice that fails keeps no words of the
+  // kit, so the table quotes none of them.
+  assert.ok(sources.inference.includes("() => new HopFailed('llm_supplier_unavailable', null)"), 'the choice keeps no reason of the kit');
+  assert.equal(table.includes('above the ceiling of'), false, 'no line of the service quotes the reason of the kit');
   // The wait before a query that answered 429 is asked again, and the time of the model call, are the code's (src/search.ts, src/budget.ts).
   assert.ok(table.includes('a query that answers 429 is asked once more, 1100 ms later') && A_SRC.includes('export const QUERY_SPACING_MS = 1_100;'));
   assert.ok(table.includes('gave no answer within the full 90 s (with less time left, the job fails as `deadline`), or could not be made') && A_SRC.includes('export const MODEL_MAX_MS = 90_000;'));
   // The codes of a job, with the status each answers with, are those of src/errors.ts.
   const [statuses] = inAdvocate("import { JOB_STATUS } from './src/errors.ts'; console.log(JSON.stringify([JOB_STATUS]));", null);
-  for (const code of ['search_failed', 'search_empty', 'no_sources', 'model_failed', 'model_output_invalid', 'no_supported_claims', 'deadline']) {
+  for (const code of ['search_failed', 'search_empty', 'no_sources', 'model_failed', 'model_output_invalid', 'no_supported_claims', 'deadline', 'inference_failed']) {
     assert.ok(rows.some((r) => r.startsWith(`| Jobs fail with \`${code}\` (${statuses[code]})`)), `a row for ${code} (${statuses[code]})`);
   }
+  assert.ok(rows.some((r) => r.startsWith(`| A job fails with \`store_write_failed\` (${statuses.store_write_failed})`)), 'a row for store_write_failed');
+  assert.deepEqual([statuses.inference_failed, statuses.store_write_failed], [502, 500]);
+  // The fallback: a job's line ends with the code that sent it to OpenRouter, for each code of a hire that falls back, and the two that do not are rows of their own.
+  for (const ending of ['insufficient_float', 'llm_supplier_unavailable', 'llm_<what>', 'marketplace_off']) assert.ok(rows.some((r) => r.startsWith(`| A job's line ends \`; inference openrouter after ${ending}\``)), `a row for ${ending}`);
+  const fallbackRow = rows.find((r) => r.startsWith("| A job's line ends `; inference openrouter after llm_<what>`")) ?? '';
+  for (const code of ['llm_post_failed', 'llm_out_of_time', 'llm_busy', 'llm_timeout', 'llm_refused', 'llm_send_lost', 'llm_failed', 'llm_receipt_unavailable', 'llm_bad_result', 'llm_receipt_failed', 'llm_incomplete', 'model_output_invalid']) assert.ok(fallbackRow.includes(`\`${code}\``), `the row names ${code}`);
+  // Every failure of the kit's hire is llm_<what> (src/inference.ts), and all but the Accept fall back: the busy and the timeout of an advert whose window is short
+  // enough are among them.
+  for (const what of ['busy', 'timeout']) assert.ok(sources.hire.includes(`failure(errors, supplier, '${what}',`), `the kit fails a hire with ${what}`);
+  assert.ok(sources.inference.includes('failure: (kind, what, _message, facts) => new HopFailed(`${kind}_${what}`, facts),'), 'as llm_<what>');
+  assert.ok(rows.some((r) => r.startsWith('| Jobs fail with `inference_failed` (502), and the line before says `inference: marketplace llm_accept_failed at accept, not falling back` |')));
+  for (const part of [
+    'Until the service restarts it posts no escrow: every later job gets its brief from OpenRouter, and its line ends `; inference openrouter after marketplace_off`.',
+    'the hire had under 60 s left to its end when it was to begin or to post (`llm_out_of_time`, at `start` or at `post`)',
+    "No script of this pack signs with the buyer key, which is the service's, so the reclaim is manual: build it with `vector_build_marketplace_reclaim` on the hosted server and sign it with the buyer key on the host by the same byte-preserving means as the supplier's transactions",
+    "The buyer wallet could not cover the chat sub-job: its float outside the collateral is under the lock of the advert chosen and two fee budgets of 0.5, which is 3.2 at today's fleet price of 0.2,",
+    '`/healthz` stays ok, because the service can still answer.',
+    'A brief of a chat supplier that the check empties is not asked of OpenRouter again: its sub-job was settled, and the code is the job\'s.',
+    'A failure at about 300 s into a job is the silence limit: the interim `102 Processing` lines of step 13 are not arriving.',
+    String.raw`with ` + "`" + String.raw`sed -i 's/^\(ADVOCATE_BUYER_[A-Z_]*\)=.*/\1=/' .env.advocate` + "`",
+  ]) assert.ok(table.includes(part), `the table has: ${part}`);
   // Ruling R-E26: the log shows words of an answer only when its status is not 200. A 200 is an answer of the model, which can quote a page or the request, so for a
   // 200 whose body or content cannot be read the line gives the reason and the length, never the text. Ruling R-E30: of an answer that is not 200 the line shows the
   // code and the first 200 characters of the message when it is the JSON of an error, never its metadata, and otherwise the first 200 characters of the answer. The
@@ -3807,13 +4109,16 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
   const toBlocks = rows.filter((r) => /block of the two API keys of step 4|supplier block of step 4|token block of step 4/.test(r));
   assert.ok(toBlocks.length >= 6, `${toBlocks.length} rows send the operator to a block of step 4`);
   for (const r of toBlocks) assert.ok(r.includes(REMINDER), `the row says to define the function first: ${r.slice(0, 90)}`);
-  // deadline: the time the model is given is the time left less 5 s, 90 s at most, and the model is not started with under 15 s. 55 s of the job gone is the last with the full 90 s,
-  // 85 s is what the search and the pages at their caps leave it, and with under 20 s left it is not started.
-  assert.deepEqual(L.model, { full: L.MODEL_MAX_MS, lessAfter: L.MODEL_MAX_MS - 1, atTheCaps: A_MODEL_TIME.least * 1000, none: null, started: L.MODEL_MIN_MS });
+  // deadline: the time OpenRouter is given is the time left less 5 s, 90 s at most, and it is not called with under 15 s. The hire ends FALLBACK_RESERVE_MS before the
+  // deadline, which leaves the whole 90 s and not a millisecond more; a receipt read until receiptByMs leaves 15 s; with under 20 s left it is not called.
+  assert.deepEqual(L.model, { full: L.MODEL_MAX_MS, lessAfter: L.MODEL_MAX_MS - 1, atReceiptBy: L.MODEL_MIN_MS, none: null, started: L.MODEL_MIN_MS });
+  assert.deepEqual([L.hopEnd, L.FALLBACK_RESERVE_MS, L.receiptEnd], [L.MODEL_MAX_MS + L.RESULT_RESERVE_MS, L.MODEL_MAX_MS + L.RESULT_RESERVE_MS, L.MODEL_MIN_MS + L.RESULT_RESERVE_MS]);
   const deadline = rowOf('deadline');
   assert.ok(deadline.includes(`The job ran out of its time: ${L.JOB_DEADLINE_MS} ms after its request arrived.`));
-  assert.ok(deadline.includes(`the time left less ${sec(L.RESULT_RESERVE_MS)} s: ${A_MODEL_TIME.least} to ${sec(L.MODEL_MAX_MS)} s when the search and the pages have taken more than ${A_MODEL_TIME.fullUntil} s (when they took ${A_MODEL_TIME.fullUntil} s or less, the model gets the full ${sec(L.MODEL_MAX_MS)} s and the same silence is \`model_failed\`).`));
+  assert.ok(deadline.includes(`OpenRouter is given the time left less ${sec(L.RESULT_RESERVE_MS)} s, ${sec(L.MODEL_MAX_MS)} s at most, and when it was given the whole ${sec(L.MODEL_MAX_MS)} s the same silence is \`model_failed\`.`));
+  assert.ok(deadline.includes(`The hire of a chat supplier ends ${sec(L.hopEnd)} s before the deadline, so a fallback after it has its ${sec(L.MODEL_MAX_MS)} s, but a receipt that failed its check late, up to ${sec(L.receiptEnd)} s before the deadline, leaves the fallback ${sec(L.MODEL_MIN_MS)} s at the least.`));
   assert.ok(deadline.includes(`The job also fails this way when it has under ${A_MODEL_TIME.startWith} s left at the time the model was to start.`));
+  assert.ok(deadline.includes('`inference: marketplace <code> at <stage>, falling back` says where the hire ended'));
   assert.ok(deadline.includes(`\`model: OpenRouter did not answer within <n> ms\` before \`job failed after <ms> ms: deadline (422)\` is the silent model, with an \`<n>\` under ${L.MODEL_MAX_MS} (with ${L.MODEL_MAX_MS} the job fails as \`model_failed\`).`));
   for (const part of ['const late = `OpenRouter did not answer within ${opts.timeoutMs} ms`;', 'if (opts.timeoutMs < MODEL_MAX_MS) {', 'opts.log(`model: ${late}`);']) assert.ok(A_SRC.includes(part), `the code writes: ${part}`);
   assert.ok(sources.kitServer.includes("log(`${refusal.kind === 'job' ? 'job failed' : 'request refused'} after ${took} ms: ${refusal.code} (${refusal.status})`);"), 'a 422 is logged with its code and status, and no detail');

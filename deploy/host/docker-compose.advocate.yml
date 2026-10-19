@@ -1,12 +1,12 @@
-# Advocate on the deployment host: template runtime (pinned) + this repo's service. Pattern: Audio Snippets, with one key and two API keys.
-# PROPOSED (built, not deployed) since 2026-10-13. Not installed: no step of RUNBOOK-advocate.md has been run. The host administrator's part is README.md.
-# The env file sits next to this file, is made from .env.advocate.example, holds the supplier key (the runtime's), the token between the two containers and the two API keys of the service, and never enters git.
+# Advocate on the deployment host: template runtime (pinned) + this repo's service. Pattern: Audio Snippets, with two keys, two API keys and a state volume.
+# PROPOSED (built, not deployed) since 2026-10-13. Steps 1 to 10 of RUNBOOK-advocate.md ran on 2026-10-18 and 2026-10-19 with the service image of ccbcb94; the image is rebuilt from this change before step 11. The host administrator's part is README.md.
+# The env file sits next to this file, is made from .env.advocate.example, holds two keys (the supplier key for the runtime, the buyer key for the service), the token between the two containers and the two API keys of the service, and never enters git.
 # After any change to it, recreate the containers. Once the runtime runs (step 13 of RUNBOOK-advocate.md), recreate only when its /status says free (curl -s http://127.0.0.1:8086/status): a stop during a job can cut a job under escrow. Before step 13 no job can run.
 # docker compose -f docker-compose.advocate.yml up -d --force-recreate <service>. restart does not re-read it. A change to SERVICE_AUTH_HEADER needs both containers recreated.
 # Both containers join proxy, the external network of the host's reverse proxy, which other stacks share, and every agent here has a service named "service". The alias
 # "service" would resolve to all of them, so SERVICE_URL names the container, which is unique. The path is /, the only path the service accepts POST on.
 # The name of that network is not in the repository: compose reads PROXY_NETWORK from .env next to this file (RUNBOOK-advocate.md step 1), and stops while it has no value.
-# The runtime reads the supplier key from the env file. The service holds no chain key: the supplier key is blanked in its environment below (an empty string overrides the value from env_file).
+# Both containers read the same file and each gets only its own key: the other one is blanked in its environment below (an empty string overrides the value from env_file).
 # The service holds the two API keys, BRAVE_SEARCH_API_KEY and OPENROUTER_API_KEY, and reads them from the env file. The runtime needs neither, so both are blanked in its environment below.
 # SERVICE_AUTH_HEADER is the one value both need, so neither blanks it: the runtime sends it as the authorization header of every call to the service (SERVICE_URL below), and the service requires it on POST /.
 name: advocate
@@ -19,16 +19,19 @@ services:
     container_name: advocate-agent
     restart: unless-stopped
     env_file: [ { path: ./.env.advocate, required: true } ]
-    # SERVICE_TIMEOUT_MS sits 120 s inside the 5 min window of the advert (the runtime refuses to boot unless it is at least 60 s inside), and the
-    # service answers a job within 150000 ms of its arrival, so a job ends with a result or a refusal before the runtime gives up on it.
-    # The two API keys are the service's: an empty string here overrides the values from env_file, so the runtime never holds them.
+    # The runtime holds the supplier key and signs the receipt. The buyer key and the two API keys are the service's: an empty string here overrides the values
+    # from env_file, so the runtime never holds them.
+    # SERVICE_TIMEOUT_MS sits 120 s inside the 8 min window of the advert (the runtime refuses to boot unless it is at least 60 s inside), and the service
+    # answers a job within 300000 ms of its arrival, so a job ends with a result or a refusal before the runtime gives up on it; a hire in its Accept at that
+    # time runs on, as the manifest says.
     environment:
       CAPABILITY_KIND: custom
       SERVICE_URL: http://advocate-service:9094/
       SERVICE_CONTENT_TYPE: application/json
-      SERVICE_TIMEOUT_MS: "180000"
-      ADVERT_MAX_PROCESSING_MS: "300000"
+      SERVICE_TIMEOUT_MS: "360000"
+      ADVERT_MAX_PROCESSING_MS: "480000"
       PORT: "8080"
+      ADVOCATE_BUYER_PRIV_KEY_HEX: ""
       BRAVE_SEARCH_API_KEY: ""
       OPENROUTER_API_KEY: ""
     ports: ["127.0.0.1:8086:8080"]
@@ -43,15 +46,19 @@ services:
     container_name: advocate-service
     restart: unless-stopped
     env_file: [ { path: ./.env.advocate, required: true } ]
-    # The service holds no chain key, and the supplier key, which is the runtime's, is blanked here. It answers POST / only to a call that carries SERVICE_AUTH_HEADER,
-    # which the runtime sends, and no port is published: the network is shared with other stacks.
-    environment: { PORT: "9094", HOST: "0.0.0.0", SUPPLIER_PRIV_KEY_HEX: "" }
-    # One job at a time holds at most 12 pages of at most 1 MB each and their text in memory, and no model runs here. A job keeps nothing, so there is no volume.
+    # This service holds the buyer key, which posts the escrow of the chat sub-job of a job, and not the supplier key, which is the runtime's: that one is blanked here.
+    # The service answers POST / only to a call that carries SERVICE_AUTH_HEADER, which the runtime sends, and no port is published: the network is shared with other stacks, and a job posts an escrow from the buyer wallet.
+    environment: { PORT: "9094", HOST: "0.0.0.0", SUPPLIER_PRIV_KEY_HEX: "", ADVOCATE_STATE_DIR: /data }
+    # stranded.json, the escrows a job left behind for the janitor, lives here and outlives the container. docker compose down keeps the volume.
+    volumes: ["advocate-state:/data"]
+    # One job at a time holds at most 12 pages of at most 1 MB each and their text in memory, and no model runs here.
     mem_limit: 1024m
-    # On SIGTERM the service takes no new job and waits up to 300 s for the one that is running, which ends within 150 s of its arrival; the 30 s more than
-    # the wait are for it to log a job it abandoned and to exit 1. A grace period shorter than the job kills it under escrow mid-run, or the service before it can say what it left.
+    # On SIGTERM the service takes no new job and waits up to 300 s for the one that is running, its Accept included; the 30 s more than that are for it to
+    # log a job it abandoned, with its escrow, and to exit 1. A grace period of 300 s or less kills a job under escrow mid-run, or the service before it can say what it left.
     stop_grace_period: 330s
     networks: [proxy]
     logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
 networks:
   proxy: { external: true, name: "${PROXY_NETWORK:?set PROXY_NETWORK in .env next to this compose file: the external network of the host's reverse proxy}" }
+volumes:
+  advocate-state: { name: advocate-state }
