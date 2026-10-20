@@ -131,18 +131,27 @@ describe('specs/advocate.md', () => {
     // The release line: the version of the manifest, and the day it was built.
     expect(section('Changelog').trim()).toBe(`- ${manifest.version}, 2026-10-17: built`);
     expect(manifest.description).toBe('The strongest one-sided brief for a position, with citations: it argues one side only, by design, omits counter-arguments, and says so in every output.');
-    expect(manifest.status).toStrictEqual({ chip: 'proposed', since: '2026-10-13' });
-    expect(section('Status').split('\n')).toContain('PROPOSED (built, not deployed). Since 2026-10-13.');
+    expect(manifest.status).toStrictEqual({ chip: 'deployed', since: '2026-10-20' });
+    // The status line of the page opens with the word the manifest carries and ends with its date: DEPLOYED since the flip of 2026-10-20, never LIVE.
+    expect(section('Status').trimStart().startsWith(`${manifest.status.chip.toUpperCase()} (`)).toBe(true);
+    expect(section('Status')).toContain(`). Since ${manifest.status.since}.\n`);
+    expect(section('Status').split('\n')).toContain('DEPLOYED (registered and staked 2026-10-19, advertised 2026-10-19, re-advertised 2026-10-20 at the status flip, one first-party job settled 2026-10-20). Since 2026-10-20.');
     expect(row(section('Identity'), 'Registry address')).toBe(`| Registry address | \`${REGISTRY_ADDRESS}\` |`);
-    // The public URL is the one the advert will carry, in service as of 2026-10-19 with no advert yet: the runbook and the example file of the host name the same URL.
-    expect(row(section('Identity'), 'Public URL')).toBe('| Public URL | `https://mp-suppliers-advocate.hal8.ai` (in service as of 2026-10-19: the manifest answers; no advert yet) |');
+    // The public URL is the one the advert carries, in service as of 2026-10-19: the runbook and the example file of the host name the same URL.
+    expect(row(section('Identity'), 'Public URL')).toBe('| Public URL | `https://mp-suppliers-advocate.hal8.ai` (in service as of 2026-10-19) |');
     expect(readFileSync(new URL('../../../deploy/host/RUNBOOK-advocate.md', import.meta.url), 'utf8')).toContain('| Public name | `mp-suppliers-advocate.hal8.ai` |');
     expect(readFileSync(new URL('../../../deploy/host/.env.advocate.example', import.meta.url), 'utf8')).toContain('ADVERT_ENDPOINT_URL=https://mp-suppliers-advocate.hal8.ai\n');
     // The runtime holds the supplier key and signs the receipt; the service holds the buyer key and no other chain key, and the one private key its settings name is that one.
     expect(section('Capability id')).toContain('The runtime claims the escrow, calls this service, signs the receipt and submits the receipt hash. The service holds the buyer key, which posts the escrow of the chat sub-job of a job, and no other chain key.');
     expect(SETTINGS.filter((name) => /PRIV|SEED|SECRET|SKEY/.test(name))).toStrictEqual(['ADVOCATE_BUYER_PRIV_KEY_HEX']);
     expect(Object.keys(manifest.keys)).toStrictEqual(['supplier_pkh', 'pub_key_hex', 'buyer_pkh']);
-    expect(row(section('Identity'), 'Second key, planned')).toBe("| Second key, planned | a separate buyer key that posts the escrow of the chat sub-job of a job, so its Posts and the supplier key's Claims never contend for the same UTxOs. The manifest publishes its key hash as `keys.buyer_pkh`, which the service derives from the key. Step 4 of the runbook makes it on the host when it runs again for this change |");
+    // The buyer key exists since step 4 ran again on the host, on 2026-10-19: the row gives the key hash the manifest serves under keys.buyer_pkh, a key hash of its own.
+    expect(row(section('Identity'), 'Second key')).toBe("| Second key | the buyer key, a separate key that posts the escrow of the chat sub-job of a job, so its Posts and the supplier key's Claims never contend for the same UTxOs. It was made on the host on 2026-10-19, in step 4 of the runbook. The manifest publishes its key hash, `ee450a88d8344f18dd2baf266100aec3b1375b5870b2fe50f34de123`, as `keys.buyer_pkh`, which the service derives from the key |");
+    expect(row(section('Identity'), 'Second key, planned')).toBe('');
+    // Two keys: the key hash of the buyer key is not the supplier key hash, the controller of the registry record.
+    const controller = /; controller key hash `([0-9a-f]{56})` \(the supplier key hash\)/.exec(row(section('Identity'), 'Registry record'))?.[1];
+    expect(controller).toMatch(/^[0-9a-f]{56}$/);
+    expect(controller).not.toBe('ee450a88d8344f18dd2baf266100aec3b1375b5870b2fe50f34de123');
     // The stake is the 10 units the runbook of the host names: 10000000 lovelace, printed with six decimals, made on 2026-10-19.
     expect(row(section('Identity'), 'Reputation stake')).toContain('| Reputation stake | a Module-3 self-stake of 10000000 lovelace (10.000000) on the capability, made on 2026-10-19 in transaction ');
     expect(readFileSync(new URL('../../../deploy/host/RUNBOOK-advocate.md', import.meta.url), 'utf8')).toContain('the stake (10)');
@@ -850,7 +859,7 @@ describe('specs/advocate.md, pinned further', () => {
     expect(existsSync(fileURLToPath(new URL('../src/gaps.ts', import.meta.url)))).toBe(true);
     const how = section('How to hire it');
     for (const part of [
-      'Not yet advertised. Once advertised, the three ways below apply. The service is built and waits for its deployment. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).',
+      'Advertised on 2026-10-19 and again on 2026-10-20, at the status flip: the marketplace indexer lists the current advert as Active and free (checked on 2026-10-20). One first-party job has settled, on 2026-10-20; it is not demand. The three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).',
       '1. **Chat client via MCP.** Same tools and same steps as for [Agent History](agent-history.md): list suppliers for `research.advocate.onesided.v1`, post an escrow, send the job, poll, verify the receipt, accept. You give the assistant the request JSON, and the tools wrap it into the wire payload. The marketplace tools are on the hosted mainnet server as of 2026-10-14.',
       "2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `c4c378a`), with your own key. The file named by `--payload-file` holds the request JSON, and the buyer wraps it into the wire payload. Allow for the 8 min processing window.",
       "3. **Developers, the raw routes.** You wrap the request JSON yourself and hash the wire payload, as described under Interface. Then the six steps in [Agent History](agent-history.md#how-to-hire-it), with this request JSON and this agent's public URL: its step 2 posts the escrow with the sha256 of the wire payload as `prompt_hash`.",

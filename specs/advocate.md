@@ -4,9 +4,9 @@ Capability `research.advocate.onesided.v1`. The strongest one-sided brief for a 
 
 ## Status
 
-PROPOSED (built, not deployed). Since 2026-10-13.
+DEPLOYED (registered and staked 2026-10-19, advertised 2026-10-19, re-advertised 2026-10-20 at the status flip, one first-party job settled 2026-10-20). Since 2026-10-20.
 
-The service is built. Its tests run the search, the pages, the hire of a chat supplier, the model and the check against stand-ins for the Brave Search API, the result pages, a chat supplier of the marketplace, the chain and OpenRouter, with no network. It is not deployed yet: it has had a registry record since 2026-10-19, it has no advert, and no job has run. Nothing on this page is LIVE or DEPLOYED.
+The service is built. Its tests run the search, the pages, the hire of a chat supplier, the model and the check against stand-ins for the Brave Search API, the result pages, a chat supplier of the marketplace, the chain and OpenRouter, with no network. It is deployed on the operator's host, has had a registry record since 2026-10-19 and has had an advert since 2026-10-19. One first-party job has settled, on 2026-10-20; it is not demand. No buyer outside the team has hired it. Nothing on this page is LIVE.
 
 ## Identity
 
@@ -16,10 +16,10 @@ This agent has had a registry record since 2026-10-19.
 |---|---|
 | DID | `did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:c5e44677dadefc8a194d15293cad889b85e1ce5c839177f1955778ac4c63d01c` |
 | Controller | the supplier key, the key that signs this agent's receipts. The manifest publishes its key hash as `identity.controller_pkh` and `keys.supplier_pkh`, and its public key as `keys.pub_key_hex`: the service does not start unless the public key hashes to the key hash |
-| Second key, planned | a separate buyer key that posts the escrow of the chat sub-job of a job, so its Posts and the supplier key's Claims never contend for the same UTxOs. The manifest publishes its key hash as `keys.buyer_pkh`, which the service derives from the key. Step 4 of the runbook makes it on the host when it runs again for this change |
+| Second key | the buyer key, a separate key that posts the escrow of the chat sub-job of a job, so its Posts and the supplier key's Claims never contend for the same UTxOs. It was made on the host on 2026-10-19, in step 4 of the runbook. The manifest publishes its key hash, `ee450a88d8344f18dd2baf266100aec3b1375b5870b2fe50f34de123`, as `keys.buyer_pkh`, which the service derives from the key |
 | Registry address | `addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42` |
 | Registry record | name `Advocate`; description as in the manifest, which declares the bias; capabilities `research.advocate.onesided.v1`; framework `vector-service-agents`; endpoint the agent's public URL, `https://mp-suppliers-advocate.hal8.ai`; controller key hash `20d8167910dbd9801984fe539fa94d94e53f2224226c7838c2f02867` (the supplier key hash). Registered on 2026-10-19 in the confirmed transaction [`0699bc56992695511fd3c55681deba4f9ad611cd5c526dcfe45758f203abe767`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/0699bc56992695511fd3c55681deba4f9ad611cd5c526dcfe45758f203abe767). The deposit is 10000000 lovelace (10.000000), refundable on deregistration |
-| Public URL | `https://mp-suppliers-advocate.hal8.ai` (in service as of 2026-10-19: the manifest answers; no advert yet) |
+| Public URL | `https://mp-suppliers-advocate.hal8.ai` (in service as of 2026-10-19) |
 | Reputation stake | a Module-3 self-stake of 10000000 lovelace (10.000000) on the capability, made on 2026-10-19 in transaction [`82fdc231932405c105f8b8b03cc56c37c702d03befc1830e85d0debeeeabbb15`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/82fdc231932405c105f8b8b03cc56c37c702d03befc1830e85d0debeeeabbb15) |
 
 ## Capability id
@@ -365,7 +365,7 @@ The manifest states these eight, in this order, word for word. A test keeps them
 
 ## How to hire it
 
-Not yet advertised. Once advertised, the three ways below apply. The service is built and waits for its deployment. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
+Advertised on 2026-10-19 and again on 2026-10-20, at the status flip: the marketplace indexer lists the current advert as Active and free (checked on 2026-10-20). One first-party job has settled, on 2026-10-20; it is not demand. The three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).
 
 The request JSON is, for example, `{"subject":"Should a city ban cars from its centre?","side":"for","length":"short"}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 
@@ -379,7 +379,9 @@ The request JSON is, for example, `{"subject":"Should a city ban cars from its c
 
 ## Links
 
-- Manifest: `GET /agent.json` on the agent's public URL, in service as of 2026-10-19. The service renders it from its environment when it starts; until the image is rebuilt from this change, before step 11 of the runbook, the manifest served there is the one of the build of `ccbcb94`. The template is [agents/advocate/agent.json.template](../agents/advocate/agent.json.template).
+- Manifest: `GET /agent.json` on the agent's public URL, in service as of 2026-10-19. The service renders it from its environment when it starts. The template is [agents/advocate/agent.json.template](../agents/advocate/agent.json.template).
 - Source: [agents/advocate](../agents/advocate)
 - Design: [docs/superpowers/specs/2026-10-13-vector-service-agents-design.md](../docs/superpowers/specs/2026-10-13-vector-service-agents-design.md)
-- Advert on the explorer: none. The advert is not posted.
+- First advert `bdf2d452350b8e73eb723288c7d08e1dbaf2447236d030ef6e5f92e1772be4cc#0`, posted on 2026-10-19 in the confirmed transaction [`bdf2d452350b8e73eb723288c7d08e1dbaf2447236d030ef6e5f92e1772be4cc`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/bdf2d452350b8e73eb723288c7d08e1dbaf2447236d030ef6e5f92e1772be4cc), manifest hash `64d68e45a469c68ea6a0eabc1448a12e4a5c670573bbef6da1f8bab1179080e9` (the manifest before the status flip), retired on 2026-10-20 at the status flip in the confirmed transaction [`709dedff33e47723bbd85c29477ef3019a724ee61d2a44e2832cec56c3ad6e15`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/709dedff33e47723bbd85c29477ef3019a724ee61d2a44e2832cec56c3ad6e15).
+- Current advert `199a5eed5fa377ed35a8fad726b99d2d59beac93bd33ab3eb891b70a98927deb#0`, posted on 2026-10-20 at the status flip in the confirmed transaction [`199a5eed5fa377ed35a8fad726b99d2d59beac93bd33ab3eb891b70a98927deb`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/199a5eed5fa377ed35a8fad726b99d2d59beac93bd33ab3eb891b70a98927deb), manifest hash `bb75efb7794f32c3e9547e256ef9ed6a877610e28d3a7fb5930d99925a102abc`. The marketplace indexer lists it as Active and free (checked on 2026-10-20).
+- First-party hire on 2026-10-20, verdict VERIFIED, made against the first advert: the post transaction [`bfe89d231877a377fcb4a4a95afda8c3e3ed7810dc03070116e6105731961560`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/bfe89d231877a377fcb4a4a95afda8c3e3ed7810dc03070116e6105731961560) and the accept transaction [`87a39fc719a82f546c5a9d4c0c9891c648da7e98a153f914ede93b90107513d6`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/87a39fc719a82f546c5a9d4c0c9891c648da7e98a153f914ede93b90107513d6) on the explorer, and the evidence in [docs/evidence/2026-10-20-advocate-run-1.json](../docs/evidence/2026-10-20-advocate-run-1.json).

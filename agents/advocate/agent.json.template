@@ -112,8 +112,8 @@
     ]
   },
   "status": {
-    "chip": "proposed",
-    "since": "2026-10-13"
+    "chip": "deployed",
+    "since": "2026-10-20"
   },
   "gaps": [
     "The brief argues one side only, by design: it leaves out counter-arguments and rebuttals, says so in declared_bias and omitted_by_design, and gives no balanced answer and no fairness guarantee.",

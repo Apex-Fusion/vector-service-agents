@@ -79,12 +79,12 @@ describe('agents/advocate/README.md', () => {
     expect(row('ADVERT_PRICE_LOVELACE')).toContain('`3000000`');
     expect(row('ADVERT_MAX_PROCESSING_MS')).toContain('`480000`');
     expect(row('ADVERT_MAX_PROCESSING_MS')).toContain(`at least ${MIN_PROCESSING_WINDOW_MS}, because the deadline of a job assumes the ${MIN_PROCESSING_WINDOW_MS / 60_000} min window`);
-    expect(row('AGENT_STATUS_CHIP')).toContain('`proposed`');
+    expect(row('AGENT_STATUS_CHIP')).toContain('`deployed`');
     expect(row('AGENT_STATUS_CHIP')).toContain('`status.chip`, in lower case');
-    expect(row('AGENT_STATUS_SINCE')).toContain('`2026-10-13`');
+    expect(row('AGENT_STATUS_SINCE')).toContain('`2026-10-20`');
     expect(row('AGENT_VERSION')).toContain('`0.1.0`');
     const manifest = manifestFromEnv({ OPERATOR_CONTACT: 'ops@example.test' });
-    expect([manifest.version, manifest.terms.price_lovelace, manifest.terms.max_processing_ms, manifest.status.chip, manifest.status.since]).toStrictEqual(['0.1.0', 3_000_000, 480_000, 'proposed', '2026-10-13']);
+    expect([manifest.version, manifest.terms.price_lovelace, manifest.terms.max_processing_ms, manifest.status.chip, manifest.status.since]).toStrictEqual(['0.1.0', 3_000_000, 480_000, 'deployed', '2026-10-20']);
     const config = loadConfig(FULL_ENV);
     expect([config.port, config.host, config.model]).toStrictEqual([PORT_DEFAULT, '0.0.0.0', DEFAULT_MODEL]);
     expect(row('PORT')).toContain(`| \`${config.port}\`, \`${config.host}\` |`);
@@ -162,15 +162,18 @@ describe('agents/advocate/README.md', () => {
   });
 
   test('it says the status the manifest and the code give, and nothing in it is a dash, a unit name or a key', () => {
-    const STATUS = 'Status: PROPOSED (built, not deployed). Since 2026-10-13.';
+    // DEPLOYED since the flip of 2026-10-20 (RUNBOOK-advocate step 17): the facts in one line, as the page of the spec gives them. Never live: a first-party run is not demand.
+    const STATUS = 'Status: DEPLOYED (registered and staked 2026-10-19, advertised 2026-10-19, re-advertised 2026-10-20 at the status flip, one first-party job settled 2026-10-20). Since 2026-10-20.';
     expect(readme).toContain(`${STATUS} The service is built and its tests run the search, the pages, the model and the check`);
+    expect(readme).toContain("It runs on the operator's host, and the one job it has settled is first-party, which is not demand.");
+    expect(readme).not.toMatch(/no registry record|no advert yet|has no advert|no job has run|not deployed/i);
     // The first line is the description of the manifest, and the sentence that follows names the capability.
     expect(readme.split('\n')[2]).toBe(`${manifestFromEnv({ OPERATOR_CONTACT: 'ops@example.test' }).description} Capability \`research.advocate.onesided.v1\`.`);
     expect(readme).toContain('against stand-ins for the Brave Search API, the result pages, a chat supplier of the marketplace, the chain and OpenRouter, with no network');
     expect(readme).not.toMatch(/[\u{2013}\u{2014}]/u);
     expect(readme).not.toMatch(UNIT_NAME);
     expect(readme).not.toMatch(/[0-9a-f]{64}/);
-    expect(readme.match(/\b(LIVE|DEPLOYED)\b/g)).toBeNull();
+    expect(readme.replace(STATUS, '').match(/\b(LIVE|DEPLOYED|PROPOSED)\b/g)).toBeNull(); // DEPLOYED is said in the status line only; elsewhere the words are in lower case, as the values the manifest carries
   });
 });
 
@@ -466,7 +469,7 @@ describe('agents/advocate/README.md, pinned further', () => {
     const quiet = { manifest, deps: baseDeps(), log: () => undefined };
     // The head: what is built and what is not, who holds the key, which keys the service holds, and what the template is for.
     holds(readme, [
-      'It has had a registry record since 2026-10-19 and has no advert yet, and no job has run.',
+      "It runs on the operator's host, and the one job it has settled is first-party, which is not demand.",
       '`specs/advocate.md` at the repository root is the specification; this page and the manifest describe the code.',
       'The service sits behind the template runtime (`vector-agent-template`, `CAPABILITY_KIND=custom`).',
       'The runtime holds the supplier key, claims the escrow of the hirer and posts the job to this service as the body of `POST /`.',

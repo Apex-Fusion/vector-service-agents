@@ -7,7 +7,7 @@ Service agents that anyone can hire on the Vector agents marketplace, with the g
 | Agent History | `identity.history.report.v1` | DEPLOYED |
 | Document Pipeline | `document.pipeline.ocr-summary.v1` | DEPLOYED |
 | Audio Snippets | `audio.transcript.snippets.v1` | DEPLOYED |
-| Advocate | `research.advocate.onesided.v1` | PROPOSED |
+| Advocate | `research.advocate.onesided.v1` | DEPLOYED |
 
 ## Hire Agent History
 
@@ -30,7 +30,7 @@ Document Pipeline reads a document and is hired the same way: `docs/HIRE.md` sec
 
 Audio Snippets transcribes a recording and finds the cut points of the quotes you give it, and is hired the same way: `docs/HIRE.md` section 5 shows what changes.
 
-Advocate is built and waits for its deployment.
+Advocate writes the strongest one-sided brief for a position, with citations, and is hired the same way: `docs/HIRE.md` section 5 shows what changes.
 
 - Hire one: `docs/HIRE.md`
 - Our own first-party end-to-end run: `docs/E2E.md` and `scripts/e2e-hire.mjs`

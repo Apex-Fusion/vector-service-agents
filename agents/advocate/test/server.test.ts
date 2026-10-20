@@ -95,7 +95,7 @@ describe('manifest', () => {
           'OpenRouter and the model provider behind it (the same prompt), only when that hire fails',
         ],
       },
-      status: { chip: 'proposed', since: '2026-10-13' },
+      status: { chip: 'deployed', since: '2026-10-20' },
       gaps: [...gapsFor('deepseek/deepseek-v4-flash', 'deepseek/deepseek-v4-flash')],
       links: { spec: SPEC_URL, source: 'https://github.com/Apex-Fusion/vector-service-agents/tree/main/agents/advocate', explorer_advert: '' },
     });
@@ -159,9 +159,9 @@ describe('manifest', () => {
     }
   });
 
-  test('defaults: proposed since 2026-10-13, price 3 units, both bonds 1 unit, an 8 min window; a smaller window is refused, a larger one is used', () => {
+  test('defaults: deployed since 2026-10-20, price 3 units, both bonds 1 unit, an 8 min window; a smaller window is refused, a larger one is used', () => {
     const m = manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT });
-    expect([m.status, m.terms.price_lovelace, m.terms.max_processing_ms]).toStrictEqual([{ chip: 'proposed', since: '2026-10-13' }, 3_000_000, 480_000]);
+    expect([m.status, m.terms.price_lovelace, m.terms.max_processing_ms]).toStrictEqual([{ chip: 'deployed', since: '2026-10-20' }, 3_000_000, 480_000]);
     for (const bad of ['0', '300000', '479999']) {
       expect(() => manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ADVERT_MAX_PROCESSING_MS: bad }), bad).toThrow(/^environment variable ADVERT_MAX_PROCESSING_MS must be at least 480000 \(the window of 8 min that the deadline of a job, 300000 ms, assumes\), got \d+$/);
     }
@@ -169,12 +169,13 @@ describe('manifest', () => {
     for (const bad of ['two', '-1', '1.5']) expect(() => manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ADVERT_PRICE_LOVELACE: bad }), bad).toThrow(/ADVERT_PRICE_LOVELACE/);
   });
 
-  test('AGENT_STATUS_CHIP: live, deployed or proposed in any case, carried in lower case, proposed by default; AGENT_STATUS_SINCE a date, 2026-10-13 by default', () => {
+  test('AGENT_STATUS_CHIP: live, deployed or proposed in any case, carried in lower case, deployed by default and never live; AGENT_STATUS_SINCE a date, 2026-10-20 by default', () => {
     const chip = (value?: string) => manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ...(value === undefined ? {} : { AGENT_STATUS_CHIP: value }) }).status.chip;
-    expect([chip(), chip(''), chip('Deployed'), chip('LIVE'), chip('proposed')]).toStrictEqual(['proposed', 'proposed', 'deployed', 'live', 'proposed']);
+    // The default is the word of the flip of 2026-10-20 (RUNBOOK-advocate step 17). A first run, before any job has settled, starts with proposed (step 4).
+    expect([chip(), chip(''), chip('Deployed'), chip('LIVE'), chip('proposed')]).toStrictEqual(['deployed', 'deployed', 'deployed', 'live', 'proposed']);
     for (const bad of ['built', 'proposed ', 'up']) expect(() => chip(bad), bad).toThrow(/AGENT_STATUS_CHIP/);
     expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: '2026-11-02' }).status.since).toBe('2026-11-02');
-    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: ' ' }).status.since).toBe('2026-10-13');
+    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: ' ' }).status.since).toBe('2026-10-20');
     for (const bad of ['yesterday', '2026-10-1']) expect(() => manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: bad }), bad).toThrow(/AGENT_STATUS_SINCE/);
   });
 
