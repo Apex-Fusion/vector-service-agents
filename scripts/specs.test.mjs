@@ -235,8 +235,10 @@ const AD = {
   did: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:c5e44677dadefc8a194d15293cad889b85e1ce5c839177f1955778ac4c63d01c',
   registerTx: '0699bc56992695511fd3c55681deba4f9ad611cd5c526dcfe45758f203abe767',
   stakeTx: '82fdc231932405c105f8b8b03cc56c37c702d03befc1830e85d0debeeeabbb15',
-  // The supplier key: its key hash is the controller of the registry record. The buyer key, the second key, was made on the host when step 4 ran again, on 2026-10-19.
+  // The supplier key: its key hash is the controller of the registry record, and its public key, the one the manifest serves under keys.pub_key_hex, signs the receipts. The buyer key,
+  // the second key, was made on the host when step 4 ran again, on 2026-10-19.
   controllerPkh: '20d8167910dbd9801984fe539fa94d94e53f2224226c7838c2f02867',
+  pubKey: '1560d8c3c13ccd096ddda69be3f4ef65413bb31a4b325001965a46e99fad215c',
   buyerPkh: 'ee450a88d8344f18dd2baf266100aec3b1375b5870b2fe50f34de123',
   // The first advert, posted and confirmed on 2026-10-19 (step 12) over the manifest of before the flip, and retired on 2026-10-20 at the status flip (step 17, item 2). The first-party run was made against it.
   firstAdvertTx: 'bdf2d452350b8e73eb723288c7d08e1dbaf2447236d030ef6e5f92e1772be4cc',
@@ -1612,6 +1614,8 @@ test('specs/advocate.md: the DID, the registry record, the reputation stake and 
   assert.match(AD.did, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
   for (const other of [AH.did, DP.did, AS.did]) assert.notEqual(AD.did, other, 'its own asset name');
   assert.equal(row('DID'), `| DID | \`${AD.did}\` |`);
+  // The supplier key: the Controller row gives its public key, the one the manifest serves, and the Registry record row its key hash (agents/advocate/test/spec.test.ts holds the one to the other).
+  assert.ok(row('Controller').startsWith(`| Controller | the supplier key, the key that signs this agent's receipts. Its public key is \`${AD.pubKey}\`. The manifest publishes`));
   const record = row('Registry record');
   for (const part of [
     'name `Advocate`', 'description as in the manifest, which declares the bias', 'capabilities `research.advocate.onesided.v1`', 'framework `vector-service-agents`',
@@ -1625,7 +1629,7 @@ test('specs/advocate.md: the DID, the registry record, the reputation stake and 
   assert.notEqual(AD.buyerPkh, AD.controllerPkh, 'the buyer key is not the supplier key');
   assert.ok(row('Second key').startsWith('| Second key | the buyer key, a separate key that posts the escrow of the chat sub-job of a job,'));
   assert.ok(row('Second key').includes(`It was made on the host on 2026-10-19, in step 4 of the runbook. The manifest publishes its key hash, \`${AD.buyerPkh}\`, as \`keys.buyer_pkh\`, which the service derives from the key |`));
-  for (const hex of [AD.registerTx, AD.stakeTx, AD.firstAdvertTx, AD.retireTx, AD.advertTx, AD.firstManifestHash, AD.manifestHash]) assert.match(hex, /^[0-9a-f]{64}$/);
+  for (const hex of [AD.registerTx, AD.stakeTx, AD.firstAdvertTx, AD.retireTx, AD.advertTx, AD.firstManifestHash, AD.manifestHash, AD.pubKey]) assert.match(hex, /^[0-9a-f]{64}$/);
   assert.equal(new Set([AD.registerTx, AD.stakeTx, AD.firstAdvertTx, AD.retireTx, AD.advertTx, AD_RUN.postTx, AD_RUN.acceptTx]).size, 7, 'seven transactions: the registration, the stake, the first advert, its retirement, the current advert, the post and the accept of the run');
   assert.notEqual(AD.firstManifestHash, AD.manifestHash, 'the flip changed the manifest, so the advert was posted again');
   assert.equal(AD.firstAdvertRef, `${AD.firstAdvertTx}#0`);
@@ -1652,8 +1656,8 @@ test('specs/advocate.md: the DID, the registry record, the reputation stake and 
 // ---- The first first-party run of Advocate, 2026-10-20 (RUNBOOK-advocate step 15) ----
 // docs/E2E.md records it in the Results table, and docs/evidence/ holds the object the script printed, byte for byte. Both keys were ours, and so were both sides of its sub-job, so the run shows
 // that the path works and is not demand. The run was made against the first advert, which step 17 retired the same day. The ledger rows of the receipt check need the chain and are repeated by hand
-// with the tool, and so is the signature: the spec gives no public key of the supplier key. The prompt hash needs only the request, so it is checked here.
-test('docs/evidence: the evidence of the first-party run of Advocate of 2026-10-20 is the file the script printed, parses, is VERIFIED, its brief hashes to result_sha256 and to the response_hash of the receipt, the receipt commits to the request of the page, and the brief was bought on the marketplace under a sub-receipt that passed the seven checks', () => {
+// with the tool. The signature needs only the public key, which the spec gives and the manifest serves, and the prompt hash only the request, so both are checked here.
+test('docs/evidence: the evidence of the first-party run of Advocate of 2026-10-20 is the file the script printed, parses, is VERIFIED, its brief hashes to result_sha256 and to the response_hash of the receipt, the receipt is signed by the supplier key of the registry record and commits to the request of the page, and the brief was bought on the marketplace under a sub-receipt that passed the seven checks', () => {
   const raw = readFileSync(new URL(`../${AD_RUN.evidence}`, import.meta.url));
   assert.equal(raw.length, AD_RUN.evidenceBytes, 'copied byte for byte: its size');
   assert.equal(createHash('sha256').update(raw).digest('hex'), AD_RUN.evidenceSha256, 'copied byte for byte: its sha256');
@@ -1676,7 +1680,12 @@ test('docs/evidence: the evidence of the first-party run of Advocate of 2026-10-
   assert.deepEqual(Object.keys(ev.receipt).sort(), ['completion_tokens', 'escrow_ref', 'model', 'prompt_hash', 'prompt_tokens', 'response_hash', 'supplier_pkh', 'wallclock_ms']);
   assert.deepEqual([ev.receipt.escrow_ref, ev.receipt.supplier_pkh, ev.receipt.model], [ev.escrow_ref, AD.controllerPkh, AGENTS.advocate.model]);
   assert.deepEqual([ev.receipt.prompt_tokens, ev.receipt.completion_tokens, ev.receipt.wallclock_ms], [0, 0, AD_RUN.wallclockMs]);
+  // The signature is Ed25519 over the canonical JSON of the receipt, and it verifies with the public key of the supplier key.
+  assert.ok(section(read('advocate'), 'What the receipt commits to').includes('The signature is Ed25519 over the canonical JSON of the receipt.'));
   assert.match(ev.receipt_signature, /^[0-9a-f]{128}$/, 'an Ed25519 signature is 64 bytes');
+  const key = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: Buffer.from(AD.pubKey, 'hex').toString('base64url') }, format: 'jwk' });
+  assert.equal(verifySignature(null, Buffer.from(canonical(ev.receipt), 'utf8'), key, Buffer.from(ev.receipt_signature, 'hex')), true, 'the receipt is signed by the supplier key');
+  assert.equal(verifySignature(null, Buffer.from(canonical({ ...ev.receipt, wallclock_ms: ev.receipt.wallclock_ms + 1 }), 'utf8'), key, Buffer.from(ev.receipt_signature, 'hex')), false, 'and by nothing else: one field changed fails it');
   // The prompt hash commits to the request of the run: the sha256 of the wire payload of the PAYLOAD of the section "Hiring Advocate", which is the example of the page.
   const payload = /\nexport PAYLOAD='([^']+)'\n/.exec(section(doc('E2E.md'), 'Hiring Advocate'))?.[1] ?? '';
   assert.deepEqual(JSON.parse(payload), AD_RUN.request);

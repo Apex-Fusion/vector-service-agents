@@ -748,6 +748,16 @@ describe('specs/advocate.md, pinned further', () => {
     expect(section('Capability id')).toContain('It holds the two API keys of its third parties, `BRAVE_SEARCH_API_KEY` and `OPENROUTER_API_KEY`. Each is sent only to its own party, and neither reaches an answer, a log line or the manifest.');
   });
 
+  // Registered on 2026-10-19 (RUNBOOK-advocate step 7): the page gives the public key of the supplier key in the Controller row and its key hash in the Registry record row.
+  // They are one key, as the service requires of SUPPLIER_PUB_KEY_HEX and SUPPLIER_PKH at start (R-D21), and the manifest serves both.
+  test('the identity of 2026-10-19: the public key of the Controller row hashes to the controller key hash of the Registry record row', () => {
+    const publicKey = /Its public key is `([0-9a-f]{64})`\./.exec(row(section('Identity'), 'Controller'))?.[1] ?? '';
+    const keyHash = /; controller key hash `([0-9a-f]{56})` \(the supplier key hash\)\./.exec(row(section('Identity'), 'Registry record'))?.[1] ?? '';
+    expect(publicKey).toMatch(/^[0-9a-f]{64}$/);
+    expect(keyHash).toMatch(/^[0-9a-f]{56}$/);
+    expect(blake2b224Hex(publicKey)).toBe(keyHash);
+  });
+
   test('the other sentences of the page that state a claim are held word for word, and to the code or the file that has the claim where there is one', async () => {
     const holds = (text: string, sentences: readonly string[]): void => { for (const sentence of sentences) expect(text, sentence).toContain(sentence); };
     const deploy = (file: string): string => readFileSync(new URL(`../../../deploy/host/${file}`, import.meta.url), 'utf8');
