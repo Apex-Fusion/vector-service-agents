@@ -1146,7 +1146,13 @@ test('Pipeline RUNBOOK collateral and float: two keys, 5 alone then 50 for the s
   assert.equal(rows.length, 2, 'two keys');
   const [supplier, buyer] = rows;
   assert.ok(supplier.startsWith("| Supplier key (the runtime's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral), then 50 units | As for Agent History:"));
-  assert.ok(buyer.startsWith("| Buyer key (the service's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral for the Accept and the Reclaim of the sub-jobs, never touched), then 100 units |"));
+  // The 5 alone is held back from every Post while the rest of the wallet covers that Post and its change, in the words of the Advocate runbook: the Pipeline posts through the same
+  // code (packages/hire-kit on packages/buyer-core, the vendored marketplace-build.ts and fleet-build.ts), which draws on the whole wallet otherwise, so the 5 is not "never touched".
+  assert.ok(buyer.startsWith("| Buyer key (the service's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral for the Accept and the Reclaim of the sub-jobs, held back from every Post while the rest of the wallet covers that Post and its change), then 100 units |"));
+  assert.ok(section(read('deploy/host/RUNBOOK-advocate.md'), 'Collateral and float').includes('(collateral for the Accept and the Reclaim of the chat sub-job, held back from every Post while the rest of the wallet covers that Post and its change)'), 'the words of the Advocate runbook');
+  assert.ok(read('packages/buyer-core/src/vendored/mcp/marketplace-build.ts').includes('return total >= lockLovelace + MARKETPLACE_MIN_FEE + MIN_UTXO_LOVELACE ? rest : undefined;'));
+  assert.ok(JSON.parse(read('agents/document-pipeline/package.json')).dependencies['@vsa/hire-kit'] !== undefined, 'the Pipeline hires through packages/hire-kit');
+  assert.equal(buyer.includes('never touched'), false, 'the words of before');
   assert.ok(funds.includes('The Foundation supplies two keys with their collateral and float. Nobody pastes either key into a chat.'));
   assert.ok(funds.includes('Two transfers, because a wallet supplied in one transfer can have its collateral spent as change by an ordinary transaction.'));
   assert.ok(buyer.includes('the OCR hops at about 2.2 net per page (price 0.2, supplier bond 1, fees about 1) plus the chat hop at about the same, so about 13 net for a job of five pages, against its price of 5.'));
@@ -3398,7 +3404,7 @@ test('Advocate RUNBOOK: the twenty-one sections in order, the seventeen steps ke
   for (const part of [
     'This is [RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md), the runbook of Audio Snippets, written for Advocate.', 'step N here is step N there',
     '- **Two keys, and two API keys.**', '- **A token on the service, as for the Pipeline and Audio Snippets.**', '- **A window of 8 min.**', '`max_processing_ms` is 480000', '`SERVICE_TIMEOUT_MS` is 360000', '300000 ms (300 s)',
-    'the search gets at most 15 s of it and the pages at most 45 s; the waits of the hire of the chat supplier stop 95 s before the deadline, so that the call through OpenRouter still has its 90 s when the hire fails by then; a send or a poll under way then is not cut and can end the hire as late as about 280 s.',
+    'the search gets at most 15 s of it and the pages at most 45 s; the waits of the hire of the chat supplier stop 95 s before the deadline, so that the call through OpenRouter still has its 90 s when the hire fails by then; a send or a poll under way then is not cut and can end a hire that fails as late as about 280 s.',
     'A hire in its Accept at the deadline runs on.', 'because a job can take as long as the runtime\'s fetch waits on silence, 300 s (step 13)',
     'because the network is shared with other stacks and a job posts an escrow from the buyer wallet',
     'The service holds a second, separate key, the buyer key, which posts the escrow of the one chat sub-job of a job, so that its Posts and the supplier key\'s Claims never contend for the same outputs',
@@ -4330,6 +4336,7 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
     ['the stranded store could not mark the Accept of the chat sub-job', 'inference', 'the stranded store could not mark the Accept of the chat sub-job at accept'],
     ['accept it again by hand at once, within 600 s of its Submit', 'inference', 'accept it again by hand at once, within 600 s of its Submit'],
     ['`janitor: kept <escrow>: Submitted: its Accept <tx> may still land until <time>`', 'janitor', 'Submitted: its Accept ${pending.tx_hash} may still land until ${iso(pending.valid_to)}'],
+    ["`janitor: kept <escrow>: Submitted: its Accept <tx> did not land by <time> and the accept window may be over; lost to its supplier's release from <time> at the latest`", 'janitor', "; lost to its supplier's release from ${iso(lostAfter)} at the latest"],
     ['`escrow <escrow> was accepted for the brief in <tx> and could not be removed from the stranded store (<error>); ...`', 'hire', 'was accepted for ${job.label} in ${accepted.txHash} and could not be removed from the stranded store (${errorText(err)}); the janitor drops it once it reads it spent'],
     ['`janitor: reclaimed <escrow>: ...`', 'janitor', 'janitor: ${action.action} ${action.escrow_ref}: ${action.note}'],
     ['`janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest`', 'janitor', 'Submitted: it cannot be reclaimed, and its supplier may release it from ${iso(lostAfter)} at the latest'],
@@ -4396,6 +4403,16 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
   const removal = rows.find((r) => r.startsWith('| `escrow <escrow> was accepted for the brief in <tx>')) ?? '';
   assert.ok(removal.includes('It is the one write of the file after a Post that fails no job: the job stands, and the service goes on posting escrows.') && sources.hire.includes('// The one write of the store that does not fail the run (ruling R62)'));
   assert.ok(sources.inference.includes("const BRIEF_LABEL = 'the brief';"), 'the job of the line is the brief');
+  // The Next step of the R62 row and of the row of an Accept that may still land, whole (the review of Plan E2). The entry the removal of R62 leaves behind has no mark, so the janitor reads it
+  // only from 5 s after its deliver_by (packages/hire-kit/src/janitor.ts); the hand Accept is made while the escrow reads Submitted with time left in the window.
+  const nextStep = (r) => (r.split(' | ')[2] ?? '').replace(/ \|$/, '');
+  assert.equal(nextStep(removal), 'Nothing for the escrow: the janitor drops its entry once two passes in a row, from 5 s after its `deliver_by`, find the escrow settled. Look at the disk and at the volume, as in the row above: the next write that fails after a Post fails its job.');
+  assert.equal(nextStep(landing), 'Wait for it as for an escrow not yet due: once the Accept lands, the escrow is settled and the janitor drops its entry. If it has not landed with time left in the window, accept the escrow again by hand within 600 s of its Submit (`vector_build_marketplace_accept`, signed as the manual reclaim of the `store_write_failed` row is; an escrow is accepted once, so a second Accept fails if the first lands). After `<time>`, if it is still Submitted, the janitor records it as lost and its supplier may release it.');
+  assert.ok(sources.janitor.includes("if (entry.accept_pending === undefined) {\n    const due = entry.deliver_by + JANITOR_GRACE_MS;\n    if (now < due) return did('waiting', `due at ${iso(due)}`);\n  }"), 'an entry with no mark is read from 5 s after its deliver_by');
+  assert.ok(sources.hire.includes('try { deps.stranded.remove(post.escrowRef); } catch (err) {'), 'the removal of R62 changes nothing in the entry it could not remove');
+  // The end of a hire the deadline row gives is the one of a hire that fails, as on the page (Time) and in the head of the runbook: a hire that is verified ends in its Accept. The sentence of
+  // the row is held whole, with the numbers of the code, below.
+  assert.equal(table.includes('can end the hire as late as'), false, 'the words of before');
   // The characters of an entry of LLM_MODEL_ALLOWLIST are those the start takes (src/server.ts).
   const allowRow = rows.find((r) => r.includes('`environment variable LLM_MODEL_ALLOWLIST must be a comma-separated list of models`')) ?? '';
   assert.ok(allowRow.includes('or an entry that is not letters, digits, dots, underscores, colons, slashes and hyphens alone.') && sources.server.includes('each of letters, digits, dots, underscores, colons, slashes and hyphens only, and its entry'), 'the characters of an entry');
@@ -4442,7 +4459,7 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
   assert.ok(deadline.includes(`The job ran out of its time: ${L.JOB_DEADLINE_MS} ms after its request arrived.`));
   assert.ok(deadline.includes(`OpenRouter is given the time left less ${sec(L.RESULT_RESERVE_MS)} s, ${sec(L.MODEL_MAX_MS)} s at most, and when it was given the whole ${sec(L.MODEL_MAX_MS)} s the same silence is \`model_failed\`.`));
   assert.ok(read('packages/buyer-core/src/fleet-clients.ts').includes('const SEND_TIMEOUT_MS = 75_000;'));
-  assert.ok(deadline.includes(`The waits of the hire of a chat supplier stop ${sec(L.hopEnd)} s before the deadline, so a fallback after a hire that failed then has its ${sec(L.MODEL_MAX_MS)} s, but a send or a poll under way at that moment is not cut and can end the hire as late as about ${sec(L.JOB_DEADLINE_MS - L.hopEnd + 75_000)} s, and a receipt that failed its check late, up to ${sec(L.receiptEnd)} s before the deadline, leaves the fallback ${sec(L.MODEL_MIN_MS)} s at the least.`));
+  assert.ok(deadline.includes(`The waits of the hire of a chat supplier stop ${sec(L.hopEnd)} s before the deadline, so a fallback after a hire that failed then has its ${sec(L.MODEL_MAX_MS)} s, but a send or a poll under way at that moment is not cut and can end a hire that fails as late as about ${sec(L.JOB_DEADLINE_MS - L.hopEnd + 75_000)} s, and a receipt that failed its check late, up to ${sec(L.receiptEnd)} s before the deadline, leaves the fallback ${sec(L.MODEL_MIN_MS)} s at the least.`));
   assert.ok(deadline.includes(`The job also fails this way when it has under ${A_MODEL_TIME.startWith} s left at the time the model was to start.`));
   assert.ok(deadline.includes('`inference: marketplace <code> at <stage>, falling back` says where the hire ended'));
   assert.ok(deadline.includes(`\`model: OpenRouter did not answer within <n> ms\` before \`job failed after <ms> ms: deadline (422)\` is the silent model, with an \`<n>\` under ${L.MODEL_MAX_MS} (with ${L.MODEL_MAX_MS} the job fails as \`model_failed\`).`));
@@ -4480,6 +4497,51 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
     "`docker exec advocate-service node -e \"fetch('https://example.org/').then((r) => console.log(r.status))\"` prints 200",
   ]) assert.ok(table.includes(part), `the table has: ${part}`);
   assert.doesNotMatch(table, /`network [a-z0-9_.-]+ declared as external/, 'the table names no network');
+});
+
+// The line of an Accept that did not land by the end of its validity (packages/hire-kit/src/janitor.ts): the janitor prints it once, at its first pass after that end, and records the escrow as
+// lost; the entry then has no mark, waits for its deliver_by as any unmarked entry does, and from 5 s after it gets the line of a Submitted escrow that nothing can settle. Run here through the
+// kit itself, against a stand-in of the chain on which the escrow stays Submitted, and held to the row of the table.
+test('Advocate RUNBOOK failure table: the row of an Accept that did not land by the end of its validity, whole, beside the row of an Accept that may still land; the janitor of the kit prints its line once, then waits for the deliver_by and gives the line of a Submitted escrow', () => {
+  const rows = section(aRunbook, 'If something goes wrong').split('\n').filter((l) => l.startsWith('| '));
+  const LINE = "janitor: kept <escrow>: Submitted: its Accept <tx> did not land by <time> and the accept window may be over; lost to its supplier's release from <time> at the latest";
+  const at = rows.findIndex((r) => r.startsWith(`| \`${LINE}\` |`));
+  assert.ok(at > 0, 'the row is there');
+  assert.ok(rows[at - 1].startsWith('| `janitor: kept <escrow>: Submitted: its Accept <tx> may still land until <time>` |'), 'right after the row of an Accept that may still land');
+  const [, meaning, next] = rows[at].split(' | ');
+  assert.equal(meaning, 'The Accept of the row above was not seen landing by the end of its validity, the first `<time>`, and the escrow still reads Submitted, so the window for an Accept may be over (on the real chain, where an Accept is valid to the end of the window, it is): the janitor records the escrow as lost, and its supplier may release it from the second `<time>` at the latest. The line is printed once, at the first pass after the first `<time>`. The entry then waits for its `deliver_by` like an unmarked one, and from 5 s after it gets the line `janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest` (its row, above).');
+  assert.equal(next, 'Nothing to do: the lock goes to the supplier when it releases. |');
+  assert.ok(rows.slice(0, at).some((r) => r.startsWith('| `janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest` |')), 'the row of the line it gets then, above');
+  // The code that writes the line and records the escrow as lost, and the vendored Accept, valid to the end of the window.
+  const janitor = read('packages/hire-kit/src/janitor.ts');
+  for (const part of [
+    'const notLanded = `Submitted: its Accept ${pending.tx_hash} did not land by ${iso(pending.valid_to)}`;',
+    'store.update(ref, { accept_pending: undefined, lost_to_release_after: lostAfter });',
+    "return did('kept', `${notLanded}${why}; lost to its supplier's release from ${iso(lostAfter)} at the latest`);",
+    "if (now >= entry.posted_at + ACCEPT_WINDOW_MS) return lost(' and the accept window may be over');",
+  ]) assert.ok(janitor.includes(part), `the janitor writes: ${part}`);
+  assert.ok(read('packages/buyer-core/src/vendored/mcp/marketplace-build.ts').includes('const validTo = datum.submitted_at + ACCEPT_WINDOW_MS;'), 'on the real chain an Accept is valid to the end of the window');
+  // Through the kit: an escrow posted at 0 whose Accept was sent and is valid to 700 s (its Submit at 100 s), with a deliver_by of 63 minutes; the chain reads it Submitted throughout.
+  const [seen] = inAdvocate(
+    "import { mkdtempSync, rmSync } from 'node:fs'; import { tmpdir } from 'node:os'; import { join } from 'node:path'; " +
+    "import { JANITOR_GRACE_MS, StrandedStore, startJanitor } from '@vsa/hire-kit'; " +
+    "const dir = mkdtempSync(join(tmpdir(), 'advocate-unlanded-')); const ref = `${'4'.repeat(64)}#0`; const tx = '5'.repeat(64); const validTo = 700_000; const due = 3_780_000; " +
+    "try { const store = new StrandedStore(dir); const accepts = []; " +
+    "store.add({ escrow_ref: ref, deliver_by: due, posted_at: 0, kind: 'llm', accept_pending: { tx_hash: tx, valid_to: validTo, by: 'run' } }); " +
+    "const chain = { escrowState: async () => 'Submitted', reclaim: async () => { throw new Error('no Reclaim of a Submitted escrow'); }, accept: async (r) => { accepts.push(r); throw new Error('no Accept here'); } }; " +
+    "const pass = async (now) => { const lines = []; await startJanitor(store, chain, 60_000, { clock: () => now, log: (l) => lines.push(l) }).stop(); return lines; }; " +
+    "const seen = { before: await pass(validTo - 1), first: await pass(validTo), next: await pass(validTo + 60_000), lastWait: await pass(due + JANITOR_GRACE_MS - 1), due: await pass(due + JANITOR_GRACE_MS), " +
+    "entry: store.get(ref), accepts, ref, tx, times: [new Date(validTo).toISOString(), new Date(due + 600_000).toISOString()] }; " +
+    "console.log(JSON.stringify([seen])); } finally { rmSync(dir, { recursive: true, force: true }); }",
+    null,
+  );
+  const template = (line) => line.replaceAll(seen.ref, '<escrow>').replaceAll(seen.tx, '<tx>').replaceAll(seen.times[0], '<time>').replaceAll(seen.times[1], '<time>');
+  assert.deepEqual(seen.before.map(template), ['janitor: kept <escrow>: Submitted: its Accept <tx> may still land until <time>'], 'before the end of its validity: the row above');
+  assert.deepEqual(seen.first.map(template), [LINE], 'at the first pass after it: this row, once');
+  assert.ok(seen.first[0].includes(`did not land by ${seen.times[0]} `) && seen.first[0].endsWith(`release from ${seen.times[1]} at the latest`), 'the end of its validity, then its deliver_by and 600 s');
+  assert.deepEqual([seen.next, seen.lastWait], [[], []], 'then no line: the entry waits for its deliver_by like an unmarked one');
+  assert.deepEqual(seen.due.map(template), ['janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest'], 'from 5 s after its deliver_by: the line of a Submitted escrow');
+  assert.deepEqual([seen.entry.accept_pending, seen.entry.lost_to_release_after, seen.accepts], [undefined, 3_780_000 + 600_000, []], 'the mark is gone, the escrow is lost from the deliver_by and 600 s, and no Accept is made again');
 });
 
 test('Advocate RUNBOOK: the four corrections of the run of Audio Snippets are in it: the hash script on the machine of the operator, the traceback of setup-venv.sh and the two checks, the comment line of the copied install script, and the collateral paragraph', () => {

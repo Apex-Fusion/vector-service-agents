@@ -517,7 +517,8 @@ describe('specs/advocate.md, pinned further', () => {
     // An Accept sent and not seen confirmed may land to the end of the accept window, which is its validity (the vendored planAccept): the janitor follows it while it
     // may land, and the operator accepts the escrow again by hand while it reads Submitted, within the window, whether the mark was written or not, as the detail
     // of the log says when it was not.
-    expect(how).toContain(`the janitor follows it while it may land, and if it is still Submitted then, the operator accepts it again by hand within ${ACCEPT_WINDOW_MS / 1000} s of its Submit; an escrow is accepted once, so a second Accept fails if the first lands, and after the ${ACCEPT_WINDOW_MS / 1000} s its supplier may Release it.`);
+    expect(how).toContain(`the janitor follows it while it may land, and while it still reads Submitted with time left in the window, the operator accepts it again by hand within ${ACCEPT_WINDOW_MS / 1000} s of its Submit; an escrow is accepted once, so a second Accept fails if the first lands, and after the ${ACCEPT_WINDOW_MS / 1000} s its supplier may Release it.`);
+    expect(how).not.toContain('if it is still Submitted then');
     expect(how).toContain('Only a mark that cannot be written fails the job, with `store_write_failed`: the escrow then stays recorded as Submitted, its Accept may still land, and the operator reads it on chain at once and, while it is still Submitted, accepts it again by hand the same way.');
     expect(readFileSync(new URL('../../../packages/buyer-core/src/vendored/mcp/marketplace-build.ts', import.meta.url), 'utf8')).toContain('const validTo = datum.submitted_at + ACCEPT_WINDOW_MS;');
     expect(how).not.toContain('can no longer land');
@@ -532,7 +533,8 @@ describe('specs/advocate.md, pinned further', () => {
     expect([fleetClients.includes('const SEND_TIMEOUT_MS = 75_000;'), fleetClients.includes('const POLL_CALL: Call = { maxResponseBytes: ANSWER_BYTES, timeoutMs: 20_000 };')]).toStrictEqual([true, true]);
     const latestEnd = hopDeadlineMs(JOB_DEADLINE_MS) + 75_000;
     expect([latestEnd, modelBudgetMs(JOB_DEADLINE_MS - latestEnd), modelBudgetMs(MODEL_MIN_MS + RESULT_RESERVE_MS - 1)]).toStrictEqual([280_000, MODEL_MIN_MS, null]);
-    expect(how).toContain(`A send, a poll or a read of the chain under way at the end of the hire is not cut (a send waits up to 75 s for the supplier's Claim, a poll up to 20 s), so a hire can end as late as about ${latestEnd / 1000} s; the call through OpenRouter then has what is left, and with under ${(MODEL_MIN_MS + RESULT_RESERVE_MS) / 1000} s left the job answers \`deadline\` (422).`);
+    // The latest end is that of a hire that fails: one that is verified ends in its Accept, which the deadline does not cut.
+    expect(how).toContain(`A send, a poll or a read of the chain under way at the end of the hire is not cut (a send waits up to 75 s for the supplier's Claim, a poll up to 20 s), so a hire that fails can end as late as about ${latestEnd / 1000} s; the call through OpenRouter then has what is left, and with under ${(MODEL_MIN_MS + RESULT_RESERVE_MS) / 1000} s left the job answers \`deadline\` (422).`);
     expect(how).toContain(`the chain waits for each of them, up to ${DELIVER_BY_BUFFER_MS / 1000} s, whatever the time`);
     expect(how).toContain(`its whole ${MODEL_MAX_MS / 1000} s after a hire that failed when its waits stopped, ${FALLBACK_RESERVE_MS / 1000} s before the deadline, at least ${MODEL_MIN_MS / 1000} s after a receipt that failed its check by ${(JOB_DEADLINE_MS - receiptByMs(JOB_DEADLINE_MS)) / 1000} s before the deadline, and what is left after a call that ran on past either (Time, above).`);
     expect(modelBudgetMs(JOB_DEADLINE_MS - receiptByMs(JOB_DEADLINE_MS))).toBe(MODEL_MIN_MS);

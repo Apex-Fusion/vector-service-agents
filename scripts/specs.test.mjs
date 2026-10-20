@@ -1854,3 +1854,19 @@ test('docs/HIRE.md and docs/E2E.md: the window and the reclaim time of the guide
   assert.ok(section(doc('E2E.md'), 'Hiring Advocate').includes("- `E2E_POLL_MS=10000`: a job takes up to 300 s, its deadline, and longer when the hire of its chat supplier is in its Accept then (the runtime gives up at 360 s), where Agent History's takes seconds, and the default pause of 5 s would ask the hosted server about 96 times in the 8 min window."));
   assert.equal(guide.match(/up to 150 s|5 min plus 180 s/), null, 'the words of before the wider window');
 });
+
+// ---- The sentences of the review of Plan E2 ----
+// The Document Pipeline hires through packages/hire-kit, on packages/buyer-core, since the merge of 2026-10-19, and its service signs no receipt: its buyer key signs only the transactions of its
+// sub-jobs. The row of its runbook that says how the 5 alone of that key is held back is held in scripts/deploy.test.mjs. Nothing else of the Pipeline changes with them.
+test('specs/document-pipeline.md: the code of its hire is packages/hire-kit on packages/buyer-core since the merge of 2026-10-19, and its service signs no receipt, its buyer key only the transactions of its sub-jobs', () => {
+  const text = read('document-pipeline');
+  const how = (section(text, 'Interface').split('\n### How it buys\n')[1] ?? '').split('\n### ')[0];
+  assert.ok(how.includes('\n**Where the code is.** The sub-hire code is in `packages/hire-kit` in this repository, on `packages/buyer-core`, since the merge of 2026-10-19. It uses the same datum codecs, builders and receipt verifier as the MCP server: they are vendored from it,'));
+  assert.ok(section(text, 'What the receipt commits to').startsWith('\nThe service signs no receipt: its buyer key signs only the transactions of its sub-jobs. The runtime builds and signs the receipt, and submits its hash in the Submit transaction.\n'));
+  assert.equal(text.match(/The sub-hire code is in `packages\/buyer-core`|The service signs nothing\./), null, 'the sentences of before the merge of 2026-10-19');
+  // The code: the service hires through the kit, which stands on buyer-core, and the kit holds the hire and its janitor.
+  const pkg = (dir) => JSON.parse(readFileSync(new URL(`../${dir}/package.json`, import.meta.url), 'utf8'));
+  assert.ok(pkg('agents/document-pipeline').dependencies['@vsa/hire-kit'] && pkg('packages/hire-kit').dependencies['@vsa/buyer-core'], 'the Pipeline depends on the kit, and the kit on buyer-core');
+  assert.ok(readFileSync(new URL('../agents/document-pipeline/src/hire.ts', import.meta.url), 'utf8').includes("import { hireOne } from '@vsa/hire-kit';"), 'the hire of a sub-job is the kit\'s');
+  for (const file of ['hire.ts', 'janitor.ts']) assert.ok(existsSync(new URL(`../packages/hire-kit/src/${file}`, import.meta.url)), file);
+});
