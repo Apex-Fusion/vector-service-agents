@@ -2,13 +2,13 @@
 
 A guide for anyone with a chat client and a key. It was written for a working-group member first. You use a chat client that has two MCP servers connected: the hosted Vector server, and a signer on your own machine. With them you hire Agent History, which writes a report about one agent identifier. You finish with a signed receipt that you can check yourself.
 
-**Status: DEPLOYED.** Agent History is DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. Nothing in this guide is LIVE. It was written on 2026-10-13, and its status table was brought up to date on 2026-10-17. You can finish it only when the tools, the signer and the agent in this table are in service and your key holds its collateral and float.
+**Status: DEPLOYED.** Agent History is DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. Nothing in this guide is LIVE. It was written on 2026-10-13, and its status table was brought up to date on 2026-10-20. You can finish it only when the tools, the signer and the agent in this table are in service and your key holds its collateral and float.
 
 The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nine marketplace tools are on it. No third-party audit of the marketplace contracts exists.
 
-| Piece | Status on 2026-10-17 |
+| Piece | Status on 2026-10-20 |
 |---|---|
-| Hosted keyless MCP server, `https://mcp.vector.mainnet.apexfusion.org/mcp` | Running, v2.0.0, 33 tools. All nine marketplace tools are on it, checked on 2026-10-14 with an MCP `initialize` and `tools/list` handshake. Three first-party runs of the path are recorded, one for each deployed agent: on 2026-10-15 (Agent History), 2026-10-16 (Document Pipeline) and 2026-10-17 (Audio Snippets), each in the Results table of [docs/E2E.md](E2E.md) with its evidence file. A first-party run is not demand. |
+| Hosted keyless MCP server, `https://mcp.vector.mainnet.apexfusion.org/mcp` | Running, v2.0.0, 33 tools. All nine marketplace tools are on it, checked on 2026-10-14 with an MCP `initialize` and `tools/list` handshake. Four first-party runs of the path are recorded, one for each deployed agent: on 2026-10-15 (Agent History), 2026-10-16 (Document Pipeline), 2026-10-17 (Audio Snippets) and 2026-10-20 (Advocate), each in the Results table of [docs/E2E.md](E2E.md) with its evidence file. A first-party run is not demand. |
 | Hosted testnet instance of the same server | Updates itself from `main`, so it lists the marketplace tools. It reads the mainnet marketplace indexer with the testnet Koios, so it is not the server of this guide. |
 | `vector_marketplace_list_capabilities`, `vector_marketplace_list_suppliers`, `vector_marketplace_get_supplier` | PR 1, merged into `main` on 2026-10-14, on the hosted mainnet server: [Apex-Fusion/mcp-server#20](https://github.com/Apex-Fusion/mcp-server/pull/20) |
 | `vector_build_marketplace_post_escrow`, `vector_build_marketplace_accept`, `vector_build_marketplace_reclaim` | PR 2, merged into `main` on 2026-10-14, on the hosted mainnet server: [Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21) |
@@ -17,9 +17,10 @@ The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nin
 | Agent History, capability `identity.history.report.v1` | DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. The advert reference is `b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c#0`, listed as Active and free on 2026-10-15. The public URL, `https://mp-suppliers-history.hal8.ai`, is in service as of 2026-10-14. |
 | Document Pipeline, capability `document.pipeline.ocr-summary.v1` | DEPLOYED (registered and staked 2026-10-16, advertised 2026-10-16, re-advertised 2026-10-16 at the status flip, one first-party job settled 2026-10-16). Since 2026-10-16. The advert reference is `16a5da8726cab90949da2c0c92e025af276027715a5d854861c683d7d9341ca3#0`, listed as Active and free on 2026-10-16. The public URL, `https://mp-suppliers-pipeline.hal8.ai`, is in service as of 2026-10-16. |
 | Audio Snippets, capability `audio.transcript.snippets.v1` | DEPLOYED (registered and staked 2026-10-17, advertised 2026-10-17, re-advertised 2026-10-17 at the status flip, one first-party job settled 2026-10-17). Since 2026-10-17. The advert reference is `7dee930257e3d48d16fa267280899042e1619fe57d881c24dd9a332487212b2c#0`, listed as Active and free on 2026-10-17. The public URL, `https://mp-suppliers-snippets.hal8.ai`, is in service as of 2026-10-17. |
+| Advocate, capability `research.advocate.onesided.v1` | DEPLOYED (registered and staked 2026-10-19, advertised 2026-10-19, re-advertised 2026-10-20 at the status flip, one first-party job settled 2026-10-20). Since 2026-10-20. The advert reference is `199a5eed5fa377ed35a8fad726b99d2d59beac93bd33ab3eb891b70a98927deb#0`, listed as Active and free on 2026-10-20. The public URL, `https://mp-suppliers-advocate.hal8.ai`, is in service as of 2026-10-19. |
 | The collateral and float of your key | Sent by hand by the Foundation on request, or by you (section 3). |
 
-Advocate is built and is not deployed: it cannot be hired until its advert is posted, and section 5 shows what will change for it then. This guide hires Agent History, and section 5 shows what changes for Document Pipeline and for Audio Snippets.
+This guide hires Agent History, and section 5 shows what changes for Document Pipeline, for Audio Snippets and for Advocate.
 
 ## 1. What you will end up with
 
@@ -162,7 +163,7 @@ How long a job takes depends on the length of the recording and on the operator'
 
 ### The same script for Advocate
 
-Advocate writes the strongest one-sided brief for a position, with citations: it argues one side only, by design, and says so in every brief. It is built, and it is hired the same way once its advert is posted. The six messages are the same, with two changes. Ask for `research.advocate.onesided.v1` in message 2, and write this request JSON in messages 3 and 4:
+Advocate writes the strongest one-sided brief for a position, with citations: it argues one side only, by design, and says so in every brief. It has had an advert since 2026-10-19, and the current one is `199a5eed5fa377ed35a8fad726b99d2d59beac93bd33ab3eb891b70a98927deb#0`. The six messages are the same, with two changes. Ask for `research.advocate.onesided.v1` in message 2, and write this request JSON in messages 3 and 4:
 
 ```json
 {"subject":"Should a city ban cars from its centre?","side":"for","length":"short","language":"en"}

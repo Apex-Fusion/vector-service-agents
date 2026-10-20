@@ -165,9 +165,9 @@ export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
       data_handling: DATA_HANDLING,
       third_parties: [...THIRD_PARTIES],
     },
-    // Absent or empty means proposed since 2026-10-13, the word and the day of the spec page. A word above proposed is the operator's to set, by
-    // AGENT_STATUS_CHIP, once it is true.
-    status: { chip: statusChip(env.AGENT_STATUS_CHIP, 'proposed'), since: statusSince(env.AGENT_STATUS_SINCE, '2026-10-13') },
+    // Absent or empty means deployed since 2026-10-20, the word and the day of RUNBOOK-advocate step 17. A first run, before any job has settled, sets
+    // proposed in the env file (step 4). A word above deployed is the operator's to set, by AGENT_STATUS_CHIP, once it is true.
+    status: { chip: statusChip(env.AGENT_STATUS_CHIP, 'deployed'), since: statusSince(env.AGENT_STATUS_SINCE, '2026-10-20') },
     gaps: [...gapsFor(marketModel, fallbackModel)],
     links: { spec: SPEC_URL, source: SOURCE_URL, explorer_advert: env.ADVERT_EXPLORER_URL ?? '' },
   };

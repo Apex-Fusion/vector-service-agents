@@ -676,7 +676,7 @@ describe('src/index.ts as a process', () => {
       const base = `http://127.0.0.1:${port}`;
       expect(await (await fetch(`${base}/healthz`)).json()).toStrictEqual({ ok: true });
       const manifest = await (await fetch(`${base}/agent.json`)).json();
-      expect([manifest.status, manifest.keys.buyer_pkh]).toStrictEqual([{ chip: 'proposed', since: '2026-10-13' }, BUYER.pkh]);
+      expect([manifest.status, manifest.keys.buyer_pkh]).toStrictEqual([{ chip: 'deployed', since: '2026-10-20' }, BUYER.pkh]);
       expect((await fetch(`${base}/`, { method: 'POST', body: wire(GOLDEN_REQUEST) })).status).toBe(401);
       for (const secret of [TEST_AUTH, TEST_BRAVE_KEY, TEST_OPENROUTER_KEY, KEY]) expect(shows(p.out() + p.err(), secret)).toBe(false);
       expect(TEST_CONTACT).toBe('ops@example.test');

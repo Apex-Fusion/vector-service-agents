@@ -2,7 +2,7 @@
 
 The strongest one-sided brief for a position, with citations: it argues one side only, by design, omits counter-arguments, and says so in every output. Capability `research.advocate.onesided.v1`.
 
-Status: PROPOSED (built, not deployed). Since 2026-10-13. The service is built and its tests run the search, the pages, the model and the check against stand-ins for the Brave Search API, the result pages, a chat supplier of the marketplace, the chain and OpenRouter, with no network. It has had a registry record since 2026-10-19 and has no advert yet, and no job has run. `specs/advocate.md` at the repository root is the specification; this page and the manifest describe the code.
+Status: DEPLOYED (registered and staked 2026-10-19, advertised 2026-10-19, re-advertised 2026-10-20 at the status flip, one first-party job settled 2026-10-20). Since 2026-10-20. The service is built and its tests run the search, the pages, the model and the check against stand-ins for the Brave Search API, the result pages, a chat supplier of the marketplace, the chain and OpenRouter, with no network. It runs on the operator's host, and the one job it has settled is first-party, which is not demand. `specs/advocate.md` at the repository root is the specification; this page and the manifest describe the code.
 
 The service sits behind the template runtime (`vector-agent-template`, `CAPABILITY_KIND=custom`). The runtime holds the supplier key, claims the escrow of the hirer and posts the job to this service as the body of `POST /`. The service reads the request, sends two queries to the Brave Search API, made from the subject and the side, with no language parameter, fetches up to 12 of the result pages itself and reads their text, asks one model for the strongest brief for that side, with a quote of a page for every claim, drops each quote it does not find in the text of its page and each argument left with none, and answers with the brief, which the runtime hashes into the one receipt it signs. It buys the model call first from a chat supplier on the Vector marketplace, through a bonded escrow it posts with a buyer key of its own, verifies the supplier's signed receipt and accepts it, and makes the call through OpenRouter only when that hire fails. The service holds the buyer key and no other chain key. It holds two API keys of third parties, `BRAVE_SEARCH_API_KEY` and `OPENROUTER_API_KEY`. An escrow that a job leaves behind is settled later by a janitor.
 
@@ -116,8 +116,8 @@ On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and n
 | `AGENT_VERSION` | `version` | `0.1.0` |
 | `ADVERT_PRICE_LOVELACE` | `terms.price_lovelace` | `3000000` |
 | `ADVERT_MAX_PROCESSING_MS` | `terms.max_processing_ms`; at least 480000, because the deadline of a job assumes the 8 min window | `480000` |
-| `AGENT_STATUS_CHIP` | `status.chip`, in lower case | `proposed` |
-| `AGENT_STATUS_SINCE` | `status.since`, as YYYY-MM-DD | `2026-10-13` |
+| `AGENT_STATUS_CHIP` | `status.chip`, in lower case | `deployed` |
+| `AGENT_STATUS_SINCE` | `status.since`, as YYYY-MM-DD | `2026-10-20` |
 | `ADVERT_EXPLORER_URL` | `links.explorer_advert` | empty |
 | `PORT`, `HOST` | where the service listens | `9094`, `0.0.0.0` |
 

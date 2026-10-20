@@ -86,7 +86,7 @@ const HOME_PATH = /C:[\\/]Users[\\/]|[\\/](Users|home)[\\/][A-Za-z]/;
 const PIPELINE_FILES = ['deploy/host/docker-compose.document-pipeline.yml', 'deploy/host/.env.document-pipeline.example', 'deploy/host/Caddyfile.document-pipeline.snippet', 'deploy/host/RUNBOOK-document-pipeline.md'];
 // Audio Snippets is DEPLOYED since 2026-10-17: its four deploy files, read by the tests of the status words and of its stack.
 const S_FILES = ['deploy/host/docker-compose.audio-snippets.yml', 'deploy/host/.env.audio-snippets.example', 'deploy/host/Caddyfile.audio-snippets.snippet', 'deploy/host/RUNBOOK-audio-snippets.md'];
-// Advocate is PROPOSED (built, not deployed) since 2026-10-13: its four deploy files, read by the tests of the status words and of its stack.
+// Advocate is DEPLOYED since 2026-10-20: its four deploy files, read by the tests of the status words and of its stack.
 const A_FILES = ['deploy/host/docker-compose.advocate.yml', 'deploy/host/.env.advocate.example', 'deploy/host/Caddyfile.advocate.snippet', 'deploy/host/RUNBOOK-advocate.md'];
 const PUBLIC_FILES = ['deploy/host/README.md', 'deploy/host/RUNBOOK.md', 'deploy/host/docker-compose.agent-history.yml', 'deploy/host/.env.agent-history.example', 'deploy/host/Caddyfile.snippet', 'agents/agent-history/Dockerfile', '.dockerignore', ...PIPELINE_FILES, 'agents/document-pipeline/Dockerfile'];
 
@@ -297,15 +297,15 @@ test('CI: the publish job runs on a push to main after the tests, logs in with G
   assert.equal(ci.jobs.test.steps.at(-1).run, 'pnpm test');
 });
 
-test('README, RUNBOOK, compose file and Caddy snippet: Agent History is DEPLOYED since 2026-10-15, the Document Pipeline since 2026-10-16 and Audio Snippets since 2026-10-17, Advocate is PROPOSED (built, not deployed), nothing is LIVE; no dash, no unit name, no person named', () => {
+test('README, RUNBOOK, compose file and Caddy snippet: Agent History is DEPLOYED since 2026-10-15, the Document Pipeline since 2026-10-16, Audio Snippets since 2026-10-17 and Advocate since 2026-10-20, nothing is LIVE; no dash, no unit name, no person named', () => {
   const STATUS = 'Status: DEPLOYED since 2026-10-15. Nothing in this folder is LIVE.';
   // The Pipeline is the second stack of the box: its section of the README and its runbook carry its own status line, DEPLOYED since 2026-10-16 (RUNBOOK-document-pipeline.md step 17).
   const P_README_STATUS = 'Status: DEPLOYED since 2026-10-16. Nothing in this section is LIVE.';
   const P_RUNBOOK_STATUS = 'Status: DEPLOYED since 2026-10-16. Nothing in this folder is LIVE.';
   // Audio Snippets is the third stack of the host, DEPLOYED since 2026-10-17 (RUNBOOK-audio-snippets.md step 17): its section of the README carries its own status line, which denies LIVE.
   const S_README_STATUS = 'Status: DEPLOYED since 2026-10-17. Nothing in this section is LIVE.';
-  // Advocate is the fourth stack of the host, PROPOSED (built, not deployed): its section of the README carries its own status line, which denies LIVE (RUNBOOK-advocate.md step 17 changes it).
-  const A_README_STATUS = 'Status: PROPOSED (built, not deployed) since 2026-10-13. Nothing in this section is LIVE.';
+  // Advocate is the fourth stack of the host, DEPLOYED since 2026-10-20 (RUNBOOK-advocate.md step 17): its section of the README carries its own status line, which denies LIVE.
+  const A_README_STATUS = 'Status: DEPLOYED since 2026-10-20. Nothing in this section is LIVE.';
   const STATUS_LINES = { 'deploy/host/README.md': [STATUS, P_README_STATUS, S_README_STATUS, A_README_STATUS], 'deploy/host/RUNBOOK.md': [STATUS], 'deploy/host/RUNBOOK-document-pipeline.md': [P_RUNBOOK_STATUS] };
   // The second line of each compose file and Caddy snippet says what happened on the box, and so does the third line of the Pipeline's env example.
   const HEADER = {
@@ -541,25 +541,22 @@ test('RUNBOOK step 17: the last item names the files that said PROPOSED about Ag
   for (const [, named] of item8.matchAll(/`([A-Za-z0-9_.\/-]+\.(?:md|yml|snippet|example|ts|mjs|template))`/g)) assert.ok(existsSync(join(root, named)), `item 8 names a file that exists: ${named}`);
 });
 
-// ---- The status words after the flips of 2026-10-15, 2026-10-16 and 2026-10-17 ----
-// Agent History, Document Pipeline and Audio Snippets are DEPLOYED. Advocate, which is built and not deployed, is PROPOSED. Nothing here is LIVE.
-// A line that says PROPOSED has to be one of the lines below, so the word cannot come back for the three that are deployed; a line that says LIVE has to deny it.
-test('status words: no file says PROPOSED about Agent History, Document Pipeline or Audio Snippets, and no file says LIVE except to deny it', () => {
-  const OTHER_AGENTS = ['specs/advocate.md'];
-  // The four deploy files of Audio Snippets and its README: since the flip of 2026-10-17 they are held to the rule as the files of the other two are.
+// ---- The status words after the flips of 2026-10-15, 2026-10-16, 2026-10-17 and 2026-10-20 ----
+// Agent History, Document Pipeline, Audio Snippets and Advocate are DEPLOYED. Nothing here is LIVE.
+// A line that says PROPOSED has to be one of the lines below, so the word cannot come back for an agent that is deployed; a line that says LIVE has to deny it.
+test('status words: no file says PROPOSED about Agent History, Document Pipeline, Audio Snippets or Advocate, and no file says LIVE except to deny it', () => {
+  // The four deploy files of Audio Snippets and of Advocate, and their READMEs: since the flips of 2026-10-17 and 2026-10-20 they are held to the rule as the files of the other two are.
   const SNIPPETS_FILES = [...S_FILES, 'agents/audio-snippets/README.md'];
-  // Advocate is built and PROPOSED until step 17 of its runbook: its four deploy files and its README say the word in their status lines and their instructions.
   const ADVOCATE_FILES = [...A_FILES, 'agents/advocate/README.md'];
-  // What may still say PROPOSED outside the spec of the agent that is PROPOSED: its row in the table of the root README, the rule that lists the three words,
-  // the marketplace tools in the Interface section of the spec (the tools, not the agent), and the instructions of the three runbooks that speak for the order of a first run.
+  // What may still say PROPOSED: the rule that lists the three words, the marketplace tools in the Interface section of a spec (the tools, not the agent), and the instructions of the four
+  // runbooks that speak for the order of a first run.
   const PROPOSED_OK = {
-    'README.md': [/^\| Advocate \| `[a-z.0-9-]+` \| PROPOSED \|$/],
-    'deploy/host/README.md': [/^Status: PROPOSED \(built, not deployed\) since 2026-10-13\. Nothing in this section is LIVE\. Steps 1 to 10 of its runbook were run on 2026-10-18 and 2026-10-19 /],
     'agents/agent-history/README.md': [/`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./],
     'specs/agent-history.md': [/^The marketplace MCP tools \(PROPOSED\) and the template's buyer, /],
     'deploy/host/RUNBOOK.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about Agent History/],
     'deploy/host/RUNBOOK-document-pipeline.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about the Document Pipeline/],
     'deploy/host/RUNBOOK-audio-snippets.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about Audio Snippets/],
+    'deploy/host/RUNBOOK-advocate.md': [/The status word stays PROPOSED until step 17\./, /change every file that says PROPOSED about Advocate/],
   };
   // What may say LIVE: the sentence that denies it, and the rule that lists the three words.
   const LIVE_OK = [/Nothing (on this page|in this guide|in this folder|in this section) is LIVE( or DEPLOYED)?\./, /`AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case\./];
@@ -567,7 +564,7 @@ test('status words: no file says PROPOSED about Agent History, Document Pipeline
   for (const f of ['specs/agent-history.md', 'specs/advocate.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md', 'deploy/host/RUNBOOK.md', 'deploy/host/README.md', 'deploy/host/docker-compose.agent-history.yml', 'deploy/host/Caddyfile.snippet', 'deploy/host/.env.agent-history.example', 'agents/agent-history/agent.json.template', ...PIPELINE_FILES, ...SNIPPETS_FILES, ...ADVOCATE_FILES, 'agents/advocate/agent.json.template']) assert.ok(files.includes(f), `${f} is walked`);
   for (const f of files) {
     const lines = read(f).split('\n');
-    if (!OTHER_AGENTS.includes(f) && !ADVOCATE_FILES.includes(f)) for (const line of lines.filter((l) => /\bPROPOSED\b/.test(l))) assert.ok((PROPOSED_OK[f] ?? []).some((re) => re.test(line)), `${f} says PROPOSED: ${line.slice(0, 110)}`);
+    for (const line of lines.filter((l) => /\bPROPOSED\b/.test(l))) assert.ok((PROPOSED_OK[f] ?? []).some((re) => re.test(line)), `${f} says PROPOSED: ${line.slice(0, 110)}`);
     for (const line of lines.filter((l) => /\bLIVE\b/.test(l))) assert.ok(LIVE_OK.some((re) => re.test(line)), `${f} says LIVE: ${line.slice(0, 110)}`);
   }
   // The values the manifest and the env example carry are neither proposed nor live.
@@ -577,15 +574,17 @@ test('status words: no file says PROPOSED about Agent History, Document Pipeline
   assert.deepEqual(JSON.parse(read('agents/document-pipeline/agent.json.template')).status, { chip: 'deployed', since: '2026-10-16' });
   assert.match(read('deploy/host/.env.audio-snippets.example'), /^AGENT_STATUS_CHIP=deployed$/m);
   assert.deepEqual(JSON.parse(read('agents/audio-snippets/agent.json.template')).status, { chip: 'deployed', since: '2026-10-17' });
-  // Advocate is built and PROPOSED until step 17 of its runbook, in its spec, and its env example and its manifest carry the word proposed since 2026-10-13. Document Pipeline is DEPLOYED since 2026-10-16 and Audio Snippets since 2026-10-17, each in the line of its spec.
-  assert.match(read('specs/advocate.md'), /^PROPOSED \(built, not deployed\)\. Since 2026-10-13\.$/m);
-  assert.match(read('deploy/host/.env.advocate.example'), /^AGENT_STATUS_CHIP=proposed$/m);
-  assert.deepEqual(JSON.parse(read('agents/advocate/agent.json.template')).status, { chip: 'proposed', since: '2026-10-13' });
+  // Advocate is DEPLOYED since 2026-10-20, in the line of its spec, and its env example and its manifest carry the word deployed since that day. Document Pipeline is DEPLOYED since 2026-10-16
+  // and Audio Snippets since 2026-10-17, each in the line of its spec.
+  assert.match(read('specs/advocate.md'), /^DEPLOYED \(registered and staked 2026-10-19, advertised 2026-10-19, re-advertised 2026-10-20 at the status flip, one first-party job settled 2026-10-20\)\. Since 2026-10-20\.$/m);
+  assert.match(read('deploy/host/.env.advocate.example'), /^AGENT_STATUS_CHIP=deployed$/m);
+  assert.deepEqual(JSON.parse(read('agents/advocate/agent.json.template')).status, { chip: 'deployed', since: '2026-10-20' });
   assert.match(read('specs/audio-snippets.md'), /^DEPLOYED \(registered and staked 2026-10-17, advertised 2026-10-17, re-advertised 2026-10-17 at the status flip, one first-party job settled 2026-10-17\)\. Since 2026-10-17\.$/m);
   assert.match(read('specs/document-pipeline.md'), /^DEPLOYED \(registered and staked 2026-10-16, advertised 2026-10-16, re-advertised 2026-10-16 at the status flip, one first-party job settled 2026-10-16\)\. Since 2026-10-16\.$/m);
-  // The specs that open a line with PROPOSED are the one this test lets say it anywhere: read from the specs folder, so that a second spec, or a spec that drops the word, is seen.
+  // No spec opens a line with PROPOSED any more: read from the specs folder, so that a spec that says it again is seen.
   const proposed = readdirSync(join(root, 'specs')).filter((f) => /^PROPOSED \(/m.test(read(`specs/${f}`))).map((f) => `specs/${f}`).sort();
-  assert.deepEqual(proposed, [...OTHER_AGENTS].sort(), 'the spec that says PROPOSED is the one that may say it anywhere');
+  assert.deepEqual(proposed, [], 'no spec says PROPOSED');
+  assert.equal(readdirSync(join(root, 'specs')).filter((f) => /^DEPLOYED \(/m.test(read(`specs/${f}`))).length, 4, 'the four specs open their status line with DEPLOYED');
 });
 
 test('RUNBOOK: Back out retires the advert first with the supplier key, then stops the services, then the host administrator removes the Caddy block', () => {
@@ -1147,7 +1146,13 @@ test('Pipeline RUNBOOK collateral and float: two keys, 5 alone then 50 for the s
   assert.equal(rows.length, 2, 'two keys');
   const [supplier, buyer] = rows;
   assert.ok(supplier.startsWith("| Supplier key (the runtime's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral), then 50 units | As for Agent History:"));
-  assert.ok(buyer.startsWith("| Buyer key (the service's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral for the Accept and the Reclaim of the sub-jobs, never touched), then 100 units |"));
+  // The 5 alone is held back from every Post while the rest of the wallet covers that Post and its change, in the words of the Advocate runbook: the Pipeline posts through the same
+  // code (packages/hire-kit on packages/buyer-core, the vendored marketplace-build.ts and fleet-build.ts), which draws on the whole wallet otherwise, so the 5 is not "never touched".
+  assert.ok(buyer.startsWith("| Buyer key (the service's), generated on the box in step 4 | Two transfers to its address: exactly 5 units alone (collateral for the Accept and the Reclaim of the sub-jobs, held back from every Post while the rest of the wallet covers that Post and its change), then 100 units |"));
+  assert.ok(section(read('deploy/host/RUNBOOK-advocate.md'), 'Collateral and float').includes('(collateral for the Accept and the Reclaim of the chat sub-job, held back from every Post while the rest of the wallet covers that Post and its change)'), 'the words of the Advocate runbook');
+  assert.ok(read('packages/buyer-core/src/vendored/mcp/marketplace-build.ts').includes('return total >= lockLovelace + MARKETPLACE_MIN_FEE + MIN_UTXO_LOVELACE ? rest : undefined;'));
+  assert.ok(JSON.parse(read('agents/document-pipeline/package.json')).dependencies['@vsa/hire-kit'] !== undefined, 'the Pipeline hires through packages/hire-kit');
+  assert.equal(buyer.includes('never touched'), false, 'the words of before');
   assert.ok(funds.includes('The Foundation supplies two keys with their collateral and float. Nobody pastes either key into a chat.'));
   assert.ok(funds.includes('Two transfers, because a wallet supplied in one transfer can have its collateral spent as change by an ordinary transaction.'));
   assert.ok(buyer.includes('the OCR hops at about 2.2 net per page (price 0.2, supplier bond 1, fees about 1) plus the chat hop at about the same, so about 13 net for a job of five pages, against its price of 5.'));
@@ -2950,7 +2955,7 @@ test('the four corrections of the run of Audio Snippets: the hash script runs on
 });
 
 // ======================================================================================================================================
-// Advocate (PROPOSED, built and not deployed, since 2026-10-13): the fourth stack on the same host.
+// Advocate (DEPLOYED since 2026-10-20): the fourth stack on the same host.
 // The four files and the section of the README are held to each other, to the service code, to the spec, and to the files of Audio Snippets they follow.
 // Since Plan E2 the service buys its model call first from a chat supplier on the Vector marketplace, with a buyer key of its own and a state volume, as the
 // Pipeline does: the two-key parts are held as the Pipeline's are, above.
@@ -2983,7 +2988,7 @@ const A_ADVERT = ['ADVERT_REF', 'ADVERT_CAPABILITY_ID', 'ADVERT_MODEL', 'ADVERT_
 const A_MANIFEST = ['OPERATOR_CONTACT', 'AGENT_DID', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_EXPLORER_URL'];
 const A_HIRES = ['LLM_MODEL_ALLOWLIST'];
 const A_STEPS = ['Put the files on the host', 'Build the service image and pin it', 'Build the runtime image', 'Make the env file, generate the two keys and enter the two API keys', 'Adapt the ops scripts', 'Supply the two wallets with their collateral and float', 'Register the identity', 'Stake in Module-3', 'Start the service', 'DNS and Caddy', 'Hash the manifest', 'Post the advert', 'Start the runtime', 'Check the advert on the indexer', 'The first-party run', 'Wallet monitor', 'Flip the status'];
-const A_STATUS = 'PROPOSED (built, not deployed) since 2026-10-13';
+const A_STATUS = 'DEPLOYED since 2026-10-20';
 const ADC = 'docker compose -f docker-compose.advocate.yml';
 // The words of the content rules, built from parts so that this file does not hold them either. The two file names of the ops scripts that hold one of them
 // (payment.skey and payment.vkey, which step 7 writes) are taken out before the search: they are names, not words of the text.
@@ -3197,7 +3202,7 @@ test('Advocate env example: every name the service code reads is in the example,
   assert.deepEqual(NEEDED.filter((n) => !(n in aExample) && !(n in aAgent.environment)), []);
 });
 
-test('Advocate env example: the chain values are those of the other three, the advert terms are the spec, the endpoint is the fourth hostname, the status word is proposed since 2026-10-13, and the manifest it produces is the default one', () => {
+test('Advocate env example: the chain values are those of the other three, the advert terms are the spec, the endpoint is the fourth hostname, the status word is deployed since 2026-10-20, and the manifest it produces is the default one', () => {
   for (const name of A_CHAIN) assert.equal(aExample[name], sExample[name], name);
   assert.deepEqual([aExample.ADVERT_CAPABILITY_ID, aExample.ADVERT_MODEL], ['research.advocate.onesided.v1', 'advocate-v1']);
   assert.ok(ASPEC.includes(`The model string in the advert and in every receipt is \`${aExample.ADVERT_MODEL}\`.`));
@@ -3206,8 +3211,11 @@ test('Advocate env example: the chain values are those of the other three, the a
   assert.equal(aExample.ADVERT_ENDPOINT_URL, 'https://mp-suppliers-advocate.hal8.ai');
   assert.equal(aExample.ADVERT_DETAIL_URI, `${aExample.ADVERT_ENDPOINT_URL}/agent.json`);
   assert.ok(DESIGN.includes('`mp-suppliers-advocate.hal8.ai`'));
-  assert.deepEqual([aExample.AGENT_STATUS_CHIP, aExample.AGENT_STATUS_SINCE], ['proposed', '2026-10-13']);
-  assert.match(aExampleText, /^# The status word the manifest carries, and since when: proposed since 2026-10-13, the day the agent was specified\. Step 17 of RUNBOOK-advocate\.md \("Flip the status"\) changes both,$/m);
+  assert.deepEqual([aExample.AGENT_STATUS_CHIP, aExample.AGENT_STATUS_SINCE], ['deployed', '2026-10-20'], 'the advert is Active, one first-party job has settled and the first stop was watched (step 17), which shows that the path works and is not demand, so nothing may claim live');
+  // The comment says what the word is, who changes it, and what a first run starts with.
+  assert.match(aExampleText, /^# The status word the manifest carries, and since when: deployed since 2026-10-20, after the advert was Active, a first-party job had settled and the first stop had been watched \(RUNBOOK-advocate\.md step 17, "Flip the status"\)\. A first-party run is not demand, so the word is not live\.$/m);
+  assert.match(aExampleText, /^# On a first run, before any job has settled, set proposed and today's date here; step 17 changes them\.$/m);
+  assert.doesNotMatch(aExampleText, /the day the agent was specified|proposed since 2026-10-13/, 'the words of before the flip');
   // The allowlist is the default of the code (ruling R-F6): the model of OPENROUTER_MODEL, so that both paths ask the same model; the start reads the example's line as that.
   const [byDefault, byExample] = inAdvocate(
     "import { loadConfig } from './src/start.ts'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((env) => { const c = loadConfig(env); return { allowlist: c.allowlist, ceiling: String(c.maxPriceLovelace), model: c.model }; })));",
@@ -3228,7 +3236,7 @@ test('Advocate env example: the chain values are those of the other three, the a
     [{ ...withoutPlaceholders(aExample), OPERATOR_CONTACT: TEST_CONTACT }, { OPERATOR_CONTACT: TEST_CONTACT }],
   );
   assert.deepEqual(withExample, withNothing, 'the example changes nothing in the manifest the advert will hash');
-  assert.deepEqual(withExample.status, { chip: 'proposed', since: '2026-10-13' });
+  assert.deepEqual(withExample.status, { chip: 'deployed', since: '2026-10-20' });
   assert.equal(withExample.terms.price_lovelace, A_TERMS.price);
   assert.equal(withExample.terms.max_processing_ms, A_TERMS.window);
   assert.equal(withExample.capability_id, aExample.ADVERT_CAPABILITY_ID);
@@ -3272,16 +3280,30 @@ test('Advocate Caddy snippet: the site block is the fourth endpoint host, the ma
   assert.ok(aSection.split('\n').map((l) => l.replace(/^ {3}/, '')).join('\n').includes('```\n' + block + '\n```'), 'the README shows the same block');
 });
 
-test('Advocate files: each says PROPOSED (built, not deployed) since 2026-10-13 in its own first lines and what ran on the host, with the image of ccbcb94; none says LIVE or DEPLOYED, names the host or another stack, or holds a dash, the unit name, a person, a home path or a word the content rules ban', () => {
-  assert.equal(aComposeText.split('\n')[1], `# ${A_STATUS}. Steps 1 to 10 of RUNBOOK-advocate.md ran on 2026-10-18 and 2026-10-19 with the service image of ccbcb94; the image is rebuilt from this change before step 11. The host administrator's part is README.md.`);
-  assert.ok(aSnippet.split('\n')[1].startsWith(`# ${A_STATUS}. Installed: steps 1 to 10 of RUNBOOK-advocate.md, step 10 among them, ran on 2026-10-18 and 2026-10-19.`));
+test('Advocate files: each says DEPLOYED since 2026-10-20 in its own first lines, the compose file and the snippet say that the stack is installed and running, the runbook and the README section say which steps were run and when, with the two images; none says LIVE or the words of before the flip, names the host or another stack, or holds a dash, the unit name, a person, a home path or a word the content rules ban', () => {
+  assert.equal(aComposeText.split('\n')[1], `# ${A_STATUS}: installed on the host since 2026-10-18 and running since 2026-10-19, on the image rebuilt from bd8e42d that day; one first-party job settled on 2026-10-20. The order of work is RUNBOOK-advocate.md: steps 1 to 15 and 17 ran from 2026-10-18 to 2026-10-20, as its first paragraph says. The host administrator's part is README.md.`);
+  assert.ok(aSnippet.split('\n')[1].startsWith(`# ${A_STATUS}: installed and running on the host. It was installed on 2026-10-19, at step 10 of RUNBOOK-advocate.md, by a copy of the host administrator's install script (install-caddy-route.sh, from the ops folder of Audio Snippets), which merges it and reloads Caddy (README.md).`));
   assert.equal(aExampleText.split('\n')[2], `# Status: ${A_STATUS}. The status word the manifest carries is AGENT_STATUS_CHIP below.`);
-  assert.equal(aRunbook.split('\n')[2], `Status: ${A_STATUS}. Nothing in this folder is LIVE. This runbook says what will happen, in order. Steps 1 to 10 were run on 2026-10-18 and 2026-10-19 with the service image of \`ccbcb94\` (the OpenRouter-only build), and the identity was registered and staked on 2026-10-19 (steps 7 and 8); no advert is posted. Before step 11 the service image is rebuilt from this change. Step 1 runs again with a bundle of the new \`main\` in \`/tmp\`, but the checkout is there and is not cloned again: in this folder (\`$BASE/repo/deploy/host\`) \`git checkout docker-compose.advocate.yml\` sets aside the pin of step 2, the one local change, on which a pull would stop; then \`git pull --ff-only /tmp/vector-service-agents.bundle main\`, and \`git log -1 --oneline\` must show the reviewed commit. \`.env\` and \`.env.advocate\` are not in git and stay as they are: never remove the checkout to clone it again. Then step 2 for the new image and its pin, step 4 for the buyer key (it has a block for the env file of that run), step 6 for the buyer wallet alone (the supplier address lists what steps 7 and 8 left of its 55, and only the buyer address is held to its two outputs), and step 9 to recreate the service.`);
+  // The first paragraph of the runbook says what ran and when: the first image (ccbcb94), the identity, the rebuild from the merge of 2026-10-19 (bd8e42d) on the checkout of the host, the
+  // advert before the buyer wallet was supplied, the run, the first stop and the flip of 2026-10-20. Its git commands are run in the test below.
+  assert.equal(aRunbook.split('\n')[2], `Status: ${A_STATUS}. Nothing in this folder is LIVE. This runbook says what happens, in order. Steps 1 to 5 were run on 2026-10-18, all but the block of the two API keys of step 4. That block, step 6 for the supplier wallet and steps 7, 8, 9 and 10 were run on 2026-10-19, with the service image of \`ccbcb94\` (the OpenRouter-only build), and the identity was registered and staked on 2026-10-19 (steps 7 and 8). The image was then rebuilt from \`bd8e42d\` (the merge of the marketplace-inference change) on 2026-10-19, and steps 1, 2, 3 and 4 were run again on the checkout of the host, which was not cloned again: in this folder (\`$BASE/repo/deploy/host\`) \`git checkout docker-compose.advocate.yml\` set aside the pin of step 2, the one local change, on which a pull would stop, \`git pull --ff-only /tmp/vector-service-agents.bundle main\` brought the new commit, which \`git log -1 --oneline\` showed, and \`.env\` and \`.env.advocate\`, which are not in git, stayed as they were; step 2 made the new pin, step 4 ran the block for the env file of the earlier run and made the buyer key, and step 9 recreated the service. Steps 11 to 14 were run on 2026-10-19, before the buyer wallet was supplied, since the advert needs only the supplier key, and step 6 for the buyer wallet, step 15, the first stop and step 17 on 2026-10-20. The first stop was watched on 2026-10-20 (the service was idle, the stop took 1 s, the log ended with the SIGTERM line and the exit code was 0). Step 16, the wallet monitor, is not used for this agent, as for the other three.`);
   assert.doesNotMatch(aRunbook, /steps 1 and 2 again for its files and its image/, 'the words of before: step 1 cannot clone again on the checkout of the host');
-  assert.ok(aSection.split('\n')[1].startsWith(`Status: ${A_STATUS}. Nothing in this section is LIVE. Steps 1 to 10 of its runbook were run on 2026-10-18 and 2026-10-19 with the service image of \`ccbcb94\`, and the identity was registered and staked on 2026-10-19; no advert is posted, and the image is rebuilt from this change before step 11. The files are `));
+  assert.ok(aSection.split('\n')[1].startsWith(`Status: ${A_STATUS}. Nothing in this section is LIVE. Steps 1 to 5 of its runbook were run on 2026-10-18, all but the block of the two API keys of step 4. That block, step 6 for the supplier wallet and steps 7, 8, 9 and 10 were run on 2026-10-19, with the service image of \`ccbcb94\`, and the identity was registered and staked on 2026-10-19. The image was rebuilt from \`bd8e42d\` on 2026-10-19, with steps 1, 2, 3 and 4 run again and step 9 again. Steps 11 to 14 were run on 2026-10-19, and step 6 for the buyer wallet and steps 15 and 17 on 2026-10-20. Step 16, the wallet monitor, is not used for this agent, as for the other three. The files are `));
+  // The first stop the status line reports is the one the section "Watch the first stop" asks for: the SIGTERM line in the log, and the exit code 0.
+  assert.ok(section(aRunbook, 'Watch the first stop').includes('The log ends with `SIGTERM: stopping; no new job, and up to 300 s for the one that is running`, and the exit code is `0`.'));
+  // The part of step 4 the record dates 2026-10-19 is the block of the two API keys of step 4, and the advert needs only the supplier key: step 12 posts it with the supplier key alone,
+  // through the runtime. The runbook numbers its steps 1 to 17 and has no step of a letter, so the record names the block, not a step 4b.
+  assert.ok(section(aRunbook, '4. Make the env file, generate the two keys and enter the two API keys').includes('apikey_into BRAVE_SEARCH_API_KEY\napikey_into OPENROUTER_API_KEY\n'));
+  assert.ok(section(aRunbook, 'If something goes wrong').includes('the block of the two API keys of step 4'), 'the name the failure table gives the block');
+  assert.doesNotMatch(aRunbook + aSection, /\bsteps? \d+[a-z]\b/i, 'no step of a letter: the runbook has none');
+  assert.ok(section(aRunbook, '12. Post the advert').includes(`${ADC} run --rm --no-deps -T agent \\\n  node_modules/.bin/tsx agent/src/cli/post-advert.ts \\\n`), 'the advert is posted by the runtime');
+  assert.equal(aAgent.environment.ADVOCATE_BUYER_PRIV_KEY_HEX, '', 'which holds the supplier key and not the buyer key');
+  // DEPLOYED is said in those lines and nowhere else (the third line of the env example and of the runbook, the second line of the compose file and of the snippet), and LIVE is only ever denied.
+  const STATUS_AT = { 'deploy/host/docker-compose.advocate.yml': `# ${A_STATUS}:`, 'deploy/host/Caddyfile.advocate.snippet': `# ${A_STATUS}:`, 'deploy/host/.env.advocate.example': `# Status: ${A_STATUS}.`, 'deploy/host/RUNBOOK-advocate.md': `Status: ${A_STATUS}.` };
   for (const rel of [...A_FILES, 'agents/advocate/Dockerfile']) {
     const text = read(rel);
-    assert.doesNotMatch(text.replace('Nothing in this folder is LIVE.', ''), /\b(LIVE|DEPLOYED)\b/, `${rel}: no status claim beyond the status line`);
+    assert.doesNotMatch(text.replace(STATUS_AT[rel] ?? '', '').replace('Nothing in this folder is LIVE.', ''), /\b(LIVE|DEPLOYED)\b/, `${rel}: no status claim beyond the status line`);
+    assert.doesNotMatch(text, /built, not deployed|what will happen|no advert is posted|is rebuilt from this change|Before step 11 the service image|Installed: steps 1 to 10/, `${rel}: the words of before the flip`);
     assert.doesNotMatch(text, HOST_WORDS, `${rel}: names no host and no other stack`);
     assert.doesNotMatch(text, DASHES, `${rel}: no em or en dash`);
     assert.doesNotMatch(text, UNIT_NAME, `${rel}: the unit is called units`);
@@ -3291,7 +3313,8 @@ test('Advocate files: each says PROPOSED (built, not deployed) since 2026-10-13 
     assert.match(text, /^[\x09\x0a\x20-\x7e]*$/, `${rel}: ASCII`);
   }
   assert.doesNotMatch(aSection, HOST_WORDS);
-  assert.doesNotMatch(aSection.replace('Nothing in this section is LIVE.', ''), /\b(LIVE|DEPLOYED)\b/);
+  assert.doesNotMatch(aSection.replace(`Status: ${A_STATUS}.`, '').replace('Nothing in this section is LIVE.', ''), /\b(LIVE|DEPLOYED)\b/);
+  assert.doesNotMatch(aSection, /built, not deployed|no advert is posted|rebuilt from this change/, 'the words of before the flip');
   assert.doesNotMatch(aSection, A_BANNED);
   // The guard finds each word it is there for in each of its forms (spelled in parts here too), and lets the file names of the ops scripts and the words that
   // only look alike pass.
@@ -3358,7 +3381,8 @@ test('Advocate README section: the fourth stack, with its two containers, the lo
   assert.ok(aSection.includes('(the chat suppliers of the fleet answer at `mp-suppliers-<name>.vector.apexfusion.org`)'));
   assert.doesNotMatch(aSection, /holds no chain key|- \*\*No state\.\*\*|There is no volume|which ends within 150 s|A window of 5 min/, 'the words of before the buyer key');
   // The opening of the note and point 1 of the list of the host administrator name the fourth stack and say which section is the last.
-  assert.ok(readme.includes('Advocate is a fourth, built and not deployed, with its own section at the end of this note, after that of Audio Snippets, and its own runbook, [RUNBOOK-advocate.md](RUNBOOK-advocate.md).'));
+  assert.ok(readme.includes('Advocate is a fourth, with its own section at the end of this note, after that of Audio Snippets, and its own runbook, [RUNBOOK-advocate.md](RUNBOOK-advocate.md).'));
+  assert.equal(readme.match(/built and not deployed/), null, 'the words of before the flip of Advocate');
   assert.ok(readme.includes('Advocate has its own name, `mp-suppliers-advocate.hal8.ai`, and its own section at the end of this note.'), 'point 1 of the list of the host administrator, in the form of the other two names: the name resolves since step 10');
   assert.equal(readme.match(/for Advocate, which is not built yet/), null, 'the words of before the build of Advocate');
   assert.equal(readme.match(/One more comes later/), null, 'the words of before step 10');
@@ -3383,7 +3407,7 @@ test('Advocate RUNBOOK: the twenty-one sections in order, the seventeen steps ke
   for (const part of [
     'This is [RUNBOOK-audio-snippets.md](RUNBOOK-audio-snippets.md), the runbook of Audio Snippets, written for Advocate.', 'step N here is step N there',
     '- **Two keys, and two API keys.**', '- **A token on the service, as for the Pipeline and Audio Snippets.**', '- **A window of 8 min.**', '`max_processing_ms` is 480000', '`SERVICE_TIMEOUT_MS` is 360000', '300000 ms (300 s)',
-    'the search gets at most 15 s of it and the pages at most 45 s; the waits of the hire of the chat supplier stop 95 s before the deadline, so that the call through OpenRouter still has its 90 s when the hire fails by then; a send or a poll under way then is not cut and can end the hire as late as about 280 s.',
+    'the search gets at most 15 s of it and the pages at most 45 s; the waits of the hire of the chat supplier stop 95 s before the deadline, so that the call through OpenRouter still has its 90 s when the hire fails by then; a send or a poll under way then is not cut and can end a hire that fails as late as about 280 s.',
     'A hire in its Accept at the deadline runs on.', 'because a job can take as long as the runtime\'s fetch waits on silence, 300 s (step 13)',
     'because the network is shared with other stacks and a job posts an escrow from the buyer wallet',
     'The service holds a second, separate key, the buyer key, which posts the escrow of the one chat sub-job of a job, so that its Posts and the supplier key\'s Claims never contend for the same outputs',
@@ -3470,12 +3494,12 @@ test('Advocate RUNBOOK steps 1 to 3: the bundle into $BASE and .env with the net
   assert.ok(three.includes(`${ADC} build agent`) && three.includes('It ends with `Image advocate-agent Built`.'));
 });
 
-// The first paragraph sends the operator back to step 1 on the checkout of the host, which is there. Its git commands run here as the paragraph gives them, read from
-// its backticks, on scratch repositories in a folder of the OS temp directory and never in this repository: no GIT_ variable of the process reaches them, no
+// The first paragraph records how step 1 ran again, on 2026-10-19, on the checkout of the host, which was there. Its git commands run here as the paragraph gives them, read
+// from its backticks, on scratch repositories in a folder of the OS temp directory and never in this repository: no GIT_ variable of the process reaches them, no
 // configuration of the machine is read, and git looks for no repository above that folder. A bundle of a first commit is cloned as step 1 clones it, the pin of
 // step 2 is made in the clone and the two env files are written next to it; a second commit that rewrites the compose file comes as a new bundle in the same place.
 const HAVE_GIT = (() => { try { execFileSync('git', ['--version'], { stdio: 'ignore' }); return true; } catch { return false; } })();
-test('Advocate RUNBOOK first paragraph in git: step 1 cannot clone again and a pull stops on the pin of step 2; the checkout of the compose file and the pull of the paragraph bring the new commit with its placeholder, and .env and .env.advocate stay as they are', { skip: HAVE_GIT ? false : 'needs git' }, () => {
+test('Advocate RUNBOOK first paragraph in git: step 1 cannot clone again and a pull stops on the pin of step 2; the checkout of the compose file and the pull the paragraph records bring the new commit with its placeholder, and .env and .env.advocate stay as they are', { skip: HAVE_GIT ? false : 'needs git' }, () => {
   const first = aRunbook.split('\n')[2];
   const ticks = [...first.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
   const commands = ticks.filter((t) => t.startsWith('git '));
@@ -3609,11 +3633,17 @@ test('Advocate RUNBOOK step 4: the env file once, the two keys, the token and th
     'An env file made from an earlier example of this folder has no buyer lines, and the buyer block refuses it and writes nothing until the block for such a file, above, has added them.',
     'For that file run the next block, then the buyer block and the two checks after it; the supplier, token and API key blocks refuse, since their lines have values.',
     'It refuses a file whose supplier lines are empty: a new env file is made from the example, above, and needs no such block.',
-    'On the host\'s file it prints `ADVERT_MAX_PROCESSING_MS=480000`, the four buyer lines with a length of 0 and `LLM_MODEL_ALLOWLIST=deepseek/deepseek-v4-flash`, in the order of the file.',
+    'On a file of an earlier example it prints `ADVERT_MAX_PROCESSING_MS=480000`, the four buyer lines with a length of 0 and `LLM_MODEL_ALLOWLIST=deepseek/deepseek-v4-flash`, in the order of the file, as it did on the host\'s file on 2026-10-19.',
+    'An env file made from an earlier example of this folder, as the one of the host was until step 4 ran again on 2026-10-19 (steps 1 to 10 ran with it), holds the supplier key, the token, the two API keys and the contact, and has no buyer lines, a window of 300000 and no line for the hires.',
     'because other stacks share the network and a job posts an escrow from the buyer wallet',
     'It must print `two different keys`. The service also refuses to start with the supplier key in the buyer lines (the table at the end).',
-    'The example carries the status word and its date in `AGENT_STATUS_CHIP` and `AGENT_STATUS_SINCE`: `proposed` since 2026-10-13. They stay so until step 17, which is the only place that changes them.',
+    "The example also carries the current status word and its date in `AGENT_STATUS_CHIP` and `AGENT_STATUS_SINCE`. On a first run, before any job has settled, set them to `proposed` and today's date: the status can honestly change only in step 17.",
   ]) assert.ok(four.includes(part), `step 4 says: ${part}`);
+  // The example carries the word of today (the test of the env example pins it), and a first run is told to start with the earlier word.
+  assert.doesNotMatch(four, /`proposed` since 2026-10-13|They stay so until step 17/, 'the words of before the flip');
+  // The env file of the host has had its buyer lines since step 4 ran again on 2026-10-19 (the first paragraph): step 4 describes it as it was until then, and what the block printed on it then.
+  assert.doesNotMatch(four, /as the one of the host is \(|On the host's file it prints/, 'the present tense of before the run of 2026-10-19');
+  assert.ok(aRunbook.split('\n')[2].includes('step 4 ran the block for the env file of the earlier run and made the buyer key'), 'the first paragraph records that run');
   assert.ok(four.indexOf('token_into\n') < four.indexOf('apikey_into BRAVE_SEARCH_API_KEY'), 'the API keys after the key and the token');
 });
 
@@ -3933,15 +3963,19 @@ test('Advocate RUNBOOK steps 6 to 9: the two wallets supplied and checked, the i
     `grep -E '^(SUPPLIER|ADVOCATE_BUYER)_ADDRESS=' "$BASE/repo/deploy/host/.env.advocate"`,
     'The first is exactly 5 units, alone.', 'Send the second only after the first has confirmed: 50 units to the supplier address, 30 units to the buyer address.',
     'for name in SUPPLIER_ADDRESS ADVOCATE_BUYER_ADDRESS; do', '"$BASE/ops/mcp-call.sh" vector_get_utxos',
-    'Each address must list two outputs: one of exactly 5 units, and one of 50 at the supplier address or of 30 at the buyer address. On the run before step 11 (the first paragraph), the supplier address lists what steps 7 and 8 left of its 55, and only the buyer address is held to its two outputs.',
+    'Each address must list two outputs: one of exactly 5 units, and one of 50 at the supplier address or of 30 at the buyer address. When the buyer wallet is supplied after the steps of the supplier key, as it was on 2026-10-20 (the first paragraph), the supplier address lists what those steps left of its 55, and only the buyer address is held to its two outputs.',
   ]) assert.ok(six.includes(part), `step 6 says: ${part}`);
+  // The first paragraph records it: the buyer wallet was supplied on 2026-10-20, after the advert of 2026-10-19, which needs only the supplier key.
+  assert.ok(aRunbook.split('\n')[2].includes('Steps 11 to 14 were run on 2026-10-19, before the buyer wallet was supplied, since the advert needs only the supplier key, and step 6 for the buyer wallet, step 15, the first stop and step 17 on 2026-10-20.'));
+  assert.equal(six.includes('On the run before step 11'), false, 'the words of before the run of 2026-10-20');
   // The two second transfers are the floats of the rows of Collateral and float.
   const collateral = section(aRunbook, 'Collateral and float');
   assert.ok(collateral.includes('exactly 5 units alone (collateral), then 50 units') && collateral.includes('held back from every Post while the rest of the wallet covers that Post and its change), then 30 units'));
   const seven = section(aRunbook, '7. Register the identity');
-  for (const part of ["sed -i '/^AGENT_DID=$/d' \"$BASE/repo/deploy/host/.env.advocate\"", 'python3 make-skey.py', './register-did.sh', 'The record has the name `Advocate`, the capability `research.advocate.onesided.v1`, the framework `vector-service-agents`, the endpoint `https://mp-suppliers-advocate.hal8.ai`', 'into the Identity section of `specs/advocate.md`', '(the DID row, the "Registry record, planned" row and the sentence that says the agent has no registry record yet)', 'remove it in Back out (point 4)', 'Operator. The same as step 7 of RUNBOOK.md, for the supplier key only.', 'The buyer key is not touched by any step here and has no second copy on the host.']) assert.ok(seven.includes(part), part);
-  // Step 7 was run on 2026-10-19 and this change records it, as the step asks: the sentence says that the record exists, and the rows are no longer planned. The runbook still
-  // quotes the old words, as the instruction it was.
+  for (const part of ["sed -i '/^AGENT_DID=$/d' \"$BASE/repo/deploy/host/.env.advocate\"", 'python3 make-skey.py', './register-did.sh', 'The record has the name `Advocate`, the capability `research.advocate.onesided.v1`, the framework `vector-service-agents`, the endpoint `https://mp-suppliers-advocate.hal8.ai`', 'into the Identity section of `specs/advocate.md`', '(the DID row, the "Registry record" row and the sentence that says the agent has a registry record)', 'remove it in Back out (point 4)', 'Operator. The same as step 7 of RUNBOOK.md, for the supplier key only.', 'The buyer key is not touched by any step here and has no second copy on the host.']) assert.ok(seven.includes(part), part);
+  // Step 7 was run on 2026-10-19 and the pull request it asked for recorded it: the sentence says that the record exists, and the rows are no longer planned. The step names the rows as
+  // they are since then, as the runbooks of Audio Snippets and the Pipeline do since their flips, and quotes no row that is gone.
+  assert.equal(seven.includes('Registry record, planned') || seven.includes('no registry record yet'), false, 'the rows of before the registration');
   assert.ok(ASPEC.includes('\nThis agent has had a registry record since 2026-10-19.\n') && ASPEC.includes('\n| DID | `did:vector:agent:') && ASPEC.includes('\n| Registry record | name `Advocate`;'), 'the spec rows step 7 names carry the record');
   assert.equal(ASPEC.includes('This agent has no registry record yet.') || ASPEC.includes('| Registry record, planned |') || ASPEC.includes('| DID | not registered.'), false, 'and the words of before are gone');
   assert.ok(section(aRunbook, '8. Stake in Module-3').includes('here both are the one capability `research.advocate.onesided.v1`'));
@@ -4018,7 +4052,11 @@ test('Advocate RUNBOOK steps 10 to 14: the copy of the install script with the v
   const twelve = section(aRunbook, '12. Post the advert');
   assert.ok(twelve.includes('the model `advocate-v1`, `max_processing_ms` 480000, the price 3000000 and both bonds at 1000000'));
   assert.ok(twelve.includes('The status word stays PROPOSED until step 17.') && twelve.includes('in the Links section of `specs/advocate.md`, in place of the line that says the advert is not posted'));
-  assert.ok(section(ASPEC, 'Links').includes('- Advert on the explorer: none. The advert is not posted.'), 'the line step 12 replaces');
+  // Step 12 ran on 2026-10-19 and its advert is recorded as the step asks: the Links give the explorer link of its transaction in place of the line that said that no advert was posted.
+  const prefix = /The link is `(https:\/\/[^`]+\/transaction\/hash\/)` followed by the transaction id/.exec(twelve)?.[1] ?? '';
+  const firstAdvert = 'bdf2d452350b8e73eb723288c7d08e1dbaf2447236d030ef6e5f92e1772be4cc';
+  assert.ok(section(ASPEC, 'Links').includes(`- First advert \`${firstAdvert}#0\`, posted on 2026-10-19 in the confirmed transaction [\`${firstAdvert}\`](${prefix}${firstAdvert})`), 'the record step 12 asks for');
+  assert.equal(section(ASPEC, 'Links').includes('The advert is not posted.'), false, 'the line step 12 replaced');
   assert.ok(twelve.includes('```sh\ncd "$BASE/repo/deploy/host"\nprintf \'%s\' "$DETAIL_HASH" | grep -Eq \'^[0-9a-f]{64}$\' || echo "not a sha256 hash"\nADVERT_REF=$(' + `${ADC} run --rm --no-deps -T agent \\\n`), 'the real run starts in this folder and checks the hash it takes from the block above');
   const thirteen = section(aRunbook, '13. Start the runtime');
   for (const part of [
@@ -4128,11 +4166,14 @@ test('Advocate RUNBOOK step 17 and Back out: the old advert retired before the r
     assert.ok(existsSync(join(root, f)), `${f} exists`);
   }
   assert.ok(item8.includes('`pnpm --filter @vsa/advocate template`') && JSON.parse(read('agents/advocate/package.json')).scripts.template === 'node --import tsx scripts/render-template.mjs');
-  // The word is carried as a default by the code, as the item says: proposed since 2026-10-13, in the manifest the template holds.
-  assert.deepEqual(JSON.parse(read('agents/advocate/agent.json.template')).status, { chip: 'proposed', since: '2026-10-13' });
-  // Every test of the agent that pins the default word is named, so that the flip is not found out by a test that fails: server.test.ts and start.test.ts hold it (the status of
+  // The word is carried as a default by the code, as the item says: deployed since the flip of 2026-10-20, in the code and in the manifest the template holds.
+  const server = read('agents/advocate/src/server.ts');
+  assert.ok(server.includes("statusChip(env.AGENT_STATUS_CHIP, 'deployed')") && server.includes("statusSince(env.AGENT_STATUS_SINCE, '2026-10-20')"), 'the code carries the word as a default, as the item says');
+  assert.equal(server.includes("statusChip(env.AGENT_STATUS_CHIP, 'proposed')") || server.includes("'2026-10-13'"), false, 'the default of before the flip');
+  assert.deepEqual(JSON.parse(read('agents/advocate/agent.json.template')).status, { chip: 'deployed', since: '2026-10-20' });
+  // Every test of the agent that pins the default word is named, so that a change of it is not found out by a test that fails: server.test.ts and start.test.ts hold it (the status of
   // /agent.json of a service started with no AGENT_STATUS_CHIP), and a test written later that holds it is found here and has to be named too.
-  const pinning = sourceFiles('agents/advocate/test').filter((f) => read(f).includes("chip: 'proposed'"));
+  const pinning = sourceFiles('agents/advocate/test').filter((f) => read(f).includes("chip: 'deployed', since: '2026-10-20'"));
   assert.ok(pinning.includes('agents/advocate/test/server.test.ts') && pinning.includes('agents/advocate/test/start.test.ts'), `the files that pin the default word: ${pinning}`);
   for (const f of pinning) assert.ok(item8.includes('`' + f + '`'), `item 8 names ${f}, which pins the default word`);
   const back = section(aRunbook, 'Back out');
@@ -4303,6 +4344,7 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
     ['the stranded store could not mark the Accept of the chat sub-job', 'inference', 'the stranded store could not mark the Accept of the chat sub-job at accept'],
     ['accept it again by hand at once, within 600 s of its Submit', 'inference', 'accept it again by hand at once, within 600 s of its Submit'],
     ['`janitor: kept <escrow>: Submitted: its Accept <tx> may still land until <time>`', 'janitor', 'Submitted: its Accept ${pending.tx_hash} may still land until ${iso(pending.valid_to)}'],
+    ["`janitor: kept <escrow>: Submitted: its Accept <tx> did not land by <time> and the accept window may be over; lost to its supplier's release from <time> at the latest`", 'janitor', "; lost to its supplier's release from ${iso(lostAfter)} at the latest"],
     ['`escrow <escrow> was accepted for the brief in <tx> and could not be removed from the stranded store (<error>); ...`', 'hire', 'was accepted for ${job.label} in ${accepted.txHash} and could not be removed from the stranded store (${errorText(err)}); the janitor drops it once it reads it spent'],
     ['`janitor: reclaimed <escrow>: ...`', 'janitor', 'janitor: ${action.action} ${action.escrow_ref}: ${action.note}'],
     ['`janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest`', 'janitor', 'Submitted: it cannot be reclaimed, and its supplier may release it from ${iso(lostAfter)} at the latest'],
@@ -4369,6 +4411,16 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
   const removal = rows.find((r) => r.startsWith('| `escrow <escrow> was accepted for the brief in <tx>')) ?? '';
   assert.ok(removal.includes('It is the one write of the file after a Post that fails no job: the job stands, and the service goes on posting escrows.') && sources.hire.includes('// The one write of the store that does not fail the run (ruling R62)'));
   assert.ok(sources.inference.includes("const BRIEF_LABEL = 'the brief';"), 'the job of the line is the brief');
+  // The Next step of the R62 row and of the row of an Accept that may still land, whole (the review of Plan E2). The entry the removal of R62 leaves behind has no mark, so the janitor reads it
+  // only from 5 s after its deliver_by (packages/hire-kit/src/janitor.ts); the hand Accept is made while the escrow reads Submitted with time left in the window.
+  const nextStep = (r) => (r.split(' | ')[2] ?? '').replace(/ \|$/, '');
+  assert.equal(nextStep(removal), 'Nothing for the escrow: the janitor drops its entry once two passes in a row, from 5 s after its `deliver_by`, find the escrow settled. Look at the disk and at the volume, as in the row above: the next write that fails after a Post fails its job.');
+  assert.equal(nextStep(landing), 'Wait for it as for an escrow not yet due: once the Accept lands, the escrow is settled and the janitor drops its entry. If it has not landed with time left in the window, accept the escrow again by hand within 600 s of its Submit (`vector_build_marketplace_accept`, signed as the manual reclaim of the `store_write_failed` row is; an escrow is accepted once, so a second Accept fails if the first lands). After `<time>`, if it is still Submitted, the janitor records it as lost and its supplier may release it.');
+  assert.ok(sources.janitor.includes("if (entry.accept_pending === undefined) {\n    const due = entry.deliver_by + JANITOR_GRACE_MS;\n    if (now < due) return did('waiting', `due at ${iso(due)}`);\n  }"), 'an entry with no mark is read from 5 s after its deliver_by');
+  assert.ok(sources.hire.includes('try { deps.stranded.remove(post.escrowRef); } catch (err) {'), 'the removal of R62 changes nothing in the entry it could not remove');
+  // The end of a hire the deadline row gives is the one of a hire that fails, as on the page (Time) and in the head of the runbook: a hire that is verified ends in its Accept. The sentence of
+  // the row is held whole, with the numbers of the code, below.
+  assert.equal(table.includes('can end the hire as late as'), false, 'the words of before');
   // The characters of an entry of LLM_MODEL_ALLOWLIST are those the start takes (src/server.ts).
   const allowRow = rows.find((r) => r.includes('`environment variable LLM_MODEL_ALLOWLIST must be a comma-separated list of models`')) ?? '';
   assert.ok(allowRow.includes('or an entry that is not letters, digits, dots, underscores, colons, slashes and hyphens alone.') && sources.server.includes('each of letters, digits, dots, underscores, colons, slashes and hyphens only, and its entry'), 'the characters of an entry');
@@ -4415,7 +4467,7 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
   assert.ok(deadline.includes(`The job ran out of its time: ${L.JOB_DEADLINE_MS} ms after its request arrived.`));
   assert.ok(deadline.includes(`OpenRouter is given the time left less ${sec(L.RESULT_RESERVE_MS)} s, ${sec(L.MODEL_MAX_MS)} s at most, and when it was given the whole ${sec(L.MODEL_MAX_MS)} s the same silence is \`model_failed\`.`));
   assert.ok(read('packages/buyer-core/src/fleet-clients.ts').includes('const SEND_TIMEOUT_MS = 75_000;'));
-  assert.ok(deadline.includes(`The waits of the hire of a chat supplier stop ${sec(L.hopEnd)} s before the deadline, so a fallback after a hire that failed then has its ${sec(L.MODEL_MAX_MS)} s, but a send or a poll under way at that moment is not cut and can end the hire as late as about ${sec(L.JOB_DEADLINE_MS - L.hopEnd + 75_000)} s, and a receipt that failed its check late, up to ${sec(L.receiptEnd)} s before the deadline, leaves the fallback ${sec(L.MODEL_MIN_MS)} s at the least.`));
+  assert.ok(deadline.includes(`The waits of the hire of a chat supplier stop ${sec(L.hopEnd)} s before the deadline, so a fallback after a hire that failed then has its ${sec(L.MODEL_MAX_MS)} s, but a send or a poll under way at that moment is not cut and can end a hire that fails as late as about ${sec(L.JOB_DEADLINE_MS - L.hopEnd + 75_000)} s, and a receipt that failed its check late, up to ${sec(L.receiptEnd)} s before the deadline, leaves the fallback ${sec(L.MODEL_MIN_MS)} s at the least.`));
   assert.ok(deadline.includes(`The job also fails this way when it has under ${A_MODEL_TIME.startWith} s left at the time the model was to start.`));
   assert.ok(deadline.includes('`inference: marketplace <code> at <stage>, falling back` says where the hire ended'));
   assert.ok(deadline.includes(`\`model: OpenRouter did not answer within <n> ms\` before \`job failed after <ms> ms: deadline (422)\` is the silent model, with an \`<n>\` under ${L.MODEL_MAX_MS} (with ${L.MODEL_MAX_MS} the job fails as \`model_failed\`).`));
@@ -4453,6 +4505,51 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
     "`docker exec advocate-service node -e \"fetch('https://example.org/').then((r) => console.log(r.status))\"` prints 200",
   ]) assert.ok(table.includes(part), `the table has: ${part}`);
   assert.doesNotMatch(table, /`network [a-z0-9_.-]+ declared as external/, 'the table names no network');
+});
+
+// The line of an Accept that did not land by the end of its validity (packages/hire-kit/src/janitor.ts): the janitor prints it once, at its first pass after that end, and records the escrow as
+// lost; the entry then has no mark, waits for its deliver_by as any unmarked entry does, and from 5 s after it gets the line of a Submitted escrow that nothing can settle. Run here through the
+// kit itself, against a stand-in of the chain on which the escrow stays Submitted, and held to the row of the table.
+test('Advocate RUNBOOK failure table: the row of an Accept that did not land by the end of its validity, whole, beside the row of an Accept that may still land; the janitor of the kit prints its line once, then waits for the deliver_by and gives the line of a Submitted escrow', () => {
+  const rows = section(aRunbook, 'If something goes wrong').split('\n').filter((l) => l.startsWith('| '));
+  const LINE = "janitor: kept <escrow>: Submitted: its Accept <tx> did not land by <time> and the accept window may be over; lost to its supplier's release from <time> at the latest";
+  const at = rows.findIndex((r) => r.startsWith(`| \`${LINE}\` |`));
+  assert.ok(at > 0, 'the row is there');
+  assert.ok(rows[at - 1].startsWith('| `janitor: kept <escrow>: Submitted: its Accept <tx> may still land until <time>` |'), 'right after the row of an Accept that may still land');
+  const [, meaning, next] = rows[at].split(' | ');
+  assert.equal(meaning, 'The Accept of the row above was not seen landing by the end of its validity, the first `<time>`, and the escrow still reads Submitted, so the window for an Accept may be over (on the real chain, where an Accept is valid to the end of the window, it is): the janitor records the escrow as lost, and its supplier may release it from the second `<time>` at the latest. The line is printed once, at the first pass after the first `<time>`. The entry then waits for its `deliver_by` like an unmarked one, and from 5 s after it gets the line `janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest` (its row, above).');
+  assert.equal(next, 'Nothing to do: the lock goes to the supplier when it releases. |');
+  assert.ok(rows.slice(0, at).some((r) => r.startsWith('| `janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest` |')), 'the row of the line it gets then, above');
+  // The code that writes the line and records the escrow as lost, and the vendored Accept, valid to the end of the window.
+  const janitor = read('packages/hire-kit/src/janitor.ts');
+  for (const part of [
+    'const notLanded = `Submitted: its Accept ${pending.tx_hash} did not land by ${iso(pending.valid_to)}`;',
+    'store.update(ref, { accept_pending: undefined, lost_to_release_after: lostAfter });',
+    "return did('kept', `${notLanded}${why}; lost to its supplier's release from ${iso(lostAfter)} at the latest`);",
+    "if (now >= entry.posted_at + ACCEPT_WINDOW_MS) return lost(' and the accept window may be over');",
+  ]) assert.ok(janitor.includes(part), `the janitor writes: ${part}`);
+  assert.ok(read('packages/buyer-core/src/vendored/mcp/marketplace-build.ts').includes('const validTo = datum.submitted_at + ACCEPT_WINDOW_MS;'), 'on the real chain an Accept is valid to the end of the window');
+  // Through the kit: an escrow posted at 0 whose Accept was sent and is valid to 700 s (its Submit at 100 s), with a deliver_by of 63 minutes; the chain reads it Submitted throughout.
+  const [seen] = inAdvocate(
+    "import { mkdtempSync, rmSync } from 'node:fs'; import { tmpdir } from 'node:os'; import { join } from 'node:path'; " +
+    "import { JANITOR_GRACE_MS, StrandedStore, startJanitor } from '@vsa/hire-kit'; " +
+    "const dir = mkdtempSync(join(tmpdir(), 'advocate-unlanded-')); const ref = `${'4'.repeat(64)}#0`; const tx = '5'.repeat(64); const validTo = 700_000; const due = 3_780_000; " +
+    "try { const store = new StrandedStore(dir); const accepts = []; " +
+    "store.add({ escrow_ref: ref, deliver_by: due, posted_at: 0, kind: 'llm', accept_pending: { tx_hash: tx, valid_to: validTo, by: 'run' } }); " +
+    "const chain = { escrowState: async () => 'Submitted', reclaim: async () => { throw new Error('no Reclaim of a Submitted escrow'); }, accept: async (r) => { accepts.push(r); throw new Error('no Accept here'); } }; " +
+    "const pass = async (now) => { const lines = []; await startJanitor(store, chain, 60_000, { clock: () => now, log: (l) => lines.push(l) }).stop(); return lines; }; " +
+    "const seen = { before: await pass(validTo - 1), first: await pass(validTo), next: await pass(validTo + 60_000), lastWait: await pass(due + JANITOR_GRACE_MS - 1), due: await pass(due + JANITOR_GRACE_MS), " +
+    "entry: store.get(ref), accepts, ref, tx, times: [new Date(validTo).toISOString(), new Date(due + 600_000).toISOString()] }; " +
+    "console.log(JSON.stringify([seen])); } finally { rmSync(dir, { recursive: true, force: true }); }",
+    null,
+  );
+  const template = (line) => line.replaceAll(seen.ref, '<escrow>').replaceAll(seen.tx, '<tx>').replaceAll(seen.times[0], '<time>').replaceAll(seen.times[1], '<time>');
+  assert.deepEqual(seen.before.map(template), ['janitor: kept <escrow>: Submitted: its Accept <tx> may still land until <time>'], 'before the end of its validity: the row above');
+  assert.deepEqual(seen.first.map(template), [LINE], 'at the first pass after it: this row, once');
+  assert.ok(seen.first[0].includes(`did not land by ${seen.times[0]} `) && seen.first[0].endsWith(`release from ${seen.times[1]} at the latest`), 'the end of its validity, then its deliver_by and 600 s');
+  assert.deepEqual([seen.next, seen.lastWait], [[], []], 'then no line: the entry waits for its deliver_by like an unmarked one');
+  assert.deepEqual(seen.due.map(template), ['janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest'], 'from 5 s after its deliver_by: the line of a Submitted escrow');
+  assert.deepEqual([seen.entry.accept_pending, seen.entry.lost_to_release_after, seen.accepts], [undefined, 3_780_000 + 600_000, []], 'the mark is gone, the escrow is lost from the deliver_by and 600 s, and no Accept is made again');
 });
 
 test('Advocate RUNBOOK: the four corrections of the run of Audio Snippets are in it: the hash script on the machine of the operator, the traceback of setup-venv.sh and the two checks, the comment line of the copied install script, and the collateral paragraph', () => {
