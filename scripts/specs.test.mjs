@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { createHash, createPublicKey, verify as verifySignature } from 'node:crypto';
+import { createHash, createPublicKey, randomBytes, verify as verifySignature } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // The four agent specs share one structure and one set of public-wording rules (docs/superpowers/specs/2026-10-13-vector-service-agents-design.md, section 8).
@@ -537,7 +539,13 @@ test('docs/HIRE.md: the ledger unit is named once, in section 3, and nowhere els
 // Section 3 of the guide has two ways to get the collateral and the float onto the key since 2026-10-15. The Foundation's way is held word for word (the one sentence that names the unit is in it), in the brand's vocabulary since 2026-10-16. The reader's own way says what a key supplied by hand needs.
 const FOUNDATION_WAY = "The Foundation supplies collateral and float for working-group experiments. It sends your address two separate transfers: 5 units alone, then a float of 50. They stay separate on purpose. The Accept and the Reclaim run the escrow script, and each needs a pure 5-unit output as collateral. The Post keeps a pure 5-unit output aside when your wallet has one. A single transfer of the whole amount lets your wallet consume the collateral with the rest. Bonds are posted and fees are consumed in the ledger's native unit, " + UNIT_NAME.source + '. The name appears once, here. The rest of this guide calls it a unit.';
 
-test('docs/HIRE.md section 3: two ways to get the collateral and the float onto the key, the Foundation way kept word for word, the own way says Vector mainnet, a key from keygen only and 5 alone before the float; the cost table and the check come after both', () => {
+// What the signer reads (packages/signer of Apex-Fusion/mcp-server at 651ae93, the build of the npm package 2.0.0): config.ts takes VECTOR_SIGNER_PRIVATE_KEY with
+// VECTOR_SIGNER_ADDRESS first, then a recovery phrase inline or from a file; keysource.ts takes a key that matches /^ed25519e?_sk1[0-9a-z]+$/ with an addr1 address,
+// and derives from a recovery phrase the signing key of the first address of one account (index 0 unless set). A raw 64-hex key matches neither, so the sentence of
+// before (2026-10-15 to 2026-10-21), which said the signer took only a keygen key and no recovery phrase, was not true, and LAUNCH.md section 5 converts a template key.
+const SIGNER_READS = "The signer reads a bech32 key that starts `ed25519_sk1`, the form `keygen` prints, with its `addr1` address, or a wallet's recovery phrase, from which it signs for one address only, the first of one account. It does not read a raw 64-hex key, such as the template's: [LAUNCH.md](LAUNCH.md) section 5 converts one. This guide uses the key from `keygen`, so a wallet's balance has to be sent to the address `keygen` printed.";
+
+test('docs/HIRE.md section 3: two ways to get the collateral and the float onto the key, the Foundation way kept word for word, the own way says Vector mainnet, the key forms the signer reads and 5 alone before the float; the cost table and the check come after both', () => {
   const three = section(hire(), '3. What the key must hold');
   const at = (needle) => { const i = three.indexOf(needle); assert.ok(i >= 0, `section 3 says: ${needle}`); return i; };
   const order = ['There are two ways to get the collateral and the float onto your key. The cost table and the check below apply to both.', "**(a) The Foundation sends a working-group member's key its collateral and float, on request.**", FOUNDATION_WAY, '**(b) Or send them yourself.**', 'What one job costs you.', '| Price (agent) |', 'Check the collateral and the float before you go on.', '(`vector_get_utxos`)'];
@@ -548,11 +556,15 @@ test('docs/HIRE.md section 3: two ways to get the collateral and the float onto 
     'The units must be on Vector mainnet.',
     "Units on Prime, on Nexus or in a bridged form elsewhere cannot serve as your key's collateral or float.",
     'The Reactor bridge moves units from Prime to Vector.',
-    "The signer accepts only a key made by `keygen`. It does not take a wallet's recovery phrase, so a wallet's balance has to be sent to the address `keygen` printed.",
+    SIGNER_READS,
     'Send 5 alone first, then the float of 50. That is two transfers, for the reason given in (a).',
   ]) assert.ok(own.includes(part), `the own way says: ${part}`);
   assert.equal(own.match(UNIT_NAME), null, 'the own way says units, the name is in the Foundation way');
   assert.equal(hire().match(/We fund it/), null, 'the title of before');
+  // The sentences of before said the signer took only a keygen key and no recovery phrase. Its source takes both forms and refuses raw hex.
+  assert.equal(hire().match(/accepts only a key made by `keygen`|does not take a wallet's recovery phrase/), null, 'the sentences of before');
+  assert.ok(existsSync(new URL('../docs/LAUNCH.md', import.meta.url)), 'the guide the sentence points to exists');
+  assert.match(doc('LAUNCH.md'), /^## 5\. Give your agent an identity from chat$/m, 'and has the section it names');
 });
 
 test('docs/HIRE.md and docs/E2E.md: no em or en dash; nothing says LIVE except the sentence that denies it; DEPLOYED only in the status paragraph of each and in the rows of Agent History, Document Pipeline, Audio Snippets and Advocate in the guide', () => {
@@ -1878,4 +1890,183 @@ test('specs/document-pipeline.md: the code of its hire is packages/hire-kit on p
   assert.ok(pkg('agents/document-pipeline').dependencies['@vsa/hire-kit'] && pkg('packages/hire-kit').dependencies['@vsa/buyer-core'], 'the Pipeline depends on the kit, and the kit on buyer-core');
   assert.ok(readFileSync(new URL('../agents/document-pipeline/src/hire.ts', import.meta.url), 'utf8').includes("import { hireOne } from '@vsa/hire-kit';"), 'the hire of a sub-job is the kit\'s');
   for (const file of ['hire.ts', 'janitor.ts']) assert.ok(existsSync(new URL(`../packages/hire-kit/src/${file}`, import.meta.url)), file);
+});
+
+// ---- The launch guide (docs/LAUNCH.md, 2026-10-21) ----
+// A member who has read HIRE.md launches a supplier of their own from vector-agent-template, gives it an identity from the chat client and hires it once. The guide is held to
+// what it was written from: the tools it names are on the hosted server or in the signer, its links resolve, the advert and stake builders are planned and never available,
+// the key conversion it prints is the one the signer reads, and its words follow the public rules.
+const launch = () => doc('LAUNCH.md');
+const LAUNCH_SECTIONS = ['What you need', 'Let your coding agent build it', 'Post the advert', 'Boot the runtime and your service', 'Give your agent an identity from chat', 'Stake (optional)', 'Test-hire your own agent from chat', 'Tell the working group'];
+// The 33 tools of the hosted server: the tools packages/builder of Apex-Fusion/mcp-server registers at main 651ae93, the commit the hosted mainnet server and the npm signer
+// 2.0.0 were built from (HIRE.md section 2). The nine marketplace tools and the registry tools are among them; no advert and no stake builder is.
+const HOSTED_TOOLS = [
+  'vector_await_transaction', 'vector_build_deploy_contract', 'vector_build_deregister_agent', 'vector_build_interact_contract', 'vector_build_marketplace_accept',
+  'vector_build_marketplace_post_escrow', 'vector_build_marketplace_reclaim', 'vector_build_message_agent', 'vector_build_register_agent', 'vector_build_self_improvement_critique',
+  'vector_build_self_improvement_endorse', 'vector_build_self_improvement_proposal_lock', 'vector_build_self_improvement_proposal_spend', 'vector_build_send_apex', 'vector_build_send_tokens',
+  'vector_build_transaction', 'vector_build_transfer_agent', 'vector_build_update_agent', 'vector_discover_agents', 'vector_dry_run', 'vector_get_agent_profile', 'vector_get_balance',
+  'vector_get_transaction_history', 'vector_get_utxos', 'vector_marketplace_get_job', 'vector_marketplace_get_supplier', 'vector_marketplace_list_capabilities', 'vector_marketplace_list_suppliers',
+  'vector_marketplace_send_job', 'vector_marketplace_verify_receipt', 'vector_self_improvement_analyze_metrics', 'vector_self_improvement_browse', 'vector_submit_transaction',
+];
+// The four tools of the signer (packages/signer/src/tools.ts at the same commit).
+const SIGNER_TOOLS = ['vector_signer_get_address', 'vector_signer_decode_transaction', 'vector_signer_sign', 'vector_signer_get_spend_limits'];
+// The sentence that says where the advert and stake builders stand on 2026-10-21: planned, not on the hosted server.
+const BUILDERS_PLANNED = 'Advert and stake builders for the hosted server are planned: work on them started on 2026-10-21, for review in the mcp-server repository. Neither is on the hosted server, and this guide does not use them.';
+// The words a public line of the launch guide does not use (its content rules). Each is spelled in two parts, as UNIT_NAME is, so that a search for the words finds none
+// in this file. "payload" is a word of its own and passes.
+const MONEY_WORDS = new RegExp('\\b(' + [['p', 'ays?'], ['p', 'aid'], ['p', 'ayments?'], ['p', 'ayers?'], ['e', 'arn\\w*'], ['mon', 'ey'], ['f', 'und(s|ed|ing)?'], ['sp', 'end\\w*'], ['sp', 'ent'], ['reve', 'nue'], ['gover', 'nance']].map((p) => p.join('')).join('|') + ')\\b', 'i');
+// The roles-not-people guard of scripts/deploy.test.mjs, read from that file so that the names stand in one place, and the host of the Foundation's own deployment,
+// which a guide for a member's own host never names.
+const PERSON_NAMES = new RegExp(/^const NAMES = \/(.+)\/i;$/m.exec(readFileSync(new URL('./deploy.test.mjs', import.meta.url), 'utf8'))?.[1] ?? 'the names guard was not found', 'i');
+const FOUNDATION_HOST = /hal8|PROXY_NETWORK|Caddy|\/opt\/|\b\d{1,3}(\.\d{1,3}){3}\b/i;
+// The block of section 5 that converts the template's 64-hex key into the form the signer reads. It was run verbatim, offline, with a throwaway key on 2026-10-21; a test
+// below runs its node code again and compares the result with what CML, which the signer parses keys with, makes of the same 32 bytes.
+const CONVERSION_BLOCK = [
+  'read -rs SUPPLIER_PRIV_KEY_HEX && export SUPPLIER_PRIV_KEY_HEX',
+  `(cd try-it && node -e "const {bech32}=require('bech32');const h=process.env.SUPPLIER_PRIV_KEY_HEX;/^[0-9a-f]{64}$/.test(h)||(console.error('expected 64 lowercase hex characters'),process.exit(1));process.stdout.write('VECTOR_SIGNER_PRIVATE_KEY='+bech32.encode('ed25519_sk',bech32.toWords(Buffer.from(h,'hex')),1023)+'\\n')")`,
+  'unset SUPPLIER_PRIV_KEY_HEX',
+].join('\n');
+// A heading as a GitHub anchor: lower case, punctuation dropped, spaces as hyphens.
+const slug = (heading) => heading.trim().toLowerCase().replace(/[^a-z0-9 _-]/g, '').replace(/ /g, '-');
+
+test('docs/LAUNCH.md: the title, the eight sections in the order a member does them, a check in every section after the first, and the README lists it next to HIRE.md', () => {
+  const text = launch();
+  assert.ok(text.startsWith('# Launch your own agent from a chat client\n'), 'the title');
+  assert.ok(text.split('\n')[2].startsWith('A guide for a developer who has read [HIRE.md](HIRE.md).'), 'the first paragraph names its reader');
+  assert.deepEqual([...text.matchAll(/^## (\d+)\. (.+)$/gm)].map((m) => [Number(m[1]), m[2]]), LAUNCH_SECTIONS.map((title, i) => [i + 1, title]));
+  LAUNCH_SECTIONS.forEach((title, i) => {
+    if (i > 0) assert.match(section(text, `${i + 1}. ${title}`), /Check[:,]|What you check/, `section ${i + 1} has a check`);
+  });
+  const lines = readFileSync(new URL('../README.md', import.meta.url), 'utf8').split('\n');
+  assert.equal(lines[lines.indexOf('- Hire one: `docs/HIRE.md`') + 1], '- Launch your own agent from a chat client: `docs/LAUNCH.md`', 'the README lists the guide right after HIRE.md');
+});
+
+test('docs/LAUNCH.md: every tool it names is one of the 33 tools of the hosted server or one of the four of the signer, as HIRE.md names them; no advert or stake tool is named', () => {
+  assert.equal(HOSTED_TOOLS.length, 33);
+  assert.equal(new Set(HOSTED_TOOLS).size, 33);
+  const known = new Set([...HOSTED_TOOLS, ...SIGNER_TOOLS]);
+  // The names HIRE.md and the E2E runbook are held to are among them: the nine marketplace tools of the design and the others of this file.
+  for (const tool of [...MARKETPLACE_TOOLS, ...OTHER_TOOLS]) assert.ok(known.has(tool), `${tool} is on the hosted server or in the signer`);
+  for (const [name, text] of [['docs/HIRE.md', hire()], ['docs/LAUNCH.md', launch()]]) {
+    const unknown = [...new Set(text.match(/\bvector_[a-z_]+/g) ?? [])].filter((t) => !known.has(t));
+    assert.deepEqual(unknown, [], `${name} names a tool that is not on the hosted server or in the signer`);
+  }
+  const named = new Set(launch().match(/\bvector_[a-z_]+/g));
+  for (const tool of ['vector_build_register_agent', 'vector_get_agent_profile', 'vector_signer_sign', 'vector_submit_transaction', 'vector_await_transaction', 'vector_build_deregister_agent', 'vector_marketplace_list_suppliers', 'vector_marketplace_verify_receipt', 'vector_get_utxos']) assert.ok(named.has(tool), `the guide names ${tool}`);
+  assert.deepEqual([...named].filter((t) => /advert|stake/.test(t)), [], 'no advert or stake tool exists on the hosted server');
+  assert.ok(launch().includes('Every tool it names is on the hosted mainnet server, which lists 33 tools, or in the signer, version 2.0.0.'));
+});
+
+test('docs/LAUNCH.md: the advert and stake builders of the hosted server are planned, and the guide never says that they are available', () => {
+  const text = launch();
+  const six = section(text, '6. Stake (optional)');
+  assert.ok(six.includes('A stake is not available as a chat tool today: the hosted server has no stake builder and no advert builder.'));
+  assert.equal(text.split(BUILDERS_PLANNED).length - 1, 1, 'the planned sentence, once');
+  assert.ok(six.includes(BUILDERS_PLANNED), 'in section 6');
+  assert.ok(six.includes("the template's command line posts the advert (section 3), and the public Module-3 SDK makes the stake"));
+  assert.equal(text.match(/builders? (is|are) (now )?(available|merged|shipped|deployed|on the hosted server)|stake (tool|builder) is available|(advert|stake) from chat with `vector_/i), null, 'nothing says the builders are there');
+});
+
+test('docs/LAUNCH.md: every relative link resolves to a file of the repository, and every anchor to a heading of that file', () => {
+  const links = [...launch().matchAll(/\]\(([^)\s]+)\)/g)].map((m) => m[1]).filter((target) => !/^https?:/.test(target));
+  assert.ok(links.length >= 10, `the guide links the repository, found ${links.length}`);
+  for (const target of links) {
+    const [path, anchor] = target.split('#');
+    const file = new URL(`../docs/${path}`, import.meta.url);
+    assert.ok(path !== '' && existsSync(file), `${target} resolves to a file`);
+    if (anchor === undefined) continue;
+    const headings = readFileSync(file, 'utf8').split('\n').filter((l) => /^#{1,6} /.test(l)).map((l) => slug(l.replace(/^#+ /, '')));
+    assert.ok(headings.includes(anchor), `${target}: the anchor is a heading of ${path}`);
+  }
+  // The external links go to the public repositories the guide is about, on their default branches.
+  for (const url of launch().match(/https:\/\/github\.com\/[^\s)]+/g)) assert.match(url, /^https:\/\/github\.com\/Apex-Fusion\/(vector-agent-template(#|\/blob\/main\/)|vector-agent-modules\/tree\/master\/Module-3$|vector-service-agents\/issues$)/, url);
+});
+
+test('docs/LAUNCH.md: the costs are the ones of the runbooks, the template docs and the register tool, each with its source', () => {
+  const one = section(launch(), '1. What you need');
+  const row = (start) => one.split('\n').find((l) => l.startsWith(start)) ?? '';
+  assert.match(row('| 3. The advert |'), /^\| 3\. The advert \| about 2 \| when you retire the advert, .* \| 1 \| .*RUNBOOK\.md#12-post-the-advert/);
+  assert.match(row('| 5. The registry deposit |'), /^\| 5\. The registry deposit \| 10 \| when you deregister, with `vector_build_deregister_agent` \| 1 \| `vector_build_register_agent`; \[HIRE\.md\]\(HIRE\.md\) section 7; .*TRUST-LAYER\.md/);
+  assert.match(row('| 6. The stake, optional |'), /^\| 6\. The stake, optional \| 10, the minimum \| after a cooldown, when you withdraw it \| 2: a seed output, then the stake \| .*TRUST-LAYER\.md.*Module-3 SDK \|$/);
+  assert.match(row('| 7. The test hire, from your hiring key |'), /the price and both bonds \| on Accept your bond returns to your hiring key, and your supplier key receives the price and the supplier bond \| 2: the Post and the Accept \| \[HIRE\.md\]\(HIRE\.md\) section 3 \|$/);
+  assert.ok(one.includes('Fees are about 0.5 a transaction, the fee floor'));
+  // The numbers are the runbook's: the deposit, the stake, the advert lock, the fee, the setup and the float of 50.
+  const runbook = readFileSync(new URL('../deploy/host/RUNBOOK.md', import.meta.url), 'utf8');
+  assert.ok(runbook.includes('The registry deposit (10 units), the stake (10), the advert (about 2 locked) and fees of about 0.5 a transaction. The setup uses about 25 with fees.'));
+  assert.ok(one.includes('Our runbooks send 5 and then 50 to each supplier key: the setup uses about 25 with fees'));
+  // The registry deposit is the one HIRE.md section 7 gives for the same tool.
+  assert.ok(section(hire(), '7. Register your own identifier (optional)').includes('It locks a deposit of 10 units, which you get back when you deregister.'));
+});
+
+test("docs/LAUNCH.md: the key is made and converted in the member's own terminal, the conversion block is the one that was proven, and it is the inverse of HIRE.md section 8", () => {
+  const text = launch();
+  const two = section(text, '2. Let your coding agent build it');
+  const rule = "Run it in your own terminal, never through your assistant's shell tool: the output of a shell tool goes back into the conversation, so the key would reach your model provider.";
+  assert.ok(two.includes(rule));
+  assert.ok(two.indexOf(rule) < two.indexOf('src/cli/gen-keypair.ts --network 1'), 'the rule comes before the command');
+  assert.ok(two.includes('From here your assistant must not open or print `.env`.'));
+  const five = section(text, '5. Give your agent an identity from chat');
+  assert.ok(five.includes('```bash\n' + CONVERSION_BLOCK + '\n```'), 'the block of section 5, verbatim');
+  assert.ok(five.indexOf('Convert the key in your own terminal') < five.indexOf('read -rs'), "it is run in the member's own terminal");
+  assert.ok(five.includes('it refuses a raw hex key'));
+  // Nothing in the block that an interactive shell would change: no history expansion, no variable or command substitution inside the double quotes, no escaped quote.
+  const code = /node -e "(.*)"\)$/m.exec(CONVERSION_BLOCK)?.[1] ?? '';
+  assert.ok(code.length > 100, 'the node code was found');
+  assert.equal(CONVERSION_BLOCK.includes('!'), false);
+  assert.equal(/\$[A-Za-z_{(]|`|\\"/.test(code), false);
+  // HIRE.md section 8 turns a signer key back into 64 hex with the same library and the same length limit.
+  assert.ok(section(hire(), '8. The terminal path').includes("const d=bech32.decode(process.env.VECTOR_SIGNER_PRIVATE_KEY,1023);process.stdout.write(Buffer.from(bech32.fromWords(d.words)).toString('hex'))"));
+});
+
+test("docs/LAUNCH.md: the node code of the conversion turns a throwaway 64-hex key into the bech32 key CML makes of the same 32 bytes, with the key hash and address of the template's derivation", () => {
+  // The bech32 library the template's try-it folder requires (bech32 ^2.0.0) is in this repository's store as a dependency of its dependencies; the code runs as the member runs it.
+  const store = fileURLToPath(new URL('../node_modules/.pnpm/', import.meta.url));
+  const dir = readdirSync(store).find((name) => /^bech32@2\./.test(name));
+  assert.ok(dir, 'bech32 2.x is in the store (the template requires ^2.0.0)');
+  const nodePath = join(store, dir, 'node_modules');
+  // Inside the double quotes the shell passes the code on unchanged (the test above checks that it holds nothing a shell would expand), so it is run as written.
+  const code = /node -e "(.*)"\)$/m.exec(CONVERSION_BLOCK)[1];
+  const fromRepo = createRequire(new URL('../packages/buyer-core/package.json', import.meta.url));
+  const CML = fromRepo('@anastasia-labs/cardano-multiplatform-lib-nodejs');
+  const { blake2b } = fromRepo('@noble/hashes/blake2b');
+  const { bech32 } = createRequire(join(nodePath, 'bech32', 'package.json'))('bech32');
+  const run = (hex) => execFileSync(process.execPath, ['-e', code], { env: { ...process.env, NODE_PATH: nodePath, SUPPLIER_PRIV_KEY_HEX: hex }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  for (let i = 0; i < 3; i++) {
+    const hex = randomBytes(32).toString('hex'); // a throwaway key, made here and never printed
+    const out = run(hex);
+    const m = /^VECTOR_SIGNER_PRIVATE_KEY=(ed25519_sk1[0-9a-z]+)\n$/.exec(out);
+    assert.ok(m, 'one line in the form keygen prints');
+    assert.match(m[1], /^ed25519e?_sk1[0-9a-z]+$/, 'the form packages/signer/src/keysource.ts accepts');
+    assert.equal(m[1], CML.PrivateKey.from_normal_bytes(Buffer.from(hex, 'hex')).to_bech32(), 'the bech32 CML makes of the same 32 bytes');
+    // The template derives the key hash as blake2b-224 of the public key and the address as an enterprise address with header 0x61 (agent/src/cli/gen-keypair.ts).
+    const pub = CML.PrivateKey.from_bech32(m[1]).to_public();
+    const pkh = Buffer.from(blake2b(pub.to_raw_bytes(), { dkLen: 28 })).toString('hex');
+    assert.equal(pub.hash().to_hex(), pkh, "the key hash the signer signs with is the template's SUPPLIER_PKH");
+    const address = bech32.encode('addr', bech32.toWords(Buffer.concat([Buffer.from([0x61]), Buffer.from(pkh, 'hex')])), 1023);
+    assert.equal(CML.EnterpriseAddress.new(1, CML.Credential.new_pub_key(pub.hash())).to_address().to_bech32(), address, "the address is the template's SUPPLIER_ADDRESS");
+  }
+  // A key that is not 64 lowercase hex prints nothing on stdout and stops with the message.
+  assert.throws(() => run('not a key'), (err) => err.status === 1 && err.stdout === '' && /expected 64 lowercase hex characters/.test(err.stderr));
+});
+
+test('docs/LAUNCH.md, the new sentence of HIRE.md section 3(b) and the new README line: hyphens only, none of the words of the content rules, no unit name, no person, no host of the Foundation, no status word', () => {
+  const readmeLine = '- Launch your own agent from a chat client: `docs/LAUNCH.md`';
+  assert.ok(PERSON_NAMES.source.startsWith('\\b(') && PERSON_NAMES.source.split('|').length >= 10, 'the names guard was read from scripts/deploy.test.mjs');
+  for (const [name, text] of [['docs/LAUNCH.md', launch()], ['HIRE.md section 3(b)', SIGNER_READS], ['README.md', readmeLine]]) {
+    assert.equal(text.match(DASHES), null, `${name}: hyphens only`);
+    assert.equal(text.match(MONEY_WORDS), null, `${name}: none of the words of the content rules`);
+    assert.equal(text.match(UNIT_NAME), null, `${name}: units, not the name`);
+    assert.equal(text.match(PERSON_NAMES), null, `${name}: roles, not people`);
+    assert.equal(text.match(FOUNDATION_HOST), null, `${name}: no host, address, network or proxy path of the Foundation's host`);
+    assert.equal(text.match(/\b(LIVE|DEPLOYED|PROPOSED)\b/), null, `${name}: no status word`);
+  }
+  // The guards find what they exist for, and pass the words the guides use.
+  const hits = [['we p', 'ay'], ['p', 'aid out'], ['p', 'ayment'], ['the p', 'ayer'], ['e', 'arn'], ['e', 'arned'], ['mon', 'ey'], ['f', 'und it'], ['f', 'unded'], ['f', 'unding'], ['sp', 'end'], ['sp', 'ending'], ['sp', 'ent'], ['reve', 'nue'], ['gover', 'nance']].map((p) => p.join(''));
+  for (const hit of hits) assert.match(hit, MONEY_WORDS, hit);
+  for (const miss of ['payload', 'the wire payload', 'learn', 'refund', 'Foundation', 'the price', 'consumed']) assert.doesNotMatch(miss, MONEY_WORDS, miss);
+  for (const hit of ['mp-suppliers-history.hal8.ai', 'PROXY_NETWORK', 'Caddyfile', '/opt/agent-history', '10.0.0.5']) assert.match(hit, FOUNDATION_HOST, hit);
+  assert.doesNotMatch('https://ogmios.vector.mainnet.apexfusion.org', FOUNDATION_HOST);
+  // The first-party label stays on the hire of one's own agent, and the guide says what is not yet recorded.
+  assert.ok(section(launch(), '7. Test-hire your own agent from chat').includes('A hire of your own agent is first-party. It shows that the path works. It is not demand.'));
+  assert.ok(launch().includes('No launch by anyone outside the team is recorded yet. The npm signer has not yet signed a registration on mainnet: our four agents were registered through the same hosted tool with another local signer. No third-party audit of the marketplace contracts exists.'));
 });
