@@ -1776,7 +1776,7 @@ test('Pipeline RUNBOOK Back out: the advert first with the supplier key, then th
   // The janitor reclaims 5 s after deliver_by, as the code says.
   assert.ok(read('packages/hire-kit/src/janitor.ts').includes('export const JANITOR_GRACE_MS = 5_000;'));
   // The stake is not refundable: the module keeps 10 units as the minimum (Module-3 spec section 6.2, stake_validation.ak). Only the identity is withdrawn, by deregistration.
-  assert.ok(back.includes('The registry identity stays on the ledger until the operator deregisters it, and the deposit returns then. The stake stays locked: the module keeps 10 units as the minimum, and only stake above it can be decreased.'));
+  assert.ok(back.includes('The registry identity stays on the ledger until the operator deregisters it, and the deposit returns then. The stake is different. The owner cannot withdraw it: the module keeps 10 units as the minimum, and only stake above it can be decreased.'));
 });
 
 test('Back out of both runbooks: the second plaintext copy of the supplier key is shredded as two files and the directory is removed with rmdir; run as written, it leaves nothing, and shred on the directory itself fails', { skip: HAVE_BASH && spawnSync('bash', ['-c', 'command -v shred'], { encoding: 'utf8' }).status === 0 ? false : 'needs bash and shred' }, () => {

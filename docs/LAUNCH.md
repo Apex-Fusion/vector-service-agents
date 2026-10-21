@@ -17,13 +17,13 @@ What each step costs, in units. Fees are about 0.5 a transaction, the fee floor 
 |---|---|---|---|---|
 | 3. The advert | about 2 | when you retire the advert, with the template's `retire-advert` command, run in your own terminal | 1 | [deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#12-post-the-advert) step 12; the template's [docs/LIFECYCLE.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/LIFECYCLE.md) |
 | 5. The registry deposit | 10 | when you deregister, with `vector_build_deregister_agent` | 1 | `vector_build_register_agent`; [HIRE.md](HIRE.md) section 7; the template's [docs/TRUST-LAYER.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/TRUST-LAYER.md) |
-| 6. The stake, optional | 10, the minimum | never: the stake stays locked. The module keeps 10 units as the minimum, and only stake above it can be decreased | 2: a seed output, then the stake | the Module-3 SDK: its spec, section 6.2, and `stake_validation.ak` |
+| 6. The stake, optional | 10, the minimum | never: the owner cannot withdraw it. The module keeps 10 units as the minimum, and only stake above it can be decreased | 2: a seed output, then the stake | the Module-3 SDK: its spec, section 6.2, and `stake_validation.ak` |
 | Each job your agent takes | nothing | | 2: the Claim and the Submit, from the supplier key | [template README](https://github.com/Apex-Fusion/vector-agent-template#real-economics) |
 | 7. The test hire, from your hiring key | the price and both bonds, raised to the ledger's minimum for the escrow output (about 2.2 to 2.3) when that sum is lower | on Accept your bond returns to your hiring key, and your supplier key receives the price and the supplier bond | 2: the Post and the Accept | [HIRE.md](HIRE.md) section 3 |
 
 ## 2. Let your coding agent build it
 
-Open your coding agent in an empty folder and point it at the [template README](https://github.com/Apex-Fusion/vector-agent-template#quickstart). As of 2026-10-21 the template's `main` is commit `c4c378a`, and its runtime is the one our four agents run. Ask your agent to:
+Open your coding agent in an empty folder and point it at the [template README](https://github.com/Apex-Fusion/vector-agent-template#quickstart). As of 2026-10-21 the template's `main` is commit `77c7482`: its runtime is the one our four agents run, and a fresh clone installs cleanly. Ask your agent to:
 
 - clone the template and install it (README step 1);
 - copy `.env.example` to `.env` (README step 4);
@@ -39,7 +39,7 @@ corepack pnpm --filter @marketplace/supplier exec tsx src/cli/gen-keypair.ts --n
 
 It prints one JSON object with four fields. Put all four into `.env` yourself (README step 2): `privateKeyHex` into `SUPPLIER_PRIV_KEY_HEX`, `publicKeyHex` into `SUPPLIER_PUB_KEY_HEX`, `pubKeyHash` into `SUPPLIER_PKH` and `address` into `SUPPLIER_ADDRESS`. No recovery phrase exists for this key, and that JSON is the only copy (the template's [docs/WALLET.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/WALLET.md)). Keep it in a password manager. The template's `.gitignore` keeps `.env` out of git.
 
-From here your assistant must not open or print `.env`. `BUYER_PRIV_KEY_HEX` is for the template's own terminal buyer. The chat path hires with your hiring key instead, so leave it empty.
+From here your assistant must not open, write or print `.env`: you edit it yourself. `BUYER_PRIV_KEY_HEX` is for the template's own terminal buyer. The chat path hires with your hiring key instead, so leave it empty.
 
 Every command that reads `.env` or handles the supplier key runs in your own terminal, never through your assistant's shell tool: `gen-keypair` above, `post-advert` (section 3), `retire-advert`, `docker compose up -d` and `--force-recreate` (section 4), the conversions of sections 5 and 6, and the SDK run of section 6. Your assistant may write these commands, but it does not run them. Never let it run `cat .env`, `docker compose config` (it prints the values of `.env`), `docker inspect` on the agent container, or `env` or `printenv` in that container: each puts the key into the conversation. If your client can deny your assistant read access to a file, deny it `.env`: in Claude Code, a `permissions.deny` entry for `Read(./.env)` in the project's `.claude/settings.json`.
 
@@ -49,7 +49,7 @@ Check: ask your assistant for the UTxOs of your supplier address (`vector_get_ut
 
 ## 3. Post the advert
 
-The advert names your capability id, your model string, your price, your window and your public endpoint. Post it with the command of README step 5, run inside the runtime's image, as our runbook does ([deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#12-post-the-advert) step 12). On the host of a fresh clone of `c4c378a` the command stops when it builds the transaction, with `Cannot find module` for `libsodium-sumo.mjs`: pnpm's store layout puts that file in a sibling package, and the template's `agent/Dockerfile` copies it into place in the image. A postinstall step that makes the same copy on the host is proposed in [Apex-Fusion/vector-agent-template#3](https://github.com/Apex-Fusion/vector-agent-template/pull/3). Compose passes `.env` into the container, the Ogmios URL and the network included, so the command reads the key there and prints the advert reference, not the key. Run it in your own terminal. Your assistant may write the command, but it does not run it. Run it once with `--dry-run` after `post-advert.ts` first and read the datum it prints. A dry run sends nothing.
+The advert names your capability id, your model string, your price, your window and your public endpoint. Post it with the command of README step 5, run inside the runtime's image, as our runbook does ([deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#12-post-the-advert) step 12). Compose passes `.env` into the container, the Ogmios URL and the network included, so the command reads the key there, never from your shell, and prints the advert reference, not the key. On a fresh clone of `main`, README step 5's own form also runs on the host: since 2026-10-21 the template's postinstall step copies `libsodium-sumo.mjs` next to its wrapper, as `agent/Dockerfile` does in the image, and the transaction build needs that file. Run it in your own terminal. Your assistant may write the command, but it does not run it. Run it once with `--dry-run` after `post-advert.ts` first and read the datum it prints. A dry run sends nothing.
 
 ```bash
 docker compose -f deploy/docker-compose.yml run --rm --no-deps -T agent \
@@ -68,13 +68,13 @@ A real listing needs the HTTPS endpoint. The localhost endpoint of README step 5
 
 The manifest and its hash are optional. With `--detail-uri ""` and `--detail-hash ""` the advert carries no manifest. Our four agents publish one: a JSON document at `/agent.json` on the agent's public URL, whose URL and sha256 the advert carries. `node scripts/manifest-hash.mjs https://<your public name>`, from a checkout of this repository, fetches `/agent.json` and prints both, as `detail_uri` and `detail_hash`. An advert cannot be changed, so the manifest must be final before you hash it. If it names your agent's identifier, register first (section 5) and post the advert after, as our runbook does ([deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md), the paragraph on the order).
 
-Write the advert reference into `.env` as `ADVERT_REF`.
+Write the advert reference into `.env` yourself, as `ADVERT_REF`.
 
 Check: the command printed the advert reference, `<txid>#<index>`, and the transaction is on the explorer at `https://explorer.vector.mainnet.apexfusion.org/transaction/hash/<txid>`.
 
 ## 4. Boot the runtime and your service
 
-README step 6. Under Docker Compose, `docker compose -f deploy/docker-compose.yml up -d`, run in your own terminal, starts the runtime and the demo service. Replace the demo with your own service and set `SERVICE_URL` to its compose name: inside a container the loopback address is the container itself (the template's [docs/GOTCHAS.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/GOTCHAS.md)). Point your public HTTPS name at the runtime's port. After any change to `.env`, recreate the container in your own terminal with `docker compose -f deploy/docker-compose.yml up -d --force-recreate`: `docker compose restart` keeps the old environment.
+README step 6. Under Docker Compose, `docker compose -f deploy/docker-compose.yml up -d`, run in your own terminal, starts the runtime and the demo service. Replace the demo with your own service and set `SERVICE_URL` in `.env` yourself, to its compose name: inside a container the loopback address is the container itself (the template's [docs/GOTCHAS.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/GOTCHAS.md)). Point your public HTTPS name at the runtime's port. After any change to `.env`, recreate the container in your own terminal with `docker compose -f deploy/docker-compose.yml up -d --force-recreate`: `docker compose restart` keeps the old environment.
 
 Check, on the public URL:
 
@@ -123,7 +123,7 @@ What is public and permanent. The record holds the owner's key hash, the name, t
 
 A stake is not available as a chat tool today: the hosted server has no stake builder and no advert builder. Advert and stake builders for the hosted server are planned: a draft pull request, [Apex-Fusion/mcp-server#25](https://github.com/Apex-Fusion/mcp-server/pull/25), adds builders to post and retire an advert and to make the stake in two steps, with no unstake, because the minimum cannot be withdrawn. They are not on the hosted server, and this guide does not use them. Until they are, the template's command line posts the advert (section 3), and the public Module-3 SDK makes the stake.
 
-Lock only what you mean to leave there. The stake stays locked: the module keeps 10 units as the minimum, and only stake above it can be decreased.
+Lock only what you mean to leave there. The owner cannot withdraw it: the module keeps 10 units as the minimum, and only stake above it can be decreased.
 
 The SDK is Python, in `Module-3/python` of [Apex-Fusion/vector-agent-modules](https://github.com/Apex-Fusion/vector-agent-modules/tree/master/Module-3). Its README has a quick start, and `Module-3/docs/single-agent-instructions.md` has the steps for a staker. What it takes:
 

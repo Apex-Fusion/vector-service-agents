@@ -1948,7 +1948,11 @@ const SKEY_BLOCK = [
 const SKEY_REMOVE = 'The file is one more plaintext copy of the supplier key: remove it once the stake has confirmed, with `rm "$HOME/supplier.skey"` in your own terminal';
 // The Module-3 stake is not refundable (the SDK's spec, section 6.2, and stake_validation.ak: a decrease must leave at least the minimum self-stake in a continuing output).
 // The public wording, everywhere the stake's return is spoken of; no timing parameter of the module is named.
-const STAKE_LOCKED = 'The stake stays locked: the module keeps 10 units as the minimum, and only stake above it can be decreased.';
+// The wording ruled on 2026-10-21: the public text says only that the owner cannot withdraw the stake, and nothing more about the module.
+const STAKE_NO_WITHDRAW = 'The owner cannot withdraw it: the module keeps 10 units as the minimum, and only stake above it can be decreased.';
+// The wordings that say the stake comes back or is withdrawn, and any cooldown. A report's blind spot about a stake output that no longer appears ("A withdrawn stake ..." in
+// specs/agent-history.md, emitted by the service and hashed into its advert) is not one of them: it names no withdrawal by the owner.
+const STAKE_RETURN_WORDS = /cooldown|refundable under the stake|the stake after its|stake stay on the ledger until the operator withdraws|when you withdraw it|stays locked|identity or the stake is withdrawn|stake (is|was|gets|can be) withdrawn|withdraws? (the|its|their) stake/i;
 const HIRE_PERMANENT = "The name and the description you enter are public and permanent: the transaction that writes them stays in the ledger's history after you deregister. Deregistering returns the deposit; it does not erase that transaction. Put no personal data in them.";
 // HIRE.md section 8 pins the template at c4c378a, whose install leaves libsodium-sumo.mjs out of the wrapper's folder (the lockfile there pins libsodium 0.7.16).
 const LIBSODIUM_COPY = 'cp node_modules/.pnpm/libsodium-sumo@0.7.16/node_modules/libsodium-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs node_modules/.pnpm/libsodium-wrappers-sumo@0.7.16/node_modules/libsodium-wrappers-sumo/dist/modules-sumo-esm/';
@@ -2014,7 +2018,7 @@ test('docs/LAUNCH.md: the costs are the ones of the runbooks, the template docs 
   assert.match(row('| 3. The advert |'), /^\| 3\. The advert \| about 2 \| when you retire the advert, .* \| 1 \| .*RUNBOOK\.md#12-post-the-advert/);
   assert.match(row('| 5. The registry deposit |'), /^\| 5\. The registry deposit \| 10 \| when you deregister, with `vector_build_deregister_agent` \| 1 \| `vector_build_register_agent`; \[HIRE\.md\]\(HIRE\.md\) section 7; .*TRUST-LAYER\.md/);
   // The stake is not refundable (Module-3 spec section 6.2, stake_validation.ak): the row says so in the public wording, and no cooldown is named.
-  assert.equal(row('| 6. The stake, optional |'), '| 6. The stake, optional | 10, the minimum | never: the stake stays locked. The module keeps 10 units as the minimum, and only stake above it can be decreased | 2: a seed output, then the stake | the Module-3 SDK: its spec, section 6.2, and `stake_validation.ak` |');
+  assert.equal(row('| 6. The stake, optional |'), '| 6. The stake, optional | 10, the minimum | never: the owner cannot withdraw it. The module keeps 10 units as the minimum, and only stake above it can be decreased | 2: a seed output, then the stake | the Module-3 SDK: its spec, section 6.2, and `stake_validation.ak` |');
   assert.match(row('| 7. The test hire, from your hiring key |'), /the price and both bonds, raised to the ledger's minimum for the escrow output \(about 2\.2 to 2\.3\) when that sum is lower \| on Accept your bond returns to your hiring key, and your supplier key receives the price and the supplier bond \| 2: the Post and the Accept \| \[HIRE\.md\]\(HIRE\.md\) section 3 \|$/);
   assert.ok(one.includes('Fees are about 0.5 a transaction, the fee floor'));
   // The numbers are the runbook's: the deposit, the stake, the advert lock, the fee, the setup and the float of 50.
@@ -2031,7 +2035,7 @@ test("docs/LAUNCH.md: the key is made and converted in the member's own terminal
   const rule = "Run it in your own terminal, never through your assistant's shell tool: the output of a shell tool goes back into the conversation, so the key would reach your model provider.";
   assert.ok(two.includes(rule));
   assert.ok(two.indexOf(rule) < two.indexOf('src/cli/gen-keypair.ts --network 1'), 'the rule comes before the command');
-  assert.ok(two.includes('From here your assistant must not open or print `.env`.'));
+  assert.ok(two.includes('From here your assistant must not open, write or print `.env`: you edit it yourself.'));
   const five = section(text, '5. Give your agent an identity from chat');
   assert.ok(five.includes('```bash\n' + CONVERSION_BLOCK + '\n```'), 'the block of section 5, verbatim');
   assert.ok(five.indexOf('Convert the key in your own terminal') < five.indexOf('read -rs'), "it is run in the member's own terminal");
@@ -2083,7 +2087,7 @@ test("docs/LAUNCH.md: the node code of the conversion turns a throwaway 64-hex k
 test('docs/LAUNCH.md, the new sentence of HIRE.md section 3(b) and the new README line: hyphens only, none of the words of the content rules, no unit name, no person, no host of the Foundation, no status word', () => {
   const readmeLine = '- Launch your own agent from a chat client: `docs/LAUNCH.md`';
   assert.ok(PERSON_NAMES.source.startsWith('\\b(') && PERSON_NAMES.source.split('|').length >= 10, 'the names guard was read from scripts/deploy.test.mjs');
-  const added = [['docs/LAUNCH.md', launch()], ['HIRE.md section 3(b)', SIGNER_READS], ['README.md', readmeLine], ['HIRE.md section 7', HIRE_PERMANENT], ['HIRE.md section 8', `${LIBSODIUM_COPY}\n${LIBSODIUM_WHY}`], ['the runbooks and the host README', STAKE_LOCKED]];
+  const added = [['docs/LAUNCH.md', launch()], ['HIRE.md section 3(b)', SIGNER_READS], ['README.md', readmeLine], ['HIRE.md section 7', HIRE_PERMANENT], ['HIRE.md section 8', `${LIBSODIUM_COPY}\n${LIBSODIUM_WHY}`], ['the runbooks and the host README', STAKE_NO_WITHDRAW]];
   for (const [name, text] of added) {
     assert.equal(text.match(DASHES), null, `${name}: hyphens only`);
     assert.equal(text.match(MONEY_WORDS), null, `${name}: none of the words of the content rules`);
@@ -2157,19 +2161,24 @@ test('docs/LAUNCH.md (finding 2): the node code of the .skey block writes the ca
 test('the stake correction: the Module-3 stake is not refundable; LAUNCH.md, the four runbooks and the host README say so in the public wording, and none says the stake returns or names a cooldown', () => {
   const read = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8');
   const six = section(launch(), '6. Stake (optional)');
-  assert.ok(six.includes('Lock only what you mean to leave there. ' + STAKE_LOCKED), 'section 6');
+  assert.ok(six.includes('Lock only what you mean to leave there. ' + STAKE_NO_WITHDRAW), 'section 6');
   const runbooks = ['deploy/host/RUNBOOK.md', 'deploy/host/RUNBOOK-document-pipeline.md', 'deploy/host/RUNBOOK-audio-snippets.md', 'deploy/host/RUNBOOK-advocate.md'];
   for (const rel of runbooks) {
     const text = read(rel);
     const eight = section(text, '8. Stake in Module-3');
-    assert.ok(['This', 'this'].some((word) => eight.includes(`${word} locks 10 units on the capability. ${STAKE_LOCKED}`)), `${rel}: step 8`);
-    assert.ok(section(text, 'Back out').includes('The registry identity stays on the ledger until the operator deregisters it, and the deposit returns then. ' + STAKE_LOCKED), `${rel}: Back out`);
+    assert.ok(['This', 'this'].some((word) => eight.includes(`${word} locks 10 units on the capability. ${STAKE_NO_WITHDRAW}`)), `${rel}: step 8`);
+    assert.ok(section(text, 'Back out').includes('The registry identity stays on the ledger until the operator deregisters it, and the deposit returns then. The stake is different. ' + STAKE_NO_WITHDRAW), `${rel}: Back out`);
+    // Round 2 (re-review R1): the signing-key files come back for a deregistration, never for a stake withdrawal, which the module does not allow at the minimum.
+    assert.ok(section(text, 'Back out').includes('When the identity is deregistered later, `python3 make-skey.py`'), `${rel}: Back out, the key files for a deregistration`);
   }
-  assert.ok(read('deploy/host/README.md').includes('The registry identity stays on the ledger until the operator deregisters it, and the deposit returns then. ' + STAKE_LOCKED), 'deploy/host/README.md');
-  // The words of before: a refund after a cooldown, a stake the operator withdraws. No timing parameter of the module is named on these pages.
+  assert.ok(read('deploy/host/README.md').includes('The registry identity stays on the ledger until the operator deregisters it, and the deposit returns then. The stake is different. ' + STAKE_NO_WITHDRAW), 'deploy/host/README.md');
+  // The words of before: a refund after a cooldown, a stake the operator withdraws, a stake that is withdrawn later. No timing parameter of the module is named on these pages.
   for (const rel of ['docs/LAUNCH.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'deploy/host/README.md', ...runbooks, ...Object.keys(AGENTS).map((n) => `specs/${n}.md`)]) {
-    assert.equal(read(rel).match(/cooldown|refundable under the stake|the stake after its|stake stay on the ledger until the operator withdraws|when you withdraw it/i), null, rel);
+    assert.equal(read(rel).match(STAKE_RETURN_WORDS), null, rel);
   }
+  // The guard finds the wordings it exists for, the runbooks' sentence of before round 2 among them, and passes the report's blind spot and the new wording.
+  for (const hit of ['When the identity or the stake is withdrawn later, `python3 make-skey.py` writes', 'the stake is withdrawn after', 'the operator withdraws the stake', 'refundable under the stake\'s own rules (a cooldown applies)', 'the stake after its cooldown', 'The stake stays locked: the module keeps 10 units']) assert.match(hit, STAKE_RETURN_WORDS, hit);
+  for (const miss of ['A withdrawn stake, a closed claim or a spent proposal no longer appears', STAKE_NO_WITHDRAW, 'When the identity is deregistered later, `python3 make-skey.py` writes']) assert.doesNotMatch(miss, STAKE_RETURN_WORDS, miss);
 });
 
 test('docs/HIRE.md (findings 3 and 9, and the copy of section 8): the record is permanent in the chain\'s history, a recovery phrase exposes the whole wallet, and the terminal path copies the file its install leaves out', () => {
@@ -2192,7 +2201,15 @@ test('docs/LAUNCH.md (findings 4 to 8): the lock floor, the fleet prefixes the c
   assert.ok(section(hire(), '3. What the key must hold').includes('The ledger needs between 2.2 and 2.3 in an escrow output of this size'));
   const two = section(text, '2. Let your coding agent build it');
   assert.ok(two.includes('with a capability id that does not start with `llm.text.generate.`, `llm.chat.`, `ocr.page.extract.` or `audio.synthesize.`: the chat hire tools refuse those.'), 'finding 5');
-  assert.ok(two.includes("As of 2026-10-21 the template's `main` is commit `c4c378a`, and its runtime is the one our four agents run."), 'finding 7');
+  assert.ok(two.includes("As of 2026-10-21 the template's `main` is commit `77c7482`: its runtime is the one our four agents run, and a fresh clone installs cleanly."), 'finding 7, round 2: main is 77c7482');
+  // Round 2 (R3): c4c378a is pinned only where a document pins it on purpose (HIRE.md section 8, with its copy line); LAUNCH.md describes main, and the postinstall is merged.
+  assert.equal(text.includes('c4c378a'), false, 'LAUNCH.md does not describe main as c4c378a');
+  assert.equal(text.includes('is proposed in') || text.includes('vector-agent-template/pull/3'), false, 'the postinstall is merged, not proposed');
+  assert.ok(section(text, '3. Post the advert').includes("On a fresh clone of `main`, README step 5's own form also runs on the host: since 2026-10-21 the template's postinstall step copies `libsodium-sumo.mjs` next to its wrapper, as `agent/Dockerfile` does in the image, and the transaction build needs that file."));
+  // Round 2 (R4): the member edits .env; the assistant neither opens nor writes it.
+  assert.ok(two.includes('From here your assistant must not open, write or print `.env`: you edit it yourself.'));
+  assert.ok(section(text, '3. Post the advert').includes('Write the advert reference into `.env` yourself, as `ADVERT_REF`.'));
+  assert.ok(section(text, '4. Boot the runtime and your service').includes('set `SERVICE_URL` in `.env` yourself, to its compose name'));
   const five = section(text, '5. Give your agent an identity from chat');
   assert.ok(five.includes('That line is the key itself: copy it into the config, then clear the terminal.'), 'finding 8');
   assert.ok(five.includes('Put the signer in your user-level client config, never in a project file inside the checkout.'), 'finding 8');
