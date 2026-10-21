@@ -355,7 +355,7 @@ Record the identity in the repository. Once the check above prints 1, open a pul
 
 ## 8. Stake in Module-3
 
-Operator. The same as step 8 of RUNBOOK.md: this locks 10 units on the capability, refundable under the stake's own rules (a cooldown applies). Read the second gotcha at the end of RUNBOOK.md before the run.
+Operator. The same as step 8 of RUNBOOK.md: this locks 10 units on the capability. The stake stays locked: the module keeps 10 units as the minimum, and only stake above it can be decreased. Read the second gotcha at the end of RUNBOOK.md before the run.
 
 ```sh
 cd "$BASE/ops"
@@ -599,7 +599,7 @@ To stop the agent, and as the first move of step 17. The order matters: the adve
 3. Host administrator: remove the Caddy block of this agent from the host's Caddy configuration, validate and reload ([README.md](README.md), the Advocate section), and remove the DNS record if it will not be reused.
 4. Operator: the keys and the state volume. The supplier key has a second plaintext copy that step 7 wrote, in two files of a directory: `shred -u "$BASE/ops/wallet/payment.skey" "$BASE/ops/wallet/payment.vkey"`, then `rmdir "$BASE/ops/wallet"` (`shred` does not take a directory, and `rmdir` refuses one that holds anything else). The env file still holds both keys, and so does the operator's offline store: keep both until both wallets are empty, because a wallet whose key is gone is gone. The buyer wallet is emptied last, with the buyer key, once `stranded.json` is `[]` or lists only escrows whose janitor line reads `janitor: kept <escrow>: Submitted: it cannot be reclaimed, and its supplier may release it from <time> at the latest` (or was never written; with the containers down, read it with `docker run --rm -v advocate-state:/data alpine cat /data/stranded.json`): its float and its collateral go back to the Foundation. No script of this pack does that: none signs with the buyer key, so the float stays in the wallet until the operator signs the transfer with the buyer key by other means (the byte-preserving signer pointed at a signing-key file made from the buyer key and shredded afterwards, as in the `store_write_failed` row of the table at the end). The volume goes after the buyer wallet, and only when the agent will not come back: `docker volume rm advocate-state`. When the identity or the stake is withdrawn later, `python3 make-skey.py` writes the directory again from the env file for that signing, and it is removed again afterwards. The two API keys stay valid on their accounts until the operator revokes them there: revoke them when the agent will not come back.
 
-The registry identity and the Module-3 stake stay on the ledger until the operator withdraws them. The deposit returns on deregistration and the stake after its cooldown.
+The registry identity stays on the ledger until the operator deregisters it, and the deposit returns then. The stake stays locked: the module keeps 10 units as the minimum, and only stake above it can be decreased.
 
 ## If something goes wrong
 
