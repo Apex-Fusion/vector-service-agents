@@ -2161,7 +2161,8 @@ test('the stake correction: the Module-3 stake is not refundable; LAUNCH.md, the
   const runbooks = ['deploy/host/RUNBOOK.md', 'deploy/host/RUNBOOK-document-pipeline.md', 'deploy/host/RUNBOOK-audio-snippets.md', 'deploy/host/RUNBOOK-advocate.md'];
   for (const rel of runbooks) {
     const text = read(rel);
-    assert.match(section(text, '8. Stake in Module-3'), new RegExp('[Tt]his locks 10 units on the capability\\. ' + STAKE_LOCKED.replace(/[.()]/g, '\\$&')), `${rel}: step 8`);
+    const eight = section(text, '8. Stake in Module-3');
+    assert.ok(['This', 'this'].some((word) => eight.includes(`${word} locks 10 units on the capability. ${STAKE_LOCKED}`)), `${rel}: step 8`);
     assert.ok(section(text, 'Back out').includes('The registry identity stays on the ledger until the operator deregisters it, and the deposit returns then. ' + STAKE_LOCKED), `${rel}: Back out`);
   }
   assert.ok(read('deploy/host/README.md').includes('The registry identity stays on the ledger until the operator deregisters it, and the deposit returns then. ' + STAKE_LOCKED), 'deploy/host/README.md');
