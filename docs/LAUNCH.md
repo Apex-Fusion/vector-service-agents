@@ -1,6 +1,6 @@
 # Launch your own agent from a chat client
 
-A guide for a developer who has read [HIRE.md](HIRE.md). You build your own supplier agent from the template and put it on Vector mainnet with an advert. From your chat client you give it an on-chain identity, and, if you want, a reputation stake from the Module-3 SDK. Then you hire it once from the same chat client and check the receipt. The chat client is Claude Code, Codex, Claude Desktop or any MCP client, with the hosted keyless MCP server and the signer on your own machine.
+A guide for a developer who has read [HIRE.md](HIRE.md). You build your own supplier agent from the template and put it on Vector mainnet with an advert. From your chat client you give it an on-chain identity. If you want, you add a reputation stake with the Module-3 SDK, from a terminal. Then you hire it once from the same chat client and check the receipt. The chat client is Claude Code, Codex, Claude Desktop or any MCP client, with the hosted keyless MCP server and the signer on your own machine.
 
 **Status on 2026-10-21.** This guide was written on 2026-10-21. Every tool it names is on the hosted mainnet server, which lists 33 tools, or in the signer, version 2.0.0. No launch by anyone outside the team is recorded yet. The npm signer has not yet signed a registration on mainnet: our four agents were registered through the same hosted tool with another local signer. No third-party audit of the marketplace contracts exists.
 
@@ -15,21 +15,21 @@ What each step costs, in units. Fees are about 0.5 a transaction, the fee floor 
 
 | Step | Locked | Comes back | Transactions | Source |
 |---|---|---|---|---|
-| 3. The advert | about 2 | when you retire the advert, with the template's `retire-advert` command | 1 | [deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#12-post-the-advert) step 12; the template's [docs/LIFECYCLE.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/LIFECYCLE.md) |
+| 3. The advert | about 2 | when you retire the advert, with the template's `retire-advert` command, run in your own terminal | 1 | [deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#12-post-the-advert) step 12; the template's [docs/LIFECYCLE.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/LIFECYCLE.md) |
 | 5. The registry deposit | 10 | when you deregister, with `vector_build_deregister_agent` | 1 | `vector_build_register_agent`; [HIRE.md](HIRE.md) section 7; the template's [docs/TRUST-LAYER.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/TRUST-LAYER.md) |
-| 6. The stake, optional | 10, the minimum | after a cooldown, when you withdraw it | 2: a seed output, then the stake | the template's [docs/TRUST-LAYER.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/TRUST-LAYER.md); the Module-3 SDK |
+| 6. The stake, optional | 10, the minimum | never: the stake stays locked. The module keeps 10 units as the minimum, and only stake above it can be decreased | 2: a seed output, then the stake | the Module-3 SDK: its spec, section 6.2, and `stake_validation.ak` |
 | Each job your agent takes | nothing | | 2: the Claim and the Submit, from the supplier key | [template README](https://github.com/Apex-Fusion/vector-agent-template#real-economics) |
-| 7. The test hire, from your hiring key | the price and both bonds | on Accept your bond returns to your hiring key, and your supplier key receives the price and the supplier bond | 2: the Post and the Accept | [HIRE.md](HIRE.md) section 3 |
+| 7. The test hire, from your hiring key | the price and both bonds, raised to the ledger's minimum for the escrow output (about 2.2 to 2.3) when that sum is lower | on Accept your bond returns to your hiring key, and your supplier key receives the price and the supplier bond | 2: the Post and the Accept | [HIRE.md](HIRE.md) section 3 |
 
 ## 2. Let your coding agent build it
 
-Open your coding agent in an empty folder and point it at the [template README](https://github.com/Apex-Fusion/vector-agent-template#quickstart). Its runtime is the one our four agents run, at commit `c4c378a`. Ask your agent to:
+Open your coding agent in an empty folder and point it at the [template README](https://github.com/Apex-Fusion/vector-agent-template#quickstart). As of 2026-10-21 the template's `main` is commit `c4c378a`, and its runtime is the one our four agents run. Ask your agent to:
 
 - clone the template and install it (README step 1);
 - copy `.env.example` to `.env` (README step 4);
 - wire your service: `SERVICE_URL` for a service that speaks HTTP, or the body of `makeHttpCalloutExecutor` in `agent/src/executor/httpCallout.ts` for anything else (README, "Plug in your software"). Your service receives the wire payload, a one-element array, so it reads `JSON.parse(body)[0].content`;
 - set `CAPABILITY_KIND=custom`, your window in `ADVERT_MAX_PROCESSING_MS` and `SERVICE_TIMEOUT_MS` at least 60 s under it (the template's [docs/GOTCHAS.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/GOTCHAS.md));
-- pick a capability id and a model string by the pattern of README "Naming your listing".
+- pick a capability id and a model string by the pattern of README "Naming your listing", with a capability id that does not start with `llm.text.generate.`, `llm.chat.`, `ocr.page.extract.` or `audio.synthesize.`: the chat hire tools refuse those.
 
 One step is yours. The template's `gen-keypair` prints the supplier's private key. Run it in your own terminal, never through your assistant's shell tool: the output of a shell tool goes back into the conversation, so the key would reach your model provider. From the root of the checkout:
 
@@ -39,7 +39,9 @@ corepack pnpm --filter @marketplace/supplier exec tsx src/cli/gen-keypair.ts --n
 
 It prints one JSON object with four fields. Put all four into `.env` yourself (README step 2): `privateKeyHex` into `SUPPLIER_PRIV_KEY_HEX`, `publicKeyHex` into `SUPPLIER_PUB_KEY_HEX`, `pubKeyHash` into `SUPPLIER_PKH` and `address` into `SUPPLIER_ADDRESS`. No recovery phrase exists for this key, and that JSON is the only copy (the template's [docs/WALLET.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/WALLET.md)). Keep it in a password manager. The template's `.gitignore` keeps `.env` out of git.
 
-From here your assistant must not open or print `.env`. It may load it into the environment of a command, with `set -a; . ./.env; set +a` (README step 4). `BUYER_PRIV_KEY_HEX` is for the template's own terminal buyer. The chat path hires with your hiring key instead, so leave it empty.
+From here your assistant must not open or print `.env`. `BUYER_PRIV_KEY_HEX` is for the template's own terminal buyer. The chat path hires with your hiring key instead, so leave it empty.
+
+Every command that reads `.env` or handles the supplier key runs in your own terminal, never through your assistant's shell tool: `gen-keypair` above, `post-advert` (section 3), `retire-advert`, `docker compose up -d` and `--force-recreate` (section 4), the conversions of sections 5 and 6, and the SDK run of section 6. Your assistant may write these commands, but it does not run them. Never let it run `cat .env`, `docker compose config` (it prints the values of `.env`), `docker inspect` on the agent container, or `env` or `printenv` in that container: each puts the key into the conversation. If your client can deny your assistant read access to a file, deny it `.env`: in Claude Code, a `permissions.deny` entry for `Read(./.env)` in the project's `.claude/settings.json`.
 
 Send `SUPPLIER_ADDRESS`, and only the address, to whoever supplies your supplier key, or send the two transfers yourself.
 
@@ -47,7 +49,7 @@ Check: ask your assistant for the UTxOs of your supplier address (`vector_get_ut
 
 ## 3. Post the advert
 
-The advert names your capability id, your model string, your price, your window and your public endpoint. Post it with the command of README step 5, run inside the runtime's image, as our runbook does ([deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#12-post-the-advert) step 12). On the host of a fresh clone the command stops when it builds the transaction, with `Cannot find module` for `libsodium-sumo.mjs`: pnpm's store layout puts that file in a sibling package, and the template's `agent/Dockerfile` copies it into place in the image. Compose passes `.env` into the container, the Ogmios URL and the network included, so the command reads the key there and prints the advert reference, not the key. You or your assistant can run it. Run it once with `--dry-run` after `post-advert.ts` first and read the datum it prints. A dry run sends nothing.
+The advert names your capability id, your model string, your price, your window and your public endpoint. Post it with the command of README step 5, run inside the runtime's image, as our runbook does ([deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#12-post-the-advert) step 12). On the host of a fresh clone of `c4c378a` the command stops when it builds the transaction, with `Cannot find module` for `libsodium-sumo.mjs`: pnpm's store layout puts that file in a sibling package, and the template's `agent/Dockerfile` copies it into place in the image. A postinstall step that makes the same copy on the host is proposed in [Apex-Fusion/vector-agent-template#3](https://github.com/Apex-Fusion/vector-agent-template/pull/3). Compose passes `.env` into the container, the Ogmios URL and the network included, so the command reads the key there and prints the advert reference, not the key. Run it in your own terminal. Your assistant may write the command, but it does not run it. Run it once with `--dry-run` after `post-advert.ts` first and read the datum it prints. A dry run sends nothing.
 
 ```bash
 docker compose -f deploy/docker-compose.yml run --rm --no-deps -T agent \
@@ -72,7 +74,7 @@ Check: the command printed the advert reference, `<txid>#<index>`, and the trans
 
 ## 4. Boot the runtime and your service
 
-README step 6. Under Docker Compose, `docker compose -f deploy/docker-compose.yml up -d` starts the runtime and the demo service. Replace the demo with your own service and set `SERVICE_URL` to its compose name: inside a container the loopback address is the container itself (the template's [docs/GOTCHAS.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/GOTCHAS.md)). Point your public HTTPS name at the runtime's port. After any change to `.env`, recreate the container with `docker compose -f deploy/docker-compose.yml up -d --force-recreate`: `docker compose restart` keeps the old environment.
+README step 6. Under Docker Compose, `docker compose -f deploy/docker-compose.yml up -d`, run in your own terminal, starts the runtime and the demo service. Replace the demo with your own service and set `SERVICE_URL` to its compose name: inside a container the loopback address is the container itself (the template's [docs/GOTCHAS.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/GOTCHAS.md)). Point your public HTTPS name at the runtime's port. After any change to `.env`, recreate the container in your own terminal with `docker compose -f deploy/docker-compose.yml up -d --force-recreate`: `docker compose restart` keeps the old environment.
 
 Check, on the public URL:
 
@@ -97,7 +99,7 @@ read -rs SUPPLIER_PRIV_KEY_HEX && export SUPPLIER_PRIV_KEY_HEX
 unset SUPPLIER_PRIV_KEY_HEX
 ```
 
-It prints one line, in the form `keygen` prints. Its value goes into `VECTOR_SIGNER_PRIVATE_KEY` of the signer entry in your client config ([HIRE.md](HIRE.md) section 4), and your `SUPPLIER_ADDRESS` goes into `VECTOR_SIGNER_ADDRESS`: it is the address of the same key. The signer does not check that the key and the address belong together. A wrong pair fails at submission, and nothing moves. The client config file now holds the supplier key in plain text, and that key controls your agent's float and its record: the warning of [HIRE.md](HIRE.md) section 4 applies.
+It prints one line, in the form `keygen` prints. That line is the key itself: copy it into the config, then clear the terminal. Its value goes into `VECTOR_SIGNER_PRIVATE_KEY` of the signer entry in your client config ([HIRE.md](HIRE.md) section 4), and your `SUPPLIER_ADDRESS` goes into `VECTOR_SIGNER_ADDRESS`: it is the address of the same key. Put the signer in your user-level client config, never in a project file inside the checkout. The signer does not check that the key and the address belong together. A wrong pair fails at submission, and nothing moves. The client config file now holds the supplier key in plain text, and that key controls your agent's float and its record: the warning of [HIRE.md](HIRE.md) section 4 applies.
 
 Restart your client and ask "What is my signer address?" The answer must be your `SUPPLIER_ADDRESS`.
 
@@ -119,14 +121,26 @@ What is public and permanent. The record holds the owner's key hash, the name, t
 
 ## 6. Stake (optional)
 
-A stake is not available as a chat tool today: the hosted server has no stake builder and no advert builder. Advert and stake builders for the hosted server are planned: work on them started on 2026-10-21, for review in the mcp-server repository. Neither is on the hosted server, and this guide does not use them. Until they are, the template's command line posts the advert (section 3), and the public Module-3 SDK makes the stake.
+A stake is not available as a chat tool today: the hosted server has no stake builder and no advert builder. Advert and stake builders for the hosted server are planned: a draft pull request, [Apex-Fusion/mcp-server#25](https://github.com/Apex-Fusion/mcp-server/pull/25), adds builders to post and retire an advert and to make the stake in two steps, with no unstake, because the minimum cannot be withdrawn. They are not on the hosted server, and this guide does not use them. Until they are, the template's command line posts the advert (section 3), and the public Module-3 SDK makes the stake.
+
+Lock only what you mean to leave there. The stake stays locked: the module keeps 10 units as the minimum, and only stake above it can be decreased.
 
 The SDK is Python, in `Module-3/python` of [Apex-Fusion/vector-agent-modules](https://github.com/Apex-Fusion/vector-agent-modules/tree/master/Module-3). Its README has a quick start, and `Module-3/docs/single-agent-instructions.md` has the steps for a staker. What it takes:
 
 - A registry record first (section 5). The staked capabilities must be a subset of the record's: here, the one capability you advertise.
-- Your key as a cardano-cli `.skey` file, the form its `load_wallet` reads. That puts one more plaintext copy of the supplier key on disk: remove the file once the stake has confirmed, as our runbook does ([deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#back-out), point 4).
+- The supplier key as a cardano-cli `.skey` file, the form its `load_wallet` reads (below).
 - The asset name of your record, the last part of your DID, as `agent_did`.
 - Two transactions: `create_seed_utxo` puts a seed output at the reputation address, then `create_stake` takes your capabilities, a `stake_amount` of 10000000 lovelace (10) and that seed output as `seed_utxo`.
+
+Make the file and run the SDK in your own terminal, never through your assistant's shell tool. At the root of your template checkout, paste the 64 hex of `SUPPLIER_PRIV_KEY_HEX`, without the name, and press Enter. The file goes to your home folder, outside the checkout, with mode 600 on Linux and macOS, and the command refuses to overwrite a file that is already there:
+
+```bash
+read -rs SUPPLIER_PRIV_KEY_HEX && export SUPPLIER_PRIV_KEY_HEX
+node -e "const h=process.env.SUPPLIER_PRIV_KEY_HEX;/^[0-9a-f]{64}$/.test(h)||(console.error('expected 64 lowercase hex characters'),process.exit(1));require('fs').writeFileSync(process.argv[1],JSON.stringify({type:'PaymentSigningKeyShelley_ed25519',description:'',cborHex:'5820'+h})+'\n',{mode:0o600,flag:'wx'})" "$HOME/supplier.skey"
+unset SUPPLIER_PRIV_KEY_HEX
+```
+
+Give `load_wallet` the path of that file. The file is one more plaintext copy of the supplier key: remove it once the stake has confirmed, with `rm "$HOME/supplier.skey"` in your own terminal, as our runbook removes its copy ([deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#back-out), point 4).
 
 Check the SDK's network constants before you lock anything. It ships with testnet values in `reputation_staking/constants.py`: the genesis time `SYSTEM_START_UNIX_S = 1752057484` and the testnet Ogmios and submit URLs. Our deployments had to replace the genesis time with the mainnet one, `1756485600` (2025-08-29T16:40:00Z, the template's `VECTOR_ZERO_TIME_MS` divided by 1000). With the testnet value the stake's `last_updated` lands about 51 days off and the validator refuses the stake ([deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#two-gotchas-that-cost-real-transactions), the second gotcha). Change it in `constants.py` itself, because the SDK's other modules copy the value when they load. Pass the mainnet Ogmios and submit URLs that the SDK's README lists, and use `deploy/mainnet/deploy_state.json`.
 
@@ -141,7 +155,7 @@ Then paste the six messages of [HIRE.md](HIRE.md) section 5, with two changes: a
 | Message | What you check |
 |---|---|
 | 2 | Your advert is listed with your price, bonds 1 and 1, your model string and your window. |
-| 3 | The lock is your price plus both bonds. The wait ends with "Transaction Confirmed". |
+| 3 | The lock is your price plus both bonds, raised to the ledger's minimum for the escrow output (about 2.2 to 2.3) when that sum is lower; the tool prints the lock beside the price and both bonds. The wait ends with "Transaction Confirmed". |
 | 4 | Your runtime claims the escrow, which takes up to 60 s, calls your service and returns its answer with the receipt. |
 | 5 | The verdict reads VERIFIED and every row of the check table says pass. Accept within 600 s of the Submit. |
 

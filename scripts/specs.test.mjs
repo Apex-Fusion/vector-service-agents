@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { createHash, createPublicKey, randomBytes, verify as verifySignature } from 'node:crypto';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { createHash, createPrivateKey, createPublicKey, randomBytes, verify as verifySignature } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { join, relative } from 'node:path';
@@ -543,7 +544,7 @@ const FOUNDATION_WAY = "The Foundation supplies collateral and float for working
 // VECTOR_SIGNER_ADDRESS first, then a recovery phrase inline or from a file; keysource.ts takes a key that matches /^ed25519e?_sk1[0-9a-z]+$/ with an addr1 address,
 // and derives from a recovery phrase the signing key of the first address of one account (index 0 unless set). A raw 64-hex key matches neither, so the sentence of
 // before (2026-10-15 to 2026-10-21), which said the signer took only a keygen key and no recovery phrase, was not true, and LAUNCH.md section 5 converts a template key.
-const SIGNER_READS = "The signer reads a bech32 key that starts `ed25519_sk1`, the form `keygen` prints, with its `addr1` address, or a wallet's recovery phrase, from which it signs for one address only, the first of one account. It does not read a raw 64-hex key, such as the template's: [LAUNCH.md](LAUNCH.md) section 5 converts one. This guide uses the key from `keygen`, so a wallet's balance has to be sent to the address `keygen` printed.";
+const SIGNER_READS = "The signer reads a bech32 key that starts `ed25519_sk1`, the form `keygen` prints, with its `addr1` address, or a wallet's recovery phrase, from which it signs for one address only, the first of one account, but the phrase in your config exposes the whole wallet, so this guide never uses one. It does not read a raw 64-hex key, such as the template's: [LAUNCH.md](LAUNCH.md) section 5 converts one. This guide uses the key from `keygen`, so a wallet's balance has to be sent to the address `keygen` printed.";
 
 test('docs/HIRE.md section 3: two ways to get the collateral and the float onto the key, the Foundation way kept word for word, the own way says Vector mainnet, the key forms the signer reads and 5 alone before the float; the cost table and the check come after both', () => {
   const three = section(hire(), '3. What the key must hold');
@@ -1911,7 +1912,9 @@ const HOSTED_TOOLS = [
 // The four tools of the signer (packages/signer/src/tools.ts at the same commit).
 const SIGNER_TOOLS = ['vector_signer_get_address', 'vector_signer_decode_transaction', 'vector_signer_sign', 'vector_signer_get_spend_limits'];
 // The sentence that says where the advert and stake builders stand on 2026-10-21: planned, not on the hosted server.
-const BUILDERS_PLANNED = 'Advert and stake builders for the hosted server are planned: work on them started on 2026-10-21, for review in the mcp-server repository. Neither is on the hosted server, and this guide does not use them.';
+// Since 2026-10-21 a draft pull request holds them, Apex-Fusion/mcp-server#25: post and retire an advert, and the stake in two steps, with no unstake. A draft, not merged,
+// not on the hosted server, so the guide still calls them planned.
+const BUILDERS_PLANNED = 'Advert and stake builders for the hosted server are planned: a draft pull request, [Apex-Fusion/mcp-server#25](https://github.com/Apex-Fusion/mcp-server/pull/25), adds builders to post and retire an advert and to make the stake in two steps, with no unstake, because the minimum cannot be withdrawn. They are not on the hosted server, and this guide does not use them.';
 // The words a public line of the launch guide does not use (its content rules). Each is spelled in two parts, as UNIT_NAME is, so that a search for the words finds none
 // in this file. "payload" is a word of its own and passes.
 const MONEY_WORDS = new RegExp('\\b(' + [['p', 'ays?'], ['p', 'aid'], ['p', 'ayments?'], ['p', 'ayers?'], ['e', 'arn\\w*'], ['mon', 'ey'], ['f', 'und(s|ed|ing)?'], ['sp', 'end\\w*'], ['sp', 'ent'], ['reve', 'nue'], ['gover', 'nance']].map((p) => p.join('')).join('|') + ')\\b', 'i');
@@ -1928,6 +1931,28 @@ const CONVERSION_BLOCK = [
 ].join('\n');
 // A heading as a GitHub anchor: lower case, punctuation dropped, spaces as hyphens.
 const slug = (heading) => heading.trim().toLowerCase().replace(/[^a-z0-9 _-]/g, '').replace(/ /g, '-');
+// The Ed25519 public key of a 32-byte seed given as 64 hex, by node:crypto alone: the seed in a PKCS8 envelope, the raw key the last 32 bytes of the SPKI.
+const publicKeyOfSeed = (hex) => createPublicKey(createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), Buffer.from(hex, 'hex')]), format: 'der', type: 'pkcs8' })).export({ format: 'der', type: 'spki' }).subarray(-32);
+// The fix round of 2026-10-21 (review v1, findings 1 to 10, the stake correction, the builders' draft, the copy of HIRE.md section 8). The sentences below are pinned.
+// Every command that reads .env or handles the supplier key is the member's, in the member's own terminal (findings 1 and 2).
+const OWN_TERMINAL = "Every command that reads `.env` or handles the supplier key runs in your own terminal, never through your assistant's shell tool: `gen-keypair` above, `post-advert` (section 3), `retire-advert`, `docker compose up -d` and `--force-recreate` (section 4), the conversions of sections 5 and 6, and the SDK run of section 6. Your assistant may write these commands, but it does not run them. Never let it run `cat .env`, `docker compose config` (it prints the values of `.env`), `docker inspect` on the agent container, or `env` or `printenv` in that container: each puts the key into the conversation. If your client can deny your assistant read access to a file, deny it `.env`: in Claude Code, a `permissions.deny` entry for `Read(./.env)` in the project's `.claude/settings.json`.";
+const RUN_IT_YOURSELF = 'Run it in your own terminal. Your assistant may write the command, but it does not run it.';
+const SKEY_RULE = "Make the file and run the SDK in your own terminal, never through your assistant's shell tool.";
+// The block of section 6 that writes the cardano-cli .skey the SDK's load_wallet reads. Run verbatim offline on 2026-10-21 with a throwaway key: pycardano 0.19.2,
+// with the three lines of load_wallet, read it back as the template's public key, key hash and address. A test below runs its node code again.
+const SKEY_BLOCK = [
+  'read -rs SUPPLIER_PRIV_KEY_HEX && export SUPPLIER_PRIV_KEY_HEX',
+  `node -e "const h=process.env.SUPPLIER_PRIV_KEY_HEX;/^[0-9a-f]{64}$/.test(h)||(console.error('expected 64 lowercase hex characters'),process.exit(1));require('fs').writeFileSync(process.argv[1],JSON.stringify({type:'PaymentSigningKeyShelley_ed25519',description:'',cborHex:'5820'+h})+'\\n',{mode:0o600,flag:'wx'})" "$HOME/supplier.skey"`,
+  'unset SUPPLIER_PRIV_KEY_HEX',
+].join('\n');
+const SKEY_REMOVE = 'The file is one more plaintext copy of the supplier key: remove it once the stake has confirmed, with `rm "$HOME/supplier.skey"` in your own terminal';
+// The Module-3 stake is not refundable (the SDK's spec, section 6.2, and stake_validation.ak: a decrease must leave at least the minimum self-stake in a continuing output).
+// The public wording, everywhere the stake's return is spoken of; no timing parameter of the module is named.
+const STAKE_LOCKED = 'The stake stays locked: the module keeps 10 units as the minimum, and only stake above it can be decreased.';
+const HIRE_PERMANENT = "The name and the description you enter are public and permanent: the transaction that writes them stays in the ledger's history after you deregister. Deregistering returns the deposit; it does not erase that transaction. Put no personal data in them.";
+// HIRE.md section 8 pins the template at c4c378a, whose install leaves libsodium-sumo.mjs out of the wrapper's folder (the lockfile there pins libsodium 0.7.16).
+const LIBSODIUM_COPY = 'cp node_modules/.pnpm/libsodium-sumo@0.7.16/node_modules/libsodium-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs node_modules/.pnpm/libsodium-wrappers-sumo@0.7.16/node_modules/libsodium-wrappers-sumo/dist/modules-sumo-esm/';
+const LIBSODIUM_WHY = "That copy is the one the template's `agent/Dockerfile` makes in its image. pnpm's store layout puts `libsodium-sumo.mjs` in a sibling package, and without it the buyer stops at the transaction build with `Cannot find module`.";
 
 test('docs/LAUNCH.md: the title, the eight sections in the order a member does them, a check in every section after the first, and the README lists it next to HIRE.md', () => {
   const text = launch();
@@ -1979,7 +2004,8 @@ test('docs/LAUNCH.md: every relative link resolves to a file of the repository, 
     assert.ok(headings.includes(anchor), `${target}: the anchor is a heading of ${path}`);
   }
   // The external links go to the public repositories the guide is about, on their default branches.
-  for (const url of launch().match(/https:\/\/github\.com\/[^\s)]+/g)) assert.match(url, /^https:\/\/github\.com\/Apex-Fusion\/(vector-agent-template(#|\/blob\/main\/)|vector-agent-modules\/tree\/master\/Module-3$|vector-service-agents\/issues$)/, url);
+  // Two pull requests are linked as what they are, open proposals: the builders' draft (mcp-server#25) and the template's install step (vector-agent-template#3).
+  for (const url of launch().match(/https:\/\/github\.com\/[^\s)]+/g)) assert.match(url, /^https:\/\/github\.com\/Apex-Fusion\/(vector-agent-template(#|\/blob\/main\/)|vector-agent-template\/pull\/3$|vector-agent-modules\/tree\/master\/Module-3$|vector-service-agents\/issues$|mcp-server\/pull\/25$)/, url);
 });
 
 test('docs/LAUNCH.md: the costs are the ones of the runbooks, the template docs and the register tool, each with its source', () => {
@@ -1987,8 +2013,9 @@ test('docs/LAUNCH.md: the costs are the ones of the runbooks, the template docs 
   const row = (start) => one.split('\n').find((l) => l.startsWith(start)) ?? '';
   assert.match(row('| 3. The advert |'), /^\| 3\. The advert \| about 2 \| when you retire the advert, .* \| 1 \| .*RUNBOOK\.md#12-post-the-advert/);
   assert.match(row('| 5. The registry deposit |'), /^\| 5\. The registry deposit \| 10 \| when you deregister, with `vector_build_deregister_agent` \| 1 \| `vector_build_register_agent`; \[HIRE\.md\]\(HIRE\.md\) section 7; .*TRUST-LAYER\.md/);
-  assert.match(row('| 6. The stake, optional |'), /^\| 6\. The stake, optional \| 10, the minimum \| after a cooldown, when you withdraw it \| 2: a seed output, then the stake \| .*TRUST-LAYER\.md.*Module-3 SDK \|$/);
-  assert.match(row('| 7. The test hire, from your hiring key |'), /the price and both bonds \| on Accept your bond returns to your hiring key, and your supplier key receives the price and the supplier bond \| 2: the Post and the Accept \| \[HIRE\.md\]\(HIRE\.md\) section 3 \|$/);
+  // The stake is not refundable (Module-3 spec section 6.2, stake_validation.ak): the row says so in the public wording, and no cooldown is named.
+  assert.equal(row('| 6. The stake, optional |'), '| 6. The stake, optional | 10, the minimum | never: the stake stays locked. The module keeps 10 units as the minimum, and only stake above it can be decreased | 2: a seed output, then the stake | the Module-3 SDK: its spec, section 6.2, and `stake_validation.ak` |');
+  assert.match(row('| 7. The test hire, from your hiring key |'), /the price and both bonds, raised to the ledger's minimum for the escrow output \(about 2\.2 to 2\.3\) when that sum is lower \| on Accept your bond returns to your hiring key, and your supplier key receives the price and the supplier bond \| 2: the Post and the Accept \| \[HIRE\.md\]\(HIRE\.md\) section 3 \|$/);
   assert.ok(one.includes('Fees are about 0.5 a transaction, the fee floor'));
   // The numbers are the runbook's: the deposit, the stake, the advert lock, the fee, the setup and the float of 50.
   const runbook = readFileSync(new URL('../deploy/host/RUNBOOK.md', import.meta.url), 'utf8');
@@ -2018,7 +2045,7 @@ test("docs/LAUNCH.md: the key is made and converted in the member's own terminal
   assert.ok(section(hire(), '8. The terminal path').includes("const d=bech32.decode(process.env.VECTOR_SIGNER_PRIVATE_KEY,1023);process.stdout.write(Buffer.from(bech32.fromWords(d.words)).toString('hex'))"));
 });
 
-test("docs/LAUNCH.md: the node code of the conversion turns a throwaway 64-hex key into the bech32 key CML makes of the same 32 bytes, with the key hash and address of the template's derivation", () => {
+test("docs/LAUNCH.md: the node code of the conversion turns a throwaway 64-hex key into the bech32 key CML makes of the same 32 bytes, and the signer's reading of it has the public key node:crypto derives from the seed and the key hash and address the template derives", () => {
   // The bech32 library the template's try-it folder requires (bech32 ^2.0.0) is in this repository's store as a dependency of its dependencies; the code runs as the member runs it.
   const store = fileURLToPath(new URL('../node_modules/.pnpm/', import.meta.url));
   const dir = readdirSync(store).find((name) => /^bech32@2\./.test(name));
@@ -2038,11 +2065,15 @@ test("docs/LAUNCH.md: the node code of the conversion turns a throwaway 64-hex k
     assert.ok(m, 'one line in the form keygen prints');
     assert.match(m[1], /^ed25519e?_sk1[0-9a-z]+$/, 'the form packages/signer/src/keysource.ts accepts');
     assert.equal(m[1], CML.PrivateKey.from_normal_bytes(Buffer.from(hex, 'hex')).to_bech32(), 'the bech32 CML makes of the same 32 bytes');
-    // The template derives the key hash as blake2b-224 of the public key and the address as an enterprise address with header 0x61 (agent/src/cli/gen-keypair.ts).
-    const pub = CML.PrivateKey.from_bech32(m[1]).to_public();
-    const pkh = Buffer.from(blake2b(pub.to_raw_bytes(), { dkLen: 28 })).toString('hex');
-    assert.equal(pub.hash().to_hex(), pkh, "the key hash the signer signs with is the template's SUPPLIER_PKH");
+    // The expected values come from outside CML. The public key: node:crypto's Ed25519 from the 32-byte seed (RFC 8032, as @noble/ed25519 in the template's
+    // gen-keypair). The key hash: blake2b-224 of that public key, with the @noble/hashes the template uses. The address: an enterprise address with header 0x61,
+    // bech32 under "addr" (agent/src/cli/gen-keypair.ts). The signer's reading of the printed key (CML, as sign.ts parses it) must give all three.
+    const expectedPub = publicKeyOfSeed(hex);
+    const pkh = Buffer.from(blake2b(expectedPub, { dkLen: 28 })).toString('hex');
     const address = bech32.encode('addr', bech32.toWords(Buffer.concat([Buffer.from([0x61]), Buffer.from(pkh, 'hex')])), 1023);
+    const pub = CML.PrivateKey.from_bech32(m[1]).to_public();
+    assert.equal(Buffer.from(pub.to_raw_bytes()).toString('hex'), expectedPub.toString('hex'), "the signer's public key is the one node:crypto derives from the template's seed");
+    assert.equal(pub.hash().to_hex(), pkh, "the key hash the signer signs with is the template's SUPPLIER_PKH");
     assert.equal(CML.EnterpriseAddress.new(1, CML.Credential.new_pub_key(pub.hash())).to_address().to_bech32(), address, "the address is the template's SUPPLIER_ADDRESS");
   }
   // A key that is not 64 lowercase hex prints nothing on stdout and stops with the message.
@@ -2052,7 +2083,8 @@ test("docs/LAUNCH.md: the node code of the conversion turns a throwaway 64-hex k
 test('docs/LAUNCH.md, the new sentence of HIRE.md section 3(b) and the new README line: hyphens only, none of the words of the content rules, no unit name, no person, no host of the Foundation, no status word', () => {
   const readmeLine = '- Launch your own agent from a chat client: `docs/LAUNCH.md`';
   assert.ok(PERSON_NAMES.source.startsWith('\\b(') && PERSON_NAMES.source.split('|').length >= 10, 'the names guard was read from scripts/deploy.test.mjs');
-  for (const [name, text] of [['docs/LAUNCH.md', launch()], ['HIRE.md section 3(b)', SIGNER_READS], ['README.md', readmeLine]]) {
+  const added = [['docs/LAUNCH.md', launch()], ['HIRE.md section 3(b)', SIGNER_READS], ['README.md', readmeLine], ['HIRE.md section 7', HIRE_PERMANENT], ['HIRE.md section 8', `${LIBSODIUM_COPY}\n${LIBSODIUM_WHY}`], ['the runbooks and the host README', STAKE_LOCKED]];
+  for (const [name, text] of added) {
     assert.equal(text.match(DASHES), null, `${name}: hyphens only`);
     assert.equal(text.match(MONEY_WORDS), null, `${name}: none of the words of the content rules`);
     assert.equal(text.match(UNIT_NAME), null, `${name}: units, not the name`);
@@ -2069,4 +2101,98 @@ test('docs/LAUNCH.md, the new sentence of HIRE.md section 3(b) and the new READM
   // The first-party label stays on the hire of one's own agent, and the guide says what is not yet recorded.
   assert.ok(section(launch(), '7. Test-hire your own agent from chat').includes('A hire of your own agent is first-party. It shows that the path works. It is not demand.'));
   assert.ok(launch().includes('No launch by anyone outside the team is recorded yet. The npm signer has not yet signed a registration on mainnet: our four agents were registered through the same hosted tool with another local signer. No third-party audit of the marketplace contracts exists.'));
+});
+
+// ---- The fix round of 2026-10-21 (launch-docs review v1) ----
+
+test('docs/LAUNCH.md (findings 1 and 2): every command that reads .env or handles the supplier key is run in the member\'s own terminal, the assistant is told what never to run, and nothing lets it run them', () => {
+  const text = launch();
+  const two = section(text, '2. Let your coding agent build it');
+  assert.ok(two.includes('\n' + OWN_TERMINAL + '\n'), 'section 2 has the paragraph, alone');
+  for (const command of ['`cat .env`', '`docker compose config`', '`docker inspect`', '`env`', '`printenv`', '`Read(./.env)`']) assert.ok(OWN_TERMINAL.includes(command), `the paragraph names ${command}`);
+  assert.ok(section(text, '3. Post the advert').includes(RUN_IT_YOURSELF), 'section 3: the advert is posted in the member\'s own terminal');
+  const four = section(text, '4. Boot the runtime and your service');
+  assert.ok(four.includes('`docker compose -f deploy/docker-compose.yml up -d`, run in your own terminal, starts the runtime and the demo service.'));
+  assert.ok(four.includes('recreate the container in your own terminal with `docker compose -f deploy/docker-compose.yml up -d --force-recreate`'));
+  assert.ok(section(text, '1. What you need').includes("with the template's `retire-advert` command, run in your own terminal"));
+  const six = section(text, '6. Stake (optional)');
+  assert.ok(six.includes(SKEY_RULE), 'section 6: the .skey file and the SDK run are the member\'s');
+  assert.ok(six.includes('```bash\n' + SKEY_BLOCK + '\n```'), 'section 6: the block that writes the .skey, verbatim');
+  assert.ok(six.indexOf(SKEY_RULE) < six.indexOf('read -rs'), 'the rule comes before the block');
+  assert.ok(six.includes(SKEY_REMOVE), 'section 6: the file is removed once the stake has confirmed');
+  // The words of before, which let the assistant run commands that read the key.
+  for (const before of ['You or your assistant can run it', 'It may load it into the environment of a command', 'by your assistant with `.env` loaded']) assert.equal(text.includes(before), false, `not: ${before}`);
+  assert.equal((SKEY_BLOCK.match(/!/g) ?? []).length, 0, 'no history expansion in the block');
+  assert.equal(/\$(?!HOME\/supplier\.skey")[A-Za-z_{(]|`|\\"/.test(SKEY_BLOCK.split('\n')[1].replace(/^node -e "/, '').replace(/" "\$HOME\/supplier\.skey"$/, '')), false, 'nothing a shell would expand inside the quoted code');
+});
+
+test('docs/LAUNCH.md (finding 2): the node code of the .skey block writes the cardano-cli envelope of the key, with mode 600 where the system has modes, refuses to overwrite and refuses a key that is not 64 lowercase hex', () => {
+  const code = /^node -e "(.*)" "\$HOME\/supplier\.skey"$/m.exec(SKEY_BLOCK)[1];
+  const dir = mkdtempSync(join(tmpdir(), 'launch-skey-'));
+  try {
+    const file = join(dir, 'supplier.skey');
+    const run = (hex) => execFileSync(process.execPath, ['-e', code, file], { env: { ...process.env, SUPPLIER_PRIV_KEY_HEX: hex }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const hex = randomBytes(32).toString('hex'); // a throwaway key, made here and never printed
+    assert.equal(run(hex), '', 'it prints nothing');
+    const skey = JSON.parse(readFileSync(file, 'utf8'));
+    assert.deepEqual(Object.keys(skey), ['type', 'description', 'cborHex']);
+    assert.equal(skey.type, 'PaymentSigningKeyShelley_ed25519', 'the type of a cardano-cli signing key file, the one pycardano\'s PaymentSigningKey.load checks');
+    assert.equal(skey.cborHex, '5820' + hex, 'a CBOR byte string of 32 bytes: the key');
+    if (process.platform !== 'win32') assert.equal(statSync(file).mode & 0o777, 0o600, 'mode 600');
+    // The key in the file is the template's: CML reads the same 32 bytes as the public key node:crypto derives from the seed.
+    const fromRepo = createRequire(new URL('../packages/buyer-core/package.json', import.meta.url));
+    const CML = fromRepo('@anastasia-labs/cardano-multiplatform-lib-nodejs');
+    const pub = CML.PrivateKey.from_normal_bytes(Buffer.from(skey.cborHex.slice(4), 'hex')).to_public();
+    assert.equal(Buffer.from(pub.to_raw_bytes()).toString('hex'), publicKeyOfSeed(hex).toString('hex'));
+    assert.throws(() => run(randomBytes(32).toString('hex')), (err) => err.status === 1 && /EEXIST/.test(err.stderr), 'a second run refuses to overwrite the file');
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).cborHex, '5820' + hex, 'and the file is unchanged');
+    rmSync(file);
+    assert.throws(() => run('not a key'), (err) => err.status === 1 && /expected 64 lowercase hex characters/.test(err.stderr));
+    assert.equal(existsSync(file), false, 'a bad key writes no file');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the stake correction: the Module-3 stake is not refundable; LAUNCH.md, the four runbooks and the host README say so in the public wording, and none says the stake returns or names a cooldown', () => {
+  const read = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8');
+  const six = section(launch(), '6. Stake (optional)');
+  assert.ok(six.includes('Lock only what you mean to leave there. ' + STAKE_LOCKED), 'section 6');
+  const runbooks = ['deploy/host/RUNBOOK.md', 'deploy/host/RUNBOOK-document-pipeline.md', 'deploy/host/RUNBOOK-audio-snippets.md', 'deploy/host/RUNBOOK-advocate.md'];
+  for (const rel of runbooks) {
+    const text = read(rel);
+    assert.match(section(text, '8. Stake in Module-3'), new RegExp('[Tt]his locks 10 units on the capability\\. ' + STAKE_LOCKED.replace(/[.()]/g, '\\$&')), `${rel}: step 8`);
+    assert.ok(section(text, 'Back out').includes('The registry identity stays on the ledger until the operator deregisters it, and the deposit returns then. ' + STAKE_LOCKED), `${rel}: Back out`);
+  }
+  assert.ok(read('deploy/host/README.md').includes('The registry identity stays on the ledger until the operator deregisters it, and the deposit returns then. ' + STAKE_LOCKED), 'deploy/host/README.md');
+  // The words of before: a refund after a cooldown, a stake the operator withdraws. No timing parameter of the module is named on these pages.
+  for (const rel of ['docs/LAUNCH.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'deploy/host/README.md', ...runbooks, ...Object.keys(AGENTS).map((n) => `specs/${n}.md`)]) {
+    assert.equal(read(rel).match(/cooldown|refundable under the stake|the stake after its|stake stay on the ledger until the operator withdraws|when you withdraw it/i), null, rel);
+  }
+});
+
+test('docs/HIRE.md (findings 3 and 9, and the copy of section 8): the record is permanent in the chain\'s history, a recovery phrase exposes the whole wallet, and the terminal path copies the file its install leaves out', () => {
+  const guide = hire();
+  assert.ok(section(guide, '7. Register your own identifier (optional)').includes(HIRE_PERMANENT));
+  assert.equal(guide.includes('stay on the ledger while the record exists'), false, 'the sentence of before');
+  assert.ok(SIGNER_READS.includes('but the phrase in your config exposes the whole wallet, so this guide never uses one'));
+  const eight = section(guide, '8. The terminal path');
+  assert.ok(eight.includes('```bash\ngit clone https://github.com/Apex-Fusion/vector-agent-template.git && cd vector-agent-template && git checkout c4c378a && corepack pnpm install\n' + LIBSODIUM_COPY + '\n```'), 'the copy follows the install, in the same block');
+  assert.ok(eight.includes(LIBSODIUM_WHY));
+  assert.ok(eight.includes('The first fetches the template at the pinned commit, and the line after it copies one file that the install leaves out:'));
+});
+
+test('docs/LAUNCH.md (findings 4 to 8): the lock floor, the fleet prefixes the chat tools refuse, the stake from a terminal, the template commit, and the key line said to be the key', () => {
+  const text = launch();
+  assert.ok(text.split('\n')[2].includes('From your chat client you give it an on-chain identity. If you want, you add a reputation stake with the Module-3 SDK, from a terminal.'), 'finding 6');
+  const seven = section(text, '7. Test-hire your own agent from chat');
+  assert.ok(seven.includes("| 3 | The lock is your price plus both bonds, raised to the ledger's minimum for the escrow output (about 2.2 to 2.3) when that sum is lower; the tool prints the lock beside the price and both bonds. The wait ends with \"Transaction Confirmed\". |"), 'finding 4');
+  // The floor is the one HIRE.md section 3 gives.
+  assert.ok(section(hire(), '3. What the key must hold').includes('The ledger needs between 2.2 and 2.3 in an escrow output of this size'));
+  const two = section(text, '2. Let your coding agent build it');
+  assert.ok(two.includes('with a capability id that does not start with `llm.text.generate.`, `llm.chat.`, `ocr.page.extract.` or `audio.synthesize.`: the chat hire tools refuse those.'), 'finding 5');
+  assert.ok(two.includes("As of 2026-10-21 the template's `main` is commit `c4c378a`, and its runtime is the one our four agents run."), 'finding 7');
+  const five = section(text, '5. Give your agent an identity from chat');
+  assert.ok(five.includes('That line is the key itself: copy it into the config, then clear the terminal.'), 'finding 8');
+  assert.ok(five.includes('Put the signer in your user-level client config, never in a project file inside the checkout.'), 'finding 8');
 });

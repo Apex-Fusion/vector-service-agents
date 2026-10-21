@@ -66,7 +66,7 @@ The Foundation supplies collateral and float for working-group experiments. It s
 
 **(b) Or send them yourself.**
 
-The units must be on Vector mainnet. Units on Prime, on Nexus or in a bridged form elsewhere cannot serve as your key's collateral or float. The Reactor bridge moves units from Prime to Vector. The signer reads a bech32 key that starts `ed25519_sk1`, the form `keygen` prints, with its `addr1` address, or a wallet's recovery phrase, from which it signs for one address only, the first of one account. It does not read a raw 64-hex key, such as the template's: [LAUNCH.md](LAUNCH.md) section 5 converts one. This guide uses the key from `keygen`, so a wallet's balance has to be sent to the address `keygen` printed. Send 5 alone first, then the float of 50. That is two transfers, for the reason given in (a).
+The units must be on Vector mainnet. Units on Prime, on Nexus or in a bridged form elsewhere cannot serve as your key's collateral or float. The Reactor bridge moves units from Prime to Vector. The signer reads a bech32 key that starts `ed25519_sk1`, the form `keygen` prints, with its `addr1` address, or a wallet's recovery phrase, from which it signs for one address only, the first of one account, but the phrase in your config exposes the whole wallet, so this guide never uses one. It does not read a raw 64-hex key, such as the template's: [LAUNCH.md](LAUNCH.md) section 5 converts one. This guide uses the key from `keygen`, so a wallet's balance has to be sent to the address `keygen` printed. Send 5 alone first, then the float of 50. That is two transfers, for the reason given in (a).
 
 What one job costs you. The price is set by the agent. Both bonds are 1. You lock the price and both bonds when you post the escrow. On Accept the supplier receives the price and the supplier bond, and your bond returns to you. If you do not accept within 600 s of the supplier's Submit, the supplier may Release the escrow and keep everything that is locked: the price and both bonds, your buyer bond included. If the supplier never submits, you reclaim the price and both bonds after `deliver_by`. Fees are about 1 across the Post and the Accept, because the fee floor is 0.5 per transaction.
 
@@ -207,7 +207,7 @@ The receipt says who answered, with which exact bytes, to which request, for whi
 
 ## 7. Register your own identifier (optional)
 
-A registry record gives your key an identifier that sits next to your hires. It locks a deposit of 10 units, which you get back when you deregister. The name and the description you enter are public and stay on the ledger while the record exists. Put no personal data in them.
+A registry record gives your key an identifier that sits next to your hires. It locks a deposit of 10 units, which you get back when you deregister. The name and the description you enter are public and permanent: the transaction that writes them stays in the ledger's history after you deregister. Deregistering returns the deposit; it does not erase that transaction. Put no personal data in them.
 
 Ask your assistant: "Register an agent for my signer address. Name <a name>, description <one line>, capabilities none, framework custom, endpoint empty. Sign, submit and wait for confirmation." The tool is `vector_build_register_agent`. It prints the agent DID, `did:vector:agent:<registry policy>:<asset name>`. After the record confirms you can use that DID, or your key hash, as the `subject` of another hire and read your own history. To get the deposit back, use `vector_build_deregister_agent`.
 
@@ -215,11 +215,14 @@ Ask your assistant: "Register an agent for my signer address. Name <a name>, des
 
 If you prefer a terminal, the template's buyer makes the same hire with the same key. It posts the escrow, waits for the job, checks the receipt itself and accepts only if every check passes. Get the advert reference from message 2 of the chat script and the full endpoint URL from `vector_marketplace_get_supplier`. As of 2026-10-15 the advert reference is `b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c#0` and the endpoint URL is `https://mp-suppliers-history.hal8.ai`, which is in service. Check both against what the tools show you.
 
-Three commands, with your key set between the first and the second. The first fetches the template at the pinned commit:
+Three commands, with your key set between the first and the second. The first fetches the template at the pinned commit, and the line after it copies one file that the install leaves out:
 
 ```bash
 git clone https://github.com/Apex-Fusion/vector-agent-template.git && cd vector-agent-template && git checkout c4c378a && corepack pnpm install
+cp node_modules/.pnpm/libsodium-sumo@0.7.16/node_modules/libsodium-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs node_modules/.pnpm/libsodium-wrappers-sumo@0.7.16/node_modules/libsodium-wrappers-sumo/dist/modules-sumo-esm/
 ```
+
+That copy is the one the template's `agent/Dockerfile` makes in its image. pnpm's store layout puts `libsodium-sumo.mjs` in a sibling package, and without it the buyer stops at the transaction build with `Cannot find module`.
 
 The buyer wants the key as 64 hex characters, in `BUYER_PRIV_KEY_HEX`. Your signer key is the same 32 bytes in another encoding. Read it into the environment without leaving it in your shell history (paste the key itself, without a `NAME=` in front of it, and press Enter), then convert it:
 
