@@ -281,7 +281,7 @@ Record the identity in the repository. Once the check above prints 1, open a pul
 
 ## 8. Stake in Module-3
 
-Operator. The same as step 8 of RUNBOOK.md: this locks 10 units on the capability, refundable under the stake's own rules (a cooldown applies). Read the second gotcha at the end of RUNBOOK.md before the run.
+Operator. The same as step 8 of RUNBOOK.md: this locks 10 units on the capability. The owner cannot withdraw it: the module keeps 10 units as the minimum, and only stake above it can be decreased. Read the second gotcha at the end of RUNBOOK.md before the run.
 
 ```sh
 cd "$BASE/ops"
@@ -512,9 +512,9 @@ To stop the agent, and as the first move of step 17. The order matters: the adve
    Wait for it to confirm. The units it locked come back.
 2. Stop the containers, operator or host administrator: `docker compose -f docker-compose.audio-snippets.yml down`. The stop waits up to 300 s for a job that is running, and Docker 30 s more for the service to log what it left and exit. There is no volume to keep, and the external network of the host's reverse proxy is not touched.
 3. Host administrator: remove the Caddy block of this agent from the host's Caddy configuration, validate and reload ([README.md](README.md), the Audio Snippets section), and remove the DNS record if it will not be reused.
-4. Operator: the key. The supplier key has a second plaintext copy that step 7 wrote, in two files of a directory: `shred -u "$BASE/ops/wallet/payment.skey" "$BASE/ops/wallet/payment.vkey"`, then `rmdir "$BASE/ops/wallet"` (`shred` does not take a directory, and `rmdir` refuses one that holds anything else). The env file still holds the key, and so does the operator's offline store: keep both until the wallet is empty, because a wallet whose key is gone is gone. When the identity or the stake is withdrawn later, `python3 make-skey.py` writes the directory again from the env file for that signing, and it is removed again afterwards.
+4. Operator: the key. The supplier key has a second plaintext copy that step 7 wrote, in two files of a directory: `shred -u "$BASE/ops/wallet/payment.skey" "$BASE/ops/wallet/payment.vkey"`, then `rmdir "$BASE/ops/wallet"` (`shred` does not take a directory, and `rmdir` refuses one that holds anything else). The env file still holds the key, and so does the operator's offline store: keep both until the wallet is empty, because a wallet whose key is gone is gone. When the identity is deregistered later, `python3 make-skey.py` writes the directory again from the env file for that signing, and it is removed again afterwards.
 
-The registry identity and the Module-3 stake stay on the ledger until the operator withdraws them. The deposit returns on deregistration and the stake after its cooldown.
+The registry identity stays on the ledger until the operator deregisters it, and the deposit returns then. The stake is different. The owner cannot withdraw it: the module keeps 10 units as the minimum, and only stake above it can be decreased.
 
 ## If something goes wrong
 

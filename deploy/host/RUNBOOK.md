@@ -178,7 +178,7 @@ Record the identity in the repository. Once the check above prints 1, open a pul
 
 ## 8. Stake in Module-3
 
-Operator. This locks 10 units on the capability, refundable under the stake's own rules (a cooldown applies).
+Operator. This locks 10 units on the capability. The owner cannot withdraw it: the module keeps 10 units as the minimum, and only stake above it can be decreased.
 
 ```sh
 cd "$BASE/ops"
@@ -359,9 +359,9 @@ To stop the agent, and as the first move of step 17. The order matters: the adve
    Wait for it to confirm. The units it locked come back.
 2. Stop the containers, operator or host administrator: `docker compose -f docker-compose.agent-history.yml down`. The external network of the host's reverse proxy is not touched.
 3. Host administrator: remove the Caddy block from the host's Caddy configuration, validate and reload ([README.md](README.md), point 4), and remove the DNS record if it will not be reused.
-4. Operator: remove the second plaintext copy of the supplier key that step 7 wrote, two files in a directory: `shred -u "$BASE/ops/wallet/payment.skey" "$BASE/ops/wallet/payment.vkey"`, then `rmdir "$BASE/ops/wallet"` (`shred` does not take a directory). The env file still holds the key. When the identity or the stake is withdrawn later, `python3 make-skey.py` writes the files again from the env file for that signing, and they are removed again afterwards.
+4. Operator: remove the second plaintext copy of the supplier key that step 7 wrote, two files in a directory: `shred -u "$BASE/ops/wallet/payment.skey" "$BASE/ops/wallet/payment.vkey"`, then `rmdir "$BASE/ops/wallet"` (`shred` does not take a directory). The env file still holds the key. When the identity is deregistered later, `python3 make-skey.py` writes the files again from the env file for that signing, and they are removed again afterwards.
 
-The registry identity and the Module-3 stake stay on the ledger until the operator withdraws them. The deposit returns on deregistration and the stake after its cooldown.
+The registry identity stays on the ledger until the operator deregisters it, and the deposit returns then. The stake is different. The owner cannot withdraw it: the module keeps 10 units as the minimum, and only stake above it can be decreased.
 
 ## If something goes wrong
 

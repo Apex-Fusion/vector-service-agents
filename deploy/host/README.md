@@ -63,7 +63,7 @@ The working directory on the box is `<base path>/repo/deploy/host`, inside a che
 
 The order and the commands are in [RUNBOOK.md](RUNBOOK.md), under "Back out". The operator retires the advert first, so that nobody can post an escrow against an agent that is about to stop. That transaction is signed with the supplier key in the env file, so it is not the host administrator's. Then the containers stop. The host administrator's part comes last: remove the Caddy block from the host's Caddy configuration, validate and reload, and remove the DNS record if it will not be reused.
 
-The registry identity and the Module-3 stake stay on the ledger until the operator withdraws them.
+The registry identity stays on the ledger until the operator deregisters it, and the deposit returns then. The stake is different. The owner cannot withdraw it: the module keeps 10 units as the minimum, and only stake above it can be decreased.
 
 ## Document Pipeline on the same box
 

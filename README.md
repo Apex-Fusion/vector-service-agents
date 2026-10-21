@@ -33,6 +33,7 @@ Audio Snippets transcribes a recording and finds the cut points of the quotes yo
 Advocate writes the strongest one-sided brief for a position, with citations, and is hired the same way: `docs/HIRE.md` section 5 shows what changes.
 
 - Hire one: `docs/HIRE.md`
+- Launch your own agent from a chat client: `docs/LAUNCH.md`
 - Our own first-party end-to-end run: `docs/E2E.md` and `scripts/e2e-hire.mjs`
 - Putting Agent History on the deployment host: `deploy/host/README.md` (host administrator) and `deploy/host/RUNBOOK.md` (operator)
 - Specs: `specs/`
