@@ -1,8 +1,9 @@
 // The identity registry helpers that the services share. The record codecs, the DID strings and the purpose values are vendored from
 // agents-marketplace packages/shared (src/vendored/shared, see VENDORED-FROM.md) and re-exported here; the rest is local: the two registries
-// (did:vector Part 1, section 4), the authenticity test of a record output, and active_key of the vector_identity library (Part 2, section 3.10).
+// (did:vector Part 1, section 4), the identity block of a manifest, the authenticity test of a record output, and active_key of the vector_identity library
+// (Part 2, section 3.10).
 import { plutusAddressToBech32 } from './vendored/shared/cbor/address.ts';
-import { keyHash } from './vendored/shared/identity/id.ts';
+import { keyHash, parseVectorDid, vectorDid } from './vendored/shared/identity/id.ts';
 import { PURPOSE_AUTHENTICATION, PURPOSE_ASSERTION, PURPOSE_TRANSACTION, PURPOSE_DELEGATION } from './vendored/shared/identity/constants.ts';
 import type { IdentityDatum, Key } from './vendored/shared/cbor/IdentityDatum.ts';
 import { REGISTRY_POLICY, REGISTRY_ADDRESS } from './constants.ts';
@@ -48,6 +49,29 @@ export function identityRegistryOf(policyId: string | undefined, address: string
   const derived = scriptAddress(policy);
   if (given !== '' && given !== derived) throw new Error(`IDENTITY_ADDRESS ${given} is not the address of IDENTITY_POLICY_ID (${derived})`);
   return { policy, address: derived };
+}
+
+/**
+ * The DID a manifest publishes (did:vector Part 1, section 3), from the operator's AGENT_DID setting: the canonical form did:vector:<identifier> as given,
+ * and the legacy form under the legacy registry policy, which the registration step wrote before the identity registry, in the canonical form of the same
+ * identifier. Another did:vector value names no Vector mainnet agent and throws, naming the variable. Absent or empty means no DID yet; a value that is not
+ * a did:vector DID is published as given.
+ */
+export function manifestDid(value: string | undefined): string {
+  const did = (value ?? '').trim();
+  if (!did.startsWith('did:vector:')) return did;
+  const parsed = parseVectorDid(did);
+  if (parsed?.form === 'canonical') return did;
+  if (parsed?.form === 'legacy' && parsed.policyId === REGISTRY_POLICY) return vectorDid(parsed.vectorId);
+  throw new Error(`environment variable AGENT_DID must be did:vector:<64 lowercase hex> or its legacy form under the registry policy ${REGISTRY_POLICY}, got "${did}"`);
+}
+/**
+ * The identity block of a manifest (vector.agent-manifest.v2): the DID; the address of the identity registry, empty while the identity registry is not
+ * configured; and the listed supplier key as the DID URL of its verification method, <DID>#<key hash> (Part 1, section 8.1), empty when the DID or the
+ * key hash is empty.
+ */
+export function manifestIdentity(did: string, supplierPkh: string, registry: Registry | null): { did: string; registry_address: string; supplier_key: string } {
+  return { did, registry_address: registry?.address ?? '', supplier_key: did !== '' && supplierPkh !== '' ? `${did}#${supplierPkh}` : '' };
 }
 
 /** One asset of an output as Koios lists it. */

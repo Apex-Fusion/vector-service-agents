@@ -1,11 +1,11 @@
 // The identity registry helpers: the vendored codecs against the bytes the Aiken types serialise, the DID strings and test vectors of
-// did:vector Part 1 section 3, the two registries of section 4, and active_key of Part 2 section 3.10.
-import { describe, test, expect } from 'vitest';
+// did:vector Part 1 section 3, the two registries of section 4, the identity block of a manifest, and active_key of Part 2 section 3.10.
+import { afterEach, describe, test, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import {
   decodeIdentityDatum, encodeIdentityDatum, decodeLegacyDatum, encodeLegacyDatum, decodePlutusDataHex, encodePlutusDataHex,
   vectorIdFromSeed, dnsSafe, keyHash, vectorDid, legacyVectorDid, parseVectorDid, utf8FromHex, utf8ToHex,
-  scriptAddress, identityRegistryOf, isAuthenticRecord, activeKey, LEGACY_REGISTRY,
+  scriptAddress, identityRegistryOf, isAuthenticRecord, activeKey, LEGACY_REGISTRY, manifestDid, manifestIdentity,
   PURPOSE_AUTHENTICATION, PURPOSE_ASSERTION, PURPOSE_TRANSACTION, PURPOSE_DELEGATION,
   didFor, blake2b224Hex, REGISTRY_POLICY, REGISTRY_ADDRESS,
 } from '../src/index.ts';
@@ -113,6 +113,44 @@ describe('the registries (Part 1 section 4)', () => {
     expect(isAuthenticRecord(REGISTRY_ADDRESS, [token(other)], LEGACY_REGISTRY, id)).toBe(false);
     expect(isAuthenticRecord(REGISTRY_ADDRESS, [token(id, '2')], LEGACY_REGISTRY, id)).toBe(false);
     expect(isAuthenticRecord(REGISTRY_ADDRESS, null, LEGACY_REGISTRY, id)).toBe(false);
+  });
+});
+
+describe('the identity block of a manifest (vector.agent-manifest.v2)', () => {
+  const ID = '8a98c4b74f0e49a09ca4b3502e121c96a8e6992afd2cba64ef8128042fedd440', PKH = '1ea22a13acac6da070959317bad9bf5e510e8f7875a6727d3a5262cd';
+  const refusal = (value: string) => `environment variable AGENT_DID must be did:vector:<64 lowercase hex> or its legacy form under the registry policy ${REGISTRY_POLICY}, got "${value}"`;
+  afterEach(() => { vi.unstubAllEnvs(); });
+  test('the DID is published in the canonical form: the canonical form as given, and the legacy form under the legacy registry policy as the same identifier', () => {
+    expect(manifestDid(`did:vector:${ID}`)).toBe(`did:vector:${ID}`);
+    expect(manifestDid(legacyVectorDid(REGISTRY_POLICY, ID))).toBe(`did:vector:${ID}`);
+    expect(manifestDid(` ${legacyVectorDid(REGISTRY_POLICY, ID)}\n`)).toBe(didFor(ID)); // without the space a file leaves around it
+  });
+  test('absent, empty or blank is no DID yet; a value that is not a did:vector DID is published as given', () => {
+    for (const none of [undefined, '', ' \n']) expect(manifestDid(none)).toBe('');
+    expect(manifestDid(' did:test ')).toBe('did:test');
+    expect(manifestDid('did:web:example.test')).toBe('did:web:example.test');
+  });
+  test('another did:vector value names no Vector mainnet agent: it throws, naming the variable and quoting the value', () => {
+    const bad = [
+      `did:vector:${ID.toUpperCase()}`, `did:vector:testnet:${ID}`, legacyVectorDid('11'.repeat(28), ID), `did:vector:agent:${REGISTRY_POLICY.toUpperCase()}:${ID}`,
+      `did:vector:${ID}#${PKH}`, 'did:vector:short', 'did:vector:',
+    ];
+    for (const value of bad) expect(() => manifestDid(value), value).toThrow(refusal(value));
+  });
+  test('the supplier key is the DID URL of the listed key, <DID>#<key hash>, when both are given; the address is the identity registry\'s, empty without one', () => {
+    const registry = identityRegistryOf(blake2b224Hex(utf8ToHex('a test identity registry')), undefined);
+    expect(manifestIdentity(`did:vector:${ID}`, PKH, registry)).toEqual({ did: `did:vector:${ID}`, registry_address: registry?.address, supplier_key: `did:vector:${ID}#${PKH}` });
+    expect(manifestIdentity(`did:vector:${ID}`, PKH, null)).toEqual({ did: `did:vector:${ID}`, registry_address: '', supplier_key: `did:vector:${ID}#${PKH}` });
+    expect(manifestIdentity('', PKH, registry)).toEqual({ did: '', registry_address: registry?.address, supplier_key: '' });
+    expect(manifestIdentity(`did:vector:${ID}`, '', null)).toEqual({ did: `did:vector:${ID}`, registry_address: '', supplier_key: '' });
+    // The order of the keys is part of the bytes an advert hashes.
+    expect(Object.keys(manifestIdentity('', '', null))).toEqual(['did', 'registry_address', 'supplier_key']);
+  });
+  test('neither reads the environment: the values come from the caller', () => {
+    vi.stubEnv('AGENT_DID', `did:vector:${ID}`);
+    vi.stubEnv('SUPPLIER_PKH', PKH);
+    expect(manifestDid(undefined)).toBe('');
+    expect(manifestIdentity(manifestDid(undefined), '', null)).toEqual({ did: '', registry_address: '', supplier_key: '' });
   });
 });
 
