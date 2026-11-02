@@ -2,7 +2,8 @@ import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { Data, Constr, fromText } from '@lucid-evolution/lucid';
 import { replayFetch, didFor, topLevelBytes, KOIOS_URL, M3_REPUTATION_ADDRESS, M3_ENDORSEMENT_ADDRESS, M1_ADDRESSES, M6_ADDRESSES } from '@vsa/vector-read';
-import { reputationSection, disputeSection, selfImprovementSection } from '../src/modules.ts';
+import { reputationSection, disputeSection, selfImprovementSection, matchesSubject } from '../src/modules.ts';
+import { DEFAULT_MODULES } from '../src/config.ts';
 import type { ModuleScan } from '../src/modules.ts';
 import type { Subject } from '../src/subject.ts';
 const fx = JSON.parse(readFileSync(new URL('./fixtures/chandra.json', import.meta.url), 'utf8'));
@@ -11,7 +12,8 @@ const OWNER = '401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9';
 // One recorded key owns eight stakes on the ledger: the agents below are two of them.
 const BUSY_OWNER = '151cadb75179beb35c094c4d05aed5cf9ac1ef5295e5161ac4141de4';
 const AGENT = '0b53d9ed96bf8ab033248afb128f2de4fc44a8da72a1208a0be474599b764330';
-const subject = (kind: Subject['kind'], asset: string | null, pkh: string | null): Subject => ({ kind, asset_name: asset, did: asset ? didFor(asset) : null, controller_pkh: pkh, candidates: [] });
+// A subject given as an identifier carries the owner key as its controller; a subject given as a key hash carries the key it was given as.
+const subject = (kind: Subject['kind'], asset: string | null, pkh: string | null): Subject => ({ kind, pkh: kind === 'pkh' ? pkh : null, asset_name: asset, did: asset ? didFor(asset) : null, registry: asset ? 'legacy' : null, controller_pkh: pkh, candidates: [] });
 const addressKey = (address: string) => `POST ${KOIOS_URL}/address_utxos ${JSON.stringify({ _addresses: [address], _extended: true })}`;
 
 describe('Module-3 stakes follow the kind of subject', () => {
@@ -165,7 +167,7 @@ describe('module scans', () => {
     for (const [n, expected] of [[1_000, true], [999, false]] as const) {
       for (const address of [M3_REPUTATION_ADDRESS, M3_ENDORSEMENT_ADDRESS]) {
         const scan: ModuleScan = { truncated: false };
-        await reputationSection(subject('asset', CHANDRA, OWNER), replayFetch({ ...fx.store, [addressKey(address)]: page(n) }), scan);
+        await reputationSection(subject('asset', CHANDRA, OWNER), replayFetch({ ...fx.store, [addressKey(address)]: page(n) }), DEFAULT_MODULES, scan);
         expect(scan.truncated, `${n} rows at ${address}`).toBe(expected);
       }
     }
@@ -173,8 +175,26 @@ describe('module scans', () => {
   test('the Module-1 section marks it too, and a scan object is optional', async () => {
     const store = { ...fx.store, [addressKey(M1_ADDRESSES.claim)]: page(1_000) };
     const scan: ModuleScan = { truncated: false };
-    await disputeSection(subject('asset', CHANDRA, OWNER), replayFetch(store), scan);
+    await disputeSection(subject('asset', CHANDRA, OWNER), replayFetch(store), DEFAULT_MODULES, scan);
     expect(scan.truncated).toBe(true);
     await expect(disputeSection(subject('asset', CHANDRA, OWNER), replayFetch(store))).resolves.toEqual({ claim: [], challenge: [], jury_pool: [], claim_v15_sim: [], challenge_v15_sim: [], jury_pool_v15_sim: [] });
+  });
+});
+
+describe('the module addresses come from the configuration', () => {
+  test('another set of addresses is read instead of the defaults, under the labels it gives', async () => {
+    const asked: string[] = [];
+    const replay = replayFetch(fx.store);
+    const f = (async (u: any, i?: RequestInit) => { asked.push(JSON.parse(String(i?.body))._addresses[0]); return replay(u, i); }) as typeof fetch;
+    const modules = { m3: { reputation: M3_REPUTATION_ADDRESS, endorsement: M3_ENDORSEMENT_ADDRESS }, m1: { claim_new: M1_ADDRESSES.claim_v15_sim }, m6: { critique_new: M6_ADDRESSES.critique } };
+    expect(Object.keys(await disputeSection(subject('asset', CHANDRA, OWNER), f, modules))).toEqual(['claim_new']);
+    expect(Object.keys(await selfImprovementSection(subject('asset', CHANDRA, OWNER), f, modules))).toEqual(['critique_new']);
+    expect(asked).toEqual([M1_ADDRESSES.claim_v15_sim, M6_ADDRESSES.critique]);
+  });
+  test('a subject given as a key hash is matched by that key, not by the controller of its first record', () => {
+    const s = { ...subject('pkh', CHANDRA, OWNER), controller_pkh: '99'.repeat(28) };
+    expect(matchesSubject([OWNER], s)).toBe(true);
+    expect(matchesSubject(['99'.repeat(28)], s)).toBe(false);
+    expect(matchesSubject([CHANDRA], s)).toBe(false);
   });
 });

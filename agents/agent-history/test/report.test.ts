@@ -1,30 +1,35 @@
 import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { Data, Constr, fromText } from '@lucid-evolution/lucid';
-import { replayFetch, KOIOS_URL, INDEXER_URL, REGISTRY_POLICY, REGISTRY_ADDRESS, M1_ADDRESSES } from '@vsa/vector-read';
-import type { Fetch } from '@vsa/vector-read';
-import { buildReport, degradedReasons, lastKnownKeyLine, BLIND_SPOTS, CURRENT_STATE_GAP, REPORT_BUDGET_MS } from '../src/report.ts';
+import { replayFetch, keyHash, utf8ToHex, legacyVectorDid, KOIOS_URL, INDEXER_URL, REGISTRY_POLICY, REGISTRY_ADDRESS, M1_ADDRESSES } from '@vsa/vector-read';
+import type { Fetch, Key } from '@vsa/vector-read';
+import { buildReport, degradedReasons, lastKnownKeysLine, BLIND_SPOTS, CURRENT_STATE_GAP, IDENTITY_VIEW_GAP, LEGACY_ONLY, REPORT_BUDGET_MS } from '../src/report.ts';
 import { manifestFromEnv } from '../src/server.ts';
-import { TEST_ENV } from './support.ts';
+import { TEST_ENV, WITH_IDENTITY, TEST_IDENTITY, LEGACY, koiosLedger, token, txHash, identityHex } from './support.ts';
+import type { LedgerTx } from './support.ts';
 const fx = JSON.parse(readFileSync(new URL('./fixtures/chandra.json', import.meta.url), 'utf8'));
-const DID = 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db';
+const CHANDRA = '5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db';
+const DID = `did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:${CHANDRA}`;
+const CANONICAL = `did:vector:${CHANDRA}`;
 const PKH = '401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9';
+const ENDPOINT = 'https://mp-suppliers-chandra.hal8.ai';
 const ALL = ['identity', 'marketplace', 'reputation', 'dispute', 'self_improvement'] as const;
 // The recorded /capability answer is replayed; the host lookup is stubbed so no test depends on DNS.
 const lookup = async () => [{ address: '8.8.8.8', family: 4 }];
 const opts = { manifest: manifestFromEnv(TEST_ENV), lookup };
+const json = (v: unknown) => JSON.parse(JSON.stringify(v));
 describe('ChandraOCR report (recorded fixtures)', () => {
-  test('identity', async () => {
+  test('identity: one legacy registration, the record and the version it made', async () => {
     const r = await buildReport({ subject: DID, include: ['identity'] }, replayFetch(fx.store), opts);
-    expect(r.subject.controller_pkh).toBe(PKH);
-    expect(r.identity).toMatchObject({ registered: { tx: 'fee14e5f2bf46b45b16e339334977833140622aa4f0b46024fcafc587b0406e6', block: 7275113 }, updates: [], deregistered: null });
-    expect((r.identity as any).record.name).toBe('ChandraOCR');
-    expect((r.identity as any).record.registered_at).toBe(1786092405791);
+    expect(r.subject).toEqual({ kind: 'asset', pkh: null, asset_name: CHANDRA, did: CANONICAL, registry: 'legacy', controller_pkh: PKH, candidates: [] });
+    expect(r.identity).toMatchObject({ origin: 'legacy', registered: { tx: 'fee14e5f2bf46b45b16e339334977833140622aa4f0b46024fcafc587b0406e6', block: 7275113, registry: 'legacy' }, adopted: null, deregistered: null });
+    expect((r.identity as any).timeline.map((e: any) => [e.registry, e.event, e.version])).toEqual([['legacy', 'registration', 0]]);
+    expect((r.identity as any).record).toMatchObject({ registry: 'legacy', controller_pkh: PKH, name: 'ChandraOCR', registered_at: 1786092405791 });
   });
   test('marketplace and reputation', async () => {
     const r = await buildReport({ subject: DID, include: ['marketplace', 'reputation'] }, replayFetch(fx.store), opts);
     const m = r.marketplace as any;
-    expect(m.as_supplier.adverts[0].capability_id).toBe('ocr.page.extract.chandra-ocr-2.v1');
+    expect(m.as_supplier.adverts[0]).toMatchObject({ capability_id: 'ocr.page.extract.chandra-ocr-2.v1', supplier_pkh: PKH, agent_id: null });
     expect(m.as_supplier.escrows.total).toBeGreaterThan(3000);
     expect(m.as_supplier.escrows.latest_checked).toBe(50);
     const rep = r.reputation as any;
@@ -39,15 +44,76 @@ describe('ChandraOCR report (recorded fixtures)', () => {
   });
 });
 
+describe('ChandraOCR in both DID forms', () => {
+  test('the legacy DID, the canonical DID and the bare identifier give the recorded report, byte for byte', async () => {
+    for (const subject of [DID, CANONICAL, CHANDRA]) {
+      const r = await buildReport({ subject, include: [...ALL] }, replayFetch(fx.store), opts);
+      expect(JSON.stringify(r), subject).toBe(JSON.stringify(fx.report));
+    }
+  });
+  test('with the identity registry configured and no identity record yet, both forms give the same report: the legacy history, and no line about the identity registry', async () => {
+    const store = {
+      ...fx.store,
+      [`POST ${KOIOS_URL}/asset_utxos ${JSON.stringify({ _asset_list: [[TEST_IDENTITY.policy, CHANDRA]], _extended: true })}`]: { status: 200, body: '[]' },
+      [`POST ${KOIOS_URL}/asset_txs ${JSON.stringify({ _asset_policy: TEST_IDENTITY.policy, _asset_name: CHANDRA, _history: true })}`]: { status: 200, body: '[]' },
+    };
+    const [legacy, canonical] = await Promise.all([DID, CANONICAL].map((subject) => buildReport({ subject, include: [...ALL] }, replayFetch(store), { ...opts, config: WITH_IDENTITY })));
+    expect(JSON.stringify(canonical)).toBe(JSON.stringify(legacy));
+    const { blind_spots, ...rest } = json(legacy);
+    const { blind_spots: recorded, ...recordedRest } = fx.report;
+    expect(rest).toEqual(recordedRest);
+    expect(recorded).toEqual([LEGACY_ONLY, ...BLIND_SPOTS]);
+    expect(blind_spots).toEqual(BLIND_SPOTS);
+  });
+
+  // ChandraOCR adopts (Part 2, section 9.1): the recorded legacy registration, then an adoption transaction that burns the legacy token and mints the
+  // identity token, with the Foundation key as controller and the supplier key listed. Every other call is the recording's.
+  const OPERATOR = '0f'.repeat(32), CAPABILITY_KEY = '220dd63e34ffbd08b03795fbdaa949df0497e94f3aa2be18da8cd40e5a5ba651';
+  const REG_TX = 'fee14e5f2bf46b45b16e339334977833140622aa4f0b46024fcafc587b0406e6', ADOPT_TX = txHash(0xad0), SUSPEND_TX = txHash(0xad1);
+  const legacyDatum = JSON.parse(fx.store[`POST ${KOIOS_URL}/utxo_info ${JSON.stringify({ _utxo_refs: [`${REG_TX}#0`], _extended: true })}`].body)[0].inline_datum.bytes;
+  const adopted = (keys: Key[]) => ({
+    controller: OPERATOR, keys, name: utf8ToHex('ChandraOCR'), description: utf8ToHex('Historical and handwritten document extraction.'),
+    framework: utf8ToHex('agents-marketplace'), endpoint: utf8ToHex(ENDPOINT), capabilities: [utf8ToHex('ocr.page.extract.chandra-ocr-2.v1')],
+  });
+  const chandraAdopts = (keys: Key[]): LedgerTx[] => [
+    { hash: REG_TX, block: 7_275_113, time: 1_786_092_415, outputs: [{ address: LEGACY.address, assets: [token(LEGACY, CHANDRA)], datum: legacyDatum, byHash: true }], mint: [token(LEGACY, CHANDRA)] },
+    { hash: ADOPT_TX, block: 9_000_000, time: 1_795_000_000, spends: [`${REG_TX}#0`], outputs: [{ address: TEST_IDENTITY.address, assets: [token(TEST_IDENTITY, CHANDRA)], datum: identityHex(adopted(keys)) }], mint: [token(LEGACY, CHANDRA, '-1'), token(TEST_IDENTITY, CHANDRA)] },
+    { hash: SUSPEND_TX, block: 9_000_100, time: 1_795_000_100, spends: [`${ADOPT_TX}#0`], outputs: [{ address: TEST_IDENTITY.address, assets: [token(TEST_IDENTITY, CHANDRA)], datum: identityHex({ ...adopted(keys), status: { type: 'Suspended', holds: [{ by: { type: 'ControllerSet' }, reason: 68, since: 1_795_000_000_000, until: 1_796_000_000_000 }] } }) }] },
+  ];
+  const supplierKey = (purposes: number): Key => ({ keyType: 'Ed25519', key: CAPABILITY_KEY, purposes, pop: null });
+  const adoptedReport = (keys: Key[], subject: string) => buildReport({ subject, include: ['identity', 'marketplace'] }, koiosLedger(chandraAdopts(keys), replayFetch(fx.store)), { ...opts, config: WITH_IDENTITY });
+  test('after the adoption both forms give one timeline across both registries, and the key check is active_key with the transaction purpose', async () => {
+    const [legacy, canonical] = await Promise.all([DID, CANONICAL].map((s) => adoptedReport([supplierKey(1 + 8)], s)));
+    expect(JSON.stringify(canonical)).toBe(JSON.stringify(legacy));
+    expect(legacy.subject).toEqual({ kind: 'asset', pkh: null, asset_name: CHANDRA, did: CANONICAL, registry: 'identity', controller_pkh: keyHash(OPERATOR), candidates: [] });
+    const identity = legacy.identity as any;
+    expect(identity).toMatchObject({ origin: 'adopted', registered: { tx: REG_TX, block: 7_275_113, registry: 'legacy' }, adopted: { tx: ADOPT_TX, block: 9_000_000 }, deregistered: null });
+    expect(identity.timeline.map((e: any) => [e.registry, e.event, e.version])).toEqual([['legacy', 'registration', 0], ['identity', 'adoption', 1], ['identity', 'update', 2]]);
+    expect(identity.timeline[1].changes.controller).toEqual({ from: PKH, to: keyHash(OPERATOR) });
+    expect(identity.timeline[1].changes.keys.added).toEqual([{ key_hash: PKH, type: 'Ed25519', purposes: ['authentication', 'transaction'] }]);
+    expect(identity.timeline[2].changes).toEqual({ status: { from: 'active', to: 'suspended' }, holds: { added: [{ by: 'controller', reason: 'securityInvestigation', since: 1_795_000_000_000, until: 1_796_000_000_000 }], renewed: [], removed: [] } });
+    // The supplier key is listed for transactions: the marketplace is read with it, and the key the endpoint serves is active.
+    expect(legacy.key_roles).toEqual({ controller_pkh: keyHash(OPERATOR), marketplace_pkhs: [PKH], advert_count: 1, capability_endpoint: ENDPOINT, capability_key_pkh: PKH, capability_key_active: true });
+    expect((legacy.marketplace as any).as_supplier.escrows.total).toBe((fx.report.marketplace as any).as_supplier.escrows.total);
+    expect(legacy.blind_spots).toEqual(BLIND_SPOTS);
+    expect(degradedReasons(legacy)).toEqual([]);
+  });
+  test('a record that lists the supplier key without the transaction purpose: the key check is false, and the marketplace falls back to the last known keys', async () => {
+    const r = await adoptedReport([supplierKey(1)], CANONICAL);
+    expect(r.key_roles).toEqual({ controller_pkh: keyHash(OPERATOR), marketplace_pkhs: [PKH], advert_count: 1, capability_endpoint: ENDPOINT, capability_key_pkh: PKH, capability_key_active: false });
+    expect(r.blind_spots).toEqual([lastKnownKeysLine([PKH]), ...BLIND_SPOTS]); // the owner key of the legacy version, the last version that named one
+  });
+});
+
 describe('report assembly against the recording', () => {
-  test('replaying the recording reproduces the recorded live report exactly: every section, the sources and the blind spots', async () => {
-    const r = JSON.parse(JSON.stringify(await buildReport({ subject: DID, include: [...ALL] }, replayFetch(fx.store), opts)));
+  test('replaying the recording reproduces the stored report exactly: every section, the sources and the blind spots', async () => {
+    const r = json(await buildReport({ subject: DID, include: [...ALL] }, replayFetch(fx.store), opts));
     const { sources, blind_spots, ...data } = r;
     const { sources: recordedSources, blind_spots: recordedBlindSpots, ...recordedData } = fx.report;
     expect(data).toEqual(recordedData);
     expect(sources).toEqual(recordedSources); // the same URLs in the same (sorted) order
     expect(blind_spots).toEqual(recordedBlindSpots);
-    expect(blind_spots).toEqual(BLIND_SPOTS); // nothing was missing or truncated for this subject, so only the fixed lines
+    expect(blind_spots).toEqual([LEGACY_ONLY, ...BLIND_SPOTS]); // nothing was missing or truncated for this subject; the identity registry is not configured
   });
   test('the Module-3 stake is a real recorded datum, decoded field by field', async () => {
     const r = await buildReport({ subject: DID, include: ['reputation'] }, replayFetch(fx.store), opts);
@@ -55,7 +121,7 @@ describe('report assembly against the recording', () => {
     expect(rep.stakes).toHaveLength(1);
     expect(rep.stakes[0]).toEqual({
       utxo: '05563e751a32ce766aaf7aa015140912563f559394b5ecea77226d2c90bd6d4f#0',
-      agent_asset_name: '5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db', owner_pkh: PKH,
+      agent_asset_name: CHANDRA, owner_pkh: PKH,
       stake_lovelace: '10000000', capabilities: ['ocr.page.extract.chandra-ocr-2.v1', 'document-extraction'],
       last_updated: 1786092804000, history_points: 0,
     });
@@ -66,20 +132,31 @@ describe('report assembly against the recording', () => {
     expect(r.dispute).toEqual({ claim: [], challenge: [], jury_pool: [], claim_v15_sim: [], challenge_v15_sim: [], jury_pool_v15_sim: [] });
     expect(r.self_improvement).toEqual({ proposal: [], critique: [], endorsement: [] });
   });
-  test('key roles: the capability key hashes to the controller', async () => {
+  test('the module sections read the addresses of the configuration, under their labels', async () => {
+    const modules = { ...WITH_IDENTITY.modules, m1: { claim_new: M1_ADDRESSES.claim_v15_sim }, m6: { proposal_new: 'addr1wxvtvyx9jkt7jprdhm0g6wxkl8pvvc63vlwumju8f5uatzgnjjjcr' } };
+    const r = await buildReport({ subject: DID, include: ['dispute', 'self_improvement'] }, replayFetch(fx.store), { ...opts, config: { registries: { legacy: LEGACY, identity: null }, modules } });
+    expect(r.dispute).toEqual({ claim_new: [] });
+    expect(r.self_improvement).toEqual({ proposal_new: [] });
+  });
+  test('key roles: the capability key of a legacy record hashes to its owner key', async () => {
     const r = await buildReport({ subject: DID, include: ['identity', 'marketplace'] }, replayFetch(fx.store), opts);
-    expect(r.key_roles).toEqual({ controller_pkh: PKH, advert_count: 1, capability_key_matches_controller: true, capability_endpoint: 'https://mp-suppliers-chandra.hal8.ai' });
+    expect(r.key_roles).toEqual({ controller_pkh: PKH, marketplace_pkhs: [PKH], advert_count: 1, capability_endpoint: ENDPOINT, capability_key_pkh: PKH, capability_key_active: true });
   });
   test('key roles: an unreachable endpoint stays unknown, and an unread marketplace section is not counted as zero adverts', async () => {
     const store = { ...fx.store };
-    delete store['GET https://mp-suppliers-chandra.hal8.ai/capability '];
+    delete store[`GET ${ENDPOINT}/capability `];
     const r = await buildReport({ subject: DID, include: ['identity'] }, replayFetch(store), opts);
-    expect(r.key_roles).toEqual({ controller_pkh: PKH, advert_count: null, capability_key_matches_controller: 'unknown', capability_endpoint: 'https://mp-suppliers-chandra.hal8.ai' });
+    expect(r.key_roles).toEqual({ controller_pkh: PKH, marketplace_pkhs: [PKH], advert_count: null, capability_endpoint: ENDPOINT, capability_key_pkh: null, capability_key_active: 'unknown' });
   });
-  test('key roles: a capability key that does not hash to the controller is reported false', async () => {
-    const store = { ...fx.store, 'GET https://mp-suppliers-chandra.hal8.ai/capability ': { status: 200, body: JSON.stringify({ pub_key_hex: 'ab'.repeat(32) }) } };
+  test('key roles: a capability key that does not hash to the owner is reported false, with its key hash', async () => {
+    const store = { ...fx.store, [`GET ${ENDPOINT}/capability `]: { status: 200, body: JSON.stringify({ pub_key_hex: 'ab'.repeat(32) }) } };
     const r = await buildReport({ subject: DID, include: ['identity'] }, replayFetch(store), opts);
-    expect(r.key_roles.capability_key_matches_controller).toBe(false);
+    expect(r.key_roles).toMatchObject({ capability_key_pkh: keyHash('ab'.repeat(32)), capability_key_active: false });
+  });
+  test('key roles: without the identity section the endpoint is not asked', async () => {
+    const r = await buildReport({ subject: DID, include: ['marketplace'] }, replayFetch(fx.store), opts);
+    expect(r.key_roles).toEqual({ controller_pkh: PKH, marketplace_pkhs: [PKH], advert_count: 1, capability_endpoint: null, capability_key_pkh: null, capability_key_active: 'unknown' });
+    expect(r.sources).not.toContain(`${ENDPOINT}/capability`);
   });
   test('as_of is the recorded tip, and a tip that cannot be read leaves the rest of the report intact', async () => {
     const tipKey = `GET ${KOIOS_URL}/tip `;
@@ -95,19 +172,21 @@ describe('report assembly against the recording', () => {
     const r = await buildReport({ subject: DID, include: ['identity', 'marketplace'] }, replayFetch(fx.store), opts);
     expect(r.sources).toEqual([
       `${INDEXER_URL}/escrows?buyer=${PKH}`, `${INDEXER_URL}/escrows?supplier=${PKH}`, `${INDEXER_URL}/suppliers`,
-      'https://mp-suppliers-chandra.hal8.ai/capability',
+      `${ENDPOINT}/capability`,
       `${KOIOS_URL}/asset_txs`, `${KOIOS_URL}/asset_utxos`, `${KOIOS_URL}/tip`, `${KOIOS_URL}/tx_info`, `${KOIOS_URL}/utxo_info`,
     ]);
   });
-  test('the blind spots say what the live indexer rows are and which module datums are skipped', async () => {
+  test('the blind spots say what the live indexer rows are, which module datums are skipped, and what the identity section is not', async () => {
     const r = await buildReport({ subject: DID, include: ['identity'] }, replayFetch(fx.store), opts);
-    expect(r.blind_spots).toEqual(BLIND_SPOTS);
-    expect(r.blind_spots).toHaveLength(6);
-    expect(r.blind_spots[0]).toMatch(/agents that share a key show the same marketplace section/);
-    expect(r.blind_spots.at(-1)).toBe(CURRENT_STATE_GAP);
-    expect(r.blind_spots.at(-1)).toMatch(/unspent outputs.*A withdrawn stake, a closed claim or a spent proposal no longer appears/);
-    expect(r.blind_spots[1]).toMatch(/one per escrow UTxO version/);
-    expect(r.blind_spots.some((b) => /Module-3/.test(b))).toBe(true);
+    expect(r.blind_spots).toEqual([LEGACY_ONLY, ...BLIND_SPOTS]);
+    expect(BLIND_SPOTS).toHaveLength(7);
+    expect(BLIND_SPOTS[0]).toMatch(/agents that share a key show the same marketplace section/);
+    expect(BLIND_SPOTS[0]).toMatch(/the listed keys with the transaction purpose/);
+    expect(BLIND_SPOTS[1]).toMatch(/one per escrow UTxO version/);
+    expect(BLIND_SPOTS[5]).toBe(CURRENT_STATE_GAP);
+    expect(BLIND_SPOTS.at(-1)).toBe(IDENTITY_VIEW_GAP);
+    expect(IDENTITY_VIEW_GAP).toMatch(/It is not a did:vector resolution/);
+    expect(BLIND_SPOTS.some((b) => /Module-3/.test(b))).toBe(true);
   });
 });
 
@@ -116,23 +195,26 @@ describe('subjects without a registry record', () => {
   const empty = { status: 200, body: '[]' };
   const store = {
     [`GET ${KOIOS_URL}/tip `]: fx.store[`GET ${KOIOS_URL}/tip `],
-    [`POST ${KOIOS_URL}/address_utxos ${JSON.stringify({ _addresses: ['addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42'], _extended: true })}`]: empty,
+    [`POST ${KOIOS_URL}/address_utxos ${JSON.stringify({ _addresses: [REGISTRY_ADDRESS], _extended: true })}`]: empty,
     [`GET ${INDEXER_URL}/suppliers `]: empty,
     [`GET ${INDEXER_URL}/escrows?supplier=${OTHER} `]: empty,
     [`GET ${INDEXER_URL}/escrows?buyer=${OTHER} `]: empty,
   };
   test('a key hash that owns no record still gets its marketplace section, and the missing record is stated', async () => {
     const r = await buildReport({ subject: OTHER, include: ['identity', 'marketplace'] }, replayFetch(store), opts);
-    expect(r.subject).toEqual({ kind: 'pkh', asset_name: null, did: null, controller_pkh: OTHER, candidates: [] });
-    expect(r.identity).toEqual({ registered: null, record: null, updates: [], deregistered: null });
+    expect(r.subject).toEqual({ kind: 'pkh', pkh: OTHER, asset_name: null, did: null, registry: null, controller_pkh: null, candidates: [] });
+    expect(r.identity).toEqual({ origin: null, registered: null, adopted: null, deregistered: null, record: null, timeline: [] });
     expect(r.marketplace).toMatchObject({ as_supplier: { adverts: [], escrows: { total: 0, first: null, last: null } }, as_buyer: { escrows: { total: 0 } } });
-    expect(r.blind_spots[0]).toMatch(/No registry record found/);
+    expect(r.key_roles).toMatchObject({ controller_pkh: null, marketplace_pkhs: [OTHER] });
+    expect(r.blind_spots).toEqual([LEGACY_ONLY, 'No registry record found for this subject.', ...BLIND_SPOTS]);
   });
-  test('a DID under another policy is rejected before anything is read, the tip included', async () => {
-    const calls: string[] = [];
-    const spy = (async (u: any) => { calls.push(String(u)); throw new Error('no network expected'); }) as typeof fetch;
-    await expect(buildReport({ subject: `did:vector:agent:${'11'.repeat(28)}:${'ab'.repeat(32)}`, include: ['identity'] }, spy, opts)).rejects.toMatchObject({ status: 400 });
-    expect(calls).toEqual([]);
+  test('a DID under another policy, or with an uppercase character, is rejected before anything is read, the tip included', async () => {
+    for (const subject of [`did:vector:agent:${'11'.repeat(28)}:${'ab'.repeat(32)}`, CANONICAL.toUpperCase().replace('DID:VECTOR:', 'did:vector:')]) {
+      const calls: string[] = [];
+      const spy = (async (u: any) => { calls.push(String(u)); throw new Error('no network expected'); }) as typeof fetch;
+      await expect(buildReport({ subject, include: ['identity'] }, spy, opts), subject).rejects.toMatchObject({ status: 400 });
+      expect(calls).toEqual([]);
+    }
   });
 });
 
@@ -186,24 +268,24 @@ describe('module scan truncation', () => {
   const LINE = 'module scan may be truncated at 1,000 rows';
   test('a module page of exactly 1,000 rows adds the line, once, at the end; 999 rows does not', async () => {
     const full = await buildReport({ subject: DID, include: ['dispute'] }, replayFetch({ ...fx.store, [claimKey]: { status: 200, body: JSON.stringify(rows(1_000)) } }), opts);
-    expect(full.blind_spots).toEqual([...BLIND_SPOTS, LINE]);
+    expect(full.blind_spots).toEqual([LEGACY_ONLY, ...BLIND_SPOTS, LINE]);
     const short = await buildReport({ subject: DID, include: ['dispute'] }, replayFetch({ ...fx.store, [claimKey]: { status: 200, body: JSON.stringify(rows(999)) } }), opts);
-    expect(short.blind_spots).toEqual(BLIND_SPOTS);
+    expect(short.blind_spots).toEqual([LEGACY_ONLY, ...BLIND_SPOTS]);
   });
 });
 
 describe('a subject whose registry record is gone', () => {
   const GONE = 'ab'.repeat(32), A = 'cd'.repeat(28), B = 'ef'.repeat(28);
-  const NO_LIVE_RECORD = 'marketplace and key_roles were not read: the subject has no live registry record';
+  const NO_MARKETPLACE_KEY = 'marketplace was not read: the subject has no live registry record that names a marketplace key (the owner key of a legacy record, or a listed key with the transaction purpose), and the identity timeline gave no earlier one.';
   const reg = (owner: string) => Data.to(new Constr(0, [new Constr(0, [owner]), fromText('A'), fromText('d'), [fromText('x.y.v1')], fromText('fw'), fromText(''), 1n]));
   const tok = [{ policy_id: REGISTRY_POLICY, asset_name: GONE, quantity: '1' }];
   const out = (datum: string | null, atRegistry = true) => ({ tx_index: 0, payment_addr: { cred: 'x', bech32: atRegistry ? REGISTRY_ADDRESS : 'addr1v' + 'q'.repeat(50) }, value: '10000000', inline_datum: datum ? { bytes: datum } : null, asset_list: atRegistry ? tok : [] });
   const spent = (hash: string) => ({ tx_hash: hash, tx_index: 0, payment_addr: { cred: 'x', bech32: REGISTRY_ADDRESS }, value: '1', asset_list: tok });
-  // registered to A, rotated to B, then the token leaves the registry: nothing is left at the registry address
+  // registered to A, rotated to B, then deregistered: the token is burned and nothing is left at the registry address
   const txs = [
-    { tx_hash: '11'.repeat(32), block_height: 100, tx_block_index: 0, tx_timestamp: 1000, inputs: [], outputs: [out(reg(A))] },
+    { tx_hash: '11'.repeat(32), block_height: 100, tx_block_index: 0, tx_timestamp: 1000, inputs: [], outputs: [out(reg(A))], assets_minted: tok },
     { tx_hash: '22'.repeat(32), block_height: 200, tx_block_index: 0, tx_timestamp: 2000, inputs: [spent('11'.repeat(32))], outputs: [out(reg(B))] },
-    { tx_hash: '33'.repeat(32), block_height: 300, tx_block_index: 0, tx_timestamp: 3000, inputs: [spent('22'.repeat(32))], outputs: [out(null, false)] },
+    { tx_hash: '33'.repeat(32), block_height: 300, tx_block_index: 0, tx_timestamp: 3000, inputs: [spent('22'.repeat(32))], outputs: [out(null, false)], assets_minted: [{ ...tok[0], quantity: '-1' }] },
   ];
   const tipKey = `GET ${KOIOS_URL}/tip `;
   const storeFor = (asset: string, listed: typeof txs) => ({
@@ -224,64 +306,81 @@ describe('a subject whose registry record is gone', () => {
     [`GET ${INDEXER_URL}/escrows?buyer=${pkh} `]: ok([]),
     [`POST ${KOIOS_URL}/utxo_info ${JSON.stringify({ _utxo_refs: [R1, R2], _extended: true })}`]: ok([{ tx_hash: 'a1'.repeat(32), tx_index: 0, value: '1', is_spent: true }, { tx_hash: 'a2'.repeat(32), tx_index: 0, value: '1', is_spent: false }]),
   });
-  test('a deregistered subject is read with the last key the identity timeline saw, and the first blind spot says which key and why', async () => {
+  test('a deregistered subject is read with the last key the identity timeline saw, and the first line after the configuration line says which key and why', async () => {
     const r = await buildReport({ subject: GONE, include: ['identity', 'marketplace'] }, replayFetch({ ...storeFor(GONE, txs), ...marketFor(B) }), opts);
-    expect(r.subject).toMatchObject({ kind: 'asset', asset_name: GONE, controller_pkh: null }); // the subject itself still has no live controller
-    expect(r.identity).toMatchObject({ registered: { block: 100 }, deregistered: { block: 300 }, record: null });
-    expect(r.identity).toHaveProperty('updates', [expect.objectContaining({ kind: 'controller_rotation', from_pkh: A, to_pkh: B })]);
+    expect(r.subject).toMatchObject({ kind: 'asset', asset_name: GONE, registry: null, controller_pkh: null }); // the subject itself has no live record
+    expect(r.identity).toMatchObject({ origin: 'legacy', registered: { block: 100 }, deregistered: { block: 300 }, record: null });
+    expect((r.identity as any).timeline.map((e: any) => [e.event, e.version])).toEqual([['registration', 0], ['update', 1], ['deregistration', 2]]);
+    expect((r.identity as any).timeline[1].changes).toEqual({ controller: { from: A, to: B } });
     const m = r.marketplace as any;
-    expect(m.as_supplier.adverts).toEqual([expect.objectContaining({ advert_ref: ADVERT_B, capability_id: 'x.y.v1', status: 'Retired' })]); // the advert of B, not of the stranger
+    expect(m.as_supplier.adverts).toEqual([expect.objectContaining({ advert_ref: ADVERT_B, supplier_pkh: B, capability_id: 'x.y.v1', status: 'Retired' })]); // the advert of B, not of the stranger
     expect(m.as_supplier.escrows).toMatchObject({ total: 2, by_indexer_state: { Claimed: 1, Submitted: 1 }, latest_checked: 2, latest_spent: 1 });
     expect(m.as_buyer.escrows.total).toBe(0);
-    expect(r.key_roles).toEqual({ controller_pkh: B, advert_count: 1, capability_key_matches_controller: 'unknown', capability_endpoint: null });
-    expect(r.blind_spots).toEqual([lastKnownKeyLine(B), ...BLIND_SPOTS]);
-    expect(r.blind_spots[0]).toContain(B);
-    expect(r.blind_spots[0]).toMatch(/last known controller key .*, taken from the identity timeline, because the subject has no live registry record/);
+    expect(r.key_roles).toEqual({ controller_pkh: null, marketplace_pkhs: [B], advert_count: 1, capability_endpoint: null, capability_key_pkh: null, capability_key_active: 'unknown' });
+    expect(r.blind_spots).toEqual([LEGACY_ONLY, lastKnownKeysLine([B]), ...BLIND_SPOTS]);
     expect(r.sources).toContain(`${INDEXER_URL}/escrows?supplier=${B}`);
     expect(r.sources).not.toContain(`${INDEXER_URL}/escrows?supplier=${A}`);
     expect(degradedReasons(r)).toEqual([]);
   });
   test('registered and deregistered with no update in between: the owner at registration is the key', async () => {
-    const direct = [txs[0], { ...txs[2], inputs: [spent('11'.repeat(32))] }]; // the token leaves the registry in the transaction after the registration
+    const direct = [txs[0], { ...txs[2], inputs: [spent('11'.repeat(32))] }]; // the token is burned in the transaction after the registration
     const r = await buildReport({ subject: GONE, include: ['identity', 'marketplace'] }, replayFetch({ ...storeFor(GONE, direct), ...marketFor(A) }), opts);
-    expect(r.identity).toMatchObject({ registered: { block: 100 }, deregistered: { block: 300 }, record: null, updates: [] });
+    expect(r.identity).toMatchObject({ registered: { block: 100 }, deregistered: { block: 300 }, record: null });
     expect((r.marketplace as any).as_supplier.escrows.total).toBe(2);
-    expect(r.key_roles.controller_pkh).toBe(A);
-    expect(r.blind_spots[0]).toBe(lastKnownKeyLine(A));
+    expect(r.key_roles.marketplace_pkhs).toEqual([A]);
+    expect(r.blind_spots[1]).toBe(lastKnownKeysLine([A]));
   });
-  test('marketplace asked and identity not: the timeline is read for the key and is not part of the report', async () => {
+  test('marketplace asked and identity not: the timeline is read for the keys and is not part of the report', async () => {
     const r = await buildReport({ subject: GONE, include: ['marketplace'] }, replayFetch({ ...storeFor(GONE, txs), ...marketFor(B) }), opts);
-    expect(JSON.parse(JSON.stringify(r))).not.toHaveProperty('identity');
+    expect(json(r)).not.toHaveProperty('identity');
     expect((r.marketplace as any).as_supplier.escrows.total).toBe(2);
     expect(r.sources).toContain(`${KOIOS_URL}/asset_txs`); // read, so listed
-    expect(r.blind_spots).toEqual([lastKnownKeyLine(B), ...BLIND_SPOTS]);
+    expect(r.blind_spots).toEqual([LEGACY_ONLY, lastKnownKeysLine([B]), ...BLIND_SPOTS]);
   });
   test('a subject with a live record reads no identity timeline for its marketplace', async () => {
     const r = await buildReport({ subject: DID, include: ['marketplace'] }, replayFetch(fx.store), opts);
     expect(r.sources.some((u) => /\/(asset_txs|tx_info)$/.test(u))).toBe(false);
-    expect(r.blind_spots).toEqual(BLIND_SPOTS);
-    expect(r.key_roles.controller_pkh).toBe(PKH);
+    expect(r.blind_spots).toEqual([LEGACY_ONLY, ...BLIND_SPOTS]);
+    expect(r.key_roles.marketplace_pkhs).toEqual([PKH]);
   });
   test('an identity timeline that cannot be read leaves no key: the marketplace carries an error that says so, and the report is degraded', async () => {
     const broken = Object.fromEntries(Object.entries(storeFor(GONE, txs)).filter(([k]) => !k.includes('/tx_info')));
     const r = await buildReport({ subject: GONE, include: ['identity', 'marketplace'] }, replayFetch(broken), opts);
     expect((r.identity as any).error).toMatch(/fixture miss/);
-    expect((r.marketplace as any).error).toMatch(/^the last known controller key could not be read: .*fixture miss/);
-    expect(r.key_roles).toEqual({ controller_pkh: null, advert_count: null, capability_key_matches_controller: 'unknown', capability_endpoint: null });
-    expect(r.blind_spots).toEqual([NO_LIVE_RECORD, ...BLIND_SPOTS]);
-    expect(degradedReasons(r)).toEqual([expect.stringMatching(/^identity: /), expect.stringMatching(/^marketplace: the last known controller key could not be read/)]);
+    expect((r.marketplace as any).error).toMatch(/^the last known marketplace keys could not be read: .*fixture miss/);
+    expect(r.key_roles).toEqual({ controller_pkh: null, marketplace_pkhs: [], advert_count: null, capability_endpoint: null, capability_key_pkh: null, capability_key_active: 'unknown' });
+    expect(r.blind_spots).toEqual([LEGACY_ONLY, NO_MARKETPLACE_KEY, ...BLIND_SPOTS]);
+    expect(degradedReasons(r)).toEqual([expect.stringMatching(/^identity: /), expect.stringMatching(/^marketplace: the last known marketplace keys could not be read/)]);
   });
-  test('a subject that was never registered gets the no-record line only, whether or not identity is asked for', async () => {
+  test('a subject that was never registered gets the no-record line, whether or not identity is asked for', async () => {
     const NEVER = '12'.repeat(32);
     for (const include of [['identity', 'marketplace'], ['marketplace']] as const) {
       const r = await buildReport({ subject: NEVER, include: [...include] }, replayFetch(storeFor(NEVER, [])), opts);
       expect(r.marketplace, include.join()).toBeNull();
       expect(r.key_roles.controller_pkh).toBeNull();
-      expect(r.blind_spots).toEqual(['No registry record found for this subject.', ...BLIND_SPOTS]);
+      expect(r.blind_spots).toEqual([LEGACY_ONLY, 'No registry record found for this subject.', ...BLIND_SPOTS]);
     }
   });
-  test('the line a report adds for a last known key is in the form the spec shows', () => {
-    expect(lastKnownKeyLine('<key hash>')).toBe('marketplace and key_roles use the last known controller key <key hash>, taken from the identity timeline, because the subject has no live registry record. That key may no longer control the subject, and the marketplace section shows what the key did, not necessarily what the subject did.');
+  test('an identity registry record that lists no marketplace key, and never did: the marketplace is not read, and the line says why', async () => {
+    const ledger: LedgerTx[] = [{ hash: txHash(1), block: 100, outputs: [{ address: TEST_IDENTITY.address, assets: [token(TEST_IDENTITY, GONE)], datum: identityHex() }], mint: [token(TEST_IDENTITY, GONE)] }];
+    const r = await buildReport({ subject: GONE, include: ['identity', 'marketplace'] }, koiosLedger(ledger, replayFetch(storeFor(GONE, []))), { ...opts, config: WITH_IDENTITY });
+    expect(r.subject).toMatchObject({ registry: 'identity' });
+    expect(r.marketplace).toBeNull();
+    expect(r.blind_spots).toEqual([NO_MARKETPLACE_KEY, ...BLIND_SPOTS]);
+  });
+  test('the line a report adds for last known keys is in the form the spec shows', () => {
+    expect(lastKnownKeysLine(['<key hash>'])).toBe('marketplace uses the last known marketplace keys <key hash>, taken from the identity timeline, because the subject has no live registry record that names one. Those keys may no longer act for the subject, and the marketplace section shows what the keys did, not necessarily what the subject did.');
+    expect(lastKnownKeysLine(['a', 'b'])).toContain('keys a, b, taken');
+  });
+});
+
+describe('the manifest DID', () => {
+  test('a report names its agent by the canonical DID, also when the setting holds the legacy form', async () => {
+    const AH = '8a98c4b74f0e49a09ca4b3502e121c96a8e6992afd2cba64ef8128042fedd440';
+    const manifest = manifestFromEnv({ ...TEST_ENV, AGENT_DID: legacyVectorDid(REGISTRY_POLICY, AH) });
+    const r = await buildReport({ subject: DID, include: ['identity'] }, replayFetch(fx.store), { ...opts, manifest });
+    expect(r.generated_by).toEqual({ agent: 'Agent History', did: `did:vector:${AH}`, version: '0.2.0' });
+    expect(r.schema).toBe('vector.agent-history.report.v2');
   });
 });
 
@@ -303,7 +402,7 @@ describe('report time budget', () => {
     expect(r.marketplace).toEqual({ error: 'time budget exceeded' });
     expect((r.identity as any).registered.block).toBe(7275113);
     expect((r.reputation as any).stakes).toHaveLength(1);
-    expect(r.key_roles).toMatchObject({ controller_pkh: PKH, advert_count: null, capability_key_matches_controller: true });
+    expect(r.key_roles).toMatchObject({ controller_pkh: PKH, marketplace_pkhs: [PKH], advert_count: null, capability_key_active: true });
     expect(ms).toBeGreaterThanOrEqual(BUDGET - 50);
     expect(ms).toBeLessThan(BUDGET + 2_500);
     expect(degradedReasons(r)).toEqual(['marketplace: time budget exceeded']);
@@ -324,7 +423,7 @@ describe('report time budget', () => {
   });
   test('a key check that never answers is unknown at the deadline', async () => {
     const { value: r, ms } = await timed(buildReport({ subject: DID, include: ['identity', 'marketplace'] }, hanging((u) => u.endsWith('/capability')), budgeted));
-    expect(r.key_roles).toEqual({ controller_pkh: PKH, advert_count: 1, capability_key_matches_controller: 'unknown', capability_endpoint: 'https://mp-suppliers-chandra.hal8.ai' });
+    expect(r.key_roles).toEqual({ controller_pkh: PKH, marketplace_pkhs: [PKH], advert_count: 1, capability_endpoint: ENDPOINT, capability_key_pkh: null, capability_key_active: 'unknown' });
     expect(ms).toBeLessThan(BUDGET + 2_500);
     expect(degradedReasons(r)).toEqual([]); // unknown is a normal answer of the key check
   });
@@ -333,8 +432,8 @@ describe('report time budget', () => {
     expect(error?.message).toBe('time budget exceeded while resolving the subject');
     expect(ms).toBeLessThan(BUDGET + 2_500);
   });
-  test('a report that finishes inside the budget is the recorded report, and the budget changes nothing in it', async () => {
-    const r = JSON.parse(JSON.stringify(await buildReport({ subject: DID, include: [...ALL] }, replayFetch(fx.store), { ...opts, budgetMs: 60_000 })));
+  test('a report that finishes inside the budget is the stored report, and the budget changes nothing in it', async () => {
+    const r = json(await buildReport({ subject: DID, include: [...ALL] }, replayFetch(fx.store), { ...opts, budgetMs: 60_000 }));
     expect(r).toEqual(fx.report);
   });
 });

@@ -13,10 +13,10 @@ pnpm install
 cd agents/agent-history
 OPERATOR_CONTACT=ops@example.test AGENT_DID=did:local PORT=9091 pnpm start
 curl -s -X POST localhost:9091/ -H 'content-type: application/json' \
-  -d '[{"content":"{\"subject\":\"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db\"}","role":"user"}]'
+  -d '[{"content":"{\"subject\":\"did:vector:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db\"}","role":"user"}]'
 ```
 
-The body of `POST /` is the wire payload: a one-element message array whose `content` is the request JSON as a string, as in the curl above. The request JSON is `{ "subject": "<DID | 64-hex asset name | 56-hex key hash>", "include": [...] }`. `include` defaults to all of `identity`, `marketplace`, `reputation`, `dispute`, `self_improvement`. A bad request is a 400 with a reason. A section that fails is reported as `{ "error": "..." }` and the report is still a 200. Identical requests within 60 s share one report, and requests that overlap share one build. A report with a failed section or without a chain tip is answered but not kept, so the next request builds it again.
+The body of `POST /` is the wire payload: a one-element message array whose `content` is the request JSON as a string, as in the curl above. The request JSON is `{ "subject": "<DID | 64-hex identifier | 56-hex key hash>", "include": [...] }`. A DID is the canonical `did:vector:<identifier>` or the legacy `did:vector:agent:<legacy registry policy>:<identifier>`, in lowercase; both give the same report. `include` defaults to all of `identity`, `marketplace`, `reputation`, `dispute`, `self_improvement`. A bad request is a 400 with a reason. A section that fails is reported as `{ "error": "..." }` and the report is still a 200. Identical requests within 60 s share one report, and requests that overlap share one build. A report with a failed section or without a chain tip is answered but not kept, so the next request builds it again.
 
 Other routes: `GET /agent.json` (manifest) and `GET /healthz`. `POST` is accepted on `/` only; any other path is a 404.
 
@@ -26,10 +26,11 @@ Other routes: `GET /agent.json` (manifest) and `GET /healthz`. `POST` is accepte
 
 | Variable | Manifest field | Default |
 |---|---|---|
-| `AGENT_DID` | `identity.did` | empty |
-| `SUPPLIER_PKH` | `identity.controller_pkh` and `keys.supplier_pkh` | empty |
+| `AGENT_DID` | `identity.did`, in the canonical form `did:vector:<identifier>`. The legacy form of the same identifier is published in the canonical form | empty |
+| `SUPPLIER_PKH` | `keys.supplier_pkh`, and with `AGENT_DID` the listed supplier key `identity.supplier_key`, `<DID>#<key hash>` | empty |
 | `SUPPLIER_PUB_KEY_HEX` | `keys.pub_key_hex` | empty |
-| `AGENT_VERSION` | `version` | `0.1.0` |
+| `IDENTITY_POLICY_ID` | `identity.registry_address`, the address of the identity registry derived from its policy | empty, the identity registry is not configured |
+| `AGENT_VERSION` | `version` | `0.2.0` |
 | `OPERATOR_CONTACT` | `operator.contact` | none. Required: the service stops at start without it |
 | `ADVERT_PRICE_LOVELACE` | `terms.price_lovelace` | `1000000` |
 | `ADVERT_MAX_PROCESSING_MS` | `terms.max_processing_ms` | `300000` |
@@ -37,7 +38,21 @@ Other routes: `GET /agent.json` (manifest) and `GET /healthz`. `POST` is accepte
 | `AGENT_STATUS_SINCE` | `status.since` | `2026-10-15` |
 | `ADVERT_EXPLORER_URL` | `links.explorer_advert` | empty |
 
-Numbers (and `PORT`) must be non-negative integers. `AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case. `OPERATOR_CONTACT` must be set and not blank. A value that breaks one of these rules stops the service at start, and the error names the variable. `OPERATOR_CONTACT` has no default, because the value is published in the manifest that the advert hashes: use a role address that the Foundation confirms, never a person's.
+Numbers (and `PORT`) must be non-negative integers. `AGENT_STATUS_CHIP` must be LIVE, DEPLOYED or PROPOSED, in any case. `OPERATOR_CONTACT` must be set and not blank. A value of `AGENT_DID` that starts with `did:vector:` must name a Vector mainnet agent: the canonical form, or the legacy form under the legacy registry policy. A value that breaks one of these rules stops the service at start, and the error names the variable. `OPERATOR_CONTACT` has no default, because the value is published in the manifest that the advert hashes: use a role address that the Foundation confirms, never a person's.
+
+## Settings of the report
+
+The registries and the module addresses are deployment values. The service reads them when it starts (`src/config.ts`), and a value that breaks a rule stops it, with the variable named.
+
+| Variable | What it sets | Default |
+|---|---|---|
+| `IDENTITY_POLICY_ID` | the identity registry: 56 lowercase hex characters, the policy ID published at its deployment. The report then reads both registries | empty: the legacy registry only, and every report says so in `blind_spots` |
+| `IDENTITY_ADDRESS` | the address of the identity registry. It may be left out; when it is set it must be the address of `IDENTITY_POLICY_ID` (the script as payment credential, no stake credential), and it needs `IDENTITY_POLICY_ID` | derived from the policy |
+| `M3_REPUTATION_ADDRESS`, `M3_ENDORSEMENT_ADDRESS` | the Module-3 stake and endorsement addresses | the deployment before the identity registry (`@vsa/vector-read` constants) |
+| `M1_ADDRESSES`, `M6_ADDRESSES` | the Module-1 and Module-6 addresses, as `label=address` pairs separated by commas. The labels (a lowercase letter, then lowercase letters, digits and `_`, 32 at most) are the keys of the `dispute` and `self_improvement` sections, in that order | the six Module-1 addresses (v14 and v15-sim) and the three Module-6 addresses before the identity registry |
+| `KOIOS_URL`, `INDEXER_URL` | the Koios and marketplace indexer bases (`@vsa/vector-read`) | Vector mainnet |
+
+Each module address must be a Vector mainnet address whose payment credential is a script. A list names no label and no address twice. The names `IDENTITY_POLICY_ID` and `IDENTITY_ADDRESS` are the ones the identity gateway and the marketplace indexer read.
 
 The advert `detail_uri` points at `GET /agent.json` and its `detail_hash` is the sha256 of the bytes served there. Adverts are immutable, so a changed manifest means a retired advert and a new one. From the repository root, print the hash of a running agent with `node scripts/manifest-hash.mjs https://<host>`.
 
@@ -45,12 +60,13 @@ The advert `detail_uri` points at `GET /agent.json` and its `detail_hash` is the
 
 ```bash
 pnpm --filter @vsa/agent-history test
-pnpm --filter @vsa/agent-history record-fixtures   # needs network; rewrites test/fixtures/chandra.json
+pnpm --filter @vsa/agent-history record-fixtures            # needs network; rewrites test/fixtures/chandra.json
+pnpm --filter @vsa/agent-history record-fixtures --replay   # no network; builds the stored report again from the recorded calls
 ```
 
-The tests replay `test/fixtures/chandra.json`, a recording of every Koios, indexer and supplier call behind the ChandraOCR report (registration at block 7,275,113, the Module-3 stake `05563e75...#0`). No test needs the network.
+The tests replay `test/fixtures/chandra.json`, a recording of every Koios, indexer and supplier call behind the ChandraOCR report (registration at block 7,275,113, the Module-3 stake `05563e75...#0`). No test needs the network. The identity registry is not deployed yet, so the tests of its records (registration, updates, holds, statuses, parties, recoveries, tombstones, adoption, a token outside its registry address) run on a small ledger in `test/support.ts`: the transactions of a test go in, and it answers the Koios calls the way Koios does. The ChandraOCR adoption tests put the recorded legacy registration and a synthetic adoption on that ledger, and every other call goes to the recording.
 
-The recorder refuses to overwrite the fixture when the live report has a failed section, no chain tip or no registry record. The `report` stored in the fixture is the report the code built during the recording, and the report test compares a fresh replay with it exactly: every section, the sources and the blind spots. Record again after any change to the shape of the report, then update the example in `specs/agent-history.md`, whose key paths a test keeps equal to a real report. The last recording, 2026-10-13, added the three Module-1 v15-sim addresses; the ledger data it holds for ChandraOCR is otherwise the same as before (3,436 indexer rows, first-party, as all marketplace activity to date; the stake; the registration), with a later chain tip. When the blind-spot lines changed (a sixth fixed line, and a reworded first one), the stored `report` was rebuilt offline from the recorded calls with the new code: no call was made again, and every other part of the report is byte-identical to the recording.
+The recorder refuses to overwrite the fixture when the report has a failed section, no chain tip or no registry record. It builds the report with the default settings (the legacy registry, the module deployments before the identity registry), the ones the tests replay it with. The `report` stored in the fixture is the report the code built from the recorded calls, and the report test compares a fresh replay with it exactly: every section, the sources and the blind spots. After a change to the shape of the report, build the stored report again with `--replay` (or record again), then update the example in `specs/agent-history.md`, whose key paths a test keeps equal to a real report. The last recording, 2026-10-13, added the three Module-1 v15-sim addresses; the ledger data it holds for ChandraOCR is otherwise the same as before (3,436 indexer rows, first-party, as all marketplace activity to date; the stake; the registration), with a later chain tip. When the blind-spot lines changed (a sixth fixed line, and a reworded first one), and again for version 0.2.0 (the identity registry), the stored `report` was rebuilt offline from the recorded calls with the new code: no call was made again, and the ledger data is the recording's.
 
 ## Live check
 
@@ -62,7 +78,7 @@ A local run against the live ledger, 2026-10-13, chain tip at block 8,729,902, s
 | Time, identical request again | 2 ms, from the cache; the body is byte-identical (6,502 bytes) |
 | `identity.registered` | tx `fee14e5f...`, block 7275113 |
 | `reputation.stakes[0]` | `05563e75...#0`, `stake_lovelace` "10000000" |
-| `key_roles.capability_key_matches_controller` | true |
+| `key_roles.capability_key_matches_controller` (0.1.0; `capability_key_active` since 0.2.0) | true |
 | `marketplace.as_supplier.escrows` | `total` 3436, `latest_checked` 50, `latest_spent` 50 |
 | `dispute` | six arrays, three from the v14 addresses and three from the v15-sim addresses, all empty for this agent |
 | Sections with an error | none |
