@@ -1,17 +1,28 @@
 // packages/buyer-core/test/fleet-build.test.ts
 // The Post of a fleet job. planFleetPostEscrow and buildFleetPostEscrow mirror the vendored planPostEscrow and buildPostEscrow with a
 // prompt hash computed by the caller (commitments.ts) in place of a template payload, and without the vendored builder's refusal of fleet
-// capabilities. (a) to (c) are the brief's tests; the rest pins the refusals the mirror keeps and builds the Post offline.
+// capabilities. (a) to (c) are the brief's tests; the rest pins the refusals the mirror keeps and builds the Post offline, in both layouts: the
+// identity layout (Part 2 sections 6.1, 6.2 and 6.5) over the identity world of the vendored fixtures (a deployment with test parameters, the agent's
+// record on the node, one fake for Koios and the indexer).
 import { describe, it, expect, beforeAll } from 'vitest';
 import { CML, getAddressDetails } from '@lucid-evolution/lucid';
-import type { LucidEvolution } from '@lucid-evolution/lucid';
-import { decodeAdvertDatum, decodeEscrowDatum, encodeEscrowDatum, requestSpecHash } from '@vsa/vector-read';
-import { planFleetPostEscrow, buildFleetPostEscrow, buildPostEscrow, lucidForAddress, ocrPromptHash, DELIVER_BY_BUFFER_MS } from '../src/index.ts';
-import type { FleetPostPlan } from '../src/index.ts';
+import type { LucidEvolution, UTxO } from '@lucid-evolution/lucid';
+import { decodeAdvertDatum, decodeEscrowDatum, decodeIdentityEscrowDatum, encodeEscrowDatum, encodeIdentityEscrowDatum, identityEscrowLockFloor, requestSpecHash } from '@vsa/vector-read';
+import type { IdentityEscrowDatum } from '@vsa/vector-read';
+import { plutusAddressFromBech32 } from '@vsa/vector-read/identity-codec';
+import {
+  planFleetPostEscrow, buildFleetPostEscrow, buildPostEscrow, fleetPostTerms, isIdentityAdvert, lucidForAddress, ocrPromptHash, DELIVER_BY_BUFFER_MS, MAX_ESCROW_LOVELACE,
+} from '../src/index.ts';
+import type { FleetPostPlan, IdentityDeployment } from '../src/index.ts';
 import { ESCROW_ADDRESS, MARKETPLACE_MIN_FEE, MAX_PROCESSING_MS_CEILING } from '../src/vendored/mcp/marketplace-constants.ts';
+import { MAX_RANGE_MS } from '../src/vendored/mcp/identity-rules.ts';
 import { isFleetCapability } from '../src/vendored/mcp/marketplace-supplier.ts';
 import { ADVERT_REF, ADVERT_DATUM_HEX, ADVERT_EXPECTED, ESCROW_OPEN_DATUM_HEX, ESCROW_EXPECTED, ESCROW_LOCKED_LOVELACE } from './fixtures/marketplace.fixture.ts';
 import { FixtureProvider, FIXTURE_UTXOS, FIXTURE_TXHASH, OWN_ADDRESS } from './fixtures/fixture-provider.ts';
+import { DEPLOYMENT, NOW as IDENTITY_NOW, identityWorld, lucidOn } from './fixtures/identity-world.ts';
+import {
+  ADVERT_REF as IDENTITY_ADVERT_REF, AGENT_ID, IDENTITY_ADVERT, OWN_PKH as IDENTITY_BUYER, SUPPLIER_PKH, advertUtxo, agentRecord, chainFake, listedRow,
+} from './fixtures/escrow-identity.fixture.ts';
 import { advertKoios, ADVERT_TX } from './advert-koios.ts';
 
 const advert = decodeAdvertDatum(ADVERT_DATUM_HEX);
@@ -112,7 +123,7 @@ describe('buildFleetPostEscrow over the fixture provider (offline)', () => {
     expect(decodeEscrowDatum(escrow.datum()!.as_datum()!.to_cbor_hex()).prompt_hash).toBe(PROMPT);
     expect(r.escrowRef).toBe(`${CML.hash_transaction(body).to_hex()}#0`);
     expect(r.datum).toStrictEqual(plan.datum);
-    expect(r).toMatchObject({ lockLovelace: 2_261_030n, deliverBy: NOW + 300_000 + DELIVER_BY_BUFFER_MS, postedAt: NOW, collateralKept: true });
+    expect(r).toMatchObject({ lockLovelace: 2_261_030n, deliverBy: NOW + 300_000 + DELIVER_BY_BUFFER_MS, postedAt: NOW, collateralKept: true, layout: 'legacy', agentId: null, escrowAddress: ESCROW_ADDRESS });
     await expect(buildPostEscrow(lucid, provider, { changeAddress: OWN_ADDRESS, advertRef: ADVERT_REF, payload: 'x', nowMs: NOW }, advertKoios().f)).rejects.toThrow(/a fleet capability/);
   }, 30_000);
 
@@ -155,5 +166,109 @@ describe('buildFleetPostEscrow over the fixture provider (offline)', () => {
     await expect(post(advertKoios({ spent: true }))).rejects.toThrow(`Advert ${ADVERT_REF} has been spent`);
     await expect(post(advertKoios({ rows: [] }))).rejects.toThrow(`No UTxO at ${ADVERT_REF}.`);
     await expect(post(advertKoios({ inputCreds: ['ee'.repeat(28)] }))).rejects.toThrow(`Advert ${ADVERT_REF} was not created by its supplier key`);
+  }, 30_000);
+});
+
+describe('planFleetPostEscrow in the identity layout (Part 2 sections 6.1 and 6.5)', () => {
+  const terms = fleetPostTerms(IDENTITY_ADVERT, OWN_ADDRESS)!;
+
+  it('takes the terms of an identity-marketplace advert: its agent, and the refund to the buyer\'s own address with no datum; a legacy advert has none', () => {
+    expect(isIdentityAdvert(IDENTITY_ADVERT)).toBe(true);
+    expect(terms).toStrictEqual({ agentId: AGENT_ID, refund: { address: plutusAddressFromBech32(OWN_ADDRESS), datum: null } });
+    expect(isIdentityAdvert(advert)).toBe(false);
+    expect(fleetPostTerms(advert, OWN_ADDRESS)).toBeUndefined();
+  });
+
+  it('writes the 16-field escrow: the 14 legacy fields as a legacy plan writes them, then agent_id and refund; its lock is sized for the widest Submitted datum', () => {
+    const legacy = planFleetPostEscrow(IDENTITY_ADVERT, IDENTITY_ADVERT_REF, IDENTITY_BUYER, PROMPT, IDENTITY_NOW);
+    const plan = planFleetPostEscrow(IDENTITY_ADVERT, IDENTITY_ADVERT_REF, IDENTITY_BUYER, PROMPT, IDENTITY_NOW, terms);
+    expect([legacy.layout, plan.layout]).toStrictEqual(['legacy', 'identity']);
+    const datum = plan.datum as IdentityEscrowDatum;
+    expect(datum).toStrictEqual({ ...legacy.datum, agent_id: AGENT_ID, refund: terms.refund });
+    expect(plan.datumHex).toBe(encodeIdentityEscrowDatum(datum));
+    expect(decodeIdentityEscrowDatum(plan.datumHex)).toStrictEqual(datum);
+    expect(legacy.datumHex).toBe(encodeEscrowDatum(legacy.datum));
+    expect(plan.lockLovelace).toBe(identityEscrowLockFloor(datum, 4_000_000n));
+    // Where the floor is above price + both bonds, the identity floor (the widest encoding of the larger datum) is the higher of the two.
+    const free = { ...IDENTITY_ADVERT, price_lovelace: 0n, buyer_bond_lovelace: 0n, supplier_bond_lovelace: 0n };
+    const freeLegacy = planFleetPostEscrow(free, IDENTITY_ADVERT_REF, IDENTITY_BUYER, PROMPT, IDENTITY_NOW).lockLovelace;
+    const freeIdentity = planFleetPostEscrow(free, IDENTITY_ADVERT_REF, IDENTITY_BUYER, PROMPT, IDENTITY_NOW, terms).lockLovelace;
+    expect(freeLegacy > 2_000_000n && freeIdentity > freeLegacy).toBe(true);
+    expect([plan.deliverBy, plan.validTo, plan.postedAt]).toStrictEqual([legacy.deliverBy, legacy.validTo, legacy.postedAt]);
+  });
+
+  it('is valid from posted_at - 60 s to posted_at + the buffer, 240 s, within the one hour of every escrow builder, whatever the window', () => {
+    for (const max_processing_ms of [0, 60_000, MAX_PROCESSING_MS_CEILING]) {
+      const plan = planFleetPostEscrow({ ...IDENTITY_ADVERT, max_processing_ms }, IDENTITY_ADVERT_REF, IDENTITY_BUYER, PROMPT, IDENTITY_NOW, terms);
+      expect([plan.validFrom, plan.validTo], `window ${max_processing_ms}`).toStrictEqual([IDENTITY_NOW - 60_000, IDENTITY_NOW + DELIVER_BY_BUFFER_MS]);
+      expect(plan.validTo - plan.validFrom <= MAX_RANGE_MS).toBe(true);
+    }
+  });
+
+  it('refuses price and both bonds above the value cap F-29 (10000000000 lovelace) in both layouts, lets exactly the cap through, and refuses a negative amount in the identity layout', () => {
+    expect(MAX_ESCROW_LOVELACE).toBe(10_000_000_000n);
+    const at = (price: bigint) => ({ ...IDENTITY_ADVERT, price_lovelace: price });
+    const cap = /asks for price \+ both bonds of 10000000001 lovelace, above the 10000000000 lovelace value cap of an escrow \(F-29\): such an escrow cannot be claimed, so it is not built\./;
+    expect(() => planFleetPostEscrow(at(9_998_000_001n), IDENTITY_ADVERT_REF, IDENTITY_BUYER, PROMPT, IDENTITY_NOW, terms)).toThrow(cap);
+    expect(() => planFleetPostEscrow(at(9_998_000_001n), IDENTITY_ADVERT_REF, IDENTITY_BUYER, PROMPT, IDENTITY_NOW)).toThrow(cap);
+    expect(planFleetPostEscrow(at(9_998_000_000n), IDENTITY_ADVERT_REF, IDENTITY_BUYER, PROMPT, IDENTITY_NOW, terms).lockLovelace).toBe(10_000_000_000n);
+    expect(planFleetPostEscrow(at(9_998_000_000n), IDENTITY_ADVERT_REF, IDENTITY_BUYER, PROMPT, IDENTITY_NOW).lockLovelace).toBe(10_000_000_000n);
+    expect(() => planFleetPostEscrow({ ...IDENTITY_ADVERT, buyer_bond_lovelace: -1n }, IDENTITY_ADVERT_REF, IDENTITY_BUYER, PROMPT, IDENTITY_NOW, terms)).toThrow(/its terms do not fit an escrow datum \(a negative amount\)/);
+  });
+});
+
+describe('buildFleetPostEscrow of an identity-marketplace advert (offline)', () => {
+  const KOIOS = 'https://koios.test.example';
+  /** The Post of the identity advert over the identity world: `records` on the node, `listed` the indexer's rows, `deployment` the chain's. */
+  const post = async (o: { records?: UTxO[]; listed?: unknown[]; deployment?: IdentityDeployment | null; indexerUrl?: string } = {}) => {
+    const world = identityWorld(o.records ?? [agentRecord()]);
+    const k = chainFake({ live: [advertUtxo()], listed: o.listed ?? [listedRow()] });
+    const build = buildFleetPostEscrow(await lucidOn(world), world, {
+      changeAddress: OWN_ADDRESS, advertRef: IDENTITY_ADVERT_REF, promptHash: PROMPT, nowMs: IDENTITY_NOW, koiosUrl: KOIOS,
+      deployment: o.deployment === undefined ? DEPLOYMENT : o.deployment, ...(o.indexerUrl === undefined ? {} : { indexerUrl: o.indexerUrl }),
+    }, k.f);
+    return { build, k };
+  };
+
+  it('pays the identity escrow at output 0 of the deployment\'s escrow address: the agent of the advert, the refund to the buyer\'s own address, the planned lock', async () => {
+    const { build } = await post();
+    const r = await build;
+    const plan = planFleetPostEscrow(IDENTITY_ADVERT, IDENTITY_ADVERT_REF, IDENTITY_BUYER, PROMPT, IDENTITY_NOW, fleetPostTerms(IDENTITY_ADVERT, OWN_ADDRESS));
+    const body = CML.Transaction.from_cbor_hex(r.unsignedCborHex).body();
+    const escrow = body.outputs().get(0);
+    expect(escrow.address().to_bech32()).toBe(DEPLOYMENT.escrow.address);
+    expect(escrow.amount().coin()).toBe(plan.lockLovelace);
+    expect(escrow.datum()?.as_datum()?.to_cbor_hex()).toBe(plan.datumHex);
+    const datum = decodeIdentityEscrowDatum(plan.datumHex);
+    expect([datum.agent_id, datum.buyer_pkh, datum.supplier_pkh, datum.prompt_hash, datum.state]).toStrictEqual([AGENT_ID, IDENTITY_BUYER, SUPPLIER_PKH, PROMPT, 'Open']);
+    expect(datum.refund).toStrictEqual({ address: plutusAddressFromBech32(OWN_ADDRESS), datum: null });
+    expect(r).toMatchObject({ layout: 'identity', agentId: AGENT_ID, escrowAddress: DEPLOYMENT.escrow.address, lockLovelace: plan.lockLovelace, datum: plan.datum, escrowRef: `${CML.hash_transaction(body).to_hex()}#0` });
+    const signers = body.required_signers();
+    expect([signers?.len(), signers?.get(0).to_hex()]).toStrictEqual([1, IDENTITY_BUYER]);
+    expect(Number(body.ttl()) - Number(body.validity_interval_start())).toBe(240);
+  }, 30_000);
+
+  it('asks the indexer it is given whether the advert is listed', async () => {
+    const { build, k } = await post({ indexerUrl: 'https://indexer.test.example/' });
+    await build;
+    expect(k.calls).toContain('https://indexer.test.example/suppliers');
+    expect(k.calls.filter((url) => url.endsWith('/suppliers'))).toHaveLength(1);
+  }, 30_000);
+
+  it('refuses an advert the indexer does not list, or lists with another agent', async () => {
+    await expect((await post({ listed: [] })).build).rejects.toThrow(/is not listed by the marketplace indexer/);
+    await expect((await post({ listed: [listedRow(IDENTITY_ADVERT_REF, 'bf'.repeat(32))] })).build).rejects.toThrow(/with another agent than the one its datum names/);
+  }, 30_000);
+
+  it('refuses an agent that fails the listing rule on chain: no record, the key or the capability not listed, not Active', async () => {
+    const hold = { by: { type: 'ControllerSet' as const }, reason: 6, since: IDENTITY_NOW - 86_400_000, until: IDENTITY_NOW + 86_400_000 };
+    await expect((await post({ records: [] })).build).rejects.toThrow(/has no record in the identity registry/);
+    await expect((await post({ records: [agentRecord({ keys: [] })] })).build).rejects.toThrow(/does not list the supplier key .* with the transaction purpose/);
+    await expect((await post({ records: [agentRecord({ capabilities: [] })] })).build).rejects.toThrow(/does not list the capability/);
+    await expect((await post({ records: [agentRecord({ status: { type: 'Suspended', holds: [hold] } })] })).build).rejects.toThrow(/is Suspended; only an Active agent can take work/);
+  }, 30_000);
+
+  it('without the identity deployment refuses the advert with the words that name the settings, and builds nothing', async () => {
+    await expect((await post({ deployment: null })).build).rejects.toThrow(/holds an identity-marketplace advert\. The identity registry is not configured on this server: set VECTOR_IDENTITY_LEGACY_ROOT and VECTOR_IDENTITY_CONFIG_SEED/);
   }, 30_000);
 });

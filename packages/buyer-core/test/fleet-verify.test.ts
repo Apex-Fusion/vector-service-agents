@@ -1,5 +1,5 @@
 // packages/buyer-core/test/fleet-verify.test.ts
-// verifyFleetReceipt: the seven checks on the receipt of a fleet sub-job, run on real Ed25519 signatures (a key generated for each job, never stored)
+// verifyFleetReceipt: the eight checks on the receipt of a fleet sub-job, run on real Ed25519 signatures (a key generated for each job, never stored)
 // and real hashes (the fleet commitments of src/commitments.ts, the receipt hash of @vsa/vector-read). The hosted server's verifier compares
 // response_hash with the sha256 of the result text; a fleet supplier hashes a canonical envelope, so this verifier is given the recomputed hash.
 import { describe, it, expect, vi } from 'vitest';
@@ -22,11 +22,11 @@ const RESPONSE_HASH = ocrResponseHash(PAGE_RESULT);
 type Checks = FleetVerification['checks'];
 const ALL_PASS: Checks = {
   escrow_ref_matches: 'pass', response_hash_matches: 'pass', supplier_key_matches: 'pass', signature_valid: 'pass',
-  on_chain_hash_matches: 'pass', prompt_hash_matches: 'pass', model_matches: 'pass',
+  on_chain_hash_matches: 'pass', prompt_hash_matches: 'pass', model_matches: 'pass', fields_match: 'pass',
 };
 const ALL_FAIL: Checks = {
   escrow_ref_matches: 'fail', response_hash_matches: 'fail', supplier_key_matches: 'fail', signature_valid: 'fail',
-  on_chain_hash_matches: 'fail', prompt_hash_matches: 'fail', model_matches: 'fail',
+  on_chain_hash_matches: 'fail', prompt_hash_matches: 'fail', model_matches: 'fail', fields_match: 'fail',
 };
 /** The verdict of the named checks failing and all others passing. */
 const onlyFails = (...failing: Array<keyof Checks>): FleetVerification => ({
@@ -54,23 +54,25 @@ const receiptFor = (pkh: string): Record<string, unknown> => ({
 /**
  * A finished job: the receipt the key signed, the hash the supplier put on chain for it, and the input that verifies it. `receipt` and `omit` change the
  * receipt BEFORE it is signed, so the signature and the hash on chain still belong to the receipt as it is: a test that changes one thing changes one thing.
+ * With `agentId` the job is hired under an identity-marketplace escrow that names that agent, and the supplier signs the ninth field agent_did.
  */
-function job(over: { key?: SupplierKey; receipt?: Record<string, unknown>; omit?: string[] } = {}) {
+function job(over: { key?: SupplierKey; receipt?: Record<string, unknown>; omit?: string[]; agentId?: string } = {}) {
   const key = over.key ?? newKey();
-  const receipt: Record<string, unknown> = { ...receiptFor(key.pkh), ...over.receipt };
+  const agentId = over.agentId ?? null;
+  const receipt: Record<string, unknown> = { ...receiptFor(key.pkh), ...(agentId === null ? {} : { agent_did: `did:vector:${agentId}` }), ...over.receipt };
   for (const field of over.omit ?? []) delete receipt[field];
   const signature = key.sign(receipt);
   const onChainHash = sha256Utf8Hex(canonicalize({ receipt, signature }));
   const input: FleetVerifyInput = {
     escrowRef: ESCROW, receipt, receiptSignature: signature, responseHashHex: RESPONSE_HASH, promptHashHex: PROMPT_HASH,
-    supplierPubKeyHex: key.pubKeyHex, supplierPkhExpected: key.pkh, model: MODEL, onChainReceiptHash: async () => onChainHash,
+    supplierPubKeyHex: key.pubKeyHex, supplierPkhExpected: key.pkh, model: MODEL, agentId, onChainReceiptHash: async () => onChainHash,
   };
   return { key, receipt, signature, onChainHash, input };
 }
 type Job = ReturnType<typeof job>;
 
 describe('verifyFleetReceipt, a receipt the supplier key signed', () => {
-  it('is VERIFIED with the seven checks passing, and leaves its input as it was', async () => {
+  it('is VERIFIED with the eight checks passing, and leaves its input as it was', async () => {
     const j = job();
     // The fixture is what it claims to be: a 32-byte key, its 28-byte hash, a 64-byte signature.
     expect(j.key.pubKeyHex).toMatch(/^[0-9a-f]{64}$/);
@@ -133,8 +135,9 @@ describe('verifyFleetReceipt, each check on its own', () => {
     ['on_chain_hash_matches', 'the hash on chain is of another signed receipt', () => ({ onChainReceiptHash: async () => sha256Utf8Hex('another signed receipt') })],
     ['prompt_hash_matches', 'the receipt is for another request', () => ({ promptHashHex: ocrPromptHash({ ...PAGE, image_b64: 'AAAA' }) })],
     ['model_matches', 'the receipt names another model', () => ({ model: 'another-model-v1' })],
+    ['fields_match', 'the escrow names an agent and the receipt, made for a legacy escrow, has no agent_did', () => ({ agentId: 'ae'.repeat(32) })],
   ];
-  it.each(flips)('%s fails when %s, and the six others still pass', async (check, _why, wrong) => {
+  it.each(flips)('%s fails when %s, and the seven others still pass', async (check, _why, wrong) => {
     const j = job();
     expect(await verifyFleetReceipt({ ...j.input, ...wrong(j) })).toStrictEqual(onlyFails(check));
   });
@@ -185,9 +188,9 @@ describe('verifyFleetReceipt, each check on its own', () => {
     expect(await verifyFleetReceipt({ ...j.input, receipt: { ...j.receipt, [field]: upper } })).toStrictEqual(onlyFails('signature_valid', 'on_chain_hash_matches'));
   });
 
-  it('a ninth field added after signing fails the signature and the on-chain row: they cover the receipt as a whole', async () => {
+  it('a ninth field added after signing fails the signature and the on-chain row, which cover the receipt as a whole, and the fields row: a receipt of a legacy escrow has eight', async () => {
     const j = job();
-    expect(await verifyFleetReceipt({ ...j.input, receipt: { ...j.receipt, note: 'added after signing' } })).toStrictEqual(onlyFails('signature_valid', 'on_chain_hash_matches'));
+    expect(await verifyFleetReceipt({ ...j.input, receipt: { ...j.receipt, note: 'added after signing' } })).toStrictEqual(onlyFails('signature_valid', 'on_chain_hash_matches', 'fields_match'));
   });
 });
 
@@ -246,10 +249,10 @@ describe('verifyFleetReceipt, a malformed receipt', () => {
     ['escrow_ref', 'escrow_ref_matches'], ['response_hash', 'response_hash_matches'], ['supplier_pkh', 'supplier_key_matches'],
     ['prompt_hash', 'prompt_hash_matches'], ['model', 'model_matches'],
   ];
-  it.each(READ_BY)('a receipt the supplier signed without %s fails %s and nothing else', async (field, check) => {
+  it.each(READ_BY)('a receipt the supplier signed without %s fails %s and the fields row, and nothing else', async (field, check) => {
     const j = job({ omit: [field] });
     expect(Object.keys(j.receipt)).not.toContain(field);
-    expect(await verifyFleetReceipt(j.input)).toStrictEqual(onlyFails(check));
+    expect(await verifyFleetReceipt(j.input)).toStrictEqual(onlyFails(check, 'fields_match'));
   });
 
   it.each(READ_BY)('a %s that is not a string fails %s and nothing else', async (field, check) => {
@@ -302,7 +305,7 @@ describe('verifyFleetReceipt, a malformed receipt', () => {
     // Both missing is not a match either: undefined is not equal to undefined here.
     const missing = undefined as unknown as string;
     const j = job({ omit: ['escrow_ref', 'response_hash', 'model'] });
-    expect(await verifyFleetReceipt({ ...j.input, escrowRef: missing, responseHashHex: missing, model: missing })).toStrictEqual(onlyFails('escrow_ref_matches', 'response_hash_matches', 'model_matches'));
+    expect(await verifyFleetReceipt({ ...j.input, escrowRef: missing, responseHashHex: missing, model: missing })).toStrictEqual(onlyFails('escrow_ref_matches', 'response_hash_matches', 'model_matches', 'fields_match'));
   });
 });
 
@@ -317,22 +320,22 @@ describe('verifyFleetReceipt, a receipt too deep to hash', () => {
     ['objects', () => { let deep: unknown = 'x'; for (let i = 0; i < DEPTH; i++) deep = { n: deep }; return deep; }],
   ];
 
-  it.each(NESTED)('a receipt with a field nested %s deep is FAILED and not a rejection: the four rows of the vendored call fail, the three made here are still made', async (_shape, nest) => {
+  it.each(NESTED)('a receipt with a field nested %s deep is FAILED and not a rejection: the five rows of the vendored call fail, the three made here are still made', async (_shape, nest) => {
     const j = job(); // signed while shallow; the depth is added after, so no signature of it exists
     const receipt = { ...j.receipt, extra: nest() };
     // The premise: the vendored function the verifier reaches does throw on this receipt, so what the test proves is the guard and not the size of the stack.
     expect(() => canonicalize({ receipt, signature: j.signature })).toThrow(RangeError);
     expect(await verifyFleetReceipt({ ...j.input, receipt })).toStrictEqual({
       verdict: 'FAILED',
-      checks: { ...ALL_PASS, supplier_key_matches: 'fail', signature_valid: 'fail', on_chain_hash_matches: 'fail', prompt_hash_matches: 'fail' },
+      checks: { ...ALL_PASS, supplier_key_matches: 'fail', signature_valid: 'fail', on_chain_hash_matches: 'fail', prompt_hash_matches: 'fail', fields_match: 'fail' },
     });
   });
 
-  it('with no hash on chain to compare, the vendored call never hashes the receipt: its signature row fails by itself, the key and prompt rows are made, the on-chain row is skipped', async () => {
+  it('with no hash on chain to compare, the vendored call never hashes the receipt: its signature row fails by itself, the key and prompt rows are made, the on-chain row is skipped, the extra field fails the fields row', async () => {
     const j = job();
     const receipt = { ...j.receipt, extra: NESTED[0][1]() };
     expect(await verifyFleetReceipt({ ...j.input, receipt, onChainReceiptHash: async () => null })).toStrictEqual({
-      verdict: 'FAILED', checks: { ...ALL_PASS, signature_valid: 'fail', on_chain_hash_matches: 'skipped' },
+      verdict: 'FAILED', checks: { ...ALL_PASS, signature_valid: 'fail', on_chain_hash_matches: 'skipped', fields_match: 'fail' },
     });
   });
 
@@ -391,5 +394,54 @@ describe('verifyFleetReceipt, how values are compared', () => {
     for (const wrong of [MODEL.toUpperCase(), ` ${MODEL}`, `${MODEL}\n`, MODEL.slice(0, -1)]) {
       expect(await verifyFleetReceipt({ ...j.input, model: wrong }), JSON.stringify(wrong)).toStrictEqual(onlyFails('model_matches'));
     }
+  });
+});
+
+describe('verifyFleetReceipt, the agent of an identity-marketplace escrow (Part 2 section 6.3)', () => {
+  const AGENT = 'ae'.repeat(32);
+
+  it('a receipt with the eight fields and agent_did = did:vector:<the agent_id of the escrow> is VERIFIED', async () => {
+    const j = job({ agentId: AGENT });
+    expect(Object.keys(j.receipt)).toHaveLength(9);
+    expect(j.receipt.agent_did).toBe(`did:vector:${AGENT}`);
+    expect(await verifyFleetReceipt(j.input)).toStrictEqual({ verdict: 'VERIFIED', checks: ALL_PASS });
+  });
+
+  it('a receipt the supplier signed for another agent fails the fields row and nothing else: it does not name the agent the buyer hired', async () => {
+    const j = job({ agentId: AGENT, receipt: { agent_did: `did:vector:${'af'.repeat(32)}` } });
+    expect(await verifyFleetReceipt(j.input)).toStrictEqual(onlyFails('fields_match'));
+  });
+
+  it.each([
+    ['the legacy form of the DID', `did:vector:agent:${'be'.repeat(28)}:${AGENT}`],
+    ['the identifier alone', AGENT],
+    ['the DID in upper case', `did:vector:${AGENT.toUpperCase()}`],
+    ['a number', 7],
+    ['null', null],
+  ])('an agent_did that is %s fails the fields row: it must be the canonical DID of the agent, exactly', async (_what, value) => {
+    const j = job({ agentId: AGENT, receipt: { agent_did: value } });
+    expect(await verifyFleetReceipt(j.input)).toStrictEqual(onlyFails('fields_match'));
+  });
+
+  it('the fields are those of the layout: no agent_did for an identity-marketplace escrow fails, and an agent_did for a legacy escrow fails', async () => {
+    const without = job({ agentId: AGENT, omit: ['agent_did'] });
+    expect(await verifyFleetReceipt(without.input)).toStrictEqual(onlyFails('fields_match'));
+    const withAgent = job({ agentId: AGENT });
+    expect(await verifyFleetReceipt({ ...withAgent.input, agentId: null })).toStrictEqual(onlyFails('fields_match'));
+  });
+
+  it('a tenth field fails the fields row, though the supplier signed it', async () => {
+    const j = job({ agentId: AGENT, receipt: { note: 'signed with the rest' } });
+    expect(await verifyFleetReceipt(j.input)).toStrictEqual(onlyFails('fields_match'));
+  });
+
+  it('agent_did changed after signing fails the signature, the on-chain row and the fields row', async () => {
+    const j = job({ agentId: AGENT });
+    expect(await verifyFleetReceipt({ ...j.input, receipt: { ...j.receipt, agent_did: `did:vector:${'af'.repeat(32)}` } })).toStrictEqual(onlyFails('signature_valid', 'on_chain_hash_matches', 'fields_match'));
+  });
+
+  it('the agent the escrow names is read in lower case, the form of an identifier', async () => {
+    const j = job({ agentId: AGENT });
+    expect(await verifyFleetReceipt({ ...j.input, agentId: AGENT.toUpperCase() })).toStrictEqual({ verdict: 'VERIFIED', checks: ALL_PASS });
   });
 });

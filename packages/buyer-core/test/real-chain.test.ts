@@ -3,25 +3,34 @@
 // for Ogmios and the submit API; fake Koios answers the advert and lineage reads; the vendored OgmiosProvider.submitTx is driven over a
 // stubbed fetch where its own answers matter. Covered: the key and the address it derives, the wallet it reads, the Post it builds keyless,
 // signs locally, submits and waits for, one transaction at a time and for awaitTimeoutMs at most, the typed error of every failure after
-// the signature, the Accept and the Reclaim up to the escrow reference script, the escrow state and receipt hash it reads off the vendored
-// lineage, and the endpoints createRealChain wires. Not covered offline: an Accept or a Reclaim that gets past the reference script, which
-// needs the deployed escrow script and the node's script evaluation (they then go through the same sign, submit and wait step as the Post).
+// the signature, the Accept and the Reclaim of a legacy escrow up to the escrow reference script, the escrow state and receipt hash it reads off
+// the vendored lineage, and the endpoints createRealChain wires. The identity layout runs all the way: with the identity deployment of the vendored
+// fixtures, the Post of an identity-marketplace advert, and the Accept and the Reclaim of an identity-marketplace escrow, which the builders evaluate
+// locally with the real applied escrow script, are built, signed, submitted and confirmed. Not covered offline: an Accept or a Reclaim of a legacy
+// escrow that gets past the reference script, which needs the deployed legacy escrow script and the node's script evaluation.
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { CML } from '@lucid-evolution/lucid';
 import type { Address, Credential, ProtocolParameters, UTxO } from '@lucid-evolution/lucid';
-import { blake2b224Hex, decodeAdvertDatum, decodeEscrowDatum, encodeEscrowDatum } from '@vsa/vector-read';
-import type { EscrowDatum } from '@vsa/vector-read';
+import { blake2b224Hex, decodeAdvertDatum, decodeEscrowDatum, decodeIdentityEscrowDatum, encodeEscrowDatum } from '@vsa/vector-read';
+import type { EscrowDatum, IdentityEscrowDatum } from '@vsa/vector-read';
+import { plutusAddressFromBech32 } from '@vsa/vector-read/identity-codec';
 import {
   createRealChain, feeOfSignedTx, ocrPromptHash, planFleetPostEscrow, rawHexToBech32, signTransaction, AcceptWindowClosedError, OgmiosProvider, TxBuildTimeoutError,
   TxNotConfirmedError, AWAIT_TIMEOUT_MAX_MS, BUILD_TIMEOUT_MS, DELIVER_BY_BUFFER_MS, ESCROW_REF_UTXO, VECTOR_OGMIOS_URL,
 } from '../src/index.ts';
-import type { ChainEscrowState, RealChainOptions } from '../src/index.ts';
+import type { ChainEscrowState, IdentityDeployment, RealChainOptions } from '../src/index.ts';
 import { RealChain } from '../src/chain.ts';
 import { ESCROW_ADDRESS, MARKETPLACE_MIN_FEE } from '../src/vendored/mcp/marketplace-constants.ts';
 import { ADVERT_REF, ADVERT_DATUM_HEX, ADVERT_EXPECTED, ESCROW_OPEN_DATUM_HEX, ESCROW_REF } from './fixtures/marketplace.fixture.ts';
 import { FixtureProvider, FIXTURE_TXHASH, FIXTURE_TOKEN_UNIT } from './fixtures/fixture-provider.ts';
 import { world, koiosFor, escrowAt, ESCROW_TX, CLAIM_TX, SUBMIT_TX } from './fixtures/escrow-koios.fixture.ts';
 import type { KoiosOptions } from './fixtures/escrow-koios.fixture.ts';
+import { CONFIG_UTXO, DEPLOYMENT, REF_UTXOS } from './fixtures/identity-world.ts';
+import {
+  ADVERT_REF as IDENTITY_ADVERT_REF, AGENT_ID, CHAIN_TXS, CLAIM_TX as IDENTITY_CLAIM_TX, ESCROW_LOCK, ESCROW_REF as IDENTITY_ESCROW_REF, IDENTITY_ADVERT,
+  POST_TX as IDENTITY_POST_TX, SUBMIT_TX as IDENTITY_SUBMIT_TX, advertUtxo, agentRecord, chainFake, escrowUtxo, identityEscrow, listedRow, submitted as submittedAt,
+  supplierEnterprise,
+} from './fixtures/escrow-identity.fixture.ts';
 import { advertKoios } from './advert-koios.ts';
 
 const KOIOS = 'https://v2.koios.vector.mainnet.apexfusion.org/';
@@ -152,7 +161,7 @@ describe('RealChain postEscrow', () => {
     expect(escrow.datum()?.as_datum()?.to_cbor_hex()).toBe(encodeEscrowDatum(plan.datum));
     expect(r).toStrictEqual({
       escrowRef: `${txHash}#0`, txHash, lockLovelace: 2_261_030n, feeLovelace: signed.body().fee(),
-      deliverBy: r.postedAt + 300_000 + 180_000, postedAt: r.postedAt, supplierPkh: ADVERT_EXPECTED.supplier_pkh, collateralKept: true,
+      deliverBy: r.postedAt + 300_000 + 180_000, postedAt: r.postedAt, supplierPkh: ADVERT_EXPECTED.supplier_pkh, collateralKept: true, agentId: null,
     });
     expect(r.feeLovelace >= MARKETPLACE_MIN_FEE).toBe(true);
     // It waited for this transaction: 60 polls over the default 180 s.
@@ -459,6 +468,88 @@ describe('RealChain readAdvert', () => {
     const empty = new RealChain(new SubmittingProvider([]), { privateKeyHex: hex, fetchImpl: advertKoios({ rows: [] }).f });
     await expect(empty.readAdvert(ADVERT_REF)).rejects.toThrow(`No UTxO at ${ADVERT_REF}.`);
   });
+});
+
+describe('RealChain in the identity layout (the deployment of the vendored fixtures, the real applied escrow script evaluated offline)', () => {
+  const IDENTITY_KOIOS = 'https://koios.test.example/';
+  /** The outputs of a transaction: address, lovelace and inline datum. */
+  const outputsOf = (cborHex: string) => {
+    const outs = CML.Transaction.from_cbor_hex(cborHex).body().outputs();
+    return Array.from({ length: outs.len() }, (_, i) => {
+      const o = outs.get(i);
+      return { address: o.address().to_bech32(), lovelace: o.amount().coin(), datum: o.datum()?.as_datum()?.to_cbor_hex() ?? null };
+    });
+  };
+  /** The identity escrow of the key, posted ten minutes ago, refunding to the key's own address. */
+  const ours = (key: { buyerPkh: string; address: string }): IdentityEscrowDatum =>
+    identityEscrow(Date.now() - 10 * 60_000, { buyer_pkh: key.buyerPkh, refund: { address: plutusAddressFromBech32(key.address), datum: null } });
+  /**
+   * A key, a node holding its wallet, the deployment's reference scripts and configuration record, the agent's record and the escrow outputs `make` gives,
+   * and one fake for Koios and the indexer (the advert, `live` and `spent` outputs, the transactions `txs`, the listed advert).
+   */
+  function identityChain(
+    make: (key: { buyerPkh: string; address: string }) => { node?: UTxO[]; live?: UTxO[]; spent?: UTxO[]; txs?: Record<string, Array<[string, string]>> } = () => ({}),
+    deployment: IdentityDeployment | null = DEPLOYMENT,
+  ) {
+    const key = generatedKey();
+    const o = make(key);
+    const node = new SubmittingProvider([...walletAt(key.address), ...REF_UTXOS, CONFIG_UTXO, agentRecord(), ...(o.node ?? [])]);
+    const k = chainFake({ live: [advertUtxo(), ...(o.live ?? [])], spent: o.spent, txs: o.txs, listed: [listedRow()] });
+    return { chain: new RealChain(node, { privateKeyHex: key.hex, koiosUrl: IDENTITY_KOIOS, fetchImpl: k.f, identityDeployment: deployment }), node, key };
+  }
+  /** The escrow of the key after the supplier's Submit, a minute ago: the Post and Claimed outputs spent, the Submitted output live. */
+  const afterSubmit = (key: { buyerPkh: string; address: string }) => {
+    const d = ours(key);
+    const live = escrowUtxo(IDENTITY_SUBMIT_TX, submittedAt(d, Date.now() - 60_000));
+    return { node: [live], live: [live], spent: [escrowUtxo(IDENTITY_POST_TX, d), escrowUtxo(IDENTITY_CLAIM_TX, { ...d, state: 'Claimed' })], txs: CHAIN_TXS };
+  };
+
+  it('posts to an identity-marketplace advert: output 0 is the identity escrow at the deployment\'s escrow address, naming the agent and refunding to the key\'s own address', async () => {
+    const { chain, node, key } = identityChain();
+    const r = await chain.postEscrow({ advertRef: IDENTITY_ADVERT_REF, promptHash: PROMPT });
+    expect(node.submitted).toHaveLength(1);
+    const [escrow] = outputsOf(node.submitted[0]);
+    expect(escrow.address).toBe(DEPLOYMENT.escrow.address);
+    const datum = decodeIdentityEscrowDatum(escrow.datum!);
+    expect([datum.agent_id, datum.buyer_pkh, datum.prompt_hash, datum.state]).toStrictEqual([AGENT_ID, key.buyerPkh, PROMPT, 'Open']);
+    expect(datum.refund).toStrictEqual({ address: plutusAddressFromBech32(key.address), datum: null });
+    expect(r).toMatchObject({ agentId: AGENT_ID, lockLovelace: escrow.lovelace, supplierPkh: IDENTITY_ADVERT.supplier_pkh, escrowRef: `${r.txHash}#0` });
+  }, 30_000);
+
+  it('accepts an identity-marketplace escrow through the deployment\'s escrow reference script: the supplier is paid at its key, the buyer bond goes to the refund address', async () => {
+    const { chain, node, key } = identityChain(afterSubmit);
+    const r = await chain.accept(IDENTITY_ESCROW_REF);
+    expect(node.submitted).toHaveLength(1);
+    const signed = CML.Transaction.from_cbor_hex(node.submitted[0]);
+    expect(r.txHash).toBe(CML.hash_transaction(signed.body()).to_hex());
+    const outs = outputsOf(node.submitted[0]);
+    expect(outs.some((o) => o.address === supplierEnterprise && o.lovelace === 3_000_000n), 'price + supplier bond to the supplier key').toBe(true);
+    expect(outs.some((o) => o.address === key.address && o.lovelace === 1_000_000n && o.datum === null), 'the buyer bond to the refund address').toBe(true);
+    const refs = signed.body().reference_inputs();
+    expect(refs?.len()).toBe(1);
+    expect(`${refs!.get(0).transaction_id().to_hex()}#${refs!.get(0).index()}`).toBe(`${REF_UTXOS[4].txHash}#${REF_UTXOS[4].outputIndex}`);
+  }, 30_000);
+
+  it('reclaims an identity-marketplace escrow past its deliver_by in full to its refund address, with nobody\'s signature but the wallet\'s', async () => {
+    const { chain, node, key } = identityChain((k) => { const live = escrowUtxo(IDENTITY_POST_TX, ours(k)); return { node: [live], live: [live] }; });
+    await chain.reclaim(IDENTITY_ESCROW_REF);
+    expect(node.submitted).toHaveLength(1);
+    expect(outputsOf(node.submitted[0]).some((o) => o.address === key.address && o.lovelace === ESCROW_LOCK && o.datum === null)).toBe(true);
+  }, 30_000);
+
+  it('reads the state and the receipt hash of an identity-marketplace escrow at its own escrow credential, and its advert with the agent', async () => {
+    const { chain } = identityChain(afterSubmit);
+    expect(await chain.escrowState(IDENTITY_ESCROW_REF)).toBe('Submitted');
+    expect(await chain.onChainReceiptHash(IDENTITY_ESCROW_REF)).toBe('cd'.repeat(32));
+    expect(await chain.readAdvert(IDENTITY_ADVERT_REF)).toStrictEqual(IDENTITY_ADVERT);
+  }, 30_000);
+
+  it('without the identity deployment, an identity-marketplace advert is refused with the words that name the settings, and nothing is submitted', async () => {
+    const { chain, node } = identityChain(undefined, null);
+    await expect(chain.readAdvert(IDENTITY_ADVERT_REF)).rejects.toThrow(/holds an identity-marketplace advert\. The identity registry is not configured on this server: set VECTOR_IDENTITY_LEGACY_ROOT/);
+    await expect(chain.postEscrow({ advertRef: IDENTITY_ADVERT_REF, promptHash: PROMPT })).rejects.toThrow(/The identity registry is not configured/);
+    expect(node.submitted).toStrictEqual([]);
+  }, 30_000);
 });
 
 describe('createRealChain', () => {

@@ -18,19 +18,22 @@ const input = (over: Partial<FleetVerifyInput> = {}): FleetVerifyInput => ({
   escrowRef: ESCROW,
   receipt: { escrow_ref: ESCROW, supplier_pkh: 'cd'.repeat(28), prompt_hash: 'ef'.repeat(32), response_hash: '12'.repeat(32), model: 'm-v1', prompt_tokens: 0, completion_tokens: 0, wallclock_ms: 1 },
   receiptSignature: 'ab'.repeat(64), responseHashHex: '12'.repeat(32), promptHashHex: 'ef'.repeat(32),
-  supplierPubKeyHex: 'ab'.repeat(32), supplierPkhExpected: 'cd'.repeat(28), model: 'm-v1',
+  supplierPubKeyHex: 'ab'.repeat(32), supplierPkhExpected: 'cd'.repeat(28), model: 'm-v1', agentId: null,
   onChainReceiptHash: async () => HASH_ON_CHAIN, ...over,
 });
 
 const ok = { state: 'pass', note: '' } as const;
 const verdictOf = (onChain: ReceiptVerdict['checks']['on_chain_hash_matches']): ReceiptVerdict => ({
   verdict: 'verified',
-  checks: { escrow_ref_matches: ok, response_hash_matches: { state: 'skipped', note: 'no report text given' }, supplier_key_matches: ok, signature_valid: ok, on_chain_hash_matches: onChain, prompt_hash_matches: ok },
+  checks: {
+    escrow_ref_matches: ok, response_hash_matches: { state: 'skipped', note: 'no report text given' }, supplier_key_matches: ok, signature_valid: ok, on_chain_hash_matches: onChain,
+    fields_match: ok, prompt_hash_matches: ok,
+  },
 });
 const throwing = (thrown: unknown) => vi.mocked(verifyReceipt).mockImplementation(() => { throw thrown; });
 
 const MADE_HERE = { escrow_ref_matches: 'pass', response_hash_matches: 'pass', model_matches: 'pass' } as const;
-const VENDORED_FAIL = { supplier_key_matches: 'fail', signature_valid: 'fail', prompt_hash_matches: 'fail' } as const;
+const VENDORED_FAIL = { supplier_key_matches: 'fail', signature_valid: 'fail', prompt_hash_matches: 'fail', fields_match: 'fail' } as const;
 
 describe('verifyFleetReceipt, when the vendored verifier throws', () => {
   beforeEach(() => { vi.mocked(verifyReceipt).mockReset(); });
@@ -40,7 +43,7 @@ describe('verifyFleetReceipt, when the vendored verifier throws', () => {
     ['a TypeError', new TypeError('x.toLowerCase is not a function')],
     ['a string', 'boom'],
     ['undefined', undefined],
-  ])('%s is FAILED and not a rejection: the four rows the vendored call owns fail, the three made here are still made', async (_what, thrown) => {
+  ])('%s is FAILED and not a rejection: the five rows the vendored call owns fail, the three made here are still made', async (_what, thrown) => {
     throwing(thrown);
     expect(await verifyFleetReceipt(input())).toStrictEqual({ verdict: 'FAILED', checks: { ...MADE_HERE, ...VENDORED_FAIL, on_chain_hash_matches: 'fail' } });
   });
@@ -61,24 +64,30 @@ describe('verifyFleetReceipt, when the vendored verifier throws', () => {
 describe('verifyFleetReceipt, what the vendored verifier is handed', () => {
   beforeEach(() => { vi.mocked(verifyReceipt).mockReset(); });
 
-  it('the input as it is, the hash on chain as the read gave it, and no result text (the response hash is checked here, against the recomputed one)', async () => {
+  it('the input as it is, the agent of a legacy escrow as none, the hash on chain as the read gave it, and no result text (the response hash is checked here, against the recomputed one)', async () => {
     vi.mocked(verifyReceipt).mockReturnValue(verdictOf(ok));
     const i = input();
     expect(await verifyFleetReceipt(i)).toStrictEqual({
       verdict: 'VERIFIED',
-      checks: { ...MADE_HERE, supplier_key_matches: 'pass', signature_valid: 'pass', on_chain_hash_matches: 'pass', prompt_hash_matches: 'pass' },
+      checks: { ...MADE_HERE, supplier_key_matches: 'pass', signature_valid: 'pass', on_chain_hash_matches: 'pass', prompt_hash_matches: 'pass', fields_match: 'pass' },
     });
     expect(verifyReceipt).toHaveBeenCalledTimes(1);
     expect(vi.mocked(verifyReceipt).mock.calls[0][0]).toStrictEqual({
       receipt: i.receipt, signature: i.receiptSignature, escrowRef: i.escrowRef, supplierPubKeyHex: i.supplierPubKeyHex,
-      escrowSupplierPkh: i.supplierPkhExpected, escrowPromptHash: i.promptHashHex, resultReceiptHashOnChain: HASH_ON_CHAIN,
+      escrowSupplierPkh: i.supplierPkhExpected, escrowPromptHash: i.promptHashHex, escrowAgentId: null, resultReceiptHashOnChain: HASH_ON_CHAIN,
     });
+  });
+
+  it("the agent of an identity-marketplace escrow as it is: the vendored fields row holds the receipt's agent_did to it", async () => {
+    vi.mocked(verifyReceipt).mockReturnValue(verdictOf(ok));
+    await verifyFleetReceipt(input({ agentId: 'ae'.repeat(32) }));
+    expect(vi.mocked(verifyReceipt).mock.calls[0][0].escrowAgentId).toBe('ae'.repeat(32));
   });
 
   it('no hash when the read broke its contract, and the on-chain row fails whatever the vendored call says of it', async () => {
     vi.mocked(verifyReceipt).mockReturnValue(verdictOf({ state: 'skipped', note: 'Submitted output not locatable' }));
     const v = await verifyFleetReceipt(input({ onChainReceiptHash: async () => 42 as unknown as string }));
-    expect(v).toStrictEqual({ verdict: 'FAILED', checks: { ...MADE_HERE, supplier_key_matches: 'pass', signature_valid: 'pass', on_chain_hash_matches: 'fail', prompt_hash_matches: 'pass' } });
+    expect(v).toStrictEqual({ verdict: 'FAILED', checks: { ...MADE_HERE, supplier_key_matches: 'pass', signature_valid: 'pass', on_chain_hash_matches: 'fail', prompt_hash_matches: 'pass', fields_match: 'pass' } });
     expect(vi.mocked(verifyReceipt).mock.calls[0][0].resultReceiptHashOnChain).toBeNull();
   });
 });

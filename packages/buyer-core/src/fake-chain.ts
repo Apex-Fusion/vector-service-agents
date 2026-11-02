@@ -10,18 +10,20 @@
 // track of an escrow that may still land. Two more steer the Accept (ruling R54): failNextAccepts makes the next Accepts fail as a build that did not
 // complete fails (a plain Error, nothing sent) or with an error the test gives, and closeAcceptWindow makes every later Accept fail the way the vendored
 // planner refuses one after the window (AcceptWindowClosedError). Not modelled: the clock of the accept window after a Submit and the supplier's Release.
+// An advert can be of either layout: an IdentityAdvertDatum (it names its agent) gets an identity-marketplace escrow, planned as RealChain plans it,
+// whose agent the Post returns (PostResult.agentId); a legacy advert gets a legacy escrow.
 import { formatOutRef, parseOutRef, sha256Utf8Hex } from '@vsa/vector-read';
 import type { AdvertDatum, EscrowDatum } from '@vsa/vector-read';
 import { AcceptWindowClosedError } from './chain.ts';
 import type { Chain, ChainEscrowState, PostResult, TxNotConfirmedError } from './chain.ts';
-import { planFleetPostEscrow } from './fleet-build.ts';
+import { fleetPostTerms, isIdentityAdvert, planFleetPostEscrow } from './fleet-build.ts';
 import { enterpriseAddressOf } from './vendored/mcp/marketplace-build.ts';
 
 type FakeState = Exclude<ChainEscrowState, 'unknown'>;
 interface FakeEscrow { datum: EscrowDatum; state: FakeState; resultReceiptHash: string | null }
 
 export interface FakeChainOptions {
-  /** The adverts the chain knows, by ref. postEscrow and readAdvert refuse any other ref. */
+  /** The adverts the chain knows, by ref, in either layout. postEscrow and readAdvert refuse any other ref. */
   adverts?: Record<string, AdvertDatum>;
   /** POSIX milliseconds: posted_at and deliver_by of a Post, and the time a Reclaim is checked against. Default Date.now. */
   clock?: () => number;
@@ -74,7 +76,7 @@ export class FakeChain implements Chain {
   async postEscrow(args: { advertRef: string; promptHash: string }): Promise<PostResult> {
     const advertRef = canonical(args.advertRef);
     const advert = this.#advert(advertRef);
-    const plan = planFleetPostEscrow(advert, advertRef, this.buyerPkh, args.promptHash, this.#clock());
+    const plan = planFleetPostEscrow(advert, advertRef, this.buyerPkh, args.promptHash, this.#clock(), fleetPostTerms(advert, this.address));
     const owed = advert.price_lovelace + advert.buyer_bond_lovelace + advert.supplier_bond_lovelace;
     if (owed > FakeChain.LOCK_LOVELACE) throw new Error(`FakeChain locks ${FakeChain.LOCK_LOVELACE} lovelace on every Post, less than the ${owed} advert ${advertRef} asks for.`);
     const cost = FakeChain.LOCK_LOVELACE + FakeChain.FEE_LOVELACE;
@@ -90,7 +92,7 @@ export class FakeChain implements Chain {
     this.#escrows.set(escrowRef, { datum: plan.datum, state: 'Open', resultReceiptHash: null });
     return {
       escrowRef, txHash, lockLovelace: FakeChain.LOCK_LOVELACE, feeLovelace: FakeChain.FEE_LOVELACE, deliverBy: plan.deliverBy, postedAt: plan.postedAt,
-      supplierPkh: plan.datum.supplier_pkh, collateralKept: this.#collateral !== null,
+      supplierPkh: plan.datum.supplier_pkh, collateralKept: this.#collateral !== null, agentId: isIdentityAdvert(advert) ? advert.agent_id : null,
     };
   }
 

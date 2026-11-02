@@ -7,9 +7,10 @@
 // reached only through safeFetch (see fleet-clients.ts).
 //
 // The indexer's row names the advert's UTxO `utxo_ref`: it is the `advert_ref` that the supplier's own /capability serves, and the ref the escrow's Post is
-// made against. So `advertRef` below is the row's `utxo_ref`.
-import { fetchSuppliers } from './vendored/mcp/marketplace-indexer.ts';
-import { INDEXER_URL, indexerUrlFrom } from './vendored/mcp/marketplace-constants.ts';
+// made against. So `advertRef` below is the row's `utxo_ref`. Its `agent_id` names the agent of an identity-marketplace advert (Part 2 section 6.4: 64
+// lowercase hex, or null for a legacy advert); it is the indexer's word, read through the vendored rowAgentId, which takes only a value of that shape.
+import { fetchSuppliers, rowAgentId } from './vendored/mcp/marketplace-indexer.ts';
+import { indexerFetch } from './indexer-fetch.ts';
 import { sameRef } from './guards.ts';
 import { probeStatus, readCapability } from './fleet-clients.ts';
 import type { FetchLike, SupplierCapability } from './fleet-clients.ts';
@@ -25,21 +26,6 @@ const HIRABLE: ReadonlySet<string> = new Set(['free', 'working']);
 /** The longest delay a timer takes: Node cuts a longer one to a millisecond. */
 const MAX_TIMER_MS = 2_147_483_647;
 const EXPIRED = Symbol('the budget of the selection ran out');
-
-/**
- * `fetchImpl` aimed at the indexer at `indexerUrl`. The vendored fetchSuppliers builds its URLs on INDEXER_URL, a constant it reads from the environment when
- * the module loads, and takes no base; a vendored file is never edited, so the calls to that base are sent to the given one. Without `indexerUrl` the fetch
- * is returned as it is, and the indexer is the configured one.
- */
-function aimedAt(indexerUrl: string | undefined, fetchImpl: FetchLike): FetchLike {
-  if (indexerUrl === undefined || indexerUrl === '') return fetchImpl;
-  const base = indexerUrlFrom(indexerUrl);
-  if (base === INDEXER_URL) return fetchImpl;
-  return ((input: Parameters<FetchLike>[0], init?: Parameters<FetchLike>[1]) => {
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    return fetchImpl(url.startsWith(`${INDEXER_URL}/`) ? `${base}${url.slice(INDEXER_URL.length)}` : input, init);
-  }) as FetchLike;
-}
 
 /** `fetchImpl` whose every request is also cancelled when `signal` fires. */
 function cancelledBy(signal: AbortSignal, fetchImpl: FetchLike): FetchLike {
@@ -59,7 +45,7 @@ const byPrice = (a: bigint, b: bigint): number => (a < b ? -1 : a > b ? 1 : 0);
 const withinCeiling = (max: bigint | undefined) => (row: { price_lovelace: bigint }): boolean => max === undefined || row.price_lovelace <= max;
 /** The Active adverts of one capability the indexer lists, priced at `max` or under it, whatever the indexer says of their supplier (ruling R60). */
 async function listedAdverts(capabilityId: string, indexerUrl: string | undefined, fetchImpl: FetchLike, max: bigint | undefined) {
-  const rows = await fetchSuppliers({ capability_id: capabilityId, onlyFree: false, fetchImpl: aimedAt(indexerUrl, fetchImpl) });
+  const rows = await fetchSuppliers({ capability_id: capabilityId, onlyFree: false, fetchImpl: indexerFetch(indexerUrl, fetchImpl) });
   return rows.filter((row) => row.advert_status === 'Active').filter(withinCeiling(max));
 }
 /** When a supplier was last seen, as a number to compare; a supplier never seen, or seen at a time that is no date, is the least recent. */
@@ -68,6 +54,16 @@ const seenAt = (iso: string | null): number => {
   return Number.isNaN(time) ? Number.NEGATIVE_INFINITY : time;
 };
 const newerFirst = (a: number, b: number): number => (a === b ? 0 : a > b ? -1 : 1);
+
+/**
+ * The chat supplier the selection chose: the advert (the indexer's utxo_ref), its endpoint, model, supplier key and price, the agent the advert names
+ * (the row's agent_id: null for a legacy advert), and what the supplier's /capability served.
+ */
+export interface LlmSupplierChoice {
+  advertRef: string; endpoint: string; model: string; supplierPkh: string; priceLovelace: bigint; agentId: string | null; capability: SupplierCapability;
+}
+/** The OCR advert the indexer lists for the key: its ref (utxo_ref), endpoint, price and window, and the agent it names (null for a legacy advert). */
+export interface OcrAdvertListing { advertRef: string; endpoint: string; priceLovelace: bigint; maxProcessingMs: number; agentId: string | null }
 
 /**
  * The chat supplier to hire, or null when none is fit. An advert priced above `maxPriceLovelace` (when given) is taken out before anything else. The
@@ -83,9 +79,7 @@ const newerFirst = (a: number, b: number): number => (a === b ? 0 : a > b ? -1 :
  */
 export async function selectLlmSupplier(args: {
   fetchImpl: FetchLike; indexerUrl?: string; allowlist: readonly string[]; probe?: boolean; budgetMs?: number; maxCandidates?: number; maxPriceLovelace?: bigint;
-}): Promise<{
-  advertRef: string; endpoint: string; model: string; supplierPkh: string; priceLovelace: bigint; capability: SupplierCapability;
-} | null> {
+}): Promise<LlmSupplierChoice | null> {
   const startedAt = performance.now();
   const budgetMs = limitOf(args.budgetMs, LLM_SELECTION_BUDGET_MS, 'budgetMs');
   const maxCandidates = limitOf(args.maxCandidates, LLM_SELECTION_MAX_CANDIDATES, 'maxCandidates');
@@ -102,12 +96,12 @@ export async function selectLlmSupplier(args: {
   const reach = cancelledBy(cutoff, args.fetchImpl);
   const expired = new Promise<typeof EXPIRED>((resolve) => { cutoff.addEventListener('abort', () => resolve(EXPIRED), { once: true }); });
   // One candidate: the supplier to hire if it passes, else null. It never rejects, so one that is still running when the budget ends is left to end alone.
-  const hire = async (row: (typeof rows)[number]) => {
+  const hire = async (row: (typeof rows)[number]): Promise<LlmSupplierChoice | null> => {
     let capability: SupplierCapability;
     try { capability = await readCapability(row.endpoint_url, reach); } catch { return null; }
     if (capability.inference_api !== 'responses' || !sameRef(capability.advert_ref, row.utxo_ref)) return null;
     if (args.probe === true && !HIRABLE.has(await probeStatus(row.endpoint_url, reach))) return null;
-    return { advertRef: row.utxo_ref, endpoint: row.endpoint_url, model: row.model, supplierPkh: row.supplier_pkh, priceLovelace: row.price_lovelace, capability };
+    return { advertRef: row.utxo_ref, endpoint: row.endpoint_url, model: row.model, supplierPkh: row.supplier_pkh, priceLovelace: row.price_lovelace, agentId: rowAgentId(row), capability };
   };
   for (const { row } of candidates) {
     const found = await Promise.race([hire(row), expired]);
@@ -119,16 +113,15 @@ export async function selectLlmSupplier(args: {
 
 /**
  * The OCR advert to hire: the Active `ocr.page.extract.chandra-ocr-2.v1` advert of the supplier key `supplierPkh`, whatever the indexer says of the supplier
- * (ruling R60), priced at `maxPriceLovelace` or under it when that is given. Exactly one is expected; none (it is not listed, or not Active, or priced above
- * the ceiling) and more than one (the choice is not made here) are both null. No supplier is contacted. Rejects when the indexer cannot be read.
+ * (ruling R60), priced at `maxPriceLovelace` or under it when that is given, in either layout. Exactly one is expected; none (it is not listed, or not
+ * Active, or priced above the ceiling) and more than one (the choice is not made here) are both null. No supplier is contacted. Rejects when the indexer
+ * cannot be read.
  */
-export async function findOcrAdvert(args: { fetchImpl: FetchLike; indexerUrl?: string; supplierPkh: string; maxPriceLovelace?: bigint }): Promise<{
-  advertRef: string; endpoint: string; priceLovelace: bigint; maxProcessingMs: number;
-} | null> {
+export async function findOcrAdvert(args: { fetchImpl: FetchLike; indexerUrl?: string; supplierPkh: string; maxPriceLovelace?: bigint }): Promise<OcrAdvertListing | null> {
   const rows = await listedAdverts(OCR_CAPABILITY, args.indexerUrl, args.fetchImpl, args.maxPriceLovelace);
   const wanted = args.supplierPkh.toLowerCase();
   const ours = rows.filter((row) => row.supplier_pkh.toLowerCase() === wanted);
   if (ours.length !== 1) return null;
   const [row] = ours;
-  return { advertRef: row.utxo_ref, endpoint: row.endpoint_url, priceLovelace: row.price_lovelace, maxProcessingMs: row.max_processing_ms };
+  return { advertRef: row.utxo_ref, endpoint: row.endpoint_url, priceLovelace: row.price_lovelace, maxProcessingMs: row.max_processing_ms, agentId: rowAgentId(row) };
 }

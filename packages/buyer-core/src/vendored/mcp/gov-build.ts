@@ -68,13 +68,12 @@ export async function ensureSlotConfig(provider: Pick<SlotClockProvider, 'getSys
 // on a sibling family file; see task-3-report.md for the reasoning).
 //
 // Deliberate exception to that rule (Task 4): buildProposalSpend below DOES
-// import getRegistryAddress from registry-build.ts - the self-improvement
-// family's NFT-resolution fallback needs the registry's own script address
-// to scan, and that address is derived from registry-build.ts's own
-// REGISTRY_SCRIPT_CBOR constant, not something this file could reasonably
-// duplicate without risking the two copies drifting apart. One-directional
-// (gov-build.ts -> registry-build.ts only, never the reverse), so it does
-// not introduce a cycle.
+// import the legacy registry's policy and address from legacy-registry.ts -
+// the self-improvement family's NFT-resolution fallback needs the registry's
+// own script address to scan, and that address is derived from the one copy
+// of the legacy registry script, not something this file could reasonably
+// duplicate without risking the two copies drifting apart. The module agent
+// identity is the legacy one until Module-6 moves to its new deployment.
 export function paymentKeyHashOf(address: string): string {
   let details;
   try {

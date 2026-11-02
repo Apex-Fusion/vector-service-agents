@@ -33,8 +33,10 @@ export type FetchLike = typeof fetch;
 
 /**
  * The receipt of a job exactly as the supplier gave it: the JSON object it signed, untrusted until a verifier has checked it. The vendored verifier takes
- * a receipt as `unknown` and the vendored transport carries it as this shape (`JobView.receipt`); the fields the spec's receipt table lists (escrow_ref,
- * supplier_pkh, prompt_hash, response_hash, model, prompt_tokens, completion_tokens, wallclock_ms) are checked there, not here.
+ * a receipt as `unknown` and the vendored transport carries it as this shape (`JobView.receipt`); the fields of a receipt (Part 2 section 6.3; the
+ * vendored RECEIPT_FIELDS and AGENT_RECEIPT_FIELDS) are checked there, not here: escrow_ref, supplier_pkh, prompt_hash, response_hash, model,
+ * prompt_tokens, completion_tokens and wallclock_ms for a legacy escrow, and those 8 and agent_did = did:vector:<agent_id> for an
+ * identity-marketplace escrow (9 fields). Signing and hashing are the same for both.
  */
 export type Receipt = Record<string, unknown>;
 

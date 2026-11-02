@@ -31,8 +31,8 @@ describe('vendored files', () => {
     expect(manifest).toContain('The Document Pipeline agent (deployed since 2026-10-16) posts escrows, signs and submits transactions, reads escrow lineage and verifies receipts.');
     expect(manifest).not.toContain('not built yet');
     expect(manifest).not.toContain('built, not deployed');
-    // src/fleet-verify.ts: on a throw the four rows fail, but the on-chain row is skipped when there was no hash on chain to compare.
-    expect(manifest).toContain('so it runs inside a `try` and its four rows fail on a throw, the on-chain row being skipped only when there was no hash to compare.');
+    // src/fleet-verify.ts: on a throw the five rows fail, but the on-chain row is skipped when there was no hash on chain to compare.
+    expect(manifest).toContain('so it runs inside a `try` and its five rows fail on a throw, the on-chain row being skipped only when there was no hash to compare.');
   });
   it('every file under src/vendored/ and test/fixtures/ has a row, so a file added without one fails', () => {
     const named = new Set(manifest.split('\n').filter((l) => l.startsWith('| `src/vendored/') || l.startsWith('| `test/fixtures/')).map((row) => row.split('|')[1].trim().replace(/^`|`$/g, '')));
@@ -42,8 +42,14 @@ describe('vendored files', () => {
   });
   // The import below is the first load of Lucid's WASM in this file: about 2.3 s on its own, 4.3 s measured while `pnpm -r test`
   // runs the packages side by side, against vitest's 5 s default. Hence the explicit timeout.
-  it('the public surface re-exports the builders, the lineage, the verifier, the provider, the signer and the fleet commitments, and exports the chain layer, the fleet clients, the supplier discovery and the fleet receipt check', async () => {
+  it('the public surface re-exports the builders of both layouts, the lineage, the verifier, the provider, the signer and the fleet commitments, and exports the identity deployment, the chain layer, the fleet clients, the supplier discovery and the fleet receipt check', async () => {
     const m = await import('../src/index.ts');
-    for (const name of ['planPostEscrow', 'buildPostEscrow', 'buildAccept', 'buildReclaim', 'resolveEscrowLineage', 'verifyReceipt', 'OgmiosProvider', 'signTransaction', 'rawHexToBech32', 'buyerIdentityOf', 'ESCROW_REF_UTXO', 'ACCEPT_WINDOW_MS', 'DELIVER_BY_BUFFER_MS', 'ocrPromptHash', 'ocrResponseHash', 'responsesPromptHash', 'responsesResponseHash', 'responsesOutputText', 'requestSpecHash', 'planFleetPostEscrow', 'buildFleetPostEscrow', 'createRealChain', 'TxNotConfirmedError', 'FakeChain', 'feeOfSignedTx', 'readCapability', 'probeStatus', 'sendOcrJob', 'sendResponsesJob', 'pollOcrJob', 'pollResponsesJob', 'selectLlmSupplier', 'findOcrAdvert', 'verifyFleetReceipt']) expect(typeof (m as Record<string, unknown>)[name], name).not.toBe('undefined');
+    for (const name of [
+      'planPostEscrow', 'buildPostEscrow', 'buildAccept', 'buildReclaim', 'buildRefundRevoked', 'refundRevokedRefusal', 'enterpriseAddressOf', 'resolveEscrowLineage', 'isIdentityEscrow',
+      'rowAgentId', 'verifyReceipt', 'RECEIPT_FIELDS', 'AGENT_RECEIPT_FIELDS', 'OgmiosProvider', 'signTransaction', 'rawHexToBech32', 'buyerIdentityOf', 'ESCROW_REF_UTXO', 'ACCEPT_WINDOW_MS',
+      'DELIVER_BY_BUFFER_MS', 'MAX_ESCROW_LOVELACE', 'buyerIdentityDeployment', 'BUYER_IDENTITY_SETTINGS', 'ocrPromptHash', 'ocrResponseHash', 'responsesPromptHash', 'responsesResponseHash',
+      'responsesOutputText', 'requestSpecHash', 'planFleetPostEscrow', 'buildFleetPostEscrow', 'fleetPostTerms', 'isIdentityAdvert', 'createRealChain', 'TxNotConfirmedError', 'FakeChain',
+      'feeOfSignedTx', 'readCapability', 'probeStatus', 'sendOcrJob', 'sendResponsesJob', 'pollOcrJob', 'pollResponsesJob', 'selectLlmSupplier', 'findOcrAdvert', 'verifyFleetReceipt',
+    ]) expect(typeof (m as Record<string, unknown>)[name], name).not.toBe('undefined');
   }, 30_000);
 });
