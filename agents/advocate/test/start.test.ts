@@ -13,8 +13,8 @@ import { createServer as netServer } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeAll, describe, test, expect, vi } from 'vitest';
-import { FakeChain, rawHexToBech32 } from '@vsa/buyer-core';
-import { sha256Utf8Hex } from '@vsa/vector-read';
+import { BUYER_IDENTITY_SETTINGS, FakeChain, rawHexToBech32 } from '@vsa/buyer-core';
+import { REGISTRY_POLICY, blake2b224Hex, identityRegistryOf, legacyVectorDid, sha256Utf8Hex, utf8ToHex } from '@vsa/vector-read';
 import { modelGap } from '../src/gaps.ts';
 import { DEFAULT_MODEL } from '../src/model.ts';
 import { manifestFromEnv } from '../src/server.ts';
@@ -57,7 +57,7 @@ describe('loadConfig', () => {
     expect(loadConfig(FULL_ENV)).toStrictEqual({
       manifest: manifestFromEnv({ ...FULL_ENV, ADVOCATE_BUYER_PKH: BUYER.pkh }), authHeader: TEST_AUTH, host: '0.0.0.0', port: 9094, braveApiKey: TEST_BRAVE_KEY,
       openRouterApiKey: TEST_OPENROUTER_KEY, model: DEFAULT_MODEL, buyer: { privateKeyHex: KEY, pkh: BUYER.pkh, address: BUYER_ADDRESS }, stateDir: '/data',
-      allowlist: [DEFAULT_MODEL], maxPriceLovelace: 1_000_000n,
+      allowlist: [DEFAULT_MODEL], maxPriceLovelace: 1_000_000n, identityDeployment: null,
     });
     // The janitor's interval and the bound of its stop are the Document Pipeline's (ruling R61).
     expect([PORT_DEFAULT, STATE_DIR_DEFAULT, PRICE_CEILING_DEFAULT_LOVELACE, JANITOR_INTERVAL_MS, JANITOR_STOP_WAIT_MS]).toStrictEqual([9094, '/data', 1_000_000n, 60_000, 30_000]);
@@ -117,6 +117,14 @@ describe('loadConfig', () => {
     expect(loadConfig({ ...FULL_ENV, AGENT_DID: ' did:test\n' }).manifest.identity.did).toBe('did:test');
   });
 
+  test('the identity block is read at start: the DID in its canonical form and the identity registry of IDENTITY_POLICY_ID; a value that breaks a rule stops the start, naming the variable', () => {
+    const id = 'c5'.repeat(32), policy = blake2b224Hex(utf8ToHex('a test identity registry'));
+    const config = loadConfig({ ...FULL_ENV, AGENT_DID: legacyVectorDid(REGISTRY_POLICY, id), IDENTITY_POLICY_ID: policy });
+    expect(config.manifest.identity).toStrictEqual({ did: `did:vector:${id}`, registry_address: identityRegistryOf(policy, undefined)!.address, supplier_key: `did:vector:${id}#${SUPPLIER.pkh}` });
+    expect(message(() => loadConfig({ ...FULL_ENV, IDENTITY_POLICY_ID: 'xyz' }))).toBe('environment variable IDENTITY_POLICY_ID must be 56 lowercase hex characters, got "xyz"');
+    expect(message(() => loadConfig({ ...FULL_ENV, AGENT_DID: `did:vector:testnet:${id}` }))).toMatch(/^environment variable AGENT_DID must be did:vector:<64 lowercase hex> or its legacy form under the registry policy /);
+  });
+
   test('seven settings are required, checked in this order, each error naming its variable; then the model, the window and the manifest, in that order', () => {
     const { OPERATOR_CONTACT, ADVOCATE_BUYER_PRIV_KEY_HEX, SUPPLIER_PKH, SERVICE_AUTH_HEADER, SUPPLIER_PUB_KEY_HEX, BRAVE_SEARCH_API_KEY, OPENROUTER_API_KEY } = FULL_ENV;
     const steps: Array<[NodeJS.ProcessEnv, string]> = [
@@ -165,7 +173,8 @@ describe('loadConfig', () => {
           expect(shows(text, KEY)).toBe(false);
         }
       }
-      expect([...CHAIN_SETTINGS]).toStrictEqual(['VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL']);
+      expect([...CHAIN_SETTINGS]).toStrictEqual(['VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', ...BUYER_IDENTITY_SETTINGS]);
+      expect([...BUYER_IDENTITY_SETTINGS]).toStrictEqual(['VECTOR_IDENTITY_LEGACY_ROOT', 'VECTOR_IDENTITY_CONFIG_SEED', 'VECTOR_IDENTITY_ESCROW_REF_UTXO']);
     });
 
     test('the key hash, the address and the public key the operator wrote down must be the key\'s: in any case they are taken, otherwise refused, naming the line and what it was checked against, never the value', () => {
@@ -298,7 +307,8 @@ describe('loadConfig', () => {
 
   test('SETTINGS are the names the service reads, each once: the list of Plan E with the buyer key, its identity, the state directory and what the hire reads', () => {
     expect([...SETTINGS]).toStrictEqual([
-      'OPERATOR_CONTACT', 'AGENT_DID', 'AGENT_VERSION', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_PRICE_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_EXPLORER_URL',
+      'OPERATOR_CONTACT', 'AGENT_DID', 'IDENTITY_POLICY_ID', 'IDENTITY_ADDRESS', 'AGENT_VERSION', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_PRICE_LOVELACE',
+      'ADVERT_MAX_PROCESSING_MS', 'ADVERT_EXPLORER_URL',
       'SERVICE_AUTH_HEADER', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY', 'OPENROUTER_MODEL',
       'ADVOCATE_BUYER_PRIV_KEY_HEX', 'ADVOCATE_BUYER_PUB_KEY_HEX', 'ADVOCATE_BUYER_PKH', 'ADVOCATE_BUYER_ADDRESS', 'ADVOCATE_STATE_DIR', 'LLM_MODEL_ALLOWLIST',
       'LLM_MAX_PRICE_LOVELACE', 'VECTOR_MARKETPLACE_INDEXER_URL', 'PORT', 'HOST',

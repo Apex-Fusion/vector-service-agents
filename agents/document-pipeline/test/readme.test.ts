@@ -4,8 +4,10 @@
 // wrong status or one that no source file knows.
 import { describe, test, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
+import { BUYER_IDENTITY_SETTINGS } from '@vsa/buyer-core';
 import { RequestError } from '../src/request.ts';
 import type { RequestErrorCode } from '../src/request.ts';
+import { manifestFromEnv } from '../src/server.ts';
 import { CHAIN_SETTINGS, LLM_MODELS_DEFAULT, OCR_SUPPLIER_PKH_DEFAULT, OTHER_SETTINGS, PORT_DEFAULT, PRICE_CEILING_DEFAULT_LOVELACE, SHUTDOWN_WAIT_MS, STATE_DIR_DEFAULT } from '../src/start.ts';
 
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
@@ -29,7 +31,8 @@ function namesRead(): string[] {
   }
   return [...found].sort();
 }
-// What buyer-core reads (src/vendored/mcp-shared/config.ts) and the README names in a sentence, not in its table.
+// What buyer-core reads: the chain endpoints (src/vendored/mcp-shared/config.ts), which the README names in a sentence, and the three settings of the
+// identity registry deployment (BUYER_IDENTITY_SETTINGS, src/deployment.ts), which have rows of their own in the table. No source of the service spells them.
 const READ_BY_BUYER_CORE = ['VECTOR_KOIOS_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_SUBMIT_URL'];
 
 describe('agents/document-pipeline/README.md', () => {
@@ -37,8 +40,9 @@ describe('agents/document-pipeline/README.md', () => {
     const table = section('Manifest').split('\n').filter((line) => /^\| `[A-Z]/.test(line));
     const documented = table.flatMap((line) => ticks(line.split('|')[1])).sort();
     expect(documented.length).toBeGreaterThanOrEqual(18);
-    expect(documented).toStrictEqual(namesRead());
+    expect(documented).toStrictEqual([...namesRead(), ...BUYER_IDENTITY_SETTINGS].sort());
     for (const name of READ_BY_BUYER_CORE) expect(section('Manifest'), name).toContain(`\`${name}\``);
+    for (const name of BUYER_IDENTITY_SETTINGS) expect(namesRead(), name).not.toContain(name);
   });
 
   test('the defaults the table gives are the code\'s', () => {
@@ -51,7 +55,17 @@ describe('agents/document-pipeline/README.md', () => {
     expect(row('ADVERT_MAX_PROCESSING_MS')).toContain('`1800000`');
     expect(row('AGENT_STATUS_CHIP')).toContain('`deployed`');
     expect(row('AGENT_STATUS_SINCE')).toContain('`2026-10-16`');
-    expect(row('AGENT_VERSION')).toContain('`0.1.0`');
+    expect(row('AGENT_VERSION')).toContain('`0.2.0`');
+    // The identity block of the manifest v2: the canonical DID, the listed supplier key, and the address of the identity registry, empty while it is not configured.
+    expect(row('AGENT_DID')).toContain('`identity.did`, in the canonical form `did:vector:<identifier>`');
+    expect(row('SUPPLIER_PKH')).toContain('with `AGENT_DID` the listed supplier key `identity.supplier_key`, `<DID>#<key hash>`');
+    expect(row('IDENTITY_POLICY_ID')).toMatch(/^\| `IDENTITY_POLICY_ID` \| `identity\.registry_address`, .* \| empty, the identity registry is not configured \|$/);
+    expect(row('IDENTITY_ADDRESS')).toMatch(/ \| derived from the policy \|$/);
+    const manifest = manifestFromEnv({ OPERATOR_CONTACT: 'ops@example.test' });
+    expect([manifest.version, manifest.identity]).toStrictEqual(['0.2.0', { did: '', registry_address: '', supplier_key: '' }]);
+    // The deployment of the identity registry that the buyer chain reads: empty means legacy adverts and escrows only.
+    expect(row('VECTOR_IDENTITY_LEGACY_ROOT')).toMatch(/ \| empty: legacy adverts and escrows only \|$/);
+    expect(row('VECTOR_IDENTITY_ESCROW_REF_UTXO')).toMatch(/ \| empty \|$/);
     // The price ceilings of ruling R56.
     for (const name of ['OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE']) expect(row(name), name).toContain(`\`${PRICE_CEILING_DEFAULT_LOVELACE}\``);
   });
@@ -84,7 +98,7 @@ describe('agents/document-pipeline/README.md', () => {
 
   test('the settings the service looks in for a buyer key put in the wrong line are the ones it reads, all but the key itself', () => {
     expect([...OTHER_SETTINGS, 'PIPELINE_BUYER_PRIV_KEY_HEX'].sort()).toStrictEqual(namesRead());
-    expect([...CHAIN_SETTINGS].sort()).toStrictEqual(READ_BY_BUYER_CORE);
+    expect([...CHAIN_SETTINGS].sort()).toStrictEqual([...READ_BY_BUYER_CORE, ...BUYER_IDENTITY_SETTINGS].sort());
   });
 
   test('it explains why a long job is kept alive with 102 Processing, what a 5xx tells the buyer, how the service stops, and what it checks at start', () => {

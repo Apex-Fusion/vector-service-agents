@@ -1,7 +1,7 @@
 // agents/document-pipeline/src/result.ts
 // What a run gives back. On success the result bundle (PipelineResult), which the server returns as JSON.stringify(result) and the runtime hashes
 // into the one receipt it signs: the document's hash, every page text with the sub-job that read it, the answer, the chat sub-job, and the accounting.
-// Each sub-job carries the receipt and signature exactly as its supplier gave them and the seven checks the Pipeline ran on them. On failure a
+// Each sub-job carries the receipt and signature exactly as its supplier gave them and the eight checks the Pipeline ran on them. On failure a
 // PipelineError, the orchestrator's own refusal, with a stable code for the server to map; a RequestError of the intake (src/request.ts) is not
 // wrapped (ruling R28). The reading of an extraction answer is src/extract.ts.
 //

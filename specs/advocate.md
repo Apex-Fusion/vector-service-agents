@@ -15,9 +15,9 @@ This agent has had a registry record since 2026-10-19.
 | Field | Value |
 |---|---|
 | DID | `did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:c5e44677dadefc8a194d15293cad889b85e1ce5c839177f1955778ac4c63d01c` |
-| Controller | the supplier key, the key that signs this agent's receipts. Its public key is `1560d8c3c13ccd096ddda69be3f4ef65413bb31a4b325001965a46e99fad215c`. The manifest publishes its key hash as `identity.controller_pkh` and `keys.supplier_pkh`, and its public key as `keys.pub_key_hex`: the service does not start unless the public key hashes to the key hash |
+| Controller | the supplier key, the key that signs this agent's receipts. Its public key is `1560d8c3c13ccd096ddda69be3f4ef65413bb31a4b325001965a46e99fad215c`. The manifest publishes its key hash as `keys.supplier_pkh` and its public key as `keys.pub_key_hex`: the service does not start unless the public key hashes to the key hash. `identity.supplier_key` names it as a key of the DID (`<DID>#<key hash>`) |
 | Second key | the buyer key, a separate key that posts the escrow of the chat sub-job of a job, so its Posts and the supplier key's Claims never contend for the same UTxOs. It was made on the host on 2026-10-19, in step 4 of the runbook. The manifest publishes its key hash, `ee450a88d8344f18dd2baf266100aec3b1375b5870b2fe50f34de123`, as `keys.buyer_pkh`, which the service derives from the key |
-| Registry address | `addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42` |
+| Registry address | `addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42`, the legacy registry. The manifest gives the identity registry address in `identity.registry_address` once the service is configured with it |
 | Registry record | name `Advocate`; description as in the manifest, which declares the bias; capabilities `research.advocate.onesided.v1`; framework `vector-service-agents`; endpoint the agent's public URL, `https://mp-suppliers-advocate.hal8.ai`; controller key hash `20d8167910dbd9801984fe539fa94d94e53f2224226c7838c2f02867` (the supplier key hash). Registered on 2026-10-19 in the confirmed transaction [`0699bc56992695511fd3c55681deba4f9ad611cd5c526dcfe45758f203abe767`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/0699bc56992695511fd3c55681deba4f9ad611cd5c526dcfe45758f203abe767). The deposit is 10000000 lovelace (10.000000), refundable on deregistration |
 | Public URL | `https://mp-suppliers-advocate.hal8.ai` (in service as of 2026-10-19) |
 | Reputation stake | a Module-3 self-stake of 10000000 lovelace (10.000000) on the capability, made on 2026-10-19 in transaction [`82fdc231932405c105f8b8b03cc56c37c702d03befc1830e85d0debeeeabbb15`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/82fdc231932405c105f8b8b03cc56c37c702d03befc1830e85d0debeeeabbb15) |
@@ -213,7 +213,8 @@ Example, for the request above. It is an illustration and not a recorded run: it
         "signature_valid": true,
         "on_chain_hash_matches": true,
         "prompt_hash_matches": true,
-        "model_matches": true
+        "model_matches": true,
+        "fields_match": true
       }
     },
     "accepted": "confirmed"
@@ -245,7 +246,7 @@ The model call is bought first from a chat supplier on the Vector marketplace, a
 
 **The hire.** The service posts an escrow on that advert and sends `POST /v1/responses` with the escrow in `X-Escrow-Ref` and the body `{ "input": "<text>" }` and nothing else, so that the prompt hash the escrow commits to is the hash of the request the supplier gets. The input is the fixed prompt of the model call, a blank line, then the message with the subject, the side, the audience when there is one, and the numbered pages: the words OpenRouter is sent as two messages, in one. It carries no temperature, no JSON mode and no token limit. A supplier at work is hired all the same: the send is made again every 15 s while it answers that it is busy. The service polls every 3 s, runs the seven checks below on the sub-receipt, and accepts the escrow only when all seven pass. Only then does it read the answer as a brief: an answer that is cut (its `status` is not `completed`) or that is not the JSON of a brief is accepted all the same, since the supplier delivered, and the job falls back.
 
-The seven checks of the sub-receipt, in the order of the `verification` object. The service accepts the escrow only when all seven pass:
+The eight checks of the sub-receipt, in the order of the `verification` object. The service accepts the escrow only when all eight pass:
 
 | Check | Passes when |
 |---|---|
@@ -256,6 +257,7 @@ The seven checks of the sub-receipt, in the order of the `verification` object. 
 | `on_chain_hash_matches` | the `result_receipt_hash` in the Submitted output of the escrow is the sha256 of the canonical JSON of `{ receipt, signature }` |
 | `prompt_hash_matches` | `prompt_hash` is the prompt hash of the escrow, so the receipt is for the request the service committed to |
 | `model_matches` | `model` is the model of the advert |
+| `fields_match` | the receipt has exactly the fields of its escrow's layout (Part 2 section 6.3 of the identity registry plan): the 8 receipt fields for a legacy escrow, and those 8 and `agent_did`, which is `did:vector:<agent_id>` of the escrow, for an identity-marketplace escrow |
 
 The hash on the ledger can lag the supplier's answer, so the service reads it again every 3 s, for up to 120 s and until 20 s before the deadline of the job, before it gives up on a receipt that is otherwise sound. An Accept that fails in a way that cannot land, a build that did not complete or a submit that was refused, is made again every 15 s, until the accept window has closed or 600 s have passed since the supplier's answer.
 

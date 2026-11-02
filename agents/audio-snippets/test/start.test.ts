@@ -7,6 +7,7 @@ import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, test, expect } from 'vitest';
+import { REGISTRY_POLICY, blake2b224Hex, identityRegistryOf, legacyVectorDid, utf8ToHex } from '@vsa/vector-read';
 import { WORKER_PATH } from '../src/asr.ts';
 import { mediaTools } from '../src/media.ts';
 import { manifestFromEnv } from '../src/server.ts';
@@ -68,6 +69,14 @@ describe('loadConfig', () => {
     expect(message(() => loadConfig({ ...FULL_ENV, SUPPLIER_PUB_KEY_HEX: SUPPLIER.pubKeyHex.slice(2) }))).toBe('environment variable SUPPLIER_PUB_KEY_HEX must be 64 hex characters, and it has 62 characters');
   });
 
+  test('the identity block is read at start: the DID in its canonical form and the identity registry of IDENTITY_POLICY_ID; a value that breaks a rule stops the start, naming the variable', () => {
+    const id = '15'.repeat(32), policy = blake2b224Hex(utf8ToHex('a test identity registry'));
+    const config = loadConfig({ ...FULL_ENV, AGENT_DID: legacyVectorDid(REGISTRY_POLICY, id), IDENTITY_POLICY_ID: policy });
+    expect(config.manifest.identity).toStrictEqual({ did: `did:vector:${id}`, registry_address: identityRegistryOf(policy, undefined)!.address, supplier_key: `did:vector:${id}#${SUPPLIER.pkh}` });
+    expect(message(() => loadConfig({ ...FULL_ENV, IDENTITY_POLICY_ID: 'xyz' }))).toBe('environment variable IDENTITY_POLICY_ID must be 56 lowercase hex characters, got "xyz"');
+    expect(message(() => loadConfig({ ...FULL_ENV, AGENT_DID: `did:vector:testnet:${id}` }))).toMatch(/^environment variable AGENT_DID must be did:vector:<64 lowercase hex> or its legacy form under the registry policy /);
+  });
+
   describe('the service token', () => {
     test('a token of the form the runbook makes is accepted; one that is not printable ASCII is refused with its length only', () => {
       expect(loadConfig(FULL_ENV).authHeader).toHaveLength(71);
@@ -89,9 +98,9 @@ describe('loadConfig', () => {
       expect(message(() => loadConfig(FULL_ENV, leaky))).toBe('the manifest would publish the service token: a value that goes into it holds the token of SERVICE_AUTH_HEADER, and the service does not start with it');
     });
     test('SETTINGS are the names the service reads, the token among them, each once', () => {
-      expect(SETTINGS).toHaveLength(18);
+      expect(SETTINGS).toHaveLength(20);
       expect(new Set(SETTINGS).size).toBe(SETTINGS.length);
-      for (const name of ['OPERATOR_CONTACT', 'SUPPLIER_PKH', 'SERVICE_AUTH_HEADER', 'WHISPER_MODEL', 'WHISPER_THREADS', 'WHISPER_MODEL_DIR', 'ASR_PYTHON', 'ASR_WORKER', 'PORT', 'HOST']) expect(SETTINGS).toContain(name);
+      for (const name of ['OPERATOR_CONTACT', 'AGENT_DID', 'IDENTITY_POLICY_ID', 'IDENTITY_ADDRESS', 'SUPPLIER_PKH', 'SERVICE_AUTH_HEADER', 'WHISPER_MODEL', 'WHISPER_THREADS', 'WHISPER_MODEL_DIR', 'ASR_PYTHON', 'ASR_WORKER', 'PORT', 'HOST']) expect(SETTINGS).toContain(name);
     });
   });
 });

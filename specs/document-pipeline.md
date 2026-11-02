@@ -15,9 +15,9 @@ This agent has had a registry record since 2026-10-16.
 | Field | Value |
 |---|---|
 | DID | `did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:b8599ec7f66a389dab40a963cce31a0e2e05c61e47f0b002fa39d59acf5932f5` |
-| Controller | the supplier key, the key that signs the receipt over the bundle |
+| Controller | the supplier key, the key that signs the receipt over the bundle. Its key hash is `keys.supplier_pkh` in the manifest, and `identity.supplier_key` names it as a key of the DID (`<DID>#<key hash>`) |
 | Second key | a separate buyer key that posts the escrows of the sub-jobs, so its Posts and the supplier key's Claims never contend for the same UTxOs. Both key hashes are published in the manifest under `keys` (`supplier_pkh`, `buyer_pkh`) |
-| Registry address | `addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42` |
+| Registry address | `addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42`, the legacy registry. The manifest gives the identity registry address in `identity.registry_address` once the service is configured with it |
 | Registry record | name `Document Pipeline`; capabilities `document.pipeline.ocr-summary.v1`; framework `vector-service-agents`; endpoint the agent's public URL; controller key hash `5750aa8006bdc4f16f7950f54b89c2efb1d11091718d0db32a4863fc` (the supplier key hash). Registered on 2026-10-16 in the confirmed transaction [`195028d86ee9735084ce648779a673da5bf76977b10bc52b3d10dbfb57ef86dd`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/195028d86ee9735084ce648779a673da5bf76977b10bc52b3d10dbfb57ef86dd). The deposit is 10000000 lovelace (10.000000), refundable on deregistration |
 | Public URL | `https://mp-suppliers-pipeline.hal8.ai` (in service as of 2026-10-16) |
 | Reputation stake | a Module-3 self-stake of 10000000 lovelace (10.000000) on the capability, made on 2026-10-16 in transaction [`6a41f59d0925b70583d0272fdddf9fedbc5dcac2d4af2c9484c452e2a5fb2830`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/6a41f59d0925b70583d0272fdddf9fedbc5dcac2d4af2c9484c452e2a5fb2830) |
@@ -163,7 +163,8 @@ Example, the result of the two-page summary run of the test suite:
           "signature_valid": true,
           "on_chain_hash_matches": true,
           "prompt_hash_matches": true,
-          "model_matches": true
+          "model_matches": true,
+          "fields_match": true
         }
       }
     },
@@ -193,7 +194,8 @@ Example, the result of the two-page summary run of the test suite:
           "signature_valid": true,
           "on_chain_hash_matches": true,
           "prompt_hash_matches": true,
-          "model_matches": true
+          "model_matches": true,
+          "fields_match": true
         }
       }
     }
@@ -224,7 +226,8 @@ Example, the result of the two-page summary run of the test suite:
       "signature_valid": true,
       "on_chain_hash_matches": true,
       "prompt_hash_matches": true,
-      "model_matches": true
+      "model_matches": true,
+      "fields_match": true
     }
   },
   "accounting": {
@@ -241,7 +244,7 @@ The example is from the stub marketplace of the test suite; hashes, references a
 |---|---|
 | `source` | `sha256` and `bytes` of the document exactly as fetched or decoded, `mime` read from its first bytes, and `pages`, the page count of the whole document (an image is one page) |
 | `pages[]` | the pages read, from the first and at most `max_pages`: `index` from 0, `text` as the OCR agent returned it, and the `sub_job` that read the page |
-| `sub_job` | `capability_id`, `advert_ref` and `escrow_ref` of the hire, the `supplier_pkh`, the `receipt` and `receipt_signature` exactly as the supplier gave them, and `verification`, the seven checks the Pipeline ran on them. Every check of a delivered result is true |
+| `sub_job` | `capability_id`, `advert_ref` and `escrow_ref` of the hire, the `supplier_pkh`, the `receipt` and `receipt_signature` exactly as the supplier gave them, and `verification`, the eight checks the Pipeline ran on them. Every check of a delivered result is true |
 | `result` | for `summary`, `{ "summary": "<text>" }`. For `extract`, `{ "extraction": <value>, "schema_valid": true }`, or, when the answer is not JSON or does not validate against the schema, `{ "extraction": null, "schema_valid": false, "raw_text": "<the answer>" }` |
 | `llm_sub_job` | the chat hire, in the shape of a page `sub_job` |
 | `accounting` | `sub_jobs`, the pages read plus one; `locked_total_lovelace`, the lock of every Post; `fees_total_lovelace`, the fee of every Post and of every Accept seen confirmed. Decimal text |
@@ -278,7 +281,7 @@ The service holds its own buyer key and posts the escrow of every sub-job from i
 1. posts an escrow on that advert,
 2. sends the page: `POST /v1/ocr/extract` with the escrow in the `X-Escrow-Ref` header, and the page image as base64 with its `mime` and `output_format` `markdown` as the body,
 3. polls the job every 3 s,
-4. runs the seven checks below on the sub-receipt, and accepts the escrow only when all seven pass.
+4. runs the eight checks below on the sub-receipt, and accepts the escrow only when all eight pass.
 
 **The chat hop.** Then it hires one `llm.text.generate.v1` supplier for the summary or the extraction.
 
@@ -286,7 +289,7 @@ The choice of supplier is made before any page escrow is posted, so a job with n
 
 The Pipeline posts an escrow on it and sends `POST /v1/responses` with the escrow in `X-Escrow-Ref` and the body `{ "input": "<text>" }` and nothing else, so that the prompt hash the escrow commits to is the hash of the request the supplier gets. The input is the instructions, in English, naming the language of the request by its code; for an extraction, a line `JSON Schema:` and the schema as compact JSON; then the text of each page after a line `=== page N ===`, N counting from 1. The Pipeline polls, runs the seven checks and accepts, as for a page. An answer whose `status` is not `completed`, a cut answer, fails the job with `llm_incomplete`, after its receipt is verified and its escrow accepted, since the supplier delivered.
 
-The seven checks of a sub-receipt, in the order of the `verification` object. The Pipeline accepts an escrow only when all seven pass:
+The eight checks of a sub-receipt, in the order of the `verification` object. The Pipeline accepts an escrow only when all eight pass:
 
 | Check | Passes when |
 |---|---|
@@ -297,6 +300,7 @@ The seven checks of a sub-receipt, in the order of the `verification` object. Th
 | `on_chain_hash_matches` | the `result_receipt_hash` in the Submitted output of the escrow is the sha256 of the canonical JSON of `{ receipt, signature }` |
 | `prompt_hash_matches` | `prompt_hash` is the prompt hash of the escrow, so the receipt is for the request the Pipeline committed to |
 | `model_matches` | `model` is the model of the advert |
+| `fields_match` | the receipt has exactly the fields of its escrow's layout (Part 2 section 6.3 of the identity registry plan): the 8 receipt fields for a legacy escrow, and those 8 and `agent_did`, which is `did:vector:<agent_id>` of the escrow, for an identity-marketplace escrow |
 
 The hash on the ledger can lag the supplier's answer, so the Pipeline reads it again every 3 s, for up to 120 s, before it gives up on a receipt that is otherwise sound.
 

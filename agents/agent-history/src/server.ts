@@ -1,6 +1,6 @@
 import { createServer as httpServer } from 'node:http';
 import type { IncomingMessage } from 'node:http';
-import { parseVectorDid, didFor, REGISTRY_POLICY } from '@vsa/vector-read';
+import { manifestDid, manifestIdentity } from '@vsa/vector-read';
 import type { Fetch, SafeFetchOpts } from '@vsa/vector-read';
 import { parseWire, BadRequest, MAX_BODY } from './request.ts';
 import { buildReport, degradedReasons, ESCROW_ROWS_GAP, DISPUTE_MODULE_GAP, GENERIC_MATCH_GAP, CURRENT_STATE_GAP, IDENTITY_VIEW_GAP } from './report.ts';
@@ -28,26 +28,15 @@ function statusChip(v: string | undefined): string {
   if (!CHIPS.includes(v.toUpperCase())) throw new Error(`environment variable AGENT_STATUS_CHIP must be one of ${CHIPS.join(', ')}, got "${v}"`);
   return v.toLowerCase();
 }
-// The DID the manifest publishes, in the canonical form did:vector:<identifier> (did:vector Part 1, section 3). The legacy form of the same identifier,
-// which the registration step wrote before the identity registry, is published in the canonical form. A did:vector value that names no Vector mainnet
-// agent stops the service, and the error names the variable. Absent or empty means none yet; another value is published as given.
-function manifestDid(v: string | undefined): string {
-  const value = (v ?? '').trim();
-  if (!value.startsWith('did:vector:')) return value;
-  const did = parseVectorDid(value);
-  if (did?.form === 'canonical') return value;
-  if (did?.form === 'legacy' && did.policyId === REGISTRY_POLICY) return didFor(did.vectorId);
-  throw new Error(`environment variable AGENT_DID must be did:vector:<64 lowercase hex> or its legacy form under the registry policy ${REGISTRY_POLICY}, got "${value}"`);
-}
 export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
   const did = manifestDid(env.AGENT_DID), supplierPkh = env.SUPPLIER_PKH ?? '';
   return {
     schema: 'vector.agent-manifest.v2', name: 'Agent History', capability_id: 'identity.history.report.v1', version: env.AGENT_VERSION ?? '0.2.0',
     description: "The registry, stake, marketplace and module records the Vector ledger holds for one agent identifier, with the gaps stated. One report per job, delivered with the runtime's signed receipt. Read-only; no model cost.",
     operator: { name: 'Apex Fusion Foundation', contact: requiredEnv('OPERATOR_CONTACT', env.OPERATOR_CONTACT) },
-    // The identity registry address, and the listed supplier key as the DID URL of its verification method (<DID>#<key hash>, Part 1 section 5).
+    // The identity registry address, and the listed supplier key as the DID URL of its verification method (<DID>#<key hash>, Part 1 section 8.1).
     // The address is empty while the identity registry is not configured.
-    identity: { did, registry_address: configFromEnv(env).registries.identity?.address ?? '', supplier_key: did && supplierPkh ? `${did}#${supplierPkh}` : '' },
+    identity: manifestIdentity(did, supplierPkh, configFromEnv(env).registries.identity),
     keys: { supplier_pkh: supplierPkh, pub_key_hex: env.SUPPLIER_PUB_KEY_HEX ?? '' },
     interface: { request_schema: { type: 'object', required: ['subject'], properties: { subject: { type: 'string', description: 'did:vector DID (canonical or legacy form), identifier (64 hex) or key hash (56 hex)' }, include: { type: 'array', items: { enum: ['identity', 'marketplace', 'reputation', 'dispute', 'self_improvement'] } } } }, response_schema: { $ref: 'https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/agent-history.md#response' }, routes: { job: '/v1/job', status: '/status', capability: '/capability' } },
     terms: { price_lovelace: envInt('ADVERT_PRICE_LOVELACE', env.ADVERT_PRICE_LOVELACE, 1_000_000), supplier_bond_lovelace: 1_000_000, buyer_bond_lovelace: 1_000_000, max_processing_ms: envInt('ADVERT_MAX_PROCESSING_MS', env.ADVERT_MAX_PROCESSING_MS, 300_000), input_limits: { request_bytes: MAX_BODY } },

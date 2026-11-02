@@ -11,9 +11,9 @@
 //                     that failed, and 503 (the service cannot take a job now) or 500 (store_write_failed) for a failure on this side, whose message is fixed
 //                     text for the buyer and whole in the log (PipelineError).
 import type { Server } from 'node:http';
-import { HealthMonitor, JobSlot, createJobServer, envInt, requiredEnv, statusChip, statusSince } from '@vsa/service-kit';
+import { HealthMonitor, JobSlot, createJobServer, envInt, given, requiredEnv, shown, statusChip, statusSince } from '@vsa/service-kit';
 import type { Refusal } from '@vsa/service-kit';
-import { REGISTRY_ADDRESS } from '@vsa/vector-read';
+import { identityRegistryOf, manifestDid, manifestIdentity } from '@vsa/vector-read';
 import { JOB_DEADLINE_MS, WALLET_READ_TIMEOUT_MS } from './budget.ts';
 import { COMBINATION_MAX_ENTRIES, SCHEMA_MAX_BYTES, SCHEMA_MAX_DEPTH } from './extract.ts';
 import { GAPS } from './gaps.ts';
@@ -96,12 +96,30 @@ const NOTES = [
   'An extraction whose answer is not JSON, or does not validate against the schema, still succeeds: the result has schema_valid false and extraction null, and the answer is kept as raw_text.',
 ];
 
+/**
+ * The identity block of the manifest, which vector-read builds the same way for every agent of this repository: the DID of AGENT_DID in its canonical form, the
+ * address of the identity registry of IDENTITY_POLICY_ID and IDENTITY_ADDRESS (empty while IDENTITY_POLICY_ID is not set), and the listed supplier key,
+ * <DID>#<key hash>. The start reads it once. A value that breaks a rule stops the start, and the error names the variable. The helpers quote the value they
+ * refuse; here a value that is hex-shaped or long is given by its length (shown), as in every other message of the service.
+ */
+function identityFromEnv(env: NodeJS.ProcessEnv) {
+  const values = [env.AGENT_DID, env.IDENTITY_POLICY_ID, env.IDENTITY_ADDRESS].map(given);
+  try {
+    return manifestIdentity(manifestDid(env.AGENT_DID), env.SUPPLIER_PKH ?? '', identityRegistryOf(env.IDENTITY_POLICY_ID, env.IDENTITY_ADDRESS));
+  } catch (e) {
+    let text = (e as Error).message;
+    for (const value of values) if (value !== '' && shown(value) !== JSON.stringify(value)) text = text.replaceAll(`"${value}"`, shown(value)).replaceAll(value, `(${shown(value)})`);
+    throw new Error(text.startsWith('environment variable ') ? text : `environment variable ${text}`);
+  }
+}
+
 export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
   return {
-    schema: 'vector.agent-manifest.v1', name: 'Document Pipeline', capability_id: 'document.pipeline.ocr-summary.v1', version: env.AGENT_VERSION ?? '0.1.0',
+    // The manifest v2 is version 0.2.0: a changed manifest needs a new advert.
+    schema: 'vector.agent-manifest.v2', name: 'Document Pipeline', capability_id: 'document.pipeline.ocr-summary.v1', version: env.AGENT_VERSION ?? '0.2.0',
     description: 'Reads a document: OCR for each page, then a summary or a structured extraction, with every sub-receipt checked and one receipt over the whole bundle.',
     operator: { name: 'Apex Fusion Foundation', contact: requiredEnv('OPERATOR_CONTACT', env.OPERATOR_CONTACT, "the operator's contact address, published in the manifest") },
-    identity: { did: env.AGENT_DID ?? '', controller_pkh: env.SUPPLIER_PKH ?? '', registry_address: REGISTRY_ADDRESS },
+    identity: identityFromEnv(env),
     keys: { supplier_pkh: env.SUPPLIER_PKH ?? '', pub_key_hex: env.SUPPLIER_PUB_KEY_HEX ?? '', buyer_pkh: env.PIPELINE_BUYER_PKH ?? '' },
     interface: {
       request_schema: REQUEST_SCHEMA,

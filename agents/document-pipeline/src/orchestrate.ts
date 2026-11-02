@@ -29,8 +29,10 @@
 // the float again, its lock and two fees against the float read then (insufficient_float, 503, after the page escrows are settled). The chat body is {input} and nothing else
 // (ruling R12). Its answer must be a completed response: one that is not is still verified and accepted (the supplier delivered), and the job fails
 // with llm_incomplete (ruling R11). Every escrow a failure leaves behind is in the stranded store, for the janitor.
-import { findOcrAdvert, ocrPromptHash, ocrResponseHash, pollOcrJob, probeStatus, readCapability, sendOcrJob, flatText, TX_FEE_BUDGET_LOVELACE } from '@vsa/buyer-core';
-import type { Chain, SupplierCapability } from '@vsa/buyer-core';
+import { findOcrAdvert, isIdentityAdvert, ocrPromptHash, ocrResponseHash, pollOcrJob, probeStatus, readCapability, sendOcrJob, flatText, TX_FEE_BUDGET_LOVELACE } from '@vsa/buyer-core';
+import type { Chain, OcrAdvertListing, SupplierCapability } from '@vsa/buyer-core';
+import { activeKey, decodeIdentityDatum, didFor, isAuthenticRecord, koios, PURPOSE_TRANSACTION } from '@vsa/vector-read';
+import type { IdentityAdvertDatum, IdentityDatum, KoiosUtxo, Registry } from '@vsa/vector-read';
 import { aboveCeiling, advertOnChain, chatJob, chooseChatSupplier, choiceLine, keyOfAdvert, plannedLockOf } from '@vsa/hire-kit';
 import {
   LLM_MIN_LEFT_MS, LLM_SELECTION_MAX_AGE_MS, OCR_IMAGE_B64_MAX, OutOfTime, PAGE_MIN_LEFT_MS, STATUS_RETRY_MS, WALLET_READ_TIMEOUT_MS, assertTimeLeft, floatNeeded, within,
@@ -61,6 +63,11 @@ export interface Deps {
   sleep: (ms: number) => Promise<void>;
   /** The key hash of the one OCR supplier the Pipeline hires. */
   ocrAllowlistPkh: string;
+  /**
+   * The identity registry (IDENTITY_POLICY_ID): the record of the agent an identity-marketplace OCR advert names is read from it. Absent or null when it is
+   * not configured; an OCR advert that names an agent is then not hired.
+   */
+  identityRegistry?: Registry | null;
   /** The chat models the Pipeline hires, in order of preference. */
   llmAllowlist: readonly string[];
   /** The marketplace indexer; the configured one when absent. */
@@ -219,16 +226,17 @@ function ocrMime(mime: string): 'image/png' | 'image/jpeg' {
 }
 
 /**
- * The OCR supplier: the allowlisted key's one Active advert at a price at or under the ceiling, checked on chain, the key its /capability serves, and its
- * /status free or working (ruling R60). ocr_supplier_unavailable (503) otherwise. When the indexer lists no such advert, it is read once more without the ceiling, so that an advert priced
- * above it is named with its price rather than said not to be listed.
+ * The OCR supplier: the allowlisted key's one Active advert at a price at or under the ceiling, in either advert layout, checked on chain, the key its
+ * /capability serves, and its /status free or working (ruling R60). An identity-marketplace advert names its agent, whose record must list the key
+ * (assertAgentListsKey). ocr_supplier_unavailable (503) otherwise. When the indexer lists no such advert, it is read once more without the ceiling, so that
+ * an advert priced above it is named with its price rather than said not to be listed.
  */
 async function ocrSupplier(deps: Deps): Promise<Supplier> {
   const pkh = deps.ocrAllowlistPkh.toLowerCase();
   const ceiling = deps.ocrMaxPriceLovelace;
   const unavailable = (why: string) => new PipelineError('ocr_supplier_unavailable', `The allowlisted OCR supplier ${pkh} cannot be hired: ${why}. Nothing was locked.`, 503);
   const find = (maxPriceLovelace?: bigint) => findOcrAdvert({ fetchImpl: deps.fetchImpl, indexerUrl: deps.indexerUrl, supplierPkh: pkh, ...(maxPriceLovelace === undefined ? {} : { maxPriceLovelace }) });
-  let listed: Awaited<ReturnType<typeof findOcrAdvert>>;
+  let listed: OcrAdvertListing | null;
   try { listed = await find(ceiling); } catch (err) {
     throw unavailable(`the marketplace indexer could not be read (${errorText(err)})`);
   }
@@ -243,6 +251,9 @@ async function ocrSupplier(deps: Deps): Promise<Supplier> {
     throw unavailable(`the advert ${advertRef} the indexer lists for it is not, on chain, an active ${OCR_CAPABILITY} advert of that key`);
   }
   if (advert.price_lovelace > ceiling) throw unavailable(`on chain, ${aboveCeiling(advertRef, advert.price_lovelace, ceiling, 'OCR_MAX_PRICE_LOVELACE')}`);
+  // An identity-marketplace advert names its agent (Part 2 section 6.2), and only an agent whose record lists the key with the transaction purpose can claim
+  // the job: that record is read before anything is locked. A legacy advert names no agent, and its key is the allowlist's word alone.
+  if (isIdentityAdvert(advert)) await assertAgentListsKey(deps, advert, advertRef, unavailable);
   let capability: SupplierCapability;
   try { capability = await readCapability(advert.endpoint_url, deps.fetchImpl); } catch (err) { throw unavailable(`its /capability could not be read (${errorText(err)})`); }
   if (!keyOfAdvert(capability, advert)) throw unavailable('the key its /capability serves is not the key of its advert, so no receipt of it could verify');
@@ -258,6 +269,29 @@ async function ocrSupplier(deps: Deps): Promise<Supplier> {
   const supplier: Supplier = { hop: 'ocr', advertRef, advert, capabilityId: advert.capability_id, model: advert.model, endpoint: advert.endpoint_url, pubKeyHex: capability.pub_key_hex, windowMs: advert.max_processing_ms };
   deps.log?.(choiceLine(supplier));
   return supplier;
+}
+
+/**
+ * The record of the agent an identity-marketplace OCR advert names must list the advert's key with the transaction purpose (active_key of the
+ * vector_identity library, Part 2 section 3.10), or the agent could not claim the job and its escrow would wait for a Reclaim. The record is the one
+ * authentic output of the agent's token at the identity registry (Part 1 section 4), read from Koios. ocr_supplier_unavailable (503) when it is not so,
+ * when there is no such record, and when no identity registry is configured or Koios cannot be read.
+ */
+async function assertAgentListsKey(deps: Deps, advert: IdentityAdvertDatum, advertRef: string, unavailable: (why: string) => PipelineError): Promise<void> {
+  const did = didFor(advert.agent_id);
+  const registry = deps.identityRegistry ?? null;
+  if (registry === null) throw unavailable(`its advert ${advertRef} names the agent ${did}, and no identity registry is configured (IDENTITY_POLICY_ID) to read the record of that agent from`);
+  let rows: KoiosUtxo[];
+  try { rows = await koios.assetUtxos(registry.policy, advert.agent_id, deps.fetchImpl); } catch (err) {
+    throw unavailable(`the record of ${did}, the agent its advert ${advertRef} names, could not be read (${errorText(err)})`);
+  }
+  const held = rows.find((u) => u.is_spent !== true && isAuthenticRecord(u.address ?? '', u.asset_list, registry, advert.agent_id));
+  let record: IdentityDatum | null = null;
+  try { record = held?.inline_datum?.bytes ? decodeIdentityDatum(held.inline_datum.bytes) : null; } catch { /* a datum that does not decode is no record */ }
+  if (record === null) throw unavailable(`the agent ${did} its advert ${advertRef} names has no record in the identity registry`);
+  if (!activeKey(record, advert.supplier_pkh, PURPOSE_TRANSACTION)) {
+    throw unavailable(`the record of ${did}, the agent its advert ${advertRef} names, does not list the key with the transaction purpose (active_key), so the agent could not claim the job`);
+  }
 }
 
 /**

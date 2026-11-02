@@ -81,7 +81,7 @@ const BRIEF: ModelBrief = {
 const exampleRequest = (): string => /Example:\n\n```json\n([\s\S]*?)\n```/.exec(sub('Request'))?.[1] ?? '';
 const THE_REQUEST = { subject: 'Should a city ban cars from its centre?', side: 'for', audience: null, length: 'short', language: 'en' };
 
-// The seven checks of a sub-receipt, in the order of verifyFleetReceipt (packages/buyer-core/src/fleet-verify.ts), which the verification object of a sub-job keeps.
+// The eight checks of a sub-receipt, in the order of verifyFleetReceipt (packages/buyer-core/src/fleet-verify.ts), which the verification object of a sub-job keeps.
 const fleetVerify = readFileSync(new URL('../../../packages/buyer-core/src/fleet-verify.ts', import.meta.url), 'utf8');
 const CHECKS = [...(/const checks: FleetVerification\['checks'\] = \{([\s\S]*?)\};/.exec(fleetVerify)?.[1] ?? '').matchAll(/^\s*([a-z_]+):/gm)].map((m) => m[1]);
 // The inference of the example: the marketplace path, with a sub-job made up for the page in the shape the service gives it (HireRecord of @vsa/hire-kit). Its
@@ -128,15 +128,17 @@ describe('specs/advocate.md', () => {
     expect(section('Capability id')).toContain('The model string in the advert and in every receipt is `advocate-v1`.');
     expect(page.split('\n')[2]).toBe(`Capability \`${manifest.capability_id}\`. ${manifest.description}`);
     expect(manifest.name).toBe('Advocate');
-    // The release line: the version of the manifest, and the day it was built.
-    expect(section('Changelog').trim()).toBe(`- ${manifest.version}, 2026-10-17: built`);
+    // The release line: the version built on 2026-10-17. The code is at 0.2.0, the manifest v2, and its line comes with its release and its new advert.
+    expect(section('Changelog').trim()).toBe('- 0.1.0, 2026-10-17: built');
+    expect(manifest.version).toBe('0.2.0');
     expect(manifest.description).toBe('The strongest one-sided brief for a position, with citations: it argues one side only, by design, omits counter-arguments, and says so in every output.');
     expect(manifest.status).toStrictEqual({ chip: 'deployed', since: '2026-10-20' });
     // The status line of the page opens with the word the manifest carries and ends with its date: DEPLOYED since the flip of 2026-10-20, never LIVE.
     expect(section('Status').trimStart().startsWith(`${manifest.status.chip.toUpperCase()} (`)).toBe(true);
     expect(section('Status')).toContain(`). Since ${manifest.status.since}.\n`);
     expect(section('Status').split('\n')).toContain('DEPLOYED (registered and staked 2026-10-19, advertised 2026-10-19, re-advertised 2026-10-20 at the status flip, one first-party job settled 2026-10-20). Since 2026-10-20.');
-    expect(row(section('Identity'), 'Registry address')).toBe(`| Registry address | \`${REGISTRY_ADDRESS}\` |`);
+    expect(row(section('Identity'), 'Registry address')).toBe(`| Registry address | \`${REGISTRY_ADDRESS}\`, the legacy registry. The manifest gives the identity registry address in \`identity.registry_address\` once the service is configured with it |`);
+    expect(manifest.identity.registry_address).toBe('');
     // The public URL is the one the advert carries, in service as of 2026-10-19: the runbook and the example file of the host name the same URL.
     expect(row(section('Identity'), 'Public URL')).toBe('| Public URL | `https://mp-suppliers-advocate.hal8.ai` (in service as of 2026-10-19) |');
     expect(readFileSync(new URL('../../../deploy/host/RUNBOOK-advocate.md', import.meta.url), 'utf8')).toContain('| Public name | `mp-suppliers-advocate.hal8.ai` |');
@@ -192,7 +194,7 @@ describe('specs/advocate.md', () => {
     expect(shown.inference).toStrictEqual({ path: 'marketplace', fallback_from: null, sub_job: EXAMPLE_SUB_JOB, accepted: 'confirmed' });
     expect(Object.keys(shown.inference)).toStrictEqual(['path', 'fallback_from', 'sub_job', 'accepted']);
     expect(Object.keys(shown.inference.sub_job)).toStrictEqual(['capability_id', 'advert_ref', 'escrow_ref', 'supplier_pkh', 'receipt', 'receipt_signature', 'verification']);
-    expect(CHECKS).toStrictEqual(['escrow_ref_matches', 'response_hash_matches', 'supplier_key_matches', 'signature_valid', 'on_chain_hash_matches', 'prompt_hash_matches', 'model_matches']);
+    expect(CHECKS).toStrictEqual(['escrow_ref_matches', 'response_hash_matches', 'supplier_key_matches', 'signature_valid', 'on_chain_hash_matches', 'prompt_hash_matches', 'model_matches', 'fields_match']);
     expect(Object.keys(shown.inference.sub_job.verification)).toStrictEqual(CHECKS);
     expect(sub('Response')).toContain('the time the service fetched it (ISO 8601, UTC)');
     expect(new Date(RETRIEVED_AT).toISOString()).toBe(RETRIEVED_AT);
@@ -523,7 +525,7 @@ describe('specs/advocate.md, pinned further', () => {
     expect(readFileSync(new URL('../../../packages/buyer-core/src/vendored/mcp/marketplace-build.ts', import.meta.url), 'utf8')).toContain('const validTo = datum.submitted_at + ACCEPT_WINDOW_MS;');
     expect(how).not.toContain('can no longer land');
     expect(readFileSync(new URL('../src/inference.ts', import.meta.url), 'utf8')).toContain(`accept it again by hand at once, within ${ACCEPT_WINDOW_MS / 1000} s of its Submit`);
-    // The seven checks of the table are those of buyer-core, in their order.
+    // The eight checks of the table are those of buyer-core, in their order.
     expect(how.split('\n').filter((l) => /^\| `[a-z_]+` \|/.test(l)).map((l) => l.split(' | ')[0].slice(3, -1))).toStrictEqual(CHECKS);
     // Time: the end of the hire and its reserve, and the confirmations the deadline does not cut.
     expect(how).toContain(`The end of the hire is ${FALLBACK_RESERVE_MS / 1000} s before the deadline of the job, the ${MODEL_MAX_MS / 1000} s of the call through OpenRouter and the ${RESULT_RESERVE_MS / 1000} s of the result, so that a hire that fails by then leaves the fallback its whole time.`);
@@ -728,10 +730,12 @@ describe('specs/advocate.md, pinned further', () => {
     expect(withAudience).toContain(`[1] ${PAGES[0].title} ${PAGES[0].url}\n${PAGES[0].excerpt}`);
   });
 
-  test('the Controller row names the three fields of the manifest and the check at start, and the code does it', () => {
+  test('the Controller row names the fields of the manifest and the check at start, and the code does it', () => {
     const controller = row(section('Identity'), 'Controller');
-    for (const field of ['identity.controller_pkh', 'keys.supplier_pkh', 'keys.pub_key_hex']) expect(controller, field).toContain(tick(field));
+    for (const field of ['keys.supplier_pkh', 'keys.pub_key_hex', 'identity.supplier_key']) expect(controller, field).toContain(tick(field));
     expect(controller).toContain('the service does not start unless the public key hashes to the key hash');
+    expect(controller).toContain('`identity.supplier_key` names it as a key of the DID (`<DID>#<key hash>`)');
+    expect(controller).not.toContain('controller_pkh');
     const pub = 'ab'.repeat(32);
     const env = {
       OPERATOR_CONTACT: 'ops@example.test', SUPPLIER_PKH: blake2b224Hex(pub), SUPPLIER_PUB_KEY_HEX: pub, SERVICE_AUTH_HEADER: `Bearer ${'cd'.repeat(32)}`,
@@ -741,7 +745,9 @@ describe('specs/advocate.md, pinned further', () => {
     // Neither API key nor the buyer key reaches the manifest (the page says so); each API key is sent to its own party alone.
     for (const key of [env.BRAVE_SEARCH_API_KEY, env.OPENROUTER_API_KEY, env.ADVOCATE_BUYER_PRIV_KEY_HEX]) expect(JSON.stringify(config.manifest).toLowerCase().includes(key.toLowerCase()), 'a key in the manifest').toBe(false);
     const buyer = buyerIdentityOf(env.ADVOCATE_BUYER_PRIV_KEY_HEX);
-    expect([config.manifest.identity.controller_pkh, config.manifest.keys]).toStrictEqual([env.SUPPLIER_PKH, { supplier_pkh: env.SUPPLIER_PKH, pub_key_hex: pub, buyer_pkh: buyer.buyerPkh }]);
+    expect([config.manifest.identity, config.manifest.keys]).toStrictEqual([{ did: '', registry_address: '', supplier_key: '' }, { supplier_pkh: env.SUPPLIER_PKH, pub_key_hex: pub, buyer_pkh: buyer.buyerPkh }]);
+    const did = `did:vector:${'c5'.repeat(32)}`;
+    expect(loadConfig({ ...env, AGENT_DID: did }).manifest.identity.supplier_key).toBe(`${did}#${env.SUPPLIER_PKH}`);
     expect([config.buyer.pkh, config.buyer.address]).toStrictEqual([buyer.buyerPkh, buyer.address]);
     expect(() => loadConfig({ ...env, SUPPLIER_PUB_KEY_HEX: 'ef'.repeat(32) })).toThrow(/is not the public key of SUPPLIER_PKH/);
     expect(row(section('What the receipt commits to'), '`supplier_pkh`')).toContain('which is also the controller key');

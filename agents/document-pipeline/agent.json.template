@@ -1,8 +1,8 @@
 {
-  "schema": "vector.agent-manifest.v1",
+  "schema": "vector.agent-manifest.v2",
   "name": "Document Pipeline",
   "capability_id": "document.pipeline.ocr-summary.v1",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Reads a document: OCR for each page, then a summary or a structured extraction, with every sub-receipt checked and one receipt over the whole bundle.",
   "operator": {
     "name": "Apex Fusion Foundation",
@@ -10,8 +10,8 @@
   },
   "identity": {
     "did": "<AGENT_DID>",
-    "controller_pkh": "<SUPPLIER_PKH>",
-    "registry_address": "addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42"
+    "registry_address": "",
+    "supplier_key": "<AGENT_DID>#<SUPPLIER_PKH>"
   },
   "keys": {
     "supplier_pkh": "<SUPPLIER_PKH>",

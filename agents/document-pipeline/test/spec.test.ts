@@ -85,10 +85,14 @@ describe('specs/document-pipeline.md', () => {
     expect(m.status).toStrictEqual({ chip: 'deployed', since: '2026-10-16' });
   });
 
-  test('the identity: the registry address, and both key hashes under keys', () => {
+  test('the identity: the registry address, the listed supplier key, and both key hashes under keys', () => {
     const identity = section('Identity');
-    expect(identity).toContain(`\`${REGISTRY_ADDRESS}\``);
-    expect(m.identity.registry_address).toBe(REGISTRY_ADDRESS);
+    const row = (label: string): string => identity.split('\n').find((l) => l.startsWith(`| ${label} |`)) ?? '';
+    expect(row('Registry address')).toBe(`| Registry address | \`${REGISTRY_ADDRESS}\`, the legacy registry. The manifest gives the identity registry address in \`identity.registry_address\` once the service is configured with it |`);
+    expect(m.identity.registry_address).toBe('');
+    expect(Object.keys(m.identity)).toStrictEqual(['did', 'registry_address', 'supplier_key']);
+    expect(row('Controller')).toContain('`identity.supplier_key` names it as a key of the DID (`<DID>#<key hash>`)');
+    expect(identity).not.toContain('controller_pkh');
     for (const key of ['supplier_pkh', 'buyer_pkh']) {
       expect(Object.keys(m.keys)).toContain(key);
       expect(identity).toContain(`\`${key}\``);
@@ -283,7 +287,7 @@ describe('specs/document-pipeline.md', () => {
     expect(errors).toContain('`request_too_large` (over 1000000 bytes)');
   });
 
-  test('How it buys states the code\'s own numbers and names: the OCR supplier key, the allowlist in order, the budgets, the seven checks, the janitor, and the endpoints of the fleet', () => {
+  test('How it buys states the code\'s own numbers and names: the OCR supplier key, the allowlist in order, the budgets, the eight checks, the janitor, and the endpoints of the fleet', () => {
     const buys = sub('How it buys');
     expect(buys.length).toBeGreaterThan(5000);
     expect(buys).toContain(`By default that is the Active advert for \`ocr.page.extract.chandra-ocr-2.v1\` of the supplier key hash \`${OCR_SUPPLIER_PKH_DEFAULT}\` (the operator's \`OCR_ALLOWLIST_SUPPLIER_PKH\` sets it). The service resolves it from the marketplace indexer at run time, whatever the indexer says of its supplier at the moment,`);
@@ -328,12 +332,12 @@ describe('specs/document-pipeline.md', () => {
     // Ruling R66: the size of each page is checked before it is rendered.
     expect(buys).toContain(`a PDF is rendered to PNG pages at 150 dpi, once the size of each page is known: a page that would be over ${MAX_PAGE_PIXELS} pixels is refused with \`page_too_large\` before it is rendered, and so is a page image over ${OCR_IMAGE_B64_MAX} base64 characters.`);
     expect(buys).toContain('a pure output of at least 5000000 lovelace as collateral and a float outside it of `(max_pages + 1) x 4500000` lovelace');
-    // The seven checks, in the order of the verification object.
+    // The eight checks, in the order of the verification object.
     const checks = Object.keys(GOLDEN.llm_sub_job.verification);
-    expect(checks).toHaveLength(7);
+    expect(checks).toHaveLength(8);
     const rows = buys.split('\n').filter((l) => l.startsWith('| `')).map((l) => l.split('`')[1]);
     expect(rows).toStrictEqual(checks);
-    expect(buys).toContain('The seven checks of a sub-receipt, in the order of the `verification` object. The Pipeline accepts an escrow only when all seven pass:');
+    expect(buys).toContain('The eight checks of a sub-receipt, in the order of the `verification` object. The Pipeline accepts an escrow only when all eight pass:');
     expect(buys).toContain(`reads it again every ${POLL_INTERVAL_MS / 1000} s, for up to ${RECEIPT_HASH_WAIT_MS / 1000} s`);
     // The janitor: a minute between passes, 5 s after deliver_by, the 600 s window of the escrow, the file in the state directory.
     expect(JANITOR_INTERVAL_MS).toBe(60_000);

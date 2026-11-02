@@ -5,7 +5,7 @@
 // supplier_pkh, receipt, receipt_signature, verification}, accepted}. The bias is declared in every brief, whatever its side or its arguments: the side as the
 // request gave it, and the two fixed statements of src/prompt.ts. The search and the model that made the brief are named in it, the model with its path
 // ("<model> via the Vector marketplace" or "<model> via OpenRouter"), and `inference` says which path the call took, why it fell back, and carries the chat
-// supplier's sub-job, its receipt and signature as the supplier gave them and the seven checks the service ran, in the key order of the Document Pipeline's
+// supplier's sub-job, its receipt and signature as the supplier gave them and the eight checks the service ran, in the key order of the Document Pipeline's
 // sub-jobs, so that a hirer checks it the same way. The schema stays vector.advocate.brief.v1: no brief has been served.
 import type { HireRecord } from '@vsa/hire-kit';
 import type { Argument, Checked, Source } from './check.ts';

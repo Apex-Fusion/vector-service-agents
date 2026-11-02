@@ -6,10 +6,10 @@
 import type { PipelineResult } from '../src/orchestrate.ts';
 import { SUMMARY } from './stub-suppliers.ts';
 
-/** The seven checks of verifyFleetReceipt, all passed: what the sub-job of every result that is delivered carries. */
+/** The eight checks of verifyFleetReceipt, all passed: what the sub-job of every result that is delivered carries. */
 export const ALL_PASS = {
   escrow_ref_matches: true, response_hash_matches: true, supplier_key_matches: true, signature_valid: true, on_chain_hash_matches: true,
-  prompt_hash_matches: true, model_matches: true,
+  prompt_hash_matches: true, model_matches: true, fields_match: true,
 };
 
 /** The result of the two-page summary run, computed from the stubs (see the head of this file). */

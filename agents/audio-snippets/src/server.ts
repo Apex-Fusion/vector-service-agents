@@ -14,9 +14,9 @@
 //                     fails with aborted (499), which the log keeps and no caller reads.
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
-import { HealthMonitor, JobSlot, createJobServer, envInt, given, requiredEnv, statusChip, statusSince } from '@vsa/service-kit';
+import { HealthMonitor, JobSlot, createJobServer, envInt, given, requiredEnv, shown, statusChip, statusSince } from '@vsa/service-kit';
 import type { Refusal } from '@vsa/service-kit';
-import { REGISTRY_ADDRESS } from '@vsa/vector-read';
+import { identityRegistryOf, manifestDid, manifestIdentity } from '@vsa/vector-read';
 import { JOB_DEADLINE_MS } from './budget.ts';
 import { INLINE_CLIPS_BYTES } from './clips.ts';
 import { assertScratch } from './disk.ts';
@@ -109,13 +109,31 @@ const NOTES = [
   `A source URL must be https and public and must not redirect: the service fetches it itself, at most ${MAX_SOURCE_BYTES} bytes, reads the type of the media from its first bytes, and refuses one that differs from the type the request declared or the server served (source_mime_mismatch, 422).`,
 ];
 
+/**
+ * The identity block of the manifest, which vector-read builds the same way for every agent of this repository: the DID of AGENT_DID in its canonical form, the
+ * address of the identity registry of IDENTITY_POLICY_ID and IDENTITY_ADDRESS (empty while IDENTITY_POLICY_ID is not set), and the listed supplier key,
+ * <DID>#<key hash>. The start reads it once. A value that breaks a rule stops the start, and the error names the variable. The helpers quote the value they
+ * refuse; here a value that is hex-shaped or long is given by its length (shown), as in every other message of the service.
+ */
+function identityFromEnv(env: NodeJS.ProcessEnv) {
+  const values = [env.AGENT_DID, env.IDENTITY_POLICY_ID, env.IDENTITY_ADDRESS].map(given);
+  try {
+    return manifestIdentity(manifestDid(env.AGENT_DID), env.SUPPLIER_PKH ?? '', identityRegistryOf(env.IDENTITY_POLICY_ID, env.IDENTITY_ADDRESS));
+  } catch (e) {
+    let text = (e as Error).message;
+    for (const value of values) if (value !== '' && shown(value) !== JSON.stringify(value)) text = text.replaceAll(`"${value}"`, shown(value)).replaceAll(value, `(${shown(value)})`);
+    throw new Error(text.startsWith('environment variable ') ? text : `environment variable ${text}`);
+  }
+}
+
 export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
   return {
-    // An AGENT_VERSION that is empty or blank is not set (given): an empty version would be published in the manifest the advert hashes.
-    schema: 'vector.agent-manifest.v1', name: 'Audio Snippets', capability_id: 'audio.transcript.snippets.v1', version: given(env.AGENT_VERSION) || '0.1.0',
+    // An AGENT_VERSION that is empty or blank is not set (given): an empty version would be published in the manifest the advert hashes. The manifest v2 is
+    // version 0.2.0: a changed manifest needs a new advert.
+    schema: 'vector.agent-manifest.v2', name: 'Audio Snippets', capability_id: 'audio.transcript.snippets.v1', version: given(env.AGENT_VERSION) || '0.2.0',
     description: 'A word-timed transcript of an audio or video file, plus the cut points for the quotes or the question you give it, and optionally the cut clips.',
     operator: { name: 'Apex Fusion Foundation', contact: requiredEnv('OPERATOR_CONTACT', env.OPERATOR_CONTACT, "the operator's contact address, published in the manifest") },
-    identity: { did: env.AGENT_DID ?? '', controller_pkh: env.SUPPLIER_PKH ?? '', registry_address: REGISTRY_ADDRESS },
+    identity: identityFromEnv(env),
     keys: { supplier_pkh: env.SUPPLIER_PKH ?? '', pub_key_hex: env.SUPPLIER_PUB_KEY_HEX ?? '' },
     interface: {
       request_schema: REQUEST_SCHEMA,

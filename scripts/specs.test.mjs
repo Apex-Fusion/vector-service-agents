@@ -1717,9 +1717,12 @@ test('docs/evidence: the evidence of the first-party run of Advocate of 2026-10-
   assert.deepEqual([sub.receipt.prompt_tokens, sub.receipt.completion_tokens, sub.receipt.wallclock_ms], [AD_RUN.subJob.promptTokens, AD_RUN.subJob.completionTokens, AD_RUN.subJob.wallclockMs]);
   assert.match(sub.receipt_signature, /^[0-9a-f]{128}$/);
   const how = (section(read('advocate'), 'Interface').split('\n### How it buys\n')[1] ?? '').split('\n### ')[0];
-  const seven = how.split('\n').filter((l) => /^\| `[a-z_]+` \|/.test(l)).map((l) => l.split(' | ')[0].slice(3, -1));
-  assert.equal(seven.length, 7);
-  assert.deepEqual(sub.verification, Object.fromEntries(seven.map((check) => [check, true])), 'the seven checks of the page, in its order, all passed');
+  // The page has eight checks since the identity registry: the eighth, fields_match, came after this run, whose sub-receipt passed the seven of then,
+  // which are the first seven of the table, in its order.
+  const checks = how.split('\n').filter((l) => /^\| `[a-z_]+` \|/.test(l)).map((l) => l.split(' | ')[0].slice(3, -1));
+  assert.deepEqual([checks.length, checks.at(-1)], [8, 'fields_match']);
+  const seven = checks.slice(0, 7);
+  assert.deepEqual(sub.verification, Object.fromEntries(seven.map((check) => [check, true])), 'the seven checks of the page at the time of the run, in its order, all passed');
   // The line of the job the docs quote is the line the code writes (src/server.ts): its counts are those of the brief and of the sub-receipt, and the time of the service is within the wall clock of the receipt.
   const template = /return `(job done in [^`]+)`;/.exec(readFileSync(new URL('../agents/advocate/src/server.ts', import.meta.url), 'utf8'))?.[1] ?? '';
   const parts = template.split(/\$\{[^}]+\}/);
@@ -2105,6 +2108,30 @@ test('docs/LAUNCH.md, the new sentence of HIRE.md section 3(b) and the new READM
   // The first-party label stays on the hire of one's own agent, and the guide says what is not yet recorded.
   assert.ok(section(launch(), '7. Test-hire your own agent from chat').includes('A hire of your own agent is first-party. It shows that the path works. It is not demand.'));
   assert.ok(launch().includes('No launch by anyone outside the team is recorded yet. The npm signer has not yet signed a registration on mainnet: our four agents were registered through the same hosted tool with another local signer. No third-party audit of the marketplace contracts exists.'));
+});
+
+test('docs/LAUNCH.md section 7: the fields of the Agent History report that a member checks are fields of the report v2 (the example of specs/agent-history.md), and the guide says of each what the spec says', () => {
+  const spec = read('agent-history');
+  const report = JSON.parse(/\n### Response\n[\s\S]*?\n```json\n([\s\S]*?)\n```/.exec(spec)[1]);
+  assert.equal(report.schema, 'vector.agent-history.report.v2');
+  const has = (path) => { let o = report; for (const k of path.split('.')) { if (o === null || typeof o !== 'object' || !(k in o)) return false; o = o[k]; } return true; };
+  const named = [...new Set([...launch().matchAll(/`((?:subject|key_roles|reputation)(?:\.[a-z_]+)+)`/g)].map((m) => m[1]))];
+  for (const field of ['subject.registry', 'subject.controller_pkh', 'key_roles.capability_key_pkh', 'key_roles.capability_key_active', 'reputation.stakes']) assert.ok(named.includes(field), `the guide names ${field}`);
+  for (const path of named) assert.ok(has(path), `${path} is a field of the report`);
+  assert.equal(launch().includes('capability_key_matches_controller'), false, 'the field of the report of 0.1.0');
+  const seven = section(launch(), '7. Test-hire your own agent from chat');
+  for (const part of [
+    'Section 5 makes a record in the legacy registry, where the controller is the owner key: it must be your `SUPPLIER_PKH`.',
+    '`key_roles.capability_key_pkh` is the key hash of the key that your endpoint serves at `/capability`. It must also be your `SUPPLIER_PKH`.',
+    '`key_roles.capability_key_active` is true when your record lets that key act in a transaction: the owner key of a legacy record, or a key that an identity registry record lists with the transaction purpose.',
+    'It is `"unknown"` when the record has no endpoint, or when your endpoint did not answer with a valid key.',
+  ]) assert.ok(seven.includes(part), `section 7 says: ${part}`);
+  // The spec says the same of each field.
+  for (const part of [
+    '`controller_pkh` is the controller key hash of that record (the owner key hash of a legacy record), or null.',
+    'For an identity registry record the last is `active_key(record, key hash, transaction)`',
+    'true when the record lists that key with the transaction purpose, false otherwise. For a legacy record it is true when the key hash is the owner key hash. It is `"unknown"` when there is no record or no endpoint, or the endpoint did not answer with a valid key.',
+  ]) assert.ok(spec.includes(part), `the spec says: ${part}`);
 });
 
 // ---- The fix round of 2026-10-21 (launch-docs review v1) ----

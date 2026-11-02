@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import Ajv from 'ajv';
 import { FakeChain } from '@vsa/buyer-core';
-import { REGISTRY_ADDRESS } from '@vsa/vector-read';
+import { REGISTRY_ADDRESS, REGISTRY_POLICY, blake2b224Hex, identityRegistryOf, legacyVectorDid, utf8ToHex } from '@vsa/vector-read';
 import { JOB_DEADLINE_MS } from '../src/budget.ts';
 import { answerResult, compileExtractionSchema, COMBINATION_MAX_ENTRIES, SCHEMA_MAX_BYTES, SCHEMA_MAX_DEPTH } from '../src/extract.ts';
 import { GAPS } from '../src/gaps.ts';
@@ -59,13 +59,13 @@ describe('manifest', () => {
     const m = manifestFromEnv(MANIFEST_ENV);
     expect(Object.keys(m)).toStrictEqual(['schema', 'name', 'capability_id', 'version', 'description', 'operator', 'identity', 'keys', 'interface', 'terms', 'behaviour', 'status', 'gaps', 'links']);
     expect(m).toStrictEqual({
-      schema: 'vector.agent-manifest.v1',
+      schema: 'vector.agent-manifest.v2',
       name: 'Document Pipeline',
       capability_id: 'document.pipeline.ocr-summary.v1',
-      version: '0.1.0',
+      version: '0.2.0',
       description: 'Reads a document: OCR for each page, then a summary or a structured extraction, with every sub-receipt checked and one receipt over the whole bundle.',
       operator: { name: 'Apex Fusion Foundation', contact: TEST_CONTACT },
-      identity: { did: 'did:test', controller_pkh: SUPPLIER.pkh, registry_address: REGISTRY_ADDRESS },
+      identity: { did: 'did:test', registry_address: '', supplier_key: `did:test#${SUPPLIER.pkh}` },
       keys: { supplier_pkh: SUPPLIER.pkh, pub_key_hex: SUPPLIER.pubKeyHex, buyer_pkh: BUYER.pkh },
       interface: {
         request_schema: m.interface.request_schema, // held against the intake below
@@ -89,11 +89,39 @@ describe('manifest', () => {
     });
   });
 
-  test('the identity fields are the operator\'s: the supplier key hash is both controller and supplier, the buyer key hash is its own field', () => {
-    const m = manifestFromEnv({ ...MANIFEST_ENV, PIPELINE_BUYER_PKH: 'cd'.repeat(28), SUPPLIER_PKH: 'ab'.repeat(28), AGENT_DID: 'did:vector:agent:x:y' });
-    expect(m.identity).toMatchObject({ did: 'did:vector:agent:x:y', controller_pkh: 'ab'.repeat(28) });
+  test('the identity fields are the operator\'s: the supplier key hash is the supplier key and, with the DID, the listed supplier key; the buyer key hash is its own field', () => {
+    const did = `did:vector:${'ef'.repeat(32)}`;
+    const m = manifestFromEnv({ ...MANIFEST_ENV, PIPELINE_BUYER_PKH: 'cd'.repeat(28), SUPPLIER_PKH: 'ab'.repeat(28), AGENT_DID: did });
+    expect(m.identity).toStrictEqual({ did, registry_address: '', supplier_key: `${did}#${'ab'.repeat(28)}` });
     expect(m.keys).toStrictEqual({ supplier_pkh: 'ab'.repeat(28), pub_key_hex: SUPPLIER.pubKeyHex, buyer_pkh: 'cd'.repeat(28) });
-    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT }).keys).toStrictEqual({ supplier_pkh: '', pub_key_hex: '', buyer_pkh: '' });
+    const none = manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT });
+    expect([none.identity, none.keys]).toStrictEqual([{ did: '', registry_address: '', supplier_key: '' }, { supplier_pkh: '', pub_key_hex: '', buyer_pkh: '' }]);
+  });
+
+  test('the identity block of the manifest v2: the canonical DID (the legacy form under the legacy registry policy gives the same manifest), the address of the identity registry once IDENTITY_POLICY_ID is set, and the listed supplier key <DID>#<key hash>', () => {
+    const id = 'b8'.repeat(32);
+    const registry = identityRegistryOf(blake2b224Hex(utf8ToHex('a test identity registry')), undefined)!;
+    const canonical = manifestFromEnv({ ...MANIFEST_ENV, AGENT_DID: `did:vector:${id}`, IDENTITY_POLICY_ID: registry.policy });
+    expect(canonical.identity).toStrictEqual({ did: `did:vector:${id}`, registry_address: registry.address, supplier_key: `did:vector:${id}#${SUPPLIER.pkh}` });
+    expect(Object.keys(canonical.identity)).toStrictEqual(['did', 'registry_address', 'supplier_key']);
+    expect(manifestFromEnv({ ...MANIFEST_ENV, AGENT_DID: ` ${legacyVectorDid(REGISTRY_POLICY, id)}\n`, IDENTITY_POLICY_ID: registry.policy, IDENTITY_ADDRESS: registry.address })).toStrictEqual(canonical);
+    expect(manifestFromEnv({ ...MANIFEST_ENV, AGENT_DID: `did:vector:${id}`, IDENTITY_POLICY_ID: ' ', IDENTITY_ADDRESS: '' }).identity.registry_address).toBe('');
+  });
+
+  test('a value of the identity block that breaks a rule stops the start, naming the variable; a value that is hex-shaped or long is given by its length', () => {
+    const refusal = (env: NodeJS.ProcessEnv): string => { try { manifestFromEnv({ ...MANIFEST_ENV, ...env }); } catch (e) { return (e as Error).message; } throw new Error('it was accepted'); };
+    const id = 'b8'.repeat(32), policy = blake2b224Hex(utf8ToHex('a test identity registry'));
+    const didRule = `environment variable AGENT_DID must be did:vector:<64 lowercase hex> or its legacy form under the registry policy ${REGISTRY_POLICY}, got`;
+    for (const did of [legacyVectorDid('11'.repeat(28), id), `did:vector:${id.toUpperCase()}`, `did:vector:testnet:${id}`]) {
+      expect(refusal({ AGENT_DID: did }), did).toBe(`${didRule} ${did.length} characters`);
+    }
+    expect(refusal({ AGENT_DID: 'did:vector:short' })).toBe(`${didRule} "did:vector:short"`);
+    expect(refusal({ IDENTITY_POLICY_ID: 'ab'.repeat(32) })).toBe('environment variable IDENTITY_POLICY_ID must be 56 lowercase hex characters, got 64 characters');
+    expect(refusal({ IDENTITY_POLICY_ID: 'xyz' })).toBe('environment variable IDENTITY_POLICY_ID must be 56 lowercase hex characters, got "xyz"');
+    expect(refusal({ IDENTITY_POLICY_ID: REGISTRY_POLICY })).toBe('environment variable IDENTITY_POLICY_ID is the policy of the legacy registry, not of the identity registry');
+    expect(refusal({ IDENTITY_ADDRESS: REGISTRY_ADDRESS })).toBe('environment variable IDENTITY_ADDRESS is set but IDENTITY_POLICY_ID is not');
+    expect(refusal({ IDENTITY_POLICY_ID: policy, IDENTITY_ADDRESS: REGISTRY_ADDRESS }))
+      .toBe(`environment variable IDENTITY_ADDRESS (${REGISTRY_ADDRESS.length} characters) is not the address of IDENTITY_POLICY_ID (${identityRegistryOf(policy, undefined)!.address})`);
   });
 
   test('GET /agent.json serves exactly the bytes JSON.stringify gives for the manifest', async () => {
@@ -113,7 +141,7 @@ describe('manifest', () => {
     expect(file.endsWith('}\n')).toBe(true);
     expect(file).not.toContain('\r');
     for (const placeholder of Object.values(placeholders)) expect(file, placeholder).toContain(`"${placeholder}"`);
-    expect(file.match(/<[A-Z_]+>/g)?.sort()).toStrictEqual(['<AGENT_DID>', '<OPERATOR_CONTACT>', '<PIPELINE_BUYER_PKH>', '<SUPPLIER_PKH>', '<SUPPLIER_PKH>', '<SUPPLIER_PUB_KEY_HEX>']); // SUPPLIER_PKH twice: controller and supplier
+    expect(file.match(/<[A-Z_]+>/g)?.sort()).toStrictEqual(['<AGENT_DID>', '<AGENT_DID>', '<OPERATOR_CONTACT>', '<PIPELINE_BUYER_PKH>', '<SUPPLIER_PKH>', '<SUPPLIER_PKH>', '<SUPPLIER_PUB_KEY_HEX>']); // the DID and SUPPLIER_PKH twice: in the listed supplier key too
   });
 
   test('OPERATOR_CONTACT is required: unset, empty and blank are refused and the error names the variable', () => {
@@ -129,7 +157,7 @@ describe('manifest', () => {
   test('defaults: deployed since 2026-10-16, price 5 units, both bonds 1 unit, a 30 min window, the limits of the intake', () => {
     const m = manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT });
     expect(m).toMatchObject({
-      version: '0.1.0', status: { chip: 'deployed', since: '2026-10-16' },
+      version: '0.2.0', status: { chip: 'deployed', since: '2026-10-16' },
       terms: { price_lovelace: 5_000_000, supplier_bond_lovelace: 1_000_000, buyer_bond_lovelace: 1_000_000, max_processing_ms: 1_800_000 },
     });
     // The limits are the numbers the intake enforces, not copies of them.
