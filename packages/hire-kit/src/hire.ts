@@ -324,7 +324,7 @@ async function finished<T, E extends Error>(deps: HireDeps, supplier: HireSuppli
 }
 
 /**
- * The receipt's seven checks, VERIFIED, or an error of the factory: first without the chain, then against the hash on chain, waiting for it up to 120 s,
+ * The receipt's eight checks, VERIFIED, or an error of the factory: first without the chain, then against the hash on chain, waiting for it up to 120 s,
  * and no later than `options.receiptBy` when it is given, in place of the deadline.
  */
 async function verified<T, E extends Error>(deps: HireDeps, supplier: HireSupplier, job: HireJob<T>, post: PostResult, done: Done, responseHashHex: string, errors: HireErrors<E>, options: HireOptions): Promise<FleetVerification> {
@@ -332,7 +332,7 @@ async function verified<T, E extends Error>(deps: HireDeps, supplier: HireSuppli
   const at = (): HireFacts => factsOf('receipt', post.escrowRef, true);
   const input: Omit<FleetVerifyInput, 'onChainReceiptHash'> = {
     escrowRef: post.escrowRef, receipt: done.receipt, receiptSignature: done.receiptSignature, responseHashHex, promptHashHex: job.promptHash,
-    supplierPubKeyHex: supplier.pubKeyHex, supplierPkhExpected: post.supplierPkh, model: supplier.model,
+    supplierPubKeyHex: supplier.pubKeyHex, supplierPkhExpected: post.supplierPkh, model: supplier.model, agentId: post.agentId,
   };
   const failed = (v: FleetVerification): E => {
     const checks = Object.entries(v.checks).filter(([, state]) => state === 'fail').map(([check]) => check).join(', ');
@@ -396,7 +396,7 @@ async function accept<T, E extends Error>(deps: HireDeps, supplier: HireSupplier
 
 // --- Moved with the hire: verificationOf from src/result.ts and the chat job from src/orchestrate.ts of the Document Pipeline ---------------------------
 
-/** The seven checks of verifyFleetReceipt as true (pass) or false, in its order. */
+/** The eight checks of verifyFleetReceipt as true (pass) or false, in its order. */
 export function verificationOf(checks: FleetVerification['checks']): Record<string, boolean> {
   return Object.fromEntries(Object.entries(checks).map(([check, state]) => [check, state === 'pass']));
 }
