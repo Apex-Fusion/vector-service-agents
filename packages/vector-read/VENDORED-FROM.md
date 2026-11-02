@@ -15,7 +15,7 @@ A third round is in the same file, again made here first: `isPrivateAddress` als
 | Here | Source | Pin | Edits |
 |---|---|---|---|
 | `src/datum.ts`, above the marker comment | `packages/builder/src/vector/marketplace-datum.ts` | `94b8f41` on branch `feat/marketplace-build-tools` (PR 2, before its merge into main on 2026-10-14). **Update to the merge commit when this file is next re-vendored.** | None. Byte-identical to the blob at the pin (the `cmp` command below). Against the PR 1 blob (`4a7b223`) it adds the safe-integer check on the advert's two sizes (`asSafeInt`), the exported `advertTextFieldsRoundTrip`, and the min-UTxO wording of one comment. No import-path adjustment was needed: the source imports only `@lucid-evolution/lucid` and `node:crypto`, and nothing from its constants module. |
-| `src/datum.ts`, below the marker comment | local | n/a | `decodeRegistryDatum`, `decodeStakeDatum`, `topLevelBytes`, `blake2b224Hex`. Not in the source; keep them when re-vendoring. |
+| `src/datum.ts`, below the marker comment | local | n/a | `decodeStakeDatum`, `topLevelBytes`, `blake2b224Hex`. Not in the source; keep them when re-vendoring. The legacy registry record is read with the vendored `decodeLegacyDatum` (Identity codecs, below), not with a local decoder. |
 | `src/safe-fetch.ts` | `packages/builder/src/vector/safe-fetch.ts` (PR 3 of the series; the file does not exist at `4a7b223`) | The build-time specification text, which has no commit. **Replace with the merge commit and record its hash when this file is next re-vendored (PR 3 merged into main on 2026-10-14).** | Transcribed from the build-time specification text, then hardened here first: the body is read through a reader with a running byte cap (cancelled on overflow) after a `content-length` pre-check; a caller `init.signal` is combined with the timeout via `AbortSignal.any`; the residual-risk comment sits above the DNS check. Second round: the timeout signal is created first and the host lookup is raced against it (a stalled resolver is cut at `timeoutMs` with the same `TimeoutError`; the caller's own signal still reaches `fetch` as before); the brackets of an IPv6 literal are stripped before `isIP`; `isPrivateAddress` expands an IPv6 address to its eight groups before classifying it, so that the mapped (`::ffff:10.0.0.1`), compatible (`::10.0.0.1`) and NAT64 (`64:ff9b::a00:1`) forms count as the IPv4 address they carry and site-local (`fec0::/10`) and multicast (`ff00::/8`) are refused. Third round: `isPrivateV4` also takes the third octet and refuses 192.0.0.0/24 (IETF protocol), 198.18.0.0/15 (benchmarking), 224.0.0.0/4 (multicast) and 240.0.0.0/4 (class E, the broadcast address included), so the same ranges are refused inside a mapped or NAT64 address too; the header comment says which IPv6 forms count as the IPv4 address inside them (`::ffff:0:0/96` and `64:ff9b::/96`; all of `::/96` is refused). Rules for https, credentials, redirects and the cap, defaults and exports unchanged. |
 | `test/fixtures/marketplace.fixture.ts` | `packages/builder/test/fixtures/marketplace.fixture.ts` | `94b8f41` | None. Byte-identical (unchanged since `4a7b223`). |
 | `test/datum.test.ts` | `packages/builder/test/marketplace-datum.test.ts` | `94b8f41` | The source tests ported from `node:test` to vitest, assertion meaning kept: the 13 of `4a7b223` and what PR 2 added (the safe-integer range test, the two Lucid-compact framing tests, the 65,535-byte header case and the `too long` check, and the six `advertTextFieldsRoundTrip` tests). Two tests of the first port that the source has since dropped as redundant are kept here (the semantic-equality test and the two lock-floor bounds). Local: the registry, stake and `topLevelBytes` tests, a `blake2b224Hex` known-answer test, and the escrow output minimum of the four service agents. |
@@ -36,3 +36,51 @@ Check that the vendored part is still byte-identical to its pin (bash; the pin i
 `git -C <mcp-server> show 94b8f41:packages/builder/src/vector/marketplace-datum.ts | cmp - <(sed '/^\/\/ ---- Local additions/,$d' packages/vector-read/src/datum.ts | sed '$d')`
 
 The fixture is checked the same way: `git -C <mcp-server> show 94b8f41:packages/builder/test/fixtures/marketplace.fixture.ts | cmp - packages/vector-read/test/fixtures/marketplace.fixture.ts`.
+
+## Identity codecs, from Apex-Fusion/agents-marketplace
+
+The files under `src/vendored/shared/` are copies of files of Apex-Fusion/agents-marketplace `packages/shared/src/` at commit `b5d66a6` (`b5d66a6437b390f525dfe00d989499ac5e339e04`, the head of branch `feat/identity-registry` on 2026-11-02). `test/fixtures/identity-cbor-fixtures.json` is a copy of `contracts/identity-marketplace/fixtures/cbor-fixtures.json` at the same commit: the Plutus Data CBOR that the Aiken types themselves serialise. Each copy was taken from the blob, `git -C <agents-marketplace> cat-file blob b5d66a6:<path>`, never from a working file.
+
+They give the services the identity registry record (`IdentityDatum`) and the legacy registry record (`LegacyDatum`) of did:vector Part 1 section 5, the canonical Plutus Data encoder and strict decoder those records are hashed and compared with, the DID strings of Part 1 section 3 (`vectorDid`, `legacyVectorDid`, `parseVectorDid`), the key hash, and the purpose and rights values. `src/identity.ts` re-exports them and adds the local part: the two registries, the authenticity test of a record output and `activeKey`, the `active_key` of the `vector_identity` library.
+
+| destination | source | commit | sha256 |
+|---|---|---|---|
+| `src/vendored/shared/cbor/plutus-data.ts` | `agents-marketplace:packages/shared/src/cbor/plutus-data.ts` | `b5d66a6` | `b9e9e1ffcba946ceeddf711547c0a7d57c4e0a316119eb0bf523a3f441844d4e` |
+| `src/vendored/shared/cbor/plutus-schema.ts` | `agents-marketplace:packages/shared/src/cbor/plutus-schema.ts` | `b5d66a6` | `e02ee3bdbaa5e6e73a31b05e642083a65fdc85453040db7783eef3bf6902ed55` |
+| `src/vendored/shared/cbor/address.ts` | `agents-marketplace:packages/shared/src/cbor/address.ts` | `b5d66a6` | `e1c526bb9bc19f38302901fce49c3128106d1b09e85f4b9146567626e6d0d7af` |
+| `src/vendored/shared/cbor/IdentityDatum.ts` | `agents-marketplace:packages/shared/src/cbor/IdentityDatum.ts` | `b5d66a6` | `146b6d92782f1163ae20a27de51d287465049222227f7e8fc5eae5a4d4ccc9b3` |
+| `src/vendored/shared/identity/id.ts` | `agents-marketplace:packages/shared/src/identity/id.ts` | `b5d66a6` | `4cb0dfb0da048bd77f1c508b1e4a42027a072e6e9676f7da2741592e680b09be` |
+| `src/vendored/shared/identity/constants.ts` | `agents-marketplace:packages/shared/src/identity/constants.ts` excerpt, lines 6-68 | `b5d66a6` | `0b142e7c0471be38d68db4c1681bbae6c7f5432856ec3eef72fb9cf1592b5b34` |
+| `src/vendored/shared/network.ts` | `agents-marketplace:packages/shared/src/network.ts` excerpt, line 16 | `b5d66a6` | `407d7b71f2f8345e40e82348ccfbebdf76fed03fd191661c94fe19f82e2129f6` |
+| `src/vendored/shared/chain/ChainProvider.ts` | `agents-marketplace:packages/shared/src/chain/ChainProvider.ts` excerpt, line 14 | `b5d66a6` | `98ea97d44254ace46fe098baec870f2acd982694dd699dd0f03368ce71b577c5` |
+| `test/fixtures/identity-cbor-fixtures.json` | `agents-marketplace:contracts/identity-marketplace/fixtures/cbor-fixtures.json` | `b5d66a6` | `4a7bf768af8d9cac859024016eddfc0b29c079b659a47650b69c5f4efc449486` |
+
+`test/vendored.test.ts` checks this table in both directions: every row names a file whose sha256 matches, and every file under `src/vendored/` has a row.
+
+No line of a copy is rewritten. The copies keep the folder layout of `packages/shared/src/`, so their relative imports (`./plutus-data.js`, `../cbor/IdentityDatum.js`, `../network.js`, `../chain/ChainProvider.js`) find the copies as they are. The TypeScript settings of this repository resolve the `.js` specifiers to the `.ts` files, and so do vitest and tsx. `address.ts` imports `bech32`, a dependency of this package for that reason, and `id.ts` imports `@noble/hashes/blake2b`.
+
+Three copies are excerpts, whole lines of the source in their order:
+
+- `identity/constants.ts`: lines 6-68 of 77, the import of `Role` and the purpose, rights, time and limit values. Left out: the header comment (lines 1-5), whose section range holds an en dash, and the amounts (lines 69-77), whose comments name the ledger's native unit, which `scripts/specs.test.mjs` refuses in every file of this repository but `docs/HIRE.md`.
+- `network.ts`: line 16 of 58, the `NetworkId` type that `address.ts` imports. The rest are the network parameters and slot conversions of the marketplace builders.
+- `chain/ChainProvider.ts`: line 14 of 96, the `OutputReference` type that `plutus-schema.ts` imports. Its comment (line 13) holds an em dash; the rest is the chain interface of the marketplace builders.
+
+The other five copies and the fixture are byte-identical to their blobs. Not copied: the escrow, advert, attestation, delegation and vault codecs, the identity redeemers, the allowlist tree and the rest of `packages/shared`. Nothing here reads them.
+
+Check the copies against the pin (bash, from the repository root): the first command prints nothing for each byte-identical copy, and the excerpts are cut the same way.
+
+```bash
+for f in cbor/plutus-data.ts cbor/plutus-schema.ts cbor/address.ts cbor/IdentityDatum.ts identity/id.ts; do git -C <agents-marketplace> cat-file blob b5d66a6:packages/shared/src/$f | cmp - packages/vector-read/src/vendored/shared/$f; done
+git -C <agents-marketplace> cat-file blob b5d66a6:packages/shared/src/identity/constants.ts | sed -n '6,68p' | cmp - packages/vector-read/src/vendored/shared/identity/constants.ts
+git -C <agents-marketplace> cat-file blob b5d66a6:packages/shared/src/network.ts | sed -n '16p' | cmp - packages/vector-read/src/vendored/shared/network.ts
+git -C <agents-marketplace> cat-file blob b5d66a6:packages/shared/src/chain/ChainProvider.ts | sed -n '14p' | cmp - packages/vector-read/src/vendored/shared/chain/ChainProvider.ts
+git -C <agents-marketplace> cat-file blob b5d66a6:contracts/identity-marketplace/fixtures/cbor-fixtures.json | cmp - packages/vector-read/test/fixtures/identity-cbor-fixtures.json
+```
+
+Re-vendoring:
+
+1. Take the new pin, a commit of Apex-Fusion/agents-marketplace that holds the identity codecs.
+2. Copy each row again from the blob at the pin. Before an excerpt is cut again, check that its line range still holds the same code, and that the lines left out still name the unit or hold a dash.
+3. If a copy now imports a file that is not here, copy that file too (or the lines of it that are needed), at the same relative path, and add its row.
+4. Recompute the sha256 column (`sha256sum`) and update the commit column and this section.
+5. Run `pnpm --filter @vsa/vector-read test` and `pnpm typecheck`. `test/identity.test.ts` decodes and encodes again the identity and legacy records of the fixture file, byte for byte, and checks the identifier and DNS-safe test vectors of Part 1 section 3.

@@ -216,19 +216,6 @@ export function escrowLockFloor(openDatum: EscrowDatum, economicTotal: bigint): 
 }
 
 // ---- Local additions below this line (not in the vendored source; see VENDORED-FROM.md). ----
-export interface RegistryDatum { owner_pkh: string; name: string; description: string; capabilities: string[]; framework: string; endpoint: string; registered_at: number }
-export function decodeRegistryDatum(hex: string): RegistryDatum {
-  const c = asConstr(Data.from(hex), 'registry');
-  if (c.index !== 0 || c.fields.length !== 7) throw new Error(`registry: expected 7 fields, got ${c.fields.length}`);
-  const owner = asConstr(c.fields[0], 'registry.owner');
-  return {
-    owner_pkh: asBytes(owner.fields[0], 'registry.owner.pkh'),
-    name: toText(asBytes(c.fields[1], 'registry.name')), description: toText(asBytes(c.fields[2], 'registry.description')),
-    capabilities: (c.fields[3] as unknown[]).map((x) => toText(asBytes(x, 'registry.capability'))),
-    framework: toText(asBytes(c.fields[4], 'registry.framework')), endpoint: toText(asBytes(c.fields[5], 'registry.endpoint')),
-    registered_at: Number(asInt(c.fields[6], 'registry.registered_at')),
-  };
-}
 export interface StakeDatum { agent_asset_name: string; owner_pkh: string; stake_lovelace: bigint; capabilities: string[]; last_updated: number; history_points: number }
 export function decodeStakeDatum(hex: string): StakeDatum {
   const c = asConstr(Data.from(hex), 'stake');

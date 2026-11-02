@@ -1,7 +1,7 @@
 // Vitest port of packages/builder/test/marketplace-datum.test.ts @ 94b8f41 (Apex-Fusion/mcp-server,
 // branch feat/marketplace-build-tools, PR 2). node:assert/strict calls became expect() equivalents with the
 // same meaning (deepEqual -> toStrictEqual, equal -> toBe, throws -> toThrow, ok(cond) -> a comparison
-// matcher). The 'registry and stake datums' block below is local to this repo. Two tests of the 4a7b223 port that
+// matcher). The 'stake datums' block below is local to this repo. Two tests of the 4a7b223 port that
 // the source has since dropped as redundant are kept here (the semantic-equality test and the two lock-floor bounds).
 import { describe, test, expect } from 'vitest';
 import { createHash } from 'node:crypto';
@@ -9,7 +9,7 @@ import { Data, Constr, fromText } from '@lucid-evolution/lucid';
 import {
   decodeAdvertDatum, decodeEscrowDatum, encodeEscrowDatum, canonicalize,
   requestSpecHash, wirePayloadFor, promptHashForPayload, escrowLockFloor, parseOutRef, formatOutRef,
-  advertTextFieldsRoundTrip, decodeRegistryDatum, decodeStakeDatum, topLevelBytes, blake2b224Hex,
+  advertTextFieldsRoundTrip, decodeStakeDatum, topLevelBytes, blake2b224Hex,
 } from '../src/datum.ts';
 import {
   ADVERT_DATUM_HEX, ADVERT_EXPECTED, ESCROW_OPEN_DATUM_HEX, ESCROW_EXPECTED, ESCROW_LOCKED_LOVELACE, ESCROW_REF,
@@ -156,16 +156,12 @@ describe('advertTextFieldsRoundTrip', () => {
   });
 });
 
-describe('registry and stake datums', () => {
+describe('stake datums', () => {
   // Module-3 stake datum of ChandraOCR (05563e75…#0), captured 2026-10-13.
   const STAKE_FIELDS = { asset: '5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db', owner: '401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9', amount: 10_000_000n, caps: ['ocr.page.extract.chandra-ocr-2.v1', 'document-extraction'], last_updated: 1786092804000, history_points: 0n };
   test('stake datum round-trips through the known shape', () => {
     const hex = Data.to(new Constr(0, [STAKE_FIELDS.asset, new Constr(0, [STAKE_FIELDS.owner]), STAKE_FIELDS.amount, STAKE_FIELDS.caps.map(fromText), BigInt(STAKE_FIELDS.last_updated), STAKE_FIELDS.history_points]));
     expect(decodeStakeDatum(hex)).toEqual({ agent_asset_name: STAKE_FIELDS.asset, owner_pkh: STAKE_FIELDS.owner, stake_lovelace: STAKE_FIELDS.amount, capabilities: STAKE_FIELDS.caps, last_updated: STAKE_FIELDS.last_updated, history_points: 0 });
-  });
-  test('registry datum decodes the seven fields', () => {
-    const hex = Data.to(new Constr(0, [new Constr(0, ['ab'.repeat(28)]), fromText('Name'), fromText('Desc'), [fromText('a.b.v1')], fromText('fw'), fromText('https://e.example'), 1786092405791n]));
-    expect(decodeRegistryDatum(hex)).toEqual({ owner_pkh: 'ab'.repeat(28), name: 'Name', description: 'Desc', capabilities: ['a.b.v1'], framework: 'fw', endpoint: 'https://e.example', registered_at: 1786092405791 });
   });
   test('topLevelBytes lists bytes fields of an unknown constructor', () => {
     const hex = Data.to(new Constr(0, ['aa'.repeat(32), new Constr(0, ['bb'.repeat(28)]), 5n]));

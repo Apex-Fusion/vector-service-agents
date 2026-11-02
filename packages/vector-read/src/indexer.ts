@@ -1,6 +1,7 @@
 import { INDEXER_URL } from './constants.ts';
 import type { Fetch } from './koios.ts';
-export interface SupplierRow { utxo_ref: string; supplier_pkh: string; capability_id: string; model: string; price_lovelace: string; supplier_bond_lovelace: string; buyer_bond_lovelace: string; max_processing_ms: number; endpoint_url: string; detail_uri: string; status: string; advert_status: string; last_seen_iso: string | null; advertised_at: number }
+// agent_id: the identifier an advert of the new layout names (64 lowercase hex), null for a legacy advert; absent from an indexer older than the identity registry.
+export interface SupplierRow { utxo_ref: string; supplier_pkh: string; agent_id?: string | null; capability_id: string; model: string; price_lovelace: string; supplier_bond_lovelace: string; buyer_bond_lovelace: string; max_processing_ms: number; endpoint_url: string; detail_uri: string; status: string; advert_status: string; last_seen_iso: string | null; advertised_at: number }
 export interface EscrowRow { utxo_ref: string; buyer_pkh: string; supplier_pkh: string; advert_ref: string; capability_id: string; payment_lovelace: string; deliver_by: number; posted_at: number; submitted_at: number | null; result_receipt_hash: string | null; state: string }
 async function getJson<T>(url: string, f: Fetch = fetch): Promise<T> {
   const res = await f(url, { headers: { accept: 'application/json', 'user-agent': 'vector-service-agents' }, signal: AbortSignal.timeout(20_000) });
