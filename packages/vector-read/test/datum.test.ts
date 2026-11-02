@@ -1,4 +1,4 @@
-// Vitest port of packages/builder/test/marketplace-datum.test.ts at ef374f8 (Apex-Fusion/mcp-server, branch
+// Vitest port of packages/builder/test/marketplace-datum.test.ts at f456194 (Apex-Fusion/mcp-server, branch
 // feat/identity-registry; first ported at 94b8f41, PR 2, and changed since only in one regex escape). node:assert/strict
 // calls became expect() equivalents with the same meaning (deepEqual -> toStrictEqual, equal -> toBe, throws -> toThrow,
 // ok(cond) -> a comparison matcher). The source tests the identity layouts in identity-codec.test.ts (ported to

@@ -1,9 +1,9 @@
-// Vitest port of packages/builder/test/identity-codec.test.ts at ef374f8 (Apex-Fusion/mcp-server, branch feat/identity-registry), the
+// Vitest port of packages/builder/test/identity-codec.test.ts at f456194 (Apex-Fusion/mcp-server, branch feat/identity-registry), the
 // tests of src/identity-codec.ts and of the identity layouts of src/datum.ts. node:assert/strict calls became expect() equivalents with
 // the same meaning (deepEqual -> toStrictEqual, equal -> toBe, throws -> toThrow, ok(cond) -> a comparison matcher). The fixture file is
-// the same file as the source's (test/fixtures/identity-cbor-fixtures.json, see VENDORED-FROM.md). OWN_ADDRESS is the wallet address of
-// the source's fixture provider (packages/builder/test/fixtures/fixture-provider.ts), written out here because this package has no
-// copy of that provider.
+// the same file as the source's (test/fixtures/identity-cbor-fixtures.json, see VENDORED-FROM.md): the agents-marketplace fixture at
+// 67054f6, the same bytes as at b5d66a6 and 1643583. OWN_ADDRESS is the wallet address of the source's fixture provider
+// (packages/builder/test/fixtures/fixture-provider.ts), written out here because this package has no copy of that provider.
 import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { Data, Constr } from '@lucid-evolution/lucid';
