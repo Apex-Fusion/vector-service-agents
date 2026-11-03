@@ -778,9 +778,9 @@ describe('specs/advocate.md, pinned further', () => {
     // Capability id: the runtime, its pinned commit and its kind are the compose file's; the model string is the one of the example file of the host.
     holds(section('Capability id'), [
       'The result names the model the service asked, and how it asked it, separately, under `model` and `inference`.',
-      'The agent runs behind the template runtime (`vector-agent-template`, pinned commit `c4c378a`, `CAPABILITY_KIND=custom`).',
+      'The agent runs behind the template runtime (`vector-agent-template`, pinned commit `78e8a81`, `CAPABILITY_KIND=custom`).',
     ]);
-    expect(deploy('docker-compose.advocate.yml')).toContain('c4c378a');
+    expect(deploy('docker-compose.advocate.yml')).toContain('78e8a81');
     expect(deploy('docker-compose.advocate.yml')).toContain('CAPABILITY_KIND: custom');
     expect(deploy('.env.advocate.example')).toContain('ADVERT_MODEL=advocate-v1');
     holds(section('Terms'), ['Amounts are `lovelace` fields. The last column is the same amount divided by 1,000,000, with six decimals.']);
@@ -879,7 +879,7 @@ describe('specs/advocate.md, pinned further', () => {
     for (const part of [
       'Advertised on 2026-10-19 and again on 2026-10-20, at the status flip: the marketplace indexer lists the current advert as Active and free (checked on 2026-10-20). One first-party job has settled, on 2026-10-20; it is not demand. The three ways below apply. The step-by-step guide is [docs/HIRE.md](../docs/HIRE.md).',
       '1. **Chat client via MCP.** Same tools and same steps as for [Agent History](agent-history.md): list suppliers for `research.advocate.onesided.v1`, post an escrow, send the job, poll, verify the receipt, accept. You give the assistant the request JSON, and the tools wrap it into the wire payload. The marketplace tools are on the hosted mainnet server as of 2026-10-14.',
-      "2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `c4c378a`), with your own key. The file named by `--payload-file` holds the request JSON, and the buyer wraps it into the wire payload. Allow for the 8 min processing window.",
+      "2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `78e8a81`), with your own key. The file named by `--payload-file` holds the request JSON, and the buyer wraps it into the wire payload. Allow for the 8 min processing window.",
       "3. **Developers, the raw routes.** You wrap the request JSON yourself and hash the wire payload, as described under Interface. Then the six steps in [Agent History](agent-history.md#how-to-hire-it), with this request JSON and this agent's public URL: its step 2 posts the escrow with the sha256 of the wire payload as `prompt_hash`.",
     ]) expect(how, part).toContain(part);
     expect(((sibling('agent-history').split('\n## How to hire it\n')[1] ?? '').split('\n')).filter((l) => /^ {3}[1-6][.] /.test(l))).toHaveLength(6);

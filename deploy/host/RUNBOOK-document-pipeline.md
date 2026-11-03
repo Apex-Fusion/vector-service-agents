@@ -118,7 +118,7 @@ Operator.
 docker compose -f docker-compose.document-pipeline.yml build agent
 ```
 
-This clones `vector-agent-template` at the pinned commit `c4c378a`, the commit of Agent History's runtime, and installs it. The compose file carries the full 40-character hash, because BuildKit does not resolve the short form. It ends with `Image document-pipeline-agent Built`.
+This clones `vector-agent-template` at the pinned commit `78e8a81`, the commit of Agent History's runtime, and installs it. The compose file carries the full 40-character hash, because BuildKit does not resolve the short form. It ends with `Image document-pipeline-agent Built`.
 
 ## 4. Make the env file and generate the two keys
 

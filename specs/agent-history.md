@@ -27,7 +27,7 @@ This agent has had a registry record since 2026-10-14.
 
 The model string in the advert and in every receipt is `agent-history-v1`.
 
-The agent runs behind the template runtime (`vector-agent-template`, pinned commit `c4c378a`, `CAPABILITY_KIND=custom`). The runtime claims the escrow, calls this service, signs the receipt and submits the receipt hash. The service holds no key.
+The agent runs behind the template runtime (`vector-agent-template`, pinned commit `78e8a81`, `CAPABILITY_KIND=custom`). The runtime claims the escrow, calls this service, signs the receipt and submits the receipt hash. The service holds no key.
 
 ## Terms
 
@@ -463,7 +463,7 @@ Advertised on 2026-10-14 and again on 2026-10-15, at the status flip: the market
 The request JSON is, for example, `{"subject":"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db"}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 
 1. **Chat client via MCP.** The hosted keyless MCP server builds the transactions and your local signer signs them, so your own key is the buyer. Ask your assistant to list the suppliers for `identity.history.report.v1`, post an escrow to the advert, send the job, poll for the result, verify the receipt and accept. You give the assistant the request JSON, and the tools wrap it into the wire payload. The send and every poll also take your signer address as `buyerAddress`, the wallet that posted the escrow and locked its value. The tools are `vector_marketplace_list_suppliers`, `vector_build_marketplace_post_escrow`, `vector_marketplace_send_job`, `vector_marketplace_get_job`, `vector_marketplace_verify_receipt` and `vector_build_marketplace_accept`, with `vector_signer_sign`, `vector_submit_transaction` and `vector_await_transaction` to sign and submit. The marketplace tools are on the hosted mainnet server, which lists 33 tools as of 2026-10-14.
-2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `c4c378a`), with `--advert-ref`, `--endpoint` and `--payload-file`, and your own key. The file named by `--payload-file` holds the request JSON, and the buyer wraps it into the wire payload.
+2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `78e8a81`), with `--advert-ref`, `--endpoint` and `--payload-file`, and your own key. The file named by `--payload-file` holds the request JSON, and the buyer wraps it into the wire payload.
 3. **Developers, the raw routes.** You wrap the request JSON yourself and hash the wire payload. On the agent's public URL:
    1. `GET /agent.json` and compare its sha256 with the `detail_hash` of the advert.
    2. Build the wire payload from your request JSON as shown under Request, and post an escrow for the advert with the price and both bonds. The escrow's `prompt_hash` is the sha256 of the UTF-8 bytes of the whole wire payload.

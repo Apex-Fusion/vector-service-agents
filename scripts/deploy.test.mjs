@@ -75,6 +75,21 @@ const keyProblems = (vars) => Object.entries(vars).flatMap(([name, value]) => [
   ...(SECRET_NAME.test(name) && String(value) !== '' ? [`${name} must be empty`] : []),
   ...KEY_SHAPED.filter((re) => re.test(String(value))).map((re) => `${name} looks like key material (${re})`),
 ]);
+// The values that the identity registry deployment on Vector mainnet published on 2026-11-03 (agents-marketplace 4c95c3f,
+// contracts/identity-marketplace/deploy/mainnet/README.md). They are public chain data: the key check passes each name only with its published value.
+const IDENTITY_MAINNET = {
+  IDENTITY_POLICY_ID: 'd958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762',
+  IDENTITY_ESCROW_REF_UTXO: '4c2d09858dab0cc22cc77dcb99efed570d909a66e0beb512041dea91005b5e82#0',
+  IDENTITY_ADVERT_REF_UTXO: '5efd18a1d90a6b87f1fd4b6fe93acfbe5be082260fd52be194b1088ade7c2758#0',
+  VECTOR_IDENTITY_LEGACY_ROOT: 'e4b6b17ce4a8f83aa17d3181ea140d2bd76c0cfa8a7c44ad69543800b4a0df01',
+  VECTOR_IDENTITY_CONFIG_SEED: '6c9856c70b1101f1a4e9ceb373188608013416eff48c51f5bb62706a65d41a2a#0',
+  VECTOR_IDENTITY_ESCROW_REF_UTXO: '4c2d09858dab0cc22cc77dcb99efed570d909a66e0beb512041dea91005b5e82#0',
+};
+// The address of the identity registry that the same deployment published: the address of IDENTITY_POLICY_ID, which the manifest gives as identity.registry_address.
+const IDENTITY_MAINNET_ADDRESS = 'addr1w8v43wprl248d9mapgrmm93zap7cuty97e5j7luw3kmhwcs8vm9vk';
+// The two names of the runtime for the escrow and the advert that carry an agent_id, in the chain block of every example.
+const RUNTIME_IDENTITY = ['IDENTITY_ESCROW_REF_UTXO', 'IDENTITY_ADVERT_REF_UTXO'];
+const withoutPublished = (env) => Object.fromEntries(Object.entries(env).filter(([name, value]) => IDENTITY_MAINNET[name] !== value));
 const DASHES = new RegExp('[' + String.fromCharCode(0x2013, 0x2014) + ']');
 const UNIT_NAME = new RegExp('AP' + '3X', 'i');
 // Individual names stay off every public surface. Case-insensitive on purpose: an address such as first.last@host is lower case, and the
@@ -105,9 +120,9 @@ test('compose: two containers with fixed names, the runtime on loopback only, th
 });
 
 test('compose: the runtime is built from the pinned template commit, written in full because BuildKit does not resolve the short form', () => {
-  assert.match(agent.build.context, /^https:\/\/github\.com\/Apex-Fusion\/vector-agent-template\.git#c4c378a[0-9a-f]{33}$/);
+  assert.match(agent.build.context, /^https:\/\/github\.com\/Apex-Fusion\/vector-agent-template\.git#78e8a81[0-9a-f]{33}$/);
   assert.equal(agent.build.dockerfile, 'agent/Dockerfile');
-  assert.ok(SPEC.includes('pinned commit `c4c378a`'), 'the spec names the same commit');
+  assert.ok(SPEC.includes('pinned commit `78e8a81`'), 'the spec names the same commit');
 });
 
 test('compose: SERVICE_URL names the service container, its port and the path /, and is not the shared alias "service"', () => {
@@ -156,15 +171,17 @@ test('compose: the processing window and the service timeout are the spec terms,
   assert.equal(service.environment.PORT, '9091');
 });
 
-// The settings of the report (agents/agent-history/src/config.ts): the identity registry and the module addresses the report reads. Each stays empty in the
-// example: empty keeps the default of the code, and a policy ID or an address there would be flagged as key material.
+// The settings of the report (agents/agent-history/src/config.ts): the identity registry and the module addresses the report reads. IDENTITY_POLICY_ID holds
+// the published policy of the identity registry on Vector mainnet; the other five stay empty in the example: empty keeps the default of the code, and an
+// address there would be flagged as key material.
 const REPORT = ['IDENTITY_POLICY_ID', 'IDENTITY_ADDRESS', 'M3_REPUTATION_ADDRESS', 'M3_ENDORSEMENT_ADDRESS', 'M1_ADDRESSES', 'M6_ADDRESSES'];
-test('env example: known names only, each once; every secret is empty; nothing in the example or in the compose environment looks like key material', () => {
-  const RUNTIME = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'ADVERT_REF'];
+test('env example: known names only, each once; every secret is empty; nothing in the example or in the compose environment looks like key material but the published values of the identity registry', () => {
+  const RUNTIME = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', ...RUNTIME_IDENTITY, 'ADVERT_REF'];
   const POST_ADVERT = ['ADVERT_CAPABILITY_ID', 'ADVERT_MODEL', 'ADVERT_PRICE_LOVELACE', 'ADVERT_SUPPLIER_BOND_LOVELACE', 'ADVERT_BUYER_BOND_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_ENDPOINT_URL', 'ADVERT_DETAIL_URI', 'ADVERT_DETAIL_HASH'];
   const MANIFEST = ['OPERATOR_CONTACT', 'AGENT_DID', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_EXPLORER_URL'];
   assert.deepEqual(Object.keys(example).filter((n) => ![...RUNTIME, ...POST_ADVERT, ...MANIFEST, ...REPORT].includes(n)), [], 'a name the runtime, the advert command and the service never read');
-  assert.deepEqual(keyProblems(example), []);
+  assert.deepEqual(keyProblems(withoutPublished(example)), []);
+  for (const name of ['IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY]) assert.equal(example[name], IDENTITY_MAINNET[name], `${name} is the published value`);
   assert.deepEqual(keyProblems(agent.environment), [], 'the compose environment of the runtime');
   assert.deepEqual(keyProblems(service.environment), [], 'the compose environment of the service');
   for (const name of ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'ADVERT_REF', 'ADVERT_DETAIL_HASH', 'AGENT_DID', 'ADVERT_EXPLORER_URL']) assert.equal(example[name], '', `${name} is filled by the runbook`);
@@ -173,13 +190,15 @@ test('env example: known names only, each once; every secret is empty; nothing i
   assert.ok(example.OPERATOR_CONTACT.startsWith('<role address'), 'a role address is asked for');
 });
 
-test('env example: the six settings of the report are empty and keep the default of the code, a value that breaks a rule stops the service at start and the error names it, and a policy ID changes the manifest', () => {
-  for (const name of REPORT) assert.equal(example[name], '', `${name} is empty`);
+test('env example: IDENTITY_POLICY_ID is the published policy and adds the identity registry, the other five settings of the report are empty and keep the default of the code, a value that breaks a rule stops the service at start and the error names it, and a policy ID changes the manifest', () => {
+  for (const name of REPORT.filter((n) => n !== 'IDENTITY_POLICY_ID')) assert.equal(example[name], '', `${name} is empty`);
+  assert.equal(example.IDENTITY_POLICY_ID, IDENTITY_MAINNET.IDENTITY_POLICY_ID);
   // Through the real code (tsx), as renderManifests does: the example, then the example with one bad value in each of the six.
   const code = "import { configFromEnv, DEFAULT_CONFIG } from './src/config.ts'; console.log(JSON.stringify([DEFAULT_CONFIG, ...JSON.parse(process.argv[1]).map((e) => { try { return configFromEnv(e); } catch (err) { return { error: err.message }; } })]));";
   const envs = [example, ...REPORT.map((name) => ({ ...example, [name]: 'x' }))];
   const [defaults, fromExample, ...refused] = JSON.parse(execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code, JSON.stringify(envs)], { cwd: join(root, 'agents/agent-history'), encoding: 'utf8' }));
-  assert.deepEqual(fromExample, defaults, 'the empty lines keep the default of the code');
+  assert.deepEqual(fromExample.registries.identity, { policy: IDENTITY_MAINNET.IDENTITY_POLICY_ID, address: IDENTITY_MAINNET_ADDRESS }, 'the published policy gives the published address');
+  assert.deepEqual({ ...fromExample, registries: { ...fromExample.registries, identity: null } }, defaults, 'the empty lines keep the default of the code');
   assert.equal(defaults.registries.identity, null, 'the default has no identity registry');
   REPORT.forEach((name, i) => assert.match(refused[i].error ?? '', new RegExp(`^environment variable ${name} `), `${name}: the error names it`));
   assert.ok(exampleText.includes('\n# The service reads these values at start. A value that breaks a rule stops the service at start, and the error names the variable.\n'), 'the comment says so');
@@ -219,8 +238,10 @@ test('env scan: it finds every form of environment read the service code could u
 });
 
 test('env example: the runtime gets every name the pinned template lists for CAPABILITY_KIND=custom', () => {
-  // From .env.example of vector-agent-template at c4c378a. The optional ones (SERVICE_AUTH_HEADER, WALLET_HEALTH_INTERVAL_MS, BUYER_PRIV_KEY_HEX) are left out.
-  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'PORT'];
+  // From .env.example of vector-agent-template at 78e8a81. The optional ones (SERVICE_AUTH_HEADER, WALLET_HEALTH_INTERVAL_MS, the self-test buyer's BUYER_PRIV_KEY_HEX,
+  // INDEXER_URL and SWITCH_SLOT, and IDENTITY_REF_UTXO, IDENTITY_CONTROLLER_PUB_KEY_HEX and IDENTITY_ACCOUNTABLE_PARTY, which only register-record.ts build reads) are left out.
+  // AGENT_ID is left out too: the step that makes the agent's record writes it into the env file.
+  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY, 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'PORT'];
   assert.deepEqual(NEEDED.filter((n) => !(n in example) && !(n in agent.environment)), []);
   assert.equal(example.NETWORK_ID, '1');
   assert.equal(example.LIVE_CHAIN, '1');
@@ -244,7 +265,7 @@ test('env example: the chain values and the advert terms are the design and the 
   assert.ok(DESIGN.includes('`mp-suppliers-history.hal8.ai`'));
 });
 
-test('env example: the status word is the spec status, and the manifest it produces is the default manifest', () => {
+test('env example: the status word is the spec status, and the manifest it produces is the default manifest with the published identity registry', () => {
   assert.ok(section(SPEC, 'Status').includes(`${example.AGENT_STATUS_CHIP.toUpperCase()} (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since ${example.AGENT_STATUS_SINCE}.`));
   assert.equal(example.AGENT_STATUS_CHIP, 'deployed', 'the advert is Active and one first-party job has settled (step 17), which shows that the path works and is not demand, so nothing may claim live');
   assert.equal(example.AGENT_STATUS_SINCE, '2026-10-15');
@@ -255,7 +276,8 @@ test('env example: the status word is the spec status, and the manifest it produ
   assert.notEqual(example.AGENT_STATUS_SINCE, '');
   // Placeholders are unset, and the one setting with no default is supplied for both.
   const [withExample, withNothing] = renderManifests([{ ...withoutPlaceholders(example), OPERATOR_CONTACT: TEST_CONTACT }, { OPERATOR_CONTACT: TEST_CONTACT }]);
-  assert.deepEqual(withExample, withNothing, 'the example changes nothing in the manifest the advert will hash');
+  assert.equal(withExample.identity.registry_address, IDENTITY_MAINNET_ADDRESS, 'the published policy gives the published address');
+  assert.deepEqual({ ...withExample, identity: withNothing.identity }, withNothing, 'the example changes nothing else in the manifest the advert will hash');
   assert.equal(withExample.operator.contact, TEST_CONTACT);
   assert.deepEqual(withExample.status, { chip: 'deployed', since: '2026-10-15' });
   assert.equal(withExample.links.explorer_advert, '');
@@ -736,8 +758,8 @@ function inPipeline(code, arg) {
 const P_SUPPLIER = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS'];
 const P_BUYER = ['PIPELINE_BUYER_PRIV_KEY_HEX', 'PIPELINE_BUYER_PUB_KEY_HEX', 'PIPELINE_BUYER_PKH', 'PIPELINE_BUYER_ADDRESS'];
 const P_TOKEN = ['SERVICE_AUTH_HEADER']; // the token between the two containers (ruling R50)
-const P_CHAIN = ['NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO'];
-// The identity registry deployment that packages/buyer-core reads (BUYER_IDENTITY_SETTINGS), empty until the identity registry is deployed.
+const P_CHAIN = ['NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', ...RUNTIME_IDENTITY];
+// The identity registry deployment that packages/buyer-core reads (BUYER_IDENTITY_SETTINGS): the values that the deployment on Vector mainnet published on 2026-11-03.
 const P_IDENTITY = ['VECTOR_IDENTITY_LEGACY_ROOT', 'VECTOR_IDENTITY_CONFIG_SEED', 'VECTOR_IDENTITY_ESCROW_REF_UTXO'];
 const P_ADVERT = ['ADVERT_REF', 'ADVERT_CAPABILITY_ID', 'ADVERT_MODEL', 'ADVERT_PRICE_LOVELACE', 'ADVERT_SUPPLIER_BOND_LOVELACE', 'ADVERT_BUYER_BOND_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_ENDPOINT_URL', 'ADVERT_DETAIL_URI', 'ADVERT_DETAIL_HASH'];
 const P_MANIFEST = ['OPERATOR_CONTACT', 'AGENT_DID', 'IDENTITY_POLICY_ID', 'IDENTITY_ADDRESS', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_EXPLORER_URL'];
@@ -767,8 +789,8 @@ test('Pipeline compose: the project and two containers have fixed names, the run
 test('Pipeline compose: the runtime is built from the template commit of Agent History, written in full', () => {
   assert.equal(pAgent.build.context, agent.build.context);
   assert.equal(pAgent.build.dockerfile, 'agent/Dockerfile');
-  assert.match(pAgent.build.context, /^https:\/\/github\.com\/Apex-Fusion\/vector-agent-template\.git#c4c378a[0-9a-f]{33}$/);
-  assert.ok(PSPEC.includes('pinned commit `c4c378a`'), 'the spec names the same commit');
+  assert.match(pAgent.build.context, /^https:\/\/github\.com\/Apex-Fusion\/vector-agent-template\.git#78e8a81[0-9a-f]{33}$/);
+  assert.ok(PSPEC.includes('pinned commit `78e8a81`'), 'the spec names the same commit');
 });
 
 test('Pipeline compose: SERVICE_URL names the service container, port 9092 and the path /, and is not the shared alias "service"', () => {
@@ -820,7 +842,7 @@ test('Pipeline compose: each container gets only its own key, the other one is b
 });
 
 test('Pipeline compose: the token between the containers (R50) is blanked in neither, so that both read the one value from the env file, and the comments say what each side does with it and when to recreate', () => {
-  // The runtime sends SERVICE_AUTH_HEADER as the authorization header of every call (vector-agent-template c4c378a, agent/src/executor/httpCallout.ts), and the service requires it on POST /.
+  // The runtime sends SERVICE_AUTH_HEADER as the authorization header of every call (vector-agent-template 78e8a81, agent/src/executor/httpCallout.ts), and the service requires it on POST /.
   assert.ok(!('SERVICE_AUTH_HEADER' in pAgent.environment), 'the runtime reads the token from the env file: a blank here would send no header');
   assert.ok(!('SERVICE_AUTH_HEADER' in pService.environment), 'the service reads the token from the env file: a blank here would stop the start');
   assert.ok('SERVICE_AUTH_HEADER' in pExample, 'the env file has the line, so both containers get it');
@@ -870,14 +892,15 @@ test('Pipeline compose: the state is a named volume at /data, memory is limited,
   assert.match(pComposeText, /renders every page at 150 dpi whatever its size/);
 });
 
-test('Pipeline env example: the blocks in order (supplier, buyer, token, chain, identity deployment, advert, manifest, hires), known names only, each once; every secret is empty and nothing looks like key material but the public key hash of the OCR supplier', () => {
+test('Pipeline env example: the blocks in order (supplier, buyer, token, chain, identity deployment, advert, manifest, hires), known names only, each once; every secret is empty and nothing looks like key material but the public key hash of the OCR supplier and the published values of the identity registry', () => {
   assert.deepEqual(Object.keys(pExample), [...P_SUPPLIER, ...P_BUYER, ...P_TOKEN, ...P_CHAIN, ...P_IDENTITY, ...P_ADVERT, ...P_MANIFEST, ...P_HIRES]);
   const { OCR_ALLOWLIST_SUPPLIER_PKH, ...rest } = pExample;
-  assert.deepEqual(keyProblems(rest), []);
+  assert.deepEqual(keyProblems(withoutPublished(rest)), []);
   assert.deepEqual(keyProblems(pAgent.environment), [], 'the compose environment of the runtime');
   assert.deepEqual(keyProblems(pService.environment), [], 'the compose environment of the service');
   for (const name of [...P_SUPPLIER, ...P_BUYER, ...P_TOKEN, 'ADVERT_REF', 'ADVERT_DETAIL_HASH', 'AGENT_DID', 'ADVERT_EXPLORER_URL']) assert.equal(pExample[name], '', `${name} is filled by the runbook`);
-  for (const name of [...P_IDENTITY, 'IDENTITY_POLICY_ID', 'IDENTITY_ADDRESS']) assert.equal(pExample[name], '', `${name} stays empty until the identity registry is deployed`);
+  for (const name of [...P_IDENTITY, 'IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY]) assert.equal(pExample[name], IDENTITY_MAINNET[name], `${name} is the value that the identity registry deployment published`);
+  assert.equal(pExample.IDENTITY_ADDRESS, '', 'IDENTITY_ADDRESS stays empty: the address of IDENTITY_POLICY_ID');
   // The one key-shaped value is the key hash of the OCR supplier the Pipeline hires, which is public and not ours.
   assert.match(OCR_ALLOWLIST_SUPPLIER_PKH, /^[0-9a-f]{56}$/);
   assert.match(pExampleText, /^# The OCR supplier is one first-party key hash, which is public and not ours\./m);
@@ -973,9 +996,9 @@ test('Pipeline env example: every name the service code reads is in the example,
 });
 
 test('Pipeline env example: the runtime gets every name the pinned template lists for CAPABILITY_KIND=custom', () => {
-  // The same list as for Agent History: from .env.example of vector-agent-template at c4c378a.
+  // The same list as for Agent History: from .env.example of vector-agent-template at 78e8a81.
   // SERVICE_AUTH_HEADER is optional in the template ("" sends no header); this pack sets it, so that the runtime sends the token the service requires (R50).
-  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'SERVICE_AUTH_HEADER', 'PORT'];
+  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY, 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'SERVICE_AUTH_HEADER', 'PORT'];
   assert.deepEqual(NEEDED.filter((n) => !(n in pExample) && !(n in pAgent.environment)), []);
   assert.equal(pExample.NETWORK_ID, '1');
   assert.equal(pExample.LIVE_CHAIN, '1');
@@ -1003,7 +1026,7 @@ test('Pipeline env example: the chain values are those of Agent History, the adv
   assert.ok(PREADME.includes(`| \`OCR_ALLOWLIST_SUPPLIER_PKH\` | the key hash of the one OCR supplier the Pipeline hires | \`${OCR_DEFAULT}\` |`), 'the README of the agent gives the same default');
 });
 
-test('Pipeline env example: the status word is deployed since 2026-10-16, and the manifest it produces is the default manifest of the service', () => {
+test('Pipeline env example: the status word is deployed since 2026-10-16, and the manifest it produces is the default manifest of the service with the published identity registry', () => {
   assert.equal(pExample.AGENT_STATUS_CHIP, 'deployed', 'the advert is Active and one first-party job has settled (step 17), which shows that the path works and is not demand, so nothing may claim live');
   assert.equal(pExample.AGENT_STATUS_SINCE, '2026-10-16');
   assert.notEqual(pExample.AGENT_STATUS_SINCE, '', 'an empty AGENT_STATUS_SINCE is refused by the service');
@@ -1011,7 +1034,8 @@ test('Pipeline env example: the status word is deployed since 2026-10-16, and th
   assert.match(pExampleText, /^# The status word the manifest carries, and since when: deployed since 2026-10-16, after the advert was Active and a first-party job had settled \(RUNBOOK-document-pipeline\.md step 17, "Flip the status"\)\. A first-party run is not demand, so the word is not live\.$/m);
   assert.match(pExampleText, /^# On a first run, before any job has settled, set proposed and today's date here; step 17 changes them\.$/m);
   const [withExample, withNothing] = renderManifests([{ ...withoutPlaceholders(pExample), OPERATOR_CONTACT: TEST_CONTACT }, { OPERATOR_CONTACT: TEST_CONTACT }], 'agents/document-pipeline');
-  assert.deepEqual(withExample, withNothing, 'the example changes nothing in the manifest the advert will hash');
+  assert.equal(withExample.identity.registry_address, IDENTITY_MAINNET_ADDRESS, 'the published policy gives the published address');
+  assert.deepEqual({ ...withExample, identity: withNothing.identity }, withNothing, 'the example changes nothing else in the manifest the advert will hash');
   assert.equal(withExample.operator.contact, TEST_CONTACT);
   assert.deepEqual(withExample.status, { chip: 'deployed', since: '2026-10-16' });
   assert.equal(withExample.links.explorer_advert, '');
@@ -1078,7 +1102,7 @@ test('Pipeline README section: the second stack beside Agent History, with its t
   assert.ok(pSection.includes('[RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md), which is the operator\'s order of work and follows [RUNBOOK.md](RUNBOOK.md) step for step'));
   const rows = pSection.split('\n').filter((l) => l.startsWith('| `'));
   assert.equal(rows.length, 2, 'the second table has the two containers');
-  assert.ok(rows[0].startsWith(`| \`${pAgent.container_name}\` | built on the box from \`https://github.com/Apex-Fusion/vector-agent-template.git\` at the same pinned commit \`c4c378a\` (\`CAPABILITY_KIND=custom\`) | 8080 | Caddy, over the external network of the host's reverse proxy. The host, on \`127.0.0.1:8084\` only |`));
+  assert.ok(rows[0].startsWith(`| \`${pAgent.container_name}\` | built on the box from \`https://github.com/Apex-Fusion/vector-agent-template.git\` at the same pinned commit \`78e8a81\` (\`CAPABILITY_KIND=custom\`) | 8080 | Caddy, over the external network of the host's reverse proxy. The host, on \`127.0.0.1:8084\` only |`));
   assert.ok(rows[1].startsWith(`| \`${pService.container_name}\` | \`ghcr.io/apex-fusion/vector-service-agents/document-pipeline\`, built on the box and pinned by digest (\`@sha256:<digest>\`, a placeholder in the repository), or by image ID | 9092 | The runtime and Caddy, over the external network of the host's reverse proxy. Nothing on the host: 9092 is never published |`));
   for (const part of [
     'The working directory on the box is `<base path>/repo/deploy/host`',
@@ -1228,7 +1252,7 @@ test('Pipeline RUNBOOK steps 1 to 3: the repository goes over as a git bundle an
   assert.doesNotMatch(one, /git clone https:/, 'no clone from GitHub: the box has no credentials');
   const three = section(pRunbook, '3. Build the runtime image');
   assert.ok(three.includes('docker compose -f docker-compose.document-pipeline.yml build agent'));
-  assert.ok(three.includes('`c4c378a`') && three.includes('the full 40-character hash, because BuildKit does not resolve the short form'));
+  assert.ok(three.includes('`78e8a81`') && three.includes('the full 40-character hash, because BuildKit does not resolve the short form'));
   assert.ok(three.includes('It ends with `Image document-pipeline-agent Built`.'));
 });
 
@@ -2163,7 +2187,7 @@ const S_TERMS = {
 };
 const S_SUPPLIER = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS'];
 const S_TOKEN = ['SERVICE_AUTH_HEADER'];
-const S_CHAIN = ['NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO'];
+const S_CHAIN = ['NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', ...RUNTIME_IDENTITY];
 const S_ADVERT = ['ADVERT_REF', 'ADVERT_CAPABILITY_ID', 'ADVERT_MODEL', 'ADVERT_PRICE_LOVELACE', 'ADVERT_SUPPLIER_BOND_LOVELACE', 'ADVERT_BUYER_BOND_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_ENDPOINT_URL', 'ADVERT_DETAIL_URI', 'ADVERT_DETAIL_HASH'];
 const S_MANIFEST = ['OPERATOR_CONTACT', 'AGENT_DID', 'IDENTITY_POLICY_ID', 'IDENTITY_ADDRESS', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_EXPLORER_URL'];
 const S_STEPS = ['Put the files on the host', 'Build the service image and pin it', 'Build the runtime image', 'Make the env file and generate the supplier key', 'Adapt the ops scripts', 'Supply the supplier wallet with its collateral and float', 'Register the identity', 'Stake in Module-3', 'Start the service', 'DNS and Caddy', 'Hash the manifest', 'Post the advert', 'Start the runtime', 'Check the advert on the indexer', 'The first-party run', 'Wallet monitor', 'Flip the status'];
@@ -2236,13 +2260,14 @@ test('Snippets compose: the service image is named by digest (a placeholder in t
   assert.ok(section(sRunbook, '9. Start the service').includes("grep -E '^    image: (ghcr[.]io/apex-fusion/vector-service-agents/audio-snippets@sha256:|sha256:)[0-9a-f]{64}$' docker-compose.audio-snippets.yml"));
 });
 
-test('Snippets env example: the blocks in order (supplier, token, chain, advert, manifest), known names only, each once; every secret empty, nothing key-shaped; the header says one key and a token, and where the network is named', () => {
+test('Snippets env example: the blocks in order (supplier, token, chain, advert, manifest), known names only, each once; every secret empty, nothing key-shaped but the published values of the identity registry; the header says one key and a token, and where the network is named', () => {
   assert.deepEqual(Object.keys(sExample), [...S_SUPPLIER, ...S_TOKEN, ...S_CHAIN, ...S_ADVERT, ...S_MANIFEST]);
-  assert.deepEqual(keyProblems(sExample), []);
+  assert.deepEqual(keyProblems(withoutPublished(sExample)), []);
   assert.deepEqual(keyProblems(sAgent.environment), []);
   assert.deepEqual(keyProblems(sService.environment), []);
   for (const name of [...S_SUPPLIER, ...S_TOKEN, 'ADVERT_REF', 'ADVERT_DETAIL_HASH', 'AGENT_DID', 'ADVERT_EXPLORER_URL']) assert.equal(sExample[name], '', `${name} is filled by the runbook`);
-  for (const name of ['IDENTITY_POLICY_ID', 'IDENTITY_ADDRESS']) assert.equal(sExample[name], '', `${name} stays empty until the identity registry is deployed`);
+  for (const name of ['IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY]) assert.equal(sExample[name], IDENTITY_MAINNET[name], `${name} is the value that the identity registry deployment published`);
+  assert.equal(sExample.IDENTITY_ADDRESS, '', 'IDENTITY_ADDRESS stays empty: the address of IDENTITY_POLICY_ID');
   assert.equal(sExampleRaw.SERVICE_AUTH_HEADER, '""', 'empty and in quotes');
   assert.match(sExample.OPERATOR_CONTACT, PLACEHOLDER);
   assert.equal(sExample.OPERATOR_CONTACT, example.OPERATOR_CONTACT, 'the same placeholder as the other two');
@@ -2265,11 +2290,11 @@ test('Snippets env example: every name the service code reads is in the example,
   for (const n of ['OPERATOR_CONTACT', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'SERVICE_AUTH_HEADER', 'WHISPER_MODEL', 'WHISPER_THREADS']) assert.ok(names.has(n), `the service reads ${n}`);
   assert.ok(!names.has('SUPPLIER_PRIV_KEY_HEX'), "no source of the service reads the supplier key: it is the runtime's");
   assert.match(sDockerfile, /ASR_WORKER=\/app\/asr\/worker\.py WHISPER_MODEL=\$WHISPER_MODEL PATH=\/app\/asr\/venv\/bin:\$PATH$/m, 'the image sets what the example leaves out');
-  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'SERVICE_AUTH_HEADER', 'PORT'];
+  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY, 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'SERVICE_AUTH_HEADER', 'PORT'];
   assert.deepEqual(NEEDED.filter((n) => !(n in sExample) && !(n in sAgent.environment)), []);
 });
 
-test('Snippets env example: the chain values are those of the Pipeline, the advert terms are the spec, the endpoint is the third hostname, the status word is deployed since 2026-10-17, and the manifest it produces is the default one', () => {
+test('Snippets env example: the chain values are those of the Pipeline, the advert terms are the spec, the endpoint is the third hostname, the status word is deployed since 2026-10-17, and the manifest it produces is the default one with the published identity registry', () => {
   for (const name of S_CHAIN) assert.equal(sExample[name], pExample[name], name);
   assert.deepEqual([sExample.ADVERT_CAPABILITY_ID, sExample.ADVERT_MODEL], ['audio.transcript.snippets.v1', 'audio-snippets-v1']);
   assert.ok(SSPEC.includes(`The model string in the advert and in every receipt is \`${sExample.ADVERT_MODEL}\`.`));
@@ -2286,7 +2311,8 @@ test('Snippets env example: the chain values are those of the Pipeline, the adve
     "import { manifestFromEnv } from './src/server.ts'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((env) => manifestFromEnv(env))));",
     [{ ...withoutPlaceholders(sExample), OPERATOR_CONTACT: TEST_CONTACT }, { OPERATOR_CONTACT: TEST_CONTACT }],
   );
-  assert.deepEqual(withExample, withNothing, 'the example changes nothing in the manifest the advert will hash');
+  assert.equal(withExample.identity.registry_address, IDENTITY_MAINNET_ADDRESS, 'the published policy gives the published address');
+  assert.deepEqual({ ...withExample, identity: withNothing.identity }, withNothing, 'the example changes nothing else in the manifest the advert will hash');
   assert.deepEqual(withExample.status, { chip: 'deployed', since: '2026-10-17' });
   assert.equal(withExample.terms.price_lovelace, S_TERMS.price);
   assert.equal(withExample.terms.max_processing_ms, S_TERMS.window);
@@ -3039,7 +3065,7 @@ const A_SUPPLIER = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_P
 const A_BUYER = ['ADVOCATE_BUYER_PRIV_KEY_HEX', 'ADVOCATE_BUYER_PUB_KEY_HEX', 'ADVOCATE_BUYER_PKH', 'ADVOCATE_BUYER_ADDRESS'];
 const A_TOKEN = ['SERVICE_AUTH_HEADER'];
 const A_API_KEYS = ['BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY'];
-const A_CHAIN = ['NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO'];
+const A_CHAIN = ['NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', ...RUNTIME_IDENTITY];
 const A_IDENTITY = P_IDENTITY;
 const A_ADVERT = ['ADVERT_REF', 'ADVERT_CAPABILITY_ID', 'ADVERT_MODEL', 'ADVERT_PRICE_LOVELACE', 'ADVERT_SUPPLIER_BOND_LOVELACE', 'ADVERT_BUYER_BOND_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_ENDPOINT_URL', 'ADVERT_DETAIL_URI', 'ADVERT_DETAIL_HASH'];
 const A_MANIFEST = ['OPERATOR_CONTACT', 'AGENT_DID', 'IDENTITY_POLICY_ID', 'IDENTITY_ADDRESS', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_EXPLORER_URL'];
@@ -3182,22 +3208,25 @@ test('Advocate compose: the service image is named by digest (a placeholder in t
   assert.ok(section(aRunbook, '9. Start the service').includes("grep -E '^    image: (ghcr[.]io/apex-fusion/vector-service-agents/advocate@sha256:|sha256:)[0-9a-f]{64}$' docker-compose.advocate.yml"));
 });
 
-test('Advocate env example: the blocks in order (supplier, buyer, token, API keys, chain, identity deployment, advert, manifest, hires), known names only, each once; every secret empty, nothing key-shaped; the header says two keys, a token and two API keys, and where the network is named', () => {
+test('Advocate env example: the blocks in order (supplier, buyer, token, API keys, chain, identity deployment, advert, manifest, hires), known names only, each once; every secret empty, nothing key-shaped but the published values of the identity registry; the header says two keys, a token and two API keys, and where the network is named', () => {
   assert.deepEqual(Object.keys(aExample), [...A_SUPPLIER, ...A_BUYER, ...A_TOKEN, ...A_API_KEYS, ...A_CHAIN, ...A_IDENTITY, ...A_ADVERT, ...A_MANIFEST, ...A_HIRES]);
-  assert.deepEqual(keyProblems(aExample), []);
+  assert.deepEqual(keyProblems(withoutPublished(aExample)), []);
   assert.deepEqual(keyProblems(aAgent.environment), []);
   assert.deepEqual(keyProblems(aService.environment), []);
   for (const name of [...A_SUPPLIER, ...A_BUYER, ...A_TOKEN, ...A_API_KEYS, 'ADVERT_REF', 'ADVERT_DETAIL_HASH', 'AGENT_DID', 'ADVERT_EXPLORER_URL']) assert.equal(aExample[name], '', `${name} is filled by the runbook`);
-  for (const name of [...A_IDENTITY, 'IDENTITY_POLICY_ID', 'IDENTITY_ADDRESS']) assert.equal(aExample[name], '', `${name} stays empty until the identity registry is deployed`);
+  for (const name of [...A_IDENTITY, 'IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY]) assert.equal(aExample[name], IDENTITY_MAINNET[name], `${name} is the value that the identity registry deployment published`);
+  assert.equal(aExample.IDENTITY_ADDRESS, '', 'IDENTITY_ADDRESS stays empty: the address of IDENTITY_POLICY_ID');
   // The two identity lines of the manifest have the same comments in the three examples, and the identity registry deployment the same in the two that hire.
   for (const text of [pExampleText, sExampleText, aExampleText]) {
-    assert.match(text, /^# IDENTITY_POLICY_ID: the policy ID of the identity registry, 56 lowercase hex characters, as its deployment publishes it\. Empty: the identity registry is not configured\.\n# The manifest publishes the address of this policy as identity\.registry_address, empty while this line is empty\./m);
+    assert.match(text, /^# IDENTITY_POLICY_ID: the policy ID of the identity registry, 56 lowercase hex characters, as its deployment publishes it: here the policy that the deployment on\n# Vector mainnet published on 2026-11-03\. The runtime reads it too\. Empty: the identity registry is not configured\.\n# The manifest publishes the address of this policy as identity\.registry_address, empty while this line is empty\./m);
     assert.match(text, /^# IDENTITY_ADDRESS: the address of the identity registry\. Empty means the address of IDENTITY_POLICY_ID\. A value needs IDENTITY_POLICY_ID and must be the address of that policy\.\nIDENTITY_ADDRESS=$/m);
+    assert.ok(text.includes('# The escrow and the advert that carry an agent_id (the runtime): the reference scripts that the identity registry deployment on Vector mainnet published\n# on 2026-11-03. Keep ESCROW_REF_UTXO and ADVERT_REF_UTXO above while legacy escrows exist.'), 'the runtime lines say what they are and that the legacy pair stays');
   }
   for (const text of [pExampleText, aExampleText]) {
     assert.ok(text.includes('are its two deployment values, under the names the MCP server reads: set both or neither.'), 'both deployment values or neither');
     assert.ok(text.includes('IDENTITY_POLICY_ID below must be the identity policy they give,\n# or the service stops at start and names the variables.'), 'the check at start');
-    assert.match(text, /^# VECTOR_IDENTITY_ESCROW_REF_UTXO: the reference-script UTxO of the escrow of the identity marketplace, <64 hex>#<index>\. The Accept and the Reclaim of such an escrow need it, so it is required with the two values above\.\nVECTOR_IDENTITY_ESCROW_REF_UTXO=$/m);
+    assert.ok(text.includes('They hold the values that the deployment\n# on Vector mainnet published on 2026-11-03; empty lines mean legacy adverts and escrows only.'), 'the published values');
+    assert.match(text, /^# VECTOR_IDENTITY_ESCROW_REF_UTXO: the reference-script UTxO of the escrow of the identity marketplace, <64 hex>#<index>\. The Accept and the Reclaim of such an escrow need it, so it is required with the two values above\.\nVECTOR_IDENTITY_ESCROW_REF_UTXO=4c2d09858dab0cc22cc77dcb99efed570d909a66e0beb512041dea91005b5e82#0$/m);
   }
   assert.equal(aExampleRaw.SERVICE_AUTH_HEADER, '""', 'empty and in quotes');
   for (const name of A_API_KEYS) assert.equal(aExampleRaw[name], '', `${name} is empty and has no quotes: a key is letters, digits, dots, hyphens and underscores`);
@@ -3266,11 +3295,11 @@ test('Advocate env example: every name the service code reads is in the example,
   assert.match(aExampleText, /^# LLM_MAX_PRICE_LOVELACE=1000000$/m, 'the ceiling is in the example, commented, at the default of the code');
   for (const n of ['OPERATOR_CONTACT', 'ADVOCATE_BUYER_PRIV_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'SERVICE_AUTH_HEADER', ...A_API_KEYS, 'OPENROUTER_MODEL', 'ADVOCATE_STATE_DIR', 'LLM_MODEL_ALLOWLIST', 'LLM_MAX_PRICE_LOVELACE']) assert.ok(names.has(n), `the service reads ${n}`);
   assert.ok(!names.has('SUPPLIER_PRIV_KEY_HEX'), "no source of the service reads the supplier key: it is the runtime's");
-  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'SERVICE_AUTH_HEADER', 'PORT'];
+  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY, 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'SERVICE_AUTH_HEADER', 'PORT'];
   assert.deepEqual(NEEDED.filter((n) => !(n in aExample) && !(n in aAgent.environment)), []);
 });
 
-test('Advocate env example: the chain values are those of the other three, the advert terms are the spec, the endpoint is the fourth hostname, the status word is deployed since 2026-10-20, and the manifest it produces is the default one', () => {
+test('Advocate env example: the chain values are those of the other three, the advert terms are the spec, the endpoint is the fourth hostname, the status word is deployed since 2026-10-20, and the manifest it produces is the default one with the published identity registry', () => {
   for (const name of A_CHAIN) assert.equal(aExample[name], sExample[name], name);
   assert.deepEqual([aExample.ADVERT_CAPABILITY_ID, aExample.ADVERT_MODEL], ['research.advocate.onesided.v1', 'advocate-v1']);
   assert.ok(ASPEC.includes(`The model string in the advert and in every receipt is \`${aExample.ADVERT_MODEL}\`.`));
@@ -3303,7 +3332,8 @@ test('Advocate env example: the chain values are those of the other three, the a
     "import { manifestFromEnv } from './src/server.ts'; console.log(JSON.stringify(JSON.parse(process.argv[1]).map((env) => manifestFromEnv(env))));",
     [{ ...withoutPlaceholders(aExample), OPERATOR_CONTACT: TEST_CONTACT }, { OPERATOR_CONTACT: TEST_CONTACT }],
   );
-  assert.deepEqual(withExample, withNothing, 'the example changes nothing in the manifest the advert will hash');
+  assert.equal(withExample.identity.registry_address, IDENTITY_MAINNET_ADDRESS, 'the published policy gives the published address');
+  assert.deepEqual({ ...withExample, identity: withNothing.identity }, withNothing, 'the example changes nothing else in the manifest the advert will hash');
   assert.deepEqual(withExample.status, { chip: 'deployed', since: '2026-10-20' });
   assert.equal(withExample.terms.price_lovelace, A_TERMS.price);
   assert.equal(withExample.terms.max_processing_ms, A_TERMS.window);

@@ -131,7 +131,7 @@ cd "$BASE/repo/deploy/host"
 docker compose -f docker-compose.audio-snippets.yml build agent
 ```
 
-This clones `vector-agent-template` at the pinned commit `c4c378a`, the commit of the runtimes of Agent History and the Pipeline, and installs it. The compose file carries the full 40-character hash, because BuildKit does not resolve the short form. It ends with `Image audio-snippets-agent Built`.
+This clones `vector-agent-template` at the pinned commit `78e8a81`, the commit of the runtimes of Agent History and the Pipeline, and installs it. The compose file carries the full 40-character hash, because BuildKit does not resolve the short form. It ends with `Image audio-snippets-agent Built`.
 
 ## 4. Make the env file and generate the supplier key
 

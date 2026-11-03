@@ -80,7 +80,7 @@ It prints the image name, `@sha256:` and 64 hex digits. Give that line to the op
 docker compose -f docker-compose.agent-history.yml build agent
 ```
 
-This clones `vector-agent-template` at the pinned commit `c4c378a` and installs it. The compose file carries the full 40-character hash, because BuildKit does not resolve the short form. The first build takes a few minutes. It ends with `Image agent-history-agent Built`.
+This clones `vector-agent-template` at the pinned commit `78e8a81` and installs it. The compose file carries the full 40-character hash, because BuildKit does not resolve the short form. The first build takes a few minutes. It ends with `Image agent-history-agent Built`.
 
 ## 4. Make the env file and generate the supplier key
 

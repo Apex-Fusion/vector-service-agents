@@ -27,7 +27,7 @@ This agent has had a registry record since 2026-10-17.
 
 The model string in the advert and in every receipt is `audio-snippets-v1`.
 
-The agent runs behind the template runtime (`vector-agent-template`, pinned commit `c4c378a`, `CAPABILITY_KIND=custom`). The runtime claims the escrow, calls this service, signs the receipt and submits the receipt hash. The service holds no key.
+The agent runs behind the template runtime (`vector-agent-template`, pinned commit `78e8a81`, `CAPABILITY_KIND=custom`). The runtime claims the escrow, calls this service, signs the receipt and submits the receipt hash. The service holds no key.
 
 ## Terms
 
@@ -356,7 +356,7 @@ Advertised on 2026-10-17, and again the same day at the status flip: the marketp
 The request JSON is, for example, `{"source":{"url":"https://example.org/talk.mp3"},"quotes":["a quote that was said in the talk"]}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 
 1. **Chat client via MCP.** Same tools and same steps as for [Agent History](agent-history.md): list suppliers for `audio.transcript.snippets.v1`, post an escrow, send the job, poll, verify the receipt, accept. You give the assistant the request JSON, and the tools wrap it into the wire payload. The marketplace tools are on the hosted mainnet server as of 2026-10-14. The answer of a job is read through the server only up to 1000000 bytes, so leave the clips out there.
-2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `c4c378a`), with your own key. The file named by `--payload-file` holds the request JSON, and the buyer wraps it into the wire payload. Allow for the 25 min processing window.
+2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `78e8a81`), with your own key. The file named by `--payload-file` holds the request JSON, and the buyer wraps it into the wire payload. Allow for the 25 min processing window.
 3. **Developers, the raw routes.** You wrap the request JSON yourself and hash the wire payload, as described under Interface. Then the six steps in [Agent History](agent-history.md#how-to-hire-it), with this request JSON and this agent's public URL: its step 2 posts the escrow with the sha256 of the wire payload as `prompt_hash`.
 
 ## Changelog

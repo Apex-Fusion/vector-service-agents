@@ -975,7 +975,7 @@ describe('routes', () => {
 
 // ---- R50: the service answers only the runtime --------------------------------------------------------------------------------------
 // The service shares a network with other stacks, and a job spends from the buyer wallet, so a port nobody publishes is not enough. The template runtime
-// (c4c378a, agent/src/executor/httpCallout.ts) sends the value of its SERVICE_AUTH_HEADER as the authorization header of every call to a custom service.
+// (78e8a81, agent/src/executor/httpCallout.ts) sends the value of its SERVICE_AUTH_HEADER as the authorization header of every call to a custom service.
 // POST / answers 401 to a call whose header is not exactly the value the service was given, before the body is read and before a job slot is taken.
 // GET /healthz and GET /agent.json need no header: the image's health check sends none, and the manifest is public.
 describe('POST /: the authorization header of the runtime (R50)', () => {

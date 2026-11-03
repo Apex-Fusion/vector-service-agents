@@ -125,7 +125,7 @@ describe('agents/document-pipeline/README.md', () => {
   });
 
   // R50: the service shares a network with other stacks and a job spends from the buyer wallet, so it answers only the runtime, which sends its
-  // SERVICE_AUTH_HEADER as the authorization header of every call (vector-agent-template c4c378a, agent/src/executor/httpCallout.ts).
+  // SERVICE_AUTH_HEADER as the authorization header of every call (vector-agent-template 78e8a81, agent/src/executor/httpCallout.ts).
   test('it says that POST / needs the authorization header the runtime sends, the 401 without it, the routes that stay open, and that the token is made, not typed (R50)', () => {
     expect(readme).toContain('`POST /` requires the `authorization` header to be exactly the value of `SERVICE_AUTH_HEADER`');
     expect(readme).toContain('the value the template runtime sends with every call to a custom service');

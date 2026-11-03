@@ -653,7 +653,7 @@ test('docs/HIRE.md and the design agree on the figures a member types or reads',
   assert.ok(guide.includes('https://explorer.vector.mainnet.apexfusion.org/transaction/hash/<txid>'), 'the explorer link pattern');
   assert.match(DESIGN, /per-transaction cap 100, daily cap 500/);
   assert.ok(guide.includes('"VECTOR_SIGNER_SPEND_LIMIT_PER_TX": "100000000"') && guide.includes('"VECTOR_SIGNER_SPEND_LIMIT_DAILY": "500000000"'), '100 and 500 units, as lovelace');
-  assert.ok(guide.includes('c4c378a'), 'the pinned template commit');
+  assert.ok(guide.includes('78e8a81'), 'the pinned template commit');
   for (const flag of ['--advert-ref', '--endpoint', '--payload-file']) assert.ok(guide.includes(flag), flag);
 });
 
@@ -1957,9 +1957,12 @@ const STAKE_NO_WITHDRAW = 'The owner cannot withdraw it: the module keeps 10 uni
 // specs/agent-history.md, emitted by the service and hashed into its advert) is not one of them: it names no withdrawal by the owner.
 const STAKE_RETURN_WORDS = /cooldown|refundable under the stake|the stake after its|stake stay on the ledger until the operator withdraws|when you withdraw it|stays locked|identity or the stake is withdrawn|stake (is|was|gets|can be) withdrawn|withdraws? (the|its|their) stake/i;
 const HIRE_PERMANENT = "The name and the description you enter are public and permanent: the transaction that writes them stays in the ledger's history after you deregister. Deregistering returns the deposit; it does not erase that transaction. Put no personal data in them.";
-// HIRE.md section 8 pins the template at c4c378a, whose install leaves libsodium-sumo.mjs out of the wrapper's folder (the lockfile there pins libsodium 0.7.16).
-const LIBSODIUM_COPY = 'cp node_modules/.pnpm/libsodium-sumo@0.7.16/node_modules/libsodium-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs node_modules/.pnpm/libsodium-wrappers-sumo@0.7.16/node_modules/libsodium-wrappers-sumo/dist/modules-sumo-esm/';
-const LIBSODIUM_WHY = "That copy is the one the template's `agent/Dockerfile` makes in its image. pnpm's store layout puts `libsodium-sumo.mjs` in a sibling package, and without it the buyer stops at the transaction build with `Cannot find module`.";
+// HIRE.md section 8 pins the template at 78e8a81, the merge of the identity registry into its main. Its postinstall step copies libsodium-sumo.mjs next to
+// the wrapper (the lockfile there pins libsodium 0.7.16), so the guide no longer copies that file by hand, as it did for the pin before.
+const TEMPLATE_INSTALL = 'git clone https://github.com/Apex-Fusion/vector-agent-template.git && cd vector-agent-template && git checkout 78e8a81 && corepack pnpm install';
+const LIBSODIUM_WHY = "The install ends with the template's postinstall step. It copies `libsodium-sumo.mjs` next to its wrapper, as the template's `agent/Dockerfile` does in its image. pnpm's store layout puts that file in a sibling package, and without it the buyer stops at the transaction build with `Cannot find module`.";
+// The buyer of that commit posts the escrow of an advert that names an agent only with the policy of the identity registry, so the command gives the published values.
+const HIRE_IDENTITY = '`IDENTITY_POLICY_ID` and `IDENTITY_ESCROW_REF_UTXO` are the published values of the identity registry on Vector mainnet. The buyer uses them only for an advert that names an agent: it posts and accepts the escrow of such an advert with them.';
 
 test('docs/LAUNCH.md: the title, the eight sections in the order a member does them, a check in every section after the first, and the README lists it next to HIRE.md', () => {
   const text = launch();
@@ -2090,7 +2093,7 @@ test("docs/LAUNCH.md: the node code of the conversion turns a throwaway 64-hex k
 test('docs/LAUNCH.md, the new sentence of HIRE.md section 3(b) and the new README line: hyphens only, none of the words of the content rules, no unit name, no person, no host of the Foundation, no status word', () => {
   const readmeLine = '- Launch your own agent from a chat client: `docs/LAUNCH.md`';
   assert.ok(PERSON_NAMES.source.startsWith('\\b(') && PERSON_NAMES.source.split('|').length >= 10, 'the names guard was read from scripts/deploy.test.mjs');
-  const added = [['docs/LAUNCH.md', launch()], ['HIRE.md section 3(b)', SIGNER_READS], ['README.md', readmeLine], ['HIRE.md section 7', HIRE_PERMANENT], ['HIRE.md section 8', `${LIBSODIUM_COPY}\n${LIBSODIUM_WHY}`], ['the runbooks and the host README', STAKE_NO_WITHDRAW]];
+  const added = [['docs/LAUNCH.md', launch()], ['HIRE.md section 3(b)', SIGNER_READS], ['README.md', readmeLine], ['HIRE.md section 7', HIRE_PERMANENT], ['HIRE.md section 8', `${TEMPLATE_INSTALL}\n${LIBSODIUM_WHY}\n${HIRE_IDENTITY}`], ['the runbooks and the host README', STAKE_NO_WITHDRAW]];
   for (const [name, text] of added) {
     assert.equal(text.match(DASHES), null, `${name}: hyphens only`);
     assert.equal(text.match(MONEY_WORDS), null, `${name}: none of the words of the content rules`);
@@ -2208,15 +2211,18 @@ test('the stake correction: the Module-3 stake is not refundable; LAUNCH.md, the
   for (const miss of ['A withdrawn stake, a closed claim or a spent proposal no longer appears', STAKE_NO_WITHDRAW, 'When the identity is deregistered later, `python3 make-skey.py` writes']) assert.doesNotMatch(miss, STAKE_RETURN_WORDS, miss);
 });
 
-test('docs/HIRE.md (findings 3 and 9, and the copy of section 8): the record is permanent in the chain\'s history, a recovery phrase exposes the whole wallet, and the terminal path copies the file its install leaves out', () => {
+test('docs/HIRE.md (findings 3 and 9, and the install of section 8): the record is permanent in the chain\'s history, a recovery phrase exposes the whole wallet, and the terminal path installs the template at the pinned commit, whose postinstall makes the file the transaction build needs, and gives the published values of the identity registry', () => {
   const guide = hire();
   assert.ok(section(guide, '7. Register your own identifier (optional)').includes(HIRE_PERMANENT));
   assert.equal(guide.includes('stay on the ledger while the record exists'), false, 'the sentence of before');
   assert.ok(SIGNER_READS.includes('but the phrase in your config exposes the whole wallet, so this guide never uses one'));
   const eight = section(guide, '8. The terminal path');
-  assert.ok(eight.includes('```bash\ngit clone https://github.com/Apex-Fusion/vector-agent-template.git && cd vector-agent-template && git checkout c4c378a && corepack pnpm install\n' + LIBSODIUM_COPY + '\n```'), 'the copy follows the install, in the same block');
+  assert.ok(eight.includes('```bash\n' + TEMPLATE_INSTALL + '\n```'), 'the install alone, in its own block');
+  assert.equal(eight.includes('cp node_modules/.pnpm/'), false, 'no copy by hand: the postinstall of the pinned commit makes it');
   assert.ok(eight.includes(LIBSODIUM_WHY));
-  assert.ok(eight.includes('The first fetches the template at the pinned commit, and the line after it copies one file that the install leaves out:'));
+  assert.ok(eight.includes('The first fetches the template at the pinned commit and installs it:'));
+  assert.ok(eight.includes(HIRE_IDENTITY));
+  assert.ok(eight.includes("  IDENTITY_POLICY_ID=d958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762 IDENTITY_ESCROW_REF_UTXO='4c2d09858dab0cc22cc77dcb99efed570d909a66e0beb512041dea91005b5e82#0' \\\n  corepack pnpm --filter try-it exec tsx src/buy-once.ts"), 'the published values go into the command of the buyer');
 });
 
 test('docs/LAUNCH.md (findings 4 to 8): the lock floor, the fleet prefixes the chat tools refuse, the stake from a terminal, the template commit, and the key line said to be the key', () => {
@@ -2229,8 +2235,8 @@ test('docs/LAUNCH.md (findings 4 to 8): the lock floor, the fleet prefixes the c
   const two = section(text, '2. Let your coding agent build it');
   assert.ok(two.includes('with a capability id that does not start with `llm.text.generate.`, `llm.chat.`, `ocr.page.extract.` or `audio.synthesize.`: the chat hire tools refuse those.'), 'finding 5');
   assert.ok(two.includes("As of 2026-10-21 the template's `main` is commit `77c7482`: its runtime is the one our four agents run, and a fresh clone installs cleanly."), 'finding 7, round 2: main is 77c7482');
-  // Round 2 (R3): c4c378a is pinned only where a document pins it on purpose (HIRE.md section 8, with its copy line); LAUNCH.md describes main, and the postinstall is merged.
-  assert.equal(text.includes('c4c378a'), false, 'LAUNCH.md does not describe main as c4c378a');
+  // Round 2 (R3): the template is pinned only where a document pins it on purpose (HIRE.md section 8, now at 78e8a81); LAUNCH.md describes main, and the postinstall is merged.
+  assert.equal(text.includes('78e8a81'), false, 'LAUNCH.md describes main and names no pin');
   assert.equal(text.includes('is proposed in') || text.includes('vector-agent-template/pull/3'), false, 'the postinstall is merged, not proposed');
   assert.ok(section(text, '3. Post the advert').includes("On a fresh clone of `main`, README step 5's own form also runs on the host: since 2026-10-21 the template's postinstall step copies `libsodium-sumo.mjs` next to its wrapper, as `agent/Dockerfile` does in the image, and the transaction build needs that file."));
   // Round 2 (R4): the member edits .env; the assistant neither opens nor writes it.
