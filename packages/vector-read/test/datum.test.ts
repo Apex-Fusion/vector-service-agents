@@ -1,16 +1,17 @@
-// Vitest port of packages/builder/test/marketplace-datum.test.ts at f456194 (Apex-Fusion/mcp-server, branch
+// Vitest port of packages/builder/test/marketplace-datum.test.ts at 94bd293 (Apex-Fusion/mcp-server, branch
 // feat/identity-registry; first ported at 94b8f41, PR 2, and changed since only in one regex escape). node:assert/strict
 // calls became expect() equivalents with the same meaning (deepEqual -> toStrictEqual, equal -> toBe, throws -> toThrow,
 // ok(cond) -> a comparison matcher). The source tests the identity layouts in identity-codec.test.ts (ported to
-// test/identity-codec.test.ts). Local to this repo: the 'identity layouts on the live terms' block, the sha256BytesHex
-// known answers (moved from packages/buyer-core with the function), the 'stake datums' block and the blocks after it. Two
-// tests of the 4a7b223 port that the source has since dropped as redundant are kept here (the semantic-equality test and
-// the two lock-floor bounds).
+// test/identity-codec.test.ts). The 'encodeAdvertDatum' block is the block of the same name in the source's
+// marketplace-advert.test.ts at 94bd293, ported the same way. Local to this repo: the 'identity layouts on the live terms'
+// block, the sha256BytesHex known answers (moved from packages/buyer-core with the function), the 'stake datums' block and
+// the blocks after it. Two tests of the 4a7b223 port that the source has since dropped as redundant are kept here (the
+// semantic-equality test and the two lock-floor bounds).
 import { describe, test, expect } from 'vitest';
 import { createHash } from 'node:crypto';
 import { Data, Constr, fromText } from '@lucid-evolution/lucid';
 import {
-  decodeAdvertDatum, decodeEscrowDatum, encodeEscrowDatum, canonicalize,
+  decodeAdvertDatum, encodeAdvertDatum, decodeEscrowDatum, encodeEscrowDatum, canonicalize,
   requestSpecHash, wirePayloadFor, promptHashForPayload, escrowLockFloor, parseOutRef, formatOutRef,
   advertTextFieldsRoundTrip, decodeStakeDatum, topLevelBytes, blake2b224Hex, sha256Utf8Hex, sha256BytesHex,
   decodeIdentityAdvertDatum, encodeIdentityAdvertDatum, decodeAnyAdvertDatum, decodeIdentityEscrowDatum, encodeIdentityEscrowDatum,
@@ -45,6 +46,28 @@ describe('advert datum', () => {
         expect(() => decodeAdvertDatum(withField(index, bad)), `${name} = ${bad}`).toThrow(new RegExp(`advert\\.${name}: .*safe`));
       }
     }
+  });
+});
+
+// The source writes back every live advert of its fixtures: the Posts of the four service agents (its advert-stake-golden.fixture.ts,
+// which is not copied here) and the ChandraOCR advert. Here the live advert is the ChandraOCR advert of marketplace.fixture.ts, and it
+// takes the place of ADVOCATE (the advert of the Advocate's Post) in the two other tests.
+describe('encodeAdvertDatum', () => {
+  const ADVERT = decodeAdvertDatum(ADVERT_DATUM_HEX);
+  test('writes the live ChandraOCR advert back byte for byte', () => {
+    expect(encodeAdvertDatum(ADVERT)).toBe(ADVERT_DATUM_HEX);
+  });
+  test('frames like the marketplace: every integer as 1b + 8 bytes, the status as a nullary constructor', () => {
+    const hex = encodeAdvertDatum({ ...ADVERT, max_output_tokens: 1, price_lovelace: 0n });
+    expect(hex.startsWith('d8798d'), 'constructor 0, a definite array of 13 fields').toBe(true);
+    expect(hex.includes('1b0000000000000001'), 'a small integer still takes nine bytes').toBe(true);
+    expect(hex.endsWith('d87980'), 'Active').toBe(true);
+    expect(encodeAdvertDatum({ ...ADVERT, status: 'Retired' }).endsWith('d87a80'), 'Retired').toBe(true);
+    expect(decodeAdvertDatum(encodeAdvertDatum({ ...ADVERT, status: 'Retired' })).status).toBe('Retired');
+  });
+  test('refuses what it cannot frame', () => {
+    expect(() => encodeAdvertDatum({ ...ADVERT, status: 'Paused' as never })).toThrow(/unknown status/);
+    expect(() => encodeAdvertDatum({ ...ADVERT, price_lovelace: -1n })).toThrow(RangeError);
   });
 });
 

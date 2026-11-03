@@ -1,4 +1,4 @@
-// Vitest port of packages/builder/test/identity-codec.test.ts at f456194 (Apex-Fusion/mcp-server, branch feat/identity-registry), the
+// Vitest port of packages/builder/test/identity-codec.test.ts at 94bd293 (Apex-Fusion/mcp-server, branch feat/identity-registry), the
 // tests of src/identity-codec.ts and of the identity layouts of src/datum.ts. node:assert/strict calls became expect() equivalents with
 // the same meaning (deepEqual -> toStrictEqual, equal -> toBe, throws -> toThrow, ok(cond) -> a comparison matcher). The fixture file is
 // the same file as the source's (test/fixtures/identity-cbor-fixtures.json, see VENDORED-FROM.md): the agents-marketplace fixture at
