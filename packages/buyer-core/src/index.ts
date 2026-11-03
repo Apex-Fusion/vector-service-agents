@@ -4,7 +4,7 @@
 // Apex-Fusion/mcp-server at 94bd293 (see VENDORED-FROM.md), both escrow and advert layouts of the drain included (Part 2 sections 6.1 to 6.5).
 // Endpoint defaults are Vector mainnet. The identity registry deployment a chain posts to and settles with is read once at start
 // (deployment.ts). The commitments of the fleet jobs (OCR and Responses) come from commitments.ts, which composes the Responses code vendored
-// from Apex-Fusion/agents-marketplace at e847a55. The chain layer is buyer-core's own: the fleet Post (fleet-build.ts), the Chain interface
+// from Apex-Fusion/agents-marketplace at 4c95c3f. The chain layer is buyer-core's own: the fleet Post (fleet-build.ts), the Chain interface
 // with RealChain behind createRealChain (chain.ts), the in-memory FakeChain the service tests run against (fake-chain.ts), and the fee of a
 // signed transaction (fees.ts). So is the HTTP side of a fleet hire: the clients that send a job to a supplier once its Post is made, poll it,
 // and read /capability and /status (fleet-clients.ts), and the choice of the chat supplier and the OCR advert from the marketplace indexer

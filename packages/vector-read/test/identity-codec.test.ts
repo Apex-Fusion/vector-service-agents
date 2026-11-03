@@ -2,7 +2,7 @@
 // tests of src/identity-codec.ts and of the identity layouts of src/datum.ts. node:assert/strict calls became expect() equivalents with
 // the same meaning (deepEqual -> toStrictEqual, equal -> toBe, throws -> toThrow, ok(cond) -> a comparison matcher). The fixture file is
 // the same file as the source's (test/fixtures/identity-cbor-fixtures.json, see VENDORED-FROM.md): the agents-marketplace fixture at
-// 67054f6, the same bytes as at b5d66a6 and 1643583. OWN_ADDRESS is the wallet address of the source's fixture provider
+// 4c95c3f, the same bytes as at b5d66a6, 1643583 and 67054f6. OWN_ADDRESS is the wallet address of the source's fixture provider
 // (packages/builder/test/fixtures/fixture-provider.ts), written out here because this package has no copy of that provider.
 import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';

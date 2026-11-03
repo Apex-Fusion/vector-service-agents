@@ -48,21 +48,21 @@ git -C <mcp-server> cat-file blob 94bd293:packages/builder/test/fixtures/identit
 
 ## Identity codecs, from Apex-Fusion/agents-marketplace
 
-The files under `src/vendored/shared/` are copies of files of Apex-Fusion/agents-marketplace `packages/shared/src/` at commit `67054f6` (`67054f6661910e0163aff8ed3f24d2695ba48207`, the head of branch `feat/identity-registry` on 2026-11-02). `test/fixtures/identity-cbor-fixtures.json` is a copy of `contracts/identity-marketplace/fixtures/cbor-fixtures.json` at the same commit: the Plutus Data CBOR that the Aiken types themselves serialise. Each copy was taken from the blob, `git -C <agents-marketplace> cat-file blob <commit>:<path>`, never from a working file. The copies were first taken at `b5d66a6` (`b5d66a6437b390f525dfe00d989499ac5e339e04`). Between `b5d66a6` and `67054f6` one source changed: `network.ts` (its comments and the mainnet system start), outside the line of the excerpt. That excerpt was cut again from the blob at `67054f6`, and it has the same bytes. The other sources and the fixture are the same blobs at both commits, so no sha256 changed.
+The files under `src/vendored/shared/` are copies of files of Apex-Fusion/agents-marketplace `packages/shared/src/` at commit `4c95c3f` (`4c95c3f7745f013f26a33e66e992989490ffb05e`, the release commit of the identity registry on Vector mainnet, the head of branch `feat/identity-registry` on 2026-11-03). `test/fixtures/identity-cbor-fixtures.json` is a copy of `contracts/identity-marketplace/fixtures/cbor-fixtures.json` at the same commit: the Plutus Data CBOR that the Aiken types themselves serialise. Each copy was taken from the blob, `git -C <agents-marketplace> cat-file blob <commit>:<path>`, never from a working file. The copies were first taken at `b5d66a6` (`b5d66a6437b390f525dfe00d989499ac5e339e04`). Between `b5d66a6` and `67054f6` (`67054f6661910e0163aff8ed3f24d2695ba48207`) one source changed: `network.ts` (its comments and the mainnet system start), outside the line of the excerpt. That excerpt was cut again from the blob at `67054f6`, and it has the same bytes. Between `67054f6` and `4c95c3f` no source and not the fixture changed: each copy and each excerpt was compared with its blob at `4c95c3f` and has the same bytes. So no sha256 changed.
 
 They give the services the identity registry record (`IdentityDatum`) and the legacy registry record (`LegacyDatum`) of did:vector Part 1 section 5, the canonical Plutus Data encoder and strict decoder those records are hashed and compared with, the DID strings of Part 1 section 3 (`vectorDid`, `legacyVectorDid`, `parseVectorDid`), the key hash, and the purpose and rights values. `src/identity.ts` re-exports them and adds the local part: the two registries, the authenticity test of a record output and `activeKey`, the `active_key` of the `vector_identity` library.
 
 | destination | source | commit | sha256 |
 |---|---|---|---|
-| `src/vendored/shared/cbor/plutus-data.ts` | `agents-marketplace:packages/shared/src/cbor/plutus-data.ts` | `67054f6` | `b9e9e1ffcba946ceeddf711547c0a7d57c4e0a316119eb0bf523a3f441844d4e` |
-| `src/vendored/shared/cbor/plutus-schema.ts` | `agents-marketplace:packages/shared/src/cbor/plutus-schema.ts` | `67054f6` | `e02ee3bdbaa5e6e73a31b05e642083a65fdc85453040db7783eef3bf6902ed55` |
-| `src/vendored/shared/cbor/address.ts` | `agents-marketplace:packages/shared/src/cbor/address.ts` | `67054f6` | `e1c526bb9bc19f38302901fce49c3128106d1b09e85f4b9146567626e6d0d7af` |
-| `src/vendored/shared/cbor/IdentityDatum.ts` | `agents-marketplace:packages/shared/src/cbor/IdentityDatum.ts` | `67054f6` | `146b6d92782f1163ae20a27de51d287465049222227f7e8fc5eae5a4d4ccc9b3` |
-| `src/vendored/shared/identity/id.ts` | `agents-marketplace:packages/shared/src/identity/id.ts` | `67054f6` | `4cb0dfb0da048bd77f1c508b1e4a42027a072e6e9676f7da2741592e680b09be` |
-| `src/vendored/shared/identity/constants.ts` | `agents-marketplace:packages/shared/src/identity/constants.ts` excerpt, lines 6-68 | `67054f6` | `0b142e7c0471be38d68db4c1681bbae6c7f5432856ec3eef72fb9cf1592b5b34` |
-| `src/vendored/shared/network.ts` | `agents-marketplace:packages/shared/src/network.ts` excerpt, line 16 | `67054f6` | `407d7b71f2f8345e40e82348ccfbebdf76fed03fd191661c94fe19f82e2129f6` |
-| `src/vendored/shared/chain/ChainProvider.ts` | `agents-marketplace:packages/shared/src/chain/ChainProvider.ts` excerpt, line 14 | `67054f6` | `98ea97d44254ace46fe098baec870f2acd982694dd699dd0f03368ce71b577c5` |
-| `test/fixtures/identity-cbor-fixtures.json` | `agents-marketplace:contracts/identity-marketplace/fixtures/cbor-fixtures.json` | `67054f6` | `4a7bf768af8d9cac859024016eddfc0b29c079b659a47650b69c5f4efc449486` |
+| `src/vendored/shared/cbor/plutus-data.ts` | `agents-marketplace:packages/shared/src/cbor/plutus-data.ts` | `4c95c3f` | `b9e9e1ffcba946ceeddf711547c0a7d57c4e0a316119eb0bf523a3f441844d4e` |
+| `src/vendored/shared/cbor/plutus-schema.ts` | `agents-marketplace:packages/shared/src/cbor/plutus-schema.ts` | `4c95c3f` | `e02ee3bdbaa5e6e73a31b05e642083a65fdc85453040db7783eef3bf6902ed55` |
+| `src/vendored/shared/cbor/address.ts` | `agents-marketplace:packages/shared/src/cbor/address.ts` | `4c95c3f` | `e1c526bb9bc19f38302901fce49c3128106d1b09e85f4b9146567626e6d0d7af` |
+| `src/vendored/shared/cbor/IdentityDatum.ts` | `agents-marketplace:packages/shared/src/cbor/IdentityDatum.ts` | `4c95c3f` | `146b6d92782f1163ae20a27de51d287465049222227f7e8fc5eae5a4d4ccc9b3` |
+| `src/vendored/shared/identity/id.ts` | `agents-marketplace:packages/shared/src/identity/id.ts` | `4c95c3f` | `4cb0dfb0da048bd77f1c508b1e4a42027a072e6e9676f7da2741592e680b09be` |
+| `src/vendored/shared/identity/constants.ts` | `agents-marketplace:packages/shared/src/identity/constants.ts` excerpt, lines 6-68 | `4c95c3f` | `0b142e7c0471be38d68db4c1681bbae6c7f5432856ec3eef72fb9cf1592b5b34` |
+| `src/vendored/shared/network.ts` | `agents-marketplace:packages/shared/src/network.ts` excerpt, line 16 | `4c95c3f` | `407d7b71f2f8345e40e82348ccfbebdf76fed03fd191661c94fe19f82e2129f6` |
+| `src/vendored/shared/chain/ChainProvider.ts` | `agents-marketplace:packages/shared/src/chain/ChainProvider.ts` excerpt, line 14 | `4c95c3f` | `98ea97d44254ace46fe098baec870f2acd982694dd699dd0f03368ce71b577c5` |
+| `test/fixtures/identity-cbor-fixtures.json` | `agents-marketplace:contracts/identity-marketplace/fixtures/cbor-fixtures.json` | `4c95c3f` | `4a7bf768af8d9cac859024016eddfc0b29c079b659a47650b69c5f4efc449486` |
 
 `test/vendored.test.ts` checks this table in both directions: every row names a file whose sha256 matches, and every file under `src/vendored/` has a row.
 
@@ -79,11 +79,11 @@ The other five copies and the fixture are byte-identical to their blobs. Not cop
 Check the copies against the pin (bash, from the repository root): the first command prints nothing for each byte-identical copy, and the excerpts are cut the same way.
 
 ```bash
-for f in cbor/plutus-data.ts cbor/plutus-schema.ts cbor/address.ts cbor/IdentityDatum.ts identity/id.ts; do git -C <agents-marketplace> cat-file blob 67054f6:packages/shared/src/$f | cmp - packages/vector-read/src/vendored/shared/$f; done
-git -C <agents-marketplace> cat-file blob 67054f6:packages/shared/src/identity/constants.ts | sed -n '6,68p' | cmp - packages/vector-read/src/vendored/shared/identity/constants.ts
-git -C <agents-marketplace> cat-file blob 67054f6:packages/shared/src/network.ts | sed -n '16p' | cmp - packages/vector-read/src/vendored/shared/network.ts
-git -C <agents-marketplace> cat-file blob 67054f6:packages/shared/src/chain/ChainProvider.ts | sed -n '14p' | cmp - packages/vector-read/src/vendored/shared/chain/ChainProvider.ts
-git -C <agents-marketplace> cat-file blob 67054f6:contracts/identity-marketplace/fixtures/cbor-fixtures.json | cmp - packages/vector-read/test/fixtures/identity-cbor-fixtures.json
+for f in cbor/plutus-data.ts cbor/plutus-schema.ts cbor/address.ts cbor/IdentityDatum.ts identity/id.ts; do git -C <agents-marketplace> cat-file blob 4c95c3f:packages/shared/src/$f | cmp - packages/vector-read/src/vendored/shared/$f; done
+git -C <agents-marketplace> cat-file blob 4c95c3f:packages/shared/src/identity/constants.ts | sed -n '6,68p' | cmp - packages/vector-read/src/vendored/shared/identity/constants.ts
+git -C <agents-marketplace> cat-file blob 4c95c3f:packages/shared/src/network.ts | sed -n '16p' | cmp - packages/vector-read/src/vendored/shared/network.ts
+git -C <agents-marketplace> cat-file blob 4c95c3f:packages/shared/src/chain/ChainProvider.ts | sed -n '14p' | cmp - packages/vector-read/src/vendored/shared/chain/ChainProvider.ts
+git -C <agents-marketplace> cat-file blob 4c95c3f:contracts/identity-marketplace/fixtures/cbor-fixtures.json | cmp - packages/vector-read/test/fixtures/identity-cbor-fixtures.json
 ```
 
 Re-vendoring:

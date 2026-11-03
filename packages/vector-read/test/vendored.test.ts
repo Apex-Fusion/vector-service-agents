@@ -23,7 +23,7 @@ describe('vendored identity codecs', () => {
       const [, dest, source, commit, sha] = cells(row);
       expect(existsSync(join(root, dest)), dest).toBe(true);
       expect(source).toMatch(/^agents-marketplace:(packages\/shared\/src|contracts\/identity-marketplace\/fixtures)\//);
-      expect(commit).toBe('67054f6');
+      expect(commit).toBe('4c95c3f');
       const actual = createHash('sha256').update(readFileSync(join(root, dest))).digest('hex');
       expect(actual, `${dest} changed since it was vendored`).toBe(sha);
     }
