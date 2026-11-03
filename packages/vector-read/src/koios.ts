@@ -22,7 +22,8 @@ export const koios = {
   assetUtxos: (policy: string, name: string, f?: Fetch) => post<KoiosUtxo[]>('asset_utxos', { _asset_list: [[policy, name]], _extended: true }, f),
   assetHistory: (policy: string, name: string, f?: Fetch) => post<Array<{ minting_txs: Array<{ tx_hash: string; quantity: string; block_time: number }> }>>('asset_history', { _asset_policy: policy, _asset_name: name }, f),
   assetTxs: (policy: string, name: string, f?: Fetch) => post<Array<{ tx_hash: string; block_height: number; block_time: number }>>('asset_txs', { _asset_policy: policy, _asset_name: name, _history: true }, f),
-  // Without _inputs and _assets Koios answers with empty inputs, empty assets_minted and empty output asset_list.
+  // Without _inputs and _assets Koios answers with empty inputs, empty assets_minted and empty output asset_list. The output inline_datum.bytes stay
+  // null: Koios gives them only with _scripts and _bytecode, which add the bytecode of every script. Read datums with utxoInfo (extended).
   txInfo: (hashes: string[], f?: Fetch) => post<KoiosTxInfo[]>('tx_info', { _tx_hashes: hashes, _inputs: true, _assets: true }, f),
   // One page of at most KOIOS_PAGE rows; `offset` (a query parameter) reads the next page. Omitted, the path is unchanged.
   addressUtxos: (addresses: string[], f?: Fetch, offset?: number) => post<KoiosUtxo[]>(offset ? `address_utxos?offset=${offset}` : 'address_utxos', { _addresses: addresses, _extended: true }, f, 40_000),

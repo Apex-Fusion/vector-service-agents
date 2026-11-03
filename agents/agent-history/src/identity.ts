@@ -79,9 +79,11 @@ export async function identityTimeline(s: Subject, f: Fetch, registries: Registr
   if (identity && identityMint) for (const tx of ordered) if (identityTxs.has(tx.tx_hash) && ledgerOrder(tx, identityMint) >= 0) steps.push({ tx, registry: 'identity' });
   const registryOf = (kind: RegistryKind) => (kind === 'legacy' ? legacy : identity!);
   const recordOutput = (tx: KoiosTxInfo, kind: RegistryKind) => tx.outputs.find((o) => isAuthenticRecord(o.payment_addr.bech32, o.asset_list, registryOf(kind), id));
-  // Legacy datums are posted by hash, so tx_info shows no inline bytes for them; utxo_info (extended) resolves the bytes. Identity records hold inline datums.
+  // Koios tx_info gives no datum bytes (inline_datum.bytes null) unless a call sets both _scripts and _bytecode, and that answer also carries the
+  // bytecode of every script. utxo_info (extended) gives the bytes of a spent output as of an unspent one, so the record outputs of both registries
+  // are read through it.
   const resolved = new Map<string, string>();
-  const unread = steps.flatMap(({ tx, registry }) => { const o = registry === 'legacy' ? recordOutput(tx, registry) : undefined; return o && !bytesOf(o.inline_datum) ? [refOf(tx.tx_hash, o.tx_index)] : []; });
+  const unread = steps.flatMap(({ tx, registry }) => { const o = recordOutput(tx, registry); return o && !bytesOf(o.inline_datum) ? [refOf(tx.tx_hash, o.tx_index)] : []; });
   if (unread.length) for (const u of await koios.utxoInfo(unread, f)) { const b = bytesOf(u.inline_datum); if (b) resolved.set(refOf(u.tx_hash, u.tx_index), b); }
 
   const timeline: TimelineEntry[] = [];
@@ -94,7 +96,7 @@ export async function identityTimeline(s: Subject, f: Fetch, registries: Registr
     const record = recordOutput(tx, registry);
     if (record) {
       const ref = refOf(tx.tx_hash, record.tx_index);
-      const bytes = bytesOf(record.inline_datum) ?? (registry === 'legacy' ? resolved.get(ref) : undefined);
+      const bytes = bytesOf(record.inline_datum) ?? resolved.get(ref);
       if (!bytes) throw new Error(`${registry === 'legacy' ? 'registry' : 'identity record'} datum at ${ref} could not be read`);
       const content: RecordContent = registry === 'legacy' ? { registry, datum: decodeLegacyDatum(bytes) } : { registry, datum: decodeIdentityDatum(bytes) };
       // Part 1, section 7.2: a version starts when the datum differs, as Plutus Data, from the last authentic record output; the adoption is always one.

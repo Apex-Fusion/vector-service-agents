@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest';
-import { didFor, encodeLegacyDatum, keyHash, utf8ToHex } from '@vsa/vector-read';
-import type { Fetch, IdentityDatum, Key, Party } from '@vsa/vector-read';
+import { didFor, encodeLegacyDatum, keyHash, koios, utf8ToHex } from '@vsa/vector-read';
+import type { Fetch, IdentityDatum, Key, KoiosTxInfo, Party } from '@vsa/vector-read';
 import { identitySection, identityTimeline } from '../src/identity.ts';
 import type { Subject } from '../src/subject.ts';
 import { koiosLedger, token, txHash as H, identityHex, TEST_IDENTITY, WITH_IDENTITY, LEGACY, CONTROLLER } from './support.ts';
@@ -9,9 +9,9 @@ import type { LedgerTx } from './support.ts';
 const ID = 'ab'.repeat(32), A = 'cd'.repeat(28), B = 'ef'.repeat(28), WALLET = 'addr1v' + 'q'.repeat(50);
 const subject: Subject = { kind: 'asset', pkh: null, asset_name: ID, did: didFor(ID), registry: null, controller_pkh: null, candidates: [] };
 const legacyHex = (owner: string, name = 'A') => encodeLegacyDatum({ owner: { type: 'VerificationKey', hash: owner }, name: utf8ToHex(name), description: utf8ToHex('d'), capabilities: [utf8ToHex('x.y.v1')], framework: utf8ToHex('fw'), endpoint: '', registeredAt: 1n });
-// Mainnet shape (checked against the live ledger: 788 of 788 registry outputs): the legacy datum is posted by hash, so tx_info shows a datum_hash
-// and no inline bytes, and the bytes come from utxo_info (extended) on the output ref. An identity record holds an inline datum.
-const legacyOut = (owner: string, name?: string) => ({ address: LEGACY.address, assets: [token(LEGACY, ID)], datum: legacyHex(owner, name), byHash: true });
+// Mainnet shape (the Koios of Vector mainnet, checked on 2026-11-03): tx_info shows a datum_hash and no bytes for the record output of either
+// registry, as the call sets neither _scripts nor _bytecode; the bytes come from utxo_info (extended) on the output ref.
+const legacyOut = (owner: string, name?: string) => ({ address: LEGACY.address, assets: [token(LEGACY, ID)], datum: legacyHex(owner, name) });
 const idOut = (over: Partial<IdentityDatum> = {}, value?: string) => ({ address: TEST_IDENTITY.address, assets: [token(TEST_IDENTITY, ID)], datum: identityHex(over), value });
 const spend = (n: number) => [`${H(n)}#0`];
 // registered to A, rotated to B, then deregistered: the token is burned
@@ -201,6 +201,33 @@ describe('the identity registry: one record from registration to tombstone', () 
   test('an identity token that is burned is an error: the identity registry never burns', async () => {
     const burned = [life[0], { hash: H(2), block: 200, spends: spend(1), outputs: [{ address: WALLET }], mint: [token(TEST_IDENTITY, ID, '-1')] }];
     await expect(identityTimeline(subject, koiosLedger(burned), WITH_IDENTITY.registries)).rejects.toThrow(/identity token was burned/);
+  });
+  // The answer of the Koios of Vector mainnet (checked on 2026-11-03 on the 11 transactions of a live identity record): tx_info gives the bytes of a
+  // record output only when the call sets both _scripts and _bytecode, and that answer also carries the bytecode of every script (773 kB, not 46 kB).
+  test('the fixture answers as Vector Koios does: tx_info gives the datum bytes only with _scripts and _bytecode', async () => {
+    const f = koiosLedger(life);
+    const [plain] = await koios.txInfo([H(1)], f);
+    expect(plain.outputs[0].inline_datum).toEqual({ bytes: null, value: null });
+    const [bytecodeOnly] = await koios.post<KoiosTxInfo[]>('tx_info', { _tx_hashes: [H(1)], _inputs: true, _assets: true, _bytecode: true }, f);
+    expect(bytecodeOnly.outputs[0].inline_datum).toEqual({ bytes: null, value: null });
+    const [full] = await koios.post<KoiosTxInfo[]>('tx_info', { _tx_hashes: [H(1)], _inputs: true, _assets: true, _scripts: true, _bytecode: true }, f);
+    expect(full.outputs[0].inline_datum?.bytes).toBe(identityHex(v0));
+  });
+  test('the datums of the identity record are read through one utxo_info call, as tx_info gives none of them', async () => {
+    const calls: Array<{ endpoint: string; body: unknown }> = [];
+    const inner = koiosLedger(life);
+    const watched: Fetch = async (u, i) => {
+      calls.push({ endpoint: String(u).split('/').pop()!, body: JSON.parse(String(i?.body ?? 'null')) });
+      return inner(u, i);
+    };
+    const { section } = await identityTimeline(subject, watched, WITH_IDENTITY.registries);
+    expect(section.record).toMatchObject({ registry: 'identity', controller_pkh: keyHash(NEW), status: { status: 'revoked' } });
+    expect(section.timeline).toHaveLength(life.length);
+    expect(calls.filter((c) => c.endpoint === 'utxo_info')).toEqual([{ endpoint: 'utxo_info', body: { _utxo_refs: life.map((tx) => `${tx.hash}#0`), _extended: true } }]);
+  });
+  test('an identity record datum that utxo_info cannot give either is an error that names the output', async () => {
+    await expect(identityTimeline(subject, altered(koiosLedger(life.slice(0, 1)), 'utxo_info', () => []), WITH_IDENTITY.registries))
+      .rejects.toThrow(`identity record datum at ${H(1)}#0 could not be read`);
   });
 });
 

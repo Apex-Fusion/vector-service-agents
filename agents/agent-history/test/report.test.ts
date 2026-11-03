@@ -76,7 +76,7 @@ describe('ChandraOCR in both DID forms', () => {
     framework: utf8ToHex('agents-marketplace'), endpoint: utf8ToHex(ENDPOINT), capabilities: [utf8ToHex('ocr.page.extract.chandra-ocr-2.v1')],
   });
   const chandraAdopts = (keys: Key[]): LedgerTx[] => [
-    { hash: REG_TX, block: 7_275_113, time: 1_786_092_415, outputs: [{ address: LEGACY.address, assets: [token(LEGACY, CHANDRA)], datum: legacyDatum, byHash: true }], mint: [token(LEGACY, CHANDRA)] },
+    { hash: REG_TX, block: 7_275_113, time: 1_786_092_415, outputs: [{ address: LEGACY.address, assets: [token(LEGACY, CHANDRA)], datum: legacyDatum }], mint: [token(LEGACY, CHANDRA)] },
     { hash: ADOPT_TX, block: 9_000_000, time: 1_795_000_000, spends: [`${REG_TX}#0`], outputs: [{ address: TEST_IDENTITY.address, assets: [token(TEST_IDENTITY, CHANDRA)], datum: identityHex(adopted(keys)) }], mint: [token(LEGACY, CHANDRA, '-1'), token(TEST_IDENTITY, CHANDRA)] },
     { hash: SUSPEND_TX, block: 9_000_100, time: 1_795_000_100, spends: [`${ADOPT_TX}#0`], outputs: [{ address: TEST_IDENTITY.address, assets: [token(TEST_IDENTITY, CHANDRA)], datum: identityHex({ ...adopted(keys), status: { type: 'Suspended', holds: [{ by: { type: 'ControllerSet' }, reason: 68, since: 1_795_000_000_000, until: 1_796_000_000_000 }] } }) }] },
   ];
