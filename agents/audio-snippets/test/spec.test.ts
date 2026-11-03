@@ -53,7 +53,8 @@ describe('specs/audio-snippets.md', () => {
     expect(section('Status').trimStart().startsWith(`${manifest.status.chip.toUpperCase()} (`)).toBe(true);
     expect(section('Status')).toContain(`). Since ${manifest.status.since}.\n`);
     expect(section('Status').split('\n')).toContain('DEPLOYED (registered and staked 2026-10-17, advertised 2026-10-17, re-advertised 2026-10-17 at the status flip, one first-party job settled 2026-10-17). Since 2026-10-17.');
-    expect(row(section('Identity'), 'Registry address')).toBe(`| Registry address | \`${REGISTRY_ADDRESS}\` |`);
+    expect(row(section('Identity'), 'Registry address')).toBe(`| Registry address | \`${REGISTRY_ADDRESS}\`, the legacy registry. The manifest gives the identity registry address in \`identity.registry_address\` once the service is configured with it |`);
+    expect(manifest.identity.registry_address).toBe('');
   });
 
   test('the request: the page shows every field of the schema the manifest publishes, and its examples are requests the intake accepts', () => {
@@ -262,14 +263,16 @@ describe('specs/audio-snippets.md, pinned further', () => {
     expect(handling).toContain('Datalab, OpenRouter and Brave are not used, and neither is any model provider.');
   });
 
-  test('the Controller row names the three fields of the manifest and the check at start, and the code does it (R-D21)', () => {
+  test('the Controller row names the fields of the manifest and the check at start, and the code does it (R-D21)', () => {
     const controller = row(section('Identity'), 'Controller');
-    expect(Object.keys(manifest.identity)).toContain('controller_pkh');
+    expect(Object.keys(manifest.identity)).toStrictEqual(['did', 'registry_address', 'supplier_key']);
     expect(Object.keys(manifest.keys)).toStrictEqual(['supplier_pkh', 'pub_key_hex']);
-    for (const field of ['identity.controller_pkh', 'keys.supplier_pkh', 'keys.pub_key_hex']) expect(controller, field).toContain(tick(field));
+    for (const field of ['keys.supplier_pkh', 'keys.pub_key_hex', 'identity.supplier_key']) expect(controller, field).toContain(tick(field));
     expect(controller).toContain('the service does not start unless the public key hashes to the key hash');
+    expect(controller).toContain('`identity.supplier_key` names it as a key of the DID (`<DID>#<key hash>`)');
+    expect(controller).not.toContain('controller_pkh');
     const config = loadConfig(FULL_ENV);
-    expect([config.manifest.identity.controller_pkh, config.manifest.keys]).toStrictEqual([SUPPLIER.pkh, { supplier_pkh: SUPPLIER.pkh, pub_key_hex: SUPPLIER.pubKeyHex }]);
+    expect([config.manifest.identity.supplier_key, config.manifest.keys]).toStrictEqual([`${FULL_ENV.AGENT_DID}#${SUPPLIER.pkh}`, { supplier_pkh: SUPPLIER.pkh, pub_key_hex: SUPPLIER.pubKeyHex }]);
     expect(() => loadConfig({ ...FULL_ENV, SUPPLIER_PUB_KEY_HEX: 'cd'.repeat(32) })).toThrow(/is not the public key of SUPPLIER_PKH/);
     expect(row(section('What the receipt commits to'), '`supplier_pkh`')).toContain('which is also the controller key');
   });

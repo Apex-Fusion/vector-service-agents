@@ -12,9 +12,9 @@
 name: advocate
 services:
   agent:
-    # The pin is the full commit c4c378a. BuildKit does not resolve the abbreviated form (repository does not contain ref).
+    # The pin is the full commit 78e8a81. BuildKit does not resolve the abbreviated form (repository does not contain ref).
     build:
-      context: https://github.com/Apex-Fusion/vector-agent-template.git#c4c378abdf2eb507ad454cbeb62b4f48bd5b46a6
+      context: https://github.com/Apex-Fusion/vector-agent-template.git#78e8a8147f4e6a2d94b9fec30e0e5f4706c70038
       dockerfile: agent/Dockerfile
     container_name: advocate-agent
     restart: unless-stopped

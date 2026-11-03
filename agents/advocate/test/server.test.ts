@@ -11,7 +11,7 @@ import { connect } from 'node:net';
 import Ajv from 'ajv';
 import { afterEach, describe, test, expect, vi } from 'vitest';
 import { operatorsText } from '@vsa/service-kit';
-import { REGISTRY_ADDRESS } from '@vsa/vector-read';
+import { REGISTRY_ADDRESS, REGISTRY_POLICY, blake2b224Hex, identityRegistryOf, legacyVectorDid, utf8ToHex } from '@vsa/vector-read';
 import { JOB_DEADLINE_MS, PAGE_TIMEOUT_MS } from '../src/budget.ts';
 import { AdvocateError, JOB_STATUS } from '../src/errors.ts';
 import type { JobCode } from '../src/errors.ts';
@@ -62,13 +62,13 @@ describe('manifest', () => {
   test('a full environment gives every field of the manifest, in the order the design gives them', () => {
     expect(Object.keys(MANIFEST)).toStrictEqual(['schema', 'name', 'capability_id', 'version', 'description', 'operator', 'identity', 'keys', 'interface', 'terms', 'behaviour', 'status', 'gaps', 'links']);
     expect(MANIFEST).toStrictEqual({
-      schema: 'vector.agent-manifest.v1',
+      schema: 'vector.agent-manifest.v2',
       name: 'Advocate',
       capability_id: 'research.advocate.onesided.v1',
-      version: '0.1.0',
+      version: '0.2.0',
       description: 'The strongest one-sided brief for a position, with citations: it argues one side only, by design, omits counter-arguments, and says so in every output.',
       operator: { name: 'Apex Fusion Foundation', contact: TEST_CONTACT },
-      identity: { did: 'did:test', controller_pkh: SUPPLIER.pkh, registry_address: REGISTRY_ADDRESS },
+      identity: { did: 'did:test', registry_address: '', supplier_key: `did:test#${SUPPLIER.pkh}` },
       keys: { supplier_pkh: SUPPLIER.pkh, pub_key_hex: SUPPLIER.pubKeyHex, buyer_pkh: BUYER.pkh },
       interface: {
         request_schema: MANIFEST.interface.request_schema, // held against the intake below
@@ -128,10 +128,38 @@ describe('manifest', () => {
     expect(360_000).toBeLessThanOrEqual(MIN_PROCESSING_WINDOW_MS - 60_000);
   });
 
-  test('without the identity the keys are empty strings; the supplier key hash is both controller and supplier, and the buyer key hash is published beside them', () => {
-    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT }).keys).toStrictEqual({ supplier_pkh: '', pub_key_hex: '', buyer_pkh: '' });
-    const m = manifestFromEnv({ ...FULL_ENV, SUPPLIER_PKH: 'ab'.repeat(28), AGENT_DID: 'did:vector:agent:x:y', ADVOCATE_BUYER_PKH: 'cd'.repeat(28) });
-    expect([m.identity.did, m.identity.controller_pkh, m.keys.supplier_pkh, m.keys.buyer_pkh]).toStrictEqual(['did:vector:agent:x:y', 'ab'.repeat(28), 'ab'.repeat(28), 'cd'.repeat(28)]);
+  test('without the identity the keys and the identity block are empty strings; the supplier key hash is the supplier key and, with the DID, the listed supplier key; the buyer key hash is published beside them', () => {
+    const none = manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT });
+    expect([none.identity, none.keys]).toStrictEqual([{ did: '', registry_address: '', supplier_key: '' }, { supplier_pkh: '', pub_key_hex: '', buyer_pkh: '' }]);
+    const did = `did:vector:${'ef'.repeat(32)}`;
+    const m = manifestFromEnv({ ...FULL_ENV, SUPPLIER_PKH: 'ab'.repeat(28), AGENT_DID: did, ADVOCATE_BUYER_PKH: 'cd'.repeat(28) });
+    expect([m.identity, m.keys.supplier_pkh, m.keys.buyer_pkh]).toStrictEqual([{ did, registry_address: '', supplier_key: `${did}#${'ab'.repeat(28)}` }, 'ab'.repeat(28), 'cd'.repeat(28)]);
+  });
+
+  test('the identity block of the manifest v2: the canonical DID (the legacy form under the legacy registry policy gives the same manifest), the address of the identity registry once IDENTITY_POLICY_ID is set, and the listed supplier key <DID>#<key hash>', () => {
+    const id = 'c5'.repeat(32);
+    const registry = identityRegistryOf(blake2b224Hex(utf8ToHex('a test identity registry')), undefined)!;
+    const canonical = manifestFromEnv({ ...FULL_ENV, AGENT_DID: `did:vector:${id}`, IDENTITY_POLICY_ID: registry.policy });
+    expect(canonical.identity).toStrictEqual({ did: `did:vector:${id}`, registry_address: registry.address, supplier_key: `did:vector:${id}#${SUPPLIER.pkh}` });
+    expect(Object.keys(canonical.identity)).toStrictEqual(['did', 'registry_address', 'supplier_key']);
+    expect(manifestFromEnv({ ...FULL_ENV, AGENT_DID: ` ${legacyVectorDid(REGISTRY_POLICY, id)}\n`, IDENTITY_POLICY_ID: registry.policy, IDENTITY_ADDRESS: registry.address })).toStrictEqual(canonical);
+    expect(manifestFromEnv({ ...FULL_ENV, AGENT_DID: `did:vector:${id}`, IDENTITY_POLICY_ID: ' ', IDENTITY_ADDRESS: '' }).identity.registry_address).toBe('');
+  });
+
+  test('a value of the identity block that breaks a rule stops the start, naming the variable; a value that is hex-shaped or long is given by its length', () => {
+    const refusal = (env: NodeJS.ProcessEnv): string => { try { manifestFromEnv({ ...FULL_ENV, ...env }); } catch (e) { return (e as Error).message; } throw new Error('it was accepted'); };
+    const id = 'c5'.repeat(32), policy = blake2b224Hex(utf8ToHex('a test identity registry'));
+    const didRule = `environment variable AGENT_DID must be did:vector:<64 lowercase hex> or its legacy form under the registry policy ${REGISTRY_POLICY}, got`;
+    for (const did of [legacyVectorDid('11'.repeat(28), id), `did:vector:${id.toUpperCase()}`, `did:vector:testnet:${id}`]) {
+      expect(refusal({ AGENT_DID: did }), did).toBe(`${didRule} ${did.length} characters`);
+    }
+    expect(refusal({ AGENT_DID: 'did:vector:short' })).toBe(`${didRule} "did:vector:short"`);
+    expect(refusal({ IDENTITY_POLICY_ID: 'ab'.repeat(32) })).toBe('environment variable IDENTITY_POLICY_ID must be 56 lowercase hex characters, got 64 characters');
+    expect(refusal({ IDENTITY_POLICY_ID: 'xyz' })).toBe('environment variable IDENTITY_POLICY_ID must be 56 lowercase hex characters, got "xyz"');
+    expect(refusal({ IDENTITY_POLICY_ID: REGISTRY_POLICY })).toBe('environment variable IDENTITY_POLICY_ID is the policy of the legacy registry, not of the identity registry');
+    expect(refusal({ IDENTITY_ADDRESS: REGISTRY_ADDRESS })).toBe('environment variable IDENTITY_ADDRESS is set but IDENTITY_POLICY_ID is not');
+    expect(refusal({ IDENTITY_POLICY_ID: policy, IDENTITY_ADDRESS: REGISTRY_ADDRESS }))
+      .toBe(`environment variable IDENTITY_ADDRESS (${REGISTRY_ADDRESS.length} characters) is not the address of IDENTITY_POLICY_ID (${identityRegistryOf(policy, undefined)!.address})`);
   });
 
   test('agent.json.template is the manifest with a placeholder for each of the five fields the operator supplies, byte for byte what renderTemplate prints', () => {
@@ -140,7 +168,7 @@ describe('manifest', () => {
     expect(file).toBe(renderTemplate());
     expect(file.endsWith('}\n')).toBe(true);
     expect(file).not.toContain('\r');
-    expect(file.match(/<[A-Z_]+>/g)?.sort()).toStrictEqual(['<ADVOCATE_BUYER_PKH>', '<AGENT_DID>', '<OPERATOR_CONTACT>', '<SUPPLIER_PKH>', '<SUPPLIER_PKH>', '<SUPPLIER_PUB_KEY_HEX>']);
+    expect(file.match(/<[A-Z_]+>/g)?.sort()).toStrictEqual(['<ADVOCATE_BUYER_PKH>', '<AGENT_DID>', '<AGENT_DID>', '<OPERATOR_CONTACT>', '<SUPPLIER_PKH>', '<SUPPLIER_PKH>', '<SUPPLIER_PUB_KEY_HEX>']);
     expect(/^[\x20-\x7e\n]*$/.test(file)).toBe(true);
   });
 
@@ -179,11 +207,11 @@ describe('manifest', () => {
     for (const bad of ['yesterday', '2026-10-1']) expect(() => manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_STATUS_SINCE: bad }), bad).toThrow(/AGENT_STATUS_SINCE/);
   });
 
-  test('AGENT_VERSION that is empty or blank is not set, and the version is 0.1.0; a value is published without the space around it', () => {
+  test('AGENT_VERSION that is empty or blank is not set, and the version is 0.2.0; a value is published without the space around it', () => {
     for (const v of [undefined, '', ' ', '\n']) {
-      expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ...(v === undefined ? {} : { AGENT_VERSION: v }) }).version, JSON.stringify(v)).toBe('0.1.0');
+      expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, ...(v === undefined ? {} : { AGENT_VERSION: v }) }).version, JSON.stringify(v)).toBe('0.2.0');
     }
-    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_VERSION: ' 0.2.0\n' }).version).toBe('0.2.0');
+    expect(manifestFromEnv({ OPERATOR_CONTACT: TEST_CONTACT, AGENT_VERSION: ' 0.3.0\n' }).version).toBe('0.3.0');
   });
 
   test('ADVERT_EXPLORER_URL is published as the link of the advert, and that link is empty while it is not set', () => {

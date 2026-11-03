@@ -80,7 +80,7 @@ It prints the image name, `@sha256:` and 64 hex digits. Give that line to the op
 docker compose -f docker-compose.agent-history.yml build agent
 ```
 
-This clones `vector-agent-template` at the pinned commit `c4c378a` and installs it. The compose file carries the full 40-character hash, because BuildKit does not resolve the short form. The first build takes a few minutes. It ends with `Image agent-history-agent Built`.
+This clones `vector-agent-template` at the pinned commit `78e8a81` and installs it. The compose file carries the full 40-character hash, because BuildKit does not resolve the short form. The first build takes a few minutes. It ends with `Image agent-history-agent Built`.
 
 ## 4. Make the env file and generate the supplier key
 
@@ -206,7 +206,7 @@ docker exec agent-history-service wget -qO- http://127.0.0.1:9091/healthz
 docker exec agent-history-service wget -qO- http://127.0.0.1:9091/agent.json
 ```
 
-`/healthz` answers `{"ok":true}`. The manifest must show the role address of step 4 in `operator.contact`, the new DID in `identity.did`, the key hash in `identity.controller_pkh` and `keys.supplier_pkh`, the public key in `keys.pub_key_hex`, `status.chip` and `status.since` as the env file sets them (step 4), and an empty `links.explorer_advert`. The advert's hash will cover exactly these bytes.
+`/healthz` answers `{"ok":true}`. The manifest must show `vector.agent-manifest.v2` in `schema`, the role address of step 4 in `operator.contact`, the new DID of step 7 in its canonical form `did:vector:<identifier>` in `identity.did` (the env file holds the legacy form `did:vector:agent:<policy>:<identifier>` of the same identifier), the listed supplier key `<DID>#<key hash>` in `identity.supplier_key`, the key hash in `keys.supplier_pkh`, the public key in `keys.pub_key_hex`, the address of the identity registry in `identity.registry_address` (empty while `IDENTITY_POLICY_ID` is empty in the env file), `status.chip` and `status.since` as the env file sets them (step 4), and an empty `links.explorer_advert`. The advert's hash will cover exactly these bytes.
 
 The service can report on itself. This shows what a buyer will get, including the registration of step 7 and the stake of step 8. Koios can take a minute to show a new registration:
 

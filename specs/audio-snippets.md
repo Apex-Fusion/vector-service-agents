@@ -15,8 +15,8 @@ This agent has had a registry record since 2026-10-17.
 | Field | Value |
 |---|---|
 | DID | `did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:1532506e54fa79cdfca6bef566ff1a5e7af9fceb332ffb7414d9923334b9d1ee` |
-| Controller | the supplier key, the only key of this agent and the key that signs its receipts. Its public key is `ef5a57f333b87f74e14c66145c7e3e5fa44ac7b69974cd6396cab1ca0ad54365`. The manifest publishes its key hash as `identity.controller_pkh` and `keys.supplier_pkh`, and its public key as `keys.pub_key_hex`: the service does not start unless the public key hashes to the key hash |
-| Registry address | `addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42` |
+| Controller | the supplier key, the only key of this agent and the key that signs its receipts. Its public key is `ef5a57f333b87f74e14c66145c7e3e5fa44ac7b69974cd6396cab1ca0ad54365`. The manifest publishes its key hash as `keys.supplier_pkh` and its public key as `keys.pub_key_hex`: the service does not start unless the public key hashes to the key hash. `identity.supplier_key` names it as a key of the DID (`<DID>#<key hash>`) |
+| Registry address | `addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42`, the legacy registry. The manifest gives the identity registry address in `identity.registry_address` once the service is configured with it |
 | Registry record | name `Audio Snippets`; description as in the manifest; capabilities `audio.transcript.snippets.v1`; framework `vector-service-agents`; endpoint the agent's public URL; controller key hash `609cd71929d168a0c12bf6fa3d6743e91f6026c6c902abc728e8b9b8` (the supplier key hash). Registered on 2026-10-17 in the confirmed transaction [`c101d9dd20a82d573bbb4d8d0155c89de403de29a73f1a68f1afa642542dc83b`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/c101d9dd20a82d573bbb4d8d0155c89de403de29a73f1a68f1afa642542dc83b). The deposit is 10000000 lovelace (10.000000), refundable on deregistration |
 | Public URL | `https://mp-suppliers-snippets.hal8.ai` (in service as of 2026-10-17) |
 | Reputation stake | a Module-3 self-stake of 10000000 lovelace (10.000000) on the capability, made on 2026-10-17 in transaction [`a23857f97c9197dd1051ef291decb06ee9cf5818339ac67ea120d0810720f3a3`](https://explorer.vector.mainnet.apexfusion.org/transaction/hash/a23857f97c9197dd1051ef291decb06ee9cf5818339ac67ea120d0810720f3a3) |
@@ -27,7 +27,7 @@ This agent has had a registry record since 2026-10-17.
 
 The model string in the advert and in every receipt is `audio-snippets-v1`.
 
-The agent runs behind the template runtime (`vector-agent-template`, pinned commit `c4c378a`, `CAPABILITY_KIND=custom`). The runtime claims the escrow, calls this service, signs the receipt and submits the receipt hash. The service holds no key.
+The agent runs behind the template runtime (`vector-agent-template`, pinned commit `78e8a81`, `CAPABILITY_KIND=custom`). The runtime claims the escrow, calls this service, signs the receipt and submits the receipt hash. The service holds no key.
 
 ## Terms
 
@@ -356,7 +356,7 @@ Advertised on 2026-10-17, and again the same day at the status flip: the marketp
 The request JSON is, for example, `{"source":{"url":"https://example.org/talk.mp3"},"quotes":["a quote that was said in the talk"]}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 
 1. **Chat client via MCP.** Same tools and same steps as for [Agent History](agent-history.md): list suppliers for `audio.transcript.snippets.v1`, post an escrow, send the job, poll, verify the receipt, accept. You give the assistant the request JSON, and the tools wrap it into the wire payload. The marketplace tools are on the hosted mainnet server as of 2026-10-14. The answer of a job is read through the server only up to 1000000 bytes, so leave the clips out there.
-2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `c4c378a`), with your own key. The file named by `--payload-file` holds the request JSON, and the buyer wraps it into the wire payload. Allow for the 25 min processing window.
+2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `78e8a81`), with your own key. The file named by `--payload-file` holds the request JSON, and the buyer wraps it into the wire payload. Allow for the 25 min processing window.
 3. **Developers, the raw routes.** You wrap the request JSON yourself and hash the wire payload, as described under Interface. Then the six steps in [Agent History](agent-history.md#how-to-hire-it), with this request JSON and this agent's public URL: its step 2 posts the escrow with the sha256 of the wire payload as `prompt_hash`.
 
 ## Changelog

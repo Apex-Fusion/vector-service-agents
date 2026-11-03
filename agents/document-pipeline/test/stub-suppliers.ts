@@ -12,9 +12,9 @@
 // The supplier endpoints are https IP literals of the documentation range 203.0.113.0/24: the clients reach a supplier only through safeFetch, which
 // looks a host name up for real, and a literal needs no lookup (ruling R20). The indexer is read with the injected fetch as it is, so its name is free.
 import { createHash, createPrivateKey, createPublicKey, sign as ed25519Sign } from 'node:crypto';
-import { blake2b224Hex, canonicalize, formatOutRef, sha256Utf8Hex } from '@vsa/vector-read';
+import { KOIOS_URL, blake2b224Hex, canonicalize, formatOutRef, sha256Utf8Hex } from '@vsa/vector-read';
 import type { AdvertDatum } from '@vsa/vector-read';
-import { FakeChain, ocrPromptHash, ocrResponseHash, responsesPromptHash, responsesResponseHash } from '@vsa/buyer-core';
+import { FakeChain, isIdentityAdvert, ocrPromptHash, ocrResponseHash, responsesPromptHash, responsesResponseHash } from '@vsa/buyer-core';
 import type { FakeChainOptions } from '@vsa/buyer-core';
 import { PAGE_0_PNG, PAGE_1_PNG, toBase64 } from './support.ts';
 
@@ -70,14 +70,17 @@ function advert(supplierPkh: string, capabilityId: string, model: string, endpoi
 export const OCR_ADVERT = advert(OCR_KEY.pkh, OCR_CAPABILITY, OCR_MODEL, OCR_ENDPOINT);
 export const LLM_ADVERT = advert(LLM_KEY.pkh, LLM_CAPABILITY, LLM_MODEL, LLM_ENDPOINT);
 
-/** A row of the indexer's /suppliers list for an advert, as the live indexer writes it: amounts as strings, the advert's UTxO as `utxo_ref` (ruling R19). */
+/**
+ * A row of the indexer's /suppliers list for an advert, as the live indexer writes it: amounts as strings, the advert's UTxO as `utxo_ref` (ruling R19),
+ * and the agent of an identity-marketplace advert as `agent_id` (Part 2 section 6.4).
+ */
 export function indexerRow(ref: string, a: AdvertDatum, over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     utxo_ref: ref, supplier_pkh: a.supplier_pkh, capability_id: a.capability_id, model: a.model, max_output_tokens: a.max_output_tokens,
     max_processing_ms: a.max_processing_ms, price_lovelace: String(a.price_lovelace), supplier_bond_lovelace: String(a.supplier_bond_lovelace),
     buyer_bond_lovelace: String(a.buyer_bond_lovelace), endpoint_url: a.endpoint_url, detail_uri: a.detail_uri, detail_hash: a.detail_hash,
     advertised_at: a.advertised_at, status: 'free', advert_status: 'Active', current_escrow_ref: null, last_seen_iso: '2026-10-15T09:00:00.000Z',
-    created_slot: 30_043_723, ...over,
+    created_slot: 30_043_723, ...(isIdentityAdvert(a) ? { agent_id: a.agent_id } : {}), ...over,
   };
 }
 
@@ -93,13 +96,14 @@ function signed(signer: StubKey, submit: Submit | undefined, receipt: Record<str
 
 /**
  * The body the OCR supplier serves for a finished page job (the result, the receipt, its signature, the escrow and the Submitted output), the way the
- * real one builds it: the response hash covers the page text and the output format the buyer asked for.
+ * real one builds it: the response hash covers the page text and the output format the buyer asked for. A supplier that serves an identity-marketplace
+ * advert signs the ninth field agent_did, the DID of its agent (Part 2 section 6.3).
  */
-export function ocrFinished(key: StubKey, escrowRef: string, request: { image_b64: string; mime: 'image/png' | 'image/jpeg' | 'image/webp'; output_format: 'markdown' | 'html' | 'json' }, signer: StubKey = key, submit?: Submit): Record<string, unknown> {
+export function ocrFinished(key: StubKey, escrowRef: string, request: { image_b64: string; mime: 'image/png' | 'image/jpeg' | 'image/webp'; output_format: 'markdown' | 'html' | 'json' }, signer: StubKey = key, submit?: Submit, agentId: string | null = null): Record<string, unknown> {
   const content = PAGE_TEXTS[request.image_b64] ?? 'A page the stub does not know.';
   const { receipt, receipt_signature } = signed(signer, submit, {
     escrow_ref: escrowRef, supplier_pkh: key.pkh, prompt_hash: ocrPromptHash(request), response_hash: ocrResponseHash({ content, output_format: request.output_format }),
-    model: OCR_MODEL, prompt_tokens: 812, completion_tokens: 9, wallclock_ms: 4210,
+    model: OCR_MODEL, prompt_tokens: 812, completion_tokens: 9, wallclock_ms: 4210, ...(agentId === null ? {} : { agent_did: `did:vector:${agentId}` }),
   });
   return {
     output_format: request.output_format, content, usage: { prompt_tokens: 812, completion_tokens: 9, total_tokens: 821 },
@@ -254,6 +258,8 @@ abstract class StubSupplier {
 }
 
 export class StubOcrSupplier extends StubSupplier {
+  /** The agent of the advert it serves, when that advert is an identity-marketplace one: its receipts then name it in agent_did. */
+  agentId: string | null = null;
   constructor(chain: FakeChain) { super(OCR_ENDPOINT, OCR_KEY, OCR_ADVERT_REF, OCR_ADVERT, chain, '/v1/ocr/extract'); }
   protected capability(): Record<string, unknown> {
     return { capability_id: OCR_CAPABILITY, model: OCR_MODEL, max_output_tokens: 8192, max_processing_ms: WINDOW_MS, price_lovelace: '200000', advert_ref: this.advertRef, supplier_pkh: this.key.pkh, pub_key_hex: this.key.pubKeyHex };
@@ -268,7 +274,7 @@ export class StubOcrSupplier extends StubSupplier {
   }
   protected finish(job: StubJob, signer: StubKey): Record<string, unknown> {
     const request = job.request as Parameters<typeof ocrFinished>[2];
-    return ocrFinished(this.key, job.escrowRef, request, signer, (hash) => this.chain.markSubmitted(job.escrowRef, hash));
+    return ocrFinished(this.key, job.escrowRef, request, signer, (hash) => this.chain.markSubmitted(job.escrowRef, hash), this.agentId);
   }
 }
 
@@ -304,6 +310,8 @@ export interface Marketplace {
   llm: StubChatSupplier;
   /** What the indexer lists at /suppliers. A test may change it before the run. */
   rows: Array<Record<string, unknown>>;
+  /** What Koios answers to asset_utxos: the outputs that hold the token of an agent's record. A test sets it. */
+  records: Array<Record<string, unknown>>;
   /** Every request the fetch got, in order. */
   calls: Array<{ method: string; url: string }>;
   fetchImpl: typeof fetch;
@@ -318,17 +326,20 @@ export function marketplace(opts: Pick<FakeChainOptions, 'floatLovelace' | 'coll
   const clock = { now: T0 };
   const chain = new FakeChain({ adverts: { [OCR_ADVERT_REF]: ocrAdvert, [LLM_ADVERT_REF]: llmAdvert }, clock: () => clock.now, prefix: PREFIX, ...chainOpts });
   const ocr = new StubOcrSupplier(chain);
+  ocr.agentId = isIdentityAdvert(ocrAdvert) ? ocrAdvert.agent_id : null;
   const llm = new StubChatSupplier(chain);
   const rows = [indexerRow(OCR_ADVERT_REF, ocrAdvert), indexerRow(LLM_ADVERT_REF, llmAdvert)];
+  const records: Marketplace['records'] = [];
   const calls: Marketplace['calls'] = [];
   const fetchImpl = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = new URL(String(input));
     const method = init.method ?? 'GET';
     calls.push({ method, url: url.href });
     if (url.origin === INDEXER && method === 'GET' && url.pathname === '/suppliers') return json(200, rows);
+    if (url.href === `${KOIOS_URL}/asset_utxos` && method === 'POST') return json(200, records);
     const supplier = [ocr, llm].find((s) => s.endpoint === url.origin);
     if (supplier === undefined) return json(404, { reason: 'no_route', message: `nothing at ${method} ${url.href}` });
     return supplier.handle(method, url.pathname, new Headers(init.headers).get('x-escrow-ref'), typeof init.body === 'string' ? init.body : '');
   }) as typeof fetch;
-  return { clock, chain, ocr, llm, rows, calls, fetchImpl };
+  return { clock, chain, ocr, llm, rows, records, calls, fetchImpl };
 }

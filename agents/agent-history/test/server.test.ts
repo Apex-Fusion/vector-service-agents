@@ -7,7 +7,7 @@ import { replayFetch } from '@vsa/vector-read';
 import type { Fetch } from '@vsa/vector-read';
 import { createServer, manifestFromEnv, envInt } from '../src/server.ts';
 import { BLIND_SPOTS, buildReport } from '../src/report.ts';
-import { TEST_ENV, TEST_CONTACT } from './support.ts';
+import { TEST_ENV, TEST_CONTACT, TEST_IDENTITY } from './support.ts';
 const fx = JSON.parse(readFileSync(new URL('./fixtures/chandra.json', import.meta.url), 'utf8'));
 const ASSET = '5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db';
 const K = 'https://v2.koios.vector.mainnet.apexfusion.org/api/v1';
@@ -28,7 +28,7 @@ describe('http surface', () => {
   });
   test('wire envelope produces a 200 report', async () => {
     const r = await call(JSON.stringify([{ content: JSON.stringify({ subject: ASSET, include: ['identity'] }), role: 'user' }]));
-    expect(r.status).toBe(200); expect(r.json.schema).toBe('vector.agent-history.report.v1');
+    expect(r.status).toBe(200); expect(r.json.schema).toBe('vector.agent-history.report.v2');
   });
   test('missing subject is a 400, not a 500', async () => {
     const r = await call(JSON.stringify([{ content: '{}', role: 'user' }]));
@@ -41,7 +41,7 @@ describe('http surface', () => {
     const port = (srv.address() as any).port;
     const res = await fetch(`http://127.0.0.1:${port}/`, { method: 'POST', body: JSON.stringify([{ content: JSON.stringify({ subject: '11'.repeat(32), include: ['identity'] }), role: 'user' }]) });
     const j = await res.json(); srv.close();
-    expect(res.status).toBe(200); expect(j.identity.registered).toBeNull(); expect(j.blind_spots[0]).toMatch(/No registry record/);
+    expect(res.status).toBe(200); expect(j.identity.registered).toBeNull(); expect(j.blind_spots).toContain('No registry record found for this subject.');
   });
 });
 
@@ -72,7 +72,7 @@ describe('wire checks over http', () => {
   };
   test('the size limit is 64 KiB in bytes: the limit passes the size check, one byte more does not', async () => {
     const atLimit = await call(pad(65_536));
-    expect(atLimit.status).toBe(400); expect(atLimit.json.message).toMatch(/subject must be a DID/); // got past the size check
+    expect(atLimit.status).toBe(400); expect(atLimit.json.message).toMatch(/subject must be a did:vector DID/); // got past the size check
     const over = await call(pad(65_537));
     expect(over.status).toBe(400); expect(over.json.message).toMatch(/too large/);
   });
@@ -87,7 +87,19 @@ describe('wire checks over http', () => {
   });
   test('a DID under another policy is a 400, not a 500', async () => {
     const r = await call(wire(['identity'], `did:vector:agent:${'11'.repeat(28)}:${ASSET}`));
-    expect(r.status).toBe(400); expect(r.json.message).toBe('DID policy is not the Vector agent registry');
+    expect(r.status).toBe(400); expect(r.json.message).toBe('DID policy is not the legacy Vector agent registry');
+  });
+  test('a DID with an uppercase character is a 400 (did:vector Part 1, section 3), and a testnet DID is a 400 too', async () => {
+    const upper = await call(wire(['identity'], `did:vector:${ASSET.toUpperCase()}`));
+    expect(upper.status).toBe(400); expect(upper.json.message).toMatch(/all in lowercase/);
+    const testnet = await call(wire(['identity'], `did:vector:testnet:${ASSET}`));
+    expect(testnet.status).toBe(400); expect(testnet.json.message).toMatch(/testnet DIDs are not supported/);
+  });
+  test('the canonical DID and the legacy DID of one agent are answered with the same report', async () => {
+    const canonical = await call(wire(['identity', 'marketplace'], `did:vector:${ASSET}`));
+    const legacy = await call(wire(['identity', 'marketplace'], `did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:${ASSET}`));
+    expect(canonical.status).toBe(200);
+    expect(legacy).toEqual(canonical);
   });
   test('anything but GET /healthz, GET /agent.json and POST is a 404', async () => {
     expect(await call('', 'PUT')).toEqual({ status: 404, json: { reason: 'not_found' } });
@@ -328,7 +340,7 @@ describe('manifest', () => {
   });
   test('the texts frozen into the advert hash: the gaps are the blind-spot sentences, the description does not claim the service signs, the subject agent endpoint is a named third party, the cache wording is exact', () => {
     const m = manifestFromEnv(TEST_ENV);
-    expect(m.gaps).toHaveLength(3);
+    expect(m.gaps).toHaveLength(4);
     expect(m.gaps[0]).toBe(BLIND_SPOTS[1]); // the same sentences in the manifest and in every report
     expect(m.gaps[1]).toBe(`${BLIND_SPOTS[2]} ${BLIND_SPOTS[3]}`);
     expect(m.gaps[2]).toBe(BLIND_SPOTS[5]); // the module sections show the ledger as it is now
@@ -344,5 +356,35 @@ describe('manifest', () => {
     expect(m.gaps[0]).toMatch(/by_indexer_state/);
     expect(m.behaviour.third_parties).toEqual(['Koios (Vector mainnet indexer)', 'marketplace indexer', "the subject agent's own endpoint (one GET /capability, 64 KiB cap, 20 s budget)"]);
     expect(m.behaviour.data_handling).toBe('Reads public ledger data only; the request subject is held in memory, and a report is served from cache for at most 60 s (expired entries are purged lazily).');
+    expect(m.gaps[3]).toBe(BLIND_SPOTS[6]); // what the identity section is, and is not
+    expect(m.gaps[3]).toMatch(/It is not a did:vector resolution/);
+  });
+  test('the identity block names the canonical DID, the identity registry address and the listed supplier key (Part 2, section 10)', () => {
+    const AH = '8a98c4b74f0e49a09ca4b3502e121c96a8e6992afd2cba64ef8128042fedd440', SUPPLIER = '1ea22a13acac6da070959317bad9bf5e510e8f7875a6727d3a5262cd';
+    const policy = TEST_IDENTITY.policy;
+    const m = manifestFromEnv({ ...TEST_ENV, AGENT_DID: `did:vector:${AH}`, SUPPLIER_PKH: SUPPLIER, IDENTITY_POLICY_ID: policy });
+    expect(m.schema).toBe('vector.agent-manifest.v2');
+    expect(m.identity).toEqual({ did: `did:vector:${AH}`, registry_address: TEST_IDENTITY.address, supplier_key: `did:vector:${AH}#${SUPPLIER}` });
+    expect(m.keys.supplier_pkh).toBe(SUPPLIER);
+    // The legacy form the registration step wrote is published in the canonical form.
+    expect(manifestFromEnv({ ...TEST_ENV, AGENT_DID: `did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:${AH}` }).identity.did).toBe(`did:vector:${AH}`);
+    // Before the identity registry is configured the address is empty; with no DID there is no supplier key URL.
+    expect(manifestFromEnv({ ...TEST_ENV, SUPPLIER_PKH: SUPPLIER }).identity).toEqual({ did: '', registry_address: '', supplier_key: '' });
+    expect(manifestFromEnv(TEST_ENV).version).toBe('0.2.0');
+  });
+  test('a did:vector AGENT_DID that names no Vector mainnet agent, or a malformed identity setting, stops the service and the error names the variable', () => {
+    for (const bad of [`did:vector:${'AB'.repeat(32)}`, `did:vector:testnet:${'ab'.repeat(32)}`, `did:vector:agent:${'11'.repeat(28)}:${'ab'.repeat(32)}`, 'did:vector:short']) {
+      expect(() => manifestFromEnv({ ...TEST_ENV, AGENT_DID: bad }), bad).toThrow(/environment variable AGENT_DID must be did:vector/);
+    }
+    expect(() => manifestFromEnv({ ...TEST_ENV, IDENTITY_POLICY_ID: 'xyz' })).toThrow(/environment variable IDENTITY_POLICY_ID must be 56 lowercase hex/);
+    expect(() => manifestFromEnv({ ...TEST_ENV, IDENTITY_ADDRESS: TEST_IDENTITY.address })).toThrow(/environment variable IDENTITY_ADDRESS is set but IDENTITY_POLICY_ID is not/);
+  });
+  test('createServer reads the settings at start and refuses one that breaks a rule, naming it', () => {
+    vi.stubEnv('OPERATOR_CONTACT', TEST_CONTACT);
+    vi.stubEnv('M1_ADDRESSES', 'claim=not-an-address');
+    expect(() => createServer()).toThrow(/environment variable M1_ADDRESSES must hold Vector mainnet script addresses/);
+    vi.stubEnv('M1_ADDRESSES', '');
+    vi.stubEnv('IDENTITY_POLICY_ID', TEST_IDENTITY.policy);
+    createServer().close(); // building the server does not listen
   });
 });

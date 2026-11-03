@@ -35,10 +35,10 @@ const PREFIX = 'hire-kit-test/';
 export const escrowNo = (n: number): string => formatOutRef(sha256Utf8Hex(`${PREFIX}${n}`), 0);
 /** What the chat supplier answers, unless a test says otherwise. */
 export const ANSWER = 'A bonded escrow holds the price and both bonds until the buyer accepts the work or reclaims the lock.';
-/** The seven checks of verifyFleetReceipt, all passed: what the record of every hire that is accepted carries. */
+/** The eight checks of verifyFleetReceipt, all passed: what the record of every hire that is accepted carries. */
 export const ALL_PASS = {
   escrow_ref_matches: true, response_hash_matches: true, supplier_key_matches: true, signature_valid: true, on_chain_hash_matches: true,
-  prompt_hash_matches: true, model_matches: true,
+  prompt_hash_matches: true, model_matches: true, fields_match: true,
 };
 
 // --- Keys ---------------------------------------------------------------------------------------------------------------------------

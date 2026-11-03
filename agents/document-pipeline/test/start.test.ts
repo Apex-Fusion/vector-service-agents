@@ -11,7 +11,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { createServer as netServer } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FakeChain, rawHexToBech32 } from '@vsa/buyer-core';
+import { BUYER_IDENTITY_SETTINGS, FakeChain, rawHexToBech32 } from '@vsa/buyer-core';
+import { REGISTRY_POLICY, blake2b224Hex, identityRegistryOf, legacyVectorDid, utf8ToHex } from '@vsa/vector-read';
 import { StrandedStore } from '../src/janitor.ts';
 import { popplerRenderer } from '../src/render.ts';
 import { manifestFromEnv } from '../src/server.ts';
@@ -170,7 +171,7 @@ describe('loadConfig', () => {
       // SUPPLIER_PKH is checked before the token is required, and its message gives a length; the search comes first all the same.
       expect(thrown(() => loadConfig({ ...FULL_ENV, SUPPLIER_PKH: CREDENTIAL })).message).toMatch(/^environment variable SUPPLIER_PKH holds the service token/);
       // A token whose whole and whose credential are under 16 characters is not looked for: the operator's choice stands, and the line is read as it is.
-      expect(loadConfig({ ...FULL_ENV, SERVICE_AUTH_HEADER: 'Bearer abc', AGENT_DID: 'did:vector:agent:abc' }).authHeader).toBe('Bearer abc');
+      expect(loadConfig({ ...FULL_ENV, SERVICE_AUTH_HEADER: 'Bearer abc', AGENT_DID: 'did:test:abc' }).authHeader).toBe('Bearer abc');
       // The buyer key is still looked for first.
       expect(thrown(() => loadConfig({ ...FULL_ENV, AGENT_DID: `${BUYER.privateKeyHex} ${CREDENTIAL}` })).message).toMatch(/^environment variable AGENT_DID holds the buyer key/);
     });
@@ -187,7 +188,7 @@ describe('loadConfig', () => {
 
   test('the supplier key hash is 56 hex characters and is published in lower case; the public key, when given, is 64', () => {
     expect(loadConfig({ ...FULL_ENV, SUPPLIER_PKH: SUPPLIER.pkh.toUpperCase() }).manifest.keys.supplier_pkh).toBe(SUPPLIER.pkh);
-    expect(loadConfig({ ...FULL_ENV, SUPPLIER_PKH: SUPPLIER.pkh.toUpperCase() }).manifest.identity.controller_pkh).toBe(SUPPLIER.pkh);
+    expect(loadConfig({ ...FULL_ENV, SUPPLIER_PKH: SUPPLIER.pkh.toUpperCase() }).manifest.identity.supplier_key).toBe(`${FULL_ENV.AGENT_DID}#${SUPPLIER.pkh}`);
     for (const bad of ['<SUPPLIER_PKH>', SUPPLIER.pkh.slice(1), `${SUPPLIER.pkh}00`, 'zz'.repeat(28)]) {
       expect(thrown(() => loadConfig({ ...FULL_ENV, SUPPLIER_PKH: bad })).message, bad).toMatch(/environment variable SUPPLIER_PKH must be 56 hex characters/);
     }
@@ -195,6 +196,14 @@ describe('loadConfig', () => {
     for (const bad of ['<SUPPLIER_PUB_KEY_HEX>', SUPPLIER.pubKeyHex.slice(1), `${SUPPLIER.pubKeyHex}00`]) {
       expect(thrown(() => loadConfig({ ...FULL_ENV, SUPPLIER_PUB_KEY_HEX: bad })).message, bad).toMatch(/environment variable SUPPLIER_PUB_KEY_HEX must be 64 hex characters/);
     }
+  });
+
+  test('the identity block is read at start: the DID in its canonical form and the identity registry of IDENTITY_POLICY_ID; a value that breaks a rule stops the start, naming the variable', () => {
+    const id = 'b8'.repeat(32), policy = blake2b224Hex(utf8ToHex('a test identity registry'));
+    const config = loadConfig({ ...FULL_ENV, AGENT_DID: legacyVectorDid(REGISTRY_POLICY, id), IDENTITY_POLICY_ID: policy });
+    expect(config.manifest.identity).toStrictEqual({ did: `did:vector:${id}`, registry_address: identityRegistryOf(policy, undefined)!.address, supplier_key: `did:vector:${id}#${SUPPLIER.pkh}` });
+    expect(thrown(() => loadConfig({ ...FULL_ENV, IDENTITY_POLICY_ID: 'xyz' })).message).toBe('environment variable IDENTITY_POLICY_ID must be 56 lowercase hex characters, got "xyz"');
+    expect(thrown(() => loadConfig({ ...FULL_ENV, AGENT_DID: `did:vector:testnet:${id}` })).message).toMatch(/^environment variable AGENT_DID must be did:vector:<64 lowercase hex> or its legacy form under the registry policy /);
   });
 
   test('the other settings that are given must be well formed, and the error names the variable', () => {
@@ -276,7 +285,8 @@ describe('loadConfig', () => {
     });
 
     test('the settings it looks in are every one the service reads but the key itself, and the ones the chain code reads and prints', () => {
-      expect([...CHAIN_SETTINGS]).toStrictEqual(['VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL']);
+      expect([...CHAIN_SETTINGS]).toStrictEqual(['VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', ...BUYER_IDENTITY_SETTINGS]);
+      expect([...BUYER_IDENTITY_SETTINGS]).toStrictEqual(['VECTOR_IDENTITY_LEGACY_ROOT', 'VECTOR_IDENTITY_CONFIG_SEED', 'VECTOR_IDENTITY_ESCROW_REF_UTXO']);
       expect(OTHER_SETTINGS).toContain('OPERATOR_CONTACT');
       expect(OTHER_SETTINGS).toContain('AGENT_DID');
       expect(OTHER_SETTINGS).toContain('SUPPLIER_PUB_KEY_HEX');
@@ -764,9 +774,11 @@ describe('src/index.ts as a process', () => {
   const cwd = fileURLToPath(new URL('..', import.meta.url));
   // What the service reads, taken out of the environment the tests run in, so that nothing an operator has set can change what a test sees.
   const READ = [
-    'OPERATOR_CONTACT', 'PIPELINE_BUYER_PRIV_KEY_HEX', 'SUPPLIER_PKH', 'SERVICE_AUTH_HEADER', 'SUPPLIER_PUB_KEY_HEX', 'AGENT_DID', 'AGENT_VERSION', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE',
+    'OPERATOR_CONTACT', 'PIPELINE_BUYER_PRIV_KEY_HEX', 'SUPPLIER_PKH', 'SERVICE_AUTH_HEADER', 'SUPPLIER_PUB_KEY_HEX', 'AGENT_DID', 'IDENTITY_POLICY_ID', 'IDENTITY_ADDRESS', 'AGENT_VERSION',
+    'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE',
     'ADVERT_PRICE_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_EXPLORER_URL', 'PIPELINE_BUYER_PKH', 'PIPELINE_BUYER_ADDRESS', 'OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST',
-    'OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE', 'PIPELINE_STATE_DIR', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', 'PORT', 'HOST',
+    'OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE', 'PIPELINE_STATE_DIR', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', ...BUYER_IDENTITY_SETTINGS,
+    'PORT', 'HOST',
   ];
   const baseEnv = (): Record<string, string | undefined> => {
     const env: Record<string, string | undefined> = { ...process.env };

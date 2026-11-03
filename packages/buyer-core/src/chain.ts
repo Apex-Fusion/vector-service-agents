@@ -6,18 +6,25 @@
 // TxNotConfirmedError that carries what a caller needs to keep track of an escrow that may still land. Its reads go through the vendored
 // lineage resolver and advert reader. The key never leaves this module: it is held in a private field, used only by signTransaction, and
 // no message carries it.
+//
+// Both escrow layouts during the drain (Part 2 sections 6.1, 6.5 and 9.6). With the identity registry deployment (deployment.ts), the chain posts
+// to identity-marketplace adverts as well as to legacy ones, reads an escrow at either escrow credential, and accepts and reclaims an
+// identity-marketplace escrow through the deployment's escrow reference script (evaluated locally with the real script, as the vendored builders
+// do). Without it, the chain knows the legacy layout only, and refuses an identity-marketplace advert or escrow with words that name the settings.
 import { CML, slotToUnixTime } from '@lucid-evolution/lucid';
 import type { Provider, UTxO } from '@lucid-evolution/lucid';
 import { formatOutRef, parseOutRef } from '@vsa/vector-read';
 import type { AdvertDatum } from '@vsa/vector-read';
 import { buildAccept, buildReclaim } from './vendored/mcp/marketplace-build.ts';
+import type { AcceptTerms, EscrowSpendBuild } from './vendored/mcp/marketplace-build.ts';
+import type { IdentityDeployment } from './vendored/mcp/identity-deployment.ts';
 import { lucidForAddress } from './vendored/mcp/build.ts';
 import { ensureSlotConfig } from './vendored/mcp/gov-build.ts';
 import type { SlotClockProvider } from './vendored/mcp/gov-build.ts';
 import { koiosFailure, resolveEscrowLineage } from './vendored/mcp/marketplace-lineage.ts';
 import type { EscrowLineage } from './vendored/mcp/marketplace-lineage.ts';
 import { koiosUtxoInfo, readAdvert as readAdvertOutput } from './vendored/mcp/marketplace-indexer.ts';
-import type { KoiosUtxo } from './vendored/mcp/marketplace-indexer.ts';
+import type { AdvertRead, KoiosUtxo } from './vendored/mcp/marketplace-indexer.ts';
 import { COLLATERAL_MIN_LOVELACE, DELIVER_BY_BUFFER_MS } from './vendored/mcp/marketplace-constants.ts';
 import { OgmiosProvider } from './vendored/mcp-shared/provider.ts';
 import { VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from './vendored/mcp-shared/config.ts';
@@ -30,8 +37,10 @@ import { feeOfSignedTx } from './fees.ts';
  * A confirmed Post. Times are POSIX milliseconds, amounts lovelace. `collateralKept` is the vendored builder's flag: true when the Post was
  * built without the wallet's smallest pure output of at least 5 units, so it is still there as collateral for the next Accept or Reclaim;
  * false when that output may have been spent, and then the wallet has collateral only if another such output remains (wallet() says).
+ * `agentId` is the agent the escrow names (the advert's): 64 lowercase hex for an identity-marketplace escrow, whose receipt must name it in
+ * agent_did, and null for a legacy escrow.
  */
-export interface PostResult { escrowRef: string; txHash: string; lockLovelace: bigint; feeLovelace: bigint; deliverBy: number; postedAt: number; supplierPkh: string; collateralKept: boolean; }
+export interface PostResult { escrowRef: string; txHash: string; lockLovelace: bigint; feeLovelace: bigint; deliverBy: number; postedAt: number; supplierPkh: string; collateralKept: boolean; agentId: string | null }
 
 /**
  * Where an escrow is. Open, Claimed and Submitted are the states of its live output.
@@ -46,7 +55,10 @@ export type ChainEscrowState = 'Open' | 'Claimed' | 'Submitted' | 'spent' | 'unk
 export interface Chain {
   /** The buyer's address and key hash, the pure output of at least 5 units kept as collateral for Accept and Reclaim (null if none), and the lovelace outside it. */
   wallet(): Promise<{ address: string; buyerPkh: string; collateralLovelace: bigint | null; floatLovelace: bigint }>;
-  /** Builds, signs, submits and awaits the confirmation of a Post that commits to `promptHash`. A failure after the signature is a TxNotConfirmedError. */
+  /**
+   * Builds, signs, submits and awaits the confirmation of a Post that commits to `promptHash`, in the layout of the advert (a legacy escrow for a legacy
+   * advert, an identity-marketplace escrow for an identity-marketplace one). A failure after the signature is a TxNotConfirmedError.
+   */
   postEscrow(args: { advertRef: string; promptHash: string }): Promise<PostResult>;
   /**
    * Accepts a Submitted escrow (settles the price and its bond to the supplier, returns the buyer bond); returns once confirmed. An AcceptWindowClosedError
@@ -57,13 +69,16 @@ export interface Chain {
   reclaim(escrowRef: string): Promise<{ txHash: string; feeLovelace: bigint }>;
   /**
    * Where the escrow is (ChainEscrowState). Throws, and never answers `unknown`, when it cannot tell (an indexer or node unreachable or
-   * behind). It also throws, and keeps throwing, for an output Koios lists that is no escrow (not at the escrow credential, no escrow datum)
-   * or an escrow whose output holds less than its datum owes: neither can happen for a ref postEscrow returned.
+   * behind). It also throws, and keeps throwing, for an output Koios lists that is no escrow (at neither escrow credential, no escrow datum of its
+   * layout) or an escrow whose output holds less than its datum owes: neither can happen for a ref postEscrow returned.
    */
   escrowState(escrowRef: string): Promise<ChainEscrowState>;
   /** The result_receipt_hash of the escrow's live Submitted output, or null when its live output is not Submitted (or it has none). Throws when it cannot tell. */
   onChainReceiptHash(escrowRef: string): Promise<string | null>;
-  /** The advert's datum, spent or not: the vendored reader's `spent` flag is dropped here, and a Post reads the advert again and refuses a spent one. */
+  /**
+   * The advert's datum, spent or not: the vendored reader's `spent` flag is dropped here, and a Post reads the advert again and refuses a spent one. An
+   * identity-marketplace advert is an IdentityAdvertDatum, which names its agent (agent_id).
+   */
   readAdvert(advertRef: string): Promise<AdvertDatum>;
 }
 
@@ -141,6 +156,14 @@ export interface RealChainOptions {
    * AWAIT_TIMEOUT_MAX_MS (600000).
    */
   awaitTimeoutMs?: number;
+  /**
+   * The identity registry deployment (buyerIdentityDeployment, read once when the service starts). With it the chain posts to identity-marketplace
+   * adverts, reads escrows at both escrow credentials, and accepts and reclaims identity-marketplace escrows through its escrow reference script.
+   * Without it (null, the default) only legacy adverts and escrows.
+   */
+  identityDeployment?: IdentityDeployment | null;
+  /** The marketplace indexer the Post of an identity-marketplace advert asks whether it lists the advert (default the configured one, VECTOR_MARKETPLACE_INDEXER_URL). */
+  indexerUrl?: string;
 }
 
 /** OgmiosProvider.awaitTx polls Koios tx_status this many times, one interval apart (vendored/mcp-shared/provider.ts); the interval is set from awaitTimeoutMs. */
@@ -157,7 +180,7 @@ const errorText = (err: unknown): string => (err instanceof Error ? err.message 
 const refusedOutright = (err: unknown): boolean => /^Transaction submission rejected \(4\d\d\b/.test(errorText(err));
 
 /**
- * The one place the closed accept window is read off the vendored planner. planAccept (vendored/mcp/marketplace-build.ts, line 248) throws
+ * The one place the closed accept window is read off the vendored planner. planAccept (vendored/mcp/marketplace-build.ts, line 402) throws
  * `Accept window closed at <iso>; the supplier may now Release.`, and buildEscrowSpend passes it on with ` (escrow <ref>)` after it. Any other error
  * of the build is passed on as it is.
  */
@@ -191,6 +214,8 @@ export class RealChain implements Chain {
   readonly #fetchImpl: typeof fetch;
   readonly #awaitTimeoutMs: number;
   readonly #pollIntervalMs: number;
+  readonly #deployment: IdentityDeployment | null;
+  readonly #indexerUrl: string | undefined;
   #queue: Promise<void> = Promise.resolve();
 
   constructor(provider: ChainProvider, opts: Omit<RealChainOptions, 'ogmiosUrl' | 'submitUrl'>) {
@@ -207,6 +232,8 @@ export class RealChain implements Chain {
     this.#provider = provider;
     this.#koiosUrl = opts.koiosUrl ?? VECTOR_KOIOS_URL;
     this.#fetchImpl = opts.fetchImpl ?? fetch;
+    this.#deployment = opts.identityDeployment ?? null;
+    this.#indexerUrl = opts.indexerUrl;
   }
 
   async wallet(): Promise<{ address: string; buyerPkh: string; collateralLovelace: bigint | null; floatLovelace: bigint }> {
@@ -220,14 +247,16 @@ export class RealChain implements Chain {
     return this.#serial(async () => {
       const built = await this.#built('The Post', async () => {
         const lucid = await lucidForAddress(this.#provider, this.address);
-        const post = await buildFleetPostEscrow(lucid, this.#provider, { changeAddress: this.address, advertRef: args.advertRef, promptHash: args.promptHash, koiosUrl: this.#koiosUrl }, this.#fetchImpl);
+        const post = await buildFleetPostEscrow(lucid, this.#provider, {
+          changeAddress: this.address, advertRef: args.advertRef, promptHash: args.promptHash, koiosUrl: this.#koiosUrl, indexerUrl: this.#indexerUrl, deployment: this.#deployment,
+        }, this.#fetchImpl);
         return { unsignedCborHex: post.unsignedCborHex, builtTxHash: parseOutRef(post.escrowRef).txHash, escrowRef: post.escrowRef, deliverBy: post.deliverBy, post };
       });
       const { txHash, feeLovelace } = await this.#signSubmitAwait(built);
       const { post } = built;
       return {
         escrowRef: post.escrowRef, txHash, lockLovelace: post.lockLovelace, feeLovelace, deliverBy: post.deliverBy, postedAt: post.postedAt,
-        supplierPkh: post.datum.supplier_pkh, collateralKept: post.collateralKept,
+        supplierPkh: post.datum.supplier_pkh, collateralKept: post.collateralKept, agentId: post.agentId,
       };
     });
   }
@@ -236,8 +265,8 @@ export class RealChain implements Chain {
     return this.#serial(async () => {
       const built = await this.#built('The Accept', async () => {
         const lucid = await lucidForAddress(this.#provider, this.address);
-        let accept: Awaited<ReturnType<typeof buildAccept>>;
-        try { accept = await buildAccept(lucid, this.#provider, this.#koiosUrl, { changeAddress: this.address, escrowRef }, this.#fetchImpl); } catch (err) { throw acceptRefusal(err); }
+        let accept: EscrowSpendBuild & AcceptTerms;
+        try { accept = await buildAccept(lucid, this.#provider, this.#koiosUrl, { changeAddress: this.address, escrowRef, deployment: this.#deployment }, this.#fetchImpl); } catch (err) { throw acceptRefusal(err); }
         return { unsignedCborHex: accept.txCbor, builtTxHash: accept.txHash, escrowRef: accept.escrowRef, deliverBy: null };
       });
       return this.#signSubmitAwait(built);
@@ -248,7 +277,7 @@ export class RealChain implements Chain {
     return this.#serial(async () => {
       const built = await this.#built('The Reclaim', async () => {
         const lucid = await lucidForAddress(this.#provider, this.address);
-        const reclaim = await buildReclaim(lucid, this.#provider, this.#koiosUrl, { changeAddress: this.address, escrowRef }, this.#fetchImpl);
+        const reclaim = await buildReclaim(lucid, this.#provider, this.#koiosUrl, { changeAddress: this.address, escrowRef, deployment: this.#deployment }, this.#fetchImpl);
         return { unsignedCborHex: reclaim.txCbor, builtTxHash: reclaim.txHash, escrowRef: reclaim.escrowRef, deliverBy: null };
       });
       return this.#signSubmitAwait(built);
@@ -272,8 +301,8 @@ export class RealChain implements Chain {
   }
 
   async readAdvert(advertRef: string): Promise<AdvertDatum> {
-    let read: Awaited<ReturnType<typeof readAdvertOutput>>;
-    try { read = await readAdvertOutput(advertRef, this.#fetchImpl, this.#koiosUrl); } catch (err) { throw new Error(`Could not read advert ${advertRef.trim()}: ${koiosFailure(err)}`); }
+    let read: AdvertRead;
+    try { read = await readAdvertOutput(advertRef, this.#fetchImpl, this.#koiosUrl, this.#deployment?.advert.address ?? null); } catch (err) { throw new Error(`Could not read advert ${advertRef.trim()}: ${koiosFailure(err)}`); }
     if ('error' in read) throw new Error(read.error);
     return read.advert;
   }
@@ -288,7 +317,7 @@ export class RealChain implements Chain {
     let rows: KoiosUtxo[];
     try { rows = await koiosUtxoInfo(this.#koiosUrl, [canonical], this.#fetchImpl); } catch (err) { throw new Error(`Could not read escrow ${canonical}: ${koiosFailure(err)}`); }
     if (!rows.some((u) => String(u?.tx_hash).toLowerCase() === ref.txHash && u?.tx_index === ref.outputIndex)) return 'unknown';
-    return resolveEscrowLineage(this.#provider, this.#koiosUrl, canonical, this.#fetchImpl);
+    return resolveEscrowLineage(this.#provider, this.#koiosUrl, canonical, this.#fetchImpl, this.#deployment);
   }
 
   /**
@@ -387,11 +416,15 @@ export class RealChain implements Chain {
 
 /**
  * The production Chain: RealChain over the vendored OgmiosProvider, with the vendored mainnet endpoints (each overridable by its
- * environment variable, see vendored/mcp-shared/config.ts) unless others are given. No network call is made here. A key that is not 64
- * lowercase hex characters is refused without being echoed, and so is an await budget outside DELIVER_BY_BUFFER_MS to AWAIT_TIMEOUT_MAX_MS.
+ * environment variable, see vendored/mcp-shared/config.ts) unless others are given, and the identity registry deployment the service read when
+ * it started (`identityDeployment`, none by default). No network call is made here. A key that is not 64 lowercase hex characters is refused
+ * without being echoed, and so is an await budget outside DELIVER_BY_BUFFER_MS to AWAIT_TIMEOUT_MAX_MS.
  */
 export async function createRealChain(opts: RealChainOptions): Promise<Chain> {
   const koiosUrl = opts.koiosUrl ?? VECTOR_KOIOS_URL;
   const provider = new OgmiosProvider({ ogmiosUrl: opts.ogmiosUrl ?? VECTOR_OGMIOS_URL, submitUrl: opts.submitUrl ?? VECTOR_SUBMIT_URL, koiosUrl });
-  return new RealChain(provider, { privateKeyHex: opts.privateKeyHex, koiosUrl, fetchImpl: opts.fetchImpl, awaitTimeoutMs: opts.awaitTimeoutMs });
+  return new RealChain(provider, {
+    privateKeyHex: opts.privateKeyHex, koiosUrl, fetchImpl: opts.fetchImpl, awaitTimeoutMs: opts.awaitTimeoutMs,
+    identityDeployment: opts.identityDeployment, indexerUrl: opts.indexerUrl,
+  });
 }

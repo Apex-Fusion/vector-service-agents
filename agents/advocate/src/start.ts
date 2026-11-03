@@ -25,8 +25,8 @@ import type { EventEmitter } from 'node:events';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
-import { buyerIdentityOf, createRealChain, rawHexToBech32 } from '@vsa/buyer-core';
-import type { Chain } from '@vsa/buyer-core';
+import { BUYER_IDENTITY_SETTINGS, buyerIdentityDeployment, buyerIdentityOf, createRealChain, rawHexToBech32 } from '@vsa/buyer-core';
+import type { Chain, IdentityDeployment } from '@vsa/buyer-core';
 import { StrandedStore, abandonedLine, startJanitor, stopJanitorWithin } from '@vsa/hire-kit';
 import {
   assertHeaderValue, assertNoTokenIn, envInt, errorText, given, hexOf, lifecycle, listen, refuseSecretIn, refuseTokenIn, requiredEnv, stopOnSignals as stopServiceOnSignals, tokenForms,
@@ -57,13 +57,17 @@ export const PRICE_CEILING_DEFAULT_LOVELACE = 1_000_000n;
  * runtime to send in a header with every call (SERVICE_AUTH_HEADER).
  */
 export const SETTINGS = [
-  'OPERATOR_CONTACT', 'AGENT_DID', 'AGENT_VERSION', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_PRICE_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_EXPLORER_URL',
+  'OPERATOR_CONTACT', 'AGENT_DID', 'IDENTITY_POLICY_ID', 'IDENTITY_ADDRESS', 'AGENT_VERSION', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_PRICE_LOVELACE',
+  'ADVERT_MAX_PROCESSING_MS', 'ADVERT_EXPLORER_URL',
   'SERVICE_AUTH_HEADER', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY', 'OPENROUTER_MODEL',
   'ADVOCATE_BUYER_PRIV_KEY_HEX', 'ADVOCATE_BUYER_PUB_KEY_HEX', 'ADVOCATE_BUYER_PKH', 'ADVOCATE_BUYER_ADDRESS', 'ADVOCATE_STATE_DIR', 'LLM_MODEL_ALLOWLIST',
   'LLM_MAX_PRICE_LOVELACE', 'VECTOR_MARKETPLACE_INDEXER_URL', 'PORT', 'HOST',
 ] as const;
-/** The settings that packages/buyer-core reads, and prints in its errors. */
-export const CHAIN_SETTINGS = ['VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL'] as const;
+/**
+ * The settings that packages/buyer-core reads: the three chain endpoints, which its errors print, and the three settings of the identity registry
+ * deployment (BUYER_IDENTITY_SETTINGS), which no source of the service names itself. The secrets are looked for in all of them.
+ */
+export const CHAIN_SETTINGS = ['VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', ...BUYER_IDENTITY_SETTINGS] as const;
 /** The settings the secrets are looked for in: every one the service reads and every one the chain code reads, but the secret's own line. */
 const SEARCHED: readonly string[] = [...SETTINGS, ...CHAIN_SETTINGS];
 
@@ -98,6 +102,8 @@ export interface ServiceConfig {
   maxPriceLovelace: bigint;
   /** The marketplace indexer (VECTOR_MARKETPLACE_INDEXER_URL); the configured one when absent. */
   indexerUrl?: string;
+  /** The identity registry deployment the chain posts to and settles with (packages/buyer-core, buyerIdentityDeployment), or null: legacy adverts and escrows only. */
+  identityDeployment: IdentityDeployment | null;
 }
 
 /**
@@ -214,16 +220,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (
   assertNoTokenIn(published, authHeader);
   assertNoKeyIn(published, braveApiKey, BRAVE_KEY);
   assertNoKeyIn(published, openRouterApiKey, OPENROUTER_KEY);
+  // Read once, after the manifest has checked IDENTITY_POLICY_ID: the chain's deployment must be the registry the manifest names.
+  const identityDeployment = buyerIdentityDeployment(env);
   return {
     manifest, authHeader, host, port, braveApiKey, openRouterApiKey, model, buyer: { privateKeyHex, pkh: buyer.buyerPkh, address: buyer.address }, stateDir, allowlist,
-    maxPriceLovelace, ...(indexerUrl === undefined ? {} : { indexerUrl }),
+    maxPriceLovelace, ...(indexerUrl === undefined ? {} : { indexerUrl }), identityDeployment,
   };
 }
 
 /** The parts of the service a test replaces; the service itself uses the real ones. */
 export interface StartOptions {
-  /** Makes the chain from the buyer key. Default createRealChain, which builds, signs and submits on Vector mainnet. */
-  createChain?: (opts: { privateKeyHex: string }) => Promise<Chain>;
+  /** Makes the chain from the buyer key, the identity registry deployment and the indexer. Default createRealChain, which builds, signs and submits on Vector mainnet. */
+  createChain?: (opts: { privateKeyHex: string; identityDeployment: IdentityDeployment | null; indexerUrl?: string }) => Promise<Chain>;
   fetchImpl?: typeof fetch;
   clock?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -271,7 +279,9 @@ export async function startService(env: NodeJS.ProcessEnv = process.env, options
   const log = options.log ?? defaultLog;
   const stranded = new StrandedStore(config.stateDir);
   assertWritable(config.stateDir);
-  const chain = await (options.createChain ?? createRealChain)({ privateKeyHex: config.buyer.privateKeyHex });
+  const chain = await (options.createChain ?? createRealChain)({
+    privateKeyHex: config.buyer.privateKeyHex, identityDeployment: config.identityDeployment, ...(config.indexerUrl === undefined ? {} : { indexerUrl: config.indexerUrl }),
+  });
   const clock = options.clock ?? Date.now;
   const slot = new JobSlot();
   const server = createServer({

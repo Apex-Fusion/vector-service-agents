@@ -3,8 +3,10 @@
 // verifyReceipt, src/vendored/mcp/marketplace-verify.ts), with one difference. That verifier compares receipt.response_hash with the sha256 of the result
 // TEXT it is given, and a fleet supplier does not hash the text: it hashes a canonical envelope ({content, output_format} for an OCR page, {output, status,
 // incomplete_details} for a chat answer; src/commitments.ts). So the buyer recomputes that hash from what the supplier returned and passes it in.
-// Four rows are the vendored verifier's own, and they are called and not copied, so the key hash, the Ed25519 check, the comparison with the hash on chain
-// and the prompt hash cannot drift from the hosted server's. Three rows are this module's:
+// Five rows are the vendored verifier's own, and they are called and not copied, so the key hash, the Ed25519 check, the comparison with the hash on chain,
+// the prompt hash and the fields of the receipt cannot drift from the hosted server's. The fields row is the agent_did check of Part 2 section 6.3: a
+// receipt for a legacy escrow has exactly the 8 receipt fields, and one for an identity-marketplace escrow has those 8 and agent_did, which must be
+// did:vector:<the escrow's agent_id>, so that the receipt names the agent the buyer hired. Three rows are this module's:
 //   escrow_ref_matches     both refs go through canonicalRef; the vendored row wants the receipt's ref spelled as the caller's, character for character
 //   response_hash_matches  against the recomputed hash, which is an input here
 //   model_matches          the vendored verifier has no such row
@@ -31,6 +33,11 @@ export interface FleetVerifyInput {
   /** The model the advert names. The receipt must name the same one, exactly. */
   model: string;
   /**
+   * The agent_id of the escrow's datum (`PostResult.agentId`): 64 lowercase hex for an identity-marketplace escrow, whose receipt must carry
+   * agent_did = did:vector:<agentId>; null for a legacy escrow, whose receipt has no agent_did.
+   */
+  agentId: string | null;
+  /**
    * The result_receipt_hash of the escrow's Submitted output (`Chain.onChainReceiptHash`), or null when there is none to read. It is called once per
    * verification, whatever the other checks say. When it throws or rejects, verifyFleetReceipt rejects with that error. When it resolves anything but a string
    * or null it has broken its contract, and the on-chain row fails.
@@ -55,6 +62,11 @@ export interface FleetVerification {
     prompt_hash_matches: 'pass' | 'fail';
     /** (7) receipt.model is the model of the advert. */
     model_matches: 'pass' | 'fail';
+    /**
+     * (8) the receipt has exactly the fields of the escrow's layout (Part 2 section 6.3): the 8 receipt fields for a legacy escrow; those 8 and
+     * agent_did = did:vector:<agentId> for an identity-marketplace escrow.
+     */
+    fields_match: 'pass' | 'fail';
   };
 }
 
@@ -66,43 +78,44 @@ function sameDigest(claimed: unknown, computed: unknown): boolean {
   return typeof claimed === 'string' && HEX64.test(claimed) && typeof computed === 'string' && claimed.toLowerCase() === computed.toLowerCase();
 }
 
-type VendoredRows = Pick<FleetVerification['checks'], 'supplier_key_matches' | 'signature_valid' | 'on_chain_hash_matches' | 'prompt_hash_matches'>;
+type VendoredRows = Pick<FleetVerification['checks'], 'supplier_key_matches' | 'signature_valid' | 'on_chain_hash_matches' | 'prompt_hash_matches' | 'fields_match'>;
 
 /**
- * The four rows the vendored verifier owns. Its escrow_ref row is not used (check 1 is made in verifyFleetReceipt) and no result text is passed, which skips
+ * The five rows the vendored verifier owns. Its escrow_ref row is not used (check 1 is made in verifyFleetReceipt) and no result text is passed, which skips
  * the one text check that does not apply to an envelope hash (check 2 is made there too).
  *
  * The call is made inside a try, because it can throw on a receipt the supplier sends. The vendored function is documented as one that never throws, and it
  * does not hold to that: canonicalize recurses, a receipt nested deeper than the stack allows makes it throw a RangeError, and the vendored signature row has a
  * guard for that where its on-chain row has none. A supplier can send such a receipt (the poll takes a body of a million bytes, which holds a hundred thousand
- * levels). A receipt that cannot be walked verifies nothing, so on a throw the four rows fail, and the on-chain row is skipped only when there was no hash to
+ * levels). A receipt that cannot be walked verifies nothing, so on a throw the five rows fail, and the on-chain row is skipped only when there was no hash to
  * compare, as it is when the call returns.
  */
 function vendoredRows(input: FleetVerifyInput, hashOnChain: string | null): VendoredRows {
   try {
     const rows = verifyReceipt({
       receipt: input.receipt, signature: input.receiptSignature, escrowRef: input.escrowRef, supplierPubKeyHex: input.supplierPubKeyHex,
-      escrowSupplierPkh: input.supplierPkhExpected, escrowPromptHash: input.promptHashHex, resultReceiptHashOnChain: hashOnChain,
+      escrowSupplierPkh: input.supplierPkhExpected, escrowPromptHash: input.promptHashHex, escrowAgentId: input.agentId, resultReceiptHashOnChain: hashOnChain,
     }).checks;
     return {
       supplier_key_matches: passIf(rows.supplier_key_matches.state === 'pass'),
       signature_valid: passIf(rows.signature_valid.state === 'pass'),
       on_chain_hash_matches: rows.on_chain_hash_matches.state === 'skipped' ? 'skipped' : passIf(rows.on_chain_hash_matches.state === 'pass'),
       prompt_hash_matches: passIf(rows.prompt_hash_matches.state === 'pass'),
+      fields_match: passIf(rows.fields_match.state === 'pass'),
     };
   } catch {
-    return { supplier_key_matches: 'fail', signature_valid: 'fail', on_chain_hash_matches: hashOnChain === null ? 'skipped' : 'fail', prompt_hash_matches: 'fail' };
+    return { supplier_key_matches: 'fail', signature_valid: 'fail', on_chain_hash_matches: hashOnChain === null ? 'skipped' : 'fail', prompt_hash_matches: 'fail', fields_match: 'fail' };
   }
 }
 
 /**
- * Runs the seven checks on the receipt of a fleet sub-job and gives the verdict: `VERIFIED` only when all seven pass, `FAILED` when any fails, and
+ * Runs the eight checks on the receipt of a fleet sub-job and gives the verdict: `VERIFIED` only when all eight pass, `FAILED` when any fails, and
  * `INCOMPLETE` when none fails and the hash on chain could not be compared (`onChainReceiptHash` returned null, so check 5 was skipped). Only `VERIFIED`
  * is a receipt to accept an escrow on.
  *
  * The receipt is the supplier's own account of the job, and so are its signature and its public key: whatever they are, a check that cannot be made on
  * them fails and nothing throws. That holds for a receipt that cannot be walked at all, one nested deeper than the stack allows, which a supplier can send
- * within the size the poll accepts: the vendored call throws on it, and the four rows it owns fail (see vendoredRows). The one rejection is not about the
+ * within the size the poll accepts: the vendored call throws on it, and the five rows it owns fail (see vendoredRows). The one rejection is not about the
  * receipt. `onChainReceiptHash` is awaited once, whatever the other checks say, before anything is hashed, and an error from it is not caught: the call
  * rejects with that error and makes no verdict, because a read that failed says nothing about the receipt. The caller (the orchestrator, which asks again
  * while the indexer catches up with the supplier's Submit) decides what to do with it. A read that resolves anything but a string or null has broken the
@@ -124,6 +137,7 @@ export async function verifyFleetReceipt(input: FleetVerifyInput): Promise<Fleet
     on_chain_hash_matches: brokenRead ? 'fail' : vendored.on_chain_hash_matches,
     prompt_hash_matches: vendored.prompt_hash_matches,
     model_matches: passIf(receipt !== null && typeof receipt.model === 'string' && receipt.model === input.model),
+    fields_match: vendored.fields_match,
   };
   const states = Object.values(checks);
   return { verdict: states.includes('fail') ? 'FAILED' : states.includes('skipped') ? 'INCOMPLETE' : 'VERIFIED', checks };

@@ -1,113 +1,237 @@
 import { describe, test, expect } from 'vitest';
-import { Data, Constr, fromText } from '@lucid-evolution/lucid';
-import { replayFetch, REGISTRY_POLICY, REGISTRY_ADDRESS } from '@vsa/vector-read';
+import { didFor, encodeLegacyDatum, keyHash, utf8ToHex } from '@vsa/vector-read';
+import type { Fetch, IdentityDatum, Key, Party } from '@vsa/vector-read';
 import { identitySection, identityTimeline } from '../src/identity.ts';
-const ASSET = 'ab'.repeat(32), A = 'cd'.repeat(28), B = 'ef'.repeat(28), K = 'https://v2.koios.vector.mainnet.apexfusion.org/api/v1';
-const reg = (owner: string) => Data.to(new Constr(0, [new Constr(0, [owner]), fromText('A'), fromText('d'), [fromText('x.y.v1')], fromText('fw'), fromText(''), 1n]));
-const tok = [{ policy_id: REGISTRY_POLICY, asset_name: ASSET, quantity: '1' }];
-const out = (datum: string | null, withTok = true) => ({ tx_index: 0, payment_addr: { cred: 'x', bech32: REGISTRY_ADDRESS }, value: '10000000', inline_datum: datum ? { bytes: datum } : null, asset_list: withTok ? tok : [] });
-const txs = [
-  { tx_hash: '11'.repeat(32), block_height: 100, tx_block_index: 0, tx_timestamp: 1000, inputs: [], outputs: [out(reg(A))], assets_minted: tok },
-  { tx_hash: '22'.repeat(32), block_height: 200, tx_block_index: 0, tx_timestamp: 2000, inputs: [{ tx_hash: '11'.repeat(32), tx_index: 0, payment_addr: { cred: 'x', bech32: REGISTRY_ADDRESS }, value: '1', asset_list: tok }], outputs: [out(reg(B))] },
-  { tx_hash: '33'.repeat(32), block_height: 300, tx_block_index: 0, tx_timestamp: 3000, inputs: [{ tx_hash: '22'.repeat(32), tx_index: 0, payment_addr: { cred: 'x', bech32: REGISTRY_ADDRESS }, value: '1', asset_list: tok }], outputs: [{ ...out(null, false), payment_addr: { cred: 'y', bech32: 'addr1v' + 'q'.repeat(50) } }], assets_minted: [{ policy_id: REGISTRY_POLICY, asset_name: ASSET, quantity: '-1' }] },
+import type { Subject } from '../src/subject.ts';
+import { koiosLedger, token, txHash as H, identityHex, TEST_IDENTITY, WITH_IDENTITY, LEGACY, CONTROLLER } from './support.ts';
+import type { LedgerTx } from './support.ts';
+
+const ID = 'ab'.repeat(32), A = 'cd'.repeat(28), B = 'ef'.repeat(28), WALLET = 'addr1v' + 'q'.repeat(50);
+const subject: Subject = { kind: 'asset', pkh: null, asset_name: ID, did: didFor(ID), registry: null, controller_pkh: null, candidates: [] };
+const legacyHex = (owner: string, name = 'A') => encodeLegacyDatum({ owner: { type: 'VerificationKey', hash: owner }, name: utf8ToHex(name), description: utf8ToHex('d'), capabilities: [utf8ToHex('x.y.v1')], framework: utf8ToHex('fw'), endpoint: '', registeredAt: 1n });
+// Mainnet shape (checked against the live ledger: 788 of 788 registry outputs): the legacy datum is posted by hash, so tx_info shows a datum_hash
+// and no inline bytes, and the bytes come from utxo_info (extended) on the output ref. An identity record holds an inline datum.
+const legacyOut = (owner: string, name?: string) => ({ address: LEGACY.address, assets: [token(LEGACY, ID)], datum: legacyHex(owner, name), byHash: true });
+const idOut = (over: Partial<IdentityDatum> = {}, value?: string) => ({ address: TEST_IDENTITY.address, assets: [token(TEST_IDENTITY, ID)], datum: identityHex(over), value });
+const spend = (n: number) => [`${H(n)}#0`];
+// registered to A, rotated to B, then deregistered: the token is burned
+const legacyLife: LedgerTx[] = [
+  { hash: H(1), block: 100, time: 1000, outputs: [legacyOut(A)], mint: [token(LEGACY, ID)] },
+  { hash: H(2), block: 200, time: 2000, spends: spend(1), outputs: [legacyOut(B)] },
+  { hash: H(3), block: 300, time: 3000, spends: spend(2), outputs: [{ address: WALLET }], mint: [token(LEGACY, ID, '-1')] },
 ];
-const store = {
-  [`POST ${K}/asset_txs ${JSON.stringify({ _asset_policy: REGISTRY_POLICY, _asset_name: ASSET, _history: true })}`]: { status: 200, body: JSON.stringify(txs.map((t) => ({ tx_hash: t.tx_hash, block_height: t.block_height, block_time: t.tx_timestamp }))) },
-  [`POST ${K}/tx_info ${JSON.stringify({ _tx_hashes: txs.map((t) => t.tx_hash), _inputs: true, _assets: true })}`]: { status: 200, body: JSON.stringify(txs) },
-};
-describe('identitySection', () => {
-  test('registration, controller rotation and deregistration are all reported', async () => {
-    const id = await identitySection({ kind: 'asset', asset_name: ASSET, did: `did:vector:agent:${REGISTRY_POLICY}:${ASSET}`, controller_pkh: null, candidates: [] }, replayFetch(store));
-    expect(id.registered).toMatchObject({ tx: '11'.repeat(32), block: 100 });
-    expect(id.updates).toEqual([{ tx: '22'.repeat(32), block: 200, time: 2000, kind: 'controller_rotation', from_pkh: A, to_pkh: B }]);
-    expect(id.deregistered).toMatchObject({ tx: '33'.repeat(32), block: 300 });
-    expect(id.record).toBeNull();
-  });
-});
+// A fetch that fails the test if anything reaches it.
+const noCall = (async () => { throw new Error('no Koios call expected'); }) as unknown as Fetch;
+// The answers of `inner`, with the rows of one endpoint changed.
+const altered = (inner: Fetch, endpoint: string, change: (rows: any[]) => unknown): Fetch => (async (u: any, i?: RequestInit) => {
+  const res = await inner(u, i);
+  return String(u).endsWith(`/${endpoint}`) ? new Response(JSON.stringify(change(await res.json())), { status: 200 }) : res;
+}) as Fetch;
 
-// A store for any listing of the txs above: asset_txs answers in the order given, tx_info with `returned` (default: the same txs).
-const subject = { kind: 'asset' as const, asset_name: ASSET, did: `did:vector:agent:${REGISTRY_POLICY}:${ASSET}`, controller_pkh: null, candidates: [] };
-const storeOf = (listed: typeof txs, returned: typeof txs = listed) => ({
-  [`POST ${K}/asset_txs ${JSON.stringify({ _asset_policy: REGISTRY_POLICY, _asset_name: ASSET, _history: true })}`]: { status: 200, body: JSON.stringify(listed.map((t) => ({ tx_hash: t.tx_hash, block_height: t.block_height, block_time: t.tx_timestamp }))) },
-  [`POST ${K}/tx_info ${JSON.stringify({ _tx_hashes: listed.map((t) => t.tx_hash), _inputs: true, _assets: true })}`]: { status: 200, body: JSON.stringify(returned) },
-});
-
-describe('identitySection ordering and strictness', () => {
-  test('a registration and an update in the same block are processed registration-first, whatever order asset_txs lists them in', async () => {
-    const registration = { ...txs[0], block_height: 100, tx_block_index: 0 };
-    const update = { ...txs[1], block_height: 100, tx_block_index: 1 }; // spends the registration output; owner A -> B
-    const id = await identitySection(subject, replayFetch(storeOf([update, registration]))); // newest first
-    expect(id.registered).toMatchObject({ tx: '11'.repeat(32), block: 100 });
-    expect(id.updates).toEqual([{ tx: '22'.repeat(32), block: 100, time: 2000, kind: 'controller_rotation', from_pkh: A, to_pkh: B }]);
-    expect(id.record?.owner_pkh).toBe(B);
+describe('the legacy registry: registration, updates and deregistration', () => {
+  test('registration, controller rotation and deregistration are three versions of one timeline', async () => {
+    const id = await identitySection(subject, koiosLedger(legacyLife));
+    expect(id).toMatchObject({ origin: 'legacy', registered: { tx: H(1), block: 100, time: 1000, registry: 'legacy' }, adopted: null, deregistered: { tx: H(3), block: 300, time: 3000 }, record: null });
+    expect(id.timeline.map((e) => [e.registry, e.event, e.version, e.lovelace])).toEqual([['legacy', 'registration', 0, '10000000'], ['legacy', 'update', 1, '10000000'], ['legacy', 'deregistration', 2, null]]);
+    expect(id.timeline[1].changes).toEqual({ controller: { from: A, to: B } });
+    // The end of a legacy record: the record is retired at the block time of that transaction (Part 1, section 8.2).
+    expect(id.timeline[2].changes).toEqual({ status: { from: 'active', to: 'retired', at: 3_000_000, successor: null } });
   });
-  test('the same owner posting the record again is an update, not a rotation', async () => {
-    const repost = { ...txs[1], outputs: [out(reg(A))] };
-    const id = await identitySection(subject, replayFetch(storeOf([txs[0], repost])));
-    expect(id.registered).toMatchObject({ tx: '11'.repeat(32), block: 100 });
-    expect(id.updates).toEqual([{ tx: '22'.repeat(32), block: 200, time: 2000, kind: 'update', from_pkh: A, to_pkh: A }]);
-    expect(id.record?.owner_pkh).toBe(A);
-    expect(id.deregistered).toBeNull();
+  test('the registration lists everything the first version sets', async () => {
+    const id = await identitySection(subject, koiosLedger(legacyLife.slice(0, 1)));
+    expect(id.timeline[0].changes).toEqual({
+      controller: { from: null, to: A }, name: { from: null, to: 'A' }, description: { from: null, to: 'd' }, framework: { from: null, to: 'fw' },
+      registered_at: { from: null, to: 1 }, capabilities: { added: ['x.y.v1'], removed: [] }, status: { from: null, to: 'active' },
+    });
+    expect(id.record).toEqual({ registry: 'legacy', controller_pkh: A, name: 'A', description: 'd', capabilities: ['x.y.v1'], framework: 'fw', endpoint: '', registered_at: 1 });
   });
-  test('a subject without an asset name has no registry history and makes no Koios call', async () => {
-    // an empty store turns any call into a fixture miss
-    const id = await identitySection({ kind: 'pkh', asset_name: null, did: null, controller_pkh: A, candidates: [] }, replayFetch({}));
-    expect(id).toEqual({ registered: null, record: null, updates: [], deregistered: null });
+  test('a registration and an update in the same block are read registration first, whatever order asset_txs lists them in', async () => {
+    const sameBlock = [{ ...legacyLife[0], block: 100, index: 0 }, { ...legacyLife[1], block: 100, index: 1 }];
+    const id = await identitySection(subject, koiosLedger(sameBlock)); // the ledger lists them newest first
+    expect(id.timeline.map((e) => [e.tx, e.event])).toEqual([[H(1), 'registration'], [H(2), 'update']]);
+    expect(id.record?.controller_pkh).toBe(B);
+  });
+  test('the same datum posted again is a change of value and no version; a changed profile field is an update', async () => {
+    const repost = await identitySection(subject, koiosLedger([legacyLife[0], { hash: H(2), block: 200, spends: spend(1), outputs: [{ ...legacyOut(A), value: '12000000' }] }]));
+    expect(repost.timeline.map((e) => [e.event, e.version, e.lovelace, e.changes])).toEqual([['registration', 0, '10000000', expect.any(Object)], ['value_change', null, '12000000', {}]]);
+    const renamed = await identitySection(subject, koiosLedger([legacyLife[0], { hash: H(2), block: 200, spends: spend(1), outputs: [legacyOut(A, 'B')] }]));
+    expect(renamed.timeline[1]).toMatchObject({ event: 'update', version: 1, changes: { name: { from: 'A', to: 'B' } } });
+    expect(Object.keys(renamed.timeline[1].changes)).toEqual(['name']);
+  });
+  test('a subject without an identifier has no registry history and makes no Koios call', async () => {
+    const id = await identitySection({ ...subject, kind: 'pkh', pkh: A, asset_name: null, did: null }, noCall);
+    expect(id).toEqual({ origin: null, registered: null, adopted: null, deregistered: null, record: null, timeline: [] });
+  });
+  test('an identifier no registry minted has an empty section', async () => {
+    expect(await identitySection(subject, koiosLedger([]))).toEqual({ origin: null, registered: null, adopted: null, deregistered: null, record: null, timeline: [] });
   });
   test('a transaction that asset_txs lists but tx_info does not return is an error, not a gap in the timeline', async () => {
-    await expect(identitySection(subject, replayFetch(storeOf(txs.slice(0, 2), txs.slice(0, 1)))))
-      .rejects.toThrow(`tx ${'22'.repeat(32)} listed by asset_txs but not returned by tx_info`);
+    await expect(identitySection(subject, altered(koiosLedger(legacyLife.slice(0, 2)), 'tx_info', (rows) => rows.filter((r: any) => r.tx_hash !== H(2)))))
+      .rejects.toThrow(`tx ${H(2)} listed by asset_txs but not returned by tx_info`);
   });
-});
-
-// Mainnet shape (checked against the live ledger: 788 of 788 registry outputs): the registry datum is posted by hash,
-// so tx_info shows a datum_hash and no inline bytes, and the bytes come from utxo_info (extended) on the output ref.
-describe('identitySection with datums posted by hash', () => {
-  const byHash = (t: (typeof txs)[number], bytes: string | null) => ({ ...t, outputs: t.outputs.map((o) => (o.inline_datum ? { ...o, inline_datum: { bytes, value: null }, datum_hash: 'dd'.repeat(32) } : o)) });
-  const resolved = (tx: string, owner: string) => ({ tx_hash: tx, tx_index: 0, value: '10000000', inline_datum: { bytes: reg(owner) }, asset_list: tok, is_spent: false });
-  const storeFor = (list: typeof txs, utxoInfo: unknown[], bytes: string | null = null) => ({
-    [`POST ${K}/asset_txs ${JSON.stringify({ _asset_policy: REGISTRY_POLICY, _asset_name: ASSET, _history: true })}`]: { status: 200, body: JSON.stringify(list.map((t) => ({ tx_hash: t.tx_hash, block_height: t.block_height, block_time: t.tx_timestamp }))) },
-    [`POST ${K}/tx_info ${JSON.stringify({ _tx_hashes: list.map((t) => t.tx_hash), _inputs: true, _assets: true })}`]: { status: 200, body: JSON.stringify(list.map((t) => byHash(t, bytes))) },
-    [`POST ${K}/utxo_info ${JSON.stringify({ _utxo_refs: list.filter((t) => t.outputs[0].inline_datum).map((t) => `${t.tx_hash}#0`), _extended: true })}`]: { status: 200, body: JSON.stringify(utxoInfo) },
-  });
-  test('the current record and the rotation are read through utxo_info', async () => {
-    const id = await identitySection(subject, replayFetch(storeFor(txs.slice(0, 2), [resolved('11'.repeat(32), A), resolved('22'.repeat(32), B)])));
-    expect(id.registered).toMatchObject({ tx: '11'.repeat(32), block: 100 });
-    expect(id.updates).toEqual([{ tx: '22'.repeat(32), block: 200, time: 2000, kind: 'controller_rotation', from_pkh: A, to_pkh: B }]);
-    expect(id.record?.owner_pkh).toBe(B);
-    expect(id.deregistered).toBeNull();
-  });
-  test('an empty bytes string counts as a missing datum and is resolved through utxo_info like null', async () => {
-    const id = await identitySection(subject, replayFetch(storeFor(txs.slice(0, 1), [resolved('11'.repeat(32), A)], '')));
-    expect(id.registered).toMatchObject({ tx: '11'.repeat(32), block: 100 });
-    expect(id.record?.owner_pkh).toBe(A);
+  test('an empty bytes string counts as a missing datum and is read through utxo_info like null', async () => {
+    const empty = altered(koiosLedger(legacyLife.slice(0, 1)), 'tx_info', (rows) => rows.map((r: any) => ({ ...r, outputs: r.outputs.map((o: any) => (o.inline_datum ? { ...o, inline_datum: { bytes: '' } } : o)) })));
+    expect((await identitySection(subject, empty)).record?.controller_pkh).toBe(A);
   });
   test('a datum that cannot be read is an error, not a deregistration', async () => {
-    await expect(identitySection(subject, replayFetch(storeFor(txs.slice(0, 1), [])))).rejects.toThrow(/could not be read/);
+    await expect(identitySection(subject, altered(koiosLedger(legacyLife.slice(0, 1)), 'utxo_info', () => []))).rejects.toThrow(`registry datum at ${H(1)}#0 could not be read`);
+  });
+  test('a token that leaves the registry for an output that is not a record, and comes back, leaves and returns in the timeline', async () => {
+    const moved: LedgerTx[] = [
+      legacyLife[0],
+      { hash: H(2), block: 200, spends: spend(1), outputs: [{ address: WALLET, assets: [token(LEGACY, ID)] }] },
+      { hash: H(3), block: 300, spends: spend(2), outputs: [legacyOut(A)] }, // the same datum as before it left
+      { hash: H(4), block: 400, spends: spend(3), outputs: [{ address: LEGACY.address, assets: [token(LEGACY, ID), token(LEGACY, 'cd'.repeat(32))], datum: legacyHex(A) }] },
+    ];
+    const away = await identitySection(subject, koiosLedger(moved.slice(0, 2)));
+    expect(away.timeline.map((e) => [e.event, e.version])).toEqual([['registration', 0], ['token_left', null]]);
+    expect(away.record).toBeNull();
+    const back = await identitySection(subject, koiosLedger(moved.slice(0, 3)));
+    expect(back.timeline.map((e) => [e.event, e.version])).toEqual([['registration', 0], ['token_left', null], ['token_returned', null]]);
+    expect(back.record?.controller_pkh).toBe(A);
+    // Two tokens of the registry in one output (Part 2, section 9.4): not an authentic record, so the record is outside its registry again.
+    const locked = await identitySection(subject, koiosLedger(moved));
+    expect(locked.timeline.at(-1)).toMatchObject({ event: 'token_left', version: null });
+    expect(locked.record).toBeNull();
   });
 });
 
-// The key the report falls back on when the registry no longer holds the record: the last to_pkh of the updates, else the owner at registration.
-describe('identityTimeline: the last controller key', () => {
-  test('after a rotation and a deregistration it is the key rotated to; the section is the one identitySection gives', async () => {
-    const t = await identityTimeline(subject, replayFetch(store));
-    expect(t.last_controller_pkh).toBe(B);
-    expect(t.section).toEqual(await identitySection(subject, replayFetch(store)));
-    expect(t.section.record).toBeNull();
+// The keys the marketplace falls back on when no live record names one: those of the last version that named a marketplace key.
+describe('identityTimeline: the last marketplace keys', () => {
+  test('after a rotation and a deregistration they are the key rotated to; the section is the one identitySection gives', async () => {
+    const t = await identityTimeline(subject, koiosLedger(legacyLife));
+    expect(t.last_marketplace_pkhs).toEqual([B]);
+    expect(t.section).toEqual(await identitySection(subject, koiosLedger(legacyLife)));
   });
-  test('registered and deregistered with no update in between it is the owner at registration', async () => {
-    const direct = [txs[0], { ...txs[2], inputs: txs[1].inputs }]; // the token leaves the registry in the transaction after the registration
-    const t = await identityTimeline(subject, replayFetch(storeOf(direct)));
-    expect(t.section).toMatchObject({ registered: { block: 100 }, deregistered: { block: 300 }, record: null, updates: [] });
-    expect(t.last_controller_pkh).toBe(A);
+  test('registered and deregistered with no update in between they are the owner at registration', async () => {
+    const t = await identityTimeline(subject, koiosLedger([legacyLife[0], { ...legacyLife[2], spends: spend(1) }]));
+    expect(t.section).toMatchObject({ registered: { block: 100 }, deregistered: { block: 300 }, record: null });
+    expect(t.last_marketplace_pkhs).toEqual([A]);
   });
-  test('with a live record it is the owner of that record', async () => {
-    const t = await identityTimeline(subject, replayFetch(storeOf(txs.slice(0, 2))));
-    expect(t.section.record?.owner_pkh).toBe(B);
-    expect(t.last_controller_pkh).toBe(B);
+  test('with a live record they are its owner; a subject never registered, or without an identifier, has none', async () => {
+    expect((await identityTimeline(subject, koiosLedger(legacyLife.slice(0, 2)))).last_marketplace_pkhs).toEqual([B]);
+    expect((await identityTimeline(subject, koiosLedger([]))).last_marketplace_pkhs).toEqual([]);
+    expect((await identityTimeline({ ...subject, kind: 'pkh', pkh: A, asset_name: null, did: null }, noCall)).last_marketplace_pkhs).toEqual([]);
   });
-  test('a subject that was never registered, or has no asset name, has none', async () => {
-    expect((await identityTimeline(subject, replayFetch(storeOf([])))).last_controller_pkh).toBeNull();
-    expect((await identityTimeline({ kind: 'pkh', asset_name: null, did: null, controller_pkh: A, candidates: [] }, replayFetch({}))).last_controller_pkh).toBeNull();
+});
+
+const ED = '22'.repeat(32), NEW = '33'.repeat(32), GUARDIAN = '44'.repeat(28), SUCCESSOR = '55'.repeat(32), P256 = `02${'66'.repeat(32)}`;
+const edKey = (purposes: number): Key => ({ keyType: 'Ed25519', key: ED, purposes, pop: null });
+const ACCOUNTABLE: Party = { role: 'Accountable', signer: { type: 'ControllerSet' }, organisation: null, notBefore: 0, notAfter: null, rights: 3, removalAfter: null };
+const GUARDIAN_PARTY: Party = { role: 'Guardian', signer: { type: 'KeyHash', hash: GUARDIAN }, organisation: null, notBefore: 0, notAfter: null, rights: 4, removalAfter: null };
+const DAY = 86_400_000, T = 1_800_000_000_000;
+
+describe('the identity registry: one record from registration to tombstone', () => {
+  // Every state of the record, each written by its own transaction (Part 1, section 6).
+  const v0: Partial<IdentityDatum> = { keys: [edKey(1 + 8), { keyType: 'P256', key: P256, purposes: 2, pop: '77'.repeat(64) }] };
+  const v1 = { ...v0, parties: [ACCOUNTABLE, GUARDIAN_PARTY], guardianThreshold: 1, endpoint: utf8ToHex('https://new.example'), capabilities: [utf8ToHex('z.v1')] };
+  const hold = { by: { type: 'ControllerSet' as const }, reason: 6, since: T, until: T + 30 * DAY };
+  const v2 = { ...v1, status: { type: 'Suspended' as const, holds: [hold] } };
+  const v3 = { ...v1, status: { type: 'Suspended' as const, holds: [{ ...hold, until: T + 31 * DAY }] } };
+  const v4 = v1;
+  const v5 = { ...v1, pendingRecovery: { newController: NEW, effectiveAfter: T + 7 * DAY } };
+  const v6 = { ...v1, controller: NEW, subagentEpoch: 1 };
+  const tombstone = { controller: NEW, keys: [], parties: [], guardianThreshold: 0, subagentEpoch: 1, description: '', framework: '', endpoint: '', capabilities: [] };
+  const v7 = { ...tombstone, status: { type: 'Revoked' as const, by: { type: 'ControllerSet' as const }, reason: 1, at: T + 40 * DAY, invalidFrom: T + 39 * DAY, successor: null } };
+  const v8 = { ...tombstone, status: { ...v7.status, successor: SUCCESSOR } };
+  const states = [v0, v1, v2, v3, v4, v5, v6, v7, v8];
+  const life: LedgerTx[] = [
+    { hash: H(1), block: 100, outputs: [idOut(v0)], mint: [token(TEST_IDENTITY, ID)] },
+    ...states.slice(1).map((s, i) => ({ hash: H(i + 2), block: 200 + i * 100, spends: spend(i + 1), outputs: [idOut(s)] })),
+    { hash: H(10), block: 1100, spends: spend(9), outputs: [idOut(v8, '2000000')] }, // Reclaim: the deposit above the ledger minimum goes back
+  ];
+  const read = () => identityTimeline(subject, koiosLedger(life), WITH_IDENTITY.registries);
+  test('a native record: registered in the identity registry, every state a version, the reclaim a change of value only', async () => {
+    const { section } = await read();
+    expect(section).toMatchObject({ origin: 'native', registered: { tx: H(1), block: 100, registry: 'identity' }, adopted: null, deregistered: null });
+    expect(section.timeline.map((e) => [e.event, e.version])).toEqual([...states.map((_, i) => [i === 0 ? 'registration' : 'update', i]), ['value_change', null]]);
+    expect(section.timeline.every((e) => e.registry === 'identity')).toBe(true);
+    expect(section.timeline.at(-1)).toMatchObject({ lovelace: '2000000', changes: {} });
+  });
+  test('the registration lists the keys, the party, the profile, the creation time and the status', async () => {
+    const [registration] = (await read()).section.timeline;
+    expect(registration.changes).toEqual({
+      controller: { from: null, to: keyHash(CONTROLLER) },
+      keys: { added: [{ key_hash: keyHash(ED), type: 'Ed25519', purposes: ['authentication', 'transaction'] }, { key_hash: keyHash(P256), type: 'P-256', purposes: ['assertion'] }], removed: [] },
+      parties: { added: [{ role: 'accountable', signer: 'controller', organisation: null, rights: ['suspend', 'revoke'], not_before: 0, not_after: null, removal_after: null }], removed: [], changed: [] },
+      created_at: { from: null, to: T }, name: { from: null, to: 'Agent' }, description: { from: null, to: 'A test agent.' }, framework: { from: null, to: 'fw' },
+      endpoint: { from: null, to: 'https://agent.example' }, capabilities: { added: ['x.y.v1'], removed: [] }, status: { from: null, to: 'active' },
+    });
+  });
+  test('parties, guardian threshold, profile, holds, statuses, recovery, controller and successor each show as the change they are', async () => {
+    const changes = (await read()).section.timeline.map((e) => e.changes);
+    expect(changes[1]).toEqual({
+      parties: { added: [{ role: 'guardian', signer: GUARDIAN, organisation: null, rights: ['recover'], not_before: 0, not_after: null, removal_after: null }], removed: [], changed: [] },
+      guardian_threshold: { from: 0, to: 1 }, endpoint: { from: 'https://agent.example', to: 'https://new.example' }, capabilities: { added: ['z.v1'], removed: ['x.y.v1'] },
+    });
+    const held = { by: 'controller', reason: 'hold', since: T, until: T + 30 * DAY };
+    expect(changes[2]).toEqual({ status: { from: 'active', to: 'suspended' }, holds: { added: [held], renewed: [], removed: [] } });
+    expect(changes[3]).toEqual({ holds: { added: [], renewed: [{ ...held, until: T + 31 * DAY }], removed: [] } });
+    expect(changes[4]).toEqual({ status: { from: 'suspended', to: 'active' }, holds: { added: [], renewed: [], removed: [{ ...held, until: T + 31 * DAY }] } });
+    expect(changes[5]).toEqual({ recovery: { event: 'started', new_controller: keyHash(NEW), effective_after: T + 7 * DAY } });
+    expect(changes[6]).toEqual({ controller: { from: keyHash(CONTROLLER), to: keyHash(NEW) }, recovery: { event: 'completed', new_controller: keyHash(NEW), effective_after: T + 7 * DAY }, subagent_epoch: { from: 0, to: 1 } });
+    expect(changes[7]).toMatchObject({
+      keys: { added: [], removed: [expect.objectContaining({ key_hash: keyHash(ED) }), expect.objectContaining({ key_hash: keyHash(P256) })] },
+      parties: { added: [], removed: [expect.objectContaining({ role: 'accountable' }), expect.objectContaining({ role: 'guardian' })], changed: [] },
+      guardian_threshold: { from: 1, to: 0 }, description: { from: 'A test agent.', to: '' }, framework: { from: 'fw', to: '' }, endpoint: { from: 'https://new.example', to: '' },
+      capabilities: { added: [], removed: ['z.v1'] },
+      status: { from: 'active', to: 'revoked', by: 'controller', reason: 'keyCompromise', at: T + 40 * DAY, invalid_from: T + 39 * DAY, successor: null },
+    });
+    expect(changes[8]).toEqual({ successor: { from: null, to: didFor(SUCCESSOR) } });
+  });
+  test('the record is the tombstone, and the last marketplace keys are those of the last version that listed a transaction key', async () => {
+    const t = await read();
+    expect(t.section.record).toMatchObject({ registry: 'identity', controller_pkh: keyHash(NEW), keys: [], parties: [], status: { status: 'revoked', reason: 'keyCompromise', successor: didFor(SUCCESSOR) } });
+    expect(t.last_marketplace_pkhs).toEqual([keyHash(ED)]); // the P-256 key cannot act in a transaction
+  });
+  test('without the identity registry configured, the native record is not read', async () => {
+    expect((await identityTimeline(subject, koiosLedger(life))).section).toMatchObject({ origin: null, timeline: [] });
+  });
+  test('a cancelled recovery and a recovery ended by a controller change are cancelled, not completed', async () => {
+    const pending = { ...v1, pendingRecovery: { newController: NEW, effectiveAfter: T + 7 * DAY } };
+    const cancelled = await identityTimeline(subject, koiosLedger([
+      { hash: H(1), block: 100, outputs: [idOut(pending)], mint: [token(TEST_IDENTITY, ID)] },
+      { hash: H(2), block: 200, spends: spend(1), outputs: [idOut(v1)] },
+      { hash: H(3), block: 300, spends: spend(2), outputs: [idOut(pending)] },
+      { hash: H(4), block: 400, spends: spend(3), outputs: [idOut({ ...v1, controller: '88'.repeat(32), subagentEpoch: 1 })] },
+    ]), WITH_IDENTITY.registries);
+    const recovery = cancelled.section.timeline.map((e) => e.changes.recovery?.event ?? null);
+    expect(recovery).toEqual(['started', 'cancelled', 'started', 'cancelled']);
+  });
+  test('an identity token that is burned is an error: the identity registry never burns', async () => {
+    const burned = [life[0], { hash: H(2), block: 200, spends: spend(1), outputs: [{ address: WALLET }], mint: [token(TEST_IDENTITY, ID, '-1')] }];
+    await expect(identityTimeline(subject, koiosLedger(burned), WITH_IDENTITY.registries)).rejects.toThrow(/identity token was burned/);
+  });
+});
+
+describe('adoption: one timeline across both registries', () => {
+  const adopted = { keys: [edKey(1 + 8)] };
+  const adoption: LedgerTx[] = [
+    { hash: H(1), block: 100, time: 1000, outputs: [legacyOut(A)], mint: [token(LEGACY, ID)] },
+    { hash: H(2), block: 200, time: 2000, spends: spend(1), outputs: [idOut(adopted), { address: WALLET, value: '10000000' }], mint: [token(LEGACY, ID, '-1'), token(TEST_IDENTITY, ID)] },
+    { hash: H(3), block: 300, time: 3000, spends: spend(2), outputs: [idOut({ ...adopted, name: utf8ToHex('Renamed') })] },
+  ];
+  test('the legacy versions come first, the adoption is the next version, and the identity versions follow', async () => {
+    const t = await identityTimeline(subject, koiosLedger(adoption), WITH_IDENTITY.registries);
+    expect(t.section).toMatchObject({ origin: 'adopted', registered: { tx: H(1), block: 100, time: 1000, registry: 'legacy' }, adopted: { tx: H(2), block: 200, time: 2000 }, deregistered: null });
+    expect(t.section.timeline.map((e) => [e.registry, e.event, e.version])).toEqual([['legacy', 'registration', 0], ['identity', 'adoption', 1], ['identity', 'update', 2]]);
+    expect(t.section.timeline[2].changes).toEqual({ name: { from: 'Agent', to: 'Renamed' } });
+    expect(t.section.record).toMatchObject({ registry: 'identity', name: 'Renamed', keys: [{ key_hash: keyHash(ED) }] });
+    expect(t.last_marketplace_pkhs).toEqual([keyHash(ED)]);
+  });
+  test('the adoption shows what changed against the legacy record: the controller key, the keys and parties, the profile', async () => {
+    const t = await identityTimeline(subject, koiosLedger(adoption), WITH_IDENTITY.registries);
+    expect(t.section.timeline[1].changes).toEqual({
+      controller: { from: A, to: keyHash(CONTROLLER) },
+      keys: { added: [{ key_hash: keyHash(ED), type: 'Ed25519', purposes: ['authentication', 'transaction'] }], removed: [] },
+      parties: { added: [expect.objectContaining({ role: 'accountable', signer: 'controller' })], removed: [], changed: [] },
+      created_at: { from: null, to: T }, name: { from: 'A', to: 'Agent' }, description: { from: 'd', to: 'A test agent.' }, endpoint: { from: '', to: 'https://agent.example' },
+      registered_at: { from: 1, to: null },
+    });
+  });
+  test('without the identity registry configured, the adoption reads as the end of the legacy record', async () => {
+    const t = await identityTimeline(subject, koiosLedger(adoption));
+    expect(t.section).toMatchObject({ origin: 'legacy', deregistered: { tx: H(2) }, record: null });
+    expect(t.section.timeline.map((e) => e.event)).toEqual(['registration', 'deregistration']);
   });
 });

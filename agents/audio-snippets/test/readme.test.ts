@@ -57,7 +57,14 @@ describe('agents/audio-snippets/README.md', () => {
     expect(row('ADVERT_MAX_PROCESSING_MS')).toContain('`1500000`');
     expect(row('AGENT_STATUS_CHIP')).toContain('`deployed`');
     expect(row('AGENT_STATUS_SINCE')).toContain('`2026-10-17`');
-    expect(row('AGENT_VERSION')).toContain('`0.1.0`');
+    expect(row('AGENT_VERSION')).toContain('`0.2.0`');
+    // The identity block of the manifest v2: the canonical DID, the listed supplier key, and the address of the identity registry, empty while it is not configured.
+    expect(row('AGENT_DID')).toContain('`identity.did`, in the canonical form `did:vector:<identifier>`');
+    expect(row('SUPPLIER_PKH')).toContain('with `AGENT_DID` the listed supplier key `identity.supplier_key`, `<DID>#<key hash>`');
+    expect(row('IDENTITY_POLICY_ID')).toMatch(/^\| `IDENTITY_POLICY_ID` \| `identity\.registry_address`, .* \| empty, the identity registry is not configured \|$/);
+    expect(row('IDENTITY_ADDRESS')).toMatch(/ \| derived from the policy \|$/);
+    const manifest = loadConfig({ ...FULL_ENV, AGENT_DID: '' }).manifest;
+    expect([manifest.version, manifest.identity]).toStrictEqual(['0.2.0', { did: '', registry_address: '', supplier_key: '' }]);
   });
 
   test('the Errors table gives each code its status, and every code it names is one the sources know', () => {

@@ -77,13 +77,15 @@ On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and n
 |---|---|---|
 | `OPERATOR_CONTACT` | `operator.contact` | none. Required: the service stops at start without it |
 | `PIPELINE_BUYER_PRIV_KEY_HEX` | the buyer key, 64 lowercase hex characters. Never published, never logged | none. Required |
-| `SUPPLIER_PKH` | `identity.controller_pkh` and `keys.supplier_pkh`, 56 hex characters | none. Required |
+| `SUPPLIER_PKH` | `keys.supplier_pkh`, 56 hex characters, and with `AGENT_DID` the listed supplier key `identity.supplier_key`, `<DID>#<key hash>` | none. Required |
 | `SERVICE_AUTH_HEADER` | the `authorization` header the runtime sends with every call, which `POST /` requires: `Bearer ` and 64 hex characters, made with `openssl rand -hex 32`. Never published, never logged | none. Required: the service stops at start without it |
 | `SUPPLIER_PUB_KEY_HEX` | `keys.pub_key_hex`, 64 hex characters | empty |
-| `AGENT_DID` | `identity.did` | empty |
+| `AGENT_DID` | `identity.did`, in the canonical form `did:vector:<identifier>`. The legacy form of the same identifier is published in the canonical form | empty |
+| `IDENTITY_POLICY_ID` | `identity.registry_address`, the address of the identity registry derived from its policy: 56 lowercase hex characters, the policy ID published at its deployment | empty, the identity registry is not configured |
+| `IDENTITY_ADDRESS` | the address of the identity registry. It may be left out; when it is set it must be the address of `IDENTITY_POLICY_ID` (the script as payment credential, no stake credential), and it needs `IDENTITY_POLICY_ID` | derived from the policy |
 | `PIPELINE_BUYER_PKH` | optional. `keys.buyer_pkh` is always the key hash derived from the buyer key; a value here that is not that hash stops the service at start | derived |
 | `PIPELINE_BUYER_ADDRESS` | optional, as above, for the mainnet enterprise address of the buyer key | derived |
-| `AGENT_VERSION` | `version` | `0.1.0` |
+| `AGENT_VERSION` | `version` | `0.2.0` |
 | `ADVERT_PRICE_LOVELACE` | `terms.price_lovelace` | `5000000` |
 | `ADVERT_MAX_PROCESSING_MS` | `terms.max_processing_ms`; at least 1800000, because the deadline of a job assumes the 30 min window | `1800000` |
 | `AGENT_STATUS_CHIP` | `status.chip`, in lower case | `deployed` |
@@ -95,9 +97,11 @@ On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and n
 | `LLM_MAX_PRICE_LOVELACE` | the most the chat job may be priced at, in lovelace, the same way (`llm_supplier_unavailable`) | `1000000` |
 | `PIPELINE_STATE_DIR` | where `stranded.json` is kept | `/data` |
 | `VECTOR_MARKETPLACE_INDEXER_URL` | the marketplace indexer the suppliers are found in | the default of `packages/buyer-core` |
+| `VECTOR_IDENTITY_LEGACY_ROOT`, `VECTOR_IDENTITY_CONFIG_SEED` | the two deployment values of the identity registry, under the names the MCP server reads: the Merkle root of the adoption allowlist (64 hex characters) and the seed output of its configuration seal (`<txid>#<index>`). Set both or neither. With them the buyer chain can post to the adverts of the identity marketplace and settle its escrows; without them it uses legacy adverts and escrows only. With them, `IDENTITY_POLICY_ID` must be the identity policy that they give, or the service stops at start. `packages/buyer-core` reads them | empty: legacy adverts and escrows only |
+| `VECTOR_IDENTITY_ESCROW_REF_UTXO` | the reference-script UTxO of the escrow of the identity marketplace, `<64 hex>#<index>`. The Accept and the Reclaim of an escrow of the identity marketplace need it, so it is required with the two values above. `packages/buyer-core` reads it | empty |
 | `PORT`, `HOST` | where the service listens | `9092`, `0.0.0.0` |
 
-Numbers (and `PORT`) must be non-negative integers. `AGENT_STATUS_CHIP` must be live, deployed or proposed, in any case. A value that breaks a rule stops the service at start, and the error names the variable. The chain endpoints are Vector mainnet's; `VECTOR_OGMIOS_URL`, `VECTOR_KOIOS_URL` and `VECTOR_SUBMIT_URL` change them, and `packages/buyer-core` reads them.
+Numbers (and `PORT`) must be non-negative integers. `AGENT_STATUS_CHIP` must be live, deployed or proposed, in any case. A value of `AGENT_DID` that starts with `did:vector:` must name a Vector mainnet agent: the canonical form, or the legacy form under the legacy registry policy. A value that breaks a rule stops the service at start, and the error names the variable. The names `IDENTITY_POLICY_ID` and `IDENTITY_ADDRESS` are the ones the identity gateway and the marketplace indexer read. The chain endpoints are Vector mainnet's; `VECTOR_OGMIOS_URL`, `VECTOR_KOIOS_URL` and `VECTOR_SUBMIT_URL` change them, and `packages/buyer-core` reads them.
 
 The advert `detail_uri` points at `GET /agent.json` and its `detail_hash` is the sha256 of the bytes served there. Adverts are immutable, so a changed manifest means a retired advert and a new one. From the repository root, print the hash of a running agent with `node scripts/manifest-hash.mjs https://<host>`.
 

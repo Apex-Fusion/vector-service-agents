@@ -13,6 +13,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { responsesPromptHash, TxNotConfirmedError } from '@vsa/buyer-core';
 import type { Chain, ChainEscrowState } from '@vsa/buyer-core';
+import { KOIOS_URL, blake2b224Hex, encodeIdentityDatum, identityRegistryOf, utf8ToHex } from '@vsa/vector-read';
+import type { AdvertDatum, IdentityDatum, Registry } from '@vsa/vector-read';
 import { runPipeline, PipelineError } from '../src/orchestrate.ts';
 import type { Deps } from '../src/orchestrate.ts';
 import { StrandedStore } from '../src/janitor.ts';
@@ -24,7 +26,7 @@ import { fakeRenderer } from './fake-renderer.ts';
 import { ALL_PASS, GOLDEN } from './golden.ts';
 import { PAGE_0_PNG, PAGE_1_PNG, TWO_PAGES_PDF, text, toBase64 } from './support.ts';
 import {
-  ALLOWLIST, INDEXER, LLM_ADVERT, LLM_ADVERT_REF, LLM_ENDPOINT, OCR_ADVERT, OCR_ADVERT_REF, OCR_ENDPOINT, T0, escrowNo, indexerRow, marketplace,
+  ALLOWLIST, INDEXER, LLM_ADVERT, LLM_ADVERT_REF, LLM_ENDPOINT, LLM_KEY, OCR_ADVERT, OCR_ADVERT_REF, OCR_ENDPOINT, OCR_KEY, T0, escrowNo, indexerRow, marketplace,
 } from './stub-suppliers.ts';
 import type { Marketplace } from './stub-suppliers.ts';
 
@@ -1279,5 +1281,51 @@ describe('runPipeline: the stranded store cannot be written', () => {
       const error = await failure(runPipeline(request(), run.deps), 'store_write_failed', 500);
       expect(error.message, String(mayLand)).toMatch(new RegExp(`${lost}#0.*EROFS`));
     }
+  });
+});
+
+// An identity-marketplace OCR advert (Part 2 section 6.2) names its agent. The Pipeline reads the agent's record at the identity registry before anything is
+// posted, and hires the advert only when the record lists the allowlisted key with the transaction purpose (active_key); the supplier's receipts then carry
+// agent_did, which the eighth check holds to the escrow's agent.
+describe('runPipeline, an identity-marketplace OCR advert', () => {
+  const AGENT = 'ae'.repeat(32);
+  const REGISTRY = identityRegistryOf(blake2b224Hex(utf8ToHex('document-pipeline test identity registry')), undefined)!;
+  const record = (purposes: number, key = OCR_KEY.pubKeyHex): IdentityDatum => ({
+    controller: '11'.repeat(32), keys: [{ keyType: 'Ed25519', key, purposes, pop: null }],
+    parties: [{ role: 'Accountable', signer: { type: 'ControllerSet' }, organisation: null, notBefore: 0, notAfter: null, rights: 3, removalAfter: null }],
+    guardianThreshold: 0, pendingRecovery: null, lineage: { type: 'Root' }, subagentEpoch: 0, name: utf8ToHex('OCR'), description: utf8ToHex('An OCR agent.'),
+    framework: utf8ToHex('fw'), endpoint: utf8ToHex(OCR_ENDPOINT), capabilities: [utf8ToHex(OCR_ADVERT.capability_id)], createdAt: 1_700_000_000_000, status: { type: 'Active' },
+  });
+  const held = (datum: IdentityDatum) => ({
+    tx_hash: 'c1'.repeat(32), tx_index: 0, address: REGISTRY.address, value: '10000000', inline_datum: { bytes: encodeIdentityDatum(datum) },
+    asset_list: [{ policy_id: REGISTRY.policy, asset_name: AGENT, quantity: '1' }], is_spent: false,
+  });
+  const identityRun = (records: Array<Record<string, unknown>>, registry: Registry | null = REGISTRY) => {
+    const run = setup({ ocrAdvert: { ...OCR_ADVERT, agent_id: AGENT } as AdvertDatum });
+    run.m.records.push(...records);
+    run.deps.identityRegistry = registry;
+    return run;
+  };
+
+  it('hires it when the record of its agent lists the key with the transaction purpose: every page receipt names the agent and passes the eight checks', async () => {
+    const run = identityRun([held(record(1 + 8))]);
+    const result = await runPipeline(request(), run.deps);
+    for (const page of result.pages) {
+      expect(page.sub_job.receipt.agent_did).toBe(`did:vector:${AGENT}`);
+      expect(page.sub_job.verification).toStrictEqual(ALL_PASS);
+    }
+    expect(run.m.calls.filter((c) => c.url === `${KOIOS_URL}/asset_utxos`)).toHaveLength(1);
+  });
+
+  it.each([
+    ['no identity registry is configured', [], null, /names the agent did:vector:(ae)+, and no identity registry is configured \(IDENTITY_POLICY_ID\)/],
+    ['the agent has no record', [], REGISTRY, /the agent did:vector:(ae)+ its advert .* names has no record in the identity registry/],
+    ['the record lists the key for authentication only', [held(record(1))], REGISTRY, /does not list the key with the transaction purpose \(active_key\)/],
+    ['the record lists another key', [held(record(1 + 8, LLM_KEY.pubKeyHex))], REGISTRY, /does not list the key with the transaction purpose \(active_key\)/],
+  ])('refuses it, posting nothing, when %s', async (_why, records, registry, says) => {
+    const run = identityRun(records, registry);
+    const error = await failure(runPipeline(request(), run.deps), 'ocr_supplier_unavailable', 503);
+    expect(error.message).toMatch(says);
+    expect(run.m.ocr.sends).toStrictEqual([]);
   });
 });

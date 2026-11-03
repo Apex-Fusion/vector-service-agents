@@ -6,7 +6,7 @@
 // The marketplace path, with the hire of packages/hire-kit: the choice of an allowlisted chat supplier at a price at or under the ceiling, its advert read and
 // checked on chain (15 s, three candidates at most, within 25 s); the float of the buyer wallet, read within 10 s, which must hold a collateral output and,
 // outside it, the lock the advert plans and the fees of a Post and an Accept; then the hire itself: the Post, recorded in the stranded store, the send, the
-// polls, the seven checks of the receipt, and the Accept. Its waits stop at the hop deadline, its first send too, and its reads of the receipt hash at
+// polls, the eight checks of the receipt, and the Accept. Its waits stop at the hop deadline, its first send too, and its reads of the receipt hash at
 // receiptByMs (src/budget.ts). Only then is the answer read as a brief (R-F3): the receipt commits to the supplier's output, not to its being a brief, and an
 // escrow that is Submitted cannot be reclaimed, so a verified answer is accepted first and read after.
 //

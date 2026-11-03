@@ -77,7 +77,7 @@ const SOURCE_2 = { title: 'Clean air and the school run', url: PAGE_2, retrieved
 /** The escrow the golden hire opens on the FakeChain (its first Post), and the key of the stub chat supplier. */
 const GOLDEN_ESCROW = 'e3b87652a5a3234ad03cbdad5e9e34ebd2c6d3b063bbf168e615c29ca225afce#0';
 const CHAT_SUPPLIER_PKH = 'bf76c61ab0368b17de63c36c3460eb943cb618ab18b57903c212025b';
-/** The chat sub-job of the golden job: the receipt and signature as the stub supplier gives them, and the seven checks, every one passed. */
+/** The chat sub-job of the golden job: the receipt and signature as the stub supplier gives them, and the eight checks, every one passed. */
 export const GOLDEN_SUB_JOB = {
   capability_id: 'llm.text.generate.v1',
   advert_ref: 'b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2#1',
@@ -96,7 +96,7 @@ export const GOLDEN_SUB_JOB = {
   receipt_signature: '0cafdf0a8cfbccace4089baf9ce74dde37b2bda63c830eb09a4fab1a3f52794b344d64a8987f5831d8e89701fcf3d4fa2ef72e63e50023f82b429ee8bf51ee04',
   verification: {
     escrow_ref_matches: true, response_hash_matches: true, supplier_key_matches: true, signature_valid: true, on_chain_hash_matches: true, prompt_hash_matches: true,
-    model_matches: true,
+    model_matches: true, fields_match: true,
   },
 };
 

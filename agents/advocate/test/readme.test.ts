@@ -6,7 +6,7 @@ import { afterEach, describe, test, expect } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { HEARTBEAT_MS, MAX_BODY, SHUTDOWN_WAIT_MS, STOPPING_TEXT, TOKEN_SEARCH_MIN, WireError, operatorsText } from '@vsa/service-kit';
 import { blake2b224Hex } from '@vsa/vector-read';
-import { buyerIdentityOf } from '@vsa/buyer-core';
+import { BUYER_IDENTITY_SETTINGS, buyerIdentityOf } from '@vsa/buyer-core';
 import { FALLBACK_RESERVE_MS, FETCH_CONCURRENCY, FETCH_PHASE_MAX_MS, FETCH_RESERVE_MS, JOB_DEADLINE_MS, MODEL_MAX_MS, MODEL_MIN_MS, PAGE_TIMEOUT_MS, RESULT_RESERVE_MS, SEARCH_MAX_MS, SEARCH_QUERY_TIMEOUT_MS } from '../src/budget.ts';
 import { checkCitations } from '../src/check.ts';
 import { AdvocateError, JOB_STATUS } from '../src/errors.ts';
@@ -19,7 +19,7 @@ import { DECLARED_BIAS_STATEMENT, OMITTED_BY_DESIGN, QUOTE_MAX_CHARS, QUOTE_MIN_
 import { RequestError } from '../src/request.ts';
 import { MAX_QUERY_CHARS, MAX_QUERY_WORDS, MAX_RESULTS, QUERY_SPACING_MS, RESULTS_PER_QUERY, queriesFor, searchWeb } from '../src/search.ts';
 import { JobSlot, MIN_PROCESSING_WINDOW_MS, TEMPLATE_ENV, manifestFromEnv } from '../src/server.ts';
-import { PORT_DEFAULT, SETTINGS, STATE_DIR_DEFAULT, loadConfig } from '../src/start.ts';
+import { CHAIN_SETTINGS, PORT_DEFAULT, SETTINGS, STATE_DIR_DEFAULT, loadConfig } from '../src/start.ts';
 import { GOLDEN_OUTCOME, GOLDEN_REQUEST } from './golden.ts';
 import { baseDeps, cleanDirs, keyOf, serve, wire } from './server-support.ts';
 
@@ -59,11 +59,13 @@ function namesRead(): string[] {
 }
 
 describe('agents/advocate/README.md', () => {
-  test('the Manifest table names exactly the variables the service reads, and they are the settings the secrets are looked for in', () => {
+  test('the Manifest table names exactly the variables the service reads and the identity deployment of its chain, and they are the settings the secrets are looked for in', () => {
     const table = section('Manifest').split('\n').filter((line) => /^\| `[A-Z]/.test(line));
     const documented = table.flatMap((line) => ticks(line.split('|')[1])).sort();
-    expect(documented).toStrictEqual(namesRead());
+    // The three settings of the identity registry deployment are read by packages/buyer-core (BUYER_IDENTITY_SETTINGS): no source of the service names them.
+    expect(documented).toStrictEqual([...namesRead(), ...BUYER_IDENTITY_SETTINGS].sort());
     expect([...SETTINGS].sort()).toStrictEqual(namesRead());
+    for (const name of BUYER_IDENTITY_SETTINGS) expect([namesRead().includes(name), CHAIN_SETTINGS.includes(name)], name).toStrictEqual([false, true]);
     for (const name of ['BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'ADVOCATE_BUYER_PRIV_KEY_HEX', 'ADVOCATE_BUYER_PKH', 'ADVOCATE_BUYER_ADDRESS', 'ADVOCATE_STATE_DIR', 'LLM_MODEL_ALLOWLIST', 'LLM_MAX_PRICE_LOVELACE', 'VECTOR_MARKETPLACE_INDEXER_URL']) expect(SETTINGS, name).toContain(name);
   });
 
@@ -82,9 +84,18 @@ describe('agents/advocate/README.md', () => {
     expect(row('AGENT_STATUS_CHIP')).toContain('`deployed`');
     expect(row('AGENT_STATUS_CHIP')).toContain('`status.chip`, in lower case');
     expect(row('AGENT_STATUS_SINCE')).toContain('`2026-10-20`');
-    expect(row('AGENT_VERSION')).toContain('`0.1.0`');
+    expect(row('AGENT_VERSION')).toContain('`0.2.0`');
     const manifest = manifestFromEnv({ OPERATOR_CONTACT: 'ops@example.test' });
-    expect([manifest.version, manifest.terms.price_lovelace, manifest.terms.max_processing_ms, manifest.status.chip, manifest.status.since]).toStrictEqual(['0.1.0', 3_000_000, 480_000, 'deployed', '2026-10-20']);
+    expect([manifest.version, manifest.terms.price_lovelace, manifest.terms.max_processing_ms, manifest.status.chip, manifest.status.since]).toStrictEqual(['0.2.0', 3_000_000, 480_000, 'deployed', '2026-10-20']);
+    // The identity block of the manifest v2: the canonical DID, the listed supplier key, and the address of the identity registry, empty while it is not configured.
+    expect(row('AGENT_DID')).toContain('`identity.did`, in the canonical form `did:vector:<identifier>`');
+    expect(row('SUPPLIER_PKH')).toContain('with `AGENT_DID` the listed supplier key `identity.supplier_key`, `<DID>#<key hash>`');
+    expect(row('IDENTITY_POLICY_ID')).toMatch(/^\| `IDENTITY_POLICY_ID` \| `identity\.registry_address`, .* \| empty, the identity registry is not configured \|$/);
+    expect(row('IDENTITY_ADDRESS')).toMatch(/ \| derived from the policy \|$/);
+    expect(manifest.identity).toStrictEqual({ did: '', registry_address: '', supplier_key: '' });
+    // The deployment of the identity registry that the buyer chain reads: empty means legacy adverts and escrows only.
+    expect(row('VECTOR_IDENTITY_LEGACY_ROOT')).toMatch(/ \| empty: legacy adverts and escrows only \|$/);
+    expect(row('VECTOR_IDENTITY_ESCROW_REF_UTXO')).toMatch(/ \| empty \|$/);
     const config = loadConfig(FULL_ENV);
     expect([config.port, config.host, config.model]).toStrictEqual([PORT_DEFAULT, '0.0.0.0', DEFAULT_MODEL]);
     expect(row('PORT')).toContain(`| \`${config.port}\`, \`${config.host}\` |`);

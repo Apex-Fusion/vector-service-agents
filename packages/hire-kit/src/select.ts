@@ -14,12 +14,13 @@
 // `unavailable`, with the reason in words; nothing was locked. The supplier chosen is logged with the host of its endpoint and never the whole URL, which
 // is the supplier's to write (ruling R65).
 //
-// The lock (plannedLockOf): what a Post on the advert locks, planned as the Post plans it (planFleetPostEscrow), with a prompt hash of the size of every
+// The lock (plannedLockOf): what a Post on the advert locks, planned as the Post plans it (planFleetPostEscrow), in the layout of the advert (an
+// identity-marketplace escrow, whose refund is the buyer's own address, for an advert that names its agent), with a prompt hash of the size of every
 // prompt hash; and the float a sub-job needs (subJobFloat), its lock and the fee of a Post and of an Accept at the marketplace floor (ruling R56).
 import {
-  LLM_SELECTION_BUDGET_MS, LLM_SELECTION_MAX_CANDIDATES, TX_FEE_BUDGET_LOVELACE, flatText, planFleetPostEscrow, selectLlmSupplier,
+  LLM_SELECTION_BUDGET_MS, LLM_SELECTION_MAX_CANDIDATES, TX_FEE_BUDGET_LOVELACE, enterpriseAddressOf, fleetPostTerms, flatText, planFleetPostEscrow, selectLlmSupplier,
 } from '@vsa/buyer-core';
-import type { Chain, FetchLike, SupplierCapability } from '@vsa/buyer-core';
+import type { Chain, FetchLike, LlmSupplierChoice, SupplierCapability } from '@vsa/buyer-core';
 import { blake2b224Hex } from '@vsa/vector-read';
 import type { AdvertDatum } from '@vsa/vector-read';
 import { canonicalRef, errorText } from './format.ts';
@@ -76,7 +77,7 @@ export async function chooseChatSupplier<E extends Error>(chain: Chain, query: C
   const ceiling = query.maxPriceLovelace;
   const budgetMs = query.budgetMs ?? LLM_SELECTION_BUDGET_MS;
   const maxCandidates = query.maxCandidates ?? LLM_SELECTION_MAX_CANDIDATES;
-  let chosen: Awaited<ReturnType<typeof selectLlmSupplier>>;
+  let chosen: LlmSupplierChoice | null;
   try { chosen = await selectLlmSupplier({ fetchImpl: query.fetchImpl, indexerUrl: query.indexerUrl, allowlist: query.allowlist, probe: true, maxPriceLovelace: ceiling, budgetMs, maxCandidates }); } catch (err) {
     throw unavailable(`the marketplace indexer could not be read (${errorText(err)})`);
   }
@@ -99,9 +100,13 @@ export async function chooseChatSupplier<E extends Error>(chain: Chain, query: C
   return supplier;
 }
 
-/** The lock a Post on the supplier's advert takes, planned as the Post plans it (planFleetPostEscrow); the planner's Error passes through for an advert no Post can be planned on. */
+/**
+ * The lock a Post on the supplier's advert takes, planned as the Post plans it (planFleetPostEscrow, in the layout of the advert, with the refund to the
+ * enterprise address of `buyerPkh`, the address of every chain of buyer-core); the planner's Error passes through for an advert no Post can be planned on.
+ */
 export function plannedLockOf(supplier: HireSupplier, buyerPkh: string, nowMs: number): bigint {
-  return planFleetPostEscrow(supplier.advert, supplier.advertRef, buyerPkh, PLANNING_PROMPT_HASH, nowMs).lockLovelace;
+  const terms = fleetPostTerms(supplier.advert, enterpriseAddressOf(buyerPkh));
+  return planFleetPostEscrow(supplier.advert, supplier.advertRef, buyerPkh, PLANNING_PROMPT_HASH, nowMs, terms).lockLovelace;
 }
 
 /** The float one sub-job needs outside the collateral: its lock and the fee of a Post and of an Accept (TX_FEE_BUDGET_LOVELACE each, ruling R56). */

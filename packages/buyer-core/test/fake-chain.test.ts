@@ -39,13 +39,22 @@ describe('FakeChain', () => {
       escrowRef: `${sha256Utf8Hex('pipeline-test/1')}#0`, txHash: sha256Utf8Hex('pipeline-test/1'),
       lockLovelace: LOCK, feeLovelace: FEE,
       deliverBy: T0 + ADVERT_EXPECTED.max_processing_ms + DELIVER_BY_BUFFER_MS, postedAt: T0, supplierPkh: ADVERT_EXPECTED.supplier_pkh,
-      collateralKept: true,
+      collateralKept: true, agentId: null,
     });
     expect(await chain.escrowState(first.escrowRef)).toBe('Open');
     expect(await chain.onChainReceiptHash(first.escrowRef)).toBeNull();
     expect((await post()).escrowRef).toBe(`${sha256Utf8Hex('pipeline-test/2')}#0`);
     // The same calls on a new chain give the same refs.
     expect((await setup().post()).escrowRef).toBe(first.escrowRef);
+  });
+
+  it('posts to an identity-marketplace advert (it names its agent) and says which agent the escrow names; readAdvert gives the advert as it is', async () => {
+    const AGENT = 'ae'.repeat(32);
+    const identityAdvert = { ...advert, agent_id: AGENT };
+    const chain = new FakeChain({ adverts: { [ADVERT_REF]: identityAdvert }, clock: () => T0, prefix: 'pipeline-test/' });
+    const posted = await chain.postEscrow({ advertRef: ADVERT_REF, promptHash: PROMPT });
+    expect(posted).toMatchObject({ agentId: AGENT, lockLovelace: LOCK, deliverBy: T0 + ADVERT_EXPECTED.max_processing_ms + DELIVER_BY_BUFFER_MS });
+    expect(await chain.readAdvert(ADVERT_REF)).toStrictEqual(identityAdvert);
   });
 
   it('markClaimed makes it Claimed, markSubmitted makes it Submitted with the receipt hash readable on chain', async () => {

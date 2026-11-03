@@ -140,9 +140,9 @@ describe('the marketplace path (rulings R-F3, R-F9)', () => {
       s.m.supplier.tokens = tokens;
       const inference = await run(s);
       expect([inference.path, inference.usage, inference.brief, inference.accepted, inference.fallbackFrom], JSON.stringify(tokens)).toStrictEqual(['marketplace', null, GOLDEN_MODEL_BRIEF, 'confirmed', null]);
-      // The sub-job carries the receipt as its supplier signed it, and the seven checks passed on it.
+      // The sub-job carries the receipt as its supplier signed it, and the eight checks passed on it.
       const receipt: Record<string, unknown> = { ...inference.subJob?.receipt };
-      expect([receipt.prompt_tokens, receipt.completion_tokens, Object.values(inference.subJob?.verification ?? {})], JSON.stringify(tokens)).toStrictEqual([tokens.prompt_tokens, tokens.completion_tokens, Array(7).fill(true)]);
+      expect([receipt.prompt_tokens, receipt.completion_tokens, Object.values(inference.subJob?.verification ?? {})], JSON.stringify(tokens)).toStrictEqual([tokens.prompt_tokens, tokens.completion_tokens, Array(8).fill(true)]);
       expect([await states(s.m, escrowNo(1)), s.stranded.list(), s.openRouter, s.lines]).toStrictEqual([['spent'], [], [], [CHOSEN]]);
     }
   });
@@ -475,7 +475,7 @@ describe('the fallback rule: an answer that was settled and is no brief (Review 
     const inference = await run(s);
     expect([inference.path, inference.fallbackFrom, inference.accepted, inference.brief, inference.usage]).toStrictEqual(['openrouter', 'model_output_invalid', 'confirmed', GOLDEN_MODEL_BRIEF, USAGE]);
     expect(inference.subJob?.escrow_ref).toBe(escrowNo(1));
-    expect(Object.values(inference.subJob?.verification ?? {})).toStrictEqual(Array(7).fill(true));
+    expect(Object.values(inference.subJob?.verification ?? {})).toStrictEqual(Array(8).fill(true));
     expect([await states(s.m, escrowNo(1)), s.stranded.list(), s.openRouter.length]).toStrictEqual([['spent'], [], 1]);
     expect(s.lines).toStrictEqual([CHOSEN, line('model_output_invalid', 'brief')]);
   });

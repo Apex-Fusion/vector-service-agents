@@ -1,16 +1,23 @@
-// Vitest port of packages/builder/test/marketplace-datum.test.ts @ 94b8f41 (Apex-Fusion/mcp-server,
-// branch feat/marketplace-build-tools, PR 2). node:assert/strict calls became expect() equivalents with the
-// same meaning (deepEqual -> toStrictEqual, equal -> toBe, throws -> toThrow, ok(cond) -> a comparison
-// matcher). The 'registry and stake datums' block below is local to this repo. Two tests of the 4a7b223 port that
-// the source has since dropped as redundant are kept here (the semantic-equality test and the two lock-floor bounds).
+// Vitest port of packages/builder/test/marketplace-datum.test.ts at 94bd293 (Apex-Fusion/mcp-server, branch
+// feat/identity-registry; first ported at 94b8f41, PR 2, and changed since only in one regex escape). node:assert/strict
+// calls became expect() equivalents with the same meaning (deepEqual -> toStrictEqual, equal -> toBe, throws -> toThrow,
+// ok(cond) -> a comparison matcher). The source tests the identity layouts in identity-codec.test.ts (ported to
+// test/identity-codec.test.ts). The 'encodeAdvertDatum' block is the block of the same name in the source's
+// marketplace-advert.test.ts at 94bd293, ported the same way. Local to this repo: the 'identity layouts on the live terms'
+// block, the sha256BytesHex known answers (moved from packages/buyer-core with the function), the 'stake datums' block and
+// the blocks after it. Two tests of the 4a7b223 port that the source has since dropped as redundant are kept here (the
+// semantic-equality test and the two lock-floor bounds).
 import { describe, test, expect } from 'vitest';
 import { createHash } from 'node:crypto';
 import { Data, Constr, fromText } from '@lucid-evolution/lucid';
 import {
-  decodeAdvertDatum, decodeEscrowDatum, encodeEscrowDatum, canonicalize,
+  decodeAdvertDatum, encodeAdvertDatum, decodeEscrowDatum, encodeEscrowDatum, canonicalize,
   requestSpecHash, wirePayloadFor, promptHashForPayload, escrowLockFloor, parseOutRef, formatOutRef,
-  advertTextFieldsRoundTrip, decodeRegistryDatum, decodeStakeDatum, topLevelBytes, blake2b224Hex,
+  advertTextFieldsRoundTrip, decodeStakeDatum, topLevelBytes, blake2b224Hex, sha256Utf8Hex, sha256BytesHex,
+  decodeIdentityAdvertDatum, encodeIdentityAdvertDatum, decodeAnyAdvertDatum, decodeIdentityEscrowDatum, encodeIdentityEscrowDatum,
+  decodeAnyEscrowDatum, identityEscrowDatumToData, identityEscrowLockFloor,
 } from '../src/datum.ts';
+import type { IdentityAdvertDatum, IdentityEscrowDatum } from '../src/datum.ts';
 import {
   ADVERT_DATUM_HEX, ADVERT_EXPECTED, ESCROW_OPEN_DATUM_HEX, ESCROW_EXPECTED, ESCROW_LOCKED_LOVELACE, ESCROW_REF,
 } from './fixtures/marketplace.fixture.ts';
@@ -36,9 +43,31 @@ describe('advert datum', () => {
       expect(decodeAdvertDatum(withField(index, MAX_SAFE))[name], `${name}: 2^53 - 1 is fine`).toBe(Number.MAX_SAFE_INTEGER);
       expect(decodeAdvertDatum(withField(index, -MAX_SAFE))[name], `${name}: the decoder stays lenient about sign`).toBe(-Number.MAX_SAFE_INTEGER);
       for (const bad of [MAX_SAFE + 1n, MAX_SAFE + 2n, -MAX_SAFE - 1n, 2n ** 64n, 10n ** 40n]) {
-        expect(() => decodeAdvertDatum(withField(index, bad)), `${name} = ${bad}`).toThrow(new RegExp(`advert\.${name}: .*safe`));
+        expect(() => decodeAdvertDatum(withField(index, bad)), `${name} = ${bad}`).toThrow(new RegExp(`advert\\.${name}: .*safe`));
       }
     }
+  });
+});
+
+// The source writes back every live advert of its fixtures: the Posts of the four service agents (its advert-stake-golden.fixture.ts,
+// which is not copied here) and the ChandraOCR advert. Here the live advert is the ChandraOCR advert of marketplace.fixture.ts, and it
+// takes the place of ADVOCATE (the advert of the Advocate's Post) in the two other tests.
+describe('encodeAdvertDatum', () => {
+  const ADVERT = decodeAdvertDatum(ADVERT_DATUM_HEX);
+  test('writes the live ChandraOCR advert back byte for byte', () => {
+    expect(encodeAdvertDatum(ADVERT)).toBe(ADVERT_DATUM_HEX);
+  });
+  test('frames like the marketplace: every integer as 1b + 8 bytes, the status as a nullary constructor', () => {
+    const hex = encodeAdvertDatum({ ...ADVERT, max_output_tokens: 1, price_lovelace: 0n });
+    expect(hex.startsWith('d8798d'), 'constructor 0, a definite array of 13 fields').toBe(true);
+    expect(hex.includes('1b0000000000000001'), 'a small integer still takes nine bytes').toBe(true);
+    expect(hex.endsWith('d87980'), 'Active').toBe(true);
+    expect(encodeAdvertDatum({ ...ADVERT, status: 'Retired' }).endsWith('d87a80'), 'Retired').toBe(true);
+    expect(decodeAdvertDatum(encodeAdvertDatum({ ...ADVERT, status: 'Retired' })).status).toBe('Retired');
+  });
+  test('refuses what it cannot frame', () => {
+    expect(() => encodeAdvertDatum({ ...ADVERT, status: 'Paused' as never })).toThrow(/unknown status/);
+    expect(() => encodeAdvertDatum({ ...ADVERT, price_lovelace: -1n })).toThrow(RangeError);
   });
 });
 
@@ -120,6 +149,15 @@ describe('hashing', () => {
     expect(formatOutRef(ESCROW_REF.slice(0, 64), 0)).toBe(ESCROW_REF);
     expect(() => parseOutRef('nope#1')).toThrow(/out ref/);
   });
+  // Local (moved from packages/buyer-core with the function): the source gained sha256BytesHex after 94b8f41 for the manifest a supplier serves.
+  test('sha256BytesHex hashes bytes as they are, in lower-case hex', () => {
+    expect(sha256BytesHex(new Uint8Array())).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+    expect(sha256BytesHex(new TextEncoder().encode('abc'))).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+  });
+  test('sha256BytesHex is not the hash of the decoded text when the bytes are not valid UTF-8', () => {
+    const bytes = new Uint8Array([0xff, 0xfe, 0x61]);
+    expect(sha256BytesHex(bytes)).not.toBe(sha256Utf8Hex(new TextDecoder().decode(bytes)));
+  });
 });
 
 // decodeAdvertDatum reads the four text fields with toText, which is lossy for bytes that are not UTF-8 (invalid
@@ -156,16 +194,12 @@ describe('advertTextFieldsRoundTrip', () => {
   });
 });
 
-describe('registry and stake datums', () => {
+describe('stake datums', () => {
   // Module-3 stake datum of ChandraOCR (05563e75…#0), captured 2026-10-13.
   const STAKE_FIELDS = { asset: '5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db', owner: '401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9', amount: 10_000_000n, caps: ['ocr.page.extract.chandra-ocr-2.v1', 'document-extraction'], last_updated: 1786092804000, history_points: 0n };
   test('stake datum round-trips through the known shape', () => {
     const hex = Data.to(new Constr(0, [STAKE_FIELDS.asset, new Constr(0, [STAKE_FIELDS.owner]), STAKE_FIELDS.amount, STAKE_FIELDS.caps.map(fromText), BigInt(STAKE_FIELDS.last_updated), STAKE_FIELDS.history_points]));
     expect(decodeStakeDatum(hex)).toEqual({ agent_asset_name: STAKE_FIELDS.asset, owner_pkh: STAKE_FIELDS.owner, stake_lovelace: STAKE_FIELDS.amount, capabilities: STAKE_FIELDS.caps, last_updated: STAKE_FIELDS.last_updated, history_points: 0 });
-  });
-  test('registry datum decodes the seven fields', () => {
-    const hex = Data.to(new Constr(0, [new Constr(0, ['ab'.repeat(28)]), fromText('Name'), fromText('Desc'), [fromText('a.b.v1')], fromText('fw'), fromText('https://e.example'), 1786092405791n]));
-    expect(decodeRegistryDatum(hex)).toEqual({ owner_pkh: 'ab'.repeat(28), name: 'Name', description: 'Desc', capabilities: ['a.b.v1'], framework: 'fw', endpoint: 'https://e.example', registered_at: 1786092405791 });
   });
   test('topLevelBytes lists bytes fields of an unknown constructor', () => {
     const hex = Data.to(new Constr(0, ['aa'.repeat(32), new Constr(0, ['bb'.repeat(28)]), 5n]));
@@ -196,5 +230,69 @@ describe('escrow output minimum of the service agents', () => {
       const economic = (price + 2n) * 1_000_000n;
       expect(escrowLockFloor(datum, economic), `${capability_id}: the lock`).toBe(economic);
     }
+  });
+});
+
+// Local to this repo. The identity layouts of did:vector Part 2 sections 6.1 and 6.2 on the terms of the live escrow and advert: the
+// legacy fields, then agent_id (and, for the escrow, the refund). The source tests them on the Aiken fixtures (test/identity-codec.test.ts).
+describe('identity layouts on the live terms', () => {
+  const AGENT_ID = 'ae'.repeat(32);
+  const ADVERT: IdentityAdvertDatum = { ...ADVERT_EXPECTED, status: 'Active', agent_id: AGENT_ID };
+  // The refund goes to the enterprise address of the buyer key, with an inline datum: both parts of a refund are written.
+  const REFUND = { address: { paymentCredential: { type: 'VerificationKey' as const, hash: ESCROW_EXPECTED.buyer_pkh }, stakeCredential: null }, datum: Data.to(new Constr(0, [])) };
+  const ESCROW: IdentityEscrowDatum = { ...ESCROW_EXPECTED, state: 'Open', agent_id: AGENT_ID, refund: REFUND };
+  const ECONOMIC = ESCROW.payment_lovelace + ESCROW.buyer_bond_lovelace + ESCROW.supplier_bond_lovelace;
+
+  test('the 14-field advert and the 16-field escrow decode to what was encoded, and encode back to the same bytes', () => {
+    const advertHex = encodeIdentityAdvertDatum(ADVERT);
+    expect((Data.from(advertHex) as Constr<Data>).fields).toHaveLength(14);
+    expect(decodeIdentityAdvertDatum(advertHex)).toStrictEqual(ADVERT);
+    expect(encodeIdentityAdvertDatum(decodeIdentityAdvertDatum(advertHex))).toBe(advertHex);
+    for (const escrow of [ESCROW, { ...ESCROW, refund: null }, { ...ESCROW, refund: { ...REFUND, datum: null } }, { ...ESCROW, submitted_at: 1786530100000, result_receipt_hash: 'ab'.repeat(32), state: 'Submitted' as const }]) {
+      const escrowHex = encodeIdentityEscrowDatum(escrow);
+      expect((Data.from(escrowHex) as Constr<Data>).fields).toHaveLength(16);
+      expect(decodeIdentityEscrowDatum(escrowHex)).toStrictEqual(escrow);
+      expect(encodeIdentityEscrowDatum(decodeIdentityEscrowDatum(escrowHex))).toBe(escrowHex);
+    }
+  });
+  test('each decoder refuses the other layout of its kind: 13 and 14 advert fields, 14 and 16 escrow fields', () => {
+    expect(() => decodeAdvertDatum(encodeIdentityAdvertDatum(ADVERT))).toThrow('advert: expected Constr 0 with 13 fields, got 0/14');
+    expect(() => decodeIdentityAdvertDatum(ADVERT_DATUM_HEX)).toThrow('advert: expected Constr 0 with 14 fields, got 0/13');
+    expect(() => decodeEscrowDatum(encodeIdentityEscrowDatum(ESCROW))).toThrow('escrow: expected Constr 0 with 14 fields, got 0/16');
+    expect(() => decodeIdentityEscrowDatum(ESCROW_OPEN_DATUM_HEX)).toThrow('escrow: expected Constr 0 with 16 fields, got 0/14');
+  });
+  test('decodeAnyAdvertDatum and decodeAnyEscrowDatum tell the layouts apart by field count and refuse any other count', () => {
+    expect(decodeAnyAdvertDatum(ADVERT_DATUM_HEX)).toStrictEqual({ layout: 'legacy', datum: ADVERT_EXPECTED });
+    expect(decodeAnyAdvertDatum(encodeIdentityAdvertDatum(ADVERT))).toStrictEqual({ layout: 'identity', datum: ADVERT });
+    expect(decodeAnyEscrowDatum(ESCROW_OPEN_DATUM_HEX)).toStrictEqual({ layout: 'legacy', datum: ESCROW_EXPECTED });
+    expect(decodeAnyEscrowDatum(encodeIdentityEscrowDatum(ESCROW))).toStrictEqual({ layout: 'identity', datum: ESCROW });
+    const withFields = (n: number) => Data.to(new Constr(0, Array.from({ length: n }, () => 0n)));
+    expect(() => decodeAnyAdvertDatum(withFields(15))).toThrow('advert: expected Constr 0 with 13 (legacy) or 14 (identity) fields, got 0/15');
+    expect(() => decodeAnyEscrowDatum(withFields(15))).toThrow('escrow: expected Constr 0 with 14 (legacy) or 16 (identity) fields, got 0/15');
+    expect(() => decodeAnyEscrowDatum(Data.to(new Constr(1, [])))).toThrow(/got 1\/0/);
+  });
+  test('the encoders refuse an agent_id that is not 32 bytes of lowercase hex', () => {
+    for (const agent_id of ['AE'.repeat(32), 'ae'.repeat(31), '']) {
+      expect(() => encodeIdentityAdvertDatum({ ...ADVERT, agent_id })).toThrow('advert.agent_id: expected 32 bytes of lowercase hex');
+      expect(() => encodeIdentityEscrowDatum({ ...ESCROW, agent_id })).toThrow('escrow.agent_id: expected 32 bytes of lowercase hex');
+    }
+  });
+  test('advertTextFieldsRoundTrip reads the 14-field advert as it reads the 13-field one', () => {
+    expect(advertTextFieldsRoundTrip(encodeIdentityAdvertDatum(ADVERT))).toBe(true);
+    const withModel = (hex: string) => { const c = Data.from(encodeIdentityAdvertDatum(ADVERT)) as Constr<Data>; c.fields[2] = hex; return Data.to(c); };
+    expect(advertTextFieldsRoundTrip(withModel('ff'))).toBe(false);
+    const fifteen = Data.from(encodeIdentityAdvertDatum(ADVERT)) as Constr<Data>;
+    expect(advertTextFieldsRoundTrip(Data.to(new Constr(0, [...fifteen.fields, 0n]))), '15 fields').toBe(false);
+  });
+  test('identityEscrowLockFloor is at least the economic total and at least the legacy floor of the same terms', () => {
+    const floor = identityEscrowLockFloor(ESCROW, ECONOMIC);
+    expect(floor).toBeGreaterThanOrEqual(ECONOMIC);
+    expect(floor).toBeGreaterThanOrEqual(escrowLockFloor(ESCROW_EXPECTED, ECONOMIC));
+    // Below the floor, the identity escrow's larger Submitted datum needs more than the legacy one.
+    expect(identityEscrowLockFloor(ESCROW, 0n)).toBeGreaterThan(escrowLockFloor(ESCROW_EXPECTED, 0n));
+    // A total above the floor is the lock as it is.
+    expect(identityEscrowLockFloor(ESCROW, 100_000_000n)).toBe(100_000_000n);
+    // The Data the floor is sized from is the escrow's own.
+    expect(Data.to(identityEscrowDatumToData(ESCROW))).toBe(encodeIdentityEscrowDatum(ESCROW));
   });
 });

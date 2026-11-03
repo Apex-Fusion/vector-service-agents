@@ -1,14 +1,25 @@
 // packages/buyer-core/test/config-and-fixtures.test.ts
 // Pins the one deviation of the vendored config.ts (mainnet defaults, VENDORED-FROM.md), and puts the vendored fixtures to work on
-// the vendored code: the live ChandraOCR advert through planPostEscrow, the lineage world through resolveEscrowLineage, and the
-// fixture provider through lucidForAddress.
+// the vendored code: the live ChandraOCR advert through planPostEscrow, the lineage world through resolveEscrowLineage, the
+// fixture provider through lucidForAddress, and the identity world (identity-world.ts, escrow-identity.fixture.ts) through
+// identityDeploymentFrom, planPostEscrow, resolveEscrowLineage and readEscrowOutput in the identity layout, and through module1Consent,
+// which reads the reward account of Module-1 from the node with getRewardAccount.
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { decodeAdvertDatum, decodeEscrowDatum, promptHashForPayload } from '@vsa/vector-read';
-import type { EscrowDatum } from '@vsa/vector-read';
+import { decodeAdvertDatum, decodeEscrowDatum, decodeIdentityEscrowDatum, identityEscrowLockFloor, promptHashForPayload } from '@vsa/vector-read';
+import type { EscrowDatum, IdentityEscrowDatum } from '@vsa/vector-read';
+import { plutusAddressFromBech32 } from '@vsa/vector-read/identity-codec';
 import { planPostEscrow, resolveEscrowLineage, lucidForAddress, DELIVER_BY_BUFFER_MS } from '../src/index.ts';
+import { identityDeploymentFrom, module1RewardAddress } from '../src/vendored/mcp/identity-deployment.ts';
+import { MODULE1_CONSENT_REDEEMER, module1Consent, requireConfigRecord } from '../src/vendored/mcp/identity-chain.ts';
+import { readEscrowOutput } from '../src/vendored/mcp/marketplace-lineage.ts';
 import { ADVERT_REF, ADVERT_DATUM_HEX, ADVERT_EXPECTED, ESCROW_REF, ESCROW_OPEN_DATUM_HEX, ESCROW_EXPECTED, ESCROW_LOCKED_LOVELACE } from './fixtures/marketplace.fixture.ts';
 import { world, escrowAt, SUBMIT_TX, ESCROW_TX } from './fixtures/escrow-koios.fixture.ts';
 import { FixtureProvider, FIXTURE_UTXOS, OWN_ADDRESS } from './fixtures/fixture-provider.ts';
+import { CONFIG_SEED, CONFIG_UTXO, DEPLOYMENT, M1, NOW, identityWorld } from './fixtures/identity-world.ts';
+import {
+  ADVERT_REF as IDENTITY_ADVERT_REF, AGENT_ID, CHAIN_TXS, CLAIM_TX, ESCROW_REF as IDENTITY_ESCROW_REF, IDENTITY_ADVERT, OWN_PKH, PAYLOAD, POST_TX,
+  chainFake, escrowUtxo, identityEscrow,
+} from './fixtures/escrow-identity.fixture.ts';
 
 const MAINNET = {
   VECTOR_OGMIOS_URL: 'https://ogmios.vector.mainnet.apexfusion.org',
@@ -96,5 +107,55 @@ describe('lucidForAddress over the fixture provider (fixture-provider.ts)', () =
   it('refuses an address that does not parse, and an address with nothing on it', async () => {
     await expect(lucidForAddress(new FixtureProvider(FIXTURE_UTXOS), 'not-an-address')).rejects.toThrow(/^Invalid change address: /);
     await expect(lucidForAddress(new FixtureProvider([]), OWN_ADDRESS)).rejects.toThrow(/^No UTxOs found at /);
+  });
+});
+
+describe('the identity layout over the identity world (identity-world.ts, escrow-identity.fixture.ts)', () => {
+  const KOIOS = 'https://koios.example';
+
+  it('identityDeploymentFrom applies the two deployment values to the real blueprint scripts, as the world does, and refuses one value without the other', () => {
+    const deployment = identityDeploymentFrom({ VECTOR_IDENTITY_LEGACY_ROOT: DEPLOYMENT.legacyRoot, VECTOR_IDENTITY_CONFIG_SEED: `${CONFIG_SEED.txHash}#${CONFIG_SEED.outputIndex}` });
+    expect([deployment?.identity.hash, deployment?.escrow.address, deployment?.advert.address]).toStrictEqual([DEPLOYMENT.identity.hash, DEPLOYMENT.escrow.address, DEPLOYMENT.advert.address]);
+    expect(identityDeploymentFrom({})).toBeNull();
+    expect(() => identityDeploymentFrom({ VECTOR_IDENTITY_LEGACY_ROOT: DEPLOYMENT.legacyRoot })).toThrow(/set both VECTOR_IDENTITY_LEGACY_ROOT and VECTOR_IDENTITY_CONFIG_SEED/);
+  });
+
+  it('planPostEscrow writes the 16-field escrow of the identity advert, with its agent and the refund, locked at the identity floor', () => {
+    const refund = { address: plutusAddressFromBech32(OWN_ADDRESS), datum: null };
+    const plan = planPostEscrow(IDENTITY_ADVERT, IDENTITY_ADVERT_REF, OWN_PKH, PAYLOAD, NOW, undefined, { agentId: AGENT_ID, refund });
+    expect(plan.layout).toBe('identity');
+    const datum = decodeIdentityEscrowDatum(plan.datumHex);
+    // The fixture's escrow posted at NOW: the advert's window and the buffer give the same deliver_by.
+    expect(datum).toStrictEqual(identityEscrow(NOW));
+    expect(plan.lockLovelace).toBe(identityEscrowLockFloor(datum, 4_000_000n));
+  });
+
+  it('resolveEscrowLineage follows an identity escrow at the escrow credential of the deployment; without the deployment the read names the settings', async () => {
+    const posted = identityEscrow(NOW - 10 * 60_000);
+    const claimed: IdentityEscrowDatum = { ...posted, state: 'Claimed' };
+    const live = escrowUtxo(CLAIM_TX, claimed);
+    const k = chainFake({ live: [live], spent: [escrowUtxo(POST_TX, posted)], txs: CHAIN_TXS });
+    const lineage = await resolveEscrowLineage(identityWorld([live]), KOIOS, IDENTITY_ESCROW_REF, k.f, DEPLOYMENT);
+    expect([lineage.layout, lineage.current?.utxo.txHash, lineage.current?.datum.state]).toStrictEqual(['identity', CLAIM_TX, 'Claimed']);
+    await expect(readEscrowOutput(KOIOS, IDENTITY_ESCROW_REF, k.f)).rejects.toThrow(/is an identity-marketplace escrow\. The identity registry is not configured on this server/);
+  });
+});
+
+describe('Module-1 consent over the identity world (identity-world.ts)', () => {
+  const consentOn = async (provider: FixtureProvider) => module1Consent(provider, DEPLOYMENT, await requireConfigRecord(provider, DEPLOYMENT));
+
+  it('withdraws the whole reward balance that getRewardAccount reports, with the configuration record as a reference input', async () => {
+    // getDelegation of the fixture provider throws (offline), so a consent that still read it would fail here.
+    const consent = await consentOn(identityWorld([], { rewards: 1_234_567n }));
+    expect([consent.amount, consent.rewardAddress, consent.redeemer]).toStrictEqual([1_234_567n, module1RewardAddress(M1), MODULE1_CONSENT_REDEEMER]);
+    expect(`${consent.refs[0].txHash}#${consent.refs[0].outputIndex}`).toBe(`${CONFIG_UTXO.txHash}#${CONFIG_UTXO.outputIndex}`);
+    expect((await consentOn(identityWorld())).amount, 'a registered account with no rewards').toBe(0n);
+  });
+
+  it('refuses a stake credential that is not registered, a reward account that cannot be read, and a node that cannot read one', async () => {
+    await expect(consentOn(identityWorld([], { rewards: null }))).rejects.toThrow(`Module-1's stake credential (${module1RewardAddress(M1)}) is not registered on the ledger, so the withdrawal by which Module-1 consents cannot be built`);
+    const unreadable = Object.assign(identityWorld(), { getRewardAccount: async () => { throw new Error('Koios request failed (account_info): 503 Service Unavailable'); } });
+    await expect(consentOn(unreadable)).rejects.toThrow(/^Could not read the reward account of Module-1's stake credential \(stake[0-9a-z]+\), which its consent must withdraw in full: Koios request failed \(account_info\): 503/);
+    await expect(consentOn(Object.assign(identityWorld(), { getRewardAccount: undefined }))).rejects.toThrow(/node provider cannot read a reward account/);
   });
 });

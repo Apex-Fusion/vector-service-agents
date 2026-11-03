@@ -83,11 +83,13 @@ On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and n
 | Variable | Use | Default |
 |---|---|---|
 | `OPERATOR_CONTACT` | `operator.contact` | none. Required: the service stops at start without it |
-| `SUPPLIER_PKH` | `identity.controller_pkh` and `keys.supplier_pkh`, 56 hex characters | none. Required |
+| `SUPPLIER_PKH` | `keys.supplier_pkh`, 56 hex characters, and with `AGENT_DID` the listed supplier key `identity.supplier_key`, `<DID>#<key hash>` | none. Required |
 | `SERVICE_AUTH_HEADER` | the `authorization` header the runtime sends with every call, which `POST /` requires: `Bearer ` and 64 hex characters, made with `openssl rand -hex 32`. Never published, never logged | none. Required: the service stops at start without it |
 | `SUPPLIER_PUB_KEY_HEX` | `keys.pub_key_hex`, 64 hex characters, the public key of `SUPPLIER_PKH`: the service stops at start unless its key hash is `SUPPLIER_PKH` | none. Required: the service stops at start without it |
-| `AGENT_DID` | `identity.did` | empty |
-| `AGENT_VERSION` | `version` | `0.1.0` |
+| `AGENT_DID` | `identity.did`, in the canonical form `did:vector:<identifier>`. The legacy form of the same identifier is published in the canonical form | empty |
+| `IDENTITY_POLICY_ID` | `identity.registry_address`, the address of the identity registry derived from its policy: 56 lowercase hex characters, the policy ID published at its deployment | empty, the identity registry is not configured |
+| `IDENTITY_ADDRESS` | the address of the identity registry. It may be left out; when it is set it must be the address of `IDENTITY_POLICY_ID` (the script as payment credential, no stake credential), and it needs `IDENTITY_POLICY_ID` | derived from the policy |
+| `AGENT_VERSION` | `version` | `0.2.0` |
 | `ADVERT_PRICE_LOVELACE` | `terms.price_lovelace` | `2000000` |
 | `ADVERT_MAX_PROCESSING_MS` | `terms.max_processing_ms`; at least 1500000, because the deadline of a job assumes the 25 min window | `1500000` |
 | `AGENT_STATUS_CHIP` | `status.chip`, in lower case | `deployed` |
@@ -100,7 +102,7 @@ On SIGTERM (`docker stop` sends it) or SIGINT the service takes no new job and n
 | `ASR_WORKER` | the worker; the image sets `/app/asr/worker.py` | `asr/worker.py` of this folder |
 | `PORT`, `HOST` | where the service listens | `9093`, `0.0.0.0` |
 
-Numbers (and `PORT`) must be non-negative integers. `AGENT_STATUS_CHIP` must be live, deployed or proposed, in any case. A value that breaks a rule stops the service at start, and the error names the variable. The advert `detail_uri` points at `GET /agent.json` and its `detail_hash` is the sha256 of the bytes served there. Adverts are immutable, so a changed manifest means a retired advert and a new one.
+Numbers (and `PORT`) must be non-negative integers. `AGENT_STATUS_CHIP` must be live, deployed or proposed, in any case. A value of `AGENT_DID` that starts with `did:vector:` must name a Vector mainnet agent: the canonical form, or the legacy form under the legacy registry policy. A value that breaks a rule stops the service at start, and the error names the variable. The names `IDENTITY_POLICY_ID` and `IDENTITY_ADDRESS` are the ones the identity gateway and the marketplace indexer read. The advert `detail_uri` points at `GET /agent.json` and its `detail_hash` is the sha256 of the bytes served there. Adverts are immutable, so a changed manifest means a retired advert and a new one.
 
 ## Tests
 

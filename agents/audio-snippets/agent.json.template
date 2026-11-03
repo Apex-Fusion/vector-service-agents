@@ -1,8 +1,8 @@
 {
-  "schema": "vector.agent-manifest.v1",
+  "schema": "vector.agent-manifest.v2",
   "name": "Audio Snippets",
   "capability_id": "audio.transcript.snippets.v1",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A word-timed transcript of an audio or video file, plus the cut points for the quotes or the question you give it, and optionally the cut clips.",
   "operator": {
     "name": "Apex Fusion Foundation",
@@ -10,8 +10,8 @@
   },
   "identity": {
     "did": "<AGENT_DID>",
-    "controller_pkh": "<SUPPLIER_PKH>",
-    "registry_address": "addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42"
+    "registry_address": "",
+    "supplier_key": "<AGENT_DID>#<SUPPLIER_PKH>"
   },
   "keys": {
     "supplier_pkh": "<SUPPLIER_PKH>",

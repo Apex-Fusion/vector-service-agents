@@ -18,9 +18,9 @@
 //                     is not stopped with it: it runs to its own end, and the job then fails with aborted (src/inference.ts).
 //   The line of a job names counts and codes and nothing else: results, pages, arguments, dropped quotes, the tokens of the model, and the path of the call.
 import type { Server } from 'node:http';
-import { JobSlot, createJobServer, envInt, given, requiredEnv, statusChip, statusSince } from '@vsa/service-kit';
+import { JobSlot, createJobServer, envInt, given, requiredEnv, shown, statusChip, statusSince } from '@vsa/service-kit';
 import type { Refusal } from '@vsa/service-kit';
-import { REGISTRY_ADDRESS } from '@vsa/vector-read';
+import { identityRegistryOf, manifestDid, manifestIdentity } from '@vsa/vector-read';
 import { JOB_DEADLINE_MS } from './budget.ts';
 import { AdvocateError } from './errors.ts';
 import { gapsFor } from './gaps.ts';
@@ -136,15 +136,33 @@ const THIRD_PARTIES = [
   'OpenRouter and the model provider behind it (the same prompt), only when that hire fails',
 ];
 
+/**
+ * The identity block of the manifest, which vector-read builds the same way for every agent of this repository: the DID of AGENT_DID in its canonical form, the
+ * address of the identity registry of IDENTITY_POLICY_ID and IDENTITY_ADDRESS (empty while IDENTITY_POLICY_ID is not set), and the listed supplier key,
+ * <DID>#<key hash>. The start reads it once. A value that breaks a rule stops the start, and the error names the variable. The helpers quote the value they
+ * refuse; here a value that is hex-shaped or long is given by its length (shown), as in every other message of the service.
+ */
+function identityFromEnv(env: NodeJS.ProcessEnv) {
+  const values = [env.AGENT_DID, env.IDENTITY_POLICY_ID, env.IDENTITY_ADDRESS].map(given);
+  try {
+    return manifestIdentity(manifestDid(env.AGENT_DID), env.SUPPLIER_PKH ?? '', identityRegistryOf(env.IDENTITY_POLICY_ID, env.IDENTITY_ADDRESS));
+  } catch (e) {
+    let text = (e as Error).message;
+    for (const value of values) if (value !== '' && shown(value) !== JSON.stringify(value)) text = text.replaceAll(`"${value}"`, shown(value)).replaceAll(value, `(${shown(value)})`);
+    throw new Error(text.startsWith('environment variable ') ? text : `environment variable ${text}`);
+  }
+}
+
 export function manifestFromEnv(env: NodeJS.ProcessEnv = process.env) {
   const fallbackModel = openRouterModel(env.OPENROUTER_MODEL);
   const marketModel = modelAllowlist(env.LLM_MODEL_ALLOWLIST, fallbackModel)[0];
   return {
-    // An AGENT_VERSION that is empty or blank is not set (given): an empty version would be published in the manifest the advert hashes.
-    schema: 'vector.agent-manifest.v1', name: 'Advocate', capability_id: 'research.advocate.onesided.v1', version: given(env.AGENT_VERSION) || '0.1.0',
+    // An AGENT_VERSION that is empty or blank is not set (given): an empty version would be published in the manifest the advert hashes. The manifest v2 is
+    // version 0.2.0: a changed manifest needs a new advert.
+    schema: 'vector.agent-manifest.v2', name: 'Advocate', capability_id: 'research.advocate.onesided.v1', version: given(env.AGENT_VERSION) || '0.2.0',
     description: 'The strongest one-sided brief for a position, with citations: it argues one side only, by design, omits counter-arguments, and says so in every output.',
     operator: { name: 'Apex Fusion Foundation', contact: requiredEnv('OPERATOR_CONTACT', env.OPERATOR_CONTACT, "the operator's contact address, published in the manifest") },
-    identity: { did: env.AGENT_DID ?? '', controller_pkh: env.SUPPLIER_PKH ?? '', registry_address: REGISTRY_ADDRESS },
+    identity: identityFromEnv(env),
     keys: { supplier_pkh: env.SUPPLIER_PKH ?? '', pub_key_hex: env.SUPPLIER_PUB_KEY_HEX ?? '', buyer_pkh: env.ADVOCATE_BUYER_PKH ?? '' },
     interface: {
       request_schema: REQUEST_SCHEMA,

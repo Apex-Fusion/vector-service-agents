@@ -80,9 +80,17 @@ describe('selectLlmSupplier', () => {
       llm(2, DEEPSEEK, { row: { last_seen_iso: '2026-10-13T09:00:00.000Z' } }),
     ]);
     expect(await select(f)).toStrictEqual({
-      advertRef: advertOf(2), endpoint: endpointOf(2), model: DEEPSEEK, supplierPkh: pkhOf(2), priceLovelace: 200000n,
+      advertRef: advertOf(2), endpoint: endpointOf(2), model: DEEPSEEK, supplierPkh: pkhOf(2), priceLovelace: 200000n, agentId: null,
       capability: { capability_id: LLM, model: DEEPSEEK, advert_ref: advertOf(2), supplier_pkh: pkhOf(2), pub_key_hex: hex(2).repeat(32), inference_api: 'responses', max_output_tokens: 8192 },
     });
+  });
+
+  it('names the agent of an identity-marketplace advert as the indexer lists it (agent_id, 64 lowercase hex), and none for a value of another shape', async () => {
+    const AGENT = 'ae'.repeat(32);
+    expect((await select(network([llm(1, DEEPSEEK, { row: { agent_id: AGENT } })])))?.agentId).toBe(AGENT);
+    for (const odd of [null, 'AE'.repeat(32), 'ae'.repeat(31), 7]) {
+      expect((await select(network([llm(1, DEEPSEEK, { row: { agent_id: odd } })])))?.agentId, JSON.stringify(odd)).toBeNull();
+    }
   });
 
   it('the allowlist order beats the price: a model earlier on the list wins at any price', async () => {
@@ -415,12 +423,17 @@ describe('findOcrAdvert', () => {
   const indexerOf = (rows: unknown[]) => routedFetch({ [`GET ${INDEXER}/suppliers`]: json(200, rows) });
   const find = (f: FakeFetch, supplierPkh = OCR_PKH) => findOcrAdvert({ fetchImpl: f.fetchImpl, indexerUrl: INDEXER, supplierPkh });
 
-  it('returns the live advert of the allowlisted key: its ref, endpoint, price and processing window', async () => {
+  it('returns the live advert of the allowlisted key: its ref, endpoint, price and processing window, and no agent for a legacy advert', async () => {
     const f = indexerOf([CHANDRA]);
     expect(await find(f)).toStrictEqual({
-      advertRef: '87c46c30026b438ef0aaedcf3c656743b32dd68ce69e36d11f1e2d2b91659e5d#0', endpoint: 'https://mp-suppliers-chandra.hal8.ai', priceLovelace: 200000n, maxProcessingMs: 300000,
+      advertRef: '87c46c30026b438ef0aaedcf3c656743b32dd68ce69e36d11f1e2d2b91659e5d#0', endpoint: 'https://mp-suppliers-chandra.hal8.ai', priceLovelace: 200000n, maxProcessingMs: 300000, agentId: null,
     });
     expect(f.calls.map((c) => c.url)).toStrictEqual([`${INDEXER}/suppliers`]);
+  });
+
+  it('returns the agent an identity-marketplace advert of the key names (Part 2 section 6.4)', async () => {
+    const AGENT = 'ae'.repeat(32);
+    expect((await find(indexerOf([{ ...CHANDRA, agent_id: AGENT }])))?.agentId).toBe(AGENT);
   });
 
   it('returns the allowlisted supplier only: another key advertising the same capability, cheaper, is never the answer', async () => {
