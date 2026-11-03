@@ -26,12 +26,13 @@ export const identityHex = (over: Partial<IdentityDatum> = {}) => encodeIdentity
 
 // ---- A small ledger that answers the Koios calls of the service ----
 // Each transaction spends earlier outputs by reference and makes outputs; Koios's answers are computed from them the way Koios builds them:
-// asset_txs lists the transactions that touched an asset, newest first; tx_info shows a datum posted by hash without its bytes; the extended
-// asset_utxos, utxo_info and address_utxos resolve the bytes. A call about something the ledger holds nothing of (an asset, a transaction, an
+// asset_txs lists the transactions that touched an asset, newest first; tx_info leaves the bytes of every datum out (inline_datum.bytes null)
+// unless the call sets both _scripts and _bytecode, as the Koios of Vector mainnet answers (checked on 2026-11-03); the extended asset_utxos,
+// utxo_info and address_utxos give the bytes. A call about something the ledger holds nothing of (an asset, a transaction, an
 // output or an address it never saw) goes to the fallback when there is one, and is otherwise answered as Koios answers it, with no rows.
 // A call that is not a Koios POST goes to the fallback (without one it fails the test).
 export interface Asset { policy_id: string; asset_name: string; quantity: string }
-export interface LedgerOut { address: string; value?: string; assets?: Asset[]; datum?: string; byHash?: boolean }
+export interface LedgerOut { address: string; value?: string; assets?: Asset[]; datum?: string }
 export interface LedgerTx { hash: string; block: number; index?: number; time?: number; spends?: string[]; outputs: LedgerOut[]; mint?: Asset[] }
 export const token = (reg: Registry, name: string, quantity = '1'): Asset => ({ policy_id: reg.policy, asset_name: name, quantity });
 export const txHash = (n: number) => n.toString(16).padStart(64, '0');
@@ -46,13 +47,13 @@ export function koiosLedger(txs: LedgerTx[], fallback?: Fetch): Fetch {
     if (!o) return null;
     return { tx_hash: o.tx.hash, tx_index: o.index, address: o.out.address, value: o.out.value ?? '10000000', block_height: o.tx.block, inline_datum: o.out.datum ? { bytes: o.out.datum } : null, asset_list: o.out.assets ?? [], is_spent: spent.has(ref) };
   };
-  const txInfo = (tx: LedgerTx) => ({
+  const txInfo = (tx: LedgerTx, withBytes: boolean) => ({
     tx_hash: tx.hash, block_height: tx.block, tx_block_index: tx.index ?? 0, tx_timestamp: tx.time ?? tx.block * 10,
     // Only the outputs the ledger made are inputs it can show; a wallet input of a test is not modelled.
     inputs: (tx.spends ?? []).flatMap((ref) => { const o = outputs.get(ref); return o ? [{ tx_hash: o.tx.hash, tx_index: o.index, payment_addr: { cred: 'x', bech32: o.out.address }, value: o.out.value ?? '10000000', asset_list: o.out.assets ?? [] }] : []; }),
     outputs: tx.outputs.map((out, index) => ({
       tx_index: index, payment_addr: { cred: 'x', bech32: out.address }, value: out.value ?? '10000000', asset_list: out.assets ?? [],
-      datum_hash: out.datum ? 'dd'.repeat(32) : null, inline_datum: out.datum ? { bytes: out.byHash ? null : out.datum, value: null } : null,
+      datum_hash: out.datum ? 'dd'.repeat(32) : null, inline_datum: out.datum ? { bytes: withBytes ? out.datum : null, value: null } : null,
     })),
     assets_minted: tx.mint ?? [],
   });
@@ -67,7 +68,7 @@ export function koiosLedger(txs: LedgerTx[], fallback?: Fetch): Fetch {
       }
       case 'tx_info': {
         const found = (body._tx_hashes as string[]).map((h) => txs.find((tx) => tx.hash === h)).filter((tx): tx is LedgerTx => tx !== undefined);
-        return found.length ? found.map(txInfo) : null;
+        return found.length ? found.map((tx) => txInfo(tx, body._scripts === true && body._bytecode === true)) : null;
       }
       case 'asset_utxos': {
         const assets = body._asset_list as string[][];

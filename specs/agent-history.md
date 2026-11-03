@@ -374,7 +374,7 @@ Times named `time` are Unix seconds. `registered_at`, `created_at`, `not_before`
 | | `POST /address_utxos` on each registry address, `offset` paged until a page is empty | a key-hash subject: the records it acts for |
 | | `POST /asset_txs`, for each registry | the transactions that moved the identifier's token (identity; also read for the marketplace keys of a subject with no live record that names one) |
 | | `POST /tx_info` | their inputs, outputs and token movements |
-| | `POST /utxo_info` | legacy registry datums posted by hash (identity), and the spent flags of the latest 50 escrow rows per side (marketplace) |
+| | `POST /utxo_info` | the datums of the record outputs of both registries, which `tx_info` gives without their bytes (identity), and the spent flags of the latest 50 escrow rows per side (marketplace) |
 | | `POST /address_utxos` on the Module-3, Module-1 and Module-6 addresses below | reputation, dispute, self_improvement |
 | Marketplace indexer (`https://mp-indexer.vector.apexfusion.org`) | `GET /suppliers` | the adverts of the marketplace keys |
 | | `GET /escrows?supplier=<key hash>` and `GET /escrows?buyer=<key hash>`, for each marketplace key | the escrow rows |
