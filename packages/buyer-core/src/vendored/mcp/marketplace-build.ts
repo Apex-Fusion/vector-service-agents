@@ -503,7 +503,7 @@ async function escrowRefScript(provider: Provider): Promise<UTxO> {
 }
 
 /** Lucid picks the collateral itself. This only turns a wallet with nothing suitable into a readable refusal instead of a ledger error. */
-function assertCollateral(utxos: UTxO[]) {
+export function assertCollateral(utxos: UTxO[]) {
   if (!utxos.some((u) => Object.keys(u.assets).every((k) => k === 'lovelace') && u.assets.lovelace >= COLLATERAL_MIN_LOVELACE)) {
     throw new Error('Collateral required: the wallet must hold one pure output of at least 5 units.');
   }

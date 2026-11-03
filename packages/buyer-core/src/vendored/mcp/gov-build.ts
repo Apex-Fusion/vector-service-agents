@@ -1,38 +1,17 @@
-// Keyless build core for the self-improvement family (spec PR 8).
-// Constructs UNSIGNED transactions only. The user's key never enters this
-// package: signing happens on the local signer (packages/signer), submission
-// via vector_submit_transaction. Constants, datum parsers, token-name
-// derivation, and helpers here are transcribed from the (still custodial,
-// pending Task 5) packages/builder/src/vector/self-improvement.ts, typed and
-// with instanceof Constr guards added to the parsers - datum field indices
-// and Data.to/Constr layouts are otherwise unchanged, since the deployed
-// module validators parse these exact bytes.
-import {
-  fromText, toText, Data, Constr, credentialToAddress, getAddressDetails, SLOT_CONFIG_NETWORK,
-} from '@lucid-evolution/lucid';
-import type { LucidEvolution, UTxO } from '@lucid-evolution/lucid';
+// packages/builder/src/vector/gov-build.ts
+// The chain clock and the payment key hash that the keyless builders share. The identity, attestation, delegation, vault and
+// marketplace builders import them from here; this file held the first keyless builder family (self-improvement), which is now in
+// gov-tx.ts with its deployment (gov-deployment.ts) and codecs (gov-codec.ts).
+import { getAddressDetails, SLOT_CONFIG_NETWORK } from '@lucid-evolution/lucid';
 
 // ─── Slot/time config ───────────────────────────────────────────────────────
 
 // Minimal provider surface needed for slot/time queries. OgmiosProvider
 // satisfies this at runtime; the base Lucid `Provider` interface does not
-// declare either method (they are OgmiosProvider-specific additions), so
-// build functions that only take a `lucid` recover this surface via
-// slotClockOf() below rather than taking a redundant provider parameter.
+// declare either method (they are OgmiosProvider-specific additions).
 export interface SlotClockProvider {
   getSystemStartMs(): Promise<number>;
   getNetworkTip?(): Promise<{ slot: number; hash?: string }>;
-}
-
-// Recovers the provider a LucidEvolution instance was built with (Lucid()'s
-// own config closure returns the exact same reference it was constructed
-// with - see @lucid-evolution/lucid's Lucid() factory). Lets build functions
-// that only take `lucid` still reach slot/tip queries: callers (including
-// offline tests) supply the extended provider once, at lucidForAddress() time.
-export function slotClockOf(lucid: LucidEvolution): SlotClockProvider {
-  const provider = lucid.config().provider;
-  if (!provider) throw new Error('Lucid instance has no provider configured - build it via lucidForAddress first.');
-  return provider as unknown as SlotClockProvider;
 }
 
 // Vector slot config - resolved from chain via Ogmios queryNetwork/startTime.
@@ -62,18 +41,9 @@ export async function ensureSlotConfig(provider: Pick<SlotClockProvider, 'getSys
   return vectorZeroTime;
 }
 
-// Address helper local to this family (mirrors registry-build.ts's
-// paymentKeyHashOf exactly, kept as an independent copy rather than a
-// cross-family import - each build-core file depends only on build.ts, not
-// on a sibling family file; see task-3-report.md for the reasoning).
-//
-// Deliberate exception to that rule (Task 4): buildProposalSpend below DOES
-// import the legacy registry's policy and address from legacy-registry.ts -
-// the self-improvement family's NFT-resolution fallback needs the registry's
-// own script address to scan, and that address is derived from the one copy
-// of the legacy registry script, not something this file could reasonably
-// duplicate without risking the two copies drifting apart. The module agent
-// identity is the legacy one until Module-6 moves to its new deployment.
+// ─── Addresses ───────────────────────────────────────────────────────────────
+
+/** The payment key hash of a wallet address; an address with a script payment credential is refused. */
 export function paymentKeyHashOf(address: string): string {
   let details;
   try {
