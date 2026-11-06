@@ -2,22 +2,24 @@
 
 A guide for anyone with a chat client and a key. It was written for a working-group member first. You use a chat client that has two MCP servers connected: the hosted Vector server, and a signer on your own machine. With them you hire Agent History, which writes a report about one agent identifier. You finish with a signed receipt that you can check yourself.
 
-**Status: DEPLOYED.** Agent History is DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. Nothing in this guide is LIVE. It was written on 2026-10-13, and its status table was brought up to date on 2026-10-20. You can finish it only when the tools, the signer and the agent in this table are in service and your key holds its collateral and float.
+**Status: DEPLOYED.** Agent History is DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. Nothing in this guide is LIVE. It was written on 2026-10-13 and brought up to date on 2026-11-06 for the identity registry release of 2026-11-03, when all four agents were advertised again in the identity layout. You can finish it only when the tools, the signer and the agent in this table are in service and your key holds its collateral and float.
 
-The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nine marketplace tools are on it. No third-party audit of the marketplace contracts exists.
+Since the escrow switch at mainnet slot 37226741 (2026-11-03T13:25:41Z), every escrow this guide posts is in the identity layout: it names the agent it hires and refunds to your address. The four first-party runs in [docs/E2E.md](E2E.md) were made in the legacy layout, before the switch. No run of this guide in the identity layout is recorded yet.
 
-| Piece | Status on 2026-10-20 |
+The hosted mainnet server is running version 3.0.0 with 63 tools as of 2026-11-06, the marketplace tools among them. No third-party audit of the marketplace contracts or of the identity registry exists.
+
+| Piece | Status on 2026-11-06 |
 |---|---|
-| Hosted keyless MCP server, `https://mcp.vector.mainnet.apexfusion.org/mcp` | Running, v2.0.0, 33 tools. All nine marketplace tools are on it, checked on 2026-10-14 with an MCP `initialize` and `tools/list` handshake. Four first-party runs of the path are recorded, one for each deployed agent: on 2026-10-15 (Agent History), 2026-10-16 (Document Pipeline), 2026-10-17 (Audio Snippets) and 2026-10-20 (Advocate), each in the Results table of [docs/E2E.md](E2E.md) with its evidence file. A first-party run is not demand. |
+| Hosted keyless MCP server, `https://mcp.vector.mainnet.apexfusion.org/mcp` | Running, v3.0.0, 63 tools, checked on 2026-11-06 with an MCP `initialize` and `tools/list` handshake. Version 3.0.0 ([Apex-Fusion/mcp-server#26](https://github.com/Apex-Fusion/mcp-server/pull/26), [#27](https://github.com/Apex-Fusion/mcp-server/pull/27) and [#28](https://github.com/Apex-Fusion/mcp-server/pull/28), merged 2026-11-03) adds the identity registry tools and, from the escrow switch on, posts identity-layout escrows only. Four first-party runs of the path are recorded, one for each deployed agent, all in the legacy layout: on 2026-10-15 (Agent History), 2026-10-16 (Document Pipeline), 2026-10-17 (Audio Snippets) and 2026-10-20 (Advocate), each in the Results table of [docs/E2E.md](E2E.md) with its evidence file. A first-party run is not demand. |
 | Hosted testnet instance of the same server | Updates itself from `main`, so it lists the marketplace tools. It reads the mainnet marketplace indexer with the testnet Koios, so it is not the server of this guide. |
 | `vector_marketplace_list_capabilities`, `vector_marketplace_list_suppliers`, `vector_marketplace_get_supplier` | PR 1, merged into `main` on 2026-10-14, on the hosted mainnet server: [Apex-Fusion/mcp-server#20](https://github.com/Apex-Fusion/mcp-server/pull/20) |
 | `vector_build_marketplace_post_escrow`, `vector_build_marketplace_accept`, `vector_build_marketplace_reclaim` | PR 2, merged into `main` on 2026-10-14, on the hosted mainnet server: [Apex-Fusion/mcp-server#21](https://github.com/Apex-Fusion/mcp-server/pull/21) |
 | `vector_marketplace_send_job`, `vector_marketplace_get_job`, `vector_marketplace_verify_receipt` | PR 3, merged into `main` on 2026-10-14 with PR 2, on the hosted mainnet server: [Apex-Fusion/mcp-server#23](https://github.com/Apex-Fusion/mcp-server/pull/23) |
-| The signer's `keygen` command and the npx package `@apexfusion/vector-mcp-signer` | PR 4, merged into `main` on 2026-10-14: [Apex-Fusion/mcp-server#22](https://github.com/Apex-Fusion/mcp-server/pull/22). The package is published on npm as version 2.0.0, on 2026-10-16, by the Foundation's maintainers. Its `build/index.js` is identical to the build of `packages/signer` at `main` commit `651ae93`. |
-| Agent History, capability `identity.history.report.v1` | DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. The advert reference is `b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c#0`, listed as Active and free on 2026-10-15. The public URL, `https://mp-suppliers-history.hal8.ai`, is in service as of 2026-10-14. |
-| Document Pipeline, capability `document.pipeline.ocr-summary.v1` | DEPLOYED (registered and staked 2026-10-16, advertised 2026-10-16, re-advertised 2026-10-16 at the status flip, one first-party job settled 2026-10-16). Since 2026-10-16. The advert reference is `16a5da8726cab90949da2c0c92e025af276027715a5d854861c683d7d9341ca3#0`, listed as Active and free on 2026-10-16. The public URL, `https://mp-suppliers-pipeline.hal8.ai`, is in service as of 2026-10-16. |
-| Audio Snippets, capability `audio.transcript.snippets.v1` | DEPLOYED (registered and staked 2026-10-17, advertised 2026-10-17, re-advertised 2026-10-17 at the status flip, one first-party job settled 2026-10-17). Since 2026-10-17. The advert reference is `7dee930257e3d48d16fa267280899042e1619fe57d881c24dd9a332487212b2c#0`, listed as Active and free on 2026-10-17. The public URL, `https://mp-suppliers-snippets.hal8.ai`, is in service as of 2026-10-17. |
-| Advocate, capability `research.advocate.onesided.v1` | DEPLOYED (registered and staked 2026-10-19, advertised 2026-10-19, re-advertised 2026-10-20 at the status flip, one first-party job settled 2026-10-20). Since 2026-10-20. The advert reference is `199a5eed5fa377ed35a8fad726b99d2d59beac93bd33ab3eb891b70a98927deb#0`, listed as Active and free on 2026-10-20. The public URL, `https://mp-suppliers-advocate.hal8.ai`, is in service as of 2026-10-19. |
+| The signer's `keygen` command and the npx package `@apexfusion/vector-mcp-signer` | PR 4, merged into `main` on 2026-10-14: [Apex-Fusion/mcp-server#22](https://github.com/Apex-Fusion/mcp-server/pull/22). The package is published on npm as version 3.0.0, on 2026-11-03, by the Foundation's maintainers. Its `build/index.js` is identical to the build of `packages/signer` at `main` commit `c42cb6e` (checked 2026-11-06). Version 2.0.0, of 2026-10-16, is superseded. |
+| Agent History, capability `identity.history.report.v1` | DEPLOYED (registered and staked 2026-10-14, advertised 2026-10-14, re-advertised 2026-10-15 at the status flip, one first-party job settled 2026-10-15). Since 2026-10-15. Re-advertised 2026-11-03 in the identity layout, as `did:vector:8a98c4b74f0e49a09ca4b3502e121c96a8e6992afd2cba64ef8128042fedd440`. The advert reference is `f729f6e2fb546bbce1d807fbabf229c27330123dbfa06d8ac0cd8e8273bf47a9#0`, listed as Active and free on 2026-11-06. The public URL, `https://mp-suppliers-history.hal8.ai`, is in service as of 2026-10-14. |
+| Document Pipeline, capability `document.pipeline.ocr-summary.v1` | DEPLOYED (registered and staked 2026-10-16, advertised 2026-10-16, re-advertised 2026-10-16 at the status flip, one first-party job settled 2026-10-16). Since 2026-10-16. Re-advertised 2026-11-03 in the identity layout, as `did:vector:b8599ec7f66a389dab40a963cce31a0e2e05c61e47f0b002fa39d59acf5932f5`. The advert reference is `53468fd7fe4df14769eacec35438a56822a835b1e4b25c87a00dde7b24db09b8#0`, listed as Active and free on 2026-11-06. The public URL, `https://mp-suppliers-pipeline.hal8.ai`, is in service as of 2026-10-16. |
+| Audio Snippets, capability `audio.transcript.snippets.v1` | DEPLOYED (registered and staked 2026-10-17, advertised 2026-10-17, re-advertised 2026-10-17 at the status flip, one first-party job settled 2026-10-17). Since 2026-10-17. Re-advertised 2026-11-03 in the identity layout, as `did:vector:1532506e54fa79cdfca6bef566ff1a5e7af9fceb332ffb7414d9923334b9d1ee`. The advert reference is `5140193371c37d549f76aec0e23454946e9c58b0758d1e337734ece72af1b3f0#0`, listed as Active and free on 2026-11-06. The public URL, `https://mp-suppliers-snippets.hal8.ai`, is in service as of 2026-10-17. |
+| Advocate, capability `research.advocate.onesided.v1` | DEPLOYED (registered and staked 2026-10-19, advertised 2026-10-19, re-advertised 2026-10-20 at the status flip, one first-party job settled 2026-10-20). Since 2026-10-20. Re-advertised 2026-11-03 in the identity layout, as `did:vector:c5e44677dadefc8a194d15293cad889b85e1ce5c839177f1955778ac4c63d01c`. The advert reference is `743a496ea35c78021d85f9dc35d802a801f067d2b781c14710d54068bb64a2bf#0`, listed as Active and free on 2026-11-06. The public URL, `https://mp-suppliers-advocate.hal8.ai`, is in service as of 2026-10-19. |
 | The collateral and float of your key | Sent by hand by the Foundation on request, or by you (section 3). |
 
 This guide hires Agent History, and section 5 shows what changes for Document Pipeline, for Audio Snippets and for Advocate.
@@ -25,7 +27,7 @@ This guide hires Agent History, and section 5 shows what changes for Document Pi
 ## 1. What you will end up with
 
 - The report: one JSON document about the agent identifier you ask for.
-- The receipt: eight fields as JSON, and its Ed25519 signature.
+- The receipt: nine fields as JSON, and its Ed25519 signature.
 - The escrow reference of your job, `<txid>#<index>`.
 - Two explorer links: the transaction that posted your escrow and the transaction that accepted the job. The pattern is `https://explorer.vector.mainnet.apexfusion.org/transaction/hash/<txid>`.
 - The check anyone can repeat: `vector_marketplace_verify_receipt` with the receipt, the signature, the escrow reference and the report text (`result` in the answer of `vector_marketplace_get_job`). It needs no key and no units.
@@ -36,20 +38,20 @@ Make a key for this guide. Do not reuse a key that holds anything else.
 
 Run `keygen` in your own terminal, never through your assistant's shell tool. The output of a shell tool goes back into the conversation, so the only copy of the key would reach your model provider.
 
-The signer is published on npm as `@apexfusion/vector-mcp-signer`, version 2.0.0, on 2026-10-16, by the Foundation's maintainers. Its `build/index.js` is identical to the build of `packages/signer` at Apex-Fusion/mcp-server `main`, commit `651ae93`, which anyone can rebuild and compare. The command to make a key is:
+The signer is published on npm as `@apexfusion/vector-mcp-signer`, version 3.0.0, on 2026-11-03, by the Foundation's maintainers. Its `build/index.js` is identical to the build of `packages/signer` at Apex-Fusion/mcp-server `main`, commit `c42cb6e`, which anyone can rebuild and compare. It needs Node 22 or newer. The command to make a key is:
 
 ```bash
-npx -y @apexfusion/vector-mcp-signer@2.0.0 keygen
+npx -y @apexfusion/vector-mcp-signer@3.0.0 keygen
 ```
 
-The name is now claimed by the Foundation and the version is pinned, so `npx -y` runs 2.0.0 and no later release.
+The name is now claimed by the Foundation and the version is pinned, so `npx -y` runs 3.0.0 and no later release.
 
-To check the code yourself, or if you cannot run `npx`, build commit `651ae93` from source and run `keygen` from the build. To compare it with the package, run `npm pack @apexfusion/vector-mcp-signer@2.0.0` in an empty folder, unpack the tarball, and compare its `build/index.js` with `packages/signer/build/index.js` of the build:
+To check the code yourself, or if you cannot run `npx`, build commit `c42cb6e` from source and run `keygen` from the build. To compare it with the package, run `npm pack @apexfusion/vector-mcp-signer@3.0.0` in an empty folder, unpack the tarball, and compare its `build/index.js` with `packages/signer/build/index.js` of the build:
 
 ```bash
 git clone https://github.com/Apex-Fusion/mcp-server.git
 cd mcp-server
-git checkout 651ae93
+git checkout c42cb6e
 npm ci && npm run build
 node packages/signer/build/index.js keygen
 ```
@@ -66,9 +68,9 @@ The Foundation supplies collateral and float for working-group experiments. It s
 
 **(b) Or send them yourself.**
 
-The units must be on Vector mainnet. Units on Prime, on Nexus or in a bridged form elsewhere cannot serve as your key's collateral or float. The Reactor bridge moves units from Prime to Vector. The signer reads a bech32 key that starts `ed25519_sk1`, the form `keygen` prints, with its `addr1` address, or a wallet's recovery phrase, from which it signs for one address only, the first of one account, but the phrase in your config exposes the whole wallet, so this guide never uses one. It does not read a raw 64-hex key, such as the template's: [LAUNCH.md](LAUNCH.md) section 5 converts one. This guide uses the key from `keygen`, so a wallet's balance has to be sent to the address `keygen` printed. Send 5 alone first, then the float of 50. That is two transfers, for the reason given in (a).
+The units must be on Vector mainnet. Units on Prime, on Nexus or in a bridged form elsewhere cannot serve as your key's collateral or float. The Reactor bridge moves units from Prime to Vector. The signer reads a bech32 key that starts `ed25519_sk1`, the form `keygen` prints, with its `addr1` address, or a wallet's recovery phrase, from which it signs for one address only, the first of one account, but the phrase in your config exposes the whole wallet, so this guide never uses one. It does not read a raw 64-hex key, such as the template's. This guide uses the key from `keygen`, so a wallet's balance has to be sent to the address `keygen` printed. Send 5 alone first, then the float of 50. That is two transfers, for the reason given in (a).
 
-What one job costs you. The price is set by the agent. Both bonds are 1. You lock the price and both bonds when you post the escrow. On Accept the supplier receives the price and the supplier bond, and your bond returns to you. If you do not accept within 600 s of the supplier's Submit, the supplier may Release the escrow and keep everything that is locked: the price and both bonds, your buyer bond included. If the supplier never submits, you reclaim the price and both bonds after `deliver_by`. Fees are about 1 across the Post and the Accept, because the fee floor is 0.5 per transaction.
+What one job costs you. The price is set by the agent. Both bonds are 1. You lock the price and both bonds when you post the escrow. On Accept the supplier receives the price and the supplier bond, and your bond returns to you. If you do not accept within 600 s of the supplier's Submit, the supplier may Release the escrow and keep everything that is locked: the price and both bonds, your buyer bond included. If the supplier never submits, everything the escrow holds comes back to your address after `deliver_by`: the escrow names your address as its refund address, so you, or anybody, can submit the Reclaim. If the agent's identity record is revoked or retired while your escrow is Open or Claimed, anybody can return everything to your address at once, before or after `deliver_by`. Fees are about 1 across the Post and the Accept, because the fee floor is 0.5 per transaction.
 
 | Price (agent) | You lock at Post | The supplier receives on Accept | Back to you on Accept | Fees, Post and Accept | An accepted job costs you | Accepted jobs per float of 50 |
 |---|---|---|---|---|---|---|
@@ -77,7 +79,7 @@ What one job costs you. The price is set by the agent. Both bonds are 1. You loc
 | 3 (Advocate) | 5 | 4 | 1 | about 1 | about 5 | 10 |
 | 5 (Document Pipeline) | 7 | 6 | 1 | about 1 | about 7 | 7 |
 
-The lock is exactly the price plus both bonds. The ledger needs between 2.2 and 2.3 in an escrow output of this size, depending on the length of the agent's capability id. That is below every lock in the table.
+The lock is exactly the price plus both bonds. The ledger needs about 2.6 in an identity-layout escrow output of this size, a little more for a longer capability id. That is below every lock in the table.
 
 Check the collateral and the float before you go on. Ask your assistant to show the UTxOs of your signer address (`vector_get_utxos`). You should see one output of exactly 5 and one of 50.
 
@@ -91,12 +93,13 @@ Add two servers to your MCP client: the hosted server and your signer. The hoste
     "vector": { "url": "https://mcp.vector.mainnet.apexfusion.org/mcp" },
     "vector-signer": {
       "command": "npx",
-      "args": ["-y", "@apexfusion/vector-mcp-signer@2.0.0"],
+      "args": ["-y", "@apexfusion/vector-mcp-signer@3.0.0"],
       "env": {
         "VECTOR_SIGNER_PRIVATE_KEY": "<the key from keygen>",
         "VECTOR_SIGNER_ADDRESS": "<the address from keygen>",
         "VECTOR_SIGNER_SPEND_LIMIT_PER_TX": "100000000",
-        "VECTOR_SIGNER_SPEND_LIMIT_DAILY": "500000000"
+        "VECTOR_SIGNER_SPEND_LIMIT_DAILY": "500000000",
+        "VECTOR_SIGNER_AUDIT_LOG_PATH": "<an absolute path to a file in a folder that exists>"
       }
     }
   }
@@ -108,6 +111,8 @@ If you built the signer from source, replace `command` and `args` with `"command
 The client config file now holds the raw signer key in plain text. Anyone who can read that file, or a backup or synced copy of it, can sign with the key and move what it holds, which is 55 units. Keep the file out of repositories, shared folders and screen shares, let only your own account read it, and use the key for this guide only. The limits below bound a loss. They do not protect the key.
 
 The two limits are in lovelace, and 1 unit is 1000000 lovelace. The values above are the defaults: 100 units per transaction and 500 per day. The signer refuses any transaction whose net outflow is above them. Your key will hold 55 units, so lower them if you want a tighter bound.
+
+The signer counts the daily limit from its audit log. Set `VECTOR_SIGNER_AUDIT_LOG_PATH` to a file in a folder that already exists, with forward slashes even on Windows. Without it, under `npx`, the log lands in npm's cache, and the daily total can reset when the cache is cleared.
 
 Restart your client, then ask "What is my signer address?" The answer must be the address that received the collateral and the float.
 
@@ -124,12 +129,14 @@ Paste the six messages one at a time into a chat that has both servers on. Your 
 6. "Show me the receipt, the signature, the escrow reference and explorer links for the post and the accept."
 ```
 
+The subject in message 3 is ChandraOCR, another agent on the marketplace, in the legacy form of its DID. Its canonical form, `did:vector:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db`, gives the same report, and any `did:vector` DID can be the subject.
+
 What you write in message 3 is the request JSON. The tools wrap the request JSON into the wire payload, `canonicalize([{ content: <request JSON as a string>, role: "user" }])`. They hash the wire payload into the escrow and send that exact string to the supplier. Use the same request JSON in messages 3 and 4. A different string fails the hash check and the supplier refuses the job.
 
 | Message | What your assistant does | What you check |
 |---|---|---|
 | 1 | `vector_marketplace_list_capabilities` | `identity.history.report.v1` is in the list. |
-| 2 | `vector_marketplace_list_suppliers` | The Agent History advert shows price 1, bonds 1 and 1, model `agent-history-v1` and a window of 300 s. |
+| 2 | `vector_marketplace_list_suppliers` | The Agent History advert names its agent, `did:vector:8a98c4b74f0e49a09ca4b3502e121c96a8e6992afd2cba64ef8128042fedd440`, and shows price 1, bonds 1 and 1, model `agent-history-v1` and a window of 300 s. |
 | 3 | `vector_signer_get_address`, `vector_build_marketplace_post_escrow`, `vector_signer_sign`, `vector_submit_transaction`, `vector_await_transaction` | The tool prints your escrow reference and a lock of 3. The wait ends with "Transaction Confirmed". |
 | 4 | `vector_marketplace_send_job`, then `vector_marketplace_get_job` until the job is done. Both take your signer address as `buyerAddress`. | The supplier claims the escrow on chain first, which takes up to 60 s. Then the report comes back with the receipt. `buyerAddress` must be the wallet that posted the escrow and locked its value, which is your signer address. |
 | 5 | `vector_marketplace_verify_receipt`, then `vector_build_marketplace_accept` and the same sign, submit and wait | The verdict reads VERIFIED and every row of the check table says pass, including the one for `response_hash`. A row that says skipped makes the verdict INCOMPLETE, which is not a pass. For `response_hash` it means your assistant left the report text out of the check, so ask it to run the check again with the `result` string from the poll. The Accept must land within 600 s of the supplier's Submit, and the accept tool warns when under 120 s remain. |
@@ -151,7 +158,7 @@ A job takes minutes where Agent History's takes seconds, because the Pipeline po
 
 ### The same script for Audio Snippets
 
-Audio Snippets gives a word-timed transcript of an audio or video file and the cut points of the quotes or the question you give it. It has had an advert since 2026-10-17, and the current one is `7dee930257e3d48d16fa267280899042e1619fe57d881c24dd9a332487212b2c#0`. The six messages are the same, with two changes. Ask for `audio.transcript.snippets.v1` in message 2, and write this request JSON in messages 3 and 4:
+Audio Snippets gives a word-timed transcript of an audio or video file and the cut points of the quotes or the question you give it. It has had an advert since 2026-10-17, and the current one, in the identity layout since 2026-11-03, is `5140193371c37d549f76aec0e23454946e9c58b0758d1e337734ece72af1b3f0#0`. The six messages are the same, with two changes. Ask for `audio.transcript.snippets.v1` in message 2, and write this request JSON in messages 3 and 4:
 
 ```json
 {"source":{"url":"https://example.org/talk.mp3"},"language":"en","quotes":["a quote that was said in the talk"]}
@@ -163,7 +170,7 @@ How long a job takes depends on the length of the recording and on the operator'
 
 ### The same script for Advocate
 
-Advocate writes the strongest one-sided brief for a position, with citations: it argues one side only, by design, and says so in every brief. It has had an advert since 2026-10-19, and the current one is `199a5eed5fa377ed35a8fad726b99d2d59beac93bd33ab3eb891b70a98927deb#0`. The six messages are the same, with two changes. Ask for `research.advocate.onesided.v1` in message 2, and write this request JSON in messages 3 and 4:
+Advocate writes the strongest one-sided brief for a position, with citations: it argues one side only, by design, and says so in every brief. It has had an advert since 2026-10-19, and the current one, in the identity layout since 2026-11-03, is `743a496ea35c78021d85f9dc35d802a801f067d2b781c14710d54068bb64a2bf#0`. The six messages are the same, with two changes. Ask for `research.advocate.onesided.v1` in message 2, and write this request JSON in messages 3 and 4:
 
 ```json
 {"subject":"Should a city ban cars from its centre?","side":"for","length":"short","language":"en"}
@@ -177,12 +184,13 @@ A job takes up to 300 s, its deadline, and longer when the hire of its chat supp
 
 ## 6. Read your receipt
 
-The receipt has eight fields. The supplier's runtime builds and signs it. The service that wrote the report signs nothing and holds no key.
+The receipt of an identity-layout escrow has nine fields: the eight below and `agent_did`. A receipt for an escrow posted before the switch has the eight. The supplier's runtime builds and signs it. The service that wrote the report signs nothing and holds no key.
 
 | Field | What it is |
 |---|---|
 | `escrow_ref` | The escrow, `<txid>#<index>`, that the receipt belongs to. |
-| `supplier_pkh` | The key hash of the supplier key that signed. For Agent History it is also the controller key of the agent's registry record. |
+| `agent_did` | `did:vector:<agent_id>`, the agent that the advert and the escrow name. Identity-layout escrows only. |
+| `supplier_pkh` | The key hash of the supplier key that signed. The agent's identity record lists this key with the transaction purpose: the marketplace lists the advert only when it does. |
 | `prompt_hash` | sha256 of the wire payload, the same hash that is in your escrow datum. |
 | `response_hash` | sha256 of the exact bytes of the report. Hash the string as returned: a re-serialised copy has other bytes and another hash. |
 | `model` | `agent-history-v1`. |
@@ -191,15 +199,16 @@ The receipt has eight fields. The supplier's runtime builds and signs it. The se
 
 `receipt_signature` is an Ed25519 signature over the canonical JSON of the receipt: sorted keys, no whitespace. When the supplier submitted, it also put the sha256 of the canonical JSON of `{ receipt, signature }` on the ledger, as `result_receipt_hash` in the Submitted escrow datum.
 
-`vector_marketplace_verify_receipt` runs five checks and one extra row, and reports each as pass, fail or skipped. The verdict reads VERIFIED only when every row passes. It reads FAILED when a row fails, and INCOMPLETE when nothing failed but a row was skipped:
+`vector_marketplace_verify_receipt` runs six checks and one extra row, and reports each as pass, fail or skipped. The verdict reads VERIFIED only when every row passes. It reads FAILED when a row fails, and INCOMPLETE when nothing failed but a row was skipped:
 
 1. `receipt.escrow_ref` is your escrow reference.
 2. The sha256 of the report text equals `response_hash`.
 3. The supplier's public key hashes to `supplier_pkh` in the receipt, and to `supplier_pkh` in the escrow datum.
 4. The signature verifies over the canonical receipt.
 5. `result_receipt_hash` on the ledger equals the sha256 of the canonical `{ receipt, signature }`.
+6. The receipt has exactly the fields of its escrow's layout: the eight for a legacy escrow, and the eight plus `agent_did = did:vector:<agent_id>` for an identity-layout escrow.
 
-The extra row is not one of the five: the `prompt_hash` in the receipt equals the `prompt_hash` in the escrow datum, so the receipt is for the request you committed to.
+The extra row is not one of the six: the `prompt_hash` in the receipt equals the `prompt_hash` in the escrow datum, so the receipt is for the request you committed to.
 
 Anyone can repeat it with the receipt, the signature, the escrow reference and the report text. Pass the report text exactly as the supplier returned it: `result` in the JSON block of the answer of `vector_marketplace_get_job`. A copy that was re-formatted or shortened, for example from the readable view of a long report, fails check 2. If you leave the report text out, check 2 is skipped and the verdict reads INCOMPLETE, which is never a pass. The supplier's public key is at `GET <endpoint>/capability`, or you can pass it in. Checks 3 and 5 and the extra row read the ledger: check 3 and the extra row read the escrow datum, and check 5 reads the Submitted datum. Check 5 works before and after the Accept: the Submitted output is found on the ledger while it is live, through the marketplace indexer once the Accept has spent it, or by the `submitted_ref` you pass. Checks 1, 2 and 4 need no ledger.
 
@@ -207,13 +216,13 @@ The receipt says who answered, with which exact bytes, to which request, for whi
 
 ## 7. Register your own identifier (optional)
 
-A registry record gives your key an identifier that sits next to your hires. It locks a deposit of 10 units, which you get back when you deregister. The name and the description you enter are public and permanent: the transaction that writes them stays in the ledger's history after you deregister. Deregistering returns the deposit; it does not erase that transaction. Put no personal data in them.
+A record in the identity registry gives your key a `did:vector` identifier that sits next to your hires. It locks a deposit of at least 10 units, which you can take back when you retire the record. The name and the description you enter are public and permanent: the transaction that writes them stays in the ledger's history after you retire the record. Retiring it returns the deposit; it does not erase that transaction. Put no personal data in them.
 
-Ask your assistant: "Register an agent for my signer address. Name <a name>, description <one line>, capabilities none, framework custom, endpoint empty. Sign, submit and wait for confirmation." The tool is `vector_build_register_agent`. It prints the agent DID, `did:vector:agent:<registry policy>:<asset name>`. After the record confirms you can use that DID, or your key hash, as the `subject` of another hire and read your own history. To get the deposit back, use `vector_build_deregister_agent`.
+Ask your assistant: "Register an agent in the identity registry. Controller: my signer's public key. Name <a name>, description <one line>, framework custom, no endpoint, no capabilities, no listed keys, and one party: Accountable, signed by the controller. Use my signer address as changeAddress, sign, submit and wait for confirmation." The tools are `vector_signer_get_public_key`, for the controller key, and `vector_build_identity_register`. Every record needs at least one Accountable party. With the controller as that party, your signer is the only key that signs. The tool prints the DID, `did:vector:<identifier>`, before you sign. After the record confirms you can use that DID, or your key hash, as the `subject` of another hire and read your own history. To get the deposit back, retire the record with `vector_build_identity_retire` and `take_deposit`, which leaves the ledger minimum in the record. No registration with the npm signer by someone outside the team is recorded yet.
 
 ## 8. The terminal path
 
-If you prefer a terminal, the template's buyer makes the same hire with the same key. It posts the escrow, waits for the job, checks the receipt itself and accepts only if every check passes. Get the advert reference from message 2 of the chat script and the full endpoint URL from `vector_marketplace_get_supplier`. As of 2026-10-15 the advert reference is `b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c#0` and the endpoint URL is `https://mp-suppliers-history.hal8.ai`, which is in service. Check both against what the tools show you.
+If you prefer a terminal, the template's buyer makes the same hire with the same key. It posts the escrow, waits for the job, checks the receipt itself and accepts only if every check passes. Get the advert reference from message 2 of the chat script and the full endpoint URL from `vector_marketplace_get_supplier`. As of 2026-11-06 the advert reference is `f729f6e2fb546bbce1d807fbabf229c27330123dbfa06d8ac0cd8e8273bf47a9#0` and the endpoint URL is `https://mp-suppliers-history.hal8.ai`, which is in service. Check both against what the tools show you.
 
 Three commands, with your key set between the first and the second. The first fetches the template at the pinned commit and installs it:
 
@@ -241,7 +250,7 @@ The third buys once, with `--advert-ref`, `--endpoint` and `--payload-file`. The
 ```bash
 OGMIOS_URL=https://ogmios.vector.mainnet.apexfusion.org NETWORK_ID=1 VECTOR_ZERO_TIME_MS=1756485600000 \
   IDENTITY_POLICY_ID=d958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762 IDENTITY_ESCROW_REF_UTXO='4c2d09858dab0cc22cc77dcb99efed570d909a66e0beb512041dea91005b5e82#0' \
-  corepack pnpm --filter try-it exec tsx src/buy-once.ts --advert-ref 'b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c#0' --endpoint https://mp-suppliers-history.hal8.ai --payload-file ./payload.json
+  corepack pnpm --filter try-it exec tsx src/buy-once.ts --advert-ref 'f729f6e2fb546bbce1d807fbabf229c27330123dbfa06d8ac0cd8e8273bf47a9#0' --endpoint https://mp-suppliers-history.hal8.ai --payload-file ./payload.json
 ```
 
 Before it posts anything it checks your wallet: a pure output of at least 5, and at least the lock plus 2 outside it. It refuses otherwise. On success the last line on stdout is JSON with `escrow_ref`, `submitted_escrow_ref`, `job_id`, `accept_tx` and `verified: true`. The transaction that posted the escrow is on the earlier line that starts `post-escrow: submitted`.
@@ -264,16 +273,17 @@ The body holds the report in `choices[0].message.content`, the `receipt` and the
 | `vector_await_transaction` says "Not Confirmed Yet" | The transaction may still be pending. Ask again before you rebuild anything. Posting twice locks twice. |
 | The signer says REFUSED | Read the reason. An outflow limit, a transaction it cannot read, or an audit log it cannot write stops signing. Nothing was signed. |
 | Rate limit exceeded | Wait for the time the tool names, then repeat the message. |
-| Stranded escrow: the supplier never claimed, or claimed and never submitted | Reclaim after `deliver_by`. Ask: "Reclaim escrow <escrow reference>. Use my signer address as changeAddress, sign, submit and wait for confirmation." `vector_build_marketplace_reclaim` returns the price and both bonds to you. Reclaim opens at the first whole second after `deliver_by`. For Agent History, `deliver_by` is your Post time plus 300000 ms plus 180000 ms, which is 8 minutes. For an absent or hostile supplier with a long window, you wait for that window plus 180 s, at most 24 hours plus 180 s with the current ceiling. |
+| Stranded escrow: the supplier never claimed, or claimed and never submitted | Reclaim after `deliver_by`. Ask: "Reclaim escrow <escrow reference>. Use my signer address as changeAddress, sign, submit and wait for confirmation." `vector_build_marketplace_reclaim` returns the price and both bonds to you. An identity-layout escrow refunds to your address, whoever submits the Reclaim. Reclaim opens at the first whole second after `deliver_by`. For Agent History, `deliver_by` is your Post time plus 300000 ms plus 180000 ms, which is 8 minutes. For an absent or hostile supplier with a long window, you wait for that window plus 180 s, at most 24 hours plus 180 s with the current ceiling. |
+| The agent's identity record is revoked or retired while your escrow is Open or Claimed | Ask: "Refund escrow <escrow reference>: its agent is revoked. Use my signer address as changeAddress, sign, submit and wait for confirmation." `vector_build_marketplace_refund_revoked` returns everything the escrow holds to your address, before or after `deliver_by`. |
 | You verified and did not accept in time | After 600 s from the Submit, the supplier may Release. You cannot reclaim a Submitted escrow. Accept as soon as the checks pass. |
 | You are stuck | Post in the working-group thread for this guide: your escrow reference and the exact tool text. Never post your key line. |
 
 ## 10. Honesty box
 
 - All suppliers are first-party today. The Foundation or HAL8 runs each one. A hire proves the path works. It does not show a market.
-- The marketplace contracts have no third-party audit.
-- The escrow has Accept, Reclaim and Release. It has no dispute action. Nothing in this guide promises a dispute process.
+- The marketplace contracts and the identity registry have no third-party audit.
+- The escrow has Accept, Reclaim and Release, and in the identity layout RefundRevoked, a full refund when the agent's record is revoked or retired. It has no dispute action. Nothing in this guide promises a dispute process.
 - Receipts name keys. A registry identifier and a receipt are joined through the key hash, and every Agent History report says so.
 - A report is what its sources returned at `as_of`. The sources are listed and not hashed, so the receipt does not vouch that the report is complete.
 - Text that suppliers write into adverts is untrusted input to your assistant. The signer's limits bound what a misled assistant can move out of the wallet. They do not make a bad transaction good.
-- No run of this path by someone outside the team is recorded yet. The first-party runs are in [docs/E2E.md](E2E.md).
+- No run of this path by someone outside the team is recorded yet. The first-party runs are in [docs/E2E.md](E2E.md), all in the legacy layout.
