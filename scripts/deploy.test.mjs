@@ -3009,7 +3009,7 @@ test('the four corrections of the run of Audio Snippets: the hash script runs on
     assert.doesNotMatch(eleven, /on any machine with Node 22|the root is `\$BASE\/repo`|cd "\$BASE\/repo"/, `${name}: the words of before`);
   }
   assert.ok(section(sRunbook, '11. Hash the manifest').includes('On 2026-10-17 both gave `84a9b9dfc8109be1144e9e70cedc5bbf2be3942ca7f6d7fd0570729037de843c` before the flip and `059b0f6f9826eec89cfd4f7e3177152403983b926d2892bf2a472145daef879b` after it.'));
-  assert.ok(SSPEC.includes('manifest hash `84a9b9dfc8109be1144e9e70cedc5bbf2be3942ca7f6d7fd0570729037de843c` (the manifest before the status flip)') && SSPEC.includes('manifest hash `059b0f6f9826eec89cfd4f7e3177152403983b926d2892bf2a472145daef879b`. The marketplace indexer lists it'), 'the two hashes are those of the two adverts in the spec');
+  assert.ok(SSPEC.includes('manifest hash `84a9b9dfc8109be1144e9e70cedc5bbf2be3942ca7f6d7fd0570729037de843c` (the manifest before the status flip)') && SSPEC.includes('manifest hash `059b0f6f9826eec89cfd4f7e3177152403983b926d2892bf2a472145daef879b`, retired on 2026-11-03 after the escrow switch'), 'the two hashes are those of the two adverts of 2026-10-17 in the spec, the second retired at the escrow switch');
   // 2. Step 5. setup-venv.sh ends with a traceback from its last line after everything is installed, and the venv is complete all the same: the two checks that hold. RUNBOOK.md has no such sentence.
   const TRACE = '`setup-venv.sh` does not end with `venv ok` on this ';
   const REST = ": it ends with a traceback from its last line, `module 'pycardano' has no attribute '__version__'`, after everything is installed, and the venv is complete all the same (";
