@@ -103,10 +103,16 @@ const AH = {
   firstAdvertTx: '13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c',
   firstAdvertRef: '13446b05fd40cfac30e3df301748d0cc900b5de1a47582e40a2671107cbc747c#0',
   retireTx: 'b15761eb6b6df82f9bb29554749960b91b4896ef0081171baa1e2c5b5728cc0c',
-  // The current advert, posted and confirmed on 2026-10-15 with the manifest of the status flip (step 17, item 6) and listed Active and free by the marketplace indexer. A reference is the transaction id and the output index.
-  advertTx: 'b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c',
-  advertRef: 'b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c#0',
-  manifestHash: '251174d556f6f56331a5abc0c343ef9d7277e932511a965ee50f248659b61501',
+  // The second advert, posted and confirmed on 2026-10-15 with the manifest of the status flip (step 17, item 6), and retired on 2026-11-03 after the escrow switch.
+  secondAdvertTx: 'b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c',
+  secondAdvertRef: 'b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c#0',
+  secondManifestHash: '251174d556f6f56331a5abc0c343ef9d7277e932511a965ee50f248659b61501',
+  secondRetireTx: '776640aea8cec3c96518ba2a69a6d22eb4867fce7a950640fb5ca6e0e402aaa5',
+  // The current advert, posted on 2026-11-03 in the identity layout, so it names the agent, and listed Active and free by the marketplace indexer (checked on 2026-11-06). A reference is the transaction id and the output index.
+  agentDid: 'did:vector:8a98c4b74f0e49a09ca4b3502e121c96a8e6992afd2cba64ef8128042fedd440',
+  advertTx: 'f729f6e2fb546bbce1d807fbabf229c27330123dbfa06d8ac0cd8e8273bf47a9',
+  advertRef: 'f729f6e2fb546bbce1d807fbabf229c27330123dbfa06d8ac0cd8e8273bf47a9#0',
+  manifestHash: 'c6e69892e717ccba1a91040ecace4edf6a454ef590dcd4d2808ef4ddc5e42ec3',
 };
 const EXPLORER_TX = 'https://explorer.vector.mainnet.apexfusion.org/transaction/hash/';
 
@@ -154,9 +160,10 @@ test('specs/agent-history.md: the DID, the registry record and the reputation st
   assert.equal(new Set([AH.firstAdvertTx, AH.retireTx, AH.advertTx]).size, 3, 'three transactions: the first advert, its retirement, the current advert');
   const links = section(text, 'Links');
   assert.ok(links.includes(`- First advert \`${AH.firstAdvertRef}\`, posted on 2026-10-14 in the confirmed transaction [\`${AH.firstAdvertTx}\`](${EXPLORER_TX}${AH.firstAdvertTx}), retired on 2026-10-15 at the status flip in the confirmed transaction [\`${AH.retireTx}\`](${EXPLORER_TX}${AH.retireTx}).`));
-  assert.ok(links.includes(`- Current advert \`${AH.advertRef}\`, posted on 2026-10-15 in the confirmed transaction [\`${AH.advertTx}\`](${EXPLORER_TX}${AH.advertTx}), manifest hash \`${AH.manifestHash}\`. The marketplace indexer lists it as Active and free (checked on 2026-10-15).`));
+  assert.ok(links.includes(`- Second advert \`${AH.secondAdvertRef}\`, posted on 2026-10-15 in the confirmed transaction [\`${AH.secondAdvertTx}\`](${EXPLORER_TX}${AH.secondAdvertTx}), manifest hash \`${AH.secondManifestHash}\`, retired on 2026-11-03 after the escrow switch in the confirmed transaction [\`${AH.secondRetireTx}\`](${EXPLORER_TX}${AH.secondRetireTx}).`), 'the advert of before the switch is history in the Links');
+  assert.ok(links.includes(`- Current advert \`${AH.advertRef}\`, posted on 2026-11-03 in the identity layout in the confirmed transaction [\`${AH.advertTx}\`](${EXPLORER_TX}${AH.advertTx}), manifest hash \`${AH.manifestHash}\`, naming the agent \`${AH.agentDid}\`. The marketplace indexer lists it as Active and free (checked on 2026-11-06).`));
   assert.ok(links.includes("- Manifest: `GET /agent.json` on the agent's public URL, in service as of 2026-10-14."));
-  assert.ok(section(text, 'How to hire it').includes('Advertised on 2026-10-14 and again on 2026-10-15, at the status flip: the marketplace indexer lists the current advert as Active and free (checked on 2026-10-15). One first-party job has settled, on 2026-10-15; it is not demand. The three ways below apply.'));
+  assert.ok(section(text, 'How to hire it').includes('Advertised on 2026-10-14, again on 2026-10-15 at the status flip, and again on 2026-11-03 in the identity layout: the marketplace indexer lists the current advert as Active and free (checked on 2026-11-06). One first-party job has settled, on 2026-10-15; it is not demand. The three ways below apply.'));
   // The words of before the advert do not come back. The three specs that have no advert keep theirs, and the runbooks quote them as instructions.
   assert.equal(text.match(/none yet|not posted|not in service|not yet advertised|once it is in service/i), null);
 });
@@ -177,10 +184,16 @@ const DP = {
   secondAdvertRef: 'd2709262e001022ea68c0222474f9bebc74f8bfc31dcddd24dc89debcc6dda16#0',
   secondManifestHash: 'f2dca80ac2b1685b956a9e0d2687d076aaa25e565637d69c58ebf0feb2127729',
   secondRetireTx: 'f9e9670e8da4fc423e371ab8cee20219c3f13c38ede12cd0208589a24edd9591',
-  // The current advert, posted and confirmed on 2026-10-16 after the content pass changed the manifest text (the advert of the status flip was retired the same day) and listed Active and free by the marketplace indexer. A reference is the transaction id and the output index.
-  advertTx: '16a5da8726cab90949da2c0c92e025af276027715a5d854861c683d7d9341ca3',
-  advertRef: '16a5da8726cab90949da2c0c92e025af276027715a5d854861c683d7d9341ca3#0',
-  manifestHash: '2d647f2ab239ce6f04c37f0eaf5d39a6240a305f020039880d05e47e1d3a67d7',
+  // The third advert, posted and confirmed on 2026-10-16 after the content pass changed the manifest text (the advert of the status flip was retired the same day), and retired on 2026-11-03 after the escrow switch.
+  thirdAdvertTx: '16a5da8726cab90949da2c0c92e025af276027715a5d854861c683d7d9341ca3',
+  thirdAdvertRef: '16a5da8726cab90949da2c0c92e025af276027715a5d854861c683d7d9341ca3#0',
+  thirdManifestHash: '2d647f2ab239ce6f04c37f0eaf5d39a6240a305f020039880d05e47e1d3a67d7',
+  thirdRetireTx: 'bf249d2e9fb1318975e66e39a170fd99b1a5bfde640b3b95125e098f6ca6b260',
+  // The current advert, posted on 2026-11-03 in the identity layout, so it names the agent, and listed Active and free by the marketplace indexer (checked on 2026-11-06). A reference is the transaction id and the output index.
+  agentDid: 'did:vector:b8599ec7f66a389dab40a963cce31a0e2e05c61e47f0b002fa39d59acf5932f5',
+  advertTx: '53468fd7fe4df14769eacec35438a56822a835b1e4b25c87a00dde7b24db09b8',
+  advertRef: '53468fd7fe4df14769eacec35438a56822a835b1e4b25c87a00dde7b24db09b8#0',
+  manifestHash: 'fe77d772bd4aee0262f5bd72ef39fb297f2ead3191d5f434ebb03b0a3fd2af98',
 };
 // The first first-party run of Document Pipeline (step 15, 2026-10-16): the object the script printed is docs/evidence/2026-10-16-document-pipeline-run-1.json, copied byte for byte.
 const DP_RUN = {
@@ -210,10 +223,16 @@ const AS = {
   firstAdvertRef: '6cc1a8a7776ff6202a95ef6496a73dd521970bb7fa252b8a265c6e204e7ec489#0',
   firstManifestHash: '84a9b9dfc8109be1144e9e70cedc5bbf2be3942ca7f6d7fd0570729037de843c',
   retireTx: '998499f2826dc80639e6606893f49568fa8c3fb3f3b001138b67637ba58f2374',
-  // The current advert, posted and confirmed on 2026-10-17 at the status flip (step 17, item 6) over the manifest of the flip, and listed Active and free by the marketplace indexer. A reference is the transaction id and the output index.
-  advertTx: '7dee930257e3d48d16fa267280899042e1619fe57d881c24dd9a332487212b2c',
-  advertRef: '7dee930257e3d48d16fa267280899042e1619fe57d881c24dd9a332487212b2c#0',
-  manifestHash: '059b0f6f9826eec89cfd4f7e3177152403983b926d2892bf2a472145daef879b',
+  // The second advert, posted and confirmed on 2026-10-17 at the status flip (step 17, item 6) over the manifest of the flip, and retired on 2026-11-03 after the escrow switch.
+  secondAdvertTx: '7dee930257e3d48d16fa267280899042e1619fe57d881c24dd9a332487212b2c',
+  secondAdvertRef: '7dee930257e3d48d16fa267280899042e1619fe57d881c24dd9a332487212b2c#0',
+  secondManifestHash: '059b0f6f9826eec89cfd4f7e3177152403983b926d2892bf2a472145daef879b',
+  secondRetireTx: '5f4fd1fc4d3fcbeeb3041386edbdcce7804330ddf529c2f428039fef8fed4a94',
+  // The current advert, posted on 2026-11-03 in the identity layout, so it names the agent, and listed Active and free by the marketplace indexer (checked on 2026-11-06). A reference is the transaction id and the output index.
+  agentDid: 'did:vector:1532506e54fa79cdfca6bef566ff1a5e7af9fceb332ffb7414d9923334b9d1ee',
+  advertTx: '5140193371c37d549f76aec0e23454946e9c58b0758d1e337734ece72af1b3f0',
+  advertRef: '5140193371c37d549f76aec0e23454946e9c58b0758d1e337734ece72af1b3f0#0',
+  manifestHash: 'c87deaa05e54ec491bb876b0e62850af4d99c85d666ef1da24582afdf9fdc63f',
   // The terms the current advert carries, as the ledger holds them: the price and the two bonds in lovelace, the window, the output tokens and the model.
   terms: { price: 2000000, supplierBond: 1000000, buyerBond: 1000000, maxProcessingMs: 1500000, maxOutputTokens: 8192, model: 'audio-snippets-v1' },
 };
@@ -248,10 +267,16 @@ const AD = {
   firstAdvertRef: 'bdf2d452350b8e73eb723288c7d08e1dbaf2447236d030ef6e5f92e1772be4cc#0',
   firstManifestHash: '64d68e45a469c68ea6a0eabc1448a12e4a5c670573bbef6da1f8bab1179080e9',
   retireTx: '709dedff33e47723bbd85c29477ef3019a724ee61d2a44e2832cec56c3ad6e15',
-  // The current advert, posted and confirmed on 2026-10-20 at the status flip (step 17, item 6) over the manifest of the flip, and listed Active and free by the marketplace indexer.
-  advertTx: '199a5eed5fa377ed35a8fad726b99d2d59beac93bd33ab3eb891b70a98927deb',
-  advertRef: '199a5eed5fa377ed35a8fad726b99d2d59beac93bd33ab3eb891b70a98927deb#0',
-  manifestHash: 'bb75efb7794f32c3e9547e256ef9ed6a877610e28d3a7fb5930d99925a102abc',
+  // The second advert, posted and confirmed on 2026-10-20 at the status flip (step 17, item 6) over the manifest of the flip, and retired on 2026-11-03 after the escrow switch.
+  secondAdvertTx: '199a5eed5fa377ed35a8fad726b99d2d59beac93bd33ab3eb891b70a98927deb',
+  secondAdvertRef: '199a5eed5fa377ed35a8fad726b99d2d59beac93bd33ab3eb891b70a98927deb#0',
+  secondManifestHash: 'bb75efb7794f32c3e9547e256ef9ed6a877610e28d3a7fb5930d99925a102abc',
+  secondRetireTx: '4da0f48f842b46075d6076a083be0891c697e67f855b6f3f26c02642aa87dcb6',
+  // The current advert, posted on 2026-11-03 in the identity layout, so it names the agent, and listed Active and free by the marketplace indexer (checked on 2026-11-06).
+  agentDid: 'did:vector:c5e44677dadefc8a194d15293cad889b85e1ce5c839177f1955778ac4c63d01c',
+  advertTx: '743a496ea35c78021d85f9dc35d802a801f067d2b781c14710d54068bb64a2bf',
+  advertRef: '743a496ea35c78021d85f9dc35d802a801f067d2b781c14710d54068bb64a2bf#0',
+  manifestHash: '07ea57ff84c404659ce9cc05f78624f70cf15a2195781a2258f4ea6aab7c499f',
   // The terms the current advert carries: the price and the two bonds in lovelace, and the window.
   terms: { price: 3000000, supplierBond: 1000000, buyerBond: 1000000, maxProcessingMs: 480000 },
 };
@@ -318,10 +343,11 @@ test('specs/document-pipeline.md: the DID, the registry record and the reputatio
   assert.notEqual(DP.advertRef, DP.firstAdvertRef);
   const links = section(text, 'Links');
   assert.ok(links.includes(`- First advert \`${DP.firstAdvertRef}\`, posted on 2026-10-16 in the confirmed transaction [\`${DP.firstAdvertTx}\`](${EXPLORER_TX}${DP.firstAdvertTx}), retired on 2026-10-16 at the status flip in the confirmed transaction [\`${DP.retireTx}\`](${EXPLORER_TX}${DP.retireTx}).`));
-  assert.ok(links.includes(`- Current advert \`${DP.advertRef}\`, posted on 2026-10-16 in the confirmed transaction [\`${DP.advertTx}\`](${EXPLORER_TX}${DP.advertTx}), manifest hash \`${DP.manifestHash}\`. The marketplace indexer lists it as Active and free (checked on 2026-10-16).`));
+  assert.ok(links.includes(`- Third advert \`${DP.thirdAdvertRef}\`, posted on 2026-10-16 in the confirmed transaction [\`${DP.thirdAdvertTx}\`](${EXPLORER_TX}${DP.thirdAdvertTx}), manifest hash \`${DP.thirdManifestHash}\`, retired on 2026-11-03 after the escrow switch in the confirmed transaction [\`${DP.thirdRetireTx}\`](${EXPLORER_TX}${DP.thirdRetireTx}).`), 'the advert of before the switch is history in the Links');
+  assert.ok(links.includes(`- Current advert \`${DP.advertRef}\`, posted on 2026-11-03 in the identity layout in the confirmed transaction [\`${DP.advertTx}\`](${EXPLORER_TX}${DP.advertTx}), manifest hash \`${DP.manifestHash}\`, naming the agent \`${DP.agentDid}\`. The marketplace indexer lists it as Active and free (checked on 2026-11-06).`));
   assert.ok(links.includes(`- Second advert \`${DP.secondAdvertRef}\`, posted on 2026-10-16 at the status flip in the confirmed transaction [\`${DP.secondAdvertTx}\`](${EXPLORER_TX}${DP.secondAdvertTx}), manifest hash \`${DP.secondManifestHash}\`, retired on 2026-10-16 in the confirmed transaction [\`${DP.secondRetireTx}\`](${EXPLORER_TX}${DP.secondRetireTx}) when the manifest text changed.`), 'the second advert and its retirement are in the Links');
   assert.ok(links.includes("- Manifest: `GET /agent.json` on the agent's public URL, in service as of 2026-10-16."));
-  assert.ok(section(text, 'How to hire it').includes('Advertised on 2026-10-16, and again the same day at the status flip: the marketplace indexer lists the current advert as Active and free (checked on 2026-10-16). One first-party job has settled, on 2026-10-16; it is not demand. The three ways below apply.'));
+  assert.ok(section(text, 'How to hire it').includes('Advertised on 2026-10-16, again the same day at the status flip, and again on 2026-11-03 in the identity layout: the marketplace indexer lists the current advert as Active and free (checked on 2026-11-06). One first-party job has settled, on 2026-10-16; it is not demand. The three ways below apply.'));
   // The words of before the advert do not come back. The two specs that have no advert keep theirs, and the runbooks quote them as instructions.
   assert.equal(text.match(/none yet|not posted|not in service|not yet advertised|none until deployed|once it is in service|waits for its deployment/i), null);
 });
@@ -455,8 +481,8 @@ const e2eScript = () => readFileSync(new URL('./e2e-hire.mjs', import.meta.url),
 const HIRE_SECTIONS = ['What you will end up with', 'Get a key', 'What the key must hold', 'Two lines of config', 'The chat script', 'Read your receipt', 'Register your own identifier (optional)', 'The terminal path', 'When it goes wrong', 'Honesty box'];
 // The signer is published on npm (2026-10-16): version 2.0.0, whose build/index.js is identical to the build of packages/signer at mcp-server main, commit 651ae93. Every npx command of the guide, the runbook and the README pins that version, so that a later release cannot change what a reader runs.
 const SIGNER_PACKAGE = '@apexfusion/vector-mcp-signer';
-const SIGNER_VERSION = '2.0.0';
-const SIGNER_COMMIT = '651ae93';
+const SIGNER_VERSION = '3.0.0';
+const SIGNER_COMMIT = 'c42cb6e';
 const SIGNER_NPX = `npx -y ${SIGNER_PACKAGE}@${SIGNER_VERSION}`;
 const CHAT_SCRIPT = [
   '1. "List the marketplace capabilities on Vector."',
@@ -468,7 +494,7 @@ const CHAT_SCRIPT = [
 ];
 // The nine marketplace tools are read from the design spec, so a renamed tool fails here before it fails in a member's chat.
 const MARKETPLACE_TOOLS = [...new Set(DESIGN.match(/\bvector_(?:build_)?marketplace_[a-z_]+/g))].sort();
-const OTHER_TOOLS = ['vector_signer_get_address', 'vector_signer_decode_transaction', 'vector_signer_sign', 'vector_signer_get_spend_limits', 'vector_submit_transaction', 'vector_await_transaction', 'vector_build_register_agent', 'vector_build_deregister_agent', 'vector_get_utxos', 'vector_get_balance'];
+const OTHER_TOOLS = ['vector_signer_get_address', 'vector_signer_decode_transaction', 'vector_signer_sign', 'vector_signer_get_spend_limits', 'vector_submit_transaction', 'vector_await_transaction', 'vector_signer_get_public_key', 'vector_build_identity_register', 'vector_build_identity_retire', 'vector_build_marketplace_refund_revoked', 'vector_build_deregister_agent', 'vector_get_utxos', 'vector_get_balance'];
 const designEndpoint = (label) => new RegExp(label + ' `([^`]+)`').exec(DESIGN)?.[1];
 const AGENT_SPEC = { 'Agent History': 'agent-history', 'Audio Snippets': 'audio-snippets', Advocate: 'advocate', 'Document Pipeline': 'document-pipeline' };
 // What the guide, the runbooks, the script and the four specs said until 2026-10-14, when the nine tools were seen on the hosted mainnet server: a wait for a cutover,
@@ -495,8 +521,8 @@ test('docs/HIRE.md: sends the member to section 5 for Document Pipeline, Audio S
   const advocateSub = '\n### The same script for Advocate\n' + (section(guide, '5. The chat script').split('\n### The same script for Advocate\n')[1] ?? '').split('\n### ')[0];
   assert.ok(advocateSub.length > 500, 'the subsection of Advocate is there');
   assert.equal(guide.match(/once it has an advert|no advert yet|until the operator posts one|waits for its deployment|once its advert is posted|cannot be hired until|is built and is not deployed|what will change for it then|it is hired the same way once/i), null, 'the words of before the advert and before the flips');
-  // The table is dated with the day of its last row (Advocate, 2026-10-20), in its header and in the status paragraph.
-  assert.ok(guide.includes('| Piece | Status on 2026-10-20 |') && guide.includes('and its status table was brought up to date on 2026-10-20.'));
+  // The table is dated with the day of its last check (2026-11-06, after the identity registry release of 2026-11-03), in its header and in the status paragraph.
+  assert.ok(guide.includes('| Piece | Status on 2026-11-06 |') && guide.includes('and brought up to date on 2026-11-06 for the identity registry release of 2026-11-03'));
   assert.equal(guide.match(/Three more agents are specified and not built/), null, 'the sentence of before the build');
   const five = section(guide, '5. The chat script');
   const heading = '\n### The same script for Document Pipeline\n';
@@ -544,7 +570,7 @@ const FOUNDATION_WAY = "The Foundation supplies collateral and float for working
 // VECTOR_SIGNER_ADDRESS first, then a recovery phrase inline or from a file; keysource.ts takes a key that matches /^ed25519e?_sk1[0-9a-z]+$/ with an addr1 address,
 // and derives from a recovery phrase the signing key of the first address of one account (index 0 unless set). A raw 64-hex key matches neither, so the sentence of
 // before (2026-10-15 to 2026-10-21), which said the signer took only a keygen key and no recovery phrase, was not true, and LAUNCH.md section 5 converts a template key.
-const SIGNER_READS = "The signer reads a bech32 key that starts `ed25519_sk1`, the form `keygen` prints, with its `addr1` address, or a wallet's recovery phrase, from which it signs for one address only, the first of one account, but the phrase in your config exposes the whole wallet, so this guide never uses one. It does not read a raw 64-hex key, such as the template's: [LAUNCH.md](LAUNCH.md) section 5 converts one. This guide uses the key from `keygen`, so a wallet's balance has to be sent to the address `keygen` printed.";
+const SIGNER_READS = "The signer reads a bech32 key that starts `ed25519_sk1`, the form `keygen` prints, with its `addr1` address, or a wallet's recovery phrase, from which it signs for one address only, the first of one account, but the phrase in your config exposes the whole wallet, so this guide never uses one. It does not read a raw 64-hex key, such as the template's. This guide uses the key from `keygen`, so a wallet's balance has to be sent to the address `keygen` printed.";
 
 test('docs/HIRE.md section 3: two ways to get the collateral and the float onto the key, the Foundation way kept word for word, the own way says Vector mainnet, the key forms the signer reads and 5 alone before the float; the cost table and the check come after both', () => {
   const three = section(hire(), '3. What the key must hold');
@@ -564,8 +590,8 @@ test('docs/HIRE.md section 3: two ways to get the collateral and the float onto 
   assert.equal(hire().match(/We fund it/), null, 'the title of before');
   // The sentences of before said the signer took only a keygen key and no recovery phrase. Its source takes both forms and refuses raw hex.
   assert.equal(hire().match(/accepts only a key made by `keygen`|does not take a wallet's recovery phrase/), null, 'the sentences of before');
-  assert.ok(existsSync(new URL('../docs/LAUNCH.md', import.meta.url)), 'the guide the sentence points to exists');
-  assert.match(doc('LAUNCH.md'), /^## 5\. Give your agent an identity from chat$/m, 'and has the section it names');
+  // Since the identity registry release LAUNCH.md converts no key (the template's commands sign the record), so the sentence sends nobody there.
+  assert.equal(section(hire(), '3. What the key must hold').includes('[LAUNCH.md](LAUNCH.md) section 5'), false, 'no pointer to a conversion that is gone');
 });
 
 test('docs/HIRE.md and docs/E2E.md: no em or en dash; nothing says LIVE except the sentence that denies it; DEPLOYED only in the status paragraph of each and in the rows of Agent History, Document Pipeline, Audio Snippets and Advocate in the guide', () => {
@@ -610,7 +636,7 @@ test('docs/HIRE.md: who receives what on Accept, Release and Reclaim', () => {
   assert.ok(three.includes("If you do not accept within 600 s of the supplier's Submit, the supplier may Release the escrow and keep everything that is locked: the price and both bonds, your buyer bond included."));
   assert.equal(three.match(/may Release/g)?.length, 1, 'said once');
   assert.equal(hire().match(/\b600000 ms\b/), null, 'the guide gives the window in seconds everywhere');
-  assert.ok(three.includes('If the supplier never submits, you reclaim the price and both bonds after `deliver_by`.'));
+  assert.ok(three.includes('If the supplier never submits, everything the escrow holds comes back to your address after `deliver_by`: the escrow names your address as its refund address, so you, or anybody, can submit the Reclaim.'));
 });
 
 test('the guide, the four specs and the E2E runbook never say that both bonds return or that the supplier gets a bond back', () => {
@@ -669,17 +695,17 @@ test('docs/HIRE.md: says what is and is not in service, tool by tool', () => {
   assert.ok(row('vector_marketplace_send_job').includes('PR 3, merged into `main` on 2026-10-14 with PR 2, on the hosted mainnet server: [Apex-Fusion/mcp-server#23](https://github.com/Apex-Fusion/mcp-server/pull/23)'));
   // PR 4 (the signer with its keygen command) is merged into main (2026-10-14) and the package is published on npm (2026-10-16). The row gives the version, the day, who published it and what its build is identical to, and no more.
   const signerRow = row('@apexfusion/vector-mcp-signer');
-  assert.ok(signerRow.includes('PR 4, merged into `main` on 2026-10-14: [Apex-Fusion/mcp-server#22](https://github.com/Apex-Fusion/mcp-server/pull/22). The package is published on npm as version 2.0.0, on 2026-10-16, by the Foundation\'s maintainers. Its `build/index.js` is identical to the build of `packages/signer` at `main` commit `651ae93`.'));
+  assert.ok(signerRow.includes('PR 4, merged into `main` on 2026-10-14: [Apex-Fusion/mcp-server#22](https://github.com/Apex-Fusion/mcp-server/pull/22). The package is published on npm as version 3.0.0, on 2026-11-03, by the Foundation\'s maintainers. Its `build/index.js` is identical to the build of `packages/signer` at `main` commit `c42cb6e` (checked 2026-11-06). Version 2.0.0, of 2026-10-16, is superseded.'));
   assert.equal(signerRow.match(/not published/), null, 'the words of before the publication');
   // Agent History is DEPLOYED since 2026-10-15 (RUNBOOK step 17): the row gives the facts and the current advert reference in full, and says the URL is in service. It does not name the retired advert.
   const agentRow = row('identity.history.report.v1');
-  assert.ok(agentRow.includes(`| ${AH_STATUS} The advert reference is \`${AH.advertRef}\`, listed as Active and free on 2026-10-15.`));
+  assert.ok(agentRow.includes(`| ${AH_STATUS} Re-advertised 2026-11-03 in the identity layout, as \`${AH.agentDid}\`. The advert reference is \`${AH.advertRef}\`, listed as Active and free on 2026-11-06.`));
   assert.ok(agentRow.includes('The public URL, `https://mp-suppliers-history.hal8.ai`, is in service as of 2026-10-14.'));
   assert.equal(agentRow.includes(AH.firstAdvertTx), false, 'the retired advert is not the one the guide gives');
   assert.equal(guide.match(/<ADVERT_REF>|placeholder|not yet advertised|not in service/i), null, 'the words of before the advert');
   // The first-party runs of the path: one for each deployed agent, each a row of the Results table of docs/E2E.md with its evidence file. A first-party run is not demand.
   const serverRow = row('mcp.vector.mainnet.apexfusion.org');
-  assert.ok(serverRow.includes('Running, v2.0.0, 33 tools. All nine marketplace tools are on it, checked on 2026-10-14 with an MCP `initialize` and `tools/list` handshake. Four first-party runs of the path are recorded, one for each deployed agent: on 2026-10-15 (Agent History), 2026-10-16 (Document Pipeline), 2026-10-17 (Audio Snippets) and 2026-10-20 (Advocate), each in the Results table of [docs/E2E.md](E2E.md) with its evidence file. A first-party run is not demand.'));
+  assert.ok(serverRow.includes('Running, v3.0.0, 63 tools, checked on 2026-11-06 with an MCP `initialize` and `tools/list` handshake. Version 3.0.0 ([Apex-Fusion/mcp-server#26](https://github.com/Apex-Fusion/mcp-server/pull/26), [#27](https://github.com/Apex-Fusion/mcp-server/pull/27) and [#28](https://github.com/Apex-Fusion/mcp-server/pull/28), merged 2026-11-03) adds the identity registry tools and, from the escrow switch on, posts identity-layout escrows only. Four first-party runs of the path are recorded, one for each deployed agent, all in the legacy layout: on 2026-10-15 (Agent History), 2026-10-16 (Document Pipeline), 2026-10-17 (Audio Snippets) and 2026-10-20 (Advocate), each in the Results table of [docs/E2E.md](E2E.md) with its evidence file. A first-party run is not demand.'));
   const runs = doc('E2E.md').split('\n').filter((l) => /^\| 20\d\d-/.test(l)).map((l) => l.split(' | ').slice(0, 2).map((cell) => cell.replace(/^\| /, '')));
   assert.deepEqual(runs, [['2026-10-15', 'Agent History'], ['2026-10-16', 'Document Pipeline'], ['2026-10-17', 'Audio Snippets'], ['2026-10-20', 'Advocate']], 'the runs the row counts are the rows of the Results table');
   assert.equal(runs.length, Object.values(AGENTS).filter((a) => a.status.startsWith('DEPLOYED ')).length, 'one run for each deployed agent');
@@ -808,7 +834,7 @@ test('docs/HIRE.md and docs/E2E.md: every place that lists what the receipt chec
 
 test('docs/HIRE.md: the status box says what runs today and that there is no audit; the client config file is said to hold the key in plain text', () => {
   const guide = hire();
-  const line = 'The hosted mainnet server is running with 33 tools as of 2026-10-14, and all nine marketplace tools are on it. No third-party audit of the marketplace contracts exists.';
+  const line = 'The hosted mainnet server is running version 3.0.0 with 63 tools as of 2026-11-06, the marketplace tools among them. No third-party audit of the marketplace contracts or of the identity registry exists.';
   assert.equal(guide.split(line).length - 1, 1, 'once');
   assert.ok(guide.indexOf('**Status: DEPLOYED.**') < guide.indexOf(line) && guide.indexOf(line) < guide.indexOf('| Piece |'), 'inside the status box, above the table');
   const four = section(guide, '4. Two lines of config');
@@ -817,31 +843,33 @@ test('docs/HIRE.md: the status box says what runs today and that there is no aud
   assert.ok(four.indexOf('in plain text') > four.indexOf('```json') && four.indexOf('in plain text') < four.indexOf('The two limits'), 'after the config, before the limits');
 });
 
-test('docs/HIRE.md: the signer is published on npm and section 2 says so; keygen and the client config run version 2.0.0 with npx, and building from source is the alternative, after the npx command', () => {
+test('docs/HIRE.md: the signer is published on npm and section 2 says so; keygen and the client config run version 3.0.0 with npx, and building from source is the alternative, after the npx command', () => {
   const guide = hire();
   const two = section(guide, '2. Get a key');
   const four = section(guide, '4. Two lines of config');
   // The facts in one paragraph: the package, the version, the day, who published it, what its build is identical to, and that anyone can rebuild and compare. No other claim about the package.
-  assert.ok(two.includes(`The signer is published on npm as \`${SIGNER_PACKAGE}\`, version ${SIGNER_VERSION}, on 2026-10-16, by the Foundation's maintainers. Its \`build/index.js\` is identical to the build of \`packages/signer\` at Apex-Fusion/mcp-server \`main\`, commit \`${SIGNER_COMMIT}\`, which anyone can rebuild and compare.`));
+  assert.ok(two.includes(`The signer is published on npm as \`${SIGNER_PACKAGE}\`, version ${SIGNER_VERSION}, on 2026-11-03, by the Foundation's maintainers. Its \`build/index.js\` is identical to the build of \`packages/signer\` at Apex-Fusion/mcp-server \`main\`, commit \`${SIGNER_COMMIT}\`, which anyone can rebuild and compare.`));
   const signerRow = guide.split('\n').find((l) => l.startsWith('|') && l.includes(SIGNER_PACKAGE)) ?? '';
   assert.equal([signerRow, two, four].join('\n').match(/\b(secure|audited|safe)\b/i), null, 'no claim of security, audit or safety about the package');
   // The command pins the version, and the note about the name is one line after it.
   const command = '```bash\n' + SIGNER_NPX + ' keygen\n```';
   assert.ok(two.includes(command), 'the npx command of the guide');
   assert.equal(two.match(/^npx /gm)?.length, 1, 'one npx command in the section');
-  const note = 'The name is now claimed by the Foundation and the version is pinned, so `npx -y` runs 2.0.0 and no later release.';
+  const note = 'The name is now claimed by the Foundation and the version is pinned, so `npx -y` runs 3.0.0 and no later release.';
   assert.ok(two.includes('\n' + note + '\n'), 'the note, in one line');
   assert.ok(two.indexOf(command) < two.indexOf(note), 'the note follows the command');
   // The alternative: one paragraph and one block, after the npx command, at the commit the package was built from. The comparison is with the tarball of the package.
-  const alternative = 'To check the code yourself, or if you cannot run `npx`, build commit `651ae93` from source and run `keygen` from the build. To compare it with the package, run `npm pack @apexfusion/vector-mcp-signer@2.0.0` in an empty folder, unpack the tarball, and compare its `build/index.js` with `packages/signer/build/index.js` of the build:';
-  assert.ok(two.includes(alternative + '\n\n```bash\ngit clone https://github.com/Apex-Fusion/mcp-server.git\ncd mcp-server\ngit checkout 651ae93\nnpm ci && npm run build\nnode packages/signer/build/index.js keygen\n```'), 'the build from source, at the commit of the package');
+  const alternative = 'To check the code yourself, or if you cannot run `npx`, build commit `c42cb6e` from source and run `keygen` from the build. To compare it with the package, run `npm pack @apexfusion/vector-mcp-signer@3.0.0` in an empty folder, unpack the tarball, and compare its `build/index.js` with `packages/signer/build/index.js` of the build:';
+  assert.ok(two.includes(alternative + '\n\n```bash\ngit clone https://github.com/Apex-Fusion/mcp-server.git\ncd mcp-server\ngit checkout c42cb6e\nnpm ci && npm run build\nnode packages/signer/build/index.js keygen\n```'), 'the build from source, at the commit of the package');
   assert.ok(two.indexOf(note) < two.indexOf(alternative), 'the alternative comes after the npx command and its note');
   // The client config runs the same version with npx; the build from source gets one sentence after the config.
   const config = JSON.parse(guide.match(/```json\n([\s\S]*?)\n```/)[1]);
   assert.equal(config.mcpServers['vector-signer'].command, 'npx');
   assert.deepEqual(config.mcpServers['vector-signer'].args, ['-y', `${SIGNER_PACKAGE}@${SIGNER_VERSION}`]);
   assert.equal(config.mcpServers.vector.url, designEndpoint('MCP'));
-  assert.deepEqual(Object.keys(config.mcpServers['vector-signer'].env), ['VECTOR_SIGNER_PRIVATE_KEY', 'VECTOR_SIGNER_ADDRESS', 'VECTOR_SIGNER_SPEND_LIMIT_PER_TX', 'VECTOR_SIGNER_SPEND_LIMIT_DAILY']);
+  assert.deepEqual(Object.keys(config.mcpServers['vector-signer'].env), ['VECTOR_SIGNER_PRIVATE_KEY', 'VECTOR_SIGNER_ADDRESS', 'VECTOR_SIGNER_SPEND_LIMIT_PER_TX', 'VECTOR_SIGNER_SPEND_LIMIT_DAILY', 'VECTOR_SIGNER_AUDIT_LOG_PATH']);
+  // The signer counts its daily limit from its audit log (the README of the package, 3.0.0), so the guide sets the path and says why.
+  assert.ok(four.includes("The signer counts the daily limit from its audit log. Set `VECTOR_SIGNER_AUDIT_LOG_PATH` to a file in a folder that already exists"));
   assert.ok(four.includes('The signer entry runs the published package with `npx`, at the version pinned in section 2:'));
   assert.ok(four.includes('If you built the signer from source, replace `command` and `args` with `"command": "node"` and `"args": ["<path to mcp-server>/packages/signer/build/index.js"]`.'));
   assert.ok(four.indexOf('```json') < four.indexOf('If you built the signer from source'), 'after the config');
@@ -880,11 +908,11 @@ test('docs/E2E.md: SIGNER_ENTRY is the build/index.js of the signer, from the pu
   assert.match(e2eScript(), /new StdioClientTransport\(\{ command: process\.execPath, args: \[SIGNER_ENTRY\]/);
 });
 
-test('docs/HIRE.md: the keygen output format is not pinned; the escrow minimum is a range; the 90 s limit belongs to the PR 3 tools, not to the wait', () => {
+test('docs/HIRE.md: the keygen output format is not pinned; the escrow minimum is given for the identity layout; the 90 s limit belongs to the PR 3 tools, not to the wait', () => {
   const guide = hire();
   assert.equal(guide.match(/VECTOR_SIGNER_PRIVATE_KEY=\.\.\./), null, 'no NAME=... line is promised from keygen');
   assert.ok(guide.includes('If keygen prints them as `NAME=value` lines, the value is what follows the `=`.'));
-  assert.ok(section(guide, '3. What the key must hold').includes('between 2.2 and 2.3 in an escrow output of this size, depending on the length of the agent'));
+  assert.ok(section(guide, '3. What the key must hold').includes('The ledger needs about 2.6 in an identity-layout escrow output of this size, a little more for a longer capability id.'));
   const timeouts = guide.split('\n').find((l) => l.startsWith('| A tool call times out near 100 s')) ?? '';
   assert.ok(timeouts.includes('The PR 3 tools that call a supplier (send job, poll job, verify receipt) stop at 90 s on their own'));
   assert.ok(timeouts.includes('`vector_await_transaction` waits as long as it is asked, up to 300 s'));
@@ -910,7 +938,7 @@ test('docs/E2E.md and scripts/e2e-hire.mjs agree on the send step, the signer se
   assert.equal(freeRow.includes('follow the next row'), false, 'the row carries its own way out');
   assert.equal(e2e.match(/never reads/), null, 'the script reads the settings it forwards; it never prints or stores them');
   assert.ok(e2e.includes('The script forwards every `VECTOR_SIGNER_` setting to the signer process it starts.') && e2e.includes('The script never prints or stores the value of a setting.'));
-  assert.match(e2e, /`keygen` command \(PR 4, merged into `main` on 2026-10-14; the npx package is published, version 2\.0\.0, and \[HIRE\.md\]\(HIRE\.md\) section 2 has the command\)/);
+  assert.match(e2e, /`keygen` command \(PR 4, merged into `main` on 2026-10-14; the npx package is published, version 3\.0\.0, and \[HIRE\.md\]\(HIRE\.md\) section 2 has the command\)/);
   assert.ok(e2e.includes('`--dry-run` is the only argument the script takes.'));
   assert.ok(e2e.includes('asks `vector_await_transaction` to wait 90 s at a time, up to four times'));
   assert.match(script, /const AWAIT_SLICE_S = 90;/);
@@ -948,7 +976,8 @@ test('docs/E2E.md and scripts/e2e-hire.mjs: the recovery text reads the escrow b
 test('docs/HIRE.md: the receipt check is described as the merged tool answers it, message 4 names buyerAddress, and keygen is run in the member\'s own terminal', () => {
   const guide = hire();
   const six = section(guide, '6. Read your receipt');
-  assert.ok(six.includes('runs five checks and one extra row, and reports each as pass, fail or skipped'));
+  assert.ok(six.includes('runs six checks and one extra row, and reports each as pass, fail or skipped'));
+  assert.ok(six.includes('6. The receipt has exactly the fields of its escrow\'s layout: the eight for a legacy escrow, and the eight plus `agent_did = did:vector:<agent_id>` for an identity-layout escrow.'), 'the sixth check');
   assert.ok(six.includes('The verdict reads VERIFIED only when every row passes. It reads FAILED when a row fails, and INCOMPLETE when nothing failed but a row was skipped'));
   assert.ok(six.includes('the `prompt_hash` in the receipt equals the `prompt_hash` in the escrow datum'), 'the extra row');
   assert.ok(six.includes('check 2 is skipped and the verdict reads INCOMPLETE, which is never a pass'));
@@ -986,10 +1015,10 @@ test('the marketplace tools are said to be on the hosted mainnet server (33 tool
   const e2e = doc('E2E.md');
   assert.ok(e2e.includes('The nine marketplace tools are merged into `main` of Apex-Fusion/mcp-server and are on the hosted mainnet server as of 2026-10-14: an MCP `initialize` and `tools/list` handshake that day listed 33 tools, the nine among them.'));
   // The current advert was posted on 2026-10-15 at the status flip (RUNBOOK step 17), so the check that ADVERT_REF is among the free suppliers can pass with it. The first first-party run settled on 2026-10-15 (step 15), against the first advert, and is in the Results table. The status word is DEPLOYED.
-  assert.ok(e2e.includes(`The current Agent History advert was posted on 2026-10-15, reference \`${AH.advertRef}\`. The first first-party run settled on 2026-10-15 (verdict VERIFIED, see [Results](#results)); it was made against the first advert, which was retired that day at the status flip.`));
+  assert.ok(e2e.includes(`The current Agent History advert was posted on 2026-11-03 in the identity layout, reference \`${AH.advertRef}\`; the advert of 2026-10-15 was retired that day after the escrow switch. The first first-party run settled on 2026-10-15 (verdict VERIFIED, see [Results](#results)); it was made against the first advert, which was retired that day at the status flip.`));
   assert.equal(e2e.includes(AH.firstAdvertTx), false, 'the retired advert is named by what it was, not by its reference');
   assert.equal(e2e.match(/has not completed a live run|first-party run has not been made/i), null, 'the words of before the run');
-  assert.ok(e2e.includes('Against the hosted mainnet server the script now passes its first check, the tool list of the builder. The check that `ADVERT_REF` is among the free suppliers can pass with that reference: the marketplace indexer lists the advert as Active and free as of 2026-10-15.'));
+  assert.ok(e2e.includes('Against the hosted mainnet server the script now passes its first check, the tool list of the builder. The check that `ADVERT_REF` is among the free suppliers can pass with that reference: the marketplace indexer lists the advert as Active and free as of 2026-11-06.'));
   assert.equal(e2e.match(/advert is not posted|until the advert is posted|not yet advertised|not in service|<ADVERT_REF>/i), null, 'the words of before the advert');
   assert.equal(e2e.match(/none yet/i), null, 'the empty row of the Results table is gone: the first run is in it');
   const builderRow = e2e.split('\n').find((l) => l.startsWith('| `BUILDER_URL` |')) ?? '';
@@ -1017,7 +1046,7 @@ test('the marketplace tools are said to be on the hosted mainnet server (33 tool
 
 test('docs/HIRE.md section 8: the current advert reference is given in full and the public URL is in service; the reference is the same in the spec, the guide and the E2E runbook, and the guide never gives the retired one', () => {
   const eight = section(hire(), '8. The terminal path');
-  assert.ok(eight.includes(`As of 2026-10-15 the advert reference is \`${AH.advertRef}\` and the endpoint URL is \`https://mp-suppliers-history.hal8.ai\`, which is in service. Check both against what the tools show you.`));
+  assert.ok(eight.includes(`As of 2026-11-06 the advert reference is \`${AH.advertRef}\` and the endpoint URL is \`https://mp-suppliers-history.hal8.ai\`, which is in service. Check both against what the tools show you.`));
   assert.ok(eight.includes(`--advert-ref '${AH.advertRef}' --endpoint https://mp-suppliers-history.hal8.ai --payload-file ./payload.json`));
   assert.equal(hire().match(/<ADVERT_REF>|placeholder|not yet advertised|not in service/i), null, 'the words of before the advert');
   // The reference is the one the agent serves at /capability since the status flip of 2026-10-15: a transaction id of 64 hex digits and the output index 0. It is given in full, never shortened, in every file that gives it.
@@ -1180,7 +1209,7 @@ test('docs/E2E.md, specs/agent-history.md and the guide record the first-party r
   const files = ['specs/agent-history.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md', 'deploy/host/docker-compose.agent-history.yml', 'deploy/host/README.md', 'deploy/host/RUNBOOK.md'];
   for (const file of files) assert.equal(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8').match(/no job (has )?settled|no first-party run of the path is recorded/i), null, file);
   // The honesty box of the guide stays true: nobody outside the team has run the path.
-  assert.ok(section(hire(), '10. Honesty box').includes('- No run of this path by someone outside the team is recorded yet. The first-party runs are in [docs/E2E.md](E2E.md).'));
+  assert.ok(section(hire(), '10. Honesty box').includes('- No run of this path by someone outside the team is recorded yet. The first-party runs are in [docs/E2E.md](E2E.md), all in the legacy layout.'));
 });
 
 test('scripts/run-e2e-from-keyfile.sh and docs/E2E.md: the key file is sourced and never printed, the output goes through the filter, and the runbook says so without a path or an address', () => {
@@ -1242,7 +1271,7 @@ test('the first adverts are history: their references are in the Links of the sp
   assert.equal(asLines.length, 1);
   assert.ok(asLines[0].startsWith('- First advert ') && asLines[0].includes('retired on 2026-10-17 at the status flip'));
   assert.equal(hire().split(AS.advertRef).length - 1, 2, 'the guide gives the current advert in its table row and in section 5');
-  assert.ok(section(hire(), '5. The chat script').includes(`It has had an advert since 2026-10-17, and the current one is \`${AS.advertRef}\`.`));
+  assert.ok(section(hire(), '5. The chat script').includes(`It has had an advert since 2026-10-17, and the current one, in the identity layout since 2026-11-03, is \`${AS.advertRef}\`.`));
   assert.equal(doc('E2E.md').split(AS.advertRef).length - 1, 2, 'the runbook gives the current advert in the Status paragraph and as the ADVERT_REF of its section');
   assert.ok(section(doc('E2E.md'), 'Hiring Audio Snippets').includes(`\nexport ADVERT_REF=${AS.advertRef}\n`));
   assert.ok(read('audio-snippets').includes(`- Current advert \`${AS.advertRef}\``));
@@ -1254,7 +1283,7 @@ test('the first adverts are history: their references are in the Links of the sp
   assert.equal(adLines.length, 1);
   assert.ok(adLines[0].startsWith('- First advert ') && adLines[0].includes('retired on 2026-10-20 at the status flip'));
   assert.equal(hire().split(AD.advertRef).length - 1, 2, 'the guide gives the current advert in its table row and in section 5');
-  assert.ok(section(hire(), '5. The chat script').includes(`It has had an advert since 2026-10-19, and the current one is \`${AD.advertRef}\`.`));
+  assert.ok(section(hire(), '5. The chat script').includes(`It has had an advert since 2026-10-19, and the current one, in the identity layout since 2026-11-03, is \`${AD.advertRef}\`.`));
   assert.equal(doc('E2E.md').split(AD.advertRef).length - 1, 2, 'the runbook gives the current advert in the Status paragraph and as the ADVERT_REF of its section');
   assert.ok(section(doc('E2E.md'), 'Hiring Advocate').includes(`\nexport ADVERT_REF=${AD.advertRef}\n`));
   assert.ok(read('advocate').includes(`- Current advert \`${AD.advertRef}\``));
@@ -1323,7 +1352,7 @@ test('docs/E2E.md, specs/document-pipeline.md and the guide record the first-par
   const bundle = JSON.parse(ev.result);
   // The Results table has its row (the test of Agent History's run holds both rows in order), and the status paragraph says the run and the adverts in the words of the spec.
   assert.ok(e2e.split('\n').includes(`| 2026-10-16 | Document Pipeline | first-party | \`${DP_RUN.escrowRef}\` | ${explorerLink(DP_RUN.postTx)} | ${explorerLink(DP_RUN.acceptTx)} | VERIFIED |`));
-  assert.ok(e2e.includes(`The current Document Pipeline advert was posted on 2026-10-16, reference \`${DP.advertRef}\`. Its first first-party run settled on 2026-10-16 (verdict VERIFIED, see [Results](#results)); it was made against the first advert, which was retired that day at the status flip. The marketplace indexer lists the current advert as Active and free as of 2026-10-16.`));
+  assert.ok(e2e.includes(`The current Document Pipeline advert was posted on 2026-11-03 in the identity layout, reference \`${DP.advertRef}\`; the advert of 2026-10-16 was retired that day after the escrow switch. Its first first-party run settled on 2026-10-16 (verdict VERIFIED, see [Results](#results)); it was made against the first advert, which was retired that day at the status flip. The marketplace indexer lists the current advert as Active and free as of 2026-11-06.`));
   assert.equal(e2e.includes(DP.firstAdvertTx), false, 'the retired advert is named by what it was, not by its reference');
   // The paragraph under the table names the evidence file, how to repeat the check, and the numbers of the run, which are those of the file.
   const results = section(e2e, 'Results');
@@ -1402,11 +1431,12 @@ test('specs/audio-snippets.md: the DID, the supplier key, the registry record an
   // The first advert was retired and the current one posted the same day (step 17): the Links keep the first as history, with the manifest it hashed, and give the current one with its manifest hash.
   const links = section(text, 'Links');
   assert.ok(links.includes(`- First advert \`${AS.firstAdvertRef}\`, posted on 2026-10-17 in the confirmed transaction ${explorerLink(AS.firstAdvertTx)}, manifest hash \`${AS.firstManifestHash}\` (the manifest before the status flip), retired on 2026-10-17 at the status flip in the confirmed transaction ${explorerLink(AS.retireTx)}.`));
-  assert.ok(links.includes(`- Current advert \`${AS.advertRef}\`, posted on 2026-10-17 at the status flip in the confirmed transaction ${explorerLink(AS.advertTx)}, manifest hash \`${AS.manifestHash}\`. The marketplace indexer lists it as Active and free (checked on 2026-10-17).`));
+  assert.ok(links.includes(`- Second advert \`${AS.secondAdvertRef}\`, posted on 2026-10-17 at the status flip in the confirmed transaction ${explorerLink(AS.secondAdvertTx)}, manifest hash \`${AS.secondManifestHash}\`, retired on 2026-11-03 after the escrow switch in the confirmed transaction ${explorerLink(AS.secondRetireTx)}.`), 'the advert of before the switch is history in the Links');
+  assert.ok(links.includes(`- Current advert \`${AS.advertRef}\`, posted on 2026-11-03 in the identity layout in the confirmed transaction ${explorerLink(AS.advertTx)}, manifest hash \`${AS.manifestHash}\`, naming the agent \`${AS.agentDid}\`. The marketplace indexer lists it as Active and free (checked on 2026-11-06).`));
   assert.ok(links.includes("- Manifest: `GET /agent.json` on the agent's public URL, in service as of 2026-10-17. The service renders it from its environment when it starts. The template is [agents/audio-snippets/agent.json.template](../agents/audio-snippets/agent.json.template)."));
   assert.ok(links.includes('- Source: [agents/audio-snippets](../agents/audio-snippets)'));
   for (const path of ['agents/audio-snippets', 'agents/audio-snippets/agent.json.template']) assert.ok(existsSync(new URL(`../${path}`, import.meta.url)), `${path} exists`);
-  assert.ok(section(text, 'How to hire it').includes('Advertised on 2026-10-17, and again the same day at the status flip: the marketplace indexer lists the current advert as Active and free (checked on 2026-10-17). One first-party job has settled, on 2026-10-17; it is not demand. The three ways below apply.'));
+  assert.ok(section(text, 'How to hire it').includes('Advertised on 2026-10-17, again the same day at the status flip, and again on 2026-11-03 in the identity layout: the marketplace indexer lists the current advert as Active and free (checked on 2026-11-06). One first-party job has settled, on 2026-10-17; it is not demand. The three ways below apply.'));
   // The words of before the advert do not come back. Advocate keeps its own, and the runbooks quote them as instructions.
   assert.equal(text.match(/none yet|not posted|not in service|not yet advertised|none until deployed|once it is in service|not served yet|waits for its deployment|Once advertised/i), null, 'the words of before the advert');
 });
@@ -1481,11 +1511,11 @@ test('docs/E2E.md, specs/audio-snippets.md and the guide record the first-party 
   const result = JSON.parse(ev.result);
   // The Results table has its row (the test of Agent History's run holds the three rows in order), and the status paragraph says the run and the adverts in the words of the spec.
   assert.ok(e2e.split('\n').includes(`| 2026-10-17 | Audio Snippets | first-party | \`${AS_RUN.escrowRef}\` | ${explorerLink(AS_RUN.postTx)} | ${explorerLink(AS_RUN.acceptTx)} | VERIFIED |`));
-  assert.ok(e2e.includes(`The current Audio Snippets advert was posted on 2026-10-17, reference \`${AS.advertRef}\`. Its first first-party run settled on 2026-10-17 (verdict VERIFIED, see [Results](#results)); it was made against the first advert, which was retired that day at the status flip. The marketplace indexer lists the current advert as Active and free as of 2026-10-17.`));
+  assert.ok(e2e.includes(`The current Audio Snippets advert was posted on 2026-11-03 in the identity layout, reference \`${AS.advertRef}\`; the advert of 2026-10-17 was retired that day after the escrow switch. Its first first-party run settled on 2026-10-17 (verdict VERIFIED, see [Results](#results)); it was made against the first advert, which was retired that day at the status flip. The marketplace indexer lists the current advert as Active and free as of 2026-11-06.`));
   assert.equal(e2e.includes(AS.firstAdvertTx), false, 'the retired advert is named by what it was, not by its reference');
   // The section of the runbook says that the agent is advertised and that its ADVERT_REF is the current advert.
   const hiring = section(e2e, 'Hiring Audio Snippets');
-  assert.ok(hiring.startsWith('\nAudio Snippets has been advertised since 2026-10-17, and its first first-party run settled that day (see [Results](#results)). `ADVERT_REF` below is its current advert, posted that day at the status flip.'));
+  assert.ok(hiring.startsWith('\nAudio Snippets has been advertised since 2026-10-17, and its first first-party run settled that day (see [Results](#results)). `ADVERT_REF` below is its current advert, posted on 2026-11-03 in the identity layout.'));
   assert.equal(hiring.match(/has no advert|posts one in step 12|is built and has no/), null, 'the words of before the advert');
   // The paragraph under the table names the evidence file, how to repeat the check, and the numbers of the run, which are those of the file and of the Terms of the page.
   const results = section(e2e, 'Results');
@@ -1510,7 +1540,7 @@ test('docs/E2E.md, specs/audio-snippets.md and the guide record the first-party 
   for (const heading of ['Status', 'How to hire it']) assert.ok(section(spec, heading).includes('One first-party job has settled, on 2026-10-17; it is not demand.'), heading);
   assert.ok(section(spec, 'Links').includes(`- First-party hire on 2026-10-17, verdict VERIFIED, made against the first advert: the post transaction ${explorerLink(AS_RUN.postTx)} and the accept transaction ${explorerLink(AS_RUN.acceptTx)} on the explorer, and the evidence in [${AS_RUN.evidence}](../${AS_RUN.evidence}).`));
   // The guide gives the agent a row of its table: the status line, the current advert and the public URL.
-  assert.ok(hire().split('\n').includes(`| Audio Snippets, capability \`audio.transcript.snippets.v1\` | ${AS_STATUS} The advert reference is \`${AS.advertRef}\`, listed as Active and free on 2026-10-17. The public URL, \`https://mp-suppliers-snippets.hal8.ai\`, is in service as of 2026-10-17. |`));
+  assert.ok(hire().split('\n').includes(`| Audio Snippets, capability \`audio.transcript.snippets.v1\` | ${AS_STATUS} Re-advertised 2026-11-03 in the identity layout, as \`${AS.agentDid}\`. The advert reference is \`${AS.advertRef}\`, listed as Active and free on 2026-11-06. The public URL, \`https://mp-suppliers-snippets.hal8.ai\`, is in service as of 2026-10-17. |`));
   // Nothing that states where the agent stands says that no job settled or that no first-party run is recorded.
   const files = ['specs/audio-snippets.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/audio-snippets/README.md', 'deploy/host/docker-compose.audio-snippets.yml', 'deploy/host/README.md', 'deploy/host/RUNBOOK-audio-snippets.md'];
   for (const file of files) assert.equal(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8').match(/no job (has )?(settled|run)|no first-party run of the path is recorded/i), null, file);
@@ -1660,8 +1690,9 @@ test('specs/advocate.md: the DID, the registry record, the reputation stake and 
   // The first advert was posted on 2026-10-19 and retired at the flip of 2026-10-20 (step 17): the Links keep it as history, with the manifest it hashed, and give the current one with its manifest hash.
   const links = section(text, 'Links');
   assert.ok(links.includes(`- First advert \`${AD.firstAdvertRef}\`, posted on 2026-10-19 in the confirmed transaction ${explorerLink(AD.firstAdvertTx)}, manifest hash \`${AD.firstManifestHash}\` (the manifest before the status flip), retired on 2026-10-20 at the status flip in the confirmed transaction ${explorerLink(AD.retireTx)}.`));
-  assert.ok(links.includes(`- Current advert \`${AD.advertRef}\`, posted on 2026-10-20 at the status flip in the confirmed transaction ${explorerLink(AD.advertTx)}, manifest hash \`${AD.manifestHash}\`. The marketplace indexer lists it as Active and free (checked on 2026-10-20).`));
-  assert.ok(section(text, 'How to hire it').includes('Advertised on 2026-10-19 and again on 2026-10-20, at the status flip: the marketplace indexer lists the current advert as Active and free (checked on 2026-10-20). One first-party job has settled, on 2026-10-20; it is not demand. The three ways below apply.'));
+  assert.ok(links.includes(`- Second advert \`${AD.secondAdvertRef}\`, posted on 2026-10-20 at the status flip in the confirmed transaction ${explorerLink(AD.secondAdvertTx)}, manifest hash \`${AD.secondManifestHash}\`, retired on 2026-11-03 after the escrow switch in the confirmed transaction ${explorerLink(AD.secondRetireTx)}.`), 'the advert of before the switch is history in the Links');
+  assert.ok(links.includes(`- Current advert \`${AD.advertRef}\`, posted on 2026-11-03 in the identity layout in the confirmed transaction ${explorerLink(AD.advertTx)}, manifest hash \`${AD.manifestHash}\`, naming the agent \`${AD.agentDid}\`. The marketplace indexer lists it as Active and free (checked on 2026-11-06).`));
+  assert.ok(section(text, 'How to hire it').includes('Advertised on 2026-10-19, again on 2026-10-20 at the status flip, and again on 2026-11-03 in the identity layout: the marketplace indexer lists the current advert as Active and free (checked on 2026-11-06). One first-party job has settled, on 2026-10-20; it is not demand. The three ways below apply.'));
   // The words of before the registration and of before the advert do not come back; the runbooks quote them as instructions.
   assert.equal(text.match(/no registry record|not registered|When registered|planned registry record|not served yet|not in service|none yet|not posted|not yet advertised|none until deployed|once it is in service|waits for its deployment|Once advertised|no advert yet/i), null, 'the words of before the registration and the advert');
 });
@@ -1739,11 +1770,11 @@ test('docs/E2E.md, specs/advocate.md and the guide record the first-party run of
   const sub = result.inference.sub_job;
   // The Results table has its row (the test of Agent History's run holds the four rows in order), and the status paragraph says the run and the adverts in the words of the spec.
   assert.ok(e2e.split('\n').includes(`| 2026-10-20 | Advocate | first-party | \`${AD_RUN.escrowRef}\` | ${explorerLink(AD_RUN.postTx)} | ${explorerLink(AD_RUN.acceptTx)} | VERIFIED |`));
-  assert.ok(e2e.includes(`The current Advocate advert was posted on 2026-10-20, reference \`${AD.advertRef}\`. Its first first-party run settled on 2026-10-20 (verdict VERIFIED, see [Results](#results)); it was made against the first advert, which was retired that day at the status flip. The marketplace indexer lists the current advert as Active and free as of 2026-10-20.`));
+  assert.ok(e2e.includes(`The current Advocate advert was posted on 2026-11-03 in the identity layout, reference \`${AD.advertRef}\`; the advert of 2026-10-20 was retired that day after the escrow switch. Its first first-party run settled on 2026-10-20 (verdict VERIFIED, see [Results](#results)); it was made against the first advert, which was retired that day at the status flip. The marketplace indexer lists the current advert as Active and free as of 2026-11-06.`));
   assert.equal(e2e.includes(AD.firstAdvertTx), false, 'the retired advert is named by what it was, not by its reference');
   // The section of the runbook says that the agent is advertised and that its ADVERT_REF is the current advert.
   const hiring = section(e2e, 'Hiring Advocate');
-  assert.ok(hiring.startsWith('\nAdvocate has been advertised since 2026-10-19, and its first first-party run settled on 2026-10-20 (see [Results](#results)). `ADVERT_REF` below is its current advert, posted on 2026-10-20 at the status flip.'));
+  assert.ok(hiring.startsWith('\nAdvocate has been advertised since 2026-10-19, and its first first-party run settled on 2026-10-20 (see [Results](#results)). `ADVERT_REF` below is its current advert, posted on 2026-11-03 in the identity layout.'));
   assert.equal(hiring.match(/has no advert|posts one in step 12|is built and has no|<txid>/), null, 'the words of before the advert');
   // The paragraph under the table names the evidence file, how to repeat the check, and the numbers of the run, which are those of the file, of the Terms of the page and of the wallets.
   const results = section(e2e, 'Results');
@@ -1784,7 +1815,7 @@ test('docs/E2E.md, specs/advocate.md and the guide record the first-party run of
   for (const heading of ['Status', 'How to hire it']) assert.ok(section(spec, heading).includes('One first-party job has settled, on 2026-10-20; it is not demand.'), heading);
   assert.ok(section(spec, 'Links').includes(`- First-party hire on 2026-10-20, verdict VERIFIED, made against the first advert: the post transaction ${explorerLink(AD_RUN.postTx)} and the accept transaction ${explorerLink(AD_RUN.acceptTx)} on the explorer, and the evidence in [${AD_RUN.evidence}](../${AD_RUN.evidence}).`));
   // The guide gives the agent a row of its table: the status line, the current advert and the public URL.
-  assert.ok(hire().split('\n').includes(`| Advocate, capability \`research.advocate.onesided.v1\` | ${AD_STATUS} The advert reference is \`${AD.advertRef}\`, listed as Active and free on 2026-10-20. The public URL, \`https://mp-suppliers-advocate.hal8.ai\`, is in service as of 2026-10-19. |`));
+  assert.ok(hire().split('\n').includes(`| Advocate, capability \`research.advocate.onesided.v1\` | ${AD_STATUS} Re-advertised 2026-11-03 in the identity layout, as \`${AD.agentDid}\`. The advert reference is \`${AD.advertRef}\`, listed as Active and free on 2026-11-06. The public URL, \`https://mp-suppliers-advocate.hal8.ai\`, is in service as of 2026-10-19. |`));
   // Nothing that states where the agent stands says that no job settled or that no first-party run is recorded.
   const files = ['specs/advocate.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/advocate/README.md', 'deploy/host/docker-compose.advocate.yml', 'deploy/host/README.md', 'deploy/host/RUNBOOK-advocate.md'];
   for (const file of files) assert.equal(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8').match(/no job (has )?(settled|run)|no first-party run of the path is recorded/i), null, file);
@@ -1794,7 +1825,7 @@ test('docs/HIRE.md and docs/E2E.md: Advocate has a subsection of section 5 and a
   const guide = hire();
   const sub = section(guide, '5. The chat script').split('\n### The same script for Advocate\n')[1] ?? '';
   assert.ok(section(guide, '5. The chat script').indexOf('\n### The same script for Advocate\n') > section(guide, '5. The chat script').indexOf('\n### The same script for Audio Snippets\n'), 'after the subsection of Audio Snippets');
-  assert.ok(sub.includes(`It has had an advert since 2026-10-19, and the current one is \`${AD.advertRef}\`. The six messages are the same, with two changes.`));
+  assert.ok(sub.includes(`It has had an advert since 2026-10-19, and the current one, in the identity layout since 2026-11-03, is \`${AD.advertRef}\`. The six messages are the same, with two changes.`));
   assert.ok(sub.includes('Ask for `research.advocate.onesided.v1` in message 2'));
   const requestJson = '{"subject":"Should a city ban cars from its centre?","side":"for","length":"short","language":"en"}';
   assert.ok(sub.includes('```json\n' + requestJson + '\n```'));
@@ -1901,23 +1932,26 @@ test('specs/document-pipeline.md: the code of its hire is packages/hire-kit on p
 // what it was written from: the tools it names are on the hosted server or in the signer, its links resolve, the advert and stake builders are planned and never available,
 // the key conversion it prints is the one the signer reads, and its words follow the public rules.
 const launch = () => doc('LAUNCH.md');
-const LAUNCH_SECTIONS = ['What you need', 'Let your coding agent build it', 'Post the advert', 'Boot the runtime and your service', 'Give your agent an identity from chat', 'Stake (optional)', 'Test-hire your own agent from chat', 'Tell the working group'];
-// The 33 tools of the hosted server: the tools packages/builder of Apex-Fusion/mcp-server registers at main 651ae93, the commit the hosted mainnet server and the npm signer
-// 2.0.0 were built from (HIRE.md section 2). The nine marketplace tools and the registry tools are among them; no advert and no stake builder is.
+const LAUNCH_SECTIONS = ['What you need', 'Let your coding agent build it', 'Post the advert', 'Boot the runtime and your service', 'Give your agent an identity', 'Stake (optional)', 'Test-hire your own agent from chat', 'Tell the working group'];
+// The 63 tools of the hosted server: the tools/list of the hosted mainnet server on 2026-11-06, version 3.0.0 (Apex-Fusion/mcp-server, the release commit c42cb6e, from which
+// the npm signer 3.0.0 was built: HIRE.md section 2). The legacy registry writes and vector_build_message_agent are retired in 3.0.0; the identity registry tools are new.
 const HOSTED_TOOLS = [
-  'vector_await_transaction', 'vector_build_deploy_contract', 'vector_build_deregister_agent', 'vector_build_interact_contract', 'vector_build_marketplace_accept',
-  'vector_build_marketplace_post_escrow', 'vector_build_marketplace_reclaim', 'vector_build_message_agent', 'vector_build_register_agent', 'vector_build_self_improvement_critique',
-  'vector_build_self_improvement_endorse', 'vector_build_self_improvement_proposal_lock', 'vector_build_self_improvement_proposal_spend', 'vector_build_send_apex', 'vector_build_send_tokens',
-  'vector_build_transaction', 'vector_build_transfer_agent', 'vector_build_update_agent', 'vector_discover_agents', 'vector_dry_run', 'vector_get_agent_profile', 'vector_get_balance',
-  'vector_get_transaction_history', 'vector_get_utxos', 'vector_marketplace_get_job', 'vector_marketplace_get_supplier', 'vector_marketplace_list_capabilities', 'vector_marketplace_list_suppliers',
-  'vector_marketplace_send_job', 'vector_marketplace_verify_receipt', 'vector_self_improvement_analyze_metrics', 'vector_self_improvement_browse', 'vector_submit_transaction',
+  'vector_await_transaction', 'vector_build_attestation_attest', 'vector_build_attestation_contest', 'vector_build_attestation_revoke', 'vector_build_attestation_withdraw',
+  'vector_build_delegation_delegate', 'vector_build_delegation_undelegate', 'vector_build_deploy_contract', 'vector_build_deregister_agent', 'vector_build_identity_adopt',
+  'vector_build_identity_change_controller', 'vector_build_identity_end_subagents', 'vector_build_identity_reclaim', 'vector_build_identity_recovery_cancel', 'vector_build_identity_recovery_complete',
+  'vector_build_identity_recovery_start', 'vector_build_identity_register', 'vector_build_identity_retire', 'vector_build_identity_revoke', 'vector_build_identity_set_successor',
+  'vector_build_identity_suspend', 'vector_build_identity_unsuspend', 'vector_build_identity_update', 'vector_build_interact_contract', 'vector_build_marketplace_accept',
+  'vector_build_marketplace_advert_post', 'vector_build_marketplace_advert_retire', 'vector_build_marketplace_advert_update', 'vector_build_marketplace_post_advert', 'vector_build_marketplace_post_escrow',
+  'vector_build_marketplace_reclaim', 'vector_build_marketplace_refund_revoked', 'vector_build_marketplace_release', 'vector_build_reputation_stake', 'vector_build_reputation_stake_open',
+  'vector_build_self_improvement_critique', 'vector_build_self_improvement_critique_spend', 'vector_build_self_improvement_endorse', 'vector_build_self_improvement_endorse_spend', 'vector_build_self_improvement_proposal_lock',
+  'vector_build_self_improvement_proposal_spend', 'vector_build_send_apex', 'vector_build_send_tokens', 'vector_build_transaction', 'vector_build_vault_close',
+  'vector_build_vault_open', 'vector_build_vault_pay', 'vector_discover_agents', 'vector_dry_run', 'vector_get_agent_profile',
+  'vector_get_balance', 'vector_get_transaction_history', 'vector_get_utxos', 'vector_marketplace_get_job', 'vector_marketplace_get_supplier',
+  'vector_marketplace_list_capabilities', 'vector_marketplace_list_suppliers', 'vector_marketplace_send_job', 'vector_marketplace_verify_receipt', 'vector_resolve_did',
+  'vector_self_improvement_analyze_metrics', 'vector_self_improvement_browse', 'vector_submit_transaction',
 ];
-// The four tools of the signer (packages/signer/src/tools.ts at the same commit).
-const SIGNER_TOOLS = ['vector_signer_get_address', 'vector_signer_decode_transaction', 'vector_signer_sign', 'vector_signer_get_spend_limits'];
-// The sentence that says where the advert and stake builders stand on 2026-10-21: planned, not on the hosted server.
-// Since 2026-10-21 a draft pull request holds them, Apex-Fusion/mcp-server#25: post and retire an advert, and the stake in two steps, with no unstake. A draft, not merged,
-// not on the hosted server, so the guide still calls them planned.
-const BUILDERS_PLANNED = 'Advert and stake builders for the hosted server are planned: a draft pull request, [Apex-Fusion/mcp-server#25](https://github.com/Apex-Fusion/mcp-server/pull/25), adds builders to post and retire an advert and to make the stake in two steps, with no unstake, because the minimum cannot be withdrawn. They are not on the hosted server, and this guide does not use them.';
+// The five tools of the signer (packages/signer/src/tools.ts at the same commit; 3.0.0 adds vector_signer_get_public_key).
+const SIGNER_TOOLS = ['vector_signer_get_address', 'vector_signer_get_public_key', 'vector_signer_decode_transaction', 'vector_signer_sign', 'vector_signer_get_spend_limits'];
 // The words a public line of the launch guide does not use (its content rules). Each is spelled in two parts, as UNIT_NAME is, so that a search for the words finds none
 // in this file. "payload" is a word of its own and passes.
 const MONEY_WORDS = new RegExp('\\b(' + [['p', 'ays?'], ['p', 'aid'], ['p', 'ayments?'], ['p', 'ayers?'], ['e', 'arn\\w*'], ['mon', 'ey'], ['f', 'und(s|ed|ing)?'], ['sp', 'end\\w*'], ['sp', 'ent'], ['reve', 'nue'], ['gover', 'nance']].map((p) => p.join('')).join('|') + ')\\b', 'i');
@@ -1925,30 +1959,12 @@ const MONEY_WORDS = new RegExp('\\b(' + [['p', 'ays?'], ['p', 'aid'], ['p', 'aym
 // which a guide for a member's own host never names.
 const PERSON_NAMES = new RegExp(/^const NAMES = \/(.+)\/i;$/m.exec(readFileSync(new URL('./deploy.test.mjs', import.meta.url), 'utf8'))?.[1] ?? 'the names guard was not found', 'i');
 const FOUNDATION_HOST = /hal8|PROXY_NETWORK|Caddy|\/opt\/|\b\d{1,3}(\.\d{1,3}){3}\b/i;
-// The block of section 5 that converts the template's 64-hex key into the form the signer reads. It was run verbatim, offline, with a throwaway key on 2026-10-21; a test
-// below runs its node code again and compares the result with what CML, which the signer parses keys with, makes of the same 32 bytes.
-const CONVERSION_BLOCK = [
-  'read -rs SUPPLIER_PRIV_KEY_HEX && export SUPPLIER_PRIV_KEY_HEX',
-  `(cd try-it && node -e "const {bech32}=require('bech32');const h=process.env.SUPPLIER_PRIV_KEY_HEX;/^[0-9a-f]{64}$/.test(h)||(console.error('expected 64 lowercase hex characters'),process.exit(1));process.stdout.write('VECTOR_SIGNER_PRIVATE_KEY='+bech32.encode('ed25519_sk',bech32.toWords(Buffer.from(h,'hex')),1023)+'\\n')")`,
-  'unset SUPPLIER_PRIV_KEY_HEX',
-].join('\n');
 // A heading as a GitHub anchor: lower case, punctuation dropped, spaces as hyphens.
 const slug = (heading) => heading.trim().toLowerCase().replace(/[^a-z0-9 _-]/g, '').replace(/ /g, '-');
-// The Ed25519 public key of a 32-byte seed given as 64 hex, by node:crypto alone: the seed in a PKCS8 envelope, the raw key the last 32 bytes of the SPKI.
-const publicKeyOfSeed = (hex) => createPublicKey(createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), Buffer.from(hex, 'hex')]), format: 'der', type: 'pkcs8' })).export({ format: 'der', type: 'spki' }).subarray(-32);
 // The fix round of 2026-10-21 (review v1, findings 1 to 10, the stake correction, the builders' draft, the copy of HIRE.md section 8). The sentences below are pinned.
 // Every command that reads .env or handles the supplier key is the member's, in the member's own terminal (findings 1 and 2).
-const OWN_TERMINAL = "Every command that reads `.env` or handles the supplier key runs in your own terminal, never through your assistant's shell tool: `gen-keypair` above, `post-advert` (section 3), `retire-advert`, `docker compose up -d` and `--force-recreate` (section 4), the conversions of sections 5 and 6, and the SDK run of section 6. Your assistant may write these commands, but it does not run them. Never let it run `cat .env`, `docker compose config` (it prints the values of `.env`), `docker inspect` on the agent container, or `env` or `printenv` in that container: each puts the key into the conversation. If your client can deny your assistant read access to a file, deny it `.env`: in Claude Code, a `permissions.deny` entry for `Read(./.env)` in the project's `.claude/settings.json`.";
+const OWN_TERMINAL = "Every command that reads `.env` or handles the supplier key runs in your own terminal, never through your assistant's shell tool: `gen-keypair` above, `post-advert` (section 3), `retire-advert`, `docker compose up -d` and `--force-recreate` (section 4), and the three record commands of section 5. Your assistant may write these commands, but it does not run them. Never let it run `cat .env`, `docker compose config` (it prints the values of `.env`), `docker inspect` on the agent container, or `env` or `printenv` in that container: each puts the key into the conversation. If your client can deny your assistant read access to a file, deny it `.env`: in Claude Code, a `permissions.deny` entry for `Read(./.env)` in the project's `.claude/settings.json`.";
 const RUN_IT_YOURSELF = 'Run it in your own terminal. Your assistant may write the command, but it does not run it.';
-const SKEY_RULE = "Make the file and run the SDK in your own terminal, never through your assistant's shell tool.";
-// The block of section 6 that writes the cardano-cli .skey the SDK's load_wallet reads. Run verbatim offline on 2026-10-21 with a throwaway key: pycardano 0.19.2,
-// with the three lines of load_wallet, read it back as the template's public key, key hash and address. A test below runs its node code again.
-const SKEY_BLOCK = [
-  'read -rs SUPPLIER_PRIV_KEY_HEX && export SUPPLIER_PRIV_KEY_HEX',
-  `node -e "const h=process.env.SUPPLIER_PRIV_KEY_HEX;/^[0-9a-f]{64}$/.test(h)||(console.error('expected 64 lowercase hex characters'),process.exit(1));require('fs').writeFileSync(process.argv[1],JSON.stringify({type:'PaymentSigningKeyShelley_ed25519',description:'',cborHex:'5820'+h})+'\\n',{mode:0o600,flag:'wx'})" "$HOME/supplier.skey"`,
-  'unset SUPPLIER_PRIV_KEY_HEX',
-].join('\n');
-const SKEY_REMOVE = 'The file is one more plaintext copy of the supplier key: remove it once the stake has confirmed, with `rm "$HOME/supplier.skey"` in your own terminal';
 // The Module-3 stake is not refundable (the SDK's spec, section 6.2, and stake_validation.ak: a decrease must leave at least the minimum self-stake in a continuing output).
 // The public wording, everywhere the stake's return is spoken of; no timing parameter of the module is named.
 // The wording ruled on 2026-10-21: the public text says only that the owner cannot withdraw the stake, and nothing more about the module.
@@ -1956,7 +1972,7 @@ const STAKE_NO_WITHDRAW = 'The owner cannot withdraw it: the module keeps 10 uni
 // The wordings that say the stake comes back or is withdrawn, and any cooldown. A report's blind spot about a stake output that no longer appears ("A withdrawn stake ..." in
 // specs/agent-history.md, emitted by the service and hashed into its advert) is not one of them: it names no withdrawal by the owner.
 const STAKE_RETURN_WORDS = /cooldown|refundable under the stake|the stake after its|stake stay on the ledger until the operator withdraws|when you withdraw it|stays locked|identity or the stake is withdrawn|stake (is|was|gets|can be) withdrawn|withdraws? (the|its|their) stake/i;
-const HIRE_PERMANENT = "The name and the description you enter are public and permanent: the transaction that writes them stays in the ledger's history after you deregister. Deregistering returns the deposit; it does not erase that transaction. Put no personal data in them.";
+const HIRE_PERMANENT = "The name and the description you enter are public and permanent: the transaction that writes them stays in the ledger's history after you retire the record. Retiring it returns the deposit; it does not erase that transaction. Put no personal data in them.";
 // HIRE.md section 8 pins the template at 78e8a81, the merge of the identity registry into its main. Its postinstall step copies libsodium-sumo.mjs next to
 // the wrapper (the lockfile there pins libsodium 0.7.16), so the guide no longer copies that file by hand, as it did for the pin before.
 const TEMPLATE_INSTALL = 'git clone https://github.com/Apex-Fusion/vector-agent-template.git && cd vector-agent-template && git checkout 78e8a81 && corepack pnpm install';
@@ -1976,9 +1992,9 @@ test('docs/LAUNCH.md: the title, the eight sections in the order a member does t
   assert.equal(lines[lines.indexOf('- Hire one: `docs/HIRE.md`') + 1], '- Launch your own agent from a chat client: `docs/LAUNCH.md`', 'the README lists the guide right after HIRE.md');
 });
 
-test('docs/LAUNCH.md: every tool it names is one of the 33 tools of the hosted server or one of the four of the signer, as HIRE.md names them; no advert or stake tool is named', () => {
-  assert.equal(HOSTED_TOOLS.length, 33);
-  assert.equal(new Set(HOSTED_TOOLS).size, 33);
+test('docs/LAUNCH.md: every tool it names is one of the 63 tools of the hosted server or one of the five of the signer, as HIRE.md names them; no retired tool, and no advert or stake tool, is named', () => {
+  assert.equal(HOSTED_TOOLS.length, 63);
+  assert.equal(new Set(HOSTED_TOOLS).size, 63);
   const known = new Set([...HOSTED_TOOLS, ...SIGNER_TOOLS]);
   // The names HIRE.md and the E2E runbook are held to are among them: the nine marketplace tools of the design and the others of this file.
   for (const tool of [...MARKETPLACE_TOOLS, ...OTHER_TOOLS]) assert.ok(known.has(tool), `${tool} is on the hosted server or in the signer`);
@@ -1986,20 +2002,29 @@ test('docs/LAUNCH.md: every tool it names is one of the 33 tools of the hosted s
     const unknown = [...new Set(text.match(/\bvector_[a-z_]+/g) ?? [])].filter((t) => !known.has(t));
     assert.deepEqual(unknown, [], `${name} names a tool that is not on the hosted server or in the signer`);
   }
+  // The legacy registry writes and the message tool are retired in 3.0.0 (the CHANGELOG of Apex-Fusion/mcp-server): neither guide names one.
+  for (const retired of ['vector_build_register_agent', 'vector_build_update_agent', 'vector_build_transfer_agent', 'vector_build_message_agent']) {
+    assert.equal(known.has(retired), false, `${retired} is retired`);
+    for (const [name, text] of [['docs/HIRE.md', hire()], ['docs/LAUNCH.md', launch()]]) assert.equal(text.includes(retired), false, `${name} does not name ${retired}`);
+  }
   const named = new Set(launch().match(/\bvector_[a-z_]+/g));
-  for (const tool of ['vector_build_register_agent', 'vector_get_agent_profile', 'vector_signer_sign', 'vector_submit_transaction', 'vector_await_transaction', 'vector_build_deregister_agent', 'vector_marketplace_list_suppliers', 'vector_marketplace_verify_receipt', 'vector_get_utxos']) assert.ok(named.has(tool), `the guide names ${tool}`);
-  assert.deepEqual([...named].filter((t) => /advert|stake/.test(t)), [], 'no advert or stake tool exists on the hosted server');
-  assert.ok(launch().includes('Every tool it names is on the hosted mainnet server, which lists 33 tools, or in the signer, version 2.0.0.'));
+  for (const tool of ['vector_get_agent_profile', 'vector_build_identity_retire', 'vector_marketplace_list_suppliers', 'vector_marketplace_verify_receipt', 'vector_get_utxos']) assert.ok(named.has(tool), `the guide names ${tool}`);
+  // The template's command line posts the advert (section 3), and new stakes are paused (section 6): the guide names no advert or stake tool.
+  assert.deepEqual([...named].filter((t) => /advert|stake/.test(t)), [], 'no advert or stake tool is named');
+  assert.ok(launch().includes('Every tool it names is on the hosted mainnet server, version 3.0.0 with 63 tools, or in the signer, version 3.0.0.'));
 });
 
-test('docs/LAUNCH.md: the advert and stake builders of the hosted server are planned, and the guide never says that they are available', () => {
+test('docs/LAUNCH.md: the record comes before the advert, the template posts the advert, and new stakes are paused; the guide offers no stake', () => {
   const text = launch();
+  const three = section(text, '3. Post the advert');
+  assert.ok(three.startsWith('\nMake your agent record first, in section 5, and write its `AGENT_ID` into `.env`.'), 'section 3 opens with the record');
+  assert.ok(three.includes('The marketplace lists an advert only when the agent record it names is live and Active, lists your supplier key for transactions and lists the advert\'s capability id.'));
+  assert.ok(three.includes('`post-advert` reads `AGENT_ID`, checks your record and posts the advert with your agent id. Without `AGENT_ID` it posts a legacy advert, which the marketplace no longer lists.'));
   const six = section(text, '6. Stake (optional)');
-  assert.ok(six.includes('A stake is not available as a chat tool today: the hosted server has no stake builder and no advert builder.'));
-  assert.equal(text.split(BUILDERS_PLANNED).length - 1, 1, 'the planned sentence, once');
-  assert.ok(six.includes(BUILDERS_PLANNED), 'in section 6');
-  assert.ok(six.includes("the template's command line posts the advert (section 3), and the public Module-3 SDK makes the stake"));
-  assert.equal(text.match(/builders? (is|are) (now )?(available|merged|shipped|deployed|on the hosted server)|stake (tool|builder) is available|(advert|stake) from chat with `vector_/i), null, 'nothing says the builders are there');
+  assert.ok(six.startsWith('\nNew stakes are paused.'), 'section 6 opens with the pause');
+  assert.ok(six.includes('the current deployment takes no new stakes, and the hosted server\'s stake tools say so and build nothing. Skip this step for now. Nothing else in this guide needs a stake.'));
+  // The SDK steps of before (a .skey copy of the supplier key, a stake on the deployment that takes no new stakes) and the builders' draft are gone.
+  for (const before of ['supplier.skey', 'load_wallet', 'create_stake', 'mcp-server/pull/25', 'are planned']) assert.equal(text.includes(before), false, `not: ${before}`);
 });
 
 test('docs/LAUNCH.md: every relative link resolves to a file of the repository, and every anchor to a heading of that file', () => {
@@ -2022,72 +2047,41 @@ test('docs/LAUNCH.md: the costs are the ones of the runbooks, the template docs 
   const one = section(launch(), '1. What you need');
   const row = (start) => one.split('\n').find((l) => l.startsWith(start)) ?? '';
   assert.match(row('| 3. The advert |'), /^\| 3\. The advert \| about 2 \| when you retire the advert, .* \| 1 \| .*RUNBOOK\.md#12-post-the-advert/);
-  assert.match(row('| 5. The registry deposit |'), /^\| 5\. The registry deposit \| 10 \| when you deregister, with `vector_build_deregister_agent` \| 1 \| `vector_build_register_agent`; \[HIRE\.md\]\(HIRE\.md\) section 7; .*TRUST-LAYER\.md/);
-  // The stake is not refundable (Module-3 spec section 6.2, stake_validation.ak): the row says so in the public wording, and no cooldown is named.
-  assert.equal(row('| 6. The stake, optional |'), '| 6. The stake, optional | 10, the minimum | never: the owner cannot withdraw it. The module keeps 10 units as the minimum, and only stake above it can be decreased | 2: a seed output, then the stake | the Module-3 SDK: its spec, section 6.2, and `stake_validation.ak` |');
-  assert.match(row('| 7. The test hire, from your hiring key |'), /the price and both bonds, raised to the ledger's minimum for the escrow output \(about 2\.2 to 2\.3\) when that sum is lower \| on Accept your bond returns to your hiring key, and your supplier key receives the price and the supplier bond \| 2: the Post and the Accept \| \[HIRE\.md\]\(HIRE\.md\) section 3 \|$/);
+  assert.match(row('| 5. The agent record deposit |'), /^\| 5\. The agent record deposit \| 10 \| when the controller retires the record and takes the deposit back, with `vector_build_identity_retire` and `take_deposit` \| 1 \| the template's `register-record` command .*; \[HIRE\.md\]\(HIRE\.md\) section 7; .*TRUST-LAYER\.md/);
+  // New stakes are paused since the identity registry release (the hosted server's stake tools, 3.0.0): the row locks nothing and says why.
+  assert.equal(row('| 6. The stake, optional |'), '| 6. The stake, optional | nothing today: new stakes are paused (section 6) | | | the Module-3 deployment on the identity registry, not published yet |');
+  assert.match(row('| 7. The test hire, from your hiring key |'), /the price and both bonds, raised to the ledger's minimum for the escrow output \(about 2\.6\) when that sum is lower \| on Accept your bond returns to your hiring key, and your supplier key receives the price and the supplier bond \| 2: the Post and the Accept \| \[HIRE\.md\]\(HIRE\.md\) section 3 \|$/);
   assert.ok(one.includes('Fees are about 0.5 a transaction, the fee floor'));
   // The numbers are the runbook's: the deposit, the stake, the advert lock, the fee, the setup and the float of 50.
   const runbook = readFileSync(new URL('../deploy/host/RUNBOOK.md', import.meta.url), 'utf8');
   assert.ok(runbook.includes('The registry deposit (10 units), the stake (10), the advert (about 2 locked) and fees of about 0.5 a transaction. The setup uses about 25 with fees.'));
   assert.ok(one.includes('Our runbooks send 5 and then 50 to each supplier key: the setup uses about 25 with fees'));
   // The registry deposit is the one HIRE.md section 7 gives for the same tool.
-  assert.ok(section(hire(), '7. Register your own identifier (optional)').includes('It locks a deposit of 10 units, which you get back when you deregister.'));
+  assert.ok(section(hire(), '7. Register your own identifier (optional)').includes('It locks a deposit of at least 10 units, which you can take back when you retire the record.'));
 });
 
-test("docs/LAUNCH.md: the key is made and converted in the member's own terminal, the conversion block is the one that was proven, and it is the inverse of HIRE.md section 8", () => {
+test("docs/LAUNCH.md: the keys are made in the member's own terminal, the controller key stays offline, and the record is made with the template's three commands", () => {
   const text = launch();
   const two = section(text, '2. Let your coding agent build it');
   const rule = "Run it in your own terminal, never through your assistant's shell tool: the output of a shell tool goes back into the conversation, so the key would reach your model provider.";
   assert.ok(two.includes(rule));
   assert.ok(two.indexOf(rule) < two.indexOf('src/cli/gen-keypair.ts --network 1'), 'the rule comes before the command');
   assert.ok(two.includes('From here your assistant must not open, write or print `.env`: you edit it yourself.'));
-  const five = section(text, '5. Give your agent an identity from chat');
-  assert.ok(five.includes('```bash\n' + CONVERSION_BLOCK + '\n```'), 'the block of section 5, verbatim');
-  assert.ok(five.indexOf('Convert the key in your own terminal') < five.indexOf('read -rs'), "it is run in the member's own terminal");
-  assert.ok(five.includes('it refuses a raw hex key'));
-  // Nothing in the block that an interactive shell would change: no history expansion, no variable or command substitution inside the double quotes, no escaped quote.
-  const code = /node -e "(.*)"\)$/m.exec(CONVERSION_BLOCK)?.[1] ?? '';
-  assert.ok(code.length > 100, 'the node code was found');
-  assert.equal(CONVERSION_BLOCK.includes('!'), false);
-  assert.equal(/\$[A-Za-z_{(]|`|\\"/.test(code), false);
-  // HIRE.md section 8 turns a signer key back into 64 hex with the same library and the same length limit.
+  assert.ok(two.includes('Only its `publicKeyHex` goes into `.env`, as `IDENTITY_CONTROLLER_PUB_KEY_HEX`; keep its `privateKeyHex` offline'), 'the controller key stays offline');
+  for (const name of ['IDENTITY_POLICY_ID', 'IDENTITY_REF_UTXO', 'IDENTITY_ESCROW_REF_UTXO', 'IDENTITY_ADVERT_REF_UTXO']) assert.ok(two.includes('`' + name + '`'), `section 2 names ${name}`);
+  // The three steps of the template README (step 5, at main 78e8a81), verbatim apart from the placeholders.
+  const five = section(text, '5. Give your agent an identity');
+  const build = 'corepack pnpm --filter @marketplace/supplier exec tsx src/cli/register-record.ts build \\\n  --out ../agent-record.json \\\n  --name "<a name>" \\\n  --endpoint https://<your public name> \\\n  --capability <your capability id>';
+  const sign = ['read -rs SIGNER_PRIV_KEY_HEX && export SIGNER_PRIV_KEY_HEX', 'corepack pnpm --filter @marketplace/supplier exec tsx src/cli/register-record.ts sign --tx ../agent-record.json', 'unset SIGNER_PRIV_KEY_HEX', 'corepack pnpm --filter @marketplace/supplier exec tsx src/cli/register-record.ts submit --tx ../agent-record.json'].join('\n');
+  assert.ok(five.includes('```bash\n' + build + '\n```'), 'the build step');
+  assert.ok(five.includes('```bash\n' + sign + '\n```'), 'the sign and submit steps');
+  assert.ok(five.indexOf('Sign on the machine that holds the controller key.') < five.indexOf('read -rs'), 'the controller signs where its key is');
+  assert.ok(five.includes('prints `AGENT_ID=<64 hex>`. Write that line into `.env` yourself'));
+  // No key is converted for the signer: the template's commands sign the record, and the signer holds only the hiring key.
+  assert.equal(text.includes('bech32'), false, 'no conversion of the supplier key');
+  assert.equal(text.includes('VECTOR_SIGNER_PRIVATE_KEY'), false, 'the supplier key never goes into the signer');
+  // HIRE.md section 8 turns a signer key into 64 hex for the template's buyer.
   assert.ok(section(hire(), '8. The terminal path').includes("const d=bech32.decode(process.env.VECTOR_SIGNER_PRIVATE_KEY,1023);process.stdout.write(Buffer.from(bech32.fromWords(d.words)).toString('hex'))"));
-});
-
-test("docs/LAUNCH.md: the node code of the conversion turns a throwaway 64-hex key into the bech32 key CML makes of the same 32 bytes, and the signer's reading of it has the public key node:crypto derives from the seed and the key hash and address the template derives", () => {
-  // The bech32 library the template's try-it folder requires (bech32 ^2.0.0) is in this repository's store as a dependency of its dependencies; the code runs as the member runs it.
-  const store = fileURLToPath(new URL('../node_modules/.pnpm/', import.meta.url));
-  const dir = readdirSync(store).find((name) => /^bech32@2\./.test(name));
-  assert.ok(dir, 'bech32 2.x is in the store (the template requires ^2.0.0)');
-  const nodePath = join(store, dir, 'node_modules');
-  // Inside the double quotes the shell passes the code on unchanged (the test above checks that it holds nothing a shell would expand), so it is run as written.
-  const code = /node -e "(.*)"\)$/m.exec(CONVERSION_BLOCK)[1];
-  const fromRepo = createRequire(new URL('../packages/buyer-core/package.json', import.meta.url));
-  const CML = fromRepo('@anastasia-labs/cardano-multiplatform-lib-nodejs');
-  const { blake2b } = fromRepo('@noble/hashes/blake2b');
-  const { bech32 } = createRequire(join(nodePath, 'bech32', 'package.json'))('bech32');
-  const run = (hex) => execFileSync(process.execPath, ['-e', code], { env: { ...process.env, NODE_PATH: nodePath, SUPPLIER_PRIV_KEY_HEX: hex }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  for (let i = 0; i < 3; i++) {
-    const hex = randomBytes(32).toString('hex'); // a throwaway key, made here and never printed
-    const out = run(hex);
-    const m = /^VECTOR_SIGNER_PRIVATE_KEY=(ed25519_sk1[0-9a-z]+)\n$/.exec(out);
-    assert.ok(m, 'one line in the form keygen prints');
-    assert.match(m[1], /^ed25519e?_sk1[0-9a-z]+$/, 'the form packages/signer/src/keysource.ts accepts');
-    assert.equal(m[1], CML.PrivateKey.from_normal_bytes(Buffer.from(hex, 'hex')).to_bech32(), 'the bech32 CML makes of the same 32 bytes');
-    // The expected values come from outside CML. The public key: node:crypto's Ed25519 from the 32-byte seed (RFC 8032, as @noble/ed25519 in the template's
-    // gen-keypair). The key hash: blake2b-224 of that public key, with the @noble/hashes the template uses. The address: an enterprise address with header 0x61,
-    // bech32 under "addr" (agent/src/cli/gen-keypair.ts). The signer's reading of the printed key (CML, as sign.ts parses it) must give all three.
-    const expectedPub = publicKeyOfSeed(hex);
-    const pkh = Buffer.from(blake2b(expectedPub, { dkLen: 28 })).toString('hex');
-    const address = bech32.encode('addr', bech32.toWords(Buffer.concat([Buffer.from([0x61]), Buffer.from(pkh, 'hex')])), 1023);
-    const pub = CML.PrivateKey.from_bech32(m[1]).to_public();
-    assert.equal(Buffer.from(pub.to_raw_bytes()).toString('hex'), expectedPub.toString('hex'), "the signer's public key is the one node:crypto derives from the template's seed");
-    assert.equal(pub.hash().to_hex(), pkh, "the key hash the signer signs with is the template's SUPPLIER_PKH");
-    assert.equal(CML.EnterpriseAddress.new(1, CML.Credential.new_pub_key(pub.hash())).to_address().to_bech32(), address, "the address is the template's SUPPLIER_ADDRESS");
-  }
-  // A key that is not 64 lowercase hex prints nothing on stdout and stops with the message.
-  assert.throws(() => run('not a key'), (err) => err.status === 1 && err.stdout === '' && /expected 64 lowercase hex characters/.test(err.stderr));
 });
 
 test('docs/LAUNCH.md, the new sentence of HIRE.md section 3(b) and the new README line: hyphens only, none of the words of the content rules, no unit name, no person, no host of the Foundation, no status word', () => {
@@ -2110,7 +2104,7 @@ test('docs/LAUNCH.md, the new sentence of HIRE.md section 3(b) and the new READM
   assert.doesNotMatch('https://ogmios.vector.mainnet.apexfusion.org', FOUNDATION_HOST);
   // The first-party label stays on the hire of one's own agent, and the guide says what is not yet recorded.
   assert.ok(section(launch(), '7. Test-hire your own agent from chat').includes('A hire of your own agent is first-party. It shows that the path works. It is not demand.'));
-  assert.ok(launch().includes('No launch by anyone outside the team is recorded yet. The npm signer has not yet signed a registration on mainnet: our four agents were registered through the same hosted tool with another local signer. No third-party audit of the marketplace contracts exists.'));
+  assert.ok(launch().includes('No launch by anyone outside the team is recorded yet, and nobody has followed this guide since the release. No third-party audit of the marketplace contracts or of the identity registry exists.'));
 });
 
 test('docs/LAUNCH.md section 7: the fields of the Agent History report that a member checks are fields of the report v2 (the example of specs/agent-history.md), and the guide says of each what the spec says', () => {
@@ -2124,8 +2118,8 @@ test('docs/LAUNCH.md section 7: the fields of the Agent History report that a me
   assert.equal(launch().includes('capability_key_matches_controller'), false, 'the field of the report of 0.1.0');
   const seven = section(launch(), '7. Test-hire your own agent from chat');
   for (const part of [
-    'Section 5 makes a record in the legacy registry, where the controller is the owner key: it must be your `SUPPLIER_PKH`.',
-    '`key_roles.capability_key_pkh` is the key hash of the key that your endpoint serves at `/capability`. It must also be your `SUPPLIER_PKH`.',
+    'Section 5 makes a record in the identity registry, whose controller is your controller key: `subject.controller_pkh` is the key hash of that key, not your `SUPPLIER_PKH`.',
+    '`key_roles.capability_key_pkh` is the key hash of the key that your endpoint serves at `/capability`. It must be your `SUPPLIER_PKH`.',
     '`key_roles.capability_key_active` is true when your record lets that key act in a transaction: the owner key of a legacy record, or a key that an identity registry record lists with the transaction purpose.',
     'It is `"unknown"` when the record has no endpoint, or when your endpoint did not answer with a valid key.',
   ]) assert.ok(seven.includes(part), `section 7 says: ${part}`);
@@ -2149,43 +2143,9 @@ test('docs/LAUNCH.md (findings 1 and 2): every command that reads .env or handle
   assert.ok(four.includes('`docker compose -f deploy/docker-compose.yml up -d`, run in your own terminal, starts the runtime and the demo service.'));
   assert.ok(four.includes('recreate the container in your own terminal with `docker compose -f deploy/docker-compose.yml up -d --force-recreate`'));
   assert.ok(section(text, '1. What you need').includes("with the template's `retire-advert` command, run in your own terminal"));
-  const six = section(text, '6. Stake (optional)');
-  assert.ok(six.includes(SKEY_RULE), 'section 6: the .skey file and the SDK run are the member\'s');
-  assert.ok(six.includes('```bash\n' + SKEY_BLOCK + '\n```'), 'section 6: the block that writes the .skey, verbatim');
-  assert.ok(six.indexOf(SKEY_RULE) < six.indexOf('read -rs'), 'the rule comes before the block');
-  assert.ok(six.includes(SKEY_REMOVE), 'section 6: the file is removed once the stake has confirmed');
+  assert.ok(section(text, '5. Give your agent an identity').includes('Run the three steps in your own terminal, from the root of your template checkout, with `.env` loaded into the environment (`set -a; . ./.env; set +a`, README step 4). Your assistant may write the commands, but it does not run them:'), 'section 5: the record commands are the member\'s');
   // The words of before, which let the assistant run commands that read the key.
   for (const before of ['You or your assistant can run it', 'It may load it into the environment of a command', 'by your assistant with `.env` loaded']) assert.equal(text.includes(before), false, `not: ${before}`);
-  assert.equal((SKEY_BLOCK.match(/!/g) ?? []).length, 0, 'no history expansion in the block');
-  assert.equal(/\$(?!HOME\/supplier\.skey")[A-Za-z_{(]|`|\\"/.test(SKEY_BLOCK.split('\n')[1].replace(/^node -e "/, '').replace(/" "\$HOME\/supplier\.skey"$/, '')), false, 'nothing a shell would expand inside the quoted code');
-});
-
-test('docs/LAUNCH.md (finding 2): the node code of the .skey block writes the cardano-cli envelope of the key, with mode 600 where the system has modes, refuses to overwrite and refuses a key that is not 64 lowercase hex', () => {
-  const code = /^node -e "(.*)" "\$HOME\/supplier\.skey"$/m.exec(SKEY_BLOCK)[1];
-  const dir = mkdtempSync(join(tmpdir(), 'launch-skey-'));
-  try {
-    const file = join(dir, 'supplier.skey');
-    const run = (hex) => execFileSync(process.execPath, ['-e', code, file], { env: { ...process.env, SUPPLIER_PRIV_KEY_HEX: hex }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    const hex = randomBytes(32).toString('hex'); // a throwaway key, made here and never printed
-    assert.equal(run(hex), '', 'it prints nothing');
-    const skey = JSON.parse(readFileSync(file, 'utf8'));
-    assert.deepEqual(Object.keys(skey), ['type', 'description', 'cborHex']);
-    assert.equal(skey.type, 'PaymentSigningKeyShelley_ed25519', 'the type of a cardano-cli signing key file, the one pycardano\'s PaymentSigningKey.load checks');
-    assert.equal(skey.cborHex, '5820' + hex, 'a CBOR byte string of 32 bytes: the key');
-    if (process.platform !== 'win32') assert.equal(statSync(file).mode & 0o777, 0o600, 'mode 600');
-    // The key in the file is the template's: CML reads the same 32 bytes as the public key node:crypto derives from the seed.
-    const fromRepo = createRequire(new URL('../packages/buyer-core/package.json', import.meta.url));
-    const CML = fromRepo('@anastasia-labs/cardano-multiplatform-lib-nodejs');
-    const pub = CML.PrivateKey.from_normal_bytes(Buffer.from(skey.cborHex.slice(4), 'hex')).to_public();
-    assert.equal(Buffer.from(pub.to_raw_bytes()).toString('hex'), publicKeyOfSeed(hex).toString('hex'));
-    assert.throws(() => run(randomBytes(32).toString('hex')), (err) => err.status === 1 && /EEXIST/.test(err.stderr), 'a second run refuses to overwrite the file');
-    assert.equal(JSON.parse(readFileSync(file, 'utf8')).cborHex, '5820' + hex, 'and the file is unchanged');
-    rmSync(file);
-    assert.throws(() => run('not a key'), (err) => err.status === 1 && /expected 64 lowercase hex characters/.test(err.stderr));
-    assert.equal(existsSync(file), false, 'a bad key writes no file');
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 });
 
 test('the stake correction: the Module-3 stake is not refundable; LAUNCH.md, the four runbooks and the host README say so in the public wording, and none says the stake returns or names a cooldown', () => {
@@ -2227,23 +2187,23 @@ test('docs/HIRE.md (findings 3 and 9, and the install of section 8): the record 
 
 test('docs/LAUNCH.md (findings 4 to 8): the lock floor, the fleet prefixes the chat tools refuse, the stake from a terminal, the template commit, and the key line said to be the key', () => {
   const text = launch();
-  assert.ok(text.split('\n')[2].includes('From your chat client you give it an on-chain identity. If you want, you add a reputation stake with the Module-3 SDK, from a terminal.'), 'finding 6');
+  assert.ok(text.split('\n')[2].includes("put it on Vector mainnet with an agent record and an advert, both made with the template's own commands in your own terminal. Then you hire it once from your chat client and check the receipt."), 'finding 6, after the identity registry release');
   const seven = section(text, '7. Test-hire your own agent from chat');
-  assert.ok(seven.includes("| 3 | The lock is your price plus both bonds, raised to the ledger's minimum for the escrow output (about 2.2 to 2.3) when that sum is lower; the tool prints the lock beside the price and both bonds. The wait ends with \"Transaction Confirmed\". |"), 'finding 4');
+  assert.ok(seven.includes("| 3 | The lock is your price plus both bonds, raised to the ledger's minimum for the escrow output (about 2.6) when that sum is lower; the tool prints the lock beside the price and both bonds. The wait ends with \"Transaction Confirmed\". |"), 'finding 4');
   // The floor is the one HIRE.md section 3 gives.
-  assert.ok(section(hire(), '3. What the key must hold').includes('The ledger needs between 2.2 and 2.3 in an escrow output of this size'));
+  assert.ok(section(hire(), '3. What the key must hold').includes('The ledger needs about 2.6 in an identity-layout escrow output of this size'));
   const two = section(text, '2. Let your coding agent build it');
   assert.ok(two.includes('with a capability id that does not start with `llm.text.generate.`, `llm.chat.`, `ocr.page.extract.` or `audio.synthesize.`: the chat hire tools refuse those.'), 'finding 5');
-  assert.ok(two.includes("As of 2026-10-21 the template's `main` is commit `77c7482`: its runtime is the one our four agents run, and a fresh clone installs cleanly."), 'finding 7, round 2: main is 77c7482');
-  // Round 2 (R3): the template is pinned only where a document pins it on purpose (HIRE.md section 8, now at 78e8a81); LAUNCH.md describes main, and the postinstall is merged.
-  assert.equal(text.includes('78e8a81'), false, 'LAUNCH.md describes main and names no pin');
+  assert.ok(two.includes("As of 2026-11-06 the template's `main` is commit `78e8a81`, the first with the identity registry: its runtime is the one our four agents run since 2026-11-03, and a fresh clone installs cleanly."), 'finding 7: main is 78e8a81 on 2026-11-06');
+  // Round 2 (R3): LAUNCH.md describes main, as of a day, and pins nothing; HIRE.md section 8 pins the same commit on purpose.
+  assert.equal(text.split('78e8a81').length - 1, 1, 'LAUNCH.md names the commit of main once, in the sentence that dates it');
   assert.equal(text.includes('is proposed in') || text.includes('vector-agent-template/pull/3'), false, 'the postinstall is merged, not proposed');
   assert.ok(section(text, '3. Post the advert').includes("On a fresh clone of `main`, README step 5's own form also runs on the host: since 2026-10-21 the template's postinstall step copies `libsodium-sumo.mjs` next to its wrapper, as `agent/Dockerfile` does in the image, and the transaction build needs that file."));
   // Round 2 (R4): the member edits .env; the assistant neither opens nor writes it.
   assert.ok(two.includes('From here your assistant must not open, write or print `.env`: you edit it yourself.'));
   assert.ok(section(text, '3. Post the advert').includes('Write the advert reference into `.env` yourself, as `ADVERT_REF`.'));
   assert.ok(section(text, '4. Boot the runtime and your service').includes('set `SERVICE_URL` in `.env` yourself, to its compose name'));
-  const five = section(text, '5. Give your agent an identity from chat');
-  assert.ok(five.includes('That line is the key itself: copy it into the config, then clear the terminal.'), 'finding 8');
-  assert.ok(five.includes('Put the signer in your user-level client config, never in a project file inside the checkout.'), 'finding 8');
+  // Finding 8 of before (the converted key line, the signer in a user-level config) has no place since section 5 converts no key; the record's facts are public instead.
+  const five = section(text, '5. Give your agent an identity');
+  assert.ok(five.includes('All of it is public. The transaction that wrote it stays in the ledger\'s history after an update or after the record is retired. Put no personal data in any field.'));
 });

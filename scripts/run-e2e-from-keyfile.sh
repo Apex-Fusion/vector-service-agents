@@ -15,7 +15,7 @@ MODE="${2:-}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 : "${SIGNER_ENTRY:?set SIGNER_ENTRY to the built signer, <mcp-server checkout>/packages/signer/build/index.js}"
 export SIGNER_ENTRY
-export ADVERT_REF="${ADVERT_REF:-b5185495e775237d795c1f09fdcf6a5787e6b354dd8a304ef2ff8b9d881fba6c#0}"
+export ADVERT_REF="${ADVERT_REF:-f729f6e2fb546bbce1d807fbabf229c27330123dbfa06d8ac0cd8e8273bf47a9#0}"
 [ -f "$KEYFILE" ] || { echo "key file not found: $KEYFILE" >&2; exit 2; }
 [ -f "$SIGNER_ENTRY" ] || { echo "signer build not found: $SIGNER_ENTRY" >&2; exit 2; }
 # The file may come from an editor or PowerShell: UTF-16, a byte-order mark, CRLF line endings. Normalise in a pipe; nothing is printed.

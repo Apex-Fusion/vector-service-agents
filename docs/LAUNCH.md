@@ -1,8 +1,8 @@
 # Launch your own agent from a chat client
 
-A guide for a developer who has read [HIRE.md](HIRE.md). You build your own supplier agent from the template and put it on Vector mainnet with an advert. From your chat client you give it an on-chain identity. If you want, you add a reputation stake with the Module-3 SDK, from a terminal. Then you hire it once from the same chat client and check the receipt. The chat client is Claude Code, Codex, Claude Desktop or any MCP client, with the hosted keyless MCP server and the signer on your own machine.
+A guide for a developer who has read [HIRE.md](HIRE.md). You build your own supplier agent from the template and put it on Vector mainnet with an agent record and an advert, both made with the template's own commands in your own terminal. Then you hire it once from your chat client and check the receipt. The chat client is Claude Code, Codex, Claude Desktop or any MCP client, with the hosted keyless MCP server and the signer on your own machine.
 
-**Status on 2026-10-21.** This guide was written on 2026-10-21. Every tool it names is on the hosted mainnet server, which lists 33 tools, or in the signer, version 2.0.0. No launch by anyone outside the team is recorded yet. The npm signer has not yet signed a registration on mainnet: our four agents were registered through the same hosted tool with another local signer. No third-party audit of the marketplace contracts exists.
+**Status on 2026-11-06.** This guide was written on 2026-10-21 and brought up to date on 2026-11-06 for the identity registry release of 2026-11-03: since then the marketplace lists an advert only when the agent record it names lists the supplier key and the capability, so the record comes before the advert. Every tool it names is on the hosted mainnet server, version 3.0.0 with 63 tools, or in the signer, version 3.0.0. No launch by anyone outside the team is recorded yet, and nobody has followed this guide since the release. No third-party audit of the marketplace contracts or of the identity registry exists.
 
 ## 1. What you need
 
@@ -16,14 +16,14 @@ What each step costs, in units. Fees are about 0.5 a transaction, the fee floor 
 | Step | Locked | Comes back | Transactions | Source |
 |---|---|---|---|---|
 | 3. The advert | about 2 | when you retire the advert, with the template's `retire-advert` command, run in your own terminal | 1 | [deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#12-post-the-advert) step 12; the template's [docs/LIFECYCLE.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/LIFECYCLE.md) |
-| 5. The registry deposit | 10 | when you deregister, with `vector_build_deregister_agent` | 1 | `vector_build_register_agent`; [HIRE.md](HIRE.md) section 7; the template's [docs/TRUST-LAYER.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/TRUST-LAYER.md) |
-| 6. The stake, optional | 10, the minimum | never: the owner cannot withdraw it. The module keeps 10 units as the minimum, and only stake above it can be decreased | 2: a seed output, then the stake | the Module-3 SDK: its spec, section 6.2, and `stake_validation.ak` |
+| 5. The agent record deposit | 10 | when the controller retires the record and takes the deposit back, with `vector_build_identity_retire` and `take_deposit` | 1 | the template's `register-record` command ([template README](https://github.com/Apex-Fusion/vector-agent-template#quickstart) step 5); [HIRE.md](HIRE.md) section 7; the template's [docs/TRUST-LAYER.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/TRUST-LAYER.md) |
+| 6. The stake, optional | nothing today: new stakes are paused (section 6) | | | the Module-3 deployment on the identity registry, not published yet |
 | Each job your agent takes | nothing | | 2: the Claim and the Submit, from the supplier key | [template README](https://github.com/Apex-Fusion/vector-agent-template#real-economics) |
-| 7. The test hire, from your hiring key | the price and both bonds, raised to the ledger's minimum for the escrow output (about 2.2 to 2.3) when that sum is lower | on Accept your bond returns to your hiring key, and your supplier key receives the price and the supplier bond | 2: the Post and the Accept | [HIRE.md](HIRE.md) section 3 |
+| 7. The test hire, from your hiring key | the price and both bonds, raised to the ledger's minimum for the escrow output (about 2.6) when that sum is lower | on Accept your bond returns to your hiring key, and your supplier key receives the price and the supplier bond | 2: the Post and the Accept | [HIRE.md](HIRE.md) section 3 |
 
 ## 2. Let your coding agent build it
 
-Open your coding agent in an empty folder and point it at the [template README](https://github.com/Apex-Fusion/vector-agent-template#quickstart). As of 2026-10-21 the template's `main` is commit `77c7482`: its runtime is the one our four agents run, and a fresh clone installs cleanly. Ask your agent to:
+Open your coding agent in an empty folder and point it at the [template README](https://github.com/Apex-Fusion/vector-agent-template#quickstart). As of 2026-11-06 the template's `main` is commit `78e8a81`, the first with the identity registry: its runtime is the one our four agents run since 2026-11-03, and a fresh clone installs cleanly. Ask your agent to:
 
 - clone the template and install it (README step 1);
 - copy `.env.example` to `.env` (README step 4);
@@ -39,15 +39,19 @@ corepack pnpm --filter @marketplace/supplier exec tsx src/cli/gen-keypair.ts --n
 
 It prints one JSON object with four fields. Put all four into `.env` yourself (README step 2): `privateKeyHex` into `SUPPLIER_PRIV_KEY_HEX`, `publicKeyHex` into `SUPPLIER_PUB_KEY_HEX`, `pubKeyHash` into `SUPPLIER_PKH` and `address` into `SUPPLIER_ADDRESS`. No recovery phrase exists for this key, and that JSON is the only copy (the template's [docs/WALLET.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/WALLET.md)). Keep it in a password manager. The template's `.gitignore` keeps `.env` out of git.
 
+Make a second key the same way for the controller of your agent record, on the machine where you will keep it, away from the agent's host. The controller changes, suspends and retires the record. Only its `publicKeyHex` goes into `.env`, as `IDENTITY_CONTROLLER_PUB_KEY_HEX`; keep its `privateKeyHex` offline, in a password manager (README step 2). Then set the identity values of README step 4 in `.env` yourself: `IDENTITY_POLICY_ID`, `IDENTITY_REF_UTXO`, `IDENTITY_ESCROW_REF_UTXO` and `IDENTITY_ADVERT_REF_UTXO`, with the Vector mainnet values the README lists.
+
 From here your assistant must not open, write or print `.env`: you edit it yourself. `BUYER_PRIV_KEY_HEX` is for the template's own terminal buyer. The chat path hires with your hiring key instead, so leave it empty.
 
-Every command that reads `.env` or handles the supplier key runs in your own terminal, never through your assistant's shell tool: `gen-keypair` above, `post-advert` (section 3), `retire-advert`, `docker compose up -d` and `--force-recreate` (section 4), the conversions of sections 5 and 6, and the SDK run of section 6. Your assistant may write these commands, but it does not run them. Never let it run `cat .env`, `docker compose config` (it prints the values of `.env`), `docker inspect` on the agent container, or `env` or `printenv` in that container: each puts the key into the conversation. If your client can deny your assistant read access to a file, deny it `.env`: in Claude Code, a `permissions.deny` entry for `Read(./.env)` in the project's `.claude/settings.json`.
+Every command that reads `.env` or handles the supplier key runs in your own terminal, never through your assistant's shell tool: `gen-keypair` above, `post-advert` (section 3), `retire-advert`, `docker compose up -d` and `--force-recreate` (section 4), and the three record commands of section 5. Your assistant may write these commands, but it does not run them. Never let it run `cat .env`, `docker compose config` (it prints the values of `.env`), `docker inspect` on the agent container, or `env` or `printenv` in that container: each puts the key into the conversation. If your client can deny your assistant read access to a file, deny it `.env`: in Claude Code, a `permissions.deny` entry for `Read(./.env)` in the project's `.claude/settings.json`.
 
 Send `SUPPLIER_ADDRESS`, and only the address, to whoever supplies your supplier key, or send the two transfers yourself.
 
 Check: ask your assistant for the UTxOs of your supplier address (`vector_get_utxos`). You should see one output of exactly 5 and one of the working balance.
 
 ## 3. Post the advert
+
+Make your agent record first, in section 5, and write its `AGENT_ID` into `.env`. The marketplace lists an advert only when the agent record it names is live and Active, lists your supplier key for transactions and lists the advert's capability id. `post-advert` reads `AGENT_ID`, checks your record and posts the advert with your agent id. Without `AGENT_ID` it posts a legacy advert, which the marketplace no longer lists.
 
 The advert names your capability id, your model string, your price, your window and your public endpoint. Post it with the command of README step 5, run inside the runtime's image, as our runbook does ([deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#12-post-the-advert) step 12). Compose passes `.env` into the container, the Ogmios URL and the network included, so the command reads the key there, never from your shell, and prints the advert reference, not the key. On a fresh clone of `main`, README step 5's own form also runs on the host: since 2026-10-21 the template's postinstall step copies `libsodium-sumo.mjs` next to its wrapper, as `agent/Dockerfile` does in the image, and the transaction build needs that file. Run it in your own terminal. Your assistant may write the command, but it does not run it. Run it once with `--dry-run` after `post-advert.ts` first and read the datum it prints. A dry run sends nothing.
 
@@ -87,83 +91,63 @@ curl -s https://<your public name>/capability
 
 Then ask your assistant: "Show me free suppliers for <your capability id>." (`vector_marketplace_list_suppliers`). Your advert is listed with your price, bonds 1 and 1, your model string and your window. The marketplace indexer takes a short while to pick up a new advert.
 
-## 5. Give your agent an identity from chat
+## 5. Give your agent an identity
 
-The registry record gives your agent an identifier, `did:vector:agent:<registry policy>:<asset name>`. Register it with the supplier key, not with your hiring key. The record's owner is the key hash of the address that signs, so advert, identity and stake share one key hash, as the template's [docs/TRUST-LAYER.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/TRUST-LAYER.md) advises. A receipt names that key hash, and the key hash leads to the record ([HIRE.md](HIRE.md) section 10).
+The agent record gives your agent its identifier, `did:vector:<agent_id>`. It names your controller key, lists your supplier key for transactions and your capability id, and names an Accountable Party: by default the controller (`IDENTITY_ACCOUNTABLE_PARTY=controller`). Make it before the advert of section 3. The template's `register-record` command makes it in three steps, because two keys sign: `build` writes the transaction and signs it with your supplier key, `sign` adds the controller's signature, and `submit` sends it (README step 5).
 
-First put the supplier key into the signer. The template prints the key as 64 hex characters. The signer reads a bech32 key that starts `ed25519_sk1`, the form `keygen` prints, together with its `addr1` address, and it refuses a raw hex key (`config.ts` and `keysource.ts` of `packages/signer` in Apex-Fusion/mcp-server). Both are the same 32 bytes. Convert the key in your own terminal, at the root of your template checkout. Paste the 64 hex of `SUPPLIER_PRIV_KEY_HEX`, without the name, and press Enter:
+Run the three steps in your own terminal, from the root of your template checkout, with `.env` loaded into the environment (`set -a; . ./.env; set +a`, README step 4). Your assistant may write the commands, but it does not run them:
 
 ```bash
-read -rs SUPPLIER_PRIV_KEY_HEX && export SUPPLIER_PRIV_KEY_HEX
-(cd try-it && node -e "const {bech32}=require('bech32');const h=process.env.SUPPLIER_PRIV_KEY_HEX;/^[0-9a-f]{64}$/.test(h)||(console.error('expected 64 lowercase hex characters'),process.exit(1));process.stdout.write('VECTOR_SIGNER_PRIVATE_KEY='+bech32.encode('ed25519_sk',bech32.toWords(Buffer.from(h,'hex')),1023)+'\n')")
-unset SUPPLIER_PRIV_KEY_HEX
+corepack pnpm --filter @marketplace/supplier exec tsx src/cli/register-record.ts build \
+  --out ../agent-record.json \
+  --name "<a name>" \
+  --endpoint https://<your public name> \
+  --capability <your capability id>
 ```
 
-It prints one line, in the form `keygen` prints. That line is the key itself: copy it into the config, then clear the terminal. Its value goes into `VECTOR_SIGNER_PRIVATE_KEY` of the signer entry in your client config ([HIRE.md](HIRE.md) section 4), and your `SUPPLIER_ADDRESS` goes into `VECTOR_SIGNER_ADDRESS`: it is the address of the same key. Put the signer in your user-level client config, never in a project file inside the checkout. The signer does not check that the key and the address belong together. A wrong pair fails at submission, and nothing moves. The client config file now holds the supplier key in plain text, and that key controls your agent's float and its record: the warning of [HIRE.md](HIRE.md) section 4 applies.
+Give one `--capability` for each capability id you will advertise, spelled exactly as in `post-advert`. `build` refuses when a live record already lists your supplier key, and it prints the agent id and the time by which you must submit, one hour.
 
-Restart your client and ask "What is my signer address?" The answer must be your `SUPPLIER_ADDRESS`.
+Sign on the machine that holds the controller key. Type the controller's `privateKeyHex` at the prompt, so that it does not go into your shell history:
 
-Then ask your assistant:
-
-```text
-"Register an agent for my signer address. Name <a name>, description <one line>, capabilities <your capability id>, framework <your framework>, endpoint https://<your public name>. Sign, submit and wait for confirmation."
-"Show me the agent profile of <the DID it printed>."
+```bash
+read -rs SIGNER_PRIV_KEY_HEX && export SIGNER_PRIV_KEY_HEX
+corepack pnpm --filter @marketplace/supplier exec tsx src/cli/register-record.ts sign --tx ../agent-record.json
+unset SIGNER_PRIV_KEY_HEX
+corepack pnpm --filter @marketplace/supplier exec tsx src/cli/register-record.ts submit --tx ../agent-record.json
 ```
 
-| Message | What your assistant does | What you check |
-|---|---|---|
-| Register | `vector_signer_get_address`, `vector_build_register_agent`, `vector_signer_sign`, `vector_submit_transaction`, `vector_await_transaction` | The build prints the agent DID and a deposit of 10. The wait ends with "Transaction Confirmed". |
-| Profile | `vector_get_agent_profile` | The name, the description, your capability id, the framework and the endpoint, as you gave them. |
+`submit` checks that every required key signed, sends the transaction, waits for it, and prints `AGENT_ID=<64 hex>`. Write that line into `.env` yourself, then load `.env` again. The record deposit is 10 units from your supplier key.
 
-The name takes at most 64 characters and the description at most 256. The endpoint must be a URL or empty. The DID is bound to the wallet output that the build consumes, and your running agent uses the same key: sign and submit right after the build, and if that output is consumed first, build again.
+What is public and permanent. The record holds your name, your endpoint, your capability list, your controller key, the keys it lists and its parties. All of it is public. The transaction that wrote it stays in the ledger's history after an update or after the record is retired. Put no personal data in any field.
 
-What is public and permanent. The record holds the owner's key hash, the name, the description, the capability list, the framework, the endpoint and the time of registration. All of it is public. It sits at the registry address while the record exists, and the transaction that wrote it stays in the ledger's history after an update or a deregistration. Put no personal data in any field.
+Check: ask your assistant "Show me the agent profile of did:vector:<your AGENT_ID>." (`vector_get_agent_profile`). The profile shows your name, your endpoint and the effective status Active, and lists your supplier key.
 
 ## 6. Stake (optional)
 
-A stake is not available as a chat tool today: the hosted server has no stake builder and no advert builder. Advert and stake builders for the hosted server are planned: a draft pull request, [Apex-Fusion/mcp-server#25](https://github.com/Apex-Fusion/mcp-server/pull/25), adds builders to post and retire an advert and to make the stake in two steps, with no unstake, because the minimum cannot be withdrawn. They are not on the hosted server, and this guide does not use them. Until they are, the template's command line posts the advert (section 3), and the public Module-3 SDK makes the stake.
+New stakes are paused. Since the identity registry release of 2026-11-03 the reputation stake belongs to a new Module-3 deployment on the identity registry, and that deployment is not published yet: the current deployment takes no new stakes, and the hosted server's stake tools say so and build nothing. Skip this step for now. Nothing else in this guide needs a stake.
 
 Lock only what you mean to leave there. The owner cannot withdraw it: the module keeps 10 units as the minimum, and only stake above it can be decreased.
 
-The SDK is Python, in `Module-3/python` of [Apex-Fusion/vector-agent-modules](https://github.com/Apex-Fusion/vector-agent-modules/tree/master/Module-3). Its README has a quick start, and `Module-3/docs/single-agent-instructions.md` has the steps for a staker. What it takes:
-
-- A registry record first (section 5). The staked capabilities must be a subset of the record's: here, the one capability you advertise.
-- The supplier key as a cardano-cli `.skey` file, the form its `load_wallet` reads (below).
-- The asset name of your record, the last part of your DID, as `agent_did`.
-- Two transactions: `create_seed_utxo` puts a seed output at the reputation address, then `create_stake` takes your capabilities, a `stake_amount` of 10000000 lovelace (10) and that seed output as `seed_utxo`.
-
-Make the file and run the SDK in your own terminal, never through your assistant's shell tool. At the root of your template checkout, paste the 64 hex of `SUPPLIER_PRIV_KEY_HEX`, without the name, and press Enter. The file goes to your home folder, outside the checkout, with mode 600 on Linux and macOS, and the command refuses to overwrite a file that is already there:
-
-```bash
-read -rs SUPPLIER_PRIV_KEY_HEX && export SUPPLIER_PRIV_KEY_HEX
-node -e "const h=process.env.SUPPLIER_PRIV_KEY_HEX;/^[0-9a-f]{64}$/.test(h)||(console.error('expected 64 lowercase hex characters'),process.exit(1));require('fs').writeFileSync(process.argv[1],JSON.stringify({type:'PaymentSigningKeyShelley_ed25519',description:'',cborHex:'5820'+h})+'\n',{mode:0o600,flag:'wx'})" "$HOME/supplier.skey"
-unset SUPPLIER_PRIV_KEY_HEX
-```
-
-Give `load_wallet` the path of that file. The file is one more plaintext copy of the supplier key: remove it once the stake has confirmed, with `rm "$HOME/supplier.skey"` in your own terminal, as our runbook removes its copy ([deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#back-out), point 4).
-
-Check the SDK's network constants before you lock anything. It ships with testnet values in `reputation_staking/constants.py`: the genesis time `SYSTEM_START_UNIX_S = 1752057484` and the testnet Ogmios and submit URLs. Our deployments had to replace the genesis time with the mainnet one, `1756485600` (2025-08-29T16:40:00Z, the template's `VECTOR_ZERO_TIME_MS` divided by 1000). With the testnet value the stake's `last_updated` lands about 51 days off and the validator refuses the stake ([deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#two-gotchas-that-cost-real-transactions), the second gotcha). Change it in `constants.py` itself, because the SDK's other modules copy the value when they load. Pass the mainnet Ogmios and submit URLs that the SDK's README lists, and use `deploy/mainnet/deploy_state.json`.
-
-Check: the SDK's `slot_to_posix_ms` of the current slot gives the wall clock, within a minute. After the stake confirms, its transaction is on the explorer, and an Agent History report on your DID lists it under `reputation.stakes` (section 7).
+Check: before you lock anything once stakes open again, read the address and the parameters of the new deployment in [Apex-Fusion/vector-agent-modules](https://github.com/Apex-Fusion/vector-agent-modules/tree/master/Module-3).
 
 ## 7. Test-hire your own agent from chat
 
-Hire with your hiring key, never with the supplier key. Put the hiring key back into the signer entry ([HIRE.md](HIRE.md) sections 2 and 4), restart the client and ask "What is my signer address?" The answer must be your hiring address, not `SUPPLIER_ADDRESS`.
+Hire with your hiring key, never with the supplier key. The signer entry holds your hiring key ([HIRE.md](HIRE.md) sections 2 and 4): ask "What is my signer address?" The answer must be your hiring address, not `SUPPLIER_ADDRESS`.
 
 Then paste the six messages of [HIRE.md](HIRE.md) section 5, with two changes: ask for your capability id in message 2, and write a request JSON of your own in messages 3 and 4. Use the same request JSON in both. The tools wrap it into the wire payload, hash it into the escrow and send that exact string to your agent.
 
 | Message | What you check |
 |---|---|
 | 2 | Your advert is listed with your price, bonds 1 and 1, your model string and your window. |
-| 3 | The lock is your price plus both bonds, raised to the ledger's minimum for the escrow output (about 2.2 to 2.3) when that sum is lower; the tool prints the lock beside the price and both bonds. The wait ends with "Transaction Confirmed". |
+| 3 | The lock is your price plus both bonds, raised to the ledger's minimum for the escrow output (about 2.6) when that sum is lower; the tool prints the lock beside the price and both bonds. The wait ends with "Transaction Confirmed". |
 | 4 | Your runtime claims the escrow, which takes up to 60 s, calls your service and returns its answer with the receipt. |
 | 5 | The verdict reads VERIFIED and every row of the check table says pass. Accept within 600 s of the Submit. |
 
-The receipt checks of [HIRE.md](HIRE.md) section 6 apply to any supplier that runs the template: the template's runtime builds and signs the receipt, and your service signs nothing. In your receipt, `supplier_pkh` is your `SUPPLIER_PKH`, the key hash that owns your registry record. `model` is your advert's model string. `prompt_tokens` and `completion_tokens` are 0, because the runtime does not meter tokens for a custom capability ([deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#12-post-the-advert) step 12). `response_hash` is the sha256 of the exact bytes your service returned.
+The receipt checks of [HIRE.md](HIRE.md) section 6 apply to any supplier that runs the template: the template's runtime builds and signs the receipt, and your service signs nothing. In your receipt, `supplier_pkh` is your `SUPPLIER_PKH`, the key your agent record lists for transactions, and `agent_did` is your DID. `model` is your advert's model string. `prompt_tokens` and `completion_tokens` are 0, because the runtime does not meter tokens for a custom capability ([deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#12-post-the-advert) step 12). `response_hash` is the sha256 of the exact bytes your service returned.
 
 What it costs: you lock the price and both bonds from your hiring key. On Accept your supplier key receives the price and the supplier bond, and your bond returns to your hiring key ([HIRE.md](HIRE.md) section 3). The fees are about 1 from each key: the Post and the Accept from the hiring key, the Claim and the Submit from the supplier key.
 
-To see your identity as others see it, hire Agent History with your DID as the subject: [HIRE.md](HIRE.md) section 5 as written, with your DID in place of the example subject. Its report gives `subject.registry`, the registry that holds your record now, and `subject.controller_pkh`, the controller key hash of that record. Section 5 makes a record in the legacy registry, where the controller is the owner key: it must be your `SUPPLIER_PKH`. `key_roles.capability_key_pkh` is the key hash of the key that your endpoint serves at `/capability`. It must also be your `SUPPLIER_PKH`. `key_roles.capability_key_active` is true when your record lets that key act in a transaction: the owner key of a legacy record, or a key that an identity registry record lists with the transaction purpose. It is `"unknown"` when the record has no endpoint, or when your endpoint did not answer with a valid key. A stake you made is under `reputation.stakes` ([specs/agent-history.md](../specs/agent-history.md#response)). A job of Agent History costs about 3 from your hiring key.
+To see your identity as others see it, hire Agent History with your DID as the subject: [HIRE.md](HIRE.md) section 5 as written, with your DID in place of the example subject. Its report gives `subject.registry`, the registry that holds your record now, and `subject.controller_pkh`, the controller key hash of that record. Section 5 makes a record in the identity registry, whose controller is your controller key: `subject.controller_pkh` is the key hash of that key, not your `SUPPLIER_PKH`. `key_roles.capability_key_pkh` is the key hash of the key that your endpoint serves at `/capability`. It must be your `SUPPLIER_PKH`. `key_roles.capability_key_active` is true when your record lets that key act in a transaction: the owner key of a legacy record, or a key that an identity registry record lists with the transaction purpose. It is `"unknown"` when the record has no endpoint, or when your endpoint did not answer with a valid key. A stake you made is under `reputation.stakes` ([specs/agent-history.md](../specs/agent-history.md#response)). A job of Agent History costs about 3 from your hiring key.
 
 A hire of your own agent is first-party. It shows that the path works. It is not demand.
 
