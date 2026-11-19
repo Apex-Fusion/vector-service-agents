@@ -5,7 +5,8 @@
 //
 // A token whose authority ended is never honoured: a token that has expired, a status entry that reads revoked or suspended, an actor that is no longer Active (when the caller gives
 // `checkActors`) and a delegation that the ledger no longer shows (when the caller gives `checkDelegation`) each refuse the call. A status list that cannot be read, or that is old,
-// refuses nothing: the result says `read: false`, so that the caller can write it to its log. The caller decides what that costs.
+// does not refuse a call with an access token: the result says `read: false`, so that the caller can write it to its log. An identity credential is different. Anybody can fetch it,
+// and it stays valid for a day, so a credential is refused (`credential.status_unknown`) unless the verifier read its list again within the time to live of the list.
 
 import { MAX_DELEGATION_DEPTH, MAX_TOKEN_LIFETIME_S } from '../common/constants.ts';
 import { accept, refuse, type Check } from '../common/result.ts';
@@ -27,12 +28,27 @@ export interface VerifierOptions extends GatewayReaderOptions {
   readonly maxActDepth?: number;
 }
 
-/** The result of a read of a status list that did not refuse the call. */
-export type StatusReading =
-  /** The list was read, and the entry is valid. `refreshError` is set when the reader used an older copy because a fresh one could not be read. */
-  | { readonly read: true; readonly list: string; readonly fetchedAt: number; readonly refreshError: string | null }
-  /** The list was not read: it could not be fetched (`unavailable`), or it is over (`stale`). The call is not refused. The caller logs `detail`. */
-  | { readonly read: false; readonly list: string; readonly reason: 'unavailable' | 'stale'; readonly detail: string };
+/** A status list that the verifier read within its time to live. The entry of the agent in it is valid. */
+export interface StatusRead {
+  readonly read: true;
+  readonly list: string;
+  /** POSIX ms. */
+  readonly fetchedAt: number;
+}
+
+/**
+ * A status list that the verifier did not read within its time to live: it could not be fetched (`unavailable`), or it is over, or the verifier holds only an older copy because a new
+ * read failed (`stale`). A call with an access token is not refused for it. The caller logs `detail`.
+ */
+export interface StatusNotRead {
+  readonly read: false;
+  readonly list: string;
+  readonly reason: 'unavailable' | 'stale';
+  readonly detail: string;
+}
+
+/** What the verifier knows of a status list for an access token, when the list did not refuse the call. */
+export type StatusReading = StatusRead | StatusNotRead;
 
 export interface CallRequest {
   /** The `Authorization` header field, `DPoP <token>`. Give it, or `accessToken`. */
@@ -78,14 +94,14 @@ export type VerifiedCall = VerifiedAccessToken & {
 export const CALL_RULES = [...ACCESS_TOKEN_RULES, 'keys.unavailable', ...KEY_SET_RULES, 'status.revoked', 'status.suspended', 'status.value', 'status.list', 'actors.refused', 'delegation.refused'] as const;
 export type CallRule = AccessTokenRule | KeysRule | 'status.revoked' | 'status.suspended' | 'status.value' | 'status.list' | 'actors.refused' | 'delegation.refused';
 
-export const CREDENTIAL_CALL_RULES = ['credential.revoked', 'credential.suspended', 'credential.status_list'] as const;
+export const CREDENTIAL_CALL_RULES = ['credential.revoked', 'credential.suspended', 'credential.status_list', 'credential.status_unknown'] as const;
 export type CredentialCheckRule = CredentialRule | KeysRule | (typeof CREDENTIAL_CALL_RULES)[number];
 
 export type SvidCheckRule<R extends string> = R | BundleReadRule;
 
 export interface VerifiedCredentialStatus extends VerifiedCredential {
-  /** What the Bitstring Status List says about the agent: both bits are clear, or the list was not read. */
-  readonly listStatus: StatusReading;
+  /** The Bitstring Status List that the verifier read within its time to live: both bits of the agent are clear in it. */
+  readonly listStatus: StatusRead;
 }
 
 export interface Verifier {
@@ -98,7 +114,10 @@ export interface Verifier {
   jwtSvid(token: string, policy: { readonly audience: string }): Promise<Check<VerifiedJwtSvid, SvidCheckRule<JwtSvidRule>>>;
   /** Checks an X.509-SVID (PEM, base64 DER, or DER bytes) against the bundle. */
   x509Svid(certificate: string | Uint8Array): Promise<Check<VerifiedX509Svid, SvidCheckRule<X509SvidRule>>>;
-  /** Checks an identity credential, and reads the Bitstring Status List that it names for the revocation bit and the suspension bit of the agent. */
+  /**
+   * Checks an identity credential, and reads the Bitstring Status List that it names for the revocation bit and the suspension bit of the agent. A list that was not read within its time to
+   * live refuses the credential (`credential.status_unknown`). The credential is a public document: it proves facts about its subject, and it does not prove that the caller is that agent.
+   */
   credential(jwt: string, policy?: { readonly subject?: string }): Promise<Check<VerifiedCredentialStatus, CredentialCheckRule>>;
 }
 
@@ -117,17 +136,21 @@ export function createVerifier(options: VerifierOptions): Verifier {
   const maxActDepth = options.maxActDepth ?? MAX_DELEGATION_DEPTH;
   const { issuer, leewaySeconds } = reader;
 
-  /** The result of a read of a list that is no refusal, as a StatusReading; a list that was read and is wrong is a refusal that the caller names. */
-  const softReading = (list: string, rule: string, detail: string): StatusReading => ({ read: false, list, reason: rule === 'list.expired' ? 'stale' : 'unavailable', detail });
-
   async function tokenStatus(claim: { readonly uri: string; readonly index: number }): Promise<Check<StatusReading, 'status.revoked' | 'status.suspended' | 'status.value' | 'status.list'>> {
     const read = await reader.tokenList(claim.uri);
-    if (!read.ok) return isSoftListRule(read.rule) ? accept(softReading(claim.uri, read.rule, read.detail)) : refuse('status.list', `${read.rule}: ${read.detail}`);
+    if (!read.ok) {
+      if (!isSoftListRule(read.rule)) return refuse('status.list', `${read.rule}: ${read.detail}`);
+      return accept({ read: false, list: claim.uri, reason: read.rule === 'list.expired' ? 'stale' : 'unavailable', detail: read.detail });
+    }
     const entry = tokenEntryStatus(read.value.list, claim.index);
     if (!entry.ok) return refuse(entry.rule === 'list.value' ? 'status.value' : 'status.list', entry.detail);
     if (entry.value === 'revoked') return refuse('status.revoked', 'the Token Status List says that the agent that asked for the token is revoked');
     if (entry.value === 'suspended') return refuse('status.suspended', 'the Token Status List says that the agent that asked for the token is suspended');
-    return accept({ read: true, list: claim.uri, fetchedAt: read.value.fetchedAt, refreshError: read.value.refreshError });
+    // An older copy after a failed new read is checked above, so a copy that shows a revocation still refuses. It is no read: the entry may have changed since.
+    if (read.value.refreshError !== null) {
+      return accept({ read: false, list: claim.uri, reason: 'stale', detail: `the verifier holds an older copy of the list, and a new read failed: ${read.value.refreshError}` });
+    }
+    return accept({ read: true, list: claim.uri, fetchedAt: read.value.fetchedAt });
   }
 
   async function accessToken(request: CallRequest, policy: AccessTokenPolicy): Promise<Check<VerifiedCall, CallRule>> {
@@ -192,12 +215,17 @@ export function createVerifier(options: VerifierOptions): Verifier {
       if (!checked.ok) return checked;
       const { list, position } = checked.value.status;
       const read = await reader.bitstringList(list);
-      if (!read.ok) return isSoftListRule(read.rule) ? accept({ ...checked.value, listStatus: softReading(list, read.rule, read.detail) }) : refuse('credential.status_list', `${read.rule}: ${read.detail}`);
+      if (!read.ok) {
+        if (!isSoftListRule(read.rule)) return refuse('credential.status_list', `${read.rule}: ${read.detail}`);
+        return refuse('credential.status_unknown', `the Bitstring Status List was not read: ${read.detail}`);
+      }
       const entry = bitstringEntryStatus(read.value.list, position);
       if (!entry.ok) return refuse('credential.status_list', entry.detail);
       if (entry.value === 'revoked') return refuse('credential.revoked', 'the revocation bit of the agent is set in the Bitstring Status List');
       if (entry.value === 'suspended') return refuse('credential.suspended', 'the suspension bit of the agent is set in the Bitstring Status List');
-      return accept({ ...checked.value, listStatus: { read: true, list, fetchedAt: read.value.fetchedAt, refreshError: read.value.refreshError } });
+      // A credential is a public document that anybody can fetch, and it stays valid for a day. An older copy of the list, after a failed new read, is no read: the agent may be revoked since.
+      if (read.value.refreshError !== null) return refuse('credential.status_unknown', `the verifier holds only an older copy of the Bitstring Status List, and a new read failed: ${read.value.refreshError}`);
+      return accept({ ...checked.value, listStatus: { read: true, list, fetchedAt: read.value.fetchedAt } });
     },
   };
 }

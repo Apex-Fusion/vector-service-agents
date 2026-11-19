@@ -111,7 +111,7 @@ describe('accessToken: a call that is right', () => {
       issuedAt: s.gateway.now(),
       expiresAt: s.gateway.now() + 300_000,
     });
-    expect(call1.status).toMatchObject({ read: true, list: `${s.gateway.baseUrl}/status/tsl/0`, refreshError: null });
+    expect(call1.status).toStrictEqual({ read: true, list: `${s.gateway.baseUrl}/status/tsl/0`, fetchedAt: s.gateway.now() });
   });
 
   it('a token for the agent alone (no delegation) is accepted when the call needs no grant, and the subject is the agent', async () => {
@@ -501,6 +501,31 @@ describe('accessToken: the lists that the token names', () => {
     s.gateway.advance(2 * 60_000);
     const verified = accepted(await call(s, token));
     expect(verified.status).toMatchObject({ read: false, reason: 'stale' });
+  });
+
+  it('a list that cannot be read again after its ttl: the older copy is checked, and the result says that the list was stale, with the reason that the new read failed', async () => {
+    const s = scene();
+    const token = await issue(s);
+    expect(accepted(await call(s, token)).status.read).toBe(true);
+    s.gateway.advance(61_000);
+    s.gateway.fault(tslPath, LISTS_UNAVAILABLE);
+    const verified = accepted(await call(s, token));
+    expect(verified.status).toMatchObject({ read: false, reason: 'stale', list: `${s.gateway.baseUrl}${tslPath}` });
+    if (!verified.status.read) expect(verified.status.detail).toMatch(/503/);
+    // The twin: the gateway answers again, and the list is read.
+    s.gateway.fault(tslPath, null);
+    s.gateway.advance(6_000);
+    expect(accepted(await call(s, token)).status.read).toBe(true);
+  });
+
+  it('an older copy that shows the agent revoked is no way round: when the new read fails, the call is still refused with status.revoked', async () => {
+    const s = scene();
+    const token = await issue(s);
+    s.gateway.setStatus(s.agent, 'revoked');
+    refused(await call(s, token), 'status.revoked');
+    s.gateway.advance(61_000);
+    s.gateway.fault(tslPath, LISTS_UNAVAILABLE);
+    refused(await call(s, token), 'status.revoked');
   });
 
   it('a list that is read and is wrong refuses the call: status.list (a list that another key signed), and status.value (a value that the gateway never writes)', async () => {

@@ -470,7 +470,7 @@ describe('credentials', () => {
   it('the verifier reads the Bitstring Status List: a credential is accepted while both bits are clear, and refused with credential.revoked or credential.suspended when a bit is set', async () => {
     const s = await setup({ listCacheSeconds: 0 });
     const verified = accepted(await s.verifier.credential(s.jwt, { subject: s.agent.did }));
-    expect(verified.listStatus).toMatchObject({ read: true, list: `${s.gateway.baseUrl}/status/bsl/0`, refreshError: null });
+    expect(verified.listStatus).toStrictEqual({ read: true, list: `${s.gateway.baseUrl}/status/bsl/0`, fetchedAt: s.gateway.now() });
     s.gateway.setStatus(s.agent, 'suspended', 'hold');
     refused(await s.verifier.credential(s.jwt), 'credential.suspended');
     s.gateway.setStatus(s.agent, 'revoked');
@@ -479,26 +479,61 @@ describe('credentials', () => {
     accepted(await s.verifier.credential(s.jwt));
   });
 
-  it('a list that cannot be read or is old does not refuse the credential (the result says so); a list that is read and is wrong does, with credential.status_list', async () => {
-    const s = await setup({ listCacheSeconds: 0 });
+  it('a list that cannot be read refuses the credential (credential.status_unknown): it is a public document that stays valid for a day, so it is not accepted on a guess', async () => {
+    const s = await setup();
+    s.gateway.setStatus(s.agent, 'revoked');
     s.gateway.fault('/status/bsl/0', LISTS_UNAVAILABLE);
-    expect(accepted(await s.verifier.credential(s.jwt)).listStatus).toMatchObject({ read: false, reason: 'unavailable' });
+    refused(await s.verifier.credential(s.jwt), 'credential.status_unknown');
+    s.gateway.fault('/status/bsl/0', 'network');
+    s.gateway.advance(6_000);
+    refused(await s.verifier.credential(s.jwt), 'credential.status_unknown');
+    // The twin: the list is readable and the agent is active.
+    s.gateway.fault('/status/bsl/0', null);
+    s.gateway.setStatus(s.agent, 'active');
+    s.gateway.advance(6_000);
+    accepted(await s.verifier.credential(s.jwt));
+  });
+
+  it('a copy of the list that read revoked is no way round: while the new read fails the copy still refuses, and when the copy is over the credential is refused for credential.status_unknown', async () => {
+    const s = await setup();
+    s.gateway.setStatus(s.agent, 'revoked');
+    refused(await s.verifier.credential(s.jwt), 'credential.revoked');
+    s.gateway.advance(61_000);
+    s.gateway.fault('/status/bsl/0', LISTS_UNAVAILABLE);
+    refused(await s.verifier.credential(s.jwt), 'credential.revoked');
+    s.gateway.advance(61 * 60_000);
+    refused(await s.verifier.credential(s.jwt), 'credential.status_unknown');
+    // The twin: the gateway answers again and the agent is active.
+    s.gateway.fault('/status/bsl/0', null);
+    s.gateway.setStatus(s.agent, 'active');
+    s.gateway.advance(6_000);
+    accepted(await s.verifier.credential(s.jwt));
+  });
+
+  it('an older copy after a failed refresh is not a read: credential.status_unknown, and the same credential is accepted when the list is read again', async () => {
+    const s = await setup();
+    accepted(await s.verifier.credential(s.jwt));
+    s.gateway.advance(61_000);
+    s.gateway.fault('/status/bsl/0', LISTS_UNAVAILABLE);
+    refused(await s.verifier.credential(s.jwt), 'credential.status_unknown');
     s.gateway.fault('/status/bsl/0', null);
     s.gateway.advance(6_000);
-    const list = await get(s.gateway, '/status/bsl/0');
-    const [h, p] = list.split('.');
-    s.gateway.fault('/status/bsl/0', { status: 200, body: `${h}.${p}.${b64url(Buffer.alloc(64))}`, headers: { 'content-type': 'application/vc+jwt' } });
-    refused(await s.verifier.credential(s.jwt), 'credential.status_list');
-    s.gateway.fault('/status/bsl/0', null);
-    s.gateway.lists.freeze();
-    s.gateway.advance(3_700_000);
+    accepted(await s.verifier.credential(s.jwt));
+  });
+
+  it('a list that is over refuses the credential (credential.status_unknown), and a list that is read and is wrong refuses it with credential.status_list', async () => {
     const old = await setup({ listCacheSeconds: 0 });
     old.gateway.lists.freeze();
     old.gateway.advance(59 * 60_000);
     const credential = await old.client.credential(old.agent.did);
     if (!credential.ok) throw new Error(credential.detail);
+    accepted(await old.verifier.credential(credential.value));
     old.gateway.advance(2 * 60_000);
-    expect(accepted(await old.verifier.credential(credential.value)).listStatus).toMatchObject({ read: false, reason: 'stale' });
+    refused(await old.verifier.credential(credential.value), 'credential.status_unknown');
+    const s = await setup({ listCacheSeconds: 0 });
+    const [h, p] = (await get(s.gateway, '/status/bsl/0')).split('.');
+    s.gateway.fault('/status/bsl/0', { status: 200, body: `${h}.${p}.${b64url(Buffer.alloc(64))}`, headers: { 'content-type': 'application/vc+jwt' } });
+    refused(await s.verifier.credential(s.jwt), 'credential.status_list');
   });
 
   it('a verifier that cannot read the key set refuses with keys.unavailable', async () => {
