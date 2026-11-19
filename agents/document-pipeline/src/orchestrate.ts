@@ -24,6 +24,10 @@
 // floor of 500000, which these transactions cost today; an Accept whose script execution cost more would exceed it. That is under the 4500000 a sub-job is
 // given. An advert with larger bonds, or a ceiling raised above that, is caught by the second look.
 //
+// The bonds of the chat advert. The buyer funds the price and both bonds of an escrow, and an Accept pays the supplier the price and its bond, so the price ceiling does not bound what
+// the chat job costs. When the operator sets LLM_MAX_SUPPLIER_BOND_LOVELACE or LLM_MAX_BUYER_BOND_LOVELACE, the advert of the chat supplier is held to it, on chain, at each choice of the
+// supplier. An advert with a bond above a limit is refused as one above the ceiling is: llm_supplier_unavailable (503), and nothing is posted for the chat job. The OCR hop has no such limit.
+//
 // Then the pages in order, none started with less than 660 s left before the deadline, and the chat job, not started with less than 420 s left
 // (ruling R40): its supplier is chosen again first when the first choice is more than 10 minutes old, and the new choice is held to its ceiling and to
 // the float again, its lock and two fees against the float read then (insufficient_float, 503, after the page escrows are settled). The chat body is {input} and nothing else
@@ -34,6 +38,7 @@ import type { Chain, OcrAdvertListing, SupplierCapability } from '@vsa/buyer-cor
 import { activeKey, decodeIdentityDatum, didFor, isAuthenticRecord, koios, PURPOSE_TRANSACTION } from '@vsa/vector-read';
 import type { IdentityAdvertDatum, IdentityDatum, KoiosUtxo, Registry } from '@vsa/vector-read';
 import { aboveCeiling, advertOnChain, chatJob, chooseChatSupplier, choiceLine, keyOfAdvert, plannedLockOf } from '@vsa/hire-kit';
+import type { BondLimits } from '@vsa/hire-kit';
 import {
   LLM_MIN_LEFT_MS, LLM_SELECTION_MAX_AGE_MS, OCR_IMAGE_B64_MAX, OutOfTime, PAGE_MIN_LEFT_MS, STATUS_RETRY_MS, WALLET_READ_TIMEOUT_MS, assertTimeLeft, floatNeeded, within,
 } from './budget.ts';
@@ -76,6 +81,11 @@ export interface Deps {
   ocrMaxPriceLovelace: bigint;
   /** The most the chat job may be priced at, in lovelace (LLM_MAX_PRICE_LOVELACE, ruling R56). */
   llmMaxPriceLovelace: bigint;
+  /**
+   * The most that the supplier bond and the buyer bond of the chat advert may each be (LLM_MAX_SUPPLIER_BOND_LOVELACE, LLM_MAX_BUYER_BOND_LOVELACE). A limit that is not set is
+   * left out: no limit, and the choice of the chat supplier is given none.
+   */
+  llmBondLimits?: BondLimits;
   stranded: StrandedStore;
   /** The moment (POSIX ms) the run must be over by: the server sets it 1620000 ms after the request arrived. */
   deadlineMs: number;
@@ -296,11 +306,13 @@ async function assertAgentListsKey(deps: Deps, advert: IdentityAdvertDatum, adve
 
 /**
  * The chat supplier: the kit's choice (chooseChatSupplier), the allowlisted supplier at a price at or under LLM_MAX_PRICE_LOVELACE that answers its /capability
- * and its /status, its advert checked on chain, the six candidates and 120 s of the selection. llm_supplier_unavailable (503) otherwise, with the kit's reason.
+ * and its /status, its advert checked on chain, the six candidates and 120 s of the selection. The advert is held to the limits of its bonds when they are set. llm_supplier_unavailable
+ * (503) otherwise, with the kit's reason.
  */
 function llmSupplier(deps: Deps, label: string): Promise<Supplier> {
   const unavailable = (why: string) => new PipelineError('llm_supplier_unavailable', `No chat supplier can be hired for ${label}: ${why}.`, 503);
   return chooseChatSupplier(deps.chain, {
-    fetchImpl: deps.fetchImpl, indexerUrl: deps.indexerUrl, allowlist: deps.llmAllowlist, maxPriceLovelace: deps.llmMaxPriceLovelace, ceilingSetting: 'LLM_MAX_PRICE_LOVELACE', log: deps.log,
+    fetchImpl: deps.fetchImpl, indexerUrl: deps.indexerUrl, allowlist: deps.llmAllowlist, maxPriceLovelace: deps.llmMaxPriceLovelace, ceilingSetting: 'LLM_MAX_PRICE_LOVELACE', ...deps.llmBondLimits,
+    log: deps.log,
   }, unavailable);
 }

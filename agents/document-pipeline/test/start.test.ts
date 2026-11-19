@@ -20,7 +20,7 @@ import { CHAIN_SETTINGS, OTHER_SETTINGS, PRICE_CEILING_DEFAULT_LOVELACE, SHUTDOW
 import type { RunningService, StartOptions } from '../src/start.ts';
 import { fakeRenderer } from './fake-renderer.ts';
 import { AUTH, BUYER, BUYER_ADDRESS, FULL_ENV, SUPPLIER, TEST_AUTH, TEST_CONTACT, cleanDirs, fakePopplerDir, inFront, keyOf, noFetch, pathOf, rawClient, tempDir, until, wire, withPath } from './server-support.ts';
-import { ALLOWLIST, INDEXER, OCR_ADVERT_REF, SUMMARY, T0, escrowNo, marketplace } from './stub-suppliers.ts';
+import { ALLOWLIST, INDEXER, LLM_ADVERT, OCR_ADVERT_REF, SUMMARY, T0, escrowNo, marketplace } from './stub-suppliers.ts';
 import { TWO_PAGES_PDF, toBase64 } from './support.ts';
 
 afterEach(() => { cleanDirs(); });
@@ -67,6 +67,49 @@ describe('loadConfig', () => {
         expect(error.message, `${name} = ${bad}`).toBe(`environment variable ${name} must be a whole number of lovelace of at least 0, and it has ${bad.length} characters`);
       }
     }
+  });
+
+  describe('the limits of the bonds of the chat advert (LLM_MAX_SUPPLIER_BOND_LOVELACE, LLM_MAX_BUYER_BOND_LOVELACE)', () => {
+    const LIMITS = [
+      { name: 'LLM_MAX_SUPPLIER_BOND_LOVELACE', field: 'llmMaxSupplierBondLovelace', other: 'llmMaxBuyerBondLovelace' },
+      { name: 'LLM_MAX_BUYER_BOND_LOVELACE', field: 'llmMaxBuyerBondLovelace', other: 'llmMaxSupplierBondLovelace' },
+    ] as const;
+
+    test('not set, empty or blank: no limit, and the config holds no field for either, so that the hire is given nothing', () => {
+      for (const env of [FULL_ENV, { ...FULL_ENV, LLM_MAX_SUPPLIER_BOND_LOVELACE: '', LLM_MAX_BUYER_BOND_LOVELACE: ' \n' }]) {
+        const keys = Object.keys(loadConfig(env));
+        expect(keys).not.toContain('llmMaxSupplierBondLovelace');
+        expect(keys).not.toContain('llmMaxBuyerBondLovelace');
+      }
+    });
+
+    test('set: a whole number of lovelace of at least 0, read as the price ceilings are read, and each setting gives its own field and no other', () => {
+      for (const { name, field, other } of LIMITS) {
+        const config = loadConfig({ ...FULL_ENV, [name]: ' 2000000\n' });
+        expect(config[field], name).toBe(2_000_000n);
+        expect(Object.keys(config), name).not.toContain(other);
+        expect(loadConfig({ ...FULL_ENV, [name]: '0' })[field], `${name} = 0`).toBe(0n);
+        expect(loadConfig({ ...FULL_ENV, [name]: '9007199254740991' })[field], `${name} at the largest safe integer`).toBe(9_007_199_254_740_991n);
+      }
+      expect(loadConfig({ ...FULL_ENV, LLM_MAX_SUPPLIER_BOND_LOVELACE: '3000000', LLM_MAX_BUYER_BOND_LOVELACE: '4000000' })).toMatchObject({ llmMaxSupplierBondLovelace: 3_000_000n, llmMaxBuyerBondLovelace: 4_000_000n });
+    });
+
+    test('anything else stops the start, naming the setting and never showing the value', () => {
+      for (const { name } of LIMITS) {
+        for (const bad of ['one', '-1', '+5', '1.5', '1e6', '0x10', '2 000 000', '99999999999999999999', '9007199254740992', 'secret-value']) {
+          const error = thrown(() => loadConfig({ ...FULL_ENV, [name]: bad }));
+          expect(error.message, `${name} = ${bad}`).toBe(`environment variable ${name} must be a whole number of lovelace of at least 0, and it has ${bad.length} characters`);
+          expect(error.message).not.toContain(bad);
+        }
+      }
+    });
+
+    test('the settings are looked in for a secret that is in the wrong line, with the others of the service', () => {
+      for (const { name } of LIMITS) {
+        expect(OTHER_SETTINGS, name).toContain(name);
+        expect(thrown(() => loadConfig({ ...FULL_ENV, [name]: BUYER.privateKeyHex })).message).toBe(`environment variable ${name} holds the buyer key, which belongs in PIPELINE_BUYER_PRIV_KEY_HEX alone: it would be printed or published. Take it out of ${name}`);
+      }
+    });
   });
 
   test('a setting that is set and empty means its default', () => {
@@ -480,6 +523,28 @@ describe('startService', () => {
     expect(kept[0]).toMatchObject({ escrow_ref: escrowNo(4), kind: 'ocr' });
   });
 
+  /**
+   * One job on a service that has the settings `limits` besides those of every test, on a marketplace of its own whose chat advert has a supplier bond of 1100000 and a buyer bond of
+   * 1300000 lovelace, so that a limit that reached the wrong bond is seen: how the job ended.
+   */
+  const jobWith = async (limits: Record<string, string>) => {
+    const m = marketplace({ llmAdvert: { ...LLM_ADVERT, supplier_bond_lovelace: 1_100_000n, buyer_bond_lovelace: 1_300_000n }, lockLovelace: 2_700_000n });
+    const env = envIn(tempDir(), { OCR_ALLOWLIST_SUPPLIER_PKH: m.ocr.key.pkh, LLM_MODEL_ALLOWLIST: ALLOWLIST.join(','), VECTOR_MARKETPLACE_INDEXER_URL: INDEXER, ...limits });
+    const service = await start(env, { createChain: async () => m.chain, fetchImpl: m.fetchImpl, renderer: fakeRenderer({ total: 2 }), clock: () => m.clock.now, sleep: async (ms) => { m.clock.now += ms; } });
+    const reply = await fetch(`http://127.0.0.1:${service.port}/`, { method: 'POST', headers: AUTH, body: wire({ source: { pdf_b64: toBase64(TWO_PAGES_PDF), mime: 'application/pdf' }, task: 'summary' }) });
+    return [reply.status, (await reply.json()).error ?? null, await m.chain.escrowState(escrowNo(1))];
+  };
+
+  test.each([['LLM_MAX_SUPPLIER_BOND_LOVELACE', 'supplier', 1_100_000], ['LLM_MAX_BUYER_BOND_LOVELACE', 'buyer', 1_300_000]])('%s reaches the hire of a job: a chat advert whose %s bond is above it is not hired, the job fails with llm_supplier_unavailable (503) before it locks anything and the log names the bond and the limit, and a chat advert at the limit is hired', async (name, kind, bond) => {
+    expect(await jobWith({ [name]: String(bond - 1) })).toStrictEqual([503, 'llm_supplier_unavailable', 'unknown']);
+    expect(logs.some((line) => line.includes('llm_supplier_unavailable (503)') && line.includes(`has a ${kind} bond of ${bond} lovelace, above the limit of ${bond - 1} lovelace`))).toBe(true);
+    expect(await jobWith({ [name]: String(bond) })).toStrictEqual([200, null, 'spent']);
+  });
+
+  test('both limits at the bonds of the chat advert: the advert is hired', async () => {
+    expect(await jobWith({ LLM_MAX_SUPPLIER_BOND_LOVELACE: '1100000', LLM_MAX_BUYER_BOND_LOVELACE: '1300000' })).toStrictEqual([200, null, 'spent']);
+  });
+
   test('a wrong buyer hash is refused before anything is made: no chain, no state directory, no listener', async () => {
     const dir = join(tempDir(), 'state');
     let made = 0;
@@ -777,7 +842,7 @@ describe('src/index.ts as a process', () => {
     'OPERATOR_CONTACT', 'PIPELINE_BUYER_PRIV_KEY_HEX', 'SUPPLIER_PKH', 'SERVICE_AUTH_HEADER', 'SUPPLIER_PUB_KEY_HEX', 'AGENT_DID', 'IDENTITY_POLICY_ID', 'IDENTITY_ADDRESS', 'AGENT_VERSION',
     'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE',
     'ADVERT_PRICE_LOVELACE', 'ADVERT_MAX_PROCESSING_MS', 'ADVERT_EXPLORER_URL', 'PIPELINE_BUYER_PKH', 'PIPELINE_BUYER_ADDRESS', 'OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST',
-    'OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE', 'PIPELINE_STATE_DIR', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', ...BUYER_IDENTITY_SETTINGS,
+    'OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE', 'LLM_MAX_SUPPLIER_BOND_LOVELACE', 'LLM_MAX_BUYER_BOND_LOVELACE', 'PIPELINE_STATE_DIR', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', ...BUYER_IDENTITY_SETTINGS,
     'PORT', 'HOST',
   ];
   const baseEnv = (): Record<string, string | undefined> => {

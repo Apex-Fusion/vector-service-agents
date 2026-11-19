@@ -984,8 +984,8 @@ test('Pipeline env example: every name the service code reads is in the example,
   const names = new Set(files.flatMap((f) => [...envNamesIn(read(f))]));
   assert.ok(names.size >= 20, 'the scan found the settings');
   // Left unset on purpose: a value here would pin a default that the code owns (the chain endpoints of buyer-core are Vector mainnet's, the price
-  // ceilings of ruling R56 are 1000000 lovelace each in agents/document-pipeline/src/start.ts).
-  const DEFAULT_IN_CODE = ['AGENT_VERSION', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_KOIOS_URL', 'VECTOR_EXPLORER_URL', 'VECTOR_BLOCKFROST_URL', 'KOIOS_URL', 'INDEXER_URL', 'OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE'];
+  // ceilings of ruling R56 are 1000000 lovelace each in agents/document-pipeline/src/start.ts). The two limits of the bonds of the chat advert have no default: there is no limit while they are not set.
+  const DEFAULT_IN_CODE = ['AGENT_VERSION', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_KOIOS_URL', 'VECTOR_EXPLORER_URL', 'VECTOR_BLOCKFROST_URL', 'KOIOS_URL', 'INDEXER_URL', 'OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE', 'LLM_MAX_SUPPLIER_BOND_LOVELACE', 'LLM_MAX_BUYER_BOND_LOVELACE'];
   assert.deepEqual([...names].filter((n) => !(n in pExample) && !(n in pService.environment) && !DEFAULT_IN_CODE.includes(n)), []);
   for (const n of DEFAULT_IN_CODE) assert.ok(!(n in pExample), `${n} stays unset in the example`);
   // The two ceilings are in the example all the same, commented, with the default of the code.
@@ -994,8 +994,22 @@ test('Pipeline env example: every name the service code reads is in the example,
     assert.ok(names.has(name), `the service reads ${name}`);
     assert.match(pExampleText, new RegExp(`^# ${name}=1000000$`, 'm'), `${name} is in the example, commented, at its default`);
   }
+  // The two limits of the bonds of the chat advert have no default: the example has them commented, at the value that the runbook recommends, and no compose file gives them a value (the operator sets them in the env file).
+  for (const name of ['LLM_MAX_SUPPLIER_BOND_LOVELACE', 'LLM_MAX_BUYER_BOND_LOVELACE']) {
+    assert.ok(names.has(name), `the service reads ${name}`);
+    assert.ok(pExampleText.split('\n').includes(`# ${name}=2000000`), `${name} is in the example, commented, at the recommended value`);
+    assert.ok(!(name in pService.environment) && !(name in pAgent.environment), `${name} has no value in the compose file`);
+  }
   for (const n of ['OPERATOR_CONTACT', 'PIPELINE_BUYER_PRIV_KEY_HEX', 'SUPPLIER_PKH', 'SERVICE_AUTH_HEADER', 'OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST', 'PIPELINE_STATE_DIR']) assert.ok(names.has(n), `the service reads ${n}`);
   assert.ok(!names.has('SUPPLIER_PRIV_KEY_HEX'), "no source of the service reads the supplier key: it is the runtime's");
+});
+
+test('Pipeline RUNBOOK step 4: one paragraph on the limits of the bonds of the chat advert names the two settings, the value of the example, the failure they give and that the OCR hop has none', () => {
+  const four = section(pRunbook, '4. Make the env file and generate the two keys');
+  const paragraphs = four.split('\n\n').filter((p) => p.includes('LLM_MAX_SUPPLIER_BOND_LOVELACE') || p.includes('LLM_MAX_BUYER_BOND_LOVELACE'));
+  assert.equal(paragraphs.length, 1, 'one paragraph');
+  for (const part of ['`LLM_MAX_SUPPLIER_BOND_LOVELACE`', '`LLM_MAX_BUYER_BOND_LOVELACE`', '`LLM_MAX_PRICE_LOVELACE`', '`2000000`', 'recreate the service', '`llm_supplier_unavailable` (503)', 'The OCR hop has no such limit']) assert.ok(paragraphs[0].includes(part), part);
+  for (const name of ['LLM_MAX_SUPPLIER_BOND_LOVELACE', 'LLM_MAX_BUYER_BOND_LOVELACE']) assert.ok(pExampleText.split('\n').includes(`# ${name}=2000000`), `${name} has the value of the paragraph in the example`);
 });
 
 test('Pipeline env example: the runtime gets every name the pinned template lists for CAPABILITY_KIND=custom', () => {

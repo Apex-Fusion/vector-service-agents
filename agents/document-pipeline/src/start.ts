@@ -28,6 +28,7 @@ import {
 } from '@vsa/service-kit';
 import type { ShutdownOutcome } from '@vsa/service-kit';
 import { abandonedLine, stopJanitorWithin } from '@vsa/hire-kit';
+import type { BondLimits } from '@vsa/hire-kit';
 import { blake2b224Hex, identityRegistryOf } from '@vsa/vector-read';
 import type { Registry } from '@vsa/vector-read';
 import { errorText } from './format.ts';
@@ -74,7 +75,7 @@ export const OTHER_SETTINGS = [
   'OPERATOR_CONTACT', 'AGENT_DID', 'IDENTITY_POLICY_ID', 'IDENTITY_ADDRESS', 'AGENT_VERSION', 'AGENT_STATUS_CHIP', 'AGENT_STATUS_SINCE', 'ADVERT_PRICE_LOVELACE',
   'ADVERT_MAX_PROCESSING_MS', 'ADVERT_EXPLORER_URL',
   'SERVICE_AUTH_HEADER', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'PIPELINE_BUYER_PKH', 'PIPELINE_BUYER_ADDRESS', 'OCR_ALLOWLIST_SUPPLIER_PKH', 'LLM_MODEL_ALLOWLIST', 'PIPELINE_STATE_DIR',
-  'OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE', 'VECTOR_MARKETPLACE_INDEXER_URL', 'PORT', 'HOST',
+  'OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE', 'LLM_MAX_SUPPLIER_BOND_LOVELACE', 'LLM_MAX_BUYER_BOND_LOVELACE', 'VECTOR_MARKETPLACE_INDEXER_URL', 'PORT', 'HOST',
 ] as const;
 /**
  * The settings that packages/buyer-core reads: the three chain endpoints, which its errors print, and the three settings of the identity registry
@@ -103,6 +104,12 @@ export interface ServiceConfig {
   /** The price ceilings of the two hops, in lovelace (ruling R56). */
   ocrMaxPriceLovelace: bigint;
   llmMaxPriceLovelace: bigint;
+  /**
+   * The most that the supplier bond and the buyer bond of the chat advert may each be, in lovelace (LLM_MAX_SUPPLIER_BOND_LOVELACE, LLM_MAX_BUYER_BOND_LOVELACE). A field is absent
+   * when its setting is not set: there is no limit then, and the hire is given none. The OCR hop has no such limit.
+   */
+  llmMaxSupplierBondLovelace?: bigint;
+  llmMaxBuyerBondLovelace?: bigint;
   indexerUrl?: string;
   /** The identity registry deployment the chain posts to and settles with (packages/buyer-core, buyerIdentityDeployment), or null: legacy adverts and escrows only. */
   identityDeployment: IdentityDeployment | null;
@@ -111,10 +118,11 @@ export interface ServiceConfig {
 }
 
 /**
- * A price in lovelace: a whole number of at least 0, or `fallback` when the setting is absent or empty. Anything else is refused with the variable
- * named and the length of what was written, never with the value: a value that is no number may be a secret in the wrong line.
+ * A number of lovelace: a whole number of at least 0, or `fallback` when the setting is absent or empty. A price has its default for `fallback`. A limit has none, and
+ * `undefined` for `fallback` says that the operator sets no limit. Anything else is refused with the variable named and the length of what was written, never with the
+ * value: a value that is no number may be a secret in the wrong line.
  */
-function lovelaceOf(name: string, value: string, fallback: bigint): bigint {
+function lovelaceOf<F extends bigint | undefined>(name: string, value: string, fallback: F): bigint | F {
   if (value === '') return fallback;
   if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error(`environment variable ${name} must be a whole number of lovelace of at least 0, and it has ${value.length} characters`);
   return BigInt(value);
@@ -166,6 +174,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (
   }
   const ocrMaxPriceLovelace = lovelaceOf('OCR_MAX_PRICE_LOVELACE', given(env.OCR_MAX_PRICE_LOVELACE), PRICE_CEILING_DEFAULT_LOVELACE);
   const llmMaxPriceLovelace = lovelaceOf('LLM_MAX_PRICE_LOVELACE', given(env.LLM_MAX_PRICE_LOVELACE), PRICE_CEILING_DEFAULT_LOVELACE);
+  // The bonds of the chat advert have no limit unless the operator sets one: no default, and a field in the config only for a limit that is set. The OCR hop has none.
+  const llmMaxSupplierBondLovelace = lovelaceOf('LLM_MAX_SUPPLIER_BOND_LOVELACE', given(env.LLM_MAX_SUPPLIER_BOND_LOVELACE), undefined);
+  const llmMaxBuyerBondLovelace = lovelaceOf('LLM_MAX_BUYER_BOND_LOVELACE', given(env.LLM_MAX_BUYER_BOND_LOVELACE), undefined);
   const port = envInt('PORT', given(env.PORT), PORT_DEFAULT);
   const host = given(env.HOST) || '0.0.0.0';
   const stateDir = given(env.PIPELINE_STATE_DIR) || STATE_DIR_DEFAULT;
@@ -193,6 +204,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (
   const identityRegistry = identityRegistryOf(env.IDENTITY_POLICY_ID, env.IDENTITY_ADDRESS);
   return {
     manifest, authHeader, privateKeyHex, buyer, host, port, stateDir, ocrAllowlistPkh, llmAllowlist, ocrMaxPriceLovelace, llmMaxPriceLovelace,
+    ...(llmMaxSupplierBondLovelace === undefined ? {} : { llmMaxSupplierBondLovelace }), ...(llmMaxBuyerBondLovelace === undefined ? {} : { llmMaxBuyerBondLovelace }),
     ...(indexerUrl === undefined ? {} : { indexerUrl }), identityDeployment, identityRegistry,
   };
 }
@@ -258,11 +270,16 @@ export async function startService(env: NodeJS.ProcessEnv = process.env, options
   });
   const clock = options.clock ?? Date.now;
   const slot = new JobSlot();
+  // The limits of the bonds of the chat advert that the operator set, as the hire takes them: one that is not set is left out, so that the choice of the chat supplier is given none.
+  const llmBondLimits: BondLimits = {
+    ...(config.llmMaxSupplierBondLovelace === undefined ? {} : { maxSupplierBondLovelace: config.llmMaxSupplierBondLovelace }),
+    ...(config.llmMaxBuyerBondLovelace === undefined ? {} : { maxBuyerBondLovelace: config.llmMaxBuyerBondLovelace }),
+  };
   const server = createServer({
     manifest: config.manifest, authHeader: config.authHeader, log, slot,
     deps: {
       chain, fetchImpl: options.fetchImpl ?? globalThis.fetch, renderer, clock, sleep: options.sleep ?? defaultSleep,
-      ocrAllowlistPkh: config.ocrAllowlistPkh, llmAllowlist: config.llmAllowlist, ocrMaxPriceLovelace: config.ocrMaxPriceLovelace, llmMaxPriceLovelace: config.llmMaxPriceLovelace,
+      ocrAllowlistPkh: config.ocrAllowlistPkh, llmAllowlist: config.llmAllowlist, ocrMaxPriceLovelace: config.ocrMaxPriceLovelace, llmMaxPriceLovelace: config.llmMaxPriceLovelace, llmBondLimits,
       ...(config.indexerUrl === undefined ? {} : { indexerUrl: config.indexerUrl }), identityRegistry: config.identityRegistry, stranded, log,
     },
   });
