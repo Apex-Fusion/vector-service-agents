@@ -196,7 +196,7 @@ export function createJobServer<Req, Res>(opts: JobServerOptions<Req, Res>): Ser
     };
     const send = (status: number, body: unknown) => sendText(status, JSON.stringify(body));
     // POST /precheck is the one other route that posts: the question the runtime asks before it claims an escrow.
-    const precheck = req.method === 'POST' && req.url === '/precheck';
+    const isPrecheck = req.method === 'POST' && req.url === '/precheck';
     try {
       // The two open routes are matched on their path, whatever the query, and answer HEAD as they answer GET.
       const path = (req.url ?? '').split('?', 1)[0];
@@ -208,7 +208,7 @@ export function createJobServer<Req, Res>(opts: JobServerOptions<Req, Res>): Ser
         return health.healthy ? send(200, { ok: true }) : send(503, { ok: false, reason: health.reason });
       }
       if (read && path === '/agent.json') return sendText(200, opts.manifestText);
-      if (req.method !== 'POST' || (req.url !== '/' && !precheck)) return send(404, { error: 'not_found' });
+      if (req.method !== 'POST' || (req.url !== '/' && !isPrecheck)) return send(404, { error: 'not_found' });
       // Only the runtime posts a job or a pre-check. The check comes before the body is read and before the slot is looked at, so a stranger neither makes the service
       // read a megabyte nor learns that a job is running (a 409 would say so), and what the answer says is the same for a missing header and a wrong one.
       if (!authorised(req)) {
@@ -216,7 +216,7 @@ export function createJobServer<Req, Res>(opts: JobServerOptions<Req, Res>): Ser
         return send(401, { error: 'unauthorized' });
       }
       // The answer of a pre-check is about one escrow, so its context is needed. The body is the job's, read and parsed as for a job.
-      if (precheck) {
+      if (isPrecheck) {
         const context = requireContext(req.headers);
         const request = opts.parse(parseWire(await readBody(req)));
         const refuseSlot = (why: 'busy' | 'held' | 'draining') => {
@@ -286,7 +286,7 @@ export function createJobServer<Req, Res>(opts: JobServerOptions<Req, Res>): Ser
       const given: Refusal | null = e instanceof WireError || e instanceof ContextError ? { code: e.code, status: e.status, message: e.message, kind: 'request' }
         : e instanceof PrecheckRefused ? e.refusal : opts.refusalOf(e);
       // The runtime reads any 2xx as a go. A refusal of a pre-check with a status that is not 400 to 599 is a fault of the service, and is never answered as it is.
-      const refusal = precheck && given !== null && !(given.status >= 400 && given.status <= 599) ? null : given;
+      const refusal = isPrecheck && given !== null && !(given.status >= 400 && given.status <= 599) ? null : given;
       if (refusal !== null) {
         const took = clock() - arrivedAt;
         if (refusal.status >= 500) {
