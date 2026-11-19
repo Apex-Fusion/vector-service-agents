@@ -1966,7 +1966,7 @@ test('Pipeline RUNBOOK failure table: the start-up refusals, the pipeline codes 
 
 test('CI: the test job installs poppler-utils before the tests and sets REQUIRE_POPPLER on the test step, so that a failed install fails the real-renderer test instead of skipping it', () => {
   const steps = ci.jobs.test.steps;
-  assert.equal(ci.jobs.test['runs-on'], 'ubuntu-24.04');
+  assert.equal(ci.jobs.test['runs-on'], 'nixos');
   const install = steps.findIndex((s) => typeof s.run === 'string' && /apt-get install -y poppler-utils/.test(s.run));
   const tests = steps.findIndex((s) => s.run === 'pnpm test');
   assert.ok(install >= 0, 'a step installs poppler-utils');
@@ -2940,13 +2940,13 @@ test('CI: the publish job also pushes the Audio Snippets image under :latest and
   assert.ok(sSection.includes('`ghcr.io/apex-fusion/vector-service-agents/audio-snippets`') && sSection.includes('`:latest`') && sSection.includes('`:<full git commit sha>`'));
 });
 
-// Ruling R-D26: a stage of a Dockerfile that no longer builds fails on the push or the pull request that broke it, before main, with no registry login.
-test('CI: the build job builds the four images of the publish job on every push and pull request, and pushes none and logs in nowhere', () => {
-  assert.deepEqual(ci.on, ['push', 'pull_request']);
+// Ruling R-D26: a stage of a Dockerfile that no longer builds fails on the pull request that broke it, before main, with no registry login.
+test('CI: the build job builds the four images of the publish job on every pull request and every push to main, and pushes none and logs in nowhere', () => {
+  assert.deepEqual(ci.on, { push: { branches: ['main'] }, pull_request: null });
   assert.deepEqual(ci.permissions, { contents: 'read' });
   const job = ci.jobs.build;
   assert.ok(job, 'a build job');
-  assert.equal(job['runs-on'], 'ubuntu-24.04');
+  assert.equal(job['runs-on'], 'nixos');
   assert.equal(job.if, undefined, 'on every event of the workflow');
   assert.equal(job.needs, undefined, 'beside the tests, not after them');
   assert.equal(job.permissions, undefined, 'the read-only permissions of the workflow');
