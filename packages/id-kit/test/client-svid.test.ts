@@ -90,7 +90,8 @@ describe('requestX509Svid', () => {
     const ed = resolveKey(ed25519Key('x509 ed').privateKey);
     await expect(createCertificationRequest(ed)).rejects.toThrow(/P-256 key/);
     const der = await createCertificationRequest(resolveKey(p256Key('x509 csr direct').privateKey));
-    expect(pem('CERTIFICATE REQUEST', der).split('\n').slice(1, -3).every((line) => line.length === 64)).toBe(true);
+    const body = pem('CERTIFICATE REQUEST', der).split('\n').filter((line) => line.length > 0 && !line.startsWith('-----'));
+    expect(body.every((line, index) => (index === body.length - 1 ? line.length <= 64 : line.length === 64))).toBe(true);
     expect(derFromText(pem('CERTIFICATE REQUEST', der), ['CERTIFICATE REQUEST'])!.equals(der)).toBe(true);
   });
 

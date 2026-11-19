@@ -320,6 +320,37 @@ describe('verifyX509Svid', () => {
     refused(verifyX509Svid(await leaf(gateway), { ...ctx, nowMs: gateway.now() - 600_000 }), 'x509.bundle');
     refused(verifyX509Svid(ctx.bundle.authorities[0]!.raw, ctx), 'x509.ca');
   });
+
+  it('a certificate whose signature was changed is refused: the key of the authority must verify the signature (x509.untrusted)', async () => {
+    const { gateway } = world();
+    const ctx = await contextOf(gateway);
+    const der = Buffer.from(new X509Certificate(await leaf(gateway)).raw);
+    accepted(verifyX509Svid(der, ctx));
+    const changed = Buffer.from(der);
+    changed.writeUInt8(changed.readUInt8(changed.length - 1) ^ 0x01, changed.length - 1);
+    refused(verifyX509Svid(changed, ctx), 'x509.untrusted');
+  });
+
+  it('an authority that is no CA does not count: a certificate with the name and the key of the CA and no CA flag gives x509.bundle', async () => {
+    const { gateway } = world();
+    const ctx = await contextOf(gateway);
+    const caFields = children(children(decode(Buffer.from(ctx.bundle.authorities[0]!.raw)))[0]!);
+    const now = gateway.now();
+    const tbs = sequence(
+      explicit(0, unsignedInteger(Uint8Array.of(2))),
+      unsignedInteger(Uint8Array.of(7)),
+      sequence(oid('1.2.840.10045.4.3.2')),
+      caFields[5]!.bytes,
+      sequence(time(now - 60_000), time(now + 3_540_000)),
+      caFields[5]!.bytes,
+      caFields[6]!.bytes,
+      explicit(3, sequence(sequence(oid('2.5.29.19'), boolean(true), octetString(sequence())))),
+    );
+    const plain = new X509Certificate(sequence(tbs, sequence(oid('1.2.840.10045.4.3.2')), bitString(ecdsaSignatureDer(await signer(gateway).sign(tbs)))));
+    expect(plain.ca).toBe(false);
+    refused(verifyX509Svid(await leaf(gateway), { ...ctx, bundle: { ...ctx.bundle, authorities: [plain] } }), 'x509.bundle');
+    accepted(verifyX509Svid(await leaf(gateway), ctx));
+  });
 });
 
 // ── the JWT-SVID ──
@@ -408,6 +439,7 @@ describe('credentials', () => {
     ['credential.status_entries', (c) => (c.credentialStatus[1].statusListIndex = String(Number(c.credentialStatus[1].statusListIndex) + 1))],
     ['credential.status_entries', (c) => (c.credentialStatus[0].statusPurpose = 'suspension')],
     ['credential.status_entries', (c) => (c.credentialStatus[0].statusListCredential = 'https://evil.example/status/bsl/0')],
+    ['credential.status_entries', (c) => ((c.credentialStatus[0].statusListCredential = 'https://evil.example/status/bsl/0'), (c.credentialStatus[1].statusListCredential = 'https://evil.example/status/bsl/0'))],
     ['credential.status_entries', (c) => (c.credentialStatus[1].statusListCredential = `https://id.vector.apexfusion.org/status/bsl/1`)],
     ['credential.status_entries', (c) => (c.credentialStatus[0].statusListIndex = '1.5')],
     ['credential.status_entries', (c) => (c.credentialStatus[0].type = 'Other')],

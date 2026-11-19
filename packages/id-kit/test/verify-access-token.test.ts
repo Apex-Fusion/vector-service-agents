@@ -161,6 +161,7 @@ describe('accessToken: the token', () => {
     ['act.invalid', (c) => (c.act = null)],
     ['act.invalid', (c) => delete c.act],
     ['delegation.details', (c) => (c.authorization_details = [{ type: 'urn:other' }])],
+    ['delegation.details', (c) => (c.authorization_details = [{ type: 'urn:other', identifier: 'a'.repeat(64), actions: ['erp.*'], locations: [AUDIENCE] }])],
     ['delegation.details', (c) => (c.authorization_details = [])],
     ['delegation.details', (c) => (c.authorization_details = [{ type: DELEGATION_DETAILS_TYPE, identifier: 'abc', actions: ['erp.*'], locations: [AUDIENCE] }])],
     ['delegation.details', (c) => (c.authorization_details = [{ type: DELEGATION_DETAILS_TYPE, identifier: 'a'.repeat(64), actions: [], locations: [AUDIENCE] }])],
@@ -178,6 +179,14 @@ describe('accessToken: the token', () => {
     const token = await forge(s, await issue(s), (claims) => mutate(claims, s.gateway.now()), header);
     refused(await callWith(s, token, await proofFor(s, token)), rule);
     // The twin: the same forging with no change is accepted, so the refusal is for the change.
+    const twin = await forge(s, await issue(s), () => undefined);
+    accepted(await callWith(s, twin, await proofFor(s, twin)));
+  });
+
+  it('a token whose kid names the Ed25519 key of the gateway is token.kid: only the P-256 key signs a token', async () => {
+    const s = scene();
+    const token = await forge(s, await issue(s), () => undefined, { kid: `${s.gateway.gatewayDid}#${s.gateway.keys.ed25519.keyHash}` });
+    refused(await callWith(s, token, await proofFor(s, token)), 'token.kid');
     const twin = await forge(s, await issue(s), () => undefined);
     accepted(await callWith(s, twin, await proofFor(s, twin)));
   });

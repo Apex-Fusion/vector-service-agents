@@ -99,6 +99,18 @@ describe('the status lists in the reader', () => {
     expect(isSoftListRule('list.expired')).toBe(true);
   });
 
+  it('a list that is over, and that the gateway sends again, does not replace a newer copy that is still valid', async () => {
+    const { gateway, reader, uri } = reading();
+    const older = await (await gateway.fetch(uri)).text();
+    gateway.advance(30 * 60_000);
+    const newer = await reader.tokenList(uri);
+    if (!newer.ok) throw new Error(newer.detail);
+    gateway.advance(31 * 60_000);
+    gateway.fault(TSL, { status: 200, body: older, headers: { 'content-type': 'application/statuslist+jwt' } });
+    const read = await reader.tokenList(uri);
+    expect(read).toMatchObject({ ok: true, value: { fetchedAt: newer.value.fetchedAt, refreshError: expect.any(String) } });
+  });
+
   it('a list that is read and is wrong is a refusal that is not soft: a bad signature, and a list for another URL', async () => {
     const { gateway, reader, uri } = reading();
     const list = await (await gateway.fetch(uri)).text();
