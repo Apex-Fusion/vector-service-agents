@@ -13,7 +13,7 @@ import { DELIVER_BY_BUFFER_MS, FakeChain, TxNotConfirmedError } from '@vsa/buyer
 import type { Chain, ChainEscrowState } from '@vsa/buyer-core';
 import { runJanitorOnce, startJanitor, StrandedStore } from '../src/janitor.ts';
 import type { JanitorChain, StrandedEntry } from '../src/janitor.ts';
-import { OCR_ADVERT, OCR_ADVERT_REF, T0, WINDOW_MS } from './stub-suppliers.ts';
+import { OCR_ADVERT, OCR_ADVERT_REF, T0, WINDOW_MS } from '../testing/index.ts';
 
 const PROMPT = 'ab'.repeat(32);
 const RECEIPT_HASH = 'cd'.repeat(32);

@@ -1,32 +1,41 @@
-// packages/hire-kit/test/stub-suppliers.ts
-// The marketplace the tests of the kit run against, all in memory: a FakeChain that holds a chat advert and an OCR advert, an indexer that lists the chat
-// advert, and a chat supplier on the Responses API that speaks the fleet protocol (Apex-Fusion/agents-marketplace at e847a55, supplier/src/server.ts)
-// through the injected fetch. Moved from agents/document-pipeline/test/stub-suppliers.ts without its OCR supplier: the OCR advert stays, as data, for the
-// tests of the janitor. The chat supplier plays its own part of the escrow on the FakeChain, the Claim when it takes a job (markClaimed) and the Submit
-// when it finishes one (markSubmitted, with the hash of the receipt it signed), and signs its receipts with the real commitment functions and a key made
-// from fixed bytes: Ed25519 signs deterministically, so every run gives the same receipts, and a test can make the receipt it expects with chatFinished.
+// packages/hire-kit/testing/stub-suppliers.ts
+// The marketplace that the tests of the kit run against, all in memory, and the two suppliers in it. The package serves this file as `@vsa/hire-kit/testing`, so that a
+// service runs its own tests against the same suppliers. It holds: a FakeChain with a chat advert, an OCR advert and the advert of an agent; an indexer that lists the chat
+// advert and the agent; a model supplier on the Responses API that speaks the fleet protocol (Apex-Fusion/agents-marketplace at e847a55, supplier/src/server.ts); and a
+// template supplier that speaks the template contract (POST /v1/job and GET /v1/job/:id, as the runtime of the agent template serves them). All of it runs through the
+// injected fetch. The model supplier moved here from agents/document-pipeline/test/stub-suppliers.ts without its OCR supplier: the OCR advert stays, as data, for the
+// tests of the janitor. Each supplier plays its own part of the escrow on the FakeChain, the Claim when it takes a job (markClaimed) and the Submit when it finishes one
+// (markSubmitted, with the hash of the receipt it signed). It signs its receipts with the real commitment functions and a key made from fixed bytes: Ed25519 signs
+// deterministically, so every run gives the same receipts, and a test can make the receipt it expects with chatFinished or templateFinished.
 //
-// The supplier can be told to misbehave the ways the tests need: answer busy, lose the connection before or after it claimed, refuse, fail the job, answer
-// a poll through a proxy, sign with another key, or change its finished answer after it signed it.
+// A supplier can be told to misbehave the ways the tests need: answer busy, lose the connection before or after it claimed, refuse, fail the job, answer a poll through
+// a proxy, sign with another key, or change its finished answer after it signed it. The template supplier can also refuse before its Claim, as the pre-check of its
+// service does, with the status and the code that a test gives.
 //
-// The supplier endpoint is an https IP literal of the documentation range 203.0.113.0/24: the clients reach a supplier only through safeFetch, which looks a
+// The supplier endpoints are https IP literals of the documentation range 203.0.113.0/24: the clients reach a supplier only through safeFetch, which looks a
 // host name up for real, and a literal needs no lookup. The indexer is read with the injected fetch as it is, so its name is free.
 import { createHash, createPrivateKey, createPublicKey, sign as ed25519Sign } from 'node:crypto';
 import { blake2b224Hex, canonicalize, formatOutRef, sha256Utf8Hex } from '@vsa/vector-read';
-import type { AdvertDatum } from '@vsa/vector-read';
+import type { AdvertDatum, IdentityAdvertDatum } from '@vsa/vector-read';
 import { FakeChain, responsesPromptHash, responsesResponseHash } from '@vsa/buyer-core';
-import type { Chain, FakeChainOptions } from '@vsa/buyer-core';
+import type { Chain, FakeChainOptions, VaultChain } from '@vsa/buyer-core';
 
 export const T0 = 1_790_000_000_000;
 export const INDEXER = 'https://indexer.test';
 export const OCR_ENDPOINT = 'https://203.0.113.21';
 export const LLM_ENDPOINT = 'https://203.0.113.31';
+export const AGENT_ENDPOINT = 'https://203.0.113.41';
 export const OCR_ADVERT_REF = `${'a1'.repeat(32)}#0`;
 export const LLM_ADVERT_REF = `${'b2'.repeat(32)}#1`;
+export const AGENT_ADVERT_REF = `${'c3'.repeat(32)}#0`;
 export const OCR_CAPABILITY = 'ocr.page.extract.chandra-ocr-2.v1';
 export const OCR_MODEL = 'historical-records-ocr-v1';
 export const LLM_CAPABILITY = 'llm.text.generate.v1';
 export const LLM_MODEL = 'deepseek/deepseek-v4-flash';
+export const AGENT_CAPABILITY = 'supplychain.order.accept.v1';
+export const AGENT_MODEL = 'order-desk-small';
+/** The agent that the advert of the template supplier names. */
+export const AGENT_ID = 'ae'.repeat(32);
 export const ALLOWLIST: readonly string[] = ['deepseek/deepseek-v4-flash', 'deepseek-v4-pro', 'moonshotai/kimi-k2.6', 'Qwen/Qwen3.6-35B-A3B-FP8'];
 /** The window of both adverts, as the live ChandraOCR advert has it: deliver_by is posted_at + 300000 + 180000. */
 export const WINDOW_MS = 300_000;
@@ -35,6 +44,8 @@ const PREFIX = 'hire-kit-test/';
 export const escrowNo = (n: number): string => formatOutRef(sha256Utf8Hex(`${PREFIX}${n}`), 0);
 /** What the chat supplier answers, unless a test says otherwise. */
 export const ANSWER = 'A bonded escrow holds the price and both bonds until the buyer accepts the work or reclaims the lock.';
+/** What the template supplier answers, unless a test says otherwise. */
+export const AGENT_ANSWER = '{"status":"confirmed","lot":"lot-1","quantity":12}';
 /** The eight checks of verifyFleetReceipt, all passed: what the record of every hire that is accepted carries. */
 export const ALL_PASS = {
   escrow_ref_matches: true, response_hash_matches: true, supplier_key_matches: true, signature_valid: true, on_chain_hash_matches: true,
@@ -56,6 +67,7 @@ export function stubKey(label: string): StubKey {
 }
 export const OCR_KEY = stubKey('hire-kit test: the OCR supplier');
 export const LLM_KEY = stubKey('hire-kit test: the chat supplier');
+export const AGENT_KEY = stubKey('hire-kit test: the template agent');
 /** Not the key of any advert: what a forged receipt is signed with. */
 export const FORGER_KEY = stubKey('hire-kit test: somebody else');
 
@@ -69,6 +81,8 @@ function advert(supplierPkh: string, capabilityId: string, model: string, endpoi
 }
 export const OCR_ADVERT = advert(OCR_KEY.pkh, OCR_CAPABILITY, OCR_MODEL, OCR_ENDPOINT);
 export const LLM_ADVERT = advert(LLM_KEY.pkh, LLM_CAPABILITY, LLM_MODEL, LLM_ENDPOINT);
+/** The advert of the template supplier: identity layout, so that a vault can pay it. The price and the bonds fit the lock that a Post of FakeChain takes. */
+export const AGENT_ADVERT: IdentityAdvertDatum = { ...advert(AGENT_KEY.pkh, AGENT_CAPABILITY, AGENT_MODEL, AGENT_ENDPOINT), agent_id: AGENT_ID };
 
 /** A row of the indexer's /suppliers list for an advert, as the live indexer writes it: amounts as strings, the advert's UTxO as `utxo_ref`. */
 export function indexerRow(ref: string, a: AdvertDatum, over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -100,7 +114,24 @@ export function chatFinished(key: StubKey, escrowRef: string, jobId: string, inp
   return { ...response, receipt, receipt_signature: receiptSignature, escrow_ref: escrowRef };
 }
 
-// --- The chat supplier -----------------------------------------------------------------------------------------------------------------
+/**
+ * What the template supplier serves for a finished job: the answer as the first choice, the receipt with `agent_did`, its signature and the Submitted output, the way the
+ * runtime of the agent template builds it. `payload` is the text that the supplier received (the wire payload), which its receipt hashes as the prompt.
+ */
+export function templateFinished(key: StubKey, escrowRef: string, jobId: string, payload: string, text: string, signer: StubKey = key, submit?: Submit): Record<string, unknown> {
+  const receipt = {
+    escrow_ref: escrowRef, supplier_pkh: key.pkh, prompt_hash: sha256Utf8Hex(payload), response_hash: sha256Utf8Hex(text), model: AGENT_MODEL, prompt_tokens: 0,
+    completion_tokens: 0, wallclock_ms: 1204, agent_did: `did:vector:${AGENT_ID}`,
+  };
+  const receiptSignature = signer.sign(receipt);
+  submit?.(sha256Utf8Hex(canonicalize({ receipt, signature: receiptSignature })));
+  return {
+    choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    receipt, receipt_signature: receiptSignature, escrow_ref: escrowRef, submitted_ref: `${sha256Utf8Hex(`submitted/${jobId}`)}#0`,
+  };
+}
+
+// --- The model supplier ----------------------------------------------------------------------------------------------------------------
 const json = (status: number, body: unknown): Response => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
 /**
@@ -117,7 +148,7 @@ export type PollStep = 'running' | 'done' | 'failed' | 'gone' | 'proxy' | { fail
 
 interface StubJob { id: string; escrowRef: string; input: string; steps: PollStep[]; finished?: Record<string, unknown> }
 
-export class StubChatSupplier {
+export class StubModelSupplier {
   readonly endpoint = LLM_ENDPOINT;
   readonly key = LLM_KEY;
   readonly advertRef = LLM_ADVERT_REF;
@@ -217,12 +248,127 @@ export class StubChatSupplier {
   }
 }
 
+// --- The template supplier -------------------------------------------------------------------------------------------------------------
+/** The envelope of an error of the runtime of the agent template: the code twice (`error` and `reason`) and the words. */
+const envelope = (code: string, message: string): { error: string; message: string; reason: string } => ({ error: code, message, reason: code });
+const jobIdOf = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+
+interface TemplateJob { id: string; escrowRef: string; payload: string; steps: PollStep[]; finished?: Record<string, unknown> }
+
+export class StubTemplateSupplier {
+  readonly endpoint = AGENT_ENDPOINT;
+  readonly key = AGENT_KEY;
+  readonly advertRef = AGENT_ADVERT_REF;
+  readonly chain: FakeChain;
+  /** The text of the answer. */
+  answer = AGENT_ANSWER;
+  /** Answer the next N sends with 409 supplier_busy (the runtime works another job), leaving the escrow Open. */
+  busy = 0;
+  /** Answer the next N sends with 409 busy (the pre-check of the service says that it works), leaving the escrow Open. */
+  serviceBusy = 0;
+  /** The next sends fail the way a dropped connection does, after the supplier claimed the escrow or before. */
+  lose: Array<'after-claim' | 'before-claim'> = [];
+  /** Answer the next N sends with 404 escrow_not_found, as a supplier whose view of the chain does not show the Post yet; the escrow stays Open. */
+  notFound = 0;
+  /** Answer every send with this refusal, as the pre-check of the service does before the Claim: the escrow stays Open and nothing is claimed. */
+  refuse: { status: number; code: string; message?: string } | null = null;
+  /** The poll steps of every new job. */
+  steps: PollStep[] = ['running', 'done'];
+  /** Sign receipts with FORGER_KEY: the hash on chain is still the one of what was signed, as a supplier with the wrong key would submit it. */
+  forge = false;
+  /** The text of a finished answer, made from the finished body after it was signed and submitted. JSON.stringify unless set. */
+  answerText: ((finished: Record<string, unknown>) => string) | null = null;
+  /** Fields that replace those of the /capability answer. */
+  capabilityOverride: Record<string, unknown> = {};
+  /** The status word its /status answers with. */
+  statusWord = 'free';
+  /** Every send, with the escrow it names, the body exactly as received and the payload of the body. */
+  readonly sends: Array<{ escrowRef: string; body: string; payload: string }> = [];
+  readonly jobs = new Map<string, TemplateJob>();
+  polls = 0;
+
+  constructor(chain: FakeChain) { this.chain = chain; }
+
+  async handle(method: string, path: string, body: string): Promise<Response> {
+    if (method === 'GET' && path === '/capability') {
+      return json(200, {
+        capability_id: AGENT_CAPABILITY, model: AGENT_MODEL, max_output_tokens: 8192, max_processing_ms: WINDOW_MS, price_lovelace: '200000', advert_ref: this.advertRef,
+        supplier_pkh: this.key.pkh, pub_key_hex: this.key.pubKeyHex, agent_id: AGENT_ID, agent_did: `did:vector:${AGENT_ID}`, ...this.capabilityOverride,
+      });
+    }
+    if (method === 'GET' && path === '/status') return json(200, { status: this.statusWord, last_seen: '2026-10-15T09:00:00.000Z', active_sessions: 0, max_sessions: 1 });
+    if (method === 'POST' && path === '/v1/job') return this.post(body);
+    if (method === 'GET' && path.startsWith('/v1/job/')) return this.poll(decodeURIComponent(path.slice('/v1/job/'.length)));
+    return json(404, { reason: 'no_route', message: `nothing at ${method} ${path}` });
+  }
+
+  private post(body: string): Response {
+    let request: { escrow_ref?: unknown; payload?: unknown };
+    try { request = JSON.parse(body) as typeof request; } catch { return json(400, envelope('bad_request', 'the body is not JSON')); }
+    const escrowRef = typeof request.escrow_ref === 'string' ? request.escrow_ref : '';
+    const payload = typeof request.payload === 'string' ? request.payload : '';
+    this.sends.push({ escrowRef, body, payload });
+    if (escrowRef === '') return json(400, envelope('escrow_ref_required', 'escrow_ref is required'));
+    if (payload === '') return json(400, envelope('payload_required', 'payload must be a non-empty string'));
+    const lost = this.lose.shift();
+    if (lost !== undefined) {
+      if (lost === 'after-claim') this.chain.markClaimed(escrowRef);
+      throw new TypeError('fetch failed');
+    }
+    const datum = this.chain.escrowDatum(escrowRef);
+    if (datum === undefined || this.notFound > 0) {
+      this.notFound = Math.max(0, this.notFound - 1);
+      return json(404, envelope('escrow_not_found', `escrow UTxO ${escrowRef} not found on chain`));
+    }
+    if (this.busy > 0) {
+      this.busy -= 1;
+      return json(409, envelope('supplier_busy', 'supplier is already working another job'));
+    }
+    if (this.serviceBusy > 0) {
+      this.serviceBusy -= 1;
+      return json(409, envelope('busy', 'the service works another job'));
+    }
+    if (this.refuse !== null) return json(this.refuse.status, envelope(this.refuse.code, this.refuse.message ?? `the service refused the job (${this.refuse.code})`));
+    // The template hashes the payload that it receives and compares it with the prompt hash of the escrow.
+    if (sha256Utf8Hex(payload) !== datum.prompt_hash) return json(409, envelope('prompt_mismatch', 'the payload does not hash to the prompt_hash of the escrow'));
+    // The Claim: the runtime answers only once its Claim is confirmed. markClaimed throws for an escrow that is not Open.
+    try { this.chain.markClaimed(escrowRef); } catch (err) { return json(409, envelope('escrow_not_claimable', err instanceof Error ? err.message : String(err))); }
+    const id = jobIdOf(this.jobs.size + 1);
+    this.jobs.set(id, { id, escrowRef, payload, steps: [...this.steps] });
+    return json(202, { job_id: id, status: 'accepted', escrow_ref: escrowRef });
+  }
+
+  private poll(id: string): Response {
+    this.polls += 1;
+    const job = this.jobs.get(id);
+    if (job === undefined) return json(404, envelope('job_not_found', `no job found with id ${id}`));
+    const step = job.steps.length > 1 ? (job.steps.shift() as PollStep) : job.steps[0];
+    const finished = (): Record<string, unknown> => job.finished
+      ?? (job.finished = templateFinished(this.key, job.escrowRef, job.id, job.payload, this.answer, this.forge ? FORGER_KEY : this.key, (hash) => this.chain.markSubmitted(job.escrowRef, hash)));
+    if (typeof step === 'object') {
+      if (step.submitted) finished();
+      return json(502, { status: 'failed', reason: step.fail, message: `the job failed (${step.fail})`, escrow_ref: job.escrowRef });
+    }
+    switch (step) {
+      case 'running': return json(202, { status: 'running', escrow_ref: job.escrowRef });
+      case 'failed': return json(502, { status: 'failed', reason: 'service_failure', message: 'the service did not answer', escrow_ref: job.escrowRef });
+      case 'gone': return json(404, envelope('job_not_found', `no job found with id ${id}`));
+      case 'proxy': return new Response('<html><body><h1>502 Bad Gateway</h1></body></html>', { status: 502, headers: { 'content-type': 'text/html' } });
+      case 'done': {
+        const body = finished();
+        return new Response(this.answerText ? this.answerText(body) : JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+    }
+  }
+}
+
 // --- The marketplace -----------------------------------------------------------------------------------------------------------------
 export interface Marketplace {
   /** The time of the FakeChain, in POSIX milliseconds; the tests give the hire the same clock. */
   clock: { now: number };
   chain: FakeChain;
-  llm: StubChatSupplier;
+  llm: StubModelSupplier;
+  agent: StubTemplateSupplier;
   /** What the indexer lists at /suppliers. A test may change it before the run. */
   rows: Array<Record<string, unknown>>;
   /** Every request the fetch got, in order. */
@@ -231,25 +377,28 @@ export interface Marketplace {
 }
 
 /**
- * The FakeChain (the two adverts, the clock at T0), the indexer listing the chat advert free, and the chat supplier behind one fetch. `llmAdvert` replaces
- * the datum of the chat advert, on the chain and in the indexer's row alike.
+ * The FakeChain (the three adverts, the clock at T0), the indexer listing the chat advert and the agent free, and the two suppliers behind one fetch. `llmAdvert` and
+ * `agentAdvert` replace the datum of the chat advert and of the agent advert, on the chain and in the indexer's row alike.
  */
-export function marketplace(opts: Pick<FakeChainOptions, 'floatLovelace' | 'collateralLovelace'> & { llmAdvert?: AdvertDatum } = {}): Marketplace {
-  const { llmAdvert = LLM_ADVERT, ...chainOpts } = opts;
+export function marketplace(opts: Pick<FakeChainOptions, 'floatLovelace' | 'collateralLovelace'> & { llmAdvert?: AdvertDatum; agentAdvert?: IdentityAdvertDatum } = {}): Marketplace {
+  const { llmAdvert = LLM_ADVERT, agentAdvert = AGENT_ADVERT, ...chainOpts } = opts;
   const clock = { now: T0 };
-  const chain = new FakeChain({ adverts: { [OCR_ADVERT_REF]: OCR_ADVERT, [LLM_ADVERT_REF]: llmAdvert }, clock: () => clock.now, prefix: PREFIX, ...chainOpts });
-  const llm = new StubChatSupplier(chain);
-  const rows = [indexerRow(LLM_ADVERT_REF, llmAdvert)];
+  const chain = new FakeChain({ adverts: { [OCR_ADVERT_REF]: OCR_ADVERT, [LLM_ADVERT_REF]: llmAdvert, [AGENT_ADVERT_REF]: agentAdvert }, clock: () => clock.now, prefix: PREFIX, ...chainOpts });
+  const llm = new StubModelSupplier(chain);
+  const agent = new StubTemplateSupplier(chain);
+  const rows = [indexerRow(LLM_ADVERT_REF, llmAdvert), indexerRow(AGENT_ADVERT_REF, agentAdvert, { agent_id: agentAdvert.agent_id })];
   const calls: Marketplace['calls'] = [];
   const fetchImpl = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = new URL(String(input));
     const method = init.method ?? 'GET';
     calls.push({ method, url: url.href });
     if (url.origin === INDEXER && method === 'GET' && url.pathname === '/suppliers') return json(200, rows);
+    const body = typeof init.body === 'string' ? init.body : '';
+    if (url.origin === agent.endpoint) return agent.handle(method, url.pathname, body);
     if (url.origin !== llm.endpoint) return json(404, { reason: 'no_route', message: `nothing at ${method} ${url.href}` });
-    return llm.handle(method, url.pathname, new Headers(init.headers).get('x-escrow-ref'), typeof init.body === 'string' ? init.body : '');
+    return llm.handle(method, url.pathname, new Headers(init.headers).get('x-escrow-ref'), body);
   }) as typeof fetch;
-  return { clock, chain, llm, rows, calls, fetchImpl };
+  return { clock, chain, llm, agent, rows, calls, fetchImpl };
 }
 
 /** The FakeChain of `m` behind a plain Chain object whose methods `over` replaces. */
@@ -259,4 +408,9 @@ export function chainWith(m: Marketplace, over: Partial<Chain>): Chain {
     wallet: () => c.wallet(), postEscrow: (a) => c.postEscrow(a), accept: (r) => c.accept(r), reclaim: (r) => c.reclaim(r),
     escrowState: (r) => c.escrowState(r), onChainReceiptHash: (r) => c.onChainReceiptHash(r), readAdvert: (r) => c.readAdvert(r), ...over,
   };
+}
+
+/** The FakeChain of `m` behind a VaultChain object whose methods `over` replaces. */
+export function vaultChainWith(m: Marketplace, over: Partial<VaultChain>): VaultChain {
+  return { ...chainWith(m, {}), payFromVault: (a) => m.chain.payFromVault(a), ...over };
 }

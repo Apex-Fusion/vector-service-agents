@@ -1,5 +1,5 @@
 // packages/hire-kit/test/hire.test.ts
-// hireOne against the in-memory marketplace of test/stub-suppliers.ts: a FakeChain, and a chat supplier speaking the fleet protocol through the injected
+// hireOne against the in-memory marketplace of testing/stub-suppliers.ts: a FakeChain, and a chat supplier speaking the fleet protocol through the injected
 // fetch (every call through safeFetch), with a clock the test owns. Every wait and every message of a hire is held, for the Document Pipeline, through its
 // factory by agents/document-pipeline/test/orchestrate.test.ts; these tests hold what the kit adds to it: the error factory is the whole seam (two factories,
 // the same words), the facts each throw site gives, what an Accept came to, and the two options the Pipeline does not set.
@@ -12,8 +12,8 @@ import type { Chain } from '@vsa/buyer-core';
 import { chatJob, hireOne, verificationOf } from '../src/hire.ts';
 import type { HireDeps, HireErrors, HireFacts, HireLedger, HireOptions, HireSupplier } from '../src/hire.ts';
 import { StrandedStore } from '../src/janitor.ts';
-import { ALL_PASS, ANSWER, LLM_ADVERT, LLM_ADVERT_REF, LLM_CAPABILITY, LLM_ENDPOINT, LLM_KEY, T0, WINDOW_MS, chainWith, chatFinished, escrowNo, marketplace } from './stub-suppliers.ts';
-import type { Marketplace } from './stub-suppliers.ts';
+import { ALL_PASS, ANSWER, LLM_ADVERT, LLM_ADVERT_REF, LLM_CAPABILITY, LLM_ENDPOINT, LLM_KEY, T0, WINDOW_MS, chainWith, chatFinished, escrowNo, marketplace } from '../testing/index.ts';
+import type { Marketplace } from '../testing/index.ts';
 
 const INPUT = 'Answer in one sentence: what does a bonded escrow hold?';
 const LABEL = 'the brief';

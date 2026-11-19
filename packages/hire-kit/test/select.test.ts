@@ -2,7 +2,7 @@
 // The chat job and the choice of the chat supplier, as agents/document-pipeline/src/orchestrate.ts had them (rulings R10, R12, R22, R25, R31, R56, R60,
 // R65): the body {input} and nothing else, the answer hashed as received and its text read before the Accept; the selection with the probe, the advert read
 // on chain and held to the allowlist, the ceiling, the endpoint and the key, the words of each refusal with the caller's code around them, and the line of
-// the choice. And what an advert locks and a sub-job needs. Against the in-memory marketplace of test/stub-suppliers.ts.
+// the choice. And what an advert locks and a sub-job needs. Against the in-memory marketplace of testing/stub-suppliers.ts.
 import { describe, it, expect } from 'vitest';
 import { LLM_SELECTION_BUDGET_MS, LLM_SELECTION_MAX_CANDIDATES, TX_FEE_BUDGET_LOVELACE, planFleetPostEscrow, responsesPromptHash, responsesResponseHash } from '@vsa/buyer-core';
 import type { AdvertDatum } from '@vsa/vector-read';
@@ -12,8 +12,8 @@ import { aboveCeiling, advertOnChain, chooseChatSupplier, choiceLine, keyOfAdver
 import type { ChatQuery } from '../src/select.ts';
 import {
   ALLOWLIST, ANSWER, FORGER_KEY, INDEXER, LLM_ADVERT, LLM_ADVERT_REF, LLM_ENDPOINT, LLM_KEY, OCR_ADVERT, OCR_ADVERT_REF, T0, chainWith, marketplace,
-} from './stub-suppliers.ts';
-import type { Marketplace } from './stub-suppliers.ts';
+} from '../testing/index.ts';
+import type { Marketplace } from '../testing/index.ts';
 
 const INPUT = 'Answer in one sentence: what does a bonded escrow hold?';
 const CEILING = 1_000_000n;

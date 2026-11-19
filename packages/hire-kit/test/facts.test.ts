@@ -2,7 +2,7 @@
 // The facts of every throw site of src/hire.ts: what each error of a hire tells the caller's factory besides its words (HireFacts), the stage the hire was
 // at, the escrow, the state of the escrow as the phase of the site last read it, and whether the job was handed over. A service that falls back reads them
 // (agents/advocate/src/inference.ts logs the stage of a hire that failed and names its escrow in the detail, and falls back or not by the code), so every site
-// is driven here on the FakeChain and the chat supplier of test/stub-suppliers.ts, with a clock the test owns and a sleep that moves it, one row of the table
+// is driven here on the FakeChain and the chat supplier of testing/stub-suppliers.ts, with a clock the test owns and a sleep that moves it, one row of the table
 // or more each, and held to the facts it gives. src/hire.ts makes its errors at 27 sites: 18 failures, 6 deadlines and 3 writes of the stranded store
 // (the closure that fails a receipt is one site with two throws, and both are driven). The last test counts them in the source, so that a site added there
 // needs its row here. A row names its site, and shows that the site threw by the code the factory was asked for and words of the kit that only that site
@@ -17,8 +17,8 @@ import type { Chain } from '@vsa/buyer-core';
 import { chatJob, hireOne } from '../src/hire.ts';
 import type { HireDeps, HireErrors, HireFacts, HireLedger, HireOptions, HireSupplier } from '../src/hire.ts';
 import { StrandedStore } from '../src/janitor.ts';
-import { LLM_ADVERT, LLM_ADVERT_REF, LLM_ENDPOINT, LLM_KEY, T0, WINDOW_MS, chainWith, escrowNo, marketplace } from './stub-suppliers.ts';
-import type { Marketplace } from './stub-suppliers.ts';
+import { LLM_ADVERT, LLM_ADVERT_REF, LLM_ENDPOINT, LLM_KEY, T0, WINDOW_MS, chainWith, escrowNo, marketplace } from '../testing/index.ts';
+import type { Marketplace } from '../testing/index.ts';
 
 const INPUT = 'Answer in one sentence: what does a bonded escrow hold?';
 /** The chat supplier as chooseChatSupplier gives it for the advert of the stub. */
