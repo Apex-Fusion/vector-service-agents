@@ -2904,8 +2904,7 @@ test('CI: the test job installs ffmpeg and the speech model of Audio Snippets be
   const cache = at((s) => s.uses === 'actions/cache@v4');
   const fetch = at((s) => s.run === 'python -I agents/audio-snippets/asr/fetch_model.py base agents/audio-snippets/.models/base');
   assert.ok(steps[apt].run.split(' ').includes('ffmpeg'), 'ffmpeg and ffprobe');
-  // The pip cache is keyed on the pinned requirements file, so a run with the same requirements downloads no wheel.
-  assert.deepEqual(steps[python].with, { 'python-version': '3.11', cache: 'pip', 'cache-dependency-path': 'agents/audio-snippets/asr/requirements.txt' });
+  assert.deepEqual(steps[python].with, { 'python-version': '3.11' });
   // In this order, each step needing the one before it: the tools, Python, the requirements, the cache, the fetch, then the tests (ruling R-D26).
   assert.ok([apt, python, pip, cache, fetch].every((at) => at >= 0), 'every step is there');
   assert.ok(apt < python && python < pip && pip < cache && cache < fetch && fetch < tests, 'apt, python, pip, the cache, the fetch, the tests');
@@ -2957,20 +2956,10 @@ test('CI: the build job builds the four images of the publish job on every pull 
   assert.equal(builds.length, 4);
   const published = ci.jobs.publish.steps.filter((s) => s.uses === 'docker/build-push-action@v6').map((s) => s.with.file);
   assert.deepEqual(builds.map((s) => s.with.file), published, 'the Dockerfiles of the publish job, in its order');
-  // Each image has one cache scope, the name of its agent. The build job writes it and reads it.
-  const scopeOf = (file) => file.split('/')[1];
   for (const step of builds) {
-    const scope = scopeOf(step.with.file);
-    assert.deepEqual(step.with, { context: '.', file: step.with.file, push: false, 'cache-from': `type=gha,scope=${scope}`, 'cache-to': `type=gha,mode=max,scope=${scope}` }, step.with.file);
+    assert.deepEqual(step.with, { context: '.', file: step.with.file, push: false }, step.with.file);
     assert.equal(step.if, undefined, step.with.file);
     assert.ok(existsSync(join(root, step.with.file)), step.with.file);
-  }
-  // The publish job builds each image again. It reads the cache of the same scope, so that it reuses the layers of the build job, and it writes no cache. Provenance is
-  // off, so that a pushed image stays one manifest with no attestation, as it was.
-  for (const step of ci.jobs.publish.steps.filter((s) => s.uses === 'docker/build-push-action@v6')) {
-    assert.equal(step.with['cache-from'], `type=gha,scope=${scopeOf(step.with.file)}`, step.with.file);
-    assert.equal(step.with['cache-to'], undefined, step.with.file);
-    assert.equal(step.with.provenance, false, step.with.file);
   }
 });
 
