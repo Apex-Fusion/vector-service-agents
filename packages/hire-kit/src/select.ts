@@ -25,6 +25,7 @@ import { blake2b224Hex } from '@vsa/vector-read';
 import type { AdvertDatum } from '@vsa/vector-read';
 import { canonicalRef, errorText } from './format.ts';
 import type { HireSupplier } from './hire.ts';
+import type { StrandedKind } from './janitor.ts';
 
 /** What the choice of a chat supplier is asked with. */
 export interface ChatQuery {
@@ -62,10 +63,14 @@ export async function advertOnChain<E>(chain: Chain, advertRef: string, unavaila
 /** The host of an endpoint, for a log line: the whole URL is the supplier's to write and stays out of the log (ruling R65). */
 const hostOf = (endpoint: string): string => { try { return new URL(endpoint).host; } catch { return 'unreadable'; } };
 
-/** The line a run logs for the supplier it chose (ruling R65): its advert, the model of the chat supplier, its price and the host of its endpoint. */
-export function choiceLine(supplier: HireSupplier): string {
-  const model = supplier.hop === 'llm' ? `, model ${flatText(supplier.model, 100)}` : '';
-  return `chosen ${supplier.hop === 'ocr' ? 'OCR' : 'chat'} supplier: advert ${supplier.advertRef}${model}, price ${supplier.advert.price_lovelace} lovelace, endpoint host ${hostOf(supplier.endpoint)}`;
+/**
+ * The line a run logs for the supplier it chose (ruling R65): its advert, the model of a chat supplier or of an agent, its price and the host of its endpoint. The words
+ * of an OCR supplier and of a chat supplier are what they were; an agent is "chosen agent supplier".
+ */
+export function choiceLine(supplier: HireSupplier<StrandedKind>): string {
+  const model = supplier.hop === 'ocr' ? '' : `, model ${flatText(supplier.model, 100)}`;
+  const who = supplier.hop === 'ocr' ? 'OCR' : supplier.hop === 'llm' ? 'chat' : 'agent';
+  return `chosen ${who} supplier: advert ${supplier.advertRef}${model}, price ${supplier.advert.price_lovelace} lovelace, endpoint host ${hostOf(supplier.endpoint)}`;
 }
 
 /** What an advert above its ceiling is said to be: its price, the ceiling, and the setting that holds it. */
@@ -104,7 +109,7 @@ export async function chooseChatSupplier<E extends Error>(chain: Chain, query: C
  * The lock a Post on the supplier's advert takes, planned as the Post plans it (planFleetPostEscrow, in the layout of the advert, with the refund to the
  * enterprise address of `buyerPkh`, the address of every chain of buyer-core); the planner's Error passes through for an advert no Post can be planned on.
  */
-export function plannedLockOf(supplier: HireSupplier, buyerPkh: string, nowMs: number): bigint {
+export function plannedLockOf(supplier: HireSupplier<StrandedKind>, buyerPkh: string, nowMs: number): bigint {
   const terms = fleetPostTerms(supplier.advert, enterpriseAddressOf(buyerPkh));
   return planFleetPostEscrow(supplier.advert, supplier.advertRef, buyerPkh, PLANNING_PROMPT_HASH, nowMs, terms).lockLovelace;
 }

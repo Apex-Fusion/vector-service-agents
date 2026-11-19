@@ -63,9 +63,9 @@ import type { AdvertDatum } from '@vsa/vector-read';
 import { BUSY_RETRY_MS, POLL_INTERVAL_MS, RECEIPT_HASH_WAIT_MS, SEND_CUTOFF_MS, checkWithin, fit, waitWithin } from './budget.ts';
 import type { Clocked } from './budget.ts';
 import { errorText, iso } from './format.ts';
-import type { StrandedStore } from './janitor.ts';
+import type { StrandedKind, StrandedStore } from './janitor.ts';
 
-/** The hop a hire is for, in the words of the stranded file's `kind` (src/janitor.ts). */
+/** The hop of a hire of the Pipeline, in the words of the stranded file's `kind` (src/janitor.ts): an OCR page or a chat job. The hire of an agent is a hop of its own, `'agent'`: its factory is a HireErrors<E, 'agent'>. */
 export type HireKind = 'ocr' | 'llm';
 /** How a hire fails before its Accept, the <what> of <hop>_<what>: see the head of this file. */
 export type HireFailure = 'post_failed' | 'busy' | 'refused' | 'send_lost' | 'failed' | 'timeout' | 'bad_result' | 'receipt_failed' | 'receipt_unavailable' | 'accept_failed';
@@ -81,17 +81,32 @@ export interface HireFacts {
   /** A send was accepted: the supplier claimed and gave a job id. */
   handedOver: boolean;
 }
+/**
+ * What a throw site knows besides its facts: a caller that turns a failure into a result reads it, and the factory of the Pipeline ignores it. It is a second argument and not a part of
+ * the facts, so the facts of every site stay what they were.
+ */
+export interface HireDetail {
+  /**
+   * The supplier's own word when it turned the send down: the status and the code of its envelope, and its message. A supplier that stays busy, or keeps answering escrow_not_found,
+   * until the send is out of time gives its last word.
+   */
+  refusal?: { status: number; code: string; message: string };
+  /** The error that ended a Post before its signature: a typed refusal of a vault Pay, for example. */
+  cause?: unknown;
+  /** The checks of a receipt that failed one. */
+  verdict?: FleetVerification;
+}
 /** The kit writes every message; the factory chooses the class, the code and the status. */
-export interface HireErrors<E extends Error> {
-  failure(kind: HireKind, what: HireFailure, message: string, facts: HireFacts): E;
+export interface HireErrors<E extends Error, K extends StrandedKind = HireKind> {
+  failure(kind: K, what: HireFailure, message: string, facts: HireFacts, detail?: HireDetail): E;
   /** `doing` completes "the deadline came while ...": "the brief was being polled". */
   deadline(doing: string, facts: HireFacts): E;
   storeWrite(message: string, facts: HireFacts): E;
 }
 
 /** The supplier of a hire, as established before its Post: the advert on chain, the endpoint it names, the key /capability serves. */
-export interface HireSupplier {
-  hop: HireKind;
+export interface HireSupplier<K extends StrandedKind = HireKind> {
+  hop: K;
   /** Canonical. */
   advertRef: string;
   /** The advert's datum as read on chain before the Post (ruling R31): what the escrow is planned from and settles against. */
@@ -115,6 +130,11 @@ export interface HireJob<T> {
   poll: (jobId: string, escrowRef: string) => Promise<PollResult>;
   /** The response hash recomputed from the finished body, and what the run keeps of it. Throws for a body it cannot use. */
   read: (body: Record<string, unknown>) => { responseHash: string; value: T };
+  /**
+   * How the escrow of this job is paid: the Post of the chain, unless this says otherwise. `what` names the payment in the messages ("Post" by default), and `run` makes it and
+   * gives its result. A payment that throws before its signature locked nothing, and one that throws a TxNotConfirmedError is recorded for the janitor, as a Post is.
+   */
+  payment?: { what: string; run: () => Promise<PostResult> };
 }
 
 export interface HireDeps extends Clocked { chain: Chain; stranded: StrandedStore; log?: (line: string) => void }
@@ -128,21 +148,46 @@ export interface HireRecord {
   capability_id: string; advert_ref: string; escrow_ref: string; supplier_pkh: string;
   receipt: Receipt; receipt_signature: string; verification: Record<string, boolean>;
 }
-/** Both absent for the Pipeline, which keeps today's behaviour exactly. */
-export interface HireOptions {
+/** All absent for the Pipeline, which keeps today's behaviour exactly. */
+export interface HireOptions<T = unknown> {
   /** No send at all once the clock is past it: a Post confirmed late stays Open, for the janitor. */
   firstSendBy?: number;
   /** The receipt-hash re-reads stop here instead of at deps.deadlineMs. */
   receiptBy?: number;
+  /**
+   * The decision between the verified receipt and the Accept. Absent, the Accept is made. A decision that does not accept stops the hire with a HireDeclined, and a hook that throws
+   * stops it with its own error: in both the escrow stays Submitted and recorded, and no Accept is made.
+   */
+  decide?: (delivery: Delivery<T>) => AcceptDecision | Promise<AcceptDecision>;
 }
 /** A hire that was verified and accepted: its record, what `read` kept of the answer, the verification, and whether the Accept was seen confirmed. */
 export interface Hired<T> { record: HireRecord; value: T; verdict: FleetVerification; accepted: 'confirmed' | 'pending' }
+/** What the decision of a hire is given: a delivery that passed the eight checks, and has not been accepted. */
+export type Delivery<T> = Omit<Hired<T>, 'accepted'>;
+/** The decision: accept, or do not, with the reason that the caller gives. */
+export type AcceptDecision = { accept: true } | { accept: false; reason: string };
+/** A hire whose decision was not to accept: its delivery, and the reason. Only a hire that has a `decide` throws it. */
+export class HireDeclined<T = unknown> extends Error {
+  readonly delivery: Delivery<T>;
+  readonly reason: string;
+  constructor(delivery: Delivery<T>, reason: string) {
+    super(`The delivery of ${delivery.record.escrow_ref} was not accepted: ${reason}. Its escrow stays Submitted and recorded for the janitor.`);
+    this.name = 'HireDeclined';
+    this.delivery = delivery;
+    this.reason = reason;
+  }
+}
 
 type Done = Extract<PollResult, { kind: 'done' }>;
 /** The reasons a fleet supplier fails a job with when its own Submit went wrong (agents-marketplace supplier/src/jobRunner.ts). */
 const SUBMIT_FAILURES: ReadonlySet<string> = new Set(['submit_timeout', 'submit_failed']);
-const failure = <E extends Error>(errors: HireErrors<E>, s: HireSupplier, what: HireFailure, message: string, facts: HireFacts): E => errors.failure(s.hop, what, message, facts);
-const named = (s: HireSupplier): string => (s.hop === 'ocr' ? 'The OCR supplier' : 'The chat supplier');
+/** What the steps of a hire work with, whatever its hop. */
+type AnySupplier = HireSupplier<StrandedKind>;
+type AnyErrors<E extends Error> = HireErrors<E, StrandedKind>;
+const failure = <E extends Error>(errors: AnyErrors<E>, s: AnySupplier, what: HireFailure, message: string, facts: HireFacts, detail?: HireDetail): E => (
+  detail === undefined ? errors.failure(s.hop, what, message, facts) : errors.failure(s.hop, what, message, facts, detail)
+);
+const named = (s: AnySupplier): string => (s.hop === 'ocr' ? 'The OCR supplier' : s.hop === 'llm' ? 'The chat supplier' : 'The agent');
 /** The state of the escrow, or null when it cannot be read. */
 async function stateOf(chain: Chain, escrowRef: string): Promise<ChainEscrowState | null> {
   try { return await chain.escrowState(escrowRef); } catch { return null; }
@@ -154,7 +199,7 @@ function factsOf(stage: HireStage, escrowRef: string | null, handedOver: boolean
 }
 
 /** A write of the stranded store after an escrow was posted; one that fails is the factory's storeWrite, whose message starts with the escrow and says what follows. */
-function recorded<E extends Error>(errors: HireErrors<E>, facts: HireFacts, write: () => void, escrowRef: string, consequence: string): void {
+function recorded<E extends Error>(errors: AnyErrors<E>, facts: HireFacts, write: () => void, escrowRef: string, consequence: string): void {
   try { write(); } catch (err) {
     throw errors.storeWrite(`Escrow ${escrowRef} could not be recorded in the stranded store (${errorText(err)}): ${consequence}`, facts);
   }
@@ -162,9 +207,10 @@ function recorded<E extends Error>(errors: HireErrors<E>, facts: HireFacts, writ
 
 /**
  * Hires `supplier` for `job`: the record of the sub-job and what `read` kept of the answer, once the escrow is verified and accepted. Books what it moved
- * in `ledger`. Every failure is an error of `errors` (see the head of this file).
+ * in `ledger`. Every failure is an error of `errors` (see the head of this file). With `options.decide` the Accept waits for the decision of the caller: a decision that
+ * does not accept ends the hire with a HireDeclined, and the escrow stays Submitted and recorded.
  */
-export async function hireOne<T, E extends Error>(deps: HireDeps, supplier: HireSupplier, job: HireJob<T>, ledger: HireLedger, errors: HireErrors<E>, options: HireOptions = {}): Promise<Hired<T>> {
+export async function hireOne<T, E extends Error, K extends StrandedKind = HireKind>(deps: HireDeps, supplier: HireSupplier<K>, job: HireJob<T>, ledger: HireLedger, errors: HireErrors<E, K>, options: HireOptions<T> = {}): Promise<Hired<T>> {
   const post = await postEscrow(deps, supplier, job, ledger, errors);
   // A Post confirmed past firstSendBy is not sent at all: its escrow stays Open, recorded, for the janitor.
   if (options.firstSendBy !== undefined && deps.clock() > options.firstSendBy) throw errors.deadline(`the Post for ${job.label} was being confirmed`, factsOf('send', post.escrowRef, false));
@@ -177,39 +223,42 @@ export async function hireOne<T, E extends Error>(deps: HireDeps, supplier: Hire
     throw failure(errors, supplier, 'bad_result', `${named(supplier)}'s answer for ${job.label} cannot be used (${errorText(err)}); its escrow ${post.escrowRef} is not accepted and stays with the janitor.`, factsOf('answer', post.escrowRef, true));
   }
   const verification = await verified(deps, supplier, job, post, done, read.responseHash, errors, options);
-  const accepted = await accept(deps, supplier, job, post, ledger, answeredAt, errors);
-  return {
-    record: {
-      capability_id: supplier.capabilityId, advert_ref: supplier.advertRef, escrow_ref: post.escrowRef, supplier_pkh: post.supplierPkh,
-      receipt: done.receipt, receipt_signature: done.receiptSignature, verification: verificationOf(verification.checks),
-    },
-    value: read.value,
-    verdict: verification,
-    accepted,
+  const record: HireRecord = {
+    capability_id: supplier.capabilityId, advert_ref: supplier.advertRef, escrow_ref: post.escrowRef, supplier_pkh: post.supplierPkh,
+    receipt: done.receipt, receipt_signature: done.receiptSignature, verification: verificationOf(verification.checks),
   };
+  // The decision of the caller comes after the eight checks and before the Accept. A hook that throws, or declines, leaves the escrow Submitted: nothing is accepted.
+  if (options.decide !== undefined) {
+    const delivery: Delivery<T> = { record, value: read.value, verdict: verification };
+    const decision = await options.decide(delivery);
+    if (!decision.accept) throw new HireDeclined(delivery, decision.reason);
+  }
+  const accepted = await accept(deps, supplier, job, post, ledger, answeredAt, errors);
+  return { record, value: read.value, verdict: verification, accepted };
 }
 
 /**
- * The Post, recorded as stranded once it is confirmed. One that failed after its signature is recorded with its validity, whether it may still land or
- * the submit API refused it (ruling R59: an API can answer 4xx for a transaction it forwarded); the janitor drops an entry the chain never shows once that
- * validity has passed. A Post that failed before its signature locked nothing and is not recorded.
+ * The payment, recorded as stranded once it is confirmed (a Post of the chain unless the job has a `payment`). One that failed after its signature is recorded with its validity,
+ * whether it may still land or the submit API refused it (ruling R59: an API can answer 4xx for a transaction it forwarded); the janitor drops an entry the chain never shows once
+ * that validity has passed. One that failed before its signature locked nothing and is not recorded; the error that ended it goes to the factory as the `cause` of the failure.
  */
-async function postEscrow<T, E extends Error>(deps: HireDeps, supplier: HireSupplier, job: HireJob<T>, ledger: HireLedger, errors: HireErrors<E>): Promise<PostResult> {
+async function postEscrow<T, E extends Error>(deps: HireDeps, supplier: AnySupplier, job: HireJob<T>, ledger: HireLedger, errors: AnyErrors<E>): Promise<PostResult> {
+  const what = job.payment?.what ?? 'Post';
   let post: PostResult;
   try {
-    post = await deps.chain.postEscrow({ advertRef: supplier.advertRef, promptHash: job.promptHash });
+    post = await (job.payment === undefined ? deps.chain.postEscrow({ advertRef: supplier.advertRef, promptHash: job.promptHash }) : job.payment.run());
   } catch (err) {
     if (err instanceof TxNotConfirmedError && err.deliverBy !== null) {
       const { escrowRef, deliverBy, validTo, mayLand } = err;
       const signed = factsOf('post', escrowRef, false);
       recorded(errors, signed, () => deps.stranded.add({ escrow_ref: escrowRef, deliver_by: deliverBy, posted_at: deliverBy - supplier.windowMs - DELIVER_BY_BUFFER_MS, kind: supplier.hop, valid_to: validTo }),
-        escrowRef, `its Post for ${job.label} was ${mayLand ? 'not seen confirmed and may land' : 'refused by the submit API after it was signed, and could land all the same if the API had forwarded it,'} until ${iso(validTo)}, and then the janitor does not know of it. Read it after its deliver_by (${iso(deliverBy)}) and reclaim it by hand if it landed.`);
+        escrowRef, `its ${what} for ${job.label} was ${mayLand ? 'not seen confirmed and may land' : 'refused by the submit API after it was signed, and could land all the same if the API had forwarded it,'} until ${iso(validTo)}, and then the janitor does not know of it. Read it after its deliver_by (${iso(deliverBy)}) and reclaim it by hand if it landed.`);
       if (!mayLand) {
-        throw failure(errors, supplier, 'post_failed', `The submit API refused the Post for ${job.label} after it was signed (${errorText(err)}). Nothing should have been locked, but its escrow ${escrowRef} is recorded for the janitor in case it landed anyway: the janitor drops the record once the Post's validity has ended (${iso(validTo)}) and the ledger shows nothing at it, and reclaims the escrow after its deliver_by if it is there.`, signed);
+        throw failure(errors, supplier, 'post_failed', `The submit API refused the ${what} for ${job.label} after it was signed (${errorText(err)}). Nothing should have been locked, but its escrow ${escrowRef} is recorded for the janitor in case it landed anyway: the janitor drops the record once the ${what}'s validity has ended (${iso(validTo)}) and the ledger shows nothing at it, and reclaims the escrow after its deliver_by if it is there.`, signed);
       }
-      throw failure(errors, supplier, 'post_failed', `The Post for ${job.label} was not confirmed (${errorText(err)}). It may still land until ${iso(validTo)}: its escrow ${escrowRef} is recorded for the janitor, which reclaims it after its deliver_by if it did.`, signed);
+      throw failure(errors, supplier, 'post_failed', `The ${what} for ${job.label} was not confirmed (${errorText(err)}). It may still land until ${iso(validTo)}: its escrow ${escrowRef} is recorded for the janitor, which reclaims it after its deliver_by if it did.`, signed);
     }
-    throw failure(errors, supplier, 'post_failed', `The Post for ${job.label} failed (${errorText(err)}). Nothing was locked for it.`, factsOf('post', null, false));
+    throw failure(errors, supplier, 'post_failed', `The ${what} for ${job.label} failed (${errorText(err)}). Nothing was locked for it.`, factsOf('post', null, false), { cause: err });
   }
   ledger.posted(post);
   recorded(errors, factsOf('post', post.escrowRef, false), () => deps.stranded.add({ escrow_ref: post.escrowRef, deliver_by: post.deliverBy, posted_at: post.postedAt, kind: supplier.hop }),
@@ -218,7 +267,7 @@ async function postEscrow<T, E extends Error>(deps: HireDeps, supplier: HireSupp
 }
 
 /** Sends the job until the supplier accepts it, and gives back the job id. */
-async function handOver<T, E extends Error>(deps: HireDeps, supplier: HireSupplier, job: HireJob<T>, post: PostResult, errors: HireErrors<E>): Promise<string> {
+async function handOver<T, E extends Error>(deps: HireDeps, supplier: AnySupplier, job: HireJob<T>, post: PostResult, errors: AnyErrors<E>): Promise<string> {
   const sendUntil = post.deliverBy - SEND_CUTOFF_MS;
   const escrow = `its escrow ${post.escrowRef}`;
   /** The state the send last read the escrow in, for the facts of a throw (null: that read failed). */
@@ -231,6 +280,10 @@ async function handOver<T, E extends Error>(deps: HireDeps, supplier: HireSuppli
   };
   /** What becomes of the escrow, in the words of the state it is read in now. */
   const leftTo = async (): Promise<string> => `${escrow} is ${said(await readState())} and goes to the janitor`;
+  /** The supplier's own word, for a caller that turns the end of a send into a result: what a refused send said, or that the supplier stayed busy (409). */
+  const wordOf = (sent: SendResult): HireDetail => ({
+    refusal: sent.kind === 'refused' ? { status: sent.status, code: sent.reason, message: sent.message } : { status: 409, code: 'busy', message: '' },
+  });
   /**
    * The state of the escrow after a send that did not hand the job over (ruling R58): a state that cannot be read is no verdict, so it is read again
    * every 15 s until the send cutoff. Still unreadable then, the supplier may hold the job with no job id to ask it for: <hop>_send_lost.
@@ -271,13 +324,13 @@ async function handOver<T, E extends Error>(deps: HireDeps, supplier: HireSuppli
       if (next === 'past the deadline') throw errors.deadline(`${job.label} waited for its supplier`, at());
       const tried = `${job.label} was sent ${sends} times, ${BUSY_RETRY_MS / 1000} s apart, until ${SEND_CUTOFF_MS / 1000} s before the deliver_by of the escrow`;
       throw notFound
-        ? failure(errors, supplier, 'refused', `${named(supplier)} kept answering ${answer}, as if the escrow were not on chain: ${tried}; ${await leftTo()}.`, at())
-        : failure(errors, supplier, 'busy', `${named(supplier)} stayed busy: ${tried}; ${await leftTo()}.`, at());
+        ? failure(errors, supplier, 'refused', `${named(supplier)} kept answering ${answer}, as if the escrow were not on chain: ${tried}; ${await leftTo()}.`, at(), wordOf(sent))
+        : failure(errors, supplier, 'busy', `${named(supplier)} stayed busy: ${tried}; ${await leftTo()}.`, at(), wordOf(sent));
     }
     // A 4xx in the supplier's own envelope is the supplier turning the job down. A 4xx whose body is no JSON object, or a JSON object without a string
     // reason (bad_response), is something in front of the supplier, and is handled like no answer (ruling R57).
     if (sent.kind === 'refused' && sent.status >= 400 && sent.status < 500 && sent.reason !== 'bad_response') {
-      throw failure(errors, supplier, 'refused', `${named(supplier)} refused ${job.label} (${answer}); ${await leftTo()}.`, at());
+      throw failure(errors, supplier, 'refused', `${named(supplier)} refused ${job.label} (${answer}); ${await leftTo()}.`, at(), wordOf(sent));
     }
     // No answer, a 5xx, a 4xx page, or a 202 without a job id: the supplier may have claimed the escrow. Its state says whether the job can be sent again.
     const state = await stateAfter(answer);
@@ -288,7 +341,7 @@ async function handOver<T, E extends Error>(deps: HireDeps, supplier: HireSuppli
       continue;
     }
     if (state === 'Open' && sent.kind === 'refused') {
-      throw failure(errors, supplier, 'refused', `${named(supplier)} refused ${job.label} twice (${answer}); ${escrow} is Open and goes to the janitor.`, at());
+      throw failure(errors, supplier, 'refused', `${named(supplier)} refused ${job.label} twice (${answer}); ${escrow} is Open and goes to the janitor.`, at(), wordOf(sent));
     }
     throw failure(errors, supplier, 'send_lost', state === 'Open'
       ? `The send of ${job.label} got no answer twice; ${escrow} is Open and goes to the janitor.`
@@ -297,7 +350,7 @@ async function handOver<T, E extends Error>(deps: HireDeps, supplier: HireSuppli
 }
 
 /** Polls the job every 3 s until the supplier hands over its result, and gives back the finished answer. */
-async function finished<T, E extends Error>(deps: HireDeps, supplier: HireSupplier, job: HireJob<T>, post: PostResult, jobId: string, errors: HireErrors<E>): Promise<Done> {
+async function finished<T, E extends Error>(deps: HireDeps, supplier: AnySupplier, job: HireJob<T>, post: PostResult, jobId: string, errors: AnyErrors<E>): Promise<Done> {
   const escrow = `its escrow ${post.escrowRef}`;
   /** The state the polls last read the escrow in, for the facts of a throw (null: that read failed). */
   let seen: { state: ChainEscrowState | null } | undefined;
@@ -327,7 +380,7 @@ async function finished<T, E extends Error>(deps: HireDeps, supplier: HireSuppli
  * The receipt's eight checks, VERIFIED, or an error of the factory: first without the chain, then against the hash on chain, waiting for it up to 120 s,
  * and no later than `options.receiptBy` when it is given, in place of the deadline.
  */
-async function verified<T, E extends Error>(deps: HireDeps, supplier: HireSupplier, job: HireJob<T>, post: PostResult, done: Done, responseHashHex: string, errors: HireErrors<E>, options: HireOptions): Promise<FleetVerification> {
+async function verified<T, E extends Error>(deps: HireDeps, supplier: AnySupplier, job: HireJob<T>, post: PostResult, done: Done, responseHashHex: string, errors: AnyErrors<E>, options: Pick<HireOptions, 'receiptBy'>): Promise<FleetVerification> {
   const escrow = `its escrow ${post.escrowRef}`;
   const at = (): HireFacts => factsOf('receipt', post.escrowRef, true);
   const input: Omit<FleetVerifyInput, 'onChainReceiptHash'> = {
@@ -336,7 +389,7 @@ async function verified<T, E extends Error>(deps: HireDeps, supplier: HireSuppli
   };
   const failed = (v: FleetVerification): E => {
     const checks = Object.entries(v.checks).filter(([, state]) => state === 'fail').map(([check]) => check).join(', ');
-    return failure(errors, supplier, 'receipt_failed', `The receipt for ${job.label} failed ${checks}; ${escrow} is not accepted and stays with the janitor.`, at());
+    return failure(errors, supplier, 'receipt_failed', `The receipt for ${job.label} failed ${checks}; ${escrow} is not accepted and stays with the janitor.`, at(), { verdict: v });
   };
   // The reads stop at receiptBy, when the caller gives one, instead of at the deadline (HireOptions).
   const reads: Clocked = options.receiptBy === undefined ? deps : { clock: () => deps.clock(), sleep: (ms) => deps.sleep(ms), deadlineMs: options.receiptBy };
@@ -363,7 +416,7 @@ async function verified<T, E extends Error>(deps: HireDeps, supplier: HireSuppli
  * over its result (its Submit came before it, so the window ends then at the latest). Only then is it <hop>_accept_failed. The deadline of the run
  * is not asked: a hire in its Accept finishes late (ruling R53). Says which it came to: confirmed, or pending for the janitor.
  */
-async function accept<T, E extends Error>(deps: HireDeps, supplier: HireSupplier, job: HireJob<T>, post: PostResult, ledger: HireLedger, answeredAt: number, errors: HireErrors<E>): Promise<'confirmed' | 'pending'> {
+async function accept<T, E extends Error>(deps: HireDeps, supplier: AnySupplier, job: HireJob<T>, post: PostResult, ledger: HireLedger, answeredAt: number, errors: AnyErrors<E>): Promise<'confirmed' | 'pending'> {
   const at = (): HireFacts => factsOf('accept', post.escrowRef, true);
   const lastChance = answeredAt + ACCEPT_WINDOW_MS;
   let accepted: { txHash: string; feeLovelace: bigint } | undefined;

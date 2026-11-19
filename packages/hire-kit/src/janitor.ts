@@ -37,7 +37,8 @@ import { ACCEPT_WINDOW_MS, TxNotConfirmedError } from '@vsa/buyer-core';
 import type { Chain, ChainEscrowState } from '@vsa/buyer-core';
 import { canonicalRef, errorText, iso } from './format.ts';
 
-export type StrandedKind = 'ocr' | 'llm';
+/** The hop that posted an entry: an OCR page, a chat job, or the job of an agent of the template contract. The store reads an entry of every kind it ever wrote. */
+export type StrandedKind = 'ocr' | 'llm' | 'agent';
 /** An Accept that was signed and sent but not seen confirmed: its transaction, the end of its validity, and who made it (the run, or the janitor's one more). */
 export interface AcceptPending { tx_hash: string; valid_to: number; by: 'run' | 'janitor' }
 /** A sub-escrow the janitor looks after. Times are POSIX milliseconds. */
@@ -105,7 +106,7 @@ function entryOf(value: unknown): StrandedEntry {
     const required = field === 'deliver_by' || field === 'posted_at';
     if ((required || value[field] !== undefined) && !isWhole(value[field])) throw new Error(`${field} of ${escrowRef} is not a whole number`);
   }
-  if (value.kind !== 'ocr' && value.kind !== 'llm') throw new Error(`kind of ${escrowRef} is neither ocr nor llm`);
+  if (value.kind !== 'ocr' && value.kind !== 'llm' && value.kind !== 'agent') throw new Error(`kind of ${escrowRef} is none of ocr, llm and agent`);
   const optional = (field: 'valid_to' | 'lost_to_release_after' | 'gone_reads') => (value[field] === undefined ? {} : { [field]: value[field] as number });
   return {
     escrow_ref: escrowRef, deliver_by: value.deliver_by as number, posted_at: value.posted_at as number, kind: value.kind,
