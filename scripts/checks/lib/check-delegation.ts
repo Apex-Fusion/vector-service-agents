@@ -47,7 +47,7 @@ const asList = (value: unknown): string[] => (Array.isArray(value) ? value.filte
 const asRecord = (value: unknown): Record<string, unknown> => (value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
 
 /** What `vector_get_delegation` must show for the delegation that the step made. */
-function liveDelegation(id: string, facts: Record<string, unknown>): ToolCheck {
+export function liveDelegation(id: string, facts: Record<string, unknown>): ToolCheck {
   return {
     tool: 'vector_get_delegation', args: { delegation: id },
     problems: (answer) => {
@@ -121,7 +121,7 @@ const delegate: StepHandler<DelegationSettings> = {
 };
 
 /** Ends the delegation of the step `delegate`. The wallet of the member gets its output back. */
-async function endDelegation(session: Session<DelegationSettings>): Promise<StepOutcome> {
+export async function endDelegation<Extra>(session: Session<Extra>): Promise<StepOutcome> {
   const record = session.state.step('delegate')!;
   const id = record.refs.delegation_id!;
   const member = session.ring.get('member');
