@@ -481,7 +481,7 @@ export class StubTemplateSupplier {
     // The template hashes the payload that it receives and compares it with the prompt hash of the escrow.
     if (sha256Utf8Hex(payload) !== datum.prompt_hash) return json(409, runtimeError('prompt_mismatch', 'the payload does not hash to the prompt_hash of the escrow'));
     // The Claim: the runtime answers only once its Claim is confirmed. markClaimed throws for an escrow that is not Open.
-    try { this.chain.markClaimed(escrowRef); } catch (err) { return json(409, runtimeError('escrow_not_claimable', err instanceof Error ? err.message : String(err))); }
+    try { this.chain.markClaimed(escrowRef); } catch { return json(409, runtimeError('escrow_not_claimable', 'the escrow is not in a state that can be claimed')); }
     const id = jobIdOf(this.jobs.size + 1);
     this.jobs.set(id, { id, escrowRef, payload, steps: [...this.steps] });
     return json(202, { job_id: id, status: 'accepted', escrow_ref: escrowRef });

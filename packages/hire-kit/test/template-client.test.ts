@@ -5,7 +5,7 @@
 // without a code, an answer for another escrow.
 import { describe, it, expect } from 'vitest';
 import { promptHashForPayload, sha256Utf8Hex, wirePayloadFor } from '@vsa/vector-read';
-import { pollTemplateJob, sendTemplateJob, templateJob } from '../src/template-client.ts';
+import { isRuntimeRefusal, pollTemplateJob, sendTemplateJob, templateJob } from '../src/template-client.ts';
 import { AGENT_ANSWER, AGENT_ENDPOINT, AGENT_KEY, escrowNo, marketplace, templateFinished } from '../testing/index.ts';
 import type { Marketplace } from '../testing/index.ts';
 
@@ -248,5 +248,33 @@ describe('the template supplier of the stub', () => {
     // The twin: with nothing to refuse, the supplier claims the escrow and answers 202.
     const accepted = await m.agent.handle('POST', '/v1/job', body);
     expect(accepted.status).toBe(202);
+  });
+
+  it('answers an escrow that is not Open with a fixed text and never with the error of the chain: nothing of the stub reaches the client', async () => {
+    const { m, post } = await posted();
+    const body = JSON.stringify({ escrow_ref: post.escrowRef, payload: wirePayloadFor(PAYLOAD) });
+    expect((await m.agent.handle('POST', '/v1/job', body)).status).toBe(202);
+    // The escrow is Claimed now: a second send is turned down, in the words that the stub always uses for it.
+    const again = await m.agent.handle('POST', '/v1/job', body);
+    const words = 'the escrow is not in a state that can be claimed';
+    expect([again.status, await again.json()]).toStrictEqual([409, { reason: 'escrow_not_claimable', message: words, error: { reason: 'escrow_not_claimable', message: words } }]);
+  });
+});
+
+describe('isRuntimeRefusal', () => {
+  it('is true for what the runtime refuses before its Claim: a status below 500 with a code of its envelope, and the three 503 codes of a service that it could not ask', () => {
+    const refusals: Array<[number, string]> = [
+      [400, 'payload_required'], [403, 'wrong_supplier'], [403, 'approval_revoked'], [408, 'past_deliver_by'], [409, 'underpaid'], [409, 'wrong_advert'], [409, 'busy'], [422, 'service_refused'],
+      [503, 'precheck_unreachable'], [503, 'precheck_timeout'], [503, 'precheck_failed'],
+    ];
+    for (const [status, code] of refusals) expect(isRuntimeRefusal({ status, code }), `${status} ${code}`).toBe(true);
+  });
+
+  it('is false for what may come after a Claim, or is no word of the runtime: a page, a lagging view of the chain, a 5xx with another code, and a precheck code with another status', () => {
+    const others: Array<[number, string]> = [
+      [502, 'bad_response'], [404, 'bad_response'], [403, 'bad_response'], [404, 'escrow_not_found'], [500, 'internal_error'], [502, 'chain_submit_failed'], [503, 'chain_submit_failed'],
+      [503, 'supplier_unavailable'], [504, 'claim_timeout'], [500, 'precheck_failed'], [504, 'precheck_timeout'], [502, 'precheck_unreachable'],
+    ];
+    for (const [status, code] of others) expect(isRuntimeRefusal({ status, code }), `${status} ${code}`).toBe(false);
   });
 });

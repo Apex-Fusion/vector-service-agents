@@ -26,7 +26,22 @@ const READ_HEADERS = { accept: 'application/json' } as const;
 /** The codes of the 503 answers that the runtime gives, before its Claim, when it could not ask its service. */
 const PRECHECK_UNAVAILABLE: Readonly<Record<string, true>> = { precheck_unreachable: true, precheck_timeout: true, precheck_failed: true };
 
-const trim = (endpoint: string): string => endpoint.replace(/\/+$/, '');
+/**
+ * Is an answer to a send the runtime's own refusal, made before its Claim? It is the envelope of the runtime with a code (an answer that is no envelope has the code bad_response), and its
+ * status is below 500, or is 503 with one of the three codes of a service that the runtime could not ask. A 404 escrow_not_found is the runtime's word about its own view of the
+ * chain, which may lag, so it is not one. A 5xx with another code may come after a Claim was sent.
+ */
+export function isRuntimeRefusal({ status, code }: { status: number; code: string }): boolean {
+  if (code === 'bad_response' || code === 'escrow_not_found') return false;
+  return status < 500 || (status === 503 && PRECHECK_UNAVAILABLE[code] === true);
+}
+
+/** The endpoint without the slashes at its end. It comes from an advert on the chain, so no pattern runs over it: a loop on the last character does it. */
+function trim(endpoint: string): string {
+  let end = endpoint.length;
+  while (end > 0 && endpoint[end - 1] === '/') end -= 1;
+  return endpoint.slice(0, end);
+}
 function jsonObject(text: string): Record<string, unknown> | null {
   try {
     const value: unknown = JSON.parse(text);
