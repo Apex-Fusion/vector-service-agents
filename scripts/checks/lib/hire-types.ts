@@ -81,12 +81,19 @@ export class DryStop extends Error {
 /** How a hire ended when it did not end well. `failed_after_claim` means that the agent may hold the job: the escrow may be claimed, so the hire is never made again. */
 export type HireFailureKind = 'refused_before_claim' | 'failed_after_claim' | 'not_accepted' | 'vault_refused' | 'other';
 
-/** What an error says of a Pay: its escrow, the vault output that continues (null when a Pay was sent and not seen confirmed), and the deliver_by and the lock when they are known. */
+/**
+ * What an error says of a Pay: its escrow, the vault output that continues (null when a Pay was sent and not seen confirmed), and the deliver_by and the lock when they are known. For a Pay that
+ * was sent and not seen confirmed it also says the vault output that continues if the Pay lands, whether it may still land, and until when (POSIX ms): until then no other Pay starts from the
+ * old reference, and after it the vault is read again from the chain.
+ */
 export interface AfterPay {
   escrowRef: string;
   vaultRef: string | null;
   deliverBy: number | null;
   lockLovelace: bigint | null;
+  vaultRefIfLanded?: string | null;
+  mayLand?: boolean | null;
+  validTo?: number | null;
 }
 
 /** The error of a hire that did not end well. It holds what it knows of the Pay, or null when no Pay was made. */

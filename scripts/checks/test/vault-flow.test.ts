@@ -178,3 +178,57 @@ describe('check 3 over the real kit and the real chain', () => {
     expect(Object.keys(t.h.state(t.name).steps)).toEqual(['delegate', 'vault_open', 'pay', 'reclaim', 'vault_close', 'undelegate']);
   }, 360_000);
 });
+
+describe('check 2 when the Pay is sent and not seen confirmed, over the real kit', () => {
+  interface InFlight { step: string; tx_hash: string; signed_cbor: string; valid_to: number; refs: Record<string, string> }
+  const unseen = (t: Awaited<ReturnType<typeof started>>) => { t.h.node.submit = async (cbor) => t.world.hashOf(cbor); };
+  const flightOf = (t: Awaited<ReturnType<typeof started>>) => t.h.state(t.name).in_flight as unknown as InFlight;
+
+  it('keeps the transaction in flight with the vault that it would leave and the old vault, waits for it, and when it cannot land the hire is made again from the old vault', async () => {
+    const t = await started('escrow', { supplier: { refuse: { status: 403, code: 'approval_revoked' } } });
+    await openVault(t);
+    const sent = t.h.node.submit.bind(t.h.node);
+    unseen(t);
+    const old = vaultOutputs(t)[0]!;
+    expect(await t.h.run(t.check, '--submit')).toBe(1);
+    expect(t.h.screen.errorText).toContain('may still land until');
+    const flight = flightOf(t);
+    expect(flight).toMatchObject({ step: 'hire:pay', refs: { vault_ref: `${flight.tx_hash}#1` } });
+    expect(t.h.state(t.name).notes.unconfirmed_pay).toMatchObject({ old_vault_ref: `${old.txHash}#${old.outputIndex}`, vault_ref_if_landed: `${flight.tx_hash}#1`, valid_to: flight.valid_to });
+    expect(t.h.state(t.name).notes.after_pay).toBeUndefined();
+    // While it may land, the next run waits for it and starts no other Pay.
+    expect(await t.h.run(t.check, '--submit')).toBe(4);
+    expect(escrowOutputs(t)).toEqual([]);
+    // After its validity it cannot land: the run lets it go, reads the old vault from the chain, and pays again.
+    moveTo(t, flight.valid_to + 61_000);
+    t.h.node.submit = sent;
+    expect(await t.h.run(t.check, '--submit')).toBe(1);
+    expect(t.h.screen.errorText).toContain('approval_revoked');
+    expect(t.h.state(t.name).notes['part.hire:pay']).toBeDefined();
+    expect(escrowOutputs(t)).toHaveLength(1);
+  }, 240_000);
+
+  it('records the Pay when it lands after all, never hires again, and the cleanup goes on from the vault that the Pay left', async () => {
+    const t = await started('escrow', { supplier: { refuse: { status: 403, code: 'approval_revoked' } } });
+    await openVault(t);
+    const sent = t.h.node.submit.bind(t.h.node);
+    unseen(t);
+    expect(await t.h.run(t.check, '--submit')).toBe(1);
+    const flight = flightOf(t);
+    t.world.chain.apply(flight.signed_cbor);
+    t.h.node.submit = sent;
+    expect(escrowOutputs(t)).toHaveLength(1);
+    // The run settles the transaction first: it is confirmed, so it is recorded as a part, and the hire is not made again.
+    t.h.screen.errors.length = 0;
+    expect(await t.h.run(t.check, '--submit')).toBe(2);
+    expect(t.h.screen.text).toContain('is confirmed: the step is recorded');
+    expect(t.h.state(t.name).notes['part.hire:pay']).toMatchObject({ refs: { vault_ref: `${flight.tx_hash}#1` } });
+    expect(t.h.screen.errorText).toContain('never hire again');
+    const part = t.h.state(t.name).notes['part.hire:pay'] as { facts: Record<string, unknown> };
+    moveTo(t, Number(part.facts.deliver_by) + 61_000);
+    expect(await t.h.run(t.check, 'cleanup', '--submit')).toBe(0);
+    expect(vaultOutputs(t)).toEqual([]);
+    expect(escrowOutputs(t)).toEqual([]);
+    expect(t.h.state(t.name).steps.vault_close!.facts.closed).toEqual([`${flight.tx_hash}#1`, t.h.state(t.name).steps.reclaim!.refs.returned_ref]);
+  }, 240_000);
+});

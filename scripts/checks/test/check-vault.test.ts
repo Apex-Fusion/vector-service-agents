@@ -239,19 +239,24 @@ describe('a hire that stops after a Pay', () => {
     expect(h.state(name).steps.reclaim!.refs.escrow_ref).toBe(ESCROW);
     expect(h.world.chain.held.some((u) => u.address === DEPLOYMENT.vault.address)).toBe(false);
   });
-  it('keeps the escrow and no vault output for a Pay that was sent and not seen confirmed: the vault is read from the chain', async () => {
+  it('keeps both vault references and the time for a Pay that was sent and not seen confirmed, tells the operator not to start another Pay, and does not take the Pay for a payment that happened', async () => {
     const t = await started('escrow');
     await submitSteps(t, 2);
     const { h, port, check, name } = t;
-    port.failure = afterPay('failed_after_claim', null, h.clock.now() + 300_000, null);
+    const old = liveVaultOf(h);
+    const validTo = h.clock.now() + 180_000;
+    port.failure = new HireFailed('other', 'the Pay was sent and not seen confirmed', {
+      escrowRef: ESCROW, vaultRef: null, deliverBy: h.clock.now() + 300_000, lockLovelace: null, vaultRefIfLanded: `${'a5'.repeat(32)}#1`, mayLand: true, validTo,
+    });
     expect(await h.run(check, '--submit')).toBe(1);
-    expect(h.state(name).notes.after_pay).toMatchObject({ escrow_ref: ESCROW, vault_ref: null });
-    const live = liveVaultOf(h);
-    h.clock.t += 300_000 + RECLAIM_AFTER_MS;
+    expect(h.screen.errorText).toContain('it may still land until');
+    expect(h.screen.errorText).toContain(`${'a5'.repeat(32)}#1`);
+    expect(h.state(name).notes.unconfirmed_pay).toMatchObject({ escrow_ref: ESCROW, old_vault_ref: `${old.txHash}#${old.outputIndex}`, vault_ref_if_landed: `${'a5'.repeat(32)}#1`, may_land: true, valid_to: validTo });
+    expect(h.state(name).notes.after_pay).toBeUndefined();
+    // The run settles the transaction in flight first. When the Pay did not land, the old reference is the vault, and the hire can be made again from it.
     port.failure = null;
-    expect(await h.run(check, 'cleanup', '--submit')).toBe(2);
-    expect(h.screen.errorText).toContain('its deliver_by or its lock is not known');
-    expect(live.assets.lovelace).toBeGreaterThan(0n);
+    expect(await h.run(check, '--submit')).toBe(0);
+    expect(port.requests.at(-1)).toMatchObject({ vaultRef: `${old.txHash}#${old.outputIndex}` });
   });
   it('keeps nothing for a hire that stopped before its Pay, and the hire can be made again', async () => {
     const t = await started('escrow');

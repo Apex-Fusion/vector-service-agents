@@ -9,7 +9,7 @@
 // What the kit says maps to the port in one way. An outcome that is not `completed` and an error of the kit are a `HireFailed` that holds what is known of the Pay: the escrow, the vault
 // output that continues after a confirmed Pay, and, for a Pay that was sent and not seen confirmed, no vault output. A dry run that reached its first transaction is a `DryStop`.
 import { join } from 'node:path';
-import { HireInterrupted, PayingKeys, advertOnChain, bondProblem, hireAgent, runJanitorOnce } from '../../../packages/hire-kit/src/index.ts';
+import { HireInterrupted, HirePayUnconfirmed, PayingKeys, advertOnChain, bondProblem, hireAgent, runJanitorOnce } from '../../../packages/hire-kit/src/index.ts';
 import type { AgentDeps, AgentErrors, AgentOutcome, AgentRequest, HireDetail, HireFacts, PayingKey } from '../../../packages/hire-kit/src/index.ts';
 import { TxNotConfirmedError, formatOutRef, parseOutRef } from './platform.ts';
 import type { AdvertDatum, ChainEscrowState, PostResult, VaultChain, VaultPayResult } from './platform.ts';
@@ -222,15 +222,23 @@ class KitPort implements HirePort {
     if (this.#chain.dry !== null) return this.#chain.dry;
     if (err instanceof HireFailed) return err;
     const interrupted = err instanceof HireInterrupted ? err : null;
-    const cause = interrupted === null ? err : interrupted.cause;
-    return new HireFailed('other', messageOf(cause), this.#afterError(interrupted?.vaultRef ?? null));
+    const unconfirmed = err instanceof HirePayUnconfirmed ? err : null;
+    const cause = interrupted?.cause ?? unconfirmed?.cause ?? err;
+    return new HireFailed('other', messageOf(cause), this.#afterError(interrupted, unconfirmed));
   }
 
-  /** What the chain saw of a Pay: a confirmed one (with the vault that continues), or one that was sent and not seen confirmed (with none), or nothing. */
-  #afterError(vaultRef: string | null): AfterPay | null {
-    const { paid, unconfirmed } = this.#chain;
-    if (paid !== null) return { escrowRef: paid.escrowRef, vaultRef: vaultRef ?? paid.vaultRef, deliverBy: paid.deliverBy, lockLovelace: paid.lockLovelace };
-    if (unconfirmed !== null) return { escrowRef: unconfirmed.escrowRef, vaultRef: null, deliverBy: unconfirmed.deliverBy, lockLovelace: null };
+  /**
+   * What the kit and the chain say of a Pay: a confirmed one (the vault that continues), or one that was sent and not seen confirmed (no vault that continues, and the vault if it lands, with the
+   * time after which it cannot land), or nothing. The kit says it in its error; the chain says it for a Pay that the port made itself.
+   */
+  #afterError(interrupted: HireInterrupted | null, unconfirmed: HirePayUnconfirmed | null): AfterPay | null {
+    const { paid, unconfirmed: sent } = this.#chain;
+    if (interrupted !== null) return { escrowRef: interrupted.escrowRef, vaultRef: interrupted.vaultRef, deliverBy: paid?.deliverBy ?? null, lockLovelace: paid?.lockLovelace ?? null };
+    if (unconfirmed !== null) {
+      return { escrowRef: unconfirmed.escrowRef, vaultRef: null, deliverBy: sent?.deliverBy ?? null, lockLovelace: null, vaultRefIfLanded: unconfirmed.vaultRefIfLanded, mayLand: unconfirmed.mayLand, validTo: unconfirmed.validTo };
+    }
+    if (paid !== null) return { escrowRef: paid.escrowRef, vaultRef: paid.vaultRef, deliverBy: paid.deliverBy, lockLovelace: paid.lockLovelace };
+    if (sent !== null) return { escrowRef: sent.escrowRef, vaultRef: null, deliverBy: sent.deliverBy, lockLovelace: null, vaultRefIfLanded: `${sent.txHash}#1`, mayLand: sent.mayLand, validTo: sent.validTo };
     return null;
   }
 

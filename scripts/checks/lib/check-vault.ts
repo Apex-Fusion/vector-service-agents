@@ -87,8 +87,8 @@ type Ses = Session<VaultSettings>;
 type Recorded = Pick<StepRecord, 'tx_hash' | 'refs' | 'facts'>;
 const partOf = (session: Ses, name: string): Recorded | undefined => session.state.note(`part.${name}`) as Recorded | undefined;
 
-/** The error of a hire that stopped after a Pay, as the check keeps it. The vault reference is null for a Pay that was sent and not seen confirmed. */
-interface AfterPayNote { escrow_ref: string; vault_ref: string | null; deliver_by: number | null; lock_lovelace: bigint | string | null; kind: string }
+/** The error of a hire that stopped after a confirmed Pay, as the check keeps it: the escrow and the vault output that continues. */
+interface AfterPayNote { escrow_ref: string; vault_ref: string; deliver_by: number | null; lock_lovelace: bigint | string | null; kind: string }
 const afterPayOf = (session: Ses): AfterPayNote | undefined => session.state.note('after_pay') as AfterPayNote | undefined;
 
 /** What the state file knows of the escrow that a Pay opened: from the step pay, from the part hire:pay, or from the error of a hire. Null when no Pay is known. */
@@ -233,6 +233,12 @@ const open: Step = {
 type Kit<T> = { kind: 'dry' } | { kind: 'done'; value: T };
 
 /**
+ * A Pay that was sent and not seen confirmed, as the check keeps it beside the transaction in flight: the vault that the check held, the vault that continues if the Pay lands, and the time
+ * after which it cannot land. The run that follows settles the transaction in flight first, and the vault is read from the chain before any step spends a reference.
+ */
+interface UnconfirmedPayNote { escrow_ref: string; old_vault_ref: string; vault_ref_if_landed: string | null; may_land: boolean | null; valid_to: number | null; deliver_by: number | null }
+
+/**
  * Calls the kit. A hire is refused after a Pay: the escrow may be claimed, and the hire is never made again. A dry stop is the dry outcome. A hire that stopped after a Pay is kept in the
  * state file, with the vault output that continues when there is one. A hire that may have been claimed (`failed_after_claim`) says so in its message. A call that is not a hire (the
  * reclaim) is made after a Pay by its nature.
@@ -245,7 +251,15 @@ async function callKit<T>(session: Ses, call: () => Promise<T>, options: { hirin
     if (err instanceof DryStop) return { kind: 'dry' };
     if (err instanceof HireFailed && options.hiring) {
       const { after } = err;
-      if (after !== null) session.state.setNote('after_pay', { escrow_ref: after.escrowRef, vault_ref: after.vaultRef, deliver_by: after.deliverBy, lock_lovelace: after.lockLovelace, kind: err.kind } satisfies AfterPayNote);
+      if (after !== null && after.vaultRef !== null) {
+        session.state.setNote('after_pay', { escrow_ref: after.escrowRef, vault_ref: after.vaultRef, deliver_by: after.deliverBy, lock_lovelace: after.lockLovelace, kind: err.kind } satisfies AfterPayNote);
+      } else if (after !== null) {
+        session.state.setNote('unconfirmed_pay', {
+          escrow_ref: after.escrowRef, old_vault_ref: vaultNow(session), vault_ref_if_landed: after.vaultRefIfLanded ?? null, may_land: after.mayLand ?? null, valid_to: after.validTo ?? null, deliver_by: after.deliverBy,
+        } satisfies UnconfirmedPayNote);
+        const until = after.validTo === undefined || after.validTo === null ? 'an unknown time' : iso(after.validTo);
+        throw new Error(`${err.message}. The Pay was sent and not seen confirmed: it may still land until ${until}, and the vault is then ${after.vaultRefIfLanded ?? 'at another reference'}. Start no other Pay until then. Run the step again after that time: the run settles the transaction first, and reads the vault from the chain`, { cause: err });
+      }
       if (err.kind === 'failed_after_claim') {
         throw new Error(`${err.message}. The agent may hold the job and the escrow ${after?.escrowRef ?? ''} may be claimed: do not hire again. Wait for its deliver_by, then run the cleanup: the janitor reclaims it`, { cause: err });
       }
