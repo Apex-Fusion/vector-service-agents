@@ -122,9 +122,9 @@ test('compose: two containers with fixed names, the runtime on loopback only, th
 });
 
 test('compose: the runtime is built from the pinned template commit, written in full because BuildKit does not resolve the short form', () => {
-  assert.match(agent.build.context, /^https:\/\/github\.com\/Apex-Fusion\/vector-agent-template\.git#48c0373[0-9a-f]{33}$/);
+  assert.match(agent.build.context, /^https:\/\/github\.com\/Apex-Fusion\/vector-agent-template\.git#a05564c[0-9a-f]{33}$/);
   assert.equal(agent.build.dockerfile, 'agent/Dockerfile');
-  assert.ok(SPEC.includes('pinned commit `48c0373`'), 'the spec names the same commit');
+  assert.ok(SPEC.includes('pinned commit `a05564c`'), 'the spec names the same commit');
 });
 
 test('compose: SERVICE_URL names the service container, its port and the path /, and is not the shared alias "service"', () => {
@@ -240,7 +240,7 @@ test('env scan: it finds every form of environment read the service code could u
 });
 
 test('env example: the runtime gets every name the pinned template lists for CAPABILITY_KIND=custom', () => {
-  // From .env.example of vector-agent-template at 48c0373. The optional ones (SERVICE_AUTH_HEADER, WALLET_HEALTH_INTERVAL_MS, the self-test buyer's BUYER_PRIV_KEY_HEX,
+  // From .env.example of vector-agent-template at a05564c. The optional ones (SERVICE_AUTH_HEADER, WALLET_HEALTH_INTERVAL_MS, the self-test buyer's BUYER_PRIV_KEY_HEX,
   // INDEXER_URL and SWITCH_SLOT, and IDENTITY_REF_UTXO, IDENTITY_CONTROLLER_PUB_KEY_HEX and IDENTITY_ACCOUNTABLE_PARTY, which only register-record.ts build reads) are left out.
   // AGENT_ID is left out too: the step that makes the agent's record writes it into the env file.
   const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY, 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'PORT'];
@@ -791,8 +791,8 @@ test('Pipeline compose: the project and two containers have fixed names, the run
 test('Pipeline compose: the runtime is built from the template commit of Agent History, written in full', () => {
   assert.equal(pAgent.build.context, agent.build.context);
   assert.equal(pAgent.build.dockerfile, 'agent/Dockerfile');
-  assert.match(pAgent.build.context, /^https:\/\/github\.com\/Apex-Fusion\/vector-agent-template\.git#48c0373[0-9a-f]{33}$/);
-  assert.ok(PSPEC.includes('pinned commit `48c0373`'), 'the spec names the same commit');
+  assert.match(pAgent.build.context, /^https:\/\/github\.com\/Apex-Fusion\/vector-agent-template\.git#a05564c[0-9a-f]{33}$/);
+  assert.ok(PSPEC.includes('pinned commit `a05564c`'), 'the spec names the same commit');
 });
 
 test('Pipeline compose: SERVICE_URL names the service container, port 9092 and the path /, and is not the shared alias "service"', () => {
@@ -844,7 +844,7 @@ test('Pipeline compose: each container gets only its own key, the other one is b
 });
 
 test('Pipeline compose: the token between the containers (R50) is blanked in neither, so that both read the one value from the env file, and the comments say what each side does with it and when to recreate', () => {
-  // The runtime sends SERVICE_AUTH_HEADER as the authorization header of every call (vector-agent-template 48c0373, agent/src/executor/httpCallout.ts), and the service requires it on POST /.
+  // The runtime sends SERVICE_AUTH_HEADER as the authorization header of every call (vector-agent-template a05564c, agent/src/executor/httpCallout.ts), and the service requires it on POST /.
   assert.ok(!('SERVICE_AUTH_HEADER' in pAgent.environment), 'the runtime reads the token from the env file: a blank here would send no header');
   assert.ok(!('SERVICE_AUTH_HEADER' in pService.environment), 'the service reads the token from the env file: a blank here would stop the start');
   assert.ok('SERVICE_AUTH_HEADER' in pExample, 'the env file has the line, so both containers get it');
@@ -998,7 +998,7 @@ test('Pipeline env example: every name the service code reads is in the example,
 });
 
 test('Pipeline env example: the runtime gets every name the pinned template lists for CAPABILITY_KIND=custom', () => {
-  // The same list as for Agent History: from .env.example of vector-agent-template at 48c0373.
+  // The same list as for Agent History: from .env.example of vector-agent-template at a05564c.
   // SERVICE_AUTH_HEADER is optional in the template ("" sends no header); this pack sets it, so that the runtime sends the token the service requires (R50).
   const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY, 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'SERVICE_AUTH_HEADER', 'PORT'];
   assert.deepEqual(NEEDED.filter((n) => !(n in pExample) && !(n in pAgent.environment)), []);
@@ -1104,7 +1104,7 @@ test('Pipeline README section: the second stack beside Agent History, with its t
   assert.ok(pSection.includes('[RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md), which is the operator\'s order of work and follows [RUNBOOK.md](RUNBOOK.md) step for step'));
   const rows = pSection.split('\n').filter((l) => l.startsWith('| `'));
   assert.equal(rows.length, 2, 'the second table has the two containers');
-  assert.ok(rows[0].startsWith(`| \`${pAgent.container_name}\` | built on the box from \`https://github.com/Apex-Fusion/vector-agent-template.git\` at the same pinned commit \`48c0373\` (\`CAPABILITY_KIND=custom\`) | 8080 | Caddy, over the external network of the host's reverse proxy. The host, on \`127.0.0.1:8084\` only |`));
+  assert.ok(rows[0].startsWith(`| \`${pAgent.container_name}\` | built on the box from \`https://github.com/Apex-Fusion/vector-agent-template.git\` at the same pinned commit \`a05564c\` (\`CAPABILITY_KIND=custom\`) | 8080 | Caddy, over the external network of the host's reverse proxy. The host, on \`127.0.0.1:8084\` only |`));
   assert.ok(rows[1].startsWith(`| \`${pService.container_name}\` | \`ghcr.io/apex-fusion/vector-service-agents/document-pipeline\`, built on the box and pinned by digest (\`@sha256:<digest>\`, a placeholder in the repository), or by image ID | 9092 | The runtime and Caddy, over the external network of the host's reverse proxy. Nothing on the host: 9092 is never published |`));
   for (const part of [
     'The working directory on the box is `<base path>/repo/deploy/host`',
@@ -1254,7 +1254,7 @@ test('Pipeline RUNBOOK steps 1 to 3: the repository goes over as a git bundle an
   assert.doesNotMatch(one, /git clone https:/, 'no clone from GitHub: the box has no credentials');
   const three = section(pRunbook, '3. Build the runtime image');
   assert.ok(three.includes('docker compose -f docker-compose.document-pipeline.yml build agent'));
-  assert.ok(three.includes('`48c0373`') && three.includes('the full 40-character hash, because BuildKit does not resolve the short form'));
+  assert.ok(three.includes('`a05564c`') && three.includes('the full 40-character hash, because BuildKit does not resolve the short form'));
   assert.ok(three.includes('It ends with `Image document-pipeline-agent Built`.'));
 });
 

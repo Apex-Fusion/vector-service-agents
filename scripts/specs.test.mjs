@@ -866,7 +866,7 @@ test('docs/HIRE.md and the design agree on the figures a member types or reads',
   assert.ok(guide.includes('https://explorer.vector.mainnet.apexfusion.org/transaction/hash/<txid>'), 'the explorer link pattern');
   assert.match(DESIGN, /per-transaction cap 100, daily cap 500/);
   assert.ok(guide.includes('"VECTOR_SIGNER_SPEND_LIMIT_PER_TX": "100000000"') && guide.includes('"VECTOR_SIGNER_SPEND_LIMIT_DAILY": "500000000"'), '100 and 500 units, as lovelace');
-  assert.ok(guide.includes('48c0373'), 'the pinned template commit');
+  assert.ok(guide.includes('a05564c'), 'the pinned template commit');
   for (const flag of ['--advert-ref', '--endpoint', '--payload-file']) assert.ok(guide.includes(flag), flag);
 });
 
@@ -2177,9 +2177,9 @@ const STAKE_NO_WITHDRAW = 'The owner cannot withdraw it: the module keeps 10 uni
 // specs/agent-history.md, emitted by the service and hashed into its advert) is not one of them: it names no withdrawal by the owner.
 const STAKE_RETURN_WORDS = /cooldown|refundable under the stake|the stake after its|stake stay on the ledger until the operator withdraws|when you withdraw it|stays locked|identity or the stake is withdrawn|stake (is|was|gets|can be) withdrawn|withdraws? (the|its|their) stake/i;
 const HIRE_PERMANENT = "The name and the description you enter are public and permanent: the transaction that writes them stays in the ledger's history after you retire the record. Retiring it returns the deposit; it does not erase that transaction. Put no personal data in them.";
-// HIRE.md section 8 pins the template at 48c0373, its main on 2026-11-19. Its postinstall step copies libsodium-sumo.mjs next to
+// HIRE.md section 8 pins the template at a05564c, its main on 2026-11-19. Its postinstall step copies libsodium-sumo.mjs next to
 // the wrapper (the lockfile there pins libsodium 0.7.16), so the guide no longer copies that file by hand, as it did for the pin before.
-const TEMPLATE_INSTALL = 'git clone https://github.com/Apex-Fusion/vector-agent-template.git && cd vector-agent-template && git checkout 48c0373 && corepack pnpm install';
+const TEMPLATE_INSTALL = 'git clone https://github.com/Apex-Fusion/vector-agent-template.git && cd vector-agent-template && git checkout a05564c && corepack pnpm install';
 const LIBSODIUM_WHY = "The install ends with the template's postinstall step. It copies `libsodium-sumo.mjs` next to its wrapper, as the template's `agent/Dockerfile` does in its image. pnpm's store layout puts that file in a sibling package, and without it the buyer stops at the transaction build with `Cannot find module`.";
 // The buyer of that commit posts the escrow of an advert that names an agent only with the policy of the identity registry, so the command gives the published values.
 const HIRE_IDENTITY = '`IDENTITY_POLICY_ID` and `IDENTITY_ESCROW_REF_UTXO` are the published values of the identity registry on Vector mainnet. The buyer uses them only for an advert that names an agent: it posts and accepts the escrow of such an advert with them.';
@@ -2296,7 +2296,7 @@ test("docs/LAUNCH.md: the keys are made in the member's own terminal, the contro
   assert.ok(two.includes('From here your assistant must not open, write or print `.env`: you edit it yourself.'));
   assert.ok(two.includes('Only its `publicKeyHex` goes into `.env`, as `IDENTITY_CONTROLLER_PUB_KEY_HEX`; keep its `privateKeyHex` offline'), 'the controller key stays offline');
   for (const name of ['IDENTITY_POLICY_ID', 'IDENTITY_REF_UTXO', 'IDENTITY_ESCROW_REF_UTXO', 'IDENTITY_ADVERT_REF_UTXO']) assert.ok(two.includes('`' + name + '`'), `section 2 names ${name}`);
-  // The three steps of the template README (step 5, at main 48c0373), verbatim apart from the placeholders.
+  // The three steps of the template README (step 5, at main a05564c), verbatim apart from the placeholders.
   const five = section(text, '5. Give your agent an identity');
   const build = 'corepack pnpm --filter @marketplace/supplier exec tsx src/cli/register-record.ts build \\\n  --out ../agent-record.json \\\n  --name "<a name>" \\\n  --endpoint https://<your public name> \\\n  --capability <your capability id>';
   const sign = ['read -rs SIGNER_PRIV_KEY_HEX && export SIGNER_PRIV_KEY_HEX', 'corepack pnpm --filter @marketplace/supplier exec tsx src/cli/register-record.ts sign --tx ../agent-record.json', 'unset SIGNER_PRIV_KEY_HEX', 'corepack pnpm --filter @marketplace/supplier exec tsx src/cli/register-record.ts submit --tx ../agent-record.json'].join('\n');
@@ -2438,9 +2438,9 @@ test('docs/LAUNCH.md (findings 4 to 8): the lock floor, the fleet prefixes the c
   assert.ok(section(hire(), '3. What the key must hold').includes('The ledger needs about 2.6 in an identity-layout escrow output of this size'));
   const two = section(text, '2. Let your coding agent build it');
   assert.ok(two.includes('with a capability id that does not start with `llm.text.generate.`, `llm.chat.`, `ocr.page.extract.` or `audio.synthesize.`: the chat hire tools refuse those.'), 'finding 5');
-  assert.ok(two.includes("As of 2026-11-19 the template's `main` is commit `48c0373`, which has the identity registry, and a fresh clone installs cleanly."), 'finding 7: main is 48c0373 on 2026-11-19');
+  assert.ok(two.includes("As of 2026-11-19 the template's `main` is commit `a05564c`, which has the identity registry, and a fresh clone installs cleanly."), 'finding 7: main is a05564c on 2026-11-19');
   // Round 2 (R3): LAUNCH.md describes main, as of a day, and pins nothing; HIRE.md section 8 pins the same commit on purpose.
-  assert.equal(text.split('48c0373').length - 1, 1, 'LAUNCH.md names the commit of main once, in the sentence that dates it');
+  assert.equal(text.split('a05564c').length - 1, 1, 'LAUNCH.md names the commit of main once, in the sentence that dates it');
   assert.equal(text.includes('is proposed in') || text.includes('vector-agent-template/pull/3'), false, 'the postinstall is merged, not proposed');
   assert.ok(section(text, '3. Post the advert').includes("On a fresh clone of `main`, README step 5's own form also runs on the host: since 2026-10-21 the template's postinstall step copies `libsodium-sumo.mjs` next to its wrapper, as `agent/Dockerfile` does in the image, and the transaction build needs that file."));
   // Round 2 (R4): the member edits .env; the assistant neither opens nor writes it.

@@ -134,7 +134,7 @@ cd "$BASE/repo/deploy/host"
 docker compose -f docker-compose.advocate.yml build agent
 ```
 
-This clones `vector-agent-template` at the pinned commit `48c0373`, the commit of the runtimes of the other three, and installs it. The compose file carries the full 40-character hash, because BuildKit does not resolve the short form. It ends with `Image advocate-agent Built`.
+This clones `vector-agent-template` at the pinned commit `a05564c`, the commit of the runtimes of the other three, and installs it. The compose file carries the full 40-character hash, because BuildKit does not resolve the short form. It ends with `Image advocate-agent Built`.
 
 ## 4. Make the env file, generate the two keys and enter the two API keys
 
