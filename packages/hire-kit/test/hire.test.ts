@@ -9,8 +9,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeChain, TxNotConfirmedError } from '@vsa/buyer-core';
 import type { Chain } from '@vsa/buyer-core';
-import { chatJob, hireOne, verificationOf } from '../src/hire.ts';
-import type { HireDeps, HireErrors, HireFacts, HireLedger, HireOptions, HireSupplier } from '../src/hire.ts';
+import { chatJob, hireOne, termsOf, verificationOf } from '../src/hire.ts';
+import type { HireDeps, HireDetail, HireErrors, HireFacts, HireLedger, HireOptions, HireSupplier } from '../src/hire.ts';
 import { StrandedStore } from '../src/janitor.ts';
 import { ALL_PASS, ANSWER, LLM_ADVERT, LLM_ADVERT_REF, LLM_CAPABILITY, LLM_ENDPOINT, LLM_KEY, T0, WINDOW_MS, chainWith, chatFinished, escrowNo, marketplace } from '../testing/index.ts';
 import type { Marketplace } from '../testing/index.ts';
@@ -285,5 +285,92 @@ describe('hireOne: a refusal that the job says is final', () => {
     other.m.llm.refuse = { status: 503, reason: 'overloaded' };
     await failure<CodedError>(hireOne(other.deps, SUPPLIER, { ...job(other.m), finalRefusal: names }, other.ledger, CODED));
     expect(other.m.llm.sends).toHaveLength(2);
+  });
+});
+
+describe('hireOne: terms (absent for the Pipeline)', () => {
+  const TERMS = { price_lovelace: '200000', supplier_bond_lovelace: '1000000', buyer_bond_lovelace: '1000000', locked_lovelace: String(FakeChain.LOCK_LOVELACE), paid_to_supplier_at_accept_lovelace: '1200000' };
+  const LINE = `hire terms: advert ${LLM_ADVERT_REF}: price 200000 lovelace, supplier bond 1000000 lovelace, buyer bond 1000000 lovelace; locked at the Post ${FakeChain.LOCK_LOVELACE} lovelace; `
+    + 'paid to the supplier at an Accept 1200000 lovelace (the price and the supplier bond; the buyer bond returns)';
+
+  it('writes nothing of it without the option: no key in the record and no line in the log', async () => {
+    const run = setup();
+    const lines: string[] = [];
+    const hired = await hireOne({ ...run.deps, log: (line) => { lines.push(line); } }, SUPPLIER, job(run.m), run.ledger, CODED);
+    expect(Object.keys(hired.record)).not.toContain('terms');
+    expect(lines).toStrictEqual([]);
+  });
+
+  it('with the option the record ends with the terms, and the log has one line that says what the Post locks and what an Accept pays', async () => {
+    const run = setup();
+    const lines: string[] = [];
+    const hired = await hireOne({ ...run.deps, log: (line) => { lines.push(line); } }, SUPPLIER, job(run.m), run.ledger, CODED, { terms: true });
+    expect(Object.keys(hired.record).at(-1)).toBe('terms');
+    expect(hired.record.terms).toStrictEqual(TERMS);
+    expect(lines).toStrictEqual([LINE]);
+  });
+
+  it('writes the line once the Post is confirmed, so that a hire that fails after the Post has said what it locks; a Post that failed says nothing', async () => {
+    const refused = setup();
+    refused.m.llm.refuse = { status: 403, reason: 'approval_revoked' };
+    const lines: string[] = [];
+    await failure<CodedError>(hireOne({ ...refused.deps, log: (line) => { lines.push(line); } }, SUPPLIER, job(refused.m), refused.ledger, CODED, { terms: true }));
+    expect(lines).toStrictEqual([LINE]);
+    // The twin: a Post that fails before its signature locks nothing, so no line says that it did.
+    const failed = setup();
+    const down = chainWith(failed.m, { postEscrow: async () => { throw new Error('the node did not answer'); } });
+    const quiet: string[] = [];
+    await failure<CodedError>(hireOne({ ...failed.deps, chain: down, log: (line) => { quiet.push(line); } }, SUPPLIER, job(failed.m), failed.ledger, CODED, { terms: true }));
+    expect(quiet).toStrictEqual([]);
+  });
+
+  it('termsOf gives whole lovelace as decimal text, and an Accept pays the price and the supplier bond: no fee, and not the buyer bond', () => {
+    const advert = { ...LLM_ADVERT, price_lovelace: 12_345_678_901n, supplier_bond_lovelace: 2_000_000n, buyer_bond_lovelace: 3_000_000n };
+    expect(termsOf(advert, 20_000_000n)).toStrictEqual({
+      price_lovelace: '12345678901', supplier_bond_lovelace: '2000000', buyer_bond_lovelace: '3000000', locked_lovelace: '20000000', paid_to_supplier_at_accept_lovelace: '12347678901',
+    });
+  });
+});
+
+describe('hireOne: what a failure tells a factory that turns it into a result', () => {
+  /** A factory that keeps the detail of each failure it is given. */
+  const keeping = (seen: HireDetail[]): HireErrors<CodedError> => ({
+    ...CODED,
+    failure: (kind, what, message, _facts, detail) => { seen.push(detail ?? {}); return new CodedError(`${kind}_${what}`, message, 422); },
+  });
+
+  it('gives the status, the code and the words of a refusal, and says that no earlier send was unclear', async () => {
+    const run = setup();
+    run.m.llm.refuse = { status: 403, reason: 'approval_revoked', message: 'The approval was revoked.' };
+    const seen: HireDetail[] = [];
+    await failure<CodedError>(hireOne(run.deps, SUPPLIER, job(run.m), run.ledger, keeping(seen)));
+    expect(run.m.llm.sends).toHaveLength(1);
+    expect(seen).toStrictEqual([{ refusal: { status: 403, code: 'approval_revoked', message: 'The approval was revoked.' }, unclearSend: false }]);
+  });
+
+  it('says that an earlier send was unclear when a refusal follows a page: the supplier may have claimed the escrow in the first send', async () => {
+    const run = setup();
+    run.m.llm.pages = [502];
+    run.m.llm.refuse = { status: 403, reason: 'approval_revoked' };
+    const seen: HireDetail[] = [];
+    await failure<CodedError>(hireOne(run.deps, SUPPLIER, job(run.m), run.ledger, keeping(seen)));
+    expect(run.m.llm.sends).toHaveLength(2);
+    expect(seen.map((detail) => [detail.refusal?.status, detail.refusal?.code, detail.unclearSend])).toStrictEqual([[403, 'approval_revoked', true]]);
+  });
+
+  it('says it for a supplier that stays busy after a page, as well: a busy streak keeps what the first send left unclear', async () => {
+    const run = setup();
+    run.m.llm.pages = [504];
+    run.m.llm.busy = 100_000;
+    const seen: HireDetail[] = [];
+    const error = await failure<CodedError>(hireOne(run.deps, SUPPLIER, job(run.m), run.ledger, keeping(seen)));
+    expect(error.code).toBe('llm_busy');
+    expect(seen.map((detail) => [detail.refusal?.status, detail.refusal?.code, detail.unclearSend])).toStrictEqual([[409, 'busy', true]]);
+    // The twin: with no page before it, the same streak leaves nothing unclear.
+    const clear = setup();
+    clear.m.llm.busy = 100_000;
+    const clearSeen: HireDetail[] = [];
+    await failure<CodedError>(hireOne(clear.deps, SUPPLIER, job(clear.m), clear.ledger, keeping(clearSeen)));
+    expect(clearSeen.map((detail) => detail.unclearSend)).toStrictEqual([false]);
   });
 });

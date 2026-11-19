@@ -91,6 +91,11 @@ export interface HireDetail {
    * until the send is out of time gives its last word.
    */
   refusal?: { status: number; code: string; message: string };
+  /**
+   * An earlier send of this job ended with no clear answer (none at all, a page, or a 5xx), so the supplier may have claimed the escrow, whatever its last answer says. It goes with a
+   * refusal or a busy answer.
+   */
+  unclearSend?: boolean;
   /** The error that ended a Post before its signature: a typed refusal of a vault Pay, for example. */
   cause?: unknown;
   /** The checks of a receipt that failed one. */
@@ -146,12 +151,36 @@ export interface HireDeps extends Clocked { chain: Chain; stranded: StrandedStor
 /** Where a hire books what it moved: the lock and the fee of its Post, the fee of its Accept seen confirmed. The Pipeline's Accounting is one. */
 export interface HireLedger { posted(post: { lockLovelace: bigint; feeLovelace: bigint }): void; accepted(accept: { feeLovelace: bigint }): void }
 /**
+ * What a hire locks and what an Accept pays, in whole lovelace as decimal text, so that the record is JSON. The buyer funds the price and both bonds at the Post. An Accept pays the
+ * supplier the price and the supplier bond, and the buyer bond returns. A Release, which the supplier makes when the buyer does not accept in time, pays the supplier all three.
+ */
+export interface HireTerms {
+  price_lovelace: string; supplier_bond_lovelace: string; buyer_bond_lovelace: string;
+  /** What the Post locked: the price and both bonds, raised to the floor of the escrow. */
+  locked_lovelace: string;
+  /** The price and the supplier bond. */
+  paid_to_supplier_at_accept_lovelace: string;
+}
+/** The terms of a hire of `advert` whose Post locked `lockLovelace`. */
+export function termsOf(advert: AdvertDatum, lockLovelace: bigint): HireTerms {
+  return {
+    price_lovelace: String(advert.price_lovelace), supplier_bond_lovelace: String(advert.supplier_bond_lovelace), buyer_bond_lovelace: String(advert.buyer_bond_lovelace),
+    locked_lovelace: String(lockLovelace), paid_to_supplier_at_accept_lovelace: String(advert.price_lovelace + advert.supplier_bond_lovelace),
+  };
+}
+/** The line of the log that says what a hire locks and what an Accept pays. */
+export const termsLine = (advertRef: string, terms: HireTerms): string => `hire terms: advert ${advertRef}: price ${terms.price_lovelace} lovelace, supplier bond ${terms.supplier_bond_lovelace} lovelace, `
+  + `buyer bond ${terms.buyer_bond_lovelace} lovelace; locked at the Post ${terms.locked_lovelace} lovelace; paid to the supplier at an Accept ${terms.paid_to_supplier_at_accept_lovelace} lovelace `
+  + '(the price and the supplier bond; the buyer bond returns)';
+/**
  * One hire on the record: the advert and escrow it ran under, the receipt and its signature as the supplier gave them, and each check of
  * verifyFleetReceipt. Keys in this order, which JSON.stringify keeps: the Pipeline's SubJob is this record.
  */
 export interface HireRecord {
   capability_id: string; advert_ref: string; escrow_ref: string; supplier_pkh: string;
   receipt: Receipt; receipt_signature: string; verification: Record<string, boolean>;
+  /** What the hire locks and what an Accept pays. Present only when the hire asked for it (HireOptions.terms): the record of the Pipeline has no such key. */
+  terms?: HireTerms;
 }
 /** All absent for the Pipeline, which keeps today's behaviour exactly. */
 export interface HireOptions<T = unknown> {
@@ -159,6 +188,8 @@ export interface HireOptions<T = unknown> {
   firstSendBy?: number;
   /** The receipt-hash re-reads stop here instead of at deps.deadlineMs. */
   receiptBy?: number;
+  /** Writes what the hire locks and what an Accept pays into its record, as `terms`, and into one line of the log, once the Post is confirmed. Absent for the Pipeline, whose record and log stay as they were. */
+  terms?: boolean;
   /**
    * The decision between the verified receipt and the Accept. Absent, the Accept is made. A decision that does not accept stops the hire with a HireDeclined, and a hook that throws
    * stops it with its own error: in both the escrow stays Submitted and recorded, and no Accept is made.
@@ -217,6 +248,9 @@ function recorded<E extends Error>(errors: AnyErrors<E>, facts: HireFacts, write
  */
 export async function hireOne<T, E extends Error, K extends StrandedKind = HireKind>(deps: HireDeps, supplier: HireSupplier<K>, job: HireJob<T>, ledger: HireLedger, errors: HireErrors<E, K>, options: HireOptions<T> = {}): Promise<Hired<T>> {
   const post = await postEscrow(deps, supplier, job, ledger, errors);
+  // What the hire locks and what an Accept pays, when the caller asks: written once the Post is confirmed, so that every end after it can say it.
+  const terms = options.terms === true ? termsOf(supplier.advert, post.lockLovelace) : undefined;
+  if (terms !== undefined) deps.log?.(termsLine(supplier.advertRef, terms));
   // A Post confirmed past firstSendBy is not sent at all: its escrow stays Open, recorded, for the janitor.
   if (options.firstSendBy !== undefined && deps.clock() > options.firstSendBy) throw errors.deadline(`the Post for ${job.label} was being confirmed`, factsOf('send', post.escrowRef, false));
   const jobId = await handOver(deps, supplier, job, post, errors);
@@ -230,7 +264,7 @@ export async function hireOne<T, E extends Error, K extends StrandedKind = HireK
   const verification = await verified(deps, supplier, job, post, done, read.responseHash, errors, options);
   const record: HireRecord = {
     capability_id: supplier.capabilityId, advert_ref: supplier.advertRef, escrow_ref: post.escrowRef, supplier_pkh: post.supplierPkh,
-    receipt: done.receipt, receipt_signature: done.receiptSignature, verification: verificationOf(verification.checks),
+    receipt: done.receipt, receipt_signature: done.receiptSignature, verification: verificationOf(verification.checks), ...(terms === undefined ? {} : { terms }),
   };
   // The decision of the caller comes after the eight checks and before the Accept. A hook that throws, or declines, leaves the escrow Submitted: nothing is accepted.
   if (options.decide !== undefined) {
@@ -288,6 +322,7 @@ async function handOver<T, E extends Error>(deps: HireDeps, supplier: AnySupplie
   /** The supplier's own word, for a caller that turns the end of a send into a result: what a refused send said, or that the supplier stayed busy (409). */
   const wordOf = (sent: SendResult): HireDetail => ({
     refusal: sent.kind === 'refused' ? { status: sent.status, code: sent.reason, message: sent.message } : { status: 409, code: 'busy', message: '' },
+    unclearSend: unknownOutcomes > 0,
   });
   /**
    * The state of the escrow after a send that did not hand the job over (ruling R58): a state that cannot be read is no verdict, so it is read again
