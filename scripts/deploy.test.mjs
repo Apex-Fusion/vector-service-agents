@@ -2278,8 +2278,8 @@ test('the origin guard refuses a runtime with no origin, a value that is no URL,
   assert.deepEqual(problemsOf((s) => { s.agent.environment.PUBLIC_ORIGIN = `https://user@${base.host}`; }), [NOT_AN_ORIGIN(`https://user@${base.host}`)], 'a user name');
   const other = CARD_STACKS[1].host;
   assert.deepEqual(problemsOf((s) => { s.agent.environment.PUBLIC_ORIGIN = `https://${other}`; }), [hostMessage(other)], 'the host of another agent');
-  assert.deepEqual(problemsOf(() => {}, base.snippet.replace(`${base.host} {`, `${other} {`)), [hostMessage(base.host, other)], 'a Caddy block that serves another host');
-  assert.deepEqual(problemsOf(() => {}, base.snippet, base.example.replace(`ADVERT_ENDPOINT_URL=${origin}\n`, `ADVERT_ENDPOINT_URL=https://${other}\n`)), [hostMessage(base.host, base.host, other)], 'an advert that names another endpoint');
+  assert.deepEqual(problemsOf(() => {}, base.snippet.split(`${base.host} {`).join(`${other} {`)), [hostMessage(base.host, other)], 'a Caddy block that serves another host');
+  assert.deepEqual(problemsOf(() => {}, base.snippet, base.example.split(`ADVERT_ENDPOINT_URL=${origin}\n`).join(`ADVERT_ENDPOINT_URL=https://${other}\n`)), [hostMessage(base.host, base.host, other)], 'an advert that names another endpoint');
   assert.deepEqual(problemsOf((s) => { s.service.environment.PUBLIC_ORIGIN = origin; }), ['the service has PUBLIC_ORIGIN: only the runtime serves the card'], 'an origin on the service');
 });
 
@@ -2309,21 +2309,21 @@ test('the route guard refuses a block that sends the card, GET / or the job rout
     `${CARD_PATH} goes to ${targets.service}, not to the runtime (${targets.runtime})`,
     `/v1/job goes to ${targets.service}, not to the runtime (${targets.runtime})`,
   ], 'a default route to the service');
-  const withHandle = (matcher, upstream) => snippet.replace('    handle {\n', `    handle ${matcher} {\n        reverse_proxy ${upstream}\n    }\n    handle {\n`);
+  const withHandle = (matcher, upstream) => snippet.split('    handle {\n').join(`    handle ${matcher} {\n        reverse_proxy ${upstream}\n    }\n    handle {\n`);
   assert.deepEqual(cardRouteProblems(withHandle(CARD_PATH, targets.service), targets), [`${CARD_PATH} goes to ${targets.service}, not to the runtime (${targets.runtime})`], 'the card to the service');
   assert.deepEqual(cardRouteProblems(withHandle('/', targets.service), targets), [`/ goes to ${targets.service}, not to the runtime (${targets.runtime})`], 'GET / to the service');
   assert.deepEqual(cardRouteProblems(withHandle('/v1/job', targets.service), targets), [`/v1/job goes to ${targets.service}, not to the runtime (${targets.runtime})`], 'the job route to the service');
   assert.deepEqual(cardRouteProblems(withHandle('/.well-known/*', targets.service), targets), ['the matcher /.well-known/* is not an exact path: this check does not read it'], 'a wildcard matcher');
   assert.deepEqual(cardRouteProblems(withHandle('@card', targets.service), targets), ['the matcher @card is not an exact path: this check does not read it'], 'a named matcher');
   assert.deepEqual(cardRouteProblems(withHandle('/agent.json', targets.service), targets), [], 'the twin: a second handle for /agent.json that goes to the service changes no answer');
-  const noDefault = snippet.replace(`    handle {\n        ${toRuntime}\n    }\n`, '');
+  const noDefault = snippet.split(`    handle {\n        ${toRuntime}\n    }\n`).join('');
   assert.notEqual(noDefault, snippet, 'the default route is cut');
   assert.deepEqual(cardRouteProblems(noDefault, targets), [
     `/ goes to nobody, not to the runtime (${targets.runtime})`,
     `${CARD_PATH} goes to nobody, not to the runtime (${targets.runtime})`,
     `/v1/job goes to nobody, not to the runtime (${targets.runtime})`,
   ], 'no default route');
-  const noService = snippet.replace(`    handle /agent.json {\n        ${toService}\n    }\n`, '');
+  const noService = snippet.split(`    handle /agent.json {\n        ${toService}\n    }\n`).join('');
   assert.notEqual(noService, snippet, 'the route of the manifest is cut');
   assert.deepEqual(cardRouteProblems(noService, targets), [`/agent.json goes to ${targets.runtime}, not to the service (${targets.service})`], 'the manifest to the runtime');
   assert.equal(snippetRoutes(snippet).host, host);
