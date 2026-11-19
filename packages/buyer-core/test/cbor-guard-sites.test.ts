@@ -75,3 +75,46 @@ describe('the copies that read chain data check it first', () => {
     expect(count('vendored/mcp/identity-deployment.ts', /\bdecodePlutusData\(/)).toBe(1);
   });
 });
+
+// The checked wrappers of @vsa/vector-read/guarded-decode read a datum, a transaction, a metadatum or an address after the scanner of cbor-depth has checked
+// the bytes, and the copies call the scanner too. The copies call them in the places below. A re-vendor that adds a call, and a file that is not named, fail
+// here until the call is named with what it reads.
+
+/** The calls of a checked wrapper, and of the scanner itself. */
+const CHECKED_CALL = /\b(?:decodePlutusData|decodeTransaction|decodeMetadatum|addressDetails|assertCborHexDepth|assertCborDepth)\s*\(/;
+
+const OWN_TRANSACTION = 'a transaction that a builder of this process made: no chain data reaches it';
+/** The files that call a checked wrapper or the scanner, how many lines call one, and what the calls read. */
+const CHECKED_CALLS: Record<string, { calls: number; reads: string }> = {
+  'vendored/mcp/attestation-build.ts': { calls: 2, reads: `the outputs of ${OWN_TRANSACTION} (the deposit, and the output of the attestation)` },
+  'vendored/mcp/attestation-read.ts': { calls: 1, reads: 'the datum of an attestation output, which comes from the chain' },
+  'vendored/mcp/gov-build.ts': { calls: 1, reads: 'an address that a caller gives' },
+  'vendored/mcp/identity-build.ts': { calls: 2, reads: `the outputs of ${OWN_TRANSACTION}` },
+  'vendored/mcp/identity-deployment.ts': { calls: 1, reads: 'the datum of the configuration record, which comes from the chain' },
+  'vendored/mcp/jury-chain.ts': { calls: 2, reads: `the first input of ${OWN_TRANSACTION}; and the address of an output, which comes from the chain` },
+  'vendored/mcp/jury-codec.ts': { calls: 1, reads: 'a datum of Module-1 or of the jury, which comes from the chain' },
+  'vendored/mcp/jury-document.ts': { calls: 2, reads: 'the transaction that Koios gives for a document, and the metadata that Blockfrost gives: both come from the chain' },
+  'vendored/mcp/marketplace-build.ts': { calls: 1, reads: `the first output of ${OWN_TRANSACTION} (the escrow of a Post)` },
+  'vendored/mcp/marketplace-indexer.ts': { calls: 1, reads: 'the inline datum of a Koios row, which comes from the chain: a row that fails the scan loses its datum' },
+  'vendored/mcp/marketplace-lineage.ts': { calls: 1, reads: 'the address of an output of an escrow lineage, which comes from the chain' },
+  'vendored/mcp/module1-build.ts': { calls: 1, reads: `the first output of ${OWN_TRANSACTION} (the payout of a withdrawal)` },
+  'vendored/mcp/vault-build.ts': { calls: 1, reads: 'the address of a vault output, which comes from the node' },
+  'vendored/mcp-shared/provider.ts': { calls: 2, reads: 'the inline datum of an output, and a datum that is looked up by its hash: both come from the node or Koios (the test above names the places)' },
+  'vendored/signer/sign.ts': { calls: 1, reads: 'the unsigned transaction that the signer is given (the test above names the order)' },
+};
+
+describe('the copies call a checked wrapper or the scanner only where the call is named', () => {
+  it('no other file calls one', () => {
+    const others = [...files].flatMap(([file, code]) => (file in CHECKED_CALLS ? [] : code.split('\n').flatMap((line, i) => (CHECKED_CALL.test(line) ? [`${file}:${i + 1}: ${line.trim()}`] : []))));
+    expect(others, 'these lines read bytes through a checked wrapper: name the file here with what it reads').toStrictEqual([]);
+  });
+
+  it('each named file makes the number of calls that is named, says what they read, and takes the wrapper or the scanner from @vsa/vector-read', () => {
+    for (const [file, { calls, reads }] of Object.entries(CHECKED_CALLS)) {
+      expect(files.has(file), `${file} is a source file`).toBe(true);
+      expect(count(file, CHECKED_CALL), `${file} makes ${calls} call(s): change the name here`).toBe(calls);
+      expect(reads.length, file).toBeGreaterThan(20);
+      expect(files.get(file)!, `${file} takes the wrapper or the scanner from @vsa/vector-read`).toMatch(/from '@vsa\/vector-read\/(?:guarded-decode|cbor-depth)';/);
+    }
+  });
+});

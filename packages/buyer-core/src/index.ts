@@ -39,6 +39,27 @@ export { readCapability, probeStatus, sendOcrJob, sendResponsesJob, pollOcrJob, 
 export type { FetchLike, SupplierCapability, Receipt, SendResult, PollResult } from './fleet-clients.ts';
 export { selectLlmSupplier, findOcrAdvert, LLM_SELECTION_BUDGET_MS, LLM_SELECTION_MAX_CANDIDATES } from './select-supplier.ts';
 export type { LlmSupplierChoice, OcrAdvertListing } from './select-supplier.ts';
+// The read and check code of the identity registry and the Module-1 builders, vendored from Apex-Fusion/mcp-server at 2d95483 (VENDORED-FROM.md).
+// The reads work on a LedgerEnv (the node, the deployment, Koios) and end inside one budget. The builders take Lucid bound to the wallet, the node
+// and the Module-1 deployment, and return an unsigned transaction.
+export { MAX_PAGE, DEFAULT_PAGE, KOIOS_ANSWER_BYTES, READ_BUDGET_MS, BudgetSpent, TooManyMatches, withinBudget, utxoOfKoiosRow, soleTokenName, credentialOutputs, credentialPage, koiosTipHeight, dataOfKoiosJson, checkPage, pageOf } from './vendored/mcp/ledger-read.ts';
+export type { LedgerEnv, ReadSession, CredentialFilter, Page } from './vendored/mcp/ledger-read.ts';
+export { readAttestation, readAttestationDatum, attestationState, parseIssuer, issuerMatches, listAttestations, checkAttestation } from './vendored/mcp/attestation-read.ts';
+export type { AttestationView, ReadDatum, AttestationState, IssuerRef, AttestationQuery, AttestationPage, CheckResult, CheckLine, AttestationExpectations, AttestationCheck } from './vendored/mcp/attestation-read.ts';
+export { readDelegation, readChainRecords, isAction, isResource, checkDelegationUse } from './vendored/mcp/delegation-read.ts';
+export type { DelegationView, DelegationUseParams, LinkConfirmations, DelegationUseCheck } from './vendored/mcp/delegation-read.ts';
+export { periodAllowance, NOT_ON_NODE, readVaults, escrowPaidFromVault } from './vendored/mcp/vault-read.ts';
+export type { VaultOutput, PeriodAllowance, SmallestEscrow, LiveVault, VaultReading, VaultPage, VaultSelector, EscrowVaultReason, EscrowVaultResult } from './vendored/mcp/vault-read.ts';
+export { MODULE1_FEE_BUFFER, MAX_URI_BYTES, defaultChallengeWindow, buildSubmitClaim, findClaim, buildOpenChallenge, assertPayoutIsOutputZero, buildWithdrawClaim } from './vendored/mcp/module1-build.ts';
+export type { Module1Context, SubmitClaimParams, SubmitClaimBuild, ClaimUtxo, OpenChallengeParams, OpenChallengeBuild, WithdrawClaimParams, WithdrawClaimBuild } from './vendored/mcp/module1-build.ts';
+export { buildDocumentPublish } from './vendored/mcp/jury-build.ts';
+export type { PublishParams, PublishBuild, JuryBuildCommon } from './vendored/mcp/jury-build.ts';
+export { DOCUMENT_LABEL, CHUNK_MAX_BYTES, DOCUMENT_TYPES, DEFAULT_MEDIA_TYPE, MAX_DOCUMENT_BYTES, MAX_FETCH_BYTES, URI_PREFIX, documentHash, documentBytes, documentUri, txHashOfUri, readDocument } from './vendored/mcp/jury-document.ts';
+export type { FetchedDocument, DocumentReadOpts } from './vendored/mcp/jury-document.ts';
+export { MODULE1_MANIFEST_ENV, MODULE1_NOT_CONFIGURED, JuryConfigError, readManifest, module1FromManifest } from './vendored/mcp/jury-deployment.ts';
+export type { Module1Deployment } from './vendored/mcp/jury-deployment.ts';
+export { decodeClaimDatum, decodeChallengeDatum } from './vendored/mcp/jury-codec.ts';
+export type { ClaimDatum, ChallengeDatum, ClaimState, ChallengeState } from './vendored/mcp/jury-codec.ts';
 export { verifyFleetReceipt } from './fleet-verify.ts';
 export { flatText } from './guards.ts';
 export type { FleetVerifyInput, FleetVerification } from './fleet-verify.ts';
