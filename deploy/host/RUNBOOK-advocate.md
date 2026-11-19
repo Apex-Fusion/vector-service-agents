@@ -134,7 +134,7 @@ cd "$BASE/repo/deploy/host"
 docker compose -f docker-compose.advocate.yml build agent
 ```
 
-This clones `vector-agent-template` at the pinned commit `48c0373`, the commit of the runtimes of the other three, and installs it. The compose file carries the full 40-character hash, because BuildKit does not resolve the short form. It ends with `Image advocate-agent Built`.
+This clones `vector-agent-template` at the pinned commit `a05564c`, the commit of the runtimes of the other three, and installs it. The compose file carries the full 40-character hash, because BuildKit does not resolve the short form. It ends with `Image advocate-agent Built`.
 
 ## 4. Make the env file, generate the two keys and enter the two API keys
 
@@ -582,6 +582,69 @@ The status is in the manifest, so changing it changes the bytes the advert hashe
 6. Post the new advert (step 12). The new `ADVERT_REF` replaces the old one in the env file.
 7. `docker compose -f docker-compose.advocate.yml up -d --force-recreate agent`, then steps 13 and 14 again.
 8. In the repository, in a pull request, change every file that says PROPOSED about Advocate, and the tests that pin the word, and leave the other three agents' lines alone (their rows in the table of `README.md` and their specs). Find them with `grep -rIl PROPOSED --exclude-dir=node_modules --exclude-dir=.git .`. They are `specs/advocate.md` (Status), `agents/advocate/README.md`, `README.md` (the table, and the line that says Advocate waits for its deployment), `docs/HIRE.md` and `docs/E2E.md` where they say it, `deploy/host/README.md` (the Advocate section), `deploy/host/RUNBOOK-advocate.md` (its first paragraph), the first lines of `deploy/host/docker-compose.advocate.yml` and `deploy/host/Caddyfile.advocate.snippet`, and `deploy/host/.env.advocate.example`. The code carries the word as a default too: the `proposed` default in `agents/advocate/src/server.ts` and the manifest template `agents/advocate/agent.json.template` (regenerate it from the code with `pnpm --filter @vsa/advocate template`, never by hand), and the pins in `agents/advocate/test/server.test.ts` and `agents/advocate/test/start.test.ts`. The tests are `agents/advocate/test/spec.test.ts`, `agents/advocate/test/readme.test.ts`, `scripts/specs.test.mjs` and `scripts/deploy.test.mjs`. They fail until all of the files agree. The new advert has a new reference: replace the old one wherever it is given as the current advert, and keep it in the Links section of the spec as the retired advert.
+
+## Take a new runtime commit
+
+Operator. Use this section when the pin of `vector-agent-template` in `docker-compose.advocate.yml` moves to a new commit. Only the runtime changes. The service, its image and its manifest stay as they are, so the advert and its hash stay as they are. Run the four parts in order. Part 3 creates the runtime again, and only while its `/status` says `free`.
+
+From the commit `a05564c` on, the runtime differs in four ways:
+
+- **A check before the Claim.** The runtime compares each escrow with the advert that it serves, before it builds a Claim. It refuses a job with 409 and one of three codes. `wrong_advert`: the escrow names another advert. `underpaid`: the quoted amount of the escrow is below the price of the advert, or the escrow holds less than that amount and both bonds. `bond_mismatch`: a bond is below the bond of the advert. A refused job costs no Claim. The escrow stays Open, and the buyer can Reclaim it after `deliver_by`. An escrow that a buyer posts for the advert of this agent passes: it names that advert, and it holds the price and both bonds of that advert.
+- **The agent card.** The compose file sets `PUBLIC_ORIGIN: https://mp-suppliers-advocate.hal8.ai` for the runtime. With that value the runtime serves `GET /.well-known/agent-card.json` and answers `GET /` with 200. Caddy sends both to the runtime, because only `/agent.json` goes to the service. The value is the https origin of the endpoint of the agent record. The runtime does not start when the value is not an https origin. A runtime without the value answers 404 on both routes.
+- **Six context headers.** The runtime sends them to the service with each job call. The service does not read them.
+- **Two settings that stay unset.** `SERVICE_PRECHECK_URL` and `RELEASE_WATCHER` are in no compose file and in no env file. So the runtime asks the service nothing before the Claim, and it runs no release watcher.
+
+**Part 1. Bring the commit to the host.** As in step 1, make a bundle of the reviewed `main` on the operator's machine, and copy it to `/tmp/` on the host. The pin of step 2 is the one local change of the checkout, and a pull stops on it. The block puts that pin aside, pulls the bundle, and puts the same pin back, so the service image does not change. It changes nothing when the compose file holds no pin of the service image of this agent.
+
+```sh
+cd "$BASE/repo/deploy/host"
+IMAGE=ghcr.io/apex-fusion/vector-service-agents/advocate
+PIN=$(sed -n 's/^    image: //p' docker-compose.advocate.yml)
+if printf '%s\n' "$PIN" | grep -Eq "^($IMAGE@sha256:|sha256:)[0-9a-f]{64}\$"; then
+  git checkout docker-compose.advocate.yml
+  git pull --ff-only /tmp/vector-service-agents.bundle main
+  sed -i "s|^    image: .*|    image: $PIN|" docker-compose.advocate.yml
+else
+  echo "the pin of step 2 is not in the compose file, do not continue" >&2
+fi
+git log -1 --oneline
+grep -n '^    image: ' docker-compose.advocate.yml
+```
+
+`git log` shows the new commit: check that it is the one that was reviewed. `grep` shows the `image:` line of the service, with `@sha256:` or `sha256:` and 64 hex digits, as before. `.env` and `.env.advocate` are not in git and stay as they are. The `context:` line of `agent` now names the new commit.
+
+**Part 2. Build the runtime image,** as in step 3. The runtime that runs now keeps the image that it started from.
+
+```sh
+cd "$BASE/repo/deploy/host"
+docker compose -f docker-compose.advocate.yml build agent
+```
+
+It ends with `Image advocate-agent Built`.
+
+**Part 3. Create the runtime again, only while `/status` says `free`.** The runtime keeps its jobs in memory, so a stop during a job can cut a job under escrow. The block creates the runtime again only when `/status` says `free`. While a job runs, it does nothing: wait until the job ends, and run it again.
+
+```sh
+cd "$BASE/repo/deploy/host"
+if curl -s http://127.0.0.1:8086/status | grep -q '"status":"free"'; then
+  docker compose -f docker-compose.advocate.yml up -d --force-recreate agent
+else
+  echo "the runtime is not free: wait, and run this block again" >&2
+fi
+```
+
+**Part 4. Check the runtime, the card and `GET /`.**
+
+```sh
+cd "$BASE/repo/deploy/host"
+curl -s http://127.0.0.1:8086/healthz
+curl -s http://127.0.0.1:8086/capability
+curl -s http://127.0.0.1:8086/status
+curl -fsS https://mp-suppliers-advocate.hal8.ai/.well-known/agent-card.json
+curl -fsS -o /dev/null -w '%{http_code}\n' https://mp-suppliers-advocate.hal8.ai/
+```
+
+`/healthz`, `/capability` and `/status` answer as in step 13. The fourth command prints the agent card, one JSON document. Its `supportedInterfaces` has one entry, with the `url` `https://mp-suppliers-advocate.hal8.ai/v1/job`, and its `skills` list `research.advocate.onesided.v1` as long as the runtime can read its advert. The last command prints `200`. If the runtime starts again and again, `docker logs --tail 20 advocate-agent` shows why. A line that names `PUBLIC_ORIGIN` means that the value in the compose file is not an https origin.
 
 ## Back out
 

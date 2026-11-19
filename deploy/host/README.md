@@ -10,7 +10,7 @@ The Document Pipeline is a second stack on the same box. It has its own section 
 
 | Container | Image | Listens on | Reachable from |
 |---|---|---|---|
-| `agent-history-agent` | built on the box from `https://github.com/Apex-Fusion/vector-agent-template.git` at the pinned commit `48c0373` (`CAPABILITY_KIND=custom`) | 8080 | Caddy, over the external network of the host's reverse proxy. The host, on `127.0.0.1:8083` only |
+| `agent-history-agent` | built on the box from `https://github.com/Apex-Fusion/vector-agent-template.git` at the pinned commit `a05564c` (`CAPABILITY_KIND=custom`) | 8080 | Caddy, over the external network of the host's reverse proxy. The host, on `127.0.0.1:8083` only |
 | `agent-history-service` | `ghcr.io/apex-fusion/vector-service-agents/agent-history`, pinned by digest | 9091 | The runtime and Caddy, over the external network of the host's reverse proxy. Nothing on the host |
 
 The working directory on the box is `<base path>/repo/deploy/host`, inside a checkout of this repository; the base path is the folder the operator chose (`BASE` in the runbook). The compose project is `agent-history`. Both containers join the existing external network of the host's reverse proxy, which the stack of that proxy created. Its name is not in the repository: compose reads it as `PROXY_NETWORK` from `.env` next to the compose file, which the operator writes in step 1 of the runbook with the name the host administrator gives, and compose stops while it has no value. The runtime claims jobs, calls the service, signs the receipt and submits its hash. The service reads public ledger data and holds no key: it reads the same env file as the runtime, and the compose file blanks the one secret in it for the service.
@@ -47,7 +47,7 @@ The working directory on the box is `<base path>/repo/deploy/host`, inside a che
    docker exec <caddy container> caddy reload --config /etc/caddy/Caddyfile
    ```
 
-   The second route matters. The advert's `detail_uri` is `https://mp-suppliers-history.hal8.ai/agent.json`, and the template runtime does not serve that path. Without the route the manifest cannot be fetched and the hash in the advert cannot be checked. The `/agent.json` route goes first so that it is not caught by the default one. Everything else goes to the runtime.
+   The second route matters. The advert's `detail_uri` is `https://mp-suppliers-history.hal8.ai/agent.json`, and the template runtime does not serve that path. Without the route the manifest cannot be fetched and the hash in the advert cannot be checked. The `/agent.json` route goes first so that it is not caught by the default one. Everything else goes to the runtime. The agent card at `/.well-known/agent-card.json` and `GET /` need no route of their own: the runtime serves both, and both take the default route.
 
 5. **Ports.** `127.0.0.1:8083` on the host is the runtime's `/healthz`, `/capability` and `/status`, for the operator's checks before DNS and as a probe afterwards. It is loopback only. The service is not published. Check `ss -ltnp` for a clash on 8083 before the first start.
 
@@ -71,7 +71,7 @@ Status: DEPLOYED since 2026-10-16. Nothing in this section is LIVE. Steps 1 to 1
 
 | Container | Image | Listens on | Reachable from |
 |---|---|---|---|
-| `document-pipeline-agent` | built on the box from `https://github.com/Apex-Fusion/vector-agent-template.git` at the same pinned commit `48c0373` (`CAPABILITY_KIND=custom`) | 8080 | Caddy, over the external network of the host's reverse proxy. The host, on `127.0.0.1:8084` only |
+| `document-pipeline-agent` | built on the box from `https://github.com/Apex-Fusion/vector-agent-template.git` at the same pinned commit `a05564c` (`CAPABILITY_KIND=custom`) | 8080 | Caddy, over the external network of the host's reverse proxy. The host, on `127.0.0.1:8084` only |
 | `document-pipeline-service` | `ghcr.io/apex-fusion/vector-service-agents/document-pipeline`, built on the box and pinned by digest (`@sha256:<digest>`, a placeholder in the repository), or by image ID | 9092 | The runtime and Caddy, over the external network of the host's reverse proxy. Nothing on the host: 9092 is never published |
 
 The working directory on the box is `<base path>/repo/deploy/host`, inside a checkout of this repository that is shipped to the box as a git bundle, because the box has no GitHub credentials; the base path is the folder the operator chose for this agent (`BASE` in its runbook). The compose project is `document-pipeline`. Both containers join the external network of the host's reverse proxy (`PROXY_NETWORK` in `.env`, written in step 1 of its runbook, as for Agent History). What differs from Agent History:
@@ -106,7 +106,7 @@ The working directory on the box is `<base path>/repo/deploy/host`, inside a che
    docker exec <caddy container> caddy reload --config /etc/caddy/Caddyfile
    ```
 
-   The second route matters for the reason it matters for Agent History: the advert's `detail_uri` is `https://mp-suppliers-pipeline.hal8.ai/agent.json`, and the template runtime does not serve that path. The `/agent.json` route goes first so that it is not caught by the default one.
+   The second route matters for the reason it matters for Agent History: the advert's `detail_uri` is `https://mp-suppliers-pipeline.hal8.ai/agent.json`, and the template runtime does not serve that path. The `/agent.json` route goes first so that it is not caught by the default one. The agent card at `/.well-known/agent-card.json` and `GET /` need no route of their own: the runtime serves both, and both take the default route.
 
 4. **Ports.** `127.0.0.1:8084` on the host is the runtime's `/healthz`, `/capability` and `/status`, for the operator's checks before DNS and as a probe afterwards. It is loopback only. The service is not published. Check `ss -ltnp` for a clash on 8084 before the first start.
 
@@ -128,7 +128,7 @@ Status: DEPLOYED since 2026-10-17. Nothing in this section is LIVE. Steps 1 to 5
 
 | Container | Image | Listens on | Reachable from |
 |---|---|---|---|
-| `audio-snippets-agent` | built on the host from `https://github.com/Apex-Fusion/vector-agent-template.git` at the same pinned commit `48c0373` (`CAPABILITY_KIND=custom`) | 8080 | Caddy, over the external network of the host's reverse proxy. The host, on `127.0.0.1:8085` only |
+| `audio-snippets-agent` | built on the host from `https://github.com/Apex-Fusion/vector-agent-template.git` at the same pinned commit `a05564c` (`CAPABILITY_KIND=custom`) | 8080 | Caddy, over the external network of the host's reverse proxy. The host, on `127.0.0.1:8085` only |
 | `audio-snippets-service` | `ghcr.io/apex-fusion/vector-service-agents/audio-snippets`, built on the host and pinned by digest (`@sha256:<digest>`, a placeholder in the repository), or by image ID | 9093 | The runtime and Caddy, over the external network of the host's reverse proxy. Nothing on the host: 9093 is never published |
 
 The working directory on the host is `<base path>/repo/deploy/host`, inside a checkout of this repository that is shipped to the host as a git bundle; the base path is the folder the operator chose for this agent (`BASE` in its runbook). The compose project is `audio-snippets`. Both containers join the external network of the host's reverse proxy (`PROXY_NETWORK` in `.env`, written in step 1 of its runbook, as for the other two). What differs from the Pipeline:
@@ -166,7 +166,7 @@ The working directory on the host is `<base path>/repo/deploy/host`, inside a ch
    docker exec <caddy container> caddy reload --config /etc/caddy/Caddyfile
    ```
 
-   The second route matters for the reason it matters for the other two: the advert's `detail_uri` is `https://mp-suppliers-snippets.hal8.ai/agent.json`, and the template runtime does not serve that path. The `/agent.json` route goes first so that it is not caught by the default one.
+   The second route matters for the reason it matters for the other two: the advert's `detail_uri` is `https://mp-suppliers-snippets.hal8.ai/agent.json`, and the template runtime does not serve that path. The `/agent.json` route goes first so that it is not caught by the default one. The agent card at `/.well-known/agent-card.json` and `GET /` need no route of their own: the runtime serves both, and both take the default route.
 
 5. **Ports.** `127.0.0.1:8085` on the host is the runtime's `/healthz`, `/capability` and `/status`, for the operator's checks before DNS and as a probe afterwards. It is loopback only. The service is not published. Check `ss -ltnp` for a clash on 8085 before the first start.
 
@@ -188,7 +188,7 @@ Status: DEPLOYED since 2026-10-20. Nothing in this section is LIVE. Steps 1 to 5
 
 | Container | Image | Listens on | Reachable from |
 |---|---|---|---|
-| `advocate-agent` | built on the host from `https://github.com/Apex-Fusion/vector-agent-template.git` at the same pinned commit `48c0373` (`CAPABILITY_KIND=custom`) | 8080 | Caddy, over the external network of the host's reverse proxy. The host, on `127.0.0.1:8086` only |
+| `advocate-agent` | built on the host from `https://github.com/Apex-Fusion/vector-agent-template.git` at the same pinned commit `a05564c` (`CAPABILITY_KIND=custom`) | 8080 | Caddy, over the external network of the host's reverse proxy. The host, on `127.0.0.1:8086` only |
 | `advocate-service` | `ghcr.io/apex-fusion/vector-service-agents/advocate`, built on the host and pinned by digest (`@sha256:<digest>`, a placeholder in the repository), or by image ID | 9094 | The runtime and Caddy, over the external network of the host's reverse proxy. Nothing on the host: 9094 is never published |
 
 The working directory on the host is `<base path>/repo/deploy/host`, inside a checkout of this repository that is shipped to the host as a git bundle; the base path is the folder the operator chose for this agent (`BASE` in its runbook). The compose project is `advocate`. Both containers join the external network of the host's reverse proxy (`PROXY_NETWORK` in `.env`, written in step 1 of its runbook, as for the other three). What differs from Audio Snippets:
@@ -226,7 +226,7 @@ The working directory on the host is `<base path>/repo/deploy/host`, inside a ch
    docker exec <caddy container> caddy reload --config /etc/caddy/Caddyfile
    ```
 
-   The second route matters for the reason it matters for the other three: the advert's `detail_uri` is `https://mp-suppliers-advocate.hal8.ai/agent.json`, and the template runtime does not serve that path. The `/agent.json` route goes first so that it is not caught by the default one.
+   The second route matters for the reason it matters for the other three: the advert's `detail_uri` is `https://mp-suppliers-advocate.hal8.ai/agent.json`, and the template runtime does not serve that path. The `/agent.json` route goes first so that it is not caught by the default one. The agent card at `/.well-known/agent-card.json` and `GET /` need no route of their own: the runtime serves both, and both take the default route.
 
 5. **Ports.** `127.0.0.1:8086` on the host is the runtime's `/healthz`, `/capability` and `/status`, for the operator's checks before DNS and as a probe afterwards. It is loopback only. The service is not published. Check `ss -ltnp` for a clash on 8086 before the first start.
 

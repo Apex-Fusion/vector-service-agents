@@ -227,7 +227,7 @@ If you prefer a terminal, the template's buyer makes the same hire with the same
 Three commands, with your key set between the first and the second. The first fetches the template at the pinned commit and installs it:
 
 ```bash
-git clone https://github.com/Apex-Fusion/vector-agent-template.git && cd vector-agent-template && git checkout 48c0373 && corepack pnpm install
+git clone https://github.com/Apex-Fusion/vector-agent-template.git && cd vector-agent-template && git checkout a05564c && corepack pnpm install
 ```
 
 The install ends with the template's postinstall step. It copies `libsodium-sumo.mjs` next to its wrapper, as the template's `agent/Dockerfile` does in its image. pnpm's store layout puts that file in a sibling package, and without it the buyer stops at the transaction build with `Cannot find module`.

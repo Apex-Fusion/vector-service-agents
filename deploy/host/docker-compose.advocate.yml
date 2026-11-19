@@ -12,9 +12,9 @@
 name: advocate
 services:
   agent:
-    # The pin is the full commit 48c0373. BuildKit does not resolve the abbreviated form (repository does not contain ref).
+    # The pin is the full commit a05564c. BuildKit does not resolve the abbreviated form (repository does not contain ref).
     build:
-      context: https://github.com/Apex-Fusion/vector-agent-template.git#48c037328b0d330b8bff895cf9c8e7b90fbf2190
+      context: https://github.com/Apex-Fusion/vector-agent-template.git#a05564cae3ca0e72a3591c8b2eb16c7909a60839
       dockerfile: agent/Dockerfile
     container_name: advocate-agent
     restart: unless-stopped
@@ -31,6 +31,9 @@ services:
       SERVICE_TIMEOUT_MS: "360000"
       ADVERT_MAX_PROCESSING_MS: "480000"
       PORT: "8080"
+      # The runtime serves the agent card and a 200 on GET / when PUBLIC_ORIGIN is set. The value is the https origin of the host that the agent record, the advert and the Caddy block name.
+      # The runtime does not start when the value is not an https origin. SERVICE_PRECHECK_URL and RELEASE_WATCHER stay unset on purpose: the runtime asks the service nothing before the Claim, and it runs no release watcher.
+      PUBLIC_ORIGIN: https://mp-suppliers-advocate.hal8.ai
       ADVOCATE_BUYER_PRIV_KEY_HEX: ""
       BRAVE_SEARCH_API_KEY: ""
       OPENROUTER_API_KEY: ""

@@ -122,9 +122,9 @@ test('compose: two containers with fixed names, the runtime on loopback only, th
 });
 
 test('compose: the runtime is built from the pinned template commit, written in full because BuildKit does not resolve the short form', () => {
-  assert.match(agent.build.context, /^https:\/\/github\.com\/Apex-Fusion\/vector-agent-template\.git#48c0373[0-9a-f]{33}$/);
+  assert.match(agent.build.context, /^https:\/\/github\.com\/Apex-Fusion\/vector-agent-template\.git#a05564c[0-9a-f]{33}$/);
   assert.equal(agent.build.dockerfile, 'agent/Dockerfile');
-  assert.ok(SPEC.includes('pinned commit `48c0373`'), 'the spec names the same commit');
+  assert.ok(SPEC.includes('pinned commit `a05564c`'), 'the spec names the same commit');
 });
 
 test('compose: SERVICE_URL names the service container, its port and the path /, and is not the shared alias "service"', () => {
@@ -240,10 +240,11 @@ test('env scan: it finds every form of environment read the service code could u
 });
 
 test('env example: the runtime gets every name the pinned template lists for CAPABILITY_KIND=custom', () => {
-  // From .env.example of vector-agent-template at 48c0373. The optional ones (SERVICE_AUTH_HEADER, WALLET_HEALTH_INTERVAL_MS, the self-test buyer's BUYER_PRIV_KEY_HEX,
+  // From .env.example of vector-agent-template at a05564c. The optional ones (SERVICE_AUTH_HEADER, WALLET_HEALTH_INTERVAL_MS, the self-test buyer's BUYER_PRIV_KEY_HEX,
   // INDEXER_URL and SWITCH_SLOT, and IDENTITY_REF_UTXO, IDENTITY_CONTROLLER_PUB_KEY_HEX and IDENTITY_ACCOUNTABLE_PARTY, which only register-record.ts build reads) are left out.
   // AGENT_ID is left out too: the step that makes the agent's record writes it into the env file.
-  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY, 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'PORT'];
+  // SERVICE_PRECHECK_URL and RELEASE_WATCHER are left out on purpose: they stay unset (the tests of the four runtimes hold that). PUBLIC_ORIGIN is needed: it gives the runtime its agent card.
+  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY, 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'PORT', 'PUBLIC_ORIGIN'];
   assert.deepEqual(NEEDED.filter((n) => !(n in example) && !(n in agent.environment)), []);
   assert.equal(example.NETWORK_ID, '1');
   assert.equal(example.LIVE_CHAIN, '1');
@@ -791,8 +792,8 @@ test('Pipeline compose: the project and two containers have fixed names, the run
 test('Pipeline compose: the runtime is built from the template commit of Agent History, written in full', () => {
   assert.equal(pAgent.build.context, agent.build.context);
   assert.equal(pAgent.build.dockerfile, 'agent/Dockerfile');
-  assert.match(pAgent.build.context, /^https:\/\/github\.com\/Apex-Fusion\/vector-agent-template\.git#48c0373[0-9a-f]{33}$/);
-  assert.ok(PSPEC.includes('pinned commit `48c0373`'), 'the spec names the same commit');
+  assert.match(pAgent.build.context, /^https:\/\/github\.com\/Apex-Fusion\/vector-agent-template\.git#a05564c[0-9a-f]{33}$/);
+  assert.ok(PSPEC.includes('pinned commit `a05564c`'), 'the spec names the same commit');
 });
 
 test('Pipeline compose: SERVICE_URL names the service container, port 9092 and the path /, and is not the shared alias "service"', () => {
@@ -844,7 +845,7 @@ test('Pipeline compose: each container gets only its own key, the other one is b
 });
 
 test('Pipeline compose: the token between the containers (R50) is blanked in neither, so that both read the one value from the env file, and the comments say what each side does with it and when to recreate', () => {
-  // The runtime sends SERVICE_AUTH_HEADER as the authorization header of every call (vector-agent-template 48c0373, agent/src/executor/httpCallout.ts), and the service requires it on POST /.
+  // The runtime sends SERVICE_AUTH_HEADER as the authorization header of every call (vector-agent-template a05564c, agent/src/executor/httpCallout.ts), and the service requires it on POST /.
   assert.ok(!('SERVICE_AUTH_HEADER' in pAgent.environment), 'the runtime reads the token from the env file: a blank here would send no header');
   assert.ok(!('SERVICE_AUTH_HEADER' in pService.environment), 'the service reads the token from the env file: a blank here would stop the start');
   assert.ok('SERVICE_AUTH_HEADER' in pExample, 'the env file has the line, so both containers get it');
@@ -998,9 +999,10 @@ test('Pipeline env example: every name the service code reads is in the example,
 });
 
 test('Pipeline env example: the runtime gets every name the pinned template lists for CAPABILITY_KIND=custom', () => {
-  // The same list as for Agent History: from .env.example of vector-agent-template at 48c0373.
+  // The same list as for Agent History: from .env.example of vector-agent-template at a05564c.
   // SERVICE_AUTH_HEADER is optional in the template ("" sends no header); this pack sets it, so that the runtime sends the token the service requires (R50).
-  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY, 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'SERVICE_AUTH_HEADER', 'PORT'];
+  // SERVICE_PRECHECK_URL and RELEASE_WATCHER stay unset on purpose, and PUBLIC_ORIGIN gives the runtime its agent card (the tests of the four runtimes).
+  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY, 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'SERVICE_AUTH_HEADER', 'PORT', 'PUBLIC_ORIGIN'];
   assert.deepEqual(NEEDED.filter((n) => !(n in pExample) && !(n in pAgent.environment)), []);
   assert.equal(pExample.NETWORK_ID, '1');
   assert.equal(pExample.LIVE_CHAIN, '1');
@@ -1104,7 +1106,7 @@ test('Pipeline README section: the second stack beside Agent History, with its t
   assert.ok(pSection.includes('[RUNBOOK-document-pipeline.md](RUNBOOK-document-pipeline.md), which is the operator\'s order of work and follows [RUNBOOK.md](RUNBOOK.md) step for step'));
   const rows = pSection.split('\n').filter((l) => l.startsWith('| `'));
   assert.equal(rows.length, 2, 'the second table has the two containers');
-  assert.ok(rows[0].startsWith(`| \`${pAgent.container_name}\` | built on the box from \`https://github.com/Apex-Fusion/vector-agent-template.git\` at the same pinned commit \`48c0373\` (\`CAPABILITY_KIND=custom\`) | 8080 | Caddy, over the external network of the host's reverse proxy. The host, on \`127.0.0.1:8084\` only |`));
+  assert.ok(rows[0].startsWith(`| \`${pAgent.container_name}\` | built on the box from \`https://github.com/Apex-Fusion/vector-agent-template.git\` at the same pinned commit \`a05564c\` (\`CAPABILITY_KIND=custom\`) | 8080 | Caddy, over the external network of the host's reverse proxy. The host, on \`127.0.0.1:8084\` only |`));
   assert.ok(rows[1].startsWith(`| \`${pService.container_name}\` | \`ghcr.io/apex-fusion/vector-service-agents/document-pipeline\`, built on the box and pinned by digest (\`@sha256:<digest>\`, a placeholder in the repository), or by image ID | 9092 | The runtime and Caddy, over the external network of the host's reverse proxy. Nothing on the host: 9092 is never published |`));
   for (const part of [
     'The working directory on the box is `<base path>/repo/deploy/host`',
@@ -1154,9 +1156,9 @@ test('Pipeline README section: the second stack beside Agent History, with its t
   assert.doesNotMatch(pSection, /no job (has )?settled|no first-party run of the path is recorded/i);
 });
 
-test('Pipeline RUNBOOK: the twenty-one sections in order, the seventeen steps keep the numbers of the Agent History runbook, three titles differ, and "Watch the first stop" sits between steps 15 and 16', () => {
+test('Pipeline RUNBOOK: the twenty-two sections in order, the seventeen steps keep the numbers of the Agent History runbook, three titles differ, and "Watch the first stop" sits between steps 15 and 16', () => {
   const numbered = P_STEPS.map((title, i) => `${i + 1}. ${title}`);
-  assert.deepEqual([...pRunbook.matchAll(/^## (.+)$/gm)].map((m) => m[1]), ['Collateral and float', ...numbered.slice(0, 15), 'Watch the first stop', ...numbered.slice(15), 'Back out', 'If something goes wrong']);
+  assert.deepEqual([...pRunbook.matchAll(/^## (.+)$/gm)].map((m) => m[1]), ['Collateral and float', ...numbered.slice(0, 15), 'Watch the first stop', ...numbered.slice(15), 'Take a new runtime commit', 'Back out', 'If something goes wrong']);
   assert.deepEqual([...pRunbook.matchAll(/^## (\d+)\. (.+)$/gm)].map((m) => [Number(m[1]), m[2]]), P_STEPS.map((title, i) => [i + 1, title]));
   const history = [...runbook.matchAll(/^## (\d+)\. (.+)$/gm)].map((m) => m[2]);
   assert.equal(history.length, P_STEPS.length, 'the same number of steps as the runbook it follows');
@@ -1254,7 +1256,7 @@ test('Pipeline RUNBOOK steps 1 to 3: the repository goes over as a git bundle an
   assert.doesNotMatch(one, /git clone https:/, 'no clone from GitHub: the box has no credentials');
   const three = section(pRunbook, '3. Build the runtime image');
   assert.ok(three.includes('docker compose -f docker-compose.document-pipeline.yml build agent'));
-  assert.ok(three.includes('`48c0373`') && three.includes('the full 40-character hash, because BuildKit does not resolve the short form'));
+  assert.ok(three.includes('`a05564c`') && three.includes('the full 40-character hash, because BuildKit does not resolve the short form'));
   assert.ok(three.includes('It ends with `Image document-pipeline-agent Built`.'));
 });
 
@@ -2164,6 +2166,395 @@ test('the deployment host is not named: no tracked file names it, the stack of i
 });
 
 // ======================================================================================================================================
+// The runtimes of the four agents on the template commit a05564c: the agent card, its route in Caddy, and the two settings that stay unset.
+// From that commit the runtime serves GET /.well-known/agent-card.json, and a 200 on GET /, when PUBLIC_ORIGIN is set. The compose file of each agent sets it for the
+// runtime: the https origin of the host that the agent record and the advert name as the endpoint, and that Caddy serves. The runtime stops at boot on a value that is not
+// an https origin, so these tests hold the value before a host takes it. The check of the escrow against the advert, before the Claim, and the six context headers have no
+// setting: every job gets them. SERVICE_PRECHECK_URL and RELEASE_WATCHER stay unset, so that the card and that check are all that changes for the four agents.
+// ======================================================================================================================================
+const CARD_PATH = '/.well-known/agent-card.json';
+const CARD_STACKS = [
+  ['Agent History', 'docker-compose.agent-history.yml', 'Caddyfile.snippet', '.env.agent-history.example', 'mp-suppliers-history.hal8.ai'],
+  ['Document Pipeline', 'docker-compose.document-pipeline.yml', 'Caddyfile.document-pipeline.snippet', '.env.document-pipeline.example', 'mp-suppliers-pipeline.hal8.ai'],
+  ['Audio Snippets', 'docker-compose.audio-snippets.yml', 'Caddyfile.audio-snippets.snippet', '.env.audio-snippets.example', 'mp-suppliers-snippets.hal8.ai'],
+  ['Advocate', 'docker-compose.advocate.yml', 'Caddyfile.advocate.snippet', '.env.advocate.example', 'mp-suppliers-advocate.hal8.ai'],
+].map(([name, composeFile, snippetFile, exampleFile, host]) => ({
+  name, host, composeFile, snippetFile, exampleFile,
+  compose: parseYaml(read(`deploy/host/${composeFile}`)), snippet: read(`deploy/host/${snippetFile}`), example: read(`deploy/host/${exampleFile}`),
+}));
+/** The environment of a compose service as a map, whether the file writes it as a map or as a list of NAME=value entries. */
+const runtimeEnvironment = (service) => {
+  const environment = service?.environment ?? {};
+  return Array.isArray(environment) ? Object.fromEntries(environment.map((entry) => [entry.split('=')[0], entry.split('=').slice(1).join('=')])) : environment;
+};
+/** The host of the site block of a Caddy snippet, and its handle blocks: the matcher of each (null when it has none) and its upstream. */
+function snippetRoutes(text) {
+  const lines = text.split('\n');
+  const block = lines.slice(lines.findIndex((l) => !l.startsWith('#') && l.trim() !== '')).join('\n');
+  return {
+    host: /^(\S+) \{$/m.exec(block)?.[1],
+    handles: [...block.matchAll(/^    handle(?: (\S+))? \{\n        reverse_proxy (\S+)\n    \}$/gm)].map(([, matcher = null, upstream]) => ({ matcher, upstream })),
+  };
+}
+/** What is wrong with the public origin of a runtime: nothing, when the list is empty. */
+function cardOriginProblems({ compose, snippet, example, host }) {
+  const value = runtimeEnvironment(compose.services?.agent).PUBLIC_ORIGIN;
+  if (typeof value !== 'string' || value === '') return ['the runtime has no PUBLIC_ORIGIN'];
+  let url;
+  try { url = new URL(value); } catch { return [`PUBLIC_ORIGIN is not a URL: ${value}`]; }
+  const problems = [];
+  if (url.protocol !== 'https:') problems.push(`PUBLIC_ORIGIN is not https: ${value}`);
+  else if (value !== url.origin) problems.push(`PUBLIC_ORIGIN is not an origin with no path, query, fragment, user name or closing slash: ${value}`);
+  const caddyHost = snippetRoutes(snippet).host;
+  const endpointHost = new URL(parseEnv(example).ADVERT_ENDPOINT_URL).host;
+  if ([caddyHost, endpointHost, host].some((other) => other !== url.host)) {
+    problems.push(`PUBLIC_ORIGIN has the host ${url.host}: the host of the Caddy block is ${caddyHost}, that of ADVERT_ENDPOINT_URL is ${endpointHost} and that of the agent is ${host}`);
+  }
+  if ('PUBLIC_ORIGIN' in runtimeEnvironment(compose.services?.service)) problems.push('the service has PUBLIC_ORIGIN: only the runtime serves the card');
+  return problems;
+}
+/** The upstream that Caddy gives a path: the handle with that exact path (the match is exact, and the case of the letters does not count), else the handle with no matcher. */
+const upstreamOf = (routes, path) => (routes.handles.find((h) => h.matcher !== null && h.matcher.toLowerCase() === path.toLowerCase()) ?? routes.handles.find((h) => h.matcher === null))?.upstream;
+/** What is wrong with the routes of a Caddy block: the card, GET / and the job route that the card names go to the runtime, and /agent.json goes to the service. */
+function cardRouteProblems(snippet, { runtime, service }) {
+  const routes = snippetRoutes(snippet);
+  const problems = [];
+  for (const { matcher } of routes.handles) {
+    if (matcher !== null && !/^\/([A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*)?$/.test(matcher)) problems.push(`the matcher ${matcher} is not an exact path: this check does not read it`);
+  }
+  for (const [path, upstream, who] of [['/', runtime, 'the runtime'], [CARD_PATH, runtime, 'the runtime'], ['/v1/job', runtime, 'the runtime'], ['/agent.json', service, 'the service']]) {
+    const got = upstreamOf(routes, path);
+    if (got !== upstream) problems.push(`${path} goes to ${got ?? 'nobody'}, not to ${who} (${upstream})`);
+  }
+  return problems;
+}
+const UNSET_SETTINGS = ['SERVICE_PRECHECK_URL', 'RELEASE_WATCHER'];
+/** The places where a compose file or an env example sets one of the two settings, for any container: a key of its environment, or a line NAME=value in an example. */
+function unsetSettingProblems(composes, examples) {
+  const problems = [];
+  for (const [file, doc] of composes) {
+    for (const [container, service] of Object.entries(doc.services ?? {})) {
+      for (const name of UNSET_SETTINGS) if (name in runtimeEnvironment(service)) problems.push(`${file}: ${container} sets ${name}`);
+    }
+  }
+  for (const [file, text] of examples) {
+    for (const line of text.split('\n')) {
+      const name = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=/.exec(line)?.[1];
+      if (UNSET_SETTINGS.includes(name)) problems.push(`${file}: sets ${name}`);
+    }
+  }
+  return problems;
+}
+
+test('the four runtimes: each compose file sets PUBLIC_ORIGIN for the runtime, as the https origin of its public host, the host that its Caddy block serves and that its advert names as the endpoint', () => {
+  assert.equal(CARD_STACKS.length, 4);
+  for (const stack of CARD_STACKS) {
+    assert.deepEqual(cardOriginProblems(stack), [], stack.name);
+    assert.equal(stack.compose.services.agent.environment.PUBLIC_ORIGIN, `https://${stack.host}`, stack.name);
+  }
+  assert.equal(new Set(CARD_STACKS.map((stack) => stack.compose.services.agent.environment.PUBLIC_ORIGIN)).size, 4, 'four runtimes, four origins');
+});
+
+test('the origin guard refuses a runtime with no origin, a value that is no URL, one that is not https, one with a path or a closing slash, a host other than the Caddy block, the endpoint or the agent has, and an origin on the service; each has an accepted twin', () => {
+  const [base] = CARD_STACKS;
+  const origin = `https://${base.host}`;
+  const problemsOf = (change, snippet = base.snippet, example = base.example) => {
+    const compose = structuredClone(base.compose);
+    change(compose.services);
+    return cardOriginProblems({ ...base, compose, snippet, example });
+  };
+  const hostMessage = (host, caddy = base.host, endpoint = base.host) => `PUBLIC_ORIGIN has the host ${host}: the host of the Caddy block is ${caddy}, that of ADVERT_ENDPOINT_URL is ${endpoint} and that of the agent is ${base.host}`;
+  const NOT_AN_ORIGIN = (value) => `PUBLIC_ORIGIN is not an origin with no path, query, fragment, user name or closing slash: ${value}`;
+  assert.deepEqual(problemsOf(() => {}), [], 'the twin: the file as it is');
+  assert.deepEqual(problemsOf((s) => { s.agent.environment = Object.entries(s.agent.environment).map(([key, value]) => `${key}=${value}`); }), [], 'the twin: the same environment written as a list');
+  assert.deepEqual(problemsOf((s) => { delete s.agent.environment.PUBLIC_ORIGIN; }), ['the runtime has no PUBLIC_ORIGIN'], 'no origin');
+  assert.deepEqual(problemsOf((s) => { s.agent.environment.PUBLIC_ORIGIN = ''; }), ['the runtime has no PUBLIC_ORIGIN'], 'an empty origin');
+  assert.deepEqual(problemsOf((s) => { s.agent.environment = Object.entries(s.agent.environment).filter(([key]) => key !== 'PUBLIC_ORIGIN').map(([key, value]) => `${key}=${value}`); }), ['the runtime has no PUBLIC_ORIGIN'], 'no origin, in the list form');
+  assert.deepEqual(problemsOf((s) => { s.agent.environment.PUBLIC_ORIGIN = base.host; }), [`PUBLIC_ORIGIN is not a URL: ${base.host}`], 'a host with no scheme');
+  assert.deepEqual(problemsOf((s) => { s.agent.environment.PUBLIC_ORIGIN = `http://${base.host}`; }), [`PUBLIC_ORIGIN is not https: http://${base.host}`], 'http');
+  assert.deepEqual(problemsOf((s) => { s.agent.environment.PUBLIC_ORIGIN = `${origin}/v1/job`; }), [NOT_AN_ORIGIN(`${origin}/v1/job`)], 'a path');
+  assert.deepEqual(problemsOf((s) => { s.agent.environment.PUBLIC_ORIGIN = `${origin}/`; }), [NOT_AN_ORIGIN(`${origin}/`)], 'a closing slash');
+  assert.deepEqual(problemsOf((s) => { s.agent.environment.PUBLIC_ORIGIN = `${origin}?x=1`; }), [NOT_AN_ORIGIN(`${origin}?x=1`)], 'a query');
+  assert.deepEqual(problemsOf((s) => { s.agent.environment.PUBLIC_ORIGIN = `https://user@${base.host}`; }), [NOT_AN_ORIGIN(`https://user@${base.host}`)], 'a user name');
+  const other = CARD_STACKS[1].host;
+  assert.deepEqual(problemsOf((s) => { s.agent.environment.PUBLIC_ORIGIN = `https://${other}`; }), [hostMessage(other)], 'the host of another agent');
+  assert.deepEqual(problemsOf(() => {}, base.snippet.split(`${base.host} {`).join(`${other} {`)), [hostMessage(base.host, other)], 'a Caddy block that serves another host');
+  assert.deepEqual(problemsOf(() => {}, base.snippet, base.example.split(`ADVERT_ENDPOINT_URL=${origin}\n`).join(`ADVERT_ENDPOINT_URL=https://${other}\n`)), [hostMessage(base.host, base.host, other)], 'an advert that names another endpoint');
+  assert.deepEqual(problemsOf((s) => { s.service.environment.PUBLIC_ORIGIN = origin; }), ['the service has PUBLIC_ORIGIN: only the runtime serves the card'], 'an origin on the service');
+});
+
+test('Caddy: in the block of each agent the card, GET / and the job route that the card names go to the runtime, and only /agent.json goes to the service', () => {
+  for (const stack of CARD_STACKS) {
+    const { agent, service } = stack.compose.services;
+    const targets = { runtime: `${agent.container_name}:${agent.environment.PORT}`, service: `${service.container_name}:${service.environment.PORT}` };
+    assert.deepEqual(cardRouteProblems(stack.snippet, targets), [], stack.name);
+    // What Caddy 2 answers for the real block (read with the upstreams replaced by an answer that names them): the match of a path is exact and does not count the case of the letters.
+    const routes = snippetRoutes(stack.snippet);
+    const table = [['/', 'runtime'], [CARD_PATH, 'runtime'], ['/agent.json', 'service'], ['/AGENT.JSON', 'service'], ['/agent.json/', 'runtime'], ['/v1/job', 'runtime'], ['/healthz', 'runtime']];
+    for (const [path, who] of table) assert.equal(upstreamOf(routes, path), targets[who], `${stack.name}: ${path}`);
+  }
+});
+
+test('the route guard refuses a block that sends the card, GET / or the job route to the service, a block with no default route and a matcher that it cannot read; each has an accepted twin', () => {
+  const [{ snippet, compose, host }] = CARD_STACKS;
+  const { agent, service } = compose.services;
+  const targets = { runtime: `${agent.container_name}:${agent.environment.PORT}`, service: `${service.container_name}:${service.environment.PORT}` };
+  const toRuntime = `reverse_proxy ${targets.runtime}`;
+  const toService = `reverse_proxy ${targets.service}`;
+  assert.equal(snippet.split(toRuntime).length - 1, 1, 'the default route of the block, the one that the guards below change');
+  assert.deepEqual(cardRouteProblems(snippet, targets), [], 'the twin: the block as it is');
+  const allToService = snippet.split(toRuntime).join(toService);
+  assert.deepEqual(cardRouteProblems(allToService, targets), [
+    `/ goes to ${targets.service}, not to the runtime (${targets.runtime})`,
+    `${CARD_PATH} goes to ${targets.service}, not to the runtime (${targets.runtime})`,
+    `/v1/job goes to ${targets.service}, not to the runtime (${targets.runtime})`,
+  ], 'a default route to the service');
+  const withHandle = (matcher, upstream) => snippet.split('    handle {\n').join(`    handle ${matcher} {\n        reverse_proxy ${upstream}\n    }\n    handle {\n`);
+  assert.deepEqual(cardRouteProblems(withHandle(CARD_PATH, targets.service), targets), [`${CARD_PATH} goes to ${targets.service}, not to the runtime (${targets.runtime})`], 'the card to the service');
+  assert.deepEqual(cardRouteProblems(withHandle('/', targets.service), targets), [`/ goes to ${targets.service}, not to the runtime (${targets.runtime})`], 'GET / to the service');
+  assert.deepEqual(cardRouteProblems(withHandle('/v1/job', targets.service), targets), [`/v1/job goes to ${targets.service}, not to the runtime (${targets.runtime})`], 'the job route to the service');
+  assert.deepEqual(cardRouteProblems(withHandle('/.well-known/*', targets.service), targets), ['the matcher /.well-known/* is not an exact path: this check does not read it'], 'a wildcard matcher');
+  assert.deepEqual(cardRouteProblems(withHandle('@card', targets.service), targets), ['the matcher @card is not an exact path: this check does not read it'], 'a named matcher');
+  assert.deepEqual(cardRouteProblems(withHandle('/agent.json', targets.service), targets), [], 'the twin: a second handle for /agent.json that goes to the service changes no answer');
+  const noDefault = snippet.split(`    handle {\n        ${toRuntime}\n    }\n`).join('');
+  assert.notEqual(noDefault, snippet, 'the default route is cut');
+  assert.deepEqual(cardRouteProblems(noDefault, targets), [
+    `/ goes to nobody, not to the runtime (${targets.runtime})`,
+    `${CARD_PATH} goes to nobody, not to the runtime (${targets.runtime})`,
+    `/v1/job goes to nobody, not to the runtime (${targets.runtime})`,
+  ], 'no default route');
+  const noService = snippet.split(`    handle /agent.json {\n        ${toService}\n    }\n`).join('');
+  assert.notEqual(noService, snippet, 'the route of the manifest is cut');
+  assert.deepEqual(cardRouteProblems(noService, targets), [`/agent.json goes to ${targets.runtime}, not to the service (${targets.service})`], 'the manifest to the runtime');
+  assert.equal(snippetRoutes(snippet).host, host);
+});
+
+test('the four stacks leave SERVICE_PRECHECK_URL and RELEASE_WATCHER unset: no compose file and no env example of deploy/host sets either, for any container', () => {
+  const names = readdirSync(join(root, 'deploy', 'host'));
+  const composes = names.filter((f) => /^docker-compose\..+\.yml$/.test(f)).map((f) => [f, parseYaml(read(`deploy/host/${f}`))]);
+  const examples = names.filter((f) => /^\.env\..+\.example$/.test(f)).map((f) => [f, read(`deploy/host/${f}`)]);
+  assert.deepEqual([composes.length, examples.length], [4, 4], 'the scan reaches the four compose files and the four env examples');
+  assert.deepEqual(unsetSettingProblems(composes, examples), []);
+});
+
+test('the unset guard refuses either setting in the environment of a container (as a map or as a list, empty or not) and on a line of an example, and accepts the twin of each', () => {
+  const [{ compose, example, composeFile, exampleFile }] = CARD_STACKS;
+  const problemsOf = (change, text = example) => {
+    const copy = structuredClone(compose);
+    change(copy.services);
+    return unsetSettingProblems([[composeFile, copy]], [[exampleFile, text]]);
+  };
+  assert.deepEqual(problemsOf(() => {}), [], 'the twin: the files as they are');
+  assert.deepEqual(problemsOf((s) => { s.agent.environment.PUBLIC_ORIGIN = 'https://example.test'; s.service.environment.PORT = '9091'; }), [], 'the twin: other settings change nothing');
+  assert.deepEqual(problemsOf((s) => { s.agent.environment.RELEASE_WATCHER = '1'; }), [`${composeFile}: agent sets RELEASE_WATCHER`], 'the watcher on the runtime');
+  assert.deepEqual(problemsOf((s) => { s.agent.environment.RELEASE_WATCHER = ''; }), [`${composeFile}: agent sets RELEASE_WATCHER`], 'the watcher, empty');
+  assert.deepEqual(problemsOf((s) => { s.agent.environment.SERVICE_PRECHECK_URL = 'http://agent-history-service:9091/precheck'; }), [`${composeFile}: agent sets SERVICE_PRECHECK_URL`], 'the hook on the runtime');
+  assert.deepEqual(problemsOf((s) => { s.service.environment.SERVICE_PRECHECK_URL = ''; }), [`${composeFile}: service sets SERVICE_PRECHECK_URL`], 'the hook on the service');
+  assert.deepEqual(problemsOf((s) => { s.agent.environment = ['CAPABILITY_KIND=custom', 'RELEASE_WATCHER=1']; }), [`${composeFile}: agent sets RELEASE_WATCHER`], 'the watcher in the list form');
+  assert.deepEqual(problemsOf((s) => { s.agent.environment = ['CAPABILITY_KIND=custom', 'SERVICE_PRECHECK_URL']; }), [`${composeFile}: agent sets SERVICE_PRECHECK_URL`], 'the hook passed through from the shell');
+  assert.deepEqual(problemsOf(() => {}, `${example}SERVICE_PRECHECK_URL=\n`), [`${exampleFile}: sets SERVICE_PRECHECK_URL`], 'the hook on a line of the example, empty');
+  assert.deepEqual(problemsOf(() => {}, `${example}RELEASE_WATCHER=1\n`), [`${exampleFile}: sets RELEASE_WATCHER`], 'the watcher on a line of the example');
+  assert.deepEqual(problemsOf(() => {}, `${example}# RELEASE_WATCHER=1 is not set here\n`), [], 'the twin: a comment that names the setting sets nothing');
+});
+
+// ---- The release steps: each runbook has a section for taking a new runtime commit -----------------------------------------------------
+// A host takes a new commit of the runtime by a pull of its checkout, a build of the runtime image and a new runtime container. The pin of the service image is the one local
+// change of the checkout (step 2 of each runbook), so the block that pulls puts it aside and back. The runtime keeps its jobs in memory: it is created again only while /status says free.
+const RELEASE_TITLE = 'Take a new runtime commit';
+const RELEASE_BOOKS = [
+  [0, 'RUNBOOK.md', 'git pull --ff-only'],
+  [1, 'RUNBOOK-document-pipeline.md', 'git pull --ff-only /tmp/vector-service-agents.bundle main'],
+  [2, 'RUNBOOK-audio-snippets.md', 'git pull --ff-only /tmp/vector-service-agents.bundle main'],
+  [3, 'RUNBOOK-advocate.md', 'git pull --ff-only /tmp/vector-service-agents.bundle main'],
+].map(([stack, file, pull]) => {
+  const { name, host, composeFile, compose, example, exampleFile } = CARD_STACKS[stack];
+  const { agent, service } = compose.services;
+  return {
+    name, host, file, pull, composeFile, container: agent.container_name, port: agent.ports[0].split(':')[1], envFile: exampleFile.replace(/\.example$/, ''),
+    image: /^ghcr\.io\/apex-fusion\/vector-service-agents\/([a-z-]+)@sha256:/.exec(service.image)[1], capability: parseEnv(example).ADVERT_CAPABILITY_ID, text: read(`deploy/host/${file}`),
+  };
+});
+const releaseSection = (book) => section(book.text, RELEASE_TITLE);
+const fencedBlocks = (text) => [...text.matchAll(/^```sh\n([\s\S]*?)^```$/gm)].map((m) => m[1]);
+/** The four blocks that a runbook gives for the release, as they read for this agent: the pull, the build, the new runtime and the check. */
+function releaseBlocksOf(book) {
+  const folder = 'cd "$BASE/repo/deploy/host"';
+  const local = `http://127.0.0.1:${book.port}`;
+  return [
+    [
+      folder, `IMAGE=ghcr.io/apex-fusion/vector-service-agents/${book.image}`, `PIN=$(sed -n 's/^    image: //p' ${book.composeFile})`,
+      'if printf \'%s\\n\' "$PIN" | grep -Eq "^($IMAGE@sha256:|sha256:)[0-9a-f]{64}\\$"; then',
+      `  git checkout ${book.composeFile}`, `  ${book.pull}`, `  sed -i "s|^    image: .*|    image: $PIN|" ${book.composeFile}`,
+      'else', '  echo "the pin of step 2 is not in the compose file, do not continue" >&2', 'fi', 'git log -1 --oneline', `grep -n '^    image: ' ${book.composeFile}`, '',
+    ],
+    [folder, `docker compose -f ${book.composeFile} build agent`, ''],
+    [
+      folder, `if curl -s ${local}/status | grep -q '"status":"free"'; then`, `  docker compose -f ${book.composeFile} up -d --force-recreate agent`,
+      'else', '  echo "the runtime is not free: wait, and run this block again" >&2', 'fi', '',
+    ],
+    [
+      folder, `curl -s ${local}/healthz`, `curl -s ${local}/capability`, `curl -s ${local}/status`,
+      `curl -fsS https://${book.host}/.well-known/agent-card.json`, `curl -fsS -o /dev/null -w '%{http_code}\\n' https://${book.host}/`, '',
+    ],
+  ].map((lines) => lines.join('\n'));
+}
+
+test('the four runbooks: after step 17 and before Back out each has the section "Take a new runtime commit", which says what the commit changes (the check before the Claim and its three codes, the card and its two routes, the headers, the two settings that stay unset) and gives four parts in order', () => {
+  assert.equal(RELEASE_BOOKS.length, 4);
+  for (const book of RELEASE_BOOKS) {
+    const headings = [...book.text.matchAll(/^## (.+)$/gm)].map((m) => m[1]);
+    const at = headings.indexOf(RELEASE_TITLE);
+    assert.ok(at > 0, `${book.name}: the section is there`);
+    assert.match(headings[at - 1], /^17\. /, `${book.name}: after step 17`);
+    assert.equal(headings[at + 1], 'Back out', `${book.name}: before Back out`);
+    const text = releaseSection(book);
+    assert.match(text, /^\nOperator\. Use this section when the pin of `vector-agent-template` in `/, book.name);
+    for (const part of [
+      `\`${book.composeFile}\``, 'Only the runtime changes.', 'so the advert and its hash stay as they are', 'and only while its `/status` says `free`.',
+      'From the commit `a05564c` on, the runtime differs in four ways:',
+      'compares each escrow with the advert that it serves, before it builds a Claim', 'refuses a job with 409 and one of three codes',
+      '`wrong_advert`: the escrow names another advert', '`underpaid`: the quoted amount of the escrow is below the price of the advert, or the escrow holds less than that amount and both bonds',
+      '`bond_mismatch`: a bond is below the bond of the advert', 'A refused job costs no Claim. The escrow stays Open, and the buyer can Reclaim it after `deliver_by`.',
+      'An escrow that a buyer posts for the advert of this agent passes',
+      `The compose file sets \`PUBLIC_ORIGIN: https://${book.host}\` for the runtime.`, 'serves `GET /.well-known/agent-card.json` and answers `GET /` with 200',
+      'Caddy sends both to the runtime, because only `/agent.json` goes to the service', 'The runtime does not start when the value is not an https origin.',
+      '**Six context headers.**', 'The service does not read them.',
+      '`SERVICE_PRECHECK_URL` and `RELEASE_WATCHER` are in no compose file and in no env file', 'the runtime asks the service nothing before the Claim, and it runs no release watcher',
+      `\`https://${book.host}/v1/job\``, `\`${book.capability}\``, `\`docker logs --tail 20 ${book.container}\``, `It ends with \`Image ${book.container} Built\`.`, `\`${book.envFile}\``,
+    ]) assert.ok(text.includes(part), `${book.name}: ${part}`);
+    assert.deepEqual([...text.matchAll(/^\*\*Part (\d)\. /gm)].map((m) => Number(m[1])), [1, 2, 3, 4], `${book.name}: four parts in order`);
+  }
+});
+
+test('the release blocks: four in each runbook, each from the folder of the compose file; the first puts the pin of step 2 aside, pulls and puts it back, the second builds the runtime, the third creates it again only when /status says free, the fourth reads the runtime and the card', () => {
+  for (const book of RELEASE_BOOKS) assert.deepEqual(fencedBlocks(releaseSection(book)), releaseBlocksOf(book), book.name);
+  assert.equal(new Set(RELEASE_BOOKS.map((book) => fencedBlocks(releaseSection(book)).join('\n'))).size, 4, 'each agent has its own names, ports and hosts');
+});
+
+const HAVE_RELEASE_TOOLS = (() => { try { execFileSync('git', ['--version'], { stdio: 'ignore' }); return HAVE_BASH; } catch { return false; } })();
+test('the first release block in git: it brings the new commit with its compose file, keeps the pin of step 2 and the two env files, and changes nothing when the compose file holds no pin of the service image of this agent', { skip: HAVE_RELEASE_TOOLS ? false : 'needs git, bash and GNU sed' }, () => {
+  for (const book of RELEASE_BOOKS) {
+    const scratch = mkdtempSync(join(tmpdir(), 'release-'));
+    try {
+      writeFileSync(join(scratch, 'gitconfig'), '');
+      const env = {
+        ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^GIT_/i.test(name))),
+        GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(scratch, 'gitconfig'), GIT_CEILING_DIRECTORIES: scratch, GIT_TERMINAL_PROMPT: '0',
+      };
+      const git = (cwd, ...args) => {
+        const r = spawnSync('git', ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', ...args], { cwd, env, encoding: 'utf8' });
+        assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
+        return r.stdout.trim();
+      };
+      // The compose file of the reviewed commit, and of the commit that the host runs: the same but for the pin of the runtime.
+      const reviewed = read(`deploy/host/${book.composeFile}`);
+      const contextLine = reviewed.split('\n').find((l) => /vector-agent-template\.git#[0-9a-f]{40}$/.test(l));
+      const imageLine = reviewed.split('\n').find((l) => l.startsWith('    image: '));
+      const older = reviewed.split(contextLine).join(contextLine.replace(/#[0-9a-f]{40}$/, `#${'1'.repeat(40)}`));
+      assert.notEqual(older, reviewed, 'the older commit has another pin of the runtime');
+      const PIN = `ghcr.io/apex-fusion/vector-service-agents/${book.image}@sha256:${'ab'.repeat(32)}`;
+      const OTHER = `ghcr.io/apex-fusion/vector-service-agents/other@sha256:${'cd'.repeat(32)}`;
+      const withImage = (text, value) => text.split(imageLine).join(`    image: ${value}`);
+      const at = (repo) => join(repo, 'deploy', 'host', book.composeFile);
+      const origin = join(scratch, 'origin');
+      const bundle = join(scratch, 'tmp', 'vector-service-agents.bundle');
+      mkdirSync(join(origin, 'deploy', 'host'), { recursive: true });
+      mkdirSync(join(scratch, 'tmp'));
+      writeFileSync(join(origin, '.gitignore'), read('.gitignore'));
+      writeFileSync(at(origin), older);
+      git(origin, 'init', '-b', 'main');
+      git(origin, 'add', '-A');
+      git(origin, 'commit', '-m', 'the commit the host runs');
+      const ran = git(origin, 'rev-parse', 'HEAD');
+      git(origin, 'bundle', 'create', bundle, 'main');
+      // Three hosts on that commit, as step 1 makes them (a clone, or a clone of the bundle): one with the pin of step 2, one with the placeholder of the repository, and one with the pin of another image.
+      const hosts = {};
+      for (const [kind, text] of [['pinned', withImage(older, PIN)], ['placeholder', older], ['other', withImage(older, OTHER)]]) {
+        const base = join(scratch, kind);
+        mkdirSync(base);
+        git(base, ...(book.pull.includes('.bundle') ? ['clone', '--branch', 'main', bundle, 'repo'] : ['clone', origin, 'repo']));
+        const here = join(base, 'repo', 'deploy', 'host');
+        writeFileSync(at(join(base, 'repo')), text);
+        writeFileSync(join(here, '.env'), 'PROXY_NETWORK=test_proxy_network\n');
+        writeFileSync(join(here, book.envFile), 'OPERATOR_CONTACT=ops@example.test\n');
+        hosts[kind] = { base, repo: join(base, 'repo'), here, text };
+      }
+      assert.equal(git(hosts.pinned.repo, 'status', '--porcelain'), `M deploy/host/${book.composeFile}`, 'the pin of step 2 is the one local change: git ignores the two env files');
+      // The reviewed commit: its compose file, which has the new pin of the runtime. It reaches the bundle too.
+      writeFileSync(at(origin), reviewed);
+      git(origin, 'commit', '-a', '-m', 'the change that is reviewed');
+      const next = git(origin, 'rev-parse', 'HEAD');
+      git(origin, 'bundle', 'create', bundle, 'main');
+      const block = fencedBlocks(releaseSection(book))[0].split('/tmp/vector-service-agents.bundle').join(bundle);
+      const run = (host) => spawnSync('bash', ['-c', block], { cwd: scratch, env: { ...env, BASE: host.base }, encoding: 'utf8' });
+      // A pull with no block stops on the pin of step 2 and moves nothing. That is why the block puts the pin aside.
+      const plain = spawnSync('git', book.pull.split(' ').slice(1).map((word) => (word === '/tmp/vector-service-agents.bundle' ? bundle : word)), { cwd: hosts.pinned.here, env, encoding: 'utf8' });
+      assert.notEqual(plain.status, 0, `${book.name}: a pull stops on the pin`);
+      assert.equal(git(hosts.pinned.repo, 'rev-parse', 'HEAD'), ran);
+      for (let again = 0; again < 2; again++) {
+        const r = run(hosts.pinned);
+        assert.equal(r.status, 0, `${book.name}: ${r.stderr}`);
+        assert.doesNotMatch(r.stderr, /fatal|error|do not continue/i, `${book.name}: no complaint (git says what it did on stderr)`);
+        assert.equal(git(hosts.pinned.repo, 'rev-parse', 'HEAD'), next, `${book.name}: the checkout is at the reviewed commit`);
+        assert.equal(readFileSync(at(hosts.pinned.repo), 'utf8'), withImage(reviewed, PIN), `${book.name}: the compose file of the reviewed commit, with the pin of step 2`);
+        assert.equal(readFileSync(join(hosts.pinned.here, '.env'), 'utf8'), 'PROXY_NETWORK=test_proxy_network\n', `${book.name}: .env stays`);
+        assert.equal(readFileSync(join(hosts.pinned.here, book.envFile), 'utf8'), 'OPERATOR_CONTACT=ops@example.test\n', `${book.name}: the env file stays`);
+        assert.ok(r.stdout.split('\n').some((line) => line.startsWith(next.slice(0, 7)) && line.endsWith(' the change that is reviewed')), `${book.name}: git log shows the reviewed commit: ${r.stdout}`);
+        assert.ok(r.stdout.trimEnd().endsWith(`:    image: ${PIN}`), `${book.name}: grep shows the pin: ${r.stdout}`);
+      }
+      for (const kind of ['placeholder', 'other']) {
+        const r = run(hosts[kind]);
+        assert.match(r.stderr, /the pin of step 2 is not in the compose file, do not continue/, `${book.name}: ${kind}`);
+        assert.equal(git(hosts[kind].repo, 'rev-parse', 'HEAD'), ran, `${book.name}: ${kind}: nothing is pulled`);
+        assert.equal(readFileSync(at(hosts[kind].repo), 'utf8'), hosts[kind].text, `${book.name}: ${kind}: the compose file is as it was`);
+      }
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  }
+});
+
+test('the third release block: it creates the runtime again only when /status says free, and not while a job runs, while the runtime is offline, or when it gives no answer or an error page', { skip: HAVE_RELEASE_TOOLS ? false : 'needs bash' }, () => {
+  for (const book of RELEASE_BOOKS) {
+    const block = fencedBlocks(releaseSection(book))[2];
+    const scratch = mkdtempSync(join(tmpdir(), 'release-'));
+    try {
+      const bin = join(scratch, 'bin');
+      const log = join(scratch, 'calls.log');
+      mkdirSync(bin);
+      mkdirSync(join(scratch, 'base', 'repo', 'deploy', 'host'), { recursive: true });
+      // The two commands are stand-ins that write down what they were asked. curl answers with STUB_STATUS, or fails like a refused connection.
+      writeFileSync(join(bin, 'curl'), '#!/bin/bash\necho "curl $*" >> "$STUB_LOG"\n[ -z "$STUB_CURL_FAILS" ] || exit 7\nprintf \'%s\' "$STUB_STATUS"\n', { mode: 0o755 });
+      writeFileSync(join(bin, 'docker'), '#!/bin/bash\necho "docker $*" >> "$STUB_LOG"\n', { mode: 0o755 });
+      const run = (status, fails = '') => {
+        const r = spawnSync('bash', ['-c', block], { env: { PATH: `${bin}:${process.env.PATH}`, BASE: join(scratch, 'base'), STUB_STATUS: status, STUB_CURL_FAILS: fails, STUB_LOG: log }, encoding: 'utf8' });
+        const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
+        rmSync(log, { force: true });
+        return { ...r, calls };
+      };
+      const answer = (status) => JSON.stringify({ status, last_seen: '2026-11-19T13:48:59.482Z', active_sessions: status === 'working' ? 1 : 0, max_sessions: 1 });
+      const asked = `curl -s http://127.0.0.1:${book.port}/status`;
+      const free = run(answer('free'));
+      assert.equal(free.status, 0, `${book.name}: ${free.stderr}`);
+      assert.deepEqual(free.calls, [asked, `docker compose -f ${book.composeFile} up -d --force-recreate agent`], `${book.name}: free`);
+      for (const [what, result] of [['working', run(answer('working'))], ['offline', run(answer('offline'))], ['no answer', run('', '1')], ['an empty answer', run('')], ['an error page', run('<h1>Bad gateway</h1>')]]) {
+        assert.deepEqual(result.calls, [asked], `${book.name}: ${what}: the status is asked and nothing is created again`);
+        assert.match(result.stderr, /the runtime is not free: wait, and run this block again/, `${book.name}: ${what}`);
+      }
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  }
+});
+
+test('README: the Caddy paragraph of each of the four stacks says that the agent card and GET / need no route of their own', () => {
+  const SENTENCE = 'The agent card at `/.well-known/agent-card.json` and `GET /` need no route of their own: the runtime serves both, and both take the default route.';
+  const paragraphs = readme.split('\n').filter((line) => line.startsWith('   The second route matters'));
+  assert.equal(paragraphs.length, 4, 'one for each stack');
+  for (const paragraph of paragraphs) assert.ok(paragraph.endsWith(` ${SENTENCE}`), paragraph.slice(0, 80));
+});
+
+// ======================================================================================================================================
 // Audio Snippets (DEPLOYED since 2026-10-17): the third stack on the same host.
 // Built on 2026-10-16; steps 1 to 5, 9 and 10 of its runbook were run on 2026-10-16 and steps 6 to 15 and 17 on 2026-10-17 (step 16 is not used).
 // The four files and the section of the README are held to each other, to the service code, to the spec, and to the files of the Document Pipeline they
@@ -2223,7 +2614,7 @@ test('Snippets compose: the runtime is the pinned template commit, SERVICE_URL n
   assert.equal(sAgent.build.context, pAgent.build.context, 'the template commit of the other two');
   assert.equal(sAgent.build.dockerfile, 'agent/Dockerfile');
   assert.deepEqual(sAgent.environment, {
-    CAPABILITY_KIND: 'custom', SERVICE_URL: 'http://audio-snippets-service:9093/', SERVICE_CONTENT_TYPE: 'application/json', SERVICE_TIMEOUT_MS: '1380000', ADVERT_MAX_PROCESSING_MS: '1500000', PORT: '8080',
+    CAPABILITY_KIND: 'custom', SERVICE_URL: 'http://audio-snippets-service:9093/', SERVICE_CONTENT_TYPE: 'application/json', SERVICE_TIMEOUT_MS: '1380000', ADVERT_MAX_PROCESSING_MS: '1500000', PORT: '8080', PUBLIC_ORIGIN: 'https://mp-suppliers-snippets.hal8.ai',
   });
   assert.deepEqual(sService.environment, { PORT: '9093', HOST: '0.0.0.0', SUPPLIER_PRIV_KEY_HEX: '' }, "the supplier key is the runtime's and is blanked for the service, which reads no other key");
   assert.equal(new URL(sAgent.environment.SERVICE_URL).hostname, sService.container_name);
@@ -2292,7 +2683,7 @@ test('Snippets env example: every name the service code reads is in the example,
   for (const n of ['OPERATOR_CONTACT', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'SERVICE_AUTH_HEADER', 'WHISPER_MODEL', 'WHISPER_THREADS']) assert.ok(names.has(n), `the service reads ${n}`);
   assert.ok(!names.has('SUPPLIER_PRIV_KEY_HEX'), "no source of the service reads the supplier key: it is the runtime's");
   assert.match(sDockerfile, /ASR_WORKER=\/app\/asr\/worker\.py WHISPER_MODEL=\$WHISPER_MODEL PATH=\/app\/asr\/venv\/bin:\$PATH$/m, 'the image sets what the example leaves out');
-  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY, 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'SERVICE_AUTH_HEADER', 'PORT'];
+  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY, 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'SERVICE_AUTH_HEADER', 'PORT', 'PUBLIC_ORIGIN'];
   assert.deepEqual(NEEDED.filter((n) => !(n in sExample) && !(n in sAgent.environment)), []);
 });
 
@@ -2405,9 +2796,9 @@ test('Snippets README section: the third stack, with its two containers, the loo
   assert.ok(sSection.includes(`\`mem_limit: ${sService.mem_limit}\``) && sSection.includes(`\`stop_grace_period: ${sService.stop_grace_period}\``));
 });
 
-test('Snippets RUNBOOK: the twenty-one sections in order, the seventeen steps keep the numbers of the other runbooks, and the head lists what differs with the names table and the two base paths', () => {
+test('Snippets RUNBOOK: the twenty-two sections in order, the seventeen steps keep the numbers of the other runbooks, and the head lists what differs with the names table and the two base paths', () => {
   const numbered = S_STEPS.map((title, i) => `${i + 1}. ${title}`);
-  assert.deepEqual([...sRunbook.matchAll(/^## (.+)$/gm)].map((m) => m[1]), ['Collateral and float', ...numbered.slice(0, 15), 'Watch the first stop', ...numbered.slice(15), 'Back out', 'If something goes wrong']);
+  assert.deepEqual([...sRunbook.matchAll(/^## (.+)$/gm)].map((m) => m[1]), ['Collateral and float', ...numbered.slice(0, 15), 'Watch the first stop', ...numbered.slice(15), 'Take a new runtime commit', 'Back out', 'If something goes wrong']);
   assert.equal([...pRunbook.matchAll(/^## (\d+)\. /gm)].length, S_STEPS.length, 'as many steps as the runbook it follows');
   for (const m of sRunbook.matchAll(/\bsteps? (\d+)/g)) assert.ok(Number(m[1]) >= 1 && Number(m[1]) <= S_STEPS.length, `step ${m[1]}`);
   const quoted = [...sExampleText.matchAll(/RUNBOOK-audio-snippets\.md step (\d+), "([^"]+)"/g)];
@@ -2758,7 +3149,7 @@ test('Snippets RUNBOOK steps 10 to 14: the copy of the install script with the v
 test('Snippets RUNBOOK: every block that works in a folder starts with its own cd to it, so that it runs alone in a new shell once BASE is set again; the few blocks that name no folder are listed', () => {
   // The fenced sh blocks of the runbook, those in the list of Back out too (indented), with the indent taken off.
   const blocks = [...sRunbook.matchAll(/^( *)```sh\n([\s\S]*?)^\1```$/gm)].map((m) => m[2].split('\n').map((l) => (l.startsWith(m[1]) ? l.slice(m[1].length) : l)).join('\n'));
-  assert.equal(blocks.length, 31, 'a block added or taken away is seen here');
+  assert.equal(blocks.length, 35, 'a block added or taken away is seen here');
   // What names no folder and no file of one: the two variables, the bundle made and the manifest hashed on the operator's machine (the host has no Node), the two checks in the image, the public check
   // of the manifest, the comparison of the tokens, the log of the first run.
   const NO_FOLDER = [
@@ -3147,7 +3538,7 @@ test('Advocate compose: the runtime is the pinned template commit, SERVICE_URL n
   assert.equal(aAgent.build.context, sAgent.build.context, 'the template commit of the other three');
   assert.equal(aAgent.build.dockerfile, 'agent/Dockerfile');
   assert.deepEqual(aAgent.environment, {
-    CAPABILITY_KIND: 'custom', SERVICE_URL: 'http://advocate-service:9094/', SERVICE_CONTENT_TYPE: 'application/json', SERVICE_TIMEOUT_MS: '360000', ADVERT_MAX_PROCESSING_MS: '480000', PORT: '8080',
+    CAPABILITY_KIND: 'custom', SERVICE_URL: 'http://advocate-service:9094/', SERVICE_CONTENT_TYPE: 'application/json', SERVICE_TIMEOUT_MS: '360000', ADVERT_MAX_PROCESSING_MS: '480000', PORT: '8080', PUBLIC_ORIGIN: 'https://mp-suppliers-advocate.hal8.ai',
     ADVOCATE_BUYER_PRIV_KEY_HEX: '', BRAVE_SEARCH_API_KEY: '', OPENROUTER_API_KEY: '',
   }, 'an empty string overrides the value from env_file: the runtime holds neither the buyer key nor either API key');
   assert.deepEqual(aService.environment, { PORT: '9094', HOST: '0.0.0.0', SUPPLIER_PRIV_KEY_HEX: '', ADVOCATE_STATE_DIR: '/data' }, "the supplier key is the runtime's and is blanked for the service, which reads the buyer key, the token and the two API keys from the env file");
@@ -3297,7 +3688,7 @@ test('Advocate env example: every name the service code reads is in the example,
   assert.match(aExampleText, /^# LLM_MAX_PRICE_LOVELACE=1000000$/m, 'the ceiling is in the example, commented, at the default of the code');
   for (const n of ['OPERATOR_CONTACT', 'ADVOCATE_BUYER_PRIV_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'SERVICE_AUTH_HEADER', ...A_API_KEYS, 'OPENROUTER_MODEL', 'ADVOCATE_STATE_DIR', 'LLM_MODEL_ALLOWLIST', 'LLM_MAX_PRICE_LOVELACE']) assert.ok(names.has(n), `the service reads ${n}`);
   assert.ok(!names.has('SUPPLIER_PRIV_KEY_HEX'), "no source of the service reads the supplier key: it is the runtime's");
-  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY, 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'SERVICE_AUTH_HEADER', 'PORT'];
+  const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY, 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'SERVICE_AUTH_HEADER', 'PORT', 'PUBLIC_ORIGIN'];
   assert.deepEqual(NEEDED.filter((n) => !(n in aExample) && !(n in aAgent.environment)), []);
 });
 
@@ -3488,9 +3879,9 @@ test('Advocate README section: the fourth stack, with its two containers, the lo
   assert.equal(readme.match(/One more comes later/), null, 'the words of before step 10');
 });
 
-test('Advocate RUNBOOK: the twenty-one sections in order, the seventeen steps keep the numbers of the other runbooks, and the head lists what differs with the names table and the two base paths', () => {
+test('Advocate RUNBOOK: the twenty-two sections in order, the seventeen steps keep the numbers of the other runbooks, and the head lists what differs with the names table and the two base paths', () => {
   const numbered = A_STEPS.map((title, i) => `${i + 1}. ${title}`);
-  assert.deepEqual([...aRunbook.matchAll(/^## (.+)$/gm)].map((m) => m[1]), ['Collateral and float', ...numbered.slice(0, 15), 'Watch the first stop', ...numbered.slice(15), 'Back out', 'If something goes wrong']);
+  assert.deepEqual([...aRunbook.matchAll(/^## (.+)$/gm)].map((m) => m[1]), ['Collateral and float', ...numbered.slice(0, 15), 'Watch the first stop', ...numbered.slice(15), 'Take a new runtime commit', 'Back out', 'If something goes wrong']);
   const snippets = [...sRunbook.matchAll(/^## (\d+)\. (.+)$/gm)].map((m) => m[2]);
   assert.equal(snippets.length, A_STEPS.length, 'as many steps as the runbook it follows');
   // Two titles differ: step 4 makes two keys and enters the two API keys too, and step 6 supplies two wallets, in the words of the Pipeline's step 6.
@@ -4177,7 +4568,7 @@ test('Advocate RUNBOOK steps 10 to 14: the copy of the install script with the v
 
 test('Advocate RUNBOOK: every block that works in a folder starts with its own cd to it, so that it runs alone in a new shell once BASE is set again; the few blocks that name no folder are listed', () => {
   const blocks = [...aRunbook.matchAll(/^( *)```sh\n([\s\S]*?)^\1```$/gm)].map((m) => m[2].split('\n').map((l) => (l.startsWith(m[1]) ? l.slice(m[1].length) : l)).join('\n'));
-  assert.equal(blocks.length, 36, 'a block added or taken away is seen here');
+  assert.equal(blocks.length, 40, 'a block added or taken away is seen here');
   // What names no folder and no file of one: the two variables, the bundle made and the manifest hashed on the operator's machine, the check of the image, the public
   // check of the manifest, the comparison of the tokens, the API keys of the runtime, the log of the first run.
   const NO_FOLDER = [
