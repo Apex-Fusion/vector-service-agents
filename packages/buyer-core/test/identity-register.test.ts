@@ -1,5 +1,6 @@
 // Vitest port of packages/builder/test/identity-register.test.ts at 2d95483 (Apex-Fusion/mcp-server): VENDORED-FROM.md lists the lines that differ from the source.
 import { describe, test } from 'vitest';
+import './ported-support.ts';
 import assert from 'node:assert/strict';
 import { CML, Constr, Data, credentialToAddress } from '@lucid-evolution/lucid';
 import type { UTxO } from '@lucid-evolution/lucid';

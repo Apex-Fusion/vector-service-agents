@@ -15,10 +15,6 @@ const DECODER_CALL = /\b(?:from_cbor_hex|from_cbor_bytes)\s*\(|\bData\.from\s*\(
 const MAY_CALL_DECODERS: Record<string, { calls: number; why: string }> = {
   'chain.ts': { calls: 1, why: 'reads the time to live of the unsigned transaction that a builder of this process made with Lucid: no chain data reaches it' },
   'fees.ts': { calls: 1, why: 'reads the fee of the signed transaction that the signer of this process made: no chain data reaches it' },
-  'vendored/mcp/marketplace-build.ts': {
-    calls: 1,
-    why: 'reads the outputs of the Post transaction that the builder of this process made, to check the first one: no chain data reaches it. This copy is at the pin before the CBOR check (see VENDORED-FROM.md)',
-  },
   'vendored/signer/sign.ts': { calls: 1, why: 'the check of the bytes runs first, in the same block (assertCborHexDepth)' },
 };
 

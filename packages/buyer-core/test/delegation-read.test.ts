@@ -3,7 +3,7 @@
 // and on synthetic ones (a chain, an ended parent, a delegate that is not Active). The node is an offline world and Koios is a fake:
 // no network. Each problem of the use check has its twin that is usable.
 import { describe, test } from 'vitest';
-import { mockTimers } from './mock-timers.ts';
+import { mockTimers } from './ported-support.ts';
 import assert from 'node:assert/strict';
 import type { Address, Credential, UTxO } from '@lucid-evolution/lucid';
 import { HIRE_ACTION, delegationUseProblems, escrowResource } from '../src/vendored/mcp/delegation-build.ts';

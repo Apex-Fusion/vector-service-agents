@@ -4,23 +4,25 @@
 // same numbers can be shown to the signer and unit-tested without a chain.
 //
 // Two escrow layouts during the drain (Part 2 Sections 6.1, 6.5 and 9.6). The legacy escrow keeps its rules and is evaluated by the
-// node, as before. The identity-marketplace escrow of the server's deployment (16-field datum: agent_id and refund) adds rules that
-// every spend here meets: the escrow input is the only script input, no mint, withdrawal or certificate, a validity range of at most
-// one hour, and buyer payouts at the refund address with its datum when the escrow names one. Its spends are evaluated locally with
-// the real script, read from the deployment's reference-script UTxO. Post refuses an escrow above the value cap F-29 in both layouts.
-import { Data, Constr, CML, calculateMinLovelaceFromUTxO, credentialToAddress } from '@lucid-evolution/lucid';
+// node, as before; from the escrow switch on (ESCROW_SWITCH_SLOT) Post builds no new legacy escrow, and the legacy spends stay. The
+// identity-marketplace escrow of the server's deployment (16-field datum: agent_id and refund) adds rules that every spend here meets:
+// the escrow input is the only script input, no mint, withdrawal or certificate, a validity range of at most one hour, and buyer
+// payouts at the refund address with its datum when the escrow names one. Its spends are evaluated locally with the real script, read
+// from the deployment's reference-script UTxO. Post refuses an escrow above the value cap F-29 in both layouts.
+import { Data, Constr, calculateMinLovelaceFromUTxO, credentialToAddress } from '@lucid-evolution/lucid';
 import type { Assets, LucidEvolution, Provider, TxSignBuilder, UTxO } from '@lucid-evolution/lucid';
 import { VECTOR_KOIOS_URL } from '../mcp-shared/config.js';
 import type { VectorUnsignedBuildResult } from '../mcp-shared/types.js';
 import { toBuildResult } from './build.js';
 import { ensureSlotConfig, paymentKeyHashOf, ChainClockError } from './gov-build.js';
 import type { SlotClockProvider } from './gov-build.js';
+import { decodeTransaction } from '@vsa/vector-read/guarded-decode';
 import {
   ESCROW_ADDRESS, ESCROW_REF_UTXO, ACCEPT_WINDOW_MS, DELIVER_BY_BUFFER_MS, MAX_PROCESSING_MS_CEILING, MARKETPLACE_MIN_FEE,
-  COLLATERAL_MIN_LOVELACE, MIN_UTXO_LOVELACE, REDEEMER, MAX_ESCROW_LOVELACE,
+  COLLATERAL_MIN_LOVELACE, MIN_UTXO_LOVELACE, REDEEMER, MAX_ESCROW_LOVELACE, ESCROW_SWITCH_SLOT, ESCROW_SWITCH_AT,
 } from './marketplace-constants.js';
 import {
-  advertTextFieldsRoundTrip, encodeEscrowDatum, encodeIdentityEscrowDatum, requestSpecHash, promptHashForPayload,
+  advertTextFieldsRoundTrip, decodeIdentityAdvertDatum, encodeEscrowDatum, encodeIdentityEscrowDatum, requestSpecHash, promptHashForPayload,
   escrowLockFloor, identityEscrowLockFloor, parseOutRef, formatOutRef,
 } from '@vsa/vector-read';
 import type { AdvertDatum, EscrowDatum, IdentityAdvertDatum, IdentityEscrowDatum, Refund } from '@vsa/vector-read';
@@ -106,11 +108,24 @@ export type PostEscrowBuild = VectorUnsignedBuildResult & PostEscrowTerms & {
   requiredSigners: SignedByBuild['requiredSigners'];
 };
 
+/** What a refusal of the escrow planner is about. A caller that must tell the refusals apart (buildVaultPay with `ledgerDecides`) needs no text. */
+export type EscrowPlanFault = 'advert_retired' | 'buyer_is_supplier' | 'advert_terms' | 'value_cap';
+
+/** A refusal of the escrow planner: an Error with the message of old, and `fault` says what it is about. */
+export class EscrowPlanRefusal extends Error {
+  readonly fault: EscrowPlanFault;
+  constructor(fault: EscrowPlanFault, message: string) {
+    super(message);
+    this.name = 'EscrowPlanRefusal';
+    this.fault = fault;
+  }
+}
+
 /** The host the endpoint URL really connects to (userinfo dropped, port kept, IDN in punycode), or an error: a signer must be able to see who is paid. */
 function endpointHostOf(endpointUrl: string, advertRef: string): string {
   let host = '';
   try { host = new URL(endpointUrl).host; } catch { /* refused below */ }
-  if (!host) throw new Error(`Advert ${advertRef} has an endpoint that is not a usable URL with a host, so a job could not be delivered to it.`);
+  if (!host) throw new EscrowPlanRefusal('advert_terms', `Advert ${advertRef} has an endpoint that is not a usable URL with a host, so a job could not be delivered to it.`);
   return host;
 }
 
@@ -121,7 +136,7 @@ function endpointHostOf(endpointUrl: string, advertRef: string): string {
  */
 function assertWithinCap(advertRef: string, economic: bigint): void {
   if (economic > MAX_ESCROW_LOVELACE) {
-    throw new Error(`Advert ${advertRef} asks for price + both bonds of ${units(economic)} units, above the ${units(MAX_ESCROW_LOVELACE)} units value cap of an escrow (F-29): such an escrow cannot be claimed, so it is not built.`);
+    throw new EscrowPlanRefusal('value_cap', `Advert ${advertRef} asks for price + both bonds of ${units(economic)} units, above the ${units(MAX_ESCROW_LOVELACE)} units value cap of an escrow (F-29): such an escrow cannot be claimed, so it is not built.`);
   }
 }
 
@@ -163,23 +178,24 @@ export function planPostEscrow(advert: AdvertDatum, advertRef: string, buyerPkh:
  * full window (and deliver_by is far inside the vault's limit of hi + 7 days). The escrow output holds exactly payment + both bonds,
  * as the vault requires of every escrow it pays: when the lock floor is above the advert's amounts, the difference is added to the
  * buyer bond, which returns to the vault on Accept and on every refund.
+ * With `options.capped` false the value cap is not checked: the vault script checks it, and buildVaultPay with `ledgerDecides` leaves it to the ledger.
  */
-export function planVaultEscrow(advert: AdvertDatum, advertRef: string, buyerPkh: string, payload: string, window: Window, identity: IdentityPostTerms): PostEscrowPlan {
+export function planVaultEscrow(advert: AdvertDatum, advertRef: string, buyerPkh: string, payload: string, window: Window, identity: IdentityPostTerms, options: { capped?: boolean } = {}): PostEscrowPlan {
   if (typeof payload !== 'string' || payload.length === 0) throw new Error('payload must be a non-empty string');
   const processing = advert.max_processing_ms;
-  if (!Number.isInteger(processing) || processing < 0) throw new Error(`Advert ${advertRef} has an unusable processing window (${processing} ms).`);
-  if (processing > MAX_PROCESSING_MS_CEILING) throw new Error(`Advert ${advertRef} advertises a processing window of ${processing} ms, longer than the ${MAX_PROCESSING_MS_CEILING} ms (24 h) a Post will lock funds for.`);
+  if (!Number.isInteger(processing) || processing < 0) throw new EscrowPlanRefusal('advert_terms', `Advert ${advertRef} has an unusable processing window (${processing} ms).`);
+  if (processing > MAX_PROCESSING_MS_CEILING) throw new EscrowPlanRefusal('advert_terms', `Advert ${advertRef} advertises a processing window of ${processing} ms, longer than the ${MAX_PROCESSING_MS_CEILING} ms (24 h) a Post will lock funds for.`);
   const times = { postedAt: window.lo + 60_000, deliverBy: window.hi + processing + DELIVER_BY_BUFFER_MS, validTo: window.hi, endpointHost: endpointHostOf(advert.endpoint_url, advertRef) };
-  return escrowPlanAt(advert, advertRef, buyerPkh, payload, times, identity, true);
+  return escrowPlanAt(advert, advertRef, buyerPkh, payload, times, identity, true, options.capped !== false);
 }
 
-/** The checks and the datum of an escrow posted at `times.postedAt`; `exactLock` puts the floor top-up into the buyer bond (planVaultEscrow). */
+/** The checks and the datum of an escrow posted at `times.postedAt`; `exactLock` puts the floor top-up into the buyer bond (planVaultEscrow); `capped` false leaves the value cap to the ledger. */
 function escrowPlanAt(
   advert: AdvertDatum, advertRef: string, buyerPkh: string, payload: string,
-  times: { postedAt: number; deliverBy: number; validTo: number; endpointHost: string }, identity: IdentityPostTerms | undefined, exactLock: boolean,
+  times: { postedAt: number; deliverBy: number; validTo: number; endpointHost: string }, identity: IdentityPostTerms | undefined, exactLock: boolean, capped = true,
 ): PostEscrowPlan {
-  if (advert.status !== 'Active') throw new Error(`Advert ${advertRef} is retired; pick another supplier.`);
-  if (advert.supplier_pkh === buyerPkh) throw new Error('The buyer cannot be the supplier of the same advert.');
+  if (advert.status !== 'Active') throw new EscrowPlanRefusal('advert_retired', `Advert ${advertRef} is retired; pick another supplier.`);
+  if (advert.supplier_pkh === buyerPkh) throw new EscrowPlanRefusal('buyer_is_supplier', 'The buyer cannot be the supplier of the same advert.');
   const ref = parseOutRef(advertRef);
   const legacy: EscrowDatum = {
     buyer_pkh: buyerPkh, supplier_pkh: advert.supplier_pkh,
@@ -191,7 +207,7 @@ function escrowPlanAt(
   let economic = advert.price_lovelace + advert.buyer_bond_lovelace + advert.supplier_bond_lovelace;
   // The advert's numbers are the supplier's to choose. The datum writer refuses what it cannot frame (negative, past
   // uint64); say so in terms of the advert instead of leaking a bare RangeError.
-  const unfit = (why: string) => new Error(`Advert ${advertRef} cannot be posted: its terms do not fit an escrow datum (${why}).`);
+  const unfit = (why: string) => new EscrowPlanRefusal('advert_terms', `Advert ${advertRef} cannot be posted: its terms do not fit an escrow datum (${why}).`);
   let datum: EscrowDatum = legacy;
   let datumHex: string;
   let lockLovelace: bigint;
@@ -209,7 +225,7 @@ function escrowPlanAt(
     } catch (err) { throw unfit(errorText(err)); }
     datum = identityDatum;
   }
-  assertWithinCap(advertRef, economic);
+  if (capped) assertWithinCap(advertRef, economic);
   return {
     datum, datumHex, layout: identity === undefined ? 'legacy' : 'identity', lockLovelace, deliverBy: times.deliverBy, validTo: times.validTo,
     supplierPkh: advert.supplier_pkh, endpointHost: times.endpointHost, capabilityId: advert.capability_id,
@@ -239,7 +255,7 @@ export function reserveCollateralInputs(utxos: UTxO[], lockLovelace: bigint): UT
  * datum) is an error, never a result. `address` is the escrow address of the Post's layout (default the legacy one).
  */
 export function assertEscrowIsOutputZero(txCbor: string, expected: { datumHex: string; lockLovelace: bigint; address?: string }): void {
-  const outputs = CML.Transaction.from_cbor_hex(txCbor).body().outputs();
+  const outputs = decodeTransaction(txCbor).body().outputs();
   const first = outputs.len() > 0 ? outputs.get(0) : undefined;
   const ok = first !== undefined
     && first.address().to_bech32() === (expected.address ?? ESCROW_ADDRESS)
@@ -261,6 +277,17 @@ async function assertAdvertAuthor(advertRef: string, creatingTxHash: string, sup
 export type HireableAdvert = Exclude<AdvertRead, { error: string }> & { ref: string };
 
 /**
+ * The words of the refusal of an advert of a fleet capability, or null for any other capability. vector_marketplace_send_job serves
+ * template-contract suppliers only, and a fleet supplier checks another hash of the request than the prompt_hash that a Post commits: a
+ * fleet hire could never be sent, and its lock would wait for a Reclaim after deliver_by. A Post and a vault payment both refuse it.
+ */
+export function fleetAdvertRefusal(ref: string, capabilityId: string): string | null {
+  return isFleetCapability(capabilityId)
+    ? `Advert ${ref} serves ${cell(capabilityId)}, a fleet capability (llm.text.generate.*, llm.chat.*, ocr.page.extract.* or audio.synthesize.*). vector_marketplace_send_job serves template-contract suppliers only in this release, so the job could never be sent and the lock would wait for a Reclaim after deliver_by. Pick a template-contract supplier.`
+    : null;
+}
+
+/**
  * Reads the advert `advertRef` in either layout (the identity layout with `deployment`) and refuses one that a Post must not hire:
  * spent, of a spent status Koios does not report, with text fields that are not valid UTF-8, or of a fleet capability.
  * `fetchImpl` stands in for fetch in the Koios call (tests).
@@ -275,10 +302,31 @@ export async function readHireableAdvert(advertRef: string, fetchImpl: typeof fe
   if (utxo.is_spent !== false) throw new Error(`Koios did not report whether advert ${ref} is unspent; refusing to hire it.`);
   const advertDatumHex = utxo.inline_datum?.bytes;
   if (!advertDatumHex || !advertTextFieldsRoundTrip(advertDatumHex)) throw new Error(`Advert ${ref} has text fields that are not valid UTF-8, so the escrow could not carry its capability id faithfully; refusing to hire it.`);
-  // vector_marketplace_send_job serves template-contract suppliers only, and a fleet supplier checks another hash of the request than
-  // the prompt_hash a Post commits: a fleet hire could never be sent, and its lock would wait for a Reclaim after deliver_by.
-  if (isFleetCapability(advert.capability_id)) throw new Error(`Advert ${ref} serves ${cell(advert.capability_id)}, a fleet capability (llm.text.generate.*, llm.chat.*, ocr.page.extract.* or audio.synthesize.*). vector_marketplace_send_job serves template-contract suppliers only in this release, so the job could never be sent and the lock would wait for a Reclaim after deliver_by. Pick a template-contract supplier.`);
+  const fleet = fleetAdvertRefusal(ref, advert.capability_id);
+  if (fleet !== null) throw new Error(fleet);
   return { ...read, ref };
+}
+
+/**
+ * The identity-marketplace advert `advertRef` as the node has it, for a payment that the ledger is to judge (buildVaultPay with
+ * `ledgerDecides`): the unspent output at the advert address of `deployment`, with an inline advert datum of 14 fields whose text fields
+ * are valid UTF-8 as stored (the escrow carries the capability id as text). Neither Koios nor the indexer is asked, so no listing
+ * decides for the node. Returns `{ error }` in words when there is no such output or it is no such advert; a failure of the node throws.
+ */
+export async function readAdvertFromNode(
+  provider: Pick<Provider, 'getUtxosByOutRef'>, advertRef: string, deployment: IdentityDeployment,
+): Promise<{ error: string } | { ref: string; advert: IdentityAdvertDatum; agentId: string }> {
+  let parsed: { txHash: string; outputIndex: number };
+  try { parsed = parseOutRef(advertRef); } catch (err) { return { error: errorText(err) }; }
+  const ref = formatOutRef(parsed.txHash, parsed.outputIndex);
+  const [utxo] = await provider.getUtxosByOutRef([parsed]);
+  if (!utxo) return { error: `The node has no unspent output ${ref}: the advert was spent (its supplier retired or replaced it), or it is not confirmed yet.` };
+  if (utxo.address !== deployment.advert.address) return { error: `UTxO ${ref} is not at the advert address of the identity marketplace, so it is no advert that a vault can pay.` };
+  if (!utxo.datum) return { error: `The advert ${ref} has no inline datum.` };
+  let advert: IdentityAdvertDatum;
+  try { advert = decodeIdentityAdvertDatum(utxo.datum); } catch (err) { return { error: `UTxO ${ref} holds no identity-marketplace advert datum (${errorText(err)}).` }; }
+  if (!advertTextFieldsRoundTrip(utxo.datum)) return { error: `Advert ${ref} has text fields that are not valid UTF-8, so the escrow could not carry its capability id faithfully.` };
+  return { ref, advert, agentId: advert.agent_id };
 }
 
 /**
@@ -311,10 +359,41 @@ export async function checkListingRule(provider: Provider, deployment: IdentityD
   return found;
 }
 
+// ─── The escrow switch (Part 2 Section 9.6) ─────────────────────────────────
+
+/** The escrow switch as the tool texts and the refusals name it. */
+export const ESCROW_SWITCH_NAME = `the escrow switch (slot ${ESCROW_SWITCH_SLOT}, ${ESCROW_SWITCH_AT})`;
+/** The refusal of a new legacy-layout advert from the escrow switch on (buildPostAdvert, vector_build_marketplace_post_advert). */
+export const LEGACY_ADVERT_REFUSAL = `From ${ESCROW_SWITCH_NAME} on, new adverts use the identity layout only, so no new legacy-layout advert is built. Post an identity-layout advert with vector_build_marketplace_advert_post: it names the agent (did:vector) whose record lists your supplier key and the capability. To take a legacy advert off the market and get its deposit back, use vector_build_marketplace_advert_retire.`;
+/** The refusal of a new escrow on the legacy-layout advert `advertRef` from the escrow switch on (buildPostEscrow). */
+export const legacyEscrowRefusal = (advertRef: string): string => `Advert ${advertRef} has the legacy layout (it names no agent DID). From ${ESCROW_SWITCH_NAME} on, new escrows go to identity-layout adverts only, so no new escrow is built for it. Hire an advert that names an agent (vector_marketplace_list_suppliers shows its DID) with vector_build_marketplace_post_escrow, or ask the supplier to post one with vector_build_marketplace_advert_post. Escrows posted before the switch keep their Accept, Reclaim and Release.`;
+
+/**
+ * Whether the node's tip has reached the escrow switch, decided as the agents-marketplace gateway decides it: the slot of the tip is at
+ * least ESCROW_SWITCH_SLOT. A tip that the node cannot give is an error, so that nothing of the legacy layout is built on an unknown
+ * side of the switch. The spends of what exists (Accept, Reclaim, Release, the Retire of an advert) never ask.
+ */
+export async function escrowSwitchPassed(provider: Provider): Promise<boolean> {
+  let slot: unknown;
+  try { slot = (await (provider as unknown as Required<Pick<SlotClockProvider, 'getNetworkTip'>>).getNetworkTip()).slot; } catch (err) {
+    throw new Error(`Could not read the chain tip from the node, so it is not known whether ${ESCROW_SWITCH_NAME} has passed: ${nodeFailure(err)}`);
+  }
+  if (typeof slot !== 'number' || !Number.isSafeInteger(slot) || slot < 0) {
+    throw new Error(`The node did not report a usable chain tip, so it is not known whether ${ESCROW_SWITCH_NAME} has passed.`);
+  }
+  return slot >= ESCROW_SWITCH_SLOT;
+}
+
+/** Refuses with `refusal` (one of the two above) once the node's tip has reached the escrow switch. */
+export async function assertBeforeEscrowSwitch(provider: Provider, refusal: string): Promise<void> {
+  if (await escrowSwitchPassed(provider)) throw new Error(refusal);
+}
+
 /**
  * Builds the unsigned Post: locks price + both bonds in a new escrow (output 0) for the advert. Reads the advert through
  * readAdvert in either layout and refuses one that is spent, retired, not valid UTF-8, of a fleet capability, above the value cap
- * (F-29), and a buyer who is the supplier. A legacy advert must have been created by its supplier key; the escrow is the legacy one.
+ * (F-29), and a buyer who is the supplier. A legacy advert is refused once the node's tip has reached the escrow switch
+ * (legacyEscrowRefusal); before it, the advert must have been created by its supplier key, and the escrow is the legacy one.
  * An identity-marketplace advert (at the advert address of `deployment`) must be listed by the indexer with its agent_id and pass the
  * listing rule on chain; the escrow is the identity one at the deployment's escrow address, with that agent_id and the refund set to
  * the buyer's own address (`changeAddress`) with no datum (Part 2 Section 6.5), so that anybody can Reclaim it to the buyer after
@@ -334,6 +413,7 @@ export async function buildPostEscrow(
   let plan: PostEscrowPlan;
   let escrowAddress = ESCROW_ADDRESS;
   if (read.layout === 'legacy') {
+    await assertBeforeEscrowSwitch(provider, legacyEscrowRefusal(advertRef));
     plan = planPostEscrow(read.advert, advertRef, buyerPkh, p.payload, nowMs, p.deliverByMs);
     await assertAdvertAuthor(advertRef, read.utxo.tx_hash, read.advert.supplier_pkh, fetchImpl);
   } else {

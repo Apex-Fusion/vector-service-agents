@@ -18,11 +18,11 @@ The fleet is not published to a registry either. The Pipeline commits to the req
 
 | destination | source | commit | sha256 |
 |---|---|---|---|
-| `src/vendored/mcp/marketplace-constants.ts` | `mcp-server:packages/builder/src/vector/marketplace-constants.ts` | `94bd293` | `ca64b38f98e7df4f204fc12e47bff88dadd2673a4c1778b78622a32854de1a8f` |
+| `src/vendored/mcp/marketplace-constants.ts` | `mcp-server:packages/builder/src/vector/marketplace-constants.ts` | `2d95483` | `ece39f1c1c274e51eff5a7f4f76a025c31df6f6cb26870c396ca225944446352` |
 | `src/vendored/mcp/marketplace-shared.ts` | `mcp-server:packages/builder/src/vector/marketplace-shared.ts` | `94bd293` | `440e6cacfa3203e78e383897259f202b7f7efd027ad893d12ac661348a0f0d6a` |
 | `src/vendored/mcp/marketplace-indexer.ts` | `mcp-server:packages/builder/src/vector/marketplace-indexer.ts` | `2d95483` | `ea1019d5a21f82a7e6d7d5d2ad9082e0c8ef3f1ec118e638e44dbd3a43de75ec` |
 | `src/vendored/mcp/marketplace-lineage.ts` | `mcp-server:packages/builder/src/vector/marketplace-lineage.ts` | `2d95483` | `418be0f614b0d584c66752899dea6394a965a3ab3e46001eeed3c4bdcc00240b` |
-| `src/vendored/mcp/marketplace-build.ts` | `mcp-server:packages/builder/src/vector/marketplace-build.ts` | `94bd293` | `4b89267c260b7e5c512e5de90a9ad01631b189cf66c6f076de3a4282614c913d` |
+| `src/vendored/mcp/marketplace-build.ts` | `mcp-server:packages/builder/src/vector/marketplace-build.ts` | `2d95483` | `df4feb12fe7f68f4a76a87c75888c48e0d99129c5247d4b7b278e9bbb5654cd3` |
 | `src/vendored/mcp/marketplace-verify.ts` | `mcp-server:packages/builder/src/vector/marketplace-verify.ts` | `94bd293` | `1ab38e9be9f6690f1ef64c82961c21556135650b6703938b1a63290fc9c92792` |
 | `src/vendored/mcp/marketplace-transport.ts` | `mcp-server:packages/builder/src/vector/marketplace-transport.ts` | `94bd293` | `4fdce708d65b3d5977de4c52dfd183e07dff169348deeac9de80eeea336943bb` |
 | `src/vendored/mcp/marketplace-supplier.ts` | `mcp-server:packages/builder/src/vector/marketplace-supplier.ts` | `94bd293` | `2143daa71df94833f9c36ff84927f391374be5d2c38f18c8c102184aaa3e7746` |
@@ -41,6 +41,8 @@ The fleet is not published to a registry either. The Pipeline commits to the req
 | `src/vendored/mcp/attestation-read.ts` | `mcp-server:packages/builder/src/vector/attestation-read.ts` | `2d95483` | `f6af8a2843edc6510fdeab3e07c7efa4244200f2d8e129ec2534d40d86616d44` |
 | `src/vendored/mcp/delegation-build.ts` | `mcp-server:packages/builder/src/vector/delegation-build.ts` | `2d95483` | `91cc41aa181b7413520dac3cdec64d6c23cee7e5511db045f2083f790fe49444` |
 | `src/vendored/mcp/delegation-read.ts` | `mcp-server:packages/builder/src/vector/delegation-read.ts` | `2d95483` | `49b508b96949e964252baebd03cd70b28f22bb2e587e8b58f535b32919af46fe` |
+| `src/vendored/mcp/vault-build.ts` | `mcp-server:packages/builder/src/vector/vault-build.ts` | `2d95483` | `4af2d07cf43fb764b1d9fcb5ea99949a3433e6fbc2151c87c8b6cac436eea6ec` |
+| `src/vendored/mcp/vault-read.ts` | `mcp-server:packages/builder/src/vector/vault-read.ts` | `2d95483` | `cc09388970a9752194a98c639c3c7233e9687b27f331f0d4ac51e72665c31590` |
 | `src/vendored/mcp-shared/provider.ts` | `mcp-server:packages/shared/src/provider.ts` | `2d95483` | `52f4f59caa36a4f1020bf9c1969a0949148b3e9b145e6d3cbc3baceda085035a` |
 | `src/vendored/mcp-shared/config.ts` | `mcp-server:packages/shared/src/config.ts` | `94bd293` | `4e1961be29545ff23978f51189c0ed47ca023e63af4ba2652e6ee89d00a4e089` |
 | `src/vendored/mcp-shared/types.ts` | `mcp-server:packages/shared/src/types.ts` | `94bd293` | `18ee292f4feca95e2c0d0eb51ce69b3bd3aba5185491ec6deac46990d27c8111` |

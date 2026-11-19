@@ -3,6 +3,7 @@
 // the real applied attestation script (identity-world.ts). A build that completes passed the script (minus the signatures, which it
 // reads only as required signers). Each refusal has a negative test.
 import { describe, test } from 'vitest';
+import './ported-support.ts';
 import assert from 'node:assert/strict';
 import { CML } from '@lucid-evolution/lucid';
 import type { UTxO } from '@lucid-evolution/lucid';

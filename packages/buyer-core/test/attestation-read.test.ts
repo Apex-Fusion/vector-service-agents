@@ -3,6 +3,7 @@
 // synthetic ones where mainnet has no example (a start time, an envelope, an invalid-from time, a decoy). The node is an offline
 // world and Koios is a fake: no network. Each refusal of the check has its accepted twin.
 import { describe, test } from 'vitest';
+import './ported-support.ts';
 import assert from 'node:assert/strict';
 import { CML, Constr, Data, credentialToAddress } from '@lucid-evolution/lucid';
 import type { UTxO } from '@lucid-evolution/lucid';

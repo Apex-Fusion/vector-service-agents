@@ -3,6 +3,7 @@
 // identity script of identity-world.ts (Lucid's local evaluation), and the test decodes the transaction to check the new datum, the
 // value, the redeemer and the required signers. Each refusal has a negative test. Offline: no network.
 import { describe, test } from 'vitest';
+import './ported-support.ts';
 import assert from 'node:assert/strict';
 import { CML } from '@lucid-evolution/lucid';
 import type { UTxO } from '@lucid-evolution/lucid';

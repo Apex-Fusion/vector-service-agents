@@ -3,7 +3,7 @@
 // the read of a script credential, the tip, the datum of a transaction input in Koios' JSON form, and paging. No network: the Koios
 // here is the fake of fixtures/ledger-read-world.ts.
 import { describe, test } from 'vitest';
-import { mockTimers } from './mock-timers.ts';
+import { mockTimers } from './ported-support.ts';
 import assert from 'node:assert/strict';
 import { Constr } from '@lucid-evolution/lucid';
 import { DEFAULT_PAGE, KOIOS_ANSWER_BYTES, MAX_PAGE, READ_BUDGET_MS, BudgetSpent, TooManyMatches, credentialOutputs, credentialPage, dataOfKoiosJson, koiosTipHeight, pageOf, soleTokenName, utxoOfKoiosRow, withinBudget } from '../src/vendored/mcp/ledger-read.ts';
