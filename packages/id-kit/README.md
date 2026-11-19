@@ -30,6 +30,7 @@ const call = await verifier.accessToken(
 );
 if (!call.ok) return refuse(call.rule);            // the rule that failed
 const { status } = call.value;
+if (status.read) log(`status list built ${Math.round((Date.now() - status.issuedAt) / 1000)} seconds ago`);
 if (!status.read) {
   // The call is not refused, but the verifier did not read the status list again within its time to live.
   // reason 'unavailable': the list cannot be read. reason 'stale': the list is over, or only an older copy is left because a new read failed.
@@ -81,7 +82,7 @@ Every check returns `{ ok: true, value }` or `{ ok: false, rule, detail }`. The 
 
 The `htu` of a proof and the URL of the request are compared as the gateway compares them: the scheme and the host in lower case, the default port dropped, no query and no fragment, and the path as it is. A trailing slash, the case of the path and a percent-encoded letter all count.
 
-The result of a call has `principal`, `actors` (the current actor first), `clientId`, `delegation` (the identifier and the patterns), `statusClaim`, `status` and the times. `status` is `{ read: true, list, fetchedAt }` or `{ read: false, list, reason, detail }`.
+The result of a call has `principal`, `actors` (the current actor first), `clientId`, `delegation` (the identifier and the patterns), `statusClaim`, `status` and the times. `status` is `{ read: true, list, fetchedAt, issuedAt }` or `{ read: false, list, reason, detail, issuedAt }`. `issuedAt` is the time that the gateway built the list (POSIX ms), so a caller can log the age of the list. It is null when the verifier holds no list.
 
 **The policy of a call** has three cases:
 
@@ -91,7 +92,7 @@ The result of a call has `principal`, `actors` (the current actor first), `clien
 { audience, require: { action, resource }, acceptDirect: true }    // both kinds; the grant of a token with a delegation is still checked
 ```
 
-`action` and `resource` are concrete values, not patterns. A pattern throws a `TypeError`. `acceptDirect` without `require` throws a `TypeError`.
+`action` and `resource` are concrete values, not patterns. A pattern throws a `TypeError`. `require` is an object with an `action` and a `resource`, both text: any other shape throws a `TypeError` before the verifier reads anything. `acceptDirect` is `true`, `false` or not set. Any other value, such as the text "false" from an environment value, throws a `TypeError`. `acceptDirect` without `require` throws a `TypeError` too.
 
 **Status lists.** The Bitstring Status List holds both purposes in one list: bit `p` is revocation, and bit `131072 + p` is suspension. The Token Status List has 2 bits for each entry: 0 valid, 1 invalid (revoked), 2 suspended. A decode checks the signature, the issuer, that the list is the one that was asked for, the time and the encoding (`list.*`). Both are read with `decodeTokenStatusList`, `decodeBitstringStatusList`, `tokenEntryStatus` and `bitstringEntryStatus`. The reader keeps the newer list: a list with an older issue time than its copy does not replace the copy.
 
@@ -114,7 +115,9 @@ An older copy is still checked. When it shows the agent revoked or suspended, th
 
 An identity credential is different. It is a public document that stays valid for a day, so a missing answer of its list cannot mean that the agent is valid. `verifier.credential` refuses with `credential.status_unknown` when the list cannot be read, when the list is over, and when the verifier holds only an older copy after a failed read. An older copy that shows a revocation or a suspension is refused with `credential.revoked` or `credential.suspended`.
 
-After a failed read the reader does not ask again before a wait. The wait is 5 seconds, or the `Retry-After` of the answer when that is longer, and never more than 60 seconds. This holds for every status. The reader uses its older copy while that copy is valid.
+A credential is also refused when its list is old (`credential.status_unknown`). The gateway serves its last list while it builds a new one, and while builds fail, so a list that the verifier has just read can be old. The option `maxCredentialListAgeSeconds` (1,200 by default) is the oldest list that a credential check accepts: the time since the issue time of the list. The gateway sets the issue time when a build ends, a build takes some minutes, and a list shows the status that the gateway read during that build. So, after the gateway sees a revocation, a credential can be accepted until the gateway has built a new list that shows it and the verifier has read that list. It is not accepted for longer than the limit plus the time of one build. A value below the `ttl` of the list throws a `TypeError`, because a list inside its `ttl` would be refused. A value that is not a number of seconds, 1 or more, throws a `TypeError` when the verifier is made. The default fits a gateway that builds the lists at least every 600 seconds, with a build of less than 600 seconds. A gateway with a longer interval needs a larger value. A call with an access token does not use this limit: it keeps the soft rule, and its `status.issuedAt` tells the age of the list.
+
+After a failed read the reader does not ask again before a wait. The wait is 5 seconds, or the `Retry-After` of the answer when that is longer, and never more than 60 seconds. This holds for every failed read: a 503, another status, a network failure, a 200 answer whose list is refused (a bad signature, another URL), and a 200 answer whose list is over. Until the wait ends, the reader gives the same failure again. A list that was wrong stays a refusal, and it is never turned into a list that was not read. The same holds for the key set and the bundle. When a read did not work, the reader uses its older copy while that copy is valid. When a list is already older than its `ttl` at the time of the read, the reader reads again after 5 seconds, not after the `ttl`.
 
 ### When a status change shows
 
@@ -123,7 +126,7 @@ A status change reaches a verifier in steps, one after the other:
 1. The gateway sees the change on the ledger. It gives the status Revoked or Retired only after 30 confirmations.
 2. The status watcher of the gateway checks the agents that have live access tokens every 30 seconds. It revokes the tokens of an agent that is no longer Active.
 3. The gateway builds the status lists at most once in each refresh interval (`STATUS_LIST_REFRESH_SECONDS`, 60 seconds by default). It serves a list as it is while the list is younger than the interval. After that, it serves its last list while a new build runs, and while it cannot build. A list is valid for one hour, and its `ttl` is the refresh interval.
-4. The verifier keeps a list for its `ttl`. `listCacheSeconds` makes that time shorter.
+4. The verifier keeps a list for its `ttl`. `listCacheSeconds` makes that time shorter. When a list is already older than its `ttl` at the time of the read, the verifier reads again after 5 seconds.
 
 Each step adds time to the others. This document gives no total. A token is also honoured until 30 seconds after its `exp`, which is 330 seconds after it was issued, at most.
 
