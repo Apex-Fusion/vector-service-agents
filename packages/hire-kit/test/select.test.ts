@@ -2,7 +2,7 @@
 // The chat job and the choice of the chat supplier, as agents/document-pipeline/src/orchestrate.ts had them (rulings R10, R12, R22, R25, R31, R56, R60,
 // R65): the body {input} and nothing else, the answer hashed as received and its text read before the Accept; the selection with the probe, the advert read
 // on chain and held to the allowlist, the ceiling, the endpoint and the key, the words of each refusal with the caller's code around them, and the line of
-// the choice. And what an advert locks and a sub-job needs. Against the in-memory marketplace of test/stub-suppliers.ts.
+// the choice. And what an advert locks and a sub-job needs. Against the in-memory marketplace of testing/stub-suppliers.ts.
 import { describe, it, expect } from 'vitest';
 import { LLM_SELECTION_BUDGET_MS, LLM_SELECTION_MAX_CANDIDATES, TX_FEE_BUDGET_LOVELACE, planFleetPostEscrow, responsesPromptHash, responsesResponseHash } from '@vsa/buyer-core';
 import type { AdvertDatum } from '@vsa/vector-read';
@@ -11,9 +11,9 @@ import type { HireSupplier } from '../src/hire.ts';
 import { aboveCeiling, advertOnChain, chooseChatSupplier, choiceLine, keyOfAdvert, plannedLockOf, subJobFloat } from '../src/select.ts';
 import type { ChatQuery } from '../src/select.ts';
 import {
-  ALLOWLIST, ANSWER, FORGER_KEY, INDEXER, LLM_ADVERT, LLM_ADVERT_REF, LLM_ENDPOINT, LLM_KEY, OCR_ADVERT, OCR_ADVERT_REF, T0, chainWith, marketplace,
-} from './stub-suppliers.ts';
-import type { Marketplace } from './stub-suppliers.ts';
+  ALLOWLIST, AGENT_ADVERT, AGENT_ADVERT_REF, AGENT_ENDPOINT, AGENT_KEY, ANSWER, FORGER_KEY, INDEXER, LLM_ADVERT, LLM_ADVERT_REF, LLM_ENDPOINT, LLM_KEY, OCR_ADVERT, OCR_ADVERT_REF, T0, chainWith, marketplace,
+} from '../testing/index.ts';
+import type { Marketplace } from '../testing/index.ts';
 
 const INPUT = 'Answer in one sentence: what does a bonded escrow hold?';
 const CEILING = 1_000_000n;
@@ -116,6 +116,37 @@ describe('chooseChatSupplier (rulings R22, R31, R56, R60, R65)', () => {
     m.llm.capabilityOverride = { advert_ref: LLM_ADVERT_REF.toUpperCase() };
     expect((await chooseChatSupplier(m.chain, query(m), unavailable)).advertRef).toBe(LLM_ADVERT_REF);
   });
+
+  it('holds the chosen advert to the limits of its bonds when the caller passes them, with the advert, the bond and the limit in the words; at the limit, with null and with no limit it is chosen as before', async () => {
+    const m = marketplace({ llmAdvert: { ...LLM_ADVERT, supplier_bond_lovelace: 25_000_000n, buyer_bond_lovelace: 7_000_000n } });
+    expect(await refused(chooseChatSupplier(m.chain, query(m, { maxSupplierBondLovelace: 24_999_999n }), unavailable))).toBe(
+      `on chain, its advert ${LLM_ADVERT_REF} has a supplier bond of 25000000 lovelace, above the limit of 24999999 lovelace: an Accept pays the supplier bond to the supplier with the price`,
+    );
+    expect(await refused(chooseChatSupplier(m.chain, query(m, { maxBuyerBondLovelace: 6_999_999n }), unavailable))).toBe(
+      `on chain, its advert ${LLM_ADVERT_REF} has a buyer bond of 7000000 lovelace, above the limit of 6999999 lovelace`,
+    );
+    // The twins: no field, null, and a limit that the bonds just meet.
+    const twins: Array<Partial<ChatQuery>> = [{}, { maxSupplierBondLovelace: null, maxBuyerBondLovelace: null }, { maxSupplierBondLovelace: 25_000_000n, maxBuyerBondLovelace: 7_000_000n }];
+    for (const limits of twins) expect((await chooseChatSupplier(m.chain, query(m, limits), unavailable)).advertRef, JSON.stringify(Object.keys(limits))).toBe(LLM_ADVERT_REF);
+  });
+
+  it('refuses a limit of a bond that is not a bigint, null or undefined with a TypeError that names the field, before the indexer is asked; a bigint, null and undefined are the limits that it takes', async () => {
+    for (const field of ['maxSupplierBondLovelace', 'maxBuyerBondLovelace']) {
+      for (const bad of [1_000_000, 0, '1000000', true, {}]) {
+        const m = marketplace();
+        const over: Record<string, unknown> = { [field]: bad };
+        const error = await chooseChatSupplier(m.chain, query(m, over as Partial<ChatQuery>), unavailable).then(() => { throw new Error('a supplier was chosen'); }, (e: unknown) => e);
+        if (!(error instanceof TypeError)) throw new Error(`${field} as ${typeof bad}: ${String(error)}`);
+        expect(error.message, `${field} as ${typeof bad}`).toContain(field);
+        expect(m.calls, `${field} as ${typeof bad}`).toStrictEqual([]);
+      }
+      for (const limit of [undefined, null, 25_000_000n]) {
+        const m = marketplace();
+        const over: Record<string, unknown> = { [field]: limit };
+        expect((await chooseChatSupplier(m.chain, query(m, over as Partial<ChatQuery>), unavailable)).advertRef, `${field} ${String(limit)}`).toBe(LLM_ADVERT_REF);
+      }
+    }
+  });
 });
 
 describe('what an advert locks, and the helpers of a choice', () => {
@@ -153,5 +184,13 @@ describe('what an advert locks, and the helpers of a choice', () => {
     const ocr: HireSupplier = { ...CHOSEN, hop: 'ocr', advertRef: OCR_ADVERT_REF, advert: OCR_ADVERT, endpoint: 'https://203.0.113.21/' };
     expect(choiceLine(ocr)).toBe(`chosen OCR supplier: advert ${OCR_ADVERT_REF}, price 200000 lovelace, endpoint host 203.0.113.21`);
     expect(choiceLine({ ...CHOSEN, model: 'a\nmodel\u001b[0m', endpoint: 'not a url' })).toBe(`chosen chat supplier: advert ${LLM_ADVERT_REF}, model a model [0m, price 200000 lovelace, endpoint host unreadable`);
+  });
+
+  it('choiceLine adds the two bonds for an agent and for no other supplier: the lines of the OCR supplier and of the chat supplier are the ones that scripts pin', () => {
+    const agent: HireSupplier<'agent'> = {
+      hop: 'agent', advertRef: AGENT_ADVERT_REF, advert: AGENT_ADVERT, capabilityId: AGENT_ADVERT.capability_id, model: AGENT_ADVERT.model, endpoint: AGENT_ENDPOINT, pubKeyHex: AGENT_KEY.pubKeyHex, windowMs: 300_000,
+    };
+    expect(choiceLine(agent)).toBe(`chosen agent supplier: advert ${AGENT_ADVERT_REF}, model ${AGENT_ADVERT.model}, price 200000 lovelace, supplier bond 1000000 lovelace, buyer bond 1000000 lovelace, endpoint host 203.0.113.41`);
+    expect(choiceLine(CHOSEN)).not.toContain('bond');
   });
 });

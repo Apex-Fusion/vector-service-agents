@@ -3,7 +3,7 @@
 // deployment values and the escrow reference script, through the vendored identityDeploymentFrom) and held to two more rules: the escrow reference script is set, and
 // IDENTITY_POLICY_ID, which the manifest publishes, is the policy the deployment gives. The values are those of the vendored identity world.
 import { describe, it, expect } from 'vitest';
-import { buyerIdentityDeployment, BUYER_IDENTITY_SETTINGS } from '../src/index.ts';
+import { buyerIdentityDeployment, buyerVaultDeployment, BUYER_IDENTITY_SETTINGS, VAULT_PAYER_IDENTITY_SETTINGS } from '../src/index.ts';
 import { CONFIG_SEED, DEPLOYMENT } from './fixtures/identity-world.ts';
 
 const ROOT = DEPLOYMENT.legacyRoot;
@@ -64,5 +64,50 @@ describe('buyerIdentityDeployment', () => {
     expect(buyerIdentityDeployment(others)).toBeNull();
     expect(buyerIdentityDeployment({ ...CONFIGURED, ...others })?.identity.hash).toBe(POLICY);
     expect(message({ VECTOR_IDENTITY_ESCROW_REF_UTXO: ESCROW_REF })).toMatch(/^environment variable VECTOR_IDENTITY_ESCROW_REF_UTXO is set, but VECTOR_IDENTITY_LEGACY_ROOT is not: set both/);
+  });
+});
+
+describe('buyerVaultDeployment', () => {
+  const VAULT_REF = `${'e0'.repeat(32)}#3`;
+  const FOUR = { ...CONFIGURED, VECTOR_IDENTITY_VAULT_REF_UTXO: VAULT_REF };
+  const vaultMessage = (env: Record<string, string | undefined>): string => {
+    try { buyerVaultDeployment(env); } catch (err) { return (err as Error).message; }
+    throw new Error('no error');
+  };
+
+  it('is the deployment of the four settings: the three that a buyer reads, and the reference script of the vault, which a chain that pays from vaults needs', () => {
+    expect([...VAULT_PAYER_IDENTITY_SETTINGS]).toStrictEqual([...BUYER_IDENTITY_SETTINGS, 'VECTOR_IDENTITY_VAULT_REF_UTXO']);
+    const deployment = buyerVaultDeployment(FOUR);
+    expect(deployment.identity.hash).toBe(POLICY);
+    expect(deployment.vault.address).toBe(DEPLOYMENT.vault.address);
+    expect(deployment.refs.vault).toStrictEqual({ txHash: 'e0'.repeat(32), outputIndex: 3 });
+    expect(deployment.refs.escrow).toStrictEqual({ txHash: 'e0'.repeat(32), outputIndex: 4 });
+  });
+
+  it('refuses a deployment with no vault reference script, and names the setting; buyerIdentityDeployment of the same settings still gives a deployment, with none', () => {
+    expect(vaultMessage(CONFIGURED)).toMatch(/^environment variable VECTOR_IDENTITY_VAULT_REF_UTXO is not set/);
+    expect(vaultMessage({ ...CONFIGURED, VECTOR_IDENTITY_VAULT_REF_UTXO: '  ' })).toMatch(/^environment variable VECTOR_IDENTITY_VAULT_REF_UTXO is not set/);
+    expect(buyerIdentityDeployment(CONFIGURED)?.refs.vault).toBeUndefined();
+    // buyerIdentityDeployment does not read the fourth setting: with it set, the result is the same as without it.
+    expect(buyerIdentityDeployment(FOUR)?.refs.vault).toBeUndefined();
+  });
+
+  it('checks the form of the vault reference script, and says which setting is wrong; a well-formed value is taken', () => {
+    expect(vaultMessage({ ...FOUR, VECTOR_IDENTITY_VAULT_REF_UTXO: 'nope' })).toBe('environment variable VECTOR_IDENTITY_VAULT_REF_UTXO must be <64 hex characters>#<output index>.');
+    expect(vaultMessage({ ...FOUR, VECTOR_IDENTITY_VAULT_REF_UTXO: `${'e0'.repeat(32)}#-1` })).toMatch(/^environment variable VECTOR_IDENTITY_VAULT_REF_UTXO must be/);
+    expect(buyerVaultDeployment({ ...FOUR, VECTOR_IDENTITY_VAULT_REF_UTXO: ` ${'E0'.repeat(32)}#3 ` }).refs.vault).toStrictEqual({ txHash: 'e0'.repeat(32), outputIndex: 3 });
+  });
+
+  it('needs the deployment: with none of the settings set it throws, and names the four, where buyerIdentityDeployment gives null', () => {
+    expect(buyerIdentityDeployment({})).toBeNull();
+    const text = vaultMessage({});
+    for (const name of VAULT_PAYER_IDENTITY_SETTINGS) expect(text).toContain(name);
+    expect(vaultMessage({ VECTOR_IDENTITY_VAULT_REF_UTXO: VAULT_REF })).toMatch(/^environment variable VECTOR_IDENTITY_VAULT_REF_UTXO is set, but VECTOR_IDENTITY_LEGACY_ROOT is not: set both/);
+  });
+
+  it('holds the rules of a service that buys: the escrow reference script is set, and IDENTITY_POLICY_ID is the policy of the deployment', () => {
+    expect(vaultMessage({ ...FOUR, VECTOR_IDENTITY_ESCROW_REF_UTXO: undefined })).toMatch(/^environment variable VECTOR_IDENTITY_ESCROW_REF_UTXO is not set/);
+    expect(vaultMessage({ ...FOUR, IDENTITY_POLICY_ID: undefined })).toMatch(/^environment variable IDENTITY_POLICY_ID is not set/);
+    expect(vaultMessage({ ...FOUR, IDENTITY_POLICY_ID: 'ab'.repeat(28) })).toMatch(/^environment variable IDENTITY_POLICY_ID is not the identity policy/);
   });
 });

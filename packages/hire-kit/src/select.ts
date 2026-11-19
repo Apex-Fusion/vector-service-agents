@@ -25,9 +25,20 @@ import { blake2b224Hex } from '@vsa/vector-read';
 import type { AdvertDatum } from '@vsa/vector-read';
 import { canonicalRef, errorText } from './format.ts';
 import type { HireSupplier } from './hire.ts';
+import type { StrandedKind } from './janitor.ts';
+
+/**
+ * The most that the bonds of an advert may be, in lovelace. The buyer funds the price and both bonds at the Post, an Accept pays the supplier the price and the supplier bond, and
+ * a Release pays the supplier all three: the price ceiling does not bound what a hire pays, and these do. A number refuses an advert whose bond is above it. `null` says that the
+ * caller sets no limit. A field that is absent is no limit either: a path that existed before the limits has none until its owner sets one.
+ */
+export interface BondLimits {
+  maxSupplierBondLovelace?: bigint | null;
+  maxBuyerBondLovelace?: bigint | null;
+}
 
 /** What the choice of a chat supplier is asked with. */
-export interface ChatQuery {
+export interface ChatQuery extends BondLimits {
   fetchImpl: FetchLike;
   /** The marketplace indexer; the configured one when absent. */
   indexerUrl?: string;
@@ -62,18 +73,51 @@ export async function advertOnChain<E>(chain: Chain, advertRef: string, unavaila
 /** The host of an endpoint, for a log line: the whole URL is the supplier's to write and stays out of the log (ruling R65). */
 const hostOf = (endpoint: string): string => { try { return new URL(endpoint).host; } catch { return 'unreadable'; } };
 
-/** The line a run logs for the supplier it chose (ruling R65): its advert, the model of the chat supplier, its price and the host of its endpoint. */
-export function choiceLine(supplier: HireSupplier): string {
-  const model = supplier.hop === 'llm' ? `, model ${flatText(supplier.model, 100)}` : '';
-  return `chosen ${supplier.hop === 'ocr' ? 'OCR' : 'chat'} supplier: advert ${supplier.advertRef}${model}, price ${supplier.advert.price_lovelace} lovelace, endpoint host ${hostOf(supplier.endpoint)}`;
+/**
+ * The line a run logs for the supplier it chose (ruling R65): its advert, the model of a chat supplier or of an agent, its price and the host of its endpoint. The words
+ * of an OCR supplier and of a chat supplier are what they were; an agent is "chosen agent supplier".
+ */
+export function choiceLine(supplier: HireSupplier<StrandedKind>): string {
+  const model = supplier.hop === 'ocr' ? '' : `, model ${flatText(supplier.model, 100)}`;
+  const who = supplier.hop === 'ocr' ? 'OCR' : supplier.hop === 'llm' ? 'chat' : 'agent';
+  // The agent's line also says its bonds: no pinned line of the older paths holds them, and a hire of an agent is the new path that says what it pays.
+  const bonds = supplier.hop === 'agent' ? `, supplier bond ${supplier.advert.supplier_bond_lovelace} lovelace, buyer bond ${supplier.advert.buyer_bond_lovelace} lovelace` : '';
+  return `chosen ${who} supplier: advert ${supplier.advertRef}${model}, price ${supplier.advert.price_lovelace} lovelace${bonds}, endpoint host ${hostOf(supplier.endpoint)}`;
 }
 
 /** What an advert above its ceiling is said to be: its price, the ceiling, and the setting that holds it. */
 export const aboveCeiling = (advertRef: string, price: bigint, ceiling: bigint, setting: string): string =>
   `its advert ${advertRef} is priced ${price} lovelace, above the ceiling of ${ceiling} lovelace (${setting})`;
 
+/** Why an advert is held back by the limits of its bonds: its bond, the limit and what the bond is for; null when no limit is passed. */
+export function bondProblem(advertRef: string, advert: AdvertDatum, limits: BondLimits): string | null {
+  const { maxSupplierBondLovelace: supplier, maxBuyerBondLovelace: buyer } = limits;
+  if (typeof supplier === 'bigint' && advert.supplier_bond_lovelace > supplier) {
+    return `its advert ${advertRef} has a supplier bond of ${advert.supplier_bond_lovelace} lovelace, above the limit of ${supplier} lovelace: an Accept pays the supplier bond to the supplier with the price`;
+  }
+  if (typeof buyer === 'bigint' && advert.buyer_bond_lovelace > buyer) {
+    return `its advert ${advertRef} has a buyer bond of ${advert.buyer_bond_lovelace} lovelace, above the limit of ${buyer} lovelace`;
+  }
+  return null;
+}
+
+const KIND: Readonly<Record<string, string>> = { number: 'a number', string: 'a text', boolean: 'a boolean', object: 'an object', function: 'a function', symbol: 'a symbol' };
+/**
+ * Refuses a limit that is not a bigint, with a TypeError that names it. A limit is a bigint, or null for no limit (`allow.null`), or left out (`allow.absent`, for a path that never had the
+ * limit). Any other value is refused: a number or a text is not the limit that the caller means, and a missing limit would count as no limit at all.
+ */
+export function requireLimits(limits: Readonly<Record<string, unknown>>, allow: { null: boolean; absent: boolean }): void {
+  for (const [name, value] of Object.entries(limits)) {
+    if (typeof value === 'bigint' || (allow.null && value === null) || (allow.absent && value === undefined)) continue;
+    const accepted = `a bigint${allow.null ? ' or null' : ''}${allow.absent ? ', or left out' : ''}`;
+    const found = value === undefined ? 'missing' : value === null ? 'null' : (KIND[typeof value] ?? `a ${typeof value}`);
+    throw new TypeError(`${name} must be ${accepted}, and it is ${found}. A number or a text is not the limit that a caller means, and a missing limit would count as none.`);
+  }
+}
+
 /** The chat supplier: the selection's choice at a price at or under the ceiling, its advert checked on chain against it. The caller's `unavailable` otherwise. */
 export async function chooseChatSupplier<E extends Error>(chain: Chain, query: ChatQuery, unavailable: (why: string) => E): Promise<HireSupplier> {
+  requireLimits({ maxSupplierBondLovelace: query.maxSupplierBondLovelace, maxBuyerBondLovelace: query.maxBuyerBondLovelace }, { null: true, absent: true });
   const ceiling = query.maxPriceLovelace;
   const budgetMs = query.budgetMs ?? LLM_SELECTION_BUDGET_MS;
   const maxCandidates = query.maxCandidates ?? LLM_SELECTION_MAX_CANDIDATES;
@@ -93,6 +137,8 @@ export async function chooseChatSupplier<E extends Error>(chain: Chain, query: C
     throw unavailable(`the advert ${advertRef} the selection chose is not, on chain, an active ${LLM_CAPABILITY} advert of the supplier the indexer names with a model on the allowlist`);
   }
   if (advert.price_lovelace > ceiling) throw unavailable(`on chain, ${aboveCeiling(advertRef, advert.price_lovelace, ceiling, query.ceilingSetting)}`);
+  const heavy = bondProblem(advertRef, advert, query);
+  if (heavy !== null) throw unavailable(`on chain, ${heavy}`);
   if (withoutSlash(advert.endpoint_url) !== withoutSlash(chosen.endpoint)) throw unavailable(`the advert ${advertRef} names another endpoint on chain than the one the selection asked`);
   if (!keyOfAdvert(chosen.capability, advert)) throw unavailable(`the key the supplier of ${advertRef} serves is not the key of its advert, so no receipt of it could verify`);
   const supplier: HireSupplier = { hop: 'llm', advertRef, advert, capabilityId: advert.capability_id, model: advert.model, endpoint: advert.endpoint_url, pubKeyHex: chosen.capability.pub_key_hex, windowMs: advert.max_processing_ms };
@@ -104,7 +150,7 @@ export async function chooseChatSupplier<E extends Error>(chain: Chain, query: C
  * The lock a Post on the supplier's advert takes, planned as the Post plans it (planFleetPostEscrow, in the layout of the advert, with the refund to the
  * enterprise address of `buyerPkh`, the address of every chain of buyer-core); the planner's Error passes through for an advert no Post can be planned on.
  */
-export function plannedLockOf(supplier: HireSupplier, buyerPkh: string, nowMs: number): bigint {
+export function plannedLockOf(supplier: HireSupplier<StrandedKind>, buyerPkh: string, nowMs: number): bigint {
   const terms = fleetPostTerms(supplier.advert, enterpriseAddressOf(buyerPkh));
   return planFleetPostEscrow(supplier.advert, supplier.advertRef, buyerPkh, PLANNING_PROMPT_HASH, nowMs, terms).lockLovelace;
 }

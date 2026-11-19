@@ -4,6 +4,12 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { join, sep } from 'node:path';
+import type {
+  AttestBuild, AttestParams, AttTypeName, DeployedScript, Effective, IssuerSigner, OutRef, PurposeName, RecordUtxo, RefName, SignedByBuild, WithdrawBuild,
+} from '../src/index.ts';
+
+/** The types that an operator script names when it builds, so that the type check fails when the entry does not export one. */
+export type OperatorTypes = [AttestBuild, AttestParams, AttTypeName, DeployedScript, Effective, IssuerSigner, OutRef, PurposeName, RecordUtxo, RefName, SignedByBuild, WithdrawBuild];
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const manifest = readFileSync(join(root, 'VENDORED-FROM.md'), 'utf8');
@@ -51,5 +57,36 @@ describe('vendored files', () => {
       'responsesOutputText', 'requestSpecHash', 'planFleetPostEscrow', 'buildFleetPostEscrow', 'fleetPostTerms', 'isIdentityAdvert', 'createRealChain', 'TxNotConfirmedError', 'FakeChain',
       'feeOfSignedTx', 'readCapability', 'probeStatus', 'sendOcrJob', 'sendResponsesJob', 'pollOcrJob', 'pollResponsesJob', 'selectLlmSupplier', 'findOcrAdvert', 'verifyFleetReceipt',
     ]) expect(typeof (m as Record<string, unknown>)[name], name).not.toBe('undefined');
+  }, 30_000);
+  // Loaded at run time, as the test above does: a static import would load Lucid's WASM at collection, outside the explicit timeout of a test.
+  it('the public surface exports the vault and delegation builders, the three typed errors of a vault Pay and the ledger check of them', async () => {
+    const m = await import('../src/index.ts');
+    for (const name of [
+      'buildVaultOpen', 'buildVaultPay', 'buildVaultClose', 'readVault', 'isLedgerRefusal', 'judgeEvaluation', 'VaultPayEvaluationError', 'VaultPayRefused', 'VaultPayImpossible',
+      'VaultPayNotEvaluated', 'HIRE_ACTION', 'buildDelegate', 'buildUndelegate', 'validActionPattern', 'validResourcePattern', 'delegationUseProblems', 'delegationProblems',
+      'narrowingProblems', 'escrowResource', 'patternsCover',
+    ]) expect(typeof (m as Record<string, unknown>)[name], name).not.toBe('undefined');
+  }, 30_000);
+  // The operator scripts of the repo import from the package entry, so the entry gives them what they build with, and each name is the one that its copy defines.
+  it('the public surface exports what an operator script builds a vault, a delegation or an attestation with, each name as its copy defines it', async () => {
+    const entry: Record<string, unknown> = await import('../src/index.ts');
+    const named: Array<[Record<string, unknown>, string[]]> = [
+      [await import('../src/vendored/mcp/delegation-build.ts'), ['buildDelegate', 'buildUndelegate', 'validActionPattern', 'validResourcePattern']],
+      [await import('../src/vendored/mcp/vault-build.ts'), [
+        'buildVaultOpen', 'buildVaultPay', 'buildVaultClose', 'readVault', 'VaultPayEvaluationError', 'VaultPayImpossible', 'VaultPayNotEvaluated', 'VaultPayRefused', 'isLedgerRefusal',
+        'judgeEvaluation',
+      ]],
+      [await import('../src/vendored/mcp/attestation-build.ts'), ['buildAttest', 'buildWithdrawAttestation', 'ATT_TYPES']],
+      [await import('../src/vendored/mcp/identity-deployment.ts'), ['identityDeploymentFrom', 'makeIdentityDeployment']],
+      [await import('../src/vendored/mcp/jury-codec.ts'), ['blake2b256Hex']],
+      [await import('../src/vendored/mcp/identity-chain.ts'), ['findRecord']],
+      [await import('../src/vendored/mcp/identity-rules.ts'), ['PURPOSE', 'effectiveStatus']],
+    ];
+    for (const [copy, names] of named) {
+      for (const name of names) {
+        expect(typeof copy[name], `${name} in its copy`).not.toBe('undefined');
+        expect(entry[name], name).toBe(copy[name]);
+      }
+    }
   }, 30_000);
 });

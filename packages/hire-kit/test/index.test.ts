@@ -4,22 +4,25 @@
 import { describe, expect, test } from 'vitest';
 import * as kit from '../src/index.ts';
 import type {
-  AcceptPending, Busy, ChatQuery, Clocked, HireDeps, HireErrors, HireFacts, HireFailure, HireJob, HireKind, HireLedger, HireOptions, HireRecord, HireStage,
-  HireSupplier, Hired, JanitorAction, JanitorChain, StrandedEntry, StrandedKind,
+  AcceptDecision, AcceptPending, AgentDelivery, AgentDeps, AgentErrors, AgentEscrow, AgentOutcome, AgentRequest, AgentSelection, BondLimits, Busy, ChatQuery, Clocked, Delivery,
+  HireDeps, HireDetail, HireErrors, HireFacts, HireFailure, HireJob, HireKind, HireLedger, HireOptions, HireRecord, HireStage, HireSupplier, HireTerms, Hired, JanitorAction,
+  JanitorChain, ModelAnswer, ModelDeps, ModelErrors, ModelRequest, StrandedEntry, StrandedKind, TemplateAnswer, VaultRefusal,
 } from '../src/index.ts';
 
 /** Every type of the surface, so that the type check reads each one. */
 export type Surface = [
-  AcceptPending, Busy, ChatQuery, Clocked, HireDeps, HireErrors<Error>, HireFacts, HireFailure, HireJob<unknown>, HireKind, HireLedger, HireOptions, HireRecord,
-  HireStage, HireSupplier, Hired<unknown>, JanitorAction, JanitorChain, StrandedEntry, StrandedKind,
+  AcceptDecision, AcceptPending, AgentDelivery, AgentDeps, AgentErrors<Error>, AgentEscrow, AgentOutcome, AgentRequest, AgentSelection, BondLimits, Busy, ChatQuery, Clocked,
+  Delivery<unknown>, HireDeps, HireDetail, HireErrors<Error>, HireFacts, HireFailure, HireJob<unknown>, HireKind, HireLedger, HireOptions, HireRecord, HireStage, HireSupplier,
+  HireTerms, Hired<unknown>, JanitorAction, JanitorChain, ModelAnswer, ModelDeps, ModelErrors<Error>, ModelRequest, StrandedEntry, StrandedKind, TemplateAnswer, VaultRefusal,
 ];
 
 describe('@vsa/hire-kit', () => {
   test('exports the values of its API and nothing else', () => {
     expect(Object.keys(kit).sort()).toStrictEqual([
-      'BUSY_RETRY_MS', 'JANITOR_GRACE_MS', 'POLL_INTERVAL_MS', 'RECEIPT_HASH_WAIT_MS', 'SEND_CUTOFF_MS', 'STRANDED_FILE', 'StrandedStore', 'abandonedLine', 'aboveCeiling',
-      'advertOnChain', 'chatJob', 'checkWithin', 'choiceLine', 'chooseChatSupplier', 'fit', 'hireOne', 'keyOfAdvert', 'plannedLockOf', 'runJanitorOnce', 'startJanitor',
-      'stopJanitorWithin', 'subJobFloat', 'verificationOf', 'waitWithin',
+      'ACCEPT_NEEDS_MS', 'BUSY_RETRY_MS', 'DECISION_WINDOW_MS', 'HireDecisionTimeout', 'HireDeclined', 'HireInterrupted', 'HireLane', 'HirePayUnconfirmed', 'JANITOR_GRACE_MS', 'POLL_INTERVAL_MS',
+      'PayingKey', 'PayingKeys', 'RECEIPT_HASH_WAIT_MS', 'SEND_CUTOFF_MS', 'STRANDED_FILE', 'StrandedStore', 'abandonedLine', 'aboveCeiling', 'advertOnChain', 'bondProblem', 'chatJob',
+      'checkWithin', 'choiceLine', 'chooseChatSupplier', 'fit', 'hireAgent', 'hireModel', 'hireOne', 'isRuntimeRefusal', 'keyOfAdvert', 'plannedLockOf', 'pollTemplateJob', 'runJanitorOnce',
+      'sendTemplateJob', 'startJanitor', 'stopJanitorWithin', 'subJobFloat', 'templateJob', 'termsLine', 'termsOf', 'verificationOf', 'waitWithin',
     ]);
   });
 });

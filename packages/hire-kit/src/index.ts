@@ -7,8 +7,21 @@
 // the Document Pipeline keeps its PipelineError, its codes and its words.
 
 // --- One hire (src/hire.ts) ---
-export { chatJob, hireOne, verificationOf } from './hire.ts';
-export type { HireDeps, HireErrors, HireFacts, HireFailure, HireJob, HireKind, HireLedger, HireOptions, HireRecord, HireStage, HireSupplier, Hired } from './hire.ts';
+export { ACCEPT_NEEDS_MS, DECISION_WINDOW_MS, HireDecisionTimeout, HireDeclined, chatJob, hireOne, termsLine, termsOf, verificationOf } from './hire.ts';
+export type {
+  AcceptDecision, Delivery, HireDeps, HireDetail, HireErrors, HireFacts, HireFailure, HireJob, HireKind, HireLedger, HireOptions, HireRecord, HireStage, HireSupplier, HireTerms, Hired,
+} from './hire.ts';
+
+// --- The hire of an agent of the template contract (src/agent.ts, src/template-client.ts) ---
+export { HireInterrupted, HirePayUnconfirmed, hireAgent } from './agent.ts';
+export type { AgentDelivery, AgentDeps, AgentErrors, AgentEscrow, AgentOutcome, AgentRequest, AgentSelection, VaultRefusal } from './agent.ts';
+export { isRuntimeRefusal, pollTemplateJob, sendTemplateJob, templateJob } from './template-client.ts';
+export type { TemplateAnswer } from './template-client.ts';
+
+// --- The paying keys (src/keys.ts) and the hire of a model from the service key (src/model.ts) ---
+export { HireLane, PayingKey, PayingKeys } from './keys.ts';
+export { hireModel } from './model.ts';
+export type { ModelAnswer, ModelDeps, ModelErrors, ModelRequest } from './model.ts';
 
 // --- The waits (src/budget.ts) ---
 export { BUSY_RETRY_MS, POLL_INTERVAL_MS, RECEIPT_HASH_WAIT_MS, SEND_CUTOFF_MS, checkWithin, fit, waitWithin } from './budget.ts';
@@ -19,5 +32,5 @@ export { JANITOR_GRACE_MS, STRANDED_FILE, StrandedStore, abandonedLine, runJanit
 export type { AcceptPending, Busy, JanitorAction, JanitorChain, StrandedEntry, StrandedKind } from './janitor.ts';
 
 // --- The chat supplier (src/select.ts) ---
-export { aboveCeiling, advertOnChain, choiceLine, chooseChatSupplier, keyOfAdvert, plannedLockOf, subJobFloat } from './select.ts';
-export type { ChatQuery } from './select.ts';
+export { aboveCeiling, advertOnChain, bondProblem, choiceLine, chooseChatSupplier, keyOfAdvert, plannedLockOf, subJobFloat } from './select.ts';
+export type { BondLimits, ChatQuery } from './select.ts';

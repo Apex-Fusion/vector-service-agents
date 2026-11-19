@@ -11,9 +11,14 @@
 // to identity-marketplace adverts as well as to legacy ones, reads an escrow at either escrow credential, and accepts and reclaims an
 // identity-marketplace escrow through the deployment's escrow reference script (evaluated locally with the real script, as the vendored builders
 // do). Without it, the chain knows the legacy layout only, and refuses an identity-marketplace advert or escrow with words that name the settings.
+//
+// The vault Pay. A RealChain over the key of a delegate also pays an escrow from a vault of its principal (payFromVault, VaultChain). The vendored vault builder runs with
+// `ledgerDecides`: it checks no limit itself, and the node evaluates the scripts of the Pay. A Pay that the vault script refuses is a typed error (VaultPayRefused, with the
+// evaluation error of the node and the draft transaction) thrown before anything is signed, so nothing is submitted. The delegate key signs the Pay and the Accept, and a Reclaim
+// of that escrow returns to the vault, as the refund of the escrow says.
 import { CML, slotToUnixTime } from '@lucid-evolution/lucid';
 import type { Provider, UTxO } from '@lucid-evolution/lucid';
-import { formatOutRef, parseOutRef } from '@vsa/vector-read';
+import { decodeIdentityEscrowDatum, formatOutRef, parseOutRef } from '@vsa/vector-read';
 import type { AdvertDatum } from '@vsa/vector-read';
 import { buildAccept, buildReclaim } from './vendored/mcp/marketplace-build.ts';
 import type { AcceptTerms, EscrowSpendBuild } from './vendored/mcp/marketplace-build.ts';
@@ -32,6 +37,9 @@ import { signTransaction } from './vendored/signer/sign.ts';
 import { rawHexToBech32 } from './signing.ts';
 import { buildFleetPostEscrow } from './fleet-build.ts';
 import { feeOfSignedTx } from './fees.ts';
+import { decodeTransaction } from '@vsa/vector-read/guarded-decode';
+import type { ValueLimit } from '@vsa/vector-read/identity-codec';
+import { buildVaultPay } from './vendored/mcp/vault-build.ts';
 
 /**
  * A confirmed Post. Times are POSIX milliseconds, amounts lovelace. `collateralKept` is the vendored builder's flag: true when the Post was
@@ -81,6 +89,29 @@ export interface Chain {
    */
   readAdvert(advertRef: string): Promise<AdvertDatum>;
 }
+
+/**
+ * A confirmed Pay from a vault: the Post result of the escrow that the Pay opened at output 0, and the vault output that continues at output 1. `lockLovelace` is what left the
+ * vault, and `feeLovelace` what the wallet of the delegate key paid. `vaultRef` is the vault that the next Pay spends (a vault reference changes at each Pay), `vaultLovelace` what it
+ * keeps, `spent` what it has paid in the current period (this Pay included), `periodStart` the start of that period and `limit` the value limit of its delegation. `promptHash` is the
+ * hash of the payload that the escrow commits to, and `delegateKey` the key that signed.
+ */
+export interface VaultPayResult extends PostResult {
+  vaultRef: string; vaultLovelace: bigint; spent: bigint; periodStart: number; newPeriod: boolean; limit: ValueLimit; promptHash: string; delegateKey: string;
+}
+
+/**
+ * A Chain that also pays an escrow from a vault, as the delegate of the delegation that the vault pays under. It checks no limit of the vault itself: the node evaluates the Pay.
+ * A Pay that the vault script refuses throws VaultPayRefused (the evaluation error and the draft transaction), a Pay that the node did not evaluate VaultPayNotEvaluated, and a Pay
+ * that cannot be built at all VaultPayImpossible (with its reason). None was signed, so nothing was submitted. A failure after the signature is a TxNotConfirmedError, as for a Post:
+ * its `escrowRef` is the escrow at output 0 and its `deliverBy` the deliver_by of that escrow.
+ */
+export interface VaultChain extends Chain {
+  payFromVault(args: { vaultRef: string; advertRef: string; payload: string }): Promise<VaultPayResult>;
+}
+
+/** How long a Pay from a vault stays valid, in minutes: DELIVER_BY_BUFFER_MS, as for a Post, so that a Pay that the wait for its confirmation gave up on can no longer land. */
+export const VAULT_PAY_VALID_MINUTES = 3;
 
 /**
  * A transaction failed after it was signed: it was refused, it may not have been submitted, or it was submitted and not confirmed in time.
@@ -180,7 +211,7 @@ const errorText = (err: unknown): string => (err instanceof Error ? err.message 
 const refusedOutright = (err: unknown): boolean => /^Transaction submission rejected \(4\d\d\b/.test(errorText(err));
 
 /**
- * The one place the closed accept window is read off the vendored planner. planAccept (vendored/mcp/marketplace-build.ts, line 402) throws
+ * The one place the closed accept window is read off the vendored planner. planAccept (vendored/mcp/marketplace-build.ts, line 482) throws
  * `Accept window closed at <iso>; the supplier may now Release.`, and buildEscrowSpend passes it on with ` (escrow <ref>)` after it. Any other error
  * of the build is passed on as it is.
  */
@@ -199,13 +230,31 @@ function collateralOf(utxos: UTxO[]): bigint | null {
 interface Built { what: string; unsignedCborHex: string; builtTxHash: string; escrowRef: string; deliverBy: number | null; validTo: number }
 
 /**
+ * What the Pay that this process built says of its escrow: the supplier key of the escrow datum at output 0, and whether the collateral that the Pay lists is still the wallet's (the
+ * Pay does not spend it). The transaction is the output of the builder of this process, so no chain data reaches this read.
+ */
+function paidEscrowOf(txCbor: string): { supplierPkh: string; collateralKept: boolean } {
+  const body = decodeTransaction(txCbor).body();
+  const datumHex = body.outputs().get(0).datum()?.as_datum()?.to_cbor_hex();
+  if (datumHex === undefined) throw new Error('The Pay has no inline datum at output 0.');
+  const refs = (list: CML.TransactionInputList | undefined): Set<string> => {
+    const found = new Set<string>();
+    for (let i = 0; list !== undefined && i < list.len(); i++) found.add(`${list.get(i).transaction_id().to_hex()}#${list.get(i).index()}`);
+    return found;
+  };
+  const spent = refs(body.inputs());
+  const collateral = refs(body.collateral_inputs());
+  return { supplierPkh: decodeIdentityEscrowDatum(datumHex).supplier_pkh, collateralKept: collateral.size > 0 && [...collateral].every((ref) => !spent.has(ref)) };
+}
+
+/**
  * The production Chain over a node (createRealChain gives it the vendored OgmiosProvider). The address is the mainnet enterprise address
  * of the key (header 0x61 and the key hash), the address gen-keypair prints for it. Transactions run one at a time, each built only after
  * the one before it is confirmed or has failed: they spend the same wallet, and a build that ran beside another could pick the same inputs.
  * The build of each, everything before its signature, is bounded by BUILD_TIMEOUT_MS, and its submit and the wait for its confirmation by
  * awaitTimeoutMs, so a transaction holds the queue at most their sum, and one queued behind it waits at most that long for it.
  */
-export class RealChain implements Chain {
+export class RealChain implements VaultChain {
   readonly address: string;
   readonly buyerPkh: string;
   readonly #signingKey: string;
@@ -281,6 +330,44 @@ export class RealChain implements Chain {
         return { unsignedCborHex: reclaim.txCbor, builtTxHash: reclaim.txHash, escrowRef: reclaim.escrowRef, deliverBy: null };
       });
       return this.#signSubmitAwait(built);
+    });
+  }
+
+  /**
+   * Pays an escrow from the Live vault `vaultRef` for the advert `advertRef` (an identity-marketplace advert of a template-contract supplier), committing to `payload` as the template does:
+   * the vendored builder runs with `ledgerDecides`, so it makes no check of the limits and the node evaluates the scripts (see VaultChain for the errors). The key of this chain must be
+   * the delegate key of the delegation of the vault, and the wallet that pays the fee: a Pay that needs another signature is refused before it is signed. The Pay is valid for
+   * VAULT_PAY_VALID_MINUTES. The deployment of the chain needs the reference script of the vault (VECTOR_IDENTITY_VAULT_REF_UTXO): read it with buyerVaultDeployment.
+   */
+  payFromVault(args: { vaultRef: string; advertRef: string; payload: string }): Promise<VaultPayResult> {
+    return this.#serial(async () => {
+      const deployment = this.#deployment;
+      if (deployment === null) {
+        throw new Error('This chain has no identity registry deployment, so it cannot pay from a vault: give it the deployment that buyerVaultDeployment reads from VECTOR_IDENTITY_LEGACY_ROOT, VECTOR_IDENTITY_CONFIG_SEED, VECTOR_IDENTITY_ESCROW_REF_UTXO and VECTOR_IDENTITY_VAULT_REF_UTXO. Nothing was built.');
+      }
+      if (deployment.refs.vault === undefined) {
+        throw new Error('This chain cannot pay from a vault: its identity deployment has no reference script of the vault. Set VECTOR_IDENTITY_VAULT_REF_UTXO and read the deployment with buyerVaultDeployment: buyerIdentityDeployment reads three settings and not this one. Nothing was built.');
+      }
+      const built = await this.#built('The vault Pay', async () => {
+        const lucid = await lucidForAddress(this.#provider, this.address);
+        const pay = await buildVaultPay({ lucid, provider: this.#provider, deployment }, {
+          changeAddress: this.address, vaultRef: args.vaultRef, advertRef: args.advertRef, payload: args.payload, validMinutes: VAULT_PAY_VALID_MINUTES, ledgerDecides: true,
+        }, this.#fetchImpl);
+        const others = pay.requiredSigners.map((signer) => signer.keyHash).filter((keyHash) => keyHash !== this.buyerPkh);
+        if (others.length > 0) {
+          throw new Error(`The Pay needs the signature of ${others.join(', ')}, and this chain signs with ${this.buyerPkh} only: the key of the chain must be the delegate key of the delegation of the vault. Nothing was signed.`);
+        }
+        // The Pay is read before it is signed: a fault of the decoder ends the call here, with nothing signed, and none can follow a payment that was confirmed.
+        const paid = paidEscrowOf(pay.txCbor);
+        return { unsignedCborHex: pay.txCbor, builtTxHash: pay.txHash, escrowRef: pay.escrowRef, deliverBy: pay.deliverBy, pay, paid };
+      });
+      const { txHash, feeLovelace } = await this.#signSubmitAwait(built);
+      const { pay, paid: { supplierPkh, collateralKept } } = built;
+      return {
+        escrowRef: pay.escrowRef, txHash, lockLovelace: pay.amountLovelace, feeLovelace, deliverBy: pay.deliverBy, postedAt: pay.validFrom + 60_000, supplierPkh, collateralKept, agentId: pay.agentId,
+        vaultRef: pay.vaultRef, vaultLovelace: pay.vaultLovelace, spent: pay.spent, periodStart: pay.periodStart, newPeriod: pay.newPeriod, limit: pay.limit, promptHash: pay.promptHash,
+        delegateKey: pay.delegateKey,
+      };
     });
   }
 
@@ -420,7 +507,7 @@ export class RealChain implements Chain {
  * it started (`identityDeployment`, none by default). No network call is made here. A key that is not 64 lowercase hex characters is refused
  * without being echoed, and so is an await budget outside DELIVER_BY_BUFFER_MS to AWAIT_TIMEOUT_MAX_MS.
  */
-export async function createRealChain(opts: RealChainOptions): Promise<Chain> {
+export async function createRealChain(opts: RealChainOptions): Promise<VaultChain> {
   const koiosUrl = opts.koiosUrl ?? VECTOR_KOIOS_URL;
   const provider = new OgmiosProvider({ ogmiosUrl: opts.ogmiosUrl ?? VECTOR_OGMIOS_URL, submitUrl: opts.submitUrl ?? VECTOR_SUBMIT_URL, koiosUrl });
   return new RealChain(provider, {
