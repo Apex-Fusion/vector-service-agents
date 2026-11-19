@@ -1,130 +1,182 @@
 // Checks 2 and 3, the vault checks, against the world of fixtures with the real Delegate, Vault Open, Vault Close and Undelegate builders. The hire kit is the one thing that a fake takes the
-// place of: a `HirePort` that records its calls. The checks must call it in the right order and with the right vault, wait for deliver_by before a reclaim, and verify each step with the
-// hosted tools.
+// place of: a `HirePort` that records its calls and, as the chain does, leaves a Returned output in the vault. The checks must call it in the right order and with the right vault, wait
+// for deliver_by before a reclaim, close the Live output and the Returned output together, verify each step with the hosted tools, and never hire again after a Pay.
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PERIOD_MS, RECLAIM_AFTER_MS, parseVaultSettings, vaultCheck } from '../lib/check-vault.ts';
-import { HireFailed } from '../lib/hire-types.ts';
-import type { HirePort, VaultHireRequest, VaultHired, VaultPaid, VaultReclaimed } from '../lib/hire-types.ts';
+import type { VaultSettings } from '../lib/check-vault.ts';
+import { DryStop, HireFailed } from '../lib/hire-types.ts';
+import type { HirePort, VaultHireRequest, VaultHired, VaultPaid, VaultPayRequest, VaultReclaimed } from '../lib/hire-types.ts';
+import type { CheckDefinition } from '../lib/runner.ts';
 import { SettingsError } from '../lib/settings.ts';
-import { FakeHosted } from './support/hosted-fake.ts';
-import type { Handler } from './support/hosted-fake.ts';
+import { StateFile } from '../lib/state.ts';
 import type { Harness } from './support/harness.ts';
 import { harness } from './support/harness.ts';
-import { DEPLOYMENT } from './support/world.ts';
+import { DEPLOYMENT, RECORD_DID } from './support/world.ts';
+import { addReturned, liveVaultOf, vaultHostedFor } from './support/vault-world.ts';
 
 const ADVERT = `${'ab'.repeat(32)}#0`;
 const ESCROW = `${'e1'.repeat(32)}#0`;
-const RETURNED = `${'f1'.repeat(32)}#0`;
+/** What a Pay locks for the advert of Agent History: the price, both bonds and the ledger minimum of the output. */
+const LOCK = 3_330_000n;
+/** What an Accept returns to the vault: the buyer bond and the ledger minimum of the Returned output. */
+const BOND_BACK = 1_330_000n;
+
+/** Writes a vault reference into the step vault_open of the state file, as a state file that a lost call left behind would hold it. */
+function setVaultRef(h: Harness, name: string, ref: string): void {
+  const path = join(h.stateDir, `${name}.state.json`);
+  const json = JSON.parse(readFileSync(path, 'utf8')) as { steps: Record<string, { refs: Record<string, string> }> };
+  json.steps.vault_open!.refs.vault_ref = ref;
+  writeFileSync(path, `${JSON.stringify(json, null, 2)}\n`, { mode: 0o600 });
+}
 
 class FakePort implements HirePort {
   readonly calls: string[] = [];
+  readonly requests: Array<VaultHireRequest | VaultPayRequest | { escrowRef: string; deliverBy: number }> = [];
   /** When set, the next hire throws it, as the kit does for a hire that stops. */
-  failure: HireFailed | null = null;
-  readonly requests: Array<VaultHireRequest | { advertRef: string; vaultRef: string } | string> = [];
+  failure: HireFailed | DryStop | null = null;
   constructor(private readonly h: () => Harness) {}
   async hire(request: VaultHireRequest): Promise<VaultHired> {
     this.calls.push('hire');
     if (this.failure !== null) throw this.failure;
     this.requests.push(request);
-    return { escrowRef: ESCROW, vaultRef: request.vaultRef, payTxHash: 'a1'.repeat(32), acceptTxHash: 'a2'.repeat(32), lockLovelace: 3_000_000n, text: 'a report' };
+    return {
+      escrowRef: ESCROW, vaultRef: request.vaultRef, payTxHash: 'a1'.repeat(32), acceptTxHash: 'a2'.repeat(32), lockLovelace: LOCK, text: 'a report', returnedRef: addReturned(this.h(), BOND_BACK, 'f2'),
+    };
   }
-  async pay(request: { advertRef: string; vaultRef: string }): Promise<VaultPaid> {
+  async pay(request: VaultPayRequest): Promise<VaultPaid> {
     this.calls.push('pay');
     this.requests.push(request);
-    return { escrowRef: ESCROW, vaultRef: request.vaultRef, txHash: 'a3'.repeat(32), lockLovelace: 3_000_000n, deliverBy: this.h().clock.now() + 300_000 };
+    if (this.failure instanceof DryStop) throw this.failure;
+    return { escrowRef: ESCROW, vaultRef: request.vaultRef, txHash: 'a3'.repeat(32), lockLovelace: LOCK, deliverBy: this.h().clock.now() + 300_000 };
   }
-  async reclaim(escrowRef: string): Promise<VaultReclaimed> {
+  async reclaim(escrow: { escrowRef: string; deliverBy: number }): Promise<VaultReclaimed> {
     this.calls.push('reclaim');
-    this.requests.push(escrowRef);
-    return { txHash: 'a4'.repeat(32), returnedRef: RETURNED };
+    this.requests.push(escrow);
+    return { txHash: 'a4'.repeat(32), returnedRef: addReturned(this.h(), LOCK, 'f1') };
   }
 }
 
-/** The hosted tools as the live server answers them: the delegation is live while its token is on the ledger, the vault while its output is held. */
-function hostedFor(h: () => Harness, name: string, returnedLovelace = '3000000'): FakeHosted {
-  const facts = (): Record<string, unknown> => h().state(name).steps.delegate!.facts;
-  const handlers: Record<string, Handler> = {
-    vector_get_delegation: (args) => {
-      const id = String(args.delegation);
-      const live = h().world.chain.held.some((u) => u.assets[`${DEPLOYMENT.delegation.hash}${id}`] === 1n);
-      const f = facts();
-      return live
-        ? { delegation: id, live: true, chain: [{ delegation: id, delegator: { type: 'PrincipalKey', key_hash: f.delegator_key_hash }, delegate: f.delegate_id, delegate_key: f.delegate_key_hash, actions: f.actions, resources: f.resources, not_after: f.not_after, depth: 1 }] }
-        : { delegation: id, live: false, chain: [] };
-    },
-    vector_get_vault: (args) => {
-      const state = h().state(name).steps;
-      if (args.owner_key_hash !== undefined) return state.reclaim === undefined ? { outputs: [] } : { outputs: [{ vault_ref: state.reclaim.refs.returned_ref, kind: 'Returned', lovelace: returnedLovelace }] };
-      const ref = state.vault_open?.refs.vault_ref;
-      const held = ref === undefined ? undefined : h().world.chain.held.find((u) => `${u.txHash}#${u.outputIndex}` === ref);
-      return held === undefined ? { outputs: [] } : { outputs: [{ vault_ref: ref, kind: 'Live', lovelace: String(held.assets.lovelace), spent: '0' }] };
-    },
-  };
-  return new FakeHosted(handlers);
-}
-
-async function started(kind: 'escrow' | 'refund', returnedLovelace?: string) {
+async function started(kind: 'escrow' | 'refund', returnedReports?: string) {
   const name = kind === 'escrow' ? 'vault-escrow' : 'vault-refund';
   let h: Harness | null = null;
   const port = new FakePort(() => h!);
-  const hosted = hostedFor(() => h!, name, returnedLovelace);
+  const hosted = vaultHostedFor(() => h!, name, returnedReports);
   h = await harness({ hosted, env: { CHECKS_ADVERT_REF: ADVERT } });
   return { h, port, hosted, check: vaultCheck(kind, () => port), name };
 }
 
+/** Runs the first `count` steps of a check with --submit, each in a run of its own. */
+async function submitSteps(t: { h: Harness; check: CheckDefinition<VaultSettings> }, count: number): Promise<void> {
+  for (let i = 0; i < count; i++) expect(await t.h.run(t.check, '--submit'), `run ${i + 1}`).toBe(0);
+}
+
 describe('the settings of the vault checks', () => {
-  it('need the advert, have defaults for the rest, and refuse a limit above the vault', () => {
-    expect(parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT })).toMatchObject({ hours: 24, advertRef: ADVERT, vaultLovelace: 6_000_000n, limitLovelace: 3_000_000n, maxSupplierBondLovelace: 1_000_000n, maxBuyerBondLovelace: 1_000_000n });
-    expect(parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_UNITS: '10', CHECKS_VAULT_LIMIT_UNITS: '10', CHECKS_HIRE_PAYLOAD: 'text' })).toMatchObject({ vaultLovelace: 10_000_000n, limitLovelace: 10_000_000n, payload: 'text' });
-    for (const env of [{}, { CHECKS_ADVERT_REF: 'nope' }, { CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_UNITS: '2', CHECKS_VAULT_LIMIT_UNITS: '3' }]) expect(() => parseVaultSettings(env)).toThrow(SettingsError);
+  it('need the advert, have defaults that fit the advert of Agent History, and refuse a limit above the period or the vault', () => {
+    expect(parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT })).toMatchObject({
+      hours: 24, advertRef: ADVERT, vaultLovelace: 8_000_000n, limitLovelace: 4_000_000n, totalLovelace: 8_000_000n, maxPriceLovelace: 2_000_000n, maxSupplierBondLovelace: 1_000_000n, maxBuyerBondLovelace: 1_000_000n,
+    });
+    expect(parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_UNITS: '12', CHECKS_VAULT_LIMIT_UNITS: '6', CHECKS_VAULT_TOTAL_UNITS: '10', CHECKS_MAX_PRICE_UNITS: '3', CHECKS_HIRE_PAYLOAD: 'text' }))
+      .toMatchObject({ vaultLovelace: 12_000_000n, limitLovelace: 6_000_000n, totalLovelace: 10_000_000n, maxPriceLovelace: 3_000_000n, payload: 'text' });
+    for (const env of [{}, { CHECKS_ADVERT_REF: 'nope' }, { CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_UNITS: '3' }, { CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_LIMIT_UNITS: '9' }]) {
+      expect(() => parseVaultSettings(env)).toThrow(SettingsError);
+    }
   });
 });
 
 describe('check 2, the vault pays an escrow that is accepted', () => {
-  it('goes delegate, vault_open, hire, vault_close, undelegate, and the kit gets the advert, the payload and the vault of the step', async () => {
-    const { h, port, check, name } = await started('escrow');
-    for (let i = 0; i < 5; i++) expect(await h.run(check, '--submit'), `run ${i + 1}`).toBe(0);
-    expect(Object.keys(h.state(name).steps)).toEqual(['delegate', 'vault_open', 'hire', 'vault_close', 'undelegate']);
+  it('goes delegate, vault_open, hire, vault_close, undelegate: the kit gets the advert, the payload, the limits and the Live vault, and the close takes the Live and the Returned output', async () => {
+    const t = await started('escrow');
+    await submitSteps(t, 5);
+    const { h, port, name } = t;
     const steps = h.state(name).steps;
-    expect(steps.delegate!.facts).toMatchObject({ actions: ['marketplace.hire.v1'], limit_lovelace: '3000000', period_ms: PERIOD_MS });
+    expect(Object.keys(steps)).toEqual(['delegate', 'vault_open', 'hire', 'vault_close', 'undelegate']);
+    expect(steps.delegate!.facts).toMatchObject({ actions: ['marketplace.hire.v1'], limit_lovelace: '4000000', total_lovelace: '8000000', period_ms: PERIOD_MS });
     expect(port.calls).toEqual(['hire']);
-    expect(port.requests[0]).toMatchObject({ advertRef: ADVERT, vaultRef: steps.vault_open!.refs.vault_ref, maxSupplierBondLovelace: 1_000_000n, maxBuyerBondLovelace: 1_000_000n });
-    expect(steps.hire!.refs).toMatchObject({ escrow_ref: ESCROW, accept_tx: 'a2'.repeat(32) });
+    expect(port.requests[0]).toMatchObject({
+      advertRef: ADVERT, vaultRef: steps.vault_open!.refs.vault_ref, maxPriceLovelace: 2_000_000n, maxSupplierBondLovelace: 1_000_000n, maxBuyerBondLovelace: 1_000_000n,
+    });
+    expect(steps.hire!.refs).toMatchObject({ escrow_ref: ESCROW, accept_tx: 'a2'.repeat(32), returned_ref: `${'f2'.repeat(32)}#0` });
+    expect(steps.vault_close!.facts.closed).toEqual([steps.vault_open!.refs.vault_ref, `${'f2'.repeat(32)}#0`]);
     for (const step of Object.values(steps)) expect(step.verified_at).not.toBeNull();
     expect(h.world.chain.held.some((u) => u.address === DEPLOYMENT.vault.address)).toBe(false);
-    expect(h.world.chain.held.some((u) => u.address === DEPLOYMENT.delegation.address && u.assets[`${DEPLOYMENT.delegation.hash}${steps.delegate!.refs.delegation_id}`] === 1n)).toBe(false);
   });
-  it('in dry mode builds the vault steps and does not call the kit', async () => {
-    const { h, port, check } = await started('escrow');
-    await h.run(check, '--submit');
-    await h.run(check, '--submit');
-    expect(await h.run(check)).toBe(0);
-    expect(h.screen.text).toContain('a dry run builds no payment');
-    expect(port.calls).toEqual([]);
+  it('in dry mode shows the hire and signs nothing: a dry stop of the kit is the end of the dry run', async () => {
+    const t = await started('escrow');
+    await submitSteps(t, 2);
+    t.port.failure = new DryStop('hire:pay');
+    expect(await t.h.run(t.check)).toBe(0);
+    expect(t.h.screen.text).toContain('the kit would hire the advert');
+    expect(t.h.state(t.name).steps.hire).toBeUndefined();
+    expect(t.h.state(t.name).notes.after_pay).toBeUndefined();
   });
-  it('cleanup closes an open vault and ends the delegation when the hire never ran', async () => {
-    const { h, port, check, name } = await started('escrow');
-    await h.run(check, '--submit');
-    await h.run(check, '--submit');
-    expect(await h.run(check, 'cleanup', '--submit')).toBe(0);
-    expect(h.screen.text).toContain('nothing stays locked');
-    expect(Object.keys(h.state(name).steps)).toEqual(['delegate', 'vault_open', 'vault_close', 'undelegate']);
-    expect(port.calls).toEqual([]);
-    h.screen.lines.length = 0;
-    expect(await h.run(check, 'cleanup', '--submit')).toBe(0);
-    expect(h.screen.text).toContain('nothing is left to take back');
+  it('reads the vault from the chain: a reference of the state file that the node does not hold gives way to the one Live output of the delegation', async () => {
+    const t = await started('escrow');
+    await submitSteps(t, 2);
+    const live = liveVaultOf(t.h);
+    setVaultRef(t.h, t.name, `${'dd'.repeat(32)}#0`);
+    expect(await t.h.run(t.check, '--submit')).toBe(0);
+    expect(t.port.requests[0]).toMatchObject({ vaultRef: `${live.txHash}#${live.outputIndex}` });
+    expect(t.h.screen.text).toContain('is not on the node: the chain shows the vault output');
+  });
+  it('stops when the reference of the state file is not on the node and the chain shows two Live outputs of the delegation, and calls the kit with neither', async () => {
+    const t = await started('escrow');
+    await submitSteps(t, 2);
+    const live = liveVaultOf(t.h);
+    t.h.world.chain.held.push({ ...live, txHash: 'bb'.repeat(32) });
+    setVaultRef(t.h, t.name, `${'dd'.repeat(32)}#0`);
+    expect(await t.h.run(t.check, '--submit')).toBe(2);
+    expect(t.h.screen.errorText).toContain('shows 2 Live vault outputs');
+    expect(t.port.calls).toEqual([]);
+  });
+  it('uses the reference of the state file when the node holds it, even when the chain shows another Live output of the delegation', async () => {
+    const t = await started('escrow');
+    await submitSteps(t, 2);
+    const live = liveVaultOf(t.h);
+    t.h.world.chain.held.push({ ...live, txHash: 'bb'.repeat(32) });
+    expect(await t.h.run(t.check, '--submit')).toBe(0);
+    expect(t.port.requests[0]).toMatchObject({ vaultRef: `${live.txHash}#${live.outputIndex}` });
+  });
+  it('is recorded from the Pay and the Accept that landed, when the call that made them did not return: the kit is not called again', async () => {
+    const t = await started('escrow');
+    await submitSteps(t, 2);
+    const state = StateFile.open(join(t.h.stateDir, `${t.name}.state.json`), { check: t.name, network: 'vector-mainnet', record: RECORD_DID });
+    const vaultRef = t.h.state(t.name).steps.vault_open!.refs.vault_ref!;
+    const at = '2026-11-15T12:00:00.000Z';
+    state.setNote('part.hire:pay', { confirmed_at: at, tx_hash: 'a1'.repeat(32), refs: { escrow_ref: ESCROW, vault_ref: vaultRef }, facts: { lock_lovelace: LOCK, deliver_by: t.h.clock.now() + 300_000, advert_ref: ADVERT } });
+    state.setNote('part.hire:accept', { confirmed_at: at, tx_hash: 'a2'.repeat(32), refs: { escrow_ref: ESCROW, returned_ref: addReturned(t.h, BOND_BACK, 'f2') }, facts: {} });
+    expect(await t.h.run(t.check, '--submit')).toBe(0);
+    expect(t.port.calls).toEqual([]);
+    expect(t.h.state(t.name).steps.hire).toMatchObject({ refs: { escrow_ref: ESCROW, accept_tx: 'a2'.repeat(32), returned_ref: `${'f2'.repeat(32)}#0` } });
+    expect(await t.h.run(t.check, '--submit')).toBe(0);
+    expect(t.h.state(t.name).steps.vault_close!.facts.closed).toHaveLength(2);
+  });
+  it('cleanup closes an open vault and ends the delegation when the hire never ran, and ends the check', async () => {
+    const t = await started('escrow');
+    await submitSteps(t, 2);
+    expect(await t.h.run(t.check, 'cleanup', '--submit')).toBe(0);
+    expect(t.h.screen.text).toContain('nothing stays locked');
+    expect(Object.keys(t.h.state(t.name).steps)).toEqual(['delegate', 'vault_open', 'vault_close', 'undelegate']);
+    expect(t.port.calls).toEqual([]);
+    t.h.screen.lines.length = 0;
+    expect(await t.h.run(t.check, 'cleanup', '--submit')).toBe(0);
+    expect(t.h.screen.text).toContain('nothing is left to take back');
+    expect(await t.h.run(t.check, '--submit')).toBe(2);
+    expect(t.h.screen.errorText).toContain('ended the check');
   });
 });
 
 describe('check 3, the vault pays an escrow that nobody claims', () => {
-  async function paid(returnedLovelace?: string) {
-    const t = await started('refund', returnedLovelace);
-    for (let i = 0; i < 3; i++) expect(await t.h.run(t.check, '--submit')).toBe(0);
+  async function paid(returnedReports?: string) {
+    const t = await started('refund', returnedReports);
+    await submitSteps(t, 3);
     return t;
   }
   it('pays without a job, then waits for deliver_by with the time that is left, and never calls the kit to reclaim before', async () => {
     const { h, port, check, name } = await paid();
     expect(port.calls).toEqual(['pay']);
+    expect(port.requests[0]).toMatchObject({ maxPriceLovelace: 2_000_000n, maxSupplierBondLovelace: 1_000_000n, maxBuyerBondLovelace: 1_000_000n });
     const deliverBy = Number(h.state(name).steps.pay!.facts.deliver_by);
     expect(await h.run(check, '--submit')).toBe(4);
     expect(h.screen.text).toContain('can be reclaimed after its deliver_by');
@@ -133,48 +185,79 @@ describe('check 3, the vault pays an escrow that nobody claims', () => {
     expect(await h.run(check, '--submit')).toBe(4);
     expect(port.calls).toEqual(['pay']);
   });
-  it('reclaims after deliver_by and the hosted tool shows the Returned output of the owner', async () => {
+  it('reclaims after deliver_by, then closes the Live and the Returned output together and ends the delegation', async () => {
     const { h, port, check, name } = await paid();
     h.clock.t = Number(h.state(name).steps.pay!.facts.deliver_by) + RECLAIM_AFTER_MS;
     expect(await h.run(check, '--submit')).toBe(0);
     expect(port.calls).toEqual(['pay', 'reclaim']);
-    expect(port.requests[1]).toBe(ESCROW);
-    expect(h.state(name).steps.reclaim).toMatchObject({ refs: { returned_ref: RETURNED }, verified_at: expect.any(String) });
+    expect(port.requests[1]).toEqual({ escrowRef: ESCROW, deliverBy: Number(h.state(name).steps.pay!.facts.deliver_by) });
+    const returnedRef = `${'f1'.repeat(32)}#0`;
+    expect(h.state(name).steps.reclaim).toMatchObject({ refs: { returned_ref: returnedRef }, verified_at: expect.any(String) });
+    expect(await h.run(check, '--submit')).toBe(0);
+    expect(h.state(name).steps.vault_close!.facts.closed).toEqual([h.state(name).steps.vault_open!.refs.vault_ref, returnedRef]);
+    expect(await h.run(check, '--submit')).toBe(0);
+    expect(Object.values(h.state(name).steps).every((step) => step.verified_at !== null)).toBe(true);
+    expect(h.world.chain.held.some((u) => u.address === DEPLOYMENT.vault.address)).toBe(false);
   });
-  it('exits 1 when the Returned output holds less than the lock', async () => {
+  it('exits 1 when the hosted tool shows the Returned output with less than the lock', async () => {
     const { h, check, name } = await paid('1000000');
     h.clock.t = Number(h.state(name).steps.pay!.facts.deliver_by) + RECLAIM_AFTER_MS;
     expect(await h.run(check, '--submit')).toBe(1);
-    expect(h.screen.errorText).toContain('holds less than the lock');
+    expect(h.screen.errorText).toContain('holds less than');
     expect(h.state(name).steps.reclaim!.verified_at).toBeNull();
+  });
+  it('cleanup waits for deliver_by, reclaims, closes both outputs and ends the delegation', async () => {
+    const { h, port, check, name } = await paid();
+    expect(await h.run(check, 'cleanup', '--submit')).toBe(4);
+    h.clock.t = Number(h.state(name).steps.pay!.facts.deliver_by) + RECLAIM_AFTER_MS;
+    expect(await h.run(check, 'cleanup', '--submit')).toBe(0);
+    expect(port.calls).toEqual(['pay', 'reclaim']);
+    expect(Object.keys(h.state(name).steps)).toEqual(['delegate', 'vault_open', 'pay', 'reclaim', 'vault_close', 'undelegate']);
+    expect(h.world.chain.held.some((u) => u.address === DEPLOYMENT.vault.address)).toBe(false);
   });
 });
 
-describe('a hire that stops after a confirmed Pay', () => {
+describe('a hire that stops after a Pay', () => {
+  const afterPay = (kind: 'failed_after_claim' | 'refused_before_claim', vaultRef: string | null, deliverBy: number | null, lock: bigint | null) => new HireFailed(kind, 'the send was lost', { escrowRef: ESCROW, vaultRef, deliverBy, lockLovelace: lock });
   it('keeps the escrow and the vault output that continues, never hires again, and the cleanup waits for deliver_by and then reclaims', async () => {
-    const { h, port, check, name } = await started('escrow');
-    await h.run(check, '--submit');
-    await h.run(check, '--submit');
-    const continued = `${'c1'.repeat(32)}#1`;
-    port.failure = new HireFailed('failed_after_claim', 'the send was lost', { escrowRef: ESCROW, vaultRef: continued, deliverBy: h.clock.now() + 300_000, lockLovelace: 3_000_000n });
+    const t = await started('escrow');
+    await submitSteps(t, 2);
+    const { h, port, check, name } = t;
+    const continued = liveVaultOf(h);
+    port.failure = afterPay('failed_after_claim', `${continued.txHash}#${continued.outputIndex}`, h.clock.now() + 300_000, LOCK);
     expect(await h.run(check, '--submit')).toBe(1);
     expect(h.screen.errorText).toContain('do not hire again');
-    expect(h.state(name).notes.after_pay).toMatchObject({ escrow_ref: ESCROW, vault_ref: continued, kind: 'failed_after_claim' });
+    expect(h.state(name).notes.after_pay).toMatchObject({ escrow_ref: ESCROW, vault_ref: `${continued.txHash}#${continued.outputIndex}`, kind: 'failed_after_claim' });
     port.failure = null;
     expect(await h.run(check, '--submit')).toBe(2);
     expect(port.calls).toEqual(['hire']);
     expect(await h.run(check, 'cleanup', '--submit')).toBe(4);
     expect(port.calls).toEqual(['hire']);
     h.clock.t += 300_000 + RECLAIM_AFTER_MS;
-    await h.run(check, 'cleanup', '--submit');
+    expect(await h.run(check, 'cleanup', '--submit')).toBe(0);
     expect(port.calls).toEqual(['hire', 'reclaim']);
     expect(h.state(name).steps.reclaim!.refs.escrow_ref).toBe(ESCROW);
+    expect(h.world.chain.held.some((u) => u.address === DEPLOYMENT.vault.address)).toBe(false);
+  });
+  it('keeps the escrow and no vault output for a Pay that was sent and not seen confirmed: the vault is read from the chain', async () => {
+    const t = await started('escrow');
+    await submitSteps(t, 2);
+    const { h, port, check, name } = t;
+    port.failure = afterPay('failed_after_claim', null, h.clock.now() + 300_000, null);
+    expect(await h.run(check, '--submit')).toBe(1);
+    expect(h.state(name).notes.after_pay).toMatchObject({ escrow_ref: ESCROW, vault_ref: null });
+    const live = liveVaultOf(h);
+    h.clock.t += 300_000 + RECLAIM_AFTER_MS;
+    port.failure = null;
+    expect(await h.run(check, 'cleanup', '--submit')).toBe(2);
+    expect(h.screen.errorText).toContain('its deliver_by or its lock is not known');
+    expect(live.assets.lovelace).toBeGreaterThan(0n);
   });
   it('keeps nothing for a hire that stopped before its Pay, and the hire can be made again', async () => {
-    const { h, port, check, name } = await started('escrow');
-    await h.run(check, '--submit');
-    await h.run(check, '--submit');
-    port.failure = new HireFailed('refused_before_claim', 'the agent turned the job down');
+    const t = await started('escrow');
+    await submitSteps(t, 2);
+    const { h, port, check, name } = t;
+    port.failure = new HireFailed('vault_refused', 'the script of the vault refused the Pay');
     expect(await h.run(check, '--submit')).toBe(1);
     expect(h.state(name).notes.after_pay).toBeUndefined();
     port.failure = null;

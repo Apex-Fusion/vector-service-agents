@@ -21,7 +21,7 @@ import { settleInFlight } from './inflight.ts';
 import { KeyFileError, KeyRing, readKeyFile } from './keys.ts';
 import type { KeyRole, LoadedKey } from './keys.ts';
 import { VectorNode } from './node.ts';
-import { OgmiosProvider, TxNotConfirmedError, lucidForAddress } from './platform.ts';
+import { OgmiosProvider, TxNotConfirmedError, lucidForAddress, readVaults } from './platform.ts';
 import type { Clock, NodeAccess, Output } from './ports.ts';
 import { PreconditionError, landFor } from './session.ts';
 import type { ChainAccess, Mode, Session, StepOutcome } from './session.ts';
@@ -104,12 +104,20 @@ const usage = (def: Pick<CheckDefinition, 'name' | 'flags'>): string =>
 
 function unusedChain(why: string): ChainAccess {
   const refuse = (): never => { throw new Error(`this check does not read the ledger (${why})`); };
-  return { get provider(): never { return refuse(); }, get deployment(): never { return refuse(); }, koiosUrl: '', fetchImpl: fetch, context: () => Promise.reject(new Error(`this check builds no transaction (${why})`)) };
+  return {
+    get provider(): never { return refuse(); }, get deployment(): never { return refuse(); }, koiosUrl: '', fetchImpl: fetch,
+    context: () => Promise.reject(new Error(`this check builds no transaction (${why})`)), liveVaultsOf: () => Promise.reject(new Error(`this check reads no vault (${why})`)),
+  };
 }
 
 function realChain(settings: CommonSettings, env: Env, fetchImpl: typeof fetch, provider: OgmiosProvider): ChainAccess {
   const deployment = deploymentFor(settings.network, env);
-  return { provider, deployment, koiosUrl: settings.urls.koios, fetchImpl, context: async (address) => ({ lucid: await lucidForAddress(provider, address), provider, deployment }) };
+  const koiosUrl = settings.urls.koios;
+  return {
+    provider, deployment, koiosUrl, fetchImpl, context: async (address) => ({ lucid: await lucidForAddress(provider, address), provider, deployment }),
+    liveVaultsOf: async (delegation, atMs) => (await readVaults({ provider, deployment, koiosUrl, fetchImpl }, { delegation }, atMs)).items
+      .filter((reading) => reading.onNode && reading.output.vault.type === 'Live').map((reading) => ({ ref: reading.output.ref, lovelace: reading.output.utxo.assets.lovelace ?? 0n })),
+  };
 }
 
 /** The hosted tools, connected when the first call is made: a dry run that calls none never needs the server. */
@@ -185,7 +193,9 @@ async function statusLines<Extra>(def: CheckDefinition<Extra>, session: Session<
       const utxos = await session.chain.provider.getUtxos(key.address);
       const total = utxos.reduce((sum, utxo) => sum + (utxo.assets.lovelace ?? 0n), 0n);
       const collateral = utxos.filter((utxo) => Object.keys(utxo.assets).every((unit) => unit === 'lovelace') && (utxo.assets.lovelace ?? 0n) >= 5_000_000n).length;
-      lines.push(`wallet of the ${key.role} key ${key.keyHash}: ${units(total)} in ${utxos.length} output(s), ${collateral} pure output(s) of 5 units or more for collateral`);
+      const none = collateral === 0 && key.role !== 'controller';
+      lines.push(`wallet of the ${key.role} key ${key.keyHash}: ${units(total)} in ${utxos.length} output(s), ${collateral} pure output(s) of 5 units or more for collateral`
+        + (none ? `. NONE: a script step of this wallet needs one, and a script step can spend it. Make one: send 5.5 units to ${key.address}. Run status again before each script step` : ''));
     }
   }
   lines.push(...(await def.status?.(session) ?? []));

@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll } from 'vitest';
-import { lucidForAddress } from '../../lib/platform.ts';
+import { decodeVaultDatum, lucidForAddress } from '../../lib/platform.ts';
 import type { HostedTools } from '../../lib/hosted.ts';
 import { runCheck } from '../../lib/runner.ts';
 import type { CheckDefinition, RunDeps } from '../../lib/runner.ts';
@@ -38,7 +38,11 @@ export interface Harness {
   evidence(check: string): Array<Record<string, unknown>>;
 }
 
-export async function harness(over: { world?: World; env?: Record<string, string | undefined>; hosted?: HostedTools; fetchImpl?: typeof fetch; clock?: FakeClock } = {}): Promise<Harness> {
+export async function harness(over: {
+  world?: World; env?: Record<string, string | undefined>; hosted?: HostedTools; fetchImpl?: typeof fetch; clock?: FakeClock;
+  /** The `fetch` and the Koios address that the builders and the reads of the escrow use. Without them a read of the network ends the test. */
+  chainFetch?: typeof fetch; koiosUrl?: string;
+} = {}): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), 'checks-run-'));
   roots.push(dir);
   const world = over.world ?? await World.identity();
@@ -53,8 +57,17 @@ export async function harness(over: { world?: World; env?: Record<string, string
   const stateDir = join(dir, 'state');
   const env = { CHECKS_NETWORK: 'vector-mainnet', CHECKS_RECORD: RECORD_DID, CHECKS_STATE_DIR: stateDir, ...keyFiles, ...over.env } as Record<string, string>;
   const chain: ChainAccess = {
-    provider: world.chain, deployment: DEPLOYMENT, koiosUrl: 'https://koios.test', fetchImpl: (async () => { throw new Error('the network was touched'); }) as typeof fetch,
+    provider: world.chain, deployment: DEPLOYMENT, koiosUrl: over.koiosUrl ?? 'https://koios.test', fetchImpl: over.chainFetch ?? ((async () => { throw new Error('the network was touched'); }) as typeof fetch),
     context: async (address) => ({ lucid: await lucidForAddress(world.chain, address), provider: world.chain, deployment: DEPLOYMENT }),
+    liveVaultsOf: async (delegation) => world.chain.held.flatMap((u) => {
+      if (u.address !== DEPLOYMENT.vault.address || u.datum === undefined || u.datum === null) return [];
+      try {
+        const vault = decodeVaultDatum(u.datum);
+        return vault.type === 'Live' && vault.delegation === delegation ? [{ ref: `${u.txHash}#${u.outputIndex}`, lovelace: u.assets.lovelace ?? 0n }] : [];
+      } catch {
+        return [];
+      }
+    }),
   };
   const hosted: HostedTools = over.hosted ?? { call: async (name) => { throw new Error(`the hosted tool ${name} was called, and the test gave none`); } };
   const deps = (more: Partial<RunDeps> = {}): RunDeps => ({ env, out: screen, clock, node, chain, hosted, awaitMs: 20_000, pollMs: 5_000, fetchImpl: over.fetchImpl ?? chain.fetchImpl, ...more });

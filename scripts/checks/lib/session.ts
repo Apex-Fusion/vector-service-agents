@@ -14,6 +14,12 @@ import type { StateFile, StepRecord } from './state.ts';
 
 export type Mode = 'dry' | 'submit';
 
+/** A Live vault output of a delegation as the chain shows it: its reference and the units that it holds. */
+export interface LiveVaultRef {
+  ref: string;
+  lovelace: bigint;
+}
+
 /** The node as the builders read it: Lucid bound to a wallet, the provider and the identity deployment. */
 export interface ChainAccess {
   provider: IdentityContext['provider'];
@@ -21,6 +27,8 @@ export interface ChainAccess {
   koiosUrl: string;
   fetchImpl: typeof fetch;
   context(address: string): Promise<IdentityContext>;
+  /** The Live vault outputs of a delegation, read from the chain and not from the state file: a reference that a payment spent is not there any more. */
+  liveVaultsOf(delegation: string, atMs: number): Promise<LiveVaultRef[]>;
 }
 
 export interface Session<Extra = unknown> {
