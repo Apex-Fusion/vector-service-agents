@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { JANITOR_GRACE_MS } from '../../../packages/hire-kit/src/index.ts';
-import { AGENT_ADVERT_REF, AGENT_ANSWER, marketplace, vaultChainWith } from '../../../packages/hire-kit/testing/index.ts';
+import { AGENT_ADVERT, AGENT_ADVERT_REF, AGENT_ANSWER, marketplace, vaultChainWith } from '../../../packages/hire-kit/testing/index.ts';
 import type { Marketplace } from '../../../packages/hire-kit/testing/index.ts';
 import { createHirePort } from '../lib/hire-adapter.ts';
 import { DryStop, HireFailed } from '../lib/hire-types.ts';
@@ -25,8 +25,8 @@ afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: tru
 
 interface Setup { m: Marketplace; port: HirePort; stateDir: string; out: MemoryOutput; evidence: unknown[]; vault: string }
 /** A marketplace with a vault that the delegate key pays from, and a port over the chain that `chain` makes of it (the FakeChain itself by default). */
-function setup(over: { chain?: (m: Marketplace) => VaultChain; limit?: typeof LIMIT } = {}): Setup {
-  const m = marketplace();
+function setup(over: { chain?: (m: Marketplace) => VaultChain; limit?: typeof LIMIT; market?: Parameters<typeof marketplace>[0] } = {}): Setup {
+  const m = marketplace(over.market);
   const stateDir = mkdtempSync(join(tmpdir(), 'checks-port-'));
   dirs.push(stateDir);
   const out = new MemoryOutput();
@@ -132,6 +132,15 @@ describe('hire', () => {
     expect(s.m.chain.vault(s.vault)).toMatchObject({ consumed: false });
     const twin = setup();
     expect((await twin.port.hire(hireRequest(twin, { maxPriceLovelace: 10_000_000n, maxSupplierBondLovelace: 10_000_000n, maxBuyerBondLovelace: 10_000_000n }))).text).toBe(AGENT_ANSWER);
+  });
+
+  it('refuses an advert that is not Active before a hire or a Pay, in the words of the port; the Active advert is paid', async () => {
+    const retired = setup({ market: { agentAdvert: { ...AGENT_ADVERT, status: 'Retired' } } });
+    expect((await failure(retired.port.hire(hireRequest(retired)))).message).toContain('is Retired on chain, not Active');
+    expect((await failure(retired.port.pay({ advertRef: AGENT_ADVERT_REF, vaultRef: retired.vault, ...NO_LIMITS }))).message).toContain('is Retired on chain, not Active');
+    expect(retired.m.chain.vault(retired.vault)).toMatchObject({ consumed: false });
+    const active = setup();
+    expect((await active.port.hire(hireRequest(active))).text).toBe(AGENT_ANSWER);
   });
 
   it.skipIf(process.getuid?.() === 0)('gives the vault that continues when the kit throws after a confirmed Pay (the stranded store cannot be written), as a failure that holds the escrow and the vault', async () => {

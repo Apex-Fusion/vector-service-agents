@@ -34,8 +34,8 @@ export function gatewayWorld(clock: { now(): number }): GatewayWorld {
 }
 
 /** A delegation of the member to the record on the stub, and the state file of check 1 that records it as the check would. */
-export function delegationOnStub(h: Harness, world: GatewayWorld, grant: { action: string; resource: string }, ended = false): StubDelegation {
-  const delegation = world.gateway.delegate({ delegator: { principalKey: testKeyOf(MEMBER_N) }, delegate: world.agent, actions: [grant.action], resources: [grant.resource] });
+export function delegationOnStub(h: Harness, world: GatewayWorld, grant: { action: string; resource: string; stubActions?: string[] }, ended = false): StubDelegation {
+  const delegation = world.gateway.delegate({ delegator: { principalKey: testKeyOf(MEMBER_N) }, delegate: world.agent, actions: grant.stubActions ?? [grant.action], resources: [grant.resource] });
   mkdirSync(h.stateDir, { recursive: true });
   const state = StateFile.open(join(h.stateDir, 'delegation.state.json'), { check: 'delegation', network: 'vector-mainnet', record: world.agent.did });
   state.recordStep('delegate', {

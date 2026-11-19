@@ -83,6 +83,11 @@ describe('the settings of the vault checks', () => {
       expect(() => parseVaultSettings(env)).toThrow(SettingsError);
     }
   });
+  it('says which limit is wrong: a limit of one payment above the limit of the period names the period, and a limit above the vault names the vault', () => {
+    expect(() => parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_UNITS: '10', CHECKS_VAULT_LIMIT_UNITS: '6', CHECKS_VAULT_TOTAL_UNITS: '4' })).toThrow(/CHECKS_VAULT_LIMIT_UNITS must be at most CHECKS_VAULT_TOTAL_UNITS/);
+    expect(() => parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_UNITS: '3', CHECKS_VAULT_LIMIT_UNITS: '5', CHECKS_VAULT_TOTAL_UNITS: '8' })).toThrow(/CHECKS_VAULT_LIMIT_UNITS must be at most CHECKS_VAULT_UNITS/);
+    expect(parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_UNITS: '10', CHECKS_VAULT_LIMIT_UNITS: '4', CHECKS_VAULT_TOTAL_UNITS: '4' })).toMatchObject({ limitLovelace: 4_000_000n, totalLovelace: 4_000_000n });
+  });
 });
 
 describe('check 2, the vault pays an escrow that is accepted', () => {
@@ -257,6 +262,16 @@ describe('a hire that stops after a Pay', () => {
     port.failure = null;
     expect(await h.run(check, '--submit')).toBe(0);
     expect(port.requests.at(-1)).toMatchObject({ vaultRef: `${old.txHash}#${old.outputIndex}` });
+  });
+  it('refuses the cleanup of an escrow whose deliver_by or lock the state file does not know, and says to read them on the ledger', async () => {
+    const t = await started('escrow');
+    await submitSteps(t, 2);
+    const live = liveVaultOf(t.h);
+    t.port.failure = new HireFailed('failed_after_claim', 'the send was lost', { escrowRef: ESCROW, vaultRef: `${live.txHash}#${live.outputIndex}`, deliverBy: null, lockLovelace: null });
+    expect(await t.h.run(t.check, '--submit')).toBe(1);
+    expect(await t.h.run(t.check, 'cleanup', '--submit')).toBe(2);
+    expect(t.h.screen.errorText).toContain('its deliver_by or its lock is not known');
+    expect(t.port.calls).toEqual(['hire']);
   });
   it('keeps nothing for a hire that stopped before its Pay, and the hire can be made again', async () => {
     const t = await started('escrow');

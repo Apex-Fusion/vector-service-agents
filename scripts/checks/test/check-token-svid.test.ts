@@ -81,6 +81,13 @@ describe('check 5, the delegation token', () => {
     expect(h.state('delegation-token').steps.token!.refs.delegation_id).toBe(delegation.id);
     expect(UNGRANTED_ACTION).not.toBe(GRANT.action);
   });
+  it('exits 1 when the verifier accepts the token for an action that the delegation must not grant: the twin of the refusal is missing, and the check says so', async () => {
+    const { h, w } = await tokenRun(40, true);
+    delegationOnStub(h, w, { ...GRANT, stubActions: ['mainnet-checks.*'] });
+    expect(await h.run(tokenCheck, '--submit')).toBe(1);
+    expect(h.screen.errorText).toContain(`the verifier accepted the token for ${UNGRANTED_ACTION}`);
+    expect(h.state('delegation-token').steps.token).toBeUndefined();
+  });
   it('exits 1 when the hosted tool says the delegation is not usable although it has 30 confirmations', async () => {
     const { h, w } = await tokenRun(40, false);
     delegationOnStub(h, w, GRANT);

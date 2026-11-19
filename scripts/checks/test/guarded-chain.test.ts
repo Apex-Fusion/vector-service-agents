@@ -123,6 +123,7 @@ describe('payFromVault', () => {
       try { await pay(new GuardedChain(bare, { parts: PARTS, limits: LIMITS })); } catch (err) { refused = err; }
     })).toBe(0);
     expect(String(refused)).toContain('VECTOR_IDENTITY_VAULT_REF_UTXO');
+    expect(String(refused)).toContain('Nothing was built');
     expect(h.node.submitted).toEqual([]);
   }, 60_000);
 });
