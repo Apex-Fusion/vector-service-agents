@@ -4,8 +4,9 @@
 // - A document that cannot be read (the gateway is unreachable, answers 503, or answers anything but 200) is `unavailable`. A list that is over (its time of validity has passed) is
 //   `expired`. Both are soft: they say that the list was not read. A relying party does not refuse a call for them, and it writes them to its log (see index.ts).
 // - A document that is read and is wrong (a bad signature, another issuer, a list for another URL, bad encoding) is a refusal. It is no soft result.
-// - After a failed read, the reader does not call again before the wait that the gateway asked for (`Retry-After`, at least 5 seconds), so that a relying party never makes a gateway
-//   that is busy with its first build of the lists busier. It uses the copy that it has while that copy is valid.
+// - After a failed read, the reader does not call again before the wait that the gateway asked for (`Retry-After`), at least 5 seconds and at most 60 seconds, so that a relying party never
+//   makes a gateway that is busy with its first build of the lists busier, and one answer never stops the reads for long. It uses the copy that it has while that copy is valid.
+// - A list with an older issue time than the copy that the reader holds is not used in place of it: the copy may show a revocation that the older list lacks.
 // - One read of a document is in flight at a time. Callers that come while it runs share its result.
 
 import { CLOCK_LEEWAY_S } from '../common/constants.ts';
@@ -69,6 +70,8 @@ export const isSoftListRule = (rule: string): boolean => rule === 'list.unavaila
 
 const MIN_FORCED_READ_MS = 30_000;
 const MIN_RETRY_MS = 5_000;
+/** The longest wait after a failed read, for any status and any `Retry-After`: one answer must not keep a list unread for days. */
+const MAX_RETRY_MS = 60_000;
 /** A key set or a bundle that cannot be read again is used for this long after its last read: one hour, the life of a status list. */
 const MAX_STALE_MS = 3_600_000;
 
@@ -93,7 +96,7 @@ export function createGatewayReader(options: GatewayReaderOptions): GatewayReade
     if (status === 200) return { ok: true, body };
     const asked = /^\d{1,6}$/.test(headers.get('retry-after') ?? '') ? Number(headers.get('retry-after')) * 1000 : 0;
     const description = jsonObject(body)?.error_description;
-    return { ok: false, detail: `the gateway answered ${status}${typeof description === 'string' ? `: ${description}` : ''}`, retryAfterMs: Math.max(asked, MIN_RETRY_MS) };
+    return { ok: false, detail: `the gateway answered ${status}${typeof description === 'string' ? `: ${description}` : ''}`, retryAfterMs: Math.min(Math.max(asked, MIN_RETRY_MS), MAX_RETRY_MS) };
   }
 
   function documentSource<T, R extends string, U extends string>(spec: {
@@ -166,6 +169,8 @@ export function createGatewayReader(options: GatewayReaderOptions): GatewayReade
   interface ListFormat<T> {
     readonly mediaType: string;
     decode(text: string, ctx: ListContext): Check<T, StatusListRule>;
+    /** When the list starts, in POSIX ms: its issue time. */
+    startOf(list: T): number;
     /** When the list ends, in POSIX ms. */
     endOf(list: T): number;
     /** How long a copy is used, in ms. */
@@ -210,6 +215,12 @@ export function createGatewayReader(options: GatewayReaderOptions): GatewayReade
         if (again.ok) decoded = decode(again.value);
       }
       if (!decoded.ok) return decoded.rule === 'list.expired' ? fallback(url, 'list.expired', decoded.detail) : decoded;
+      // A list with an older issue time than the copy is no news, even when it is still valid: the copy may show a revocation that this list lacks. Keep the copy.
+      const held = copies.get(url);
+      if (valid(held) && format.startOf(decoded.value) < format.startOf(held.list)) {
+        retryAt.set(url, now() + MIN_RETRY_MS);
+        return fallback(url, 'list.unavailable', 'the gateway sent a list with an older issue time than the copy that the reader holds');
+      }
       retryAt.delete(url);
       const fetchedAt = now();
       copies.set(url, { list: decoded.value, fetchedAt, refreshAt: fetchedAt + Math.min(format.freshMs(decoded.value), (options.listCacheSeconds ?? Number.POSITIVE_INFINITY) * 1000) });
@@ -230,12 +241,14 @@ export function createGatewayReader(options: GatewayReaderOptions): GatewayReade
   const tokenLists = listSource<TokenStatusList>({
     mediaType: 'application/statuslist+jwt',
     decode: decodeTokenStatusList,
+    startOf: (list) => list.issuedAt,
     endOf: (list) => list.expiresAt,
     freshMs: (list) => (list.ttlSeconds ?? 60) * 1000,
   });
   const bitstringLists = listSource<BitstringStatusList>({
     mediaType: 'application/vc+jwt',
     decode: decodeBitstringStatusList,
+    startOf: (list) => list.validFrom,
     endOf: (list) => list.validUntil,
     freshMs: (list) => list.ttlMs ?? 60_000,
   });

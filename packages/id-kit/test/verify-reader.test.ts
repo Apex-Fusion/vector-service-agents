@@ -111,6 +111,38 @@ describe('the status lists in the reader', () => {
     expect(read).toMatchObject({ ok: true, value: { fetchedAt: newer.value.fetchedAt, refreshError: expect.any(String) } });
   });
 
+  it('a list with an older issue time does not replace a newer copy, although the older list is still valid; a list with the same issue time is a read again', async () => {
+    const { gateway, reader, uri } = reading();
+    const older = await (await gateway.fetch(uri)).text();
+    gateway.advance(30 * 60_000);
+    const newer = await reader.tokenList(uri);
+    if (!newer.ok) throw new Error(newer.detail);
+    const same = await (await gateway.fetch(uri)).text();
+    gateway.advance(61_000);
+    gateway.fault(TSL, { status: 200, body: older, headers: { 'content-type': 'application/statuslist+jwt' } });
+    const kept = await reader.tokenList(uri);
+    expect(kept).toMatchObject({ ok: true, value: { fetchedAt: newer.value.fetchedAt, refreshError: expect.stringMatching(/older issue time/) } });
+    if (kept.ok) expect(kept.value.list.issuedAt).toBe(newer.value.list.issuedAt);
+    // The twin: the same list again is accepted as a new read.
+    gateway.fault(TSL, { status: 200, body: same, headers: { 'content-type': 'application/statuslist+jwt' } });
+    gateway.advance(6_000);
+    const again = await reader.tokenList(uri);
+    expect(again).toMatchObject({ ok: true, value: { fetchedAt: gateway.now(), refreshError: null } });
+  });
+
+  it('the wait after a failed read is 60 seconds at most, for any status and any Retry-After: one 404 with a very long Retry-After does not stop the reads for days', async () => {
+    const { gateway, reader, uri } = reading();
+    gateway.fault(TSL, { status: 404, body: '{}', headers: { 'content-type': 'application/json', 'retry-after': '999999' } });
+    expect(await reader.tokenList(uri)).toMatchObject({ ok: false, rule: 'list.unavailable' });
+    gateway.advance(59_000);
+    await reader.tokenList(uri);
+    expect(count(gateway, TSL)).toBe(1);
+    gateway.fault(TSL, null);
+    gateway.advance(2_000);
+    expect((await reader.tokenList(uri)).ok).toBe(true);
+    expect(count(gateway, TSL)).toBe(2);
+  });
+
   it('a list that is read and is wrong is a refusal that is not soft: a bad signature, and a list for another URL', async () => {
     const { gateway, reader, uri } = reading();
     const list = await (await gateway.fetch(uri)).text();
