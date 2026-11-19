@@ -128,13 +128,22 @@ describe('the context headers', () => {
     }
   });
 
-  test('the model is 1 to 256 printable ASCII characters, spaces inside it allowed', () => {
-    for (const bad of ['', 'x'.repeat(257), 'caf\u00e9', 'tab\there', 'line\nbreak', '\u007f', 'carriage\rreturn', '\u0000']) {
-      expect(refused(withHeader('x-vector-advert-model', bad)).message, JSON.stringify(bad)).toContain('the header x-vector-advert-model must be text of 1 to 256 printable ASCII characters');
-    }
-    for (const good of ['a', 'x'.repeat(256), 'qwen2.5:0.5b', 'meta/llama 3.1 8b', '~!@#$%^&*()_+{}|:"<>?', 'audio-snippets-v1']) {
-      expect(parseContext(withHeader('x-vector-advert-model', good))?.advertModel, good).toBe(good);
-    }
+  test('the model comes written as encodeURIComponent writes it, for the text on the chain is free text and a header takes visible ASCII only; the kit decodes it once', () => {
+    const FORM = 'the header x-vector-advert-model must be a model text of 1 to 256 characters with no control character, written as encodeURIComponent writes it';
+    const GOOD_MODELS: Array<[sent: string, model: string]> = [
+      ['a', 'a'], ['audio-snippets-v1', 'audio-snippets-v1'], ['qwen2.5%3A0.5b', 'qwen2.5:0.5b'], ['meta%2Fllama%203.1%208b', 'meta/llama 3.1 8b'],
+      ['meta/llama 3.1 8b', 'meta/llama 3.1 8b'], // a plain text that needs no escape is read as it is
+      ['Qw%C3%A9n', 'Qw\u00e9n'], ['%F0%9F%98%80', '\u{1F600}'], ['100%25', '100%'], ['%2525', '%25'], // a text is decoded once, never twice
+      ['x'.repeat(256), 'x'.repeat(256)], ['%41'.repeat(256), 'A'.repeat(256)],
+    ];
+    for (const [sent, model] of GOOD_MODELS) expect(parseContext(withHeader('x-vector-advert-model', sent))?.advertModel, sent).toBe(model);
+    const BAD = [
+      '', 'x'.repeat(257), '%41'.repeat(257), 'x'.repeat(3073), // length: 1 to 256 characters once decoded
+      'caf\u00e9', 'tab\there', 'line\nbreak', '\u007f', 'carriage\rreturn', '\u0000', // a character that is not visible ASCII, sent as it is
+      '%', 'abc%', '%zz', '%4', '%E9', '%C3', '%C3%28', // an escape that is not one
+      '%00', '%0A', '%0D', '%1B', '%7F', '%C2%80', '%C2%9F', // a control character, escaped
+    ];
+    for (const bad of BAD) expect(refused(withHeader('x-vector-advert-model', bad)).message, JSON.stringify(bad)).toBe(FORM);
   });
 
   test('a header that came more than once is no one text and is refused with its name', () => {

@@ -5,6 +5,8 @@
 //   - A call with none of the six has no context. That is no error: a runtime that sends no context header works as it always did.
 //   - A call with some of the six, but not all, is refused: the six come together.
 //   - A call with a header in a form that is not the right one is refused too. The message names the header and the form, and never the value.
+//   - The advert model is free text on the chain, and a header holds visible ASCII only. So it comes written as encodeURIComponent writes it, and the object has the
+//     decoded text.
 //
 // The server answers each refusal with 400 {error: "bad_context", message}, and reads the headers only after the call has shown the token of the runtime.
 import type { IncomingHttpHeaders } from 'node:http';
@@ -15,7 +17,7 @@ export interface JobContext {
   readonly escrowRef: string;
   /** The advert output that the escrow was posted against, in the same form. */
   readonly advertRef: string;
-  /** The model text of the advert: 1 to 256 printable ASCII characters. */
+  /** The model text of the advert, decoded: 1 to 256 characters with no control character. */
   readonly advertModel: string;
   /** The key hash of the buyer: 56 hex characters, in lower case. */
   readonly buyerPkh: string;
@@ -51,14 +53,27 @@ const REFERENCE = /^([0-9a-fA-F]{64})#(0|[1-9][0-9]{0,9})$/;
 const KEY_HASH = /^[0-9a-fA-F]{56}$/;
 const LOVELACE = /^(?:0|[1-9][0-9]{0,18})$/;
 const MILLISECONDS = /^(?:0|[1-9][0-9]{0,15})$/;
-const MODEL = /^[ -~]{1,256}$/;
+// The model text of an advert is free text, and a header holds visible ASCII only. So the runtime writes the text as encodeURIComponent does, and the kit decodes it
+// once. The header has 1 to 3072 characters (the longest writing of 256 characters is shorter than that). The text that comes out has 1 to 256 characters and no
+// control character, for a service writes it to its log. A plain name stays as it is.
+const MODEL_WIRE = /^[ -~]{1,3072}$/;
+const CONTROL = /\p{Cc}/u;
 
 const REFERENCE_FORM = 'a transaction hash of 64 hex characters, "#" and an output index';
+const MODEL_FORM = 'a model text of 1 to 256 characters with no control character, written as encodeURIComponent writes it';
 
 /** `<hash>#<index>` with the hash in lower case, or undefined when the text is not a reference. */
 function reference(text: string): string | undefined {
   const match = REFERENCE.exec(text);
   return match === null ? undefined : `${match[1].toLowerCase()}#${match[2]}`;
+}
+
+/** The model text out of its header, or undefined when the header is not as MODEL_FORM says. */
+function modelText(text: string): string | undefined {
+  if (!MODEL_WIRE.test(text)) return undefined;
+  let model: string;
+  try { model = decodeURIComponent(text); } catch { return undefined; } // an escape that is not one, or bytes that are not UTF-8
+  return model.length <= 256 && !CONTROL.test(model) ? model : undefined;
 }
 
 /** The value of one field: what `parse` makes of its header, or a refusal that names the header and the form. */
@@ -82,7 +97,7 @@ export function parseContext(headers: IncomingHttpHeaders): JobContext | undefin
   return {
     escrowRef: read(headers, 'escrowRef', REFERENCE_FORM, reference),
     advertRef: read(headers, 'advertRef', REFERENCE_FORM, reference),
-    advertModel: read(headers, 'advertModel', 'text of 1 to 256 printable ASCII characters', (text) => (MODEL.test(text) ? text : undefined)),
+    advertModel: read(headers, 'advertModel', MODEL_FORM, modelText),
     buyerPkh: read(headers, 'buyerPkh', 'a key hash of 56 hex characters', (text) => (KEY_HASH.test(text) ? text.toLowerCase() : undefined)),
     paymentLovelace: read(
       headers, 'paymentLovelace', 'a whole number of lovelace, with no sign and no leading zero, of at most 19 digits',

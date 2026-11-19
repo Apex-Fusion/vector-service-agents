@@ -94,6 +94,20 @@ describe('the job call and the context headers', () => {
     });
   });
 
+  test('the advert model reaches run decoded: the runtime writes it as encodeURIComponent does, and the job code gets the text of the advert', async () => {
+    const MODEL = 'Qw\u00e9n / v1: 50% fast';
+    const { seen, run } = noting();
+    await serve(echoOptions({ run }), async (base) => {
+      const sent = encodeURIComponent(MODEL);
+      expect(sent).toMatch(/^[ -~]+$/);
+      const res = await call(base, '/', wire({ say: 'hi' }), { ...contextHeaders(), 'x-vector-advert-model': sent });
+      expect(res.status).toBe(200);
+      const bad = await call(base, '/', wire({ say: 'hi' }), { ...contextHeaders(), 'x-vector-advert-model': '%E9' });
+      expect([bad.status, (await bad.json() as { error: string }).error]).toStrictEqual([400, 'bad_context']);
+    });
+    expect(seen.map((s) => s.context?.advertModel)).toStrictEqual([MODEL]);
+  });
+
   test('the context comes before the body and before the slot: a bad header is 400 bad_context for a bad body and for a busy slot; the right headers are the twin', async () => {
     const { seen, run, release } = noting();
     const slot = new JobSlot();
