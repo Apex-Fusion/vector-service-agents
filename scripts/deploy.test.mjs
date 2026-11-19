@@ -1563,7 +1563,7 @@ test('Pipeline RUNBOOK steps 6 to 8: two wallets supplied and checked, the ident
   ]) assert.ok(seven.includes(part), `step 7 says: ${part}`);
   assert.ok(seven.indexOf('Record the identity in the repository.') > seven.indexOf("grep -c '^AGENT_DID=did:vector:agent:'"), 'after the identity is checked');
   // Step 7 was run on 2026-10-16 and the pull request it asks for changed those rows: the sentence says that the record exists, and the row is no longer "planned". The runbook still quotes the old words, as the instruction it was.
-  assert.ok(PSPEC.includes('\nThis agent has had a registry record since 2026-10-16.\n') && PSPEC.includes('\n| DID | `did:vector:agent:') && PSPEC.includes('\n| Registry record | name `Document Pipeline`;'), 'the spec rows the pull request changed carry the record');
+  assert.ok(PSPEC.includes('\nThis agent has had a registry record since 2026-10-16.\n') && /\n\| DID \| `did:vector:[0-9a-f]{64}` \|\n/.test(PSPEC) && PSPEC.includes('\n| Registry record | name `Document Pipeline`;'), 'the spec rows the pull request changed carry the record');
   assert.equal(PSPEC.includes('This agent has no registry record yet.') || PSPEC.includes('| Registry record, planned |'), false, 'and the words of before are gone');
   const eight = section(pRunbook, '8. Stake in Module-3');
   assert.ok(eight.includes('cd "$BASE/ops"\n./venv/bin/python m3-self-stake.py'));
@@ -4076,7 +4076,7 @@ test('Advocate RUNBOOK steps 6 to 9: the two wallets supplied and checked, the i
   // Step 7 was run on 2026-10-19 and the pull request it asked for recorded it: the sentence says that the record exists, and the rows are no longer planned. The step names the rows as
   // they are since then, as the runbooks of Audio Snippets and the Pipeline do since their flips, and quotes no row that is gone.
   assert.equal(seven.includes('Registry record, planned') || seven.includes('no registry record yet'), false, 'the rows of before the registration');
-  assert.ok(ASPEC.includes('\nThis agent has had a registry record since 2026-10-19.\n') && ASPEC.includes('\n| DID | `did:vector:agent:') && ASPEC.includes('\n| Registry record | name `Advocate`;'), 'the spec rows step 7 names carry the record');
+  assert.ok(ASPEC.includes('\nThis agent has had a registry record since 2026-10-19.\n') && /\n\| DID \| `did:vector:[0-9a-f]{64}` \|\n/.test(ASPEC) && ASPEC.includes('\n| Registry record | name `Advocate`;'), 'the spec rows step 7 names carry the record');
   assert.equal(ASPEC.includes('This agent has no registry record yet.') || ASPEC.includes('| Registry record, planned |') || ASPEC.includes('| DID | not registered.'), false, 'and the words of before are gone');
   assert.ok(section(aRunbook, '8. Stake in Module-3').includes('here both are the one capability `research.advocate.onesided.v1`'));
   const nine = section(aRunbook, '9. Start the service');

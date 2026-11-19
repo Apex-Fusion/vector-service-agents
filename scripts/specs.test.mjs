@@ -276,7 +276,7 @@ test('specs/ holds one page for each agent of the list, whatever the number: ten
 // Agent History has a registry record and a Module-3 self-stake since 2026-10-14 (RUNBOOK steps 7 and 8), and a public URL in service and an advert since the same day (steps 10 to 14), all run on the box.
 // The spec, the guide and the runbooks record them and claim nothing more: one first-party job has settled (2026-10-15, RUNBOOK step 15), which is not demand, and the status word is DEPLOYED since 2026-10-15 (RUNBOOK step 17), never LIVE. The values are the ones the ledger holds for that registration and those adverts.
 const AH = {
-  did: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:8a98c4b74f0e49a09ca4b3502e121c96a8e6992afd2cba64ef8128042fedd440',
+  legacyDid: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:8a98c4b74f0e49a09ca4b3502e121c96a8e6992afd2cba64ef8128042fedd440',
   registerTx: '6da5a2b4435257daf905f92f7ae281446d627aaedee25193cf55d94a547a49fa',
   stakeTx: 'eaf4d43d33da429e0d1072e2f01ae628958dedef97a385bc4d8120b3c8debba7',
   controllerPkh: '1ea22a13acac6da070959317bad9bf5e510e8f7875a6727d3a5262cd',
@@ -317,16 +317,19 @@ test('specs/agent-history.md: the Status line says DEPLOYED since 2026-10-15, th
 test('specs/agent-history.md: the DID, the registry record and the reputation stake of 2026-10-14 are in the Identity table with their transactions, the URL is in service since 2026-10-14, and the first advert (retired on 2026-10-15) and the current advert (posted on 2026-10-15) are recorded in the Links', () => {
   const text = read('agent-history');
   const row = (label) => section(text, 'Identity').split('\n').find((l) => l.startsWith(`| ${label} |`)) ?? '';
-  // The DID has the registry policy of the DID in the Request example and an asset name of 64 hex. The explorer link has the pattern the member guide gives.
+  // The DID row has the canonical DID: did:vector: and the 64 hex of the asset name, which the identity gateway resolves and the manifest names. The legacy form has the registry policy of the DID
+  // in the Request example and the same 64 hex. It stands in the Registry record row, and not in the DID row. The explorer link has the pattern the member guide gives.
   const policy = /did:vector:agent:([0-9a-f]{56}):/.exec(section(text, 'Interface'))?.[1] ?? '';
   assert.match(policy, /^[0-9a-f]{56}$/);
-  assert.match(AH.did, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
+  assert.match(AH.legacyDid, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
+  assert.equal(AH.agentDid, `did:vector:${AH.legacyDid.split(':').pop()}`, 'the same asset name in both forms');
   assert.ok(readFileSync(new URL('../docs/HIRE.md', import.meta.url), 'utf8').includes(`${EXPLORER_TX}<txid>`), 'the explorer link pattern');
-  assert.equal(row('DID'), `| DID | \`${AH.did}\` |`);
+  assert.equal(row('DID'), `| DID | \`${AH.agentDid}\` |`);
   const record = row('Registry record');
   for (const part of [
     'name `Agent History`', 'description as in the manifest', 'capabilities `identity.history.report.v1`', 'framework `vector-service-agents`', "endpoint the agent's public URL",
     `controller key hash \`${AH.controllerPkh}\` (the supplier key hash)`, 'Registered on 2026-10-14 in the confirmed transaction', `[\`${AH.registerTx}\`](${EXPLORER_TX}${AH.registerTx})`,
+    `The legacy registry identifies this agent by the legacy DID \`${AH.legacyDid}\`.`,
     'The deposit is 10000000 lovelace (10.000000), refundable on deregistration',
   ]) assert.ok(record.includes(part), `the Registry record row says: ${part}`);
   const stake = row('Reputation stake');
@@ -352,7 +355,7 @@ test('specs/agent-history.md: the DID, the registry record and the reputation st
 // Document Pipeline has a registry record and a Module-3 self-stake since 2026-10-16 (RUNBOOK-document-pipeline steps 7 and 8), and a public URL in service and an advert since the same day (steps 10 to 14), all run on the box.
 // The spec, the guide and the runbooks record them and claim nothing more: one first-party job has settled (2026-10-16, step 15), which is not demand, and the status word is DEPLOYED since 2026-10-16 (step 17), never LIVE. The values are the ones the ledger holds for that registration, that stake and those adverts.
 const DP = {
-  did: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:b8599ec7f66a389dab40a963cce31a0e2e05c61e47f0b002fa39d59acf5932f5',
+  legacyDid: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:b8599ec7f66a389dab40a963cce31a0e2e05c61e47f0b002fa39d59acf5932f5',
   registerTx: '195028d86ee9735084ce648779a673da5bf76977b10bc52b3d10dbfb57ef86dd',
   stakeTx: '6a41f59d0925b70583d0272fdddf9fedbc5dcac2d4af2c9484c452e2a5fb2830',
   controllerPkh: '5750aa8006bdc4f16f7950f54b89c2efb1d11091718d0db32a4863fc',
@@ -393,7 +396,7 @@ const DP_RUN = {
 // The spec, the guide and the runbooks record them and claim nothing more: one first-party job has settled (2026-10-17, step 15), which is not demand, and the status word is DEPLOYED since 2026-10-17 (step 17), never LIVE.
 // The values are the ones the ledger holds for that registration, that stake and those adverts, and the public key is the one the manifest serves under keys.pub_key_hex.
 const AS = {
-  did: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:1532506e54fa79cdfca6bef566ff1a5e7af9fceb332ffb7414d9923334b9d1ee',
+  legacyDid: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:1532506e54fa79cdfca6bef566ff1a5e7af9fceb332ffb7414d9923334b9d1ee',
   registerTx: 'c101d9dd20a82d573bbb4d8d0155c89de403de29a73f1a68f1afa642542dc83b',
   stakeTx: 'a23857f97c9197dd1051ef291decb06ee9cf5818339ac67ea120d0810720f3a3',
   // The supplier key, the only key of the agent: its key hash is the controller of the registry record, and its public key signs the receipts.
@@ -435,7 +438,7 @@ const AS_RUN = {
 // is DEPLOYED since 2026-10-20 (step 17), never LIVE. The values are the ones the ledger holds for that registration, that stake and those adverts, and the key hash of the buyer key is the one
 // the manifest serves under keys.buyer_pkh.
 const AD = {
-  did: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:c5e44677dadefc8a194d15293cad889b85e1ce5c839177f1955778ac4c63d01c',
+  legacyDid: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:c5e44677dadefc8a194d15293cad889b85e1ce5c839177f1955778ac4c63d01c',
   registerTx: '0699bc56992695511fd3c55681deba4f9ad611cd5c526dcfe45758f203abe767',
   stakeTx: '82fdc231932405c105f8b8b03cc56c37c702d03befc1830e85d0debeeeabbb15',
   // The supplier key: its key hash is the controller of the registry record, and its public key, the one the manifest serves under keys.pub_key_hex, signs the receipts. The buyer key,
@@ -497,17 +500,20 @@ test('specs/document-pipeline.md: the Status line says DEPLOYED since 2026-10-16
 test('specs/document-pipeline.md: the DID, the registry record and the reputation stake of 2026-10-16 are in the Identity table with their transactions, the URL is in service since 2026-10-16, and the first advert (retired on 2026-10-16) and the current advert (posted on 2026-10-16) are recorded in the Links', () => {
   const text = read('document-pipeline');
   const row = (label) => section(text, 'Identity').split('\n').find((l) => l.startsWith(`| ${label} |`)) ?? '';
-  // The DID has the registry policy that every DID of the registry has (the one in the Request example of Agent History) and an asset name of 64 hex of its own. The explorer link has the pattern the member guide gives.
+  // The DID row has the canonical DID, which the identity gateway resolves. The legacy form has the registry policy that every DID of the legacy registry has (the one in the Request example of
+  // Agent History) and the same 64 hex. It stands in the Registry record row, and not in the DID row. The explorer link has the pattern the member guide gives.
   const policy = /did:vector:agent:([0-9a-f]{56}):/.exec(section(read('agent-history'), 'Interface'))?.[1] ?? '';
   assert.match(policy, /^[0-9a-f]{56}$/);
-  assert.match(DP.did, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
-  assert.notEqual(DP.did, AH.did, 'its own asset name');
+  assert.match(DP.legacyDid, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
+  assert.equal(DP.agentDid, `did:vector:${DP.legacyDid.split(':').pop()}`, 'the same asset name in both forms');
+  assert.notEqual(DP.legacyDid, AH.legacyDid, 'its own asset name');
   assert.ok(readFileSync(new URL('../docs/HIRE.md', import.meta.url), 'utf8').includes(`${EXPLORER_TX}<txid>`), 'the explorer link pattern');
-  assert.equal(row('DID'), `| DID | \`${DP.did}\` |`);
+  assert.equal(row('DID'), `| DID | \`${DP.agentDid}\` |`);
   const record = row('Registry record');
   for (const part of [
     'name `Document Pipeline`', 'capabilities `document.pipeline.ocr-summary.v1`', 'framework `vector-service-agents`', "endpoint the agent's public URL",
     `controller key hash \`${DP.controllerPkh}\` (the supplier key hash)`, 'Registered on 2026-10-16 in the confirmed transaction', `[\`${DP.registerTx}\`](${EXPLORER_TX}${DP.registerTx})`,
+    `The legacy registry identifies this agent by the legacy DID \`${DP.legacyDid}\`.`,
     'The deposit is 10000000 lovelace (10.000000), refundable on deregistration',
   ]) assert.ok(record.includes(part), `the Registry record row says: ${part}`);
   const stake = row('Reputation stake');
@@ -886,7 +892,7 @@ test('docs/HIRE.md: says what is and is not in service, tool by tool', () => {
   assert.equal(guide.match(/<ADVERT_REF>|placeholder|not yet advertised|not in service/i), null, 'the words of before the advert');
   // The first-party runs of the path: one for each deployed agent, each a row of the Results table of docs/E2E.md with its evidence file. A first-party run is not demand.
   const serverRow = row('mcp.vector.mainnet.apexfusion.org');
-  assert.ok(serverRow.includes('Running, v3.0.0, 63 tools, checked on 2026-11-06 with an MCP `initialize` and `tools/list` handshake. Version 3.0.0 ([Apex-Fusion/mcp-server#26](https://github.com/Apex-Fusion/mcp-server/pull/26), [#27](https://github.com/Apex-Fusion/mcp-server/pull/27) and [#28](https://github.com/Apex-Fusion/mcp-server/pull/28), merged 2026-11-03) adds the identity registry tools and, from the escrow switch on, posts identity-layout escrows only. Four first-party runs of the path are recorded, one for each deployed agent, all in the legacy layout: on 2026-10-15 (Agent History), 2026-10-16 (Document Pipeline), 2026-10-17 (Audio Snippets) and 2026-10-20 (Advocate), each in the Results table of [docs/E2E.md](E2E.md) with its evidence file. A first-party run is not demand.'));
+  assert.ok(serverRow.includes('Running, v3.0.0, 86 tools, checked on 2026-11-19 with an MCP `initialize` and `tools/list` handshake. Version 3.0.0 ([Apex-Fusion/mcp-server#26](https://github.com/Apex-Fusion/mcp-server/pull/26), [#27](https://github.com/Apex-Fusion/mcp-server/pull/27) and [#28](https://github.com/Apex-Fusion/mcp-server/pull/28), merged 2026-11-03) adds the identity registry tools and, from the escrow switch on, posts identity-layout escrows only. Four first-party runs of the path are recorded, one for each deployed agent, all in the legacy layout: on 2026-10-15 (Agent History), 2026-10-16 (Document Pipeline), 2026-10-17 (Audio Snippets) and 2026-10-20 (Advocate), each in the Results table of [docs/E2E.md](E2E.md) with its evidence file. A first-party run is not demand.'));
   const runs = doc('E2E.md').split('\n').filter((l) => /^\| 20\d\d-/.test(l)).map((l) => l.split(' | ').slice(0, 2).map((cell) => cell.replace(/^\| /, '')));
   assert.deepEqual(runs, [['2026-10-15', 'Agent History'], ['2026-10-16', 'Document Pipeline'], ['2026-10-17', 'Audio Snippets'], ['2026-10-20', 'Advocate']], 'the runs the row counts are the rows of the Results table');
   assert.equal(runs.length, Object.values(AGENTS).filter((a) => a.status.startsWith('DEPLOYED ')).length, 'one run for each deployed agent');
@@ -1015,7 +1021,7 @@ test('docs/HIRE.md and docs/E2E.md: every place that lists what the receipt chec
 
 test('docs/HIRE.md: the status box says what runs today and that there is no audit; the client config file is said to hold the key in plain text', () => {
   const guide = hire();
-  const line = 'The hosted mainnet server is running version 3.0.0 with 63 tools as of 2026-11-06, the marketplace tools among them. No third-party audit of the marketplace contracts or of the identity registry exists.';
+  const line = 'The hosted mainnet server is running version 3.0.0 with 86 tools as of 2026-11-19, the marketplace tools among them. No third-party audit of the marketplace contracts or of the identity registry exists.';
   assert.equal(guide.split(line).length - 1, 1, 'once');
   assert.ok(guide.indexOf('**Status: DEPLOYED.**') < guide.indexOf(line) && guide.indexOf(line) < guide.indexOf('| Piece |'), 'inside the status box, above the table');
   const four = section(guide, '4. Two lines of config');
@@ -1195,6 +1201,9 @@ test('docs/E2E.md and scripts/e2e-hire.mjs: buyerAddress, the skipped and incomp
 test('the marketplace tools are said to be on the hosted mainnet server (33 tools, 2026-10-14) in the runbooks, the script and the four specs, nothing waits for a cutover, and way 1 of the Agent History spec names buyerAddress', () => {
   const e2e = doc('E2E.md');
   assert.ok(e2e.includes('The nine marketplace tools are merged into `main` of Apex-Fusion/mcp-server and are on the hosted mainnet server as of 2026-10-14: an MCP `initialize` and `tools/list` handshake that day listed 33 tools, the nine among them.'));
+  // The status paragraph gives the tool count of the hosted server with its day: the tools/list handshake of 2026-11-19 listed 86 tools. The count of 2026-11-06 is gone.
+  assert.ok(e2e.includes('On 2026-11-19 it runs version 3.0.0 and lists 86 tools.'));
+  assert.equal(e2e.includes('lists 63 tools'), false, 'the count of before');
   // The current advert was posted on 2026-10-15 at the status flip (RUNBOOK step 17), so the check that ADVERT_REF is among the free suppliers can pass with it. The first first-party run settled on 2026-10-15 (step 15), against the first advert, and is in the Results table. The status word is DEPLOYED.
   assert.ok(e2e.includes(`The current Agent History advert was posted on 2026-11-03 in the identity layout, reference \`${AH.advertRef}\`; the advert of 2026-10-15 was retired that day after the escrow switch. The first first-party run settled on 2026-10-15 (verdict VERIFIED, see [Results](#results)); it was made against the first advert, which was retired that day at the status flip.`));
   assert.equal(e2e.includes(AH.firstAdvertTx), false, 'the retired advert is named by what it was, not by its reference');
@@ -1359,7 +1368,7 @@ test('docs/evidence: the evidence of the first-party run of 2026-10-15 parses, i
   // The report is the one this agent writes for that subject.
   const report = JSON.parse(ev.result);
   assert.equal(report.schema, 'vector.agent-history.report.v1');
-  assert.equal(report.generated_by.did, AH.did);
+  assert.equal(report.generated_by.did, AH.legacyDid); // the report of 2026-10-15 names the agent in the legacy form that the service then wrote
   assert.equal(report.subject.did, JSON.parse(request).subject);
 });
 
@@ -1574,18 +1583,21 @@ test('specs/audio-snippets.md: the Status line says DEPLOYED since 2026-10-17, t
 test('specs/audio-snippets.md: the DID, the supplier key, the registry record and the reputation stake of 2026-10-17 are in the Identity table with their transactions, the URL is in service, the current advert carries the terms of the page, and the first advert (retired at the flip), the current advert and the first-party hire are in the Links', () => {
   const text = read('audio-snippets');
   const row = (label) => section(text, 'Identity').split('\n').find((l) => l.startsWith(`| ${label} |`)) ?? '';
-  // The DID has the registry policy that every DID of the registry has and an asset name of 64 hex of its own.
+  // The DID row has the canonical DID: did:vector: and the 64 hex of the asset name, which the identity gateway resolves and the manifest names. The legacy form has the registry policy that
+  // every DID of the legacy registry has and the same 64 hex. It stands in the Registry record row, and not in the DID row.
   const policy = /did:vector:agent:([0-9a-f]{56}):/.exec(section(read('agent-history'), 'Interface'))?.[1] ?? '';
   assert.match(policy, /^[0-9a-f]{56}$/);
-  assert.match(AS.did, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
-  assert.equal(new Set([AS.did, AH.did, DP.did]).size, 3, 'its own asset name');
-  assert.equal(row('DID'), `| DID | \`${AS.did}\` |`);
+  assert.match(AS.legacyDid, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
+  assert.equal(AS.agentDid, `did:vector:${AS.legacyDid.split(':').pop()}`, 'the same asset name in both forms');
+  assert.equal(new Set([AS.legacyDid, AH.legacyDid, DP.legacyDid]).size, 3, 'its own asset name');
+  assert.equal(row('DID'), `| DID | \`${AS.agentDid}\` |`);
   // The supplier key is the only key of the agent: the Controller row gives its public key, the one the manifest serves, and the Registry record row its key hash (agents/audio-snippets/test/spec.test.ts holds the one to the other).
   assert.ok(row('Controller').startsWith(`| Controller | the supplier key, the only key of this agent and the key that signs its receipts. Its public key is \`${AS.pubKey}\`. The manifest publishes`));
   const record = row('Registry record');
   for (const part of [
     'name `Audio Snippets`', 'description as in the manifest', 'capabilities `audio.transcript.snippets.v1`', 'framework `vector-service-agents`', "endpoint the agent's public URL",
     `controller key hash \`${AS.controllerPkh}\` (the supplier key hash)`, `Registered on 2026-10-17 in the confirmed transaction ${explorerLink(AS.registerTx)}`,
+    `The legacy registry identifies this agent by the legacy DID \`${AS.legacyDid}\`.`,
     'The deposit is 10000000 lovelace (10.000000), refundable on deregistration',
   ]) assert.ok(record.includes(part), `the Registry record row says: ${part}`);
   // The deposit closes the row, as in the rows of the other two (step 7 of the runbook names the deposit of 10 units).
@@ -1834,16 +1846,19 @@ test('specs/advocate.md: the Economics line under Terms in the form of the Pipel
 test('specs/advocate.md: the DID, the registry record, the reputation stake and the buyer key of 2026-10-19 are in the Identity table, the URL is in service as of 2026-10-19, the current advert carries the terms of the page, and the first advert (retired at the flip), the current advert and the first-party hire are in the Links', () => {
   const text = read('advocate');
   const row = (label) => section(text, 'Identity').split('\n').find((l) => l.startsWith(`| ${label} |`)) ?? '';
+  // The DID row has the canonical DID, which the identity gateway resolves. The legacy form is in the Registry record row.
   const policy = /did:vector:agent:([0-9a-f]{56}):/.exec(section(read('agent-history'), 'Interface'))?.[1] ?? '';
-  assert.match(AD.did, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
-  for (const other of [AH.did, DP.did, AS.did]) assert.notEqual(AD.did, other, 'its own asset name');
-  assert.equal(row('DID'), `| DID | \`${AD.did}\` |`);
+  assert.match(AD.legacyDid, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
+  assert.equal(AD.agentDid, `did:vector:${AD.legacyDid.split(':').pop()}`, 'the same asset name in both forms');
+  for (const other of [AH.legacyDid, DP.legacyDid, AS.legacyDid]) assert.notEqual(AD.legacyDid, other, 'its own asset name');
+  assert.equal(row('DID'), `| DID | \`${AD.agentDid}\` |`);
   // The supplier key: the Controller row gives its public key, the one the manifest serves, and the Registry record row its key hash (agents/advocate/test/spec.test.ts holds the one to the other).
   assert.ok(row('Controller').startsWith(`| Controller | the supplier key, the key that signs this agent's receipts. Its public key is \`${AD.pubKey}\`. The manifest publishes`));
   const record = row('Registry record');
   for (const part of [
     'name `Advocate`', 'description as in the manifest, which declares the bias', 'capabilities `research.advocate.onesided.v1`', 'framework `vector-service-agents`',
     "endpoint the agent's public URL, `https://mp-suppliers-advocate.hal8.ai`", `controller key hash \`${AD.controllerPkh}\` (the supplier key hash)`,
+    `The legacy registry identifies this agent by the legacy DID \`${AD.legacyDid}\`.`,
     'Registered on 2026-10-19 in the confirmed transaction', `[\`${AD.registerTx}\`](${EXPLORER_TX}${AD.registerTx})`, 'The deposit is 10000000 lovelace (10.000000), refundable on deregistration',
   ]) assert.ok(record.includes(part), `the Registry record row says: ${part}`);
   const stake = row('Reputation stake');
@@ -2114,27 +2129,32 @@ test('specs/document-pipeline.md: the code of its hire is packages/hire-kit on p
 // server make the stake, and its words follow the public rules.
 const launch = () => doc('LAUNCH.md');
 const LAUNCH_SECTIONS = ['What you need', 'Let your coding agent build it', 'Post the advert', 'Boot the runtime and your service', 'Give your agent an identity', 'Stake (optional)', 'Test-hire your own agent from chat', 'Tell the working group'];
-// The 63 tools of the hosted server: the tools/list of the hosted mainnet server on 2026-11-06, version 3.0.0 (Apex-Fusion/mcp-server, the release commit c42cb6e, from which
-// the npm signer 3.0.0 was built: HIRE.md section 2). The legacy registry writes and vector_build_message_agent are retired in 3.0.0; the identity registry tools are new.
+// The 86 tools of the hosted server: the tools/list of the hosted mainnet server on 2026-11-19, version 3.0.0. The names are the tools that Apex-Fusion/mcp-server lists at main.
+// The legacy registry writes and vector_build_message_agent are retired in 3.0.0. Since 2026-11-06 the list has 23 more names: the jury, document and Module-1 tools, the stake tools, and the read and check tools.
 const HOSTED_TOOLS = [
   'vector_await_transaction', 'vector_build_attestation_attest', 'vector_build_attestation_contest', 'vector_build_attestation_revoke', 'vector_build_attestation_withdraw',
-  'vector_build_delegation_delegate', 'vector_build_delegation_undelegate', 'vector_build_deploy_contract', 'vector_build_deregister_agent', 'vector_build_identity_adopt',
-  'vector_build_identity_change_controller', 'vector_build_identity_end_subagents', 'vector_build_identity_reclaim', 'vector_build_identity_recovery_cancel', 'vector_build_identity_recovery_complete',
-  'vector_build_identity_recovery_start', 'vector_build_identity_register', 'vector_build_identity_retire', 'vector_build_identity_revoke', 'vector_build_identity_set_successor',
-  'vector_build_identity_suspend', 'vector_build_identity_unsuspend', 'vector_build_identity_update', 'vector_build_interact_contract', 'vector_build_marketplace_accept',
-  'vector_build_marketplace_advert_post', 'vector_build_marketplace_advert_retire', 'vector_build_marketplace_advert_update', 'vector_build_marketplace_post_advert', 'vector_build_marketplace_post_escrow',
-  'vector_build_marketplace_reclaim', 'vector_build_marketplace_refund_revoked', 'vector_build_marketplace_release', 'vector_build_reputation_stake', 'vector_build_reputation_stake_open',
-  'vector_build_self_improvement_critique', 'vector_build_self_improvement_critique_spend', 'vector_build_self_improvement_endorse', 'vector_build_self_improvement_endorse_spend', 'vector_build_self_improvement_proposal_lock',
-  'vector_build_self_improvement_proposal_spend', 'vector_build_send_apex', 'vector_build_send_tokens', 'vector_build_transaction', 'vector_build_vault_close',
-  'vector_build_vault_open', 'vector_build_vault_pay', 'vector_discover_agents', 'vector_dry_run', 'vector_get_agent_profile',
-  'vector_get_balance', 'vector_get_transaction_history', 'vector_get_utxos', 'vector_marketplace_get_job', 'vector_marketplace_get_supplier',
-  'vector_marketplace_list_capabilities', 'vector_marketplace_list_suppliers', 'vector_marketplace_send_job', 'vector_marketplace_verify_receipt', 'vector_resolve_did',
-  'vector_self_improvement_analyze_metrics', 'vector_self_improvement_browse', 'vector_submit_transaction',
+  'vector_build_delegation_delegate', 'vector_build_delegation_undelegate', 'vector_build_deploy_contract', 'vector_build_deregister_agent', 'vector_build_document_publish',
+  'vector_build_identity_adopt', 'vector_build_identity_change_controller', 'vector_build_identity_end_subagents', 'vector_build_identity_reclaim', 'vector_build_identity_recovery_cancel',
+  'vector_build_identity_recovery_complete', 'vector_build_identity_recovery_start', 'vector_build_identity_register', 'vector_build_identity_retire', 'vector_build_identity_revoke',
+  'vector_build_identity_set_successor', 'vector_build_identity_suspend', 'vector_build_identity_unsuspend', 'vector_build_identity_update', 'vector_build_interact_contract',
+  'vector_build_jury_commit', 'vector_build_jury_exit', 'vector_build_jury_register', 'vector_build_jury_reveal', 'vector_build_jury_topup',
+  'vector_build_marketplace_accept', 'vector_build_marketplace_advert_post', 'vector_build_marketplace_advert_retire', 'vector_build_marketplace_advert_update', 'vector_build_marketplace_post_advert',
+  'vector_build_marketplace_post_escrow', 'vector_build_marketplace_reclaim', 'vector_build_marketplace_refund_revoked', 'vector_build_marketplace_release', 'vector_build_module1_challenge',
+  'vector_build_module1_claim', 'vector_build_module1_withdraw_claim', 'vector_build_reputation_stake', 'vector_build_reputation_stake_decrease', 'vector_build_reputation_stake_increase',
+  'vector_build_reputation_stake_open', 'vector_build_reputation_stake_update_capabilities', 'vector_build_self_improvement_critique', 'vector_build_self_improvement_critique_spend', 'vector_build_self_improvement_endorse',
+  'vector_build_self_improvement_endorse_spend', 'vector_build_self_improvement_proposal_lock', 'vector_build_self_improvement_proposal_spend', 'vector_build_send_apex', 'vector_build_send_tokens',
+  'vector_build_transaction', 'vector_build_vault_close', 'vector_build_vault_open', 'vector_build_vault_pay', 'vector_check_attestation',
+  'vector_check_delegation_use', 'vector_delegation_request_cosign', 'vector_discover_agents', 'vector_dry_run', 'vector_get_agent_profile',
+  'vector_get_attestation', 'vector_get_balance', 'vector_get_delegation', 'vector_get_document', 'vector_get_jury',
+  'vector_get_jury_cases', 'vector_get_reputation_stake', 'vector_get_transaction_history', 'vector_get_utxos', 'vector_get_vault',
+  'vector_list_attestations', 'vector_marketplace_get_job', 'vector_marketplace_get_supplier', 'vector_marketplace_list_capabilities', 'vector_marketplace_list_suppliers',
+  'vector_marketplace_send_job', 'vector_marketplace_verify_receipt', 'vector_resolve_did', 'vector_self_improvement_analyze_metrics', 'vector_self_improvement_browse',
+  'vector_submit_transaction',
 ];
 // The five tools of the signer (packages/signer/src/tools.ts at the same commit; 3.0.0 adds vector_signer_get_public_key).
 const SIGNER_TOOLS = ['vector_signer_get_address', 'vector_signer_get_public_key', 'vector_signer_decode_transaction', 'vector_signer_sign', 'vector_signer_get_spend_limits'];
-// The six stake tools of the hosted server since 2026-11-19: the tools/list of the hosted mainnet server on that day had 86 tools, version 3.0.0 (Apex-Fusion/mcp-server, merge commit 06a9df1).
-// vector_build_reputation_stake and vector_build_reputation_stake_open are among the 63 above (they built nothing in 3.0.0 of 2026-11-06); the other four are new.
+// The six stake tools of the hosted server since 2026-11-19: the stake tools of the list above, which is the tools/list of that day. They make a stake on the Module-3 deployment of the identity registry.
+// vector_build_reputation_stake and vector_build_reputation_stake_open were in the list of 2026-11-06 and built nothing then; the other four are new.
 const STAKE_TOOLS = ['vector_build_reputation_stake', 'vector_build_reputation_stake_decrease', 'vector_build_reputation_stake_increase', 'vector_build_reputation_stake_open', 'vector_build_reputation_stake_update_capabilities', 'vector_get_reputation_stake'];
 // The words a public line of the launch guide does not use (its content rules). Each is spelled in two parts, as UNIT_NAME is, so that a search for the words finds none
 // in this file. "payload" is a word of its own and passes.
@@ -2176,11 +2196,12 @@ test('docs/LAUNCH.md: the title, the eight sections in the order a member does t
   assert.equal(lines[lines.indexOf('- Hire one: `docs/HIRE.md`') + 1], '- Launch your own agent from a chat client: `docs/LAUNCH.md`', 'the README lists the guide right after HIRE.md');
 });
 
-test('docs/LAUNCH.md: every tool it names is one of the 63 tools of the hosted server of 2026-11-06, one of its six stake tools (86 tools since 2026-11-19) or one of the five of the signer; no retired tool, and no advert tool, is named', () => {
-  assert.equal(HOSTED_TOOLS.length, 63);
-  assert.equal(new Set(HOSTED_TOOLS).size, 63);
+test('docs/LAUNCH.md: every tool it names is one of the 86 tools of the hosted server of 2026-11-19 or one of the five of the signer; no retired tool, and no advert tool, is named', () => {
+  assert.equal(HOSTED_TOOLS.length, 86);
+  assert.equal(new Set(HOSTED_TOOLS).size, 86);
   assert.equal(new Set(STAKE_TOOLS).size, 6);
-  const known = new Set([...HOSTED_TOOLS, ...STAKE_TOOLS, ...SIGNER_TOOLS]);
+  for (const tool of STAKE_TOOLS) assert.ok(HOSTED_TOOLS.includes(tool), `${tool} is one of the 86`);
+  const known = new Set([...HOSTED_TOOLS, ...SIGNER_TOOLS]);
   // The names HIRE.md and the E2E runbook are held to are among them: the nine marketplace tools of the design and the others of this file.
   for (const tool of [...MARKETPLACE_TOOLS, ...OTHER_TOOLS]) assert.ok(known.has(tool), `${tool} is on the hosted server or in the signer`);
   for (const [name, text] of [['docs/HIRE.md', hire()], ['docs/LAUNCH.md', launch()]]) {
@@ -2197,7 +2218,20 @@ test('docs/LAUNCH.md: every tool it names is one of the 63 tools of the hosted s
   // The template's command line posts the advert (section 3), and the six stake tools make the stake (section 6): the guide names all six stake tools and no advert tool.
   assert.deepEqual([...named].filter((t) => /stake/.test(t)).sort(), [...STAKE_TOOLS].sort(), 'the six stake tools are named, and no other');
   assert.deepEqual([...named].filter((t) => /advert/.test(t)), [], 'no advert tool is named');
-  assert.ok(launch().includes('Every tool it names is on the hosted mainnet server, version 3.0.0, or in the signer, version 3.0.0. The hosted server had 63 tools on 2026-11-06. It has 86 since 2026-11-19, and the six stake tools of section 6 are among the 86.'));
+  assert.ok(launch().includes('Every tool it names is on the hosted mainnet server, version 3.0.0, or in the signer, version 3.0.0. The hosted server has 86 tools as of 2026-11-19, and the six stake tools of section 6 are among them.'));
+});
+
+test('the tool count of the hosted server is the count of its tool list, 86 on 2026-11-19, in the guide, the runbook and the launch guide, and no file gives the count of 2026-11-06', () => {
+  const count = `${HOSTED_TOOLS.length} tools`;
+  const places = [
+    ['docs/HIRE.md, status box', hire(), `with ${count} as of 2026-11-19`],
+    ['docs/HIRE.md, table row', hire(), `Running, v3.0.0, ${count}, checked on 2026-11-19 with an MCP`],
+    ['docs/E2E.md', doc('E2E.md'), `On 2026-11-19 it runs version 3.0.0 and lists ${count}.`],
+    ['docs/LAUNCH.md', launch(), `The hosted server has ${count} as of 2026-11-19`],
+  ];
+  for (const [place, text, sentence] of places) assert.ok(text.includes(sentence), `${place} says: ${sentence}`);
+  const files = [['README.md', readFileSync(new URL('../README.md', import.meta.url), 'utf8')], ['docs/HIRE.md', hire()], ['docs/E2E.md', doc('E2E.md')], ['docs/LAUNCH.md', launch()], ...Object.keys(AGENTS).map((name) => [`specs/${name}.md`, read(name)])];
+  for (const [name, text] of files) assert.equal(text.match(/\b63 tools\b/), null, `${name} does not give the count of 2026-11-06`);
 });
 
 test('docs/LAUNCH.md: the record comes before the advert, the template posts the advert, and a stake is made with the six stake tools of the hosted server on the Module-3 deployment of the identity registry', () => {

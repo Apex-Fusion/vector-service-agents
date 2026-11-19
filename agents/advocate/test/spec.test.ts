@@ -770,9 +770,10 @@ describe('specs/advocate.md, pinned further', () => {
     const identity = section('Identity');
     const interfaceText = section('Interface');
     const built = buildResult(parseRequest(exampleRequest()), BRIEF.thesis, checkCitations(BRIEF, PAGES), EXAMPLE_INFERENCE);
-    // Identity: the DID is the registry policy of the three agents that have one, then the name of the asset; the supplier key is the one that signs the receipts.
+    // Identity: the DID row has the canonical DID, the name of the asset after did:vector:. The legacy form has the registry policy of the three agents that have one, then the same name of the asset, and it is in the Registry record row. The supplier key is the one that signs the receipts.
     const policy = /did:vector:agent:([0-9a-f]{56}):/.exec(identity)?.[1] ?? '';
-    expect(row(identity, 'DID')).toBe(`| DID | ${tick(`did:vector:agent:${policy}:c5e44677dadefc8a194d15293cad889b85e1ce5c839177f1955778ac4c63d01c`)} |`);
+    expect(row(identity, 'DID')).toBe(`| DID | ${tick('did:vector:c5e44677dadefc8a194d15293cad889b85e1ce5c839177f1955778ac4c63d01c')} |`);
+    expect(row(identity, 'Registry record')).toContain(`The legacy registry identifies this agent by the legacy DID ${tick(`did:vector:agent:${policy}:c5e44677dadefc8a194d15293cad889b85e1ce5c839177f1955778ac4c63d01c`)}.`);
     for (const other of ['agent-history', 'audio-snippets', 'document-pipeline']) expect(readFileSync(new URL(`../../../specs/${other}.md`, import.meta.url), 'utf8'), other).toContain(`did:vector:agent:${policy}:`);
     holds(row(identity, 'Controller'), ["the supplier key, the key that signs this agent's receipts."]);
     // Capability id: the runtime, its pinned commit and its kind are the compose file's; the model string is the one of the example file of the host.
