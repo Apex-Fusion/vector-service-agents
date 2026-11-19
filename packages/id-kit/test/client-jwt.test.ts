@@ -107,7 +107,7 @@ describe('createDpopProof', () => {
   it.each<[string, { method: string; url: string }, RegExp]>([
     ['a method in lower case', { method: 'post', url: ENDPOINT }, /upper case HTTP method/],
     ['an empty method', { method: '', url: ENDPOINT }, /upper case HTTP method/],
-    ['a URL that is not a URL', { method: 'POST', url: 'not a url' }, /is not a URL/],
+    ['a URL that is not a URL', { method: 'POST', url: 'not a url' }, /http or https URL/],
     ['a URL that is not http or https', { method: 'POST', url: 'ftp://rs.example/a' }, /http or https URL/],
   ])('refuses %s', async (_name, request, message) => {
     await expect(createDpopProof(ed25519Key('client-jwt refuse').privateKey, { ...request, now: clock })).rejects.toThrow(message);

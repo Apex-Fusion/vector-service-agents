@@ -2,6 +2,7 @@
 // One way to call the gateway, for the client and for the verifier's reader. The `fetch` function is the caller's (a test gives the stub gateway's). A call has a time
 // limit and a size limit on the answer, and it follows no redirect.
 
+import { isRecord } from './json.ts';
 import { refuse, type GatewayRefused } from './result.ts';
 
 export interface HttpContext {
@@ -75,7 +76,7 @@ export function gatewayOrigin(baseUrl: string): string {
 export function jsonObject(body: string): Record<string, unknown> | null {
   try {
     const value: unknown = JSON.parse(body);
-    return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+    return isRecord(value) ? value : null;
   } catch {
     return null;
   }

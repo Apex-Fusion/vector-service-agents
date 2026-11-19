@@ -3,7 +3,7 @@
 // time, and `jti` is used once. The token endpoint wants a proof by the key that the new token is bound to. A resource wants a proof for each call, and the proof names the
 // access token by its hash (`ath`).
 
-import { createHash } from 'node:crypto';
+import { htuForm, tokenHash } from '../common/dpop.ts';
 import { resolveKey, type KeyInput } from '../common/keys.ts';
 import { signJws } from '../vendored/m4/jose.ts';
 import { newJti, seconds } from './agent-jwt.ts';
@@ -19,20 +19,14 @@ export interface DpopProofOptions {
   readonly now?: () => number;
 }
 
-/** The URL as a proof names it: the scheme, the host and the path. The query and the fragment are not in it. */
+/** The URL as a proof names it: the scheme, the host and the path. The query and the fragment are not in it. Throws a TypeError for a text that is not an http or https URL. */
 export function proofTarget(url: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new TypeError('the URL of a DPoP proof is not a URL');
-  }
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new TypeError('the URL of a DPoP proof is an http or https URL');
-  return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
+  const target = htuForm(url);
+  if (target === null) throw new TypeError('the URL of a DPoP proof is an http or https URL');
+  return target;
 }
 
-/** The hash that names an access token in a proof: the SHA-256 hash of the token as ASCII text, in base64url. */
-export const tokenHash = (accessToken: string): string => createHash('sha256').update(accessToken, 'ascii').digest('base64url');
+export { tokenHash };
 
 /** A DPoP proof, signed by `key`. The header holds the public JWK of the key and nothing else of it. */
 export async function createDpopProof(key: KeyInput, options: DpopProofOptions): Promise<string> {

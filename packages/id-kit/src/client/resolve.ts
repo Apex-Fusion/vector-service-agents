@@ -4,6 +4,7 @@
 // wants to know whether the agents of a delegation chain are Active reads `effectiveStatus` of each.
 
 import { vectorIdOf } from '../common/did.ts';
+import { isRecord } from '../common/json.ts';
 import { badBody, failureOf, jsonObject, send } from '../common/http.ts';
 import { accept, type GatewayResult } from '../common/result.ts';
 import type { ClientContext } from './context.ts';
@@ -28,8 +29,8 @@ export type Resolution =
   /** The gateway has no record for the DID (404). */
   | { readonly kind: 'not_found'; readonly did: string };
 
-function object(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+function recordOrNull(value: unknown): Record<string, unknown> | null {
+  return isRecord(value) ? value : null;
 }
 
 function keysOf(metadata: Record<string, unknown>): RecordKey[] | null {
@@ -38,7 +39,7 @@ function keysOf(metadata: Record<string, unknown>): RecordKey[] | null {
   if (!Array.isArray(listed)) return null;
   const keys: RecordKey[] = [];
   for (const entry of listed) {
-    const key = object(entry);
+    const key = recordOrNull(entry);
     if (key === null || typeof key.id !== 'string' || !key.id.startsWith('#') || typeof key.type !== 'string') return null;
     const purposes = key.purposes === undefined ? [] : key.purposes;
     if (!Array.isArray(purposes) || !purposes.every((p) => typeof p === 'string')) return null;
@@ -54,17 +55,17 @@ export async function resolveAgent(ctx: ClientContext, did: string): Promise<Gat
   const { status, body } = outcome.reply;
   if (status !== 200 && status !== 410 && status !== 404) return failureOf(outcome, 'a DID resolution');
   const result = jsonObject(body);
-  const metadata = object(result?.didDocumentMetadata);
+  const metadata = recordOrNull(result?.didDocumentMetadata);
   if (result === null || metadata === null) return badBody(status, 'the answer is not a DID resolution result');
   if (status === 404) return accept({ kind: 'not_found', did });
 
-  const vectorStatus = object(metadata.vectorStatus);
+  const vectorStatus = recordOrNull(metadata.vectorStatus);
   const effectiveStatus = vectorStatus?.effective;
   if (vectorStatus === null || !isEffectiveStatus(effectiveStatus)) return badBody(status, 'the metadata has no effective status of the agent');
   const effectiveReason = typeof vectorStatus.effectiveReason === 'string' ? vectorStatus.effectiveReason : null;
   if (status === 410) return accept({ kind: 'deactivated', did, effectiveStatus, effectiveReason, metadata });
 
-  const document = object(result.didDocument);
+  const document = recordOrNull(result.didDocument);
   const keys = keysOf(metadata);
   if (document === null || keys === null) return badBody(status, 'the result has no document, or its key list is not well formed');
   return accept({ kind: 'resolved', did, effectiveStatus, effectiveReason, keys, document, metadata });

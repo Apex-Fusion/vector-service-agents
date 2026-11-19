@@ -5,6 +5,7 @@
 
 import { CLOCK_LEEWAY_S, DELEGATION_DETAILS_TYPE, MAX_ACTIONS, MAX_AUDIENCES, MAX_AUDIENCE_LENGTH, MAX_DELEGATION_DEPTH, MAX_LOCATIONS, MAX_TOKEN_LIFETIME_S, PURPOSE } from '../common/constants.ts';
 import { parseKid } from '../common/did.ts';
+import { isRecord } from '../common/json.ts';
 import { isActionPattern, isResourcePattern, narrower } from '../vendored/m4/delegation-patterns.ts';
 import { JoseError, algKeyKind, has, jwkThumbprint, parseJws, publicJwkKey, recordKeyObject, verifyJws, type JwkKey, type KeyKind } from '../vendored/m4/jose.ts';
 import type { ListedKey, StubAgent, StubDelegation, StubState } from './state.ts';
@@ -67,8 +68,8 @@ export function parseJsonObject(contentType: string | null, body: string): Recor
   } catch {
     throw invalidRequest('the body is not UTF-8 JSON');
   }
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw invalidRequest('the body is not a JSON object');
-  return value as Record<string, unknown>;
+  if (!isRecord(value)) throw invalidRequest('the body is not a JSON object');
+  return value;
 }
 
 // ── the JWT of an agent ──
@@ -238,8 +239,8 @@ export function parseDelegationRequest(text: string | undefined): DelegationRequ
   } catch {
     throw invalidDetails('authorization_details is not JSON');
   }
-  if (!Array.isArray(value) || value.length !== 1 || value[0] === null || typeof value[0] !== 'object' || Array.isArray(value[0])) throw invalidDetails('authorization_details must be a list with one delegation object');
-  const detail = value[0] as Record<string, unknown>;
+  if (!Array.isArray(value) || value.length !== 1 || !isRecord(value[0])) throw invalidDetails('authorization_details must be a list with one delegation object');
+  const detail: Record<string, unknown> = value[0];
   if (detail.type !== DELEGATION_DETAILS_TYPE) throw invalidDetails(`the authorization details type must be ${DELEGATION_DETAILS_TYPE}`);
   const unknown = Object.keys(detail).find((k) => DETAIL_MEMBERS[k] !== true);
   if (unknown !== undefined) throw invalidDetails(`unknown authorization details member ${unknown}`);

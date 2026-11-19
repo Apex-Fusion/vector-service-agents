@@ -95,11 +95,11 @@ export interface RecordedRequest {
 export type Fault = { readonly status: number; readonly body?: string; readonly headers?: Readonly<Record<string, string>> } | 'network';
 
 /** The answer of the live gateway while it builds its status lists, as a fault. */
-export const LISTS_UNAVAILABLE: Fault = {
+export const LISTS_UNAVAILABLE = {
   status: 503,
   body: JSON.stringify({ error: 'temporarily_unavailable', error_description: 'the status lists could not be built from the ledger' }),
   headers: { 'content-type': 'application/json', 'cache-control': 'no-store', 'retry-after': '5' },
-};
+} as const satisfies Fault;
 
 export interface StubGateway {
   readonly baseUrl: string;
