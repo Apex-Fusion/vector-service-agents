@@ -8,10 +8,13 @@ export const REGISTRY_ADDRESS = 'addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjy
 export const ADVERT_ADDRESS = 'addr1wxvjn7jwak9kdvctscywvq0d9f9hksf6ysfa6yatya2efksvgxwpa';
 export const ESCROW_ADDRESS = 'addr1wxqsaczee4upnn50n9dwgw9mkph77yqp0d9p0y5ul9c6jysrv9dl5';
 export const ESCROW_SCRIPT_HASH = '810ee059cd7819ce8f995ae438bbb06fef10017b4a17929cf971a912';
-// The module deployments that were on Vector mainnet before the identity registry. A service that reads modules can point its configuration at
-// the new deployments; these are the defaults.
-export const M3_REPUTATION_ADDRESS = 'addr1w9gk3cv8rn7mre2urrhpwwkteh8qjgzy5j9u9c3l8w34pyc76uluq';
-export const M3_ENDORSEMENT_ADDRESS = 'addr1w9m3j6ld07uy2asssqxvwfqu73ykuqxhjqw7jpulkqera0cjm7mmz';
+// Module-3 (reputation staking) is the deployment for the identity registry. It is on Vector mainnet since 2026-11-03.
+// Its reputation validator is the policy of the stake tokens and the script credential of the stake address.
+// The Module-3 deployment before it keeps its positions. Its stakes have a 6-field datum, and the stake decoder refuses that datum.
+export const M3_REPUTATION_ADDRESS = 'addr1w8adj3dtyrmp5k8mma4r8285jxyeklw5zelmvssqhsrqgfqc9uavs';
+export const M3_ENDORSEMENT_ADDRESS = 'addr1wys6c9gzhfa6ka8f3me66ftthgtz9gf4ry62cxwsgvsjdlspch2kv';
+// Module-1 and Module-6 are the deployments that were on Vector mainnet before the identity registry. A service that reads modules can point its
+// configuration at new deployments. These are the defaults.
 // Module-1 (dispute) has two deployments on Vector mainnet: v14 (the three unsuffixed labels) and the v15-sim set (script hashes 6c7a075f..., a28a2a36..., 7135ee94...).
 // The labels are the keys of the report's dispute section.
 export const M1_ADDRESSES = {

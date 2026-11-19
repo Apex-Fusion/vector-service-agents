@@ -24,7 +24,7 @@ export const BLIND_SPOTS: readonly string[] = [
   ESCROW_ROWS_GAP,
   DISPUTE_MODULE_GAP,
   GENERIC_MATCH_GAP,
-  'Module-3 stakes are read with the six-field stake layout and other datums at that address are skipped. A subject given as a DID or asset name keeps only the stakes whose datum names that asset, not those that share its owner key; a subject given as a key hash keeps every stake that key owns, whatever the asset.',
+  'Module-3 stakes are read from the deployment on the identity registry, with its eight-field stake layout. An output is a stake only when it holds the stake token of the agent that its datum names. Other outputs at that address are skipped. The stakes of the earlier Module-3 deployment have another address and the six-field layout, and the report does not read them. A subject given as a DID or asset name keeps only the stakes whose datum names that asset, not those that share its owner key; a subject given as a key hash keeps every stake that key owns, whatever the asset.',
   CURRENT_STATE_GAP,
   IDENTITY_VIEW_GAP,
 ];

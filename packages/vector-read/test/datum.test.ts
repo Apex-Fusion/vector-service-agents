@@ -4,7 +4,7 @@
 // ok(cond) -> a comparison matcher). The source tests the identity layouts in identity-codec.test.ts (ported to
 // test/identity-codec.test.ts). The 'encodeAdvertDatum' block is the block of the same name in the source's
 // marketplace-advert.test.ts at 94bd293, ported the same way. Local to this repo: the 'identity layouts on the live terms'
-// block, the sha256BytesHex known answers (moved from packages/buyer-core with the function), the 'stake datums' block and
+// block, the sha256BytesHex known answers (moved from packages/buyer-core with the function), the 'topLevelBytes' block and
 // the blocks after it. Two tests of the 4a7b223 port that the source has since dropped as redundant are kept here (the
 // semantic-equality test and the two lock-floor bounds).
 import { describe, test, expect } from 'vitest';
@@ -13,7 +13,7 @@ import { Data, Constr, fromText } from '@lucid-evolution/lucid';
 import {
   decodeAdvertDatum, encodeAdvertDatum, decodeEscrowDatum, encodeEscrowDatum, canonicalize,
   requestSpecHash, wirePayloadFor, promptHashForPayload, escrowLockFloor, parseOutRef, formatOutRef,
-  advertTextFieldsRoundTrip, decodeStakeDatum, topLevelBytes, blake2b224Hex, sha256Utf8Hex, sha256BytesHex,
+  advertTextFieldsRoundTrip, topLevelBytes, blake2b224Hex, sha256Utf8Hex, sha256BytesHex,
   decodeIdentityAdvertDatum, encodeIdentityAdvertDatum, decodeAnyAdvertDatum, decodeIdentityEscrowDatum, encodeIdentityEscrowDatum,
   decodeAnyEscrowDatum, identityEscrowDatumToData, identityEscrowLockFloor,
 } from '../src/datum.ts';
@@ -194,13 +194,7 @@ describe('advertTextFieldsRoundTrip', () => {
   });
 });
 
-describe('stake datums', () => {
-  // Module-3 stake datum of ChandraOCR (05563e75…#0), captured 2026-10-13.
-  const STAKE_FIELDS = { asset: '5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db', owner: '401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9', amount: 10_000_000n, caps: ['ocr.page.extract.chandra-ocr-2.v1', 'document-extraction'], last_updated: 1786092804000, history_points: 0n };
-  test('stake datum round-trips through the known shape', () => {
-    const hex = Data.to(new Constr(0, [STAKE_FIELDS.asset, new Constr(0, [STAKE_FIELDS.owner]), STAKE_FIELDS.amount, STAKE_FIELDS.caps.map(fromText), BigInt(STAKE_FIELDS.last_updated), STAKE_FIELDS.history_points]));
-    expect(decodeStakeDatum(hex)).toEqual({ agent_asset_name: STAKE_FIELDS.asset, owner_pkh: STAKE_FIELDS.owner, stake_lovelace: STAKE_FIELDS.amount, capabilities: STAKE_FIELDS.caps, last_updated: STAKE_FIELDS.last_updated, history_points: 0 });
-  });
+describe('topLevelBytes', () => {
   test('topLevelBytes lists bytes fields of an unknown constructor', () => {
     const hex = Data.to(new Constr(0, ['aa'.repeat(32), new Constr(0, ['bb'.repeat(28)]), 5n]));
     expect(topLevelBytes(hex)).toEqual(['aa'.repeat(32), 'bb'.repeat(28)]);

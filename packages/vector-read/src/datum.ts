@@ -352,16 +352,6 @@ export function identityEscrowLockFloor(openDatum: IdentityEscrowDatum, economic
 }
 
 // ---- Local additions below this line (not in the vendored source; see VENDORED-FROM.md). ----
-export interface StakeDatum { agent_asset_name: string; owner_pkh: string; stake_lovelace: bigint; capabilities: string[]; last_updated: number; history_points: number }
-export function decodeStakeDatum(hex: string): StakeDatum {
-  const c = asConstr(Data.from(hex), 'stake');
-  if (c.index !== 0 || c.fields.length !== 6) throw new Error(`stake: expected 6 fields, got ${c.fields.length}`);
-  return {
-    agent_asset_name: asBytes(c.fields[0], 'stake.asset'), owner_pkh: asBytes(asConstr(c.fields[1], 'stake.owner').fields[0], 'stake.owner.pkh'),
-    stake_lovelace: asInt(c.fields[2], 'stake.amount'), capabilities: (c.fields[3] as unknown[]).map((x) => toText(asBytes(x, 'stake.capability'))),
-    last_updated: Number(asInt(c.fields[4], 'stake.last_updated')), history_points: Number(asInt(c.fields[5], 'stake.history_points')),
-  };
-}
 /** Bytes fields at the top level or one constructor deep: enough to match a datum to an asset name or key hash without knowing its full schema. */
 export function topLevelBytes(hex: string): string[] {
   const out: string[] = [];

@@ -4,10 +4,11 @@ import { configFromEnv, DEFAULT_CONFIG, DEFAULT_MODULES } from '../src/config.ts
 import { TEST_IDENTITY } from './support.ts';
 
 describe('configFromEnv: the deployment values the report reads with', () => {
-  test('with no setting: the legacy registry only, and the module deployments before the identity registry', () => {
+  test('with no setting: the legacy registry only, Module-3 on the identity registry, and Module-1 and Module-6 from before it', () => {
     expect(configFromEnv({})).toEqual(DEFAULT_CONFIG);
     expect(DEFAULT_CONFIG.registries).toEqual({ legacy: LEGACY_REGISTRY, identity: null });
     expect(DEFAULT_MODULES).toEqual({ m3: { reputation: M3_REPUTATION_ADDRESS, endorsement: M3_ENDORSEMENT_ADDRESS }, m1: M1_ADDRESSES, m6: M6_ADDRESSES });
+    expect(DEFAULT_MODULES.m3).toEqual({ reputation: 'addr1w8adj3dtyrmp5k8mma4r8285jxyeklw5zelmvssqhsrqgfqc9uavs', endorsement: 'addr1wys6c9gzhfa6ka8f3me66ftthgtz9gf4ry62cxwsgvsjdlspch2kv' });
     expect(configFromEnv({ IDENTITY_POLICY_ID: '', M1_ADDRESSES: ' ', M6_ADDRESSES: '', M3_REPUTATION_ADDRESS: '' })).toEqual(DEFAULT_CONFIG); // empty means the default
   });
   test('the identity registry from its policy, the address derived from it or given and equal to it', () => {

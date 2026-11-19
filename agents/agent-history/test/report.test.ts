@@ -5,7 +5,7 @@ import { replayFetch, keyHash, utf8ToHex, legacyVectorDid, KOIOS_URL, INDEXER_UR
 import type { Fetch, Key } from '@vsa/vector-read';
 import { buildReport, degradedReasons, lastKnownKeysLine, BLIND_SPOTS, CURRENT_STATE_GAP, IDENTITY_VIEW_GAP, LEGACY_ONLY, REPORT_BUDGET_MS } from '../src/report.ts';
 import { manifestFromEnv } from '../src/server.ts';
-import { TEST_ENV, WITH_IDENTITY, TEST_IDENTITY, LEGACY, koiosLedger, token, txHash, identityHex } from './support.ts';
+import { TEST_ENV, WITH_IDENTITY, TEST_IDENTITY, LEGACY, BUILT_STAKE_HEX, koiosLedger, token, txHash, identityHex, stakeRow, stakeToken, withStakeRows } from './support.ts';
 import type { LedgerTx } from './support.ts';
 const fx = JSON.parse(readFileSync(new URL('./fixtures/chandra.json', import.meta.url), 'utf8'));
 const CHANDRA = '5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db';
@@ -32,8 +32,7 @@ describe('ChandraOCR report (recorded fixtures)', () => {
     expect(m.as_supplier.adverts[0]).toMatchObject({ capability_id: 'ocr.page.extract.chandra-ocr-2.v1', supplier_pkh: PKH, agent_id: null });
     expect(m.as_supplier.escrows.total).toBeGreaterThan(3000);
     expect(m.as_supplier.escrows.latest_checked).toBe(50);
-    const rep = r.reputation as any;
-    expect(rep.stakes[0]).toMatchObject({ utxo: '05563e751a32ce766aaf7aa015140912563f559394b5ecea77226d2c90bd6d4f#0', stake_lovelace: '10000000' });
+    expect(r.reputation).toEqual({ stakes: [], endorsements: [] }); // the Module-3 addresses of the identity deployment hold nothing for this agent
   });
   test('a failing section does not fail the report', async () => {
     const store = { ...fx.store };
@@ -115,17 +114,22 @@ describe('report assembly against the recording', () => {
     expect(blind_spots).toEqual(recordedBlindSpots);
     expect(blind_spots).toEqual([LEGACY_ONLY, ...BLIND_SPOTS]); // nothing was missing or truncated for this subject; the identity registry is not configured
   });
-  test('the Module-3 stake is a real recorded datum, decoded field by field', async () => {
+  test('the report shows no stake for ChandraOCR: its recorded stake is on the earlier Module-3 deployment, which the report does not read', async () => {
     const r = await buildReport({ subject: DID, include: ['reputation'] }, replayFetch(fx.store), opts);
-    const rep = r.reputation as any;
-    expect(rep.stakes).toHaveLength(1);
-    expect(rep.stakes[0]).toEqual({
-      utxo: '05563e751a32ce766aaf7aa015140912563f559394b5ecea77226d2c90bd6d4f#0',
-      agent_asset_name: CHANDRA, owner_pkh: PKH,
-      stake_lovelace: '10000000', capabilities: ['ocr.page.extract.chandra-ocr-2.v1', 'document-extraction'],
-      last_updated: 1786092804000, history_points: 0,
+    expect(r.reputation).toEqual({ stakes: [], endorsements: [] });
+  });
+  test('a stake of the identity deployment is in the report, field by field (a built stake: no stake exists on that deployment yet)', async () => {
+    const store = withStakeRows(fx.store, [stakeRow(2, BUILT_STAKE_HEX, [stakeToken(CHANDRA)])]);
+    const r = await buildReport({ subject: DID, include: ['reputation'] }, replayFetch(store), opts);
+    expect(json(r.reputation)).toEqual({
+      stakes: [{
+        utxo: `${txHash(2)}#0`, agent_asset_name: CHANDRA, owner_pkh: PKH, stake_lovelace: '10000000', capabilities: ['ocr.page.extract.chandra-ocr-2.v1'],
+        last_updated: 1_794_745_920_000, history_points: 0, challenge_locks: [], stake_id: `${'ab'.repeat(32)}#1`,
+      }],
+      endorsements: [],
     });
-    expect(rep.endorsements).toEqual([]);
+    expect(r.blind_spots).toEqual([LEGACY_ONLY, ...BLIND_SPOTS]);
+    expect(degradedReasons(r)).toEqual([]);
   });
   test('the dispute and self-improvement sections list their module addresses and find nothing for this agent', async () => {
     const r = await buildReport({ subject: DID, include: ['dispute', 'self_improvement'] }, replayFetch(fx.store), opts);
@@ -401,7 +405,7 @@ describe('report time budget', () => {
     const { value: r, ms } = await timed(buildReport({ subject: DID, include: [...ALL] }, hanging((u) => u.includes('/escrows?supplier=')), budgeted));
     expect(r.marketplace).toEqual({ error: 'time budget exceeded' });
     expect((r.identity as any).registered.block).toBe(7275113);
-    expect((r.reputation as any).stakes).toHaveLength(1);
+    expect(r.reputation).toEqual({ stakes: [], endorsements: [] });
     expect(r.key_roles).toMatchObject({ controller_pkh: PKH, marketplace_pkhs: [PKH], advert_count: null, capability_key_active: true });
     expect(ms).toBeGreaterThanOrEqual(BUDGET - 50);
     expect(ms).toBeLessThan(BUDGET + 2_500);

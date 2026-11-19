@@ -39,3 +39,18 @@ describe('vendored identity codecs', () => {
     expect(excerpts).toStrictEqual(['src/vendored/shared/identity/constants.ts', 'src/vendored/shared/network.ts', 'src/vendored/shared/chain/ChainProvider.ts']);
   });
 });
+
+// The stake codec copied from mcp-server: one row of the Stake codec table. The copy leaves out two lines of its source, so the sha256 is the check here;
+// the cmp command of VENDORED-FROM.md checks it against the source.
+describe('vendored stake codec', () => {
+  const stakeRows = manifest.split('\n').filter((l) => l.startsWith('| `src/reputation-datum.ts` | `mcp-server:'));
+  it('the table names the copy with its source in mcp-server, the commit and the sha256 of the copy', () => {
+    expect(stakeRows).toHaveLength(1);
+    const [, dest, source, commit, sha] = cells(stakeRows[0]);
+    expect(existsSync(join(root, dest)), dest).toBe(true);
+    expect(source).toBe('mcp-server:packages/builder/src/vector/reputation-datum.ts` excerpt, lines 1-28, 30-93, 95-115');
+    expect(commit).toBe('06a9df1');
+    const actual = createHash('sha256').update(readFileSync(join(root, dest))).digest('hex');
+    expect(actual, `${dest} changed since it was vendored`).toBe(sha);
+  });
+});

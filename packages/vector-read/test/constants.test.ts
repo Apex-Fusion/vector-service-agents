@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest';
 import { getAddressDetails } from '@lucid-evolution/lucid';
-import { REGISTRY_POLICY, REGISTRY_ADDRESS, ADVERT_ADDRESS, ESCROW_ADDRESS, ESCROW_SCRIPT_HASH, M3_REPUTATION_ADDRESS, M3_ENDORSEMENT_ADDRESS, M1_ADDRESSES, M6_ADDRESSES } from '../src/index.ts';
+import { REGISTRY_POLICY, REGISTRY_ADDRESS, ADVERT_ADDRESS, ESCROW_ADDRESS, ESCROW_SCRIPT_HASH, M3_REPUTATION_ADDRESS, M3_ENDORSEMENT_ADDRESS, M1_ADDRESSES, M6_ADDRESSES, REPUTATION_ADDRESS } from '../src/index.ts';
 // Every address constant is a Vector mainnet script address with no stake part: network 1, enterprise, script credential.
 // The script hashes are those of the design spec (section 6). The design gives the Module-1 v15-sim set by the first
 // eight hex digits only; the full hashes below are from the Module-1 mainnet deployments record (id mainnet-v15-sim-2026-04-22).
@@ -8,8 +8,8 @@ const SCRIPT_HASH: Record<string, [address: string, hash: string | null]> = {
   registry: [REGISTRY_ADDRESS, REGISTRY_POLICY],
   advert: [ADVERT_ADDRESS, '9929fa4eed8b66b30b8608e601ed2a4b7b413a2413dd13ab275594da'],
   escrow: [ESCROW_ADDRESS, ESCROW_SCRIPT_HASH],
-  m3_reputation: [M3_REPUTATION_ADDRESS, '5168e1871cfdb1e55c18ee173acbcdce092044a48bc2e23f3ba35093'],
-  m3_endorsement: [M3_ENDORSEMENT_ADDRESS, '77196bed7fb8457610800cc7241cf4496e00d7901de9079fb0323ebf'],
+  m3_reputation: [M3_REPUTATION_ADDRESS, 'fad945ab20f61a58fbdf6a33a8f491899b7dd4167fb64200bc060424'],
+  m3_endorsement: [M3_ENDORSEMENT_ADDRESS, '21ac1502ba7bab74e98ef3ad256bba1622a1351934ac19d0432126fe'],
   m1_claim: [M1_ADDRESSES.claim, 'a9d22e8b01d282be8007b8d9e3e8af548aaa56f1c3e433c0eddd8760'],
   m1_challenge: [M1_ADDRESSES.challenge, '12700f4aabdd63caab38adfb50455da54a4e4bc0402a4b1d5a90d1fb'],
   m1_jury_pool: [M1_ADDRESSES.jury_pool, '2b01c6b3164237757fc82e64780c63ecfc1d5a733ce919a3e2e75f28'],
@@ -37,5 +37,10 @@ describe('address constants', () => {
   test('no address is listed twice', () => {
     const all = Object.values(SCRIPT_HASH).map(([address]) => address);
     expect(new Set(all).size).toBe(all.length);
+  });
+  test('the Module-3 defaults are the deployment on the identity registry, and the stake address is the one that the stake codec belongs to', () => {
+    expect(M3_REPUTATION_ADDRESS).toBe('addr1w8adj3dtyrmp5k8mma4r8285jxyeklw5zelmvssqhsrqgfqc9uavs');
+    expect(M3_ENDORSEMENT_ADDRESS).toBe('addr1wys6c9gzhfa6ka8f3me66ftthgtz9gf4ry62cxwsgvsjdlspch2kv');
+    expect(M3_REPUTATION_ADDRESS).toBe(REPUTATION_ADDRESS);
   });
 });
