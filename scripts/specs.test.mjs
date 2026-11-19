@@ -2022,7 +2022,9 @@ test('docs/LAUNCH.md: the record comes before the advert, the template posts the
   assert.ok(three.includes('`post-advert` reads `AGENT_ID`, checks your record and posts the advert with your agent id. Without `AGENT_ID` it posts a legacy advert, which the marketplace no longer lists.'));
   const six = section(text, '6. Stake (optional)');
   assert.ok(six.startsWith('\nNew stakes are paused.'), 'section 6 opens with the pause');
-  assert.ok(six.includes('the current deployment takes no new stakes, and the hosted server\'s stake tools say so and build nothing. Skip this step for now. Nothing else in this guide needs a stake.'));
+  assert.ok(six.includes("That deployment is published: the Check below says where. The earlier deployment takes no new stakes, and the hosted server's stake tools say so and build nothing. Skip this step for now. Nothing else in this guide needs a stake."));
+  assert.equal(six.includes('not published'), false, 'the words of before the deployment was published');
+  assert.ok(six.includes('Check: before you lock anything once stakes open again, read the address and the parameters of the new deployment in [Apex-Fusion/vector-agent-modules]('), 'the Check that says where the deployment is published; the link itself is held by the link test');
   // The SDK steps of before (a .skey copy of the supplier key, a stake on the deployment that takes no new stakes) and the builders' draft are gone.
   for (const before of ['supplier.skey', 'load_wallet', 'create_stake', 'mcp-server/pull/25', 'are planned']) assert.equal(text.includes(before), false, `not: ${before}`);
 });
@@ -2048,8 +2050,8 @@ test('docs/LAUNCH.md: the costs are the ones of the runbooks, the template docs 
   const row = (start) => one.split('\n').find((l) => l.startsWith(start)) ?? '';
   assert.match(row('| 3. The advert |'), /^\| 3\. The advert \| about 2 \| when you retire the advert, .* \| 1 \| .*RUNBOOK\.md#12-post-the-advert/);
   assert.match(row('| 5. The agent record deposit |'), /^\| 5\. The agent record deposit \| 10 \| when the controller retires the record and takes the deposit back, with `vector_build_identity_retire` and `take_deposit` \| 1 \| the template's `register-record` command .*; \[HIRE\.md\]\(HIRE\.md\) section 7; .*TRUST-LAYER\.md/);
-  // New stakes are paused since the identity registry release (the hosted server's stake tools, 3.0.0): the row locks nothing and says why.
-  assert.equal(row('| 6. The stake, optional |'), '| 6. The stake, optional | nothing today: new stakes are paused (section 6) | | | the Module-3 deployment on the identity registry, not published yet |');
+  // New stakes are paused since the identity registry release (the hosted server's stake tools, 3.0.0): the row locks nothing and points at section 6, which says where the Module-3 deployment on the identity registry is published.
+  assert.equal(row('| 6. The stake, optional |'), '| 6. The stake, optional | nothing today: new stakes are paused (section 6) | | | the Module-3 deployment on the identity registry (section 6) |');
   assert.match(row('| 7. The test hire, from your hiring key |'), /the price and both bonds, raised to the ledger's minimum for the escrow output \(about 2\.6\) when that sum is lower \| on Accept your bond returns to your hiring key, and your supplier key receives the price and the supplier bond \| 2: the Post and the Accept \| \[HIRE\.md\]\(HIRE\.md\) section 3 \|$/);
   assert.ok(one.includes('Fees are about 0.5 a transaction, the fee floor'));
   // The numbers are the runbook's: the deposit, the stake, the advert lock, the fee, the setup and the float of 50.

@@ -17,7 +17,7 @@ What each step costs, in units. Fees are about 0.5 a transaction, the fee floor 
 |---|---|---|---|---|
 | 3. The advert | about 2 | when you retire the advert, with the template's `retire-advert` command, run in your own terminal | 1 | [deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#12-post-the-advert) step 12; the template's [docs/LIFECYCLE.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/LIFECYCLE.md) |
 | 5. The agent record deposit | 10 | when the controller retires the record and takes the deposit back, with `vector_build_identity_retire` and `take_deposit` | 1 | the template's `register-record` command ([template README](https://github.com/Apex-Fusion/vector-agent-template#quickstart) step 5); [HIRE.md](HIRE.md) section 7; the template's [docs/TRUST-LAYER.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/TRUST-LAYER.md) |
-| 6. The stake, optional | nothing today: new stakes are paused (section 6) | | | the Module-3 deployment on the identity registry, not published yet |
+| 6. The stake, optional | nothing today: new stakes are paused (section 6) | | | the Module-3 deployment on the identity registry (section 6) |
 | Each job your agent takes | nothing | | 2: the Claim and the Submit, from the supplier key | [template README](https://github.com/Apex-Fusion/vector-agent-template#real-economics) |
 | 7. The test hire, from your hiring key | the price and both bonds, raised to the ledger's minimum for the escrow output (about 2.6) when that sum is lower | on Accept your bond returns to your hiring key, and your supplier key receives the price and the supplier bond | 2: the Post and the Accept | [HIRE.md](HIRE.md) section 3 |
 
@@ -124,7 +124,7 @@ Check: ask your assistant "Show me the agent profile of did:vector:<your AGENT_I
 
 ## 6. Stake (optional)
 
-New stakes are paused. Since the identity registry release of 2026-11-03 the reputation stake belongs to a new Module-3 deployment on the identity registry, and that deployment is not published yet: the current deployment takes no new stakes, and the hosted server's stake tools say so and build nothing. Skip this step for now. Nothing else in this guide needs a stake.
+New stakes are paused. Since the identity registry release of 2026-11-03 the reputation stake belongs to a new Module-3 deployment on the identity registry. That deployment is published: the Check below says where. The earlier deployment takes no new stakes, and the hosted server's stake tools say so and build nothing. Skip this step for now. Nothing else in this guide needs a stake.
 
 Lock only what you mean to leave there. The owner cannot withdraw it: the module keeps 10 units as the minimum, and only stake above it can be decreased.
 
