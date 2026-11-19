@@ -20,7 +20,7 @@ The fleet is not published to a registry either. The Pipeline commits to the req
 |---|---|---|---|
 | `src/vendored/mcp/marketplace-constants.ts` | `mcp-server:packages/builder/src/vector/marketplace-constants.ts` | `94bd293` | `ca64b38f98e7df4f204fc12e47bff88dadd2673a4c1778b78622a32854de1a8f` |
 | `src/vendored/mcp/marketplace-shared.ts` | `mcp-server:packages/builder/src/vector/marketplace-shared.ts` | `94bd293` | `440e6cacfa3203e78e383897259f202b7f7efd027ad893d12ac661348a0f0d6a` |
-| `src/vendored/mcp/marketplace-indexer.ts` | `mcp-server:packages/builder/src/vector/marketplace-indexer.ts` | `94bd293` | `2072e5bdbc7f9f1fbd039add30bb4e92a2cd8e4641f2584daf04b40558d0d9ab` |
+| `src/vendored/mcp/marketplace-indexer.ts` | `mcp-server:packages/builder/src/vector/marketplace-indexer.ts` | `2d95483` | `ea1019d5a21f82a7e6d7d5d2ad9082e0c8ef3f1ec118e638e44dbd3a43de75ec` |
 | `src/vendored/mcp/marketplace-lineage.ts` | `mcp-server:packages/builder/src/vector/marketplace-lineage.ts` | `94bd293` | `50bfb6d0bd15b0f370d5cf28df2071ee09f25ac201d6fdb6b52e8362ff481ab8` |
 | `src/vendored/mcp/marketplace-build.ts` | `mcp-server:packages/builder/src/vector/marketplace-build.ts` | `94bd293` | `4b89267c260b7e5c512e5de90a9ad01631b189cf66c6f076de3a4282614c913d` |
 | `src/vendored/mcp/marketplace-verify.ts` | `mcp-server:packages/builder/src/vector/marketplace-verify.ts` | `94bd293` | `1ab38e9be9f6690f1ef64c82961c21556135650b6703938b1a63290fc9c92792` |
@@ -90,10 +90,11 @@ Per file (the line numbers are the same in the source and the copy):
 - line 37: in the comment of `MAX_ESCROW_LOVELACE`, the unit name becomes `units` (`at most 10,000 units`).
 - line 41: in the comment of `MAX_ESCROW_INPUT_LOVELACE`, the unit name becomes `units` (`10,005 units`).
 
-`src/vendored/mcp/marketplace-indexer.ts`
+`src/vendored/mcp/marketplace-indexer.ts` (at `2d95483`)
 - line 4: `import { VECTOR_KOIOS_URL } from '@apexfusion/vector-mcp-shared/config';` becomes `import { VECTOR_KOIOS_URL } from '../mcp-shared/config.js';`
-- line 6: `import { decodeAdvertDatum, decodeIdentityAdvertDatum, formatOutRef, parseOutRef } from './marketplace-datum.js';` becomes `import { decodeAdvertDatum, decodeIdentityAdvertDatum, formatOutRef, parseOutRef } from '@vsa/vector-read';`
-- line 7: `import type { AdvertDatum, IdentityAdvertDatum } from './marketplace-datum.js';` becomes `import type { AdvertDatum, IdentityAdvertDatum } from '@vsa/vector-read';`
+- line 5: `import { assertCborHexDepth } from '@apexfusion/vector-mcp-shared/cbor-depth';` becomes `import { assertCborHexDepth } from '@vsa/vector-read/cbor-depth';`
+- line 7: `import { decodeAdvertDatum, decodeIdentityAdvertDatum, formatOutRef, parseOutRef } from './marketplace-datum.js';` becomes `import { decodeAdvertDatum, decodeIdentityAdvertDatum, formatOutRef, parseOutRef } from '@vsa/vector-read';`
+- line 8: `import type { AdvertDatum, IdentityAdvertDatum } from './marketplace-datum.js';` becomes `import type { AdvertDatum, IdentityAdvertDatum } from '@vsa/vector-read';`
 
 `src/vendored/mcp/marketplace-lineage.ts`
 - line 13: `import { decodeEscrowDatum, decodeIdentityEscrowDatum, encodeEscrowDatum, encodeIdentityEscrowDatum, parseOutRef, formatOutRef } from './marketplace-datum.js';` becomes `import { decodeEscrowDatum, decodeIdentityEscrowDatum, encodeEscrowDatum, encodeIdentityEscrowDatum, parseOutRef, formatOutRef } from '@vsa/vector-read';`
@@ -254,18 +255,18 @@ No other copy holds an en or em dash (the comment of `ToolCall` in the source of
 
 ## CBOR check
 
-The rule: Refuse CBOR that is nested deeper than 64 levels before it is decoded. The mcp-server applies it at `2d95483` to every datum, transaction and metadata value that its own builders did not make. The scanner and the wrappers are in `@vsa/vector-read` (`src/cbor-depth.ts` and `src/guarded-decode.ts`), and this package takes three copies at `2d95483` and leaves the others at `94bd293`. `test/cbor-guard-sites.test.ts` reads `src/` and names each file that decodes CBOR by itself, with the reason that the call is safe. `test/cbor-guard.test.ts` shows each check at work.
+The rule: Refuse CBOR that is nested deeper than 64 levels before it is decoded. The mcp-server applies it at `2d95483` to every datum, transaction and metadata value that its own builders did not make. The scanner and the wrappers are in `@vsa/vector-read` (`src/cbor-depth.ts` and `src/guarded-decode.ts`), and this package takes the copies that are named under Moved to at `2d95483` and leaves the others at `94bd293`. `test/cbor-guard-sites.test.ts` reads `src/` and names each file that decodes CBOR by itself, with the reason that the call is safe. `test/cbor-guard.test.ts` shows each check at work.
 
 Moved to `2d95483`:
 
 - `src/vendored/mcp-shared/provider.ts`. The `OgmiosProvider` hands Lucid no inline datum that fails the check. An output with such a datum stays in the list, with its address, its value and its other fields, and without its datum. The provider writes one line for the operator. A datum that is looked up by its hash, and fails the check, is refused. Anyone can send an output with a datum to an address, so this is the place where the datum of such an output would reach Lucid: it matters most here. Against `94bd293` the source file also adds the class `OgmiosRpcError`: an error of the node is thrown as that class, with the same message as before. No code of this package depends on the class.
 - `src/vendored/mcp/identity-deployment.ts`. `findConfigRecord` reads the datum of the configuration record through `decodePlutusData`. This is the only change of the source file since `94bd293`.
 - `src/vendored/signer/sign.ts`. `signTransaction` checks the bytes of the transaction before CML reads them. This is the only change of the source file since `94bd293`.
+- `src/vendored/mcp/marketplace-indexer.ts`. A Koios row whose inline datum fails the check keeps its other fields and loses its datum, so that the readers of a row see a row without a datum, as they see a datum that does not decode. The source file also adds the page reads of `credential_utxos` and exports `koiosPostList`, which the read code of the ledger copies uses.
 
 Left at `94bd293`, with the reason:
 
 - `src/vendored/mcp/marketplace-build.ts`. At `2d95483` the source reads the Post transaction that it built through `decodeTransaction`. No chain data reaches that read: the transaction is the output of the builder of this process. The source file also changes in other ways since `94bd293`: the escrow switch, the payment of a vault and the classes of the refusals of the escrow planner. Those belong to a re-vendor of the whole set, not to this check.
-- `src/vendored/mcp/marketplace-indexer.ts`. At `2d95483` the source takes the inline datum out of a Koios row that fails the check, so that the readers of a row see a row without a datum. The readers of a row here are the datum decoders of `@vsa/vector-read`, and each one refuses such a datum before it reads it, as it refuses a datum that does not decode. The source file also changes in other ways since `94bd293`: the page reads of `credential_utxos`.
 - `src/vendored/mcp/build.ts`. The excerpt (lines 1-48) holds `lucidForAddress` and `toBuildResult`. The changes of the source at `2d95483` are in the builders that the excerpt leaves out: the datum, the redeemer and the script that a caller gives, and the fee of a transaction that a caller gives.
 - Every other copy: its source does not change at `2d95483`.
 
@@ -295,13 +296,14 @@ From the repository root, with `<mcp-server>` a checkout that has `94bd293` and 
 
 ```bash
 # The whole files.
-for f in marketplace-constants marketplace-shared marketplace-indexer marketplace-lineage marketplace-build marketplace-verify marketplace-transport marketplace-supplier gov-build rate-limiter identity-chain identity-rules identity-scripts.generated legacy-registry; do git -C <mcp-server> cat-file blob 94bd293:packages/builder/src/vector/$f.ts | diff - packages/buyer-core/src/vendored/mcp/$f.ts; done
+for f in marketplace-constants marketplace-shared marketplace-lineage marketplace-build marketplace-verify marketplace-transport marketplace-supplier gov-build rate-limiter identity-chain identity-rules identity-scripts.generated legacy-registry; do git -C <mcp-server> cat-file blob 94bd293:packages/builder/src/vector/$f.ts | diff - packages/buyer-core/src/vendored/mcp/$f.ts; done
 git -C <mcp-server> cat-file blob 94bd293:packages/builder/src/env.ts | diff - packages/buyer-core/src/vendored/mcp/env.ts
 for f in config types; do git -C <mcp-server> cat-file blob 94bd293:packages/shared/src/$f.ts | diff - packages/buyer-core/src/vendored/mcp-shared/$f.ts; done
-# The three copies at 2d95483: each diff prints the one rewritten import line.
+# The copies at 2d95483: each diff prints the rewritten import lines, and no other line.
 git -C <mcp-server> cat-file blob 2d95483:packages/builder/src/vector/identity-deployment.ts | diff - packages/buyer-core/src/vendored/mcp/identity-deployment.ts
 git -C <mcp-server> cat-file blob 2d95483:packages/shared/src/provider.ts | diff - packages/buyer-core/src/vendored/mcp-shared/provider.ts
 git -C <mcp-server> cat-file blob 2d95483:packages/signer/src/sign.ts | diff - packages/buyer-core/src/vendored/signer/sign.ts
+git -C <mcp-server> cat-file blob 2d95483:packages/builder/src/vector/marketplace-indexer.ts | diff - packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts
 for f in escrow-koios.fixture.ts marketplace.fixture.ts fixture-provider.ts protocol-params.fixture.json identity-world.ts escrow-identity.fixture.ts; do git -C <mcp-server> cat-file blob 94bd293:packages/builder/test/fixtures/$f | diff - packages/buyer-core/test/fixtures/$f; done
 # The excerpts.
 git -C <mcp-server> cat-file blob 94bd293:packages/shared/src/tx.ts | sed -n '1,3p;46,54p;66,103p' | cmp - packages/buyer-core/src/vendored/mcp-shared/tx.ts
