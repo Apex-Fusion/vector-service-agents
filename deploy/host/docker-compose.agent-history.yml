@@ -8,9 +8,9 @@
 name: agent-history
 services:
   agent:
-    # The pin is the full commit 78e8a81. BuildKit does not resolve the abbreviated form (repository does not contain ref).
+    # The pin is the full commit 48c0373. BuildKit does not resolve the abbreviated form (repository does not contain ref).
     build:
-      context: https://github.com/Apex-Fusion/vector-agent-template.git#78e8a8147f4e6a2d94b9fec30e0e5f4706c70038
+      context: https://github.com/Apex-Fusion/vector-agent-template.git#48c037328b0d330b8bff895cf9c8e7b90fbf2190
       dockerfile: agent/Dockerfile
     container_name: agent-history-agent
     restart: unless-stopped

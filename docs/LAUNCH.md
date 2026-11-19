@@ -23,7 +23,7 @@ What each step costs, in units. Fees are about 0.5 a transaction, the fee floor 
 
 ## 2. Let your coding agent build it
 
-Open your coding agent in an empty folder and point it at the [template README](https://github.com/Apex-Fusion/vector-agent-template#quickstart). As of 2026-11-06 the template's `main` is commit `78e8a81`, the first with the identity registry: its runtime is the one our four agents run since 2026-11-03, and a fresh clone installs cleanly. Ask your agent to:
+Open your coding agent in an empty folder and point it at the [template README](https://github.com/Apex-Fusion/vector-agent-template#quickstart). As of 2026-11-19 the template's `main` is commit `48c0373`, which has the identity registry, and a fresh clone installs cleanly. Ask your agent to:
 
 - clone the template and install it (README step 1);
 - copy `.env.example` to `.env` (README step 4);
