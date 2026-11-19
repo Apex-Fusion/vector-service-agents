@@ -140,6 +140,7 @@ describe('accessToken: a call that is right', () => {
 describe('accessToken: the token', () => {
   const forgedCases: Array<[string, (claims: Record<string, unknown>, now: number) => void, Record<string, unknown>?]> = [
     ['token.alg', () => undefined, { alg: 'HS256' }],
+    ['token.alg', () => undefined, { alg: 'none' }],
     ['token.typ', () => undefined, { typ: 'JWT' }],
     ['token.kid', () => undefined, { kid: `did:vector:${'a'.repeat(64)}#${'b'.repeat(56)}` }],
     ['token.issuer', (c) => (c.iss = 'https://evil.example')],
@@ -163,6 +164,7 @@ describe('accessToken: the token', () => {
     ['delegation.details', (c) => (c.authorization_details = [{ type: 'urn:other' }])],
     ['delegation.details', (c) => (c.authorization_details = [{ type: 'urn:other', identifier: 'a'.repeat(64), actions: ['erp.*'], locations: [AUDIENCE] }])],
     ['delegation.details', (c) => (c.authorization_details = [])],
+    ['delegation.details', (c) => { const entry = { type: DELEGATION_DETAILS_TYPE, identifier: 'a'.repeat(64), actions: ['erp.*'], locations: [AUDIENCE] }; c.authorization_details = [entry, entry]; }],
     ['delegation.details', (c) => (c.authorization_details = [{ type: DELEGATION_DETAILS_TYPE, identifier: 'abc', actions: ['erp.*'], locations: [AUDIENCE] }])],
     ['delegation.details', (c) => (c.authorization_details = [{ type: DELEGATION_DETAILS_TYPE, identifier: 'a'.repeat(64), actions: [], locations: [AUDIENCE] }])],
     ['delegation.details', (c) => (c.authorization_details = [{ type: DELEGATION_DETAILS_TYPE, identifier: 'a'.repeat(64), actions: ['Bad Action'], locations: [AUDIENCE] }])],
@@ -189,6 +191,14 @@ describe('accessToken: the token', () => {
     refused(await callWith(s, token, await proofFor(s, token)), 'token.kid');
     const twin = await forge(s, await issue(s), () => undefined);
     accepted(await callWith(s, twin, await proofFor(s, twin)));
+  });
+
+  it('an unsecured token (alg none, an empty signature) is refused: token.alg', async () => {
+    const s = scene();
+    const token = await issue(s);
+    const unsecured = `${b64url(JSON.stringify({ ...decodeJwt(token).header, alg: 'none' }))}.${token.split('.')[1]}.`;
+    refused(await callWith(s, unsecured, await proofFor(s, unsecured)), 'token.alg');
+    accepted(await callWith(s, token, await proofFor(s, token)));
   });
 
   it('a token whose signature does not verify is refused: a changed claim, and another key with the same kid', async () => {
@@ -295,6 +305,26 @@ describe('accessToken: the DPoP proof', () => {
     accepted(await callWith(s, token, await proofFor(s, token, { claims: { iat: Math.floor(s.gateway.now() / 1000) - 299 } })));
     refused(await callWith(s, token, await proofFor(s, token, { claims: { iat: Math.floor(s.gateway.now() / 1000) + 31 } })), 'dpop.iat');
     refused(await callWith(s, token, await proofFor(s, token, { claims: { iat: Math.floor(s.gateway.now() / 1000) - 301 } })), 'dpop.iat');
+  });
+
+  it.each<[string, string, string, boolean]>([
+    ['the default port of https in the proof', 'https://mp-mock.example:443/t/1/erp/stock', URL_OF_CALL, true],
+    ['the default port of https in the request', URL_OF_CALL, 'https://mp-mock.example:443/t/1/erp/stock', true],
+    ['an upper case scheme and host in the proof', 'HTTPS://MP-MOCK.EXAMPLE/t/1/erp/stock', URL_OF_CALL, true],
+    ['an upper case scheme and host in the request', URL_OF_CALL, 'HTTPS://MP-MOCK.EXAMPLE/t/1/erp/stock', true],
+    ['a query and a fragment', `${URL_OF_CALL}?a=1#b`, `${URL_OF_CALL}?c=2`, true],
+    ['a trailing slash', `${URL_OF_CALL}/`, URL_OF_CALL, false],
+    ['a path with another case', 'https://mp-mock.example/T/1/erp/stock', URL_OF_CALL, false],
+    ['a percent-encoded letter in the proof', 'https://mp-mock.example/t/1/erp/st%6Fck', URL_OF_CALL, false],
+    ['a percent-encoded letter in the request', URL_OF_CALL, 'https://mp-mock.example/t/1/erp/st%6Fck', false],
+    ['another port', 'https://mp-mock.example:8443/t/1/erp/stock', URL_OF_CALL, false],
+    ['another scheme', 'http://mp-mock.example/t/1/erp/stock', URL_OF_CALL, false],
+  ])('the htu of a proof against the URL of the request: %s', async (_name, htu, url, accepts) => {
+    const s = scene();
+    const token = await issue(s);
+    const result = await s.verifier.accessToken({ authorization: `DPoP ${token}`, dpop: await proofFor(s, token, { claims: { htu } }), method: 'POST', url }, POLICY);
+    if (accepts) accepted(result);
+    else refused(result, 'dpop.url');
   });
 
   it('the method and the URL of the call are the ones that the verifier gets: a proof for POST is refused for a GET', async () => {
@@ -620,6 +650,25 @@ describe('accessToken: the lists that the token names', () => {
     s.gateway.fault(jwks, null);
     s.gateway.advance(31_000);
     accepted(await call(s, token));
+  });
+});
+
+describe('accessToken: the last position of a list', () => {
+  it('a token of an agent at position 131,071 is accepted, and refused when the suspension bit of that position is set (the last bit of the Bitstring Status List)', async () => {
+    const s = scene({ listCacheSeconds: 0 });
+    const last = s.gateway.createAgent({ label: 'rp last position', statusIndex: LIST_SIZE - 1 });
+    const root = s.gateway.delegate({ delegator: s.boss, delegate: last, actions: ['erp.*'], resources: [AUDIENCE] });
+    const asked = await s.client.requestToken({ subject: { did: last.did, key: last.authentication.privateKey }, dpopKey: last.delegation.privateKey, resource: AUDIENCE, delegation: { identifier: root.id } });
+    if (!asked.ok) throw new Error(asked.detail);
+    const callAsLast = async () => {
+      const presented = await presentToken(asked.value.accessToken, last.delegation.privateKey, { method: 'POST', url: URL_OF_CALL }, { now: s.gateway.now });
+      return s.verifier.accessToken({ authorization: presented.authorization, dpop: presented.dpop, method: 'POST', url: URL_OF_CALL }, POLICY);
+    };
+    const verified = accepted(await callAsLast());
+    expect(verified.statusClaim.index).toBe(LIST_SIZE - 1);
+    expect(verified.status.read).toBe(true);
+    s.gateway.setStatus(last, 'suspended');
+    refused(await callAsLast(), 'status.suspended');
   });
 });
 

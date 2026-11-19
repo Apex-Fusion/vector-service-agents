@@ -123,6 +123,22 @@ describe('status lists', () => {
     expect(accepted(bitstringEntryStatus(accepted(decodeBitstringStatusList(second.bsl, await ctx1('bsl'))), far.index - LIST_SIZE))).toBe('suspended');
   });
 
+  it('the last position of a list (131,071) is read in both formats: the entry of the Token Status List, and the suspension bit at 262,143 of the Bitstring Status List', async () => {
+    const w = world();
+    const { gateway } = w;
+    const revoked = gateway.createAgent({ label: 'sl second to last', statusIndex: LIST_SIZE - 2, status: 'revoked' });
+    const suspended = gateway.createAgent({ label: 'sl last', statusIndex: LIST_SIZE - 1, status: 'suspended' });
+    const l = await lists(w);
+    const tsl = accepted(decodeTokenStatusList(l.tsl, await l.ctx('tsl')));
+    const bsl = accepted(decodeBitstringStatusList(l.bsl, await l.ctx('bsl')));
+    const positions = [LIST_SIZE - 3, revoked.index, suspended.index];
+    expect(positions.map((p) => accepted(tokenEntryStatus(tsl, p)))).toStrictEqual(['valid', 'revoked', 'suspended']);
+    expect(positions.map((p) => accepted(bitstringEntryStatus(bsl, p)))).toStrictEqual(['valid', 'revoked', 'suspended']);
+    expect(bsl.bit(2 * LIST_SIZE - 1)).toBe(true);
+    refused(tokenEntryStatus(tsl, LIST_SIZE), 'list.index');
+    refused(bitstringEntryStatus(bsl, LIST_SIZE), 'list.index');
+  });
+
   it('the entry lookups: a position that the list does not have is list.index, a value that the gateway never writes is list.value, a list that names one purpose only is list.malformed, and revocation wins', async () => {
     const w = world();
     w.gateway.createAgent({ label: 'sl lookups' });
@@ -144,6 +160,7 @@ describe('status lists', () => {
   /** A Token Status List and a Bitstring Status List with a wrong part, signed by the key of the gateway. */
   const tokenCases: Array<[string, (c: Record<string, unknown>, now: number) => void, Record<string, unknown>?]> = [
     ['list.alg', () => undefined, { alg: 'HS256' }],
+    ['list.alg', () => undefined, { alg: 'none' }],
     ['list.typ', () => undefined, { typ: 'JWT' }],
     ['list.kid', () => undefined, { kid: `did:vector:${'a'.repeat(64)}#${'b'.repeat(56)}` }],
     ['list.issuer', (c) => (c.iss = 'https://evil.example')],
@@ -367,6 +384,7 @@ describe('verifyJwtSvid', () => {
   }
   const cases: Array<[string, (c: Record<string, unknown>, now: number, td: string) => void, Record<string, unknown>?]> = [
     ['jwt_svid.alg', () => undefined, { alg: 'HS256' }],
+    ['jwt_svid.alg', () => undefined, { alg: 'none' }],
     ['jwt_svid.typ', () => undefined, { typ: 'at+jwt' }],
     ['jwt_svid.kid', () => undefined, { kid: 'unknown' }],
     ['jwt_svid.claims', (c) => delete c.sub],
@@ -423,6 +441,7 @@ describe('credentials', () => {
 
   const changes: Array<[string, (c: Record<string, any>, now: number) => void, Record<string, unknown>?]> = [
     ['credential.alg', () => undefined, { alg: 'HS256' }],
+    ['credential.alg', () => undefined, { alg: 'none' }],
     ['credential.typ', () => undefined, { typ: 'at+jwt' }],
     ['credential.typ', () => undefined, { cty: 'other' }],
     ['credential.kid', () => undefined, { kid: 'unknown' }],
