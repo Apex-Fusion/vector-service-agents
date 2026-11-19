@@ -1,67 +1,136 @@
 import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { Data, Constr, fromText } from '@lucid-evolution/lucid';
-import { replayFetch, didFor, topLevelBytes, KOIOS_URL, M3_REPUTATION_ADDRESS, M3_ENDORSEMENT_ADDRESS, M1_ADDRESSES, M6_ADDRESSES } from '@vsa/vector-read';
+import { replayFetch, didFor, topLevelBytes, encodeStakeDatum, SEED_STAKE_ID, M3_REPUTATION_ADDRESS, M3_ENDORSEMENT_ADDRESS, M1_ADDRESSES, M6_ADDRESSES } from '@vsa/vector-read';
+import type { StakeDatum } from '@vsa/vector-read';
 import { reputationSection, disputeSection, selfImprovementSection, matchesSubject } from '../src/modules.ts';
 import { DEFAULT_MODULES } from '../src/config.ts';
 import type { ModuleScan } from '../src/modules.ts';
 import type { Subject } from '../src/subject.ts';
+import { BUILT_STAKE, BUILT_STAKE_HEX, addressKey, stakeRow, stakeToken, txHash, withStakeRows } from './support.ts';
+import type { Asset, StakeRow } from './support.ts';
 const fx = JSON.parse(readFileSync(new URL('./fixtures/chandra.json', import.meta.url), 'utf8'));
 const CHANDRA = '5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db';
 const OWNER = '401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9';
-// One recorded key owns eight stakes on the ledger: the agents below are two of them.
+// The Module-3 deployment before the identity registry, as the fixture recorded it on 2026-10-13. The fixture still holds its outputs: the stake datums
+// have 6 fields, and the default settings do not read that address. One recorded key owns eight stakes there: the agents below are two of them.
+const EARLIER = { ...DEFAULT_MODULES, m3: { reputation: 'addr1w9gk3cv8rn7mre2urrhpwwkteh8qjgzy5j9u9c3l8w34pyc76uluq', endorsement: 'addr1w9m3j6ld07uy2asssqxvwfqu73ykuqxhjqw7jpulkqera0cjm7mmz' } };
 const BUSY_OWNER = '151cadb75179beb35c094c4d05aed5cf9ac1ef5295e5161ac4141de4';
 const AGENT = '0b53d9ed96bf8ab033248afb128f2de4fc44a8da72a1208a0be474599b764330';
 // A subject given as an identifier carries the owner key as its controller; a subject given as a key hash carries the key it was given as.
 const subject = (kind: Subject['kind'], asset: string | null, pkh: string | null): Subject => ({ kind, pkh: kind === 'pkh' ? pkh : null, asset_name: asset, did: asset ? didFor(asset) : null, registry: asset ? 'legacy' : null, controller_pkh: pkh, candidates: [] });
-const addressKey = (address: string) => `POST ${KOIOS_URL}/address_utxos ${JSON.stringify({ _addresses: [address], _extended: true })}`;
 
-describe('Module-3 stakes follow the kind of subject', () => {
+describe('Module-3 stakes of the deployment on the identity registry follow the kind of subject', () => {
   const SIBLING = 'cc'.repeat(32), OTHER_OWNER = '99'.repeat(28);
-  const stakeDatum = (asset: string, owner: string, amount: bigint) => Data.to(new Constr(0, [asset, new Constr(0, [owner]), amount, [fromText('x.y.v1')], 1_700_000_000_000n, 0n]));
-  const txOf = (n: number) => n.toString(16).padStart(64, 'e');
-  const row = (n: number, datum: string) => ({ tx_hash: txOf(n), tx_index: 0, address: M3_REPUTATION_ADDRESS, value: '2000000', block_height: 9_000_000 + n, inline_datum: { bytes: datum }, asset_list: [] });
-  // The recorded stakes plus two synthetic ones: a sibling (same owner, other asset) and a rotated one (same asset, other owner).
-  const withSynthetic = () => {
-    const key = addressKey(M3_REPUTATION_ADDRESS);
-    const rows = JSON.parse(fx.store[key].body);
-    rows.push(row(1, stakeDatum(SIBLING, OWNER, 5_000_000n)), row(2, stakeDatum(CHANDRA, OTHER_OWNER, 7_000_000n)));
-    return { ...fx.store, [key]: { status: 200, body: JSON.stringify(rows) } };
+  // A stake output with its token, for the datum of ChandraOCR with the fields in `over` changed.
+  const row = (n: number, over: Partial<StakeDatum> = {}) => {
+    const d = { ...BUILT_STAKE, ...over };
+    return stakeRow(n, encodeStakeDatum(d), [stakeToken(d.agent_did)]);
   };
-  const refs = (r: { stakes: Array<{ utxo: string }> }) => r.stakes.map((s) => s.utxo);
-  const RECORDED = '05563e751a32ce766aaf7aa015140912563f559394b5ecea77226d2c90bd6d4f#0';
+  const ref = (n: number) => `${txHash(n)}#0`;
+  // A sibling (same owner, other asset), the stake of ChandraOCR, and a rotated one (same asset, other owner).
+  const store = withStakeRows(fx.store, [row(1, { agent_did: SIBLING }), row(2), row(3, { owner_pkh: OTHER_OWNER })]);
   test('a subject given as an asset keeps only the stakes whose datum names that asset', async () => {
-    const r = await reputationSection(subject('asset', CHANDRA, OWNER), replayFetch(withSynthetic()));
-    expect(refs(r)).toEqual([RECORDED, `${txOf(2)}#0`]); // the sibling stake is out; the stake of another owner on this asset is in
+    const r = await reputationSection(subject('asset', CHANDRA, OWNER), replayFetch(store));
+    expect(r.stakes.map((s) => s.utxo)).toEqual([ref(2), ref(3)]); // the sibling stake is out; the stake of another owner on this asset is in
   });
   test('a subject given as a key hash keeps the stakes that key owns, whatever the asset', async () => {
-    const r = await reputationSection(subject('pkh', CHANDRA, OWNER), replayFetch(withSynthetic()));
-    expect(refs(r)).toEqual([RECORDED, `${txOf(1)}#0`]);
-    expect(r.stakes.map((s) => s.agent_asset_name)).toEqual([CHANDRA, SIBLING]);
+    const r = await reputationSection(subject('pkh', CHANDRA, OWNER), replayFetch(store));
+    expect(r.stakes.map((s) => s.utxo)).toEqual([ref(1), ref(2)]);
+    expect(r.stakes.map((s) => s.agent_asset_name)).toEqual([SIBLING, CHANDRA]);
   });
-  // Only ChandraOCR's own rows are pinned exactly (its stake above and in report.test.ts). Other agents' rows are unrelated data: a later recording
-  // may hold more of them, so they are checked by what they must be, and counted from below.
-  test('on the recorded ledger data, one agent of a key with many stakes gets its own and none of its siblings', async () => {
-    const asAsset = await reputationSection(subject('asset', AGENT, BUSY_OWNER), replayFetch(fx.store));
-    expect(asAsset.stakes.length).toBeGreaterThanOrEqual(1);
-    for (const s of asAsset.stakes) expect(s).toMatchObject({ agent_asset_name: AGENT, owner_pkh: BUSY_OWNER }); // no sibling of the same owner
-    const asKey = await reputationSection(subject('pkh', null, BUSY_OWNER), replayFetch(fx.store));
-    expect(asKey.stakes.length).toBeGreaterThanOrEqual(8); // eight when recorded
-    for (const s of asKey.stakes) expect(s.owner_pkh).toBe(BUSY_OWNER);
-    expect(new Set(asKey.stakes.map((s) => s.agent_asset_name)).size).toBeGreaterThan(1); // the key has siblings
-    expect(asKey.stakes.map((s) => s.agent_asset_name)).toContain(AGENT);
+  test('a subject with no stake gets the same answer as before: no stakes, whatever else the address holds', async () => {
+    expect(await reputationSection(subject('asset', 'dd'.repeat(32), '88'.repeat(28)), replayFetch(store))).toMatchObject({ stakes: [] });
+    expect(await reputationSection(subject('pkh', null, '88'.repeat(28)), replayFetch(store))).toMatchObject({ stakes: [] });
+    expect(await reputationSection(subject('asset', CHANDRA, OWNER), replayFetch(fx.store))).toEqual({ stakes: [], endorsements: [] }); // the recorded ledger data: nothing at the stake address
+  });
+});
+
+describe('a stake of the identity deployment, built from the datum encoding of the deployment', () => {
+  // BUILT_STAKE is a built vector, not a recorded datum: no stake exists on the deployment yet (test/support.ts names the place to change when one does).
+  test('the built datum bytes are the fields of BUILT_STAKE', () => {
+    expect(encodeStakeDatum(BUILT_STAKE)).toBe(BUILT_STAKE_HEX);
+  });
+  test('the entry shows each field of the datum, and the output that holds it', async () => {
+    const r = await reputationSection(subject('asset', CHANDRA, OWNER), replayFetch(withStakeRows(fx.store, [stakeRow(2, BUILT_STAKE_HEX, [stakeToken(CHANDRA)])])));
+    expect(r.stakes).toEqual([{
+      utxo: `${txHash(2)}#0`, agent_asset_name: CHANDRA, owner_pkh: OWNER, stake_lovelace: '10000000', capabilities: ['ocr.page.extract.chandra-ocr-2.v1'],
+      last_updated: 1_794_745_920_000, history_points: 0, challenge_locks: [], stake_id: `${'ab'.repeat(32)}#1`,
+    }]);
+    expect(Object.keys(r.stakes[0])).toEqual(['utxo', 'agent_asset_name', 'owner_pkh', 'stake_lovelace', 'capabilities', 'last_updated', 'history_points', 'challenge_locks', 'stake_id']);
+  });
+  test('an entry shows the open challenges, and a capability that is not UTF-8 as 0x and its hex', async () => {
+    const lock = '72636c5f' + '01'.repeat(24);
+    const d: StakeDatum = { ...BUILT_STAKE, challenge_locks: [lock], staked_capabilities: ['61', 'c3a9', 'ff', ''] };
+    const r = await reputationSection(subject('asset', CHANDRA, OWNER), replayFetch(withStakeRows(fx.store, [stakeRow(2, encodeStakeDatum(d), [stakeToken(CHANDRA)])])));
+    expect(r.stakes[0]).toMatchObject({ challenge_locks: [lock], capabilities: ['a', 'é', '0xff', ''] });
+  });
+  test('the amount and the history points are exact: a JSON number up to 2^53 - 1, a decimal string beyond', async () => {
+    const shown = async (over: Partial<StakeDatum>) => {
+      const r = await reputationSection(subject('asset', CHANDRA, OWNER), replayFetch(withStakeRows(fx.store, [stakeRow(2, encodeStakeDatum({ ...BUILT_STAKE, ...over }), [stakeToken(CHANDRA)])])));
+      return [r.stakes[0].stake_lovelace, r.stakes[0].history_points];
+    };
+    expect(await shown({ stake_amount: 2n ** 70n, history_points: 2n ** 53n })).toEqual(['1180591620717411303424', '9007199254740992']);
+    expect(await shown({ stake_amount: 1n, history_points: 2n ** 53n - 1n })).toEqual(['1', 9_007_199_254_740_991]);
+  });
+
+  // What is no stake. Each output below differs from the built stake output in one thing, and the built stake output (the twin of all of them) is a stake.
+  const rows: Array<[what: string, output: StakeRow]> = [
+    ['an output with the datum and no token, the opening output of a stake', stakeRow(2, encodeStakeDatum({ ...BUILT_STAKE, stake_id: SEED_STAKE_ID }), [])],
+    ['an output whose asset list is null', stakeRow(2, BUILT_STAKE_HEX, null)],
+    ['an output with a token of another policy', stakeRow(2, BUILT_STAKE_HEX, [{ ...stakeToken(CHANDRA), policy_id: '11'.repeat(28) }])],
+    ['an output with the stake token of another agent', stakeRow(2, BUILT_STAKE_HEX, [stakeToken('cc'.repeat(32))])],
+    ['an output with a history bonus token of the policy', stakeRow(2, BUILT_STAKE_HEX, [{ ...stakeToken(CHANDRA), asset_name: Buffer.from('hbonus_' + 'x'.repeat(10)).toString('hex') }])],
+    ['an output with 2 of the stake token', stakeRow(2, BUILT_STAKE_HEX, [stakeToken(CHANDRA, '2')])],
+    ['an output with the stake token and a datum that is not Plutus data', stakeRow(2, 'zz', [stakeToken(CHANDRA)])],
+    ['an output with the stake token and the 6 fields of the earlier deployment', stakeRow(2, Data.to(new Constr(0, [CHANDRA, new Constr(0, [OWNER]), 10_000_000n, [fromText('x.y.v1')], 1_700_000_000_000n, 0n])), [stakeToken(CHANDRA)])],
+    ['an output with the stake token and no datum', stakeRow(2, null, [stakeToken(CHANDRA)])],
+  ];
+  test.each(rows)('%s is no stake', async (_what, output) => {
+    const r = await reputationSection(subject('asset', CHANDRA, OWNER), replayFetch(withStakeRows(fx.store, [output])));
+    expect(r.stakes).toEqual([]);
+  });
+  test('the twin of each: the built datum with its own token is a stake', async () => {
+    const r = await reputationSection(subject('asset', CHANDRA, OWNER), replayFetch(withStakeRows(fx.store, [stakeRow(2, BUILT_STAKE_HEX, [stakeToken(CHANDRA)])])));
+    expect(r.stakes).toHaveLength(1);
+  });
+  test('the policy of the token is the hash in the configured stake address: the token of another validator is no stake there, and the token of its own validator is', async () => {
+    // The Module-1 claim validator stands for another deployment. Its address holds the output, and the stake address setting names that address.
+    const other = M1_ADDRESSES.claim, otherHash = 'a9d22e8b01d282be8007b8d9e3e8af548aaa56f1c3e433c0eddd8760';
+    const modules = { ...DEFAULT_MODULES, m3: { ...DEFAULT_MODULES.m3, reputation: other } };
+    const at = (assets: Asset[]) => replayFetch({ ...fx.store, [addressKey(other)]: { status: 200, body: JSON.stringify([stakeRow(2, BUILT_STAKE_HEX, assets)]) } });
+    expect((await reputationSection(subject('asset', CHANDRA, OWNER), at([stakeToken(CHANDRA)]), modules)).stakes).toEqual([]); // the token of the identity deployment's validator
+    expect((await reputationSection(subject('asset', CHANDRA, OWNER), at([{ ...stakeToken(CHANDRA), policy_id: otherHash }]), modules)).stakes).toHaveLength(1);
+  });
+});
+
+describe('the earlier Module-3 deployment', () => {
+  const earlier = JSON.parse(fx.store[addressKey(EARLIER.m3.reputation)].body) as Array<{ inline_datum: { bytes: string } }>;
+  test('the fixture holds its recorded stakes: real datums of 6 fields, which the default settings do not read', async () => {
+    expect(earlier.filter((u) => (Data.from(u.inline_datum.bytes) as Constr<Data>).fields.length === 6).length).toBeGreaterThanOrEqual(9); // nine when recorded
+    expect(addressKey(EARLIER.m3.reputation)).not.toBe(addressKey(M3_REPUTATION_ADDRESS));
+    expect(addressKey(EARLIER.m3.endorsement)).not.toBe(addressKey(M3_ENDORSEMENT_ADDRESS));
+  });
+  test('set as the stake address, it gives no stake: a real 6-field datum with its real token is not a stake of the 8-field layout', async () => {
+    for (const s of [subject('asset', CHANDRA, OWNER), subject('asset', AGENT, BUSY_OWNER), subject('pkh', null, BUSY_OWNER)]) {
+      expect((await reputationSection(s, replayFetch(fx.store), EARLIER)).stakes, JSON.stringify(s.asset_name ?? s.pkh)).toEqual([]);
+    }
   });
 });
 
 describe('Module-3 endorsements', () => {
+  // The recorded endorsement datums are those of the earlier deployment: the matching is by bytes fields, whatever the layout.
   test('endorsement datums recorded from the ledger are found by the asset name they name', async () => {
-    const r = await reputationSection(subject('asset', AGENT, null), replayFetch(fx.store));
+    const r = await reputationSection(subject('asset', AGENT, null), replayFetch(fx.store), EARLIER);
     expect(r.endorsements.length).toBeGreaterThanOrEqual(4); // four when recorded
     for (const e of r.endorsements) expect(e).toEqual({ utxo: expect.stringMatching(/^[0-9a-f]{64}#\d+$/), block: expect.any(Number), fields: expect.arrayContaining([AGENT]) });
   });
   test('an agent that no recorded endorsement names has none', async () => {
-    const r = await reputationSection(subject('asset', CHANDRA, OWNER), replayFetch(fx.store));
+    const r = await reputationSection(subject('asset', CHANDRA, OWNER), replayFetch(fx.store), EARLIER);
     expect(r.endorsements).toEqual([]);
+  });
+  test('the endorsement address of the default settings is the one of the identity deployment: the recorded endorsements of the earlier deployment are not read', async () => {
+    expect((await reputationSection(subject('asset', AGENT, null), replayFetch(fx.store))).endorsements).toEqual([]);
   });
 });
 

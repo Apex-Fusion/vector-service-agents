@@ -32,8 +32,8 @@ const PURPOSES = [[PURPOSE_AUTHENTICATION, 'authentication'], [PURPOSE_ASSERTION
 const RIGHTS = [[RIGHT_SUSPEND, 'suspend'], [RIGHT_REVOKE, 'revoke'], [RIGHT_RECOVER, 'recover']] as const;
 // The words of the bits that are set, in the order of the list (a sum of powers of two, read as the library reads it).
 const words = (value: number, names: ReadonlyArray<readonly [number, string]>) => names.filter(([bit]) => (BigInt(value) / BigInt(bit)) % 2n === 1n).map(([, word]) => word);
-// A legacy record's self-declared registration time can be any integer: a JSON number while it is exact, else a decimal string.
-const jsonInt = (n: bigint): number | string => (n <= BigInt(Number.MAX_SAFE_INTEGER) && n >= BigInt(Number.MIN_SAFE_INTEGER) ? Number(n) : n.toString());
+// An integer of a datum can have any size: a JSON number while it is exact, else a decimal string. The self-declared registration time of a legacy record and the history points of a stake are shown so.
+export const jsonInt = (n: bigint): number | string => (n <= BigInt(Number.MAX_SAFE_INTEGER) && n >= BigInt(Number.MIN_SAFE_INTEGER) ? Number(n) : n.toString());
 
 export interface KeyView { key_hash: string; type: 'Ed25519' | 'P-256'; purposes: string[] }
 export interface PartyView { role: string; signer: string; organisation: string | null; rights: string[]; not_before: number; not_after: number | null; removal_after: number | null }

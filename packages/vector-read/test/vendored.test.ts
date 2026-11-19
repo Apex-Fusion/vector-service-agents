@@ -39,3 +39,39 @@ describe('vendored identity codecs', () => {
     expect(excerpts).toStrictEqual(['src/vendored/shared/identity/constants.ts', 'src/vendored/shared/network.ts', 'src/vendored/shared/chain/ChainProvider.ts']);
   });
 });
+
+// The stake codec copied from mcp-server: one row of the Stake codec table. The copy leaves out two lines of its source, so the sha256 is the check here;
+// the cmp command of VENDORED-FROM.md checks it against the source.
+describe('vendored stake codec', () => {
+  const stakeRows = manifest.split('\n').filter((l) => l.startsWith('| `src/reputation-datum.ts` | `mcp-server:'));
+  it('the table names the copy with its source in mcp-server, the commit and the sha256 of the copy', () => {
+    expect(stakeRows).toHaveLength(1);
+    const [, dest, source, commit, sha] = cells(stakeRows[0]);
+    expect(existsSync(join(root, dest)), dest).toBe(true);
+    expect(source).toBe('mcp-server:packages/builder/src/vector/reputation-datum.ts` excerpt, lines 1-29, 31-94, 96-116');
+    expect(commit).toBe('2d95483');
+    const actual = createHash('sha256').update(readFileSync(join(root, dest))).digest('hex');
+    expect(actual, `${dest} changed since it was vendored`).toBe(sha);
+  });
+});
+
+// The CBOR check copied from mcp-server: the two rows of the CBOR check table. The scanner is a whole copy. The wrappers have one rewritten import line, so the sha256 is
+// the check here, and the cmp and diff commands of VENDORED-FROM.md check both copies against the source.
+describe('vendored CBOR check', () => {
+  const checkRows = manifest.split('\n').filter((l) => l.startsWith('| `src/cbor-depth.ts` | `mcp-server:') || l.startsWith('| `src/guarded-decode.ts` | `mcp-server:'));
+  it('the table names each copy with its source in mcp-server, the commit and the sha256 of the copy', () => {
+    expect(checkRows.map((row) => cells(row)[1])).toStrictEqual(['src/cbor-depth.ts', 'src/guarded-decode.ts']);
+    for (const row of checkRows) {
+      const [, dest, source, commit, sha] = cells(row);
+      expect(existsSync(join(root, dest)), dest).toBe(true);
+      expect(source).toMatch(/^mcp-server:packages\/(?:shared\/src\/cbor-depth|builder\/src\/vector\/guarded-decode)\.ts$/);
+      expect(commit).toBe('2d95483');
+      const actual = createHash('sha256').update(readFileSync(join(root, dest))).digest('hex');
+      expect(actual, `${dest} changed since it was vendored`).toBe(sha);
+    }
+  });
+  it('the scanner has no import, and the wrappers import it from the file next to them: the one rewritten line', () => {
+    expect(readFileSync(join(root, 'src/cbor-depth.ts'), 'utf8')).not.toMatch(/^import /m);
+    expect(readFileSync(join(root, 'src/guarded-decode.ts'), 'utf8').split('\n')[12]).toBe("import { assertCborDepth, assertCborHexDepth } from './cbor-depth.js';");
+  });
+});

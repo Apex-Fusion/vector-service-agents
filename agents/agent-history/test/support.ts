@@ -2,8 +2,8 @@
 // address on the reserved .test domain, never a real one.
 export const TEST_CONTACT = 'ops@example.test';
 export const TEST_ENV = { OPERATOR_CONTACT: TEST_CONTACT } as const;
-import { encodeIdentityDatum, identityRegistryOf, blake2b224Hex, utf8ToHex, KOIOS_URL, LEGACY_REGISTRY } from '@vsa/vector-read';
-import type { Fetch, IdentityDatum, Registry } from '@vsa/vector-read';
+import { encodeIdentityDatum, identityRegistryOf, blake2b224Hex, utf8ToHex, stakeTokenName, KOIOS_URL, LEGACY_REGISTRY, M3_REPUTATION_ADDRESS, REPUTATION_SCRIPT_HASH } from '@vsa/vector-read';
+import type { Fetch, FixtureStore, IdentityDatum, Registry, StakeDatum } from '@vsa/vector-read';
 import { DEFAULT_CONFIG } from '../src/config.ts';
 import type { ReportConfig } from '../src/config.ts';
 
@@ -99,3 +99,26 @@ export function koiosLedger(txs: LedgerTx[], fallback?: Fetch): Fetch {
     return ok(rows ?? []);
   }) as Fetch;
 }
+
+// ---- The Module-3 deployment on the identity registry ----
+// A BUILT stake, not a recorded one: no stake exists on the deployment yet (its stake address held no output on 2026-11-19). The datum has the encoding of the
+// MCP server builder (encodeStakeDatum; the golden bytes are in packages/vector-read/test/reputation-datum.test.ts) and the fields of ChandraOCR. When a live
+// stake exists, record its Koios row with `pnpm --filter @vsa/agent-history record-fixtures --extend`. Then put its inline datum in BUILT_STAKE_HEX and the
+// fields that it decodes to in BUILT_STAKE, here and in packages/vector-read/test/reputation-datum.test.ts.
+export const BUILT_STAKE: StakeDatum = {
+  agent_did: '5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db', owner_pkh: '401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9',
+  stake_amount: 10_000_000n, staked_capabilities: [Buffer.from('ocr.page.extract.chandra-ocr-2.v1').toString('hex')], last_updated: 1_794_745_920_000,
+  history_points: 0n, challenge_locks: [], stake_id: { txHash: 'ab'.repeat(32), outputIndex: 1 },
+};
+export const BUILT_STAKE_HEX = `d8799f5820${BUILT_STAKE.agent_did}d8799f581c${BUILT_STAKE.owner_pkh}ff1a009896809f5821${BUILT_STAKE.staked_capabilities[0]}ff1b000001a1df316a000080d8799f5820${'ab'.repeat(32)}01ffff`;
+export const addressKey = (address: string) => `POST ${KOIOS_URL}/address_utxos ${JSON.stringify({ _addresses: [address], _extended: true })}`;
+/** The stake token of an agent, as Koios lists it in `asset_list`. */
+export const stakeToken = (agentId: string, quantity = '1'): Asset => ({ policy_id: REPUTATION_SCRIPT_HASH, asset_name: stakeTokenName(agentId), quantity });
+/** A row of the extended Koios `address_utxos` answer: an output at the stake address. */
+export interface StakeRow { tx_hash: string; tx_index: number; address: string; value: string; block_height: number; inline_datum: { bytes: string } | null; asset_list: Asset[] | null }
+/** The row of an output at the stake address. `n` makes its transaction hash. */
+export const stakeRow = (n: number, datum: string | null, assets: Asset[] | null): StakeRow => ({
+  tx_hash: txHash(n), tx_index: 0, address: M3_REPUTATION_ADDRESS, value: '12000000', block_height: 9_100_000 + n, inline_datum: datum === null ? null : { bytes: datum }, asset_list: assets,
+});
+/** `store` with the stake address answering with `rows`. */
+export const withStakeRows = (store: FixtureStore, rows: unknown[]): FixtureStore => ({ ...store, [addressKey(M3_REPUTATION_ADDRESS)]: { status: 200, body: JSON.stringify(rows) } });

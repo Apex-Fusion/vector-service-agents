@@ -10,7 +10,7 @@ export interface ModuleAddresses {
   m6: Record<string, string>;
 }
 export interface ReportConfig { registries: Registries; modules: ModuleAddresses }
-// The module deployments that were on Vector mainnet before the identity registry.
+// The defaults: Module-3 is the deployment on the identity registry. Module-1 and Module-6 are the deployments from before the identity registry.
 export const DEFAULT_MODULES: ModuleAddresses = { m3: { reputation: M3_REPUTATION_ADDRESS, endorsement: M3_ENDORSEMENT_ADDRESS }, m1: { ...M1_ADDRESSES }, m6: { ...M6_ADDRESSES } };
 // No identity registry: the state before its deployment, and what a report built without a configuration reads.
 export const DEFAULT_CONFIG: ReportConfig = { registries: { legacy: LEGACY_REGISTRY, identity: null }, modules: DEFAULT_MODULES };

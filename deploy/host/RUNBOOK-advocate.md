@@ -134,7 +134,7 @@ cd "$BASE/repo/deploy/host"
 docker compose -f docker-compose.advocate.yml build agent
 ```
 
-This clones `vector-agent-template` at the pinned commit `78e8a81`, the commit of the runtimes of the other three, and installs it. The compose file carries the full 40-character hash, because BuildKit does not resolve the short form. It ends with `Image advocate-agent Built`.
+This clones `vector-agent-template` at the pinned commit `48c0373`, the commit of the runtimes of the other three, and installs it. The compose file carries the full 40-character hash, because BuildKit does not resolve the short form. It ends with `Image advocate-agent Built`.
 
 ## 4. Make the env file, generate the two keys and enter the two API keys
 
@@ -356,6 +356,8 @@ Record the identity in the repository. Once the check above prints 1, open a pul
 ## 8. Stake in Module-3
 
 Operator. The same as step 8 of RUNBOOK.md: this locks 10 units on the capability. The owner cannot withdraw it: the module keeps 10 units as the minimum, and only stake above it can be decreased. Read the second gotcha at the end of RUNBOOK.md before the run.
+
+This script stakes on the earlier Module-3 deployment, the one before the identity registry. Agent History reads the Module-3 deployment on the identity registry, so it does not show a stake that this script makes. To make a stake that it shows, use the stake tools of the hosted MCP server on that deployment: `vector_build_reputation_stake_open` (step 1), `vector_build_reputation_stake` (step 2) and `vector_get_reputation_stake` (to read the stake). Section 6 of `docs/LAUNCH.md` gives the two steps.
 
 ```sh
 cd "$BASE/ops"

@@ -27,7 +27,7 @@ This agent has had a registry record since 2026-10-14.
 
 The model string in the advert and in every receipt is `agent-history-v1`.
 
-The agent runs behind the template runtime (`vector-agent-template`, pinned commit `78e8a81`, `CAPABILITY_KIND=custom`). The runtime claims the escrow, calls this service, signs the receipt and submits the receipt hash. The service holds no key.
+The agent runs behind the template runtime (`vector-agent-template`, pinned commit `48c0373`, `CAPABILITY_KIND=custom`). The runtime claims the escrow, calls this service, signs the receipt and submits the receipt hash. The service holds no key.
 
 ## Terms
 
@@ -101,7 +101,7 @@ The runtime fails the job on any non-2xx answer, and the buyer reclaims after `d
 
 ### Response
 
-`schema` is `vector.agent-history.report.v2`. The report below is built from a live run for the ChandraOCR agent on 2026-10-13, at block 8728604: the ledger data is that run's recording, and the report is what version 0.2.0 builds from it with the identity registry not configured, as before its deployment. Its supplier escrows, 3,436 indexer rows for 1,160 jobs, are first-party, as all marketplace activity to date. `generated_by.did` is shown as a placeholder because the run was made before this agent was registered on 2026-10-14. A section that was not in `include` has no key in the report.
+`schema` is `vector.agent-history.report.v2`. The report below is built from a live run for the ChandraOCR agent on 2026-10-13, at block 8728604: the ledger data is that run's recording, and the report is what version 0.2.0 builds from it with the identity registry not configured, as before its deployment. The two Module-3 reads are the exception: they were made on 2026-11-19, at the stake address and the endorsement address of the Module-3 deployment on the identity registry. Both answered with no output, so `reputation` is empty. The recording also holds the stake that ChandraOCR made on the earlier Module-3 deployment, and the report does not read that deployment. Its supplier escrows, 3,436 indexer rows for 1,160 jobs, are first-party, as all marketplace activity to date. `generated_by.did` is shown as a placeholder because the run was made before this agent was registered on 2026-10-14. A section that was not in `include` has no key in the report.
 
 ```json
 {
@@ -276,20 +276,7 @@ The runtime fails the job on any non-2xx answer, and the buyer reclaims after `d
     "outcome_verification": "indexer state for all rows; spent flags checked on the latest 50 per side via Koios utxo_info"
   },
   "reputation": {
-    "stakes": [
-      {
-        "utxo": "05563e751a32ce766aaf7aa015140912563f559394b5ecea77226d2c90bd6d4f#0",
-        "agent_asset_name": "5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db",
-        "owner_pkh": "401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9",
-        "stake_lovelace": "10000000",
-        "capabilities": [
-          "ocr.page.extract.chandra-ocr-2.v1",
-          "document-extraction"
-        ],
-        "last_updated": 1786092804000,
-        "history_points": 0
-      }
-    ],
+    "stakes": [],
     "endorsements": []
   },
   "dispute": {
@@ -333,9 +320,10 @@ The runtime fails the job on any non-2xx answer, and the buyer reclaims after `d
     "Escrow rows come from the marketplace indexer, one per escrow UTxO version: a job appears once for each state it reached (Open, Claimed, Submitted), so up to three times, and never as Accepted, Released or Reclaimed. The report gives by_indexer_state counts and, for the latest 50 rows per side, how many are spent on the ledger (latest_checked, latest_spent). It gives no outcome counts: Accept, Release and Reclaim are not told apart.",
     "The dispute module is deployed but not wired to the escrow contract; dispute entries, if any, are matched without a verified schema.",
     "Module-1 and Module-6 datums, and Module-3 endorsements, are matched generically: a datum is attributed to the subject when one of its bytes fields (top level or one constructor deep) equals the identifier the subject was given as, the asset name for a DID or asset name and the key hash for a key hash. An entry that names an agent only by its controller key is not found for a DID or asset name, and an entry that names only an asset name is not found for a key hash. Their full layouts are not decoded.",
-    "Module-3 stakes are read with the six-field stake layout and other datums at that address are skipped. A subject given as a DID or asset name keeps only the stakes whose datum names that asset, not those that share its owner key; a subject given as a key hash keeps every stake that key owns, whatever the asset.",
+    "Module-3 stakes are read from the deployment on the identity registry, with its eight-field stake layout. An output is a stake only when it holds the stake token of the agent that its datum names. Other outputs at that address are skipped. The stakes of the earlier Module-3 deployment have another address and the six-field layout, and the report does not read them. A subject given as a DID or asset name keeps only the stakes whose datum names that asset, not those that share its owner key; a subject given as a key hash keeps every stake that key owns, whatever the asset.",
     "The reputation, dispute and self_improvement sections list the unspent outputs at the module addresses as they are now. A withdrawn stake, a closed claim or a spent proposal no longer appears, and the report does not say that it ever existed.",
-    "The identity section shows each version of the record as the ledger holds it: the status the version wrote, the keys as listed (the proof of a P-256 key is not checked) and the parties as named. It is not a did:vector resolution: it does not apply confirmations, holds that have run out, a missing Accountable Party, the status of a parent, the cutoff slot of the legacy registry or the not-found rules of the method. Resolve the DID for its effective status."
+    "The identity section shows each version of the record as the ledger holds it: the status the version wrote, the keys as listed (the proof of a P-256 key is not checked) and the parties as named. It is not a did:vector resolution: it does not apply confirmations, holds that have run out, a missing Accountable Party, the status of a parent, the cutoff slot of the legacy registry or the not-found rules of the method. Resolve the DID for its effective status.",
+    "The report refuses CBOR that is nested deeper than 64 levels before it decodes it. A datum that fails this check counts as a datum that does not decode: the report skips the output that holds it, and the identity section shows an error when a record in the history of the subject fails it."
   ]
 }
 ```
@@ -357,13 +345,43 @@ Times named `time` are Unix seconds. `registered_at`, `created_at`, `not_before`
 | `marketplace` | null when no marketplace key is known. The marketplace keys are the key hash given, or the keys of the subject's live record: the owner key of a legacy record, or each listed key of an identity registry record for which `active_key(record, key, transaction)` holds. A subject with no live record that names one is read with the keys of the last version that named one, and a blind-spot line names them. Otherwise `as_supplier` and `as_buyer`, each with `adverts[]` and `escrows`, and `outcome_verification`, a sentence that says how the counts were checked. `as_buyer.adverts` is always empty |
 | `marketplace.*.adverts[]` | the adverts the marketplace indexer lists for the marketplace keys: `advert_ref`, `supplier_pkh`, `agent_id` (the identifier an advert of the new layout names, null for a legacy advert), `capability_id`, `model`, `price_lovelace`, `status`, `advertised_at` |
 | `marketplace.*.escrows` | the rows of all the marketplace keys together. `total` is the number of indexer rows, which are escrow UTxO versions: a job has a row for each state it reached. `by_indexer_state` counts rows per state label. `latest_checked` is how many of the newest rows (by `posted_at`, at most 50) were looked up on the ledger, and `latest_spent` how many of those are spent. `first` and `last` are the oldest and newest row exactly as the indexer returns it, or null. There are no outcome counts |
-| `reputation.stakes[]` | Module-3 stakes: `utxo`, `agent_asset_name`, `owner_pkh`, `stake_lovelace`, `capabilities[]`, `last_updated`, `history_points`. Which stakes are kept depends on the kind of subject, see Known gaps |
+| `reputation.stakes[]` | Module-3 stakes of the deployment on the identity registry, one entry for each stake output, with the fields below. An output is a stake only when it holds the stake token of the agent that its datum names. Which stakes are kept depends on the kind of subject, see Known gaps |
 | `reputation.endorsements[]` | Module-3 endorsement datums that name the subject: `utxo`, `block`, and `fields[]`, the datum's bytes fields in hex. A datum names the subject when one of its bytes fields is the asset name, for a subject given as a DID or asset name, or the key hash, for a subject given as a key hash. Whether the subject is the endorser or the endorsed is not decoded |
 | `dispute` | one array for each Module-1 address the service reads, under its label: by default `claim[]`, `challenge[]` and `jury_pool[]` from the Module-1 v14 addresses, and `claim_v15_sim[]`, `challenge_v15_sim[]` and `jury_pool_v15_sim[]` from the v15-sim addresses. Each holds the datums that name the subject (as for endorsements), each entry shaped like an endorsement |
 | `self_improvement` | one array for each Module-6 address, under its label: by default `proposal[]`, `critique[]` and `endorsement[]`, the Module-6 v8 datums that name the subject (as for endorsements), each entry shaped like an endorsement |
 | `key_roles` | `controller_pkh` (as in `subject`), `marketplace_pkhs` (the keys the marketplace section is about), `advert_count` (null when `marketplace` was not read, so unknown is not shown as zero), `capability_endpoint` (the endpoint in the record), `capability_key_pkh` (the key hash, blake2b-224, of the `pub_key_hex` served at `GET <endpoint>/capability`, or null) and `capability_key_active`. For an identity registry record the last is `active_key(record, key hash, transaction)` (Part 2, section 3.10): true when the record lists that key with the transaction purpose, false otherwise. For a legacy record it is true when the key hash is the owner key hash. It is `"unknown"` when there is no record or no endpoint, or the endpoint did not answer with a valid key. The endpoint comes from the record, so the check runs only when `identity` is included |
 | `sources` | every URL the report read, once each, sorted. Request bodies are not part of it, so `address_utxos` appears once however many addresses were read |
 | `blind_spots` | the fixed lines under Known gaps, plus the lines added when they apply |
+
+An entry of `reputation.stakes[]`. The example is built from the datum encoding of the deployment's builder, because no stake exists on the deployment yet. Its transaction ids are made up.
+
+```json
+{
+  "utxo": "0000000000000000000000000000000000000000000000000000000000000002#0",
+  "agent_asset_name": "5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db",
+  "owner_pkh": "401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9",
+  "stake_lovelace": "10000000",
+  "capabilities": [
+    "ocr.page.extract.chandra-ocr-2.v1"
+  ],
+  "last_updated": 1794745920000,
+  "history_points": 0,
+  "challenge_locks": [],
+  "stake_id": "abababababababababababababababababababababababababababababababab#1"
+}
+```
+
+| Stake field | Content |
+|---|---|
+| `utxo` | `<txid>#<index>` of the stake output. It changes with each action on the stake |
+| `agent_asset_name` | the identifier that the datum names (`agent_did`): 64 hex characters, the asset name of the registry token |
+| `owner_pkh` | the key hash of the owner credential of the stake |
+| `stake_lovelace` | the amount that the datum counts (`stake_amount`), a `lovelace` string. It can be less than the amount that the output holds |
+| `capabilities[]` | the staked capabilities (`staked_capabilities`) as text. A capability whose bytes are not UTF-8 is shown as `0x` and the hex |
+| `last_updated` | Unix milliseconds: the upper bound of the validity range of the last action of the owner |
+| `history_points` | the points that the module added. A number, or a decimal string when the number is too large for a JSON number to hold exactly |
+| `challenge_locks[]` | the token names, in hex, of the open challenges against the stake. The list is empty when no challenge is open |
+| `stake_id` | `<txid>#<index>` of the seed output that made the stake. It never changes, and it tells the stakes of one agent apart |
 
 ### Where the data comes from
 
@@ -382,12 +400,12 @@ Times named `time` are Unix seconds. `registered_at`, `created_at`, `not_before`
 
 The registries: the legacy registry (policy `be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01`, address `addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42`) always, and the identity registry once its deployment values are set: `IDENTITY_POLICY_ID`, and `IDENTITY_ADDRESS`, which may be left out and must otherwise be the address of that policy. Until then the report reads the legacy registry only, and says so in `blind_spots`.
 
-Module addresses read, one page each. These are the defaults, the deployments that were on Vector mainnet before the identity registry. `M3_REPUTATION_ADDRESS`, `M3_ENDORSEMENT_ADDRESS`, `M1_ADDRESSES` and `M6_ADDRESSES` replace them, so that the report reads the new module deployments once they are published. The last two are `label=address` pairs separated by commas, and their labels are the keys of the `dispute` and `self_improvement` sections, in that order.
+Module addresses read, one page each. These are the defaults: for Module-3 the deployment on the identity registry (on Vector mainnet since 2026-11-03), and for Module-1 and Module-6 the deployments that were on Vector mainnet before the identity registry. `M3_REPUTATION_ADDRESS`, `M3_ENDORSEMENT_ADDRESS`, `M1_ADDRESSES` and `M6_ADDRESSES` replace them, so that the report reads other deployments, the new ones once they are published. The last two are `label=address` pairs separated by commas, and their labels are the keys of the `dispute` and `self_improvement` sections, in that order.
 
 | Module | Label | Address |
 |---|---|---|
-| Module-3 | reputation | `addr1w9gk3cv8rn7mre2urrhpwwkteh8qjgzy5j9u9c3l8w34pyc76uluq` |
-| Module-3 | endorsement | `addr1w9m3j6ld07uy2asssqxvwfqu73ykuqxhjqw7jpulkqera0cjm7mmz` |
+| Module-3 | reputation | `addr1w8adj3dtyrmp5k8mma4r8285jxyeklw5zelmvssqhsrqgfqc9uavs` |
+| Module-3 | endorsement | `addr1wys6c9gzhfa6ka8f3me66ftthgtz9gf4ry62cxwsgvsjdlspch2kv` |
 | Module-1 v14 | claim | `addr1wx5ayt5tq8fg905qq7udnclg4a2g42jk78p7gv7qahwcwcqjd9tzq` |
 | Module-1 v14 | challenge | `addr1wyf8qr6240wk8j4t8zklk5z9tkj55njtcpqz5jcat2gdr7cazrd0t` |
 | Module-1 v14 | jury_pool | `addr1wy4sr34nzeprwatleqhxg7qvv0k0c826wv7wjxdrutn472q7yn6fa` |
@@ -397,6 +415,8 @@ Module addresses read, one page each. These are the defaults, the deployments th
 | Module-6 v8 | proposal | `addr1wxvtvyx9jkt7jprdhm0g6wxkl8pvvc63vlwumju8f5uatzgnjjjcr` |
 | Module-6 v8 | critique | `addr1w9gas5jxfye79d7g87lddu5p3lhvt67ku4ptfvgyqn4rp6stn80z3` |
 | Module-6 v8 | endorsement | `addr1w8t3qgtthdpznyaw5vtdh87tlekzg5f5rdcav20ghwf7pms2mfltj` |
+
+A Module-3 output is a stake when its datum has the 8 fields of the stake datum and the output holds exactly one token of the policy that is the script hash in the stake address, with the name `rstk_` followed by the first 27 bytes of the blake2b-256 hash of the 32 identifier bytes in the datum. The reputation validator is both the policy of the stake tokens and the script credential of the stake address. The report skips every other output at the stake address: the opening output of a stake (the datum without the token), an output that holds a history bonus token, and an output that anybody sent there. It also skips the stakes of the earlier Module-3 deployment, whose stake address is `addr1w9gk3cv8rn7mre2urrhpwwkteh8qjgzy5j9u9c3l8w34pyc76uluq`, whose endorsement address is `addr1w9m3j6ld07uy2asssqxvwfqu73ykuqxhjqw7jpulkqera0cjm7mmz` and whose stake datum has 6 fields. Set `M3_REPUTATION_ADDRESS` and `M3_ENDORSEMENT_ADDRESS` to read another deployment with the 8-field layout.
 
 ## What the receipt commits to
 
@@ -436,15 +456,16 @@ Datalab, OpenRouter and Brave are not used. There is no model, no OCR and no web
 
 ## Known gaps
 
-Every report carries these seven lines in `blind_spots`, word for word. A test keeps this list equal to `BLIND_SPOTS` in `agents/agent-history/src/report.ts`.
+Every report carries these eight lines in `blind_spots`, word for word. A test keeps this list equal to `BLIND_SPOTS` in `agents/agent-history/src/report.ts`.
 
 - Receipts and adverts name the supplier key hash; identity and marketplace are joined by key hash: the owner key of a legacy record, or the listed keys with the transaction purpose of an identity registry record. The marketplace section is therefore about those keys, not about one agent: agents that share a key show the same marketplace section.
 - Escrow rows come from the marketplace indexer, one per escrow UTxO version: a job appears once for each state it reached (Open, Claimed, Submitted), so up to three times, and never as Accepted, Released or Reclaimed. The report gives by_indexer_state counts and, for the latest 50 rows per side, how many are spent on the ledger (latest_checked, latest_spent). It gives no outcome counts: Accept, Release and Reclaim are not told apart.
 - The dispute module is deployed but not wired to the escrow contract; dispute entries, if any, are matched without a verified schema.
 - Module-1 and Module-6 datums, and Module-3 endorsements, are matched generically: a datum is attributed to the subject when one of its bytes fields (top level or one constructor deep) equals the identifier the subject was given as, the asset name for a DID or asset name and the key hash for a key hash. An entry that names an agent only by its controller key is not found for a DID or asset name, and an entry that names only an asset name is not found for a key hash. Their full layouts are not decoded.
-- Module-3 stakes are read with the six-field stake layout and other datums at that address are skipped. A subject given as a DID or asset name keeps only the stakes whose datum names that asset, not those that share its owner key; a subject given as a key hash keeps every stake that key owns, whatever the asset.
+- Module-3 stakes are read from the deployment on the identity registry, with its eight-field stake layout. An output is a stake only when it holds the stake token of the agent that its datum names. Other outputs at that address are skipped. The stakes of the earlier Module-3 deployment have another address and the six-field layout, and the report does not read them. A subject given as a DID or asset name keeps only the stakes whose datum names that asset, not those that share its owner key; a subject given as a key hash keeps every stake that key owns, whatever the asset.
 - The reputation, dispute and self_improvement sections list the unspent outputs at the module addresses as they are now. A withdrawn stake, a closed claim or a spent proposal no longer appears, and the report does not say that it ever existed.
 - The identity section shows each version of the record as the ledger holds it: the status the version wrote, the keys as listed (the proof of a P-256 key is not checked) and the parties as named. It is not a did:vector resolution: it does not apply confirmations, holds that have run out, a missing Accountable Party, the status of a parent, the cutoff slot of the legacy registry or the not-found rules of the method. Resolve the DID for its effective status.
+- The report refuses CBOR that is nested deeper than 64 levels before it decodes it. A datum that fails this check counts as a datum that does not decode: the report skips the output that holds it, and the identity section shows an error when a record in the history of the subject fails it.
 
 A report adds a line when it applies:
 
@@ -463,7 +484,7 @@ Advertised on 2026-10-14, again on 2026-10-15 at the status flip, and again on 2
 The request JSON is, for example, `{"subject":"did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db"}`. Ways 1 and 2 wrap it into the wire payload for you. Way 3 does not.
 
 1. **Chat client via MCP.** The hosted keyless MCP server builds the transactions and your local signer signs them, so your own key is the buyer. Ask your assistant to list the suppliers for `identity.history.report.v1`, post an escrow to the advert, send the job, poll for the result, verify the receipt and accept. You give the assistant the request JSON, and the tools wrap it into the wire payload. The send and every poll also take your signer address as `buyerAddress`, the wallet that posted the escrow and locked its value. The tools are `vector_marketplace_list_suppliers`, `vector_build_marketplace_post_escrow`, `vector_marketplace_send_job`, `vector_marketplace_get_job`, `vector_marketplace_verify_receipt` and `vector_build_marketplace_accept`, with `vector_signer_sign`, `vector_submit_transaction` and `vector_await_transaction` to sign and submit. The marketplace tools are on the hosted mainnet server, which lists 33 tools as of 2026-10-14.
-2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `78e8a81`), with `--advert-ref`, `--endpoint` and `--payload-file`, and your own key. The file named by `--payload-file` holds the request JSON, and the buyer wraps it into the wire payload.
+2. **Terminal via the template's buyer.** `try-it/src/buy-once.ts` in `vector-agent-template` (pinned commit `48c0373`), with `--advert-ref`, `--endpoint` and `--payload-file`, and your own key. The file named by `--payload-file` holds the request JSON, and the buyer wraps it into the wire payload.
 3. **Developers, the raw routes.** You wrap the request JSON yourself and hash the wire payload. On the agent's public URL:
    1. `GET /agent.json` and compare its sha256 with the `detail_hash` of the advert.
    2. Build the wire payload from your request JSON as shown under Request, and post an escrow for the advert with the price and both bonds. The escrow's `prompt_hash` is the sha256 of the UTF-8 bytes of the whole wire payload.

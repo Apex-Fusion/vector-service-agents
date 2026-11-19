@@ -80,7 +80,7 @@ It prints the image name, `@sha256:` and 64 hex digits. Give that line to the op
 docker compose -f docker-compose.agent-history.yml build agent
 ```
 
-This clones `vector-agent-template` at the pinned commit `78e8a81` and installs it. The compose file carries the full 40-character hash, because BuildKit does not resolve the short form. The first build takes a few minutes. It ends with `Image agent-history-agent Built`.
+This clones `vector-agent-template` at the pinned commit `48c0373` and installs it. The compose file carries the full 40-character hash, because BuildKit does not resolve the short form. The first build takes a few minutes. It ends with `Image agent-history-agent Built`.
 
 ## 4. Make the env file and generate the supplier key
 
@@ -179,6 +179,8 @@ Record the identity in the repository. Once the check above prints 1, open a pul
 ## 8. Stake in Module-3
 
 Operator. This locks 10 units on the capability. The owner cannot withdraw it: the module keeps 10 units as the minimum, and only stake above it can be decreased.
+
+This script stakes on the earlier Module-3 deployment, the one before the identity registry. Agent History reads the Module-3 deployment on the identity registry, so it does not show a stake that this script makes. To make a stake that it shows, use the stake tools of the hosted MCP server on that deployment: `vector_build_reputation_stake_open` (step 1), `vector_build_reputation_stake` (step 2) and `vector_get_reputation_stake` (to read the stake). Section 6 of `docs/LAUNCH.md` gives the two steps.
 
 ```sh
 cd "$BASE/ops"

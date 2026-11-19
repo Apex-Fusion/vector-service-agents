@@ -1,6 +1,6 @@
 # Vendored from Apex-Fusion/mcp-server and Apex-Fusion/agents-marketplace
 
-The files under `src/vendored/mcp/`, `src/vendored/mcp-shared/` and `src/vendored/signer/` and the six files under `test/fixtures/` are copies of files of Apex-Fusion/mcp-server at commit `94bd293` (`94bd293403039e2c9762e0c86a87892467cbc9c6`, committed on 2026-11-03 at 01:15:28 +0100). It is not a merge commit: it is the head of the branch `feat/identity-registry`, which is not merged into main. After the pin before, that branch was rebased onto `4f01518`, the commit of PR #25 on main (2026-10-23). So the pin before is not an ancestor of `94bd293`. The copies before it were at `f456194` (`f45619410aaeafeb287b36958ef251c38cf8186d`, committed on 2026-11-02 at 20:35:53 +0100) and before that at `ef374f8` (`ef374f878f7ac8f44eb32c68b0be12a1d2f63de3`, committed on 2026-11-02 at 19:18:59 +0100), two heads of the same branch before the rebase, and before that at `651ae93`, the merge of PR #24 into main on 2026-10-14. The two files under `src/vendored/fleet/` are copies of files of Apex-Fusion/agents-marketplace at commit `e847a55` (`e847a553146516e574f3cadb6688d74dd4cf2b7b`, committed on 2026-10-13, the `origin/main` of the clone it was taken from on 2026-10-15).
+The files under `src/vendored/mcp/`, `src/vendored/mcp-shared/` and `src/vendored/signer/` and the six files under `test/fixtures/` are copies of files of Apex-Fusion/mcp-server at commit `94bd293` (`94bd293403039e2c9762e0c86a87892467cbc9c6`, committed on 2026-11-03 at 01:15:28 +0100), but for three files that are at `2d95483` (see CBOR check). `94bd293` is not a merge commit: it is the head of the branch `feat/identity-registry`, which is not merged into main. After the pin before, that branch was rebased onto `4f01518`, the commit of PR #25 on main (2026-10-23). So the pin before is not an ancestor of `94bd293`. The copies before it were at `f456194` (`f45619410aaeafeb287b36958ef251c38cf8186d`, committed on 2026-11-02 at 20:35:53 +0100) and before that at `ef374f8` (`ef374f878f7ac8f44eb32c68b0be12a1d2f63de3`, committed on 2026-11-02 at 19:18:59 +0100), two heads of the same branch before the rebase, and before that at `651ae93`, the merge of PR #24 into main on 2026-10-14. `2d95483` (`2d9548319d8d3e6406622131260c4278f3cc195a`, committed on 2026-11-19 at 13:41:08 +0100) is the commit that adds the CBOR check. Its parent is `06a9df1`, the head of main on that day, and `94bd293` is an ancestor of `06a9df1`. The two files under `src/vendored/fleet/` are copies of files of Apex-Fusion/agents-marketplace at commit `e847a55` (`e847a553146516e574f3cadb6688d74dd4cf2b7b`, committed on 2026-10-13, the `origin/main` of the clone it was taken from on 2026-10-15).
 
 Each copy was taken from the blob at its commit, `git -C <checkout> cat-file blob <commit>:<path>`, never from a working file. A checkout that runs with `core.autocrlf=true` has CRLF working files, while the blobs are LF and so is every checkout of this repository (`.gitattributes` says `eol=lf`). A `cp` of such a working file records a sha256 that no checkout of this repository reproduces. The mcp-server checkout of the first copies (at `651ae93`) ran with `core.autocrlf=true`, and each of its working files was checked to equal its blob once CR is stripped. The re-vendors at `ef374f8`, `f456194` and `94bd293` took every copy from its blob too. The agents-marketplace clone runs with `core.autocrlf=true` too, and its working tree is a stale branch while the copies come from `origin/main`: the two fleet files were taken from the blobs and no working file of that clone was read.
 
@@ -30,16 +30,16 @@ The fleet is not published to a registry either. The Pipeline commits to the req
 | `src/vendored/mcp/build.ts` | `mcp-server:packages/builder/src/vector/build.ts` excerpt, lines 1-48 | `94bd293` | `73cdbd0d5a6c35c54b89452d0d4b1b2e062d898acbfc0443e993f3b2fd281a5e` |
 | `src/vendored/mcp/rate-limiter.ts` | `mcp-server:packages/builder/src/vector/rate-limiter.ts` | `94bd293` | `4290366f2f28b2ea3229a1c1bd4c69b068453a1d7b8d7f168a801964e61e3e7b` |
 | `src/vendored/mcp/env.ts` | `mcp-server:packages/builder/src/env.ts` | `94bd293` | `061feb39a1466bf6b984da8f2e17ca53acfc9deef9b404f6815663c94b9db67c` |
-| `src/vendored/mcp/identity-deployment.ts` | `mcp-server:packages/builder/src/vector/identity-deployment.ts` | `94bd293` | `6f1ad8e1852e1846ab3e598dcba30fc663ddd9554b9ec543908094110b8a94bd` |
+| `src/vendored/mcp/identity-deployment.ts` | `mcp-server:packages/builder/src/vector/identity-deployment.ts` | `2d95483` | `7a736eb221ae76a82dec6ba9793505df006edb25adaed5cc541d058e35cbae0a` |
 | `src/vendored/mcp/identity-chain.ts` | `mcp-server:packages/builder/src/vector/identity-chain.ts` | `94bd293` | `84b2c75868ca3802546171b75827e3036ededca0a8a64bd9f14124f8e308876b` |
 | `src/vendored/mcp/identity-rules.ts` | `mcp-server:packages/builder/src/vector/identity-rules.ts` | `94bd293` | `83846aa3ecce13b4144334f663f396c06f58d06eac3db14e28ccf85aa23beed8` |
 | `src/vendored/mcp/identity-scripts.generated.ts` | `mcp-server:packages/builder/src/vector/identity-scripts.generated.ts` | `94bd293` | `25abe9bb03ec7d50f1f29b414b9c631fdc72e56a91a76af12bb8e13a37e75feb` |
 | `src/vendored/mcp/legacy-registry.ts` | `mcp-server:packages/builder/src/vector/legacy-registry.ts` | `94bd293` | `6011cb3eafe396446ccfb6abd28bc97a141fb1db6a0b35c4f50fb441c90ed178` |
-| `src/vendored/mcp-shared/provider.ts` | `mcp-server:packages/shared/src/provider.ts` | `94bd293` | `903e5a156a609fc666d1f966be7df14f7470be8efb76be40f5e0365a7df72774` |
+| `src/vendored/mcp-shared/provider.ts` | `mcp-server:packages/shared/src/provider.ts` | `2d95483` | `52f4f59caa36a4f1020bf9c1969a0949148b3e9b145e6d3cbc3baceda085035a` |
 | `src/vendored/mcp-shared/config.ts` | `mcp-server:packages/shared/src/config.ts` | `94bd293` | `4e1961be29545ff23978f51189c0ed47ca023e63af4ba2652e6ee89d00a4e089` |
 | `src/vendored/mcp-shared/types.ts` | `mcp-server:packages/shared/src/types.ts` | `94bd293` | `18ee292f4feca95e2c0d0eb51ce69b3bd3aba5185491ec6deac46990d27c8111` |
 | `src/vendored/mcp-shared/tx.ts` | `mcp-server:packages/shared/src/tx.ts` excerpt, lines 1-3, 46-54, 66-103 | `94bd293` | `94b72ffa2eff13b7aa1ace088dd3a56cb699c4c1fcf338ccf7d5e4b003007eec` |
-| `src/vendored/signer/sign.ts` | `mcp-server:packages/signer/src/sign.ts` | `94bd293` | `45de4ea065585e47fa63d087471f2360482503ad37664da8185869479abf3be4` |
+| `src/vendored/signer/sign.ts` | `mcp-server:packages/signer/src/sign.ts` | `2d95483` | `d2286710ce8452b036665eac2877488fe7c758a2a2d627ec5c6f5faedb3fa669` |
 | `src/vendored/fleet/responses.ts` | `agents-marketplace:packages/shared/src/responses.ts` | `4c95c3f` | `04340e5cdc18da67de82dd373ef1a95d03d1ad597cfd77c5e0d3a2ec54aae657` |
 | `src/vendored/fleet/types.ts` | `agents-marketplace:packages/shared/src/tx/types.ts` excerpt, lines 18-35 | `4c95c3f` | `da27cb19fd0357fa60df3058a7d4d0ad1f917588eef97798ab24ded80bf766d6` |
 | `test/fixtures/escrow-koios.fixture.ts` | `mcp-server:packages/builder/test/fixtures/escrow-koios.fixture.ts` | `94bd293` | `a23549963e4c0c3832c7588bbacf49557fd79fb7833cd159b5484039b673cdc0` |
@@ -49,7 +49,7 @@ The fleet is not published to a registry either. The Pipeline commits to the req
 | `test/fixtures/identity-world.ts` | `mcp-server:packages/builder/test/fixtures/identity-world.ts` | `94bd293` | `103400dab7ce0ff0d8c3fa2eb076680e660918d5acd8d7ef7198c173d6bfbd02` |
 | `test/fixtures/escrow-identity.fixture.ts` | `mcp-server:packages/builder/test/fixtures/escrow-identity.fixture.ts` | `94bd293` | `ac74eebd5192d2f19eafb97a962f8066a470dcee025e7fb4d4e6ceebb1bababc` |
 
-Byte-identical to the blob (no edit at all): `marketplace-shared.ts`, `gov-build.ts`, `env.ts`, `identity-deployment.ts`, `identity-scripts.generated.ts`, `legacy-registry.ts`, `provider.ts`, `types.ts`, `sign.ts`, `marketplace.fixture.ts`, `fixture-provider.ts`, `protocol-params.fixture.json`. The excerpts `tx.ts` and `fleet/types.ts` are byte-identical to their line ranges. Every other copy differs from its blob only on the lines listed below (`fleet/responses.ts`: line 1).
+Byte-identical to the blob (no edit at all): `marketplace-shared.ts`, `gov-build.ts`, `env.ts`, `identity-scripts.generated.ts`, `legacy-registry.ts`, `types.ts`, `marketplace.fixture.ts`, `fixture-provider.ts`, `protocol-params.fixture.json`. The excerpts `tx.ts` and `fleet/types.ts` are byte-identical to their line ranges. Every other copy differs from its blob only on the lines listed below (`fleet/responses.ts`: line 1). The three copies at `2d95483` (`identity-deployment.ts`, `provider.ts` and `sign.ts`) differ from their blobs by one import line each.
 
 Eight copies are the same files as at `651ae93`, with the same sha256: `build.ts`, `rate-limiter.ts`, `env.ts`, `config.ts` and the four fixtures `escrow-koios.fixture.ts`, `marketplace.fixture.ts`, `fixture-provider.ts` and `protocol-params.fixture.json`. Their sources did not change between `651ae93` and `94bd293`. `provider.ts` was the same file as at `651ae93` until `f456194`.
 
@@ -77,6 +77,7 @@ Only whole lines change, one line for one line, so a copy keeps the line numbers
 - `@apexfusion/vector-mcp-shared/config`, `/types`, `/tx`, `/provider` become `../mcp-shared/config.js`, `../mcp-shared/types.js`, `../mcp-shared/tx.js`, `../mcp-shared/provider.js`.
 - `./marketplace-datum.js` (and the fixtures' `../../src/vector/marketplace-datum.ts`) becomes `@vsa/vector-read`. Every name imported that way is exported by `packages/vector-read/src/datum.ts`, `sha256BytesHex` included.
 - `./identity-codec.js` (and the fixtures' `../../src/vector/identity-codec.ts`) becomes `@vsa/vector-read/identity-codec`, the subpath export of `packages/vector-read/src/identity-codec.ts` (see Not copied).
+- `./guarded-decode.js` becomes `@vsa/vector-read/guarded-decode`. `./cbor-depth.js` (in the shared package of the source) and `@apexfusion/vector-mcp-shared/cbor-depth` (in the signer) become `@vsa/vector-read/cbor-depth`. Both are subpath exports of `packages/vector-read` (see CBOR check).
 - `./safe-fetch.js` becomes `@vsa/vector-read`. The mcp-server's `safe-fetch.ts` at `94bd293` (unchanged since `651ae93`) is vector-read's `src/safe-fetch.ts` (the mcp-server vendored it from this repository) plus one provenance comment line.
 - `../env.js` becomes `./env.js` (`rate-limiter.ts`).
 - A fixture's `../../src/vector/<file>.ts` becomes `../../src/vendored/mcp/<file>.ts`, where that copy sits here.
@@ -171,6 +172,15 @@ Per file (the line numbers are the same in the source and the copy):
 `src/vendored/fleet/responses.ts` (from agents-marketplace at `4c95c3f`; the source is the same blob as at `e847a55`)
 - line 1: `import type { ChatMessage } from "./tx/types.js";` becomes `import type { ChatMessage } from "./types.js";`
 
+`src/vendored/mcp/identity-deployment.ts` (at `2d95483`)
+- line 17: `import { decodePlutusData } from './guarded-decode.js';` becomes `import { decodePlutusData } from '@vsa/vector-read/guarded-decode';`
+
+`src/vendored/mcp-shared/provider.ts` (at `2d95483`)
+- line 32: `import { assertCborHexDepth } from './cbor-depth.js';` becomes `import { assertCborHexDepth } from '@vsa/vector-read/cbor-depth';`
+
+`src/vendored/signer/sign.ts` (at `2d95483`)
+- line 5: `import { assertCborHexDepth } from '@apexfusion/vector-mcp-shared/cbor-depth';` becomes `import { assertCborHexDepth } from '@vsa/vector-read/cbor-depth';`
+
 `src/vendored/mcp-shared/config.ts`: not an import rewrite, the listed deviation below.
 
 ## Deviation: config.ts defaults to Vector mainnet
@@ -232,14 +242,34 @@ No other copy holds an en or em dash (the comment of `ToolCall` in the source of
 
 ## Not copied
 
-- `packages/builder/src/vector/marketplace-datum.ts` and `packages/builder/src/vector/identity-codec.ts`: one copy of each, in `@vsa/vector-read` at `94bd293` (`src/datum.ts` above its marker, and `src/identity-codec.ts`; see `packages/vector-read/VENDORED-FROM.md`). The datum module imports the identity codecs, so `identity-codec.ts` is copied once, next to it, and the copies here import it through the subpath `@vsa/vector-read/identity-codec`. The index of vector-read does not export it: its names (`decodeIdentityDatum`, `plutusAddressToBech32` and others) are also the names of the agents-marketplace codecs that vector-read's `src/identity.ts` re-exports. Between `651ae93` and `ef374f8` the datum module gained the identity layouts (the 16-field escrow, the 14-field advert, `decodeAnyEscrowDatum`, `decodeAnyAdvertDatum`, the identity encoders, `identityEscrowLockFloor` and `plutusDataMaxBytes`) and the import of the identity codecs. Neither file changed between `ef374f8` and `f456194`. At `94bd293` the datum module gained `encodeAdvertDatum`, the writer of the legacy advert datum, and `identity-codec.ts` did not change.
+- `packages/builder/src/vector/marketplace-datum.ts` and `packages/builder/src/vector/identity-codec.ts`: one copy of each, in `@vsa/vector-read` at `2d95483` (`src/datum.ts` above its marker, and `src/identity-codec.ts`; see `packages/vector-read/VENDORED-FROM.md`). The datum module imports the identity codecs, so `identity-codec.ts` is copied once, next to it, and the copies here import it through the subpath `@vsa/vector-read/identity-codec`. The index of vector-read does not export it: its names (`decodeIdentityDatum`, `plutusAddressToBech32` and others) are also the names of the agents-marketplace codecs that vector-read's `src/identity.ts` re-exports. Between `651ae93` and `ef374f8` the datum module gained the identity layouts (the 16-field escrow, the 14-field advert, `decodeAnyEscrowDatum`, `decodeAnyAdvertDatum`, the identity encoders, `identityEscrowLockFloor` and `plutusDataMaxBytes`) and the import of the identity codecs. Neither file changed between `ef374f8` and `f456194`. At `94bd293` the datum module gained `encodeAdvertDatum`, the writer of the legacy advert datum, and `identity-codec.ts` did not change. At `2d95483` both files read each datum through `decodePlutusData` of `@vsa/vector-read/guarded-decode` (see CBOR check).
 - `packages/builder/src/vector/safe-fetch.ts`: imported from `@vsa/vector-read` (above).
+- `packages/shared/src/cbor-depth.ts` and `packages/builder/src/vector/guarded-decode.ts`: one copy of each, in `@vsa/vector-read` at `2d95483` (`src/cbor-depth.ts` and `src/guarded-decode.ts`; see `packages/vector-read/VENDORED-FROM.md`). The copies here import them through the subpaths `@vsa/vector-read/cbor-depth` and `@vsa/vector-read/guarded-decode`.
 - The self-improvement builders of Module-6 (`gov-tx.ts`, which imports `@aws-sdk/client-s3`, with `gov-deployment.ts` and `gov-codec.ts`; until `f456194` they were the rest of `gov-build.ts`), and `registry-build.ts`: no copy imports them.
 - The MCP tool modules of the marketplace (`marketplace.ts` and `marketplace-*-tools.ts`), of the reputation stakes (`reputation-tools.ts`) and of the identity registry (`identity-tools.ts`, `identity-family.ts`, `attestation-tools.ts`, `delegation-tools.ts` and `vault-tools.ts`): they need `@modelcontextprotocol/sdk` and `zod`.
 - The builders of identities, attestations, delegations, vaults, adverts and reputation stakes with their shared parts (`identity-build.ts`, `identity-shared.ts`, `identity-gateway.ts`, `attestation-build.ts`, `delegation-build.ts`, `vault-build.ts`, `marketplace-advert-build.ts`, `marketplace-advert.ts` and `reputation-build.ts`), and the rest of `packages/builder/src/vector/`: no copy imports them. A buyer posts, accepts and reclaims escrows; it registers no identity, posts no advert and makes no stake.
 - The test fixtures that no copied fixture imports, among them the blueprint `identity-marketplace.plutus.json` (`identity-scripts.generated.ts` carries its scripts), `legacy-datum.ts`, and `identity-cbor-fixtures.json` (vector-read carries the same file).
 - Everything of the signer but `sign.ts` (its key loading, key generation, policy, audit log and tools). The Document Pipeline's key comes from its env file as raw hex; `src/signing.ts` turns such a key into the bech32 that `signTransaction` takes.
 - The rest of Apex-Fusion/agents-marketplace. Of the fleet only `packages/shared/src/responses.ts` and the excerpt above are copied. The OCR commitments are not: `ocrPromptHash` (in the OCR escrow builder, `packages/shared/src/tx/escrow/postOcrEscrow.ts`) and the OCR response hash (computed inline by `runOcrJob` in `supplier/src/jobRunner.ts`) are three lines each on `canonicalize`, written in `src/commitments.ts` and pinned by `test/commitments.test.ts`.
+
+## CBOR check
+
+The rule: Refuse CBOR that is nested deeper than 64 levels before it is decoded. The mcp-server applies it at `2d95483` to every datum, transaction and metadata value that its own builders did not make. The scanner and the wrappers are in `@vsa/vector-read` (`src/cbor-depth.ts` and `src/guarded-decode.ts`), and this package takes three copies at `2d95483` and leaves the others at `94bd293`. `test/cbor-guard-sites.test.ts` reads `src/` and names each file that decodes CBOR by itself, with the reason that the call is safe. `test/cbor-guard.test.ts` shows each check at work.
+
+Moved to `2d95483`:
+
+- `src/vendored/mcp-shared/provider.ts`. The `OgmiosProvider` hands Lucid no inline datum that fails the check. An output with such a datum stays in the list, with its address, its value and its other fields, and without its datum. The provider writes one line for the operator. A datum that is looked up by its hash, and fails the check, is refused. Anyone can send an output with a datum to an address, so this is the place where the datum of such an output would reach Lucid: it matters most here. Against `94bd293` the source file also adds the class `OgmiosRpcError`: an error of the node is thrown as that class, with the same message as before. No code of this package depends on the class.
+- `src/vendored/mcp/identity-deployment.ts`. `findConfigRecord` reads the datum of the configuration record through `decodePlutusData`. This is the only change of the source file since `94bd293`.
+- `src/vendored/signer/sign.ts`. `signTransaction` checks the bytes of the transaction before CML reads them. This is the only change of the source file since `94bd293`.
+
+Left at `94bd293`, with the reason:
+
+- `src/vendored/mcp/marketplace-build.ts`. At `2d95483` the source reads the Post transaction that it built through `decodeTransaction`. No chain data reaches that read: the transaction is the output of the builder of this process. The source file also changes in other ways since `94bd293`: the escrow switch, the payment of a vault and the classes of the refusals of the escrow planner. Those belong to a re-vendor of the whole set, not to this check.
+- `src/vendored/mcp/marketplace-indexer.ts`. At `2d95483` the source takes the inline datum out of a Koios row that fails the check, so that the readers of a row see a row without a datum. The readers of a row here are the datum decoders of `@vsa/vector-read`, and each one refuses such a datum before it reads it, as it refuses a datum that does not decode. The source file also changes in other ways since `94bd293`: the page reads of `credential_utxos`.
+- `src/vendored/mcp/build.ts`. The excerpt (lines 1-48) holds `lucidForAddress` and `toBuildResult`. The changes of the source at `2d95483` are in the builders that the excerpt leaves out: the datum, the redeemer and the script that a caller gives, and the fee of a transaction that a caller gives.
+- Every other copy: its source does not change at `2d95483`.
+
+Code of this package that decodes by itself: `src/chain.ts` reads the time to live of the unsigned transaction, and `src/fees.ts` reads the fee of the signed transaction. The builder and the signer of this process made both transactions, so no chain data reaches those reads.
 
 ## Local files
 
@@ -261,14 +291,17 @@ The tests: `test/vendored.test.ts` (this manifest, both ways, and the public sur
 
 ## Checking the copies against the pin
 
-From the repository root, with `<mcp-server>` a checkout that has `94bd293` and `<agents-marketplace>` one that has `4c95c3f`. Each `diff` prints nothing for a byte-identical copy and only the lines listed under Rewritten lines for a rewritten one (the old line of a unit-name rewrite holds the name). Each `cmp` prints nothing.
+From the repository root, with `<mcp-server>` a checkout that has `94bd293` and `2d95483`, and `<agents-marketplace>` one that has `4c95c3f`. Each `diff` prints nothing for a byte-identical copy and only the lines listed under Rewritten lines for a rewritten one (the old line of a unit-name rewrite holds the name). Each `cmp` prints nothing.
 
 ```bash
 # The whole files.
-for f in marketplace-constants marketplace-shared marketplace-indexer marketplace-lineage marketplace-build marketplace-verify marketplace-transport marketplace-supplier gov-build rate-limiter identity-deployment identity-chain identity-rules identity-scripts.generated legacy-registry; do git -C <mcp-server> cat-file blob 94bd293:packages/builder/src/vector/$f.ts | diff - packages/buyer-core/src/vendored/mcp/$f.ts; done
+for f in marketplace-constants marketplace-shared marketplace-indexer marketplace-lineage marketplace-build marketplace-verify marketplace-transport marketplace-supplier gov-build rate-limiter identity-chain identity-rules identity-scripts.generated legacy-registry; do git -C <mcp-server> cat-file blob 94bd293:packages/builder/src/vector/$f.ts | diff - packages/buyer-core/src/vendored/mcp/$f.ts; done
 git -C <mcp-server> cat-file blob 94bd293:packages/builder/src/env.ts | diff - packages/buyer-core/src/vendored/mcp/env.ts
-for f in provider config types; do git -C <mcp-server> cat-file blob 94bd293:packages/shared/src/$f.ts | diff - packages/buyer-core/src/vendored/mcp-shared/$f.ts; done
-git -C <mcp-server> cat-file blob 94bd293:packages/signer/src/sign.ts | diff - packages/buyer-core/src/vendored/signer/sign.ts
+for f in config types; do git -C <mcp-server> cat-file blob 94bd293:packages/shared/src/$f.ts | diff - packages/buyer-core/src/vendored/mcp-shared/$f.ts; done
+# The three copies at 2d95483: each diff prints the one rewritten import line.
+git -C <mcp-server> cat-file blob 2d95483:packages/builder/src/vector/identity-deployment.ts | diff - packages/buyer-core/src/vendored/mcp/identity-deployment.ts
+git -C <mcp-server> cat-file blob 2d95483:packages/shared/src/provider.ts | diff - packages/buyer-core/src/vendored/mcp-shared/provider.ts
+git -C <mcp-server> cat-file blob 2d95483:packages/signer/src/sign.ts | diff - packages/buyer-core/src/vendored/signer/sign.ts
 for f in escrow-koios.fixture.ts marketplace.fixture.ts fixture-provider.ts protocol-params.fixture.json identity-world.ts escrow-identity.fixture.ts; do git -C <mcp-server> cat-file blob 94bd293:packages/builder/test/fixtures/$f | diff - packages/buyer-core/test/fixtures/$f; done
 # The excerpts.
 git -C <mcp-server> cat-file blob 94bd293:packages/shared/src/tx.ts | sed -n '1,3p;46,54p;66,103p' | cmp - packages/buyer-core/src/vendored/mcp-shared/tx.ts
@@ -280,10 +313,10 @@ git -C <agents-marketplace> cat-file blob 4c95c3f:packages/shared/src/tx/types.t
 
 ## Re-vendoring
 
-1. Take the new pin (a commit of Apex-Fusion/mcp-server).
-2. Re-vendor `packages/vector-read` first, at the same pin: its `src/datum.ts` and `src/identity-codec.ts` are the datum codecs and the identity codecs that the copies here import (see `packages/vector-read/VENDORED-FROM.md`).
+1. Take the new pin (a commit of Apex-Fusion/mcp-server). The copies are at `94bd293`, but for three at `2d95483` (CBOR check, above): take those three at the new pin, and take another copy when the new pin changes its source and the change belongs to this package.
+2. Re-vendor `packages/vector-read` first, at the same pin: its `src/datum.ts`, `src/identity-codec.ts`, `src/cbor-depth.ts` and `src/guarded-decode.ts` are the datum codecs, the identity codecs and the CBOR check that the copies here import (see `packages/vector-read/VENDORED-FROM.md`).
 3. For each row, take the blob at the pin with `git cat-file blob` (never a working file of a CRLF checkout), cut the excerpts again after checking that the line ranges still hold the same code (`build.ts`: `lucidForAddress` and `toBuildResult`; `tx.ts`: the header and the `blake2b` import, `lovelaceToAda`, `cborUint`, `cborBytes` and `deriveNftAssetName`), and apply the import rewrites listed above, one line for one line.
-4. If a copy now imports a file that is not here, copy that file whole too and add its row. For the shared `tx.ts`, add the lines that are needed to the excerpt instead, whole lines in source order. A name of the datum module or of `identity-codec.ts` comes from `@vsa/vector-read` or `@vsa/vector-read/identity-codec`. If the mcp-server changes its version of `@lucid-evolution/uplc`, pin the same version in `package.json`.
+4. If a copy now imports a file that is not here, copy that file whole too and add its row. For the shared `tx.ts`, add the lines that are needed to the excerpt instead, whole lines in source order. A name of the datum module or of `identity-codec.ts` comes from `@vsa/vector-read` or `@vsa/vector-read/identity-codec`, and a name of the CBOR check comes from `@vsa/vector-read/cbor-depth` or `@vsa/vector-read/guarded-decode`. If the mcp-server changes its version of `@lucid-evolution/uplc`, pin the same version in `package.json`.
 5. Apply the config.ts deviation again: the source's `config.ts` defaults to testnet, so set the defaults of lines 2-4 to the mainnet values above. A fresh blob brings the testnet defaults back, and `test/config-and-fixtures.test.ts` fails until they are mainnet again.
 6. Apply the unit-name deviation again: search every copy under `src/vendored/` for the unit name, in any case, and rewrite each line that names it, one line for one line. The name becomes `units`. An identifier that spells it becomes `units`, after a check that no other `units` is in its scope. List each rewritten line under Rewritten lines. Leave the copies under `test/fixtures/` byte-identical. `scripts/specs.test.mjs` fails on a line that is left.
 7. Check the verbatim exceptions above against the new copies (the em dash lines of `fixture-provider.ts`, the unit name of `identity-world.ts`, and any new one), and update their line numbers here.

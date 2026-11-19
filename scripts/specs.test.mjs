@@ -679,7 +679,7 @@ test('docs/HIRE.md and the design agree on the figures a member types or reads',
   assert.ok(guide.includes('https://explorer.vector.mainnet.apexfusion.org/transaction/hash/<txid>'), 'the explorer link pattern');
   assert.match(DESIGN, /per-transaction cap 100, daily cap 500/);
   assert.ok(guide.includes('"VECTOR_SIGNER_SPEND_LIMIT_PER_TX": "100000000"') && guide.includes('"VECTOR_SIGNER_SPEND_LIMIT_DAILY": "500000000"'), '100 and 500 units, as lovelace');
-  assert.ok(guide.includes('78e8a81'), 'the pinned template commit');
+  assert.ok(guide.includes('48c0373'), 'the pinned template commit');
   for (const flag of ['--advert-ref', '--endpoint', '--payload-file']) assert.ok(guide.includes(flag), flag);
 });
 
@@ -1929,8 +1929,8 @@ test('specs/document-pipeline.md: the code of its hire is packages/hire-kit on p
 
 // ---- The launch guide (docs/LAUNCH.md, 2026-10-21) ----
 // A member who has read HIRE.md launches a supplier of their own from vector-agent-template, gives it an identity from the chat client and hires it once. The guide is held to
-// what it was written from: the tools it names are on the hosted server or in the signer, its links resolve, the advert and stake builders are planned and never available,
-// the key conversion it prints is the one the signer reads, and its words follow the public rules.
+// what it was written from: the tools it names are on the hosted server or in the signer, its links resolve, the template posts the advert and the six stake tools of the hosted
+// server make the stake, and its words follow the public rules.
 const launch = () => doc('LAUNCH.md');
 const LAUNCH_SECTIONS = ['What you need', 'Let your coding agent build it', 'Post the advert', 'Boot the runtime and your service', 'Give your agent an identity', 'Stake (optional)', 'Test-hire your own agent from chat', 'Tell the working group'];
 // The 63 tools of the hosted server: the tools/list of the hosted mainnet server on 2026-11-06, version 3.0.0 (Apex-Fusion/mcp-server, the release commit c42cb6e, from which
@@ -1952,6 +1952,9 @@ const HOSTED_TOOLS = [
 ];
 // The five tools of the signer (packages/signer/src/tools.ts at the same commit; 3.0.0 adds vector_signer_get_public_key).
 const SIGNER_TOOLS = ['vector_signer_get_address', 'vector_signer_get_public_key', 'vector_signer_decode_transaction', 'vector_signer_sign', 'vector_signer_get_spend_limits'];
+// The six stake tools of the hosted server since 2026-11-19: the tools/list of the hosted mainnet server on that day had 86 tools, version 3.0.0 (Apex-Fusion/mcp-server, merge commit 06a9df1).
+// vector_build_reputation_stake and vector_build_reputation_stake_open are among the 63 above (they built nothing in 3.0.0 of 2026-11-06); the other four are new.
+const STAKE_TOOLS = ['vector_build_reputation_stake', 'vector_build_reputation_stake_decrease', 'vector_build_reputation_stake_increase', 'vector_build_reputation_stake_open', 'vector_build_reputation_stake_update_capabilities', 'vector_get_reputation_stake'];
 // The words a public line of the launch guide does not use (its content rules). Each is spelled in two parts, as UNIT_NAME is, so that a search for the words finds none
 // in this file. "payload" is a word of its own and passes.
 const MONEY_WORDS = new RegExp('\\b(' + [['p', 'ays?'], ['p', 'aid'], ['p', 'ayments?'], ['p', 'ayers?'], ['e', 'arn\\w*'], ['mon', 'ey'], ['f', 'und(s|ed|ing)?'], ['sp', 'end\\w*'], ['sp', 'ent'], ['reve', 'nue'], ['gover', 'nance']].map((p) => p.join('')).join('|') + ')\\b', 'i');
@@ -1973,9 +1976,9 @@ const STAKE_NO_WITHDRAW = 'The owner cannot withdraw it: the module keeps 10 uni
 // specs/agent-history.md, emitted by the service and hashed into its advert) is not one of them: it names no withdrawal by the owner.
 const STAKE_RETURN_WORDS = /cooldown|refundable under the stake|the stake after its|stake stay on the ledger until the operator withdraws|when you withdraw it|stays locked|identity or the stake is withdrawn|stake (is|was|gets|can be) withdrawn|withdraws? (the|its|their) stake/i;
 const HIRE_PERMANENT = "The name and the description you enter are public and permanent: the transaction that writes them stays in the ledger's history after you retire the record. Retiring it returns the deposit; it does not erase that transaction. Put no personal data in them.";
-// HIRE.md section 8 pins the template at 78e8a81, the merge of the identity registry into its main. Its postinstall step copies libsodium-sumo.mjs next to
+// HIRE.md section 8 pins the template at 48c0373, its main on 2026-11-19. Its postinstall step copies libsodium-sumo.mjs next to
 // the wrapper (the lockfile there pins libsodium 0.7.16), so the guide no longer copies that file by hand, as it did for the pin before.
-const TEMPLATE_INSTALL = 'git clone https://github.com/Apex-Fusion/vector-agent-template.git && cd vector-agent-template && git checkout 78e8a81 && corepack pnpm install';
+const TEMPLATE_INSTALL = 'git clone https://github.com/Apex-Fusion/vector-agent-template.git && cd vector-agent-template && git checkout 48c0373 && corepack pnpm install';
 const LIBSODIUM_WHY = "The install ends with the template's postinstall step. It copies `libsodium-sumo.mjs` next to its wrapper, as the template's `agent/Dockerfile` does in its image. pnpm's store layout puts that file in a sibling package, and without it the buyer stops at the transaction build with `Cannot find module`.";
 // The buyer of that commit posts the escrow of an advert that names an agent only with the policy of the identity registry, so the command gives the published values.
 const HIRE_IDENTITY = '`IDENTITY_POLICY_ID` and `IDENTITY_ESCROW_REF_UTXO` are the published values of the identity registry on Vector mainnet. The buyer uses them only for an advert that names an agent: it posts and accepts the escrow of such an advert with them.';
@@ -1992,10 +1995,11 @@ test('docs/LAUNCH.md: the title, the eight sections in the order a member does t
   assert.equal(lines[lines.indexOf('- Hire one: `docs/HIRE.md`') + 1], '- Launch your own agent from a chat client: `docs/LAUNCH.md`', 'the README lists the guide right after HIRE.md');
 });
 
-test('docs/LAUNCH.md: every tool it names is one of the 63 tools of the hosted server or one of the five of the signer, as HIRE.md names them; no retired tool, and no advert or stake tool, is named', () => {
+test('docs/LAUNCH.md: every tool it names is one of the 63 tools of the hosted server of 2026-11-06, one of its six stake tools (86 tools since 2026-11-19) or one of the five of the signer; no retired tool, and no advert tool, is named', () => {
   assert.equal(HOSTED_TOOLS.length, 63);
   assert.equal(new Set(HOSTED_TOOLS).size, 63);
-  const known = new Set([...HOSTED_TOOLS, ...SIGNER_TOOLS]);
+  assert.equal(new Set(STAKE_TOOLS).size, 6);
+  const known = new Set([...HOSTED_TOOLS, ...STAKE_TOOLS, ...SIGNER_TOOLS]);
   // The names HIRE.md and the E2E runbook are held to are among them: the nine marketplace tools of the design and the others of this file.
   for (const tool of [...MARKETPLACE_TOOLS, ...OTHER_TOOLS]) assert.ok(known.has(tool), `${tool} is on the hosted server or in the signer`);
   for (const [name, text] of [['docs/HIRE.md', hire()], ['docs/LAUNCH.md', launch()]]) {
@@ -2009,20 +2013,28 @@ test('docs/LAUNCH.md: every tool it names is one of the 63 tools of the hosted s
   }
   const named = new Set(launch().match(/\bvector_[a-z_]+/g));
   for (const tool of ['vector_get_agent_profile', 'vector_build_identity_retire', 'vector_marketplace_list_suppliers', 'vector_marketplace_verify_receipt', 'vector_get_utxos']) assert.ok(named.has(tool), `the guide names ${tool}`);
-  // The template's command line posts the advert (section 3), and new stakes are paused (section 6): the guide names no advert or stake tool.
-  assert.deepEqual([...named].filter((t) => /advert|stake/.test(t)), [], 'no advert or stake tool is named');
-  assert.ok(launch().includes('Every tool it names is on the hosted mainnet server, version 3.0.0 with 63 tools, or in the signer, version 3.0.0.'));
+  // The template's command line posts the advert (section 3), and the six stake tools make the stake (section 6): the guide names all six stake tools and no advert tool.
+  assert.deepEqual([...named].filter((t) => /stake/.test(t)).sort(), [...STAKE_TOOLS].sort(), 'the six stake tools are named, and no other');
+  assert.deepEqual([...named].filter((t) => /advert/.test(t)), [], 'no advert tool is named');
+  assert.ok(launch().includes('Every tool it names is on the hosted mainnet server, version 3.0.0, or in the signer, version 3.0.0. The hosted server had 63 tools on 2026-11-06. It has 86 since 2026-11-19, and the six stake tools of section 6 are among the 86.'));
 });
 
-test('docs/LAUNCH.md: the record comes before the advert, the template posts the advert, and new stakes are paused; the guide offers no stake', () => {
+test('docs/LAUNCH.md: the record comes before the advert, the template posts the advert, and a stake is made with the six stake tools of the hosted server on the Module-3 deployment of the identity registry', () => {
   const text = launch();
   const three = section(text, '3. Post the advert');
   assert.ok(three.startsWith('\nMake your agent record first, in section 5, and write its `AGENT_ID` into `.env`.'), 'section 3 opens with the record');
   assert.ok(three.includes('The marketplace lists an advert only when the agent record it names is live and Active, lists your supplier key for transactions and lists the advert\'s capability id.'));
   assert.ok(three.includes('`post-advert` reads `AGENT_ID`, checks your record and posts the advert with your agent id. Without `AGENT_ID` it posts a legacy advert, which the marketplace no longer lists.'));
   const six = section(text, '6. Stake (optional)');
-  assert.ok(six.startsWith('\nNew stakes are paused.'), 'section 6 opens with the pause');
-  assert.ok(six.includes('the current deployment takes no new stakes, and the hosted server\'s stake tools say so and build nothing. Skip this step for now. Nothing else in this guide needs a stake.'));
+  assert.ok(six.startsWith('\nA stake is a deposit of your agent in the Module-3 deployment on the identity registry.'), 'section 6 opens with what a stake is');
+  assert.ok(six.includes('Since 2026-11-19 the stake tools of the hosted server make a new stake there, and Agent History reads that deployment, so your stake shows under `reputation.stakes` in its report (section 7). The stake tools do not build for the earlier Module-3 deployment, and Agent History does not read it. Nothing else in this guide needs a stake.'));
+  for (const tool of STAKE_TOOLS) assert.ok(six.includes('`' + tool + '`'), `section 6 names ${tool}`);
+  assert.ok(six.includes('1. Ask your assistant for step 1 (`vector_build_reputation_stake_open`)') && six.includes('2. Ask for step 2 (`vector_build_reputation_stake`)'), 'the two builds, step 1 first');
+  assert.ok(six.includes('Only step 2 can use this output, so go on to step 2 once step 1 has confirmed.'));
+  assert.ok(six.includes('The controller key of your agent and the owner key of the stake sign it. The owner key is the controller key, or a key that your record lists with the transaction purpose.'));
+  assert.ok(six.includes('Check: ask your assistant "Show me the stake of did:vector:<your AGENT_ID>." (`vector_get_reputation_stake`).'), 'the Check reads the stake');
+  // The words of before: new stakes were paused, the deployment was not published, and the hosted tools built nothing.
+  for (const before of ['paused', 'not published', 'build nothing', 'Skip this step', 'once stakes open again']) assert.equal(six.includes(before), false, `not: ${before}`);
   // The SDK steps of before (a .skey copy of the supplier key, a stake on the deployment that takes no new stakes) and the builders' draft are gone.
   for (const before of ['supplier.skey', 'load_wallet', 'create_stake', 'mcp-server/pull/25', 'are planned']) assert.equal(text.includes(before), false, `not: ${before}`);
 });
@@ -2048,8 +2060,8 @@ test('docs/LAUNCH.md: the costs are the ones of the runbooks, the template docs 
   const row = (start) => one.split('\n').find((l) => l.startsWith(start)) ?? '';
   assert.match(row('| 3. The advert |'), /^\| 3\. The advert \| about 2 \| when you retire the advert, .* \| 1 \| .*RUNBOOK\.md#12-post-the-advert/);
   assert.match(row('| 5. The agent record deposit |'), /^\| 5\. The agent record deposit \| 10 \| when the controller retires the record and takes the deposit back, with `vector_build_identity_retire` and `take_deposit` \| 1 \| the template's `register-record` command .*; \[HIRE\.md\]\(HIRE\.md\) section 7; .*TRUST-LAYER\.md/);
-  // New stakes are paused since the identity registry release (the hosted server's stake tools, 3.0.0): the row locks nothing and says why.
-  assert.equal(row('| 6. The stake, optional |'), '| 6. The stake, optional | nothing today: new stakes are paused (section 6) | | | the Module-3 deployment on the identity registry, not published yet |');
+  // A stake locks at least 10 and costs about 1.5 in fees; only stake above the 10 minimum can be decreased. It is made with the stake tools of the hosted server (section 6).
+  assert.equal(row('| 6. The stake, optional |'), '| 6. The stake, optional | at least 10, and about 1.5 in fees | the 10 minimum does not: only stake above it can be decreased (section 6) | 2: the opening output and the stake | the Module-3 deployment on the identity registry, made with the stake tools of the hosted server (section 6) |');
   assert.match(row('| 7. The test hire, from your hiring key |'), /the price and both bonds, raised to the ledger's minimum for the escrow output \(about 2\.6\) when that sum is lower \| on Accept your bond returns to your hiring key, and your supplier key receives the price and the supplier bond \| 2: the Post and the Accept \| \[HIRE\.md\]\(HIRE\.md\) section 3 \|$/);
   assert.ok(one.includes('Fees are about 0.5 a transaction, the fee floor'));
   // The numbers are the runbook's: the deposit, the stake, the advert lock, the fee, the setup and the float of 50.
@@ -2069,7 +2081,7 @@ test("docs/LAUNCH.md: the keys are made in the member's own terminal, the contro
   assert.ok(two.includes('From here your assistant must not open, write or print `.env`: you edit it yourself.'));
   assert.ok(two.includes('Only its `publicKeyHex` goes into `.env`, as `IDENTITY_CONTROLLER_PUB_KEY_HEX`; keep its `privateKeyHex` offline'), 'the controller key stays offline');
   for (const name of ['IDENTITY_POLICY_ID', 'IDENTITY_REF_UTXO', 'IDENTITY_ESCROW_REF_UTXO', 'IDENTITY_ADVERT_REF_UTXO']) assert.ok(two.includes('`' + name + '`'), `section 2 names ${name}`);
-  // The three steps of the template README (step 5, at main 78e8a81), verbatim apart from the placeholders.
+  // The three steps of the template README (step 5, at main 48c0373), verbatim apart from the placeholders.
   const five = section(text, '5. Give your agent an identity');
   const build = 'corepack pnpm --filter @marketplace/supplier exec tsx src/cli/register-record.ts build \\\n  --out ../agent-record.json \\\n  --name "<a name>" \\\n  --endpoint https://<your public name> \\\n  --capability <your capability id>';
   const sign = ['read -rs SIGNER_PRIV_KEY_HEX && export SIGNER_PRIV_KEY_HEX', 'corepack pnpm --filter @marketplace/supplier exec tsx src/cli/register-record.ts sign --tx ../agent-record.json', 'unset SIGNER_PRIV_KEY_HEX', 'corepack pnpm --filter @marketplace/supplier exec tsx src/cli/register-record.ts submit --tx ../agent-record.json'].join('\n');
@@ -2171,6 +2183,23 @@ test('the stake correction: the Module-3 stake is not refundable; LAUNCH.md, the
   for (const miss of ['A withdrawn stake, a closed claim or a spent proposal no longer appears', STAKE_NO_WITHDRAW, 'When the identity is deregistered later, `python3 make-skey.py` writes']) assert.doesNotMatch(miss, STAKE_RETURN_WORDS, miss);
 });
 
+// Step 8 of the four runbooks runs m3-self-stake.py, which stakes on the Module-3 deployment before the identity registry. Agent History reads the deployment on the identity
+// registry, so the runbooks say that the stake of the script is not shown, and name the stake tools of the hosted server that make a stake that is shown.
+const EARLIER_STAKE_NOTE = 'This script stakes on the earlier Module-3 deployment, the one before the identity registry. Agent History reads the Module-3 deployment on the identity registry, so it does not show a stake that this script makes. To make a stake that it shows, use the stake tools of the hosted MCP server on that deployment: `vector_build_reputation_stake_open` (step 1), `vector_build_reputation_stake` (step 2) and `vector_get_reputation_stake` (to read the stake). Section 6 of `docs/LAUNCH.md` gives the two steps.';
+
+test('the runbooks, step 8: the script stakes on the earlier Module-3 deployment, Agent History does not read that stake, and the stake tools of the hosted server make a stake that it reads', () => {
+  const read = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8');
+  for (const rel of ['deploy/host/RUNBOOK.md', 'deploy/host/RUNBOOK-document-pipeline.md', 'deploy/host/RUNBOOK-audio-snippets.md', 'deploy/host/RUNBOOK-advocate.md']) {
+    const eight = section(read(rel), '8. Stake in Module-3');
+    assert.ok(eight.includes('\n' + EARLIER_STAKE_NOTE + '\n'), `${rel}: step 8 holds the note, in a paragraph of its own`);
+    assert.ok(eight.indexOf(EARLIER_STAKE_NOTE) < eight.indexOf('./venv/bin/python m3-self-stake.py'), `${rel}: the note comes before the command`);
+  }
+  // The tools of the note are stake tools of the hosted server, and the guide that the note points at names them too.
+  const tools = EARLIER_STAKE_NOTE.match(/\bvector_[a-z_]+/g);
+  assert.equal(tools.length, 3);
+  for (const tool of tools) assert.ok(STAKE_TOOLS.includes(tool) && section(launch(), '6. Stake (optional)').includes('`' + tool + '`'), `${tool} is a stake tool, and section 6 of the guide names it`);
+});
+
 test('docs/HIRE.md (findings 3 and 9, and the install of section 8): the record is permanent in the chain\'s history, a recovery phrase exposes the whole wallet, and the terminal path installs the template at the pinned commit, whose postinstall makes the file the transaction build needs, and gives the published values of the identity registry', () => {
   const guide = hire();
   assert.ok(section(guide, '7. Register your own identifier (optional)').includes(HIRE_PERMANENT));
@@ -2194,9 +2223,9 @@ test('docs/LAUNCH.md (findings 4 to 8): the lock floor, the fleet prefixes the c
   assert.ok(section(hire(), '3. What the key must hold').includes('The ledger needs about 2.6 in an identity-layout escrow output of this size'));
   const two = section(text, '2. Let your coding agent build it');
   assert.ok(two.includes('with a capability id that does not start with `llm.text.generate.`, `llm.chat.`, `ocr.page.extract.` or `audio.synthesize.`: the chat hire tools refuse those.'), 'finding 5');
-  assert.ok(two.includes("As of 2026-11-06 the template's `main` is commit `78e8a81`, the first with the identity registry: its runtime is the one our four agents run since 2026-11-03, and a fresh clone installs cleanly."), 'finding 7: main is 78e8a81 on 2026-11-06');
+  assert.ok(two.includes("As of 2026-11-19 the template's `main` is commit `48c0373`, which has the identity registry, and a fresh clone installs cleanly."), 'finding 7: main is 48c0373 on 2026-11-19');
   // Round 2 (R3): LAUNCH.md describes main, as of a day, and pins nothing; HIRE.md section 8 pins the same commit on purpose.
-  assert.equal(text.split('78e8a81').length - 1, 1, 'LAUNCH.md names the commit of main once, in the sentence that dates it');
+  assert.equal(text.split('48c0373').length - 1, 1, 'LAUNCH.md names the commit of main once, in the sentence that dates it');
   assert.equal(text.includes('is proposed in') || text.includes('vector-agent-template/pull/3'), false, 'the postinstall is merged, not proposed');
   assert.ok(section(text, '3. Post the advert').includes("On a fresh clone of `main`, README step 5's own form also runs on the host: since 2026-10-21 the template's postinstall step copies `libsodium-sumo.mjs` next to its wrapper, as `agent/Dockerfile` does in the image, and the transaction build needs that file."));
   // Round 2 (R4): the member edits .env; the assistant neither opens nor writes it.

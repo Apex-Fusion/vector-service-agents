@@ -12,8 +12,9 @@
 //
 // Decoders check the shape: constructor indices, field counts, fixed byte lengths and integer ranges. They do not check the limits
 // of a valid record (Part 2 Section 3.3); identity-rules.ts does. Every error is `<what>: <field path>: <problem>`.
-import { Constr, Data, credentialToAddress, getAddressDetails } from '@lucid-evolution/lucid';
+import { Constr, Data, credentialToAddress } from '@lucid-evolution/lucid';
 import type { AddressDetails } from '@lucid-evolution/lucid';
+import { addressDetails, decodePlutusData } from './guarded-decode.js';
 
 // ─── Shared readers and writers ─────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -36,7 +37,7 @@ function codec<T>(name: string, body: () => T): T {
 
 function parse(hex: string): Data {
   if (typeof hex !== 'string' || !HEX.test(hex.toLowerCase())) fail('cbor', 'expected hex');
-  try { return Data.from(hex.toLowerCase()); } catch { return fail('cbor', 'not Plutus Data'); }
+  try { return decodePlutusData(hex.toLowerCase()); } catch { return fail('cbor', 'not Plutus Data'); }
 }
 
 export function constrFields(x: Data, path: string, index: number, count: number): Data[] {
@@ -324,12 +325,12 @@ export interface LegacyDatum {
   registeredAt: bigint;
 }
 
-function credentialOf(x: Data, path: string): Credential {
+export function credentialOf(x: Data, path: string): Credential {
   const index = constrIndex(x, path, 2);
   const [hash] = constrFields(x, path, index, 1);
   return { type: index === 0 ? 'VerificationKey' : 'Script', hash: bytesOf(hash, `${path}.hash`, 28) };
 }
-function credentialData(c: Credential, path: string): Data {
+export function credentialData(c: Credential, path: string): Data {
   return new Constr(c.type === 'VerificationKey' ? 0 : 1, [hexData(c.hash, `${path}.hash`, 28)]);
 }
 
@@ -589,7 +590,7 @@ export function plutusAddressOf(x: Data, path = 'address'): PlutusAddress {
 /** The Plutus form of a bech32 address with a key or script payment credential; pointer and Byron addresses are refused. */
 export function plutusAddressFromBech32(address: string): PlutusAddress {
   let details: AddressDetails;
-  try { details = getAddressDetails(address); } catch { return fail('address', 'not a valid address'); }
+  try { details = addressDetails(address); } catch { return fail('address', 'not a valid address'); }
   const cred = (c: { type: 'Key' | 'Script'; hash: string }): Credential => ({ type: c.type === 'Key' ? 'VerificationKey' : 'Script', hash: c.hash.toLowerCase() });
   if (!details.paymentCredential || (details.type !== 'Base' && details.type !== 'Enterprise')) fail('address', `a ${details.type} address cannot be used here`);
   return {
