@@ -4,7 +4,7 @@ The code that a service uses to hire a supplier on the Vector marketplace.
 The kit posts the escrow, sends the job, polls for the result, checks the receipt and accepts the escrow.
 It hires a chat model, an OCR supplier or an agent of the template contract.
 
-This page describes the paying keys, the limits of the bonds, the five outcomes of `hireAgent`, the vault that continues after a Pay, and the shared stubs.
+This page describes the paying keys, the limits of a hire, the five outcomes of `hireAgent`, the limit of the decision, the vault that continues after a Pay, and the shared stubs.
 The head of each file in `src/` describes that file.
 
 ## Paying keys
@@ -29,20 +29,27 @@ The buyer bond returns to the buyer.
 A Release pays the supplier the price and both bonds.
 The supplier makes a Release when the buyer does not accept in time.
 
-So `hireModel` and `hireAgent` take two limits.
-Both are required, and neither has a default.
+So `hireAgent` takes three limits, and `hireModel` takes the same three.
+All are required, and none has a default.
+Each is a bigint, or `null` for no limit.
 
 | Field | Meaning |
 |---|---|
+| `maxPriceLovelace` | The most that the price of the advert may be. |
 | `maxSupplierBondLovelace` | The most that the supplier bond of the advert may be. |
 | `maxBuyerBondLovelace` | The most that the buyer bond of the advert may be. |
 
-A number refuses an advert whose bond is above it.
-The message names the advert, the bond and the limit.
+A number refuses an advert that is above it.
+The message names the advert, the value and the limit.
 The refusal comes before the Post or the Pay, so nothing is posted.
-`null` means no limit.
+For `hireModel` the price ceiling is a bigint, and it has no `null`.
 
-`chooseChatSupplier` takes the same two limits as optional fields.
+A limit that is a number, a text, `undefined` or a missing field is refused with a `TypeError` that names the field.
+The error comes before anything is read, posted or paid, and before the lane of the key is used.
+A caller of plain JavaScript that writes `1000000` and not `1000000n` gets the error, and it does not hire.
+
+`chooseChatSupplier` takes the two limits of the bonds as optional fields.
+It accepts a bigint, `null` or `undefined`, and it refuses every other type in the same way.
 A call that gives none has no limit, as before.
 
 Every hire of `hireModel` and `hireAgent` writes its terms into one line of the log, once the Post is confirmed.
@@ -54,19 +61,20 @@ The Document Pipeline does not ask for terms, so its record and its log do not c
 
 ```ts
 const outcome = await hireAgent(key, deps, {
-  selection: { capabilityId: 'supplychain.order.accept.v1', model: 'order-desk-small', maxPriceLovelace: 500_000n },
+  selection: { capabilityId: 'supplychain.order.accept.v1', model: 'order-desk-small' },
   payload: '{"purchase_order":"PO-7"}',
+  maxPriceLovelace: 500_000n,
   maxSupplierBondLovelace: 2_000_000n,
   maxBuyerBondLovelace: null,
 }, errors);
 ```
 
 The selection names an advert (`advertRef`), or a capability that one Active advert in the indexer matches.
-A model and a price ceiling narrow the match.
+A model and the price ceiling narrow the match.
 Two adverts that match are an error: the caller names one by its `advertRef`.
 The kit reads the advert on chain in both cases.
-It checks every field of the selection against the advert: the advert must be Active, and its capability, its model and its price must be the ones that the caller gave.
-Then it checks the two limits of the bonds.
+It checks every field of the selection against the advert: the advert must be Active, and its capability and its model must be the ones that the caller gave.
+Then it checks the three limits.
 A mismatch is the `unavailable` error of the caller, and nothing is paid.
 
 `hireAgent` says how the hire ended in one of five outcomes.
@@ -74,10 +82,10 @@ A mismatch is the `unavailable` error of the caller, and nothing is paid.
 | Outcome | Meaning |
 |---|---|
 | `completed` | The receipt passed the eight checks, the decision accepted it, and the Accept was made. |
-| `refused_before_claim` | The runtime refused the job before its Claim. The kit shows it with three facts together (see below). The escrow stays Open, and the janitor reclaims it after its `deliver_by`. |
+| `refused_before_claim` | The runtime refused the job. The kit gives this word on three facts together (see below). The escrow stays Open, and the janitor reclaims it after its `deliver_by`. |
 | `failed_after_claim` | The agent may hold the job, or the kit cannot tell that it does not. The escrow stays in the store for the janitor. |
 | `vault_refused` | The vault Pay did not leave the node. Nothing was signed, and no money moved. |
-| `not_accepted` | The delivery came and the escrow was not accepted: a check of the receipt failed, or the decision of the caller said no. |
+| `not_accepted` | The delivery came and the escrow was not accepted: a check of the receipt failed, the decision of the caller said no (`declined`), or the decision did not answer in time (`decision_timeout`). |
 
 `refused_before_claim` needs all three facts:
 
@@ -87,6 +95,14 @@ A mismatch is the `unavailable` error of the caller, and nothing is paid.
 
 An agent that stays busy until the send ends in time gives the same outcome, with the code `busy`.
 
+The word rests on the answer of the runtime and on one read of the chain just after it.
+It is no proof.
+Two cases still give it wrongly.
+A runtime can claim the escrow and still answer a clean refusal.
+A runtime can claim the escrow after its refusal, because an Open escrow stays open to a Claim until its `deliver_by`.
+In both cases the escrow is in the store of the key, and the janitor reclaims an Open or Claimed escrow after its deadline.
+An escrow that the agent went on to Submit cannot be reclaimed.
+
 Every other end of a send is `failed_after_claim` with the reason `send_lost`.
 That covers no answer, a page, a 5xx with another code, `escrow_not_found`, a refusal after an unclear send, and an escrow that is not read Open.
 A caller must not hire again after `send_lost`, because the agent may hold the job.
@@ -95,6 +111,23 @@ The other reasons of `failed_after_claim` are `failed`, `timeout`, `bad_result`,
 
 What no outcome names is thrown as an error of the factory of the caller.
 That includes no advert to hire, an advert above a limit, a Post that failed before its signature, the deadline, a failed write of the store, and a decision that throws.
+
+## The decision of the caller
+
+`request.decide` runs after the eight checks and before the Accept.
+It has until `DECISION_WINDOW_MS` after the answer of the agent.
+That is the accept window of 600 s, less the 240 s that an Accept needs (`ACCEPT_NEEDS_MS`): its build, up to 60 s, and its confirmation, up to 180 s.
+So the limit is 360 s.
+
+A decision that has not answered by then ends the hire as `not_accepted` with the reason `decision_timeout`.
+The kit sends no Accept, and the lane of the key is free for the next hire.
+The kit does not ask the decision at all when that time has passed already.
+A decision that never answers does not hold the lane.
+A decision that throws ends the hire with its own error.
+
+On the chain, the escrow stays Submitted.
+With no Accept in the accept window, the supplier can release the escrow, and a Release pays the supplier the price and both bonds.
+So a decision that is too slow costs the caller what the hire paid.
 
 ## Pay from a vault
 
@@ -112,11 +145,19 @@ The next hire from this vault must start from it.
 A caller takes the continuing reference from an outcome or from an error:
 
 - An outcome that has an escrow has the field `vaultRef`. It is `null` when the wallet paid.
-- A hire that throws after a confirmed Pay throws a `HireInterrupted`. It has the fields `vaultRef` and `cause`. Its message is the message of the cause.
+- A hire that throws after a confirmed Pay throws a `HireInterrupted`. It has the fields `vaultRef`, `escrowRef` and `cause`. Its message is the message of the cause.
+- A hire whose Pay was submitted and not seen confirmed throws a `HirePayUnconfirmed`. The Pay may still land. It has the fields `vaultRefIfLanded` (the vault if the Pay lands: `<tx hash>#1`), `escrowRef`, `txHash`, `mayLand`, `validTo` and `cause`. `validTo` is the time after which the Pay cannot land, in POSIX milliseconds.
 
-The kit wraps every error that follows a confirmed Pay: the deadline, a failed write of the store, and a decision that throws.
-An error before a confirmed Pay reaches the caller as it is, because no vault was spent.
-A caller that keeps the old reference pays its next hire from a vault that does not exist.
+The kit wraps every error that follows a confirmed Pay: the deadline, a failed write of the store, and a ledger or a decision that throws.
+It wraps the error of a Pay that was not seen confirmed in the same way.
+An error before any Pay reaches the caller as it is, because no vault was spent.
+
+After a `HirePayUnconfirmed`, a caller does not start a Pay from the old reference before `validTo`, because the Pay may land and spend it.
+After `validTo` the caller reads the vault again from the chain.
+If the Pay landed, the vault is at `vaultRefIfLanded`, and a hire with the old reference ends as `vault_refused` with the reason `no_vault`.
+If it did not land, the old reference is still the vault.
+A caller that sees the Pay on the chain before `validTo` can use `vaultRefIfLanded` at once.
+A caller that keeps the old reference after the Pay landed pays its next hire from a vault that does not exist.
 
 ## Stubs
 
