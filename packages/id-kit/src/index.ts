@@ -11,6 +11,6 @@ export {
 export type {
   AccessTokenContext, AccessTokenPolicy, AccessTokenRequest, AccessTokenRule, ActorCheck, AuthorityVerdict, BitstringStatusList, BundleReadRule, BundleRule, CallRequest, CallRule, CredentialCheckRule,
   CredentialContext, CredentialRule, DelegationCheck, DelegationContext, DelegationGrant, DpopRule, EntryStatus, GatewayKey, GatewayReader, GatewayReaderOptions, JwtSvidRule, KeySet, KeySetRule, KeysRule,
-  ListContext, ListReadRule, ListSnapshot, Principal, ReplayStore, ReplayStoreOptions, RequiredGrant, SpiffeBundle, StatusListRule, StatusReading, SvidCheckRule, SvidContext, TokenStatusList, Verifier,
+  ListContext, ListReadRule, ListSnapshot, Principal, ReplayStore, ReplayStoreOptions, RequiredGrant, SpiffeBundle, StatusListRule, StatusNotRead, StatusRead, StatusReading, SvidCheckRule, SvidContext, TokenStatusList, Verifier,
   VerifiedAccessToken, VerifiedCall, VerifiedCredential, VerifiedCredentialStatus, VerifiedDpop, VerifiedJwtSvid, VerifiedX509Svid, VerifierOptions, X509SvidRule,
 } from './verify/index.ts';

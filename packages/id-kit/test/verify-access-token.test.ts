@@ -111,7 +111,7 @@ describe('accessToken: a call that is right', () => {
       issuedAt: s.gateway.now(),
       expiresAt: s.gateway.now() + 300_000,
     });
-    expect(call1.status).toMatchObject({ read: true, list: `${s.gateway.baseUrl}/status/tsl/0`, refreshError: null });
+    expect(call1.status).toStrictEqual({ read: true, list: `${s.gateway.baseUrl}/status/tsl/0`, fetchedAt: s.gateway.now(), issuedAt: s.gateway.now() });
   });
 
   it('a token for the agent alone (no delegation) is accepted when the call needs no grant, and the subject is the agent', async () => {
@@ -140,6 +140,7 @@ describe('accessToken: a call that is right', () => {
 describe('accessToken: the token', () => {
   const forgedCases: Array<[string, (claims: Record<string, unknown>, now: number) => void, Record<string, unknown>?]> = [
     ['token.alg', () => undefined, { alg: 'HS256' }],
+    ['token.alg', () => undefined, { alg: 'none' }],
     ['token.typ', () => undefined, { typ: 'JWT' }],
     ['token.kid', () => undefined, { kid: `did:vector:${'a'.repeat(64)}#${'b'.repeat(56)}` }],
     ['token.issuer', (c) => (c.iss = 'https://evil.example')],
@@ -163,6 +164,7 @@ describe('accessToken: the token', () => {
     ['delegation.details', (c) => (c.authorization_details = [{ type: 'urn:other' }])],
     ['delegation.details', (c) => (c.authorization_details = [{ type: 'urn:other', identifier: 'a'.repeat(64), actions: ['erp.*'], locations: [AUDIENCE] }])],
     ['delegation.details', (c) => (c.authorization_details = [])],
+    ['delegation.details', (c) => { const entry = { type: DELEGATION_DETAILS_TYPE, identifier: 'a'.repeat(64), actions: ['erp.*'], locations: [AUDIENCE] }; c.authorization_details = [entry, entry]; }],
     ['delegation.details', (c) => (c.authorization_details = [{ type: DELEGATION_DETAILS_TYPE, identifier: 'abc', actions: ['erp.*'], locations: [AUDIENCE] }])],
     ['delegation.details', (c) => (c.authorization_details = [{ type: DELEGATION_DETAILS_TYPE, identifier: 'a'.repeat(64), actions: [], locations: [AUDIENCE] }])],
     ['delegation.details', (c) => (c.authorization_details = [{ type: DELEGATION_DETAILS_TYPE, identifier: 'a'.repeat(64), actions: ['Bad Action'], locations: [AUDIENCE] }])],
@@ -189,6 +191,14 @@ describe('accessToken: the token', () => {
     refused(await callWith(s, token, await proofFor(s, token)), 'token.kid');
     const twin = await forge(s, await issue(s), () => undefined);
     accepted(await callWith(s, twin, await proofFor(s, twin)));
+  });
+
+  it('an unsecured token (alg none, an empty signature) is refused: token.alg', async () => {
+    const s = scene();
+    const token = await issue(s);
+    const unsecured = `${b64url(JSON.stringify({ ...decodeJwt(token).header, alg: 'none' }))}.${token.split('.')[1]}.`;
+    refused(await callWith(s, unsecured, await proofFor(s, unsecured)), 'token.alg');
+    accepted(await callWith(s, token, await proofFor(s, token)));
   });
 
   it('a token whose signature does not verify is refused: a changed claim, and another key with the same kid', async () => {
@@ -297,6 +307,26 @@ describe('accessToken: the DPoP proof', () => {
     refused(await callWith(s, token, await proofFor(s, token, { claims: { iat: Math.floor(s.gateway.now() / 1000) - 301 } })), 'dpop.iat');
   });
 
+  it.each<[string, string, string, boolean]>([
+    ['the default port of https in the proof', 'https://mp-mock.example:443/t/1/erp/stock', URL_OF_CALL, true],
+    ['the default port of https in the request', URL_OF_CALL, 'https://mp-mock.example:443/t/1/erp/stock', true],
+    ['an upper case scheme and host in the proof', 'HTTPS://MP-MOCK.EXAMPLE/t/1/erp/stock', URL_OF_CALL, true],
+    ['an upper case scheme and host in the request', URL_OF_CALL, 'HTTPS://MP-MOCK.EXAMPLE/t/1/erp/stock', true],
+    ['a query and a fragment', `${URL_OF_CALL}?a=1#b`, `${URL_OF_CALL}?c=2`, true],
+    ['a trailing slash', `${URL_OF_CALL}/`, URL_OF_CALL, false],
+    ['a path with another case', 'https://mp-mock.example/T/1/erp/stock', URL_OF_CALL, false],
+    ['a percent-encoded letter in the proof', 'https://mp-mock.example/t/1/erp/st%6Fck', URL_OF_CALL, false],
+    ['a percent-encoded letter in the request', URL_OF_CALL, 'https://mp-mock.example/t/1/erp/st%6Fck', false],
+    ['another port', 'https://mp-mock.example:8443/t/1/erp/stock', URL_OF_CALL, false],
+    ['another scheme', 'http://mp-mock.example/t/1/erp/stock', URL_OF_CALL, false],
+  ])('the htu of a proof against the URL of the request: %s', async (_name, htu, url, accepts) => {
+    const s = scene();
+    const token = await issue(s);
+    const result = await s.verifier.accessToken({ authorization: `DPoP ${token}`, dpop: await proofFor(s, token, { claims: { htu } }), method: 'POST', url }, POLICY);
+    if (accepts) accepted(result);
+    else refused(result, 'dpop.url');
+  });
+
   it('the method and the URL of the call are the ones that the verifier gets: a proof for POST is refused for a GET', async () => {
     const s = scene();
     const token = await issue(s);
@@ -327,7 +357,38 @@ describe('accessToken: the grant and the chain of actors', () => {
     refused(await call(s, token, {}, { audience: AUDIENCE, require: { action: 'erp', resource: AUDIENCE } }), 'delegation.action');
     refused(await call(s, token, {}, { audience: AUDIENCE, require: { action: ACTION, resource: 'https://other.example/t/1/erp' } }), 'delegation.resource');
     accepted(await call(s, token, {}, { audience: AUDIENCE, require: { action: 'erp.stock.write', resource: AUDIENCE } }));
-    accepted(await call(s, token, {}, { audience: AUDIENCE }));
+    refused(await call(s, token, {}, { audience: AUDIENCE }), 'delegation.unchecked');
+  });
+
+  it('a token that carries a delegation is refused when the policy names no action and no resource: the delegate chooses the audience, and nothing else compares the grant with the call (delegation.unchecked)', async () => {
+    const s = scene();
+    const other = 'https://mp-mock.example/t/2/hr';
+    const asked = await s.client.requestToken({ subject: { did: s.agent.did, key: s.agent.authentication.privateKey }, dpopKey: s.agent.delegation.privateKey, resource: other, delegation: { identifier: s.root.id } });
+    if (!asked.ok) throw new Error(asked.detail);
+    const callAt = async (token: string, policy: AccessTokenPolicy) => {
+      const url = `${other}/stock`;
+      const presented = await presentToken(token, s.agent.delegation.privateKey, { method: 'POST', url }, { now: s.gateway.now });
+      return s.verifier.accessToken({ authorization: presented.authorization, dpop: presented.dpop, method: 'POST', url }, policy);
+    };
+    refused(await callAt(asked.value.accessToken, { audience: other }), 'delegation.unchecked');
+    refused(await callAt(asked.value.accessToken, { audience: other, require: { action: ACTION, resource: other } }), 'delegation.resource');
+    // The twin: a token for the agent alone, for the same resource, is accepted with the same policy.
+    const direct = await s.client.requestToken({ subject: { did: s.agent.did, key: s.agent.authentication.privateKey }, dpopKey: s.agent.delegation.privateKey, resource: other });
+    if (!direct.ok) throw new Error(direct.detail);
+    accepted(await callAt(direct.value.accessToken, { audience: other }));
+  });
+
+  it('the policy has three cases: with no require only a token with no delegation is accepted, with require only a token with a delegation, and with require and acceptDirect both', async () => {
+    const s = scene();
+    const delegated = await issue(s);
+    const direct = await issue(s, false);
+    accepted(await call(s, direct, {}, { audience: AUDIENCE }));
+    refused(await call(s, delegated, {}, { audience: AUDIENCE }), 'delegation.unchecked');
+    accepted(await call(s, delegated));
+    refused(await call(s, direct), 'delegation.missing');
+    accepted(await call(s, delegated, {}, { ...POLICY, acceptDirect: true }));
+    accepted(await call(s, direct, {}, { ...POLICY, acceptDirect: true }));
+    refused(await call(s, delegated, {}, { audience: AUDIENCE, require: { action: 'hr.read', resource: AUDIENCE }, acceptDirect: true }), 'delegation.action');
   });
 
   it('the pattern rule is exact for a prefix: oc.* does not cover ocr.read, and * covers every action and resource', async () => {
@@ -345,12 +406,39 @@ describe('accessToken: the grant and the chain of actors', () => {
     refused(await check(['erp.*'], [`${AUDIENCE}/stock`], 'erp.stock.read'), 'delegation.resource');
   });
 
+  it('acceptDirect is true, false or not set: any other value, such as the text "false" from an environment value, throws a TypeError, and a token with no delegation is not accepted by it', async () => {
+    const s = scene();
+    const direct = await issue(s, false);
+    for (const bad of ['false', 'true', '', 0, 1, null, {}, []]) {
+      await expect(call(s, direct, {}, { ...POLICY, acceptDirect: bad as never })).rejects.toThrow(/acceptDirect is true or false/);
+    }
+    accepted(await call(s, direct, {}, { ...POLICY, acceptDirect: true }));
+    refused(await call(s, direct, {}, { ...POLICY, acceptDirect: false }), 'delegation.missing');
+    refused(await call(s, direct, {}, { ...POLICY, acceptDirect: undefined }), 'delegation.missing');
+  });
+
+  it('the shape of require is checked: an object with an action and a resource, both text. A call that is wrong throws a TypeError that names require, before any request to the gateway', async () => {
+    const s = scene();
+    const token = await issue(s);
+    const before = s.gateway.requests.length;
+    for (const require of [{}, { action: ACTION }, { resource: AUDIENCE }, { action: 1, resource: AUDIENCE }, { action: ACTION, resource: null }, 'erp.stock.read', [], 42]) {
+      await expect(call(s, token, {}, { audience: AUDIENCE, require: require as never })).rejects.toThrow(/require is an object with an action and a resource/);
+    }
+    expect(s.gateway.requests.length).toBe(before);
+    accepted(await call(s, token));
+  });
+
   it('a call that asks for a pattern as its action or resource is a mistake of the caller, and it throws', async () => {
     const s = scene();
     const token = await issue(s);
     for (const require of [{ action: 'erp.*', resource: AUDIENCE }, { action: '*', resource: AUDIENCE }, { action: ACTION, resource: '*' }, { action: 'Bad Action', resource: AUDIENCE }]) {
       await expect(call(s, token, {}, { audience: AUDIENCE, require })).rejects.toThrow(TypeError);
     }
+  });
+
+  it('acceptDirect with no require is a mistake of the caller, and it throws', async () => {
+    const s = scene();
+    await expect(call(s, await issue(s, false), {}, { audience: AUDIENCE, acceptDirect: true })).rejects.toThrow(TypeError);
   });
 
   it('the chain of actors: 4 levels are accepted and 5 are refused, and an actor must be a DID', async () => {
@@ -486,7 +574,7 @@ describe('accessToken: the lists that the token names', () => {
     const token = await issue(s);
     s.gateway.fault(tslPath, LISTS_UNAVAILABLE);
     const verified = accepted(await call(s, token));
-    expect(verified.status).toMatchObject({ read: false, reason: 'unavailable', list: `${s.gateway.baseUrl}/status/tsl/0` });
+    expect(verified.status).toMatchObject({ read: false, reason: 'unavailable', issuedAt: null, list: `${s.gateway.baseUrl}/status/tsl/0` });
     if (!verified.status.read) expect(verified.status.detail).toMatch(/503/);
     s.gateway.fault(tslPath, 'network');
     s.gateway.advance(61_000);
@@ -501,6 +589,57 @@ describe('accessToken: the lists that the token names', () => {
     s.gateway.advance(2 * 60_000);
     const verified = accepted(await call(s, token));
     expect(verified.status).toMatchObject({ read: false, reason: 'stale' });
+  });
+
+  it('the status of a call tells the age of the list: the time that the gateway built it, so that a caller can log how old it is', async () => {
+    const s = scene();
+    const token = await issue(s);
+    const built = s.gateway.now();
+    expect(accepted(await call(s, token)).status).toMatchObject({ read: true, issuedAt: built });
+    s.gateway.lists.freeze();
+    s.gateway.advance(200_000);
+    expect(accepted(await call(s, token)).status).toMatchObject({ read: true, issuedAt: built, fetchedAt: built + 200_000 });
+    // An older copy after a failed new read tells its issue time too.
+    s.gateway.fault(tslPath, LISTS_UNAVAILABLE);
+    s.gateway.advance(6_000);
+    expect(accepted(await call(s, token)).status).toMatchObject({ read: false, reason: 'stale', issuedAt: built });
+  });
+
+  it('a list that was wrong refuses the next calls too, until the wait ends: the refusal is not turned into a list that was not read', async () => {
+    const s = scene();
+    const token = await issue(s);
+    const [h, p] = (await (await s.gateway.fetch(`${s.gateway.baseUrl}${tslPath}`)).text()).split('.');
+    s.gateway.fault(tslPath, { status: 200, body: `${h}.${p}.${b64url(Buffer.alloc(64))}`, headers: { 'content-type': 'application/statuslist+jwt' } });
+    refused(await call(s, token), 'status.list');
+    refused(await call(s, token), 'status.list');
+    s.gateway.advance(6_000);
+    s.gateway.fault(tslPath, null);
+    expect(accepted(await call(s, token)).status.read).toBe(true);
+  });
+
+  it('a list that cannot be read again after its ttl: the older copy is checked, and the result says that the list was stale, with the reason that the new read failed', async () => {
+    const s = scene();
+    const token = await issue(s);
+    expect(accepted(await call(s, token)).status.read).toBe(true);
+    s.gateway.advance(61_000);
+    s.gateway.fault(tslPath, LISTS_UNAVAILABLE);
+    const verified = accepted(await call(s, token));
+    expect(verified.status).toMatchObject({ read: false, reason: 'stale', list: `${s.gateway.baseUrl}${tslPath}` });
+    if (!verified.status.read) expect(verified.status.detail).toMatch(/503/);
+    // The twin: the gateway answers again, and the list is read.
+    s.gateway.fault(tslPath, null);
+    s.gateway.advance(6_000);
+    expect(accepted(await call(s, token)).status.read).toBe(true);
+  });
+
+  it('an older copy that shows the agent revoked is no way round: when the new read fails, the call is still refused with status.revoked', async () => {
+    const s = scene();
+    const token = await issue(s);
+    s.gateway.setStatus(s.agent, 'revoked');
+    refused(await call(s, token), 'status.revoked');
+    s.gateway.advance(61_000);
+    s.gateway.fault(tslPath, LISTS_UNAVAILABLE);
+    refused(await call(s, token), 'status.revoked');
   });
 
   it('a list that is read and is wrong refuses the call: status.list (a list that another key signed), and status.value (a value that the gateway never writes)', async () => {
@@ -559,6 +698,25 @@ describe('accessToken: the lists that the token names', () => {
     s.gateway.fault(jwks, null);
     s.gateway.advance(31_000);
     accepted(await call(s, token));
+  });
+});
+
+describe('accessToken: the last position of a list', () => {
+  it('a token of an agent at position 131,071 is accepted, and refused when the suspension bit of that position is set (the last bit of the Bitstring Status List)', async () => {
+    const s = scene({ listCacheSeconds: 0 });
+    const last = s.gateway.createAgent({ label: 'rp last position', statusIndex: LIST_SIZE - 1 });
+    const root = s.gateway.delegate({ delegator: s.boss, delegate: last, actions: ['erp.*'], resources: [AUDIENCE] });
+    const asked = await s.client.requestToken({ subject: { did: last.did, key: last.authentication.privateKey }, dpopKey: last.delegation.privateKey, resource: AUDIENCE, delegation: { identifier: root.id } });
+    if (!asked.ok) throw new Error(asked.detail);
+    const callAsLast = async () => {
+      const presented = await presentToken(asked.value.accessToken, last.delegation.privateKey, { method: 'POST', url: URL_OF_CALL }, { now: s.gateway.now });
+      return s.verifier.accessToken({ authorization: presented.authorization, dpop: presented.dpop, method: 'POST', url: URL_OF_CALL }, POLICY);
+    };
+    const verified = accepted(await callAsLast());
+    expect(verified.statusClaim.index).toBe(LIST_SIZE - 1);
+    expect(verified.status.read).toBe(true);
+    s.gateway.setStatus(last, 'suspended');
+    refused(await callAsLast(), 'status.suspended');
   });
 });
 

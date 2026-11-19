@@ -4,7 +4,7 @@
 //   the signature against the key set of the gateway; `iss` is the gateway; `aud` names this resource; the time (`exp`, `iat`, `nbf`, a life of 5 minutes at most);
 //   `cnf.jkt`, and the DPoP proof of this call by that key (see dpop.ts), which is also accepted once;
 //   the chain of actors (`act`) is a chain of DIDs, and not deeper than the longest delegation chain;
-//   the authorization details name a delegation, and, if the caller asks for an action on a resource, a pattern of the grant covers each of them (the pattern rule of the delegation);
+//   the authorization details name a delegation; a token with a delegation is accepted only when the caller names the action and the resource of the call, and a pattern of the grant covers each of them (the pattern rule of the delegation);
 //   the status claim names an entry in a Token Status List of the gateway.
 // The check does not read the status list, the DID of an actor, or the ledger. It returns what it found, so that the caller can (see index.ts).
 
@@ -38,6 +38,7 @@ export const ACCESS_TOKEN_RULES = [
   'act.depth',
   'delegation.details',
   'delegation.missing',
+  'delegation.unchecked',
   'delegation.action',
   'delegation.resource',
   'status.claim',
@@ -78,6 +79,8 @@ export interface AccessTokenContext {
   readonly maxActDepth: number;
   readonly replay: ReplayStore;
   readonly require: RequiredGrant | null;
+  /** True when a token with no delegation is accepted too, with `require`. */
+  readonly acceptDirect: boolean;
 }
 
 export type Principal = { readonly kind: 'agent'; readonly did: string } | { readonly kind: 'key'; readonly keyHash: string; readonly id: string };
@@ -195,11 +198,30 @@ const concreteAction = (value: string): boolean => isActionPattern(value) && val
 /** True when `value` is a resource that can be asked for: not a wildcard pattern. */
 const concreteResource = (value: string): boolean => isResourcePattern(value) && value !== '*';
 
-export function checkAccessToken(request: AccessTokenRequest, ctx: AccessTokenContext): Check<VerifiedAccessToken, AccessTokenRule> {
-  const required = ctx.require;
-  if (required !== null && (!concreteAction(required.action) || !concreteResource(required.resource))) {
+/**
+ * Checks the shape of the policy of a call, and throws a TypeError for a mistake of the caller. `require` is nothing, or an object with an `action` and a `resource` that are text and
+ * concrete values. `acceptDirect` is nothing, true or false, and true goes with `require`.
+ */
+export function assertPolicy(policy: { readonly require?: unknown; readonly acceptDirect?: unknown }): void {
+  const { require: required, acceptDirect } = policy;
+  if (acceptDirect !== undefined && typeof acceptDirect !== 'boolean') {
+    throw new TypeError('acceptDirect is true or false. Any other value, such as the text "false", is a mistake of the caller.');
+  }
+  if (required === undefined || required === null) {
+    if (acceptDirect === true) throw new TypeError('acceptDirect goes with require: with no require, only a token with no delegation is accepted, and a token with a delegation is refused.');
+    return;
+  }
+  if (!isRecord(required) || typeof required.action !== 'string' || typeof required.resource !== 'string') {
+    throw new TypeError('require is an object with an action and a resource, both text: for example { action: "erp.stock.read", resource: "https://example.org/erp" }.');
+  }
+  if (!concreteAction(required.action) || !concreteResource(required.resource)) {
     throw new TypeError('the action and the resource of a call are concrete values: an action such as erp.stock.read, and a resource such as an https URL or script:<56 hex characters>. They are not patterns.');
   }
+}
+
+export function checkAccessToken(request: AccessTokenRequest, ctx: AccessTokenContext): Check<VerifiedAccessToken, AccessTokenRule> {
+  assertPolicy(ctx);
+  const required = ctx.require;
   const signed = verifyGatewayJws(request.accessToken, ctx.keys, { typ: 'at+jwt' }, TOKEN_JWS_RULES);
   if (!signed.ok) return signed;
   const claims = signed.value.payload;
@@ -245,8 +267,12 @@ export function checkAccessToken(request: AccessTokenRequest, ctx: AccessTokenCo
     if (!read.ok) return read;
     grant = read.value;
   }
-  if (required !== null) {
-    if (grant === null) return refuse('delegation.missing', 'the token names no delegation, so it grants no action and no resource');
+  if (required === null) {
+    // The delegate chooses the audience of a token, and the gateway does not compare it with the delegation. A token with a delegation is the grant of somebody else, so nothing here may take it for the call.
+    if (grant !== null) return refuse('delegation.unchecked', 'the token carries a delegation, and the policy of this call names no action and no resource that its grant must cover');
+  } else if (grant === null) {
+    if (!ctx.acceptDirect) return refuse('delegation.missing', 'the token names no delegation, so it grants no action and no resource');
+  } else {
     if (!grant.actions.some((pattern) => covers(pattern, required.action))) return refuse('delegation.action', 'no action pattern of the grant covers the action of this call');
     if (!grant.locations.some((pattern) => covers(pattern, required.resource))) return refuse('delegation.resource', 'no resource pattern of the grant covers the resource of this call');
   }

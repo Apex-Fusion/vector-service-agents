@@ -154,14 +154,13 @@ describe('the live credential', () => {
     expect(checkCredential(jwt(), credentialCtx(NOW - 3_600_000))).toMatchObject({ ok: false, rule: 'credential.not_yet_valid' });
   });
 
-  it('the verifier, with the captured files as the gateway, accepts the credential and reads its list; two hours later it still accepts it and says that the list is stale', async () => {
+  it('the verifier, with the captured files as the gateway, accepts the credential and reads its list; two hours later the list is over, so the credential is refused for credential.status_unknown', async () => {
     let now = NOW;
     const verifier = createVerifier({ baseUrl: ORIGIN, fetch: fixtureFetch, now: () => now });
     const first = accepted(await verifier.credential(jwt(), { subject: `did:vector:${manifest.agent}` }));
     expect(first.listStatus).toMatchObject({ read: true, list: `${ORIGIN}/status/bsl/0` });
     now = NOW + 2 * 3_600_000;
-    const later = accepted(await verifier.credential(jwt()));
-    expect(later.listStatus).toMatchObject({ read: false, reason: 'stale' });
+    expect(await verifier.credential(jwt())).toMatchObject({ ok: false, rule: 'credential.status_unknown' });
     now = NOW + DAY_MS + 3_600_000;
     expect(await verifier.credential(jwt())).toMatchObject({ ok: false, rule: 'credential.expired' });
   });
