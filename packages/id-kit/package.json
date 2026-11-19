@@ -1,7 +1,7 @@
 {
   "name": "@vsa/id-kit", "version": "0.1.0", "private": true, "type": "module",
   "exports": { ".": "./src/index.ts", "./client": "./src/client/index.ts", "./verify": "./src/verify/index.ts", "./testing": "./src/testing/index.ts" },
-  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit", "capture": "node scripts/capture-live-vectors.mjs" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit", "capture": "tsx scripts/capture-live-vectors.ts" },
   "dependencies": { "@noble/hashes": "^1.7.1" },
-  "devDependencies": { "vitest": "^5.0.5", "typescript": "^5.7.3", "@types/node": "^22.13.1" }
+  "devDependencies": { "vitest": "^5.0.5", "typescript": "^5.7.3", "tsx": "^4.21.0", "@types/node": "^22.13.1" }
 }
