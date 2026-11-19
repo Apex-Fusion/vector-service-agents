@@ -4,7 +4,7 @@ permissions:
   contents: read
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    runs-on: nixos
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -34,7 +34,7 @@ jobs:
   # Every push and pull request builds the four images, with no push and no registry login, so that a stage that no longer builds fails before it reaches
   # main. The publish job builds them again on main, and pushes them.
   build:
-    runs-on: ubuntu-24.04
+    runs-on: nixos
     steps:
       - uses: actions/checkout@v4
       - uses: docker/build-push-action@v6
@@ -60,7 +60,7 @@ jobs:
   publish:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: nixos
     permissions:
       contents: read
       packages: write
