@@ -6,12 +6,15 @@ import { plutusAddressToBech32 } from './vendored/shared/cbor/address.ts';
 import { keyHash, parseVectorDid, vectorDid } from './vendored/shared/identity/id.ts';
 import { PURPOSE_AUTHENTICATION, PURPOSE_ASSERTION, PURPOSE_TRANSACTION, PURPOSE_DELEGATION } from './vendored/shared/identity/constants.ts';
 import type { IdentityDatum, Key } from './vendored/shared/cbor/IdentityDatum.ts';
+import { decodeIdentityDatum as readIdentityDatum, decodeLegacyDatum as readLegacyDatum } from './vendored/shared/cbor/IdentityDatum.ts';
+import { decodePlutusDataHex as readPlutusDataHex } from './vendored/shared/cbor/plutus-data.ts';
+import { assertCborHexDepth } from './cbor-depth.ts';
 import { REGISTRY_POLICY, REGISTRY_ADDRESS } from './constants.ts';
 
 export type { IdentityDatum, LegacyDatum, Key, KeyType, Signer, Role, Party, Lineage, Status, Hold, PendingRecovery } from './vendored/shared/cbor/IdentityDatum.ts';
-export { KEY_TYPES, ROLES, decodeIdentityDatum, encodeIdentityDatum, decodeLegacyDatum, encodeLegacyDatum } from './vendored/shared/cbor/IdentityDatum.ts';
+export { KEY_TYPES, ROLES, encodeIdentityDatum, encodeLegacyDatum } from './vendored/shared/cbor/IdentityDatum.ts';
 export type { PlutusData } from './vendored/shared/cbor/plutus-data.ts';
-export { decodePlutusDataHex, encodePlutusDataHex } from './vendored/shared/cbor/plutus-data.ts';
+export { encodePlutusDataHex } from './vendored/shared/cbor/plutus-data.ts';
 export type { PlutusAddress, PlutusCredential } from './vendored/shared/cbor/address.ts';
 export { plutusAddressFromBech32, plutusAddressToBech32 } from './vendored/shared/cbor/address.ts';
 export type { ParsedVectorDid } from './vendored/shared/identity/id.ts';
@@ -20,6 +23,17 @@ export {
   PURPOSE_AUTHENTICATION, PURPOSE_ASSERTION, PURPOSE_TRANSACTION, PURPOSE_DELEGATION, ED25519_PURPOSES, P256_PURPOSES,
   RIGHT_SUSPEND, RIGHT_REVOKE, RIGHT_RECOVER, ROLE_MAX_RIGHTS,
 } from './vendored/shared/identity/constants.ts';
+
+// The decoders of the record and of Plutus Data are the ones of agents-marketplace, in plain TypeScript. They read a datum of a chain output, so each one runs
+// the check of cbor-depth.ts first, as every other datum decoder of this package does: CBOR that is nested deeper than 64 levels is refused before it is
+// decoded, and the refusal is an Error, as for a datum that does not decode.
+const checked = <T>(read: (hex: string) => T, what: string) => (hex: string): T => {
+  assertCborHexDepth(hex, { what });
+  return read(hex);
+};
+export const decodeIdentityDatum = checked(readIdentityDatum, 'The record datum');
+export const decodeLegacyDatum = checked(readLegacyDatum, 'The record datum');
+export const decodePlutusDataHex = checked(readPlutusDataHex, 'The datum');
 
 /** A registry: its minting policy (the script hash) and the exact address of its records. */
 export interface Registry { policy: string; address: string }
