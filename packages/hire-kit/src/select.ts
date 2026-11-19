@@ -101,8 +101,23 @@ export function bondProblem(advertRef: string, advert: AdvertDatum, limits: Bond
   return null;
 }
 
+const KIND: Readonly<Record<string, string>> = { number: 'a number', string: 'a text', boolean: 'a boolean', object: 'an object', function: 'a function', symbol: 'a symbol' };
+/**
+ * Refuses a limit that is not a bigint, with a TypeError that names it. A limit is a bigint, or null for no limit (`allow.null`), or left out (`allow.absent`, for a path that never had the
+ * limit). Any other value is refused: a number or a text is not the limit that the caller means, and a missing limit would count as no limit at all.
+ */
+export function requireLimits(limits: Readonly<Record<string, unknown>>, allow: { null: boolean; absent: boolean }): void {
+  for (const [name, value] of Object.entries(limits)) {
+    if (typeof value === 'bigint' || (allow.null && value === null) || (allow.absent && value === undefined)) continue;
+    const accepted = `a bigint${allow.null ? ' or null' : ''}${allow.absent ? ', or left out' : ''}`;
+    const found = value === undefined ? 'missing' : value === null ? 'null' : (KIND[typeof value] ?? `a ${typeof value}`);
+    throw new TypeError(`${name} must be ${accepted}, and it is ${found}. A number or a text is not the limit that a caller means, and a missing limit would count as none.`);
+  }
+}
+
 /** The chat supplier: the selection's choice at a price at or under the ceiling, its advert checked on chain against it. The caller's `unavailable` otherwise. */
 export async function chooseChatSupplier<E extends Error>(chain: Chain, query: ChatQuery, unavailable: (why: string) => E): Promise<HireSupplier> {
+  requireLimits({ maxSupplierBondLovelace: query.maxSupplierBondLovelace, maxBuyerBondLovelace: query.maxBuyerBondLovelace }, { null: true, absent: true });
   const ceiling = query.maxPriceLovelace;
   const budgetMs = query.budgetMs ?? LLM_SELECTION_BUDGET_MS;
   const maxCandidates = query.maxCandidates ?? LLM_SELECTION_MAX_CANDIDATES;

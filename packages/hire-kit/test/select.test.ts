@@ -129,6 +129,24 @@ describe('chooseChatSupplier (rulings R22, R31, R56, R60, R65)', () => {
     const twins: Array<Partial<ChatQuery>> = [{}, { maxSupplierBondLovelace: null, maxBuyerBondLovelace: null }, { maxSupplierBondLovelace: 25_000_000n, maxBuyerBondLovelace: 7_000_000n }];
     for (const limits of twins) expect((await chooseChatSupplier(m.chain, query(m, limits), unavailable)).advertRef, JSON.stringify(Object.keys(limits))).toBe(LLM_ADVERT_REF);
   });
+
+  it('refuses a limit of a bond that is not a bigint, null or undefined with a TypeError that names the field, before the indexer is asked; a bigint, null and undefined are the limits that it takes', async () => {
+    for (const field of ['maxSupplierBondLovelace', 'maxBuyerBondLovelace']) {
+      for (const bad of [1_000_000, 0, '1000000', true, {}]) {
+        const m = marketplace();
+        const over: Record<string, unknown> = { [field]: bad };
+        const error = await chooseChatSupplier(m.chain, query(m, over as Partial<ChatQuery>), unavailable).then(() => { throw new Error('a supplier was chosen'); }, (e: unknown) => e);
+        if (!(error instanceof TypeError)) throw new Error(`${field} as ${typeof bad}: ${String(error)}`);
+        expect(error.message, `${field} as ${typeof bad}`).toContain(field);
+        expect(m.calls, `${field} as ${typeof bad}`).toStrictEqual([]);
+      }
+      for (const limit of [undefined, null, 25_000_000n]) {
+        const m = marketplace();
+        const over: Record<string, unknown> = { [field]: limit };
+        expect((await chooseChatSupplier(m.chain, query(m, over as Partial<ChatQuery>), unavailable)).advertRef, `${field} ${String(limit)}`).toBe(LLM_ADVERT_REF);
+      }
+    }
+  });
 });
 
 describe('what an advert locks, and the helpers of a choice', () => {
