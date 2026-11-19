@@ -74,6 +74,16 @@ describe('the copies that read chain data check it first', () => {
     expect(code).toMatch(/import \{ decodePlutusData \} from '@vsa\/vector-read\/guarded-decode';/);
     expect(count('vendored/mcp/identity-deployment.ts', /\bdecodePlutusData\(/)).toBe(1);
   });
+
+  it('the vault Pay, the delegation builders and what they build on read a transaction and an address through the checked wrappers, and none calls the address decoder of Lucid', () => {
+    // These copies are at 2d95483. The datums they read come through @vsa/vector-read/identity-codec, which runs the check first.
+    const copies = ['vault-build', 'delegation-build', 'identity-build', 'attestation-build', 'marketplace-build'].map((name) => `vendored/mcp/${name}.ts`);
+    for (const file of copies) expect(count(file, /\bgetAddressDetails\s*\(/), `${file} calls the address decoder of Lucid`).toBe(0);
+    expect(files.get('vendored/mcp/vault-build.ts')!).toMatch(/import \{ addressDetails \} from '@vsa\/vector-read\/guarded-decode';/);
+    for (const file of ['identity-build', 'attestation-build', 'marketplace-build'].map((name) => `vendored/mcp/${name}.ts`)) {
+      expect(files.get(file)!, file).toMatch(/import \{ decodeTransaction \} from '@vsa\/vector-read\/guarded-decode';/);
+    }
+  });
 });
 
 // The checked wrappers of @vsa/vector-read/guarded-decode read a datum, a transaction, a metadatum or an address after the scanner of cbor-depth has checked

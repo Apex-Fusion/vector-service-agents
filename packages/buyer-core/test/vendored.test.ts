@@ -52,4 +52,12 @@ describe('vendored files', () => {
       'feeOfSignedTx', 'readCapability', 'probeStatus', 'sendOcrJob', 'sendResponsesJob', 'pollOcrJob', 'pollResponsesJob', 'selectLlmSupplier', 'findOcrAdvert', 'verifyFleetReceipt',
     ]) expect(typeof (m as Record<string, unknown>)[name], name).not.toBe('undefined');
   }, 30_000);
+  // Loaded at run time, as the test above does: a static import would load Lucid's WASM at collection, outside the explicit timeout of a test.
+  it('the public surface exports the vault and delegation builders, the three typed errors of a vault Pay and the ledger check of them', async () => {
+    const m = await import('../src/index.ts');
+    for (const name of [
+      'buildVaultOpen', 'buildVaultPay', 'buildVaultClose', 'readVault', 'isLedgerRefusal', 'judgeEvaluation', 'VaultPayEvaluationError', 'VaultPayRefused', 'VaultPayImpossible',
+      'VaultPayNotEvaluated', 'HIRE_ACTION', 'buildDelegate', 'buildUndelegate', 'delegationUseProblems', 'delegationProblems', 'narrowingProblems', 'escrowResource', 'patternsCover',
+    ]) expect(typeof (m as Record<string, unknown>)[name], name).not.toBe('undefined');
+  }, 30_000);
 });

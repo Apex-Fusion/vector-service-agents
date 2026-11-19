@@ -1,7 +1,7 @@
 // packages/buyer-core/src/index.ts
 // The public surface of @vsa/buyer-core, under stable names: the code the hosted keyless MCP server builds, reads and verifies with,
 // and the signing function of the member's local signer (sign.ts; the hosted server never signs), all vendored from
-// Apex-Fusion/mcp-server at 94bd293 (see VENDORED-FROM.md), both escrow and advert layouts of the drain included (Part 2 sections 6.1 to 6.5).
+// Apex-Fusion/mcp-server at 94bd293 and 2d95483 (see VENDORED-FROM.md), both escrow and advert layouts of the drain included (Part 2 sections 6.1 to 6.5).
 // Endpoint defaults are Vector mainnet. The identity registry deployment a chain posts to and settles with is read once at start
 // (deployment.ts). The commitments of the fleet jobs (OCR and Responses) come from commitments.ts, which composes the Responses code vendored
 // from Apex-Fusion/agents-marketplace at 4c95c3f. The chain layer is buyer-core's own: the fleet Post (fleet-build.ts), the Chain interface
@@ -23,6 +23,18 @@ export { OgmiosProvider } from './vendored/mcp-shared/provider.ts';
 export { signTransaction } from './vendored/signer/sign.ts';
 export { rawHexToBech32, buyerIdentityOf } from './signing.ts';
 export { ensureSlotConfig, paymentKeyHashOf } from './vendored/mcp/gov-build.ts';
+// The vault and delegation builders, vendored from the same source (the vault Pay with `ledgerDecides`, Open and Close of a vault, Delegate and Undelegate), and the types of a build context.
+export {
+  buildVaultOpen, buildVaultPay, buildVaultClose, readVault, isLedgerRefusal, judgeEvaluation, VaultPayEvaluationError, VaultPayImpossible, VaultPayNotEvaluated, VaultPayRefused,
+} from './vendored/mcp/vault-build.ts';
+export type {
+  ValidatorError, VaultCloseBuild, VaultOpenBuild, VaultOpenParams, VaultOwnerInput, VaultPayAttempt, VaultPayBuild, VaultPayImpossibleReason, VaultPayParams,
+} from './vendored/mcp/vault-build.ts';
+export {
+  HIRE_ACTION, buildDelegate, buildUndelegate, delegationProblems, delegationUseProblems, escrowResource, liveDelegations, narrowingProblems, patternsCover, patternsOf,
+} from './vendored/mcp/delegation-build.ts';
+export type { DelegateBuild, DelegateParams, DelegatorInput, UndelegateBuild, UndelegateParams } from './vendored/mcp/delegation-build.ts';
+export type { BuildCommon, IdentityContext } from './vendored/mcp/identity-build.ts';
 export { ESCROW_REF_UTXO, ACCEPT_WINDOW_MS, DELIVER_BY_BUFFER_MS, MARKETPLACE_MIN_FEE, MAX_ESCROW_LOVELACE } from './vendored/mcp/marketplace-constants.ts';
 export { VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from './vendored/mcp-shared/config.ts';
 export type { IdentityDeployment } from './vendored/mcp/identity-deployment.ts';

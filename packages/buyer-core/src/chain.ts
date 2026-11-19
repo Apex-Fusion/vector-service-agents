@@ -180,7 +180,7 @@ const errorText = (err: unknown): string => (err instanceof Error ? err.message 
 const refusedOutright = (err: unknown): boolean => /^Transaction submission rejected \(4\d\d\b/.test(errorText(err));
 
 /**
- * The one place the closed accept window is read off the vendored planner. planAccept (vendored/mcp/marketplace-build.ts, line 402) throws
+ * The one place the closed accept window is read off the vendored planner. planAccept (vendored/mcp/marketplace-build.ts, line 482) throws
  * `Accept window closed at <iso>; the supplier may now Release.`, and buildEscrowSpend passes it on with ` (escrow <ref>)` after it. Any other error
  * of the build is passed on as it is.
  */
