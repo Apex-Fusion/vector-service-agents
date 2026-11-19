@@ -79,7 +79,7 @@ describe('parseKeyText', () => {
       ['more_than_one_key', `${one}\n${two}\n`, 'two keys'],
       ['extended_key', `ed25519e_sk1${'q'.repeat(60)}`, 'extended'],
       ['no_key', seedHex(1).slice(0, 62), 'short'],
-      ['no_key', 'ed25519_sk1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq', 'bad bech32'],
+      ['no_key', `ed25519_sk1${'q'.repeat(32)}`, 'bad bech32'],
     ];
     for (const [reason, text, what] of cases) {
       const err = refusal(() => parseKeyText(text, 'member'));
