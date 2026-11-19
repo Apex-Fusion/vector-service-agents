@@ -555,6 +555,17 @@ describe('credentials', () => {
     refused(await s.verifier.credential(s.jwt), 'credential.status_list');
   });
 
+  it('a credential of the agent at the last position (131,071) is accepted, and refused when its suspension bit, the last bit of the list, is set', async () => {
+    const w = world();
+    const agent = w.gateway.createAgent({ label: 'credential last position', statusIndex: LIST_SIZE - 1 });
+    const issued = await w.client.credential(agent.did);
+    if (!issued.ok) throw new Error(issued.detail);
+    const verifier = createVerifier({ baseUrl: w.gateway.baseUrl, fetch: w.gateway.fetch, now: w.gateway.now, listCacheSeconds: 0 });
+    expect(accepted(await verifier.credential(issued.value)).status.position).toBe(LIST_SIZE - 1);
+    w.gateway.setStatus(agent, 'suspended');
+    refused(await verifier.credential(issued.value), 'credential.suspended');
+  });
+
   it('a verifier that cannot read the key set refuses with keys.unavailable', async () => {
     const s = await setup();
     s.gateway.fault('/.well-known/jwks.json', 'network');

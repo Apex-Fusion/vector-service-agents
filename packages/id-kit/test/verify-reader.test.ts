@@ -123,6 +123,9 @@ describe('the status lists in the reader', () => {
     const kept = await reader.tokenList(uri);
     expect(kept).toMatchObject({ ok: true, value: { fetchedAt: newer.value.fetchedAt, refreshError: expect.stringMatching(/older issue time/) } });
     if (kept.ok) expect(kept.value.list.issuedAt).toBe(newer.value.list.issuedAt);
+    const before = count(gateway, TSL);
+    await reader.tokenList(uri);
+    expect(count(gateway, TSL)).toBe(before);
     // The twin: the same list again is accepted as a new read.
     gateway.fault(TSL, { status: 200, body: same, headers: { 'content-type': 'application/statuslist+jwt' } });
     gateway.advance(6_000);
