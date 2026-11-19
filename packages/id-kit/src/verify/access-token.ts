@@ -198,14 +198,30 @@ const concreteAction = (value: string): boolean => isActionPattern(value) && val
 /** True when `value` is a resource that can be asked for: not a wildcard pattern. */
 const concreteResource = (value: string): boolean => isResourcePattern(value) && value !== '*';
 
-export function checkAccessToken(request: AccessTokenRequest, ctx: AccessTokenContext): Check<VerifiedAccessToken, AccessTokenRule> {
-  const required = ctx.require;
-  if (required !== null && (!concreteAction(required.action) || !concreteResource(required.resource))) {
+/**
+ * Checks the shape of the policy of a call, and throws a TypeError for a mistake of the caller. `require` is nothing, or an object with an `action` and a `resource` that are text and
+ * concrete values. `acceptDirect` is nothing, true or false, and true goes with `require`.
+ */
+export function assertPolicy(policy: { readonly require?: unknown; readonly acceptDirect?: unknown }): void {
+  const { require: required, acceptDirect } = policy;
+  if (acceptDirect !== undefined && typeof acceptDirect !== 'boolean') {
+    throw new TypeError('acceptDirect is true or false. Any other value, such as the text "false", is a mistake of the caller.');
+  }
+  if (required === undefined || required === null) {
+    if (acceptDirect === true) throw new TypeError('acceptDirect goes with require: with no require, only a token with no delegation is accepted, and a token with a delegation is refused.');
+    return;
+  }
+  if (!isRecord(required) || typeof required.action !== 'string' || typeof required.resource !== 'string') {
+    throw new TypeError('require is an object with an action and a resource, both text: for example { action: "erp.stock.read", resource: "https://example.org/erp" }.');
+  }
+  if (!concreteAction(required.action) || !concreteResource(required.resource)) {
     throw new TypeError('the action and the resource of a call are concrete values: an action such as erp.stock.read, and a resource such as an https URL or script:<56 hex characters>. They are not patterns.');
   }
-  if (ctx.acceptDirect && required === null) {
-    throw new TypeError('acceptDirect goes with require: with no require, only a token with no delegation is accepted, and a token with a delegation is refused.');
-  }
+}
+
+export function checkAccessToken(request: AccessTokenRequest, ctx: AccessTokenContext): Check<VerifiedAccessToken, AccessTokenRule> {
+  assertPolicy(ctx);
+  const required = ctx.require;
   const signed = verifyGatewayJws(request.accessToken, ctx.keys, { typ: 'at+jwt' }, TOKEN_JWS_RULES);
   if (!signed.ok) return signed;
   const claims = signed.value.payload;

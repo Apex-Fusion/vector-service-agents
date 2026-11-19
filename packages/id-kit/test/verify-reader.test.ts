@@ -146,6 +146,68 @@ describe('the status lists in the reader', () => {
     expect(count(gateway, TSL)).toBe(2);
   });
 
+  it('a list that is already older than its ttl when it is read (the gateway serves its last list while it builds a new one) is read again after 5 seconds, not after the ttl', async () => {
+    const { gateway, reader, uri } = reading({ listCacheSeconds: 30 });
+    expect((await reader.tokenList(uri)).ok).toBe(true);
+    gateway.lists.freeze();
+    gateway.advance(60_000);
+    expect((await reader.tokenList(uri)).ok).toBe(true);
+    expect(count(gateway, TSL)).toBe(2);
+    gateway.advance(4_000);
+    await reader.tokenList(uri);
+    expect(count(gateway, TSL)).toBe(2);
+    gateway.advance(2_000);
+    await reader.tokenList(uri);
+    expect(count(gateway, TSL)).toBe(3);
+  });
+
+  it('the wait after a failed read holds for every failed read: a list that is refused, and a list that is over, give the same answer again at once, with no new request, until the wait ends', async () => {
+    const refused = reading();
+    const list = await (await refused.gateway.fetch(refused.uri)).text();
+    const [h, p] = list.split('.');
+    refused.gateway.fault(TSL, { status: 200, body: `${h}.${p}.${b64url(Buffer.alloc(64))}` });
+    expect(await refused.reader.tokenList(refused.uri)).toMatchObject({ ok: false, rule: 'list.signature' });
+    expect(await refused.reader.tokenList(refused.uri)).toMatchObject({ ok: false, rule: 'list.signature' });
+    refused.gateway.advance(4_000);
+    expect(await refused.reader.tokenList(refused.uri)).toMatchObject({ ok: false, rule: 'list.signature' });
+    expect(count(refused.gateway, TSL)).toBe(2);
+    refused.gateway.advance(2_000);
+    await refused.reader.tokenList(refused.uri);
+    expect(count(refused.gateway, TSL)).toBe(3);
+    // A list that is over: soft, with the same wait.
+    const over = reading();
+    over.gateway.lists.freeze();
+    over.gateway.advance(3_700_000);
+    expect(await over.reader.tokenList(over.uri)).toMatchObject({ ok: false, rule: 'list.expired' });
+    expect(await over.reader.tokenList(over.uri)).toMatchObject({ ok: false, rule: 'list.expired' });
+    expect(count(over.gateway, TSL)).toBe(1);
+    over.gateway.advance(6_000);
+    await over.reader.tokenList(over.uri);
+    expect(count(over.gateway, TSL)).toBe(2);
+    // The Retry-After of the answer counts for a 200 answer too, and the cap holds.
+    const header = reading();
+    const [h2, p2] = (await (await header.gateway.fetch(header.uri)).text()).split('.');
+    header.gateway.fault(TSL, { status: 200, body: `${h2}.${p2}.${b64url(Buffer.alloc(64))}`, headers: { 'retry-after': '30' } });
+    await header.reader.tokenList(header.uri);
+    header.gateway.advance(29_000);
+    await header.reader.tokenList(header.uri);
+    expect(count(header.gateway, TSL)).toBe(2);
+    header.gateway.advance(2_000);
+    await header.reader.tokenList(header.uri);
+    expect(count(header.gateway, TSL)).toBe(3);
+  });
+
+  it('a refusal is given again while the wait lasts, also when the reader holds an older copy: a list that was wrong is never turned into the copy', async () => {
+    const { gateway, reader, uri } = reading();
+    const list = await (await gateway.fetch(uri)).text();
+    const [h, p] = list.split('.');
+    expect((await reader.tokenList(uri)).ok).toBe(true);
+    gateway.advance(61_000);
+    gateway.fault(TSL, { status: 200, body: `${h}.${p}.${b64url(Buffer.alloc(64))}` });
+    expect(await reader.tokenList(uri)).toMatchObject({ ok: false, rule: 'list.signature' });
+    expect(await reader.tokenList(uri)).toMatchObject({ ok: false, rule: 'list.signature' });
+  });
+
   it('a list that is read and is wrong is a refusal that is not soft: a bad signature, and a list for another URL', async () => {
     const { gateway, reader, uri } = reading();
     const list = await (await gateway.fetch(uri)).text();
@@ -218,6 +280,29 @@ describe('the key set and the bundle in the reader', () => {
     const again = reading();
     again.gateway.fault('/spiffe/bundle', { status: 200, body: 'not json' });
     expect(await again.reader.bundle()).toMatchObject({ ok: false, rule: 'bundle.unavailable' });
+  });
+
+  it('a key set or a bundle that is refused is not read again at once, and the refusal is given again until the wait ends, also when the reader holds a copy', async () => {
+    const jwks = '/.well-known/jwks.json';
+    const { gateway, reader } = reading();
+    gateway.fault(jwks, { status: 200, body: '{}' });
+    expect(await reader.keys()).toMatchObject({ ok: false, rule: 'jwks.malformed' });
+    expect(await reader.keys()).toMatchObject({ ok: false, rule: 'jwks.malformed' });
+    expect(count(gateway, jwks)).toBe(1);
+    gateway.advance(6_000);
+    await reader.keys();
+    expect(count(gateway, jwks)).toBe(2);
+    const held = reading();
+    await held.reader.keys();
+    held.gateway.advance(301_000);
+    held.gateway.fault(jwks, { status: 200, body: '{}' });
+    expect(await held.reader.keys()).toMatchObject({ ok: false, rule: 'jwks.malformed' });
+    expect(await held.reader.keys()).toMatchObject({ ok: false, rule: 'jwks.malformed' });
+    const bundle = reading();
+    bundle.gateway.fault('/spiffe/bundle', { status: 200, body: '{}' });
+    expect(await bundle.reader.bundle()).toMatchObject({ ok: false, rule: 'bundle.malformed' });
+    expect(await bundle.reader.bundle()).toMatchObject({ ok: false, rule: 'bundle.malformed' });
+    expect(count(bundle.gateway, '/spiffe/bundle')).toBe(1);
   });
 
   it('a reader needs the origin of a gateway: an http URL (not a loopback host) and a URL with a path are refused', () => {

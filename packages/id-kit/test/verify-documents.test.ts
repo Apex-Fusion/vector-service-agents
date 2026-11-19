@@ -489,7 +489,7 @@ describe('credentials', () => {
   it('the verifier reads the Bitstring Status List: a credential is accepted while both bits are clear, and refused with credential.revoked or credential.suspended when a bit is set', async () => {
     const s = await setup({ listCacheSeconds: 0 });
     const verified = accepted(await s.verifier.credential(s.jwt, { subject: s.agent.did }));
-    expect(verified.listStatus).toStrictEqual({ read: true, list: `${s.gateway.baseUrl}/status/bsl/0`, fetchedAt: s.gateway.now() });
+    expect(verified.listStatus).toStrictEqual({ read: true, list: `${s.gateway.baseUrl}/status/bsl/0`, fetchedAt: s.gateway.now(), issuedAt: s.gateway.now() });
     s.gateway.setStatus(s.agent, 'suspended', 'hold');
     refused(await s.verifier.credential(s.jwt), 'credential.suspended');
     s.gateway.setStatus(s.agent, 'revoked');
@@ -541,7 +541,7 @@ describe('credentials', () => {
   });
 
   it('a list that is over refuses the credential (credential.status_unknown), and a list that is read and is wrong refuses it with credential.status_list', async () => {
-    const old = await setup({ listCacheSeconds: 0 });
+    const old = await setup({ listCacheSeconds: 0, maxCredentialListAgeSeconds: 3_600 });
     old.gateway.lists.freeze();
     old.gateway.advance(59 * 60_000);
     const credential = await old.client.credential(old.agent.did);
@@ -552,6 +552,7 @@ describe('credentials', () => {
     const s = await setup({ listCacheSeconds: 0 });
     const [h, p] = (await get(s.gateway, '/status/bsl/0')).split('.');
     s.gateway.fault('/status/bsl/0', { status: 200, body: `${h}.${p}.${b64url(Buffer.alloc(64))}`, headers: { 'content-type': 'application/vc+jwt' } });
+    refused(await s.verifier.credential(s.jwt), 'credential.status_list');
     refused(await s.verifier.credential(s.jwt), 'credential.status_list');
   });
 
@@ -564,6 +565,35 @@ describe('credentials', () => {
     expect(accepted(await verifier.credential(issued.value)).status.position).toBe(LIST_SIZE - 1);
     w.gateway.setStatus(agent, 'suspended');
     refused(await verifier.credential(issued.value), 'credential.suspended');
+  });
+
+  it('a list that the gateway serves while it cannot build a new one is old: a credential is refused when the list was built more than 1,200 seconds ago, although the verifier has just read it', async () => {
+    const s = await setup({ listCacheSeconds: 0 });
+    const built = s.gateway.now();
+    expect(accepted(await s.verifier.credential(s.jwt)).listStatus.issuedAt).toBe(built);
+    s.gateway.lists.freeze();
+    s.gateway.setStatus(s.agent, 'revoked');
+    s.gateway.advance(1_200_000);
+    expect(accepted(await s.verifier.credential(s.jwt)).listStatus).toMatchObject({ issuedAt: built, fetchedAt: built + 1_200_000 });
+    s.gateway.advance(1_000);
+    refused(await s.verifier.credential(s.jwt), 'credential.status_unknown');
+    // The twin: a verifier with a larger limit accepts the same list. The gateway built no new list, so the list shows no revocation.
+    const lenient = await setup({ listCacheSeconds: 0, maxCredentialListAgeSeconds: 3_600 });
+    accepted(await lenient.verifier.credential(lenient.jwt));
+    lenient.gateway.lists.freeze();
+    lenient.gateway.setStatus(lenient.agent, 'revoked');
+    lenient.gateway.advance(1_300_000);
+    accepted(await lenient.verifier.credential(lenient.jwt));
+  });
+
+  it('the limit for the age of a list has a lower bound and a shape: a value below the ttl of the list (60 seconds here) throws at the first credential check, and the ttl itself is accepted; a value that is no number of seconds, 1 or more, throws when the verifier is made', async () => {
+    const low = await setup({ maxCredentialListAgeSeconds: 59 });
+    await expect(low.verifier.credential(low.jwt)).rejects.toThrow(TypeError);
+    const equal = await setup({ maxCredentialListAgeSeconds: 60 });
+    accepted(await equal.verifier.credential(equal.jwt));
+    for (const bad of [0, 0.5, -1, Number.NaN, Number.POSITIVE_INFINITY, '1200', null]) {
+      expect(() => createVerifier({ baseUrl: equal.gateway.baseUrl, fetch: equal.gateway.fetch, now: equal.gateway.now, maxCredentialListAgeSeconds: bad as never })).toThrow(TypeError);
+    }
   });
 
   it('a verifier that cannot read the key set refuses with keys.unavailable', async () => {

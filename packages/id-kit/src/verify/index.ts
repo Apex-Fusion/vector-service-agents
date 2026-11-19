@@ -9,15 +9,19 @@
 // and it stays valid for a day, so a credential is refused (`credential.status_unknown`) unless the verifier read its list again within the time to live of the list.
 
 import { MAX_DELEGATION_DEPTH, MAX_TOKEN_LIFETIME_S } from '../common/constants.ts';
+import { isNumber } from '../common/json.ts';
 import { accept, refuse, type Check } from '../common/result.ts';
 import type { GatewayClient } from '../client/index.ts';
-import { ACCESS_TOKEN_RULES, checkAccessToken, parseAuthorization, type AccessTokenContext, type AccessTokenRule, type DelegationGrant, type Principal, type RequiredGrant, type VerifiedAccessToken } from './access-token.ts';
+import { ACCESS_TOKEN_RULES, assertPolicy, checkAccessToken, parseAuthorization, type AccessTokenContext, type AccessTokenRule, type DelegationGrant, type Principal, type RequiredGrant, type VerifiedAccessToken } from './access-token.ts';
 import { checkCredential, type CredentialRule, type VerifiedCredential } from './credential.ts';
 import { KEY_SET_RULES, type KeySet } from './keys.ts';
 import { createGatewayReader, isSoftListRule, type BundleReadRule, type GatewayReader, type GatewayReaderOptions, type KeysRule } from './reader.ts';
 import { createReplayStore, type ReplayStore } from './replay.ts';
 import { bitstringEntryStatus, tokenEntryStatus } from './status-list.ts';
 import { verifyJwtSvid, verifyX509Svid, type JwtSvidRule, type VerifiedJwtSvid, type VerifiedX509Svid, type X509SvidRule } from './svid.ts';
+
+/** The default of `maxCredentialListAgeSeconds`: 20 minutes. */
+const DEFAULT_CREDENTIAL_LIST_AGE_S = 1_200;
 
 export interface VerifierOptions extends GatewayReaderOptions {
   /** The store of the DPoP proofs that the verifier accepted. The default is a new store for this verifier. */
@@ -26,14 +30,22 @@ export interface VerifierOptions extends GatewayReaderOptions {
   readonly maxLifetimeSeconds?: number;
   /** The most levels of the `act` chain. The default is 4, the longest delegation chain. */
   readonly maxActDepth?: number;
+  /**
+   * The oldest status list that a credential check accepts, in seconds: the time since the gateway built the list. The default is 1,200. The gateway serves its last list while it builds a new
+   * one, and while builds fail, so a list that the verifier has just read can be old. A credential is refused (`credential.status_unknown`) when the list is older than this. A value that is no
+   * number of seconds, 1 or more, throws a TypeError when the verifier is made. A value below the `ttl` of the list throws a TypeError at the first credential check.
+   */
+  readonly maxCredentialListAgeSeconds?: number;
 }
 
 /** A status list that the verifier read within its time to live. The entry of the agent in it is valid. */
 export interface StatusRead {
   readonly read: true;
   readonly list: string;
-  /** POSIX ms. */
+  /** POSIX ms. When the verifier read the list. */
   readonly fetchedAt: number;
+  /** POSIX ms. When the gateway built the list. The age of the list is the time now minus this. */
+  readonly issuedAt: number;
 }
 
 /**
@@ -45,6 +57,8 @@ export interface StatusNotRead {
   readonly list: string;
   readonly reason: 'unavailable' | 'stale';
   readonly detail: string;
+  /** POSIX ms. When the gateway built the older copy that the verifier holds, or null when the verifier holds no list. */
+  readonly issuedAt: number | null;
 }
 
 /** What the verifier knows of a status list for an access token, when the list did not refuse the call. */
@@ -122,7 +136,8 @@ export interface Verifier {
   x509Svid(certificate: string | Uint8Array): Promise<Check<VerifiedX509Svid, SvidCheckRule<X509SvidRule>>>;
   /**
    * Checks an identity credential, and reads the Bitstring Status List that it names for the revocation bit and the suspension bit of the agent. A list that was not read within its time to
-   * live refuses the credential (`credential.status_unknown`). The credential is a public document: it proves facts about its subject, and it does not prove that the caller is that agent.
+   * live refuses the credential (`credential.status_unknown`), and so does a list that the gateway built more than `maxCredentialListAgeSeconds` ago. The credential is a public document:
+   * it proves facts about its subject, and it does not prove that the caller is that agent.
    */
   credential(jwt: string, policy?: { readonly subject?: string }): Promise<Check<VerifiedCredentialStatus, CredentialCheckRule>>;
 }
@@ -140,13 +155,15 @@ export function createVerifier(options: VerifierOptions): Verifier {
   const replay = options.replay ?? createReplayStore();
   const maxLifetimeSeconds = options.maxLifetimeSeconds ?? MAX_TOKEN_LIFETIME_S;
   const maxActDepth = options.maxActDepth ?? MAX_DELEGATION_DEPTH;
+  const maxListAgeSeconds = options.maxCredentialListAgeSeconds === undefined ? DEFAULT_CREDENTIAL_LIST_AGE_S : options.maxCredentialListAgeSeconds;
+  if (!isNumber(maxListAgeSeconds) || maxListAgeSeconds < 1) throw new TypeError('maxCredentialListAgeSeconds is a number of seconds, 1 or more');
   const { issuer, leewaySeconds } = reader;
 
   async function tokenStatus(claim: { readonly uri: string; readonly index: number }): Promise<Check<StatusReading, 'status.revoked' | 'status.suspended' | 'status.value' | 'status.list'>> {
     const read = await reader.tokenList(claim.uri);
     if (!read.ok) {
       if (!isSoftListRule(read.rule)) return refuse('status.list', `${read.rule}: ${read.detail}`);
-      return accept({ read: false, list: claim.uri, reason: read.rule === 'list.expired' ? 'stale' : 'unavailable', detail: read.detail });
+      return accept({ read: false, list: claim.uri, reason: read.rule === 'list.expired' ? 'stale' : 'unavailable', detail: read.detail, issuedAt: null });
     }
     const entry = tokenEntryStatus(read.value.list, claim.index);
     if (!entry.ok) return refuse(entry.rule === 'list.value' ? 'status.value' : 'status.list', entry.detail);
@@ -154,16 +171,17 @@ export function createVerifier(options: VerifierOptions): Verifier {
     if (entry.value === 'suspended') return refuse('status.suspended', 'the Token Status List says that the agent that asked for the token is suspended');
     // An older copy after a failed new read is checked above, so a copy that shows a revocation still refuses. It is no read: the entry may have changed since.
     if (read.value.refreshError !== null) {
-      return accept({ read: false, list: claim.uri, reason: 'stale', detail: `the verifier holds an older copy of the list, and a new read failed: ${read.value.refreshError}` });
+      return accept({ read: false, list: claim.uri, reason: 'stale', detail: `the verifier holds an older copy of the list, and a new read failed: ${read.value.refreshError}`, issuedAt: read.value.list.issuedAt });
     }
-    return accept({ read: true, list: claim.uri, fetchedAt: read.value.fetchedAt });
+    return accept({ read: true, list: claim.uri, fetchedAt: read.value.fetchedAt, issuedAt: read.value.list.issuedAt });
   }
 
   async function accessToken(request: CallRequest, policy: AccessTokenPolicy): Promise<Check<VerifiedCall, CallRule>> {
+    assertPolicy(policy);
     const token = request.accessToken !== undefined ? accept(request.accessToken) : parseAuthorization(request.authorization);
     if (!token.ok) return token;
     const context = (keys: KeySet): AccessTokenContext => ({
-      keys, issuer, audience: policy.audience, nowMs: reader.now(), leewaySeconds, maxLifetimeSeconds, maxActDepth, replay, require: policy.require ?? null, acceptDirect: policy.acceptDirect ?? false,
+      keys, issuer, audience: policy.audience, nowMs: reader.now(), leewaySeconds, maxLifetimeSeconds, maxActDepth, replay, require: policy.require ?? null, acceptDirect: policy.acceptDirect === true,
     });
     const call = { accessToken: token.value, dpop: request.dpop, method: request.method, url: request.url };
     const keys = await reader.keys();
@@ -225,13 +243,22 @@ export function createVerifier(options: VerifierOptions): Verifier {
         if (!isSoftListRule(read.rule)) return refuse('credential.status_list', `${read.rule}: ${read.detail}`);
         return refuse('credential.status_unknown', `the Bitstring Status List was not read: ${read.detail}`);
       }
+      // The limit must not be below the ttl of the list: a list inside its ttl would be refused.
+      const ttlMs = read.value.list.ttlMs ?? 60_000;
+      if (maxListAgeSeconds * 1000 < ttlMs) {
+        throw new TypeError(`maxCredentialListAgeSeconds is ${maxListAgeSeconds}, and the ttl of the list is ${ttlMs / 1000} seconds: the limit must not be below the ttl`);
+      }
       const entry = bitstringEntryStatus(read.value.list, position);
       if (!entry.ok) return refuse('credential.status_list', entry.detail);
       if (entry.value === 'revoked') return refuse('credential.revoked', 'the revocation bit of the agent is set in the Bitstring Status List');
       if (entry.value === 'suspended') return refuse('credential.suspended', 'the suspension bit of the agent is set in the Bitstring Status List');
       // A credential is a public document that anybody can fetch, and it stays valid for a day. An older copy of the list, after a failed new read, is no read: the agent may be revoked since.
       if (read.value.refreshError !== null) return refuse('credential.status_unknown', `the verifier holds only an older copy of the Bitstring Status List, and a new read failed: ${read.value.refreshError}`);
-      return accept({ ...checked.value, listStatus: { read: true, list, fetchedAt: read.value.fetchedAt } });
+      const ageMs = reader.now() - read.value.list.validFrom;
+      if (ageMs > maxListAgeSeconds * 1000) {
+        return refuse('credential.status_unknown', `the Bitstring Status List was built ${Math.round(ageMs / 1000)} seconds ago, and a credential is not accepted with a list older than ${maxListAgeSeconds} seconds`);
+      }
+      return accept({ ...checked.value, listStatus: { read: true, list, fetchedAt: read.value.fetchedAt, issuedAt: read.value.list.validFrom } });
     },
   };
 }

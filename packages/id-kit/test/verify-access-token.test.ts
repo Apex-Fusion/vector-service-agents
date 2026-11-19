@@ -111,7 +111,7 @@ describe('accessToken: a call that is right', () => {
       issuedAt: s.gateway.now(),
       expiresAt: s.gateway.now() + 300_000,
     });
-    expect(call1.status).toStrictEqual({ read: true, list: `${s.gateway.baseUrl}/status/tsl/0`, fetchedAt: s.gateway.now() });
+    expect(call1.status).toStrictEqual({ read: true, list: `${s.gateway.baseUrl}/status/tsl/0`, fetchedAt: s.gateway.now(), issuedAt: s.gateway.now() });
   });
 
   it('a token for the agent alone (no delegation) is accepted when the call needs no grant, and the subject is the agent', async () => {
@@ -406,6 +406,28 @@ describe('accessToken: the grant and the chain of actors', () => {
     refused(await check(['erp.*'], [`${AUDIENCE}/stock`], 'erp.stock.read'), 'delegation.resource');
   });
 
+  it('acceptDirect is true, false or not set: any other value, such as the text "false" from an environment value, throws a TypeError, and a token with no delegation is not accepted by it', async () => {
+    const s = scene();
+    const direct = await issue(s, false);
+    for (const bad of ['false', 'true', '', 0, 1, null, {}, []]) {
+      await expect(call(s, direct, {}, { ...POLICY, acceptDirect: bad as never })).rejects.toThrow(/acceptDirect is true or false/);
+    }
+    accepted(await call(s, direct, {}, { ...POLICY, acceptDirect: true }));
+    refused(await call(s, direct, {}, { ...POLICY, acceptDirect: false }), 'delegation.missing');
+    refused(await call(s, direct, {}, { ...POLICY, acceptDirect: undefined }), 'delegation.missing');
+  });
+
+  it('the shape of require is checked: an object with an action and a resource, both text. A call that is wrong throws a TypeError that names require, before any request to the gateway', async () => {
+    const s = scene();
+    const token = await issue(s);
+    const before = s.gateway.requests.length;
+    for (const require of [{}, { action: ACTION }, { resource: AUDIENCE }, { action: 1, resource: AUDIENCE }, { action: ACTION, resource: null }, 'erp.stock.read', [], 42]) {
+      await expect(call(s, token, {}, { audience: AUDIENCE, require: require as never })).rejects.toThrow(/require is an object with an action and a resource/);
+    }
+    expect(s.gateway.requests.length).toBe(before);
+    accepted(await call(s, token));
+  });
+
   it('a call that asks for a pattern as its action or resource is a mistake of the caller, and it throws', async () => {
     const s = scene();
     const token = await issue(s);
@@ -552,7 +574,7 @@ describe('accessToken: the lists that the token names', () => {
     const token = await issue(s);
     s.gateway.fault(tslPath, LISTS_UNAVAILABLE);
     const verified = accepted(await call(s, token));
-    expect(verified.status).toMatchObject({ read: false, reason: 'unavailable', list: `${s.gateway.baseUrl}/status/tsl/0` });
+    expect(verified.status).toMatchObject({ read: false, reason: 'unavailable', issuedAt: null, list: `${s.gateway.baseUrl}/status/tsl/0` });
     if (!verified.status.read) expect(verified.status.detail).toMatch(/503/);
     s.gateway.fault(tslPath, 'network');
     s.gateway.advance(61_000);
@@ -567,6 +589,28 @@ describe('accessToken: the lists that the token names', () => {
     s.gateway.advance(2 * 60_000);
     const verified = accepted(await call(s, token));
     expect(verified.status).toMatchObject({ read: false, reason: 'stale' });
+  });
+
+  it('the status of a call tells the age of the list: the time that the gateway built it, so that a caller can log how old it is', async () => {
+    const s = scene();
+    const token = await issue(s);
+    const built = s.gateway.now();
+    expect(accepted(await call(s, token)).status).toMatchObject({ read: true, issuedAt: built });
+    s.gateway.lists.freeze();
+    s.gateway.advance(200_000);
+    expect(accepted(await call(s, token)).status).toMatchObject({ read: true, issuedAt: built, fetchedAt: built + 200_000 });
+  });
+
+  it('a list that was wrong refuses the next calls too, until the wait ends: the refusal is not turned into a list that was not read', async () => {
+    const s = scene();
+    const token = await issue(s);
+    const [h, p] = (await (await s.gateway.fetch(`${s.gateway.baseUrl}${tslPath}`)).text()).split('.');
+    s.gateway.fault(tslPath, { status: 200, body: `${h}.${p}.${b64url(Buffer.alloc(64))}`, headers: { 'content-type': 'application/statuslist+jwt' } });
+    refused(await call(s, token), 'status.list');
+    refused(await call(s, token), 'status.list');
+    s.gateway.advance(6_000);
+    s.gateway.fault(tslPath, null);
+    expect(accepted(await call(s, token)).status.read).toBe(true);
   });
 
   it('a list that cannot be read again after its ttl: the older copy is checked, and the result says that the list was stale, with the reason that the new read failed', async () => {

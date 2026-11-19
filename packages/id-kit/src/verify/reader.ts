@@ -66,7 +66,7 @@ export interface GatewayReader {
 }
 
 /** True for the two results that say that a list was not read: it cannot be fetched, or it is over. They are not a refusal of a call. */
-export const isSoftListRule = (rule: string): boolean => rule === 'list.unavailable' || rule === 'list.expired';
+export const isSoftListRule = (rule: string): rule is 'list.unavailable' | 'list.expired' => rule === 'list.unavailable' || rule === 'list.expired';
 
 const MIN_FORCED_READ_MS = 30_000;
 const MIN_RETRY_MS = 5_000;
@@ -75,7 +75,8 @@ const MAX_RETRY_MS = 60_000;
 /** A key set or a bundle that cannot be read again is used for this long after its last read: one hour, the life of a status list. */
 const MAX_STALE_MS = 3_600_000;
 
-type Fetched = { readonly ok: true; readonly body: string } | { readonly ok: false; readonly detail: string; readonly retryAfterMs: number };
+/** One answer of the gateway. `retryAfterMs` is the wait that holds when the reader then cannot use the answer: 5 seconds, or the `Retry-After` of the answer when that is longer, and at most 60 seconds. */
+type Fetched = { readonly ok: true; readonly body: string; readonly retryAfterMs: number } | { readonly ok: false; readonly detail: string; readonly retryAfterMs: number };
 
 /** One document of the gateway with one copy: a key set, or the bundle. */
 interface DocumentSource<T, R extends string> {
@@ -93,10 +94,11 @@ export function createGatewayReader(options: GatewayReaderOptions): GatewayReade
     const outcome = await send(http, url, { method: 'GET', headers: { accept: mediaType } });
     if (!outcome.reached) return { ok: false, detail: outcome.detail, retryAfterMs: MIN_RETRY_MS };
     const { status, headers, body } = outcome.reply;
-    if (status === 200) return { ok: true, body };
     const asked = /^\d{1,6}$/.test(headers.get('retry-after') ?? '') ? Number(headers.get('retry-after')) * 1000 : 0;
+    const retryAfterMs = Math.min(Math.max(asked, MIN_RETRY_MS), MAX_RETRY_MS);
+    if (status === 200) return { ok: true, body, retryAfterMs };
     const description = jsonObject(body)?.error_description;
-    return { ok: false, detail: `the gateway answered ${status}${typeof description === 'string' ? `: ${description}` : ''}`, retryAfterMs: Math.min(Math.max(asked, MIN_RETRY_MS), MAX_RETRY_MS) };
+    return { ok: false, detail: `the gateway answered ${status}${typeof description === 'string' ? `: ${description}` : ''}`, retryAfterMs };
   }
 
   function documentSource<T, R extends string, U extends string>(spec: {
@@ -110,24 +112,29 @@ export function createGatewayReader(options: GatewayReaderOptions): GatewayReade
   }): DocumentSource<T, R | U> {
     let copy: { value: T; fetchedAt: number } | null = null;
     let running: Promise<Check<T, R | U>> | null = null;
-    let retryAt = 0;
+    /** After a failed read: when the next read may start, why the read failed, and the refusal to give until then when the document that came was wrong. */
+    let wait: { readonly until: number; readonly detail: string; readonly refusal: Check<T, R | U> | null } = { until: 0, detail: '', refusal: null };
     const fallback = (detail: string): Check<T, R | U> => (copy !== null && now() - copy.fetchedAt < MAX_STALE_MS ? accept(copy.value) : refuse(spec.unavailable, detail));
 
     async function read(): Promise<Check<T, R | U>> {
       const fetched = await fetchText(spec.url, spec.mediaType);
       if (!fetched.ok) {
-        retryAt = now() + fetched.retryAfterMs;
+        wait = { until: now() + fetched.retryAfterMs, detail: fetched.detail, refusal: null };
         return fallback(fetched.detail);
       }
       const json = jsonObject(fetched.body);
       if (json === null) {
-        retryAt = now() + MIN_RETRY_MS;
-        return fallback('the gateway answered 200 with a body that is not a JSON object');
+        const detail = 'the gateway answered 200 with a body that is not a JSON object';
+        wait = { until: now() + fetched.retryAfterMs, detail, refusal: null };
+        return fallback(detail);
       }
       const parsed = spec.parse(json);
-      if (!parsed.ok) return parsed;
+      if (!parsed.ok) {
+        wait = { until: now() + fetched.retryAfterMs, detail: parsed.detail, refusal: parsed };
+        return parsed;
+      }
       copy = { value: parsed.value, fetchedAt: now() };
-      retryAt = 0;
+      wait = { until: 0, detail: '', refusal: null };
       return parsed;
     }
 
@@ -137,10 +144,9 @@ export function createGatewayReader(options: GatewayReaderOptions): GatewayReade
         if (copy !== null) {
           const age = t - copy.fetchedAt;
           if (age < spec.freshMs(copy.value) && !(force && age >= MIN_FORCED_READ_MS)) return Promise.resolve(accept(copy.value));
-          if (t < retryAt) return Promise.resolve(fallback('the last read failed; the reader waits before it reads again'));
-        } else if (t < retryAt) {
-          return Promise.resolve(refuse(spec.unavailable, 'the last read failed; the reader waits before it reads again'));
         }
+        // The wait holds for every failed read. A document that was wrong stays a refusal. A read that failed gives the copy while it is not older than an hour.
+        if (t < wait.until) return Promise.resolve(wait.refusal ?? fallback(wait.detail));
         running ??= read().finally(() => {
           running = null;
         });
@@ -186,7 +192,8 @@ export function createGatewayReader(options: GatewayReaderOptions): GatewayReade
     }
     const copies = new Map<string, Copy>();
     const running = new Map<string, Promise<Check<ListSnapshot<T>, ListReadRule>>>();
-    const retryAt = new Map<string, number>();
+    /** After a failed read of a URL: when the next read may start, and what the failure was. */
+    const waits = new Map<string, { readonly until: number; readonly rule: ListReadRule; readonly detail: string }>();
     const valid = (copy: Copy | undefined): copy is Copy => copy !== undefined && format.endOf(copy.list) > now() - leewaySeconds * 1000;
 
     /** The older copy while it is valid, with the reason that a fresh one was not read; else the soft rule. */
@@ -195,17 +202,27 @@ export function createGatewayReader(options: GatewayReaderOptions): GatewayReade
       return valid(copy) ? accept({ list: copy.list, fetchedAt: copy.fetchedAt, refreshError: detail }) : refuse(rule, detail);
     }
 
+    /** The answer while the wait after a failed read lasts: the same failure again. A list that was wrong stays a refusal. A list that was not read gives the older copy while it is valid. */
+    function replay(url: string, wait: { readonly rule: ListReadRule; readonly detail: string }): Check<ListSnapshot<T>, ListReadRule> {
+      return isSoftListRule(wait.rule) ? fallback(url, wait.rule, wait.detail) : refuse(wait.rule, wait.detail);
+    }
+
     async function read(url: string): Promise<Check<ListSnapshot<T>, ListReadRule>> {
       const fetched = await fetchText(url, format.mediaType);
+      /** The reader waits before it asks again, and gives this failure again until then. */
+      const failed = (rule: ListReadRule, detail: string): void => {
+        waits.set(url, { until: now() + fetched.retryAfterMs, rule, detail });
+      };
       if (!fetched.ok) {
-        retryAt.set(url, now() + fetched.retryAfterMs);
+        failed('list.unavailable', fetched.detail);
         return fallback(url, 'list.unavailable', fetched.detail);
       }
       const text = fetched.body.trim();
       const keys = await keySource.get();
       if (!keys.ok) {
-        retryAt.set(url, now() + MIN_RETRY_MS);
-        return fallback(url, 'list.unavailable', `the key set of the gateway cannot be used: ${keys.detail}`);
+        const detail = `the key set of the gateway cannot be used: ${keys.detail}`;
+        failed('list.unavailable', detail);
+        return fallback(url, 'list.unavailable', detail);
       }
       const decode = (keySet: KeySet) => format.decode(text, { keys: keySet, issuer, url, nowMs: now(), leewaySeconds });
       let decoded = decode(keys.value);
@@ -214,16 +231,24 @@ export function createGatewayReader(options: GatewayReaderOptions): GatewayReade
         const again = await keySource.get(true);
         if (again.ok) decoded = decode(again.value);
       }
-      if (!decoded.ok) return decoded.rule === 'list.expired' ? fallback(url, 'list.expired', decoded.detail) : decoded;
+      if (!decoded.ok) {
+        failed(decoded.rule, decoded.detail);
+        return decoded.rule === 'list.expired' ? fallback(url, 'list.expired', decoded.detail) : decoded;
+      }
       // A list with an older issue time than the copy is no news, even when it is still valid: the copy may show a revocation that this list lacks. Keep the copy.
       const held = copies.get(url);
       if (valid(held) && format.startOf(decoded.value) < format.startOf(held.list)) {
-        retryAt.set(url, now() + MIN_RETRY_MS);
-        return fallback(url, 'list.unavailable', 'the gateway sent a list with an older issue time than the copy that the reader holds');
+        const detail = 'the gateway sent a list with an older issue time than the copy that the reader holds';
+        failed('list.unavailable', detail);
+        return fallback(url, 'list.unavailable', detail);
       }
-      retryAt.delete(url);
+      waits.delete(url);
       const fetchedAt = now();
-      copies.set(url, { list: decoded.value, fetchedAt, refreshAt: fetchedAt + Math.min(format.freshMs(decoded.value), (options.listCacheSeconds ?? Number.POSITIVE_INFINITY) * 1000) });
+      const ttlMs = format.freshMs(decoded.value);
+      const fresh = Math.min(ttlMs, (options.listCacheSeconds ?? Number.POSITIVE_INFINITY) * 1000);
+      // A list that is older than its ttl when the reader reads it comes from a gateway that serves its last list while it builds a new one. Ask again soon.
+      const refreshAfter = fetchedAt - format.startOf(decoded.value) >= ttlMs ? Math.min(fresh, MIN_RETRY_MS) : fresh;
+      copies.set(url, { list: decoded.value, fetchedAt, refreshAt: fetchedAt + refreshAfter });
       return accept({ list: decoded.value, fetchedAt, refreshError: null });
     }
 
@@ -231,7 +256,8 @@ export function createGatewayReader(options: GatewayReaderOptions): GatewayReade
       const t = now();
       const copy = copies.get(url);
       if (valid(copy) && t < copy.refreshAt) return Promise.resolve(accept({ list: copy.list, fetchedAt: copy.fetchedAt, refreshError: null }));
-      if (t < (retryAt.get(url) ?? 0)) return Promise.resolve(fallback(url, 'list.unavailable', 'the last read failed; the reader waits before it reads again'));
+      const wait = waits.get(url);
+      if (wait !== undefined && t < wait.until) return Promise.resolve(replay(url, wait));
       const started = running.get(url) ?? read(url).finally(() => running.delete(url));
       running.set(url, started);
       return started;
