@@ -599,6 +599,10 @@ describe('accessToken: the lists that the token names', () => {
     s.gateway.lists.freeze();
     s.gateway.advance(200_000);
     expect(accepted(await call(s, token)).status).toMatchObject({ read: true, issuedAt: built, fetchedAt: built + 200_000 });
+    // An older copy after a failed new read tells its issue time too.
+    s.gateway.fault(tslPath, LISTS_UNAVAILABLE);
+    s.gateway.advance(6_000);
+    expect(accepted(await call(s, token)).status).toMatchObject({ read: false, reason: 'stale', issuedAt: built });
   });
 
   it('a list that was wrong refuses the next calls too, until the wait ends: the refusal is not turned into a list that was not read', async () => {
