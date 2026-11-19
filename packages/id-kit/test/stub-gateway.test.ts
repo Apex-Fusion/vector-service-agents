@@ -337,12 +337,12 @@ describe('stub gateway: keys, SPIFFE and the other routes', () => {
   });
 
   /** An X.509-SVID request that the test writes by hand: its own nonce, proof key and request, so that each part can be wrong. */
-  async function x509Raw(gateway: StubGateway, agent: StubAgent, options: { nonce?: string | null; proofJwk?: unknown; csr?: string; key?: TestKey; authKey?: TestKey } = {}): Promise<{ status: number; body: Record<string, unknown> }> {
+  async function x509Raw(gateway: StubGateway, agent: StubAgent, options: { nonce?: string | null; proofJwk?: unknown; csr?: string; key?: TestKey; signerKey?: TestKey } = {}): Promise<{ status: number; body: Record<string, unknown> }> {
     const key = options.key ?? p256Key('stub x509 raw key');
     let nonce = options.nonce;
     if (nonce === undefined) nonce = (JSON.parse(await (await gateway.fetch(`${gateway.baseUrl}/spiffe/nonce`, { method: 'POST' })).text()) as { nonce: string }).nonce;
     const csr = options.csr ?? pem('CERTIFICATE REQUEST', await createCertificationRequest(resolveKey(key.privateKey)));
-    const proof = await createAgentJwt({ did: agent.did, key: (options.authKey ?? agent.authentication).privateKey }, `${gateway.baseUrl}/token`, {
+    const proof = await createAgentJwt({ did: agent.did, key: (options.signerKey ?? agent.authentication).privateKey }, `${gateway.baseUrl}/token`, {
       now: gateway.now,
       algorithms: ['EdDSA', 'ES256'],
       extraClaims: { ...(nonce === null ? {} : { nonce }), cnf: { jwk: options.proofJwk === undefined ? key.jwk : options.proofJwk } },
@@ -386,10 +386,10 @@ describe('stub gateway: keys, SPIFFE and the other routes', () => {
     expect(await x509Raw(gateway, agent, { proofJwk: null })).toMatchObject({ status: 400, body: mismatch });
     const assertionOnly = ed25519Key('stub x509 assertion only');
     const other = gateway.createAgent({ label: 'stub x509 assertion agent', keys: [{ key: assertionOnly, purposes: 2 }] });
-    expect(await x509Raw(gateway, other, { authKey: assertionOnly })).toMatchObject({ status: 400, body: { error: 'invalid_proof', error_description: expect.stringMatching(/not an authentication key of the agent/) } });
+    expect(await x509Raw(gateway, other, { signerKey: assertionOnly })).toMatchObject({ status: 400, body: { error: 'invalid_proof', error_description: expect.stringMatching(/not an authentication key of the agent/) } });
     const p256Auth = p256Key('stub x509 p256 auth');
     const withP256 = gateway.createAgent({ label: 'stub x509 p256 agent', keys: [{ key: p256Auth, purposes: 1 }] });
-    expect((await x509Raw(gateway, withP256, { authKey: p256Auth })).status).toBe(200);
+    expect((await x509Raw(gateway, withP256, { signerKey: p256Auth })).status).toBe(200);
   });
 
   it('refuses a certification request that is not P-256, that is not signed by its key, that has bytes after it, or that is not a request at all', async () => {

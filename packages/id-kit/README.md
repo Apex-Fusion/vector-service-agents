@@ -14,7 +14,7 @@ import { createGatewayClient, createVerifier, presentToken } from '@vsa/id-kit';
 // An agent asks for a token that covers a delegation, and calls a resource with it.
 const client = createGatewayClient({ baseUrl: 'https://id.vector.apexfusion.org' });
 const token = await client.requestToken({
-  subject: { did, key: authenticationKey },   // a private KeyObject, or a sign function (SignerKey)
+  subject: { did, key: recordKey },            // a private KeyObject, or a sign function (SignerKey)
   dpopKey: delegateKey,                        // with a delegation: the Ed25519 delegate key of the leaf delegation
   resource: 'https://mock.example/t/1/erp',
   delegation: { identifier: delegationId },
