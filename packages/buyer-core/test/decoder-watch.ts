@@ -1,9 +1,11 @@
 // packages/buyer-core/test/decoder-watch.ts
 //
-// For the tests of the CBOR check (cbor-guard.test.ts). A watch stands in for a decoder of Lucid or CML until `vi.restoreAllMocks()`. An input that nests no deeper
-// than the limit goes to the real decoder. A deeper input is counted, and the watch throws a marked Error for it: the real decoder never sees it, and the guard that
-// should have refused it is the failure. So a test shows a missing guard, and no deep input ever reaches a real library. (The same helper is in packages/vector-read.)
+// For the tests of the CBOR check (cbor-guard.test.ts, and the tests of the document read that jury-document.test.ts ports). A watch stands in for a decoder of Lucid
+// or CML until `vi.restoreAllMocks()`. An input that nests no deeper than the limit goes to the real decoder. A deeper input is counted, and the watch throws a marked
+// Error for it: the real decoder never sees it, and the guard that should have refused it is the failure. So a test shows a missing guard, and no deep input ever
+// reaches a real library. (The same helper is in packages/vector-read.)
 import { vi } from 'vitest';
+import { CML, Data } from '@lucid-evolution/lucid';
 import { CborGuardError, cborDepth } from '@vsa/vector-read/cbor-depth';
 
 type Decoder = (input: string | Uint8Array, ...rest: unknown[]) => unknown;
@@ -34,4 +36,13 @@ export function watchDecoder(target: object, method: string): DecoderWatch {
     return real(input, ...rest);
   });
   return { calls: () => calls, reached: () => reached };
+}
+
+/** Watches Lucid's `Data.from` and the decoders of CML that the copies of this package call on CBOR that this package did not build. */
+export function watchAllDecoders(): DecoderWatch {
+  const watches = [
+    watchDecoder(Data, 'from'), watchDecoder(CML.PlutusData, 'from_cbor_hex'), watchDecoder(CML.Transaction, 'from_cbor_hex'),
+    watchDecoder(CML.TransactionMetadatum, 'from_cbor_bytes'),
+  ];
+  return { calls: () => watches.reduce((sum, watch) => sum + watch.calls(), 0), reached: () => watches.reduce((sum, watch) => sum + watch.reached(), 0) };
 }

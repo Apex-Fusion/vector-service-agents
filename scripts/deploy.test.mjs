@@ -984,7 +984,7 @@ test('Pipeline env example: every name the service code reads is in the example,
   assert.ok(names.size >= 20, 'the scan found the settings');
   // Left unset on purpose: a value here would pin a default that the code owns (the chain endpoints of buyer-core are Vector mainnet's, the price
   // ceilings of ruling R56 are 1000000 lovelace each in agents/document-pipeline/src/start.ts).
-  const DEFAULT_IN_CODE = ['AGENT_VERSION', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_KOIOS_URL', 'VECTOR_EXPLORER_URL', 'KOIOS_URL', 'INDEXER_URL', 'OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE'];
+  const DEFAULT_IN_CODE = ['AGENT_VERSION', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_KOIOS_URL', 'VECTOR_EXPLORER_URL', 'VECTOR_BLOCKFROST_URL', 'KOIOS_URL', 'INDEXER_URL', 'OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE'];
   assert.deepEqual([...names].filter((n) => !(n in pExample) && !(n in pService.environment) && !DEFAULT_IN_CODE.includes(n)), []);
   for (const n of DEFAULT_IN_CODE) assert.ok(!(n in pExample), `${n} stays unset in the example`);
   // The two ceilings are in the example all the same, commented, with the default of the code.
@@ -3291,7 +3291,7 @@ test('Advocate env example: every name the service code reads is in the example,
   for (const n of keyNames) names.add(n);
   // Left unset on purpose: the defaults of the code. OPENROUTER_MODEL is optional, deepseek/deepseek-v4-flash by default (the test above); the chain endpoints and the
   // indexer are Vector mainnet's in packages/buyer-core; the ceiling of the chat job is 1000000 lovelace in the code, and the example carries it commented.
-  const DEFAULT_IN_CODE = ['AGENT_VERSION', 'KOIOS_URL', 'INDEXER_URL', 'OPENROUTER_MODEL', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_KOIOS_URL', 'VECTOR_EXPLORER_URL', 'LLM_MAX_PRICE_LOVELACE'];
+  const DEFAULT_IN_CODE = ['AGENT_VERSION', 'KOIOS_URL', 'INDEXER_URL', 'OPENROUTER_MODEL', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_KOIOS_URL', 'VECTOR_EXPLORER_URL', 'VECTOR_BLOCKFROST_URL', 'LLM_MAX_PRICE_LOVELACE'];
   assert.deepEqual([...names].filter((n) => !(n in aExample) && !(n in aService.environment) && !DEFAULT_IN_CODE.includes(n)), []);
   for (const n of DEFAULT_IN_CODE) assert.ok(!(n in aExample), `${n} stays unset in the example`);
   assert.match(aExampleText, /^# LLM_MAX_PRICE_LOVELACE=1000000$/m, 'the ceiling is in the example, commented, at the default of the code');
