@@ -23,7 +23,7 @@ import {
   startService, stopOnSignals,
 } from '../src/start.ts';
 import type { StartOptions } from '../src/start.ts';
-import { CHAT_ADVERT_REF, CHAT_MODEL, INDEXER, WINDOW_MS, escrowNo } from './fake-chain-support.ts';
+import { CHAT_ADVERT_REF, CHAT_MODEL, INDEXER, WINDOW_MS, chatAdvert, escrowNo } from './fake-chain-support.ts';
 import type { Market } from './fake-chain-support.ts';
 import { at, fixture, reply, routedFetch } from './fake-fetch.ts';
 import { GOLDEN_REQUEST, GOLDEN_T0, TEST_BRAVE_KEY, TEST_OPENROUTER_KEY, braveAnswer, braveAnswers, goldenAnswer, goldenMarket, modelRoute } from './golden.ts';
@@ -111,6 +111,51 @@ describe('loadConfig', () => {
     for (const bad of ['one', '-1', '1.5', '1e6', '0x10', '99999999999999999999', 'secret-value']) {
       expect(message(() => loadConfig({ ...FULL_ENV, LLM_MAX_PRICE_LOVELACE: bad })), bad).toBe(`environment variable LLM_MAX_PRICE_LOVELACE must be a whole number of lovelace of at least 0, and it has ${bad.length} characters`);
     }
+  });
+
+  describe('the limits of the bonds of the chat advert (LLM_MAX_SUPPLIER_BOND_LOVELACE, LLM_MAX_BUYER_BOND_LOVELACE)', () => {
+    const LIMITS = [
+      { name: 'LLM_MAX_SUPPLIER_BOND_LOVELACE', field: 'maxSupplierBondLovelace', other: 'maxBuyerBondLovelace' },
+      { name: 'LLM_MAX_BUYER_BOND_LOVELACE', field: 'maxBuyerBondLovelace', other: 'maxSupplierBondLovelace' },
+    ] as const;
+
+    test('not set, empty or blank: no limit, and the config holds no field for either, so that the hire is given nothing', () => {
+      for (const env of [FULL_ENV, { ...FULL_ENV, LLM_MAX_SUPPLIER_BOND_LOVELACE: '', LLM_MAX_BUYER_BOND_LOVELACE: ' \n' }]) {
+        const keys = Object.keys(loadConfig(env));
+        expect(keys).not.toContain('maxSupplierBondLovelace');
+        expect(keys).not.toContain('maxBuyerBondLovelace');
+      }
+    });
+
+    test('set: a whole number of lovelace of at least 0, read as the price ceiling is read, and each setting gives its own field and no other', () => {
+      for (const { name, field, other } of LIMITS) {
+        const config = loadConfig({ ...FULL_ENV, [name]: ' 2000000\n' });
+        expect(config[field], name).toBe(2_000_000n);
+        expect(Object.keys(config), name).not.toContain(other);
+        expect(loadConfig({ ...FULL_ENV, [name]: '0' })[field], `${name} = 0`).toBe(0n);
+        expect(loadConfig({ ...FULL_ENV, [name]: '9007199254740991' })[field], `${name} at the largest safe integer`).toBe(9_007_199_254_740_991n);
+      }
+      const both = loadConfig({ ...FULL_ENV, LLM_MAX_SUPPLIER_BOND_LOVELACE: '3000000', LLM_MAX_BUYER_BOND_LOVELACE: '4000000' });
+      expect([both.maxSupplierBondLovelace, both.maxBuyerBondLovelace]).toStrictEqual([3_000_000n, 4_000_000n]);
+    });
+
+    test('anything else stops the start, naming the setting and never showing the value', () => {
+      for (const { name } of LIMITS) {
+        for (const bad of ['one', '-1', '+5', '1.5', '1e6', '0x10', '2 000 000', '99999999999999999999', '9007199254740992', 'secret-value']) {
+          const text = message(() => loadConfig({ ...FULL_ENV, [name]: bad }));
+          expect(text, `${name} = ${bad}`).toBe(`environment variable ${name} must be a whole number of lovelace of at least 0, and it has ${bad.length} characters`);
+          expect(text).not.toContain(bad);
+        }
+      }
+    });
+
+    test('the settings are looked in for a secret that is in the wrong line, with the others of the service', () => {
+      for (const { name } of LIMITS) {
+        expect(SETTINGS, name).toContain(name);
+        expect(message(() => loadConfig({ ...FULL_ENV, [name]: KEY }))).toBe(`environment variable ${name} holds the buyer key, which belongs in ADVOCATE_BUYER_PRIV_KEY_HEX alone: it would be printed or published. Take it out of ${name}`);
+        expect(message(() => loadConfig({ ...FULL_ENV, [name]: TEST_BRAVE_KEY }))).toBe(`environment variable ${name} holds the Brave Search API key, which belongs in BRAVE_SEARCH_API_KEY alone: it would be printed or published. Take it out of ${name}`);
+      }
+    });
   });
 
   test('the DID is published without the space a file leaves around it', () => {
@@ -311,7 +356,7 @@ describe('loadConfig', () => {
       'ADVERT_MAX_PROCESSING_MS', 'ADVERT_EXPLORER_URL',
       'SERVICE_AUTH_HEADER', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY', 'OPENROUTER_MODEL',
       'ADVOCATE_BUYER_PRIV_KEY_HEX', 'ADVOCATE_BUYER_PUB_KEY_HEX', 'ADVOCATE_BUYER_PKH', 'ADVOCATE_BUYER_ADDRESS', 'ADVOCATE_STATE_DIR', 'LLM_MODEL_ALLOWLIST',
-      'LLM_MAX_PRICE_LOVELACE', 'VECTOR_MARKETPLACE_INDEXER_URL', 'PORT', 'HOST',
+      'LLM_MAX_PRICE_LOVELACE', 'LLM_MAX_SUPPLIER_BOND_LOVELACE', 'LLM_MAX_BUYER_BOND_LOVELACE', 'VECTOR_MARKETPLACE_INDEXER_URL', 'PORT', 'HOST',
     ]);
     expect(new Set(SEARCHED).size).toBe(SEARCHED.length);
   });
@@ -464,6 +509,30 @@ describe('startService', () => {
       createChain: async () => m.chain, fetchImpl: ipJob(m, openRouter), clock: () => m.clock.now, sleep: m.sleep,
     });
     expect((await (await postJob(cheap.port)).json()).inference.fallback_from).toBe('llm_supplier_unavailable');
+  });
+
+  /**
+   * One job on a service that has the settings `limits` besides those of every test, on a market of its own whose one chat advert has a supplier bond of 1100000 and a buyer bond of
+   * 1300000 lovelace, so that a limit that reached the wrong bond is seen: how the job ended.
+   */
+  const jobWith = async (limits: Record<string, string>) => {
+    const m = goldenMarket({ advert: chatAdvert({ supplier_bond_lovelace: 1_100_000n, buyer_bond_lovelace: 1_300_000n }), lockLovelace: 2_700_000n });
+    const openRouter: number[] = [];
+    const service = await start(envIn(tempDir(), { VECTOR_MARKETPLACE_INDEXER_URL: INDEXER, ...limits }), {
+      createChain: async () => m.chain, fetchImpl: ipJob(m, openRouter), clock: () => m.clock.now, sleep: m.sleep,
+    });
+    const answer = await (await postJob(service.port)).json();
+    return [answer.inference.path, answer.inference.fallback_from, await m.chain.escrowState(escrowNo(1)), openRouter];
+  };
+
+  test.each([['LLM_MAX_SUPPLIER_BOND_LOVELACE', 'supplier', 1_100_000], ['LLM_MAX_BUYER_BOND_LOVELACE', 'buyer', 1_300_000]])('%s reaches the hire of a job: an advert whose %s bond is above it is not hired and the log names the setting, and an advert at the limit is hired', async (name, kind, bond) => {
+    expect(await jobWith({ [name]: String(bond - 1) })).toStrictEqual(['openrouter', 'llm_supplier_unavailable', 'unknown', [1]]);
+    expect(logs.some((line) => line.includes(`its ${kind} bond is ${bond} lovelace, above the limit of ${bond - 1} lovelace (${name})`))).toBe(true);
+    expect(await jobWith({ [name]: String(bond) })).toStrictEqual(['marketplace', null, 'spent', []]);
+  });
+
+  test('both limits at the bonds of the advert: the advert is hired', async () => {
+    expect(await jobWith({ LLM_MAX_SUPPLIER_BOND_LOVELACE: '1100000', LLM_MAX_BUYER_BOND_LOVELACE: '1300000' })).toStrictEqual(['marketplace', null, 'spent', []]);
   });
 
   test('the allowlist of LLM_MODEL_ALLOWLIST reaches the hire of a job and the manifest alike: the gap and the listening line name its first model, and the hire buys a model on it and no other (ruling R-F19)', async () => {

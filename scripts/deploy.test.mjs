@@ -3681,15 +3681,30 @@ test('Advocate env example: every name the service code reads is in the example,
   assert.deepEqual(keyNames, A_API_KEYS, 'the constants of the two keys');
   for (const n of keyNames) names.add(n);
   // Left unset on purpose: the defaults of the code. OPENROUTER_MODEL is optional, deepseek/deepseek-v4-flash by default (the test above); the chain endpoints and the
-  // indexer are Vector mainnet's in packages/buyer-core; the ceiling of the chat job is 1000000 lovelace in the code, and the example carries it commented.
-  const DEFAULT_IN_CODE = ['AGENT_VERSION', 'KOIOS_URL', 'INDEXER_URL', 'OPENROUTER_MODEL', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_KOIOS_URL', 'VECTOR_EXPLORER_URL', 'VECTOR_BLOCKFROST_URL', 'LLM_MAX_PRICE_LOVELACE'];
+  // indexer are Vector mainnet's in packages/buyer-core; the ceiling of the chat job is 1000000 lovelace in the code, and the example carries it commented. The two limits of the bonds of
+  // the chat advert have no default: there is no limit while they are not set.
+  const DEFAULT_IN_CODE = ['AGENT_VERSION', 'KOIOS_URL', 'INDEXER_URL', 'OPENROUTER_MODEL', 'VECTOR_MARKETPLACE_INDEXER_URL', 'VECTOR_OGMIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_KOIOS_URL', 'VECTOR_EXPLORER_URL', 'VECTOR_BLOCKFROST_URL', 'LLM_MAX_PRICE_LOVELACE', 'LLM_MAX_SUPPLIER_BOND_LOVELACE', 'LLM_MAX_BUYER_BOND_LOVELACE'];
   assert.deepEqual([...names].filter((n) => !(n in aExample) && !(n in aService.environment) && !DEFAULT_IN_CODE.includes(n)), []);
   for (const n of DEFAULT_IN_CODE) assert.ok(!(n in aExample), `${n} stays unset in the example`);
   assert.match(aExampleText, /^# LLM_MAX_PRICE_LOVELACE=1000000$/m, 'the ceiling is in the example, commented, at the default of the code');
+  // The two limits of the bonds are in the example too, commented, at the value that the runbook recommends, and no compose file gives them a value (the operator sets them in the env file).
+  for (const name of ['LLM_MAX_SUPPLIER_BOND_LOVELACE', 'LLM_MAX_BUYER_BOND_LOVELACE']) {
+    assert.ok(names.has(name), `the service reads ${name}`);
+    assert.ok(aExampleText.split('\n').includes(`# ${name}=2000000`), `${name} is in the example, commented, at the recommended value`);
+    assert.ok(!(name in aService.environment) && !(name in aAgent.environment), `${name} has no value in the compose file`);
+  }
   for (const n of ['OPERATOR_CONTACT', 'ADVOCATE_BUYER_PRIV_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'SERVICE_AUTH_HEADER', ...A_API_KEYS, 'OPENROUTER_MODEL', 'ADVOCATE_STATE_DIR', 'LLM_MODEL_ALLOWLIST', 'LLM_MAX_PRICE_LOVELACE']) assert.ok(names.has(n), `the service reads ${n}`);
   assert.ok(!names.has('SUPPLIER_PRIV_KEY_HEX'), "no source of the service reads the supplier key: it is the runtime's");
   const NEEDED = ['SUPPLIER_PRIV_KEY_HEX', 'SUPPLIER_PUB_KEY_HEX', 'SUPPLIER_PKH', 'SUPPLIER_ADDRESS', 'NETWORK_ID', 'OGMIOS_URL', 'VECTOR_ZERO_TIME_MS', 'LIVE_CHAIN', 'ADVERT_REF', 'ESCROW_REF_UTXO', 'ADVERT_REF_UTXO', 'IDENTITY_POLICY_ID', ...RUNTIME_IDENTITY, 'CAPABILITY_KIND', 'SERVICE_URL', 'SERVICE_TIMEOUT_MS', 'ADVERT_MAX_PROCESSING_MS', 'SERVICE_CONTENT_TYPE', 'SERVICE_AUTH_HEADER', 'PORT', 'PUBLIC_ORIGIN'];
   assert.deepEqual(NEEDED.filter((n) => !(n in aExample) && !(n in aAgent.environment)), []);
+});
+
+test('Advocate RUNBOOK step 4: one paragraph on the limits of the bonds of the chat advert names the two settings, the value of the example and the fall back to OpenRouter that they give', () => {
+  const four = section(aRunbook, '4. Make the env file, generate the two keys and enter the two API keys');
+  const paragraphs = four.split('\n\n').filter((p) => p.includes('LLM_MAX_SUPPLIER_BOND_LOVELACE') || p.includes('LLM_MAX_BUYER_BOND_LOVELACE'));
+  assert.equal(paragraphs.length, 1, 'one paragraph');
+  for (const part of ['`LLM_MAX_SUPPLIER_BOND_LOVELACE`', '`LLM_MAX_BUYER_BOND_LOVELACE`', '`LLM_MAX_PRICE_LOVELACE`', '`2000000`', 'recreate the service', '`llm_supplier_unavailable`', 'gets its brief from OpenRouter']) assert.ok(paragraphs[0].includes(part), part);
+  for (const name of ['LLM_MAX_SUPPLIER_BOND_LOVELACE', 'LLM_MAX_BUYER_BOND_LOVELACE']) assert.ok(aExampleText.split('\n').includes(`# ${name}=2000000`), `${name} has the value of the paragraph in the example`);
 });
 
 test('Advocate env example: the chain values are those of the other three, the advert terms are the spec, the endpoint is the fourth hostname, the status word is deployed since 2026-10-20, and the manifest it produces is the default one with the published identity registry', () => {
@@ -4849,9 +4864,9 @@ test('Advocate RUNBOOK failure table: the refusals at start, the API keys, the c
     assert.ok(table.includes(row), `the table quotes ${row}`);
     assert.ok(sources[where].includes(quote), `${where} prints ${quote}`);
   }
-  // A line of the service about a hire carries its code and its stage, never the reason the kit gave (ruling R-F8): the choice that fails keeps no words of the
-  // kit, so the table quotes none of them.
-  assert.ok(sources.inference.includes("() => new HopFailed('llm_supplier_unavailable', null)"), 'the choice keeps no reason of the kit');
+  // A line of the service about a hire carries its code and its stage, never the reason the kit gave (ruling R-F8), with one exception: an advert that the choice refuses for a bond above a
+  // limit of the operator gets a line that names the advert, the bond and the limit. The choice keeps no other reason of the kit, so the table quotes none of them.
+  assert.ok(sources.inference.includes("return new HopFailed('llm_supplier_unavailable', null);") && sources.inference.includes('if (refusal !== null) log(refusal);'), 'the choice keeps no reason of the kit but the one of a bond');
   assert.equal(table.includes('above the ceiling of'), false, 'no line of the service quotes the reason of the kit');
   // The wait before a query that answered 429 is asked again, and the time of the model call, are the code's (src/search.ts, src/budget.ts).
   assert.ok(table.includes('a query that answers 429 is asked once more, 1100 ms later') && A_SRC.includes('export const QUERY_SPACING_MS = 1_100;'));

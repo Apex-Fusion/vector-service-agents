@@ -66,7 +66,7 @@ describe('agents/advocate/README.md', () => {
     expect(documented).toStrictEqual([...namesRead(), ...BUYER_IDENTITY_SETTINGS].sort());
     expect([...SETTINGS].sort()).toStrictEqual(namesRead());
     for (const name of BUYER_IDENTITY_SETTINGS) expect([namesRead().includes(name), CHAIN_SETTINGS.includes(name)], name).toStrictEqual([false, true]);
-    for (const name of ['BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'ADVOCATE_BUYER_PRIV_KEY_HEX', 'ADVOCATE_BUYER_PKH', 'ADVOCATE_BUYER_ADDRESS', 'ADVOCATE_STATE_DIR', 'LLM_MODEL_ALLOWLIST', 'LLM_MAX_PRICE_LOVELACE', 'VECTOR_MARKETPLACE_INDEXER_URL']) expect(SETTINGS, name).toContain(name);
+    for (const name of ['BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'ADVOCATE_BUYER_PRIV_KEY_HEX', 'ADVOCATE_BUYER_PKH', 'ADVOCATE_BUYER_ADDRESS', 'ADVOCATE_STATE_DIR', 'LLM_MODEL_ALLOWLIST', 'LLM_MAX_PRICE_LOVELACE', 'LLM_MAX_SUPPLIER_BOND_LOVELACE', 'LLM_MAX_BUYER_BOND_LOVELACE', 'VECTOR_MARKETPLACE_INDEXER_URL']) expect(SETTINGS, name).toContain(name);
   });
 
   test("the defaults the table gives are the code's", () => {
@@ -112,6 +112,14 @@ describe('agents/advocate/README.md', () => {
     expect(row('LLM_MAX_PRICE_LOVELACE')).toContain('| the most the chat job may be priced at, in lovelace: an advert priced above it is not hired, and when no advert at or under it can be, the job gets its brief from OpenRouter |');
     expect(textOf('../../packages/hire-kit/src/select.ts')).toContain('allowlist: query.allowlist, probe: true, maxPriceLovelace: ceiling, budgetMs, maxCandidates })');
     expect(textOf('src/inference.ts')).toContain("} catch { return fallBack('llm_supplier_unavailable', 'choice'); }");
+    // The limits of the bonds of the chat advert have no default: the config holds no field for one that is not set. The choice refuses the advert it picks when a bond is above a limit, and the job falls back as for the ceiling.
+    expect(Object.keys(config)).not.toContain('maxSupplierBondLovelace');
+    expect(Object.keys(config)).not.toContain('maxBuyerBondLovelace');
+    for (const name of ['LLM_MAX_SUPPLIER_BOND_LOVELACE', 'LLM_MAX_BUYER_BOND_LOVELACE']) {
+      expect(row(name), name).toMatch(/ \| none: no limit \|$/);
+      expect(row(name), name).toContain('the choice of the chat supplier refuses an advert with a larger');
+      expect(row(name), name).toContain('the job then gets its brief from OpenRouter');
+    }
     const buyer = buyerIdentityOf(BUYER_KEY);
     expect([config.buyer.pkh, config.buyer.address, config.manifest.keys.buyer_pkh]).toStrictEqual([buyer.buyerPkh, buyer.address, buyer.buyerPkh]);
     for (const name of ['ADVOCATE_BUYER_PKH', 'ADVOCATE_BUYER_ADDRESS']) expect(row(name), name).toMatch(/ \| derived \|$/);
