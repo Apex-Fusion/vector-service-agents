@@ -208,7 +208,6 @@ function signAll(request: LandRequest, io: LandIo, facts: TxFacts, needed: reado
     if (factsOf(signed).bodyHex !== facts.bodyHex) throw refuse(`the body after the signature of ${keyHash} is not the body that was built`);
   }
   const final = factsOf(signed);
-  if (final.bodyHex !== facts.bodyHex || final.txHash !== facts.txHash) throw refuse('the signed transaction is not the transaction that was built, byte for byte');
   const missing = needed.filter((keyHash) => !final.witnesses.includes(keyHash));
   if (missing.length > 0) throw refuse(`the signed transaction has no witness of ${missing.join(', ')}`);
   return signed;

@@ -226,3 +226,16 @@ describe('what goes wrong after the signature', () => {
     expect((err as TxNotConfirmedError).deliverBy).toBe(NOW + 480_000);
   });
 });
+
+describe('the signed body', () => {
+  it('refuses a signer that changes the body, before the submit, and names the signature; and lands with a signer that keeps the body', async () => {
+    const t = await setup();
+    const other = await t.world.simplePayment(member.address, 4_000_000n, agent.address);
+    const swapping: Signer = { has: () => true, sign: () => other.unsignedCbor };
+    const err = await refusal(landTransaction(t.request, { ...t.io, signer: swapping }));
+    expect(err).toBeInstanceOf(GuardRefusal);
+    expect((err as GuardRefusal).failures.map((g) => g.message).join(' ')).toContain('after the signature of');
+    expect(t.node.submitted).toEqual([]);
+    expect((await landTransaction(t.request, t.io)).kind).toBe('landed');
+  });
+});

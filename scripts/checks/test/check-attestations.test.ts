@@ -123,7 +123,7 @@ describe('the cleanup', () => {
     expect(h.screen.text).toContain('stays locked until');
     const until = Number(h.state('attestations').steps.issue_approval!.facts.valid_until) + WITHDRAW_WAIT_MS;
     h.clock.t = until + 120_000;
-    h.world.chain.tipSlot = Math.floor((h.clock.t - VECTOR_MAINNET.systemStartMs) / 1000);
+    h.world.chain.tipSlot = Math.floor((h.clock.t - VECTOR_MAINNET.systemStartMs!) / 1000);
     h.screen.lines.length = 0;
     expect(await h.run(attestationsCheck, 'cleanup', '--submit')).toBe(0);
     expect(h.state('attestations').steps.withdraw_approval).toBeDefined();

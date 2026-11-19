@@ -50,7 +50,9 @@ describe('body', () => {
   it('refuses a hash or a fee that is not the one the builder gave, and accepts the same', () => {
     const tx = facts({ inputs: [ref(1)], outputs: [output(0, member.address, 19_600_000n)] });
     expect(judge(tx, [walletInput(1)]).body.ok).toBe(true);
-    expect(judge(tx, [walletInput(1)], plan(), { ...claims, txHash: 'cd'.repeat(32) }).body.message).toContain('hash');
+    const wrongHash = judge(tx, [walletInput(1)], plan(), { ...claims, txHash: 'cd'.repeat(32) }).body;
+    expect(wrongHash.ok).toBe(false);
+    expect(wrongHash.message).toContain('the hash of the bytes');
     expect(judge(tx, [walletInput(1)], plan(), { ...claims, feeLovelace: 1n }).body.message).toContain('fee');
   });
 });
@@ -265,5 +267,33 @@ describe('a transaction that the node would take', () => {
     expect(failed(runGuards({ facts: tx, claims: claimed, inputs, plan: plan({ maxOutflow: { [member.keyHash]: 4_000_000n } }), ring }))).toEqual([]);
     const refused = failed(runGuards({ facts: tx, claims: claimed, inputs, plan: plan({ maxOutflow: { [member.keyHash]: 3_000_000n } }), ring }));
     expect(refused.map((g) => g.guard)).toEqual(['outflow']);
+  });
+});
+
+describe('the guards that the tests above do not reach', () => {
+  it('signers: refuses an input that the ledger did not give, and accepts it when the ledger gave it', () => {
+    const tx = facts({ inputs: [ref(1)], outputs: [output(0, member.address, 19_600_000n)] });
+    const refused = judge(tx, []).signers;
+    expect(refused.ok).toBe(false);
+    expect(refused.message).toContain('could not be read');
+    expect(judge(tx, [walletInput(1)]).signers.ok).toBe(true);
+  });
+  it('collateral: refuses a script that runs with no collateral input, and accepts it with a collateral input that the transaction returns in part', () => {
+    const base = { runsScripts: true, inputs: [ref(1)], outputs: [output(0, member.address, 19_600_000n)] };
+    const none = judge(facts(base), [walletInput(1)]).collateral;
+    expect(none.ok).toBe(false);
+    expect(none.message).toContain('no collateral input');
+    const covered = facts({ ...base, collateralInputs: [ref(2)], collateralReturn: output(1, member.address, 18_000_000n) });
+    expect(judge(covered, [walletInput(1), walletInput(2)]).collateral.ok).toBe(true);
+  });
+  it('vault: refuses a transaction that pays two escrows, and does not refuse one escrow for that', () => {
+    const vault = { address: DEPLOYMENT.vault.address, escrowAddress: DEPLOYMENT.escrow.address, perTx: 3_000_000n, total: 3_000_000n };
+    const step = plan({ vault, destinations: new Set([DEPLOYMENT.escrow.address]) });
+    const two = facts({ inputs: [ref(1)], outputs: [output(0, DEPLOYMENT.escrow.address, 1_000_000n), output(1, DEPLOYMENT.escrow.address, 1_000_000n), output(2, member.address, 17_000_000n)] });
+    const refused = judge(two, [walletInput(1)], step).vault;
+    expect(refused.ok).toBe(false);
+    expect(refused.message).toContain('pays 2 escrows');
+    const one = facts({ inputs: [ref(1)], outputs: [output(0, DEPLOYMENT.escrow.address, 1_000_000n), output(1, member.address, 18_000_000n)] });
+    expect(judge(one, [walletInput(1)], step).vault.message).not.toContain('pays 2 escrows');
   });
 });
