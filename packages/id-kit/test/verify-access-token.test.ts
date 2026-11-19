@@ -327,7 +327,38 @@ describe('accessToken: the grant and the chain of actors', () => {
     refused(await call(s, token, {}, { audience: AUDIENCE, require: { action: 'erp', resource: AUDIENCE } }), 'delegation.action');
     refused(await call(s, token, {}, { audience: AUDIENCE, require: { action: ACTION, resource: 'https://other.example/t/1/erp' } }), 'delegation.resource');
     accepted(await call(s, token, {}, { audience: AUDIENCE, require: { action: 'erp.stock.write', resource: AUDIENCE } }));
-    accepted(await call(s, token, {}, { audience: AUDIENCE }));
+    refused(await call(s, token, {}, { audience: AUDIENCE }), 'delegation.unchecked');
+  });
+
+  it('a token that carries a delegation is refused when the policy names no action and no resource: the delegate chooses the audience, and nothing else compares the grant with the call (delegation.unchecked)', async () => {
+    const s = scene();
+    const other = 'https://mp-mock.example/t/2/hr';
+    const asked = await s.client.requestToken({ subject: { did: s.agent.did, key: s.agent.authentication.privateKey }, dpopKey: s.agent.delegation.privateKey, resource: other, delegation: { identifier: s.root.id } });
+    if (!asked.ok) throw new Error(asked.detail);
+    const callAt = async (token: string, policy: AccessTokenPolicy) => {
+      const url = `${other}/stock`;
+      const presented = await presentToken(token, s.agent.delegation.privateKey, { method: 'POST', url }, { now: s.gateway.now });
+      return s.verifier.accessToken({ authorization: presented.authorization, dpop: presented.dpop, method: 'POST', url }, policy);
+    };
+    refused(await callAt(asked.value.accessToken, { audience: other }), 'delegation.unchecked');
+    refused(await callAt(asked.value.accessToken, { audience: other, require: { action: ACTION, resource: other } }), 'delegation.resource');
+    // The twin: a token for the agent alone, for the same resource, is accepted with the same policy.
+    const direct = await s.client.requestToken({ subject: { did: s.agent.did, key: s.agent.authentication.privateKey }, dpopKey: s.agent.delegation.privateKey, resource: other });
+    if (!direct.ok) throw new Error(direct.detail);
+    accepted(await callAt(direct.value.accessToken, { audience: other }));
+  });
+
+  it('the policy has three cases: with no require only a token with no delegation is accepted, with require only a token with a delegation, and with require and acceptDirect both', async () => {
+    const s = scene();
+    const delegated = await issue(s);
+    const direct = await issue(s, false);
+    accepted(await call(s, direct, {}, { audience: AUDIENCE }));
+    refused(await call(s, delegated, {}, { audience: AUDIENCE }), 'delegation.unchecked');
+    accepted(await call(s, delegated));
+    refused(await call(s, direct), 'delegation.missing');
+    accepted(await call(s, delegated, {}, { ...POLICY, acceptDirect: true }));
+    accepted(await call(s, direct, {}, { ...POLICY, acceptDirect: true }));
+    refused(await call(s, delegated, {}, { audience: AUDIENCE, require: { action: 'hr.read', resource: AUDIENCE }, acceptDirect: true }), 'delegation.action');
   });
 
   it('the pattern rule is exact for a prefix: oc.* does not cover ocr.read, and * covers every action and resource', async () => {
@@ -351,6 +382,11 @@ describe('accessToken: the grant and the chain of actors', () => {
     for (const require of [{ action: 'erp.*', resource: AUDIENCE }, { action: '*', resource: AUDIENCE }, { action: ACTION, resource: '*' }, { action: 'Bad Action', resource: AUDIENCE }]) {
       await expect(call(s, token, {}, { audience: AUDIENCE, require })).rejects.toThrow(TypeError);
     }
+  });
+
+  it('acceptDirect with no require is a mistake of the caller, and it throws', async () => {
+    const s = scene();
+    await expect(call(s, await issue(s, false), {}, { audience: AUDIENCE, acceptDirect: true })).rejects.toThrow(TypeError);
   });
 
   it('the chain of actors: 4 levels are accepted and 5 are refused, and an actor must be a DID', async () => {

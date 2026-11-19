@@ -80,8 +80,14 @@ export type DelegationCheck = (context: DelegationContext) => Promise<AuthorityV
 export interface AccessTokenPolicy {
   /** The identifier of this resource: the audience of the token must name it. */
   readonly audience: string;
-  /** The action and the resource of this call. When given, the token must have a delegation, and a pattern of its grant must cover each of them. */
+  /**
+   * The action and the resource of this call, as concrete values. A token that carries a delegation is accepted only when the policy gives them and a pattern of the grant covers each of
+   * them (`delegation.unchecked` when the policy gives none). With no `require`, the policy accepts tokens with no delegation only, where the agent acts for itself. With `require`, a token
+   * with no delegation is refused (`delegation.missing`) unless `acceptDirect` is set.
+   */
   readonly require?: RequiredGrant;
+  /** With `require`, a token that carries no delegation is accepted too. The grant of a token with a delegation is still checked. With no `require` this is a mistake, and it throws a TypeError. */
+  readonly acceptDirect?: boolean;
   readonly checkActors?: ActorCheck;
   readonly checkDelegation?: DelegationCheck;
 }
@@ -157,7 +163,7 @@ export function createVerifier(options: VerifierOptions): Verifier {
     const token = request.accessToken !== undefined ? accept(request.accessToken) : parseAuthorization(request.authorization);
     if (!token.ok) return token;
     const context = (keys: KeySet): AccessTokenContext => ({
-      keys, issuer, audience: policy.audience, nowMs: reader.now(), leewaySeconds, maxLifetimeSeconds, maxActDepth, replay, require: policy.require ?? null,
+      keys, issuer, audience: policy.audience, nowMs: reader.now(), leewaySeconds, maxLifetimeSeconds, maxActDepth, replay, require: policy.require ?? null, acceptDirect: policy.acceptDirect ?? false,
     });
     const call = { accessToken: token.value, dpop: request.dpop, method: request.method, url: request.url };
     const keys = await reader.keys();
