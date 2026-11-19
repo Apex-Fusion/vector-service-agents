@@ -11,17 +11,33 @@ import { CML, SLOT_CONFIG_NETWORK, createCostModels, utxoToTransactionInput, utx
 import type { UTxO } from '@lucid-evolution/lucid';
 import { decodeIdentityEscrowDatum, promptHashForPayload } from '@vsa/vector-read';
 import { decodeVaultDatum, encodeVaultDatum, plutusAddressFromBech32 } from '@vsa/vector-read/identity-codec';
-import { TxNotConfirmedError, VaultPayImpossible, VaultPayRefused, isLedgerRefusal, VAULT_PAY_VALID_MINUTES } from '../src/index.ts';
+import type * as GuardedDecode from '@vsa/vector-read/guarded-decode';
+import { TxNotConfirmedError, VaultPayImpossible, VaultPayRefused, buyerIdentityDeployment, buyerVaultDeployment, isLedgerRefusal, VAULT_PAY_VALID_MINUTES } from '../src/index.ts';
 import { RealChain } from '../src/chain.ts';
 import { OgmiosRpcError } from '../src/vendored/mcp-shared/provider.ts';
 import { FixtureProvider, FIXTURE_TXHASH, fixtureProtocolParameters } from './fixtures/fixture-provider.ts';
-import { CONFIG_UTXO, DAY, DEPLOYMENT, NOW, REF_UTXOS } from './fixtures/identity-world.ts';
+import { CONFIG_SEED, CONFIG_UTXO, DAY, DEPLOYMENT, NOW, REF_UTXOS } from './fixtures/identity-world.ts';
+import type { IdentityDeployment } from '../src/vendored/mcp/identity-deployment.ts';
 import {
   ADVERT_REF, AGENT_ID, CHAIN_TXS, CLAIM_TX, DELEGATE_KEY, DELEGATION_ID, ESCROW_LOCK, ESCROW_REF, IDENTITY_ADVERT, OWN_PKH, PAYLOAD, POST_TX, SUBMIT_TX, advertUtxo, agentRecord,
   chainFake, delegateRecord, delegation, delegationUtxo, escrowUtxo, identityEscrow, liveVault, submitted as submittedAt, supplierEnterprise, vaultUtxo,
 } from './fixtures/escrow-identity.fixture.ts';
 
-afterEach(() => { vi.useRealTimers(); });
+// The decoder of a transaction is the checked wrapper of vector-read. A test turns a fault of it on for the read of the Pay (paidEscrowOf of chain.ts) and for nothing else: the stack
+// of the call says where it comes from, and the real function runs for every other call.
+const decoding = vi.hoisted(() => ({ fault: false }));
+vi.mock('@vsa/vector-read/guarded-decode', async (importOriginal) => {
+  const actual = await importOriginal<typeof GuardedDecode>();
+  return {
+    ...actual,
+    decodeTransaction: (hex: string) => {
+      if (decoding.fault && (new Error('where').stack ?? '').includes('paidEscrowOf')) throw new Error('decode fault');
+      return actual.decodeTransaction(hex);
+    },
+  };
+});
+
+afterEach(() => { vi.useRealTimers(); decoding.fault = false; });
 
 // --- The evaluating node ------------------------------------------------------------------------------------------------------------
 type Uplc = { eval_phase_two_raw: (...args: [Uint8Array, Uint8Array[], Uint8Array[], Uint8Array, bigint, bigint, bigint, bigint, number]) => Uint8Array[] };
@@ -101,11 +117,11 @@ const held = (over: { vault?: UTxO[]; delegationUtxo?: UTxO; delegate?: UTxO } =
 ];
 const VAULT_REF = `${vaultUtxo(liveVault()).txHash}#0`;
 
-function payChain(utxos: UTxO[] = held()) {
+function payChain(utxos: UTxO[] = held(), deployment: IdentityDeployment | null = DEPLOYMENT) {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
   const node = new EvaluatingNode(utxos);
-  const chain = new RealChain(node, { privateKeyHex: DELEGATE_PRIVATE_KEY, fetchImpl: noFetch, identityDeployment: DEPLOYMENT });
+  const chain = new RealChain(node, { privateKeyHex: DELEGATE_PRIVATE_KEY, fetchImpl: noFetch, identityDeployment: deployment });
   const pay = (over: Partial<{ vaultRef: string; advertRef: string; payload: string }> = {}) => chain.payFromVault({ vaultRef: VAULT_REF, advertRef: ADVERT_REF, payload: PAYLOAD, ...over });
   return { chain, node, pay };
 }
@@ -352,4 +368,50 @@ describe('the refund of an escrow that a vault paid returns to the vault (the re
     expect(back[0].lovelace).toBeGreaterThanOrEqual(1_000_000n);
     expect(decodeVaultDatum(back[0].datum!)).toStrictEqual({ type: 'Returned', owner });
   }, 60_000);
+});
+
+describe('the deployment of a chain that pays from vaults', () => {
+  const REF_TX = 'e0'.repeat(32);
+  /** The settings of a buyer: the two deployment values, the escrow reference script and the policy the manifest publishes. The vault is the fourth, which a vault payer adds. */
+  const THREE = {
+    VECTOR_IDENTITY_LEGACY_ROOT: DEPLOYMENT.legacyRoot, VECTOR_IDENTITY_CONFIG_SEED: `${CONFIG_SEED.txHash}#${CONFIG_SEED.outputIndex}`, VECTOR_IDENTITY_ESCROW_REF_UTXO: `${REF_TX}#4`,
+    IDENTITY_POLICY_ID: DEPLOYMENT.identity.hash,
+  };
+  const FOUR = { ...THREE, VECTOR_IDENTITY_VAULT_REF_UTXO: `${REF_TX}#3` };
+
+  it('a chain made with buyerVaultDeployment pays from a vault: the deployment holds the vault script and its reference script, and the Pay is built, evaluated, signed and submitted', async () => {
+    const deployment = buyerVaultDeployment(FOUR);
+    expect(deployment.vault.hash).toBe(DEPLOYMENT.vault.hash);
+    expect(deployment.refs.vault).toStrictEqual({ txHash: REF_TX, outputIndex: 3 });
+    const { pay, node } = payChain(held(), deployment);
+    await expect(pay()).resolves.toMatchObject({ delegateKey: DELEGATE_KEY.keyHash, vaultRef: expect.stringMatching(/#1$/) });
+    expect(node.submitted).toHaveLength(1);
+  }, 60_000);
+
+  it('a chain made with buyerIdentityDeployment, which reads three settings, cannot pay from a vault: it says so with the name of the fourth setting, and builds and signs nothing', async () => {
+    const deployment = buyerIdentityDeployment(FOUR);
+    expect(deployment?.refs.vault).toBeUndefined();
+    const { pay, node } = payChain(held(), deployment);
+    const error = await rejection(pay());
+    expect(String(error)).toContain('VECTOR_IDENTITY_VAULT_REF_UTXO');
+    expect(String(error)).toContain('buyerVaultDeployment');
+    expect(node.evaluations).toStrictEqual([]);
+    expect(node.submitted).toStrictEqual([]);
+    // The twin: the chain with the vault reference script pays.
+    await expect(payChain(held(), buyerVaultDeployment(FOUR)).pay()).resolves.toMatchObject({ delegateKey: DELEGATE_KEY.keyHash });
+  }, 120_000);
+});
+
+describe('the Pay is read before it is signed', () => {
+  it('a fault of the decoder ends the call with nothing signed or submitted, so that no fault can follow a confirmed payment; without the fault the same Pay is submitted', async () => {
+    const { pay, node } = payChain();
+    decoding.fault = true;
+    const error = await rejection(pay());
+    expect(String(error)).toContain('decode fault');
+    expect(node.submitted).toStrictEqual([]);
+    expect(node.events).not.toContain('submit');
+    decoding.fault = false;
+    await expect(pay()).resolves.toMatchObject({ delegateKey: DELEGATE_KEY.keyHash });
+    expect(node.submitted).toHaveLength(1);
+  }, 120_000);
 });

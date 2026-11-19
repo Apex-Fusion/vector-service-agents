@@ -38,7 +38,7 @@ export type { BuildCommon, IdentityContext } from './vendored/mcp/identity-build
 export { ESCROW_REF_UTXO, ACCEPT_WINDOW_MS, DELIVER_BY_BUFFER_MS, MARKETPLACE_MIN_FEE, MAX_ESCROW_LOVELACE } from './vendored/mcp/marketplace-constants.ts';
 export { VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from './vendored/mcp-shared/config.ts';
 export type { IdentityDeployment } from './vendored/mcp/identity-deployment.ts';
-export { buyerIdentityDeployment, BUYER_IDENTITY_SETTINGS } from './deployment.ts';
+export { buyerIdentityDeployment, buyerVaultDeployment, BUYER_IDENTITY_SETTINGS, VAULT_PAYER_IDENTITY_SETTINGS } from './deployment.ts';
 export { ocrPromptHash, ocrResponseHash, responsesPromptHash, responsesResponseHash, responsesOutputText, requestSpecHash } from './commitments.ts';
 export { planFleetPostEscrow, buildFleetPostEscrow, fleetPostTerms, isIdentityAdvert } from './fleet-build.ts';
 export type { FleetPostPlan, FleetPostBuild, IdentityPostTerms } from './fleet-build.ts';

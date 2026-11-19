@@ -337,13 +337,16 @@ export class RealChain implements VaultChain {
    * Pays an escrow from the Live vault `vaultRef` for the advert `advertRef` (an identity-marketplace advert of a template-contract supplier), committing to `payload` as the template does:
    * the vendored builder runs with `ledgerDecides`, so it makes no check of the limits and the node evaluates the scripts (see VaultChain for the errors). The key of this chain must be
    * the delegate key of the delegation of the vault, and the wallet that pays the fee: a Pay that needs another signature is refused before it is signed. The Pay is valid for
-   * VAULT_PAY_VALID_MINUTES. The deployment of the chain needs the reference script of the vault (VECTOR_IDENTITY_VAULT_REF_UTXO).
+   * VAULT_PAY_VALID_MINUTES. The deployment of the chain needs the reference script of the vault (VECTOR_IDENTITY_VAULT_REF_UTXO): read it with buyerVaultDeployment.
    */
   payFromVault(args: { vaultRef: string; advertRef: string; payload: string }): Promise<VaultPayResult> {
     return this.#serial(async () => {
       const deployment = this.#deployment;
       if (deployment === null) {
-        throw new Error('This chain has no identity registry deployment, so it cannot pay from a vault: give it the deployment that VECTOR_IDENTITY_LEGACY_ROOT, VECTOR_IDENTITY_CONFIG_SEED and VECTOR_IDENTITY_VAULT_REF_UTXO describe. Nothing was built.');
+        throw new Error('This chain has no identity registry deployment, so it cannot pay from a vault: give it the deployment that buyerVaultDeployment reads from VECTOR_IDENTITY_LEGACY_ROOT, VECTOR_IDENTITY_CONFIG_SEED, VECTOR_IDENTITY_ESCROW_REF_UTXO and VECTOR_IDENTITY_VAULT_REF_UTXO. Nothing was built.');
+      }
+      if (deployment.refs.vault === undefined) {
+        throw new Error('This chain cannot pay from a vault: its identity deployment has no reference script of the vault. Set VECTOR_IDENTITY_VAULT_REF_UTXO and read the deployment with buyerVaultDeployment: buyerIdentityDeployment reads three settings and not this one. Nothing was built.');
       }
       const built = await this.#built('The vault Pay', async () => {
         const lucid = await lucidForAddress(this.#provider, this.address);
@@ -354,11 +357,12 @@ export class RealChain implements VaultChain {
         if (others.length > 0) {
           throw new Error(`The Pay needs the signature of ${others.join(', ')}, and this chain signs with ${this.buyerPkh} only: the key of the chain must be the delegate key of the delegation of the vault. Nothing was signed.`);
         }
-        return { unsignedCborHex: pay.txCbor, builtTxHash: pay.txHash, escrowRef: pay.escrowRef, deliverBy: pay.deliverBy, pay };
+        // The Pay is read before it is signed: a fault of the decoder ends the call here, with nothing signed, and none can follow a payment that was confirmed.
+        const paid = paidEscrowOf(pay.txCbor);
+        return { unsignedCborHex: pay.txCbor, builtTxHash: pay.txHash, escrowRef: pay.escrowRef, deliverBy: pay.deliverBy, pay, paid };
       });
       const { txHash, feeLovelace } = await this.#signSubmitAwait(built);
-      const { pay } = built;
-      const { supplierPkh, collateralKept } = paidEscrowOf(pay.txCbor);
+      const { pay, paid: { supplierPkh, collateralKept } } = built;
       return {
         escrowRef: pay.escrowRef, txHash, lockLovelace: pay.amountLovelace, feeLovelace, deliverBy: pay.deliverBy, postedAt: pay.validFrom + 60_000, supplierPkh, collateralKept, agentId: pay.agentId,
         vaultRef: pay.vaultRef, vaultLovelace: pay.vaultLovelace, spent: pay.spent, periodStart: pay.periodStart, newPeriod: pay.newPeriod, limit: pay.limit, promptHash: pay.promptHash,
