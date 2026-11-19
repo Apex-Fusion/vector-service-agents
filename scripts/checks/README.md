@@ -131,9 +131,13 @@ The script `02-vault-escrow.ts` uses `hireAgent` of the hire kit with the paying
 | `refused_before_claim` | The agent turned the job down and the escrow is Open. The check records the escrow and the vault that continues, and exits with 1. It never hires again. `cleanup` reclaims after `deliver_by`. |
 | `failed_after_claim` | The agent may hold the job. The check does the same, and its message says that the escrow may be claimed. |
 | `vault_refused` | The script of the vault refused the Pay, or the node did not evaluate it. Nothing was signed. The evidence keeps the words of the node and the draft transaction. The hire can be made again. |
-| `not_accepted` | The delivery came and the escrow was not accepted. The check records the escrow and never hires again. |
+| `not_accepted` | The delivery came and the escrow was not accepted: a check of the receipt failed, the decision was refused, or it was not made in time (`decision_timeout`). The check records the escrow and never hires again. |
 
-Every transaction of the kit is written to the state file when it lands, as a part of the step (`part.hire:pay`, `part.hire:accept`). A Pay that was sent and not seen confirmed is kept as a transaction in flight with the vault reference that it would leave. The next run settles it first. Before a step spends a vault, it asks the node for the reference of the state file. If the node does not hold it, the step reads the Live vault of the delegation from the chain and goes on with it, or stops when there is more than one.
+Every transaction of the kit is written to the state file when it lands, as a part of the step (`part.hire:pay`, `part.hire:accept`).
+
+A Pay that was sent and not seen confirmed may still land. The check keeps it as a transaction in flight, with the vault reference that the Pay would leave, and as the note `unconfirmed_pay`: the vault that the check held, the vault if the Pay lands, and the time after which it cannot land. The message says the same. Start no other Pay until that time. The next run settles the transaction first: it waits while the Pay may land, records it as a part when it landed, and lets it go when it cannot land. A hire after that starts from the vault that the node holds.
+
+Before a step spends a vault, it asks the node for the reference of the state file. If the node does not hold it, the step reads the Live vault of the delegation from the chain and goes on with it, or stops when there is more than one.
 
 ## Files
 
