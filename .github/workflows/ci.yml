@@ -1,16 +1,25 @@
 name: ci
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
   test:
     runs-on: nixos
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with: { version: 10.33.2 }
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
+      # deploy.test.mjs renders the compose files with docker compose config. The runner image has no docker compose, and without it those tests skip.
+      - uses: docker/setup-compose-action@v2
       # poppler-utils gives pdfinfo and pdftoppm, which the Document Pipeline renders PDFs with, and ffmpeg gives ffmpeg and ffprobe, which Audio Snippets
       # reads and cuts media with. REQUIRE_POPPLER and REQUIRE_ASR make a failed install fail the tests that need them instead of skipping them.
       - run: sudo apt-get update && sudo apt-get install -y poppler-utils ffmpeg
@@ -18,7 +27,10 @@ jobs:
       # cache, under that revision, saves the download; the fetch runs every time all the same, because it checks the size and the sha256 of each of the four
       # files and fetches only when one is not as pinned, so a cache that holds something else is caught before the tests.
       - uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: agents/audio-snippets/asr/requirements.txt
       - run: python -m pip install --disable-pip-version-check -r agents/audio-snippets/asr/requirements.txt
       - uses: actions/cache@v4
         with:
@@ -31,36 +43,47 @@ jobs:
         env:
           REQUIRE_POPPLER: "1"
           REQUIRE_ASR: "1"
-  # Every push and pull request builds the four images, with no push and no registry login, so that a stage that no longer builds fails before it reaches
-  # main. The publish job builds them again on main, and pushes them.
+  # Every pull request and every push to main builds the four images, with no push and no registry login, so that a stage that no longer builds fails before it
+  # reaches main. The publish job builds them again on main, from the layers this job caches, and pushes them. Each image has one cache scope, the same in both jobs.
   build:
     runs-on: nixos
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: agents/agent-history/Dockerfile
           push: false
+          cache-from: type=gha,scope=agent-history
+          cache-to: type=gha,mode=max,scope=agent-history
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: agents/document-pipeline/Dockerfile
           push: false
+          cache-from: type=gha,scope=document-pipeline
+          cache-to: type=gha,mode=max,scope=document-pipeline
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: agents/audio-snippets/Dockerfile
           push: false
+          cache-from: type=gha,scope=audio-snippets
+          cache-to: type=gha,mode=max,scope=audio-snippets
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: agents/advocate/Dockerfile
           push: false
+          cache-from: type=gha,scope=advocate
+          cache-to: type=gha,mode=max,scope=advocate
   publish:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: nixos
+    timeout-minutes: 15
     permissions:
       contents: read
       packages: write
@@ -71,11 +94,16 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # The build job caches the layers of each image under its own scope. The builds below read them, so they build only what changed.
+      # provenance: false keeps each pushed image as it was: one manifest and no attestation. Buildx adds a provenance attestation to a pushed image otherwise.
+      - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: agents/agent-history/Dockerfile
           push: true
+          provenance: false
+          cache-from: type=gha,scope=agent-history
           tags: |
             ghcr.io/apex-fusion/vector-service-agents/agent-history:latest
             ghcr.io/apex-fusion/vector-service-agents/agent-history:${{ github.sha }}
@@ -85,6 +113,8 @@ jobs:
           context: .
           file: agents/document-pipeline/Dockerfile
           push: true
+          provenance: false
+          cache-from: type=gha,scope=document-pipeline
           tags: |
             ghcr.io/apex-fusion/vector-service-agents/document-pipeline:latest
             ghcr.io/apex-fusion/vector-service-agents/document-pipeline:${{ github.sha }}
@@ -94,6 +124,8 @@ jobs:
           context: .
           file: agents/audio-snippets/Dockerfile
           push: true
+          provenance: false
+          cache-from: type=gha,scope=audio-snippets
           tags: |
             ghcr.io/apex-fusion/vector-service-agents/audio-snippets:latest
             ghcr.io/apex-fusion/vector-service-agents/audio-snippets:${{ github.sha }}
@@ -103,6 +135,8 @@ jobs:
           context: .
           file: agents/advocate/Dockerfile
           push: true
+          provenance: false
+          cache-from: type=gha,scope=advocate
           tags: |
             ghcr.io/apex-fusion/vector-service-agents/advocate:latest
             ghcr.io/apex-fusion/vector-service-agents/advocate:${{ github.sha }}
