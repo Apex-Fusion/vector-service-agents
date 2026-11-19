@@ -22,6 +22,9 @@ services:
       SERVICE_TIMEOUT_MS: "180000"
       ADVERT_MAX_PROCESSING_MS: "300000"
       PORT: "8080"
+      # The runtime serves the agent card and a 200 on GET / when PUBLIC_ORIGIN is set. The value is the https origin of the host that the agent record, the advert and the Caddy block name.
+      # The runtime does not start when the value is not an https origin. SERVICE_PRECHECK_URL and RELEASE_WATCHER stay unset on purpose: the runtime asks the service nothing before the Claim, and it runs no release watcher.
+      PUBLIC_ORIGIN: https://mp-suppliers-history.hal8.ai
     ports: ["127.0.0.1:8083:8080"]
     depends_on: [service]
     networks: [proxy]

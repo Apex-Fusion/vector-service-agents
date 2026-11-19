@@ -47,7 +47,7 @@ The working directory on the box is `<base path>/repo/deploy/host`, inside a che
    docker exec <caddy container> caddy reload --config /etc/caddy/Caddyfile
    ```
 
-   The second route matters. The advert's `detail_uri` is `https://mp-suppliers-history.hal8.ai/agent.json`, and the template runtime does not serve that path. Without the route the manifest cannot be fetched and the hash in the advert cannot be checked. The `/agent.json` route goes first so that it is not caught by the default one. Everything else goes to the runtime.
+   The second route matters. The advert's `detail_uri` is `https://mp-suppliers-history.hal8.ai/agent.json`, and the template runtime does not serve that path. Without the route the manifest cannot be fetched and the hash in the advert cannot be checked. The `/agent.json` route goes first so that it is not caught by the default one. Everything else goes to the runtime. The agent card at `/.well-known/agent-card.json` and `GET /` need no route of their own: the runtime serves both, and both take the default route.
 
 5. **Ports.** `127.0.0.1:8083` on the host is the runtime's `/healthz`, `/capability` and `/status`, for the operator's checks before DNS and as a probe afterwards. It is loopback only. The service is not published. Check `ss -ltnp` for a clash on 8083 before the first start.
 
@@ -106,7 +106,7 @@ The working directory on the box is `<base path>/repo/deploy/host`, inside a che
    docker exec <caddy container> caddy reload --config /etc/caddy/Caddyfile
    ```
 
-   The second route matters for the reason it matters for Agent History: the advert's `detail_uri` is `https://mp-suppliers-pipeline.hal8.ai/agent.json`, and the template runtime does not serve that path. The `/agent.json` route goes first so that it is not caught by the default one.
+   The second route matters for the reason it matters for Agent History: the advert's `detail_uri` is `https://mp-suppliers-pipeline.hal8.ai/agent.json`, and the template runtime does not serve that path. The `/agent.json` route goes first so that it is not caught by the default one. The agent card at `/.well-known/agent-card.json` and `GET /` need no route of their own: the runtime serves both, and both take the default route.
 
 4. **Ports.** `127.0.0.1:8084` on the host is the runtime's `/healthz`, `/capability` and `/status`, for the operator's checks before DNS and as a probe afterwards. It is loopback only. The service is not published. Check `ss -ltnp` for a clash on 8084 before the first start.
 
@@ -166,7 +166,7 @@ The working directory on the host is `<base path>/repo/deploy/host`, inside a ch
    docker exec <caddy container> caddy reload --config /etc/caddy/Caddyfile
    ```
 
-   The second route matters for the reason it matters for the other two: the advert's `detail_uri` is `https://mp-suppliers-snippets.hal8.ai/agent.json`, and the template runtime does not serve that path. The `/agent.json` route goes first so that it is not caught by the default one.
+   The second route matters for the reason it matters for the other two: the advert's `detail_uri` is `https://mp-suppliers-snippets.hal8.ai/agent.json`, and the template runtime does not serve that path. The `/agent.json` route goes first so that it is not caught by the default one. The agent card at `/.well-known/agent-card.json` and `GET /` need no route of their own: the runtime serves both, and both take the default route.
 
 5. **Ports.** `127.0.0.1:8085` on the host is the runtime's `/healthz`, `/capability` and `/status`, for the operator's checks before DNS and as a probe afterwards. It is loopback only. The service is not published. Check `ss -ltnp` for a clash on 8085 before the first start.
 
@@ -226,7 +226,7 @@ The working directory on the host is `<base path>/repo/deploy/host`, inside a ch
    docker exec <caddy container> caddy reload --config /etc/caddy/Caddyfile
    ```
 
-   The second route matters for the reason it matters for the other three: the advert's `detail_uri` is `https://mp-suppliers-advocate.hal8.ai/agent.json`, and the template runtime does not serve that path. The `/agent.json` route goes first so that it is not caught by the default one.
+   The second route matters for the reason it matters for the other three: the advert's `detail_uri` is `https://mp-suppliers-advocate.hal8.ai/agent.json`, and the template runtime does not serve that path. The `/agent.json` route goes first so that it is not caught by the default one. The agent card at `/.well-known/agent-card.json` and `GET /` need no route of their own: the runtime serves both, and both take the default route.
 
 5. **Ports.** `127.0.0.1:8086` on the host is the runtime's `/healthz`, `/capability` and `/status`, for the operator's checks before DNS and as a probe afterwards. It is loopback only. The service is not published. Check `ss -ltnp` for a clash on 8086 before the first start.
 
