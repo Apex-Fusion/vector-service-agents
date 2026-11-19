@@ -27,6 +27,7 @@ export const BLIND_SPOTS: readonly string[] = [
   'Module-3 stakes are read from the deployment on the identity registry, with its eight-field stake layout. An output is a stake only when it holds the stake token of the agent that its datum names. Other outputs at that address are skipped. The stakes of the earlier Module-3 deployment have another address and the six-field layout, and the report does not read them. A subject given as a DID or asset name keeps only the stakes whose datum names that asset, not those that share its owner key; a subject given as a key hash keeps every stake that key owns, whatever the asset.',
   CURRENT_STATE_GAP,
   IDENTITY_VIEW_GAP,
+  'The report refuses CBOR that is nested deeper than 64 levels before it decodes it. A datum that fails this check counts as a datum that does not decode: the report skips the output that holds it, and the identity section shows an error when a record in the history of the subject fails it.',
 ];
 // Lines a report adds to the fixed ones when they apply.
 export const LEGACY_ONLY = 'Only the legacy registry was read: the identity registry is not configured in this service.';

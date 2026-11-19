@@ -24,8 +24,8 @@ describe('specs/agent-history.md', () => {
   test('Known gaps lists every fixed blind-spot line, word for word', () => {
     const gaps = section('Known gaps');
     for (const line of BLIND_SPOTS) expect(gaps, line.slice(0, 50)).toContain(`\n- ${line}\n`);
-    expect(BLIND_SPOTS).toHaveLength(7);
-    expect(gaps).toContain('Every report carries these seven lines in `blind_spots`, word for word.');
+    expect(BLIND_SPOTS).toHaveLength(8);
+    expect(gaps).toContain('Every report carries these eight lines in `blind_spots`, word for word.');
   });
   test('the manifest gaps are blind-spot lines, so the spec lists them word for word as well', () => {
     const m = manifestFromEnv(TEST_ENV);

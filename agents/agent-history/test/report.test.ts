@@ -183,12 +183,14 @@ describe('report assembly against the recording', () => {
   test('the blind spots say what the live indexer rows are, which module datums are skipped, and what the identity section is not', async () => {
     const r = await buildReport({ subject: DID, include: ['identity'] }, replayFetch(fx.store), opts);
     expect(r.blind_spots).toEqual([LEGACY_ONLY, ...BLIND_SPOTS]);
-    expect(BLIND_SPOTS).toHaveLength(7);
+    expect(BLIND_SPOTS).toHaveLength(8);
     expect(BLIND_SPOTS[0]).toMatch(/agents that share a key show the same marketplace section/);
     expect(BLIND_SPOTS[0]).toMatch(/the listed keys with the transaction purpose/);
     expect(BLIND_SPOTS[1]).toMatch(/one per escrow UTxO version/);
     expect(BLIND_SPOTS[5]).toBe(CURRENT_STATE_GAP);
-    expect(BLIND_SPOTS.at(-1)).toBe(IDENTITY_VIEW_GAP);
+    expect(BLIND_SPOTS[6]).toBe(IDENTITY_VIEW_GAP);
+    // The last fixed line is the CBOR check: the rule, and what happens to a datum that fails it.
+    expect(BLIND_SPOTS[7]).toBe('The report refuses CBOR that is nested deeper than 64 levels before it decodes it. A datum that fails this check counts as a datum that does not decode: the report skips the output that holds it, and the identity section shows an error when a record in the history of the subject fails it.');
     expect(IDENTITY_VIEW_GAP).toMatch(/It is not a did:vector resolution/);
     expect(BLIND_SPOTS.some((b) => /Module-3/.test(b))).toBe(true);
   });
