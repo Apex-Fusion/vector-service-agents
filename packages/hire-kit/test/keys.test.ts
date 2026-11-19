@@ -53,17 +53,18 @@ const ERRORS: AgentErrors<CodedError> = {
   storeWrite: (message) => new CodedError('store_write_failed', message),
   unavailable: (why) => new CodedError('no_agent', `No agent to hire: ${why}.`),
 };
-const request = (over: Partial<AgentRequest> = {}): AgentRequest => ({ selection: { capabilityId: AGENT_CAPABILITY, model: AGENT_MODEL }, payload: PAYLOAD, label: 'the order', ...over });
+const request = (over: Partial<AgentRequest> = {}): AgentRequest => ({
+  selection: { capabilityId: AGENT_CAPABILITY, model: AGENT_MODEL }, payload: PAYLOAD, label: 'the order', maxSupplierBondLovelace: null, maxBuyerBondLovelace: null, ...over,
+});
 
-/** The deps of a hire from `key` against the marketplace `m`, whose clock the hire moves on when it pauses. */
-function agentDeps(key: PayingKey, m: Marketplace): AgentDeps {
-  const clocked = { clock: () => m.clock.now, sleep: async (ms: number) => { m.clock.now += ms; }, deadlineMs: T0 + 1_000_000 };
-  return { ...key.hireDeps(clocked), fetchImpl: m.fetchImpl, indexerUrl: INDEXER, ledger: { posted: () => undefined, accepted: () => undefined } };
+/** The deps of a hire against the marketplace `m`, whose clock the hire moves on when it pauses. The chain and the store of the hire are the ones of the key it runs from. */
+function agentDeps(m: Marketplace): AgentDeps {
+  return { clock: () => m.clock.now, sleep: async (ms: number) => { m.clock.now += ms; }, deadlineMs: T0 + 1_000_000, fetchImpl: m.fetchImpl, indexerUrl: INDEXER, ledger: { posted: () => undefined, accepted: () => undefined } };
 }
 /** Hires an agent that turns the job down, so that the escrow stays Open in the store of `key`; gives the ref of that escrow. */
 async function strand(key: PayingKey, m: Marketplace, over: Partial<AgentRequest> = {}): Promise<string> {
   m.agent.refuse = { status: 403, code: 'approval_revoked' };
-  const outcome = await hireAgent(agentDeps(key, m), request(over), ERRORS);
+  const outcome = await hireAgent(key, agentDeps(m), request(over), ERRORS);
   if (outcome.outcome !== 'refused_before_claim') throw new Error(`the hire ended in ${outcome.outcome}`);
   return outcome.escrowRef;
 }

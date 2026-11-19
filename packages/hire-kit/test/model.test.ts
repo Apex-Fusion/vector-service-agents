@@ -58,7 +58,9 @@ async function setup(opts: Parameters<typeof marketplace>[0] = {}, wrap?: (m: Ma
   const deps: ModelDeps = { clock: () => m.clock.now, sleep: async (ms) => { m.clock.now += ms; }, deadlineMs: T0 + 1_000_000, fetchImpl: m.fetchImpl, indexerUrl: INDEXER, ledger };
   return { m, key, deps, booked };
 }
-const request = (over: Partial<ModelRequest> = {}): ModelRequest => ({ input: INPUT, label: 'the brief', allowlist: ALLOWLIST, maxPriceLovelace: CEILING, ceilingSetting: 'LLM_MAX_PRICE_LOVELACE', ...over });
+const request = (over: Partial<ModelRequest> = {}): ModelRequest => ({
+  input: INPUT, label: 'the brief', allowlist: ALLOWLIST, maxPriceLovelace: CEILING, ceilingSetting: 'LLM_MAX_PRICE_LOVELACE', maxSupplierBondLovelace: null, maxBuyerBondLovelace: null, ...over,
+});
 /** What a hire rejects with; the test fails when the hire completes. */
 async function thrown(hire: Promise<unknown>): Promise<CodedError> {
   const error = await hire.then(() => { throw new Error('the hire completed'); }, (err: unknown) => err);
@@ -144,18 +146,61 @@ describe('hireModel', () => {
     expect(run.m.llm.sends).toHaveLength(2);
   });
 
-  it('puts no cap on the lock: an advert priced at the ceiling with bonds that take a lock of 60 units is hired, and the lock is booked as it is; one lovelace over the ceiling is not hired', async () => {
-    const big = { ...LLM_ADVERT, supplier_bond_lovelace: 25_000_000n, buyer_bond_lovelace: 25_000_000n };
-    const run = await setup({ lockLovelace: 60_000_000n, floatLovelace: 200_000_000n, llmAdvert: big });
-    const hired = await hireModel(run.key, run.deps, request(), ERRORS);
-    expect(hired.accepted).toBe('confirmed');
-    expect(run.booked).toStrictEqual([{ lockLovelace: 60_000_000n, feeLovelace: FakeChain.FEE_LOVELACE }]);
-    // The ceiling is the only gate: the same advert, one lovelace over the ceiling, is not hired, and nothing is posted.
-    const over = await setup({ lockLovelace: 60_000_000n, floatLovelace: 200_000_000n, llmAdvert: big });
-    const error = await thrown(hireModel(over.key, over.deps, request({ maxPriceLovelace: CEILING - 1n }), ERRORS));
+  it('does not let the price ceiling bound what a hire pays: an advert at the ceiling whose supplier bond is above the limit is not hired, with the advert, the bond and the limit in the message, and nothing is posted; at the limit, and with no limit, it is hired', async () => {
+    const advert = { ...LLM_ADVERT, supplier_bond_lovelace: 25_000_000n };
+    const over = await setup({ lockLovelace: 60_000_000n, floatLovelace: 200_000_000n, llmAdvert: advert });
+    const error = await thrown(hireModel(over.key, over.deps, request({ maxSupplierBondLovelace: 24_999_999n }), ERRORS));
+    expect(error.code).toBe('no_model');
+    for (const part of [LLM_ADVERT_REF, 'supplier bond', '25000000', '24999999']) expect(error.message).toContain(part);
+    expect([over.booked, over.m.llm.sends, over.key.stranded.list()]).toStrictEqual([[], [], []]);
+    for (const limit of [25_000_000n, null]) {
+      const run = await setup({ lockLovelace: 60_000_000n, floatLovelace: 200_000_000n, llmAdvert: advert });
+      const before = (await run.m.chain.wallet()).floatLovelace;
+      const hired = await hireModel(run.key, run.deps, request({ maxSupplierBondLovelace: limit }), ERRORS);
+      expect(hired.accepted, String(limit)).toBe('confirmed');
+      // What the record says an Accept pays is what the wallet lost, with the fees of the Post and of the Accept.
+      expect(hired.record.terms).toStrictEqual({
+        price_lovelace: '200000', supplier_bond_lovelace: '25000000', buyer_bond_lovelace: '1000000', locked_lovelace: '60000000', paid_to_supplier_at_accept_lovelace: '25200000',
+      });
+      expect(before - (await run.m.chain.wallet()).floatLovelace).toBe(25_200_000n + 2n * FakeChain.FEE_LOVELACE);
+    }
+  });
+
+  it('refuses an advert whose buyer bond is above its own limit, and hires it at the limit and with none', async () => {
+    const advert = { ...LLM_ADVERT, buyer_bond_lovelace: 25_000_000n };
+    const over = await setup({ lockLovelace: 60_000_000n, floatLovelace: 200_000_000n, llmAdvert: advert });
+    const error = await thrown(hireModel(over.key, over.deps, request({ maxBuyerBondLovelace: 24_999_999n }), ERRORS));
+    for (const part of [LLM_ADVERT_REF, 'buyer bond', '25000000', '24999999']) expect(error.message).toContain(part);
+    expect(over.booked).toStrictEqual([]);
+    for (const limit of [25_000_000n, null]) {
+      const run = await setup({ lockLovelace: 60_000_000n, floatLovelace: 200_000_000n, llmAdvert: advert });
+      expect((await hireModel(run.key, run.deps, request({ maxBuyerBondLovelace: limit }), ERRORS)).accepted).toBe('confirmed');
+    }
+  });
+
+  it('keeps the price ceiling as a gate of its own: one lovelace over it is not hired, and nothing is posted', async () => {
+    const run = await setup();
+    const error = await thrown(hireModel(run.key, run.deps, request({ maxPriceLovelace: CEILING - 1n }), ERRORS));
     expect(error.code).toBe('no_model');
     expect(error.message).toContain('LLM_MAX_PRICE_LOVELACE');
-    expect(over.booked).toStrictEqual([]);
+    expect(run.booked).toStrictEqual([]);
+  });
+
+  it('writes what the hire locks and what an Accept pays into its log: the terms line follows the line of the choice', async () => {
+    const run = await setup();
+    const lines: string[] = [];
+    await hireModel(run.key, { ...run.deps, log: (line) => { lines.push(line); } }, request(), ERRORS);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/^chosen chat supplier: advert /);
+    expect(lines[1]).toBe(`hire terms: advert ${LLM_ADVERT_REF}: price 200000 lovelace, supplier bond 1000000 lovelace, buyer bond 1000000 lovelace; locked at the Post ${FakeChain.LOCK_LOVELACE} lovelace; `
+      + 'paid to the supplier at an Accept 1200000 lovelace (the price and the supplier bond; the buyer bond returns)');
+  });
+
+  it('makes a caller write the two limits: a request without them does not type-check, and null is the way to say no limit', () => {
+    // @ts-expect-error: maxSupplierBondLovelace and maxBuyerBondLovelace are required, with no default
+    const incomplete: ModelRequest = { input: INPUT, allowlist: ALLOWLIST, maxPriceLovelace: CEILING, ceilingSetting: 'LLM_MAX_PRICE_LOVELACE' };
+    expect(incomplete.input).toBe(INPUT);
+    expect(request().maxSupplierBondLovelace).toBeNull();
   });
 
   it('throws unavailable, and posts nothing, when no model on the allowlist is listed; a model that is listed is hired', async () => {

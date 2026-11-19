@@ -5,8 +5,10 @@
 //     fails, and does not fall back to a model service that is not on the marketplace.
 //   - A hire that fails ends the job of the caller as a recorded failure: the call throws the error of the caller's factory once, and the escrow the hire left behind is in the
 //     stranded store of the key, for its janitor.
-//   - The lock of the hire has no cap. The only ceiling is the price: an advert priced above `maxPriceLovelace` is not hired, and the bonds and the lock that its Post takes are not
-//     looked at. A caller that wants to know whether its wallet covers a lock reads it with plannedLockOf, before it decides.
+//   - The price ceiling does not bound what a hire pays. The buyer funds the price and both bonds at the Post, an Accept pays the supplier the price and the supplier bond, and a Release
+//     pays it all three. So a request carries a limit for each bond, with no default. A number refuses an advert whose bond is above it, before the Post. `null` is no limit. The kit does
+//     not cap the lock of the Post: a caller that wants to know whether its wallet covers a lock reads it with plannedLockOf, before it decides.
+//   - Every hire writes its terms into its record and into its log: the price, both bonds, what the Post locks, and what an Accept pays the supplier.
 import type { FetchLike } from '@vsa/buyer-core';
 import type { Clocked } from './budget.ts';
 import { chatJob, hireOne } from './hire.ts';
@@ -24,8 +26,12 @@ export interface ModelRequest {
   label?: string;
   /** The chat models the caller hires, in order of preference. */
   allowlist: readonly string[];
-  /** The most the job may be priced at, in lovelace: the only ceiling of a model hire. */
+  /** The most the job may be priced at, in lovelace: an advert above it is not hired. */
   maxPriceLovelace: bigint;
+  /** The most the supplier bond of the advert may be, in lovelace. An Accept pays it to the supplier with the price. A number refuses a dearer advert before the Post; `null` is no limit; no default. */
+  maxSupplierBondLovelace: bigint | null;
+  /** The most the buyer bond of the advert may be, in lovelace. The buyer funds it at the Post, and it returns at an Accept. A number refuses a dearer advert; `null` is no limit; no default. */
+  maxBuyerBondLovelace: bigint | null;
   /** The setting a message names for the ceiling: 'LLM_MAX_PRICE_LOVELACE'. */
   ceilingSetting: string;
   /** To the choice of the supplier: absent, its own defaults (120 s and 6 candidates). */
@@ -59,9 +65,9 @@ export function hireModel<E extends Error>(key: PayingKey, deps: ModelDeps, requ
   return key.lane.run(async () => {
     const supplier = await chooseChatSupplier(key.chain, {
       fetchImpl: deps.fetchImpl, indexerUrl: deps.indexerUrl, allowlist: request.allowlist, maxPriceLovelace: request.maxPriceLovelace, ceilingSetting: request.ceilingSetting,
-      budgetMs: request.budgetMs, maxCandidates: request.maxCandidates, log: deps.log,
+      maxSupplierBondLovelace: request.maxSupplierBondLovelace, maxBuyerBondLovelace: request.maxBuyerBondLovelace, budgetMs: request.budgetMs, maxCandidates: request.maxCandidates, log: deps.log,
     }, (why) => errors.unavailable(why));
     const job = chatJob(supplier.endpoint, request.input, request.label ?? 'the model call', deps.fetchImpl);
-    return hireOne(key.hireDeps(deps, deps.log), supplier, job, deps.ledger, errors, deps.options);
+    return hireOne(key.hireDeps(deps, deps.log), supplier, job, deps.ledger, errors, { ...deps.options, terms: true });
   });
 }
