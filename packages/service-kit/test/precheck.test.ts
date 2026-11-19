@@ -335,6 +335,16 @@ describe('POST /precheck: the slot', () => {
     });
   });
 
+  test('the 120 seconds start when the option has answered, not when the call arrived', async () => {
+    const slot = new JobSlot();
+    let now = T;
+    await serve(echoOptions({ slot, clock: () => now, precheck: async () => { now += 30_000; return GO; } }), async (base) => {
+      expect((await precheck(base)).status).toBe(200);
+      expect(slot.reservedFor(T + 30_000 + RESERVATION_MS - 1), 'held until 120 seconds after the answer').toBe(ESCROW_X);
+      expect(slot.reservedFor(T + 30_000 + RESERVATION_MS), 'and not longer').toBeUndefined();
+    });
+  });
+
   test('a service that is stopping answers 503 shutting_down, asks no option and reserves nothing; a slot that starts draining while the option is asked gives 503 too', async () => {
     const slot = new JobSlot();
     const logs: string[] = [];
