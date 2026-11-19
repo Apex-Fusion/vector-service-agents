@@ -21,12 +21,12 @@ The fleet is not published to a registry either. The Pipeline commits to the req
 | `src/vendored/mcp/marketplace-constants.ts` | `mcp-server:packages/builder/src/vector/marketplace-constants.ts` | `94bd293` | `ca64b38f98e7df4f204fc12e47bff88dadd2673a4c1778b78622a32854de1a8f` |
 | `src/vendored/mcp/marketplace-shared.ts` | `mcp-server:packages/builder/src/vector/marketplace-shared.ts` | `94bd293` | `440e6cacfa3203e78e383897259f202b7f7efd027ad893d12ac661348a0f0d6a` |
 | `src/vendored/mcp/marketplace-indexer.ts` | `mcp-server:packages/builder/src/vector/marketplace-indexer.ts` | `2d95483` | `ea1019d5a21f82a7e6d7d5d2ad9082e0c8ef3f1ec118e638e44dbd3a43de75ec` |
-| `src/vendored/mcp/marketplace-lineage.ts` | `mcp-server:packages/builder/src/vector/marketplace-lineage.ts` | `94bd293` | `50bfb6d0bd15b0f370d5cf28df2071ee09f25ac201d6fdb6b52e8362ff481ab8` |
+| `src/vendored/mcp/marketplace-lineage.ts` | `mcp-server:packages/builder/src/vector/marketplace-lineage.ts` | `2d95483` | `418be0f614b0d584c66752899dea6394a965a3ab3e46001eeed3c4bdcc00240b` |
 | `src/vendored/mcp/marketplace-build.ts` | `mcp-server:packages/builder/src/vector/marketplace-build.ts` | `94bd293` | `4b89267c260b7e5c512e5de90a9ad01631b189cf66c6f076de3a4282614c913d` |
 | `src/vendored/mcp/marketplace-verify.ts` | `mcp-server:packages/builder/src/vector/marketplace-verify.ts` | `94bd293` | `1ab38e9be9f6690f1ef64c82961c21556135650b6703938b1a63290fc9c92792` |
 | `src/vendored/mcp/marketplace-transport.ts` | `mcp-server:packages/builder/src/vector/marketplace-transport.ts` | `94bd293` | `4fdce708d65b3d5977de4c52dfd183e07dff169348deeac9de80eeea336943bb` |
 | `src/vendored/mcp/marketplace-supplier.ts` | `mcp-server:packages/builder/src/vector/marketplace-supplier.ts` | `94bd293` | `2143daa71df94833f9c36ff84927f391374be5d2c38f18c8c102184aaa3e7746` |
-| `src/vendored/mcp/gov-build.ts` | `mcp-server:packages/builder/src/vector/gov-build.ts` | `94bd293` | `f0697457856e46254396890c5bc60a12e78b3e9208ebc03b1fe5c6e385e034ad` |
+| `src/vendored/mcp/gov-build.ts` | `mcp-server:packages/builder/src/vector/gov-build.ts` | `2d95483` | `3a242c62cf365ec9f3fff61ae2cc017e3114bca4b0cc3c695124be62815e7843` |
 | `src/vendored/mcp/build.ts` | `mcp-server:packages/builder/src/vector/build.ts` excerpt, lines 1-48 | `94bd293` | `73cdbd0d5a6c35c54b89452d0d4b1b2e062d898acbfc0443e993f3b2fd281a5e` |
 | `src/vendored/mcp/rate-limiter.ts` | `mcp-server:packages/builder/src/vector/rate-limiter.ts` | `94bd293` | `4290366f2f28b2ea3229a1c1bd4c69b068453a1d7b8d7f168a801964e61e3e7b` |
 | `src/vendored/mcp/env.ts` | `mcp-server:packages/builder/src/env.ts` | `94bd293` | `061feb39a1466bf6b984da8f2e17ca53acfc9deef9b404f6815663c94b9db67c` |
@@ -49,7 +49,7 @@ The fleet is not published to a registry either. The Pipeline commits to the req
 | `test/fixtures/identity-world.ts` | `mcp-server:packages/builder/test/fixtures/identity-world.ts` | `94bd293` | `103400dab7ce0ff0d8c3fa2eb076680e660918d5acd8d7ef7198c173d6bfbd02` |
 | `test/fixtures/escrow-identity.fixture.ts` | `mcp-server:packages/builder/test/fixtures/escrow-identity.fixture.ts` | `94bd293` | `ac74eebd5192d2f19eafb97a962f8066a470dcee025e7fb4d4e6ceebb1bababc` |
 
-Byte-identical to the blob (no edit at all): `marketplace-shared.ts`, `gov-build.ts`, `env.ts`, `identity-scripts.generated.ts`, `legacy-registry.ts`, `types.ts`, `marketplace.fixture.ts`, `fixture-provider.ts`, `protocol-params.fixture.json`. The excerpts `tx.ts` and `fleet/types.ts` are byte-identical to their line ranges. Every other copy differs from its blob only on the lines listed below (`fleet/responses.ts`: line 1). The three copies at `2d95483` (`identity-deployment.ts`, `provider.ts` and `sign.ts`) differ from their blobs by one import line each.
+Byte-identical to the blob (no edit at all): `marketplace-shared.ts`, `env.ts`, `identity-scripts.generated.ts`, `legacy-registry.ts`, `types.ts`, `marketplace.fixture.ts`, `fixture-provider.ts`, `protocol-params.fixture.json`. The excerpts `tx.ts` and `fleet/types.ts` are byte-identical to their line ranges. Every other copy differs from its blob only on the lines listed below (`fleet/responses.ts`: line 1). The copies at `2d95483` differ from their blobs on import lines only: `identity-deployment.ts`, `provider.ts`, `sign.ts` and `gov-build.ts` by one line each, `marketplace-lineage.ts` by three and `marketplace-indexer.ts` by four.
 
 Eight copies are the same files as at `651ae93`, with the same sha256: `build.ts`, `rate-limiter.ts`, `env.ts`, `config.ts` and the four fixtures `escrow-koios.fixture.ts`, `marketplace.fixture.ts`, `fixture-provider.ts` and `protocol-params.fixture.json`. Their sources did not change between `651ae93` and `94bd293`. `provider.ts` was the same file as at `651ae93` until `f456194`.
 
@@ -96,9 +96,13 @@ Per file (the line numbers are the same in the source and the copy):
 - line 7: `import { decodeAdvertDatum, decodeIdentityAdvertDatum, formatOutRef, parseOutRef } from './marketplace-datum.js';` becomes `import { decodeAdvertDatum, decodeIdentityAdvertDatum, formatOutRef, parseOutRef } from '@vsa/vector-read';`
 - line 8: `import type { AdvertDatum, IdentityAdvertDatum } from './marketplace-datum.js';` becomes `import type { AdvertDatum, IdentityAdvertDatum } from '@vsa/vector-read';`
 
-`src/vendored/mcp/marketplace-lineage.ts`
+`src/vendored/mcp/marketplace-lineage.ts` (at `2d95483`)
+- line 10: `import { addressDetails } from './guarded-decode.js';` becomes `import { addressDetails } from '@vsa/vector-read/guarded-decode';`
 - line 13: `import { decodeEscrowDatum, decodeIdentityEscrowDatum, encodeEscrowDatum, encodeIdentityEscrowDatum, parseOutRef, formatOutRef } from './marketplace-datum.js';` becomes `import { decodeEscrowDatum, decodeIdentityEscrowDatum, encodeEscrowDatum, encodeIdentityEscrowDatum, parseOutRef, formatOutRef } from '@vsa/vector-read';`
 - line 14: `import type { EscrowDatum, EscrowState, IdentityEscrowDatum, Refund } from './marketplace-datum.js';` becomes `import type { EscrowDatum, EscrowState, IdentityEscrowDatum, Refund } from '@vsa/vector-read';`
+
+`src/vendored/mcp/gov-build.ts` (at `2d95483`)
+- line 6: `import { addressDetails } from './guarded-decode.js';` becomes `import { addressDetails } from '@vsa/vector-read/guarded-decode';`
 
 `src/vendored/mcp/marketplace-build.ts`
 - line 13: `import { VECTOR_KOIOS_URL } from '@apexfusion/vector-mcp-shared/config';` becomes `import { VECTOR_KOIOS_URL } from '../mcp-shared/config.js';`
@@ -263,12 +267,14 @@ Moved to `2d95483`:
 - `src/vendored/mcp/identity-deployment.ts`. `findConfigRecord` reads the datum of the configuration record through `decodePlutusData`. This is the only change of the source file since `94bd293`.
 - `src/vendored/signer/sign.ts`. `signTransaction` checks the bytes of the transaction before CML reads them. This is the only change of the source file since `94bd293`.
 - `src/vendored/mcp/marketplace-indexer.ts`. A Koios row whose inline datum fails the check keeps its other fields and loses its datum, so that the readers of a row see a row without a datum, as they see a datum that does not decode. The source file also adds the page reads of `credential_utxos` and exports `koiosPostList`, which the read code of the ledger copies uses.
+- `src/vendored/mcp/marketplace-lineage.ts`. The source reads the payment credential of the address of an output through `addressDetails`, in place of Lucid's `getAddressDetails` (the change is in `07777dd`, before `2d95483`). The outputs of a lineage come from the chain, and the address of a hostile output can be a Byron address, which is CBOR.
+- `src/vendored/mcp/gov-build.ts`. `paymentKeyHashOf` reads an address through `addressDetails` (also `07777dd`).
 
 Left at `94bd293`, with the reason:
 
 - `src/vendored/mcp/marketplace-build.ts`. At `2d95483` the source reads the Post transaction that it built through `decodeTransaction`. No chain data reaches that read: the transaction is the output of the builder of this process. The source file also changes in other ways since `94bd293`: the escrow switch, the payment of a vault and the classes of the refusals of the escrow planner. Those belong to a re-vendor of the whole set, not to this check.
 - `src/vendored/mcp/build.ts`. The excerpt (lines 1-48) holds `lucidForAddress` and `toBuildResult`. The changes of the source at `2d95483` are in the builders that the excerpt leaves out: the datum, the redeemer and the script that a caller gives, and the fee of a transaction that a caller gives.
-- Every other copy: its source does not change at `2d95483`.
+- Every other copy: its source has no change of the check since `94bd293`.
 
 Code of this package that decodes by itself: `src/chain.ts` reads the time to live of the unsigned transaction, and `src/fees.ts` reads the fee of the signed transaction. The builder and the signer of this process made both transactions, so no chain data reaches those reads.
 
@@ -296,7 +302,7 @@ From the repository root, with `<mcp-server>` a checkout that has `94bd293` and 
 
 ```bash
 # The whole files.
-for f in marketplace-constants marketplace-shared marketplace-lineage marketplace-build marketplace-verify marketplace-transport marketplace-supplier gov-build rate-limiter identity-chain identity-rules identity-scripts.generated legacy-registry; do git -C <mcp-server> cat-file blob 94bd293:packages/builder/src/vector/$f.ts | diff - packages/buyer-core/src/vendored/mcp/$f.ts; done
+for f in marketplace-constants marketplace-shared marketplace-build marketplace-verify marketplace-transport marketplace-supplier rate-limiter identity-chain identity-rules identity-scripts.generated legacy-registry; do git -C <mcp-server> cat-file blob 94bd293:packages/builder/src/vector/$f.ts | diff - packages/buyer-core/src/vendored/mcp/$f.ts; done
 git -C <mcp-server> cat-file blob 94bd293:packages/builder/src/env.ts | diff - packages/buyer-core/src/vendored/mcp/env.ts
 for f in config types; do git -C <mcp-server> cat-file blob 94bd293:packages/shared/src/$f.ts | diff - packages/buyer-core/src/vendored/mcp-shared/$f.ts; done
 # The copies at 2d95483: each diff prints the rewritten import lines, and no other line.
@@ -304,6 +310,7 @@ git -C <mcp-server> cat-file blob 2d95483:packages/builder/src/vector/identity-d
 git -C <mcp-server> cat-file blob 2d95483:packages/shared/src/provider.ts | diff - packages/buyer-core/src/vendored/mcp-shared/provider.ts
 git -C <mcp-server> cat-file blob 2d95483:packages/signer/src/sign.ts | diff - packages/buyer-core/src/vendored/signer/sign.ts
 git -C <mcp-server> cat-file blob 2d95483:packages/builder/src/vector/marketplace-indexer.ts | diff - packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts
+for f in marketplace-lineage gov-build; do git -C <mcp-server> cat-file blob 2d95483:packages/builder/src/vector/$f.ts | diff - packages/buyer-core/src/vendored/mcp/$f.ts; done
 for f in escrow-koios.fixture.ts marketplace.fixture.ts fixture-provider.ts protocol-params.fixture.json identity-world.ts escrow-identity.fixture.ts; do git -C <mcp-server> cat-file blob 94bd293:packages/builder/test/fixtures/$f | diff - packages/buyer-core/test/fixtures/$f; done
 # The excerpts.
 git -C <mcp-server> cat-file blob 94bd293:packages/shared/src/tx.ts | sed -n '1,3p;46,54p;66,103p' | cmp - packages/buyer-core/src/vendored/mcp-shared/tx.ts
