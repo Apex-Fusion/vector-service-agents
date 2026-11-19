@@ -27,8 +27,18 @@ import { canonicalRef, errorText } from './format.ts';
 import type { HireSupplier } from './hire.ts';
 import type { StrandedKind } from './janitor.ts';
 
+/**
+ * The most that the bonds of an advert may be, in lovelace. The buyer funds the price and both bonds at the Post, an Accept pays the supplier the price and the supplier bond, and
+ * a Release pays the supplier all three: the price ceiling does not bound what a hire pays, and these do. A number refuses an advert whose bond is above it. `null` says that the
+ * caller sets no limit. A field that is absent is no limit either: a path that existed before the limits has none until its owner sets one.
+ */
+export interface BondLimits {
+  maxSupplierBondLovelace?: bigint | null;
+  maxBuyerBondLovelace?: bigint | null;
+}
+
 /** What the choice of a chat supplier is asked with. */
-export interface ChatQuery {
+export interface ChatQuery extends BondLimits {
   fetchImpl: FetchLike;
   /** The marketplace indexer; the configured one when absent. */
   indexerUrl?: string;
@@ -70,12 +80,26 @@ const hostOf = (endpoint: string): string => { try { return new URL(endpoint).ho
 export function choiceLine(supplier: HireSupplier<StrandedKind>): string {
   const model = supplier.hop === 'ocr' ? '' : `, model ${flatText(supplier.model, 100)}`;
   const who = supplier.hop === 'ocr' ? 'OCR' : supplier.hop === 'llm' ? 'chat' : 'agent';
-  return `chosen ${who} supplier: advert ${supplier.advertRef}${model}, price ${supplier.advert.price_lovelace} lovelace, endpoint host ${hostOf(supplier.endpoint)}`;
+  // The agent's line also says its bonds: no pinned line of the older paths holds them, and a hire of an agent is the new path that says what it pays.
+  const bonds = supplier.hop === 'agent' ? `, supplier bond ${supplier.advert.supplier_bond_lovelace} lovelace, buyer bond ${supplier.advert.buyer_bond_lovelace} lovelace` : '';
+  return `chosen ${who} supplier: advert ${supplier.advertRef}${model}, price ${supplier.advert.price_lovelace} lovelace${bonds}, endpoint host ${hostOf(supplier.endpoint)}`;
 }
 
 /** What an advert above its ceiling is said to be: its price, the ceiling, and the setting that holds it. */
 export const aboveCeiling = (advertRef: string, price: bigint, ceiling: bigint, setting: string): string =>
   `its advert ${advertRef} is priced ${price} lovelace, above the ceiling of ${ceiling} lovelace (${setting})`;
+
+/** Why an advert is held back by the limits of its bonds: its bond, the limit and what the bond is for; null when no limit is passed. */
+export function bondProblem(advertRef: string, advert: AdvertDatum, limits: BondLimits): string | null {
+  const { maxSupplierBondLovelace: supplier, maxBuyerBondLovelace: buyer } = limits;
+  if (typeof supplier === 'bigint' && advert.supplier_bond_lovelace > supplier) {
+    return `its advert ${advertRef} has a supplier bond of ${advert.supplier_bond_lovelace} lovelace, above the limit of ${supplier} lovelace: an Accept pays the supplier bond to the supplier with the price`;
+  }
+  if (typeof buyer === 'bigint' && advert.buyer_bond_lovelace > buyer) {
+    return `its advert ${advertRef} has a buyer bond of ${advert.buyer_bond_lovelace} lovelace, above the limit of ${buyer} lovelace`;
+  }
+  return null;
+}
 
 /** The chat supplier: the selection's choice at a price at or under the ceiling, its advert checked on chain against it. The caller's `unavailable` otherwise. */
 export async function chooseChatSupplier<E extends Error>(chain: Chain, query: ChatQuery, unavailable: (why: string) => E): Promise<HireSupplier> {
@@ -98,6 +122,8 @@ export async function chooseChatSupplier<E extends Error>(chain: Chain, query: C
     throw unavailable(`the advert ${advertRef} the selection chose is not, on chain, an active ${LLM_CAPABILITY} advert of the supplier the indexer names with a model on the allowlist`);
   }
   if (advert.price_lovelace > ceiling) throw unavailable(`on chain, ${aboveCeiling(advertRef, advert.price_lovelace, ceiling, query.ceilingSetting)}`);
+  const heavy = bondProblem(advertRef, advert, query);
+  if (heavy !== null) throw unavailable(`on chain, ${heavy}`);
   if (withoutSlash(advert.endpoint_url) !== withoutSlash(chosen.endpoint)) throw unavailable(`the advert ${advertRef} names another endpoint on chain than the one the selection asked`);
   if (!keyOfAdvert(chosen.capability, advert)) throw unavailable(`the key the supplier of ${advertRef} serves is not the key of its advert, so no receipt of it could verify`);
   const supplier: HireSupplier = { hop: 'llm', advertRef, advert, capabilityId: advert.capability_id, model: advert.model, endpoint: advert.endpoint_url, pubKeyHex: chosen.capability.pub_key_hex, windowMs: advert.max_processing_ms };
