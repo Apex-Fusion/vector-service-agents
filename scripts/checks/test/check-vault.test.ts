@@ -13,7 +13,7 @@ import { SettingsError } from '../lib/settings.ts';
 import { StateFile } from '../lib/state.ts';
 import type { Harness } from './support/harness.ts';
 import { harness } from './support/harness.ts';
-import { DEPLOYMENT, RECORD_DID } from './support/world.ts';
+import { AGENT_N, DEPLOYMENT, MEMBER_N, RECORD_DID, World, keyOf } from './support/world.ts';
 import { addReturned, liveVaultOf, vaultHostedFor } from './support/vault-world.ts';
 
 const ADVERT = `${'ab'.repeat(32)}#0`;
@@ -263,5 +263,21 @@ describe('a hire that stops after a Pay', () => {
     port.failure = null;
     expect(await h.run(check, '--submit')).toBe(0);
     expect(port.calls).toEqual(['hire', 'hire']);
+  });
+});
+
+describe('the status of a check', () => {
+  it('says when the wallet of a key has no pure output of 5 units for collateral, and how to make one; a wallet that has one gets no warning', async () => {
+    const bare = await World.identity({ wallets: [{ n: MEMBER_N, lovelace: [3_000_000n, 2_000_000n] }, { n: AGENT_N, lovelace: [200_000_000n, 5_000_000n] }] });
+    const without = await harness({ world: bare, env: { CHECKS_ADVERT_REF: ADVERT } });
+    expect(await without.run(vaultCheck('escrow', () => new FakePort(() => without)), 'status')).toBe(0);
+    const member = keyOf(MEMBER_N);
+    expect(without.screen.text).toContain(`wallet of the member key ${member.keyHash}`);
+    expect(without.screen.text).toContain(`NONE: a script step of this wallet needs one`);
+    expect(without.screen.text).toContain(`send 5.5 units to ${member.address}`);
+    expect(without.screen.text.split('\n').filter((line) => line.includes('NONE'))).toHaveLength(1);
+    const stocked = await harness({ env: { CHECKS_ADVERT_REF: ADVERT } });
+    expect(await stocked.run(vaultCheck('escrow', () => new FakePort(() => stocked)), 'status')).toBe(0);
+    expect(stocked.screen.text).not.toContain('NONE');
   });
 });

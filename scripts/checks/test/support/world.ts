@@ -9,6 +9,7 @@ import type { KeyRole } from '../../lib/keys.ts';
 import { CONFIG_UTXO, DEPLOYMENT, NOW, REF_UTXOS, recordUtxo, rootRecord } from '../../../../packages/buyer-core/test/fixtures/identity-world.ts';
 import { ADVERT_REF, AGENT_ID, IDENTITY_ADVERT, advertUtxo, agentRecord } from '../../../../packages/buyer-core/test/fixtures/escrow-identity.fixture.ts';
 import { ChainView, hashOfTransaction } from './chain-view.ts';
+import type { IdentityDatum } from '../../../../packages/vector-read/src/identity-codec.ts';
 
 export { DEPLOYMENT, NOW, ADVERT_REF, AGENT_ID, IDENTITY_ADVERT };
 export const DAY = 86_400_000;
@@ -66,9 +67,9 @@ export class World {
    * The registry of the fixtures with a test record: the controller key (the controller of the record), the delegate key (listed in the record with the authentication and the
    * delegation purposes), a funded member, and the advert of an agent that the identity marketplace lists.
    */
-  static async identity(over: { wallets?: readonly WalletSpec[]; extra?: readonly Utxo[]; advert?: IdentityAdvertDatum } = {}): Promise<World> {
+  static async identity(over: { wallets?: readonly WalletSpec[]; extra?: readonly Utxo[]; advert?: IdentityAdvertDatum; record?: Partial<IdentityDatum> } = {}): Promise<World> {
     const agent = keyOf(AGENT_N);
-    const record = recordUtxo(RECORD_ID, rootRecord({ keys: [{ keyType: 'Ed25519', key: agent.publicKeyHex, purposes: 1 + 8 + 16, pop: null }], capabilities: [] }));
+    const record = recordUtxo(RECORD_ID, rootRecord({ keys: [{ keyType: 'Ed25519', key: agent.publicKeyHex, purposes: 1 + 8 + 16, pop: null }], capabilities: [], ...over.record }));
     const wallets = over.wallets ?? [{ n: MEMBER_N }, { n: AGENT_N, lovelace: [200_000_000n, 5_000_000n] }];
     const utxos = [...wallets.flatMap((w) => walletOutputs(w.n, w.lovelace ?? [1_000_000_000n, 5_000_000n])), ...REF_UTXOS, CONFIG_UTXO, record, agentRecord(), advertUtxo(over.advert), ...(over.extra ?? [])];
     return new World(new ChainView(utxos, NOW));

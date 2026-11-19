@@ -1,4 +1,4 @@
-// The checks reach the packages through lib/platform.ts only. This test loads it, so that a package that moves a file or drops a name is found here.
+// The checks reach the packages through lib/platform.ts, and the hire kit through lib/hire-adapter.ts. This test loads platform, so that a package that moves a file or drops a name is found here.
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,9 +21,11 @@ describe('platform', () => {
     expect(platform.ATT_TYPES.principal_binding).toBe(4);
   });
 
-  it('is the only file of lib that names a package by its path', () => {
+  it('is, with hire-adapter.ts, the only place in lib that names a package by its path: the hire kit is used in that one file', () => {
     const others = readdirSync(LIB).filter((file) => file.endsWith('.ts') && file !== 'platform.ts');
     const reaching = others.filter((file) => /['"][./]*\/?packages\/[^'"]*['"]/.test(readFileSync(join(LIB, file), 'utf8')));
-    expect(reaching).toEqual([]);
+    expect(reaching).toEqual(['hire-adapter.ts']);
+    const kit = others.filter((file) => /packages\/hire-kit\//.test(readFileSync(join(LIB, file), 'utf8')));
+    expect(kit).toEqual(['hire-adapter.ts']);
   });
 });

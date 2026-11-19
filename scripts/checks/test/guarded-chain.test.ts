@@ -7,18 +7,18 @@ import { encodeVaultDatum, plutusAddressFromBech32 } from '../../../packages/vec
 import { GuardedChain } from '../lib/guarded-chain.ts';
 import type { PartNames, SpendResult, VaultLimits } from '../lib/guarded-chain.ts';
 import { DryStop } from '../lib/hire-types.ts';
+import { KeyRing } from '../lib/keys.ts';
 import { GuardRefusal } from '../lib/land.ts';
 import { TxNotConfirmedError, decodeVaultDatum } from '../lib/platform.ts';
 import type { VaultPayResult } from '../lib/platform.ts';
-import type { CheckDefinition } from '../lib/runner.ts';
-import type { Session } from '../lib/session.ts';
 import {
   ADVERT_REF, AGENT_ID, CHAIN_TXS, CLAIM_TX, DELEGATE_KEY, ESCROW_LOCK, ESCROW_REF, OWN_PKH, PAYLOAD, POST_TX, SUBMIT_TX, advertUtxo, chainFake, delegateRecord, delegationUtxo, escrowUtxo, identityEscrow,
   liveVault, submitted as submittedAt, supplierEnterprise, vaultUtxo,
 } from '../../../packages/buyer-core/test/fixtures/escrow-identity.fixture.ts';
 import { harness } from './support/harness.ts';
 import type { Harness } from './support/harness.ts';
-import { DEPLOYMENT, NOW, World } from './support/world.ts';
+import { probed } from './support/probe.ts';
+import { CONTROLLER_N, DEPLOYMENT, MEMBER_N, NOW, World, keyOf } from './support/world.ts';
 
 afterEach(() => { vi.useRealTimers(); });
 
@@ -37,16 +37,6 @@ async function worldWith(escrows: Parameters<typeof World.identity>[0] = {}) {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
   return World.identity({ extra: [vaultUtxo(liveVault(), 100_000_000n), delegationUtxo(), delegateRecord(), ...(escrows.extra ?? [])] });
-}
-
-/** Runs `body` inside a probe check of the real runner, with --submit unless `dry`, and gives the harness. */
-async function probed(h: Harness, body: (session: Session<null>) => Promise<void>, options: { dry?: boolean } = {}): Promise<number> {
-  const check: CheckDefinition<null> = {
-    name: 'probe', title: 'a probe of the guarded chain', needs: { keys: ['controller', 'agent', 'member'], chain: true, hosted: [] }, steps: ['probe'], parse: () => null,
-    next: async (session) => { await body(session); return { kind: 'done', message: 'probe done' }; },
-    cleanup: async () => ({ kind: 'done', message: '' }),
-  };
-  return options.dry === true ? h.run(check) : h.run(check, '--submit');
 }
 
 const pay = (chain: GuardedChain, over: Partial<{ vaultRef: string }> = {}) => chain.payFromVault({ vaultRef: VAULT_REF, advertRef: ADVERT_REF, payload: PAYLOAD, ...over });
@@ -191,5 +181,18 @@ describe('what the guarded chain reads', () => {
     expect(seen!.state).toBe('Open');
     expect(seen!.wallet).toMatchObject({ buyerPkh: DELEGATE_KEY.keyHash, collateralLovelace: 5_000_000n });
     expect(String(seen!.post)).toContain('pays from a vault only');
+  }, 60_000);
+});
+
+describe('the key of the chain', () => {
+  it('refuses a Pay that needs the signature of the delegate key when the chain signs with another key, and signs nothing', async () => {
+    const h = await harness({ world: await worldWith(), chainFetch: noFetch });
+    let refused: unknown;
+    expect(await probed(h, async (session) => {
+      const other = new KeyRing([keyOf(CONTROLLER_N), keyOf(MEMBER_N, 'agent'), keyOf(7, 'member')]);
+      try { await pay(new GuardedChain({ ...session, ring: other }, { parts: PARTS, limits: LIMITS })); } catch (err) { refused = err; }
+    })).toBe(0);
+    expect(String(refused)).toContain(`needs the signature of ${DELEGATE_KEY.keyHash}`);
+    expect(h.node.submitted).toEqual([]);
   }, 60_000);
 });

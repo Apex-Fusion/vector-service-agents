@@ -11,6 +11,7 @@ import type { Marketplace } from '../../../packages/hire-kit/testing/index.ts';
 import { createHirePort } from '../lib/hire-adapter.ts';
 import { DryStop, HireFailed } from '../lib/hire-types.ts';
 import type { HireLimits, HirePort, VaultHireRequest } from '../lib/hire-types.ts';
+import { TxNotConfirmedError } from '../lib/platform.ts';
 import type { VaultChain } from '../lib/platform.ts';
 import { MemoryOutput } from './support/fakes.ts';
 
@@ -93,6 +94,21 @@ describe('hire', () => {
     const error = await failure(s.port.hire(hireRequest(s)));
     expect(error.kind).toBe('not_accepted');
     expect(error.after).not.toBeNull();
+  });
+
+  it('does not call a hire complete while its Accept is not seen confirmed: it is a failure that holds the escrow and the vault, and the message says to run the step again', async () => {
+    const s = setup({
+      chain: (m) => vaultChainWith(m, {
+        accept: async (ref) => {
+          const done = await m.chain.accept(ref);
+          throw new TxNotConfirmedError('the Accept was sent and not seen confirmed', { txHash: done.txHash, escrowRef: ref, deliverBy: null, validTo: m.clock.now + 60_000, mayLand: true });
+        },
+      }),
+    });
+    const error = await failure(s.port.hire(hireRequest(s)));
+    expect(error.kind).toBe('other');
+    expect(error.message).toContain('not yet seen confirmed');
+    expect(error.after).toMatchObject({ escrowRef: expect.stringMatching(/#0$/), vaultRef: expect.stringMatching(/#/) });
   });
 
   it('says vault_refused for a Pay above the limit of the delegation, keeps the words of the node and the draft in the evidence, and holds no Pay; the twin with a higher limit completes', async () => {
