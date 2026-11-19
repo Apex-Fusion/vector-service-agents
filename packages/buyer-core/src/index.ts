@@ -31,13 +31,23 @@ export type {
   ValidatorError, VaultCloseBuild, VaultOpenBuild, VaultOpenParams, VaultOwnerInput, VaultPayAttempt, VaultPayBuild, VaultPayImpossibleReason, VaultPayParams,
 } from './vendored/mcp/vault-build.ts';
 export {
-  HIRE_ACTION, buildDelegate, buildUndelegate, delegationProblems, delegationUseProblems, escrowResource, liveDelegations, narrowingProblems, patternsCover, patternsOf,
+  HIRE_ACTION, buildDelegate, buildUndelegate, delegationProblems, delegationUseProblems, escrowResource, liveDelegations, narrowingProblems, patternsCover, patternsOf, validActionPattern,
+  validResourcePattern,
 } from './vendored/mcp/delegation-build.ts';
 export type { DelegateBuild, DelegateParams, DelegatorInput, UndelegateBuild, UndelegateParams } from './vendored/mcp/delegation-build.ts';
 export type { BuildCommon, IdentityContext } from './vendored/mcp/identity-build.ts';
 export { ESCROW_REF_UTXO, ACCEPT_WINDOW_MS, DELIVER_BY_BUFFER_MS, MARKETPLACE_MIN_FEE, MAX_ESCROW_LOVELACE } from './vendored/mcp/marketplace-constants.ts';
 export { VECTOR_KOIOS_URL, VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL } from './vendored/mcp-shared/config.ts';
-export type { IdentityDeployment } from './vendored/mcp/identity-deployment.ts';
+// What the operator scripts of the repo build and read with, so that they import it from the entry: the deployment that the environment describes (or that its parts make), the record
+// of an identity and the rules of its status and purposes, the attestation builders, and the vault builders above.
+export { identityDeploymentFrom, makeIdentityDeployment } from './vendored/mcp/identity-deployment.ts';
+export type { DeployedScript, IdentityDeployment, OutRef, RefName } from './vendored/mcp/identity-deployment.ts';
+export { findRecord } from './vendored/mcp/identity-chain.ts';
+export type { RecordUtxo, SignedByBuild } from './vendored/mcp/identity-chain.ts';
+export { PURPOSE, effectiveStatus } from './vendored/mcp/identity-rules.ts';
+export type { Effective, PurposeName } from './vendored/mcp/identity-rules.ts';
+export { ATT_TYPES, buildAttest, buildWithdrawAttestation } from './vendored/mcp/attestation-build.ts';
+export type { AttestBuild, AttestParams, AttTypeName, IssuerSigner, WithdrawBuild } from './vendored/mcp/attestation-build.ts';
 export { buyerIdentityDeployment, buyerVaultDeployment, BUYER_IDENTITY_SETTINGS, VAULT_PAYER_IDENTITY_SETTINGS } from './deployment.ts';
 export { ocrPromptHash, ocrResponseHash, responsesPromptHash, responsesResponseHash, responsesOutputText, requestSpecHash } from './commitments.ts';
 export { planFleetPostEscrow, buildFleetPostEscrow, fleetPostTerms, isIdentityAdvert } from './fleet-build.ts';
@@ -70,7 +80,7 @@ export { DOCUMENT_LABEL, CHUNK_MAX_BYTES, DOCUMENT_TYPES, DEFAULT_MEDIA_TYPE, MA
 export type { FetchedDocument, DocumentReadOpts } from './vendored/mcp/jury-document.ts';
 export { MODULE1_MANIFEST_ENV, MODULE1_NOT_CONFIGURED, JuryConfigError, readManifest, module1FromManifest } from './vendored/mcp/jury-deployment.ts';
 export type { Module1Deployment } from './vendored/mcp/jury-deployment.ts';
-export { decodeClaimDatum, decodeChallengeDatum } from './vendored/mcp/jury-codec.ts';
+export { blake2b256Hex, decodeClaimDatum, decodeChallengeDatum } from './vendored/mcp/jury-codec.ts';
 export type { ClaimDatum, ChallengeDatum, ClaimState, ChallengeState } from './vendored/mcp/jury-codec.ts';
 export { verifyFleetReceipt } from './fleet-verify.ts';
 export { flatText, isRecord } from './guards.ts';
