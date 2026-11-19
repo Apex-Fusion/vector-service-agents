@@ -17,3 +17,9 @@ export function replayFetch(store: FixtureStore): Fetch {
     return new Response(hit.body, { status: hit.status, headers: { 'content-type': 'application/json' } });
   }) as Fetch;
 }
+/** Replays the calls that the store holds. Records from `real` the calls that it lacks. It never makes a recorded call again. */
+export function extendingFetch(real: Fetch, store: FixtureStore): Fetch {
+  const replay = replayFetch(store);
+  const record = recordingFetch(real, store);
+  return async (url: Parameters<Fetch>[0], init?: RequestInit) => (Object.hasOwn(store, keyOf(String(url), init)) ? replay(url, init) : record(url, init));
+}
