@@ -4714,3 +4714,1024 @@ test('CI: the publish job also pushes the Advocate image under :latest and :<sha
   assert.ok(ci.jobs.build.steps.some((s) => s.uses === 'docker/build-push-action@v6' && s.with.file === 'agents/advocate/Dockerfile' && s.with.push === false));
   assert.equal(JSON.stringify(ci.jobs.test).includes('advocate'), false, 'the tests of Advocate run in pnpm test, as they are');
 });
+
+// ======================================================================================================================================
+// The agents host (deploy/server): one set-up script, one main Caddyfile, and the two host names of the mock systems.
+// These tests parse the files, run the script in a sandbox against stand-ins for the programs of the system (no root and no network), and run
+// the commands of the runbook that a test can run. Each guard has an accepted twin and refused copies. The local proof with the real Caddy is
+// deploy/server/prove-mock-mtls.mjs. It needs Docker, so it runs by hand.
+// ======================================================================================================================================
+const SRV = 'deploy/server';
+const srvRead = (name) => read(`${SRV}/${name}`);
+// Escape a text for a RegExp.
+const srvEscape = (text) => text.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+// Replace every copy of a part. Stop when the part is not there: a change that changes nothing proves nothing.
+const srvReplace = (text, from, to) => {
+  assert.ok(text.split(from).length > 1, `the text holds: ${from}`);
+  return text.split(from).join(to);
+};
+const SRV_FOLDER = '/etc/caddy/agents';
+const SRV_UPSTREAM = '127.0.0.1:9120';
+const SRV_CERT = '{http.request.tls.client.certificate_der_base64}';
+
+// A Caddyfile as a tree. A line that ends with "{" opens a block, and "}" closes it. A comment and a blank line are dropped.
+function srvCaddyTree(text) {
+  const top = [];
+  const stack = [{ children: top }];
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    if (line === '}') {
+      assert.ok(stack.length > 1, 'a closing brace has an opening brace');
+      stack.pop();
+      continue;
+    }
+    const opens = line.endsWith('{');
+    const node = { head: opens ? line.slice(0, -1).trim() : line, children: opens ? [] : null };
+    stack.at(-1).children.push(node);
+    if (opens) stack.push(node);
+  }
+  assert.equal(stack.length, 1, 'every opening brace is closed');
+  return top;
+}
+const srvLeaves = (nodes) => nodes.filter((n) => n.children === null).map((n) => n.head);
+const srvBlocks = (nodes, head) => nodes.filter((n) => n.children !== null && n.head === head);
+const srvFlat = (nodes) => nodes.flatMap((n) => [n.head, ...(n.children ? srvFlat(n.children) : [])]);
+const srvCode = (text) => text.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
+
+// The faults of a main Caddyfile. An empty list is a pass.
+function srvCaddyfileProblems(text) {
+  const problems = [];
+  const nodes = srvCaddyTree(text);
+  const imports = srvLeaves(nodes).filter((l) => l.startsWith('import '));
+  if (imports.length !== 1 || imports[0] !== `import ${SRV_FOLDER}/*.snippet`) problems.push(`the one import line must read "import ${SRV_FOLDER}/*.snippet", found: ${imports.join(' | ') || 'none'}`);
+  const sites = nodes.filter((n) => n.children !== null && n.head !== '');
+  if (sites.length > 0) problems.push(`the main file has a site block: ${sites.map((s) => s.head).join(', ')}`);
+  const globals = nodes.filter((n) => n.children !== null && n.head === '');
+  if (globals.length !== 1 || nodes[0] !== globals[0]) return [...problems, 'the file must start with one global options block'];
+  const options = globals[0].children;
+  if (!srvLeaves(options).includes('admin localhost:2019')) problems.push('the admin API must listen on localhost:2019');
+  const servers = srvBlocks(options, 'servers');
+  if (servers.length !== 1 || !srvLeaves(servers[0].children).includes('protocols h1 h2')) problems.push('servers must set "protocols h1 h2": HTTP/3 needs UDP, and the firewall opens TCP only');
+  if (/trusted_proxies|client_ip_headers|cloudflare/i.test(srvCode(text))) problems.push('no name of this host is behind a proxy, so the file has no proxy setting');
+  return problems;
+}
+
+test('agents host: the main Caddyfile imports the snippet folder, has no site block, keeps the admin API on the loopback address and turns HTTP/3 off', () => {
+  const text = srvRead('Caddyfile');
+  assert.deepEqual(srvCaddyfileProblems(text), [], 'the real file passes');
+  const faults = [
+    ['no import line', srvReplace(text, `import ${SRV_FOLDER}/*.snippet\n`, ''), /one import line/],
+    ['another folder', srvReplace(text, `import ${SRV_FOLDER}/`, 'import /etc/caddy/other/'), /one import line/],
+    ['a second import line', `${text}import /etc/caddy/more/*.snippet\n`, /one import line/],
+    ['a site block in the main file', `${text}example.test {\n\trespond "x"\n}\n`, /site block/],
+    ['the admin API on a public address', srvReplace(text, 'admin localhost:2019', 'admin 0.0.0.0:2019'), /admin API/],
+    ['HTTP/3 on', srvReplace(text, 'protocols h1 h2', 'protocols h1 h2 h3'), /protocols h1 h2/],
+    ['a trusted proxy', srvReplace(text, '\tadmin localhost:2019\n', '\tadmin localhost:2019\n\tservers {\n\t\ttrusted_proxies static private_ranges\n\t}\n'), /proxy/],
+  ];
+  for (const [name, broken, expected] of faults) {
+    const problems = srvCaddyfileProblems(broken);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+});
+
+test('agents host: the Caddyfile and setup.sh name the same snippet folder, and the runbook and the README use it', () => {
+  const importLine = /^import (\/\S+)\/\*\.snippet$/m.exec(srvRead('Caddyfile'));
+  assert.equal(importLine?.[1], SRV_FOLDER);
+  assert.equal(/^SNIPPET_FOLDER=(\S+)$/m.exec(srvRead('setup.sh'))?.[1], SRV_FOLDER);
+  assert.match(srvRead('README.md'), new RegExp(`\`${srvEscape(SRV_FOLDER)}/\\*\\.snippet\``));
+  assert.match(srvRead('RUNBOOK.md'), new RegExp(srvEscape(`${SRV_FOLDER}/mock-systems.snippet`)));
+});
+
+// The faults of the mock snippet. The first block is the normal host and the second is the client-certificate host.
+function srvMockSnippetProblems(text) {
+  const problems = [];
+  const sites = srvCaddyTree(text);
+  const heads = sites.map((s) => s.head);
+  if (heads.join(' | ') !== '<mock-host> | <mock-mtls-host>') return [`the site blocks must be <mock-host> and <mock-mtls-host>, in this order; found: ${heads.join(' | ')}`];
+  const [plain, mtls] = sites;
+  for (const [name, site] of [['<mock-host>', plain], ['<mock-mtls-host>', mtls]]) {
+    for (const header of ['Client-Cert', 'Client-Cert-Chain']) {
+      if (!srvLeaves(site.children).includes(`request_header -${header}`)) problems.push(`${name}: the block does not remove the inbound ${header} header at its top level`);
+    }
+  }
+  // The normal host asks for no certificate and sets no header of its own.
+  if (srvBlocks(plain.children, 'tls').length > 0) problems.push('<mock-host>: the block has a tls setting, and it must ask for no certificate');
+  if (srvFlat(plain.children).some((h) => h.startsWith('header_up'))) problems.push('<mock-host>: the block sets a request header, and it must not');
+  if (!srvLeaves(plain.children).includes(`reverse_proxy ${SRV_UPSTREAM}`)) problems.push(`<mock-host>: the block must have the line "reverse_proxy ${SRV_UPSTREAM}"`);
+  // The client-certificate host asks for a certificate, does not check it, and passes it on only when the client sent one.
+  const tls = srvBlocks(mtls.children, 'tls');
+  if (tls.length !== 1 || srvFlat(tls[0].children).join(' | ') !== 'client_auth | mode request') problems.push('<mock-mtls-host>: the tls block must hold client_auth with "mode request" and nothing else: no CA and no certificate to trust, because Caddy does not check the certificate');
+  const matcher = `@clientcert expression \`${SRV_CERT} != ""\``;
+  if (!srvLeaves(mtls.children).includes(matcher)) problems.push(`<mock-mtls-host>: the matcher must be: ${matcher}`);
+  const setLine = `header_up Client-Cert ":${SRV_CERT}:"`;
+  const withCert = srvBlocks(mtls.children, 'handle @clientcert');
+  if (withCert.length !== 1 || srvFlat(withCert[0].children).join(' | ') !== `reverse_proxy ${SRV_UPSTREAM} | ${setLine}`) problems.push(`<mock-mtls-host>: "handle @clientcert" must hold one proxy that sets: ${setLine}`);
+  const without = srvBlocks(mtls.children, 'handle');
+  if (without.length !== 1 || srvFlat(without[0].children).join(' | ') !== `reverse_proxy ${SRV_UPSTREAM}`) problems.push('<mock-mtls-host>: the plain "handle" must hold one proxy that sets no header');
+  // The whole file: one header line, and every proxy goes to the one upstream on the loopback address.
+  const all = srvFlat(sites);
+  if (all.filter((h) => h.startsWith('header_up')).length !== 1) problems.push('the file must have exactly one header_up line');
+  const proxies = all.filter((h) => h.startsWith('reverse_proxy'));
+  if (proxies.length !== 3 || proxies.some((h) => !h.startsWith(`reverse_proxy ${SRV_UPSTREAM}`))) problems.push(`the file must have three proxy lines, and each goes to ${SRV_UPSTREAM}`);
+  return problems;
+}
+
+test('agents host: the mock snippet asks for a client certificate on the mTLS host, does not check it, passes it in Client-Cert, and removes the inbound header on both hosts', () => {
+  const text = srvRead('Caddyfile.mock-systems.snippet');
+  assert.deepEqual(srvMockSnippetProblems(text), [], 'the real file passes');
+  const at = text.indexOf('\n<mock-mtls-host> {\n');
+  assert.ok(at > 0);
+  const [plain, mtls] = [text.slice(0, at), text.slice(at)];
+  const tlsBlock = '\ttls {\n\t\tclient_auth {\n\t\t\tmode request\n\t\t}\n\t}\n';
+  const faults = [
+    ['<mock-host> keeps a forged Client-Cert', `${srvReplace(plain, '\trequest_header -Client-Cert\n', '')}${mtls}`, /<mock-host>: .* inbound Client-Cert header/],
+    ['<mock-host> keeps a forged Client-Cert-Chain', `${srvReplace(plain, '\trequest_header -Client-Cert-Chain\n', '')}${mtls}`, /<mock-host>: .* inbound Client-Cert-Chain header/],
+    ['<mock-mtls-host> keeps a forged Client-Cert', `${plain}${srvReplace(mtls, '\trequest_header -Client-Cert\n', '')}`, /<mock-mtls-host>: .* inbound Client-Cert header/],
+    ['<mock-mtls-host> keeps a forged Client-Cert-Chain', `${plain}${srvReplace(mtls, '\trequest_header -Client-Cert-Chain\n', '')}`, /<mock-mtls-host>: .* inbound Client-Cert-Chain header/],
+    ['the removal sits inside a handle only', `${plain}${srvReplace(srvReplace(mtls, '\trequest_header -Client-Cert\n', ''), '\thandle {\n', '\thandle {\n\t\trequest_header -Client-Cert\n')}`, /<mock-mtls-host>: .* inbound Client-Cert header/],
+    ['Caddy requires the certificate', `${plain}${srvReplace(mtls, 'mode request', 'mode require')}`, /"mode request" and nothing else/],
+    ['Caddy checks the certificate when one is given', `${plain}${srvReplace(mtls, 'mode request', 'mode verify_if_given')}`, /"mode request" and nothing else/],
+    ['Caddy trusts a fixed CA', `${plain}${srvReplace(mtls, '\t\t\tmode request\n', '\t\t\tmode request\n\t\t\ttrust_pool file /etc/ssl/ca.pem\n')}`, /"mode request" and nothing else/],
+    ['Caddy asks for no certificate', `${plain}${srvReplace(mtls, tlsBlock, '')}`, /"mode request" and nothing else/],
+    ['the normal host asks for a certificate', `${srvReplace(plain, '\trequest_header -Client-Cert\n', `${tlsBlock}\trequest_header -Client-Cert\n`)}${mtls}`, /<mock-host>: the block has a tls setting/],
+    ['the header goes without a certificate too', `${plain}${srvReplace(mtls, `${SRV_CERT} != ""`, 'true')}`, /matcher must be/],
+    ['another header name', `${plain}${srvReplace(mtls, 'header_up Client-Cert ', 'header_up X-Client-Cert ')}`, /must hold one proxy that sets/],
+    ['a value with no colons', `${plain}${srvReplace(mtls, `":${SRV_CERT}:"`, `"${SRV_CERT}"`)}`, /must hold one proxy that sets/],
+    ['no plain handle', `${plain}${srvReplace(mtls, '\thandle {\n\t\treverse_proxy 127.0.0.1:9120\n\t}\n', '')}`, /plain "handle"/],
+    ['the normal host sets the header', `${srvReplace(plain, '\treverse_proxy 127.0.0.1:9120\n', '\treverse_proxy 127.0.0.1:9120 {\n\t\theader_up Client-Cert x\n\t}\n')}${mtls}`, /sets a request header/],
+    ['an upstream on a public address', srvReplace(text, SRV_UPSTREAM, '0.0.0.0:9120'), /each goes to/],
+    ['the two blocks swapped', `${mtls.slice(1)}\n${plain}`, /in this order/],
+  ];
+  for (const [name, broken, expected] of faults) {
+    const problems = srvMockSnippetProblems(broken);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+});
+
+// ---- setup.sh: what the text of the script must and must not do ----
+// The firewall opens TCP 22, 80 and 443, and nothing else.
+function srvPortProblems(text) {
+  const problems = [];
+  const code = srvCode(text);
+  const ports = /^OPEN_PORTS="([0-9 ]*)"$/m.exec(text)?.[1];
+  if (ports !== '22 80 443') problems.push(`OPEN_PORTS must be "22 80 443", found: ${ports}`);
+  // Two places say "ufw allow": the text that the script compares with the rules, and the one command that opens a port. Both read OPEN_PORTS.
+  const allows = code.match(/\bufw\s+(?:allow|limit|reject|route|insert|prepend)\b/g) ?? [];
+  if (allows.length !== 2) problems.push(`the script must have exactly two "ufw allow" places (the comparison and the one command), found ${allows.length}`);
+  if (!code.includes('for port in $OPEN_PORTS; do ufw allow "$port/tcp" >/dev/null; done')) problems.push('the one ufw allow command must run in a loop over $OPEN_PORTS');
+  if (!code.includes("printf 'ufw allow %s/tcp\\n' \"$port\"")) problems.push('the comparison must be made from $OPEN_PORTS');
+  if (!code.includes('ufw default deny incoming') || /ufw\s+default\s+allow\s+incoming/.test(code)) problems.push('the default for incoming traffic must be deny');
+  if (/\bufw\s+disable\b/.test(code)) problems.push('the script must not disable the firewall');
+  if (!/\bufw --force enable\b/.test(code)) problems.push('the script must enable the firewall');
+  if (/\b(?:iptables|ip6tables|nft|firewall-cmd)\b/.test(code)) problems.push('the script must set no firewall rule except through ufw');
+  return problems;
+}
+
+test('agents host: setup.sh opens TCP 22, 80 and 443 only, denies the rest, and enables the firewall', () => {
+  const text = srvRead('setup.sh');
+  assert.deepEqual(srvPortProblems(text), [], 'the real file passes');
+  const faults = [
+    ['a fourth port in the list', srvReplace(text, 'OPEN_PORTS="22 80 443"', 'OPEN_PORTS="22 80 443 8080"'), /OPEN_PORTS must be/],
+    ['a port taken out of the list', srvReplace(text, 'OPEN_PORTS="22 80 443"', 'OPEN_PORTS="22 443"'), /OPEN_PORTS must be/],
+    ['a rule for one more port', srvReplace(text, '  ufw --force enable >/dev/null\n', '  ufw allow 8080/tcp >/dev/null\n  ufw --force enable >/dev/null\n'), /exactly two "ufw allow" places/],
+    ['a rule with a limit', srvReplace(text, '  ufw --force enable >/dev/null\n', '  ufw limit 22/tcp >/dev/null\n  ufw --force enable >/dev/null\n'), /exactly two "ufw allow" places/],
+    ['the command outside the loop', srvReplace(text, 'for port in $OPEN_PORTS; do ufw allow "$port/tcp" >/dev/null; done', 'ufw allow 22/tcp >/dev/null; ufw allow "$OPEN_PORTS" >/dev/null'), /in a loop over \$OPEN_PORTS/],
+    ['incoming traffic allowed', srvReplace(text, 'ufw default deny incoming', 'ufw default allow incoming'), /default for incoming traffic/],
+    ['the firewall disabled', srvReplace(text, '  ufw --force enable >/dev/null\n', '  ufw disable >/dev/null\n'), /must not disable|must enable/],
+    ['the firewall never enabled', srvReplace(text, '  ufw --force enable >/dev/null\n', ''), /must enable the firewall/],
+    ['a raw iptables rule', srvReplace(text, '  ufw --force enable >/dev/null\n', '  iptables -A INPUT -p tcp --dport 8080 -j ACCEPT\n  ufw --force enable >/dev/null\n'), /through ufw/],
+  ];
+  for (const [name, broken, expected] of faults) {
+    const problems = srvPortProblems(broken);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+});
+
+// No container port binds to a public address. The script starts no container. Its daemon.json makes the loopback address the default of a published port.
+const srvDaemonJson = (text) => JSON.parse(/daemon_json\(\) \{\n  cat <<'EOF'\n([\s\S]*?)\nEOF\n\}/.exec(text)?.[1] ?? 'null');
+function srvPublicPortProblems(text) {
+  const problems = [];
+  const code = srvCode(text);
+  if (/\bdocker\s+(?:run|create|start|compose\s+(?:up|run|create|start))\b/.test(code)) problems.push('the script starts a container');
+  if (/\bdocker\b[^\n]*(?:\s-[pP](?:\s|=|\d)|\s--publish(?:-all)?\b)|\bports:/.test(code)) problems.push('the script publishes a port');
+  if (/0\.0\.0\.0|\[::\]|--network[ =]host|network_mode/.test(code)) problems.push('the script names a public address or the host network');
+  const daemon = srvDaemonJson(text);
+  if (daemon?.ip !== '127.0.0.1') problems.push('daemon.json must make 127.0.0.1 the default address of a published port');
+  if (daemon?.['live-restore'] !== true) problems.push('daemon.json must set live-restore, so that a restart of the daemon keeps the containers');
+  if (daemon?.['log-driver'] !== 'json-file' || JSON.stringify(daemon?.['log-opts']) !== JSON.stringify({ 'max-size': '10m', 'max-file': '3' })) problems.push('daemon.json must limit the log of each container to 3 files of 10m');
+  return problems;
+}
+// A compose file of the host: each published port names the loopback address, and no service uses the host network.
+function srvComposeProblems(text) {
+  const problems = [];
+  for (const [name, service] of Object.entries(parseYaml(text)?.services ?? {})) {
+    if (service.network_mode === 'host') problems.push(`${name}: network_mode host`);
+    for (const port of service.ports ?? []) {
+      const loopback = typeof port === 'string' ? /^(?:127\.0\.0\.1|\[::1\]):\d+:\d+(?:\/(?:tcp|udp))?$/.test(port) : port?.host_ip === '127.0.0.1' || port?.host_ip === '::1';
+      if (!loopback) problems.push(`${name}: the port ${JSON.stringify(port)} does not name the loopback address`);
+    }
+  }
+  return problems;
+}
+
+test('agents host: setup.sh starts no container and binds no port to a public address, and daemon.json makes the loopback address the default', () => {
+  const text = srvRead('setup.sh');
+  assert.deepEqual(srvPublicPortProblems(text), [], 'the real file passes');
+  const daemonBlock = /daemon_json\(\) \{\n  cat <<'EOF'\n[\s\S]*?\nEOF\n\}/.exec(text)[0];
+  const faults = [
+    ['a container started', srvReplace(text, '  ufw --force enable >/dev/null\n', '  docker run -d nginx\n  ufw --force enable >/dev/null\n'), /starts a container/],
+    ['a compose start', srvReplace(text, '  ufw --force enable >/dev/null\n', '  docker compose up -d\n  ufw --force enable >/dev/null\n'), /starts a container/],
+    ['a published port', srvReplace(text, '  ufw --force enable >/dev/null\n', '  docker x -p 8080:80\n  ufw --force enable >/dev/null\n'), /publishes a port/],
+    ['a public address', srvReplace(text, '  ufw --force enable >/dev/null\n', '  echo 0.0.0.0:8080\n  ufw --force enable >/dev/null\n'), /public address/],
+    ['the host network', srvReplace(text, '  ufw --force enable >/dev/null\n', '  docker x --network host\n  ufw --force enable >/dev/null\n'), /public address or the host network/],
+    ['no default address', srvReplace(text, daemonBlock, daemonBlock.replace('  "ip": "127.0.0.1",\n', '')), /default address/],
+    ['a public default address', srvReplace(text, '"ip": "127.0.0.1"', '"ip": "0.0.0.0"'), /default address/],
+    ['no live-restore', srvReplace(text, daemonBlock, daemonBlock.replace('  "live-restore": true,\n', '')), /live-restore/],
+    ['no log limit', srvReplace(text, '"max-size": "10m"', '"max-size": "1g"'), /log of each container/],
+  ];
+  for (const [name, broken, expected] of faults) {
+    const problems = srvPublicPortProblems(broken);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+});
+
+test('agents host: a compose file of the host publishes ports on the loopback address only; the guard refuses a short form, a public address and the host network, and passes the loopback forms', () => {
+  // The compose files of the agents come later. The guard reads each one that is in the folder now, and it is tested on texts.
+  for (const name of readdirSync(join(root, SRV)).filter((f) => /^docker-compose.*\.ya?ml$/.test(f))) assert.deepEqual(srvComposeProblems(srvRead(name)), [], name);
+  const compose = (port) => `services:\n  agent:\n    image: example\n    ports: [${port}]\n`;
+  for (const ok of ['"127.0.0.1:8101:8080"', '"[::1]:8101:8080"', '"127.0.0.1:9101:9091/tcp"']) assert.deepEqual(srvComposeProblems(compose(ok)), [], ok);
+  assert.deepEqual(srvComposeProblems('services:\n  agent:\n    image: example\n'), [], 'no port at all');
+  assert.deepEqual(srvComposeProblems('services:\n  agent:\n    image: example\n    ports:\n      - { target: 8080, published: 8101, host_ip: 127.0.0.1 }\n'), [], 'the long form with the loopback address');
+  for (const bad of ['"8101:8080"', '"0.0.0.0:8101:8080"', '"[::]:8101:8080"', '"8101"', '"127.0.0.2:8101:8080"']) assert.equal(srvComposeProblems(compose(bad)).length, 1, bad);
+  assert.equal(srvComposeProblems('services:\n  agent:\n    image: example\n    ports:\n      - { target: 8080, published: 8101 }\n').length, 1, 'the long form with no address');
+  assert.equal(srvComposeProblems('services:\n  agent:\n    image: example\n    network_mode: host\n').length, 1, 'the host network');
+});
+
+// setup.sh makes no key, reads no key and holds no secret.
+function srvSecretProblems(text) {
+  const problems = [];
+  const code = srvCode(text);
+  // The assigned names and values, run through the key check of the compose files (a secret name needs an empty value; no value looks like a key).
+  const assigned = Object.fromEntries([...code.matchAll(/^\s*(?:export |local |readonly )?([A-Za-z_][A-Za-z0-9_]*)=([^\n]*)$/gm)].map((m) => [m[1], m[2].replace(/^"(.*)"$/, '$1')]));
+  problems.push(...keyProblems(assigned));
+  if (/[0-9a-fA-F]{56,}/.test(code)) problems.push('a run of 56 or more hex characters looks like key material');
+  if (/-----BEGIN [A-Z ]*(?:PRIVATE KEY|SECRET)|ed25519e?_sk|addr1[0-9a-z]{20,}/i.test(code)) problems.push('key material');
+  if (/\b(?:ssh-keygen|age-keygen|wg\s+genkey|gen-keypair|keygen)\b|\bopenssl\s+(?:genpkey|genrsa|ecparam|req|rand)\b|\bgpg\b[^\n]*--(?:quick-)?(?:full-)?gen(?:erate)?-key|\bdocker\s+login\b/.test(code)) problems.push('the script makes a key, or logs in to a registry');
+  if (/\.env\b|\bread\s+-[A-Za-z]*s|\b(?:chpasswd|passwd\s+[a-z]|--password)\b/.test(code)) problems.push('the script reads an env file or a secret, or sets a password');
+  return problems;
+}
+
+test('agents host: setup.sh holds no secret, reads none and makes no key', () => {
+  const text = srvRead('setup.sh');
+  assert.deepEqual(srvSecretProblems(text), [], 'the real file passes');
+  // The two pinned fingerprints are 40 hex characters and public. They are the fingerprints that the two vendors publish for their apt keys.
+  // A change of the pin needs a change here: the operator checks the new value on the web site of the vendor first.
+  assert.match(text, /^DOCKER_KEY_FPR=9DC858229FC7DD38854AE2D88D81803C0EBFCD88$/m);
+  assert.match(text, /^CADDY_KEY_FPR=65760C51EDEA2017CEA2CA15155B6D79CA56EA34$/m);
+  const insert = (line) => srvReplace(text, '  ufw --force enable >/dev/null\n', `  ${line}\n  ufw --force enable >/dev/null\n`);
+  const faults = [
+    ['a key written out', insert(`SUPPLIER_KEY=${'ab'.repeat(32)}`), /key material|looks like/],
+    ['a secret name with a value', insert('API_TOKEN=abc'), /API_TOKEN must be empty/],
+    ['a private key block', insert('echo "-----BEGIN PRIVATE KEY-----"'), /key material/],
+    ['a signer key', insert(`echo ed25519${'_sk1'}${'q'.repeat(28)}`), /key material/],
+    ['ssh-keygen', insert('ssh-keygen -t ed25519 -N "" -f /root/k'), /makes a key/],
+    ['openssl genpkey', insert('openssl genpkey -algorithm ed25519'), /makes a key/],
+    ['a key pair command of the agents', insert('gen-keypair --network 1'), /makes a key/],
+    ['a registry login', insert('docker login ghcr.io'), /makes a key, or logs in/],
+    ['a read of an env file', insert('. ./.env.agent'), /reads an env file/],
+    ['a silent prompt', insert('read -rs SECRET_TEXT'), /reads an env file or a secret/],
+    ['a password', insert('chpasswd < users.txt'), /sets a password/],
+  ];
+  for (const [name, broken, expected] of faults) {
+    const problems = srvSecretProblems(broken);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+});
+
+// setup.sh never restarts a container. It restarts Docker only on the branch where no container runs. It restarts nothing else but the journal.
+function srvRestartProblems(text) {
+  const problems = [];
+  const code = srvCode(text);
+  if (/\bdocker\s+(?:restart|kill|stop|rm|compose\s+(?:restart|stop|down|rm|kill))\b/.test(code)) problems.push('the script stops or restarts a container');
+  const restarts = [...code.matchAll(/systemctl\s+restart\s+(\S+)/g)].map((m) => m[1]);
+  if (restarts.some((unit) => !['docker', 'systemd-journald'].includes(unit))) problems.push(`the script restarts a unit that is not Docker or the journal: ${restarts.join(', ')}`);
+  if (!/if \[ -z "\$\(docker ps --quiet\)" \]; then\n\s+systemctl restart docker\n/.test(code)) problems.push('Docker restarts only on the branch where "docker ps --quiet" lists no container');
+  if (!/systemctl reload caddy/.test(code) || /systemctl\s+(?:restart|stop)\s+caddy/.test(code)) problems.push('Caddy reloads, and it never restarts');
+  return problems;
+}
+
+test('agents host: setup.sh never restarts a container or Caddy, and restarts Docker only when no container runs', () => {
+  const text = srvRead('setup.sh');
+  assert.deepEqual(srvRestartProblems(text), [], 'the real file passes');
+  const insert = (line) => srvReplace(text, '  ufw --force enable >/dev/null\n', `  ${line}\n  ufw --force enable >/dev/null\n`);
+  const faults = [
+    ['a container restart', insert('docker restart agent'), /stops or restarts a container/],
+    ['a compose stop', insert('docker compose down'), /stops or restarts a container/],
+    ['a Caddy restart', insert('systemctl restart caddy'), /not Docker or the journal|never restarts/],
+    ['a restart of the container runtime', insert('systemctl restart containerd'), /not Docker or the journal/],
+    ['a Docker restart with no condition', srvReplace(text, 'if [ -z "$(docker ps --quiet)" ]; then', 'if true; then'), /only on the branch/],
+    ['no reload of Caddy', srvReplace(text, 'systemctl reload caddy', 'true'), /Caddy reloads/],
+  ];
+  for (const [name, broken, expected] of faults) {
+    const problems = srvRestartProblems(broken);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+});
+
+// The checks of the script run before it changes anything, in this order.
+function srvOrderProblems(text) {
+  const main = /\nmain\(\) \{\n([\s\S]*?)\n\}\n/.exec(text)?.[1];
+  if (!main) return ['setup.sh has no main function'];
+  const calls = main.split('\n').map((l) => l.trim().split(' ')[0]);
+  const expected = ['check_agent_names', 'check_root_and_os', 'check_not_the_present_host', 'check_web_ports', 'check_ssh_port'];
+  const problems = [];
+  if (calls.slice(0, expected.length).join(' ') !== expected.join(' ')) problems.push(`main must start with the checks: ${expected.join(', ')}; it starts with: ${calls.slice(0, expected.length).join(', ')}`);
+  const rest = calls.slice(expected.length).filter((c) => c.startsWith('install_') || c.startsWith('ensure_'));
+  if (rest.length === 0 || rest[0] !== 'install_prerequisites') problems.push('the first change is install_prerequisites');
+  if (!/\nmain "\$@"\s*$/.test(text)) problems.push('the script must end with: main "$@"');
+  return problems;
+}
+
+test('agents host: setup.sh makes all its checks before its first change; it needs root, apt and a codename, pins two fingerprints and uses https only', () => {
+  const text = srvRead('setup.sh');
+  assert.deepEqual(srvOrderProblems(text), [], 'the real file passes');
+  assert.ok(srvOrderProblems(srvReplace(text, '  check_not_the_present_host\n  check_web_ports\n', '  check_web_ports\n  check_not_the_present_host\n')).length > 0, 'the checks swapped');
+  assert.ok(srvOrderProblems(srvReplace(text, '  check_not_the_present_host\n', '')).length > 0, 'a check taken out');
+  assert.ok(srvOrderProblems(srvReplace(text, '  install_prerequisites\n', '  ensure_docker\n')).length > 0, 'a change before the first change');
+  const code = srvCode(text);
+  assert.ok(text.startsWith('#!/usr/bin/env bash\n'));
+  assert.match(code, /^set -euo pipefail$/m);
+  assert.match(code, /\[ "\$\(id -u\)" -eq 0 \] \|\| refuse 'run this script as root'/);
+  assert.match(text, /^DOCKER_KEY_FPR=[0-9A-F]{40}$/m);
+  assert.match(text, /^CADDY_KEY_FPR=[0-9A-F]{40}$/m);
+  assert.match(code, /curl --fail --silent --show-error --location --proto '=https' --tlsv1\.2 /);
+  assert.doesNotMatch(code, /\bhttp:\/\//, 'no plain http address');
+  assert.match(code, /grep -Fq ":\$fingerprint:" <<<"\$listing"/, 'the key is checked against the pinned fingerprint before it is installed');
+  assert.match(code, /https:\/\/download\.docker\.com\/linux\/\$OS_ID\/gpg/);
+  assert.match(text, /^CADDY_KEY_URL=https:\/\/dl\.cloudsmith\.io\/public\/caddy\/stable\/gpg\.key$/m);
+});
+
+test('agents host: setup.sh lists the containers, the volumes and the folders of the present host, and the lists equal the compose files and the runbooks in deploy/host', () => {
+  const listed = (text, name) => new RegExp(`^${name}="([^"]*)"$`, 'm').exec(text)?.[1]?.split(' ').sort();
+  const fromHost = () => {
+    const files = readdirSync(join(root, 'deploy/host'));
+    const composes = files.filter((f) => /^docker-compose\..+\.yml$/.test(f)).map((f) => parseYaml(read(`deploy/host/${f}`)));
+    assert.ok(composes.length >= 4, `the walk finds the compose files, found ${composes.length}`);
+    return {
+      PRESENT_CONTAINERS: composes.flatMap((c) => Object.values(c.services).map((s) => s.container_name)).sort(),
+      PRESENT_VOLUMES: composes.flatMap((c) => Object.values(c.volumes ?? {}).map((v) => v.name)).sort(),
+      PRESENT_FOLDERS: files.filter((f) => /^RUNBOOK.*\.md$/.test(f)).map((f) => /^BASE=(\/\S+)$/m.exec(read(`deploy/host/${f}`))?.[1]).sort(),
+    };
+  };
+  const expected = fromHost();
+  const text = srvRead('setup.sh');
+  for (const [name, values] of Object.entries(expected)) assert.deepEqual(listed(text, name), values, `${name} equals deploy/host`);
+  assert.equal(expected.PRESENT_CONTAINERS.length, 8);
+  // A copy that forgets one container, or names one that deploy/host does not have, is refused.
+  const without = srvReplace(text, ' advocate-service"', '"');
+  assert.notDeepEqual(listed(without, 'PRESENT_CONTAINERS'), expected.PRESENT_CONTAINERS);
+  assert.notDeepEqual(listed(srvReplace(text, 'PRESENT_VOLUMES="', 'PRESENT_VOLUMES="other-state '), 'PRESENT_VOLUMES'), expected.PRESENT_VOLUMES);
+});
+
+test('agents host: setup.sh passes bash -n, and shellcheck when it is installed', { skip: HAVE_BASH ? false : 'needs bash' }, () => {
+  const syntax = spawnSync('bash', ['-n', join(root, SRV, 'setup.sh')], { encoding: 'utf8' });
+  assert.equal(syntax.status, 0, syntax.stderr);
+  const have = spawnSync('bash', ['-c', 'command -v shellcheck'], { encoding: 'utf8' });
+  if (have.status !== 0) return;
+  const check = spawnSync('shellcheck', ['-s', 'bash', join(root, SRV, 'setup.sh')], { encoding: 'utf8' });
+  assert.equal(check.status, 0, check.stdout);
+});
+
+// ---- setup.sh run in a sandbox ----
+// The script runs as the user of the test, with no root and no network. AGENTS_HOST_ROOT puts every path of the host under a temporary folder. The
+// programs of the system (apt-get, systemctl, ufw, docker, caddy, curl, gpg, id, useradd and the others) are stand-ins that log each call and keep a
+// little state. PATH holds the stand-ins and a few real tools, and nothing else, so that a program that the script calls and the sandbox does not
+// know, a key generator for example, stops the script.
+import { symlinkSync } from 'node:fs';
+import { userInfo } from 'node:os';
+const SRV_NEEDS = { skip: HAVE_BASH && process.platform === 'linux' ? false : 'needs bash, GNU tools and Linux' };
+const SRV_TOOLS = ['bash', 'dirname', 'basename', 'sed', 'tr', 'awk', 'grep', 'cmp', 'stat', 'cp', 'install', 'chmod', 'chown', 'mktemp', 'cat', 'rm', 'sort', 'head', 'ln', 'touch'];
+const SRV_STUBBED = ['id', 'getent', 'useradd', 'usermod', 'dpkg', 'dpkg-query', 'apt-get', 'curl', 'gpg', 'systemctl', 'ss', 'sshd'];
+const SRV_STUB = String.raw`#!/usr/bin/env bash
+# A stand-in for the programs of the system that setup.sh calls. One file. It works by the name that calls it.
+name=__NAME__
+printf '%s' "$name" >> "$STUB_LOG"
+for a in "$@"; do printf ' %s' "$a" >> "$STUB_LOG"; done
+printf '\n' >> "$STUB_LOG"
+state=$STUB_STATE
+status=0
+case "$name" in
+  id)
+    if [ "$1" = -u ]; then echo "$STUB_UID"
+    elif [ "$1" = -nG ]; then echo "$2 $(cat "$state/groups" 2>/dev/null)"
+    else echo "the stand-in for id knows two forms only: $*" >&2; status=2; fi ;;
+  getent)
+    if [ ! -e "$state/user-made" ] && [ -z "$STUB_USER_EXISTS" ]; then status=1; fi ;;
+  useradd) touch "$state/user-made" ;;
+  usermod) echo docker >> "$state/groups" ;;
+  dpkg) echo amd64 ;;
+  dpkg-query)
+    for last; do :; done
+    if grep -Fxq -- "$last" "$state/installed" 2>/dev/null; then printf 'install ok installed'; else status=1; fi ;;
+  apt-get)
+    cmd=''
+    while [ $# -gt 0 ]; do
+      a=$1; shift
+      case "$a" in
+        -o) shift ;;
+        -*) ;;
+        *)
+          if [ -z "$cmd" ]; then cmd=$a
+          elif [ "$cmd" = install ]; then
+            echo "$a" >> "$state/installed"
+            case "$a" in
+              docker-ce) ln -sf "$STUB_PROGRAM" "$STUB_BIN/docker"; touch "$state/unit-docker" ;;
+              caddy) ln -sf "$STUB_PROGRAM" "$STUB_BIN/caddy"; touch "$state/unit-caddy" ;;
+              ufw) ln -sf "$STUB_PROGRAM" "$STUB_BIN/ufw" ;;
+            esac
+          fi ;;
+      esac
+    done ;;
+  curl)
+    out=''; url=''
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --output) out=$2; shift 2 ;;
+        -*) shift ;;
+        *) url=$1; shift ;;
+      esac
+    done
+    echo "stand-in key from $url" > "$out" ;;
+  gpg)
+    for last; do :; done
+    if grep -q 'download.docker.com' "$last"; then fpr=$STUB_DOCKER_FPR; else fpr=$STUB_CADDY_FPR; fi
+    echo 'pub:-:4096:1:AAAA:1:::-:::scESCA::::::23::0:'
+    echo "fpr:::::::::$fpr:" ;;
+  systemctl)
+    case "$1" in
+      enable) for a in "$@"; do case "$a" in enable|--now|-*) ;; *) touch "$state/unit-$a" ;; esac; done ;;
+      is-enabled) if [ -e "$state/unit-$2" ]; then echo enabled; else echo disabled; status=1; fi ;;
+      is-active) shift; if [ "$1" = --quiet ]; then shift; fi; if [ ! -e "$state/unit-$1" ]; then status=1; fi ;;
+    esac ;;
+  ufw)
+    rules=$state/ufw.rules
+    case "$*" in
+      'status verbose')
+        if [ -e "$state/ufw.active" ]; then printf 'Status: active\nLogging: on (low)\nDefault: %s\nNew profiles: skip\n' "$(cat "$state/ufw.defaults" 2>/dev/null)"; else echo 'Status: inactive'; fi ;;
+      'show added')
+        echo "Added user rules (see 'ufw status' for running firewall):"
+        if [ -s "$rules" ]; then cat "$rules"; else echo '(None)'; fi ;;
+      '--force reset') rm -f "$rules" "$state/ufw.active" "$state/ufw.defaults" ;;
+      'default deny incoming') echo 'deny (incoming), allow (outgoing), disabled (routed)' > "$state/ufw.defaults" ;;
+      '--force enable') touch "$state/ufw.active" ;;
+      allow\ *) echo "ufw $*" >> "$rules" ;;
+    esac ;;
+  docker)
+    case "$1" in
+      --version) echo 'Docker version 0.0.0-stand-in' ;;
+      compose) echo '0.0.0-stand-in' ;;
+      ps)
+        case "$*" in
+          'ps -a --format {{.Names}}') for n in $STUB_CONTAINERS; do echo "$n"; done ;;
+          'ps --quiet') for n in $STUB_RUNNING; do echo "$n"; done ;;
+        esac ;;
+      volume) for n in $STUB_VOLUMES; do echo "$n"; done ;;
+    esac ;;
+  caddy)
+    case "$1" in
+      version) echo 'v0.0.0-stand-in h1:stand-in' ;;
+      validate) if [ -n "$STUB_CADDY_INVALID" ]; then echo 'Error: the stand-in says that the file is wrong' >&2; status=1; fi ;;
+    esac ;;
+  ss) if [ -n "$STUB_LISTEN" ]; then printf '%s\n' "$STUB_LISTEN"; fi ;;
+  sshd) echo "port $STUB_SSHD_PORT" ;;
+esac
+exit $status
+`.replace('name=__NAME__', 'name=$' + '{0##*/}');
+const srvPin = (name) => new RegExp(`^${name}=([0-9A-F]{40})$`, 'm').exec(srvRead('setup.sh'))?.[1];
+// A call of a program that changes the host: an install, an index update, a user, a download, a unit, a firewall rule.
+const SRV_CHANGES = /^(?:useradd|usermod|curl) |^apt-get .* (?:install|update)(?: |$)|^systemctl (?:enable|restart|reload|start|stop) |^ufw (?:--force|default|allow) /;
+
+// The real tools that the sandbox links, found one time for all sandboxes, and the group of the user of the test.
+let srvToolList;
+const srvToolPaths = () => (srvToolList ??= spawnSync('bash', ['-c', 'for t in "$@"; do command -v "$t"; done', 'find', ...SRV_TOOLS], { encoding: 'utf8' }).stdout.trim().split('\n'));
+let SRV_GROUP = '';
+try { SRV_GROUP = execFileSync('id', ['-gn'], { encoding: 'utf8' }).trim(); } catch { /* the tests that use it skip on a system with no id */ }
+function srvSandbox({ docker = false, ufw = true, installed = ['ca-certificates', 'curl', 'gnupg'], osRelease = 'ID=ubuntu\nVERSION_ID="22.04"\nVERSION_CODENAME=jammy\n' } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'agents-host-'));
+  const d = Object.fromEntries(['root', 'bin', 'tools', 'state', 'logs', 'tmp'].map((n) => [n, join(dir, n)]));
+  for (const folder of Object.values(d)) mkdirSync(folder, { recursive: true });
+  mkdirSync(join(d.root, 'etc'));
+  writeFileSync(join(d.root, 'etc', 'os-release'), osRelease);
+  const program = join(d.bin, '.stand-in');
+  writeFileSync(program, SRV_STUB, { mode: 0o755 });
+  for (const name of [...SRV_STUBBED, ...(ufw ? ['ufw'] : []), ...(docker ? ['docker'] : [])]) symlinkSync(program, join(d.bin, name));
+  srvToolPaths().forEach((found, i) => symlinkSync(found, join(d.tools, SRV_TOOLS[i])));
+  writeFileSync(join(d.state, 'installed'), `${[...installed, ...(docker ? ['docker-ce', 'docker-compose-plugin'] : [])].join('\n')}\n`);
+  if (docker) writeFileSync(join(d.state, 'unit-docker'), '');
+  const user = userInfo().username;
+  const group = SRV_GROUP;
+  let runs = 0;
+  const box = {
+    dir,
+    fsRoot: d.root,
+    state: d.state,
+    user,
+    seed(rel, text) { mkdirSync(join(d.root, rel, '..'), { recursive: true }); writeFileSync(join(d.root, rel), text); },
+    seedState(name, text) { writeFileSync(join(d.state, name), text); },
+    // Put a program of our own in place of a stand-in. The old link goes first: a write through it would change the stand-in.
+    replaceProgram(name, script) { rmSync(join(d.bin, name), { force: true }); writeFileSync(join(d.bin, name), script, { mode: 0o755 }); },
+    file(rel) { return readFileSync(join(d.root, rel), 'utf8'); },
+    has(rel) { return existsSync(join(d.root, rel)); },
+    run(args = [], env = {}) {
+      runs += 1;
+      const log = join(d.logs, `run-${runs}`);
+      writeFileSync(log, '');
+      const r = spawnSync(join(d.tools, 'bash'), [join(root, SRV, 'setup.sh'), ...args], {
+        cwd: dir, encoding: 'utf8', timeout: 60_000,
+        env: {
+          PATH: `${d.bin}:${d.tools}`, HOME: dir, TMPDIR: d.tmp, AGENTS_HOST_ROOT: d.root, AGENTS_HOST_USER: user, AGENTS_HOST_GROUP: group,
+          STUB_STATE: d.state, STUB_LOG: log, STUB_BIN: d.bin, STUB_PROGRAM: program, STUB_UID: '0', STUB_USER_EXISTS: '', STUB_CONTAINERS: '', STUB_RUNNING: '',
+          STUB_VOLUMES: '', STUB_CADDY_INVALID: '', STUB_LISTEN: '', STUB_SSHD_PORT: '22', STUB_DOCKER_FPR: srvPin('DOCKER_KEY_FPR'), STUB_CADDY_FPR: srvPin('CADDY_KEY_FPR'), ...env,
+        },
+      });
+      return { status: r.status, stdout: r.stdout, stderr: r.stderr, calls: readFileSync(log, 'utf8').split('\n').filter(Boolean) };
+    },
+    // Every file and folder under the root of the host: kind, mode, path and the hash of the content.
+    tree() {
+      const out = [];
+      const walk = (abs, rel) => {
+        for (const entry of readdirSync(abs, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+          const path = join(abs, entry.name);
+          const name = rel === '' ? entry.name : `${rel}/${entry.name}`;
+          const mode = (statSync(path).mode & 0o777).toString(8);
+          if (entry.isDirectory()) {
+            out.push(`d ${mode} ${name}`);
+            walk(path, name);
+          } else {
+            out.push(`f ${mode} ${name} ${createHash('sha256').update(readFileSync(path)).digest('hex')}`);
+          }
+        }
+      };
+      walk(d.root, '');
+      return out;
+    },
+  };
+  return box;
+}
+function withSrvSandbox(options, fn) {
+  const box = srvSandbox(options);
+  try {
+    return fn(box);
+  } finally {
+    rmSync(box.dir, { recursive: true, force: true });
+  }
+}
+const srvMode = (box, rel) => (statSync(join(box.fsRoot, rel)).mode & 0o777).toString(8);
+
+test('agents host: setup.sh on a fresh host reads the two vendor keys over https, installs Docker and Caddy after the index update that follows each source, makes the user, writes its files and prints what it did', SRV_NEEDS, () => withSrvSandbox({}, (box) => {
+  const r = box.run(['alpha', 'beta']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^setup: result: \d+ changed, \d+ unchanged$/m);
+  assert.match(r.stdout, /^setup: changed: installed Docker Engine and the compose plugin$/m);
+  assert.match(r.stdout, /^setup: changed: installed Caddy$/m);
+  assert.match(r.stdout, /^setup: keys: this script made no key\./m);
+  // The order: key, index update, install, for Docker, and then for Caddy. A source that is added after the last update gives packages with no candidate.
+  const steps = r.calls.filter((c) => /^(?:curl|apt-get) /.test(c)).map((c) => (c.startsWith('curl ') ? c.split(' ').at(-1) : c.endsWith(' update') ? 'update' : `install ${c.replace(/^.* install /, '')}`));
+  assert.deepEqual(steps, [
+    'https://download.docker.com/linux/ubuntu/gpg', 'update', 'install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin',
+    'https://dl.cloudsmith.io/public/caddy/stable/gpg.key', 'update', 'install caddy',
+  ]);
+  for (const call of r.calls.filter((c) => c.startsWith('curl '))) assert.match(call, /^curl --fail --silent --show-error --location --proto =https --tlsv1\.2 --max-time 60 --output \S+ https:\/\/\S+$/);
+  assert.equal(box.file('etc/apt/sources.list.d/docker.list'), 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu jammy stable\n');
+  assert.equal(box.file('etc/apt/sources.list.d/caddy-stable.list'), 'deb [signed-by=/etc/apt/keyrings/caddy-stable.asc] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main\n');
+  assert.ok(box.has('etc/apt/keyrings/docker.asc') && box.has('etc/apt/keyrings/caddy-stable.asc'));
+  // The new Caddyfile is checked before it is written, and Caddy is reloaded after that, never restarted.
+  const validate = r.calls.findIndex((c) => c.startsWith('caddy validate --config ') && c.endsWith('/deploy/server/Caddyfile --adapter caddyfile'));
+  const reload = r.calls.indexOf('systemctl reload caddy');
+  assert.ok(validate >= 0 && reload > validate, 'validate, then reload');
+  assert.equal(r.calls.filter((c) => /^systemctl restart /.test(c)).map((c) => c.replace('systemctl restart ', '')).join(), 'systemd-journald');
+  // The user is a system user with a shell, made with no password, and it joins the group docker.
+  const useradd = r.calls.find((c) => c.startsWith('useradd '));
+  assert.match(useradd, /^useradd --system --user-group --create-home --home-dir \S+\/srv\/agents --shell \/bin\/bash \S+$/);
+  assert.ok(r.calls.includes(`usermod --append --groups docker ${box.user}`));
+  assert.equal(r.calls.filter((c) => /password/i.test(c)).length, 0);
+}));
+
+test('agents host: setup.sh run two times gives the same result: the second run changes no file, no user, no unit and no rule, and its result line says 0 changed', SRV_NEEDS, () => withSrvSandbox({}, (box) => {
+  const first = box.run(['alpha', 'beta']);
+  assert.equal(first.status, 0, first.stderr);
+  const treeAfterFirst = box.tree();
+  assert.ok(first.calls.filter((c) => SRV_CHANGES.test(c)).length > 15, 'the first run changes a lot');
+  const second = box.run(['alpha', 'beta']);
+  assert.equal(second.status, 0, second.stderr);
+  assert.deepEqual(box.tree(), treeAfterFirst, 'the files and folders are the same');
+  assert.deepEqual(second.calls.filter((c) => SRV_CHANGES.test(c)), [], 'no call changes the host');
+  assert.match(second.stdout, /^setup: result: 0 changed, \d+ unchanged$/m);
+  assert.doesNotMatch(second.stdout, /^setup: changed:/m);
+  // A third run with one more name changes that folder and nothing else.
+  const third = box.run(['alpha', 'beta', 'gamma']);
+  assert.equal(third.status, 0, third.stderr);
+  assert.match(third.stdout, /^setup: result: 1 changed, \d+ unchanged$/m);
+  assert.deepEqual(box.tree().filter((l) => !treeAfterFirst.includes(l)), ['d 750 srv/agents/gamma']);
+}));
+
+test('agents host: setup.sh stops on a host that runs the agents of the present host, with exit code 3 and no change; a host with other containers passes', SRV_NEEDS, () => {
+  const refused = [
+    ['a container of Agent History', { docker: true }, { STUB_CONTAINERS: 'unrelated agent-history-service' }, undefined, /container:agent-history-service/],
+    ['a stopped container of the Pipeline', { docker: true }, { STUB_CONTAINERS: 'document-pipeline-agent' }, undefined, /container:document-pipeline-agent/],
+    ['a container of Advocate', { docker: true }, { STUB_CONTAINERS: 'advocate-agent' }, undefined, /container:advocate-agent/],
+    ['a volume', { docker: true }, { STUB_VOLUMES: 'advocate-state' }, undefined, /volume:advocate-state/],
+    ['the volume of the Pipeline', { docker: true }, { STUB_VOLUMES: 'other document-pipeline-state' }, undefined, /volume:document-pipeline-state/],
+    ['a folder', {}, {}, (box) => box.seed('opt/audio-snippets/.keep', ''), /folder:\/opt\/audio-snippets/],
+    ['another folder', {}, {}, (box) => box.seed('opt/agent-history/.keep', ''), /folder:\/opt\/agent-history/],
+  ];
+  for (const [name, options, env, seed, expected] of refused) {
+    withSrvSandbox(options, (box) => {
+      seed?.(box);
+      const before = box.tree();
+      const r = box.run(['alpha'], env);
+      assert.equal(r.status, 3, `${name}: ${r.stdout}${r.stderr}`);
+      assert.match(r.stderr, /refused: this host runs the agents of the present host:/, name);
+      assert.match(r.stderr, expected, name);
+      assert.match(r.stderr, /nothing was changed/, name);
+      assert.deepEqual(box.tree(), before, `${name}: no file changed`);
+      assert.deepEqual(r.calls.filter((c) => SRV_CHANGES.test(c)), [], `${name}: no call changed the host`);
+      assert.equal(r.stdout, '', `${name}: nothing was printed as done`);
+    });
+  }
+  // The twin: containers, volumes and folders that are not the present host's pass.
+  withSrvSandbox({ docker: true }, (box) => {
+    box.seed('opt/something-else/.keep', '');
+    const r = box.run(['alpha'], { STUB_CONTAINERS: 'reorder-agent reorder-service unrelated', STUB_VOLUMES: 'reorder-state' });
+    assert.equal(r.status, 0, r.stderr);
+  });
+});
+
+test('agents host: setup.sh sets the firewall to TCP 22, 80 and 443 and nothing else, also when the firewall had another rule; a firewall that is right is not touched', SRV_NEEDS, () => {
+  const allowed = 'ufw allow 22/tcp\nufw allow 443/tcp\nufw allow 80/tcp\n';
+  const defaults = 'deny (incoming), allow (outgoing), disabled (routed)\n';
+  const writes = (calls) => calls.filter((c) => /^ufw (?:--force|default|allow) /.test(c)).map((c) => c.replace(/^ufw /, ''));
+  const APPLY = ['--force reset', 'default deny incoming', 'default allow outgoing', 'allow 22/tcp', 'allow 80/tcp', 'allow 443/tcp', '--force enable'];
+  const rules = (box) => readFileSync(join(box.state, 'ufw.rules'), 'utf8').trim().split('\n').sort();
+  const seeded = (box, text, { active = true, policy = defaults } = {}) => {
+    box.seedState('ufw.rules', text);
+    box.seedState('ufw.defaults', policy);
+    if (active) box.seedState('ufw.active', '');
+  };
+  const cases = [
+    ['a fresh firewall', () => {}, APPLY],
+    ['one more rule', (box) => seeded(box, `${allowed}ufw allow 8080/tcp\n`), APPLY],
+    ['one rule missing', (box) => seeded(box, 'ufw allow 22/tcp\nufw allow 443/tcp\n'), APPLY],
+    ['a rule for a port in the short form', (box) => seeded(box, `${allowed}ufw allow 9101\n`), APPLY],
+    ['the rules right and the firewall off', (box) => seeded(box, allowed, { active: false }), APPLY],
+    ['the rules right and incoming traffic allowed', (box) => seeded(box, allowed, { policy: 'allow (incoming), allow (outgoing), disabled (routed)\n' }), APPLY],
+    ['a firewall that is right', (box) => seeded(box, allowed), []],
+  ];
+  for (const [name, seed, expected] of cases) {
+    withSrvSandbox({}, (box) => {
+      seed(box);
+      const r = box.run(['alpha']);
+      assert.equal(r.status, 0, `${name}: ${r.stderr}`);
+      assert.deepEqual(writes(r.calls), expected, name);
+      assert.deepEqual(rules(box), ['ufw allow 22/tcp', 'ufw allow 443/tcp', 'ufw allow 80/tcp'], `${name}: the rules at the end`);
+      assert.ok(existsSync(join(box.state, 'ufw.active')), `${name}: the firewall is on at the end`);
+    });
+  }
+  // IPv6 goes through the firewall: a file that says IPV6=no is corrected, and the firewall is applied again.
+  withSrvSandbox({}, (box) => {
+    box.seed('etc/default/ufw', 'IPV6=no\nDEFAULT_INPUT_POLICY="DROP"\n');
+    seeded(box, allowed);
+    const r = box.run(['alpha']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(box.file('etc/default/ufw'), /^IPV6=yes$/m);
+    assert.deepEqual(writes(r.calls), APPLY);
+  });
+  // A host with no ufw gets it from apt first.
+  withSrvSandbox({ ufw: false }, (box) => {
+    const r = box.run(['alpha']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.calls.some((c) => /^apt-get .* install ufw$/.test(c)));
+    assert.deepEqual(writes(r.calls), APPLY);
+  });
+});
+
+test('agents host: setup.sh makes no key; the folder for keys is empty with mode 700, no file of the host holds key material, and the layout has the owners and modes of the README', SRV_NEEDS, () => withSrvSandbox({}, (box) => {
+  const r = box.run(['alpha', 'beta']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(readdirSync(join(box.fsRoot, 'srv/agents/keys')), [], 'no key');
+  const modes = Object.fromEntries(['srv/agents', 'srv/agents/keys', 'srv/agents/mock-systems', 'srv/agents/alpha', 'srv/agents/beta', 'etc/caddy/agents', 'etc/caddy/Caddyfile', 'etc/docker/daemon.json'].map((p) => [p, srvMode(box, p)]));
+  assert.deepEqual(modes, { 'srv/agents': '750', 'srv/agents/keys': '700', 'srv/agents/mock-systems': '750', 'srv/agents/alpha': '750', 'srv/agents/beta': '750', 'etc/caddy/agents': '755', 'etc/caddy/Caddyfile': '644', 'etc/docker/daemon.json': '644' });
+  // The README table says that the owner is the service user. The sandbox gives the user of the test that place.
+  for (const rel of ['srv/agents', 'srv/agents/keys', 'srv/agents/mock-systems', 'srv/agents/alpha', 'srv/agents/beta']) assert.equal(statSync(join(box.fsRoot, rel)).uid, userInfo().uid, rel);
+  for (const entry of box.tree().filter((l) => l.startsWith('f '))) {
+    const text = box.file(entry.split(' ')[2]);
+    assert.doesNotMatch(text, /[0-9a-fA-F]{56,}/, `${entry}: no run of hex that looks like a key`);
+    assert.doesNotMatch(text, /PRIVATE KEY|ed25519e?_sk|addr1[0-9a-z]{20,}/i, entry);
+  }
+  // Only the stand-ins ran. A key generator is not in the sandbox, so a call to one would have stopped the script.
+  assert.equal(r.calls.filter((c) => /keygen|genpkey|gen-keypair|openssl|--gen-key/.test(c)).length, 0);
+  // The README table gives the same modes.
+  const readme = srvRead('README.md');
+  for (const row of ['| `/srv/agents` | `agents`, 750 |', '| `/srv/agents/<agent>` | `agents`, 750 |', '| `/srv/agents/mock-systems` | `agents`, 750 |', '| `/srv/agents/keys` | `agents`, 700 |', '| `/etc/caddy/Caddyfile` | `root`, 644 |', '| `/etc/caddy/agents/*.snippet` | `root`, 644 |']) assert.ok(readme.includes(row), row);
+}));
+
+test('agents host: setup.sh writes daemon.json with the log limits, live-restore and the loopback default, copies the Caddyfile whole, limits the journal, and keeps an old file one time', SRV_NEEDS, () => withSrvSandbox({}, (box) => {
+  box.seed('etc/caddy/Caddyfile', ':80 {\n\trespond "welcome"\n}\n');
+  box.seed('etc/docker/daemon.json', '{ "debug": true }\n');
+  const r = box.run(['alpha']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(box.file('etc/docker/daemon.json')), { ip: '127.0.0.1', 'live-restore': true, 'log-driver': 'json-file', 'log-opts': { 'max-size': '10m', 'max-file': '3' } });
+  assert.equal(box.file('etc/caddy/Caddyfile'), srvRead('Caddyfile'), 'the file of the repository, byte for byte');
+  assert.equal(box.file('etc/systemd/journald.conf.d/agents-host.conf'), '[Journal]\nSystemMaxUse=1G\nSystemMaxFileSize=100M\nMaxRetentionSec=1month\n');
+  // The two old files are kept as they were, one time. A later change of the new file does not replace the copy.
+  assert.equal(box.file('etc/caddy/Caddyfile.before-setup'), ':80 {\n\trespond "welcome"\n}\n');
+  assert.equal(box.file('etc/docker/daemon.json.before-setup'), '{ "debug": true }\n');
+  box.seed('etc/caddy/Caddyfile', '# edited by hand\n');
+  const again = box.run(['alpha']);
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(box.file('etc/caddy/Caddyfile'), srvRead('Caddyfile'), 'the file is put back');
+  assert.equal(box.file('etc/caddy/Caddyfile.before-setup'), ':80 {\n\trespond "welcome"\n}\n', 'the first copy stays');
+}));
+
+test('agents host: setup.sh restarts Docker for a new daemon.json only when no container runs, and otherwise says pending', SRV_NEEDS, () => {
+  for (const [running, restarts] of [['', true], ['0123456789ab', false]]) {
+    withSrvSandbox({ docker: true }, (box) => {
+      box.seed('etc/docker/daemon.json', '{ "log-driver": "json-file" }\n');
+      const r = box.run([], { STUB_RUNNING: running });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.calls.includes('systemctl restart docker'), restarts, `containers running: ${JSON.stringify(running)}`);
+      assert.equal(/^setup: pending: daemon\.json changed, and containers run\./m.test(r.stdout), !restarts);
+      assert.equal(JSON.parse(box.file('etc/docker/daemon.json'))['live-restore'], true, 'the file is written in both cases');
+    });
+  }
+  // A host that has no Docker yet starts it with the file already in place: no restart is needed, and none is made.
+  withSrvSandbox({}, (box) => {
+    const r = box.run([]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.calls.includes('systemctl restart docker'), false);
+    assert.ok(r.stdout.indexOf('etc/docker/daemon.json') > 0 && r.stdout.indexOf('etc/docker/daemon.json') < r.stdout.indexOf('installed Docker Engine'), 'daemon.json is written before Docker is installed');
+  });
+  // The same run again, with the file as the script writes it: nothing is pending and no restart is made.
+  withSrvSandbox({ docker: true }, (box) => {
+    box.run([]);
+    const r = box.run([], { STUB_RUNNING: '0123456789ab' });
+    assert.equal(r.calls.includes('systemctl restart docker'), false);
+    assert.doesNotMatch(r.stdout, /pending/);
+  });
+});
+
+test('agents host: setup.sh refuses a user that is not root, another system, an SSH session or sshd off port 22, a program on port 80, a bad agent name, a key with another fingerprint, a conflicting package and a bad Caddy file; the clean run is the twin of each', SRV_NEEDS, () => {
+  const clean = withSrvSandbox({}, (box) => box.run(['alpha']));
+  assert.equal(clean.status, 0, clean.stderr);
+  const noChange = (box, r) => assert.deepEqual(r.calls.filter((c) => SRV_CHANGES.test(c)), []);
+  const noFirewall = (box, r) => assert.deepEqual(r.calls.filter((c) => /^ufw (?:--force|default|allow)/.test(c)), []);
+  const noCalls = (box, r) => assert.deepEqual(r.calls, []);
+  // [name, sandbox options, environment, arguments, expected message, a check of what did not happen]
+  const refusals = [
+    ['a user that is not root', {}, { STUB_UID: '1000' }, ['alpha'], /run this script as root/, noChange],
+    ['another system', { osRelease: 'ID=fedora\nVERSION_ID="40"\n' }, {}, ['alpha'], /needs Ubuntu or Debian \(apt\)\. This host runs 'fedora'/, noChange],
+    ['an OS file with no codename', { osRelease: 'ID=ubuntu\nVERSION_ID="22.04"\n' }, {}, ['alpha'], /has no codename/, noChange],
+    ['an SSH session on port 2222', {}, { SSH_CONNECTION: '192.0.2.1 50000 192.0.2.2 2222' }, ['alpha'], /this SSH session uses port 2222/, noFirewall],
+    ['sshd on port 2222', {}, { STUB_SSHD_PORT: '2222' }, ['alpha'], /sshd listens on port 2222/, noFirewall],
+    ['a web server on port 80', {}, { STUB_LISTEN: 'LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:(("nginx",pid=412,fd=6))' }, ['alpha'], /another program holds TCP 80 or 443: 0\.0\.0\.0:80 users:/, noChange],
+    ['a container proxy on port 443', {}, { STUB_LISTEN: 'LISTEN 0 4096 [::]:443 [::]:* users:(("docker-proxy",pid=7,fd=4))' }, ['alpha'], /another program holds TCP 80 or 443/, noChange],
+    ['an agent name with a slash', {}, {}, ['../x'], /bad agent name '\.\.\/x'/, noCalls],
+    ['an agent name in capitals', {}, {}, ['Alpha'], /bad agent name 'Alpha'/, noCalls],
+    ['an agent name that is too long', {}, {}, ['a'.repeat(32)], /bad agent name/, noCalls],
+    ['the name of the key folder', {}, {}, ['keys'], /the name 'keys' is for the set-up itself/, noCalls],
+    ['the name of the mock folder', {}, {}, ['alpha', 'mock-systems'], /the name 'mock-systems' is for the set-up itself/, noCalls],
+    ['a Docker key with another fingerprint', {}, { STUB_DOCKER_FPR: 'A'.repeat(40) }, ['alpha'], /the key from https:\/\/download\.docker\.com\/linux\/ubuntu\/gpg does not have the fingerprint [0-9A-F]{40}/, (box, r) => {
+      assert.equal(box.has('etc/apt/sources.list.d/docker.list'), false, 'no source is written');
+      assert.equal(box.has('etc/apt/keyrings/docker.asc'), false, 'no key is installed');
+      assert.equal(r.calls.some((c) => / install docker-ce/.test(c)), false, 'no package is installed');
+    }],
+    ['a Caddy key with another fingerprint', { docker: true }, { STUB_CADDY_FPR: 'B'.repeat(40) }, ['alpha'], /the key from https:\/\/dl\.cloudsmith\.io\/public\/caddy\/stable\/gpg\.key does not have the fingerprint/, (box, r) => {
+      assert.equal(box.has('etc/apt/sources.list.d/caddy-stable.list'), false);
+      assert.equal(r.calls.some((c) => / install caddy/.test(c)), false);
+    }],
+    ['the Ubuntu Docker package', { installed: ['ca-certificates', 'curl', 'gnupg', 'docker.io'] }, {}, ['alpha'], /these packages conflict with Docker Engine\. Remove them first: docker\.io/, (box, r) => {
+      assert.equal(r.calls.some((c) => / install docker-ce/.test(c)), false);
+      assert.equal(box.has('etc/apt/sources.list.d/docker.list'), false);
+    }],
+    ['a Caddy file that does not validate', {}, { STUB_CADDY_INVALID: '1' }, ['alpha'], /caddy validate stops on the new Caddyfile or on a snippet in \/etc\/caddy\/agents: Error: the stand-in says/, (box) => {
+      assert.equal(box.has('etc/caddy/Caddyfile'), false, 'the old file is not replaced');
+      assert.equal(box.has('etc/systemd/journald.conf.d/agents-host.conf'), false, 'nothing runs after the refusal');
+    }],
+  ];
+  for (const [name, options, env, args, expected, check] of refusals) {
+    withSrvSandbox(options, (box) => {
+      const r = box.run(args, env);
+      assert.equal(r.status, 1, `${name}: ${r.stdout}${r.stderr}`);
+      assert.match(r.stderr, expected, name);
+      assert.doesNotMatch(r.stderr, /stopped \(exit/, `${name}: a refusal gives no "stopped" line`);
+      check(box, r);
+    });
+  }
+});
+
+test('agents host: setup.sh installs a missing prerequisite before Docker, reads the package lists again after each new source, and gives the line that says the script is safe to run again when apt fails', SRV_NEEDS, () => {
+  withSrvSandbox({ installed: ['ca-certificates', 'curl'] }, (box) => {
+    const r = box.run([]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^setup: changed: installed gnupg$/m);
+    // The first index update serves the prerequisite. A source that comes after it needs an update of its own, or its packages have no candidate.
+    const steps = r.calls.filter((c) => /^(?:curl|apt-get) /.test(c)).map((c) => (c.startsWith('curl ') ? c.split(' ').at(-1) : c.endsWith(' update') ? 'update' : `install ${c.replace(/^.* install /, '')}`));
+    assert.deepEqual(steps, [
+      'update', 'install gnupg',
+      'https://download.docker.com/linux/ubuntu/gpg', 'update', 'install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin',
+      'https://dl.cloudsmith.io/public/caddy/stable/gpg.key', 'update', 'install caddy',
+    ]);
+  });
+  withSrvSandbox({}, (box) => {
+    box.replaceProgram('apt-get', '#!/usr/bin/env bash\necho "E: Could not get lock" >&2\nexit 100\n');
+    box.replaceProgram('dpkg-query', '#!/usr/bin/env bash\nexit 1\n');
+    const r = box.run([]);
+    assert.equal(r.status, 100, r.stderr);
+    assert.match(r.stderr, /setup: stopped \(exit 100\)\. Fix the cause\. The script is safe to run again\./);
+  });
+});
+
+// ---- The proof script, the README and the runbook ----
+import { X509Certificate } from 'node:crypto';
+import { AGENT_SNIPPET, ADMIN_LINE, HOST_PLACEHOLDER, MTLS_PLACEHOLDER, UPSTREAM, clientCertValue, fillAgentSnippet, fillSnippet, headerValues, proofCaddyfile } from '../deploy/server/prove-mock-mtls.mjs';
+
+// One public test certificate (a self-signed client certificate with a SPIFFE ID). Its private key was destroyed when it was made. The tests use its bytes only.
+const SRV_TEST_CERT = `-----BEGIN CERTIFICATE-----
+MIIBwzCCAWmgAwIBAgIUCebbW8qSmQrpDyc7gxgMjoHMH7owCgYIKoZIzj0EAwIw
+FjEUMBIGA1UEAwwLdGVzdCBjbGllbnQwIBcNMjYxMTE5MTgxMDE1WhgPMjEyNjEw
+MjYxODEwMTVaMBYxFDASBgNVBAMMC3Rlc3QgY2xpZW50MFkwEwYHKoZIzj0CAQYI
+KoZIzj0DAQcDQgAEeg3wAO7KBWIZOd7osXm9mmL9Gisyem9EoXIwL7QMUWLkQHOB
+/mQU8XT88Y/b1/GlzaAZEIUe2q77/YqdsYzt7KOBkjCBjzAdBgNVHQ4EFgQUcRDs
+jowTYpWCKxL67+bXVW2aTgUwHwYDVR0jBBgwFoAUcRDsjowTYpWCKxL67+bXVW2a
+TgUwDwYDVR0TAQH/BAUwAwEB/zAnBgNVHREEIDAehhxzcGlmZmU6Ly90ZXN0LmV4
+YW1wbGUvY2xpZW50MBMGA1UdJQQMMAoGCCsGAQUFBwMCMAoGCCqGSM49BAMCA0gA
+MEUCIQCmrOwslKJSBUSAT5Pne2a3qqXR8mGjSyj4tTaoK0PI7wIgP9b04ss0PcEu
+dU2vOq5bnjiXwkW7gODMOWtbRp9woJU=
+-----END CERTIFICATE-----
+`;
+
+test('agents host: the proof script fills the real snippet and the real main Caddyfile, and refuses a text that lacks a placeholder or the admin line', () => {
+  const snippet = srvRead('Caddyfile.mock-systems.snippet');
+  const filled = fillSnippet(snippet, { host: 'a.test:18443', mtlsHost: 'b.test:18443', upstream: '127.0.0.1:19120' });
+  for (const part of [HOST_PLACEHOLDER, MTLS_PLACEHOLDER, UPSTREAM]) assert.equal(filled.split(part).length, 1, `${part} is gone`);
+  const sites = srvCaddyTree(filled);
+  assert.deepEqual(sites.map((s) => s.head), ['a.test:18443', 'b.test:18443']);
+  assert.equal(srvFlat(sites).filter((h) => h.startsWith('reverse_proxy 127.0.0.1:19120')).length, 3, 'the three proxy lines go to the echo backend');
+  for (const part of [HOST_PLACEHOLDER, MTLS_PLACEHOLDER, UPSTREAM]) {
+    assert.throws(() => fillSnippet(snippet.split(part).join('x'), { host: 'a', mtlsHost: 'b', upstream: 'c' }), new RegExp(srvEscape(part)), part);
+  }
+  const main = srvRead('Caddyfile');
+  const proof = proofCaddyfile(main, { httpPort: 18080, httpsPort: 18443 });
+  const lines = proof.split('\n');
+  assert.equal(lines.includes(ADMIN_LINE), false, 'the admin line is replaced');
+  for (const line of ['\tadmin off', '\tlocal_certs', '\tskip_install_trust', '\thttp_port 18080', '\thttps_port 18443', '\tdefault_bind 127.0.0.1', '\t\tprotocols h1 h2', `import ${SRV_FOLDER}/*.snippet`]) assert.ok(lines.includes(line), line);
+  assert.equal(srvCaddyTree(proof).length, 2, 'the global block and the import line');
+  assert.throws(() => proofCaddyfile(srvReplace(main, ADMIN_LINE, '\tadmin off'), { httpPort: 1, httpsPort: 2 }), /admin line once/);
+  assert.throws(() => proofCaddyfile(`${main}${ADMIN_LINE}\n`, { httpPort: 1, httpsPort: 2 }), /admin line once/);
+  // The snippet of an agent, and the reader of the raw header list of a Node request.
+  const agent = fillAgentSnippet(AGENT_SNIPPET, { host: 'agent.example.test', servicePort: 9101, runtimePort: 8101 });
+  assert.deepEqual(srvFlat(srvCaddyTree(agent)), ['agent.example.test', 'handle /agent.json', 'reverse_proxy 127.0.0.1:9101', 'handle', 'reverse_proxy 127.0.0.1:8101']);
+  for (const part of ['<agent-host>', '<service-port>', '<runtime-port>']) {
+    assert.throws(() => fillAgentSnippet(AGENT_SNIPPET.split(part).join('x'), { host: 'a', servicePort: 1, runtimePort: 2 }), new RegExp(srvEscape(part)), part);
+  }
+  assert.deepEqual(headerValues(['Host', 'a', 'client-cert', ':X:', 'CLIENT-CERT', ':Y:', 'Client-Cert-Chain', ':Z:'], 'Client-Cert'), [':X:', ':Y:']);
+  assert.deepEqual(headerValues(['Host', 'a'], 'Client-Cert'), []);
+});
+
+test('agents host: the README gives the counts, the memory and the plan of the ports, and the snippet shape of the README is the one that the proof validates', () => {
+  const readme = srvRead('README.md');
+  for (const part of ['The host has 19 containers: 8 services, 10 runtimes and 1 mock service.', '| Memory | 8 GiB |', '| Agent host names | 10 | A, DNS only |', '| Mock host names | 2 | A, DNS only |', '| Organisation checks | 9 | TXT |']) assert.ok(readme.includes(part), part);
+  // The plan of the ports: the counts in the rows are the sizes of the ranges, and together they are the 19 containers.
+  const plan = Object.fromEntries([...readme.matchAll(/^\| (Runtime|Service|Mock service) \((\d+)\) \| (\d+)(?: to (\d+))? \|$/gm)].map((m) => [m[1], { count: Number(m[2]), from: Number(m[3]), to: Number(m[4] ?? m[3]) }]));
+  assert.deepEqual(Object.keys(plan), ['Runtime', 'Service', 'Mock service']);
+  for (const [name, { count, from, to }] of Object.entries(plan)) assert.equal(to - from + 1, count, `${name}: the range has as many ports as the count`);
+  assert.equal(plan.Runtime.count + plan.Service.count + plan['Mock service'].count, 19);
+  assert.ok(plan.Runtime.to < plan.Service.from && plan.Service.to < plan['Mock service'].from, 'the ranges do not overlap');
+  assert.equal(SRV_UPSTREAM, `127.0.0.1:${plan['Mock service'].from}`, 'the snippet proxies to the port of the mock service in the plan');
+  const runbook = srvRead('RUNBOOK.md');
+  assert.ok(runbook.includes(`seq ${plan.Runtime.from} ${plan.Runtime.to}`), 'the runbook checks each runtime port of the plan');
+  assert.ok(runbook.includes(`range ${plan.Runtime.from} to ${plan.Runtime.to}`) && runbook.includes(`range ${plan.Service.from} to ${plan.Service.to}`));
+  // The snippet shape of an agent.
+  const block = /\n```\n(<agent-host> \{\n[\s\S]*?\n\})\n```\n/.exec(readme)?.[1];
+  assert.equal(`${block}\n`, AGENT_SNIPPET);
+});
+
+test('agents host: the README gives the header Client-Cert as the snippet sets it, and its example code reads a real value and gives null for a bad one', () => {
+  const readme = srvRead('README.md');
+  const FORM = '^:[A-Za-z0-9+/]+={0,2}:$';
+  for (const row of ['| Name | `Client-Cert` (the name of RFC 9440) |', '| Value | `:` + the standard base64 of the DER bytes of the certificate + `:` |', `| Form of the value | \`${FORM}\` |`]) assert.ok(readme.includes(row), row);
+  assert.ok(srvRead('Caddyfile.mock-systems.snippet').includes(`header_up Client-Cert ":${SRV_CERT}:"`), 'the snippet sets that value');
+  // The value of the proof is the value of the table, for a real certificate.
+  const value = clientCertValue(SRV_TEST_CERT);
+  assert.match(value, new RegExp(FORM));
+  const der = new X509Certificate(SRV_TEST_CERT).raw;
+  assert.equal(value, `:${der.toString('base64')}:`);
+  assert.equal(Buffer.from(value.slice(1, -1), 'base64').equals(der), true, 'the value decodes to the DER bytes');
+  // The example code of the README runs as written, in a child process, with the value and with bad values.
+  const code = /```js\n([\s\S]*?)\n```/.exec(readme)?.[1];
+  assert.ok(code, 'the README has the example');
+  const codeLines = code.split('\n');
+  const source = [
+    ...codeLines.filter((l) => l.startsWith('import ')),
+    'const run = (req) => {',
+    ...codeLines.filter((l) => !l.startsWith('import ')),
+    'return certificate;',
+    '};',
+    'const inputs = JSON.parse(process.argv[2]);',
+    "console.log(JSON.stringify(inputs.map((h) => { const c = run({ headers: { 'client-cert': h ?? undefined } }); return c && { subject: c.subject, fingerprint: c.fingerprint256 }; })));",
+  ].join('\n');
+  const dir = mkdtempSync(join(tmpdir(), 'agents-host-example-'));
+  try {
+    writeFileSync(join(dir, 'example.mjs'), source);
+    const bad = [null, value.slice(1, -1), `${value}, ${value}`, ':not base64!:', '::', `${value} `, `x${value}`, ':AAAA:'];
+    const out = JSON.parse(execFileSync(process.execPath, [join(dir, 'example.mjs'), JSON.stringify([value, ...bad])], { encoding: 'utf8' }));
+    assert.deepEqual(out[0], { subject: 'CN=test client', fingerprint: new X509Certificate(SRV_TEST_CERT).fingerprint256 });
+    assert.deepEqual(out.slice(1), bad.map(() => null), 'no header, no colons, two headers, no base64, an empty value, a space, a prefix and bytes that are not a certificate all give null');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('agents host: the runbook has its steps in order, the README points at them, and the failure table uses the messages of the script', () => {
+  const runbook = srvRead('RUNBOOK.md');
+  const readme = srvRead('README.md');
+  const setup = srvRead('setup.sh');
+  assert.deepEqual([...runbook.matchAll(/^## (.+)$/gm)].map((m) => m[1]), [
+    '1. Get the host', '2. Put the files on the host', '3. Run the script', '4. Check the host', '5. Make the DNS records', '6. Install the snippet of the mock systems',
+    '7. Add an agent', '8. Remove an agent', 'Keys', 'The restart rule', 'Upgrade the host', 'The failure table',
+  ]);
+  assert.ok(readme.includes('(RUNBOOK, step 6)') && runbook.includes('\n## 6. Install the snippet of the mock systems\n'));
+  assert.ok(readme.includes('See the RUNBOOK, section "Keys".') && runbook.includes('\n## Keys\n'));
+  assert.ok(runbook.includes('(README, section "The local proof")') && readme.includes('\n### The local proof\n'));
+  // A message in the failure table is a message that the script prints.
+  for (const message of ['this host runs the agents of the present host', 'another program holds TCP 80 or 443', 'this SSH session uses port', 'does not have the fingerprint', 'conflict with Docker Engine', 'caddy validate stops on', 'pending: daemon.json changed', 'stopped (exit']) {
+    assert.ok(runbook.includes(message), `the runbook says: ${message}`);
+    assert.ok(setup.includes(message), `the script says: ${message}`);
+  }
+  // The rules that both documents give: the restart rule, the keys rule and the modes that the check of step 4 expects.
+  for (const text of [readme, runbook]) assert.ok(text.includes('A restart during a run is forbidden.'));
+  assert.ok(readme.includes('Reload Caddy. Do not restart it.') && runbook.includes('Never restart Caddy. Reload it.'));
+  assert.ok(readme.includes('No key is made on another machine. No key leaves the host.'));
+  for (const rule of ['Make each key on this host. Never make a key on another machine.', 'Make a key as the service user, in `/srv/agents/keys`, with `umask 077`. A key file has mode 600.', 'The key never leaves the host. Nobody signs on another machine.', 'The script makes no key and reads no key.']) assert.ok(runbook.includes(rule), rule);
+  assert.ok(runbook.includes('`750 agents:agents /srv/agents`, `700 agents:agents /srv/agents/keys`, `750 agents:agents /srv/agents/mock-systems`'));
+});
+
+test('agents host: the commands of the runbook run as written: the check of the listeners, the change of the placeholders, the check for a public container port and the check of each runtime', NEEDS_BASH, () => {
+  const runbook = srvRead('RUNBOOK.md');
+  const lines = runbook.split('\n').map((l) => l.trim());
+  const line = (start) => {
+    const found = lines.find((l) => l.startsWith(start));
+    assert.ok(found, `the runbook has a command that starts with: ${start}`);
+    return found;
+  };
+  const dir = mkdtempSync(join(tmpdir(), 'agents-host-runbook-'));
+  // The lines that a command reads from a program of the system are replaced by a sample.
+  const sampled = (command, source, sample) => runBash(`SAMPLE=$'${sample.split('\n').join('\\n')}'\n${command.replace(source, 'printf \'%s\\n\' "$SAMPLE"')}\n`, dir);
+  try {
+    // 1. The listeners: the three public ports and the loopback addresses pass. Any other address is printed.
+    const listeners = line('ss -ltnH');
+    const fine = ['LISTEN 0 128 0.0.0.0:22 0.0.0.0:*', 'LISTEN 0 128 [::]:22 [::]:*', 'LISTEN 0 511 *:80 *:*', 'LISTEN 0 511 *:443 *:*', 'LISTEN 0 4096 127.0.0.1:2019 0.0.0.0:*', 'LISTEN 0 4096 127.0.0.53%lo:53 0.0.0.0:*', 'LISTEN 0 4096 [::1]:8101 [::]:*', 'LISTEN 0 4096 127.0.0.1:9120 0.0.0.0:*'];
+    assert.equal(sampled(listeners, 'ss -ltnH', fine.join('\n')).stdout, 'ok: no other public listener\n');
+    for (const extra of ['LISTEN 0 4096 0.0.0.0:8101 0.0.0.0:*', 'LISTEN 0 4096 [::]:9101 [::]:*', 'LISTEN 0 4096 *:8080 *:*', 'LISTEN 0 4096 192.0.2.7:2019 0.0.0.0:*']) {
+      const r = sampled(listeners, 'ss -ltnH', [...fine, extra].join('\n'));
+      assert.equal(r.stdout, `${extra.split(' ')[3]}\n`, `the check prints ${extra}`);
+    }
+    // 2. The placeholders of the snippet: both are replaced, and the check says so. Copies that keep a placeholder fail the check.
+    copyFileSync(join(root, SRV, 'Caddyfile.mock-systems.snippet'), join(dir, 'Caddyfile.mock-systems.snippet'));
+    const sed = line('sed -e "s|<mock-host>|');
+    const check = line('if grep -qF -e');
+    const done = runBash(`MOCK_HOST=mock.example.test\nMOCK_MTLS_HOST=mock-mtls.example.test\n${sed}\n${check}\n`, dir);
+    assert.equal(done.stdout, 'ok\n', done.stderr);
+    assert.deepEqual(srvMockSnippetProblems(readFileSync(join(dir, 'mock-systems.snippet'), 'utf8').split('mock.example.test').join('<mock-host>').split('mock-mtls.example.test').join('<mock-mtls-host>')), [], 'the copy is the snippet with two names in place of the placeholders');
+    assert.deepEqual(srvCaddyTree(readFileSync(join(dir, 'mock-systems.snippet'), 'utf8')).map((s) => s.head), ['mock.example.test', 'mock-mtls.example.test']);
+    assert.equal(runBash(`cp Caddyfile.mock-systems.snippet mock-systems.snippet\n${check}\n`, dir).stdout, 'a placeholder is left\n', 'no placeholder replaced');
+    assert.equal(runBash(`MOCK_HOST=mock.example.test\nsed -e "s|<mock-host>|$MOCK_HOST|g" Caddyfile.mock-systems.snippet > mock-systems.snippet\n${check}\n`, dir).stdout, 'a placeholder is left\n', 'one placeholder replaced');
+    assert.ok(runbook.includes('sudo install -m 644 -o root -g root mock-systems.snippet /etc/caddy/agents/mock-systems.snippet'), 'the copy is installed with a mode that Caddy can read');
+    // 3. The public container port: the loopback forms and a container with no port pass. A public address is found.
+    const publicPorts = line("docker ps --format '{{.Names}} {{.Ports}}'");
+    const source = "docker ps --format '{{.Names}} {{.Ports}}'";
+    assert.equal(sampled(publicPorts, source, 'a-agent 127.0.0.1:8101->8080/tcp\na-service 127.0.0.1:9101->9091/tcp\nb-agent ').stdout, 'ok: no public container port\n');
+    for (const bad of ['c-agent 0.0.0.0:8102->8080/tcp, [::]:8102->8080/tcp', 'c-agent 0.0.0.0:8102->8080/tcp', 'c-agent [::]:8102->8080/tcp']) {
+      assert.match(sampled(publicPorts, source, `a-agent 127.0.0.1:8101->8080/tcp\n${bad}`).stdout, /PUBLIC PORT FOUND\n$/, bad);
+    }
+    // 4. The check of each runtime: ten ports, one answer or "no answer" for each.
+    mkdirSync(join(dir, 'bin'));
+    writeFileSync(join(dir, 'bin', 'curl'), '#!/bin/bash\nfor last; do :; done\ncase "$last" in *:8105/status) exit 7 ;; esac\nprintf free\n', { mode: 0o755 });
+    const loop = line('for port in $(seq');
+    const r = runBash(`PATH="${join(dir, 'bin')}:$PATH"\n${loop}\n`, dir);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(r.stdout.trim().split('\n'), Array.from({ length: 10 }, (_, i) => `${8101 + i}: ${8101 + i === 8105 ? 'no answer' : 'free'}`));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('agents host: no command of the runbook prints a key or an env file, and none makes a key', () => {
+  const runbook = srvRead('RUNBOOK.md');
+  const blocks = [...runbook.matchAll(/```[a-z]*\n([\s\S]*?)\n\s*```/g)].map((m) => m[1]).join('\n');
+  assert.ok(blocks.length > 2000, `the guard reads the code blocks, found ${blocks.length} characters`);
+  const danger = /keygen|genpkey|gen-keypair|openssl\s+(?:req|genpkey|rand)|\bcat\b[^\n]*(?:\.env|keys\/|\.key|\.skey)|\bprintenv\b|\bdocker\s+(?:compose\s+config|inspect)\b/i;
+  assert.doesNotMatch(blocks, danger);
+  for (const bad of ['ssh-keygen -t ed25519', 'cat /srv/agents/keys/service.key', 'cat .env.agent', 'docker compose config', 'docker inspect agent', 'printenv', 'gen-keypair --network 1', 'openssl genpkey -algorithm ed25519']) assert.match(bad, danger, bad);
+});
