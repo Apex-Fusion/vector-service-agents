@@ -96,6 +96,17 @@ function stateOf(value: unknown, path: string): CheckState {
 
 export interface StateIdentity { check: string; network: string; record: string }
 
+/** Reads a state file that is there: its mode, its JSON and its shape are checked. */
+function readState(path: string): CheckState {
+  const mode = statSync(path).mode & 0o777;
+  if (process.platform !== 'win32' && (mode & 0o077) !== 0) throw new StateError('mode', `${path} has mode ${mode.toString(8)} and other users can read it: set mode 600 on it`);
+  let parsed: unknown;
+  try { parsed = JSON.parse(readFileSync(path, 'utf8')); } catch (err) {
+    throw new StateError(err instanceof SyntaxError ? 'invalid' : 'unreadable', `${path} is ${err instanceof SyntaxError ? 'not JSON' : 'not readable'}: repair it, or move it away to start the check again`);
+  }
+  return stateOf(parsed, path);
+}
+
 export class StateFile {
   readonly path: string;
   readonly #io: Partial<WriteIo>;
@@ -117,17 +128,16 @@ export class StateFile {
       writeFileAtomically(path, `${JSON.stringify(state, null, 2)}\n`, io);
       return new StateFile(path, state, io);
     }
-    const mode = statSync(path).mode & 0o777;
-    if (process.platform !== 'win32' && (mode & 0o077) !== 0) throw new StateError('mode', `${path} has mode ${mode.toString(8)} and other users can read it: set mode 600 on it`);
-    let parsed: unknown;
-    try { parsed = JSON.parse(readFileSync(path, 'utf8')); } catch (err) {
-      throw new StateError(err instanceof SyntaxError ? 'invalid' : 'unreadable', `${path} is ${err instanceof SyntaxError ? 'not JSON' : 'not readable'}: repair it, or move it away to start the check again`);
-    }
-    const state = stateOf(parsed, path);
+    const state = readState(path);
     for (const field of ['check', 'network', 'record'] as const) {
       if (state[field] !== identity[field]) throw new StateError('mismatch', `${path} is the state of another ${field} (${field}: ${state[field]}), and this run is for ${identity[field]}: use another folder or another record`);
     }
     return new StateFile(path, state, io);
+  }
+
+  /** Reads the state file of a check, for another check that needs a fact of it. It makes nothing: a file that is not there gives null. */
+  static peek(path: string): CheckState | null {
+    return existsSync(path) ? readState(path) : null;
   }
 
   snapshot(): CheckState {
@@ -172,11 +182,12 @@ export class StateFile {
     this.#commit((next) => { next.notes[key] = structuredClone(value); });
   }
 
-  /** Applies a change to a copy, writes the copy, and keeps it only when the write worked. */
+  /** Applies a change to a copy, writes the copy, and keeps what was written only when the write worked. A bigint is written as its decimal text. */
   #commit(change: (next: CheckState) => void): void {
     const next = structuredClone(this.#state);
     change(next);
-    writeFileAtomically(this.path, `${JSON.stringify(next, null, 2)}\n`, this.#io);
-    this.#state = next;
+    const text = `${JSON.stringify(next, (_key, value: unknown) => (typeof value === 'bigint' ? value.toString() : value), 2)}\n`;
+    writeFileAtomically(this.path, text, this.#io);
+    this.#state = JSON.parse(text) as CheckState;
   }
 }

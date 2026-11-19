@@ -14,7 +14,7 @@ export {
 } from '../../../packages/buyer-core/src/index.ts';
 export type { Chain, ChainEscrowState, IdentityDeployment, PostResult } from '../../../packages/buyer-core/src/index.ts';
 
-export { HIRE_ACTION, buildDelegate, buildUndelegate, escrowResource } from '../../../packages/buyer-core/src/vendored/mcp/delegation-build.ts';
+export { HIRE_ACTION, buildDelegate, buildUndelegate, escrowResource, validActionPattern, validResourcePattern } from '../../../packages/buyer-core/src/vendored/mcp/delegation-build.ts';
 export type { DelegateBuild, DelegateParams, UndelegateBuild } from '../../../packages/buyer-core/src/vendored/mcp/delegation-build.ts';
 export { VaultPayImpossible, VaultPayNotEvaluated, VaultPayRefused, buildVaultClose, buildVaultOpen, buildVaultPay } from '../../../packages/buyer-core/src/vendored/mcp/vault-build.ts';
 export type { VaultCloseBuild, VaultOpenBuild, VaultPayBuild } from '../../../packages/buyer-core/src/vendored/mcp/vault-build.ts';
@@ -23,6 +23,8 @@ export type { AttestBuild, WithdrawBuild } from '../../../packages/buyer-core/sr
 export { identityDeploymentFrom, makeIdentityDeployment } from '../../../packages/buyer-core/src/vendored/mcp/identity-deployment.ts';
 export { blake2b256Hex } from '../../../packages/buyer-core/src/vendored/mcp/jury-codec.ts';
 export type { BuildCommon, IdentityContext } from '../../../packages/buyer-core/src/vendored/mcp/identity-build.ts';
+export { findRecord } from '../../../packages/buyer-core/src/vendored/mcp/identity-chain.ts';
+export { PURPOSE, effectiveStatus } from '../../../packages/buyer-core/src/vendored/mcp/identity-rules.ts';
 
 export { decodeTransaction } from '../../../packages/vector-read/src/guarded-decode.ts';
 export { decodeIdentityEscrowDatum, formatOutRef, parseOutRef } from '../../../packages/vector-read/src/index.ts';

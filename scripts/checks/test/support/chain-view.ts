@@ -7,7 +7,7 @@ import { OgmiosRpcError } from '../../../../packages/buyer-core/src/vendored/mcp
 import { decodeTransaction } from '../../lib/platform.ts';
 import type { Utxo } from '../../lib/platform.ts';
 
-interface Redeemer { ex_units: { mem: number; steps: number }; redeemer_index: number; redeemer_tag: string }
+interface Redeemer { ex_units: { mem: number; steps: number }; redeemer_index: number; redeemer_tag: (typeof TAGS)[number] }
 
 /** Lucid and its evaluator, from the place of buyer-core: the version that buyer-core pins. The tests of the checks name no package of their own. */
 const BUYER_CORE = fileURLToPath(new URL('../../../../packages/buyer-core/package.json', import.meta.url));
