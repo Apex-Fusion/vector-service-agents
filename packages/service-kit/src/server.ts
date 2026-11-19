@@ -26,6 +26,8 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer as httpServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
+import { ContextError, parseContext } from './context.ts';
+import type { JobContext } from './context.ts';
 import type { HealthMonitor } from './health.ts';
 import { JobSlot } from './slot.ts';
 import { errorText } from './text.ts';
@@ -56,8 +58,11 @@ export interface JobServerOptions<Req, Res> {
   authHeader: string;
   /** The request JSON (the content of the wire message) as the request of the job; throws what refusalOf reads for a request it refuses. */
   parse: (requestJson: string) => Req;
-  /** Runs one job, which arrived at `arrivedAt` (the clock's time). With abortOnClose it is given `signal`, which aborts when the caller hangs up. */
-  run: (request: Req, arrivedAt: number, signal?: AbortSignal) => Promise<Res>;
+  /**
+   * Runs one job, which arrived at `arrivedAt` (the clock's time). With abortOnClose it is given `signal`, which aborts when the caller hangs up. `context` is what
+   * the runtime said of the escrow in the six context headers of the call (src/context.ts), and is undefined for a call that came with none.
+   */
+  run: (request: Req, arrivedAt: number, signal?: AbortSignal, context?: JobContext) => Promise<Res>;
   /** The answer's body: JSON.stringify(result) by default, made once, exactly the bytes the runtime hashes. */
   serialize?: (result: Res) => string;
   /** Called with a result that is about to be answered: the service writes its own line ("job done in <ms> ms" by default). */
@@ -158,9 +163,15 @@ export function createJobServer<Req, Res>(opts: JobServerOptions<Req, Res>): Ser
         noteRefusal(arrivedAt);
         return send(401, { error: 'unauthorized' });
       }
+      // The context of the call, when the runtime sent one, is read before the body: a call with a bad header is refused with no upload read.
+      const context = parseContext(req.headers);
       const request = opts.parse(parseWire(await readBody(req)));
-      const taken = slot.take();
+      const taken = slot.take(context?.escrowRef, clock());
       if (taken === 'busy') return send(409, { error: 'busy' });
+      if (taken === 'held') {
+        log('job refused: the slot is held for another escrow');
+        return send(409, { error: 'busy' });
+      }
       if (taken === 'draining') {
         log('job refused: the service is stopping');
         return send(503, { error: 'shutting_down', message: STOPPING_TEXT });
@@ -181,7 +192,7 @@ export function createJobServer<Req, Res>(opts: JobServerOptions<Req, Res>): Ser
           res.on('close', abandoned);
           if (res.destroyed) abandoned(); // gone before the job began
         }
-        result = await opts.run(request, arrivedAt, abort?.signal);
+        result = await opts.run(request, arrivedAt, abort?.signal, context);
       } finally {
         clearInterval(heartbeat);
         if (abort !== undefined) res.off('close', abandoned);
@@ -193,7 +204,7 @@ export function createJobServer<Req, Res>(opts: JobServerOptions<Req, Res>): Ser
     } catch (e) {
       // Headers already out: nothing more can be said on this response. Log why, then cut it.
       if (res.headersSent) { log(`response failed after the headers were sent: ${errorText(e)}`); res.destroy(); return; }
-      const refusal: Refusal | null = e instanceof WireError ? { code: e.code, status: e.status, message: e.message, kind: 'request' } : opts.refusalOf(e);
+      const refusal: Refusal | null = e instanceof WireError || e instanceof ContextError ? { code: e.code, status: e.status, message: e.message, kind: 'request' } : opts.refusalOf(e);
       if (refusal !== null) {
         const took = clock() - arrivedAt;
         if (refusal.status >= 500) {

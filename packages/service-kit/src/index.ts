@@ -12,7 +12,9 @@ export {
 } from './env.ts';
 export type { StatusChip } from './env.ts';
 export { MAX_BODY, WireError, parseWire, readBody } from './wire.ts';
-export { JobSlot } from './slot.ts';
+export { CONTEXT_HEADERS } from './context.ts';
+export type { JobContext } from './context.ts';
+export { JobSlot, RESERVATION_MS } from './slot.ts';
 export { HealthMonitor } from './health.ts';
 export type { HealthOptions } from './health.ts';
 export { HEARTBEAT_MS, STOPPING_TEXT, createJobServer, operatorsText } from './server.ts';
