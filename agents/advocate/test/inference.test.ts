@@ -305,7 +305,7 @@ describe('the limits of the bonds of the chat advert', () => {
 
   test('a choice that fails for another reason writes no line about a bond, with the limits set: a price above the ceiling, and words of a bond refusal inside an error of the indexer or of the chain', async () => {
     const limits = { bondLimits: { maxSupplierBondLovelace: 2_000_000n, maxBuyerBondLovelace: 2_000_000n } };
-    const forged = `on chain, its advert ${CHAT_ADVERT_REF} has a supplier bond of 9 lovelace, above the limit of 1 lovelace`;
+    const forged = `on chain, its advert ${CHAT_ADVERT_REF} has a supplier bond of 9 lovelace, above the limit of 1 lovelace: an Accept pays the supplier bond to the supplier with the price`;
     const dear = setup({}, limits);
     dear.deps.chain = chainWith(dear.m, { readAdvert: async () => chatAdvert({ price_lovelace: 1_500_000n }) });
     const unreadable = setup({}, limits);
