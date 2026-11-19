@@ -1,23 +1,26 @@
 // packages/hire-kit/testing/stub-suppliers.ts
-// The marketplace that the tests of the kit run against, all in memory, and the two suppliers in it. The package serves this file as `@vsa/hire-kit/testing`, so that a
-// service runs its own tests against the same suppliers. It holds: a FakeChain with a chat advert, an OCR advert and the advert of an agent; an indexer that lists the chat
-// advert and the agent; a model supplier on the Responses API that speaks the fleet protocol (Apex-Fusion/agents-marketplace at e847a55, supplier/src/server.ts); and a
-// template supplier that speaks the template contract (POST /v1/job and GET /v1/job/:id, as the runtime of the agent template serves them). All of it runs through the
-// injected fetch. The model supplier moved here from agents/document-pipeline/test/stub-suppliers.ts without its OCR supplier: the OCR advert stays, as data, for the
-// tests of the janitor. Each supplier plays its own part of the escrow on the FakeChain, the Claim when it takes a job (markClaimed) and the Submit when it finishes one
-// (markSubmitted, with the hash of the receipt it signed). It signs its receipts with the real commitment functions and a key made from fixed bytes: Ed25519 signs
-// deterministically, so every run gives the same receipts, and a test can make the receipt it expects with chatFinished or templateFinished.
+// The marketplace that the tests of a service run against, all in memory, and the three suppliers in it. The package serves this file as `@vsa/hire-kit/testing`, so that the
+// kit and every service run their tests against the same suppliers. It holds: a FakeChain with an OCR advert, a chat advert and the advert of an agent; an indexer that lists
+// the adverts a test asks for; an OCR supplier and a model supplier that speak the fleet protocol (Apex-Fusion/agents-marketplace at e847a55, supplier/src/server.ts); and a
+// template supplier that speaks the template contract (POST /v1/job and GET /v1/job/:id, as the runtime of the agent template serves them). All of it runs through the injected
+// fetch. Each supplier plays its own part of the escrow on the FakeChain, the Claim when it takes a job (markClaimed) and the Submit when it finishes one (markSubmitted, with
+// the hash of the receipt it signed). It signs its receipts with the real commitment functions and a key made from fixed bytes: Ed25519 signs deterministically, so every run
+// gives the same receipts, and a test can pin a result byte for byte or make the receipt it expects with chatFinished, ocrFinished or templateFinished.
 //
-// A supplier can be told to misbehave the ways the tests need: answer busy, lose the connection before or after it claimed, refuse, fail the job, answer a poll through
-// a proxy, sign with another key, or change its finished answer after it signed it. The template supplier can also refuse before its Claim, as the pre-check of its
-// service does, with the status and the code that a test gives.
+// What differs from one set of tests to another is a world (stubWorld): the prefix of the escrow refs, the label of the keys, the window of the adverts, the answer of the chat
+// supplier, the counts that its receipts sign, and the text that the OCR supplier reads off a page. The names that this file exports without a world are those of its own world,
+// HIRE_KIT_WORLD. A service that pins goldens makes its own world and passes it to `marketplace`.
 //
-// The supplier endpoints are https IP literals of the documentation range 203.0.113.0/24: the clients reach a supplier only through safeFetch, which looks a
-// host name up for real, and a literal needs no lookup. The indexer is read with the injected fetch as it is, so its name is free.
+// A supplier can be told to misbehave the ways the tests need: answer busy, lose the connection before or after it claimed, refuse, fail the job, answer a poll through a proxy or
+// a gateway, sign with another key, or change its finished answer after it signed it. The template supplier can also refuse before its Claim, as the runtime does, with the status
+// and the code that a test gives, in the envelope that the runtime writes.
+//
+// The supplier endpoints are https IP literals of the documentation range 203.0.113.0/24: the clients reach a supplier only through safeFetch, which looks a host name up for real,
+// and a literal needs no lookup. The indexer is read with the injected fetch as it is, so its name is free.
 import { createHash, createPrivateKey, createPublicKey, sign as ed25519Sign } from 'node:crypto';
-import { blake2b224Hex, canonicalize, formatOutRef, sha256Utf8Hex } from '@vsa/vector-read';
+import { KOIOS_URL, blake2b224Hex, canonicalize, formatOutRef, sha256Utf8Hex } from '@vsa/vector-read';
 import type { AdvertDatum, IdentityAdvertDatum } from '@vsa/vector-read';
-import { FakeChain, responsesPromptHash, responsesResponseHash } from '@vsa/buyer-core';
+import { FakeChain, isIdentityAdvert, ocrPromptHash, ocrResponseHash, responsesPromptHash, responsesResponseHash } from '@vsa/buyer-core';
 import type { Chain, FakeChainOptions, VaultChain } from '@vsa/buyer-core';
 
 export const T0 = 1_790_000_000_000;
@@ -37,12 +40,9 @@ export const AGENT_MODEL = 'order-desk-small';
 /** The agent that the advert of the template supplier names. */
 export const AGENT_ID = 'ae'.repeat(32);
 export const ALLOWLIST: readonly string[] = ['deepseek/deepseek-v4-flash', 'deepseek-v4-pro', 'moonshotai/kimi-k2.6', 'Qwen/Qwen3.6-35B-A3B-FP8'];
-/** The window of both adverts, as the live ChandraOCR advert has it: deliver_by is posted_at + 300000 + 180000. */
+/** The window of the adverts of the default world, as the live ChandraOCR advert has it: deliver_by is posted_at + 300000 + 180000. */
 export const WINDOW_MS = 300_000;
-const PREFIX = 'hire-kit-test/';
-/** The escrow the n-th Post of a test opens (from 1): FakeChain's refs are sha256(prefix + n)#0. */
-export const escrowNo = (n: number): string => formatOutRef(sha256Utf8Hex(`${PREFIX}${n}`), 0);
-/** What the chat supplier answers, unless a test says otherwise. */
+/** What the chat supplier of the default world answers, unless a test says otherwise. */
 export const ANSWER = 'A bonded escrow holds the price and both bonds until the buyer accepts the work or reclaims the lock.';
 /** What the template supplier answers, unless a test says otherwise. */
 export const AGENT_ANSWER = '{"status":"confirmed","lot":"lot-1","quantity":12}';
@@ -65,110 +65,186 @@ export function stubKey(label: string): StubKey {
   const pubKeyHex = Buffer.from(x, 'base64url').toString('hex');
   return { pubKeyHex, pkh: blake2b224Hex(pubKeyHex), sign: (receipt) => ed25519Sign(null, Buffer.from(canonicalize(receipt), 'utf8'), privateKey).toString('hex') };
 }
-export const OCR_KEY = stubKey('hire-kit test: the OCR supplier');
-export const LLM_KEY = stubKey('hire-kit test: the chat supplier');
-export const AGENT_KEY = stubKey('hire-kit test: the template agent');
-/** Not the key of any advert: what a forged receipt is signed with. */
-export const FORGER_KEY = stubKey('hire-kit test: somebody else');
-
-// --- Adverts and the indexer ---------------------------------------------------------------------------------------------------------
-function advert(supplierPkh: string, capabilityId: string, model: string, endpoint: string): AdvertDatum {
-  return {
-    supplier_pkh: supplierPkh, capability_id: capabilityId, model, max_output_tokens: 8192, max_processing_ms: WINDOW_MS,
-    price_lovelace: 200_000n, supplier_bond_lovelace: 1_000_000n, buyer_bond_lovelace: 1_000_000n, endpoint_url: endpoint,
-    detail_uri: '', detail_hash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', advertised_at: 1_786_529_315_923, status: 'Active',
-  };
-}
-export const OCR_ADVERT = advert(OCR_KEY.pkh, OCR_CAPABILITY, OCR_MODEL, OCR_ENDPOINT);
-export const LLM_ADVERT = advert(LLM_KEY.pkh, LLM_CAPABILITY, LLM_MODEL, LLM_ENDPOINT);
-/** The advert of the template supplier: identity layout, so that a vault can pay it. The price and the bonds fit the lock that a Post of FakeChain takes. */
-export const AGENT_ADVERT: IdentityAdvertDatum = { ...advert(AGENT_KEY.pkh, AGENT_CAPABILITY, AGENT_MODEL, AGENT_ENDPOINT), agent_id: AGENT_ID };
-
-/** A row of the indexer's /suppliers list for an advert, as the live indexer writes it: amounts as strings, the advert's UTxO as `utxo_ref`. */
-export function indexerRow(ref: string, a: AdvertDatum, over: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    utxo_ref: ref, supplier_pkh: a.supplier_pkh, capability_id: a.capability_id, model: a.model, max_output_tokens: a.max_output_tokens,
-    max_processing_ms: a.max_processing_ms, price_lovelace: String(a.price_lovelace), supplier_bond_lovelace: String(a.supplier_bond_lovelace),
-    buyer_bond_lovelace: String(a.buyer_bond_lovelace), endpoint_url: a.endpoint_url, detail_uri: a.detail_uri, detail_hash: a.detail_hash,
-    advertised_at: a.advertised_at, status: 'free', advert_status: 'Active', current_escrow_ref: null, last_seen_iso: '2026-10-15T09:00:00.000Z',
-    created_slot: 30_043_723, ...over,
-  };
-}
 
 // --- What a finished job serves --------------------------------------------------------------------------------------------------------
 type Submit = (resultReceiptHash: string) => void;
 
-/** The Responses object the chat supplier serves for a finished job, with the receipt fields, the way the real one builds it; `submit` gets the hash of the signed receipt. */
-export function chatFinished(key: StubKey, escrowRef: string, jobId: string, input: string, answer: string, status: string, signer: StubKey = key, submit?: Submit): Record<string, unknown> {
-  const response = {
-    id: `resp_${jobId}`, object: 'response', status, incomplete_details: status === 'incomplete' ? { reason: 'max_output_tokens' } : null, model: LLM_MODEL,
-    output: [{ type: 'message', id: `msg_${jobId}`, role: 'assistant', status, content: [{ type: 'output_text', text: answer, annotations: [] }] }],
-    usage: { input_tokens: 96, output_tokens: 24, total_tokens: 120 },
-  };
-  const receipt = {
-    escrow_ref: escrowRef, supplier_pkh: key.pkh, prompt_hash: responsesPromptHash({ input }), response_hash: responsesResponseHash(response),
-    model: LLM_MODEL, prompt_tokens: 96, completion_tokens: 24, wallclock_ms: 1830,
-  };
+/** The receipt of a finished job, signed by `signer`; `submit` gets the hash of the signed receipt, as the Submit puts it on chain. */
+function signed(signer: StubKey, submit: Submit | undefined, receipt: Record<string, unknown>) {
   const receiptSignature = signer.sign(receipt);
   submit?.(sha256Utf8Hex(canonicalize({ receipt, signature: receiptSignature })));
-  return { ...response, receipt, receipt_signature: receiptSignature, escrow_ref: escrowRef };
+  return { receipt, receipt_signature: receiptSignature };
 }
+
+/** The request that the OCR supplier takes: the page image, its type, and the format of the text. */
+export interface OcrRequest { image_b64: string; mime: 'image/png' | 'image/jpeg' | 'image/webp'; output_format: 'markdown' | 'html' | 'json' }
+
+// --- The world -------------------------------------------------------------------------------------------------------------------------
+export interface StubWorldOptions {
+  /** The n-th Post of a test opens `${sha256(prefix + n)}#0`: the prefix of the FakeChain. */
+  prefix: string;
+  /** The keys are made from `${label}: the OCR supplier`, `${label}: the chat supplier`, `${label}: the template agent` and `${label}: somebody else`. */
+  label: string;
+  /** max_processing_ms of every advert and every /capability: deliver_by is posted_at + this + 180000. Default WINDOW_MS. */
+  windowMs?: number;
+  /** What the chat supplier answers, unless a test says otherwise. Default ANSWER. */
+  answer?: string;
+  /** When the indexer and /status say that a supplier was last seen. */
+  lastSeen?: string;
+  /** The counts and the wall clock that the receipt of a chat job signs, and that the usage of its response counts. */
+  chatReceipt?: { promptTokens: number; completionTokens: number; wallclockMs: number };
+  /** What the OCR supplier reads off a page image, by the base64 of the image. */
+  pageTexts?: Readonly<Record<string, string>>;
+}
+
+export interface StubWorld {
+  readonly prefix: string;
+  readonly windowMs: number;
+  readonly answer: string;
+  readonly lastSeen: string;
+  readonly chatReceipt: { promptTokens: number; completionTokens: number; wallclockMs: number };
+  readonly pageTexts: Readonly<Record<string, string>>;
+  readonly ocrKey: StubKey;
+  readonly llmKey: StubKey;
+  readonly agentKey: StubKey;
+  /** Not the key of any advert: what a forged receipt is signed with. */
+  readonly forgerKey: StubKey;
+  readonly ocrAdvert: AdvertDatum;
+  readonly llmAdvert: AdvertDatum;
+  /** The advert of the template supplier: identity layout, so that a vault can pay it. */
+  readonly agentAdvert: IdentityAdvertDatum;
+  /** The escrow the n-th Post of a test opens (from 1): FakeChain's refs are sha256(prefix + n)#0. */
+  escrowNo(n: number): string;
+  /**
+   * A row of the indexer's /suppliers list for an advert, as the live indexer writes it: amounts as strings, the advert's UTxO as `utxo_ref`, and the agent of an
+   * identity-marketplace advert as `agent_id` (Part 2 section 6.4).
+   */
+  indexerRow(ref: string, a: AdvertDatum, over?: Record<string, unknown>): Record<string, unknown>;
+  /**
+   * The Responses object the chat supplier serves for a finished job, with the receipt fields, the way the real one builds it. `tokens` replaces the counts that the receipt
+   * signs and nothing else, and need not be counts at all, since no check of a receipt reads them.
+   */
+  chatFinished(key: StubKey, escrowRef: string, jobId: string, input: string, answer: string, status: string, signer?: StubKey, submit?: Submit, tokens?: { prompt_tokens: unknown; completion_tokens: unknown }): Record<string, unknown>;
+  /**
+   * The body the OCR supplier serves for a finished page job (the result, the receipt, its signature, the escrow and the Submitted output), the way the real one builds it: the
+   * response hash covers the page text and the output format the buyer asked for. A supplier that serves an identity-marketplace advert signs the ninth field agent_did.
+   */
+  ocrFinished(key: StubKey, escrowRef: string, request: OcrRequest, signer?: StubKey, submit?: Submit, agentId?: string | null): Record<string, unknown>;
+}
+
+/** Makes a world: the keys, the adverts and the builders of finished jobs of one set of tests. */
+export function stubWorld(options: StubWorldOptions): StubWorld {
+  const { prefix, label } = options;
+  const windowMs = options.windowMs ?? WINDOW_MS;
+  const answer = options.answer ?? ANSWER;
+  const lastSeen = options.lastSeen ?? '2026-10-15T09:00:00.000Z';
+  const chatReceipt = options.chatReceipt ?? { promptTokens: 96, completionTokens: 24, wallclockMs: 1830 };
+  const pageTexts = options.pageTexts ?? {};
+  const ocrKey = stubKey(`${label}: the OCR supplier`);
+  const llmKey = stubKey(`${label}: the chat supplier`);
+  const agentKey = stubKey(`${label}: the template agent`);
+  const forgerKey = stubKey(`${label}: somebody else`);
+  const advert = (supplierPkh: string, capabilityId: string, model: string, endpoint: string): AdvertDatum => ({
+    supplier_pkh: supplierPkh, capability_id: capabilityId, model, max_output_tokens: 8192, max_processing_ms: windowMs,
+    price_lovelace: 200_000n, supplier_bond_lovelace: 1_000_000n, buyer_bond_lovelace: 1_000_000n, endpoint_url: endpoint,
+    detail_uri: '', detail_hash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', advertised_at: 1_786_529_315_923, status: 'Active',
+  });
+  return {
+    prefix, windowMs, answer, lastSeen, chatReceipt, pageTexts, ocrKey, llmKey, agentKey, forgerKey,
+    ocrAdvert: advert(ocrKey.pkh, OCR_CAPABILITY, OCR_MODEL, OCR_ENDPOINT),
+    llmAdvert: advert(llmKey.pkh, LLM_CAPABILITY, LLM_MODEL, LLM_ENDPOINT),
+    agentAdvert: { ...advert(agentKey.pkh, AGENT_CAPABILITY, AGENT_MODEL, AGENT_ENDPOINT), agent_id: AGENT_ID },
+    escrowNo: (n) => formatOutRef(sha256Utf8Hex(`${prefix}${n}`), 0),
+    indexerRow: (ref, a, over = {}) => ({
+      utxo_ref: ref, supplier_pkh: a.supplier_pkh, capability_id: a.capability_id, model: a.model, max_output_tokens: a.max_output_tokens,
+      max_processing_ms: a.max_processing_ms, price_lovelace: String(a.price_lovelace), supplier_bond_lovelace: String(a.supplier_bond_lovelace),
+      buyer_bond_lovelace: String(a.buyer_bond_lovelace), endpoint_url: a.endpoint_url, detail_uri: a.detail_uri, detail_hash: a.detail_hash,
+      advertised_at: a.advertised_at, status: 'free', advert_status: 'Active', current_escrow_ref: null, last_seen_iso: lastSeen,
+      created_slot: 30_043_723, ...(isIdentityAdvert(a) ? { agent_id: a.agent_id } : {}), ...over,
+    }),
+    chatFinished: (key, escrowRef, jobId, input, text, status, signer = key, submit, tokens) => {
+      const { promptTokens, completionTokens, wallclockMs } = chatReceipt;
+      const response = {
+        id: `resp_${jobId}`, object: 'response', status, incomplete_details: status === 'incomplete' ? { reason: 'max_output_tokens' } : null, model: LLM_MODEL,
+        output: [{ type: 'message', id: `msg_${jobId}`, role: 'assistant', status, content: [{ type: 'output_text', text, annotations: [] }] }],
+        usage: { input_tokens: promptTokens, output_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
+      };
+      const { receipt, receipt_signature } = signed(signer, submit, {
+        escrow_ref: escrowRef, supplier_pkh: key.pkh, prompt_hash: responsesPromptHash({ input }), response_hash: responsesResponseHash(response),
+        model: LLM_MODEL, prompt_tokens: tokens?.prompt_tokens ?? promptTokens, completion_tokens: tokens?.completion_tokens ?? completionTokens, wallclock_ms: wallclockMs,
+      });
+      return { ...response, receipt, receipt_signature, escrow_ref: escrowRef };
+    },
+    ocrFinished: (key, escrowRef, request, signer = key, submit, agentId = null) => {
+      const content = pageTexts[request.image_b64] ?? 'A page the stub does not know.';
+      const { receipt, receipt_signature } = signed(signer, submit, {
+        escrow_ref: escrowRef, supplier_pkh: key.pkh, prompt_hash: ocrPromptHash(request), response_hash: ocrResponseHash({ content, output_format: request.output_format }),
+        model: OCR_MODEL, prompt_tokens: 812, completion_tokens: 9, wallclock_ms: 4210, ...(agentId === null ? {} : { agent_did: `did:vector:${agentId}` }),
+      });
+      return {
+        output_format: request.output_format, content, usage: { prompt_tokens: 812, completion_tokens: 9, total_tokens: 821 },
+        receipt, receipt_signature, escrow_ref: escrowRef, submitted_ref: formatOutRef(sha256Utf8Hex(`submit/${escrowRef}`), 0),
+      };
+    },
+  };
+}
+
+/** The world of the tests of the kit. */
+export const HIRE_KIT_WORLD = stubWorld({ prefix: 'hire-kit-test/', label: 'hire-kit test' });
 
 /**
  * What the template supplier serves for a finished job: the answer as the first choice, the receipt with `agent_did`, its signature and the Submitted output, the way the
  * runtime of the agent template builds it. `payload` is the text that the supplier received (the wire payload), which its receipt hashes as the prompt.
  */
 export function templateFinished(key: StubKey, escrowRef: string, jobId: string, payload: string, text: string, signer: StubKey = key, submit?: Submit): Record<string, unknown> {
-  const receipt = {
+  const { receipt, receipt_signature } = signed(signer, submit, {
     escrow_ref: escrowRef, supplier_pkh: key.pkh, prompt_hash: sha256Utf8Hex(payload), response_hash: sha256Utf8Hex(text), model: AGENT_MODEL, prompt_tokens: 0,
     completion_tokens: 0, wallclock_ms: 1204, agent_did: `did:vector:${AGENT_ID}`,
-  };
-  const receiptSignature = signer.sign(receipt);
-  submit?.(sha256Utf8Hex(canonicalize({ receipt, signature: receiptSignature })));
+  });
   return {
     choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-    receipt, receipt_signature: receiptSignature, escrow_ref: escrowRef, submitted_ref: `${sha256Utf8Hex(`submitted/${jobId}`)}#0`,
+    receipt, receipt_signature, escrow_ref: escrowRef, submitted_ref: `${sha256Utf8Hex(`submitted/${jobId}`)}#0`,
   };
 }
 
-// --- The model supplier ----------------------------------------------------------------------------------------------------------------
+// --- The fleet suppliers ---------------------------------------------------------------------------------------------------------------
 const json = (status: number, body: unknown): Response => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
 /**
- * What the supplier answers to one poll of a job. A job takes its steps in order and repeats the last one.
+ * What a supplier answers to one poll of a job. A job takes its steps in order and repeats the last one.
  *   running               202: the job is not finished
  *   done                  finishes the job if it is not (the Submit on chain), then 200 with the result, the receipt and its signature
  *   failed                the supplier's own failure envelope on a 502; nothing is submitted
  *   gone                  404: the supplier no longer knows the job
  *   proxy                 a 502 HTML page of a proxy, no answer of the supplier's
- *   { fail, submitted }   the supplier's own failure envelope with the reason `fail` on a 502, after its Submit landed when `submitted`, with nothing
- *                         submitted otherwise
+ *   proxy-404             a 404 HTML page of a proxy, no answer of the supplier's either
+ *   no-receipt            a 200 without the receipt and its signature, no answer of the supplier's
+ *   gateway-after-submit  finishes the job, then a gateway's JSON error with a reason on a 504, which the client reads as `failed`
+ *   { fail, submitted }   the supplier's own failure envelope with the reason `fail` on a 502, after its Submit landed when `submitted` (as the real one
+ *                         answers submit_timeout when it could not see its Submit confirmed) and with nothing submitted otherwise
  */
-export type PollStep = 'running' | 'done' | 'failed' | 'gone' | 'proxy' | { fail: string; submitted: boolean };
+export type PollStep = 'running' | 'done' | 'failed' | 'gone' | 'proxy' | 'proxy-404' | 'no-receipt' | 'gateway-after-submit' | { fail: string; submitted: boolean };
 
-interface StubJob { id: string; escrowRef: string; input: string; steps: PollStep[]; finished?: Record<string, unknown> }
+interface StubJob { id: string; escrowRef: string; request: Record<string, unknown>; steps: PollStep[]; finished?: Record<string, unknown> }
 
-export class StubModelSupplier {
-  readonly endpoint = LLM_ENDPOINT;
-  readonly key = LLM_KEY;
-  readonly advertRef = LLM_ADVERT_REF;
-  readonly route = '/v1/responses';
-  readonly chain: FakeChain;
-  /** The text of the answer. */
-  answer = ANSWER;
-  /** The status of the response: `incomplete` is a model that stopped at its output limit. */
-  status = 'completed';
+abstract class StubSupplier {
   /** Answer the next N sends with 409 supplier_busy, leaving the escrow Open. */
   busy = 0;
   /** The next sends fail the way a dropped connection does, after the supplier claimed the escrow or before. */
   lose: Array<'after-claim' | 'before-claim'> = [];
   /** Answer the next N sends with 404 escrow_not_found, as a supplier whose view of the chain does not show the Post yet; the escrow stays Open. */
   notFound = 0;
-  /** Answer every send with this refusal, before any claim. */
-  refuse: { status: number; reason: string } | null = null;
-  /** The poll steps of every new job. */
+  /** Answer every send with this refusal: before any claim, or, with `claim`, after claiming the escrow (it took the job from an earlier send). `message` replaces its words. */
+  refuse: { status: number; reason: string; claim?: boolean; message?: string } | null = null;
+  /** Answer the next sends with an HTML page of each of these statuses, as a proxy in front of the supplier would; the supplier never sees them. */
+  pages: number[] = [];
+  /** Answer the next sends with these JSON bodies and statuses, as a gateway in front of the supplier would: objects that are not the supplier's envelope. */
+  oddAnswers: Array<{ status: number; body: unknown }> = [];
+  /** The poll steps of every new job, unless `plans` holds one for it. */
   steps: PollStep[] = ['running', 'done'];
-  /** Sign receipts with FORGER_KEY: the hash on chain is still the one of what was signed, as a supplier with the wrong key would submit it. */
+  /** The poll steps of the next jobs, one list per job, in order. */
+  plans: PollStep[][] = [];
+  /** Sign receipts with the forger's key: the hash on chain is still the one of what was signed, as a supplier with the wrong key would submit it. */
   forge = false;
   /** The text of a finished answer, made from the finished body after it was signed and submitted. JSON.stringify unless set. */
   answerText: ((finished: Record<string, unknown>) => string) | null = null;
@@ -176,21 +252,30 @@ export class StubModelSupplier {
   capabilityOverride: Record<string, unknown> = {};
   /** The status word its /status answers with. */
   statusWord = 'free';
+  /** Answer the next /status calls with a 503 page, then with the status word again. */
+  statusFailures = 0;
+  /** Called with each send as it comes, before it is answered: a test hangs up a caller here. */
+  onSend: (() => void) | null = null;
   /** Every send, with the X-Escrow-Ref header and the body exactly as received. */
   readonly sends: Array<{ escrowRef: string; body: string }> = [];
   readonly jobs = new Map<string, StubJob>();
   polls = 0;
 
-  constructor(chain: FakeChain) { this.chain = chain; }
+  constructor(readonly endpoint: string, readonly key: StubKey, readonly advertRef: string, readonly advert: AdvertDatum, readonly chain: FakeChain, readonly route: string, readonly world: StubWorld) {}
+
+  /** The body of a finished job, after the Submit on chain with the hash of the receipt it signed. */
+  protected abstract finish(job: StubJob, signer: StubKey): Record<string, unknown>;
+  /** Why the body of a send is not a request this supplier takes, or null. */
+  protected abstract refusal(request: Record<string, unknown>): string | null;
+  /** What /capability serves, before `capabilityOverride` is put over it. */
+  abstract capability(): Record<string, unknown>;
 
   handle(method: string, path: string, escrowRef: string | null, body: string): Response {
-    if (method === 'GET' && path === '/capability') {
-      return json(200, {
-        capability_id: LLM_CAPABILITY, model: LLM_MODEL, max_output_tokens: 8192, max_processing_ms: WINDOW_MS, price_lovelace: '200000', advert_ref: this.advertRef,
-        supplier_pkh: this.key.pkh, pub_key_hex: this.key.pubKeyHex, inference_api: 'responses', upstream_api: 'responses', reasoning_disabled: false, ...this.capabilityOverride,
-      });
+    if (method === 'GET' && path === '/capability') return json(200, { ...this.capability(), ...this.capabilityOverride });
+    if (method === 'GET' && path === '/status') {
+      if (this.statusFailures > 0) { this.statusFailures -= 1; return new Response('<html><body><h1>503</h1></body></html>', { status: 503, headers: { 'content-type': 'text/html' } }); }
+      return json(200, { status: this.statusWord, last_seen: this.world.lastSeen, active_sessions: 0, max_sessions: 1 });
     }
-    if (method === 'GET' && path === '/status') return json(200, { status: this.statusWord, last_seen: '2026-10-15T09:00:00.000Z', active_sessions: 0, max_sessions: 1 });
     if (method === 'POST' && path === this.route) return this.post(escrowRef ?? '', body);
     if (method === 'GET' && path.startsWith(`${this.route}/`)) return this.poll(decodeURIComponent(path.slice(this.route.length + 1)));
     return json(404, { reason: 'no_route', message: `nothing at ${method} ${path}` });
@@ -198,6 +283,11 @@ export class StubModelSupplier {
 
   private post(escrowRef: string, body: string): Response {
     this.sends.push({ escrowRef, body });
+    this.onSend?.();
+    const page = this.pages.shift();
+    if (page !== undefined) return new Response(`<html><body><h1>${page}</h1></body></html>`, { status: page, headers: { 'content-type': 'text/html' } });
+    const odd = this.oddAnswers.shift();
+    if (odd !== undefined) return json(odd.status, odd.body);
     const lost = this.lose.shift();
     if (lost !== undefined) {
       if (lost === 'after-claim') this.chain.markClaimed(escrowRef);
@@ -211,16 +301,19 @@ export class StubModelSupplier {
       this.notFound -= 1;
       return json(404, { reason: 'escrow_not_found', message: 'escrow UTxO not found on chain' });
     }
-    if (this.refuse !== null) return json(this.refuse.status, { reason: this.refuse.reason, message: `the supplier refused the job (${this.refuse.reason})` });
+    if (this.refuse !== null) {
+      if (this.refuse.claim === true) this.chain.markClaimed(escrowRef);
+      return json(this.refuse.status, { reason: this.refuse.reason, message: this.refuse.message ?? `the supplier refused the job (${this.refuse.reason})` });
+    }
     let request: unknown;
     try { request = JSON.parse(body); } catch { return json(400, { reason: 'bad_request', message: 'the body is not JSON' }); }
-    // The fleet's chat route takes a Responses request; a hire sends {input} and nothing else (ruling R12), so anything more is refused here.
-    const keys = request !== null && typeof request === 'object' && !Array.isArray(request) ? Object.keys(request).sort().join(',') : '';
-    if (keys !== 'input' || typeof (request as { input: unknown }).input !== 'string') return json(400, { reason: 'bad_request', message: `the body must be {input} and nothing else, not {${keys}}` });
+    if (request === null || typeof request !== 'object' || Array.isArray(request)) return json(400, { reason: 'bad_request', message: 'the body is not an object' });
+    const why = this.refusal(request as Record<string, unknown>);
+    if (why !== null) return json(400, { reason: 'bad_request', message: why });
     // The Claim: the real supplier answers only once its Claim is confirmed. markClaimed throws for an escrow that is not Open.
     this.chain.markClaimed(escrowRef);
-    const id = `responses-job-${this.jobs.size + 1}`;
-    this.jobs.set(id, { id, escrowRef, input: (request as { input: string }).input, steps: [...this.steps] });
+    const id = `${this.route.split('/').pop()}-job-${this.jobs.size + 1}`;
+    this.jobs.set(id, { id, escrowRef, request: request as Record<string, unknown>, steps: [...(this.plans.shift() ?? this.steps)] });
     return json(202, { job_id: id, status: 'accepted', escrow_ref: escrowRef });
   }
 
@@ -229,8 +322,7 @@ export class StubModelSupplier {
     const job = this.jobs.get(id);
     if (job === undefined) return json(404, { reason: 'job_not_found', message: `no job found with id ${id}` });
     const step = job.steps.length > 1 ? (job.steps.shift() as PollStep) : job.steps[0];
-    const finished = (): Record<string, unknown> => job.finished
-      ?? (job.finished = chatFinished(this.key, job.escrowRef, job.id, job.input, this.answer, this.status, this.forge ? FORGER_KEY : this.key, (hash) => this.chain.markSubmitted(job.escrowRef, hash)));
+    const finished = (): Record<string, unknown> => job.finished ?? (job.finished = this.finish(job, this.forge ? this.world.forgerKey : this.key));
     if (typeof step === 'object') {
       if (step.submitted) finished();
       return json(502, { status: 'failed', reason: step.fail, message: `the job failed (${step.fail})`, escrow_ref: job.escrowRef });
@@ -240,11 +332,67 @@ export class StubModelSupplier {
       case 'failed': return json(502, { status: 'failed', reason: 'upstream_failure', message: 'the upstream model did not answer', escrow_ref: job.escrowRef });
       case 'gone': return json(404, { reason: 'job_not_found', message: `no job found with id ${id}` });
       case 'proxy': return new Response('<html><body><h1>502 Bad Gateway</h1></body></html>', { status: 502, headers: { 'content-type': 'text/html' } });
+      case 'proxy-404': return new Response('<html><body><h1>404 Not Found</h1></body></html>', { status: 404, headers: { 'content-type': 'text/html' } });
+      case 'no-receipt': return json(200, { status: 'done', escrow_ref: job.escrowRef });
+      case 'gateway-after-submit': finished(); return json(504, { reason: 'gateway_timeout', message: 'the upstream did not answer in time' });
       case 'done': {
         const body = finished();
         return new Response(this.answerText ? this.answerText(body) : JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
       }
     }
+  }
+}
+
+/** The OCR supplier of the fleet: POST /v1/ocr/extract with the escrow in the header X-Escrow-Ref. */
+export class StubOcrSupplier extends StubSupplier {
+  /** The agent of the advert it serves, when that advert is an identity-marketplace one: its receipts then name it in agent_did. */
+  agentId: string | null = null;
+  constructor(chain: FakeChain, world: StubWorld = HIRE_KIT_WORLD) { super(OCR_ENDPOINT, world.ocrKey, OCR_ADVERT_REF, world.ocrAdvert, chain, '/v1/ocr/extract', world); }
+  capability(): Record<string, unknown> {
+    return {
+      capability_id: OCR_CAPABILITY, model: OCR_MODEL, max_output_tokens: 8192, max_processing_ms: this.world.windowMs, price_lovelace: '200000', advert_ref: this.advertRef,
+      supplier_pkh: this.key.pkh, pub_key_hex: this.key.pubKeyHex,
+    };
+  }
+  protected refusal(r: Record<string, unknown>): string | null {
+    const keys = Object.keys(r).sort().join(',');
+    if (keys !== 'image_b64,mime,output_format') return `the body must be {image_b64, mime, output_format} and nothing else, not {${keys}}`;
+    if (typeof r.image_b64 !== 'string' || r.image_b64.length > 12_000_000) return 'image_b64 must be base64 text of at most 12000000 characters';
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(String(r.mime))) return 'mime is not supported';
+    if (!['markdown', 'html', 'json'].includes(String(r.output_format))) return 'output_format is not supported';
+    return null;
+  }
+  protected finish(job: StubJob, signer: StubKey): Record<string, unknown> {
+    return this.world.ocrFinished(this.key, job.escrowRef, job.request as unknown as OcrRequest, signer, (hash) => this.chain.markSubmitted(job.escrowRef, hash), this.agentId);
+  }
+}
+
+/** The model supplier of the fleet, on the Responses API: POST /v1/responses with the escrow in the header X-Escrow-Ref. */
+export class StubModelSupplier extends StubSupplier {
+  /** The text of the answer. */
+  answer: string;
+  /** The status of the response: `incomplete` is a model that stopped at its output limit; any other text is a supplier that says something else. */
+  status = 'completed';
+  /** The counts that its receipts sign, when a test sets them (they need not be counts at all); the counts of the world otherwise. */
+  tokens: { prompt_tokens: unknown; completion_tokens: unknown } | null = null;
+  constructor(chain: FakeChain, world: StubWorld = HIRE_KIT_WORLD) {
+    super(LLM_ENDPOINT, world.llmKey, LLM_ADVERT_REF, world.llmAdvert, chain, '/v1/responses', world);
+    this.answer = world.answer;
+  }
+  capability(): Record<string, unknown> {
+    return {
+      capability_id: LLM_CAPABILITY, model: LLM_MODEL, max_output_tokens: 8192, max_processing_ms: this.world.windowMs, price_lovelace: '200000', advert_ref: this.advertRef,
+      supplier_pkh: this.key.pkh, pub_key_hex: this.key.pubKeyHex, inference_api: 'responses', upstream_api: 'responses', reasoning_disabled: false,
+    };
+  }
+  /** The fleet's chat route takes a Responses request; a hire sends {input} and nothing else, so anything more is refused here. */
+  protected refusal(r: Record<string, unknown>): string | null {
+    const keys = Object.keys(r).sort().join(',');
+    if (keys !== 'input') return `the body must be {input} and nothing else, not {${keys}}`;
+    return typeof r.input === 'string' ? null : 'input must be a string';
+  }
+  protected finish(job: StubJob, signer: StubKey): Record<string, unknown> {
+    return this.world.chatFinished(this.key, job.escrowRef, job.id, String(job.request.input), this.answer, this.status, signer, (hash) => this.chain.markSubmitted(job.escrowRef, hash), this.tokens ?? undefined);
   }
 }
 
@@ -259,9 +407,10 @@ interface TemplateJob { id: string; escrowRef: string; payload: string; steps: P
 
 export class StubTemplateSupplier {
   readonly endpoint = AGENT_ENDPOINT;
-  readonly key = AGENT_KEY;
+  readonly key: StubKey;
   readonly advertRef = AGENT_ADVERT_REF;
   readonly chain: FakeChain;
+  readonly world: StubWorld;
   /** The text of the answer. */
   answer = AGENT_ANSWER;
   /** Answer the next N sends with 409 supplier_busy (the runtime, or its service, works another job), leaving the escrow Open. */
@@ -270,11 +419,11 @@ export class StubTemplateSupplier {
   lose: Array<'after-claim' | 'before-claim'> = [];
   /** Answer the next N sends with 404 escrow_not_found, as a supplier whose view of the chain does not show the Post yet; the escrow stays Open. */
   notFound = 0;
-  /** Answer every send with this refusal, as the pre-check of the service does before the Claim: the escrow stays Open and nothing is claimed. */
+  /** Answer every send with this refusal, as a check of the runtime before the Claim does (its terms check, or its service): the escrow stays Open and nothing is claimed. */
   refuse: { status: number; code: string; message?: string } | null = null;
   /** The poll steps of every new job. */
   steps: PollStep[] = ['running', 'done'];
-  /** Sign receipts with FORGER_KEY: the hash on chain is still the one of what was signed, as a supplier with the wrong key would submit it. */
+  /** Sign receipts with the forger's key: the hash on chain is still the one of what was signed, as a supplier with the wrong key would submit it. */
   forge = false;
   /** The text of a finished answer, made from the finished body after it was signed and submitted. JSON.stringify unless set. */
   answerText: ((finished: Record<string, unknown>) => string) | null = null;
@@ -287,16 +436,20 @@ export class StubTemplateSupplier {
   readonly jobs = new Map<string, TemplateJob>();
   polls = 0;
 
-  constructor(chain: FakeChain) { this.chain = chain; }
+  constructor(chain: FakeChain, world: StubWorld = HIRE_KIT_WORLD) {
+    this.chain = chain;
+    this.world = world;
+    this.key = world.agentKey;
+  }
 
   async handle(method: string, path: string, body: string): Promise<Response> {
     if (method === 'GET' && path === '/capability') {
       return json(200, {
-        capability_id: AGENT_CAPABILITY, model: AGENT_MODEL, max_output_tokens: 8192, max_processing_ms: WINDOW_MS, price_lovelace: '200000', advert_ref: this.advertRef,
+        capability_id: AGENT_CAPABILITY, model: AGENT_MODEL, max_output_tokens: 8192, max_processing_ms: this.world.windowMs, price_lovelace: '200000', advert_ref: this.advertRef,
         supplier_pkh: this.key.pkh, pub_key_hex: this.key.pubKeyHex, agent_id: AGENT_ID, agent_did: `did:vector:${AGENT_ID}`, ...this.capabilityOverride,
       });
     }
-    if (method === 'GET' && path === '/status') return json(200, { status: this.statusWord, last_seen: '2026-10-15T09:00:00.000Z', active_sessions: 0, max_sessions: 1 });
+    if (method === 'GET' && path === '/status') return json(200, { status: this.statusWord, last_seen: this.world.lastSeen, active_sessions: 0, max_sessions: 1 });
     if (method === 'POST' && path === '/v1/job') return this.post(body);
     if (method === 'GET' && path.startsWith('/v1/job/')) return this.poll(decodeURIComponent(path.slice('/v1/job/'.length)));
     return json(404, { reason: 'no_route', message: `nothing at ${method} ${path}` });
@@ -340,7 +493,7 @@ export class StubTemplateSupplier {
     if (job === undefined) return json(404, runtimeError('job_not_found', `no job found with id ${id}`));
     const step = job.steps.length > 1 ? (job.steps.shift() as PollStep) : job.steps[0];
     const finished = (): Record<string, unknown> => job.finished
-      ?? (job.finished = templateFinished(this.key, job.escrowRef, job.id, job.payload, this.answer, this.forge ? FORGER_KEY : this.key, (hash) => this.chain.markSubmitted(job.escrowRef, hash)));
+      ?? (job.finished = templateFinished(this.key, job.escrowRef, job.id, job.payload, this.answer, this.forge ? this.world.forgerKey : this.key, (hash) => this.chain.markSubmitted(job.escrowRef, hash)));
     if (typeof step === 'object') {
       if (step.submitted) finished();
       return json(502, { status: 'failed', reason: step.fail, message: `the job failed (${step.fail})`, escrow_ref: job.escrowRef });
@@ -350,6 +503,9 @@ export class StubTemplateSupplier {
       case 'failed': return json(502, { status: 'failed', reason: 'service_failure', message: 'the service did not answer', escrow_ref: job.escrowRef });
       case 'gone': return json(404, runtimeError('job_not_found', `no job found with id ${id}`));
       case 'proxy': return new Response('<html><body><h1>502 Bad Gateway</h1></body></html>', { status: 502, headers: { 'content-type': 'text/html' } });
+      case 'proxy-404': return new Response('<html><body><h1>404 Not Found</h1></body></html>', { status: 404, headers: { 'content-type': 'text/html' } });
+      case 'no-receipt': return json(200, { status: 'done', escrow_ref: job.escrowRef });
+      case 'gateway-after-submit': finished(); return json(504, { reason: 'gateway_timeout', message: 'the upstream did not answer in time' });
       case 'done': {
         const body = finished();
         return new Response(this.answerText ? this.answerText(body) : JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -363,38 +519,62 @@ export interface Marketplace {
   /** The time of the FakeChain, in POSIX milliseconds; the tests give the hire the same clock. */
   clock: { now: number };
   chain: FakeChain;
+  ocr: StubOcrSupplier;
   llm: StubModelSupplier;
   agent: StubTemplateSupplier;
   /** What the indexer lists at /suppliers. A test may change it before the run. */
   rows: Array<Record<string, unknown>>;
+  /** What Koios answers to asset_utxos: the outputs that hold the token of an agent's record. A test sets it. */
+  records: Array<Record<string, unknown>>;
   /** Every request the fetch got, in order. */
   calls: Array<{ method: string; url: string }>;
   fetchImpl: typeof fetch;
 }
 
+export interface MarketplaceOptions extends Pick<FakeChainOptions, 'floatLovelace' | 'collateralLovelace' | 'buyerPkh' | 'lockLovelace'> {
+  /** The world of the tests; HIRE_KIT_WORLD by default. */
+  world?: StubWorld;
+  /** The suppliers the indexer lists, in this order, all of them free. Default the model supplier and the template supplier. */
+  listed?: ReadonlyArray<'ocr' | 'llm' | 'agent'>;
+  /** The datum of an advert, on the chain and in the indexer's row alike (a test of a price, for one). */
+  ocrAdvert?: AdvertDatum;
+  llmAdvert?: AdvertDatum;
+  agentAdvert?: IdentityAdvertDatum;
+  /** The start of the clock of the chain; T0 by default. */
+  t0?: number;
+}
+
 /**
- * The FakeChain (the three adverts, the clock at T0), the indexer listing the chat advert and the agent free, and the two suppliers behind one fetch. `llmAdvert` and
- * `agentAdvert` replace the datum of the chat advert and of the agent advert, on the chain and in the indexer's row alike.
+ * The FakeChain (the three adverts, the clock at `t0`), the indexer listing the suppliers `listed` free, and the three suppliers behind one fetch. The chain holds an advert
+ * for each supplier whether the indexer lists it or not.
  */
-export function marketplace(opts: Pick<FakeChainOptions, 'floatLovelace' | 'collateralLovelace' | 'buyerPkh' | 'lockLovelace'> & { llmAdvert?: AdvertDatum; agentAdvert?: IdentityAdvertDatum } = {}): Marketplace {
-  const { llmAdvert = LLM_ADVERT, agentAdvert = AGENT_ADVERT, ...chainOpts } = opts;
-  const clock = { now: T0 };
-  const chain = new FakeChain({ adverts: { [OCR_ADVERT_REF]: OCR_ADVERT, [LLM_ADVERT_REF]: llmAdvert, [AGENT_ADVERT_REF]: agentAdvert }, clock: () => clock.now, prefix: PREFIX, ...chainOpts });
-  const llm = new StubModelSupplier(chain);
-  const agent = new StubTemplateSupplier(chain);
-  const rows = [indexerRow(LLM_ADVERT_REF, llmAdvert), indexerRow(AGENT_ADVERT_REF, agentAdvert, { agent_id: agentAdvert.agent_id })];
+export function marketplace(opts: MarketplaceOptions = {}): Marketplace {
+  const { world = HIRE_KIT_WORLD, listed = ['llm', 'agent'], t0 = T0, ocrAdvert = world.ocrAdvert, llmAdvert = world.llmAdvert, agentAdvert = world.agentAdvert, ...chainOpts } = opts;
+  const clock = { now: t0 };
+  const chain = new FakeChain({
+    adverts: { [OCR_ADVERT_REF]: ocrAdvert, [LLM_ADVERT_REF]: llmAdvert, [AGENT_ADVERT_REF]: agentAdvert }, clock: () => clock.now, prefix: world.prefix, ...chainOpts,
+  });
+  const ocr = new StubOcrSupplier(chain, world);
+  ocr.agentId = isIdentityAdvert(ocrAdvert) ? ocrAdvert.agent_id : null;
+  const llm = new StubModelSupplier(chain, world);
+  const agent = new StubTemplateSupplier(chain, world);
+  const rowOf = { ocr: world.indexerRow(OCR_ADVERT_REF, ocrAdvert), llm: world.indexerRow(LLM_ADVERT_REF, llmAdvert), agent: world.indexerRow(AGENT_ADVERT_REF, agentAdvert) };
+  const rows = listed.map((name) => rowOf[name]);
+  const records: Marketplace['records'] = [];
   const calls: Marketplace['calls'] = [];
   const fetchImpl = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = new URL(String(input));
     const method = init.method ?? 'GET';
     calls.push({ method, url: url.href });
     if (url.origin === INDEXER && method === 'GET' && url.pathname === '/suppliers') return json(200, rows);
+    if (url.href === `${KOIOS_URL}/asset_utxos` && method === 'POST') return json(200, records);
     const body = typeof init.body === 'string' ? init.body : '';
     if (url.origin === agent.endpoint) return agent.handle(method, url.pathname, body);
-    if (url.origin !== llm.endpoint) return json(404, { reason: 'no_route', message: `nothing at ${method} ${url.href}` });
-    return llm.handle(method, url.pathname, new Headers(init.headers).get('x-escrow-ref'), body);
+    const supplier = [ocr, llm].find((s) => s.endpoint === url.origin);
+    if (supplier === undefined) return json(404, { reason: 'no_route', message: `nothing at ${method} ${url.href}` });
+    return supplier.handle(method, url.pathname, new Headers(init.headers).get('x-escrow-ref'), body);
   }) as typeof fetch;
-  return { clock, chain, llm, agent, rows, calls, fetchImpl };
+  return { clock, chain, ocr, llm, agent, rows, records, calls, fetchImpl };
 }
 
 /** The FakeChain of `m` behind a plain Chain object whose methods `over` replaces. */
@@ -410,3 +590,9 @@ export function chainWith(m: Marketplace, over: Partial<Chain>): Chain {
 export function vaultChainWith(m: Marketplace, over: Partial<VaultChain>): VaultChain {
   return { ...chainWith(m, {}), payFromVault: (a) => m.chain.payFromVault(a), ...over };
 }
+
+// --- The names of the default world ----------------------------------------------------------------------------------------------------
+export const {
+  ocrKey: OCR_KEY, llmKey: LLM_KEY, agentKey: AGENT_KEY, forgerKey: FORGER_KEY, ocrAdvert: OCR_ADVERT, llmAdvert: LLM_ADVERT, agentAdvert: AGENT_ADVERT,
+  escrowNo, indexerRow, chatFinished, ocrFinished,
+} = HIRE_KIT_WORLD;
