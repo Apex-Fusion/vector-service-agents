@@ -1,0 +1,50 @@
+{
+  "origin": "https://id.vector.apexfusion.org",
+  "capturedAtMs": 1795112240977,
+  "capturedAt": "2026-11-19T18:17:20.977Z",
+  "agent": "c5e44677dadefc8a194d15293cad889b85e1ce5c839177f1955778ac4c63d01c",
+  "files": {
+    "jwks.json": {
+      "path": "/.well-known/jwks.json",
+      "status": 200,
+      "contentType": "application/json",
+      "bytes": 551,
+      "sha256": "0c2d1e4c643b56b72f38ea454ecd1f9abaa7990629e35e37960b0327f0c8d30c"
+    },
+    "metadata.json": {
+      "path": "/.well-known/oauth-authorization-server",
+      "status": 200,
+      "contentType": "application/json",
+      "bytes": 993,
+      "sha256": "ba637ac1b8ae896387df193e2d3b7dbf03c961c9482299130555c23f45402e2c"
+    },
+    "bundle.json": {
+      "path": "/spiffe/bundle",
+      "status": 200,
+      "contentType": "application/json",
+      "bytes": 1102,
+      "sha256": "540d7811afd2fbe6631a8af7cf2063d4cad9aaa3c5189eb187d83016658f72a2"
+    },
+    "tsl-0.jwt": {
+      "path": "/status/tsl/0",
+      "status": 200,
+      "contentType": "application/statuslist+jwt",
+      "bytes": 699,
+      "sha256": "b5c7fa737e09392887a4bae7fd9b6f3b02398f273e70ee289de5296612d368d2"
+    },
+    "bsl-0.jwt": {
+      "path": "/status/bsl/0",
+      "status": 200,
+      "contentType": "application/vc+jwt",
+      "bytes": 1189,
+      "sha256": "4087051f55928af87905b966a9043f7f2e95ebb1967e6a6b96ef016c12bf95a0"
+    },
+    "credential.jwt": {
+      "path": "/agents/c5e44677dadefc8a194d15293cad889b85e1ce5c839177f1955778ac4c63d01c/credential",
+      "status": 200,
+      "contentType": "application/vc+jwt",
+      "bytes": 1522,
+      "sha256": "34b9b4ec0e91d8d17883fd60f507434457a8a2b833079c3231b310bfcf7a93a1"
+    }
+  }
+}
