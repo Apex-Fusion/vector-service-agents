@@ -1,0 +1,18 @@
+# deploy/server/Caddyfile - the main Caddy file of the agents host. setup.sh installs it as /etc/caddy/Caddyfile.
+#
+# This file has the global options and one import line. It has no site block.
+# One snippet file for each agent goes in /etc/caddy/agents, and its name ends in .snippet. The import line reads all of them.
+# To add an agent, add one file. To remove an agent, remove its file. Then validate and reload Caddy (RUNBOOK.md).
+#
+# Every host name of this host is a DNS-only name. No proxy stands in front of it. Caddy ends TLS itself and gets its own
+# certificate for each name from the public ACME service. For that, the firewall opens TCP 80 and TCP 443.
+# The firewall opens no UDP port. So HTTP/3 is off, and Caddy sends no Alt-Svc header.
+{
+	# The admin API listens on the loopback address only. The firewall does not open it.
+	admin localhost:2019
+	servers {
+		protocols h1 h2
+	}
+}
+
+import /etc/caddy/agents/*.snippet
