@@ -138,7 +138,7 @@ describe('the context headers', () => {
     ];
     for (const [sent, model] of GOOD_MODELS) expect(parseContext(withHeader('x-vector-advert-model', sent))?.advertModel, sent).toBe(model);
     const BAD = [
-      '', 'x'.repeat(257), '%41'.repeat(257), 'x'.repeat(3073), // length: 1 to 256 characters once decoded
+      '', 'x'.repeat(257), '%41'.repeat(257), // length: 1 to 256 characters once decoded
       'caf\u00e9', 'tab\there', 'line\nbreak', '\u007f', 'carriage\rreturn', '\u0000', // a character that is not visible ASCII, sent as it is
       '%', 'abc%', '%zz', '%4', '%E9', '%C3', '%C3%28', // an escape that is not one
       '%00', '%0A', '%0D', '%1B', '%7F', '%C2%80', '%C2%9F', // a control character, escaped

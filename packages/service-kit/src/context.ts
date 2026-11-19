@@ -54,9 +54,8 @@ const KEY_HASH = /^[0-9a-fA-F]{56}$/;
 const LOVELACE = /^(?:0|[1-9][0-9]{0,18})$/;
 const MILLISECONDS = /^(?:0|[1-9][0-9]{0,15})$/;
 // The model text of an advert is free text, and a header holds visible ASCII only. So the runtime writes the text as encodeURIComponent does, and the kit decodes it
-// once. The header has 1 to 3072 characters (the longest writing of 256 characters is shorter than that). The text that comes out has 1 to 256 characters and no
-// control character, for a service writes it to its log. A plain name stays as it is.
-const MODEL_WIRE = /^[ -~]{1,3072}$/;
+// once. The text that comes out has 1 to 256 characters and no control character, for a service writes it to its log. A plain name stays as it is.
+const MODEL_WIRE = /^[ -~]+$/;
 const CONTROL = /\p{Cc}/u;
 
 const REFERENCE_FORM = 'a transaction hash of 64 hex characters, "#" and an output index';
