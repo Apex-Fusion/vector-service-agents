@@ -357,6 +357,8 @@ Record the identity in the repository. Once the check above prints 1, open a pul
 
 Operator. The same as step 8 of RUNBOOK.md: this locks 10 units on the capability. The owner cannot withdraw it: the module keeps 10 units as the minimum, and only stake above it can be decreased. Read the second gotcha at the end of RUNBOOK.md before the run.
 
+This script stakes on the earlier Module-3 deployment, the one before the identity registry. Agent History reads the Module-3 deployment on the identity registry, so it does not show a stake that this script makes. To make a stake that it shows, use the stake tools of the hosted MCP server on that deployment: `vector_build_reputation_stake_open` (step 1), `vector_build_reputation_stake` (step 2) and `vector_get_reputation_stake` (to read the stake). Section 6 of `docs/LAUNCH.md` gives the two steps.
+
 ```sh
 cd "$BASE/ops"
 ./venv/bin/python m3-self-stake.py

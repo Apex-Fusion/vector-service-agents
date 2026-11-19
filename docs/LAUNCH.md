@@ -2,7 +2,7 @@
 
 A guide for a developer who has read [HIRE.md](HIRE.md). You build your own supplier agent from the template and put it on Vector mainnet with an agent record and an advert, both made with the template's own commands in your own terminal. Then you hire it once from your chat client and check the receipt. The chat client is Claude Code, Codex, Claude Desktop or any MCP client, with the hosted keyless MCP server and the signer on your own machine.
 
-**Status on 2026-11-06.** This guide was written on 2026-10-21 and brought up to date on 2026-11-06 for the identity registry release of 2026-11-03: since then the marketplace lists an advert only when the agent record it names lists the supplier key and the capability, so the record comes before the advert. Every tool it names is on the hosted mainnet server, version 3.0.0 with 63 tools, or in the signer, version 3.0.0. No launch by anyone outside the team is recorded yet, and nobody has followed this guide since the release. No third-party audit of the marketplace contracts or of the identity registry exists.
+**Status on 2026-11-06.** This guide was written on 2026-10-21 and brought up to date on 2026-11-06 for the identity registry release of 2026-11-03: since then the marketplace lists an advert only when the agent record it names lists the supplier key and the capability, so the record comes before the advert. Section 6 was brought up to date on 2026-11-19 for the stake tools of the hosted server. Every tool it names is on the hosted mainnet server, version 3.0.0, or in the signer, version 3.0.0. The hosted server had 63 tools on 2026-11-06. It has 86 since 2026-11-19, and the six stake tools of section 6 are among the 86. No launch by anyone outside the team is recorded yet, and nobody has followed this guide since the release. No third-party audit of the marketplace contracts or of the identity registry exists.
 
 ## 1. What you need
 
@@ -17,7 +17,7 @@ What each step costs, in units. Fees are about 0.5 a transaction, the fee floor 
 |---|---|---|---|---|
 | 3. The advert | about 2 | when you retire the advert, with the template's `retire-advert` command, run in your own terminal | 1 | [deploy/host/RUNBOOK.md](../deploy/host/RUNBOOK.md#12-post-the-advert) step 12; the template's [docs/LIFECYCLE.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/LIFECYCLE.md) |
 | 5. The agent record deposit | 10 | when the controller retires the record and takes the deposit back, with `vector_build_identity_retire` and `take_deposit` | 1 | the template's `register-record` command ([template README](https://github.com/Apex-Fusion/vector-agent-template#quickstart) step 5); [HIRE.md](HIRE.md) section 7; the template's [docs/TRUST-LAYER.md](https://github.com/Apex-Fusion/vector-agent-template/blob/main/docs/TRUST-LAYER.md) |
-| 6. The stake, optional | nothing today: new stakes are paused (section 6) | | | the Module-3 deployment on the identity registry (section 6) |
+| 6. The stake, optional | at least 10, and about 1.5 in fees | the 10 minimum does not: only stake above it can be decreased (section 6) | 2: the opening output and the stake | the Module-3 deployment on the identity registry, made with the stake tools of the hosted server (section 6) |
 | Each job your agent takes | nothing | | 2: the Claim and the Submit, from the supplier key | [template README](https://github.com/Apex-Fusion/vector-agent-template#real-economics) |
 | 7. The test hire, from your hiring key | the price and both bonds, raised to the ledger's minimum for the escrow output (about 2.6) when that sum is lower | on Accept your bond returns to your hiring key, and your supplier key receives the price and the supplier bond | 2: the Post and the Accept | [HIRE.md](HIRE.md) section 3 |
 
@@ -124,11 +124,20 @@ Check: ask your assistant "Show me the agent profile of did:vector:<your AGENT_I
 
 ## 6. Stake (optional)
 
-New stakes are paused. Since the identity registry release of 2026-11-03 the reputation stake belongs to a new Module-3 deployment on the identity registry. That deployment is published: the Check below says where. The earlier deployment takes no new stakes, and the hosted server's stake tools say so and build nothing. Skip this step for now. Nothing else in this guide needs a stake.
+A stake is a deposit of your agent in the Module-3 deployment on the identity registry. Since 2026-11-19 the stake tools of the hosted server make a new stake there, and Agent History reads that deployment, so your stake shows under `reputation.stakes` in its report (section 7). The stake tools do not build for the earlier Module-3 deployment, and Agent History does not read it. Nothing else in this guide needs a stake.
+
+A stake takes two builds, each one signed, sent and awaited as in [HIRE.md](HIRE.md) section 5. The agent is `did:vector:<your AGENT_ID>`. Its record (section 5) must be Active and must list each capability that you stake on, spelled as the record spells it.
+
+1. Ask your assistant for step 1 (`vector_build_reputation_stake_open`) with your agent, your capability id and your signer address as `changeAddress`. It locks an opening output that names the agent, the owner key and the capabilities. Only your wallet key signs it. Only step 2 can use this output, so go on to step 2 once step 1 has confirmed.
+2. Ask for step 2 (`vector_build_reputation_stake`) with the opening reference that step 1 gave. It consumes the opening output, makes the stake and locks at least 10 units. The controller key of your agent and the owner key of the stake sign it. The owner key is the controller key, or a key that your record lists with the transaction purpose.
+
+Each build returns the unsigned transaction and the key hash of every key that must sign it. Your wallet needs 10 units or more for the stake, about 1.5 for the fees of the two steps, and one pure output of exactly 5 as collateral for step 2.
+
+Later, `vector_build_reputation_stake_increase` adds to the stake, `vector_build_reputation_stake_update_capabilities` changes the capabilities that it backs, and `vector_build_reputation_stake_decrease` takes out stake above the minimum.
 
 Lock only what you mean to leave there. The owner cannot withdraw it: the module keeps 10 units as the minimum, and only stake above it can be decreased.
 
-Check: before you lock anything once stakes open again, read the address and the parameters of the new deployment in [Apex-Fusion/vector-agent-modules](https://github.com/Apex-Fusion/vector-agent-modules/tree/master/Module-3).
+Check: ask your assistant "Show me the stake of did:vector:<your AGENT_ID>." (`vector_get_reputation_stake`). It lists the stake with its amount, its capabilities and its owner key. The address and the parameters of the deployment are in [Apex-Fusion/vector-agent-modules](https://github.com/Apex-Fusion/vector-agent-modules/tree/master/Module-3).
 
 ## 7. Test-hire your own agent from chat
 
