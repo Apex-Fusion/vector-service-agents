@@ -1,0 +1,194 @@
+{
+  "source": "tools/list of the hosted MCP server of Vector mainnet, read on 2026-11-19 (86 tools). Only the input schemas of the read and check tools that the mainnet checks call.",
+  "tools": {
+    "vector_get_attestation": {
+      "type": "object",
+      "properties": {
+        "attestation": {
+          "description": "The attestation: its identifier (the token name, 64 hex) that the attest build returned",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        }
+      },
+      "required": [
+        "attestation"
+      ]
+    },
+    "vector_list_attestations": {
+      "type": "object",
+      "properties": {
+        "subject": {
+          "description": "The DID of the agent that the attestations are about: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "issuer": {
+          "description": "The issuer: a DID (did:vector:<64 hex>, matched with issuer_id of a registered issuer), a key hash (56 hex) or an Ed25519 public key (64 hex) of the issuer key. 64 hex can also be an issuer identifier: they match by either reading",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "att_type": {
+          "description": "Only attestations of this type (it needs a subject or an issuer): identity (0), provenance (1), software (2), environment (3), principal_binding (4), approval (5) or other (15)",
+          "type": "string",
+          "enum": [
+            "identity",
+            "provenance",
+            "software",
+            "environment",
+            "principal_binding",
+            "approval",
+            "other"
+          ]
+        },
+        "limit": {
+          "description": "Rows in one answer (default 20, at most 50)",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "offset": {
+          "description": "Rows to skip (default 0): the next_offset of the previous answer",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "vector_check_attestation": {
+      "type": "object",
+      "properties": {
+        "attestation": {
+          "description": "The attestation: its identifier (the token name, 64 hex) that the attest build returned",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "time": {
+          "description": "The time to check at (default now) (POSIX milliseconds)",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "expected_type": {
+          "description": "The type that the attestation must have: identity (0), provenance (1), software (2), environment (3), principal_binding (4), approval (5) or other (15)",
+          "type": "string",
+          "enum": [
+            "identity",
+            "provenance",
+            "software",
+            "environment",
+            "principal_binding",
+            "approval",
+            "other"
+          ]
+        },
+        "expected_subject": {
+          "description": "The DID of the agent that the attestation must be about: did:vector:<64 hex> (the bare 64-hex identifier also works)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "expected_issuer": {
+          "description": "The issuer that the attestation must name: a DID (compared with issuer_id), a key hash (56 hex) or an Ed25519 public key (64 hex) compared with the issuer key by its key hash, or 64 hex that can be an issuer identifier or a public key (they match by either reading)",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "expected_digest": {
+          "description": "The SHA-256 digest that the attestation must carry (64 hex)",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        }
+      },
+      "required": [
+        "attestation"
+      ]
+    },
+    "vector_get_delegation": {
+      "type": "object",
+      "properties": {
+        "delegation": {
+          "description": "The delegation: its identifier (the token name, 64 hex) that the delegate build returned",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        }
+      },
+      "required": [
+        "delegation"
+      ]
+    },
+    "vector_check_delegation_use": {
+      "type": "object",
+      "properties": {
+        "delegation": {
+          "description": "The delegation: its identifier (the token name, 64 hex) that the delegate build returned",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "action": {
+          "description": "The action: an internal name such as marketplace.hire.v1, or an external that starts with oauth:, mcp: or https://",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "resource": {
+          "description": "The resource: script: and the 56 hex characters of a script hash, or an external that starts with oauth:, mcp: or https://",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "time": {
+          "description": "The instant to check at (default now) (POSIX milliseconds)",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "min_confirmations": {
+          "description": "Each link of the chain must have at least this many blocks on top of the block of its mint (default 0: no wait)",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        }
+      },
+      "required": [
+        "delegation",
+        "action",
+        "resource"
+      ]
+    },
+    "vector_get_vault": {
+      "type": "object",
+      "properties": {
+        "vault_ref": {
+          "description": "One vault output: '<txid>#<index>'",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "owner_key_hash": {
+          "description": "The principal key that owns the vault outputs: a key hash, 56 hex characters",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{56}$"
+        },
+        "delegation": {
+          "description": "The delegation: its identifier (the token name, 64 hex) that the delegate build returned",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "limit": {
+          "description": "Rows in one answer (default 20, at most 50)",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "offset": {
+          "description": "Rows to skip (default 0): the next_offset of the previous answer",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    }
+  }
+}
