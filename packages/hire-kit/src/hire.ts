@@ -10,7 +10,8 @@
 // does not fail a job that is settled and verified (ruling R62). Moved from agents/document-pipeline/src/hire.ts with its rulings and its words; the
 // Pipeline's factory makes PipelineError <hop>_<what> (422), deadline (422) and store_write_failed (500), as before.
 //
-// The Post. Confirmed: it is recorded in the stranded store before anything else. Failed after its signature: recorded too, with the end of its
+// The Post. Confirmed: it is recorded in the stranded store before anything else, and then booked in the ledger of the caller. A ledger that throws leaves the escrow in the store, and a
+// store that cannot be written still gets the lock booked. Failed after its signature: recorded too, with the end of its
 // validity, whether it may still land or the submit API refused it (ruling R59), and <hop>_post_failed. Failed before its signature: nothing was locked.
 //
 // The send (75 s at most each). Accepted: there is a job id to poll. Busy (409 supplier_busy): sent again every 15 s, on the same escrow, until 90 s
@@ -50,12 +51,13 @@
 // deadline runs on. Nor does it cut a call already under way: a send in flight (up to 75 s), a poll in flight (up to 20 s) and a read of the chain
 // each end when they end, after the deadline if it came meanwhile. See the head of src/budget.ts.
 //
-// Two options a caller may set (HireOptions), both absent for the Pipeline, which keeps the behaviour above exactly: firstSendBy, past which no first send
-// is made, so that a Post confirmed late stays Open for the janitor and the hire fails with the factory's deadline; and receiptBy, at which the repeats
-// of a read of the receipt hash stop instead of at the deadline. The hire takes no abort signal: once its Post is made it ends on its own terms, settled
-// or recorded for the janitor.
+// Four options a caller may set (HireOptions), all absent for the Pipeline, which keeps the behaviour above exactly: firstSendBy, past which no first send
+// is made, so that a Post confirmed late stays Open for the janitor and the hire fails with the factory's deadline; receiptBy, at which the repeats
+// of a read of the receipt hash stop instead of at the deadline; terms, which writes what the hire locks and what an Accept pays into the record and the log; and decide, the decision of the
+// caller between the checked receipt and the Accept, which has until DECISION_WINDOW_MS after the answer of the supplier (a HireDecisionTimeout when it has not answered by then).
+// The hire takes no abort signal: once its Post is made it ends on its own terms, settled or recorded for the janitor.
 import {
-  ACCEPT_WINDOW_MS, AcceptWindowClosedError, DELIVER_BY_BUFFER_MS, TxNotConfirmedError, pollResponsesJob, responsesOutputText, responsesPromptHash,
+  ACCEPT_WINDOW_MS, AcceptWindowClosedError, BUILD_TIMEOUT_MS, DELIVER_BY_BUFFER_MS, TxNotConfirmedError, pollResponsesJob, responsesOutputText, responsesPromptHash,
   responsesResponseHash, sendResponsesJob, verifyFleetReceipt,
 } from '@vsa/buyer-core';
 import type { Chain, ChainEscrowState, FetchLike, FleetVerification, FleetVerifyInput, PollResult, PostResult, Receipt, SendResult } from '@vsa/buyer-core';
@@ -192,7 +194,9 @@ export interface HireOptions<T = unknown> {
   terms?: boolean;
   /**
    * The decision between the verified receipt and the Accept. Absent, the Accept is made. A decision that does not accept stops the hire with a HireDeclined, and a hook that throws
-   * stops it with its own error: in both the escrow stays Submitted and recorded, and no Accept is made.
+   * stops it with its own error: in both the escrow stays Submitted and recorded, and no Accept is made. The decision has a limit, DECISION_WINDOW_MS after the answer of the supplier:
+   * a hook that has not answered by then stops the hire with a HireDecisionTimeout, and its escrow stays Submitted and recorded too. The hook is not asked at all when the limit has
+   * passed already.
    */
   decide?: (delivery: Delivery<T>) => AcceptDecision | Promise<AcceptDecision>;
 }
@@ -211,6 +215,26 @@ export class HireDeclined<T = unknown> extends Error {
     this.name = 'HireDeclined';
     this.delivery = delivery;
     this.reason = reason;
+  }
+}
+
+/** What an Accept needs before the accept window closes: its build, which RealChain bounds by BUILD_TIMEOUT_MS, and the wait for its confirmation, which RealChain bounds by DELIVER_BY_BUFFER_MS unless a service sets another. */
+export const ACCEPT_NEEDS_MS = BUILD_TIMEOUT_MS + DELIVER_BY_BUFFER_MS;
+/** The decision of a hire ends this long after the answer of the supplier at the latest: the accept window, less what an Accept needs. */
+export const DECISION_WINDOW_MS = ACCEPT_WINDOW_MS - ACCEPT_NEEDS_MS;
+/**
+ * A hire whose decision did not answer in time: its delivery, and the moment (POSIX ms of the clock of the run) by which the decision had to end. No Accept was made, and the escrow
+ * stays Submitted and recorded. With no Accept in the accept window, the supplier can release the escrow, and then it takes the price and both bonds.
+ */
+export class HireDecisionTimeout<T = unknown> extends Error {
+  readonly delivery: Delivery<T>;
+  readonly decideBy: number;
+  constructor(delivery: Delivery<T>, decideBy: number) {
+    super(`The decision on the delivery of ${delivery.record.escrow_ref} did not answer by ${iso(decideBy)}, so no Accept was made: an Accept needs ${ACCEPT_NEEDS_MS / 1000} s before its accept window closes. `
+      + 'Its escrow stays Submitted and recorded. Its supplier can release it once the window has closed, and then it takes the price and both bonds.');
+    this.name = 'HireDecisionTimeout';
+    this.delivery = delivery;
+    this.decideBy = decideBy;
   }
 }
 
@@ -242,6 +266,18 @@ function recorded<E extends Error>(errors: AnyErrors<E>, facts: HireFacts, write
 }
 
 /**
+ * The decision of the caller, or 'late' when it has not answered by `limit` (POSIX ms of the clock of the run). The timer is a real one. It is set before the hook is asked and cleared
+ * when the hook ends, so a hook that never answers does not hold the run. A hook that throws throws as it is. The hook is not asked when the limit has passed already.
+ */
+async function decidedBy<T>(deps: HireDeps, decide: NonNullable<HireOptions<T>['decide']>, delivery: Delivery<T>, limit: number): Promise<AcceptDecision | 'late'> {
+  const remaining = limit - deps.clock();
+  if (remaining <= 0) return 'late';
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<'late'>((resolve) => { timer = setTimeout(() => resolve('late'), remaining); });
+  try { return await Promise.race([Promise.resolve(decide(delivery)), expired]); } finally { clearTimeout(timer); }
+}
+
+/**
  * Hires `supplier` for `job`: the record of the sub-job and what `read` kept of the answer, once the escrow is verified and accepted. Books what it moved
  * in `ledger`. Every failure is an error of `errors` (see the head of this file). With `options.decide` the Accept waits for the decision of the caller: a decision that
  * does not accept ends the hire with a HireDeclined, and the escrow stays Submitted and recorded.
@@ -266,10 +302,12 @@ export async function hireOne<T, E extends Error, K extends StrandedKind = HireK
     capability_id: supplier.capabilityId, advert_ref: supplier.advertRef, escrow_ref: post.escrowRef, supplier_pkh: post.supplierPkh,
     receipt: done.receipt, receipt_signature: done.receiptSignature, verification: verificationOf(verification.checks), ...(terms === undefined ? {} : { terms }),
   };
-  // The decision of the caller comes after the eight checks and before the Accept. A hook that throws, or declines, leaves the escrow Submitted: nothing is accepted.
+  // The decision of the caller comes after the eight checks and before the Accept. A hook that throws, declines or does not answer in time leaves the escrow Submitted: nothing is accepted.
   if (options.decide !== undefined) {
     const delivery: Delivery<T> = { record, value: read.value, verdict: verification };
-    const decision = await options.decide(delivery);
+    const decideBy = answeredAt + DECISION_WINDOW_MS;
+    const decision = await decidedBy(deps, options.decide, delivery, decideBy);
+    if (decision === 'late') throw new HireDecisionTimeout(delivery, decideBy);
     if (!decision.accept) throw new HireDeclined(delivery, decision.reason);
   }
   const accepted = await accept(deps, supplier, job, post, ledger, answeredAt, errors);
@@ -299,9 +337,15 @@ async function postEscrow<T, E extends Error>(deps: HireDeps, supplier: AnySuppl
     }
     throw failure(errors, supplier, 'post_failed', `The ${what} for ${job.label} failed (${errorText(err)}). Nothing was locked for it.`, factsOf('post', null, false), { cause: err });
   }
-  ledger.posted(post);
-  recorded(errors, factsOf('post', post.escrowRef, false), () => deps.stranded.add({ escrow_ref: post.escrowRef, deliver_by: post.deliverBy, posted_at: post.postedAt, kind: supplier.hop }),
-    post.escrowRef, `it locks ${post.lockLovelace} lovelace for ${job.label} and the janitor does not know of it. Reclaim it by hand after its deliver_by (${iso(post.deliverBy)}).`);
+  // The lock is on chain whether or not anything records it. The entry of the store comes first, so that the janitor knows the escrow whatever the ledger of the caller does next. Both
+  // run: a store that cannot be written still gets the lock booked, and the first error is the one that is thrown, the store's before the ledger's.
+  const failures: unknown[] = [];
+  try {
+    recorded(errors, factsOf('post', post.escrowRef, false), () => deps.stranded.add({ escrow_ref: post.escrowRef, deliver_by: post.deliverBy, posted_at: post.postedAt, kind: supplier.hop }),
+      post.escrowRef, `it locks ${post.lockLovelace} lovelace for ${job.label} and the janitor does not know of it. Reclaim it by hand after its deliver_by (${iso(post.deliverBy)}).`);
+  } catch (err) { failures.push(err); }
+  try { ledger.posted(post); } catch (err) { failures.push(err); }
+  if (failures.length > 0) throw failures[0];
   return post;
 }
 

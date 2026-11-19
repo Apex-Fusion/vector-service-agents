@@ -3,13 +3,13 @@
 // fetch (every call through safeFetch), with a clock the test owns. Every wait and every message of a hire is held, for the Document Pipeline, through its
 // factory by agents/document-pipeline/test/orchestrate.test.ts; these tests hold what the kit adds to it: the error factory is the whole seam (two factories,
 // the same words), the facts each throw site gives, what an Accept came to, and the two options the Pipeline does not set.
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeChain, TxNotConfirmedError } from '@vsa/buyer-core';
 import type { Chain } from '@vsa/buyer-core';
-import { chatJob, hireOne, termsOf, verificationOf } from '../src/hire.ts';
+import { ACCEPT_NEEDS_MS, DECISION_WINDOW_MS, HireDecisionTimeout, chatJob, hireOne, termsOf, verificationOf } from '../src/hire.ts';
 import type { HireDeps, HireDetail, HireErrors, HireFacts, HireLedger, HireOptions, HireSupplier } from '../src/hire.ts';
 import { StrandedStore } from '../src/janitor.ts';
 import { ALL_PASS, ANSWER, LLM_ADVERT, LLM_ADVERT_REF, LLM_CAPABILITY, LLM_ENDPOINT, LLM_KEY, T0, WINDOW_MS, chainWith, chatFinished, escrowNo, marketplace } from '../testing/index.ts';
@@ -63,7 +63,7 @@ const HOP: HireErrors<HopError> = {
 
 // --- The harness -------------------------------------------------------------------------------------------------------------------
 const dirs: string[] = [];
-afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); vi.useRealTimers(); });
 
 interface Run {
   m: Marketplace; deps: HireDeps; stranded: StrandedStore; sleeps: number[]; ledger: HireLedger;
@@ -372,5 +372,64 @@ describe('hireOne: what a failure tells a factory that turns it into a result', 
     const clearSeen: HireDetail[] = [];
     await failure<CodedError>(hireOne(clear.deps, SUPPLIER, job(clear.m), clear.ledger, keeping(clearSeen)));
     expect(clearSeen.map((detail) => detail.unclearSend)).toStrictEqual([false]);
+  });
+});
+
+describe('hireOne: the Post is recorded before the ledger books it', () => {
+  it('has the escrow in the store when the ledger is called: a ledger that throws leaves the escrow recorded, its error is the one thrown, and nothing is sent', async () => {
+    const run = setup();
+    const held: string[][] = [];
+    const closed = new Error('the ledger is closed');
+    const ledger: HireLedger = { posted: () => { held.push(run.stranded.list().map((e) => e.escrow_ref)); throw closed; }, accepted: () => undefined };
+    const error = await failure<Error>(hireOne(run.deps, SUPPLIER, job(run.m), ledger, CODED));
+    expect(error).toBe(closed);
+    expect(held).toStrictEqual([[escrowNo(1)]]);
+    expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1))]);
+    expect(run.m.llm.sends).toStrictEqual([]);
+  });
+
+  it('books the lock when the store cannot be written, as it did, and the error of the store is the one thrown, also when the ledger throws too', async () => {
+    const run = setup();
+    run.stranded.add = () => { throw new Error('ENOSPC: no space left on device'); };
+    const error = await failure<CodedError>(hireOne(run.deps, SUPPLIER, job(run.m), run.ledger, CODED));
+    expect(error.code).toBe('store_write_failed');
+    expect(run.booked.posted).toStrictEqual([{ lockLovelace: FakeChain.LOCK_LOVELACE, feeLovelace: FakeChain.FEE_LOVELACE }]);
+    const both = setup();
+    both.stranded.add = () => { throw new Error('ENOSPC: no space left on device'); };
+    const closed: HireLedger = { posted: () => { throw new Error('the ledger is closed'); }, accepted: () => undefined };
+    expect((await failure<CodedError>(hireOne(both.deps, SUPPLIER, job(both.m), closed, CODED))).code).toBe('store_write_failed');
+  });
+});
+
+describe('hireOne: the decision of the caller has a limit (absent for the Pipeline)', () => {
+  const never = (): Promise<never> => new Promise<never>(() => undefined);
+
+  it('is the accept window less what an Accept needs: 600 s less its build and its confirmation', () => {
+    expect([ACCEPT_NEEDS_MS, DECISION_WINDOW_MS]).toStrictEqual([240_000, 360_000]);
+  });
+
+  it('throws a HireDecisionTimeout when the decision has not answered by the limit: the delivery and the limit are in it, no Accept is made, and the escrow stays Submitted and recorded', async () => {
+    vi.useFakeTimers();
+    const run = setup();
+    const error = await failure<HireDecisionTimeout<{ text: string; status: unknown }>>(hireOne(run.deps, SUPPLIER, job(run.m), run.ledger, CODED, { decide: () => { vi.advanceTimersByTime(DECISION_WINDOW_MS); return never(); } }));
+    expect(error).toBeInstanceOf(HireDecisionTimeout);
+    expect([error.delivery.record.escrow_ref, error.delivery.value.text, error.decideBy]).toStrictEqual([escrowNo(1), ANSWER, run.m.clock.now + DECISION_WINDOW_MS]);
+    expect(error.message).toContain('did not answer');
+    expect(await run.m.chain.escrowState(escrowNo(1))).toBe('Submitted');
+    expect(run.stranded.list()).toStrictEqual([entry(escrowNo(1))]);
+    expect(run.booked.accepted).toStrictEqual([]);
+  });
+
+  it('hears a decision that answers one millisecond before the limit, and a decision that throws keeps its own error', async () => {
+    vi.useFakeTimers();
+    const run = setup();
+    const hired = await hireOne(run.deps, SUPPLIER, job(run.m), run.ledger, CODED, { decide: async () => { vi.advanceTimersByTime(DECISION_WINDOW_MS - 1); return { accept: true }; } });
+    expect(hired.accepted).toBe('confirmed');
+    // The timer of the limit is cleared when the decision answers: none is left to hold a process open.
+    expect(vi.getTimerCount()).toBe(0);
+    const hook = new Error('the order desk is closed');
+    const thrown = setup();
+    expect(await failure<Error>(hireOne(thrown.deps, SUPPLIER, job(thrown.m), thrown.ledger, CODED, { decide: async () => { throw hook; } }))).toBe(hook);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
