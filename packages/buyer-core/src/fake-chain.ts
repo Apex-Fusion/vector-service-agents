@@ -61,6 +61,8 @@ export interface FakeChainOptions {
   floatLovelace?: bigint;
   /** Default 5000000 lovelace, the 5-unit output sent alone; null for a wallet without collateral. */
   collateralLovelace?: bigint | null;
+  /** What every Post locks: FakeChain.LOCK_LOVELACE unless this says otherwise, for a test of an advert whose price and bonds ask for more. */
+  lockLovelace?: bigint;
 }
 
 const RECEIPT_HASH = /^[0-9a-f]{64}$/;
@@ -81,6 +83,7 @@ export class FakeChain implements VaultChain {
   readonly #clock: () => number;
   readonly #prefix: string;
   readonly #collateral: bigint | null;
+  readonly #lock: bigint;
   #float: bigint;
   #posts = 0;
   #failNextPost: TxNotConfirmedError | null = null;
@@ -99,6 +102,7 @@ export class FakeChain implements VaultChain {
     this.address = enterpriseAddressOf(this.buyerPkh);
     this.#float = opts.floatLovelace ?? 50_000_000n;
     this.#collateral = opts.collateralLovelace === undefined ? 5_000_000n : opts.collateralLovelace;
+    this.#lock = opts.lockLovelace ?? FakeChain.LOCK_LOVELACE;
   }
 
   async wallet(): Promise<{ address: string; buyerPkh: string; collateralLovelace: bigint | null; floatLovelace: bigint }> {
@@ -110,8 +114,8 @@ export class FakeChain implements VaultChain {
     const advert = this.#advert(advertRef);
     const plan = planFleetPostEscrow(advert, advertRef, this.buyerPkh, args.promptHash, this.#clock(), fleetPostTerms(advert, this.address));
     const owed = advert.price_lovelace + advert.buyer_bond_lovelace + advert.supplier_bond_lovelace;
-    if (owed > FakeChain.LOCK_LOVELACE) throw new Error(`FakeChain locks ${FakeChain.LOCK_LOVELACE} lovelace on every Post, less than the ${owed} advert ${advertRef} asks for.`);
-    const cost = FakeChain.LOCK_LOVELACE + FakeChain.FEE_LOVELACE;
+    if (owed > this.#lock) throw new Error(`FakeChain locks ${this.#lock} lovelace on every Post, less than the ${owed} advert ${advertRef} asks for.`);
+    const cost = this.#lock + FakeChain.FEE_LOVELACE;
     if (this.#float < cost) throw new Error(`FakeChain: the float of ${this.#float} lovelace cannot cover the lock and the fee (${cost}).`);
     const failure = this.#failNextPost;
     if (failure !== null) {
@@ -121,9 +125,9 @@ export class FakeChain implements VaultChain {
     this.#float -= cost;
     const txHash = sha256Utf8Hex(`${this.#prefix}${++this.#posts}`);
     const escrowRef = formatOutRef(txHash, 0);
-    this.#escrows.set(escrowRef, { datum: plan.datum, state: 'Open', resultReceiptHash: null, lock: FakeChain.LOCK_LOVELACE, vault: null });
+    this.#escrows.set(escrowRef, { datum: plan.datum, state: 'Open', resultReceiptHash: null, lock: this.#lock, vault: null });
     return {
-      escrowRef, txHash, lockLovelace: FakeChain.LOCK_LOVELACE, feeLovelace: FakeChain.FEE_LOVELACE, deliverBy: plan.deliverBy, postedAt: plan.postedAt,
+      escrowRef, txHash, lockLovelace: this.#lock, feeLovelace: FakeChain.FEE_LOVELACE, deliverBy: plan.deliverBy, postedAt: plan.postedAt,
       supplierPkh: plan.datum.supplier_pkh, collateralKept: this.#collateral !== null, agentId: isIdentityAdvert(advert) ? advert.agent_id : null,
     };
   }
