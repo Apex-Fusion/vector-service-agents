@@ -7,13 +7,13 @@
 // the Document Pipeline keeps its PipelineError, its codes and its words.
 
 // --- One hire (src/hire.ts) ---
-export { HireDeclined, chatJob, hireOne, termsLine, termsOf, verificationOf } from './hire.ts';
+export { ACCEPT_NEEDS_MS, DECISION_WINDOW_MS, HireDecisionTimeout, HireDeclined, chatJob, hireOne, termsLine, termsOf, verificationOf } from './hire.ts';
 export type {
   AcceptDecision, Delivery, HireDeps, HireDetail, HireErrors, HireFacts, HireFailure, HireJob, HireKind, HireLedger, HireOptions, HireRecord, HireStage, HireSupplier, HireTerms, Hired,
 } from './hire.ts';
 
 // --- The hire of an agent of the template contract (src/agent.ts, src/template-client.ts) ---
-export { HireInterrupted, hireAgent } from './agent.ts';
+export { HireInterrupted, HirePayUnconfirmed, hireAgent } from './agent.ts';
 export type { AgentDelivery, AgentDeps, AgentErrors, AgentEscrow, AgentOutcome, AgentRequest, AgentSelection, VaultRefusal } from './agent.ts';
 export { isRuntimeRefusal, pollTemplateJob, sendTemplateJob, templateJob } from './template-client.ts';
 export type { TemplateAnswer } from './template-client.ts';

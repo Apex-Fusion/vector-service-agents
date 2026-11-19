@@ -1,13 +1,15 @@
 // packages/hire-kit/src/agent.ts
-// The hire of an agent of the template contract, from the choice of its advert to the Accept. The caller names what it wants (a capability and a model, or one advert, and the most the
-// advert may cost in price and in bonds), the text the agent reads, where the money comes from (the wallet, or a vault that the key pays from as a delegate), and the decision it takes
-// between the checked receipt and the Accept. The hire runs in the lane of the paying key it is given, so that it has the one chain and the one store of that key, and the janitor of
-// the key starts no transaction while it runs. The kit says how the hire ended in one of five words, in a type that a `switch` can check:
+// The hire of an agent of the template contract, from the choice of its advert to the Accept. The caller names what it wants (a capability and a model, or one advert), the three limits of
+// what the hire may cost (the price, the supplier bond and the buyer bond), the text the agent reads, where the money comes from (the wallet, or a vault that the key pays from as a delegate),
+// and the decision it takes between the checked receipt and the Accept. The hire runs in the lane of the paying key it is given, so that it has the one chain and the one store of that key,
+// and the janitor of the key starts no transaction while it runs. The kit says how the hire ended in one of five words, in a type that a `switch` can check:
 //   completed             the receipt passed the eight checks, the decision accepted it, and the Accept was made.
-//   refused_before_claim  the runtime of the agent refused the job before its Claim, and the kit can show that nothing was claimed: the answer is the envelope of the runtime with a code, its status
-//                         is below 500 (or 503 with one of the three codes of a service it could not ask), the escrow was read Open after the answer, and no earlier send of the job ended
-//                         without a clear answer. The same holds when the agent stayed busy until the send ran out of time. The escrow stays Open and recorded: the janitor reclaims it after
-//                         its deliver_by, to the vault when a vault paid it.
+//   refused_before_claim  the runtime of the agent refused the job. The kit gives this word when three things hold together: the answer is the envelope of the runtime with a code, and its status
+//                         is below 500 (or 503 with one of the three codes of a service it could not ask); the escrow was read Open once, just after the answer; and no earlier send of the job
+//                         ended without a clear answer. The same holds when the agent stayed busy until the send ran out of time. The word rests on what the runtime said and on that one read of
+//                         the chain. It is no proof, and two cases still give it wrongly: a runtime that claims the escrow and still answers a clean refusal, and a runtime that claims the
+//                         escrow after its refusal (an Open escrow stays open to a Claim until its deliver_by). In both the escrow is in the store of the key, and the janitor reclaims an Open or
+//                         Claimed escrow after its deadline, to the vault when a vault paid it. An escrow that the agent went on to Submit cannot be reclaimed.
 //   failed_after_claim    the agent may hold the job, or the kit cannot tell that it does not, and the hire did not end well. Every end of a send that is not a refusal as above is
 //                         `send_lost`: no answer, a page or a 5xx, a refusal after a send that was unclear, escrow_not_found (the view of the runtime may lag), an escrow that is not read
 //                         Open. The other reasons are the agent's failure, the polls that ran out of time, an answer that cannot be used, a receipt that the kit cannot get to check
@@ -15,29 +17,33 @@
 //                         that failed. The escrow stays recorded for the janitor.
 //   vault_refused         the vault Pay did not leave the node as a transaction: the script of the vault refused it (a limit), the node did not evaluate it, or it cannot be built. Nothing was
 //                         signed, nothing was submitted, and no money moved. The evaluation error and the body of the transaction are in the result.
-//   not_accepted          the delivery came and the escrow was not accepted: the receipt failed a check (the verdict says which), or the decision of the caller said no. The escrow stays as it is.
-// What is not an outcome is thrown by the factory of the caller: no advert or no agent to hire (an advert above a limit of the price or of a bond among them), a Post that failed before its
-// signature, the deadline, the stranded store, and a decision that throws. When a vault Pay was confirmed before the error, the error is a HireInterrupted: it carries the vault that
-// continues, and the error that ended the hire as its cause. The vault that a Pay leaves has a new reference. A caller takes it from an outcome (`vaultRef`) or from a HireInterrupted,
-// and a caller that keeps the old reference pays its next hire from a vault that no longer exists.
-import { VaultPayImpossible, VaultPayNotEvaluated, VaultPayRefused, fetchSuppliers, indexerFetch, readCapability } from '@vsa/buyer-core';
-import type { Chain, FetchLike, FleetVerification, VaultChain, VaultPayAttempt, VaultPayImpossibleReason } from '@vsa/buyer-core';
+//   not_accepted          the delivery came and the escrow was not accepted: the receipt failed a check (the verdict says which), the decision of the caller said no, or the decision did not
+//                         answer in time (`decision_timeout`). The decision has until DECISION_WINDOW_MS after the answer of the agent: the accept window less what an Accept needs. No Accept is
+//                         made, and the escrow stays Submitted and recorded. With no Accept in the window the agent can release the escrow, and it takes the price and both bonds.
+// What is not an outcome is thrown by the factory of the caller: no advert or no agent to hire (an advert above a limit among them), a Post that failed before its signature, the deadline,
+// the stranded store, and a decision that throws. A limit that is not a bigint or null is a TypeError, thrown before anything is read. A Pay from a vault spends the vault that the caller
+// held and leaves a new one, so two errors carry a vault reference. After a confirmed Pay the error is a HireInterrupted: it carries the vault that continues, the escrow, and the error that
+// ended the hire as its cause. After a Pay that was submitted and not seen confirmed the error is a HirePayUnconfirmed: it carries the vault that continues if the Pay lands, the escrow,
+// whether the Pay may still land, and the time after which it cannot. A caller takes the continuing reference from an outcome (`vaultRef`) or from a HireInterrupted, and a caller that keeps
+// the old reference pays its next hire from a vault that no longer exists.
+import { TxNotConfirmedError, VaultPayImpossible, VaultPayNotEvaluated, VaultPayRefused, fetchSuppliers, indexerFetch, readCapability } from '@vsa/buyer-core';
+import type { Chain, FetchLike, FleetVerification, VaultChain, VaultPayAttempt, VaultPayImpossibleReason, VaultPayResult } from '@vsa/buyer-core';
 import type { Clocked } from './budget.ts';
 import { canonicalRef, errorText } from './format.ts';
-import { HireDeclined, hireOne, termsOf } from './hire.ts';
+import { HireDeclined, HireDecisionTimeout, hireOne, termsOf } from './hire.ts';
 import type { AcceptDecision, Delivery, HireDetail, HireErrors, HireFacts, HireFailure, HireLedger, HireOptions, HireRecord, HireSupplier, HireTerms } from './hire.ts';
 import type { PayingKey } from './keys.ts';
-import { advertOnChain, bondProblem, choiceLine, keyOfAdvert } from './select.ts';
+import { advertOnChain, bondProblem, choiceLine, keyOfAdvert, requireLimits } from './select.ts';
 import { isRuntimeRefusal, templateJob } from './template-client.ts';
 import type { TemplateAnswer } from './template-client.ts';
 
 /**
- * How an agent is chosen: by what it does, or by the advert that the caller names. Either way the advert is read on chain, and every other field that the caller gives is checked against it:
- * the capability, the model and the price ceiling. An advert that does not fit is refused before anything is paid.
+ * How an agent is chosen: by what it does, or by the advert that the caller names. Either way the advert is read on chain, and every field that the caller gives (the capability and the model)
+ * and the three limits of the request are checked against it. An advert that does not fit is refused before anything is paid.
  */
 export type AgentSelection =
-  | { advertRef: string; capabilityId?: string; model?: string; maxPriceLovelace?: bigint }
-  | { advertRef?: undefined; capabilityId: string; model?: string; maxPriceLovelace?: bigint };
+  | { advertRef: string; capabilityId?: string; model?: string }
+  | { advertRef?: undefined; capabilityId: string; model?: string };
 
 /** A delivery that passed the eight checks, as the decision of the caller sees it. */
 export interface AgentDelivery { escrowRef: string; advertRef: string; text: string; record: HireRecord; verdict: FleetVerification }
@@ -51,13 +57,21 @@ export interface AgentRequest {
   /** The vault to pay from, as the ref of its UTxO. Absent, the wallet of the chain pays. */
   vaultRef?: string;
   /**
+   * The most the price of the advert may be, in lovelace. A number refuses a dearer advert, for a selection by capability and for a named advert. `null` is the choice of no ceiling.
+   * The three limits have no default, and each is a bigint or null: a number, a text or a missing field is refused with a TypeError before anything is read.
+   */
+  maxPriceLovelace: bigint | null;
+  /**
    * The most the supplier bond of the advert may be, in lovelace. The buyer funds the bond at the Post, and an Accept pays it to the supplier with the price, so the price ceiling does not
-   * bound what the hire pays. A number refuses a dearer advert before anything is paid. `null` is the choice of no limit. There is no default: write one of the two.
+   * bound what the hire pays. A number refuses a dearer advert before anything is paid. `null` is the choice of no limit.
    */
   maxSupplierBondLovelace: bigint | null;
-  /** The most the buyer bond of the advert may be, in lovelace: the buyer funds it at the Post, and it returns at an Accept. A number refuses a dearer advert; `null` is no limit; no default. */
+  /** The most the buyer bond of the advert may be, in lovelace: the buyer funds it at the Post, and it returns at an Accept. A number refuses a dearer advert; `null` is no limit. */
   maxBuyerBondLovelace: bigint | null;
-  /** The decision between the checked receipt and the Accept. Absent, a delivery that passed the checks is accepted. A hook that throws stops the hire with its own error. */
+  /**
+   * The decision between the checked receipt and the Accept. Absent, a delivery that passed the checks is accepted. A hook that throws stops the hire with its own error. A hook that has not
+   * answered by DECISION_WINDOW_MS after the answer of the agent ends the hire as not_accepted with `decision_timeout`, and the hook is not asked when that time has passed already.
+   */
   decide?: (delivery: AgentDelivery) => AcceptDecision | Promise<AcceptDecision>;
 }
 
@@ -92,20 +106,51 @@ export type AgentOutcome =
   | ({ outcome: 'failed_after_claim'; reason: HireFailure; message: string } & AgentEscrow)
   | { outcome: 'vault_refused'; advertRef: string; message: string; refusal: VaultRefusal }
   | ({ outcome: 'not_accepted'; reason: 'receipt_failed'; message: string; verdict: FleetVerification } & AgentEscrow)
-  | ({ outcome: 'not_accepted'; reason: 'declined'; message: string; declined: string; delivery: AgentDelivery } & AgentEscrow);
+  | ({ outcome: 'not_accepted'; reason: 'declined'; message: string; declined: string; delivery: AgentDelivery } & AgentEscrow)
+  | ({ outcome: 'not_accepted'; reason: 'decision_timeout'; message: string; delivery: AgentDelivery } & AgentEscrow);
 
 /**
  * An error that ended a hire after a vault Pay was confirmed. The Pay spent the vault the caller held and left a new one: `vaultRef` is the reference of the vault that continues, and the
- * next Pay of the caller starts from it. `cause` is the error that ended the hire (a deadline, a failed write of the store, the decision of the caller that threw), and the message is its message.
+ * next Pay of the caller starts from it. `escrowRef` is the escrow that the Pay opened. `cause` is the error that ended the hire (a deadline, a failed write of the store, the decision of
+ * the caller that threw, a ledger that threw), and the message is its message.
  */
 export class HireInterrupted extends Error {
   readonly vaultRef: string;
+  readonly escrowRef: string;
   readonly cause: unknown;
-  constructor(cause: unknown, vaultRef: string) {
+  constructor(cause: unknown, vaultRef: string, escrowRef: string) {
     super(cause instanceof Error ? cause.message : String(cause));
     this.name = 'HireInterrupted';
     this.cause = cause;
     this.vaultRef = vaultRef;
+    this.escrowRef = escrowRef;
+  }
+}
+
+/**
+ * A vault Pay was signed and submitted, and the kit did not see it confirmed. It may still land, until `validTo` (POSIX ms). If it lands, it spends the vault that the caller held, and the
+ * vault continues at `vaultRefIfLanded`, the second output of the Pay. `escrowRef` is the first output, which the kit has recorded for the janitor. Until `validTo` a caller must not start
+ * another Pay from the old reference, because the Pay may land and spend it. After `validTo` the Pay cannot land, and the caller reads the vault again from the chain: if the Pay landed,
+ * the vault continues at `vaultRefIfLanded`, and if it did not, the old reference is still the vault. `mayLand` is false when the Pay certainly did not reach the node (the kit did not send
+ * it, or the submit API refused it). The kit records the escrow all the same, because an API can answer 4xx for a transaction that it forwarded. `cause` is the error that ended the hire,
+ * and the message is its message.
+ */
+export class HirePayUnconfirmed extends Error {
+  readonly txHash: string;
+  readonly escrowRef: string;
+  readonly vaultRefIfLanded: string;
+  readonly mayLand: boolean;
+  readonly validTo: number;
+  readonly cause: unknown;
+  constructor(cause: unknown, pay: TxNotConfirmedError) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'HirePayUnconfirmed';
+    this.cause = cause;
+    this.txHash = pay.txHash;
+    this.escrowRef = pay.escrowRef;
+    this.vaultRefIfLanded = `${pay.txHash}#1`;
+    this.mayLand = pay.mayLand;
+    this.validTo = pay.validTo;
   }
 }
 
@@ -134,18 +179,20 @@ const stopping = <E extends Error>(errors: AgentErrors<E>): HireErrors<HireStop 
 
 const canPayFromVault = (chain: Chain): chain is VaultChain => 'payFromVault' in chain && typeof chain.payFromVault === 'function';
 
-/** What a selection asks for, in words. */
-function asked(selection: AgentSelection): string {
+/** What a request asks for, in words. */
+function asked(request: AgentRequest): string {
+  const { selection, maxPriceLovelace } = request;
   const parts: string[] = [];
   if (selection.capabilityId !== undefined) parts.push(`the capability ${selection.capabilityId}`);
   if (selection.model !== undefined) parts.push(`the model ${selection.model}`);
-  if (selection.maxPriceLovelace !== undefined) parts.push(`a price of at most ${selection.maxPriceLovelace} lovelace`);
+  if (maxPriceLovelace !== null) parts.push(`a price of at most ${maxPriceLovelace} lovelace`);
   return parts.length === 0 ? 'what was asked' : parts.join(', ');
 }
 
 /** The advert of the only Active listing that fits the selection. Two that fit, or none, is the caller's `unavailable`: the kit never picks one of several at random. */
-async function listedAdvert<E extends Error>(deps: AgentDeps, selection: AgentSelection, unavailable: (why: string) => E): Promise<string> {
-  const { capabilityId, model, maxPriceLovelace } = selection;
+async function listedAdvert<E extends Error>(deps: AgentDeps, request: AgentRequest, unavailable: (why: string) => E): Promise<string> {
+  const { capabilityId, model } = request.selection;
+  const { maxPriceLovelace } = request;
   if (capabilityId === undefined) throw unavailable('the selection names neither an advert nor a capability');
   let rows: Awaited<ReturnType<typeof fetchSuppliers>>;
   try {
@@ -153,30 +200,30 @@ async function listedAdvert<E extends Error>(deps: AgentDeps, selection: AgentSe
   } catch (err) {
     throw unavailable(`the marketplace indexer could not be read (${errorText(err)})`);
   }
-  const fit = rows.filter((row) => row.advert_status === 'Active' && (model === undefined || row.model === model) && (maxPriceLovelace === undefined || row.price_lovelace <= maxPriceLovelace));
-  if (fit.length === 0) throw unavailable(`the indexer lists no Active advert for ${asked(selection)}`);
-  if (fit.length > 1) throw unavailable(`the indexer lists ${fit.length} Active adverts for ${asked(selection)}; name one by its advert ref: ${fit.map((row) => row.utxo_ref).join(', ')}`);
+  const fit = rows.filter((row) => row.advert_status === 'Active' && (model === undefined || row.model === model) && (maxPriceLovelace === null || row.price_lovelace <= maxPriceLovelace));
+  if (fit.length === 0) throw unavailable(`the indexer lists no Active advert for ${asked(request)}`);
+  if (fit.length > 1) throw unavailable(`the indexer lists ${fit.length} Active adverts for ${asked(request)}; name one by its advert ref: ${fit.map((row) => row.utxo_ref).join(', ')}`);
   try { return canonicalRef(fit[0].utxo_ref); } catch (err) { throw unavailable(`the indexer lists an advert with a ref that cannot be read (${errorText(err)})`); }
 }
 
 /**
  * The agent to hire. The advert comes from the indexer's listing (one Active advert that fits) or from the caller by name, and is read on chain either way: it must be Active, it must be the
- * capability, the model and the price that were asked, and its bonds must be within the limits of the request. A named advert is not looked up in the listing of the indexer. The agent must
- * then serve, at its endpoint, its own advert and a key that hashes to the supplier key of the advert, or no receipt of it could verify.
+ * capability and the model that were asked, its price must be within the ceiling, and its bonds must be within the limits of the request. A named advert is not looked up in the listing of
+ * the indexer. The agent must then serve, at its endpoint, its own advert and a key that hashes to the supplier key of the advert, or no receipt of it could verify.
  */
 async function chooseAgent<E extends Error>(chain: Chain, deps: AgentDeps, request: AgentRequest, unavailable: (why: string) => E): Promise<HireSupplier<'agent'>> {
-  const { selection } = request;
+  const { selection, maxPriceLovelace } = request;
   let advertRef: string;
   if (selection.advertRef === undefined) {
-    advertRef = await listedAdvert(deps, selection, unavailable);
+    advertRef = await listedAdvert(deps, request, unavailable);
   } else {
     try { advertRef = canonicalRef(selection.advertRef); } catch (err) { throw unavailable(errorText(err)); }
   }
   const advert = await advertOnChain(chain, advertRef, unavailable);
   if (advert.status !== 'Active') throw unavailable(`its advert ${advertRef} is ${advert.status} on chain, not Active`);
-  const { capabilityId, model, maxPriceLovelace } = selection;
-  if ((capabilityId !== undefined && advert.capability_id !== capabilityId) || (model !== undefined && advert.model !== model) || (maxPriceLovelace !== undefined && advert.price_lovelace > maxPriceLovelace)) {
-    throw unavailable(`the advert ${advertRef} is not, on chain, an Active advert for ${asked(selection)}: it is for the capability ${advert.capability_id} with the model ${advert.model}, priced ${advert.price_lovelace} lovelace`);
+  const { capabilityId, model } = selection;
+  if ((capabilityId !== undefined && advert.capability_id !== capabilityId) || (model !== undefined && advert.model !== model) || (maxPriceLovelace !== null && advert.price_lovelace > maxPriceLovelace)) {
+    throw unavailable(`the advert ${advertRef} is not, on chain, an Active advert for ${asked(request)}: it is for the capability ${advert.capability_id} with the model ${advert.model}, priced ${advert.price_lovelace} lovelace`);
   }
   const heavy = bondProblem(advertRef, advert, request);
   if (heavy !== null) throw unavailable(heavy);
@@ -231,13 +278,15 @@ function ended<E extends Error>(stop: HireStop, advertRef: string, vaultRef: str
 }
 
 /**
- * Hires one agent for one request from `key`, and says how the hire ended. Chooses the agent (`request.selection`, checked on chain with the limits of the bonds), pays its escrow from the wallet
- * or from the vault of `request.vaultRef`, sends the payload, polls, checks the receipt, asks `request.decide`, and accepts or does not. It runs in the lane of the key: one hire at a time for the key,
- * and the janitor of the key starts no transaction meanwhile. A vault Pay checks no limit of the vault: the node evaluates it, and the answer of the vault script is the `vault_refused` outcome
- * with the evaluation error and the body of the transaction. The error of the factory (`errors`) is thrown for what no outcome names, in a HireInterrupted after a confirmed vault Pay.
+ * Hires one agent for one request from `key`, and says how the hire ended. Refuses a limit that is neither a bigint nor null with a TypeError, before anything is read. Chooses the agent
+ * (`request.selection`, checked on chain with the three limits), pays its escrow from the wallet or from the vault of `request.vaultRef`, sends the payload, polls, checks the receipt,
+ * asks `request.decide`, and accepts or does not. It runs in the lane of the key: one hire at a time for the key, and the janitor of the key starts no transaction meanwhile. A vault
+ * Pay checks no limit of the vault: the node evaluates it, and the answer of the vault script is the `vault_refused` outcome with the evaluation error and the body of the transaction.
+ * The error of the factory (`errors`) is thrown for what no outcome names, in a HireInterrupted after a confirmed vault Pay and in a HirePayUnconfirmed after one that was not seen confirmed.
  */
 export async function hireAgent<E extends Error>(key: PayingKey, deps: AgentDeps, request: AgentRequest, errors: AgentErrors<E>): Promise<AgentOutcome> {
   if (typeof request.payload !== 'string' || request.payload === '') throw new TypeError('The payload must be a non-empty string.');
+  requireLimits({ maxPriceLovelace: request.maxPriceLovelace, maxSupplierBondLovelace: request.maxSupplierBondLovelace, maxBuyerBondLovelace: request.maxBuyerBondLovelace }, { null: true, absent: false });
   return key.lane.run(() => hireInLane(key, deps, request, errors));
 }
 
@@ -245,17 +294,21 @@ async function hireInLane<E extends Error>(key: PayingKey, deps: AgentDeps, requ
   const { chain } = key;
   const supplier = await chooseAgent(chain, deps, request, (why) => errors.unavailable(why));
   const job = templateJob(supplier.endpoint, request.payload, request.label ?? 'the agent job', deps.fetchImpl);
-  /** The vault after a confirmed Pay: the next Pay of the caller starts from it. */
-  const vault: { vaultRef: string | null } = { vaultRef: null };
+  /** What a vault Pay came to: the one that was confirmed (the vault continues, and the Pay opened the escrow), or the one that was submitted and not seen confirmed. */
+  const pay: { confirmed: VaultPayResult | null; unconfirmed: TxNotConfirmedError | null } = { confirmed: null, unconfirmed: null };
   const { vaultRef, decide } = request;
   if (vaultRef !== undefined) {
     if (!canPayFromVault(chain)) throw errors.unavailable('the chain of this run cannot pay from a vault');
     job.payment = {
       what: 'Vault Pay',
       run: async () => {
-        const paid = await chain.payFromVault({ vaultRef, advertRef: supplier.advertRef, payload: request.payload });
-        vault.vaultRef = paid.vaultRef;
-        return paid;
+        try {
+          pay.confirmed = await chain.payFromVault({ vaultRef, advertRef: supplier.advertRef, payload: request.payload });
+          return pay.confirmed;
+        } catch (err) {
+          if (err instanceof TxNotConfirmedError) pay.unconfirmed = err;
+          throw err;
+        }
       },
     };
   }
@@ -273,23 +326,25 @@ async function hireInLane<E extends Error>(key: PayingKey, deps: AgentDeps, requ
     try {
       const hired = await hireOne(key.hireDeps(deps, deps.log), supplier, job, ledger, stopping(errors), options);
       return {
-        outcome: 'completed', paidFrom: vaultRef === undefined ? 'wallet' : 'vault', advertRef: supplier.advertRef, escrowRef: hired.record.escrow_ref, vaultRef: vault.vaultRef,
+        outcome: 'completed', paidFrom: vaultRef === undefined ? 'wallet' : 'vault', advertRef: supplier.advertRef, escrowRef: hired.record.escrow_ref, vaultRef: pay.confirmed?.vaultRef ?? null,
         terms: termsOf(supplier.advert, locked), text: hired.value.text, record: hired.record, verdict: hired.verdict, accepted: hired.accepted,
       };
     } catch (err) {
-      if (err instanceof HireStop) return ended(err, supplier.advertRef, vault.vaultRef, termsOf(supplier.advert, locked), errors);
-      if (err instanceof HireDeclined) {
+      if (err instanceof HireStop) return ended(err, supplier.advertRef, pay.confirmed?.vaultRef ?? null, termsOf(supplier.advert, locked), errors);
+      if (err instanceof HireDeclined || err instanceof HireDecisionTimeout) {
         const delivery = deliveryOf(err.delivery);
-        return {
-          outcome: 'not_accepted', reason: 'declined', message: err.message, declined: err.reason, delivery, advertRef: supplier.advertRef, escrowRef: delivery.escrowRef, vaultRef: vault.vaultRef,
-          terms: termsOf(supplier.advert, locked),
-        };
+        const escrow: AgentEscrow = { advertRef: supplier.advertRef, escrowRef: delivery.escrowRef, vaultRef: pay.confirmed?.vaultRef ?? null, terms: termsOf(supplier.advert, locked) };
+        if (err instanceof HireDecisionTimeout) return { outcome: 'not_accepted', reason: 'decision_timeout', message: err.message, delivery, ...escrow };
+        return { outcome: 'not_accepted', reason: 'declined', message: err.message, declined: err.reason, delivery, ...escrow };
       }
       throw err;
     }
   };
   try { return await run(); } catch (err) {
-    // Every error after a confirmed Pay, the factory's and the caller's own, carries the vault that continues. Before a confirmed Pay there is none, and the error is thrown as it is.
-    throw vault.vaultRef === null ? err : new HireInterrupted(err, vault.vaultRef);
+    // After a confirmed Pay every error carries the vault that continues, the factory's and the caller's own. After a Pay that was not seen confirmed it carries the vault that continues if the Pay
+    // lands. Before any Pay there is no vault to name, and the error is thrown as it is.
+    if (pay.confirmed !== null) throw new HireInterrupted(err, pay.confirmed.vaultRef, pay.confirmed.escrowRef);
+    if (pay.unconfirmed !== null) throw new HirePayUnconfirmed(err, pay.unconfirmed);
+    throw err;
   }
 }

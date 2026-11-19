@@ -1,7 +1,7 @@
 // packages/hire-kit/test/model.test.ts
 // hireModel against the in-memory marketplace of testing/stub-suppliers.ts, from a paying key: model hires run one after the other from the one service key, one hire for each
-// decision, no retry and no fallback, a failed hire is a failure that is thrown once and recorded in the store of the key, and the lock of the hire has no cap: the price ceiling
-// is the only one. Each refusal has its accepted twin.
+// decision, no retry and no fallback, a failed hire is a failure that is thrown once and recorded in the store of the key, and the price ceiling and the two limits of the bonds hold
+// what a hire pays. Each refusal has its accepted twin.
 import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -201,6 +201,41 @@ describe('hireModel', () => {
     const incomplete: ModelRequest = { input: INPUT, allowlist: ALLOWLIST, maxPriceLovelace: CEILING, ceilingSetting: 'LLM_MAX_PRICE_LOVELACE' };
     expect(incomplete.input).toBe(INPUT);
     expect(request().maxSupplierBondLovelace).toBeNull();
+  });
+
+  it('refuses a limit that is not a bigint with a TypeError that names the field (the two limits of the bonds also take null): nothing is read or posted, and the lane stays free', async () => {
+    /** A request that a JavaScript caller can write: the limit `field` holds `value`, or is left out. */
+    const forged = (field: string, value: unknown, present: boolean): ModelRequest => {
+      const written: Record<string, unknown> = { ...request() };
+      if (present) written[field] = value; else delete written[field];
+      return written as unknown as ModelRequest;
+    };
+    const bad: Array<[string, boolean, unknown]> = [
+      ['a number', true, 1_000_000], ['zero', true, 0], ['a text', true, '1000000'], ['a boolean', true, true], ['an object', true, {}], ['undefined', true, undefined], ['a missing field', false, undefined],
+    ];
+    for (const field of ['maxPriceLovelace', 'maxSupplierBondLovelace', 'maxBuyerBondLovelace']) {
+      // The price ceiling is a bigint here, with no null; the two limits of the bonds take null as well.
+      const cases: Array<[string, boolean, unknown]> = field === 'maxPriceLovelace' ? [...bad, ['null', true, null]] : bad;
+      for (const [what, present, value] of cases) {
+        const run = await setup();
+        const error = await hireModel(run.key, run.deps, forged(field, value, present), ERRORS).then(() => { throw new Error('the hire completed'); }, (err: unknown) => err);
+        if (!(error instanceof TypeError)) throw new Error(`${field} as ${what}: ${String(error)}`);
+        expect(error.message, `${field} as ${what}`).toContain(field);
+        expect([run.m.calls, run.booked, run.key.stranded.list(), run.key.lane.busy], `${field} as ${what}`).toStrictEqual([[], [], [], false]);
+      }
+    }
+  });
+
+  it('hires with a bigint and with null in each limit of the bonds, and holds zero as a limit and not as no limit: the type of a limit is checked, and not its value', async () => {
+    for (const field of ['maxSupplierBondLovelace', 'maxBuyerBondLovelace'] as const) {
+      for (const limit of [null, 5_000_000n]) {
+        const run = await setup();
+        expect((await hireModel(run.key, run.deps, request({ [field]: limit }), ERRORS)).accepted, `${field} ${String(limit)}`).toBe('confirmed');
+      }
+      const zero = await setup();
+      expect((await thrown(hireModel(zero.key, zero.deps, request({ [field]: 0n }), ERRORS))).code, field).toBe('no_model');
+      expect(zero.booked, field).toStrictEqual([]);
+    }
   });
 
   it('throws unavailable, and posts nothing, when no model on the allowlist is listed; a model that is listed is hired', async () => {

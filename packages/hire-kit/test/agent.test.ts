@@ -7,10 +7,11 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { FakeChain } from '@vsa/buyer-core';
+import { FakeChain, TxNotConfirmedError } from '@vsa/buyer-core';
 import type { Chain } from '@vsa/buyer-core';
-import { HireInterrupted, hireAgent } from '../src/agent.ts';
+import { HireInterrupted, HirePayUnconfirmed, hireAgent } from '../src/agent.ts';
 import type { AgentDeps, AgentErrors, AgentOutcome, AgentRequest } from '../src/agent.ts';
+import { DECISION_WINDOW_MS } from '../src/hire.ts';
 import type { HireLedger } from '../src/hire.ts';
 import { JANITOR_GRACE_MS, StrandedStore, runJanitorOnce } from '../src/janitor.ts';
 import { PayingKeys } from '../src/keys.ts';
@@ -44,7 +45,7 @@ const ERRORS: AgentErrors<CodedError> = {
 };
 
 const dirs: string[] = [];
-afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
+afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 /** A promise that the test settles by hand. (Promise.withResolvers is not in the types of this package's target.) */
 function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -80,7 +81,7 @@ async function setup(opts: Parameters<typeof marketplace>[0] = {}, over: { deadl
   return { m, key, deps, stranded: key.stranded, sleeps, logs, booked };
 }
 const request = (over: Partial<AgentRequest> = {}): AgentRequest => ({
-  selection: { capabilityId: AGENT_CAPABILITY, model: AGENT_MODEL }, payload: PAYLOAD, label: 'the order', maxSupplierBondLovelace: null, maxBuyerBondLovelace: null, ...over,
+  selection: { capabilityId: AGENT_CAPABILITY, model: AGENT_MODEL }, payload: PAYLOAD, label: 'the order', maxPriceLovelace: null, maxSupplierBondLovelace: null, maxBuyerBondLovelace: null, ...over,
 });
 /** The hire of the request `over` makes, from the key of the run. */
 const go = (run: Run, over: Partial<AgentRequest> = {}): Promise<AgentOutcome> => hireAgent(run.key, run.deps, request(over), ERRORS);
@@ -213,13 +214,13 @@ describe('hireAgent: the choice by capability and model', () => {
 
   it('refuses an advert priced above the ceiling of the request, and no advert of the capability or of the model; at the ceiling it is hired', async () => {
     const above = await setup();
-    expect((await thrown(go(above, { selection: { capabilityId: AGENT_CAPABILITY, maxPriceLovelace: AGENT_ADVERT.price_lovelace - 1n } }))).code).toBe('no_agent');
+    expect((await thrown(go(above, { selection: { capabilityId: AGENT_CAPABILITY }, maxPriceLovelace: AGENT_ADVERT.price_lovelace - 1n }))).code).toBe('no_agent');
     const noModel = await setup();
     expect((await thrown(go(noModel, { selection: { capabilityId: AGENT_CAPABILITY, model: 'order-desk-xl' } }))).code).toBe('no_agent');
     const noCapability = await setup();
     expect((await thrown(go(noCapability, { selection: { capabilityId: 'supplychain.other.v1' } }))).code).toBe('no_agent');
     for (const run of [above, noModel, noCapability]) expect(run.booked.posted).toStrictEqual([]);
-    expect((await go(await setup(), { selection: { capabilityId: AGENT_CAPABILITY, maxPriceLovelace: AGENT_ADVERT.price_lovelace } })).outcome).toBe('completed');
+    expect((await go(await setup(), { selection: { capabilityId: AGENT_CAPABILITY }, maxPriceLovelace: AGENT_ADVERT.price_lovelace })).outcome).toBe('completed');
   });
 
   it('does not take an advert that the indexer lists as Active and the chain does not show as the capability that was asked', async () => {
@@ -235,13 +236,13 @@ describe('hireAgent: the choice by capability and model', () => {
 describe('hireAgent: a named advert is checked as a selection is', () => {
   it('refuses a named advert priced above the ceiling that the caller gives, with the advert, its price and the ceiling in the message, and pays one priced at it', async () => {
     const above = await setup();
-    const error = await thrown(go(above, { selection: { advertRef: AGENT_ADVERT_REF, maxPriceLovelace: AGENT_ADVERT.price_lovelace - 1n } }));
+    const error = await thrown(go(above, { selection: { advertRef: AGENT_ADVERT_REF }, maxPriceLovelace: AGENT_ADVERT.price_lovelace - 1n }));
     expect(error.code).toBe('no_agent');
     expect(error.message).toContain(AGENT_ADVERT_REF);
     expect(error.message).toContain(String(AGENT_ADVERT.price_lovelace));
     expect(error.message).toContain(String(AGENT_ADVERT.price_lovelace - 1n));
     expect([above.booked.posted, above.m.agent.sends, above.stranded.list()]).toStrictEqual([[], [], []]);
-    expect((await go(await setup(), { selection: { advertRef: AGENT_ADVERT_REF, maxPriceLovelace: AGENT_ADVERT.price_lovelace } })).outcome).toBe('completed');
+    expect((await go(await setup(), { selection: { advertRef: AGENT_ADVERT_REF }, maxPriceLovelace: AGENT_ADVERT.price_lovelace })).outcome).toBe('completed');
   });
 
   it('refuses a named advert of another capability or another model than the caller names, and pays one that is what the caller names', async () => {
@@ -251,7 +252,7 @@ describe('hireAgent: a named advert is checked as a selection is', () => {
     expect((await thrown(go(model, { selection: { advertRef: AGENT_ADVERT_REF, model: 'order-desk-xl' } }))).message).toMatch(/is not, on chain, an Active/);
     for (const run of [capability, model]) expect([run.booked.posted, run.m.agent.sends, run.stranded.list()]).toStrictEqual([[], [], []]);
     const twin = await setup();
-    expect((await go(twin, { selection: { advertRef: AGENT_ADVERT_REF, capabilityId: AGENT_CAPABILITY, model: AGENT_MODEL, maxPriceLovelace: AGENT_ADVERT.price_lovelace } })).outcome).toBe('completed');
+    expect((await go(twin, { selection: { advertRef: AGENT_ADVERT_REF, capabilityId: AGENT_CAPABILITY, model: AGENT_MODEL }, maxPriceLovelace: AGENT_ADVERT.price_lovelace })).outcome).toBe('completed');
   });
 
   it('refuses a named advert that is not Active on chain, and pays the same advert when it is', async () => {
@@ -269,7 +270,7 @@ describe('hireAgent: the limits of the bonds', () => {
   it('refuses an advert at the price ceiling whose supplier bond is above the limit, with the advert, the bond and the limit in the message, and posts nothing; at the limit, and with no limit, it is hired', async () => {
     const advert = heavy({ supplier_bond_lovelace: 1_000_000n });
     const over = await setup({ agentAdvert: advert });
-    const error = await thrown(go(over, { selection: { advertRef: AGENT_ADVERT_REF, maxPriceLovelace: advert.price_lovelace }, maxSupplierBondLovelace: 999_999n }));
+    const error = await thrown(go(over, { selection: { advertRef: AGENT_ADVERT_REF }, maxPriceLovelace: advert.price_lovelace, maxSupplierBondLovelace: 999_999n }));
     expect(error.code).toBe('no_agent');
     for (const part of [AGENT_ADVERT_REF, 'supplier bond', '1000000', '999999']) expect(error.message).toContain(part);
     expect([over.booked.posted, over.m.agent.sends, over.stranded.list()]).toStrictEqual([[], [], []]);
@@ -300,21 +301,73 @@ describe('hireAgent: the limits of the bonds', () => {
     const advert = heavy({ supplier_bond_lovelace: 25_000_000n });
     const unbounded = await setup({ agentAdvert: advert, lockLovelace: 60_000_000n, floatLovelace: 200_000_000n });
     const before = (await unbounded.m.chain.wallet()).floatLovelace;
-    const outcome = await go(unbounded, { selection: { advertRef: AGENT_ADVERT_REF, maxPriceLovelace: advert.price_lovelace } });
+    const outcome = await go(unbounded, { selection: { advertRef: AGENT_ADVERT_REF }, maxPriceLovelace: advert.price_lovelace });
     if (outcome.outcome !== 'completed') throw new Error(`the hire ended in ${outcome.outcome}`);
     expect(outcome.terms.paid_to_supplier_at_accept_lovelace).toBe('25200000');
     expect(before - (await unbounded.m.chain.wallet()).floatLovelace).toBe(25_200_000n + 2n * FakeChain.FEE_LOVELACE);
     const bounded = await setup({ agentAdvert: advert, lockLovelace: 60_000_000n, floatLovelace: 200_000_000n });
-    expect((await thrown(go(bounded, { selection: { advertRef: AGENT_ADVERT_REF, maxPriceLovelace: advert.price_lovelace }, maxSupplierBondLovelace: 1_000_000n }))).message).toContain('25000000');
+    expect((await thrown(go(bounded, { selection: { advertRef: AGENT_ADVERT_REF }, maxPriceLovelace: advert.price_lovelace, maxSupplierBondLovelace: 1_000_000n }))).message).toContain('25000000');
     expect(bounded.booked.posted).toStrictEqual([]);
   });
 
-  it('makes a caller write the two limits: a request without them does not type-check, and null is the way to say no limit', () => {
-    // @ts-expect-error: maxSupplierBondLovelace and maxBuyerBondLovelace are required, with no default
+  it('makes a caller write the three limits: a request without them does not type-check, and null is the way to say no limit', () => {
+    // @ts-expect-error: maxPriceLovelace, maxSupplierBondLovelace and maxBuyerBondLovelace are required, with no default
     const incomplete: AgentRequest = { selection: { capabilityId: AGENT_CAPABILITY }, payload: PAYLOAD };
     expect(incomplete.payload).toBe(PAYLOAD);
-    const explicit: AgentRequest = { selection: { capabilityId: AGENT_CAPABILITY }, payload: PAYLOAD, maxSupplierBondLovelace: null, maxBuyerBondLovelace: 5n };
-    expect([explicit.maxSupplierBondLovelace, explicit.maxBuyerBondLovelace]).toStrictEqual([null, 5n]);
+    const explicit: AgentRequest = { selection: { capabilityId: AGENT_CAPABILITY }, payload: PAYLOAD, maxPriceLovelace: null, maxSupplierBondLovelace: null, maxBuyerBondLovelace: 5n };
+    expect([explicit.maxPriceLovelace, explicit.maxSupplierBondLovelace, explicit.maxBuyerBondLovelace]).toStrictEqual([null, null, 5n]);
+  });
+});
+
+describe('hireAgent: a limit that is neither a bigint nor null', () => {
+  const FIELDS = ['maxPriceLovelace', 'maxSupplierBondLovelace', 'maxBuyerBondLovelace'] as const;
+  /** A request that a JavaScript caller can write: the limit `field` holds `value`, or is left out. */
+  const forged = (field: string, value: unknown, present = true, over: Partial<AgentRequest> = {}): AgentRequest => {
+    const written: Record<string, unknown> = { ...request(over) };
+    if (present) written[field] = value; else delete written[field];
+    return written as unknown as AgentRequest;
+  };
+  /** What the hire rejects with; the test fails when it ends in an outcome. */
+  const rejection = (hire: Promise<AgentOutcome>): Promise<unknown> => hire.then((outcome) => { throw new Error(`the hire ended in ${outcome.outcome}`); }, (err: unknown) => err);
+
+  it('refuses a number, a text, a boolean, an object and a missing limit with a TypeError that names the field: nothing is read, posted or paid, and the lane stays free', async () => {
+    const bad: Array<[string, boolean, unknown]> = [
+      ['a number', true, 1_000_000], ['zero', true, 0], ['a text', true, '1000000'], ['a boolean', true, true], ['an object', true, {}], ['undefined', true, undefined], ['a missing field', false, undefined],
+    ];
+    for (const field of FIELDS) {
+      for (const [what, present, value] of bad) {
+        const run = await setup();
+        const error = await rejection(hireAgent(run.key, run.deps, forged(field, value, present), ERRORS));
+        if (!(error instanceof TypeError)) throw new Error(`${field} as ${what}: ${String(error)}`);
+        expect(error.message, `${field} as ${what}`).toContain(field);
+        expect([run.m.calls, run.booked.posted, run.stranded.list(), run.key.lane.busy], `${field} as ${what}`).toStrictEqual([[], [], [], false]);
+      }
+    }
+  });
+
+  it('hires with a bigint and with null in each of the three, and holds zero as a limit and not as no limit: the type of a limit is checked, and not its value', async () => {
+    for (const field of FIELDS) {
+      for (const limit of [null, 5_000_000n]) {
+        const run = await setup();
+        expect((await go(run, { [field]: limit })).outcome, `${field} ${String(limit)}`).toBe('completed');
+      }
+    }
+    for (const field of FIELDS) {
+      const zero = await setup();
+      expect((await thrown(go(zero, { [field]: 0n }))).code, field).toBe('no_agent');
+      expect(zero.booked.posted, field).toStrictEqual([]);
+    }
+  });
+
+  it('needs the price ceiling for a selection by capability and for a named advert, and null says that there is none', async () => {
+    for (const selection of [{ capabilityId: AGENT_CAPABILITY }, { advertRef: AGENT_ADVERT_REF }]) {
+      const missing = await setup();
+      const error = await rejection(hireAgent(missing.key, missing.deps, forged('maxPriceLovelace', undefined, false, { selection }), ERRORS));
+      expect(error, JSON.stringify(Object.keys(selection))).toBeInstanceOf(TypeError);
+      expect(missing.m.calls).toStrictEqual([]);
+      const none = await setup();
+      expect((await go(none, { selection, maxPriceLovelace: null })).outcome, JSON.stringify(Object.keys(selection))).toBe('completed');
+    }
   });
 });
 
@@ -567,6 +620,56 @@ describe('hireAgent: not_accepted', () => {
   });
 });
 
+describe('hireAgent: a decision that does not answer', () => {
+  const never = (): Promise<never> => new Promise<never>(() => undefined);
+
+  it('ends as not_accepted with decision_timeout when the decision has not answered by the limit, which is the accept window less what an Accept needs: no Accept is made, the escrow stays Submitted and recorded, and the lane is free', async () => {
+    vi.useFakeTimers();
+    const run = await setup();
+    let asked = 0;
+    const outcome = await go(run, { decide: () => { asked += 1; vi.advanceTimersByTime(DECISION_WINDOW_MS); return never(); } });
+    expect(words(outcome)).toBe('not_accepted decision_timeout');
+    if (outcome.outcome !== 'not_accepted' || outcome.reason !== 'decision_timeout') return;
+    expect(asked).toBe(1);
+    expect([outcome.delivery.text, outcome.delivery.verdict.verdict, outcome.vaultRef]).toStrictEqual([AGENT_ANSWER, 'VERIFIED', null]);
+    expect(outcome.message).toContain('did not answer');
+    expect(await run.m.chain.escrowState(outcome.escrowRef)).toBe('Submitted');
+    expect(run.stranded.list().map((entry) => entry.escrow_ref)).toStrictEqual([outcome.escrowRef]);
+    expect(run.booked.accepted).toStrictEqual([]);
+    expect(run.key.lane.busy).toBe(false);
+    // The next hire of the key starts at once and completes.
+    expect((await go(run, { decide: () => ({ accept: true }) })).outcome).toBe('completed');
+  });
+
+  it('hears a decision that answers one millisecond before the limit: the Accept is made', async () => {
+    vi.useFakeTimers();
+    const run = await setup();
+    const outcome = await go(run, { decide: async () => { vi.advanceTimersByTime(DECISION_WINDOW_MS - 1); return { accept: true }; } });
+    expect(outcome.outcome).toBe('completed');
+    expect(run.booked.accepted).toHaveLength(1);
+  });
+
+  it('does not ask the decision when the limit has passed before it would start: no call, no Accept, and the same outcome', async () => {
+    const run = await setup({}, { chain: (m) => chainWith(m, { onChainReceiptHash: async (ref) => { m.clock.now += DECISION_WINDOW_MS + 1; return m.chain.onChainReceiptHash(ref); } }) });
+    let asked = 0;
+    const outcome = await go(run, { decide: () => { asked += 1; return { accept: true }; } });
+    expect([asked, words(outcome)]).toStrictEqual([0, 'not_accepted decision_timeout']);
+    if (outcome.outcome === 'not_accepted') expect(await run.m.chain.escrowState(outcome.escrowRef)).toBe('Submitted');
+    expect(run.booked.accepted).toStrictEqual([]);
+  });
+
+  it('says the vault that continues when the decision of a vault-paid hire times out, and the next hire from that vault completes', async () => {
+    vi.useFakeTimers();
+    const run = await setup();
+    const held = openVault(run);
+    const outcome = await go(run, { vaultRef: held, decide: () => { vi.advanceTimersByTime(DECISION_WINDOW_MS); return never(); } });
+    expect(words(outcome)).toBe('not_accepted decision_timeout');
+    if (outcome.outcome !== 'not_accepted' || outcome.vaultRef === null) throw new Error('the outcome names no vault');
+    expect(outcome.vaultRef).not.toBe(held);
+    expect((await go(run, { vaultRef: outcome.vaultRef, decide: () => ({ accept: true }) })).outcome).toBe('completed');
+  });
+});
+
 describe('hireAgent: what is thrown and not an outcome', () => {
   it('throws the factory\'s failure, with the kind agent, for a Post that failed before its signature, and posts nothing; the twin posts', async () => {
     const run = await setup({}, { chain: (m) => chainWith(m, { postEscrow: async () => { throw new Error('the wallet has no collateral'); } }) });
@@ -677,6 +780,9 @@ describe('hireAgent: an error after a confirmed vault Pay carries the vault that
   async function checkContinues(run: Run, held: string, error: HireInterrupted): Promise<void> {
     expect(error.vaultRef).not.toBe(held);
     expect(run.m.chain.vault(error.vaultRef)).toMatchObject({ kind: 'Live', consumed: false, delegation: DELEGATION });
+    // The error names the escrow of the same Pay: its first output, where the continuing vault is the second.
+    expect(error.escrowRef).toBe(`${error.vaultRef.split('#')[0]}#0`);
+    expect(['Open', 'Claimed', 'Submitted']).toContain(await run.m.chain.escrowState(error.escrowRef));
     // The old reference ends as vault_refused; the one that the error carries pays the next hire.
     expect(words(await go(run, { vaultRef: held }))).toBe('vault_refused impossible');
     expect((await go(run, { vaultRef: error.vaultRef })).outcome).toBe('completed');
@@ -727,6 +833,115 @@ describe('hireAgent: an error after a confirmed vault Pay carries the vault that
     vi.spyOn(run.m.chain, 'payFromVault').mockRejectedValueOnce(new Error('the node did not answer'));
     const second = await thrown(go(run, { vaultRef: vault }));
     expect([second.code, second.message]).toStrictEqual(['agent_post_failed', 'The Vault Pay for the order failed (the node did not answer). Nothing was locked for it.']);
+  });
+});
+
+describe('hireAgent: a vault Pay that was submitted and not seen confirmed', () => {
+  const VALID_TO = T0 + 180_000;
+  /** What the kit gets when Koios lags behind a Pay: the error of a Pay not seen confirmed, with the facts of the Pay as it was made. */
+  const unseen = (landed: { escrowRef: string; deliverBy: number }, mayLand: boolean): TxNotConfirmedError => new TxNotConfirmedError(
+    'The Pay was submitted, but Koios did not report it confirmed.', { txHash: landed.escrowRef.split('#')[0], escrowRef: landed.escrowRef, deliverBy: landed.deliverBy, validTo: VALID_TO, mayLand },
+  );
+  /** The next Pay lands on the chain of the run, and the kit is told that it was not seen confirmed. */
+  function landUnseen(run: Run): void {
+    const real = run.m.chain.payFromVault.bind(run.m.chain);
+    vi.spyOn(run.m.chain, 'payFromVault').mockImplementationOnce(async (args) => { throw unseen(await real(args), true); });
+  }
+  /** What a hire throws when its vault Pay was not seen confirmed; the test fails when it ends in an outcome or throws anything else. */
+  async function pending(hire: Promise<AgentOutcome>): Promise<HirePayUnconfirmed> {
+    const error = await hire.then((outcome) => { throw new Error(`the hire ended in ${outcome.outcome}`); }, (err: unknown) => err);
+    if (!(error instanceof HirePayUnconfirmed)) throw error;
+    return error;
+  }
+
+  it('throws a HirePayUnconfirmed that names the vault the Pay leaves if it lands, says that it may land, and gives the time after which it cannot; the escrow is in the store', async () => {
+    const run = await setup();
+    const held = openVault(run);
+    landUnseen(run);
+    const error = await pending(go(run, { vaultRef: held }));
+    expect([error.escrowRef, error.vaultRefIfLanded, error.mayLand, error.validTo]).toStrictEqual([`${error.txHash}#0`, `${error.txHash}#1`, true, VALID_TO]);
+    expect(error.cause).toMatchObject({ code: 'agent_post_failed' });
+    expect(error.message).toBe(error.cause instanceof Error ? error.cause.message : '');
+    expect(error.message).toContain('may still land');
+    expect(run.stranded.list()).toMatchObject([{ escrow_ref: error.escrowRef, kind: 'agent', valid_to: VALID_TO }]);
+    // The Pay landed in this world: the vault that the caller held is spent, and the named reference is the live vault.
+    expect(run.m.chain.vault(held)).toMatchObject({ consumed: true });
+    expect(run.m.chain.vault(error.vaultRefIfLanded)).toMatchObject({ kind: 'Live', consumed: false, delegation: DELEGATION });
+    expect(words(await go(run, { vaultRef: held }))).toBe('vault_refused impossible');
+    expect((await go(run, { vaultRef: error.vaultRefIfLanded })).outcome).toBe('completed');
+  });
+
+  it('says that the Pay may not land when it was certainly not forwarded, and still names the reference; the vault the caller held is live then, and pays the next hire', async () => {
+    const run = await setup();
+    const held = openVault(run);
+    const hash = 'ab'.repeat(32);
+    vi.spyOn(run.m.chain, 'payFromVault').mockRejectedValueOnce(unseen({ escrowRef: `${hash}#0`, deliverBy: T0 + 480_000 }, false));
+    const error = await pending(go(run, { vaultRef: held }));
+    expect([error.mayLand, error.vaultRefIfLanded, error.escrowRef, error.txHash]).toStrictEqual([false, `${hash}#1`, `${hash}#0`, hash]);
+    expect(run.m.chain.vault(held)).toMatchObject({ kind: 'Live', consumed: false });
+    expect((await go(run, { vaultRef: held })).outcome).toBe('completed');
+  });
+
+  it('throws it when the store cannot record the Pay as well: the cause is the store write, and the reference and the time are still named', async () => {
+    const run = await setup();
+    const held = openVault(run);
+    landUnseen(run);
+    vi.spyOn(run.key.stranded, 'add').mockImplementationOnce(() => { throw new Error('the disk is full'); });
+    const error = await pending(go(run, { vaultRef: held }));
+    expect(error.cause).toMatchObject({ code: 'store_write_failed' });
+    expect([error.vaultRefIfLanded, error.validTo]).toStrictEqual([`${error.txHash}#1`, VALID_TO]);
+  });
+
+  it('throws the factory\'s error as it is for a Post from the wallet that was not seen confirmed: there is no vault to name', async () => {
+    const run = await setup();
+    const hash = 'cd'.repeat(32);
+    run.m.chain.failNextPost(new TxNotConfirmedError('The Post was submitted, but Koios did not report it confirmed.', { txHash: hash, escrowRef: `${hash}#0`, deliverBy: T0 + 480_000, validTo: VALID_TO, mayLand: true }));
+    const error = await thrown(go(run));
+    expect(error.code).toBe('agent_post_failed');
+    expect(error).not.toBeInstanceOf(HirePayUnconfirmed);
+    expect(run.stranded.list().map((entry) => entry.escrow_ref)).toStrictEqual([`${hash}#0`]);
+  });
+});
+
+describe('hireAgent: a ledger that throws after a confirmed Post or Pay', () => {
+  const closed = new Error('the ledger is closed');
+  /** The ledger of the run throws when a Post is booked; `seen` keeps what the store held at that moment. */
+  function closeLedger(run: Run, seen: string[][]): void {
+    run.deps.ledger = { posted: () => { seen.push(run.stranded.list().map((entry) => entry.escrow_ref)); throw closed; }, accepted: () => undefined };
+  }
+
+  it('paid from the wallet: the escrow is in the store when the ledger is called, nothing is sent, the error is the ledger\'s own, and the janitor reclaims the lock', async () => {
+    const run = await setup();
+    const seen: string[][] = [];
+    closeLedger(run, seen);
+    const error = await go(run).then(() => null, (err: unknown) => err);
+    expect(error).toBe(closed);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toHaveLength(1);
+    expect(run.stranded.list().map((entry) => entry.kind)).toStrictEqual(['agent']);
+    expect([run.m.agent.sends, run.key.lane.busy]).toStrictEqual([[], false]);
+    const [entry] = run.stranded.list();
+    run.m.clock.now = entry.deliver_by + JANITOR_GRACE_MS + 1;
+    expect((await runJanitorOnce(run.stranded, run.m.chain, run.m.clock.now)).map((action) => action.action)).toStrictEqual(['reclaimed']);
+    expect(run.stranded.list()).toStrictEqual([]);
+  });
+
+  it('paid from a vault: a HireInterrupted names the vault that continues and the escrow, which is in the store; the janitor returns the lock to the vault', async () => {
+    const run = await setup();
+    const held = openVault(run);
+    const seen: string[][] = [];
+    closeLedger(run, seen);
+    const error = await interrupted(go(run, { vaultRef: held }));
+    expect(error.cause).toBe(closed);
+    expect(error.message).toBe('the ledger is closed');
+    expect(seen).toStrictEqual([[error.escrowRef]]);
+    expect(run.stranded.list().map((entry) => entry.escrow_ref)).toStrictEqual([error.escrowRef]);
+    expect(error.escrowRef).toBe(`${error.vaultRef.split('#')[0]}#0`);
+    expect(run.m.chain.vault(error.vaultRef)).toMatchObject({ kind: 'Live', consumed: false });
+    expect(run.m.agent.sends).toStrictEqual([]);
+    run.m.clock.now = run.stranded.list()[0].deliver_by + JANITOR_GRACE_MS + 1;
+    expect((await runJanitorOnce(run.stranded, run.m.chain, run.m.clock.now)).map((action) => action.action)).toStrictEqual(['reclaimed']);
+    expect(run.m.chain.vaults().filter((view) => view.kind === 'Returned')).toHaveLength(1);
   });
 });
 

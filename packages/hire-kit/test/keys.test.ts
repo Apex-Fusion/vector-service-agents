@@ -54,7 +54,7 @@ const ERRORS: AgentErrors<CodedError> = {
   unavailable: (why) => new CodedError('no_agent', `No agent to hire: ${why}.`),
 };
 const request = (over: Partial<AgentRequest> = {}): AgentRequest => ({
-  selection: { capabilityId: AGENT_CAPABILITY, model: AGENT_MODEL }, payload: PAYLOAD, label: 'the order', maxSupplierBondLovelace: null, maxBuyerBondLovelace: null, ...over,
+  selection: { capabilityId: AGENT_CAPABILITY, model: AGENT_MODEL }, payload: PAYLOAD, label: 'the order', maxPriceLovelace: null, maxSupplierBondLovelace: null, maxBuyerBondLovelace: null, ...over,
 });
 
 /** The deps of a hire against the marketplace `m`, whose clock the hire moves on when it pauses. The chain and the store of the hire are the ones of the key it runs from. */

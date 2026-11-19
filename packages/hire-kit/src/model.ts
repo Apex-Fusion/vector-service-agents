@@ -14,7 +14,7 @@ import type { Clocked } from './budget.ts';
 import { chatJob, hireOne } from './hire.ts';
 import type { HireErrors, HireLedger, HireOptions, Hired } from './hire.ts';
 import type { PayingKey } from './keys.ts';
-import { chooseChatSupplier } from './select.ts';
+import { chooseChatSupplier, requireLimits } from './select.ts';
 
 /** What the kit keeps of the answer of a model: its text, and the status of the response as the supplier gave it. */
 export interface ModelAnswer { text: string; status: unknown }
@@ -58,10 +58,13 @@ export interface ModelErrors<E extends Error> extends HireErrors<E> {
 }
 
 /**
- * Hires one model for `request` from `key`: the answer, the record of the hire, and what the Accept came to. Rejects with the error of `errors` for every failure; the kit
- * does not try again, does not choose another supplier and does not fall back (see the head of this file).
+ * Hires one model for `request` from `key`: the answer, the record of the hire, and what the Accept came to. Refuses a limit that is not a bigint (the two limits of the bonds also take
+ * null) with a TypeError, before the lane of the key is used and before anything is read. Rejects with the error of `errors` for every other failure; the kit does not try again, does
+ * not choose another supplier and does not fall back (see the head of this file).
  */
-export function hireModel<E extends Error>(key: PayingKey, deps: ModelDeps, request: ModelRequest, errors: ModelErrors<E>): Promise<Hired<ModelAnswer>> {
+export async function hireModel<E extends Error>(key: PayingKey, deps: ModelDeps, request: ModelRequest, errors: ModelErrors<E>): Promise<Hired<ModelAnswer>> {
+  requireLimits({ maxPriceLovelace: request.maxPriceLovelace }, { null: false, absent: false });
+  requireLimits({ maxSupplierBondLovelace: request.maxSupplierBondLovelace, maxBuyerBondLovelace: request.maxBuyerBondLovelace }, { null: true, absent: false });
   return key.lane.run(async () => {
     const supplier = await chooseChatSupplier(key.chain, {
       fetchImpl: deps.fetchImpl, indexerUrl: deps.indexerUrl, allowlist: request.allowlist, maxPriceLovelace: request.maxPriceLovelace, ceilingSetting: request.ceilingSetting,
