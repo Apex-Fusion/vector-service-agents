@@ -68,6 +68,8 @@ All settings are environment variables.
 | `CHECKS_ADVERT_REF` | none | Checks 2 and 3: the advert of the agent to hire (`<tx hash>#<index>`). |
 | `CHECKS_VAULT_UNITS` | `6` | Checks 2 and 3: what the vault locks, in units. |
 | `CHECKS_VAULT_LIMIT_UNITS` | `3` | Checks 2 and 3: the limit of one payment and of the period. It must cover the price and both bonds of the advert. |
+| `CHECKS_MAX_SUPPLIER_BOND_UNITS` | `1` | Checks 2 and 3: the most that the supplier bond of the advert may be. The kit refuses a higher bond. |
+| `CHECKS_MAX_BUYER_BOND_UNITS` | `1` | Checks 2 and 3: the most that the buyer bond of the advert may be. The kit refuses a higher bond. |
 | `CHECKS_HIRE_PAYLOAD` | a short text | Check 2: the text that the agent reads. |
 | `CHECKS_SVID_VERIFIER_URL` | none | Check 6: the URL of the host that asks for a client certificate. `http://127.0.0.1:<port>` runs the verifier and the client on one machine. |
 | `CHECKS_SVID_AUDIENCE` | the verifier URL | Check 6: the audience of the JWT-SVID. The verifier service needs the same value. |
@@ -98,7 +100,7 @@ All amounts are in units. A transaction pays a fee, below `CHECKS_MAX_FEE_LOVELA
 | Delegate (checks 1, 2, 3) | the fee | the delegation output (the dry run shows its amount) | at `undelegate` |
 | Undelegate | the fee | none | the delegation output |
 | `vault_open` (checks 2, 3) | the fee | `CHECKS_VAULT_UNITS` (6) in the vault | at `vault_close` |
-| `hire` (check 2) | the fee of the payment and of the accept, and the price of the advert (1 for the Agent History advert) | the bonds, until the accept | the bonds, to the vault |
+| `hire` (check 2) | the fee of the payment and of the accept. The accept pays the supplier the price and the supplier bond (2 for the Agent History advert) | the price and both bonds (3 for the Agent History advert), until the accept | the buyer bond (1), to the vault |
 | `pay`, `reclaim` (check 3) | the fee of each | the price and both bonds (3 for the Agent History advert), until the reclaim | all of it, to the vault as a Returned output |
 | `vault_close` | the fee | none | the Live output and the Returned output |
 | `issue_approval`, `issue_binding` (check 4) | the fee of each | 5 each | at the withdraw, 90 days after `valid_until` |
@@ -109,6 +111,8 @@ The deposits of check 4 stay locked until 90 days after `valid_until`. The defau
 ## Status of checks 2 and 3
 
 The vault steps (`delegate`, `vault_open`, `vault_close`, `undelegate`) and the order, the waits and the hosted checks of both checks are built and tested with the real builders. The calls of the hire kit (`hire`, `pay`, `reclaim`) go through the `HirePort` of `lib/hire-types.ts`. The adapter that makes a `HirePort` from the kit, and the scripts `02-vault-escrow.ts` and `03-vault-refund.ts`, are added when the kit is on the main branch.
+
+The buyer funds the price and both bonds. A hire that stops after a confirmed Pay leaves an escrow that may be claimed. The check keeps the escrow and the vault output that continues, never hires again, and the `cleanup` command waits for `deliver_by`, reclaims the escrow, closes the vault and ends the delegation.
 
 ## Files
 

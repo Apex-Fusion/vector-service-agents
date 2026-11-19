@@ -3,6 +3,7 @@
 // hosted tools.
 import { describe, expect, it } from 'vitest';
 import { PERIOD_MS, RECLAIM_AFTER_MS, parseVaultSettings, vaultCheck } from '../lib/check-vault.ts';
+import { HireFailed } from '../lib/hire-types.ts';
 import type { HirePort, VaultHireRequest, VaultHired, VaultPaid, VaultReclaimed } from '../lib/hire-types.ts';
 import { SettingsError } from '../lib/settings.ts';
 import { FakeHosted } from './support/hosted-fake.ts';
@@ -17,10 +18,13 @@ const RETURNED = `${'f1'.repeat(32)}#0`;
 
 class FakePort implements HirePort {
   readonly calls: string[] = [];
+  /** When set, the next hire throws it, as the kit does for a hire that stops. */
+  failure: HireFailed | null = null;
   readonly requests: Array<VaultHireRequest | { advertRef: string; vaultRef: string } | string> = [];
   constructor(private readonly h: () => Harness) {}
   async hire(request: VaultHireRequest): Promise<VaultHired> {
     this.calls.push('hire');
+    if (this.failure !== null) throw this.failure;
     this.requests.push(request);
     return { escrowRef: ESCROW, vaultRef: request.vaultRef, payTxHash: 'a1'.repeat(32), acceptTxHash: 'a2'.repeat(32), lockLovelace: 3_000_000n, text: 'a report' };
   }
@@ -70,7 +74,7 @@ async function started(kind: 'escrow' | 'refund', returnedLovelace?: string) {
 
 describe('the settings of the vault checks', () => {
   it('need the advert, have defaults for the rest, and refuse a limit above the vault', () => {
-    expect(parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT })).toMatchObject({ hours: 24, advertRef: ADVERT, vaultLovelace: 6_000_000n, limitLovelace: 3_000_000n });
+    expect(parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT })).toMatchObject({ hours: 24, advertRef: ADVERT, vaultLovelace: 6_000_000n, limitLovelace: 3_000_000n, maxSupplierBondLovelace: 1_000_000n, maxBuyerBondLovelace: 1_000_000n });
     expect(parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_UNITS: '10', CHECKS_VAULT_LIMIT_UNITS: '10', CHECKS_HIRE_PAYLOAD: 'text' })).toMatchObject({ vaultLovelace: 10_000_000n, limitLovelace: 10_000_000n, payload: 'text' });
     for (const env of [{}, { CHECKS_ADVERT_REF: 'nope' }, { CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_UNITS: '2', CHECKS_VAULT_LIMIT_UNITS: '3' }]) expect(() => parseVaultSettings(env)).toThrow(SettingsError);
   });
@@ -84,7 +88,7 @@ describe('check 2, the vault pays an escrow that is accepted', () => {
     const steps = h.state(name).steps;
     expect(steps.delegate!.facts).toMatchObject({ actions: ['marketplace.hire.v1'], limit_lovelace: '3000000', period_ms: PERIOD_MS });
     expect(port.calls).toEqual(['hire']);
-    expect(port.requests[0]).toMatchObject({ advertRef: ADVERT, vaultRef: steps.vault_open!.refs.vault_ref });
+    expect(port.requests[0]).toMatchObject({ advertRef: ADVERT, vaultRef: steps.vault_open!.refs.vault_ref, maxSupplierBondLovelace: 1_000_000n, maxBuyerBondLovelace: 1_000_000n });
     expect(steps.hire!.refs).toMatchObject({ escrow_ref: ESCROW, accept_tx: 'a2'.repeat(32) });
     for (const step of Object.values(steps)) expect(step.verified_at).not.toBeNull();
     expect(h.world.chain.held.some((u) => u.address === DEPLOYMENT.vault.address)).toBe(false);
@@ -143,5 +147,38 @@ describe('check 3, the vault pays an escrow that nobody claims', () => {
     expect(await h.run(check, '--submit')).toBe(1);
     expect(h.screen.errorText).toContain('holds less than the lock');
     expect(h.state(name).steps.reclaim!.verified_at).toBeNull();
+  });
+});
+
+describe('a hire that stops after a confirmed Pay', () => {
+  it('keeps the escrow and the vault output that continues, never hires again, and the cleanup waits for deliver_by and then reclaims', async () => {
+    const { h, port, check, name } = await started('escrow');
+    await h.run(check, '--submit');
+    await h.run(check, '--submit');
+    const continued = `${'c1'.repeat(32)}#1`;
+    port.failure = new HireFailed('failed_after_claim', 'the send was lost', { escrowRef: ESCROW, vaultRef: continued, deliverBy: h.clock.now() + 300_000, lockLovelace: 3_000_000n });
+    expect(await h.run(check, '--submit')).toBe(1);
+    expect(h.screen.errorText).toContain('do not hire again');
+    expect(h.state(name).notes.after_pay).toMatchObject({ escrow_ref: ESCROW, vault_ref: continued, kind: 'failed_after_claim' });
+    port.failure = null;
+    expect(await h.run(check, '--submit')).toBe(2);
+    expect(port.calls).toEqual(['hire']);
+    expect(await h.run(check, 'cleanup', '--submit')).toBe(4);
+    expect(port.calls).toEqual(['hire']);
+    h.clock.t += 300_000 + RECLAIM_AFTER_MS;
+    await h.run(check, 'cleanup', '--submit');
+    expect(port.calls).toEqual(['hire', 'reclaim']);
+    expect(h.state(name).steps.reclaim!.refs.escrow_ref).toBe(ESCROW);
+  });
+  it('keeps nothing for a hire that stopped before its Pay, and the hire can be made again', async () => {
+    const { h, port, check, name } = await started('escrow');
+    await h.run(check, '--submit');
+    await h.run(check, '--submit');
+    port.failure = new HireFailed('refused_before_claim', 'the agent turned the job down');
+    expect(await h.run(check, '--submit')).toBe(1);
+    expect(h.state(name).notes.after_pay).toBeUndefined();
+    port.failure = null;
+    expect(await h.run(check, '--submit')).toBe(0);
+    expect(port.calls).toEqual(['hire', 'hire']);
   });
 });
