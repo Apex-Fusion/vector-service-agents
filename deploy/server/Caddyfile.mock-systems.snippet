@@ -1,0 +1,42 @@
+# deploy/server/Caddyfile.mock-systems.snippet - the two host names of the mock systems.
+#
+# Replace the two placeholders, then install the file as /etc/caddy/agents/mock-systems.snippet (RUNBOOK.md):
+#   <mock-host>       the normal HTTPS host. Callers send access tokens and JWT-SVIDs here.
+#   <mock-mtls-host>  the client-certificate host. Callers present an X.509-SVID as the TLS client certificate here.
+# Both names are DNS-only names. Caddy gets its own certificate for each name.
+# The mock service listens on 127.0.0.1:9120 and on no other address. Only Caddy reaches it.
+#
+# The header Client-Cert carries the client certificate from Caddy to the mock service (RFC 9440):
+#   Client-Cert: :<standard base64 of the DER bytes of the certificate that the client presented>:
+# - It holds one certificate. It is the first certificate of the chain that the client sent.
+# - Caddy asks for the certificate on <mock-mtls-host> only. A client can send none.
+# - Caddy does not check who issued the certificate. The TLS handshake proves that the client holds the private key.
+#   The mock service checks the chain against the SPIFFE bundle of the identity gateway, and it checks the validity time and the SPIFFE ID.
+# - When the client sends no certificate, the header is absent. It is never empty.
+# - Caddy removes a Client-Cert header and a Client-Cert-Chain header that a client sends, on both host names.
+#   So a client cannot forge a certificate. Caddy never sets Client-Cert-Chain.
+
+<mock-host> {
+	request_header -Client-Cert
+	request_header -Client-Cert-Chain
+	reverse_proxy 127.0.0.1:9120
+}
+
+<mock-mtls-host> {
+	tls {
+		client_auth {
+			mode request
+		}
+	}
+	request_header -Client-Cert
+	request_header -Client-Cert-Chain
+	@clientcert expression `{http.request.tls.client.certificate_der_base64} != ""`
+	handle @clientcert {
+		reverse_proxy 127.0.0.1:9120 {
+			header_up Client-Cert ":{http.request.tls.client.certificate_der_base64}:"
+		}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:9120
+	}
+}
