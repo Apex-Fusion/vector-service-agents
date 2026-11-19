@@ -23,6 +23,8 @@ const POLL_TIMEOUT_MS = 20_000;
 const JOB_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const JSON_HEADERS = { 'content-type': 'application/json', accept: 'application/json' } as const;
 const READ_HEADERS = { accept: 'application/json' } as const;
+/** The codes of the 503 answers that the runtime gives, before its Claim, when it could not ask its service. */
+const PRECHECK_UNAVAILABLE: Readonly<Record<string, true>> = { precheck_unreachable: true, precheck_timeout: true, precheck_failed: true };
 
 const trim = (endpoint: string): string => endpoint.replace(/\/+$/, '');
 function jsonObject(text: string): Record<string, unknown> | null {
@@ -139,5 +141,7 @@ export function templateJob(endpoint: string, payload: string, label: string, fe
       const text = message.content;
       return { responseHash: sha256Utf8Hex(text), value: { text } };
     },
+    // The runtime answers 503 with one of three codes when it could not ask its service before the Claim: it claimed nothing, so the refusal is final and the job is not sent again.
+    finalRefusal: ({ status, reason }) => status === 503 && PRECHECK_UNAVAILABLE[reason] === true,
   };
 }

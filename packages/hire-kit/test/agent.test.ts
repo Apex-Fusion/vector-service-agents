@@ -213,16 +213,21 @@ describe('hireAgent: refused_before_claim', () => {
     }
   });
 
-  it('says refused_before_claim with the status 503 and the code when the runtime could not ask its service; the kit reads a 503 as a send that may have claimed, so it sends once more after it saw the escrow Open', async () => {
+  it('says refused_before_claim with the status 503 and the code, after one send, when the runtime could not ask its service: it claimed nothing, so the refusal is final; any other 503 may have claimed, and is sent once more after the escrow is seen Open', async () => {
     for (const code of ['precheck_unreachable', 'precheck_timeout', 'precheck_failed']) {
       const run = setup();
       run.m.agent.refuse = { status: 503, code };
       const outcome = await hireAgent(run.deps, request(), ERRORS);
       expect(words(outcome)).toBe(`refused_before_claim ${code}`);
       expect(outcome).toMatchObject({ status: 503 });
-      expect(run.m.agent.sends).toHaveLength(2);
+      expect(run.m.agent.sends).toHaveLength(1);
       expect(await run.m.chain.escrowState(run.stranded.list()[0].escrow_ref)).toBe('Open');
     }
+    // The twin: a 503 of the runtime that is not one of the three (its Claim could not be sent) may have left the job claimed, so the kit reads the escrow and sends once more.
+    const other = setup();
+    other.m.agent.refuse = { status: 503, code: 'chain_submit_failed' };
+    expect(words(await hireAgent(other.deps, request(), ERRORS))).toBe('refused_before_claim chain_submit_failed');
+    expect(other.m.agent.sends).toHaveLength(2);
   });
 
   it('the janitor reclaims the escrow of a refused vault Pay after its deliver_by, to the vault as a Returned output, and the store is empty afterwards', async () => {

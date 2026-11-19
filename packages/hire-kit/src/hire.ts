@@ -135,6 +135,11 @@ export interface HireJob<T> {
    * gives its result. A payment that throws before its signature locked nothing, and one that throws a TxNotConfirmedError is recorded for the janitor, as a Post is.
    */
   payment?: { what: string; run: () => Promise<PostResult> };
+  /**
+   * Says that a refusal whose status the kit reads as no answer (a 5xx) is the final word of the supplier: it refused before it claimed the escrow, so the job is not sent again.
+   * Absent, only a 4xx in the envelope of the supplier is final, as for the Pipeline.
+   */
+  finalRefusal?: (refusal: { status: number; reason: string }) => boolean;
 }
 
 export interface HireDeps extends Clocked { chain: Chain; stranded: StrandedStore; log?: (line: string) => void }
@@ -327,9 +332,9 @@ async function handOver<T, E extends Error>(deps: HireDeps, supplier: AnySupplie
         ? failure(errors, supplier, 'refused', `${named(supplier)} kept answering ${answer}, as if the escrow were not on chain: ${tried}; ${await leftTo()}.`, at(), wordOf(sent))
         : failure(errors, supplier, 'busy', `${named(supplier)} stayed busy: ${tried}; ${await leftTo()}.`, at(), wordOf(sent));
     }
-    // A 4xx in the supplier's own envelope is the supplier turning the job down. A 4xx whose body is no JSON object, or a JSON object without a string
-    // reason (bad_response), is something in front of the supplier, and is handled like no answer (ruling R57).
-    if (sent.kind === 'refused' && sent.status >= 400 && sent.status < 500 && sent.reason !== 'bad_response') {
+    // A 4xx in the supplier's own envelope is the supplier turning the job down, and so is a refusal that the job says is final. A 4xx whose body is no JSON object, or a JSON
+    // object without a string reason (bad_response), is something in front of the supplier, and is handled like no answer (ruling R57).
+    if (sent.kind === 'refused' && sent.reason !== 'bad_response' && ((sent.status >= 400 && sent.status < 500) || job.finalRefusal?.(sent) === true)) {
       throw failure(errors, supplier, 'refused', `${named(supplier)} refused ${job.label} (${answer}); ${await leftTo()}.`, at(), wordOf(sent));
     }
     // No answer, a 5xx, a 4xx page, or a 202 without a job id: the supplier may have claimed the escrow. Its state says whether the job can be sent again.

@@ -264,3 +264,26 @@ describe('hireOne: receiptBy (absent for the Pipeline)', () => {
     expect(await run.m.chain.escrowState(escrowNo(1))).toBe('spent');
   });
 });
+
+describe('hireOne: a refusal that the job says is final', () => {
+  it('ends the hire at the first refusal with a 5xx status that the job names, and keeps the way of the Pipeline for a job that names none: one send against two', async () => {
+    const names = ({ status, reason }: { status: number; reason: string }): boolean => status === 503 && reason === 'maintenance';
+    const named = setup();
+    named.m.llm.refuse = { status: 503, reason: 'maintenance' };
+    const first = await failure<CodedError>(hireOne(named.deps, SUPPLIER, { ...job(named.m), finalRefusal: names }, named.ledger, CODED));
+    expect(first.code).toBe('llm_refused');
+    expect(named.m.llm.sends).toHaveLength(1);
+    expect(named.stranded.list()).toStrictEqual([entry(escrowNo(1))]);
+    // The twin: a job that names none is sent once more after the escrow was read Open, and is refused twice.
+    const plain = setup();
+    plain.m.llm.refuse = { status: 503, reason: 'maintenance' };
+    const second = await failure<CodedError>(hireOne(plain.deps, SUPPLIER, job(plain.m), plain.ledger, CODED));
+    expect(second.code).toBe('llm_refused');
+    expect(plain.m.llm.sends).toHaveLength(2);
+    // Another reason with the same status is not the one that the job names: it is sent once more as well.
+    const other = setup();
+    other.m.llm.refuse = { status: 503, reason: 'overloaded' };
+    await failure<CodedError>(hireOne(other.deps, SUPPLIER, { ...job(other.m), finalRefusal: names }, other.ledger, CODED));
+    expect(other.m.llm.sends).toHaveLength(2);
+  });
+});
