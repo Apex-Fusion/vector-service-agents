@@ -7,9 +7,22 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-// The four agent specs share one structure and one set of public-wording rules (docs/superpowers/specs/2026-10-13-vector-service-agents-design.md, section 8).
+// The agent specs share one structure and one set of public-wording rules (docs/superpowers/specs/2026-10-13-vector-service-agents-design.md, section 8).
 // The member guide and the E2E runbook are pinned against the same specs and the design at the end of this file.
+// A page has one of two profiles. The `profile` of its entry in AGENTS chooses the profile of the page. Nothing in the page chooses it.
+// So a page that has the headings or the status word of the other profile fails under its own profile.
+// - deployed: the pages of the first four agents. Eleven headings. The status line starts with DEPLOYED. The page says that nothing on it is LIVE.
+// - use-case: the page of a use-case agent. Thirteen headings: the eleven, with "Claim statements" and "Fault switch" after "What the receipt commits to".
+//   "Claim statements" holds the statements of the claim that the agent stakes for each run. The status line starts with PROPOSED.
+//   The page says that nothing on it is LIVE or DEPLOYED.
+// The two profiles share every other rule but one. The wire payload wording of Interface and How to hire it is a rule of the deployed profile only:
+// a use-case agent is hired through a delegation and a vault, so its page does not have the three ways of hiring.
 const HEADINGS = ['Status', 'Identity', 'Capability id', 'Terms', 'Interface', 'What the receipt commits to', 'Operator and data handling', 'Known gaps', 'How to hire it', 'Changelog', 'Links'];
+const USE_CASE_HEADINGS = [...HEADINGS.slice(0, 6), 'Claim statements', 'Fault switch', ...HEADINGS.slice(6)];
+const PROFILES = {
+  deployed: { headings: HEADINGS, statusWord: 'DEPLOYED', denial: 'Nothing on this page is LIVE.', wirePayload: true },
+  'use-case': { headings: USE_CASE_HEADINGS, statusWord: 'PROPOSED', denial: 'Nothing on this page is LIVE or DEPLOYED.', wirePayload: false },
+};
 // The sentence under "Identity" in each spec. Agent History was registered on 2026-10-14 (RUNBOOK step 7), Document Pipeline on 2026-10-16 (step 7 of RUNBOOK-document-pipeline), Audio Snippets on 2026-10-17 (step 7 of RUNBOOK-audio-snippets) and Advocate on 2026-10-19 (step 7 of RUNBOOK-advocate), and each says so. No spec says that it has no record.
 const NO_RECORD = 'This agent has no registry record yet.';
 const HAS_RECORD = 'This agent has had a registry record since 2026-10-14.';
@@ -27,11 +40,13 @@ const AS_STATUS = 'DEPLOYED (registered and staked 2026-10-17, advertised 2026-1
 // until step 17; it was registered, staked and advertised on 2026-10-19, and one first-party job settled on 2026-10-20. It is DEPLOYED, never LIVE: a first-party run is not demand.
 const AD_STATUS = 'DEPLOYED (registered and staked 2026-10-19, advertised 2026-10-19, re-advertised 2026-10-20 at the status flip, one first-party job settled 2026-10-20). Since 2026-10-20.';
 const AGENTS = {
-  'agent-history': { capability: 'identity.history.report.v1', model: 'agent-history-v1', status: AH_STATUS, record: HAS_RECORD },
-  'document-pipeline': { capability: 'document.pipeline.ocr-summary.v1', model: 'document-pipeline-v1', status: DP_STATUS, record: DP_HAS_RECORD },
-  'audio-snippets': { capability: 'audio.transcript.snippets.v1', model: 'audio-snippets-v1', status: AS_STATUS, record: AS_HAS_RECORD },
-  advocate: { capability: 'research.advocate.onesided.v1', model: 'advocate-v1', status: AD_STATUS, record: AD_HAS_RECORD },
+  'agent-history': { profile: 'deployed', capability: 'identity.history.report.v1', model: 'agent-history-v1', status: AH_STATUS, record: HAS_RECORD },
+  'document-pipeline': { profile: 'deployed', capability: 'document.pipeline.ocr-summary.v1', model: 'document-pipeline-v1', status: DP_STATUS, record: DP_HAS_RECORD },
+  'audio-snippets': { profile: 'deployed', capability: 'audio.transcript.snippets.v1', model: 'audio-snippets-v1', status: AS_STATUS, record: AS_HAS_RECORD },
+  advocate: { profile: 'deployed', capability: 'research.advocate.onesided.v1', model: 'advocate-v1', status: AD_STATUS, record: AD_HAS_RECORD },
 };
+// The tests of the guide, the README table and the design read the entries of the deployed agents only. A use-case page has an entry in AGENTS and is not one of them.
+const DEPLOYED_AGENTS = Object.fromEntries(Object.entries(AGENTS).filter(([, agent]) => agent.profile === 'deployed'));
 // The ledger's native unit is named once, in docs/HIRE.md. Spelled in two parts, so a search for the name finds only the guide.
 const UNIT_NAME = new RegExp('AP' + '3X', 'gi');
 // En and em dash, built from their code points so that this file holds neither.
@@ -42,60 +57,226 @@ const read = (name) => readFileSync(new URL(`../specs/${name}.md`, import.meta.u
 const section = (text, heading) => { const rest = text.split(`\n## ${heading}\n`)[1] ?? ''; return rest.split('\n## ')[0]; };
 const DESIGN = readFileSync(new URL('../docs/superpowers/specs/2026-10-13-vector-service-agents-design.md', import.meta.url), 'utf8');
 
-test('specs/ holds exactly the four agent specs', () => {
-  assert.deepEqual(readdirSync(new URL('../specs/', import.meta.url)).sort(), Object.keys(AGENTS).map((n) => `${n}.md`).sort());
+/** The files that specs/ has to hold for a list of agents: one page for each agent, and no other file. The number of files is the number of agents. */
+const specFileProblems = (files, agents) => {
+  const wanted = Object.keys(agents).map((name) => `${name}.md`);
+  return { missing: wanted.filter((file) => !files.includes(file)).sort(), extra: files.filter((file) => !wanted.includes(file)).sort() };
+};
+
+test('specs/ holds one page for each agent of the list, and no other file', () => {
+  assert.deepEqual(specFileProblems(readdirSync(new URL('../specs/', import.meta.url)), AGENTS), { missing: [], extra: [] });
 });
 
-for (const [name, { capability, status, record }] of Object.entries(AGENTS)) {
-  test(`${name}: the eleven headings in order, the capability id and the status line`, () => {
-    const text = read(name);
-    assert.deepEqual([...text.matchAll(/^## (.+)$/gm)].map((m) => m[1]), HEADINGS);
-    assert.ok(text.startsWith('# '), 'starts with a title');
-    assert.ok(text.split('\n')[2].includes(`\`${capability}\``), 'the first line after the title names the capability id');
-    assert.equal(section(text, 'Capability id').split('\n')[1], `\`${capability}\``);
-    assert.ok(section(text, 'Status').includes(status), `the status line is "${status}"`);
+// The rules of a page, in five groups. Each function finds the rules that the page breaks under the profile of its entry, as { rule, detail }.
+// The pages of AGENTS break none. The fixtures after the loop break one rule at a time.
+const problem = (rule, detail) => ({ rule, detail });
+const headingsOf = (text) => [...text.matchAll(/^## (.+)$/gm)].map((m) => m[1]);
+const STATUS_WORDS = /\b(LIVE|DEPLOYED)\b/g;
+const RECORD_SENTENCES = [NO_RECORD, HAS_RECORD, DP_HAS_RECORD, AS_HAS_RECORD, AD_HAS_RECORD];
+
+/** The headings of the profile in order, the title, the capability id, and the status line of the entry, which starts with the status word of the profile. */
+const structureProblems = (text, { profile, capability, status }) => {
+  const { headings, statusWord } = PROFILES[profile];
+  return [
+    JSON.stringify(headingsOf(text)) !== JSON.stringify(headings) && problem('headings', `the page has ${JSON.stringify(headingsOf(text))}, and the ${profile} profile has ${JSON.stringify(headings)}`),
+    !text.startsWith('# ') && problem('title', 'the page starts with a title'),
+    !(text.split('\n')[2] ?? '').includes(`\`${capability}\``) && problem('capability-line', 'the first line after the title names the capability id'),
+    section(text, 'Capability id').split('\n')[1] !== `\`${capability}\`` && problem('capability-id', 'the Capability id section gives the capability id'),
+    !new RegExp(`^${statusWord}\\b`).test(status) && problem('status-word', `the status line of the entry starts with ${statusWord}`),
+    !section(text, 'Status').includes(status) && problem('status-line', `the Status section has the status line "${status}"`),
+  ].filter(Boolean);
+};
+
+/** LIVE and DEPLOYED stand under Status and nowhere else, as the status line and the denial of the profile. No em or en dash, no native unit name. */
+const wordProblems = (text, { profile, status }) => {
+  const { denial } = PROFILES[profile];
+  const under = section(text, 'Status');
+  return [
+    !under.includes(denial) && problem('denial', `the Status section says "${denial}"`),
+    text.replace(under, '').match(STATUS_WORDS) !== null && problem('status-words-outside', 'LIVE or DEPLOYED stands outside the Status section'),
+    under.replace(denial, '').replace(status, '').match(STATUS_WORDS) !== null && problem('status-words-inside', 'LIVE or DEPLOYED stands in the Status section, outside the status line and the denial'),
+    text.match(DASHES) !== null && problem('dash', 'the page has an em or en dash'),
+    text.match(UNIT_NAME) !== null && problem('unit-name', 'the page names the native unit'),
+  ].filter(Boolean);
+};
+
+/** The Identity section says the record state of the entry and no other one, and does not claim that the whole table is absent. */
+const identityProblems = (text, { record }) => {
+  const identity = section(text, 'Identity');
+  return [
+    !identity.includes(`\n${record}\n`) && problem('record', `the Identity section says "${record}"`),
+    ...RECORD_SENTENCES.filter((sentence) => sentence !== record && identity.includes(sentence)).map((sentence) => problem('record-other', `the Identity section does not say "${sentence}"`)),
+    text.match(/Nothing in this table/) !== null && problem('identity-table', 'the Identity table is not said to be absent'),
+  ].filter(Boolean);
+};
+
+/** The request JSON and the wire payload are two names. The deployed profile also says who wraps the one into the other, and what the receipt commits to. */
+const payloadProblems = (text, { profile }) => [
+  text.match(/payload is the request JSON/i) !== null && problem('payload-confused', 'the payload is not said to be the request JSON'),
+  ...(PROFILES[profile].wirePayload ? [
+    !section(text, 'Interface').includes(WIRE_PAYLOAD) && problem('payload-defined', 'Interface defines the wire payload'),
+    !section(text, 'Interface').includes('wrap the request JSON into the wire payload for you') && problem('payload-wrap', 'Interface says that the tools and the buyer wrap the request JSON'),
+    !/3[.] [*][*]Developers, the raw routes[.][*][*][^\n]*wire payload/.test(section(text, 'How to hire it')) && problem('payload-raw-routes', 'How to hire it names the wire payload in the raw routes'),
+    !/prompt_hash[^\n]*wire payload/.test(section(text, 'What the receipt commits to')) && problem('payload-receipt', 'the receipt commits to the wire payload'),
+  ] : []),
+].filter(Boolean);
+
+/** Terms are lovelace fields printed with six decimals. */
+const termsProblems = (text) => {
+  const rows = [...section(text, 'Terms').matchAll(/^\| (Price|Supplier bond|Buyer bond) \| (\d+) \| (\d+\.\d{6}) \|$/gm)];
+  return [
+    rows.length !== 3 && problem('terms-rows', `Terms has ${rows.length} rows of price and bonds, and wants 3`),
+    ...rows.filter(([, , lovelace, printed]) => (Number(lovelace) / 1_000_000).toFixed(6) !== printed).map(([, label]) => problem('terms-decimals', `${label} is not printed with six decimals`)),
+  ].filter(Boolean);
+};
+
+const pageProblems = (text, entry) => [...structureProblems(text, entry), ...wordProblems(text, entry), ...identityProblems(text, entry), ...payloadProblems(text, entry), ...termsProblems(text)];
+const rulesOf = (problems) => problems.map((p) => p.rule);
+
+for (const [name, entry] of Object.entries(AGENTS)) {
+  test(`${name}: the headings of the ${entry.profile} profile in order, the capability id and the status line`, () => {
+    assert.ok(Object.hasOwn(PROFILES, entry.profile), `${entry.profile} is a profile`);
+    assert.deepEqual(structureProblems(read(name), entry), []);
   });
 
-  test(`${name}: LIVE and DEPLOYED are said under Status and nowhere else, as the status line and the sentence that denies LIVE; no em or en dash, no native unit name`, () => {
-    const text = read(name);
-    const under = section(text, 'Status');
-    // Agent History (since 2026-10-15), Document Pipeline (since 2026-10-16), Audio Snippets (since 2026-10-17) and Advocate (since 2026-10-20) are DEPLOYED and say that nothing on their page is LIVE.
-    const denial = 'Nothing on this page is LIVE.';
-    assert.ok(under.includes(denial), `the Status section says "${denial}"`);
-    assert.equal(text.replace(under, '').match(/\b(LIVE|DEPLOYED)\b/g), null, 'not outside the Status section');
-    assert.equal(under.replace(denial, '').replace(status, '').match(/\b(LIVE|DEPLOYED)\b/g), null, 'inside it, only the status line and the denial');
-    assert.equal(text.match(DASHES), null);
-    assert.equal(text.match(UNIT_NAME), null);
+  test(`${name}: LIVE and DEPLOYED are said under Status and nowhere else, as the status line and the sentence that denies them; no em or en dash, no native unit name`, () => {
+    assert.deepEqual(wordProblems(read(name), entry), []);
   });
 
   test(`${name}: the Identity section says whether the agent has a registry record, and it does not claim the whole table is absent`, () => {
-    const text = read(name);
-    const identity = section(text, 'Identity');
-    assert.ok(identity.includes(`\n${record}\n`), `the Identity section says "${record}"`);
-    for (const other of [NO_RECORD, HAS_RECORD, DP_HAS_RECORD, AS_HAS_RECORD, AD_HAS_RECORD].filter((sentence) => sentence !== record)) assert.equal(identity.includes(other), false, `and not "${other}"`);
-    assert.equal(text.match(/Nothing in this table/), null); // the registry address row does exist
+    assert.deepEqual(identityProblems(read(name), entry), []);
   });
 
-  test(`${name}: the request JSON and the wire payload are named apart, and the raw routes say who wraps`, () => {
-    const text = read(name);
-    assert.equal(text.match(/payload is the request JSON/i), null);
-    assert.ok(section(text, 'Interface').includes(WIRE_PAYLOAD), 'Interface defines the wire payload');
-    assert.ok(section(text, 'Interface').includes('wrap the request JSON into the wire payload for you'), 'the tools and the buyer wrap it');
-    assert.match(section(text, 'How to hire it'), /3[.] [*][*]Developers, the raw routes[.][*][*][^\n]*wire payload/);
-    assert.match(section(text, 'What the receipt commits to'), /prompt_hash[^\n]*wire payload/);
+  test(`${name}: the request JSON and the wire payload are named apart${PROFILES[entry.profile].wirePayload ? ', and the raw routes say who wraps' : ''}`, () => {
+    assert.deepEqual(payloadProblems(read(name), entry), []);
   });
 
   test(`${name}: Terms are lovelace fields printed with six decimals`, () => {
-    const rows = [...section(read(name), 'Terms').matchAll(/^\| (Price|Supplier bond|Buyer bond) \| (\d+) \| (\d+\.\d{6}) \|$/gm)];
-    assert.equal(rows.length, 3);
-    for (const [, , lovelace, printed] of rows) assert.equal((Number(lovelace) / 1_000_000).toFixed(6), printed);
+    assert.deepEqual(termsProblems(read(name)), []);
   });
 }
+
+// ---- The two profiles, on pages that this test makes ----
+// The use-case profile has no page in specs/ yet. These fixtures show what it accepts and what it refuses, with the functions that check the real pages.
+// Each refused page is the accepted page with one change, and the test names the rule that the change breaks.
+const FIXTURE_ENTRIES = {
+  deployed: { profile: 'deployed', capability: 'example.fixture.deployed.v1', status: 'DEPLOYED (registered and staked 2026-11-01, advertised 2026-11-01, one first-party job settled 2026-11-02). Since 2026-11-02.', record: HAS_RECORD },
+  'use-case': { profile: 'use-case', capability: 'example.fixture.usecase.v1', status: 'PROPOSED (not built). Since 2026-11-19.', record: NO_RECORD },
+};
+
+/** A page that has every rule of the profile of `entry`, as short as the rules allow. `headings` can be another list than the one of the profile. */
+function examplePage(entry, headings = PROFILES[entry.profile].headings) {
+  const wording = PROFILES[entry.profile].wirePayload;
+  const bodies = {
+    Status: `${entry.status}\n\n${PROFILES[entry.profile].denial}`,
+    Identity: `${entry.record}\n\n| Field | Value |\n|---|---|\n| DID | assigned at registration |`,
+    'Capability id': `\`${entry.capability}\``,
+    Terms: ['| Term | `lovelace` | Printed |', '|---|---|---|', '| Price | 3000000 | 3.000000 |', '| Supplier bond | 1000000 | 1.000000 |', '| Buyer bond | 1000000 | 1.000000 |'].join('\n'),
+    Interface: wording ? `The wire payload is ${WIRE_PAYLOAD}.\n\nThe tools and the buyer wrap the request JSON into the wire payload for you.` : 'A request is a JSON object.',
+    'What the receipt commits to': wording ? 'The `prompt_hash` is the sha256 of the wire payload.' : 'The receipt commits to the result.',
+    'Claim statements': '| Id | Statement |\n|---|---|\n| S1 | The first statement. |\n| S2 | The second statement. |\n| S3 | The third statement. |',
+    'Fault switch': 'None. `FAULT_MODE` must be empty.',
+    'Known gaps': '- A gap.',
+    'How to hire it': wording ? '1. **Chat client.** Ask your assistant.\n2. **Terminal.** Run the buyer.\n3. **Developers, the raw routes.** Post the wire payload.' : '1. Delegate to the agent.\n2. Hire it.',
+    Changelog: '- 0.1.0, 2026-11-19: built',
+  };
+  return `# Example\n\nCapability \`${entry.capability}\`. A page that the test makes.\n\n${headings.map((heading) => `## ${heading}\n\n${bodies[heading] ?? 'Text.'}\n`).join('\n')}`;
+}
+
+test('the use-case profile accepts a page of thirteen headings with the status PROPOSED, and refuses a page that breaks one of its rules, under the name of that rule', () => {
+  const entry = FIXTURE_ENTRIES['use-case'];
+  const denial = PROFILES['use-case'].denial;
+  const page = examplePage(entry);
+  assert.deepEqual(pageProblems(page, entry), [], 'the accepted page');
+  assert.equal(page.includes(WIRE_PAYLOAD), false, 'the accepted page has no wire payload wording: the rule is the deployed profile\'s');
+  const change = (from, to) => { assert.ok(page.includes(from), `the page has: ${from}`); return page.replace(from, to); };
+  const swapped = USE_CASE_HEADINGS.map((heading) => (heading === 'Claim statements' ? 'Fault switch' : heading === 'Fault switch' ? 'Claim statements' : heading));
+  const deployedStatus = { ...entry, status: FIXTURE_ENTRIES.deployed.status }; // an entry of the use-case profile whose status line starts with DEPLOYED
+  const refused = [
+    ['a missing heading', examplePage(entry, USE_CASE_HEADINGS.filter((heading) => heading !== 'Fault switch')), ['headings']],
+    ['"Standing claim", the heading of the first drafts, in place of "Claim statements"', examplePage(entry, USE_CASE_HEADINGS.map((heading) => (heading === 'Claim statements' ? 'Standing claim' : heading))), ['headings']],
+    ['the eleven headings of the deployed profile', examplePage(entry, HEADINGS), ['headings']],
+    ['the thirteen headings in another order', examplePage(entry, swapped), ['headings']],
+    ['an extra heading', examplePage(entry, [...USE_CASE_HEADINGS, 'Extra']), ['headings']],
+    ['no title', change('# Example\n', 'Example\n'), ['title']],
+    ['a first line that does not name the capability id', change('Capability `example.fixture.usecase.v1`. A page that the test makes.', 'A page that the test makes.'), ['capability-line']],
+    ['another capability id in the Capability id section', change('## Capability id\n\n`example.fixture.usecase.v1`', '## Capability id\n\n`example.fixture.other.v1`'), ['capability-id']],
+    ['an entry with the status DEPLOYED', examplePage(deployedStatus), ['status-word'], deployedStatus],
+    ['a Status section without the status line of the entry', change(entry.status, 'PROPOSED (built, not deployed). Since 2026-11-19.'), ['status-line']],
+    ['no denial', change(`\n\n${denial}`, ''), ['denial']],
+    ['LIVE outside the Status section', change('- A gap.', '- A gap. The agent is LIVE.'), ['status-words-outside']],
+    ['DEPLOYED outside the Status section', change('- A gap.', '- A gap. The agent is DEPLOYED.'), ['status-words-outside']],
+    ['LIVE in the Status section, outside the status line and the denial', change(denial, `${denial} The agent is LIVE.`), ['status-words-inside']],
+    ['an em dash', change('- A gap.', `- A gap ${String.fromCharCode(0x2014)} more.`), ['dash']],
+    ['an en dash', change('- A gap.', `- A gap ${String.fromCharCode(0x2013)} more.`), ['dash']],
+    ['the native unit name', change('- A gap.', `- A gap. It costs 3 ${UNIT_NAME.source}.`), ['unit-name']],
+    ['no record sentence in Identity', change(NO_RECORD, 'Planned. Values are filled at registration.'), ['record']],
+    ['the record sentence of another state next to its own', change(NO_RECORD, `${NO_RECORD}\n${HAS_RECORD}`), ['record-other']],
+    ['a claim that the whole Identity table is absent', change('| DID | assigned at registration |', '| DID | Nothing in this table is known. |'), ['identity-table']],
+    ['the payload said to be the request JSON', change('- A gap.', '- A gap. The payload is the request JSON.'), ['payload-confused']],
+    ['a Terms table of two rows', change('| Buyer bond | 1000000 | 1.000000 |', ''), ['terms-rows']],
+    ['a printed value that is not the lovelace value', change('| Price | 3000000 | 3.000000 |', '| Price | 3000000 | 3.500000 |'), ['terms-decimals']],
+  ];
+  for (const [what, variant, rules, checked = entry] of refused) {
+    assert.notEqual(variant, page, `${what}: the page changes`);
+    assert.deepEqual(rulesOf(pageProblems(variant, checked)), rules, what);
+  }
+});
+
+test('the two profiles are what they say, and a page does not pick its profile: the headings of the other profile are refused in both directions, and the headings of its own are accepted', () => {
+  const [deployed, useCase] = [FIXTURE_ENTRIES.deployed, FIXTURE_ENTRIES['use-case']];
+  assert.deepEqual(pageProblems(examplePage(deployed), deployed), [], 'eleven headings under the deployed profile');
+  assert.deepEqual(pageProblems(examplePage(useCase), useCase), [], 'thirteen headings under the use-case profile');
+  assert.deepEqual(rulesOf(pageProblems(examplePage(useCase, HEADINGS), useCase)), ['headings'], 'eleven headings under the use-case profile');
+  assert.deepEqual(rulesOf(pageProblems(examplePage(deployed, USE_CASE_HEADINGS), deployed)), ['headings'], 'thirteen headings under the deployed profile');
+  assert.equal(HEADINGS.length, 11);
+  assert.deepEqual(USE_CASE_HEADINGS, ['Status', 'Identity', 'Capability id', 'Terms', 'Interface', 'What the receipt commits to', 'Claim statements', 'Fault switch', 'Operator and data handling', 'Known gaps', 'How to hire it', 'Changelog', 'Links']);
+  assert.deepEqual(HEADINGS, ['Status', 'Identity', 'Capability id', 'Terms', 'Interface', 'What the receipt commits to', 'Operator and data handling', 'Known gaps', 'How to hire it', 'Changelog', 'Links']);
+  // The status word, the denial and the wire payload rule of each profile. The headings of each are the two lists above.
+  assert.deepEqual(Object.fromEntries(Object.entries(PROFILES).map(([profile, rules]) => [profile, { headings: rules.headings, statusWord: rules.statusWord, denial: rules.denial, wirePayload: rules.wirePayload }])), {
+    deployed: { headings: HEADINGS, statusWord: 'DEPLOYED', denial: 'Nothing on this page is LIVE.', wirePayload: true },
+    'use-case': { headings: USE_CASE_HEADINGS, statusWord: 'PROPOSED', denial: 'Nothing on this page is LIVE or DEPLOYED.', wirePayload: false },
+  });
+});
+
+test('the deployed profile keeps its rules beside the use-case profile, and refuses a page that breaks one of them, under the name of that rule', () => {
+  const entry = FIXTURE_ENTRIES.deployed;
+  const denial = PROFILES.deployed.denial;
+  const page = examplePage(entry);
+  assert.deepEqual(pageProblems(page, entry), [], 'the accepted page');
+  const change = (from, to) => { assert.ok(page.includes(from), `the page has: ${from}`); return page.replace(from, to); };
+  const proposedStatus = { ...entry, status: FIXTURE_ENTRIES['use-case'].status }; // an entry of the deployed profile whose status line starts with PROPOSED
+  const refused = [
+    ['a missing heading', examplePage(entry, HEADINGS.slice(0, -1)), ['headings']],
+    ['an entry with the status PROPOSED', examplePage(proposedStatus), ['status-word'], proposedStatus],
+    ['no denial', change(`\n\n${denial}`, ''), ['denial']],
+    ['the denial of the use-case profile', change(denial, PROFILES['use-case'].denial), ['denial', 'status-words-inside']],
+    ['no definition of the wire payload', change(WIRE_PAYLOAD, 'the payload'), ['payload-defined']],
+    ['no word on who wraps the request JSON', change('wrap the request JSON into the wire payload for you', 'wrap the request'), ['payload-wrap']],
+    ['no raw routes in How to hire it', change('3. **Developers, the raw routes.**', '3. **Developers.**'), ['payload-raw-routes']],
+    ['a receipt that does not say what prompt_hash commits to', change('The `prompt_hash` is the sha256 of the wire payload.', 'The `prompt_hash` is a hash.'), ['payload-receipt']],
+  ];
+  for (const [what, variant, rules, checked = entry] of refused) {
+    assert.notEqual(variant, page, `${what}: the page changes`);
+    assert.deepEqual(rulesOf(pageProblems(variant, checked)), rules, what);
+  }
+});
+
+test('specs/ holds one page for each agent of the list, whatever the number: ten agents want ten files, and a missing file or an extra file is refused', () => {
+  const names = Array.from({ length: 10 }, (_, i) => `fixture-agent-${i + 1}`);
+  const agents = Object.fromEntries(names.map((name) => [name, FIXTURE_ENTRIES['use-case']]));
+  const files = names.map((name) => `${name}.md`);
+  assert.deepEqual(specFileProblems(files, agents), { missing: [], extra: [] }, 'ten files for ten agents');
+  assert.deepEqual(specFileProblems(files.slice(0, 4), Object.fromEntries(Object.entries(agents).slice(0, 4))), { missing: [], extra: [] }, 'four files for four agents');
+  assert.deepEqual(specFileProblems(files.slice(1), agents), { missing: [files[0]], extra: [] }, 'a missing file');
+  assert.deepEqual(specFileProblems([...files, 'notes.md'], agents), { missing: [], extra: ['notes.md'] }, 'an extra file');
+  assert.deepEqual(specFileProblems(files.slice(0, 4), agents), { missing: files.slice(4).sort(), extra: [] }, 'four files for ten agents');
+});
 
 // Agent History has a registry record and a Module-3 self-stake since 2026-10-14 (RUNBOOK steps 7 and 8), and a public URL in service and an advert since the same day (steps 10 to 14), all run on the box.
 // The spec, the guide and the runbooks record them and claim nothing more: one first-party job has settled (2026-10-15, RUNBOOK step 15), which is not demand, and the status word is DEPLOYED since 2026-10-15 (RUNBOOK step 17), never LIVE. The values are the ones the ledger holds for that registration and those adverts.
 const AH = {
-  did: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:8a98c4b74f0e49a09ca4b3502e121c96a8e6992afd2cba64ef8128042fedd440',
+  legacyDid: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:8a98c4b74f0e49a09ca4b3502e121c96a8e6992afd2cba64ef8128042fedd440',
   registerTx: '6da5a2b4435257daf905f92f7ae281446d627aaedee25193cf55d94a547a49fa',
   stakeTx: 'eaf4d43d33da429e0d1072e2f01ae628958dedef97a385bc4d8120b3c8debba7',
   controllerPkh: '1ea22a13acac6da070959317bad9bf5e510e8f7875a6727d3a5262cd',
@@ -136,16 +317,19 @@ test('specs/agent-history.md: the Status line says DEPLOYED since 2026-10-15, th
 test('specs/agent-history.md: the DID, the registry record and the reputation stake of 2026-10-14 are in the Identity table with their transactions, the URL is in service since 2026-10-14, and the first advert (retired on 2026-10-15) and the current advert (posted on 2026-10-15) are recorded in the Links', () => {
   const text = read('agent-history');
   const row = (label) => section(text, 'Identity').split('\n').find((l) => l.startsWith(`| ${label} |`)) ?? '';
-  // The DID has the registry policy of the DID in the Request example and an asset name of 64 hex. The explorer link has the pattern the member guide gives.
+  // The DID row has the canonical DID: did:vector: and the 64 hex of the asset name, which the identity gateway resolves and the manifest names. The legacy form has the registry policy of the DID
+  // in the Request example and the same 64 hex. It stands in the Registry record row, and not in the DID row. The explorer link has the pattern the member guide gives.
   const policy = /did:vector:agent:([0-9a-f]{56}):/.exec(section(text, 'Interface'))?.[1] ?? '';
   assert.match(policy, /^[0-9a-f]{56}$/);
-  assert.match(AH.did, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
+  assert.match(AH.legacyDid, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
+  assert.equal(AH.agentDid, `did:vector:${AH.legacyDid.split(':').pop()}`, 'the same asset name in both forms');
   assert.ok(readFileSync(new URL('../docs/HIRE.md', import.meta.url), 'utf8').includes(`${EXPLORER_TX}<txid>`), 'the explorer link pattern');
-  assert.equal(row('DID'), `| DID | \`${AH.did}\` |`);
+  assert.equal(row('DID'), `| DID | \`${AH.agentDid}\` |`);
   const record = row('Registry record');
   for (const part of [
     'name `Agent History`', 'description as in the manifest', 'capabilities `identity.history.report.v1`', 'framework `vector-service-agents`', "endpoint the agent's public URL",
     `controller key hash \`${AH.controllerPkh}\` (the supplier key hash)`, 'Registered on 2026-10-14 in the confirmed transaction', `[\`${AH.registerTx}\`](${EXPLORER_TX}${AH.registerTx})`,
+    `The legacy registry identifies this agent by the legacy DID \`${AH.legacyDid}\`.`,
     'The deposit is 10000000 lovelace (10.000000), refundable on deregistration',
   ]) assert.ok(record.includes(part), `the Registry record row says: ${part}`);
   const stake = row('Reputation stake');
@@ -171,7 +355,7 @@ test('specs/agent-history.md: the DID, the registry record and the reputation st
 // Document Pipeline has a registry record and a Module-3 self-stake since 2026-10-16 (RUNBOOK-document-pipeline steps 7 and 8), and a public URL in service and an advert since the same day (steps 10 to 14), all run on the box.
 // The spec, the guide and the runbooks record them and claim nothing more: one first-party job has settled (2026-10-16, step 15), which is not demand, and the status word is DEPLOYED since 2026-10-16 (step 17), never LIVE. The values are the ones the ledger holds for that registration, that stake and those adverts.
 const DP = {
-  did: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:b8599ec7f66a389dab40a963cce31a0e2e05c61e47f0b002fa39d59acf5932f5',
+  legacyDid: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:b8599ec7f66a389dab40a963cce31a0e2e05c61e47f0b002fa39d59acf5932f5',
   registerTx: '195028d86ee9735084ce648779a673da5bf76977b10bc52b3d10dbfb57ef86dd',
   stakeTx: '6a41f59d0925b70583d0272fdddf9fedbc5dcac2d4af2c9484c452e2a5fb2830',
   controllerPkh: '5750aa8006bdc4f16f7950f54b89c2efb1d11091718d0db32a4863fc',
@@ -212,7 +396,7 @@ const DP_RUN = {
 // The spec, the guide and the runbooks record them and claim nothing more: one first-party job has settled (2026-10-17, step 15), which is not demand, and the status word is DEPLOYED since 2026-10-17 (step 17), never LIVE.
 // The values are the ones the ledger holds for that registration, that stake and those adverts, and the public key is the one the manifest serves under keys.pub_key_hex.
 const AS = {
-  did: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:1532506e54fa79cdfca6bef566ff1a5e7af9fceb332ffb7414d9923334b9d1ee',
+  legacyDid: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:1532506e54fa79cdfca6bef566ff1a5e7af9fceb332ffb7414d9923334b9d1ee',
   registerTx: 'c101d9dd20a82d573bbb4d8d0155c89de403de29a73f1a68f1afa642542dc83b',
   stakeTx: 'a23857f97c9197dd1051ef291decb06ee9cf5818339ac67ea120d0810720f3a3',
   // The supplier key, the only key of the agent: its key hash is the controller of the registry record, and its public key signs the receipts.
@@ -254,7 +438,7 @@ const AS_RUN = {
 // is DEPLOYED since 2026-10-20 (step 17), never LIVE. The values are the ones the ledger holds for that registration, that stake and those adverts, and the key hash of the buyer key is the one
 // the manifest serves under keys.buyer_pkh.
 const AD = {
-  did: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:c5e44677dadefc8a194d15293cad889b85e1ce5c839177f1955778ac4c63d01c',
+  legacyDid: 'did:vector:agent:be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01:c5e44677dadefc8a194d15293cad889b85e1ce5c839177f1955778ac4c63d01c',
   registerTx: '0699bc56992695511fd3c55681deba4f9ad611cd5c526dcfe45758f203abe767',
   stakeTx: '82fdc231932405c105f8b8b03cc56c37c702d03befc1830e85d0debeeeabbb15',
   // The supplier key: its key hash is the controller of the registry record, and its public key, the one the manifest serves under keys.pub_key_hex, signs the receipts. The buyer key,
@@ -316,17 +500,20 @@ test('specs/document-pipeline.md: the Status line says DEPLOYED since 2026-10-16
 test('specs/document-pipeline.md: the DID, the registry record and the reputation stake of 2026-10-16 are in the Identity table with their transactions, the URL is in service since 2026-10-16, and the first advert (retired on 2026-10-16) and the current advert (posted on 2026-10-16) are recorded in the Links', () => {
   const text = read('document-pipeline');
   const row = (label) => section(text, 'Identity').split('\n').find((l) => l.startsWith(`| ${label} |`)) ?? '';
-  // The DID has the registry policy that every DID of the registry has (the one in the Request example of Agent History) and an asset name of 64 hex of its own. The explorer link has the pattern the member guide gives.
+  // The DID row has the canonical DID, which the identity gateway resolves. The legacy form has the registry policy that every DID of the legacy registry has (the one in the Request example of
+  // Agent History) and the same 64 hex. It stands in the Registry record row, and not in the DID row. The explorer link has the pattern the member guide gives.
   const policy = /did:vector:agent:([0-9a-f]{56}):/.exec(section(read('agent-history'), 'Interface'))?.[1] ?? '';
   assert.match(policy, /^[0-9a-f]{56}$/);
-  assert.match(DP.did, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
-  assert.notEqual(DP.did, AH.did, 'its own asset name');
+  assert.match(DP.legacyDid, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
+  assert.equal(DP.agentDid, `did:vector:${DP.legacyDid.split(':').pop()}`, 'the same asset name in both forms');
+  assert.notEqual(DP.legacyDid, AH.legacyDid, 'its own asset name');
   assert.ok(readFileSync(new URL('../docs/HIRE.md', import.meta.url), 'utf8').includes(`${EXPLORER_TX}<txid>`), 'the explorer link pattern');
-  assert.equal(row('DID'), `| DID | \`${DP.did}\` |`);
+  assert.equal(row('DID'), `| DID | \`${DP.agentDid}\` |`);
   const record = row('Registry record');
   for (const part of [
     'name `Document Pipeline`', 'capabilities `document.pipeline.ocr-summary.v1`', 'framework `vector-service-agents`', "endpoint the agent's public URL",
     `controller key hash \`${DP.controllerPkh}\` (the supplier key hash)`, 'Registered on 2026-10-16 in the confirmed transaction', `[\`${DP.registerTx}\`](${EXPLORER_TX}${DP.registerTx})`,
+    `The legacy registry identifies this agent by the legacy DID \`${DP.legacyDid}\`.`,
     'The deposit is 10000000 lovelace (10.000000), refundable on deregistration',
   ]) assert.ok(record.includes(part), `the Registry record row says: ${part}`);
   const stake = row('Reputation stake');
@@ -356,7 +543,7 @@ test('no spec says any more that it has no advert: Advocate, advertised since 20
   // Advocate was built on 2026-10-17 and is DEPLOYED since 2026-10-20: its Changelog keeps the one line of the release and the day it was built, and How to hire it no longer waits.
   assert.equal(section(read('advocate'), 'Changelog').trim(), '- 0.1.0, 2026-10-17: built');
   assert.equal(section(read('advocate'), 'How to hire it').match(/Not yet advertised|Once advertised|waits for its deployment/), null, 'Advocate is advertised since 2026-10-19');
-  for (const name of Object.keys(AGENTS)) assert.equal(read(name).match(/Not yet advertised|Once advertised|waits for its deployment/), null, `${name} is advertised`);
+  for (const name of Object.keys(DEPLOYED_AGENTS)) assert.equal(read(name).match(/Not yet advertised|Once advertised|waits for its deployment/), null, `${name} is advertised`);
   // Audio Snippets was built on 2026-10-16 and is DEPLOYED since 2026-10-17: its Changelog keeps the one line of the release and the day it was built, and How to hire it no longer waits.
   assert.equal(section(read('audio-snippets'), 'Changelog').trim(), '- 0.1.0, 2026-10-16: built');
   assert.equal(section(read('audio-snippets'), 'How to hire it').match(/Not yet advertised|Once advertised|waits for its deployment/), null, 'Audio Snippets is advertised since 2026-10-17');
@@ -376,8 +563,8 @@ test('the terms of each spec are the terms in the design spec, read from its Ter
     const n = (s) => Number(s.replace(/ /g, '')); // the design groups thousands with a space
     found.set(m[6], { price: n(m[1]) * 1_000_000, supplierBond: n(m[2]) * 1_000_000, buyerBond: n(m[3]) * 1_000_000, window: n(m[4]), timeout: n(m[5]) });
   }
-  assert.deepEqual([...found.keys()].sort(), Object.values(AGENTS).map((a) => a.model).sort(), 'the design has one Terms paragraph for each agent');
-  for (const [name, { model }] of Object.entries(AGENTS)) {
+  assert.deepEqual([...found.keys()].sort(), Object.values(DEPLOYED_AGENTS).map((a) => a.model).sort(), 'the design has one Terms paragraph for each agent');
+  for (const [name, { model }] of Object.entries(DEPLOYED_AGENTS)) {
     const design = found.get(model);
     const terms = section(read(name), 'Terms');
     const row = (label) => Number(terms.match(new RegExp('[|] ' + label + ' [|] ([0-9]+) '))?.[1]);
@@ -460,17 +647,17 @@ test('specs/document-pipeline.md: the extraction schema rules name the keywords 
 });
 
 test('the four specs, the guide and the README agree on what is built: Agent History, Document Pipeline, Audio Snippets and Advocate DEPLOYED', () => {
-  const byStatus = (re) => Object.entries(AGENTS).filter(([, a]) => re.test(a.status)).map(([name]) => name).sort();
+  const byStatus = (re) => Object.entries(DEPLOYED_AGENTS).filter(([, a]) => re.test(a.status)).map(([name]) => name).sort();
   assert.deepEqual(byStatus(/^DEPLOYED \(/), ['advocate', 'agent-history', 'audio-snippets', 'document-pipeline']);
   assert.deepEqual(byStatus(/^PROPOSED \(built, not deployed\)\./), [], 'no agent is built and waiting any more');
   assert.deepEqual(byStatus(/^PROPOSED \(not built\)\./), [], 'no agent is specified and not built any more');
   // Each spec carries its own status line in its Status section, alone on a line, and no spec has the line of before its flip.
   for (const [name, { status }] of Object.entries(AGENTS)) assert.ok(section(read(name), 'Status').split('\n').includes(status), `${name}: the status line, alone on its line`);
-  for (const name of Object.keys(AGENTS)) assert.equal(section(read(name), 'Status').match(/PROPOSED|not deployed/), null, `${name}: the line of before its flip is gone`);
+  for (const name of Object.keys(DEPLOYED_AGENTS)) assert.equal(section(read(name), 'Status').match(/PROPOSED|not deployed/), null, `${name}: the line of before its flip is gone`);
   // The guide says it in a sentence and in the rows of its table, and the root README keeps its table: DEPLOYED for the four.
   assert.ok(hire().includes('This guide hires Agent History, and section 5 shows what changes for Document Pipeline, for Audio Snippets and for Advocate.'));
   const tableRows = readFileSync(new URL('../README.md', import.meta.url), 'utf8').split('\n');
-  for (const [name, { capability }] of Object.entries(AGENTS)) assert.ok(tableRows.some((l) => l.endsWith(`| \`${capability}\` | DEPLOYED |`)), `${name}: its row of the README table`);
+  for (const [name, { capability }] of Object.entries(DEPLOYED_AGENTS)) assert.ok(tableRows.some((l) => l.endsWith(`| \`${capability}\` | DEPLOYED |`)), `${name}: its row of the README table`);
 });
 
 // ---- The member guide (docs/HIRE.md) and the E2E runbook (docs/E2E.md) ----
@@ -641,7 +828,7 @@ test('docs/HIRE.md: who receives what on Accept, Release and Reclaim', () => {
 
 test('the guide, the four specs and the E2E runbook never say that both bonds return or that the supplier gets a bond back', () => {
   const texts = [['docs/HIRE.md', hire()], ['docs/E2E.md', doc('E2E.md')], ...Object.keys(AGENTS).map((name) => [`specs/${name}.md`, read(name)])];
-  assert.equal(texts.length, 6);
+  assert.equal(texts.length, 2 + Object.keys(AGENTS).length);
   for (const [name, text] of texts) assert.equal(text.match(BONDS_RETURN), null, name);
   // The pattern finds each wording it exists for, among them the sentence that was wrong in specs/agent-history.md.
   for (const wrong of ['On Accept the supplier is paid the price and gets its own bond back.', 'the supplier gets its bond back', 'both bonds return', 'both bonds come back', 'the bonds are returned', 'returned on Accept', 'the bonds back']) assert.match(wrong, BONDS_RETURN, wrong);
@@ -705,7 +892,7 @@ test('docs/HIRE.md: says what is and is not in service, tool by tool', () => {
   assert.equal(guide.match(/<ADVERT_REF>|placeholder|not yet advertised|not in service/i), null, 'the words of before the advert');
   // The first-party runs of the path: one for each deployed agent, each a row of the Results table of docs/E2E.md with its evidence file. A first-party run is not demand.
   const serverRow = row('mcp.vector.mainnet.apexfusion.org');
-  assert.ok(serverRow.includes('Running, v3.0.0, 63 tools, checked on 2026-11-06 with an MCP `initialize` and `tools/list` handshake. Version 3.0.0 ([Apex-Fusion/mcp-server#26](https://github.com/Apex-Fusion/mcp-server/pull/26), [#27](https://github.com/Apex-Fusion/mcp-server/pull/27) and [#28](https://github.com/Apex-Fusion/mcp-server/pull/28), merged 2026-11-03) adds the identity registry tools and, from the escrow switch on, posts identity-layout escrows only. Four first-party runs of the path are recorded, one for each deployed agent, all in the legacy layout: on 2026-10-15 (Agent History), 2026-10-16 (Document Pipeline), 2026-10-17 (Audio Snippets) and 2026-10-20 (Advocate), each in the Results table of [docs/E2E.md](E2E.md) with its evidence file. A first-party run is not demand.'));
+  assert.ok(serverRow.includes('Running, v3.0.0, 86 tools, checked on 2026-11-19 with an MCP `initialize` and `tools/list` handshake. Version 3.0.0 ([Apex-Fusion/mcp-server#26](https://github.com/Apex-Fusion/mcp-server/pull/26), [#27](https://github.com/Apex-Fusion/mcp-server/pull/27) and [#28](https://github.com/Apex-Fusion/mcp-server/pull/28), merged 2026-11-03) adds the identity registry tools and, from the escrow switch on, posts identity-layout escrows only. Four first-party runs of the path are recorded, one for each deployed agent, all in the legacy layout: on 2026-10-15 (Agent History), 2026-10-16 (Document Pipeline), 2026-10-17 (Audio Snippets) and 2026-10-20 (Advocate), each in the Results table of [docs/E2E.md](E2E.md) with its evidence file. A first-party run is not demand.'));
   const runs = doc('E2E.md').split('\n').filter((l) => /^\| 20\d\d-/.test(l)).map((l) => l.split(' | ').slice(0, 2).map((cell) => cell.replace(/^\| /, '')));
   assert.deepEqual(runs, [['2026-10-15', 'Agent History'], ['2026-10-16', 'Document Pipeline'], ['2026-10-17', 'Audio Snippets'], ['2026-10-20', 'Advocate']], 'the runs the row counts are the rows of the Results table');
   assert.equal(runs.length, Object.values(AGENTS).filter((a) => a.status.startsWith('DEPLOYED ')).length, 'one run for each deployed agent');
@@ -834,7 +1021,7 @@ test('docs/HIRE.md and docs/E2E.md: every place that lists what the receipt chec
 
 test('docs/HIRE.md: the status box says what runs today and that there is no audit; the client config file is said to hold the key in plain text', () => {
   const guide = hire();
-  const line = 'The hosted mainnet server is running version 3.0.0 with 63 tools as of 2026-11-06, the marketplace tools among them. No third-party audit of the marketplace contracts or of the identity registry exists.';
+  const line = 'The hosted mainnet server is running version 3.0.0 with 86 tools as of 2026-11-19, the marketplace tools among them. No third-party audit of the marketplace contracts or of the identity registry exists.';
   assert.equal(guide.split(line).length - 1, 1, 'once');
   assert.ok(guide.indexOf('**Status: DEPLOYED.**') < guide.indexOf(line) && guide.indexOf(line) < guide.indexOf('| Piece |'), 'inside the status box, above the table');
   const four = section(guide, '4. Two lines of config');
@@ -1014,6 +1201,9 @@ test('docs/E2E.md and scripts/e2e-hire.mjs: buyerAddress, the skipped and incomp
 test('the marketplace tools are said to be on the hosted mainnet server (33 tools, 2026-10-14) in the runbooks, the script and the four specs, nothing waits for a cutover, and way 1 of the Agent History spec names buyerAddress', () => {
   const e2e = doc('E2E.md');
   assert.ok(e2e.includes('The nine marketplace tools are merged into `main` of Apex-Fusion/mcp-server and are on the hosted mainnet server as of 2026-10-14: an MCP `initialize` and `tools/list` handshake that day listed 33 tools, the nine among them.'));
+  // The status paragraph gives the tool count of the hosted server with its day: the tools/list handshake of 2026-11-19 listed 86 tools. The count of 2026-11-06 is gone.
+  assert.ok(e2e.includes('On 2026-11-19 it runs version 3.0.0 and lists 86 tools.'));
+  assert.equal(e2e.includes('lists 63 tools'), false, 'the count of before');
   // The current advert was posted on 2026-10-15 at the status flip (RUNBOOK step 17), so the check that ADVERT_REF is among the free suppliers can pass with it. The first first-party run settled on 2026-10-15 (step 15), against the first advert, and is in the Results table. The status word is DEPLOYED.
   assert.ok(e2e.includes(`The current Agent History advert was posted on 2026-11-03 in the identity layout, reference \`${AH.advertRef}\`; the advert of 2026-10-15 was retired that day after the escrow switch. The first first-party run settled on 2026-10-15 (verdict VERIFIED, see [Results](#results)); it was made against the first advert, which was retired that day at the status flip.`));
   assert.equal(e2e.includes(AH.firstAdvertTx), false, 'the retired advert is named by what it was, not by its reference');
@@ -1039,7 +1229,7 @@ test('the marketplace tools are said to be on the hosted mainnet server (33 tool
   }
   assert.equal(read('agent-history').match(/not on the hosted server/), null);
   // No file that once said it waits for a cutover says it now.
-  const waited = [['docs/HIRE.md', hire()], ['docs/E2E.md', e2e], ['deploy/host/RUNBOOK.md', readFileSync(new URL('../deploy/host/RUNBOOK.md', import.meta.url), 'utf8')], ['scripts/e2e-hire.mjs', script], ...Object.keys(AGENTS).map((name) => ['specs/' + name + '.md', read(name)])];
+  const waited = [['docs/HIRE.md', hire()], ['docs/E2E.md', e2e], ['deploy/host/RUNBOOK.md', readFileSync(new URL('../deploy/host/RUNBOOK.md', import.meta.url), 'utf8')], ['scripts/e2e-hire.mjs', script], ...Object.keys(DEPLOYED_AGENTS).map((name) => ['specs/' + name + '.md', read(name)])];
   assert.equal(waited.length, 8);
   for (const [name, text] of waited) assert.equal(text.match(WAITS_FOR_CUTOVER), null, name + ' still waits for a cutover');
 });
@@ -1178,7 +1368,7 @@ test('docs/evidence: the evidence of the first-party run of 2026-10-15 parses, i
   // The report is the one this agent writes for that subject.
   const report = JSON.parse(ev.result);
   assert.equal(report.schema, 'vector.agent-history.report.v1');
-  assert.equal(report.generated_by.did, AH.did);
+  assert.equal(report.generated_by.did, AH.legacyDid); // the report of 2026-10-15 names the agent in the legacy form that the service then wrote
   assert.equal(report.subject.did, JSON.parse(request).subject);
 });
 
@@ -1393,18 +1583,21 @@ test('specs/audio-snippets.md: the Status line says DEPLOYED since 2026-10-17, t
 test('specs/audio-snippets.md: the DID, the supplier key, the registry record and the reputation stake of 2026-10-17 are in the Identity table with their transactions, the URL is in service, the current advert carries the terms of the page, and the first advert (retired at the flip), the current advert and the first-party hire are in the Links', () => {
   const text = read('audio-snippets');
   const row = (label) => section(text, 'Identity').split('\n').find((l) => l.startsWith(`| ${label} |`)) ?? '';
-  // The DID has the registry policy that every DID of the registry has and an asset name of 64 hex of its own.
+  // The DID row has the canonical DID: did:vector: and the 64 hex of the asset name, which the identity gateway resolves and the manifest names. The legacy form has the registry policy that
+  // every DID of the legacy registry has and the same 64 hex. It stands in the Registry record row, and not in the DID row.
   const policy = /did:vector:agent:([0-9a-f]{56}):/.exec(section(read('agent-history'), 'Interface'))?.[1] ?? '';
   assert.match(policy, /^[0-9a-f]{56}$/);
-  assert.match(AS.did, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
-  assert.equal(new Set([AS.did, AH.did, DP.did]).size, 3, 'its own asset name');
-  assert.equal(row('DID'), `| DID | \`${AS.did}\` |`);
+  assert.match(AS.legacyDid, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
+  assert.equal(AS.agentDid, `did:vector:${AS.legacyDid.split(':').pop()}`, 'the same asset name in both forms');
+  assert.equal(new Set([AS.legacyDid, AH.legacyDid, DP.legacyDid]).size, 3, 'its own asset name');
+  assert.equal(row('DID'), `| DID | \`${AS.agentDid}\` |`);
   // The supplier key is the only key of the agent: the Controller row gives its public key, the one the manifest serves, and the Registry record row its key hash (agents/audio-snippets/test/spec.test.ts holds the one to the other).
   assert.ok(row('Controller').startsWith(`| Controller | the supplier key, the only key of this agent and the key that signs its receipts. Its public key is \`${AS.pubKey}\`. The manifest publishes`));
   const record = row('Registry record');
   for (const part of [
     'name `Audio Snippets`', 'description as in the manifest', 'capabilities `audio.transcript.snippets.v1`', 'framework `vector-service-agents`', "endpoint the agent's public URL",
     `controller key hash \`${AS.controllerPkh}\` (the supplier key hash)`, `Registered on 2026-10-17 in the confirmed transaction ${explorerLink(AS.registerTx)}`,
+    `The legacy registry identifies this agent by the legacy DID \`${AS.legacyDid}\`.`,
     'The deposit is 10000000 lovelace (10.000000), refundable on deregistration',
   ]) assert.ok(record.includes(part), `the Registry record row says: ${part}`);
   // The deposit closes the row, as in the rows of the other two (step 7 of the runbook names the deposit of 10 units).
@@ -1653,16 +1846,19 @@ test('specs/advocate.md: the Economics line under Terms in the form of the Pipel
 test('specs/advocate.md: the DID, the registry record, the reputation stake and the buyer key of 2026-10-19 are in the Identity table, the URL is in service as of 2026-10-19, the current advert carries the terms of the page, and the first advert (retired at the flip), the current advert and the first-party hire are in the Links', () => {
   const text = read('advocate');
   const row = (label) => section(text, 'Identity').split('\n').find((l) => l.startsWith(`| ${label} |`)) ?? '';
+  // The DID row has the canonical DID, which the identity gateway resolves. The legacy form is in the Registry record row.
   const policy = /did:vector:agent:([0-9a-f]{56}):/.exec(section(read('agent-history'), 'Interface'))?.[1] ?? '';
-  assert.match(AD.did, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
-  for (const other of [AH.did, DP.did, AS.did]) assert.notEqual(AD.did, other, 'its own asset name');
-  assert.equal(row('DID'), `| DID | \`${AD.did}\` |`);
+  assert.match(AD.legacyDid, new RegExp(`^did:vector:agent:${policy}:[0-9a-f]{64}$`));
+  assert.equal(AD.agentDid, `did:vector:${AD.legacyDid.split(':').pop()}`, 'the same asset name in both forms');
+  for (const other of [AH.legacyDid, DP.legacyDid, AS.legacyDid]) assert.notEqual(AD.legacyDid, other, 'its own asset name');
+  assert.equal(row('DID'), `| DID | \`${AD.agentDid}\` |`);
   // The supplier key: the Controller row gives its public key, the one the manifest serves, and the Registry record row its key hash (agents/advocate/test/spec.test.ts holds the one to the other).
   assert.ok(row('Controller').startsWith(`| Controller | the supplier key, the key that signs this agent's receipts. Its public key is \`${AD.pubKey}\`. The manifest publishes`));
   const record = row('Registry record');
   for (const part of [
     'name `Advocate`', 'description as in the manifest, which declares the bias', 'capabilities `research.advocate.onesided.v1`', 'framework `vector-service-agents`',
     "endpoint the agent's public URL, `https://mp-suppliers-advocate.hal8.ai`", `controller key hash \`${AD.controllerPkh}\` (the supplier key hash)`,
+    `The legacy registry identifies this agent by the legacy DID \`${AD.legacyDid}\`.`,
     'Registered on 2026-10-19 in the confirmed transaction', `[\`${AD.registerTx}\`](${EXPLORER_TX}${AD.registerTx})`, 'The deposit is 10000000 lovelace (10.000000), refundable on deregistration',
   ]) assert.ok(record.includes(part), `the Registry record row says: ${part}`);
   const stake = row('Reputation stake');
@@ -1933,27 +2129,32 @@ test('specs/document-pipeline.md: the code of its hire is packages/hire-kit on p
 // server make the stake, and its words follow the public rules.
 const launch = () => doc('LAUNCH.md');
 const LAUNCH_SECTIONS = ['What you need', 'Let your coding agent build it', 'Post the advert', 'Boot the runtime and your service', 'Give your agent an identity', 'Stake (optional)', 'Test-hire your own agent from chat', 'Tell the working group'];
-// The 63 tools of the hosted server: the tools/list of the hosted mainnet server on 2026-11-06, version 3.0.0 (Apex-Fusion/mcp-server, the release commit c42cb6e, from which
-// the npm signer 3.0.0 was built: HIRE.md section 2). The legacy registry writes and vector_build_message_agent are retired in 3.0.0; the identity registry tools are new.
+// The 86 tools of the hosted server: the tools/list of the hosted mainnet server on 2026-11-19, version 3.0.0. The names are the tools that Apex-Fusion/mcp-server lists at main.
+// The legacy registry writes and vector_build_message_agent are retired in 3.0.0. Since 2026-11-06 the list has 23 more names: the jury, document and Module-1 tools, the stake tools, and the read and check tools.
 const HOSTED_TOOLS = [
   'vector_await_transaction', 'vector_build_attestation_attest', 'vector_build_attestation_contest', 'vector_build_attestation_revoke', 'vector_build_attestation_withdraw',
-  'vector_build_delegation_delegate', 'vector_build_delegation_undelegate', 'vector_build_deploy_contract', 'vector_build_deregister_agent', 'vector_build_identity_adopt',
-  'vector_build_identity_change_controller', 'vector_build_identity_end_subagents', 'vector_build_identity_reclaim', 'vector_build_identity_recovery_cancel', 'vector_build_identity_recovery_complete',
-  'vector_build_identity_recovery_start', 'vector_build_identity_register', 'vector_build_identity_retire', 'vector_build_identity_revoke', 'vector_build_identity_set_successor',
-  'vector_build_identity_suspend', 'vector_build_identity_unsuspend', 'vector_build_identity_update', 'vector_build_interact_contract', 'vector_build_marketplace_accept',
-  'vector_build_marketplace_advert_post', 'vector_build_marketplace_advert_retire', 'vector_build_marketplace_advert_update', 'vector_build_marketplace_post_advert', 'vector_build_marketplace_post_escrow',
-  'vector_build_marketplace_reclaim', 'vector_build_marketplace_refund_revoked', 'vector_build_marketplace_release', 'vector_build_reputation_stake', 'vector_build_reputation_stake_open',
-  'vector_build_self_improvement_critique', 'vector_build_self_improvement_critique_spend', 'vector_build_self_improvement_endorse', 'vector_build_self_improvement_endorse_spend', 'vector_build_self_improvement_proposal_lock',
-  'vector_build_self_improvement_proposal_spend', 'vector_build_send_apex', 'vector_build_send_tokens', 'vector_build_transaction', 'vector_build_vault_close',
-  'vector_build_vault_open', 'vector_build_vault_pay', 'vector_discover_agents', 'vector_dry_run', 'vector_get_agent_profile',
-  'vector_get_balance', 'vector_get_transaction_history', 'vector_get_utxos', 'vector_marketplace_get_job', 'vector_marketplace_get_supplier',
-  'vector_marketplace_list_capabilities', 'vector_marketplace_list_suppliers', 'vector_marketplace_send_job', 'vector_marketplace_verify_receipt', 'vector_resolve_did',
-  'vector_self_improvement_analyze_metrics', 'vector_self_improvement_browse', 'vector_submit_transaction',
+  'vector_build_delegation_delegate', 'vector_build_delegation_undelegate', 'vector_build_deploy_contract', 'vector_build_deregister_agent', 'vector_build_document_publish',
+  'vector_build_identity_adopt', 'vector_build_identity_change_controller', 'vector_build_identity_end_subagents', 'vector_build_identity_reclaim', 'vector_build_identity_recovery_cancel',
+  'vector_build_identity_recovery_complete', 'vector_build_identity_recovery_start', 'vector_build_identity_register', 'vector_build_identity_retire', 'vector_build_identity_revoke',
+  'vector_build_identity_set_successor', 'vector_build_identity_suspend', 'vector_build_identity_unsuspend', 'vector_build_identity_update', 'vector_build_interact_contract',
+  'vector_build_jury_commit', 'vector_build_jury_exit', 'vector_build_jury_register', 'vector_build_jury_reveal', 'vector_build_jury_topup',
+  'vector_build_marketplace_accept', 'vector_build_marketplace_advert_post', 'vector_build_marketplace_advert_retire', 'vector_build_marketplace_advert_update', 'vector_build_marketplace_post_advert',
+  'vector_build_marketplace_post_escrow', 'vector_build_marketplace_reclaim', 'vector_build_marketplace_refund_revoked', 'vector_build_marketplace_release', 'vector_build_module1_challenge',
+  'vector_build_module1_claim', 'vector_build_module1_withdraw_claim', 'vector_build_reputation_stake', 'vector_build_reputation_stake_decrease', 'vector_build_reputation_stake_increase',
+  'vector_build_reputation_stake_open', 'vector_build_reputation_stake_update_capabilities', 'vector_build_self_improvement_critique', 'vector_build_self_improvement_critique_spend', 'vector_build_self_improvement_endorse',
+  'vector_build_self_improvement_endorse_spend', 'vector_build_self_improvement_proposal_lock', 'vector_build_self_improvement_proposal_spend', 'vector_build_send_apex', 'vector_build_send_tokens',
+  'vector_build_transaction', 'vector_build_vault_close', 'vector_build_vault_open', 'vector_build_vault_pay', 'vector_check_attestation',
+  'vector_check_delegation_use', 'vector_delegation_request_cosign', 'vector_discover_agents', 'vector_dry_run', 'vector_get_agent_profile',
+  'vector_get_attestation', 'vector_get_balance', 'vector_get_delegation', 'vector_get_document', 'vector_get_jury',
+  'vector_get_jury_cases', 'vector_get_reputation_stake', 'vector_get_transaction_history', 'vector_get_utxos', 'vector_get_vault',
+  'vector_list_attestations', 'vector_marketplace_get_job', 'vector_marketplace_get_supplier', 'vector_marketplace_list_capabilities', 'vector_marketplace_list_suppliers',
+  'vector_marketplace_send_job', 'vector_marketplace_verify_receipt', 'vector_resolve_did', 'vector_self_improvement_analyze_metrics', 'vector_self_improvement_browse',
+  'vector_submit_transaction',
 ];
 // The five tools of the signer (packages/signer/src/tools.ts at the same commit; 3.0.0 adds vector_signer_get_public_key).
 const SIGNER_TOOLS = ['vector_signer_get_address', 'vector_signer_get_public_key', 'vector_signer_decode_transaction', 'vector_signer_sign', 'vector_signer_get_spend_limits'];
-// The six stake tools of the hosted server since 2026-11-19: the tools/list of the hosted mainnet server on that day had 86 tools, version 3.0.0 (Apex-Fusion/mcp-server, merge commit 06a9df1).
-// vector_build_reputation_stake and vector_build_reputation_stake_open are among the 63 above (they built nothing in 3.0.0 of 2026-11-06); the other four are new.
+// The six stake tools of the hosted server since 2026-11-19: the stake tools of the list above, which is the tools/list of that day. They make a stake on the Module-3 deployment of the identity registry.
+// vector_build_reputation_stake and vector_build_reputation_stake_open were in the list of 2026-11-06 and built nothing then; the other four are new.
 const STAKE_TOOLS = ['vector_build_reputation_stake', 'vector_build_reputation_stake_decrease', 'vector_build_reputation_stake_increase', 'vector_build_reputation_stake_open', 'vector_build_reputation_stake_update_capabilities', 'vector_get_reputation_stake'];
 // The words a public line of the launch guide does not use (its content rules). Each is spelled in two parts, as UNIT_NAME is, so that a search for the words finds none
 // in this file. "payload" is a word of its own and passes.
@@ -1995,11 +2196,12 @@ test('docs/LAUNCH.md: the title, the eight sections in the order a member does t
   assert.equal(lines[lines.indexOf('- Hire one: `docs/HIRE.md`') + 1], '- Launch your own agent from a chat client: `docs/LAUNCH.md`', 'the README lists the guide right after HIRE.md');
 });
 
-test('docs/LAUNCH.md: every tool it names is one of the 63 tools of the hosted server of 2026-11-06, one of its six stake tools (86 tools since 2026-11-19) or one of the five of the signer; no retired tool, and no advert tool, is named', () => {
-  assert.equal(HOSTED_TOOLS.length, 63);
-  assert.equal(new Set(HOSTED_TOOLS).size, 63);
+test('docs/LAUNCH.md: every tool it names is one of the 86 tools of the hosted server of 2026-11-19 or one of the five of the signer; no retired tool, and no advert tool, is named', () => {
+  assert.equal(HOSTED_TOOLS.length, 86);
+  assert.equal(new Set(HOSTED_TOOLS).size, 86);
   assert.equal(new Set(STAKE_TOOLS).size, 6);
-  const known = new Set([...HOSTED_TOOLS, ...STAKE_TOOLS, ...SIGNER_TOOLS]);
+  for (const tool of STAKE_TOOLS) assert.ok(HOSTED_TOOLS.includes(tool), `${tool} is one of the 86`);
+  const known = new Set([...HOSTED_TOOLS, ...SIGNER_TOOLS]);
   // The names HIRE.md and the E2E runbook are held to are among them: the nine marketplace tools of the design and the others of this file.
   for (const tool of [...MARKETPLACE_TOOLS, ...OTHER_TOOLS]) assert.ok(known.has(tool), `${tool} is on the hosted server or in the signer`);
   for (const [name, text] of [['docs/HIRE.md', hire()], ['docs/LAUNCH.md', launch()]]) {
@@ -2016,7 +2218,20 @@ test('docs/LAUNCH.md: every tool it names is one of the 63 tools of the hosted s
   // The template's command line posts the advert (section 3), and the six stake tools make the stake (section 6): the guide names all six stake tools and no advert tool.
   assert.deepEqual([...named].filter((t) => /stake/.test(t)).sort(), [...STAKE_TOOLS].sort(), 'the six stake tools are named, and no other');
   assert.deepEqual([...named].filter((t) => /advert/.test(t)), [], 'no advert tool is named');
-  assert.ok(launch().includes('Every tool it names is on the hosted mainnet server, version 3.0.0, or in the signer, version 3.0.0. The hosted server had 63 tools on 2026-11-06. It has 86 since 2026-11-19, and the six stake tools of section 6 are among the 86.'));
+  assert.ok(launch().includes('Every tool it names is on the hosted mainnet server, version 3.0.0, or in the signer, version 3.0.0. The hosted server has 86 tools as of 2026-11-19, and the six stake tools of section 6 are among them.'));
+});
+
+test('the tool count of the hosted server is the count of its tool list, 86 on 2026-11-19, in the guide, the runbook and the launch guide, and no file gives the count of 2026-11-06', () => {
+  const count = `${HOSTED_TOOLS.length} tools`;
+  const places = [
+    ['docs/HIRE.md, status box', hire(), `with ${count} as of 2026-11-19`],
+    ['docs/HIRE.md, table row', hire(), `Running, v3.0.0, ${count}, checked on 2026-11-19 with an MCP`],
+    ['docs/E2E.md', doc('E2E.md'), `On 2026-11-19 it runs version 3.0.0 and lists ${count}.`],
+    ['docs/LAUNCH.md', launch(), `The hosted server has ${count} as of 2026-11-19`],
+  ];
+  for (const [place, text, sentence] of places) assert.ok(text.includes(sentence), `${place} says: ${sentence}`);
+  const files = [['README.md', readFileSync(new URL('../README.md', import.meta.url), 'utf8')], ['docs/HIRE.md', hire()], ['docs/E2E.md', doc('E2E.md')], ['docs/LAUNCH.md', launch()], ...Object.keys(AGENTS).map((name) => [`specs/${name}.md`, read(name)])];
+  for (const [name, text] of files) assert.equal(text.match(/\b63 tools\b/), null, `${name} does not give the count of 2026-11-06`);
 });
 
 test('docs/LAUNCH.md: the record comes before the advert, the template posts the advert, and a stake is made with the six stake tools of the hosted server on the Module-3 deployment of the identity registry', () => {
