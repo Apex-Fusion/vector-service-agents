@@ -202,6 +202,29 @@ describe('hireAgent: refused_before_claim', () => {
     expect(twin.sleeps.filter((ms) => ms === 15_000)).toHaveLength(2);
   });
 
+  it('says refused_before_claim with the code and the status of every refusal that the runtime makes before its Claim: the terms of the escrow (409) and its service (403 and others); one send, no retry', async () => {
+    for (const [status, code] of [[409, 'wrong_advert'], [409, 'underpaid'], [409, 'bond_mismatch'], [403, 'approval_revoked'], [422, 'order_rejected']] as const) {
+      const run = setup();
+      run.m.agent.refuse = { status, code };
+      const outcome = await hireAgent(run.deps, request(), ERRORS);
+      expect(words(outcome)).toBe(`refused_before_claim ${code}`);
+      expect(outcome).toMatchObject({ status, supplierMessage: `the service refused the job (${code})` });
+      expect(run.m.agent.sends).toHaveLength(1);
+    }
+  });
+
+  it('says refused_before_claim with the status 503 and the code when the runtime could not ask its service; the kit reads a 503 as a send that may have claimed, so it sends once more after it saw the escrow Open', async () => {
+    for (const code of ['precheck_unreachable', 'precheck_timeout', 'precheck_failed']) {
+      const run = setup();
+      run.m.agent.refuse = { status: 503, code };
+      const outcome = await hireAgent(run.deps, request(), ERRORS);
+      expect(words(outcome)).toBe(`refused_before_claim ${code}`);
+      expect(outcome).toMatchObject({ status: 503 });
+      expect(run.m.agent.sends).toHaveLength(2);
+      expect(await run.m.chain.escrowState(run.stranded.list()[0].escrow_ref)).toBe('Open');
+    }
+  });
+
   it('the janitor reclaims the escrow of a refused vault Pay after its deliver_by, to the vault as a Returned output, and the store is empty afterwards', async () => {
     const run = setup();
     const vault = openVault(run);

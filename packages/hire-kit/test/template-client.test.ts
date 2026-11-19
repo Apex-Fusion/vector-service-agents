@@ -48,15 +48,21 @@ describe('sendTemplateJob', () => {
     expect(m.agent.sends).toStrictEqual([]);
   });
 
-  it('says busy for 409 supplier_busy and for 409 busy, which the pre-check of the service answers, and the escrow stays Open', async () => {
+  it('says busy for 409 supplier_busy, which the runtime answers when it or its service works another job; the escrow stays Open, and the same send is accepted once the supplier is free', async () => {
     const { m, post } = await posted();
-    m.agent.busy = 1;
-    m.agent.serviceBusy = 1;
+    m.agent.busy = 2;
     expect(await sendTemplateJob(AGENT_ENDPOINT, post.escrowRef, PAYLOAD, m.fetchImpl)).toStrictEqual({ kind: 'busy' });
     expect(await sendTemplateJob(AGENT_ENDPOINT, post.escrowRef, PAYLOAD, m.fetchImpl)).toStrictEqual({ kind: 'busy' });
     expect(await m.chain.escrowState(post.escrowRef)).toBe('Open');
-    // The twin: the same send, once the supplier is free, is accepted.
     expect((await sendTemplateJob(AGENT_ENDPOINT, post.escrowRef, PAYLOAD, m.fetchImpl)).kind).toBe('accepted');
+  });
+
+  it('says refused, not busy, for every other 409 and for the busy word of the service itself: only supplier_busy is retried', async () => {
+    for (const code of ['busy', 'wrong_advert', 'underpaid', 'bond_mismatch', 'prompt_mismatch', 'escrow_not_claimable']) {
+      const { m, post } = await posted();
+      m.agent.refuse = { status: 409, code };
+      expect(await sendTemplateJob(AGENT_ENDPOINT, post.escrowRef, PAYLOAD, m.fetchImpl)).toMatchObject({ kind: 'refused', status: 409, reason: code });
+    }
   });
 
   it('is a refusal, with the status, the code and the words of the envelope, for the answer of the pre-check of the service; the escrow stays Open and nothing is claimed', async () => {
@@ -71,13 +77,25 @@ describe('sendTemplateJob', () => {
     expect(await sendTemplateJob(AGENT_ENDPOINT, post.escrowRef, PAYLOAD, m.fetchImpl)).toMatchObject({ kind: 'refused', status: 409, reason: 'prompt_mismatch' });
   });
 
-  it('reads the code from `reason`, from `error` as a text, and from `error` as an object with a reason; a body with none is no envelope of the supplier', async () => {
+  it('says refused with the code and the status for the three 503 codes of a runtime that could not ask its service, and for the statuses that its service gives', async () => {
+    for (const [status, code] of [[503, 'precheck_unreachable'], [503, 'precheck_timeout'], [503, 'precheck_failed'], [403, 'approval_revoked'], [422, 'order_rejected'], [429, 'rate_limited']] as const) {
+      const { m, post } = await posted();
+      m.agent.refuse = { status, code };
+      expect(await sendTemplateJob(AGENT_ENDPOINT, post.escrowRef, PAYLOAD, m.fetchImpl)).toMatchObject({ kind: 'refused', status, reason: code });
+      expect(await m.chain.escrowState(post.escrowRef)).toBe('Open');
+    }
+  });
+
+  it('reads the code from `reason`, which both envelopes of the runtime carry; a body without it is no envelope of the runtime, whatever else it holds', async () => {
     const send = (body: unknown) => sendTemplateJob(AGENT_ENDPOINT, OTHER, PAYLOAD, answering(() => json(403, body)).fetchImpl);
-    expect(await send({ reason: 'a_code', message: 'words' })).toStrictEqual({ kind: 'refused', status: 403, reason: 'a_code', message: 'words' });
-    expect(await send({ error: 'b_code', message: 'words' })).toStrictEqual({ kind: 'refused', status: 403, reason: 'b_code', message: 'words' });
-    expect(await send({ error: { reason: 'c_code', message: 'inner words' } })).toStrictEqual({ kind: 'refused', status: 403, reason: 'c_code', message: 'inner words' });
-    expect(await send({ message: 'no code here' })).toMatchObject({ kind: 'refused', status: 403, reason: 'bad_response' });
-    expect(await send({ error: '' })).toMatchObject({ reason: 'bad_response' });
+    // The refusal of a check before the Claim: the code twice, and the words.
+    expect(await send({ error: 'a_code', message: 'words', reason: 'a_code' })).toStrictEqual({ kind: 'refused', status: 403, reason: 'a_code', message: 'words' });
+    // Every other error: reason and message, and error as an object that holds both.
+    expect(await send({ reason: 'b_code', message: 'words', error: { reason: 'b_code', message: 'words' } })).toStrictEqual({ kind: 'refused', status: 403, reason: 'b_code', message: 'words' });
+    expect(await send({ error: 'c_code', message: 'words' })).toMatchObject({ kind: 'refused', status: 403, reason: 'bad_response' });
+    expect(await send({ error: { reason: 'd_code', message: 'words' } })).toMatchObject({ reason: 'bad_response' });
+    expect(await send({ message: 'no code here' })).toMatchObject({ reason: 'bad_response' });
+    expect(await send({ reason: '' })).toMatchObject({ reason: 'bad_response' });
   });
 
   it('keeps what the supplier wrote out of a log line: control characters become spaces and the text is cut', async () => {
@@ -138,7 +156,7 @@ describe('pollTemplateJob', () => {
       kind: 'failed', reason: 'service_failure', message: 'the service did not answer',
     });
     expect(await poll(() => json(404, { reason: 'job_not_found', message: 'no job' }))).toStrictEqual({ kind: 'gone' });
-    expect(await poll(() => json(404, { error: 'job_not_found', message: 'no job' }))).toStrictEqual({ kind: 'gone' });
+    expect(await poll(() => json(404, { reason: 'job_not_found', message: 'no job', error: { reason: 'job_not_found', message: 'no job' } }))).toStrictEqual({ kind: 'gone' });
     expect(await poll(() => json(500, { reason: 'internal_error', message: 'it broke' }))).toMatchObject({ kind: 'failed', reason: 'internal_error' });
   });
 
@@ -212,5 +230,23 @@ describe('templateJob', () => {
     expect(done.receipt.response_hash).toBe(job.read(done.body).responseHash);
     expect(done.receipt.prompt_hash).toBe(job.promptHash);
     expect(escrowNo(1)).toBe(post.escrowRef);
+  });
+});
+
+describe('the template supplier of the stub', () => {
+  it('writes the two envelopes of the runtime: the refusal of a check before the Claim, and every other error', async () => {
+    const { m, post } = await posted();
+    const body = JSON.stringify({ escrow_ref: post.escrowRef, payload: wirePayloadFor(PAYLOAD) });
+    m.agent.refuse = { status: 409, code: 'underpaid', message: 'The escrow holds less than the price.' };
+    const refusal = await m.agent.handle('POST', '/v1/job', body);
+    expect([refusal.status, await refusal.json()]).toStrictEqual([409, { error: 'underpaid', message: 'The escrow holds less than the price.', reason: 'underpaid' }]);
+    m.agent.refuse = null;
+    m.agent.busy = 1;
+    const busy = await m.agent.handle('POST', '/v1/job', body);
+    const words = 'supplier is already working another job';
+    expect([busy.status, await busy.json()]).toStrictEqual([409, { reason: 'supplier_busy', message: words, error: { reason: 'supplier_busy', message: words } }]);
+    // The twin: with nothing to refuse, the supplier claims the escrow and answers 202.
+    const accepted = await m.agent.handle('POST', '/v1/job', body);
+    expect(accepted.status).toBe(202);
   });
 });

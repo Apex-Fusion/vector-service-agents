@@ -249,8 +249,10 @@ export class StubModelSupplier {
 }
 
 // --- The template supplier -------------------------------------------------------------------------------------------------------------
-/** The envelope of an error of the runtime of the agent template: the code twice (`error` and `reason`) and the words. */
-const envelope = (code: string, message: string): { error: string; message: string; reason: string } => ({ error: code, message, reason: code });
+/** A refusal of a check before the Claim (the terms of the escrow, the service of the runtime), as the runtime writes it: the code twice, as `error` and as `reason`, and the words. */
+const refusal = (code: string, message: string): { error: string; message: string; reason: string } => ({ error: code, message, reason: code });
+/** Any other error of the runtime, as it writes it: `reason` and `message`, and `error` as an object that holds both. */
+const runtimeError = (reason: string, message: string): { reason: string; message: string; error: { reason: string; message: string } } => ({ reason, message, error: { reason, message } });
 const jobIdOf = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
 interface TemplateJob { id: string; escrowRef: string; payload: string; steps: PollStep[]; finished?: Record<string, unknown> }
@@ -262,10 +264,8 @@ export class StubTemplateSupplier {
   readonly chain: FakeChain;
   /** The text of the answer. */
   answer = AGENT_ANSWER;
-  /** Answer the next N sends with 409 supplier_busy (the runtime works another job), leaving the escrow Open. */
+  /** Answer the next N sends with 409 supplier_busy (the runtime, or its service, works another job), leaving the escrow Open. */
   busy = 0;
-  /** Answer the next N sends with 409 busy (the pre-check of the service says that it works), leaving the escrow Open. */
-  serviceBusy = 0;
   /** The next sends fail the way a dropped connection does, after the supplier claimed the escrow or before. */
   lose: Array<'after-claim' | 'before-claim'> = [];
   /** Answer the next N sends with 404 escrow_not_found, as a supplier whose view of the chain does not show the Post yet; the escrow stays Open. */
@@ -304,12 +304,12 @@ export class StubTemplateSupplier {
 
   private post(body: string): Response {
     let request: { escrow_ref?: unknown; payload?: unknown };
-    try { request = JSON.parse(body) as typeof request; } catch { return json(400, envelope('bad_request', 'the body is not JSON')); }
+    try { request = JSON.parse(body) as typeof request; } catch { return json(400, runtimeError('bad_request', 'the body is not JSON')); }
     const escrowRef = typeof request.escrow_ref === 'string' ? request.escrow_ref : '';
     const payload = typeof request.payload === 'string' ? request.payload : '';
     this.sends.push({ escrowRef, body, payload });
-    if (escrowRef === '') return json(400, envelope('escrow_ref_required', 'escrow_ref is required'));
-    if (payload === '') return json(400, envelope('payload_required', 'payload must be a non-empty string'));
+    if (escrowRef === '') return json(400, runtimeError('escrow_ref_required', 'escrow_ref is required'));
+    if (payload === '') return json(400, runtimeError('payload_required', 'payload must be a non-empty string'));
     const lost = this.lose.shift();
     if (lost !== undefined) {
       if (lost === 'after-claim') this.chain.markClaimed(escrowRef);
@@ -318,21 +318,17 @@ export class StubTemplateSupplier {
     const datum = this.chain.escrowDatum(escrowRef);
     if (datum === undefined || this.notFound > 0) {
       this.notFound = Math.max(0, this.notFound - 1);
-      return json(404, envelope('escrow_not_found', `escrow UTxO ${escrowRef} not found on chain`));
+      return json(404, runtimeError('escrow_not_found', `escrow UTxO ${escrowRef} not found on chain`));
     }
     if (this.busy > 0) {
       this.busy -= 1;
-      return json(409, envelope('supplier_busy', 'supplier is already working another job'));
+      return json(409, runtimeError('supplier_busy', 'supplier is already working another job'));
     }
-    if (this.serviceBusy > 0) {
-      this.serviceBusy -= 1;
-      return json(409, envelope('busy', 'the service works another job'));
-    }
-    if (this.refuse !== null) return json(this.refuse.status, envelope(this.refuse.code, this.refuse.message ?? `the service refused the job (${this.refuse.code})`));
+    if (this.refuse !== null) return json(this.refuse.status, refusal(this.refuse.code, this.refuse.message ?? `the service refused the job (${this.refuse.code})`));
     // The template hashes the payload that it receives and compares it with the prompt hash of the escrow.
-    if (sha256Utf8Hex(payload) !== datum.prompt_hash) return json(409, envelope('prompt_mismatch', 'the payload does not hash to the prompt_hash of the escrow'));
+    if (sha256Utf8Hex(payload) !== datum.prompt_hash) return json(409, runtimeError('prompt_mismatch', 'the payload does not hash to the prompt_hash of the escrow'));
     // The Claim: the runtime answers only once its Claim is confirmed. markClaimed throws for an escrow that is not Open.
-    try { this.chain.markClaimed(escrowRef); } catch (err) { return json(409, envelope('escrow_not_claimable', err instanceof Error ? err.message : String(err))); }
+    try { this.chain.markClaimed(escrowRef); } catch (err) { return json(409, runtimeError('escrow_not_claimable', err instanceof Error ? err.message : String(err))); }
     const id = jobIdOf(this.jobs.size + 1);
     this.jobs.set(id, { id, escrowRef, payload, steps: [...this.steps] });
     return json(202, { job_id: id, status: 'accepted', escrow_ref: escrowRef });
@@ -341,7 +337,7 @@ export class StubTemplateSupplier {
   private poll(id: string): Response {
     this.polls += 1;
     const job = this.jobs.get(id);
-    if (job === undefined) return json(404, envelope('job_not_found', `no job found with id ${id}`));
+    if (job === undefined) return json(404, runtimeError('job_not_found', `no job found with id ${id}`));
     const step = job.steps.length > 1 ? (job.steps.shift() as PollStep) : job.steps[0];
     const finished = (): Record<string, unknown> => job.finished
       ?? (job.finished = templateFinished(this.key, job.escrowRef, job.id, job.payload, this.answer, this.forge ? FORGER_KEY : this.key, (hash) => this.chain.markSubmitted(job.escrowRef, hash)));
@@ -352,7 +348,7 @@ export class StubTemplateSupplier {
     switch (step) {
       case 'running': return json(202, { status: 'running', escrow_ref: job.escrowRef });
       case 'failed': return json(502, { status: 'failed', reason: 'service_failure', message: 'the service did not answer', escrow_ref: job.escrowRef });
-      case 'gone': return json(404, envelope('job_not_found', `no job found with id ${id}`));
+      case 'gone': return json(404, runtimeError('job_not_found', `no job found with id ${id}`));
       case 'proxy': return new Response('<html><body><h1>502 Bad Gateway</h1></body></html>', { status: 502, headers: { 'content-type': 'text/html' } });
       case 'done': {
         const body = finished();

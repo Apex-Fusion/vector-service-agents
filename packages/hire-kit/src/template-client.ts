@@ -2,10 +2,12 @@
 // The HTTP side of the hire of an agent of the template contract: the send of a job (POST /v1/job with the escrow and the wire payload), the poll (GET /v1/job/:id), and the
 // job that `hireOne` runs (the prompt hash of the payload, the answer text and its hash). It follows the fleet clients of buyer-core step by step: one POST per send, a poll that
 // rejects for every answer that is not the supplier's own, and no endpoint and no network word in a message.
-// What a send says. accepted (202 with the status accepted and a job id), busy (409 with the code supplier_busy, or busy, which the pre-check of a service answers), refused (the
-// status, the code and the words of the envelope of the supplier, or bad_response for an answer that is no envelope: a page, a gateway), timeout (no answer at all). A send that
-// ends in anything but accepted and refused may have reached the supplier, which may have claimed the escrow: the caller reads the escrow before it sends again.
-// The envelope of a refusal carries its code as `reason`, as `error` (a text), or as `error.reason`: the runtime of the template writes `reason` and `error` both.
+// What a send says. accepted (202 with the status accepted and a job id), busy (409 with the code supplier_busy: the runtime answers it when it or its service works another job, and
+// it is the only code to retry), refused (the status, the code and the words of the envelope of the runtime: 4xx for its checks before the Claim, the terms of the escrow and its service
+// among them, and 503 for a service it could not ask; or bad_response for an answer that is no envelope: a page, a gateway), timeout (no answer at all). A send that ends in anything
+// but accepted and refused may have reached the supplier, which may have claimed the escrow: the caller reads the escrow before it sends again.
+// The runtime writes two envelopes. A refusal of a check before the Claim is `{error: <code>, message, reason: <code>}`. Its other errors are `{reason, message, error: {reason, message}}`.
+// Both carry the code as `reason`, and that is where this client reads it.
 import { flatText, isRecord } from '@vsa/buyer-core';
 import type { FetchLike, PollResult, SendResult } from '@vsa/buyer-core';
 import { promptHashForPayload, safeFetch, sha256Utf8Hex, wirePayloadFor } from '@vsa/vector-read';
@@ -31,20 +33,12 @@ function jsonObject(text: string): Record<string, unknown> | null {
 }
 const nonEmpty = (value: unknown): value is string => typeof value === 'string' && value !== '';
 
-/** The code of an envelope: `reason`, else `error` as a text, else the `reason` of `error` as an object. Flat and bounded (the supplier wrote it). */
+/** The code of an envelope of the runtime: its `reason`. Flat and bounded (the supplier wrote it). */
 function codeOf(body: Record<string, unknown>): string | undefined {
-  const { reason, error } = body;
-  if (nonEmpty(reason)) return flatText(reason, 100);
-  if (nonEmpty(error)) return flatText(error, 100);
-  if (isRecord(error) && nonEmpty(error.reason)) return flatText(error.reason, 100);
-  return undefined;
+  return nonEmpty(body.reason) ? flatText(body.reason, 100) : undefined;
 }
-/** The words of an envelope: `message`, else the `message` of `error` as an object. Flat and bounded. */
-function messageOf(body: Record<string, unknown>): string {
-  if (typeof body.message === 'string') return flatText(body.message, 500);
-  if (isRecord(body.error) && typeof body.error.message === 'string') return flatText(body.error.message, 500);
-  return '';
-}
+/** The words of an envelope of the runtime: its `message`. Flat and bounded. */
+const messageOf = (body: Record<string, unknown>): string => (typeof body.message === 'string' ? flatText(body.message, 500) : '');
 const refused = (status: number, reason: string, message: string): SendResult => ({ kind: 'refused', status, reason, message });
 
 function sendResult(status: number, text: string): SendResult {
@@ -58,7 +52,7 @@ function sendResult(status: number, text: string): SendResult {
   const code = codeOf(answer);
   // A JSON object without a code is a gateway's or a proxy's in front of the agent, and is no more its verdict than a page is.
   if (code === undefined) return refused(status, 'bad_response', `The agent answered ${status} with a JSON object that is not its envelope (no code).`);
-  if (status === 409 && (code === 'supplier_busy' || code === 'busy')) return { kind: 'busy' };
+  if (status === 409 && code === 'supplier_busy') return { kind: 'busy' };
   return refused(status, code, messageOf(answer));
 }
 
