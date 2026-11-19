@@ -36,6 +36,8 @@ The fleet is not published to a registry either. The Pipeline commits to the req
 | `src/vendored/mcp/identity-scripts.generated.ts` | `mcp-server:packages/builder/src/vector/identity-scripts.generated.ts` | `94bd293` | `25abe9bb03ec7d50f1f29b414b9c631fdc72e56a91a76af12bb8e13a37e75feb` |
 | `src/vendored/mcp/legacy-registry.ts` | `mcp-server:packages/builder/src/vector/legacy-registry.ts` | `94bd293` | `6011cb3eafe396446ccfb6abd28bc97a141fb1db6a0b35c4f50fb441c90ed178` |
 | `src/vendored/mcp/ledger-read.ts` | `mcp-server:packages/builder/src/vector/ledger-read.ts` | `2d95483` | `783eb1e2ea3173ec92570dbcabc5545eb1ec7535a52b19318a6bd251f37f9f94` |
+| `src/vendored/mcp/identity-build.ts` | `mcp-server:packages/builder/src/vector/identity-build.ts` | `2d95483` | `39e00fd8e9b772b889c343aecfdc4e12bed8329d963a7b000ee511900b7995e5` |
+| `src/vendored/mcp/attestation-build.ts` | `mcp-server:packages/builder/src/vector/attestation-build.ts` | `2d95483` | `84827a361ee73cb5866b90baf3c325f01dbd35a555943ba85df8cf99d2d123b4` |
 | `src/vendored/mcp-shared/provider.ts` | `mcp-server:packages/shared/src/provider.ts` | `2d95483` | `52f4f59caa36a4f1020bf9c1969a0949148b3e9b145e6d3cbc3baceda085035a` |
 | `src/vendored/mcp-shared/config.ts` | `mcp-server:packages/shared/src/config.ts` | `94bd293` | `4e1961be29545ff23978f51189c0ed47ca023e63af4ba2652e6ee89d00a4e089` |
 | `src/vendored/mcp-shared/types.ts` | `mcp-server:packages/shared/src/types.ts` | `94bd293` | `18ee292f4feca95e2c0d0eb51ce69b3bd3aba5185491ec6deac46990d27c8111` |
@@ -52,6 +54,7 @@ The fleet is not published to a registry either. The Pipeline commits to the req
 | `test/fixtures/ledger-read-world.ts` | `mcp-server:packages/builder/test/fixtures/ledger-read-world.ts` | `2d95483` | `1010f2d994b30b7207a6beb2d4350da7cecc737c99663032c7f1be2d32bb58ae` |
 | `test/fixtures/capture-neutral.ts` | `mcp-server:packages/builder/test/fixtures/capture-neutral.ts` | `2d95483` | `4a4d9d67691a6d7b6e25a02ebf1b44e2298b6ce552db09eb912fd3cfcb974103` |
 | `test/fixtures/ledger-read-mainnet.json` | `mcp-server:packages/builder/test/fixtures/ledger-read-mainnet.json` | `2d95483` | `2739e407283f5393a794e68b4045b603b84643dffc319957e9d003dabe756e91` |
+| `test/fixtures/legacy-datum.ts` | `mcp-server:packages/builder/test/fixtures/legacy-datum.ts` | `2d95483` | `2904847e3620857a0362108cc9c12bbde7028b8764035d55e756900b61b6c45e` |
 
 Byte-identical to the blob (no edit at all): `marketplace-shared.ts`, `env.ts`, `identity-scripts.generated.ts`, `legacy-registry.ts`, `types.ts`, `marketplace.fixture.ts`, `fixture-provider.ts`, `protocol-params.fixture.json`. The excerpts `tx.ts` and `fleet/types.ts` are byte-identical to their line ranges. Every other copy differs from its blob only on the lines listed below (`fleet/responses.ts`: line 1). The copies at `2d95483` differ from their blobs on import lines only: `identity-deployment.ts`, `provider.ts`, `sign.ts` and `gov-build.ts` by one line each, `marketplace-lineage.ts` by three and `marketplace-indexer.ts` by four.
 
