@@ -96,6 +96,7 @@ const CHECKED_CALL = /\b(?:decodePlutusData|decodeTransaction|decodeMetadatum|ad
 const OWN_TRANSACTION = 'a transaction that a builder of this process made: no chain data reaches it';
 /** The files that call a checked wrapper or the scanner, how many lines call one, and what the calls read. */
 const CHECKED_CALLS: Record<string, { calls: number; reads: string }> = {
+  'chain.ts': { calls: 1, reads: `the supplier, the output and the collateral of ${OWN_TRANSACTION} (the Pay of a vault, which the node evaluated)` },
   'vendored/mcp/attestation-build.ts': { calls: 2, reads: `the outputs of ${OWN_TRANSACTION} (the deposit, and the output of the attestation)` },
   'vendored/mcp/attestation-read.ts': { calls: 1, reads: 'the datum of an attestation output, which comes from the chain' },
   'vendored/mcp/gov-build.ts': { calls: 1, reads: 'an address that a caller gives' },
