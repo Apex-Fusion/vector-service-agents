@@ -43,6 +43,13 @@ The fleet is not published to a registry either. The Pipeline commits to the req
 | `src/vendored/mcp/delegation-read.ts` | `mcp-server:packages/builder/src/vector/delegation-read.ts` | `2d95483` | `49b508b96949e964252baebd03cd70b28f22bb2e587e8b58f535b32919af46fe` |
 | `src/vendored/mcp/vault-build.ts` | `mcp-server:packages/builder/src/vector/vault-build.ts` | `2d95483` | `4af2d07cf43fb764b1d9fcb5ea99949a3433e6fbc2151c87c8b6cac436eea6ec` |
 | `src/vendored/mcp/vault-read.ts` | `mcp-server:packages/builder/src/vector/vault-read.ts` | `2d95483` | `cc09388970a9752194a98c639c3c7233e9687b27f331f0d4ac51e72665c31590` |
+| `src/vendored/mcp/jury-codec.ts` | `mcp-server:packages/builder/src/vector/jury-codec.ts` | `2d95483` | `0d544af427d8368632d79d6f19b578ec6218bc64f6e3a1af1ab5053103d38485` |
+| `src/vendored/mcp/jury-deployment.ts` | `mcp-server:packages/builder/src/vector/jury-deployment.ts` | `2d95483` | `00c780beaabe1deccbd64743e007171c3c92cbf1252606aaac38c454ef5f48f6` |
+| `src/vendored/mcp/jury-document.ts` | `mcp-server:packages/builder/src/vector/jury-document.ts` | `2d95483` | `bcb6986bac413bf0defa40ccd9c0931a57a0138ac2557c33b44c09c48d122dec` |
+| `src/vendored/mcp/jury-chain.ts` | `mcp-server:packages/builder/src/vector/jury-chain.ts` | `2d95483` | `1542bc144af42bdbc2529db84c3a9013caaa75122ca74afc71250e2a2327355f` |
+| `src/vendored/mcp/jury-read.ts` | `mcp-server:packages/builder/src/vector/jury-read.ts` | `2d95483` | `ac2926e08b0285af4959e967f2a21b7fd9b88bd4f45ff1048c6e6714493d4189` |
+| `src/vendored/mcp/jury-build.ts` | `mcp-server:packages/builder/src/vector/jury-build.ts` | `2d95483` | `0db3ea754beeafd40747c93c27ad588d676bc58fb62d6ac3177af426d629f5cc` |
+| `src/vendored/mcp/module1-build.ts` | `mcp-server:packages/builder/src/vector/module1-build.ts` | `2d95483` | `8af4372dce544d3988cf70bc281d1ff936f04f1bfaac389556b132d0401cbfa6` |
 | `src/vendored/mcp-shared/provider.ts` | `mcp-server:packages/shared/src/provider.ts` | `2d95483` | `52f4f59caa36a4f1020bf9c1969a0949148b3e9b145e6d3cbc3baceda085035a` |
 | `src/vendored/mcp-shared/config.ts` | `mcp-server:packages/shared/src/config.ts` | `94bd293` | `4e1961be29545ff23978f51189c0ed47ca023e63af4ba2652e6ee89d00a4e089` |
 | `src/vendored/mcp-shared/types.ts` | `mcp-server:packages/shared/src/types.ts` | `94bd293` | `18ee292f4feca95e2c0d0eb51ce69b3bd3aba5185491ec6deac46990d27c8111` |
@@ -60,6 +67,13 @@ The fleet is not published to a registry either. The Pipeline commits to the req
 | `test/fixtures/capture-neutral.ts` | `mcp-server:packages/builder/test/fixtures/capture-neutral.ts` | `2d95483` | `4a4d9d67691a6d7b6e25a02ebf1b44e2298b6ce552db09eb912fd3cfcb974103` |
 | `test/fixtures/ledger-read-mainnet.json` | `mcp-server:packages/builder/test/fixtures/ledger-read-mainnet.json` | `2d95483` | `2739e407283f5393a794e68b4045b603b84643dffc319957e9d003dabe756e91` |
 | `test/fixtures/legacy-datum.ts` | `mcp-server:packages/builder/test/fixtures/legacy-datum.ts` | `2d95483` | `2904847e3620857a0362108cc9c12bbde7028b8764035d55e756900b61b6c45e` |
+| `test/fixtures/jury-world.ts` | `mcp-server:packages/builder/test/fixtures/jury-world.ts` | `2d95483` | `27623e29c398bccd176f543419ceed80ced4eabbb0fa87f1ae6c97d0bd832049` |
+| `test/fixtures/jury-blueprint.json` | `mcp-server:packages/builder/test/fixtures/jury-blueprint.json` | `2d95483` | `a77761790fde30e63d4566f9af2a9b4cc06bec2e4f8739a6fd5588fbaad55132` |
+| `test/fixtures/module1-mainnet-manifest.json` | `mcp-server:packages/builder/test/fixtures/module1-mainnet-manifest.json` | `2d95483` | `581265949aaf373e568c893c2f65baa5d4e3bcc92e6f4a8407577c1dd0953995` |
+| `test/fixtures/module1-mainnet-scripts.json` | `mcp-server:packages/builder/test/fixtures/module1-mainnet-scripts.json` | `2d95483` | `57d0d362e3dd9d258fea3bc51f5fbb27e01899a1bc1aab03e5266ffc9c3ec596` |
+| `test/fixtures/module1-withdrawal-mainnet.json` | `mcp-server:packages/builder/test/fixtures/module1-withdrawal-mainnet.json` | `2d95483` | `e22d2a728261867f5a3d48dd04a7a3e27baae967d943bbd537b5133b67060713` |
+| `test/fixtures/jury-document-mainnet.json` | `mcp-server:packages/builder/test/fixtures/jury-document-mainnet.json` | `2d95483` | `9ccc6bb58247ff8584161b8cadc3294375b190d777f5a0a3e2de61b6773c0a55` |
+| `test/fixtures/jury-python-vectors.json` | `mcp-server:packages/builder/test/fixtures/jury-python-vectors.json` | `2d95483` | `5533c78fa10cfaeee50017eb1949737795eaa87e5bed9d61012fceeb3a610432` |
 
 Byte-identical to the blob (no edit at all): `marketplace-shared.ts`, `env.ts`, `identity-scripts.generated.ts`, `legacy-registry.ts`, `types.ts`, `marketplace.fixture.ts`, `fixture-provider.ts`, `protocol-params.fixture.json`. The excerpts `tx.ts` and `fleet/types.ts` are byte-identical to their line ranges. Every other copy differs from its blob only on the lines listed below (`fleet/responses.ts`: line 1). The copies at `2d95483` differ from their blobs on import lines only: `identity-deployment.ts`, `provider.ts`, `sign.ts` and `gov-build.ts` by one line each, `marketplace-lineage.ts` by three and `marketplace-indexer.ts` by four.
 
