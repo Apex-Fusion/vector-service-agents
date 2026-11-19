@@ -18,6 +18,11 @@ export type { AgentDelivery, AgentDeps, AgentErrors, AgentEscrow, AgentOutcome, 
 export { pollTemplateJob, sendTemplateJob, templateJob } from './template-client.ts';
 export type { TemplateAnswer } from './template-client.ts';
 
+// --- The paying keys (src/keys.ts) and the hire of a model from the service key (src/model.ts) ---
+export { HireLane, PayingKey, PayingKeys } from './keys.ts';
+export { hireModel } from './model.ts';
+export type { ModelAnswer, ModelDeps, ModelErrors, ModelRequest } from './model.ts';
+
 // --- The waits (src/budget.ts) ---
 export { BUSY_RETRY_MS, POLL_INTERVAL_MS, RECEIPT_HASH_WAIT_MS, SEND_CUTOFF_MS, checkWithin, fit, waitWithin } from './budget.ts';
 export type { Clocked } from './budget.ts';

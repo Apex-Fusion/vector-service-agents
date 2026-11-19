@@ -180,7 +180,7 @@ function ended<E extends Error>(stop: HireStop, advertRef: string, vault: { vaul
  */
 export async function hireAgent<E extends Error>(deps: AgentDeps, request: AgentRequest, errors: AgentErrors<E>): Promise<AgentOutcome> {
   if (typeof request.payload !== 'string' || request.payload === '') throw new TypeError('The payload must be a non-empty string.');
-  const supplier = await chooseAgent(deps, request.selection, errors.unavailable);
+  const supplier = await chooseAgent(deps, request.selection, (why) => errors.unavailable(why));
   const job = templateJob(supplier.endpoint, request.payload, request.label ?? 'the agent job', deps.fetchImpl);
   /** The vault after a confirmed Pay: the next Pay of the caller starts from it. */
   const vault: { vaultRef: string | null } = { vaultRef: null };

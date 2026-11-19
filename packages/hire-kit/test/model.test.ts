@@ -1,0 +1,169 @@
+// packages/hire-kit/test/model.test.ts
+// hireModel against the in-memory marketplace of testing/stub-suppliers.ts, from a paying key: model hires run one after the other from the one service key, one hire for each
+// decision, no retry and no fallback, a failed hire is a failure that is thrown once and recorded in the store of the key, and the lock of the hire has no cap: the price ceiling
+// is the only one. Each refusal has its accepted twin.
+import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { FakeChain } from '@vsa/buyer-core';
+import { hireModel } from '../src/model.ts';
+import type { ModelDeps, ModelErrors, ModelRequest } from '../src/model.ts';
+import type { HireLedger } from '../src/hire.ts';
+import { PayingKeys } from '../src/keys.ts';
+import type { PayingKey } from '../src/keys.ts';
+import { ALLOWLIST, ANSWER, INDEXER, LLM_ADVERT, LLM_ADVERT_REF, T0, chainWith, escrowNo, indexerRow, marketplace } from '../testing/index.ts';
+import type { Marketplace } from '../testing/index.ts';
+
+const INPUT = 'Answer in one sentence: what does a bonded escrow hold?';
+const CEILING = LLM_ADVERT.price_lovelace;
+const SECOND_ENDPOINT = 'https://203.0.113.32';
+
+class CodedError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = 'CodedError';
+    this.code = code;
+  }
+}
+const ERRORS: ModelErrors<CodedError> = {
+  failure: (kind, what, message) => new CodedError(`${kind}_${what}`, message),
+  deadline: (doing) => new CodedError('deadline', `The deadline of the job came while ${doing}.`),
+  storeWrite: (message) => new CodedError('store_write_failed', message),
+  unavailable: (why) => new CodedError('no_model', `No model to hire: ${why}.`),
+};
+
+const dirs: string[] = [];
+afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+
+/** A promise that the test settles by hand. (Promise.withResolvers is not in the types of this package's target.) */
+function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+interface Run {
+  m: Marketplace; key: PayingKey; deps: ModelDeps; booked: Array<{ lockLovelace: bigint; feeLovelace: bigint }>;
+}
+/** A marketplace and the paying key of its chain (the chain `over` wraps, when a test needs to see or to hold its calls), with the deps of a hire. */
+async function setup(opts: Parameters<typeof marketplace>[0] = {}, wrap?: (m: Marketplace) => Parameters<typeof chainWith>[1]): Promise<Run> {
+  const m = marketplace(opts);
+  const dir = mkdtempSync(join(tmpdir(), 'hire-kit-model-'));
+  dirs.push(dir);
+  const key = await new PayingKeys(dir).add(wrap === undefined ? m.chain : chainWith(m, wrap(m)));
+  const booked: Run['booked'] = [];
+  const ledger: HireLedger = { posted: (post) => { booked.push({ lockLovelace: post.lockLovelace, feeLovelace: post.feeLovelace }); }, accepted: () => undefined };
+  const deps: ModelDeps = { clock: () => m.clock.now, sleep: async (ms) => { m.clock.now += ms; }, deadlineMs: T0 + 1_000_000, fetchImpl: m.fetchImpl, indexerUrl: INDEXER, ledger };
+  return { m, key, deps, booked };
+}
+const request = (over: Partial<ModelRequest> = {}): ModelRequest => ({ input: INPUT, label: 'the brief', allowlist: ALLOWLIST, maxPriceLovelace: CEILING, ceilingSetting: 'LLM_MAX_PRICE_LOVELACE', ...over });
+/** What a hire rejects with; the test fails when the hire completes. */
+async function thrown(hire: Promise<unknown>): Promise<CodedError> {
+  const error = await hire.then(() => { throw new Error('the hire completed'); }, (err: unknown) => err);
+  if (!(error instanceof CodedError)) throw error;
+  return error;
+}
+
+describe('hireModel', () => {
+  it('hires the chat supplier that the indexer lists, from the key: one Post, the answer, VERIFIED, the Accept confirmed, the lock booked, the store empty', async () => {
+    const run = await setup();
+    const hired = await hireModel(run.key, run.deps, request(), ERRORS);
+    expect(hired.value).toStrictEqual({ text: ANSWER, status: 'completed' });
+    expect([hired.verdict.verdict, hired.accepted, hired.record.escrow_ref, hired.record.advert_ref]).toStrictEqual(['VERIFIED', 'confirmed', escrowNo(1), LLM_ADVERT_REF]);
+    expect(run.booked).toStrictEqual([{ lockLovelace: FakeChain.LOCK_LOVELACE, feeLovelace: FakeChain.FEE_LOVELACE }]);
+    expect(run.key.stranded.list()).toStrictEqual([]);
+    expect(run.m.llm.sends).toHaveLength(1);
+  });
+
+  it('runs two hires from one key one after the other: the second Post waits for the Accept of the first; the hires of two keys do not wait for each other', async () => {
+    const events: string[] = [];
+    const gate = deferred();
+    const reached = deferred();
+    let gated = true;
+    const run = await setup({}, (m) => ({
+      postEscrow: async (args) => { events.push('post'); return m.chain.postEscrow(args); },
+      accept: async (ref) => {
+        events.push('accept');
+        if (gated) { gated = false; reached.resolve(); await gate.promise; }
+        return m.chain.accept(ref);
+      },
+    }));
+    const first = hireModel(run.key, run.deps, request(), ERRORS);
+    const second = hireModel(run.key, run.deps, request({ input: 'a second question' }), ERRORS);
+    await reached.promise;
+    // The first hire is in its Accept, held. The second has not posted: it waits for the lane of the key.
+    expect(events).toStrictEqual(['post', 'accept']);
+    expect(run.key.lane.busy).toBe(true);
+    gate.resolve();
+    await Promise.all([first, second]);
+    expect(events).toStrictEqual(['post', 'accept', 'post', 'accept']);
+    // The twin: another key has a lane of its own, and its hire completes while the first key's Accept is held.
+    const heldGate = deferred();
+    const heldReached = deferred();
+    const keyA = await setup({ buyerPkh: 'aa'.repeat(28) }, (m) => ({ accept: async (ref) => { heldReached.resolve(); await heldGate.promise; return m.chain.accept(ref); } }));
+    const keyB = await setup({ buyerPkh: 'dd'.repeat(28) });
+    const holding = hireModel(keyA.key, keyA.deps, request(), ERRORS);
+    await heldReached.promise;
+    const other = await hireModel(keyB.key, keyB.deps, request(), ERRORS);
+    expect(other.accepted).toBe('confirmed');
+    expect(keyA.key.lane.busy).toBe(true);
+    heldGate.resolve();
+    expect((await holding).accepted).toBe('confirmed');
+  });
+
+  it('makes one hire for one decision: a supplier that refuses ends the call with the error of the factory, once, with one Post and one send, and no other supplier is asked', async () => {
+    const run = await setup();
+    // A second supplier that the indexer lists: a fallback would find it. Nothing may call it.
+    run.m.rows.push(indexerRow(`${'d4'.repeat(32)}#0`, { ...LLM_ADVERT, endpoint_url: SECOND_ENDPOINT }));
+    run.m.llm.refuse = { status: 422, reason: 'bad_input' };
+    const error = await thrown(hireModel(run.key, run.deps, request(), ERRORS));
+    expect(error.code).toBe('llm_refused');
+    expect(run.m.llm.sends).toHaveLength(1);
+    expect(run.booked).toHaveLength(1);
+    // No second Post: the chain knows no second escrow.
+    expect(await run.m.chain.escrowState(escrowNo(2))).toBe('unknown');
+    expect(run.m.calls.filter((call) => new URL(call.url).origin === SECOND_ENDPOINT)).toStrictEqual([]);
+    // The failure is recorded: the escrow is in the store of the key, for its janitor.
+    expect(run.key.stranded.list().map((entry) => [entry.escrow_ref, entry.kind])).toStrictEqual([[escrowNo(1), 'llm']]);
+    // The twin: the same call to a supplier that works completes with one Post.
+    const twin = await setup();
+    const hired = await hireModel(twin.key, twin.deps, request(), ERRORS);
+    expect(hired.accepted).toBe('confirmed');
+    expect(twin.booked).toHaveLength(1);
+  });
+
+  it('frees the lane of the key when a hire fails: the next decision is a new hire, and it completes', async () => {
+    const run = await setup();
+    run.m.llm.refuse = { status: 422, reason: 'bad_input' };
+    expect((await thrown(hireModel(run.key, run.deps, request(), ERRORS))).code).toBe('llm_refused');
+    run.m.llm.refuse = null;
+    const next = await hireModel(run.key, run.deps, request({ input: 'the next question' }), ERRORS);
+    expect([next.accepted, next.record.escrow_ref]).toStrictEqual(['confirmed', escrowNo(2)]);
+    expect(run.m.llm.sends).toHaveLength(2);
+  });
+
+  it('puts no cap on the lock: an advert priced at the ceiling with bonds that take a lock of 60 units is hired, and the lock is booked as it is; one lovelace over the ceiling is not hired', async () => {
+    const big = { ...LLM_ADVERT, supplier_bond_lovelace: 25_000_000n, buyer_bond_lovelace: 25_000_000n };
+    const run = await setup({ lockLovelace: 60_000_000n, floatLovelace: 200_000_000n, llmAdvert: big });
+    const hired = await hireModel(run.key, run.deps, request(), ERRORS);
+    expect(hired.accepted).toBe('confirmed');
+    expect(run.booked).toStrictEqual([{ lockLovelace: 60_000_000n, feeLovelace: FakeChain.FEE_LOVELACE }]);
+    // The ceiling is the only gate: the same advert, one lovelace over the ceiling, is not hired, and nothing is posted.
+    const over = await setup({ lockLovelace: 60_000_000n, floatLovelace: 200_000_000n, llmAdvert: big });
+    const error = await thrown(hireModel(over.key, over.deps, request({ maxPriceLovelace: CEILING - 1n }), ERRORS));
+    expect(error.code).toBe('no_model');
+    expect(error.message).toContain('LLM_MAX_PRICE_LOVELACE');
+    expect(over.booked).toStrictEqual([]);
+  });
+
+  it('throws unavailable, and posts nothing, when no model on the allowlist is listed; a model that is listed is hired', async () => {
+    const run = await setup();
+    const error = await thrown(hireModel(run.key, run.deps, request({ allowlist: ['nobody/nothing'] }), ERRORS));
+    expect(error.code).toBe('no_model');
+    expect(run.booked).toStrictEqual([]);
+    expect(run.key.stranded.list()).toStrictEqual([]);
+    expect((await hireModel(run.key, run.deps, request(), ERRORS)).accepted).toBe('confirmed');
+  });
+});

@@ -376,7 +376,7 @@ export interface Marketplace {
  * The FakeChain (the three adverts, the clock at T0), the indexer listing the chat advert and the agent free, and the two suppliers behind one fetch. `llmAdvert` and
  * `agentAdvert` replace the datum of the chat advert and of the agent advert, on the chain and in the indexer's row alike.
  */
-export function marketplace(opts: Pick<FakeChainOptions, 'floatLovelace' | 'collateralLovelace'> & { llmAdvert?: AdvertDatum; agentAdvert?: IdentityAdvertDatum } = {}): Marketplace {
+export function marketplace(opts: Pick<FakeChainOptions, 'floatLovelace' | 'collateralLovelace' | 'buyerPkh' | 'lockLovelace'> & { llmAdvert?: AdvertDatum; agentAdvert?: IdentityAdvertDatum } = {}): Marketplace {
   const { llmAdvert = LLM_ADVERT, agentAdvert = AGENT_ADVERT, ...chainOpts } = opts;
   const clock = { now: T0 };
   const chain = new FakeChain({ adverts: { [OCR_ADVERT_REF]: OCR_ADVERT, [LLM_ADVERT_REF]: llmAdvert, [AGENT_ADVERT_REF]: agentAdvert }, clock: () => clock.now, prefix: PREFIX, ...chainOpts });
