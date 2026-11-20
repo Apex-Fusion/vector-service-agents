@@ -20,7 +20,7 @@
 // that deposit and the fee of the transaction from the wallet of its live delegation key. The Undelegate returns the deposit to that wallet, less its own fee.
 import type { DelegateBuild, DelegateParams, UndelegateBuild, UndelegateParams } from '@vsa/buyer-core';
 import { encodeDelegationDatum } from '@vsa/vector-read/identity-codec';
-import { accepted, parseDelegationId, parseDid, parseKeyHash, parseTenantId, refused, type Accepted, type DelegationId, type Did, type Refused } from '../protocol/index.ts';
+import { accepted, agentIdOf, parseDelegationId, parseDid, parseKeyHash, parseTenantId, refused, type Accepted, type DelegationId, type Did, type Refused } from '../protocol/index.ts';
 import { MAX_WAIT_MS, within, type Clock } from './ports.ts';
 import { takeTurn, type SerialQueue } from './queue.ts';
 import { ROUTES, originOf, type MockBases, type RouteId, type TokenTarget } from './routes.ts';
@@ -316,7 +316,7 @@ function planOf(deps: SubDelegationDeps, request: SubDelegationRequest, limits: 
     return bad(`confirmationWaitMs, pollMs, endTimeoutMs, stepTimeoutMs and landingWaitMs must be whole numbers from 1 to ${MAX_WAIT_MS}`);
   }
   return accepted({
-    target, action: route.value.action, resource: route.value.resource, parent: parent.value, subagentId: subagent.value.slice('did:vector:'.length), agentSigner: request.agent.signer,
+    target, action: route.value.action, resource: route.value.resource, parent: parent.value, subagentId: agentIdOf(subagent.value), agentSigner: request.agent.signer,
     subagentSigner: request.subagent.signer, walletAddress: request.agent.walletAddress, walletHex, script: deps.delegationScript, validForMs: request.validForMs,
     jobTimeoutMs: limits.jobTimeoutMs, confirmationWaitMs, pollMs, endTimeoutMs, stepTimeoutMs, landingWaitMs,
   });

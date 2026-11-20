@@ -6,10 +6,10 @@
 // Each function checks the type of the answer first (answers.ts). An answer of the wrong type, or for another question, is `check_unavailable`. It is never the code of a rule.
 // "Now" is the time of the run. A delegation that has fewer confirmations than the gateway asks for is usable: the check does not wait for confirmations.
 import type { DelegationUseCheck, DelegationView, EscrowVaultReason, EscrowVaultResult } from '@vsa/buyer-core';
-import { accepted, refused } from '../protocol/index.ts';
+import { accepted, agentIdOf, refused } from '../protocol/index.ts';
 import type { DelegationId, Did, OutputRef, ProtocolResult } from '../protocol/index.ts';
 import { delegationViewOf, paymentOf, useCheckOf } from './answers.ts';
-import { clip, idOf } from './ids.ts';
+import { clip } from './ids.ts';
 
 /**
  * The delegation that was read is a live delegation (an authentic output that holds its token), its delegate is the sender, and its delegate key is the key of the escrow.
@@ -23,7 +23,7 @@ export function checkDelegationNamesSender(answer: DelegationView, id: Delegatio
   // Decided: a delegation that is not found gets `delegation_invalid`. This holds also when the hirer ended it a moment before the check.
   // One read cannot tell the two apart: an ended delegation has no output, as one that never existed. The run then ends as Rejected, and not as Cancelled. This is a known limit.
   if (link === undefined) return refused('delegation_invalid', 'no live delegation has this identifier: it does not exist, or it was ended');
-  if (link.delegation.delegate !== idOf(senderDid)) return refused('delegation_invalid', 'the delegate of the delegation is not the sender');
+  if (link.delegation.delegate !== agentIdOf(senderDid)) return refused('delegation_invalid', 'the delegate of the delegation is not the sender');
   if (link.delegation.delegateKey !== buyerPkh) return refused('delegation_invalid', 'the delegate key of the delegation is not the key of the escrow');
   return accepted(null);
 }

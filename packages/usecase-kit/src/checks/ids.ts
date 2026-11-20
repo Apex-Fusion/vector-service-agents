@@ -1,15 +1,6 @@
 // packages/usecase-kit/src/checks/ids.ts
-// Small helpers that the checks share: the identifier of a DID, the form of a hex member of an answer, the key hash of a public key, and a text that is cut to a short length. Not part of the public surface.
+// Small helpers that the checks share: the form of a hex member of an answer, the key hash of a public key, and a text that is cut to a short length. Not part of the public surface.
 import { blake2b } from '@noble/hashes/blake2b';
-import type { Did } from '../protocol/index.ts';
-
-const DID_PREFIX = 'did:vector:';
-
-/** The 64 hex characters of a DID of the protocol. The input has the form of a DID: the callers check it first. */
-export const idOf = (did: Did): string => did.substring(DID_PREFIX.length);
-
-/** The DID of an identifier of 64 hex characters. */
-export const didOf = (id: string): Did => `${DID_PREFIX}${id}`;
 
 /** The size of each kind of hex member that the ledger and the gateway give, in bytes. A member is written as twice as many lower-case hex characters. */
 export const KEY_BYTES = 32;

@@ -28,6 +28,7 @@ export type ModelName = string;
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const DID = /^did:vector:[0-9a-f]{64}$/;
+const DID_PREFIX = 'did:vector:';
 // An output index has at most 10 digits and no leading zero, as in the context headers of service-kit.
 const OUTPUT_REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]{0,9})$/;
 // A tenant is a path segment of a mock URL and the start of a document number. It starts with a letter or a digit, so it is never "." or "..".
@@ -59,6 +60,11 @@ export const parseKeyHash = (value: unknown, field = 'key hash'): ProtocolResult
 export const isKeyHash = (value: unknown): value is KeyHash => matches(value, HASH28);
 export const isScriptHash = (value: unknown): value is ScriptHash => matches(value, HASH28);
 export const isModelName = (value: unknown): value is ModelName => matches(value, MODEL_NAME);
+
+/** The id of an agent: the 64 hex characters of its DID. A delegation names its delegate and its parent by this id. The input has the form of a DID: a caller checks it with `parseDid` first. */
+export const agentIdOf = (did: Did): string => did.substring(DID_PREFIX.length);
+/** The DID of an agent, from its id of 64 lower-case hex characters. */
+export const didOfAgentId = (id: string): Did => `${DID_PREFIX}${id}`;
 
 /** A new salt: 32 random bytes from the system source, as 64 lower-case hex characters. */
 export const newSalt = (): Salt => randomBytes(32).toString('hex');

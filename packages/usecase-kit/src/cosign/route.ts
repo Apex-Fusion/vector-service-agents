@@ -18,7 +18,7 @@ import { blake2b } from '@noble/hashes/blake2b';
 import type { IdentityDeployment } from '@vsa/buyer-core';
 import { within } from '@vsa/service-kit';
 import { addressDetails, decodeTransaction } from '@vsa/vector-read/guarded-decode';
-import { COSIGN_ROUTE, COSIGN_RULE, accepted, checkMembers, isKeyHash, isScriptHash, parseDid, parseJsonText, readMembers, refused } from '../protocol/index.ts';
+import { COSIGN_ROUTE, COSIGN_RULE, accepted, agentIdOf, checkMembers, isKeyHash, isScriptHash, parseDid, parseJsonText, readMembers, refused } from '../protocol/index.ts';
 import type { ManifestCosign, ProtocolResult, Refused } from '../protocol/index.ts';
 import { MAX_COSIGN_REQUEST_BYTES, MAX_TRANSACTION_HEX, MAX_WINDOW_MS, RESERVATION_MARGIN_MS, SLOT_MS } from './codes.ts';
 import type { CosignCode } from './codes.ts';
@@ -216,7 +216,7 @@ function checkConfig(config: CosignConfig): ProtocolResult<{ agentId: string; ke
   // A key of the agent on the allowlist would let one key be the delegator and the delegate of one delegation.
   const agentKeys = new Set([...keys.keys(), ...config.otherKeyHashes]);
   if ([...agentKeys].some((keyHash) => settings.value.allowlist.has(keyHash))) return bad('the allowlist must not hold a key of the agent');
-  return accepted({ agentId: did.value.slice('did:vector:'.length), keys, agentKeys, register, settings: settings.value });
+  return accepted({ agentId: agentIdOf(did.value), keys, agentKeys, register, settings: settings.value });
 }
 
 /**
