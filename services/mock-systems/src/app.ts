@@ -10,7 +10,8 @@
 //   6. A POST has a JSON body of at most 1 MiB. It is read only now, after the caller was verified.
 //   7. The handler runs. A document that is not well formed is 400. Any other failure of the service is 500 with no detail, and the call is not honoured.
 // Each call is one line of JSON for the log, and a call to a system of a tenant is also in the log of the tenant. The line has the verified identity (`sub`, the `act` chain, the
-// delegation), the route, the tenant and the decision with the rule that refused. It never has a token, a proof or the bytes of a certificate.
+// delegation), the route, the tenant and the decision with the rule that refused. It never has a token, a proof or the bytes of a certificate. The line goes to the log of the tenant that
+// the call began with, and only while that tenant still has the name: a call that ran while its tenant was made again is on stdout only, and the new tenant has no line of it.
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { errorText, flatText } from '@vsa/service-kit';
@@ -60,6 +61,8 @@ interface Draft {
   path: string;
   host: HostClass;
   tenant: string | null;
+  /** The tenant that has the name of the URL when the call begins, or null. The line of the call goes to the log of this tenant, and only while it still has the name. */
+  owner: Tenant | null;
   route: string | null;
   credential: LogLine['credential'];
   trace: CallTrace;
@@ -257,10 +260,11 @@ export function createApp(deps: AppDeps): App {
     draft.route = route.id;
     draft.tenant = named;
     draft.kind = route.need.kind === 'open' ? 'record' : 'system';
+    const tenant = store.get(named);
+    draft.owner = tenant ?? null;
     const wantsMtls = route.need.kind === 'x509';
     if (wantsMtls && host !== 'mtls') return refuse('wrong_host', 'host.mtls_only', 'this route takes the client certificate, and only on the client-certificate host');
     if (!wantsMtls && host !== 'token') return refuse('wrong_host', 'host.token_only', 'this route is served on the host of tokens, not on the client-certificate host');
-    const tenant = store.get(named);
     if (tenant === undefined) return refuse('tenant_not_found', 'tenant.missing', `there is no tenant ${named}: make it with POST /admin/tenants`);
 
     const caller = await verifyCaller(req, draft, route, tenant, path);
@@ -331,7 +335,7 @@ export function createApp(deps: AppDeps): App {
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const draft: Draft = { method: req.method ?? '', path: '', host: 'other', tenant: null, route: null, credential: 'none', trace: newTrace(), allow: null, kind: 'none' };
+    const draft: Draft = { method: req.method ?? '', path: '', host: 'other', tenant: null, owner: null, route: null, credential: 'none', trace: newTrace(), allow: null, kind: 'none' };
     let outcome: Outcome<Ok>;
     try {
       outcome = await dispatch(req, draft);
@@ -347,7 +351,7 @@ export function createApp(deps: AppDeps): App {
     if (draft.kind !== 'health') {
       const line = lineOf(draft, outcome);
       deps.writeLog(JSON.stringify(line));
-      if (draft.kind === 'system' && draft.tenant !== null) store.get(draft.tenant)?.log(line);
+      if (draft.kind === 'system' && draft.owner !== null && store.get(draft.owner.id) === draft.owner) draft.owner.log(line);
     }
     try {
       respond(res, draft, outcome);

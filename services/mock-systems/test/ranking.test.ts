@@ -207,7 +207,11 @@ describe('a tenant that is made again while the approval is checked', () => {
     hold.release();
     refused(await held, 409, 'tenant_changed');
     expect(await written(s)).toEqual([]);
+    // The refused call is on stdout. It is not in the log of the new tenant, which has taken no call yet.
+    expect(s.harness.logged().filter((line) => line.code === 'tenant_changed')).toHaveLength(1);
+    expect(await tenantLog(s)).toEqual([]);
     expect((await send(body())).status).toBe(201);
+    expect((await tenantLog(s)).map((line) => line.decision)).toEqual(['allowed']);
   });
 });
 

@@ -11,6 +11,10 @@ const refused = (reply: { status: number; json: Record<string, unknown> | null }
   expect([reply.status, reply.json?.error]).toEqual([status, code]);
 };
 const lastRule = (s: Scenario): unknown => s.harness.logged().at(-1)?.rule;
+const logOf = async (s: Scenario, tenant: string): Promise<Array<{ decision: string; code: string | null }>> => {
+  const body = (await s.harness.call({ path: `/t/${tenant}/log` })).json as { lines: Array<{ decision: string; code: string | null }> }; // the shape of the answer of GET /log
+  return body.lines;
+};
 const ORGS = { supplier: SUPPLIER_ORG, insurer: INSURER_ORG };
 
 describe('POST /admin/tenants', () => {
@@ -284,8 +288,12 @@ describe('a tenant that is made again while a call runs', () => {
     hold.release();
     refused(await held, 409, 'tenant_changed');
     expect(lastRule(s)).toBe('tenant.changed');
+    // The refused call is on stdout. It is not in the log of the new tenant, which has taken no call yet.
+    expect(s.harness.logged().filter((line) => line.code === 'tenant_changed')).toHaveLength(1);
+    expect((await s.harness.call({ path: '/t/run1/log' })).json).toEqual({ tenant: 'run1', dropped: 0, lines: [] });
     expect((await s.harness.call({ path: '/t/run1/state' })).json).toMatchObject({ organisations: { supplier: 'another.example.test' }, po_store: { orders: [] } });
     expect((await callWithToken(s, agent, 'po', 'POST', '/po', purchaseOrder('run1', 'run1-1'))).status).toBe(201);
+    expect((await logOf(s, 'run1')).map((line) => line.decision)).toEqual(['allowed']);
   });
   it('the same call with no reset in the middle is honoured', async () => {
     const s = await scenario('run1');
@@ -296,6 +304,18 @@ describe('a tenant that is made again while a call runs', () => {
     await hold.asked;
     hold.release();
     expect((await held).status).toBe(201);
+  });
+  it('a call that is refused with no reset in the middle is in the log of its tenant', async () => {
+    const s = await scenario('run1');
+    const agent = delegateTo(s, 'reorder', [['po.write', 'po']]);
+    const credential = await s.world.token(agent.agent, agent.delegation, `${PUBLIC_BASE}/t/run1/po`);
+    s.world.end(agent.delegation);
+    const hold = s.world.holdLedger();
+    const held = s.harness.tokenCall({ tenant: 'run1', credential, method: 'POST', route: '/po', body: purchaseOrder('run1', 'run1-1') });
+    await hold.asked;
+    hold.release();
+    refused(await held, 403, 'delegation_ended');
+    expect(await logOf(s, 'run1')).toMatchObject([{ decision: 'refused', code: 'delegation_ended' }]);
   });
 });
 
