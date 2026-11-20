@@ -2,14 +2,15 @@
 // and no vault output is spent. The guards: the settings and the message, the limits that the caller must give, the authority of the job, the Live vault of the delegation, the size of the body of the
 // call to the runtime, and the advert that the document names. The last tests are for two jobs at one time on one delegation key, and for the hire of a bidder with a request for quotation.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { POLL_INTERVAL_MS } from '@vsa/hire-kit';
+import { POLL_INTERVAL_MS, hireAgent } from '@vsa/hire-kit';
+import type { AgentErrors } from '@vsa/hire-kit';
 import { AGENT_ADVERT, INDEXER, LLM_ADVERT_REF } from '@vsa/hire-kit/testing';
 import { MAX_REQUEST_BYTES, RFQ_SCHEMA, RUNTIME_BODY_LIMIT_BYTES, checkRequestSize, parseRfq } from '@vsa/usecase-kit/protocol';
-import { hireCounterparty, requestText, runtimeBody } from '@vsa/usecase-kit/buyer';
+import { hireCounterparty, requestText, runtimeBody, settledResult } from '@vsa/usecase-kit/buyer';
 import type { HireInput, RefusedCode } from '@vsa/usecase-kit/buyer';
 import { wirePayloadFor } from '@vsa/vector-read';
 import {
-  AGENT_ADVERT_REF, BUYER_DID, DELEGATION, NO_LIMITS, OTHER_ID, T0, cleanWorlds, executeRequest, expectKind, go, handoffFor, input, purchaseOrder, untouched, words, world,
+  AGENT_ADVERT_REF, BUYER_DID, DELEGATION, NO_LIMITS, OTHER_ID, T0, cleanWorlds, executeRequest, expectKind, go, handoffFor, input, pieces, purchaseOrder, untouched, words, world,
 } from './support.ts';
 
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); cleanWorlds(); });
@@ -302,6 +303,48 @@ describe('the advert that the document names', () => {
   }
 });
 
+/** The errors that the hire kit asks for, when a test hires with the hire kit itself and not through the flow. */
+const KIT_ERRORS: AgentErrors<Error> = {
+  failure: (_kind, _what, message) => new Error(message), deadline: (doing) => new Error(`the deadline came while ${doing}`), storeWrite: (message) => new Error(message), unavailable: (why) => new Error(why),
+};
+/** The moment, in milliseconds after T0, at which the first hire of a pair lets go of the lane: its Accept is slow. */
+const RELEASE_MS = 90_000;
+
+/** A promise that the test settles by hand. (Promise.withResolvers is not in the types of this package's target.) */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+/**
+ * Two hires of one paying key at one time. The first is made with the hire kit itself, from the wallet, and it holds the lane of the key: its Accept waits until the test lets it go, and the clock then
+ * stands RELEASE_MS after T0. The second goes through the flow, from the vault, with the deadline `deadlineMs` after T0: it enters the lane while the first holds it, and it has its turn when the first has
+ * ended. `held` is what the chain and the fetch had seen when the second hire waited in the lane, and `after` is what they had seen at the end: the difference is the work of the second hire.
+ */
+async function twoAtOnce(deadlineMs: number) {
+  const w = await world({ deadlineMs });
+  const chain = { adverts: vi.spyOn(w.m.chain, 'readAdvert'), posts: vi.spyOn(w.m.chain, 'postEscrow'), pays: vi.spyOn(w.m.chain, 'payFromVault') };
+  const seen = (): number[] => [chain.adverts.mock.calls.length, chain.posts.mock.calls.length, chain.pays.mock.calls.length, w.m.calls.length];
+  const gate = deferred();
+  const reached = deferred();
+  const accept = w.m.chain.accept.bind(w.m.chain);
+  vi.spyOn(w.m.chain, 'accept').mockImplementationOnce(async (ref) => { reached.resolve(); await gate.promise; return accept(ref); });
+  const request = { selection: { advertRef: AGENT_ADVERT_REF }, payload: '{"purchase_order":"first"}', label: 'the first order', maxPriceLovelace: null, maxSupplierBondLovelace: null, maxBuyerBondLovelace: null };
+  const first = hireAgent(w.key, { ...w.deps.hire, deadlineMs: T0 + 1_000_000 }, request, KIT_ERRORS);
+  await reached.promise;
+  // The second hire enters the lane of the key and waits behind the first.
+  const queued = deferred();
+  const enter = w.key.lane.run.bind(w.key.lane);
+  vi.spyOn(w.key.lane, 'run').mockImplementationOnce((job) => { queued.resolve(); return enter(job); });
+  const second = go(w, { message: handoffFor(purchaseOrder({ po_number: 'run1-0002' })) });
+  await Promise.race([queued.promise, second]);
+  const held = seen();
+  w.m.clock.now = T0 + RELEASE_MS;
+  gate.resolve();
+  return { w, chain, held, first: await first, second: await second, after: seen() };
+}
+
 describe('two jobs at one time on one delegation key', () => {
   it('runs them one after the other: the second job reads the vault that the first Pay left, and both complete', async () => {
     const w = await world();
@@ -346,6 +389,40 @@ describe('two jobs at one time on one delegation key', () => {
     expect(w.m.agent.sends).toHaveLength(1);
     // The vault that the first Pay left is live and unspent.
     expect(w.m.chain.vaults().filter((vault) => !vault.consumed)).toHaveLength(1);
+  });
+
+  it('ends a hire whose turn in the lane of the hire kit comes after its deadline: failed with the reason deadline and no escrow, and the hire kit reads nothing and pays nothing', async () => {
+    const { w, chain, held, first, second, after } = await twoAtOnce(60_000);
+    expect(first.outcome).toBe('completed');
+    const step = expectKind(second, 'failed');
+    expect([step.reason, step.handoff, step.vault_ref, step.terms]).toStrictEqual(['deadline', null, null, null]);
+    // The hire kit ended it at its turn: its error says that the hire had not begun. The check of the flow before the Pay gives a step with no cause.
+    expect(step.cause).toBeInstanceOf(Error);
+    expect((step.cause as Error).message).toMatch(/had not begun/);
+    // After the first hire held the lane, the chain got no read of an advert, no Post and no Pay, and the fetch got no call: no probe of the agent and no send.
+    expect(after).toStrictEqual(held);
+    expect(chain.pays).not.toHaveBeenCalled();
+    // The vault is as it was, and no second escrow exists: the one Post and the one send are those of the first hire, and its stranded record is gone.
+    expect(w.m.chain.vault(w.vault)).toMatchObject({ kind: 'Live', consumed: false });
+    expect(w.m.chain.vaults()).toHaveLength(1);
+    expect([w.booked.posted.length, w.m.agent.sends.length, w.key.stranded.list().length]).toStrictEqual([1, 1, 0]);
+    expect(settledResult(step, pieces())).toMatchObject({ outcome: 'failed', reason: 'deadline', exit_state: 'Failed', handoff: null });
+    // The lane is free, and the vault that the flow read is still live: the next hire with time to spare pays from it.
+    w.deps.hire.deadlineMs = T0 + 1_000_000;
+    expect(words(await go(w))).toBe('completed');
+    expect(w.m.chain.vault(w.vault)).toMatchObject({ consumed: true });
+  });
+
+  it('hires both when the turn of the second still meets its deadline: the same pair with a deadline after the moment that the first lets go of the lane, so the second reads the advert, pays from the vault and completes', async () => {
+    const { w, chain, held, first, second, after } = await twoAtOnce(150_000);
+    expect(first.outcome).toBe('completed');
+    const step = expectKind(second, 'completed');
+    // What the refusal above shows to be absent is here: after the first hire let go of the lane, the hire kit read the advert, paid from the vault and sent.
+    expect(after).not.toStrictEqual(held);
+    expect(chain.pays).toHaveBeenCalledTimes(1);
+    expect(step.handoff).toMatchObject({ paid_from_vault: true, accepted: 'confirmed' });
+    expect(w.m.chain.vault(w.vault)).toMatchObject({ consumed: true });
+    expect([w.booked.posted.length, w.m.agent.sends.length, w.booked.accepted.length]).toStrictEqual([2, 2, 2]);
   });
 });
 
