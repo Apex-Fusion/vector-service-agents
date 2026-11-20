@@ -54,6 +54,13 @@ describe('the answer of the option', () => {
     expect(world.faults).toHaveLength(1);
   });
 
+  it('keeps one request apart from another that runs at the same time: a refusal of one is never the answer of the other', async () => {
+    const world = makeWorld();
+    const option = precheckOf({ kind: 'order-desk', ports: world.ports });
+    const answers = await Promise.all([option(world.handoff, world.context), option(world.handoff, { ...world.context, buyerPkh: STRANGER }), option(world.handoff, world.context)]);
+    expect(answers.map((answer) => (answer.go ? 'go' : answer.error))).toEqual(['go', 'sender_key_mismatch', 'go']);
+  });
+
   it('is never a go for a fault of the checks: the answer is a rejection', async () => {
     const world = makeWorld();
     const broken: ChecksPorts = { ...world.ports, clock: () => Number.NaN };
