@@ -1,7 +1,7 @@
 // packages/usecase-kit/src/protocol/identifiers.ts
 // The identifiers of the protocol, each with the form that it has on the wire and a parse function. A parse function takes any value and never throws. It returns the text as it is when
 // the form is right, and a refusal when it is not. The refusal names the field and the form, and it never repeats the value. Every hex form is lower case: a text in upper case is a
-// different text, so it is refused and not changed. A caller that needs no detail of a refusal uses the `is` function of a form (`isKeyHash` and `isScriptHash`).
+// different text, so it is refused and not changed. A caller that needs no detail of a refusal uses the `is` function of a form (`isKeyHash`, `isScriptHash` and `isModelName`).
 import { randomBytes } from 'node:crypto';
 import { accepted, refused, type ProtocolResult } from './result.ts';
 
@@ -23,6 +23,8 @@ export type TenantId = string;
 export type KeyHash = string;
 /** The hash of a script: BLAKE2b with 28 bytes of the script, as 56 lower-case hex characters. The hash of the delegation script is the policy of the delegation tokens. */
 export type ScriptHash = string;
+/** The name of a model, as an advert writes it: letters, digits, dots, underscores, colons, slashes and hyphens. The colon is for a variant such as `qwen2.5:0.5b`. */
+export type ModelName = string;
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const DID = /^did:vector:[0-9a-f]{64}$/;
@@ -32,6 +34,7 @@ const OUTPUT_REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]{0,9})$/;
 const TENANT_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 // A key hash and a script hash are two kinds of one form: a hash of 28 bytes.
 const HASH28 = /^[0-9a-f]{56}$/;
+const MODEL_NAME = /^[A-Za-z0-9._:/-]+$/;
 
 const HEX_FORM = '64 lower-case hex characters';
 const HASH28_FORM = '56 lower-case hex characters';
@@ -55,6 +58,7 @@ export const parseKeyHash = (value: unknown, field = 'key hash'): ProtocolResult
 
 export const isKeyHash = (value: unknown): value is KeyHash => matches(value, HASH28);
 export const isScriptHash = (value: unknown): value is ScriptHash => matches(value, HASH28);
+export const isModelName = (value: unknown): value is ModelName => matches(value, MODEL_NAME);
 
 /** A new salt: 32 random bytes from the system source, as 64 lower-case hex characters. */
 export const newSalt = (): Salt => randomBytes(32).toString('hex');

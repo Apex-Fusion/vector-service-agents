@@ -1,7 +1,7 @@
 // packages/usecase-kit/src/manifest/fields.ts
 // The members that the agents add under `behaviour`, one validator for each. A validator takes any value and never throws. It returns `{ ok: true, value }` with a NEW plain value in the form of the
 // protocol type, or `{ ok: false, code: 'bad_shape', detail }`. The detail names the field and never repeats the value. The inputs come from code and from settings, so a wrong type is a refusal.
-import { accepted, checkMembers, parseDigest, readMembers, refused } from '../protocol/index.ts';
+import { accepted, checkMembers, isModelName, parseDigest, readMembers, refused } from '../protocol/index.ts';
 import type { ManifestClaim, ManifestFileRef, ManifestModel, ManifestRelyingOn, ProtocolResult } from '../protocol/index.ts';
 
 /** The longest statement of a claim, in characters. */
@@ -11,7 +11,6 @@ export const MAX_URI_CHARS = 2048;
 /** The longest route of a mock system or of the gateway, in characters. */
 const MAX_ROUTE_CHARS = 200;
 
-const MODEL_NAME = /^[A-Za-z0-9._:/-]+$/;
 const ROUTE = /^(?:GET|POST|PUT|PATCH|DELETE|HEAD) \/[\x21-\x7e]*$/;
 /** An address in printable characters with no space, that starts with `https://` and a host: `https:///x` is read as a host `x`, so it is refused here. */
 const URI = /^https:\/\/[\x21-\x2e\x30-\x7e][\x21-\x7e]*$/;
@@ -108,7 +107,7 @@ export function parseModel(value: unknown, field = 'behaviour.model'): ProtocolR
   if (!read.ok) return read;
   const members = checkMembers(read.value, field, ['allowlist', 'max_price_lovelace']);
   if (members !== null) return members;
-  const allowlist = readTexts(read.value.allowlist, `${field}.allowlist`, 'a model name of letters, digits, dots, underscores, colons, slashes and hyphens', (text) => MODEL_NAME.test(text));
+  const allowlist = readTexts(read.value.allowlist, `${field}.allowlist`, 'a model name of letters, digits, dots, underscores, colons, slashes and hyphens', isModelName);
   if (!allowlist.ok) return allowlist;
   if (allowlist.value.length === 0) return refused('bad_shape', `${field}.allowlist must name at least one model`);
   const ceiling = read.value.max_price_lovelace;
