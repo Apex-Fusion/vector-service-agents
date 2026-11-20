@@ -1,7 +1,7 @@
 // packages/usecase-kit/test/protocol/results.test.ts: the results of a buyer-side agent, and the one rule for their exit state. The typecheck is part of the test: a line that must not compile carries a
 // `@ts-expect-error`, and the typecheck fails when such a line compiles. The samples below are the results that the pages describe.
 import { describe, expect, expectTypeOf, it } from 'vitest';
-import { EXECUTE_OUTCOMES, EXIT_STATES, NO_OPEN_CLAIM, PROPOSAL_SCHEMA, RECEIPT_CHECKS, RESULT_SCHEMA, exitStateOf } from '@vsa/usecase-kit/protocol';
+import { EXECUTE_OUTCOMES, EXIT_STATES, NO_OPEN_CLAIM, PROPOSAL_SCHEMA, RECEIPT_CHECKS, RESULT_SCHEMA, exitStateOf, refusedExit } from '@vsa/usecase-kit/protocol';
 import type {
   ChallengeRecord, CompletedResult, Decision, DisputedResult, EscalatedResult, ExecuteOutcome, ExecuteResult, ExitState, ExitStateInput, FailedProposalResult, FailedResult, HandoffRecord,
   ProposalResult, ProposedResult, ReceiptVerification, RefusedResult, SubJob, UnfiledDisputeResult, VaultRefusedResult, WriteRecord,
@@ -162,6 +162,29 @@ describe('the result of execute: one form for each outcome', () => {
     expectTypeOf<Extract<RefusedResult, { reason: 'approval_expired' }>['exit_state']>().toEqualTypeOf<'Expired'>();
     expectTypeOf<Extract<RefusedResult, { reason: 'delegation_ended' }>['exit_state']>().toEqualTypeOf<'Cancelled'>();
     expectTypeOf<Extract<RefusedResult, { exit_state: 'Rejected' }>['reason']>().toEqualTypeOf<string>();
+  });
+
+  it('makes a result with no cast: exitStateOf for completed, failed and vault_refused, and refusedExit for a refused result', () => {
+    // The reason and the flag are not literal types, as in a run: a step of the agent gives the reason, and the agent reads the delegation.
+    const make = (reason: string, delegation_ended: boolean) => {
+      const input = { challenge_filed: false, delegation_ended };
+      const completed: CompletedResult = { ...base, outcome: 'completed', reason: null, challenge: null, handoff, exit_state: exitStateOf({ ...input, reason: null, outcome: 'completed' }) };
+      const failed: FailedResult = { ...base, outcome: 'failed', reason, challenge: null, handoff: null, exit_state: exitStateOf({ ...input, reason, outcome: 'failed' }) };
+      const vault: VaultRefusedResult = { ...base, outcome: 'vault_refused', reason, challenge: null, handoff: null, exit_state: exitStateOf({ ...input, reason, outcome: 'vault_refused' }) };
+      const byCounterparty: RefusedResult = { ...base, outcome: 'refused_by_counterparty', ...refusedExit(reason), challenge: null, handoff };
+      const bySystem: RefusedResult = { ...base, outcome: 'refused_by_system', ...refusedExit(reason), challenge: null, handoff: null };
+      // @ts-expect-error exitStateOf of the outcome failed gives Failed, and a completed result has the state Completed
+      const completedFromFailed: CompletedResult = { ...base, outcome: 'completed', reason: null, challenge: null, handoff, exit_state: exitStateOf({ ...input, reason: null, outcome: 'failed' }) };
+      // @ts-expect-error the state of exitStateOf for a refused outcome is not proven to go with the reason that is a string beside it
+      const refusedFromState: RefusedResult = { ...base, outcome: 'refused_by_counterparty', reason, challenge: null, handoff, exit_state: exitStateOf({ ...input, reason, outcome: 'refused_by_counterparty' }) };
+      return { completed, failed, vault, byCounterparty, bySystem, completedFromFailed, refusedFromState };
+    };
+    const rows = [make('approval_expired', false), make('delegation_ended', true), make('not_covered', true)];
+    expect(rows.map((row) => [row.completed.exit_state, row.failed.exit_state, row.vault.exit_state, row.byCounterparty.exit_state, row.bySystem.exit_state])).toStrictEqual([
+      ['Completed', 'Failed', 'Failed', 'Expired', 'Expired'],
+      ['Completed', 'Failed', 'Cancelled', 'Cancelled', 'Cancelled'],
+      ['Completed', 'Failed', 'Cancelled', 'Rejected', 'Rejected'],
+    ]);
   });
 
   it('has the evaluation error of the node as the reason when the vault refused, and the state Cancelled or Failed', () => {
@@ -340,14 +363,59 @@ describe('exitStateOf', () => {
     expect(JSON.stringify(input)).toBe(before);
   });
 
-  it('has the signature of the protocol', () => {
-    expectTypeOf(exitStateOf).parameter(0).toEqualTypeOf<ExitStateInput>();
+  it('has the signature of the protocol: a call with any outcome takes ExitStateInput and gives ExitState, and the overloads together give the six states', () => {
+    // expect-type reads all overloads for `.returns`, and it gives the union of their return types.
     expectTypeOf(exitStateOf).returns.toEqualTypeOf<ExitState>();
+    expectTypeOf(exitStateOf).toBeCallableWith({} as ExitStateInput).returns.toEqualTypeOf<ExitState>();
     expectTypeOf<ExitStateInput>().toEqualTypeOf<{
       readonly outcome: ExecuteOutcome;
       readonly reason: string | null;
       readonly challenge_filed: boolean;
       readonly delegation_ended: boolean;
     }>();
+  });
+
+  it('gives, for an outcome that the compiler knows, the state type of the result for that outcome, and ExitState for an outcome that only the run knows', () => {
+    const input = { reason: null, challenge_filed: false, delegation_ended: false };
+    expectTypeOf(exitStateOf({ ...input, outcome: 'completed' })).toEqualTypeOf<CompletedResult['exit_state']>();
+    expectTypeOf(exitStateOf({ ...input, outcome: 'failed' })).toEqualTypeOf<FailedResult['exit_state']>();
+    expectTypeOf(exitStateOf({ ...input, outcome: 'vault_refused' })).toEqualTypeOf<VaultRefusedResult['exit_state']>();
+    expectTypeOf(exitStateOf({ ...input, outcome: 'disputed' })).toEqualTypeOf<DisputedResult['exit_state']>();
+    expectTypeOf(exitStateOf({ ...input, outcome: 'refused_by_counterparty' })).toEqualTypeOf<RefusedResult['exit_state']>();
+    expectTypeOf(exitStateOf({ ...input, outcome: 'refused_by_system' })).toEqualTypeOf<RefusedResult['exit_state']>();
+    // An outcome that is a variable of a union type: the two refused outcomes have one form, and all outcomes together have the general form.
+    const refused = 'refused_by_system' as RefusedResult['outcome'];
+    expectTypeOf(exitStateOf({ ...input, outcome: refused })).toEqualTypeOf<RefusedResult['exit_state']>();
+    const known = 'completed' as ExecuteOutcome;
+    expectTypeOf(exitStateOf({ ...input, outcome: known })).toEqualTypeOf<ExitState>();
+    expect(exitStateOf({ ...input, outcome: known })).toBe('Completed');
+  });
+});
+
+describe('refusedExit', () => {
+  const REASONS = ['approval_expired', 'delegation_ended', 'approval_revoked', 'not_covered', 'sender_not_active', '', 'Approval_Expired', 'toString', '__proto__'];
+
+  it.each(REASONS)('gives the reason as it is, and the state that exitStateOf gives for each refused outcome: %j', (reason) => {
+    const pair = refusedExit(reason);
+    expect(pair.reason).toBe(reason);
+    for (const outcome of ['refused_by_counterparty', 'refused_by_system'] as const) {
+      expect(pair.exit_state).toBe(exitStateOf({ outcome, reason, challenge_filed: false, delegation_ended: false }));
+      expect(pair.exit_state).toBe(exitStateOf({ outcome, reason, challenge_filed: true, delegation_ended: true }));
+    }
+  });
+
+  it('gives Expired for approval_expired, Cancelled for delegation_ended, and Rejected for any other reason', () => {
+    expect(refusedExit('approval_expired')).toStrictEqual({ reason: 'approval_expired', exit_state: 'Expired' });
+    expect(refusedExit('delegation_ended')).toStrictEqual({ reason: 'delegation_ended', exit_state: 'Cancelled' });
+    for (const other of ['approval_revoked', 'not_covered', '', 'Approval_Expired']) expect(refusedExit(other)).toStrictEqual({ reason: other, exit_state: 'Rejected' });
+  });
+
+  it('has the pair that the type of a refused result needs', () => {
+    expectTypeOf(refusedExit).parameters.toEqualTypeOf<[reason: string]>();
+    expectTypeOf(refusedExit('x')).toEqualTypeOf<
+      | { readonly reason: 'approval_expired'; readonly exit_state: 'Expired' }
+      | { readonly reason: 'delegation_ended'; readonly exit_state: 'Cancelled' }
+      | { readonly reason: string; readonly exit_state: 'Rejected' }
+    >();
   });
 });

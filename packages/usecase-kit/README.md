@@ -39,7 +39,7 @@ A validator takes any value and never throws. It returns `{ ok: true, value }` o
 | Requests | `Authority`, `Proposal`, `RequestBase`, `ProposeRequest`, `ExecuteRequest`, `UseCaseRequest`, `ProposeFieldsParser`; `parseAuthority`, `parseProposal`, `parseRequest`, `makeProposal` |
 | Messages | `Handoff`, `RfqMessage`, `PROPOSAL_SCHEMA`, `RESULT_SCHEMA`, `HANDOFF_SCHEMA`, `RFQ_SCHEMA`, `DOCUMENT_SCHEMAS`, `DocumentSchema`; `parseHandoff`, `parseRfq` |
 | Approval | `ApprovalRef`, `ApprovalInput`, `ApprovalResult`, `ApprovalAccepted`, `ApprovalRefused`, `ApprovalRefusedByCheck`, `ApprovalDigestMismatch`, `ApprovalCheck`, `ApprovalRefusal`, `APPROVAL_ATT_TYPE`, `APPROVAL_VALIDITY_DEFAULT_MS`, `APPROVAL_VALIDITY_MAX_MS`, `APPROVAL_DEPOSIT_LOVELACE`; `parseApprovalRef` |
-| Results | `ProposalResult`, `ProposedResult`, `FailedProposalResult`, `ExecuteResult`, `CompletedResult`, `DisputedResult`, `EscalatedResult`, `UnfiledDisputeResult`, `RefusedResult`, `VaultRefusedResult`, `FailedResult`, `Decision`, `SubJob`, `HandoffRecord`, `WriteRecord`, `ChallengeRecord`, `ReceiptVerification`, `ReceiptCheck`, `RECEIPT_CHECKS`, `NO_OPEN_CLAIM`, `ExitStateInput`; `exitStateOf` |
+| Results | `ProposalResult`, `ProposedResult`, `FailedProposalResult`, `ExecuteResult`, `CompletedResult`, `DisputedResult`, `EscalatedResult`, `UnfiledDisputeResult`, `RefusedResult`, `RefusedExit`, `VaultRefusedResult`, `FailedResult`, `Decision`, `SubJob`, `HandoffRecord`, `WriteRecord`, `ChallengeRecord`, `ReceiptVerification`, `ReceiptCheck`, `RECEIPT_CHECKS`, `NO_OPEN_CLAIM`, `ExitStateInput`; `exitStateOf`, `refusedExit` |
 | Codes | `USE_CASES`, `HANDOFF_USE_CASES`, `OPERATIONS`, `OUTCOMES`, `PROPOSE_OUTCOMES`, `EXECUTE_OUTCOMES`, `EXIT_STATES`, `ERROR_STATUS`, `REFUSAL_CODES`, `SENDER_REFUSALS`, `DELEGATION_REFUSALS`, `VAULT_REFUSALS`, `APPROVAL_REFUSALS`, `COUNTERPARTY_REFUSALS`, `AFTER_CLAIM_REFUSALS`, `SYSTEM_REFUSALS`, `SYSTEM_REFUSAL_STATUS`, `ErrorCode`, `ErrorBody`, `RefusalCode`, `SystemRefusal`, `Outcome`, `ProposeOutcome`, `ExecuteOutcome`, `ExitState`, `UseCase`, `HandoffUseCase`, `Operation`; `isErrorCode`, `isRefusalCode`, `isSystemRefusal` |
 | Kinds and faults | `BUYER_SIDE_KINDS`, `COUNTERPARTY_KINDS`, `AGENT_KINDS`, `BuyerSideKind`, `CounterpartyKind`, `AgentKind`, `FAULT_MODES`, `FaultMode`, `FaultSetting`; `isFaultSetting` |
 | Manifest | `BehaviourAdditions`, `ManifestClaim`, `ClaimStatement`, `ManifestCosign`, `ManifestModel`, `ManifestRelyingOn`, `ManifestFileRef` |
@@ -84,7 +84,7 @@ The protocol takes a document only when the two give the same text. It refuses a
 
 ### Results and the exit state
 
-A buyer-side agent answers 200 with an `outcome` whenever it could read the request. `exitStateOf` gives the exit state of an `execute` result. It is the one rule for every buyer-side agent, and the result types agree with it: a result with a pair of outcome and exit state that the function cannot give does not compile. The one exception is the reason `approval_expired` with the state `Rejected`. The type of a refused result cannot refuse that pair, so make a result with `exitStateOf`.
+A buyer-side agent answers 200 with an `outcome` whenever it could read the request. `exitStateOf` gives the exit state of an `execute` result. It is the one rule for every buyer-side agent, and the result types agree with it: a result with a pair of outcome and exit state that the function cannot give does not compile. The one exception is the reason `approval_expired` with the state `Rejected`: the type of a refused result cannot refuse that pair.
 
 | Outcome | Exit state |
 |---|---|
@@ -94,6 +94,8 @@ A buyer-side agent answers 200 with an `outcome` whenever it could read the requ
 | `refused_by_counterparty`, `refused_by_system` | `Expired` for the reason `approval_expired`, `Cancelled` for the reason `delegation_ended`, and `Rejected` for any other reason |
 | `vault_refused` | `Cancelled` when the agent read the delegation after the refusal and found that the hirer ended it, and `Failed` in every other case |
 | `failed` | `Failed` |
+
+A result is made with no cast. A form that has one state has that state written in it: `Completed` for `completed`, `Failed` for `failed`, `Escalated` for a dispute with a challenge, and `Failed` for a dispute with no challenge. A `vault_refused` result takes `exit_state: exitStateOf({ outcome: 'vault_refused', ... })`. For an outcome that the compiler knows, the type of that call is the state type of the result. For an outcome that only the run knows, the type is `ExitState`. A refused result takes `...refusedExit(reason)`, as in `{ ...base, outcome, ...refusedExit(reason), challenge: null }`. It gives the reason and its exit state together, and the type of a refused result needs that pair. `exit_state: exitStateOf(...)` does not compile in a refused result, because its type does not prove that the state goes with the reason.
 
 A proposal that was made has the exit state `null`. A proposal that failed has `Failed`.
 
