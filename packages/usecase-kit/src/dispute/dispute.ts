@@ -9,8 +9,8 @@
 //      its claim document is on chain, its hash is the hash that the claim holds, and it is the document that `claimDocument` writes for that party. Two claims with the same last deadline end the job with
 //      `claim_ambiguous`: the code never chooses by the order of a list. None ends it with `no_open_claim`.
 //   3. Make the evidence document. A document that is refused ends the job. Nothing is on chain yet.
-//   4. In one job of the queue: check the window that is left, write the journal, publish the evidence document, and wait for its confirmation. A document that is not confirmed ends the job. The
-//      challenge is not built.
+//   4. In one job of the queue: check the window that is left, read the journal again (another call can have written its record while this job waited), write the journal, publish the evidence
+//      document, and wait for its confirmation. A document that is not confirmed ends the job. The challenge is not built.
 //   5. In one job of the queue: read the claim again, and build the challenge against the exact output that the evidence names. A claim that changed ends the job.
 // A job (one escrow) gets one challenge. Once a transaction of a job landed or may land, the job takes no second attempt, also after a restart: the journal says so.
 //
@@ -617,6 +617,7 @@ export class Dispute {
     const parsed = parseJobRecord(stored.value);
     if (!parsed.ok) return notFiled('journal_unavailable', `the journal gave a record that is not in its form: ${parsed.detail}`);
     const earlier = parsed.value !== null && parsed.value.step !== 'not_sent' ? parsed.value : null;
+    if (earlier !== null && earlier.against !== target.against) return notFiled('job_already_disputed', 'a challenge for this job was recorded against another agent: a job has one counterparty', landedOf(earlier));
     if (earlier?.filed != null) return accepted(filedOfRecord(earlier.filed));
 
     // 1. The claims, and a challenge of this agent for this job that is on chain already.
@@ -668,6 +669,12 @@ export class Dispute {
         return { stop: 'port_error', detail: `the clock failed, and nothing was sent: ${describeError(error)}` };
       }
       if (challengeDeadlineOf(claim) - at < this.#windowLeft) return { stop: 'claim_window_closing', detail: 'the challenge window of the claim ends too soon for the evidence to confirm' };
+      // Another call for this job can have written its record while this job waited in the queue: the record is read again, in the job, right before the evidence is sent.
+      const current = await bounded(this.#sleep, this.#readTimeout, 'journal_unavailable', 'the journal', () => this.#journal.get(escrow));
+      if (!current.ok) return { stop: 'journal_unavailable', detail: `${current.detail}, so nothing was sent` };
+      const seen = parseJobRecord(current.value);
+      if (!seen.ok) return { stop: 'journal_unavailable', detail: `the journal gave a record that is not in its form, so nothing was sent: ${seen.detail}` };
+      if (seen.value !== null && seen.value.step !== 'not_sent') return { stop: 'job_already_disputed', detail: `${earlierDetail(seen.value)}; nothing was sent` };
       const written = await this.#store(escrow, started);
       if (!written.ok) return { stop: 'journal_unavailable', detail: `${written.detail}, so nothing was sent` };
       progress.sent = true;

@@ -1,6 +1,7 @@
 // packages/usecase-kit/test/dispute/journal.test.ts: one challenge for a job, also after a restart. The journal is written before the evidence is sent and after each step that landed, and a new call
 // reads it first: a job with a record gets that state, and nothing is sent a second time. A challenge of this agent for this job that is on chain is found again, and it is the result.
 import { describe, expect, it } from 'vitest';
+import { HireLane } from '@vsa/hire-kit';
 import { documentUri } from '@vsa/buyer-core';
 import { NO_OPEN_CLAIM } from '@vsa/usecase-kit/protocol';
 import { MemoryJournal } from '@vsa/usecase-kit/dispute';
@@ -52,7 +53,8 @@ describe('the journal is written before the evidence is sent and after each step
     expect(journal.puts[2]).toMatchObject({ step: 'done', evidence: LANDED, ended: null, filed: { record: { claim: REF_A, evidence: EVIDENCE_TX }, stake_lovelace: '50000000', fee_lovelace: '900000' } });
     const order = events.filter((event) => event.startsWith('journal') || event.startsWith('publish') || event.startsWith('openChallenge') || event.startsWith('queue') || event === 'readClaims');
     expect(order).toEqual([
-      'journal get', 'readClaims', 'queue:start', 'journal put started', 'publish evidence', 'queue:end', 'journal put evidence_landed', 'queue:start', `openChallenge ${REF_A}`, 'queue:end', 'journal put done',
+      'journal get', 'readClaims', 'queue:start', 'journal get', 'journal put started', 'publish evidence', 'queue:end', 'journal put evidence_landed', 'queue:start', `openChallenge ${REF_A}`, 'queue:end',
+      'journal put done',
     ]);
   });
 
@@ -295,10 +297,43 @@ describe('the journal can fail', () => {
     const result = await read.dispute.challengeDelivery(delivery());
     expectNotFiled(result, 'journal_unavailable');
     expect(result.detail).toContain('did not answer');
-    const write = rig({}, { sleep: () => fire.promise, journal: { get: async () => null, put: () => never() } });
+    const late = deferred<void>();
+    const write = rig({}, { sleep: () => late.promise, journal: { get: async () => null, put: () => { late.resolve(); return never(); } } });
     write.port.claims = [claimView()];
-    expectNotFiled(await write.dispute.challengeDelivery(delivery()), 'journal_unavailable');
+    const stored = await write.dispute.challengeDelivery(delivery());
+    expectNotFiled(stored, 'journal_unavailable');
+    expect(stored.detail).toContain('nothing was sent');
     expect(write.port.published).toEqual([]);
+  });
+});
+
+describe('two calls for one job never send twice', () => {
+  it('stops the second of two calls that share the queue and the journal, in the job, and sends the evidence and the challenge once', async () => {
+    const journal = new MemoryJournal();
+    const lane = new HireLane();
+    const events: Events = [];
+    const first = rig({}, { journal, queue: lane, events });
+    const second = rig({}, { journal, queue: lane, port: first.port });
+    first.port.claims = [claimView()];
+    const [a, b] = await Promise.all([first.dispute.challengeDelivery(delivery()), second.dispute.challengeDelivery(delivery())]);
+    expect([a.ok, b.ok].sort()).toEqual([false, true]);
+    const stopped = a.ok ? b : a;
+    expectNotFiled(stopped, 'job_already_disputed');
+    expect(stopped.detail).toContain('nothing was sent');
+    expect(first.port.published.length).toBe(1);
+    expect(first.port.challenged.length).toBe(1);
+  });
+
+  it('does not give the filed challenge of another counterparty for the same job', async () => {
+    const journal = new MemoryJournal();
+    await journal.put(ESCROW, record({ step: 'done', against: THIRD, evidence: LANDED, filed: { ...CHAIN_FILED, against_did: THIRD, stake_lovelace: '50000000', fee_lovelace: null } }));
+    const { events, port, dispute } = rig({}, { journal });
+    port.claims = [claimView()];
+    const result = await dispute.challengeDelivery(delivery());
+    expectNotFiled(result, 'job_already_disputed');
+    expect(result.detail).toContain('another agent');
+    expect(events).toEqual([]);
+    expect(port.published).toEqual([]);
   });
 });
 
