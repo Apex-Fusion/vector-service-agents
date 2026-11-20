@@ -39,17 +39,21 @@ export interface SubJob {
   readonly verification: ReceiptVerification;
 }
 
-/** A decision of the model. The agent keeps the choice as the model gave it: no code of the agent changes, clamps or computes it again. */
-export interface Decision {
+/** The sub-job of a hire that was paid, and whether its Accept was seen on the chain: `confirmed` when the Accept was seen on the chain, and `pending` when it was sent and not yet seen. */
+export interface PaidDelivery {
+  readonly sub_job: SubJob;
+  readonly accepted: 'confirmed' | 'pending';
+}
+
+/**
+ * A decision of the model. The agent keeps the choice as the model gave it: no code of the agent changes, clamps or computes it again. `C` is the type of the choice: a caller that knows the shape of its
+ * choice reads `Decision<C>`, and with no argument the choice is any JSON value.
+ */
+export interface Decision<C extends JsonValue = JsonValue> {
   readonly name: string;
-  readonly choice: JsonValue;
+  readonly choice: C;
   readonly reasoning: string;
-  readonly inference: {
-    readonly path: 'marketplace';
-    readonly sub_job: SubJob;
-    /** `confirmed` when the Accept was seen on the chain, and `pending` when it was sent and not yet seen. */
-    readonly accepted: 'confirmed' | 'pending';
-  };
+  readonly inference: { readonly path: 'marketplace' } & PaidDelivery;
 }
 
 interface ProposalResultBase {
