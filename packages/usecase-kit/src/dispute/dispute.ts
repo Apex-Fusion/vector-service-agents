@@ -14,7 +14,7 @@ import { NO_OPEN_CLAIM, accepted, parseDid, parseJsonValue, parseOutputRef, refu
 import type { Did, Digest, JsonObject, JsonValue, ManifestClaim, OutputRef, ProtocolResult, Refused } from '../protocol/index.ts';
 import { JUROR_MEDIA_TYPE, claimDocument, evidenceDocument } from './documents.ts';
 import type { ApprovalDigestFacts, EvidenceDocumentInput, OrderConfirmationFacts, QuotePriceFacts } from './documents.ts';
-import { challengeDeadlineOf } from './ports.ts';
+import { challengeDeadlineOf, withdrawableFrom } from './ports.ts';
 import type { ClaimView, Module1Port, OpenedChallenge, ServiceQueue, TxNotBuilt, TxNotConfirmed, TxResult } from './ports.ts';
 import type {
   ChallengeCode, ChallengeFiled, ChallengeNotFiled, ChallengeResult, ClaimLookupCode, ClaimWithdrawn, DocumentLanded, RunClaimNotStaked, RunClaimResult, SentNotConfirmed, WithdrawNotDone,
@@ -117,9 +117,6 @@ function changeOf(before: ClaimView, after: ClaimView | null, now: number): stri
   if (now >= challengeDeadlineOf(after)) return 'the challenge window of the claim ended';
   return null;
 }
-
-/** The earliest moment of a withdrawal: the first whole second after the challenge window. Module-1 needs the start of the transaction strictly after the window. */
-const withdrawableFrom = (claim: ClaimView): number => Math.ceil((challengeDeadlineOf(claim) + 1) / 1000) * 1000;
 
 /** What a challenge step knows when it ends: the result, and whether a transaction of the job landed or may land. */
 interface Ended {

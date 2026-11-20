@@ -26,6 +26,9 @@ export interface ClaimView {
 /** The last moment of the challenge window of a claim, in POSIX milliseconds. A challenge must start before it, and a withdrawal after it. */
 export const challengeDeadlineOf = (claim: Pick<ClaimView, 'submitted_at' | 'challenge_window_ms'>): number => claim.submitted_at + claim.challenge_window_ms;
 
+/** The earliest moment of a withdrawal: the first whole second after the challenge window, in POSIX milliseconds. Module-1 needs the start of the transaction strictly after the window. */
+export const withdrawableFrom = (claim: Pick<ClaimView, 'submitted_at' | 'challenge_window_ms'>): number => Math.ceil((challengeDeadlineOf(claim) + 1) / 1000) * 1000;
+
 /** A transaction that was not signed and not sent: the build or a check of the build refused it. Nothing landed, and nothing can land. */
 export type TxNotBuilt = Refused<'not_built'>;
 

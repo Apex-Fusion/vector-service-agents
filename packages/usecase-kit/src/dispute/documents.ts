@@ -24,6 +24,7 @@ export const JUROR_RECORD_LIMIT_BYTES = 4_300;
 export const JUROR_MEDIA_TYPE = 'text/plain';
 /** The statement that the three evidence formats are about. */
 export const EVIDENCE_STATEMENT = 'S1';
+const EVIDENCE_HEADER = `Evidence about statement ${EVIDENCE_STATEMENT} of a claim on the Vector marketplace.`;
 
 const MAX_SHOWN_CHARS = 80;
 
@@ -254,7 +255,7 @@ function orderEvidence(parties: EvidenceParties, root: JsonObject): ProtocolResu
   const differing = ORDER_FIELDS.filter(([name]) => !same(member(order, name), member(confirmation, name)));
   if (differing.length === 0) return refused('no_contradiction', 'the confirmation has the same SKU, lot and quantity as the purchase order');
   return accepted(lines([
-    'Evidence about statement S1 of a claim on the Vector marketplace.',
+    EVIDENCE_HEADER,
     'The claimer is an order desk. The challenger is the agent that sent the order desk a purchase order.',
     `The purchase order names ${namesIn(order)}.`,
     `The confirmation that the order desk signed for this purchase order names ${namesIn(confirmation)}.`,
@@ -276,7 +277,7 @@ function quoteEvidence(parties: EvidenceParties, root: JsonObject): ProtocolResu
   if (!quote.ok) return quote;
   if (same(root.quoted_unit_price, root.listed_unit_price)) return refused('no_contradiction', 'the quoted unit price is the unit price of the published price list');
   return accepted(lines([
-    'Evidence about statement S1 of a claim on the Vector marketplace.',
+    EVIDENCE_HEADER,
     'The claimer is a bid desk. The challenger is the agent that asked the bid desk for a quote.',
     `The bid desk quoted the unit price ${show(root.quoted_unit_price)} for the SKU ${show(root.sku)} at the quantity ${show(root.quantity)}.`,
     `The published price list of the bid desk gives the unit price ${show(root.listed_unit_price)} for the SKU ${show(root.sku)} at the quantity ${show(root.quantity)}.`,
@@ -313,7 +314,7 @@ function approvalEvidence(parties: EvidenceParties, root: JsonObject): ProtocolR
   if (expected.value === observed.value) return refused('no_contradiction', 'the digest of the approval is the digest of the request that was sent');
   const role = DIGEST_ROLES[useCase];
   return accepted(lines([
-    'Evidence about statement S1 of a claim on the Vector marketplace.',
+    EVIDENCE_HEADER,
     `The claimer is ${role.claimer}. ${role.receiver}`,
     `The hirer of the claimer approved a document. The approval holds the digest ${expected.value}.`,
     `The ${role.sent} that the claimer sent holds the digest ${observed.value}.`,

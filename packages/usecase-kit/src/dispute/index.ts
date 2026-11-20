@@ -4,7 +4,7 @@ export { EVIDENCE_STATEMENT, JUROR_MEDIA_TYPE, JUROR_RECORD_LIMIT_BYTES, MAX_JUR
 export type {
   ApprovalDigestFacts, ClaimDocumentInput, DocumentCode, EvidenceDocumentInput, EvidenceFacts, EvidenceParties, JurorDocument, OrderConfirmationFacts, QuotePriceFacts,
 } from './documents.ts';
-export { challengeDeadlineOf } from './ports.ts';
+export { challengeDeadlineOf, withdrawableFrom } from './ports.ts';
 export type {
   ClaimView, Module1Port, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument, ServiceQueue, SubmitClaimCall, SubmittedClaim, TxNotBuilt, TxNotConfirmed, TxResult,
   WithdrawClaimCall, WithdrawnClaim,
