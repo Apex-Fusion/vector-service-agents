@@ -204,6 +204,45 @@ describe('a challenge of this agent for this job that is on chain is found again
     expect(rigged.port.challenged).toEqual([]);
   });
 
+  /** Members that Module-1 does not check, and that another auditor can fill with any value: the output is still a challenge of another auditor, and it is not read further. */
+  const FOREIGN: Array<[string, Partial<Record<keyof ChallengeView, unknown>>]> = [
+    ['a claim token that is not a claim token', { claim_token: 'ff'.repeat(32) }],
+    ['a resolution deadline below 0', { resolution_deadline_ms: -1 }],
+    ['a resolution deadline that is not a number', { resolution_deadline_ms: 'zq9' }],
+    ['a stake that is not a bigint', { stake_lovelace: 5 }],
+    ['a claim reference that is not a reference', { claim: 'zq9' }],
+    ['a state that does not exist', { state: 'Weird' }],
+    ['no evidence address', { evidence_uri: undefined }],
+    ['no member at all that Module-1 leaves free', {}],
+  ];
+
+  it.each(FOREIGN)('skips the challenge of another auditor with %s, and challenges the claim of the other party', async (_name, bad) => {
+    const rigged = rig();
+    rigged.port.claims = [claimView(), claimView({ ref: REF_B, token: TOKEN_B, state: 'Challenged' })];
+    rigged.port.challenges = [{ ...challengeView({ auditor: THIRD, auditor_key_hash: '0e'.repeat(28), claim: REF_B, claim_token: TOKEN_B }), ...bad } as ChallengeView];
+    expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(rigged.port.challenged.map((call) => call.claim)).toEqual([REF_A]);
+    expect(rigged.port.published.length).toBe(1);
+  });
+
+  it('says chain_unavailable for the same members in a challenge of this agent, and for a challenger that the code cannot tell, because the code writes its own challenges', async () => {
+    const wrong: Array<[string, Partial<Record<keyof ChallengeView, unknown>>]> = [
+      ['a claim token that is not a claim token', { claim_token: 'ff'.repeat(32) }],
+      ['a resolution deadline below 0', { resolution_deadline_ms: -1 }],
+      ['no evidence address', { evidence_uri: undefined }],
+      ['a challenger that is not a DID', { auditor: 'zq9' }],
+      ['a key hash that is not a hash', { auditor_key_hash: 'zq9' }],
+      ['no key hash member', { auditor_key_hash: undefined }],
+    ];
+    for (const [name, bad] of wrong) {
+      const rigged = rig();
+      rigged.port.claims = [claimView({ state: 'Challenged' })];
+      rigged.port.challenges = [{ ...challengeView(), ...bad } as ChallengeView];
+      expectNotFiled(await rigged.dispute.challengeDelivery(delivery()), 'chain_unavailable');
+      expect(rigged.port.published, name).toEqual([]);
+    }
+  });
+
   it('says chain_unavailable when the challenges or the evidence cannot be read, and never takes that for no open claim; the job is not used up', async () => {
     const challenges = rig();
     ownChallenge(challenges);

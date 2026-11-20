@@ -209,6 +209,14 @@ function challengeViewOf(value: unknown): ChallengeView | null {
   };
 }
 
+/** The challenger of a challenge view: its DID and its key hash. Null when either has the wrong form, because the code cannot tell then whose the challenge is. */
+function challengerOf(value: unknown): { readonly did: Did; readonly key_hash: string | null } | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+  const did = parseDid(v.auditor, 'auditor');
+  return did.ok && isKeyHash(v.auditor_key_hash) ? { did: did.value, key_hash: v.auditor_key_hash } : null;
+}
+
 /** A document that the port read, or null when a member has the wrong type. */
 function readDocumentOf(value: unknown): ReadDocument | null {
   if (typeof value !== 'object' || value === null) return null;
@@ -629,7 +637,9 @@ export class Dispute {
 
   /**
    * A challenge of this agent for this job that is on chain already, as the filed challenge, or null. The claims of the other party that are Challenged are looked at, and the challenges that name
-   * one of them: a challenge of this agent whose evidence document is on chain, has the hash that the challenge holds, and names this job. A document that cannot be read is `chain_unavailable`.
+   * one of them. Only a challenge of this agent is read: the output of another auditor can hold any claim token and any deadline, because Module-1 checks neither, so such an output is left out and
+   * is never a failure. A challenge of this agent is one whose evidence document is on chain, has the hash that the challenge holds, and names this job. A document that cannot be read is
+   * `chain_unavailable`, and so is a list that cannot be read or a challenge whose challenger the code cannot tell.
    */
   async #findOwn(target: ChallengeTarget, me: Did, claims: readonly ClaimView[]): Promise<ProtocolResult<ChallengeFiled | null, 'chain_unavailable'>> {
     const challenged = claims.filter((claim) => claim.claimer === target.against && claim.state === 'Challenged');
@@ -639,9 +649,12 @@ export class Dispute {
     if (!Array.isArray(read.value)) return refused('chain_unavailable', 'the challenges cannot be read: the port gave no list');
     const mine: ChallengeView[] = [];
     for (const value of read.value) {
+      const challenger = challengerOf(value);
+      if (challenger === null) return refused('chain_unavailable', 'the challenges cannot be read: the port gave a challenge of a wrong shape');
+      if (challenger.did !== me || challenger.key_hash !== this.#port.agent.key_hash) continue;
       const view = challengeViewOf(value);
-      if (view === null) return refused('chain_unavailable', 'the challenges cannot be read: the port gave a challenge of a wrong shape');
-      if (view.auditor === me && view.auditor_key_hash === this.#port.agent.key_hash && challenged.some((claim) => claim.token === view.claim_token)) mine.push(view);
+      if (view === null) return refused('chain_unavailable', 'the challenges cannot be read: the port gave a challenge of this agent of a wrong shape');
+      if (challenged.some((claim) => claim.token === view.claim_token)) mine.push(view);
     }
     mine.sort((a, b) => a.challenged_at - b.challenged_at || (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0));
     for (const challenge of mine) {

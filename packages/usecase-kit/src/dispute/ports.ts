@@ -185,7 +185,7 @@ export interface Module1Port {
   readClaims(): Promise<readonly ClaimView[]>;
   /** The live claim output at `ref`, or null when the output is spent, or is not a claim output. It throws when the chain cannot be read. */
   readClaim(ref: OutputRef): Promise<ClaimView | null>;
-  /** Every live challenge output whose payment credential is the challenge script, at any address. It throws when the chain cannot be read. */
+  /** Every live challenge output whose payment credential is the challenge script, at any address, and whose datum can be read: an output with a datum that cannot be read is left out, because any auditor makes challenge outputs. It throws when the chain cannot be read. */
   readChallenges(): Promise<readonly ChallengeView[]>;
   /**
    * The document at a `vector-tx:` URI, or the reason that the source has none (`DocumentResult`). It throws for another address, and when the source cannot be read or answers in a wrong shape: a read

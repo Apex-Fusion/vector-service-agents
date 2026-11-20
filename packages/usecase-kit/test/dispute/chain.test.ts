@@ -10,6 +10,7 @@ import type { ClaimDatum } from '@vsa/buyer-core';
 import { utf8Hex } from '@vsa/vector-read/identity-codec';
 import { Dispute, MAX_CLAIM_TYPE_BYTES, MemoryJournal, claimDocument, evidenceDocument } from '@vsa/usecase-kit/dispute';
 import type { ChallengeResult, ClaimScope, DisputeJournal, DisputeSettings, Module1PortDeps, ServiceQueue } from '@vsa/usecase-kit/dispute';
+import { encodeChallengeDatum } from '../../../buyer-core/src/vendored/mcp/jury-codec.ts';
 import { CLAIM_TOKEN, DAY, HOUR, NOW, agentRecord, claimUtxo, recordUtxo } from '../../../buyer-core/test/fixtures/jury-world.ts';
 import { AUDITOR_ID, CLAIMER_ID, MODULE1, WALLET, WALLET_ADDRESS, bareTransactionCbor, forever, kitClaim, koiosOf, ledgerWorld, realPort, signWithWallet } from './ledger.ts';
 import type { LedgerProvider } from './ledger.ts';
@@ -339,6 +340,30 @@ describe('the challenge on the ledger', () => {
       expect(filedOf(await challengeOrder(disputeOf(behind, AUDITOR_ID))).record.claim).toBe(CLAIM_REF);
     }, SLOW);
   });
+
+  it('reads no challenge of another auditor, whatever its claim token and its deadline, and leaves out a challenge output whose datum cannot be read', async () => {
+    const challengedToken = `636c6d5f${'0d'.repeat(28)}`;
+    const foreign = (claimToken: string, resolutionDeadline: number): string => encodeChallengeDatum({
+      claimRef: { txHash: 'c5'.repeat(32), outputIndex: 0 }, auditorDid: THIRD_ID, auditorCredential: { type: 'VerificationKey', hash: '0d'.repeat(28) }, stakeAmount: 50_000_000n,
+      evidenceHash: 'ee'.repeat(32), evidenceUri: utf8Hex('vector-tx:x'), challengedAt: NOW - HOUR, resolutionDeadline, eligibleJurors: [], state: { type: 'PendingOracle' }, claimToken,
+    });
+    const output = (datum: string | undefined) => ({
+      txHash: 'c6'.repeat(32), outputIndex: 0, address: MODULE1.challenge.address, assets: { lovelace: 50_000_000n, [`${MODULE1.challenge.hash}63686c5f${'0d'.repeat(28)}`]: 1n },
+      ...(datum === undefined ? {} : { datum }),
+    });
+    const cases: Array<[string, string | undefined, number]> = [
+      ['a claim token that is not a claim token', foreign('ff'.repeat(32), 72 * HOUR), 1],
+      ['the claim token of the claim that is Challenged', foreign(challengedToken, 72 * HOUR), 1],
+      ['a resolution deadline below 0, which the code cannot decode', foreign(challengedToken, -1), 0],
+      ['a datum that cannot be read', 'd8799f01ff', 0],
+      ['no inline datum', undefined, 0],
+    ];
+    for (const [name, datum, listed] of cases) {
+      const ledger = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN), { ...claimUtxo(challengedToken, { state: 'Challenged' }), txHash: 'c5'.repeat(32) }, output(datum)]);
+      expect((await realPort(ledger, AUDITOR_ID, NOW).readChallenges()).length, name).toBe(listed);
+      expect(filedOf(await challengeOrder(disputeOf(ledger, AUDITOR_ID))).record.claim, name).toBe(CLAIM_REF);
+    }
+  }, SLOW);
 
   describe('an agent that staked a claim for each of two runs has two open claims, and the newest one is challenged', () => {
     it('challenges the claim with the latest challenge deadline, and the evidence names that claim', async () => {

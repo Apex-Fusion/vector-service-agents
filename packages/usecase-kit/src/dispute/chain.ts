@@ -18,7 +18,7 @@ import {
   AWAIT_TIMEOUT_MAX_MS, BUILD_TIMEOUT_MS, DELIVER_BY_BUFFER_MS, DOCUMENT_LABEL, KOIOS_ANSWER_BYTES, buildDocumentPublish, buildOpenChallenge, buildSubmitClaim, buildWithdrawClaim, credentialOutputs,
   decodeChallengeDatum, decodeClaimDatum, koiosUtxoInfo, lucidForAddress, paymentKeyHashOf, readDocument as readDocumentOfUri, txHashOfUri,
 } from '@vsa/buyer-core';
-import type { LedgerEnv, Module1Deployment } from '@vsa/buyer-core';
+import type { ChallengeDatum, LedgerEnv, Module1Deployment } from '@vsa/buyer-core';
 import type { Provider, UTxO } from '@lucid-evolution/lucid';
 import { addressDetails, decodeTransaction } from '@vsa/vector-read/guarded-decode';
 import { utf8Hex } from '@vsa/vector-read/identity-codec';
@@ -161,13 +161,21 @@ function claimViewOf(module1: Module1Deployment, utxo: UTxO): ClaimView | null {
   };
 }
 
-/** The challenge output that a UTxO holds, or null when it is not one. It throws for a challenge output with a datum that cannot be read. */
+/**
+ * The challenge output that a UTxO holds, or null when it is not one, or when its datum cannot be read. Any auditor makes a challenge output, and Module-1 checks only part of its datum, so a datum that
+ * the code cannot read is the choice of the auditor and says nothing about the node: the output is left out. A challenge of this agent always has a datum that the code reads, because the builder writes
+ * it. An output of a wrong shape is still an error of the node (`scriptToken`, `checkedUtxo`).
+ */
 function challengeViewOf(module1: Module1Deployment, utxo: UTxO): ChallengeView | null {
   const token = scriptToken(module1.challenge, utxo);
-  if (token === null) return null;
+  if (token === null || utxo.datum === undefined || utxo.datum === null) return null;
   const ref = refOfUtxo(utxo);
-  if (utxo.datum === undefined || utxo.datum === null) throw new Error(`the challenge output ${ref} has no inline datum`);
-  const datum = decodeChallengeDatum(utxo.datum);
+  let datum: ChallengeDatum;
+  try {
+    datum = decodeChallengeDatum(utxo.datum);
+  } catch {
+    return null;
+  }
   return {
     ref, token, claim: refOfUtxo(datum.claimRef), claim_token: datum.claimToken, auditor: `did:vector:${datum.auditorDid}`,
     auditor_key_hash: datum.auditorCredential.type === 'VerificationKey' ? datum.auditorCredential.hash : null, stake_lovelace: datum.stakeAmount, evidence_hash: datum.evidenceHash,
