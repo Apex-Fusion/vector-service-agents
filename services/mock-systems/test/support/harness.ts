@@ -2,8 +2,8 @@
 // The service on a real HTTP server on 127.0.0.1 (a port that the system gives), with the world of the tests behind it, and a client that sends the header fields that a proxy would
 // send: the Host header of the host of tokens or of the client-certificate host, and a Client-Cert header. The approval check is a fake that the test gives: it records what it was
 // asked, and it answers with what the test says. It exists only here: no source of the service builds one.
-import { createServer, request } from 'node:http';
-import type { IncomingHttpHeaders, Server } from 'node:http';
+import { createServer } from 'node:http';
+import type { Server } from 'node:http';
 import { connect } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { listen } from '@vsa/service-kit';
@@ -12,25 +12,10 @@ import type { App } from '../../src/app.ts';
 import type { ApprovalAnswer, ApprovalCheck, ApprovalInput } from '../../src/approval.ts';
 import { INSURER_ORG, MTLS_HOST, OPERATOR_TOKEN, PUBLIC_BASE, PUBLIC_HOST, SUPPLIER_ORG, World, resourceOf } from './world.ts';
 import type { IssuedCredential } from './world.ts';
+import { send } from './net.ts';
+import type { CallOptions, Reply } from './net.ts';
 
-export interface Reply {
-  status: number;
-  headers: IncomingHttpHeaders;
-  text: string;
-  /** The body as JSON, or null when it is no JSON. */
-  json: Record<string, unknown> | null;
-}
-
-export interface CallOptions {
-  method?: string;
-  path: string;
-  /** The Host header: the host of tokens by default. `null` sends none. */
-  host?: string | null;
-  headers?: Record<string, string | string[]>;
-  /** A JSON body, or a text that is sent as it is. */
-  body?: unknown;
-  contentType?: string | null;
-}
+export type { CallOptions, Reply } from './net.ts';
 
 export class Harness {
   readonly lines: string[] = [];
@@ -96,31 +81,7 @@ export class Harness {
   }
 
   call(options: CallOptions): Promise<Reply> {
-    const headers: Record<string, string | string[]> = { ...options.headers };
-    const sent = options.body === undefined ? undefined : typeof options.body === 'string' ? options.body : JSON.stringify(options.body);
-    if (sent !== undefined && options.contentType !== null) headers['content-type'] = options.contentType ?? 'application/json';
-    const host = options.host === undefined ? PUBLIC_HOST : options.host;
-    if (host !== null) headers.host = host;
-    return new Promise((resolve, reject) => {
-      const req = request({ host: '127.0.0.1', port: this.port, method: options.method ?? 'GET', path: options.path, headers, setHost: false }, (res) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf8');
-          let json: Record<string, unknown> | null = null;
-          try {
-            const parsed: unknown = JSON.parse(text);
-            json = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
-          } catch {
-            json = null;
-          }
-          resolve({ status: res.statusCode ?? 0, headers: res.headers, text, json });
-        });
-      });
-      req.on('error', reject);
-      if (sent !== undefined) req.write(sent);
-      req.end();
-    });
+    return send(this.port, options);
   }
 
   /** `POST /admin/tenants` with the operator token. */
