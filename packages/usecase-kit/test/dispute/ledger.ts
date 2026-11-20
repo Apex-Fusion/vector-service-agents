@@ -12,7 +12,7 @@ import { utf8Hex } from '@vsa/vector-read/identity-codec';
 import { FixtureProvider } from '../../../buyer-core/test/fixtures/fixture-provider.ts';
 import { AUDITOR_ID, CLAIMER_ID, JURY_REF_UTXO, MODULE1, MODULE1_UTXOS, WALLET, WALLET_ADDRESS, WALLET_UTXOS, claimUtxo, recordUtxo } from '../../../buyer-core/test/fixtures/jury-world.ts';
 import { DEPLOYMENT } from '../../../buyer-core/test/fixtures/identity-world.ts';
-import { escrowUtxo, identityEscrow } from '../../../buyer-core/test/fixtures/escrow-identity.fixture.ts';
+import { escrowUtxo, identityEscrow, submitted } from '../../../buyer-core/test/fixtures/escrow-identity.fixture.ts';
 import type { IdentityEscrowDatum } from '@vsa/vector-read';
 import { createModule1Port } from '@vsa/usecase-kit/dispute';
 import type { Module1Port, Module1PortDeps } from '@vsa/usecase-kit/dispute';
@@ -173,6 +173,18 @@ export function postEscrowAt(ledger: LedgerProvider, at: number, spent = false, 
   ledger.koiosSpent.splice(0, ledger.koiosSpent.length, ...ledger.koiosSpent.filter(others));
   ledger.blockTimes.set(ESCROW_TX, Math.floor(at / 1000));
   (spent ? ledger.koiosSpent : ledger.live).push(jobEscrow(at, over, datum));
+}
+
+/**
+ * The output that a later step of the job made, put into the ledger at the transaction `txHash`, in a block made at `at`: the Claim output (the state Claimed) or the Submit output (the state Submitted). It keeps the
+ * members that the Post wrote, as the script keeps them, and it holds the same value. `spent` puts it where the settlement leaves a spent output: only the output info of the fake Koios gives it. The output is the output
+ * 0 of the transaction, and this gives its reference.
+ */
+export function laterEscrowAt(ledger: LedgerProvider, txHash: string, at: number, state: 'Claimed' | 'Submitted', spent: boolean): string {
+  const post = identityEscrow(JOB_BEGAN_AT, { capability_id: CAPABILITY, agent_id: CLAIMER_ID });
+  (spent ? ledger.koiosSpent : ledger.live).push(escrowUtxo(txHash, state === 'Claimed' ? { ...post, state } : submitted(post, at)));
+  ledger.blockTimes.set(txHash, Math.floor(at / 1000));
+  return `${txHash}#0`;
 }
 
 /** A node with the wallet, the Module-1 outputs, the records of the claimer and the auditor, the escrow of the job, and `extra`: outputs, or a function that makes them with the ledger in hand (a claim needs its document on the ledger). */

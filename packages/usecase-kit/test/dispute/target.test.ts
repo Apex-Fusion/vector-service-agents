@@ -463,6 +463,8 @@ describe('the job began when the block of its escrow output was made, and the ch
       ['an agent that is a DID', escrowJob({ agent_id: OTHER })],
       ['an agent in upper case', escrowJob({ agent_id: OTHER_ID.toUpperCase() })],
       ['an agent that is too short', escrowJob({ agent_id: 'c1' })],
+      ['no state', escrowJob({ state: undefined as never })],
+      ['a state that is a number', escrowJob({ state: 1 as never })],
       ['a refusal with another code', { ok: false, code: 'weird', detail: 'x' }],
       ['a refusal with no detail', { ok: false, code: 'not_escrow' }],
     ];
@@ -582,7 +584,33 @@ describe('the escrow is the escrow of this job', () => {
     expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
   });
 
-  it('names the first member that is wrong: the layout, then the capability, then the agent', async () => {
+  it('refuses an output that a later step of the escrow made, for a delivery, an approval and a lookup, says to name the output of the Post, and publishes nothing', async () => {
+    // The claim of the samples was staked 10 minutes ago, after the job began 30 minutes ago, so it does not cover the job. A later step was made 5 minutes ago: a start from its block would make the claim a target.
+    const later = { block_time_ms: NOW - 5 * 60_000 };
+    for (const state of ['Claimed', 'Submitted', 'Accepted', 'Reclaimed', 'Released'] as const) {
+      const rigged = rig();
+      rigged.port.claims = [claimView({ submitted_at: NOW - 10 * 60_000 })];
+      rigged.port.readEscrowAnswer = () => escrowJob({ ...later, state });
+      const delivered = await rigged.dispute.challengeDelivery(delivery());
+      expectNotFiled(delivered, 'bad_shape');
+      expect(delivered.detail, state).toContain('the state of its datum is not Open');
+      expect(delivered.detail, state).toContain('Name the output that the Post made');
+      expect(delivered.detail, state).not.toContain(state);
+      rigged.port.readEscrowAnswer = () => hiringMe({ ...later, state });
+      expectNotFiled(await rigged.dispute.challengeApproval(approval()), 'bad_shape');
+      expect(await rigged.dispute.findOpenClaim(OTHER, SCOPE), state).toMatchObject({ ok: false, code: 'bad_shape' });
+      expect(rigged.port.published, state).toEqual([]);
+      // The escrow is checked before any claim document is read.
+      expect(rigged.events.some((event) => event.startsWith('readDocument')), state).toBe(false);
+    }
+    // The twin: the same block and the state Open. Only the state differs, and the claim is a target for this start.
+    const twin = rig();
+    twin.port.claims = [claimView({ submitted_at: NOW - 10 * 60_000 })];
+    twin.port.readEscrowAnswer = () => escrowJob(later);
+    expect((await twin.dispute.challengeDelivery(delivery())).ok).toBe(true);
+  });
+
+  it('names the first member that is wrong: the layout, then the capability, then the agent, then the state', async () => {
     const rigged = rig();
     rigged.port.claims = [claimView()];
     rigged.port.readEscrowAnswer = () => escrowJob({ agent_id: null, capability_id: OTHER_CAPABILITY });
@@ -594,6 +622,15 @@ describe('the escrow is the escrow of this job', () => {
     expectNotFiled(capability, 'bad_shape');
     expect(capability.detail).toContain('capability_id');
     expect(capability.detail).not.toContain('agent_id');
+    rigged.port.readEscrowAnswer = () => escrowJob({ agent_id: THIRD_ID, state: 'Submitted' });
+    const agent = await rigged.dispute.challengeDelivery(delivery());
+    expectNotFiled(agent, 'bad_shape');
+    expect(agent.detail).toContain('agent_id');
+    expect(agent.detail).not.toContain('state');
+    rigged.port.readEscrowAnswer = () => escrowJob({ state: 'Submitted' });
+    const state = await rigged.dispute.challengeDelivery(delivery());
+    expectNotFiled(state, 'bad_shape');
+    expect(state.detail).toContain('the state of its datum');
   });
 
   it('gives the lookup the agent of the lookup or this agent as the agent of the escrow, and no other agent', async () => {

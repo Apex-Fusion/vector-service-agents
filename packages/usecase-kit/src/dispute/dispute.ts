@@ -8,7 +8,8 @@
 //      that the record names (step 2).
 //   1. Read the claims. A challenge of this agent for this job that is on chain already is found again, and it is the result. The code never files a second one.
 //   2. Choose the claim. The escrow of the job is read first, when the other party has an open claim. It must be the escrow of this job: its datum has the identity layout, its capability_id is the capability of the
-//      job, and its agent_id is the agent that the job hired (the counterparty for a delivery, this agent for an approval). Another escrow is `bad_shape`. A claim is a target only when ALL hold: its claimer is the
+//      job, and its agent_id is the agent that the job hired (the counterparty for a delivery, this agent for an approval). It must be the output that the Post made: its datum has the state Open, because the block of a
+//      later output (the Claim or the Submit) is later than the start of the job. Another escrow, and the output of a later step, is `bad_shape`. A claim is a target only when ALL hold: its claimer is the
 //      other party; its claim document is a claim document of this kit for the capability of the job (it is on chain, its hash is the hash that the claim holds, and it is the document that `claimDocument` writes
 //      for that party and that capability) and its statement S1 is the text of the statement S1 of the manifest that the job hired (the same text in NFC and in NFD is one text); it was submitted before the job
 //      began (the time of the block of its escrow output: the chain port reads it from the chain, and the caller gives no time); it is Open with enough window left; and its stake is not above the challenge stake. A claim
@@ -97,11 +98,11 @@ export interface DisputeDeps {
 /** The job that a claim of the other party must cover to be the target of a challenge. */
 export interface ClaimScope {
   /**
-   * The escrow of the job: its output in any state, spent or not. A job gets one challenge. The chain port reads this output. It must be the escrow of this job: its datum has the identity layout, its capability_id is
-   * the `capability_id` of this scope, and its agent_id is the agent that the job hired (the counterparty of a delivery, this agent for an approval). The kit cannot tell two jobs of the same two agents for the same
-   * capability apart, so the caller names the escrow of its own job. The time of the block that holds the transaction that made the output is the start of the job: a claim that was submitted at or after that time does not
-   * cover the job, so it is never the target. The start comes from the chain, and the caller gives none. Name the output that the Post made: an output that a later step (Claim or Submit) made is in a later block, and it
-   * gives a later start.
+   * The escrow of the job: the output that its Post made, unspent or spent (Koios keeps the datum of a spent output). A job gets one challenge. The chain port reads this output. It must be the escrow of this job: its datum
+   * has the identity layout, its capability_id is the `capability_id` of this scope, and its agent_id is the agent that the job hired (the counterparty of a delivery, this agent for an approval). The kit cannot tell two
+   * jobs of the same two agents for the same capability apart, so the caller names the escrow of its own job. The time of the block that holds the transaction that made the output is the start of the job: a claim that was
+   * submitted at or after that time does not cover the job, so it is never the target. The start comes from the chain, and the caller gives none. Name the output that the Post made. An output that a later step (Claim or
+   * Submit) made is in a later block, and it would give a later start, so the state of its datum is not Open, and it is `bad_shape`.
    */
   readonly escrow_ref: OutputRef;
   /** The capability that the job hired. The caller knows it from the advert of the job. The escrow of the job names it, and the target holds a claim document of this kit for it. */
@@ -284,17 +285,17 @@ function documentResultOf(value: unknown): Fetched | null {
 
 /** The result of a read of the escrow of a job, in its form, or null when the port gave another shape: the job of the escrow, or the refusal that the output is no escrow output of the deployment. */
 function escrowJobOf(value: unknown):
-  | { readonly kind: 'job'; readonly block_time_ms: number; readonly capability_id: string; readonly agent_id: string | null }
+  | { readonly kind: 'job'; readonly block_time_ms: number; readonly state: string; readonly capability_id: string; readonly agent_id: string | null }
   | { readonly kind: 'refused'; readonly detail: string }
   | null {
   if (typeof value !== 'object' || value === null) return null;
   const v = value as Record<string, unknown>;
   if (v.ok === true) {
     const inner = typeof v.value === 'object' && v.value !== null ? (v.value as Record<string, unknown>) : {};
-    const { block_time_ms: at, capability_id: capability, agent_id: agent } = inner;
-    if (typeof at !== 'number' || !Number.isSafeInteger(at) || at < 1 || typeof capability !== 'string') return null;
+    const { block_time_ms: at, state, capability_id: capability, agent_id: agent } = inner;
+    if (typeof at !== 'number' || !Number.isSafeInteger(at) || at < 1 || typeof state !== 'string' || typeof capability !== 'string') return null;
     if (agent !== null && (typeof agent !== 'string' || !HASH.test(agent))) return null;
-    return { kind: 'job', block_time_ms: at, capability_id: capability, agent_id: agent };
+    return { kind: 'job', block_time_ms: at, state, capability_id: capability, agent_id: agent };
   }
   return v.ok === false && v.code === 'not_escrow' && typeof v.detail === 'string' ? { kind: 'refused', detail: v.detail } : null;
 }
@@ -570,10 +571,12 @@ export class Dispute {
    * The start of the job, after a check that the escrow that `scope` names is the escrow of this job. The escrow is read from the chain, and the caller gives no time. It is the escrow of this job only when its datum has
    * the identity layout (the legacy layout names no agent), its capability_id is the capability of the scope, and its agent_id is one of the agents in `hired`: the agent that the job hired. Any other escrow is the
    * escrow of another job, and it is `bad_shape`, so a caller cannot widen the choice of the target with the escrow of a newer job. An output that is no escrow output of the deployment is `bad_shape` too. The start is the
-   * time of the block that holds the transaction that made the escrow output. The member `posted_at` of the datum is not used: the poster writes it and no validator checks it, so a claimer that is also the poster could
-   * write a time that makes each of its claims "after the start", and so block each challenge against itself. A source that cannot be read, that does not have the output, that gives no time of the block, or that
-   * answers in a wrong shape is `chain_unavailable`. So is a block that is dated after the clock: a job cannot begin after the clock, and the sender of a transaction cannot cause that, so the clock or the source is wrong.
-   * The detail names the member of the datum that is wrong, and it never repeats the value: the poster writes it.
+   * time of the block that holds the transaction that made the escrow output, so the output must be the output that the Post made: its datum has the state Open, and Koios keeps that datum after the output is spent. An
+   * output that a later step made (the Claim or the Submit) is in a later block. A caller that names it would move the start of the job later, and a claim that was staked after the job began would be a target. Its datum has
+   * another state, so it is `bad_shape` with a detail that says to name the output of the Post. The member `posted_at` of the datum is not used: the poster writes it and no validator checks it, so a claimer that is also
+   * the poster could write a time that makes each of its claims "after the start", and so block each challenge against itself. A source that cannot be read, that does not have the output, that gives no time of the block,
+   * or that answers in a wrong shape is `chain_unavailable`. So is a block that is dated after the clock: a job cannot begin after the clock, and the sender of a transaction cannot cause that, so the clock or the source is
+   * wrong. The detail names the member of the datum that is wrong, and it never repeats the value: the poster writes it.
    */
   async #startOf(scope: ClaimScope, now: number, hired: Hired): Promise<ProtocolResult<number, 'bad_shape' | 'chain_unavailable'>> {
     const read = await bounded(this.#sleep, this.#readTimeout, 'chain_unavailable', 'the escrow of the job', () => this.#port.readEscrowJob(scope.escrow_ref));
@@ -584,6 +587,7 @@ export class Dispute {
     if (job.agent_id === null) return refused('bad_shape', 'escrow_ref names an escrow of the legacy layout: its datum has no agent_id, so it is not the escrow of this job');
     if (job.capability_id !== scope.capability_id) return refused('bad_shape', 'escrow_ref names the escrow of another job: the capability_id of its datum is not the capability_id of the job');
     if (!hired.dids.includes(`${DID_PREFIX}${job.agent_id}`)) return refused('bad_shape', `escrow_ref names the escrow of another job: the agent_id of its datum is not ${hired.words}`);
+    if (job.state !== 'Open') return refused('bad_shape', 'escrow_ref names an output that a later step of the escrow made, and not the output of its Post: the state of its datum is not Open. Name the output that the Post made, because only the block of that output is the start of the job');
     if (job.block_time_ms > now) return refused('chain_unavailable', 'the block of the escrow output is dated after the clock, so the clock or the source of the chain is wrong');
     return accepted(job.block_time_ms);
   }
@@ -625,8 +629,8 @@ export class Dispute {
   /**
    * The claim that a challenge of `did` would name for the job in `scope`: the target with the latest challenge deadline (see `#choose`). A lookup has no direction, so the escrow of the job may name `did` or this
    * agent as the agent that the job hired. `no_open_claim` says that there is none, and its detail counts the claims that were left out for each reason. `chain_unavailable` says that the claims, the escrow of the
-   * job or a claim document could not be read, and it is never `no_open_claim`. `bad_shape` says that the scope is wrong, that `escrow_ref` names no escrow output of the deployment, or that the escrow is not the
-   * escrow of this job.
+   * job or a claim document could not be read, and it is never `no_open_claim`. `bad_shape` says that the scope is wrong, that `escrow_ref` names no escrow output of the deployment, that the escrow is not the escrow of
+   * this job, or that the output is not the output that its Post made.
    */
   async findOpenClaim(did: Did, scope: ClaimScope): Promise<ProtocolResult<ClaimView, ClaimLookupCode>> {
     const checked = parseDid(did, 'did');

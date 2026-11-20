@@ -16,7 +16,7 @@ import { encodeChallengeDatum } from '../../../buyer-core/src/vendored/mcp/jury-
 import { CLAIM_TOKEN, DAY, HOUR, NOW, agentRecord, claimUtxo, recordUtxo } from '../../../buyer-core/test/fixtures/jury-world.ts';
 import { ESCROW_ADDRESS } from '../../../buyer-core/src/vendored/mcp/marketplace-constants.ts';
 import { identityEscrow } from '../../../buyer-core/test/fixtures/escrow-identity.fixture.ts';
-import { AUDITOR_ID, CLAIMER_ID, MODULE1, WALLET, WALLET_ADDRESS, bareTransactionCbor, forever, kitClaim, koiosOf, ledgerWorld, postEscrowAt, realPort, signWithWallet } from './ledger.ts';
+import { AUDITOR_ID, CLAIMER_ID, MODULE1, WALLET, WALLET_ADDRESS, bareTransactionCbor, forever, kitClaim, koiosOf, laterEscrowAt, ledgerWorld, postEscrowAt, realPort, signWithWallet } from './ledger.ts';
 import type { LedgerProvider } from './ledger.ts';
 import { CONFIRMATION, DIGEST_FACTS, ESCROW, ESCROW_2, JOB, JOB_BEGAN_AT, MANIFEST_SHA, ORDER_DESK_CLAIM, ORDER_FACTS, QUOTE_FACTS, SCOPE, SETTINGS, STATEMENT_S1, THIRD_ID, deferred, kitClaimDocument } from './support.ts';
 
@@ -971,19 +971,49 @@ describe('the start of a job is the time of the block of its escrow output', () 
     expect(filedOf(await challengeOrder(disputeOf(both, AUDITOR_ID))).record.claim).toBe(NEWER_REF);
   }, SLOW);
 
-  /** What the port gives for the escrow of the job of the samples when its block was made at `blockTime`. */
-  const job = (blockTime: number) => ({ ok: true, value: { block_time_ms: blockTime, capability_id: JOB.capability_id, agent_id: CLAIMER_ID } });
+  /** What the port gives for the escrow of the job of the samples when its block was made at `blockTime` and the state of its datum is `state`. */
+  const job = (blockTime: number, state = 'Open') => ({ ok: true, value: { block_time_ms: blockTime, state, capability_id: JOB.capability_id, agent_id: CLAIMER_ID } });
 
-  it('gives the time of the block of an escrow output of any state, unspent or spent, with the capability and the agent of its datum', async () => {
+  it('gives the time of the block of an escrow output of any state, unspent or spent, with the state, the capability and the agent of its datum', async () => {
     const ledger = ledgerWorld();
     const port = realPort(ledger, AUDITOR_ID, NOW);
     expect(await port.readEscrowJob(ESCROW)).toEqual(job(JOB_BEGAN_AT));
     postEscrowAt(ledger, NOW - 7 * DAY, true);
     expect(await port.readEscrowJob(ESCROW)).toEqual(job(NOW - 7 * DAY));
-    // The output of the state Submitted was made by a later transaction, in a later block. Its time is the time of that block, and not the member posted_at that it keeps from the Post.
+    // The output of the state Claimed or Submitted was made by a later transaction, in a later block. Its time is the time of that block, and not the member posted_at that it keeps from the Post. The port gives the state, so that the dispute code can tell it from the output of the Post.
+    postEscrowAt(ledger, NOW - DAY, false, {}, { posted_at: NOW - 2 * DAY, state: 'Claimed' });
+    expect(await port.readEscrowJob(ESCROW)).toEqual(job(NOW - DAY, 'Claimed'));
     postEscrowAt(ledger, NOW - DAY, false, {}, { posted_at: NOW - 2 * DAY, state: 'Submitted', submitted_at: NOW - DAY, result_receipt_hash: 'cd'.repeat(32) });
-    expect(await port.readEscrowJob(ESCROW)).toEqual(job(NOW - DAY));
+    expect(await port.readEscrowJob(ESCROW)).toEqual(job(NOW - DAY, 'Submitted'));
     await expect(port.readEscrowJob('zq9')).rejects.toThrow(TypeError);
+  }, SLOW);
+
+  /**
+   * The job after its steps: the Post output (the escrow of the samples, spent), the Claim output 12 minutes after it (spent) and the Submit output 25 minutes after it (unspent). The older claim of the other party covers the job. The newer
+   * claim was staked 10 minutes after the Post, so it does not cover the job, and it ends later. The block of the Claim output and the block of the Submit output are after the newer claim, so a start from one of them would make it a target.
+   */
+  function stepped(): { readonly ledger: LedgerProvider; readonly claimOutput: string; readonly submitOutput: string } {
+    const ledger = ledgerWorld((l) => [
+      kitClaim(l, CLAIM_TOKEN),
+      { ...kitClaim(l, `636c6d5f${'0d'.repeat(28)}`, { challengeWindow: 20 * HOUR }, NOW - (JOB_BEGAN_AT + 10 * 60_000)), txHash: 'c4'.repeat(32) },
+    ]);
+    postEscrowAt(ledger, JOB_BEGAN_AT, true);
+    return {
+      ledger, claimOutput: laterEscrowAt(ledger, 'ea'.repeat(32), JOB_BEGAN_AT + 12 * 60_000, 'Claimed', true), submitOutput: laterEscrowAt(ledger, 'e8'.repeat(32), JOB_BEGAN_AT + 25 * 60_000, 'Submitted', false),
+    };
+  }
+
+  it('refuses the Claim output and the Submit output of the job, says to name the output of the Post, and sends nothing; the Post output files the job against the claim that covers it', async () => {
+    const { ledger, claimOutput, submitOutput } = stepped();
+    for (const [name, ref] of [['the Claim output', claimOutput], ['the Submit output', submitOutput]] as const) {
+      const delivered = await challengeOrder(disputeOf(ledger, AUDITOR_ID), ref);
+      expect(delivered, name).toMatchObject({ ok: false, code: 'bad_shape' });
+      if (!delivered.ok) expect(delivered.detail, name).toContain('the output of its Post');
+      expect(await disputeOf(ledger, AUDITOR_ID).findOpenClaim(CLAIMER, { ...SCOPE, escrow_ref: ref }), name).toMatchObject({ ok: false, code: 'bad_shape' });
+      expect(ledger.accepted, name).toEqual([]);
+    }
+    // The twin: the Post output gives the start of the job, also when it is spent. The newer claim was staked after it, so only the older claim is the target.
+    expect(filedOf(await challengeOrder(disputeOf(ledger, AUDITOR_ID))).record.claim).toBe(CLAIM_REF);
   }, SLOW);
 
   /** What a poster can write into the member posted_at of the datum: no validator checks it. */
@@ -1039,7 +1069,7 @@ describe('the start of a job is the time of the block of its escrow output', () 
     // The twin: an escrow of the legacy layout, at the legacy escrow address.
     const { agent_id: _agent, refund: _refund, ...legacy } = identityEscrow(JOB_BEGAN_AT, { capability_id: JOB.capability_id });
     postEscrowAt(ledger, JOB_BEGAN_AT, false, { address: ESCROW_ADDRESS, datum: encodeEscrowDatum(legacy) });
-    expect(await port.readEscrowJob(ESCROW)).toEqual({ ok: true, value: { block_time_ms: JOB_BEGAN_AT, capability_id: JOB.capability_id, agent_id: null } });
+    expect(await port.readEscrowJob(ESCROW)).toEqual({ ok: true, value: { block_time_ms: JOB_BEGAN_AT, state: 'Open', capability_id: JOB.capability_id, agent_id: null } });
   }, SLOW);
 
   /** The fake Koios of the ledger, with the answer of the route `utxo_info` changed by `change`. Any other route is as it is. */

@@ -173,11 +173,11 @@ export const NO_DOCUMENT: DocumentAbsent = { ok: false, code: 'no_document', det
 export const NOT_ESCROW: NotAnEscrow = { ok: false, code: 'not_escrow', detail: 'the output is not at the escrow script of the deployment' };
 
 /**
- * What a read of the escrow of the job of the samples answers: the job began at `JOB_BEGAN_AT`, for the capability of the job, and the datum names `OTHER_ID` as its agent, which is the counterparty that this agent hired.
- * A job that the sender of a request hired this agent for names `ME_ID`. `overrides` change members.
+ * What a read of the escrow of the job of the samples answers: the output of the Post, in a block made at `JOB_BEGAN_AT` (the state Open), for the capability of the job, and the datum names `OTHER_ID` as its agent, which is
+ * the counterparty that this agent hired. A job that the sender of a request hired this agent for names `ME_ID`. `overrides` change members.
  */
 export const escrowJob = (overrides: Partial<EscrowJob> = {}): Extract<EscrowJobResult, { ok: true }> => ({
-  ok: true, value: { block_time_ms: JOB_BEGAN_AT, capability_id: CAPABILITY, agent_id: OTHER_ID, ...overrides },
+  ok: true, value: { block_time_ms: JOB_BEGAN_AT, state: 'Open', capability_id: CAPABILITY, agent_id: OTHER_ID, ...overrides },
 });
 
 /** A chain port that answers from lists that a test sets, and that writes each call to the events. A test changes an answer by setting the member of the same name. */

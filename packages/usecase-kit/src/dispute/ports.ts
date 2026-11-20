@@ -1,11 +1,13 @@
 // packages/usecase-kit/src/dispute/ports.ts
 // What the dispute code needs from the outside: the chain, the queue of the service key and the clock.
 //
-// The chain port reads the claims and the challenges of Module-1, the documents that they name, and the job of an escrow output: the time of the block that holds its transaction, which is the start of the job. It lands four kinds of transaction: a document, a claim, a challenge and a withdrawal. A port
+// The chain port reads the claims and the challenges of Module-1, the documents that they name, and the job of an escrow output: the time of the block that holds its transaction (the start of the job, for the output that
+// the Post made), the state of its datum, and the capability and the agent that the datum names. It lands four kinds of transaction: a document, a claim, a challenge and a withdrawal. A port
 // method that lands a transaction never throws for a problem of the build, the signature or the submit. It returns a typed result that says what happened, and what could still land. A read throws
 // when the chain cannot be read, and it never answers with a list that leaves a claim out. The real port is `createModule1Port` (chain.ts). A test can give a scripted port, or the real port over the
 // fixture world of the buyer code.
 import type { ChallengeState, ClaimState } from '@vsa/buyer-core';
+import type { EscrowState } from '@vsa/vector-read';
 import type { Accepted, Did, OutputRef, Refused } from '../protocol/index.ts';
 
 /** The most bytes of a claim type: the limit of `buildSubmitClaim` of the buyer code, which refuses a type of 0 bytes and a type of more than 64 bytes. */
@@ -74,13 +76,18 @@ export type DocumentAbsent = Refused<'transaction_unknown' | 'no_document'>;
 /** The result of a read of a document: the document, or the reason that the source, which answered, has none. A read that gets no answer throws. */
 export type DocumentResult = Accepted<ReadDocument> | DocumentAbsent;
 
-/** What the port reads about the job that an escrow output stands for: when it began, and the capability and the agent that its datum names. */
+/** What the port reads about the job that an escrow output stands for: when its block was made, the state of its datum, and the capability and the agent that its datum names. */
 export interface EscrowJob {
   /**
-   * The start of the job, in POSIX milliseconds: the time of the block that holds the transaction that made the escrow output. The chain gives it, and the poster of the escrow cannot choose it. It is not the member
-   * `posted_at` of the datum: the poster writes that member, and no validator checks it.
+   * The time of the block that holds the transaction that made the escrow output, in POSIX milliseconds. For the output that the Post made (the state Open), it is the start of the job. The chain gives it, and the poster
+   * of the escrow cannot choose it. It is not the member `posted_at` of the datum: the poster writes that member, and no validator checks it.
    */
   readonly block_time_ms: number;
+  /**
+   * The state that the datum of the output holds. The output that the Post made has the state Open, and Koios keeps that datum after the output is spent. An output that a later step made (the Claim or the Submit) has
+   * another state, and its block is later than the start of the job: only the output of the Post gives the start.
+   */
+  readonly state: EscrowState;
   /** The capability that the datum names, as text: the member `capability_id` of the datum. */
   readonly capability_id: string;
   /** The agent that the datum names: 64 lower-case hex characters, with no `did:vector:`. It is the agent that the job hired. Null for an escrow of the legacy layout: its datum names no agent. */
@@ -220,9 +227,10 @@ export interface Module1Port {
    */
   isIndexed(ref: OutputRef): Promise<boolean>;
   /**
-   * The job that the escrow output at `ref` stands for: the time of the block that holds the transaction that made the output, and the capability and the agent of its datum (`EscrowJob`). The output can be in any state of
-   * the escrow, spent or not. It gives `not_escrow` when the source answered and the output is not an escrow output of the deployment. It throws when the source cannot be read, answers in a wrong shape, gives no time of
-   * the block, or does not have the output (it can be behind): a read that throws never says that the output is no escrow output.
+   * The job that the escrow output at `ref` stands for: the time of the block that holds the transaction that made the output, the state of its datum, and the capability and the agent of its datum (`EscrowJob`). The output
+   * can be in any state of the escrow, spent or not, and the port gives the state: the dispute code takes only the output that the Post made (the state Open). It gives `not_escrow` when the source answered and the output
+   * is not an escrow output of the deployment. It throws when the source cannot be read, answers in a wrong shape, gives no time of the block, or does not have the output (it can be behind): a read that throws never says
+   * that the output is no escrow output.
    */
   readEscrowJob(ref: OutputRef): Promise<EscrowJobResult>;
   publishDocument(call: PublishCall): Promise<TxResult<PublishedDocument>>;
