@@ -110,7 +110,7 @@ describe('a limit that is not given', () => {
   // The price ceiling takes no null. The two bonds take null, as a caller writes it on purpose.
   bad.push(['maxPriceLovelace as null', (limits) => { limits.maxPriceLovelace = null; }]);
   bad.push(['allowlist missing', (limits) => { delete limits.allowlist; }]);
-  for (const [kind, value] of [['a text', `deepseek/deepseek-v4-flash ${MARKER}`], ['a number', 7], ['null', null], ['undefined', undefined], ['an object', {}], ['an empty list', []],
+  for (const [kind, value] of [['a text', `deepseek/deepseek-v4-flash ${MARKER}`], ['a text with no space', 'deepseek/deepseek-v4-flash'], ['a number', 7], ['null', null], ['undefined', undefined], ['an object', {}], ['an empty list', []],
     ['a list with a number', ['a/b', 7]], ['a list with an empty name', ['a/b', '']], ['a list with a name that has a space', [`a/b ${MARKER}`]], ['a list with a hole', [, 'a/b']]] as Array<[string, unknown]>) {
     bad.push([`allowlist as ${kind}`, (limits) => { limits.allowlist = value; }]);
   }
