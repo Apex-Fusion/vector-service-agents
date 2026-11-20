@@ -33,8 +33,8 @@ import type { Provider, UTxO } from '@lucid-evolution/lucid';
 import { addressDetails, decodeTransaction } from '@vsa/vector-read/guarded-decode';
 import type { EscrowDatum } from '@vsa/vector-read';
 import { utf8Hex } from '@vsa/vector-read/identity-codec';
-import { accepted, parseOutputRef, refused } from '../protocol/index.ts';
-import type { Did, OutputRef } from '../protocol/index.ts';
+import { accepted, didOfAgentId, parseOutputRef, refused } from '../protocol/index.ts';
+import type { Did, KeyHash, OutputRef } from '../protocol/index.ts';
 import type {
   ChallengeView, ClaimView, DocumentAbsent, DocumentResult, EscrowJobResult, Module1Port, NotAnEscrow, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument, SubmitClaimCall, SubmittedClaim, TxNotBuilt,
   TxNotConfirmed, TxResult, WithdrawClaimCall, WithdrawnClaim,
@@ -196,7 +196,7 @@ function claimViewOf(module1: Module1Deployment, utxo: UTxO): ClaimView | null {
   if (utxo.datum === undefined || utxo.datum === null) throw new Error(`the claim output ${ref} has no inline datum`);
   const datum = decodeClaimDatum(utxo.datum);
   return {
-    ref, token, claimer: `did:vector:${datum.claimerDid}`, claimer_key_hash: datum.claimerCredential.type === 'VerificationKey' ? datum.claimerCredential.hash : null, state: datum.state,
+    ref, token, claimer: didOfAgentId(datum.claimerDid), claimer_key_hash: datum.claimerCredential.type === 'VerificationKey' ? datum.claimerCredential.hash : null, state: datum.state,
     stake_lovelace: datum.stakeAmount, submitted_at: datum.submittedAt, challenge_window_ms: datum.challengeWindow, claim_hash: datum.claimHash, claim_type: textOfHex(datum.claimType),
     claim_uri: textOfHex(datum.storageUri),
   };
@@ -218,7 +218,7 @@ function challengeViewOf(module1: Module1Deployment, utxo: UTxO): ChallengeView 
     return null;
   }
   return {
-    ref, token, claim: refOfUtxo(datum.claimRef), claim_token: datum.claimToken, auditor: `did:vector:${datum.auditorDid}`,
+    ref, token, claim: refOfUtxo(datum.claimRef), claim_token: datum.claimToken, auditor: didOfAgentId(datum.auditorDid),
     auditor_key_hash: datum.auditorCredential.type === 'VerificationKey' ? datum.auditorCredential.hash : null, stake_lovelace: datum.stakeAmount, evidence_hash: datum.evidenceHash,
     evidence_uri: textOfHex(datum.evidenceUri), challenged_at: datum.challengedAt, resolution_deadline_ms: datum.resolutionDeadline, state: datum.state.type,
   };
@@ -325,7 +325,7 @@ export function createModule1Port(deps: Module1PortDeps): Module1Port {
   }
   const resolutionDeadline = deps.module1.protocol.resolutionDeadline;
   if (!Number.isSafeInteger(resolutionDeadline) || resolutionDeadline < 1) throw new TypeError('the resolution deadline of the Module-1 deployment must be a whole number of milliseconds');
-  const agent: { readonly did: Did; readonly key_hash: string } = { did: `did:vector:${agentId}`, key_hash: keyHash };
+  const agent: { readonly did: Did; readonly key_hash: KeyHash } = { did: didOfAgentId(agentId), key_hash: keyHash };
   // `credentialOutputs` reads the Koios URL and the fetch of its environment, and nothing else: the deployment of the identity registry is not needed to list the outputs of a script. Its fetch is the one
   // of the caller, which `wholeRows` wraps so that a row of a wrong shape is an error.
   const koios = { provider: provider as Provider, koiosUrl: deps.koios_url, fetchImpl: wholeRows(deps.fetch) } as LedgerEnv;

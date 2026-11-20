@@ -8,7 +8,7 @@
 // fixture world of the buyer code.
 import type { ChallengeState, ClaimState } from '@vsa/buyer-core';
 import type { EscrowState } from '@vsa/vector-read';
-import type { Accepted, Did, OutputRef, Refused } from '../protocol/index.ts';
+import type { Accepted, Did, KeyHash, OutputRef, Refused } from '../protocol/index.ts';
 
 /** The most bytes of a claim type: the limit of `buildSubmitClaim` of the buyer code, which refuses a type of 0 bytes and a type of more than 64 bytes. */
 export const MAX_CLAIM_TYPE_BYTES = 64;
@@ -21,7 +21,7 @@ export interface ClaimView {
   readonly token: string;
   readonly claimer: Did;
   /** The key hash of the claimer credential (56 lower-case hex characters), or null when the credential is a script. Only this key can withdraw the claim. */
-  readonly claimer_key_hash: string | null;
+  readonly claimer_key_hash: KeyHash | null;
   readonly state: ClaimState;
   readonly stake_lovelace: bigint;
   /** POSIX milliseconds. */
@@ -47,7 +47,7 @@ export interface ChallengeView {
   /** The challenger. */
   readonly auditor: Did;
   /** The key hash of the auditor credential (56 lower-case hex characters), or null when the credential is a script. */
-  readonly auditor_key_hash: string | null;
+  readonly auditor_key_hash: KeyHash | null;
   readonly stake_lovelace: bigint;
   /** The hash of the evidence document that the challenge holds, in lower-case hex. */
   readonly evidence_hash: string;
@@ -204,7 +204,7 @@ export interface WithdrawClaimCall {
 /** The chain, as the dispute code uses it. Every transaction method takes the wallet of the service key and spends it: call it inside the queue of that key. */
 export interface Module1Port {
   /** The agent that the key acts for: its DID, and the hash of the key. */
-  readonly agent: { readonly did: Did; readonly key_hash: string };
+  readonly agent: { readonly did: Did; readonly key_hash: KeyHash };
   /**
    * The parameters of the Module-1 deployment that a challenge must agree with. `resolution_deadline_ms` is the time that the oracle and the jury have to resolve a challenge: a challenge
    * names this value, and the relay opens a case for it only when the value leaves the time that it needs (SPEC rule of the relay).
