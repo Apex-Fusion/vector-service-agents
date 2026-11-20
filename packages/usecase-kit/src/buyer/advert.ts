@@ -5,9 +5,8 @@
 // The advert of another agent, and an advert that names no agent (a legacy advert), are `advert_not_counterparty`. A read that cannot be made is `ledger_unavailable`, and so is a reading of the wrong
 // shape: neither is read as a match. In each of these cases nothing is paid. The function never throws.
 import type { Chain } from '@vsa/buyer-core';
+import { didOfAgentId } from '@vsa/usecase-kit/protocol';
 import type { Did, OutputRef } from '@vsa/usecase-kit/protocol';
-
-const DID_PREFIX = 'did:vector:';
 
 /** The codes of an advert check that stops the job. `ledger_unavailable` says that the advert could not be read. */
 export type AdvertRefusal = 'advert_not_counterparty' | 'ledger_unavailable';
@@ -30,6 +29,6 @@ export async function checkAdvertAgent(chain: Pick<Chain, 'readAdvert'>, advert:
     return { ok: false, code: 'ledger_unavailable', detail: 'the ledger could not be read for the advert of the document' };
   }
   if (typeof agent !== 'string') return { ok: false, code: 'advert_not_counterparty', detail: 'the advert of the document names no agent, so it is not the advert of the counterparty' };
-  if (`${DID_PREFIX}${agent}` !== counterparty) return { ok: false, code: 'advert_not_counterparty', detail: 'the advert of the document names another agent than the counterparty of the document' };
+  if (didOfAgentId(agent) !== counterparty) return { ok: false, code: 'advert_not_counterparty', detail: 'the advert of the document names another agent than the counterparty of the document' };
   return { ok: true };
 }

@@ -31,7 +31,7 @@
 import { verificationOf } from '@vsa/hire-kit';
 import type { AgentDelivery, AgentEscrow, AgentOutcome, HireFailure, HireTerms } from '@vsa/hire-kit';
 import { flatText } from '@vsa/service-kit/text';
-import { AFTER_CLAIM_REFUSALS, COUNTERPARTY_REFUSALS, ERROR_STATUS, RECEIPT_CHECKS, isErrorCode, isPlainObject, parseJsonText, parseJsonValue, parseOutputRef } from '@vsa/usecase-kit/protocol';
+import { AFTER_CLAIM_REFUSALS, COUNTERPARTY_REFUSALS, ERROR_STATUS, RECEIPT_CHECKS, isErrorCode, isKeyHash, isPlainObject, parseJsonText, parseJsonValue, parseOutputRef } from '@vsa/usecase-kit/protocol';
 import type { CounterpartyKind, Did, HandoffRecord, JsonObject, OutputRef, ReceiptCheck, ReceiptVerification, UseCase } from '@vsa/usecase-kit/protocol';
 import type { DelegationAfter } from './authority.ts';
 import type { BookingFailure, FailedStep, HireStep, UnrecordedDelivery, VerifiedDelivery } from './steps.ts';
@@ -299,9 +299,6 @@ function vaultRefusedStep(outcome: VaultRefused, context: StepContext): HireStep
   };
 }
 
-/** The hash of a supplier key: 56 lower-case hex characters. */
-const SUPPLIER_PKH = /^[0-9a-f]{56}$/;
-
 /** What can be recorded of a delivery that cannot be written as JSON data: the escrow and the advert of the outcome, the supplier key hash and the eight checks of its record. `null` when one of them cannot be read. */
 function unrecordedOf(delivery: AgentDelivery, escrow: Escrow): UnrecordedDelivery | null {
   try {
@@ -309,7 +306,7 @@ function unrecordedOf(delivery: AgentDelivery, escrow: Escrow): UnrecordedDelive
     if (typeof record !== 'object' || record === null) return null;
     const supplier: unknown = Reflect.get(record, 'supplier_pkh');
     const verification = verificationFrom(Reflect.get(record, 'verification'));
-    if (typeof supplier !== 'string' || !SUPPLIER_PKH.test(supplier) || verification === null) return null;
+    if (!isKeyHash(supplier) || verification === null) return null;
     return { escrow_ref: escrow.escrow_ref, advert_ref: escrow.advert_ref, supplier_pkh: supplier, verification };
   } catch {
     return null;

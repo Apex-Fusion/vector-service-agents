@@ -2,11 +2,10 @@
 // The authority check of a job. The agent reads the delegation of the request. A delegation that exists and names another agent as its delegate is refused: `delegation_not_mine`. A delegation
 // that is not found does not stop the job, because the ledger refuses the payment later and the flow then reads the delegation again. The agent does not judge what the delegation covers: the
 // vault, the counterparty and the mock systems do that. A delegation that cannot be read is neither "mine" nor "not found": it has its own code, `ledger_unavailable`, and the job does not go on.
-import { accepted, parseDelegationId, parseDid, refused } from '@vsa/usecase-kit/protocol';
+import { accepted, agentIdOf, parseDelegationId, parseDid, refused } from '@vsa/usecase-kit/protocol';
 import type { DelegationId, Did, ProtocolResult } from '@vsa/usecase-kit/protocol';
 import type { DelegationReading, LedgerReads } from './ports.ts';
 
-const DID_PREFIX = 'did:vector:';
 const AGENT_ID = /^[0-9a-f]{64}$/;
 
 /** What the check found, for a job that goes on. */
@@ -46,7 +45,7 @@ export async function checkAuthority(
   const reading = readingOf(read);
   if (!reading.ok) return { ok: false, code: 'ledger_unavailable', detail: reading.detail };
   if (reading.value === null) return { ok: true, delegation: 'not_found' };
-  if (reading.value.delegate !== checkedAgent.value.slice(DID_PREFIX.length)) {
+  if (reading.value.delegate !== agentIdOf(checkedAgent.value)) {
     return { ok: false, code: 'delegation_not_mine', detail: 'authority.delegation names another agent as its delegate' };
   }
   return { ok: true, delegation: 'names_agent' };
