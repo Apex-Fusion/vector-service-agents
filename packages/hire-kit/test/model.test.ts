@@ -240,6 +240,25 @@ describe('hireModel', () => {
     expect(early.key.stranded.list().map((entry) => entry.escrow_ref)).toStrictEqual([escrowNo(1)]);
   });
 
+  it('ends a hire whose turn has less than `minLeftAtTurnMs` left with the deadline error at the stage `lane`, before it reads or posts anything; with that much left, it hires', async () => {
+    const short = await setup();
+    const error = await thrown(hireModel(short.key, { ...short.deps, deadlineMs: T0 + 59_999 }, request({ minLeftAtTurnMs: 60_000 }), ERRORS));
+    expect([error.code, error.facts]).toStrictEqual(['deadline', { stage: 'lane', escrowRef: null, handedOver: false }]);
+    expect([short.m.calls, short.booked, short.key.stranded.list()]).toStrictEqual([[], [], []]);
+    // The twins: the same margin with the deadline 60 s ahead, and no margin with the deadline 59.999 s ahead.
+    const exact = await setup();
+    expect((await hireModel(exact.key, { ...exact.deps, deadlineMs: T0 + 60_000 }, request({ minLeftAtTurnMs: 60_000 }), ERRORS)).accepted).toBe('confirmed');
+    const plain = await setup();
+    expect((await hireModel(plain.key, { ...plain.deps, deadlineMs: T0 + 59_999 }, request(), ERRORS)).accepted).toBe('confirmed');
+  });
+
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, '60000', null])('refuses the margin %s with a TypeError before the lane is used and before anything is read', async (margin) => {
+    const run = await setup();
+    await expect(hireModel(run.key, run.deps, request({ minLeftAtTurnMs: margin as unknown as number }), ERRORS)).rejects.toThrow(TypeError);
+    expect(run.m.calls).toStrictEqual([]);
+    expect(run.key.lane.busy).toBe(false);
+  });
+
   it('does not let the price ceiling bound what a hire pays: an advert at the ceiling whose supplier bond is above the limit is not hired, with the advert, the bond and the limit in the message, and nothing is posted; at the limit, and with no limit, it is hired', async () => {
     const advert = { ...LLM_ADVERT, supplier_bond_lovelace: 25_000_000n };
     const over = await setup({ lockLovelace: 60_000_000n, floatLovelace: 200_000_000n, llmAdvert: advert });

@@ -33,7 +33,7 @@ import type { Clocked } from './budget.ts';
 import { canonicalRef, errorText } from './format.ts';
 import { HireDeclined, HireDecisionTimeout, hireOne, termsOf } from './hire.ts';
 import type { AcceptDecision, Delivery, HireDetail, HireErrors, HireFacts, HireFailure, HireLedger, HireOptions, HireRecord, HireSupplier, HireTerms } from './hire.ts';
-import { checkTurn } from './keys.ts';
+import { checkTurn, minLeftAtTurn } from './keys.ts';
 import type { PayingKey } from './keys.ts';
 import { advertOnChain, bondProblem, choiceLine, keyOfAdvert, requireLimits } from './select.ts';
 import { isRuntimeRefusal, templateJob } from './template-client.ts';
@@ -70,6 +70,11 @@ export interface AgentRequest {
   maxSupplierBondLovelace: bigint | null;
   /** The most the buyer bond of the advert may be, in lovelace: the buyer funds it at the Post, and it returns at an Accept. A number refuses a dearer advert; `null` is no limit. */
   maxBuyerBondLovelace: bigint | null;
+  /**
+   * The least time, in milliseconds, that must be left before `deps.deadlineMs` when the turn of the hire comes. A turn with less time left ends with the deadline error at the stage `lane`, before
+   * anything is read or paid. Absent is 0: only a turn at or after the deadline ends. A value that is not a finite number of 0 or more is refused with a TypeError before anything is read.
+   */
+  minLeftAtTurnMs?: number;
   /**
    * The decision between the checked receipt and the Accept. Absent, a delivery that passed the checks is accepted. A hook that throws stops the hire with its own error. A hook that has not
    * answered by DECISION_WINDOW_MS after the answer of the agent ends the hire as not_accepted with `decision_timeout`, and the hook is not asked when that time has passed already.
@@ -285,17 +290,19 @@ function ended<E extends Error>(stop: HireStop, advertRef: string, vaultRef: str
  * asks `request.decide`, and accepts or does not. It runs in the lane of the key: one hire at a time for the key, and the janitor of the key starts no transaction meanwhile. A vault
  * Pay checks no limit of the vault: the node evaluates it, and the answer of the vault script is the `vault_refused` outcome with the evaluation error and the body of the transaction.
  * The error of the factory (`errors`) is thrown for what no outcome names, in a HireInterrupted after a confirmed vault Pay and in a HirePayUnconfirmed after one that was not seen confirmed.
- * A hire whose turn in the lane comes at or after `deps.deadlineMs` throws the `deadline` of `errors` as it is, with the stage `lane` and no escrow, before anything is read or paid: no vault is spent.
+ * A hire whose turn in the lane comes at or after `deps.deadlineMs`, or with less than `request.minLeftAtTurnMs` left, throws the `deadline` of `errors` as it is, with the stage `lane` and no
+ * escrow, before anything is read or paid: no vault is spent.
  */
 export async function hireAgent<E extends Error>(key: PayingKey, deps: AgentDeps, request: AgentRequest, errors: AgentErrors<E>): Promise<AgentOutcome> {
   if (typeof request.payload !== 'string' || request.payload === '') throw new TypeError('The payload must be a non-empty string.');
   requireLimits({ maxPriceLovelace: request.maxPriceLovelace, maxSupplierBondLovelace: request.maxSupplierBondLovelace, maxBuyerBondLovelace: request.maxBuyerBondLovelace }, { null: true, absent: false });
-  return key.lane.run(() => hireInLane(key, deps, request, errors));
+  const minLeftMs = minLeftAtTurn(request.minLeftAtTurnMs);
+  return key.lane.run(() => hireInLane(key, deps, request, errors, minLeftMs));
 }
 
-async function hireInLane<E extends Error>(key: PayingKey, deps: AgentDeps, request: AgentRequest, errors: AgentErrors<E>): Promise<AgentOutcome> {
+async function hireInLane<E extends Error>(key: PayingKey, deps: AgentDeps, request: AgentRequest, errors: AgentErrors<E>, minLeftMs: number): Promise<AgentOutcome> {
   const label = request.label ?? 'the agent job';
-  checkTurn(deps, label, errors);
+  checkTurn(deps, label, errors, minLeftMs);
   const { chain } = key;
   const supplier = await chooseAgent(chain, deps, request, (why) => errors.unavailable(why));
   const job = templateJob(supplier.endpoint, request.payload, label, deps.fetchImpl);

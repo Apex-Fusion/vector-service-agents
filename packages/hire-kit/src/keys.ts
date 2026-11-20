@@ -38,13 +38,24 @@ export class HireLane {
 }
 
 /**
- * The first check of a hire, made when the lane of its key gives it its turn, before it reads an advert, chooses a supplier, builds a transaction or pays. When the clock does not stand before the
- * deadline, the hire ends with the deadline error of `errors` (`label` says which hire), and its facts name the stage `lane` and no escrow: nothing was posted, and no vault was spent. A turn at the
- * deadline is too late: `fit` (src/budget.ts) takes that moment as in time for a wait, and a hire that has not begun has no time left at it. There is no margin. A turn before the deadline goes on,
- * and the waits and the options of the hire (hireOne, src/hire.ts) cut it as before.
+ * The least time left at the turn of a hire, from the request of the caller: absent is 0. A value that is not a finite number of 0 or more is refused with a TypeError, before the lane is used.
  */
-export function checkTurn<E extends Error>(t: Clocked, label: string, errors: Pick<HireErrors<E>, 'deadline'>): void {
-  if (t.clock() < t.deadlineMs) return;
+export function minLeftAtTurn(value: unknown): number {
+  if (value === undefined) return 0;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new TypeError('minLeftAtTurnMs must be a finite number of milliseconds, 0 or more.');
+  return value;
+}
+
+/**
+ * The first check of a hire, made when the lane of its key gives it its turn, before it reads an advert, chooses a supplier, builds a transaction or pays. When the clock does not stand before the
+ * deadline, or the time left until the deadline is less than `minLeftMs`, the hire ends with the deadline error of `errors` (`label` says which hire), and its facts name the stage `lane` and no
+ * escrow: nothing was posted, and no vault was spent. A turn at the deadline is too late also with no margin: `fit` (src/budget.ts) takes that moment as in time for a wait, and a hire that has not
+ * begun has no time left at it. A caller gives a margin when a hire that posts with less time left can only end at its first poll with a locked escrow. A turn in time goes on, and the waits and the
+ * options of the hire (hireOne, src/hire.ts) cut it as before.
+ */
+export function checkTurn<E extends Error>(t: Clocked, label: string, errors: Pick<HireErrors<E>, 'deadline'>, minLeftMs = 0): void {
+  const left = t.deadlineMs - t.clock();
+  if (left > 0 && left >= minLeftMs) return;
   // The text is true also when the lane was free and the deadline had passed before the call: the hire had not begun when its turn came.
   throw errors.deadline(`${label} had not begun`, { stage: 'lane', escrowRef: null, handedOver: false });
 }

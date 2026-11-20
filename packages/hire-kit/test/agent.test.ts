@@ -1134,6 +1134,22 @@ describe('hireAgent: in the lane of its paying key', () => {
     expect(run.m.chain.vault(vault)).toMatchObject({ consumed: true });
     expect(run.m.chain.vault(second.value.vaultRef ?? '')).toMatchObject({ kind: 'Live', consumed: false });
   });
+
+  it('ends a hire whose turn has less than `minLeftAtTurnMs` left with the deadline error at the stage `lane`, before it reads or pays anything; with that much left, it hires', async () => {
+    const short = await setup({}, { deadlineMs: 59_999 });
+    const error = await thrown(go(short, { minLeftAtTurnMs: 60_000 }));
+    expect([error.code, error.facts]).toStrictEqual(['deadline', { stage: 'lane', escrowRef: null, handedOver: false }]);
+    expect([short.m.calls, short.m.agent.sends, short.booked.posted, short.stranded.list()]).toStrictEqual([[], [], [], []]);
+    // The twins: the same margin with the deadline 60 s ahead, and no margin with the deadline 59.999 s ahead.
+    expect((await go(await setup({}, { deadlineMs: 60_000 }), { minLeftAtTurnMs: 60_000 })).outcome).toBe('completed');
+    expect((await go(await setup({}, { deadlineMs: 59_999 }))).outcome).toBe('completed');
+  });
+
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, '60000', null])('refuses the margin %s with a TypeError before anything is read', async (margin) => {
+    const run = await setup();
+    await expect(go(run, { minLeftAtTurnMs: margin as unknown as number })).rejects.toThrow(TypeError);
+    expect([run.m.calls, run.m.agent.sends]).toStrictEqual([[], []]);
+  });
 });
 
 describe('hireAgent: the five outcomes in one type', () => {
