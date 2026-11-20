@@ -152,6 +152,24 @@ describe('a challenge is never built before the evidence document is confirmed',
     expect((await digest.dispute.challengeApproval(approval())).ok).toBe(true);
     expect(textOf(digest.port.published[0]!.bytes)).toContain(`holds the digest ${MISMATCH.expected_digest}`);
   });
+
+  it('writes lines with references and codes to the log, and no value of the facts and no text of the evidence', async () => {
+    const { logs, port, dispute } = rig();
+    port.claims = [claimView()];
+    const facts = { ...ORDER_FACTS, purchase_order: { ...ORDER_FACTS.purchase_order, sku: 'SKU-zq9marker' }, confirmation: { ...ORDER_FACTS.confirmation, sku: 'SKU-zq9other' } };
+    expect((await dispute.challengeDelivery(delivery({ evidence: facts }))).ok).toBe(true);
+    expect(logs.length).toBeGreaterThan(1);
+    expect(logs.join('\n')).not.toContain('zq9');
+    expect(logs.join('\n')).not.toContain('Evidence about');
+    expect(textOf(port.published[0]!.bytes)).toContain('SKU-zq9marker');
+    // A failure that stops after the evidence landed is logged with its code and its references.
+    const late = rig();
+    late.port.claims = [claimView()];
+    late.port.openChallengeAnswer = () => ({ ok: false, code: 'not_built', detail: 'the wallet is empty' });
+    await late.dispute.challengeDelivery(delivery({ evidence: facts }));
+    expect(late.logs.some((line) => line.includes('challenge_not_built') && line.includes(EVIDENCE_TX))).toBe(true);
+    expect(late.logs.join('\n')).not.toContain('zq9');
+  });
 });
 
 describe('the claim that is challenged is the open claim of the other party of this job', () => {

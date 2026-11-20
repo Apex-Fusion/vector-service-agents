@@ -1,6 +1,6 @@
 // packages/usecase-kit/test/dispute/claim.test.ts: the claim of a run and the withdrawal of a claim, on a scripted chain port. Each refusal has an accepted twin.
 import { describe, expect, it } from 'vitest';
-import { claimDocument, Dispute } from '@vsa/usecase-kit/dispute';
+import { Dispute, challengeDeadlineOf, claimDocument, withdrawableFrom } from '@vsa/usecase-kit/dispute';
 import type { DisputeSettings, RunClaimInput, RunClaimResult, WithdrawResult } from '@vsa/usecase-kit/dispute';
 import {
   CHALLENGE_TX, CLAIM_DOC_TX, EVIDENCE_TX, HOUR, KEY_HASH, MANIFEST_SHA, ME, NOW, ORDER_DESK_CLAIM, OTHER_KEY_HASH, RecordingQueue, REF_A, REF_C, ScriptedPort, TOKEN_A, TOKEN_C, claimView,
@@ -142,6 +142,16 @@ describe('the withdrawal of a claim', () => {
     });
   });
 
+  it('gives the end of the window and the first moment of a withdrawal, which is the first whole second after the window', () => {
+    const claim = { submitted_at: NOW - 4 * HOUR, challenge_window_ms: 4 * HOUR };
+    expect(challengeDeadlineOf(claim)).toBe(NOW);
+    expect(withdrawableFrom(claim)).toBe(NOW + 1000);
+    // A window that ends inside a second: the withdrawal starts at the next whole second.
+    expect(withdrawableFrom({ submitted_at: NOW - 4 * HOUR + 500, challenge_window_ms: 4 * HOUR })).toBe(NOW + 1000);
+    expect(withdrawableFrom({ submitted_at: NOW - 4 * HOUR + 999, challenge_window_ms: 4 * HOUR })).toBe(NOW + 1000);
+    expect(withdrawableFrom({ submitted_at: NOW - 4 * HOUR + 1000, challenge_window_ms: 4 * HOUR })).toBe(NOW + 2000);
+  });
+
   it('refuses a withdrawal inside the challenge window, and sends nothing; the same claim goes out after the window', async () => {
     const { events, port, dispute, time } = rig();
     port.claims = [mine({ submitted_at: NOW - HOUR })];
@@ -187,6 +197,14 @@ describe('the withdrawal of a claim', () => {
       expectWithdrawRefused(await dispute.withdrawClaim({ claim: REF_A }), 'not_claimer');
       expect(port.withdrawn).toEqual([]);
     }
+  });
+
+  it('never withdraws a claim of a script credential, not even for a port that names no key', async () => {
+    const { port, dispute } = rig();
+    Object.defineProperty(port, 'agent', { value: { did: ME, key_hash: null } });
+    port.claims = [mine({ claimer_key_hash: null })];
+    expectWithdrawRefused(await dispute.withdrawClaim({ claim: REF_A }), 'not_claimer');
+    expect(port.withdrawn).toEqual([]);
   });
 
   it('says what the order of the refusals is: not Open before not the claimer before a window that has not ended', async () => {

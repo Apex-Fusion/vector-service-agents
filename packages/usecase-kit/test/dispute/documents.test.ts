@@ -49,6 +49,11 @@ describe('the claim document of an agent', () => {
   /** The statement `S3` with `length` characters of letters, as a claim input. */
   const withLastStatement = (text: string): ClaimDocumentInput => claimInput({ claim: { statements: [ORDER_DESK_CLAIM.statements[0], ORDER_DESK_CLAIM.statements[1], { id: 'S3', text }] } });
 
+  it('has the limits that the rules name: 3,000 bytes for a document and 4,300 bytes for its record', () => {
+    expect(MAX_JUROR_DOCUMENT_BYTES).toBe(3_000);
+    expect(JUROR_RECORD_LIMIT_BYTES).toBe(4_300);
+  });
+
   it('accepts a document of exactly the most bytes and refuses one byte more, and it never cuts', () => {
     const short = claimDocument(withLastStatement('x'));
     if (!short.ok) throw new Error(short.detail);
@@ -80,6 +85,21 @@ describe('the claim document of an agent', () => {
   it('measures the record of a juror as the text escaped twice as a JSON string', () => {
     expect(jurorRecordSize('abc')).toBe(3);
     expect(jurorRecordSize('a"b\n')).toBe(9);
+  });
+
+  it('accepts a document whose record is exactly the most bytes, and refuses a record of one byte more', () => {
+    const withTail = (letters: number): ClaimDocumentInput => claimInput({
+      claim: { statements: [ORDER_DESK_CLAIM.statements[0], ORDER_DESK_CLAIM.statements[1], { id: 'S3', text: `${'"'.repeat(800)}${'a'.repeat(letters)}` }] },
+    });
+    const probe = claimDocument(withTail(1));
+    if (!probe.ok) throw new Error(probe.detail);
+    // Each letter is one byte in the document and one byte in the record, so the tail that makes the record the most is known.
+    const letters = 1 + JUROR_RECORD_LIMIT_BYTES - jurorRecordSize(probe.value.text);
+    const exact = claimDocument(withTail(letters));
+    if (!exact.ok) throw new Error(exact.detail);
+    expect(jurorRecordSize(exact.value.text)).toBe(JUROR_RECORD_LIMIT_BYTES);
+    expect(exact.value.bytes.length).toBeLessThan(MAX_JUROR_DOCUMENT_BYTES);
+    expect(claimDocument(withTail(letters + 1))).toMatchObject({ ok: false, code: 'document_too_large' });
   });
 
   const BAD_CLAIMS: Array<[string, Partial<ClaimDocumentInput> | Record<string, unknown>]> = [

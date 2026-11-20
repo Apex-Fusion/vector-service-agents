@@ -256,6 +256,18 @@ describe('what the chain port reads', () => {
     expect(await realPort(ledger, AUDITOR_ID, NOW).readClaim(`${'ee'.repeat(32)}#0`)).toBeNull();
   }, SLOW);
 
+  it('reads a claim of a script credential with no key hash, and takes no output of another address for a claim', async () => {
+    const script = claimUtxo(CLAIM_TOKEN, { claimerCredential: { type: 'Script', hash: 'ab'.repeat(28) } });
+    const elsewhere = { ...claimUtxo(`636c6d5f${'0b'.repeat(28)}`), txHash: 'ad'.repeat(32), address: WALLET_ADDRESS };
+    const atChallenge = { ...claimUtxo(`636c6d5f${'0c'.repeat(28)}`), txHash: 'ae'.repeat(32), address: MODULE1.challenge.address };
+    const ledger = ledgerWorld([script, elsewhere, atChallenge]);
+    const port = realPort(ledger, AUDITOR_ID, NOW);
+    expect(await port.readClaim(CLAIM_REF)).toMatchObject({ ref: CLAIM_REF, claimer_key_hash: null });
+    expect(await port.readClaim(`${'ad'.repeat(32)}#0`)).toBeNull();
+    expect(await port.readClaim(`${'ae'.repeat(32)}#0`)).toBeNull();
+    expect((await port.readClaims()).map((claim) => claim.ref)).toEqual([CLAIM_REF]);
+  }, SLOW);
+
   it('does not take a claim output with a datum that it cannot read for no claim', async () => {
     const broken = { ...claimUtxo(CLAIM_TOKEN), datum: 'd8799f01ff' };
     const ledger = ledgerWorld([broken]);
