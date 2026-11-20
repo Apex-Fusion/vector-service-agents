@@ -1,11 +1,12 @@
 // packages/usecase-kit/src/buyer/results.ts
 // The results of a buyer-side agent, made from their pieces. A caller gives the pieces once, and the helper writes every member of the result: no caller builds a result by hand and leaves a
 // member out. The exit state of an `execute` result comes from `exitStateOf` of the protocol, in this file only, and no helper writes a state of its own. A piece of the wrong shape is a
-// fault of the code of the caller: the helper throws a TypeError and makes no result.
+// fault of the code of the caller: the helper throws a TypeError and makes no result. The pieces must agree with the outcome: a reason is a code, a refusal of the counterparty or a failure holds no
+// record of an Accept that was made, and a completed result holds a verified and accepted hire.
 //
 //   propose  proposedResult, failedProposalResult
 //   execute  completedResult, refusedResult, vaultRefusedResult, failedResult, disputedResult, and settledResult for the steps of the hire that need nothing more from the use case
-import { DOCUMENT_SCHEMAS, HANDOFF_USE_CASES, PROPOSAL_SCHEMA, RECEIPT_CHECKS, RESULT_SCHEMA, USE_CASES, exitStateOf, makeProposal, parseDigest, refusedExit } from '@vsa/usecase-kit/protocol';
+import { DOCUMENT_SCHEMAS, HANDOFF_USE_CASES, NO_OPEN_CLAIM, PROPOSAL_SCHEMA, RECEIPT_CHECKS, RESULT_SCHEMA, USE_CASES, exitStateOf, makeProposal, parseDigest, parseOutputRef, refusedExit } from '@vsa/usecase-kit/protocol';
 import type {
   ChallengeRecord, CompletedResult, Decision, Digest, DisputedResult, ExecuteOutcome, ExecuteResult, ExitState, FailedProposalResult, FailedResult, FaultSetting, HandoffRecord,
   Proposal, ProposalResult, RefusedResult, SubJob, UseCase, VaultRefusedResult, WriteRecord,
@@ -57,8 +58,18 @@ function stateOf(outcome: ExecuteOutcome, reason: string | null, filed: boolean,
   return exitStateOf({ outcome, reason, challenge_filed: filed, delegation_ended: ended });
 }
 
-function reasonOf(reason: unknown): string {
-  if (typeof reason !== 'string' || reason === '') throw new TypeError('the reason must be a code that is not empty');
+/** A code: lower-case letters, digits and `_`, 64 characters at most. */
+const CODE = /^[a-z0-9_]{1,64}$/;
+
+/** The reason of a result that has a code as its reason. A sentence, a text with capital letters or a text that is too long is a fault of the caller. */
+function codeOf(reason: unknown): string {
+  if (typeof reason !== 'string' || !CODE.test(reason)) throw new TypeError('the reason must be a code: lower-case letters, digits and "_", 64 characters at most');
+  return reason;
+}
+
+/** The reason of a refused Pay: the evaluation error of the node, which is words, and not a code. It must be a text that is not empty. */
+function evaluationErrorOf(reason: unknown): string {
+  if (typeof reason !== 'string' || reason.trim() === '') throw new TypeError('the reason of a refused Pay must be a text that is not empty');
   return reason;
 }
 
@@ -84,56 +95,77 @@ function holdsAcceptedHire(handoff: HandoffRecord | null): boolean {
 
 /**
  * The approved proposal was carried out. A use case that hires a counterparty needs the record of a hire that was verified and accepted: a record that holds none is a fault of the caller, and
- * the function throws and makes no result. Use case 3 (supplier bid evaluation) hires no counterparty to execute, so its record is `null`.
+ * the function throws and makes no result. Use case 3 (supplier bid evaluation) hires no counterparty to execute, so its record is `null`, and any record is a fault.
  */
 export function completedResult(pieces: ResultPieces): CompletedResult {
   const base = baseOf(pieces);
-  if ((HANDOFF_USE_CASES as readonly string[]).includes(base.use_case) && !holdsAcceptedHire(base.handoff)) {
-    throw new TypeError('a completed result of this use case needs the record of a hire that was verified and accepted');
+  if ((HANDOFF_USE_CASES as readonly string[]).includes(base.use_case)) {
+    if (!holdsAcceptedHire(base.handoff)) throw new TypeError('a completed result of this use case needs the record of a hire that was verified and accepted');
+  } else if (base.handoff !== null) {
+    throw new TypeError('a completed result of use case 3 holds no record of a hire: that use case hires no counterparty to execute');
   }
   const state = stateOf('completed', null, false, false);
   if (state !== 'Completed') throw wrongState('completed', state);
   return { ...base, outcome: 'completed', reason: null, challenge: null, exit_state: state };
 }
 
-/** The counterparty (`by` is `counterparty`) or a mock system (`system`) refused. `reason` is its code. The exit state follows the reason: `refusedExit` of the protocol gives the two as one pair. */
+/**
+ * The counterparty (`by` is `counterparty`) or a mock system (`system`) refused. `reason` is its code. The exit state follows the reason: `refusedExit` of the protocol gives the two as one pair. A refusal
+ * by the counterparty holds no record of an Accept that was made. A mock system can refuse after the hire was accepted, so the record of an accepted hire is allowed for a refusal by a mock system.
+ */
 export function refusedResult(by: 'counterparty' | 'system', pieces: ResultPieces, reason: string): RefusedResult {
-  const outcome = by === 'counterparty' ? 'refused_by_counterparty' : 'refused_by_system';
   if (by !== 'counterparty' && by !== 'system') throw new TypeError('a refusal is by the counterparty or by a mock system');
-  return { ...baseOf(pieces), outcome, ...refusedExit(reasonOf(reason)), challenge: null };
+  const base = baseOf(pieces);
+  if (by === 'counterparty' && acceptWasMade(base.handoff)) throw new TypeError('a refusal by the counterparty cannot hold the record of a hire whose Accept was made');
+  return { ...base, outcome: by === 'counterparty' ? 'refused_by_counterparty' : 'refused_by_system', ...refusedExit(codeOf(reason)), challenge: null };
 }
 
-/** The ledger refused the Pay from the vault. `reason` is the evaluation error. `delegationEnded` is true when the flow read the delegation again and found that the hirer ended it. */
+/** The ledger refused the Pay from the vault. `reason` is the evaluation error. `delegationEnded` is true when the flow read the delegation again and found that the hirer ended it. No Accept was made. */
 export function vaultRefusedResult(pieces: ResultPieces, reason: string, delegationEnded: boolean): VaultRefusedResult {
   if (typeof delegationEnded !== 'boolean') throw new TypeError('delegationEnded must be a boolean');
-  const code = reasonOf(reason);
-  const state = stateOf('vault_refused', code, false, delegationEnded);
+  const text = evaluationErrorOf(reason);
+  const base = baseOf(pieces);
+  if (acceptWasMade(base.handoff)) throw new TypeError('a refusal of the vault cannot hold the record of a hire whose Accept was made: no Pay was made');
+  const state = stateOf('vault_refused', text, false, delegationEnded);
   if (state !== 'Cancelled' && state !== 'Failed') throw wrongState('vault_refused', state);
-  return { ...baseOf(pieces), outcome: 'vault_refused', reason: code, challenge: null, exit_state: state };
+  return { ...base, outcome: 'vault_refused', reason: text, challenge: null, exit_state: state };
 }
 
-/** The job could not be finished. `reason` is a code. */
+/** The job could not be finished. `reason` is a code. The record holds no Accept that was made: paid work that was accepted is not reported as a failure. */
 export function failedResult(pieces: ResultPieces, reason: string): FailedResult {
-  const code = reasonOf(reason);
+  const code = codeOf(reason);
+  const base = baseOf(pieces);
+  if (acceptWasMade(base.handoff)) throw new TypeError('a failed result cannot hold the record of a hire whose Accept was made');
   const state = stateOf('failed', code, false, false);
   if (state !== 'Failed') throw wrongState('failed', state);
-  return { ...baseOf(pieces), outcome: 'failed', reason: code, challenge: null, exit_state: state };
+  return { ...base, outcome: 'failed', reason: code, challenge: null, exit_state: state };
+}
+
+/** A challenge that the agent filed: the claim and the challenge output are output references, and the evidence is the hash of the transaction that published it. */
+function isChallengeRecord(value: unknown): value is ChallengeRecord {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  return parseOutputRef(Reflect.get(value, 'claim')).ok && parseDigest(Reflect.get(value, 'evidence')).ok && parseOutputRef(Reflect.get(value, 'challenge')).ok;
 }
 
 /**
- * The agent did not accept the delivery. With a challenge that it filed, the state is `Escalated`. With no challenge, `reason` is `NO_OPEN_CLAIM`, or the code of the step that failed, and the
- * state is `Failed`.
+ * The agent did not accept the delivery. With a challenge that it filed, the state is `Escalated`. With no challenge, the result has the form with no challenge and the state that `exitStateOf` gives for
+ * it, which is `Failed`, and never `Escalated`: `reason` is the code of the step that failed, and `{ challenge: null }` says that no challenge was filed and gives the reason `NO_OPEN_CLAIM`. A challenge that
+ * is not the record of a challenge is a fault of the caller.
  */
 export function disputedResult(pieces: ResultPieces, dispute: { readonly challenge: ChallengeRecord } | { readonly reason: string }): DisputedResult {
-  if ('challenge' in dispute) {
+  const given: Readonly<Record<string, unknown>> = dispute;
+  const base = baseOf(pieces);
+  if ('challenge' in given && given.challenge !== null) {
+    if (!isChallengeRecord(given.challenge)) throw new TypeError('the challenge must be the record of a challenge that was filed: a claim, the evidence and the challenge output');
     const state = stateOf('disputed', null, true, false);
     if (state !== 'Escalated') throw wrongState('disputed', state);
-    return { ...baseOf(pieces), outcome: 'disputed', reason: null, challenge: dispute.challenge, exit_state: state };
+    return { ...base, outcome: 'disputed', reason: null, challenge: given.challenge, exit_state: state };
   }
-  const code = reasonOf(dispute.reason);
+  if (!('reason' in given) && !('challenge' in given)) throw new TypeError('a dispute holds the challenge that was filed, or a reason');
+  const code = 'reason' in given ? codeOf(given.reason) : NO_OPEN_CLAIM;
   const state = stateOf('disputed', code, false, false);
   if (state !== 'Failed') throw wrongState('disputed', state);
-  return { ...baseOf(pieces), outcome: 'disputed', reason: code, challenge: null, exit_state: state };
+  return { ...base, outcome: 'disputed', reason: code, challenge: null, exit_state: state };
 }
 
 /** The steps that the use case has to finish itself: a completed hire writes to a mock system, a delivery that was not accepted is disputed, and a refused request is an error answer. */
@@ -176,7 +208,7 @@ function checkedProposalPieces(pieces: ProposalPieces): ProposalPieces {
 
 /** A job that could not make a proposal. The document, the salt and the digest are those of `proposal`, and they are null when the job failed before it had a document. */
 export function failedProposalResult(pieces: ProposalPieces, reason: string, proposal: Proposal | null = null): FailedProposalResult {
-  const code = reasonOf(reason);
+  const code = codeOf(reason);
   const state = stateOf('failed', code, false, false);
   if (state !== 'Failed') throw wrongState('failed', state);
   return {

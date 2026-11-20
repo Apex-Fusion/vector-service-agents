@@ -112,13 +112,72 @@ describe('the results of execute', () => {
     expect(completedResult(pieces({ use_case: 'bid-evaluation', handoff: null })).exit_state).toBe('Completed');
   });
 
+  it('refuses a completed result of use case 3 that holds the record of a hire: that use case hires no counterparty to execute', () => {
+    for (const record of [accepted, handoff, { ...accepted, verification: { ...ALL_TRUE, signature_valid: false } }]) {
+      expect(() => completedResult(pieces({ use_case: 'bid-evaluation', handoff: record as never }))).toThrow(TypeError);
+    }
+    expect(completedResult(pieces({ use_case: 'bid-evaluation', handoff: null })).outcome).toBe('completed');
+  });
+
+  it('refuses a reason that is not a code: a sentence, capital letters, a space, a dot, a hyphen, more than 64 characters; and takes a code of letters, digits and "_"', () => {
+    const proposal: ProposalPieces = { use_case: 'inventory-reorder', decisions: [], sub_jobs: [], fault_mode: '' };
+    for (const reason of ['the lot is gone, call 555-0100', 'Cannot_Supply', 'cannot supply', 'cannot.supply', 'cannot-supply', 'a'.repeat(65), 'é', ' x', 'x\n']) {
+      expect(() => refusedResult('counterparty', pieces(), reason), reason).toThrow(TypeError);
+      expect(() => refusedResult('system', pieces(), reason), reason).toThrow(TypeError);
+      expect(() => failedResult(pieces(), reason), reason).toThrow(TypeError);
+      expect(() => disputedResult(pieces(), { reason }), reason).toThrow(TypeError);
+      expect(() => failedProposalResult(proposal, reason), reason).toThrow(TypeError);
+    }
+    for (const reason of ['x', 'code_2', '0123456789', 'a'.repeat(64)]) {
+      expect(refusedResult('counterparty', pieces(), reason).reason).toBe(reason);
+      expect(refusedResult('system', pieces(), reason).reason).toBe(reason);
+      expect(failedResult(pieces(), reason).reason).toBe(reason);
+      expect(disputedResult(pieces(), { reason }).reason).toBe(reason);
+      expect(failedProposalResult(proposal, reason).reason).toBe(reason);
+    }
+    // The reason of a refused Pay is the evaluation error of the node. It is words, so it is not a code. An empty text and white space are refused.
+    const words = '3010 Some scripts of the transactions terminated with error(s).';
+    expect(vaultRefusedResult(pieces(), words, false).reason).toBe(words);
+    for (const reason of ['', '  \n', 7, null, undefined]) expect(() => vaultRefusedResult(pieces(), reason as never, false)).toThrow(TypeError);
+  });
+
+  it('gives the form with no challenge and the exit state of the protocol for a dispute with no challenge, and never Escalated', () => {
+    const none = disputedResult(pieces({ handoff }), { challenge: null as never });
+    expect(none).toMatchObject({ outcome: 'disputed', reason: NO_OPEN_CLAIM, challenge: null, exit_state: 'Failed' });
+    expect(Object.keys(none).sort()).toStrictEqual(RESULT_KEYS);
+    expect(none.exit_state).toBe(exitStateOf({ outcome: 'disputed', reason: NO_OPEN_CLAIM, challenge_filed: false, delegation_ended: false }));
+    // A challenge that is not the record of a challenge is a fault of the caller: it is never Escalated.
+    for (const junk of [undefined, 'a challenge', 7, [], {}, { claim: challenge.claim }, { ...challenge, evidence: 'abc' }, { ...challenge, claim: 'not a reference' }, { ...challenge, challenge: 7 }]) {
+      expect(() => disputedResult(pieces({ handoff }), { challenge: junk as never }), JSON.stringify(junk)).toThrow(TypeError);
+    }
+    expect(() => disputedResult(pieces({ handoff }), {} as never)).toThrow(TypeError);
+    // The twin: the challenge that was filed is Escalated.
+    expect(disputedResult(pieces({ handoff }), { challenge })).toMatchObject({ outcome: 'disputed', reason: null, challenge, exit_state: 'Escalated' });
+  });
+
+  it('refuses the record of a hire whose Accept was made for a refusal by the counterparty, a refusal of the vault and a failed result; a refusal by a mock system can hold it', () => {
+    for (const record of [accepted, { ...accepted, accepted: 'pending' }]) {
+      expect(() => refusedResult('counterparty', pieces({ handoff: record as never }), 'approval_not_found')).toThrow(TypeError);
+      expect(() => vaultRefusedResult(pieces({ handoff: record as never }), 'eval error', false)).toThrow(TypeError);
+      expect(() => failedResult(pieces({ handoff: record as never }), 'post_failed')).toThrow(TypeError);
+    }
+    // The twins: no record, a hire with no Accept, and a delivery that the decision refused have no Accept that was made.
+    for (const record of [null, handoff, { ...accepted, accepted: 'no' }]) {
+      expect(refusedResult('counterparty', pieces({ handoff: record as never }), 'approval_not_found').outcome).toBe('refused_by_counterparty');
+      expect(failedResult(pieces({ handoff: record as never }), 'post_failed').outcome).toBe('failed');
+    }
+    expect(vaultRefusedResult(pieces(), 'eval error', false).outcome).toBe('vault_refused');
+    // A mock system can refuse after the hire was accepted: its refusal holds the record of the accepted hire.
+    expect(refusedResult('system', pieces({ handoff: accepted }), 'token_invalid')).toMatchObject({ outcome: 'refused_by_system', reason: 'token_invalid', handoff: accepted });
+  });
+
   it('refuses pieces of the wrong shape, and makes no result', () => {
     const wrong: Array<[string, Record<string, unknown>]> = [
       ['a use case that the protocol does not have', { use_case: 'payroll' }], ['a digest that is no digest', { proposal_digest: 'abc' }], ['a handoff that is a list', { handoff: [] }],
       ['a handoff that is a text', { handoff: 'done' }], ['writes that are no list', { writes: 'none' }], ['decisions that are no list', { decisions: undefined }], ['a fault setting that is no text', { fault_mode: null }],
     ];
     for (const [name, over] of wrong) expect(() => completedResult({ ...pieces({ handoff: accepted }), ...over } as never), name).toThrow(TypeError);
-    for (const useCase of USE_CASES) expect(completedResult(pieces({ use_case: useCase, handoff: accepted })).use_case).toBe(useCase);
+    for (const useCase of USE_CASES) expect(completedResult(pieces({ use_case: useCase, handoff: useCase === 'bid-evaluation' ? null : accepted })).use_case).toBe(useCase);
   });
 
   it('keeps no list of the caller: a write that the caller adds later is not in the result', () => {
@@ -172,6 +231,15 @@ describe('settledResult', () => {
 
   it('throws for a step that the use case must finish, and never makes `completed` of it', () => {
     for (const kind of ['completed', 'not_accepted', 'refused'] as const) expect(() => settledResult({ kind } as never, base), kind).toThrow(TypeError);
+  });
+
+  it('refuses a step that is made by hand with a reason that is not a code, or with the record of a hire whose Accept was made', () => {
+    expect(() => settledResult({ ...refused, reason: 'free words of the counterparty' }, base)).toThrow(TypeError);
+    expect(() => settledResult({ ...refused, handoff: accepted }, base)).toThrow(TypeError);
+    expect(() => settledResult({ kind: 'failed', reason: 'free words', detail: 'x', handoff: null, vault_ref: null, terms: null }, base)).toThrow(TypeError);
+    expect(() => settledResult({ kind: 'failed', reason: 'timeout', detail: 'x', handoff: accepted, vault_ref: null, terms: null }, base)).toThrow(TypeError);
+    // The twin: the same steps with a code and a record with no Accept make their results.
+    expect(settledResult({ kind: 'failed', reason: 'timeout', detail: 'x', handoff, vault_ref: null, terms: null }, base)).toMatchObject({ outcome: 'failed', reason: 'timeout' });
   });
 });
 
