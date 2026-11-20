@@ -149,7 +149,7 @@ Every process of the host that can open `127.0.0.1:9120` is a direct client of t
 The TLS handshake proves that the client holds the private key of the certificate. Nothing else is checked.
 The mock service must check these things itself:
 
-1. The certificate chain, against the SPIFFE bundle of the identity gateway. The service reads the bundle again every 300 seconds. When a read fails, the service goes on with its old copy for up to one hour after the last good read, and then it refuses the call. So an authority that the gateway removed stays trusted for up to one hour in that time.
+1. The certificate chain, against the SPIFFE bundle of the identity gateway. The service reads the bundle again every 300 seconds. When a new copy cannot be fetched, the service goes on with its old copy for up to one hour after the last good read, and then it refuses the call. So an authority that the gateway removed stays trusted for up to one hour in that time.
 2. The validity time of the certificate.
 3. The SPIFFE ID in the URI name of the certificate.
 

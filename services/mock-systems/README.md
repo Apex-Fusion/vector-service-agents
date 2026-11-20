@@ -141,7 +141,7 @@ A call that cannot be checked is refused, and the answer is 503. The service nev
 A token is an access token of the identity gateway with a DPoP proof. The call sends `Authorization: DPoP <token>` and one `DPoP` header. The checks, in order:
 
 1. The `Authorization` header has the scheme `DPoP` and a token.
-2. The signature is valid against the key set of the gateway. The service reads the key set again every 300 seconds, and when a token names a key that it does not hold. When a read fails, the verifier goes on with its old copy for up to one hour after the last good read. After that it refuses the call (503 `gateway_unavailable`).
+2. The signature is valid against the key set of the gateway. The service reads the key set again every 300 seconds, and when a token names a key that it does not hold. When a new copy cannot be fetched (no answer, an error status, or a body that is not JSON), the verifier goes on with its old copy for up to one hour after the last good read. After that it refuses the call (503 `gateway_unavailable`). When the gateway answers with a key set that has no usable key, the service refuses the call at once.
 3. The issuer is the gateway.
 4. The audience is the resource of the route: `<public base>/t/<tenant>/<system>`. The comparison is exact.
 5. The time: the life of the token is at most 5 minutes, it has not ended, and it is not from the future. The verifier accepts a clock difference of 30 seconds.
@@ -157,7 +157,7 @@ A token is an access token of the identity gateway with a DPoP proof. The call s
 The route is on the client-certificate host. The checks, in order:
 
 1. The request has exactly one `Client-Cert` header, in the form `:<base64>:`.
-2. The certificate was issued by an authority in the SPIFFE bundle of the gateway. The service reads the bundle again every 300 seconds. When a read fails, the verifier goes on with its old copy for up to one hour after the last good read, and then it refuses the call (503 `gateway_unavailable`).
+2. The certificate was issued by an authority in the SPIFFE bundle of the gateway. The service reads the bundle again every 300 seconds. When a new copy cannot be fetched (no answer, an error status, or a body that is not JSON), the verifier goes on with its old copy for up to one hour after the last good read, and then it refuses the call (503 `gateway_unavailable`). When the gateway answers with a body that is not a bundle, the service refuses the call at once.
 3. The certificate is valid now. The verifier accepts a clock difference of 30 seconds at the start.
 4. The certificate is a leaf (it is no CA). Its key usage has `digitalSignature`, and has neither `keyCertSign` nor `cRLSign`.
 5. The certificate has exactly one URI name. It is a SPIFFE ID of the form `spiffe://<trust domain>/agent/<64 hex characters>`, and the trust domain is the one of the gateway.
@@ -315,8 +315,8 @@ The approval check in the tests is a fake that exists in the test support only.
 - **An approval.** The service does not check an approval itself. The approval check is a dependency of the app. The production start refuses while none is wired.
 - **A second use of a JWT-SVID.** A JWT-SVID can be used again within its lifetime. The service does not record the SVIDs that it saw.
 - **The end of a token or an SVID.** A token is honoured up to 30 seconds after `exp`, and a JWT-SVID up to 30 seconds after its end. This is the clock difference that the verifier accepts. The check of the ledger still refuses an ended delegation in that time. An X.509-SVID gets no time after its end. At its start, a certificate is accepted 30 seconds early.
-- **A key or an authority that the gateway removed.** The verifier reads the key set and the bundle every 300 seconds. While a read fails, it uses its old copy for up to one hour after the last good read. So a key or an authority that the gateway removed stays trusted for up to one hour in that time.
-- **The width of a delegation.** A delegation with the grant `*` on `*` covers every route of every tenant. The organisation that delegates decides how wide its delegation is.
+- **A key or an authority that the gateway removed.** The verifier reads the key set and the bundle every 300 seconds. While a new copy cannot be fetched, it uses its old copy for up to one hour after the last good read. So a key or an authority that the gateway removed stays trusted for up to one hour in that time.
+- **The width of a delegation.** A delegation with the grant `*` on `*` covers every token route of every tenant, within the depth of the chain that each route takes. The organisation that delegates decides how wide its delegation is.
 - **Where an SVID is honoured.** A JWT-SVID with two audiences is honoured at both. One X.509-SVID is honoured at every tenant whose organisation for that route is the organisation of the agent.
 - **A second ranking.** The same ranking with the same approval can be written again. A ranking has no one-for-each rule.
 - **A status list that is not read.** A status list that cannot be fetched (the gateway does not answer, or it answers with an error status), or that is over, does not refuse a token call. The log line says that the list was not read (`token_status`). A list that arrives and is not valid, for example a body that is not a list, refuses the call (401 `token_invalid`, rule `status.list`).
