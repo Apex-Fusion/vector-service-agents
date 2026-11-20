@@ -3,7 +3,7 @@
 // the ledger shows it, and the end step ends only the delegation that its own run made. The ledger of support.ts is faithful to that rule: a transaction takes effect when it lands.
 import { describe, expect, it } from 'vitest';
 import { createSerialQueue, withSubDelegation } from '../../src/access/index.ts';
-import type { SerialQueue, SubDelegationRequest, SubDelegationRun } from '../../src/access/index.ts';
+import type { LeftSubDelegation, LiveDelegation, SerialQueue, SubDelegationRequest, SubDelegationRun } from '../../src/access/index.ts';
 import { takeTurn } from '../../src/access/queue.ts';
 import { FakeClock, NOW, PARENT_ID, markSigner, settle, subWorld, type SubWorld } from './support.ts';
 
@@ -115,6 +115,66 @@ describe('the end step ends only the delegation that its own run made', () => {
     expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'submit_failed', detail: expect.stringContaining('another transaction made') }, end: { state: 'not_made' } });
     expect(w.chain.log).not.toContain('buildUndelegate');
     expect(w.chain.log).not.toContain('readiness');
+  });
+});
+
+describe('a ledger that shows the delegation of this run with a transaction hash that is not a hash', () => {
+  /** Plays a ledger whose answer for the sub-delegation is `change` of the true answer. The parent is read as it is. It gives back the read of the ledger as it was. */
+  function reading(w: SubWorld, change: (live: LiveDelegation) => unknown): SubWorld['chain']['readDelegation'] {
+    const read = w.chain.readDelegation.bind(w.chain);
+    w.chain.readDelegation = async (id) => {
+      const live = await read(id);
+      return (live === null || id === PARENT_ID ? live : change(live)) as never;
+    };
+    return read;
+  }
+  const wrong: [string, (live: LiveDelegation) => unknown][] = [
+    ['no transaction hash', (live) => ({ id: live.id, delegation: live.delegation })],
+    ['the right hash in capital letters', (live) => ({ ...live, txHash: live.txHash.toUpperCase() })],
+    ['the right hash with a prefix', (live) => ({ ...live, txHash: `0x${live.txHash}` })],
+    ['the right hash with a line end', (live) => ({ ...live, txHash: `${live.txHash}\n` })],
+    ['a hash of 63 characters', (live) => ({ ...live, txHash: live.txHash.slice(1) })],
+    ['a hash of 65 characters', (live) => ({ ...live, txHash: `${live.txHash}0` })],
+    ['an empty hash', (live) => ({ ...live, txHash: '' })],
+    ['a hash that is a number', (live) => ({ ...live, txHash: 5 })],
+    ['a hash that is null', (live) => ({ ...live, txHash: null })],
+    ['an answer that is a text', () => 'live'],
+    ['an answer that is undefined', () => undefined],
+  ];
+
+  it.each(wrong)('is not read as a delegation of another transaction: %s gives not_ended with the reference, and never not_made', async (_name, change) => {
+    const w = subWorld();
+    const read = reading(w, change);
+    const journal: LeftSubDelegation[] = [];
+    const run = await w.clock.run(withSubDelegation({ ...w.deps, beforeSend: (reference) => void journal.push(reference) }, w.request, w.limits, async () => 'job'));
+    expect(run).toMatchObject({ ok: true, kind: 'returned', value: 'job' });
+    expect(run.end).toMatchObject({ state: 'not_ended', code: 'end_unconfirmed', left: { id: w.chain.subId, delegateTxHash: w.chain.builtDelegates[0]!.txHash, endTxHash: null } });
+    expect(run.end.state === 'not_ended' && run.end.left).toStrictEqual(journal[0]);
+    expect(w.chain.log).not.toContain('buildUndelegate');
+    expect(w.chain.submitted.map((s) => s.kind)).toStrictEqual(['delegate']);
+    expect(await read(w.chain.subId!)).not.toBeNull();
+  });
+
+  it.each(wrong)('is not read as a delegation of another transaction at the end step either: %s after a run that read the right hash', async (_name, change) => {
+    const w = subWorld();
+    let jobDone = false;
+    const read = reading(w, (live) => (jobDone ? change(live) : live));
+    const run = await w.clock.run(withSubDelegation(w.deps, w.request, w.limits, async () => ((jobDone = true), 'job')));
+    expect(run).toMatchObject({ ok: true, kind: 'returned', value: 'job', end: { state: 'not_ended', code: 'end_unconfirmed', left: { id: w.chain.subId, endTxHash: null } } });
+    expect(w.chain.log).not.toContain('buildUndelegate');
+    expect(await read(w.chain.subId!)).not.toBeNull();
+  });
+
+  it.each([
+    ['the right hash in its form', (live: LiveDelegation) => ({ ...live, txHash: live.txHash }), 'ended'],
+    ['the hash of another transaction in the form of a hash', (live: LiveDelegation) => ({ ...live, txHash: 'ee'.repeat(32) }), 'not_made'],
+  ] as const)('is read for what it says when the answer has %s: the end is %s, the twin of every answer above', async (_name, change, end) => {
+    const w = subWorld();
+    let jobDone = false;
+    reading(w, (live) => (jobDone ? change(live) : live));
+    const run = await w.clock.run(withSubDelegation(w.deps, w.request, w.limits, async () => ((jobDone = true), 'job')));
+    expect(run).toMatchObject({ ok: true, kind: 'returned', value: 'job', end: { state: end } });
+    expect(w.chain.submitted.map((s) => s.kind)).toStrictEqual(end === 'ended' ? ['delegate', 'undelegate'] : ['delegate']);
   });
 });
 

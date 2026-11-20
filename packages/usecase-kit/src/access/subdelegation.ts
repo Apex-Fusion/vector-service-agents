@@ -168,7 +168,11 @@ export type SubDelegationEnd =
   | { readonly state: 'not_made' }
   /** The ledger no longer shows the sub-delegation. `txHash` is the Undelegate. */
   | { readonly state: 'ended'; readonly txHash: string }
-  /** The sub-delegation may be alive. `left` is what a janitor needs. `end_failed`: the Undelegate was not sent. `end_unconfirmed`: it was sent, or the time ran out, and the ledger still shows the sub-delegation. */
+  /**
+   * The sub-delegation may be alive. `left` is what a janitor needs. `end_failed`: the Undelegate was not sent. `end_unconfirmed`: the time ran out before the step could tell. The Undelegate was sent and the
+   * ledger still shows the sub-delegation, or the ledger shows nothing yet, or it could not be read, or it shows the delegation of this run with a transaction hash that is not 64 lower-case hex characters, so
+   * the step cannot tell which transaction made it.
+   */
   | { readonly state: 'not_ended'; readonly code: 'end_failed' | 'end_unconfirmed'; readonly detail: string; readonly left: LeftSubDelegation };
 
 /**
@@ -210,6 +214,8 @@ interface Plan {
 }
 
 const KEY_HASH = /^[0-9a-f]{56}$/;
+/** The form of a transaction hash: 64 lower-case hex characters. A build reports its hash in this form, and the ledger must show the hash of the transaction of a delegation in the same form. */
+const TX_HASH = /^[0-9a-f]{64}$/;
 const NOT_MADE: SubDelegationEnd = { state: 'not_made' };
 const hexOf = (text: string): string => Buffer.from(text, 'utf8').toString('hex');
 const isWhole = (value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max;
@@ -306,7 +312,7 @@ function buildProblem(built: DelegateBuild, plan: Plan, parent: DelegationDatum,
   const d = built.delegation;
   const only = (items: readonly string[], text: string): boolean => items.length === 1 && items[0] === hexOf(text);
   if (!/^[0-9a-f]{64}$/.test(built.id)) return 'the build has no delegation identifier';
-  if (!/^[0-9a-f]{64}$/.test(built.txHash)) return 'the build has no transaction hash';
+  if (!TX_HASH.test(built.txHash)) return 'the build has no transaction hash';
   if (d.remaining !== 0) return `the build allows ${String(d.remaining)} further hops, and a sub-delegation allows none`;
   if (d.value === null || d.value.perTx !== 0n || d.value.total !== 0n) return 'the build has a value above 0, or no value limit';
   if (d.value.periodMs !== periodMs) return 'the build has not the period that was asked for';
@@ -349,11 +355,20 @@ const timedOut = (what: string, ms: number): SubDelegationFailure => refused('st
 /** What the ledger shows of one delegation: it is live and made by the transaction `txHash`, it is not on the ledger, or it cannot be read. */
 type Seen = { readonly state: 'live'; readonly txHash: string } | { readonly state: 'absent' } | { readonly state: 'unreadable'; readonly detail: string };
 
+/**
+ * What the ledger shows of the delegation `id`. A delegation that comes with a transaction hash that is not in the form of a hash is `unreadable`: the step cannot tell which transaction made it, and a
+ * hash that only differs from the hash of this run in its form (for example in capital letters) is not another transaction. So such an answer is never read as a delegation of another transaction.
+ */
 async function seenOn(deps: SubDelegationDeps, plan: Plan, id: string): Promise<Seen> {
   const read = await answerOf(deps.clock, plan.stepTimeoutMs, () => deps.chain.readDelegation(id));
   if (read.state === 'timed_out') return { state: 'unreadable', detail: `the ledger did not answer within ${plan.stepTimeoutMs} ms` };
   if (read.state === 'threw') return { state: 'unreadable', detail: errorText(read.error) };
-  return read.value === null ? { state: 'absent' } : { state: 'live', txHash: read.value.txHash };
+  if (read.value === null) return { state: 'absent' };
+  const shown: unknown = read.value; // a port in JavaScript can give any value, so the answer is checked as an unknown value
+  const txHash: unknown = typeof shown === 'object' && shown !== null && 'txHash' in shown ? shown.txHash : undefined;
+  return typeof txHash === 'string' && TX_HASH.test(txHash)
+    ? { state: 'live', txHash }
+    : { state: 'unreadable', detail: 'the ledger shows the delegation, and the hash of its transaction is not 64 lower-case hex characters' };
 }
 
 /**
@@ -480,8 +495,10 @@ async function waitUntilReady(deps: SubDelegationDeps, plan: Plan, made: LeftSub
  * what is left.
  *
  * It ends only the delegation that THIS run made. The ledger shows the transaction that made each delegation: one that this run made is ended, and one that another transaction made under the same
- * identifier is left alone, because the Delegate of this run can never land (`not_made`). A Delegate that was sent may not be on the ledger yet: the step reads the ledger again until `endTimeoutMs`.
- * When the ledger shows the delegation and the builder refuses, the step stops at once (`end_failed`), because that refusal is a rule and time does not change it.
+ * identifier is left alone, because the Delegate of this run can never land (`not_made`). A delegation that the ledger shows with a transaction hash that is not in the form of a hash is not taken as the
+ * delegation of another transaction: the step cannot tell who made it, so it reads again until `endTimeoutMs`, and then it gives `not_ended` with the reference, and never `not_made`. A Delegate that was
+ * sent may not be on the ledger yet: the step reads the ledger again until `endTimeoutMs`. When the ledger shows the delegation and the builder refuses, the step stops at once (`end_failed`), because that
+ * refusal is a rule and time does not change it.
  *
  * The build and the send of the Undelegate go through the queue of the wallet, and the turn is kept until the ledger no longer shows the delegation. Every call of a port has the bound
  * `stepTimeoutMs`, and the whole step has the bound `endTimeoutMs`.
