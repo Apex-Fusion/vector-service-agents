@@ -9,9 +9,9 @@ import { HIRE_ACTION } from '@vsa/buyer-core';
 import type { AttestationCheck, DelegationUseCheck, DelegationView, EscrowVaultResult } from '@vsa/buyer-core';
 import { EFFECTIVE_STATUSES } from '@vsa/id-kit/client';
 import type { Resolution } from '@vsa/id-kit/client';
-import { accepted, isPlainObject, parseOutputRef, refused } from '../protocol/index.ts';
+import { accepted, isKeyHash, isPlainObject, parseOutputRef, refused } from '../protocol/index.ts';
 import type { AttestationId, DelegationId, Did, OutputRef, ProtocolResult, Refused } from '../protocol/index.ts';
-import { DIGEST_BYTES, ID_BYTES, KEY_BYTES, KEY_HASH_BYTES, TX_HASH_BYTES, isHex } from './ids.ts';
+import { DIGEST_BYTES, ID_BYTES, KEY_BYTES, TX_HASH_BYTES, isHex } from './ids.ts';
 
 export type Answer<T> = ProtocolResult<T, 'check_unavailable'>;
 
@@ -20,7 +20,6 @@ const isTextOrNull = (value: unknown): value is string | null => value === null 
 const isTexts = (value: unknown): value is readonly string[] => Array.isArray(value) && value.every(isText);
 const isWhole = (value: unknown): value is number => Number.isSafeInteger(value);
 
-const isKeyHash = (value: unknown): value is string => isHex(value, KEY_HASH_BYTES);
 /** The identifier of an agent, of a delegation or of an attestation: the name of its token. */
 const isId = (value: unknown): value is string => isHex(value, ID_BYTES);
 const isIdOrNull = (value: unknown): value is string | null => value === null || isId(value);

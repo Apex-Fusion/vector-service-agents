@@ -8,7 +8,8 @@
 // the approval and passes it on, and the counterparty or the mock system refuses it when it is not right.
 //
 // A parser takes any value and never throws. It reads each member of an object one time, into a copy, and it works on that copy. It returns the members that it checked, as new objects: a document, a
-// proposal and a request for quotation are copies, and a caller uses them and never the input. A refusal has the code `bad_shape`. It names the field, and it never repeats a value. A request is
+// proposal and a request for quotation are copies, and a caller uses them and never the input. The document of a proposal, of a handoff and of a request for quotation holds each text in the NFC form,
+// which is the form that the digest binds, so a service works on the bytes that its digest covers. A refusal has the code `bad_shape`. It names the field, and it never repeats a value. A request is
 // refused when it has a member that the protocol does not name: `execute` takes no member of a use case, and `authority` takes no `vault`.
 import { parseApprovalRef, type ApprovalRef } from './approval.ts';
 import { HANDOFF_USE_CASES, type HandoffUseCase, type UseCase } from './codes.ts';
@@ -17,7 +18,7 @@ import {
   newSalt, parseDelegationId, parseDid, parseDigest, parseSalt, parseTenantId,
   type DelegationId, type Did, type Digest, type Salt, type TenantId,
 } from './identifiers.ts';
-import { parseDocument, parseJsonValue, type Document } from './json.ts';
+import { parseCanonicalDocument, parseJsonValue, type Document } from './json.ts';
 import { checkMembers, readMembers } from './members.ts';
 import { defineMember, ownMember } from './own.ts';
 import { accepted, refused, type ProtocolResult } from './result.ts';
@@ -112,7 +113,7 @@ export function parseAuthority(value: unknown, field = 'authority'): ProtocolRes
 export function makeProposal(document: unknown, salt: unknown = newSalt()): ProtocolResult<Proposal> {
   const checkedSalt = parseSalt(salt, 'salt');
   if (!checkedSalt.ok) return checkedSalt;
-  const checkedDocument = parseDocument(document, 'document');
+  const checkedDocument = parseCanonicalDocument(document, 'document');
   if (!checkedDocument.ok) return checkedDocument;
   const digest = proposalDigest(checkedSalt.value, checkedDocument.value);
   if (!digest.ok) return digest;
@@ -125,7 +126,7 @@ export function parseProposal(value: unknown, field = 'proposal'): ProtocolResul
   if (!read.ok) return read;
   const members = checkMembers(read.value, field, ['document', 'salt', 'proposal_digest']);
   if (members !== null) return members;
-  const document = parseDocument(read.value.document, `${field}.document`);
+  const document = parseCanonicalDocument(read.value.document, `${field}.document`);
   if (!document.ok) return document;
   const salt = parseSalt(read.value.salt, `${field}.salt`);
   if (!salt.ok) return salt;
@@ -205,7 +206,7 @@ export function parseHandoff(input: unknown): ProtocolResult<Handoff> {
   if (!sender.ok) return sender;
   const delegation = parseDelegationId(members.delegation, 'handoff.delegation');
   if (!delegation.ok) return delegation;
-  const document = parseDocument(members.document, 'handoff.document');
+  const document = parseCanonicalDocument(members.document, 'handoff.document');
   if (!document.ok) return document;
   const salt = parseSalt(members.salt, 'handoff.salt');
   if (!salt.ok) return salt;
@@ -228,7 +229,7 @@ export function parseRfq(input: unknown): ProtocolResult<RfqMessage> {
   if (!sender.ok) return sender;
   const delegation = parseDelegationId(members.delegation, 'request.delegation');
   if (!delegation.ok) return delegation;
-  const rfq = parseDocument(members.rfq, 'request.rfq');
+  const rfq = parseCanonicalDocument(members.rfq, 'request.rfq');
   if (!rfq.ok) return rfq;
   return accepted({ schema: RFQ_SCHEMA, sender_did: sender.value, delegation: delegation.value, rfq: rfq.value });
 }

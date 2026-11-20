@@ -13,7 +13,7 @@
 // Nothing in the body of the request names it. A member of the body that looks like a buyer key is not read.
 import type { JobContext } from '@vsa/service-kit';
 import type { Resolution } from '@vsa/id-kit/client';
-import { COUNTERPARTY_KINDS, HANDOFF_SCHEMA, RFQ_SCHEMA, accepted, isPlainObject, parseDelegationId, parseDid, parseOutputRef, refused } from '../protocol/index.ts';
+import { COUNTERPARTY_KINDS, HANDOFF_SCHEMA, RFQ_SCHEMA, accepted, isPlainObject, parseDelegationId, parseDid, parseKeyHash, parseOutputRef, refused } from '../protocol/index.ts';
 import type { CounterpartyKind, Did, Handoff, RfqMessage } from '../protocol/index.ts';
 import { checkApproval } from './approval.ts';
 import { checkDelegationNamesSender, checkDelegationUsable, checkVaultPaid } from './delegation.ts';
@@ -42,8 +42,6 @@ export const SHARED_CHECK_NAMES = {
   'bid-desk': [...SENDER, ...DELEGATION],
 } as const satisfies Record<CounterpartyKind, readonly string[]>;
 
-const KEY_HASH = /^[0-9a-f]{56}$/;
-
 /** A TypeError for an input of the wrong form. The message names the field and never the value. */
 function assertShared(input: SharedInput): void {
   if (!isPlainObject(input) || !isPlainObject(input.request) || !isPlainObject(input.context)) throw new TypeError('the shared checks need a kind, a request and a job context');
@@ -52,9 +50,9 @@ function assertShared(input: SharedInput): void {
   if (input.request.schema !== schema) throw new TypeError(`a request to a ${input.kind} must have the schema ${schema}`);
   const checked = [
     parseDid(input.request.sender_did, 'request.sender_did'), parseDelegationId(input.request.delegation, 'request.delegation'), parseOutputRef(input.context.escrowRef, 'context.escrowRef'),
+    parseKeyHash(input.context.buyerPkh, 'context.buyerPkh'),
   ];
   for (const part of checked) if (!part.ok) throw new TypeError(`the input of the shared checks is wrong: ${part.detail}`);
-  if (typeof input.context.buyerPkh !== 'string' || !KEY_HASH.test(input.context.buyerPkh)) throw new TypeError('the input of the shared checks is wrong: context.buyerPkh must be 56 lower-case hex characters');
 }
 
 /**

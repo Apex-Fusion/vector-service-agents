@@ -6,14 +6,11 @@
 //   any other value              the start stops with an error that names the variable and the allowed values
 //
 // The value is fixed for the life of the process: the reader returns a frozen switch, and nothing in this folder reads the setting a second time.
-import { AGENT_KINDS, FAULT_MODES, accepted, isFaultSetting, refused } from '../protocol/index.ts';
+import { FAULT_MODES, accepted, isAgentKind, isFaultSetting, refused } from '../protocol/index.ts';
 import type { AgentKind, FaultSetting, ProtocolResult } from '../protocol/index.ts';
 
 /** The name of the setting. */
 export const FAULT_MODE_VARIABLE = 'FAULT_MODE';
-
-/** True for the name of a kind of agent. A script is plain JavaScript, so a kind that comes from it is checked at run time. */
-export const isAgentKind = (value: unknown): value is AgentKind => typeof value === 'string' && (AGENT_KINDS as readonly string[]).includes(value);
 
 declare const sealed: unique symbol;
 

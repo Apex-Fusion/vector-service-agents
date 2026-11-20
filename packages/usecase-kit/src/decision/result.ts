@@ -2,8 +2,8 @@
 // What `decide` returns. It is a typed result: `{ ok: true, value }` with the decision, or `{ ok: false, code, reason, detail, ... }` with a failure. No code reads success from a text. A failure never
 // holds a decision, so a decision that the model did not give cannot be recorded by mistake.
 //
-// The decision is the `Decision` of the protocol. `TypedDecision<C>` is that decision with a narrower type for the choice: the value is the same, and the caller reads `choice` as the type of
-// its parser and does not parse it again.
+// The decision is the `Decision<C>` of the protocol, where `C` is the type of the choice that the parser of the decision gives: the value is the same as an untyped `Decision`, and the caller reads
+// `choice` as the type of its parser and does not parse it again. `TypedDecision<C>` is the name of that type in this folder.
 //
 // A failure has two codes. `code` is the error code of the protocol: it is the code of an error answer of a counterparty, and `ERROR_STATUS[code]` is its status. `reason` is what a buyer-side agent
 // writes as the `reason` of a result that has the outcome `failed`.
@@ -30,17 +30,11 @@
 // failed result. A failure before an Accept has no delivery. `escrow_ref` and `stage` are set for every failure after a Post, and they say where the hire ended. An escrow that a failed hire left is with
 // the janitor of the key.
 import type { HireStage } from '@vsa/hire-kit';
-import type { Accepted, Decision, ErrorCode, JsonValue, OutputRef, ReceiptVerification, Refused, SubJob } from '../protocol/index.ts';
+import type { Accepted, Decision, ErrorCode, JsonValue, OutputRef, PaidDelivery, ReceiptVerification, Refused } from '../protocol/index.ts';
 
 /** The error codes that a failed decision has. Each is a code of the protocol, so `ERROR_STATUS` gives its status. */
 export const DECISION_FAILURE_CODES = ['inference_failed', 'store_write_failed', 'model_output_invalid', 'internal'] as const satisfies readonly ErrorCode[];
 export type DecisionFailureCode = (typeof DECISION_FAILURE_CODES)[number];
-
-/** The sub-job of a hire that was paid, and whether its Accept was seen on the chain. */
-export interface PaidDelivery {
-  readonly sub_job: SubJob;
-  readonly accepted: 'confirmed' | 'pending';
-}
 
 /**
  * A hire that was paid, and whose sub-job cannot be recorded in full. `sub_job` is null, and `receipt` says that the receipt is not recorded: it cannot be copied as JSON data, or a check of it is
@@ -72,9 +66,7 @@ export interface DecisionFailure extends Refused<DecisionFailureCode> {
   readonly stage: HireStage | null;
 }
 
-/** A decision of the protocol whose choice has the type of the parser of the decision. */
-export interface TypedDecision<C extends JsonValue> extends Decision {
-  readonly choice: C;
-}
+/** A decision whose choice has the type of the parser of the decision. It is the generic `Decision` of the protocol. */
+export type TypedDecision<C extends JsonValue> = Decision<C>;
 
 export type DecideResult<C extends JsonValue> = Accepted<TypedDecision<C>> | DecisionFailure;

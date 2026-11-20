@@ -10,13 +10,16 @@
 // The check is a walk. It reads each member one time, as data, and it builds a new plain value while it checks. It makes each member and each index of the copy with defineProperty, so a prototype that
 // was changed cannot change the copy, and no setter of a prototype runs. Everything after the check (the canonical text, the digest, and the value that goes back to the caller) uses that copy and
 // never the original. The walk never throws: a Proxy that throws, or that is revoked, gives a refusal.
+// The walk writes each text value into the copy in one of two forms. `parseJsonValue` and `parseDocument` write it as it came, so a text that a model or a supplier wrote stays as it was written.
+// `parseCanonicalDocument` writes it in the NFC form, which is the form that the digest binds, so that a service works on the bytes that its digest covers. A key is in the NFC form already,
+// because the walk refuses any other key.
 import { defineMember } from './own.ts';
 import { accepted, refused, type ProtocolResult } from './result.ts';
 import { shown } from './text.ts';
 
 export type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 export type JsonObject = { readonly [key: string]: JsonValue };
-/** A JSON object that a proposal or a request for quotation carries. It is checked by parseDocument. */
+/** A JSON object that a proposal or a request for quotation carries. `parseCanonicalDocument` checks it and gives the copy that a service works on. `parseDocument` checks an object in the same way and keeps each text as it came. */
 export type Document = JsonObject;
 
 /** The most levels of objects and arrays in a document. The outer object is level 1. A document of a use case is under 8 levels deep. */
@@ -53,6 +56,13 @@ type Walked = { readonly ok: true; readonly value: JsonValue } | Failure;
 const stop = (path: readonly Step[], what: string): Failure => ({ ok: false, problem: { path, what } });
 const copy = (value: JsonValue): Walked => ({ ok: true, value });
 
+/** How the walk writes a text value into the copy. */
+type TextForm = (text: string) => string;
+/** The text as it came. */
+const asCame: TextForm = (text) => text;
+/** The text in the NFC form. `String.prototype.normalize` keeps a lone surrogate as it is. */
+const inNfc: TextForm = (text) => text.normalize('NFC');
+
 /** The longest path that a detail shows. A deeper path is shown by its end, so the member is named and the detail stays short. */
 const MAX_PATH_TEXT = 120;
 
@@ -79,7 +89,7 @@ function keysProblem(keys: readonly (string | symbol)[], length: number): Failur
  * the copy is made with defineProperty, so no setter of a prototype runs. A descriptor is read as its own data (`Object.hasOwn`): `in` would find a `value` that Object.prototype holds, and it would
  * take an accessor for a data member.
  */
-function walkArray(value: readonly unknown[], depth: number): Walked {
+function walkArray(value: readonly unknown[], depth: number, form: TextForm): Walked {
   if (Object.getPrototypeOf(value) !== Array.prototype) return stop([], 'is an array of a kind that JSON does not have');
   // A Proxy can report any value as its length. Only a number is used, because an object can give another number at each use.
   const length: unknown = value.length;
@@ -92,7 +102,7 @@ function walkArray(value: readonly unknown[], depth: number): Walked {
     const descriptor = Reflect.getOwnPropertyDescriptor(value, index);
     if (descriptor === undefined) return stop([index], 'is a hole in an array');
     if (!Object.hasOwn(descriptor, 'value')) return stop([index], 'is an accessor, which is not allowed');
-    const member = walk(descriptor.value, depth + 1);
+    const member = walk(descriptor.value, depth + 1, form);
     if (!member.ok) return stop([index, ...member.problem.path], member.problem.what);
     defineMember(out, index, member.value);
   }
@@ -100,7 +110,7 @@ function walkArray(value: readonly unknown[], depth: number): Walked {
 }
 
 /** A plain object, read by its own keys into a new object. Each member is read one time, from its descriptor, so a getter never runs. Each member of the copy is made with defineProperty. */
-function walkObject(value: Record<string, unknown>, depth: number): Walked {
+function walkObject(value: Record<string, unknown>, depth: number, form: TextForm): Walked {
   const out: Record<string, JsonValue> = {};
   for (const key of Reflect.ownKeys(value)) {
     if (typeof key !== 'string') return stop([], 'has a key that JSON cannot hold');
@@ -110,43 +120,62 @@ function walkObject(value: Record<string, unknown>, depth: number): Walked {
     const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
     if (descriptor === undefined || descriptor.enumerable !== true) return stop([], 'has a key that JSON cannot hold');
     if (!Object.hasOwn(descriptor, 'value')) return stop([key], 'is an accessor, which is not allowed');
-    const member = walk(descriptor.value, depth + 1);
+    const member = walk(descriptor.value, depth + 1, form);
     if (!member.ok) return stop([key, ...member.problem.path], member.problem.what);
     defineMember(out, key, member.value);
   }
   return copy(out);
 }
 
-function walk(value: unknown, depth: number): Walked {
-  if (value === null || typeof value === 'boolean' || typeof value === 'string') return copy(value);
+function walk(value: unknown, depth: number, form: TextForm): Walked {
+  if (value === null || typeof value === 'boolean') return copy(value);
+  if (typeof value === 'string') return copy(form(value));
   if (typeof value === 'number') return Number.isFinite(value) ? copy(value) : stop([], 'is not a finite number');
   if (typeof value !== 'object') return stop([], 'is not JSON data');
   if (depth > MAX_DOCUMENT_DEPTH) return stop([], `is nested deeper than ${MAX_DOCUMENT_DEPTH} levels`);
-  if (Array.isArray(value)) return walkArray(value, depth);
+  if (Array.isArray(value)) return walkArray(value, depth, form);
   if (!isPlainObject(value)) return stop([], 'is not a plain object');
-  return walkObject(value, depth);
+  return walkObject(value, depth, form);
 }
 
-/**
- * A value that JSON can hold and that the canonical form writes without loss. The result holds a NEW value that the walk built while it checked: it is equal to the input at the time of the walk,
- * and it shares no object with the input. A caller uses this value and never the input.
- */
-export function parseJsonValue(value: unknown, field = 'value'): ProtocolResult<JsonValue> {
+/** The value of a walk that writes each text in the given form, or a refusal that names the path of the member that is wrong. */
+function parseWith(value: unknown, field: string, form: TextForm): ProtocolResult<JsonValue> {
   try {
-    const walked = walk(value, 1);
+    const walked = walk(value, 1, form);
     return walked.ok ? accepted(walked.value) : refused('bad_shape', `${pathText(field, walked.problem.path)} ${walked.problem.what}`);
   } catch {
     return refused('bad_shape', `${field} cannot be read as JSON data`);
   }
 }
 
-/** A JSON object under the rules of parseJsonValue. The result holds a new object: the copy that was checked. */
-export function parseDocument(value: unknown, field = 'document'): ProtocolResult<Document> {
+function documentWith(value: unknown, field: string, form: TextForm): ProtocolResult<Document> {
   if (!isPlainObject(value)) return refused('bad_shape', `${field} must be a JSON object`);
-  const walked = parseJsonValue(value, field);
+  const walked = parseWith(value, field, form);
   if (!walked.ok) return walked;
   // A value that was an object at the first look and is not one at the walk is refused: the copy is what counts.
   return isPlainObject(walked.value) ? accepted(walked.value as Document) : refused('bad_shape', `${field} must be a JSON object`);
+}
+
+/**
+ * A value that JSON can hold and that the canonical form writes without loss. The result holds a NEW value that the walk built while it checked: it is equal to the input at the time of the walk,
+ * and it shares no object with the input. Each text is as it came. A caller uses this value and never the input.
+ */
+export function parseJsonValue(value: unknown, field = 'value'): ProtocolResult<JsonValue> {
+  return parseWith(value, field, asCame);
+}
+
+/** A JSON object under the rules of parseJsonValue. The result holds a new object: the copy that was checked. Each text is as it came. A document that a digest binds goes through `parseCanonicalDocument`. */
+export function parseDocument(value: unknown, field = 'document'): ProtocolResult<Document> {
+  return documentWith(value, field, asCame);
+}
+
+/**
+ * A JSON object under the rules of parseJsonValue, with each text value written in the NFC form. The digest of a proposal binds the NFC form of every text, so the copy holds the bytes that the digest
+ * covers, and a service that works on the copy works on the text that the hirer approved. The result holds a new object. A key is not changed: a key that is not in the NFC form is refused. The parsers of
+ * the messages (`parseProposal`, `makeProposal`, `parseHandoff` and `parseRfq`) use it for their documents.
+ */
+export function parseCanonicalDocument(value: unknown, field = 'document'): ProtocolResult<Document> {
+  return documentWith(value, field, inNfc);
 }
 
 /** The value in JSON text. Text that is not JSON gives a refusal and never an exception. The value that comes out is not yet checked: pass it to parseJsonValue or parseDocument, or to a parser of the protocol. */

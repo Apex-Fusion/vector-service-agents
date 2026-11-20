@@ -1,7 +1,7 @@
 // packages/usecase-kit/test/protocol/faults.test.ts: the kinds of agent and the values of the fault switch. A fault value is empty in a clean run. A value that an agent kind does not list is not a
 // fault value of that kind.
 import { describe, expect, expectTypeOf, it } from 'vitest';
-import { AGENT_KINDS, BUYER_SIDE_KINDS, COUNTERPARTY_KINDS, FAULT_MODES, isFaultSetting } from '@vsa/usecase-kit/protocol';
+import { AGENT_KINDS, BUYER_SIDE_KINDS, COUNTERPARTY_KINDS, FAULT_MODES, isAgentKind, isFaultSetting } from '@vsa/usecase-kit/protocol';
 import type { AgentKind, BuyerSideKind, CounterpartyKind, FaultMode, FaultSetting } from '@vsa/usecase-kit/protocol';
 
 describe('the kinds of agent', () => {
@@ -15,6 +15,44 @@ describe('the kinds of agent', () => {
     expectTypeOf<BuyerSideKind>().toEqualTypeOf<'reorder-agent' | 'prior-authorization-agent' | 'sourcing-agent'>();
     expectTypeOf<CounterpartyKind>().toEqualTypeOf<'order-desk' | 'insurer-intake-agent' | 'bid-desk'>();
     expectTypeOf<AgentKind>().toEqualTypeOf<BuyerSideKind | CounterpartyKind>();
+  });
+});
+
+describe('isAgentKind', () => {
+  it.each(AGENT_KINDS)('takes the kind %s', (kind) => {
+    expect(isAgentKind(kind)).toBe(true);
+  });
+
+  it.each([
+    ['an empty text', '', 'bid-desk'],
+    ['upper case', 'BID-DESK', 'bid-desk'],
+    ['one capital letter', 'Bid-desk', 'bid-desk'],
+    ['a prefix', 'x-bid-desk', 'bid-desk'],
+    ['a suffix', 'bid-desk-2', 'bid-desk'],
+    ['a part of a kind', 'bid', 'bid-desk'],
+    ['white space before', ' bid-desk', 'bid-desk'],
+    ['white space after', 'bid-desk ', 'bid-desk'],
+    ['a line break after', 'bid-desk\n', 'bid-desk'],
+    ['an underscore for the hyphen', 'bid_desk', 'bid-desk'],
+    ['the name of a member of Object.prototype', 'constructor', 'order-desk'],
+    ['the name of a method of an array', 'includes', 'order-desk'],
+    ['the name of a use case', 'inventory-reorder', 'reorder-agent'],
+    ['the name of a fault value', 'confirm_wrong_lot', 'order-desk'],
+    ['a number', 1, 'bid-desk'],
+    ['null', null, 'bid-desk'],
+    ['undefined', undefined, 'bid-desk'],
+    ['a list that holds a kind', ['bid-desk'], 'bid-desk'],
+    ['an object with a toString that gives a kind', { toString: () => 'bid-desk' }, 'bid-desk'],
+    ['a String object', new String('bid-desk'), 'bid-desk'],
+  ])('refuses %s, and takes the kind that it stands for', (_what, value, kind) => {
+    expect(isAgentKind(value)).toBe(false);
+    expect(isAgentKind(kind)).toBe(true);
+  });
+
+  it('is a type guard that gives an AgentKind', () => {
+    const value: unknown = 'order-desk';
+    if (isAgentKind(value)) expectTypeOf(value).toEqualTypeOf<AgentKind>();
+    expect(isAgentKind(value)).toBe(true);
   });
 });
 

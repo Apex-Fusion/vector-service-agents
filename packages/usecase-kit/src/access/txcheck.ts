@@ -4,9 +4,8 @@
 // the certificates, the withdrawals, the required signers, the collateral and the fee. A transaction that fails a rule is not signed. This file is not part of the public surface.
 import { CML } from '@lucid-evolution/lucid';
 import { addressDetails, decodeTransaction } from '@vsa/vector-read/guarded-decode';
+import { isScriptHash } from '../protocol/index.ts';
 import { errorText } from './text.ts';
-
-const SCRIPT_HASH = /^[0-9a-f]{56}$/;
 
 /**
  * The highest fee, in lovelace, that a Delegate or an Undelegate of this folder may have: 2 units. In the offline identity world with the real builder of buyer-core, a Delegate costs about
@@ -64,7 +63,7 @@ export function addressHexOf(address: string): string | null {
 export function delegationScriptProblem(script: unknown): string | null {
   if (typeof script !== 'object' || script === null) return 'delegationScript must be the delegation script of the identity deployment: its hash and its address';
   const { hash, address } = script as Partial<DelegationScript>; // a caller in JavaScript can give any value, so each member is checked below
-  if (typeof hash !== 'string' || !SCRIPT_HASH.test(hash) || typeof address !== 'string') return 'delegationScript must have the hash of the script (56 lower-case hex characters) and its address';
+  if (!isScriptHash(hash) || typeof address !== 'string') return 'delegationScript must have the hash of the script (56 lower-case hex characters) and its address';
   try {
     const credential = addressDetails(address).paymentCredential;
     return credential?.type === 'Script' && credential.hash === hash ? null : 'the address of the delegation script is not an address of the script with this hash';

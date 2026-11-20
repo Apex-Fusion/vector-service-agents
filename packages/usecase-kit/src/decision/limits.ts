@@ -13,7 +13,7 @@
 // `checkLimits` reads each member of the limits one time, as data, and returns a new frozen object. `decide` uses that copy and never the caller's object again, so a caller that changes its
 // limits or its list while a decision waits for its turn does not change the limits of that decision.
 import type { ModelRequest } from '@vsa/hire-kit';
-import { accepted, refused, type ProtocolResult } from '../protocol/index.ts';
+import { accepted, isModelName, refused, type ProtocolResult } from '../protocol/index.ts';
 
 /** The name of the setting that holds the models that an agent may hire: a comma-separated list. */
 export const LLM_MODEL_ALLOWLIST_SETTING = 'LLM_MODEL_ALLOWLIST';
@@ -23,8 +23,7 @@ export const LLM_MAX_PRICE_SETTING = 'LLM_MAX_PRICE_LOVELACE';
 /** The four limits of a model hire, with the types of the request of `hireModel`. All four are required. */
 export type ModelLimits = Readonly<Pick<ModelRequest, 'allowlist' | 'maxPriceLovelace' | 'maxSupplierBondLovelace' | 'maxBuyerBondLovelace'>>;
 
-/** The name of a model, as an advert writes it: letters, digits, dots, underscores, colons, slashes and hyphens. The colon is for a variant such as `qwen2.5:0.5b`. */
-const MODEL_NAME = /^[A-Za-z0-9._:/-]+$/;
+/** The form of a model name in words, for a detail. `isModelName` of the protocol checks the form. */
 const MODEL_FORM = 'letters, digits, dots, underscores, colons, slashes and hyphens';
 
 /** What a value is, in words, for a detail. It never repeats the value. */
@@ -57,7 +56,7 @@ function names(value: unknown): ProtocolResult<readonly string[], 'bad_limit'> {
   try {
     for (let index = 0; index < value.length; index += 1) {
       const name: unknown = value[index];
-      if (typeof name !== 'string' || !MODEL_NAME.test(name)) {
+      if (!isModelName(name)) {
         return refused('bad_limit', `limits.allowlist entry ${index + 1} must be a model name (${MODEL_FORM}), and it is ${typeof name === 'string' ? 'a text of another form' : kindOf(name)}`);
       }
       list.push(name);
@@ -107,7 +106,7 @@ export function parseModelAllowlist(value: unknown): ProtocolResult<readonly str
   if (typeof value !== 'string') return refused('bad_limit', `${LLM_MODEL_ALLOWLIST_SETTING} must be a text, and it is ${kindOf(value)}`);
   const models = value.split(',').map((name) => name.trim()).filter((name) => name !== '');
   if (models.length === 0) return refused('bad_limit', `${LLM_MODEL_ALLOWLIST_SETTING} must name at least one model, as a comma-separated list`);
-  const wrong = models.findIndex((name) => !MODEL_NAME.test(name));
+  const wrong = models.findIndex((name) => !isModelName(name));
   if (wrong !== -1) return refused('bad_limit', `${LLM_MODEL_ALLOWLIST_SETTING} entry ${wrong + 1} must be a model name (${MODEL_FORM})`);
   return accepted(models);
 }

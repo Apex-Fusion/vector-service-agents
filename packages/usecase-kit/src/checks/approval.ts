@@ -28,12 +28,12 @@
 // A digest mismatch gives both digests: the digest that the attestation holds, and the digest of the document that was received.
 import type { CheckLine } from '@vsa/buyer-core';
 import type { Delegator } from '@vsa/vector-read/identity-codec';
-import { APPROVAL_ATT_TYPE, accepted, isPlainObject, parseApprovalRef, parseDelegationId, parseDid, proposalDigest, refused } from '../protocol/index.ts';
+import { APPROVAL_ATT_TYPE, accepted, agentIdOf, didOfAgentId, isPlainObject, parseApprovalRef, parseDelegationId, parseDid, proposalDigest, refused } from '../protocol/index.ts';
 import type {
   ApprovalCheck, ApprovalInput, ApprovalRef, ApprovalRefusedByCheck, ApprovalResult, DelegationId, Did, Digest, ProtocolResult,
 } from '../protocol/index.ts';
 import { attestationCheckOf, delegationViewOf } from './answers.ts';
-import { clip, didOf, idOf, keyHashOf } from './ids.ts';
+import { clip, keyHashOf } from './ids.ts';
 import { badAnswer, readThrough } from './ports.ts';
 import type { ChecksPorts } from './ports.ts';
 
@@ -146,14 +146,14 @@ export async function checkApproval(ports: ChecksPorts, input: ApprovalInput): P
   if (view === null) return badAnswer(ports, 'attestation', 'there is no attestation, and no line says that it is not authentic');
   const att = view.attestation;
   if (att.attType !== APPROVAL_ATT_TYPE) return refusedBy('approval_wrong_type', 'the attestation is not an approval');
-  if (att.subject !== idOf(sender)) return refusedBy('approval_wrong_subject', 'the subject of the attestation is not the sender');
+  if (att.subject !== agentIdOf(sender)) return refusedBy('approval_wrong_subject', 'the subject of the attestation is not the sender');
 
   const root = await rootDelegatorOf(ports, delegation);
   if (!root.ok) return root;
   const delegator = root.value;
   const issuedByRoot = delegator.type === 'PrincipalKey' ? keyHashOf(att.issuer) === delegator.hash : att.issuerId !== null && att.issuerId === delegator.id;
   if (!issuedByRoot) return refusedBy('approval_wrong_issuer', 'the issuer of the attestation is not the root delegator of the delegation');
-  if (att.issuerId !== null && didOf(att.issuerId) !== ref.issuer_did) return refusedBy('approval_wrong_issuer', 'the issuer record that the reference names is not the issuer record of the attestation');
+  if (att.issuerId !== null && didOfAgentId(att.issuerId) !== ref.issuer_did) return refusedBy('approval_wrong_issuer', 'the issuer record that the reference names is not the issuer record of the attestation');
 
   const rule = failedCondition(ports, lines, RULE);
   if (rule !== null) return rule;
@@ -168,7 +168,7 @@ export async function checkApproval(ports: ChecksPorts, input: ApprovalInput): P
     };
   }
   // The issuer DID is the one that the attestation names, and never the one that the reference names: the reference is not verified. An attestation with no issuer record has none.
-  return { ok: true, attestation: ref.attestation, issuer_did: att.issuerId === null ? null : didOf(att.issuerId), issuer_key_hash: keyHashOf(att.issuer), valid_until: att.validUntil };
+  return { ok: true, attestation: ref.attestation, issuer_did: att.issuerId === null ? null : didOfAgentId(att.issuerId), issuer_key_hash: keyHashOf(att.issuer), valid_until: att.validUntil };
 }
 
 /** The check bound to its ports: the `ApprovalCheck` of the protocol, for a service that takes the check as a dependency. It throws CheckUnavailableError as `checkApproval` does. */

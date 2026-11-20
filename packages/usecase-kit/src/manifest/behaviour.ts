@@ -10,19 +10,14 @@
 //   lots         The lots file of an order desk.   price_list   The price list of a bid desk.
 //
 // The members come out in this order, so the same parts give the same bytes. The builders take the KIND of the agent and never the fault setting, so the manifest cannot depend on it.
-import { FAULT_MODES, accepted, checkMembers, readMembers, refused } from '../protocol/index.ts';
+import { COSIGN_ROUTE, COSIGN_RULE, FAULT_MODES, accepted, checkMembers, isAgentKind, readMembers, refused } from '../protocol/index.ts';
 import type { AgentKind, BehaviourAdditions, FaultMode, ManifestCosign, ManifestFileRef, ManifestModel, ManifestRelyingOn, ProtocolResult } from '../protocol/index.ts';
 import { buildClaim, parseClaim, parseFileRef, parseModel, parseRelyingOn } from './fields.ts';
 import type { FieldOptions } from './fields.ts';
-import { isAgentKind, isBuyerSideKind } from './kinds.ts';
+import { isBuyerSideKind } from './kinds.ts';
 
 /** The schema of the manifest that these members belong to. */
 export const MANIFEST_SCHEMA = 'vector.agent-manifest.v2';
-/** The path of the co-sign route of a buyer-side agent. The method is POST. */
-export const COSIGN_ROUTE = '/cosign/delegate';
-/** The rule of the co-signature, in the words of the manifest. */
-export const COSIGN_RULE =
-  "The agent signs only a Delegate transaction that names this agent and one of its free delegation keys, and that spends nothing of the agent's own. It signs only for a principal key that is on an allowlist that the operator sets.";
 
 /** The members that an agent of any kind can add under `behaviour`. */
 export const ADDITION_MEMBERS = ['operations', 'claim', 'cosign', 'fault_modes', 'model', 'relying_on', 'lots', 'price_list'] as const;

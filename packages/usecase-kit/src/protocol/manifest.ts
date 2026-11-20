@@ -1,9 +1,9 @@
 // packages/usecase-kit/src/protocol/manifest.ts
-// What an agent manifest (`vector.agent-manifest.v2`) adds under `behaviour` for these agents, as types. The manifest has other members that each agent writes. These are the members that
-// the agents share, and the members that only some kinds have.
+// What an agent manifest (`vector.agent-manifest.v2`) adds under `behaviour` for these agents, as types, and the one route and the one rule of the co-signature. The manifest has other members that each
+// agent writes. These are the members that the agents share, and the members that only some kinds have.
 //
 //   claim        The three statements of the claim of the agent, with no reference to a claim: a claim is staked for each run.
-//   cosign       The rule by which a buyer-side agent co-signs a delegation. Only a buyer-side agent has it.
+//   cosign       The route and the rule by which a buyer-side agent co-signs a delegation. Only a buyer-side agent has it. COSIGN_ROUTE and COSIGN_RULE hold both.
 //   operations   `["propose", "execute"]` for a buyer-side agent. A counterparty has no operations, and the member is absent.
 //   fault_modes  The fault values that the agent kind lists. The value that is active is not in the manifest.
 //   model        The models that the agent may hire for its decisions, and the most that it pays for a call.
@@ -29,6 +29,21 @@ export interface ManifestCosign {
   readonly route: string;
   readonly rule: string;
 }
+
+/** The path of the co-sign route of a buyer-side agent, on the origin of its endpoint. The method is POST. */
+export const COSIGN_ROUTE = '/cosign/delegate';
+
+/**
+ * The rule of the co-signature in words: what the route of a buyer-side agent checks before it signs. The cosign folder states this rule, and the manifest of a buyer-side agent holds it, so a reader of the
+ * manifest reads the rule that the route applies. A change of a rule of the route changes this text, and so it changes the bytes of the manifest and the hash of the advert.
+ */
+export const COSIGN_RULE =
+  'The agent signs one kind of transaction: a Delegate transaction of the delegation contract that names this agent as the delegate and one of its own delegation keys as the delegate key. ' +
+  'The delegator must have signed the transaction first, and the delegator must be a principal key on the allowlist of the operator. ' +
+  'The delegation key must have no live delegation and no other signed transaction whose window is open. ' +
+  'The transaction must spend nothing of the agent, and it must have no certificate, no withdrawal and no other mint. ' +
+  'Its validity window must end in the future, and not too far ahead, and the period of the delegation must not be over. ' +
+  'The agent adds one witness of the delegation key and changes nothing else.';
 
 /** The models that an agent may hire (the setting `LLM_MODEL_ALLOWLIST`) and the most that it pays for one call, in lovelace (`LLM_MAX_PRICE_LOVELACE`). */
 export interface ManifestModel {

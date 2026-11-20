@@ -103,9 +103,9 @@ describe('buildBehaviour: stable bytes', () => {
   it('has a hash for each kind that changes only when the additions change on purpose', () => {
     const hashes = Object.fromEntries(AGENT_KINDS.map((kind) => [kind, createHash('sha256').update(JSON.stringify(unwrap(buildBehaviour(kind, PARTS[kind]))), 'utf8').digest('hex')]));
     expect(hashes).toStrictEqual({
-      'reorder-agent': '6696b7c808d71747fb4a1fedbe999f775fc944bbc8aa4927bac4897ce4ba9d0e',
-      'prior-authorization-agent': '9daed395eb64efbda1877b24d3480ec9e500f51ecff16af9ade1b73cd4367ff9',
-      'sourcing-agent': 'b592eab49cd5e268eccb4e85dcf910d37476151eefd20e2b611428e25f7bdaae',
+      'reorder-agent': '7bc4cc9e54373a49b6ed57bdd36d3688c1a720ff593f48df4611e43afac61ad5',
+      'prior-authorization-agent': '53d9083950c7cc5d6c192da2774e1c97469ae3da7430ed1ad5f5cf9a4bfa902d',
+      'sourcing-agent': 'e343cdbcab061f44ad4e0530c8f491ddc8aca7a9ed43a84fcb0c2d3bec516796',
       'order-desk': '2dc3a03737610012eabe0f27e8c8858ed0d16b5d9942f6744d9246ab96c6b06e',
       'insurer-intake-agent': '2d90e2bf6909d650d1cdd30f10a79bcd2e103e99ba0d84b1e241072736893022',
       'bid-desk': '59f2b585c126238b21824d6f64513b786acedc1898e5b925bcdaaad8bc174562',
@@ -249,9 +249,10 @@ describe('the co-sign rule', () => {
   it('names the route, and states the rule in the words of the manifest', () => {
     expect(buildCosign()).toStrictEqual({ route: '/cosign/delegate', rule: COSIGN_RULE });
     expect(COSIGN_RULE).toContain('Delegate transaction');
-    expect(COSIGN_RULE).toContain('free delegation keys');
-    expect(COSIGN_RULE).toContain('spends nothing');
-    expect(COSIGN_RULE).toContain('allowlist that the operator sets');
+    expect(COSIGN_RULE).toContain('signed the transaction first');
+    expect(COSIGN_RULE).toContain('spend nothing of the agent');
+    expect(COSIGN_RULE).toContain('allowlist of the operator');
+    expect(COSIGN_RULE).toContain('period of the delegation must not be over');
   });
 
   it('gives a new object on each call', () => {

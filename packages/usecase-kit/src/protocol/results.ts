@@ -15,7 +15,7 @@
 //   refused_by_counterparty, refused_by_system    `...refusedExit(reason)`. It gives the reason and its state together, and the type of a refused result needs that pair.
 import type { ExecuteOutcome, ExitState, UseCase } from './codes.ts';
 import type { FaultSetting } from './faults.ts';
-import type { Did, Digest, OutputRef, Salt } from './identifiers.ts';
+import type { Did, Digest, KeyHash, OutputRef, Salt } from './identifiers.ts';
 import type { Document, JsonObject, JsonValue } from './json.ts';
 import type { PROPOSAL_SCHEMA, RESULT_SCHEMA } from './messages.ts';
 
@@ -33,23 +33,27 @@ export interface SubJob {
   readonly advert_ref: OutputRef;
   readonly escrow_ref: OutputRef;
   /** The hash of the supplier key: 56 lower-case hex characters. */
-  readonly supplier_pkh: string;
+  readonly supplier_pkh: KeyHash;
   readonly receipt: JsonObject;
   readonly receipt_signature: string;
   readonly verification: ReceiptVerification;
 }
 
-/** A decision of the model. The agent keeps the choice as the model gave it: no code of the agent changes, clamps or computes it again. */
-export interface Decision {
+/** The sub-job of a hire that was paid, and whether its Accept was seen on the chain: `confirmed` when the Accept was seen on the chain, and `pending` when it was sent and not yet seen. */
+export interface PaidDelivery {
+  readonly sub_job: SubJob;
+  readonly accepted: 'confirmed' | 'pending';
+}
+
+/**
+ * A decision of the model. The agent keeps the choice as the model gave it: no code of the agent changes, clamps or computes it again. `C` is the type of the choice: a caller that knows the shape of its
+ * choice reads `Decision<C>`, and with no argument the choice is any JSON value.
+ */
+export interface Decision<C extends JsonValue = JsonValue> {
   readonly name: string;
-  readonly choice: JsonValue;
+  readonly choice: C;
   readonly reasoning: string;
-  readonly inference: {
-    readonly path: 'marketplace';
-    readonly sub_job: SubJob;
-    /** `confirmed` when the Accept was seen on the chain, and `pending` when it was sent and not yet seen. */
-    readonly accepted: 'confirmed' | 'pending';
-  };
+  readonly inference: { readonly path: 'marketplace' } & PaidDelivery;
 }
 
 interface ProposalResultBase {

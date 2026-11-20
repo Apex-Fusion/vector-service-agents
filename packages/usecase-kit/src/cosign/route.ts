@@ -18,9 +18,9 @@ import { blake2b } from '@noble/hashes/blake2b';
 import type { IdentityDeployment } from '@vsa/buyer-core';
 import { within } from '@vsa/service-kit';
 import { addressDetails, decodeTransaction } from '@vsa/vector-read/guarded-decode';
-import { accepted, checkMembers, parseDid, parseJsonText, readMembers, refused } from '../protocol/index.ts';
+import { COSIGN_ROUTE, COSIGN_RULE, accepted, agentIdOf, checkMembers, isKeyHash, isScriptHash, parseDid, parseJsonText, readMembers, refused } from '../protocol/index.ts';
 import type { ManifestCosign, ProtocolResult, Refused } from '../protocol/index.ts';
-import { COSIGN_PATH, MAX_COSIGN_REQUEST_BYTES, MAX_TRANSACTION_HEX, MAX_WINDOW_MS, RESERVATION_MARGIN_MS, SLOT_MS } from './codes.ts';
+import { MAX_COSIGN_REQUEST_BYTES, MAX_TRANSACTION_HEX, MAX_WINDOW_MS, RESERVATION_MARGIN_MS, SLOT_MS } from './codes.ts';
 import type { CosignCode } from './codes.ts';
 import { makeHandler } from './http.ts';
 import type { CosignHandler } from './http.ts';
@@ -76,26 +76,16 @@ export interface CosignSigned {
 }
 
 export interface CosignRoute {
-  readonly path: typeof COSIGN_PATH;
+  readonly path: typeof COSIGN_ROUTE;
   /** The function behind the route. It never throws: every failure is a typed refusal. */
   cosign(body: string | Uint8Array): Promise<ProtocolResult<CosignSigned, CosignCode>>;
   /** The handler that a service mounts at `POST /cosign/delegate`. It never throws. */
   readonly handle: CosignHandler;
 }
 
-/** The rule of the route in words, for `behaviour.cosign` of the manifest of a buyer-side agent. */
-export const COSIGN_MANIFEST: ManifestCosign = {
-  route: COSIGN_PATH,
-  rule:
-    'The agent signs one kind of transaction: a Delegate transaction of the delegation contract that names this agent as the delegate and one of its own delegation keys as the delegate key. ' +
-    'The delegator must have signed the transaction first, and the delegator must be a principal key on the allowlist of the operator. ' +
-    'The delegation key must have no live delegation and no other signed transaction whose window is open. ' +
-    'The transaction must spend nothing of the agent, and it must have no certificate, no withdrawal and no other mint. ' +
-    'Its validity window must end in the future, and not too far ahead, and the period of the delegation must not be over. ' +
-    'The agent adds one witness of the delegation key and changes nothing else.',
-};
+/** The route and the rule of the co-signature, for `behaviour.cosign` of the manifest of a buyer-side agent. Both are the ones of the protocol: the manifest folder builds the same member from them. */
+export const COSIGN_MANIFEST: ManifestCosign = { route: COSIGN_ROUTE, rule: COSIGN_RULE };
 
-const KEY_HASH = /^[0-9a-f]{56}$/;
 const HEX = /^(?:[0-9a-fA-F]{2})+$/;
 /** The largest slot that the route converts to a time: about 35,000 years. A slot above it is "too far ahead". */
 const MAX_SLOT = 2n ** 40n;
@@ -164,7 +154,7 @@ function keysInUseOf(value: unknown): Set<string> | undefined {
   const keys = new Set<string>();
   // The built-in iterator of `Set` throws for a value that is not a `Set`, and a `Set` that has another `has` or another iterator is read as the built-in `Set` reads it.
   for (const entry of Set.prototype.values.call(value) as Iterable<unknown>) {
-    if (typeof entry !== 'string' || !KEY_HASH.test(entry)) return undefined;
+    if (!isKeyHash(entry)) return undefined;
     keys.add(entry);
   }
   return keys;
@@ -203,9 +193,9 @@ function checkConfig(config: CosignConfig): ProtocolResult<{ agentId: string; ke
   if (!did.ok) return bad('agentDid must be a DID of the form did:vector:<64 hex characters>');
   const hash = config.deployment?.delegation?.hash;
   const address = config.deployment?.delegation?.address;
-  if (typeof hash !== 'string' || !KEY_HASH.test(hash) || typeof address !== 'string' || address === '') return bad('deployment must hold the hash and the address of the delegation script');
+  if (!isScriptHash(hash) || typeof address !== 'string' || address === '') return bad('deployment must hold the hash and the address of the delegation script');
   if (!Array.isArray(config.delegationKeys) || config.delegationKeys.length < 1 || config.delegationKeys.length > 8) return bad('delegationKeys must be a list of one to eight keys');
-  if (!Array.isArray(config.otherKeyHashes) || config.otherKeyHashes.length > 64 || config.otherKeyHashes.some((entry) => typeof entry !== 'string' || !KEY_HASH.test(entry))) {
+  if (!Array.isArray(config.otherKeyHashes) || config.otherKeyHashes.length > 64 || config.otherKeyHashes.some((entry) => !isKeyHash(entry))) {
     return bad('otherKeyHashes must be a list of at most 64 key hashes of 56 lower-case hex characters');
   }
   const keys = new Map<string, Key>();
@@ -226,7 +216,7 @@ function checkConfig(config: CosignConfig): ProtocolResult<{ agentId: string; ke
   // A key of the agent on the allowlist would let one key be the delegator and the delegate of one delegation.
   const agentKeys = new Set([...keys.keys(), ...config.otherKeyHashes]);
   if ([...agentKeys].some((keyHash) => settings.value.allowlist.has(keyHash))) return bad('the allowlist must not hold a key of the agent');
-  return accepted({ agentId: did.value.slice('did:vector:'.length), keys, agentKeys, register, settings: settings.value });
+  return accepted({ agentId: agentIdOf(did.value), keys, agentKeys, register, settings: settings.value });
 }
 
 /**
@@ -369,5 +359,5 @@ export function createCosignRoute(config: CosignConfig): ProtocolResult<CosignRo
     return result;
   }
 
-  return accepted({ path: COSIGN_PATH, cosign, handle: makeHandler(cosign) });
+  return accepted({ path: COSIGN_ROUTE, cosign, handle: makeHandler(cosign) });
 }

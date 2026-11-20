@@ -9,8 +9,10 @@
 // the hash of the served bytes, so the bytes must not change between two renders, and they must not change with the fault setting. The builders take the KIND of the agent and never the setting. The
 // active fault value is in each result and in the evidence file, and it is never in the manifest.
 export {
-  ADDITION_MEMBERS, COSIGN_ROUTE, COSIGN_RULE, FAULT_EFFECTS, MANIFEST_SCHEMA, buildBehaviour, buildCosign, buildFaultModes, faultGap, parseBehaviourAdditions, withFaultGap,
+  ADDITION_MEMBERS, FAULT_EFFECTS, MANIFEST_SCHEMA, buildBehaviour, buildCosign, buildFaultModes, faultGap, parseBehaviourAdditions, withFaultGap,
 } from './behaviour.ts';
+// The route and the rule of the co-signature are held by the protocol. The cosign folder states the same rule.
+export { COSIGN_ROUTE, COSIGN_RULE } from '../protocol/index.ts';
 export type { BehaviourParts, ManifestOptions } from './behaviour.ts';
 export { MAX_STATEMENT_CHARS, MAX_URI_CHARS, buildClaim, parseClaim, parseFileRef, parseModel, parseRelyingOn } from './fields.ts';
 export type { FieldOptions } from './fields.ts';

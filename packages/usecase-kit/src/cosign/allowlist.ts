@@ -2,9 +2,8 @@
 // The allowlist of the operator: the principal keys that a delegation may come from. The text form is one key hash for each entry (56 lower-case hex characters), separated by white space or commas. A `#`
 // starts a note that runs to the end of the line. The service reads the text once, at its start, from a file or from a setting, and checks it here. The operator command of the later work calls
 // `addToAllowlist` and writes the new text back. This code reads and writes no file.
-import { accepted, refused, type ProtocolResult } from '../protocol/index.ts';
+import { accepted, isKeyHash, refused, type ProtocolResult } from '../protocol/index.ts';
 
-const KEY_HASH = /^[0-9a-f]{56}$/;
 /** The most keys on the list. */
 export const MAX_ALLOWLIST_KEYS = 1_024;
 /** The most bytes of the text of the list. */
@@ -41,7 +40,7 @@ export function parseAllowlist(text: unknown): ProtocolResult<Allowlist, 'bad_se
   for (let i = 0; i < lines.length; i++) {
     const entries = lines[i].split('#', 1)[0].split(/[\s,]+/).filter((entry) => entry !== '');
     for (const entry of entries) {
-      if (!KEY_HASH.test(entry)) return refused('bad_setting', `the allowlist has an entry on line ${i + 1} that is not a key hash (56 lower-case hex characters)`);
+      if (!isKeyHash(entry)) return refused('bad_setting', `the allowlist has an entry on line ${i + 1} that is not a key hash (56 lower-case hex characters)`);
       keys.add(entry);
     }
   }
@@ -56,7 +55,7 @@ export function parseAllowlist(text: unknown): ProtocolResult<Allowlist, 'bad_se
 export function addToAllowlist(text: unknown, keyHash: unknown): ProtocolResult<{ readonly text: string; readonly added: boolean }, 'bad_setting'> {
   const parsed = parseAllowlist(text);
   if (!parsed.ok) return parsed;
-  if (typeof keyHash !== 'string' || !KEY_HASH.test(keyHash)) return refused('bad_setting', 'the key must be a key hash of 56 lower-case hex characters');
+  if (!isKeyHash(keyHash)) return refused('bad_setting', 'the key must be a key hash of 56 lower-case hex characters');
   if (parsed.value.has(keyHash)) return accepted({ text: text as string, added: false });
   if (parsed.value.size >= MAX_ALLOWLIST_KEYS) return refused('bad_setting', `the allowlist has ${MAX_ALLOWLIST_KEYS} keys already`);
   const base = (text as string) === '' || (text as string).endsWith('\n') ? (text as string) : `${text as string}\n`;

@@ -1,11 +1,11 @@
 // packages/usecase-kit/src/fault/stamp.ts
 // The field `fault_mode` of a result. The service adds it to every result with ONE helper, so that job code cannot leave it out or write another value. The evidence writer reads it back with
 // `readFaultMode`: a result that has no such field is never taken as a clean result.
-import { accepted, isFaultSetting, parseDocument, readMembers, refused } from '../protocol/index.ts';
+import { accepted, isAgentKind, isFaultSetting, parseDocument, readMembers, refused } from '../protocol/index.ts';
 import type { AgentKind, FaultSetting, ProtocolResult } from '../protocol/index.ts';
 import { compareDetail, compareSettings } from './compare.ts';
 import type { FaultCompareRefusal } from './compare.ts';
-import { describeValue, isAgentKind, isFaultSwitch } from './setting.ts';
+import { describeValue, isFaultSwitch } from './setting.ts';
 import type { FaultSwitch } from './setting.ts';
 
 /** A result with the member `fault_mode` of the switch. Each member of the result stays, except a `fault_mode` that the job wrote. */
