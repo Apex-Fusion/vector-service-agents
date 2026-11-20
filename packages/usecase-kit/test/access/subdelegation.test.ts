@@ -486,3 +486,56 @@ describe('the reference that is given before the Delegate is sent', () => {
     expect(calls).toBe(0);
   });
 });
+
+describe('a wait that could have no end', () => {
+  /** A clock that stands still: the poll sleep ends at once, and the long sleeps of the bounds never end. */
+  const frozen = { now: (): number => NOW, sleep: (ms: number): Promise<void> => (ms === 5_000 ? Promise.resolve() : new Promise<void>(() => undefined)) };
+
+  it('is cut by the number of reads when the clock does not move: the wait and the end step both end', async () => {
+    const w = subWorld({ limits: { confirmationWaitMs: 60_000, endTimeoutMs: 120_000, pollMs: 5_000 } });
+    const run = await withSubDelegation({ chain: w.chain, clock: frozen }, w.request, w.limits, idle);
+    expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'confirmation_timeout' }, end: { state: 'not_ended', code: 'end_unconfirmed' } });
+    expect(w.chain.log.filter((step) => step === 'readiness')).toHaveLength(Math.ceil(60_000 / 5_000) + 1);
+    expect(w.chain.log.filter((step) => step === 'buildUndelegate')).toHaveLength(Math.ceil(120_000 / 5_000) + 1);
+  });
+});
+
+describe('an end that is not seen', () => {
+  it('is not claimed: a ledger that cannot be read after the Undelegate gives end_unconfirmed, and a ledger that can be read gives ended', async () => {
+    const w = subWorld({ limits: { endTimeoutMs: 40_000 } });
+    const read = w.chain.readDelegation.bind(w.chain);
+    w.chain.readDelegation = async (id) => {
+      if (w.chain.submitted.some((s) => s.kind === 'undelegate')) throw new Error('the ledger cannot be read');
+      return read(id);
+    };
+    expect((await go(w, idle)).end).toMatchObject({ state: 'not_ended', code: 'end_unconfirmed', left: { endTxHash: expect.any(String) } });
+    expect((await go(subWorld({ limits: { endTimeoutMs: 40_000 } }), idle)).end.state).toBe('ended');
+  });
+
+  it('is refused when the Undelegate is for another delegation: nothing is sent for it', async () => {
+    const w = subWorld();
+    const build = w.chain.buildUndelegate.bind(w.chain);
+    w.chain.buildUndelegate = async (params) => ({ ...(await build(params)), id: 'ee'.repeat(32) });
+    const run = await go(w, idle);
+    expect(run.end).toMatchObject({ state: 'not_ended', code: 'end_failed' });
+    expect(run.end.state === 'not_ended' && run.end.detail).toContain('another delegation');
+    expect(w.chain.submitted.map((s) => s.kind)).toStrictEqual(['delegate']);
+  });
+});
+
+describe('a route that cannot be a sub-delegation', () => {
+  it('is refused when its action is a pattern, or its resource is not an https URL, and a route that is right is accepted', async () => {
+    const base = subWorld();
+    for (const target of [{ ...base.target, action: 'erp.*' }, { ...base.target, resource: 'http://mock.example/t/run1/erp' }, { ...base.target, resource: 'https://mock.example/t/run1/erp ' }]) {
+      const w = subWorld({ request: { target } });
+      expect(await go(w, idle), target.action + target.resource).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'bad_request' }, end: { state: 'not_made' } });
+      expect(w.chain.log).not.toContain('buildDelegate');
+    }
+    expect((await go(subWorld(), idle)).kind).toBe('returned');
+  });
+
+  it('is refused when a signer is not an object', async () => {
+    const w = subWorld({ request: { agent: { signer: null as never, walletAddress: WALLET } } });
+    expect(await go(w, idle)).toMatchObject({ ok: false, failure: { code: 'bad_request' }, end: { state: 'not_made' } });
+  });
+});

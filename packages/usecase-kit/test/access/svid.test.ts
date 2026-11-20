@@ -219,6 +219,7 @@ describe('a JWT-SVID', () => {
     const result = await fetchJwtSvid({ client: w.client }, w.agent(w.orderDesk), w.requirements);
     if (!result.ok) throw new Error('no SVID');
     expect(result.value).toMatchObject({ spiffeId: `spiffe://id.vector.apexfusion.org/agent/${w.orderDesk.id}`, audience: ['https://mock.example/t/run1/insurer'] });
+    expect(result.value.expiresAt).toBeGreaterThan(w.gateway.now());
     expect(result.value.expiresAt).toBeLessThanOrEqual(w.gateway.now() + 300_000);
     const jwt = result.value.bearer().slice('Bearer '.length);
     expect(claimsOf(jwt)).toMatchObject({ sub: result.value.spiffeId, aud: 'https://mock.example/t/run1/insurer' });
@@ -322,5 +323,16 @@ describe('a JWT-SVID', () => {
     const result = await callWithJwtSvid({ fetch: async (_url, init) => { throw new Error(`down: ${String((init?.headers as Record<string, string>).authorization)}`); }, clock: w.clock }, svid.value, w.requirements);
     expect(result).toMatchObject({ ok: false, code: 'mock_system_failed', sent: true });
     for (const part of [jwt, ...jwt.split('.')]) expect(JSON.stringify(result)).not.toContain(part);
+  });
+});
+
+describe('a client that gives no private key for the certificate', () => {
+  it('gives gateway_bad_response, and gives the credential when the client gives the key', async () => {
+    const w = world();
+    const real = await w.client.x509Svid({ agent: w.agent(w.orderDesk) });
+    if (!real.ok) throw new Error('no SVID');
+    const client = (privateKey: typeof real.value.privateKey) => ({ jwtSvid: w.client.jwtSvid, x509Svid: async () => ({ ok: true as const, value: { ...real.value, privateKey } }) });
+    expect(await fetchX509Svid({ client: client(null) }, w.agent(w.orderDesk))).toMatchObject({ ok: false, code: 'gateway_bad_response' });
+    expect((await fetchX509Svid({ client: client(real.value.privateKey) }, w.agent(w.orderDesk))).ok).toBe(true);
   });
 });

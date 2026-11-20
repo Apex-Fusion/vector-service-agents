@@ -381,3 +381,48 @@ describe('the limits of a call', () => {
     expect(await callWithToken({ ...w.deps, maxAnswerBytes: 1 }, await w.tokenFor(w.erp), w.erp)).toMatchObject({ ok: false, sent: true, status: 200 });
   });
 });
+
+describe('each check of the token against the route', () => {
+  it('refuses the call when only the route differs, when only the resource differs, and when only the action differs', async () => {
+    const w = world();
+    stub.requests.length = 0;
+    stub.reply({ status: 200, body: '{}' });
+    const base = { route: w.erp.route, action: w.erp.action, resource: w.erp.resource, callers: w.erp.callers, holder: 'agent' as const, expiresAt: w.clock.now() + 60_000 };
+    const key = w.agent.delegation.privateKey;
+    for (const over of [{ route: 'po.write' as const }, { resource: 'https://mock.example/t/run1' }, { action: 'po.write' }]) {
+      expect(await callWithToken(w.deps, new RouteToken({ ...base, ...over }, 'a.b.c', key), w.erp), JSON.stringify(over)).toMatchObject({ ok: false, sent: false });
+    }
+    expect(stub.requests).toHaveLength(0);
+    expect((await callWithToken(w.deps, new RouteToken(base, 'a.b.c', key), w.erp)).ok).toBe(true);
+  });
+});
+
+describe('a credential in the words of the other side', () => {
+  it('is not shown when a refusal repeats the headers of the call', async () => {
+    const w = world();
+    const token = await w.tokenFor(w.erp);
+    const echo: typeof fetch = async (_url, init) => {
+      const headers = init?.headers as Record<string, string>;
+      return new Response(JSON.stringify({ error: 'token_invalid', message: `bad ${headers.authorization} with ${headers.dpop}` }), { status: 401 });
+    };
+    const result = await callWithToken({ ...w.deps, fetch: echo }, token, w.erp);
+    expect(result).toMatchObject({ ok: false, code: 'refused_by_system', reason: 'token_invalid', status: 401 });
+    expect(JSON.stringify(result)).not.toMatch(/eyJ/);
+    expect(JSON.stringify(result)).toContain('[removed]');
+  });
+
+  it('is not shown when an error repeats only a part of the token or of the proof', async () => {
+    const w = world();
+    const token = await w.tokenFor(w.erp);
+    const parts: string[] = [];
+    const failing: typeof fetch = async (_url, init) => {
+      const headers = init?.headers as Record<string, string>;
+      parts.push(headers.authorization!.split('.')[1]!, headers.dpop!.split('.')[1]!);
+      throw new Error(`failed near ${parts[0]} and ${parts[1]}`);
+    };
+    const result = await callWithToken({ ...w.deps, fetch: failing }, token, w.erp);
+    expect(result).toMatchObject({ ok: false, code: 'mock_system_failed', sent: true });
+    expect(parts[0]!.length).toBeGreaterThan(12);
+    for (const part of parts) expect(JSON.stringify(result)).not.toContain(part);
+  });
+});

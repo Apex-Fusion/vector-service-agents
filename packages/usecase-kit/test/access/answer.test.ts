@@ -104,3 +104,26 @@ describe('codeIn', () => {
     expect(codeIn(undefined)).toBeNull();
   });
 });
+
+describe('the edges of the rule', () => {
+  it('takes 299 as the last success and 300 as the first failure, and 400 as the first status that can be a refusal', () => {
+    expect(readAnswer(299, '{}')).toMatchObject({ ok: true });
+    expect(readAnswer(300, '{}')).toMatchObject({ ok: false, code: 'mock_system_failed' });
+    expect(readAnswer(400, '{}')).toMatchObject({ ok: false, code: 'mock_system_failed' });
+    expect(readAnswer(402, refusal('x'))).toMatchObject({ ok: false, code: 'mock_system_failed' });
+    expect(readAnswer(404, refusal('x'))).toMatchObject({ ok: false, code: 'mock_system_failed' });
+    expect(readAnswer(199, '{}')).toMatchObject({ ok: false, code: 'mock_system_failed' });
+    expect(readAnswer(0, '{}')).toMatchObject({ ok: false, code: 'mock_system_failed' });
+  });
+
+  it('removes a secret of 8 characters or more from a detail, and keeps a word that is shorter, so a short secret does not break the words', () => {
+    const body = refusal('not_covered', 'the call with abcdefgh and with abc failed');
+    const detail = (secrets: string[]): string => {
+      const result = readAnswer(403, body, secrets);
+      return result.ok === false ? result.detail : '';
+    };
+    expect(detail(['abcdefgh'])).toContain('the call with [removed] and with abc failed');
+    expect(detail(['abc'])).toContain('the call with abcdefgh and with abc failed');
+    expect(detail([])).toContain('the call with abcdefgh and with abc failed');
+  });
+});

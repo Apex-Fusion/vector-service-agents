@@ -275,3 +275,34 @@ describe('what a result and a token show', () => {
     expect(JSON.parse(JSON.stringify(result.value))).toMatchObject({ route: 'erp.stock', holder: 'agent' });
   });
 });
+
+describe('what counts as a delegation that is too young', () => {
+  interface Answer {
+    readonly status?: number;
+    readonly error?: string | null;
+    readonly detail?: string;
+  }
+  const answering = (over: Answer): Pick<GatewayClient, 'requestToken'> => ({
+    requestToken: async () => ({
+      ok: false, rule: 'gateway.refused', detail: over.detail ?? `delegation ${'ab'.repeat(32)} has fewer than 30 confirmations`, status: over.status ?? 400,
+      error: over.error === undefined ? 'invalid_authorization_details' : over.error, retryAfterSeconds: null,
+    }),
+  });
+  const code = async (over: Answer): Promise<string> => {
+    const w = world();
+    return failure(await requestRouteToken({ client: answering(over) }, w.agentRequest(w.erp))).code;
+  };
+
+  it('is the answer of the gateway for a young delegation, and no other answer', async () => {
+    expect(await code({})).toBe('delegation_too_young');
+    expect(await code({ status: 403 })).toBe('gateway_refused');
+    expect(await code({ status: 429 })).toBe('gateway_refused');
+    expect(await code({ error: 'invalid_request' })).toBe('gateway_refused');
+    expect(await code({ error: null })).toBe('gateway_refused');
+    for (const detail of [
+      `delegation ${'ab'.repeat(32)} has fewer than 29 confirmations`, `delegation ${'AB'.repeat(32)} has fewer than 30 confirmations`, `delegation abc has fewer than 30 confirmations`,
+      `delegation ${'ab'.repeat(32)} has fewer than 30 confirmations and was undelegated`, `the delegation ${'ab'.repeat(32)} has fewer than 30 confirmations`,
+      `delegation ${'ab'.repeat(32)} was undelegated`,
+    ]) expect(await code({ detail }), detail).toBe('gateway_refused');
+  });
+});
