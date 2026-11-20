@@ -5,7 +5,7 @@
 //
 //   propose  proposedResult, failedProposalResult
 //   execute  completedResult, refusedResult, vaultRefusedResult, failedResult, disputedResult, and settledResult for the steps of the hire that need nothing more from the use case
-import { DOCUMENT_SCHEMAS, PROPOSAL_SCHEMA, RESULT_SCHEMA, USE_CASES, exitStateOf, makeProposal, parseDigest } from '@vsa/usecase-kit/protocol';
+import { DOCUMENT_SCHEMAS, HANDOFF_USE_CASES, PROPOSAL_SCHEMA, RECEIPT_CHECKS, RESULT_SCHEMA, USE_CASES, exitStateOf, makeProposal, parseDigest } from '@vsa/usecase-kit/protocol';
 import type {
   ChallengeRecord, CompletedResult, Decision, Digest, DisputedResult, ExecuteOutcome, ExecuteResult, ExitState, FailedProposalResult, FailedResult, FaultSetting, HandoffRecord,
   Proposal, ProposalResult, RefusedResult, SubJob, UseCase, VaultRefusedResult, WriteRecord,
@@ -66,11 +66,26 @@ function wrongState(outcome: ExecuteOutcome, state: ExitState): Error {
   return new Error(`exitStateOf gave ${state} for ${outcome}, which the result of ${outcome} cannot hold`);
 }
 
-/** The approved proposal was carried out. */
+/** The record of a hire that was verified and accepted: the receipt and its signature, all eight checks true, and the Accept confirmed or pending. */
+function holdsAcceptedHire(handoff: HandoffRecord | null): boolean {
+  if (handoff === null) return false;
+  const { verification } = handoff;
+  const accepted = handoff.accepted === 'confirmed' || handoff.accepted === 'pending';
+  return accepted && handoff.receipt !== null && handoff.receipt_signature !== null && verification !== null && RECEIPT_CHECKS.every((check) => verification[check] === true);
+}
+
+/**
+ * The approved proposal was carried out. A use case that hires a counterparty needs the record of a hire that was verified and accepted: a record that holds none is a fault of the caller, and
+ * the function throws and makes no result. Use case 3 (supplier bid evaluation) hires no counterparty to execute, so its record is `null`.
+ */
 export function completedResult(pieces: ResultPieces): CompletedResult {
+  const base = baseOf(pieces);
+  if ((HANDOFF_USE_CASES as readonly string[]).includes(base.use_case) && !holdsAcceptedHire(base.handoff)) {
+    throw new TypeError('a completed result of this use case needs the record of a hire that was verified and accepted');
+  }
   const state = stateOf('completed', null, false, false);
   if (state !== 'Completed') throw wrongState('completed', state);
-  return { ...baseOf(pieces), outcome: 'completed', reason: null, challenge: null, exit_state: state };
+  return { ...base, outcome: 'completed', reason: null, challenge: null, exit_state: state };
 }
 
 /** The counterparty (`by` is `counterparty`) or a mock system (`system`) refused. `reason` is its code. The exit state follows the reason. */
