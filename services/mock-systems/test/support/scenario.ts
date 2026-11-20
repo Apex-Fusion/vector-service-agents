@@ -88,7 +88,14 @@ export const intakeBody = (tenant: string, number: string, status: 'complete' | 
   status, missing,
 });
 
-export const rankingBody = (tenant: string, topDid: string, secondDid: string, approval: { attestation: string; issuer_did: string } | null = { attestation: '07'.repeat(32), issuer_did: `did:vector:${'b2'.repeat(32)}` }) => ({
+/** The body of `POST /sourcing/rankings`: the ranking, its salt, and the approval that it names (or `null`). */
+export interface RankingBody {
+  ranking: Record<string, unknown>;
+  salt: string;
+  approval: { attestation: string; issuer_did: string } | null;
+}
+
+export const rankingBody = (tenant: string, topDid: string, secondDid: string, approval: { attestation: string; issuer_did: string } | null = { attestation: '07'.repeat(32), issuer_did: `did:vector:${'b2'.repeat(32)}` }): RankingBody => ({
   ranking: {
     schema: 'vector.usecase.ranking.v1', rfq_id: 'rfq-1', rfq_sha256: '5a'.repeat(32), tenant, weights: { price: 0.4, lead_time: 0.2, reliability: 0.2, compliance: 0.2 },
     ranked: [
@@ -99,3 +106,14 @@ export const rankingBody = (tenant: string, topDid: string, secondDid: string, a
   },
   salt: 'f6'.repeat(32), approval,
 });
+
+/** What `GET /t/<tenant>/state` shows of the sourcing record. */
+interface SourcingState {
+  sourcing: { rankings: unknown[] };
+}
+
+/** The rankings that the sourcing record of the tenant holds now. */
+export async function rankingsOf(s: Scenario): Promise<unknown[]> {
+  const state = (await s.harness.call({ path: `/t/${s.tenant}/state` })).json as unknown as SourcingState; // the body of our own service, in the shape that its README gives
+  return state.sourcing.rankings;
+}
