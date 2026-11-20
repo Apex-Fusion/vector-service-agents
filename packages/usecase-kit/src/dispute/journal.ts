@@ -4,7 +4,9 @@
 // a second evidence document and does not file a second challenge.
 //
 // One record can lapse: a record `started` that is older than its lease (`started_lease_ms` of the settings) does not block the job any more. It says only that the evidence may be on chain. A write
-// that lands after its bound leaves such a record with nothing sent, and a process that stops after the write leaves one with the evidence sent. Without the lease the job stays blocked for good.
+// that lands after its bound leaves such a record with nothing sent, and a process that stops after the write leaves one with the evidence sent. Without the lease the job stays blocked for good. A job that
+// goes on after a lapse names the claim of the record again, and no other claim: a transaction of the first try can still land, and the chain takes only one challenge of a claim. A try after a lapse that
+// sends nothing writes the lapsed record back, and not `not_sent`: the job stays tied to that claim.
 //
 // The journal is a port, because a process that keeps its records in memory forgets them when it stops. `MemoryJournal` is the default: it holds the records of the life of the process, and it is
 // what a test uses. A service that must not file a job twice after a restart gives a journal that keeps the records on disk, and that returns from `put` only when the record is stored.
@@ -53,7 +55,7 @@ export interface JobRecord {
   readonly escrow: OutputRef;
   /** The other party of the job: the claimer that the challenge is against. */
   readonly against: Did;
-  /** The claim output that the evidence names, and its token. */
+  /** The claim output that the evidence names, and its token. A job that goes on after the lapse of a record `started` names this claim again. */
   readonly claim: OutputRef;
   readonly claim_token: string;
   /**

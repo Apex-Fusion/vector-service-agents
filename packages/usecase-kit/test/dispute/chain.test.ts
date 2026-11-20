@@ -582,6 +582,36 @@ describe('the challenge on the ledger', () => {
       expect(restarted).toMatchObject({ ok: false, code: 'job_already_disputed', sent: { tx_hash: ledger.accepted[0] } });
       expect(ledger.accepted.length).toBe(1);
     }, SLOW);
+
+    describe('a record started that is older than its lease names the claim for the job', () => {
+      const NEWER_REF = `${'c4'.repeat(32)}#0`;
+      /** A claim of the same agent that was staked 50 minutes ago and ends 20 hours later: with no record, it is the target. */
+      const newer = (l: LedgerProvider) => ({ ...kitClaim(l, `636c6d5f${'0d'.repeat(28)}`, { challengeWindow: 20 * HOUR }, 50 * 60_000), txHash: 'c4'.repeat(32) });
+      /** A journal with a record `started` of the claim `CLAIM_REF` for the job, 11 minutes old: it is older than the lease of 10 minutes. */
+      const lapsed = async (): Promise<MemoryJournal> => {
+        const journal = new MemoryJournal();
+        await journal.put(ESCROW, { step: 'started', escrow: ESCROW, against: CLAIMER, claim: CLAIM_REF, claim_token: CLAIM_TOKEN, started_at: NOW - 11 * 60_000, evidence: null, filed: null, ended: null });
+        return journal;
+      };
+
+      it('files against the claim of the record, and leaves the claim that ends later open', async () => {
+        const ledger = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN), newer(l)]);
+        const filed = filedOf(await challengeOrder(disputeOf(ledger, AUDITOR_ID, NOW, { journal: await lapsed() })));
+        expect(filed.record.claim).toBe(CLAIM_REF);
+        expect(ledger.atAddress(MODULE1.challenge.address).length).toBe(1);
+        expect(claimsOn(ledger).find((claim) => claim.ref === NEWER_REF)!.datum.state).toBe('Open');
+        // The twin: a job with no record names the claim that ends later.
+        const free = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN), newer(l)]);
+        expect(filedOf(await challengeOrder(disputeOf(free, AUDITOR_ID))).record.claim).toBe(NEWER_REF);
+      }, SLOW);
+
+      it('says claim_changed and sends no transaction when the claim of the record is spent, although another claim is a target', async () => {
+        const ledger = ledgerWorld((l) => [newer(l)]);
+        const result = await challengeOrder(disputeOf(ledger, AUDITOR_ID, NOW, { journal: await lapsed() }));
+        expect(result).toMatchObject({ ok: false, code: 'claim_changed', evidence: null, sent: null });
+        expect(ledger.accepted).toEqual([]);
+      }, SLOW);
+    });
   });
 });
 

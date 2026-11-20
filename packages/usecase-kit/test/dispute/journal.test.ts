@@ -5,7 +5,7 @@ import { HireLane } from '@vsa/hire-kit';
 import { documentUri } from '@vsa/buyer-core';
 import { NO_OPEN_CLAIM } from '@vsa/usecase-kit/protocol';
 import { MemoryJournal } from '@vsa/usecase-kit/dispute';
-import type { ChallengeResult, ChallengeView, DeliveryChallengeInput, DisputeJournal, DisputeSettings, JobRecord } from '@vsa/usecase-kit/dispute';
+import type { ChallengeResult, ChallengeView, ClaimView, DeliveryChallengeInput, DisputeJournal, DisputeSettings, JobRecord } from '@vsa/usecase-kit/dispute';
 import {
   CHALLENGE_TOKEN, CHALLENGE_TX, ESCROW, ESCROW_2, EVIDENCE_TX, HOUR, JOB, KEY_HASH, NO_DOCUMENT, NO_TRANSACTION, NOW, ORDER_FACTS, OTHER, REF_A, REF_B, THIRD, TOKEN_A, TOKEN_B, challengeView, claimView, deferred,
   evidenceOf, never, rig,
@@ -42,6 +42,12 @@ function ownChallenge(rigged: Rig, challenge: Partial<ChallengeView> = {}, bytes
   rigged.port.challenges = [challengeView(challenge)];
   rigged.port.documents.set(documentUri(EVIDENCE_TX), { bytes, type: 'evidence', media_type: 'text/plain' });
 }
+
+/** A journal that has no record at the first read of a job and gives `stored` at each later read: another call wrote its record while this job waited in the queue. Its `put` stores nothing. */
+const onSecondRead = (stored: JobRecord): DisputeJournal => {
+  let reads = 0;
+  return { get: async () => { reads += 1; return reads === 1 ? null : stored; }, put: async () => undefined };
+};
 
 describe('the journal is written before the evidence is sent and after each step that landed', () => {
   it('writes started inside the job before the publish, then evidence_landed, then done, and reads first', async () => {
@@ -436,18 +442,14 @@ describe('a record of another job is never the record of this job', () => {
   });
 
   it('says journal_unavailable when the journal gives the record of another escrow in the job, right before the evidence is sent, and sends nothing', async () => {
-    const second = (stored: JobRecord): DisputeJournal => {
-      let reads = 0;
-      return { get: async () => { reads += 1; return reads === 1 ? null : stored; }, put: async () => undefined };
-    };
-    const other = rig({}, { journal: second(record({ escrow: ESCROW_2 })) });
+    const other = rig({}, { journal: onSecondRead(record({ escrow: ESCROW_2 })) });
     other.port.claims = [claimView()];
     const result = await other.dispute.challengeDelivery(delivery());
     expectNotFiled(result, 'journal_unavailable');
     expect(result.detail).toContain('nothing was sent');
     expect(other.port.published).toEqual([]);
     // The twin: the record of this job at that read stops the job, as before.
-    const same = rig({}, { journal: second(record()) });
+    const same = rig({}, { journal: onSecondRead(record()) });
     same.port.claims = [claimView()];
     expectNotFiled(await same.dispute.challengeDelivery(delivery()), 'job_already_disputed');
     expect(same.port.published).toEqual([]);
@@ -558,17 +560,13 @@ describe('a record started gives the job back when its lease has passed', () => 
   });
 
   it('uses the same rule in the job, where the journal is read again right before the evidence is sent', async () => {
-    const second = (stored: JobRecord): DisputeJournal => {
-      let reads = 0;
-      return { get: async () => { reads += 1; return reads === 1 ? null : stored; }, put: async () => undefined };
-    };
-    const young = rig({}, { journal: second(record({ started_at: NOW - LEASE + 1 })) });
+    const young = rig({}, { journal: onSecondRead(record({ started_at: NOW - LEASE + 1 })) });
     young.port.claims = [claimView()];
     const stopped = await young.dispute.challengeDelivery(delivery());
     expectNotFiled(stopped, 'job_already_disputed');
     expect(stopped.detail).toContain('nothing was sent');
     expect(young.port.published).toEqual([]);
-    const old = rig({}, { journal: second(record({ started_at: NOW - LEASE })) });
+    const old = rig({}, { journal: onSecondRead(record({ started_at: NOW - LEASE })) });
     old.port.claims = [claimView()];
     expect((await old.dispute.challengeDelivery(delivery())).ok).toBe(true);
     expect(old.port.published.length).toBe(1);
@@ -636,6 +634,171 @@ describe('a record started gives the job back when its lease has passed', () => 
     expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
     expect(rigged.port.published.length).toBe(1);
     expect(rigged.port.challenged.length).toBe(1);
+  });
+});
+
+describe('a lapsed record gives the job back only for the claim that it names', () => {
+  const LEASE = 600_000;
+  const LEAST_WINDOW = 10 * 60_000;
+
+  /** A claim of the other party that is a target and ends later than the claim REF_A: with no record, a challenge names it. */
+  const later = (): ClaimView => claimView({ ref: REF_B, token: TOKEN_B, submitted_at: NOW - HOUR + 60_000, challenge_window_ms: 20 * HOUR });
+
+  /** A dispute over `claims`, whose journal holds a record `started` of the claim REF_A that is as old as the lease. */
+  async function lapsedOver(claims: ClaimView[]) {
+    const inner = new MemoryJournal();
+    await inner.put(ESCROW, record({ started_at: NOW - LEASE }));
+    const journal = recording([], inner);
+    const rigged = rig({}, { journal });
+    rigged.port.claims = claims;
+    return { ...rigged, journal };
+  }
+
+  it('files the challenge against the claim of the record, and not against the claim that ends later', async () => {
+    const { journal, port, dispute } = await lapsedOver([claimView(), later()]);
+    expect(await dispute.challengeDelivery(delivery())).toMatchObject({ ok: true, value: { record: { claim: REF_A }, claim_token: TOKEN_A } });
+    // The evidence names the claim of the record, the challenge spends it, and the journal keeps it.
+    expect(port.published.map((call) => call.bytes)).toEqual([evidenceOf().bytes]);
+    expect(port.challenged.map((call) => call.claim)).toEqual([REF_A]);
+    expect(journal.puts.map((value) => [value.step, value.claim])).toEqual([['started', REF_A], ['evidence_landed', REF_A], ['done', REF_A]]);
+    // The twin: a job with no record names the claim that ends later.
+    const free = rig();
+    free.port.claims = [claimView(), later()];
+    expect((await free.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(free.port.challenged.map((call) => call.claim)).toEqual([REF_B]);
+  });
+
+  const UNUSABLE: Array<[string, ClaimView[], string, string]> = [
+    ['is spent', [later()], 'claim_changed', 'spent'],
+    ['is Challenged by another agent', [claimView({ state: 'Challenged' }), later()], 'claim_changed', 'Challenged'],
+    ['is Validated', [claimView({ state: 'Validated' }), later()], 'claim_changed', 'Validated'],
+    ['is Invalidated', [claimView({ state: 'Invalidated' }), later()], 'claim_changed', 'Invalidated'],
+    ['holds another token than the record says', [claimView({ token: TOKEN_B }), later()], 'claim_changed', 'another claim'],
+    ['has another claimer than the record says', [claimView({ claimer: THIRD }), later()], 'claim_changed', 'another claim'],
+    ['has a window that ends now', [claimView({ submitted_at: NOW - 4 * HOUR }), later()], 'claim_changed', 'ended'],
+    ['has a window that ends in 1 ms', [claimView({ submitted_at: NOW - 4 * HOUR + 1 }), later()], 'claim_window_closing', 'too soon'],
+    ['has 1 ms less window than the least window', [claimView({ submitted_at: NOW - 4 * HOUR + LEAST_WINDOW - 1 }), later()], 'claim_window_closing', 'too soon'],
+  ];
+
+  it.each(UNUSABLE)('ends the job and sends nothing when the claim of the record %s, although another claim is a target', async (_name, claims, code, word) => {
+    const { journal, port, dispute } = await lapsedOver(claims);
+    const result = await dispute.challengeDelivery(delivery());
+    expectNotFiled(result, code);
+    expect(result).toMatchObject({ evidence: null, sent: null, challenge: null, wrong_document: null });
+    expect(result.detail).toContain(`the claim ${REF_A}`);
+    expect(result.detail).toContain(word);
+    expect(port.published).toEqual([]);
+    expect(port.challenged).toEqual([]);
+    expect(journal.puts).toEqual([]);
+  });
+
+  it('files against the claim of the record when its window is exactly the least window', async () => {
+    const { port, dispute } = await lapsedOver([claimView({ submitted_at: NOW - 4 * HOUR + LEAST_WINDOW }), later()]);
+    expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(port.challenged.map((call) => call.claim)).toEqual([REF_A]);
+  });
+
+  it('checks the claim of the record like any other claim, and sends nothing when it is not a target', async () => {
+    const cases: Array<[string, ClaimView, string]> = [
+      ['a stake above the challenge stake', claimView({ stake_lovelace: 50_000_001n }), '1 with a stake above the challenge stake'],
+      ['a claim document that is not of this kit', claimView({ claim_hash: 'ab'.repeat(32) }), '1 without a claim document of this kit'],
+    ];
+    for (const [name, named, counted] of cases) {
+      const { journal, port, dispute } = await lapsedOver([named, later()]);
+      const result = await dispute.challengeDelivery(delivery());
+      expectNotFiled(result, NO_OPEN_CLAIM);
+      expect(result.detail, name).toContain(counted);
+      expect(port.published, name).toEqual([]);
+      expect(port.challenged, name).toEqual([]);
+      expect(journal.puts, name).toEqual([]);
+    }
+  });
+
+  it('gives no limit for a record that says that nothing was sent: the job names the claim that is a target', async () => {
+    const journal = new MemoryJournal();
+    await journal.put(ESCROW, record({ step: 'not_sent', started_at: NOW - LEASE }));
+    const { port, dispute } = rig({}, { journal });
+    port.claims = [later()];
+    expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(port.challenged.map((call) => call.claim)).toEqual([REF_B]);
+  });
+
+  it('writes the lapsed record back when the evidence of the second try is not built, so that the next try names the same claim', async () => {
+    const { journal, port, dispute } = await lapsedOver([claimView(), later()]);
+    const publish = port.publishAnswer;
+    port.publishAnswer = () => ({ ok: false, code: 'not_built', detail: 'no collateral' });
+    expectNotFiled(await dispute.challengeDelivery(delivery()), 'evidence_not_built');
+    // The record is the record of the first try again, and it is not `not_sent`.
+    expect(journal.puts.map((value) => value.step)).toEqual(['started', 'started']);
+    expect(journal.puts[1]).toEqual(record({ started_at: NOW - LEASE }));
+    // The next try goes on, and it names the claim of the record, and not the claim that ends later.
+    port.publishAnswer = publish;
+    expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(port.challenged.map((call) => call.claim)).toEqual([REF_A]);
+  });
+
+  it('leaves not_sent when there is no lapsed record, and the next try names the claim that ends later', async () => {
+    const journal = recording([]);
+    const { port, dispute } = rig({}, { journal });
+    port.claims = [claimView(), later()];
+    const publish = port.publishAnswer;
+    port.publishAnswer = () => ({ ok: false, code: 'not_built', detail: 'no collateral' });
+    expectNotFiled(await dispute.challengeDelivery(delivery()), 'evidence_not_built');
+    expect(journal.puts.map((value) => value.step)).toEqual(['started', 'not_sent']);
+    port.publishAnswer = publish;
+    expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(port.challenged.map((call) => call.claim)).toEqual([REF_B]);
+  });
+
+  it('files no second challenge when the challenge of the first try lands while the evidence of the second try confirms', async () => {
+    const { port, dispute } = await lapsedOver([claimView(), later()]);
+    const publish = port.publishAnswer;
+    port.publishAnswer = (call) => {
+      // The first try lands now: the claim of the record is Challenged, and the challenge of this agent for this job is on chain.
+      port.claims = [claimView({ state: 'Challenged' }), later()];
+      port.challenges = [challengeView()];
+      port.documents.set(documentUri(EVIDENCE_TX), { bytes: evidenceOf().bytes, type: 'evidence', media_type: 'text/plain' });
+      return publish(call);
+    };
+    expectNotFiled(await dispute.challengeDelivery(delivery()), 'claim_changed');
+    expect(port.challenged).toEqual([]);
+    // The next call finds the challenge of the first try. The job has one challenge, and it is not against the claim that ends later.
+    expect(await dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: CHAIN_FILED });
+    expect(port.challenged).toEqual([]);
+  });
+
+  it('stops in the job when the journal gives a lapsed record of another claim at the second read, and sends nothing', async () => {
+    // The first read gives no record, so the job chooses the claim that ends later. Then a record of the claim REF_A lapses before the job runs.
+    const other = rig({}, { journal: onSecondRead(record({ started_at: NOW - LEASE })) });
+    other.port.claims = [claimView(), later()];
+    const stopped = await other.dispute.challengeDelivery(delivery());
+    expectNotFiled(stopped, 'job_already_disputed');
+    expect(stopped.detail).toContain('names another claim');
+    expect(stopped.detail).toContain('nothing was sent');
+    expect(other.port.published).toEqual([]);
+    expect(other.port.challenged).toEqual([]);
+    // The twin: the lapsed record names the claim that the job chose.
+    const same = rig({}, { journal: onSecondRead(record({ started_at: NOW - LEASE, claim: REF_B, claim_token: TOKEN_B })) });
+    same.port.claims = [claimView(), later()];
+    expect((await same.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(same.port.challenged.map((call) => call.claim)).toEqual([REF_B]);
+  });
+
+  const OTHER_MEMBER: Array<[string, Partial<JobRecord>]> = [
+    ['claim output', { claim: REF_B }],
+    ['claim token', { claim_token: TOKEN_B }],
+    ['claimer', { against: THIRD }],
+  ];
+
+  it.each(OTHER_MEMBER)('stops in the job when the lapsed record has another %s than the job, and sends nothing', async (_name, member) => {
+    const rigged = rig({}, { journal: onSecondRead(record({ started_at: NOW - LEASE, ...member })) });
+    rigged.port.claims = [claimView()];
+    expectNotFiled(await rigged.dispute.challengeDelivery(delivery()), 'job_already_disputed');
+    expect(rigged.port.published).toEqual([]);
+    // The twin: the same record with the output, the token and the claimer of the job.
+    const twin = rig({}, { journal: onSecondRead(record({ started_at: NOW - LEASE })) });
+    twin.port.claims = [claimView()];
+    expect((await twin.dispute.challengeDelivery(delivery())).ok).toBe(true);
   });
 });
 

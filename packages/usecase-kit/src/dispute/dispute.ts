@@ -4,19 +4,25 @@
 //
 // The order of a challenge is fixed, and each step is checked before the next one starts:
 //   0. Read the journal of the job. A job that has a record gets that state, and nothing is sent a second time. A record that is for another escrow is `journal_unavailable`: it is not this job's record.
-//      A record `started` that is older than its lease gives the job back (`started_lease_ms`), and only after step 1 found no challenge of this agent on chain.
+//      A record `started` that is older than its lease gives the job back (`started_lease_ms`), and only after step 1 found no challenge of this agent on chain. The job then goes on only against the claim
+//      that the record names (step 2).
 //   1. Read the claims. A challenge of this agent for this job that is on chain already is found again, and it is the result. The code never files a second one.
 //   2. Choose the claim. A claim is a target only when ALL hold: its claimer is the other party; its claim document is a claim document of this kit for the capability of the job (it is on chain, its hash
 //      is the hash that the claim holds, and it is the document that `claimDocument` writes for that party and that capability) and its statement S1 is exactly the text of the statement S1 of the manifest
 //      that the job hired; it was submitted before the job began (the time of the Post of its escrow: the chain port reads the datum of the escrow output, and the caller gives no time); it is Open with
 //      enough window left; and its stake is not above the challenge stake. A claim that is not a target is left out and counted by its reason, so the claimer cannot choose the target or block a challenge with
 //      a claim of its own. Among the targets the one with the latest challenge deadline is chosen, and with the same deadline the one with the lowest claim token. None ends the job with `no_open_claim`.
+//      After a lapsed record `started`, only the claim of the record can be chosen, and it must still be a target. A claim of the record that is spent, is not Open, or has no window left ends the job with
+//      `claim_changed`, and one with too little window left ends it with `claim_window_closing`. Nothing is sent then.
 //   3. Make the evidence document. A document that is refused ends the job. Nothing is on chain yet.
-//   4. In one job of the queue: check the window that is left, read the journal again (another call can have written its record while this job waited), write the journal with the time of the job
-//      (`started_at`), publish the evidence document, and wait for its confirmation. A document that is not confirmed ends the job. The challenge is not built.
+//   4. In one job of the queue: check the window that is left, read the journal again (another call can have written its record while this job waited: a record that stops the job ends it, and so does a
+//      lapsed record of another claim), write the journal with the time of the job (`started_at`), publish the evidence document, and wait for its confirmation. A document that is not confirmed ends the job.
+//      The challenge is not built.
 //   5. In one job of the queue: read the claim again, and build the challenge against the exact output that the evidence names. A claim that changed ends the job.
 // A job (one escrow) gets one challenge. Once a transaction of a job landed or may land, the job takes no second attempt, also after a restart: the journal says so. Only a record `started` lapses: it says
-// that the evidence may be on chain, and nothing else. After its lease the job may go on, and the chain still takes one challenge of a claim.
+// that the evidence may be on chain, and nothing else. After its lease the job may go on, but only against the claim that its record names. A challenge of the first try can still land after the lease, and the
+// chain takes only one challenge of a claim. So the second try cannot give the job a second challenge, and a second try against another claim could. When the claim of the record cannot be used any more, the job
+// ends, and nothing is sent.
 //
 // Every read of a port has a bound, so a read that never answers does not hold the queue of the service key: it ends with `chain_unavailable`. Every transaction runs in the queue of the service key.
 // The code of a caller must not call a method of this class from inside a job of the same queue: the call would wait for itself.
@@ -60,9 +66,10 @@ export interface DisputeSettings {
   /**
    * How long a record `started` blocks the job, in milliseconds, counted from the time in the record. Such a record says that the evidence of the job may be on chain, and that the code did not write the
    * end of the job. A write that lands after its bound (`journal_unavailable`) leaves one with nothing sent, and a process that stops after the write leaves one with the evidence sent. After the lease
-   * the record gives the job back: a challenge of this agent that is on chain is still the result, and if there is none, the job goes on. Two processes can both go on after a lease ends, and the chain
-   * takes only one challenge of a claim. The default is 10 minutes, or twice `read_timeout_ms` when that is more. A value below twice `read_timeout_ms` is refused: a write ends at that bound and can still
-   * land later, so the lease must be longer than that.
+   * the record gives the job back: a challenge of this agent that is on chain is still the result, and if there is none, the job goes on, but only against the claim that the record names. A transaction of the
+   * first try can still land after the lease, and the chain takes only one challenge of a claim, so the job files at most one challenge. When that claim is spent, is not Open, or has too little window left, the
+   * job ends with `claim_changed` or `claim_window_closing`, and nothing is sent. Two processes can both go on after a lease ends, and they go on against the same claim. The default is 10 minutes, or twice
+   * `read_timeout_ms` when that is more. A value below twice `read_timeout_ms` is refused: a write ends at that bound and can still land later, so the lease must be longer than that.
    */
   readonly started_lease_ms?: number;
 }
@@ -167,9 +174,12 @@ function failed<B extends string, C extends string>(failure: StepFailure, built:
   return { code: 'port_error', detail: failure.detail, sent: null };
 }
 
-/** Why a claim is no longer the open claim that was read before, or null when nothing changed. */
-function changeOf(before: ClaimView, after: ClaimView | null, now: number): string | null {
-  if (after === null) return 'the claim output is spent or is not a claim output any more';
+/** What a claim output that is no longer in the list says: it is spent, or it is no claim output any more. */
+const CLAIM_GONE = 'the claim output is spent or is not a claim output any more';
+
+/** Why a claim is no longer the open claim that was read before, or null when nothing changed. `before` names the claim: its token, its claimer and the hash of its claim document. */
+function changeOf(before: Pick<ClaimView, 'token' | 'claimer' | 'claim_hash'>, after: ClaimView | null, now: number): string | null {
+  if (after === null) return CLAIM_GONE;
   if (after.state !== 'Open') return `the claim is ${after.state} now`;
   if (after.token !== before.token || after.claimer !== before.claimer || after.claim_hash !== before.claim_hash) return 'the output holds another claim now';
   if (now >= challengeDeadlineOf(after)) return 'the challenge window of the claim ended';
@@ -416,11 +426,28 @@ export class Dispute {
 
   /**
    * Is `record` a record `started` that is older than its lease at `now`? Only such a record lapses. It says that the evidence may be on chain, and no later step ends it. A record of any other step says what
-   * landed or how the job ended, and it stays. The journal has no lock across processes, so two processes that read the same lapsed record can both go on, and both can publish an evidence document. The chain
-   * takes only one challenge of a claim: the second job finds the claim changed, or the node refuses its build. So a job never files two challenges.
+   * landed or how the job ended, and it stays. A transaction of the first try can still land after the lease: it is valid for 30 minutes by default, and the lease is 10 minutes by default. So a job goes on after
+   * a lapse only against the claim that the record names (`#recordedClaim`, and the second read of the journal in the job of the queue). The chain takes only one challenge of a claim: when the first try lands, that
+   * claim is spent, and the second try finds the claim changed, or the node refuses its build. The journal has no lock across processes, so two processes that read the same lapsed record can both go on, and both can
+   * publish an evidence document. They go on against the same claim, so a job never files two challenges.
    */
   #lapsed(record: JobRecord, now: number): boolean {
     return record.step === 'started' && now - record.started_at >= this.#startedLease;
+  }
+
+  /**
+   * The claim that a job with a lapsed record `started` may name: the claim of the record, and no other (`#lapsed` says why). `claim_changed` says that the claim is spent, is not Open, is another claim than the
+   * record says, or has no window left. `claim_window_closing` says that less than the least window is left for the evidence to confirm. The claim is a candidate only: `#choose` checks it like any other claim.
+   */
+  #recordedClaim(record: JobRecord, claims: readonly ClaimView[], now: number): ProtocolResult<ClaimView, 'claim_changed' | 'claim_window_closing'> {
+    const rule = `a lapsed record of this job names the claim ${record.claim}, and the job goes on only against it`;
+    const named = claims.find((claim) => claim.ref === record.claim);
+    if (named === undefined) return refused('claim_changed', `${rule}: ${CLAIM_GONE}`);
+    // The record has the token and the claimer of the claim, and no hash of its claim document. The hash of an output cannot change, so the hash that is read now stands for it.
+    const change = changeOf({ token: record.claim_token, claimer: record.against, claim_hash: named.claim_hash }, named, now);
+    if (change !== null) return refused('claim_changed', `${rule}: ${change}`);
+    if (challengeDeadlineOf(named) - now < this.#windowLeft) return refused('claim_window_closing', `${rule}: the challenge window of the claim ends too soon for the evidence to confirm`);
+    return accepted(named);
   }
 
   /** The claims of the chain, each in its form. A list that cannot be read, or that has a view of a wrong shape, is `chain_unavailable`: the code never takes it for a list with no claim. */
@@ -796,11 +823,20 @@ export class Dispute {
     }
     if (earlier !== null) {
       if (!lapsed) return notFiled('job_already_disputed', earlierDetail(earlier, this.#startedLease), landedOf(earlier));
-      this.#log(`dispute: the started record of the job ${escrow} is older than its lease of ${this.#startedLease} ms, and no challenge of this agent is on chain, so the job goes on`);
+      this.#log(`dispute: the started record of the job ${escrow} is older than its lease of ${this.#startedLease} ms, and no challenge of this agent is on chain, so the job goes on, only against the claim ${earlier.claim}`);
     }
 
-    // 2. The claim of the other party that the challenge names.
-    const chosen = await this.#choose(target.against, claims.value, target.scope, this.#now(), this.#windowLeft);
+    // 2. The claim of the other party that the challenge names. After a lapsed record `started`, only the claim of the record can be named: a transaction of the first try can still land.
+    let candidates = claims.value;
+    if (earlier !== null) {
+      const recorded = this.#recordedClaim(earlier, claims.value, this.#now());
+      if (!recorded.ok) {
+        this.#log(`dispute: no challenge for the job ${escrow}: ${recorded.code}`);
+        return notFiled(recorded.code, recorded.detail);
+      }
+      candidates = [recorded.value];
+    }
+    const chosen = await this.#choose(target.against, candidates, target.scope, this.#now(), this.#windowLeft);
     if (!chosen.ok) {
       this.#log(`dispute: no challenge for the job ${escrow}: ${chosen.code}`);
       return notFiled(chosen.code, chosen.detail);
@@ -814,7 +850,7 @@ export class Dispute {
     if (!document.ok) return notFiled(document.code, document.detail);
 
     // 4. The evidence is published first, and the challenge waits for its confirmation. The window that is left is checked in the job, right before the publish: the wait for the queue can be long.
-    type FirstJob = { readonly stop: ChallengeCode; readonly detail: string } | { readonly tx: TxResult<PublishedDocument>; readonly started: JobRecord };
+    type FirstJob = { readonly stop: ChallengeCode; readonly detail: string } | { readonly tx: TxResult<PublishedDocument>; readonly started: JobRecord; readonly replaced: JobRecord | null };
     const first = await this.#queued<FirstJob>(async () => {
       let at: number;
       try {
@@ -829,24 +865,29 @@ export class Dispute {
       const seen = parseJobRecord(current.value);
       if (!seen.ok) return { stop: 'journal_unavailable', detail: `the journal gave a record that is not in its form, so nothing was sent: ${seen.detail}` };
       if (seen.value !== null && seen.value.escrow !== escrow) return { stop: 'journal_unavailable', detail: 'the journal gave the record of another job, so nothing was sent' };
-      if (seen.value !== null && seen.value.step !== 'not_sent' && !this.#lapsed(seen.value, at)) return { stop: 'job_already_disputed', detail: `${earlierDetail(seen.value, this.#startedLease)}; nothing was sent` };
+      const recorded = seen.value !== null && seen.value.step !== 'not_sent' ? seen.value : null;
+      if (recorded !== null && !this.#lapsed(recorded, at)) return { stop: 'job_already_disputed', detail: `${earlierDetail(recorded, this.#startedLease)}; nothing was sent` };
+      // A record that lapsed gives the job back only for the claim that it names, also when it lapsed while this job waited in the queue.
+      if (recorded !== null && (recorded.claim !== claim.ref || recorded.claim_token !== claim.token || recorded.against !== claim.claimer)) {
+        return { stop: 'job_already_disputed', detail: 'a lapsed record of this job names another claim, and the job goes on only against the claim of its record; nothing was sent' };
+      }
       const started: JobRecord = { step: 'started', escrow, against: claim.claimer, claim: claim.ref, claim_token: claim.token, started_at: at, evidence: null, filed: null, ended: null };
       const written = await this.#store(escrow, started);
       if (!written.ok) return { stop: 'journal_unavailable', detail: `${written.detail}, so nothing was sent` };
       progress.sent = true;
-      return { tx: await this.#port.publishDocument({ bytes: document.value.bytes, type: 'evidence', media_type: JUROR_MEDIA_TYPE }), started };
+      return { tx: await this.#port.publishDocument({ bytes: document.value.bytes, type: 'evidence', media_type: JUROR_MEDIA_TYPE }), started, replaced: recorded };
     }, () => progress.sent);
     if ('code' in first) return notFiled('port_error', first.detail);
     if ('stop' in first) {
       this.#log(`dispute: no evidence for the job ${escrow}: ${first.stop}`);
       return notFiled(first.stop, first.detail);
     }
-    const { tx: published, started } = first;
+    const { tx: published, started, replaced } = first;
     if (!published.ok) {
       const why = failed(published, 'evidence_not_built', 'evidence_not_confirmed');
       if (why.code === 'evidence_not_built') {
-        // Nothing was sent: the job may be tried again.
-        await this.#remember(escrow, { ...started, step: 'not_sent' });
+        // Nothing was sent: the job may be tried again. A lapsed record that this try replaced comes back, because the transactions of its try may still land: the next try names its claim again, and no other.
+        await this.#remember(escrow, replaced ?? { ...started, step: 'not_sent' });
         return notFiled(why.code, why.detail);
       }
       return this.#finish(escrow, started, notFiled(why.code, why.detail, { sent: why.sent }));
