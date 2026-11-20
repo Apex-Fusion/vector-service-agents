@@ -10,7 +10,8 @@
 // ends by itself at its `notAfter`, and the result gives the reference that a janitor needs to end it earlier.
 //
 // The Delegate carries its own end of validity: the TTL of its body is the slot that the end of validity in the report of the build gives (`DelegationChain.slotAt`), and the reference of a left
-// sub-delegation holds that end and that slot. So a Delegate that the ledger does not show by then never lands, and a janitor may drop its reference after that end.
+// sub-delegation holds that slot. A Delegate that the ledger does not show when the slot of the chain tip is at or past that TTL never lands, so a janitor may drop its reference then. The janitor
+// compares the slot of the tip with `delegateTtlSlot`, never the clock with `delegateValidTo`: the TTL is in the signed bytes, and the time is only what the build port reported.
 //
 // Runs of one agent wallet at one time go through the queue of that wallet for the build and the send of each transaction (queue.ts), and the end step ends only the delegation that its own run made.
 // Every wait on a port has a bound, and a port that gives no answer is a typed failure.
@@ -105,8 +106,8 @@ export interface SubDelegationDeps {
   readonly walletQueue: SerialQueue;
   /**
    * Called with the reference of the sub-delegation just BEFORE the Delegate is sent, so that a crash of the process cannot leave a sub-delegation that no record names. Write the reference to the
-   * store of the janitor here, and remove it when the run gives `end.state` of `ended` or `not_made`. A Delegate that the ledger does not show after `delegateValidTo` never lands, so a janitor may drop the
-   * reference of a run that crashed after that time. A hook that throws stops the run with `journal_failed`: nothing is sent.
+   * store of the janitor here, and remove it when the run gives `end.state` of `ended` or `not_made`. A Delegate that the ledger does not show when the slot of the chain tip is at or past
+   * `delegateTtlSlot` never lands, so a janitor may drop the reference of a run that crashed then. A hook that throws stops the run with `journal_failed`: nothing is sent.
    */
   readonly beforeSend?: (reference: LeftSubDelegation) => void | Promise<void>;
 }
@@ -170,9 +171,12 @@ export interface LeftSubDelegation {
   readonly resource: string;
   /** The hash of the Delegate transaction. */
   readonly delegateTxHash: string;
-  /** The end of the validity of the Delegate transaction, in POSIX milliseconds. A Delegate that is not on the ledger by then never lands: its bytes end at `delegateTtlSlot`. */
+  /** The end of the validity of the Delegate transaction, in POSIX milliseconds, as the build port reported it. It is for people: a janitor uses `delegateTtlSlot`. */
   readonly delegateValidTo: number;
-  /** The TTL of the Delegate transaction: the first slot in which it can no longer land. It is the slot that `delegateValidTo` gives, and the bytes that the keys signed carry it. */
+  /**
+   * The TTL of the Delegate transaction: the first slot in which it can no longer land. The bytes that the keys signed carry it. A Delegate that the ledger does not show when the slot of the chain tip is
+   * at or past this slot never lands, and a janitor may drop the reference then.
+   */
   readonly delegateTtlSlot: number;
   /** When the delegation ends by itself, in POSIX milliseconds. */
   readonly notAfter: number;
