@@ -11,6 +11,7 @@
 // Exit: 0 the step is shown or done, 1 a step failed (the state is unchanged, but for a transaction in flight), 2 a setting, a flag, a key file or the state is wrong or a guard
 // refused before any signature, 3 the hosted tools cannot be used, 4 a wait is open: the output says how long is left.
 import { join } from 'node:path';
+import { collateralAdvice, isCollateralOutput } from './collateral.ts';
 import { EvidenceError, EvidenceFile } from './evidence.ts';
 import { duration, iso, units } from './format.ts';
 import { GuardRefusal, LandRefused, NetworkGate } from './land.ts';
@@ -52,6 +53,8 @@ export interface CheckDefinition<Extra = unknown> {
   cleanup(session: Session<Extra>, flags: ReadonlySet<string>): Promise<StepOutcome>;
   /** Lines of the status besides the generic ones. */
   status?(session: Session<Extra>): Promise<string[]>;
+  /** What the next command is when it is not the next step in order: the status says it in place of the step. Null for the step in order. */
+  nextHint?(session: Session<Extra>): string | null;
 }
 
 export interface RunDeps {
@@ -184,18 +187,19 @@ async function statusLines<Extra>(def: CheckDefinition<Extra>, session: Session<
     lines.push(`  ${key.slice(5).padEnd(16)} confirmed (a part of a step), transaction ${hash}`);
   }
   lines.push(snapshot.in_flight === null ? 'in flight: nothing' : `in flight: the step ${snapshot.in_flight.step}, transaction ${snapshot.in_flight.tx_hash}, signed at ${iso(snapshot.in_flight.signed_at)}, may land until ${iso(snapshot.in_flight.valid_to)}`);
+  const hint = def.nextHint?.(session) ?? null;
   const next = def.steps.find((step) => snapshot.steps[step] === undefined);
-  lines.push(next === undefined ? 'next: every step is confirmed; run cleanup to take back what can come back' : `next: ${next}`);
+  lines.push(`next: ${hint ?? (next === undefined ? 'every step is confirmed; run cleanup to take back what can come back' : next)}`);
   if (def.needs.chain) {
     const gate = await session.network.guard();
     lines.push(`network guard: ${gate.ok ? 'ok' : 'FAIL'}, ${gate.message}`);
     for (const key of [...session.ring.keyHashes()].map((hash) => session.ring.get(session.ring.roleOf(hash)!))) {
       const utxos = await session.chain.provider.getUtxos(key.address);
       const total = utxos.reduce((sum, utxo) => sum + (utxo.assets.lovelace ?? 0n), 0n);
-      const collateral = utxos.filter((utxo) => Object.keys(utxo.assets).every((unit) => unit === 'lovelace') && (utxo.assets.lovelace ?? 0n) >= 5_000_000n).length;
+      const collateral = utxos.filter(isCollateralOutput).length;
       const none = collateral === 0 && key.role !== 'controller';
       lines.push(`wallet of the ${key.role} key ${key.keyHash}: ${units(total)} in ${utxos.length} output(s), ${collateral} pure output(s) of 5 units or more for collateral`
-        + (none ? `. NONE: a script step of this wallet needs one, and a script step can spend it. Make one: send 5.5 units to ${key.address}. Run status again before each script step` : ''));
+        + (none ? `. NONE: a script step of this wallet needs one, and a script step can spend it. ${collateralAdvice(key.address)}. Run status again before each script step` : ''));
     }
   }
   lines.push(...(await def.status?.(session) ?? []));

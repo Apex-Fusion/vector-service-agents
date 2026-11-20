@@ -5,6 +5,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PERIOD_MS, RECLAIM_AFTER_MS, parseVaultSettings, vaultCheck } from '../lib/check-vault.ts';
+import { collateralAdvice } from '../lib/collateral.ts';
+import { iso } from '../lib/format.ts';
 import type { VaultSettings } from '../lib/check-vault.ts';
 import { DryStop, HireFailed } from '../lib/hire-types.ts';
 import type { HirePort, VaultHireRequest, VaultHired, VaultPaid, VaultPayRequest, VaultReclaimed } from '../lib/hire-types.ts';
@@ -18,10 +20,13 @@ import { addReturned, liveVaultOf, vaultHostedFor } from './support/vault-world.
 
 const ADVERT = `${'ab'.repeat(32)}#0`;
 const ESCROW = `${'e1'.repeat(32)}#0`;
-/** What a Pay locks for the advert of Agent History: the price, both bonds and the ledger minimum of the output. */
-const LOCK = 3_330_000n;
-/** What an Accept returns to the vault: the buyer bond and the ledger minimum of the Returned output. */
-const BOND_BACK = 1_330_000n;
+/** The request that the agent accepts: check 2 has no default for it. */
+const PAYLOAD = '{"subject":"the test record"}';
+const ESCROW_ENV = { CHECKS_ADVERT_REF: ADVERT, CHECKS_HIRE_PAYLOAD: PAYLOAD };
+/** What a Pay from a vault locks for the advert of Agent History (price 1, bonds 1 and 1): exactly the price and both bonds. */
+const LOCK = 3_000_000n;
+/** What an Accept returns to the vault: the buyer bond and a top-up to the ledger minimum of the Returned output. */
+const BOND_BACK = 1_064_570n;
 
 /** Writes a vault reference into the step vault_open of the state file, as a state file that a lost call left behind would hold it. */
 function setVaultRef(h: Harness, name: string, ref: string): void {
@@ -58,12 +63,12 @@ class FakePort implements HirePort {
   }
 }
 
-async function started(kind: 'escrow' | 'refund', returnedReports?: string) {
+async function started(kind: 'escrow' | 'refund', returnedReports?: string, world?: World) {
   const name = kind === 'escrow' ? 'vault-escrow' : 'vault-refund';
   let h: Harness | null = null;
   const port = new FakePort(() => h!);
   const hosted = vaultHostedFor(() => h!, name, returnedReports);
-  h = await harness({ hosted, env: { CHECKS_ADVERT_REF: ADVERT } });
+  h = await harness({ hosted, env: ESCROW_ENV, ...(world === undefined ? {} : { world }) });
   return { h, port, hosted, check: vaultCheck(kind, () => port), name };
 }
 
@@ -74,19 +79,36 @@ async function submitSteps(t: { h: Harness; check: CheckDefinition<VaultSettings
 
 describe('the settings of the vault checks', () => {
   it('need the advert, have defaults that fit the advert of Agent History, and refuse a limit above the period or the vault', () => {
-    expect(parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT })).toMatchObject({
+    expect(parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT }, 'refund')).toMatchObject({
       hours: 24, advertRef: ADVERT, vaultLovelace: 8_000_000n, limitLovelace: 4_000_000n, totalLovelace: 8_000_000n, maxPriceLovelace: 2_000_000n, maxSupplierBondLovelace: 1_000_000n, maxBuyerBondLovelace: 1_000_000n,
     });
-    expect(parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_UNITS: '12', CHECKS_VAULT_LIMIT_UNITS: '6', CHECKS_VAULT_TOTAL_UNITS: '10', CHECKS_MAX_PRICE_UNITS: '3', CHECKS_HIRE_PAYLOAD: 'text' }))
-      .toMatchObject({ vaultLovelace: 12_000_000n, limitLovelace: 6_000_000n, totalLovelace: 10_000_000n, maxPriceLovelace: 3_000_000n, payload: 'text' });
+    expect(parseVaultSettings({ ...ESCROW_ENV, CHECKS_VAULT_UNITS: '12', CHECKS_VAULT_LIMIT_UNITS: '6', CHECKS_VAULT_TOTAL_UNITS: '10', CHECKS_MAX_PRICE_UNITS: '3' }, 'escrow'))
+      .toMatchObject({ vaultLovelace: 12_000_000n, limitLovelace: 6_000_000n, totalLovelace: 10_000_000n, maxPriceLovelace: 3_000_000n, payload: PAYLOAD });
     for (const env of [{}, { CHECKS_ADVERT_REF: 'nope' }, { CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_UNITS: '3' }, { CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_LIMIT_UNITS: '9' }]) {
-      expect(() => parseVaultSettings(env)).toThrow(SettingsError);
+      expect(() => parseVaultSettings(env, 'refund')).toThrow(SettingsError);
     }
   });
   it('says which limit is wrong: a limit of one payment above the limit of the period names the period, and a limit above the vault names the vault', () => {
-    expect(() => parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_UNITS: '10', CHECKS_VAULT_LIMIT_UNITS: '6', CHECKS_VAULT_TOTAL_UNITS: '4' })).toThrow(/CHECKS_VAULT_LIMIT_UNITS must be at most CHECKS_VAULT_TOTAL_UNITS/);
-    expect(() => parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_UNITS: '3', CHECKS_VAULT_LIMIT_UNITS: '5', CHECKS_VAULT_TOTAL_UNITS: '8' })).toThrow(/CHECKS_VAULT_LIMIT_UNITS must be at most CHECKS_VAULT_UNITS/);
-    expect(parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_UNITS: '10', CHECKS_VAULT_LIMIT_UNITS: '4', CHECKS_VAULT_TOTAL_UNITS: '4' })).toMatchObject({ limitLovelace: 4_000_000n, totalLovelace: 4_000_000n });
+    expect(() => parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_UNITS: '10', CHECKS_VAULT_LIMIT_UNITS: '6', CHECKS_VAULT_TOTAL_UNITS: '4' }, 'refund')).toThrow(/CHECKS_VAULT_LIMIT_UNITS must be at most CHECKS_VAULT_TOTAL_UNITS/);
+    expect(() => parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_UNITS: '3', CHECKS_VAULT_LIMIT_UNITS: '5', CHECKS_VAULT_TOTAL_UNITS: '8' }, 'refund')).toThrow(/CHECKS_VAULT_LIMIT_UNITS must be at most CHECKS_VAULT_UNITS/);
+    expect(parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT, CHECKS_VAULT_UNITS: '10', CHECKS_VAULT_LIMIT_UNITS: '4', CHECKS_VAULT_TOTAL_UNITS: '4' }, 'refund')).toMatchObject({ limitLovelace: 4_000_000n, totalLovelace: 4_000_000n });
+  });
+  it('give check 2 no default for the request of the agent: a missing, an empty or a blank CHECKS_HIRE_PAYLOAD is refused for check 2, and check 3 needs none', () => {
+    for (const payload of [undefined, '', '   ']) {
+      const env = { CHECKS_ADVERT_REF: ADVERT, ...(payload === undefined ? {} : { CHECKS_HIRE_PAYLOAD: payload }) };
+      expect(() => parseVaultSettings(env, 'escrow')).toThrow(/set CHECKS_HIRE_PAYLOAD/);
+      expect(parseVaultSettings(env, 'refund').payload).toBe('');
+    }
+    expect(parseVaultSettings({ CHECKS_ADVERT_REF: ADVERT, CHECKS_HIRE_PAYLOAD: `  ${PAYLOAD}  ` }, 'escrow').payload).toBe(PAYLOAD);
+  });
+  it('stop a run of check 2 at its start, with exit 2 and the name of the setting, when the request of the agent is not set; check 3 starts without it', async () => {
+    const bare = { CHECKS_ADVERT_REF: ADVERT };
+    const escrow = await harness({ env: bare });
+    expect(await escrow.run(vaultCheck('escrow', () => new FakePort(() => escrow)))).toBe(2);
+    expect(escrow.screen.errorText).toContain('set CHECKS_HIRE_PAYLOAD');
+    expect(escrow.node.submitted).toEqual([]);
+    const refund = await harness({ env: bare });
+    expect(await refund.run(vaultCheck('refund', () => new FakePort(() => refund)))).toBe(0);
   });
 });
 
@@ -151,9 +173,16 @@ describe('check 2, the vault pays an escrow that is accepted', () => {
     const at = '2026-11-15T12:00:00.000Z';
     state.setNote('part.hire:pay', { confirmed_at: at, tx_hash: 'a1'.repeat(32), refs: { escrow_ref: ESCROW, vault_ref: vaultRef }, facts: { lock_lovelace: LOCK, deliver_by: t.h.clock.now() + 300_000, advert_ref: ADVERT } });
     state.setNote('part.hire:accept', { confirmed_at: at, tx_hash: 'a2'.repeat(32), refs: { escrow_ref: ESCROW, returned_ref: addReturned(t.h, BOND_BACK, 'f2') }, facts: {} });
+    t.h.screen.lines.length = 0;
+    expect(await t.h.run(t.check, 'status')).toBe(0);
+    expect(t.h.screen.text).toContain('next: hire');
+    expect(t.h.screen.text).not.toContain('next: cleanup');
     expect(await t.h.run(t.check, '--submit')).toBe(0);
     expect(t.port.calls).toEqual([]);
     expect(t.h.state(t.name).steps.hire).toMatchObject({ refs: { escrow_ref: ESCROW, accept_tx: 'a2'.repeat(32), returned_ref: `${'f2'.repeat(32)}#0` } });
+    t.h.screen.lines.length = 0;
+    expect(await t.h.run(t.check, 'status')).toBe(0);
+    expect(t.h.screen.text).toContain('next: vault_close');
     expect(await t.h.run(t.check, '--submit')).toBe(0);
     expect(t.h.state(t.name).steps.vault_close!.facts.closed).toHaveLength(2);
   });
@@ -272,6 +301,9 @@ describe('a hire that stops after a Pay', () => {
     expect(await t.h.run(t.check, 'cleanup', '--submit')).toBe(2);
     expect(t.h.screen.errorText).toContain('its deliver_by or its lock is not known');
     expect(t.port.calls).toEqual(['hire']);
+    t.h.screen.lines.length = 0;
+    expect(await t.h.run(t.check, 'status')).toBe(0);
+    expect(t.h.screen.text).toContain('next: cleanup, after its deliver_by');
   });
   it('keeps nothing for a hire that stopped before its Pay, and the hire can be made again', async () => {
     const t = await started('escrow');
@@ -289,15 +321,145 @@ describe('a hire that stops after a Pay', () => {
 describe('the status of a check', () => {
   it('says when the wallet of a key has no pure output of 5 units for collateral, and how to make one; a wallet that has one gets no warning', async () => {
     const bare = await World.identity({ wallets: [{ n: MEMBER_N, lovelace: [3_000_000n, 2_000_000n] }, { n: AGENT_N, lovelace: [200_000_000n, 5_000_000n] }] });
-    const without = await harness({ world: bare, env: { CHECKS_ADVERT_REF: ADVERT } });
+    const without = await harness({ world: bare, env: ESCROW_ENV });
     expect(await without.run(vaultCheck('escrow', () => new FakePort(() => without)), 'status')).toBe(0);
     const member = keyOf(MEMBER_N);
     expect(without.screen.text).toContain(`wallet of the member key ${member.keyHash}`);
     expect(without.screen.text).toContain(`NONE: a script step of this wallet needs one`);
     expect(without.screen.text).toContain(`send 5.5 units to ${member.address}`);
     expect(without.screen.text.split('\n').filter((line) => line.includes('NONE'))).toHaveLength(1);
-    const stocked = await harness({ env: { CHECKS_ADVERT_REF: ADVERT } });
+    const stocked = await harness({ env: ESCROW_ENV });
     expect(await stocked.run(vaultCheck('escrow', () => new FakePort(() => stocked)), 'status')).toBe(0);
     expect(stocked.screen.text).not.toContain('NONE');
+  });
+});
+
+describe('the collateral of the wallet that pays a step', () => {
+  const member = keyOf(MEMBER_N);
+  const agent = keyOf(AGENT_N);
+  it('stops the step delegate before the build when the member wallet has no pure output of 5 units or more, and the same step runs when it has one', async () => {
+    const poor = await World.identity();
+    poor.useUp(MEMBER_N);
+    const stopped = await started('escrow', undefined, poor);
+    expect(await stopped.h.run(stopped.check)).toBe(2);
+    expect(stopped.h.screen.errorText).toContain(`The member wallet ${member.keyHash}`);
+    expect(stopped.h.screen.errorText).toContain(collateralAdvice(member.address));
+    expect(stopped.h.screen.errorText).not.toContain('Collateral required');
+    const ready = await started('escrow');
+    expect(await ready.h.run(ready.check)).toBe(0);
+  });
+  it('asks for no collateral at vault_open, which runs no script: the step builds and lands with outputs of less than 5 units', async () => {
+    const t = await started('escrow');
+    await submitSteps(t, 1);
+    t.h.world.useUp(MEMBER_N, [4_000_000n, 4_000_000n, 4_000_000n, 4_000_000n]);
+    expect(await t.h.run(t.check)).toBe(0);
+    expect(t.h.screen.text).toContain('opens a vault');
+    expect(await t.h.run(t.check, '--submit')).toBe(0);
+    expect(t.h.state(t.name).steps.vault_open).toBeDefined();
+  });
+  it('stops vault_close when the steps used up the outputs of the member wallet, and the same close runs while the wallet holds one', async () => {
+    const t = await started('escrow');
+    await submitSteps(t, 3);
+    const { h, check } = t;
+    expect(await h.run(check)).toBe(0);
+    h.world.useUp(MEMBER_N);
+    const sent = h.node.submitted.length;
+    h.screen.lines.length = 0;
+    expect(await h.run(check)).toBe(2);
+    expect(h.screen.errorText).toContain(`The member wallet ${member.keyHash}`);
+    expect(h.screen.errorText).not.toContain('Collateral required');
+    expect(h.node.submitted).toHaveLength(sent);
+  });
+  it('stops hire before the kit is called when the agent wallet has no pure output of 5 units or more, and calls the kit when it has one', async () => {
+    const t = await started('escrow');
+    await submitSteps(t, 2);
+    const { h, port, check } = t;
+    port.failure = new DryStop('hire:pay');
+    expect(await h.run(check)).toBe(0);
+    expect(port.calls).toEqual(['hire']);
+    h.world.useUp(AGENT_N);
+    h.screen.lines.length = 0;
+    expect(await h.run(check)).toBe(2);
+    expect(port.calls).toEqual(['hire']);
+    expect(h.screen.errorText).toContain(`The agent wallet ${agent.keyHash}`);
+    expect(h.screen.errorText).toContain(collateralAdvice(agent.address));
+  });
+  it('stops pay before the kit is called when the agent wallet has no pure output of 5 units or more, and calls the kit when it has one', async () => {
+    const t = await started('refund');
+    await submitSteps(t, 2);
+    const { h, port, check } = t;
+    port.failure = new DryStop('pay');
+    expect(await h.run(check)).toBe(0);
+    expect(port.calls).toEqual(['pay']);
+    h.world.useUp(AGENT_N);
+    h.screen.lines.length = 0;
+    expect(await h.run(check)).toBe(2);
+    expect(port.calls).toEqual(['pay']);
+    expect(h.screen.errorText).toContain(`The agent wallet ${agent.keyHash}`);
+  });
+  it('stops reclaim, and the cleanup, after the wait and not before it, when the agent wallet has no pure output of 5 units or more', async () => {
+    const t = await started('refund');
+    await submitSteps(t, 3);
+    const { h, port, check, name } = t;
+    h.world.useUp(AGENT_N);
+    expect(await h.run(check, '--submit')).toBe(4);
+    h.clock.t = Number(h.state(name).steps.pay!.facts.deliver_by) + RECLAIM_AFTER_MS;
+    h.screen.lines.length = 0;
+    expect(await h.run(check, '--submit')).toBe(2);
+    expect(h.screen.errorText).toContain(`The agent wallet ${agent.keyHash}`);
+    expect(await h.run(check, 'cleanup', '--submit')).toBe(2);
+    expect(port.calls).toEqual(['pay']);
+  });
+});
+
+describe('the next command that the status names', () => {
+  const stopAfterPay = (h: Harness, deliverBy: number): HireFailed => {
+    const continued = liveVaultOf(h);
+    return new HireFailed('failed_after_claim', 'the send was lost', { escrowRef: ESCROW, vaultRef: `${continued.txHash}#${continued.outputIndex}`, deliverBy, lockLovelace: LOCK });
+  };
+  it('names hire before a Pay, cleanup with the time after a hire that stopped after its Pay, and says that the check is ended after the cleanup', async () => {
+    const t = await started('escrow');
+    await submitSteps(t, 2);
+    const { h, port, check } = t;
+    expect(await h.run(check, 'status')).toBe(0);
+    expect(h.screen.text).toContain('next: hire');
+    const deliverBy = h.clock.now() + 300_000;
+    port.failure = stopAfterPay(h, deliverBy);
+    expect(await h.run(check, '--submit')).toBe(1);
+    h.screen.lines.length = 0;
+    expect(await h.run(check, 'status')).toBe(0);
+    expect(h.screen.text).not.toContain('next: hire');
+    expect(h.screen.text).toContain(`next: cleanup, after ${iso(deliverBy + RECLAIM_AFTER_MS)}`);
+    expect(h.screen.text).toContain(ESCROW);
+    port.failure = null;
+    h.clock.t = deliverBy + RECLAIM_AFTER_MS;
+    expect(await h.run(check, 'cleanup', '--submit')).toBe(0);
+    h.screen.lines.length = 0;
+    expect(await h.run(check, 'status')).toBe(0);
+    expect(h.screen.text).toContain('next: nothing');
+    expect(h.screen.text).not.toContain('next: hire');
+  });
+  it('names cleanup without a time when the escrow is reclaimed and the cleanup stopped before the rest', async () => {
+    const t = await started('escrow');
+    await submitSteps(t, 2);
+    const { h, port, check } = t;
+    const deliverBy = h.clock.now() + 300_000;
+    port.failure = stopAfterPay(h, deliverBy);
+    expect(await h.run(check, '--submit')).toBe(1);
+    port.failure = null;
+    h.clock.t = deliverBy + RECLAIM_AFTER_MS;
+    h.world.useUp(MEMBER_N);
+    expect(await h.run(check, 'cleanup', '--submit')).toBe(2);
+    expect(port.calls).toEqual(['hire', 'reclaim']);
+    h.screen.lines.length = 0;
+    expect(await h.run(check, 'status')).toBe(0);
+    expect(h.screen.text).toContain('next: cleanup: the escrow is reclaimed');
+    expect(h.screen.text).not.toContain('next: cleanup, after');
+  });
+  it('names the next step in order for check 3 after its Pay', async () => {
+    const t = await started('refund');
+    await submitSteps(t, 3);
+    expect(await t.h.run(t.check, 'status')).toBe(0);
+    expect(t.h.screen.text).toContain('next: reclaim');
   });
 });

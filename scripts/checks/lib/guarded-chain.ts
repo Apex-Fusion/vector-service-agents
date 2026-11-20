@@ -11,6 +11,7 @@ import {
   readAdvert as readAdvertOutput, resolveEscrowLineage,
 } from './platform.ts';
 import type { AdvertDatum, ChainEscrowState, PostResult, VaultChain, VaultPayResult } from './platform.ts';
+import { isCollateralOutput } from './collateral.ts';
 import { iso, units } from './format.ts';
 import { DryStop } from './hire-types.ts';
 import type { LandRequest } from './land.ts';
@@ -42,8 +43,6 @@ export interface SpendResult {
 
 const LIVE_STATES = new Set<ChainEscrowState>(['Open', 'Claimed', 'Submitted']);
 const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
-/** A pure output of at least this many units is the collateral of a script step. */
-const COLLATERAL_MIN_LOVELACE = 5_000_000n;
 const ACCEPT_WINDOW_CLOSED = /^Accept window closed at /;
 
 /** The planner of the Accept says in these words that the accept window has closed: the call can never be made again. */
@@ -71,7 +70,7 @@ export class GuardedChain implements VaultChain {
   async wallet(): Promise<{ address: string; buyerPkh: string; collateralLovelace: bigint | null; floatLovelace: bigint }> {
     const utxos = await this.#host.chain.provider.getUtxos(this.address);
     const total = utxos.reduce((sum, utxo) => sum + (utxo.assets.lovelace ?? 0n), 0n);
-    const pure = utxos.filter((utxo) => Object.keys(utxo.assets).every((unit) => unit === 'lovelace') && (utxo.assets.lovelace ?? 0n) >= COLLATERAL_MIN_LOVELACE).map((utxo) => utxo.assets.lovelace ?? 0n);
+    const pure = utxos.filter(isCollateralOutput).map((utxo) => utxo.assets.lovelace ?? 0n);
     const collateralLovelace = pure.length === 0 ? null : pure.reduce((smallest, amount) => (amount < smallest ? amount : smallest), pure[0]!);
     return { address: this.address, buyerPkh: this.buyerPkh, collateralLovelace, floatLovelace: total - (collateralLovelace ?? 0n) };
   }

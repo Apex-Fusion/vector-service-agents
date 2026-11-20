@@ -8,6 +8,7 @@
 // The salt and the document stay off the chain. They are in the state file (mode 600), so that the owner can show them or delete them. Each attestation locks a deposit of 5 units.
 // The ledger lets the issuer withdraw the deposit 90 days after `valid_until`. The step `cleanup` withdraws what is due and says the date for the rest.
 import { createHash, randomBytes } from 'node:crypto';
+import { requireCollateral } from './collateral.ts';
 import { iso, units } from './format.ts';
 import type { StepPlan } from './guards.ts';
 import { requireRecord } from './record.ts';
@@ -64,6 +65,7 @@ function issue(kind: Kind): StepHandler<AttestationSettings> {
   return {
     name: kind.step,
     async run(session) {
+      await requireCollateral(session, 'member');
       const record = await requireRecord(session, {});
       const member = session.ring.get('member');
       const now = session.clock.now();
@@ -155,6 +157,8 @@ const readCheck: StepHandler<AttestationSettings> = {
     await verifyWithTools(session, 'read_check', calls, shows);
     session.state.recordStep('read_check', { confirmed_at: iso(session.clock.now()), tx_hash: null, refs: {}, facts: shows });
     session.state.markVerified('read_check', iso(session.clock.now()));
+    // The read is the proof of the two issue steps too: it found both attestations as the steps made them.
+    for (const kind of KINDS) session.state.markVerified(kind.step, iso(session.clock.now()));
     return { kind: 'done', message: 'the hosted tools read both attestations: the salted digests pass and the digests with no salt fail' };
   },
 };
@@ -169,6 +173,7 @@ async function withdrawDue(session: Session<AttestationSettings>): Promise<StepO
     if (session.state.step(kind.withdrawStep) !== undefined) { lines.push(`the ${kind.type} deposit is back already`); continue; }
     const from = Number(done.facts.valid_until) + WITHDRAW_WAIT_MS;
     if (session.clock.now() < from + 60_000) { lines.push(`the deposit of the ${kind.type} attestation stays locked until ${iso(from)}: run the cleanup again after that date`); continue; }
+    await requireCollateral(session, 'member');
     const member = session.ring.get('member');
     const id = done.refs.attestation_id!;
     const context = await session.chain.context(member.address);

@@ -6,8 +6,8 @@
 // Check 3 (vault-refund): the same, but the job is never sent. The escrow stays Open until its deliver_by. The janitor of the kit reclaims it, and the lock returns to the vault as a
 // Returned output. The member closes the Live and the Returned output together and ends the delegation.
 //
-// The buyer funds the price and both bonds, and the output of the escrow holds the ledger minimum on top. An Accept pays the supplier the price and the supplier bond, and the buyer bond
-// returns to the vault as a Returned output. A Reclaim returns the whole lock to the vault.
+// The buyer funds the price and both bonds, and nothing more: a Pay from a vault locks exactly their sum. An Accept pays the supplier the price and the supplier bond, and the buyer bond
+// returns to the vault as a Returned output, with a top-up to the ledger minimum. A Reclaim returns the whole lock to the vault.
 // Every step is one transaction of the member key, or one call of the hire kit through a `HirePort`; the transactions of the kit are the delegate key's, and they go through the guards of
 // the check (guarded-chain.ts). The vault and the delegation are the member's; the record only holds the delegate key. Each check opens its own delegation, because a delegate key can have
 // one live delegation at a time: run the checks one after the other.
@@ -15,6 +15,7 @@
 // A hire that stops after a Pay leaves an escrow that may be claimed. The state file keeps the escrow and the vault output that continues (the chain writes each transaction as a part of the
 // step when it lands, and the error of the kit is kept too), the check never hires again, and the cleanup waits for deliver_by, reclaims, closes the vault and ends the delegation. A Pay that
 // was sent and not seen confirmed leaves no vault reference: the next run settles the transaction in flight first, and the vault is read from the chain before any step uses a reference.
+import { requireCollateral } from './collateral.ts';
 import { iso, units } from './format.ts';
 import { requireRecord } from './record.ts';
 import { runSteps, verifyStep, waitFor } from './runner.ts';
@@ -40,14 +41,14 @@ export interface VaultSettings {
   advertRef: string;
   /** What the vault locks, in lovelace. */
   vaultLovelace: bigint;
-  /** The value limit of the delegation: the most that one payment may lock, and the most that all payments of the period may lock. One payment locks the price, both bonds and the ledger minimum. */
+  /** The value limit of the delegation: the most that one payment may lock, and the most that all payments of the period may lock. One payment locks the price and both bonds. */
   limitLovelace: bigint;
   totalLovelace: bigint;
   /** The most that the price, the supplier bond and the buyer bond of the advert may be. The kit refuses the hire above any of them. */
   maxPriceLovelace: bigint;
   maxSupplierBondLovelace: bigint;
   maxBuyerBondLovelace: bigint;
-  /** The text that the agent reads (check 2). */
+  /** The request that the agent accepts (check 2). Check 3 sends no job, and the value is empty. */
   payload: string;
 }
 
@@ -57,7 +58,7 @@ export const PERIOD_MS = 86_400_000;
 /** The time after deliver_by at which the check asks the kit to reclaim: it covers the difference between the clock of the machine and the time of the ledger. */
 export const RECLAIM_AFTER_MS = 60_000;
 
-export function parseVaultSettings(env: Env): VaultSettings {
+export function parseVaultSettings(env: Env, kind: VaultKind): VaultSettings {
   const reader = new EnvReader(env);
   const hours = Number(reader.whole('CHECKS_DELEGATION_HOURS', 1n, 720n, 24n));
   const advertRef = reader.text('CHECKS_ADVERT_REF', true) ?? '';
@@ -70,7 +71,7 @@ export function parseVaultSettings(env: Env): VaultSettings {
   const maxPriceLovelace = reader.whole('CHECKS_MAX_PRICE_UNITS', 0n, 1000n, 2n) * UNIT;
   const maxSupplierBondLovelace = reader.whole('CHECKS_MAX_SUPPLIER_BOND_UNITS', 0n, 1000n, 1n) * UNIT;
   const maxBuyerBondLovelace = reader.whole('CHECKS_MAX_BUYER_BOND_UNITS', 0n, 1000n, 1n) * UNIT;
-  const payload = reader.text('CHECKS_HIRE_PAYLOAD', false) ?? 'Give the history report of the test record for the mainnet checks.';
+  const payload = kind === 'escrow' ? (reader.text('CHECKS_HIRE_PAYLOAD', true) ?? '') : '';
   reader.done();
   return { hours, advertRef, vaultLovelace, limitLovelace, totalLovelace, maxPriceLovelace, maxSupplierBondLovelace, maxBuyerBondLovelace, payload };
 }
@@ -142,6 +143,7 @@ function stranded(session: Ses): { escrowRef: string; deliverBy: number; lockLov
 const delegate: Step = {
   name: 'delegate',
   async run(session: Ses) {
+    await requireCollateral(session, 'member');
     const record = await requireRecord(session, { delegationKey: true });
     const member = session.ring.get('member');
     const agent = session.ring.get('agent');
@@ -290,6 +292,7 @@ const hire = (makePort: (session: Ses, kind: VaultKind) => HirePort): Step => ({
       });
       return { kind: 'done', message: 'the hire is recorded from its Pay and its Accept' };
     }
+    await requireCollateral(session, 'agent');
     const port = makePort(session, 'escrow');
     const vaultRef = await liveVaultRef(session);
     session.out.out(`the kit would hire the advert ${session.extra.advertRef} and pay it from the vault ${vaultRef}, send the job, verify the receipt and accept it with the delegate key`);
@@ -316,6 +319,7 @@ const hire = (makePort: (session: Ses, kind: VaultKind) => HirePort): Step => ({
 const pay = (makePort: (session: Ses, kind: VaultKind) => HirePort): Step => ({
   name: 'pay',
   async run(session: Ses) {
+    await requireCollateral(session, 'agent');
     const port = makePort(session, 'refund');
     const vaultRef = await liveVaultRef(session);
     session.out.out(`the kit would pay the advert ${session.extra.advertRef} from the vault ${vaultRef} and send no job (the delegation allows ${units(session.extra.limitLovelace)} for one payment)`);
@@ -345,6 +349,7 @@ const reclaim = (makePort: (session: Ses, kind: VaultKind) => HirePort, kind: Va
     if (escrow === null) throw new PreconditionError('no escrow was paid from the vault: there is nothing to reclaim');
     const from = escrow.deliverBy + RECLAIM_AFTER_MS;
     if (session.clock.now() < from) return waitFor(from, session.clock.now(), `the escrow ${escrow.escrowRef} can be reclaimed after its deliver_by ${iso(escrow.deliverBy)}`);
+    await requireCollateral(session, 'agent');
     session.out.out(`the janitor of the kit would reclaim the escrow ${escrow.escrowRef}; the lock returns to the vault of the member as a Returned output`);
     const result = await callKit(session, () => makePort(session, kind).reclaim({ escrowRef: escrow.escrowRef, deliverBy: escrow.deliverBy }), { hiring: false });
     if (result.kind === 'dry') return { kind: 'dry' };
@@ -365,6 +370,7 @@ const reclaim = (makePort: (session: Ses, kind: VaultKind) => HirePort, kind: Va
 const close: Step = {
   name: 'vault_close',
   async run(session: Ses) {
+    await requireCollateral(session, 'member');
     const refs = [await liveVaultRef(session), ...returnedRefs(session)];
     const member = session.ring.get('member');
     const context = await session.chain.context(member.address);
@@ -421,6 +427,20 @@ async function finish(session: Ses, reclaimStep: Step): Promise<StepOutcome> {
   return { kind: 'done', message: 'nothing stays locked: the vault is closed and the delegation has ended' };
 }
 
+/**
+ * What the next command is when the steps in order do not say it. A hire that stopped after its Pay is never made again: the cleanup is next, and the earliest time of its reclaim is named.
+ * After the cleanup the check is ended. Null when the next step in order is right.
+ */
+function nextHint(session: Ses): string | null {
+  const { state } = session;
+  if (state.note('cleaned_up') !== undefined) return 'nothing: the cleanup took back the vault and the delegation, and the check is ended. Use a new CHECKS_STATE_DIR for a new run';
+  const paid = paidFacts(session);
+  if (paid === null || state.step('hire') !== undefined || state.step('pay') !== undefined || hiredFromParts(session) !== null) return null;
+  if (state.step('reclaim') !== undefined) return 'cleanup: the escrow is reclaimed, and the cleanup takes back the rest of the vault and the delegation';
+  const from = paid.deliverBy === null ? 'its deliver_by' : iso(paid.deliverBy + RECLAIM_AFTER_MS);
+  return `cleanup, after ${from}: the Pay of the hire is known (the escrow ${paid.escrowRef}) and the hire did not end, so the check never hires again. The cleanup reclaims the escrow, closes the vault and ends the delegation`;
+}
+
 export function vaultCheck(kind: VaultKind, makePort: (session: Ses, kind: VaultKind) => HirePort): CheckDefinition<VaultSettings> {
   const reclaimStep = reclaim(makePort, kind);
   const steps: Step[] = kind === 'escrow' ? [delegate, open, hire(makePort), close, undelegate] : [delegate, open, pay(makePort), reclaimStep, close, undelegate];
@@ -429,11 +449,12 @@ export function vaultCheck(kind: VaultKind, makePort: (session: Ses, kind: Vault
     title: kind === 'escrow' ? 'the record pays an agent from the vault of a member, the job is done and accepted' : 'the record pays an agent from the vault of a member, no job is sent, and the lock returns to the vault',
     needs: { keys: ['controller', 'agent', 'member'], chain: true, hosted: ['vector_get_delegation', 'vector_get_vault'] },
     steps: steps.map((step) => step.name),
-    parse: (env) => parseVaultSettings(env),
+    parse: (env) => parseVaultSettings(env, kind),
     next: (session, flags) => {
       if (session.state.note('cleaned_up') !== undefined) throw new PreconditionError('the cleanup of this check took back the vault and the delegation and ended the check: use a new CHECKS_STATE_DIR for a new run');
       return runSteps(session, steps, flags);
     },
     cleanup: (session) => finish(session, reclaimStep),
+    nextHint,
   };
 }
