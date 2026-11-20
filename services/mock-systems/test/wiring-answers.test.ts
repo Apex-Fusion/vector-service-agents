@@ -74,6 +74,10 @@ describe('the answer that the wiring gives for an answer of the kit', () => {
     ['a refusal with a code that the service does not have', { ok: false, code: 'approval_great', detail: 'x' }],
     ['a refusal with the code of the shared checks', { ok: false, code: 'delegation_invalid', detail: 'x' }],
     ['a refusal with the code of an unreadable source', { ok: false, code: 'check_unavailable', detail: 'x' }],
+    ['ok as a text, with the code and the sentence of a rule', { ok: 'true', code: 'approval_revoked', detail: 'x' }],
+    ['ok as the number 1, with the code and the sentence of a rule', { ok: 1, code: 'approval_expired', detail: 'x' }],
+    ['ok null, with the code and the sentence of a rule', { ok: null, code: 'approval_revoked', detail: 'x' }],
+    ['no ok, with the code and the sentence of a rule', { code: 'approval_revoked', detail: 'x' }],
   ])('is never a pass for an answer of another shape: %s is 503 approval_unavailable', async (_name, answer) => {
     kit.answer = answer;
     const decided = await decideApproval(check(), INPUT);

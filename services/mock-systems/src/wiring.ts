@@ -43,10 +43,17 @@ function protocolInputOf(input: ApprovalInput): ProtocolInput {
   };
 }
 
-/** The answer of the service for the result of the protocol: a pass keeps nothing but the pass, and a refusal keeps its code and its sentence. */
+/**
+ * The answer of the service for the result of the protocol: a pass keeps nothing but the pass, and a refusal keeps its code and its sentence. A result whose `ok` is neither `true` nor `false` is not
+ * an answer of the check: it throws, and the route answers 503.
+ */
 function answerOf(result: ApprovalResult): ApprovalAnswer {
-  if (result.ok === true) return { ok: true };
-  return { ok: false, code: result.code, detail: result.detail };
+  // `ok` is read one time: the answer is decided on the value that was read.
+  const ok: unknown = result.ok;
+  if (ok === true) return { ok: true };
+  if (ok !== false) throw new TypeError('the approval check gave a result that is neither a pass nor a refusal');
+  const refusal = result as Extract<ApprovalResult, { ok: false }>;
+  return { ok: false, code: refusal.code, detail: refusal.detail };
 }
 
 export function wireApprovalCheck(sources: ApprovalSources): ApprovalCheck {
