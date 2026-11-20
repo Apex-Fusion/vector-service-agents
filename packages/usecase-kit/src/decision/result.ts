@@ -11,12 +11,14 @@
 //   code                  reason                         when
 //   inference_failed      the code of hire-kit           the hire of the model failed, or its receipt did not pass the checks: `llm_supplier_unavailable` (no model on the allowlist at or
 //                                                        under the three limits), `llm_post_failed`, `llm_busy`, `llm_refused`, `llm_send_lost`, `llm_failed`, `llm_timeout`, `llm_bad_result`,
-//                                                        `llm_receipt_failed`, `llm_receipt_unavailable`, `llm_accept_failed`, `llm_out_of_time`, or `hire_threw` (a port threw)
+//                                                        `llm_receipt_failed`, `llm_receipt_unavailable`, `llm_accept_failed`, `llm_out_of_time` (the deadline of the run came; when the decision
+//                                                        did not start its hire because less than HIRE_MIN_MS was left, nothing was locked), or `hire_threw` (a port threw)
 //   store_write_failed    store_write_failed             the stranded store of the key could not be written for the escrow of the hire
 //   model_output_invalid  model_output_invalid           the hire completed, and the answer is not an object of the shape that the decision asks for
 //   internal              bad_limit                      a limit is missing or has a wrong type: nothing was hired
 //   internal              bad_decision                   the definition of the decision is wrong: nothing was hired
 //   internal              bad_input                      the input is not JSON data, or its prompt has more than MAX_PROMPT_BYTES bytes: nothing was hired
+//   internal              bad_deps                       a member of the deps cannot be read, or the clock does not give the time: nothing was hired
 //   internal              choice_changed                 the parser of the decision returned a value that is not the choice that the model gave
 //
 // `delivery` is set when the model was hired and paid, and its answer could not be used (`model_output_invalid` and `choice_changed`). The sub-job is real: the escrow was accepted, so the agent

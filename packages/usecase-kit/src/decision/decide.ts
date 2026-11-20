@@ -13,6 +13,10 @@
 //     usable is `model_output_invalid`. Nothing hires again, nothing tries another supplier, and nothing falls back to a provider outside the marketplace.
 //   - Decisions run one after the other. `hireModel` runs each hire in the lane of the service key, so two decisions that start at one time never post two escrows at one time. The second decision
 //     waits until the first has ended, however it ended.
+//   - No hire starts when the time of the run is over. A decision reads the clock before it hires. With the deadline of the run past, or less than HIRE_MIN_MS away, the result is
+//     `inference_failed` with the reason `llm_out_of_time`, and nothing is posted. A hire that started late would choose a supplier and Post, the supplier would claim, and the hire would end as
+//     out of time with its lock held until the deadline of the escrow. The check is made when the decision starts. A decision that waits in the lane of the key and gets its turn after the
+//     deadline is not covered here: the hire kit checks that when the lane gives the turn.
 //   - The prompt holds the input as data in one marked block (src/decision/prompt.ts). This lowers the risk that the input misleads the model, and it does not remove it.
 //
 // What a decision costs and locks. The Post locks the price and both bonds of the advert, raised to the floor of the escrow, and the fee of the Post and the fee of the Accept come from the wallet
@@ -24,7 +28,7 @@
 // the answer or a key.
 import { hireModel } from '@vsa/hire-kit';
 import type { HireFacts, Hired, ModelAnswer, ModelDeps, ModelErrors, ModelRequest, PayingKey } from '@vsa/hire-kit';
-import { accepted, type JsonValue } from '../protocol/index.ts';
+import { accepted, refused, type JsonValue, type ProtocolResult } from '../protocol/index.ts';
 import { readAnswer } from './answer.ts';
 import { LLM_MAX_PRICE_SETTING, checkLimits, type ModelLimits } from './limits.ts';
 import { buildPrompt } from './prompt.ts';
@@ -67,6 +71,28 @@ function failure(code: DecisionFailureCode, reason: string, detail: string, rest
   return { ok: false, code, reason, detail, delivery: rest.delivery ?? null, escrow_ref: rest.escrow_ref ?? null, stage: rest.stage ?? null };
 }
 
+/**
+ * The least time before the deadline of the run with which a decision starts its hire: 60 seconds. A hire needs the Post, the Claim and the work of the supplier, the eight checks and the Accept.
+ * A hire that starts with less time left ends as out of time, with its escrow locked until the deadline of the escrow, so `decide` does not start it.
+ */
+export const HIRE_MIN_MS = 60_000;
+
+/**
+ * The time from now to the deadline of the run, in milliseconds: negative when the deadline is past. A clock that throws or does not give a finite number, and a deadline that is not a number,
+ * are a refusal with their own reason: the time is not known, and an unknown time is never "enough time".
+ */
+function timeLeft(ports: Pick<ModelDeps, 'clock' | 'deadlineMs'>): ProtocolResult<number, 'bad_deps'> {
+  const { clock, deadlineMs } = ports;
+  if (typeof clock !== 'function' || typeof deadlineMs !== 'number' || Number.isNaN(deadlineMs)) return refused('bad_deps', 'the clock of the decision is not a function, or its deadline is not a number: nothing was hired');
+  let now: unknown;
+  try {
+    now = clock();
+  } catch {
+    return refused('bad_deps', 'the clock of the decision cannot be read: nothing was hired');
+  }
+  return typeof now === 'number' && Number.isFinite(now) ? accepted(deadlineMs - now) : refused('bad_deps', 'the clock of the decision does not give a finite number: nothing was hired');
+}
+
 /** The failure of a hire: the code of the hire as the reason, and what became of its escrow. */
 function hireFailure(decision: string, error: HireEnded): DecisionFailure {
   const { hopCode, facts } = error;
@@ -94,6 +120,11 @@ export async function decide<C extends JsonValue>(deps: DecisionDeps, spec: Deci
   const prompt = buildPrompt(definition.value, input);
   if (!prompt.ok) return failure('internal', prompt.code, prompt.detail);
   const { name, parse } = definition.value;
+  const left = timeLeft(ports);
+  if (!left.ok) return failure('internal', left.code, left.detail);
+  if (left.value < HIRE_MIN_MS) {
+    return failure('inference_failed', 'llm_out_of_time', `the model hire for the decision ${name} was not started, because the deadline of the run is past or less than ${HIRE_MIN_MS / 1000} seconds away; nothing was locked for it`);
+  }
 
   const request: ModelRequest = {
     input: prompt.value,

@@ -5,7 +5,7 @@ import { FakeChain, TxNotConfirmedError, responsesPromptHash } from '@vsa/buyer-
 import { LLM_ADVERT, LLM_ADVERT_REF, LLM_CAPABILITY, LLM_ENDPOINT, LLM_KEY, INDEXER, T0, escrowNo, indexerRow } from '@vsa/hire-kit/testing';
 import { RECEIPT_CHECKS, accepted } from '@vsa/usecase-kit/protocol';
 import type { JsonValue } from '@vsa/usecase-kit/protocol';
-import { decide } from '@vsa/usecase-kit/decision';
+import { HIRE_MIN_MS, decide } from '@vsa/usecase-kit/decision';
 import type { ChoiceParser, DecisionSpec } from '@vsa/usecase-kit/decision';
 import {
   ACCEPT_DELIVERY, AVAILABILITY, CATALOGUE_INPUT, DELIVERY_INPUT, GOOD_SCORE, LIMITS, MEDIUM_LOT, REORDER, SCORE, SCORE_INPUT, SCORE_IN_RANGE, STOCK_INPUT, cleanup, lost, promptOf, said, setup, won,
@@ -249,7 +249,7 @@ describe('decide: a hire that fails', () => {
     { name: 'a supplier whose job fails', code: 'inference_failed', reason: 'llm_failed', stage: 'poll', escrow: escrowNo(1), arrange: (run) => { run.m.llm.steps = ['failed']; } },
     { name: 'a job that does not finish before the escrow is due', code: 'inference_failed', reason: 'llm_timeout', stage: 'poll', escrow: escrowNo(1), arrange: (run) => { run.m.llm.steps = ['running']; } },
     { name: 'a job that does not finish before the deadline of the run', code: 'inference_failed', reason: 'llm_out_of_time', stage: 'poll', escrow: escrowNo(1),
-      arrange: (run) => { run.m.llm.steps = ['running']; run.deps.deadlineMs = T0 + 4_000; } },
+      arrange: (run) => { run.m.llm.steps = ['running']; run.deps.deadlineMs = T0 + HIRE_MIN_MS + 4_000; } },
     { name: 'an answer that cannot be read', code: 'inference_failed', reason: 'llm_bad_result', stage: 'answer', escrow: escrowNo(1),
       arrange: (run) => { run.m.llm.answerText = (body) => JSON.stringify({ ...body, output: `${MARKER} text` }); } },
     { name: 'an Accept that keeps failing', code: 'inference_failed', reason: 'llm_accept_failed', stage: 'accept', escrow: escrowNo(1), wrap: () => ({ accept: async () => { throw new Error(`no node ${MARKER}`); } }) },
