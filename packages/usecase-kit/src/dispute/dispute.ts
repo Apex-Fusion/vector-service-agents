@@ -314,7 +314,7 @@ const SKIPS = {
   window: 'with a challenge window that ends too soon',
   began: 'submitted at or after the start of the job',
   stake: 'with a stake above the challenge stake',
-  no_document: 'whose claim document is not on chain',
+  no_document: 'whose claim document is not on chain or is not a document',
   not_kit: 'without a claim document of this kit',
   capability: 'with a claim document for another capability',
 } as const;

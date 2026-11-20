@@ -3,7 +3,7 @@
 // payment credential and gives the metadata of a document.
 import { CML, credentialToAddress } from '@lucid-evolution/lucid';
 import { setImmediate as tick } from 'node:timers/promises';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HireLane } from '@vsa/hire-kit';
 import { KOIOS_ANSWER_BYTES, buildSubmitClaim, decodeChallengeDatum, decodeClaimDatum, documentHash, documentUri, lucidForAddress } from '@vsa/buyer-core';
 import type { ClaimDatum } from '@vsa/buyer-core';
@@ -21,6 +21,48 @@ const CLAIMER = did(CLAIMER_ID);
 const AUDITOR = did(AUDITOR_ID);
 const CLAIM_REF = `${'cc'.repeat(32)}#0`;
 const SLOW = 120_000;
+
+/** CBOR (hex) that is nested 100 levels deep: more than the reader decodes. */
+const DEEP = `${'81'.repeat(100)}00`;
+
+/** The CBOR metadatum of a JSON-like value: a number is an int, a string a text, an array a list, an object a map with text keys. */
+function metadatumOf(value: unknown): CML.TransactionMetadatum {
+  if (typeof value === 'number') return CML.TransactionMetadatum.new_int(CML.Int.new(BigInt(value)));
+  if (typeof value === 'string') return CML.TransactionMetadatum.new_text(value);
+  if (Array.isArray(value)) {
+    const list = CML.MetadatumList.new();
+    for (const item of value) list.add(metadatumOf(item));
+    return CML.TransactionMetadatum.new_list(list);
+  }
+  const map = CML.MetadatumMap.new();
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) map.set(CML.TransactionMetadatum.new_text(key), metadatumOf(item));
+  return CML.TransactionMetadatum.new_map(map);
+}
+
+/** The CBOR (hex) of the metadata map `{ 22084: value }`: the form that Blockfrost gives for the label of the documents. */
+function labelCbor(value: unknown): string {
+  const map = CML.MetadatumMap.new();
+  map.set(CML.TransactionMetadatum.new_int(CML.Int.new(22084n)), metadatumOf(value));
+  return Buffer.from(CML.TransactionMetadatum.new_map(map).to_cbor_bytes()).toString('hex');
+}
+
+/** The second source of the reader of the buyer code (Blockfrost) is read with the global fetch. A test that stubs it gets the real one back here. */
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+/** The address of the second source in a test that stubs the global fetch: it is in the documentation range, which the reader does not refuse as a private address. No test reaches the network. */
+const BLOCKFROST = { blockfrost_url: 'https://203.0.113.7' } as const;
+
+/** Stubs the global fetch with a Blockfrost that lists the label of the documents with `metadata` for each transaction. It gives the URLs that were asked. */
+function stubBlockfrost(metadata: unknown): string[] {
+  const asked: string[] = [];
+  vi.stubGlobal('fetch', async (url: unknown) => {
+    asked.push(String(url));
+    return new Response(JSON.stringify([{ label: '22084', metadata }]), { status: 200 });
+  });
+  return asked;
+}
 
 /** The dispute code of `agentId` over `ledger`, in the queue of a service key. */
 function disputeOf(
@@ -342,6 +384,59 @@ describe('the challenge on the ledger', () => {
       behind.koiosBehind.clear();
       expect(filedOf(await challengeOrder(disputeOf(behind, AUDITOR_ID))).record.claim).toBe(CLAIM_REF);
     }, SLOW);
+
+    describe('a claim whose document does not decode is left out, as the claimer makes the document', () => {
+      const DOC_TX = 'ab'.repeat(32);
+      const NEWER_TOKEN = `636c6d5f${'0d'.repeat(28)}`;
+      /** A newer claim that ends later. Its document is the transaction `DOC_TX`, which no test puts on the ledger as a document. */
+      const newer = () => ({
+        ...claimUtxo(NEWER_TOKEN, { claimHash: 'cd'.repeat(32), storageUri: utf8Hex(documentUri(DOC_TX)), challengeWindow: 20 * HOUR }, 50 * 60_000), txHash: 'c4'.repeat(32),
+      });
+      const world = (): LedgerProvider => ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN), newer()]);
+
+      it('files the challenge against the claim of this kit when the newer claim holds a transaction whose CBOR is nested too deep, and against the newer claim when its document is of this kit', async () => {
+        const deep = world();
+        deep.bare.set(DOC_TX, DEEP);
+        expect(filedOf(await challengeOrder(disputeOf(deep, AUDITOR_ID))).record.claim).toBe(CLAIM_REF);
+        expect(deep.accepted.length).toBe(2);
+        // The twin: the newer claim holds a document of this kit, with JSON metadata, and it ends later, so it is the target.
+        const twin = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN), { ...kitClaim(l, NEWER_TOKEN, { challengeWindow: 20 * HOUR }, 50 * 60_000), txHash: 'c4'.repeat(32) }]);
+        expect(filedOf(await challengeOrder(disputeOf(twin, AUDITOR_ID))).record.claim).toBe(`${'c4'.repeat(32)}#0`);
+      }, SLOW);
+
+      it('does the same when Koios keeps no CBOR and Blockfrost gives a CBOR that is nested too deep', async () => {
+        const ledger = world();
+        ledger.bare.set(DOC_TX, null);
+        const asked = stubBlockfrost(DEEP);
+        expect(filedOf(await challengeOrder(disputeOf(ledger, AUDITOR_ID, NOW, { port: BLOCKFROST }))).record.claim).toBe(CLAIM_REF);
+        expect(asked).toEqual([`https://203.0.113.7/txs/${DOC_TX}/metadata/cbor`]);
+        expect(ledger.accepted.length).toBe(2);
+      }, SLOW);
+
+      it('says no_open_claim and counts the claim when it is the only claim, and files nothing', async () => {
+        const cases: Array<[string, (ledger: LedgerProvider) => void]> = [
+          ['a transaction whose CBOR is nested too deep', (ledger) => { ledger.bare.set(DOC_TX, DEEP); }],
+          ['a Blockfrost whose CBOR is nested too deep', (ledger) => { ledger.bare.set(DOC_TX, null); stubBlockfrost(DEEP); }],
+        ];
+        for (const [name, set] of cases) {
+          const ledger = ledgerWorld([newer()]);
+          set(ledger);
+          const result = await challengeOrder(disputeOf(ledger, AUDITOR_ID, NOW, { port: BLOCKFROST }));
+          expect(result, name).toMatchObject({ ok: false, code: 'no_open_claim' });
+          if (!result.ok) expect(result.detail, name).toContain('1 whose claim document is not on chain or is not a document');
+          expect(ledger.accepted, name).toEqual([]);
+        }
+      }, SLOW);
+
+      it('says chain_unavailable for hex text that is not hex, because no claimer makes the answer of a source, and files the same job when the source answers', async () => {
+        const ledger = world();
+        ledger.bare.set(DOC_TX, 'zz');
+        expect(await challengeOrder(disputeOf(ledger, AUDITOR_ID))).toMatchObject({ ok: false, code: 'chain_unavailable' });
+        expect(ledger.accepted).toEqual([]);
+        ledger.bare.set(DOC_TX, bareTransactionCbor());
+        expect(filedOf(await challengeOrder(disputeOf(ledger, AUDITOR_ID))).record.claim).toBe(CLAIM_REF);
+      }, SLOW);
+    });
   });
 
   it('reads no challenge of another auditor, whatever its claim token and its deadline, and leaves out a challenge output whose datum cannot be read', async () => {
@@ -688,6 +783,10 @@ describe('a read of a document says why the source has none, and throws when the
     ['a label with a chunk that is not text', 'no_document', label({ v: 1, t: 'claim', m: 'text/plain', d: [7] })],
     ['a label with a chunk that starts with 0x', 'no_document', label({ v: 1, t: 'claim', m: 'text/plain', d: ['0xab'] })],
     ['a label with a type that starts with 0x', 'no_document', label({ v: 1, t: '0xab', m: 'text/plain', d: ['x'] })],
+    ['a label with a type that is not text', 'no_document', label({ v: 1, t: 7, m: 'text/plain', d: ['x'] })],
+    ['a label with a chunk of more than 64 bytes', 'no_document', label({ v: 1, t: 'claim', m: 'text/plain', d: ['a'.repeat(65)] })],
+    ['a transaction whose CBOR is nested too deep', 'no_document', (ledger) => { ledger.bare.set(TX, DEEP); }],
+    ['a transaction whose CBOR is not well-formed', 'no_document', (ledger) => { ledger.bare.set(TX, 'ff'); }],
   ];
 
   it.each(ABSENT)('says why for %s', async (_name, code, set) => {
@@ -708,7 +807,7 @@ describe('a read of a document says why the source has none, and throws when the
     ['a Koios that answers 503', (ledger) => { ledger.koiosStatus = 503; }, {}],
     ['a Koios that answers something that is not a list', () => undefined, { fetch: (async () => new Response('{"rows":[]}', { status: 200 })) as unknown as typeof fetch }],
     ['a request that fails', () => undefined, { fetch: (async () => { throw new TypeError('fetch failed'); }) as unknown as typeof fetch }],
-    ['a CBOR that does not decode', (ledger) => { ledger.bare.set(TX, 'zz'); }, {}],
+    ['a CBOR that is not hex', (ledger) => { ledger.bare.set(TX, 'zz'); }, {}],
   ];
 
   it.each(FAILURES)('throws for %s, and never says that the document is not there', async (_name, set, extra) => {
@@ -734,6 +833,45 @@ describe('a read of a document says why the source has none, and throws when the
     const rows = [null, 'zq9', { tx_hash: 7, tx_index: 0 }, { tx_hash: CLAIM_REF.split('#')[0], tx_index: '0' }];
     const port = realPort(ledger, AUDITOR_ID, NOW, { fetch: (async () => new Response(JSON.stringify(rows), { status: 200 })) as unknown as typeof fetch });
     expect(await port.isIndexed(CLAIM_REF)).toBe(false);
+  }, SLOW);
+});
+
+describe('a document that Blockfrost gives for a transaction that Koios shows with no JSON', () => {
+  const TX = '9a'.repeat(32);
+  const MISSING = documentUri(TX);
+
+  /** A ledger whose Koios keeps no CBOR of the transaction, and a Blockfrost that lists the label with `metadata`. */
+  function viaBlockfrost(metadata: unknown): { readonly ledger: LedgerProvider; readonly asked: string[] } {
+    const ledger = ledgerWorld();
+    ledger.bare.set(TX, null);
+    return { ledger, asked: stubBlockfrost(metadata) };
+  }
+
+  it('gives the document that the CBOR of the label holds, as the twin of the refusals below', async () => {
+    const { ledger, asked } = viaBlockfrost(labelCbor({ v: 1, t: 'claim', m: 'text/plain', d: ['a document\n'] }));
+    const result = await realPort(ledger, AUDITOR_ID, NOW, BLOCKFROST).readDocument(MISSING);
+    expect(result).toMatchObject({ ok: true, value: { type: 'claim', media_type: 'text/plain' } });
+    if (result.ok) expect(Buffer.from(result.value.bytes).toString('utf8')).toBe('a document\n');
+    expect(asked).toEqual([`https://203.0.113.7/txs/${TX}/metadata/cbor`]);
+  }, SLOW);
+
+  const BAD: Array<[string, string]> = [
+    ['CBOR that is nested too deep', DEEP],
+    ['CBOR that stops', 'a1195644a4'],
+    ['a chunk of 65 bytes, which the decoder refuses', `a1195644a4617601617465636c61696d616d706170706c69636174696f6e2f6a736f6e6164817841${'61'.repeat(65)}`],
+    ['a label value with a key that is a list, which cannot be shown as JSON', 'a1195644a1810101'],
+    ['a label value that is not a document', labelCbor({ v: 2, t: 'claim', m: 'text/plain', d: ['x'] })],
+  ];
+
+  it.each(BAD)('says no_document for %s, as the sender of the address makes it', async (_name, hex) => {
+    const { ledger, asked } = viaBlockfrost(hex);
+    expect(await realPort(ledger, AUDITOR_ID, NOW, BLOCKFROST).readDocument(MISSING)).toMatchObject({ ok: false, code: 'no_document' });
+    expect(asked.length).toBe(1);
+  }, SLOW);
+
+  it('throws for hex text that is not hex, because no sender makes the answer of a source', async () => {
+    const { ledger } = viaBlockfrost('zz');
+    await expect(realPort(ledger, AUDITOR_ID, NOW, BLOCKFROST).readDocument(MISSING)).rejects.toThrow(/is not hex/);
   }, SLOW);
 });
 

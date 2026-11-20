@@ -92,19 +92,22 @@ const LABEL = String(DOCUMENT_LABEL);
 /** What the reader of the buyer code says when the source answered and does not have the transaction of a document. */
 const UNKNOWN_TRANSACTION = new RegExp(`^Koios does not know the transaction ${TX_HASH}: `);
 /**
- * What the reader says when the source has the transaction and it carries no document: no metadata of the label, no JSON for the metadata of the label and no CBOR form that the reader can get, or a value of
- * the label that is not a document. The sender of a document address can cause each of these. A document of this kit always has JSON metadata, because the claim document refuses the texts that db-sync
- * cannot keep as JSON, so a transaction with no JSON for the label does not carry a document of this kit.
+ * What the reader says when the source has the transaction and the transaction carries no document that the reader can use: no metadata of the label, no JSON for the metadata of the label and no CBOR
+ * form that the reader can get, a value of the label that is not a document, and a CBOR form that the reader refuses (`does not decode`: CBOR that is nested too deep, that is not well-formed, or that
+ * the decoder does not read). The sender of a document address makes each of these, so none is a failure of the source. A document of this kit always has JSON metadata, because the claim document
+ * refuses the texts that db-sync cannot keep as JSON, so a transaction with no JSON for the label does not carry a document of this kit. Hex text that is not hex is no such case: no sender makes the
+ * hex text that a source gives, so it stays a failure of the source (the reader says `is not hex` for the CBOR of Blockfrost, and `is not hex of whole bytes` inside `does not decode` for Koios).
  */
 const NO_DOCUMENT = new RegExp(
   `^(?:The label ${LABEL} metadata |Chunk \\d+ of the label ${LABEL} metadata |The type \\(t\\) or the media type \\(m\\) of the label ${LABEL} metadata `
-  + `|The transaction ${TX_HASH} has no label ${LABEL} metadata, |Koios gives no JSON for the label ${LABEL} metadata of the transaction ${TX_HASH}, and its CBOR form cannot be read)`,
+  + `|The transaction ${TX_HASH} has no label ${LABEL} metadata, |Koios gives no JSON for the label ${LABEL} metadata of the transaction ${TX_HASH}, and its CBOR form cannot be read`
+  + `|The CBOR of the transaction ${TX_HASH} does not decode \\((?!The transaction is not hex of whole bytes\\.)|The CBOR metadata of the transaction ${TX_HASH} does not decode \\()`,
 );
 
 /**
  * The reader throws one `Error` for every problem, so the code that calls it must tell the answer of the source from a failure of the source. The two patterns above are answers of the source: the
- * transaction is not known to it, or it carries no document. Every other error is a failure of the source (a request that failed or was refused, an answer of a wrong shape, a CBOR that does not
- * decode), and the caller throws it on: such an error never says that a document is not there.
+ * transaction is not known to it, or it carries no document that the reader can use. A claimer makes the second, so it is never a failure. Every other error is a failure of the source (a request that
+ * failed or was refused, an answer of a wrong shape, a time-out, hex text that is not hex), and the caller throws it on: such an error never says that a document is not there.
  */
 function absenceOf(error: unknown): DocumentAbsent | null {
   if (!(error instanceof Error)) return null;

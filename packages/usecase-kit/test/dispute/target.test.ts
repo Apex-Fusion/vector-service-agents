@@ -19,7 +19,7 @@ const textOf = (bytes: Uint8Array): string => Buffer.from(bytes).toString('utf8'
 /** The detail of no_open_claim for `open` open claims, and for the counts of the six reasons in the order of the detail. */
 const counted = (open: number, left: readonly [number, number, number, number, number, number]): string =>
   `the agent has ${open} open claim(s), and none can be challenged: ${left[0]} with a challenge window that ends too soon, ${left[1]} submitted at or after the start of the job, `
-  + `${left[2]} with a stake above the challenge stake, ${left[3]} whose claim document is not on chain, ${left[4]} without a claim document of this kit, ${left[5]} with a claim document for another capability`;
+  + `${left[2]} with a stake above the challenge stake, ${left[3]} whose claim document is not on chain or is not a document, ${left[4]} without a claim document of this kit, ${left[5]} with a claim document for another capability`;
 
 /** A claim of the other party that was staked a minute after the older claim of the samples, before the job began, and that ends 15 hours later: with no rule of the job, it would be the target. */
 const newer = (overrides: Partial<ClaimView> = {}): ClaimView => claimView({ ref: REF_B, token: TOKEN_B, submitted_at: NOW - HOUR + 60_000, challenge_window_ms: 20 * HOUR, ...overrides });

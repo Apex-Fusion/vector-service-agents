@@ -66,8 +66,8 @@ export interface ReadDocument {
 
 /**
  * Why a read of a document found none although the source answered. `transaction_unknown`: the source does not have the transaction at the address, and it can be behind. `no_document`: the source has
- * the transaction, and the transaction carries no document: it has no metadata of the label of the documents, or no metadata that holds JSON, or a value that is not a document. The sender of an
- * address can cause both, so the dispute code never takes them for a failure of the source.
+ * the transaction, and the transaction carries no document that the reader can use: it has no metadata of the label of the documents, or no metadata that holds JSON, or a value that is not a document, or
+ * a form that the reader refuses (CBOR that does not decode). The sender of an address can cause both, so the dispute code never takes them for a failure of the source.
  */
 export type DocumentAbsent = Refused<'transaction_unknown' | 'no_document'>;
 

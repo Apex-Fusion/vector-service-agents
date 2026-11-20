@@ -135,8 +135,14 @@ export class LedgerProvider extends FixtureProvider {
   }
 }
 
+/**
+ * The records of the claimer and the auditor. They are made one time: `recordUtxo` gives each record a transaction hash from a counter that has room for 208 records, and a test file that makes
+ * a world for each test goes past it. No test changes an output, and each ledger has its own list of live outputs, so the worlds share these two.
+ */
+const RECORDS: UTxO[] = [recordUtxo(CLAIMER_ID), recordUtxo(AUDITOR_ID)];
+
 /** A node with the wallet, the Module-1 outputs, the records of the claimer and the auditor, and `extra`: outputs, or a function that makes them with the ledger in hand (a claim needs its document on the ledger). */
-export function ledgerWorld(extra: UTxO[] | ((ledger: LedgerProvider) => UTxO[]) = [], records: UTxO[] = [recordUtxo(CLAIMER_ID), recordUtxo(AUDITOR_ID)]): LedgerProvider {
+export function ledgerWorld(extra: UTxO[] | ((ledger: LedgerProvider) => UTxO[]) = [], records: UTxO[] = RECORDS): LedgerProvider {
   const ledger = new LedgerProvider([...WALLET_UTXOS, ...MODULE1_UTXOS, JURY_REF_UTXO, ...records]);
   ledger.live.push(...(typeof extra === 'function' ? extra(ledger) : extra));
   return ledger;
