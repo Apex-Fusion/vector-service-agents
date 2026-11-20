@@ -3,7 +3,8 @@
 // The SPIFFE ID of an agent is `spiffe://<trust domain>/agent/<identifier>`. The trust domain is the host of the gateway.
 // - X.509-SVID (SPIFFE X509-SVID standard): the certificate must chain to an authority of the bundle, be inside its validity, be no CA, have the key usage digitalSignature and neither
 //   keyCertSign nor cRLSign, and have exactly one URI name: a SPIFFE ID of this trust domain. The check reads the DER of the certificate with the strict reader of the gateway, because
-//   node:crypto does not give the key usage bits or the exact names.
+//   node:crypto does not give the key usage bits or the exact names. The input is exactly one certificate (PEM text, base64 of the DER, or DER bytes): a second certificate, or any other
+//   text or bytes next to it, make it malformed.
 // - JWT-SVID (SPIFFE JWT-SVID standard): an ES256 JWT that a key of the bundle (use jwt-svid) signed, with `sub` a SPIFFE ID of this trust domain, `aud` naming the resource, and a life
 //   of 5 minutes at most.
 // An SVID has no entry in a status list: the gateway gives X.509-SVIDs the noRevAvail extension. An SVID ends by its time. A caller that must know whether the agent is still Active
@@ -191,10 +192,30 @@ function readCertificate(raw: Buffer): CertificateFacts {
   return { notBefore, notAfter, isCa, keyUsage, uriNames };
 }
 
-/** Reads a certificate that a caller gives as PEM text, as base64 of its DER, or as DER bytes. Throws when it is none of them. */
+/** One PEM block of a certificate. The text is trimmed first, so nothing stands before or after the block. The body has no `-`, so a second block does not fit in it. */
+const PEM_CERTIFICATE = /^-----BEGIN CERTIFICATE-----([^-]*)-----END CERTIFICATE-----$/;
+
+/**
+ * The DER bytes that a text holds: one PEM block of a certificate, or base64 of the DER. Only white space may stand around the block, or in the base64. The base64 must be the exact text of
+ * its bytes: the decoder of Node skips characters that are no base64 and stops at a padding, so it would drop a second certificate after the first one with no sign. Throws for any other text.
+ */
+function derOfText(text: string): Buffer {
+  const trimmed = text.trim();
+  const block = PEM_CERTIFICATE.exec(trimmed);
+  const base64 = (block === null ? trimmed : block[1]!).replace(/\s+/g, '');
+  const der = Buffer.from(base64, 'base64');
+  if (der.toString('base64') !== base64) throw new Error('the text is no PEM block of a certificate, and no base64 of DER bytes');
+  return der;
+}
+
+/** Reads a certificate that a caller gives as PEM text, as base64 of its DER, or as DER bytes. The input is exactly one certificate. Throws when it is none. */
 function toCertificate(input: string | Uint8Array): X509Certificate {
-  if (typeof input !== 'string') return new X509Certificate(Buffer.from(input));
-  return input.includes('-----BEGIN') ? new X509Certificate(input) : new X509Certificate(Buffer.from(input.trim(), 'base64'));
+  const der = typeof input === 'string' ? derOfText(input) : Buffer.from(input);
+  const certificate = new X509Certificate(der);
+  // `X509Certificate` reads the first certificate that it finds and drops the rest: the bytes after it, and the bytes before a PEM block that sits inside the input. So the input is one
+  // certificate only when the certificate that was read is as long as the input.
+  if (certificate.raw.length !== der.length) throw new Error('the input is not exactly one certificate');
+  return certificate;
 }
 
 const DIGITAL_SIGNATURE = 0x80;
@@ -202,8 +223,9 @@ const KEY_CERT_SIGN = 0x04;
 const CRL_SIGN = 0x02;
 
 /**
- * Checks an X.509-SVID against the bundle. `certificate` is the leaf, as PEM text, as base64 DER (the form of a header that a proxy sets), or as DER bytes. The trust check is first, so
- * that a certificate from outside the trust domain is refused for that reason, whatever else it holds.
+ * Checks an X.509-SVID against the bundle. `certificate` is the leaf, as PEM text, as base64 DER (the form of a header that a proxy sets), or as DER bytes, and it is exactly one certificate:
+ * a second certificate, a second PEM block, or any other text or bytes make it `x509.malformed`. The trust check is first among the rules, so that a certificate from outside the trust domain
+ * is refused for that reason, whatever else it holds.
  */
 export function verifyX509Svid(certificate: string | Uint8Array, ctx: SvidContext): Check<VerifiedX509Svid, X509SvidRule> {
   let leaf: X509Certificate;
@@ -212,7 +234,7 @@ export function verifyX509Svid(certificate: string | Uint8Array, ctx: SvidContex
     leaf = toCertificate(certificate);
     facts = readCertificate(Buffer.from(leaf.raw));
   } catch {
-    return refuse('x509.malformed', 'the certificate cannot be read as an X.509 certificate of version 3');
+    return refuse('x509.malformed', 'the input cannot be read as exactly one X.509 certificate of version 3 (one PEM block, base64 of its DER, or its DER bytes)');
   }
   const now = ctx.nowMs;
   const usable = ctx.bundle.authorities.filter((ca) => {

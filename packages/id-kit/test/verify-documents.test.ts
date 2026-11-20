@@ -7,7 +7,7 @@ import { LIST_SIZE } from '../src/common/constants.ts';
 import { resolveKey } from '../src/common/keys.ts';
 import type { Check } from '../src/common/result.ts';
 import { identifier, LISTS_UNAVAILABLE, p256Key, type StubGateway } from '../src/testing/index.ts';
-import { bitString, boolean, children, decode, ecdsaSignatureDer, explicit, implicitPrimitive, octetString, oid, sequence, time, unsignedInteger } from '../src/vendored/m4/der.ts';
+import { bitString, boolean, children, decode, ecdsaSignatureDer, explicit, implicitPrimitive, octetString, oid, sequence, time, unsignedInteger, utf8String } from '../src/vendored/m4/der.ts';
 import { b64url, signJws } from '../src/vendored/m4/jose.ts';
 import {
   BUNDLE_RULES, CREDENTIAL_CALL_RULES, CREDENTIAL_RULES, JWT_SVID_RULES, KEY_SET_RULES, STATUS_LIST_RULES, X509_SVID_RULES, bitstringEntryStatus, checkCredential, createVerifier, decodeBitstringStatusList,
@@ -233,7 +233,7 @@ describe('status lists', () => {
 // ── the X.509-SVID ──
 
 /** A leaf certificate that the key of the stub gateway signs under the CA of the bundle, with the parts that a test changes. */
-async function leaf(gateway: StubGateway, options: { keyUsage?: number | null; uris?: string[]; ca?: boolean; notBefore?: number; notAfter?: number } = {}): Promise<string> {
+async function leaf(gateway: StubGateway, options: { keyUsage?: number | null; uris?: string[]; ca?: boolean; notBefore?: number; notAfter?: number; carries?: string } = {}): Promise<string> {
   const bundle = await bundleOf(gateway);
   const caFields = children(children(decode(Buffer.from(bundle.authorities[0]!.raw)))[0]!);
   const agentId = identifier('x509 leaf agent');
@@ -256,6 +256,7 @@ async function leaf(gateway: StubGateway, options: { keyUsage?: number | null; u
         extension('2.5.29.19', true, options.ca ? sequence(boolean(true)) : sequence()),
         ...(usage === null ? [] : [extension('2.5.29.15', true, bitString(Uint8Array.of(usage), unused))]),
         extension('2.5.29.17', true, sequence(...(options.uris ?? [`spiffe://${gateway.trustDomain}/agent/${agentId}`]).map((u) => implicitPrimitive(6, Buffer.from(u, 'ascii'))))),
+        ...(options.carries === undefined ? [] : [extension('1.3.6.1.4.1.99999.1', false, utf8String(options.carries))]),
       ),
     ),
   );
@@ -367,6 +368,112 @@ describe('verifyX509Svid', () => {
     expect(plain.ca).toBe(false);
     refused(verifyX509Svid(await leaf(gateway), { ...ctx, bundle: { ...ctx.bundle, authorities: [plain] } }), 'x509.bundle');
     accepted(verifyX509Svid(await leaf(gateway), ctx));
+  });
+
+  // The input is exactly one certificate. `X509Certificate` reads the first certificate that it finds and drops the rest, so each input of the refusals below passed for its first certificate.
+
+  const derOf = (pem: string): Buffer => Buffer.from(new X509Certificate(pem).raw);
+
+  interface Pieces {
+    readonly pem: string;
+    readonly otherPem: string;
+    readonly der: Buffer;
+    readonly otherDer: Buffer;
+    /** The DER of the CA certificate of the bundle. */
+    readonly ca: Buffer;
+    readonly base64: string;
+    readonly otherBase64: string;
+  }
+
+  /** Two certificates that the gateway signed, and the CA. The DER of the first has a length that is no multiple of 3, so its base64 text ends with a padding. */
+  async function pieces(gateway: StubGateway): Promise<Pieces> {
+    let pem = await leaf(gateway);
+    for (let tries = 0; derOf(pem).length % 3 === 0 && tries < 40; tries++) pem = await leaf(gateway);
+    const otherPem = await leaf(gateway, { uris: [`spiffe://${gateway.trustDomain}/agent/${identifier('x509 other agent')}`] });
+    const der = derOf(pem);
+    if (der.length % 3 === 0) throw new Error('no certificate with a padded base64 text');
+    const otherDer = derOf(otherPem);
+    const ca = Buffer.from((await bundleOf(gateway)).authorities[0]!.raw);
+    return { pem, otherPem, der, otherDer, ca, base64: der.toString('base64'), otherBase64: otherDer.toString('base64') };
+  }
+
+  it('one certificate is accepted in each of its forms: a PEM block, base64 of the DER, DER bytes', async () => {
+    const { gateway } = world();
+    const ctx = await contextOf(gateway);
+    const p = await pieces(gateway);
+    const verified = accepted(verifyX509Svid(p.pem, ctx));
+    const forms: Array<[string, string | Uint8Array]> = [
+      ['PEM with no line feed at the end', p.pem.trim()],
+      ['PEM with blank lines around it', `\n\n${p.pem}\n\n`],
+      ['PEM with CRLF line ends', p.pem.replace(/\n/g, '\r\n')],
+      ['base64', p.base64],
+      ['base64 with white space around it', ` ${p.base64}\n`],
+      ['base64 in lines of 64 characters', p.base64.match(/.{1,64}/g)!.join('\n')],
+      ['DER bytes (a Buffer)', p.der],
+      ['DER bytes (a Uint8Array)', new Uint8Array(p.der)],
+    ];
+    for (const [name, input] of forms) expect(verifyX509Svid(input, ctx), name).toStrictEqual({ ok: true, value: verified });
+  });
+
+  it('nothing but white space may stand around the one PEM block: spaces and tabs before and after it are accepted', async () => {
+    const { gateway } = world();
+    const ctx = await contextOf(gateway);
+    const p = await pieces(gateway);
+    const verified = accepted(verifyX509Svid(p.pem, ctx));
+    expect(verifyX509Svid(`  \t${p.pem.trim()} \t \n`, ctx)).toStrictEqual({ ok: true, value: verified });
+    refused(verifyX509Svid(`x ${p.pem.trim()}`, ctx), 'x509.malformed');
+    refused(verifyX509Svid(`${p.pem.trim()} x`, ctx), 'x509.malformed');
+  });
+
+  const notOne: Array<[string, (p: Pieces) => string | Uint8Array]> = [
+    ['DER bytes and one more byte', (p) => Buffer.concat([p.der, Buffer.from([0])])],
+    ['DER bytes and then a line feed', (p) => Buffer.concat([p.der, Buffer.from('\n')])],
+    ['the DER bytes of two certificates one after the other', (p) => Buffer.concat([p.der, p.otherDer])],
+    ['the DER bytes of a certificate and then of the CA that signed it', (p) => Buffer.concat([p.der, p.ca])],
+    ['DER bytes with a byte before the certificate', (p) => Buffer.concat([Buffer.from([0]), p.der])],
+    ['bytes that hold a PEM block after other bytes (the PEM reader of the runtime skips what comes before it)', (p) => Buffer.concat([Buffer.from('other bytes\n'), Buffer.from(p.pem)])],
+    ['base64 of the DER bytes of two certificates', (p) => Buffer.concat([p.der, p.otherDer]).toString('base64')],
+    ['the base64 text of a certificate and then the base64 text of another (the padding of the first ends what the decoder of the runtime reads)', (p) => p.base64 + p.otherBase64],
+    ['base64 of a certificate and then characters that are no base64', (p) => `${p.base64}!!!!`],
+    ['two PEM blocks', (p) => p.pem + p.otherPem],
+    ['a PEM block and then text', (p) => `${p.pem}the rest of a file\n`],
+    ['text and then a PEM block', (p) => `Bag Attributes\n${p.pem}`],
+    ['a PEM block and then base64 of a certificate', (p) => `${p.pem}${p.otherBase64}`],
+    ['one PEM block that holds the DER bytes of two certificates', (p) => `-----BEGIN CERTIFICATE-----\n${Buffer.concat([p.der, p.otherDer]).toString('base64').match(/.{1,64}/g)!.join('\n')}\n-----END CERTIFICATE-----\n`],
+  ];
+  it.each(notOne)('refuses an input that is not exactly one certificate: %s (x509.malformed)', async (_name, make) => {
+    const { gateway } = world();
+    const ctx = await contextOf(gateway);
+    const p = await pieces(gateway);
+    const result = verifyX509Svid(make(p), ctx);
+    refused(result, 'x509.malformed');
+    // The detail holds no part of the certificates.
+    if (!result.ok) for (const held of [p.pem, p.base64, p.otherBase64]) expect(repeatsCredential(result.detail, held)).toBe(false);
+    // The twin: the first certificate alone is accepted, so the refusal is for what comes with it.
+    accepted(verifyX509Svid(p.pem, ctx));
+  });
+
+  it('a certificate that holds the PEM text of another certificate is refused: the PEM reader of the runtime reads the certificate in the text, so the bytes that it checks are not the bytes that came', async () => {
+    const { gateway } = world();
+    const ctx = await contextOf(gateway);
+    const carried = await leaf(gateway, { uris: [`spiffe://${gateway.trustDomain}/agent/${identifier('x509 carried agent')}`] });
+    const carrier = derOf(await leaf(gateway, { carries: `\n${carried}` }));
+    // The twin: a certificate of the same kind that carries nothing is accepted.
+    accepted(verifyX509Svid(await leaf(gateway), ctx));
+    refused(verifyX509Svid(carrier, ctx), 'x509.malformed');
+    refused(verifyX509Svid(carrier.toString('base64'), ctx), 'x509.malformed');
+  });
+
+  it('the verifier gives the same answers: verifier.x509Svid refuses two certificates in each form, and accepts the first one alone', async () => {
+    const w = world();
+    const verifier = createVerifier({ baseUrl: w.gateway.baseUrl, fetch: w.gateway.fetch, now: w.gateway.now });
+    const p = await pieces(w.gateway);
+    accepted(await verifier.x509Svid(p.pem));
+    accepted(await verifier.x509Svid(p.base64));
+    accepted(await verifier.x509Svid(p.der));
+    refused(await verifier.x509Svid(p.pem + p.otherPem), 'x509.malformed');
+    refused(await verifier.x509Svid(p.base64 + p.otherBase64), 'x509.malformed');
+    refused(await verifier.x509Svid(Buffer.concat([p.der, p.otherDer])), 'x509.malformed');
   });
 });
 
