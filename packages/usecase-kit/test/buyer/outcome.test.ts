@@ -313,6 +313,24 @@ describe('the map from the outcome of the hire kit to the step and the result', 
     expect(stepOfOutcome(refusedBefore('delegation_ended', 403), { ...CONTEXT, use_case: 'payroll' as never }).kind).toBe('failed');
   });
 
+  it('reads a decision after the Claim as a refusal only for a counterparty that has that code: the Order Desk refuses, and the insurer intake agent and the bid desk fail with the code as the reason', () => {
+    const decision = failedAfter('failed', kitMessage(serviceAnswer(403, '{"error":"cannot_supply","message":"the lot is gone"}')));
+    const across = (outcome: AgentOutcome): string[] => (['inventory-reorder', 'prior-authorization', 'bid-evaluation'] as const).map((useCase) => words(stepOfOutcome(outcome, { ...CONTEXT, use_case: useCase })));
+    expect(across(decision)).toStrictEqual(['refused_by_counterparty after_claim cannot_supply', 'failed cannot_supply', 'failed cannot_supply']);
+    // The failed step keeps the escrow that is Claimed, with the vault that continues and the terms, and it holds no text of the counterparty. Its result is Failed, with the code as the reason.
+    for (const useCase of ['prior-authorization', 'bid-evaluation'] as const) {
+      const step = stepOfOutcome(decision, { ...CONTEXT, use_case: useCase });
+      if (step.kind !== 'failed') throw new Error(`the step is ${words(step)}`);
+      expect(step.handoff, useCase).toMatchObject({ counterparty_did: COUNTERPARTY_DID, advert_ref: AGENT_ADVERT_REF, escrow_ref: ESCROW, accepted: null, receipt: null });
+      expect([step.vault_ref, step.terms], useCase).toStrictEqual([NEXT_VAULT, TERMS]);
+      expect(JSON.stringify(step), useCase).not.toContain('the lot is gone');
+      expect(resultOf(step), useCase).toBe('failed:cannot_supply:Failed');
+    }
+    // The twin: the Order Desk answers with the same words, and it is a refusal with the exit state Rejected. A use case that is not one of the three has no counterparty that lists the code.
+    expect(resultOf(stepOfOutcome(decision, CONTEXT))).toBe('refused_by_counterparty:cannot_supply:Rejected');
+    expect(words(stepOfOutcome(decision, { ...CONTEXT, use_case: 'payroll' as never }))).toBe('failed cannot_supply');
+  });
+
   it('keeps the escrow, the advert and the vault of the Pay in the record of every step that had a Pay, and no text of the counterparty anywhere', () => {
     const context = CONTEXT;
     for (const outcome of [completed, refusedBefore('delegation_ended', 403), failedAfter('timeout'), declined, timedOut, receiptFailed]) {

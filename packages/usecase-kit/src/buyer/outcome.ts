@@ -6,7 +6,10 @@
 //   refused_before_claim, status 403, a refusal code that the     refused_by_counterparty    that code
 //     protocol lists for the counterparty of the use case
 //   refused_before_claim, any other answer                        failed                     the code when it is a code of ERROR_STATUS, else `counterparty_refused`
-//   failed_after_claim, `failed`, with a code of AFTER_CLAIM    refused_by_counterparty    that code (the decision of the counterparty after its Claim)
+//   failed_after_claim, `failed`, with a code of AFTER_CLAIM,    refused_by_counterparty    that code (the decision of the counterparty after its Claim)
+//     that the protocol lists for the counterparty of the use case
+//   failed_after_claim, `failed`, with a code of AFTER_CLAIM,    failed                     that code
+//     that the protocol does not list for that counterparty
 //   failed_after_claim, any other                               failed                     the reason of the hire kit. It is NOT a refusal.
 //   vault_refused                                               vault_refused              the evaluation error of the node, or the code of the builder when the Pay could not be built, or `vault_reason_missing` when none was given
 //   not_accepted, declined                                      not_accepted               (the code of the use case files the challenge)
@@ -20,7 +23,8 @@
 //
 // The words of a counterparty never reach a reason: a reason is a code of the protocol, or a fixed code of this folder. An answer before the Claim is a refusal only when its status is 403 and its code
 // is a refusal code that the protocol lists for the counterparty of the use case, and is not a code of AFTER_CLAIM_REFUSALS. A job that failed after the Claim is a failure and never a refusal. The one
-// exception is `afterClaimRefusalIn`: the code that the counterparty answered as its own decision after its Claim, which the runtime copies into the message of the failure.
+// exception is `afterClaimRefusalIn`: the code that the counterparty answered as its own decision after its Claim, which the runtime copies into the message of the failure. It is a refusal only when the
+// protocol lists that code for the counterparty of the use case, as before the Claim. For any other counterparty it is the reason of a failure.
 import { verificationOf } from '@vsa/hire-kit';
 import type { AgentDelivery, AgentEscrow, AgentOutcome, HireFailure, HireTerms } from '@vsa/hire-kit';
 import { flatText } from '@vsa/service-kit/text';
@@ -222,14 +226,19 @@ const COUNTERPARTY_OF: Readonly<Record<UseCase, CounterpartyKind>> = {
   'inventory-reorder': 'order-desk', 'prior-authorization': 'insurer-intake-agent', 'bid-evaluation': 'bid-desk',
 };
 
+/** True when `code` is a refusal code that the protocol lists for the kind of counterparty of the use case. A use case that is not one of the three has none. */
+function isRefusalOfUseCase(code: string, useCase: UseCase): boolean {
+  return Object.hasOwn(COUNTERPARTY_OF, useCase) && (COUNTERPARTY_REFUSALS[COUNTERPARTY_OF[useCase]] as readonly string[]).includes(code);
+}
+
 /**
  * The code of a refusal by a rule of the protocol, or `null`. An answer before the Claim is a refusal only when its status is 403 and its code is a refusal code that the protocol lists for the kind of
  * counterparty of the use case, and is not a code of `AFTER_CLAIM_REFUSALS`: a decision after the Claim cannot come before it.
  */
 function ruleRefusalIn(status: unknown, code: unknown, useCase: UseCase): string | null {
-  if (status !== 403 || typeof code !== 'string' || !Object.hasOwn(COUNTERPARTY_OF, useCase)) return null;
+  if (status !== 403 || typeof code !== 'string') return null;
   if ((AFTER_CLAIM_REFUSALS as readonly string[]).includes(code)) return null;
-  return (COUNTERPARTY_REFUSALS[COUNTERPARTY_OF[useCase]] as readonly string[]).includes(code) ? code : null;
+  return isRefusalOfUseCase(code, useCase) ? code : null;
 }
 
 function refusedBeforeClaimStep(outcome: Refused, context: StepContext): HireStep {
@@ -249,7 +258,12 @@ function failedAfterClaimStep(outcome: FailedAfterClaim, context: StepContext): 
   const handoff = recordOf(context.counterparty_did, escrow.advert_ref, escrow.escrow_ref, null, null);
   const refusal = outcome.reason === 'failed' ? afterClaimRefusalIn(outcome.message) : null;
   if (refusal !== null) {
-    return { kind: 'refused_by_counterparty', reason: refusal, source: 'after_claim', runtime_status: null, handoff, vault_ref: escrow.vault_ref, terms: escrow.terms };
+    // The same rule as before the Claim: the code is a refusal only when the protocol lists it for the counterparty of the use case. A counterparty that has no such code did not decide this by a rule of
+    // the protocol, so the job failed, and the reason is that code.
+    if (isRefusalOfUseCase(refusal, context.use_case)) {
+      return { kind: 'refused_by_counterparty', reason: refusal, source: 'after_claim', runtime_status: null, handoff, vault_ref: escrow.vault_ref, terms: escrow.terms };
+    }
+    return failure(refusal, 'the counterparty answered after its Claim with a code that the protocol does not list as a refusal of its kind, so the job failed and it is not a refusal', { handoff, vault_ref: escrow.vault_ref, terms: escrow.terms });
   }
   if (!(KIT_FAILURES as readonly unknown[]).includes(outcome.reason)) return inconsistent(context, 'the hire kit gave a reason that it does not list', escrow);
   return failure(outcome.reason, `the hire failed after the Pay (${outcome.reason}), and it is not a refusal`, { handoff, vault_ref: escrow.vault_ref, terms: escrow.terms });

@@ -5,11 +5,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TxNotConfirmedError } from '@vsa/buyer-core';
 import { DECISION_WINDOW_MS } from '@vsa/hire-kit';
 import { AGENT_ANSWER, INDEXER } from '@vsa/hire-kit/testing';
-import { ERROR_STATUS, parseHandoff } from '@vsa/usecase-kit/protocol';
+import { ERROR_STATUS, RFQ_SCHEMA, parseHandoff, parseRfq } from '@vsa/usecase-kit/protocol';
+import type { UseCase } from '@vsa/usecase-kit/protocol';
 import { completedResult, requestText, settledResult } from '@vsa/usecase-kit/buyer';
-import type { DeliveryDecision, HireStep } from '@vsa/usecase-kit/buyer';
+import type { DeliveryDecision, HireInput, HireStep } from '@vsa/usecase-kit/buyer';
 import {
-  AGENT_ADVERT_REF, COUNTERPARTY_DID, T0, cleanWorlds, expectDecided, expectKind, go, handoffFor, inFrontOfPolls, inFrontOfSends, jsonResponse, page, pieces, purchaseOrder, untouched, words, world,
+  AGENT_ADVERT_REF, BUYER_DID, COUNTERPARTY_DID, DELEGATION, T0, cleanWorlds, expectDecided, expectKind, go, handoffFor, inFrontOfPolls, inFrontOfSends, jsonResponse, page, pieces, purchaseOrder, untouched, words,
+  world,
 } from './support.ts';
 
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); cleanWorlds(); });
@@ -236,6 +238,27 @@ describe('a hire that fails after the Claim', () => {
     expect(await w.m.chain.escrowState(step.handoff.escrow_ref)).toBe('Claimed');
     expect(JSON.stringify(step)).not.toContain('the lot is gone');
     expect(settledResult(step, pieces())).toMatchObject({ outcome: 'refused_by_counterparty', reason: 'cannot_supply', exit_state: 'Rejected' });
+  });
+
+  it('is a failure, and not a refusal, for a counterparty that has no such code: the insurer intake agent of use case 2 and the bid desk of use case 3 fail with the reason cannot_supply, and the escrow is Claimed', async () => {
+    const rfq = parseRfq({ schema: RFQ_SCHEMA, sender_did: BUYER_DID, delegation: DELEGATION, rfq: { rfq_id: 'rfq-1', items: [{ sku: 'SKU-100', quantity: 5 }] } });
+    if (!rfq.ok) throw new Error('the request for quotation of the test is refused');
+    const insurerDocument = { schema: 'vector.usecase.priorauth-request.v1', request_number: 'run1-0001', insurer_did: COUNTERPARTY_DID, advert_ref: AGENT_ADVERT_REF };
+    const hires: Array<[UseCase, Partial<HireInput>]> = [
+      ['prior-authorization', { message: { ...handoffFor(insurerDocument), use_case: 'prior-authorization' } }],
+      ['bid-evaluation', { message: rfq.value, advert_ref: AGENT_ADVERT_REF }],
+    ];
+    for (const [useCase, over] of hires) {
+      const w = await world();
+      w.m.agent.steps = ['running', { fail: 'service_http_403', submitted: false }];
+      w.deps.hire.fetchImpl = inFrontOfPolls(w.m, failureWith('service returned HTTP 403: {"error":"cannot_supply","message":"the lot is gone; this text never reaches the result"}'));
+      const step = expectKind(await go(w, over), 'failed');
+      expect(step.reason, useCase).toBe('cannot_supply');
+      expect(await w.m.chain.escrowState(escrowOf(step)), useCase).toBe('Claimed');
+      expect(step.handoff, useCase).toMatchObject({ accepted: null, receipt: null });
+      expect(JSON.stringify(step), useCase).not.toContain('the lot is gone');
+      expect(settledResult(step, pieces({ use_case: useCase }))).toMatchObject({ outcome: 'failed', reason: 'cannot_supply', exit_state: 'Failed' });
+    }
   });
 
   it('is a failure when the answer of the service carries another code, or no code: the same failed job, and it is not a refusal', async () => {

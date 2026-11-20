@@ -3,7 +3,7 @@
 // except `completed`. A step holds what the hire kit knows of the payment: the escrow, the vault that continues, and the terms. It holds no text of the counterparty.
 //
 //   completed                the vault paid the hire, the receipt passed the eight checks, the decision accepted the delivery, and the Accept was made. A ledger of the caller that failed to book the Accept does not change this: `booking_failed` says it.
-//   refused_by_counterparty  the counterparty refused the job by a rule of the protocol: before its Claim (status 403 and a refusal code of its kind), or after its Claim (a code of AFTER_CLAIM_REFUSALS). Before its Claim the escrow stays Open. After its Claim the escrow is Claimed. Either way it returns to the vault after its deadline.
+//   refused_by_counterparty  the counterparty refused the job by a rule of the protocol: before its Claim (status 403 and a refusal code of its kind), or after its Claim (a code of AFTER_CLAIM_REFUSALS that the protocol lists for its kind). Before its Claim the escrow stays Open. After its Claim the escrow is Claimed. Either way it returns to the vault after its deadline.
 //   vault_refused            the ledger refused the Pay from the vault, or the Pay could not be made. Nothing was signed and no money moved.
 //   failed                   the job did not finish, and it is not a refusal. A job that failed after the Claim is here, and so is an answer before the Claim that is not a refusal by a rule of the protocol.
 //   not_accepted             the delivery came, and the decision said no or did not answer in time, or the delivery passed the eight checks and cannot be recorded. The code of the use case files the challenge.
@@ -58,7 +58,7 @@ export interface RefusedByCounterpartyStep extends PaidStep {
   readonly kind: 'refused_by_counterparty';
   /** A refusal code that the protocol lists for the counterparty of the use case. Never a text of the counterparty. */
   readonly reason: string;
-  /** Before its Claim (status 403 and a refusal code of its kind that is not an after-Claim code), or after its Claim (a code of `AFTER_CLAIM_REFUSALS`). */
+  /** Before its Claim (status 403 and a refusal code of its kind that is not an after-Claim code), or after its Claim (a code of `AFTER_CLAIM_REFUSALS` that is a refusal code of its kind). */
   readonly source: 'before_claim' | 'after_claim';
   /** 403 when the refusal came before the Claim, and `null` when it came after. */
   readonly runtime_status: number | null;
