@@ -3,3 +3,5 @@
 // Import it as `@vsa/usecase-kit/protocol`.
 export * from './result.ts';
 export * from './identifiers.ts';
+export * from './json.ts';
+export * from './digest.ts';
