@@ -251,10 +251,10 @@ export function withMint(hex: string, mint: Record<string, [string, bigint][]>):
   });
 }
 /** The transaction with a redeemer for each of `tags` (0 spend, 1 mint, 2 cert, 3 reward, 4 voting, 5 proposing) at the index 0. */
-export function withRedeemers(hex: string, tags: number[]): string {
+export function withRedeemers(hex: string, tags: number[], index = 0n): string {
   return changed(hex, (p) => {
     const list = CML.LegacyRedeemerList.new();
-    for (const tag of tags) list.add(CML.LegacyRedeemer.new(tag, 0n, CML.PlutusData.new_integer(CML.BigInteger.from_str('0')), CML.ExUnits.new(1n, 1n)));
+    for (const tag of tags) list.add(CML.LegacyRedeemer.new(tag, index, CML.PlutusData.new_integer(CML.BigInteger.from_str('0')), CML.ExUnits.new(1n, 1n)));
     p.witnesses.set_redeemers(CML.Redeemers.new_arr_legacy_redeemer(list));
   });
 }

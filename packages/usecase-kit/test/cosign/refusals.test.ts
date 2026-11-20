@@ -163,6 +163,20 @@ describe('a transaction that does more than delegate is not a Delegate', () => {
       await refuses('not_a_delegation', withOutputAddress(hex, 0, OWN_ADDRESS));
     });
 
+    it('refuses a delegation output that holds one token that is not the minted token: another policy, another name, or two of it', async () => {
+      const { hex, id } = await build();
+      const holding = (policy: string, name: string, quantity: bigint) => withOutputs(hex, (outputs) => outputs.map((output) => {
+        if (output.address().to_bech32() !== DEPLOYMENT.delegation.address) return output;
+        const assets = CML.MultiAsset.new();
+        assets.set(CML.ScriptHash.from_hex(policy), CML.AssetName.from_hex(name), quantity);
+        return CML.TransactionOutput.new(output.address(), CML.Value.new(output.amount().coin(), assets), output.datum());
+      }));
+      await refuses('not_a_delegation', holding(OTHER_AGENT_ID.slice(0, 56), id, 1n));
+      await refuses('not_a_delegation', holding(policyOf, nameHex('other'), 1n));
+      await refuses('not_a_delegation', holding(policyOf, id, 2n));
+      await signs(holding(policyOf, id, 1n));
+    });
+
     it('refuses a delegation output that holds another token, or a reference script', async () => {
       const { hex, id } = await build();
       await refuses('not_a_delegation', withOutputs(hex, (outputs) => outputs.map((output) => {
@@ -184,6 +198,12 @@ describe('a transaction that does more than delegate is not a Delegate', () => {
     it.each([['a spend', 0], ['a certificate', 2], ['a withdrawal', 3], ['a vote', 4], ['a proposal', 5]] as const)('refuses a redeemer for %s (tag %i) in place of the mint', async (_name, tag) => {
       const { hex } = await build();
       await refuses('not_a_delegation', withRedeemers(hex, [tag as number]));
+    });
+
+    it('refuses a redeemer for the mint at an index that is not the index of the policy', async () => {
+      const { hex } = await build();
+      await refuses('not_a_delegation', withRedeemers(hex, [1], 1n));
+      await signs(withRedeemers(hex, [1], 0n));
     });
 
     it('reads the redeemers in the form of a map as it reads the form of a list: the mint alone is signed, and any other purpose is refused', async () => {
