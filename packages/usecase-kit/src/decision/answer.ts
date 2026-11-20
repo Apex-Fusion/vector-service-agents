@@ -4,9 +4,14 @@
 // The model answers with one JSON object that has exactly two members, `reasoning` (a text that is not blank) and `choice` (JSON data of the shape that the decision names). The text of the answer is
 // read in these steps. The first step that fails ends the reading with `model_output_invalid`, and then no decision is recorded:
 //   1. The supplier gave the answer as completed. An answer that stopped at its output limit is cut, and it is not read.
-//   2. The object is the text from the first `{` to the last `}`. Words before it and after it, and a code fence around it, are not read. The text must parse as JSON, and it must say one thing:
-//      no key stands two times in one object, and every number reads back as itself (see lossless.ts). The value must be plain JSON data (no `__proto__` key, no number that is not finite, no
-//      value nested deeper than the protocol allows).
+//   2. The whole answer is the object. The reader takes off the white space at both ends (space, tab, line feed and carriage return) and a byte order mark at the start. What is left must be
+//      EXACTLY one JSON object and nothing else. Two wrappers are permitted, because models write them and they say nothing: (a) think blocks at the very start, each from `<think>` to the first
+//      `</think>`, whatever it holds; and (b) ONE code fence around the whole rest: a line of three backticks with an optional word such as `json`, the object, and a line of three backticks.
+//      Any other character before the object or after it ends the reading: words, a list that holds the object, a second object, a fence with text beside it, a think block after the object.
+//      The rule is strict on purpose. A decision is recorded only when the answer has one reading. "Sure. {...} Hope this helps, but reject it." has two, and a reader that took the text from the
+//      first brace to the last would record a choice that the answer takes back.
+//      The object text must parse as JSON, and it must say one thing: no key stands two times in one object, and every number reads back as itself (see lossless.ts). The value must be plain JSON
+//      data (no `__proto__` key, no number that is not finite, no value nested deeper than the protocol allows).
 //   3. The object has the members `reasoning` and `choice`, and no other member. The reasoning is a text with at least one character that is not white space. It is kept as the model wrote it.
 //   4. The parser of the decision accepts the choice. The parser gets a COPY of the choice and returns the parsed value or a refusal.
 //   5. The value that the parser returned is the choice that the model gave. A parser that changed a member, left one out or added one is a defect of the use case. The reading ends with
@@ -51,6 +56,50 @@ function sameJson(a: JsonValue, b: JsonValue): boolean {
   return keys.length === Object.keys(b).length && keys.every((key) => sameJson(a[key]!, b[key]!));
 }
 
+const BYTE_ORDER_MARK = '\uFEFF';
+const THINK_OPEN = '<think>';
+const THINK_CLOSE = '</think>';
+const FENCE = '```';
+/** The white space of JSON. */
+const SPACE = ' \t\n\r';
+/** The opening line of a code fence: three backticks, an optional word such as `json`, and a line break. */
+const FENCE_OPEN = /^```[A-Za-z0-9_+-]{0,32}[ \t]*\r?\n/;
+const FENCE_FAULT = 'has a code fence that is not whole: it needs an opening line, the object and a closing line, and nothing else';
+
+/** The text without the white space of JSON at both ends. It is a loop and not a pattern, so that a long run of white space inside the text costs nothing. */
+function trimSpace(text: string): string {
+  let start = 0;
+  let end = text.length;
+  while (start < end && SPACE.includes(text[start]!)) start += 1;
+  while (end > start && SPACE.includes(text[end - 1]!)) end -= 1;
+  return text.slice(start, end);
+}
+
+/** The text inside a code fence that stands around the whole of `rest`, or a refusal. `rest` starts with the three backticks. */
+function unfence(rest: string): ProtocolResult<string, 'wrapper'> {
+  const open = FENCE_OPEN.exec(rest);
+  if (open === null || !rest.endsWith(FENCE)) return refused('wrapper', FENCE_FAULT);
+  // The closing line: a line break, then the spaces or tabs that may stand before the mark, then the three backticks that end the text.
+  let end = rest.length - FENCE.length;
+  while (end > open[0].length && ' \t'.includes(rest[end - 1]!)) end -= 1;
+  if (end <= open[0].length || rest[end - 1] !== '\n') return refused('wrapper', FENCE_FAULT);
+  return accepted(trimSpace(rest.slice(open[0].length, end)));
+}
+
+/**
+ * The text of the one JSON object that is the whole answer, or a refusal (step 2 in the head of this file). Only the two wrappers that say nothing are taken off. The text that is left is not
+ * searched for an object: it IS the object, and the JSON parser decides whether it is. This is strict on purpose: a decision is recorded only when the answer has one reading.
+ */
+function objectText(text: string): ProtocolResult<string, 'wrapper'> {
+  let rest = trimSpace(text.startsWith(BYTE_ORDER_MARK) ? text.slice(1) : text);
+  while (rest.startsWith(THINK_OPEN)) {
+    const end = rest.indexOf(THINK_CLOSE, THINK_OPEN.length);
+    if (end === -1) return refused('wrapper', 'has a think block that is not closed');
+    rest = trimSpace(rest.slice(end + THINK_CLOSE.length));
+  }
+  return rest.startsWith(FENCE) ? unfence(rest) : accepted(rest);
+}
+
 /**
  * The reasoning and the choice in the answer of a model, or a refusal. It never throws, also when the parser throws: that is a choice that the parser could not read, and so a
  * `model_output_invalid`. The reasoning is returned as it was written, with no trimming.
@@ -60,22 +109,22 @@ export function readAnswer<C extends JsonValue>(answer: ModelAnswerText, parse: 
   const invalid = (what: string): ProtocolResult<never, AnswerFault> => refused('model_output_invalid', `the answer of the model ${what} (an answer of ${text.length} characters)`);
   if (answer.status !== 'completed') return invalid('was not given as a completed answer');
 
-  const first = text.indexOf('{');
-  const last = text.lastIndexOf('}');
-  if (first === -1 || last < first) return invalid('holds no JSON object');
-  const json = text.slice(first, last + 1);
+  const unwrapped = objectText(text);
+  if (!unwrapped.ok) return invalid(unwrapped.detail);
+  const json = unwrapped.value;
   let parsedText: unknown;
   try {
     parsedText = JSON.parse(json);
   } catch {
-    return invalid('is not JSON');
+    return invalid('is not one JSON object alone: it is not JSON, or it has text before or after the object');
   }
+  if (typeof parsedText !== 'object' || parsedText === null || Array.isArray(parsedText)) return invalid('is JSON that is not an object');
   // `JSON.parse` keeps the last of two members that have one key, and it rounds a number to a double. A text that says more than the value that it gives is refused (see lossless.ts).
   const lost = losses(json);
   if (lost !== null) return invalid(lost);
   const data = parseJsonValue(parsedText, 'answer');
   if (!data.ok) return invalid(`is not plain JSON data (${data.detail})`);
-  // The text starts with `{` and it parsed, so the value is an object.
+  // The text is one JSON object that parsed, and the copy keeps that: the value is an object.
   const object = data.value as Record<string, unknown>;
   const members = checkMembers(object, 'answer', ['reasoning', 'choice']);
   if (members !== null) return invalid(`has the wrong members (${members.detail})`);

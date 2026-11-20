@@ -160,6 +160,8 @@ describe('decide: an answer of another shape', () => {
     ['an empty answer', ''],
     ['JSON that is cut', `{"reasoning":"${MARKER}","choice":{"lot":"lot-medium"`],
     ['two objects', `${wrapped(lot)} ${wrapped(lot)}`],
+    ['words before and after the object', `Here is my answer.\n${wrapped(lot)}\nI hope it helps.`],
+    ['the object in a list', `[${wrapped(lot)}]`],
     ['no choice', JSON.stringify({ reasoning: MARKER })],
     ['no reasoning', JSON.stringify({ choice: lot })],
     ['a reasoning that is not a text', JSON.stringify({ reasoning: 7, choice: lot })],
@@ -199,15 +201,28 @@ describe('decide: an answer of another shape', () => {
     expect(won(await decide(whole.deps, REORDER, STOCK_INPUT)).choice).toStrictEqual(MEDIUM_LOT);
   });
 
-  it('reads an answer in a code fence, and an answer with words around the object: the twins of the cases above', async () => {
+  it('reads an answer in a code fence, with white space around it, and after a think block: the twins of the cases above', async () => {
     const reasoning = 'A medium lot.';
-    const texts = ['```json\n' + said(MEDIUM_LOT, reasoning) + '\n```', `Here is my answer.\n${said(MEDIUM_LOT, reasoning)}\nI hope it helps.`, `  \n${said(MEDIUM_LOT, reasoning)}\n  `];
+    const texts = ['```json\n' + said(MEDIUM_LOT, reasoning) + '\n```', `  \n${said(MEDIUM_LOT, reasoning)}\n  `, `<think>Two lots would do.</think>\n\`\`\`json\n${said(MEDIUM_LOT, reasoning)}\n\`\`\``];
     for (const text of texts) {
       const run = await setup();
       run.m.llm.answer = text;
       const decision = won(await decide(run.deps, REORDER, STOCK_INPUT));
       expect([decision.choice, decision.reasoning]).toStrictEqual([MEDIUM_LOT, reasoning]);
     }
+  });
+
+  it('does not record a choice that words around the object take back: the object alone is the twin', async () => {
+    const accept = { accept: true, mismatch: [] };
+    const around = await setup();
+    around.m.llm.answer = `Sure. ${said(accept)} Hope this helps, but reject it.`;
+    const failure = lost(await decide(around.deps, ACCEPT_DELIVERY, DELIVERY_INPUT));
+    expect([failure.code, failure.reason]).toStrictEqual(['model_output_invalid', 'model_output_invalid']);
+    expect('value' in failure).toBe(false);
+    expect(await around.m.chain.escrowState(escrowNo(1))).toBe('spent');
+    const alone = await setup();
+    alone.m.llm.answer = said(accept);
+    expect(won(await decide(alone.deps, ACCEPT_DELIVERY, DELIVERY_INPUT)).choice).toStrictEqual(accept);
   });
 });
 

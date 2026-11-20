@@ -27,19 +27,18 @@ describe('readAnswer: the text of the answer', () => {
     ['one fence with a language', '```json\n' + said(MEDIUM_LOT) + '\n```'],
     ['one fence with no language', '```\n' + said(MEDIUM_LOT) + '\n```'],
     ['white space around', `\n\n  ${said(MEDIUM_LOT)}  \n`],
-    ['words before and after', `Here is the answer: ${said(MEDIUM_LOT)} Thank you.`],
     ['a line break inside the object', JSON.stringify({ reasoning: 'Why.', choice: MEDIUM_LOT }, null, 2)],
   ])('reads %s: the twin of the refusals', (_name, text) => {
     expect(readAnswer(completed(text), parseReorder)).toMatchObject({ ok: true, value: { choice: MEDIUM_LOT } });
   });
 
   it.each<[string, string, string]>([
-    ['no object', 'The lot is medium.', 'holds no JSON object'],
-    ['a list', '[1, 2]', 'holds no JSON object'],
-    ['a close brace before an open brace', '} {', 'holds no JSON object'],
-    ['text that is not JSON between the braces', '{not json}', 'is not JSON'],
-    ['two objects', `${said(MEDIUM_LOT)} ${said(MEDIUM_LOT)}`, 'is not JSON'],
-    ['a cut object', `${said(MEDIUM_LOT)}`.slice(0, -2) + '}', 'is not JSON'],
+    ['no object', 'The lot is medium.', 'is not one JSON object alone'],
+    ['a list', '[1, 2]', 'is JSON that is not an object'],
+    ['a close brace before an open brace', '} {', 'is not one JSON object alone'],
+    ['text that is not JSON between the braces', '{not json}', 'is not one JSON object alone'],
+    ['two objects', `${said(MEDIUM_LOT)} ${said(MEDIUM_LOT)}`, 'is not one JSON object alone'],
+    ['a cut object', `${said(MEDIUM_LOT)}`.slice(0, -2) + '}', 'is not one JSON object alone'],
     ['a number that is not finite', '{"reasoning":"r","choice":1e999}', 'has a number that a double does not hold without loss'],
     ['the key __proto__', '{"reasoning":"r","choice":{"__proto__":1}}', 'is not plain JSON data'],
     ['a value nested too deep', `{"reasoning":"r","choice":${'{"a":'.repeat(40)}1${'}'.repeat(40)}}`, 'is not plain JSON data'],
