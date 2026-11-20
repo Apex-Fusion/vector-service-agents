@@ -1,11 +1,14 @@
 // packages/usecase-kit/src/protocol/results.ts
-// The results of a buyer-side agent, as types. A buyer-side agent answers 200 with an `outcome` whenever it could read the request, so the signed receipt of the job commits to what happened.
+// The results of a buyer-side agent, as types, and the one rule for their exit state. A buyer-side agent answers 200 with an `outcome` whenever it could read the request, so the signed receipt of the
+// job commits to what happened.
 //
 //   propose  ProposalResult: the document, the salt and the digest of the proposal, the decisions of the model and the sub-jobs that bought them.
 //   execute  ExecuteResult: the outcome, its reason, the exit state, the handoff to the counterparty, the writes to the mock systems, the challenge, and the decisions.
 //
 // `reason` is a code or a sentence that goes with the outcome: the code of the counterparty for `refused_by_counterparty`, the evaluation error of the node for `vault_refused`, the code of the mock
 // system for `refused_by_system`, and a code for `failed`. A job that was carried out has no reason. `fault_mode` is in every result: it is empty in a clean run.
+//
+// The exit state is fixed by one rule, `exitStateOf`, and the types below agree with it: a result with a pair of outcome and exit state that the function cannot give does not compile.
 import type { ExecuteOutcome, ExitState, UseCase } from './codes.ts';
 import type { FaultSetting } from './faults.ts';
 import type { Did, Digest, OutputRef, Salt } from './identifiers.ts';
@@ -50,12 +53,10 @@ interface ProposalResultBase {
   readonly use_case: UseCase;
   readonly decisions: readonly Decision[];
   readonly sub_jobs: readonly SubJob[];
-  /** A run gets its exit state at its end, so a proposal that was made has none. A proposal that failed can carry the exit state `Failed`. */
-  readonly exit_state: ExitState | null;
   readonly fault_mode: FaultSetting;
 }
 
-/** A proposal that was made. The hirer reads the document and approves `proposal_digest`. */
+/** A proposal that was made. The hirer reads the document and approves `proposal_digest`. A run gets its exit state at its end, so a proposal that was made has none. */
 export interface ProposedResult extends ProposalResultBase {
   readonly document: Document;
   readonly salt: Salt;
@@ -65,12 +66,13 @@ export interface ProposedResult extends ProposalResultBase {
   readonly reason: null;
 }
 
-/** A job that could not make a proposal. The document, the salt and the digest are null when the job failed before it had a document. */
+/** A job that could not make a proposal. The exit state is `Failed`. The document, the salt and the digest are null when the job failed before it had a document. */
 export interface FailedProposalResult extends ProposalResultBase {
   readonly document: Document | null;
   readonly salt: Salt | null;
   readonly proposal_digest: Digest | null;
   readonly outcome: 'failed';
+  readonly exit_state: 'Failed';
   readonly reason: string;
 }
 
@@ -106,10 +108,12 @@ export interface ChallengeRecord {
   readonly challenge: OutputRef;
 }
 
+/** The reason of a dispute with no challenge when the other party has no open claim, so that the agent files no challenge. */
+export const NO_OPEN_CLAIM = 'no_open_claim';
+
 interface ExecuteResultBase {
   readonly schema: typeof RESULT_SCHEMA;
   readonly use_case: UseCase;
-  readonly exit_state: ExitState;
   readonly proposal_digest: Digest;
   /** The hire of the counterparty, or null when no escrow was posted, and in the third use case, which hires no counterparty to execute. */
   readonly handoff: HandoffRecord | null;
@@ -123,20 +127,89 @@ export interface CompletedResult extends ExecuteResultBase {
   readonly outcome: 'completed';
   readonly reason: null;
   readonly challenge: null;
+  readonly exit_state: 'Completed';
 }
 
-/** The agent did not accept the delivery and filed a challenge. There is no challenge, and the reason says why, when the other party had no open claim. */
-export interface DisputedResult extends ExecuteResultBase {
+/** The agent did not accept the delivery and filed a challenge. */
+export interface EscalatedResult extends ExecuteResultBase {
   readonly outcome: 'disputed';
-  readonly reason: string | null;
-  readonly challenge: ChallengeRecord | null;
+  readonly reason: null;
+  readonly challenge: ChallengeRecord;
+  readonly exit_state: 'Escalated';
 }
 
-/** The vault, the counterparty or a mock system refused, or the job failed. The reason says why. */
-export interface RefusedResult extends ExecuteResultBase {
-  readonly outcome: Exclude<ExecuteOutcome, 'completed' | 'disputed'>;
+/** The agent did not accept the delivery and filed no challenge. The reason is NO_OPEN_CLAIM, or the code of the step that failed. */
+export interface UnfiledDisputeResult extends ExecuteResultBase {
+  readonly outcome: 'disputed';
   readonly reason: string;
   readonly challenge: null;
+  readonly exit_state: 'Failed';
 }
 
-export type ExecuteResult = CompletedResult | DisputedResult | RefusedResult;
+export type DisputedResult = EscalatedResult | UnfiledDisputeResult;
+
+/** The counterparty or a mock system refused. The reason is its code. The state is `Expired` for `approval_expired`, `Cancelled` for `delegation_ended`, and `Rejected` for any other code. */
+export interface RefusedResult extends ExecuteResultBase {
+  readonly outcome: 'refused_by_counterparty' | 'refused_by_system';
+  readonly reason: string;
+  readonly challenge: null;
+  readonly exit_state: 'Rejected' | 'Expired' | 'Cancelled';
+}
+
+/** The ledger refused the payment from the vault. The reason is the evaluation error. The state is `Cancelled` when the hirer ended the delegation, and `Failed` in every other case. */
+export interface VaultRefusedResult extends ExecuteResultBase {
+  readonly outcome: 'vault_refused';
+  readonly reason: string;
+  readonly challenge: null;
+  readonly exit_state: 'Cancelled' | 'Failed';
+}
+
+/** The job could not be finished. The reason is a code. */
+export interface FailedResult extends ExecuteResultBase {
+  readonly outcome: 'failed';
+  readonly reason: string;
+  readonly challenge: null;
+  readonly exit_state: 'Failed';
+}
+
+export type ExecuteResult = CompletedResult | DisputedResult | RefusedResult | VaultRefusedResult | FailedResult;
+
+/** What the exit state of an `execute` result depends on. */
+export interface ExitStateInput {
+  readonly outcome: ExecuteOutcome;
+  /** The reason of the result, or null when it has none. */
+  readonly reason: string | null;
+  /** True when the agent filed a challenge. */
+  readonly challenge_filed: boolean;
+  /** True when the agent read the delegation after a refusal of the vault and found that the hirer ended it. */
+  readonly delegation_ended: boolean;
+}
+
+/**
+ * The exit state of an `execute` result. It is the one rule for every buyer-side agent:
+ *   completed                                    Completed
+ *   disputed, challenge filed                    Escalated
+ *   disputed, no challenge filed                 Failed
+ *   refused_by_counterparty, refused_by_system   Expired for the reason `approval_expired`, Cancelled for the reason `delegation_ended`, and Rejected for any other reason
+ *   vault_refused                                Cancelled when the delegation ended, and Failed in every other case
+ *   failed                                       Failed
+ * A flag counts only when it is the boolean `true`. An outcome that the protocol does not have gives `Failed`: it is never a pass.
+ */
+export function exitStateOf(input: ExitStateInput): ExitState {
+  const { outcome, reason } = input;
+  switch (outcome) {
+    case 'completed':
+      return 'Completed';
+    case 'disputed':
+      return input.challenge_filed === true ? 'Escalated' : 'Failed';
+    case 'refused_by_counterparty':
+    case 'refused_by_system':
+      return reason === 'approval_expired' ? 'Expired' : reason === 'delegation_ended' ? 'Cancelled' : 'Rejected';
+    case 'vault_refused':
+      return input.delegation_ended === true ? 'Cancelled' : 'Failed';
+    case 'failed':
+      return 'Failed';
+    default:
+      return 'Failed';
+  }
+}
