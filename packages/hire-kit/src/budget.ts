@@ -10,6 +10,8 @@
 // Nor does it cut the repeats of an Accept that failed in a way that cannot land, every 15 s for up to 600 s after the supplier's answer (ruling R54). So a
 // hire in its Accept at the deadline runs on, and its Accept completes, is left accept_pending or fails accept_failed. A call already under way when the
 // deadline comes is not cut either: a send in flight (up to 75 s), a poll in flight (up to 20 s) and a read of the chain each end when they end.
+// A hire that has not begun is cut too. When the lane of its paying key gives it its turn at or after the deadline, it ends with the same error before it reads an advert or posts anything
+// (checkTurn, src/keys.ts).
 
 /** A busy supplier, or one that does not see the escrow yet, is sent the same job again this often, on the same escrow... */
 export const BUSY_RETRY_MS = 15_000;

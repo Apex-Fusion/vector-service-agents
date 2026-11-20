@@ -1,6 +1,7 @@
 // packages/hire-kit/src/model.ts
 // The hire of a model on the marketplace, from the service key. A model hire is a decision of the service, and the kit makes one hire for it:
 //   - Model hires run one after the other from the one service key. They go through the lane of the key, so a second hire starts only when the first has ended, however it ended.
+//     A hire whose turn comes at or after its deadline does not begin: it ends with the deadline error before it reads or posts anything (checkTurn, src/keys.ts).
 //   - One call is one decision and one hire: one choice of a supplier, one Post, one job. The kit does not retry the call, does not try another supplier when the one it chose
 //     fails, and does not fall back to a model service that is not on the marketplace.
 //   - A hire that fails ends the job of the caller as a recorded failure: the call throws the error of the caller's factory once, and the escrow the hire left behind is in the
@@ -13,6 +14,7 @@ import type { FetchLike } from '@vsa/buyer-core';
 import type { Clocked } from './budget.ts';
 import { chatJob, hireOne } from './hire.ts';
 import type { HireErrors, HireLedger, HireOptions, Hired } from './hire.ts';
+import { checkTurn } from './keys.ts';
 import type { PayingKey } from './keys.ts';
 import { chooseChatSupplier, requireLimits } from './select.ts';
 
@@ -59,18 +61,21 @@ export interface ModelErrors<E extends Error> extends HireErrors<E> {
 
 /**
  * Hires one model for `request` from `key`: the answer, the record of the hire, and what the Accept came to. Refuses a limit that is not a bigint (the two limits of the bonds also take
- * null) with a TypeError, before the lane of the key is used and before anything is read. Rejects with the error of `errors` for every other failure; the kit does not try again, does
- * not choose another supplier and does not fall back (see the head of this file).
+ * null) with a TypeError, before the lane of the key is used and before anything is read. A hire whose turn in the lane comes at or after `deps.deadlineMs` rejects with the `deadline` of `errors`,
+ * with the stage `lane` and no escrow, before anything is read or posted. Rejects with the error of `errors` for every other failure; the kit does not try again, does not choose another
+ * supplier and does not fall back (see the head of this file).
  */
 export async function hireModel<E extends Error>(key: PayingKey, deps: ModelDeps, request: ModelRequest, errors: ModelErrors<E>): Promise<Hired<ModelAnswer>> {
   requireLimits({ maxPriceLovelace: request.maxPriceLovelace }, { null: false, absent: false });
   requireLimits({ maxSupplierBondLovelace: request.maxSupplierBondLovelace, maxBuyerBondLovelace: request.maxBuyerBondLovelace }, { null: true, absent: false });
+  const label = request.label ?? 'the model call';
   return key.lane.run(async () => {
+    checkTurn(deps, label, errors);
     const supplier = await chooseChatSupplier(key.chain, {
       fetchImpl: deps.fetchImpl, indexerUrl: deps.indexerUrl, allowlist: request.allowlist, maxPriceLovelace: request.maxPriceLovelace, ceilingSetting: request.ceilingSetting,
       maxSupplierBondLovelace: request.maxSupplierBondLovelace, maxBuyerBondLovelace: request.maxBuyerBondLovelace, budgetMs: request.budgetMs, maxCandidates: request.maxCandidates, log: deps.log,
     }, (why) => errors.unavailable(why));
-    const job = chatJob(supplier.endpoint, request.input, request.label ?? 'the model call', deps.fetchImpl);
+    const job = chatJob(supplier.endpoint, request.input, label, deps.fetchImpl);
     return hireOne(key.hireDeps(deps, deps.log), supplier, job, deps.ledger, errors, { ...deps.options, terms: true });
   });
 }

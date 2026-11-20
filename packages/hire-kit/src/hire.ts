@@ -71,8 +71,11 @@ import type { StrandedKind, StrandedStore } from './janitor.ts';
 export type HireKind = 'ocr' | 'llm';
 /** How a hire fails before its Accept, the <what> of <hop>_<what>: see the head of this file. */
 export type HireFailure = 'post_failed' | 'busy' | 'refused' | 'send_lost' | 'failed' | 'timeout' | 'bad_result' | 'receipt_failed' | 'receipt_unavailable' | 'accept_failed';
-/** Where a hire was when it ended: the Post, the send, the polls, the reading of the answer, the check of the receipt, or the Accept. */
-export type HireStage = 'post' | 'send' | 'poll' | 'answer' | 'receipt' | 'accept';
+/**
+ * Where a hire was when it ended: the lane of its key, the Post, the send, the polls, the reading of the answer, the check of the receipt, or the Accept. `lane` is a hire whose turn in the lane
+ * came at or after its deadline: it ended before it read an advert or paid anything, and its facts name no escrow (checkTurn, src/keys.ts).
+ */
+export type HireStage = 'lane' | 'post' | 'send' | 'poll' | 'answer' | 'receipt' | 'accept';
 /** What the throw site knows: the caller decides from it whether an escrow is still in play. The Pipeline ignores it. */
 export interface HireFacts {
   stage: HireStage;
