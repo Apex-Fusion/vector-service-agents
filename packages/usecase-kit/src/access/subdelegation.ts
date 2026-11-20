@@ -69,6 +69,11 @@ export interface TxSigner {
 export interface SubDelegationDeps {
   readonly chain: DelegationChain;
   readonly clock: Clock;
+  /**
+   * Called with the reference of the sub-delegation just BEFORE the Delegate is sent, so that a crash of the process cannot leave a sub-delegation that no record names. Write the reference to the
+   * store of the janitor here, and remove it when the run gives `end.state` of `ended` or `not_made`. A hook that throws stops the run with `journal_failed`: nothing is sent.
+   */
+  readonly beforeSend?: (reference: LeftSubDelegation) => void | Promise<void>;
 }
 
 export interface SubDelegationRequest {
@@ -109,7 +114,7 @@ export interface SubDelegationHandle {
 
 export const SUB_DELEGATION_FAILURES = [
   'bad_request', 'parent_unreadable', 'parent_not_live', 'parent_exhausted', 'parent_expiring', 'build_refused', 'build_mismatch', 'missing_signer', 'sign_failed', 'submit_failed',
-  'confirmation_timeout', 'ledger_unreadable', 'sub_delegation_unusable', 'internal',
+  'confirmation_timeout', 'ledger_unreadable', 'sub_delegation_unusable', 'journal_failed', 'internal',
 ] as const;
 export type SubDelegationFailureCode = (typeof SUB_DELEGATION_FAILURES)[number];
 /** Why the job did not start. The error code of the protocol for a buyer-side agent is `failed`, with this code as the reason. */
@@ -269,6 +274,11 @@ async function makeSubDelegation(deps: SubDelegationDeps, plan: Plan, left: { cu
   const made: LeftSubDelegation = {
     id: built.id, parent: plan.parent, action: plan.target.action, resource: plan.target.resource, delegateTxHash: built.txHash, delegateValidTo: built.validTo, notAfter, endTxHash: null,
   };
+  try {
+    await deps.beforeSend?.(made);
+  } catch (error) {
+    return refused('journal_failed', `the reference of the sub-delegation could not be written: ${errorText(error)}`);
+  }
   left.current = made;
   try {
     await chain.submit(signed.value);
