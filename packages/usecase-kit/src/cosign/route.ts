@@ -224,8 +224,9 @@ export function createCosignRoute(config: CosignConfig): ProtocolResult<CosignRo
     if (!(to - now <= settings.maxFutureMs)) return refused('not_a_delegation', 'the validity window ends too far ahead');
 
     if (delegation.delegator.type !== 'PrincipalKey' || !settings.allowlist.has(delegation.delegator.hash)) return refused('principal_not_allowed', 'the agent does not accept delegations from this delegator');
-    const wanted = new Set([delegation.delegator.hash, delegation.delegateKey]);
-    if (facts.requiredSigners.length !== wanted.size || facts.requiredSigners.some((signer) => !wanted.has(signer))) {
+    // The required signers are the delegator and the delegation key: both are there, and nothing else is. A list of the right length with a key twice has no delegation key, and it is refused.
+    const wanted = [...new Set([delegation.delegator.hash, delegation.delegateKey])];
+    if (facts.requiredSigners.length !== wanted.length || wanted.some((signer) => !facts.requiredSigners.includes(signer))) {
       return refused('not_a_delegation', 'the required signers must be the delegator and the delegation key');
     }
     if (facts.witnessKeyHashes.includes(delegation.delegateKey)) return refused('not_a_delegation', 'the transaction has a witness of the delegation key already');
