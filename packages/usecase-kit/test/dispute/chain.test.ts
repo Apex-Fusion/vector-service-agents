@@ -5,7 +5,7 @@ import { CML, credentialToAddress } from '@lucid-evolution/lucid';
 import { setImmediate as tick } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 import { HireLane } from '@vsa/hire-kit';
-import { buildSubmitClaim, decodeChallengeDatum, decodeClaimDatum, documentHash, documentUri, lucidForAddress } from '@vsa/buyer-core';
+import { KOIOS_ANSWER_BYTES, buildSubmitClaim, decodeChallengeDatum, decodeClaimDatum, documentHash, documentUri, lucidForAddress } from '@vsa/buyer-core';
 import type { ClaimDatum } from '@vsa/buyer-core';
 import { utf8Hex } from '@vsa/vector-read/identity-codec';
 import { Dispute, MAX_CLAIM_TYPE_BYTES, MemoryJournal, claimDocument, evidenceDocument } from '@vsa/usecase-kit/dispute';
@@ -23,10 +23,13 @@ const CLAIM_REF = `${'cc'.repeat(32)}#0`;
 const SLOW = 120_000;
 
 /** The dispute code of `agentId` over `ledger`, in the queue of a service key. */
-function disputeOf(ledger: LedgerProvider, agentId: string, now = NOW, extra: { readonly journal?: DisputeJournal; readonly settings?: Partial<DisputeSettings> } = {}): Dispute {
+function disputeOf(
+  ledger: LedgerProvider, agentId: string, now = NOW,
+  extra: { readonly journal?: DisputeJournal; readonly settings?: Partial<DisputeSettings>; readonly port?: Partial<Module1PortDeps> } = {},
+): Dispute {
   const queue: ServiceQueue = new HireLane();
   return new Dispute({
-    port: realPort(ledger, agentId, now), queue, clock: () => now, sleep: forever, settings: { ...SETTINGS, ...extra.settings }, ...(extra.journal === undefined ? {} : { journal: extra.journal }),
+    port: realPort(ledger, agentId, now, extra.port), queue, clock: () => now, sleep: forever, settings: { ...SETTINGS, ...extra.settings }, ...(extra.journal === undefined ? {} : { journal: extra.journal }),
   });
 }
 
@@ -565,6 +568,84 @@ describe('what the chain port reads', () => {
     it('takes a well-formed output that is not a claim for no claim, as the twin of the shapes above', async () => {
       const ledger = ledgerWorld([{ txHash: 'ab'.repeat(32), outputIndex: 0, address: MODULE1.claim.address, assets: { lovelace: 3_000_000n, [`${MODULE1.claim.hash}${'11'.repeat(32)}`]: 2n } }]);
       expect(await realPort(ledger, AUDITOR_ID, NOW).readClaims()).toEqual([]);
+    }, SLOW);
+  });
+
+  describe('an answer of a wrong shape from Koios is an error, and never no claim', () => {
+    type Row = Record<string, unknown>;
+    const STAKE = credentialToAddress('Mainnet', { type: 'Script', hash: MODULE1.claim.hash }, { type: 'Key', hash: '0d'.repeat(28) });
+    const MIB = 1024 * 1024;
+
+    /** A ledger whose claim of this kit is at an address with a stake part: the node does not list it by the address of the script, so only the list of Koios shows it. */
+    const hidden = (): LedgerProvider => ledgerWorld((l) => [{ ...kitClaim(l, CLAIM_TOKEN), address: STAKE }]);
+
+    /** The fake Koios of the ledger, with the rows of `credential_utxos` changed by `change`. Any other route is as it is. */
+    function bending(ledger: LedgerProvider, change: (rows: Row[]) => unknown[]): typeof fetch {
+      const honest = koiosOf(ledger);
+      return (async (url: string, init?: RequestInit) => {
+        const answer = await honest(url as never, init);
+        if (!url.includes('credential_utxos')) return answer;
+        return new Response(JSON.stringify(change((await answer.json()) as Row[])), { status: 200 });
+      }) as unknown as typeof fetch;
+    }
+
+    const SHAPES: Array<[string, (rows: Row[]) => unknown[]]> = [
+      ['a value that is a number', (rows) => rows.map((row) => ({ ...row, value: Number(row.value) }))],
+      ['an index that is a text', (rows) => rows.map((row) => ({ ...row, tx_index: String(row.tx_index) }))],
+      ['a hash that is not a hash', (rows) => rows.map((row) => ({ ...row, tx_hash: 'zq9' }))],
+      ['no address', (rows) => rows.map((row) => ({ ...row, address: '' }))],
+      ['a list of tokens that is not a list', (rows) => rows.map((row) => ({ ...row, asset_list: 'zq9' }))],
+      ['a token quantity that is a number', (rows) => rows.map((row) => ({ ...row, asset_list: (row.asset_list as Row[]).map((token) => ({ ...token, quantity: Number(token.quantity) })) }))],
+      ['an entry that is null', (rows) => [...rows, null]],
+      ['an entry that is a text', (rows) => [...rows, 'zq9']],
+      ['an entry that is a number', (rows) => [...rows, 7]],
+      ['an entry that is a list', (rows) => [...rows, []]],
+    ];
+
+    it.each(SHAPES)('says chain_unavailable for a list with %s, and sends nothing', async (_name, change) => {
+      const ledger = hidden();
+      const port = { fetch: bending(ledger, change) };
+      await expect(realPort(ledger, AUDITOR_ID, NOW, port).readClaims()).rejects.toThrow(/wrong shape/);
+      expect(await challengeOrder(disputeOf(ledger, AUDITOR_ID, NOW, { port }))).toMatchObject({ ok: false, code: 'chain_unavailable' });
+      expect(ledger.accepted).toEqual([]);
+    }, SLOW);
+
+    it('reads the claim and files the challenge when every row is in its form, as the twin of the shapes above', async () => {
+      const ledger = hidden();
+      const port = { fetch: bending(ledger, (rows) => rows) };
+      expect(await realPort(ledger, AUDITOR_ID, NOW, port).readClaims()).toMatchObject([{ ref: CLAIM_REF, token: CLAIM_TOKEN }]);
+      expect(filedOf(await challengeOrder(disputeOf(ledger, AUDITOR_ID, NOW, { port }))).record.claim).toBe(CLAIM_REF);
+      expect(ledger.accepted.length).toBe(2);
+    }, SLOW);
+
+    /** A body of 17 chunks of 1 MiB with no length header: it passes the limit of 16 MiB at its last chunk. */
+    const longStream = (): ReadableStream<Uint8Array> => {
+      let sent = 0;
+      return new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent === 17) controller.close();
+          else {
+            sent += 1;
+            controller.enqueue(new Uint8Array(MIB).fill(32));
+          }
+        },
+      });
+    };
+
+    const ANSWERS: Array<[string, () => Response, RegExp]> = [
+      ['a status of 503', () => new Response('{"error":"unavailable"}', { status: 503 }), /answered 503/],
+      ['a body that is not JSON', () => new Response('<html>', { status: 200 }), /not valid JSON/],
+      ['a body that is not a list', () => new Response('{"rows":[]}', { status: 200 }), /non-list/],
+      ['a body over the limit by its length header', () => new Response('[]', { status: 200, headers: { 'content-length': String(KOIOS_ANSWER_BYTES + 1) } }), /byte limit/],
+      ['a body over the limit by its stream', () => new Response(longStream(), { status: 200 }), /byte limit/],
+    ];
+
+    it.each(ANSWERS)('says chain_unavailable for %s', async (_name, answer, message) => {
+      const ledger = hidden();
+      const port = { fetch: (async () => answer()) as unknown as typeof fetch };
+      await expect(realPort(ledger, AUDITOR_ID, NOW, port).readClaims()).rejects.toThrow(message);
+      expect(await challengeOrder(disputeOf(ledger, AUDITOR_ID, NOW, { port }))).toMatchObject({ ok: false, code: 'chain_unavailable' });
+      expect(ledger.accepted).toEqual([]);
     }, SLOW);
   });
 

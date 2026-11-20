@@ -6,7 +6,8 @@
 // The reads go by the payment credential of the script. Module-1 checks only the payment credential of a claim or a challenge output (SPEC, the data that the jury reads), so a claimer can stake a
 // claim at an address of the claim script with a stake part, and the node, which lists by exact address, does not show it. The node lists the address of the script. Koios lists every address that has
 // the script as its payment credential, and the node must hold each output that Koios lists and the node did not list yet: the node decides what an output holds and whether it is spent. An answer of
-// a wrong shape from the node is an error, and never "no claim": a claim that was left out for such an answer would let a challenge pass it by.
+// a wrong shape from the node is an error, and never "no claim": a claim that was left out for such an answer would let a challenge pass it by. The same holds for Koios: the reader of the buyer code
+// leaves out each row that it cannot read, and takes the rest for the whole list, so the port checks every row of a list first (`wholeRows`), and a row of a wrong shape is an error.
 //
 // The checks come before the signature. Each build is compared with the call that asked for it: a challenge or a withdrawal must spend the claim output that the call names, and a challenge must hold
 // the hash and the URI of the evidence of the call. A build that does not match is refused (`not_built`), and nothing is signed. Every transaction needs the signature of the wallet key only.
@@ -16,7 +17,7 @@
 // before its `valid_to`. The `sleep` that the caller gives must not hold the process open: its timer is not cancelled when the work ends first.
 import {
   AWAIT_TIMEOUT_MAX_MS, BUILD_TIMEOUT_MS, DELIVER_BY_BUFFER_MS, DOCUMENT_LABEL, KOIOS_ANSWER_BYTES, buildDocumentPublish, buildOpenChallenge, buildSubmitClaim, buildWithdrawClaim, credentialOutputs,
-  decodeChallengeDatum, decodeClaimDatum, koiosUtxoInfo, lucidForAddress, paymentKeyHashOf, readDocument as readDocumentOfUri, txHashOfUri,
+  decodeChallengeDatum, decodeClaimDatum, koiosUtxoInfo, lucidForAddress, paymentKeyHashOf, readDocument as readDocumentOfUri, txHashOfUri, utxoOfKoiosRow,
 } from '@vsa/buyer-core';
 import type { ChallengeDatum, LedgerEnv, Module1Deployment } from '@vsa/buyer-core';
 import type { Provider, UTxO } from '@lucid-evolution/lucid';
@@ -188,6 +189,70 @@ function requireMilliseconds(value: unknown, name: string, most: number): number
   return value;
 }
 
+type FetchInput = Parameters<typeof fetch>[0];
+type FetchInit = Parameters<typeof fetch>[1];
+
+/** The route of a request: the last part of the path of its URL, or null when the URL cannot be read. */
+function routeOf(input: FetchInput): string | null {
+  try {
+    return new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url).pathname.split('/').pop() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The text of the body of an answer, at most `max` bytes. A longer answer is refused by its length header before a byte is read, or as soon as the stream passes the cap. The signal of the request
+ * ends a read that stalls: the read then throws.
+ */
+async function cappedText(res: Response, max: number): Promise<string> {
+  const tooLong = (): Error => new Error(`Koios credential_utxos: the answer is over the ${max} byte limit`);
+  if (Number(res.headers.get('content-length')) > max) {
+    await res.body?.cancel().catch(() => undefined);
+    throw tooLong();
+  }
+  if (res.body === null) return '';
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => undefined);
+      throw tooLong();
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks, total));
+}
+
+/**
+ * `fetch` for the reads of `credential_utxos`. The reader of the buyer code (`credentialOutputs`) leaves out each row that it cannot read as an output, and takes the rest for the whole list. A Koios
+ * that gives the row of a claim in a wrong shape would hide the claim, and a challenge would pass it by. So this reads the body of a good answer one time, at most `KOIOS_ANSWER_BYTES`, and checks every
+ * entry of a list with the function of the reader (`utxoOfKoiosRow`): an entry that is not an object, or that the function cannot read, is an error of the source. The reader then gets the same
+ * answer. A request to another route goes through, and so does an answer that is not good or is not a list: the reader refuses those itself.
+ */
+function wholeRows(inner: typeof fetch): typeof fetch {
+  return (async (input: FetchInput, init?: FetchInit) => {
+    const res = await inner(input, init);
+    if (!res.ok || routeOf(input) !== 'credential_utxos') return res;
+    const text = await cappedText(res, KOIOS_ANSWER_BYTES);
+    let body: unknown = null;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      // The reader says that the answer is not JSON.
+    }
+    if (Array.isArray(body)) {
+      const wrong = body.findIndex((row) => utxoOfKoiosRow(row as Parameters<typeof utxoOfKoiosRow>[0]) === null);
+      if (wrong >= 0) throw new Error(`Koios credential_utxos gave the entry ${wrong} in a wrong shape, so the list of outputs is not complete`);
+    }
+    return new Response(text, { status: res.status, headers: res.headers });
+  }) as typeof fetch;
+}
+
 /** What a build is, as far as landing it needs. Every Module-1 build and the build of a document have these members. */
 interface Built {
   readonly txCbor: string;
@@ -217,8 +282,9 @@ export function createModule1Port(deps: Module1PortDeps): Module1Port {
   const resolutionDeadline = deps.module1.protocol.resolutionDeadline;
   if (!Number.isSafeInteger(resolutionDeadline) || resolutionDeadline < 1) throw new TypeError('the resolution deadline of the Module-1 deployment must be a whole number of milliseconds');
   const agent: { readonly did: Did; readonly key_hash: string } = { did: `did:vector:${agentId}`, key_hash: keyHash };
-  // `credentialOutputs` reads the Koios URL and the fetch of its environment, and nothing else: the deployment of the identity registry is not needed to list the outputs of a script.
-  const koios = { provider: provider as Provider, koiosUrl: deps.koios_url, fetchImpl: deps.fetch } as LedgerEnv;
+  // `credentialOutputs` reads the Koios URL and the fetch of its environment, and nothing else: the deployment of the identity registry is not needed to list the outputs of a script. Its fetch is the one
+  // of the caller, which `wholeRows` wraps so that a row of a wrong shape is an error.
+  const koios = { provider: provider as Provider, koiosUrl: deps.koios_url, fetchImpl: wholeRows(deps.fetch) } as LedgerEnv;
 
   /**
    * Every live output of the script `script` that holds one of its tokens, at any address with the script as its payment credential. The node lists the address of the script. Koios lists the
