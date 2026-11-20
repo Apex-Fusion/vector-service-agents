@@ -7,7 +7,7 @@ import type { AgentDelivery, AgentOutcome, HireRecord, HireTerms } from '@vsa/hi
 import { AFTER_CLAIM_REFUSALS, ERROR_STATUS, REFUSAL_CODES, RECEIPT_CHECKS } from '@vsa/usecase-kit/protocol';
 import type { ExitState } from '@vsa/usecase-kit/protocol';
 import { COUNTERPARTY_REFUSED, INCONSISTENT_OUTCOME, VAULT_REASON_MISSING, afterClaimRefusalIn, completedResult, settledResult, stepOfOutcome } from '@vsa/usecase-kit/buyer';
-import type { DelegationAfter, HireStep } from '@vsa/usecase-kit/buyer';
+import type { DelegationAfter, HireStep, StepContext } from '@vsa/usecase-kit/buyer';
 import { AGENT_ADVERT_REF, COUNTERPARTY_DID, pieces, words } from './support.ts';
 
 const ESCROW = `${'44'.repeat(32)}#0`;
@@ -17,6 +17,12 @@ const TERMS: HireTerms = {
   price_lovelace: '200000', supplier_bond_lovelace: '1000000', buyer_bond_lovelace: '1000000', locked_lovelace: '2261030', paid_to_supplier_at_accept_lovelace: '1200000',
 };
 const paid = { advertRef: AGENT_ADVERT_REF, escrowRef: ESCROW, vaultRef: NEXT_VAULT, terms: TERMS };
+/** What the flow knows besides the outcome: the counterparty, and the advert that the approved document names. */
+const CONTEXT: StepContext = { counterparty_did: COUNTERPARTY_DID, advert_ref: AGENT_ADVERT_REF, delegation_after: null };
+const OTHER_ESCROW = `${'55'.repeat(32)}#0`;
+const OTHER_ADVERT = `${'66'.repeat(32)}#0`;
+/** The step and the result of an outcome that does not hold together. */
+const NOT_HOLDING = { step: `failed ${INCONSISTENT_OUTCOME}`, result: `failed:${INCONSISTENT_OUTCOME}:Failed` } as const;
 const CHECKS: FleetVerification['checks'] = {
   escrow_ref_matches: 'pass', response_hash_matches: 'pass', supplier_key_matches: 'pass', signature_valid: 'pass', on_chain_hash_matches: 'pass', prompt_hash_matches: 'pass', model_matches: 'pass',
   fields_match: 'pass',
@@ -168,6 +174,20 @@ const TABLE: readonly Row[] = [
     name: 'a vault_refused outcome that holds no refusal', outcome: { outcome: 'vault_refused', advertRef: AGENT_ADVERT_REF, message: 'kit words', refusal: null } as never, step: `failed ${INCONSISTENT_OUTCOME}`,
     result: `failed:${INCONSISTENT_OUTCOME}:Failed`,
   },
+  { name: 'completed, but the escrow of the outcome is not the escrow of the record', outcome: { ...completed, escrowRef: OTHER_ESCROW }, ...NOT_HOLDING },
+  { name: 'completed, but the escrow of the receipt is not the escrow of the outcome', outcome: { ...completed, record: { ...record, receipt: { ...record.receipt, escrow_ref: OTHER_ESCROW } } }, ...NOT_HOLDING },
+  { name: 'completed, but the advert of the outcome is not the advert that the document names', outcome: { ...completed, advertRef: OTHER_ADVERT }, ...NOT_HOLDING },
+  { name: 'completed, but the advert of the record is not the advert that the document names', outcome: { ...completed, record: { ...record, advert_ref: OTHER_ADVERT } }, ...NOT_HOLDING },
+  { name: 'completed, the verdict says VERIFIED, and one of its eight checks failed', outcome: { ...completed, verdict: { verdict: 'VERIFIED', checks: { ...CHECKS, signature_valid: 'fail' } } }, ...NOT_HOLDING },
+  { name: 'completed, the verdict says VERIFIED, and one of its eight checks was skipped', outcome: { ...completed, verdict: { verdict: 'VERIFIED', checks: { ...CHECKS, on_chain_hash_matches: 'skipped' } } }, ...NOT_HOLDING },
+  { name: 'completed, but a check of the record is the text "true"', outcome: { ...completed, record: { ...record, verification: { ...ALL_TRUE, model_matches: 'true' as never } } }, ...NOT_HOLDING },
+  { name: 'completed, but the receipt has no member', outcome: { ...completed, record: { ...record, receipt: {} as never } }, ...NOT_HOLDING },
+  { name: 'completed, but the receipt is null', outcome: { ...completed, record: { ...record, receipt: null as never } }, ...NOT_HOLDING },
+  { name: 'completed, but the signature of the receipt is empty', outcome: { ...completed, record: { ...record, receipt_signature: '' } }, ...NOT_HOLDING },
+  { name: 'completed, but the signature of the receipt is missing', outcome: { ...completed, record: { ...record, receipt_signature: undefined as never } }, ...NOT_HOLDING },
+  { name: 'completed, but the record is missing', outcome: { ...completed, record: undefined as never }, ...NOT_HOLDING },
+  { name: 'completed, but the verdict is missing', outcome: { ...completed, verdict: undefined as never }, ...NOT_HOLDING },
+  { name: 'completed, but the Accept is missing', outcome: { ...completed, accepted: undefined as never }, ...NOT_HOLDING },
 ];
 
 /** The result of a step as `outcome:reason:exit_state`, or `use case` for a step that the use case finishes. */
@@ -189,7 +209,7 @@ describe('the map from the outcome of the hire kit to the step and the result', 
 
   for (const row of TABLE) {
     it(`${row.name}: ${row.step}, ${row.result}`, () => {
-      const step = stepOfOutcome(row.outcome, { counterparty_did: COUNTERPARTY_DID, delegation_after: row.after ?? null });
+      const step = stepOfOutcome(row.outcome, { ...CONTEXT, delegation_after: row.after ?? null });
       expect(words(step)).toBe(row.step);
       expect(resultOf(step)).toBe(row.result);
     });
@@ -199,14 +219,14 @@ describe('the map from the outcome of the hire kit to the step and the result', 
     const passes = TABLE.filter((row) => row.result.startsWith('completed:')).map((row) => row.name);
     expect(passes).toStrictEqual(['completed, Accept confirmed', 'completed, Accept pending']);
     // The same holds for the steps: no step but `completed` has the kind of a pass.
-    const kinds = TABLE.map((row) => stepOfOutcome(row.outcome, { counterparty_did: COUNTERPARTY_DID, delegation_after: null }).kind);
+    const kinds = TABLE.map((row) => stepOfOutcome(row.outcome, CONTEXT).kind);
     expect(kinds.filter((kind) => kind === 'completed')).toHaveLength(2);
   });
 
   it('passes every refusal code of the protocol through as the reason, and the exit state follows the rule', () => {
     const states: Record<string, ExitState> = { approval_expired: 'Expired', delegation_ended: 'Cancelled' };
     for (const code of REFUSAL_CODES) {
-      const step = stepOfOutcome(refusedBefore(code, ERROR_STATUS[code]), { counterparty_did: COUNTERPARTY_DID, delegation_after: null });
+      const step = stepOfOutcome(refusedBefore(code, ERROR_STATUS[code]), CONTEXT);
       expect(step.kind).toBe('refused_by_counterparty');
       if (step.kind !== 'refused_by_counterparty') continue;
       expect(step.reason).toBe(code);
@@ -216,7 +236,7 @@ describe('the map from the outcome of the hire kit to the step and the result', 
   });
 
   it('keeps the escrow, the advert and the vault of the Pay in the record of every step that had a Pay, and no text of the counterparty anywhere', () => {
-    const context = { counterparty_did: COUNTERPARTY_DID, delegation_after: null };
+    const context = CONTEXT;
     for (const outcome of [completed, refusedBefore('delegation_ended', 403), failedAfter('timeout'), declined, timedOut, receiptFailed]) {
       const step = stepOfOutcome(outcome, context);
       if (!('handoff' in step) || step.handoff === null) throw new Error(`the step ${words(step)} has no record`);
@@ -227,7 +247,7 @@ describe('the map from the outcome of the hire kit to the step and the result', 
   });
 
   it('says in the record when a hire was paid from the wallet and not from the vault: the flag is the word of the hire kit, and it is not assumed', () => {
-    const context = { counterparty_did: COUNTERPARTY_DID, delegation_after: null };
+    const context = CONTEXT;
     const fromWallet = stepOfOutcome({ ...completed, paidFrom: 'wallet' }, context);
     const fromVault = stepOfOutcome(completed, context);
     if (fromWallet.kind !== 'completed' || fromVault.kind !== 'completed') throw new Error('unexpected steps');
@@ -235,7 +255,7 @@ describe('the map from the outcome of the hire kit to the step and the result', 
   });
 
   it('writes the delivery into the record of a completed hire and of a hire that was not accepted, and nothing of it for a refusal', () => {
-    const context = { counterparty_did: COUNTERPARTY_DID, delegation_after: null };
+    const context = CONTEXT;
     const done = stepOfOutcome(completed, context);
     const no = stepOfOutcome(declined, context);
     const refused = stepOfOutcome(refusedBefore('delegation_ended', 403), context);
@@ -247,7 +267,7 @@ describe('the map from the outcome of the hire kit to the step and the result', 
   });
 
   it('keeps the transaction body of a refused Pay in the evidence of the step, and gives the code of the builder for a Pay that could not be built', () => {
-    const context = { counterparty_did: COUNTERPARTY_DID, delegation_after: 'live' as const };
+    const context = { ...CONTEXT, delegation_after: 'live' as const };
     const ledger = stepOfOutcome(ledgerRefusal('ledger'), context);
     const built = stepOfOutcome(impossible('below_minimum'), context);
     if (ledger.kind !== 'vault_refused' || built.kind !== 'vault_refused') throw new Error('unexpected steps');
@@ -257,14 +277,67 @@ describe('the map from the outcome of the hire kit to the step and the result', 
 
   it('cuts a reason that the node or the use case wrote at a fixed length and makes it one line', () => {
     const long = `3010 ${'x'.repeat(2_000)}\nforged line`;
-    const step = stepOfOutcome({ ...ledgerRefusal('ledger'), refusal: { kind: 'ledger', evaluationError: long, validators: [], body: 'a1', attempt: undefined as never } } as AgentOutcome, { counterparty_did: COUNTERPARTY_DID, delegation_after: null });
+    const step = stepOfOutcome({ ...ledgerRefusal('ledger'), refusal: { kind: 'ledger', evaluationError: long, validators: [], body: 'a1', attempt: undefined as never } } as AgentOutcome, CONTEXT);
     if (step.kind !== 'vault_refused') throw new Error('unexpected step');
     expect(step.reason.length).toBeLessThanOrEqual(300);
     expect(step.reason).not.toContain('\n');
-    const noLong = stepOfOutcome({ ...declined, declined: `no\n${'y'.repeat(2_000)}` } as AgentOutcome, { counterparty_did: COUNTERPARTY_DID, delegation_after: null });
+    const noLong = stepOfOutcome({ ...declined, declined: `no\n${'y'.repeat(2_000)}` } as AgentOutcome, CONTEXT);
     if (noLong.kind !== 'not_accepted') throw new Error('unexpected step');
     expect(noLong.declined?.length).toBeLessThanOrEqual(300);
     expect(noLong.declined).not.toContain('\n');
+  });
+});
+
+describe('a completed outcome that does not hold together', () => {
+  /** Each part of a completed outcome that can disagree with the others. Each outcome below is the clean one, with one part changed. */
+  const BROKEN: Array<[string, typeof completed]> = [
+    ['the escrow of the outcome is not the escrow of the record', { ...completed, escrowRef: OTHER_ESCROW }],
+    ['the escrow of the receipt is not the escrow of the outcome', { ...completed, record: { ...record, receipt: { ...record.receipt, escrow_ref: OTHER_ESCROW } } }],
+    ['the advert of the outcome is not the advert that the document names', { ...completed, advertRef: OTHER_ADVERT }],
+    ['the advert of the record is not the advert that the document names', { ...completed, record: { ...record, advert_ref: OTHER_ADVERT } }],
+    ['one check of the verdict failed', { ...completed, verdict: { verdict: 'VERIFIED', checks: { ...CHECKS, signature_valid: 'fail' } } }],
+    ['one check of the record is false', { ...completed, record: { ...record, verification: { ...ALL_TRUE, model_matches: false } } }],
+    ['the receipt has no member', { ...completed, record: { ...record, receipt: {} as never } }],
+    ['the signature of the receipt is empty', { ...completed, record: { ...record, receipt_signature: '' } }],
+    ['the record is missing', { ...completed, record: undefined as never }],
+    ['the verdict is missing', { ...completed, verdict: undefined as never }],
+    ['the Accept is not confirmed and not pending', { ...completed, accepted: 'no' as never }],
+  ];
+
+  it('is never completed: each part that disagrees makes a failed step with inconsistent_outcome, and its result is failed', () => {
+    for (const [name, outcome] of BROKEN) {
+      const step = stepOfOutcome(outcome, CONTEXT);
+      if (step.kind !== 'failed') throw new Error(`${name}: the step is ${words(step)}`);
+      expect(step.reason, name).toBe(INCONSISTENT_OUTCOME);
+      expect(settledResult(step, pieces())).toMatchObject({ outcome: 'failed', reason: INCONSISTENT_OUTCOME, exit_state: 'Failed' });
+    }
+  });
+
+  it('keeps the escrow of the outcome in the step, with its advert and its vault, and says nothing of an Accept or of a receipt', () => {
+    for (const [name, outcome] of BROKEN) {
+      const step = stepOfOutcome(outcome, CONTEXT);
+      if (step.kind !== 'failed') throw new Error(`${name}: the step is ${words(step)}`);
+      expect(step.handoff, name).toMatchObject({
+        counterparty_did: COUNTERPARTY_DID, advert_ref: outcome.advertRef, escrow_ref: outcome.escrowRef, accepted: null, receipt: null, receipt_signature: null, verification: null, result: null,
+      });
+      expect([step.vault_ref, step.terms], name).toStrictEqual([NEXT_VAULT, TERMS]);
+    }
+  });
+
+  it('does not throw for an outcome that cannot be read, and keeps the escrow that it names: the error is the cause of the step', () => {
+    const boom = new Error('a member that throws');
+    const unreadable = { ...completed, get verdict(): never { throw boom; } };
+    const step = stepOfOutcome(unreadable as never, CONTEXT);
+    if (step.kind !== 'failed') throw new Error(`the step is ${words(step)}`);
+    expect([step.reason, step.cause]).toStrictEqual([INCONSISTENT_OUTCOME, boom]);
+    expect(step.handoff).toMatchObject({ escrow_ref: ESCROW, accepted: null });
+  });
+
+  it('twin: the clean outcome is completed, and an outcome for another advert is completed when the document names that advert', () => {
+    expect(stepOfOutcome(completed, CONTEXT).kind).toBe('completed');
+    const other: Extract<AgentOutcome, { outcome: 'completed' }> = { ...completed, advertRef: OTHER_ADVERT, record: { ...record, advert_ref: OTHER_ADVERT } };
+    expect(stepOfOutcome(other, { ...CONTEXT, advert_ref: OTHER_ADVERT }).kind).toBe('completed');
+    expect(stepOfOutcome(other, CONTEXT).kind).toBe('failed');
   });
 });
 

@@ -182,7 +182,7 @@ function causeOf(cause: unknown): InterruptionCause {
  * HirePayUnconfirmed. Any other error came before every Pay, so no vault was spent. `delivery` is what the decision was given, or `null`. The record of an interrupted hire does not say
  * whether the Accept was made: the hire kit wraps an error of its ledger, which can come after the Accept, in the same error as a decision that threw.
  */
-function stepOfError(error: unknown, context: StepContext & { readonly advert_ref: OutputRef }, delivery: VerifiedDelivery | null): HireStep {
+function stepOfError(error: unknown, context: StepContext, delivery: VerifiedDelivery | null): HireStep {
   if (error instanceof HireInterrupted) {
     const escrow = parseOutputRef(error.escrowRef, 'escrow');
     if (!escrow.ok) return failure(INCONSISTENT_OUTCOME, 'the hire kit gave an escrow that is not an output reference', { cause: error });
@@ -266,10 +266,6 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
     }
     // The delegation is read again only after a refused Pay: `delegation_ended` decides between the exit states Cancelled and Failed.
     const after = outcome?.outcome === 'vault_refused' ? await delegationAfter(reads, message.delegation) : null;
-    try {
-      return stepOfOutcome(outcome, { ...context, delegation_after: after });
-    } catch (error) {
-      return failure(INCONSISTENT_OUTCOME, 'the outcome of the hire could not be read', { cause: error });
-    }
+    return stepOfOutcome(outcome, { ...context, delegation_after: after });
   });
 }

@@ -9,6 +9,7 @@ vi.mock('@vsa/hire-kit', async (importOriginal) => {
 });
 import { hireAgent } from '@vsa/hire-kit';
 import type { AgentOutcome } from '@vsa/hire-kit';
+import { LLM_ADVERT_REF } from '@vsa/hire-kit/testing';
 import { INCONSISTENT_OUTCOME, VAULT_REASON_MISSING, settledResult } from '@vsa/usecase-kit/buyer';
 import { AGENT_ADVERT_REF, cleanWorlds, expectKind, go, pieces, words, world } from './support.ts';
 
@@ -16,6 +17,51 @@ afterEach(() => { vi.restoreAllMocks(); cleanWorlds(); });
 
 /** The next call of `hireAgent` pays nothing and answers with `outcome`. */
 const answers = (outcome: unknown): void => { vi.mocked(hireAgent).mockImplementationOnce(async () => outcome as AgentOutcome); };
+
+type Completed = Extract<AgentOutcome, { outcome: 'completed' }>;
+
+/** The next call of `hireAgent` runs the real hire kit: the Pay, the send, the checks and the Accept happen. It answers with the outcome that `change` makes of the real one. */
+const changes = (change: (outcome: Completed) => unknown): void => {
+  vi.mocked(hireAgent).mockImplementationOnce(async (key, deps, request, errors) => {
+    const kit = await vi.importActual<typeof HireKit>('@vsa/hire-kit');
+    const outcome = await kit.hireAgent(key, deps, request, errors);
+    if (outcome.outcome !== 'completed') throw new Error('the hire of the test did not complete');
+    return change(outcome) as AgentOutcome;
+  });
+};
+
+describe('a completed outcome that does not hold together', () => {
+  it('is a failed step and not a pass, although the real hire was paid and accepted: an outcome for another advert than the document names', async () => {
+    const w = await world();
+    changes((outcome) => ({ ...outcome, advertRef: LLM_ADVERT_REF }));
+    const step = expectKind(await go(w), 'failed');
+    expect([step.reason, step.handoff?.advert_ref, step.handoff?.accepted]).toStrictEqual([INCONSISTENT_OUTCOME, LLM_ADVERT_REF, null]);
+    // The money moved: the Pay was made and the Accept was confirmed. The step keeps the escrow, so that the money is not lost from the record.
+    expect(await w.m.chain.escrowState(step.handoff?.escrow_ref ?? '')).toBe('spent');
+    expect(step.vault_ref).not.toBeNull();
+    expect(settledResult(step, pieces())).toMatchObject({ outcome: 'failed', reason: INCONSISTENT_OUTCOME, exit_state: 'Failed' });
+  });
+
+  it('keeps the escrow in the step when the record of the outcome is missing, and when the receipt and the signature are hollow', async () => {
+    for (const change of [
+      (outcome: Completed) => ({ ...outcome, record: undefined }),
+      (outcome: Completed) => ({ ...outcome, record: { ...outcome.record, receipt: {}, receipt_signature: '' } }),
+    ]) {
+      const w = await world();
+      changes(change);
+      const step = expectKind(await go(w), 'failed');
+      expect(step.reason).toBe(INCONSISTENT_OUTCOME);
+      expect(step.handoff).toMatchObject({ advert_ref: AGENT_ADVERT_REF, accepted: null, receipt: null });
+      expect(await w.m.chain.escrowState(step.handoff?.escrow_ref ?? '')).toBe('spent');
+    }
+  });
+
+  it('twin: the outcome that the real hire kit gives is completed', async () => {
+    const w = await world();
+    changes((outcome) => outcome);
+    expect(words(await go(w))).toBe('completed');
+  });
+});
 
 describe('an outcome that the hire kit does not give', () => {
   it('is a failed step with inconsistent_outcome when the outcome is null or undefined, and the result is made: the flow does not throw', async () => {

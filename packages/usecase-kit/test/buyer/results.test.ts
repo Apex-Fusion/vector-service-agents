@@ -100,6 +100,9 @@ describe('the results of execute', () => {
       ['no record', null], ['a hire that no delivery came for', handoff], ['a delivery that the decision did not accept', { ...accepted, accepted: 'no' }],
       ['an Accept that is not known', { ...accepted, accepted: null }], ['a check that is false', { ...accepted, verification: { ...ALL_TRUE, model_matches: false } }],
       ['a record with no checks', { ...accepted, verification: null }], ['a record with no receipt', { ...accepted, receipt: null }], ['a record with no signature', { ...accepted, receipt_signature: null }],
+      ['a receipt with no member', { ...accepted, receipt: {} }], ['a signature that is empty', { ...accepted, receipt_signature: '' }],
+      ['a receipt of another escrow than the escrow of the record', { ...accepted, receipt: { escrow_ref: `${'99'.repeat(32)}#0` } }],
+      ['a check that is the text "true"', { ...accepted, verification: { ...ALL_TRUE, model_matches: 'true' } }], ['a receipt that is a list', { ...accepted, receipt: [ESCROW] }],
     ];
     for (const useCase of ['inventory-reorder', 'prior-authorization'] as const) {
       for (const [name, record] of records) expect(() => completedResult(pieces({ use_case: useCase, handoff: record as never })), `${useCase}: ${name}`).toThrow(TypeError);

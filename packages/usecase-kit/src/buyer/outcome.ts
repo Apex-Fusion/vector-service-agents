@@ -2,7 +2,7 @@
 // The map from what the hire kit says to a step of this folder, in one function with one table. The exit state of a result is never written here: `exitStateOf` of the protocol gives it.
 //
 //   outcome of the hire kit                                     step                       reason of the result
-//   completed, VERIFIED and all eight checks true               completed                  none
+//   completed, and it holds together (see completedStep)        completed                  none
 //   refused_before_claim                                        refused_by_counterparty    the code of the counterparty when the protocol has it, else `counterparty_refused`
 //   failed_after_claim, `failed`, with a code of AFTER_CLAIM    refused_by_counterparty    that code (the decision of the counterparty after its Claim)
 //   failed_after_claim, any other                               failed                     the reason of the hire kit. It is NOT a refusal.
@@ -42,6 +42,8 @@ const KIT_FAILURES_ARE_LISTED: [Exclude<HireFailure, (typeof KIT_FAILURES)[numbe
 export interface StepContext {
   /** The counterparty as the approved document names it. */
   readonly counterparty_did: Did;
+  /** The advert that the approved document names. A `completed` outcome is for this advert and no other. */
+  readonly advert_ref: OutputRef;
   /** What the delegation was after a refused Pay. The flow reads it when the outcome is `vault_refused`; it is `null` for any other outcome. */
   readonly delegation_after: DelegationAfter | null;
 }
@@ -87,18 +89,28 @@ function verificationFrom(value: unknown): ReceiptVerification | null {
   return checks;
 }
 
-/** The delivery as a decision and a result see it, or `null` when the hire kit gave a delivery that cannot be written as JSON data. Each call makes a new copy. */
+/**
+ * The delivery as a decision and a result see it, or `null` when the hire kit gave a delivery that cannot be written as JSON data, or whose receipt has no member or whose signature is empty. Each call
+ * makes a new copy. The function never throws.
+ */
 export function deliveryOf(delivery: AgentDelivery): VerifiedDelivery | null {
-  const escrow = parseOutputRef(delivery.escrowRef, 'escrow');
-  const advert = parseOutputRef(delivery.advertRef, 'advert');
-  const receipt = jsonObjectOf(delivery.record.receipt);
-  const verification = verificationFrom(delivery.record.verification);
-  const signature: unknown = delivery.record.receipt_signature;
-  if (!escrow.ok || !advert.ok || receipt === null || verification === null || typeof signature !== 'string' || typeof delivery.text !== 'string') return null;
-  const parsed = parseJsonText(delivery.text);
-  return {
-    escrow_ref: escrow.value, advert_ref: advert.value, text: delivery.text, result: parsed.ok ? jsonObjectOf(parsed.value) : null, receipt, receipt_signature: signature, verification,
-  };
+  try {
+    const record: unknown = delivery.record;
+    if (typeof record !== 'object' || record === null) return null;
+    const escrow = parseOutputRef(delivery.escrowRef, 'escrow');
+    const advert = parseOutputRef(delivery.advertRef, 'advert');
+    const receipt = jsonObjectOf(Reflect.get(record, 'receipt'));
+    const verification = verificationFrom(Reflect.get(record, 'verification'));
+    const signature: unknown = Reflect.get(record, 'receipt_signature');
+    if (!escrow.ok || !advert.ok || receipt === null || Object.keys(receipt).length === 0 || verification === null) return null;
+    if (typeof signature !== 'string' || signature === '' || typeof delivery.text !== 'string') return null;
+    const parsed = parseJsonText(delivery.text);
+    return {
+      escrow_ref: escrow.value, advert_ref: advert.value, text: delivery.text, result: parsed.ok ? jsonObjectOf(parsed.value) : null, receipt, receipt_signature: signature, verification,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** The escrow that a Pay opened, with its references in the form of the protocol. */
@@ -131,10 +143,10 @@ export function failure(reason: string, detail: string, extra: Partial<Omit<Fail
   return { kind: 'failed', reason, detail, handoff: null, vault_ref: null, terms: null, ...extra };
 }
 
-/** The step for an outcome that does not hold together. It names the escrow when it is known, so that no escrow is lost from the record. */
-function inconsistent(context: StepContext, detail: string, escrow: Escrow | null = null, accepted: HandoffRecord['accepted'] = null): FailedStep {
+/** The step for an outcome that does not hold together. It names the escrow when it is known, so that no escrow is lost from the record. The record says nothing of an Accept. */
+function inconsistent(context: StepContext, detail: string, escrow: Escrow | null = null): FailedStep {
   return failure(INCONSISTENT_OUTCOME, detail, {
-    handoff: escrow === null ? null : recordOf(context.counterparty_did, escrow.advert_ref, escrow.escrow_ref, null, accepted),
+    handoff: escrow === null ? null : recordOf(context.counterparty_did, escrow.advert_ref, escrow.escrow_ref, null, null),
     vault_ref: escrow?.vault_ref ?? null, terms: escrow?.terms ?? null,
   });
 }
@@ -145,18 +157,34 @@ type FailedAfterClaim = Extract<AgentOutcome, { outcome: 'failed_after_claim' }>
 type VaultRefused = Extract<AgentOutcome, { outcome: 'vault_refused' }>;
 type NotAccepted = Extract<AgentOutcome, { outcome: 'not_accepted' }>;
 
+/** The verdict of the kit as the flow reads it: VERIFIED, and each of the eight checks `pass`. */
+function verdictHolds(verdict: unknown): boolean {
+  if (typeof verdict !== 'object' || verdict === null) return false;
+  const checks: unknown = Reflect.get(verdict, 'checks');
+  return Reflect.get(verdict, 'verdict') === 'VERIFIED' && typeof checks === 'object' && checks !== null && RECEIPT_CHECKS.every((check) => Reflect.get(checks, check) === 'pass');
+}
+
 /**
- * `completed` holds only when everything that the protocol means by it holds: the verdict is VERIFIED, all eight checks are true, and the Accept is confirmed or pending. Anything else is
- * `inconsistent_outcome`: a hire that did not verify is never reported as done.
+ * `completed` holds only when its parts agree with each other, and not with the word `completed`: the escrow of the outcome is the escrow of the record and of the receipt, the advert of the outcome
+ * and of the record is the advert that the approved document names, the verdict is VERIFIED and each of its eight checks passed, each of the eight members of the verification is the boolean `true`,
+ * the receipt is an object with members, its signature is a text that is not empty, and the Accept is confirmed or pending. Anything else is `inconsistent_outcome`, and the step keeps the escrow:
+ * a hire that did not verify is never reported as done.
  */
 function completedStep(outcome: Completed, context: StepContext): HireStep {
   const escrow = escrowOf(outcome);
   if (escrow === null) return inconsistent(context, 'the hire kit gave an escrow or an advert that is not an output reference');
+  const no = (detail: string): FailedStep => inconsistent(context, detail, escrow);
+  if (escrow.advert_ref !== context.advert_ref) return no('the hire says completed for another advert than the advert that the approved document names');
+  const record: unknown = outcome.record;
+  const recorded = (member: string): unknown => (typeof record === 'object' && record !== null ? Reflect.get(record, member) : undefined);
+  if (recorded('escrow_ref') !== escrow.escrow_ref) return no('the record of the hire is not the record of the escrow of the outcome');
+  if (recorded('advert_ref') !== escrow.advert_ref) return no('the record of the hire is for another advert than the advert of the outcome');
   const delivery = deliveryOf({ escrowRef: outcome.escrowRef, advertRef: outcome.advertRef, text: outcome.text, record: outcome.record, verdict: outcome.verdict });
-  if (delivery === null) return inconsistent(context, 'the delivery of the hire cannot be written as JSON data', escrow, outcome.accepted === 'confirmed' ? 'confirmed' : 'pending');
-  const verified = outcome.verdict.verdict === 'VERIFIED' && RECEIPT_CHECKS.every((check) => delivery.verification[check] === true);
-  if (!verified) return inconsistent(context, 'the hire says completed, and its receipt is not verified', escrow);
-  if (outcome.accepted !== 'confirmed' && outcome.accepted !== 'pending') return inconsistent(context, 'the hire says completed, and it does not say whether the Accept was seen', escrow);
+  if (delivery === null) return no('the delivery of the hire cannot be written as JSON data, or its receipt has no member, or its signature is empty');
+  if (delivery.receipt.escrow_ref !== escrow.escrow_ref) return no('the receipt of the hire is not the receipt of the escrow of the outcome');
+  if (!verdictHolds(outcome.verdict)) return no('the hire says completed, and its verdict is not VERIFIED with each of the eight checks passed');
+  if (!RECEIPT_CHECKS.every((check) => delivery.verification[check] === true)) return no('the hire says completed, and one of the eight checks of its record is not true');
+  if (outcome.accepted !== 'confirmed' && outcome.accepted !== 'pending') return no('the hire says completed, and it does not say whether the Accept was seen');
   return {
     kind: 'completed', handoff: recordOf(context.counterparty_did, escrow.advert_ref, escrow.escrow_ref, delivery, outcome.accepted, outcome.paidFrom === 'vault'), vault_ref: escrow.vault_ref, terms: escrow.terms, delivery,
   };
@@ -220,22 +248,36 @@ function notAcceptedStep(outcome: NotAccepted, context: StepContext): HireStep {
   };
 }
 
+/** The escrow that an outcome names, or `null` when it names none or cannot be read. It never throws. */
+function escrowIfReadable(outcome: AgentOutcome): Escrow | null {
+  try {
+    return escrowOf(outcome as AgentEscrow);
+  } catch {
+    return null;
+  }
+}
+
 /**
- * The step for one outcome of the hire kit. The switch has no default that passes: an outcome that is not one of the five is `inconsistent_outcome`.
+ * The step for one outcome of the hire kit. The switch has no default that passes: an outcome that is not one of the five is `inconsistent_outcome`. An outcome that cannot be read (a member that
+ * throws) is `inconsistent_outcome` too, with the escrow that it names, and the error as the `cause` for the log. The function never throws.
  * `context.delegation_after` is read by the flow for `vault_refused`; the function reads no ledger.
  */
 export function stepOfOutcome(outcome: AgentOutcome, context: StepContext): HireStep {
   if (typeof outcome !== 'object' || outcome === null) return inconsistent(context, 'the hire kit gave no outcome');
-  switch (outcome.outcome) {
-    case 'completed': return completedStep(outcome, context);
-    case 'refused_before_claim': return refusedBeforeClaimStep(outcome, context);
-    case 'failed_after_claim': return failedAfterClaimStep(outcome, context);
-    case 'vault_refused': return vaultRefusedStep(outcome, context);
-    case 'not_accepted': return notAcceptedStep(outcome, context);
-    default: {
-      const unknown: never = outcome;
-      void unknown;
-      return inconsistent(context, 'the hire kit gave an outcome that it does not list');
+  try {
+    switch (outcome.outcome) {
+      case 'completed': return completedStep(outcome, context);
+      case 'refused_before_claim': return refusedBeforeClaimStep(outcome, context);
+      case 'failed_after_claim': return failedAfterClaimStep(outcome, context);
+      case 'vault_refused': return vaultRefusedStep(outcome, context);
+      case 'not_accepted': return notAcceptedStep(outcome, context);
+      default: {
+        const unknown: never = outcome;
+        void unknown;
+        return inconsistent(context, 'the hire kit gave an outcome that it does not list');
+      }
     }
+  } catch (error) {
+    return { ...inconsistent(context, 'the outcome of the hire could not be read', escrowIfReadable(outcome)), cause: error };
   }
 }

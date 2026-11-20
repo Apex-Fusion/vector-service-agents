@@ -66,12 +66,20 @@ function wrongState(outcome: ExecuteOutcome, state: ExitState): Error {
   return new Error(`exitStateOf gave ${state} for ${outcome}, which the result of ${outcome} cannot hold`);
 }
 
-/** The record of a hire that was verified and accepted: the receipt and its signature, all eight checks true, and the Accept confirmed or pending. */
+/** True when the record says that the Accept was made: confirmed on the chain, or sent and not yet seen. */
+function acceptWasMade(handoff: HandoffRecord | null): boolean {
+  return handoff !== null && (handoff.accepted === 'confirmed' || handoff.accepted === 'pending');
+}
+
+/**
+ * The record of a hire that was verified and accepted: the Accept is confirmed or pending, the receipt is an object with members that names the escrow of the record, its signature is a text that is
+ * not empty, and each of the eight checks is the boolean `true`.
+ */
 function holdsAcceptedHire(handoff: HandoffRecord | null): boolean {
-  if (handoff === null) return false;
-  const { verification } = handoff;
-  const accepted = handoff.accepted === 'confirmed' || handoff.accepted === 'pending';
-  return accepted && handoff.receipt !== null && handoff.receipt_signature !== null && verification !== null && RECEIPT_CHECKS.every((check) => verification[check] === true);
+  if (handoff === null || !acceptWasMade(handoff)) return false;
+  const { receipt, receipt_signature: signature, verification } = handoff;
+  const receiptNamesEscrow = typeof receipt === 'object' && receipt !== null && !Array.isArray(receipt) && Object.keys(receipt).length > 0 && receipt.escrow_ref === handoff.escrow_ref;
+  return receiptNamesEscrow && typeof signature === 'string' && signature !== '' && verification !== null && RECEIPT_CHECKS.every((check) => verification[check] === true);
 }
 
 /**
