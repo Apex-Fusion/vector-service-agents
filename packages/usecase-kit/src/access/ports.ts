@@ -44,7 +44,6 @@ export async function within<T>(clock: Clock, ms: number, work: (signal: AbortSi
   const run = Promise.resolve()
     .then(() => work(abort.signal))
     .then((value): Bounded<T> => ({ timedOut: false, value }));
-  run.catch(() => undefined);
   try {
     const first = await Promise.race([run, late]);
     if (first.timedOut) abort.abort();
