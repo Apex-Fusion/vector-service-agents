@@ -43,7 +43,11 @@ export async function decideApproval(check: ApprovalCheck, input: ApprovalInput,
   let answer: unknown;
   let timer: NodeJS.Timeout | undefined;
   try {
-    const limit = new Promise<typeof TIMED_OUT>((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs); });
+    const limit = new Promise<typeof TIMED_OUT>((resolve) => {
+      timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs);
+      // The timer does not keep the process alive: a stop of the service does not wait for a check that never answers.
+      timer.unref();
+    });
     answer = await Promise.race([check(input), limit]);
   } catch (error) {
     return refuse('approval_unavailable', 'approval.failed', `the approval check could not run: ${errorText(error, 200)}`);
