@@ -379,13 +379,15 @@ describe('verifyX509Svid', () => {
     readonly otherPem: string;
     readonly der: Buffer;
     readonly otherDer: Buffer;
+    /** The DER of a long certificate: its content is more than 65,535 bytes, so the length of its outer SEQUENCE takes 3 bytes, and its BER form with an indefinite length is one byte shorter. */
+    readonly longDer: Buffer;
     /** The DER of the CA certificate of the bundle. */
     readonly ca: Buffer;
     readonly base64: string;
     readonly otherBase64: string;
   }
 
-  /** Two certificates that the gateway signed, and the CA. The DER of the first has a length that is no multiple of 3, so its base64 text ends with a padding. */
+  /** Two certificates that the gateway signed, a long one, and the CA. The DER of the first has a length that is no multiple of 3, so its base64 text ends with a padding. */
   async function pieces(gateway: StubGateway): Promise<Pieces> {
     let pem = await leaf(gateway);
     for (let tries = 0; derOf(pem).length % 3 === 0 && tries < 40; tries++) pem = await leaf(gateway);
@@ -393,9 +395,17 @@ describe('verifyX509Svid', () => {
     const der = derOf(pem);
     if (der.length % 3 === 0) throw new Error('no certificate with a padded base64 text');
     const otherDer = derOf(otherPem);
+    const longDer = derOf(await leaf(gateway, { carries: 'A'.repeat(70_000) }));
     const ca = Buffer.from((await bundleOf(gateway)).authorities[0]!.raw);
-    return { pem, otherPem, der, otherDer, ca, base64: der.toString('base64'), otherBase64: otherDer.toString('base64') };
+    return { pem, otherPem, der, otherDer, longDer, ca, base64: der.toString('base64'), otherBase64: otherDer.toString('base64') };
   }
+
+  /** The certificate with the indefinite length of BER on its outer SEQUENCE (`30 80 … 00 00`) in place of the definite length of DER. */
+  const indefinite = (der: Buffer): Buffer => {
+    const header = der[1]! & 0x80 ? 2 + (der[1]! & 0x7f) : 2;
+    return Buffer.concat([Buffer.from([0x30, 0x80]), der.subarray(header), Buffer.from([0, 0])]);
+  };
+  const pemOf = (der: Buffer): string => `-----BEGIN CERTIFICATE-----\n${der.toString('base64').match(/.{1,64}/g)!.join('\n')}\n-----END CERTIFICATE-----\n`;
 
   it('one certificate is accepted in each of its forms: a PEM block, base64 of the DER, DER bytes', async () => {
     const { gateway } = world();
@@ -425,6 +435,21 @@ describe('verifyX509Svid', () => {
     refused(verifyX509Svid(`${p.pem.trim()} x`, ctx), 'x509.malformed');
   });
 
+  it('Node reads a certificate with an indefinite outer length (30 80 … 00 00) and gives back its DER form: a short certificate is as long in BER as in DER, and a long one is one byte shorter (the premise of the BER rows below)', async () => {
+    const { gateway } = world();
+    const ctx = await contextOf(gateway);
+    const p = await pieces(gateway);
+    const short = indefinite(p.der);
+    const long = indefinite(p.longDer);
+    expect(short.length, 'a short certificate: the BER form is as long as the DER form').toBe(p.der.length);
+    expect(long.length + 1, 'a long certificate: the BER form is one byte shorter than the DER form').toBe(p.longDer.length);
+    expect(new X509Certificate(short).raw.equals(p.der), 'Node reads the BER form of the short certificate and gives back its DER form').toBe(true);
+    expect(new X509Certificate(long).raw.equals(p.longDer), 'Node reads the BER form of the long certificate and gives back its DER form').toBe(true);
+    // The twin: the DER forms are accepted.
+    accepted(verifyX509Svid(p.der, ctx));
+    accepted(verifyX509Svid(p.longDer, ctx));
+  });
+
   const notOne: Array<[string, (p: Pieces) => string | Uint8Array]> = [
     ['DER bytes and one more byte', (p) => Buffer.concat([p.der, Buffer.from([0])])],
     ['DER bytes and then a line feed', (p) => Buffer.concat([p.der, Buffer.from('\n')])],
@@ -439,7 +464,15 @@ describe('verifyX509Svid', () => {
     ['a PEM block and then text', (p) => `${p.pem}the rest of a file\n`],
     ['text and then a PEM block', (p) => `Bag Attributes\n${p.pem}`],
     ['a PEM block and then base64 of a certificate', (p) => `${p.pem}${p.otherBase64}`],
-    ['one PEM block that holds the DER bytes of two certificates', (p) => `-----BEGIN CERTIFICATE-----\n${Buffer.concat([p.der, p.otherDer]).toString('base64').match(/.{1,64}/g)!.join('\n')}\n-----END CERTIFICATE-----\n`],
+    ['one PEM block that holds the DER bytes of two certificates', (p) => pemOf(Buffer.concat([p.der, p.otherDer]))],
+    ['a certificate with an indefinite outer length (30 80 … 00 00), as long as its DER form: DER bytes', (p) => indefinite(p.der)],
+    ['a certificate with an indefinite outer length, as long as its DER form: base64', (p) => indefinite(p.der).toString('base64')],
+    ['a certificate with an indefinite outer length, as long as its DER form: a PEM block', (p) => pemOf(indefinite(p.der))],
+    ['a certificate with an indefinite outer length and one more byte', (p) => Buffer.concat([indefinite(p.der), Buffer.from([0x41])])],
+    ['a long certificate with an indefinite outer length (one byte shorter than its DER form), alone', (p) => indefinite(p.longDer)],
+    ['a long certificate with an indefinite outer length and one more byte, as long as its DER form: DER bytes', (p) => Buffer.concat([indefinite(p.longDer), Buffer.from([0x41])])],
+    ['a long certificate with an indefinite outer length and one more byte, as long as its DER form: base64', (p) => Buffer.concat([indefinite(p.longDer), Buffer.from([0x41])]).toString('base64')],
+    ['a long certificate with an indefinite outer length and one more byte, as long as its DER form: a PEM block', (p) => pemOf(Buffer.concat([indefinite(p.longDer), Buffer.from([0x41])]))],
   ];
   it.each(notOne)('refuses an input that is not exactly one certificate: %s (x509.malformed)', async (_name, make) => {
     const { gateway } = world();

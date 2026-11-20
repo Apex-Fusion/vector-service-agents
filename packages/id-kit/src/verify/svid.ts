@@ -208,13 +208,16 @@ function derOfText(text: string): Buffer {
   return der;
 }
 
-/** Reads a certificate that a caller gives as PEM text, as base64 of its DER, or as DER bytes. The input is exactly one certificate. Throws when it is none. */
+/**
+ * Reads a certificate that a caller gives as PEM text, as base64 of its DER, or as DER bytes. The input is exactly one certificate in DER. Throws when it is none.
+ */
 function toCertificate(input: string | Uint8Array): X509Certificate {
   const der = typeof input === 'string' ? derOfText(input) : Buffer.from(input);
   const certificate = new X509Certificate(der);
-  // `X509Certificate` reads the first certificate that it finds and drops the rest: the bytes after it, and the bytes before a PEM block that sits inside the input. So the input is one
-  // certificate only when the certificate that was read is as long as the input.
-  if (certificate.raw.length !== der.length) throw new Error('the input is not exactly one certificate');
+  // `X509Certificate` reads the first certificate that it finds and drops the rest: the bytes after it, and the bytes before a PEM block that sits inside the input. It also reads a BER form,
+  // for example an outer SEQUENCE with an indefinite length (`30 80 … 00 00`), and gives back its DER form. That form can have the length of the input, and it has other bytes. So the input is
+  // one certificate in DER only when the certificate that was read has the bytes of the input: a compare of the lengths is not enough.
+  if (!certificate.raw.equals(der)) throw new Error('the input is not exactly one certificate in DER');
   return certificate;
 }
 
