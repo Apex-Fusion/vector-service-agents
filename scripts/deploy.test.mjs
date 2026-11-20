@@ -6188,6 +6188,10 @@ function mockComposeProblems(text, storeBytes = mockStoreBytes()) {
   if (!(s.security_opt ?? []).includes('no-new-privileges:true')) problems.push('security_opt must have no-new-privileges:true');
   if (!Array.isArray(s.tmpfs) || s.tmpfs.length !== 1 || !/^\/tmp(?::|$)/.test(s.tmpfs[0])) problems.push('tmpfs must be the one entry /tmp: tsx writes its cache there, and nothing else is writable');
   for (const key of ['privileged', 'cap_add', 'network_mode', 'pid', 'ipc', 'devices', 'volumes_from']) if (key in s) problems.push(`${key} is not allowed`);
+  // The service listens on 0.0.0.0 inside its container. A network that another container shares would let that container send a forged Client-Cert header. With no networks key, compose puts
+  // the service on the default network of its own project, which no other container joins.
+  if ('networks' in s) problems.push('the service has no networks key: it stays on the default network of its own project, which no other container shares');
+  if ('networks' in model) problems.push('the file has no top-level networks key: the service stays on the default network of its own project');
   if (s.logging?.driver !== 'json-file' || s.logging?.options?.['max-size'] !== '10m' || s.logging?.options?.['max-file'] !== '3') problems.push('logging must be json-file with 3 files of 10m, as the other compose files have it');
   const limit = mockBytes(s.mem_limit);
   if (!(limit > 0)) problems.push('mem_limit must be set, for example 2048m');
@@ -6207,6 +6211,9 @@ test('mock service compose: one container with the image by digest, on 127.0.0.1
     ['a second port', srvReplace(text, '["127.0.0.1:9120:9120"]', '["127.0.0.1:9120:9120", "127.0.0.1:9121:9121"]'), /ports must be the one entry/],
     ['another port on the host', srvReplace(text, '"127.0.0.1:9120:9120"', '"127.0.0.1:9121:9120"'), /ports must be the one entry/],
     ['the host network', srvReplace(text, '    read_only: true\n', '    read_only: true\n    network_mode: host\n'), /network_mode/],
+    ['a network of the service', srvReplace(text, '    read_only: true\n', '    read_only: true\n    networks: [proxy]\n'), /the service has no networks key/],
+    ['a network at the top', `${text}networks:\n  proxy:\n    name: shared\n`, /no top-level networks key/],
+    ['the external network of the proxy, on the service and at the top', `${srvReplace(text, '    read_only: true\n', '    read_only: true\n    networks: [proxy]\n')}networks:\n  proxy:\n    external: true\n`, /the service has no networks key/],
     ['a volume', srvReplace(text, '    read_only: true\n', '    read_only: true\n    volumes: ["state:/data"]\n'), /no volume/],
     ['a named volume at the top', `${text}volumes:\n  state: {}\n`, /no volume/],
     ['the image by tag', srvReplace(text, '@sha256:<digest>', ':latest'), /image must be/],
