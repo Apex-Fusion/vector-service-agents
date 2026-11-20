@@ -13,11 +13,11 @@ describe('the folder', () => {
     expect(byName.withSubDelegation).toBe(byPath.withSubDelegation);
     expect(Object.keys(byName).sort()).toStrictEqual(
       [
-        'CONFIRMATIONS_REQUIRED', 'DEFAULT_CALL_TIMEOUT_MS', 'DEFAULT_CONFIRMATION_WAIT_MS', 'DEFAULT_END_TIMEOUT_MS', 'DEFAULT_MAX_ANSWER_BYTES', 'DEFAULT_POLL_MS', 'DEFAULT_STEP_TIMEOUT_MS', 'GATEWAY_FAILURES',
-        'JwtSvidCredential',
-        'MAX_CODE_CHARS', 'MAX_SUB_DELEGATION_MS', 'MIN_SUB_DELEGATION_MS', 'REFUSAL_WITHOUT_CODE', 'ROUTES', 'RouteToken', 'SUB_DELEGATION_FAILURES', 'SYSTEMS', 'X509SvidCredential', 'askWhileTooYoung',
-        'callWithJwtSvid', 'callWithToken', 'callWithX509Svid', 'codeIn', 'fetchJwtSvid', 'fetchX509Svid', 'httpsTransport', 'jwtSvidTarget', 'readAnswer', 'requestRouteToken', 'requestSubagentToken',
-        'systemClock', 'tokenTarget', 'txSignerOfRawKey', 'withSubDelegation', 'within', 'x509Target',
+        'CONFIRMATIONS_REQUIRED', 'DEFAULT_CALL_TIMEOUT_MS', 'DEFAULT_CONFIRMATION_WAIT_MS', 'DEFAULT_END_TIMEOUT_MS', 'DEFAULT_LANDING_WAIT_MS', 'DEFAULT_MAX_ANSWER_BYTES', 'DEFAULT_POLL_MS',
+        'DEFAULT_STEP_TIMEOUT_MS', 'GATEWAY_FAILURES', 'JwtSvidCredential', 'MAX_CODE_CHARS', 'MAX_COLLATERAL_LOVELACE', 'MAX_DELEGATION_DEPOSIT_LOVELACE', 'MAX_SUB_DELEGATION_MS', 'MAX_TX_FEE_LOVELACE',
+        'MIN_SUB_DELEGATION_MS', 'REFUSAL_WITHOUT_CODE', 'ROUTES', 'RouteToken', 'SUB_DELEGATION_FAILURES', 'SYSTEMS', 'X509SvidCredential', 'askWhileTooYoung', 'callWithJwtSvid', 'callWithToken',
+        'callWithX509Svid', 'codeIn', 'createSerialQueue', 'fetchJwtSvid', 'fetchX509Svid', 'httpsTransport', 'jwtSvidTarget', 'readAnswer', 'requestRouteToken', 'requestSubagentToken', 'systemClock',
+        'tokenTarget', 'txSignerOfRawKey', 'withSubDelegation', 'within', 'x509Target',
       ].sort(),
     );
   });
@@ -33,7 +33,7 @@ describe('the code of the folder', () => {
   const files = readdirSync(SRC).filter((name) => name.endsWith('.ts'));
 
   it('has one file for each part', () => {
-    expect(files.sort()).toStrictEqual(['answer.ts', 'call.ts', 'gateway.ts', 'index.ts', 'mtls.ts', 'ports.ts', 'routes.ts', 'signer.ts', 'subdelegation.ts', 'svid.ts', 'text.ts', 'token.ts', 'url.ts']);
+    expect(files.sort()).toStrictEqual(['answer.ts', 'call.ts', 'gateway.ts', 'index.ts', 'mtls.ts', 'ports.ts', 'queue.ts', 'routes.ts', 'signer.ts', 'subdelegation.ts', 'svid.ts', 'text.ts', 'token.ts', 'txcheck.ts', 'url.ts']);
   });
 
   it.each(files)('%s reads no environment variable, no file and no stream of the process, and writes no log line', (name) => {

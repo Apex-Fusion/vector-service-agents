@@ -33,8 +33,8 @@ describe('the sub-delegation is ended', () => {
     expect(order.every((at, i) => at >= 0 && (i === 0 || at > order[i - 1]!))).toBe(true);
     expect(w.chain.log.lastIndexOf('readiness')).toBeLessThan(w.chain.log.indexOf('buildUndelegate'));
     expect(w.chain.undelegateParams).toStrictEqual([{ changeAddress: WALLET, nowMs: expect.any(Number), id: w.chain.subId, signer: AGENT_KEY }]);
-    expect(w.chain.submitted[1]!.cbor).toBe(`undelegate:${w.chain.subId}+${AGENT_KEY.slice(0, 4)}`);
-    expect(run.end).toMatchObject({ state: 'ended', txHash: `ff${w.chain.subId!.slice(2)}` });
+    expect(w.chain.submitted[1]!.cbor).toBe(`${w.chain.builtUndelegates[0]!.txCbor}+${AGENT_KEY.slice(0, 4)}`);
+    expect(run.end).toMatchObject({ state: 'ended', txHash: w.chain.builtUndelegates[0]!.txHash });
     expect(handle).toMatchObject({ id: w.chain.subId, parent: PARENT_ID, notAfter: NOW + 3_600_000 });
     expect(handle!.signal.aborted).toBe(false);
   });
@@ -185,7 +185,7 @@ describe('an end step that fails', () => {
     expect(run).toMatchObject({ ok: true, kind: 'returned', value: { stock: 12 } });
     expect(run.end).toMatchObject({ state: 'not_ended', code: 'end_failed', left: { id: w.chain.subId, parent: PARENT_ID, action: 'erp.stock.read', resource: w.target.resource, endTxHash: null } });
     const left = run.end.state === 'not_ended' ? run.end.left : null;
-    expect(left).toMatchObject({ delegateTxHash: `ee${w.chain.subId!.slice(2)}`, notAfter: NOW + 3_600_000 });
+    expect(left).toMatchObject({ delegateTxHash: w.chain.builtDelegates[0]!.txHash, notAfter: NOW + 3_600_000 });
     expect(left!.delegateValidTo).toBeGreaterThan(NOW);
     expect(w.chain.submitted.map((s) => s.kind)).toStrictEqual(['delegate']);
   });
@@ -205,7 +205,7 @@ describe('an end step that fails', () => {
     const w = subWorld();
     w.chain.faults.submitUndelegateThrows = true;
     const run = await go(w, idle);
-    expect(run).toMatchObject({ ok: true, end: { state: 'not_ended', code: 'end_failed', left: { endTxHash: `ff${w.chain.subId!.slice(2)}` } } });
+    expect(run).toMatchObject({ ok: true, end: { state: 'not_ended', code: 'end_failed', left: { endTxHash: w.chain.builtUndelegates[0]!.txHash } } });
   });
 
   it('is reported as not confirmed when the Undelegate never lands, at the end time of the step and not later', async () => {
@@ -222,7 +222,8 @@ describe('an end step that fails', () => {
     w.chain.faults.submitDelegateThrows = true;
     const run = await go(w, idle);
     expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'submit_failed' }, end: { state: 'not_ended', code: 'end_unconfirmed', left: { endTxHash: null } } });
-    expect(w.chain.log.filter((step) => step === 'buildUndelegate').length).toBeGreaterThan(2);
+    expect(w.chain.log.filter((step) => step === 'read:sub').length).toBeGreaterThan(2);
+    expect(w.chain.log).not.toContain('buildUndelegate');
     expect(w.chain.submitted.map((s) => s.kind)).toStrictEqual(['delegate']);
   });
 
@@ -390,7 +391,7 @@ describe('the keys', () => {
   it('sign the Delegate with the agent key and the subagent key, and each one time', async () => {
     const w = subWorld();
     await go(w, idle);
-    expect(w.chain.submitted[0]!.cbor).toBe(`delegate:${w.chain.subId}+${AGENT_KEY.slice(0, 4)}+${SUBAGENT_KEY.slice(0, 4)}`);
+    expect(w.chain.submitted[0]!.cbor).toBe(`${w.chain.builtDelegates[0]!.txCbor}+${AGENT_KEY.slice(0, 4)}+${SUBAGENT_KEY.slice(0, 4)}`);
   });
 
   it('refuse a Delegate that needs a key that was not given, before it is sent; and sign it when the key is given', async () => {
@@ -493,10 +494,11 @@ describe('a wait that could have no end', () => {
 
   it('is cut by the number of reads when the clock does not move: the wait and the end step both end', async () => {
     const w = subWorld({ limits: { confirmationWaitMs: 60_000, endTimeoutMs: 120_000, pollMs: 5_000 } });
-    const run = await withSubDelegation({ chain: w.chain, clock: frozen }, w.request, w.limits, idle);
+    const run = await withSubDelegation({ ...w.deps, clock: frozen }, w.request, w.limits, idle);
     expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'confirmation_timeout' }, end: { state: 'not_ended', code: 'end_unconfirmed' } });
     expect(w.chain.log.filter((step) => step === 'readiness')).toHaveLength(Math.ceil(60_000 / 5_000) + 1);
-    expect(w.chain.log.filter((step) => step === 'buildUndelegate')).toHaveLength(Math.ceil(120_000 / 5_000) + 1);
+    expect(w.chain.log.filter((step) => step === 'read:sub')).toHaveLength(2 * (Math.ceil(120_000 / 5_000) + 1));
+    expect(w.chain.log).not.toContain('buildUndelegate');
   });
 });
 

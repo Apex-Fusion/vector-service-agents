@@ -4,16 +4,23 @@
 // path: after a success, a refusal, a failure, a throw of the job, a timeout of the job, and a timeout of the wait. It returns what the job returned together with the result of the end step.
 //
 // The sub-delegation is narrow by construction, and the caller cannot widen it: `remaining` is 0 (the subagent cannot delegate again), the value limit is `{ per_tx: 0, total: 0 }` with the period of
-// the parent, and the validity is inside the validity of the parent and ends within `validForMs`. The build is checked again before it is signed, so a builder that gives a wider delegation never
-// gets a signature. A sub-delegation that is not ended still ends by itself at its `notAfter`, and the result gives the reference that a janitor needs to end it earlier.
+// the parent, and the validity is inside the validity of the parent and ends within `validForMs`. The action and the resource come from the route table. The keys sign the BYTES of a transaction
+// that was read (txcheck.ts), and never the report of the builder about them, so a builder that gives the bytes of a wider delegation gets no signature. A sub-delegation that is not ended still
+// ends by itself at its `notAfter`, and the result gives the reference that a janitor needs to end it earlier.
+//
+// Runs of one agent wallet at one time go through the queue of that wallet for the build and the send of each transaction (queue.ts), and the end step ends only the delegation that its own run made.
+// Every wait on a port has a bound, and a port that gives no answer is a typed failure.
 //
 // What it costs and locks, from the builders: the Delegate makes one output at the delegation address that holds the ledger minimum for its datum (`DelegateBuild.outputLovelace`). The agent pays
 // that deposit and the fee of the transaction from the wallet of its live delegation key. The Undelegate returns the deposit to that wallet, less its own fee.
 import type { DelegateBuild, DelegateParams, UndelegateBuild, UndelegateParams } from '@vsa/buyer-core';
+import { encodeDelegationDatum } from '@vsa/vector-read/identity-codec';
 import { accepted, parseDelegationId, parseDid, parseTenantId, refused, type Accepted, type DelegationId, type Did, type Refused } from '../protocol/index.ts';
 import { MAX_WAIT_MS, within, type Clock } from './ports.ts';
+import { takeTurn, type SerialQueue } from './queue.ts';
 import { ROUTES, type RouteId, type TokenTarget } from './routes.ts';
 import { errorText, safeText } from './text.ts';
+import { addressHexOf, delegateTxProblem, delegationScriptProblem, undelegateTxProblem, type DelegationScript } from './txcheck.ts';
 
 /** The confirmations that the gateway wants for every delegation of a chain, before it issues a token under it. */
 export const CONFIRMATIONS_REQUIRED = 30;
@@ -24,8 +31,10 @@ export const MAX_SUB_DELEGATION_MS = 86_400_000;
 export const DEFAULT_CONFIRMATION_WAIT_MS = 360_000;
 export const DEFAULT_POLL_MS = 5_000;
 export const DEFAULT_END_TIMEOUT_MS = 120_000;
-/** The longest wait for one answer of a port before the Delegate is sent and while it is sent: the read of the parent, the build, the hook and the send. The default is 60 seconds. */
+/** The longest wait for one answer of a port, in milliseconds: the read of the parent, the build, the hook, the send, and each call of the end step. The default is 60 seconds. */
 export const DEFAULT_STEP_TIMEOUT_MS = 60_000;
+/** The longest time that a Delegate keeps its turn in the queue of the wallet after its send, while it waits to be on the ledger, in milliseconds. The default is 120 seconds. */
+export const DEFAULT_LANDING_WAIT_MS = 120_000;
 
 /** The datum of a delegation as the builders of the ledger give it. */
 export type DelegationDatum = DelegateBuild['delegation'];
@@ -34,6 +43,8 @@ export type DelegationDatum = DelegateBuild['delegation'];
 export interface LiveDelegation {
   readonly id: string;
   readonly delegation: DelegationDatum;
+  /** The hash of the transaction that made the delegation: the `txHash` of its output. The end step ends only a delegation that the Delegate of its own run made. */
+  readonly txHash: string;
 }
 
 /** Whether the gateway can issue a token under a delegation now. */
@@ -71,6 +82,13 @@ export interface TxSigner {
 export interface SubDelegationDeps {
   readonly chain: DelegationChain;
   readonly clock: Clock;
+  /** The delegation script of the identity deployment: `deployment.delegation` of `@vsa/buyer-core`. The keys sign only a transaction that mints the token of this script and puts it in an output at its address. */
+  readonly delegationScript: DelegationScript;
+  /**
+   * The queue of the wallet key of the agent: the same queue that holds its other transactions. The build and the send of a Delegate or an Undelegate go through it, one at a time, and each keeps its
+   * turn until the ledger shows it. `createSerialQueue()` makes one for a test and for a caller that has none.
+   */
+  readonly walletQueue: SerialQueue;
   /**
    * Called with the reference of the sub-delegation just BEFORE the Delegate is sent, so that a crash of the process cannot leave a sub-delegation that no record names. Write the reference to the
    * store of the janitor here, and remove it when the run gives `end.state` of `ended` or `not_made`. A hook that throws stops the run with `journal_failed`: nothing is sent.
@@ -94,14 +112,19 @@ export interface SubDelegationRequest {
 export interface SubDelegationLimits {
   /** The longest time that the job runs, in milliseconds. A job that is slower is not waited for, and the sub-delegation is ended. */
   readonly jobTimeoutMs: number;
-  /** The longest wait for the confirmations. The default is DEFAULT_CONFIRMATION_WAIT_MS. */
+  /**
+   * The longest time from the start of the run to the moment when the gateway can issue a token: the wait for the turn in the queue of the wallet, the Delegate, and the wait for its 30 confirmations.
+   * The default is DEFAULT_CONFIRMATION_WAIT_MS.
+   */
   readonly confirmationWaitMs?: number;
   /** The time between two reads of the ledger. The default is DEFAULT_POLL_MS. */
   readonly pollMs?: number;
-  /** The longest time of the end step: the Undelegate, and the wait until the ledger shows it. The default is DEFAULT_END_TIMEOUT_MS. */
+  /** The longest time of the end step: the turn in the queue, the Undelegate, and the wait until the ledger shows it. The default is DEFAULT_END_TIMEOUT_MS. */
   readonly endTimeoutMs?: number;
   /** The longest wait for one answer of a port: the read of the parent, the build, the hook, the send, and each call of the end step. The default is DEFAULT_STEP_TIMEOUT_MS. */
   readonly stepTimeoutMs?: number;
+  /** The longest time that the Delegate keeps its turn in the queue after its send, while it waits to be on the ledger. The default is DEFAULT_LANDING_WAIT_MS. */
+  readonly landingWaitMs?: number;
 }
 
 /** What the job gets. */
@@ -141,7 +164,7 @@ export interface LeftSubDelegation {
 }
 
 export type SubDelegationEnd =
-  /** Nothing was sent to the node, so there is nothing to end. */
+  /** Nothing of this run is on the ledger and nothing can land: no Delegate was sent, or the ledger shows a delegation with this identifier that ANOTHER transaction made, so the Delegate of this run never lands. There is nothing to end. */
   | { readonly state: 'not_made' }
   /** The ledger no longer shows the sub-delegation. `txHash` is the Undelegate. */
   | { readonly state: 'ended'; readonly txHash: string }
@@ -174,12 +197,16 @@ interface Plan {
   readonly agentSigner: TxSigner;
   readonly subagentSigner: TxSigner;
   readonly walletAddress: string;
+  /** The bytes of the address of the wallet, in hex: every output of a transaction of this run that is not the delegation output goes there. */
+  readonly walletHex: string;
+  readonly script: DelegationScript;
   readonly validForMs: number;
   readonly jobTimeoutMs: number;
   readonly confirmationWaitMs: number;
   readonly pollMs: number;
   readonly endTimeoutMs: number;
   readonly stepTimeoutMs: number;
+  readonly landingWaitMs: number;
 }
 
 const KEY_HASH = /^[0-9a-f]{56}$/;
@@ -229,8 +256,11 @@ function routeOf(target: TokenTarget): Accepted<{ readonly action: string; reado
 }
 
 /** The plan of a request, or the first rule that it breaks. Nothing is sent before this passes. */
-function planOf(request: SubDelegationRequest, limits: SubDelegationLimits): Accepted<Plan> | SubDelegationFailure {
+function planOf(deps: SubDelegationDeps, request: SubDelegationRequest, limits: SubDelegationLimits): Accepted<Plan> | SubDelegationFailure {
   const bad = (detail: string): SubDelegationFailure => refused('bad_request', detail);
+  const scriptProblem = delegationScriptProblem(deps.delegationScript);
+  if (scriptProblem !== null) return bad(scriptProblem);
+  if (typeof deps.walletQueue !== 'object' || deps.walletQueue === null || typeof deps.walletQueue.run !== 'function') return bad('walletQueue must be the queue of the wallet key: an object with a run function');
   const { target } = request;
   const route = routeOf(target);
   if (!route.ok) return route;
@@ -241,37 +271,53 @@ function planOf(request: SubDelegationRequest, limits: SubDelegationLimits): Acc
   const problem = signerProblem(request.agent.signer, 'agent.signer') ?? signerProblem(request.subagent.signer, 'subagent.signer');
   if (problem !== null) return bad(problem);
   if (request.agent.signer.keyHash === request.subagent.signer.keyHash) return bad('the agent and the subagent must have two delegation keys');
-  if (typeof request.agent.walletAddress !== 'string' || request.agent.walletAddress.length < 1) return bad('agent.walletAddress must be the address of the wallet of the delegation key');
+  const walletHex = typeof request.agent.walletAddress === 'string' ? addressHexOf(request.agent.walletAddress) : null;
+  if (walletHex === null) return bad('agent.walletAddress must be the address of the wallet of the delegation key');
   if (!isWhole(request.validForMs, MIN_SUB_DELEGATION_MS, MAX_SUB_DELEGATION_MS)) return bad(`validForMs must be a whole number from ${MIN_SUB_DELEGATION_MS} to ${MAX_SUB_DELEGATION_MS}`);
   const confirmationWaitMs = limits.confirmationWaitMs === undefined ? DEFAULT_CONFIRMATION_WAIT_MS : limits.confirmationWaitMs;
   const pollMs = limits.pollMs === undefined ? DEFAULT_POLL_MS : limits.pollMs;
   const endTimeoutMs = limits.endTimeoutMs === undefined ? DEFAULT_END_TIMEOUT_MS : limits.endTimeoutMs;
   const stepTimeoutMs = limits.stepTimeoutMs === undefined ? DEFAULT_STEP_TIMEOUT_MS : limits.stepTimeoutMs;
+  const landingWaitMs = limits.landingWaitMs === undefined ? DEFAULT_LANDING_WAIT_MS : limits.landingWaitMs;
   if (!isWhole(limits.jobTimeoutMs, 1, MAX_WAIT_MS)) return bad(`jobTimeoutMs must be a whole number from 1 to ${MAX_WAIT_MS}`);
-  if (![confirmationWaitMs, pollMs, endTimeoutMs, stepTimeoutMs].every((ms) => isWhole(ms, 1, MAX_WAIT_MS))) {
-    return bad(`confirmationWaitMs, pollMs, endTimeoutMs and stepTimeoutMs must be whole numbers from 1 to ${MAX_WAIT_MS}`);
+  if (![confirmationWaitMs, pollMs, endTimeoutMs, stepTimeoutMs, landingWaitMs].every((ms) => isWhole(ms, 1, MAX_WAIT_MS))) {
+    return bad(`confirmationWaitMs, pollMs, endTimeoutMs, stepTimeoutMs and landingWaitMs must be whole numbers from 1 to ${MAX_WAIT_MS}`);
   }
   return accepted({
     target, action: route.value.action, resource: route.value.resource, parent: parent.value, subagentId: subagent.value.slice('did:vector:'.length), agentSigner: request.agent.signer,
-    subagentSigner: request.subagent.signer, walletAddress: request.agent.walletAddress, validForMs: request.validForMs, jobTimeoutMs: limits.jobTimeoutMs, confirmationWaitMs, pollMs,
-    endTimeoutMs, stepTimeoutMs,
+    subagentSigner: request.subagent.signer, walletAddress: request.agent.walletAddress, walletHex, script: deps.delegationScript, validForMs: request.validForMs,
+    jobTimeoutMs: limits.jobTimeoutMs, confirmationWaitMs, pollMs, endTimeoutMs, stepTimeoutMs, landingWaitMs,
   });
 }
 
-/** The first way in which a build is not the narrow sub-delegation that was asked for, or null. The build is checked after the builder made it, and before any key signs. */
-function buildProblem(built: DelegateBuild, plan: Plan, parent: DelegationDatum, notAfter: number, periodMs: number): string | null {
+/** The datum of the delegation that was asked for, as the output of the Delegate must hold it. Every field comes from the request, the parent or the clock, and only the start comes from the build. */
+function askedDatum(plan: Plan, parent: DelegationDatum, notBefore: number, notAfter: number, periodMs: number): DelegationDatum {
+  return {
+    delegator: { type: 'Agent', id: parent.delegate }, parent: plan.parent, delegate: plan.subagentId, delegateKey: plan.subagentSigner.keyHash, actions: [hexOf(plan.action)],
+    resources: [hexOf(plan.resource)], notBefore, notAfter, depth: parent.depth + 1, remaining: 0, purpose: null, value: { perTx: 0n, total: 0n, periodMs },
+  };
+}
+
+/**
+ * The first way in which the REPORT of a build is not the narrow sub-delegation that was asked for, or null. The bytes of the transaction are read by `delegateTxProblem` after this check and
+ * before any key signs. The start of the delegation is the one thing that the builder chooses: it is from the start of the parent to the later of now and that start.
+ */
+function buildProblem(built: DelegateBuild, plan: Plan, parent: DelegationDatum, notAfter: number, periodMs: number, now: number): string | null {
   const d = built.delegation;
   const only = (items: readonly string[], text: string): boolean => items.length === 1 && items[0] === hexOf(text);
   if (!/^[0-9a-f]{64}$/.test(built.id)) return 'the build has no delegation identifier';
+  if (!/^[0-9a-f]{64}$/.test(built.txHash)) return 'the build has no transaction hash';
   if (d.remaining !== 0) return `the build allows ${String(d.remaining)} further hops, and a sub-delegation allows none`;
   if (d.value === null || d.value.perTx !== 0n || d.value.total !== 0n) return 'the build has a value above 0, or no value limit';
   if (d.value.periodMs !== periodMs) return 'the build has not the period that was asked for';
-  if (d.delegator.type !== 'Agent') return 'the delegator of the build is not an agent';
+  if (d.delegator.type !== 'Agent' || d.delegator.id !== parent.delegate) return 'the delegator of the build is not the agent that the parent names as its delegate';
+  if (d.purpose !== null) return 'the build has a purpose, and a sub-delegation has none';
   if (d.parent !== plan.parent) return 'the build is not one hop below the parent that was asked for';
   if (d.delegate !== plan.subagentId || d.delegateKey !== plan.subagentSigner.keyHash) return 'the build has not the delegate and the delegate key of the subagent';
   if (!only(d.actions, plan.action) || !only(d.resources, plan.resource)) return 'the build has not exactly the one action and the one resource of the route';
   if (d.depth !== parent.depth + 1) return 'the build has not the depth of the parent plus one';
   if (d.notBefore < parent.notBefore || d.notAfter > parent.notAfter || d.notAfter !== notAfter || d.notAfter <= d.notBefore) return 'the build has not a period inside the period of the parent';
+  if (d.notBefore > Math.max(now, parent.notBefore)) return 'the build starts later than the parent and the clock';
   return null;
 }
 
@@ -300,11 +346,22 @@ async function answerOf<T>(clock: Clock, ms: number, call: () => Promise<T>): Pr
 
 const timedOut = (what: string, ms: number): SubDelegationFailure => refused('step_timeout', `${what} did not answer within ${ms} ms`);
 
+/** What the ledger shows of one delegation: it is live and made by the transaction `txHash`, it is not on the ledger, or it cannot be read. */
+type Seen = { readonly state: 'live'; readonly txHash: string } | { readonly state: 'absent' } | { readonly state: 'unreadable'; readonly detail: string };
+
+async function seenOn(deps: SubDelegationDeps, plan: Plan, id: string): Promise<Seen> {
+  const read = await answerOf(deps.clock, plan.stepTimeoutMs, () => deps.chain.readDelegation(id));
+  if (read.state === 'timed_out') return { state: 'unreadable', detail: `the ledger did not answer within ${plan.stepTimeoutMs} ms` };
+  if (read.state === 'threw') return { state: 'unreadable', detail: errorText(read.error) };
+  return read.value === null ? { state: 'absent' } : { state: 'live', txHash: read.value.txHash };
+}
+
 /**
- * Reads the parent, builds the Delegate, checks the build, signs it, and sends it. Each call of a port has the bound `stepTimeoutMs`, and a call that gives no answer is `step_timeout`.
- * `left.current` is set before the send: a transaction that was sent may land, even when the send throws or gives no answer, and the end step then runs as for a Delegate that may have landed.
+ * Reads the parent, builds the Delegate, checks the build and the BYTES of its transaction, signs it, and sends it. Each call of a port has the bound `stepTimeoutMs`, and a call that gives no answer is
+ * `step_timeout`. `left.current` is set before the send: a transaction that was sent may land, even when the send throws or gives no answer, and the end step then runs as for a Delegate that may have
+ * landed.
  */
-async function makeSubDelegation(deps: SubDelegationDeps, plan: Plan, left: { current: LeftSubDelegation | null }): Promise<Accepted<LeftSubDelegation> | SubDelegationFailure> {
+async function buildAndSend(deps: SubDelegationDeps, plan: Plan, left: { current: LeftSubDelegation | null }): Promise<Accepted<LeftSubDelegation> | SubDelegationFailure> {
   const { chain, clock } = deps;
   const read = await answerOf(clock, plan.stepTimeoutMs, () => chain.readDelegation(plan.parent));
   if (read.state === 'timed_out') return timedOut('the read of the parent delegation', plan.stepTimeoutMs);
@@ -325,8 +382,18 @@ async function makeSubDelegation(deps: SubDelegationDeps, plan: Plan, left: { cu
   if (build.state === 'timed_out') return timedOut('the build of the Delegate', plan.stepTimeoutMs);
   if (build.state === 'threw') return refused('build_refused', `the Delegate could not be built: ${errorText(build.error)}`);
   const built: DelegateBuild = build.value;
-  const problem = buildProblem(built, plan, datum, notAfter, periodMs);
+  const problem = buildProblem(built, plan, datum, notAfter, periodMs, now);
   if (problem !== null) return refused('build_mismatch', problem);
+  let datumHex: string;
+  try {
+    datumHex = encodeDelegationDatum(askedDatum(plan, datum, built.delegation.notBefore, notAfter, periodMs));
+  } catch (error) {
+    return refused('build_mismatch', `the datum that was asked for cannot be written: ${errorText(error)}`);
+  }
+  const txProblem = delegateTxProblem(built.txCbor, {
+    txHash: built.txHash, id: built.id, script: plan.script, walletHex: plan.walletHex, signers: [plan.agentSigner.keyHash, plan.subagentSigner.keyHash], datumHex,
+  });
+  if (txProblem !== null) return refused('build_mismatch', txProblem);
   const signed = signAll(built.txCbor, built.requiredSigners, [plan.agentSigner, plan.subagentSigner]);
   if (!signed.ok) return signed;
   const made: LeftSubDelegation = {
@@ -342,12 +409,49 @@ async function makeSubDelegation(deps: SubDelegationDeps, plan: Plan, left: { cu
   return accepted(made);
 }
 
-/** Waits, within the bound, until the gateway can issue a token under the sub-delegation. A read that fails is tried again until the bound. At the bound, a wait that never read the ledger is `ledger_unreadable`. */
-async function waitUntilReady(deps: SubDelegationDeps, plan: Plan, made: LeftSubDelegation): Promise<Accepted<true> | SubDelegationFailure> {
+/**
+ * Waits, for at most `landingWaitMs`, until the ledger shows a delegation with the identifier of this run. The caller holds the turn of the wallet queue meanwhile, so the next build reads the
+ * outputs that this Delegate left. A delegation of ANOTHER transaction under the same identifier means that this Delegate can never land: that is `submit_failed`. A wait that ends before
+ * the delegation shows is not a failure: the run goes on, and the wait for the confirmations decides.
+ */
+async function landed(deps: SubDelegationDeps, plan: Plan, made: LeftSubDelegation): Promise<SubDelegationFailure | null> {
+  const { clock } = deps;
+  const polls = Math.ceil(plan.landingWaitMs / plan.pollMs) + 1;
+  const outcome = await within(clock, plan.landingWaitMs, async (signal): Promise<'ours' | 'taken' | 'unseen'> => {
+    for (let poll = 0; poll < polls && !signal.aborted; poll += 1) {
+      const seen = await seenOn(deps, plan, made.id);
+      if (seen.state === 'live') return seen.txHash === made.delegateTxHash ? 'ours' : 'taken';
+      await clock.sleep(plan.pollMs, signal);
+    }
+    return 'unseen';
+  });
+  return !outcome.timedOut && outcome.value === 'taken'
+    ? refused('submit_failed', 'the ledger shows a delegation with the identifier of this run that another transaction made, so the Delegate of this run never lands')
+    : null;
+}
+
+/** Takes the turn of the wallet queue, builds and sends the Delegate, and keeps the turn until the ledger shows it. */
+async function makeSubDelegation(deps: SubDelegationDeps, plan: Plan, left: { current: LeftSubDelegation | null }): Promise<Accepted<LeftSubDelegation> | SubDelegationFailure> {
+  const turn = await takeTurn(deps.walletQueue, deps.clock, plan.confirmationWaitMs);
+  if (turn.state === 'timed_out') return refused('step_timeout', `the turn in the queue of the wallet did not come within ${plan.confirmationWaitMs} ms`);
+  if (turn.state === 'failed') return refused('internal', `the queue of the wallet failed: ${errorText(turn.error)}`);
+  try {
+    const made = await buildAndSend(deps, plan, left);
+    return made.ok ? ((await landed(deps, plan, made.value)) ?? made) : made;
+  } finally {
+    turn.release();
+  }
+}
+
+/**
+ * Waits, within `budgetMs`, until the gateway can issue a token under the sub-delegation. A read that fails is tried again until the bound. At the bound, a wait that never read the ledger is
+ * `ledger_unreadable`.
+ */
+async function waitUntilReady(deps: SubDelegationDeps, plan: Plan, made: LeftSubDelegation, budgetMs: number): Promise<Accepted<true> | SubDelegationFailure> {
   const { chain, clock } = deps;
   const seen: { failure: string | null; confirmations: number | null; unusable: readonly string[] | null } = { failure: null, confirmations: null, unusable: null };
-  const polls = Math.ceil(plan.confirmationWaitMs / plan.pollMs) + 1;
-  const bounded = await within(clock, plan.confirmationWaitMs, async () => {
+  const polls = Math.ceil(budgetMs / plan.pollMs) + 1;
+  const bounded = await within(clock, budgetMs, async () => {
     for (let poll = 0; poll < polls; poll += 1) {
       try {
         const readiness = await chain.readiness(made.id, { action: made.action, resource: made.resource }, clock.now());
@@ -371,58 +475,76 @@ async function waitUntilReady(deps: SubDelegationDeps, plan: Plan, made: LeftSub
   return refused('confirmation_timeout', `the sub-delegation had ${seen.confirmations === null ? 'an unknown number' : String(seen.confirmations)} of ${CONFIRMATIONS_REQUIRED} confirmations when the wait ended`);
 }
 
-/** True when the ledger shows the delegation, false when it does not, and null when the ledger cannot be read. */
-async function showsLive(chain: DelegationChain, id: string): Promise<boolean | null> {
-  try {
-    return (await chain.readDelegation(id)) !== null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * The end step: the Undelegate, signed by the agent key, and then the wait until the ledger no longer shows the delegation. It never throws: every failure is in the result, with the reference of
- * what is left. A Delegate that was sent may not be on the ledger yet: the step tries to build the Undelegate again until `endTimeoutMs`, and it stops at once when the ledger shows the delegation
- * and the builder still refuses, because that refusal is a rule and time does not change it.
+ * what is left.
+ *
+ * It ends only the delegation that THIS run made. The ledger shows the transaction that made each delegation: one that this run made is ended, and one that another transaction made under the same
+ * identifier is left alone, because the Delegate of this run can never land (`not_made`). A Delegate that was sent may not be on the ledger yet: the step reads the ledger again until `endTimeoutMs`.
+ * When the ledger shows the delegation and the builder refuses, the step stops at once (`end_failed`), because that refusal is a rule and time does not change it.
+ *
+ * The build and the send of the Undelegate go through the queue of the wallet, and the turn is kept until the ledger no longer shows the delegation. Every call of a port has the bound
+ * `stepTimeoutMs`, and the whole step has the bound `endTimeoutMs`.
  */
 async function endSubDelegation(deps: SubDelegationDeps, plan: Plan, left: LeftSubDelegation | null): Promise<SubDelegationEnd> {
   if (left === null) return NOT_MADE;
-  const { chain, clock } = deps;
+  const { clock } = deps;
   let current = left;
   const notEnded = (code: 'end_failed' | 'end_unconfirmed', detail: string): SubDelegationEnd => ({ state: 'not_ended', code, detail, left: current });
+  const deadline = clock.now() + plan.endTimeoutMs;
+  const polls = Math.ceil(plan.endTimeoutMs / plan.pollMs) + 1;
   try {
-    const bounded = await within(clock, plan.endTimeoutMs, async (): Promise<SubDelegationEnd> => {
-      const polls = Math.ceil(plan.endTimeoutMs / plan.pollMs) + 1;
-      let sent: UndelegateBuild | null = null;
-      let why = 'the sub-delegation is not on the ledger';
-      for (let poll = 0; poll < polls; poll += 1) {
-        if (sent !== null) {
-          if ((await showsLive(chain, left.id)) === false) return { state: 'ended', txHash: sent.txHash };
-          await clock.sleep(plan.pollMs);
-          continue;
-        }
-        let built: UndelegateBuild | null = null;
+    const bounded = await within(clock, plan.endTimeoutMs, async (signal): Promise<SubDelegationEnd> => {
+      let used = 0;
+      /** False when the polls or the time are spent. */
+      const wait = async (): Promise<boolean> => {
+        used += 1;
+        if (used >= polls || signal.aborted) return false;
+        await clock.sleep(plan.pollMs, signal);
+        return !signal.aborted;
+      };
+      /** The Undelegate, with the turn held from the build until the ledger no longer shows the delegation. Null when the build gave no answer: the caller reads the ledger and tries again. */
+      const undelegate = async (): Promise<SubDelegationEnd | null> => {
+        const turn = await takeTurn(deps.walletQueue, clock, Math.max(1, deadline - clock.now()));
+        if (turn.state === 'timed_out') return notEnded('end_unconfirmed', 'the turn in the queue of the wallet did not come before the end step ran out of time');
+        if (turn.state === 'failed') return notEnded('end_failed', `the queue of the wallet failed: ${errorText(turn.error)}`);
         try {
-          built = await chain.buildUndelegate({ changeAddress: plan.walletAddress, nowMs: clock.now(), id: left.id, signer: plan.agentSigner.keyHash });
-        } catch (error) {
-          why = `the Undelegate could not be built: ${errorText(error)}`;
-          if ((await showsLive(chain, left.id)) === true) return notEnded('end_failed', why);
-        }
-        if (built !== null) {
+          const build = await answerOf(clock, plan.stepTimeoutMs, () => deps.chain.buildUndelegate({ changeAddress: plan.walletAddress, nowMs: clock.now(), id: left.id, signer: plan.agentSigner.keyHash }));
+          if (build.state === 'timed_out') return null;
+          if (build.state === 'threw') return notEnded('end_failed', `the Undelegate could not be built: ${errorText(build.error)}`);
+          const built: UndelegateBuild = build.value;
           if (built.id !== left.id) return notEnded('end_failed', 'the Undelegate is for another delegation');
-          const signed = signAll(built.txCbor, built.requiredSigners, [plan.agentSigner, plan.subagentSigner]);
+          const problem = undelegateTxProblem(built.txCbor, { txHash: built.txHash, id: left.id, script: plan.script, walletHex: plan.walletHex, signers: [plan.agentSigner.keyHash] });
+          if (problem !== null) return notEnded('end_failed', problem);
+          const signed = signAll(built.txCbor, built.requiredSigners, [plan.agentSigner]);
           if (!signed.ok) return notEnded('end_failed', signed.detail);
           current = { ...left, endTxHash: built.txHash };
-          try {
-            await chain.submit(signed.value);
-          } catch (error) {
-            return notEnded('end_failed', `the Undelegate was not accepted by the node: ${errorText(error)}`);
-          }
-          sent = built;
+          const sent = await answerOf(clock, plan.stepTimeoutMs, () => deps.chain.submit(signed.value));
+          if (sent.state === 'threw') return notEnded('end_failed', `the Undelegate was not accepted by the node: ${errorText(sent.error)}`);
+          let why = 'the ledger still shows the sub-delegation after the Undelegate was sent';
+          do {
+            const seen = await seenOn(deps, plan, left.id);
+            if (seen.state === 'absent') return { state: 'ended', txHash: built.txHash };
+            why = seen.state === 'unreadable' ? `the ledger could not be read after the Undelegate was sent: ${seen.detail}` : 'the ledger still shows the sub-delegation after the Undelegate was sent';
+          } while (await wait());
+          return notEnded('end_unconfirmed', why);
+        } finally {
+          turn.release();
         }
-        await clock.sleep(plan.pollMs);
-      }
-      return notEnded('end_unconfirmed', sent === null ? why : 'the ledger still shows the sub-delegation after the Undelegate was sent');
+      };
+      let why = 'the sub-delegation is not on the ledger';
+      do {
+        const seen = await seenOn(deps, plan, left.id);
+        if (seen.state === 'live') {
+          if (seen.txHash !== left.delegateTxHash) return NOT_MADE;
+          const ended = await undelegate();
+          if (ended !== null) return ended;
+          why = `the build of the Undelegate did not answer within ${plan.stepTimeoutMs} ms`;
+        } else {
+          why = seen.state === 'absent' ? 'the sub-delegation is not on the ledger' : `the ledger could not be read: ${seen.detail}`;
+        }
+      } while (await wait());
+      return notEnded('end_unconfirmed', why);
     });
     return bounded.timedOut ? notEnded('end_unconfirmed', `the end did not finish within ${plan.endTimeoutMs} ms`) : bounded.value;
   } catch (error) {
@@ -433,9 +555,10 @@ async function endSubDelegation(deps: SubDelegationDeps, plan: Plan, left: LeftS
 /**
  * Makes a sub-delegation, runs `job` under it, and ends it. It never throws, and `end` of the result is always there.
  *
- * The steps are in this order: the request is checked and nothing is sent when it is wrong; the parent is read; the Delegate is built, checked and signed by the agent key and the subagent key; it
- * is sent; the wait for 30 confirmations runs, bounded by `confirmationWaitMs`; the job runs, bounded by `jobTimeoutMs`; and the end step runs in a `finally` path, for every outcome after the Delegate
- * was sent. The end step is the Undelegate. It is ended only when the ledger no longer shows the delegation. A failed end step does not change the result of the job.
+ * The steps are in this order: the request is checked and nothing is sent when it is wrong; the turn in the queue of the wallet comes; the parent is read; the Delegate is built, and its report and its
+ * bytes are checked; it is signed by the agent key and the subagent key, and sent; the turn is kept until the ledger shows the Delegate; the wait for 30 confirmations runs; the job runs, bounded by
+ * `jobTimeoutMs`; and the end step runs in a `finally` path, for every outcome after the Delegate was sent. The end step is the Undelegate. It is ended only when the ledger no longer shows the
+ * delegation. A failed end step does not change the result of the job. `confirmationWaitMs` bounds everything from the start of the run to the moment when a token can be issued.
  */
 export async function withSubDelegation<T>(
   deps: SubDelegationDeps,
@@ -443,7 +566,7 @@ export async function withSubDelegation<T>(
   limits: SubDelegationLimits,
   job: (handle: SubDelegationHandle) => Promise<T>,
 ): Promise<SubDelegationRun<T>> {
-  const planned = planOf(request, limits);
+  const planned = planOf(deps, request, limits);
   if (!planned.ok) return { ok: false, kind: 'not_ready', failure: planned, end: NOT_MADE };
   const plan = planned.value;
   const left: { current: LeftSubDelegation | null } = { current: null };
@@ -460,9 +583,10 @@ export async function withSubDelegation<T>(
 }
 
 async function runUnder<T>(deps: SubDelegationDeps, plan: Plan, left: { current: LeftSubDelegation | null }, job: (handle: SubDelegationHandle) => Promise<T>): Promise<SubDelegationOutcome<T>> {
+  const startedAt = deps.clock.now();
   const made = await makeSubDelegation(deps, plan, left);
   if (!made.ok) return { ok: false, kind: 'not_ready', failure: made };
-  const ready = await waitUntilReady(deps, plan, made.value);
+  const ready = await waitUntilReady(deps, plan, made.value, Math.max(1, startedAt + plan.confirmationWaitMs - deps.clock.now()));
   if (!ready.ok) return { ok: false, kind: 'not_ready', failure: ready };
   try {
     const bounded = await within(deps.clock, plan.jobTimeoutMs, (signal) => job({ id: made.value.id, parent: plan.parent, target: plan.target, notAfter: made.value.notAfter, signal }));

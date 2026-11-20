@@ -4,7 +4,7 @@
 //   - a token for one route, and the token of a subagent (src/token.ts);
 //   - a call with a token, with a JWT-SVID, or with an X.509-SVID, and the typed result of a call (src/call.ts, src/answer.ts);
 //   - the SVIDs of a counterparty (src/svid.ts, src/mtls.ts);
-//   - the sub-delegation, ended in a `finally` path (src/subdelegation.ts, src/signer.ts).
+//   - the sub-delegation, ended in a `finally` path (src/subdelegation.ts, src/signer.ts), the transaction rules that the keys follow (src/txcheck.ts), and the queue of a wallet (src/queue.ts).
 // Every access to the gateway, the ledger, a mock system and the clock goes through a parameter. The folder reads no key file and no environment variable.
 export { SYSTEMS, ROUTES, jwtSvidTarget, tokenTarget, x509Target } from './routes.ts';
 export type {
@@ -13,6 +13,11 @@ export type {
 
 export { systemClock, within } from './ports.ts';
 export type { Bounded, Clock } from './ports.ts';
+
+export { createSerialQueue } from './queue.ts';
+export type { SerialQueue } from './queue.ts';
+export { MAX_COLLATERAL_LOVELACE, MAX_DELEGATION_DEPOSIT_LOVELACE, MAX_TX_FEE_LOVELACE } from './txcheck.ts';
+export type { DelegationScript } from './txcheck.ts';
 
 export { GATEWAY_FAILURES } from './gateway.ts';
 export type { GatewayFailure, GatewayFailureCode } from './gateway.ts';
@@ -32,7 +37,8 @@ export { httpsTransport } from './mtls.ts';
 export type { MtlsReply, MtlsRequest, MtlsTransport } from './mtls.ts';
 
 export {
-  CONFIRMATIONS_REQUIRED, DEFAULT_CONFIRMATION_WAIT_MS, DEFAULT_END_TIMEOUT_MS, DEFAULT_POLL_MS, DEFAULT_STEP_TIMEOUT_MS, MAX_SUB_DELEGATION_MS, MIN_SUB_DELEGATION_MS, SUB_DELEGATION_FAILURES,
+  CONFIRMATIONS_REQUIRED, DEFAULT_CONFIRMATION_WAIT_MS, DEFAULT_END_TIMEOUT_MS, DEFAULT_LANDING_WAIT_MS, DEFAULT_POLL_MS, DEFAULT_STEP_TIMEOUT_MS, MAX_SUB_DELEGATION_MS, MIN_SUB_DELEGATION_MS,
+  SUB_DELEGATION_FAILURES,
   withSubDelegation,
 } from './subdelegation.ts';
 export type {
