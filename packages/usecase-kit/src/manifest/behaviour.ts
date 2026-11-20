@@ -44,10 +44,10 @@ export function buildFaultModes<K extends AgentKind>(kind: K): readonly FaultMod
 
 /** What each fault value does, in the words of the gap sentence. */
 export const FAULT_EFFECTS = {
-  confirm_wrong_lot: 'the confirmation names another lot than the purchase order',
-  alter_after_approval: 'one sentence of the justification changes after the approval and before the handoff',
-  quote_off_price_list: 'one quote line has a unit price that is not the published price',
-  invert_scores: 'one scorer returns its component scores reversed',
+  confirm_wrong_lot: 'the confirmation names another lot and quantity than the purchase order, and the order that it places has the wrong lot',
+  alter_after_approval: 'in execute, one sentence of the justification changes before the handoff, so its digest differs from the approved digest',
+  quote_off_price_list: 'one quote line has a unit price that is not the published price for that item and quantity',
+  invert_scores: 'one scorer returns its component scores reversed, as 100 minus each',
 } as const satisfies Record<FaultMode, string>;
 
 /**
@@ -59,8 +59,7 @@ export function faultGap(kind: AgentKind): string | null {
   const values: readonly FaultMode[] = FAULT_MODES[kind];
   if (values.length === 0) return null;
   const named = values.map((value) => `${value} (${FAULT_EFFECTS[value]})`).join(', ');
-  const which = values.length === 1 ? 'its one possible value is' : 'its possible values are';
-  return `This service has a fault switch for failure runs, and ${which} ${named}; this manifest is the same for every value, so only the field fault_mode of each result shows which value is active.`;
+  return `This service has a fault switch for failure runs with these possible values: ${named}; this manifest is the same for every value, so only the field fault_mode of each result shows which value is active.`;
 }
 
 /** The gaps with the fault sentence of the kind at the end, as a new list. A kind with no fault value gets the gaps as they are. */

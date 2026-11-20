@@ -275,7 +275,7 @@ describe('buildFaultModes', () => {
 describe('the fault sentence of the gaps', () => {
   it('is one sentence for a kind with a fault value: the value, what it does, and where the active value shows', () => {
     expect(faultGap('order-desk')).toBe(
-      'This service has a fault switch for failure runs, and its one possible value is confirm_wrong_lot (the confirmation names another lot than the purchase order); this manifest is the same for every value, so only the field fault_mode of each result shows which value is active.',
+      'This service has a fault switch for failure runs with these possible values: confirm_wrong_lot (the confirmation names another lot and quantity than the purchase order, and the order that it places has the wrong lot); this manifest is the same for every value, so only the field fault_mode of each result shows which value is active.',
     );
   });
 
