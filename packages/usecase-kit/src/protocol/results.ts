@@ -8,7 +8,11 @@
 // `reason` is a code or a sentence that goes with the outcome: the code of the counterparty for `refused_by_counterparty`, the evaluation error of the node for `vault_refused`, the code of the mock
 // system for `refused_by_system`, and a code for `failed`. A job that was carried out has no reason. `fault_mode` is in every result: it is empty in a clean run.
 //
-// The exit state is fixed by one rule, `exitStateOf`, and the types below agree with it: a result with a pair of outcome and exit state that the function cannot give does not compile.
+// The exit state is fixed by one rule, `exitStateOf`, and the types below agree with it: a result with a pair of outcome and exit state that the function cannot give does not compile. The one exception
+// is the reason `approval_expired` with the state `Rejected`: see RefusedResult. A result is made with no cast:
+//   completed, failed, disputed (two forms)       write the one state of the form: `Completed`, `Failed`, `Escalated`, or `Failed`.
+//   vault_refused                                 `exit_state: exitStateOf({ outcome: 'vault_refused', ... })`. For this outcome the type of the call is the state type of the result.
+//   refused_by_counterparty, refused_by_system    `...refusedExit(reason)`. It gives the reason and its state together, and the type of a refused result needs that pair.
 import type { ExecuteOutcome, ExitState, UseCase } from './codes.ts';
 import type { FaultSetting } from './faults.ts';
 import type { Did, Digest, OutputRef, Salt } from './identifiers.ts';
@@ -148,15 +152,26 @@ export interface UnfiledDisputeResult extends ExecuteResultBase {
 
 export type DisputedResult = EscalatedResult | UnfiledDisputeResult;
 
-/** The counterparty or a mock system refused. The reason is its code. The state is `Expired` for `approval_expired`, `Cancelled` for `delegation_ended`, and `Rejected` for any other code. */
-export interface RefusedResult extends ExecuteResultBase {
+interface RefusedResultBase extends ExecuteResultBase {
   readonly outcome: 'refused_by_counterparty' | 'refused_by_system';
-  readonly reason: string;
   readonly challenge: null;
-  readonly exit_state: 'Rejected' | 'Expired' | 'Cancelled';
 }
 
-/** The ledger refused the payment from the vault. The reason is the evaluation error. The state is `Cancelled` when the hirer ended the delegation, and `Failed` in every other case. */
+/** The reason of a refused result and its exit state, as a pair. TypeScript proves the state for a reason that is a literal type, so the third form takes any other reason. `refusedExit` makes the pair. */
+export type RefusedExit =
+  | { readonly reason: 'approval_expired'; readonly exit_state: 'Expired' }
+  | { readonly reason: 'delegation_ended'; readonly exit_state: 'Cancelled' }
+  | { readonly reason: string; readonly exit_state: 'Rejected' };
+
+/**
+ * The counterparty or a mock system refused. The reason is its code. The state follows the reason, as `exitStateOf` gives it: `Expired` for `approval_expired`, `Cancelled` for `delegation_ended`, and
+ * `Rejected` for any other code. The type cannot refuse the reason `approval_expired` with the state `Rejected`, because TypeScript has no type for a string that is not one of two given strings. Make the
+ * reason and the state with `...refusedExit(reason)`, so that the pair is right. `exit_state: exitStateOf(...)` does not compile here: the type of that call does not prove that the state goes with the
+ * reason that stands beside it.
+ */
+export type RefusedResult = RefusedResultBase & RefusedExit;
+
+/** The ledger refused the payment from the vault. The reason is the evaluation error. The state is `Cancelled` when the hirer ended the delegation, and `Failed` in every other case. Make the state with `exitStateOf`. */
 export interface VaultRefusedResult extends ExecuteResultBase {
   readonly outcome: 'vault_refused';
   readonly reason: string;
@@ -185,6 +200,9 @@ export interface ExitStateInput {
   readonly delegation_ended: boolean;
 }
 
+/** The input of `exitStateOf` for an outcome that the compiler knows. */
+type ExitStateInputFor<O extends ExecuteOutcome> = ExitStateInput & { readonly outcome: O };
+
 /**
  * The exit state of an `execute` result. It is the one rule for every buyer-side agent:
  *   completed                                    Completed
@@ -194,7 +212,16 @@ export interface ExitStateInput {
  *   vault_refused                                Cancelled when the delegation ended, and Failed in every other case
  *   failed                                       Failed
  * A flag counts only when it is the boolean `true`. An outcome that the protocol does not have gives `Failed`: it is never a pass.
+ *
+ * An outcome that the compiler knows gives the state type of the result for that outcome, so `exit_state: exitStateOf({ outcome: 'vault_refused', ... })` needs no cast. An outcome that only the run
+ * knows gives `ExitState`. A refused outcome gives `Rejected`, `Expired` or `Cancelled`, but the type of a refused result links the state to the reason: take the pair from `refusedExit`.
  */
+export function exitStateOf(input: ExitStateInputFor<'completed'>): 'Completed';
+export function exitStateOf(input: ExitStateInputFor<'failed'>): 'Failed';
+export function exitStateOf(input: ExitStateInputFor<'vault_refused'>): 'Cancelled' | 'Failed';
+export function exitStateOf(input: ExitStateInputFor<'disputed'>): 'Escalated' | 'Failed';
+export function exitStateOf(input: ExitStateInputFor<'refused_by_counterparty' | 'refused_by_system'>): 'Rejected' | 'Expired' | 'Cancelled';
+export function exitStateOf(input: ExitStateInput): ExitState;
 export function exitStateOf(input: ExitStateInput): ExitState {
   const { outcome, reason } = input;
   switch (outcome) {
@@ -212,4 +239,14 @@ export function exitStateOf(input: ExitStateInput): ExitState {
     default:
       return 'Failed';
   }
+}
+
+/**
+ * The reason of a refused result and its exit state, as the pair that the type of the result needs: `Expired` for `approval_expired`, `Cancelled` for `delegation_ended`, and `Rejected` for any other reason.
+ * Spread it into the result: `{ ...base, outcome, ...refusedExit(reason), challenge: null }`. It gives the state that `exitStateOf` gives for a refused outcome with the same reason.
+ */
+export function refusedExit(reason: string): RefusedExit {
+  if (reason === 'approval_expired') return { reason, exit_state: 'Expired' };
+  if (reason === 'delegation_ended') return { reason, exit_state: 'Cancelled' };
+  return { reason, exit_state: 'Rejected' };
 }

@@ -19,6 +19,7 @@ import {
 } from './identifiers.ts';
 import { parseDocument, parseJsonValue, type Document } from './json.ts';
 import { checkMembers, readMembers } from './members.ts';
+import { defineMember, ownMember } from './own.ts';
 import { accepted, refused, type ProtocolResult } from './result.ts';
 import { shown } from './text.ts';
 
@@ -145,7 +146,8 @@ const NO_FIELDS: ProposeFieldsParser<Record<never, never>> = (fields) => checkMe
  *
  * For `propose`, `parseFields` reads the members of the use case. With no parser, a `propose` request has no member beyond `op`, `authority` and `tenant`. The members of the use case are copies of plain
  * JSON data. The result keeps `op`, `authority` and `tenant` of the request, whatever the parser returns. For `execute`, the members are checked before their values, and `approval` must be there:
- * it is a reference or it is null.
+ * it is a reference or it is null. A member of the protocol is read as an own member only: a value that Object.prototype holds for `op`, `authority` or `tenant` is never read, so such a name is a
+ * member that the request lacks.
  */
 export function parseRequest(input: unknown): ProtocolResult<UseCaseRequest>;
 export function parseRequest<F extends object>(input: unknown, parseFields: ProposeFieldsParser<F>): ProtocolResult<UseCaseRequest<F>>;
@@ -153,31 +155,32 @@ export function parseRequest(input: unknown, parseFields: ProposeFieldsParser<ob
   const read = readMembers(input, 'request');
   if (!read.ok) return read;
   const members = read.value;
-  const op = members.op;
+  const op = ownMember(members, 'op');
   if (op !== 'propose' && op !== 'execute') return refused('bad_shape', 'request.op must be "propose" or "execute"');
   if (op === 'execute') {
     const checked = checkMembers(members, 'request', EXECUTE_MEMBERS);
     if (checked !== null) return checked;
   }
-  const authority = parseAuthority(members.authority, 'authority');
+  const authority = parseAuthority(ownMember(members, 'authority'), 'authority');
   if (!authority.ok) return authority;
-  const tenant = parseTenantId(members.tenant, 'tenant');
+  const tenant = parseTenantId(ownMember(members, 'tenant'), 'tenant');
   if (!tenant.ok) return tenant;
   if (op === 'execute') {
-    const proposal = parseProposal(members.proposal, 'proposal');
+    const proposal = parseProposal(ownMember(members, 'proposal'), 'proposal');
     if (!proposal.ok) return proposal;
-    const approval = members.approval === null ? accepted(null) : parseApprovalRef(members.approval, 'approval');
+    const given = ownMember(members, 'approval');
+    const approval = given === null ? accepted(null) : parseApprovalRef(given, 'approval');
     if (!approval.ok) return approval;
     const request: ExecuteRequest = { op: 'execute', authority: authority.value, tenant: tenant.value, proposal: proposal.value, approval: approval.value };
     return accepted(request);
   }
-  // Each field of the use case is a copy of plain JSON data. defineProperty makes each field an own member, so the key __proto__ stays a member and the field parser sees it.
+  // Each field of the use case is a copy of plain JSON data. defineMember makes each field an own member, so the key __proto__ stays a member and the field parser sees it.
   const fields: Record<string, unknown> = {};
   for (const [name, member] of Object.entries(members)) {
     if (BASE_MEMBERS.includes(name)) continue;
     const copied = parseJsonValue(member, `request.${shown(name)}`);
     if (!copied.ok) return copied;
-    Object.defineProperty(fields, name, { value: copied.value, enumerable: true, writable: true, configurable: true });
+    defineMember(fields, name, copied.value);
   }
   const parsed = parseFields(fields);
   if (!parsed.ok) return parsed;
