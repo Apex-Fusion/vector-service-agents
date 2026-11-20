@@ -5,7 +5,7 @@
 //
 //   propose  proposedResult, failedProposalResult
 //   execute  completedResult, refusedResult, vaultRefusedResult, failedResult, disputedResult, and settledResult for the steps of the hire that need nothing more from the use case
-import { DOCUMENT_SCHEMAS, HANDOFF_USE_CASES, PROPOSAL_SCHEMA, RECEIPT_CHECKS, RESULT_SCHEMA, USE_CASES, exitStateOf, makeProposal, parseDigest } from '@vsa/usecase-kit/protocol';
+import { DOCUMENT_SCHEMAS, HANDOFF_USE_CASES, PROPOSAL_SCHEMA, RECEIPT_CHECKS, RESULT_SCHEMA, USE_CASES, exitStateOf, makeProposal, parseDigest, refusedExit } from '@vsa/usecase-kit/protocol';
 import type {
   ChallengeRecord, CompletedResult, Decision, Digest, DisputedResult, ExecuteOutcome, ExecuteResult, ExitState, FailedProposalResult, FailedResult, FaultSetting, HandoffRecord,
   Proposal, ProposalResult, RefusedResult, SubJob, UseCase, VaultRefusedResult, WriteRecord,
@@ -88,14 +88,11 @@ export function completedResult(pieces: ResultPieces): CompletedResult {
   return { ...base, outcome: 'completed', reason: null, challenge: null, exit_state: state };
 }
 
-/** The counterparty (`by` is `counterparty`) or a mock system (`system`) refused. `reason` is its code. The exit state follows the reason. */
+/** The counterparty (`by` is `counterparty`) or a mock system (`system`) refused. `reason` is its code. The exit state follows the reason: `refusedExit` of the protocol gives the two as one pair. */
 export function refusedResult(by: 'counterparty' | 'system', pieces: ResultPieces, reason: string): RefusedResult {
   const outcome = by === 'counterparty' ? 'refused_by_counterparty' : 'refused_by_system';
   if (by !== 'counterparty' && by !== 'system') throw new TypeError('a refusal is by the counterparty or by a mock system');
-  const code = reasonOf(reason);
-  const state = stateOf(outcome, code, false, false);
-  if (state !== 'Rejected' && state !== 'Expired' && state !== 'Cancelled') throw wrongState(outcome, state);
-  return { ...baseOf(pieces), outcome, reason: code, challenge: null, exit_state: state };
+  return { ...baseOf(pieces), outcome, ...refusedExit(reasonOf(reason)), challenge: null };
 }
 
 /** The ledger refused the Pay from the vault. `reason` is the evaluation error. `delegationEnded` is true when the flow read the delegation again and found that the hirer ended it. */
