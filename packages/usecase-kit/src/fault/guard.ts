@@ -13,11 +13,11 @@
 // evidence of a run records the value that the guard read for each service. The field `fault_mode` of each result (see `checkFaultMode`) is the second proof of what the running process did. A
 // refusal body of a service has no `fault_mode` (the protocol fixes its two members), so for a counterparty that refused, the value that the guard read is the record.
 import { types } from 'node:util';
-import { FAULT_MODES, accepted, checkMembers, isFaultSetting, readMembers, refused } from '../protocol/index.ts';
+import { FAULT_MODES, accepted, checkMembers, isAgentKind, isFaultSetting, readMembers, refused } from '../protocol/index.ts';
 import type { AgentKind, FaultSetting, ProtocolResult } from '../protocol/index.ts';
 import { compareDetail, compareSettings } from './compare.ts';
 import type { FaultCompareRefusal } from './compare.ts';
-import { FAULT_MODE_VARIABLE, describeValue, isAgentKind } from './setting.ts';
+import { FAULT_MODE_VARIABLE, describeValue } from './setting.ts';
 
 /** A service of the run, as the script sees it. */
 export interface SeenService<K extends AgentKind = AgentKind> {

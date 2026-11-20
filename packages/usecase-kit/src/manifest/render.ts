@@ -9,11 +9,10 @@
 // read back is refused. The search sees what a reader of the text decodes only when the text is in the ONE form that the kit writes. So the text must equal what `JSON.stringify` writes for the
 // manifest that the text holds: a value that was written with an escape (`JSON.rawJSON` makes one) is refused, because a reader decodes the escape and a count in the text does not.
 import { createHash } from 'node:crypto';
-import { AGENT_KINDS, FAULT_MODES, accepted, isPlainObject, refused } from '../protocol/index.ts';
+import { AGENT_KINDS, FAULT_MODES, accepted, isAgentKind, isPlainObject, refused } from '../protocol/index.ts';
 import type { AgentKind, Digest, FaultSetting, ProtocolResult, Refused } from '../protocol/index.ts';
 import { ADDITION_MEMBERS, MANIFEST_SCHEMA, faultGap, parseBehaviourAdditions } from './behaviour.ts';
 import type { ManifestOptions } from './behaviour.ts';
-import { isAgentKind } from './kinds.ts';
 
 /** The bytes of a manifest, as text, and their SHA-256 as 64 lower-case hex characters. For a served manifest this is the `detail_hash` of the advert. */
 export interface RenderedManifest {

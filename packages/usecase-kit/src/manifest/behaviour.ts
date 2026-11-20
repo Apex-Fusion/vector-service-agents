@@ -10,11 +10,11 @@
 //   lots         The lots file of an order desk.   price_list   The price list of a bid desk.
 //
 // The members come out in this order, so the same parts give the same bytes. The builders take the KIND of the agent and never the fault setting, so the manifest cannot depend on it.
-import { FAULT_MODES, accepted, checkMembers, readMembers, refused } from '../protocol/index.ts';
+import { FAULT_MODES, accepted, checkMembers, isAgentKind, readMembers, refused } from '../protocol/index.ts';
 import type { AgentKind, BehaviourAdditions, FaultMode, ManifestCosign, ManifestFileRef, ManifestModel, ManifestRelyingOn, ProtocolResult } from '../protocol/index.ts';
 import { buildClaim, parseClaim, parseFileRef, parseModel, parseRelyingOn } from './fields.ts';
 import type { FieldOptions } from './fields.ts';
-import { isAgentKind, isBuyerSideKind } from './kinds.ts';
+import { isBuyerSideKind } from './kinds.ts';
 
 /** The schema of the manifest that these members belong to. */
 export const MANIFEST_SCHEMA = 'vector.agent-manifest.v2';

@@ -11,3 +11,6 @@ export const AGENT_KINDS = [...BUYER_SIDE_KINDS, ...COUNTERPARTY_KINDS] as const
 export type BuyerSideKind = (typeof BUYER_SIDE_KINDS)[number];
 export type CounterpartyKind = (typeof COUNTERPARTY_KINDS)[number];
 export type AgentKind = (typeof AGENT_KINDS)[number];
+
+/** True for the name of a kind of agent. The code of an agent can be plain JavaScript, so a kind that comes from a script is checked at run time. */
+export const isAgentKind = (value: unknown): value is AgentKind => typeof value === 'string' && (AGENT_KINDS as readonly string[]).includes(value);
