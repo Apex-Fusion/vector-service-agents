@@ -1,9 +1,10 @@
-// packages/usecase-kit/test/buyer/message.test.ts: the message that a buyer-side agent sends to a counterparty, and the size of the body of the call. The handoff holds the approved document, its
-// salt and the approval reference exactly as the hirer gave them, and the approval can be null. The body is the one that the hire kit builds after the Pay; the flow builds it before the Pay.
+// packages/usecase-kit/test/buyer/message.test.ts: the message that a buyer-side agent sends to a counterparty, and the two size checks before the Pay: the wire payload that a service takes, and the
+// body of the call that the runtime takes. The handoff holds the approved document, its salt and the approval reference exactly as the hirer gave them, and the approval can be null. The wire payload and
+// the body are the ones that the hire kit builds after the Pay; the flow builds them before the Pay.
 import { describe, expect, it } from 'vitest';
 import { canonicalize, wirePayloadFor } from '@vsa/vector-read';
-import { HANDOFF_SCHEMA, RFQ_SCHEMA, RUNTIME_BODY_LIMIT_BYTES, parseHandoff, parseRfq } from '@vsa/usecase-kit/protocol';
-import { BODY_ESCROW_REF, checkRuntimeBody, handoffOf, messageOf, requestText, runtimeBody } from '@vsa/usecase-kit/buyer';
+import { HANDOFF_SCHEMA, MAX_REQUEST_BYTES, RFQ_SCHEMA, RUNTIME_BODY_LIMIT_BYTES, parseHandoff, parseRfq } from '@vsa/usecase-kit/protocol';
+import { BODY_ESCROW_REF, checkRuntimeBody, checkWirePayload, handoffOf, messageOf, requestText, runtimeBody } from '@vsa/usecase-kit/buyer';
 import { APPROVAL, BUYER_DID, COUNTERPARTY_DID, DELEGATION, PRINCIPAL_DID, SALT, executeRequest, purchaseOrder } from './support.ts';
 
 const bodyBytes = (text: string): number => Buffer.byteLength(runtimeBody(text), 'utf8');
@@ -139,5 +140,29 @@ describe('runtimeBody and checkRuntimeBody', () => {
     expect(Buffer.byteLength(quotes)).toBeLessThan(RUNTIME_BODY_LIMIT_BYTES);
     expect(checkRuntimeBody(quotes)).toMatchObject({ ok: false, code: 'request_too_large' });
     expect(checkRuntimeBody('"'.repeat(1_000)).ok).toBe(true);
+  });
+});
+
+describe('checkWirePayload', () => {
+  const wireBytes = (text: string): number => Buffer.byteLength(wirePayloadFor(text), 'utf8');
+
+  it('takes a wire payload at the limit of a service and refuses one byte more, with the detail of the protocol', () => {
+    const atLimit = 'a'.repeat(MAX_REQUEST_BYTES - wireBytes(''));
+    expect(wireBytes(atLimit)).toBe(MAX_REQUEST_BYTES);
+    expect(checkWirePayload(atLimit)).toStrictEqual({ ok: true, value: MAX_REQUEST_BYTES });
+    expect(checkWirePayload(`${atLimit}a`)).toStrictEqual({
+      ok: false, code: 'request_too_large', detail: `the request has ${MAX_REQUEST_BYTES + 1} bytes, and a service takes at most ${MAX_REQUEST_BYTES} bytes`,
+    });
+  });
+
+  it('counts the bytes of the wire payload and not the text: a quote mark is two bytes of it, and a character of three bytes is three', () => {
+    const base = wireBytes('');
+    expect(wireBytes('"'.repeat(10))).toBe(base + 20);
+    expect(wireBytes('€'.repeat(10))).toBe(base + 30);
+    // A text of quote marks that is under the limit as a text and over it as a wire payload.
+    const quotes = '"'.repeat(MAX_REQUEST_BYTES / 2);
+    expect(Buffer.byteLength(quotes)).toBeLessThan(MAX_REQUEST_BYTES);
+    expect(checkWirePayload(quotes)).toMatchObject({ ok: false, code: 'request_too_large' });
+    expect(checkWirePayload('"'.repeat(1_000)).ok).toBe(true);
   });
 });

@@ -140,17 +140,30 @@ describe('the vault of the delegation', () => {
   });
 });
 
-describe('the size of the body of the call', () => {
-  /** A document whose handoff makes a body of exactly `bytes` bytes when it is filled with plain letters: each letter is one byte at every level. */
+describe('the size of the call', () => {
+  /** The bytes of the wire payload that the hire kit sends for a document: the wire payload of the canonical text of its handoff. */
+  const wireBytes = (document: Record<string, unknown>): number => Buffer.byteLength(wirePayloadFor(requestText(handoffFor(document))), 'utf8');
+
+  /** A document whose wire payload is exactly `bytes` bytes when it is filled with plain letters: each letter is one byte at every level. */
+  function documentForWire(bytes: number): Record<string, unknown> {
+    return purchaseOrder({ note: 'a'.repeat(bytes - wireBytes(purchaseOrder({ note: '' }))) });
+  }
+
+  /**
+   * A document whose body is exactly `bytes` bytes. A quote mark of the note is eight bytes in the body and four in the wire payload, so 60,000 of them keep the wire payload far below the limit of a
+   * service, and the limit of the runtime is the one that binds.
+   */
   function documentForBody(bytes: number): Record<string, unknown> {
-    const empty = purchaseOrder({ note: '' });
-    const base = Buffer.byteLength(runtimeBody(requestText(handoffFor(empty))), 'utf8');
-    return purchaseOrder({ note: 'a'.repeat(bytes - base) });
+    const quotes = '"'.repeat(60_000);
+    const base = Buffer.byteLength(runtimeBody(requestText(handoffFor(purchaseOrder({ note: quotes })))), 'utf8');
+    return purchaseOrder({ note: quotes + 'a'.repeat(bytes - base) });
   }
 
   it('hires with a body at the limit of the runtime, and the body that the flow computed is the body that the hire kit sent', async () => {
     const w = await world();
-    const step = await go(w, { message: handoffFor(documentForBody(RUNTIME_BODY_LIMIT_BYTES)) });
+    const document = documentForBody(RUNTIME_BODY_LIMIT_BYTES);
+    expect(wireBytes(document)).toBeLessThan(MAX_REQUEST_BYTES);
+    const step = await go(w, { message: handoffFor(document) });
     expect(words(step)).toBe('completed');
     // The drift guard: the body of the real send has the size that the flow computed before the Pay.
     expect(Buffer.byteLength(w.m.agent.sends[0]!.body, 'utf8')).toBe(RUNTIME_BODY_LIMIT_BYTES);
@@ -158,9 +171,31 @@ describe('the size of the body of the call', () => {
 
   it('refuses a body of one byte above the limit as request_too_large: no Pay is made, and nothing is locked until a reclaim', async () => {
     const w = await world();
-    const step = expectKind(await go(w, { message: handoffFor(documentForBody(RUNTIME_BODY_LIMIT_BYTES + 1)) }), 'refused');
+    const document = documentForBody(RUNTIME_BODY_LIMIT_BYTES + 1);
+    expect(wireBytes(document)).toBeLessThan(MAX_REQUEST_BYTES);
+    const step = expectKind(await go(w, { message: handoffFor(document) }), 'refused');
     expect(step.code).toBe('request_too_large');
     expect(step.detail).toBe(`the call to the counterparty has ${RUNTIME_BODY_LIMIT_BYTES + 1} bytes, and the runtime takes at most ${RUNTIME_BODY_LIMIT_BYTES} bytes`);
+    expect(w.reads.calls.liveVaults).toBe(0);
+    expect(untouched(w)).toStrictEqual(NOTHING);
+    expect(w.m.chain.vault(w.vault)).toMatchObject({ kind: 'Live', consumed: false });
+  });
+
+  it('hires with a wire payload at the limit of a service, and the payload that the flow computed is the payload that the hire kit sent', async () => {
+    const w = await world();
+    const step = await go(w, { message: handoffFor(documentForWire(MAX_REQUEST_BYTES)) });
+    expect(words(step)).toBe('completed');
+    // The drift guard: the wire payload of the real send has the size that the flow computed before the Pay.
+    expect(Buffer.byteLength(w.m.agent.sends[0]!.payload, 'utf8')).toBe(MAX_REQUEST_BYTES);
+  });
+
+  it('refuses a wire payload of one byte above the limit of a service as request_too_large, although the runtime would take its body: no Pay is made', async () => {
+    const w = await world();
+    const document = documentForWire(MAX_REQUEST_BYTES + 1);
+    expect(Buffer.byteLength(runtimeBody(requestText(handoffFor(document))), 'utf8')).toBeLessThan(RUNTIME_BODY_LIMIT_BYTES);
+    const step = expectKind(await go(w, { message: handoffFor(document) }), 'refused');
+    expect(step.code).toBe('request_too_large');
+    expect(step.detail).toBe(`the request has ${MAX_REQUEST_BYTES + 1} bytes, and a service takes at most ${MAX_REQUEST_BYTES} bytes`);
     expect(w.reads.calls.liveVaults).toBe(0);
     expect(untouched(w)).toStrictEqual(NOTHING);
     expect(w.m.chain.vault(w.vault)).toMatchObject({ kind: 'Live', consumed: false });
@@ -169,14 +204,31 @@ describe('the size of the body of the call', () => {
   it('refuses a document that the service takes and the runtime does not: its quote marks are escaped two more times in the body', async () => {
     const w = await world();
     const document = purchaseOrder({ note: '"'.repeat(200_000) });
-    // The request is under the limit of the service: its wire payload is below MAX_REQUEST_BYTES.
+    // The request is under the limit of the service: its wire payload is below MAX_REQUEST_BYTES. So is the wire payload of the handoff.
     const request = executeRequest(document);
     const requestWire = wirePayloadFor(JSON.stringify({ op: 'execute', authority: request.authority, tenant: request.tenant, proposal: request.proposal, approval: request.approval }));
     expect(checkRequestSize(requestWire)).toMatchObject({ ok: true });
     expect(Buffer.byteLength(requestWire)).toBeLessThan(MAX_REQUEST_BYTES);
+    expect(wireBytes(document)).toBeLessThan(MAX_REQUEST_BYTES);
     const step = expectKind(await go(w, { message: handoffFor(document) }), 'refused');
     expect(step.code).toBe('request_too_large');
+    expect(step.detail).toContain('the runtime takes at most');
     expect(untouched(w)).toStrictEqual(NOTHING);
+  });
+
+  it('counts the wire payload that is sent and not the request that the agent got: the canonical form makes a text of the NFC form longer', async () => {
+    const w = await world();
+    // U+1D15E is four bytes. Its NFC form is two code points of four bytes each.
+    const note = '\u{1D15E}'.repeat(115_000);
+    const document = purchaseOrder({ note });
+    expect(Buffer.byteLength(JSON.stringify(document), 'utf8')).toBeLessThan(MAX_REQUEST_BYTES);
+    expect(wireBytes(document)).toBeGreaterThan(MAX_REQUEST_BYTES);
+    expect(wireBytes(document)).toBeLessThan(RUNTIME_BODY_LIMIT_BYTES - 1_000);
+    const step = expectKind(await go(w, { message: handoffFor(document) }), 'refused');
+    expect([step.code, step.detail]).toStrictEqual(['request_too_large', expect.stringContaining('a service takes at most')]);
+    expect(untouched(w)).toStrictEqual(NOTHING);
+    // The twin: plain letters of the same size in the request come to a wire payload under the limit, and the hire is made.
+    expect(words(await go(w, { message: handoffFor(purchaseOrder({ note: 'a'.repeat(460_000) })) }))).toBe('completed');
   });
 });
 

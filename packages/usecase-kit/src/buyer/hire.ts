@@ -2,7 +2,7 @@
 // The hire of a counterparty from the vault of the delegation: the part of `execute` that pays. The steps, in this order, and each one ends the flow with a typed step when it fails:
 //   1. The settings and the message are checked. A limit that is not a bigint or null, and a decision that is not a function, are a fault of the settings (`internal`).
 //   2. The authority: the delegation of the message must not name another agent (`delegation_not_mine`). A delegation that is not found goes on.
-//   3. The size: the body of the call to the runtime must not pass its limit (`request_too_large`). It is checked here because the hire kit builds the body after the Pay.
+//   3. The size: the wire payload that is sent must not pass the limit of a service, and the body of the call to the runtime must not pass its limit (`request_too_large`). It is checked here because the hire kit builds both after the Pay.
 //   4. One job at a time for the paying key. In that turn the flow reads the Live vault of the delegation, exactly one, and checks that the deadline of the job leaves time for the first poll. Then it
 //      hires from the vault with `hireAgent`. The advert is read on the chain: the flow never asks the indexer. The three limits go to the hire kit as the caller gave them.
 //   5. The outcome becomes a step (outcome.ts). After a refused Pay the delegation is read again.
@@ -14,7 +14,7 @@ import type { Did, Handoff, OutputRef, ProtocolResult, RfqMessage } from '@vsa/u
 import { checkAuthority, delegationAfter } from './authority.ts';
 import { checkLimits } from './limits.ts';
 import type { HireLimits } from './limits.ts';
-import { checkRuntimeBody, messageOf, requestText } from './message.ts';
+import { checkRuntimeBody, checkWirePayload, messageOf, requestText } from './message.ts';
 import type { CounterpartyMessage } from './message.ts';
 import { INCONSISTENT_OUTCOME, deliveryOf, failure, recordOf, stepOfOutcome } from './outcome.ts';
 import type { StepContext } from './outcome.ts';
@@ -217,6 +217,8 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
     return refusal(authority.code, authority.detail);
   }
   const text = requestText(message);
+  const wire = checkWirePayload(text);
+  if (!wire.ok) return refusal(wire.code, wire.detail);
   const size = checkRuntimeBody(text);
   if (!size.ok) return refusal('request_too_large', size.detail);
 

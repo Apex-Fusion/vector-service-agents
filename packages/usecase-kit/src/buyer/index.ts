@@ -9,7 +9,7 @@ export { checkAuthority, delegationAfter, readingOf } from './authority.ts';
 export type { AuthorityRefusal, DelegationAfter, DelegationState } from './authority.ts';
 export { findLiveVault } from './vault.ts';
 export type { VaultRefusal, VaultSearch } from './vault.ts';
-export { BODY_ESCROW_REF, checkRuntimeBody, handoffOf, messageOf, requestText, runtimeBody } from './message.ts';
+export { BODY_ESCROW_REF, checkRuntimeBody, checkWirePayload, handoffOf, messageOf, requestText, runtimeBody } from './message.ts';
 export type { CounterpartyMessage, HandoffSource } from './message.ts';
 export { COUNTERPARTY_REFUSED, INCONSISTENT_OUTCOME, afterClaimRefusalIn, stepOfOutcome } from './outcome.ts';
 export type { AfterClaimRefusal, StepContext } from './outcome.ts';

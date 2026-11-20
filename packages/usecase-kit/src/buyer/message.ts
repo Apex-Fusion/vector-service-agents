@@ -1,14 +1,15 @@
 // packages/usecase-kit/src/buyer/message.ts
-// The message that a buyer-side agent sends to a counterparty, and the size check that comes before the Pay.
+// The message that a buyer-side agent sends to a counterparty, and the two size checks that come before the Pay.
 //
 // The handoff has the approved document, its salt and the approval reference, exactly as the hirer gave them. The approval can be null: the agent does not check it. It passes the reference on,
 // and the counterparty or the mock system refuses a reference that is not right. The request for quotation of use case 3 (supplier bid evaluation) has no approval.
 //
-// The body of the call. The hire kit sends the message to the runtime of the counterparty as `{ escrow_ref, payload }`, where `payload` is the wire payload of the message (the message as a
-// string inside a one-message JSON array). The body is longer than the message: each quote mark and each backslash is escaped two times. The runtime refuses a body above its limit. The kit
-// builds the body after the Pay, so a body that is too large would lock the payment until the reclaim. This file builds the same body before the Pay, so that the flow can refuse in time.
+// The two limits. A service takes at most `MAX_REQUEST_BYTES` of wire payload: the wire payload is the request text written as a string inside a one-message JSON array, and it is the exact text that the
+// hire kit sends. The runtime in front of the service takes at most `RUNTIME_BODY_LIMIT_BYTES` of body. The hire kit sends the message to the runtime as `{ escrow_ref, payload }`, where `payload` is the wire
+// payload, so the body is longer than the wire payload: each quote mark and each backslash is escaped two times. The kit builds the wire payload and the body after the Pay, so a message that is too large
+// would lock the payment until the reclaim. This file builds the same wire payload and the same body before the Pay, so that the flow can refuse in time.
 import { canonicalize, wirePayloadFor } from '@vsa/vector-read';
-import { HANDOFF_SCHEMA, RFQ_SCHEMA, RUNTIME_BODY_LIMIT_BYTES, accepted, parseHandoff, parseProposal, parseRfq, refused } from '@vsa/usecase-kit/protocol';
+import { HANDOFF_SCHEMA, RFQ_SCHEMA, RUNTIME_BODY_LIMIT_BYTES, accepted, checkRequestSize, parseHandoff, parseProposal, parseRfq, refused } from '@vsa/usecase-kit/protocol';
 import type { Did, ExecuteRequest, Handoff, HandoffUseCase, ProtocolResult, RfqMessage } from '@vsa/usecase-kit/protocol';
 
 /** What a buyer-side agent sends to a counterparty: a handoff (use case 1 and use case 2), or a request for quotation (use case 3). */
@@ -64,4 +65,12 @@ export function checkRuntimeBody(text: string): ProtocolResult<number, 'request_
   return bytes <= RUNTIME_BODY_LIMIT_BYTES
     ? accepted(bytes)
     : refused('request_too_large', `the call to the counterparty has ${bytes} bytes, and the runtime takes at most ${RUNTIME_BODY_LIMIT_BYTES} bytes`);
+}
+
+/**
+ * The size of the wire payload of the text in bytes of UTF-8, or the refusal of `checkRequestSize` when it is above `MAX_REQUEST_BYTES`. The payload is the one that is sent, as the canonical form writes it,
+ * and not the request that the agent got: the canonical form can make a text longer (it writes each text in the NFC form), so a request under the limit can give a payload above it.
+ */
+export function checkWirePayload(text: string): ProtocolResult<number, 'request_too_large' | 'bad_shape'> {
+  return checkRequestSize(wirePayloadFor(text));
 }
