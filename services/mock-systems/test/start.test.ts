@@ -1,6 +1,6 @@
 // The start and the stop of the service. `startService` reads the settings, wires the parts and listens last, so a start that is refused opens no port. These tests start the service with a test
 // approval check (the option `wire`) on a port that the system gives, and they call it over 127.0.0.1. The stub gateway, the ledger of fixture data and one clock stand behind it, as in the
-// other tests. The start with the shipped wiring, which has no approval check, is in test/wiring.test.ts.
+// other tests. The start with the real wiring of the approval check is in test/wiring.test.ts.
 import { once } from 'node:events';
 import { connect } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';

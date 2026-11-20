@@ -14,8 +14,9 @@ import type { ApprovalAnswer, ApprovalCheck, ApprovalInput } from './approval.ts
 /**
  * The budget of one ledger read of the approval check, in milliseconds. The check makes two reads, one after the other: the attestation, and then the delegation chain of the caller. Each read
  * opens a budget of its own (`withinBudget` of buyer-core), so the check can run for twice this time. The service waits APPROVAL_TIMEOUT_MS (30 s) for the check. A read of 12 s gives 24 s at
- * the most. So a ledger that answers too slowly ends the check with an error, and the call is 503 `approval_unavailable` with the rule `approval.failed`, before the wait ends and the rule
- * is `approval.timeout`. The 20 s of LEDGER_BUDGET_MS (src/ledger.ts) are for the one read of the check of a token: two reads of 20 s would be 40 s, which is more than the wait.
+ * the most, which is inside the wait. So a ledger that answers too slowly ends the check by itself before the wait ends. The call is then 503 `approval_unavailable` with the rule `approval.failed`,
+ * and not with the rule `approval.timeout` of the wait. The 20 s of LEDGER_BUDGET_MS (src/ledger.ts) are for the one read of the check of a token: two reads of 20 s would be 40 s, which is more
+ * than the wait.
  */
 export const APPROVAL_READ_BUDGET_MS = 12_000;
 
