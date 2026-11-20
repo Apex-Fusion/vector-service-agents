@@ -7,7 +7,8 @@ import { NO_OPEN_CLAIM } from '@vsa/usecase-kit/protocol';
 import { MemoryJournal } from '@vsa/usecase-kit/dispute';
 import type { ChallengeResult, ChallengeView, DeliveryChallengeInput, DisputeJournal, JobRecord } from '@vsa/usecase-kit/dispute';
 import {
-  CHALLENGE_TOKEN, CHALLENGE_TX, ESCROW, ESCROW_2, EVIDENCE_TX, HOUR, JOB, KEY_HASH, NOW, ORDER_FACTS, OTHER, REF_A, REF_B, THIRD, TOKEN_A, TOKEN_B, challengeView, claimView, deferred, evidenceOf, never, rig,
+  CHALLENGE_TOKEN, CHALLENGE_TX, ESCROW, ESCROW_2, EVIDENCE_TX, HOUR, JOB, KEY_HASH, NO_DOCUMENT, NO_TRANSACTION, NOW, ORDER_FACTS, OTHER, REF_A, REF_B, THIRD, TOKEN_A, TOKEN_B, challengeView, claimView, deferred,
+  evidenceOf, never, rig,
 } from './support.ts';
 import type { Events, Rig } from './support.ts';
 
@@ -215,6 +216,20 @@ describe('a challenge of this agent for this job that is on chain is found again
     expectNotFiled(await evidence.dispute.challengeDelivery(delivery()), 'chain_unavailable');
     evidence.port.readDocumentAnswer = normal;
     expect((await evidence.dispute.challengeDelivery(delivery())).ok).toBe(true);
+  });
+
+  it('says chain_unavailable when the evidence document of a challenge of this agent is not found, and files nothing; the challenge is found again when the document is there', async () => {
+    for (const absent of [NO_TRANSACTION, NO_DOCUMENT]) {
+      const rigged = rig();
+      ownChallenge(rigged);
+      const normal = rigged.port.readDocumentAnswer;
+      rigged.port.readDocumentAnswer = () => absent;
+      expectNotFiled(await rigged.dispute.challengeDelivery(delivery()), 'chain_unavailable');
+      expect(rigged.port.published).toEqual([]);
+      expect(rigged.port.challenged).toEqual([]);
+      rigged.port.readDocumentAnswer = normal;
+      expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    }
   });
 });
 

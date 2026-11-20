@@ -50,6 +50,10 @@ export class LedgerProvider extends FixtureProvider {
   koiosStatus: number | null = null;
   /** Outputs that the fake Koios lists and the node does not hold: spent outputs, or outputs that the node has not seen. */
   readonly koiosOnly: UTxO[] = [];
+  /** Transactions that the fake Koios does not have yet: it is behind. Its lists, its metadata and its output info leave their outputs and their documents out. */
+  readonly koiosBehind = new Set<string>();
+  /** Transactions that the fake Koios has and that carry no document, with the CBOR that `tx_cbor` gives for each, or null for a transaction of which it keeps no CBOR. */
+  readonly bare = new Map<string, string | null>();
   #documentCount = 0;
 
   constructor(utxos: UTxO[]) {
@@ -163,8 +167,9 @@ function koiosRow(utxo: UTxO): Record<string, unknown> {
 
 /**
  * A fake Koios over a ledger. `credential_utxos` lists the unspent outputs of a payment credential at any address, with the filter of a token policy, the order, the offset and the limit of a page. It
- * lists the outputs that the node holds, and the outputs of `koiosOnly`. `tx_metadata` gives the label metadata of a document. Any other route is a 404. `koiosStatus` of the ledger makes every route
- * answer with that status.
+ * lists the outputs that the node holds, and the outputs of `koiosOnly`. `tx_metadata` gives the label metadata of a document, and no JSON for a transaction of `bare`. `tx_cbor` gives the CBOR of a
+ * transaction of `bare`, and `utxo_info` the outputs that the ledger holds. The transactions of `koiosBehind` are not known to any route. Any other route is a 404. `koiosStatus` of the ledger makes
+ * every route answer with that status.
  */
 export function koiosOf(ledger: LedgerProvider): typeof fetch {
   return (async (url: string, init?: RequestInit) => {
@@ -175,7 +180,7 @@ export function koiosOf(ledger: LedgerProvider): typeof fetch {
     const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, string[]>) : {};
     const answer = (rows: unknown): Response => new Response(JSON.stringify(rows), { status: 200 });
     if (route === 'credential_utxos') {
-      let rows = [...ledger.live, ...ledger.koiosOnly].filter((utxo) => body._payment_credentials!.includes(paymentCredentialOf(utxo.address) ?? ''));
+      let rows = [...ledger.live, ...ledger.koiosOnly].filter((utxo) => !ledger.koiosBehind.has(utxo.txHash) && body._payment_credentials!.includes(paymentCredentialOf(utxo.address) ?? ''));
       const filter = address.searchParams.get('asset_list');
       if (filter?.startsWith('cs.')) {
         const wanted = JSON.parse(filter.slice(3)) as Array<{ policy_id: string }>;
@@ -187,11 +192,22 @@ export function koiosOf(ledger: LedgerProvider): typeof fetch {
       return answer(rows.slice(offset, offset + limit).map(koiosRow));
     }
     if (route === 'tx_metadata') {
-      return answer((body._tx_hashes ?? []).filter((hash) => ledger.metadata.has(hash)).map((hash) => ({ tx_hash: hash, metadata: { [String(DOCUMENT_LABEL)]: ledger.metadata.get(hash) } })));
+      const known = (body._tx_hashes ?? []).filter((hash) => !ledger.koiosBehind.has(hash));
+      return answer(known.flatMap((hash): Array<{ tx_hash: string; metadata: unknown }> => (ledger.metadata.has(hash)
+        ? [{ tx_hash: hash, metadata: { [String(DOCUMENT_LABEL)]: ledger.metadata.get(hash) } }]
+        : ledger.bare.has(hash) ? [{ tx_hash: hash, metadata: null }] : [])));
+    }
+    if (route === 'tx_cbor') return answer((body._tx_hashes ?? []).filter((hash) => ledger.bare.has(hash)).map((hash) => ({ tx_hash: hash, cbor: ledger.bare.get(hash) })));
+    if (route === 'utxo_info') {
+      const wanted = new Set(body._utxo_refs ?? []);
+      return answer([...ledger.live, ...ledger.koiosOnly].filter((utxo) => wanted.has(refOf(utxo)) && !ledger.koiosBehind.has(utxo.txHash)).map(koiosRow));
     }
     return new Response('[]', { status: 404 });
   }) as unknown as typeof fetch;
 }
+
+/** The CBOR of a transaction with no inputs, no outputs and no metadata, as `tx_cbor` of Koios gives it for a transaction that carries no document. */
+export const bareTransactionCbor = (): string => CML.Transaction.new(CML.TransactionBody.new(CML.TransactionInputList.new(), CML.TransactionOutputList.new(), 0n), CML.TransactionWitnessSet.new(), true).to_cbor_hex();
 
 /** A promise that never settles: a wait that never ends. */
 export const forever = (): Promise<never> => new Promise<never>(() => undefined);

@@ -15,18 +15,18 @@
 // `build_timeout_ms`, and the submit and the confirmation share `confirm_timeout_ms`. A wait that ends first gives `not_confirmed` with `may_land` true: the transaction can still land, and only
 // before its `valid_to`. The `sleep` that the caller gives must not hold the process open: its timer is not cancelled when the work ends first.
 import {
-  AWAIT_TIMEOUT_MAX_MS, BUILD_TIMEOUT_MS, DELIVER_BY_BUFFER_MS, buildDocumentPublish, buildOpenChallenge, buildSubmitClaim, buildWithdrawClaim, credentialOutputs, decodeChallengeDatum, decodeClaimDatum,
-  lucidForAddress, paymentKeyHashOf, readDocument as readDocumentOfUri, txHashOfUri,
+  AWAIT_TIMEOUT_MAX_MS, BUILD_TIMEOUT_MS, DELIVER_BY_BUFFER_MS, DOCUMENT_LABEL, KOIOS_ANSWER_BYTES, buildDocumentPublish, buildOpenChallenge, buildSubmitClaim, buildWithdrawClaim, credentialOutputs,
+  decodeChallengeDatum, decodeClaimDatum, koiosUtxoInfo, lucidForAddress, paymentKeyHashOf, readDocument as readDocumentOfUri, txHashOfUri,
 } from '@vsa/buyer-core';
 import type { LedgerEnv, Module1Deployment } from '@vsa/buyer-core';
 import type { Provider, UTxO } from '@lucid-evolution/lucid';
 import { addressDetails, decodeTransaction } from '@vsa/vector-read/guarded-decode';
 import { utf8Hex } from '@vsa/vector-read/identity-codec';
-import { accepted, parseOutputRef } from '../protocol/index.ts';
+import { accepted, parseOutputRef, refused } from '../protocol/index.ts';
 import type { Did, OutputRef } from '../protocol/index.ts';
 import type {
-  ChallengeView, ClaimView, Module1Port, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument, ReadDocument, SubmitClaimCall, SubmittedClaim, TxNotBuilt, TxNotConfirmed, TxResult,
-  WithdrawClaimCall, WithdrawnClaim,
+  ChallengeView, ClaimView, DocumentAbsent, DocumentResult, Module1Port, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument, SubmitClaimCall, SubmittedClaim, TxNotBuilt, TxNotConfirmed,
+  TxResult, WithdrawClaimCall, WithdrawnClaim,
 } from './ports.ts';
 import { describeError } from './text.ts';
 
@@ -85,6 +85,32 @@ const HASH = /^[0-9a-f]{64}$/;
 const textOfHex = (hex: string): string => Buffer.from(hex, 'hex').toString('utf8');
 
 const refOfUtxo = (utxo: { readonly txHash: string; readonly outputIndex: number }): string => `${utxo.txHash}#${utxo.outputIndex}`;
+
+const TX_HASH = '[0-9a-f]{64}';
+const LABEL = String(DOCUMENT_LABEL);
+/** What the reader of the buyer code says when the source answered and does not have the transaction of a document. */
+const UNKNOWN_TRANSACTION = new RegExp(`^Koios does not know the transaction ${TX_HASH}: `);
+/**
+ * What the reader says when the source has the transaction and it carries no document: no metadata of the label, no JSON for the metadata of the label and no CBOR form that the reader can get, or a value of
+ * the label that is not a document. The sender of a document address can cause each of these. A document of this kit always has JSON metadata, because the claim document refuses the texts that db-sync
+ * cannot keep as JSON, so a transaction with no JSON for the label does not carry a document of this kit.
+ */
+const NO_DOCUMENT = new RegExp(
+  `^(?:The label ${LABEL} metadata |Chunk \\d+ of the label ${LABEL} metadata |The type \\(t\\) or the media type \\(m\\) of the label ${LABEL} metadata `
+  + `|The transaction ${TX_HASH} has no label ${LABEL} metadata, |Koios gives no JSON for the label ${LABEL} metadata of the transaction ${TX_HASH}, and its CBOR form cannot be read)`,
+);
+
+/**
+ * The reader throws one `Error` for every problem, so the code that calls it must tell the answer of the source from a failure of the source. The two patterns above are answers of the source: the
+ * transaction is not known to it, or it carries no document. Every other error is a failure of the source (a request that failed or was refused, an answer of a wrong shape, a CBOR that does not
+ * decode), and the caller throws it on: such an error never says that a document is not there.
+ */
+function absenceOf(error: unknown): DocumentAbsent | null {
+  if (!(error instanceof Error)) return null;
+  if (UNKNOWN_TRANSACTION.test(error.message)) return refused('transaction_unknown', 'the source does not have the transaction of the document');
+  if (NO_DOCUMENT.test(error.message)) return refused('no_document', 'the transaction carries no document that the source can give');
+  return null;
+}
 
 /**
  * An output as the node gives it, checked for its form. The node is the authority on what an output holds, so an output of a wrong shape is an error of the node: it throws, and it is never taken
@@ -304,11 +330,24 @@ export function createModule1Port(deps: Module1PortDeps): Module1Port {
       return challenges;
     },
 
-    async readDocument(uri: string): Promise<ReadDocument> {
+    async readDocument(uri: string): Promise<DocumentResult> {
       // The only documents of this kit are `vector-tx:` documents. An address of another kind is refused here, so no URL that comes from chain data is ever fetched.
       if (typeof uri !== 'string' || txHashOfUri(uri) === null) throw new TypeError('uri must be a vector-tx: address: this port reads no other document');
-      const read = await readDocumentOfUri(uri, { koiosUrl: deps.koios_url, fetchImpl: deps.fetch, ...(deps.blockfrost_url === undefined ? {} : { blockfrostUrl: deps.blockfrost_url }) });
-      return { bytes: read.bytes, type: read.type, media_type: read.mediaType };
+      try {
+        const read = await readDocumentOfUri(uri, { koiosUrl: deps.koios_url, fetchImpl: deps.fetch, ...(deps.blockfrost_url === undefined ? {} : { blockfrostUrl: deps.blockfrost_url }) });
+        return accepted({ bytes: read.bytes, type: read.type, media_type: read.mediaType });
+      } catch (error) {
+        const absent = absenceOf(error);
+        if (absent === null) throw error;
+        return absent;
+      }
+    },
+
+    async isIndexed(ref: OutputRef): Promise<boolean> {
+      const named = refOf(ref);
+      if (named === null) throw new TypeError('ref must be a transaction hash, a hash sign and an output index');
+      const rows = await koiosUtxoInfo(deps.koios_url, [ref], deps.fetch, KOIOS_ANSWER_BYTES);
+      return rows.some((row) => typeof row?.tx_hash === 'string' && row.tx_hash.toLowerCase() === named.txHash && row.tx_index === named.outputIndex);
     },
 
     async publishDocument(call: PublishCall): Promise<TxResult<PublishedDocument>> {

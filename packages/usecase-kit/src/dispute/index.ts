@@ -8,8 +8,8 @@ export type {
 } from './documents.ts';
 export { MAX_CLAIM_TYPE_BYTES, challengeDeadlineOf, withdrawableFrom } from './ports.ts';
 export type {
-  ChallengeView, ClaimView, Module1Port, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument, ReadDocument, ServiceQueue, SubmitClaimCall, SubmittedClaim, TxNotBuilt,
-  TxNotConfirmed, TxResult, WithdrawClaimCall, WithdrawnClaim,
+  ChallengeView, ClaimView, DocumentAbsent, DocumentResult, Module1Port, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument, ReadDocument, ServiceQueue, SubmitClaimCall, SubmittedClaim,
+  TxNotBuilt, TxNotConfirmed, TxResult, WithdrawClaimCall, WithdrawnClaim,
 } from './ports.ts';
 export { MemoryJournal } from './journal.ts';
 export type { DisputeJournal, EndedRecord, FiledRecord, JobRecord, JobStep } from './journal.ts';

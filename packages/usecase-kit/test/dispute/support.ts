@@ -4,8 +4,8 @@ import { documentHash, documentUri } from '@vsa/buyer-core';
 import { canonicalSha256 } from '@vsa/usecase-kit/protocol';
 import { Dispute, claimDocument, evidenceDocument } from '@vsa/usecase-kit/dispute';
 import type {
-  ChallengeView, ClaimView, DisputeJournal, DisputeSettings, Module1Port, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument, ReadDocument, ServiceQueue, SubmittedClaim,
-  SubmitClaimCall, TxResult, WithdrawClaimCall, WithdrawnClaim,
+  ChallengeView, ClaimView, DisputeJournal, DisputeSettings, DocumentAbsent, DocumentResult, Module1Port, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument, ReadDocument, ServiceQueue,
+  SubmittedClaim, SubmitClaimCall, TxResult, WithdrawClaimCall, WithdrawnClaim,
 } from '@vsa/usecase-kit/dispute';
 
 export const NOW = Date.UTC(2026, 10, 15, 12, 0, 0);
@@ -160,6 +160,10 @@ export class RecordingQueue {
   }
 }
 
+/** What a read of a document answers when the source does not have the transaction of the document, and when the transaction carries no document. */
+export const NO_TRANSACTION: DocumentAbsent = { ok: false, code: 'transaction_unknown', detail: 'the source does not have the transaction of the document' };
+export const NO_DOCUMENT: DocumentAbsent = { ok: false, code: 'no_document', detail: 'the transaction carries no document' };
+
 /** A chain port that answers from lists that a test sets, and that writes each call to the events. A test changes an answer by setting the member of the same name. */
 export class ScriptedPort implements Module1Port {
   readonly agent = { did: ME, key_hash: KEY_HASH };
@@ -172,14 +176,16 @@ export class ScriptedPort implements Module1Port {
   readChallengesFails: Error | null = null;
   /** What `readClaim` answers. The default finds the claim by its ref in `claims`. */
   readClaimAnswer: (ref: string) => ClaimView | null | Error = (ref) => this.claims.find((claim) => claim.ref === ref) ?? null;
-  /** What `readDocument` answers. The default is the claim document that this kit writes for the claim with this URI. */
-  readDocumentAnswer: (uri: string) => ReadDocument | Error = (uri) => {
+  /** What `readDocument` answers: a document, the absence of one, or an error for a source that fails. The default is the claim document that this kit writes for the claim with this URI. */
+  readDocumentAnswer: (uri: string) => ReadDocument | DocumentAbsent | Error = (uri) => {
     const named = this.documents.get(uri);
     if (named !== undefined) return named;
     const claim = this.claims.find((candidate) => candidate.claim_uri === uri);
     if (claim === undefined) return new Error('no document at this address');
     return { bytes: kitClaimDocument(claim.claimer).bytes, type: 'claim', media_type: 'text/plain' };
   };
+  /** What `isIndexed` answers: the source of the documents has each claim, unless a test says that it is behind or that it fails. */
+  isIndexedAnswer: (ref: string) => boolean | Error = () => true;
   publishAnswer: (call: PublishCall) => Answer<PublishedDocument> = (call) => ok({ tx_hash: EVIDENCE_TX, uri: documentUri(EVIDENCE_TX), document_hash: documentHash(call.bytes), fee_lovelace: 200_000n });
   submitClaimAnswer: (call: SubmitClaimCall) => Answer<SubmittedClaim> = (call) =>
     ok({ tx_hash: CHALLENGE_TX, claim: REF_C, claim_token: TOKEN_C, stake_lovelace: call.stake_lovelace, submitted_at: NOW, challenge_window_ms: call.challenge_window_ms, fee_lovelace: 500_000n });
@@ -229,9 +235,17 @@ export class ScriptedPort implements Module1Port {
     return this.challenges;
   }
 
-  async readDocument(uri: string): Promise<ReadDocument> {
+  async readDocument(uri: string): Promise<DocumentResult> {
     this.events.push(`readDocument ${uri}`);
     const answer = this.readDocumentAnswer(uri);
+    if (answer instanceof Error) throw answer;
+    // A test gives a document in its plain form, or the absence of one in the form of the port.
+    return typeof answer === 'object' && answer !== null && 'ok' in answer ? answer : { ok: true, value: answer as ReadDocument };
+  }
+
+  async isIndexed(ref: string): Promise<boolean> {
+    this.events.push(`isIndexed ${ref}`);
+    const answer = this.isIndexedAnswer(ref);
     if (answer instanceof Error) throw answer;
     return answer;
   }

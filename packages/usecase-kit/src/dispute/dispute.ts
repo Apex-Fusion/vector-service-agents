@@ -25,7 +25,7 @@ import type { ApprovalDigestFacts, EvidenceDocumentInput, OrderConfirmationFacts
 import { MemoryJournal, parseJobRecord } from './journal.ts';
 import type { DisputeJournal, FiledRecord, JobRecord } from './journal.ts';
 import { MAX_CLAIM_TYPE_BYTES, challengeDeadlineOf, withdrawableFrom } from './ports.ts';
-import type { ChallengeView, ClaimView, Module1Port, OpenedChallenge, PublishedDocument, ReadDocument, ServiceQueue, TxNotBuilt, TxNotConfirmed, TxResult } from './ports.ts';
+import type { ChallengeView, ClaimView, DocumentAbsent, Module1Port, OpenedChallenge, PublishedDocument, ReadDocument, ServiceQueue, TxNotBuilt, TxNotConfirmed, TxResult } from './ports.ts';
 import type {
   ChallengeCode, ChallengeFiled, ChallengeNotFiled, ChallengeResult, ClaimLookupCode, ClaimWithdrawn, DocumentLanded, RunClaimNotStaked, RunClaimResult, SentNotConfirmed, WithdrawNotDone,
   WithdrawResult,
@@ -218,6 +218,24 @@ function readDocumentOf(value: unknown): ReadDocument | null {
   return { bytes: v.bytes, type: v.type, media_type: v.media_type };
 }
 
+/** A document that the code asked the port for, as the port answered: the document, the reason that the source has none, or no read at all for an address that is not a `vector-tx:` address. */
+type Fetched =
+  | { readonly kind: 'document'; readonly document: ReadDocument }
+  | { readonly kind: 'absent'; readonly code: DocumentAbsent['code'] }
+  | { readonly kind: 'other_address' };
+
+/** The result of a read of a document, in its form, or null when the port gave another shape. A result that this returns is a copy. */
+function documentResultOf(value: unknown): Fetched | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+  if (v.ok === true) {
+    const document = readDocumentOf(v.value);
+    return document === null ? null : { kind: 'document', document };
+  }
+  if (v.ok === false && typeof v.detail === 'string' && (v.code === 'transaction_unknown' || v.code === 'no_document')) return { kind: 'absent', code: v.code };
+  return null;
+}
+
 const LATE = Symbol('late');
 
 /**
@@ -273,6 +291,7 @@ const SKIPS = {
   window: 'with a challenge window that ends too soon',
   began: 'submitted at or after the start of the job',
   stake: 'with a stake above the challenge stake',
+  no_document: 'whose claim document is not on chain',
   not_kit: 'without a claim document of this kit',
   capability: 'with a claim document for another capability',
 } as const;
@@ -281,7 +300,7 @@ type SkipReason = keyof typeof SKIPS;
 /** What the code finds in the claim document of a claim that it looks at: the statement of a target, or the reason that the claim is left out. */
 type Examined =
   | { readonly kind: 'target'; readonly statement_text: string }
-  | { readonly kind: 'skip'; readonly reason: 'not_kit' | 'capability' };
+  | { readonly kind: 'skip'; readonly reason: 'no_document' | 'not_kit' | 'capability' };
 
 /** What a challenge knows about its own transactions while it runs. */
 interface Progress {
@@ -370,19 +389,22 @@ export class Dispute {
     }
   }
 
-  /** The document at a `vector-tx:` address, in its form. Null when the address is of another kind: a document that cannot be a document of this kit, and that the code never fetches. */
-  async #document(uri: string, what: string): Promise<ProtocolResult<ReadDocument | null, 'chain_unavailable'>> {
+  /**
+   * The document at a `vector-tx:` address, as the port answered. An address of another kind is never fetched: such a document cannot be a document of this kit. A source that answered and has no document is
+   * `absent`, and the caller decides what that means. A read that fails, that is not done within the bound, or that answers in a wrong shape is `chain_unavailable`.
+   */
+  async #document(uri: string, what: string): Promise<ProtocolResult<Fetched, 'chain_unavailable'>> {
     let address: string | null;
     try {
       address = txHashOfUri(uri);
     } catch {
       address = null;
     }
-    if (address === null) return accepted(null);
+    if (address === null) return accepted({ kind: 'other_address' });
     const read = await bounded(this.#sleep, this.#readTimeout, 'chain_unavailable', what, () => this.#port.readDocument(uri));
     if (!read.ok) return read;
-    const document = readDocumentOf(read.value);
-    return document === null ? refused('chain_unavailable', `${what} cannot be read: the port gave a document of a wrong shape`) : accepted(document);
+    const result = documentResultOf(read.value);
+    return result === null ? refused('chain_unavailable', `${what} cannot be read: the port gave a result of a wrong shape`) : accepted(result);
   }
 
   /** Stores a record, bounded. A failure is `journal_unavailable` with the reason. */
@@ -400,18 +422,34 @@ export class Dispute {
   // --- The claim that a challenge names ---------------------------------------------------------------------------------------------------------------------------------
 
   /**
+   * A claim whose document the source did not find, although the source answered. The kit publishes and confirms the claim document before it stakes the claim, so a source that has the claim transaction
+   * has the document: the claim holds a document that is not on chain, and it is left out. A source that does not have the claim transaction is behind, and the document can be there: that is
+   * `chain_unavailable`, and it is never a reason to leave the claim out.
+   */
+  async #missingDocument(claim: ClaimView): Promise<ProtocolResult<Examined, 'chain_unavailable'>> {
+    const known = await bounded(this.#sleep, this.#readTimeout, 'chain_unavailable', 'the claim transaction', () => this.#port.isIndexed(claim.ref));
+    if (!known.ok) return known;
+    if (known.value === true) return accepted({ kind: 'skip', reason: 'no_document' });
+    if (known.value === false) return refused('chain_unavailable', 'the claim document is not found, and the source of the documents does not have the claim transaction: the source can be behind');
+    return refused('chain_unavailable', 'the claim transaction cannot be read: the port gave an answer that is not true or false');
+  }
+
+  /**
    * What the code finds in the claim document of a claim: the statement of a target, or the reason that the claim is left out. A claim is a claim of this kit when its claim document is a `vector-tx:`
    * document that is on chain, its hash is the claim hash that the claim holds, it was published as a claim with the media type of this kit, and it is the document that `claimDocument` writes for the
-   * claimer. It covers the job only when the capability of the document is the capability of the job. The kit fixes no text of a statement for a capability, so no statement is compared. A document
-   * that cannot be read is `chain_unavailable`.
+   * claimer. It covers the job only when the capability of the document is the capability of the job. The kit fixes no text of a statement for a capability, so no statement is compared. A claim whose
+   * document is not on chain, is not of this kit, or is for another capability is left out, because the claimer makes the document. A source that cannot be read is `chain_unavailable`.
    */
   async #examine(claim: ClaimView, scope: ClaimScope): Promise<ProtocolResult<Examined, 'chain_unavailable'>> {
-    const skip = (reason: 'not_kit' | 'capability'): ProtocolResult<Examined, 'chain_unavailable'> => accepted({ kind: 'skip', reason });
+    const skip = (reason: 'no_document' | 'not_kit' | 'capability'): ProtocolResult<Examined, 'chain_unavailable'> => accepted({ kind: 'skip', reason });
     if (!HASH.test(claim.claim_hash)) return skip('not_kit');
     const read = await this.#document(claim.claim_uri, 'the claim document');
     if (!read.ok) return read;
-    const document = read.value;
-    if (document === null || documentHash(document.bytes) !== claim.claim_hash) return skip('not_kit');
+    const fetched = read.value;
+    if (fetched.kind === 'other_address') return skip('not_kit');
+    if (fetched.kind === 'absent') return fetched.code === 'no_document' ? skip('no_document') : this.#missingDocument(claim);
+    const document = fetched.document;
+    if (documentHash(document.bytes) !== claim.claim_hash) return skip('not_kit');
     if (document.type !== 'claim' || document.media_type !== JUROR_MEDIA_TYPE) return skip('not_kit');
     const input = readClaimDocument(document.bytes);
     if (!input.ok || input.value.agent_did !== claim.claimer) return skip('not_kit');
@@ -430,7 +468,7 @@ export class Dispute {
   async #choose(did: Did, claims: readonly ClaimView[], scope: ClaimScope, now: number, leastLeft: number): Promise<ProtocolResult<Chosen, ClaimLookupCode>> {
     const open = claims.filter((claim) => claim.claimer === did && claim.state === 'Open');
     if (open.length === 0) return refused(NO_OPEN_CLAIM, 'the agent has no open claim');
-    const skipped: Record<SkipReason, number> = { window: 0, began: 0, stake: 0, not_kit: 0, capability: 0 };
+    const skipped: Record<SkipReason, number> = { window: 0, began: 0, stake: 0, no_document: 0, not_kit: 0, capability: 0 };
     const room = Math.max(leastLeft, 1);
     const candidates: ClaimView[] = [];
     for (const claim of open) {
@@ -609,8 +647,10 @@ export class Dispute {
     for (const challenge of mine) {
       const fetched = await this.#document(challenge.evidence_uri, 'the evidence document');
       if (!fetched.ok) return fetched;
-      if (fetched.value === null || documentHash(fetched.value.bytes) !== challenge.evidence_hash) continue;
-      const references = evidenceReferences(fetched.value.bytes);
+      // The evidence document of a challenge of this agent was confirmed before the challenge was built, so a source that has the challenge has it. A source that has none is behind.
+      if (fetched.value.kind === 'absent') return refused('chain_unavailable', 'the evidence document of a challenge of this agent is not found: the source of the documents can be behind');
+      if (fetched.value.kind === 'other_address' || documentHash(fetched.value.document.bytes) !== challenge.evidence_hash) continue;
+      const references = evidenceReferences(fetched.value.document.bytes);
       if (!references.ok || references.value.escrow_ref !== target.escrow || references.value.by_did !== me || references.value.against_did !== target.against) continue;
       const evidenceTx = txHashOfUri(challenge.evidence_uri)!;
       return accepted({

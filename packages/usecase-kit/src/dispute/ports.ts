@@ -64,6 +64,16 @@ export interface ReadDocument {
   readonly media_type: string | null;
 }
 
+/**
+ * Why a read of a document found none although the source answered. `transaction_unknown`: the source does not have the transaction at the address, and it can be behind. `no_document`: the source has
+ * the transaction, and the transaction carries no document: it has no metadata of the label of the documents, or no metadata that holds JSON, or a value that is not a document. The sender of an
+ * address can cause both, so the dispute code never takes them for a failure of the source.
+ */
+export type DocumentAbsent = Refused<'transaction_unknown' | 'no_document'>;
+
+/** The result of a read of a document: the document, or the reason that the source, which answered, has none. A read that gets no answer throws. */
+export type DocumentResult = Accepted<ReadDocument> | DocumentAbsent;
+
 /** The last moment of the challenge window of a claim, in POSIX milliseconds. A challenge must start before it, and a withdrawal after it. */
 export const challengeDeadlineOf = (claim: Pick<ClaimView, 'submitted_at' | 'challenge_window_ms'>): number => claim.submitted_at + claim.challenge_window_ms;
 
@@ -177,8 +187,16 @@ export interface Module1Port {
   readClaim(ref: OutputRef): Promise<ClaimView | null>;
   /** Every live challenge output whose payment credential is the challenge script, at any address. It throws when the chain cannot be read. */
   readChallenges(): Promise<readonly ChallengeView[]>;
-  /** The document at a `vector-tx:` URI. It throws for another address, and when the chain cannot be read or has no document there. */
-  readDocument(uri: string): Promise<ReadDocument>;
+  /**
+   * The document at a `vector-tx:` URI, or the reason that the source has none (`DocumentResult`). It throws for another address, and when the source cannot be read or answers in a wrong shape: a read
+   * that throws never says that the document is not there.
+   */
+  readDocument(uri: string): Promise<DocumentResult>;
+  /**
+   * True when the source that gives the documents has the output at `ref`: it has indexed the transaction that made it. The kit confirms the claim document before it stakes the claim, so a source that
+   * has the claim has the document. False when the source answers that it does not have the output. It throws when the source cannot be read.
+   */
+  isIndexed(ref: OutputRef): Promise<boolean>;
   publishDocument(call: PublishCall): Promise<TxResult<PublishedDocument>>;
   submitClaim(call: SubmitClaimCall): Promise<TxResult<SubmittedClaim>>;
   openChallenge(call: OpenChallengeCall): Promise<TxResult<OpenedChallenge>>;

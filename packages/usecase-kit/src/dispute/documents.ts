@@ -161,6 +161,9 @@ function parseStatementText(value: unknown, field: string): ProtocolResult<strin
   // A statement longer than the whole document cannot fit. The check comes before the pattern, so a huge text is not scanned.
   if (value.length > MAX_JUROR_DOCUMENT_BYTES) return refused('document_too_large', `${field} is longer than a document for a juror can be`);
   if (!PLAIN_TEXT.test(value)) return refused('bad_shape', `${field} must be plain text: no control character, no line break, no space at either end`);
+  // The builder of a document transaction refuses U+0000 and its JSON escape, because a chain indexer gives no JSON for the metadata of such a text. U+0000 is a control character, and the pattern refused it
+  // already. The escape is refused here too, so each claim of this kit has metadata with a JSON form, and a claim whose document has none is not a claim of this kit.
+  if (value.includes('\\u0000')) return refused('bad_shape', `${field} must not hold the six characters of the escape of U+0000: a chain indexer gives no JSON for them`);
   return accepted(value);
 }
 

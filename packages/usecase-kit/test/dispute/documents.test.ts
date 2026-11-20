@@ -118,6 +118,8 @@ describe('the claim document of an agent', () => {
     ['statement ids out of order', { claim: { statements: [ORDER_DESK_CLAIM.statements[1], ORDER_DESK_CLAIM.statements[0], ORDER_DESK_CLAIM.statements[2]] } }],
     ['a statement with a line break', { claim: { statements: [{ id: 'S1', text: `one\n${MARKER}` }, ORDER_DESK_CLAIM.statements[1], ORDER_DESK_CLAIM.statements[2]] } }],
     ['a statement with a control character', { claim: { statements: [{ id: 'S1', text: `one\u0007${MARKER}` }, ORDER_DESK_CLAIM.statements[1], ORDER_DESK_CLAIM.statements[2]] } }],
+    ['a statement with U+0000', { claim: { statements: [{ id: 'S1', text: `one\u0000${MARKER}` }, ORDER_DESK_CLAIM.statements[1], ORDER_DESK_CLAIM.statements[2]] } }],
+    ['a statement with the six characters of the escape of U+0000', { claim: { statements: [{ id: 'S1', text: `one \\u0000 ${MARKER}` }, ORDER_DESK_CLAIM.statements[1], ORDER_DESK_CLAIM.statements[2]] } }],
     ['a statement with a space at its start', { claim: { statements: [{ id: 'S1', text: ` ${MARKER}` }, ORDER_DESK_CLAIM.statements[1], ORDER_DESK_CLAIM.statements[2]] } }],
     ['a statement that is not text', { claim: { statements: [{ id: 'S1', text: 7 }, ORDER_DESK_CLAIM.statements[1], ORDER_DESK_CLAIM.statements[2]] } }],
   ];
@@ -128,6 +130,13 @@ describe('the claim document of an agent', () => {
     if (refused.ok) return;
     expect(refused.detail).not.toContain(MARKER);
     expect(refused.detail).not.toContain('AB'.repeat(8));
+  });
+
+  it('accepts a backslash, and the escape of another character, as the twin of the refusals of U+0000', () => {
+    // A chain indexer keeps these texts as JSON, so a claim of this kit can hold them.
+    for (const text of ['a path a\\b', 'the escape \\u0041 is a letter', 'a \\u000 text', 'the escape \\u0001 is another control character']) {
+      expect(claimDocument(withLastStatement(text)), text).toMatchObject({ ok: true });
+    }
   });
 
   it('refuses a member that the input or the claim does not have, and names the member and not its value', () => {
@@ -179,6 +188,8 @@ describe('the claim document that is read back', () => {
     ['a capability that a claim document cannot have', (text) => text.replace('supplychain.order.accept.v1', 'two words')],
     ['an agent that is not a DID', (text) => text.replace(/did:vector:[0-9a-f]{64}/, 'did:vector:xyz')],
     ['a manifest hash in upper case', (text) => text.replace(MANIFEST_SHA, MANIFEST_SHA.toUpperCase())],
+    ['a statement with U+0000', (text) => text.replace('S2: This agent', 'S2: This\u0000 agent')],
+    ['a statement with the six characters of the escape of U+0000', (text) => text.replace('S2: This agent', 'S2: This \\u0000 agent')],
     ['a byte order mark', (text) => `\ufeff${text}`],
     ['bytes that are not UTF-8', () => Uint8Array.from([0xff, 0xfe, 0x41])],
     ['no bytes', () => new Uint8Array()],

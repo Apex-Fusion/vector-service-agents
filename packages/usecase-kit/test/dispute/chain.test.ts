@@ -11,7 +11,7 @@ import { utf8Hex } from '@vsa/vector-read/identity-codec';
 import { Dispute, MAX_CLAIM_TYPE_BYTES, MemoryJournal, claimDocument, evidenceDocument } from '@vsa/usecase-kit/dispute';
 import type { ChallengeResult, ClaimScope, DisputeJournal, DisputeSettings, Module1PortDeps, ServiceQueue } from '@vsa/usecase-kit/dispute';
 import { CLAIM_TOKEN, DAY, HOUR, NOW, agentRecord, claimUtxo, recordUtxo } from '../../../buyer-core/test/fixtures/jury-world.ts';
-import { AUDITOR_ID, CLAIMER_ID, MODULE1, WALLET, WALLET_ADDRESS, forever, kitClaim, koiosOf, ledgerWorld, realPort, signWithWallet } from './ledger.ts';
+import { AUDITOR_ID, CLAIMER_ID, MODULE1, WALLET, WALLET_ADDRESS, bareTransactionCbor, forever, kitClaim, koiosOf, ledgerWorld, realPort, signWithWallet } from './ledger.ts';
 import type { LedgerProvider } from './ledger.ts';
 import { DIGEST_FACTS, ESCROW, ESCROW_2, JOB, MANIFEST_SHA, ORDER_DESK_CLAIM, ORDER_FACTS, SETTINGS, STATEMENT_S1, THIRD_ID, deferred, kitClaimDocument } from './support.ts';
 
@@ -308,12 +308,35 @@ describe('the challenge on the ledger', () => {
       expect((await challengeOrder(disputeOf(twin, AUDITOR_ID))).ok).toBe(true);
     }, SLOW);
 
-    it('says chain_unavailable for a claim whose document is not on the ledger, and never takes it for a claim of another kind', async () => {
+    it('leaves out a claim whose document is not on the ledger when Koios has the claim, and says chain_unavailable when Koios is behind', async () => {
       // The fixture claim holds the address of a document that no transaction of the ledger carries.
       const ledger = ledgerWorld([claimUtxo(CLAIM_TOKEN)]);
       const result = await challengeOrder(disputeOf(ledger, AUDITOR_ID));
-      expect(result).toMatchObject({ ok: false, code: 'chain_unavailable' });
+      expect(result).toMatchObject({ ok: false, code: 'no_open_claim' });
+      if (!result.ok) expect(result.detail).toContain('1 whose claim document is not on chain');
       expect(ledger.accepted).toEqual([]);
+      // Koios is behind: the node lists the claim, and Koios has neither the claim nor its document. That is no reason to leave the claim out.
+      const behind = ledgerWorld([claimUtxo(CLAIM_TOKEN)]);
+      behind.koiosBehind.add(CLAIM_REF.split('#')[0]!);
+      expect(await challengeOrder(disputeOf(behind, AUDITOR_ID))).toMatchObject({ ok: false, code: 'chain_unavailable' });
+      expect(behind.accepted).toEqual([]);
+    }, SLOW);
+
+    it('challenges the claim of this kit although a newer claim holds a document that does not exist, and waits for Koios when it does not have the newer claim yet', async () => {
+      const world = (): LedgerProvider => ledgerWorld((l) => [
+        kitClaim(l, CLAIM_TOKEN),
+        { ...claimUtxo(`636c6d5f${'0d'.repeat(28)}`, { claimHash: 'cd'.repeat(32), storageUri: utf8Hex(documentUri('ab'.repeat(32))), challengeWindow: 20 * HOUR }, 50 * 60_000), txHash: 'c4'.repeat(32) },
+      ]);
+      const filed = filedOf(await challengeOrder(disputeOf(world(), AUDITOR_ID)));
+      expect(filed.record.claim).toBe(CLAIM_REF);
+      // The node lists the newer claim, and Koios does not have it yet: the code cannot tell a missing document from a source that is behind.
+      const behind = world();
+      behind.koiosBehind.add('c4'.repeat(32));
+      expect(await challengeOrder(disputeOf(behind, AUDITOR_ID))).toMatchObject({ ok: false, code: 'chain_unavailable' });
+      expect(behind.accepted).toEqual([]);
+      // Koios catches up, and the same job is filed.
+      behind.koiosBehind.clear();
+      expect(filedOf(await challengeOrder(disputeOf(behind, AUDITOR_ID))).record.claim).toBe(CLAIM_REF);
     }, SLOW);
   });
 
@@ -531,12 +554,80 @@ describe('what the chain port reads', () => {
       evidence_hash: filed.evidence_hash, evidence_uri: filed.evidence_uri, resolution_deadline_ms: 72 * HOUR, state: 'PendingOracle',
     });
     const document = await port.readDocument(filed.evidence_uri);
-    expect(Buffer.from(document.bytes).toString('utf8')).toBe(ledger.documents.get(filed.record.evidence));
-    expect(document).toMatchObject({ type: 'evidence', media_type: 'text/plain' });
+    if (!document.ok) throw new Error(document.detail);
+    expect(Buffer.from(document.value.bytes).toString('utf8')).toBe(ledger.documents.get(filed.record.evidence));
+    expect(document.value).toMatchObject({ type: 'evidence', media_type: 'text/plain' });
     // No other address is read: an https address is refused, and so is an address that is not a transaction.
     await expect(port.readDocument('https://example.org/claim.txt')).rejects.toThrow(TypeError);
     await expect(port.readDocument('vector-tx:zq9')).rejects.toThrow();
-    await expect(port.readDocument(documentUri('9a'.repeat(32)))).rejects.toThrow();
+    // A transaction that Koios does not have is an answer of the source, and it is not a failure.
+    expect(await port.readDocument(documentUri('9a'.repeat(32)))).toMatchObject({ ok: false, code: 'transaction_unknown' });
+  }, SLOW);
+});
+
+describe('a read of a document says why the source has none, and throws when the source fails', () => {
+  const TX = '9a'.repeat(32);
+  const MISSING = documentUri(TX);
+  /** The second source of the reader is a private address: it is refused at once, and no test reaches the network. */
+  const OFFLINE = { blockfrost_url: 'http://127.0.0.1:9' };
+  const label = (value: unknown) => (ledger: LedgerProvider): void => { ledger.metadata.set(TX, value as never); };
+
+  const ABSENT: Array<[string, 'transaction_unknown' | 'no_document', (ledger: LedgerProvider) => void]> = [
+    ['a transaction that Koios does not have', 'transaction_unknown', () => undefined],
+    ['a transaction with no metadata, whose CBOR has no label', 'no_document', (ledger) => { ledger.bare.set(TX, bareTransactionCbor()); }],
+    ['a transaction with no JSON for the label and no CBOR form that the reader can get', 'no_document', (ledger) => { ledger.bare.set(TX, null); }],
+    ['a label with a value of another version', 'no_document', label({ v: 2, t: 'claim', m: 'text/plain', d: ['x'] })],
+    ['a label with a value that is not an object', 'no_document', label('zq9')],
+    ['a label with no list of chunks', 'no_document', label({ v: 1, t: 'claim', m: 'text/plain' })],
+    ['a label with a chunk that is not text', 'no_document', label({ v: 1, t: 'claim', m: 'text/plain', d: [7] })],
+    ['a label with a chunk that starts with 0x', 'no_document', label({ v: 1, t: 'claim', m: 'text/plain', d: ['0xab'] })],
+    ['a label with a type that starts with 0x', 'no_document', label({ v: 1, t: '0xab', m: 'text/plain', d: ['x'] })],
+  ];
+
+  it.each(ABSENT)('says why for %s', async (_name, code, set) => {
+    const ledger = ledgerWorld();
+    set(ledger);
+    const result = await realPort(ledger, AUDITOR_ID, NOW, OFFLINE).readDocument(MISSING);
+    expect(result).toMatchObject({ ok: false, code });
+    if (!result.ok) expect(result.detail).not.toContain(TX);
+  }, SLOW);
+
+  it('gives the document of a transaction that carries one, as the twin of the absences above', async () => {
+    const ledger = ledgerWorld();
+    ledger.metadata.set(TX, { v: 1, t: 'claim', m: 'text/plain', d: ['a document\n'] });
+    expect(await realPort(ledger, AUDITOR_ID, NOW, OFFLINE).readDocument(MISSING)).toMatchObject({ ok: true, value: { type: 'claim', media_type: 'text/plain' } });
+  }, SLOW);
+
+  const FAILURES: Array<[string, (ledger: LedgerProvider) => void, Partial<Module1PortDeps>]> = [
+    ['a Koios that answers 503', (ledger) => { ledger.koiosStatus = 503; }, {}],
+    ['a Koios that answers something that is not a list', () => undefined, { fetch: (async () => new Response('{"rows":[]}', { status: 200 })) as unknown as typeof fetch }],
+    ['a request that fails', () => undefined, { fetch: (async () => { throw new TypeError('fetch failed'); }) as unknown as typeof fetch }],
+    ['a CBOR that does not decode', (ledger) => { ledger.bare.set(TX, 'zz'); }, {}],
+  ];
+
+  it.each(FAILURES)('throws for %s, and never says that the document is not there', async (_name, set, extra) => {
+    const ledger = ledgerWorld();
+    set(ledger);
+    await expect(realPort(ledger, AUDITOR_ID, NOW, { ...OFFLINE, ...extra }).readDocument(MISSING)).rejects.toThrow();
+  }, SLOW);
+
+  it('says whether Koios has the output of a claim, and throws when it cannot be read', async () => {
+    const ledger = ledgerWorld([claimUtxo(CLAIM_TOKEN)]);
+    const port = realPort(ledger, AUDITOR_ID, NOW);
+    expect(await port.isIndexed(CLAIM_REF)).toBe(true);
+    expect(await port.isIndexed(`${'ee'.repeat(32)}#0`)).toBe(false);
+    ledger.koiosBehind.add(CLAIM_REF.split('#')[0]!);
+    expect(await port.isIndexed(CLAIM_REF)).toBe(false);
+    await expect(port.isIndexed('zq9')).rejects.toThrow(TypeError);
+    ledger.koiosStatus = 503;
+    await expect(port.isIndexed(CLAIM_REF)).rejects.toThrow();
+  }, SLOW);
+
+  it('never takes a row of a wrong shape for the output that was asked for', async () => {
+    const ledger = ledgerWorld([claimUtxo(CLAIM_TOKEN)]);
+    const rows = [null, 'zq9', { tx_hash: 7, tx_index: 0 }, { tx_hash: CLAIM_REF.split('#')[0], tx_index: '0' }];
+    const port = realPort(ledger, AUDITOR_ID, NOW, { fetch: (async () => new Response(JSON.stringify(rows), { status: 200 })) as unknown as typeof fetch });
+    expect(await port.isIndexed(CLAIM_REF)).toBe(false);
   }, SLOW);
 });
 

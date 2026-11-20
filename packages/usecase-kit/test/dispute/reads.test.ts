@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { HireLane } from '@vsa/hire-kit';
 import type { ChallengeResult, ClaimView, DeliveryChallengeInput, RunClaimInput } from '@vsa/usecase-kit/dispute';
 import {
-  ESCROW, EVIDENCE_TX, HOUR, JOB, KEY_HASH, MANIFEST_SHA, ME, NOW, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER, REF_A, REF_B, ScriptedPort, THIRD, TOKEN_B, challengeView, claimView, deferred, evidenceOf, rig,
+  ESCROW, EVIDENCE_TX, HOUR, JOB, KEY_HASH, MANIFEST_SHA, ME, NO_TRANSACTION, NOW, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER, REF_A, REF_B, ScriptedPort, THIRD, TOKEN_B, challengeView, claimView, deferred, evidenceOf, rig,
 } from './support.ts';
 
 const delivery = (): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: ESCROW, ...JOB, evidence: ORDER_FACTS });
@@ -193,6 +193,18 @@ describe('each read of the port has a bound', () => {
     expect(third.port.withdrawn).toEqual([]);
   });
 
+  it('says chain_unavailable when the answer about the claim transaction never comes, and it does not say no_open_claim', async () => {
+    const timer = sleeps();
+    const { port, dispute } = rig({}, { sleep: timer.sleep });
+    port.claims = [claimView()];
+    port.readDocumentAnswer = () => NO_TRANSACTION;
+    port.isIndexed = stall(timer.fire);
+    const result = await dispute.challengeDelivery(delivery());
+    expectNotFiled(result, 'chain_unavailable');
+    expect(result.detail).toContain('the claim transaction');
+    expect(port.published).toEqual([]);
+  });
+
   it('does not hold the queue of the service key when the second read of the claim never comes', async () => {
     const timer = sleeps();
     const lane = new HireLane();
@@ -233,7 +245,7 @@ describe('each read of the port has a bound', () => {
 
   it('is a bound of the same kind for each read of this port, so that no read has none', async () => {
     const port = new ScriptedPort();
-    const reads = ['readClaims', 'readClaim', 'readChallenges', 'readDocument'] as const;
+    const reads = ['readClaims', 'readClaim', 'readChallenges', 'readDocument', 'isIndexed'] as const;
     expect(reads.every((name) => typeof port[name] === 'function')).toBe(true);
   });
 });

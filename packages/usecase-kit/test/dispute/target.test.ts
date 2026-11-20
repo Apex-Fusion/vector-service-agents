@@ -8,18 +8,34 @@ import { NO_OPEN_CLAIM } from '@vsa/usecase-kit/protocol';
 import { Dispute, claimDocument } from '@vsa/usecase-kit/dispute';
 import type { ChallengeResult, ClaimView, DeliveryChallengeInput } from '@vsa/usecase-kit/dispute';
 import {
-  CAPABILITY, ESCROW, EVIDENCE_TX, HOUR, JOB, JOB_BEGAN_AT, MANIFEST_SHA, NOW, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER, PRIOR_AUTHORIZATION_CLAIM, REF_A, REF_B, REF_C, RecordingQueue, STATEMENT_S1, SETTINGS,
-  ScriptedPort, THIRD, TOKEN_A, TOKEN_B, TOKEN_C, claimView, kitClaimDocument, never, rig,
+  CAPABILITY, ESCROW, EVIDENCE_TX, HOUR, JOB, JOB_BEGAN_AT, MANIFEST_SHA, NO_DOCUMENT, NO_TRANSACTION, NOW, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER, PRIOR_AUTHORIZATION_CLAIM, REF_A, REF_B, REF_C,
+  RecordingQueue, STATEMENT_S1, SETTINGS, ScriptedPort, THIRD, TOKEN_A, TOKEN_B, TOKEN_C, claimView, kitClaimDocument, never, rig,
 } from './support.ts';
 import type { Rig } from './support.ts';
 
 const delivery = (): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: ESCROW, ...JOB, evidence: ORDER_FACTS });
 const textOf = (bytes: Uint8Array): string => Buffer.from(bytes).toString('utf8');
 
-/** The detail of no_open_claim for `open` open claims, and for the counts of the five reasons in the order of the detail. */
-const counted = (open: number, left: readonly [number, number, number, number, number]): string =>
+/** The detail of no_open_claim for `open` open claims, and for the counts of the six reasons in the order of the detail. */
+const counted = (open: number, left: readonly [number, number, number, number, number, number]): string =>
   `the agent has ${open} open claim(s), and none can be challenged: ${left[0]} with a challenge window that ends too soon, ${left[1]} submitted at or after the start of the job, `
-  + `${left[2]} with a stake above the challenge stake, ${left[3]} without a claim document of this kit, ${left[4]} with a claim document for another capability`;
+  + `${left[2]} with a stake above the challenge stake, ${left[3]} whose claim document is not on chain, ${left[4]} without a claim document of this kit, ${left[5]} with a claim document for another capability`;
+
+/** A claim of the other party that was staked a minute after the older claim of the samples, before the job began, and that ends 15 hours later: with no rule of the job, it would be the target. */
+const newer = (overrides: Partial<ClaimView> = {}): ClaimView => claimView({ ref: REF_B, token: TOKEN_B, submitted_at: NOW - HOUR + 60_000, challenge_window_ms: 20 * HOUR, ...overrides });
+
+/** The claim document that this kit writes for OTHER for `capability`, with the statements of the order desk. */
+function forCapability(capability: string) {
+  const document = claimDocument({ agent_did: OTHER, capability_id: capability, manifest_sha256: MANIFEST_SHA, claim: ORDER_DESK_CLAIM });
+  if (!document.ok) throw new Error(document.detail);
+  return document.value;
+}
+
+/** The port answers `answer` for the document of `claim`, and what it answered before for every other address. */
+function answering(rigged: Rig, claim: ClaimView, answer: unknown): void {
+  const normal = rigged.port.readDocumentAnswer;
+  rigged.port.readDocumentAnswer = (uri) => (uri === claim.claim_uri ? (answer as never) : normal(uri));
+}
 
 function expectNotFiled(result: ChallengeResult, code: string): asserts result is Extract<ChallengeResult, { ok: false }> {
   expect(result).toMatchObject({ ok: false, code });
@@ -49,6 +65,8 @@ describe('a challenge names only a claim of this kit', () => {
     ['a document with another media type', ({ port }) => holding(port, claimView(), kitClaimDocument(OTHER).bytes, 'claim', 'application/json')],
     ['a document with no type', ({ port }) => holding(port, claimView(), kitClaimDocument(OTHER).bytes, null as never, null as never)],
     ['a document that is not UTF-8', ({ port }) => holding(port, claimView(), Uint8Array.from([0xff, 0xfe, 0x41]))],
+    ['a document with a NUL character', ({ port }) => holding(port, claimView(), Buffer.from(kitClaimDocument(OTHER).text.replace('S2: This agent', 'S2: This\u0000 agent')))],
+    ['a document with the escape of U+0000', ({ port }) => holding(port, claimView(), Buffer.from(kitClaimDocument(OTHER).text.replace('S2: This agent', 'S2: This \\u0000 agent')))],
   ];
 
   it.each(NOT_KIT)('leaves out a claim with %s, says how many claims were left out, and publishes nothing', async (_name, make) => {
@@ -56,7 +74,7 @@ describe('a challenge names only a claim of this kit', () => {
     rigged.port.claims = [make(rigged)];
     const result = await rigged.dispute.challengeDelivery(delivery());
     expectNotFiled(result, NO_OPEN_CLAIM);
-    expect(result.detail).toBe(counted(1, [0, 0, 0, 1, 0]));
+    expect(result.detail).toBe(counted(1, [0, 0, 0, 0, 1, 0]));
     expect(rigged.port.published).toEqual([]);
     expect(rigged.port.challenged).toEqual([]);
     expect(rigged.events).toEqual(['readClaims', `readDocument ${rigged.port.claims[0]!.claim_uri}`]);
@@ -159,16 +177,6 @@ describe('a challenge names only a claim of this kit', () => {
 });
 
 describe('a claim is a target only when it covers the job', () => {
-  /** A claim of the other party that was staked a minute after the older claim of the samples, before the job began, and that ends 15 hours later: with no rule of the job, it would be the target. */
-  const newer = (overrides: Partial<ClaimView> = {}): ClaimView => claimView({ ref: REF_B, token: TOKEN_B, submitted_at: NOW - HOUR + 60_000, challenge_window_ms: 20 * HOUR, ...overrides });
-
-  /** The claim document that this kit writes for OTHER for `capability`, with the statements of the order desk. */
-  function forCapability(capability: string) {
-    const document = claimDocument({ agent_did: OTHER, capability_id: capability, manifest_sha256: MANIFEST_SHA, claim: ORDER_DESK_CLAIM });
-    if (!document.ok) throw new Error(document.detail);
-    return document.value;
-  }
-
   it('leaves out a claim document of this kit for another capability, and challenges the claim that is for the capability of the job', async () => {
     const rigged = rig();
     const decoy = holding(rigged.port, newer(), forCapability('supplychain.rfq.quote.v1').bytes);
@@ -185,7 +193,7 @@ describe('a claim is a target only when it covers the job', () => {
     rigged.port.claims = [holding(rigged.port, claimView(), forCapability('supplychain.rfq.quote.v1').bytes)];
     const result = await rigged.dispute.challengeDelivery(delivery());
     expectNotFiled(result, NO_OPEN_CLAIM);
-    expect(result.detail).toBe(counted(1, [0, 0, 0, 0, 1]));
+    expect(result.detail).toBe(counted(1, [0, 0, 0, 0, 0, 1]));
     expect(rigged.port.published).toEqual([]);
     const twin = rig();
     twin.port.claims = [holding(twin.port, claimView(), forCapability('supplychain.rfq.quote.v1').bytes)];
@@ -198,7 +206,7 @@ describe('a claim is a target only when it covers the job', () => {
       rigged.port.claims = [claimView({ submitted_at: submitted })];
       const result = await rigged.dispute.challengeDelivery(delivery());
       expect(result.ok, String(submitted)).toBe(filed);
-      if (!result.ok) expect(result.detail).toBe(counted(1, [0, 1, 0, 0, 0]));
+      if (!result.ok) expect(result.detail).toBe(counted(1, [0, 1, 0, 0, 0, 0]));
       expect(rigged.events.includes(`readDocument ${claimView().claim_uri}`), String(submitted)).toBe(filed);
     }
   });
@@ -231,16 +239,19 @@ describe('a claim is a target only when it covers the job', () => {
 
   it('counts the claims that were left out for each reason in the detail of no_open_claim', async () => {
     const rigged = rig();
+    const missing = claimView({ ref: `${'cf'.repeat(32)}#0`, token: `636c6d5f${'0c'.repeat(28)}` });
     rigged.port.claims = [
       claimView({ submitted_at: NOW - 4 * HOUR + 60_000 }),
       claimView({ ref: REF_B, token: TOKEN_B, submitted_at: JOB_BEGAN_AT }),
       claimView({ ref: REF_C, token: TOKEN_C, stake_lovelace: SETTINGS.challenge_stake_lovelace + 1n }),
+      missing,
       { ...claimView({ ref: `${'cd'.repeat(32)}#0`, token: `636c6d5f${'0d'.repeat(28)}` }), claim_hash: 'ab'.repeat(32) },
       holding(rigged.port, claimView({ ref: `${'ce'.repeat(32)}#0`, token: `636c6d5f${'0e'.repeat(28)}` }), forCapability('supplychain.rfq.quote.v1').bytes),
     ];
+    answering(rigged, missing, NO_DOCUMENT);
     const result = await rigged.dispute.challengeDelivery(delivery());
     expectNotFiled(result, NO_OPEN_CLAIM);
-    expect(result.detail).toBe(counted(5, [1, 1, 1, 1, 1]));
+    expect(result.detail).toBe(counted(6, [1, 1, 1, 1, 1, 1]));
     expect(rigged.port.published).toEqual([]);
   });
 
@@ -252,6 +263,76 @@ describe('a claim is a target only when it covers the job', () => {
     for (const bad of [null, 'zq9', {}, { capability_id: CAPABILITY }, { ...JOB, extra: 1 }, { ...JOB, job_began_at: 0 }, { ...JOB, capability_id: 'zq9 x' }]) {
       expect(await dispute.findOpenClaim(OTHER, bad as never), JSON.stringify(bad)).toMatchObject({ ok: false, code: 'bad_shape' });
     }
+  });
+});
+
+describe('a claim document that the claimer can spoil is left out, and a source that cannot be read is chain_unavailable', () => {
+  it('leaves out a newer claim whose document the source does not find, when the source has the claim, and challenges the older claim of this kit', async () => {
+    const rigged = rig();
+    const spoiled = newer();
+    rigged.port.claims = [claimView(), spoiled];
+    answering(rigged, spoiled, NO_TRANSACTION);
+    expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(rigged.port.challenged.map((call) => call.claim)).toEqual([REF_A]);
+    // The source was asked for the claim that holds the missing document, and the claim was left out.
+    expect(rigged.events.filter((event) => /^(readDocument|isIndexed)/.test(event))).toEqual([`readDocument ${spoiled.claim_uri}`, `isIndexed ${REF_B}`, `readDocument ${claimView().claim_uri}`]);
+  });
+
+  it('says chain_unavailable when the source does not find the document and does not have the claim, or cannot say, and files the same job when it has the claim', async () => {
+    const answers: Array<[string, () => unknown]> = [['a source that is behind', () => false], ['a source that fails', () => new Error('Koios answered 503')], ['an answer that is not true or false', () => 'yes']];
+    for (const [name, answer] of answers) {
+      const rigged = rig();
+      const spoiled = newer();
+      rigged.port.claims = [claimView(), spoiled];
+      answering(rigged, spoiled, NO_TRANSACTION);
+      rigged.port.isIndexedAnswer = answer as never;
+      expectNotFiled(await rigged.dispute.challengeDelivery(delivery()), 'chain_unavailable');
+      expect(rigged.port.published, name).toEqual([]);
+      // The twin: the source has the claim now, and the job was not used up.
+      rigged.port.isIndexedAnswer = () => true;
+      expect((await rigged.dispute.challengeDelivery(delivery())).ok, name).toBe(true);
+    }
+  });
+
+  it('leaves out a claim whose transaction carries no document without asking whether the source has the claim, and challenges the older claim', async () => {
+    const rigged = rig();
+    const spoiled = newer();
+    rigged.port.claims = [claimView(), spoiled];
+    answering(rigged, spoiled, NO_DOCUMENT);
+    expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(rigged.port.challenged.map((call) => call.claim)).toEqual([REF_A]);
+    expect(rigged.events.some((event) => event.startsWith('isIndexed'))).toBe(false);
+  });
+
+  it('says no_open_claim and counts the claim when the only claim has no document on chain, for each kind of absence', async () => {
+    for (const absent of [NO_TRANSACTION, NO_DOCUMENT]) {
+      const rigged = rig();
+      rigged.port.claims = [claimView()];
+      answering(rigged, claimView(), absent);
+      const result = await rigged.dispute.challengeDelivery(delivery());
+      expectNotFiled(result, NO_OPEN_CLAIM);
+      expect(result.detail).toBe(counted(1, [0, 0, 0, 1, 0, 0]));
+      expect(rigged.port.published).toEqual([]);
+    }
+  });
+
+  it('says chain_unavailable for a result of a read of a document that is not in the form of the port, and accepts the form as the twin', async () => {
+    const plain = { bytes: kitClaimDocument(OTHER).bytes, type: 'claim', media_type: 'text/plain' };
+    const shapes: unknown[] = [
+      { ok: true }, { ok: true, value: 'text' }, { ok: true, value: { bytes: 'text', type: 'claim', media_type: 'text/plain' } }, { ok: false, code: 'weird', detail: 'x' },
+      { ok: false, code: 'no_document' }, { ok: 'yes', value: plain }, plain, null, 'text',
+    ];
+    for (const shape of shapes) {
+      const rigged = rig();
+      rigged.port.claims = [claimView()];
+      rigged.port.readDocument = async () => shape as never;
+      expectNotFiled(await rigged.dispute.challengeDelivery(delivery()), 'chain_unavailable');
+      expect(rigged.port.published).toEqual([]);
+    }
+    const twin = rig();
+    twin.port.claims = [claimView()];
+    twin.port.readDocument = async () => ({ ok: true, value: plain });
+    expect((await twin.dispute.challengeDelivery(delivery())).ok).toBe(true);
   });
 });
 
@@ -332,7 +413,7 @@ describe('the newest open claim of the other party is the target', () => {
     port.claims = [{ ...LATEST, claim_hash: 'ab'.repeat(32) }, { ...LATER, claim_uri: 'https://example.org/c' }, claimView({ ref: REF_B, token: TOKEN_B, submitted_at: NOW - 4 * HOUR + 60_000 })];
     const result = await dispute.challengeDelivery(delivery());
     expectNotFiled(result, NO_OPEN_CLAIM);
-    expect(result.detail).toBe(counted(3, [1, 0, 0, 2, 0]));
+    expect(result.detail).toBe(counted(3, [1, 0, 0, 0, 2, 0]));
   });
 
   it('gives the newest claim of this kit from findOpenClaim, and the claim with the lowest token for claims that end at the same moment', async () => {
