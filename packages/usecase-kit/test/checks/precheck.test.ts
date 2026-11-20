@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
 import { createJobServer } from '@vsa/service-kit';
 import type { JobContext, Refusal } from '@vsa/service-kit';
-import { CheckUnavailableError, precheckOf } from '../../src/checks/index.ts';
+import { CheckUnavailableError, MESSAGE_LIMIT, precheckOf } from '../../src/checks/index.ts';
 import type { ChecksPorts, ExtraCheck } from '../../src/checks/index.ts';
 import {
   AFTER_CLAIM_REFUSALS, APPROVAL_REFUSALS, COUNTERPARTY_REFUSALS, DELEGATION_REFUSALS, ERROR_STATUS, SENDER_REFUSALS, VAULT_REFUSALS, accepted, parseHandoff, parseJsonText, refused,
@@ -121,6 +121,31 @@ describe('the hooks', () => {
     for (const note of ['', undefined, 5 as unknown as string]) {
       const answer = await precheckOf({ kind: 'order-desk', ports: bad.ports, onRefused: () => note })(bad.handoff, bad.context);
       expect(answer).toMatchObject({ go: false, error: 'sender_unaccountable', message: 'the record of the sender lists no Accountable Party' });
+    }
+  });
+
+  it('cuts the whole message to MESSAGE_LIMIT characters, and keeps a short text of onRefused whole', async () => {
+    const world = makeWorld({ organisation: null });
+    const answer = (note: string) => precheckOf({ kind: 'order-desk', ports: world.ports, onRefused: () => note })(world.handoff, world.context);
+    const short = await answer('challenge 12ab#0');
+    expect(short).toMatchObject({ go: false, message: 'the record of the sender lists no Accountable Party challenge 12ab#0' });
+    const long = await answer('z'.repeat(5000));
+    expect(long).toMatchObject({ go: false, status: 403, error: 'sender_unaccountable' });
+    if (!long.go) expect([long.message.length, long.message.startsWith('the record of the sender lists no Accountable Party zzz')]).toEqual([MESSAGE_LIMIT, true]);
+    expect(MESSAGE_LIMIT).toBe(300);
+  });
+
+  it('does not split a pair of surrogate characters when it cuts the message', async () => {
+    const world = makeWorld({ organisation: null });
+    const detail = 'the record of the sender lists no Accountable Party';
+    for (const pad of [0, 1]) {
+      const note = 'x'.repeat(pad) + '\u{1F600}'.repeat(300);
+      const answer = await precheckOf({ kind: 'order-desk', ports: world.ports, onRefused: () => note })(world.handoff, world.context);
+      if (answer.go) throw new Error('the sender is refused');
+      const last = answer.message.charCodeAt(answer.message.length - 1);
+      expect(answer.message.length).toBeLessThanOrEqual(MESSAGE_LIMIT);
+      expect(last >= 0xd800 && last <= 0xdbff, `pad ${pad}`).toBe(false);
+      expect(answer.message.startsWith(detail)).toBe(true);
     }
   });
 

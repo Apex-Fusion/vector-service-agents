@@ -17,7 +17,7 @@ import { COUNTERPARTY_KINDS, HANDOFF_SCHEMA, RFQ_SCHEMA, accepted, isPlainObject
 import type { CounterpartyKind, Did, Handoff, RfqMessage } from '../protocol/index.ts';
 import { checkApproval } from './approval.ts';
 import { checkDelegationNamesSender, checkDelegationUsable, checkVaultPaid } from './delegation.ts';
-import { CheckUnavailableError, badAnswer, nowOf, readThrough, reportFault } from './ports.ts';
+import { CheckUnavailableError, nowOf, readThrough, reportFault } from './ports.ts';
 import type { ChecksPorts } from './ports.ts';
 import type { CheckStep } from './run.ts';
 import { checkSenderAccountable, checkSenderActive, checkSenderKey } from './sender.ts';
@@ -57,16 +57,18 @@ function assertShared(input: SharedInput): void {
   if (typeof input.context.buyerPkh !== 'string' || !KEY_HASH.test(input.context.buyerPkh)) throw new TypeError('the input of the shared checks is wrong: context.buyerPkh must be 56 lower-case hex characters');
 }
 
-/** The DID resolution of the sender. A failed call, and a resolution of another DID, are a source that did not answer. */
+/**
+ * The DID resolution of the sender, as the client of the gateway gave it. A call that failed, and an answer that is not a result of the client (`ok` is not true), are a source that did not
+ * answer. The first check of the sender checks the type of the resolution, and that it is the resolution of this DID.
+ */
 async function resolveSender(ports: ChecksPorts, sender: Did): Promise<Resolution> {
-  const result = await readThrough(ports, 'identity gateway', () => ports.gateway.resolve(sender));
-  if (result.ok !== true) {
-    reportFault(ports, 'identity gateway', new Error(`${String(result.rule)}: ${String(result.detail)}`));
+  const result: unknown = await readThrough(ports, 'identity gateway', () => ports.gateway.resolve(sender));
+  if (!isPlainObject(result) || result.ok !== true) {
+    reportFault(ports, 'identity gateway', new Error(isPlainObject(result) ? `${String(result.rule)}: ${String(result.detail)}` : 'the client of the gateway gave no result'));
     throw new CheckUnavailableError('identity gateway');
   }
-  const resolution = result.value;
-  if (resolution.did !== sender || (resolution.kind === 'resolved' && resolution.document.id !== sender)) return badAnswer(ports, 'identity gateway', 'it is not the resolution of the sender');
-  return resolution;
+  // The type of the value is checked by checkSenderActive, which is the next call.
+  return result.value as Resolution;
 }
 
 /**
@@ -85,12 +87,18 @@ export function sharedChecks(ports: ChecksPorts, input: SharedInput): CheckStep[
     return resolved;
   };
 
+  // A refusal with the code `check_unavailable` is an answer that was not usable. The service is told, as it is for a read that failed.
+  const refuse = <R extends { readonly code: string; readonly detail: string }>(source: string, refusal: R): R => {
+    if (refusal.code === 'check_unavailable') reportFault(ports, source, new TypeError(refusal.detail));
+    return refusal;
+  };
+
   const steps: CheckStep[] = [
     {
       names: ['sender_active'],
       run: async () => {
-        const active = checkSenderActive(await resolveSender(ports, sender));
-        if (!active.ok) return active;
+        const active = checkSenderActive(await resolveSender(ports, sender), sender);
+        if (!active.ok) return refuse('identity gateway', active);
         resolved = active.value;
         return accepted({});
       },
@@ -99,7 +107,7 @@ export function sharedChecks(ports: ChecksPorts, input: SharedInput): CheckStep[
       names: ['sender_accountable'],
       run: async () => {
         const accountable = checkSenderAccountable(senderRecord(), now);
-        return accountable.ok ? accepted({ organisation: accountable.value.organisation, organisation_verified: accountable.value.organisationVerified }) : accountable;
+        return accountable.ok ? accepted({ organisation: accountable.value.organisation, organisation_verified: accountable.value.organisationVerified }) : refuse('identity gateway', accountable);
       },
     },
     {
@@ -114,15 +122,15 @@ export function sharedChecks(ports: ChecksPorts, input: SharedInput): CheckStep[
       run: async () => {
         const view = await readThrough(ports, 'delegation', () => ports.ledger.readDelegation(delegation));
         const named = checkDelegationNamesSender(view, delegation, sender, context.buyerPkh);
-        return named.ok ? accepted({}) : named;
+        return named.ok ? accepted({}) : refuse('delegation', named);
       },
     },
     {
       names: ['delegation_usable'],
       run: async () => {
         const use = await readThrough(ports, 'delegation use', () => ports.ledger.delegationUse(delegation, now));
-        const usable = checkDelegationUsable(use, delegation, now);
-        return usable.ok ? accepted({}) : usable;
+        const usable = checkDelegationUsable(use, delegation, now, ports.ledger.hireResource);
+        return usable.ok ? accepted({}) : refuse('delegation use', usable);
       },
     },
     {
@@ -130,7 +138,7 @@ export function sharedChecks(ports: ChecksPorts, input: SharedInput): CheckStep[
       run: async () => {
         const paid = await readThrough(ports, 'vault payment', () => ports.ledger.escrowPaid(context.escrowRef, delegation));
         const checked = checkVaultPaid(paid, context.escrowRef, delegation);
-        return checked.ok ? accepted({}) : checked;
+        return checked.ok ? accepted({}) : refuse('vault payment', checked);
       },
     },
   ];

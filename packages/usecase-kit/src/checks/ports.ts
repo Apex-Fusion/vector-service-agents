@@ -3,16 +3,18 @@
 // The code of the checks reads no key file and no environment variable.
 //
 // A read that fails is never a pass. A port can throw, or the gateway can refuse the call. The check then ends with the code `check_unavailable`. It never ends with the code of a rule.
-import { HIRE_ACTION, checkAttestation, checkDelegationUse, escrowPaidFromVault, escrowResource, readDelegation } from '@vsa/buyer-core';
+import { HIRE_ACTION, checkAttestation, checkDelegationUse, escrowPaidFromVault, escrowResource, readDelegation, withinBudget } from '@vsa/buyer-core';
 import type { AttestationCheck, DelegationUseCheck, DelegationView, EscrowVaultResult, LedgerEnv } from '@vsa/buyer-core';
 import type { GatewayClient } from '@vsa/id-kit/client';
 import type { AttestationId, DelegationId, OutputRef } from '../protocol/index.ts';
 
-/** The reads of the ledger that the checks need. Each one can throw: that is a read that failed. */
+/** The reads of the ledger that the checks need. Each one can throw: that is a read that failed. The checks check the type of each answer (answers.ts). */
 export interface LedgerPort {
+  /** The resource of a hire from a vault: `script:` and the hash of the escrow script. The use of a delegation is the use for the hire action on this resource. */
+  readonly hireResource: string;
   /** The delegation and its parents up to the root. The chain is empty when the delegation is not live. */
   readDelegation(id: DelegationId): Promise<DelegationView>;
-  /** Can the delegation be used at the time `atMs` to hire a supplier, that is, to pay an escrow from a vault? It asks for no confirmations. */
+  /** Can the delegation be used at the time `atMs` to hire a supplier, that is, to pay an escrow from a vault? It asks for no confirmations. The answer names the resource that it is for. */
   delegationUse(id: DelegationId, atMs: number): Promise<DelegationUseCheck>;
   /** The attestation, and each condition of the validity rule at the time `atMs`. The attestation is null when no authentic output holds it. */
   attestation(id: AttestationId, atMs: number): Promise<AttestationCheck>;
@@ -35,15 +37,17 @@ export interface ChecksPorts {
 
 /**
  * The ledger port on a `LedgerEnv` (the node, the deployment and Koios). The use of a delegation is the use of a vault payment: the hire action on the escrow script of the deployment.
- * Each read ends inside the budget of the env, and the runtime waits only 10 seconds for a pre-check, so a caller gives an env with a short `budgetMs`.
+ * All four reads end inside `env.budgetMs`. The reads of a delegation, of its use and of an attestation open a budget of their own. The vault read runs inside `withinBudget` in the same way:
+ * its Koios call has a limit of 15 seconds, which is more than the 10 seconds that the runtime waits for a pre-check. So a caller gives an env with a short `budgetMs`.
  */
 export function ledgerPortOf(env: LedgerEnv): LedgerPort {
-  const resource = escrowResource(env.deployment.escrow.hash);
+  const hireResource = escrowResource(env.deployment.escrow.hash);
   return {
+    hireResource,
     readDelegation: (id) => readDelegation(env, id),
-    delegationUse: (id, atMs) => checkDelegationUse(env, { id, action: HIRE_ACTION, resource, atMs }),
+    delegationUse: (id, atMs) => checkDelegationUse(env, { id, action: HIRE_ACTION, resource: hireResource, atMs }),
     attestation: (id, atMs) => checkAttestation(env, { id, atMs }),
-    escrowPaid: (escrowRef, delegation) => escrowPaidFromVault(env, escrowRef, delegation),
+    escrowPaid: (escrowRef, delegation) => withinBudget(env, (inside) => escrowPaidFromVault(inside, escrowRef, delegation)),
   };
 }
 

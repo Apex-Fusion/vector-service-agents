@@ -3,11 +3,13 @@
 //   - the sender resolves and its effective status is Active                      (sender_not_active)
 //   - an Accountable Party covers the record now                                  (sender_unaccountable)
 //   - the buyer key of the escrow is a key that the record lists for delegation   (sender_key_mismatch)
-// Each function takes the DID resolution of the sender that the gateway gave, and it reads nothing. The buyer key comes from the job context of the runtime, which the runtime read
-// from the escrow on the ledger. It never comes from the body of the request: the sender chooses the body.
+// Each function takes the DID resolution of the sender that the gateway gave, and it reads nothing. The first check also takes the DID that was asked. It checks the type of the answer
+// (answers.ts): an answer of the wrong type, or for another DID, is `check_unavailable`, and it is never the code of a rule.
+// The buyer key comes from the job context of the runtime, which the runtime read from the escrow on the ledger. It never comes from the body of the request: the sender chooses the body.
 import type { Resolution } from '@vsa/id-kit/client';
 import { accepted, isPlainObject, refused } from '../protocol/index.ts';
-import type { ProtocolResult } from '../protocol/index.ts';
+import type { Did, ProtocolResult } from '../protocol/index.ts';
+import { resolutionOf } from './answers.ts';
 
 /** A resolution of a record that exists and has not ended. */
 export type ResolvedSender = Extract<Resolution, { readonly kind: 'resolved' }>;
@@ -32,12 +34,18 @@ function timeOf(value: unknown): number | null {
 
 /**
  * The sender resolves and its effective status is Active. A record that does not exist, a record that ended and a status other than Active are `sender_not_active`.
- * The one other cause that the gateway names, a record with no Accountable Party that covers it, is the second check, so it gets that code. It is never a pass.
+ * The one other cause that the gateway names is a record with no Accountable Party that covers it. It is the cause of the second check. See the comment at the code below.
+ * Only the kind `resolved` goes on. A kind that this code does not know, and an answer of the wrong type or for another DID, are `check_unavailable`. They are never a pass.
  */
-export function checkSenderActive(resolution: Resolution): ProtocolResult<ResolvedSender, 'sender_not_active' | 'sender_unaccountable'> {
+export function checkSenderActive(answer: Resolution, sender: Did): ProtocolResult<ResolvedSender, 'sender_not_active' | 'sender_unaccountable' | 'check_unavailable'> {
+  const checked = resolutionOf(answer, sender);
+  if (!checked.ok) return checked;
+  const resolution = checked.value;
   if (resolution.kind === 'not_found') return refused('sender_not_active', 'the sender has no record at the identity gateway');
   if (resolution.kind === 'deactivated') return refused('sender_not_active', `the record of the sender has ended (${resolution.effectiveStatus})`);
   if (resolution.effectiveStatus === 'active') return accepted(resolution);
+  // Decided: a sender that is suspended because no Accountable Party covers it gets `sender_unaccountable`, and not `sender_not_active`.
+  // The gateway counts this cause in its effective status. A check on the status alone would never give the code of the second check. Any other suspension is `sender_not_active`.
   if (resolution.effectiveStatus === 'suspended' && resolution.effectiveReason === 'unaccountable') return refused('sender_unaccountable', 'no Accountable Party covers the record of the sender now');
   return refused('sender_not_active', `the sender is not Active (${resolution.effectiveStatus})`);
 }
@@ -70,6 +78,7 @@ export function checkSenderAccountable(resolution: ResolvedSender, nowMs: number
  * for another kind of key. `buyerPkh` is 56 lower-case hex characters, from the job context.
  */
 export function checkSenderKey(resolution: ResolvedSender, buyerPkh: string): ProtocolResult<null, 'sender_key_mismatch'> {
-  const listed = resolution.keys.some((key) => key.type === 'Ed25519' && key.keyHash.toLowerCase() === buyerPkh && key.purposes.includes('delegation'));
+  // The purposes must be a list. A text has `includes` too, and it matches a part of the text.
+  const listed = resolution.keys.some((key) => key.type === 'Ed25519' && key.keyHash.toLowerCase() === buyerPkh && Array.isArray(key.purposes) && key.purposes.includes('delegation'));
   return listed ? accepted(null) : refused('sender_key_mismatch', 'the record of the sender does not list the key of the escrow with the delegation purpose');
 }

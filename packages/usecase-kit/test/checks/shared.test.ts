@@ -25,6 +25,7 @@ function spied(world: World, calls: string[]): ChecksPorts {
   return {
     ...world.ports,
     ledger: {
+      hireResource: real.hireResource,
       readDelegation: (id) => { calls.push('readDelegation'); return real.readDelegation(id); },
       delegationUse: (id, at) => { calls.push('delegationUse'); return real.delegationUse(id, at); },
       attestation: (id, at) => { calls.push('attestation'); return real.attestation(id, at); },

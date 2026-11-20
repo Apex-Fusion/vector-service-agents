@@ -11,7 +11,7 @@ import type { World, WorldOptions } from './support.ts';
 
 const named = async (world: World, buyerPkh = world.context.buyerPkh, sender = world.sender.did) =>
   checkDelegationNamesSender(await world.ports.ledger.readDelegation(DELEGATION_ID), DELEGATION_ID, sender, buyerPkh);
-const usable = async (world: World, at = T) => checkDelegationUsable(await world.ports.ledger.delegationUse(DELEGATION_ID, at), DELEGATION_ID, at);
+const usable = async (world: World, at = T) => checkDelegationUsable(await world.ports.ledger.delegationUse(DELEGATION_ID, at), DELEGATION_ID, at, world.ports.ledger.hireResource);
 const paid = async (world: World, escrowRef = ESCROW_REF, id = DELEGATION_ID) => checkVaultPaid(await world.ports.ledger.escrowPaid(escrowRef, id), escrowRef, id);
 
 describe('the delegation exists, is authentic, and names the sender and the key of the escrow', () => {
@@ -53,12 +53,15 @@ describe('the delegation exists, is authentic, and names the sender and the key 
     expect(await named(world, world.context.buyerPkh, `did:vector:${'c9'.repeat(32)}`)).toMatchObject({ ok: false, code: 'delegation_invalid' });
   });
 
-  it('refuses a view whose first link is another delegation than the one that was asked for', async () => {
+  it('does not take a view of another delegation than the one that was asked for: check_unavailable, and not a rule', async () => {
     const world = makeWorld();
     const view = await world.ports.ledger.readDelegation(DELEGATION_ID);
     const other = '9e'.repeat(32);
-    expect(checkDelegationNamesSender(view, other, world.sender.did, world.context.buyerPkh)).toMatchObject({ ok: false, code: 'delegation_invalid' });
+    expect(checkDelegationNamesSender(view, other, world.sender.did, world.context.buyerPkh)).toMatchObject({ ok: false, code: 'check_unavailable' });
+    expect(checkDelegationNamesSender({ ...view, id: other }, DELEGATION_ID, world.sender.did, world.context.buyerPkh)).toMatchObject({ ok: false, code: 'check_unavailable' });
+    // A chain with no link is the answer for a delegation that is not live. It is a rule, and the same view with its link is accepted.
     expect(checkDelegationNamesSender({ ...view, chain: [] }, DELEGATION_ID, world.sender.did, world.context.buyerPkh)).toMatchObject({ ok: false, code: 'delegation_invalid' });
+    expect(checkDelegationNamesSender(view, DELEGATION_ID, world.sender.did, world.context.buyerPkh)).toEqual({ ok: true, value: null });
   });
 });
 
@@ -124,28 +127,50 @@ describe('the delegation and every ancestor are usable now', () => {
     await expect(world.ports.ledger.delegationUse(DELEGATION_ID, T)).rejects.toThrow();
   });
 
-  it('does not take an answer for another delegation, another time or another action: check_unavailable', async () => {
+  it('does not take an answer for another delegation, time, action or resource: check_unavailable, and not a rule', async () => {
     const world = makeWorld();
+    const resource = world.ports.ledger.hireResource;
+    const other = `script:${'00'.repeat(28)}`;
     const use = await world.ports.ledger.delegationUse(DELEGATION_ID, T);
-    expect(checkDelegationUsable(use, DELEGATION_ID, T)).toMatchObject({ ok: true });
-    expect(checkDelegationUsable(use, '5c'.repeat(32), T)).toMatchObject({ ok: false, code: 'check_unavailable' });
-    expect(checkDelegationUsable(use, DELEGATION_ID, T + 1)).toMatchObject({ ok: false, code: 'check_unavailable' });
-    expect(checkDelegationUsable({ ...use, action: 'other.action.v1' }, DELEGATION_ID, T)).toMatchObject({ ok: false, code: 'check_unavailable' });
+    expect(checkDelegationUsable(use, DELEGATION_ID, T, resource)).toMatchObject({ ok: true });
+    expect(checkDelegationUsable(use, '5c'.repeat(32), T, resource)).toMatchObject({ ok: false, code: 'check_unavailable' });
+    expect(checkDelegationUsable(use, DELEGATION_ID, T + 1, resource)).toMatchObject({ ok: false, code: 'check_unavailable' });
+    expect(checkDelegationUsable({ ...use, action: 'other.action.v1' }, DELEGATION_ID, T, resource)).toMatchObject({ ok: false, code: 'check_unavailable' });
+    // The answer is for the resource that it names. It must be the resource that was asked for, in both directions.
+    expect(checkDelegationUsable({ ...use, resource: other }, DELEGATION_ID, T, resource)).toMatchObject({ ok: false, code: 'check_unavailable' });
+    expect(checkDelegationUsable(use, DELEGATION_ID, T, other)).toMatchObject({ ok: false, code: 'check_unavailable' });
+    expect(checkDelegationUsable({ ...use, view: { ...use.view, id: '5c'.repeat(32) } }, DELEGATION_ID, T, resource)).toMatchObject({ ok: false, code: 'check_unavailable' });
   });
 
-  it('does not read usable as true when the flag is not exactly true, or when a problem is listed', async () => {
-    const use = await makeWorld().ports.ledger.delegationUse(DELEGATION_ID, T);
-    for (const flag of [undefined, 'true', 1, null]) {
-      expect(checkDelegationUsable({ ...use, usable: flag as unknown as boolean }, DELEGATION_ID, T)).toMatchObject({ ok: false, code: 'delegation_ended' });
-    }
-    expect(checkDelegationUsable({ ...use, usable: true, problems: ['a problem'] }, DELEGATION_ID, T)).toMatchObject({ ok: false, code: 'delegation_ended' });
-    expect(checkDelegationUsable({ ...use, usable: false, problems: [] }, DELEGATION_ID, T)).toMatchObject({ ok: false, code: 'delegation_ended' });
+  it('throws a TypeError for a question with no resource: a question that is wrong is a fault of the caller, and never a pass', async () => {
+    const world = makeWorld();
+    const use = await world.ports.ledger.delegationUse(DELEGATION_ID, T);
+    for (const resource of ['', undefined, null, 7]) expect(() => checkDelegationUsable(use, DELEGATION_ID, T, resource as unknown as string)).toThrow(TypeError);
+  });
+
+  it('does not take a flag that is not a boolean, and not a list of problems that is not a list of texts: check_unavailable, and not a rule', async () => {
+    const world = makeWorld();
+    const use = await world.ports.ledger.delegationUse(DELEGATION_ID, T);
+    const ask = (over: object) => checkDelegationUsable({ ...use, ...over }, DELEGATION_ID, T, world.ports.ledger.hireResource);
+    for (const usable of [undefined, 'yes', 'true', 1, 0, null]) expect(ask({ usable }), String(usable)).toMatchObject({ ok: false, code: 'check_unavailable' });
+    for (const problems of [undefined, null, {}, 'a problem', [1], [null], [['x']]]) expect(ask({ usable: true, problems }), JSON.stringify(problems)).toMatchObject({ ok: false, code: 'check_unavailable' });
+    expect(ask({})).toMatchObject({ ok: true });
+  });
+
+  it('does not take an answer in which usable and the problems disagree: check_unavailable, and the same problems with the flag false are a rule', async () => {
+    const world = makeWorld();
+    const use = await world.ports.ledger.delegationUse(DELEGATION_ID, T);
+    const ask = (over: object) => checkDelegationUsable({ ...use, ...over }, DELEGATION_ID, T, world.ports.ledger.hireResource);
+    expect(ask({ usable: true, problems: ['a problem'] })).toMatchObject({ ok: false, code: 'check_unavailable' });
+    expect(ask({ usable: false, problems: [] })).toMatchObject({ ok: false, code: 'check_unavailable' });
+    expect(ask({ usable: false, problems: ['a problem'] })).toMatchObject({ ok: false, code: 'delegation_ended' });
+    expect(ask({ usable: true, problems: [] })).toMatchObject({ ok: true });
   });
 
   it('puts one short printable line in the detail, whatever the text of the first problem is, and only the first problem', async () => {
     const use = await makeWorld().ports.ledger.delegationUse(DELEGATION_ID, T);
     const long = `the delegate did:vector:${'ab'.repeat(32)} is bad\nsecond line\u0000\u0007 ${'x'.repeat(400)}`;
-    const result = checkDelegationUsable({ ...use, usable: false, problems: [long, 'the other problem'] }, DELEGATION_ID, T);
+    const result = checkDelegationUsable({ ...use, usable: false, problems: [long, 'the other problem'] }, DELEGATION_ID, T, makeWorld().ports.ledger.hireResource);
     expect(result).toMatchObject({ ok: false, code: 'delegation_ended' });
     if (result.ok) return;
     expect(result.detail).toMatch(/^[\x20-\x7e]+$/);
@@ -153,7 +178,7 @@ describe('the delegation and every ancestor are usable now', () => {
     expect(result.detail).toContain('did:vector:abababab..');
     expect(result.detail).not.toContain('abababababab');
     expect(result.detail).not.toContain('the other problem');
-    const short = checkDelegationUsable({ ...use, usable: false, problems: ['the delegation ends at 2026-11-18T12:00:00Z'] }, DELEGATION_ID, T);
+    const short = checkDelegationUsable({ ...use, usable: false, problems: ['the delegation ends at 2026-11-18T12:00:00Z'] }, DELEGATION_ID, T, makeWorld().ports.ledger.hireResource);
     expect(short).toMatchObject({ ok: false, detail: 'the delegation cannot be used now: the delegation ends at 2026-11-18T12:00:00Z' });
   });
 });

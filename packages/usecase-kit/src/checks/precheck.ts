@@ -34,10 +34,22 @@ export interface PrecheckOptions<K extends CounterpartyKind> {
   /** Called when every check passed, before the answer is a go. It gets the record of the checks. A hook that throws makes the answer a fault, and never a go. */
   readonly onPass?: (record: ChecksRecord, request: RequestOf<K>, context: JobContext) => void | Promise<void>;
   /**
-   * Called with a refusal before the answer is written. It can act on the refusal, for example file a challenge when the digest of the approval does not match, and it can give a text that
-   * goes after the message. A hook that throws changes nothing: the refusal is still the answer, and the service is told through `onFault` of the ports.
+   * Called with a refusal before the answer is written. It can act on the refusal, for example file a challenge when the digest of the approval does not match.
+   * It can give a text that goes after the message. THE TEXT GOES TO THE BUYER, so it must hold no secret. The use is a reference to a challenge.
+   * The whole message is cut to MESSAGE_LIMIT characters, so a long text loses its end.
+   * A hook that throws changes nothing: the refusal is still the answer, and the service is told through `onFault` of the ports.
    */
   readonly onRefused?: (refusal: ChecksRefused, request: RequestOf<K>, context: JobContext) => string | void | Promise<string | void>;
+}
+
+/** The most characters that the message of a refusal has. The message goes to the buyer, so its length has a limit. */
+export const MESSAGE_LIMIT = 300;
+
+/** The text cut to `max` characters. A surrogate pair is not split: a half of it is not a character. */
+function cut(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const last = text.charCodeAt(max - 1);
+  return text.substring(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max);
 }
 
 const SHARED_CODES: readonly string[] = [...SENDER_REFUSALS, ...DELEGATION_REFUSALS, ...VAULT_REFUSALS, ...APPROVAL_REFUSALS];
@@ -101,6 +113,6 @@ export function precheckOf<K extends CounterpartyKind>(options: PrecheckOptions<
         reportFault(ports, 'refusal hook', cause);
       }
     }
-    return { go: false, status: ERROR_STATUS[outcome.code], error: outcome.code, message };
+    return { go: false, status: ERROR_STATUS[outcome.code], error: outcome.code, message: cut(message, MESSAGE_LIMIT) };
   };
 }

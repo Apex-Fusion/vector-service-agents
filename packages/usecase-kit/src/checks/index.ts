@@ -12,5 +12,5 @@ export { checkDelegationNamesSender, checkDelegationUsable, checkVaultPaid } fro
 export { approvalCheckOf, checkApproval } from './approval.ts';
 export { SHARED_CHECK_NAMES, sharedChecks } from './shared.ts';
 export type { RequestOf, SharedInput } from './shared.ts';
-export { precheckOf } from './precheck.ts';
+export { MESSAGE_LIMIT, precheckOf } from './precheck.ts';
 export type { ExtraCheck, PrecheckOptions } from './precheck.ts';

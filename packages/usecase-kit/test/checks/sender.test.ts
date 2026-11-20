@@ -24,38 +24,88 @@ const party = (over: Record<string, unknown> = {}): Record<string, unknown> => (
 describe('the sender resolves and is Active', () => {
   it('accepts an Active sender, and gives the resolution back', async () => {
     const world = makeWorld();
-    const result = checkSenderActive(await resolve(world));
+    const result = checkSenderActive(await resolve(world), world.sender.did);
     expect(result).toMatchObject({ ok: true, value: { kind: 'resolved', effectiveStatus: 'active' } });
   });
 
   it.each(['suspended', 'revoked', 'retired'] as const)('refuses a sender that is %s with sender_not_active', async (status) => {
     const world = makeWorld();
     world.gateway.setStatus(world.sender, status);
-    const result = checkSenderActive(await resolve(world));
+    const result = checkSenderActive(await resolve(world), world.sender.did);
     expect(result).toMatchObject({ ok: false, code: 'sender_not_active' });
   });
 
   it('refuses a DID that the gateway does not know with sender_not_active', async () => {
     const world = makeWorld();
-    const result = checkSenderActive(await resolve(world, `did:vector:${'12'.repeat(32)}`));
+    const result = checkSenderActive(await resolve(world, `did:vector:${'12'.repeat(32)}`), `did:vector:${'12'.repeat(32)}`);
     expect(result).toMatchObject({ ok: false, code: 'sender_not_active' });
   });
 
   it('refuses a subagent whose parent is suspended: its effective status is not Active', async () => {
     const world = makeWorld();
     const child = world.gateway.createAgent({ label: 'child of the sender', parent: world.sender, organisation: { domain: 'buyer.example' } });
-    expect(checkSenderActive(await resolve(world, child.did))).toMatchObject({ ok: true });
+    expect(checkSenderActive(await resolve(world, child.did), child.did)).toMatchObject({ ok: true });
     world.gateway.setStatus(world.sender, 'suspended');
-    expect(checkSenderActive(await resolve(world, child.did))).toMatchObject({ ok: false, code: 'sender_not_active' });
+    expect(checkSenderActive(await resolve(world, child.did), child.did)).toMatchObject({ ok: false, code: 'sender_not_active' });
   });
 
   it('gives the code of the second check when the gateway says that the sender is suspended because no Accountable Party covers it', async () => {
     const resolved = await resolvedOf(makeWorld());
-    expect(checkSenderActive({ ...resolved, effectiveStatus: 'suspended', effectiveReason: 'unaccountable' })).toMatchObject({ ok: false, code: 'sender_unaccountable' });
+    expect(checkSenderActive({ ...resolved, effectiveStatus: 'suspended', effectiveReason: 'unaccountable' }, resolved.did)).toMatchObject({ ok: false, code: 'sender_unaccountable' });
     // The same suspension for any other reason keeps the code of the first check, and so does a status that is not suspended.
-    expect(checkSenderActive({ ...resolved, effectiveStatus: 'suspended', effectiveReason: 'parentSuspended' })).toMatchObject({ ok: false, code: 'sender_not_active' });
-    expect(checkSenderActive({ ...resolved, effectiveStatus: 'suspended', effectiveReason: null })).toMatchObject({ ok: false, code: 'sender_not_active' });
-    expect(checkSenderActive({ ...resolved, effectiveStatus: 'revoked', effectiveReason: 'unaccountable' })).toMatchObject({ ok: false, code: 'sender_not_active' });
+    expect(checkSenderActive({ ...resolved, effectiveStatus: 'suspended', effectiveReason: 'parentSuspended' }, resolved.did)).toMatchObject({ ok: false, code: 'sender_not_active' });
+    expect(checkSenderActive({ ...resolved, effectiveStatus: 'suspended', effectiveReason: null }, resolved.did)).toMatchObject({ ok: false, code: 'sender_not_active' });
+    expect(checkSenderActive({ ...resolved, effectiveStatus: 'revoked', effectiveReason: 'unaccountable' }, resolved.did)).toMatchObject({ ok: false, code: 'sender_not_active' });
+  });
+});
+
+describe('an answer of the resolver that is not usable is check_unavailable, never a pass and never the code of a rule', () => {
+  const ask = async (over: Record<string, unknown>) => {
+    const world = makeWorld();
+    const resolved = await resolvedOf(world);
+    return checkSenderActive({ ...resolved, ...over } as unknown as Resolution, world.sender.did);
+  };
+  const unavailable = { ok: false, code: 'check_unavailable' };
+
+  it('goes on only for the kinds that it knows, and only the kind resolved is a sender that can pass', async () => {
+    expect(await ask({})).toMatchObject({ ok: true });
+    for (const kind of ['resolved_pending', 'RESOLVED', 'active', '', undefined, null, 7]) expect(await ask({ kind }), String(kind)).toMatchObject(unavailable);
+    expect(await ask({ kind: 'not_found' })).toMatchObject({ ok: false, code: 'sender_not_active' });
+    expect(await ask({ kind: 'deactivated' })).toMatchObject({ ok: false, code: 'sender_not_active' });
+  });
+
+  it('refuses a value that is not an object, and a resolution of another DID', async () => {
+    const world = makeWorld();
+    for (const value of [null, undefined, 'resolved', 5, [], () => 1]) expect(checkSenderActive(value as unknown as Resolution, world.sender.did), String(value)).toMatchObject(unavailable);
+    expect(await ask({ did: `did:vector:${'12'.repeat(32)}` })).toMatchObject(unavailable);
+    expect(await ask({ did: undefined })).toMatchObject(unavailable);
+    expect(await ask({ document: { id: `did:vector:${'12'.repeat(32)}` } })).toMatchObject(unavailable);
+  });
+
+  it('refuses a status or a reason of the wrong type, and metadata or a document that is missing', async () => {
+    for (const effectiveStatus of ['ACTIVE', 'unknown', '', undefined, null, 1, ['active']]) expect(await ask({ effectiveStatus }), String(effectiveStatus)).toMatchObject(unavailable);
+    for (const effectiveReason of [5, {}, ['unaccountable'], undefined]) expect(await ask({ effectiveReason }), String(effectiveReason)).toMatchObject(unavailable);
+    for (const metadata of [null, undefined, 'metadata', [], 5]) expect(await ask({ metadata }), String(metadata)).toMatchObject(unavailable);
+    for (const document of [null, undefined, {}, [], 'did']) expect(await ask({ document }), String(document)).toMatchObject(unavailable);
+  });
+
+  it('refuses keys that are not a list of keys, and purposes that are not a list of texts: a text is not a list, although it can hold a part of "delegation"', async () => {
+    const world = makeWorld();
+    const key = (over: Record<string, unknown>) => ({ keyHash: world.delegateKey.keyHash, type: 'Ed25519', purposes: ['delegation'], ...over });
+    for (const keys of ['x', null, undefined, {}, 5, [null], [{}], [key({ keyHash: 7 })], [key({ type: undefined })], [key({ purposes: undefined })]]) {
+      expect(await ask({ keys }), JSON.stringify(keys)).toMatchObject(unavailable);
+    }
+    for (const purposes of ['delegation', 'nodelegationx', {}, [1], [null], [['delegation']], null]) expect(await ask({ keys: [key({ purposes })] }), JSON.stringify(purposes)).toMatchObject(unavailable);
+    expect(await ask({ keys: [key({})] })).toMatchObject({ ok: true });
+    expect(await ask({ keys: [] })).toMatchObject({ ok: true });
+  });
+
+  it('does not let the key check take a text for a list of purposes, when it is called alone', async () => {
+    const world = makeWorld();
+    const resolved = await resolvedOf(world);
+    const keys = [{ keyHash: world.delegateKey.keyHash, type: 'Ed25519', purposes: 'nodelegationx' }];
+    expect(checkSenderKey({ ...resolved, keys: keys as unknown as ResolvedSender['keys'] }, world.delegateKey.keyHash)).toMatchObject({ ok: false, code: 'sender_key_mismatch' });
+    expect(checkSenderKey(resolved, world.delegateKey.keyHash)).toMatchObject({ ok: true });
   });
 });
 
