@@ -5,7 +5,7 @@
 //   completed                the vault paid the hire, the receipt passed the eight checks, the decision accepted the delivery, and the Accept was made. A ledger of the caller that failed to book the Accept does not change this: `booking_failed` says it.
 //   refused_by_counterparty  the counterparty refused the job by a rule of the protocol: before its Claim (status 403 and a refusal code of its kind), or after its Claim (a code of AFTER_CLAIM_REFUSALS that the protocol lists for its kind). Before its Claim the escrow stays Open. After its Claim the escrow is Claimed. Either way it returns to the vault after its deadline.
 //   vault_refused            the ledger refused the Pay from the vault, or the Pay could not be made. Nothing was signed and no money moved.
-//   failed                   the job did not finish, and it is not a refusal. A job that failed after the Claim is here, and so is an answer before the Claim that is not a refusal by a rule of the protocol.
+//   failed                   the job did not finish, and it is not a refusal. A job that failed after the Claim is here, and so is an answer before the Claim that is not a refusal by a rule of the protocol. So is a `completed` outcome of the hire kit that does not hold together: the Accept was made, and the record says it.
 //   not_accepted             the delivery came, and the decision said no or did not answer in time, or the delivery passed the eight checks and cannot be recorded. The code of the use case files the challenge.
 //   interrupted              an error ended the hire after the Pay was confirmed.
 //   pay_unconfirmed          the Pay was sent and not seen confirmed. It may still land.
@@ -95,7 +95,7 @@ export interface FailedStep {
   readonly reason: string;
   /** One sentence for a log. It holds no text of the counterparty. */
   readonly detail: string;
-  /** The hire, or `null` when no escrow was posted. */
+  /** The hire, or `null` when no escrow was posted. Its `accepted` is `confirmed` or `pending` only for a `completed` outcome of the hire kit that did not hold together (`inconsistent_outcome`): the Accept was made on the chain, and the use case must not hire again for the same work. */
   readonly handoff: HandoffRecord | null;
   readonly vault_ref: string | null;
   readonly terms: HireTerms | null;

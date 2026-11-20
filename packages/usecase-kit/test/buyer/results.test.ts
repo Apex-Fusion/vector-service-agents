@@ -283,14 +283,23 @@ describe('settledResult', () => {
     for (const kind of ['completed', 'not_accepted', 'refused'] as const) expect(() => settledResult({ kind } as never, base), kind).toThrow(TypeError);
   });
 
-  it('refuses a step that is made by hand with a reason that is not a code, or with the record of a hire whose Accept was made', () => {
+  it('refuses a step that is made by hand with a reason that is not a code, or with the record of a hire whose Accept was made, when the step is a refusal or ended in an error after the Pay', () => {
     expect(() => settledResult({ ...refused, reason: 'free words of the counterparty' }, base)).toThrow(TypeError);
     expect(() => settledResult({ ...refused, handoff: accepted }, base)).toThrow(TypeError);
     expect(() => settledResult({ kind: 'failed', reason: 'free words', detail: 'x', handoff: null, vault_ref: null, terms: null }, base)).toThrow(TypeError);
-    expect(() => settledResult({ kind: 'failed', reason: 'timeout', detail: 'x', handoff: accepted, vault_ref: null, terms: null }, base)).toThrow(TypeError);
     for (const step of [interrupted('deadline'), unconfirmed]) expect(() => settledResult({ ...step, handoff: accepted }, base), step.kind).toThrow(TypeError);
     // The twin: the same steps with a code and a record with no Accept make their results.
     expect(settledResult({ kind: 'failed', reason: 'timeout', detail: 'x', handoff, vault_ref: null, terms: null }, base)).toMatchObject({ outcome: 'failed', reason: 'timeout' });
+  });
+
+  it('makes the result of a failed step that holds the record of a hire whose Accept was made: the hire kit said completed and the flow did not take the outcome, and the result says that the Accept was made', () => {
+    for (const record of [accepted, { ...accepted, accepted: 'pending' }] as const) {
+      const result = settledResult({ kind: 'failed', reason: 'inconsistent_outcome', detail: 'x', handoff: record, vault_ref: null, terms: TERMS }, base);
+      expect(result).toMatchObject({ outcome: 'failed', reason: 'inconsistent_outcome', challenge: null, exit_state: 'Failed', handoff: record });
+      expect(result.handoff?.accepted).toBe(record.accepted);
+    }
+    // The twin: the same step with a record that has no Accept makes the same result with that record.
+    expect(settledResult({ kind: 'failed', reason: 'inconsistent_outcome', detail: 'x', handoff, vault_ref: null, terms: TERMS }, base)).toMatchObject({ outcome: 'failed', exit_state: 'Failed', handoff: { accepted: null } });
   });
 });
 

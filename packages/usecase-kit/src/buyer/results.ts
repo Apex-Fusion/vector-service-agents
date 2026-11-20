@@ -149,7 +149,7 @@ export function vaultRefusedResult(pieces: ResultPieces, reason: string, delegat
 
 /**
  * The job could not be finished. `reason` is a code. The record may hold an Accept that was made (`confirmed` or `pending`): the work was paid, and a later step failed, for example the write to a mock
- * system. The result keeps the record of what was paid, and the exit state stays `Failed`.
+ * system, or the hire kit said `completed` and the flow did not take that outcome as one that holds together. The result keeps the record of what was paid, and the exit state stays `Failed`.
  */
 export function failedResult(pieces: ResultPieces, reason: string): FailedResult {
   const code = codeOf(reason);
@@ -190,21 +190,23 @@ export function disputedResult(pieces: ResultPieces, dispute: { readonly challen
 /** The steps that the use case has to finish itself: a completed hire writes to a mock system, a delivery that was not accepted is disputed, and a refused request is an error answer. */
 export type SettledStep = Exclude<HireStep, CompletedStep | NotAcceptedStep | RefusedStep>;
 
-/** The record of a step that ended the hire with no pass. Only a `completed` step holds an Accept that was made, and the use case finishes that step, so a step that holds one was made by hand. */
+/** The record of a step that ended the hire with an error after the Pay (`interrupted`, `pay_unconfirmed`). No such step holds an Accept that was made, so a step that holds one was made by hand. */
 function recordWithNoAccept(handoff: HandoffRecord | null): HandoffRecord | null {
-  if (acceptWasMade(handoff)) throw new TypeError('a step of the hire that the use case does not finish cannot hold the record of a hire whose Accept was made');
+  if (acceptWasMade(handoff)) throw new TypeError('a step that ended the hire with an error after the Pay cannot hold the record of a hire whose Accept was made');
   return handoff;
 }
 
 /**
  * The result for a step of the hire that needs nothing more from the use case. The handoff comes from the step. A step that the use case must finish (`completed`, `not_accepted`, `refused`)
- * is a fault of the caller: the function throws and makes no result. So is a failure step that holds the record of an Accept that was made: no step of the hire has one except `completed`.
+ * is a fault of the caller: the function throws and makes no result. So is an `interrupted` or `pay_unconfirmed` step that holds the record of an Accept that was made: no such step has one. A `failed` step
+ * may hold one: the hire kit said `completed`, the Accept is on the chain, and the flow did not take the outcome as one that holds together (`inconsistent_outcome`). Its result is `failed`, and its record says that
+ * the Accept was made.
  */
 export function settledResult(step: SettledStep, pieces: Omit<ResultPieces, 'handoff'>): ExecuteResult {
   switch (step.kind) {
     case 'refused_by_counterparty': return refusedResult('counterparty', { ...pieces, handoff: step.handoff }, step.reason);
     case 'vault_refused': return vaultRefusedResult({ ...pieces, handoff: null }, step.reason, step.delegation_ended);
-    case 'failed': return failedResult({ ...pieces, handoff: recordWithNoAccept(step.handoff) }, step.reason);
+    case 'failed': return failedResult({ ...pieces, handoff: step.handoff }, step.reason);
     case 'interrupted': return failedResult({ ...pieces, handoff: recordWithNoAccept(step.handoff) }, INTERRUPTION_REASONS[step.cause_kind]);
     case 'pay_unconfirmed': return failedResult({ ...pieces, handoff: recordWithNoAccept(step.handoff) }, PAY_UNCONFIRMED);
     default: {

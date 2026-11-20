@@ -35,14 +35,14 @@ describe('a completed outcome that does not hold together', () => {
     const w = await world();
     changes((outcome) => ({ ...outcome, advertRef: LLM_ADVERT_REF }));
     const step = expectKind(await go(w), 'failed');
-    expect([step.reason, step.handoff?.advert_ref, step.handoff?.accepted]).toStrictEqual([INCONSISTENT_OUTCOME, LLM_ADVERT_REF, null]);
-    // The money moved: the Pay was made and the Accept was confirmed. The step keeps the escrow, so that the money is not lost from the record.
+    expect([step.reason, step.handoff?.advert_ref, step.handoff?.accepted]).toStrictEqual([INCONSISTENT_OUTCOME, LLM_ADVERT_REF, 'confirmed']);
+    // The money moved: the Pay was made and the Accept was confirmed on the chain. The record says so, so that a use case that runs again does not pay a second time for the same work.
     expect(await w.m.chain.escrowState(step.handoff?.escrow_ref ?? '')).toBe('spent');
     expect(step.vault_ref).not.toBeNull();
-    expect(settledResult(step, pieces())).toMatchObject({ outcome: 'failed', reason: INCONSISTENT_OUTCOME, exit_state: 'Failed' });
+    expect(settledResult(step, pieces())).toMatchObject({ outcome: 'failed', reason: INCONSISTENT_OUTCOME, exit_state: 'Failed', handoff: { escrow_ref: step.handoff?.escrow_ref, accepted: 'confirmed' } });
   });
 
-  it('keeps the escrow in the step when the record of the outcome is missing, and when the receipt and the signature are hollow', async () => {
+  it('keeps the escrow and the Accept in the step when the record of the outcome is missing, and when the receipt and the signature are hollow', async () => {
     for (const change of [
       (outcome: Completed) => ({ ...outcome, record: undefined }),
       (outcome: Completed) => ({ ...outcome, record: { ...outcome.record, receipt: {}, receipt_signature: '' } }),
@@ -51,17 +51,17 @@ describe('a completed outcome that does not hold together', () => {
       changes(change);
       const step = expectKind(await go(w), 'failed');
       expect(step.reason).toBe(INCONSISTENT_OUTCOME);
-      expect(step.handoff).toMatchObject({ advert_ref: AGENT_ADVERT_REF, accepted: null, receipt: null });
+      expect(step.handoff).toMatchObject({ advert_ref: AGENT_ADVERT_REF, accepted: 'confirmed', receipt: null });
       expect(await w.m.chain.escrowState(step.handoff?.escrow_ref ?? '')).toBe('spent');
     }
   });
 
-  it('is a failed step and not a pass when the hire kit says that the wallet paid: the flow hires from the Live vault, so the step keeps the escrow, says that no Accept is known, and says that the vault did not pay', async () => {
+  it('is a failed step and not a pass when the hire kit says that the wallet paid: the flow hires from the Live vault, so the step keeps the escrow and the Accept that the kit said, and says that the vault did not pay', async () => {
     const w = await world();
     changes((outcome) => ({ ...outcome, paidFrom: 'wallet' }));
     const step = expectKind(await go(w), 'failed');
-    expect([step.reason, step.handoff?.paid_from_vault, step.handoff?.accepted, step.handoff?.receipt]).toStrictEqual([INCONSISTENT_OUTCOME, false, null, null]);
-    // The money moved: the Pay was made and the Accept was confirmed. The step keeps the escrow, so that the money is not lost from the record.
+    expect([step.reason, step.handoff?.paid_from_vault, step.handoff?.accepted, step.handoff?.receipt]).toStrictEqual([INCONSISTENT_OUTCOME, false, 'confirmed', null]);
+    // The money moved: the Pay was made and the Accept was confirmed on the chain. The record says so.
     expect(await w.m.chain.escrowState(step.handoff?.escrow_ref ?? '')).toBe('spent');
     expect(step.vault_ref).not.toBeNull();
     expect(settledResult(step, pieces())).toMatchObject({ outcome: 'failed', reason: INCONSISTENT_OUTCOME, exit_state: 'Failed' });
@@ -69,6 +69,16 @@ describe('a completed outcome that does not hold together', () => {
     const twin = await world();
     changes((outcome) => outcome);
     expect(expectKind(await go(twin), 'completed').handoff).toMatchObject({ paid_from_vault: true, accepted: 'confirmed' });
+  });
+
+  it('keeps a pending Accept as pending in the record of the failed step, and the twin of an outcome that never reached the Accept keeps null', async () => {
+    const w = await world();
+    changes((outcome) => ({ ...outcome, advertRef: LLM_ADVERT_REF, accepted: 'pending' }));
+    expect(expectKind(await go(w), 'failed').handoff).toMatchObject({ accepted: 'pending' });
+    const never = await world();
+    answers({ outcome: 'failed_after_claim', reason: 'made_up', message: 'kit words', advertRef: AGENT_ADVERT_REF, escrowRef: `${'44'.repeat(32)}#0`, vaultRef: null, terms: {} });
+    const step = expectKind(await go(never), 'failed');
+    expect([step.reason, step.handoff?.accepted]).toStrictEqual([INCONSISTENT_OUTCOME, null]);
   });
 
   it('is a failed step and not a pass when the receipt is not the receipt of this hire: it names another agent than the counterparty of the document, no agent, or another advert than the advert of the document', async () => {
@@ -83,8 +93,8 @@ describe('a completed outcome that does not hold together', () => {
       const w = await world();
       changes(change);
       const step = expectKind(await go(w), 'failed');
-      expect([step.reason, step.handoff?.accepted, step.handoff?.receipt], name).toStrictEqual([INCONSISTENT_OUTCOME, null, null]);
-      // The money moved: the Pay was made and the Accept was confirmed. The step keeps the escrow, so that the money is not lost from the record.
+      expect([step.reason, step.handoff?.accepted, step.handoff?.receipt], name).toStrictEqual([INCONSISTENT_OUTCOME, 'confirmed', null]);
+      // The money moved: the Pay was made and the Accept was confirmed on the chain. The record says so.
       expect(await w.m.chain.escrowState(step.handoff?.escrow_ref ?? ''), name).toBe('spent');
       expect(settledResult(step, pieces()), name).toMatchObject({ outcome: 'failed', reason: INCONSISTENT_OUTCOME, exit_state: 'Failed' });
     }

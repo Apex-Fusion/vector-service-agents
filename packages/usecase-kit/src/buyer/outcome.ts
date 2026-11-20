@@ -25,6 +25,9 @@
 // is a refusal code that the protocol lists for the counterparty of the use case, and is not a code of AFTER_CLAIM_REFUSALS. A job that failed after the Claim is a failure and never a refusal. The one
 // exception is `afterClaimRefusalIn`: the code that the counterparty answered as its own decision after its Claim, which the runtime copies into the message of the failure. It is a refusal only when the
 // protocol lists that code for the counterparty of the use case, as before the Claim. For any other counterparty it is the reason of a failure.
+//
+// A `completed` that does not hold together is `failed`, and its record keeps what the hire kit said of the Accept: `confirmed` or `pending`. The Accept was made on the chain, so the record must say so, or a use
+// case that runs again would pay a second time for the same work. An outcome that did not reach the Accept has `null` there.
 import { verificationOf } from '@vsa/hire-kit';
 import type { AgentDelivery, AgentEscrow, AgentOutcome, HireFailure, HireTerms } from '@vsa/hire-kit';
 import { flatText } from '@vsa/service-kit/text';
@@ -170,10 +173,14 @@ export function failure(reason: string, detail: string, extra: Partial<Omit<Fail
   return { kind: 'failed', reason, detail, handoff: null, vault_ref: null, terms: null, ...extra };
 }
 
-/** The step for an outcome that does not hold together. It names the escrow when it is known, so that no escrow is lost from the record. The record says nothing of an Accept, and `paidFromVault` is the word of the hire kit: it is false when the kit did not say that the vault paid. */
-function inconsistent(context: StepContext, detail: string, escrow: Escrow | null = null, paidFromVault = true): FailedStep {
+/**
+ * The step for an outcome that does not hold together. It names the escrow when it is known, so that no escrow is lost from the record. `accepted` is what the hire kit said of the Accept of a `completed` outcome:
+ * `confirmed` or `pending` means that the Accept was made on the chain, and the record says so. It is `null` for an outcome that did not reach the Accept, and for one that does not say. `paidFromVault` is the word
+ * of the hire kit: it is false when the kit did not say that the vault paid.
+ */
+function inconsistent(context: StepContext, detail: string, escrow: Escrow | null = null, paidFromVault = true, accepted: HandoffRecord['accepted'] = null): FailedStep {
   return failure(INCONSISTENT_OUTCOME, detail, {
-    handoff: escrow === null ? null : recordOf(context.counterparty_did, escrow.advert_ref, escrow.escrow_ref, null, null, paidFromVault),
+    handoff: escrow === null ? null : recordOf(context.counterparty_did, escrow.advert_ref, escrow.escrow_ref, null, accepted, paidFromVault),
     vault_ref: escrow?.vault_ref ?? null, terms: escrow?.terms ?? null, ...(context.booking_failed === null ? {} : { cause: context.booking_failed.cause }),
   });
 }
@@ -197,13 +204,15 @@ function verdictHolds(verdict: unknown): boolean {
  * approved document names, the receipt is the receipt of this hire (its agent is the counterparty that the document names, and when it names an advert, that advert is the advert of the document), the
  * verdict is VERIFIED and each of its eight checks passed, each of the eight members of the verification is the boolean `true`, the receipt is an object with members, its signature is a text that is not
  * empty, and the Accept is confirmed or pending. Anything else is `inconsistent_outcome`, and the step keeps the escrow: a hire that did not verify, or that the wallet paid, is never reported as done. The
- * record of that step says what the hire kit said of the payment: `paid_from_vault` is false when the kit did not say that the vault paid.
+ * record of that step says what the hire kit said of the payment (`paid_from_vault` is false when the kit did not say that the vault paid) and of the Accept (`accepted` is `confirmed` or `pending` when the kit
+ * said so: the Accept was made, and the use case must not hire again for the same work).
  */
 function completedStep(outcome: Completed, context: StepContext): HireStep {
   const escrow = escrowOf(outcome);
   if (escrow === null) return inconsistent(context, 'the hire kit gave an escrow or an advert that is not an output reference');
   const paidFromVault = outcome.paidFrom === 'vault';
-  const no = (detail: string): FailedStep => inconsistent(context, detail, escrow, paidFromVault);
+  const accepted = outcome.accepted === 'confirmed' || outcome.accepted === 'pending' ? outcome.accepted : null;
+  const no = (detail: string): FailedStep => inconsistent(context, detail, escrow, paidFromVault, accepted);
   if (!paidFromVault) return no('the hire says completed, and it does not say that the vault paid: the flow always hires from the Live vault of the delegation');
   if (escrow.advert_ref !== context.advert_ref) return no('the hire says completed for another advert than the advert that the approved document names');
   const record: unknown = outcome.record;
@@ -217,9 +226,9 @@ function completedStep(outcome: Completed, context: StepContext): HireStep {
   if (Object.hasOwn(delivery.receipt, 'advert_ref') && delivery.receipt.advert_ref !== context.advert_ref) return no('the receipt of the hire names another advert than the advert that the approved document names');
   if (!verdictHolds(outcome.verdict)) return no('the hire says completed, and its verdict is not VERIFIED with each of the eight checks passed');
   if (!RECEIPT_CHECKS.every((check) => delivery.verification[check] === true)) return no('the hire says completed, and one of the eight checks of its record is not true');
-  if (outcome.accepted !== 'confirmed' && outcome.accepted !== 'pending') return no('the hire says completed, and it does not say whether the Accept was seen');
+  if (accepted === null) return no('the hire says completed, and it does not say whether the Accept was seen');
   return {
-    kind: 'completed', handoff: recordOf(context.counterparty_did, escrow.advert_ref, escrow.escrow_ref, delivery, outcome.accepted), vault_ref: escrow.vault_ref, terms: escrow.terms, delivery,
+    kind: 'completed', handoff: recordOf(context.counterparty_did, escrow.advert_ref, escrow.escrow_ref, delivery, accepted), vault_ref: escrow.vault_ref, terms: escrow.terms, delivery,
     booking_failed: context.booking_failed,
   };
 }
@@ -347,6 +356,16 @@ function escrowIfReadable(outcome: AgentOutcome): Escrow | null {
   }
 }
 
+/** What a `completed` outcome says of the Accept: `confirmed` or `pending`. It is `null` for any other outcome, for any other word, and when the outcome cannot be read. It never throws. */
+function acceptedIfReadable(outcome: AgentOutcome): HandoffRecord['accepted'] {
+  try {
+    const accepted: unknown = outcome.outcome === 'completed' ? outcome.accepted : null;
+    return accepted === 'confirmed' || accepted === 'pending' ? accepted : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * True when the outcome says `vault_refused`, the one outcome after which the flow reads the delegation again. It is the one read of the outcome that the flow makes before `stepOfOutcome`, and it is
  * guarded in the same way: a value that is not an object, or an outcome whose `outcome` member throws, is not a refused Pay here, and `stepOfOutcome` makes the step for it. The function never throws.
@@ -361,7 +380,7 @@ export function isVaultRefused(outcome: unknown): boolean {
 
 /**
  * The step for one outcome of the hire kit. The switch has no default that passes: an outcome that is not one of the five is `inconsistent_outcome`. An outcome that cannot be read (a member that
- * throws) is `inconsistent_outcome` too, with the escrow that it names, and the error as the `cause` for the log. The function never throws.
+ * throws) is `inconsistent_outcome` too, with the escrow that it names, the Accept that a `completed` outcome says, and the error as the `cause` for the log. The function never throws.
  * `context.delegation_after` is read by the flow for `vault_refused` (see `isVaultRefused`); the function reads no ledger.
  */
 export function stepOfOutcome(outcome: AgentOutcome, context: StepContext): HireStep {
@@ -380,6 +399,6 @@ export function stepOfOutcome(outcome: AgentOutcome, context: StepContext): Hire
       }
     }
   } catch (error) {
-    return { ...inconsistent(context, 'the outcome of the hire could not be read', escrowIfReadable(outcome)), cause: error };
+    return { ...inconsistent(context, 'the outcome of the hire could not be read', escrowIfReadable(outcome), true, acceptedIfReadable(outcome)), cause: error };
   }
 }

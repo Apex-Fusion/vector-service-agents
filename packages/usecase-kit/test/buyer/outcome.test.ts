@@ -352,22 +352,22 @@ describe('the map from the outcome of the hire kit to the step and the result', 
     }
   });
 
-  it('does not make a completed step of a hire that the wallet paid: it is a failed step with the escrow kept and no Accept, and its record has the flag of the payment that the hire kit gave', () => {
+  it('does not make a completed step of a hire that the wallet paid: it is a failed step with the escrow kept and the Accept that the hire kit said, and its record has the flag of the payment that the hire kit gave', () => {
     const fromWallet = stepOfOutcome({ ...completed, paidFrom: 'wallet', vaultRef: null }, CONTEXT);
     const fromVault = stepOfOutcome(completed, CONTEXT);
     if (fromWallet.kind !== 'failed' || fromVault.kind !== 'completed') throw new Error(`unexpected steps: ${words(fromWallet)}, ${words(fromVault)}`);
     expect([fromWallet.reason, fromWallet.vault_ref, fromWallet.terms]).toStrictEqual([INCONSISTENT_OUTCOME, null, TERMS]);
     expect(fromWallet.handoff).toStrictEqual({
-      counterparty_did: COUNTERPARTY_DID, advert_ref: AGENT_ADVERT_REF, escrow_ref: ESCROW, paid_from_vault: false, receipt: null, receipt_signature: null, verification: null, result: null, accepted: null,
+      counterparty_did: COUNTERPARTY_DID, advert_ref: AGENT_ADVERT_REF, escrow_ref: ESCROW, paid_from_vault: false, receipt: null, receipt_signature: null, verification: null, result: null, accepted: 'confirmed',
     });
-    // The record is no record of an accepted hire: no completed result can be made of it.
+    // The record is no record of a hire that the vault paid: no completed result can be made of it.
     expect(() => completedResult(pieces({ handoff: fromWallet.handoff }))).toThrow(TypeError);
     expect(settledResult(fromWallet, pieces())).toMatchObject({ outcome: 'failed', reason: INCONSISTENT_OUTCOME, exit_state: 'Failed', handoff: fromWallet.handoff });
     // The twin: the same outcome that the vault paid is completed, and its record says so.
     expect(fromVault.handoff).toMatchObject({ paid_from_vault: true, accepted: 'confirmed' });
     // The flag is the word of the hire kit in every record of this kind: a hire that the vault paid and that does not verify says so.
     const unverified = stepOfOutcome({ ...completed, verdict: { verdict: 'FAILED', checks: CHECKS } }, CONTEXT);
-    expect(unverified).toMatchObject({ kind: 'failed', reason: INCONSISTENT_OUTCOME, handoff: { paid_from_vault: true, accepted: null } });
+    expect(unverified).toMatchObject({ kind: 'failed', reason: INCONSISTENT_OUTCOME, handoff: { paid_from_vault: true, accepted: 'confirmed' } });
   });
 
   it('writes the delivery into the record of a completed hire and of a hire that was not accepted, and nothing of it for a refusal', () => {
@@ -433,24 +433,44 @@ describe('a completed outcome that does not hold together', () => {
     }
   });
 
-  it('keeps the escrow of the outcome in the step, with its advert and its vault, and says nothing of an Accept or of a receipt', () => {
+  it('keeps the escrow of the outcome in the step, with its advert and its vault and the Accept that the outcome says, and says nothing of a receipt', () => {
     for (const [name, outcome] of BROKEN) {
       const step = stepOfOutcome(outcome, CONTEXT);
       if (step.kind !== 'failed') throw new Error(`${name}: the step is ${words(step)}`);
       expect(step.handoff, name).toMatchObject({
-        counterparty_did: COUNTERPARTY_DID, advert_ref: outcome.advertRef, escrow_ref: outcome.escrowRef, accepted: null, receipt: null, receipt_signature: null, verification: null, result: null,
+        counterparty_did: COUNTERPARTY_DID, advert_ref: outcome.advertRef, escrow_ref: outcome.escrowRef, accepted: name === 'the Accept is not confirmed and not pending' ? null : 'confirmed', receipt: null,
+        receipt_signature: null, verification: null, result: null,
       });
       expect([step.vault_ref, step.terms], name).toStrictEqual([NEXT_VAULT, TERMS]);
     }
   });
 
-  it('does not throw for an outcome that cannot be read, and keeps the escrow that it names: the error is the cause of the step', () => {
+  it('does not throw for an outcome that cannot be read, and keeps the escrow that it names, and the Accept when it can be read: the error is the cause of the step', () => {
     const boom = new Error('a member that throws');
     const unreadable = { ...completed, get verdict(): never { throw boom; } };
     const step = stepOfOutcome(unreadable as never, CONTEXT);
     if (step.kind !== 'failed') throw new Error(`the step is ${words(step)}`);
     expect([step.reason, step.cause]).toStrictEqual([INCONSISTENT_OUTCOME, boom]);
-    expect(step.handoff).toMatchObject({ escrow_ref: ESCROW, accepted: null });
+    expect(step.handoff).toMatchObject({ escrow_ref: ESCROW, accepted: 'confirmed' });
+    // The Accept is null when the member that says it is the member that cannot be read.
+    const noAccept = stepOfOutcome({ ...completed, get accepted(): never { throw boom; } } as never, CONTEXT);
+    if (noAccept.kind !== 'failed') throw new Error(`the step is ${words(noAccept)}`);
+    expect([noAccept.reason, noAccept.cause, noAccept.handoff?.accepted]).toStrictEqual([INCONSISTENT_OUTCOME, boom, null]);
+  });
+
+  it('keeps the Accept that the outcome says in its record: confirmed or pending, because the Accept was made on the chain, and the result says so; an outcome that says nothing of it, and an outcome that never reached it, keep null', () => {
+    for (const accepted of ['confirmed', 'pending'] as const) {
+      const step = stepOfOutcome({ ...completed, accepted, advertRef: OTHER_ADVERT }, CONTEXT);
+      if (step.kind !== 'failed') throw new Error(`${accepted}: the step is ${words(step)}`);
+      expect([step.reason, step.handoff?.accepted], accepted).toStrictEqual([INCONSISTENT_OUTCOME, accepted]);
+      expect(settledResult(step, pieces()), accepted).toMatchObject({ outcome: 'failed', reason: INCONSISTENT_OUTCOME, exit_state: 'Failed', handoff: { escrow_ref: ESCROW, accepted } });
+    }
+    const unsaid = [{ ...completed, accepted: 'no' as never }, { ...completed, accepted: undefined as never }, failedAfter('cannot_supply' as never), { ...timedOut, reason: 'maybe' as never } as AgentOutcome];
+    for (const [index, outcome] of unsaid.entries()) {
+      const step = stepOfOutcome(outcome, CONTEXT);
+      if (step.kind !== 'failed') throw new Error(`the step is ${words(step)}`);
+      expect([step.reason, step.handoff?.accepted], `case ${index}`).toStrictEqual([INCONSISTENT_OUTCOME, null]);
+    }
   });
 
   it('twin: the clean outcome is completed, and an outcome for another advert is completed when the document names that advert', () => {
@@ -496,7 +516,7 @@ describe('a delivery that passed the eight checks and cannot be recorded', () =>
   it('is never completed: a completed outcome with such a receipt is failed with inconsistent_outcome, and the escrow is kept', () => {
     const step = stepOfOutcome({ ...completed, record: { ...record, receipt: { escrow_ref: ESCROW, prompt_tokens: deep } as never } }, CONTEXT);
     if (step.kind !== 'failed') throw new Error(`the step is ${words(step)}`);
-    expect([step.reason, step.handoff?.escrow_ref, step.handoff?.accepted]).toStrictEqual([INCONSISTENT_OUTCOME, ESCROW, null]);
+    expect([step.reason, step.handoff?.escrow_ref, step.handoff?.accepted]).toStrictEqual([INCONSISTENT_OUTCOME, ESCROW, 'confirmed']);
   });
 
   it('twin: a receipt that the reader takes, at five levels, is recorded with the delivery', () => {
