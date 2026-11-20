@@ -13,7 +13,7 @@ export { BODY_ESCROW_REF, checkRuntimeBody, checkWirePayload, handoffOf, message
 export type { CounterpartyMessage, HandoffSource } from './message.ts';
 export { COUNTERPARTY_REFUSED, INCONSISTENT_OUTCOME, VAULT_REASON_MISSING, afterClaimRefusalIn, stepOfOutcome } from './outcome.ts';
 export type { AfterClaimRefusal, StepContext } from './outcome.ts';
-export { hireCounterparty } from './hire.ts';
+export { EARLIER_PAY_MAY_LAND, hireCounterparty } from './hire.ts';
 export type { DeliveryDecision, HandoffHireInput, HireDeps, HireInput, QuoteHireInput } from './hire.ts';
 export type {
   CompletedStep, FailedStep, HireStep, InterruptedStep, InterruptionCause, NotAcceptedStep, PayUnconfirmedStep, RefusedByCounterpartyStep, RefusedCode, RefusedStep, VaultRefusedStep,

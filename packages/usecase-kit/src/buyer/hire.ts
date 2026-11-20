@@ -3,8 +3,9 @@
 //   1. The settings and the message are checked. A limit that is not a bigint or null, and a decision that is not a function, are a fault of the settings (`internal`).
 //   2. The authority: the delegation of the message must not name another agent (`delegation_not_mine`). A delegation that is not found goes on.
 //   3. The size: the wire payload that is sent must not pass the limit of a service, and the body of the call to the runtime must not pass its limit (`request_too_large`). It is checked here because the hire kit builds both after the Pay.
-//   4. One job at a time for the paying key. In that turn the flow reads the Live vault of the delegation, exactly one, and checks that the deadline of the job leaves time for the first poll. Then it
-//      hires from the vault with `hireAgent`. The advert is read on the chain: the flow never asks the indexer. The three limits go to the hire kit as the caller gave them.
+//   4. One job at a time for the paying key, and no Pay while an earlier Pay of the key may still land (`earlier_pay_may_land`). In that turn the flow reads the Live vault of the delegation, exactly one,
+//      and checks that the deadline of the job leaves time for the first poll. Then it hires from the vault with `hireAgent`. The advert is read on the chain: the flow never asks the indexer. The three
+//      limits go to the hire kit as the caller gave them.
 //   5. The outcome becomes a step (outcome.ts). After a refused Pay the delegation is read again.
 // The delegation key is the paying key: it signs the Pay and the Accept. No step retries, and no step hires a second time for the same work.
 import { HireInterrupted, HireLane, HirePayUnconfirmed, POLL_INTERVAL_MS, hireAgent } from '@vsa/hire-kit';
@@ -102,23 +103,35 @@ function decisionOf(answer: unknown): AcceptDecision {
   throw new DecisionError('the decision must answer { accept: true } or { accept: false, reason }');
 }
 
-const lanes = new WeakMap<PayingKey, HireLane>();
+/** What the flow keeps for one paying key. */
+interface KeyState {
+  /** One job at a time. */
+  readonly lane: HireLane;
+  /** A Pay of the key that was sent and not seen confirmed, and that may still land: the vault output that it spends, and the time (POSIX ms) after which it cannot land. */
+  pending: { readonly vault_ref: string; readonly valid_to: number } | null;
+}
+
+const keys = new WeakMap<PayingKey, KeyState>();
 
 /**
- * Runs `job` when every job that was given before it for the same paying key has ended. The flow reads the vault of the delegation and pays from it in one turn: a Pay spends the vault output
- * that was read, so a second job that read the vault before the first Pay would pay from an output that no longer exists. The hire kit has its own lane for the hire, and it cannot be taken
- * twice, so the flow keeps one more lane for the key.
+ * The state of a paying key. The flow reads the vault of the delegation and pays from it in one turn, in the lane: a Pay spends the vault output that was read, so a second job that read the vault
+ * before the first Pay would pay from an output that no longer exists. The hire kit has its own lane for the hire, and it cannot be taken twice, so the flow keeps one more lane for the key.
+ * A Pay that was sent and not seen confirmed may still land until its validity ends, and it spends the vault output that it names: only one of two Pays from that output can land. So no job of the key
+ * pays until the validity of the first has ended.
  */
-function serially<T>(key: PayingKey, job: () => Promise<T>): Promise<T> {
-  let lane = lanes.get(key);
-  if (lane === undefined) {
-    lane = new HireLane();
-    lanes.set(key, lane);
+function stateOfKey(key: PayingKey): KeyState {
+  let state = keys.get(key);
+  if (state === undefined) {
+    state = { lane: new HireLane(), pending: null };
+    keys.set(key, state);
   }
-  return lane.run(job);
+  return state;
 }
 
 const refusal = (code: RefusedCode, detail: string): RefusedStep => ({ kind: 'refused', code, detail });
+
+/** The reason of a job that was stopped before the Pay because an earlier Pay of the same key was sent and not seen confirmed, and may still land. */
+export const EARLIER_PAY_MAY_LAND = 'earlier_pay_may_land';
 
 interface Prepared {
   readonly message: CounterpartyMessage;
@@ -234,7 +247,17 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
   const size = checkRuntimeBody(text);
   if (!size.ok) return refusal('request_too_large', size.detail);
 
-  return serially(key, async () => {
+  const state = stateOfKey(key);
+  return state.lane.run(async () => {
+    // A Pay of an earlier job may still land and spend its vault output. Until its validity has ended, this job reads nothing and pays nothing. After that, the vault is read again: it is the vault that
+    // the Pay left if it landed, and the old vault if it did not.
+    const pending = state.pending;
+    if (pending !== null) {
+      if (!(hire.clock() >= pending.valid_to)) {
+        return failure(EARLIER_PAY_MAY_LAND, `an earlier Pay from the vault output ${pending.vault_ref} may still land until ${pending.valid_to} (POSIX ms), so no Pay of this key starts, and nothing was paid`);
+      }
+      state.pending = null;
+    }
     const found = await findLiveVault(reads, message.delegation, hire.clock());
     if (!found.ok) return failure(found.code, found.detail);
     // A job that waited for the lane, or for the read of the vault, may have run out of time. The first thing that the hire kit does after the Pay is to wait one poll interval, and it fails when that
@@ -265,7 +288,9 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
     try {
       outcome = await hireAgent(key, hire, request, ERRORS);
     } catch (error) {
-      return stepOfError(error, context, seen.delivery);
+      const step = stepOfError(error, context, seen.delivery);
+      if (step.kind === 'pay_unconfirmed' && step.may_land) state.pending = { vault_ref: found.vault_ref, valid_to: step.valid_to };
+      return step;
     }
     // The delegation is read again only after a refused Pay: `delegation_ended` decides between the exit states Cancelled and Failed.
     const after = outcome?.outcome === 'vault_refused' ? await delegationAfter(reads, message.delegation) : null;

@@ -141,6 +141,13 @@ export async function world(options: { market?: Parameters<typeof marketplace>[0
   return made;
 }
 
+/** The deps of the flow for a second paying key on the chain of the world, with a stranded store of its own. */
+export async function otherKeyDeps(w: World): Promise<HireDeps> {
+  const dir = mkdtempSync(join(tmpdir(), 'usecase-kit-buyer-'));
+  dirs.push(dir);
+  return { ...w.deps, key: await new PayingKeys(dir).add(w.m.chain) };
+}
+
 /** The input of a hire of the template supplier for a document, with no limit and a decision that accepts. `over` replaces members. */
 export function input(over: Partial<HireInput> = {}): HireInput {
   return { message: handoffFor(), counterparty_did: COUNTERPARTY_DID, capability_id: CAPABILITY, limits: NO_LIMITS, decide: ACCEPT, ...over } as HireInput;
