@@ -9,7 +9,7 @@ import type { AgentKind } from '@vsa/usecase-kit/protocol';
 const env = (fault?: unknown): Record<string, unknown> => ({ PATH: '/usr/bin', LLM_MAX_PRICE_LOVELACE: '200000', ...(fault === undefined ? {} : { FAULT_MODE: fault }) });
 const service = (name: string, kind: AgentKind, fault?: unknown): SeenService => ({ service: name, kind, env: env(fault) });
 
-/** The services of the first use case, as a script sees them. */
+/** The services of use case 1 (inventory reorder), as a script sees them. */
 const run = (orderDesk?: unknown, reorder?: unknown): SeenService[] => [service('reorder-agent', 'reorder-agent', reorder), service('order-desk-small', 'order-desk', orderDesk)];
 
 describe('checkCleanRun', () => {
