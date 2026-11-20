@@ -68,4 +68,19 @@ describe('checkRequestSize', () => {
     const result = checkRequestSize(value as never);
     expect(result).toMatchObject({ ok: false, code: 'bad_shape' });
   });
+
+  it('refuses a value that cannot be read with bad_shape and does not throw, and takes the bytes themselves', () => {
+    const revoked = Proxy.revocable(new Uint8Array(3), {});
+    revoked.revoke();
+    const hostile: ReadonlyArray<readonly [string, () => Uint8Array]> = [
+      ['a Proxy whose prototype trap throws', () => new Proxy(new Uint8Array(3), { getPrototypeOf() { throw new Error('the trap ran'); } })],
+      ['a revoked Proxy', () => revoked.proxy],
+      ['a Proxy of bytes with no trap, which is not bytes itself', () => new Proxy(new Uint8Array(3), {})],
+    ];
+    for (const [label, make] of hostile) {
+      expect(() => checkRequestSize(make()), label).not.toThrow();
+      expect(checkRequestSize(make()), label).toStrictEqual({ ok: false, code: 'bad_shape', detail: 'the request cannot be read' });
+    }
+    expect(checkRequestSize(new Uint8Array(3))).toStrictEqual({ ok: true, value: 3 });
+  });
 });

@@ -17,12 +17,19 @@ export const MAX_REQUEST_BYTES = 900_000;
 /** The most bytes that the runtime in front of a service takes in the body of one call: 1 MiB. A body above this number is refused. */
 export const RUNTIME_BODY_LIMIT_BYTES = 1_048_576;
 
-/** The size of a wire payload in bytes, or `request_too_large` when it is over MAX_REQUEST_BYTES. The size is counted in bytes of UTF-8, as the HTTP layer counts it, and not in characters. */
+/**
+ * The size of a wire payload in bytes, or `request_too_large` when it is over MAX_REQUEST_BYTES. The size is counted in bytes of UTF-8, as the HTTP layer counts it, and not in characters. It never throws:
+ * a value that cannot be read, such as a Proxy that throws when it is asked for its prototype, gives `bad_shape`.
+ */
 export function checkRequestSize(wirePayload: string | Uint8Array): ProtocolResult<number, 'request_too_large' | 'bad_shape'> {
   let bytes: number;
-  if (typeof wirePayload === 'string') bytes = Buffer.byteLength(wirePayload, 'utf8');
-  else if (wirePayload instanceof Uint8Array) bytes = wirePayload.byteLength;
-  else return refused('bad_shape', 'the request must be text or bytes');
+  try {
+    if (typeof wirePayload === 'string') bytes = Buffer.byteLength(wirePayload, 'utf8');
+    else if (wirePayload instanceof Uint8Array) bytes = wirePayload.byteLength;
+    else return refused('bad_shape', 'the request must be text or bytes');
+  } catch {
+    return refused('bad_shape', 'the request cannot be read');
+  }
   return bytes <= MAX_REQUEST_BYTES
     ? accepted(bytes)
     : refused('request_too_large', `the request has ${bytes} bytes, and a service takes at most ${MAX_REQUEST_BYTES} bytes`);
