@@ -3,16 +3,17 @@
 // the clock is the clock port of the test.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TxNotConfirmedError } from '@vsa/buyer-core';
-import { EARLIER_PAY_MAY_LAND, completedResult, hireCounterparty, settledResult } from '@vsa/usecase-kit/buyer';
+import { HirePayUnconfirmed } from '@vsa/hire-kit';
+import { EARLIER_PAY_MAY_LAND, INCONSISTENT_OUTCOME, completedResult, hireCounterparty, settledResult } from '@vsa/usecase-kit/buyer';
 import { T0, cleanWorlds, expectKind, go, handoffFor, input, otherKeyDeps, pieces, purchaseOrder, untouched, words, world } from './support.ts';
 
 afterEach(() => { vi.restoreAllMocks(); cleanWorlds(); });
 
 const VALID_TO = T0 + 400_000;
 const second = () => handoffFor(purchaseOrder({ po_number: 'run1-0002' }));
-/** A Pay that was sent and not seen confirmed. It did not land, and `mayLand` says whether it may still do so. */
-const unseen = (mayLand: boolean): TxNotConfirmedError => new TxNotConfirmedError(
-  'The Pay was submitted, but Koios did not report it confirmed.', { txHash: 'ab'.repeat(32), escrowRef: `${'ab'.repeat(32)}#0`, deliverBy: T0 + 480_000, validTo: VALID_TO, mayLand },
+/** A Pay that was sent and not seen confirmed. It did not land, and `mayLand` says whether it may still do so. `escrowRef` is the escrow that the Pay opens if it lands. */
+const unseen = (mayLand: boolean, escrowRef = `${'ab'.repeat(32)}#0`): TxNotConfirmedError => new TxNotConfirmedError(
+  'The Pay was submitted, but Koios did not report it confirmed.', { txHash: 'ab'.repeat(32), escrowRef, deliverBy: T0 + 480_000, validTo: VALID_TO, mayLand },
 );
 
 describe('a Pay that may still land', () => {
@@ -58,6 +59,36 @@ describe('a Pay that may still land', () => {
     expect(first.may_land).toBe(false);
     expect(words(await go(w, { message: second() }))).toBe('completed');
     expect(pay).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops the next job of the key also when the error of the hire kit holds an escrow that is not an output reference: the first step is failed with inconsistent_outcome, and the Pay may land all the same', async () => {
+    const NOT_A_REF = 'not an output reference';
+    const w = await world();
+    const pay = vi.spyOn(w.m.chain, 'payFromVault').mockRejectedValueOnce(unseen(true, NOT_A_REF));
+    const first = expectKind(await go(w), 'failed');
+    expect([first.reason, first.handoff]).toStrictEqual([INCONSISTENT_OUTCOME, null]);
+    expect(first.cause).toBeInstanceOf(HirePayUnconfirmed);
+    expect(first.cause).toMatchObject({ mayLand: true, escrowRef: NOT_A_REF, validTo: VALID_TO });
+    // The next job of the key is stopped before any read of the vault and any Pay, as it is for a Pay with an escrow that is an output reference.
+    const next = expectKind(await go(w, { message: second() }), 'failed');
+    expect([next.reason, next.handoff, next.vault_ref]).toStrictEqual([EARLIER_PAY_MAY_LAND, null, null]);
+    expect(next.detail).toContain(`${VALID_TO}`);
+    expect(pay).toHaveBeenCalledTimes(1);
+    expect(w.reads.calls.liveVaults).toBe(1);
+    expect(w.m.agent.sends).toStrictEqual([]);
+    expect(w.m.chain.vault(w.vault)).toMatchObject({ kind: 'Live', consumed: false });
+    // One millisecond before the validity ends the job is still stopped. At the end the key pays again, after a new read of the vault.
+    w.m.clock.now = VALID_TO - 1;
+    expect(words(await go(w, { message: second() }))).toBe(`failed ${EARLIER_PAY_MAY_LAND}`);
+    w.m.clock.now = VALID_TO;
+    expect(words(await go(w, { message: second() }))).toBe('completed');
+    expect(w.reads.calls.liveVaults).toBe(2);
+    // The twin: a Pay with the same escrow that certainly did not reach the node does not stop the next job, and it pays from the same vault.
+    const twin = await world();
+    const twinPay = vi.spyOn(twin.m.chain, 'payFromVault').mockRejectedValueOnce(unseen(false, NOT_A_REF));
+    expect(words(await go(twin))).toBe(`failed ${INCONSISTENT_OUTCOME}`);
+    expect(words(await go(twin, { message: second() }))).toBe('completed');
+    expect(twinPay).toHaveBeenCalledTimes(2);
   });
 
   it('stops only the paying key whose Pay may land: another key on the same chain pays at once', async () => {

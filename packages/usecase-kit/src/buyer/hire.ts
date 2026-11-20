@@ -312,9 +312,10 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
     try {
       outcome = await hireAgent(key, hireDeps, request, ERRORS);
     } catch (error) {
-      const step = stepOfError(error, context, seen.delivery);
-      if (step.kind === 'pay_unconfirmed' && step.may_land) state.pending = { vault_ref: found.vault_ref, valid_to: step.valid_to };
-      return step;
+      // A Pay that was sent and not seen confirmed may still land, and it spends the vault output that this job read. The key waits for the end of its validity whatever step the error becomes: an escrow
+      // that is not an output reference makes the step `failed`, and the Pay may land all the same.
+      if (error instanceof HirePayUnconfirmed && error.mayLand) state.pending = { vault_ref: found.vault_ref, valid_to: error.validTo };
+      return stepOfError(error, context, seen.delivery);
     }
     // The delegation is read again only after a refused Pay: `delegation_ended` decides between the exit states Cancelled and Failed. The flow reads the outcome only in `isVaultRefused` and in `stepOfOutcome`,
     // and neither throws: an outcome that cannot be read is a step with the reason `inconsistent_outcome`, and it is not an error of the flow.
