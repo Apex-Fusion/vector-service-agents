@@ -151,6 +151,64 @@ describe('a token for another audience, another action, another resource or anot
   });
 });
 
+// The service asks for the action and the resource of the route as whole texts. A grant covers them when it names them, or names a pattern of a delegation that covers them (`erp.*`, `*`).
+// A text that is only a prefix covers nothing. The organisation that delegates decides how wide its delegation is: a grant of `*` on `*` covers every route of every tenant.
+describe('the pattern of a grant', () => {
+  /** One call to the ERP of `tenant` with a token of a new agent whose delegation has these actions and resources. */
+  async function readStock(s: Scenario, label: string, actions: string[], resources: string[], tenant = s.tenant) {
+    const agent = s.world.agent(label);
+    const delegation = s.world.delegate({ delegate: agent, actions, resources, remaining: 1 });
+    const credential = await s.world.token(agent, delegation, resourceOf(tenant, 'erp'));
+    return s.harness.tokenCall({ tenant, credential, method: 'GET', route: '/erp/stock/GLV-NIT-M' });
+  }
+  it('a grant that names the action and the resource, or a pattern that covers them, is honoured', async () => {
+    const s = await scenario(TENANT);
+    const exact = resourceOf(TENANT, 'erp');
+    const grants: Array<[string, string[], string[]]> = [
+      ['both named', ['erp.stock.read'], [exact]],
+      ['an action pattern', ['erp.*'], [exact]],
+      ['the pattern of every action', ['*'], [exact]],
+      ['the pattern of every resource', ['erp.stock.read'], ['*']],
+      ['both patterns of everything', ['*'], ['*']],
+    ];
+    for (const [label, actions, resources] of grants) {
+      const reply = await readStock(s, label, actions, resources);
+      expect(reply.status, `${label}: ${reply.text}`).toBe(200);
+    }
+  });
+  it('a text that is only a prefix covers nothing: part of an action name, part of a resource and part of a system name are refused', async () => {
+    const s = await scenario(TENANT);
+    const exact = resourceOf(TENANT, 'erp');
+    const grants: Array<[string, string[], string[], string]> = [
+      ['a prefix of the action name', ['erp.stock'], [exact], 'delegation.action'],
+      ['the base of the tenant, a prefix of the resource', ['erp.stock.read'], [`${PUBLIC_BASE}/t/${TENANT}`], 'delegation.resource'],
+      ['the start of the name of the tenant, a prefix of the resource', ['erp.stock.read'], [`${PUBLIC_BASE}/t/ru`], 'delegation.resource'],
+      ['a part of the name of the system, a prefix of the resource', ['erp.stock.read'], [exact.slice(0, -1)], 'delegation.resource'],
+    ];
+    for (const [label, actions, resources, rule] of grants) {
+      const reply = await readStock(s, label, actions, resources);
+      refused(reply, 403, 'not_covered');
+      expect(lastRule(s), label).toBe(rule);
+    }
+  });
+  it('a grant of every action on every resource covers every route of every tenant', async () => {
+    const s = await scenario(TENANT);
+    expect((await s.harness.seed('run2')).status).toBe(201);
+    const agent = s.world.agent('everything');
+    const delegation = s.world.delegate({ delegate: agent, actions: ['*'], resources: ['*'], remaining: 1 });
+    const calls: Array<[string, string, string, string, unknown]> = [
+      [TENANT, 'erp', 'GET', '/erp/stock/GLV-NIT-M', undefined],
+      ['run2', 'vendors', 'GET', '/vendors', undefined],
+      ['run2', 'po', 'POST', PO, purchaseOrder('run2', 'any-1')],
+    ];
+    for (const [tenant, system, method, route, body] of calls) {
+      const credential = await s.world.token(agent, delegation, resourceOf(tenant, system));
+      const reply = await s.harness.tokenCall({ tenant, credential, method, route, body });
+      expect(reply.status, `${tenant} ${method} ${route}: ${reply.text}`).toBeLessThan(300);
+    }
+  });
+});
+
 describe('a proof that is not right', () => {
   it('a proof that was used is refused the second time, and the first call was honoured', async () => {
     const { s, agent } = await setup();

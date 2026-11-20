@@ -152,8 +152,8 @@ export class World {
     return `:${new X509Certificate(issued.value.certificate).raw.toString('base64')}:`;
   }
 
-  /** A JWT-SVID of `agent` for the audience. */
-  async jwtSvid(agent: StubAgent, audience: string): Promise<string> {
+  /** A JWT-SVID of `agent` for the audience, or for each audience of a list. */
+  async jwtSvid(agent: StubAgent, audience: string | readonly string[]): Promise<string> {
     const issued = await this.client.jwtSvid({ agent: { did: agent.did, key: agent.authentication.privateKey }, audience });
     if (!issued.ok) throw new Error(`the stub gateway refused the JWT-SVID: ${issued.rule}: ${issued.detail}`);
     return issued.value.svid;

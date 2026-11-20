@@ -117,6 +117,16 @@ describe('an X.509-SVID that is not right', () => {
     s.world.advance(420_000);
     expect((await x509(s, header)).status).toBe(200);
   });
+  it('a certificate is refused when its end has come, with no leeway at its end, and the same certificate one second before was honoured', async () => {
+    const s = await scenario(TENANT);
+    // The stub makes a certificate that starts one minute before it is made and lasts one hour, so it ends 3540 seconds after the first call.
+    const header = await s.world.clientCert(supplierAgent(s));
+    s.world.advance(3_539_000);
+    expect((await x509(s, header)).status).toBe(200);
+    s.world.advance(1_000);
+    refused(await x509(s, header), 401, 'svid_invalid');
+    expect(lastRule(s)).toBe('x509.expired');
+  });
   it('a certificate whose bytes are no certificate is refused, and a header that is not in the form of the contract is refused as malformed', async () => {
     const s = await scenario(TENANT);
     const good = await s.world.clientCert(supplierAgent(s));
@@ -314,6 +324,14 @@ describe('the agent of an SVID', () => {
     expect((await viaCert(s, there, '/t/run2/supplier/catalogue/GLV-NIT-M')).status).toBe(200);
     refused(await viaCert(s, there), 403, 'organisation_mismatch');
   });
+  it('a certificate is not bound to a tenant: it is honoured at every tenant whose supplier is the organisation of the agent, and refused where the supplier is another', async () => {
+    const s = await scenario(TENANT);
+    expect((await s.harness.seed('run2')).status).toBe(201);
+    expect((await s.harness.seed('run3', { organisations: { supplier: 'other.example.test', insurer: INSURER_ORG } })).status).toBe(201);
+    const header = await s.world.clientCert(supplierAgent(s));
+    for (const tenant of [TENANT, 'run2']) expect((await x509(s, header, `/t/${tenant}/supplier/catalogue/GLV-NIT-M`)).status, tenant).toBe(200);
+    refused(await x509(s, header, '/t/run3/supplier/catalogue/GLV-NIT-M'), 403, 'organisation_mismatch');
+  });
 });
 
 describe('a gateway that cannot be read', () => {
@@ -410,6 +428,24 @@ describe('a JWT-SVID', () => {
     expect(lastRule(s)).toBe('jwt_svid.not_yet_valid');
     s.world.advance(540_000);
     expect((await call()).status).toBe(200);
+  });
+  it('is honoured up to 30 seconds after its end, the leeway of the verifier, and is refused after that', async () => {
+    const s = await scenario(TENANT);
+    const token = await s.world.jwtSvid(insurerAgent(s), AUDIENCE);
+    const call = () => s.harness.call({ path: REQUIREMENTS, headers: { authorization: `Bearer ${token}` } });
+    // The JWT-SVID of the stub lasts 300 seconds.
+    s.world.advance(329_000);
+    expect((await call()).status).toBe(200);
+    s.world.advance(2_000);
+    refused(await call(), 401, 'svid_invalid');
+    expect(lastRule(s)).toBe('jwt_svid.expired');
+  });
+  it('with two audiences is honoured at both of them, at the insurer of each tenant that it names', async () => {
+    const s = await scenario(TENANT);
+    expect((await s.harness.seed('run2')).status).toBe(201);
+    const token = await s.world.jwtSvid(insurerAgent(s), [AUDIENCE, `${PUBLIC_BASE}/t/run2/insurer`]);
+    for (const tenant of [TENANT, 'run2']) expect((await s.harness.call({ path: `/t/${tenant}/insurer/requirements/SYN-MRI-LS`, headers: { authorization: `Bearer ${token}` } })).status, tenant).toBe(200);
+    refused(await s.harness.call({ path: `/t/${TENANT}/insurer/requirements/SYN-MRI-LS`, headers: { authorization: `Bearer ${await s.world.jwtSvid(insurerAgent(s, 'other'), `${PUBLIC_BASE}/t/run2/insurer`)}` } }), 401, 'svid_invalid');
   });
   it('is refused when another gateway signed it, and when the agent is of another organisation or not Active', async () => {
     const s = await scenario(TENANT);
