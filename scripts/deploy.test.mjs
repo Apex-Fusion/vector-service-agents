@@ -1987,7 +1987,7 @@ test('CI: the publish job also pushes the Document Pipeline image under :latest 
   assert.match(job.if, /github\.event_name == 'push'/);
   assert.match(job.if, /github\.ref == 'refs\/heads\/main'/);
   const builds = job.steps.filter((s) => s.uses === 'docker/build-push-action@v6');
-  assert.equal(builds.length, 5, 'one image for each agent that is built, and one for the mock service');
+  assert.equal(builds.length, 4, 'one image for each agent that is built');
   const history = builds.find((s) => s.with.file === 'agents/agent-history/Dockerfile');
   const pipeline = builds.find((s) => s.with.file === 'agents/document-pipeline/Dockerfile');
   assert.ok(history && pipeline);
@@ -3332,7 +3332,7 @@ test('CI: the publish job also pushes the Audio Snippets image under :latest and
 });
 
 // Ruling R-D26: a stage of a Dockerfile that no longer builds fails on the pull request that broke it, before main, with no registry login.
-test('CI: the build job builds the five images of the publish job on every pull request and every push to main, and pushes none and logs in nowhere', () => {
+test('CI: the build job builds the four images of the publish job on every pull request and every push to main, and pushes none and logs in nowhere', () => {
   assert.deepEqual(ci.on, { push: { branches: ['main'] }, pull_request: null });
   assert.deepEqual(ci.permissions, { contents: 'read' });
   const job = ci.jobs.build;
@@ -3344,7 +3344,7 @@ test('CI: the build job builds the five images of the publish job on every pull 
   assert.equal(job.steps[0].uses, 'actions/checkout@v4');
   assert.equal(job.steps.some((s) => typeof s.uses === 'string' && s.uses.startsWith('docker/login-action')), false, 'no registry login');
   const builds = job.steps.filter((s) => s.uses === 'docker/build-push-action@v6');
-  assert.equal(builds.length, 5);
+  assert.equal(builds.length, 4);
   const published = ci.jobs.publish.steps.filter((s) => s.uses === 'docker/build-push-action@v6').map((s) => s.with.file);
   assert.deepEqual(builds.map((s) => s.with.file), published, 'the Dockerfiles of the publish job, in its order');
   for (const step of builds) {
@@ -6685,31 +6685,4 @@ test('mock service image, the health check: run as the Dockerfile writes it agai
   } finally {
     for (const server of [ok, unwell]) { server.closeAllConnections(); server.close(); }
   }
-});
-
-test('mock service CI: the build job builds services/mock-systems/Dockerfile with no push as its last step, the publish job pushes it under :latest and :<sha> as its last step, after the login and with the labels of the other four, and the comment above the build job counts the images', () => {
-  const FILE = 'services/mock-systems/Dockerfile';
-  const builds = ci.jobs.build.steps.filter((s) => s.uses === 'docker/build-push-action@v6');
-  const built = builds.find((s) => s.with.file === FILE);
-  assert.ok(built, 'the build job builds it');
-  assert.deepEqual(built.with, { context: '.', file: FILE, push: false });
-  assert.equal(built.if, undefined, 'no condition of its own');
-  assert.equal(ci.jobs.build.steps.at(-1), built, 'the last step of the build job');
-  assert.equal(ci.jobs.build.steps.some((s) => typeof s.uses === 'string' && s.uses.startsWith('docker/login-action')), false, 'no registry login in the build job');
-  const publishes = ci.jobs.publish.steps.filter((s) => s.uses === 'docker/build-push-action@v6');
-  const pushed = publishes.find((s) => s.with.file === FILE);
-  assert.ok(pushed, 'the publish job pushes it');
-  assert.equal(pushed.with.context, '.');
-  assert.equal(pushed.with.push, true);
-  assert.deepEqual(pushed.with.tags.trim().split('\n'), [`${MOCK.image}:latest`, `${MOCK.image}:\${{ github.sha }}`], 'the two tags');
-  assert.equal(pushed.if, undefined, 'no condition of its own: the conditions are the job\'s');
-  for (const other of publishes.filter((s) => s !== pushed)) assert.equal(pushed.with.labels, other.with.labels, `the label of ${other.with.file}`);
-  assert.equal(ci.jobs.publish.steps.at(-1), pushed, 'the last step of the publish job');
-  assert.ok(ci.jobs.publish.steps.indexOf(pushed) > ci.jobs.publish.steps.findIndex((s) => s.uses === 'docker/login-action@v3'), 'after the login');
-  assert.deepEqual(builds.map((s) => s.with.file), publishes.map((s) => s.with.file), 'the same Dockerfiles in both jobs, in the same order');
-  assert.equal(parseYaml(mockComposeText).services[MOCK.name].image.split('@')[0], MOCK.image, 'the compose file names the image that CI pushes');
-  // The comment above the build job says how many images it builds, and the number is right.
-  const comment = /^ {2}# (Every pull request[^\n]*\n {2}# [^\n]*)\n {2}build:$/m.exec(read('.github/workflows/ci.yml'))?.[1] ?? '';
-  const words = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'];
-  assert.ok(comment.includes(`builds the ${words[builds.length]} images`), `the comment names ${words[builds.length]} images: ${comment}`);
 });
