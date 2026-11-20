@@ -1,15 +1,16 @@
 // packages/hire-kit/test/model.test.ts
 // hireModel against the in-memory marketplace of testing/stub-suppliers.ts, from a paying key: model hires run one after the other from the one service key, one hire for each
 // decision, no retry and no fallback, a failed hire is a failure that is thrown once and recorded in the store of the key, and the price ceiling and the two limits of the bonds hold
-// what a hire pays. Each refusal has its accepted twin.
+// what a hire pays, and a hire whose turn in the lane comes after its deadline does not begin. Each refusal has its accepted twin.
 import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeChain } from '@vsa/buyer-core';
+import type { Chain } from '@vsa/buyer-core';
 import { hireModel } from '../src/model.ts';
-import type { ModelDeps, ModelErrors, ModelRequest } from '../src/model.ts';
-import type { HireLedger } from '../src/hire.ts';
+import type { ModelAnswer, ModelDeps, ModelErrors, ModelRequest } from '../src/model.ts';
+import type { HireFacts, HireLedger, Hired } from '../src/hire.ts';
 import { PayingKeys } from '../src/keys.ts';
 import type { PayingKey } from '../src/keys.ts';
 import { ALLOWLIST, ANSWER, INDEXER, LLM_ADVERT, LLM_ADVERT_REF, T0, chainWith, escrowNo, indexerRow, marketplace } from '../testing/index.ts';
@@ -21,15 +22,17 @@ const SECOND_ENDPOINT = 'https://203.0.113.32';
 
 class CodedError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  readonly facts: HireFacts | undefined;
+  constructor(code: string, message: string, facts?: HireFacts) {
     super(message);
     this.name = 'CodedError';
     this.code = code;
+    this.facts = facts;
   }
 }
 const ERRORS: ModelErrors<CodedError> = {
   failure: (kind, what, message) => new CodedError(`${kind}_${what}`, message),
-  deadline: (doing) => new CodedError('deadline', `The deadline of the job came while ${doing}.`),
+  deadline: (doing, facts) => new CodedError('deadline', `The deadline of the job came while ${doing}.`, facts),
   storeWrite: (message) => new CodedError('store_write_failed', message),
   unavailable: (why) => new CodedError('no_model', `No model to hire: ${why}.`),
 };
@@ -66,6 +69,48 @@ async function thrown(hire: Promise<unknown>): Promise<CodedError> {
   const error = await hire.then(() => { throw new Error('the hire completed'); }, (err: unknown) => err);
   if (!(error instanceof CodedError)) throw error;
   return error;
+}
+
+/** The chain of `m`, with each call written to `events` by its name. */
+const noting = (m: Marketplace, events: string[]): Partial<Chain> => ({
+  wallet: () => { events.push('wallet'); return m.chain.wallet(); },
+  postEscrow: (args) => { events.push('postEscrow'); return m.chain.postEscrow(args); },
+  accept: (ref) => { events.push('accept'); return m.chain.accept(ref); },
+  reclaim: (ref) => { events.push('reclaim'); return m.chain.reclaim(ref); },
+  escrowState: (ref) => { events.push('escrowState'); return m.chain.escrowState(ref); },
+  onChainReceiptHash: (ref) => { events.push('onChainReceiptHash'); return m.chain.onChainReceiptHash(ref); },
+  readAdvert: (ref) => { events.push('readAdvert'); return m.chain.readAdvert(ref); },
+});
+/** The moment, in milliseconds after T0, at which the first hire of a pair lets go of the lane: its Accept is slow. */
+const RELEASE_MS = 90_000;
+/**
+ * Two hires from one key at one time. The first holds the lane: its Accept waits until the test lets it go, and the clock stands RELEASE_MS after T0 when it does. The second has the deadline
+ * `deadlineMs` after T0, and its turn comes when the first has ended. `events` are the calls that the chain got, by name. `held` is what the chain and the fetch had seen while the first hire held
+ * the lane and the second waited: whatever comes after it is the second hire's.
+ */
+async function twoAtOnce(deadlineMs: number): Promise<{ run: Run; events: string[]; held: { events: string[]; calls: number }; first: Hired<ModelAnswer>; second: PromiseSettledResult<Hired<ModelAnswer>> }> {
+  const events: string[] = [];
+  const gate = deferred();
+  const reached = deferred();
+  let held = { events: [] as string[], calls: 0 };
+  let gated = true;
+  const run = await setup({}, (m) => ({
+    ...noting(m, events),
+    accept: async (ref) => {
+      events.push('accept');
+      if (gated) { gated = false; held = { events: [...events], calls: m.calls.length }; reached.resolve(); await gate.promise; }
+      return m.chain.accept(ref);
+    },
+  }));
+  const first = hireModel(run.key, run.deps, request(), ERRORS);
+  const second = hireModel(run.key, { ...run.deps, deadlineMs: T0 + deadlineMs }, request({ input: 'a second question', label: 'the second brief' }), ERRORS);
+  const ended = Promise.allSettled([first, second]);
+  await reached.promise;
+  run.m.clock.now = T0 + RELEASE_MS;
+  gate.resolve();
+  const [one, two] = await ended;
+  if (one.status !== 'fulfilled') throw one.reason;
+  return { run, events, held, first: one.value, second: two };
 }
 
 describe('hireModel', () => {
@@ -144,6 +189,55 @@ describe('hireModel', () => {
     const next = await hireModel(run.key, run.deps, request({ input: 'the next question' }), ERRORS);
     expect([next.accepted, next.record.escrow_ref]).toStrictEqual(['confirmed', escrowNo(2)]);
     expect(run.m.llm.sends).toHaveLength(2);
+  });
+
+  it('ends a hire whose turn in the lane comes after its deadline with the deadline error, before it reads, chooses or posts anything: the chain, the suppliers and the store show nothing of it, and the lane is free for the next hire', async () => {
+    const { run, events, held, first, second } = await twoAtOnce(60_000);
+    expect(first.accepted).toBe('confirmed');
+    if (second.status !== 'rejected') throw new Error('the second hire did not end in an error');
+    const error: unknown = second.reason;
+    if (!(error instanceof CodedError)) throw error;
+    // The first hire held the lane until the clock stood 90 s after T0, so the second had its turn 30 s after its deadline.
+    expect([error.code, error.message]).toStrictEqual(['deadline', 'The deadline of the job came while the second brief waited for its turn in the lane of its key.']);
+    // No stage of a hire and no escrow: the facts say that nothing was signed.
+    expect(error.facts).toStrictEqual({ stage: 'lane', escrowRef: null, handedOver: false });
+    // Nothing was read: the chain got no call, and the fetch got none (no indexer, no probe of a supplier, no send) after the first hire held the lane.
+    expect(events).toStrictEqual(held.events);
+    expect(run.m.calls).toHaveLength(held.calls);
+    // Nothing was posted or recorded: the chain knows no second escrow, the one send is the first hire's, and the store is empty.
+    expect(await run.m.chain.escrowState(escrowNo(2))).toBe('unknown');
+    expect(run.m.llm.sends).toHaveLength(1);
+    expect(run.booked).toHaveLength(1);
+    expect(run.key.stranded.list()).toStrictEqual([]);
+    // The lane is free: the next hire has its turn, and its Post is the second of the chain.
+    const third = await hireModel(run.key, run.deps, request({ input: 'a third question' }), ERRORS);
+    expect([third.accepted, third.record.escrow_ref]).toStrictEqual(['confirmed', escrowNo(2)]);
+  });
+
+  it('hires both when the turn of the second still meets its deadline: the same pair, with a deadline after the moment that the first lets go of the lane', async () => {
+    const { run, events, held, first, second } = await twoAtOnce(150_000);
+    if (second.status !== 'fulfilled') throw second.reason;
+    expect([first.accepted, second.value.accepted]).toStrictEqual(['confirmed', 'confirmed']);
+    expect([first.record.escrow_ref, second.value.record.escrow_ref]).toStrictEqual([escrowNo(1), escrowNo(2)]);
+    // What the refusal above shows to be absent is here: the second hire read, posted and sent after the first let go.
+    expect(events.length).toBeGreaterThan(held.events.length);
+    expect(run.m.calls.length).toBeGreaterThan(held.calls);
+    expect([run.m.llm.sends.length, run.booked.length]).toStrictEqual([2, 2]);
+    expect(run.key.stranded.list()).toStrictEqual([]);
+  });
+
+  it('keeps no margin at the turn: a turn at the deadline or after it is too late, and a turn a millisecond before it is in time, so the hire goes on, posts, and ends at its first poll as it did before', async () => {
+    for (const deadlineMs of [T0 - 1, T0]) {
+      const late = await setup();
+      const error = await thrown(hireModel(late.key, { ...late.deps, deadlineMs }, request(), ERRORS));
+      expect([error.code, error.facts], String(deadlineMs - T0)).toStrictEqual(['deadline', { stage: 'lane', escrowRef: null, handedOver: false }]);
+      expect([late.m.calls, late.booked, late.key.stranded.list()], String(deadlineMs - T0)).toStrictEqual([[], [], []]);
+    }
+    const early = await setup();
+    const error = await thrown(hireModel(early.key, { ...early.deps, deadlineMs: T0 + 1 }, request(), ERRORS));
+    // The turn is in time, so the hire reads and posts. The waits that the deadline cuts end it, and its escrow is in the store for the janitor.
+    expect([error.code, error.facts?.stage, error.facts?.escrowRef]).toStrictEqual(['deadline', 'poll', escrowNo(1)]);
+    expect(early.key.stranded.list().map((entry) => entry.escrow_ref)).toStrictEqual([escrowNo(1)]);
   });
 
   it('does not let the price ceiling bound what a hire pays: an advert at the ceiling whose supplier bond is above the limit is not hired, with the advert, the bond and the limit in the message, and nothing is posted; at the limit, and with no limit, it is hired', async () => {

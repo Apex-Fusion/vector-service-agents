@@ -1,23 +1,23 @@
 // packages/hire-kit/test/agent.test.ts
 // hireAgent against the in-memory marketplace of testing/stub-suppliers.ts: a FakeChain with a vault that a delegate key pays from, and a template supplier behind the injected fetch,
 // with a clock the test owns, run from the paying key of the chain. The five outcomes (completed, refused_before_claim, failed_after_claim, vault_refused, not_accepted), the choice
-// of the agent by capability and model and by name, the limits of the bonds, the payment from the wallet and from a vault, the decision of the caller, the lane of the key, and what
+// of the agent by capability and model and by name, the limits of the bonds, the payment from the wallet and from a vault, the decision of the caller, the lane of the key and the turn of a hire in it, and what
 // is thrown instead of an outcome. Each refusal has its accepted twin.
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeChain, TxNotConfirmedError } from '@vsa/buyer-core';
-import type { Chain } from '@vsa/buyer-core';
+import type { Chain, VaultChain } from '@vsa/buyer-core';
 import { HireInterrupted, HirePayUnconfirmed, hireAgent } from '../src/agent.ts';
 import type { AgentDeps, AgentErrors, AgentOutcome, AgentRequest } from '../src/agent.ts';
 import { DECISION_WINDOW_MS } from '../src/hire.ts';
-import type { HireLedger } from '../src/hire.ts';
+import type { HireFacts, HireLedger } from '../src/hire.ts';
 import { JANITOR_GRACE_MS, StrandedStore, runJanitorOnce } from '../src/janitor.ts';
 import { PayingKeys } from '../src/keys.ts';
 import type { PayingKey } from '../src/keys.ts';
 import {
-  AGENT_ADVERT, AGENT_ADVERT_REF, AGENT_ANSWER, AGENT_CAPABILITY, AGENT_ENDPOINT, AGENT_KEY, AGENT_MODEL, FORGER_KEY, INDEXER, T0, chainWith, indexerRow, marketplace, vaultChainWith,
+  AGENT_ADVERT, AGENT_ADVERT_REF, AGENT_ANSWER, AGENT_CAPABILITY, AGENT_ENDPOINT, AGENT_KEY, AGENT_MODEL, FORGER_KEY, INDEXER, T0, chainWith, escrowNo, indexerRow, marketplace, vaultChainWith,
 } from '../testing/index.ts';
 import type { Marketplace } from '../testing/index.ts';
 
@@ -30,16 +30,18 @@ const PAGE_504 = '<html><body><h1>504 Gateway Timeout</h1></body></html>';
 
 class CodedError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  readonly facts: HireFacts | undefined;
+  constructor(code: string, message: string, facts?: HireFacts) {
     super(message);
     this.name = 'CodedError';
     this.code = code;
+    this.facts = facts;
   }
 }
 /** As a service writes its errors: the code <hop>_<what> for a failure, and its own codes for the rest. */
 const ERRORS: AgentErrors<CodedError> = {
   failure: (kind, what, message) => new CodedError(`${kind}_${what}`, message),
-  deadline: (doing) => new CodedError('deadline', `The deadline of the job came while ${doing}.`),
+  deadline: (doing, facts) => new CodedError('deadline', `The deadline of the job came while ${doing}.`, facts),
   storeWrite: (message) => new CodedError('store_write_failed', message),
   unavailable: (why) => new CodedError('no_agent', `No agent to hire: ${why}.`),
 };
@@ -945,6 +947,59 @@ describe('hireAgent: a ledger that throws after a confirmed Post or Pay', () => 
   });
 });
 
+/** The chain of `m`, with each call written to `events` by its name. */
+const noting = (m: Marketplace, events: string[]): Partial<VaultChain> => ({
+  wallet: () => { events.push('wallet'); return m.chain.wallet(); },
+  postEscrow: (args) => { events.push('postEscrow'); return m.chain.postEscrow(args); },
+  payFromVault: (args) => { events.push('payFromVault'); return m.chain.payFromVault(args); },
+  accept: (ref) => { events.push('accept'); return m.chain.accept(ref); },
+  reclaim: (ref) => { events.push('reclaim'); return m.chain.reclaim(ref); },
+  escrowState: (ref) => { events.push('escrowState'); return m.chain.escrowState(ref); },
+  onChainReceiptHash: (ref) => { events.push('onChainReceiptHash'); return m.chain.onChainReceiptHash(ref); },
+  readAdvert: (ref) => { events.push('readAdvert'); return m.chain.readAdvert(ref); },
+});
+/** The moment, in milliseconds after T0, at which the first hire of a pair lets go of the lane: its Accept is slow. */
+const RELEASE_MS = 90_000;
+/**
+ * Two hires from one key at one time. The first is from the wallet and holds the lane: its Accept waits until the test lets it go, and the clock stands RELEASE_MS after T0 when it does. The second
+ * pays from a vault when `fromVault` says so, has the deadline `deadlineMs` after T0, and has its turn when the first has ended. `events` are the calls that the chain got, by name. `held` is what the
+ * chain and the fetch had seen while the first hire held the lane and the second waited: whatever comes after it is the second hire's.
+ */
+async function twoAtOnce(deadlineMs: number, fromVault: boolean): Promise<{ run: Run; vault: string | null; events: string[]; held: { events: string[]; calls: number }; first: AgentOutcome; second: PromiseSettledResult<AgentOutcome> }> {
+  const events: string[] = [];
+  const gate = deferred();
+  const reached = deferred();
+  let held = { events: [] as string[], calls: 0 };
+  let gated = true;
+  const run = await setup({}, {
+    chain: (m) => vaultChainWith(m, {
+      ...noting(m, events),
+      accept: async (ref) => {
+        events.push('accept');
+        if (gated) { gated = false; held = { events: [...events], calls: m.calls.length }; reached.resolve(); await gate.promise; }
+        return m.chain.accept(ref);
+      },
+    }),
+  });
+  const vault = fromVault ? openVault(run) : null;
+  const first = go(run);
+  const second = hireAgent(run.key, { ...run.deps, deadlineMs: T0 + deadlineMs }, request({ payload: '{"purchase_order":"PO-8"}', label: 'the second order', ...(vault === null ? {} : { vaultRef: vault }) }), ERRORS);
+  const ended = Promise.allSettled([first, second]);
+  await reached.promise;
+  run.m.clock.now = T0 + RELEASE_MS;
+  gate.resolve();
+  const [one, two] = await ended;
+  if (one.status !== 'fulfilled') throw one.reason;
+  return { run, vault, events, held, first: one.value, second: two };
+}
+/** The error of the factory that a settled hire rejected with; the test fails when the hire ended in an outcome, or in an error of another kind. */
+function rejectedWith(settled: PromiseSettledResult<AgentOutcome>): CodedError {
+  if (settled.status !== 'rejected') throw new Error(`the hire ended in ${settled.value.outcome}`);
+  const error: unknown = settled.reason;
+  if (!(error instanceof CodedError)) throw error;
+  return error;
+}
+
 describe('hireAgent: in the lane of its paying key', () => {
   it('takes no deps with a chain or a store: they come from the key, so no hire can run with the chain of one key and the store of another', () => {
     const noChain: 'chain' extends keyof AgentDeps ? never : true = true;
@@ -1012,6 +1067,72 @@ describe('hireAgent: in the lane of its paying key', () => {
     gate.resolve();
     expect([(await first).outcome, (await second).outcome]).toStrictEqual(['completed', 'completed']);
     expect(events).toStrictEqual(['post', 'accept', 'post', 'accept']);
+  });
+
+  it('ends a hire from the wallet whose turn comes after its deadline with the deadline error, before it reads, chooses or posts anything: the chain, the agent and the store show nothing of it, and the lane is free for the next hire', async () => {
+    const { run, events, held, first, second } = await twoAtOnce(60_000, false);
+    expect(first.outcome).toBe('completed');
+    const error = rejectedWith(second);
+    // The first hire held the lane until the clock stood 90 s after T0, so the second had its turn 30 s after its deadline.
+    expect([error.code, error.message]).toStrictEqual(['deadline', 'The deadline of the job came while the second order waited for its turn in the lane of its key.']);
+    // No stage of a hire and no escrow: the facts say that nothing was signed.
+    expect(error.facts).toStrictEqual({ stage: 'lane', escrowRef: null, handedOver: false });
+    // Nothing was read: the chain got no call, and the fetch got none (no indexer, no probe of the agent, no send) after the first hire held the lane.
+    expect(events).toStrictEqual(held.events);
+    expect(run.m.calls).toHaveLength(held.calls);
+    // Nothing was posted or recorded: the chain knows no second escrow, the one send is the first hire's, and the store is empty.
+    expect(await run.m.chain.escrowState(escrowNo(2))).toBe('unknown');
+    expect(run.m.agent.sends).toHaveLength(1);
+    expect(run.booked.posted).toHaveLength(1);
+    expect(run.stranded.list()).toStrictEqual([]);
+    // The lane is free: the next hire has its turn, and its Post is the second of the chain.
+    const third = await go(run, { payload: '{"purchase_order":"PO-9"}' });
+    expect([third.outcome, third.outcome === 'completed' ? third.escrowRef : null]).toStrictEqual(['completed', escrowNo(2)]);
+  });
+
+  it('hires both from the wallet when the turn of the second still meets its deadline: the same pair, with a deadline after the moment that the first lets go of the lane', async () => {
+    const { run, events, held, first, second } = await twoAtOnce(150_000, false);
+    if (second.status !== 'fulfilled') throw second.reason;
+    expect([first.outcome, second.value.outcome]).toStrictEqual(['completed', 'completed']);
+    // What the refusal above shows to be absent is here: the second hire read, posted and sent after the first let go.
+    expect(events.length).toBeGreaterThan(held.events.length);
+    expect(run.m.calls.length).toBeGreaterThan(held.calls);
+    expect([run.m.agent.sends.length, run.booked.posted.length]).toStrictEqual([2, 2]);
+    expect(run.stranded.list()).toStrictEqual([]);
+  });
+
+  it('ends a hire from a vault whose turn comes after its deadline with the deadline error as it is: no Pay is made, the vault reference that the caller holds is still the Live one, and it pays the next hire', async () => {
+    const { run, vault, events, held, first, second } = await twoAtOnce(60_000, true);
+    if (vault === null) throw new Error('the pair has no vault');
+    expect(first.outcome).toBe('completed');
+    // The error is the factory's own, and no HireInterrupted or HirePayUnconfirmed: no Pay was made, so there is no vault that continues.
+    const error = rejectedWith(second);
+    expect([error.code, error.facts]).toStrictEqual(['deadline', { stage: 'lane', escrowRef: null, handedOver: false }]);
+    // No Pay: the chain got no call of the second hire, and the vault is as it was, with no output made from it.
+    expect(events).toStrictEqual(held.events);
+    expect(events).not.toContain('payFromVault');
+    expect(run.m.calls).toHaveLength(held.calls);
+    expect(run.m.chain.vault(vault)).toMatchObject({ kind: 'Live', consumed: false });
+    expect(run.m.chain.vaults()).toHaveLength(1);
+    expect(run.stranded.list()).toStrictEqual([]);
+    // The reference that the caller holds still pays: the next hire from it completes, and its Pay spends the vault.
+    const third = await go(run, { vaultRef: vault, payload: '{"purchase_order":"PO-9"}' });
+    if (third.outcome !== 'completed') throw new Error(`the hire ended in ${third.outcome}`);
+    expect(third.paidFrom).toBe('vault');
+    expect(run.m.chain.vault(vault)).toMatchObject({ consumed: true });
+    expect(run.m.chain.vault(third.vaultRef ?? '')).toMatchObject({ kind: 'Live', consumed: false });
+  });
+
+  it('pays the second hire from the vault when its turn still meets its deadline: the same pair, with a deadline after the moment that the first lets go of the lane', async () => {
+    const { run, vault, events, held, first, second } = await twoAtOnce(150_000, true);
+    if (vault === null || second.status !== 'fulfilled') throw new Error('the second hire did not end in an outcome');
+    expect([first.outcome, second.value.outcome]).toStrictEqual(['completed', 'completed']);
+    if (second.value.outcome !== 'completed') return;
+    expect([second.value.paidFrom, events.filter((event) => event === 'payFromVault')]).toStrictEqual(['vault', ['payFromVault']]);
+    expect(events.length).toBeGreaterThan(held.events.length);
+    expect(run.m.calls.length).toBeGreaterThan(held.calls);
+    expect(run.m.chain.vault(vault)).toMatchObject({ consumed: true });
+    expect(run.m.chain.vault(second.value.vaultRef ?? '')).toMatchObject({ kind: 'Live', consumed: false });
   });
 });
 
