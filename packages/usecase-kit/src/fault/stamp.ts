@@ -1,7 +1,7 @@
 // packages/usecase-kit/src/fault/stamp.ts
 // The field `fault_mode` of a result. The service adds it to every result with ONE helper, so that job code cannot leave it out or write another value. The evidence writer reads it back with
 // `readFaultMode`: a result that has no such field is never taken as a clean result.
-import { accepted, isFaultSetting, isPlainObject, readMembers, refused } from '../protocol/index.ts';
+import { accepted, isFaultSetting, parseDocument, readMembers, refused } from '../protocol/index.ts';
 import type { AgentKind, FaultSetting, ProtocolResult } from '../protocol/index.ts';
 import { compareDetail, compareSettings } from './compare.ts';
 import type { FaultCompareRefusal } from './compare.ts';
@@ -12,13 +12,17 @@ import type { FaultSwitch } from './setting.ts';
 export type WithFaultMode<R extends object, K extends AgentKind> = R extends unknown ? Omit<R, 'fault_mode'> & { readonly fault_mode: FaultSetting<K> } : never;
 
 /**
- * The result with `fault_mode` set to the value of the switch, as a new object. The member stands last. A value that the job wrote is dropped: the switch decides, and job code cannot hide a fault
- * that is on or show one that is off. A result that is not a JSON object, and a switch that is not well formed, throw: an error never gives a result without the field.
+ * The result with `fault_mode` set to the value of the switch, as a new object. The result of a job is JSON data, and it is copied with the JSON walk of the protocol: the walk reads each member
+ * one time, and it refuses a function, an accessor, a member that is not enumerable and every other value that JSON cannot hold. So the copy has no `toJSON` or `then` that is a function or a
+ * getter: nothing can change what `JSON.stringify` writes, and an `async` function cannot take the result for a promise. The copy gets `fault_mode` as its LAST own member. A value that the job wrote is dropped: the switch
+ * decides, and job code cannot hide a fault that is on or show one that is off. A result that the walk refuses, and a switch that `readFaultSwitch` did not make, throw: an error never gives a
+ * result without the field.
  */
 export function withFaultMode<K extends AgentKind, R extends object>(fault: FaultSwitch<K>, result: R): WithFaultMode<R, K> {
   if (!isFaultSwitch(fault)) throw new TypeError('the fault switch is not a switch that readFaultSwitch made');
-  if (!isPlainObject(result)) throw new TypeError('a result must be a JSON object, so that it can carry fault_mode');
-  const { fault_mode: _written, ...members } = result;
+  const data = parseDocument(result, 'result');
+  if (!data.ok) throw new TypeError(`a result must be JSON data, so that it can carry fault_mode: ${data.detail}`);
+  const { fault_mode: _written, ...members } = data.value;
   return { ...members, fault_mode: fault.mode } as WithFaultMode<R, K>;
 }
 

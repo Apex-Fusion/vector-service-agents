@@ -18,8 +18,8 @@ export const isAgentKind = (value: unknown): value is AgentKind => typeof value 
 declare const sealed: unique symbol;
 
 /**
- * The fault setting of one process: the kind of agent and the value that was read at the start. Only `readFaultSwitch` makes one, and the object is frozen. The type has a member that no other
- * code can name, so an object that a caller writes by hand is not a switch.
+ * The fault setting of one process: the kind of agent and the value that was read at the start. Only `readFaultSwitch` makes one. The object is frozen, and this module marks it, so a function that
+ * takes a switch accepts only a marked one. The type has a member that no other code can name, so an object that a caller writes by hand is not a switch at compile time either.
  */
 export interface FaultSwitch<K extends AgentKind = AgentKind> {
   readonly [sealed]: true;
@@ -58,6 +58,9 @@ export function parseFaultSetting<K extends AgentKind>(kind: K, value: unknown):
   return refused('bad_fault_mode', `environment variable ${FAULT_MODE_VARIABLE} must be ${allowed} for ${kind}, got ${describeValue(value)}`);
 }
 
+/** The switches that `readFaultSwitch` made. A hand-made object is not in it, also a frozen one with the right members: an object of another origin can have a getter that gives another value at the next read. */
+const ISSUED = new WeakSet<object>();
+
 /**
  * Reads the setting at the start of a service and returns the switch that the service keeps. A value that the kind does not list throws an error with the text of the refusal, so the start stops. The
  * error names the variable and the allowed values. It does not repeat a long value or a value that looks like a key.
@@ -65,11 +68,12 @@ export function parseFaultSetting<K extends AgentKind>(kind: K, value: unknown):
 export function readFaultSwitch<K extends AgentKind>(kind: K, value: unknown): FaultSwitch<K> {
   const setting = parseFaultSetting(kind, value);
   if (!setting.ok) throw new Error(setting.detail);
-  return Object.freeze({ kind, mode: setting.value }) as unknown as FaultSwitch<K>;
+  const fault = Object.freeze({ kind, mode: setting.value }) as unknown as FaultSwitch<K>;
+  ISSUED.add(fault);
+  return fault;
 }
 
-/** True when the object is a switch with a kind and a setting that fit each other. A script and a test can give a value of the wrong form. */
+/** True only for a switch that `readFaultSwitch` made. A copy, an object that inherits from a switch, and an object that a caller wrote by hand are not switches. */
 export function isFaultSwitch(value: unknown): value is FaultSwitch {
-  if (typeof value !== 'object' || value === null || !('kind' in value) || !('mode' in value)) return false;
-  return isAgentKind(value.kind) && isFaultSetting(value.kind, value.mode);
+  return typeof value === 'object' && value !== null && ISSUED.has(value);
 }

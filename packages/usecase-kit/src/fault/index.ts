@@ -4,9 +4,10 @@
 // A fault value makes one agent do one wrong thing on purpose in a failure run, so that the other agents and the checks can show how they answer. The setting is FAULT_MODE. It is empty in a clean run.
 //
 //   start        `readFaultSwitch(kind, process.env.FAULT_MODE)` one time. An unknown value, and the value of another kind, stop the start.
-//   results      `withFaultMode` or `withFaultModeJob` gives every result of a job the field `fault_mode`. No job code writes the field.
+//   results      `withFaultMode` or `withFaultModeJob` gives every result of a job the field `fault_mode`, and they accept only a switch that `readFaultSwitch` made. The result of a job is JSON data: it is
+//                copied with the JSON walk of the protocol, so no function, getter, `toJSON` or `then` of the job can change what leaves the service. No job code writes the field.
 //   manifest     The manifest names the possible values and never the active one (`@vsa/usecase-kit/manifest`).
-//   run script   `checkCleanRun` before a clean run, `checkFaultRun` before a fault run, and `checkFaultMode` on each result that goes into the evidence file.
+//   run script   `checkCleanRun` before a clean run and `checkFaultRun` before a fault run, and the same guard again after the run. `checkFaultMode` checks each result that goes into the evidence file.
 //
 // A fault never changes a check. A fault value changes WHAT an agent sends or decides in its own job, as the page of that agent says. It never changes whether a check of a counterparty, a verifier
 // or a limit runs. No check function of the kit takes a fault value: it has no parameter for one, and a request has no member that could carry one. The tests show this for the checks of the protocol.
