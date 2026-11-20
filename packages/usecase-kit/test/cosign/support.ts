@@ -8,7 +8,7 @@ import type { DelegateParams } from '@vsa/buyer-core';
 import { encodeDelegationDatum, utf8Hex } from '@vsa/vector-read/identity-codec';
 import type { DelegationDatum } from '@vsa/vector-read/identity-codec';
 import { COSIGN_SETTINGS, createCosignRoute, parseCosignSettings, providerLedger } from '@vsa/usecase-kit/cosign';
-import type { CosignConfig, CosignLedger, CosignRoute, DelegationKey } from '@vsa/usecase-kit/cosign';
+import type { CosignConfig, CosignLedger, CosignRoute, DelegationKey, KeyRegister } from '@vsa/usecase-kit/cosign';
 import type { FixtureProvider } from '../../../buyer-core/test/fixtures/fixture-provider.ts';
 import { DAY, DEPLOYMENT, NOW, OWN_ADDRESS, identityWorld, recordUtxo, rootRecord, testKey } from '../../../buyer-core/test/fixtures/identity-world.ts';
 
@@ -90,6 +90,8 @@ export interface Setup {
   keys: TestKey[];
   otherKeyHashes: string[];
   ledger: CosignLedger;
+  /** The register of the signed bodies. The route has the register in memory when a test gives none. Two routes that get the same register share it, as two processes of a service share a durable one. */
+  register: KeyRegister;
   limits: Record<string, string>;
   /** Replaces the sign function of each delegation key: it gets the key and the function that signs well. */
   sign: (key: TestKey, good: DelegationKey['sign']) => DelegationKey['sign'];
@@ -133,6 +135,7 @@ export function configOf(over: Partial<Setup> = {}): Watched {
   const config: CosignConfig = {
     agentDid: AGENT_DID, deployment: DEPLOYMENT, delegationKeys: keys.map((key) => withSign(signerOf(key, signed), key, over.sign)), otherKeyHashes: over.otherKeyHashes ?? [SUPPLIER.keyHash, SERVICE.keyHash],
     settings: settings.value, ledger: over.ledger ?? ledgerOf(world()), systemStartMs: SYSTEM_START_MS, now: () => clock.now, log: (line) => logs.push(line),
+    ...(over.register === undefined ? {} : { register: over.register }),
   };
   return { config, signed, logs, clock };
 }
@@ -145,8 +148,20 @@ export function harness(over: Partial<Setup> = {}): Harness {
   return { route: made.value, ...watched };
 }
 
-/** The request body of the route for a transaction. */
-export const requestOf = (hex: string): string => JSON.stringify({ transaction: hex });
+/** The request body of the route for a transaction as it is: no witness is added. */
+export const plainRequestOf = (hex: string): string => JSON.stringify({ transaction: hex });
+
+/**
+ * The request body that a member sends: the delegator signs the body first, as the route asks. `signer` is the delegator of the datum, and it is the principal key of the member unless a test builds
+ * another delegator. A transaction that has a witness of that key already is sent as it is, and so is a text that is not a transaction.
+ */
+export function requestOf(hex: string, signer: TestKey = PRINCIPAL): string {
+  try {
+    return plainRequestOf(witnessesOf(hex).some(([hash]) => hash === signer.keyHash) ? hex : signedBy(hex, signer));
+  } catch {
+    return plainRequestOf(hex);
+  }
+}
 
 /** A promise and the function that settles it. A test holds a read of the ledger at a gate with it. (`Promise.withResolvers` is not in the library of the target of this package, es2022.) */
 export function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {

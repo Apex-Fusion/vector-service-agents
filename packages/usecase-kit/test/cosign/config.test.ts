@@ -2,11 +2,13 @@
 // The config of the route is checked once, when the service starts. A config that is wrong gives a refusal and no route, so a service that gets a refusal does not start. The refusal names the setting
 // and never repeats a value.
 import { describe, expect, it } from 'vitest';
-import { createCosignRoute } from '@vsa/usecase-kit/cosign';
-import type { CosignConfig, DelegationKey } from '@vsa/usecase-kit/cosign';
+import { KeyReservations, createCosignRoute } from '@vsa/usecase-kit/cosign';
+import type { ClaimResult, CosignConfig, DelegationKey, KeyRegister } from '@vsa/usecase-kit/cosign';
 import { DELEG_A, DEPLOYMENT, STRANGER, SUPPLIER, configOf, keyOf, signerOf } from './support.ts';
 
 const MARKER = 'zq9-marker-7f3';
+const held = async (): Promise<ClaimResult> => 'held';
+const released = async (): Promise<void> => undefined;
 
 /** The config of the tests with one member changed: `over` may hold a value of any type. */
 function changedConfig(over: Record<string, unknown>): CosignConfig {
@@ -19,6 +21,12 @@ describe('createCosignRoute', () => {
     expect(createCosignRoute(changedConfig({ delegationKeys: [signerOf(DELEG_A)] }))).toMatchObject({ ok: true });
     const eight = Array.from({ length: 8 }, (_, i) => signerOf(keyOf(40 + i)));
     expect(createCosignRoute(changedConfig({ delegationKeys: eight }))).toMatchObject({ ok: true });
+  });
+
+  it('makes a route from a good config with the register of the service, and with no register: the route has one in memory', () => {
+    const mine: KeyRegister = new KeyReservations();
+    expect(createCosignRoute(changedConfig({ register: mine }))).toMatchObject({ ok: true });
+    expect(createCosignRoute(changedConfig({ register: undefined }))).toMatchObject({ ok: true });
   });
 
   it.each([
@@ -46,6 +54,12 @@ describe('createCosignRoute', () => {
     ['settings with a limit of the wrong type', { settings: { ...configOf().config.settings, maxConcurrent: '4' } }],
     ['no ledger', { ledger: undefined }],
     ['a ledger with no function for the delegations', { ledger: { outputs: async () => [] } }],
+    ['a register that is text', { register: 'register' }],
+    ['a register that is null', { register: null }],
+    ['a register with no take function', { register: { commit: held, release: released } }],
+    ['a register with no commit function', { register: { take: held, release: released } }],
+    ['a register with no release function', { register: { take: held, commit: held } }],
+    ['a register with a take that is not a function', { register: { take: 'held', commit: held, release: released } }],
     ['a start of the chain that is zero', { systemStartMs: 0 }],
     ['a start of the chain that is not a whole number', { systemStartMs: 1_756_485_600_000.5 }],
     ['a start of the chain that is text', { systemStartMs: '1756485600000' }],

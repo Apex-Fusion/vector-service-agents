@@ -20,11 +20,11 @@ export const COSIGN_REFUSALS = {
   not_for_this_agent: 400,
   /** The delegation key is in use: the agent signed another body for it whose window is open, or a live delegation on the ledger names it. */
   key_in_use: 409,
-  /** The delegator is not a principal key on the allowlist of the operator. */
+  /** The delegator did not sign this body first (the transaction has no witness of the delegator that verifies over it), or the delegator is not a principal key on the allowlist of the operator, or it is a key of the agent. */
   principal_not_allowed: 403,
   /** An input or a collateral input of the transaction is an output of a wallet of a key of this agent. */
   spends_agent_funds: 403,
-  /** The validity window of the transaction has ended. */
+  /** The validity window of the transaction has ended, or the period of the delegation in its datum has ended. */
   expired: 400,
 } as const;
 export type CosignRefusal = keyof typeof COSIGN_REFUSALS;

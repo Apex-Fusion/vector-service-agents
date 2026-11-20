@@ -4,7 +4,6 @@
 import { describe, expect, it } from 'vitest';
 import { RESERVATION_MARGIN_MS } from '@vsa/usecase-kit/cosign';
 import type { CosignLedger, DelegationKey } from '@vsa/usecase-kit/cosign';
-import { KeyReservations } from '../../src/cosign/register.ts';
 import {
   DELEG_A, DELEG_B, NOW, STRANGER, SUPPLIER, agentWallet, bodyHashOf, build, deferred, harness, hostedToolTakes, ledgerOf, liveDelegation, privateKeyOf, requestOf, withInput, world,
 } from './support.ts';
@@ -116,62 +115,6 @@ describe('the register of signed bodies', () => {
     expect(await failing).toMatchObject({ ok: false, code: 'check_unavailable' });
     expect((await signing).ok).toBe(true);
     expect(await h.route.cosign(requestOf(second.hex))).toMatchObject({ ok: false, code: 'key_in_use' });
-  });
-});
-
-describe('the unit of the register', () => {
-  it('takes a free key, refuses another body, and takes the same body', () => {
-    const register = new KeyReservations();
-    const hold = register.take('k', 'body-1', 1_000, 0);
-    expect(hold).toBeDefined();
-    expect(register.take('k', 'body-2', 1_000, 0)).toBeUndefined();
-    expect(register.take('k', 'body-1', 1_000, 0)).toBeDefined();
-    expect(register.take('other', 'body-2', 1_000, 0)).toBeDefined();
-  });
-
-  it('drops an entry that was not committed when its last request is over, and keeps a committed one until its time', () => {
-    const register = new KeyReservations();
-    const lost = register.take('k', 'body-1', 1_000, 0)!;
-    lost.release();
-    expect(register.size).toBe(0);
-    expect(register.take('k', 'body-2', 1_000, 0)).toBeDefined();
-
-    const register2 = new KeyReservations();
-    const kept = register2.take('k', 'body-1', 1_000, 0)!;
-    kept.commit();
-    kept.release();
-    expect(register2.take('k', 'body-2', 1_000, 999)).toBeUndefined();
-    expect(register2.take('k', 'body-2', 1_000, 1_000)).toBeDefined();
-  });
-
-  it('keeps an entry that another request for the same body still uses, and releases each hold one time', () => {
-    const register = new KeyReservations();
-    const one = register.take('k', 'body-1', 1_000, 0)!;
-    const two = register.take('k', 'body-1', 1_000, 0)!;
-    one.release();
-    one.release();
-    expect(register.take('k', 'body-2', 1_000, 0)).toBeUndefined();
-    two.release();
-    expect(register.take('k', 'body-2', 1_000, 0)).toBeDefined();
-  });
-
-  it('does not let a stale hold drop the entry of a newer body', () => {
-    const register = new KeyReservations();
-    const stale = register.take('k', 'body-1', 1_000, 0)!;
-    const fresh = register.take('k', 'body-2', 5_000, 2_000)!;
-    stale.release();
-    expect(register.take('k', 'body-3', 5_000, 2_001)).toBeUndefined();
-    fresh.release();
-  });
-
-  it('takes no key when a time is not a number, also for a key that is free', () => {
-    const register = new KeyReservations();
-    expect(register.take('k', 'body-1', Number.NaN, 0)).toBeUndefined();
-    expect(register.take('k', 'body-1', 1_000, Number.NaN)).toBeUndefined();
-    expect(register.take('k', 'body-1', Infinity, 0)).toBeUndefined();
-    const held = new KeyReservations();
-    held.take('k', 'body-1', 1_000, 0)!.commit();
-    expect(held.take('k', 'body-2', 1_000, Number.NaN)).toBeUndefined();
   });
 });
 

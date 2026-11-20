@@ -3,7 +3,7 @@
 // is not CBOR is refused with a typed code, and it never makes the route throw or hang. After each of them the route still signs a good transaction.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MAX_COSIGN_REQUEST_BYTES, MAX_TRANSACTION_HEX } from '@vsa/usecase-kit/cosign';
-import { DELEG_A, bodyHexOf, build, harness, hostedToolTakes, requestOf } from './support.ts';
+import { DELEG_A, PRINCIPAL, bodyHexOf, build, harness, hostedToolTakes, plainRequestOf, requestOf, signedBy } from './support.ts';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -35,7 +35,8 @@ describe('the size is checked before any parse', () => {
 describe('the frame of the request', () => {
   it('takes the request as text and as bytes, and the transaction in lower case and in upper case', async () => {
     const { hex } = await build();
-    const results = [requestOf(hex), Buffer.from(requestOf(hex)), requestOf(hex.toUpperCase()), `  ${requestOf(hex)}\n`];
+    const sealed = signedBy(hex, PRINCIPAL);
+    const results = [plainRequestOf(sealed), Buffer.from(plainRequestOf(sealed)), plainRequestOf(sealed.toUpperCase()), `  ${plainRequestOf(sealed)}\n`];
     for (const body of results) expect((await harness().route.cosign(body)).ok).toBe(true);
   });
 
@@ -87,16 +88,16 @@ describe('a transaction that is not a transaction', () => {
     ['the CBOR integer 0', '00'], ['an empty array', '80'], ['an array of four integers', '8400000000'], ['an empty map', 'a0'], ['a break', 'ff'], ['a text string', '6161'],
     ['an array of four items with a body that is not a map', '84 80 a0 f5 f6'], ['the frame with an empty body', '84 a0 a0 f5 f6'],
   ])('is refused with `not_a_delegation`: %s', async (_name, hex) => {
-    expect(await harness().route.cosign(requestOf(hex.replace(/\s/g, '')))).toMatchObject({ ok: false, code: 'not_a_delegation' });
+    expect(await harness().route.cosign(plainRequestOf(hex.replace(/\s/g, '')))).toMatchObject({ ok: false, code: 'not_a_delegation' });
   });
 
   it('refuses a transaction that is cut, and a transaction that has bytes after it: the decoder reads a prefix, and the route does not', async () => {
     const { hex } = await build();
     for (const cut of [2, 10, hex.length / 2, hex.length - 4, hex.length - 2]) {
-      expect(await harness().route.cosign(requestOf(hex.slice(0, Math.floor(cut / 2) * 2))), `cut at ${cut}`).toMatchObject({ ok: false, code: 'not_a_delegation' });
+      expect(await harness().route.cosign(plainRequestOf(hex.slice(0, Math.floor(cut / 2) * 2))), `cut at ${cut}`).toMatchObject({ ok: false, code: 'not_a_delegation' });
     }
     for (const tail of ['00', 'f6', 'deadbeef', hex.slice(-8)]) {
-      expect(await harness().route.cosign(requestOf(hex + tail)), tail).toMatchObject({ ok: false, code: 'not_a_delegation' });
+      expect(await harness().route.cosign(plainRequestOf(hex + tail)), tail).toMatchObject({ ok: false, code: 'not_a_delegation' });
     }
     expect((await harness().route.cosign(requestOf(hex))).ok).toBe(true);
   });
@@ -109,7 +110,7 @@ describe('a transaction that is not a transaction', () => {
     const h = harness();
     for (const levels of [65, 200, 5_000]) {
       const deep = `${'81'.repeat(levels)}00`;
-      expect(await h.route.cosign(requestOf(withRedeemerData(hex, deep))), `${levels} levels`).toMatchObject({ ok: false, code: 'not_a_delegation' });
+      expect(await h.route.cosign(plainRequestOf(withRedeemerData(hex, deep))), `${levels} levels`).toMatchObject({ ok: false, code: 'not_a_delegation' });
     }
     // The twin: the same transaction with nesting inside the limit is read, and then it is the same Delegate with a redeemer that has some data.
     const inside = await h.route.cosign(requestOf(withRedeemerData(hex, `${'81'.repeat(10)}00`)));
@@ -122,12 +123,12 @@ describe('a transaction that is not a transaction', () => {
   it('refuses a length that the bytes cannot hold, in a place that the decoder library would allocate for', async () => {
     const { hex } = await build();
     for (const data of ['5bffffffffffffffff', '9bffffffffffffffff', '5a7fffffff00', 'bb0000000100000000']) {
-      expect(await harness().route.cosign(requestOf(withRedeemerData(hex, data))), data).toMatchObject({ ok: false, code: 'not_a_delegation' });
+      expect(await harness().route.cosign(plainRequestOf(withRedeemerData(hex, data))), data).toMatchObject({ ok: false, code: 'not_a_delegation' });
     }
   });
 
   it('gives a typed result for a build with one byte changed, and what it signs is read by the hosted tool', async () => {
-    const { hex } = await build();
+    const hex = signedBy((await build()).hex, PRINCIPAL);
     let seed = 0x9e3779b9;
     const next = (): number => {
       seed = (seed + 0x6d2b79f5) | 0;
@@ -140,7 +141,7 @@ describe('a transaction that is not a transaction', () => {
       const at = 2 * Math.floor(next() * (hex.length / 2));
       const byte = (parseInt(hex.slice(at, at + 2), 16) ^ (1 << Math.floor(next() * 8))).toString(16).padStart(2, '0');
       const changed = hex.slice(0, at) + byte + hex.slice(at + 2);
-      const result = await harness().route.cosign(requestOf(changed));
+      const result = await harness().route.cosign(plainRequestOf(changed));
       if (result.ok) {
         signed += 1;
         // A change that leaves a Delegate (the fee, a signature, a hash) is signed over its own body, and the tool takes the answer.

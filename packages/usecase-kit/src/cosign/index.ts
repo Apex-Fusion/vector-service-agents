@@ -10,6 +10,8 @@ export { COSIGN_SETTINGS, DEFAULT_LIMITS, checkCosignSettings, parseCosignSettin
 export type { CosignLimits, CosignSettings } from './settings.ts';
 export { providerLedger } from './ledger.ts';
 export type { CosignLedger, LedgerOutput } from './ledger.ts';
+export { KeyReservations } from './register.ts';
+export type { ClaimResult, KeyClaim, KeyRegister } from './register.ts';
 export { COSIGN_MANIFEST, createCosignRoute } from './route.ts';
 export type { CosignConfig, CosignRoute, CosignSigned, DelegationKey } from './route.ts';
 export type { CosignHandler, CosignHttpRequest, CosignHttpResponse } from './http.ts';

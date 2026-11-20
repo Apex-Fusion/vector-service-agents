@@ -4,7 +4,7 @@
 import { CML } from '@lucid-evolution/lucid';
 import { describe, expect, it } from 'vitest';
 import { COSIGN_PATH } from '@vsa/usecase-kit/cosign';
-import { DELEG_A, DELEG_B, PRINCIPAL, bodyHashOf, bodyHexOf, build, harness, hostedToolTakes, requestOf, signedBy, witnessesOf } from './support.ts';
+import { DELEG_A, DELEG_B, PRINCIPAL, bodyHashOf, bodyHexOf, build, harness, hostedToolTakes, plainRequestOf, requestOf, signedBy, witnessesOf } from './support.ts';
 
 describe('the Delegate that the rule allows', () => {
   it('is signed with the delegation key that the datum names, over the hash of the body', async () => {
@@ -22,31 +22,35 @@ describe('the Delegate that the rule allows', () => {
     expect(h.logs).toEqual([`cosign signed key ${DELEG_A.keyHash.slice(0, 8)} body ${bodyHashOf(hex).slice(0, 12)}`]);
   });
 
-  it('is answered with the same transaction and one witness more: the answer differs from the input by that witness only', async () => {
-    const { hex } = await build();
-    const result = await harness().route.cosign(requestOf(hex));
+  it('is answered with the same transaction and one witness more: the answer differs from the input by that witness only, and the witness of the delegator stays', async () => {
+    const { hex: built } = await build();
+    const hex = signedBy(built, PRINCIPAL);
+    const result = await harness().route.cosign(plainRequestOf(hex));
     if (!result.ok) throw new Error(result.detail);
     const answer = result.value.transaction;
     expect(answer).not.toBe(hex);
-    // The body, the validity flag and the auxiliary data are the bytes of the input. The input has no witness, so the answer has exactly the one.
+    // The body, the validity flag and the auxiliary data are the bytes of the input. The input has the one witness of the delegator, so the answer has it and the new one at its end.
     expect(bodyHexOf(answer)).toBe(bodyHexOf(hex));
-    expect(witnessesOf(hex)).toEqual([]);
+    expect(witnessesOf(hex).map(([hash]) => hash)).toEqual([PRINCIPAL.keyHash]);
     const witnesses = witnessesOf(answer);
-    expect(witnesses.map(([hash]) => hash)).toEqual([DELEG_A.keyHash]);
+    expect(witnesses.map(([hash]) => hash)).toEqual([PRINCIPAL.keyHash, DELEG_A.keyHash]);
+    expect(witnesses[0]).toEqual(witnessesOf(hex)[0]);
     // The answer, with its list of vkey witnesses taken out, is the input with its list taken out.
     const without = (text: string) => {
       const set = CML.Transaction.from_cbor_hex(text).witness_set();
       return JSON.stringify({ ...JSON.parse(set.to_json()), vkeywitnesses: null });
     };
     expect(without(answer)).toBe(without(hex));
-    // And the bytes. The answer is the array head and the body of the input, the head of the witness set with one entry more, the new entry (key 0, the tag 258 and an array of one item, then the witness of
-    // 101 bytes), and then every byte that the input has after the head of its witness set: its redeemers, the validity flag and the auxiliary data.
-    const bodyEnd = 2 + bodyHexOf(hex).length;
-    expect(answer.slice(0, bodyEnd)).toBe(hex.slice(0, bodyEnd));
-    expect([hex.slice(bodyEnd, bodyEnd + 2), answer.slice(bodyEnd, bodyEnd + 2)]).toEqual(['a1', 'a2']);
-    const entryLength = 2 + 8 + 2 * 101;
-    expect(answer.slice(bodyEnd + 2, bodyEnd + 2 + entryLength)).toMatch(/^00d9010281825820/);
-    expect(answer.slice(bodyEnd + 2 + entryLength)).toBe(hex.slice(bodyEnd + 2));
+    // And the bytes. Each witness is 101 bytes: 82 5820 <key> 5840 <signature>. The answer is the input with the head of the list of witnesses counted up (81 to 82), and the new witness after the old one.
+    const witnessBytes = ([, publicKey, signature]: [string, string, string]): string => `825820${publicKey}5840${signature}`;
+    const old = witnessBytes(witnesses[0]!);
+    const added = witnessBytes(witnesses[1]!);
+    expect(added).toHaveLength(2 * 101);
+    const at = hex.indexOf(old);
+    expect([hex.slice(at - 2, at), answer.slice(at - 2, at)]).toEqual(['81', '82']);
+    expect(answer.slice(0, at - 2)).toBe(hex.slice(0, at - 2));
+    expect(answer.slice(at, at + old.length + added.length)).toBe(old + added);
+    expect(answer.slice(at + old.length + added.length)).toBe(hex.slice(at + old.length));
   });
 
   it('is taken by the hosted tool: one witness of the delegate key whose signature verifies over the body that the tool sent', async () => {
@@ -90,7 +94,7 @@ describe('the Delegate that the rule allows', () => {
 
   it('is accepted with the hex in upper case, and the answer is in lower case', async () => {
     const { hex } = await build();
-    const result = await harness().route.cosign(requestOf(hex.toUpperCase()));
+    const result = await harness().route.cosign(plainRequestOf(signedBy(hex, PRINCIPAL).toUpperCase()));
     if (!result.ok) throw new Error(result.detail);
     expect(result.value.transaction).toBe(result.value.transaction.toLowerCase());
     expect(hostedToolTakes(hex, result.value.transaction, DELEG_A.keyHash)).toMatchObject({ ok: true });

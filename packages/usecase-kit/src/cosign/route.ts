@@ -4,13 +4,15 @@
 // The agent signs a transaction only when ALL of this holds, checked on the body that it signs:
 //   - it is one Delegate of the delegation contract of the deployment: one token of the delegation policy minted and nothing else, one output at the delegation script with an inline datum (read.ts);
 //   - the datum names this agent as the delegate and one of its delegation keys as the delegate key;
-//   - the delegator is a principal key on the allowlist of the operator;
-//   - the window has a start and an end, is one hour long at most, has not ended, and ends not too far ahead;
+//   - the window has a start and an end, is one hour long at most, has not ended, and ends not too far ahead, and the period of the delegation has not ended;
+//   - the delegator signed the body first: the transaction holds one witness of the delegator key, and its signature verifies over the hash of the body that the agent signs;
+//   - the delegator is a principal key on the allowlist of the operator, and it is not a key of the agent;
 //   - the required signers are the delegator and the delegation key, and the delegation key has not signed the transaction yet;
-//   - no other body that the agent signed holds the delegation key now, and no live delegation on the ledger names it;
+//   - no other body that the agent signed holds the delegation key now (the register), and no live delegation on the ledger names it;
 //   - no input and no collateral input is an output of a wallet of a key of this agent, or of a script, or is unknown to the ledger.
-// The checks run in this order. The ledger is read after every check that needs no network, the outputs first and the delegations second, and a read that fails is `check_unavailable` and never a pass.
-// The signature is made over the hash of the bytes of the body, and the answer is the input with the one witness added (layout.ts): the agent checks that again before it answers.
+// The checks run in this order. The register is asked after every check that needs no network, and before the ledger. The ledger is read after it, the outputs first and the delegations second. A read of
+// the ledger or a call of the register that fails is `check_unavailable` and never a pass. The signature is made over the hash of the bytes of the body. The commit in the register is made, and it is
+// durable, before the answer leaves. The answer is the input with the one witness added (layout.ts): the agent checks that again before it answers.
 import { CML } from '@lucid-evolution/lucid';
 import { blake2b } from '@noble/hashes/blake2b';
 import type { IdentityDeployment } from '@vsa/buyer-core';
@@ -23,12 +25,14 @@ import type { CosignCode } from './codes.ts';
 import { makeHandler } from './http.ts';
 import type { CosignHandler } from './http.ts';
 import { addVkeyWitness, bodyBytesOf, readFrame } from './layout.ts';
-import type { CosignLedger, LedgerOutput } from './ledger.ts';
+import type { CosignLedger } from './ledger.ts';
 import { readDelegateTransaction } from './read.ts';
 import type { DelegateFacts } from './read.ts';
 import { KeyReservations } from './register.ts';
+import type { ClaimResult, KeyClaim, KeyRegister } from './register.ts';
 import { checkCosignSettings } from './settings.ts';
 import type { CosignSettings } from './settings.ts';
+import { delegatorSigned, verifies } from './witness.ts';
 
 /** One delegation key of the agent. The route gets the key through this function and reads no key file. */
 export interface DelegationKey {
@@ -48,6 +52,11 @@ export interface CosignConfig {
   readonly otherKeyHashes: readonly string[];
   readonly settings: CosignSettings;
   readonly ledger: CosignLedger;
+  /**
+   * The register of the bodies that the agent signed (register.ts has its contract). A service that runs more than one process, or that must keep the register over a restart, gives one that is shared and
+   * durable. The default is `KeyReservations`: it is in memory, it belongs to this route, and a restart forgets it.
+   */
+  readonly register?: KeyRegister;
   /** The start of the chain in POSIX ms: the time of slot 0. A slot is one second. */
   readonly systemStartMs: number;
   /** The clock, in POSIX ms. */
@@ -79,8 +88,10 @@ export const COSIGN_MANIFEST: ManifestCosign = {
   route: COSIGN_PATH,
   rule:
     'The agent signs one kind of transaction: a Delegate transaction of the delegation contract that names this agent as the delegate and one of its own delegation keys as the delegate key. ' +
-    'The delegator must be a principal key on the allowlist of the operator. The delegation key must have no live delegation and no other signed transaction whose window is open. ' +
-    'The transaction must spend nothing of the agent, and it must have no certificate, no withdrawal and no other mint. Its validity window must end in the future, and not too far ahead. ' +
+    'The delegator must have signed the transaction first, and the delegator must be a principal key on the allowlist of the operator. ' +
+    'The delegation key must have no live delegation and no other signed transaction whose window is open. ' +
+    'The transaction must spend nothing of the agent, and it must have no certificate, no withdrawal and no other mint. ' +
+    'Its validity window must end in the future, and not too far ahead, and the period of the delegation must not be over. ' +
     'The agent adds one witness of the delegation key and changes nothing else.',
 };
 
@@ -120,14 +131,47 @@ function parseRequest(body: unknown): ProtocolResult<string, 'bad_shape' | 'requ
   return accepted(hex.toLowerCase());
 }
 
-/** True when `signature` verifies over `message` for `publicKey`. */
-function verifies(publicKey: Uint8Array, signature: Uint8Array, message: Uint8Array): boolean {
-  try {
-    return CML.PublicKey.from_bytes(publicKey).verify(message, CML.Ed25519Signature.from_raw_bytes(signature));
-  } catch {
-    return false;
+const NOT_ACCEPTED = 'the agent does not accept delegations from this delegator';
+const SIGN_FIRST = 'sign the transaction with the key of the delegator first, and then ask again';
+
+/** The text of a reference to an output. */
+const refKey = (ref: { readonly txHash: string; readonly outputIndex: number }): string => `${ref.txHash}#${ref.outputIndex}`;
+
+/**
+ * The answer of the ledger for the outputs, in its checked form: the address of each output, by reference. The answer is a list. Each entry is an object with a text for the hash, a whole number for the
+ * index and a text for the address. Each entry is an output that the route asked for, and no reference comes two times. An answer that breaks one of these rules is undefined, and the route reads it as
+ * `check_unavailable`: with a reference that comes two times, the last entry would hide the first.
+ */
+function outputsOf(value: unknown, asked: ReadonlySet<string>): Map<string, string> | undefined {
+  if (!Array.isArray(value) || value.length > asked.size) return undefined;
+  const addresses = new Map<string, string>();
+  for (const entry of value as unknown[]) {
+    if (typeof entry !== 'object' || entry === null) return undefined;
+    const { txHash, outputIndex, address } = entry as Record<string, unknown>;
+    if (typeof txHash !== 'string' || typeof outputIndex !== 'number' || !Number.isSafeInteger(outputIndex) || typeof address !== 'string') return undefined;
+    const ref = refKey({ txHash, outputIndex });
+    if (!asked.has(ref) || addresses.has(ref)) return undefined;
+    addresses.set(ref, address);
   }
+  return addresses;
 }
+
+/**
+ * The answer of the ledger for the delegation keys in use, in its checked form: a copy. The answer is a `Set`, and each member is a key hash of 56 lower-case hex characters. A set of upper-case hashes,
+ * of delegation identifiers or of objects, and any other value, is undefined, and the route reads it as `check_unavailable`: such a value would make a key in use look free.
+ */
+function keysInUseOf(value: unknown): Set<string> | undefined {
+  const keys = new Set<string>();
+  // The built-in iterator of `Set` throws for a value that is not a `Set`, and a `Set` that has another `has` or another iterator is read as the built-in `Set` reads it.
+  for (const entry of Set.prototype.values.call(value) as Iterable<unknown>) {
+    if (typeof entry !== 'string' || !KEY_HASH.test(entry)) return undefined;
+    keys.add(entry);
+  }
+  return keys;
+}
+
+/** The answer of the register to `take` and to `commit`, when it is one of the two answers of the contract. */
+const claimResultOf = (value: unknown): ClaimResult | undefined => (value === 'held' || value === 'in_use' ? value : undefined);
 
 /**
  * The check of the answer before it leaves: the body bytes, the validity flag, the auxiliary data and each other entry of the witness set are the bytes of the input, the decoder reads the answer as it
@@ -144,7 +188,7 @@ function answerIsRight(facts: DelegateFacts, answer: Uint8Array, key: Key, signa
     const tx = decodeTransaction(hex, 'the answer');
     if (tx.to_cbor_hex() !== hex || CML.hash_transaction(tx.body()).to_hex() !== hexOf(facts.bodyHash)) return false;
     const vkeys = tx.witness_set().vkeywitnesses();
-    if (vkeys === undefined || vkeys.len() !== facts.witnessKeyHashes.length + 1) return false;
+    if (vkeys === undefined || vkeys.len() !== facts.witnesses.length + 1) return false;
     const last = vkeys.get(vkeys.len() - 1);
     return sameBytes(last.vkey().to_raw_bytes(), key.publicKey) && sameBytes(last.ed25519_signature().to_raw_bytes(), signature);
   } catch {
@@ -153,7 +197,7 @@ function answerIsRight(facts: DelegateFacts, answer: Uint8Array, key: Key, signa
 }
 
 /** The config, checked. The refusal names the setting and never repeats a value. */
-function checkConfig(config: CosignConfig): ProtocolResult<{ agentId: string; keys: Map<string, Key>; agentKeys: Set<string>; settings: CosignSettings }, 'bad_setting'> {
+function checkConfig(config: CosignConfig): ProtocolResult<{ agentId: string; keys: Map<string, Key>; agentKeys: Set<string>; register: KeyRegister; settings: CosignSettings }, 'bad_setting'> {
   const bad = (detail: string) => refused('bad_setting', detail);
   const did = parseDid(config?.agentDid, 'agentDid');
   if (!did.ok) return bad('agentDid must be a DID of the form did:vector:<64 hex characters>');
@@ -175,31 +219,39 @@ function checkConfig(config: CosignConfig): ProtocolResult<{ agentId: string; ke
   const settings = checkCosignSettings(config.settings);
   if (!settings.ok) return settings;
   if (typeof config.ledger?.outputs !== 'function' || typeof config.ledger?.delegateKeysInUse !== 'function') return bad('ledger must have the functions outputs and delegateKeysInUse');
+  const register = config.register === undefined ? new KeyReservations() : config.register;
+  if (typeof register?.take !== 'function' || typeof register.commit !== 'function' || typeof register.release !== 'function') return bad('register must have the functions take, commit and release');
   if (!Number.isSafeInteger(config.systemStartMs) || config.systemStartMs <= 0) return bad('systemStartMs must be a positive whole number of milliseconds');
   if (typeof config.now !== 'function') return bad('now must be a function');
-  return accepted({ agentId: did.value.slice('did:vector:'.length), keys, agentKeys: new Set([...keys.keys(), ...config.otherKeyHashes]), settings: settings.value });
+  // A key of the agent on the allowlist would let one key be the delegator and the delegate of one delegation.
+  const agentKeys = new Set([...keys.keys(), ...config.otherKeyHashes]);
+  if ([...agentKeys].some((keyHash) => settings.value.allowlist.has(keyHash))) return bad('the allowlist must not hold a key of the agent');
+  return accepted({ agentId: did.value.slice('did:vector:'.length), keys, agentKeys, register, settings: settings.value });
 }
 
 /**
- * The route for the agent of `config`. A config that is wrong is a refusal and the route is not made: a service that gets a refusal does not start. The route holds the register of the bodies that it
- * signed, and its limit for requests at one time, so a service makes one route and keeps it.
+ * The route for the agent of `config`. A config that is wrong is a refusal and the route is not made: a service that gets a refusal does not start. The route holds its limit for requests at one time,
+ * and the register of the bodies that it signed (the one that the config gives, or the one in memory), so a service makes one route and keeps it.
  */
 export function createCosignRoute(config: CosignConfig): ProtocolResult<CosignRoute, 'bad_setting'> {
   const checked = checkConfig(config);
   if (!checked.ok) return checked;
-  const { agentId, keys, agentKeys, settings } = checked.value;
+  const { agentId, keys, agentKeys, register, settings } = checked.value;
   const { deployment, ledger, now: clock, systemStartMs, log } = config;
-  const reservations = new KeyReservations();
   let running = 0;
 
   const slotMs = (slot: bigint): number | undefined => (slot < MAX_SLOT ? systemStartMs + Number(slot) * SLOT_MS : undefined);
-  const unavailable = (): Refused<'check_unavailable'> => refused('check_unavailable', 'the agent could not read the ledger');
+  const ledgerUnavailable = (): Refused<'check_unavailable'> => refused('check_unavailable', 'the agent could not read the ledger');
+  const registerUnavailable = (): Refused<'check_unavailable'> => refused('check_unavailable', 'the agent could not use its register of signed bodies');
   const internal = (): Refused<'internal'> => refused('internal', 'the agent could not sign');
-  /** One read of the ledger, with its time limit. It gives UNREADABLE when the read throws, takes too long, or gives a value of the wrong form. */
-  async function read<T>(work: () => Promise<T>, formOk: (value: T) => boolean): Promise<T | typeof UNREADABLE> {
+  /**
+   * One call to a source outside the route, the ledger or the register, with its time limit. It gives UNREADABLE when the call throws, takes too long, or gives a value that `check` does not take.
+   * `check` gives the value in its checked form, a copy that the route uses, and undefined for a value that it does not take.
+   */
+  async function ask<T>(work: () => Promise<unknown>, check: (value: unknown) => T | undefined): Promise<T | typeof UNREADABLE> {
     try {
-      const value = await within(Promise.resolve().then(work), settings.ledgerTimeoutMs);
-      return formOk(value) ? value : UNREADABLE;
+      const checkedValue = check(await within(Promise.resolve().then(work), settings.ledgerTimeoutMs));
+      return checkedValue === undefined ? UNREADABLE : checkedValue;
     } catch {
       return UNREADABLE;
     }
@@ -222,36 +274,45 @@ export function createCosignRoute(config: CosignConfig): ProtocolResult<CosignRo
     if (from === undefined || to === undefined || !(from < to) || to - from > MAX_WINDOW_MS) return refused('not_a_delegation', 'the validity window is not the window of a Delegate');
     if (!(now < to)) return refused('expired', 'the validity window of the transaction has ended');
     if (!(to - now <= settings.maxFutureMs)) return refused('not_a_delegation', 'the validity window ends too far ahead');
+    // The period of the delegation: the contract does not compare it with the time, and a key that a delegation of an ended period names stays in use until the delegator ends it.
+    if (delegation.notAfter < Math.max(now, from)) return refused('expired', 'the period of the delegation has ended');
 
-    if (delegation.delegator.type !== 'PrincipalKey' || !settings.allowlist.has(delegation.delegator.hash)) return refused('principal_not_allowed', 'the agent does not accept delegations from this delegator');
+    // The delegator signs first. The check comes before the allowlist, so that no refusal before this point tells a caller who has no signature of the delegator whether a key is on the list.
+    const delegator = delegation.delegator;
+    if (delegator.type !== 'PrincipalKey') return refused('principal_not_allowed', NOT_ACCEPTED);
+    if (!delegatorSigned(facts, delegator.hash)) return refused('principal_not_allowed', SIGN_FIRST);
+    if (agentKeys.has(delegator.hash) || !settings.allowlist.has(delegator.hash)) return refused('principal_not_allowed', NOT_ACCEPTED);
     // The required signers are the delegator and the delegation key: both are there, and nothing else is. A list of the right length with a key twice has no delegation key, and it is refused.
-    const wanted = [...new Set([delegation.delegator.hash, delegation.delegateKey])];
+    const wanted = [...new Set([delegator.hash, delegation.delegateKey])];
     if (facts.requiredSigners.length !== wanted.length || wanted.some((signer) => !facts.requiredSigners.includes(signer))) {
       return refused('not_a_delegation', 'the required signers must be the delegator and the delegation key');
     }
-    if (facts.witnessKeyHashes.includes(delegation.delegateKey)) return refused('not_a_delegation', 'the transaction has a witness of the delegation key already');
+    if (facts.witnesses.some((witness) => witness.keyHash === delegation.delegateKey)) return refused('not_a_delegation', 'the transaction has a witness of the delegation key already');
 
     const bodyHash = hexOf(facts.bodyHash);
-    const hold = reservations.take(delegation.delegateKey, bodyHash, to + RESERVATION_MARGIN_MS, now);
-    if (hold === undefined) return refused('key_in_use', 'the delegation key is in use');
+    const claim: KeyClaim = { keyHash: delegation.delegateKey, bodyHash, untilMs: to + RESERVATION_MARGIN_MS };
+    const taken = await ask(() => register.take(claim, now), claimResultOf);
+    if (taken === UNREADABLE) return registerUnavailable();
+    if (taken === 'in_use') return refused('key_in_use', 'the delegation key is in use');
+    let committed = false;
     try {
-      const outputs = await read(() => ledger.outputs([...facts.spent]), (value) => Array.isArray(value));
-      if (outputs === UNREADABLE) return unavailable();
-      const byRef = new Map(outputs.map((output): [string, LedgerOutput] => [`${output?.txHash}#${output?.outputIndex}`, output]));
+      const asked = new Set(facts.spent.map(refKey));
+      const addresses = await ask(() => ledger.outputs([...facts.spent]), (value) => outputsOf(value, asked));
+      if (addresses === UNREADABLE) return ledgerUnavailable();
       let owned = false;
       let script = false;
       let unknown = false;
       for (const ref of facts.spent) {
-        const output = byRef.get(`${ref.txHash}#${ref.outputIndex}`);
+        const output = addresses.get(refKey(ref));
         if (output === undefined) {
           unknown = true;
           continue;
         }
         let credential;
         try {
-          credential = addressDetails(output.address).paymentCredential;
+          credential = addressDetails(output).paymentCredential;
         } catch {
-          return unavailable();
+          return ledgerUnavailable();
         }
         if (credential === undefined) unknown = true;
         else if (credential.type === 'Script') script = true;
@@ -261,8 +322,8 @@ export function createCosignRoute(config: CosignConfig): ProtocolResult<CosignRo
       if (script) return refused('not_a_delegation', 'the transaction spends a script output');
       if (unknown) return refused('not_a_delegation', 'the transaction spends an output that the ledger does not have, or that has no key');
 
-      const used = await read(() => ledger.delegateKeysInUse(), (value) => typeof value?.has === 'function');
-      if (used === UNREADABLE) return unavailable();
+      const used = await ask(() => ledger.delegateKeysInUse(), keysInUseOf);
+      if (used === UNREADABLE) return ledgerUnavailable();
       if (used.has(delegation.delegateKey)) return refused('key_in_use', 'the delegation key is in use');
 
       let signature: Uint8Array;
@@ -274,10 +335,15 @@ export function createCosignRoute(config: CosignConfig): ProtocolResult<CosignRo
       if (signature.length !== 64 || !verifies(key.publicKey, signature, facts.bodyHash)) return internal();
       const answer = addVkeyWitness(facts.bytes, facts.frame, key.publicKey, signature);
       if (answer === undefined || !answerIsRight(facts, answer, key, signature)) return internal();
-      hold.commit();
+      // The commit is durable before the answer leaves. When it fails, the signature is dropped.
+      const done = await ask(() => register.commit(claim, now), claimResultOf);
+      if (done === UNREADABLE) return registerUnavailable();
+      if (done === 'in_use') return refused('key_in_use', 'the delegation key is in use');
+      committed = true;
       return accepted({ transaction: hexOf(answer), bodyHash, keyHash: delegation.delegateKey });
     } finally {
-      hold.release();
+      // A request that ends without a committed signature gives its take back. A release that fails does not change the answer: the entry ends at its time.
+      if (!committed) await ask(() => register.release(claim), () => true);
     }
   }
 

@@ -14,7 +14,7 @@ export const COSIGN_SETTINGS = {
   maxConcurrent: 'COSIGN_MAX_CONCURRENT',
   /** How far ahead the end of the validity window of a transaction may be, in milliseconds. */
   maxFutureMs: 'COSIGN_MAX_FUTURE_MS',
-  /** How long the route waits for one read of the ledger, in milliseconds. A read that takes longer is `check_unavailable`. */
+  /** How long the route waits for one read of the ledger or one call of the register of signed bodies, in milliseconds. A read or a call that takes longer is `check_unavailable`. */
   ledgerTimeoutMs: 'COSIGN_LEDGER_TIMEOUT_MS',
 } as const;
 

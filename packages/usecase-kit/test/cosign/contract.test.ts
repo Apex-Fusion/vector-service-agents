@@ -52,7 +52,11 @@ describe('the rule in the manifest', () => {
 
   it('names each clause of the rule that the route checks', () => {
     const rule = COSIGN_MANIFEST.rule.toLowerCase();
-    for (const clause of ['delegate transaction', 'names this agent', 'delegation key', 'allowlist', 'no live delegation', 'spend nothing of the agent', 'no certificate', 'no withdrawal', 'no other mint', 'validity window', 'one witness']) {
+    const clauses = [
+      'delegate transaction', 'names this agent', 'delegation key', 'signed the transaction first', 'allowlist', 'no live delegation', 'spend nothing of the agent', 'no certificate', 'no withdrawal', 'no other mint',
+      'validity window', 'period of the delegation', 'one witness',
+    ];
+    for (const clause of clauses) {
       expect(rule, clause).toContain(clause);
     }
   });

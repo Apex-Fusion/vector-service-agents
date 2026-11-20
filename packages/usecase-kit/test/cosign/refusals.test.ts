@@ -8,29 +8,29 @@ import type { DelegationDatum } from '@vsa/vector-read/identity-codec';
 import { COSIGN_SETTINGS } from '@vsa/usecase-kit/cosign';
 import type { CosignCode } from '@vsa/usecase-kit/cosign';
 import {
-  AGENT_ID, DEPLOYMENT, DELEG_A, DELEG_B, NOW, OTHER_AGENT_ID, OTHER_AGENT_KEY, OWN_ADDRESS, PRINCIPAL, SERVICE, STRANGER, SUPPLIER, agentWallet, build, changed, harness, ledgerOf, liveDelegation, memberUtxos, requestOf,
+  AGENT_ID, DAY, DEPLOYMENT, DELEG_A, DELEG_B, NOW, OTHER_AGENT_ID, OTHER_AGENT_KEY, OWN_ADDRESS, PRINCIPAL, SERVICE, STRANGER, SUPPLIER, agentWallet, build, changed, harness, ledgerOf, liveDelegation, memberUtxos, requestOf,
   signedBy, spentOf, walletAddress, withCollateral, withInput, withInputs, withMint, withOutputAddress, withOutputs, withRedeemerMap, withRedeemers, withRequiredSigners, withoutParts, world,
 } from './support.ts';
-import type { Setup } from './support.ts';
+import type { Setup, TestKey } from './support.ts';
 
 /** The answer of the route to `hex`, and what its sign functions got. */
-async function ask(hex: string, over: Partial<Setup> = {}) {
+async function ask(hex: string, over: Partial<Setup> = {}, signer: TestKey = PRINCIPAL) {
   const h = harness(over);
-  const result = await h.route.cosign(requestOf(hex));
+  const result = await h.route.cosign(requestOf(hex, signer));
   return { result, signed: h.signed, h };
 }
 
-/** The agent refuses `hex` with `code`, and no key of the agent signs anything. */
-async function refuses(code: CosignCode, hex: string, over: Partial<Setup> = {}): Promise<void> {
-  const { result, signed } = await ask(hex, over);
+/** The agent refuses `hex` with `code`, and no key of the agent signs anything. The delegator signs `hex` first: `signer` is the key of the delegator of its datum. */
+async function refuses(code: CosignCode, hex: string, over: Partial<Setup> = {}, signer: TestKey = PRINCIPAL): Promise<void> {
+  const { result, signed } = await ask(hex, over, signer);
   expect(result.ok).toBe(false);
   if (!result.ok) expect(result.code).toBe(code);
   expect(signed).toEqual([]);
 }
 
-/** The agent signs `hex`. */
-async function signs(hex: string, over: Partial<Setup> = {}): Promise<void> {
-  const { result, signed } = await ask(hex, over);
+/** The agent signs `hex`, after the delegator signed it. */
+async function signs(hex: string, over: Partial<Setup> = {}, signer: TestKey = PRINCIPAL): Promise<void> {
+  const { result, signed } = await ask(hex, over, signer);
   if (!result.ok) throw new Error(`refused with ${result.code}: ${result.detail}`);
   expect(signed).toHaveLength(1);
 }
@@ -304,10 +304,10 @@ describe('the delegation must name this agent and one of its delegation keys', (
 });
 
 describe('the delegator must be a principal key on the allowlist', () => {
-  it('refuses a principal key that is not on the list, and signs the same transaction when it is', async () => {
+  it('refuses a principal key that is not on the list, and signs the same transaction when it is: the delegator signed it in both cases', async () => {
     const { hex } = await build({ delegator: { type: 'PrincipalKey', hash: STRANGER.keyHash } });
-    await refuses('principal_not_allowed', hex);
-    await signs(hex, { allowed: [STRANGER.keyHash] });
+    await refuses('principal_not_allowed', hex, {}, STRANGER);
+    await signs(hex, { allowed: [STRANGER.keyHash] }, STRANGER);
   });
 
   it('refuses every principal key when the list is empty', async () => {
@@ -328,10 +328,10 @@ describe('the delegator must be a principal key on the allowlist', () => {
 
   it('shows nothing of the list in the refusal: not a key, not the size', async () => {
     const { hex } = await build({ delegator: { type: 'PrincipalKey', hash: STRANGER.keyHash } });
-    const { result } = await ask(hex, { allowed: [PRINCIPAL.keyHash, DELEG_B.keyHash] });
+    const { result } = await ask(hex, { allowed: [PRINCIPAL.keyHash, OTHER_AGENT_KEY.keyHash] }, STRANGER);
     expect(result.ok).toBe(false);
     const text = JSON.stringify(result);
-    for (const secret of [PRINCIPAL.keyHash, DELEG_B.keyHash, STRANGER.keyHash, '2 ', 'allowlist', 'list']) expect(text).not.toContain(secret);
+    for (const secret of [PRINCIPAL.keyHash, OTHER_AGENT_KEY.keyHash, STRANGER.keyHash, '2 ', 'allowlist', 'list']) expect(text).not.toContain(secret);
   });
 });
 
@@ -341,6 +341,27 @@ describe('the validity window', () => {
     await refuses('expired', hex, { now: hi });
     await refuses('expired', hex, { now: hi + 3_600_000 });
     await signs(hex, { now: hi - 1 });
+  });
+
+  it('is refused with `expired` when the period of the delegation has ended before now, and signed when the period ends at now', async () => {
+    // The contract does not compare the period with the time. A key that such a delegation names is in use until the delegator ends the delegation, so the agent does not sign it.
+    await refuses('expired', (await build({ notBefore: NOW - 2 * DAY, notAfter: NOW - 1 })).hex);
+    await refuses('expired', (await build({ notBefore: NOW - 2 * DAY, notAfter: NOW - DAY })).hex);
+    await signs((await build({ notBefore: NOW - 2 * DAY, notAfter: NOW })).hex);
+  });
+
+  it('is refused with `expired` when the period of the delegation has ended before the window of the transaction starts, and signed when it ends at the start', async () => {
+    // The builder starts a window one minute before the time of the build. The clock is 5 minutes before that time, so the window starts in 4 minutes. The period ends between the clock and the start.
+    const start = NOW - 60_000;
+    const now = NOW - 5 * 60_000;
+    await refuses('expired', (await build({ validMinutes: 5, notBefore: NOW - DAY, notAfter: start - 1 })).hex, { now });
+    await signs((await build({ validMinutes: 5, notBefore: NOW - DAY, notAfter: start })).hex, { now });
+  });
+
+  it('gives the refusal for the period a text that shows nothing of the request', async () => {
+    const { hex } = await build({ notBefore: NOW - 2 * DAY, notAfter: NOW - DAY });
+    const { result } = await ask(hex);
+    expect(result).toMatchObject({ ok: false, code: 'expired', detail: 'the period of the delegation has ended' });
   });
 
   it('is refused when it ends too far ahead of the clock, and signed under the limit', async () => {

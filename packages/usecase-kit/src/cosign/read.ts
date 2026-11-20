@@ -19,6 +19,13 @@ import { MAX_SPENT_OUTPUTS } from './codes.ts';
 import { bodyBytesOf, readFrame } from './layout.ts';
 import type { Frame } from './layout.ts';
 
+/** One vkey witness of the transaction: the key as it is written, the blake2b-224 hash of that key (56 hex characters), and the signature as it is written. */
+export interface VkeyWitness {
+  readonly keyHash: string;
+  readonly publicKey: Uint8Array;
+  readonly signature: Uint8Array;
+}
+
 /** What the route needs to know about a transaction that has the form of a Delegate. */
 export interface DelegateFacts {
   /** The bytes of the transaction, as they came. */
@@ -29,8 +36,8 @@ export interface DelegateFacts {
   readonly delegation: DelegationDatum;
   /** The key hashes (56 hex characters each) in the required signers of the body, in the order of the body. */
   readonly requiredSigners: readonly string[];
-  /** The key hashes of the vkey witnesses that the transaction carries now. */
-  readonly witnessKeyHashes: readonly string[];
+  /** The vkey witnesses that the transaction carries now, in the order of the witness set. */
+  readonly witnesses: readonly VkeyWitness[];
   /** The outputs that the transaction spends and uses as collateral, each one once. */
   readonly spent: readonly OutRef[];
   /** The slot of the start and the slot of the end of the validity window. */
@@ -159,11 +166,15 @@ export function readDelegateTransaction(hex: string, deployment: IdentityDeploym
   const requiredSigners: string[] = [];
   for (let i = 0; signers !== undefined && i < signers.len(); i++) requiredSigners.push(signers.get(i).to_hex());
   const vkeys = tx.witness_set().vkeywitnesses();
-  const witnessKeyHashes: string[] = [];
-  for (let i = 0; vkeys !== undefined && i < vkeys.len(); i++) witnessKeyHashes.push(vkeys.get(i).vkey().hash().to_hex());
+  const witnesses: VkeyWitness[] = [];
+  for (let i = 0; vkeys !== undefined && i < vkeys.len(); i++) {
+    const witness = vkeys.get(i);
+    const publicKey = Uint8Array.from(witness.vkey().to_raw_bytes());
+    witnesses.push({ keyHash: Buffer.from(blake2b(publicKey, { dkLen: 28 })).toString('hex'), publicKey, signature: Uint8Array.from(witness.ed25519_signature().to_raw_bytes()) });
+  }
   const validFromSlot = body.validity_interval_start();
   const validToSlot = body.ttl();
   if (validFromSlot === undefined || validToSlot === undefined) return notADelegation('the transaction has no validity window');
 
-  return accepted({ bytes, frame, bodyHash, delegation, requiredSigners, witnessKeyHashes, spent, validFromSlot, validToSlot });
+  return accepted({ bytes, frame, bodyHash, delegation, requiredSigners, witnesses, spent, validFromSlot, validToSlot });
 }
