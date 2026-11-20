@@ -1,0 +1,426 @@
+// packages/usecase-kit/test/access/subdelegation.test.ts: the sub-delegation of an agent to a subagent. The ledger is an object in memory and the clock is moved by the test (support.ts). The review
+// question: is a sub-delegation ever left alive? Each test of an end has its twin: the same run in which nothing goes wrong, or the same failure at a point where it is harmless.
+import { describe, expect, it } from 'vitest';
+import { MAX_SUB_DELEGATION_MS, MIN_SUB_DELEGATION_MS, tokenTarget, withSubDelegation } from '../../src/access/index.ts';
+import type { DelegationDatum, SubDelegationHandle, SubDelegationRun } from '../../src/access/index.ts';
+import { AGENT_KEY, BASES, DAY, NOW, OTHER_KEY, PARENT_ID, SUBAGENT_ID, SUBAGENT_KEY, WALLET, expectTarget, markSigner, parentDatum, subWorld, type SubWorld } from './support.ts';
+
+
+/** Runs the sub-delegation with the job, and moves the clock until it ends. A wait with no end fails the test. */
+const go = <T>(w: SubWorld, job: (handle: SubDelegationHandle) => Promise<T>): Promise<SubDelegationRun<T>> => w.clock.run(withSubDelegation(w.deps, w.request, w.limits, job));
+const hex = (text: string): string => Buffer.from(text, 'utf8').toString('hex');
+const idle = async (): Promise<string> => 'done';
+
+/** The ledger shows no live sub-delegation, and an Undelegate was sent after the Delegate. */
+async function expectEnded(w: SubWorld): Promise<void> {
+  const kinds = w.chain.submitted.map((s) => s.kind);
+  expect(kinds).toStrictEqual(['delegate', 'undelegate']);
+  expect(w.chain.subId).not.toBeNull();
+  expect(await w.chain.readDelegation(w.chain.subId!)).toBeNull();
+}
+
+describe('the sub-delegation is ended', () => {
+  it('after the job returned a value: in this order, with the Undelegate signed by the agent key', async () => {
+    const w = subWorld();
+    let handle: SubDelegationHandle | null = null;
+    const run = await go(w, async (h) => {
+      handle = h;
+      return 'stock read';
+    });
+    expect(run).toMatchObject({ ok: true, kind: 'returned', value: 'stock read', end: { state: 'ended' } });
+    await expectEnded(w);
+    const order = ['read:parent', 'buildDelegate', 'submit:delegate', 'readiness', 'buildUndelegate', 'submit:undelegate'].map((step) => w.chain.log.indexOf(step));
+    expect(order.every((at, i) => at >= 0 && (i === 0 || at > order[i - 1]!))).toBe(true);
+    expect(w.chain.log.lastIndexOf('readiness')).toBeLessThan(w.chain.log.indexOf('buildUndelegate'));
+    expect(w.chain.undelegateParams).toStrictEqual([{ changeAddress: WALLET, nowMs: expect.any(Number), id: w.chain.subId, signer: AGENT_KEY }]);
+    expect(w.chain.submitted[1]!.cbor).toBe(`undelegate:${w.chain.subId}+${AGENT_KEY.slice(0, 4)}`);
+    expect(run.end).toMatchObject({ state: 'ended', txHash: `ff${w.chain.subId!.slice(2)}` });
+    expect(handle).toMatchObject({ id: w.chain.subId, parent: PARENT_ID, notAfter: NOW + 3_600_000 });
+    expect(handle!.signal.aborted).toBe(false);
+  });
+
+  const jobs: [string, () => Promise<unknown>][] = [
+    ['a refusal that the job found', async () => ({ ok: false, code: 'refused_by_system', reason: 'not_covered', status: 403 })],
+    ['a failure that the job found', async () => ({ ok: false, code: 'mock_system_failed', status: 500 })],
+    ['a value that is false', async () => false],
+    ['nothing', async () => undefined],
+  ];
+  it.each(jobs)('after the job returned %s, and the job result is the value', async (_name, job) => {
+    const w = subWorld();
+    const run = await go(w, job);
+    expect(run).toMatchObject({ ok: true, kind: 'returned', end: { state: 'ended' } });
+    expect(run.ok && run.value).toStrictEqual(await job());
+    await expectEnded(w);
+  });
+
+  it('after the job threw: the error of the job comes back unchanged', async () => {
+    const w = subWorld();
+    const boom = new RangeError('the job broke');
+    const run = await go(w, async () => {
+      throw boom;
+    });
+    expect(run.ok).toBe(false);
+    expect(run).toMatchObject({ kind: 'threw', end: { state: 'ended' } });
+    expect(run.kind === 'threw' && run.error).toBe(boom);
+    await expectEnded(w);
+  });
+
+  it('after the job threw a value that is not an error, and after a job that threw before its first await', async () => {
+    const early = subWorld();
+    const run = await go(early, () => {
+      throw 'plain text';
+    });
+    expect(run).toMatchObject({ ok: false, kind: 'threw', error: 'plain text', end: { state: 'ended' } });
+    await expectEnded(early);
+  });
+
+  it('after the job timed out: the job time is the clock time, the signal aborts, and the job is not waited for', async () => {
+    const w = subWorld({ limits: { jobTimeoutMs: 90_000 } });
+    let handle: SubDelegationHandle | null = null;
+    const started = { at: 0 };
+    const run = await go(w, (h) => {
+      handle = h;
+      started.at = w.clock.now();
+      return new Promise<never>(() => undefined);
+    });
+    expect(run).toMatchObject({ ok: false, kind: 'timed_out', end: { state: 'ended' } });
+    expect(handle!.signal.aborted).toBe(true);
+    expect(w.chain.submitted.find((s) => s.kind === 'undelegate')!.at).toBe(started.at + 90_000);
+    await expectEnded(w);
+  });
+
+  it('after the wait for the confirmations timed out, with no job run: the sub-delegation is on the ledger and it is ended', async () => {
+    const w = subWorld({ limits: { confirmationWaitMs: 60_000 } });
+    w.chain.faults.neverConfirm = true;
+    let ran = false;
+    const run = await go(w, async () => (ran = true));
+    expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'confirmation_timeout' }, end: { state: 'ended' } });
+    expect(run.kind === 'not_ready' && run.failure.detail).toMatch(/of 30 confirmations/);
+    expect(ran).toBe(false);
+    await expectEnded(w);
+  });
+
+  it('after a ledger that cannot be read during the wait, and after a chain that is not usable: the sub-delegation lands and it is ended', async () => {
+    const unreadable = subWorld({ limits: { confirmationWaitMs: 30_000 } });
+    unreadable.chain.faults.readinessThrows = true;
+    expect(await go(unreadable, idle)).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'ledger_unreadable' }, end: { state: 'ended' } });
+    await expectEnded(unreadable);
+    const unusable = subWorld();
+    unusable.chain.faults.unusable = true;
+    const run = await go(unusable, idle);
+    expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'sub_delegation_unusable' }, end: { state: 'ended' } });
+    expect(run.kind === 'not_ready' && run.failure.detail).toContain('the delegate is not Active');
+    await expectEnded(unusable);
+  });
+
+  it('after a Delegate that the node refused but that landed anyway: it was sent, so it is ended', async () => {
+    const w = subWorld();
+    w.chain.faults.submitDelegateThrows = true;
+    w.chain.faults.delegateLandsAnyway = true;
+    const run = await go(w, idle);
+    expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'submit_failed' }, end: { state: 'ended' } });
+    await expectEnded(w);
+  });
+});
+
+describe('the twins of the ends above', () => {
+  it('the job ends one millisecond before its time, and it is not a timeout; one millisecond later it is', async () => {
+    for (const [ms, kind] of [[89_999, 'returned'], [90_000, 'timed_out']] as const) {
+      const w = subWorld({ limits: { jobTimeoutMs: 90_000 } });
+      const run = await go(w, async () => (await w.clock.sleep(ms), 'late'));
+      expect(run.kind, `${ms}`).toBe(kind);
+      expect(run.end.state).toBe('ended');
+    }
+  });
+
+  it('the confirmations come in time, and the job runs: the delegation has 30 confirmations at 128 seconds, and the wait is bounded at its limit', async () => {
+    for (const [wait, kind] of [[100_000, 'not_ready'], [127_000, 'not_ready'], [135_000, 'returned'], [200_000, 'returned']] as const) {
+      const w = subWorld({ limits: { confirmationWaitMs: wait } });
+      const run = await go(w, idle);
+      expect(run.kind, `${wait}`).toBe(kind);
+      expect(run.end.state).toBe('ended');
+    }
+  });
+
+  it('a read of the ledger that fails for a while does not end the wait: it goes on, and the job runs', async () => {
+    const w = subWorld();
+    const readiness = w.chain.readiness.bind(w.chain);
+    let reads = 0;
+    w.chain.readiness = async (...args) => {
+      reads += 1;
+      if (reads <= 3) throw new Error('the ledger cannot be read');
+      return readiness(...args);
+    };
+    expect(await go(w, idle)).toMatchObject({ ok: true, kind: 'returned', end: { state: 'ended' } });
+  });
+
+  it('a chain that stays unreadable but is read once gives a timeout, and a chain that is never read gives an unreadable ledger', async () => {
+    const w = subWorld({ limits: { confirmationWaitMs: 30_000 } });
+    const readiness = w.chain.readiness.bind(w.chain);
+    let reads = 0;
+    w.chain.readiness = async (...args) => {
+      reads += 1;
+      if (reads > 1) throw new Error('the ledger cannot be read');
+      return readiness(...args);
+    };
+    const run = await go(w, idle);
+    expect(run).toMatchObject({ kind: 'not_ready', failure: { code: 'ledger_unreadable' } });
+  });
+
+  it('a call to the ledger that never answers still ends the wait at its bound', async () => {
+    const w = subWorld({ limits: { confirmationWaitMs: 45_000 } });
+    w.chain.faults.readinessHangs = true;
+    const started = w.clock.now();
+    const run = await go(w, idle);
+    expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'confirmation_timeout' }, end: { state: 'ended' } });
+    expect(w.clock.now() - started).toBeLessThan(45_000 + 130_000);
+  });
+});
+
+describe('an end step that fails', () => {
+  it('is reported with the reference that is left, and the value of the job stays', async () => {
+    const w = subWorld();
+    w.chain.faults.buildUndelegateThrows = true;
+    const run = await go(w, async () => ({ stock: 12 }));
+    expect(run).toMatchObject({ ok: true, kind: 'returned', value: { stock: 12 } });
+    expect(run.end).toMatchObject({ state: 'not_ended', code: 'end_failed', left: { id: w.chain.subId, parent: PARENT_ID, action: 'erp.stock.read', resource: w.target.resource, endTxHash: null } });
+    const left = run.end.state === 'not_ended' ? run.end.left : null;
+    expect(left).toMatchObject({ delegateTxHash: `ee${w.chain.subId!.slice(2)}`, notAfter: NOW + 3_600_000 });
+    expect(left!.delegateValidTo).toBeGreaterThan(NOW);
+    expect(w.chain.submitted.map((s) => s.kind)).toStrictEqual(['delegate']);
+  });
+
+  it('does not hide the error of the job: the error and the failed end are both in the result', async () => {
+    const w = subWorld();
+    w.chain.faults.buildUndelegateThrows = true;
+    const boom = new Error('the job broke');
+    const run = await go(w, async () => {
+      throw boom;
+    });
+    expect(run).toMatchObject({ ok: false, kind: 'threw', end: { state: 'not_ended', code: 'end_failed' } });
+    expect(run.kind === 'threw' && run.error).toBe(boom);
+  });
+
+  it('is reported when the node refuses the Undelegate, with the hash of the Undelegate in the reference', async () => {
+    const w = subWorld();
+    w.chain.faults.submitUndelegateThrows = true;
+    const run = await go(w, idle);
+    expect(run).toMatchObject({ ok: true, end: { state: 'not_ended', code: 'end_failed', left: { endTxHash: `ff${w.chain.subId!.slice(2)}` } } });
+  });
+
+  it('is reported as not confirmed when the Undelegate never lands, at the end time of the step and not later', async () => {
+    const w = subWorld({ limits: { endTimeoutMs: 40_000 } });
+    w.chain.faults.undelegateNeverLands = true;
+    const run = await go(w, idle);
+    const undelegateAt = w.chain.submitted.find((s) => s.kind === 'undelegate')!.at;
+    expect(run).toMatchObject({ ok: true, end: { state: 'not_ended', code: 'end_unconfirmed', left: { endTxHash: expect.any(String) } } });
+    expect(w.clock.now() - undelegateAt).toBeLessThanOrEqual(40_000);
+  });
+
+  it('waits for a Delegate that is not on the ledger yet, and reports it when it never comes', async () => {
+    const w = subWorld({ limits: { endTimeoutMs: 30_000 } });
+    w.chain.faults.submitDelegateThrows = true;
+    const run = await go(w, idle);
+    expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'submit_failed' }, end: { state: 'not_ended', code: 'end_unconfirmed', left: { endTxHash: null } } });
+    expect(w.chain.log.filter((step) => step === 'buildUndelegate').length).toBeGreaterThan(2);
+    expect(w.chain.submitted.map((s) => s.kind)).toStrictEqual(['delegate']);
+  });
+
+  it('stops at once when the ledger shows the sub-delegation and the builder still refuses: time does not change that', async () => {
+    const w = subWorld();
+    w.chain.faults.buildUndelegateThrows = true;
+    await go(w, idle);
+    expect(w.chain.log.filter((step) => step === 'buildUndelegate').length).toBe(1);
+  });
+});
+
+describe('a sub-delegation that is wider than the narrow one is never built', () => {
+  it('has the narrow terms in the request to the builder, and the caller cannot change them', async () => {
+    const w = subWorld({ request: { remaining: 5, value: { perTx: 9n, total: 9n, periodMs: 1 }, actions: ['*'], resources: ['*'], notAfter: NOW + 100 * DAY } as never });
+    await go(w, idle);
+    expect(w.chain.params).toHaveLength(1);
+    const [params] = w.chain.params;
+    expect(params).toStrictEqual({
+      changeAddress: WALLET, nowMs: NOW, parent: PARENT_ID, delegate: SUBAGENT_ID, delegateKey: SUBAGENT_KEY, actions: ['erp.stock.read'], resources: [w.target.resource],
+      notAfter: NOW + 3_600_000, remaining: 0, value: { perTx: 0n, total: 0n, periodMs: DAY },
+    });
+  });
+
+  it('takes the period of the parent, and the validity of the parent when it ends sooner', async () => {
+    const week = subWorld({ parent: parentDatum({ value: { perTx: 1n, total: 1n, periodMs: 7 * DAY } }) });
+    await go(week, idle);
+    expect(week.chain.params[0]!.value).toStrictEqual({ perTx: 0n, total: 0n, periodMs: 7 * DAY });
+    const unlimited = subWorld({ parent: parentDatum({ value: null }) });
+    await go(unlimited, idle);
+    expect(unlimited.chain.params[0]!.value).toStrictEqual({ perTx: 0n, total: 0n, periodMs: 3_600_000 });
+    const short = subWorld({ parent: parentDatum({ notAfter: NOW + 20 * 60_000 }) });
+    await go(short, idle);
+    expect(short.chain.params[0]!.notAfter).toBe(NOW + 20 * 60_000);
+    expect(short.chain.params[0]!.notBefore).toBeUndefined();
+  });
+
+  const tampers: [string, (d: DelegationDatum) => DelegationDatum][] = [
+    ['one more hop', (d) => ({ ...d, remaining: 1 })],
+    ['three more hops', (d) => ({ ...d, remaining: 3 })],
+    ['a value of 1 per transaction', (d) => ({ ...d, value: { perTx: 1n, total: 0n, periodMs: DAY } })],
+    ['a total of 1', (d) => ({ ...d, value: { perTx: 0n, total: 1n, periodMs: DAY } })],
+    ['no value limit', (d) => ({ ...d, value: null })],
+    ['another period', (d) => ({ ...d, value: { perTx: 0n, total: 0n, periodMs: DAY + 1 } })],
+    ['a second action', (d) => ({ ...d, actions: [...d.actions, hex('po.write')] })],
+    ['a pattern for an action', (d) => ({ ...d, actions: [hex('erp.*')] })],
+    ['another action', (d) => ({ ...d, actions: [hex('po.write')] })],
+    ['no action', (d) => ({ ...d, actions: [] })],
+    ['a second resource', (d) => ({ ...d, resources: [...d.resources, hex('https://mock.example/t/run1/po')] })],
+    ['every resource', (d) => ({ ...d, resources: [hex('*')] })],
+    ['no resource', (d) => ({ ...d, resources: [] })],
+    ['another parent', (d) => ({ ...d, parent: 'dd'.repeat(32) })],
+    ['no parent', (d) => ({ ...d, parent: null })],
+    ['another delegate', (d) => ({ ...d, delegate: 'dd'.repeat(32) })],
+    ['another delegate key', (d) => ({ ...d, delegateKey: OTHER_KEY })],
+    ['a principal key as its delegator', (d) => ({ ...d, delegator: { type: 'PrincipalKey', hash: '44'.repeat(28), organisation: null } })],
+    ['an end after the parent', (d) => ({ ...d, notAfter: NOW + 5 * DAY + 1 })],
+    ['an end that is not the one asked for', (d) => ({ ...d, notAfter: d.notAfter - 1 })],
+    ['a start before the parent', (d) => ({ ...d, notBefore: NOW - DAY - 1 })],
+    ['an end before its start', (d) => ({ ...d, notBefore: d.notAfter })],
+    ['another depth', (d) => ({ ...d, depth: 3 })],
+  ];
+
+  it.each(tampers)('is not signed, not sent and not run when the builder gives %s', async (_name, change) => {
+    const w = subWorld();
+    w.chain.tamper = change;
+    let ran = false;
+    const run = await go(w, async () => (ran = true));
+    expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'build_mismatch' }, end: { state: 'not_made' } });
+    expect(w.chain.submitted).toHaveLength(0);
+    expect(w.chain.log).not.toContain('buildUndelegate');
+    expect(ran).toBe(false);
+  });
+
+  it('is built, signed, sent and run when the builder gives exactly what was asked for: the twin of every build above', async () => {
+    const w = subWorld();
+    expect(await go(w, idle)).toMatchObject({ ok: true, kind: 'returned', end: { state: 'ended' } });
+    expect(w.chain.submitted[0]!.kind).toBe('delegate');
+  });
+});
+
+describe('a request that is wrong is refused before anything is built', () => {
+  const expectNothing = (w: SubWorld, run: SubDelegationRun<unknown>, code: string): void => {
+    expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code }, end: { state: 'not_made' } });
+    expect(w.chain.log).not.toContain('buildDelegate');
+    expect(w.chain.submitted).toHaveLength(0);
+  };
+
+  it.each([
+    ['a route that takes the agent only', { target: expectTarget(tokenTarget(BASES, 'run1', 'po.write')) }],
+    ['a parent that is not a delegation identifier', { parent: 'abc' }],
+    ['a subagent that is not a DID', { subagent: { did: 'did:vector:abc', signer: markSigner(SUBAGENT_KEY) } }],
+    ['the same key for the agent and the subagent', { subagent: { did: `did:vector:${SUBAGENT_ID}`, signer: markSigner(AGENT_KEY) } }],
+    ['a key hash that is not 56 hex characters', { agent: { signer: markSigner('11'.repeat(27)), walletAddress: WALLET } }],
+    ['a signer without a sign function', { subagent: { did: `did:vector:${SUBAGENT_ID}`, signer: { keyHash: SUBAGENT_KEY } as never } }],
+    ['no wallet address', { agent: { signer: markSigner(AGENT_KEY), walletAddress: '' } }],
+    ['a validity that is too short', { validForMs: MIN_SUB_DELEGATION_MS - 1 }],
+    ['a validity that is too long', { validForMs: MAX_SUB_DELEGATION_MS + 1 }],
+    ['a validity that is not a whole number', { validForMs: 600_000.5 }],
+    ['a validity that is a text', { validForMs: '3600000' as never }],
+  ] as const)('refuses %s', async (_name, over) => {
+    const w = subWorld({ request: over as never });
+    expectNothing(w, await go(w, idle), 'bad_request');
+  });
+
+  it.each([
+    ['a job time of 0', { jobTimeoutMs: 0 }],
+    ['a job time that is not a number', { jobTimeoutMs: Number.NaN }],
+    ['a poll time of 0', { pollMs: 0 }],
+    ['a wait of 0', { confirmationWaitMs: 0 }],
+    ['an end time that is not whole', { endTimeoutMs: 1.5 }],
+  ] as const)('refuses %s', async (_name, over) => {
+    const w = subWorld({ limits: over });
+    expectNothing(w, await go(w, idle), 'bad_request');
+  });
+
+  it('accepts the shortest and the longest validity, and a job time of 1 millisecond', async () => {
+    for (const validForMs of [MIN_SUB_DELEGATION_MS, MAX_SUB_DELEGATION_MS]) {
+      const w = subWorld({ request: { validForMs }, parent: parentDatum({ notAfter: NOW + 5 * DAY }) });
+      expect((await go(w, idle)).kind).toBe('returned');
+    }
+    const quick = subWorld({ limits: { jobTimeoutMs: 1 } });
+    expect((await go(quick, async () => 'fast')).kind).toBe('returned');
+  });
+
+  it('refuses a parent that is not live, a parent with no further hop, a parent that ends too soon, and a parent that cannot be read', async () => {
+    const gone = subWorld({ parent: null });
+    expectNothing(gone, await go(gone, idle), 'parent_not_live');
+    const spent = subWorld({ parent: parentDatum({ remaining: 0 }) });
+    expectNothing(spent, await go(spent, idle), 'parent_exhausted');
+    const ending = subWorld({ parent: parentDatum({ notAfter: NOW + MIN_SUB_DELEGATION_MS - 1 }) });
+    expectNothing(ending, await go(ending, idle), 'parent_expiring');
+    const unreadable = subWorld();
+    unreadable.chain.faults.readThrows = true;
+    expectNothing(unreadable, await go(unreadable, idle), 'parent_unreadable');
+    const enough = subWorld({ parent: parentDatum({ notAfter: NOW + MIN_SUB_DELEGATION_MS }) });
+    expect((await go(enough, idle)).kind).toBe('returned');
+  });
+
+  it('refuses a parent that has not started, until its start leaves enough time', async () => {
+    const early = subWorld({ parent: parentDatum({ notBefore: NOW + 60_000, notAfter: NOW + 60_000 + MIN_SUB_DELEGATION_MS - 1 }) });
+    expectNothing(early, await go(early, idle), 'parent_expiring');
+  });
+
+  it('reports a builder that refuses with its words, and sends nothing; the twin is the run in which the builder accepts', async () => {
+    const w = subWorld();
+    w.chain.faults.buildDelegateThrows = true;
+    const run = await go(w, idle);
+    expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'build_refused' }, end: { state: 'not_made' } });
+    expect(run.kind === 'not_ready' && run.failure.detail).toContain('allows no further hop');
+    expect(w.chain.submitted).toHaveLength(0);
+    expect(w.chain.log).not.toContain('buildUndelegate');
+    w.chain.faults.buildDelegateThrows = false;
+    expect((await go(w, idle)).kind).toBe('returned');
+  });
+});
+
+describe('the keys', () => {
+  it('sign the Delegate with the agent key and the subagent key, and each one time', async () => {
+    const w = subWorld();
+    await go(w, idle);
+    expect(w.chain.submitted[0]!.cbor).toBe(`delegate:${w.chain.subId}+${AGENT_KEY.slice(0, 4)}+${SUBAGENT_KEY.slice(0, 4)}`);
+  });
+
+  it('refuse a Delegate that needs a key that was not given, before it is sent; and sign it when the key is given', async () => {
+    const w = subWorld();
+    w.chain.faults.extraSigner = OTHER_KEY;
+    const run = await go(w, idle);
+    expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'missing_signer' }, end: { state: 'not_made' } });
+    expect(run.kind === 'not_ready' && run.failure.detail).toContain(OTHER_KEY);
+    expect(w.chain.submitted).toHaveLength(0);
+  });
+
+  it('give a signer that throws a result with its name and without its message', async () => {
+    const secret = 'SEED-0123456789-abcdef';
+    const w = subWorld({ request: { subagent: { did: `did:vector:${SUBAGENT_ID}`, signer: { keyHash: SUBAGENT_KEY, sign: () => { throw new Error(`cannot sign with ${secret}`); } } } } });
+    const run = await go(w, idle);
+    expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'sign_failed' }, end: { state: 'not_made' } });
+    expect(JSON.stringify(run)).not.toContain(secret);
+    expect(w.chain.submitted).toHaveLength(0);
+  });
+});
+
+describe('the end of a run that cannot be sent', () => {
+  it('leaves nothing to end when the Delegate was never sent: the end is not_made and the ledger is not asked to undelegate', async () => {
+    const w = subWorld();
+    w.chain.faults.buildDelegateThrows = true;
+    const run = await go(w, idle);
+    expect(run.end).toStrictEqual({ state: 'not_made' });
+    expect(w.chain.log).not.toContain('buildUndelegate');
+  });
+
+  it('does not wait with no end when every part of the world is unreadable', async () => {
+    const w = subWorld({ limits: { confirmationWaitMs: 20_000, endTimeoutMs: 20_000 } });
+    w.chain.faults.readThrows = false;
+    w.chain.faults.readinessHangs = true;
+    w.chain.faults.undelegateNeverLands = true;
+    const run = await go(w, idle);
+    expect(run.kind).toBe('not_ready');
+    expect(run.end.state).toBe('not_ended');
+  });
+});
