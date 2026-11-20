@@ -118,6 +118,22 @@ describe('an outcome that the hire kit does not give', () => {
     expect(words(await go(await world()))).toBe('completed');
   });
 
+  it('is a failed step with inconsistent_outcome when the outcome member cannot be read: the flow does not reject, it reads no delegation, and the error is the cause of the step', async () => {
+    const boom = new Error('a member that throws');
+    const w = await world();
+    answers({ get outcome(): string { throw boom; }, advertRef: AGENT_ADVERT_REF, message: 'kit words' });
+    const step = expectKind(await go(w), 'failed');
+    expect([step.reason, step.cause, step.handoff]).toStrictEqual([INCONSISTENT_OUTCOME, boom, null]);
+    expect(settledResult(step, pieces())).toMatchObject({ outcome: 'failed', reason: INCONSISTENT_OUTCOME, exit_state: 'Failed' });
+    // The delegation is read again only after a refused Pay, and an outcome that cannot be read is not known to be one.
+    expect(w.reads.calls.delegation).toBe(1);
+    // The twin: the same kind of outcome with a member that can be read, and that says vault_refused, is a refused Pay, and the delegation is read again.
+    const twin = await world();
+    answers({ get outcome(): string { return 'vault_refused'; }, advertRef: AGENT_ADVERT_REF, message: 'kit words', refusal: { kind: 'ledger', evaluationError: '3010 script error', validators: [], body: 'a1b2', attempt: undefined } });
+    expect(expectKind(await go(twin), 'vault_refused')).toMatchObject({ reason: '3010 script error', delegation: 'live' });
+    expect(twin.reads.calls.delegation).toBe(2);
+  });
+
   it('is a vault_refused step with a fixed reason when the node gave no evaluation error, and the result is made', async () => {
     const w = await world();
     answers({ outcome: 'vault_refused', advertRef: AGENT_ADVERT_REF, message: 'kit words', refusal: { kind: 'ledger', evaluationError: '', validators: [], body: 'a1b2', attempt: undefined } });

@@ -17,7 +17,7 @@ import { checkLimits } from './limits.ts';
 import type { HireLimits } from './limits.ts';
 import { checkRuntimeBody, checkWirePayload, messageOf, requestText } from './message.ts';
 import type { CounterpartyMessage } from './message.ts';
-import { INCONSISTENT_OUTCOME, JOB_LABEL, deliveryOf, failure, recordOf, stepOfOutcome } from './outcome.ts';
+import { INCONSISTENT_OUTCOME, JOB_LABEL, deliveryOf, failure, isVaultRefused, recordOf, stepOfOutcome } from './outcome.ts';
 import type { StepContext } from './outcome.ts';
 import type { LedgerReads } from './ports.ts';
 import type { BookingFailure, HireStep, InterruptionCause, RefusedCode, RefusedStep, VerifiedDelivery } from './steps.ts';
@@ -316,8 +316,9 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
       if (step.kind === 'pay_unconfirmed' && step.may_land) state.pending = { vault_ref: found.vault_ref, valid_to: step.valid_to };
       return step;
     }
-    // The delegation is read again only after a refused Pay: `delegation_ended` decides between the exit states Cancelled and Failed.
-    const after = outcome?.outcome === 'vault_refused' ? await delegationAfter(reads, message.delegation) : null;
+    // The delegation is read again only after a refused Pay: `delegation_ended` decides between the exit states Cancelled and Failed. The flow reads the outcome only in `isVaultRefused` and in `stepOfOutcome`,
+    // and neither throws: an outcome that cannot be read is a step with the reason `inconsistent_outcome`, and it is not an error of the flow.
+    const after = isVaultRefused(outcome) ? await delegationAfter(reads, message.delegation) : null;
     return stepOfOutcome(outcome, { ...context, delegation_after: after, booking_failed: booking.failed });
   });
 }

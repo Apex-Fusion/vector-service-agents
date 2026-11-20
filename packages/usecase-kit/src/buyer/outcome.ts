@@ -348,9 +348,21 @@ function escrowIfReadable(outcome: AgentOutcome): Escrow | null {
 }
 
 /**
+ * True when the outcome says `vault_refused`, the one outcome after which the flow reads the delegation again. It is the one read of the outcome that the flow makes before `stepOfOutcome`, and it is
+ * guarded in the same way: a value that is not an object, or an outcome whose `outcome` member throws, is not a refused Pay here, and `stepOfOutcome` makes the step for it. The function never throws.
+ */
+export function isVaultRefused(outcome: unknown): boolean {
+  try {
+    return typeof outcome === 'object' && outcome !== null && Reflect.get(outcome, 'outcome') === 'vault_refused';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The step for one outcome of the hire kit. The switch has no default that passes: an outcome that is not one of the five is `inconsistent_outcome`. An outcome that cannot be read (a member that
  * throws) is `inconsistent_outcome` too, with the escrow that it names, and the error as the `cause` for the log. The function never throws.
- * `context.delegation_after` is read by the flow for `vault_refused`; the function reads no ledger.
+ * `context.delegation_after` is read by the flow for `vault_refused` (see `isVaultRefused`); the function reads no ledger.
  */
 export function stepOfOutcome(outcome: AgentOutcome, context: StepContext): HireStep {
   if (typeof outcome !== 'object' || outcome === null) return inconsistent(context, 'the hire kit gave no outcome');
