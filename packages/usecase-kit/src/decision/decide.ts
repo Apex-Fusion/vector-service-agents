@@ -44,7 +44,8 @@ import { subJobOf, unrecordedOf } from './subjob.ts';
 
 /**
  * What a decision needs. The ports are the ones of a hire: the fetch, the clock, the sleep, the deadline of the run, the ledger and the indexer. The key is the service key, the one key that
- * every model hire of the agent runs from. The four limits are required, and the caller reads them from its settings.
+ * every model hire of the agent runs from. The four limits are required, and the caller reads them from its settings. A decision starts its hire only when the clock stands at least HIRE_MIN_MS
+ * before the deadline of the run.
  */
 export interface DecisionDeps extends ModelDeps {
   /** The service key. Its lane runs one hire at a time, so decisions run one after the other. */
