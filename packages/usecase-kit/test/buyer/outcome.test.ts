@@ -130,6 +130,10 @@ const TABLE: readonly Row[] = [
   { name: 'not accepted, the decision did not answer in time', outcome: timedOut, step: 'not_accepted decision_timeout', result: 'use case' },
   { name: 'not accepted, the receipt failed a check', outcome: receiptFailed, step: 'failed receipt_failed', result: 'failed:receipt_failed:Failed' },
   { name: 'not accepted, a reason that the kit does not have', outcome: { ...timedOut, reason: 'maybe' as never } as AgentOutcome, step: `failed ${INCONSISTENT_OUTCOME}`, result: `failed:${INCONSISTENT_OUTCOME}:Failed` },
+  {
+    name: 'not accepted, the delivery has a check that is not a boolean', step: `failed ${INCONSISTENT_OUTCOME}`, result: `failed:${INCONSISTENT_OUTCOME}:Failed`,
+    outcome: { ...declined, delivery: { ...delivery, record: { ...record, verification: { ...ALL_TRUE, fields_match: undefined as never } } } } as AgentOutcome,
+  },
   { name: 'an outcome that the kit does not have', outcome: { outcome: 'paid', ...paid } as never, step: `failed ${INCONSISTENT_OUTCOME}`, result: `failed:${INCONSISTENT_OUTCOME}:Failed` },
 ];
 
