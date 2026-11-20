@@ -1,0 +1,10 @@
+{
+  "name": "@vsa/usecase-kit", "version": "0.1.0", "private": true, "type": "module",
+  "exports": { "./*": "./src/*/index.ts" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit" },
+  "dependencies": {
+    "@vsa/buyer-core": "workspace:*", "@vsa/hire-kit": "workspace:*", "@vsa/id-kit": "workspace:*", "@vsa/service-kit": "workspace:*", "@vsa/vector-read": "workspace:*",
+    "@anastasia-labs/cardano-multiplatform-lib-nodejs": "6.0.2-3", "@lucid-evolution/lucid": "^0.4.29", "@noble/hashes": "^1.7.1"
+  },
+  "devDependencies": { "vitest": "^5.0.5", "typescript": "^5.7.3", "tsx": "^4.21.0", "@types/node": "^22.13.1" }
+}
