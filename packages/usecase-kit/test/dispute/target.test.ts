@@ -339,6 +339,48 @@ describe('a claim is a target only when its statement S1 is the statement that t
     expect((await twin.dispute.challengeDelivery(delivery({ statement_text: STATEMENT_S1 }))).ok).toBe(true);
   });
 
+  /** A statement with accented letters: its NFC form and its NFD form are different texts of the same statement. */
+  const ACCENTED = 'A confirmation that this agent signs names the SKU, the lot and the quantity of the order that it answers, caf\u00e9 r\u00e8gle.';
+
+  it('takes the same text in NFD and in NFC as one statement, whichever form the claim document or the job has, and quotes it in the same form in the evidence', async () => {
+    // The two forms are not the same string.
+    expect(ACCENTED.normalize('NFD')).not.toBe(ACCENTED.normalize('NFC'));
+    const forms: Array<[string, string, string]> = [
+      ['NFD in the claim document and NFC in the job', ACCENTED.normalize('NFD'), ACCENTED.normalize('NFC')],
+      ['NFC in the claim document and NFD in the job', ACCENTED.normalize('NFC'), ACCENTED.normalize('NFD')],
+      ['NFD in both', ACCENTED.normalize('NFD'), ACCENTED.normalize('NFD')],
+      ['NFC in both', ACCENTED.normalize('NFC'), ACCENTED.normalize('NFC')],
+    ];
+    for (const [name, inDocument, inJob] of forms) {
+      const rigged = rig();
+      rigged.port.claims = [holding(rigged.port, claimView(), withStatement(inDocument).bytes)];
+      expect((await rigged.dispute.challengeDelivery(delivery({ statement_text: inJob }))).ok, name).toBe(true);
+      // The evidence writes the statement in the form NFC, and a character that is not printable ASCII as `\u` and four hex digits, whichever form the claim document has.
+      const printed = inDocument.normalize('NFC').replace(/[^\x20-\x7e]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
+      expect(textOf(rigged.port.published[0]!.bytes), name).toContain(`Statement S1 of the claim reads: "${printed}"`);
+      expect(await rigged.dispute.findOpenClaim(OTHER, { ...SCOPE, statement_text: inJob }), name).toMatchObject({ ok: true, value: { ref: REF_A } });
+    }
+  });
+
+  it('leaves out a claim whose S1 is more than another form of the text of the job: another accent, a homoglyph, a ligature, or a letter more', async () => {
+    const others: Array<[string, string]> = [
+      ['another accent', ACCENTED.normalize('NFD').replace('e\u0301', 'e\u0300')],
+      ['a homoglyph: a Cyrillic letter for a Latin letter', ACCENTED.replace('A confirmation', '\u0410 confirmation')],
+      ['a ligature that only a compatibility form folds', ACCENTED.replace('confirmation', 'con\ufb01rmation')],
+      ['a letter more', ACCENTED.normalize('NFD').replace('e\u0301', 'ee\u0301')],
+    ];
+    for (const [name, inDocument] of others) {
+      for (const [form, inJob] of [['NFC', ACCENTED.normalize('NFC')], ['NFD', ACCENTED.normalize('NFD')]] as const) {
+        const rigged = rig();
+        rigged.port.claims = [holding(rigged.port, claimView(), withStatement(inDocument).bytes)];
+        const result = await rigged.dispute.challengeDelivery(delivery({ statement_text: inJob }));
+        expectNotFiled(result, NO_OPEN_CLAIM);
+        expect(result.detail, `${name}, ${form} in the job`).toBe(counted(1, [0, 0, 0, 0, 0, 0, 1]));
+        expect(rigged.port.published, name).toEqual([]);
+      }
+    }
+  });
+
   it('gives the same target from findOpenClaim', async () => {
     const rigged = rig();
     rigged.port.claims = [claimView(), decoyOf(rigged)];

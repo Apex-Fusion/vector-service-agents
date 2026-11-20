@@ -10,10 +10,10 @@
 //   2. Choose the claim. The escrow of the job is read first, when the other party has an open claim. It must be the escrow of this job: its datum has the identity layout, its capability_id is the capability of the
 //      job, and its agent_id is the agent that the job hired (the counterparty for a delivery, this agent for an approval). Another escrow is `bad_shape`. A claim is a target only when ALL hold: its claimer is the
 //      other party; its claim document is a claim document of this kit for the capability of the job (it is on chain, its hash is the hash that the claim holds, and it is the document that `claimDocument` writes
-//      for that party and that capability) and its statement S1 is exactly the text of the statement S1 of the manifest that the job hired; it was submitted before the job began (the time of the block of its escrow
-//      output: the chain port reads it from the chain, and the caller gives no time); it is Open with enough window left; and its stake is not above the challenge stake. A claim that is not a target is left out and
-//      counted by its reason, so the claimer cannot choose the target or block a challenge with a claim of its own. Among the targets the one with the latest challenge deadline is chosen, and with the same deadline the
-//      one with the lowest claim token. None ends the job with `no_open_claim`.
+//      for that party and that capability) and its statement S1 is the text of the statement S1 of the manifest that the job hired (the same text in NFC and in NFD is one text); it was submitted before the job
+//      began (the time of the block of its escrow output: the chain port reads it from the chain, and the caller gives no time); it is Open with enough window left; and its stake is not above the challenge stake. A claim
+//      that is not a target is left out and counted by its reason, so the claimer cannot choose the target or block a challenge with a claim of its own. Among the targets the one with the latest challenge deadline is
+//      chosen, and with the same deadline the one with the lowest claim token. None ends the job with `no_open_claim`.
 //      After a lapsed record `started`, only the claim of the record can be chosen, and it must still be a target. A claim of the record that is spent, is not Open, or has no window left ends the job with
 //      `claim_changed`, and one with too little window left ends it with `claim_window_closing`. Nothing is sent then.
 //   3. Make the evidence document. A document that is refused ends the job. Nothing is on chain yet.
@@ -108,7 +108,8 @@ export interface ClaimScope {
   readonly capability_id: string;
   /**
    * The text of the statement S1 of the manifest that the job hired: the statement that the job broke. The caller has the manifest of the agent that it hired. The target is a claim whose claim document has
-   * exactly this text as its statement S1. A claim for the same capability with another S1 is left out, because the evidence would quote a statement that the job did not break.
+   * this text as its statement S1: the same text in the form NFC and in the form NFD is one text, and any other difference leaves the claim out (a homoglyph is another text). A claim for the same capability with
+   * another S1 is left out, because the evidence would quote a statement that the job did not break.
    */
   readonly statement_text: string;
 }
@@ -541,9 +542,10 @@ export class Dispute {
   /**
    * What the code finds in the claim document of a claim: the statement of a target, or the reason that the claim is left out. A claim is a claim of this kit when its claim document is a `vector-tx:`
    * document that is on chain and is a document, its hash is the claim hash that the claim holds, it was published as a claim with the media type of this kit, and it is the document that `claimDocument`
-   * writes for the claimer. It covers the job only when the capability of the document is the capability of the job, and its statement S1 is exactly the text that the job hired (`statement_text` of the
-   * scope): a claim with another S1 would make the evidence quote a statement that the job did not break. A claim whose document is not on chain, is not a document, is not of this kit, is for another
-   * capability, or has another S1 is left out, because the claimer makes the document. A source that cannot be read is `chain_unavailable`.
+   * writes for the claimer. It covers the job only when the capability of the document is the capability of the job, and its statement S1 is the text that the job hired (`statement_text` of the scope). The compare
+   * takes the NFC form of both texts, so a text in NFD and the same text in NFC are one statement: the evidence document writes each text in NFC. Another difference, such as a homoglyph, is another text: a claim
+   * with another S1 would make the evidence quote a statement that the job did not break. A claim whose document is not on chain, is not a document, is not of this kit, is for another capability, or has another S1 is
+   * left out, because the claimer makes the document. A source that cannot be read is `chain_unavailable`.
    */
   async #examine(claim: ClaimView, scope: ClaimScope): Promise<ProtocolResult<Examined, 'chain_unavailable'>> {
     const skip = (reason: DocumentSkip): ProtocolResult<Examined, 'chain_unavailable'> => accepted({ kind: 'skip', reason });
@@ -561,7 +563,7 @@ export class Dispute {
     if (input.value.capability_id !== scope.capability_id) return skip('capability');
     const statement = input.value.claim.statements.find((candidate) => candidate.id === EVIDENCE_STATEMENT);
     if (statement === undefined) return skip('not_kit');
-    return statement.text === scope.statement_text ? accepted({ kind: 'target', statement_text: statement.text }) : skip('statement');
+    return statement.text.normalize('NFC') === scope.statement_text.normalize('NFC') ? accepted({ kind: 'target', statement_text: statement.text }) : skip('statement');
   }
 
   /**
