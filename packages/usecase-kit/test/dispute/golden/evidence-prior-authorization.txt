@@ -1,0 +1,15 @@
+Evidence about statement S1 of a claim on the Vector marketplace.
+The claimer is a prior authorization agent. The challenger is the insurer intake agent that received a request from the claimer.
+The hirer of the claimer approved a document. The approval holds the digest e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1.
+The request that the claimer sent holds the digest e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2.
+The two digests differ. So the request that the claimer sent is not the document that its hirer approved.
+The digest of a request is the SHA-256 of its salt followed by its canonical text. This evidence has no text of the request and no salt.
+The challenger refused the request before it did any work.
+References
+Claim: cacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca#0
+Claim token: 636c6d5f0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+Claimer: did:vector:d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3
+Challenger: did:vector:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
+Escrow of the job: e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5#1
+Approval attestation: 2222222222222222222222222222222222222222222222222222222222222222
+Approval issuer: did:vector:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2

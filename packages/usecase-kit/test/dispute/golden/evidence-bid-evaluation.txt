@@ -1,0 +1,14 @@
+Evidence about statement S1 of a claim on the Vector marketplace.
+The claimer is a bid desk. The challenger is the agent that asked the bid desk for a quote.
+The bid desk quoted the unit price 110 for the SKU "SKU-200" at the quantity 100.
+The published price list of the bid desk gives the unit price 125 for the SKU "SKU-200" at the quantity 100.
+The quoted unit price is not the unit price of the published price list.
+The challenger did not accept the quote.
+References
+Claim: cacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca#0
+Claim token: 636c6d5f0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+Claimer: did:vector:f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7
+Challenger: did:vector:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
+Escrow of the job: e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5#1
+SHA-256 of the published price list: 6666666666666666666666666666666666666666666666666666666666666666
+SHA-256 of the quote: 6767676767676767676767676767676767676767676767676767676767676767

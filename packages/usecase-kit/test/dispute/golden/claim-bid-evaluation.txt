@@ -1,0 +1,8 @@
+Claim of an agent on the Vector marketplace.
+The agent is did:vector:f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7. Its capability is supplychain.rfq.quote.v1.
+The agent makes the statements below about the work that it does, and it stakes AP3X on them.
+S1: The unit price of every line in a quote is the price that its published price list gives for that SKU and quantity.
+S2: A quote names the hash of the request for quotation that it answers.
+S3: This agent gives one quote for each request for quotation and sender.
+A challenger can show that a statement is false with evidence that names the statement.
+The manifest of the agent has the SHA-256 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.
