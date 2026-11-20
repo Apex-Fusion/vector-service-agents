@@ -23,6 +23,18 @@ export const SUPPLIER_ORG = 'alfa.example.test';
 export const INSURER_ORG = 'delta.example.test';
 export const HOUR = 3_600_000;
 
+/** The published values of the identity registry deployment of Vector mainnet: public chain data, and the three settings of the service that name them. */
+export const DEPLOYMENT_SETTINGS = {
+  VECTOR_IDENTITY_LEGACY_ROOT: 'e4b6b17ce4a8f83aa17d3181ea140d2bd76c0cfa8a7c44ad69543800b4a0df01',
+  VECTOR_IDENTITY_CONFIG_SEED: '6c9856c70b1101f1a4e9ceb373188608013416eff48c51f5bb62706a65d41a2a#0',
+  VECTOR_IDENTITY_POLICY_ID: 'd958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762',
+};
+
+/** A complete good environment for the service on `port`. The gateway is the default one, which is the address of the stub gateway too. `extra` adds or replaces a setting. */
+export const serviceEnvironment = (port: number, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
+  MOCK_PUBLIC_BASE: PUBLIC_BASE, MOCK_MTLS_BASE: MTLS_BASE, MOCK_OPERATOR_TOKEN: OPERATOR_TOKEN, ...DEPLOYMENT_SETTINGS, PORT: String(port), HOST: '127.0.0.1', ...extra,
+});
+
 const utf8Hex = (text: string): string => Buffer.from(text, 'utf8').toString('hex');
 
 /** The URL of a system of a tenant, as a delegation names it. */
