@@ -245,7 +245,7 @@ describe('each read of the port has a bound', () => {
 
   it('is a bound of the same kind for each read of this port, so that no read has none', async () => {
     const port = new ScriptedPort();
-    const reads = ['readClaims', 'readClaim', 'readChallenges', 'readDocument', 'isIndexed', 'readEscrowPostedAt'] as const;
+    const reads = ['readClaims', 'readClaim', 'readChallenges', 'readDocument', 'isIndexed', 'readEscrowJob'] as const;
     expect(reads.every((name) => typeof port[name] === 'function')).toBe(true);
   });
 });

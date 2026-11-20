@@ -88,6 +88,9 @@ const claimsOn = (ledger: LedgerProvider) => ledger.atAddress(MODULE1.claim.addr
 /** The challenge of the buyer-side agent of use case 1 for the escrow of a job. */
 const challengeOrder = (dispute: Dispute, escrow: string = ESCROW, scope: Omit<ClaimScope, 'escrow_ref'> = JOB): Promise<ChallengeResult> => dispute.challengeDelivery({ counterparty: CLAIMER, escrow_ref: escrow, ...scope, evidence: ORDER_FACTS });
 
+/** The challenge of a counterparty that refused a request of the other party for the digest of the approval. The other party posted the escrow of the job. */
+const challengeApproved = (dispute: Dispute, escrow: string = ESCROW): Promise<ChallengeResult> => dispute.challengeApproval({ sender: CLAIMER, escrow_ref: escrow, ...JOB, evidence: DIGEST_FACTS });
+
 function filedOf(result: ChallengeResult) {
   if (!result.ok) throw new Error(`${result.code}: ${result.detail}`);
   return result.value;
@@ -117,9 +120,9 @@ describe('the claim of a run on the ledger', () => {
     expect(output.assets).toMatchObject({ lovelace: 50_000_000n, [`${MODULE1.claim.hash}${staked.value.claim_token}`]: 1n });
     expect(staked.value.challenge_deadline).toBe(datum.submittedAt + 24 * HOUR);
     expect(staked.value.fee_lovelace > 0n).toBe(true);
-    // The open claim of the agent for a job that was posted after the claim is this claim: its document is read from the ledger, and it is the claim document that this kit wrote.
+    // The open claim of the agent for a job whose block was made after the claim is this claim: its document is read from the ledger, and it is the claim document that this kit wrote. A time of a block has whole seconds.
     const lookup = disputeOf(ledger, AUDITOR_ID, NOW + 60_000);
-    postEscrowAt(ledger, datum.submittedAt + 1);
+    postEscrowAt(ledger, datum.submittedAt + 1000);
     expect(await lookup.findOpenClaim(CLAIMER, SCOPE)).toMatchObject({ ok: true, value: { ref: staked.value.claim, token: staked.value.claim_token, state: 'Open', claimer: CLAIMER } });
     // The twin: a job that was posted at the moment of the claim is not covered by it.
     postEscrowAt(ledger, datum.submittedAt);
@@ -943,7 +946,7 @@ describe('a document that Blockfrost gives for a transaction that Koios shows wi
   }, SLOW);
 });
 
-describe('the start of a job is the time of the Post that the datum of its escrow holds', () => {
+describe('the start of a job is the time of the block of its escrow output', () => {
   const ESCROW_TX = ESCROW.split('#')[0]!;
   const NEWER_REF = `${'c4'.repeat(32)}#0`;
   /** Two claims of this kit: the older was submitted an hour before the clock, and the newer 50 minutes before it, and it ends later. */
@@ -952,7 +955,7 @@ describe('the start of a job is the time of the Post that the datum of its escro
     { ...kitClaim(l, `636c6d5f${'0d'.repeat(28)}`, { challengeWindow: 20 * HOUR }, 50 * 60_000), txHash: 'c4'.repeat(32) },
   ]);
 
-  it.each([['unspent', false], ['spent', true]] as const)('reads the time from the datum of the escrow output when it is %s: the claim that was staked after the Post is not the target', async (_name, spent) => {
+  it.each([['unspent', false], ['spent', true]] as const)('reads the time from the block of the escrow output when it is %s: the claim that was staked after the Post is not the target', async (_name, spent) => {
     // The job was posted 55 minutes ago. The newer claim was staked 5 minutes after the Post, so only the older claim covers the job.
     const covering = twoClaims();
     postEscrowAt(covering, NOW - 55 * 60_000, spent);
@@ -964,16 +967,41 @@ describe('the start of a job is the time of the Post that the datum of its escro
     expect(filedOf(await challengeOrder(disputeOf(both, AUDITOR_ID))).record.claim).toBe(NEWER_REF);
   }, SLOW);
 
-  it('gives the time of the Post of an escrow output of any state, unspent or spent', async () => {
+  it('gives the time of the block of an escrow output of any state, unspent or spent', async () => {
     const ledger = ledgerWorld();
     const port = realPort(ledger, AUDITOR_ID, NOW);
-    expect(await port.readEscrowPostedAt(ESCROW)).toEqual({ ok: true, value: { posted_at: JOB_BEGAN_AT } });
+    expect(await port.readEscrowJob(ESCROW)).toEqual({ ok: true, value: { block_time_ms: JOB_BEGAN_AT } });
     postEscrowAt(ledger, NOW - 7 * DAY, true);
-    expect(await port.readEscrowPostedAt(ESCROW)).toEqual({ ok: true, value: { posted_at: NOW - 7 * DAY } });
-    // The output of the state Submitted keeps the time of the Post as it was posted.
-    postEscrowAt(ledger, NOW - 2 * DAY, false, { datum: encodeIdentityEscrowDatum(submitted(identityEscrow(NOW - 2 * DAY), NOW - DAY)) });
-    expect(await port.readEscrowPostedAt(ESCROW)).toEqual({ ok: true, value: { posted_at: NOW - 2 * DAY } });
-    await expect(port.readEscrowPostedAt('zq9')).rejects.toThrow(TypeError);
+    expect(await port.readEscrowJob(ESCROW)).toEqual({ ok: true, value: { block_time_ms: NOW - 7 * DAY } });
+    // The output of the state Submitted was made by a later transaction, in a later block. Its time is the time of that block, and not the member posted_at that it keeps from the Post.
+    postEscrowAt(ledger, NOW - DAY, false, { datum: encodeIdentityEscrowDatum(submitted(identityEscrow(NOW - 2 * DAY), NOW - DAY)) });
+    expect(await port.readEscrowJob(ESCROW)).toEqual({ ok: true, value: { block_time_ms: NOW - DAY } });
+    await expect(port.readEscrowJob('zq9')).rejects.toThrow(TypeError);
+  }, SLOW);
+
+  /** What a poster can write into the member posted_at of the datum: no validator checks it. */
+  const POSTED_AT: Array<[string, number]> = [
+    ['a time in the future', NOW + 365 * DAY],
+    ['the time 1000', 1000],
+    ['the time 0', 0],
+    ['a time that a number cannot hold', 2 ** 60],
+  ];
+
+  it.each(POSTED_AT)('takes the time of the block, and not the member posted_at of the datum, when the poster writes %s', async (_name, postedAt) => {
+    const lie = { datum: encodeIdentityEscrowDatum(identityEscrow(postedAt)) };
+    // The job was posted 55 minutes ago: only the older claim of the poster covers it. The poster is the other party, and it makes the challenge of a counterparty that refused its request.
+    const covering = twoClaims();
+    postEscrowAt(covering, NOW - 55 * 60_000, false, lie);
+    expect(await realPort(covering, AUDITOR_ID, NOW).readEscrowJob(ESCROW)).toEqual({ ok: true, value: { block_time_ms: NOW - 55 * 60_000 } });
+    expect(filedOf(await challengeApproved(disputeOf(covering, AUDITOR_ID))).record.claim).toBe(CLAIM_REF);
+    // Both claims were staked before the block of the job: the newer claim ends later, so it is the target. A start from the datum would leave out each claim, or refuse the job.
+    const both = twoClaims();
+    postEscrowAt(both, NOW - 30 * 60_000, false, lie);
+    expect(filedOf(await challengeApproved(disputeOf(both, AUDITOR_ID))).record.claim).toBe(NEWER_REF);
+    // The twin: the poster writes the time of its block, and the result is the same.
+    const honest = twoClaims();
+    postEscrowAt(honest, NOW - 55 * 60_000);
+    expect(filedOf(await challengeApproved(disputeOf(honest, AUDITOR_ID))).record.claim).toBe(CLAIM_REF);
   }, SLOW);
 
   const NOT_ESCROWS: Array<[string, (ledger: LedgerProvider) => void, string]> = [
@@ -981,14 +1009,12 @@ describe('the start of a job is the time of the Post that the datum of its escro
     ['an output at the escrow script with a datum that is not an escrow datum', (ledger) => postEscrowAt(ledger, JOB_BEGAN_AT, false, { datum: 'd8799f01ff' }), 'holds no escrow datum'],
     ['an output at the escrow script with no datum', (ledger) => postEscrowAt(ledger, JOB_BEGAN_AT, false, { datum: undefined }), 'holds no escrow datum'],
     ['an output that holds less than its datum owes', (ledger) => postEscrowAt(ledger, JOB_BEGAN_AT, false, { assets: { lovelace: 1_000_000n } }), 'holds less than its escrow datum owes'],
-    ['a time of the Post that a number cannot hold', (ledger) => postEscrowAt(ledger, 2 ** 60), 'not a time in POSIX milliseconds'],
-    ['a time of the Post of 0', (ledger) => postEscrowAt(ledger, 0), 'not a time in POSIX milliseconds'],
   ];
 
   it.each(NOT_ESCROWS)('says not_escrow for %s, and the dispute says bad_shape and files nothing', async (_name, set, why) => {
     const ledger = twoClaims();
     set(ledger);
-    const result = await realPort(ledger, AUDITOR_ID, NOW).readEscrowPostedAt(ESCROW);
+    const result = await realPort(ledger, AUDITOR_ID, NOW).readEscrowJob(ESCROW);
     expect(result).toMatchObject({ ok: false, code: 'not_escrow' });
     if (!result.ok) expect(result.detail).toContain(why);
     const refused = await challengeOrder(disputeOf(ledger, AUDITOR_ID));
@@ -999,13 +1025,13 @@ describe('the start of a job is the time of the Post that the datum of its escro
   it('says that an identity-marketplace escrow is no escrow output when the port has no identity deployment, and reads an escrow of the legacy layout', async () => {
     const ledger = ledgerWorld();
     const port = realPort(ledger, AUDITOR_ID, NOW, { identity_deployment: null });
-    const refused = await port.readEscrowPostedAt(ESCROW);
+    const refused = await port.readEscrowJob(ESCROW);
     expect(refused).toMatchObject({ ok: false, code: 'not_escrow' });
     if (!refused.ok) expect(refused.detail).toContain('no identity deployment');
     // The twin: an escrow of the legacy layout, at the legacy escrow address.
     const { agent_id: _agent, refund: _refund, ...legacy } = identityEscrow(JOB_BEGAN_AT);
     postEscrowAt(ledger, JOB_BEGAN_AT, false, { address: ESCROW_ADDRESS, datum: encodeEscrowDatum(legacy) });
-    expect(await port.readEscrowPostedAt(ESCROW)).toEqual({ ok: true, value: { posted_at: JOB_BEGAN_AT } });
+    expect(await port.readEscrowJob(ESCROW)).toEqual({ ok: true, value: { block_time_ms: JOB_BEGAN_AT } });
   }, SLOW);
 
   /** The fake Koios of the ledger, with the answer of the route `utxo_info` changed by `change`. Any other route is as it is. */
@@ -1025,6 +1051,12 @@ describe('the start of a job is the time of the Post that the datum of its escro
     ['an answer that is not a list', (ledger) => bendingInfo(ledger, () => new Response('{"rows":[]}', { status: 200 }))],
     ['a row with no spent status', (ledger) => bendingInfo(ledger, rowsWith(({ is_spent: _spent, ...row }) => row))],
     ['a row with no value', (ledger) => bendingInfo(ledger, rowsWith(({ value: _value, ...row }) => row))],
+    ['a row with no time of the block', (ledger) => bendingInfo(ledger, rowsWith(({ block_time: _time, ...row }) => row))],
+    ['a row with a time of the block that is a text', (ledger) => bendingInfo(ledger, rowsWith((row) => ({ ...row, block_time: String(row.block_time) })))],
+    ['a row with a time of the block that is empty', (ledger) => bendingInfo(ledger, rowsWith((row) => ({ ...row, block_time: null })))],
+    ['a row with a time of the block of 0', (ledger) => bendingInfo(ledger, rowsWith((row) => ({ ...row, block_time: 0 })))],
+    ['a row with a time of the block that is not a whole number', (ledger) => bendingInfo(ledger, rowsWith((row) => ({ ...row, block_time: 1.5 })))],
+    ['a row with a time of the block that a number cannot hold in milliseconds', (ledger) => bendingInfo(ledger, rowsWith((row) => ({ ...row, block_time: 2 ** 53 })))],
     ['a request that fails', () => (async () => { throw new TypeError('fetch failed'); }) as unknown as typeof fetch],
   ];
 
@@ -1034,7 +1066,7 @@ describe('the start of a job is the time of the Post that the datum of its escro
     const honest = koiosOf(ledger);
     const failing = bend(ledger);
     const fetchImpl = (async (url: string, init?: RequestInit) => (String(url).includes('utxo_info') ? failing(url as never, init) : honest(url as never, init))) as unknown as typeof fetch;
-    await expect(realPort(ledger, AUDITOR_ID, NOW, { fetch: fetchImpl }).readEscrowPostedAt(ESCROW)).rejects.toThrow();
+    await expect(realPort(ledger, AUDITOR_ID, NOW, { fetch: fetchImpl }).readEscrowJob(ESCROW)).rejects.toThrow();
     const result = await challengeOrder(disputeOf(ledger, AUDITOR_ID, NOW, { port: { fetch: fetchImpl } }));
     expect(result).toMatchObject({ ok: false, code: 'chain_unavailable' });
     expect(ledger.accepted).toEqual([]);

@@ -270,8 +270,8 @@ describe('a claim is a target only when it covers the job', () => {
     const { port, dispute } = rig();
     port.claims = [claimView(), newer({ stake_lovelace: 500_000_000n })];
     expect(await dispute.findOpenClaim(OTHER, SCOPE)).toMatchObject({ ok: true, value: { ref: REF_A } });
-    // The claim was submitted an hour before the clock, and the escrow of the job was posted three hours before it.
-    port.readEscrowAnswer = () => ({ ok: true, value: { posted_at: NOW - 3 * HOUR } });
+    // The claim was submitted an hour before the clock, and the block of the escrow output of the job was made three hours before it.
+    port.readEscrowAnswer = () => ({ ok: true, value: { block_time_ms: NOW - 3 * HOUR } });
     expect(await dispute.findOpenClaim(OTHER, SCOPE)).toMatchObject({ ok: false, code: NO_OPEN_CLAIM });
     for (const bad of [
       null, 'zq9', {}, JOB, { capability_id: CAPABILITY, statement_text: STATEMENT_S1, escrow_ref: ESCROW, job_began_at: JOB_BEGAN_AT }, { ...SCOPE, extra: 1 }, { ...SCOPE, escrow_ref: 'zq9' },
@@ -347,17 +347,17 @@ describe('a claim is a target only when its statement S1 is the statement that t
   });
 });
 
-describe('the job began when its escrow was posted, and the chain says when', () => {
-  const posted = (postedAt: number) => ({ ok: true, value: { posted_at: postedAt } }) as const;
+describe('the job began when the block of its escrow output was made, and the chain says when', () => {
+  const began = (blockTime: number) => ({ ok: true, value: { block_time_ms: blockTime } }) as const;
 
-  it('takes a claim that was submitted before the time of the Post, and leaves out a claim that was submitted at it or after it: the port gives the time', async () => {
+  it('takes a claim that was submitted before the start of the job, and leaves out a claim that was submitted at it or after it: the port gives the start', async () => {
     // The claim of the samples was submitted an hour before the clock.
-    for (const [postedAt, filed] of [[NOW - HOUR + 1, true], [NOW - HOUR, false], [NOW - 2 * HOUR, false], [NOW, true]] as const) {
+    for (const [start, filed] of [[NOW - HOUR + 1, true], [NOW - HOUR, false], [NOW - 2 * HOUR, false], [NOW, true]] as const) {
       const rigged = rig();
       rigged.port.claims = [claimView()];
-      rigged.port.readEscrowAnswer = () => posted(postedAt);
+      rigged.port.readEscrowAnswer = () => began(start);
       const result = await rigged.dispute.challengeDelivery(delivery());
-      expect(result.ok, String(postedAt)).toBe(filed);
+      expect(result.ok, String(start)).toBe(filed);
       if (!result.ok) expect(result.detail).toBe(counted(1, [0, 1, 0, 0, 0, 0, 0]));
     }
   });
@@ -384,21 +384,22 @@ describe('the job began when its escrow was posted, and the chain says when', ()
     expect(rigged.port.published).toEqual([]);
     expect(await rigged.dispute.findOpenClaim(OTHER, SCOPE)).toMatchObject({ ok: false, code: 'bad_shape' });
     // The twin: the output is an escrow output, and the same job is filed.
-    rigged.port.readEscrowAnswer = () => posted(JOB_BEGAN_AT);
+    rigged.port.readEscrowAnswer = () => began(JOB_BEGAN_AT);
     expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
   });
 
-  it('refuses an escrow that was posted after the clock, because its time of the Post cannot be right, and takes one that was posted at the clock', async () => {
+  it('says chain_unavailable, and publishes nothing, for a block that is dated after the clock, and takes a block that is dated at the clock', async () => {
     const rigged = rig();
     rigged.port.claims = [claimView()];
-    for (const postedAt of [NOW + 1, NOW + 24 * HOUR]) {
-      rigged.port.readEscrowAnswer = () => posted(postedAt);
+    for (const start of [NOW + 1, NOW + 24 * HOUR]) {
+      rigged.port.readEscrowAnswer = () => began(start);
       const result = await rigged.dispute.challengeDelivery(delivery());
-      expectNotFiled(result, 'bad_shape');
-      expect(result.detail).toContain('escrow_ref');
-      expect(rigged.port.published, String(postedAt)).toEqual([]);
+      expectNotFiled(result, 'chain_unavailable');
+      expect(result.detail).toContain('dated after the clock');
+      expect(rigged.port.published, String(start)).toEqual([]);
+      expect(await rigged.dispute.findOpenClaim(OTHER, SCOPE), String(start)).toMatchObject({ ok: false, code: 'chain_unavailable' });
     }
-    rigged.port.readEscrowAnswer = () => posted(NOW);
+    rigged.port.readEscrowAnswer = () => began(NOW);
     expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
   });
 
@@ -409,9 +410,10 @@ describe('the job began when its escrow was posted, and the chain says when', ()
       ['a text', 'text'],
       ['a result with no value', { ok: true }],
       ['a value with no time', { ok: true, value: {} }],
-      ['a time that is a text', { ok: true, value: { posted_at: String(JOB_BEGAN_AT) } }],
-      ['a time of 0', posted(0)],
-      ['a time that is not a whole number', posted(JOB_BEGAN_AT + 0.5)],
+      ['the time of the Post of the datum and no time of the block', { ok: true, value: { posted_at: JOB_BEGAN_AT } }],
+      ['a time that is a text', { ok: true, value: { block_time_ms: String(JOB_BEGAN_AT) } }],
+      ['a time of 0', began(0)],
+      ['a time that is not a whole number', began(JOB_BEGAN_AT + 0.5)],
       ['a refusal with another code', { ok: false, code: 'weird', detail: 'x' }],
       ['a refusal with no detail', { ok: false, code: 'not_escrow' }],
     ];
@@ -424,7 +426,7 @@ describe('the job began when its escrow was posted, and the chain says when', ()
       expect(result.detail, name).not.toContain('secret-key');
       expect(rigged.port.published, name).toEqual([]);
       expect(await rigged.dispute.findOpenClaim(OTHER, SCOPE), name).toMatchObject({ ok: false, code: 'chain_unavailable' });
-      rigged.port.readEscrowAnswer = () => posted(JOB_BEGAN_AT);
+      rigged.port.readEscrowAnswer = () => began(JOB_BEGAN_AT);
       expect((await rigged.dispute.challengeDelivery(delivery())).ok, name).toBe(true);
     }
   });
@@ -433,7 +435,7 @@ describe('the job began when its escrow was posted, and the chain says when', ()
     const fire = deferred<void>();
     const rigged = rig({ read_timeout_ms: 5_000 }, { sleep: () => fire.promise });
     rigged.port.claims = [claimView()];
-    rigged.port.readEscrowPostedAt = () => {
+    rigged.port.readEscrowJob = () => {
       fire.resolve(undefined);
       return new Promise<never>(() => undefined);
     };

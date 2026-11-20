@@ -3,7 +3,7 @@
 // scripts, and Lucid runs them on every build. This provider adds what the fixture node lacks: it takes a signed transaction, checks that the required signers signed it, removes the outputs that the
 // transaction spends, adds the outputs that it makes, and keeps the document that it carries. A transaction is confirmed when the provider has taken it, unless a test says that it is not.
 // `koiosOf` is a fake Koios over the same ledger: it lists the outputs of a payment credential, at any address, it gives the metadata of a document, and it describes the outputs by reference, spent or not.
-// The world holds the escrow of the job of the samples (`jobEscrow`), an output of the identity layout that the real port reads for the time of the Post.
+// The world holds the escrow of the job of the samples (`jobEscrow`), an output of the identity layout that the real port reads for the time of its block: the fake Koios gives `block_time` for each output.
 import { CML, coreToTxOutput, getAddressDetails } from '@lucid-evolution/lucid';
 import type { Address, Credential, OutRef, UTxO } from '@lucid-evolution/lucid';
 import { documentUri, rawHexToBech32, signTransaction } from '@vsa/buyer-core';
@@ -23,6 +23,9 @@ export { AUDITOR_ID, CLAIMER_ID, JURY_REF_UTXO, MODULE1, WALLET, WALLET_ADDRESS 
 const DOCUMENT_LABEL = 22084n;
 
 const refOf = (utxo: { txHash: string; outputIndex: number }): string => `${utxo.txHash}#${utxo.outputIndex}`;
+
+/** The hash of the transaction of the escrow output of the job. */
+const ESCROW_TX = ESCROW.split('#')[0]!;
 
 /** The metadata of a document, as label 22084 holds it. */
 export interface DocumentMetadata {
@@ -57,6 +60,8 @@ export class LedgerProvider extends FixtureProvider {
   readonly koiosSpent: UTxO[] = [];
   /** Transactions that the fake Koios does not have yet: it is behind. Its lists, its metadata and its output info leave their outputs and their documents out. */
   readonly koiosBehind = new Set<string>();
+  /** The time of the block of a transaction, in seconds, by the hash of the transaction. The fake Koios gives it as `block_time` for each output that the transaction made. A transaction with no time here has rows with no `block_time`. */
+  readonly blockTimes = new Map<string, number>();
   /** Transactions that the fake Koios has and that carry no document, with the CBOR that `tx_cbor` gives for each, or null for a transaction of which it keeps no CBOR. */
   readonly bare = new Map<string, string | null>();
   #documentCount = 0;
@@ -155,17 +160,22 @@ export function jobEscrow(postedAt = JOB_BEGAN_AT, over: Partial<UTxO> = {}): UT
   return { ...escrowUtxo(txHash, identityEscrow(postedAt)), outputIndex: Number(index), ...over };
 }
 
-/** Puts the escrow of the job into the ledger as the Post made it (live), or as the settlement left it (spent: only the output info of the fake Koios gives it), in the place of the escrow that the ledger has. */
-export function postEscrowAt(ledger: LedgerProvider, postedAt: number, spent = false, over: Partial<UTxO> = {}): void {
+/**
+ * Puts the escrow of the job into the ledger as the Post made it (live), or as the settlement left it (spent: only the output info of the fake Koios gives it), in the place of the escrow that the ledger has. `at` is the time of
+ * the block of its transaction, and the datum says the same time as its member `posted_at`, as a poster that tells the truth writes it. A test that wants another `posted_at` gives its own datum in `over`.
+ */
+export function postEscrowAt(ledger: LedgerProvider, at: number, spent = false, over: Partial<UTxO> = {}): void {
   const others = (utxo: UTxO): boolean => refOf(utxo) !== ESCROW;
   ledger.live = ledger.live.filter(others);
   ledger.koiosSpent.splice(0, ledger.koiosSpent.length, ...ledger.koiosSpent.filter(others));
-  (spent ? ledger.koiosSpent : ledger.live).push(jobEscrow(postedAt, over));
+  ledger.blockTimes.set(ESCROW_TX, Math.floor(at / 1000));
+  (spent ? ledger.koiosSpent : ledger.live).push(jobEscrow(at, over));
 }
 
 /** A node with the wallet, the Module-1 outputs, the records of the claimer and the auditor, the escrow of the job, and `extra`: outputs, or a function that makes them with the ledger in hand (a claim needs its document on the ledger). */
 export function ledgerWorld(extra: UTxO[] | ((ledger: LedgerProvider) => UTxO[]) = [], records: UTxO[] = RECORDS): LedgerProvider {
   const ledger = new LedgerProvider([...WALLET_UTXOS, ...MODULE1_UTXOS, JURY_REF_UTXO, ...records, jobEscrow()]);
+  ledger.blockTimes.set(ESCROW_TX, Math.floor(JOB_BEGAN_AT / 1000));
   ledger.live.push(...(typeof extra === 'function' ? extra(ledger) : extra));
   return ledger;
 }
@@ -183,12 +193,12 @@ export function kitClaim(ledger: LedgerProvider, token: string, overrides: Parti
 /** The payment credential of an address, in hex. */
 const paymentCredentialOf = (address: string): string | undefined => getAddressDetails(address).paymentCredential?.hash;
 
-/** A Koios row of an output, as `credential_utxos` and `utxo_info` show it. `spent` is what the row says about the output. */
-function koiosRow(utxo: UTxO, spent = false): Record<string, unknown> {
+/** A Koios row of an output, as `credential_utxos` and `utxo_info` show it. `spent` is what the row says about the output, and `blockTime` the time of the block of its transaction in seconds, or undefined for a row with none. */
+function koiosRow(utxo: UTxO, spent = false, blockTime?: number): Record<string, unknown> {
   const tokens = Object.entries(utxo.assets).filter(([unit]) => unit !== 'lovelace');
   return {
     tx_hash: utxo.txHash, tx_index: utxo.outputIndex, address: utxo.address, value: String(utxo.assets.lovelace), payment_cred: paymentCredentialOf(utxo.address), datum_hash: null,
-    inline_datum: utxo.datum ? { bytes: utxo.datum } : null, reference_script: null, is_spent: spent,
+    inline_datum: utxo.datum ? { bytes: utxo.datum } : null, reference_script: null, is_spent: spent, ...(blockTime === undefined ? {} : { block_time: blockTime }),
     asset_list: tokens.map(([unit, quantity]) => ({ policy_id: unit.slice(0, 56), asset_name: unit.slice(56), quantity: String(quantity), decimals: 0 })),
   };
 }
@@ -217,7 +227,7 @@ export function koiosOf(ledger: LedgerProvider): typeof fetch {
       rows = [...rows].sort((a, b) => (a.txHash < b.txHash ? -1 : a.txHash > b.txHash ? 1 : a.outputIndex - b.outputIndex));
       const offset = Number(address.searchParams.get('offset') ?? 0);
       const limit = Number(address.searchParams.get('limit') ?? 1000);
-      return answer(rows.slice(offset, offset + limit).map((utxo) => koiosRow(utxo)));
+      return answer(rows.slice(offset, offset + limit).map((utxo) => koiosRow(utxo, false, ledger.blockTimes.get(utxo.txHash))));
     }
     if (route === 'tx_metadata') {
       const known = (body._tx_hashes ?? []).filter((hash) => !ledger.koiosBehind.has(hash));
@@ -229,7 +239,10 @@ export function koiosOf(ledger: LedgerProvider): typeof fetch {
     if (route === 'utxo_info') {
       const wanted = new Set(body._utxo_refs ?? []);
       const asked = (utxo: UTxO): boolean => wanted.has(refOf(utxo)) && !ledger.koiosBehind.has(utxo.txHash);
-      return answer([...[...ledger.live, ...ledger.koiosOnly].filter(asked).map((utxo) => koiosRow(utxo)), ...ledger.koiosSpent.filter(asked).map((utxo) => koiosRow(utxo, true))]);
+      return answer([
+        ...[...ledger.live, ...ledger.koiosOnly].filter(asked).map((utxo) => koiosRow(utxo, false, ledger.blockTimes.get(utxo.txHash))),
+        ...ledger.koiosSpent.filter(asked).map((utxo) => koiosRow(utxo, true, ledger.blockTimes.get(utxo.txHash))),
+      ]);
     }
     return new Response('[]', { status: 404 });
   }) as unknown as typeof fetch;

@@ -9,7 +9,7 @@
 //   1. Read the claims. A challenge of this agent for this job that is on chain already is found again, and it is the result. The code never files a second one.
 //   2. Choose the claim. A claim is a target only when ALL hold: its claimer is the other party; its claim document is a claim document of this kit for the capability of the job (it is on chain, its hash
 //      is the hash that the claim holds, and it is the document that `claimDocument` writes for that party and that capability) and its statement S1 is exactly the text of the statement S1 of the manifest
-//      that the job hired; it was submitted before the job began (the time of the Post of its escrow: the chain port reads the datum of the escrow output, and the caller gives no time); it is Open with
+//      that the job hired; it was submitted before the job began (the time of the block of its escrow output: the chain port reads it from the chain, and the caller gives no time); it is Open with
 //      enough window left; and its stake is not above the challenge stake. A claim that is not a target is left out and counted by its reason, so the claimer cannot choose the target or block a challenge with
 //      a claim of its own. Among the targets the one with the latest challenge deadline is chosen, and with the same deadline the one with the lowest claim token. None ends the job with `no_open_claim`.
 //      After a lapsed record `started`, only the claim of the record can be chosen, and it must still be a target. A claim of the record that is spent, is not Open, or has no window left ends the job with
@@ -91,8 +91,9 @@ export interface DisputeDeps {
 /** The job that a claim of the other party must cover to be the target of a challenge. */
 export interface ClaimScope {
   /**
-   * The escrow of the job: its output in any state, spent or not, as the buyer posted it or as a later step made it. A job gets one challenge. The chain port reads the datum of this output, and the time of the
-   * Post in it is the start of the job: a claim that was submitted at or after that time does not cover the job, so it is never the target. The start comes from the chain, and the caller gives none.
+   * The escrow of the job: its output in any state, spent or not. A job gets one challenge. The chain port reads this output, and the time of the block that holds the transaction that made it is the start of the job: a
+   * claim that was submitted at or after that time does not cover the job, so it is never the target. The start comes from the chain, and the caller gives none. Name the output that the Post made: an output that a later
+   * step (Claim or Submit) made is in a later block, and it gives a later start.
    */
   readonly escrow_ref: OutputRef;
   /** The capability that the job hired. The caller knows it from the advert of the job. The target holds a claim document of this kit for this capability. */
@@ -272,14 +273,14 @@ function documentResultOf(value: unknown): Fetched | null {
   return null;
 }
 
-/** The result of a read of the escrow of a job, in its form, or null when the port gave another shape: the time of the Post, or the refusal that the output is no escrow output of the deployment. */
-function escrowPostOf(value: unknown): { readonly kind: 'posted'; readonly posted_at: number } | { readonly kind: 'refused'; readonly detail: string } | null {
+/** The result of a read of the escrow of a job, in its form, or null when the port gave another shape: the start of the job, or the refusal that the output is no escrow output of the deployment. */
+function escrowJobOf(value: unknown): { readonly kind: 'job'; readonly block_time_ms: number } | { readonly kind: 'refused'; readonly detail: string } | null {
   if (typeof value !== 'object' || value === null) return null;
   const v = value as Record<string, unknown>;
   if (v.ok === true) {
     const inner = v.value;
-    const at = typeof inner === 'object' && inner !== null ? (inner as Record<string, unknown>).posted_at : undefined;
-    return typeof at === 'number' && Number.isSafeInteger(at) && at > 0 ? { kind: 'posted', posted_at: at } : null;
+    const at = typeof inner === 'object' && inner !== null ? (inner as Record<string, unknown>).block_time_ms : undefined;
+    return typeof at === 'number' && Number.isSafeInteger(at) && at > 0 ? { kind: 'job', block_time_ms: at } : null;
   }
   return v.ok === false && v.code === 'not_escrow' && typeof v.detail === 'string' ? { kind: 'refused', detail: v.detail } : null;
 }
@@ -545,24 +546,24 @@ export class Dispute {
   }
 
   /**
-   * When the job began: the time of the Post of its escrow, from the datum of the output that `escrow` names. The chain port reads the output, spent or not, and every state of the escrow keeps the time of the
-   * Post. The time comes from the chain and never from the caller, because a wrong start would widen the targets to the claims that were staked after the job. An output that is no escrow output of the
-   * deployment is a refusal of the input (`bad_shape`), and so is a time that is later than `now`: a job cannot begin after the clock. A source that cannot be read, that does not have the output, or that
-   * answers in a wrong shape is `chain_unavailable`.
+   * When the job began: the time of the block that holds the transaction that made the escrow output that `escrow` names. The chain port reads it from the chain, and the caller gives no time. The member `posted_at`
+   * of the datum is not used: the poster writes it and no validator checks it, so a claimer that is also the poster could write a time that makes each of its claims "after the start", and so block each challenge
+   * against itself. An output that is no escrow output of the deployment is a refusal of the input (`bad_shape`). A source that cannot be read, that does not have the output, that gives no time of the block, or that
+   * answers in a wrong shape is `chain_unavailable`. So is a block that is dated after the clock: a job cannot begin after the clock, and the sender of a transaction cannot cause that, so the clock or the source is wrong.
    */
   async #began(escrow: OutputRef, now: number): Promise<ProtocolResult<number, 'bad_shape' | 'chain_unavailable'>> {
-    const read = await bounded(this.#sleep, this.#readTimeout, 'chain_unavailable', 'the escrow of the job', () => this.#port.readEscrowPostedAt(escrow));
+    const read = await bounded(this.#sleep, this.#readTimeout, 'chain_unavailable', 'the escrow of the job', () => this.#port.readEscrowJob(escrow));
     if (!read.ok) return read;
-    const post = escrowPostOf(read.value);
-    if (post === null) return refused('chain_unavailable', 'the escrow of the job cannot be read: the port gave a result of a wrong shape');
-    if (post.kind === 'refused') return refused('bad_shape', `escrow_ref names no escrow output of the deployment: ${describeError(post.detail)}`);
-    if (post.posted_at > now) return refused('bad_shape', 'escrow_ref names an escrow that was posted after the clock, so its time of the Post cannot be right');
-    return accepted(post.posted_at);
+    const job = escrowJobOf(read.value);
+    if (job === null) return refused('chain_unavailable', 'the escrow of the job cannot be read: the port gave a result of a wrong shape');
+    if (job.kind === 'refused') return refused('bad_shape', `escrow_ref names no escrow output of the deployment: ${describeError(job.detail)}`);
+    if (job.block_time_ms > now) return refused('chain_unavailable', 'the block of the escrow output is dated after the clock, so the clock or the source of the chain is wrong');
+    return accepted(job.block_time_ms);
   }
 
   /**
    * The claim that a challenge of `did` names for the job in `scope`. A claim is a target only when ALL hold: it is an Open claim of `did`; it has at least `leastLeft` milliseconds of window left at `now`;
-   * it was submitted before the job began (the time of the Post of its escrow, from the chain); its stake is not above the challenge stake; and its claim document is a claim document of this kit for the
+   * it was submitted before the job began (the time of the block of its escrow output, from the chain); its stake is not above the challenge stake; and its claim document is a claim document of this kit for the
    * capability of the job, with the statement S1 of the job. A claim that is not a target is left out of the choice and counted by its reason: the detail of `no_open_claim` says how many claims were left out
    * for each reason. Among the targets the one with the latest challenge deadline is chosen, and with the same deadline the one with the lowest claim token, so the choice does not depend on the order of a list.
    * The claim documents are read in that order, and the first target ends the search. A document that cannot be read is `chain_unavailable`, and it is never taken for a claim that is not a target. The escrow

@@ -1,6 +1,6 @@
 // packages/usecase-kit/src/dispute/chain.ts
-// The chain port of the dispute code over the Module-1 builders of the buyer code. It reads the claims and the challenges of Module-1, the documents that they name, and the time of the Post of the escrow of a
-// job, and it builds, signs, submits and confirms four kinds of transaction: a document, a claim, a challenge and a withdrawal. The builders are keyless: they take a Lucid instance bound to the wallet address
+// The chain port of the dispute code over the Module-1 builders of the buyer code. It reads the claims and the challenges of Module-1, the documents that they name, and the job of an escrow output (the time of the
+// block that holds its transaction), and it builds, signs, submits and confirms four kinds of transaction: a document, a claim, a challenge and a withdrawal. The builders are keyless: they take a Lucid instance bound to the wallet address
 // and return an unsigned transaction. The signature comes from a function that the caller gives. The code never holds a key: the caller closes the function over the service key.
 //
 // The reads go by the payment credential of the script. Module-1 checks only the payment credential of a claim or a challenge output (SPEC, the data that the jury reads), so a claimer can stake a
@@ -9,10 +9,12 @@
 // a wrong shape from the node is an error, and never "no claim": a claim that was left out for such an answer would let a challenge pass it by. The same holds for Koios: the reader of the buyer code
 // leaves out each row that it cannot read, and takes the rest for the whole list, so the port checks every row of a list first (`wholeRows`), and a row of a wrong shape is an error.
 //
-// The escrow of a job is read from Koios `utxo_info` with `readEscrowOutput` of the buyer code, and not from the node. Koios keeps the datum of a spent output, so the output of any state of the escrow can be named
-// when the job is long done, and one request gives its datum. The reader looks at the one output that it is asked for, so an output that someone locks at the escrow credential cannot change the answer, and it fails
-// closed: an output that is not at the escrow script of the deployment, that holds no escrow datum, or that holds less than its datum owes is no escrow (`not_escrow`). The `tx_info` of the Post is not used: it
-// needs the hash of the Post transaction, and a caller names any output of the escrow. Every other failure of the reader, and an output that Koios does not have, throws.
+// The escrow of a job is read from Koios `utxo_info`, and not from the node. Koios keeps the datum of a spent output, so the output of any state of the escrow can be named when the job is long done. The reader
+// `readEscrowOutput` of the buyer code looks at the one output that it is asked for, so an output that someone locks at the escrow credential cannot change the answer, and it fails closed: an output that is not
+// at the escrow script of the deployment, that holds no escrow datum, or that holds less than its datum owes is no escrow (`not_escrow`). The start of the job is the `block_time` that `utxo_info` gives for the same output:
+// the time of the block that holds the transaction that made it, in seconds. The datum has a time too (`posted_at`), but the poster writes it and no validator checks it, so the port never uses it. The time of the block comes
+// from `utxo_info` and not from `tx_info` of the transaction: one small answer gives it, and `tx_info` gives the whole transaction. Every other failure of the reader, an output that Koios does not have, and a row with no
+// time of the block throw.
 //
 // The checks come before the signature. Each build is compared with the call that asked for it: a challenge or a withdrawal must spend the claim output that the call names, and a challenge must hold
 // the hash and the URI of the evidence of the call. A build that does not match is refused (`not_built`), and nothing is signed. Every transaction needs the signature of the wallet key only.
@@ -31,7 +33,7 @@ import { utf8Hex } from '@vsa/vector-read/identity-codec';
 import { accepted, parseOutputRef, refused } from '../protocol/index.ts';
 import type { Did, OutputRef } from '../protocol/index.ts';
 import type {
-  ChallengeView, ClaimView, DocumentAbsent, DocumentResult, EscrowPostResult, Module1Port, NotAnEscrow, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument, SubmitClaimCall, SubmittedClaim, TxNotBuilt,
+  ChallengeView, ClaimView, DocumentAbsent, DocumentResult, EscrowJobResult, Module1Port, NotAnEscrow, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument, SubmitClaimCall, SubmittedClaim, TxNotBuilt,
   TxNotConfirmed, TxResult, WithdrawClaimCall, WithdrawnClaim,
 } from './ports.ts';
 import { describeError } from './text.ts';
@@ -462,18 +464,22 @@ export function createModule1Port(deps: Module1PortDeps): Module1Port {
       return rows.some((row) => typeof row?.tx_hash === 'string' && row.tx_hash.toLowerCase() === named.txHash && row.tx_index === named.outputIndex);
     },
 
-    async readEscrowPostedAt(ref: OutputRef): Promise<EscrowPostResult> {
-      if (refOf(ref) === null) throw new TypeError('ref must be a transaction hash, a hash sign and an output index');
+    async readEscrowJob(ref: OutputRef): Promise<EscrowJobResult> {
+      const named = refOf(ref);
+      if (named === null) throw new TypeError('ref must be a transaction hash, a hash sign and an output index');
       try {
-        const { datum } = await readEscrowOutput(deps.koios_url, ref, deps.fetch, identityDeployment);
-        // The reader takes a number out of an integer of the datum, and an integer beyond 2^53 loses its digits: a time that is not a whole number of milliseconds above 0 is no time of a Post.
-        if (!Number.isSafeInteger(datum.posted_at) || datum.posted_at < 1) return refused('not_escrow', 'the escrow datum holds a time of the Post that is not a time in POSIX milliseconds');
-        return accepted({ posted_at: datum.posted_at });
+        await readEscrowOutput(deps.koios_url, ref, deps.fetch, identityDeployment);
       } catch (error) {
         const reason = notEscrowOf(error);
         if (reason === null) throw error;
         return reason;
       }
+      const rows = await koiosUtxoInfo(deps.koios_url, [ref], deps.fetch, KOIOS_ANSWER_BYTES);
+      const row = rows.find((candidate) => typeof candidate?.tx_hash === 'string' && candidate.tx_hash.toLowerCase() === named.txHash && candidate.tx_index === named.outputIndex);
+      if (row === undefined) throw new Error('Koios does not have the escrow output');
+      const seconds = row.block_time;
+      if (typeof seconds !== 'number' || !Number.isSafeInteger(seconds) || seconds < 1 || !Number.isSafeInteger(seconds * 1000)) throw new Error('Koios gave no time of the block for the escrow output');
+      return accepted({ block_time_ms: seconds * 1000 });
     },
 
     async publishDocument(call: PublishCall): Promise<TxResult<PublishedDocument>> {

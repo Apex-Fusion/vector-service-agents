@@ -4,7 +4,7 @@ import { documentHash, documentUri } from '@vsa/buyer-core';
 import { canonicalSha256 } from '@vsa/usecase-kit/protocol';
 import { Dispute, claimDocument, evidenceDocument } from '@vsa/usecase-kit/dispute';
 import type {
-  ChallengeView, ClaimView, DisputeJournal, DisputeSettings, DocumentAbsent, DocumentResult, EscrowPostResult, Module1Port, NotAnEscrow, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument,
+  ChallengeView, ClaimView, DisputeJournal, DisputeSettings, DocumentAbsent, DocumentResult, EscrowJobResult, Module1Port, NotAnEscrow, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument,
   ReadDocument, ServiceQueue, SubmittedClaim, SubmitClaimCall, TxResult, WithdrawClaimCall, WithdrawnClaim,
 } from '@vsa/usecase-kit/dispute';
 
@@ -101,7 +101,7 @@ export const STATEMENT_S1 = ORDER_DESK_CLAIM.statements[0].text;
 /** The job that the claims of the samples cover: the capability that they are for, and the statement S1 of their claim document. A challenge adds the escrow of the job. */
 export const JOB = { capability_id: CAPABILITY, statement_text: STATEMENT_S1 } as const;
 
-/** The whole scope of the job of the samples, for a lookup: its escrow, its capability and its statement. The scripted port gives `JOB_BEGAN_AT` as the time of the Post of each escrow. */
+/** The whole scope of the job of the samples, for a lookup: its escrow, its capability and its statement. The scripted port gives `JOB_BEGAN_AT` as the start of the job of each escrow. */
 export const SCOPE = { escrow_ref: ESCROW, ...JOB } as const;
 
 export const PARTIES = { claim: REF_A, claim_token: TOKEN_A, against_did: OTHER, by_did: ME, escrow_ref: ESCROW, statement_text: STATEMENT_S1 } as const;
@@ -194,8 +194,8 @@ export class ScriptedPort implements Module1Port {
   };
   /** What `isIndexed` answers: the source of the documents has each claim, unless a test says that it is behind or that it fails. */
   isIndexedAnswer: (ref: string) => boolean | Error = () => true;
-  /** What `readEscrowPostedAt` answers: the time of the Post, the refusal that the output is no escrow output, or an error for a source that fails. The default is `JOB_BEGAN_AT` for each escrow. */
-  readEscrowAnswer: (ref: string) => EscrowPostResult | Error = () => ({ ok: true, value: { posted_at: JOB_BEGAN_AT } });
+  /** What `readEscrowJob` answers: the job of the escrow, the refusal that the output is no escrow output, or an error for a source that fails. The default is the start `JOB_BEGAN_AT` for each escrow. */
+  readEscrowAnswer: (ref: string) => EscrowJobResult | Error = () => ({ ok: true, value: { block_time_ms: JOB_BEGAN_AT } });
   publishAnswer: (call: PublishCall) => Answer<PublishedDocument> = (call) => ok({ tx_hash: EVIDENCE_TX, uri: documentUri(EVIDENCE_TX), document_hash: documentHash(call.bytes), fee_lovelace: 200_000n });
   submitClaimAnswer: (call: SubmitClaimCall) => Answer<SubmittedClaim> = (call) =>
     ok({ tx_hash: CHALLENGE_TX, claim: REF_C, claim_token: TOKEN_C, stake_lovelace: call.stake_lovelace, submitted_at: NOW, challenge_window_ms: call.challenge_window_ms, fee_lovelace: 500_000n });
@@ -260,7 +260,7 @@ export class ScriptedPort implements Module1Port {
     return answer;
   }
 
-  async readEscrowPostedAt(ref: string): Promise<EscrowPostResult> {
+  async readEscrowJob(ref: string): Promise<EscrowJobResult> {
     this.events.push(`readEscrow ${ref}`);
     const answer = this.readEscrowAnswer(ref);
     if (answer instanceof Error) throw answer;
