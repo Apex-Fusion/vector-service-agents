@@ -92,5 +92,11 @@ export type ApprovalRefused = ApprovalRefusedByCheck | ApprovalDigestMismatch;
 
 export type ApprovalResult = ApprovalAccepted | ApprovalRefused;
 
-/** The check of an approval. A counterparty makes it before it claims a job, and the mock system of the third use case makes it on a ranking. */
+/**
+ * The check of an approval. A counterparty makes it before it claims a job, and the mock system of the third use case makes it on a ranking.
+ *
+ * A check can throw when it cannot read a source, such as the ledger or the gateway. A throw is not an answer. A caller treats it as "not available" (503): it is never a pass, and it is never a refusal of
+ * a rule. The checks folder throws `CheckUnavailableError` in this case, and the mock service answers 503 `approval_unavailable`. A check that answers with `ok: false` is a refusal of a rule, and the
+ * caller gives its code.
+ */
 export type ApprovalCheck = (input: ApprovalInput) => Promise<ApprovalResult>;
