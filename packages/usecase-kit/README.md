@@ -18,9 +18,8 @@ The package has no root entry. Each folder of `src/` is one part of the code and
 | `src/access` | `@vsa/usecase-kit/access` | The credentials that an agent needs for a call to a business system (tokens and SVIDs), the typed result of a call, and the sub-delegation of a subagent. |
 | `src/decision` | `@vsa/usecase-kit/decision` | The decisions that an agent buys from a model. One decision is one hire, with limits that the caller must give, and no second try. |
 | `src/buyer` | `@vsa/usecase-kit/buyer` | The flow of a buyer-side agent: it reads the authority of a request, finds the vault, hires the counterparty, and makes the results of the protocol. |
-| `src/dispute` | `@vsa/usecase-kit/dispute` | The dispute path of an agent: the claim of a run, the documents for a juror, and the challenge. |
 
-Each folder has a section below, except `buyer` and `dispute`. They have a row only.
+Each folder has a section below, except `buyer`. It has a row only.
 
 ## How a new folder becomes a subpath
 
