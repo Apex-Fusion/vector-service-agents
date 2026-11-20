@@ -6,7 +6,6 @@
 //   any other value              the start stops with an error that names the variable and the allowed values
 //
 // The value is fixed for the life of the process: the reader returns a frozen switch, and nothing in this folder reads the setting a second time.
-import { shown } from '@vsa/service-kit';
 import { AGENT_KINDS, FAULT_MODES, accepted, isFaultSetting, refused } from '../protocol/index.ts';
 import type { AgentKind, FaultSetting, ProtocolResult } from '../protocol/index.ts';
 
@@ -37,9 +36,13 @@ function allowedText(kind: AgentKind): string {
   return values.length === 0 ? 'empty' : `empty or ${values.map((value) => JSON.stringify(value)).join(' or ')}`;
 }
 
-/** What a message says about a value that it refuses. A text is shown short and plain, or by its length only, because a secret can stand in the wrong line of a file. */
+/**
+ * What a message says about a value that it refuses. A text is shown when it is short and plain (at most 24 characters, with no run of 20 hex characters), and else by its length only, because a
+ * secret can stand in the wrong line of a file. A value that is not a text is shown by its type. The rule is the rule of `shown` in the service kit; this folder does not import that package, so that
+ * a run script can load it with Node type stripping.
+ */
 export function describeValue(value: unknown): string {
-  if (typeof value === 'string') return shown(value);
+  if (typeof value === 'string') return value.length <= 24 && !/[0-9a-fA-F]{20}/.test(value) ? JSON.stringify(value) : `${value.length} characters`;
   return `a value of type ${value === null ? 'null' : typeof value}`;
 }
 

@@ -92,6 +92,7 @@ describe('parseClaim', () => {
 
   it('refuses the wrong number of statements, a statement that is not an object, and a missing text', () => {
     expect(parseClaim(statements(CLAIM[0], CLAIM[1]))).toMatchObject({ ok: false });
+    expect(parseClaim(statements(...CLAIM, 'A fourth statement.'))).toMatchObject({ ok: false, code: 'bad_shape' });
     expect(parseClaim({ statements: [...CLAIM] })).toMatchObject({ ok: false });
     expect(parseClaim({ statements: [{ id: 'S1' }, { id: 'S2', text: 'b' }, { id: 'S3', text: 'c' }] })).toMatchObject({ ok: false });
     expect(parseClaim({})).toMatchObject({ ok: false });

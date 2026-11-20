@@ -7,7 +7,7 @@
 //   - an environment that the script could not read is refused;
 //   - a value that is not a text is refused, and it is never read as "no fault".
 // The guards look at the settings of the environments. The field `fault_mode` of each result (see `checkFaultMode`) shows what the running process did, so a script checks both.
-import { FAULT_MODES, accepted, checkMembers, isFaultSetting, isPlainObject, readMembers, refused } from '../protocol/index.ts';
+import { FAULT_MODES, accepted, checkMembers, isFaultSetting, readMembers, refused } from '../protocol/index.ts';
 import type { AgentKind, FaultSetting, ProtocolResult } from '../protocol/index.ts';
 import { compareDetail, compareSettings } from './compare.ts';
 import type { FaultCompareRefusal } from './compare.ts';
@@ -46,7 +46,7 @@ const label = (name: unknown): string => JSON.stringify(String(name).slice(0, 60
 interface Entry {
   readonly service: string;
   readonly kind: AgentKind;
-  readonly env: Readonly<Record<string, unknown>> | null;
+  readonly env: object | null;
 }
 
 /** The services of a run: a list that is not empty, with a name, a kind of agent and an environment in each entry, and no name twice. */
@@ -63,7 +63,7 @@ function readServices(seen: unknown): ProtocolResult<readonly Entry[], 'bad_inpu
     if (typeof service !== 'string' || service === '') return refused('bad_input', `services[${index}].service must be the name of a service`);
     if (names.has(service)) return refused('bad_input', `the service ${label(service)} is in the list twice`);
     if (!isAgentKind(kind)) return refused('bad_input', `the service ${label(service)} has a kind that is not a kind of agent`);
-    if (env !== null && !isPlainObject(env)) return refused('bad_input', `the environment of the service ${label(service)} must be an object, or null when it could not be read`);
+    if (env !== null && (typeof env !== 'object' || Array.isArray(env))) return refused('bad_input', `the environment of the service ${label(service)} must be an object, or null when it could not be read`);
     names.add(service);
     entries.push({ service, kind, env });
   }
@@ -88,15 +88,25 @@ function readExpected(expected: unknown, entries: readonly Entry[]): ProtocolRes
   return accepted({ service, value });
 }
 
-/** The text of FAULT_MODE in an environment: `undefined` is the empty text, and a value that is not a text is refused. */
+/**
+ * The text of FAULT_MODE in an environment: not set is the empty text, and a value that is not a text is refused. Only the variable of the environment itself counts. A value that the environment
+ * inherits from a prototype, a getter, and an object that cannot be read (a Proxy that throws) are `service_unreadable`: a guard never passes on a value that it cannot read as data. The real
+ * `process.env` of Node has a prototype of its own, so the environment is not required to be a plain object.
+ */
 function settingOf(entry: Entry): ProtocolResult<string, 'service_unreadable' | 'bad_fault_mode'> {
-  if (entry.env === null) return refused('service_unreadable', `the script could not read the environment of the service ${label(entry.service)}`);
-  const env = readMembers(entry.env, 'environment');
-  if (!env.ok) return refused('service_unreadable', `the script could not read the environment of the service ${label(entry.service)}`);
-  const value = env.value[FAULT_MODE_VARIABLE];
-  if (value === undefined) return accepted('');
-  if (typeof value !== 'string') return refused('bad_fault_mode', `${FAULT_MODE_VARIABLE} of the service ${label(entry.service)} must be a text, got ${describeValue(value)}`);
-  return accepted(value);
+  const unreadable = refused('service_unreadable', `the script could not read the environment of the service ${label(entry.service)}`);
+  if (entry.env === null) return unreadable;
+  try {
+    if (!(FAULT_MODE_VARIABLE in entry.env)) return accepted('');
+    const descriptor = Reflect.getOwnPropertyDescriptor(entry.env, FAULT_MODE_VARIABLE);
+    if (descriptor === undefined || !('value' in descriptor)) return unreadable;
+    const value: unknown = descriptor.value;
+    if (value === undefined) return accepted('');
+    if (typeof value !== 'string') return refused('bad_fault_mode', `${FAULT_MODE_VARIABLE} of the service ${label(entry.service)} must be a text, got ${describeValue(value)}`);
+    return accepted(value);
+  } catch {
+    return unreadable;
+  }
 }
 
 /** The shared check. A clean run passes `faultRun` false. A fault run passes `faultRun` true and the expectation, so a missing expectation is a refusal and never a clean run. */
