@@ -194,9 +194,10 @@ function verdictHolds(verdict: unknown): boolean {
 /**
  * `completed` holds only when its parts agree with each other, and not with the word `completed`: the vault paid it (the flow always hires from the Live vault of the delegation, so a hire that the
  * wallet paid is not the hire that the flow asked for), the escrow of the outcome is the escrow of the record and of the receipt, the advert of the outcome and of the record is the advert that the
- * approved document names, the verdict is VERIFIED and each of its eight checks passed, each of the eight members of the verification is the boolean `true`, the receipt is an object with members, its
- * signature is a text that is not empty, and the Accept is confirmed or pending. Anything else is `inconsistent_outcome`, and the step keeps the escrow: a hire that did not verify, or that the wallet
- * paid, is never reported as done. The record of that step says what the hire kit said of the payment: `paid_from_vault` is false when the kit did not say that the vault paid.
+ * approved document names, the receipt is the receipt of this hire (its agent is the counterparty that the document names, and when it names an advert, that advert is the advert of the document), the
+ * verdict is VERIFIED and each of its eight checks passed, each of the eight members of the verification is the boolean `true`, the receipt is an object with members, its signature is a text that is not
+ * empty, and the Accept is confirmed or pending. Anything else is `inconsistent_outcome`, and the step keeps the escrow: a hire that did not verify, or that the wallet paid, is never reported as done. The
+ * record of that step says what the hire kit said of the payment: `paid_from_vault` is false when the kit did not say that the vault paid.
  */
 function completedStep(outcome: Completed, context: StepContext): HireStep {
   const escrow = escrowOf(outcome);
@@ -212,6 +213,8 @@ function completedStep(outcome: Completed, context: StepContext): HireStep {
   const delivery = deliveryOf({ escrowRef: outcome.escrowRef, advertRef: outcome.advertRef, text: outcome.text, record: outcome.record, verdict: outcome.verdict });
   if (delivery === null) return no('the delivery of the hire cannot be written as JSON data, or its receipt has no member, or its signature is empty');
   if (delivery.receipt.escrow_ref !== escrow.escrow_ref) return no('the receipt of the hire is not the receipt of the escrow of the outcome');
+  if (delivery.receipt.agent_did !== context.counterparty_did) return no('the receipt of the hire does not name the counterparty of the approved document as its agent');
+  if (Object.hasOwn(delivery.receipt, 'advert_ref') && delivery.receipt.advert_ref !== context.advert_ref) return no('the receipt of the hire names another advert than the advert that the approved document names');
   if (!verdictHolds(outcome.verdict)) return no('the hire says completed, and its verdict is not VERIFIED with each of the eight checks passed');
   if (!RECEIPT_CHECKS.every((check) => delivery.verification[check] === true)) return no('the hire says completed, and one of the eight checks of its record is not true');
   if (outcome.accepted !== 'confirmed' && outcome.accepted !== 'pending') return no('the hire says completed, and it does not say whether the Accept was seen');

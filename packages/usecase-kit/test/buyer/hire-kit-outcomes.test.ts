@@ -71,6 +71,31 @@ describe('a completed outcome that does not hold together', () => {
     expect(expectKind(await go(twin), 'completed').handoff).toMatchObject({ paid_from_vault: true, accepted: 'confirmed' });
   });
 
+  it('is a failed step and not a pass when the receipt is not the receipt of this hire: it names another agent than the counterparty of the document, no agent, or another advert than the advert of the document', async () => {
+    const receiptOf = (outcome: Completed): Record<string, unknown> => ({ ...outcome.record.receipt });
+    const withReceipt = (outcome: Completed, receipt: Record<string, unknown>): unknown => ({ ...outcome, record: { ...outcome.record, receipt } });
+    const NOT_THIS_HIRE: Array<[string, (outcome: Completed) => unknown]> = [
+      ['another agent', (outcome) => withReceipt(outcome, { ...receiptOf(outcome), agent_did: `did:vector:${'cc'.repeat(32)}` })],
+      ['no agent', (outcome) => withReceipt(outcome, Object.fromEntries(Object.entries(receiptOf(outcome)).filter(([member]) => member !== 'agent_did')))],
+      ['another advert', (outcome) => withReceipt(outcome, { ...receiptOf(outcome), advert_ref: LLM_ADVERT_REF })],
+    ];
+    for (const [name, change] of NOT_THIS_HIRE) {
+      const w = await world();
+      changes(change);
+      const step = expectKind(await go(w), 'failed');
+      expect([step.reason, step.handoff?.accepted, step.handoff?.receipt], name).toStrictEqual([INCONSISTENT_OUTCOME, null, null]);
+      // The money moved: the Pay was made and the Accept was confirmed. The step keeps the escrow, so that the money is not lost from the record.
+      expect(await w.m.chain.escrowState(step.handoff?.escrow_ref ?? ''), name).toBe('spent');
+      expect(settledResult(step, pieces()), name).toMatchObject({ outcome: 'failed', reason: INCONSISTENT_OUTCOME, exit_state: 'Failed' });
+    }
+    // The twins: the receipt that the real hire kit gives, and the same receipt with the advert of the document in it, are completed.
+    for (const change of [(outcome: Completed) => outcome, (outcome: Completed) => withReceipt(outcome, { ...receiptOf(outcome), advert_ref: AGENT_ADVERT_REF })]) {
+      const twin = await world();
+      changes(change);
+      expect(expectKind(await go(twin), 'completed').handoff).toMatchObject({ paid_from_vault: true, accepted: 'confirmed' });
+    }
+  });
+
   it('twin: the outcome that the real hire kit gives is completed', async () => {
     const w = await world();
     changes((outcome) => outcome);

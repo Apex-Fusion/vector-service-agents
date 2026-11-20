@@ -25,6 +25,7 @@ const kitMessage = (words: string): string => `The agent failed the handoff (${w
 const serviceAnswer = (status: number, body: string): string => `service_http_${status}: service returned HTTP ${status}: ${body}`;
 const OTHER_ESCROW = `${'55'.repeat(32)}#0`;
 const OTHER_ADVERT = `${'66'.repeat(32)}#0`;
+const OTHER_DID = `did:vector:${'cc'.repeat(32)}`;
 /** The step and the result of an outcome that does not hold together. */
 const NOT_HOLDING = { step: `failed ${INCONSISTENT_OUTCOME}`, result: `failed:${INCONSISTENT_OUTCOME}:Failed` } as const;
 const CHECKS: FleetVerification['checks'] = {
@@ -34,7 +35,7 @@ const CHECKS: FleetVerification['checks'] = {
 const VERIFIED: FleetVerification = { verdict: 'VERIFIED', checks: CHECKS };
 const ALL_TRUE = Object.fromEntries(RECEIPT_CHECKS.map((check) => [check, true]));
 const record: HireRecord = {
-  capability_id: 'supplychain.order.accept.v1', advert_ref: AGENT_ADVERT_REF, escrow_ref: ESCROW, supplier_pkh: 'ab'.repeat(28), receipt: { escrow_ref: ESCROW, model: 'order-desk-small' },
+  capability_id: 'supplychain.order.accept.v1', advert_ref: AGENT_ADVERT_REF, escrow_ref: ESCROW, supplier_pkh: 'ab'.repeat(28), receipt: { escrow_ref: ESCROW, model: 'order-desk-small', agent_did: COUNTERPARTY_DID },
   receipt_signature: 'cd'.repeat(64), verification: ALL_TRUE, terms: TERMS,
 };
 const delivery: AgentDelivery = { escrowRef: ESCROW, advertRef: AGENT_ADVERT_REF, text: ANSWER, record, verdict: VERIFIED };
@@ -237,6 +238,15 @@ const TABLE: readonly Row[] = [
   { name: 'completed, but the Accept is missing', outcome: { ...completed, accepted: undefined as never }, ...NOT_HOLDING },
   { name: 'completed, but the wallet paid and not the vault', outcome: { ...completed, paidFrom: 'wallet', vaultRef: null }, ...NOT_HOLDING },
   { name: 'completed, but the hire kit does not say who paid', outcome: { ...completed, paidFrom: undefined as never }, ...NOT_HOLDING },
+  {
+    name: 'completed, but the receipt names another agent than the counterparty of the document', outcome: { ...completed, record: { ...record, receipt: { ...record.receipt, agent_did: OTHER_DID } } },
+    ...NOT_HOLDING,
+  },
+  { name: 'completed, but the receipt names no agent', outcome: { ...completed, record: { ...record, receipt: { escrow_ref: ESCROW, model: 'order-desk-small' } } }, ...NOT_HOLDING },
+  {
+    name: 'completed, but the receipt names another advert than the advert of the document', outcome: { ...completed, record: { ...record, receipt: { ...record.receipt, advert_ref: OTHER_ADVERT } } },
+    ...NOT_HOLDING,
+  },
 ];
 
 /** The result of a step as `outcome:reason:exit_state`, or `use case` for a step that the use case finishes. */
@@ -409,6 +419,9 @@ describe('a completed outcome that does not hold together', () => {
     ['the record is missing', { ...completed, record: undefined as never }],
     ['the verdict is missing', { ...completed, verdict: undefined as never }],
     ['the Accept is not confirmed and not pending', { ...completed, accepted: 'no' as never }],
+    ['the receipt names another agent than the counterparty of the document', { ...completed, record: { ...record, receipt: { ...record.receipt, agent_did: OTHER_DID } } }],
+    ['the receipt names no agent', { ...completed, record: { ...record, receipt: { escrow_ref: ESCROW, model: 'order-desk-small' } } }],
+    ['the receipt names another advert than the advert of the document', { ...completed, record: { ...record, receipt: { ...record.receipt, advert_ref: OTHER_ADVERT } } }],
   ];
 
   it('is never completed: each part that disagrees makes a failed step with inconsistent_outcome, and its result is failed', () => {
@@ -445,6 +458,21 @@ describe('a completed outcome that does not hold together', () => {
     const other: Extract<AgentOutcome, { outcome: 'completed' }> = { ...completed, advertRef: OTHER_ADVERT, record: { ...record, advert_ref: OTHER_ADVERT } };
     expect(stepOfOutcome(other, { ...CONTEXT, advert_ref: OTHER_ADVERT }).kind).toBe('completed');
     expect(stepOfOutcome(other, CONTEXT).kind).toBe('failed');
+  });
+
+  it('twin: a receipt that names the counterparty of the document is completed, with no advert in it and with the advert of the document in it; a receipt that names another counterparty or another advert is failed', () => {
+    const withReceipt = (receipt: Record<string, unknown>): Extract<AgentOutcome, { outcome: 'completed' }> => ({ ...completed, record: { ...record, receipt: receipt as never } });
+    const receipt = { escrow_ref: ESCROW, model: 'order-desk-small', agent_did: COUNTERPARTY_DID };
+    expect(stepOfOutcome(withReceipt(receipt), CONTEXT).kind).toBe('completed');
+    expect(stepOfOutcome(withReceipt({ ...receipt, advert_ref: AGENT_ADVERT_REF }), CONTEXT).kind).toBe('completed');
+    // The same receipts do not hold for a document that names another counterparty.
+    expect(stepOfOutcome(withReceipt(receipt), { ...CONTEXT, counterparty_did: OTHER_DID }).kind).toBe('failed');
+    expect(stepOfOutcome(withReceipt({ ...receipt, advert_ref: AGENT_ADVERT_REF }), { ...CONTEXT, counterparty_did: OTHER_DID }).kind).toBe('failed');
+    // The advert of the receipt is read against the advert of the document: the outcome and the record name that advert, and the receipt names it or another one.
+    const other = { ...completed, advertRef: OTHER_ADVERT, record: { ...record, advert_ref: OTHER_ADVERT } };
+    const onOther = (advert: string): Extract<AgentOutcome, { outcome: 'completed' }> => ({ ...other, record: { ...other.record, receipt: { ...record.receipt, advert_ref: advert } as never } });
+    expect(stepOfOutcome(onOther(OTHER_ADVERT), { ...CONTEXT, advert_ref: OTHER_ADVERT }).kind).toBe('completed');
+    expect(stepOfOutcome(onOther(AGENT_ADVERT_REF), { ...CONTEXT, advert_ref: OTHER_ADVERT }).kind).toBe('failed');
   });
 });
 
