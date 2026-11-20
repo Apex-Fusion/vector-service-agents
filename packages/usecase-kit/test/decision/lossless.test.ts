@@ -41,6 +41,9 @@ describe('losses: keys', () => {
     ['a list of lists of objects', '[[{"a":1}],[{"a":1}]]'],
     ['the same key after the object closed and another opened', '{"a":{"b":1},"c":{"b":2}}'],
     ['white space between the marks', ' {\n  "a" : 1 ,\n  "b" : [ { "a" : 2 } ]\n} '],
+    ['a list of three equal texts', '["a","a","a"]'],
+    ['equal texts in two lists of one object', '{"k":["a","a","a"],"j":["a","a","a"]}'],
+    ['equal texts in a list of lists', '[["x","x","x"],["x","x","x"]]'],
   ])('takes %s', (_name, json) => {
     expect(losses(json)).toBeNull();
   });
