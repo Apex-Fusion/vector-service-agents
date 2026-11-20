@@ -49,8 +49,8 @@ export interface BookingFailure {
   readonly cause: unknown;
   /** The hash of the Accept transaction, as the hire kit gave it to the ledger. `null` when the call holds no hash: the type of the ledger of the hire kit names only the fee. */
   readonly accept_tx_hash: string | null;
-  /** The fee of the Accept transaction in lovelace, as the hire kit gave it to the ledger. */
-  readonly fee_lovelace: bigint;
+  /** The fee of the Accept transaction, as the hire kit gave it to the ledger. It is whole lovelace as decimal text, as the terms of the hire are, so that the step can be written as JSON. */
+  readonly fee_lovelace: string;
 }
 
 export interface CompletedStep extends PaidStep {

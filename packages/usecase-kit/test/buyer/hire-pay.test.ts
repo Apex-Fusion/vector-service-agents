@@ -122,7 +122,9 @@ describe('a ledger that throws when it books the Accept', () => {
     const made: { txHash: string; feeLovelace: bigint } = await accept.mock.results[0]!.value;
     expect(made.txHash).toMatch(/^[0-9a-f]{64}$/);
     expect(made.feeLovelace).toBeGreaterThan(0n);
-    expect(step.booking_failed).toStrictEqual({ cause: boom, accept_tx_hash: made.txHash, fee_lovelace: made.feeLovelace });
+    expect(step.booking_failed).toStrictEqual({ cause: boom, accept_tx_hash: made.txHash, fee_lovelace: String(made.feeLovelace) });
+    // The fee is decimal text, so the step can be written as JSON.
+    expect(JSON.parse(JSON.stringify(step.booking_failed))).toMatchObject({ accept_tx_hash: made.txHash, fee_lovelace: String(made.feeLovelace) });
     expect(step.booking_failed?.cause).toBe(boom);
     expect(await w.m.chain.escrowState(step.handoff.escrow_ref)).toBe('spent');
     // The hire kit went on after the Accept: its entry in the stranded store is gone, the Post was booked, and the work was sent one time.
@@ -155,7 +157,7 @@ describe('a ledger that throws when it books the Accept', () => {
     expect(got).toHaveLength(1);
     expect(got[0]!.txHash).toMatch(/^[0-9a-f]{64}$/);
     // The step holds the hash and the fee as the ledger got them, and not what the ledger left in the object.
-    expect(step.booking_failed).toMatchObject({ accept_tx_hash: got[0]!.txHash, fee_lovelace: got[0]!.feeLovelace });
+    expect(step.booking_failed).toMatchObject({ accept_tx_hash: got[0]!.txHash, fee_lovelace: String(got[0]!.feeLovelace) });
     expect(got[0]!.feeLovelace).toBeGreaterThan(0n);
   });
 
@@ -170,7 +172,7 @@ describe('a ledger that throws when it books the Accept', () => {
     w.deps.hire.ledger.accepted = () => { throw new Error('the ledger is closed'); };
     const step = expectKind(await go(w), 'completed');
     expect(fee).toBeGreaterThan(0n);
-    expect(step.booking_failed).toMatchObject({ accept_tx_hash: null, fee_lovelace: fee });
+    expect(step.booking_failed).toMatchObject({ accept_tx_hash: null, fee_lovelace: String(fee) });
     expect(step.handoff).toMatchObject({ accepted: 'confirmed' });
   });
 

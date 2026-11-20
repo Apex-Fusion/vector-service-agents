@@ -510,8 +510,8 @@ describe('a delivery that passed the eight checks and cannot be recorded', () =>
 
 describe('a booking that failed', () => {
   const boom = new Error('the ledger is closed');
-  /** What the hire kit gave to the ledger in the call that threw: the hash of the Accept transaction and its fee. */
-  const booking: BookingFailure = { cause: boom, accept_tx_hash: '77'.repeat(32), fee_lovelace: 176_000n };
+  /** What the hire kit gave to the ledger in the call that threw: the hash of the Accept transaction and its fee, as decimal text. */
+  const booking: BookingFailure = { cause: boom, accept_tx_hash: '77'.repeat(32), fee_lovelace: '176000' };
 
   it('is a member of the completed step, which is still completed, and it is null when the booking worked', () => {
     const step = stepOfOutcome(completed, { ...CONTEXT, booking_failed: booking });
