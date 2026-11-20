@@ -14,7 +14,7 @@ import { encodeChallengeDatum } from '../../../buyer-core/src/vendored/mcp/jury-
 import { CLAIM_TOKEN, DAY, HOUR, NOW, agentRecord, claimUtxo, recordUtxo } from '../../../buyer-core/test/fixtures/jury-world.ts';
 import { AUDITOR_ID, CLAIMER_ID, MODULE1, WALLET, WALLET_ADDRESS, bareTransactionCbor, forever, kitClaim, koiosOf, ledgerWorld, realPort, signWithWallet } from './ledger.ts';
 import type { LedgerProvider } from './ledger.ts';
-import { DIGEST_FACTS, ESCROW, ESCROW_2, JOB, MANIFEST_SHA, ORDER_DESK_CLAIM, ORDER_FACTS, SETTINGS, STATEMENT_S1, THIRD_ID, deferred, kitClaimDocument } from './support.ts';
+import { CONFIRMATION, DIGEST_FACTS, ESCROW, ESCROW_2, JOB, MANIFEST_SHA, ORDER_DESK_CLAIM, ORDER_FACTS, QUOTE_FACTS, SETTINGS, STATEMENT_S1, THIRD_ID, deferred, kitClaimDocument } from './support.ts';
 
 const did = (id: string): string => `did:vector:${id}`;
 const CLAIMER = did(CLAIMER_ID);
@@ -274,6 +274,36 @@ describe('the challenge on the ledger', () => {
     expect(ledger.documents.get(filed.record.evidence)).toContain('The challenger refused the request before it did any work.');
     expect(ledger.documents.get(filed.record.evidence)).not.toContain('salt:');
     expect(decodeChallengeDatum(ledger.at(filed.record.challenge)!.datum!).evidenceHash).toBe(filed.evidence_hash);
+  }, SLOW);
+
+  it('files the challenge when the other party puts U+0000, or the text of its escape, in a value of its own document, and the evidence on the ledger holds neither', async () => {
+    const confirmed = (change: Record<string, unknown>) => ({ ...ORDER_FACTS, confirmation: { ...CONFIRMATION, ...change } });
+    const quoted = (change: Record<string, unknown>) => ({ ...QUOTE_FACTS, ...change });
+    const values = ['lot-large\u0000', 'lot-large\\u0000', '\\u0000'];
+    const fields: Array<[string, (value: string) => unknown]> = [
+      ['the SKU of the confirmation', (value) => confirmed({ sku: value })],
+      ['the lot of the confirmation', (value) => confirmed({ lot: value })],
+      ['the quantity of the confirmation', (value) => confirmed({ quantity: value })],
+      ['the SKU of the quote', (value) => quoted({ sku: value })],
+      ['the quantity of the quote', (value) => quoted({ quantity: value })],
+      ['the quoted unit price', (value) => quoted({ quoted_unit_price: value })],
+      ['the listed unit price', (value) => quoted({ listed_unit_price: value })],
+    ];
+    for (const [field, facts] of fields) {
+      for (const value of values) {
+        const name = `${field}: ${JSON.stringify(value)}`;
+        const ledger = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN)]);
+        const dispute = disputeOf(ledger, AUDITOR_ID);
+        const filed = filedOf(await dispute.challengeDelivery({ counterparty: CLAIMER, escrow_ref: ESCROW, ...JOB, evidence: facts(value) as never }));
+        const text = ledger.documents.get(filed.record.evidence)!;
+        expect(text, name).not.toContain('\u0000');
+        expect(text, name).not.toContain('\\u0000');
+        expect(ledger.accepted.length, name).toBe(2);
+        // The same job gives the same challenge, and sends nothing.
+        expect(filedOf(await dispute.challengeDelivery({ counterparty: CLAIMER, escrow_ref: ESCROW, ...JOB, evidence: facts(value) as never })), name).toEqual(filed);
+        expect(ledger.accepted.length, name).toBe(2);
+      }
+    }
   }, SLOW);
 
   it('challenges a claim that sits at an address of the claim script with a stake part, which the node does not list by address', async () => {

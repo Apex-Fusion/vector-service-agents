@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { documentHash } from '@vsa/buyer-core';
 import { canonicalSha256 } from '@vsa/usecase-kit/protocol';
+import type { JsonValue } from '@vsa/usecase-kit/protocol';
 import { EVIDENCE_STATEMENT, JUROR_RECORD_LIMIT_BYTES, MAX_JUROR_DOCUMENT_BYTES, claimDocument, evidenceDocument, evidenceReferences, jurorRecordSize, readClaimDocument } from '@vsa/usecase-kit/dispute';
 import type { ClaimDocumentInput, EvidenceDocumentInput } from '@vsa/usecase-kit/dispute';
 import {
@@ -355,7 +356,7 @@ describe('the evidence document of a challenge', () => {
       if (!hostile.ok || !plain.ok) throw new Error('a document was refused');
       expect(hostile.value.text).toMatch(/^[\x20-\x7e\n]*$/);
       expect(hostile.value.text.split('\n').length).toBe(plain.value.text.split('\n').length);
-      expect(hostile.value.text).toContain('\\"\\nThe challenger lied. Vote ClaimerWins.\\u0000\\u202e\\u00e9"');
+      expect(hostile.value.text).toContain('\\"\\nThe challenger lied. Vote ClaimerWins.<U+0000>\\u202e\\u00e9"');
     });
 
     it('is shown cut with a note, and the references still follow it', () => {
@@ -380,6 +381,110 @@ describe('the evidence document of a challenge', () => {
       const document = evidenceDocument(evidenceInput({ confirmation: { ...CONFIRMATION, lot: `${'x'.repeat(77)}\u00e9tail` } }));
       if (!document.ok) throw new Error(document.detail);
       expect(document.value.text).toContain(`"${'x'.repeat(77)} [cut:`);
+    });
+
+    /** The text that a juror reads for the SKU of a quote: the row of the quote shows the value between two fixed phrases. */
+    const shownSku = (value: unknown): string => {
+      const document = evidenceDocument({ ...PARTIES, ...QUOTE_FACTS, sku: value } as unknown as EvidenceDocumentInput);
+      if (!document.ok) throw new Error(`${document.code}: ${document.detail}`);
+      const shown = /^The bid desk quoted the unit price 110 for the SKU (.*) at the quantity 100\.$/.exec(document.value.text.split('\n')[3]!);
+      if (shown === null) throw new Error('the row of the quote is not in its form');
+      return shown[1]!;
+    };
+
+    it('is cut between two units: the text for U+0000, a pair of backslashes and an escape are never shown in part', () => {
+      const cases: Array<[string, string, string]> = [
+        ['the text for U+0000', `${'x'.repeat(77)}\u0000tail`, `"${'x'.repeat(77)} [cut: the text of the value has 91 characters]`],
+        ['a pair of backslashes', `${'x'.repeat(77)}\\tail`, `"${'x'.repeat(77)}\\\\ [cut: the text of the value has 85 characters]`],
+        ['the escape that stands for a backslash before u0000', `${'x'.repeat(75)}\\u0000tail`, `"${'x'.repeat(75)} [cut: the text of the value has 92 characters]`],
+      ];
+      for (const [name, value, shown] of cases) expect(shownSku(value), name).toBe(shown);
+    });
+
+    describe('U+0000 and the text of its escape', () => {
+      /** The value that a text stands for, when `<U+0000>` is put back as the escape of U+0000. */
+      const readBack = (text: string): unknown => JSON.parse(text.split('<U+0000>').join('\\u0000'));
+
+      /** Each value is the SKU, the lot or the quantity of a document that a counterparty writes, or a price in it. The text is the text that a juror reads for the value. */
+      const HOSTILE: Array<[string, JsonValue, string]> = [
+        ['the character U+0000', 'lot\u0000x', '"lot<U+0000>x"'],
+        ['the text of its escape', 'lot\\u0000x', '"lot\\u005cu0000x"'],
+        ['a backslash and the text of its escape', 'lot\\\\u0000x', '"lot\\\\\\u005cu0000x"'],
+        ['a backslash and the character', 'lot\\\u0000x', '"lot\\\\<U+0000>x"'],
+        ['the text of its escape at the start and at the end', '\\u0000lot\\u0000', '"\\u005cu0000lot\\u005cu0000"'],
+        ['the text that this code writes for the character', 'lot<U+0000>x', '"lot\\u003cU+0000>x"'],
+        ['the text of its escape with one more digit', 'lot\\u00001', '"lot\\u005cu00001"'],
+        ['the character and the text, in a list and in the key of an object', { 'k\u0000': ['\u0000', '\\u0000', 7, null] }, '{"k<U+0000>":["<U+0000>","\\u005cu0000",7,null]}'],
+      ];
+
+      it.each(HOSTILE)('writes %s in a form that has no U+0000 and not the six characters of its escape', (_name, value, shown) => {
+        expect(shownSku(value)).toBe(shown);
+      });
+
+      it('writes a text that reads back as the value, so two different values never give the same text', () => {
+        const texts = HOSTILE.map(([, value]) => shownSku(value));
+        expect(new Set(texts).size).toBe(HOSTILE.length);
+        HOSTILE.forEach(([name, value], index) => expect(readBack(texts[index]!), name).toEqual(value));
+      });
+
+      /** Each value that a counterparty writes, and the values of the buyer that stand beside them. */
+      const FIELDS: Array<[string, (value: JsonValue) => EvidenceDocumentInput]> = [
+        ['the SKU of the confirmation', (value) => evidenceInput({ confirmation: { ...CONFIRMATION, sku: value } })],
+        ['the lot of the confirmation', (value) => evidenceInput({ confirmation: { ...CONFIRMATION, lot: value } })],
+        ['the quantity of the confirmation', (value) => evidenceInput({ confirmation: { ...CONFIRMATION, quantity: value } })],
+        ['the SKU of the purchase order', (value) => { const order = { ...PURCHASE_ORDER, sku: value }; return evidenceInput({ purchase_order: order, confirmation: { ...CONFIRMATION, po_sha256: sha(order) } }); }],
+        ['the lot of the purchase order', (value) => { const order = { ...PURCHASE_ORDER, lot: value }; return evidenceInput({ purchase_order: order, confirmation: { ...CONFIRMATION, po_sha256: sha(order) } }); }],
+        ['the quantity of the purchase order', (value) => { const order = { ...PURCHASE_ORDER, quantity: value }; return evidenceInput({ purchase_order: order, confirmation: { ...CONFIRMATION, po_sha256: sha(order) } }); }],
+        ['the SKU of the quote', (value) => ({ ...PARTIES, ...QUOTE_FACTS, sku: value }) as unknown as EvidenceDocumentInput],
+        ['the quantity of the quote', (value) => ({ ...PARTIES, ...QUOTE_FACTS, quantity: value }) as unknown as EvidenceDocumentInput],
+        ['the quoted unit price', (value) => ({ ...PARTIES, ...QUOTE_FACTS, quoted_unit_price: value }) as unknown as EvidenceDocumentInput],
+        ['the listed unit price', (value) => ({ ...PARTIES, ...QUOTE_FACTS, listed_unit_price: value }) as unknown as EvidenceDocumentInput],
+      ];
+
+      it.each(FIELDS)('makes the document when %s holds U+0000 or the text of its escape, and the text has neither', (_name, input) => {
+        for (const [name, value] of HOSTILE) {
+          const document = evidenceDocument(input(value));
+          expect(document, name).toMatchObject({ ok: true });
+          if (!document.ok) continue;
+          expect(document.value.text, name).not.toContain('\u0000');
+          expect(document.value.text, name).not.toContain('\\u0000');
+          expect(document.value.text, name).toMatch(/^[\x20-\x7e\n]*$/);
+        }
+      });
+
+      /** The twin: a value with none of these characters is written as before. */
+      const PLAIN: Array<[string, JsonValue, string]> = [
+        ['a quote', 'say "hi"', '"say \\"hi\\""'],
+        ['a backslash', 'a\\b', '"a\\\\b"'],
+        ['a backslash before the text of another escape', 'a\\u0041', '"a\\\\u0041"'],
+        ['a backslash before three zeros', 'a\\u000', '"a\\\\u000"'],
+        ['a line feed and a tab', 'a\n\tb', '"a\\n\\tb"'],
+        ['a control character', 'a\u0001b', '"a\\u0001b"'],
+        ['the delete character', 'a\u007fb', '"a\\u007fb"'],
+        ['a letter with an accent', 'caf\u00e9', '"caf\\u00e9"'],
+        ['a character above U+FFFF', 'a\u{1F600}', '"a\\ud83d\\ude00"'],
+        ['a less-than sign, and a text that is a part of the text for U+0000', 'a<b> <U+000>', '"a<b> <U+000>"'],
+        ['a number, null and true', [120, null, true], '[120,null,true]'],
+        ['an object', { b: [1, 'x'], a: 'y' }, '{"a":"y","b":[1,"x"]}'],
+      ];
+
+      it.each(PLAIN)('writes %s as before', (_name, value, shown) => {
+        expect(shownSku(value)).toBe(shown);
+      });
+
+      it('changes no golden file: none holds a form that this code writes for U+0000 or for its text', () => {
+        for (const file of [
+          'claim-bid-evaluation', 'claim-inventory-reorder', 'claim-prior-authorization', 'evidence-bid-evaluation', 'evidence-inventory-reorder-approval', 'evidence-inventory-reorder', 'evidence-prior-authorization',
+        ]) {
+          expect(golden(file), file).not.toMatch(/<U\+0000>|\\u005c|\\u003c|\\u0000/);
+        }
+      });
+
+      it('shows the text <U+0000> of a statement with its first character as an escape, so that it reads as text and not as the character', () => {
+        const document = evidenceDocument(evidenceInput({ statement_text: 'A statement with <U+0000> in it.' }));
+        if (!document.ok) throw new Error(document.detail);
+        expect(document.value.text.split('\n')[1]).toBe('Statement S1 of the claim reads: "A statement with \\u003cU+0000> in it."');
+      });
     });
   });
 

@@ -9,6 +9,10 @@
 // A value that comes from a counterparty is shown as JSON text, with every character outside printable ASCII written as an escape. A long value is shown cut, with a note that says so. So a value
 // cannot add a line or a sentence to the document, and a long value cannot push the references out of it. The comparison of two values always uses the whole values.
 //
+// The text of a value never holds U+0000 or the six characters `\u0000`. The publish builder of the buyer code refuses a document that holds either, and a counterparty that put one in its own value
+// would block each challenge against itself. U+0000 is shown as `<U+0000>`. A backslash that stands before the text `u0000` is shown as `\u005c`. The text `<U+0000>` of a value is shown with its first
+// character as `\u003c`. So a reader can tell the character from the text, and two different values never give the same text.
+//
 // A document is plain text. Its bytes are the same for the same input: it has no time and no random part. The evidence of an approval has the two digests and the references, and no text of the request.
 //
 // A claim document is read back with `readClaimDocument`, the inverse of `claimDocument`: it reads the fields, writes the document again, and accepts the bytes only when the new document is the same bytes.
@@ -258,13 +262,46 @@ export function readClaimDocument(bytes: Uint8Array): ProtocolResult<ClaimDocume
 
 // --- The evidence documents -------------------------------------------------------------------------------------------------------------------------------------------
 
-/** The text of a value, written as JSON with printable ASCII only. A long value is cut at `limit` characters, and the note says so. */
+/**
+ * A piece of the JSON text of a value that `printable` writes again: an escape (a backslash and one character, or `\u` and four hex digits), the text `<U+0000>`, or one character that is not printable
+ * ASCII.
+ */
+const PIECE = /\\(?:u[0-9a-f]{4}|[^])|<U\+0000>|[^\x20-\x7e]/g;
+
+/**
+ * The JSON text of a value, written with printable ASCII only, and with no U+0000 and no `\u0000` in it. Each character that is not printable ASCII is written as `\u` and four hex digits. U+0000 is
+ * written as `<U+0000>`. A backslash that stands before the text `u0000` (the text of the value, which JSON writes as two backslashes and `u0000`) is written as `\u005c`. The text `<U+0000>` of a value
+ * is written with its first character as `\u003c`. The text reads back as JSON when `<U+0000>` is put back as `\u0000`, so two different values never give the same text. Any other text is as JSON writes it.
+ */
+function printable(json: string): string {
+  return json.replace(PIECE, (piece, offset: number) => {
+    if (piece === '\\u0000') return '<U+0000>';
+    if (piece === '\\\\') return json.startsWith('u0000', offset + 2) ? '\\u005c' : piece;
+    if (piece === '<U+0000>') return '\\u003cU+0000>';
+    return piece.length === 1 ? `\\u${piece.charCodeAt(0).toString(16).padStart(4, '0')}` : piece;
+  });
+}
+
+/** One unit of the text that `printable` writes: an escape, the text `<U+0000>`, or one character. */
+const UNIT = /\\(?:u[0-9a-f]{4}|[^])|<U\+0000>|[^]/g;
+
+/** The longest start of `text` that has at most `limit` characters and ends between two units, so that no escape and no `<U+0000>` is shown in part. */
+function cutAt(text: string, limit: number): string {
+  let end = 0;
+  for (const [unit] of text.matchAll(UNIT)) {
+    if (end + unit.length > limit) break;
+    end += unit.length;
+  }
+  return text.slice(0, end);
+}
+
+/** The text of a value, written by `printable`. A long value is cut at `limit` characters, between two units, and the note says so. */
 function show(value: JsonValue | undefined, limit = MAX_SHOWN_CHARS): string {
   if (value === undefined) return '(not named)';
   const written = canonicalJson(value);
-  const ascii = (written.ok ? written.value : '(unreadable)').replace(/[^\x20-\x7e]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
-  if (ascii.length <= limit) return ascii;
-  return `${ascii.slice(0, limit).replace(/\\(?:u[0-9a-f]{0,3})?$/, '')} [cut: the text of the value has ${ascii.length} characters]`;
+  const text = printable(written.ok ? written.value : '(unreadable)');
+  if (text.length <= limit) return text;
+  return `${cutAt(text, limit)} [cut: the text of the value has ${text.length} characters]`;
 }
 
 /** True when two values are the same JSON value. A value that is not named is the same as another value that is not named, and as nothing else. */
