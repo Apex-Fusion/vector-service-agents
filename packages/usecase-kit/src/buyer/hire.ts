@@ -10,13 +10,13 @@
 import { HireInterrupted, HireLane, HirePayUnconfirmed, POLL_INTERVAL_MS, hireAgent } from '@vsa/hire-kit';
 import type { AcceptDecision, AgentDeps, AgentDelivery, AgentErrors, AgentOutcome, AgentRequest, HireFailure, PayingKey } from '@vsa/hire-kit';
 import { HANDOFF_SCHEMA, parseDid, parseOutputRef } from '@vsa/usecase-kit/protocol';
-import type { Did, Handoff, OutputRef, ProtocolResult, RfqMessage } from '@vsa/usecase-kit/protocol';
+import type { Did, Handoff, OutputRef, ProtocolResult, RfqMessage, UseCase } from '@vsa/usecase-kit/protocol';
 import { checkAuthority, delegationAfter } from './authority.ts';
 import { checkLimits } from './limits.ts';
 import type { HireLimits } from './limits.ts';
 import { checkRuntimeBody, checkWirePayload, messageOf, requestText } from './message.ts';
 import type { CounterpartyMessage } from './message.ts';
-import { INCONSISTENT_OUTCOME, deliveryOf, failure, recordOf, stepOfOutcome } from './outcome.ts';
+import { INCONSISTENT_OUTCOME, JOB_LABEL, deliveryOf, failure, recordOf, stepOfOutcome } from './outcome.ts';
 import type { StepContext } from './outcome.ts';
 import type { LedgerReads } from './ports.ts';
 import type { HireStep, InterruptionCause, RefusedCode, RefusedStep, VerifiedDelivery } from './steps.ts';
@@ -122,6 +122,8 @@ const refusal = (code: RefusedCode, detail: string): RefusedStep => ({ kind: 're
 
 interface Prepared {
   readonly message: CounterpartyMessage;
+  /** The use case of the job: a handoff names it, and a request for quotation is the use case of a bid desk. */
+  readonly use_case: UseCase;
   readonly counterparty: Did;
   readonly advert: OutputRef;
   readonly capability: string;
@@ -157,7 +159,8 @@ function prepareChecked(input: HireInput): Preparation {
     advert = parseOutputRef(input.advert_ref, 'advert_ref');
     if (!advert.ok) return no('internal', advert.detail);
   }
-  return { ok: true, value: { message: message.value, counterparty: counterparty.value, advert: advert.value, capability: input.capability_id, model: input.model, limits: limits.value, decide: input.decide } };
+  const useCase: UseCase = message.value.schema === HANDOFF_SCHEMA ? message.value.use_case : 'bid-evaluation';
+  return { ok: true, value: { message: message.value, use_case: useCase, counterparty: counterparty.value, advert: advert.value, capability: input.capability_id, model: input.model, limits: limits.value, decide: input.decide } };
 }
 
 /** The input as checked values, or a refusal. A member of the input that cannot be read (a getter that throws) is `internal`, and the error is not repeated: it could hold a part of the settings. */
@@ -216,7 +219,7 @@ function stepOfError(error: unknown, context: StepContext, delivery: VerifiedDel
 export async function hireCounterparty(deps: HireDeps, input: HireInput): Promise<HireStep> {
   const prepared = prepare(input);
   if (!prepared.ok) return prepared.step;
-  const { message, counterparty, advert, capability, model, limits, decide } = prepared.value;
+  const { message, use_case: useCase, counterparty, advert, capability, model, limits, decide } = prepared.value;
   const { key, hire, reads } = deps;
   if (!('payFromVault' in key.chain) || typeof key.chain.payFromVault !== 'function') return refusal('internal', 'the chain of the paying key cannot pay from a vault');
 
@@ -241,7 +244,7 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
     const seen: { delivery: VerifiedDelivery | null } = { delivery: null };
     const request: AgentRequest = {
       selection: { advertRef: advert, capabilityId: capability, ...(model === undefined ? {} : { model }) },
-      payload: text, label: 'the handoff', vaultRef: found.vault_ref,
+      payload: text, label: JOB_LABEL, vaultRef: found.vault_ref,
       maxPriceLovelace: limits.maxPriceLovelace, maxSupplierBondLovelace: limits.maxSupplierBondLovelace, maxBuyerBondLovelace: limits.maxBuyerBondLovelace,
       decide: async (delivered: AgentDelivery): Promise<AcceptDecision> => {
         const forDecision = deliveryOf(delivered);
@@ -257,7 +260,7 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
         return decisionOf(answer);
       },
     };
-    const context = { counterparty_did: counterparty, advert_ref: advert, delegation_after: null };
+    const context = { counterparty_did: counterparty, advert_ref: advert, use_case: useCase, delegation_after: null };
     let outcome: AgentOutcome;
     try {
       outcome = await hireAgent(key, hire, request, ERRORS);
