@@ -248,6 +248,17 @@ describe('the answer of the ledger for the outputs is checked in full', () => {
     expect(h.signed).toEqual([]);
   });
 
+  it('refuses a reference that comes two times in an answer that leaves out another reference: the count of the entries is not the check', async () => {
+    const unknown = { ...agentWallet(DELEG_A, 1), txHash: 'ee'.repeat(32), outputIndex: 5 };
+    const hex = withInput((await build()).hex, unknown);
+    // The ledger has each output of the build and not the unknown one. An answer with the first entry twice has as many entries as the transaction has references.
+    const h = harness({ ledger: answering((found) => [...found, found[0]!]), limits: quick });
+    expect(await h.route.cosign(requestOf(hex))).toMatchObject({ ok: false, code: 'check_unavailable' });
+    expect(h.signed).toEqual([]);
+    // The twin: the answer as the ledger gives it leaves out the unknown output, and the rule refuses the transaction for that.
+    expect(await harness({ ledger: answering((found) => found) }).route.cosign(requestOf(hex))).toMatchObject({ ok: false, code: 'not_a_delegation' });
+  });
+
   const faults: [string, (found: Found) => unknown][] = [
     ['an output that was not asked for', (found) => [...found, { txHash: 'ee'.repeat(32), outputIndex: 0, address: OWN_ADDRESS }]],
     ['an output of the right hash and an index that was not asked for', (found) => [...found, { ...found[0]!, outputIndex: found[0]!.outputIndex + 7 }]],
