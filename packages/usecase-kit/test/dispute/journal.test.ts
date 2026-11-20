@@ -14,7 +14,7 @@ import type { Events, Rig } from './support.ts';
 
 const delivery = (escrow = ESCROW): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: escrow, ...JOB, evidence: ORDER_FACTS });
 const LANDED = { tx_hash: EVIDENCE_TX, uri: documentUri(EVIDENCE_TX), document_hash: evidenceOf().hash };
-const record = (extra: Partial<JobRecord> = {}): JobRecord => ({ step: 'started', against: OTHER, claim: REF_A, claim_token: TOKEN_A, evidence: null, filed: null, ended: null, ...extra });
+const record = (extra: Partial<JobRecord> = {}): JobRecord => ({ step: 'started', escrow: ESCROW, against: OTHER, claim: REF_A, claim_token: TOKEN_A, evidence: null, filed: null, ended: null, ...extra });
 const CHAIN_FILED = {
   record: { claim: REF_A, evidence: EVIDENCE_TX, challenge: `${CHALLENGE_TX}#0` }, claim_token: TOKEN_A, against_did: OTHER, evidence_uri: documentUri(EVIDENCE_TX), evidence_hash: evidenceOf().hash,
   challenge_tx: CHALLENGE_TX, challenge_token: CHALLENGE_TOKEN, stake_lovelace: 50_000_000n, deadline: NOW - 10 * 60_000 + 72 * HOUR, fee_lovelace: null,
@@ -143,7 +143,7 @@ describe('a job with a record gets its recorded state, and nothing is sent a sec
     expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
     // The record of another job does not stop this job.
     const other = new MemoryJournal();
-    await other.put(ESCROW_2, record());
+    await other.put(ESCROW_2, record({ escrow: ESCROW_2 }));
     const rigged = rig({}, { journal: other });
     rigged.port.claims = [claimView()];
     expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
@@ -295,6 +295,8 @@ describe('the journal can fail', () => {
     ['a step that does not exist', { ...record(), step: 'finished' }],
     ['a member that the record does not have', { ...record(), extra: 1 }],
     ['a member that is missing', (({ against: _against, ...rest }) => rest)(record())],
+    ['no escrow member', (({ escrow: _escrow, ...rest }) => rest)(record())],
+    ['an escrow that is not an output reference', { ...record(), escrow: 'zq9' }],
     ['a claimer that is not a DID', { ...record(), against: 'zq9' }],
     ['a claim token that is not a claim token', { ...record(), claim_token: 'ab' }],
     ['evidence with a hash that is not a hash', { ...record({ step: 'evidence_landed' }), evidence: { ...LANDED, document_hash: 'zz' } }],
@@ -388,6 +390,73 @@ describe('two calls for one job never send twice', () => {
     expect(result.detail).toContain('another agent');
     expect(events).toEqual([]);
     expect(port.published).toEqual([]);
+  });
+});
+
+describe('a record of another job is never the record of this job', () => {
+  /** A journal that gives the record that is stored for `from`, whatever escrow it is asked for: the mistake that the code must not follow. */
+  const misrouted = (inner: DisputeJournal, from: string): DisputeJournal => ({ get: async () => inner.get(from), put: (escrow, value) => inner.put(escrow, value) });
+  const FILED = { ...CHAIN_FILED, stake_lovelace: '50000000', fee_lovelace: null };
+
+  const OF_ANOTHER_JOB: Array<[string, JobRecord]> = [
+    ['started', record()],
+    ['evidence_landed', record({ step: 'evidence_landed', evidence: LANDED })],
+    ['filed challenge', record({ step: 'done', evidence: LANDED, filed: FILED })],
+    ['ended job', record({ step: 'done', evidence: LANDED, ended: { code: 'challenge_not_built', detail: 'x', sent: null, challenge: null, wrong_document: null } })],
+    ['not_sent', record({ step: 'not_sent' })],
+  ];
+
+  it.each(OF_ANOTHER_JOB)('says journal_unavailable for the %s record of another escrow, does not read the chain, and sends nothing', async (_name, stored) => {
+    const inner = new MemoryJournal();
+    await inner.put(ESCROW, stored);
+    const { events, port, dispute } = rig({}, { journal: misrouted(inner, ESCROW) });
+    port.claims = [claimView()];
+    const result = await dispute.challengeDelivery(delivery(ESCROW_2));
+    expectNotFiled(result, 'journal_unavailable');
+    expect(result.detail).toContain('another job');
+    expect(events).toEqual([]);
+    expect(port.published).toEqual([]);
+    expect(port.challenged).toEqual([]);
+  });
+
+  it('gives the filed challenge of the same escrow from the same journal, as the twin', async () => {
+    const inner = new MemoryJournal();
+    await inner.put(ESCROW, record({ step: 'done', evidence: LANDED, filed: FILED }));
+    const { events, dispute } = rig({}, { journal: misrouted(inner, ESCROW) });
+    expect(await dispute.challengeDelivery(delivery(ESCROW))).toMatchObject({ ok: true, value: { record: { claim: REF_A, challenge: `${CHALLENGE_TX}#0` } } });
+    expect(events).toEqual([]);
+  });
+
+  it('says journal_unavailable when the journal gives the record of another escrow in the job, right before the evidence is sent, and sends nothing', async () => {
+    const second = (stored: JobRecord): DisputeJournal => {
+      let reads = 0;
+      return { get: async () => { reads += 1; return reads === 1 ? null : stored; }, put: async () => undefined };
+    };
+    const other = rig({}, { journal: second(record({ escrow: ESCROW_2 })) });
+    other.port.claims = [claimView()];
+    const result = await other.dispute.challengeDelivery(delivery());
+    expectNotFiled(result, 'journal_unavailable');
+    expect(result.detail).toContain('nothing was sent');
+    expect(other.port.published).toEqual([]);
+    // The twin: the record of this job at that read stops the job, as before.
+    const same = rig({}, { journal: second(record()) });
+    same.port.claims = [claimView()];
+    expectNotFiled(await same.dispute.challengeDelivery(delivery()), 'job_already_disputed');
+    expect(same.port.published).toEqual([]);
+  });
+
+  it('writes the escrow of the job into every record that it stores, also for a challenge that it finds on chain', async () => {
+    const stored = recording([]);
+    const filed = rig({}, { journal: stored });
+    filed.port.claims = [claimView()];
+    expect((await filed.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    const found = recording([]);
+    const chain = rig({}, { journal: found });
+    ownChallenge(chain);
+    expect((await chain.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    const puts = [...stored.puts, ...found.puts];
+    expect(puts.length).toBe(4);
+    expect(puts.map((value) => value.escrow)).toEqual([ESCROW, ESCROW, ESCROW, ESCROW]);
   });
 });
 

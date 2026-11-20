@@ -7,7 +7,8 @@
 // what a test uses. A service that must not file a job twice after a restart gives a journal that keeps the records on disk, and that returns from `put` only when the record is stored.
 //
 // A record is JSON data: the amounts are decimal texts, and nothing in it is a key or a part of a request. The code checks each record that a journal gives, because a record that is read from a
-// disk can be damaged: a record that is not in its form is `journal_unavailable`, and never "no record".
+// disk can be damaged: a record that is not in its form is `journal_unavailable`, and never "no record". A record names the escrow that it is for. A journal that gives the record of another escrow
+// has made a mistake, and the code does not take that record for the record of this job: that is `journal_unavailable` too, and nothing is sent.
 import { accepted, checkMembers, parseDid, parseJsonValue, parseOutputRef, refused } from '../protocol/index.ts';
 import type { ChallengeRecord, Did, JsonObject, JsonValue, OutputRef, ProtocolResult } from '../protocol/index.ts';
 import { parseClaimToken } from './documents.ts';
@@ -45,6 +46,8 @@ export interface EndedRecord {
 /** What the journal keeps for a job. */
 export interface JobRecord {
   readonly step: JobStep;
+  /** The job that the record is for: the escrow that the journal stores it under. A record for another escrow is never the record of this job. */
+  readonly escrow: OutputRef;
   /** The other party of the job: the claimer that the challenge is against. */
   readonly against: Did;
   /** The claim output that the evidence names, and its token. */
@@ -149,7 +152,7 @@ function endedOf(value: JsonValue | undefined): Reading<EndedRecord> {
 
 /**
  * The record that a journal gave, in its form, or a refusal. It reads the value one time as JSON data. A step that is not one of the four, a member that is missing or that the record does not have, a
- * value of a wrong form, and a `done` record that says neither or both of `filed` and `ended`, are refused.
+ * value of a wrong form, and a `done` record that says neither or both of `filed` and `ended`, are refused. The code that reads the record checks that its escrow is the escrow of the call.
  */
 export function parseJobRecord(value: unknown): ProtocolResult<JobRecord | null> {
   if (value === null) return accepted(null);
@@ -157,13 +160,15 @@ export function parseJobRecord(value: unknown): ProtocolResult<JobRecord | null>
   if (!copy.ok) return copy;
   const root = copy.value;
   if (!isObject(root)) return bad('shape');
-  const members = checkMembers(root, 'the journal record', ['step', 'against', 'claim', 'claim_token', 'evidence', 'filed', 'ended']);
+  const members = checkMembers(root, 'the journal record', ['step', 'escrow', 'against', 'claim', 'claim_token', 'evidence', 'filed', 'ended']);
   if (members !== null) return members;
   const step = root.step;
   if (typeof step !== 'string' || !STEPS.includes(step)) return bad('step');
+  const escrow = parseOutputRef(root.escrow, 'escrow');
   const against = parseDid(root.against, 'against');
   const claim = parseOutputRef(root.claim, 'claim');
   const token = parseClaimToken(root.claim_token);
+  if (!escrow.ok) return bad('escrow');
   if (!against.ok || !claim.ok || !token.ok) return bad('claim');
   const evidence = root.evidence === null ? accepted(null) : documentOf(root.evidence, 'evidence');
   const filed = root.filed === null ? accepted(null) : filedOf(root.filed);
@@ -172,5 +177,5 @@ export function parseJobRecord(value: unknown): ProtocolResult<JobRecord | null>
   if (!filed.ok) return filed;
   if (!ended.ok) return ended;
   if (step === 'done' ? (filed.value === null) === (ended.value === null) : filed.value !== null || ended.value !== null) return bad('end');
-  return accepted({ step: step as JobStep, against: against.value, claim: claim.value, claim_token: token.value, evidence: evidence.value, filed: filed.value, ended: ended.value });
+  return accepted({ step: step as JobStep, escrow: escrow.value, against: against.value, claim: claim.value, claim_token: token.value, evidence: evidence.value, filed: filed.value, ended: ended.value });
 }

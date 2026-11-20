@@ -3,7 +3,7 @@
 // the queue of the service key, the clock and the journal come in as ports (ports.ts, journal.ts), so a test runs it on a scripted port and on the fixture world.
 //
 // The order of a challenge is fixed, and each step is checked before the next one starts:
-//   0. Read the journal of the job. A job that has a record gets that state, and nothing is sent a second time.
+//   0. Read the journal of the job. A job that has a record gets that state, and nothing is sent a second time. A record that is for another escrow is `journal_unavailable`: it is not this job's record.
 //   1. Read the claims. A challenge of this agent for this job that is on chain already is found again, and it is the result. The code never files a second one.
 //   2. Choose the claim. A claim is a target only when ALL hold: its claimer is the other party; its claim document is a claim document of this kit for the capability of the job (it is on chain, its hash
 //      is the hash that the claim holds, and it is the document that `claimDocument` writes for that party and that capability); it was submitted before the job began; it is Open with enough window left;
@@ -694,6 +694,7 @@ export class Dispute {
     if (!stored.ok) return notFiled('journal_unavailable', stored.detail);
     const parsed = parseJobRecord(stored.value);
     if (!parsed.ok) return notFiled('journal_unavailable', `the journal gave a record that is not in its form: ${parsed.detail}`);
+    if (parsed.value !== null && parsed.value.escrow !== escrow) return notFiled('journal_unavailable', 'the journal gave the record of another job: a record must be for the escrow that it is read for, and nothing was sent');
     const earlier = parsed.value !== null && parsed.value.step !== 'not_sent' ? parsed.value : null;
     if (earlier !== null && earlier.against !== target.against) return notFiled('job_already_disputed', 'a challenge for this job was recorded against another agent: a job has one counterparty', landedOf(earlier));
     if (earlier?.filed != null) return accepted(filedOfRecord(earlier.filed));
@@ -712,7 +713,7 @@ export class Dispute {
     if (own.value !== null) {
       const filed = own.value;
       const base: JobRecord = {
-        step: 'done', against: target.against, claim: filed.record.claim, claim_token: filed.claim_token, evidence: { tx_hash: filed.record.evidence, uri: filed.evidence_uri, document_hash: filed.evidence_hash },
+        step: 'done', escrow, against: target.against, claim: filed.record.claim, claim_token: filed.claim_token, evidence: { tx_hash: filed.record.evidence, uri: filed.evidence_uri, document_hash: filed.evidence_hash },
         filed: recordOfFiled(filed), ended: null,
       };
       await this.#remember(escrow, base);
@@ -736,7 +737,7 @@ export class Dispute {
     if (!document.ok) return notFiled(document.code, document.detail);
 
     // 4. The evidence is published first, and the challenge waits for its confirmation. The window that is left is checked in the job, right before the publish: the wait for the queue can be long.
-    const started: JobRecord = { step: 'started', against: claim.claimer, claim: claim.ref, claim_token: claim.token, evidence: null, filed: null, ended: null };
+    const started: JobRecord = { step: 'started', escrow, against: claim.claimer, claim: claim.ref, claim_token: claim.token, evidence: null, filed: null, ended: null };
     type FirstJob = { readonly stop: ChallengeCode; readonly detail: string } | { readonly tx: TxResult<PublishedDocument> };
     const first = await this.#queued<FirstJob>(async () => {
       let at: number;
@@ -751,6 +752,7 @@ export class Dispute {
       if (!current.ok) return { stop: 'journal_unavailable', detail: `${current.detail}, so nothing was sent` };
       const seen = parseJobRecord(current.value);
       if (!seen.ok) return { stop: 'journal_unavailable', detail: `the journal gave a record that is not in its form, so nothing was sent: ${seen.detail}` };
+      if (seen.value !== null && seen.value.escrow !== escrow) return { stop: 'journal_unavailable', detail: 'the journal gave the record of another job, so nothing was sent' };
       if (seen.value !== null && seen.value.step !== 'not_sent') return { stop: 'job_already_disputed', detail: `${earlierDetail(seen.value)}; nothing was sent` };
       const written = await this.#store(escrow, started);
       if (!written.ok) return { stop: 'journal_unavailable', detail: `${written.detail}, so nothing was sent` };
