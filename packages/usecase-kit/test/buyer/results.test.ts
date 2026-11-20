@@ -1,0 +1,363 @@
+// packages/usecase-kit/test/buyer/results.test.ts: the results of a buyer-side agent, made from their pieces. Each helper writes every member of the result of its outcome. The exit state comes from
+// `exitStateOf` and is never written by the caller. A piece of the wrong shape is a fault of the caller: the helper throws and makes no result. The typecheck is part of the test: a line that must not
+// compile carries a `@ts-expect-error`.
+import { describe, expect, it } from 'vitest';
+import type { HireTerms } from '@vsa/hire-kit';
+import { EXECUTE_OUTCOMES, NO_OPEN_CLAIM, PROPOSAL_SCHEMA, RESULT_SCHEMA, SYSTEM_REFUSALS, USE_CASES, exitStateOf, makeProposal, proposalDigest } from '@vsa/usecase-kit/protocol';
+import type { ExecuteOutcome, ReceiptVerification } from '@vsa/usecase-kit/protocol';
+import {
+  BAD_DOCUMENT, INTERRUPTION_REASONS, PAY_UNCONFIRMED, completedResult, disputedResult, failedProposalResult, failedResult, proposedResult, refusedResult, settledResult, vaultRefusedResult,
+} from '@vsa/usecase-kit/buyer';
+import type { InterruptedStep, PayUnconfirmedStep, ProposalPieces, RefusedByCounterpartyStep, VaultRefusedStep } from '@vsa/usecase-kit/buyer';
+import { COUNTERPARTY_DID, SALT, pieces, purchaseOrder } from './support.ts';
+
+const ESCROW = `${'44'.repeat(32)}#0`;
+const ADVERT = `${'55'.repeat(32)}#0`;
+const OTHER_ADVERT = `${'66'.repeat(32)}#0`;
+const OTHER_DID = `did:vector:${'cc'.repeat(32)}`;
+const TERMS: HireTerms = {
+  price_lovelace: '200000', supplier_bond_lovelace: '1000000', buyer_bond_lovelace: '1000000', locked_lovelace: '2261030', paid_to_supplier_at_accept_lovelace: '1200000',
+};
+const handoff = {
+  counterparty_did: COUNTERPARTY_DID, advert_ref: ADVERT, escrow_ref: ESCROW, paid_from_vault: true, receipt: null, receipt_signature: null, verification: null, result: null, accepted: null,
+} as const;
+const ALL_TRUE: ReceiptVerification = {
+  escrow_ref_matches: true, response_hash_matches: true, supplier_key_matches: true, signature_valid: true, on_chain_hash_matches: true, prompt_hash_matches: true, model_matches: true, fields_match: true,
+};
+/** The record of a hire that was verified and accepted. */
+const accepted = { ...handoff, receipt: { escrow_ref: ESCROW, agent_did: COUNTERPARTY_DID }, receipt_signature: 'cd'.repeat(64), verification: ALL_TRUE, result: { status: 'confirmed' }, accepted: 'confirmed' } as const;
+const challenge = { claim: `${'66'.repeat(32)}#0`, evidence: '77'.repeat(32), challenge: `${'88'.repeat(32)}#0` };
+const RESULT_KEYS = ['challenge', 'decisions', 'exit_state', 'fault_mode', 'handoff', 'outcome', 'proposal_digest', 'reason', 'schema', 'use_case', 'writes'];
+
+describe('the results of execute', () => {
+  it('makes a completed result with every member, and the state Completed', () => {
+    const result = completedResult(pieces({ handoff: accepted }));
+    expect(Object.keys(result).sort()).toStrictEqual(RESULT_KEYS);
+    expect(result).toStrictEqual({
+      schema: RESULT_SCHEMA, use_case: 'inventory-reorder', proposal_digest: '88'.repeat(32), handoff: accepted, writes: [], decisions: [], fault_mode: '', outcome: 'completed', reason: null, challenge: null,
+      exit_state: 'Completed',
+    });
+  });
+
+  it('makes a refusal by the counterparty and a refusal by a mock system, and the exit state follows the reason', () => {
+    for (const [by, outcome] of [['counterparty', 'refused_by_counterparty'], ['system', 'refused_by_system']] as const) {
+      expect(refusedResult(by, pieces(), 'approval_digest_mismatch')).toMatchObject({ outcome, reason: 'approval_digest_mismatch', challenge: null, exit_state: 'Rejected' });
+      expect(refusedResult(by, pieces(), 'approval_expired')).toMatchObject({ outcome, reason: 'approval_expired', exit_state: 'Expired' });
+      expect(refusedResult(by, pieces(), 'delegation_ended')).toMatchObject({ outcome, reason: 'delegation_ended', exit_state: 'Cancelled' });
+      expect(Object.keys(refusedResult(by, pieces(), 'x')).sort()).toStrictEqual(RESULT_KEYS);
+    }
+    for (const code of SYSTEM_REFUSALS) expect(refusedResult('system', pieces(), code).exit_state).toBe(exitStateOf({ outcome: 'refused_by_system', reason: code, challenge_filed: false, delegation_ended: false }));
+  });
+
+  it('makes a refusal of the vault, Cancelled when the delegation ended and Failed in every other case', () => {
+    expect(vaultRefusedResult(pieces(), '3010 Some scripts of the transactions terminated with error(s).', false)).toMatchObject({ outcome: 'vault_refused', exit_state: 'Failed', challenge: null });
+    expect(vaultRefusedResult(pieces(), 'no_delegation', true)).toMatchObject({ outcome: 'vault_refused', reason: 'no_delegation', exit_state: 'Cancelled' });
+    expect(Object.keys(vaultRefusedResult(pieces(), 'x', true)).sort()).toStrictEqual(RESULT_KEYS);
+  });
+
+  it('refuses a flag that is not a boolean: a text such as "false" is not read as false, and no result is made', () => {
+    for (const flag of ['false', 'true', 0, 1, null, undefined]) expect(() => vaultRefusedResult(pieces(), 'x', flag as never), String(flag)).toThrow(TypeError);
+  });
+
+  it('makes a failed result, and the state Failed', () => {
+    expect(failedResult(pieces({ handoff }), 'send_lost')).toMatchObject({ outcome: 'failed', reason: 'send_lost', challenge: null, exit_state: 'Failed', handoff });
+    expect(Object.keys(failedResult(pieces(), 'x')).sort()).toStrictEqual(RESULT_KEYS);
+  });
+
+  it('makes a failed result that holds the record of a hire whose Accept was made: the work was paid and a later step failed, so the result keeps the record of what was paid, and the state stays Failed', () => {
+    const writes = [{ system: 'po-store', route: 'POST /po', status: 503, ref: null }];
+    for (const record of [accepted, { ...accepted, accepted: 'pending' }]) {
+      const result = failedResult(pieces({ handoff: record as never, writes }), 'mock_system_failed');
+      expect(result).toMatchObject({ outcome: 'failed', reason: 'mock_system_failed', challenge: null, exit_state: 'Failed', writes });
+      expect(result.handoff).toStrictEqual(record);
+      expect(Object.keys(result).sort()).toStrictEqual(RESULT_KEYS);
+      expect(result.exit_state).toBe(exitStateOf({ outcome: 'failed', reason: 'mock_system_failed', challenge_filed: false, delegation_ended: false }));
+    }
+    // The twins: no record, a hire with no Accept, and a delivery that the decision refused make the same result as before.
+    for (const record of [null, handoff, { ...accepted, accepted: 'no' }]) {
+      const result = failedResult(pieces({ handoff: record as never, writes }), 'mock_system_failed');
+      expect(result).toMatchObject({ outcome: 'failed', reason: 'mock_system_failed', challenge: null, exit_state: 'Failed' });
+      expect(result.handoff).toStrictEqual(record);
+    }
+  });
+
+  it('makes a dispute: Escalated with the challenge that was filed, and Failed with no challenge and a reason', () => {
+    const escalated = disputedResult(pieces({ handoff }), { challenge });
+    expect(escalated).toMatchObject({ outcome: 'disputed', reason: null, challenge, exit_state: 'Escalated' });
+    expect(Object.keys(escalated).sort()).toStrictEqual(RESULT_KEYS);
+    expect(disputedResult(pieces({ handoff }), { reason: NO_OPEN_CLAIM })).toMatchObject({ outcome: 'disputed', reason: NO_OPEN_CLAIM, challenge: null, exit_state: 'Failed' });
+    expect(disputedResult(pieces({ handoff }), { reason: 'challenge_failed' })).toMatchObject({ reason: 'challenge_failed', challenge: null, exit_state: 'Failed' });
+  });
+
+  it('gives the state that exitStateOf gives for every outcome and every flag: the helpers hold no state of their own', () => {
+    const made: Array<[ExecuteOutcome, string | null, boolean, boolean, string]> = [
+      ['completed', null, false, false, completedResult(pieces({ handoff: accepted })).exit_state],
+      ['refused_by_counterparty', 'approval_expired', false, false, refusedResult('counterparty', pieces(), 'approval_expired').exit_state],
+      ['refused_by_system', 'delegation_ended', false, false, refusedResult('system', pieces(), 'delegation_ended').exit_state],
+      ['vault_refused', 'r', false, true, vaultRefusedResult(pieces(), 'r', true).exit_state],
+      ['vault_refused', 'r', false, false, vaultRefusedResult(pieces(), 'r', false).exit_state],
+      ['disputed', null, true, false, disputedResult(pieces(), { challenge }).exit_state],
+      ['disputed', 'r', false, false, disputedResult(pieces(), { reason: 'r' }).exit_state],
+      ['failed', 'r', false, false, failedResult(pieces(), 'r').exit_state],
+    ];
+    for (const [outcome, reason, filed, ended, state] of made) expect(state, `${outcome} ${reason}`).toBe(exitStateOf({ outcome, reason, challenge_filed: filed, delegation_ended: ended }));
+    expect(EXECUTE_OUTCOMES.every((outcome) => made.some(([name]) => name === outcome))).toBe(true);
+  });
+
+  it('refuses a reason that is not a code: an empty text, a number, nothing', () => {
+    for (const reason of ['', 7, null, undefined]) {
+      expect(() => refusedResult('counterparty', pieces(), reason as never)).toThrow(TypeError);
+      expect(() => vaultRefusedResult(pieces(), reason as never, false)).toThrow(TypeError);
+      expect(() => failedResult(pieces(), reason as never)).toThrow(TypeError);
+      expect(() => disputedResult(pieces(), { reason } as never)).toThrow(TypeError);
+    }
+    expect(() => refusedResult('hirer' as never, pieces(), 'x')).toThrow(TypeError);
+  });
+
+  it('refuses a completed result when the record is not the record of a hire that was verified and accepted: a refused or failed hire is never reported as completed', () => {
+    const records: Array<[string, unknown]> = [
+      ['no record', null], ['a hire that no delivery came for', handoff], ['a delivery that the decision did not accept', { ...accepted, accepted: 'no' }],
+      ['an Accept that is not known', { ...accepted, accepted: null }], ['a check that is false', { ...accepted, verification: { ...ALL_TRUE, model_matches: false } }],
+      ['a record with no checks', { ...accepted, verification: null }], ['a record with no receipt', { ...accepted, receipt: null }], ['a record with no signature', { ...accepted, receipt_signature: null }],
+      ['a receipt with no member', { ...accepted, receipt: {} }], ['a signature that is empty', { ...accepted, receipt_signature: '' }],
+      ['a receipt of another escrow than the escrow of the record', { ...accepted, receipt: { escrow_ref: `${'99'.repeat(32)}#0` } }],
+      ['a check that is the text "true"', { ...accepted, verification: { ...ALL_TRUE, model_matches: 'true' } }], ['a receipt that is a list', { ...accepted, receipt: [ESCROW] }],
+      ['a hire that the wallet paid', { ...accepted, paid_from_vault: false }], ['a flag of the payment that is the text "true"', { ...accepted, paid_from_vault: 'true' }],
+      ['a receipt of another agent than the counterparty of the record', { ...accepted, receipt: { ...accepted.receipt, agent_did: OTHER_DID } }], ['a receipt that names no agent', { ...accepted, receipt: { escrow_ref: ESCROW } }],
+      ['a receipt of another advert than the advert of the record', { ...accepted, receipt: { ...accepted.receipt, advert_ref: OTHER_ADVERT } }],
+      ['the record of two hires: the escrow and the receipt of one, the counterparty and the advert of the other', { ...accepted, counterparty_did: OTHER_DID, advert_ref: OTHER_ADVERT }],
+    ];
+    for (const useCase of ['inventory-reorder', 'prior-authorization'] as const) {
+      for (const [name, record] of records) expect(() => completedResult(pieces({ use_case: useCase, handoff: record as never })), `${useCase}: ${name}`).toThrow(TypeError);
+    }
+    // The twins: an Accept that is pending is an accepted hire, and use case 3 (supplier bid evaluation) hires no counterparty to execute.
+    expect(completedResult(pieces({ handoff: { ...accepted, accepted: 'pending' } })).outcome).toBe('completed');
+    expect(completedResult(pieces({ handoff: { ...accepted, paid_from_vault: true } })).outcome).toBe('completed');
+    expect(completedResult(pieces({ use_case: 'bid-evaluation', handoff: null })).exit_state).toBe('Completed');
+    // The twins: a record whose parts are one hire is completed, with a receipt that names no advert, with a receipt that names the advert of the record, and for another counterparty and advert when every part names them.
+    expect(completedResult(pieces({ handoff: { ...accepted, receipt: { ...accepted.receipt, advert_ref: ADVERT } } })).outcome).toBe('completed');
+    const otherHire = { ...accepted, counterparty_did: OTHER_DID, advert_ref: OTHER_ADVERT, receipt: { ...accepted.receipt, agent_did: OTHER_DID, advert_ref: OTHER_ADVERT } };
+    expect(completedResult(pieces({ handoff: otherHire })).outcome).toBe('completed');
+  });
+
+  it('refuses a completed result of use case 3 that holds the record of a hire: that use case hires no counterparty to execute', () => {
+    for (const record of [accepted, handoff, { ...accepted, verification: { ...ALL_TRUE, signature_valid: false } }]) {
+      expect(() => completedResult(pieces({ use_case: 'bid-evaluation', handoff: record as never }))).toThrow(TypeError);
+    }
+    expect(completedResult(pieces({ use_case: 'bid-evaluation', handoff: null })).outcome).toBe('completed');
+  });
+
+  it('refuses a reason that is not a code: a sentence, capital letters, a space, a dot, a hyphen, more than 64 characters; and takes a code of letters, digits and "_"', () => {
+    const proposal: ProposalPieces = { use_case: 'inventory-reorder', decisions: [], sub_jobs: [], fault_mode: '' };
+    for (const reason of ['the lot is gone, call 555-0100', 'Cannot_Supply', 'cannot supply', 'cannot.supply', 'cannot-supply', 'a'.repeat(65), 'é', ' x', 'x\n']) {
+      expect(() => refusedResult('counterparty', pieces(), reason), reason).toThrow(TypeError);
+      expect(() => refusedResult('system', pieces(), reason), reason).toThrow(TypeError);
+      expect(() => failedResult(pieces(), reason), reason).toThrow(TypeError);
+      expect(() => disputedResult(pieces(), { reason }), reason).toThrow(TypeError);
+      expect(() => failedProposalResult(proposal, reason), reason).toThrow(TypeError);
+    }
+    for (const reason of ['x', 'code_2', '0123456789', 'a'.repeat(64)]) {
+      expect(refusedResult('counterparty', pieces(), reason).reason).toBe(reason);
+      expect(refusedResult('system', pieces(), reason).reason).toBe(reason);
+      expect(failedResult(pieces(), reason).reason).toBe(reason);
+      expect(disputedResult(pieces(), { reason }).reason).toBe(reason);
+      expect(failedProposalResult(proposal, reason).reason).toBe(reason);
+    }
+    // The reason of a refused Pay is the evaluation error of the node. It is words, so it is not a code. An empty text and white space are refused.
+    const words = '3010 Some scripts of the transactions terminated with error(s).';
+    expect(vaultRefusedResult(pieces(), words, false).reason).toBe(words);
+    for (const reason of ['', '  \n', 7, null, undefined]) expect(() => vaultRefusedResult(pieces(), reason as never, false)).toThrow(TypeError);
+  });
+
+  it('gives the form with no challenge and the exit state of the protocol for a dispute with no challenge, and never Escalated', () => {
+    const none = disputedResult(pieces({ handoff }), { challenge: null as never });
+    expect(none).toMatchObject({ outcome: 'disputed', reason: NO_OPEN_CLAIM, challenge: null, exit_state: 'Failed' });
+    expect(Object.keys(none).sort()).toStrictEqual(RESULT_KEYS);
+    expect(none.exit_state).toBe(exitStateOf({ outcome: 'disputed', reason: NO_OPEN_CLAIM, challenge_filed: false, delegation_ended: false }));
+    // A challenge that is not the record of a challenge is a fault of the caller: it is never Escalated.
+    for (const junk of [undefined, 'a challenge', 7, [], {}, { claim: challenge.claim }, { ...challenge, evidence: 'abc' }, { ...challenge, claim: 'not a reference' }, { ...challenge, challenge: 7 }]) {
+      expect(() => disputedResult(pieces({ handoff }), { challenge: junk as never }), JSON.stringify(junk)).toThrow(TypeError);
+    }
+    expect(() => disputedResult(pieces({ handoff }), {} as never)).toThrow(TypeError);
+    // The twin: the challenge that was filed is Escalated.
+    expect(disputedResult(pieces({ handoff }), { challenge })).toMatchObject({ outcome: 'disputed', reason: null, challenge, exit_state: 'Escalated' });
+  });
+
+  it('refuses a refusal by the counterparty that holds a delivery: it comes before the delivery, so a record with a receipt, a signature, checks, a result or a word on the Accept is refused; a refusal by a mock system can hold an accepted hire', () => {
+    const delivered: Array<[string, unknown]> = [
+      ['an accepted hire', accepted], ['a pending Accept', { ...accepted, accepted: 'pending' }], ['a delivery that the decision refused', { ...accepted, accepted: 'no' }],
+      ['a receipt', { ...handoff, receipt: { escrow_ref: ESCROW } }], ['a signature', { ...handoff, receipt_signature: 'cd'.repeat(64) }], ['checks', { ...handoff, verification: ALL_TRUE }],
+      ['a result', { ...handoff, result: { status: 'confirmed' } }], ['a word on the Accept', { ...handoff, accepted: 'no' }],
+    ];
+    for (const [name, record] of delivered) expect(() => refusedResult('counterparty', pieces({ handoff: record as never }), 'approval_not_found'), name).toThrow(TypeError);
+    // The twins: no record, and the record of a hire that was paid and refused before any delivery.
+    for (const record of [null, handoff]) expect(refusedResult('counterparty', pieces({ handoff: record as never }), 'approval_not_found').outcome).toBe('refused_by_counterparty');
+    // A mock system can refuse after the hire was accepted: its refusal holds the record of the accepted hire.
+    for (const record of [accepted, { ...accepted, accepted: 'pending' }, { ...accepted, accepted: 'no' }]) {
+      expect(refusedResult('system', pieces({ handoff: record as never }), 'token_invalid')).toMatchObject({ outcome: 'refused_by_system', reason: 'token_invalid', handoff: record });
+    }
+  });
+
+  it('refuses a refusal of the vault that holds the record of a hire: the Pay was refused, so no escrow was posted', () => {
+    const records: Array<[string, unknown]> = [
+      ['an accepted hire', accepted], ['a pending Accept', { ...accepted, accepted: 'pending' }], ['a paid escrow with no delivery and no Accept', handoff], ['a delivery that the decision refused', { ...accepted, accepted: 'no' }],
+    ];
+    for (const [name, record] of records) expect(() => vaultRefusedResult(pieces({ handoff: record as never }), 'eval error', false), name).toThrow(TypeError);
+    // The twins: with no record the result is made, Failed while the delegation stands and Cancelled when the hirer ended it.
+    expect(vaultRefusedResult(pieces(), 'eval error', false)).toMatchObject({ outcome: 'vault_refused', exit_state: 'Failed', handoff: null });
+    expect(vaultRefusedResult(pieces({ handoff: null }), 'eval error', true)).toMatchObject({ outcome: 'vault_refused', exit_state: 'Cancelled', handoff: null });
+  });
+
+  it('refuses a dispute that holds the record of a hire whose Accept was made: a dispute is about a delivery that was not accepted', () => {
+    for (const record of [accepted, { ...accepted, accepted: 'pending' }]) {
+      expect(() => disputedResult(pieces({ handoff: record as never }), { challenge })).toThrow(TypeError);
+      expect(() => disputedResult(pieces({ handoff: record as never }), { challenge: null as never })).toThrow(TypeError);
+      expect(() => disputedResult(pieces({ handoff: record as never }), { reason: 'challenge_failed' })).toThrow(TypeError);
+    }
+    // The twins: no record, a hire with no delivery, and a delivery that the decision refused make the results of a dispute.
+    for (const record of [null, handoff, { ...accepted, accepted: 'no' }]) {
+      expect(disputedResult(pieces({ handoff: record as never }), { challenge })).toMatchObject({ outcome: 'disputed', reason: null, challenge, exit_state: 'Escalated' });
+      expect(disputedResult(pieces({ handoff: record as never }), { reason: 'challenge_failed' })).toMatchObject({ outcome: 'disputed', reason: 'challenge_failed', challenge: null, exit_state: 'Failed' });
+    }
+  });
+
+  it('refuses pieces of the wrong shape, and makes no result', () => {
+    const wrong: Array<[string, Record<string, unknown>]> = [
+      ['a use case that the protocol does not have', { use_case: 'payroll' }], ['a digest that is no digest', { proposal_digest: 'abc' }], ['a handoff that is a list', { handoff: [] }],
+      ['a handoff that is a text', { handoff: 'done' }], ['writes that are no list', { writes: 'none' }], ['decisions that are no list', { decisions: undefined }], ['a fault setting that is no text', { fault_mode: null }],
+    ];
+    for (const [name, over] of wrong) expect(() => completedResult({ ...pieces({ handoff: accepted }), ...over } as never), name).toThrow(TypeError);
+    for (const useCase of USE_CASES) expect(completedResult(pieces({ use_case: useCase, handoff: useCase === 'bid-evaluation' ? null : accepted })).use_case).toBe(useCase);
+  });
+
+  it('keeps no list of the caller: a write that the caller adds later is not in the result', () => {
+    const writes = [{ system: 'po-store', route: 'POST /po', status: 201, ref: 'po-1' }];
+    const decisions: never[] = [];
+    const result = completedResult(pieces({ handoff: accepted, writes, decisions }));
+    writes.push({ system: 'po-store', route: 'POST /po', status: 201, ref: 'po-2' });
+    expect(result.writes).toHaveLength(1);
+    expect(result.writes).not.toBe(writes);
+    expect(result.decisions).not.toBe(decisions);
+  });
+
+  it('does not compile a result with a member left out, or with a state of the caller', () => {
+    // The lines below are never run: the typecheck is the test, and each line must not compile.
+    const compileOnly = (): void => {
+      // @ts-expect-error The pieces need the writes.
+      const noWrites: Parameters<typeof completedResult>[0] = { use_case: 'inventory-reorder', proposal_digest: '88'.repeat(32), handoff: null, decisions: [], fault_mode: '' };
+      void noWrites;
+      // @ts-expect-error A refusal is by the counterparty or by a mock system, and it takes no state.
+      refusedResult('hirer', pieces(), 'x', 'Rejected');
+      // @ts-expect-error A dispute holds a challenge or a reason.
+      disputedResult(pieces(), {});
+    };
+    expect(compileOnly).toBeTypeOf('function');
+  });
+});
+
+describe('settledResult', () => {
+  const settled = pieces({ handoff: null });
+  const { handoff: _handoff, ...base } = settled;
+  const refused: RefusedByCounterpartyStep = { kind: 'refused_by_counterparty', reason: 'approval_expired', source: 'before_claim', runtime_status: 403, handoff, vault_ref: null, terms: TERMS };
+  const vault: VaultRefusedStep = { kind: 'vault_refused', reason: 'no_delegation', refusal: 'impossible', delegation: 'ended', delegation_ended: true, evidence: { transaction_body: null }, handoff: null };
+  const interrupted = (cause: InterruptedStep['cause_kind']): InterruptedStep => ({ kind: 'interrupted', cause_kind: cause, detail: 'x', vault_ref: ESCROW, escrow_ref: ESCROW, handoff, delivery: null, cause: new Error('x') });
+  const unconfirmed: PayUnconfirmedStep = {
+    kind: 'pay_unconfirmed', detail: 'x', escrow_ref: ESCROW, vault_ref_if_landed: ESCROW, tx_hash: '44'.repeat(32), may_land: true, valid_to: 1, handoff, cause: new Error('x'),
+  };
+
+  it('makes the result of each step that the use case does not have to finish, with the handoff of the step', () => {
+    expect(settledResult(refused, base)).toMatchObject({ outcome: 'refused_by_counterparty', reason: 'approval_expired', exit_state: 'Expired', handoff });
+    expect(settledResult(vault, base)).toMatchObject({ outcome: 'vault_refused', reason: 'no_delegation', exit_state: 'Cancelled', handoff: null });
+    expect(settledResult({ kind: 'failed', reason: 'timeout', detail: 'x', handoff, vault_ref: null, terms: null }, base)).toMatchObject({ outcome: 'failed', reason: 'timeout', exit_state: 'Failed', handoff });
+    expect(settledResult(unconfirmed, base)).toMatchObject({ outcome: 'failed', reason: PAY_UNCONFIRMED, exit_state: 'Failed', handoff });
+    for (const cause of ['deadline', 'store_write', 'decision_error', 'other'] as const) {
+      expect(settledResult(interrupted(cause), base)).toMatchObject({ outcome: 'failed', reason: INTERRUPTION_REASONS[cause], exit_state: 'Failed', handoff });
+    }
+  });
+
+  it('names a reason of its own for each interruption, and none of them is the reason of a refusal', () => {
+    expect(INTERRUPTION_REASONS).toStrictEqual({ deadline: 'deadline', store_write: 'store_write_failed', decision_error: 'decision_error', other: 'hire_interrupted' });
+  });
+
+  it('throws for a step that the use case must finish, and never makes `completed` of it', () => {
+    for (const kind of ['completed', 'not_accepted', 'refused'] as const) expect(() => settledResult({ kind } as never, base), kind).toThrow(TypeError);
+  });
+
+  it('refuses a step that is made by hand with a reason that is not a code, or with the record of a hire whose Accept was made, when the step is a refusal or ended in an error after the Pay', () => {
+    expect(() => settledResult({ ...refused, reason: 'free words of the counterparty' }, base)).toThrow(TypeError);
+    expect(() => settledResult({ ...refused, handoff: accepted }, base)).toThrow(TypeError);
+    expect(() => settledResult({ kind: 'failed', reason: 'free words', detail: 'x', handoff: null, vault_ref: null, terms: null }, base)).toThrow(TypeError);
+    for (const step of [interrupted('deadline'), unconfirmed]) expect(() => settledResult({ ...step, handoff: accepted }, base), step.kind).toThrow(TypeError);
+    // The twin: the same steps with a code and a record with no Accept make their results.
+    expect(settledResult({ kind: 'failed', reason: 'timeout', detail: 'x', handoff, vault_ref: null, terms: null }, base)).toMatchObject({ outcome: 'failed', reason: 'timeout' });
+  });
+
+  it('makes the result of a failed step that holds the record of a hire whose Accept was made: the hire kit said completed and the flow did not take the outcome, and the result says that the Accept was made', () => {
+    for (const record of [accepted, { ...accepted, accepted: 'pending' }] as const) {
+      const result = settledResult({ kind: 'failed', reason: 'inconsistent_outcome', detail: 'x', handoff: record, vault_ref: null, terms: TERMS }, base);
+      expect(result).toMatchObject({ outcome: 'failed', reason: 'inconsistent_outcome', challenge: null, exit_state: 'Failed', handoff: record });
+      expect(result.handoff?.accepted).toBe(record.accepted);
+    }
+    // The twin: the same step with a record that has no Accept makes the same result with that record.
+    expect(settledResult({ kind: 'failed', reason: 'inconsistent_outcome', detail: 'x', handoff, vault_ref: null, terms: TERMS }, base)).toMatchObject({ outcome: 'failed', exit_state: 'Failed', handoff: { accepted: null } });
+  });
+});
+
+describe('the result of propose', () => {
+  const proposalPieces: ProposalPieces = { use_case: 'inventory-reorder', decisions: [], sub_jobs: [], fault_mode: '' };
+
+  it('makes the proposal of the document: the salt that is given, the digest of the salt and the document, no exit state and no reason', () => {
+    const made = makeProposal(purchaseOrder(), SALT);
+    const digest = proposalDigest(SALT, purchaseOrder());
+    if (!made.ok || !digest.ok) throw new Error('refused');
+    expect(proposedResult(purchaseOrder(), proposalPieces, SALT)).toStrictEqual({
+      schema: PROPOSAL_SCHEMA, use_case: 'inventory-reorder', decisions: [], sub_jobs: [], fault_mode: '', document: purchaseOrder(), salt: SALT, proposal_digest: digest.value, outcome: 'proposed',
+      exit_state: null, reason: null,
+    });
+    expect(made.value.proposal_digest).toBe(digest.value);
+  });
+
+  it('makes a new salt for each proposal when none is given, so that two proposals of one document have two digests', () => {
+    const a = proposedResult(purchaseOrder(), proposalPieces);
+    const b = proposedResult(purchaseOrder(), proposalPieces);
+    if (a.outcome !== 'proposed' || b.outcome !== 'proposed') throw new Error('not proposed');
+    expect(a.salt).toMatch(/^[0-9a-f]{64}$/);
+    expect(a.salt).not.toBe(b.salt);
+    expect(a.proposal_digest).not.toBe(b.proposal_digest);
+  });
+
+  it('makes a failed proposal with no document when the document is refused, and when its schema is not the schema of the use case', () => {
+    const bad: unknown[] = [{ schema: 'vector.usecase.po.v1', quantity: undefined }, { schema: 'vector.usecase.po.v1', quantity: () => 1 }, { schema: 'vector.usecase.po.v1', n: 10n }, 'a text', null, [], { schema: 'vector.usecase.ranking.v1' }, {}];
+    for (const document of bad) {
+      expect(proposedResult(document, proposalPieces), JSON.stringify(String(document))).toStrictEqual({
+        schema: PROPOSAL_SCHEMA, use_case: 'inventory-reorder', decisions: [], sub_jobs: [], fault_mode: '', document: null, salt: null, proposal_digest: null, outcome: 'failed', exit_state: 'Failed', reason: BAD_DOCUMENT,
+      });
+    }
+    // The twin: the document of the right schema is proposed, and each use case has its own schema.
+    expect(proposedResult(purchaseOrder(), proposalPieces).outcome).toBe('proposed');
+    expect(proposedResult({ schema: 'vector.usecase.ranking.v1' }, { ...proposalPieces, use_case: 'bid-evaluation' }).outcome).toBe('proposed');
+    expect(proposedResult({ schema: 'vector.usecase.priorauth-request.v1' }, { ...proposalPieces, use_case: 'prior-authorization' }).outcome).toBe('proposed');
+  });
+
+  it('refuses a salt that is not a salt: the proposal is failed with no document', () => {
+    expect(proposedResult(purchaseOrder(), proposalPieces, 'abc')).toMatchObject({ outcome: 'failed', reason: BAD_DOCUMENT, document: null, salt: null, proposal_digest: null });
+  });
+
+  it('makes a failed proposal for a job that failed, with the proposal when it had one and nulls when it had none', () => {
+    const made = makeProposal(purchaseOrder(), SALT);
+    if (!made.ok) throw new Error('refused');
+    expect(failedProposalResult(proposalPieces, 'llm_timeout')).toMatchObject({ outcome: 'failed', exit_state: 'Failed', reason: 'llm_timeout', document: null, salt: null, proposal_digest: null });
+    expect(failedProposalResult(proposalPieces, 'llm_timeout', made.value)).toMatchObject({ document: purchaseOrder(), salt: SALT, proposal_digest: made.value.proposal_digest });
+    expect(() => failedProposalResult(proposalPieces, '')).toThrow(TypeError);
+  });
+
+  it('refuses pieces of the wrong shape and keeps no list of the caller', () => {
+    expect(() => proposedResult(purchaseOrder(), { ...proposalPieces, use_case: 'payroll' } as never)).toThrow(TypeError);
+    expect(() => proposedResult(purchaseOrder(), { ...proposalPieces, decisions: 'none' } as never)).toThrow(TypeError);
+    expect(() => proposedResult(purchaseOrder(), { ...proposalPieces, sub_jobs: undefined } as never)).toThrow(TypeError);
+    expect(() => proposedResult(purchaseOrder(), { ...proposalPieces, fault_mode: null } as never)).toThrow(TypeError);
+    const decisions: never[] = [];
+    const result = proposedResult(purchaseOrder(), { ...proposalPieces, decisions });
+    expect(result.decisions).not.toBe(decisions);
+  });
+});
