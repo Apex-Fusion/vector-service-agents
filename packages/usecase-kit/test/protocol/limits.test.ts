@@ -1,11 +1,33 @@
-// packages/usecase-kit/test/protocol/limits.test.ts: the request limit. The limit counts bytes of the wire payload, as the HTTP layer does, and not characters.
+// packages/usecase-kit/test/protocol/limits.test.ts: the request limit and the limit of the runtime body. The request limit counts bytes of the wire payload, as the HTTP layer does, and not characters.
+// It bounds the wire payload only. The body of the call that a sender makes to the runtime can be longer than the wire payload, so a sender must also keep that body under the limit of the runtime.
 import { describe, expect, it } from 'vitest';
-import { MAX_REQUEST_BYTES, checkRequestSize } from '@vsa/usecase-kit/protocol';
+import { MAX_REQUEST_BYTES, RUNTIME_BODY_LIMIT_BYTES, checkRequestSize } from '@vsa/usecase-kit/protocol';
 
 describe('MAX_REQUEST_BYTES', () => {
-  it('is 900,000 bytes, which is under the 1 MiB that the runtime takes', () => {
+  it('is 900,000 bytes of wire payload', () => {
     expect(MAX_REQUEST_BYTES).toBe(900_000);
-    expect(MAX_REQUEST_BYTES).toBeLessThan(1024 * 1024);
+  });
+});
+
+describe('RUNTIME_BODY_LIMIT_BYTES', () => {
+  it('is 1 MiB, the most that the runtime takes in the body of one call', () => {
+    expect(RUNTIME_BODY_LIMIT_BYTES).toBe(1_048_576);
+    expect(RUNTIME_BODY_LIMIT_BYTES).toBe(1024 * 1024);
+  });
+
+  it('is above the request limit, and the request limit does not bound the body of a call', () => {
+    expect(MAX_REQUEST_BYTES).toBeLessThan(RUNTIME_BODY_LIMIT_BYTES);
+    // A request text of quote marks: the wire payload writes each one as two bytes, and a second JSON object writes each of those two as two bytes again.
+    const wirePayload = JSON.stringify([{ content: '"'.repeat(270_000), role: 'user' }]);
+    const body = JSON.stringify({ payload: wirePayload });
+    expect(checkRequestSize(wirePayload).ok).toBe(true);
+    expect(Buffer.byteLength(wirePayload, 'utf8')).toBeLessThan(MAX_REQUEST_BYTES);
+    expect(Buffer.byteLength(body, 'utf8')).toBeGreaterThan(RUNTIME_BODY_LIMIT_BYTES);
+  });
+
+  it('is not the limit that checkRequestSize applies', () => {
+    expect(checkRequestSize('a'.repeat(RUNTIME_BODY_LIMIT_BYTES - 1))).toMatchObject({ ok: false, code: 'request_too_large' });
+    expect(checkRequestSize('a'.repeat(MAX_REQUEST_BYTES))).toStrictEqual({ ok: true, value: MAX_REQUEST_BYTES });
   });
 });
 
