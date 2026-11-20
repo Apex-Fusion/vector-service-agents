@@ -132,7 +132,7 @@ export interface Verifier {
   accessToken(request: CallRequest, policy: AccessTokenPolicy): Promise<Check<VerifiedCall, CallRule>>;
   /** Checks a JWT-SVID for this resource against the bundle. */
   jwtSvid(token: string, policy: { readonly audience: string }): Promise<Check<VerifiedJwtSvid, SvidCheckRule<JwtSvidRule>>>;
-  /** Checks an X.509-SVID (PEM, base64 DER, or DER bytes) against the bundle. */
+  /** Checks an X.509-SVID against the bundle. The input is exactly one certificate (PEM, base64 DER, or DER bytes): a second certificate, or any other text or bytes next to it, is `x509.malformed`. */
   x509Svid(certificate: string | Uint8Array): Promise<Check<VerifiedX509Svid, SvidCheckRule<X509SvidRule>>>;
   /**
    * Checks an identity credential, and reads the Bitstring Status List that it names for the revocation bit and the suspension bit of the agent. A list that was not read within its time to
