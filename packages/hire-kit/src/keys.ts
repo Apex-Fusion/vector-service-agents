@@ -56,8 +56,9 @@ export function minLeftAtTurn(value: unknown): number {
 export function checkTurn<E extends Error>(t: Clocked, label: string, errors: Pick<HireErrors<E>, 'deadline'>, minLeftMs = 0): void {
   const left = t.deadlineMs - t.clock();
   if (left > 0 && left >= minLeftMs) return;
-  // The text is true also when the lane was free and the deadline had passed before the call: the hire had not begun when its turn came.
-  throw errors.deadline(`${label} had not begun`, { stage: 'lane', escrowRef: null, handedOver: false });
+  // The text is true also when the lane was free and the deadline had passed before the call: the hire had not begun when its turn came. A turn that the margin ends says so, with the time left.
+  const why = left > 0 ? `: its turn came ${left} ms before the deadline, less than minLeftAtTurnMs (${minLeftMs} ms)` : '';
+  throw errors.deadline(`${label} had not begun${why}`, { stage: 'lane', escrowRef: null, handedOver: false });
 }
 
 /** One key that pays, with its chain, its stranded store and its lane. Made by PayingKeys.add. */

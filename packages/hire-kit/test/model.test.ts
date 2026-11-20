@@ -244,6 +244,7 @@ describe('hireModel', () => {
     const short = await setup();
     const error = await thrown(hireModel(short.key, { ...short.deps, deadlineMs: T0 + 59_999 }, request({ minLeftAtTurnMs: 60_000 }), ERRORS));
     expect([error.code, error.facts]).toStrictEqual(['deadline', { stage: 'lane', escrowRef: null, handedOver: false }]);
+    expect(error.message).toBe('The deadline of the job came while the brief had not begun: its turn came 59999 ms before the deadline, less than minLeftAtTurnMs (60000 ms).');
     expect([short.m.calls, short.booked, short.key.stranded.list()]).toStrictEqual([[], [], []]);
     // The twins: the same margin with the deadline 60 s ahead, and no margin with the deadline 59.999 s ahead.
     const exact = await setup();
