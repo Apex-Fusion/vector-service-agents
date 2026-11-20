@@ -78,7 +78,7 @@ export function checkDpopProof(proof: string | readonly string[] | undefined, ex
   if (key.kind !== kind) return refuse('dpop.alg', 'the algorithm of the proof does not match its key');
   if (!verifyJws(jws, kind, key.key)) return refuse('dpop.signature', 'the signature of the proof does not verify with the key in its header');
   if (typeof payload.jti !== 'string' || payload.jti.length === 0 || payload.jti.length > 256) return refuse('dpop.jti', 'the proof needs a jti of 1 to 256 characters');
-  if (payload.htm !== expect.method) return refuse('dpop.method', `the proof is for the method ${JSON.stringify(payload.htm)}, and the request is ${expect.method}`);
+  if (payload.htm !== expect.method) return refuse('dpop.method', `the htm of the proof is not the method of the request, which is ${expect.method}`);
   const target = htuForm(expect.url);
   if (typeof payload.htu !== 'string' || htuForm(payload.htu) === null || htuForm(payload.htu) !== target) return refuse('dpop.url', 'the proof is for another URL than the request');
   if (!isNumber(payload.iat)) return refuse('dpop.iat', 'the proof needs iat');

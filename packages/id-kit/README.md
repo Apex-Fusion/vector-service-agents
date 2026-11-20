@@ -60,11 +60,13 @@ The client checks a request against the limits of the gateway before it sends it
 
 Every check returns `{ ok: true, value }` or `{ ok: false, rule, detail }`. The `rule` is a member of the list of that check (exported as `ACCESS_TOKEN_RULES`, `CALL_RULES`, `STATUS_LIST_RULES`, `X509_SVID_RULES`, `JWT_SVID_RULES`, `CREDENTIAL_RULES`, `CREDENTIAL_CALL_RULES`, `KEY_SET_RULES` and `BUNDLE_RULES`). Each rule has a refusal and an accepted twin in the tests.
 
+A `detail` is a sentence for a log. It names a rule, a field, a count, a time or a public identifier (a DID, a trust domain). It never repeats a credential or a part of one: not the `Authorization` header, not a token, a proof or a certificate, and not a value of the header of a JWS. So a service can return a detail, or write it to a log.
+
 **Access token and DPoP proof** (`verifier.accessToken`), in this order:
 
 | Rules | Check |
 |---|---|
-| `token.missing`, `token.scheme` | The `Authorization` header is `DPoP <token>`. A token that is sent as `Bearer` is refused. |
+| `token.missing`, `token.scheme` | The `Authorization` header is `DPoP <token>`. A token that is sent as `Bearer` is refused. The detail of `token.scheme` never repeats the header: a caller that sends `<token> <something>` puts its token in the place of the scheme. |
 | `token.malformed`, `token.alg`, `token.typ`, `token.kid`, `token.signature` | A JWS, ES256 (the algorithm `none` is refused), `typ` at+jwt, signed by a P-256 key of the key set of the gateway. A JWT-SVID, a status list or a credential is `token.typ`. |
 | `token.issuer`, `token.audience` | `iss` is the gateway. `aud` names this resource. |
 | `token.lifetime`, `token.expired`, `token.not_yet_valid` | `exp - iat` is from 1 to 300 seconds. A token is accepted until 30 seconds after `exp` (the clock leeway, `leewaySeconds`). So a token is honoured for 330 seconds after it was issued, at most. |

@@ -11,7 +11,7 @@ import type { Check } from '../src/common/result.ts';
 import { ed25519Key, identifier, LISTS_UNAVAILABLE, p256Key, type StubAgent, type StubDelegation, type TestKey } from '../src/testing/index.ts';
 import { b64url, signJws } from '../src/vendored/m4/jose.ts';
 import { ACCESS_TOKEN_RULES, CALL_RULES, createReplayStore, createVerifier, gatewayActorCheck, parseAuthorization, type AccessTokenPolicy, type CallRequest, type CallRule, type VerifiedCall, type Verifier } from '../src/verify/index.ts';
-import { decodeJwt, world, type World } from './support.ts';
+import { decodeJwt, repeatsCredential, world, type World } from './support.ts';
 
 const AUDIENCE = 'https://mp-mock.example/t/1/erp';
 const URL_OF_CALL = `${AUDIENCE}/stock`;
@@ -339,6 +339,68 @@ describe('accessToken: the DPoP proof', () => {
     const token = await issue(s);
     accepted(await call(s, token));
     refused(await call(s, token), 'dpop.replay_store');
+  });
+});
+
+describe('accessToken: a refusal never repeats a credential', () => {
+  const MARKER = 'marker-7c1e4b';
+
+  it('the header `<token> <something>` has the token in the place of the scheme: it is refused (token.scheme), and the detail holds no part of the header', async () => {
+    const s = scene();
+    const token = await issue(s);
+    const proof = await proofFor(s, token);
+    for (const authorization of [`${token} x`, `${token} ${token}`, `${token} ${proof}`, `Bearer ${token}`]) {
+      const result = await s.verifier.accessToken({ authorization, dpop: proof, method: 'POST', url: URL_OF_CALL }, POLICY);
+      refused(result, 'token.scheme');
+      if (!result.ok) for (const credential of [token, proof]) expect(repeatsCredential(result.detail, credential), authorization.substring(0, 20)).toBe(false);
+    }
+    // A scheme that is no credential is not repeated either, and the function that reads the header says the same.
+    const strange = parseAuthorization(`${MARKER} abc`);
+    expect(strange).toMatchObject({ ok: false, rule: 'token.scheme' });
+    if (!strange.ok) expect(strange.detail).not.toContain(MARKER);
+    // The twin: the same token with the scheme DPoP is accepted.
+    accepted(await s.verifier.accessToken({ authorization: `DPoP ${token}`, dpop: await proofFor(s, token), method: 'POST', url: URL_OF_CALL }, POLICY));
+  });
+
+  it('no detail holds a credential or a part of one, whatever kind of credential is in the wrong place: an access token, a DPoP proof, a JWT-SVID, an identity credential, a status list', async () => {
+    const s = scene();
+    const token = await issue(s);
+    const proof = await proofFor(s, token);
+    const svid = await s.client.jwtSvid({ agent: { did: s.agent.did, key: s.agent.authentication.privateKey }, audience: AUDIENCE });
+    const credential = await s.client.credential(s.agent.did);
+    if (!svid.ok || !credential.ok) throw new Error('the stub gateway gave no JWT-SVID or no credential');
+    const list = await (await s.gateway.fetch(`${s.gateway.baseUrl}/status/tsl/0`)).text();
+    const credentials = [token, proof, svid.value.svid, credential.value, list];
+    const asToken: Array<[string, string, string]> = [['a DPoP proof', proof, 'token.alg'], ['a JWT-SVID', svid.value.svid, 'token.typ'], ['an identity credential', credential.value, 'token.typ'], ['a status list', list, 'token.typ']];
+    const asProof: Array<[string, string, string]> = [['an access token', token, 'dpop.typ'], ['a JWT-SVID', svid.value.svid, 'dpop.typ'], ['an identity credential', credential.value, 'dpop.typ'], ['a status list', list, 'dpop.typ']];
+    for (const [kind, wrong, rule] of asToken) {
+      const result = await callWith(s, wrong, await proofFor(s, wrong));
+      refused(result, rule);
+      if (!result.ok) for (const held of credentials) expect(repeatsCredential(result.detail, held), `${kind} as the token`).toBe(false);
+    }
+    for (const [kind, wrong, rule] of asProof) {
+      const result = await callWith(s, token, wrong);
+      refused(result, rule);
+      if (!result.ok) for (const held of credentials) expect(repeatsCredential(result.detail, held), `${kind} as the proof`).toBe(false);
+    }
+    // The twin: the token with its own proof is accepted.
+    accepted(await callWith(s, token, proof));
+  });
+
+  it.each<[string, Record<string, unknown>, ProofChange]>([
+    ['token.alg', { alg: MARKER }, {}],
+    ['token.typ', { typ: MARKER }, {}],
+    ['token.kid', { kid: MARKER }, {}],
+    ['dpop.method', {}, { claims: { htm: MARKER } }],
+  ])('a refusal for %s does not repeat the free-form value that the token or the proof holds before its signature is checked', async (rule, tokenHeader, proofChange) => {
+    const s = scene();
+    const token = await forge(s, await issue(s), () => undefined, tokenHeader);
+    const result = await callWith(s, token, await proofFor(s, token, proofChange));
+    refused(result, rule);
+    if (!result.ok) expect(result.detail).not.toContain(MARKER);
+    // The twin: the same call with no marker is accepted.
+    const twin = await forge(s, await issue(s), () => undefined);
+    accepted(await callWith(s, twin, await proofFor(s, twin)));
   });
 });
 

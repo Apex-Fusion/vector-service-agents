@@ -13,7 +13,7 @@ import {
   BUNDLE_RULES, CREDENTIAL_CALL_RULES, CREDENTIAL_RULES, JWT_SVID_RULES, KEY_SET_RULES, STATUS_LIST_RULES, X509_SVID_RULES, bitstringEntryStatus, checkCredential, createVerifier, decodeBitstringStatusList,
   decodeTokenStatusList, parseBundle, parseKeySet, tokenEntryStatus, verifyJwtSvid, verifyX509Svid, type KeySet, type SpiffeBundle,
 } from '../src/verify/index.ts';
-import { decodeJwt, world, type World } from './support.ts';
+import { decodeJwt, repeatsCredential, world, type World } from './support.ts';
 
 /** The rules that the tests of this file saw refused. The last test checks each rule of these documents is in it. */
 const seen = new Set<string>();
@@ -600,6 +600,70 @@ describe('credentials', () => {
     const s = await setup();
     s.gateway.fault('/.well-known/jwks.json', 'network');
     refused(await s.verifier.credential(s.jwt), 'keys.unavailable');
+  });
+});
+
+describe('a refusal never repeats a credential', () => {
+  const MARKER = 'marker-3f9a51';
+  const AUD = 'https://mp-mock.example';
+
+  it('whatever credential is in the wrong place, no detail holds it or a part of it: a JWT-SVID, an identity credential, a status list and a certificate', async () => {
+    const w = world();
+    const agent = w.gateway.createAgent({ label: 'detail agent' });
+    const svid = await w.client.jwtSvid({ agent: { did: agent.did, key: agent.authentication.privateKey }, audience: AUD });
+    const credential = await w.client.credential(agent.did);
+    if (!svid.ok || !credential.ok) throw new Error('the stub gateway gave no JWT-SVID or no credential');
+    const list = await get(w.gateway, '/status/tsl/0');
+    const pem = await leaf(w.gateway);
+    const credentials = [svid.value.svid, credential.value, list, pem, new X509Certificate(pem).raw.toString('base64')];
+    const svidCtx = { bundle: await bundleOf(w.gateway), trustDomain: w.gateway.trustDomain, nowMs: w.gateway.now(), leewaySeconds: 30 };
+    const credentialCtx = { keys: await keysOf(w.gateway), issuer: w.gateway.baseUrl, nowMs: w.gateway.now(), leewaySeconds: 30, subject: null };
+    const wrong: Array<[string, Check<unknown>]> = [
+      ['an identity credential as a JWT-SVID', verifyJwtSvid(credential.value, { ...svidCtx, audience: AUD })],
+      ['a status list as a JWT-SVID', verifyJwtSvid(list, { ...svidCtx, audience: AUD })],
+      ['a certificate as a JWT-SVID', verifyJwtSvid(pem, { ...svidCtx, audience: AUD })],
+      ['a JWT-SVID for another audience', verifyJwtSvid(svid.value.svid, { ...svidCtx, audience: 'https://other.example' })],
+      ['a JWT-SVID as an identity credential', checkCredential(svid.value.svid, credentialCtx)],
+      ['a status list as an identity credential', checkCredential(list, credentialCtx)],
+      ['a certificate as an identity credential', checkCredential(pem, credentialCtx)],
+      ['a JWT-SVID as a certificate', verifyX509Svid(svid.value.svid, svidCtx)],
+      ['an identity credential as a certificate', verifyX509Svid(credential.value, svidCtx)],
+      ['a status list as a certificate', verifyX509Svid(list, svidCtx)],
+    ];
+    for (const [name, result] of wrong) {
+      expect(result.ok, name).toBe(false);
+      if (!result.ok) for (const held of credentials) expect(repeatsCredential(result.detail, held), `${name}: ${held.substring(0, 16)}`).toBe(false);
+    }
+    // The twin: each credential in its own place is accepted.
+    accepted(verifyJwtSvid(svid.value.svid, { ...svidCtx, audience: AUD }));
+    accepted(checkCredential(credential.value, credentialCtx));
+    accepted(verifyX509Svid(pem, svidCtx));
+  });
+
+  it.each<[string, 'jwt-svid' | 'credential', Record<string, unknown>]>([
+    ['jwt_svid.alg', 'jwt-svid', { alg: MARKER }],
+    ['jwt_svid.typ', 'jwt-svid', { typ: MARKER }],
+    ['jwt_svid.kid', 'jwt-svid', { kid: MARKER }],
+    ['credential.alg', 'credential', { alg: MARKER }],
+    ['credential.typ', 'credential', { typ: MARKER }],
+    ['credential.typ', 'credential', { cty: MARKER }],
+    ['credential.kid', 'credential', { kid: MARKER }],
+  ])('a refusal for %s does not repeat the free-form value that the header holds before its signature is checked (%s, %j)', async (rule, kind, header) => {
+    const w = world();
+    const agent = w.gateway.createAgent({ label: 'marker agent' });
+    const credential = await w.client.credential(agent.did);
+    const svid = await w.client.jwtSvid({ agent: { did: agent.did, key: agent.authentication.privateKey }, audience: AUD });
+    if (!credential.ok || !svid.ok) throw new Error('the stub gateway gave no credential or no JWT-SVID');
+    const check: (jwt: string) => Promise<Check<unknown>> =
+      kind === 'jwt-svid'
+        ? async (jwt) => verifyJwtSvid(jwt, { bundle: await bundleOf(w.gateway), trustDomain: w.gateway.trustDomain, nowMs: w.gateway.now(), leewaySeconds: 30, audience: AUD })
+        : async (jwt) => checkCredential(jwt, { keys: await keysOf(w.gateway), issuer: w.gateway.baseUrl, nowMs: w.gateway.now(), leewaySeconds: 30, subject: null });
+    const original = kind === 'jwt-svid' ? svid.value.svid : credential.value;
+    const result = await check(await forged(w.gateway, original, () => undefined, header));
+    refused(result, rule);
+    if (!result.ok) expect(result.detail).not.toContain(MARKER);
+    // The twin: the same document with its own header is accepted.
+    accepted(await check(await forged(w.gateway, original, () => undefined)));
   });
 });
 

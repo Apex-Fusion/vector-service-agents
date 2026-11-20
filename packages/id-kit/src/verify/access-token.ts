@@ -116,12 +116,15 @@ export interface VerifiedAccessToken {
   readonly keyThumbprint: string;
 }
 
-/** The token in an `Authorization` header field of the form `DPoP <token>`. A token that is sent as `Bearer` is refused: a token that is bound to a key is no bearer token. */
+/**
+ * The token in an `Authorization` header field of the form `DPoP <token>`. A token that is sent as `Bearer` is refused: a token that is bound to a key is no bearer token. No refusal repeats a
+ * part of the header: when a caller sends `<token> <something>` by mistake, the word in the place of the scheme is the whole credential.
+ */
 export function parseAuthorization(header: string | undefined): Check<string, 'token.missing' | 'token.scheme'> {
   if (header === undefined || header.trim() === '') return refuse('token.missing', 'the request has no Authorization header field');
   const parts = /^(\S+) (\S+)$/.exec(header.trim());
   if (parts === null) return refuse('token.scheme', 'the Authorization header field is not a scheme and a token');
-  if (parts[1]!.toLowerCase() !== 'dpop') return refuse('token.scheme', `the Authorization scheme is ${parts[1]}, and an access token of the gateway is sent with DPoP`);
+  if (parts[1]!.toLowerCase() !== 'dpop') return refuse('token.scheme', 'the Authorization scheme is not DPoP: an access token of the gateway is bound to a key, so it is sent with DPoP and never as a Bearer token');
   return accept(parts[2]!);
 }
 
