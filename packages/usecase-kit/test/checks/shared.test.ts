@@ -270,6 +270,13 @@ describe('a source that cannot be read', () => {
     expect(await run(world, 'order-desk', world.context, second)).toMatchObject({ ok: false, code: 'check_unavailable', detail: 'the delegation could not be read' });
   });
 
+  it('ends with check_unavailable when the hook that tells the service about the fault throws: the hook changes nothing', async () => {
+    const world = makeWorld();
+    const ports: ChecksPorts = { ...withLedger(world, { readDelegation: failing }), onFault: () => { throw new Error('the log is full'); } };
+    expect(await run(world, 'order-desk', world.context, ports)).toMatchObject({ ok: false, code: 'check_unavailable', detail: 'the delegation could not be read' });
+    expect((await run(world)).ok).toBe(true);
+  });
+
   it('ends with check_unavailable, and not with a rule, for the answer of a read that is not for this check', async () => {
     const world = makeWorld();
     const use = await world.ports.ledger.delegationUse(world.handoff.delegation, T);
