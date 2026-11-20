@@ -1,5 +1,6 @@
 // packages/usecase-kit/test/protocol/nfc-copy.test.ts: the document that a parser of a message returns holds each text in the NFC form, the form that the digest binds. So a service works on the same bytes
 // that its digest covers. The two parsers of a plain JSON value keep each text as it came, because a text that a model or a supplier wrote is recorded as it was written.
+import { createHash } from 'node:crypto';
 import { canonicalize } from '@vsa/vector-read';
 import { describe, expect, it } from 'vitest';
 import {
@@ -139,5 +140,63 @@ describe('the parsers of a plain JSON value keep each text as it came', () => {
     const parseFields: ProposeFieldsParser<{ note: string }> = (fields) => accepted({ note: String(fields.note) });
     const result = parseRequest({ op: 'propose', authority: AUTHORITY, tenant: TENANT, note: 'cafe\u0301' }, parseFields);
     expect(result.ok && 'note' in result.value ? result.value.note : null).toBe('cafe\u0301');
+  });
+});
+
+/** A text that the NFC form makes longer: two characters have no composed form, so their NFC form is two characters each (10 characters become 12, and 13 bytes become 18). */
+const LONGER = { note: 'qa \u0958 and \u0344', list: ['\u0958'] };
+const LONGER_NFC = { note: 'qa \u0915\u093c and \u0308\u0301', list: ['\u0915\u093c'] };
+
+/** A text that the NFC form puts in another order: a mark above and a mark below, which have no composed form, change places. The length stays. */
+const REORDERED = { note: 'q\u0307\u0323 and \u00e9' };
+const REORDERED_NFC = { note: 'q\u0323\u0307 and \u00e9' };
+
+/** The digest of the salt bytes and the UTF-8 of a canonical text, made with node:crypto alone. */
+const digestOf = (text: string): string => createHash('sha256').update(Buffer.from(SALT, 'hex')).update(text, 'utf8').digest('hex');
+
+describe('a text that the NFC form changes in length or in order', () => {
+  it.each([
+    ['is longer in the NFC form', LONGER, LONGER_NFC],
+    ['has its marks in another order in the NFC form', REORDERED, REORDERED_NFC],
+  ])('a text that %s gives the NFC copy and the digest of that copy', (_what, given, nfc) => {
+    const copy = parseCanonicalDocument(given);
+    expect(copy).toStrictEqual({ ok: true, value: nfc });
+    expect(JSON.stringify(copy.ok && copy.value)).not.toBe(JSON.stringify(given));
+    // The digest is the digest of the NFC form, and the buyer code writes the same canonical text.
+    expect(proposalDigest(SALT, given)).toStrictEqual({ ok: true, value: digestOf(canonicalize(given)) });
+    expect(proposalDigest(SALT, given)).toStrictEqual(proposalDigest(SALT, nfc));
+  });
+
+  it('gives a copy that is longer than the text that was given, and the bytes of the copy are the bytes that the digest covers', () => {
+    const copy = parseCanonicalDocument(LONGER);
+    expect(copy.ok && typeof copy.value.note === 'string' ? copy.value.note.length : 0).toBe(LONGER.note.length + 2);
+    expect(copy.ok && Buffer.byteLength(JSON.stringify(copy.value.note), 'utf8')).toBeGreaterThan(Buffer.byteLength(JSON.stringify(LONGER.note), 'utf8'));
+    expect(copy.ok && canonicalJson(copy.value)).toStrictEqual(canonicalJson(LONGER));
+  });
+
+  it.each([
+    ['is longer in the NFC form', LONGER, LONGER_NFC],
+    ['has its marks in another order in the NFC form', REORDERED, REORDERED_NFC],
+  ])('a proposal of a text that %s makes a copy that parseProposal takes again, with the same digest', (_what, given, nfc) => {
+    const made = makeProposal(given, SALT);
+    expect(made.ok && made.value.document).toStrictEqual(nfc);
+    if (!made.ok) return;
+    expect(parseProposal(made.value)).toStrictEqual(made);
+    // The proposal goes over the wire as JSON text, and it is read again.
+    expect(parseProposal(JSON.parse(JSON.stringify(made.value)))).toStrictEqual(made);
+    // A proposal that holds the text as it was given and the digest of the NFC form is the same proposal.
+    expect(parseProposal({ document: given, salt: SALT, proposal_digest: made.value.proposal_digest })).toStrictEqual(made);
+  });
+
+  it('keeps a lone surrogate through a proposal and its digest: the canonical text writes it as an escape, and the proposal goes over the wire and back', () => {
+    const given = { note: 'a\ud800b', list: ['\udc00'] };
+    const canonical = '{"list":["\\udc00"],"note":"a\\ud800b"}';
+    expect(canonicalJson(given)).toStrictEqual({ ok: true, value: canonical });
+    const made = makeProposal(given, SALT);
+    expect(made).toStrictEqual({ ok: true, value: { document: given, salt: SALT, proposal_digest: digestOf(canonical) } });
+    // JSON text writes a lone surrogate as an escape, and reading the text gives the lone surrogate back.
+    const wire = JSON.stringify(made.ok && made.value);
+    expect(wire).toContain('\\ud800');
+    expect(parseProposal(JSON.parse(wire))).toStrictEqual(made);
   });
 });
