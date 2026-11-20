@@ -29,7 +29,7 @@ export const DECISION_FAILURE_CODES = ['inference_failed', 'store_write_failed',
 export type DecisionFailureCode = (typeof DECISION_FAILURE_CODES)[number];
 
 /** The sub-job of a hire that was paid, and whether its Accept was seen on the chain. */
-export interface Delivery {
+export interface PaidDelivery {
   readonly sub_job: SubJob;
   readonly accepted: 'confirmed' | 'pending';
 }
@@ -38,7 +38,7 @@ export interface DecisionFailure extends Refused<DecisionFailureCode> {
   /** What a result with the outcome `failed` gives as its `reason`. See the table at the head of this file. */
   readonly reason: string;
   /** The hire that was paid and whose answer could not be used. Null for every other failure. */
-  readonly delivery: Delivery | null;
+  readonly delivery: PaidDelivery | null;
   /** The escrow of the hire, when one was posted. It is a public reference. */
   readonly escrow_ref: OutputRef | null;
   /** Where the hire was when it ended. Null when the failure is not a failure of the hire. */
