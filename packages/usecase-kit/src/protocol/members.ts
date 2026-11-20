@@ -2,6 +2,7 @@
 // The rule "an object with these members and no other", and the safe read of the members of an object. A message of the protocol has exactly the members that it names. A member that is missing is
 // a refusal, and so is a member that the message does not have. A parser of the fields of a use case uses these rules for its own members.
 import { isPlainObject } from './json.ts';
+import { defineMember } from './own.ts';
 import { accepted, refused, type ProtocolResult, type Refused } from './result.ts';
 import { shown } from './text.ts';
 
@@ -27,7 +28,8 @@ export function checkMembers(record: Readonly<Record<string, unknown>>, field: s
 /**
  * The own members of a plain object, each read one time as data, in a NEW plain object. A parser reads the members from this copy, so a getter or a Proxy cannot give it another value at a second read.
  * It refuses a value that is not a plain object, an accessor member, a key that is a symbol, and a member that is not enumerable. The values of the members stay as they are: they are not copied here.
- * The key `__proto__` stays an own member of the copy, so `checkMembers` can refuse it. It never throws.
+ * The key `__proto__` stays an own member of the copy, so `checkMembers` can refuse it. Each member is made with defineProperty, so no setter of a prototype runs. The copy is a plain object, so a name
+ * that it lacks is not `undefined` when Object.prototype has that name: call `checkMembers` before a member is read. It never throws.
  */
 export function readMembers(value: unknown, field: string): ProtocolResult<Record<string, unknown>> {
   if (!isPlainObject(value)) return refused('bad_shape', `${field} must be a JSON object`);
@@ -37,8 +39,8 @@ export function readMembers(value: unknown, field: string): ProtocolResult<Recor
       if (typeof key !== 'string') return refused('bad_shape', `${field} has a key that JSON cannot hold`);
       const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
       if (descriptor === undefined || descriptor.enumerable !== true) return refused('bad_shape', `${field} has a key that JSON cannot hold`);
-      if (!('value' in descriptor)) return refused('bad_shape', `${field}.${shown(key)} is an accessor, which is not allowed`);
-      Object.defineProperty(out, key, { value: descriptor.value, enumerable: true, writable: true, configurable: true });
+      if (!Object.hasOwn(descriptor, 'value')) return refused('bad_shape', `${field}.${shown(key)} is an accessor, which is not allowed`);
+      defineMember(out, key, descriptor.value);
     }
     return accepted(out);
   } catch {

@@ -52,6 +52,23 @@ function throwing(): { object: Record<string, unknown>; reads: () => number } {
   return { object, reads: () => reads };
 }
 
+/**
+ * A Proxy of the array `[1, 2]` that reports `length` as its length. Its descriptor trap gives a data member for every index, and it counts the calls. It throws at the 1,001st call, so that a walk that
+ * trusts the length ends.
+ */
+function reporting(length: unknown): { proxy: unknown[]; reads: () => number } {
+  let reads = 0;
+  const proxy = new Proxy([1, 2], {
+    get: (target, key, receiver) => (key === 'length' ? length : Reflect.get(target, key, receiver)),
+    getOwnPropertyDescriptor(target, key) {
+      reads += 1;
+      if (reads > 1_000) throw new Error('the walk reads on');
+      return Reflect.getOwnPropertyDescriptor(target, key) ?? { value: 0, enumerable: true, configurable: true, writable: true };
+    },
+  });
+  return { proxy, reads: () => reads };
+}
+
 function revoked(): object {
   const { proxy, revoke } = Proxy.revocable({}, {});
   revoke();
@@ -161,6 +178,45 @@ describe.each(ENTRY_POINTS)('%s', (_name, parse) => {
     Object.defineProperty(array, 0, { get() { reads += 1; return 1; }, enumerable: true, configurable: true });
     expect(parse({ a: array }).ok).toBe(false);
     expect(reads).toBe(0);
+  });
+
+  it.each([3, 1, 50_000_000, 2 ** 32 - 1])('refuses an array that reports a length of %d that its keys do not have, before it reads an index, and takes the plain twin', (length) => {
+    const { proxy, reads } = reporting(length);
+    expect(() => parse({ a: proxy })).not.toThrow();
+    expect(parse({ a: proxy }).ok).toBe(false);
+    expect(reads()).toBe(0);
+    // The twins: a plain array of the same small length, and the same Proxy with the length that its keys have. A walk reads the indexes of the second one.
+    expect(parse({ a: [1, 2, 3] }).ok).toBe(true);
+    const honest = reporting(2);
+    expect(parse({ a: honest.proxy }).ok).toBe(true);
+    expect(honest.reads()).toBeGreaterThan(0);
+  });
+
+  it('refuses an array whose length is not a number, and does not ask the length for a number', () => {
+    let asked = 0;
+    const { proxy, reads } = reporting({ valueOf() { asked += 1; return 2; } });
+    expect(parse({ a: proxy }).ok).toBe(false);
+    expect([asked, reads()]).toStrictEqual([0, 0]);
+  });
+});
+
+describe('the length of an array', () => {
+  it.each([
+    ['a length above the keys', 50_000_000, 'document.a[2] is a hole in an array'],
+    ['the largest length of an array', 2 ** 32 - 1, 'document.a[2] is a hole in an array'],
+    ['a length under the keys', 1, 'document.a has a key that JSON cannot hold'],
+    ['a length that is a text', '2', 'document.a has a length that is not a number'],
+  ])('refuses %s before it reads an index, and names the refusal', (_name, length, detail) => {
+    const { proxy, reads } = reporting(length);
+    expect(parseJsonValue({ a: proxy }, 'document')).toStrictEqual({ ok: false, code: 'bad_shape', detail });
+    expect(reads()).toBe(0);
+  });
+
+  it('refuses an array of the largest length that has no index, at its first index, as before', () => {
+    const sparse: unknown[] = [];
+    sparse.length = 2 ** 32 - 1;
+    expect(parseJsonValue({ a: sparse }, 'document')).toStrictEqual({ ok: false, code: 'bad_shape', detail: 'document.a[0] is a hole in an array' });
+    expect(parseJsonValue({ a: [] }, 'document')).toStrictEqual({ ok: true, value: { a: [] } });
   });
 });
 

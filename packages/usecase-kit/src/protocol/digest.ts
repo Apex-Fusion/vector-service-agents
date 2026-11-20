@@ -14,20 +14,32 @@ import { accepted, type ProtocolResult } from './result.ts';
 
 const isList = (value: JsonValue): value is readonly JsonValue[] => Array.isArray(value);
 
-/** The canonical text of a copy that parseJsonValue built: at most MAX_DOCUMENT_DEPTH levels, so the recursion is short. No array method runs on the copy. */
+/**
+ * The canonical text of a copy that parseJsonValue built: at most MAX_DOCUMENT_DEPTH levels, so the recursion is short. The text grows by string concatenation. No array of parts is built, because `push` on
+ * an array calls a setter that a prototype has for an index, and a copy has its own member for each index and each key, so reading it never reaches a prototype.
+ */
 function write(value: JsonValue): string {
   if (value === null) return 'null';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   if (typeof value === 'number') return JSON.stringify(value);
   if (typeof value === 'string') return JSON.stringify(value.normalize('NFC'));
-  const parts: string[] = [];
+  let text = '';
+  let separator = '';
   if (isList(value)) {
-    for (let index = 0; index < value.length; index += 1) parts.push(write(value[index]!));
-    return `[${parts.join(',')}]`;
+    for (let index = 0; index < value.length; index += 1) {
+      text += `${separator}${write(value[index]!)}`;
+      separator = ',';
+    }
+    return `[${text}]`;
   }
   // Array.prototype.sort with no function orders strings by UTF-16 code unit, which is the order of the canonical form.
-  for (const key of Object.keys(value).sort()) parts.push(`${JSON.stringify(key)}:${write(value[key]!)}`);
-  return `{${parts.join(',')}}`;
+  const keys = Object.keys(value).sort();
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index]!;
+    text += `${separator}${JSON.stringify(key)}:${write(value[key]!)}`;
+    separator = ',';
+  }
+  return `{${text}}`;
 }
 
 /** The canonical text of a JSON value, or a refusal when the value is not one that the canonical form can write without loss (see parseJsonValue). */
