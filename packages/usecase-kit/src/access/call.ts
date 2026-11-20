@@ -1,16 +1,18 @@
 // packages/usecase-kit/src/access/call.ts
-// One call to a mock system, with the credential of its route. Each function checks that the credential is for this route, before it sends anything. Then it makes the proof or the header, sends
-// the call once, and maps the answer with `readAnswer`: the body for a 2xx, `refused_by_system` for a 401 or a 403, and `mock_system_failed` for everything else. There is no retry: a write may
-// have taken effect, so a caller that wants another try reads the state first. No function throws.
+// One call to a mock system, with the credential of its route. Each function checks that the credential is for this route, before it sends anything, and it reads the URL as a parsed URL (url.ts):
+// the host is the host of its kind, and the path is below the resource of the credential on a segment boundary. Then it makes the proof or the header, sends the call once, and maps the answer
+// with `readAnswer`: the body for a 2xx, `refused_by_system` for a 401 or a 403, and `mock_system_failed` for everything else. There is no retry: a write may have taken effect, so a caller that
+// wants another try reads the state first. No function throws.
 import type { PresentedToken } from '@vsa/id-kit/client';
 import { RUNTIME_BODY_LIMIT_BYTES, type JsonValue } from '../protocol/index.ts';
 import { failed, readAnswer, type SystemFailed, type SystemResult } from './answer.ts';
 import type { MtlsTransport } from './mtls.ts';
 import { MAX_WAIT_MS, within, type Clock } from './ports.ts';
-import type { HttpMethod, JwtSvidTarget, RouteTarget, TokenTarget, X509Target } from './routes.ts';
+import { originOf, type HttpMethod, type JwtSvidTarget, type MockBases, type RouteTarget, type TokenTarget, type X509Target } from './routes.ts';
 import type { JwtSvidCredential, X509SvidCredential } from './svid.ts';
 import type { RouteToken } from './token.ts';
 import { errorText, piecesOf, safeText } from './text.ts';
+import { urlProblem } from './url.ts';
 
 /** The longest time that a call waits for the answer, in milliseconds. A mock system can take about 50 seconds for a check of its own. */
 export const DEFAULT_CALL_TIMEOUT_MS = 60_000;
@@ -21,6 +23,8 @@ export interface CallDeps {
   /** The `fetch` of the caller. A test gives a stub. */
   readonly fetch: typeof fetch;
   readonly clock: Clock;
+  /** The two origins of the mock service. A call goes to the host of its kind: a token and a JWT-SVID to the public base, and an X.509-SVID to the client-certificate base. */
+  readonly bases: MockBases;
   /** The longest time that a call waits, in milliseconds: a whole number from 1 to 86,400,000. The default is DEFAULT_CALL_TIMEOUT_MS. */
   readonly timeoutMs?: number;
   /** The most bytes of an answer that a call reads: a whole number of at least 1. The default is DEFAULT_MAX_ANSWER_BYTES. */
@@ -40,8 +44,24 @@ interface Prepared {
 
 const notSent = (detail: string): SystemFailed => failed(null, null, false, detail);
 
-/** The URL is the resource, or a path below it. A URL on another host, or on a path that only starts with the same letters, is not. */
-const isUnder = (url: string, resource: string): boolean => url === resource || url.startsWith(`${resource}/`);
+/**
+ * `notSent` for a URL that breaks a rule of `urlProblem`, or null. `kind` names the base of the host of this kind of call: the public base for a token and for a JWT-SVID, and the client-certificate
+ * base for an X.509-SVID. The resource of a system is on the public base, and a call with a client certificate goes to the same path on the client-certificate base.
+ */
+function urlRefusal(deps: CallDeps, kind: 'publicBase' | 'mtlsBase', url: unknown, resource: string): SystemFailed | null {
+  const origin = originOf(deps.bases?.[kind], kind);
+  if (!origin.ok) return notSent(`${kind} of the call must be an https origin`);
+  let wanted = resource;
+  if (kind === 'mtlsBase') {
+    try {
+      wanted = `${origin.value}${new URL(resource).pathname}`;
+    } catch {
+      return notSent('the resource of the route is not a URL');
+    }
+  }
+  const problem = urlProblem(url, origin.value, wanted);
+  return problem === null ? null : notSent(problem);
+}
 
 /** The limits of a call, or why the call is refused before it is sent: a limit that is not a whole number in its range is an error, and never "no limit". */
 function limitsOf(deps: CallDeps): { readonly ok: true; readonly timeoutMs: number; readonly maxBytes: number } | { readonly ok: false; readonly failure: SystemFailed } {
@@ -112,7 +132,8 @@ export async function callWithToken(deps: CallDeps, token: RouteToken, target: T
   if (token.route !== target.route || token.resource !== target.resource || token.action !== target.action) {
     return notSent(`the token is for the route ${token.route}, and the call is for the route ${target.route}`);
   }
-  if (!isUnder(target.url, token.resource)) return notSent('the URL of the call is not below the resource of the token');
+  const refusedUrl = urlRefusal(deps, 'publicBase', target.url, token.resource);
+  if (refusedUrl !== null) return refusedUrl;
   if (target.callers === 'agent' && token.holder === 'subagent') return notSent(`the route ${target.route} takes the agent only, and the token is a subagent token`);
   if (deps.clock.now() >= token.expiresAt) return notSent('the token has ended');
   const limits = limitsOf(deps);
@@ -140,7 +161,8 @@ export async function callWithToken(deps: CallDeps, token: RouteToken, target: T
 /** A call with a JWT-SVID, as `Authorization: Bearer <JWT-SVID>`. The JWT-SVID must name the audience of the route, the URL must be below that audience, and the JWT-SVID must not have ended. */
 export async function callWithJwtSvid(deps: CallDeps, svid: JwtSvidCredential, target: JwtSvidTarget, body?: JsonValue): Promise<SystemResult> {
   if (!svid.audience.includes(target.audience)) return notSent(`the JWT-SVID does not name the audience of the route ${target.route}`);
-  if (!isUnder(target.url, target.audience)) return notSent('the URL of the call is not below the audience of the JWT-SVID');
+  const refusedUrl = urlRefusal(deps, 'publicBase', target.url, target.audience);
+  if (refusedUrl !== null) return refusedUrl;
   if (deps.clock.now() >= svid.expiresAt) return notSent('the JWT-SVID has ended');
   const limits = limitsOf(deps);
   if (!limits.ok) return limits.failure;
@@ -160,9 +182,12 @@ export async function callWithJwtSvid(deps: CallDeps, svid: JwtSvidCredential, t
 
 /**
  * A call with an X.509-SVID as the TLS client certificate, to the client-certificate host. The call goes through the transport and not through `fetch`, because `fetch` cannot present a client
- * certificate. The certificate must not have ended. The private key goes to the transport only, and a text that a result shows never holds it.
+ * certificate. The URL must be on the client-certificate base, on the path of the resource of the route or below it, and the certificate must not have ended. The private key goes to the transport
+ * only, and a text that a result shows never holds it.
  */
 export async function callWithX509Svid(deps: CallDeps & { readonly transport: MtlsTransport }, credential: X509SvidCredential, target: X509Target, body?: JsonValue): Promise<SystemResult> {
+  const refusedUrl = urlRefusal(deps, 'mtlsBase', target.url, target.resource);
+  if (refusedUrl !== null) return refusedUrl;
   if (deps.clock.now() >= credential.expiresAt) return notSent('the X.509-SVID has ended');
   const limits = limitsOf(deps);
   if (!limits.ok) return limits.failure;

@@ -52,11 +52,12 @@ describe('the target of a token route', () => {
     expect(records.ok && submission.ok && records.value.action !== submission.value.action).toBe(true);
   });
 
-  it('puts a path parameter in the path as one encoded segment', () => {
+  it('puts a path parameter in the path as one encoded segment, and refuses a slash and a backslash: a call refuses an encoded slash, so no target may hold one', () => {
     const target = tokenTarget(BASES, 'run1', 'erp.stock', { sku: 'A B' });
     expect(target.ok && target.value.url).toBe('https://mock.example/t/run1/erp/stock/A%20B');
-    const slash = tokenTarget(BASES, 'run1', 'erp.stock', { sku: 'a/b?c#d' });
-    expect(slash.ok && slash.value.url).toBe('https://mock.example/t/run1/erp/stock/a%2Fb%3Fc%23d');
+    const marks = tokenTarget(BASES, 'run1', 'erp.stock', { sku: 'a?c#d%e' });
+    expect(marks.ok && marks.value.url).toBe('https://mock.example/t/run1/erp/stock/a%3Fc%23d%25e');
+    for (const sku of ['a/b', '/', 'a\\b', '..\\x']) expect(tokenTarget(BASES, 'run1', 'erp.stock', { sku }), sku).toMatchObject({ ok: false, code: 'bad_shape' });
   });
 
   it.each(['', '.', '..'])('refuses the path parameter %j, and accepts a name that only contains dots', (sku) => {

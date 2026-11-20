@@ -112,7 +112,7 @@ describe('an X.509-SVID', () => {
 });
 
 describe('a call with an X.509-SVID', () => {
-  const deps = (w: SvidWorld, transport: MtlsTransport, over: Partial<CallDeps> = {}) => ({ fetch, clock: w.clock, transport, ...over });
+  const deps = (w: SvidWorld, transport: MtlsTransport, over: Partial<CallDeps> = {}) => ({ fetch, clock: w.clock, bases: BASES, transport, ...over });
 
   it('goes to the client-certificate host through the transport, with the certificate and the key, and gives the body', async () => {
     const w = world();
@@ -256,7 +256,7 @@ describe('a JWT-SVID', () => {
     stub.reply({ status: 200, body: '{"service_code":"SYN-MRI-LS","requirements":[]}' });
     const svid = await fetchJwtSvid({ client: w.client }, w.agent(w.orderDesk), w.requirements);
     if (!svid.ok) throw new Error('no SVID');
-    const result = await callWithJwtSvid({ fetch: viaStub(stub), clock: w.clock }, svid.value, w.requirements);
+    const result = await callWithJwtSvid({ fetch: viaStub(stub), clock: w.clock, bases: BASES }, svid.value, w.requirements);
     expect(result).toMatchObject({ ok: true, status: 200, body: { service_code: 'SYN-MRI-LS' } });
     expect(stub.requests).toHaveLength(1);
     const sent = stub.requests[0]!;
@@ -270,7 +270,7 @@ describe('a JWT-SVID', () => {
     stub.requests.length = 0;
     const svid = await fetchJwtSvid({ client: w.client }, w.agent(w.orderDesk), w.requests);
     if (!svid.ok) throw new Error('no SVID');
-    const deps: CallDeps = { fetch: viaStub(stub), clock: w.clock };
+    const deps: CallDeps = { fetch: viaStub(stub), clock: w.clock, bases: BASES };
     stub.reply({ status: 201, body: '{"intake_id":"i1"}' });
     expect(await callWithJwtSvid(deps, svid.value, w.requests, { request: { request_number: 'R1' }, status: 'complete' })).toMatchObject({ ok: true, status: 201 });
     expect(stub.requests[0]!.headers['content-type']).toBe('application/json');
@@ -290,7 +290,7 @@ describe('a JWT-SVID', () => {
     if (!svid.ok) throw new Error('no SVID');
     const other = jwtSvidTarget(BASES, 'run2', 'insurer.requirements', { service_code: 'SYN-MRI-LS' });
     if (!other.ok) throw new Error('target');
-    const deps: CallDeps = { fetch: viaStub(stub), clock: w.clock };
+    const deps: CallDeps = { fetch: viaStub(stub), clock: w.clock, bases: BASES };
     expect(await callWithJwtSvid(deps, svid.value, other.value)).toMatchObject({ ok: false, sent: false });
     expect(stub.requests).toHaveLength(0);
     expect((await callWithJwtSvid(deps, svid.value, w.requirements)).ok).toBe(true);
@@ -307,7 +307,7 @@ describe('a JWT-SVID', () => {
     stub.reply({ status: 200, body: '{}' });
     const svid = await fetchJwtSvid({ client: w.client }, w.agent(w.orderDesk), w.requirements);
     if (!svid.ok) throw new Error('no SVID');
-    const deps: CallDeps = { fetch: viaStub(stub), clock: w.clock };
+    const deps: CallDeps = { fetch: viaStub(stub), clock: w.clock, bases: BASES };
     await w.clock.advance(svid.value.expiresAt - w.clock.now() - 1);
     expect((await callWithJwtSvid(deps, svid.value, w.requirements)).ok).toBe(true);
     await w.clock.advance(1);
@@ -320,7 +320,7 @@ describe('a JWT-SVID', () => {
     const svid = await fetchJwtSvid({ client: w.client }, w.agent(w.orderDesk), w.requirements);
     if (!svid.ok) throw new Error('no SVID');
     const jwt = svid.value.bearer().slice('Bearer '.length);
-    const result = await callWithJwtSvid({ fetch: async (_url, init) => { throw new Error(`down: ${String((init?.headers as Record<string, string>).authorization)}`); }, clock: w.clock }, svid.value, w.requirements);
+    const result = await callWithJwtSvid({ fetch: async (_url, init) => { throw new Error(`down: ${String((init?.headers as Record<string, string>).authorization)}`); }, clock: w.clock, bases: BASES }, svid.value, w.requirements);
     expect(result).toMatchObject({ ok: false, code: 'mock_system_failed', sent: true });
     for (const part of [jwt, ...jwt.split('.')]) expect(JSON.stringify(result)).not.toContain(part);
   });

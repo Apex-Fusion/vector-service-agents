@@ -32,7 +32,7 @@ describe('the code of the folder', () => {
   const files = readdirSync(SRC).filter((name) => name.endsWith('.ts'));
 
   it('has one file for each part', () => {
-    expect(files.sort()).toStrictEqual(['answer.ts', 'call.ts', 'gateway.ts', 'index.ts', 'mtls.ts', 'ports.ts', 'routes.ts', 'signer.ts', 'subdelegation.ts', 'svid.ts', 'text.ts', 'token.ts']);
+    expect(files.sort()).toStrictEqual(['answer.ts', 'call.ts', 'gateway.ts', 'index.ts', 'mtls.ts', 'ports.ts', 'routes.ts', 'signer.ts', 'subdelegation.ts', 'svid.ts', 'text.ts', 'token.ts', 'url.ts']);
   });
 
   it.each(files)('%s reads no environment variable, no file and no stream of the process, and writes no log line', (name) => {

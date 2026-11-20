@@ -25,7 +25,7 @@ function world() {
   const child = w.gateway.delegate({ delegator: w.agent, delegate: w.reader, parent: root, actions: ['erp.stock.read'], resources: ['*'], remaining: 0 });
   const clock = new FakeClock(w.gateway.now());
   const verifier = createVerifier({ baseUrl: w.gateway.baseUrl, fetch: w.gateway.fetch, now: w.gateway.now });
-  const deps: CallDeps = { fetch: viaStub(stub), clock };
+  const deps: CallDeps = { fetch: viaStub(stub), clock, bases };
   const tokenFor = async (target: TokenTarget): Promise<RouteToken> => {
     const result = await requestRouteToken(
       { client: w.client },

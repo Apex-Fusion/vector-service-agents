@@ -81,7 +81,7 @@ export interface JwtSvidTarget extends TargetBase {
 export type RouteTarget = TokenTarget | X509Target | JwtSvidTarget;
 
 /** The origin of a base: https only, because a resource of a delegation is an https URL. No user, path, query or fragment. */
-function originOf(base: unknown, field: string): ProtocolResult<string> {
+export function originOf(base: unknown, field: string): ProtocolResult<string> {
   if (typeof base !== 'string') return refused('bad_shape', `${field} must be text`);
   let url: URL;
   try {
@@ -97,15 +97,15 @@ function originOf(base: unknown, field: string): ProtocolResult<string> {
 const PARAMETER = /\{([a-z_]+)\}/g;
 const MAX_PARAMETER_CHARS = 128;
 
-/** The path of a template with its parameters. A value is one path segment: it is not empty, it is not `.` or `..`, and it is percent-encoded. */
+/** The path of a template with its parameters. A value is one path segment: it is not empty, it is not `.` or `..`, it has no slash and no backslash, and it is percent-encoded. */
 function pathOf(template: string, params: Readonly<Record<string, unknown>>): ProtocolResult<string> {
   const names = [...template.matchAll(PARAMETER)].map((match) => match[1]!);
   for (const name of Object.keys(params)) if (!names.includes(name)) return refused('bad_shape', `the route has no path parameter ${name}`);
   let failure: string | null = null;
   const path = template.replace(PARAMETER, (_whole, name: string) => {
     const value = Object.hasOwn(params, name) ? params[name] : undefined;
-    if (typeof value !== 'string' || value.length < 1 || value.length > MAX_PARAMETER_CHARS || value === '.' || value === '..') {
-      failure ??= `the path parameter ${name} must be 1 to ${MAX_PARAMETER_CHARS} characters, and not "." or ".."`;
+    if (typeof value !== 'string' || value.length < 1 || value.length > MAX_PARAMETER_CHARS || value === '.' || value === '..' || value.includes('/') || value.includes('\\')) {
+      failure ??= `the path parameter ${name} must be 1 to ${MAX_PARAMETER_CHARS} characters, with no slash and no backslash, and not "." or ".."`;
       return '';
     }
     return encodeURIComponent(value);
