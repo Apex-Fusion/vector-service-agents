@@ -284,6 +284,9 @@ describe('a sub-delegation that is wider than the narrow one is never built', ()
     ['a start before the parent', (d) => ({ ...d, notBefore: NOW - DAY - 1 })],
     ['an end before its start', (d) => ({ ...d, notBefore: d.notAfter })],
     ['another depth', (d) => ({ ...d, depth: 3 })],
+    ['another agent as its delegator', (d) => ({ ...d, delegator: { type: 'Agent', id: 'dd'.repeat(32) } })],
+    ['a purpose', (d) => ({ ...d, purpose: 'ee'.repeat(32) })],
+    ['a start after the clock and after the start of the parent', (d) => ({ ...d, notBefore: NOW + 60_000 })],
   ];
 
   it.each(tampers)('is not signed, not sent and not run when the builder gives %s', async (_name, change) => {
