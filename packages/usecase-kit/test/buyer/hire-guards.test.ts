@@ -5,11 +5,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { POLL_INTERVAL_MS } from '@vsa/hire-kit';
 import { AGENT_ADVERT, INDEXER, LLM_ADVERT_REF } from '@vsa/hire-kit/testing';
 import { MAX_REQUEST_BYTES, RFQ_SCHEMA, RUNTIME_BODY_LIMIT_BYTES, checkRequestSize, parseRfq } from '@vsa/usecase-kit/protocol';
-import { requestText, runtimeBody } from '@vsa/usecase-kit/buyer';
+import { hireCounterparty, requestText, runtimeBody } from '@vsa/usecase-kit/buyer';
 import type { HireInput, RefusedCode } from '@vsa/usecase-kit/buyer';
 import { wirePayloadFor } from '@vsa/vector-read';
 import {
-  AGENT_ADVERT_REF, BUYER_DID, DELEGATION, NO_LIMITS, OTHER_ID, T0, cleanWorlds, executeRequest, expectKind, go, handoffFor, purchaseOrder, untouched, words, world,
+  AGENT_ADVERT_REF, BUYER_DID, DELEGATION, NO_LIMITS, OTHER_ID, T0, cleanWorlds, executeRequest, expectKind, go, handoffFor, input, purchaseOrder, untouched, words, world,
 } from './support.ts';
 
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); cleanWorlds(); });
@@ -53,6 +53,29 @@ describe('the settings and the message', () => {
     expect(words(await go(w, { limits: { maxPriceLovelace: null, maxSupplierBondLovelace: null, maxBuyerBondLovelace: null } }))).toBe('completed');
     const bounded = await world();
     expect(words(await go(bounded, { limits: { maxPriceLovelace: 200_000n, maxSupplierBondLovelace: 1_000_000n, maxBuyerBondLovelace: 1_000_000n } }))).toBe('completed');
+  });
+
+  it('refuses a limit that cannot be read as internal, with a step and no throw: a getter that throws', async () => {
+    const w = await world();
+    const limits = { get maxPriceLovelace(): bigint | null { throw new Error('SECRET-SETTING'); }, maxSupplierBondLovelace: null, maxBuyerBondLovelace: null };
+    const step = expectKind(await go(w, { limits }), 'refused');
+    expect([step.code, step.detail]).toStrictEqual(['internal', 'maxPriceLovelace cannot be read']);
+    expect(JSON.stringify(step)).not.toContain('SECRET-SETTING');
+    expect(w.reads.calls).toStrictEqual({ delegation: 0, liveVaults: 0 });
+    expect(untouched(w)).toStrictEqual(NOTHING);
+    // The twin: limits that can be read are hired with.
+    expect(words(await go(w))).toBe('completed');
+  });
+
+  it('refuses an input whose member cannot be read as internal, with a step and no throw', async () => {
+    const w = await world();
+    const unreadable = input();
+    Object.defineProperty(unreadable, 'capability_id', { get: () => { throw new Error('SECRET-SETTING'); } });
+    const step = expectKind(await hireCounterparty(w.deps, unreadable), 'refused');
+    expect([step.code, step.detail]).toStrictEqual(['internal', 'the input of the hire cannot be read']);
+    expect(JSON.stringify(step)).not.toContain('SECRET-SETTING');
+    expect(untouched(w)).toStrictEqual(NOTHING);
+    expect(words(await hireCounterparty(w.deps, input()))).toBe('completed');
   });
 
   it('refuses a paying key whose chain cannot pay from a vault as internal, and pays nothing', async () => {

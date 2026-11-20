@@ -6,7 +6,7 @@ import type { FleetVerification } from '@vsa/buyer-core';
 import type { AgentDelivery, AgentOutcome, HireRecord, HireTerms } from '@vsa/hire-kit';
 import { AFTER_CLAIM_REFUSALS, ERROR_STATUS, REFUSAL_CODES, RECEIPT_CHECKS } from '@vsa/usecase-kit/protocol';
 import type { ExitState } from '@vsa/usecase-kit/protocol';
-import { COUNTERPARTY_REFUSED, INCONSISTENT_OUTCOME, afterClaimRefusalIn, completedResult, settledResult, stepOfOutcome } from '@vsa/usecase-kit/buyer';
+import { COUNTERPARTY_REFUSED, INCONSISTENT_OUTCOME, VAULT_REASON_MISSING, afterClaimRefusalIn, completedResult, settledResult, stepOfOutcome } from '@vsa/usecase-kit/buyer';
 import type { DelegationAfter, HireStep } from '@vsa/usecase-kit/buyer';
 import { AGENT_ADVERT_REF, COUNTERPARTY_DID, pieces, words } from './support.ts';
 
@@ -38,6 +38,10 @@ const ledgerRefusal = (kind: 'ledger' | 'not_evaluated'): AgentOutcome => ({
   refusal: { kind, evaluationError: '3010 Some scripts of the transactions terminated with error(s).', validators: [], body: 'a1b2c3', attempt: undefined as never },
 });
 const impossible = (reason: 'no_vault' | 'no_delegation' | 'below_minimum'): AgentOutcome => ({ outcome: 'vault_refused', advertRef: AGENT_ADVERT_REF, message: 'kit words', refusal: { kind: 'impossible', reason } });
+/** A refusal of the ledger with the evaluation error that the test gives, which can be wrong on purpose. */
+const withEvaluation = (evaluationError: unknown): AgentOutcome => ({
+  outcome: 'vault_refused', advertRef: AGENT_ADVERT_REF, message: 'kit words', refusal: { kind: 'ledger', evaluationError: evaluationError as string, validators: [], body: 'a1b2c3', attempt: undefined as never },
+});
 const declined: AgentOutcome = { outcome: 'not_accepted', reason: 'declined', message: 'kit words', declined: 'the lot is not the lot of the order', delivery, ...paid };
 const timedOut: AgentOutcome = { outcome: 'not_accepted', reason: 'decision_timeout', message: 'kit words', delivery, ...paid };
 const receiptFailed: AgentOutcome = {
@@ -135,6 +139,35 @@ const TABLE: readonly Row[] = [
     outcome: { ...declined, delivery: { ...delivery, record: { ...record, verification: { ...ALL_TRUE, fields_match: undefined as never } } } } as AgentOutcome,
   },
   { name: 'an outcome that the kit does not have', outcome: { outcome: 'paid', ...paid } as never, step: `failed ${INCONSISTENT_OUTCOME}`, result: `failed:${INCONSISTENT_OUTCOME}:Failed` },
+  { name: 'an outcome that is null', outcome: null as never, step: `failed ${INCONSISTENT_OUTCOME}`, result: `failed:${INCONSISTENT_OUTCOME}:Failed` },
+  { name: 'an outcome that is undefined', outcome: undefined as never, step: `failed ${INCONSISTENT_OUTCOME}`, result: `failed:${INCONSISTENT_OUTCOME}:Failed` },
+  {
+    name: 'the vault refused the Pay and the node gave an empty evaluation error', outcome: withEvaluation(''), after: 'live', step: 'vault_refused ledger',
+    result: `vault_refused:${VAULT_REASON_MISSING}:Failed`,
+  },
+  {
+    name: 'the vault refused the Pay and the node gave an evaluation error of white space', outcome: withEvaluation('  \n\t '), after: 'live', step: 'vault_refused ledger',
+    result: `vault_refused:${VAULT_REASON_MISSING}:Failed`,
+  },
+  {
+    name: 'the vault refused the Pay and the node gave no evaluation error', outcome: withEvaluation(undefined), after: 'live', step: 'vault_refused ledger',
+    result: `vault_refused:${VAULT_REASON_MISSING}:Failed`,
+  },
+  {
+    name: 'the vault refused the Pay and the evaluation error is not a text', outcome: withEvaluation(3010), after: 'live', step: 'vault_refused ledger', result: `vault_refused:${VAULT_REASON_MISSING}:Failed`,
+  },
+  {
+    name: 'the vault refused the Pay, the hirer ended the delegation, and the node gave an empty evaluation error', outcome: withEvaluation(''), after: 'ended', step: 'vault_refused ledger',
+    result: `vault_refused:${VAULT_REASON_MISSING}:Cancelled`,
+  },
+  {
+    name: 'the Pay cannot be built and the builder gave no reason', outcome: { ...impossible('no_vault'), refusal: { kind: 'impossible', reason: undefined as never } } as AgentOutcome, after: 'live',
+    step: 'vault_refused impossible', result: `vault_refused:${VAULT_REASON_MISSING}:Failed`,
+  },
+  {
+    name: 'a vault_refused outcome that holds no refusal', outcome: { outcome: 'vault_refused', advertRef: AGENT_ADVERT_REF, message: 'kit words', refusal: null } as never, step: `failed ${INCONSISTENT_OUTCOME}`,
+    result: `failed:${INCONSISTENT_OUTCOME}:Failed`,
+  },
 ];
 
 /** The result of a step as `outcome:reason:exit_state`, or `use case` for a step that the use case finishes. */
@@ -150,8 +183,8 @@ function resultOf(step: HireStep): string {
 
 describe('the map from the outcome of the hire kit to the step and the result', () => {
   it('has a row for every outcome of the hire kit', () => {
-    expect(new Set(TABLE.map((row) => row.outcome.outcome)).size).toBeGreaterThanOrEqual(Object.keys(COVERED).length);
-    for (const name of Object.keys(COVERED)) expect(TABLE.some((row) => row.outcome.outcome === name), name).toBe(true);
+    expect(new Set(TABLE.map((row) => row.outcome?.outcome)).size).toBeGreaterThanOrEqual(Object.keys(COVERED).length);
+    for (const name of Object.keys(COVERED)) expect(TABLE.some((row) => row.outcome?.outcome === name), name).toBe(true);
   });
 
   for (const row of TABLE) {

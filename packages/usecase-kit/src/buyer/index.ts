@@ -11,7 +11,7 @@ export { findLiveVault } from './vault.ts';
 export type { VaultRefusal, VaultSearch } from './vault.ts';
 export { BODY_ESCROW_REF, checkRuntimeBody, checkWirePayload, handoffOf, messageOf, requestText, runtimeBody } from './message.ts';
 export type { CounterpartyMessage, HandoffSource } from './message.ts';
-export { COUNTERPARTY_REFUSED, INCONSISTENT_OUTCOME, afterClaimRefusalIn, stepOfOutcome } from './outcome.ts';
+export { COUNTERPARTY_REFUSED, INCONSISTENT_OUTCOME, VAULT_REASON_MISSING, afterClaimRefusalIn, stepOfOutcome } from './outcome.ts';
 export type { AfterClaimRefusal, StepContext } from './outcome.ts';
 export { hireCounterparty } from './hire.ts';
 export type { DeliveryDecision, HandoffHireInput, HireDeps, HireInput, QuoteHireInput } from './hire.ts';

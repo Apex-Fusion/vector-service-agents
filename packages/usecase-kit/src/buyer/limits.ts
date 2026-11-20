@@ -29,13 +29,25 @@ function kindOf(value: unknown): string {
 
 /**
  * The three limits as a new object, or a refusal that names the first limit that is wrong. A limit is a bigint of at least 0, or `null`. A number, a text, `undefined` and a missing member
- * are refused: a missing limit would count as no limit at all. Each member is read one time, and the result holds the values that were checked.
+ * are refused: a missing limit would count as no limit at all. Each member is read one time, and the result holds the values that were checked. A member that cannot be read (a getter that throws)
+ * is refused too, and the error is not repeated: it could hold a part of the settings.
  */
 export function checkLimits(limits: unknown): ProtocolResult<HireLimits, 'bad_limit'> {
-  if (limits === null || typeof limits !== 'object' || Array.isArray(limits)) return refused('bad_limit', 'the limits must be an object with the three limits of a hire');
+  let isObject: boolean;
+  try {
+    isObject = limits !== null && typeof limits === 'object' && !Array.isArray(limits);
+  } catch {
+    isObject = false;
+  }
+  if (!isObject) return refused('bad_limit', 'the limits must be an object with the three limits of a hire');
   const found: Record<string, bigint | null> = {};
   for (const name of LIMIT_NAMES) {
-    const value: unknown = Reflect.get(limits, name);
+    let value: unknown;
+    try {
+      value = Reflect.get(limits as object, name);
+    } catch {
+      return refused('bad_limit', `${name} cannot be read`);
+    }
     if (value === null) {
       found[name] = null;
     } else if (typeof value === 'bigint') {

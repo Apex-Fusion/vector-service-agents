@@ -136,7 +136,7 @@ type Preparation = { readonly ok: true; readonly value: Prepared } | { readonly 
  * The input as checked values, or the refusal for the first value that is wrong. A value of the settings or of the code of the use case that is wrong is `internal`. A value that comes from the
  * request and the approved document is `bad_shape`.
  */
-function prepare(input: HireInput): Preparation {
+function prepareChecked(input: HireInput): Preparation {
   const no = (code: RefusedCode, detail: string): Preparation => ({ ok: false, step: refusal(code, detail) });
   if (typeof input !== 'object' || input === null) return no('internal', 'the input of the hire must be an object');
   const limits = checkLimits(input.limits);
@@ -158,6 +158,15 @@ function prepare(input: HireInput): Preparation {
     if (!advert.ok) return no('internal', advert.detail);
   }
   return { ok: true, value: { message: message.value, counterparty: counterparty.value, advert: advert.value, capability: input.capability_id, model: input.model, limits: limits.value, decide: input.decide } };
+}
+
+/** The input as checked values, or a refusal. A member of the input that cannot be read (a getter that throws) is `internal`, and the error is not repeated: it could hold a part of the settings. */
+function prepare(input: HireInput): Preparation {
+  try {
+    return prepareChecked(input);
+  } catch {
+    return { ok: false, step: refusal('internal', 'the input of the hire cannot be read') };
+  }
 }
 
 /** The reason of the result for an error that ended the hire after the Pay was confirmed. */
@@ -256,7 +265,7 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
       return stepOfError(error, context, seen.delivery);
     }
     // The delegation is read again only after a refused Pay: `delegation_ended` decides between the exit states Cancelled and Failed.
-    const after = outcome.outcome === 'vault_refused' ? await delegationAfter(reads, message.delegation) : null;
+    const after = outcome?.outcome === 'vault_refused' ? await delegationAfter(reads, message.delegation) : null;
     try {
       return stepOfOutcome(outcome, { ...context, delegation_after: after });
     } catch (error) {

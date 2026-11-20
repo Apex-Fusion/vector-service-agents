@@ -30,6 +30,8 @@ import type { FailedStep, HireStep, VerifiedDelivery } from './steps.ts';
 export const COUNTERPARTY_REFUSED = 'counterparty_refused';
 /** The reason of a result that the flow cannot trust: the hire kit said something that does not hold together. It is never a pass. */
 export const INCONSISTENT_OUTCOME = 'inconsistent_outcome';
+/** The reason of a `vault_refused` step when the node or the builder gave no text: a fixed code of this folder, so that a result always has a reason. */
+export const VAULT_REASON_MISSING = 'vault_reason_missing';
 
 /** The codes of the hire kit for a hire that failed. The hire kit lists them as the type `HireFailure`. */
 const KIT_FAILURES = ['post_failed', 'busy', 'refused', 'send_lost', 'failed', 'timeout', 'bad_result', 'receipt_failed', 'receipt_unavailable', 'accept_failed'] as const satisfies readonly HireFailure[];
@@ -182,13 +184,20 @@ function failedAfterClaimStep(outcome: FailedAfterClaim, context: StepContext): 
   return failure(outcome.reason, `the hire failed after the Pay (${outcome.reason}), and it is not a refusal`, { handoff, vault_ref: escrow.vault_ref, terms: escrow.terms });
 }
 
+/** The reason of a `vault_refused` step: the text that the node or the builder gave, flat and cut short, or the fixed code of this folder when it gave no text. */
+function vaultReasonOf(value: unknown): string {
+  const text = typeof value === 'string' ? flatText(value, EVALUATION_ERROR_MAX) : '';
+  return text.trim() === '' ? VAULT_REASON_MISSING : text;
+}
+
 function vaultRefusedStep(outcome: VaultRefused, context: StepContext): HireStep {
   const { refusal } = outcome;
+  if (typeof refusal !== 'object' || refusal === null) return inconsistent(context, 'the hire kit gave a vault_refused outcome that holds no refusal');
   const delegation = context.delegation_after ?? 'unreadable';
   const base = { kind: 'vault_refused', delegation, delegation_ended: delegation === 'ended', handoff: null } as const;
-  if (refusal.kind === 'impossible') return { ...base, reason: refusal.reason, refusal: 'impossible', evidence: { transaction_body: null } };
+  if (refusal.kind === 'impossible') return { ...base, reason: vaultReasonOf(refusal.reason), refusal: 'impossible', evidence: { transaction_body: null } };
   return {
-    ...base, reason: flatText(refusal.evaluationError, EVALUATION_ERROR_MAX), refusal: refusal.kind === 'ledger' ? 'ledger' : 'not_evaluated',
+    ...base, reason: vaultReasonOf(refusal.evaluationError), refusal: refusal.kind === 'ledger' ? 'ledger' : 'not_evaluated',
     evidence: { transaction_body: typeof refusal.body === 'string' ? refusal.body : null },
   };
 }
@@ -216,6 +225,7 @@ function notAcceptedStep(outcome: NotAccepted, context: StepContext): HireStep {
  * `context.delegation_after` is read by the flow for `vault_refused`; the function reads no ledger.
  */
 export function stepOfOutcome(outcome: AgentOutcome, context: StepContext): HireStep {
+  if (typeof outcome !== 'object' || outcome === null) return inconsistent(context, 'the hire kit gave no outcome');
   switch (outcome.outcome) {
     case 'completed': return completedStep(outcome, context);
     case 'refused_before_claim': return refusedBeforeClaimStep(outcome, context);

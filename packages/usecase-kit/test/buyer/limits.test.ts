@@ -71,4 +71,20 @@ describe('checkLimits', () => {
     expect(checked).toStrictEqual({ ok: true, value: { maxPriceLovelace: 7n, maxSupplierBondLovelace: null, maxBuyerBondLovelace: null } });
     expect(reads).toBe(1);
   });
+
+  it('refuses a limit that cannot be read, names the limit, and repeats nothing of the error: a getter that throws, and a Proxy that throws', () => {
+    for (const name of LIMIT_NAMES) {
+      const given = { ...ALL, get [name](): never { throw new Error('SECRET-SETTING'); } };
+      const refused = checkLimits(given);
+      expect(refused).toStrictEqual({ ok: false, code: 'bad_limit', detail: `${name} cannot be read` });
+      expect(JSON.stringify(refused)).not.toContain('SECRET-SETTING');
+    }
+    const proxy = new Proxy({}, { get: () => { throw new Error('SECRET-SETTING'); } });
+    expect(checkLimits(proxy)).toStrictEqual({ ok: false, code: 'bad_limit', detail: 'maxPriceLovelace cannot be read' });
+    const revoked = Proxy.revocable({}, {});
+    revoked.revoke();
+    expect(checkLimits(revoked.proxy)).toStrictEqual({ ok: false, code: 'bad_limit', detail: 'the limits must be an object with the three limits of a hire' });
+    // The twin: limits that can be read are taken.
+    expect(checkLimits(ALL).ok).toBe(true);
+  });
 });
