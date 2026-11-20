@@ -5,7 +5,7 @@ import { HireLane } from '@vsa/hire-kit';
 import { documentUri } from '@vsa/buyer-core';
 import { NO_OPEN_CLAIM } from '@vsa/usecase-kit/protocol';
 import { MemoryJournal } from '@vsa/usecase-kit/dispute';
-import type { ChallengeResult, ChallengeView, ClaimView, DeliveryChallengeInput, DisputeJournal, DisputeSettings, JobRecord } from '@vsa/usecase-kit/dispute';
+import type { ChallengeResult, ChallengeView, ClaimView, DeliveryChallengeInput, DisputeJournal, DisputeSettings, JobRecord, OpenedChallenge, TxResult } from '@vsa/usecase-kit/dispute';
 import {
   CHALLENGE_TOKEN, CHALLENGE_TX, ESCROW, ESCROW_2, EVIDENCE_TX, HOUR, JOB, KEY_HASH, NO_DOCUMENT, NO_TRANSACTION, NOW, ORDER_FACTS, OTHER, OTHER_KEY_HASH, REF_A, REF_B, THIRD, TOKEN_A, TOKEN_B, challengeView, claimView,
   deferred, evidenceOf, never, rig,
@@ -802,6 +802,51 @@ describe('a lapsed record gives the job back only for the claim that it names', 
     expectNotFiled(result, 'challenge_not_built');
     expect(result).toMatchObject({ evidence: { tx_hash: EVIDENCE_TX }, sent: null });
     expect(failing.journal.puts.at(-1)).toMatchObject({ step: 'done', filed: null, ended: { code: 'challenge_not_built' } });
+  });
+
+  /** What the port says when the node refuses the challenge of the second try because the first try spent its claim output: the transaction never reached the node, so it cannot land. */
+  const REFUSED: TxResult<OpenedChallenge> = { ok: false, code: 'not_confirmed', detail: 'refused: BadInputsUTxO', tx_hash: '97'.repeat(32), valid_to: NOW + 30 * 60_000, may_land: false };
+
+  it('gives the challenge of the first try as the result when it lands between the build and the submit of the second try, and the node refuses the challenge of the second try', async () => {
+    const landing = await lapsedOver([claimView(), later()]);
+    landing.port.openChallengeAnswer = () => {
+      // The first try lands now: the challenge of the second try spends the same claim output, so the node refuses it.
+      firstTryLands(landing.port, [claimView({ state: 'Challenged' }), later()]);
+      return REFUSED;
+    };
+    expect(await landing.dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: FIRST_FILED });
+    // The second try built its challenge against the claim of the record. The job looked again for a challenge of this agent, and it has one challenge.
+    expect(landing.port.challenged.map((call) => call.claim)).toEqual([REF_A]);
+    expect(landing.events.filter((event) => event === 'readClaims').length).toBe(2);
+    // The journal keeps the challenge as the end of the job, and the next call gives it and reads nothing.
+    expect(landing.journal.puts.at(-1)).toMatchObject({ step: 'done', filed: { record: { claim: REF_A, evidence: FIRST_EVIDENCE_TX, challenge: `${FIRST_CHALLENGE_TX}#0` } }, ended: null });
+    const calls = landing.events.length;
+    expect(await landing.dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: FIRST_FILED });
+    expect(landing.events.length).toBe(calls);
+    // The twin: no challenge of this agent is on chain. The result is `challenge_not_confirmed`, with the evidence and the transaction that the node refused.
+    const failing = await lapsedOver([claimView(), later()]);
+    failing.port.openChallengeAnswer = () => REFUSED;
+    const result = await failing.dispute.challengeDelivery(delivery());
+    expectNotFiled(result, 'challenge_not_confirmed');
+    expect(result).toMatchObject({ evidence: { tx_hash: EVIDENCE_TX }, sent: { tx_hash: '97'.repeat(32), may_land: false } });
+    expect(failing.journal.puts.at(-1)).toMatchObject({ step: 'done', filed: null, ended: { code: 'challenge_not_confirmed' } });
+    expect(failing.events.filter((event) => event === 'readClaims').length).toBe(2);
+  });
+
+  it('does not search for the challenge of the first try when the challenge of the second try may still land, and says challenge_not_confirmed', async () => {
+    const { events, journal, port, dispute } = await lapsedOver([claimView(), later()]);
+    port.openChallengeAnswer = () => {
+      firstTryLands(port, [claimView({ state: 'Challenged' }), later()]);
+      return { ...REFUSED, may_land: true };
+    };
+    const result = await dispute.challengeDelivery(delivery());
+    expectNotFiled(result, 'challenge_not_confirmed');
+    expect(result).toMatchObject({ evidence: { tx_hash: EVIDENCE_TX }, sent: { may_land: true } });
+    expect(journal.puts.at(-1)).toMatchObject({ step: 'done', filed: null, ended: { code: 'challenge_not_confirmed', sent: { may_land: true } } });
+    expect(events.filter((event) => event === 'readClaims').length).toBe(1);
+    expect(events).not.toContain('readChallenges');
+    // The next call finds the challenge of the first try, as it does for any job.
+    expect(await dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: FIRST_FILED });
   });
 
   it('says claim_changed as before when no challenge of this agent is on chain: another agent challenged the claim, or the claim is gone', async () => {

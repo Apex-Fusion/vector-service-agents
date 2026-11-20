@@ -22,7 +22,8 @@
 //      lapsed record of another claim), write the journal with the time of the job (`started_at`), publish the evidence document, and wait for its confirmation. A document that is not confirmed ends the job.
 //      The challenge is not built.
 //   5. In one job of the queue: read the claim again, and build the challenge against the exact output that the evidence names. A claim that changed ends the job. After a lapsed record, the job then looks again
-//      for a challenge of this agent for this job on chain (step 1): the challenge of the first try can land while the second try runs. That challenge is the result, and the evidence of the second try is not used.
+//      for a challenge of this agent for this job on chain (step 1): the challenge of the first try can land while the second try runs. The second try then ends with `claim_changed`, with `challenge_not_built`, or
+//      with `challenge_not_confirmed` when the node refuses its challenge (`may_land` is false). That challenge is the result, and the evidence of the second try is not used.
 // A job (one escrow) gets one challenge. Once a transaction of a job landed or may land, the job takes no second attempt, also after a restart: the journal says so. Only a record `started` lapses: it says
 // that the evidence may be on chain, and nothing else. After its lease the job may go on, but only against the claim that its record names. A challenge of the first try can still land after the lease, and the
 // chain takes only one challenge of a claim. So the second try cannot give the job a second challenge, and a second try against another claim could. When the claim of the record cannot be used any more, the job
@@ -73,8 +74,9 @@ export interface DisputeSettings {
    * end of the job. A write that lands after its bound (`journal_unavailable`) leaves one with nothing sent, and a process that stops after the write leaves one with the evidence sent. After the lease
    * the record gives the job back: a challenge of this agent that is on chain is still the result, and if there is none, the job goes on, but only against the claim that the record names. A transaction of the
    * first try can still land after the lease, and the chain takes only one challenge of a claim, so the job files at most one challenge. When that claim is spent, is not Open, or has too little window left, the
-   * job ends with `claim_changed` or `claim_window_closing`, and nothing is sent. The first try can also land while the second try runs. The second try then ends with `claim_changed` (the claim is Challenged now)
-   * or with `challenge_not_built` (the node builds no challenge for a claim output that is spent), and it looks again for a challenge of this agent for the job on chain: that challenge is the result. Two processes
+   * job ends with `claim_changed` or `claim_window_closing`, and nothing is sent. The first try can also land while the second try runs. The second try then ends with `claim_changed` (the claim is Challenged now),
+   * with `challenge_not_built` (the node builds no challenge for a claim output that is spent), or with `challenge_not_confirmed` and `may_land` false (the node refuses the challenge, which spends a claim output that
+   * is spent), and it looks again for a challenge of this agent for the job on chain: that challenge is the result. Two processes
    * can both go on after a lease ends, and they go on against the same claim. The default is 10 minutes, or twice `read_timeout_ms` when that is more. A value below twice `read_timeout_ms` is refused: a write ends
    * at that bound and can still land later, so the lease must be longer than that.
    */
@@ -972,11 +974,14 @@ export class Dispute {
       };
     });
     const after = (code: ChallengeCode, detail: string, more: Landed = {}): Promise<ChallengeResult> => this.#finish(escrow, landed, notFiled(code, detail, { evidence, ...more }));
-    // After a lapsed record, the first try can have landed its challenge while this try ran. It spent the claim of both tries, so this try ends with `claim_changed` or with `challenge_not_built`. A challenge of
-    // this agent for this job that is on chain now is the result. A search that fails is `chain_unavailable`: nothing says that no challenge is on chain, and a later call finds it.
+    // After a lapsed record, the first try can have landed its challenge while this try ran. It spent the claim of both tries, so this try ends with `claim_changed` (the claim is Challenged now), with
+    // `challenge_not_built` (the node builds no challenge for a claim output that is spent), or with `challenge_not_confirmed` when the node refuses the challenge that was built (`may_land` is false: it never reached
+    // the node, and it cannot land). A challenge of this agent for this job that is on chain now is the result. A search that fails is `chain_unavailable`: nothing says that no challenge is on chain, and a later call
+    // finds it. A challenge that may still land (`may_land` is true) is not searched for here: it can be the challenge of this try, and the result says that it may land.
     const lapsedBefore = earlier !== null || replaced !== null;
     const endOrFind = async (code: ChallengeCode, detail: string, more: Landed = {}): Promise<ChallengeResult> => {
-      if (!lapsedBefore || (code !== 'claim_changed' && code !== 'challenge_not_built')) return after(code, detail, more);
+      const cannotLand = code === 'claim_changed' || code === 'challenge_not_built' || (code === 'challenge_not_confirmed' && more.sent?.may_land === false);
+      if (!lapsedBefore || !cannotLand) return after(code, detail, more);
       const own = await this.#findOwnAgain(target, me);
       if (!own.ok) return after('chain_unavailable', `${detail}; the search for a challenge of this agent on chain failed: ${own.detail}`, more);
       if (own.value === null) return after(code, detail, more);
