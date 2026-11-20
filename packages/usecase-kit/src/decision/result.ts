@@ -16,7 +16,7 @@
 //   model_output_invalid  model_output_invalid           the hire completed, and the answer is not an object of the shape that the decision asks for
 //   internal              bad_limit                      a limit is missing or has a wrong type: nothing was hired
 //   internal              bad_decision                   the definition of the decision is wrong: nothing was hired
-//   internal              bad_input                      the input is not JSON data: nothing was hired
+//   internal              bad_input                      the input is not JSON data, or its prompt has more than MAX_PROMPT_BYTES bytes: nothing was hired
 //   internal              choice_changed                 the parser of the decision returned a value that is not the choice that the model gave
 //
 // `delivery` is set when the model was hired and paid, and its answer could not be used (`model_output_invalid` and `choice_changed`). The sub-job is real: the escrow was accepted, so the agent

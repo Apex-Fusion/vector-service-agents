@@ -1,9 +1,9 @@
 // packages/usecase-kit/test/decision/prompt.test.ts: the prompt of a decision. The input can hold text of another party. It goes into the prompt as data, in ONE marked block, and the fixed text says
 // that the block is data. The text in the block cannot close the block and cannot start a new line. This lowers the risk that the input misleads the model, and it does not remove it.
 import { afterEach, describe, expect, it } from 'vitest';
-import { INPUT_CLOSE, INPUT_OPEN, buildPrompt, decide } from '@vsa/usecase-kit/decision';
+import { INPUT_CLOSE, INPUT_OPEN, MAX_PROMPT_BYTES, buildPrompt, decide } from '@vsa/usecase-kit/decision';
 import type { DecisionSpec } from '@vsa/usecase-kit/decision';
-import { MEDIUM_LOT, REORDER, STOCK_INPUT, cleanup, promptsSent, said, setup, won } from './support.ts';
+import { MEDIUM_LOT, REORDER, STOCK_INPUT, cleanup, lost, promptsSent, said, setup, won } from './support.ts';
 
 afterEach(cleanup);
 
@@ -109,5 +109,60 @@ describe('the prompt of a decision', () => {
 
   it('takes the input that is JSON data: the twin of the refusals', () => {
     expect(buildPrompt(REORDER, { a: 'text', b: 12, c: [true, null] }).ok).toBe(true);
+  });
+});
+
+describe('the size of the prompt', () => {
+  const bytesOf = (prompt: string): number => Buffer.byteLength(prompt, 'utf8');
+  /** The bytes of the prompt that the fixed text and the block of an empty text make. A text of plain letters adds one byte for each letter. */
+  const base = bytesOf(build({ q: '' }));
+  const inputOf = (promptBytes: number): { q: string } => ({ q: 'a'.repeat(promptBytes - base) });
+
+  it('is at most 200,000 bytes of UTF-8', () => {
+    expect(MAX_PROMPT_BYTES).toBe(200_000);
+  });
+
+  it('takes a prompt of exactly the limit and refuses one that has one byte more: the limit is on the bytes of the whole prompt', () => {
+    expect(bytesOf(build(inputOf(MAX_PROMPT_BYTES)))).toBe(MAX_PROMPT_BYTES);
+    expect(buildPrompt(REORDER, inputOf(MAX_PROMPT_BYTES + 1))).toStrictEqual({
+      ok: false, code: 'bad_input', detail: `the prompt has ${MAX_PROMPT_BYTES + 1} bytes, and a decision sends at most ${MAX_PROMPT_BYTES} bytes`,
+    });
+  });
+
+  it('counts bytes and not characters: a text of 70,000 characters that have three bytes each is refused', () => {
+    const input = { q: '\u20ac'.repeat(70_000) };
+    expect(JSON.stringify(input).length).toBeLessThan(MAX_PROMPT_BYTES);
+    expect(buildPrompt(REORDER, input)).toMatchObject({ ok: false, code: 'bad_input' });
+    // The twin: 60,000 such characters are 180,000 bytes, and the prompt is under the limit.
+    expect(bytesOf(build({ q: '\u20ac'.repeat(60_000) }))).toBeLessThan(MAX_PROMPT_BYTES);
+  });
+
+  it('counts the escapes that the prompt writes: the characters < and > are six bytes each in the block', () => {
+    const input = { q: '<>'.repeat(20_000) };
+    expect(JSON.stringify(input).length).toBeLessThan(MAX_PROMPT_BYTES / 4);
+    expect(buildPrompt(REORDER, input)).toMatchObject({ ok: false, code: 'bad_input' });
+    // The twin: a text of the same number of plain characters is taken.
+    expect(buildPrompt(REORDER, { q: 'ab'.repeat(20_000) }).ok).toBe(true);
+  });
+
+  it('refuses a prompt that the fixed text makes too large, as it refuses one that the input makes too large', () => {
+    const instruction = 'x'.repeat(MAX_PROMPT_BYTES);
+    expect(buildPrompt({ instruction }, {})).toMatchObject({ ok: false, code: 'bad_input' });
+    expect(buildPrompt({ instruction: 'x' }, {}).ok).toBe(true);
+  });
+
+  it('refuses an input of 2 MB before anything is hired: no call, no Post, no escrow for the janitor', async () => {
+    const run = await setup();
+    const failure = lost(await decide(run.deps, REORDER, { q: 'a'.repeat(2 * 1024 * 1024) }));
+    expect([failure.code, failure.reason, failure.stage, failure.escrow_ref, failure.delivery]).toStrictEqual(['internal', 'bad_input', null, null, null]);
+    expect([run.m.calls, run.booked, run.key.stranded.list()]).toStrictEqual([[], [], []]);
+  });
+
+  it('hires for a prompt of exactly the limit, and the supplier receives that prompt: the twin', async () => {
+    const run = await setup();
+    run.m.llm.answer = said(MEDIUM_LOT);
+    const input = inputOf(MAX_PROMPT_BYTES);
+    won(await decide(run.deps, REORDER, input));
+    expect(promptsSent(run).map(bytesOf)).toStrictEqual([MAX_PROMPT_BYTES]);
   });
 });

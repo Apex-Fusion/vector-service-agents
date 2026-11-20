@@ -14,7 +14,7 @@ function node(args: readonly string[]): string {
 }
 
 const NAMES = [
-  'DECISION_FAILURE_CODES', 'INPUT_CLOSE', 'INPUT_OPEN', 'LLM_MAX_PRICE_SETTING', 'LLM_MODEL_ALLOWLIST_SETTING', 'buildPrompt', 'checkLimits', 'decide', 'parseMaxPrice', 'parseModelAllowlist',
+  'DECISION_FAILURE_CODES', 'INPUT_CLOSE', 'INPUT_OPEN', 'LLM_MAX_PRICE_SETTING', 'LLM_MODEL_ALLOWLIST_SETTING', 'MAX_PROMPT_BYTES', 'buildPrompt', 'checkLimits', 'decide', 'parseMaxPrice', 'parseModelAllowlist',
 ];
 
 describe('the subpath @vsa/usecase-kit/decision', () => {

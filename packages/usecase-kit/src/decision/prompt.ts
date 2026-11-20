@@ -12,6 +12,7 @@
 //   - the characters `<` and `>` are written as `\u003c` and `\u003e`, so no text of the input can hold a mark of the block;
 //   - the characters U+0085, U+2028 and U+2029, which some readers take for a line break, are written as escapes too.
 // The same input always gives the same prompt, so the prompt hash that the escrow commits to is the same as well.
+// The prompt has at most MAX_PROMPT_BYTES bytes of UTF-8, and a larger prompt is refused before the hire.
 //
 // This lowers the risk that a model follows an instruction that hides in the input. It does not remove it: a model can still be misled by the data that it reads. Nothing here checks what the
 // model decides, and nothing can. The hirer approves a proposal, and the checks of the counterparty and of the mock systems come after it.
@@ -23,6 +24,13 @@ import { whereNotJson } from './where.ts';
 export const INPUT_OPEN = '<input_data>';
 /** The mark that closes the input block. */
 export const INPUT_CLOSE = '</input_data>';
+
+/**
+ * The most bytes of UTF-8 that a prompt has: 200,000. The count is of the whole prompt, as the supplier receives it: the fixed text, the rules, the block of the input with its escapes, and the
+ * closing line. A supplier refuses a body that is too large only AFTER the Post. The escrow is posted then, and its price and both bonds stay locked until its deadline. So a decision refuses
+ * a larger prompt here, before the hire, and nothing is posted.
+ */
+export const MAX_PROMPT_BYTES = 200_000;
 
 const RULES = [
   'Read this message by these rules.',
@@ -45,5 +53,8 @@ const oneLine = (json: string): string => json.replace(/[<>\u0085\u2028\u2029]/g
 export function buildPrompt(spec: Pick<DecisionSpec, 'instruction'>, input: unknown): ProtocolResult<string, 'bad_input'> {
   const data = canonicalJson(input, 'input');
   if (!data.ok) return refused('bad_input', `the input ${whereNotJson(input)}`);
-  return accepted([spec.instruction, RULES, `${INPUT_OPEN}\n${oneLine(data.value)}\n${INPUT_CLOSE}`, CLOSING].join('\n\n'));
+  const prompt = [spec.instruction, RULES, `${INPUT_OPEN}\n${oneLine(data.value)}\n${INPUT_CLOSE}`, CLOSING].join('\n\n');
+  const bytes = Buffer.byteLength(prompt, 'utf8');
+  if (bytes > MAX_PROMPT_BYTES) return refused('bad_input', `the prompt has ${bytes} bytes, and a decision sends at most ${MAX_PROMPT_BYTES} bytes`);
+  return accepted(prompt);
 }
