@@ -188,7 +188,7 @@ export function createCosignRoute(config: CosignConfig): ProtocolResult<CosignRo
   const checked = checkConfig(config);
   if (!checked.ok) return checked;
   const { agentId, keys, agentKeys, settings } = checked.value;
-  const { deployment, ledger, now: clock, systemStartMs } = config;
+  const { deployment, ledger, now: clock, systemStartMs, log } = config;
   const reservations = new KeyReservations();
   let running = 0;
 
@@ -235,7 +235,7 @@ export function createCosignRoute(config: CosignConfig): ProtocolResult<CosignRo
     const hold = reservations.take(delegation.delegateKey, bodyHash, to + RESERVATION_MARGIN_MS, now);
     if (hold === undefined) return refused('key_in_use', 'the delegation key is in use');
     try {
-      const outputs = await read(() => ledger.outputs(facts.spent), (value) => Array.isArray(value));
+      const outputs = await read(() => ledger.outputs([...facts.spent]), (value) => Array.isArray(value));
       if (outputs === UNREADABLE) return unavailable();
       const byRef = new Map(outputs.map((output): [string, LedgerOutput] => [`${output?.txHash}#${output?.outputIndex}`, output]));
       let owned = false;
@@ -296,7 +296,7 @@ export function createCosignRoute(config: CosignConfig): ProtocolResult<CosignRo
       }
     }
     try {
-      config.log?.(result.ok ? `cosign signed key ${result.value.keyHash.slice(0, 8)} body ${result.value.bodyHash.slice(0, 12)}` : `cosign refused ${result.code}`);
+      log?.(result.ok ? `cosign signed key ${result.value.keyHash.slice(0, 8)} body ${result.value.bodyHash.slice(0, 12)}` : `cosign refused ${result.code}`);
     } catch {
       // A log that fails does not change the answer.
     }
