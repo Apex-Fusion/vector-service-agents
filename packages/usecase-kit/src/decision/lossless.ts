@@ -10,22 +10,19 @@
 /** A number in JSON, read from a place in the text. */
 const NUMBER = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
 
-/** The digits of a number in its text with no sign, no leading zeros and no trailing zeros, and the place of its point: the value is 0.<digits> times 10 to the power <point>. A zero has no digits. */
-function decimal(text: string): { digits: string; point: number } | null {
-  const match = /^-?(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(text);
-  if (match === null) return null;
-  const [, integer = '', fraction = '', exponent = '0'] = match;
-  const all = integer + fraction;
-  const leading = all.length - all.replace(/^0+/, '').length;
-  const digits = all.slice(leading).replace(/0+$/, '');
-  return { digits, point: digits === '' ? 0 : integer.length - leading + Number(exponent) };
+/**
+ * The significant digits of a number in its text: no sign, no point, no exponent, no leading zeros and no trailing zeros. A zero has no digits. A text that is not a number of JSON has none.
+ * The double of a number is the nearest to it, and its shortest text is within half a step of the double. So two texts of one double that have the same digits have the same point too.
+ */
+function digitsOf(text: string): string | null {
+  const match = /^-?(\d+)(?:\.(\d+))?(?:[eE][+-]?\d+)?$/.exec(text);
+  return match === null ? null : `${match[1]}${match[2] ?? ''}`.replace(/^0+/, '').replace(/0+$/, '');
 }
 
-/** True when the number reads back as itself: the shortest text of its double is the same decimal number. `Infinity` has no decimal, so a number that overflows does not pass. */
+/** True when the number reads back as itself: the shortest text of its double has the digits of the number. `Infinity` has no digits, so a number that overflows does not pass. */
 function readsBack(literal: string): boolean {
-  const written = decimal(literal);
-  const read = decimal(String(Number(literal)));
-  return written !== null && read !== null && written.digits === read.digits && written.point === read.point;
+  const written = digitsOf(literal);
+  return written !== null && written === digitsOf(String(Number(literal)));
 }
 
 /**
