@@ -70,15 +70,25 @@ export interface ApprovalAccepted {
   readonly valid_until: number | null;
 }
 
-/** The approval failed a check. `code` is the check that failed, and `detail` is a sentence for a log. */
-export interface ApprovalRefused {
+/** The approval failed a check, and the check is not the digest check. `code` is the check that failed, and `detail` is a sentence for a log. */
+export interface ApprovalRefusedByCheck {
   readonly ok: false;
-  readonly code: ApprovalRefusal;
+  readonly code: Exclude<ApprovalRefusal, 'approval_digest_mismatch'>;
   readonly detail: string;
-  /** With `approval_digest_mismatch` only: the digest that the attestation holds, and the digest of the document that was received. A challenge needs both. */
-  readonly expected_digest?: Digest;
-  readonly observed_digest?: Digest;
 }
+
+/** The digest of the attestation is not the digest of the document and the salt that were received. The two digests are the evidence of a challenge, so the check gives both. */
+export interface ApprovalDigestMismatch {
+  readonly ok: false;
+  readonly code: 'approval_digest_mismatch';
+  readonly detail: string;
+  /** The digest that the attestation holds. */
+  readonly expected_digest: Digest;
+  /** The digest of the document and the salt that were received: SHA-256(salt ++ canonical document). */
+  readonly observed_digest: Digest;
+}
+
+export type ApprovalRefused = ApprovalRefusedByCheck | ApprovalDigestMismatch;
 
 export type ApprovalResult = ApprovalAccepted | ApprovalRefused;
 

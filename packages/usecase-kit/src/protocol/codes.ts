@@ -60,6 +60,7 @@ export const ERROR_STATUS = {
   bad_wire: 400,
   request_too_large: 400,
   bad_shape: 400,
+  // The delegation exists and names another agent as its delegate. A delegation that is not found does not end the job with this code: the ledger refuses the payment later.
   delegation_not_mine: 400,
   unauthorized: 401,
   sender_not_active: 403,

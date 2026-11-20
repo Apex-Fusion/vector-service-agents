@@ -3,11 +3,11 @@
 import { accepted, refused, type ProtocolResult } from './result.ts';
 
 /**
- * The most bytes of wire payload that a service takes: 900,000.
+ * The most bytes of wire payload that an agent takes: 900,000.
  *
- * The wire payload is the request text written as a string inside a one-message JSON array, so it is longer than the request text: each quote mark and each backslash gets one more
- * character, and a control character gets up to five more. The runtime in front of a service refuses a body above 1 MiB (1,048,576 bytes), and it counts the body after this escaping.
- * A limit near 1 MiB would be safe only for texts that need almost no escaping. This limit stays under that line, so that a request that the protocol takes is not refused by the runtime.
+ * The wire payload is the request text written as a string inside a one-message JSON array. Writing the text as a string makes it longer: each quote mark and each backslash gets one more
+ * character. The limit counts the payload after this step. The runtime in front of an agent refuses a body above 1 MiB (1,048,576 bytes), and the shared service code reads at most 1,000,000
+ * bytes. This limit is below both. A limit on the request text before this step is not safe, because the text can grow past the limit of the runtime.
  */
 export const MAX_REQUEST_BYTES = 900_000;
 

@@ -50,7 +50,7 @@ interface ProposalResultBase {
   readonly use_case: UseCase;
   readonly decisions: readonly Decision[];
   readonly sub_jobs: readonly SubJob[];
-  /** The exit state is null for a job that proposed. A run gets its exit state at its end. */
+  /** A run gets its exit state at its end, so a proposal that was made has none. A proposal that failed can carry the exit state `Failed`. */
   readonly exit_state: ExitState | null;
   readonly fault_mode: FaultSetting;
 }
@@ -61,6 +61,7 @@ export interface ProposedResult extends ProposalResultBase {
   readonly salt: Salt;
   readonly proposal_digest: Digest;
   readonly outcome: 'proposed';
+  readonly exit_state: null;
   readonly reason: null;
 }
 

@@ -5,7 +5,9 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE, APPROVAL_REFUSALS, APPROVAL_VALIDITY_DEFAULT_MS, APPROVAL_VALIDITY_MAX_MS, parseApprovalRef,
 } from '@vsa/usecase-kit/protocol';
-import type { ApprovalAccepted, ApprovalCheck, ApprovalInput, ApprovalRefusal, ApprovalRefused, ApprovalResult, ApprovalRef, RefusalCode } from '@vsa/usecase-kit/protocol';
+import type {
+  ApprovalAccepted, ApprovalCheck, ApprovalDigestMismatch, ApprovalInput, ApprovalRef, ApprovalRefusal, ApprovalRefused, ApprovalRefusedByCheck, ApprovalResult, RefusalCode,
+} from '@vsa/usecase-kit/protocol';
 import { APPROVAL, ATTESTATION, BAD_MARKER, DID_A, DOCUMENT, ID_A, SALT } from './support.ts';
 
 describe('the constants of an approval', () => {
@@ -116,11 +118,15 @@ describe('the types of the approval check', () => {
     }
   });
 
-  it('let a mismatch carry the two digests, and no other refusal needs them', () => {
+  it('make a digest mismatch carry the two digests, and no other refusal needs them', () => {
+    const digestsOf = (result: ApprovalResult): readonly [string, string] | null =>
+      !result.ok && result.code === 'approval_digest_mismatch' ? [result.expected_digest, result.observed_digest] : null;
     const mismatch: ApprovalResult = { ok: false, code: 'approval_digest_mismatch', detail: 'the digest differs', expected_digest: '55'.repeat(32), observed_digest: '66'.repeat(32) };
     const revoked: ApprovalResult = { ok: false, code: 'approval_revoked', detail: 'the attestation was revoked' };
-    expect(mismatch.ok === false && mismatch.expected_digest).toBe('55'.repeat(32));
-    expect(revoked.ok === false && revoked.expected_digest).toBeUndefined();
+    expect(digestsOf(mismatch)).toStrictEqual(['55'.repeat(32), '66'.repeat(32)]);
+    expect(digestsOf(revoked)).toBeNull();
+    expectTypeOf<ApprovalDigestMismatch['code']>().toEqualTypeOf<'approval_digest_mismatch'>();
+    expectTypeOf<ApprovalRefusedByCheck['code']>().toEqualTypeOf<Exclude<ApprovalRefusal, 'approval_digest_mismatch'>>();
   });
 
   it('refuse a result that is not in the protocol', () => {
@@ -136,7 +142,13 @@ describe('the types of the approval check', () => {
     const wrongTime: ApprovalInput = { ...input, now_ms: '1780000000000' };
     // @ts-expect-error the approval is a reference or null, and it is not left out
     const noApproval: ApprovalInput = { sender_did: DID_A, delegation: '11'.repeat(32), document: DOCUMENT, salt: SALT, now_ms: 1 };
-    expect([wrongCode, noDetail, noAttestation, text, wrongTime, noApproval]).toHaveLength(6);
+    // @ts-expect-error a digest mismatch carries the two digests
+    const noDigests: ApprovalResult = { ok: false, code: 'approval_digest_mismatch', detail: 'x' };
+    // @ts-expect-error a digest mismatch carries the observed digest too
+    const oneDigest: ApprovalResult = { ok: false, code: 'approval_digest_mismatch', detail: 'x', expected_digest: '55'.repeat(32) };
+    // @ts-expect-error only a digest mismatch carries the digests
+    const wrongDigests: ApprovalResult = { ok: false, code: 'approval_revoked', detail: 'x', expected_digest: '55'.repeat(32), observed_digest: '66'.repeat(32) };
+    expect([wrongCode, noDetail, noAttestation, text, wrongTime, noApproval, noDigests, oneDigest, wrongDigests]).toHaveLength(9);
   });
 
   it('have an input that holds an approval reference as the protocol gives it', () => {

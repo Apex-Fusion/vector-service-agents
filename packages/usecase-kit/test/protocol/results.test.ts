@@ -91,7 +91,9 @@ describe('the result of propose', () => {
     const wrongUseCase: ProposalResult = { schema: PROPOSAL_SCHEMA, use_case: 'billing', document: DOCUMENT, salt: SALT, proposal_digest: DIGEST, decisions: [], sub_jobs: [], outcome: 'proposed', reason: null, exit_state: null, fault_mode: '' };
     // @ts-expect-error a fault value that no kind of agent has
     const wrongFault: ProposalResult = { schema: PROPOSAL_SCHEMA, use_case: 'inventory-reorder', document: DOCUMENT, salt: SALT, proposal_digest: DIGEST, decisions: [], sub_jobs: [], outcome: 'proposed', reason: null, exit_state: null, fault_mode: 'break_things' };
-    expect([reason, noDocument, noReason, wrongOutcome, wrongUseCase, wrongFault]).toHaveLength(6);
+    // @ts-expect-error a proposal that was made has no exit state yet
+    const exitState: ProposalResult = { schema: PROPOSAL_SCHEMA, use_case: 'inventory-reorder', document: DOCUMENT, salt: SALT, proposal_digest: DIGEST, decisions: [], sub_jobs: [], outcome: 'proposed', reason: null, exit_state: 'Completed', fault_mode: '' };
+    expect([reason, noDocument, noReason, wrongOutcome, wrongUseCase, wrongFault, exitState]).toHaveLength(7);
   });
 });
 
