@@ -119,6 +119,8 @@ The protocol holds the types of the check and not the function. `ApprovalInput` 
 
 **The Unicode tables.** The canonical form puts each string value in the NFC form with the Unicode tables of the Node that runs. Two hosts with different Unicode versions can disagree on a character that only the newer version knows, and then their digests of one document differ. Run all parties on one Node line.
 
+**Hostile values.** The parsers defend against a value that changes between two reads and against a changed prototype; a process that replaces a built-in function (for example `Object.keys`) is outside what they defend against.
+
 ## Tests
 
 `pnpm test` in this folder runs vitest. Each refusal has a test with an accepted twin. `pnpm typecheck` also checks the lines of the tests that must not compile (`@ts-expect-error`). No test uses the network.

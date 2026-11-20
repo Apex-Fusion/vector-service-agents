@@ -2,7 +2,8 @@
 // The names that the protocol fixes: the use cases, the operations, the outcomes of a buyer-side agent, the exit states of a run, and every error and refusal code with its HTTP status.
 //
 // A buyer-side agent answers 200 with an `outcome` whenever it could read the request. The outcome and the reason are in the signed receipt, so what happened is on record:
-//   - `refused_by_counterparty`: the counterparty refused the job. `reason` holds the code that the counterparty gave. The escrow stays open and returns to the vault after `deliver_by`.
+//   - `refused_by_counterparty`: the counterparty refused the job. `reason` holds the code that the counterparty gave. For most codes the refusal comes before the Claim: the escrow stays Open and returns
+//     to the vault after `deliver_by`. For a code of AFTER_CLAIM_REFUSALS the escrow is Claimed, and it stays Claimed until the buyer reclaims it after the deadline.
 //   - `vault_refused`: the ledger refused the payment from the vault. `reason` holds the evaluation error that the node reported.
 //   - `refused_by_system`: a mock system refused a call. `reason` holds its code (see SYSTEM_REFUSALS).
 // A counterparty answers 200 only when it did the work. It refuses with `403 { error: <refusal code>, message }`. A refusal comes before the Claim, so the escrow stays Open and nothing is paid. The
