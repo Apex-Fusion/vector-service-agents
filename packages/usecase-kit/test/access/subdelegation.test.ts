@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_STEP_TIMEOUT_MS, MAX_SUB_DELEGATION_MS, MIN_SUB_DELEGATION_MS, ROUTES, tokenTarget, withSubDelegation, x509Target } from '../../src/access/index.ts';
 import type { DelegationDatum, LeftSubDelegation, SubDelegationHandle, SubDelegationRun } from '../../src/access/index.ts';
-import { AGENT_KEY, BASES, DAY, NOW, OTHER_KEY, PARENT_ID, SUBAGENT_ID, SUBAGENT_KEY, WALLET, erpTarget, expectTarget, markSigner, parentDatum, subWorld, type SubWorld } from './support.ts';
+import { AGENT_KEY, BASES, DAY, NOW, OTHER_KEY, PARENT_ID, SUBAGENT_ID, SUBAGENT_KEY, WALLET, erpTarget, expectTarget, markSigner, parentDatum, slotOf, subWorld, type SubWorld } from './support.ts';
 
 
 /** Runs the sub-delegation with the job, and moves the clock until it ends. A wait with no end fails the test. */
@@ -187,6 +187,7 @@ describe('an end step that fails', () => {
     const left = run.end.state === 'not_ended' ? run.end.left : null;
     expect(left).toMatchObject({ delegateTxHash: w.chain.builtDelegates[0]!.txHash, notAfter: NOW + 3_600_000 });
     expect(left!.delegateValidTo).toBeGreaterThan(NOW);
+    expect(left!.delegateTtlSlot).toBe(slotOf(left!.delegateValidTo));
     expect(w.chain.submitted.map((s) => s.kind)).toStrictEqual(['delegate']);
   });
 
@@ -653,6 +654,15 @@ describe('every wait on a port has a bound', () => {
     expectStopped(w, await go(w, idle), started);
   });
 
+  it('ends a slot clock that never answers at the bound, with nothing sent and nothing to end', async () => {
+    const w = withStep();
+    w.chain.slotAt = never;
+    const started = w.clock.now();
+    const run = await go(w, idle);
+    expectStopped(w, run, started);
+    expect(run.kind === 'not_ready' && run.failure.detail).toContain('the slot clock of the chain did not answer within 30000 ms');
+  });
+
   it('ends a hook that never answers at the bound, with nothing sent and nothing to end', async () => {
     const w = withStep();
     const started = w.clock.now();
@@ -705,6 +715,10 @@ describe('every wait on a port has a bound', () => {
     ['the build', (w: SubWorld, ms: number) => {
       const build = w.chain.buildDelegate.bind(w.chain);
       w.chain.buildDelegate = async (params) => (await w.clock.sleep(ms), build(params));
+    }],
+    ['the slot clock', (w: SubWorld, ms: number) => {
+      const slotAt = w.chain.slotAt.bind(w.chain);
+      w.chain.slotAt = async (validTo) => (await w.clock.sleep(ms), slotAt(validTo));
     }],
     ['the send', (w: SubWorld, ms: number) => {
       const submit = w.chain.submit.bind(w.chain);

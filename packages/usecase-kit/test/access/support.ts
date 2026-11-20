@@ -179,6 +179,10 @@ export const SUBAGENT_KEY = '22'.repeat(28);
 export const OTHER_KEY = '33'.repeat(28);
 export const NOW = Date.UTC(2026, 10, 20, 12, 0, 0);
 export const DAY = 86_400_000;
+/** The POSIX time of slot 0 on the chain of the tests: the system start that the fixture provider of buyer-core gives. A slot lasts one second. */
+export const ZERO_TIME = 1_756_485_600_000;
+/** The slot that contains `ms`: the slot that a builder writes in the TTL of a transaction for a `validTo` of `ms`. */
+export const slotOf = (ms: number): number => Math.floor((ms - ZERO_TIME) / 1000);
 const hex = (text: string): string => Buffer.from(text, 'utf8').toString('hex');
 const MAINNET = 1;
 
@@ -241,6 +245,8 @@ export interface TxSpec {
   /** The collateral that the transaction names: its inputs, where the return goes, and the total that it can forfeit. */
   collateral?: { inputs: Ref[]; returnAddress: string | null; total: bigint | null };
   isValid?: boolean;
+  /** The TTL: the slot at which the transaction ends. No value is a body with no end of validity. */
+  ttl?: bigint;
 }
 
 function valueOf(output: OutputSpec): CML.Value {
@@ -295,6 +301,7 @@ export function txOf(spec: TxSpec): { cbor: string; hash: string } {
     if (spec.collateral.returnAddress !== null) body.set_collateral_return(outputOf({ address: spec.collateral.returnAddress, coin: 1_000_000n }));
     if (spec.collateral.total !== null) body.set_total_collateral(spec.collateral.total);
   }
+  if (spec.ttl !== undefined) body.set_ttl(spec.ttl);
   const tx = CML.Transaction.new(body, CML.TransactionWitnessSet.new(), spec.isValid ?? true);
   return { cbor: tx.to_cbor_hex(), hash: CML.hash_transaction(tx.body()).to_hex() };
 }
@@ -363,6 +370,8 @@ export class FakeDelegations implements DelegationChain {
   readonly submitted: { kind: 'delegate' | 'undelegate'; cbor: string; at: number }[] = [];
   readonly builtDelegates: DelegateBuild[] = [];
   readonly builtUndelegates: UndelegateBuild[] = [];
+  /** The `validTo` that each call of `slotAt` asked for. */
+  readonly slotQueries: number[] = [];
   readonly faults: Faults = {};
   /** Plays a builder that gives another datum than the one that was asked for, in its report and in its bytes. */
   tamper: ((datum: DelegationDatum) => DelegationDatum) | null = null;
@@ -437,6 +446,12 @@ export class FakeDelegations implements DelegationChain {
     return this.faults.neverConfirm !== true && confirmations >= 30 ? { state: 'ready' } : { state: 'waiting', confirmations: Math.min(confirmations, 29) };
   }
 
+  async slotAt(ms: number): Promise<number> {
+    this.log.push('slotAt');
+    this.slotQueries.push(ms);
+    return slotOf(ms);
+  }
+
   async buildDelegate(params: DelegateParams): Promise<DelegateBuild> {
     this.log.push('buildDelegate');
     this.params.push(params);
@@ -453,6 +468,7 @@ export class FakeDelegations implements DelegationChain {
     const id = createHash('sha256').update(refKey(seed)).digest('hex');
     const fee = 230_000n;
     const signers = [parent.delegateKey, params.delegateKey];
+    const validTo = this.clock.now() + 1_800_000;
     const spec: TxSpec = {
       inputs: [seed],
       outputs: [
@@ -462,13 +478,14 @@ export class FakeDelegations implements DelegationChain {
       fee,
       mint: [{ policy: this.script.hash, name: id, quantity: 1n }],
       signers,
+      ttl: BigInt(slotOf(validTo)),
     };
     const tx = txOf(this.txTamper === null ? spec : this.txTamper(spec, 'delegate'));
     const requiredSigners = signers.map((keyHash) => ({ keyHash, roles: [] as string[] }));
     if (this.faults.extraSigner !== undefined) requiredSigners.push({ keyHash: this.faults.extraSigner, roles: ['wallet'] });
     const txHash = this.reportHash ?? tx.hash;
     const built: DelegateBuild = {
-      txCbor: tx.cbor, txHash, fee: String(fee), feeAda: '0.23', validFrom: this.clock.now() - 60_000, validTo: this.clock.now() + 1_800_000, requiredSigners, id, seed: refKey(seed), outputIndex: 0,
+      txCbor: tx.cbor, txHash, fee: String(fee), feeAda: '0.23', validFrom: this.clock.now() - 60_000, validTo, requiredSigners, id, seed: refKey(seed), outputIndex: 0,
       outputLovelace: DEPOSIT, delegation: datum,
     };
     this.#made.set(tx.hash, { kind: 'delegate', id, datum, hash: tx.hash, inputs: [seed], created: [{ txHash: tx.hash, index: 1, lovelace: seed.lovelace - DEPOSIT - fee }], outputIndex: 0, adopted: false });

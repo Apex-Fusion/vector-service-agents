@@ -27,7 +27,7 @@ export interface DelegationScript {
   readonly address: string;
 }
 
-/** What a transaction of this folder is checked against. Every value is made by this folder from its own request, and none comes from the builder. */
+/** What a transaction of this folder is checked against. Every value is made by this folder from its own request, and none comes from the builder, with one exception: `DelegateExpectation.ttlSlot`. */
 export interface TxExpectation {
   /** The hash that the builder reports for the transaction: it must be the hash of the bytes. */
   readonly txHash: string;
@@ -40,9 +40,15 @@ export interface TxExpectation {
   readonly signers: readonly string[];
 }
 
-/** The datum that a Delegate must put in its one output at the delegation script, as the hex of its CBOR. */
+/** What a Delegate is checked against, besides what every transaction is checked against. */
 export interface DelegateExpectation extends TxExpectation {
+  /** The datum that a Delegate must put in its one output at the delegation script, as the hex of its CBOR. */
   readonly datumHex: string;
+  /**
+   * The TTL that the body of the Delegate must have: the slot that its end of validity gives. This value comes from the report of the build, through the slot rule of the chain. The record of a left
+   * sub-delegation names the same end, so the bytes that the keys sign end where a janitor expects.
+   */
+  readonly ttlSlot: number;
 }
 
 /** The address of a script or of a wallet as the hex of its bytes, or null when the text is not an address. */
@@ -138,6 +144,16 @@ function delegationOutputProblem(output: CML.TransactionOutput, e: DelegateExpec
   return null;
 }
 
+/**
+ * The TTL of a Delegate: its body ends at the slot that the record of the sub-delegation names. A Delegate with no TTL could land at any time, after a janitor dropped the record, and anyone who holds its
+ * bytes could send them again while its seed output is unspent.
+ */
+function ttlProblem(body: CML.TransactionBody, ttlSlot: number): string | null {
+  const ttl = body.ttl();
+  if (ttl === undefined) return 'the transaction has no end of validity (no TTL), so it could land at any time';
+  return ttl === BigInt(ttlSlot) ? null : `the end of validity of the transaction (slot ${ttl}) is not the slot of the end of validity that the build reports (slot ${ttlSlot})`;
+}
+
 function decoded(txCbor: string): CML.Transaction | string {
   try {
     return decodeTransaction(txCbor, 'The transaction');
@@ -148,8 +164,9 @@ function decoded(txCbor: string): CML.Transaction | string {
 
 /**
  * The first rule that a Delegate breaks, or null when the keys may sign it. The transaction has the hash that the builder reports; it mints exactly one token, the token of this delegation under
- * the delegation policy; it has exactly one output at the delegation script, and that output holds the datum that was asked for; every other output goes to the wallet of the agent; it has no
- * certificate, withdrawal, vote, proposal or gift to the treasury; its required signers are the keys of this run; and its fee and its collateral are within the limits.
+ * the delegation policy; it has exactly one output at the delegation script, and that output holds the datum that was asked for; every other output goes to the wallet of the agent; its TTL is the slot of
+ * the end of validity that the build reports; it has no certificate, withdrawal, vote, proposal or gift to the treasury; its required signers are the keys of this run; and its fee and its collateral are
+ * within the limits.
  */
 export function delegateTxProblem(txCbor: string, e: DelegateExpectation): string | null {
   const tx = decoded(txCbor);
@@ -168,7 +185,7 @@ export function delegateTxProblem(txCbor: string, e: DelegateExpectation): strin
   }
   if (atScript.length !== 1) return `the transaction has ${atScript.length} outputs at the delegation script, and it needs exactly one`;
   const problem = delegationOutputProblem(atScript[0]!, e);
-  return problem ?? bodyProblem(tx, e);
+  return problem ?? ttlProblem(body, e.ttlSlot) ?? bodyProblem(tx, e);
 }
 
 /**

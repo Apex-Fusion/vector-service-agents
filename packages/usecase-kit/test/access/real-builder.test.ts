@@ -1,14 +1,14 @@
 // packages/usecase-kit/test/access/real-builder.test.ts: the Delegate that the REAL builder of buyer-core makes for the terms of a sub-delegation, in the offline identity world of buyer-core. Lucid runs
 // the applied delegation script on the build, so a build that completes passes the contract (minus the signatures). The rest of the ledger is the fake of support.ts.
-import type { UTxO } from '@lucid-evolution/lucid';
+import { CML, type UTxO } from '@lucid-evolution/lucid';
 import { describe, expect, it } from 'vitest';
 import { buildDelegate, buildUndelegate, enterpriseAddressOf, lucidForAddress } from '@vsa/buyer-core';
 import type { DelegateBuild, UndelegateBuild } from '@vsa/buyer-core';
 import { encodeDelegationDatum } from '@vsa/vector-read/identity-codec';
 import { DEPLOYMENT, identityWorld, recordUtxo, rootRecord, testKey } from '../../../buyer-core/test/fixtures/identity-world.ts';
-import { MAX_DELEGATION_DEPOSIT_LOVELACE, MAX_TX_FEE_LOVELACE, withSubDelegation } from '../../src/access/index.ts';
+import { MAX_DELEGATION_DEPOSIT_LOVELACE, MAX_TX_FEE_LOVELACE, deploymentSlotAt, withSubDelegation } from '../../src/access/index.ts';
 import type { DelegationDatum, SubDelegationRun, TxSigner } from '../../src/access/index.ts';
-import { AGENT_ID, DAY, NOW, PARENT_ID, SUBAGENT_ID, parentDatum, subWorld, type SubWorld } from './support.ts';
+import { AGENT_ID, DAY, NOW, PARENT_ID, SUBAGENT_ID, ZERO_TIME, parentDatum, subWorld, type SubWorld } from './support.ts';
 
 const AGENT = testKey(41);
 const SUBAGENT = testKey(42);
@@ -51,7 +51,21 @@ interface RunOptions {
   lie?: boolean;
   /** The Undelegate is the real one too, built over the identity world that holds the landed delegation. */
   realUndelegate?: boolean;
+  /** The bytes of the Delegate end this many slots later than the real builder wrote (a negative number is earlier), and the report is made again for them. */
+  moveTtl?: bigint;
+  /** The `validTo` of the report is this many milliseconds later than the real builder wrote. */
+  moveReport?: number;
 }
+
+/** The real Delegate with the TTL of its bytes moved by `slots`, and its hash made again for the new bytes: a builder whose bytes end at another slot than its report says. */
+function withTtlMoved(made: DelegateBuild, slots: bigint): DelegateBuild {
+  const tx = CML.Transaction.from_cbor_hex(made.txCbor);
+  const body = tx.body();
+  body.set_ttl(body.ttl()! + slots);
+  const moved = CML.Transaction.new(body, tx.witness_set(), tx.is_valid(), tx.auxiliary_data());
+  return { ...made, txCbor: moved.to_cbor_hex(), txHash: CML.hash_transaction(moved.body()).to_hex() };
+}
+
 async function run(options: RunOptions = {}): Promise<{ w: SubWorld; result: SubDelegationRun<string>; built: DelegateBuild[]; undelegated: UndelegateBuild[]; signed: string[] }> {
   const { context } = await world(options.ledger);
   const signed: string[] = [];
@@ -60,15 +74,17 @@ async function run(options: RunOptions = {}): Promise<{ w: SubWorld; result: Sub
     script: DEPLOYMENT.delegation,
     request: { agent: { signer: counting(AGENT.keyHash, signed), walletAddress: WALLET }, subagent: { did: `did:vector:${SUBAGENT_ID}`, signer: counting((options.subagentKey ?? SUBAGENT).keyHash, signed) } },
   });
+  w.chain.slotAt = deploymentSlotAt(context.provider);
   const built: DelegateBuild[] = [];
   const undelegated: UndelegateBuild[] = [];
   w.chain.buildDelegate = async (params) => {
     w.chain.params.push(params);
     const made = await buildDelegate(context, params);
     if (options.lie !== true) {
-      built.push(made);
-      w.chain.adopt(made);
-      return made;
+      const given: DelegateBuild = { ...(options.moveTtl === undefined ? made : withTtlMoved(made, options.moveTtl)), validTo: made.validTo + (options.moveReport ?? 0) };
+      built.push(given);
+      w.chain.adopt(given);
+      return given;
     }
     const wide = await buildDelegate(context, { ...params, actions: ['erp.stock.read', 'po.write'], resources: ['https://mock.example/t/run1/erp', 'https://mock.example/t/run1/po'], value: { perTx: 6_000_000n, total: 22_000_000n, periodMs: DAY } });
     const lie: DelegateBuild = { ...wide, delegation: made.delegation };
@@ -170,5 +186,37 @@ describe('the keys sign the bytes that the real builder makes, and only those', 
       return made;
     };
     expect(await w.clock.run(withSubDelegation(w.deps, w.request, w.limits, idle))).toMatchObject({ ok: false, failure: { code: 'build_mismatch', detail: expect.stringContaining('does not mint exactly') }, end: { state: 'not_made' } });
+  });
+});
+
+describe('the end of validity of the Delegate that the real builder makes', () => {
+  it('is a TTL that is the slot of its reported end on the slot clock of the deployment, so the check passes with the rule of the deployment', async () => {
+    const { result, built, w } = await run();
+    expect(result).toMatchObject({ ok: true, kind: 'returned', end: { state: 'ended' } });
+    const { validTo, txCbor } = built[0]!;
+    expect(validTo).toBe(NOW + 1_800_000);
+    expect(CML.Transaction.from_cbor_hex(txCbor).body().ttl()).toBe(BigInt((validTo - ZERO_TIME) / 1000));
+    expect(w.chain.submitted.map((s) => s.kind)).toStrictEqual(['delegate', 'undelegate']);
+  });
+
+  it.each([[1n], [-1n]])('is refused when its bytes end %s slots from the slot of the report: no key signs and nothing is sent', async (moveTtl) => {
+    const { result, signed, w } = await run({ moveTtl });
+    expect(result).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'build_mismatch', detail: expect.stringContaining('is not the slot of the end of validity') }, end: { state: 'not_made' } });
+    expect(signed).toStrictEqual([]);
+    expect(w.chain.submitted).toHaveLength(0);
+  });
+
+  it.each([[0], [999]])('is signed and sent when its report ends %i ms into the slot of the TTL: the twin', async (moveReport) => {
+    const { result, signed, w } = await run({ moveReport });
+    expect(result).toMatchObject({ ok: true, kind: 'returned', end: { state: 'ended' } });
+    expect(signed.slice(0, 2).sort()).toStrictEqual([AGENT.keyHash, SUBAGENT.keyHash].sort());
+    expect(w.chain.submitted.map((s) => s.kind)).toStrictEqual(['delegate', 'undelegate']);
+  });
+
+  it('is refused when its report ends one second after the slot of the TTL', async () => {
+    const { result, signed, w } = await run({ moveReport: 1_000 });
+    expect(result).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'build_mismatch', detail: expect.stringContaining('is not the slot of the end of validity') }, end: { state: 'not_made' } });
+    expect(signed).toStrictEqual([]);
+    expect(w.chain.submitted).toHaveLength(0);
   });
 });

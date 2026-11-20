@@ -4,7 +4,8 @@
 //   - a token for one route, and the token of a subagent (src/token.ts);
 //   - a call with a token, with a JWT-SVID, or with an X.509-SVID, and the typed result of a call (src/call.ts, src/answer.ts);
 //   - the SVIDs of a counterparty (src/svid.ts, src/mtls.ts);
-//   - the sub-delegation, ended in a `finally` path (src/subdelegation.ts, src/signer.ts), the transaction rules that the keys follow (src/txcheck.ts), and the queue of a wallet (src/queue.ts).
+//   - the sub-delegation, ended in a `finally` path (src/subdelegation.ts, src/signer.ts), the transaction rules that the keys follow (src/txcheck.ts), the slot rule of the deployment (src/slot.ts), and the
+//     queue of a wallet (src/queue.ts).
 // Every access to the gateway, the ledger, a mock system and the clock goes through a parameter. The folder reads no key file and no environment variable.
 export { SYSTEMS, ROUTES, jwtSvidTarget, tokenTarget, x509Target } from './routes.ts';
 export type {
@@ -47,3 +48,5 @@ export type {
 } from './subdelegation.ts';
 export { txSignerOfRawKey } from './signer.ts';
 export type { RawKeySigner } from './signer.ts';
+export { deploymentSlotAt } from './slot.ts';
+export type { SlotClockSource } from './slot.ts';

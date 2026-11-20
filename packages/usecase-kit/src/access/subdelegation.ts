@@ -8,6 +8,9 @@
 // that was read (txcheck.ts), and never the report of the builder about them, so a builder that gives the bytes of a wider delegation gets no signature. A sub-delegation that is not ended still
 // ends by itself at its `notAfter`, and the result gives the reference that a janitor needs to end it earlier.
 //
+// The Delegate carries its own end of validity: the TTL of its body is the slot that the end of validity in the report of the build gives (`DelegationChain.slotAt`), and the reference of a left
+// sub-delegation holds that end and that slot. So a Delegate that the ledger does not show by then never lands, and a janitor may drop its reference after that end.
+//
 // Runs of one agent wallet at one time go through the queue of that wallet for the build and the send of each transaction (queue.ts), and the end step ends only the delegation that its own run made.
 // Every wait on a port has a bound, and a port that gives no answer is a typed failure.
 //
@@ -69,6 +72,11 @@ export interface DelegationChain {
   buildUndelegate(params: UndelegateParams): Promise<UndelegateBuild>;
   /** Sends a signed transaction to the node. */
   submit(signedCborHex: string): Promise<string>;
+  /**
+   * The slot that a time gives on the slot clock of the chain: the slot that the builders write in the TTL of a transaction for a `validTo` of `ms` POSIX milliseconds. The TTL is the first slot in which the
+   * transaction can no longer land. The keys sign a Delegate only when its TTL is this slot for the `validTo` that the report of its build gives. `deploymentSlotAt` gives the rule of the identity deployment.
+   */
+  slotAt(ms: number): Promise<number>;
 }
 
 /** A key that signs a transaction. */
@@ -91,7 +99,8 @@ export interface SubDelegationDeps {
   readonly walletQueue: SerialQueue;
   /**
    * Called with the reference of the sub-delegation just BEFORE the Delegate is sent, so that a crash of the process cannot leave a sub-delegation that no record names. Write the reference to the
-   * store of the janitor here, and remove it when the run gives `end.state` of `ended` or `not_made`. A hook that throws stops the run with `journal_failed`: nothing is sent.
+   * store of the janitor here, and remove it when the run gives `end.state` of `ended` or `not_made`. A Delegate that the ledger does not show after `delegateValidTo` never lands, so a janitor may drop the
+   * reference of a run that crashed after that time. A hook that throws stops the run with `journal_failed`: nothing is sent.
    */
   readonly beforeSend?: (reference: LeftSubDelegation) => void | Promise<void>;
 }
@@ -155,8 +164,10 @@ export interface LeftSubDelegation {
   readonly resource: string;
   /** The hash of the Delegate transaction. */
   readonly delegateTxHash: string;
-  /** The end of the validity of the Delegate transaction, in POSIX milliseconds. A Delegate that is not on the ledger by then never lands. */
+  /** The end of the validity of the Delegate transaction, in POSIX milliseconds. A Delegate that is not on the ledger by then never lands: its bytes end at `delegateTtlSlot`. */
   readonly delegateValidTo: number;
+  /** The TTL of the Delegate transaction: the first slot in which it can no longer land. It is the slot that `delegateValidTo` gives, and the bytes that the keys signed carry it. */
+  readonly delegateTtlSlot: number;
   /** When the delegation ends by itself, in POSIX milliseconds. */
   readonly notAfter: number;
   /** The hash of the Undelegate that was sent, or null when none was sent. */
@@ -267,6 +278,7 @@ function planOf(deps: SubDelegationDeps, request: SubDelegationRequest, limits: 
   const scriptProblem = delegationScriptProblem(deps.delegationScript);
   if (scriptProblem !== null) return bad(scriptProblem);
   if (typeof deps.walletQueue !== 'object' || deps.walletQueue === null || typeof deps.walletQueue.run !== 'function') return bad('walletQueue must be the queue of the wallet key: an object with a run function');
+  if (typeof deps.chain?.slotAt !== 'function') return bad('chain.slotAt must be the slot rule of the chain: a function that gives the slot of a time');
   const { target } = request;
   const route = routeOf(target);
   if (!route.ok) return route;
@@ -313,6 +325,7 @@ function buildProblem(built: DelegateBuild, plan: Plan, parent: DelegationDatum,
   const only = (items: readonly string[], text: string): boolean => items.length === 1 && items[0] === hexOf(text);
   if (!/^[0-9a-f]{64}$/.test(built.id)) return 'the build has no delegation identifier';
   if (!TX_HASH.test(built.txHash)) return 'the build has no transaction hash';
+  if (!isWhole(built.validTo, 1)) return 'the build has no end of validity: its validTo is not a whole number of POSIX milliseconds';
   if (d.remaining !== 0) return `the build allows ${String(d.remaining)} further hops, and a sub-delegation allows none`;
   if (d.value === null || d.value.perTx !== 0n || d.value.total !== 0n) return 'the build has a value above 0, or no value limit';
   if (d.value.periodMs !== periodMs) return 'the build has not the period that was asked for';
@@ -372,9 +385,9 @@ async function seenOn(deps: SubDelegationDeps, plan: Plan, id: string): Promise<
 }
 
 /**
- * Reads the parent, builds the Delegate, checks the build and the BYTES of its transaction, signs it, and sends it. Each call of a port has the bound `stepTimeoutMs`, and a call that gives no answer is
- * `step_timeout`. `left.current` is set before the send: a transaction that was sent may land, even when the send throws or gives no answer, and the end step then runs as for a Delegate that may have
- * landed.
+ * Reads the parent, builds the Delegate, checks the build, reads the slot of its end of validity, checks the BYTES of its transaction, signs it, and sends it. Each call of a port has the bound
+ * `stepTimeoutMs`, and a call that gives no answer is `step_timeout`. `left.current` is set before the send: a transaction that was sent may land, even when the send throws or gives no answer, and the end
+ * step then runs as for a Delegate that may have landed.
  */
 async function buildAndSend(deps: SubDelegationDeps, plan: Plan, left: { current: LeftSubDelegation | null }): Promise<Accepted<LeftSubDelegation> | SubDelegationFailure> {
   const { chain, clock } = deps;
@@ -405,14 +418,20 @@ async function buildAndSend(deps: SubDelegationDeps, plan: Plan, left: { current
   } catch (error) {
     return refused('build_mismatch', `the datum that was asked for cannot be written: ${errorText(error)}`);
   }
+  const slot = await answerOf(clock, plan.stepTimeoutMs, () => chain.slotAt(built.validTo));
+  if (slot.state === 'timed_out') return timedOut('the slot clock of the chain', plan.stepTimeoutMs);
+  if (slot.state === 'threw') return refused('ledger_unreadable', `the slot of the end of validity of the Delegate could not be read: ${errorText(slot.error)}`);
+  if (!isWhole(slot.value, 0)) return refused('ledger_unreadable', 'the slot clock of the chain gave a slot that is not a whole number from 0');
+  const ttlSlot = slot.value;
   const txProblem = delegateTxProblem(built.txCbor, {
-    txHash: built.txHash, id: built.id, script: plan.script, walletHex: plan.walletHex, signers: [plan.agentSigner.keyHash, plan.subagentSigner.keyHash], datumHex,
+    txHash: built.txHash, id: built.id, script: plan.script, walletHex: plan.walletHex, signers: [plan.agentSigner.keyHash, plan.subagentSigner.keyHash], datumHex, ttlSlot,
   });
   if (txProblem !== null) return refused('build_mismatch', txProblem);
   const signed = signAll(built.txCbor, built.requiredSigners, [plan.agentSigner, plan.subagentSigner]);
   if (!signed.ok) return signed;
   const made: LeftSubDelegation = {
-    id: built.id, parent: plan.parent, action: plan.action, resource: plan.resource, delegateTxHash: built.txHash, delegateValidTo: built.validTo, notAfter, endTxHash: null,
+    id: built.id, parent: plan.parent, action: plan.action, resource: plan.resource, delegateTxHash: built.txHash, delegateValidTo: built.validTo, delegateTtlSlot: ttlSlot, notAfter,
+    endTxHash: null,
   };
   const journal = await answerOf(clock, plan.stepTimeoutMs, async () => deps.beforeSend?.(made));
   if (journal.state === 'timed_out') return timedOut('the hook that writes the reference of the sub-delegation', plan.stepTimeoutMs);
