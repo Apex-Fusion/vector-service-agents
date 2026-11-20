@@ -113,6 +113,26 @@ describe('the real approval check on the whole route', () => {
     expect((await send(sent)).status).toBe(201);
     expect(await rankingsOf(s)).toHaveLength(1);
   });
+
+  /** A ranking that no digest can bind: the canonical form refuses it, so the check fails to run for it. The text of the body is what the caller sends. */
+  const nested = (levels: number): Record<string, unknown> => (levels === 0 ? { end: true } : { down: nested(levels - 1) });
+  const unbindable: ReadonlyArray<readonly [what: string, body: (sent: RankingBody) => string]> = [
+    ['a key that is a whole number', (sent) => JSON.stringify({ ...sent, ranking: { ...sent.ranking, 7: 'x' } })],
+    ['the key __proto__', (sent) => JSON.stringify(sent).replace('"rfq_id"', '"__proto__":1,"rfq_id"')],
+    ['a key that is not in the NFC form', (sent) => JSON.stringify({ ...sent, ranking: { ...sent.ranking, 'e\u0301': 'x' } })],
+    ['more than 32 levels of objects', (sent) => JSON.stringify({ ...sent, ranking: { ...sent.ranking, deep: nested(40) } })],
+    ['a number that is not finite', (sent) => JSON.stringify(sent).replace('"price":0.4', '"price":1e999')],
+  ];
+  it.each(unbindable)('a ranking with %s makes the check fail to run: 503 approval_unavailable, nothing is written, and the ranking without it is written', async (_what, text) => {
+    const { s, agent, sent, send, lastRule } = await setup();
+    s.world.approve(agent.agent, sent.ranking, sent.salt);
+    const reply = await send(text(sent));
+    refused(reply, 503, 'approval_unavailable');
+    expect(lastRule()).toBe('approval.failed');
+    expect(reply.json?.message).toContain('the approval check could not run: the input of the approval check is wrong');
+    expect(await rankingsOf(s)).toEqual([]);
+    expect((await send(sent)).status).toBe(201);
+  });
 });
 
 /** A world with one agent, its delegation from the member and the approval of one ranking. The wired check is bound to the ledger and the gateway of that world. */
