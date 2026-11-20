@@ -8,7 +8,8 @@ import type { AttestationCheck } from '@vsa/buyer-core';
 import { canonicalSha256, proposalDigest } from '../../src/protocol/index.ts';
 import type { ApprovalInput, Document } from '../../src/protocol/index.ts';
 import {
-  ATTESTATION_ID, DELEGATION_ID, DOCUMENT, HOUR, ISSUER_DID, ISSUER_ID, ISSUER_KEY, MAINNET, OTHER_DID, T, attestation, attestationUtxo, delegation, delegationUtxo, failing, from, makeWorld, proposalOf, withLedger,
+  ATTESTATION_ID, DELEGATION_ID, DOCUMENT, HOUR, ISSUER_DID, ISSUER_ID, ISSUER_KEY, MAINNET, OTHER_DID, T, attestation, attestationUtxo, delegation, delegationUtxo, failing, from, leavingForm, makeWorld, proposalOf, valueAt,
+  withLedger, withMember,
 } from './support.ts';
 import type { World, WorldOptions } from './support.ts';
 
@@ -146,9 +147,28 @@ describe('the issuer is the root delegator: approval_wrong_issuer', () => {
     expect((await refusal(orphan, withIssuerDid(orphan, ISSUER_DID))).code).toBe('approval_wrong_issuer');
   });
 
-  it('throws CheckUnavailableError for a delegation that is not live: it has no chain, so the answer cannot be judged, and it is not a rule', async () => {
-    await expect(check(makeWorld({ delegation: null }))).rejects.toBeInstanceOf(CheckUnavailableError);
-    await expect(check(makeWorld())).resolves.toMatchObject({ ok: true });
+  it('refuses a delegation that does not exist: no root delegator exists that the issuer could be', async () => {
+    const world = makeWorld({ delegation: null });
+    expect(await refusal(world)).toMatchObject({ code: 'approval_wrong_issuer', detail: expect.stringContaining('no live delegation has this identifier') });
+    expect(await approvalCheckOf(world.ports)(world.approvalInput)).toMatchObject({ ok: false, code: 'approval_wrong_issuer' });
+    // The same approval with the delegation on the ledger is accepted.
+    expect(await check(makeWorld())).toMatchObject({ ok: true });
+  });
+
+  it('is not reached for a delegation that does not exist when the shared checks run: the check of the delegation refuses it first, and the delegation is read once', async () => {
+    const counted = async (world: World) => {
+      let reads = 0;
+      const ports = withLedger(world, { readDelegation: (id) => { reads += 1; return world.ports.ledger.readDelegation(id); } });
+      const outcome = await runChecks(sharedChecks(ports, { kind: 'order-desk', request: world.handoff, context: world.context }));
+      return { outcome, reads };
+    };
+    const gone = await counted(makeWorld({ delegation: null }));
+    expect(gone.outcome).toMatchObject({ ok: false, code: 'delegation_invalid' });
+    expect(gone.reads).toBe(1);
+    // With the delegation on the ledger the approval check reads it a second time, and the run passes.
+    const live = await counted(makeWorld());
+    expect(live.outcome.ok).toBe(true);
+    expect(live.reads).toBe(2);
   });
 
   it('refuses a reference that names another issuer record than the attestation does, and accepts the right name', async () => {
@@ -289,6 +309,18 @@ describe('a source that cannot be read: never a pass, and never the code of a ru
     expect(await checkApproval(withLedger(wrong, { readDelegation: failing }), wrong.approvalInput)).toMatchObject({ ok: false, code: 'approval_wrong_type' });
   });
 
+  it('tells a delegation that does not exist from a read that did not answer: the first is a refusal, the others are CheckUnavailableError', async () => {
+    const world = makeWorld();
+    const view = await world.ports.ledger.readDelegation(DELEGATION_ID);
+    const reading = (read: unknown) => withLedger(world, { readDelegation: read as never });
+    // The port says that the delegation is not live: it gives the delegation that was asked for, with an empty chain. This is an answer, and the answer is a refusal.
+    expect(await checkApproval(reading(async () => ({ ...view, chain: [] })), world.approvalInput)).toMatchObject({ ok: false, code: 'approval_wrong_issuer' });
+    // A read that fails, an answer of the wrong shape and an answer for another delegation are not an answer: never a pass, and never the code of a rule.
+    const notAnswers = [failing, async () => null, async () => ({}), async () => ({ ...view, chain: null }), async () => ({ id: DELEGATION_ID, chain: [] }), async () => ({ ...view, id: '9e'.repeat(32), chain: [] })];
+    for (const [index, read] of notAnswers.entries()) await expect(checkApproval(reading(read), world.approvalInput), `read ${index}`).rejects.toBeInstanceOf(CheckUnavailableError);
+    expect(await checkApproval(reading(async () => view), world.approvalInput)).toMatchObject({ ok: true });
+  });
+
   it('throws CheckUnavailableError when the node does not answer: the real read code fails and the approval is not accepted', async () => {
     const world = makeWorld();
     world.ledger.provider.getUtxos = failing;
@@ -324,7 +356,7 @@ describe('a source that cannot be read: never a pass, and never the code of a ru
     const delegation = await world.ports.ledger.readDelegation(DELEGATION_ID);
     const link = delegation.chain[0];
     const views: unknown[] = [
-      null, undefined, {}, 'x', { id: DELEGATION_ID }, { ...delegation, chain: 'x' }, { ...delegation, chain: [{}] }, { ...delegation, chain: [{ id: DELEGATION_ID }] }, { ...delegation, chain: [] },
+      null, undefined, {}, 'x', { id: DELEGATION_ID }, { ...delegation, chain: 'x' }, { ...delegation, chain: [{}] }, { ...delegation, chain: [{ id: DELEGATION_ID }] },
       { ...delegation, id: '9e'.repeat(32) }, { ...delegation, chain: [{ ...link, id: '9e'.repeat(32) }] }, { ...delegation, chain: [{ ...link, delegation: null }] },
       { ...delegation, chain: [{ ...link, delegation: { ...link.delegation, delegator: { type: 'Nobody' } } }] }, { ...delegation, missingParent: 7 },
     ];
@@ -454,5 +486,53 @@ describe('the approval uses what the read of the attestation decided: ruleValid 
     expect(outcome.record.facts.approval_issuer_did).toBeNull();
     const registered = makeWorld({ attestation: { issuerId: ISSUER_ID }, issuerRecord: {} });
     expect(await check(registered, withIssuerDid(registered, ISSUER_DID))).toMatchObject({ ok: true, issuer_did: ISSUER_DID });
+  });
+});
+
+describe('a hex member of an answer is read only in the form of its kind', () => {
+  const world = makeWorld();
+  const KEY = ISSUER_KEY.publicKey;
+  const attestationWith = (path: string, value: unknown, over: World = world) => async () => withMember(await over.ports.ledger.attestation(ATTESTATION_ID, T), `attestation.attestation.${path}`, value);
+
+  it('does not read a key with other characters before it, after it or inside it, or in capitals, as the key: the approval is not accepted', async () => {
+    const issuers = [`${KEY}zz`, `${KEY}0`, `${KEY}00`, `zz${KEY}`, `${KEY.toUpperCase()}zz`, `${KEY.substring(0, 62)} ${KEY.substring(62)}`, ...leavingForm(KEY)];
+    for (const issuer of issuers) {
+      await expect(checkApproval(withLedger(world, { attestation: attestationWith('issuer', issuer) }), world.approvalInput), issuer).rejects.toMatchObject({ code: 'check_unavailable', source: 'attestation' });
+    }
+    expect(await checkApproval(withLedger(world, { attestation: attestationWith('issuer', KEY) }), world.approvalInput)).toMatchObject({ ok: true, issuer_key_hash: ISSUER_KEY.keyHash });
+  });
+
+  it('does not read the subject or the digest in another form as the same value: the answer cannot be judged. A value in the right form that is another value is the code of its rule', async () => {
+    const real = await world.ports.ledger.attestation(ATTESTATION_ID, T);
+    for (const member of ['subject', 'digest']) {
+      for (const text of leavingForm(valueAt(real, `attestation.attestation.${member}`) as string)) {
+        await expect(checkApproval(withLedger(world, { attestation: attestationWith(member, text) }), world.approvalInput), `${member} ${text}`).rejects.toBeInstanceOf(CheckUnavailableError);
+      }
+    }
+    const refusedFor = (path: string, value: unknown) => checkApproval(withLedger(world, { attestation: attestationWith(path, value) }), world.approvalInput);
+    expect(await refusedFor('subject', 'b4'.repeat(32))).toMatchObject({ ok: false, code: 'approval_wrong_subject' });
+    expect(await refusedFor('digest', digestOf('5a'.repeat(32), DOCUMENT))).toMatchObject({ ok: false, code: 'approval_digest_mismatch' });
+    expect(await refusedFor('issuer', OTHER_KEY.publicKey)).toMatchObject({ ok: false, code: 'approval_wrong_issuer' });
+  });
+
+  it('does not read the hash of a root delegator that is a key in capitals as the same key hash', async () => {
+    const view = await world.ports.ledger.readDelegation(DELEGATION_ID);
+    for (const hash of leavingForm(ISSUER_KEY.keyHash)) {
+      const ports = withLedger(world, { readDelegation: async () => withMember(view, 'chain.0.delegation.delegator.hash', hash) });
+      await expect(checkApproval(ports, world.approvalInput), hash).rejects.toMatchObject({ code: 'check_unavailable', source: 'delegation' });
+    }
+    expect(await check(world)).toMatchObject({ ok: true });
+  });
+
+  it('does not read the issuer record, or an agent that is the root delegator, in capitals as the same agent', async () => {
+    const agent = makeWorld(agentRoot());
+    const input = withIssuerDid(agent, ISSUER_DID);
+    const view = await agent.ports.ledger.readDelegation(DELEGATION_ID);
+    for (const id of leavingForm(ISSUER_ID)) {
+      await expect(checkApproval(withLedger(agent, { attestation: attestationWith('issuerId', id, agent) }), input), `issuer record ${id}`).rejects.toMatchObject({ code: 'check_unavailable', source: 'attestation' });
+      const ports = withLedger(agent, { readDelegation: async () => withMember(view, 'chain.0.delegation.delegator.id', id) });
+      await expect(checkApproval(ports, input), `root delegator ${id}`).rejects.toMatchObject({ code: 'check_unavailable', source: 'delegation' });
+    }
+    expect(await check(agent, input)).toMatchObject({ ok: true, issuer_did: ISSUER_DID });
   });
 });

@@ -79,6 +79,6 @@ export function checkSenderAccountable(resolution: ResolvedSender, nowMs: number
  */
 export function checkSenderKey(resolution: ResolvedSender, buyerPkh: string): ProtocolResult<null, 'sender_key_mismatch'> {
   // The purposes must be a list. A text has `includes` too, and it matches a part of the text.
-  const listed = resolution.keys.some((key) => key.type === 'Ed25519' && key.keyHash.toLowerCase() === buyerPkh && Array.isArray(key.purposes) && key.purposes.includes('delegation'));
+  const listed = resolution.keys.some((key) => key.type === 'Ed25519' && key.keyHash === buyerPkh && Array.isArray(key.purposes) && key.purposes.includes('delegation'));
   return listed ? accepted(null) : refused('sender_key_mismatch', 'the record of the sender does not list the key of the escrow with the delegation purpose');
 }

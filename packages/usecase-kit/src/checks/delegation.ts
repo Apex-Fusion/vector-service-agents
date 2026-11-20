@@ -24,7 +24,7 @@ export function checkDelegationNamesSender(answer: DelegationView, id: Delegatio
   // One read cannot tell the two apart: an ended delegation has no output, as one that never existed. The run then ends as Rejected, and not as Cancelled. This is a known limit.
   if (link === undefined) return refused('delegation_invalid', 'no live delegation has this identifier: it does not exist, or it was ended');
   if (link.delegation.delegate !== idOf(senderDid)) return refused('delegation_invalid', 'the delegate of the delegation is not the sender');
-  if (link.delegation.delegateKey.toLowerCase() !== buyerPkh) return refused('delegation_invalid', 'the delegate key of the delegation is not the key of the escrow');
+  if (link.delegation.delegateKey !== buyerPkh) return refused('delegation_invalid', 'the delegate key of the delegation is not the key of the escrow');
   return accepted(null);
 }
 

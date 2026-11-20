@@ -117,3 +117,23 @@ export const withLedger = (world: World, ledger: Partial<ChecksPorts['ledger']>)
 
 /** A rejection the way a failed network call rejects. */
 export const failing = (): Promise<never> => Promise.reject(new TypeError('fetch failed: https://koios.example/api/v1/tx_info?key=secret-token-123'));
+
+/** The ways in which a text of lower-case hex can leave its form: upper case, another character (inside it, at its end and as its last character), and another length. The text needs a letter, or its upper-case form is the same text. */
+export function leavingForm(text: string): string[] {
+  if (text.toUpperCase() === text) throw new Error('the text has no letter: its upper-case form is the same text');
+  const shorter = (count: number): string => text.substring(0, text.length - count);
+  return [text.toUpperCase(), `${text.substring(0, 10)}zz${text.substring(12)}`, `${text}zz`, `${shorter(1)}\n`, `${text}00`, `${text}0`, shorter(2), shorter(1), ''];
+}
+
+/** The member of an answer at `path`: names and indexes, separated by dots. */
+export const valueAt = (answer: unknown, path: string): unknown => path.split('.').reduce<unknown>((at, name) => (at as Record<string, unknown>)[name], answer);
+
+/** A copy of an answer with the member at `path` replaced. */
+export function withMember<T>(answer: T, path: string, value: unknown): T {
+  const copy = structuredClone(answer);
+  const names = path.split('.');
+  const last = names.pop() as string;
+  const holder = names.reduce<unknown>((at, name) => (at as Record<string, unknown>)[name], copy);
+  (holder as Record<string, unknown>)[last] = value;
+  return copy;
+}

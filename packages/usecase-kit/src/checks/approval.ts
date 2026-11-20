@@ -7,6 +7,7 @@
 //     - Root delegator is a key principal: the hash of the issuer key is the hash of the root delegator.
 //     - Root delegator is an agent: the issuer id is the id of the root delegator.
 //     - The reference names an issuer record: it must be the issuer record of the attestation.
+//     - The delegation does not exist, or a parent of it was ended: there is no root delegator that the issuer could be.
 //   valid at the time of the check by the rule of the registry    approval_revoked, approval_expired, approval_issuer_invalid
 //     - The attestation is active.
 //     - The time is inside its validity range.
@@ -15,8 +16,9 @@
 //
 // The read of the attestation decides the validity. This check uses what the read decided: `ruleValid`, and every condition line. The approval passes only when `ruleValid` is the boolean true
 // and every line passes or does not apply. A failing line of a condition that this code knows gives the code of that condition. The read can give something that this check cannot judge: a line
-// that has the wrong shape, two lines with one identifier, a line with no result that this code knows, a failing line of a condition that this code does not know, or `ruleValid` false with no
-// failing line that explains it. The check then throws CheckUnavailableError.
+// that has the wrong shape, two lines with one identifier, a line with no result that this code knows, a failing line of a condition that this code does not know, `ruleValid` false with no
+// failing line that explains it, or a hex member that is not lower-case hex of the length of its kind (answers.ts). The check then throws CheckUnavailableError. So does a read of the
+// delegation that fails or that has the wrong shape. A read of the delegation that says that it does not exist is an answer, and the answer is a refusal.
 //
 // The time of the check can be before the time of issue. A relying party does not require that the time is after `issued_at`.
 // The registry sets `issued_at` to the end of the validity window of the transaction. So it can be up to an hour after the block.
@@ -26,9 +28,9 @@
 // A digest mismatch gives both digests: the digest that the attestation holds, and the digest of the document that was received.
 import type { CheckLine } from '@vsa/buyer-core';
 import type { Delegator } from '@vsa/vector-read/identity-codec';
-import { APPROVAL_ATT_TYPE, isPlainObject, parseApprovalRef, parseDelegationId, parseDid, parseDigest, proposalDigest } from '../protocol/index.ts';
+import { APPROVAL_ATT_TYPE, accepted, isPlainObject, parseApprovalRef, parseDelegationId, parseDid, proposalDigest, refused } from '../protocol/index.ts';
 import type {
-  ApprovalCheck, ApprovalInput, ApprovalRef, ApprovalRefusedByCheck, ApprovalResult, DelegationId, Did, Digest,
+  ApprovalCheck, ApprovalInput, ApprovalRef, ApprovalRefusedByCheck, ApprovalResult, DelegationId, Did, Digest, ProtocolResult,
 } from '../protocol/index.ts';
 import { attestationCheckOf, delegationViewOf } from './answers.ts';
 import { clip, didOf, idOf, keyHashOf } from './ids.ts';
@@ -61,20 +63,22 @@ function readInput(input: ApprovalInput): ReadInput {
 }
 
 /**
- * The root delegator of the delegation, or null when the chain does not end at a root because a parent was ended. Every link names the next one as its parent.
- * A delegation that is not live has no chain. The shared checks found it live a moment before, so an empty chain is an answer that this check cannot judge: CheckUnavailableError.
+ * The root delegator of the delegation: the delegator of the last link of its chain. Every link names the next one as its parent.
+ * There is no root delegator to compare with when the delegation does not exist or was ended (the chain is empty), and when a parent was ended (the chain does not end at a root). Each is the
+ * refusal `approval_wrong_issuer`: no root delegator exists that the issuer could be. A read that fails, and an answer of the wrong type, are CheckUnavailableError: a source that did not
+ * answer is not a rule.
  */
-async function rootDelegatorOf(ports: ChecksPorts, id: DelegationId): Promise<Delegator | null> {
+async function rootDelegatorOf(ports: ChecksPorts, id: DelegationId): Promise<ProtocolResult<Delegator, 'approval_wrong_issuer'>> {
   const answer = await readThrough(ports, 'delegation', () => ports.ledger.readDelegation(id));
   const checked = delegationViewOf(answer, id);
   if (!checked.ok) return badAnswer(ports, 'delegation', checked.detail);
   const chain = checked.value.chain;
-  if (chain.length === 0) return badAnswer(ports, 'delegation', 'the delegation is not live now');
+  if (chain.length === 0) return refused('approval_wrong_issuer', 'no live delegation has this identifier, so the approval has no root delegator to compare with');
   for (let index = 0; index < chain.length; index += 1) {
     const parent = index + 1 < chain.length ? chain[index + 1].id : null;
-    if (chain[index].delegation.parent !== parent) return null;
+    if (chain[index].delegation.parent !== parent) return refused('approval_wrong_issuer', 'the delegation has no root, so the approval has no root delegator to compare with');
   }
-  return chain[chain.length - 1].delegation.delegator;
+  return accepted(chain[chain.length - 1].delegation.delegator);
 }
 
 // The conditions of the validity rule, in the order that the rule lists them, each with the code that its failure gives.
@@ -124,6 +128,7 @@ function failedCondition(ports: ChecksPorts, lines: Lines, which: readonly Condi
  * It throws a TypeError for an input of the wrong type.
  * It throws CheckUnavailableError for a source that cannot be read, and for an answer that this check cannot judge. Decided: a caller treats a throw as "not available". It never treats it as a pass.
  * A list of checks turns the throw into the code `check_unavailable`.
+ * A delegation that does not exist has no root delegator, so the refusal is `approval_wrong_issuer`. The list of the shared checks refuses such a delegation before it runs this check, as `delegation_invalid`.
  */
 export async function checkApproval(ports: ChecksPorts, input: ApprovalInput): Promise<ApprovalResult> {
   const { ref, sender, delegation, observed, nowMs } = readInput(input);
@@ -144,8 +149,9 @@ export async function checkApproval(ports: ChecksPorts, input: ApprovalInput): P
   if (att.subject !== idOf(sender)) return refusedBy('approval_wrong_subject', 'the subject of the attestation is not the sender');
 
   const root = await rootDelegatorOf(ports, delegation);
-  if (root === null) return refusedBy('approval_wrong_issuer', 'the delegation has no root, so the approval has no root delegator to compare with');
-  const issuedByRoot = root.type === 'PrincipalKey' ? keyHashOf(att.issuer) === root.hash.toLowerCase() : att.issuerId !== null && att.issuerId === root.id;
+  if (!root.ok) return root;
+  const delegator = root.value;
+  const issuedByRoot = delegator.type === 'PrincipalKey' ? keyHashOf(att.issuer) === delegator.hash : att.issuerId !== null && att.issuerId === delegator.id;
   if (!issuedByRoot) return refusedBy('approval_wrong_issuer', 'the issuer of the attestation is not the root delegator of the delegation');
   if (att.issuerId !== null && didOf(att.issuerId) !== ref.issuer_did) return refusedBy('approval_wrong_issuer', 'the issuer record that the reference names is not the issuer record of the attestation');
 
@@ -155,12 +161,10 @@ export async function checkApproval(ports: ChecksPorts, input: ApprovalInput): P
   if (failedOther !== undefined) return badAnswer(ports, 'attestation', `the condition ${clip(failedOther.id, 40)} failed, and this code does not know it`);
   if (checked.ruleValid !== true) return badAnswer(ports, 'attestation', 'the rule is not valid, and no condition that this code knows says why');
 
-  const expected = parseDigest(att.digest, 'digest');
-  if (!expected.ok) return badAnswer(ports, 'attestation', 'the digest of the attestation is not a digest');
-  if (expected.value !== observed) {
+  if (att.digest !== observed) {
     return {
       ok: false, code: 'approval_digest_mismatch', detail: 'the digest of the attestation is not the digest of the document and the salt that were received',
-      expected_digest: expected.value, observed_digest: observed,
+      expected_digest: att.digest, observed_digest: observed,
     };
   }
   // The issuer DID is the one that the attestation names, and never the one that the reference names: the reference is not verified. An attestation with no issuer record has none.
