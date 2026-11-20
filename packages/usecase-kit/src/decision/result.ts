@@ -21,10 +21,12 @@
 //   internal              bad_deps                       a member of the deps cannot be read, or the clock does not give the time: nothing was hired
 //   internal              choice_changed                 the parser of the decision returned a value that is not the choice that the model gave
 //
-// `delivery` is set when the model was hired and paid, and its answer could not be used (`model_output_invalid` and `choice_changed`). The sub-job is real: the escrow was accepted, so the agent
-// carries the sub-job in its failed result. The other failures have no delivery. `escrow_ref` and `stage` say where a failed hire ended. An escrow that a failed hire left is with the janitor of the key.
+// `delivery` is set for every failure after an Accept: the hire was paid, and the failure says so. It holds the complete sub-job (`PaidDelivery`) when the record of the hire can be recorded, and
+// otherwise as much of it as can be recorded (`UnrecordedDelivery`: the escrow, the advert, the key hash of the supplier and the eight checks, and a typed member that says that the receipt is
+// not recorded). The agent carries the delivery in its failed result. A failure before an Accept has no delivery. `escrow_ref` and `stage` are set for every failure after a Post, and they say where
+// the hire ended. An escrow that a failed hire left is with the janitor of the key.
 import type { HireStage } from '@vsa/hire-kit';
-import type { Accepted, Decision, ErrorCode, JsonValue, OutputRef, Refused, SubJob } from '../protocol/index.ts';
+import type { Accepted, Decision, ErrorCode, JsonValue, OutputRef, ReceiptVerification, Refused, SubJob } from '../protocol/index.ts';
 
 /** The error codes that a failed decision has. Each is a code of the protocol, so `ERROR_STATUS` gives its status. */
 export const DECISION_FAILURE_CODES = ['inference_failed', 'store_write_failed', 'model_output_invalid', 'internal'] as const satisfies readonly ErrorCode[];
@@ -36,14 +38,32 @@ export interface PaidDelivery {
   readonly accepted: 'confirmed' | 'pending';
 }
 
+/**
+ * A hire that was paid, and whose sub-job cannot be recorded in full. `sub_job` is null, and `receipt` says that the receipt is not recorded: it cannot be copied as JSON data, or a check of it is
+ * not true, or the record of the hire was not handed over at all (a port threw after the Accept). Each other member is what could be read, and it is null when it could not be: the escrow, the
+ * advert, the key hash of the supplier and the eight checks. The supplier writes the receipt, so a supplier can make a hire that is paid and has no complete sub-job.
+ */
+export interface UnrecordedDelivery {
+  readonly sub_job: null;
+  readonly receipt: 'not_recordable';
+  readonly accepted: 'confirmed' | 'pending';
+  readonly escrow_ref: OutputRef | null;
+  readonly advert_ref: OutputRef | null;
+  readonly supplier_pkh: string | null;
+  readonly verification: ReceiptVerification | null;
+}
+
 export interface DecisionFailure extends Refused<DecisionFailureCode> {
   /** What a result with the outcome `failed` gives as its `reason`. See the table at the head of this file. */
   readonly reason: string;
-  /** The hire that was paid and whose answer could not be used. Null for every other failure. */
-  readonly delivery: PaidDelivery | null;
-  /** The escrow of the hire, when one was posted. It is a public reference. */
+  /** The hire that was paid, for every failure after an Accept: whole (`sub_job` is a sub-job), or as much as can be recorded (`sub_job` is null). Null for every other failure. */
+  readonly delivery: PaidDelivery | UnrecordedDelivery | null;
+  /** The escrow of the hire, for every failure after a Post when its reference is known. It is a public reference. */
   readonly escrow_ref: OutputRef | null;
-  /** Where the hire was when it ended. Null when the failure is not a failure of the hire. */
+  /**
+   * Where the hire was when it ended: `accept` for a hire that was paid, whatever failed after the Accept. For an error that hire-kit did not make (a port threw), the last stage that the ledger
+   * told of: `post` once it booked the Post. Null when no escrow was posted and the failure is not a failure of the hire, and for a throw that no ledger call came before.
+   */
   readonly stage: HireStage | null;
 }
 

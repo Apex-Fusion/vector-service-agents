@@ -4,11 +4,28 @@
 //
 // Every member of the sub-job is checked for its form: the references (`<64 hex>#<index>`), the key hash (56 lower-case hex characters), the capability, the signature and the receipt. The receipt is
 // returned as a new copy of plain JSON data. The supplier writes the receipt, so a refusal of the receipt says where, by depth, and repeats no key and no value (see where.ts).
+//
+// A refusal of the record comes after the Accept: the hire was paid. `unrecordedOf` keeps what can still be recorded of it, so that the failure of the decision says that the escrow was paid.
 import type { HireRecord } from '@vsa/hire-kit';
-import { RECEIPT_CHECKS, accepted, isPlainObject, parseDocument, parseOutputRef, refused, type ProtocolResult, type ReceiptCheck, type SubJob } from '../protocol/index.ts';
+import {
+  RECEIPT_CHECKS, accepted, isPlainObject, parseDocument, parseOutputRef, refused, type OutputRef, type ProtocolResult, type ReceiptCheck, type ReceiptVerification, type SubJob,
+} from '../protocol/index.ts';
+import type { UnrecordedDelivery } from './result.ts';
 import { whereNotJson } from './where.ts';
 
 const KEY_HASH = /^[0-9a-f]{56}$/;
+
+/** The eight checks as booleans, in the order of the protocol, or a refusal that says what is missing. A check that is not true is still a boolean here: the caller decides what it means. */
+function checksOf(checks: unknown): ProtocolResult<ReceiptVerification, 'bad_checks'> {
+  if (typeof checks !== 'object' || checks === null) return refused('bad_checks', 'no verification');
+  const verification: Partial<Record<ReceiptCheck, boolean>> = {};
+  for (const check of RECEIPT_CHECKS) {
+    const state: unknown = Reflect.get(checks, check);
+    if (typeof state !== 'boolean') return refused('bad_checks', `no result for the check ${check}`);
+    verification[check] = state;
+  }
+  return accepted(verification as ReceiptVerification);
+}
 
 /**
  * The sub-job of a hire record. `llm_receipt_failed` says that a check of the receipt is not true: the hire must not give a decision. `llm_bad_result` says that the record has a member that is
@@ -16,15 +33,9 @@ const KEY_HASH = /^[0-9a-f]{56}$/;
  */
 export function subJobOf(record: HireRecord): ProtocolResult<SubJob, 'llm_receipt_failed' | 'llm_bad_result'> {
   const bad = (what: string): ProtocolResult<never, 'llm_bad_result'> => refused('llm_bad_result', `the record of the hire has ${what}`);
-  const checks: unknown = record.verification;
-  if (typeof checks !== 'object' || checks === null) return bad('no verification');
-  const verification: Partial<Record<ReceiptCheck, boolean>> = {};
-  for (const check of RECEIPT_CHECKS) {
-    const state = (checks as Record<string, unknown>)[check];
-    if (typeof state !== 'boolean') return bad(`no result for the check ${check}`);
-    verification[check] = state;
-  }
-  const failed = RECEIPT_CHECKS.filter((check) => verification[check] !== true);
+  const checks = checksOf(record.verification);
+  if (!checks.ok) return bad(checks.detail);
+  const failed = RECEIPT_CHECKS.filter((check) => checks.value[check] !== true);
   if (failed.length > 0) return refused('llm_receipt_failed', `the receipt did not pass the checks ${failed.join(', ')}`);
 
   const advertRef = parseOutputRef(record.advert_ref, 'advert_ref');
@@ -43,6 +54,35 @@ export function subJobOf(record: HireRecord): ProtocolResult<SubJob, 'llm_receip
     supplier_pkh: record.supplier_pkh,
     receipt: receipt.value,
     receipt_signature: record.receipt_signature,
-    verification: verification as Record<ReceiptCheck, boolean>,
+    verification: checks.value,
   });
+}
+
+/**
+ * What can be recorded of a hire that was paid, when `subJobOf` refuses its record. Each member is read by itself with the form check of the sub-job, and a member that is not right is null. The
+ * receipt is never copied. `escrow` is the reference that the ledger was told at the Post: it stands for the escrow when the record has none that can be read. It never throws, also when the record
+ * is not an object or a member cannot be read.
+ */
+export function unrecordedOf(record: unknown, how: 'confirmed' | 'pending', escrow: OutputRef | null): UnrecordedDelivery {
+  const members = isPlainObject(record) ? record : {};
+  const read = (name: string): unknown => {
+    try {
+      return members[name];
+    } catch {
+      return undefined;
+    }
+  };
+  const escrowRef = parseOutputRef(read('escrow_ref'), 'escrow_ref');
+  const advertRef = parseOutputRef(read('advert_ref'), 'advert_ref');
+  const pkh = read('supplier_pkh');
+  const checks = checksOf(read('verification'));
+  return {
+    sub_job: null,
+    receipt: 'not_recordable',
+    accepted: how,
+    escrow_ref: escrowRef.ok ? escrowRef.value : escrow,
+    advert_ref: advertRef.ok ? advertRef.value : null,
+    supplier_pkh: typeof pkh === 'string' && KEY_HASH.test(pkh) ? pkh : null,
+    verification: checks.ok ? checks.value : null,
+  };
 }

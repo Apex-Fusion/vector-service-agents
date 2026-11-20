@@ -128,6 +128,8 @@ describe('decide: a parser that does not return the choice that it was given', (
     expect([failure.code, failure.reason]).toStrictEqual(['internal', 'choice_changed']);
     // The hire was made and paid, so the sub-job is real and the failure carries it.
     expect(failure.delivery).toMatchObject({ accepted: 'confirmed', sub_job: { escrow_ref: escrowNo(1) } });
+    // The hire was paid, and the failure says where the hire ended.
+    expect([failure.escrow_ref, failure.stage]).toStrictEqual([escrowNo(1), 'accept']);
     expect(await run.m.chain.escrowState(escrowNo(1))).toBe('spent');
     expect('value' in failure).toBe(false);
   });
@@ -181,7 +183,8 @@ describe('decide: an answer of another shape', () => {
     const run = await setup();
     run.m.llm.answer = text;
     const failure = lost(await decide(run.deps, REORDER, STOCK_INPUT));
-    expect([failure.code, failure.reason, failure.stage]).toStrictEqual(['model_output_invalid', 'model_output_invalid', null]);
+    expect([failure.code, failure.reason, failure.stage]).toStrictEqual(['model_output_invalid', 'model_output_invalid', 'accept']);
+    expect(failure.detail).toContain(`; its escrow ${escrowNo(1)} was accepted, so the supplier is paid`);
     expect('value' in failure).toBe(false);
     // The hire was made and paid. The failure carries the real sub-job, so the agent can name it in its failed result.
     expect(failure.delivery).toMatchObject({ accepted: 'confirmed', sub_job: { escrow_ref: escrowNo(1), supplier_pkh: LLM_KEY.pkh } });
@@ -290,12 +293,12 @@ describe('decide: a hire that fails', () => {
     expect(won(await decide(run.deps, REORDER, STOCK_INPUT)).choice).toStrictEqual(MEDIUM_LOT);
   });
 
-  it('is a typed failure, and not an exception, when a port of the hire throws: the ledger that books the Post', async () => {
+  it('is a typed failure, and not an exception, when a port of the hire throws: the ledger that books the Post. The failure has the escrow and the stage', async () => {
     const run = await setup();
     run.deps.ledger = { posted: () => { throw new Error(`the ledger broke ${MARKER}`); }, accepted: () => undefined };
     const failure = lost(await decide(run.deps, REORDER, STOCK_INPUT));
-    expect([failure.code, failure.reason, failure.delivery]).toStrictEqual(['inference_failed', 'hire_threw', null]);
-    expect(failure.detail).toContain('Error');
+    expect([failure.code, failure.reason, failure.delivery, failure.escrow_ref, failure.stage]).toStrictEqual(['inference_failed', 'hire_threw', null, escrowNo(1), 'post']);
+    expect(failure.detail).toBe(`the model hire for the decision reorder threw Error after its Post; its escrow ${escrowNo(1)} stays with the janitor of the key`);
     expect(JSON.stringify(failure)).not.toContain(MARKER);
     // The Post was made before the ledger threw. The escrow is recorded for the janitor, and nothing hires again.
     expect(run.key.stranded.list().map((entry) => entry.escrow_ref)).toStrictEqual([escrowNo(1)]);

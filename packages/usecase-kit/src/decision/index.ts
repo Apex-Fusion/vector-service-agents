@@ -11,7 +11,7 @@
 export { HIRE_MIN_MS, decide } from './decide.ts';
 export type { DecisionDeps } from './decide.ts';
 export { DECISION_FAILURE_CODES } from './result.ts';
-export type { DecideResult, DecisionFailure, DecisionFailureCode, PaidDelivery, TypedDecision } from './result.ts';
+export type { DecideResult, DecisionFailure, DecisionFailureCode, PaidDelivery, TypedDecision, UnrecordedDelivery } from './result.ts';
 export type { ChoiceParser, DecisionSpec } from './spec.ts';
 export { LLM_MAX_PRICE_SETTING, LLM_MODEL_ALLOWLIST_SETTING, checkLimits, parseMaxPrice, parseModelAllowlist } from './limits.ts';
 export type { ModelLimits } from './limits.ts';

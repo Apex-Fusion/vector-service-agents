@@ -3,9 +3,11 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { ModelRequest, PayingKey } from '@vsa/hire-kit';
 import { ERROR_STATUS, accepted } from '@vsa/usecase-kit/protocol';
-import type { Decision, ErrorCode, JsonValue, ProtocolResult } from '@vsa/usecase-kit/protocol';
+import type { Decision, ErrorCode, JsonValue, ProtocolResult, ReceiptVerification } from '@vsa/usecase-kit/protocol';
 import { DECISION_FAILURE_CODES, decide } from '@vsa/usecase-kit/decision';
-import type { ChoiceParser, DecideResult, DecisionDeps, DecisionFailure, DecisionFailureCode, DecisionSpec, ModelLimits, TypedDecision } from '@vsa/usecase-kit/decision';
+import type {
+  ChoiceParser, DecideResult, DecisionDeps, DecisionFailure, DecisionFailureCode, DecisionSpec, ModelLimits, PaidDelivery, TypedDecision, UnrecordedDelivery,
+} from '@vsa/usecase-kit/decision';
 import { REORDER } from './support.ts';
 import type { ReorderChoice } from './support.ts';
 
@@ -85,6 +87,22 @@ describe('the result', () => {
         expectTypeOf(result.reason).toBeString();
         // @ts-expect-error: a failure holds no decision
         void result.value;
+      }
+    }
+    expect(typeof compileOnly).toBe('function');
+  });
+
+  it('has a delivery that is whole or partial: a sub-job that is null says that the receipt is not recorded, and the check of it gives the whole delivery', () => {
+    function compileOnly(failure: DecisionFailure): void {
+      const { delivery } = failure;
+      if (delivery === null) return;
+      if (delivery.sub_job !== null) {
+        expectTypeOf(delivery).toEqualTypeOf<PaidDelivery>();
+      } else {
+        expectTypeOf(delivery).toEqualTypeOf<UnrecordedDelivery>();
+        expectTypeOf(delivery.receipt).toEqualTypeOf<'not_recordable'>();
+        expectTypeOf(delivery.escrow_ref).toEqualTypeOf<string | null>();
+        expectTypeOf(delivery.verification).toEqualTypeOf<ReceiptVerification | null>();
       }
     }
     expect(typeof compileOnly).toBe('function');
