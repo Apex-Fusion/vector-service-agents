@@ -2,8 +2,8 @@
 // The tables below are written out from the protocol. A code that is added, removed or moved to another status fails here.
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
-  APPROVAL_REFUSALS, COUNTERPARTY_KINDS, COUNTERPARTY_REFUSALS, DELEGATION_REFUSALS, ERROR_STATUS, EXECUTE_OUTCOMES, EXIT_STATES, OPERATIONS, OUTCOMES, PROPOSE_OUTCOMES, REFUSAL_CODES,
-  SENDER_REFUSALS, USE_CASES, VAULT_REFUSALS, isErrorCode, isRefusalCode,
+  AFTER_CLAIM_REFUSALS, APPROVAL_REFUSALS, COUNTERPARTY_KINDS, COUNTERPARTY_REFUSALS, DELEGATION_REFUSALS, ERROR_STATUS, EXECUTE_OUTCOMES, EXIT_STATES, OPERATIONS, OUTCOMES, PROPOSE_OUTCOMES, REFUSAL_CODES,
+  SENDER_REFUSALS, SYSTEM_REFUSALS, SYSTEM_REFUSAL_STATUS, USE_CASES, VAULT_REFUSALS, isErrorCode, isRefusalCode, isSystemRefusal,
 } from '@vsa/usecase-kit/protocol';
 import type { ErrorBody, ErrorCode, ExecuteOutcome, ExitState, Operation, Outcome, ProposeOutcome, RefusalCode, UseCase } from '@vsa/usecase-kit/protocol';
 
@@ -51,6 +51,7 @@ const EXPECTED_STATUS: Readonly<Record<string, number>> = {
   hire_failed: 502,
   // 503
   shutting_down: 503,
+  check_unavailable: 503,
   // 500
   store_write_failed: 500,
   internal: 500,
@@ -140,6 +141,84 @@ describe('isErrorCode and isRefusalCode', () => {
     (value) => {
       expect(isErrorCode(value)).toBe(false);
       expect(isRefusalCode(value)).toBe(false);
+    },
+  );
+});
+
+describe('check_unavailable', () => {
+  it('is a 503 error code, and it is not a refusal code of a rule', () => {
+    expect(ERROR_STATUS.check_unavailable).toBe(503);
+    expect(isErrorCode('check_unavailable')).toBe(true);
+    expect(isRefusalCode('check_unavailable')).toBe(false);
+    expect(REFUSAL_CODES).not.toContain('check_unavailable');
+    for (const kind of COUNTERPARTY_KINDS) expect(COUNTERPARTY_REFUSALS[kind]).not.toContain('check_unavailable');
+    expectTypeOf<'check_unavailable'>().toExtend<ErrorCode>();
+    expectTypeOf<'check_unavailable'>().not.toExtend<RefusalCode>();
+  });
+});
+
+describe('AFTER_CLAIM_REFUSALS', () => {
+  it('is cannot_supply alone: the decision of the order desk after its Claim', () => {
+    expect([...AFTER_CLAIM_REFUSALS]).toStrictEqual(['cannot_supply']);
+    expect(COUNTERPARTY_REFUSALS['order-desk']).toContain('cannot_supply');
+    expect(isRefusalCode('cannot_supply')).toBe(true);
+    expect(ERROR_STATUS.cannot_supply).toBe(403);
+  });
+
+  it('names no code of the other counterparties, and no check that comes before the Claim', () => {
+    for (const code of AFTER_CLAIM_REFUSALS) {
+      expect(COUNTERPARTY_REFUSALS['insurer-intake-agent']).not.toContain(code);
+      expect(COUNTERPARTY_REFUSALS['bid-desk']).not.toContain(code);
+    }
+    const before: readonly string[] = [...SENDER_REFUSALS, ...DELEGATION_REFUSALS, ...VAULT_REFUSALS, ...APPROVAL_REFUSALS];
+    for (const code of AFTER_CLAIM_REFUSALS) expect(before).not.toContain(code);
+    expectTypeOf<(typeof AFTER_CLAIM_REFUSALS)[number]>().toExtend<RefusalCode>();
+  });
+});
+
+describe('the refusals of a mock system', () => {
+  it('are token_invalid with the status 401, and five codes and the eight codes of an approval with the status 403', () => {
+    expect({ ...SYSTEM_REFUSAL_STATUS }).toStrictEqual({
+      token_invalid: 401,
+      not_covered: 403,
+      delegation_ended: 403,
+      chain_too_deep: 403,
+      supplier_not_active: 403,
+      approval_not_found: 403,
+      approval_wrong_type: 403,
+      approval_wrong_subject: 403,
+      approval_wrong_issuer: 403,
+      approval_revoked: 403,
+      approval_expired: 403,
+      approval_issuer_invalid: 403,
+      approval_digest_mismatch: 403,
+    });
+  });
+
+  it('are listed in the order of the protocol, and the list and the table hold the same codes', () => {
+    expect([...SYSTEM_REFUSALS]).toStrictEqual(['token_invalid', 'not_covered', 'delegation_ended', 'chain_too_deep', 'supplier_not_active', ...APPROVAL_REFUSALS]);
+    expect(Object.keys(SYSTEM_REFUSAL_STATUS).sort()).toStrictEqual([...SYSTEM_REFUSALS].sort());
+    expect(new Set(SYSTEM_REFUSALS).size).toBe(SYSTEM_REFUSALS.length);
+    expectTypeOf<(typeof SYSTEM_REFUSALS)[number]>().toEqualTypeOf<keyof typeof SYSTEM_REFUSAL_STATUS>();
+  });
+
+  it('give the status that ERROR_STATUS gives for the codes that both name, and four codes are only the codes of a mock system', () => {
+    for (const code of SYSTEM_REFUSALS) {
+      if (isErrorCode(code)) expect(ERROR_STATUS[code], code).toBe(SYSTEM_REFUSAL_STATUS[code]);
+      else expect(['token_invalid', 'not_covered', 'chain_too_deep', 'supplier_not_active'], code).toContain(code);
+    }
+  });
+});
+
+describe('isSystemRefusal', () => {
+  it('takes every code of the list', () => {
+    for (const code of SYSTEM_REFUSALS) expect(isSystemRefusal(code), code).toBe(true);
+  });
+
+  it.each(['', 'busy', 'sender_not_active', 'check_unavailable', 'client_certificate_missing', 'TOKEN_INVALID', ' token_invalid', 'constructor', 'toString', '__proto__', 'hasOwnProperty', 42, null, undefined, {}, ['token_invalid']])(
+    'refuses %j: a code of a mock system that is not in the list can be a reason, and it is not a refusal that the protocol names',
+    (value) => {
+      expect(isSystemRefusal(value)).toBe(false);
     },
   );
 });

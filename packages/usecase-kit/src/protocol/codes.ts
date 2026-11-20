@@ -4,13 +4,17 @@
 // A buyer-side agent answers 200 with an `outcome` whenever it could read the request. The outcome and the reason are in the signed receipt, so what happened is on record:
 //   - `refused_by_counterparty`: the counterparty refused the job. `reason` holds the code that the counterparty gave. The escrow stays open and returns to the vault after `deliver_by`.
 //   - `vault_refused`: the ledger refused the payment from the vault. `reason` holds the evaluation error that the node reported.
-//   - `refused_by_system`: a mock system refused a call. `reason` holds its code.
-// A counterparty answers 200 only when it did the work. A refusal is `403 { error: <refusal code>, message }`, and it comes before the counterparty claims the job, so nothing is paid.
-// An error of any agent is `{ error: <code>, message }` with the status of ERROR_STATUS.
+//   - `refused_by_system`: a mock system refused a call. `reason` holds its code (see SYSTEM_REFUSALS).
+// A counterparty answers 200 only when it did the work. It refuses with `403 { error: <refusal code>, message }`. A refusal comes before the Claim, so the escrow stays Open and nothing is paid. The
+// one exception is AFTER_CLAIM_REFUSALS: a decision of the counterparty after its Claim. An error of any agent is `{ error: <code>, message }` with the status of ERROR_STATUS.
 import type { CounterpartyKind } from './kinds.ts';
 
 export const USE_CASES = ['inventory-reorder', 'prior-authorization', 'bid-evaluation'] as const;
 export type UseCase = (typeof USE_CASES)[number];
+
+/** The use cases that have a handoff to a counterparty. Use case 3 (supplier bid evaluation) has none: a bid desk gets a request for quotation, and the buyer approves the ranking. */
+export const HANDOFF_USE_CASES = ['inventory-reorder', 'prior-authorization'] as const satisfies readonly UseCase[];
+export type HandoffUseCase = (typeof HANDOFF_USE_CASES)[number];
 
 export const OPERATIONS = ['propose', 'execute'] as const;
 export type Operation = (typeof OPERATIONS)[number];
@@ -24,7 +28,7 @@ export type ProposeOutcome = (typeof PROPOSE_OUTCOMES)[number];
 export type ExecuteOutcome = (typeof EXECUTE_OUTCOMES)[number];
 export type Outcome = (typeof OUTCOMES)[number];
 
-/** The state in which a run ends. */
+/** The state in which a run ends. The rule that gives the state of an `execute` result is `exitStateOf`. */
 export const EXIT_STATES = ['Completed', 'Rejected', 'Expired', 'Cancelled', 'Escalated', 'Failed'] as const;
 export type ExitState = (typeof EXIT_STATES)[number];
 
@@ -55,7 +59,17 @@ export const REFUSAL_CODES = [
 ] as const;
 export type RefusalCode = (typeof REFUSAL_CODES)[number];
 
-/** The HTTP status of every error code of an agent. A refusal code of a counterparty is a 403. A request that cannot be read is a 400, and so is a delegation that names another agent. */
+/**
+ * The refusal codes that a counterparty answers after its Claim. Every other refusal comes before the Claim. `cannot_supply` is a decision of the Order Desk: its model decides after the Claim
+ * that the lot cannot be supplied. The buyer sees a job that failed after the Claim, with this code in the message. The escrow is Claimed, and it stays Claimed until the buyer reclaims it after
+ * the deadline. Nothing is paid for the work that was not done.
+ */
+export const AFTER_CLAIM_REFUSALS = ['cannot_supply'] as const;
+
+/**
+ * The HTTP status of every error code of an agent. A refusal code of a counterparty is a 403. A request that cannot be read is a 400, and so is a delegation that names another agent. A check of a
+ * counterparty that could not read its source is a 503 (`check_unavailable`).
+ */
 export const ERROR_STATUS = {
   bad_wire: 400,
   request_too_large: 400,
@@ -94,6 +108,9 @@ export const ERROR_STATUS = {
   mock_system_failed: 502,
   hire_failed: 502,
   shutting_down: 503,
+  // A check of a counterparty could not read its source: the ledger or the gateway. It is never a pass, and the counterparty does not take the job. It is not a refusal code of a rule, so it is
+  // not in REFUSAL_CODES.
+  check_unavailable: 503,
   store_write_failed: 500,
   internal: 500,
 } as const;
@@ -114,4 +131,33 @@ export function isErrorCode(value: unknown): value is ErrorCode {
 /** True when the value is the name of a refusal code of a counterparty. */
 export function isRefusalCode(value: unknown): value is RefusalCode {
   return typeof value === 'string' && (REFUSAL_CODES as readonly string[]).includes(value);
+}
+
+/**
+ * The refusals of a mock system that the protocol names, and the status of each: 401 for a token that is not valid, and 403 for the other rules, among them the eight codes of an approval. They are
+ * the possible `reason` of `refused_by_system`. A mock system can answer other codes of its own (for a client certificate, a tenant or a host). A buyer-side agent passes any code on as the reason, so
+ * a reason that is not in this list is not an error.
+ */
+export const SYSTEM_REFUSALS = ['token_invalid', 'not_covered', 'delegation_ended', 'chain_too_deep', 'supplier_not_active', ...APPROVAL_REFUSALS] as const;
+export type SystemRefusal = (typeof SYSTEM_REFUSALS)[number];
+
+export const SYSTEM_REFUSAL_STATUS = {
+  token_invalid: 401,
+  not_covered: 403,
+  delegation_ended: 403,
+  chain_too_deep: 403,
+  supplier_not_active: 403,
+  approval_not_found: 403,
+  approval_wrong_type: 403,
+  approval_wrong_subject: 403,
+  approval_wrong_issuer: 403,
+  approval_revoked: 403,
+  approval_expired: 403,
+  approval_issuer_invalid: 403,
+  approval_digest_mismatch: 403,
+} as const satisfies Record<SystemRefusal, 401 | 403>;
+
+/** True when the value is the name of a refusal that the protocol names for a mock system. A code of a mock system that is not in the list can still be a reason. */
+export function isSystemRefusal(value: unknown): value is SystemRefusal {
+  return typeof value === 'string' && (SYSTEM_REFUSALS as readonly string[]).includes(value);
 }
