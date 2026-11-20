@@ -3,6 +3,7 @@
 // are public in the datums on the chain) could make the agent hold each of its delegation keys for a body that the principal never sent. Each refusal here has its twin, and each refusal comes before the
 // register is asked and before the ledger is read.
 import { CML } from '@lucid-evolution/lucid';
+import { blake2b } from '@noble/hashes/blake2b';
 import { describe, expect, it } from 'vitest';
 import { Allowlist, COSIGN_STATUS, KeyReservations, createCosignRoute } from '@vsa/usecase-kit/cosign';
 import {
@@ -139,6 +140,16 @@ describe('the agent signs only a body that the delegator signed first', () => {
     await refusedForSignature(twice);
     await refusedForSignature(withWitness(signedBy(hex, PRINCIPAL), good.publicKey, bad));
     await refusedForSignature(withWitness(withWitness(hex, good.publicKey, bad), good.publicKey, good.signature));
+  });
+
+  it('refuses the witness of a key of small order whose hash is on the list: the library alone takes its signatures over every body, and the node does not', async () => {
+    const identity = `01${'00'.repeat(31)}`;
+    const hash = Buffer.from(blake2b(Buffer.from(identity, 'hex'), { dkLen: 28 })).toString('hex');
+    const { hex } = await build({ delegator: { type: 'PrincipalKey', hash } });
+    // R = the identity point and S = 0; R = the base point and S = 1.
+    for (const signature of [`${identity}${'00'.repeat(32)}`, `58${'66'.repeat(31)}01${'00'.repeat(31)}`]) {
+      await refusedForSignature(withWitness(hex, identity, signature), { allowed: [PRINCIPAL.keyHash, hash] });
+    }
   });
 
   it('signs a request that the delegator signed: the answer has the witness of the delegator, then the one of the agent, and the bytes of the body of the input', async () => {
