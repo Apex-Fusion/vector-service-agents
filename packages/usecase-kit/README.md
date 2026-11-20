@@ -19,7 +19,7 @@ The package has no root entry. Each folder of `src/` is one part of the code and
 | `src/decision` | `@vsa/usecase-kit/decision` | The decisions that an agent buys from a model. One decision is one hire, with limits that the caller must give, and no second try. |
 | `src/buyer` | `@vsa/usecase-kit/buyer` | The flow of a buyer-side agent: it reads the authority of a request, finds the vault, hires the counterparty, and makes the results of the protocol. |
 
-Each folder has a section below, except `buyer`. It has a row only.
+Each folder has a section below.
 
 ## How a new folder becomes a subpath
 
@@ -209,6 +209,23 @@ The protocol holds types, parsers and tables. It reads no setting and no file. I
 **The contract of a caller.** The prompt asks the model for ONE JSON object and nothing else. The reader takes think blocks at the start and one code fence around the object, and it refuses any other text (`model_output_invalid`). A hire starts only with 60 seconds left before the deadline of the run (`HIRE_MIN_MS`). The same rule holds when the hire waits in the lane of the service key: the request gives `minLeftAtTurnMs` to the hire kit. A failure after an Accept says that the supplier is paid, or may be paid, and it carries the delivery.
 
 **What it does not prove.** A live supplier and the output of a real model, which can put words around the object that the reader wants.
+
+## The buyer folder
+
+**What it is for.** The flow of a buyer-side agent. It reads the delegation of a request, finds the one Live vault of that delegation, and hires the counterparty from the vault with `hireAgent` of `@vsa/hire-kit`. The delegation key signs the Pay and the Accept. Each end of a hire is one typed step, and helpers make the results of the protocol from the steps.
+
+**Main exports.** `hireCounterparty` (it gives a `HireStep`, and only `completed` is a pass), `checkAuthority`, `findLiveVault`, `checkAdvertAgent`, `checkLimits`, `ledgerReadsFrom`, `stepOfOutcome`, the size checks that come before the Pay (`checkWirePayload` and `checkRuntimeBody`), and the helpers of results (`proposedResult`, `failedProposalResult`, `completedResult`, `refusedResult`, `vaultRefusedResult`, `failedResult`, `disputedResult` and `settledResult`).
+
+**What a caller must give.** `HireDeps` has the paying key (`key`: the delegation key, whose chain must pay from a vault), the deps of the hire kit (`hire`: the fetch, the clock, the sleep, the deadline, the ledger that books the lock and the fees, and the log) and the reads of the ledger (`reads`: `ledgerReadsFrom(env)` makes them from a `LedgerEnv` of buyer-core). The three limits of a hire are required: `maxPriceLovelace`, `maxSupplierBondLovelace` and `maxBuyerBondLovelace`. Each is a `bigint` or `null`. The caller reads them from the settings of the agent, and the folder never fills in a limit that is missing. The flow reads the advert on the chain, and it never asks the indexer.
+
+**The contract of a caller.**
+
+- One call of `hireCounterparty` is one hire, and it makes at most one Pay. No step retries. Three calls with the same handoff make three Pays. A caller calls again for a job only when the result says that nothing was paid: the step `refused`, the step `vault_refused`, or a failure that ended before any Pay. A Pay that was sent and not seen confirmed (`pay_unconfirmed`) may still land, and no other Pay of the same key starts before its validity ends (`earlier_pay_may_land`). The flow keeps this state, and its lane, for the `PayingKey` object in memory: use one `PayingKey` for one key.
+- A `completed` step can carry `booking_failed`. The ledger of the caller threw when the hire kit booked the fee of the Accept. The Accept is on the chain, and the work is paid for, so the step stays `completed`. `booking_failed` holds `accept_tx_hash` (it is `null` when the call held no hash) and `fee_lovelace`. The ledger may have written the booking before it threw. The caller checks its ledger by `accept_tx_hash` before it books the fee again.
+- Before the Pay, the agent of the advert must be the counterparty. The flow reads the advert of the document on the chain before it reads a vault. The advert must name the counterparty as its agent: the DID is `did:vector:` and the `agent_id` of the advert, compared as text. Another agent, and an advert with no agent, are `advert_not_counterparty`, and nothing is paid. The hire kit checks the agent of the receipt against the agent of the advert, and never against the counterparty of the document, so this check ties the Pay to the counterparty.
+- The first thing that the hire kit does after the Pay is to wait one poll interval. The flow checks that the deadline of the job leaves that time, and it asks the hire kit for the same time at its turn in the lane (`minLeftAtTurnMs`). A hire that waited too long ends with the reason `deadline`, and nothing is paid.
+
+**What it does not prove without a chain.** The reads of a vault and of a delegation on mainnet, and the lag of the indexer right after a Pay.
 
 ## Tests
 
