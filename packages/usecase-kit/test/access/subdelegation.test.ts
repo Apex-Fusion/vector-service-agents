@@ -333,6 +333,11 @@ describe('a request that is wrong is refused before anything is built', () => {
     ['a poll time of 0', { pollMs: 0 }],
     ['a wait of 0', { confirmationWaitMs: 0 }],
     ['an end time that is not whole', { endTimeoutMs: 1.5 }],
+    ['a job time over one day', { jobTimeoutMs: 86_400_001 }],
+    ['a poll time over one day', { pollMs: 86_400_001 }],
+    ['a wait over one day', { confirmationWaitMs: 86_400_001 }],
+    ['a poll time that is null: a wrong type is an error, and not "no limit"', { pollMs: null as never }],
+    ['a job time that is a text', { jobTimeoutMs: '600000' as never }],
   ] as const)('refuses %s', async (_name, over) => {
     const w = subWorld({ limits: over });
     expectNothing(w, await go(w, idle), 'bad_request');
@@ -345,6 +350,8 @@ describe('a request that is wrong is refused before anything is built', () => {
     }
     const quick = subWorld({ limits: { jobTimeoutMs: 1 } });
     expect((await go(quick, async () => 'fast')).kind).toBe('returned');
+    const longest = subWorld({ limits: { jobTimeoutMs: 86_400_000, confirmationWaitMs: 86_400_000, endTimeoutMs: 86_400_000, pollMs: 3_600_000 } });
+    expect((await go(longest, idle)).kind).toBe('returned');
   });
 
   it('refuses a parent that is not live, a parent with no further hop, a parent that ends too soon, and a parent that cannot be read', async () => {

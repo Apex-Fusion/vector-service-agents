@@ -337,3 +337,47 @@ describe('what a result of a call shows', () => {
     expect(shown).not.toContain(w.agent.delegation.jwk.x);
   });
 });
+
+describe('a call that would reach what the token is not for', () => {
+  it('is not sent to a URL that is not below the resource of the token, and is sent to one that is', async () => {
+    const w = world();
+    stub.requests.length = 0;
+    stub.reply({ status: 200, body: '{}' });
+    const token = await w.tokenFor(w.erp);
+    const elsewhere = [
+      'https://elsewhere.example/t/run1/erp/stock/GLV-NIT-M', 'https://mock.example/t/run1/erpx/stock/GLV-NIT-M', 'https://mock.example/t/run1/po', 'https://mock.example/t/run1/erp.evil/x',
+      'https://mock.example/t/run2/erp/stock/x', 'https://mock.example:8443/t/run1/erp/stock/x', 'http://mock.example/t/run1/erp/stock/x',
+    ];
+    for (const url of elsewhere) expect(await callWithToken(w.deps, token, { ...w.erp, url }), url).toMatchObject({ ok: false, code: 'mock_system_failed', sent: false });
+    expect(stub.requests).toHaveLength(0);
+    expect((await callWithToken(w.deps, token, { ...w.erp, url: `${w.erp.resource}/stock/MSK-N95` })).ok).toBe(true);
+    const po = await w.tokenFor(w.po);
+    expect((await callWithToken(w.deps, po, w.po, { po_number: 'x' })).ok).toBe(true);
+  });
+});
+
+describe('the limits of a call', () => {
+  it.each([[0], [-1], [1.5], [Number.NaN], [86_400_001], ['5000'], [null]])('refuses the time limit %j before it sends', async (timeoutMs) => {
+    const w = world();
+    stub.requests.length = 0;
+    stub.reply({ status: 200, body: '{}' });
+    const result = await callWithToken({ ...w.deps, timeoutMs: timeoutMs as never }, await w.tokenFor(w.erp), w.erp);
+    expect(result).toMatchObject({ ok: false, code: 'mock_system_failed', sent: false });
+    expect(stub.requests).toHaveLength(0);
+  });
+
+  it.each([[0], [-5], [0.5], [Number.NaN], ['100']])('refuses the answer limit %j before it sends', async (maxAnswerBytes) => {
+    const w = world();
+    stub.requests.length = 0;
+    const result = await callWithToken({ ...w.deps, maxAnswerBytes: maxAnswerBytes as never }, await w.tokenFor(w.erp), w.erp);
+    expect(result).toMatchObject({ ok: false, sent: false });
+    expect(stub.requests).toHaveLength(0);
+  });
+
+  it('takes the shortest and the longest time limit, and a limit of one byte for the answer to fail the answer', async () => {
+    const w = world();
+    stub.reply({ status: 200, body: '{}' });
+    for (const timeoutMs of [1, 86_400_000]) expect((await callWithToken({ ...w.deps, timeoutMs }, await w.tokenFor(w.erp), w.erp)).ok, `${timeoutMs}`).toBe(true);
+    expect(await callWithToken({ ...w.deps, maxAnswerBytes: 1 }, await w.tokenFor(w.erp), w.erp)).toMatchObject({ ok: false, sent: true, status: 200 });
+  });
+});

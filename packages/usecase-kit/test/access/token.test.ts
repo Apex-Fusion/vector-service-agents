@@ -171,7 +171,7 @@ describe('askWhileTooYoung', () => {
     expect(asks).toBe(1);
   });
 
-  it.each([[{ waitMs: -1, pollMs: 1 }], [{ waitMs: 1.5, pollMs: 1 }], [{ waitMs: 10, pollMs: 0 }], [{ waitMs: 10, pollMs: Number.NaN }]])('refuses the bounds %j and asks nothing', async (bad) => {
+  it.each([[{ waitMs: -1, pollMs: 1 }], [{ waitMs: 1.5, pollMs: 1 }], [{ waitMs: 10, pollMs: 0 }], [{ waitMs: 10, pollMs: Number.NaN }], [{ waitMs: 86_400_001, pollMs: 1 }], [{ waitMs: 10, pollMs: 86_400_001 }]])('refuses the bounds %j and asks nothing', async (bad) => {
     let asks = 0;
     const result = await askWhileTooYoung(new FakeClock(NOW), () => (asks += 1, Promise.reject(new Error('not asked'))), bad);
     expect(failure(result).code).toBe('bad_request');

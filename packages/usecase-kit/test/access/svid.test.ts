@@ -293,6 +293,11 @@ describe('a JWT-SVID', () => {
     expect(await callWithJwtSvid(deps, svid.value, other.value)).toMatchObject({ ok: false, sent: false });
     expect(stub.requests).toHaveLength(0);
     expect((await callWithJwtSvid(deps, svid.value, w.requirements)).ok).toBe(true);
+    stub.requests.length = 0;
+    for (const url of ['https://elsewhere.example/t/run1/insurer/requirements/x', 'https://mock.example/t/run1/insurerx/requirements/x', 'https://mock.example/t/run1/po']) {
+      expect(await callWithJwtSvid(deps, svid.value, { ...w.requirements, url }), url).toMatchObject({ ok: false, code: 'mock_system_failed', sent: false });
+    }
+    expect(stub.requests).toHaveLength(0);
   });
 
   it('is not sent after it ended, and is sent a millisecond before', async () => {
