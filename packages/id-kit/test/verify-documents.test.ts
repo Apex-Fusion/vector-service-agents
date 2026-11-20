@@ -7,13 +7,13 @@ import { LIST_SIZE } from '../src/common/constants.ts';
 import { resolveKey } from '../src/common/keys.ts';
 import type { Check } from '../src/common/result.ts';
 import { identifier, LISTS_UNAVAILABLE, p256Key, type StubGateway } from '../src/testing/index.ts';
-import { bitString, boolean, children, decode, ecdsaSignatureDer, explicit, implicitPrimitive, octetString, oid, sequence, time, unsignedInteger } from '../src/vendored/m4/der.ts';
+import { bitString, boolean, children, decode, ecdsaSignatureDer, explicit, implicitPrimitive, octetString, oid, sequence, time, unsignedInteger, utf8String } from '../src/vendored/m4/der.ts';
 import { b64url, signJws } from '../src/vendored/m4/jose.ts';
 import {
   BUNDLE_RULES, CREDENTIAL_CALL_RULES, CREDENTIAL_RULES, JWT_SVID_RULES, KEY_SET_RULES, STATUS_LIST_RULES, X509_SVID_RULES, bitstringEntryStatus, checkCredential, createVerifier, decodeBitstringStatusList,
   decodeTokenStatusList, parseBundle, parseKeySet, tokenEntryStatus, verifyJwtSvid, verifyX509Svid, type KeySet, type SpiffeBundle,
 } from '../src/verify/index.ts';
-import { decodeJwt, world, type World } from './support.ts';
+import { decodeJwt, repeatsCredential, world, type World } from './support.ts';
 
 /** The rules that the tests of this file saw refused. The last test checks each rule of these documents is in it. */
 const seen = new Set<string>();
@@ -233,7 +233,7 @@ describe('status lists', () => {
 // ── the X.509-SVID ──
 
 /** A leaf certificate that the key of the stub gateway signs under the CA of the bundle, with the parts that a test changes. */
-async function leaf(gateway: StubGateway, options: { keyUsage?: number | null; uris?: string[]; ca?: boolean; notBefore?: number; notAfter?: number } = {}): Promise<string> {
+async function leaf(gateway: StubGateway, options: { keyUsage?: number | null; uris?: string[]; ca?: boolean; notBefore?: number; notAfter?: number; carries?: string } = {}): Promise<string> {
   const bundle = await bundleOf(gateway);
   const caFields = children(children(decode(Buffer.from(bundle.authorities[0]!.raw)))[0]!);
   const agentId = identifier('x509 leaf agent');
@@ -256,6 +256,7 @@ async function leaf(gateway: StubGateway, options: { keyUsage?: number | null; u
         extension('2.5.29.19', true, options.ca ? sequence(boolean(true)) : sequence()),
         ...(usage === null ? [] : [extension('2.5.29.15', true, bitString(Uint8Array.of(usage), unused))]),
         extension('2.5.29.17', true, sequence(...(options.uris ?? [`spiffe://${gateway.trustDomain}/agent/${agentId}`]).map((u) => implicitPrimitive(6, Buffer.from(u, 'ascii'))))),
+        ...(options.carries === undefined ? [] : [extension('1.3.6.1.4.1.99999.1', false, utf8String(options.carries))]),
       ),
     ),
   );
@@ -367,6 +368,145 @@ describe('verifyX509Svid', () => {
     expect(plain.ca).toBe(false);
     refused(verifyX509Svid(await leaf(gateway), { ...ctx, bundle: { ...ctx.bundle, authorities: [plain] } }), 'x509.bundle');
     accepted(verifyX509Svid(await leaf(gateway), ctx));
+  });
+
+  // The input is exactly one certificate. `X509Certificate` reads the first certificate that it finds and drops the rest, so each input of the refusals below passed for its first certificate.
+
+  const derOf = (pem: string): Buffer => Buffer.from(new X509Certificate(pem).raw);
+
+  interface Pieces {
+    readonly pem: string;
+    readonly otherPem: string;
+    readonly der: Buffer;
+    readonly otherDer: Buffer;
+    /** The DER of a long certificate: its content is more than 65,535 bytes, so the length of its outer SEQUENCE takes 3 bytes, and its BER form with an indefinite length is one byte shorter. */
+    readonly longDer: Buffer;
+    /** The DER of the CA certificate of the bundle. */
+    readonly ca: Buffer;
+    readonly base64: string;
+    readonly otherBase64: string;
+  }
+
+  /** Two certificates that the gateway signed, a long one, and the CA. The DER of the first has a length that is no multiple of 3, so its base64 text ends with a padding. */
+  async function pieces(gateway: StubGateway): Promise<Pieces> {
+    let pem = await leaf(gateway);
+    for (let tries = 0; derOf(pem).length % 3 === 0 && tries < 40; tries++) pem = await leaf(gateway);
+    const otherPem = await leaf(gateway, { uris: [`spiffe://${gateway.trustDomain}/agent/${identifier('x509 other agent')}`] });
+    const der = derOf(pem);
+    if (der.length % 3 === 0) throw new Error('no certificate with a padded base64 text');
+    const otherDer = derOf(otherPem);
+    const longDer = derOf(await leaf(gateway, { carries: 'A'.repeat(70_000) }));
+    const ca = Buffer.from((await bundleOf(gateway)).authorities[0]!.raw);
+    return { pem, otherPem, der, otherDer, longDer, ca, base64: der.toString('base64'), otherBase64: otherDer.toString('base64') };
+  }
+
+  /** The certificate with the indefinite length of BER on its outer SEQUENCE (`30 80 … 00 00`) in place of the definite length of DER. */
+  const indefinite = (der: Buffer): Buffer => {
+    const header = der[1]! & 0x80 ? 2 + (der[1]! & 0x7f) : 2;
+    return Buffer.concat([Buffer.from([0x30, 0x80]), der.subarray(header), Buffer.from([0, 0])]);
+  };
+  const pemOf = (der: Buffer): string => `-----BEGIN CERTIFICATE-----\n${der.toString('base64').match(/.{1,64}/g)!.join('\n')}\n-----END CERTIFICATE-----\n`;
+
+  it('one certificate is accepted in each of its forms: a PEM block, base64 of the DER, DER bytes', async () => {
+    const { gateway } = world();
+    const ctx = await contextOf(gateway);
+    const p = await pieces(gateway);
+    const verified = accepted(verifyX509Svid(p.pem, ctx));
+    const forms: Array<[string, string | Uint8Array]> = [
+      ['PEM with no line feed at the end', p.pem.trim()],
+      ['PEM with blank lines around it', `\n\n${p.pem}\n\n`],
+      ['PEM with CRLF line ends', p.pem.replace(/\n/g, '\r\n')],
+      ['base64', p.base64],
+      ['base64 with white space around it', ` ${p.base64}\n`],
+      ['base64 in lines of 64 characters', p.base64.match(/.{1,64}/g)!.join('\n')],
+      ['DER bytes (a Buffer)', p.der],
+      ['DER bytes (a Uint8Array)', new Uint8Array(p.der)],
+    ];
+    for (const [name, input] of forms) expect(verifyX509Svid(input, ctx), name).toStrictEqual({ ok: true, value: verified });
+  });
+
+  it('nothing but white space may stand around the one PEM block: spaces and tabs before and after it are accepted', async () => {
+    const { gateway } = world();
+    const ctx = await contextOf(gateway);
+    const p = await pieces(gateway);
+    const verified = accepted(verifyX509Svid(p.pem, ctx));
+    expect(verifyX509Svid(`  \t${p.pem.trim()} \t \n`, ctx)).toStrictEqual({ ok: true, value: verified });
+    refused(verifyX509Svid(`x ${p.pem.trim()}`, ctx), 'x509.malformed');
+    refused(verifyX509Svid(`${p.pem.trim()} x`, ctx), 'x509.malformed');
+  });
+
+  it('Node reads a certificate with an indefinite outer length (30 80 … 00 00) and gives back its DER form: a short certificate is as long in BER as in DER, and a long one is one byte shorter (the premise of the BER rows below)', async () => {
+    const { gateway } = world();
+    const ctx = await contextOf(gateway);
+    const p = await pieces(gateway);
+    const short = indefinite(p.der);
+    const long = indefinite(p.longDer);
+    expect(short.length, 'a short certificate: the BER form is as long as the DER form').toBe(p.der.length);
+    expect(long.length + 1, 'a long certificate: the BER form is one byte shorter than the DER form').toBe(p.longDer.length);
+    expect(new X509Certificate(short).raw.equals(p.der), 'Node reads the BER form of the short certificate and gives back its DER form').toBe(true);
+    expect(new X509Certificate(long).raw.equals(p.longDer), 'Node reads the BER form of the long certificate and gives back its DER form').toBe(true);
+    // The twin: the DER forms are accepted.
+    accepted(verifyX509Svid(p.der, ctx));
+    accepted(verifyX509Svid(p.longDer, ctx));
+  });
+
+  const notOne: Array<[string, (p: Pieces) => string | Uint8Array]> = [
+    ['DER bytes and one more byte', (p) => Buffer.concat([p.der, Buffer.from([0])])],
+    ['DER bytes and then a line feed', (p) => Buffer.concat([p.der, Buffer.from('\n')])],
+    ['the DER bytes of two certificates one after the other', (p) => Buffer.concat([p.der, p.otherDer])],
+    ['the DER bytes of a certificate and then of the CA that signed it', (p) => Buffer.concat([p.der, p.ca])],
+    ['DER bytes with a byte before the certificate', (p) => Buffer.concat([Buffer.from([0]), p.der])],
+    ['bytes that hold a PEM block after other bytes (the PEM reader of the runtime skips what comes before it)', (p) => Buffer.concat([Buffer.from('other bytes\n'), Buffer.from(p.pem)])],
+    ['base64 of the DER bytes of two certificates', (p) => Buffer.concat([p.der, p.otherDer]).toString('base64')],
+    ['the base64 text of a certificate and then the base64 text of another (the padding of the first ends what the decoder of the runtime reads)', (p) => p.base64 + p.otherBase64],
+    ['base64 of a certificate and then characters that are no base64', (p) => `${p.base64}!!!!`],
+    ['two PEM blocks', (p) => p.pem + p.otherPem],
+    ['a PEM block and then text', (p) => `${p.pem}the rest of a file\n`],
+    ['text and then a PEM block', (p) => `Bag Attributes\n${p.pem}`],
+    ['a PEM block and then base64 of a certificate', (p) => `${p.pem}${p.otherBase64}`],
+    ['one PEM block that holds the DER bytes of two certificates', (p) => pemOf(Buffer.concat([p.der, p.otherDer]))],
+    ['a certificate with an indefinite outer length (30 80 … 00 00), as long as its DER form: DER bytes', (p) => indefinite(p.der)],
+    ['a certificate with an indefinite outer length, as long as its DER form: base64', (p) => indefinite(p.der).toString('base64')],
+    ['a certificate with an indefinite outer length, as long as its DER form: a PEM block', (p) => pemOf(indefinite(p.der))],
+    ['a certificate with an indefinite outer length and one more byte', (p) => Buffer.concat([indefinite(p.der), Buffer.from([0x41])])],
+    ['a long certificate with an indefinite outer length (one byte shorter than its DER form), alone', (p) => indefinite(p.longDer)],
+    ['a long certificate with an indefinite outer length and one more byte, as long as its DER form: DER bytes', (p) => Buffer.concat([indefinite(p.longDer), Buffer.from([0x41])])],
+    ['a long certificate with an indefinite outer length and one more byte, as long as its DER form: base64', (p) => Buffer.concat([indefinite(p.longDer), Buffer.from([0x41])]).toString('base64')],
+    ['a long certificate with an indefinite outer length and one more byte, as long as its DER form: a PEM block', (p) => pemOf(Buffer.concat([indefinite(p.longDer), Buffer.from([0x41])]))],
+  ];
+  it.each(notOne)('refuses an input that is not exactly one certificate: %s (x509.malformed)', async (_name, make) => {
+    const { gateway } = world();
+    const ctx = await contextOf(gateway);
+    const p = await pieces(gateway);
+    const result = verifyX509Svid(make(p), ctx);
+    refused(result, 'x509.malformed');
+    // The detail holds no part of the certificates.
+    if (!result.ok) for (const held of [p.pem, p.base64, p.otherBase64]) expect(repeatsCredential(result.detail, held)).toBe(false);
+    // The twin: the first certificate alone is accepted, so the refusal is for what comes with it.
+    accepted(verifyX509Svid(p.pem, ctx));
+  });
+
+  it('a certificate that holds the PEM text of another certificate is refused: the PEM reader of the runtime reads the certificate in the text, so the bytes that it checks are not the bytes that came', async () => {
+    const { gateway } = world();
+    const ctx = await contextOf(gateway);
+    const carried = await leaf(gateway, { uris: [`spiffe://${gateway.trustDomain}/agent/${identifier('x509 carried agent')}`] });
+    const carrier = derOf(await leaf(gateway, { carries: `\n${carried}` }));
+    // The twin: a certificate of the same kind that carries nothing is accepted.
+    accepted(verifyX509Svid(await leaf(gateway), ctx));
+    refused(verifyX509Svid(carrier, ctx), 'x509.malformed');
+    refused(verifyX509Svid(carrier.toString('base64'), ctx), 'x509.malformed');
+  });
+
+  it('the verifier gives the same answers: verifier.x509Svid refuses two certificates in each form, and accepts the first one alone', async () => {
+    const w = world();
+    const verifier = createVerifier({ baseUrl: w.gateway.baseUrl, fetch: w.gateway.fetch, now: w.gateway.now });
+    const p = await pieces(w.gateway);
+    accepted(await verifier.x509Svid(p.pem));
+    accepted(await verifier.x509Svid(p.base64));
+    accepted(await verifier.x509Svid(p.der));
+    refused(await verifier.x509Svid(p.pem + p.otherPem), 'x509.malformed');
+    refused(await verifier.x509Svid(p.base64 + p.otherBase64), 'x509.malformed');
+    refused(await verifier.x509Svid(Buffer.concat([p.der, p.otherDer])), 'x509.malformed');
   });
 });
 
@@ -600,6 +740,70 @@ describe('credentials', () => {
     const s = await setup();
     s.gateway.fault('/.well-known/jwks.json', 'network');
     refused(await s.verifier.credential(s.jwt), 'keys.unavailable');
+  });
+});
+
+describe('a refusal never repeats a credential', () => {
+  const MARKER = 'marker-3f9a51';
+  const AUD = 'https://mp-mock.example';
+
+  it('whatever credential is in the wrong place, no detail holds it or a part of it: a JWT-SVID, an identity credential, a status list and a certificate', async () => {
+    const w = world();
+    const agent = w.gateway.createAgent({ label: 'detail agent' });
+    const svid = await w.client.jwtSvid({ agent: { did: agent.did, key: agent.authentication.privateKey }, audience: AUD });
+    const credential = await w.client.credential(agent.did);
+    if (!svid.ok || !credential.ok) throw new Error('the stub gateway gave no JWT-SVID or no credential');
+    const list = await get(w.gateway, '/status/tsl/0');
+    const pem = await leaf(w.gateway);
+    const credentials = [svid.value.svid, credential.value, list, pem, new X509Certificate(pem).raw.toString('base64')];
+    const svidCtx = { bundle: await bundleOf(w.gateway), trustDomain: w.gateway.trustDomain, nowMs: w.gateway.now(), leewaySeconds: 30 };
+    const credentialCtx = { keys: await keysOf(w.gateway), issuer: w.gateway.baseUrl, nowMs: w.gateway.now(), leewaySeconds: 30, subject: null };
+    const wrong: Array<[string, Check<unknown>]> = [
+      ['an identity credential as a JWT-SVID', verifyJwtSvid(credential.value, { ...svidCtx, audience: AUD })],
+      ['a status list as a JWT-SVID', verifyJwtSvid(list, { ...svidCtx, audience: AUD })],
+      ['a certificate as a JWT-SVID', verifyJwtSvid(pem, { ...svidCtx, audience: AUD })],
+      ['a JWT-SVID for another audience', verifyJwtSvid(svid.value.svid, { ...svidCtx, audience: 'https://other.example' })],
+      ['a JWT-SVID as an identity credential', checkCredential(svid.value.svid, credentialCtx)],
+      ['a status list as an identity credential', checkCredential(list, credentialCtx)],
+      ['a certificate as an identity credential', checkCredential(pem, credentialCtx)],
+      ['a JWT-SVID as a certificate', verifyX509Svid(svid.value.svid, svidCtx)],
+      ['an identity credential as a certificate', verifyX509Svid(credential.value, svidCtx)],
+      ['a status list as a certificate', verifyX509Svid(list, svidCtx)],
+    ];
+    for (const [name, result] of wrong) {
+      expect(result.ok, name).toBe(false);
+      if (!result.ok) for (const held of credentials) expect(repeatsCredential(result.detail, held), `${name}: ${held.substring(0, 16)}`).toBe(false);
+    }
+    // The twin: each credential in its own place is accepted.
+    accepted(verifyJwtSvid(svid.value.svid, { ...svidCtx, audience: AUD }));
+    accepted(checkCredential(credential.value, credentialCtx));
+    accepted(verifyX509Svid(pem, svidCtx));
+  });
+
+  it.each<[string, 'jwt-svid' | 'credential', Record<string, unknown>]>([
+    ['jwt_svid.alg', 'jwt-svid', { alg: MARKER }],
+    ['jwt_svid.typ', 'jwt-svid', { typ: MARKER }],
+    ['jwt_svid.kid', 'jwt-svid', { kid: MARKER }],
+    ['credential.alg', 'credential', { alg: MARKER }],
+    ['credential.typ', 'credential', { typ: MARKER }],
+    ['credential.typ', 'credential', { cty: MARKER }],
+    ['credential.kid', 'credential', { kid: MARKER }],
+  ])('a refusal for %s does not repeat the free-form value that the header holds before its signature is checked (%s, %j)', async (rule, kind, header) => {
+    const w = world();
+    const agent = w.gateway.createAgent({ label: 'marker agent' });
+    const credential = await w.client.credential(agent.did);
+    const svid = await w.client.jwtSvid({ agent: { did: agent.did, key: agent.authentication.privateKey }, audience: AUD });
+    if (!credential.ok || !svid.ok) throw new Error('the stub gateway gave no credential or no JWT-SVID');
+    const check: (jwt: string) => Promise<Check<unknown>> =
+      kind === 'jwt-svid'
+        ? async (jwt) => verifyJwtSvid(jwt, { bundle: await bundleOf(w.gateway), trustDomain: w.gateway.trustDomain, nowMs: w.gateway.now(), leewaySeconds: 30, audience: AUD })
+        : async (jwt) => checkCredential(jwt, { keys: await keysOf(w.gateway), issuer: w.gateway.baseUrl, nowMs: w.gateway.now(), leewaySeconds: 30, subject: null });
+    const original = kind === 'jwt-svid' ? svid.value.svid : credential.value;
+    const result = await check(await forged(w.gateway, original, () => undefined, header));
+    refused(result, rule);
+    if (!result.ok) expect(result.detail).not.toContain(MARKER);
+    // The twin: the same document with its own header is accepted.
+    accepted(await check(await forged(w.gateway, original, () => undefined)));
   });
 });
 

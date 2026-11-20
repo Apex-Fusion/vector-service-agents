@@ -60,11 +60,13 @@ The client checks a request against the limits of the gateway before it sends it
 
 Every check returns `{ ok: true, value }` or `{ ok: false, rule, detail }`. The `rule` is a member of the list of that check (exported as `ACCESS_TOKEN_RULES`, `CALL_RULES`, `STATUS_LIST_RULES`, `X509_SVID_RULES`, `JWT_SVID_RULES`, `CREDENTIAL_RULES`, `CREDENTIAL_CALL_RULES`, `KEY_SET_RULES` and `BUNDLE_RULES`). Each rule has a refusal and an accepted twin in the tests.
 
+A `detail` is a sentence for a log. It names a rule, a field, a count, a time or a public identifier (a DID, a trust domain). It never repeats a credential or a part of one: not the `Authorization` header, not a token, a proof or a certificate, and not a value of the header of a JWS. So a service can return a detail, or write it to a log.
+
 **Access token and DPoP proof** (`verifier.accessToken`), in this order:
 
 | Rules | Check |
 |---|---|
-| `token.missing`, `token.scheme` | The `Authorization` header is `DPoP <token>`. A token that is sent as `Bearer` is refused. |
+| `token.missing`, `token.scheme` | The `Authorization` header is `DPoP <token>`. A token that is sent as `Bearer` is refused. The detail of `token.scheme` never repeats the header: a caller that sends `<token> <something>` puts its token in the place of the scheme. |
 | `token.malformed`, `token.alg`, `token.typ`, `token.kid`, `token.signature` | A JWS, ES256 (the algorithm `none` is refused), `typ` at+jwt, signed by a P-256 key of the key set of the gateway. A JWT-SVID, a status list or a credential is `token.typ`. |
 | `token.issuer`, `token.audience` | `iss` is the gateway. `aud` names this resource. |
 | `token.lifetime`, `token.expired`, `token.not_yet_valid` | `exp - iat` is from 1 to 300 seconds. A token is accepted until 30 seconds after `exp` (the clock leeway, `leewaySeconds`). So a token is honoured for 330 seconds after it was issued, at most. |
@@ -96,7 +98,7 @@ The result of a call has `principal`, `actors` (the current actor first), `clien
 
 **Status lists.** The Bitstring Status List holds both purposes in one list: bit `p` is revocation, and bit `131072 + p` is suspension. The Token Status List has 2 bits for each entry: 0 valid, 1 invalid (revoked), 2 suspended. A decode checks the signature, the issuer, that the list is the one that was asked for, the time and the encoding (`list.*`). Both are read with `decodeTokenStatusList`, `decodeBitstringStatusList`, `tokenEntryStatus` and `bitstringEntryStatus`. The reader keeps the newer list: a list with an older issue time than its copy does not replace the copy.
 
-**X.509-SVID** (`verifier.x509Svid`): the certificate chains to an authority of the bundle, is inside its validity (`x509.not_yet_valid`, `x509.expired`), is no CA, has the key usage digitalSignature and neither keyCertSign nor cRLSign, and has exactly one URI name that is a SPIFFE ID of an agent in this trust domain (`x509.malformed`, `x509.bundle`, `x509.untrusted`, `x509.ca`, `x509.key_usage`, `x509.san`, `x509.spiffe_id`, `x509.trust_domain`). The input is PEM, base64 of the DER (the form of a header that a proxy sets) or DER bytes.
+**X.509-SVID** (`verifier.x509Svid`): the certificate chains to an authority of the bundle, is inside its validity (`x509.not_yet_valid`, `x509.expired`), is no CA, has the key usage digitalSignature and neither keyCertSign nor cRLSign, and has exactly one URI name that is a SPIFFE ID of an agent in this trust domain (`x509.malformed`, `x509.bundle`, `x509.untrusted`, `x509.ca`, `x509.key_usage`, `x509.san`, `x509.spiffe_id`, `x509.trust_domain`). The input is exactly one certificate: one PEM block (with only white space around it), the base64 of its DER (the form of a header that a proxy sets), or its DER bytes. A second certificate, a second PEM block, or any other text or bytes next to the certificate make the input `x509.malformed`. The base64 text has the standard alphabet and its padding, and white space in it does not count. The check compares the bytes that the runtime read with the bytes of the input, not only their lengths, so a certificate in BER (for example with the indefinite outer length `30 80 … 00 00`) is `x509.malformed` too, also when it is as long as its DER form.
 
 **JWT-SVID** (`verifier.jwtSvid`): ES256, `typ` JWT, a key of the bundle, `sub` a SPIFFE ID of an agent in this trust domain, `aud` names this resource, a life of 5 minutes at most (`jwt_svid.*`).
 
@@ -138,7 +140,7 @@ The verifier keeps the key set of the gateway for 300 seconds (`keyCacheSeconds`
 
 The status lists do not show everything. A delegation has no entry in a list, and an actor other than the requester has none in the token. For a call that must never honour authority that ended, give the policy:
 
-- `checkActors`: called with the DIDs of the actors, the principal when it is an agent, and the requester. `gatewayActorCheck(client)` resolves each one and requires the effective status Active.
+- `checkActors`: called with the DIDs of the actors, the principal when it is an agent, and the requester. `gatewayActorCheck(client)` resolves each one. An agent passes only when the result is of the kind `resolved` (the answer of a live record: the gateway does not answer 410, the answer for a record that has ended) and its effective status is Active. An answer for an ended record is refused, whatever status its body gives. A result of any other kind is refused, and so is a `resolved` result whose metadata has the member `deactivated` set to anything but false, whatever its effective status says.
 - `checkDelegation`: called with the grant of the delegation, for a check of the whole chain on the ledger. It runs for a token that has a delegation.
 
 A check that returns `{ ok: false }` or throws refuses the call (`actors.refused`, `delegation.refused`).

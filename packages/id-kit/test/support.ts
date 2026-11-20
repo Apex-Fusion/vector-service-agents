@@ -38,6 +38,16 @@ export function es256Verifies(data: Uint8Array, signature: Uint8Array, publicKey
   return verify('sha256', data, { key: publicKey, dsaEncoding: 'ieee-p1363' }, signature);
 }
 
+/**
+ * True when `text` holds a credential or a part of one: the whole credential, one of its dot-separated parts, or any run of 24 characters of it. A refusal that a service returns or
+ * writes to a log must hold none of these.
+ */
+export function repeatsCredential(text: string, credential: string): boolean {
+  if (text.includes(credential) || credential.split('.').some((part) => part.length > 0 && text.includes(part))) return true;
+  for (let start = 0; start + 24 <= credential.length; start++) if (text.includes(credential.substring(start, start + 24))) return true;
+  return false;
+}
+
 /** The text of a value that must be a string. */
 export function text(value: unknown): string {
   if (typeof value !== 'string') throw new Error(`expected a string, got ${typeof value}`);

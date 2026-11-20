@@ -72,7 +72,8 @@ export interface SignedDocument {
 
 /**
  * Checks a compact JWS that the gateway signed: a JWS whose payload is a JSON object, ES256, the `typ` (and `cty`, when one is named) that this kind of document has, a `kid` that
- * the key set holds for a P-256 key, and a signature that verifies. The check of the signature is last, so that a document of another kind never gets that far.
+ * the key set holds for a P-256 key, and a signature that verifies. The check of the signature is last, so that a document of another kind never gets that far. No detail repeats a value of the
+ * header: the signature is not checked yet when `alg`, `typ`, `cty` or `kid` refuse, so such a value is any text of the caller, and a credential that is sent in the wrong place must not come back.
  */
 export function verifyGatewayJws<R extends string>(token: unknown, keys: KeySet, expect: { readonly typ: string; readonly cty?: string }, rules: JwsRules<R>): Check<SignedDocument, R> {
   let jws: Jws;
@@ -83,11 +84,11 @@ export function verifyGatewayJws<R extends string>(token: unknown, keys: KeySet,
     throw e;
   }
   const { header, payload } = jws;
-  if (header.alg !== 'ES256') return refuse(rules.alg, `the algorithm is ${JSON.stringify(header.alg)}, and the gateway signs with ES256`);
-  if (header.typ !== expect.typ) return refuse(rules.typ, `the JWT type (typ) is ${JSON.stringify(header.typ)}, and a document of this kind has ${expect.typ}`);
-  if (expect.cty !== undefined && header.cty !== expect.cty) return refuse(rules.typ, `the content type (cty) is ${JSON.stringify(header.cty)}, and a document of this kind has ${expect.cty}`);
+  if (header.alg !== 'ES256') return refuse(rules.alg, 'the algorithm (alg) is not ES256, and the gateway signs with ES256');
+  if (header.typ !== expect.typ) return refuse(rules.typ, `the JWT type (typ) is not ${expect.typ}, the type of a document of this kind`);
+  if (expect.cty !== undefined && header.cty !== expect.cty) return refuse(rules.typ, `the content type (cty) is not ${expect.cty}, the content type of a document of this kind`);
   const key = typeof header.kid === 'string' ? keys.get(header.kid) : undefined;
-  if (key === undefined) return refuse(rules.kid, `the key set of the gateway has no key with the kid ${JSON.stringify(header.kid)}`);
+  if (key === undefined) return refuse(rules.kid, 'the key set of the gateway has no key with the kid of this document');
   if (key.kind !== 'P256') return refuse(rules.kid, 'the key named by kid is not a P-256 key');
   if (!verifyJws(jws, 'P256', key.key)) return refuse(rules.signature, 'the signature does not verify with the key that kid names');
   return accept({ jws, header, payload, key });

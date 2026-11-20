@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { DELEGATION_DETAILS_TYPE, LIST_SIZE, TOKEN_EXCHANGE_GRANT } from '../src/common/constants.ts';
 import type { Check } from '../src/common/result.ts';
 import { b64url } from '../src/vendored/m4/jose.ts';
-import { bitstringEntryStatus, checkCredential, createVerifier, decodeBitstringStatusList, decodeTokenStatusList, parseBundle, parseKeySet, tokenEntryStatus } from '../src/verify/index.ts';
+import { bitstringEntryStatus, checkCredential, createVerifier, decodeBitstringStatusList, decodeTokenStatusList, parseBundle, parseKeySet, tokenEntryStatus, verifyX509Svid } from '../src/verify/index.ts';
 import { decodeJwt } from './support.ts';
 
 const dir = new URL('./fixtures/live/', import.meta.url);
@@ -78,6 +78,16 @@ describe('the live metadata and keys', () => {
     const p256 = [...keys.values()].find((k) => k.kind === 'P256')!;
     expect(ca.publicKey.export({ format: 'jwk' })).toMatchObject({ x: (p256.jwk as { x: string }).x, y: (p256.jwk as { y: string }).y });
     expect([...bundle.jwtKeys.keys()]).toStrictEqual([p256.kid]);
+  });
+
+  it('the CA certificate that the live gateway made is read as exactly one certificate in each form: it is refused for what it is (x509.ca), not as malformed, and a byte after it is malformed', () => {
+    const json = JSON.parse(read('bundle.json')) as { keys: Array<{ use: string; x5c?: string[] }> };
+    const base64 = json.keys.find((k) => k.use === 'x509-svid')!.x5c![0]!;
+    const der = Buffer.from(base64, 'base64');
+    const context = { bundle: accepted(parseBundle(json)), trustDomain: new URL(ORIGIN).hostname, nowMs: NOW, leewaySeconds: 30 };
+    const pem = `-----BEGIN CERTIFICATE-----\n${base64.match(/.{1,64}/g)!.join('\n')}\n-----END CERTIFICATE-----\n`;
+    for (const form of [der, new Uint8Array(der), base64, pem]) expect(verifyX509Svid(form, context)).toMatchObject({ ok: false, rule: 'x509.ca' });
+    expect(verifyX509Svid(Buffer.concat([der, Buffer.from([0])]), context)).toMatchObject({ ok: false, rule: 'x509.malformed' });
   });
 });
 
