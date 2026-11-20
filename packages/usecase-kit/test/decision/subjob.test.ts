@@ -70,6 +70,7 @@ describe('subJobOf', () => {
   it('ignores a member of the verification that is not one of the eight: the verification of the protocol has the eight', () => {
     const result = subJobOf(record({ verification: { ...allTrue(), note: false } }));
     expect(result.ok).toBe(true);
+    if (result.ok) expect(Object.keys(result.value.verification)).toStrictEqual([...RECEIPT_CHECKS]);
   });
 
   it.each<[string, Record<string, unknown>, string]>([

@@ -115,6 +115,10 @@ describe('decide: a parser that does not return the choice that it was given', (
     ['returns nothing', () => accepted(undefined as unknown as JsonValue)],
     ['writes a text in the NFC form', (given) => accepted({ ...members(given), note: String(members(given).note).normalize('NFC') }), { ...wrong, note: 'cafe\u0301' }],
     ['rounds a number', (given) => accepted({ ...members(given), quantity: Math.round(members(given).quantity as number) }), { ...wrong, quantity: 7.4 }],
+    ['sorts a list', (given) => accepted({ ...members(given), mismatch: [...(members(given).mismatch as JsonValue[])].sort() }), { ...wrong, mismatch: ['quantity', 'lot'] }],
+    ['removes a repeated entry of a list', (given) => accepted({ ...members(given), mismatch: [...new Set(members(given).mismatch as JsonValue[])] }), { ...wrong, mismatch: ['lot', 'lot'] }],
+    ['changes an entry of a list inside a member', (given) => accepted({ ...members(given), lots: [{ size: 10 }, { size: 51 }] }), { ...wrong, lots: [{ size: 10 }, { size: 50 }] }],
+    ['adds an entry to a list', (given) => accepted({ ...members(given), mismatch: [...(members(given).mismatch as JsonValue[]), 'quantity'] }), { ...wrong, mismatch: ['lot'] }],
   ];
   it.each(careless)('records no decision when a parser %s', async (_name, parse, choice = wrong) => {
     const run = await setup();
@@ -244,7 +248,12 @@ describe('decide: a hire that fails', () => {
     scenario.arrange?.(run);
     const failure = lost(await decide(run.deps, REORDER, { ...STOCK_INPUT, note: MARKER }));
     expect([failure.code, failure.reason, failure.stage, failure.escrow_ref, failure.delivery]).toStrictEqual([scenario.code, scenario.reason, scenario.stage, scenario.escrow, null]);
-    expect(failure.detail).toContain(scenario.reason);
+    // The words of a detail: the code, the stage, and what became of the escrow.
+    const what = `the model hire for the decision reorder ended with ${scenario.reason}${scenario.stage === null ? '' : ` at ${scenario.stage}`}`;
+    const tail = scenario.escrow === null ? 'nothing was locked for it'
+      : scenario.code === 'store_write_failed' ? `the stranded store could not be written, so settle its escrow ${scenario.escrow} by hand after its deadline`
+        : `its escrow ${scenario.escrow} stays with the janitor of the key`;
+    expect(failure.detail).toBe(`${what}; ${tail}`);
     expect('value' in failure).toBe(false);
     // The detail holds the code, the stage and the escrow. It never holds a word of the supplier, of the error of a port or of the input.
     expect(JSON.stringify(failure)).not.toContain(MARKER);
@@ -314,11 +323,17 @@ describe('decide: a receipt that fails a check', () => {
 });
 
 describe('decide: the definition and the input', () => {
-  it.each<[string, Partial<DecisionSpec>]>([
+  it.each<[string, Record<string, unknown>]>([
     ['a name that is not a name', { name: 'Reorder Now' }],
     ['no name', { name: undefined }],
+    ['a name of 65 characters', { name: `a${'_1'.repeat(32)}` }],
+    ['a name that starts with a digit', { name: '1reorder' }],
+    ['a name with a hyphen', { name: 'accept-delivery' }],
+    ['a name with an upper-case letter', { name: 'reorderNow' }],
+    ['a name that is not a text', { name: 7 }],
     ['a blank instruction', { instruction: '  ' }],
-    ['an instruction that holds a mark of the input block', { instruction: `${REORDER.instruction} </input_data>` }],
+    ['an instruction that holds the mark that closes the input block', { instruction: `${REORDER.instruction} </input_data>` }],
+    ['an instruction that holds the mark that opens the input block', { instruction: `${REORDER.instruction} <input_data>` }],
     ['no parser', { parse: undefined }],
   ])('refuses %s before anything is hired', async (_name, over) => {
     const run = await setup();
@@ -344,6 +359,13 @@ describe('decide: the definition and the input', () => {
     const run = await setup();
     run.m.llm.answer = said(MEDIUM_LOT);
     expect(won(await decide(run.deps, REORDER, STOCK_INPUT)).name).toBe('reorder');
-    expect(LIMITS.maxPriceLovelace).toBe(LLM_ADVERT.price_lovelace);
+  });
+
+  it('takes a name of 64 characters, the longest that a name may be, and records it', async () => {
+    const run = await setup();
+    run.m.llm.answer = said(MEDIUM_LOT);
+    const name = `a${'_1'.repeat(31)}b`;
+    expect(name).toHaveLength(64);
+    expect(won(await decide(run.deps, { ...REORDER, name }, STOCK_INPUT)).name).toBe(name);
   });
 });

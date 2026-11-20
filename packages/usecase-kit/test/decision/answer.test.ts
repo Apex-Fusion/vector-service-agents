@@ -133,8 +133,15 @@ describe('readAnswer: the parser of the decision', () => {
     expect(JSON.stringify(result)).not.toContain(MARKER);
   });
 
-  it('is choice_changed when the parser says ok and gives no value', () => {
-    expect(readAnswer(completed(said(MEDIUM_LOT)), (() => ({ ok: true })) as unknown as ChoiceParser<JsonValue>)).toMatchObject({ ok: false, code: 'choice_changed' });
+  it.each<[string, () => unknown]>([
+    ['says ok and gives no value', () => ({ ok: true })],
+    ['returns NaN', () => accepted(Number.NaN)],
+    ['returns an object of a class', () => accepted(new Map() as unknown as JsonValue)],
+    ['returns a function', () => accepted((() => 1) as unknown as JsonValue)],
+  ])('is choice_changed, and says that the value is not JSON data, when the parser %s', (_name, parse) => {
+    expect(readAnswer(completed(said(MEDIUM_LOT)), parse as unknown as ChoiceParser<JsonValue>)).toStrictEqual({
+      ok: false, code: 'choice_changed', detail: 'the parser of the decision returned a value that is not JSON data',
+    });
   });
 
   it('reads the verdict of the parser one time: a getter cannot show one value to the check and another to the record', () => {

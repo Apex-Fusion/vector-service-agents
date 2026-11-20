@@ -81,6 +81,19 @@ describe('the limits that decide checks: a hire outside them is never made', () 
       expect(won(await decide(none.deps, REORDER, STOCK_INPUT)).inference.accepted, field).toBe('confirmed');
     }
   });
+
+  it('holds each bond against its own limit: an advert with a supplier bond of 3 and a buyer bond of 1 passes the limits 3 and 1, and fails when either limit is one lovelace below its own bond', async () => {
+    const chain = { lockLovelace: 60_000_000n, floatLovelace: 200_000_000n, llmAdvert: { ...LLM_ADVERT, supplier_bond_lovelace: 3_000_000n, buyer_bond_lovelace: 1_000_000n } };
+    const within = await setup(chain, undefined, { ...LIMITS, maxSupplierBondLovelace: 3_000_000n, maxBuyerBondLovelace: 1_000_000n });
+    within.m.llm.answer = said(MEDIUM_LOT);
+    expect(won(await decide(within.deps, REORDER, STOCK_INPUT)).inference.accepted).toBe('confirmed');
+    const over: Array<[string, bigint, bigint]> = [['supplier bond', 2_999_999n, 1_000_000n], ['buyer bond', 3_000_000n, 999_999n]];
+    for (const [name, supplierLimit, buyerLimit] of over) {
+      const run = await setup(chain, undefined, { ...LIMITS, maxSupplierBondLovelace: supplierLimit, maxBuyerBondLovelace: buyerLimit });
+      expect(lost(await decide(run.deps, REORDER, STOCK_INPUT)).reason, name).toBe('llm_supplier_unavailable');
+      expect([run.booked, run.m.llm.sends], name).toStrictEqual([[], []]);
+    }
+  });
 });
 
 describe('a limit that is not given', () => {
@@ -123,7 +136,8 @@ describe('a limit that is not given', () => {
     for (const limits of [undefined, null, 'limits', 7, [], () => LIMITS]) {
       const run = await setup();
       run.deps = { ...run.deps, limits: limits as unknown as ModelLimits };
-      expect(lost(await decide(run.deps, REORDER, STOCK_INPUT)).reason, String(limits)).toBe('bad_limit');
+      const failure = lost(await decide(run.deps, REORDER, STOCK_INPUT));
+      expect([failure.reason, failure.detail.startsWith('limits must be an object, and it is ')], String(limits)).toStrictEqual(['bad_limit', true]);
       await expectNothingHired(run);
     }
   });
