@@ -45,7 +45,8 @@ export class HireLane {
  */
 export function checkTurn<E extends Error>(t: Clocked, label: string, errors: Pick<HireErrors<E>, 'deadline'>): void {
   if (t.clock() < t.deadlineMs) return;
-  throw errors.deadline(`${label} waited for its turn in the lane of its key`, { stage: 'lane', escrowRef: null, handedOver: false });
+  // The text is true also when the lane was free and the deadline had passed before the call: the hire had not begun when its turn came.
+  throw errors.deadline(`${label} had not begun`, { stage: 'lane', escrowRef: null, handedOver: false });
 }
 
 /** One key that pays, with its chain, its stranded store and its lane. Made by PayingKeys.add. */

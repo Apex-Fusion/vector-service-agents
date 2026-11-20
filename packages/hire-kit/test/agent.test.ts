@@ -1074,7 +1074,7 @@ describe('hireAgent: in the lane of its paying key', () => {
     expect(first.outcome).toBe('completed');
     const error = rejectedWith(second);
     // The first hire held the lane until the clock stood 90 s after T0, so the second had its turn 30 s after its deadline.
-    expect([error.code, error.message]).toStrictEqual(['deadline', 'The deadline of the job came while the second order waited for its turn in the lane of its key.']);
+    expect([error.code, error.message]).toStrictEqual(['deadline', 'The deadline of the job came while the second order had not begun.']);
     // No stage of a hire and no escrow: the facts say that nothing was signed.
     expect(error.facts).toStrictEqual({ stage: 'lane', escrowRef: null, handedOver: false });
     // Nothing was read: the chain got no call, and the fetch got none (no indexer, no probe of the agent, no send) after the first hire held the lane.

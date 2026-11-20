@@ -198,7 +198,7 @@ describe('hireModel', () => {
     const error: unknown = second.reason;
     if (!(error instanceof CodedError)) throw error;
     // The first hire held the lane until the clock stood 90 s after T0, so the second had its turn 30 s after its deadline.
-    expect([error.code, error.message]).toStrictEqual(['deadline', 'The deadline of the job came while the second brief waited for its turn in the lane of its key.']);
+    expect([error.code, error.message]).toStrictEqual(['deadline', 'The deadline of the job came while the second brief had not begun.']);
     // No stage of a hire and no escrow: the facts say that nothing was signed.
     expect(error.facts).toStrictEqual({ stage: 'lane', escrowRef: null, handedOver: false });
     // Nothing was read: the chain got no call, and the fetch got none (no indexer, no probe of a supplier, no send) after the first hire held the lane.
