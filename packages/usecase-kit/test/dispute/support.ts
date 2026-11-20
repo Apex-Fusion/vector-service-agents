@@ -50,10 +50,9 @@ export const CHALLENGE_TX = '99'.repeat(32);
 export const MANIFEST_SHA = '5a'.repeat(32);
 export const CHALLENGE_TOKEN = `63686c5f${'0e'.repeat(28)}`;
 
-/** The capability that the claim documents of the samples are for, and the scope of a job that they cover: the job began half an hour ago, after the claims of the samples were staked. */
+/** The capability that the claim documents of the samples are for, and the time that the job of the samples began: half an hour ago, after the claims of the samples were staked. */
 export const CAPABILITY = 'supplychain.order.accept.v1';
 export const JOB_BEGAN_AT = NOW - 30 * 60_000;
-export const JOB = { capability_id: CAPABILITY, job_began_at: JOB_BEGAN_AT } as const;
 
 // --- The statements of three agents -----------------------------------------------------------------------------------------------------------------------------------
 
@@ -98,6 +97,9 @@ export const REORDER_AGENT_S1 = 'An order that this agent places is the purchase
 
 /** The text of the statement S1 of the claim document of the samples: the statement that the evidence is about. */
 export const STATEMENT_S1 = ORDER_DESK_CLAIM.statements[0].text;
+
+/** The job that the claims of the samples cover: the capability that they are for, the statement S1 of their claim document, and the time that the job began. */
+export const JOB = { capability_id: CAPABILITY, statement_text: STATEMENT_S1, job_began_at: JOB_BEGAN_AT } as const;
 
 export const PARTIES = { claim: REF_A, claim_token: TOKEN_A, against_did: OTHER, by_did: ME, escrow_ref: ESCROW, statement_text: STATEMENT_S1 } as const;
 

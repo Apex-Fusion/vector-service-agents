@@ -159,8 +159,8 @@ function finish(type: JurorDocument['type'], text: string): ProtocolResult<Juror
   return accepted({ type, media_type: JUROR_MEDIA_TYPE, text, bytes, hash: documentHash(bytes) });
 }
 
-/** The text of one statement of a claim: plain text that fits a document. The detail names the field and never repeats the value. */
-function parseStatementText(value: unknown, field: string): ProtocolResult<string, 'bad_shape' | 'document_too_large'> {
+/** The text of one statement of a claim: plain text that fits a document. The detail names the field and never repeats the value. The challenge code checks the statement that a job hired with it too. */
+export function parseStatementText(value: unknown, field: string): ProtocolResult<string, 'bad_shape' | 'document_too_large'> {
   if (typeof value !== 'string') return refused('bad_shape', `${field} must be a text`);
   // A statement longer than the whole document cannot fit. The check comes before the pattern, so a huge text is not scanned.
   if (value.length > MAX_JUROR_DOCUMENT_BYTES) return refused('document_too_large', `${field} is longer than a document for a juror can be`);

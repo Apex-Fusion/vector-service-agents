@@ -7,9 +7,10 @@
 //      A record `started` that is older than its lease gives the job back (`started_lease_ms`), and only after step 1 found no challenge of this agent on chain.
 //   1. Read the claims. A challenge of this agent for this job that is on chain already is found again, and it is the result. The code never files a second one.
 //   2. Choose the claim. A claim is a target only when ALL hold: its claimer is the other party; its claim document is a claim document of this kit for the capability of the job (it is on chain, its hash
-//      is the hash that the claim holds, and it is the document that `claimDocument` writes for that party and that capability); it was submitted before the job began; it is Open with enough window left;
-//      and its stake is not above the challenge stake. A claim that is not a target is left out and counted by its reason, so the claimer cannot choose the target or block a challenge with a claim of its
-//      own. Among the targets the one with the latest challenge deadline is chosen, and with the same deadline the one with the lowest claim token. None ends the job with `no_open_claim`.
+//      is the hash that the claim holds, and it is the document that `claimDocument` writes for that party and that capability) and its statement S1 is exactly the text of the statement S1 of the manifest
+//      that the job hired; it was submitted before the job began; it is Open with enough window left; and its stake is not above the challenge stake. A claim that is not a target is left out and counted by
+//      its reason, so the claimer cannot choose the target or block a challenge with a claim of its own. Among the targets the one with the latest challenge deadline is chosen, and with the same deadline the
+//      one with the lowest claim token. None ends the job with `no_open_claim`.
 //   3. Make the evidence document. A document that is refused ends the job. Nothing is on chain yet.
 //   4. In one job of the queue: check the window that is left, read the journal again (another call can have written its record while this job waited), write the journal with the time of the job
 //      (`started_at`), publish the evidence document, and wait for its confirmation. A document that is not confirmed ends the job. The challenge is not built.
@@ -22,7 +23,7 @@
 import { documentHash, txHashOfUri } from '@vsa/buyer-core';
 import { NO_OPEN_CLAIM, accepted, checkMembers, parseDid, parseJsonValue, parseOutputRef, refused } from '../protocol/index.ts';
 import type { Did, Digest, JsonObject, JsonValue, ManifestClaim, OutputRef, ProtocolResult, Refused } from '../protocol/index.ts';
-import { EVIDENCE_STATEMENT, JUROR_MEDIA_TYPE, claimDocument, evidenceDocument, evidenceReferences, parseCapabilityId, parseClaimToken, readClaimDocument } from './documents.ts';
+import { EVIDENCE_STATEMENT, JUROR_MEDIA_TYPE, claimDocument, evidenceDocument, evidenceReferences, parseCapabilityId, parseClaimToken, parseStatementText, readClaimDocument } from './documents.ts';
 import type { ApprovalDigestFacts, EvidenceDocumentInput, OrderConfirmationFacts, QuotePriceFacts } from './documents.ts';
 import { MemoryJournal, parseJobRecord } from './journal.ts';
 import type { DisputeJournal, FiledRecord, JobRecord } from './journal.ts';
@@ -84,6 +85,11 @@ export interface DisputeDeps {
 export interface ClaimScope {
   /** The capability that the job hired. The caller knows it from the advert of the job. The target holds a claim document of this kit for this capability. */
   readonly capability_id: string;
+  /**
+   * The text of the statement S1 of the manifest that the job hired: the statement that the job broke. The caller has the manifest of the agent that it hired. The target is a claim whose claim document has
+   * exactly this text as its statement S1. A claim for the same capability with another S1 is left out, because the evidence would quote a statement that the job did not break.
+   */
+  readonly statement_text: string;
   /** When the job began, in POSIX milliseconds: the time of the Post of its escrow. A claim that was submitted at or after this time does not cover the job, so it is never the target. */
   readonly job_began_at: number;
 }
@@ -317,13 +323,17 @@ const SKIPS = {
   no_document: 'whose claim document is not on chain or is not a document',
   not_kit: 'without a claim document of this kit',
   capability: 'with a claim document for another capability',
+  statement: 'with a claim document whose statement S1 is another text',
 } as const;
 type SkipReason = keyof typeof SKIPS;
+
+/** The reasons that the claim document of a claim gives for leaving the claim out. */
+type DocumentSkip = 'no_document' | 'not_kit' | 'capability' | 'statement';
 
 /** What the code finds in the claim document of a claim that it looks at: the statement of a target, or the reason that the claim is left out. */
 type Examined =
   | { readonly kind: 'target'; readonly statement_text: string }
-  | { readonly kind: 'skip'; readonly reason: 'no_document' | 'not_kit' | 'capability' };
+  | { readonly kind: 'skip'; readonly reason: DocumentSkip };
 
 /** What a challenge knows about its own transactions while it runs. */
 interface Progress {
@@ -472,12 +482,13 @@ export class Dispute {
 
   /**
    * What the code finds in the claim document of a claim: the statement of a target, or the reason that the claim is left out. A claim is a claim of this kit when its claim document is a `vector-tx:`
-   * document that is on chain, its hash is the claim hash that the claim holds, it was published as a claim with the media type of this kit, and it is the document that `claimDocument` writes for the
-   * claimer. It covers the job only when the capability of the document is the capability of the job. The kit fixes no text of a statement for a capability, so no statement is compared. A claim whose
-   * document is not on chain, is not of this kit, or is for another capability is left out, because the claimer makes the document. A source that cannot be read is `chain_unavailable`.
+   * document that is on chain and is a document, its hash is the claim hash that the claim holds, it was published as a claim with the media type of this kit, and it is the document that `claimDocument`
+   * writes for the claimer. It covers the job only when the capability of the document is the capability of the job, and its statement S1 is exactly the text that the job hired (`statement_text` of the
+   * scope): a claim with another S1 would make the evidence quote a statement that the job did not break. A claim whose document is not on chain, is not a document, is not of this kit, is for another
+   * capability, or has another S1 is left out, because the claimer makes the document. A source that cannot be read is `chain_unavailable`.
    */
   async #examine(claim: ClaimView, scope: ClaimScope): Promise<ProtocolResult<Examined, 'chain_unavailable'>> {
-    const skip = (reason: 'no_document' | 'not_kit' | 'capability'): ProtocolResult<Examined, 'chain_unavailable'> => accepted({ kind: 'skip', reason });
+    const skip = (reason: DocumentSkip): ProtocolResult<Examined, 'chain_unavailable'> => accepted({ kind: 'skip', reason });
     if (!HASH.test(claim.claim_hash)) return skip('not_kit');
     const read = await this.#document(claim.claim_uri, 'the claim document');
     if (!read.ok) return read;
@@ -491,20 +502,21 @@ export class Dispute {
     if (!input.ok || input.value.agent_did !== claim.claimer) return skip('not_kit');
     if (input.value.capability_id !== scope.capability_id) return skip('capability');
     const statement = input.value.claim.statements.find((candidate) => candidate.id === EVIDENCE_STATEMENT);
-    return statement === undefined ? skip('not_kit') : accepted({ kind: 'target', statement_text: statement.text });
+    if (statement === undefined) return skip('not_kit');
+    return statement.text === scope.statement_text ? accepted({ kind: 'target', statement_text: statement.text }) : skip('statement');
   }
 
   /**
    * The claim that a challenge of `did` names for the job in `scope`. A claim is a target only when ALL hold: it is an Open claim of `did`; it has at least `leastLeft` milliseconds of window left at `now`;
-   * it was submitted before the job began; its stake is not above the challenge stake; and its claim document is a claim document of this kit for the capability of the job. A claim that is not a target is
-   * left out of the choice and counted by its reason: the detail of `no_open_claim` says how many claims were left out for each reason. Among the targets the one with the latest challenge deadline is
-   * chosen, and with the same deadline the one with the lowest claim token, so the choice does not depend on the order of a list. The claim documents are read in that order, and the first target ends the
-   * search. A document that cannot be read is `chain_unavailable`, and it is never taken for a claim that is not a target.
+   * it was submitted before the job began; its stake is not above the challenge stake; and its claim document is a claim document of this kit for the capability of the job, with the statement S1 of the job.
+   * A claim that is not a target is left out of the choice and counted by its reason: the detail of `no_open_claim` says how many claims were left out for each reason. Among the targets the one with the
+   * latest challenge deadline is chosen, and with the same deadline the one with the lowest claim token, so the choice does not depend on the order of a list. The claim documents are read in that order, and
+   * the first target ends the search. A document that cannot be read is `chain_unavailable`, and it is never taken for a claim that is not a target.
    */
   async #choose(did: Did, claims: readonly ClaimView[], scope: ClaimScope, now: number, leastLeft: number): Promise<ProtocolResult<Chosen, ClaimLookupCode>> {
     const open = claims.filter((claim) => claim.claimer === did && claim.state === 'Open');
     if (open.length === 0) return refused(NO_OPEN_CLAIM, 'the agent has no open claim');
-    const skipped: Record<SkipReason, number> = { window: 0, began: 0, stake: 0, no_document: 0, not_kit: 0, capability: 0 };
+    const skipped: Record<SkipReason, number> = { window: 0, began: 0, stake: 0, no_document: 0, not_kit: 0, capability: 0, statement: 0 };
     const room = Math.max(leastLeft, 1);
     const candidates: ClaimView[] = [];
     for (const claim of open) {
@@ -883,7 +895,7 @@ function parseChallengeInput(input: unknown, party: 'counterparty' | 'sender', k
   const copy = parseJsonValue(input, 'challenge');
   if (!copy.ok) return copy;
   if (!isObject(copy.value)) return refused('bad_shape', 'challenge must be a JSON object');
-  const members = checkMembers(copy.value, 'challenge', [party, 'escrow_ref', 'capability_id', 'job_began_at', 'evidence']);
+  const members = checkMembers(copy.value, 'challenge', [party, 'escrow_ref', 'capability_id', 'statement_text', 'job_began_at', 'evidence']);
   if (members !== null) return members;
   const against = parseDid(copy.value[party], `challenge.${party}`);
   if (!against.ok) return against;
@@ -897,13 +909,15 @@ function parseChallengeInput(input: unknown, party: 'counterparty' | 'sender', k
   return accepted({ against: against.value, escrow: escrow.value, scope: scope.value, facts });
 }
 
-/** The capability and the start of a job, from the members of an object that `checkMembers` passed. The detail names the member and never repeats the value. */
+/** The capability, the statement and the start of a job, from the members of an object that `checkMembers` passed. The detail names the member and never repeats the value. */
 function parseClaimScope(record: JsonObject, field: string): ProtocolResult<ClaimScope, 'bad_shape'> {
   const capability = parseCapabilityId(record.capability_id, `${field}.capability_id`);
   if (!capability.ok) return capability;
+  const statement = parseStatementText(record.statement_text, `${field}.statement_text`);
+  if (!statement.ok) return refused('bad_shape', statement.detail);
   const began = record.job_began_at;
   if (typeof began !== 'number' || !Number.isSafeInteger(began) || began <= 0) return refused('bad_shape', `${field}.job_began_at must be a time in POSIX milliseconds: a whole number above 0`);
-  return accepted({ capability_id: capability.value, job_began_at: began });
+  return accepted({ capability_id: capability.value, statement_text: statement.value, job_began_at: began });
 }
 
 /** A scope that a caller gives alone, as a copy of plain data, or a refusal. */
@@ -911,6 +925,6 @@ function parseScope(input: unknown, field: string): ProtocolResult<ClaimScope, '
   const copy = parseJsonValue(input, field);
   if (!copy.ok) return copy;
   if (!isObject(copy.value)) return refused('bad_shape', `${field} must be a JSON object`);
-  const members = checkMembers(copy.value, field, ['capability_id', 'job_began_at']);
+  const members = checkMembers(copy.value, field, ['capability_id', 'statement_text', 'job_began_at']);
   return members !== null ? members : parseClaimScope(copy.value, field);
 }

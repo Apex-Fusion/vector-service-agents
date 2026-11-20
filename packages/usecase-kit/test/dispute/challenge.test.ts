@@ -549,6 +549,13 @@ describe('the input of a challenge', () => {
     ['a capability that is not a capability', { capability_id: 'zq9 with spaces' }],
     ['a capability that is too long', { capability_id: `zq9${'a'.repeat(64)}` }],
     ['a capability that is a number', { capability_id: 7 }],
+    ['a statement that is a number', { statement_text: 7 }],
+    ['a statement that is empty', { statement_text: '' }],
+    ['a statement with a line break', { statement_text: 'zq9 one\ntwo' }],
+    ['a statement with U+0000', { statement_text: 'zq9 one\u0000two' }],
+    ['a statement with the escape of U+0000', { statement_text: 'zq9 one \\u0000 two' }],
+    ['a statement with a space at its start', { statement_text: ' zq9 one' }],
+    ['a statement that is longer than any document', { statement_text: `zq9${'a'.repeat(3_000)}` }],
     ['a start of the job that is a text', { job_began_at: 'zq9' }],
     ['a start of the job that is not a whole number', { job_began_at: NOW + 0.5 }],
     ['a start of the job that is 0', { job_began_at: 0 }],
@@ -563,8 +570,8 @@ describe('the input of a challenge', () => {
     expect(events).toEqual([]);
   });
 
-  it('refuses an input that lacks the capability or the start of the job, for a delivery and for an approval, before it reads the chain', async () => {
-    for (const name of ['capability_id', 'job_began_at'] as const) {
+  it('refuses an input that lacks the capability, the statement or the start of the job, for a delivery and for an approval, before it reads the chain', async () => {
+    for (const name of ['capability_id', 'statement_text', 'job_began_at'] as const) {
       const { events, dispute } = rig();
       const { [name]: _left, ...rest } = delivery();
       expectNotFiled(await dispute.challengeDelivery(rest as unknown as DeliveryChallengeInput), 'bad_shape');
@@ -572,7 +579,7 @@ describe('the input of a challenge', () => {
       expectNotFiled(await dispute.challengeApproval(restOfApproval as unknown as ApprovalChallengeInput), 'bad_shape');
       expect(events).toEqual([]);
     }
-    // The twin: an input with both members is filed.
+    // The twin: an input with all three members is filed.
     const { port, dispute } = rig();
     port.claims = [claimView()];
     expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);

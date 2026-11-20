@@ -1,7 +1,7 @@
 // packages/usecase-kit/test/dispute/target.test.ts: the claim that a challenge names, on a scripted chain port. A claim is a target only when ALL hold: its claimer is the other party; its claim document
-// is on chain, is the document that the claim holds by hash, and is the document that `claimDocument` writes for the claimer and for the capability of the job; it was submitted before the job began; it is
-// Open with enough window left; and its stake is not above the challenge stake. Among the targets the one with the latest challenge deadline is chosen, and with the same deadline the one with the lowest
-// claim token. A claim that is not a target is left out and counted. Each refusal has an accepted twin.
+// is on chain, is the document that the claim holds by hash, and is the document that `claimDocument` writes for the claimer and for the capability of the job, with the statement S1 that the job hired; it was
+// submitted before the job began; it is Open with enough window left; and its stake is not above the challenge stake. Among the targets the one with the latest challenge deadline is chosen, and with the
+// same deadline the one with the lowest claim token. A claim that is not a target is left out and counted. Each refusal has an accepted twin.
 import { describe, expect, it } from 'vitest';
 import { documentHash, documentUri } from '@vsa/buyer-core';
 import { NO_OPEN_CLAIM } from '@vsa/usecase-kit/protocol';
@@ -13,13 +13,14 @@ import {
 } from './support.ts';
 import type { Rig } from './support.ts';
 
-const delivery = (): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: ESCROW, ...JOB, evidence: ORDER_FACTS });
+const delivery = (extra: Partial<DeliveryChallengeInput> = {}): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: ESCROW, ...JOB, evidence: ORDER_FACTS, ...extra });
 const textOf = (bytes: Uint8Array): string => Buffer.from(bytes).toString('utf8');
 
-/** The detail of no_open_claim for `open` open claims, and for the counts of the six reasons in the order of the detail. */
-const counted = (open: number, left: readonly [number, number, number, number, number, number]): string =>
+/** The detail of no_open_claim for `open` open claims, and for the counts of the seven reasons in the order of the detail. */
+const counted = (open: number, left: readonly [number, number, number, number, number, number, number]): string =>
   `the agent has ${open} open claim(s), and none can be challenged: ${left[0]} with a challenge window that ends too soon, ${left[1]} submitted at or after the start of the job, `
-  + `${left[2]} with a stake above the challenge stake, ${left[3]} whose claim document is not on chain or is not a document, ${left[4]} without a claim document of this kit, ${left[5]} with a claim document for another capability`;
+  + `${left[2]} with a stake above the challenge stake, ${left[3]} whose claim document is not on chain or is not a document, ${left[4]} without a claim document of this kit, `
+  + `${left[5]} with a claim document for another capability, ${left[6]} with a claim document whose statement S1 is another text`;
 
 /** A claim of the other party that was staked a minute after the older claim of the samples, before the job began, and that ends 15 hours later: with no rule of the job, it would be the target. */
 const newer = (overrides: Partial<ClaimView> = {}): ClaimView => claimView({ ref: REF_B, token: TOKEN_B, submitted_at: NOW - HOUR + 60_000, challenge_window_ms: 20 * HOUR, ...overrides });
@@ -54,6 +55,15 @@ function otherStatements(claimer: string) {
   return document.value;
 }
 
+/** The claim document that this kit writes for OTHER for the capability of the job, with `text` as its statement S1 and the other statements of the order desk. */
+function withStatement(text: string) {
+  const document = claimDocument({
+    agent_did: OTHER, capability_id: CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: { statements: [{ id: 'S1', text }, ORDER_DESK_CLAIM.statements[1], ORDER_DESK_CLAIM.statements[2]] },
+  });
+  if (!document.ok) throw new Error(document.detail);
+  return document.value;
+}
+
 describe('a challenge names only a claim of this kit', () => {
   const NOT_KIT: Array<[string, (rigged: Rig) => ClaimView]> = [
     ['a claim hash that is not the hash of the document', ({ port }) => ({ ...holding(port, claimView(), kitClaimDocument(OTHER).bytes), claim_hash: 'ab'.repeat(32) })],
@@ -74,7 +84,7 @@ describe('a challenge names only a claim of this kit', () => {
     rigged.port.claims = [make(rigged)];
     const result = await rigged.dispute.challengeDelivery(delivery());
     expectNotFiled(result, NO_OPEN_CLAIM);
-    expect(result.detail).toBe(counted(1, [0, 0, 0, 0, 1, 0]));
+    expect(result.detail).toBe(counted(1, [0, 0, 0, 0, 1, 0, 0]));
     expect(rigged.port.published).toEqual([]);
     expect(rigged.port.challenged).toEqual([]);
     expect(rigged.events).toEqual(['readClaims', `readDocument ${rigged.port.claims[0]!.claim_uri}`]);
@@ -153,7 +163,7 @@ describe('a challenge names only a claim of this kit', () => {
     const rigged = rig();
     const document = otherStatements(OTHER);
     rigged.port.claims = [holding(rigged.port, claimView(), document.bytes)];
-    expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect((await rigged.dispute.challengeDelivery(delivery({ statement_text: PRIOR_AUTHORIZATION_CLAIM.statements[0].text }))).ok).toBe(true);
     const text = textOf(rigged.port.published[0]!.bytes);
     expect(text.split('\n')[1]).toBe(`Statement S1 of the claim reads: "${PRIOR_AUTHORIZATION_CLAIM.statements[0].text}"`);
     expect(text).not.toContain(STATEMENT_S1);
@@ -168,7 +178,7 @@ describe('a challenge names only a claim of this kit', () => {
     });
     if (!document.ok) throw new Error(document.detail);
     rigged.port.claims = [holding(rigged.port, claimView(), document.value.bytes)];
-    expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect((await rigged.dispute.challengeDelivery(delivery({ statement_text: long }))).ok).toBe(true);
     const text = textOf(rigged.port.published[0]!.bytes);
     expect(text).toContain('[cut: the text of the value has 1002 characters]');
     expect(text).not.toContain('x'.repeat(400));
@@ -193,7 +203,7 @@ describe('a claim is a target only when it covers the job', () => {
     rigged.port.claims = [holding(rigged.port, claimView(), forCapability('supplychain.rfq.quote.v1').bytes)];
     const result = await rigged.dispute.challengeDelivery(delivery());
     expectNotFiled(result, NO_OPEN_CLAIM);
-    expect(result.detail).toBe(counted(1, [0, 0, 0, 0, 0, 1]));
+    expect(result.detail).toBe(counted(1, [0, 0, 0, 0, 0, 1, 0]));
     expect(rigged.port.published).toEqual([]);
     const twin = rig();
     twin.port.claims = [holding(twin.port, claimView(), forCapability('supplychain.rfq.quote.v1').bytes)];
@@ -206,7 +216,7 @@ describe('a claim is a target only when it covers the job', () => {
       rigged.port.claims = [claimView({ submitted_at: submitted })];
       const result = await rigged.dispute.challengeDelivery(delivery());
       expect(result.ok, String(submitted)).toBe(filed);
-      if (!result.ok) expect(result.detail).toBe(counted(1, [0, 1, 0, 0, 0, 0]));
+      if (!result.ok) expect(result.detail).toBe(counted(1, [0, 1, 0, 0, 0, 0, 0]));
       expect(rigged.events.includes(`readDocument ${claimView().claim_uri}`), String(submitted)).toBe(filed);
     }
   });
@@ -247,11 +257,12 @@ describe('a claim is a target only when it covers the job', () => {
       missing,
       { ...claimView({ ref: `${'cd'.repeat(32)}#0`, token: `636c6d5f${'0d'.repeat(28)}` }), claim_hash: 'ab'.repeat(32) },
       holding(rigged.port, claimView({ ref: `${'ce'.repeat(32)}#0`, token: `636c6d5f${'0e'.repeat(28)}` }), forCapability('supplychain.rfq.quote.v1').bytes),
+      holding(rigged.port, claimView({ ref: `${'c0'.repeat(32)}#0`, token: `636c6d5f${'0f'.repeat(28)}` }), withStatement('This agent answers each request that it takes.').bytes),
     ];
     answering(rigged, missing, NO_DOCUMENT);
     const result = await rigged.dispute.challengeDelivery(delivery());
     expectNotFiled(result, NO_OPEN_CLAIM);
-    expect(result.detail).toBe(counted(6, [1, 1, 1, 1, 1, 1]));
+    expect(result.detail).toBe(counted(7, [1, 1, 1, 1, 1, 1, 1]));
     expect(rigged.port.published).toEqual([]);
   });
 
@@ -260,9 +271,77 @@ describe('a claim is a target only when it covers the job', () => {
     port.claims = [claimView(), newer({ stake_lovelace: 500_000_000n })];
     expect(await dispute.findOpenClaim(OTHER, JOB)).toMatchObject({ ok: true, value: { ref: REF_A } });
     expect(await dispute.findOpenClaim(OTHER, { ...JOB, job_began_at: NOW - 3 * HOUR })).toMatchObject({ ok: false, code: NO_OPEN_CLAIM });
-    for (const bad of [null, 'zq9', {}, { capability_id: CAPABILITY }, { ...JOB, extra: 1 }, { ...JOB, job_began_at: 0 }, { ...JOB, capability_id: 'zq9 x' }]) {
+    for (const bad of [
+      null, 'zq9', {}, { capability_id: CAPABILITY }, { capability_id: CAPABILITY, job_began_at: JOB_BEGAN_AT }, { ...JOB, extra: 1 }, { ...JOB, job_began_at: 0 }, { ...JOB, capability_id: 'zq9 x' },
+      { ...JOB, statement_text: 7 }, { ...JOB, statement_text: 'one\ntwo' }, { ...JOB, statement_text: '' },
+    ]) {
       expect(await dispute.findOpenClaim(OTHER, bad as never), JSON.stringify(bad)).toMatchObject({ ok: false, code: 'bad_shape' });
     }
+  });
+});
+
+describe('a claim is a target only when its statement S1 is the statement that the job hired', () => {
+  const DECOY_S1 = 'This agent answers each request that it takes.';
+  /** A claim of the same capability that was staked before the job began, and that ends later than the claim of the samples. Its statement S1 is another text: the claimer makes the document. */
+  const decoyOf = (rigged: Rig): ClaimView => holding(rigged.port, newer(), withStatement(DECOY_S1).bytes);
+
+  it('challenges the claim with the statement of the job, and leaves out a decoy of the same capability that ends later', async () => {
+    const rigged = rig();
+    const decoy = decoyOf(rigged);
+    rigged.port.claims = [claimView(), decoy];
+    expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(rigged.port.challenged.map((call) => call.claim)).toEqual([REF_A]);
+    expect(textOf(rigged.port.published[0]!.bytes)).toContain(`Statement S1 of the claim reads: "${STATEMENT_S1}"`);
+    // The decoy ends later, so it is read first, and the claim with the statement of the job after it.
+    expect(rigged.events.filter((event) => event.startsWith('readDocument'))).toEqual([`readDocument ${decoy.claim_uri}`, `readDocument ${claimView().claim_uri}`]);
+  });
+
+  it('challenges the decoy when the job hired its statement, as the twin, and the evidence quotes that statement', async () => {
+    const rigged = rig();
+    rigged.port.claims = [claimView(), decoyOf(rigged)];
+    expect((await rigged.dispute.challengeDelivery(delivery({ statement_text: DECOY_S1 }))).ok).toBe(true);
+    expect(rigged.port.challenged.map((call) => call.claim)).toEqual([REF_B]);
+    expect(textOf(rigged.port.published[0]!.bytes)).toContain(`Statement S1 of the claim reads: "${DECOY_S1}"`);
+    expect(textOf(rigged.port.published[0]!.bytes)).not.toContain(STATEMENT_S1);
+  });
+
+  it('says no_open_claim and counts the claim when no claim has the statement of the job, and publishes nothing', async () => {
+    const rigged = rig();
+    rigged.port.claims = [decoyOf(rigged)];
+    const result = await rigged.dispute.challengeDelivery(delivery());
+    expectNotFiled(result, NO_OPEN_CLAIM);
+    expect(result.detail).toBe(counted(1, [0, 0, 0, 0, 0, 0, 1]));
+    expect(rigged.port.published).toEqual([]);
+    expect(rigged.port.challenged).toEqual([]);
+  });
+
+  it('compares the whole text: another case, a character more or less, and another space leave the claim out, and the same text takes it', async () => {
+    const variants: Array<[string, string]> = [
+      ['another case', STATEMENT_S1.toLowerCase()],
+      ['one character more', `${STATEMENT_S1}.`],
+      ['one character less', STATEMENT_S1.slice(0, -1)],
+      ['another space', STATEMENT_S1.replace('the SKU,', 'the  SKU,')],
+      ['another letter', STATEMENT_S1.replace('names', 'name')],
+    ];
+    for (const [name, statement] of variants) {
+      const rigged = rig();
+      rigged.port.claims = [claimView()];
+      const result = await rigged.dispute.challengeDelivery(delivery({ statement_text: statement }));
+      expectNotFiled(result, NO_OPEN_CLAIM);
+      expect(result.detail, name).toBe(counted(1, [0, 0, 0, 0, 0, 0, 1]));
+      expect(rigged.port.published, name).toEqual([]);
+    }
+    const twin = rig();
+    twin.port.claims = [claimView()];
+    expect((await twin.dispute.challengeDelivery(delivery({ statement_text: STATEMENT_S1 }))).ok).toBe(true);
+  });
+
+  it('gives the same target from findOpenClaim', async () => {
+    const rigged = rig();
+    rigged.port.claims = [claimView(), decoyOf(rigged)];
+    expect(await rigged.dispute.findOpenClaim(OTHER, JOB)).toMatchObject({ ok: true, value: { ref: REF_A } });
+    expect(await rigged.dispute.findOpenClaim(OTHER, { ...JOB, statement_text: DECOY_S1 })).toMatchObject({ ok: true, value: { ref: REF_B } });
+    expect(await rigged.dispute.findOpenClaim(OTHER, { ...JOB, statement_text: 'Another statement.' })).toMatchObject({ ok: false, code: NO_OPEN_CLAIM });
   });
 });
 
@@ -311,7 +390,7 @@ describe('a claim document that the claimer can spoil is left out, and a source 
       answering(rigged, claimView(), absent);
       const result = await rigged.dispute.challengeDelivery(delivery());
       expectNotFiled(result, NO_OPEN_CLAIM);
-      expect(result.detail).toBe(counted(1, [0, 0, 0, 1, 0, 0]));
+      expect(result.detail).toBe(counted(1, [0, 0, 0, 1, 0, 0, 0]));
       expect(rigged.port.published).toEqual([]);
     }
   });
@@ -413,7 +492,7 @@ describe('the newest open claim of the other party is the target', () => {
     port.claims = [{ ...LATEST, claim_hash: 'ab'.repeat(32) }, { ...LATER, claim_uri: 'https://example.org/c' }, claimView({ ref: REF_B, token: TOKEN_B, submitted_at: NOW - 4 * HOUR + 60_000 })];
     const result = await dispute.challengeDelivery(delivery());
     expectNotFiled(result, NO_OPEN_CLAIM);
-    expect(result.detail).toBe(counted(3, [1, 0, 0, 0, 2, 0]));
+    expect(result.detail).toBe(counted(3, [1, 0, 0, 0, 2, 0, 0]));
   });
 
   it('gives the newest claim of this kit from findOpenClaim, and the claim with the lowest token for claims that end at the same moment', async () => {
