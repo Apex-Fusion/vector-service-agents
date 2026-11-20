@@ -344,6 +344,24 @@ describe('the claim that is challenged is the open claim of the other party of t
     });
   });
 
+  it('names in the evidence the claim, the parties and the job that it found, whatever the facts say', async () => {
+    const { port, dispute } = rig();
+    port.claims = [claimView()];
+    const facts = { ...ORDER_FACTS, claim: REF_B, claim_token: TOKEN_B, against_did: THIRD, by_did: OTHER, escrow_ref: ESCROW_2 };
+    const result = await dispute.challengeDelivery(delivery({ evidence: facts as unknown as DeliveryChallengeInput['evidence'] }));
+    expect(result.ok).toBe(true);
+    const text = textOf(port.published[0]!.bytes);
+    expect(text).toContain(`Claim: ${REF_A}`);
+    expect(text).toContain(`Claim token: ${TOKEN_A}`);
+    expect(text).toContain(`Claimer: ${OTHER}`);
+    expect(text).toContain(`Challenger: ${ME}`);
+    expect(text).toContain(`Escrow of the job: ${ESCROW}`);
+    expect(text).not.toContain(REF_B);
+    expect(text).not.toContain(TOKEN_B);
+    expect(text).not.toContain(ESCROW_2);
+    expect(port.challenged[0]!.claim).toBe(REF_A);
+  });
+
   it('refuses a challenge stake below the stake of the claim before it publishes, and accepts a stake of the same size or more', async () => {
     const low = rig({ challenge_stake_lovelace: 49_999_999n });
     low.port.claims = [target];
