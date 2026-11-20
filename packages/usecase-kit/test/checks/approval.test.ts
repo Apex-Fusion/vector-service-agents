@@ -6,7 +6,7 @@ import { CheckUnavailableError, approvalCheckOf, checkApproval } from '../../src
 import { canonicalSha256, proposalDigest } from '../../src/protocol/index.ts';
 import type { ApprovalInput, Document } from '../../src/protocol/index.ts';
 import {
-  ATTESTATION_ID, DELEGATION_ID, DOCUMENT, HOUR, ISSUER_DID, ISSUER_ID, ISSUER_KEY, MAINNET, OTHER_DID, T, attestation, attestationUtxo, delegation, delegationUtxo, failing, makeWorld, proposalOf, withLedger,
+  ATTESTATION_ID, DELEGATION_ID, DOCUMENT, HOUR, ISSUER_DID, ISSUER_ID, ISSUER_KEY, MAINNET, OTHER_DID, T, attestation, attestationUtxo, delegation, delegationUtxo, failing, from, makeWorld, proposalOf, withLedger,
 } from './support.ts';
 import type { World, WorldOptions } from './support.ts';
 
@@ -252,7 +252,7 @@ describe('the order of the checks', () => {
     const expected = ['approval_wrong_type', 'approval_wrong_subject', 'approval_wrong_issuer', 'approval_revoked', 'approval_expired', 'approval_issuer_invalid', 'approval_digest_mismatch', 'accepted'];
     const codes: string[] = [];
     for (let left = 0; left <= order.length; left += 1) {
-      const world = worldWith(order.slice(left));
+      const world = worldWith(from(order, left));
       const result = await check(world, withIssuerDid(world, ISSUER_DID));
       codes.push(result.ok ? 'accepted' : result.code);
     }

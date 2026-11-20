@@ -7,7 +7,7 @@ import { SHARED_CHECK_NAMES, runChecks, sharedChecks } from '../../src/checks/in
 import type { ChecksOutcome, ChecksPorts, SharedInput } from '../../src/checks/index.ts';
 import { COUNTERPARTY_KINDS, COUNTERPARTY_REFUSALS } from '../../src/protocol/index.ts';
 import type { CounterpartyKind } from '../../src/protocol/index.ts';
-import { ATTESTATION_ID, DOCUMENT, ISSUER_KEY, PLAIN_ESCROW_REF, T, HOUR, failing, makeWorld, proposalOf, withLedger } from './support.ts';
+import { ATTESTATION_ID, DOCUMENT, HOUR, ISSUER_KEY, PLAIN_ESCROW_REF, T, failing, first, from, makeWorld, proposalOf, withLedger } from './support.ts';
 import type { World, WorldOptions } from './support.ts';
 
 const HANDOFF_KINDS = ['order-desk', 'insurer-intake-agent'] as const;
@@ -125,27 +125,27 @@ describe('the order of the checks', () => {
   it.each(HANDOFF_KINDS)('gives the codes of COUNTERPARTY_REFUSALS in their order for the %s, one defect fewer at a time, and then passes', async (kind) => {
     const codes: string[] = [];
     for (let left = 0; left <= ORDER.length; left += 1) {
-      const { world, context } = worldWith(ORDER.slice(left));
+      const { world, context } = worldWith(from(ORDER, left));
       codes.push(codeOf(await runChecks(sharedChecks(world.ports, { kind, request: issuerHandoff(world), context }))));
     }
-    expect(codes.slice(0, ORDER.length)).toEqual(COUNTERPARTY_REFUSALS[kind].slice(0, ORDER.length));
+    expect(first(codes, ORDER.length)).toEqual(first(COUNTERPARTY_REFUSALS[kind], ORDER.length));
     expect(codes[ORDER.length]).toBe('accepted');
   });
 
   it('gives the codes of the bid desk in their order: its list is the shared list up to the vault payment', async () => {
     const codes: string[] = [];
     for (let left = 0; left <= 6; left += 1) {
-      const { world, context } = worldWith(ORDER.slice(left));
+      const { world, context } = worldWith(from(ORDER, left));
       codes.push(codeOf(await run(world, 'bid-desk', context)));
     }
-    expect(codes.slice(0, 6)).toEqual(COUNTERPARTY_REFUSALS['bid-desk'].slice(0, 6));
+    expect(first(codes, 6)).toEqual(first(COUNTERPARTY_REFUSALS['bid-desk'], 6));
     expect(codes[6]).toBe('accepted');
   });
 
   it('keeps the shared names in the order of the codes, and one name for each check', () => {
     for (const kind of COUNTERPARTY_KINDS) {
       expect(new Set(SHARED_CHECK_NAMES[kind]).size).toBe(SHARED_CHECK_NAMES[kind].length);
-      expect(SHARED_CHECK_NAMES[kind].slice(0, 6)).toEqual(['sender_active', 'sender_accountable', 'sender_key', 'delegation', 'delegation_usable', 'vault_paid']);
+      expect(first(SHARED_CHECK_NAMES[kind], 6)).toEqual(['sender_active', 'sender_accountable', 'sender_key', 'delegation', 'delegation_usable', 'vault_paid']);
     }
   });
 });

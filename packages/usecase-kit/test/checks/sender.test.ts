@@ -21,7 +21,7 @@ const resolvedOf = async (world: World): Promise<ResolvedSender> => {
 const withMetadata = (resolution: ResolvedSender, metadata: Record<string, unknown>): ResolvedSender => ({ ...resolution, metadata: { ...resolution.metadata, ...metadata } });
 const party = (over: Record<string, unknown> = {}): Record<string, unknown> => ({ role: 'accountable', signer: 'controller', notBefore: '2026-01-01T00:00:00Z', rights: ['suspend', 'revoke'], ...over });
 
-describe('check 1: the sender resolves and is Active', () => {
+describe('the sender resolves and is Active', () => {
   it('accepts an Active sender, and gives the resolution back', async () => {
     const world = makeWorld();
     const result = checkSenderActive(await resolve(world));
@@ -59,7 +59,7 @@ describe('check 1: the sender resolves and is Active', () => {
   });
 });
 
-describe('check 2: an Accountable Party covers the record now', () => {
+describe('an Accountable Party covers the record now', () => {
   it('accepts a sender with a covering Accountable Party, and records its organisation as verified', async () => {
     const resolved = await resolvedOf(makeWorld());
     expect(checkSenderAccountable(resolved, T)).toEqual({ ok: true, value: { organisation: 'buyer.example', organisationVerified: true } });
@@ -120,7 +120,7 @@ describe('check 2: an Accountable Party covers the record now', () => {
   });
 });
 
-describe('check 3: the key of the escrow is listed with the delegation purpose', () => {
+describe('the key of the escrow is listed with the delegation purpose', () => {
   it('accepts the delegation key of the sender', async () => {
     const world = makeWorld();
     expect(checkSenderKey(await resolvedOf(world), world.delegateKey.keyHash)).toEqual({ ok: true, value: null });

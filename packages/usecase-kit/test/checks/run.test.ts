@@ -97,6 +97,7 @@ describe('a list or an answer that is wrong is an error, and never a pass', () =
     ['no answer', undefined], ['null', null], ['an empty object', {}], ['ok as a text', { ok: 'true', value: {} }], ['ok as a number', { ok: 1, value: {} }], ['ok as a truthy object', { ok: {}, value: {} }],
     ['a pass with no facts', { ok: true }], ['a pass with facts that are not JSON data', { ok: true, value: { a: undefined } }], ['a pass whose facts are not an object', { ok: true, value: 'yes' }],
     ['a pass whose facts hold a function', { ok: true, value: { a: () => 1 } }], ['a refusal with no code', { ok: false, detail: 'x' }], ['a refusal with a code that is not a refusal code', { ok: false, code: 'nope', detail: 'x' }],
+    ['a refusal with ok as a text', { ok: 'false', code: 'sender_not_active', detail: 'x' }], ['a refusal with no ok', { code: 'sender_not_active', detail: 'x' }],
     ['a refusal with a code of a mock system', { ok: false, code: 'token_invalid', detail: 'x' }], ['a refusal with no detail', { ok: false, code: 'sender_not_active' }],
     ['a refusal with a detail that is not a text', { ok: false, code: 'sender_not_active', detail: 5 }], ['a refusal with digests that are not digests', { ok: false, code: 'approval_digest_mismatch', detail: 'x', digests: { expected_digest: 'a', observed_digest: DIGEST_B } }],
     ['a refusal with digests that are not an object', { ok: false, code: 'approval_digest_mismatch', detail: 'x', digests: 'ab' }],

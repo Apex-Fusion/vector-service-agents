@@ -10,7 +10,7 @@ import {
   AFTER_CLAIM_REFUSALS, APPROVAL_REFUSALS, COUNTERPARTY_REFUSALS, DELEGATION_REFUSALS, ERROR_STATUS, SENDER_REFUSALS, VAULT_REFUSALS, accepted, parseHandoff, parseJsonText, refused,
 } from '../../src/protocol/index.ts';
 import type { CounterpartyKind, Handoff, RfqMessage } from '../../src/protocol/index.ts';
-import { DOCUMENT, T, failing, makeWorld, proposalOf, withLedger } from './support.ts';
+import { DOCUMENT, T, failing, from, makeWorld, proposalOf, withLedger } from './support.ts';
 import type { World } from './support.ts';
 
 const STRANGER = 'c0'.repeat(28);
@@ -137,7 +137,8 @@ describe('the checks of the kind', () => {
     expect(await option(world.handoff, world.context)).toEqual({ go: true });
     expect(ran).toEqual(['true:true', 'lot', 'quantity']);
     expect(record).toMatchObject({ facts: { supplier: 'ok', organisation: 'buyer.example' } });
-    expect(Object.keys((record as { checks: object }).checks).slice(-4)).toEqual(['approval_digest', 'for_this_supplier', 'lot', 'quantity']);
+    const names = Object.keys((record as { checks: object }).checks);
+    expect(from(names, names.length - 4)).toEqual(['approval_digest', 'for_this_supplier', 'lot', 'quantity']);
   });
 
   it('do not run when a shared check refuses, and the shared refusal is the answer', async () => {

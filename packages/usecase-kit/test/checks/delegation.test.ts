@@ -14,7 +14,7 @@ const named = async (world: World, buyerPkh = world.context.buyerPkh, sender = w
 const usable = async (world: World, at = T) => checkDelegationUsable(await world.ports.ledger.delegationUse(DELEGATION_ID, at), DELEGATION_ID, at);
 const paid = async (world: World, escrowRef = ESCROW_REF, id = DELEGATION_ID) => checkVaultPaid(await world.ports.ledger.escrowPaid(escrowRef, id), escrowRef, id);
 
-describe('check 4: the delegation exists, is authentic, and names the sender and the key of the escrow', () => {
+describe('the delegation exists, is authentic, and names the sender and the key of the escrow', () => {
   it('accepts a live delegation whose delegate is the sender and whose delegate key is the key of the escrow', async () => {
     expect(await named(makeWorld())).toEqual({ ok: true, value: null });
   });
@@ -62,7 +62,7 @@ describe('check 4: the delegation exists, is authentic, and names the sender and
   });
 });
 
-describe('check 5: the delegation and every ancestor are usable now', () => {
+describe('the delegation and every ancestor are usable now', () => {
   const PARENT = 'a1'.repeat(32);
   const parent = delegationUtxo(PARENT, delegation({ delegate: ISSUER_ID, delegateKey: ISSUER_KEY.keyHash, remaining: 2, depth: 1 }));
   const issuerKeys = { keys: [{ keyType: 'Ed25519' as const, key: ISSUER_KEY.publicKey, purposes: 31, pop: null }] };
@@ -140,6 +140,21 @@ describe('check 5: the delegation and every ancestor are usable now', () => {
     }
     expect(checkDelegationUsable({ ...use, usable: true, problems: ['a problem'] }, DELEGATION_ID, T)).toMatchObject({ ok: false, code: 'delegation_ended' });
     expect(checkDelegationUsable({ ...use, usable: false, problems: [] }, DELEGATION_ID, T)).toMatchObject({ ok: false, code: 'delegation_ended' });
+  });
+
+  it('puts one short printable line in the detail, whatever the text of the first problem is, and only the first problem', async () => {
+    const use = await makeWorld().ports.ledger.delegationUse(DELEGATION_ID, T);
+    const long = `the delegate did:vector:${'ab'.repeat(32)} is bad\nsecond line\u0000\u0007 ${'x'.repeat(400)}`;
+    const result = checkDelegationUsable({ ...use, usable: false, problems: [long, 'the other problem'] }, DELEGATION_ID, T);
+    expect(result).toMatchObject({ ok: false, code: 'delegation_ended' });
+    if (result.ok) return;
+    expect(result.detail).toMatch(/^[\x20-\x7e]+$/);
+    expect(result.detail.length).toBeLessThanOrEqual(200);
+    expect(result.detail).toContain('did:vector:abababab..');
+    expect(result.detail).not.toContain('abababababab');
+    expect(result.detail).not.toContain('the other problem');
+    const short = checkDelegationUsable({ ...use, usable: false, problems: ['the delegation ends at 2026-11-18T12:00:00Z'] }, DELEGATION_ID, T);
+    expect(short).toMatchObject({ ok: false, detail: 'the delegation cannot be used now: the delegation ends at 2026-11-18T12:00:00Z' });
   });
 });
 

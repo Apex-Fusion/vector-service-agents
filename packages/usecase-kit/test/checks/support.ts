@@ -19,6 +19,9 @@ import type { ApprovalInput, Document, Handoff, Proposal, RfqMessage } from '../
 
 export { CAPTURE, DAY, ISSUER_KEY, MAINNET, attestation, attestationUtxo, callsTo, delegation, delegationUtxo, liveRecord, recordUtxo };
 export const HOUR = 3_600_000;
+/** The items of a list from the index `from` on, and the first `count` items. */
+export const from = <T>(list: readonly T[], start: number): T[] => list.filter((_, index) => index >= start);
+export const first = <T>(list: readonly T[], count: number): T[] => list.filter((_, index) => index < count);
 /** The time of the checks: a minute after the tip of the capture. */
 export const T = CAPTURE_MS + 60_000;
 export const ATTESTATION_ID = '88'.repeat(32);
