@@ -619,12 +619,44 @@ describe('accessToken: authority that ended', () => {
     const parent = s.gateway.createAgent({ label: 'rp parent' });
     const child = s.gateway.createAgent({ label: 'rp child', parent });
     s.gateway.setStatus(parent, 'revoked');
-    expect(await check([s.agent.did, child.did])).toMatchObject({ ok: false, detail: expect.stringContaining('has the effective status revoked (parentRevoked)') });
+    expect(await check([s.agent.did, child.did])).toMatchObject({ ok: false, detail: expect.stringMatching(/has an ended record.*revoked \(parentRevoked\)/) });
     s.gateway.setStatus(s.boss, 'suspended');
     expect(await check([s.boss.did])).toMatchObject({ ok: false, detail: expect.stringContaining('has the effective status suspended') });
     expect(await check([`did:vector:${identifier('rp nobody')}`])).toMatchObject({ ok: false, detail: expect.stringContaining('does not resolve to an agent') });
     s.gateway.fault(`/1.0/identifiers/${s.agent.did}`, 'network');
     expect(await check([s.agent.did])).toMatchObject({ ok: false, detail: expect.stringContaining('cannot be resolved') });
+  });
+
+  it('gatewayActorCheck passes an actor only when the answer is a live record and its effective status is Active: an answer for an ended record (410) is refused whatever its body says', async () => {
+    const s = scene();
+    const check = gatewayActorCheck(s.client);
+    const did = s.agent.did;
+    const path = `/1.0/identifiers/${did}`;
+    const live = JSON.parse(await (await s.gateway.fetch(`${s.gateway.baseUrl}${path}`)).text());
+    /** The answer of the gateway for the agent: the HTTP status and the effective status in the body are what the test picks. */
+    const answer = (status: number, effective: string) => {
+      const body = structuredClone(live);
+      body.didDocumentMetadata.vectorStatus.effective = effective;
+      return { status, body: JSON.stringify(body), headers: { 'content-type': 'application/did-resolution' } };
+    };
+    // The twin: a live record that says Active passes.
+    expect(await check([did])).toStrictEqual({ ok: true });
+    s.gateway.fault(path, answer(200, 'active'));
+    expect(await check([did])).toStrictEqual({ ok: true });
+    // An answer that says the record ended (410) is refused with any status text in its body, Active too.
+    for (const effective of ['active', 'suspended', 'revoked', 'retired']) {
+      s.gateway.fault(path, answer(410, effective));
+      expect(await check([did]), `410 with ${effective}`).toMatchObject({ ok: false, detail: expect.stringContaining('has an ended record') });
+    }
+    // A live answer that does not say Active is refused for its status.
+    for (const effective of ['suspended', 'revoked', 'retired']) {
+      s.gateway.fault(path, answer(200, effective));
+      expect(await check([did]), `200 with ${effective}`).toMatchObject({ ok: false, detail: expect.stringContaining(`has the effective status ${effective}`) });
+    }
+    // A record that is not found, and a resolution that fails, are refused too, each with a detail that says which.
+    expect(await check([`did:vector:${identifier('rp nobody else')}`])).toMatchObject({ ok: false, detail: expect.stringContaining('does not resolve to an agent') });
+    s.gateway.fault(path, 'network');
+    expect(await check([did])).toMatchObject({ ok: false, detail: expect.stringContaining('cannot be resolved') });
   });
 });
 

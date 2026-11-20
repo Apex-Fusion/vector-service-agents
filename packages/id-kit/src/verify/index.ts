@@ -264,16 +264,21 @@ export function createVerifier(options: VerifierOptions): Verifier {
 }
 
 /**
- * A check of actors for `checkActors` that resolves each DID at the gateway and requires the effective status Active. An agent that does not resolve, is deactivated, is suspended, or
- * cannot be resolved because the gateway fails, refuses the call.
+ * A check of actors for `checkActors` that resolves each DID at the gateway. An agent passes only when the answer is that of a live record (the result is `resolved`) AND its effective status
+ * is Active. An agent that does not resolve, whose record has ended (the gateway answers 410, whatever status its body gives), that is suspended, or that cannot be resolved because the gateway
+ * fails, refuses the call.
  */
 export function gatewayActorCheck(client: GatewayClient): ActorCheck {
   return async (agents) => {
     for (const did of agents) {
       const resolved = await client.resolve(did);
       if (!resolved.ok) return { ok: false, detail: `${did} cannot be resolved: ${resolved.detail}` };
-      if (resolved.value.kind === 'not_found') return { ok: false, detail: `${did} does not resolve to an agent` };
-      if (resolved.value.effectiveStatus !== 'active') return { ok: false, detail: `${did} has the effective status ${resolved.value.effectiveStatus}${resolved.value.effectiveReason === null ? '' : ` (${resolved.value.effectiveReason})`}` };
+      const record = resolved.value;
+      if (record.kind === 'not_found') return { ok: false, detail: `${did} does not resolve to an agent` };
+      const status = `${record.effectiveStatus}${record.effectiveReason === null ? '' : ` (${record.effectiveReason})`}`;
+      // A record that ended is no live record, whatever its body says: the answer for it is the status 410.
+      if (record.kind === 'deactivated') return { ok: false, detail: `${did} has an ended record: the gateway answered 410, and its body gives the effective status ${status}` };
+      if (record.effectiveStatus !== 'active') return { ok: false, detail: `${did} has the effective status ${status}` };
     }
     return { ok: true };
   };

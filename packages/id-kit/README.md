@@ -140,7 +140,7 @@ The verifier keeps the key set of the gateway for 300 seconds (`keyCacheSeconds`
 
 The status lists do not show everything. A delegation has no entry in a list, and an actor other than the requester has none in the token. For a call that must never honour authority that ended, give the policy:
 
-- `checkActors`: called with the DIDs of the actors, the principal when it is an agent, and the requester. `gatewayActorCheck(client)` resolves each one and requires the effective status Active.
+- `checkActors`: called with the DIDs of the actors, the principal when it is an agent, and the requester. `gatewayActorCheck(client)` resolves each one. An agent passes only when the answer is that of a live record (the gateway does not answer 410, the answer for a record that has ended) and its effective status is Active. An answer for an ended record is refused, whatever status its body gives.
 - `checkDelegation`: called with the grant of the delegation, for a check of the whole chain on the ledger. It runs for a token that has a delegation.
 
 A check that returns `{ ok: false }` or throws refuses the call (`actors.refused`, `delegation.refused`).
