@@ -6,11 +6,11 @@
 //   MOCK_MTLS_BASE              the https origin of the host that asks for a client certificate. It is another host than MOCK_PUBLIC_BASE. The service takes the header Client-Cert on it only.
 //   MOCK_OPERATOR_TOKEN         the token of POST /admin/tenants: 32 to 128 characters of letters, digits and . _ ~ + / = -. No default.
 //   IDENTITY_GATEWAY_URL        the origin of the identity gateway. Default https://id.vector.apexfusion.org.
-//   VECTOR_OGMIOS_URL           the node of the ledger that the delegation check reads. Default: the node of Vector mainnet.
-//   VECTOR_KOIOS_URL            the indexer of the ledger that the delegation check reads. Default: the indexer of Vector mainnet.
+//   VECTOR_OGMIOS_URL           the node of the ledger that the delegation check and the approval check read. Default: the node of Vector mainnet.
+//   VECTOR_KOIOS_URL            the indexer of the ledger that the delegation check and the approval check read. Default: the indexer of Vector mainnet.
 //   VECTOR_IDENTITY_LEGACY_ROOT, VECTOR_IDENTITY_CONFIG_SEED, VECTOR_IDENTITY_POLICY_ID
-//                               the identity registry deployment that the delegation check reads: the two published values and the policy that they give. All three are required, so that a
-//                               value with a typo stops the start. A read of the ledger with the wrong deployment finds no delegation, and the service would refuse every call.
+//                               the identity registry deployment that the two checks read: the two published values and the policy that they give. All three are required, so that a
+//                               value with a typo stops the start. A read of the ledger with the wrong deployment finds no delegation and no attestation, and the service would refuse every call.
 //   PORT, HOST                  where the service listens. Defaults 9120 and 127.0.0.1. The container sets HOST to 0.0.0.0, and its compose file publishes the port on 127.0.0.1 only.
 import { identityDeploymentFrom } from '@vsa/buyer-core';
 import type { IdentityDeployment } from '@vsa/buyer-core';
