@@ -140,8 +140,9 @@ describe('the issuer is the root delegator: approval_wrong_issuer', () => {
 
   it('refuses a delegation that is not live, and a chain whose parent was ended: there is no root delegator to compare with', async () => {
     expect((await refusal(makeWorld({ delegation: null }))).code).toBe('approval_wrong_issuer');
-    const orphan = makeWorld({ delegation: { parent: 'a1'.repeat(32), depth: 2, remaining: 0, delegator: { type: 'Agent', id: ISSUER_ID } }, issuerRecord: {} });
-    expect((await refusal(orphan)).code).toBe('approval_wrong_issuer');
+    // The approval is by the agent that the leaf names as its delegator. The parent was ended, so the chain has no root: the leaf must not be taken for the root.
+    const orphan = makeWorld({ delegation: { parent: 'a1'.repeat(32), depth: 2, remaining: 0, delegator: { type: 'Agent', id: ISSUER_ID } }, issuerRecord: {}, attestation: { issuerId: ISSUER_ID } });
+    expect((await refusal(orphan, withIssuerDid(orphan, ISSUER_DID))).code).toBe('approval_wrong_issuer');
   });
 
   it('refuses a reference that names another issuer record than the attestation does, and accepts the right name', async () => {
