@@ -92,6 +92,18 @@ const ok = <T>(value: T): TxResult<T> => ({ ok: true, value });
 /** The calls that a port got and the jobs that the queue ran, in order, in one list. */
 export type Events = string[];
 
+/** A promise that the test settles by hand. (Promise.withResolvers is not in the types of this package's target.) */
+export function deferred<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+/** What a scripted port answers for a transaction: a result, or a promise of one that a test settles later. */
+export type Answer<T> = TxResult<T> | Promise<TxResult<T>>;
+
 /** A queue that runs one job at a time and writes `queue:start` and `queue:end` to the events. */
 export class RecordingQueue {
   constructor(readonly events: Events) {}
@@ -112,15 +124,15 @@ export class ScriptedPort implements Module1Port {
   readClaimsFails: Error | null = null;
   /** What `readClaim` answers. The default finds the claim by its ref in `claims`. */
   readClaimAnswer: (ref: string) => ClaimView | null | Error = (ref) => this.claims.find((claim) => claim.ref === ref) ?? null;
-  publishAnswer: (call: PublishCall) => TxResult<PublishedDocument> = (call) => ok({ tx_hash: EVIDENCE_TX, uri: `vector-tx:${EVIDENCE_TX.slice(0, 43)}`, document_hash: documentHash(call.bytes), fee_lovelace: 200_000n });
-  submitClaimAnswer: (call: SubmitClaimCall) => TxResult<SubmittedClaim> = (call) =>
+  publishAnswer: (call: PublishCall) => Answer<PublishedDocument> = (call) => ok({ tx_hash: EVIDENCE_TX, uri: `vector-tx:${EVIDENCE_TX.slice(0, 43)}`, document_hash: documentHash(call.bytes), fee_lovelace: 200_000n });
+  submitClaimAnswer: (call: SubmitClaimCall) => Answer<SubmittedClaim> = (call) =>
     ok({ tx_hash: CHALLENGE_TX, claim: REF_C, claim_token: TOKEN_C, stake_lovelace: call.stake_lovelace, submitted_at: NOW, challenge_window_ms: call.challenge_window_ms, fee_lovelace: 500_000n });
-  openChallengeAnswer: (call: OpenChallengeCall) => TxResult<OpenedChallenge> = (call) =>
+  openChallengeAnswer: (call: OpenChallengeCall) => Answer<OpenedChallenge> = (call) =>
     ok({
       tx_hash: CHALLENGE_TX, challenge: `${CHALLENGE_TX}#0`, challenge_token: `63686c5f${'0e'.repeat(28)}`, claim: call.claim, claim_token: call.claim_token, stake_lovelace: call.stake_lovelace,
       deadline: NOW + call.resolution_deadline_ms, fee_lovelace: 700_000n,
     });
-  withdrawAnswer: (call: WithdrawClaimCall) => TxResult<WithdrawnClaim> = (call) =>
+  withdrawAnswer: (call: WithdrawClaimCall) => Answer<WithdrawnClaim> = (call) =>
     ok({ tx_hash: CHALLENGE_TX, claim: call.claim, claim_token: call.claim_token, payout: `${CHALLENGE_TX}#0`, stake_lovelace: 50_000_000n, fee_lovelace: 400_000n });
 
   /** The calls with their arguments, for a test that looks at what was sent. */
@@ -130,6 +142,17 @@ export class ScriptedPort implements Module1Port {
   readonly withdrawn: WithdrawClaimCall[] = [];
 
   constructor(readonly events: Events = []) {}
+
+  /** Makes the publish wait until the function that this returns is called, and then answers as before. It shows what happens while the evidence is not confirmed. */
+  holdPublish(): () => void {
+    const answer = this.publishAnswer;
+    const gate = deferred<void>();
+    this.publishAnswer = async (call) => {
+      await gate.promise;
+      return answer(call);
+    };
+    return gate.resolve;
+  }
 
   async readClaims(): Promise<readonly ClaimView[]> {
     this.events.push('readClaims');
