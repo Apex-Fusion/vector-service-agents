@@ -2,7 +2,7 @@
 // How a hire of a counterparty ended, as one tagged union. A caller switches on `kind`, and the compiler checks that it handled every kind. No kind is read from a text, and no kind is a pass
 // except `completed`. A step holds what the hire kit knows of the payment: the escrow, the vault that continues, and the terms. It holds no text of the counterparty.
 //
-//   completed                the receipt passed the eight checks, the decision accepted the delivery, and the Accept was made. A ledger of the caller that failed to book the Accept does not change this: `booking_failed` says it.
+//   completed                the vault paid the hire, the receipt passed the eight checks, the decision accepted the delivery, and the Accept was made. A ledger of the caller that failed to book the Accept does not change this: `booking_failed` says it.
 //   refused_by_counterparty  the counterparty refused the job by a rule of the protocol: before its Claim (status 403 and a refusal code of its kind), or after its Claim (a code of AFTER_CLAIM_REFUSALS). Before its Claim the escrow stays Open. After its Claim the escrow is Claimed. Either way it returns to the vault after its deadline.
 //   vault_refused            the ledger refused the Pay from the vault, or the Pay could not be made. Nothing was signed and no money moved.
 //   failed                   the job did not finish, and it is not a refusal. A job that failed after the Claim is here, and so is an answer before the Claim that is not a refusal by a rule of the protocol.

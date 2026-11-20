@@ -56,6 +56,21 @@ describe('a completed outcome that does not hold together', () => {
     }
   });
 
+  it('is a failed step and not a pass when the hire kit says that the wallet paid: the flow hires from the Live vault, so the step keeps the escrow, says that no Accept is known, and says that the vault did not pay', async () => {
+    const w = await world();
+    changes((outcome) => ({ ...outcome, paidFrom: 'wallet' }));
+    const step = expectKind(await go(w), 'failed');
+    expect([step.reason, step.handoff?.paid_from_vault, step.handoff?.accepted, step.handoff?.receipt]).toStrictEqual([INCONSISTENT_OUTCOME, false, null, null]);
+    // The money moved: the Pay was made and the Accept was confirmed. The step keeps the escrow, so that the money is not lost from the record.
+    expect(await w.m.chain.escrowState(step.handoff?.escrow_ref ?? '')).toBe('spent');
+    expect(step.vault_ref).not.toBeNull();
+    expect(settledResult(step, pieces())).toMatchObject({ outcome: 'failed', reason: INCONSISTENT_OUTCOME, exit_state: 'Failed' });
+    // The twin: the outcome that the real hire kit gives, which says that the vault paid, is completed.
+    const twin = await world();
+    changes((outcome) => outcome);
+    expect(expectKind(await go(twin), 'completed').handoff).toMatchObject({ paid_from_vault: true, accepted: 'confirmed' });
+  });
+
   it('twin: the outcome that the real hire kit gives is completed', async () => {
     const w = await world();
     changes((outcome) => outcome);

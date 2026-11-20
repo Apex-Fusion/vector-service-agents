@@ -235,6 +235,8 @@ const TABLE: readonly Row[] = [
   { name: 'completed, but the record is missing', outcome: { ...completed, record: undefined as never }, ...NOT_HOLDING },
   { name: 'completed, but the verdict is missing', outcome: { ...completed, verdict: undefined as never }, ...NOT_HOLDING },
   { name: 'completed, but the Accept is missing', outcome: { ...completed, accepted: undefined as never }, ...NOT_HOLDING },
+  { name: 'completed, but the wallet paid and not the vault', outcome: { ...completed, paidFrom: 'wallet', vaultRef: null }, ...NOT_HOLDING },
+  { name: 'completed, but the hire kit does not say who paid', outcome: { ...completed, paidFrom: undefined as never }, ...NOT_HOLDING },
 ];
 
 /** The result of a step as `outcome:reason:exit_state`, or `use case` for a step that the use case finishes. */
@@ -322,12 +324,22 @@ describe('the map from the outcome of the hire kit to the step and the result', 
     }
   });
 
-  it('says in the record when a hire was paid from the wallet and not from the vault: the flag is the word of the hire kit, and it is not assumed', () => {
-    const context = CONTEXT;
-    const fromWallet = stepOfOutcome({ ...completed, paidFrom: 'wallet' }, context);
-    const fromVault = stepOfOutcome(completed, context);
-    if (fromWallet.kind !== 'completed' || fromVault.kind !== 'completed') throw new Error('unexpected steps');
-    expect([fromWallet.handoff.paid_from_vault, fromVault.handoff.paid_from_vault]).toStrictEqual([false, true]);
+  it('does not make a completed step of a hire that the wallet paid: it is a failed step with the escrow kept and no Accept, and its record has the flag of the payment that the hire kit gave', () => {
+    const fromWallet = stepOfOutcome({ ...completed, paidFrom: 'wallet', vaultRef: null }, CONTEXT);
+    const fromVault = stepOfOutcome(completed, CONTEXT);
+    if (fromWallet.kind !== 'failed' || fromVault.kind !== 'completed') throw new Error(`unexpected steps: ${words(fromWallet)}, ${words(fromVault)}`);
+    expect([fromWallet.reason, fromWallet.vault_ref, fromWallet.terms]).toStrictEqual([INCONSISTENT_OUTCOME, null, TERMS]);
+    expect(fromWallet.handoff).toStrictEqual({
+      counterparty_did: COUNTERPARTY_DID, advert_ref: AGENT_ADVERT_REF, escrow_ref: ESCROW, paid_from_vault: false, receipt: null, receipt_signature: null, verification: null, result: null, accepted: null,
+    });
+    // The record is no record of an accepted hire: no completed result can be made of it.
+    expect(() => completedResult(pieces({ handoff: fromWallet.handoff }))).toThrow(TypeError);
+    expect(settledResult(fromWallet, pieces())).toMatchObject({ outcome: 'failed', reason: INCONSISTENT_OUTCOME, exit_state: 'Failed', handoff: fromWallet.handoff });
+    // The twin: the same outcome that the vault paid is completed, and its record says so.
+    expect(fromVault.handoff).toMatchObject({ paid_from_vault: true, accepted: 'confirmed' });
+    // The flag is the word of the hire kit in every record of this kind: a hire that the vault paid and that does not verify says so.
+    const unverified = stepOfOutcome({ ...completed, verdict: { verdict: 'FAILED', checks: CHECKS } }, CONTEXT);
+    expect(unverified).toMatchObject({ kind: 'failed', reason: INCONSISTENT_OUTCOME, handoff: { paid_from_vault: true, accepted: null } });
   });
 
   it('writes the delivery into the record of a completed hire and of a hire that was not accepted, and nothing of it for a refusal', () => {

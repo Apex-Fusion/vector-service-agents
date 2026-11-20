@@ -103,12 +103,14 @@ describe('the results of execute', () => {
       ['a receipt with no member', { ...accepted, receipt: {} }], ['a signature that is empty', { ...accepted, receipt_signature: '' }],
       ['a receipt of another escrow than the escrow of the record', { ...accepted, receipt: { escrow_ref: `${'99'.repeat(32)}#0` } }],
       ['a check that is the text "true"', { ...accepted, verification: { ...ALL_TRUE, model_matches: 'true' } }], ['a receipt that is a list', { ...accepted, receipt: [ESCROW] }],
+      ['a hire that the wallet paid', { ...accepted, paid_from_vault: false }], ['a flag of the payment that is the text "true"', { ...accepted, paid_from_vault: 'true' }],
     ];
     for (const useCase of ['inventory-reorder', 'prior-authorization'] as const) {
       for (const [name, record] of records) expect(() => completedResult(pieces({ use_case: useCase, handoff: record as never })), `${useCase}: ${name}`).toThrow(TypeError);
     }
     // The twins: an Accept that is pending is an accepted hire, and use case 3 (supplier bid evaluation) hires no counterparty to execute.
     expect(completedResult(pieces({ handoff: { ...accepted, accepted: 'pending' } })).outcome).toBe('completed');
+    expect(completedResult(pieces({ handoff: { ...accepted, paid_from_vault: true } })).outcome).toBe('completed');
     expect(completedResult(pieces({ use_case: 'bid-evaluation', handoff: null })).exit_state).toBe('Completed');
   });
 

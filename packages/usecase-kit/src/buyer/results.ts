@@ -2,7 +2,7 @@
 // The results of a buyer-side agent, made from their pieces. A caller gives the pieces once, and the helper writes every member of the result: no caller builds a result by hand and leaves a
 // member out. The exit state of an `execute` result comes from `exitStateOf` of the protocol, in this file only, and no helper writes a state of its own. A piece of the wrong shape is a
 // fault of the code of the caller: the helper throws a TypeError and makes no result. The pieces must agree with the outcome: a reason is a code, a refusal of the counterparty or a failure holds no
-// record of an Accept that was made, and a completed result holds a verified and accepted hire.
+// record of an Accept that was made, and a completed result holds a hire that the vault paid and that was verified and accepted.
 //
 //   propose  proposedResult, failedProposalResult
 //   execute  completedResult, refusedResult, vaultRefusedResult, failedResult, disputedResult, and settledResult for the steps of the hire that need nothing more from the use case
@@ -83,24 +83,25 @@ function acceptWasMade(handoff: HandoffRecord | null): boolean {
 }
 
 /**
- * The record of a hire that was verified and accepted: the Accept is confirmed or pending, the receipt is an object with members that names the escrow of the record, its signature is a text that is
- * not empty, and each of the eight checks is the boolean `true`.
+ * The record of a hire that the vault paid, and that was verified and accepted: `paid_from_vault` is the boolean `true` (the flow always hires from the Live vault of the delegation, so a hire that the
+ * wallet paid is not the hire of this flow), the Accept is confirmed or pending, the receipt is an object with members that names the escrow of the record, its signature is a text that is not empty,
+ * and each of the eight checks is the boolean `true`.
  */
 function holdsAcceptedHire(handoff: HandoffRecord | null): boolean {
-  if (handoff === null || !acceptWasMade(handoff)) return false;
+  if (handoff === null || handoff.paid_from_vault !== true || !acceptWasMade(handoff)) return false;
   const { receipt, receipt_signature: signature, verification } = handoff;
   const receiptNamesEscrow = typeof receipt === 'object' && receipt !== null && !Array.isArray(receipt) && Object.keys(receipt).length > 0 && receipt.escrow_ref === handoff.escrow_ref;
   return receiptNamesEscrow && typeof signature === 'string' && signature !== '' && verification !== null && RECEIPT_CHECKS.every((check) => verification[check] === true);
 }
 
 /**
- * The approved proposal was carried out. A use case that hires a counterparty needs the record of a hire that was verified and accepted: a record that holds none is a fault of the caller, and
+ * The approved proposal was carried out. A use case that hires a counterparty needs the record of a hire that the vault paid, and that was verified and accepted: a record that holds none is a fault of the caller, and
  * the function throws and makes no result. Use case 3 (supplier bid evaluation) hires no counterparty to execute, so its record is `null`, and any record is a fault.
  */
 export function completedResult(pieces: ResultPieces): CompletedResult {
   const base = baseOf(pieces);
   if ((HANDOFF_USE_CASES as readonly string[]).includes(base.use_case)) {
-    if (!holdsAcceptedHire(base.handoff)) throw new TypeError('a completed result of this use case needs the record of a hire that was verified and accepted');
+    if (!holdsAcceptedHire(base.handoff)) throw new TypeError('a completed result of this use case needs the record of a hire that the vault paid, and that was verified and accepted');
   } else if (base.handoff !== null) {
     throw new TypeError('a completed result of use case 3 holds no record of a hire: that use case hires no counterparty to execute');
   }

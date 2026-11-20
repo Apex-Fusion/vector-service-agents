@@ -151,7 +151,7 @@ function escrowOf(outcome: AgentEscrow): Escrow | null {
   return { advert_ref: advert.value, escrow_ref: escrow.value, vault_ref: typeof outcome.vaultRef === 'string' ? outcome.vaultRef : null, terms: outcome.terms };
 }
 
-/** The hire as the result of the agent records it. `delivery` is `null` when no delivery came. */
+/** The hire as the result of the agent records it. `delivery` is `null` when no delivery came. `paidFromVault` is false when the hire kit did not say that the vault paid. */
 export function recordOf(
   counterparty: Did, advert: OutputRef, escrow: OutputRef, delivery: VerifiedDelivery | null, accepted: HandoffRecord['accepted'], paidFromVault = true,
 ): HandoffRecord {
@@ -166,10 +166,10 @@ export function failure(reason: string, detail: string, extra: Partial<Omit<Fail
   return { kind: 'failed', reason, detail, handoff: null, vault_ref: null, terms: null, ...extra };
 }
 
-/** The step for an outcome that does not hold together. It names the escrow when it is known, so that no escrow is lost from the record. The record says nothing of an Accept. */
-function inconsistent(context: StepContext, detail: string, escrow: Escrow | null = null): FailedStep {
+/** The step for an outcome that does not hold together. It names the escrow when it is known, so that no escrow is lost from the record. The record says nothing of an Accept, and `paidFromVault` is the word of the hire kit: it is false when the kit did not say that the vault paid. */
+function inconsistent(context: StepContext, detail: string, escrow: Escrow | null = null, paidFromVault = true): FailedStep {
   return failure(INCONSISTENT_OUTCOME, detail, {
-    handoff: escrow === null ? null : recordOf(context.counterparty_did, escrow.advert_ref, escrow.escrow_ref, null, null),
+    handoff: escrow === null ? null : recordOf(context.counterparty_did, escrow.advert_ref, escrow.escrow_ref, null, null, paidFromVault),
     vault_ref: escrow?.vault_ref ?? null, terms: escrow?.terms ?? null, ...(context.booking_failed === null ? {} : { cause: context.booking_failed.cause }),
   });
 }
@@ -188,15 +188,18 @@ function verdictHolds(verdict: unknown): boolean {
 }
 
 /**
- * `completed` holds only when its parts agree with each other, and not with the word `completed`: the escrow of the outcome is the escrow of the record and of the receipt, the advert of the outcome
- * and of the record is the advert that the approved document names, the verdict is VERIFIED and each of its eight checks passed, each of the eight members of the verification is the boolean `true`,
- * the receipt is an object with members, its signature is a text that is not empty, and the Accept is confirmed or pending. Anything else is `inconsistent_outcome`, and the step keeps the escrow:
- * a hire that did not verify is never reported as done.
+ * `completed` holds only when its parts agree with each other, and not with the word `completed`: the vault paid it (the flow always hires from the Live vault of the delegation, so a hire that the
+ * wallet paid is not the hire that the flow asked for), the escrow of the outcome is the escrow of the record and of the receipt, the advert of the outcome and of the record is the advert that the
+ * approved document names, the verdict is VERIFIED and each of its eight checks passed, each of the eight members of the verification is the boolean `true`, the receipt is an object with members, its
+ * signature is a text that is not empty, and the Accept is confirmed or pending. Anything else is `inconsistent_outcome`, and the step keeps the escrow: a hire that did not verify, or that the wallet
+ * paid, is never reported as done. The record of that step says what the hire kit said of the payment: `paid_from_vault` is false when the kit did not say that the vault paid.
  */
 function completedStep(outcome: Completed, context: StepContext): HireStep {
   const escrow = escrowOf(outcome);
   if (escrow === null) return inconsistent(context, 'the hire kit gave an escrow or an advert that is not an output reference');
-  const no = (detail: string): FailedStep => inconsistent(context, detail, escrow);
+  const paidFromVault = outcome.paidFrom === 'vault';
+  const no = (detail: string): FailedStep => inconsistent(context, detail, escrow, paidFromVault);
+  if (!paidFromVault) return no('the hire says completed, and it does not say that the vault paid: the flow always hires from the Live vault of the delegation');
   if (escrow.advert_ref !== context.advert_ref) return no('the hire says completed for another advert than the advert that the approved document names');
   const record: unknown = outcome.record;
   const recorded = (member: string): unknown => (typeof record === 'object' && record !== null ? Reflect.get(record, member) : undefined);
@@ -209,7 +212,7 @@ function completedStep(outcome: Completed, context: StepContext): HireStep {
   if (!RECEIPT_CHECKS.every((check) => delivery.verification[check] === true)) return no('the hire says completed, and one of the eight checks of its record is not true');
   if (outcome.accepted !== 'confirmed' && outcome.accepted !== 'pending') return no('the hire says completed, and it does not say whether the Accept was seen');
   return {
-    kind: 'completed', handoff: recordOf(context.counterparty_did, escrow.advert_ref, escrow.escrow_ref, delivery, outcome.accepted, outcome.paidFrom === 'vault'), vault_ref: escrow.vault_ref, terms: escrow.terms, delivery,
+    kind: 'completed', handoff: recordOf(context.counterparty_did, escrow.advert_ref, escrow.escrow_ref, delivery, outcome.accepted), vault_ref: escrow.vault_ref, terms: escrow.terms, delivery,
     booking_failed: context.booking_failed,
   };
 }
