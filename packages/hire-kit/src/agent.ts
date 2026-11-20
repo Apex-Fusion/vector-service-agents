@@ -2,7 +2,8 @@
 // The hire of an agent of the template contract, from the choice of its advert to the Accept. The caller names what it wants (a capability and a model, or one advert), the three limits of
 // what the hire may cost (the price, the supplier bond and the buyer bond), the text the agent reads, where the money comes from (the wallet, or a vault that the key pays from as a delegate),
 // and the decision it takes between the checked receipt and the Accept. The hire runs in the lane of the paying key it is given, so that it has the one chain and the one store of that key,
-// and the janitor of the key starts no transaction while it runs. The kit says how the hire ended in one of five words, in a type that a `switch` can check:
+// and the janitor of the key starts no transaction while it runs. A hire whose turn in the lane comes at or after its deadline ends at once with the deadline error, before it reads, posts or pays
+// anything (checkTurn, src/keys.ts). The kit says how the hire ended in one of five words, in a type that a `switch` can check:
 //   completed             the receipt passed the eight checks, the decision accepted it, and the Accept was made.
 //   refused_before_claim  the runtime of the agent refused the job. The kit gives this word when three things hold together: the answer is the envelope of the runtime with a code, and its status
 //                         is below 500 (or 503 with one of the three codes of a service it could not ask); the escrow was read Open once, just after the answer; and no earlier send of the job
@@ -32,6 +33,7 @@ import type { Clocked } from './budget.ts';
 import { canonicalRef, errorText } from './format.ts';
 import { HireDeclined, HireDecisionTimeout, hireOne, termsOf } from './hire.ts';
 import type { AcceptDecision, Delivery, HireDetail, HireErrors, HireFacts, HireFailure, HireLedger, HireOptions, HireRecord, HireSupplier, HireTerms } from './hire.ts';
+import { checkTurn } from './keys.ts';
 import type { PayingKey } from './keys.ts';
 import { advertOnChain, bondProblem, choiceLine, keyOfAdvert, requireLimits } from './select.ts';
 import { isRuntimeRefusal, templateJob } from './template-client.ts';
@@ -283,6 +285,7 @@ function ended<E extends Error>(stop: HireStop, advertRef: string, vaultRef: str
  * asks `request.decide`, and accepts or does not. It runs in the lane of the key: one hire at a time for the key, and the janitor of the key starts no transaction meanwhile. A vault
  * Pay checks no limit of the vault: the node evaluates it, and the answer of the vault script is the `vault_refused` outcome with the evaluation error and the body of the transaction.
  * The error of the factory (`errors`) is thrown for what no outcome names, in a HireInterrupted after a confirmed vault Pay and in a HirePayUnconfirmed after one that was not seen confirmed.
+ * A hire whose turn in the lane comes at or after `deps.deadlineMs` throws the `deadline` of `errors` as it is, with the stage `lane` and no escrow, before anything is read or paid: no vault is spent.
  */
 export async function hireAgent<E extends Error>(key: PayingKey, deps: AgentDeps, request: AgentRequest, errors: AgentErrors<E>): Promise<AgentOutcome> {
   if (typeof request.payload !== 'string' || request.payload === '') throw new TypeError('The payload must be a non-empty string.');
@@ -291,9 +294,11 @@ export async function hireAgent<E extends Error>(key: PayingKey, deps: AgentDeps
 }
 
 async function hireInLane<E extends Error>(key: PayingKey, deps: AgentDeps, request: AgentRequest, errors: AgentErrors<E>): Promise<AgentOutcome> {
+  const label = request.label ?? 'the agent job';
+  checkTurn(deps, label, errors);
   const { chain } = key;
   const supplier = await chooseAgent(chain, deps, request, (why) => errors.unavailable(why));
-  const job = templateJob(supplier.endpoint, request.payload, request.label ?? 'the agent job', deps.fetchImpl);
+  const job = templateJob(supplier.endpoint, request.payload, label, deps.fetchImpl);
   /** What a vault Pay came to: the one that was confirmed (the vault continues, and the Pay opened the escrow), or the one that was submitted and not seen confirmed. */
   const pay: { confirmed: VaultPayResult | null; unconfirmed: TxNotConfirmedError | null } = { confirmed: null, unconfirmed: null };
   const { vaultRef, decide } = request;

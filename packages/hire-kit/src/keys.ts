@@ -5,10 +5,12 @@
 // key that posted the escrow, and a Reclaim of an escrow that a vault paid returns the lock to that vault.
 // Two things make the separation hold. The registry gives one PayingKey to one key hash and one directory, and refuses a second. And a PayingKey is the only source of the deps
 // of a hire from its key (hireDeps), so that a hire has no way to take the chain of one key and the store of another.
+// A hire waits in the lane for the hires before it, and the deadline of its caller may pass meanwhile. So the first thing a hire does at its turn is checkTurn, which ends a hire that is too late
+// before it reads an advert or pays.
 import { join, resolve } from 'node:path';
 import type { Chain } from '@vsa/buyer-core';
 import type { Clocked } from './budget.ts';
-import type { HireDeps } from './hire.ts';
+import type { HireDeps, HireErrors } from './hire.ts';
 import { StrandedStore, startJanitor } from './janitor.ts';
 
 /** The hash of a payment key: 28 bytes, 56 lowercase hex characters. */
@@ -33,6 +35,18 @@ export class HireLane {
 
   /** True while a job runs or waits for the jobs before it. */
   get busy(): boolean { return this.#open > 0; }
+}
+
+/**
+ * The first check of a hire, made when the lane of its key gives it its turn, before it reads an advert, chooses a supplier, builds a transaction or pays. When the clock does not stand before the
+ * deadline, the hire ends with the deadline error of `errors` (`label` says which hire), and its facts name the stage `lane` and no escrow: nothing was posted, and no vault was spent. A turn at the
+ * deadline is too late: `fit` (src/budget.ts) takes that moment as in time for a wait, and a hire that has not begun has no time left at it. There is no margin. A turn before the deadline goes on,
+ * and the waits and the options of the hire (hireOne, src/hire.ts) cut it as before.
+ */
+export function checkTurn<E extends Error>(t: Clocked, label: string, errors: Pick<HireErrors<E>, 'deadline'>): void {
+  if (t.clock() < t.deadlineMs) return;
+  // The text is true also when the lane was free and the deadline had passed before the call: the hire had not begun when its turn came.
+  throw errors.deadline(`${label} had not begun`, { stage: 'lane', escrowRef: null, handedOver: false });
 }
 
 /** One key that pays, with its chain, its stranded store and its lane. Made by PayingKeys.add. */
