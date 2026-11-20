@@ -4,7 +4,7 @@
 import { afterEach, expect } from 'vitest';
 import type { StubAgent, StubDelegation } from '@vsa/id-kit/testing';
 import { Harness } from './harness.ts';
-import type { Reply } from './harness.ts';
+import type { HarnessOptions, Reply } from './harness.ts';
 import { INSURER_ORG, SUPPLIER_ORG, World, resourceOf } from './world.ts';
 import type { IssuedCredential } from './world.ts';
 
@@ -19,10 +19,10 @@ export interface Scenario {
   tenant: string;
 }
 
-/** A service with a tenant. */
-export async function scenario(tenant = 'run1', extra: Record<string, unknown> = {}): Promise<Scenario> {
+/** A service with a tenant. `options` sets what the harness lets a test set. */
+export async function scenario(tenant = 'run1', extra: Record<string, unknown> = {}, options: HarnessOptions = {}): Promise<Scenario> {
   const world = new World();
-  const harness = await Harness.start(world);
+  const harness = await Harness.start(world, options);
   open.push(harness);
   const seeded = await harness.seed(tenant, extra);
   expect(seeded.status, seeded.text).toBe(201);

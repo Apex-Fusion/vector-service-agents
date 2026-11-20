@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { APPROVAL_CODES } from '../src/errors.ts';
 import { callWithToken, delegateTo, rankingBody, scenario } from './support/scenario.ts';
+import type { HarnessOptions } from './support/harness.ts';
 import type { Scenario } from './support/scenario.ts';
 import { PUBLIC_BASE } from './support/world.ts';
 
@@ -15,9 +16,14 @@ const refused = (reply: { status: number; json: Record<string, unknown> | null }
 };
 const lastRule = (s: Scenario): unknown => s.harness.logged().at(-1)?.rule;
 const written = async (s: Scenario): Promise<unknown[]> => ((await s.harness.call({ path: `/t/${TENANT}/state` })).json as { sourcing: { rankings: unknown[] } }).sourcing.rankings;
+interface LogEntry { decision: string; code: string | null; rule: string | null }
+const tenantLog = async (s: Scenario): Promise<LogEntry[]> => {
+  const body = (await s.harness.call({ path: `/t/${TENANT}/log` })).json as { lines: LogEntry[] }; // the shape of the answer of GET /log
+  return body.lines;
+};
 
-async function setup() {
-  const s = await scenario(TENANT);
+async function setup(options: HarnessOptions = {}) {
+  const s = await scenario(TENANT, {}, options);
   const agent = delegateTo(s, 'sourcing', [['sourcing.award.write', 'sourcing']]);
   const alfa = s.world.agent('desk-alfa');
   const bravo = s.world.agent('desk-bravo');
@@ -49,6 +55,15 @@ describe('a ranking that is right', () => {
     const { s, alfa, bravo, send } = await setup();
     const first = await send(rankingBody(TENANT, alfa.did, bravo.did));
     const second = await send(rankingBody(TENANT, bravo.did, alfa.did));
+    expect([first.json?.ranking_id, second.json?.ranking_id]).toEqual(['RK-run1-0001', 'RK-run1-0002']);
+    expect(await written(s)).toHaveLength(2);
+  });
+  it('writes the same ranking with the same approval again: the sourcing record has no one-for-each rule, so each write is a new record', async () => {
+    const { s, send, body } = await setup();
+    const sent = body();
+    const first = await send(sent);
+    const second = await send(sent);
+    expect([first.status, second.status]).toEqual([201, 201]);
     expect([first.json?.ranking_id, second.json?.ranking_id]).toEqual(['RK-run1-0001', 'RK-run1-0002']);
     expect(await written(s)).toHaveLength(2);
   });
@@ -193,6 +208,42 @@ describe('a tenant that is made again while the approval is checked', () => {
     refused(await held, 409, 'tenant_changed');
     expect(await written(s)).toEqual([]);
     expect((await send(body())).status).toBe(201);
+  });
+});
+
+describe('the time limit of the approval check', () => {
+  it('a check that does not answer in the limit is 503 approval_unavailable with the rule approval.timeout, and nothing is written', async () => {
+    const { s, send, body } = await setup({ approvalTimeoutMs: 50 });
+    const hold = s.harness.holdApproval();
+    const reply = await send(body());
+    refused(reply, 503, 'approval_unavailable');
+    expect(lastRule(s)).toBe('approval.timeout');
+    expect(reply.json?.message).toContain('50 ms');
+    expect(s.harness.approvals).toHaveLength(1);
+    expect(await written(s)).toEqual([]);
+    expect((await tenantLog(s)).map((line) => [line.decision, line.code, line.rule])).toEqual([['refused', 'approval_unavailable', 'approval.timeout']]);
+    hold.release();
+  });
+  it('a check that answers inside the limit is used: the ranking is written', async () => {
+    const { s, send, body } = await setup({ approvalTimeoutMs: 5_000 });
+    const hold = s.harness.holdApproval();
+    const sending = send(body());
+    await hold.asked;
+    hold.release();
+    const reply = await sending;
+    expect(reply.status, reply.text).toBe(201);
+    expect(await written(s)).toHaveLength(1);
+  });
+  it.each([['a late pass', { ok: true }], ['a late failure', 'throw']] as const)('%s after the limit changes nothing: no ranking, no second line and no error line', async (_name, late) => {
+    const { s, send, body } = await setup({ approvalTimeoutMs: 50 });
+    const hold = s.harness.holdApproval();
+    refused(await send(body()), 503, 'approval_unavailable');
+    s.harness.answer = late;
+    hold.release();
+    // A call to the service: the late answer is in by the time that it answers.
+    expect(await written(s)).toEqual([]);
+    expect(s.harness.logged().filter((line) => line.route === 'POST /sourcing/rankings' || line.event === 'error')).toHaveLength(1);
+    expect(await tenantLog(s)).toHaveLength(1);
   });
 });
 

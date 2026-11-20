@@ -17,6 +17,12 @@ import type { CallOptions, Reply } from './net.ts';
 
 export type { CallOptions, Reply } from './net.ts';
 
+/** What a test may set when it starts the service. */
+export interface HarnessOptions {
+  /** How long a call waits for the approval check, in milliseconds. The default is the one of the app. */
+  approvalTimeoutMs?: number;
+}
+
 export class Harness {
   readonly lines: string[] = [];
   readonly approvals: ApprovalInput[] = [];
@@ -29,7 +35,7 @@ export class Harness {
   readonly server: Server;
   port = 0;
 
-  constructor(readonly world: World) {
+  constructor(readonly world: World, options: HarnessOptions = {}) {
     const approvalCheck: ApprovalCheck = async (input) => {
       this.approvals.push(input);
       this.onApprovalAsked?.();
@@ -40,13 +46,13 @@ export class Harness {
     };
     this.app = createApp({
       config: { publicBase: PUBLIC_BASE, publicHost: PUBLIC_HOST, mtlsHost: MTLS_HOST, operatorToken: OPERATOR_TOKEN },
-      identity: world.identity, approvalCheck, now: world.now, writeLog: (line) => { this.lines.push(line); },
+      identity: world.identity, approvalCheck, approvalTimeoutMs: options.approvalTimeoutMs, now: world.now, writeLog: (line) => { this.lines.push(line); },
     });
     this.server = createServer((req, res) => { void this.app.handle(req, res); });
   }
 
-  static async start(world: World = new World()): Promise<Harness> {
-    const harness = new Harness(world);
+  static async start(world: World = new World(), options: HarnessOptions = {}): Promise<Harness> {
+    const harness = new Harness(world, options);
     await listen(harness.server, 0, '127.0.0.1');
     harness.port = (harness.server.address() as AddressInfo).port;
     return harness;

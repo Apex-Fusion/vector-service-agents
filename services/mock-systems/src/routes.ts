@@ -47,6 +47,8 @@ export interface Call {
   readonly sender: string | null;
   readonly now: () => number;
   readonly approvalCheck: ApprovalCheck;
+  /** How long the call waits for the approval check, in milliseconds. */
+  readonly approvalTimeoutMs: number;
   readonly identity: IdentityDeps;
   readonly trace: CallTrace;
 }
@@ -154,7 +156,7 @@ const vendorsRoute: Route = {
  * The write of an approved ranking. In this order, and the first failure ends the call:
  *   1. the body is a ranking with one entry of rank 1, a salt and an approval (or null);
  *   2. no approval is `approval_not_found`;
- *   3. the approval check that the app was given passes, for the ranking that was sent;
+ *   3. the approval check that the app was given passes, for the ranking that was sent, and it answers in the time limit (503 `approval_unavailable` when it does not);
  *   4. the supplier of rank 1 resolves and is Active now;
  *   5. the tenant is still the one that the caller was verified for.
  * Only then is the ranking written.
@@ -168,7 +170,7 @@ const rankingRoute: Route = {
     if (call.sender === null || by.kind !== 'token') throw new Error('the ranking route ran with no verified token');
     const approved = await decideApproval(call.approvalCheck, {
       sender: call.sender, delegation: by.delegation, attestation: request.approval.attestation, issuerDid: request.approval.issuer_did, document: request.ranking, salt: request.salt, atMs: call.now(),
-    });
+    }, call.approvalTimeoutMs);
     if (!approved.ok) return approved;
     const supplier = await authorizeSupplier(call.identity, request.top, call.trace);
     if (!supplier.ok) return supplier;

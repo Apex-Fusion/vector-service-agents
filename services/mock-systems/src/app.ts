@@ -14,6 +14,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { errorText, flatText } from '@vsa/service-kit';
+import { APPROVAL_TIMEOUT_MS } from './approval.ts';
 import type { ApprovalCheck } from './approval.ts';
 import type { ServiceConfig } from './config.ts';
 import { pass, refuse } from './errors.ts';
@@ -39,6 +40,8 @@ export interface AppDeps {
   readonly config: AppConfig;
   readonly identity: IdentityDeps;
   readonly approvalCheck: ApprovalCheck;
+  /** How long a call waits for the approval check, in milliseconds. The default is `APPROVAL_TIMEOUT_MS`. A test sets a short time. */
+  readonly approvalTimeoutMs?: number;
   readonly now: () => number;
   /** Takes one line of JSON for each call. */
   readonly writeLog: (line: string) => void;
@@ -154,6 +157,7 @@ function challengeOf(credential: Draft['credential']): string | null {
 
 export function createApp(deps: AppDeps): App {
   const { config, identity, now } = deps;
+  const approvalTimeoutMs = deps.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS;
   const store = new TenantStore({ now });
 
   const isoNow = (): string => new Date(now()).toISOString();
@@ -270,7 +274,7 @@ export function createApp(deps: AppDeps): App {
     }
     // The caller was verified for this tenant, with its organisations. A tenant that was made again while the checks ran is another tenant: the call is not honoured for it.
     if (store.get(named) !== tenant) return refuse('tenant_changed', 'tenant.changed', `the tenant ${named} was made again while the call ran: send the call again`);
-    const call: Call = { tenant, current: () => store.get(named), params, body, actor: caller.value.actor, sender: caller.value.sender, now, approvalCheck: deps.approvalCheck, identity, trace: draft.trace };
+    const call: Call = { tenant, current: () => store.get(named), params, body, actor: caller.value.actor, sender: caller.value.sender, now, approvalCheck: deps.approvalCheck, approvalTimeoutMs, identity, trace: draft.trace };
     try {
       return await route.handle(call);
     } catch (error) {

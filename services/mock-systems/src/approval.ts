@@ -2,7 +2,7 @@
 // The approval check of a ranking. The service does not make the check: the app factory takes it as a dependency, in the shape below. The check reads the attestation on the ledger and
 // answers with a typed result: it passes, or it names the one of eight codes that failed. The attestation must exist, have the approval type, name the sender as its subject, come from
 // the root delegator of the delegation, be valid now, and its digest must be the digest of the ranking and the salt. The service never reads success from a text, and it never takes an
-// answer that is not exactly one of the two shapes: an answer of another shape, and a check that throws, refuse the call.
+// answer that is not exactly one of the two shapes: an answer of another shape, a check that throws and a check that does not answer in time refuse the call.
 import { APPROVAL_CODES, pass, refuse } from './errors.ts';
 import type { ApprovalCode, Outcome } from './errors.ts';
 import type { Json } from './validate.ts';
@@ -30,14 +30,27 @@ export type ApprovalAnswer =
 
 export type ApprovalCheck = (input: ApprovalInput) => Promise<ApprovalAnswer>;
 
-/** Runs the check and turns its answer into a decision. Only `ok: true`, the boolean, passes. */
-export async function decideApproval(check: ApprovalCheck, input: ApprovalInput): Promise<Outcome<null>> {
+/** How long the service waits for the approval check, in milliseconds. The check reads the ledger, which can be slow. A check that never answers must not hold a call open with no end. */
+export const APPROVAL_TIMEOUT_MS = 30_000;
+
+const TIMED_OUT = Symbol('the approval check did not answer in time');
+
+/**
+ * Runs the check and turns its answer into a decision. Only `ok: true`, the boolean, passes. A check that does not answer in `timeoutMs` refuses the call. The service stops to wait for it,
+ * and what the check answers or how it fails later changes nothing.
+ */
+export async function decideApproval(check: ApprovalCheck, input: ApprovalInput, timeoutMs: number = APPROVAL_TIMEOUT_MS): Promise<Outcome<null>> {
   let answer: unknown;
+  let timer: NodeJS.Timeout | undefined;
   try {
-    answer = await check(input);
+    const limit = new Promise<typeof TIMED_OUT>((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs); });
+    answer = await Promise.race([check(input), limit]);
   } catch (error) {
     return refuse('approval_unavailable', 'approval.failed', `the approval check could not run: ${errorText(error, 200)}`);
+  } finally {
+    clearTimeout(timer);
   }
+  if (answer === TIMED_OUT) return refuse('approval_unavailable', 'approval.timeout', `the approval check did not answer in ${timeoutMs} ms`);
   if (typeof answer === 'object' && answer !== null && 'ok' in answer) {
     if (answer.ok === true) return pass(null);
     if (answer.ok === false && 'code' in answer && 'detail' in answer && typeof answer.detail === 'string') {
