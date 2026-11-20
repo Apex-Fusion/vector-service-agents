@@ -1,12 +1,15 @@
 // Check 4, the attestations, against the world of fixtures with the real Attest and Withdraw builders: salted digests, the order of the steps, the read by the hosted tools (the salted
 // digest passes and the digest with no salt fails), and the cleanup that withdraws what is due and says the date for the rest.
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { WITHDRAW_WAIT_MS, attestationsCheck, parseAttestationSettings, plainDigest, saltedDigest } from '../lib/check-attestations.ts';
+import { collateralAdvice } from '../lib/collateral.ts';
 import { SettingsError, VECTOR_MAINNET } from '../lib/settings.ts';
+import { StateFile } from '../lib/state.ts';
 import { FakeHosted } from './support/hosted-fake.ts';
 import type { Harness } from './support/harness.ts';
 import { harness } from './support/harness.ts';
-import { DEPLOYMENT, MEMBER_N, RECORD_DID, RECORD_ID, keyOf } from './support/world.ts';
+import { DEPLOYMENT, MEMBER_N, RECORD_DID, RECORD_ID, World, keyOf } from './support/world.ts';
 
 const member = keyOf(MEMBER_N);
 
@@ -35,10 +38,10 @@ function hostedFor(h: () => Harness): FakeHosted {
   });
 }
 
-async function started() {
+async function started(world?: World) {
   let h: Harness | null = null;
   const hosted = hostedFor(() => h!);
-  h = await harness({ hosted });
+  h = await harness({ hosted, ...(world === undefined ? {} : { world }) });
   return { h, hosted };
 }
 
@@ -111,6 +114,26 @@ describe('the step read_check', () => {
     expect(await h.run(attestationsCheck, '--submit')).toBe(1);
     expect(h.screen.errorText).toContain('accepted the digest of the document with no salt');
   });
+  it('marks both issue steps as verified when the read passes, and leaves them not verified when it fails', async () => {
+    const { h } = await started();
+    await h.run(attestationsCheck, '--submit');
+    await h.run(attestationsCheck, '--submit');
+    for (const step of ['issue_approval', 'issue_binding']) expect(h.state('attestations').steps[step]!.verified_at, step).toBeNull();
+    expect(await h.run(attestationsCheck, '--submit')).toBe(0);
+    for (const step of ['issue_approval', 'issue_binding']) expect(h.state('attestations').steps[step]!.verified_at, step).not.toBeNull();
+    h.screen.lines.length = 0;
+    expect(await h.run(attestationsCheck, 'status')).toBe(0);
+    expect(h.screen.text).not.toContain('not verified');
+
+    let failing: Harness | null = null;
+    const honest = hostedFor(() => failing!);
+    const lax = new FakeHosted({ ...honest.handlers, vector_check_attestation: (args) => ({ attestation: args.attestation, found: true, valid: true, rule_valid: true, conditions: [] }) });
+    failing = await harness({ hosted: lax });
+    await failing.run(attestationsCheck, '--submit');
+    await failing.run(attestationsCheck, '--submit');
+    expect(await failing.run(attestationsCheck, '--submit')).toBe(1);
+    for (const step of ['issue_approval', 'issue_binding']) expect(failing.state('attestations').steps[step]!.verified_at, step).toBeNull();
+  });
 });
 
 describe('the cleanup', () => {
@@ -134,5 +157,32 @@ describe('the cleanup', () => {
     const { h } = await started();
     expect(await h.run(attestationsCheck, 'cleanup')).toBe(0);
     expect(h.screen.text).toContain('no approval attestation to take back');
+  });
+});
+
+describe('the collateral of the member wallet', () => {
+  it('stops an issue step before the build, and before a salt is written, when the member wallet has no pure output of 5 units or more', async () => {
+    const poor = await World.identity();
+    poor.useUp(MEMBER_N);
+    const { h } = await started(poor);
+    expect(await h.run(attestationsCheck, '--submit')).toBe(2);
+    expect(h.screen.errorText).toContain(`The member wallet ${member.keyHash}`);
+    expect(h.screen.errorText).toContain(collateralAdvice(member.address));
+    expect(h.screen.errorText).not.toContain('Collateral required');
+    expect(h.node.submitted).toEqual([]);
+    expect(StateFile.peek(join(h.stateDir, 'attestations.state.json'))?.notes['held.approval']).toBeUndefined();
+  });
+  it('stops the withdraw of a deposit that is due when the member wallet has no pure output of 5 units or more', async () => {
+    const { h } = await started();
+    await h.run(attestationsCheck, '--submit');
+    await h.run(attestationsCheck, '--submit');
+    h.clock.t = Number(h.state('attestations').steps.issue_approval!.facts.valid_until) + WITHDRAW_WAIT_MS + 120_000;
+    h.world.chain.tipSlot = Math.floor((h.clock.t - VECTOR_MAINNET.systemStartMs!) / 1000);
+    h.world.useUp(MEMBER_N);
+    const sent = h.node.submitted.length;
+    h.screen.lines.length = 0;
+    expect(await h.run(attestationsCheck, 'cleanup', '--submit')).toBe(2);
+    expect(h.screen.errorText).toContain(`The member wallet ${member.keyHash}`);
+    expect(h.node.submitted).toHaveLength(sent);
   });
 });

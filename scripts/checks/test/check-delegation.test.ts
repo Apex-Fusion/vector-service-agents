@@ -2,12 +2,13 @@
 // the delegation from any state.
 import { describe, expect, it } from 'vitest';
 import { delegationCheck, parseDelegationSettings } from '../lib/check-delegation.ts';
+import { collateralAdvice } from '../lib/collateral.ts';
 import { writeKeyFile } from './support/world.ts';
 import { SettingsError } from '../lib/settings.ts';
 import { FakeHosted } from './support/hosted-fake.ts';
 import type { Harness } from './support/harness.ts';
 import { harness } from './support/harness.ts';
-import { AGENT_N, DEPLOYMENT, MEMBER_N, RECORD_ID, keyOf } from './support/world.ts';
+import { AGENT_N, DEPLOYMENT, MEMBER_N, RECORD_ID, World, keyOf } from './support/world.ts';
 
 const member = keyOf(MEMBER_N);
 const agent = keyOf(AGENT_N);
@@ -28,10 +29,10 @@ function hostedFor(h: () => Harness, over: { usable?: boolean } = {}): FakeHoste
   });
 }
 
-async function started(over: { usable?: boolean } = {}) {
+async function started(over: { usable?: boolean; world?: World } = {}) {
   let h: Harness | null = null;
   const hosted = hostedFor(() => h!, over);
-  h = await harness({ hosted });
+  h = await harness({ hosted, ...(over.world === undefined ? {} : { world: over.world }) });
   return { h, hosted };
 }
 
@@ -122,5 +123,32 @@ describe('the cleanup', () => {
     h.screen.lines.length = 0;
     expect(await h.run(delegationCheck, 'cleanup', '--submit')).toBe(0);
     expect(h.screen.text).toContain('has ended already');
+  });
+});
+
+describe('the collateral of the member wallet', () => {
+  it('stops delegate before the build when the member wallet has no pure output of 5 units or more, and the same step runs when it has one', async () => {
+    const poor = await World.identity();
+    poor.useUp(MEMBER_N);
+    const stopped = await started({ world: poor });
+    expect(await stopped.h.run(delegationCheck, '--submit')).toBe(2);
+    expect(stopped.h.screen.errorText).toContain(`The member wallet ${member.keyHash}`);
+    expect(stopped.h.screen.errorText).toContain(collateralAdvice(member.address));
+    expect(stopped.h.screen.errorText).not.toContain('Collateral required');
+    expect(stopped.h.node.submitted).toEqual([]);
+    const ready = await started();
+    expect(await ready.h.run(delegationCheck, '--submit')).toBe(0);
+  });
+  it('stops undelegate and the cleanup when the steps used up the outputs of the member wallet', async () => {
+    const { h } = await started();
+    expect(await h.run(delegationCheck, '--submit')).toBe(0);
+    h.world.useUp(MEMBER_N);
+    const sent = h.node.submitted.length;
+    expect(await h.run(delegationCheck, '--submit', '--skip-token-check')).toBe(2);
+    expect(h.screen.errorText).toContain(`The member wallet ${member.keyHash}`);
+    h.screen.lines.length = 0;
+    expect(await h.run(delegationCheck, 'cleanup', '--submit')).toBe(2);
+    expect(h.screen.errorText).toContain(`The member wallet ${member.keyHash}`);
+    expect(h.node.submitted).toHaveLength(sent);
   });
 });

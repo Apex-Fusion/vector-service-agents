@@ -6,10 +6,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LISTED } from '../../../packages/buyer-core/test/fixtures/identity-world.ts';
 import { ADVERT_REF, IDENTITY_ADVERT, advertUtxo, chainFake } from '../../../packages/buyer-core/test/fixtures/escrow-identity.fixture.ts';
-import { vaultCheck } from '../lib/check-vault.ts';
+import { RECLAIM_AFTER_MS, vaultCheck } from '../lib/check-vault.ts';
 import type { VaultKind, VaultSettings } from '../lib/check-vault.ts';
 import { vaultPort } from '../lib/hire-adapter.ts';
 import { decodeVaultDatum } from '../lib/platform.ts';
+import { iso } from '../lib/format.ts';
 import type { CheckDefinition } from '../lib/runner.ts';
 import { harness } from './support/harness.ts';
 import type { Harness } from './support/harness.ts';
@@ -56,7 +57,7 @@ async function started(kind: VaultKind, over: { supplier?: Supplier; env?: Recor
   const world = await World.identity({ advert: ADVERT });
   let h: Harness | null = null;
   const hosted = vaultHostedFor(() => h!, name);
-  h = await harness({ world, hosted, env: { CHECKS_ADVERT_REF: ADVERT_REF, ...over.env }, fetchImpl: supplierFetch(over.supplier), chainFetch: koiosOf(world), koiosUrl: KOIOS });
+  h = await harness({ world, hosted, env: { CHECKS_ADVERT_REF: ADVERT_REF, CHECKS_HIRE_PAYLOAD: '{"subject":"the test record"}', ...over.env }, fetchImpl: supplierFetch(over.supplier), chainFetch: koiosOf(world), koiosUrl: KOIOS });
   const check: CheckDefinition<VaultSettings> = vaultCheck(kind, vaultPort);
   return { h, check, name, world };
 }
@@ -132,6 +133,10 @@ describe('check 2 when the agent refuses the job after the Pay', () => {
     expect(t.h.state(t.name).steps.hire).toBeUndefined();
     expect(escrowOutputs(t)).toHaveLength(1);
     expect(vaultOutputs(t).map((u) => `${u.txHash}#${u.outputIndex}`)).toEqual([part.refs.vault_ref]);
+    t.h.screen.lines.length = 0;
+    expect(await t.h.run(t.check, 'status')).toBe(0);
+    expect(t.h.screen.text).toContain(`next: cleanup, after ${iso(Number(part.facts.deliver_by) + RECLAIM_AFTER_MS)}`);
+    expect(t.h.screen.text).not.toContain('next: hire');
     // The check never hires again: the kit is not called, and the escrow is the only thing to take back.
     t.h.screen.lines.length = 0;
     t.h.screen.errors.length = 0;
@@ -151,6 +156,9 @@ describe('check 2 when the agent refuses the job after the Pay', () => {
     expect(vaultOutputs(t)).toEqual([]);
     expect(escrowOutputs(t)).toEqual([]);
     expect(t.h.state(t.name).notes.cleaned_up).toBeDefined();
+    t.h.screen.lines.length = 0;
+    expect(await t.h.run(t.check, 'status')).toBe(0);
+    expect(t.h.screen.text).toContain('next: nothing');
   }, 240_000);
 });
 

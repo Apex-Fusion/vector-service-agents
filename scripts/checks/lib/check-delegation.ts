@@ -8,6 +8,7 @@
 // What the hosted tools show after each step (the delegation is live with the grant that the step made, and then it is not live) is the second proof: the hosted server reads the
 // ledger on its own.
 import { join } from 'node:path';
+import { requireCollateral } from './collateral.ts';
 import { iso, units } from './format.ts';
 import type { StepPlan } from './guards.ts';
 import { requireRecord } from './record.ts';
@@ -77,6 +78,7 @@ function usable(id: string, action: string, resource: string): ToolCheck {
 const delegate: StepHandler<DelegationSettings> = {
   name: 'delegate',
   async run(session) {
+    await requireCollateral(session, 'member');
     const record = await requireRecord(session, { delegationKey: true });
     const member = session.ring.get('member');
     const agent = session.ring.get('agent');
@@ -122,6 +124,7 @@ const delegate: StepHandler<DelegationSettings> = {
 
 /** Ends the delegation of the step `delegate`. The wallet of the member gets its output back. */
 export async function endDelegation<Extra>(session: Session<Extra>): Promise<StepOutcome> {
+  await requireCollateral(session, 'member');
   const record = session.state.step('delegate')!;
   const id = record.refs.delegation_id!;
   const member = session.ring.get('member');

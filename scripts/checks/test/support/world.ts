@@ -87,6 +87,12 @@ export class World {
     return hashOfTransaction(cborHex);
   }
 
+  /** Leaves the wallet of the key `n` with outputs of less than 5 units only (by default 3 and 2 units), as a wallet that many steps have used up. */
+  useUp(n: number, lovelace: readonly bigint[] = [3_000_000n, 2_000_000n]): void {
+    const address = keyOf(n).address;
+    this.chain.held = [...this.chain.held.filter((utxo) => utxo.address !== address), ...walletOutputs(n, lovelace)];
+  }
+
   addressOf(n: number): string {
     return buyerIdentityOf(seedHex(n)).address;
   }
