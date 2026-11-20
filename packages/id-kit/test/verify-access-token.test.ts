@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
-import { newJti, presentToken, tokenHash } from '../src/client/index.ts';
+import { newJti, presentToken, tokenHash, type GatewayClient } from '../src/client/index.ts';
 import { DELEGATION_DETAILS_TYPE, LIST_SIZE } from '../src/common/constants.ts';
 import { resolveKey } from '../src/common/keys.ts';
 import type { Check } from '../src/common/result.ts';
@@ -657,6 +657,67 @@ describe('accessToken: authority that ended', () => {
     expect(await check([`did:vector:${identifier('rp nobody else')}`])).toMatchObject({ ok: false, detail: expect.stringContaining('does not resolve to an agent') });
     s.gateway.fault(path, 'network');
     expect(await check([did])).toMatchObject({ ok: false, detail: expect.stringContaining('cannot be resolved') });
+  });
+
+  it('gatewayActorCheck refuses a live answer whose metadata marks the record as deactivated, whatever its effective status says: for a live record the member `deactivated` is absent or false', async () => {
+    const s = scene();
+    const check = gatewayActorCheck(s.client);
+    const did = s.agent.did;
+    const path = `/1.0/identifiers/${did}`;
+    const live = JSON.parse(await (await s.gateway.fetch(`${s.gateway.baseUrl}${path}`)).text());
+    /** The answer 200 of the gateway for the agent, whose effective status is Active, with the member `deactivated` of its metadata as the test picks it (`undefined` leaves the member out). */
+    const answer = (deactivated: unknown) => {
+      const body = structuredClone(live);
+      body.didDocumentMetadata.deactivated = deactivated;
+      return { status: 200, body: JSON.stringify(body), headers: { 'content-type': 'application/did-resolution' } };
+    };
+    // The twins: a live record with no member `deactivated` (as the live gateway sends it), and one with the member false, pass.
+    for (const marked of [undefined, false]) {
+      s.gateway.fault(path, answer(marked));
+      expect(await check([did]), `deactivated ${String(marked)}`).toStrictEqual({ ok: true });
+    }
+    // The premise of the refusals: the client reads a 200 answer as `resolved`, with the effective status Active and the member in its metadata.
+    s.gateway.fault(path, answer(true));
+    expect(await s.client.resolve(did)).toMatchObject({ ok: true, value: { kind: 'resolved', effectiveStatus: 'active', metadata: { deactivated: true } } });
+    // The refusals: a value of the member that is not false, with the status Active. The metadata alone refuses the record.
+    for (const marked of [true, 'true', 1, null]) {
+      s.gateway.fault(path, answer(marked));
+      expect(await check([did]), `deactivated ${JSON.stringify(marked)}`).toMatchObject({ ok: false, detail: expect.stringContaining('its metadata marks as deactivated') });
+    }
+  });
+
+  it('gatewayActorCheck passes only a result of the kind `resolved`: a result of a kind that it does not know, with no kind, or with no value is refused, whatever its status text says', async () => {
+    const s = scene();
+    const first = s.agent.did;
+    const second = s.boss.did;
+    /** The result of the client for a live record that is Active, with the members that the type of the result names. */
+    const live = (did: string) => ({ ok: true, value: { kind: 'resolved', did, effectiveStatus: 'active', effectiveReason: null, keys: [], document: {}, metadata: {} } });
+    /** The result `live` with the members of `change`: a result of a kind that the type does not name, or with no kind. */
+    const changed = (did: string, change: Record<string, unknown>) => ({ ok: true, value: { ...live(did).value, ...change } });
+    /** A client that gives the results that the test picks. A wrapper of the client can give a result that the type does not name, so the test casts. */
+    const clientOf = (answers: Record<string, unknown>): GatewayClient => ({ ...s.client, resolve: async (did: string) => answers[did] }) as GatewayClient;
+    const both = { [first]: live(first), [second]: live(second) };
+    // The twin: results of the kind resolved with the status Active pass, for one agent and for two.
+    expect(await gatewayActorCheck(clientOf(both))([first])).toStrictEqual({ ok: true });
+    expect(await gatewayActorCheck(clientOf(both))([first, second])).toStrictEqual({ ok: true });
+    const notKnown: Array<[string, unknown]> = [
+      ['a kind that the check does not know, with the status Active', changed(first, { kind: 'tombstone' })],
+      ['no kind, with the status Active', changed(first, { kind: undefined })],
+      ['no value', { ok: true }],
+      ['a value that is null', { ok: true, value: null }],
+    ];
+    for (const [name, answer] of notKnown) {
+      expect(await gatewayActorCheck(clientOf({ [first]: answer }))([first]), name).toMatchObject({ ok: false, detail: expect.stringContaining(`${first} has a resolution result of a kind that this check does not know`) });
+    }
+    // A result of the kind resolved with no metadata cannot show that the record is live: it is refused too, with a detail of its own.
+    expect(await gatewayActorCheck(clientOf({ [first]: changed(first, { metadata: undefined }) }))([first])).toMatchObject({ ok: false, detail: expect.stringContaining(`${first} has a resolution result with no metadata`) });
+    // A list: the first agent passes and the second one has a result of a kind that the check does not know, so the detail names the second agent.
+    const secondUnknown = { ...both, [second]: changed(second, { kind: 'tombstone' }) };
+    expect(await gatewayActorCheck(clientOf(secondUnknown))([first, second])).toMatchObject({ ok: false, detail: expect.stringContaining(`${second} has a resolution result of a kind that this check does not know`) });
+    // A call is refused (actors.refused) for such a result, and the same call with results of the kind resolved is accepted.
+    const token = await issue(s);
+    refused(await call(s, token, {}, { ...POLICY, checkActors: gatewayActorCheck(clientOf({ ...both, [first]: changed(first, { kind: 'tombstone' }) })) }), 'actors.refused');
+    accepted(await call(s, token, {}, { ...POLICY, checkActors: gatewayActorCheck(clientOf(both)) }));
   });
 });
 

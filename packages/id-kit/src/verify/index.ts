@@ -9,9 +9,9 @@
 // and it stays valid for a day, so a credential is refused (`credential.status_unknown`) unless the verifier read its list again within the time to live of the list.
 
 import { MAX_DELEGATION_DEPTH, MAX_TOKEN_LIFETIME_S } from '../common/constants.ts';
-import { isNumber } from '../common/json.ts';
+import { isNumber, isRecord } from '../common/json.ts';
 import { accept, refuse, type Check } from '../common/result.ts';
-import type { GatewayClient } from '../client/index.ts';
+import type { GatewayClient, Resolution } from '../client/index.ts';
 import { ACCESS_TOKEN_RULES, assertPolicy, checkAccessToken, parseAuthorization, type AccessTokenContext, type AccessTokenRule, type DelegationGrant, type Principal, type RequiredGrant, type VerifiedAccessToken } from './access-token.ts';
 import { checkCredential, type CredentialRule, type VerifiedCredential } from './credential.ts';
 import { KEY_SET_RULES, type KeySet } from './keys.ts';
@@ -264,20 +264,27 @@ export function createVerifier(options: VerifierOptions): Verifier {
 }
 
 /**
- * A check of actors for `checkActors` that resolves each DID at the gateway. An agent passes only when the answer is that of a live record (the result is `resolved`) AND its effective status
- * is Active. An agent that does not resolve, whose record has ended (the gateway answers 410, whatever status its body gives), that is suspended, or that cannot be resolved because the gateway
- * fails, refuses the call.
+ * A check of actors for `checkActors` that resolves each DID at the gateway. An agent passes only when the result is of the kind `resolved` (the answer of a live record), its metadata does
+ * not mark the record as deactivated, AND its effective status is Active. Every other result refuses the call: a DID that does not resolve, a record that has ended (the gateway answers 410,
+ * whatever status its body gives), a record that is suspended, a gateway that fails, and a result of a kind that this check does not know (the result of a wrapper of the client, or a member
+ * that the result type gets later).
  */
 export function gatewayActorCheck(client: GatewayClient): ActorCheck {
   return async (agents) => {
     for (const did of agents) {
       const resolved = await client.resolve(did);
       if (!resolved.ok) return { ok: false, detail: `${did} cannot be resolved: ${resolved.detail}` };
-      const record = resolved.value;
-      if (record.kind === 'not_found') return { ok: false, detail: `${did} does not resolve to an agent` };
+      // The type says that the value is a `Resolution`. The check does not rely on it: a wrapper of the client can give a kind that the type does not name, a value with no kind, or no value.
+      const record = resolved.value as Resolution | null | undefined;
+      if (record?.kind === 'not_found') return { ok: false, detail: `${did} does not resolve to an agent` };
+      if (record?.kind !== 'resolved' && record?.kind !== 'deactivated') return { ok: false, detail: `${did} has a resolution result of a kind that this check does not know, so it is no live record` };
       const status = `${record.effectiveStatus}${record.effectiveReason === null ? '' : ` (${record.effectiveReason})`}`;
       // A record that ended is no live record, whatever its body says: the answer for it is the status 410.
       if (record.kind === 'deactivated') return { ok: false, detail: `${did} has an ended record: the gateway answered 410, and its body gives the effective status ${status}` };
+      // The metadata of a live answer can say it too. The member `deactivated` is absent for a live record, or it is false (DID Core): any other value refuses. A result with no metadata cannot show it.
+      if (!isRecord(record.metadata)) return { ok: false, detail: `${did} has a resolution result with no metadata, so the check cannot tell that the record is live` };
+      const marked = record.metadata.deactivated;
+      if (marked !== undefined && marked !== false) return { ok: false, detail: `${did} has a record that its metadata marks as deactivated, and its body gives the effective status ${status}` };
       if (record.effectiveStatus !== 'active') return { ok: false, detail: `${did} has the effective status ${status}` };
     }
     return { ok: true };
