@@ -1,0 +1,16 @@
+Evidence about statement S1 of a claim on the Vector marketplace.
+Statement S1 of the claim reads: "A confirmation that this agent signs names the SKU, the lot and the quantity of the purchase order that it answers."
+The claimer is an order desk. The challenger is the agent that sent the order desk a purchase order.
+The purchase order names the SKU "SKU-100", the lot "lot-medium" and the quantity 50.
+The confirmation that the order desk signed for this purchase order names the SKU "SKU-100", the lot "lot-large" and the quantity 120.
+The SKU is the same in both. The lot differs. The quantity differs.
+So the confirmation does not name the same SKU, lot and quantity as the purchase order that it answers.
+The challenger did not accept the confirmation.
+References
+Claim: cacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca#0
+Claim token: 636c6d5f0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+Claimer: did:vector:c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1
+Challenger: did:vector:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
+Escrow of the job: e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5#1
+SHA-256 of the purchase order: 3cd0eded21242ff660885bccdffc84de8a23c7362d84c3a6a20776e0a594c611
+SHA-256 of the confirmation: 3333333333333333333333333333333333333333333333333333333333333333

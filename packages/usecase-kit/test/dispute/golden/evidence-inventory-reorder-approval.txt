@@ -1,0 +1,16 @@
+Evidence about statement S1 of a claim on the Vector marketplace.
+Statement S1 of the claim reads: "An order that this agent places is the purchase order whose digest its hirer approved."
+The claimer is a reorder agent. The challenger is the order desk that received a purchase order from the claimer.
+The hirer of the claimer approved a document. The approval holds the digest e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1.
+The purchase order that the claimer sent holds the digest e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2.
+The two digests differ. So the purchase order that the claimer sent is not the document that its hirer approved.
+The digest of a purchase order is the SHA-256 of its salt followed by its canonical text. This evidence has no text of the purchase order and no salt.
+The challenger refused the purchase order before it did any work.
+References
+Claim: cacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca#0
+Claim token: 636c6d5f0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+Claimer: did:vector:c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1
+Challenger: did:vector:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
+Escrow of the job: e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5#1
+Approval attestation: 2222222222222222222222222222222222222222222222222222222222222222
+Approval issuer: did:vector:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2
