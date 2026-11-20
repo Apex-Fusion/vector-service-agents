@@ -423,6 +423,14 @@ describe('the approval uses what the read of the attestation decided: ruleValid 
     expect(await checkApproval(both, input)).toMatchObject({ ok: false, code: 'approval_revoked' });
   });
 
+  it('cannot judge an answer that lacks a line of the rule, also when an earlier check would refuse: the answer is not judged at all', async () => {
+    const wrongType = makeWorld({ attestation: { attType: 15 } });
+    const without = (id: string): ChecksPorts =>
+      withLedger(wrongType, { attestation: async (at, time) => ({ ...(await wrongType.ports.ledger.attestation(at, time)), conditions: (await wrongType.ports.ledger.attestation(at, time)).conditions.filter((line) => line.id !== id) }) });
+    await expect(checkApproval(without('envelope'), wrongType.approvalInput)).rejects.toBeInstanceOf(CheckUnavailableError);
+    expect(await checkApproval(wrongType.ports, wrongType.approvalInput)).toMatchObject({ ok: false, code: 'approval_wrong_type' });
+  });
+
   it('cannot judge two lines with one identifier, a line of the wrong shape, conditions that are not a list, or a condition with no line', async () => {
     const active = (answer: AttestationCheck) => answer.conditions.filter((line) => line.id === 'active');
     for (const [first, second] of [['pass', 'fail'], ['fail', 'pass'], ['pass', 'pass'], ['fail', 'fail']]) {

@@ -58,6 +58,7 @@ describe('the answer of delegationUse', () => {
     const world = makeWorld();
     const use = await world.ports.ledger.delegationUse(DELEGATION_ID, T);
     const answers: unknown[] = [
+      { ...use, usable: false, problems: [1] },
       null, undefined, {}, { ...use, resource: `script:${'00'.repeat(28)}` }, { ...use, atMs: T + 1 }, { ...use, action: 'other.v1' }, { ...use, view: { ...use.view, id: '9e'.repeat(32) } },
       { ...use, usable: 'yes' }, { ...use, usable: undefined }, { ...use, problems: {} }, { ...use, problems: undefined }, { ...use, problems: [1] }, { ...use, usable: false, problems: [] },
     ];
@@ -72,9 +73,19 @@ describe('the answer of escrowPaid', () => {
     const paid = await world.ports.ledger.escrowPaid(ESCROW_REF, DELEGATION_ID);
     const answers: unknown[] = [
       null, undefined, {}, { paid: 'yes' }, { paid: 1 }, { paid: false }, { paid: false, reason: 'no_vault_input' }, { paid: false, reason: 7, detail: 'x' }, { ...paid, escrowRef: PLAIN_ESCROW_REF },
+      { paid: 'yes', reason: 'no_vault_input', detail: 'x' },
       { ...paid, delegation: '9e'.repeat(32) }, { ...paid, vaultRef: undefined },
     ];
     await expectUnavailable(world, (answer) => withLedger(world, { escrowPaid: async () => answer as never }), answers, BEFORE_VAULT);
+  });
+});
+
+describe('a wrong answer is told to the service', () => {
+  it('calls onFault with the source of the answer that was not usable, and the check still ends with check_unavailable', async () => {
+    const world = makeWorld();
+    const outcome = await run(world, withLedger(world, { delegationUse: async () => null as never }));
+    expect(outcome).toMatchObject({ ok: false, code: 'check_unavailable' });
+    expect(world.faults.map(([source]) => source)).toEqual(['delegation use']);
   });
 });
 
