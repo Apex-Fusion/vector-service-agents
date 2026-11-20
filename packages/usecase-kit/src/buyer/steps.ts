@@ -1,0 +1,137 @@
+// packages/usecase-kit/src/buyer/steps.ts
+// How a hire of a counterparty ended, as one tagged union. A caller switches on `kind`, and the compiler checks that it handled every kind. No kind is read from a text, and no kind is a pass
+// except `completed`. A step holds what the hire kit knows of the payment: the escrow, the vault that continues, and the terms. It holds no text of the counterparty.
+//
+//   completed                the receipt passed the eight checks, the decision accepted the delivery, and the Accept was made.
+//   refused_by_counterparty  the counterparty refused the job. Before its Claim the escrow stays Open. After its Claim the escrow is Claimed. Either way it returns to the vault after its deadline.
+//   vault_refused            the ledger refused the Pay from the vault, or the Pay could not be made. Nothing was signed and no money moved.
+//   failed                   the job did not finish, and it is not a refusal. A job that failed after the Claim is here.
+//   not_accepted             the delivery came, and the decision said no or did not answer in time. The code of the use case files the challenge.
+//   interrupted              an error ended the hire after the Pay was confirmed.
+//   pay_unconfirmed          the Pay was sent and not seen confirmed. It may still land.
+//   refused                  the request is refused before any ledger read of the Pay: an error of the protocol with its code.
+import type { ErrorCode, HandoffRecord, OutputRef, ReceiptVerification } from '@vsa/usecase-kit/protocol';
+import type { HireTerms } from '@vsa/hire-kit';
+import type { JsonObject } from '@vsa/usecase-kit/protocol';
+import type { DelegationAfter } from './authority.ts';
+
+/** A delivery that passed the eight checks of the receipt. The decision of a use case gets it. */
+export interface VerifiedDelivery {
+  readonly escrow_ref: OutputRef;
+  readonly advert_ref: OutputRef;
+  /** The text of the answer of the counterparty, as it gave it. */
+  readonly text: string;
+  /** The answer as a JSON object, or `null` when its text is not one. The confirmation, the intake record or the quote is here. */
+  readonly result: JsonObject | null;
+  /** The receipt as the counterparty signed it. */
+  readonly receipt: JsonObject;
+  readonly receipt_signature: string;
+  /** The eight checks of the receipt. */
+  readonly verification: ReceiptVerification;
+}
+
+/** What the hire kit says of an escrow that a Pay opened. */
+interface PaidStep {
+  /** The hire for the result of the agent. */
+  readonly handoff: HandoffRecord;
+  /** The vault that continues after the Pay. */
+  readonly vault_ref: string | null;
+  readonly terms: HireTerms;
+}
+
+export interface CompletedStep extends PaidStep {
+  readonly kind: 'completed';
+  readonly delivery: VerifiedDelivery;
+}
+
+export interface RefusedByCounterpartyStep extends PaidStep {
+  readonly kind: 'refused_by_counterparty';
+  /** A code of the protocol, or `counterparty_refused` when the counterparty gave no code of the protocol. Never a text of the counterparty. */
+  readonly reason: string;
+  /** Before its Claim (the runtime refused the job), or after its Claim (a code of `AFTER_CLAIM_REFUSALS`). */
+  readonly source: 'before_claim' | 'after_claim';
+  /** The HTTP status of the refusal when it came before the Claim, and `null` when it came after. */
+  readonly runtime_status: number | null;
+}
+
+export interface VaultRefusedStep {
+  readonly kind: 'vault_refused';
+  /** The evaluation error of the node for a Pay that the vault script refused or the node did not evaluate, and the code of the builder for a Pay that could not be built. */
+  readonly reason: string;
+  readonly refusal: 'ledger' | 'not_evaluated' | 'impossible';
+  /** What the delegation was when the flow read it again after the refusal. */
+  readonly delegation: DelegationAfter;
+  /** True when the hirer ended the delegation. The exit state is then `Cancelled`. */
+  readonly delegation_ended: boolean;
+  /** For the evidence file. It is not part of the result of the agent. */
+  readonly evidence: { readonly transaction_body: string | null };
+  /** No escrow was posted. */
+  readonly handoff: null;
+}
+
+export interface FailedStep {
+  readonly kind: 'failed';
+  /** A code. A code of the hire kit for a job that failed after the Pay, or a code of this folder. */
+  readonly reason: string;
+  /** One sentence for a log. It holds no text of the counterparty. */
+  readonly detail: string;
+  /** The hire, or `null` when no escrow was posted. */
+  readonly handoff: HandoffRecord | null;
+  readonly vault_ref: string | null;
+  readonly terms: HireTerms | null;
+  /** The error that ended the hire, for the log of the operator. Never put it in a result. */
+  readonly cause?: unknown;
+}
+
+export interface NotAcceptedStep extends PaidStep {
+  readonly kind: 'not_accepted';
+  /** The decision said no (`declined`), or it did not answer in time (`decision_timeout`). */
+  readonly why: 'declined' | 'decision_timeout';
+  /** The reason that the decision gave when it said no, and `null` for a decision that did not answer. It is the words of the use case, never of the counterparty. */
+  readonly declined: string | null;
+  readonly delivery: VerifiedDelivery;
+}
+
+/** Why an error ended a hire after the Pay was confirmed. */
+export type InterruptionCause = 'deadline' | 'store_write' | 'decision_error' | 'other';
+
+export interface InterruptedStep {
+  readonly kind: 'interrupted';
+  readonly cause_kind: InterruptionCause;
+  readonly detail: string;
+  /** The vault that continues. The next Pay starts from it. */
+  readonly vault_ref: string;
+  readonly escrow_ref: OutputRef;
+  readonly handoff: HandoffRecord;
+  /** The delivery that the decision was given, or `null` when the hire ended before the decision. */
+  readonly delivery: VerifiedDelivery | null;
+  /** The error that ended the hire, for the log of the operator. Never put it in a result. */
+  readonly cause: unknown;
+}
+
+export interface PayUnconfirmedStep {
+  readonly kind: 'pay_unconfirmed';
+  readonly detail: string;
+  /** The escrow that the Pay opens if it lands. */
+  readonly escrow_ref: OutputRef;
+  /** The vault that continues if the Pay lands. */
+  readonly vault_ref_if_landed: string;
+  readonly tx_hash: string;
+  /** False when the Pay certainly did not reach the node. */
+  readonly may_land: boolean;
+  /** The time after which the Pay cannot land, in POSIX milliseconds. A caller starts no other Pay from the old vault before it. */
+  readonly valid_to: number;
+  readonly handoff: HandoffRecord;
+  readonly cause: unknown;
+}
+
+/** The codes of a request that is refused before the Pay. Each one is an error code of the protocol with its HTTP status. `internal` is a fault of the settings of the agent. */
+export type RefusedCode = Extract<ErrorCode, 'delegation_not_mine' | 'request_too_large' | 'bad_shape' | 'internal'>;
+
+export interface RefusedStep {
+  readonly kind: 'refused';
+  readonly code: RefusedCode;
+  readonly detail: string;
+}
+
+export type HireStep = CompletedStep | RefusedByCounterpartyStep | VaultRefusedStep | FailedStep | NotAcceptedStep | InterruptedStep | PayUnconfirmedStep | RefusedStep;
