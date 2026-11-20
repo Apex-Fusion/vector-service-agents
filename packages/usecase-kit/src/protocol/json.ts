@@ -9,6 +9,7 @@
 //   - a value nested deeper than MAX_DOCUMENT_DEPTH, so that a hostile document cannot overflow the stack of a service.
 // The checks are made on a value of any origin and never throw.
 import { accepted, refused, type ProtocolResult } from './result.ts';
+import { shown } from './text.ts';
 
 export type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 export type JsonObject = { readonly [key: string]: JsonValue };
@@ -19,7 +20,6 @@ export type Document = JsonObject;
 export const MAX_DOCUMENT_DEPTH = 32;
 
 const WHOLE_NUMBER_KEY = /^(?:0|[1-9][0-9]*)$/;
-const NOT_PRINTABLE = /[^\x20-\x7e]/g;
 
 /** True for a plain object: made by an object literal, by JSON.parse, or with no prototype. An array, a date, a map and an object of a class are not. The members stay `unknown`: this checks the object, not its fields. */
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -34,9 +34,13 @@ interface Problem {
   readonly what: string;
 }
 
-/** The path of a member as text: the field, then `.key` and `[index]`. A key is cut to 40 characters and shows only printable ASCII, so that a hostile key cannot fill or split a log line. */
+/** The longest path that a detail shows. A deeper path is shown by its end, so the member is named and the detail stays short. */
+const MAX_PATH_TEXT = 120;
+
+/** The path of a member as text: the field, then `.key` and `[index]`. A key comes from outside, so it is shown cut and in printable form. */
 function pathText(field: string, path: readonly Step[]): string {
-  return path.reduce<string>((text, step) => (typeof step === 'number' ? `${text}[${step}]` : `${text}.${step.slice(0, 40).replace(NOT_PRINTABLE, '?')}`), field);
+  const text = path.reduce<string>((built, step) => (typeof step === 'number' ? `${built}[${step}]` : `${built}.${shown(step)}`), field);
+  return text.length <= MAX_PATH_TEXT ? text : `${field}...${text.slice(field.length + 3 - MAX_PATH_TEXT)}`;
 }
 
 function problemOf(value: unknown, depth: number, path: Step[]): Problem | null {

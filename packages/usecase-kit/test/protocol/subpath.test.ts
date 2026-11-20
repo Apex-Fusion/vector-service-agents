@@ -24,6 +24,13 @@ describe('the subpath pattern', () => {
     expect(Object.keys(byName).sort()).toStrictEqual(Object.keys(byPath).sort());
   });
 
+  it('loads the whole protocol folder with Node type stripping and with tsx, so that no type is imported as a value', () => {
+    const script = "const m = await import('@vsa/usecase-kit/protocol'); console.log(Object.keys(m).sort().join(','));";
+    const expected = Object.keys(byName).sort().join(',');
+    expect(node(['--experimental-strip-types', '--input-type=module', '-e', script])).toBe(expected);
+    expect(node(['--import', 'tsx', '--input-type=module', '-e', script])).toBe(expected);
+  }, 60_000);
+
   it('is one pattern, with no root entry and no barrel in src', () => {
     expect(manifest.exports).toStrictEqual({ './*': './src/*/index.ts' });
     expect(existsSync(join(SRC, 'index.ts'))).toBe(false);

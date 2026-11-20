@@ -157,6 +157,30 @@ describe('parseJsonValue refuses what JSON cannot hold, or what the canonical fo
       expect(result.detail).not.toContain(MARKER);
     }
   });
+
+  it('keeps the detail short for a member that is deep and has long keys, and shows the end of the path', () => {
+    const key = 'k'.repeat(40);
+    let value: unknown = Number.NaN;
+    for (let level = 0; level < 30; level += 1) value = { [key]: value };
+    const result = parseJsonValue(value, 'document');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.detail.length).toBeLessThan(250);
+      expect(result.detail.startsWith('document...')).toBe(true);
+      expect(result.detail.endsWith(`.${key} is not a finite number`)).toBe(true);
+    }
+  });
+
+  it('keeps the detail short for a document that holds itself', () => {
+    const circular: Record<string, unknown> = { a: 1 };
+    circular.document = circular;
+    const result = parseJsonValue(circular, 'handoff.document');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.detail.length).toBeLessThan(250);
+      expect(result.detail).toContain('is nested deeper than 32 levels');
+    }
+  });
 });
 
 describe('parseDocument takes a JSON object and nothing else', () => {
