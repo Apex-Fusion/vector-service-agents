@@ -307,7 +307,20 @@ async function waitUntilReady(deps: SubDelegationDeps, plan: Plan, made: LeftSub
   return refused('confirmation_timeout', `the sub-delegation had ${seen.confirmations === null ? 'an unknown number' : String(seen.confirmations)} of ${CONFIRMATIONS_REQUIRED} confirmations when the wait ended`);
 }
 
-/** The end step. It never throws: every failure is in the result, with the reference of what is left. */
+/** True when the ledger shows the delegation, false when it does not, and null when the ledger cannot be read. */
+async function showsLive(chain: DelegationChain, id: string): Promise<boolean | null> {
+  try {
+    return (await chain.readDelegation(id)) !== null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The end step: the Undelegate, signed by the agent key, and then the wait until the ledger no longer shows the delegation. It never throws: every failure is in the result, with the reference of
+ * what is left. A Delegate that was sent may not be on the ledger yet: the step tries to build the Undelegate again until `endTimeoutMs`, and it stops at once when the ledger shows the delegation
+ * and the builder still refuses, because that refusal is a rule and time does not change it.
+ */
 async function endSubDelegation(deps: SubDelegationDeps, plan: Plan, left: LeftSubDelegation | null): Promise<SubDelegationEnd> {
   if (left === null) return NOT_MADE;
   const { chain, clock } = deps;
@@ -315,31 +328,37 @@ async function endSubDelegation(deps: SubDelegationDeps, plan: Plan, left: LeftS
   const notEnded = (code: 'end_failed' | 'end_unconfirmed', detail: string): SubDelegationEnd => ({ state: 'not_ended', code, detail, left: current });
   try {
     const bounded = await within(clock, plan.endTimeoutMs, async (): Promise<SubDelegationEnd> => {
-      let built: UndelegateBuild;
-      try {
-        built = await chain.buildUndelegate({ changeAddress: plan.walletAddress, nowMs: clock.now(), id: left.id, signer: plan.agentSigner.keyHash });
-      } catch (error) {
-        return notEnded('end_failed', `the Undelegate could not be built: ${errorText(error)}`);
-      }
-      if (built.id !== left.id) return notEnded('end_failed', 'the Undelegate is for another delegation');
-      const signed = signAll(built.txCbor, built.requiredSigners, [plan.agentSigner, plan.subagentSigner]);
-      if (!signed.ok) return notEnded('end_failed', signed.detail);
-      current = { ...left, endTxHash: built.txHash };
-      try {
-        await chain.submit(signed.value);
-      } catch (error) {
-        return notEnded('end_failed', `the Undelegate was not accepted by the node: ${errorText(error)}`);
-      }
       const polls = Math.ceil(plan.endTimeoutMs / plan.pollMs) + 1;
+      let sent: UndelegateBuild | null = null;
+      let why = 'the sub-delegation is not on the ledger';
       for (let poll = 0; poll < polls; poll += 1) {
+        if (sent !== null) {
+          if ((await showsLive(chain, left.id)) === false) return { state: 'ended', txHash: sent.txHash };
+          await clock.sleep(plan.pollMs);
+          continue;
+        }
+        let built: UndelegateBuild | null = null;
         try {
-          if ((await chain.readDelegation(left.id)) === null) return { state: 'ended', txHash: built.txHash };
-        } catch {
-          // The ledger cannot be read now. The end is not seen, so it is not claimed: the next read decides, or the bound.
+          built = await chain.buildUndelegate({ changeAddress: plan.walletAddress, nowMs: clock.now(), id: left.id, signer: plan.agentSigner.keyHash });
+        } catch (error) {
+          why = `the Undelegate could not be built: ${errorText(error)}`;
+          if ((await showsLive(chain, left.id)) === true) return notEnded('end_failed', why);
+        }
+        if (built !== null) {
+          if (built.id !== left.id) return notEnded('end_failed', 'the Undelegate is for another delegation');
+          const signed = signAll(built.txCbor, built.requiredSigners, [plan.agentSigner, plan.subagentSigner]);
+          if (!signed.ok) return notEnded('end_failed', signed.detail);
+          current = { ...left, endTxHash: built.txHash };
+          try {
+            await chain.submit(signed.value);
+          } catch (error) {
+            return notEnded('end_failed', `the Undelegate was not accepted by the node: ${errorText(error)}`);
+          }
+          sent = built;
         }
         await clock.sleep(plan.pollMs);
       }
-      return notEnded('end_unconfirmed', 'the ledger still shows the sub-delegation after the Undelegate was sent');
+      return notEnded('end_unconfirmed', sent === null ? why : 'the ledger still shows the sub-delegation after the Undelegate was sent');
     });
     return bounded.timedOut ? notEnded('end_unconfirmed', `the end did not finish within ${plan.endTimeoutMs} ms`) : bounded.value;
   } catch (error) {
