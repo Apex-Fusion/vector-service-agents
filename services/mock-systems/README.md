@@ -53,11 +53,11 @@ The sourcing record takes a ranking in this order. The first failure ends the ca
 
 1. The body is a ranking.
 2. An `approval` of `null` is 403 `approval_not_found`.
-3. The approval check passes for the ranking exactly as it was sent. A check that does not pass gives one of the codes `approval_*` (403). A check that fails to run, or that does not answer in 30 seconds, is 503 `approval_unavailable`. The log line then has the rule `approval.timeout` or `approval.failed`. A late answer changes nothing.
+3. The approval check passes for the ranking exactly as it was sent. A check that does not pass gives one of the codes `approval_*` (403). A check that fails to run is 503 `approval_unavailable`: a source that it reads cannot be read, or it does not answer in 30 seconds. The log line then has the rule `approval.failed` or `approval.timeout`. A late answer changes nothing.
 4. The supplier of rank 1 resolves at the identity gateway and is Active now (403 `supplier_not_active`).
 5. The tenant is still the one that the caller was verified for (409 `tenant_changed`).
 
-The approval check is a dependency of the service. See "What the service does not verify".
+The approval check is the check of the use-case kit. See "The approval check of a ranking".
 
 ## Tenants
 
@@ -184,6 +184,29 @@ An access token is not a JWT-SVID, and a JWT-SVID is not an access token. Each r
 The operator token is the value of `MOCK_OPERATOR_TOKEN`. The service compares it in constant time. A missing token and a wrong token are both 401 `operator_token_invalid`.
 The token goes in the `Authorization` header only. A query string, a cookie or another header does not carry it.
 
+### The approval check of a ranking
+
+The service runs the approval check of the use-case kit (`@vsa/usecase-kit/checks`) and takes its answer as it is. It gives the check the agent that calls, the delegation of the token, the reference of the approval, the ranking exactly as it was sent, the salt and the time of the call. `src/wiring.ts` is the one place that wires the check to the service.
+
+The check reads the Vector ledger. It uses the node and the indexer of the settings `VECTOR_OGMIOS_URL` and `VECTOR_KOIOS_URL`, and the deployment of the three settings `VECTOR_IDENTITY_*`. It reads:
+
+- the attestation that `approval.attestation` names;
+- the delegation of the token, and its parents up to the root delegator;
+- the record of the issuer of the attestation, and its ancestors, when the attestation names an issuer record.
+
+It does not read the identity gateway. The checks run in this order. The first failure is the answer:
+
+1. The attestation exists and is authentic (403 `approval_not_found`).
+2. It is an approval (403 `approval_wrong_type`).
+3. Its subject is the agent that calls (403 `approval_wrong_subject`).
+4. Its issuer is the root delegator of the delegation of the token (403 `approval_wrong_issuer`). When the attestation names an issuer record, `approval.issuer_did` must name the same record.
+5. It is valid now by the rule of the registry. It is not revoked (403 `approval_revoked`). The time of the call is in its time window (403 `approval_expired`). The signature of its envelope verifies, when it has one. The record of its issuer was not invalid when the issuer made it (403 `approval_issuer_invalid`).
+6. Its digest is SHA-256 of the salt and the canonical form of the ranking (403 `approval_digest_mismatch`). The canonical form has the keys in order and no white space. So the order of the keys in the body does not matter, and the change of one value does.
+
+A source that cannot be read gives 503 `approval_unavailable` and the rule `approval.failed`. The message names the source: the attestation or the delegation. A source cannot be read when the node or the indexer gives no answer, when its answer is not as the check needs, and when a read takes more than 12 seconds. The check never takes such a source as a pass, and it never answers it with the code of a rule.
+The two reads of the check come one after the other, and each has its own budget of 12 seconds. So the check ends by itself inside the 30 seconds that the service waits for it.
+A ranking that a digest cannot bind makes the check fail to run, and the answer is 503 too. These are: a key that is a whole number, the key `__proto__`, a key that is not in the NFC form, a number that is not finite, and more than 32 levels of objects.
+
 ## Refusals
 
 A refusal is a typed result. Its body is `{ "error": "<code>", "message": "<words>" }`. A caller reads the code and the status. The message tells a person what to change.
@@ -217,7 +240,7 @@ A 401 has a `WWW-Authenticate` header (`DPoP algs="ES256 EdDSA"` for a token, `B
 | `operator_token_invalid` | 401 | The operator token is missing or wrong. |
 | `gateway_unavailable` | 503 | The identity gateway could not be read. |
 | `ledger_unavailable` | 503 | The ledger could not be read. |
-| `approval_unavailable` | 503 | The approval check failed to run, did not answer in 30 seconds, or gave an answer that is not a pass and is not a refusal. |
+| `approval_unavailable` | 503 | The approval check failed to run: a source that it reads (the attestation or the delegation on the ledger) could not be read, or it did not answer in 30 seconds, or it gave an answer that is not a pass and is not a refusal. |
 | `service_busy` | 503 | The store of used proofs is full. Send the call again later. |
 | `bad_request` | 400 | The request is not as the route needs. The message names the field. |
 | `not_found` | 404 | No such route. |
@@ -271,11 +294,11 @@ The service reads its settings from the environment at the start. A wrong value 
 | `MOCK_MTLS_BASE` | required | The https origin of the client-certificate host. It is another host than `MOCK_PUBLIC_BASE`. |
 | `MOCK_OPERATOR_TOKEN` | required | The token of `POST /admin/tenants`: 32 to 128 characters of letters, digits and `. _ ~ + / = -`. It is the one secret of the service. |
 | `IDENTITY_GATEWAY_URL` | `https://id.vector.apexfusion.org` | The origin of the identity gateway. |
-| `VECTOR_OGMIOS_URL` | `https://ogmios.vector.mainnet.apexfusion.org` | The node that the check of a delegation reads. |
-| `VECTOR_KOIOS_URL` | `https://v2.koios.vector.mainnet.apexfusion.org` | The indexer that the check of a delegation reads. |
-| `VECTOR_IDENTITY_LEGACY_ROOT` | required | A published value of the identity registry deployment that the check of a delegation reads. |
+| `VECTOR_OGMIOS_URL` | `https://ogmios.vector.mainnet.apexfusion.org` | The node that the checks of a delegation and of an approval read. |
+| `VECTOR_KOIOS_URL` | `https://v2.koios.vector.mainnet.apexfusion.org` | The indexer that the checks of a delegation and of an approval read. |
+| `VECTOR_IDENTITY_LEGACY_ROOT` | required | A published value of the identity registry deployment that the two checks read. |
 | `VECTOR_IDENTITY_CONFIG_SEED` | required | A published value of the same deployment. |
-| `VECTOR_IDENTITY_POLICY_ID` | required | The policy that the two values give. The start checks it, so that a value with a typo stops the start. A read with the wrong deployment would find no delegation, and the service would refuse every call. |
+| `VECTOR_IDENTITY_POLICY_ID` | required | The policy that the two values give. The start checks it, so that a value with a typo stops the start. A read with the wrong deployment would find no delegation and no attestation, and the service would refuse every call. |
 | `PORT` | `9120` | The port of the service. |
 | `HOST` | `127.0.0.1` | The address of the service. The image sets `0.0.0.0`. |
 
@@ -287,8 +310,8 @@ The operator token must be in `MOCK_OPERATOR_TOKEN` only. The start refuses a to
 corepack pnpm --filter @vsa/mock-systems start
 ```
 
-The production start **refuses** while no approval check is wired. It writes `[mock-systems] cannot start: ...` on stderr, opens no port and exits with 1.
-The one place to wire the check is `src/wiring.ts`. The test of the wiring is `test/wiring.test.ts`.
+The production start wires the approval check of the use-case kit to the ledger, the gateway client and the clock of the service (`src/wiring.ts`). The start needs no answer of the gateway, the node or the indexer: the first call reads them.
+A start for which the wiring gives no approval check **refuses**. It writes `[mock-systems] cannot start: ...` on stderr, opens no port and exits with 1. The real wiring always gives a check. A test can pass a wiring that gives none.
 
 The image is built from the root of the repository:
 
@@ -309,11 +332,11 @@ corepack pnpm --filter @vsa/mock-systems typecheck
 ```
 
 The tests use no network. They run the service on `127.0.0.1`, with the stub gateway of `@vsa/id-kit/testing` and a ledger of fixture data from `packages/buyer-core`.
-The approval check in the tests is a fake that exists in the test support only.
+Most tests give the service a fake approval check. It exists in the test support only. The tests in `test/wiring.test.ts`, and the last tests in `test/ranking.test.ts`, run the real check of the kit on the fixture ledger: the member issues an approval as an attestation, and the check reads it.
 
 ## What the service does not verify
 
-- **An approval.** The service does not check an approval itself. The approval check is a dependency of the app. The production start refuses while none is wired.
+- **An approval beyond the check of the kit.** The service takes the answer of the approval check as it is. It adds no check of an approval. The check reads the node and the indexer that the settings name, and it takes what they show as the state of the ledger. The service does not compare their answers with another source. A source that cannot be read gives 503 `approval_unavailable`, and never a pass.
 - **A second use of a JWT-SVID.** A JWT-SVID can be used again within its lifetime. The service does not record the SVIDs that it saw.
 - **The end of a token or an SVID.** A token is honoured up to 30 seconds after `exp`, and a JWT-SVID up to 30 seconds after its end. This is the clock difference that the verifier accepts. The check of the ledger still refuses an ended delegation in that time. An X.509-SVID gets no time after its end. At its start, a certificate is accepted 30 seconds early.
 - **A key or an authority that the gateway removed.** The verifier reads the key set and the bundle every 300 seconds. While a new copy cannot be fetched, it uses its old copy for up to one hour after the last good read. So a key or an authority that the gateway removed stays trusted for up to one hour in that time.
@@ -334,6 +357,6 @@ The approval check in the tests is a fake that exists in the test support only.
 | `src/routes.ts` | The routes, the need of each route and the handler of each route. |
 | `src/tenants.ts` | The tenants, the writes and the log of a tenant. |
 | `src/documents.ts`, `src/validate.ts`, `src/seed.ts` | The readers of the bodies and of the seed, and the default data. |
-| `src/approval.ts`, `src/wiring.ts` | The shape of the approval check, and the one place that wires it. |
+| `src/approval.ts`, `src/wiring.ts` | The shape of the approval check and the decision on its answer, and the one place that wires the check of the use-case kit to the service. |
 | `src/config.ts`, `src/start.ts`, `src/index.ts`, `src/ledger.ts` | The settings, the start and the stop, the entry and the reads of the ledger. |
 | `src/errors.ts` | The codes of the refusals and their statuses. |
