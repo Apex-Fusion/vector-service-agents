@@ -149,9 +149,10 @@ Every process of the host that can open `127.0.0.1:9120` is a direct client of t
 The TLS handshake proves that the client holds the private key of the certificate. Nothing else is checked.
 The mock service must check these things itself:
 
-1. The certificate chain, against the SPIFFE bundle of the identity gateway. The service reads the bundle again every 300 seconds. When a new copy cannot be fetched, the service goes on with its old copy for up to one hour after the last good read, and then it refuses the call. So an authority that the gateway removed stays trusted for up to one hour in that time.
-2. The validity time of the certificate.
-3. The SPIFFE ID in the URI name of the certificate.
+1. The value holds exactly one certificate, and the certificate that the service verifies is the whole value. `X509Certificate` reads the first certificate that it finds, drops the bytes after it, and reads a certificate that sits inside another one in place of the outer one. The TLS handshake proves only that the client holds the key of the certificate that it presented, and it does not prove who issued that certificate. So a client can put the SVID of another agent inside a certificate of its own, and a service that keeps the inner certificate takes the client for that agent.
+2. The certificate chain, against the SPIFFE bundle of the identity gateway. The service reads the bundle again every 300 seconds. When a new copy cannot be fetched, the service goes on with its old copy for up to one hour after the last good read, and then it refuses the call. So an authority that the gateway removed stays trusted for up to one hour in that time.
+3. The validity time of the certificate.
+4. The SPIFFE ID in the URI name of the certificate.
 
 A service reads the header in this way (Node 22). The result is `null` when there is no valid certificate:
 
@@ -162,11 +163,18 @@ const header = req.headers['client-cert']; // A string, or undefined. Node joins
 const match = /^:([A-Za-z0-9+/]+={0,2}):$/.exec(header ?? '');
 let certificate = null;
 try {
-  if (match) certificate = new X509Certificate(Buffer.from(match[1], 'base64'));
+  if (match) {
+    const bytes = Buffer.from(match[1], 'base64');
+    const read = new X509Certificate(bytes);
+    // X509Certificate reads the first certificate that it finds in the bytes. Keep the result only when it is the whole value.
+    if (read.raw.equals(bytes)) certificate = read;
+  }
 } catch {
   // The bytes are not a certificate. The request has no certificate.
 }
 ```
+
+`x509Svid` of `@vsa/id-kit` makes this check and the three other checks.
 
 ### The local proof
 

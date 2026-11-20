@@ -6035,10 +6035,10 @@ test('agents host: the README gives the header Client-Cert as the snippet sets i
   const dir = mkdtempSync(join(tmpdir(), 'agents-host-example-'));
   try {
     writeFileSync(join(dir, 'example.mjs'), source);
-    const bad = [null, value.slice(1, -1), `${value}, ${value}`, ':not base64!:', '::', `${value} `, `x${value}`, ':AAAA:'];
+    const bad = [null, value.slice(1, -1), `${value}, ${value}`, ':not base64!:', '::', `${value} `, `x${value}`, ':AAAA:', `:${Buffer.concat([der, Buffer.from([0])]).toString('base64')}:`, `:${Buffer.concat([der, der]).toString('base64')}:`];
     const out = JSON.parse(execFileSync(process.execPath, [join(dir, 'example.mjs'), JSON.stringify([value, ...bad])], { encoding: 'utf8' }));
     assert.deepEqual(out[0], { subject: 'CN=test client', fingerprint: new X509Certificate(SRV_TEST_CERT).fingerprint256 });
-    assert.deepEqual(out.slice(1), bad.map(() => null), 'no header, no colons, two headers, no base64, an empty value, a space, a prefix and bytes that are not a certificate all give null');
+    assert.deepEqual(out.slice(1), bad.map(() => null), 'no header, no colons, two headers, no base64, an empty value, a space, a prefix, bytes that are not a certificate, a certificate and one more byte, and a certificate two times all give null');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
