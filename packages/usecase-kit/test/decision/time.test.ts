@@ -111,30 +111,46 @@ describe('decide: a clock that cannot be read is never enough time', () => {
   });
 });
 
-describe('decide: a decision that waits in the lane until after the deadline', () => {
-  // The check of `decide` is made when the decision starts. A decision that starts with time left, waits for the lane of its key, and gets its turn after the deadline is checked by the hire kit, at
-  // the moment when the lane gives the turn.
-  it('does not post for it: the hire kit ends it at its turn, and nothing is posted or locked', async () => {
+describe('decide: a decision that waits in the lane', () => {
+  // The check of `decide` is made when the decision starts. A decision that starts with time left and waits for the lane of its key is checked again by the hire kit when the lane gives it its
+  // turn: the request asks for HIRE_MIN_MS left at that moment.
+  const deadline = T0 + 600_000;
+
+  /** Two decisions at one time from one key. The first holds the lane in its Accept until the clock stands at `turnAt`; then the second gets its turn. */
+  async function pair(turnAt: number) {
     const gate = deferred();
     const reached = deferred();
     let held = true;
     const run = await setup({}, (m) => ({ accept: async (ref) => { if (held) { held = false; reached.resolve(); await gate.promise; } return m.chain.accept(ref); } }));
     run.m.llm.answer = said(MEDIUM_LOT);
-    const deadline = T0 + 600_000;
     run.deps.deadlineMs = deadline;
     const first = decide(run.deps, REORDER, STOCK_INPUT);
     const second = decide(run.deps, REORDER, STOCK_INPUT);
     await reached.promise;
-    // The first decision is in its Accept, and the second waits. The clock passes the deadline, and the first decision ends.
-    run.m.clock.now = deadline + 1;
+    run.m.clock.now = turnAt;
     gate.resolve();
     const [a, b] = await Promise.all([first, second]);
     expect(won(a).inference.sub_job.escrow_ref).toBe(escrowNo(1));
-    const failure = lost(b);
+    return { run, second: b };
+  }
+
+  it.each([
+    ['after the deadline', deadline + 1],
+    ['1 ms before the deadline', deadline - 1],
+    [`${HIRE_MIN_MS - 1} ms before the deadline`, deadline - HIRE_MIN_MS + 1],
+  ])('does not post for a turn %s: the hire kit ends it at its turn, and nothing is posted or locked', async (_name, turnAt) => {
+    const { run, second } = await pair(turnAt);
+    const failure = lost(second);
     expect([failure.code, failure.reason, failure.stage, failure.escrow_ref, failure.delivery]).toStrictEqual(['inference_failed', 'llm_out_of_time', 'lane', null, null]);
     // One Post and one send: the second decision posted nothing and locked nothing.
     expect([run.booked.length, run.m.llm.sends.length]).toStrictEqual([1, 1]);
     expect(await run.m.chain.escrowState(escrowNo(2))).toBe('unknown');
     expect(run.key.stranded.list()).toStrictEqual([]);
+  });
+
+  it(`hires for a turn ${HIRE_MIN_MS} ms before the deadline: the twin`, async () => {
+    const { run, second } = await pair(deadline - HIRE_MIN_MS);
+    expect(won(second).inference.sub_job.escrow_ref).toBe(escrowNo(2));
+    expect([run.booked.length, run.m.llm.sends.length]).toStrictEqual([2, 2]);
   });
 });

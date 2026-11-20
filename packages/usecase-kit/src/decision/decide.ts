@@ -15,8 +15,8 @@
 //     waits until the first has ended, however it ended.
 //   - No hire starts when the time of the run is over. A decision reads the clock before it hires. With the deadline of the run past, or less than HIRE_MIN_MS away, the result is
 //     `inference_failed` with the reason `llm_out_of_time`, and nothing is posted. A hire that started late would choose a supplier and Post, the supplier would claim, and the hire would end as
-//     out of time with its lock held until the deadline of the escrow. The check is made when the decision starts. A decision that waits in the lane of the key and gets its turn after the
-//     deadline is not covered here: the hire kit checks that when the lane gives the turn.
+//     out of time with its lock held until the deadline of the escrow. The same rule holds when the lane of the key gives the hire its turn: the request asks the hire kit for HIRE_MIN_MS left
+//     at the turn (`minLeftAtTurnMs`), so a decision that waited in the lane ends at the stage `lane` with nothing posted.
 //   - A paid hire is always in the failure. The Accept pays the supplier, and what fails after it does not undo that: the record of the hire cannot be recorded (the supplier writes its receipt), the
 //     answer cannot be read, the result of the hire has a wrong form, or the ledger of the caller throws. An Accept that was sent and is not seen on the chain may still land, so the supplier may be
 //     paid also when the stranded store cannot be written for it. Every failure after an Accept says in its detail that the escrow was paid, or may be paid, and it has a `delivery`: the complete
@@ -254,6 +254,7 @@ export async function decide<C extends JsonValue>(deps: DecisionDeps, spec: Deci
     maxSupplierBondLovelace: limits.value.maxSupplierBondLovelace,
     maxBuyerBondLovelace: limits.value.maxBuyerBondLovelace,
     ceilingSetting: LLM_MAX_PRICE_SETTING,
+    minLeftAtTurnMs: HIRE_MIN_MS,
   };
   const seen: Seen = { escrow: null, accept: null };
   let hired: Hired<ModelAnswer>;

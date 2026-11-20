@@ -46,6 +46,7 @@ describe('the call to hireModel', () => {
       maxSupplierBondLovelace: LIMITS.maxSupplierBondLovelace,
       maxBuyerBondLovelace: LIMITS.maxBuyerBondLovelace,
       ceilingSetting: 'LLM_MAX_PRICE_LOVELACE',
+      minLeftAtTurnMs: 60_000,
     });
   });
 
