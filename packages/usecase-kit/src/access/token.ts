@@ -6,7 +6,7 @@ import { inspect } from 'node:util';
 import { presentToken, type GatewayClient, type KeyInput, type PresentedToken } from '@vsa/id-kit/client';
 import { accepted, parseDelegationId, parseDid, type Accepted, type DelegationId, type Did } from '../protocol/index.ts';
 import { fromRule, fromThrown, gatewayFailure, type GatewayFailure } from './gateway.ts';
-import type { Clock } from './ports.ts';
+import { MAX_WAIT_MS, type Clock } from './ports.ts';
 import type { RouteId, TokenCallers, TokenTarget } from './routes.ts';
 
 /** Who holds the token: the agent (an act chain of one link), or a subagent (two links). */
@@ -150,8 +150,8 @@ export interface PatientOptions {
  * Use it for a delegation that the caller saw with 30 confirmations and that the gateway, which reads the ledger by itself, has not yet seen so.
  */
 export async function askWhileTooYoung(clock: Clock, ask: () => Promise<RouteTokenResult>, options: PatientOptions): Promise<RouteTokenResult> {
-  if (!Number.isInteger(options.waitMs) || options.waitMs < 0 || !Number.isInteger(options.pollMs) || options.pollMs < 1) {
-    return gatewayFailure('bad_request', 'waitMs must be a whole number of at least 0, and pollMs a whole number of at least 1');
+  if (!Number.isSafeInteger(options.waitMs) || options.waitMs < 0 || options.waitMs > MAX_WAIT_MS || !Number.isSafeInteger(options.pollMs) || options.pollMs < 1 || options.pollMs > MAX_WAIT_MS) {
+    return gatewayFailure('bad_request', `waitMs must be a whole number from 0 to ${MAX_WAIT_MS}, and pollMs a whole number from 1 to ${MAX_WAIT_MS}`);
   }
   const deadline = clock.now() + options.waitMs;
   const runs = Math.floor(options.waitMs / options.pollMs) + 1;

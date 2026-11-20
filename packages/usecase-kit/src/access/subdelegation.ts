@@ -11,7 +11,7 @@
 // that deposit and the fee of the transaction from the wallet of its live delegation key. The Undelegate returns the deposit to that wallet, less its own fee.
 import { isAction, isResource, type DelegateBuild, type DelegateParams, type UndelegateBuild, type UndelegateParams } from '@vsa/buyer-core';
 import { accepted, parseDelegationId, parseDid, refused, type Accepted, type DelegationId, type Did, type Refused } from '../protocol/index.ts';
-import { within, type Clock } from './ports.ts';
+import { MAX_WAIT_MS, within, type Clock } from './ports.ts';
 import type { TokenTarget } from './routes.ts';
 import { errorText, safeText } from './text.ts';
 
@@ -202,11 +202,11 @@ function planOf(request: SubDelegationRequest, limits: SubDelegationLimits): Acc
   if (request.agent.signer.keyHash === request.subagent.signer.keyHash) return bad('the agent and the subagent must have two delegation keys');
   if (typeof request.agent.walletAddress !== 'string' || request.agent.walletAddress.length < 1) return bad('agent.walletAddress must be the address of the wallet of the delegation key');
   if (!isWhole(request.validForMs, MIN_SUB_DELEGATION_MS, MAX_SUB_DELEGATION_MS)) return bad(`validForMs must be a whole number from ${MIN_SUB_DELEGATION_MS} to ${MAX_SUB_DELEGATION_MS}`);
-  const confirmationWaitMs = limits.confirmationWaitMs ?? DEFAULT_CONFIRMATION_WAIT_MS;
-  const pollMs = limits.pollMs ?? DEFAULT_POLL_MS;
-  const endTimeoutMs = limits.endTimeoutMs ?? DEFAULT_END_TIMEOUT_MS;
-  if (!isWhole(limits.jobTimeoutMs, 1)) return bad('jobTimeoutMs must be a whole number of at least 1');
-  if (!isWhole(confirmationWaitMs, 1) || !isWhole(pollMs, 1) || !isWhole(endTimeoutMs, 1)) return bad('confirmationWaitMs, pollMs and endTimeoutMs must be whole numbers of at least 1');
+  const confirmationWaitMs = limits.confirmationWaitMs === undefined ? DEFAULT_CONFIRMATION_WAIT_MS : limits.confirmationWaitMs;
+  const pollMs = limits.pollMs === undefined ? DEFAULT_POLL_MS : limits.pollMs;
+  const endTimeoutMs = limits.endTimeoutMs === undefined ? DEFAULT_END_TIMEOUT_MS : limits.endTimeoutMs;
+  if (!isWhole(limits.jobTimeoutMs, 1, MAX_WAIT_MS)) return bad(`jobTimeoutMs must be a whole number from 1 to ${MAX_WAIT_MS}`);
+  if (!isWhole(confirmationWaitMs, 1, MAX_WAIT_MS) || !isWhole(pollMs, 1, MAX_WAIT_MS) || !isWhole(endTimeoutMs, 1, MAX_WAIT_MS)) return bad(`confirmationWaitMs, pollMs and endTimeoutMs must be whole numbers from 1 to ${MAX_WAIT_MS}`);
   return accepted({
     target, parent: parent.value, subagentId: subagent.value.slice('did:vector:'.length), agentSigner: request.agent.signer, subagentSigner: request.subagent.signer,
     walletAddress: request.agent.walletAddress, validForMs: request.validForMs, jobTimeoutMs: limits.jobTimeoutMs, confirmationWaitMs, pollMs, endTimeoutMs,

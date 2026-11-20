@@ -28,6 +28,9 @@ export const systemClock: Clock = {
     }),
 };
 
+/** The longest wait that any bound of this folder takes: one day, in milliseconds. A timer cannot hold more than about 24 days, so a longer number would end at once. */
+export const MAX_WAIT_MS = 86_400_000;
+
 export type Bounded<T> = { readonly timedOut: false; readonly value: T } | { readonly timedOut: true };
 
 /**
