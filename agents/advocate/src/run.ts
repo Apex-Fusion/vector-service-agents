@@ -16,7 +16,7 @@
 // The run writes no log line of its own: its phases write theirs (counts, codes and statuses, never a text of the job), and the server writes the line of the
 // job.
 import type { Chain } from '@vsa/buyer-core';
-import type { StrandedStore } from '@vsa/hire-kit';
+import type { BondLimits, StrandedStore } from '@vsa/hire-kit';
 import type { SafeFetchOpts } from '@vsa/vector-read';
 import { SEARCH_MAX_MS, SEARCH_QUERY_TIMEOUT_MS, fetchDeadlineMs } from './budget.ts';
 import { checkCitations } from './check.ts';
@@ -57,6 +57,11 @@ export interface RunDeps {
   /** The chat models the service hires (LLM_MODEL_ALLOWLIST) and the most an advert may be priced at (LLM_MAX_PRICE_LOVELACE). */
   allowlist: readonly string[];
   maxPriceLovelace: bigint;
+  /**
+   * The most that the supplier bond and the buyer bond of the chat advert may each be (LLM_MAX_SUPPLIER_BOND_LOVELACE, LLM_MAX_BUYER_BOND_LOVELACE). A limit that is not set is
+   * left out: no limit, and the choice of the chat supplier is given none.
+   */
+  bondLimits?: BondLimits;
   /** The marketplace indexer; the configured one when absent (VECTOR_MARKETPLACE_INDEXER_URL). */
   indexerUrl?: string;
   /** The key hash of the buyer key. */
@@ -114,7 +119,7 @@ async function runJob(req: AdvocateRequest, deps: RunDeps): Promise<RunOutcome> 
   // The model: the marketplace first, OpenRouter when that hire fails (src/inference.ts), each in its part of the time left.
   const inference = await infer(req, pages, {
     chain: deps.chain, stranded: deps.stranded, fetchImpl: deps.fetchImpl, clock, sleep: deps.sleep, allowlist: deps.allowlist, maxPriceLovelace: deps.maxPriceLovelace,
-    indexerUrl: deps.indexerUrl, buyerPkh: deps.buyerPkh, openRouterApiKey: deps.openRouterApiKey, openRouterModel: deps.model, marketplace: deps.marketplace,
+    indexerUrl: deps.indexerUrl, bondLimits: deps.bondLimits, buyerPkh: deps.buyerPkh, openRouterApiKey: deps.openRouterApiKey, openRouterModel: deps.model, marketplace: deps.marketplace,
     deadlineMs, signal, log,
   });
 

@@ -59,7 +59,7 @@ export interface Market {
  * The FakeChain (the advert of the chat supplier, the clock at `t0`), the indexer listing it free, and the supplier, answering the golden brief `answer`.
  * `advert` replaces the datum of the advert, on the chain and in the indexer's row alike.
  */
-export function market(opts: Pick<FakeChainOptions, 'floatLovelace' | 'collateralLovelace'> & { t0: number; answer: string; advert?: AdvertDatum }): Market {
+export function market(opts: Pick<FakeChainOptions, 'floatLovelace' | 'collateralLovelace' | 'lockLovelace'> & { t0: number; answer: string; advert?: AdvertDatum }): Market {
   const { t0, answer, advert = chatAdvert(), ...chainOpts } = opts;
   const shared = marketplace({ ...chainOpts, world, listed: ['llm'], llmAdvert: advert, t0 });
   const supplier = shared.llm;

@@ -23,12 +23,17 @@
 // the caller did, so that the log names the escrow.
 //
 // The log (R-F8). A line about the hop carries its code and its stage and nothing else: `inference: marketplace <code> at <stage>, falling back` or
-// `..., not falling back`. The messages of the kit can hold the words of a supplier, and none of them reaches a line or a detail of this file. The kit's own
+// `..., not falling back`. The messages of the kit can hold the words of a supplier, and none of them reaches a line or a detail of this file, with one exception. The kit's own
 // lines through `log` (the supplier chosen, a store entry it could not remove) carry references, a price and a host, and are let through.
+//
+// The limits of the bonds. The buyer funds the price and both bonds of an escrow, and an Accept pays the supplier the price and the supplier bond: the price ceiling does not
+// bound what a hire pays. The operator can limit each bond (LLM_MAX_SUPPLIER_BOND_LOVELACE, LLM_MAX_BUYER_BOND_LOVELACE), and the choice is given the limits that are set. An advert
+// whose bond is above a limit is refused before its Post, as an advert above the price ceiling is: the job falls back as llm_supplier_unavailable at the choice. The one exception
+// to the rule of the log is this refusal. Its line names the advert, the bond, the limit and the setting, and holds a reference and numbers of the chain and of the settings only.
 import { within } from '@vsa/service-kit';
 import type { Chain } from '@vsa/buyer-core';
 import { chatJob, chooseChatSupplier, hireOne, plannedLockOf, subJobFloat } from '@vsa/hire-kit';
-import type { HireErrors, HireFacts, HireLedger, HireRecord, HireStage, HireSupplier, Hired, StrandedStore } from '@vsa/hire-kit';
+import type { BondLimits, HireErrors, HireFacts, HireLedger, HireRecord, HireStage, HireSupplier, Hired, StrandedStore } from '@vsa/hire-kit';
 import { CHOICE_BUDGET_MS, CHOICE_MAX_CANDIDATES, CHOICE_WITHIN_MS, HOP_MIN_MS, WALLET_READ_MS, hopDeadlineMs, modelBudgetMs, receiptByMs } from './budget.ts';
 import { AdvocateError } from './errors.ts';
 import { callModel, parseBriefAnswer } from './model.ts';
@@ -44,6 +49,11 @@ export interface InferenceDeps {
   chain: Chain; stranded: StrandedStore; fetchImpl: typeof fetch; clock: () => number; sleep: (ms: number) => Promise<void>;
   /** The chat models the service hires (LLM_MODEL_ALLOWLIST), the most an advert may be priced at (LLM_MAX_PRICE_LOVELACE), and the marketplace indexer. */
   allowlist: readonly string[]; maxPriceLovelace: bigint; indexerUrl?: string;
+  /**
+   * The most that the supplier bond and the buyer bond of the advert may each be (LLM_MAX_SUPPLIER_BOND_LOVELACE, LLM_MAX_BUYER_BOND_LOVELACE). A limit that is not set is
+   * left out, and the choice is given no limit.
+   */
+  bondLimits?: BondLimits;
   /** The key hash of the buyer key, which the lock of a Post is planned with. */
   buyerPkh: string;
   /** The fallback: the key of OpenRouter and its model (OPENROUTER_API_KEY, OPENROUTER_MODEL). */
@@ -109,6 +119,19 @@ export const ADVOCATE_HOP_ERRORS: HireErrors<HopFailed> = {
   storeWrite: (_message, facts) => new HopFailed('store_write_failed', facts),
 };
 
+/** The reason the kit gives for an advert whose bond is above a limit (bondProblem of packages/hire-kit): its advert, the kind of bond, the bond and the limit. It stands at the start of the reason: the other reasons can hold words of a third party. */
+const BOND_REFUSAL = /^on chain, its advert ([0-9a-f]{64}#\d+) has a (supplier|buyer) bond of (\d+) lovelace, above the limit of (\d+) lovelace(?::|$)/;
+/** The setting that holds the limit of each bond. */
+const BOND_SETTING = { supplier: 'LLM_MAX_SUPPLIER_BOND_LOVELACE', buyer: 'LLM_MAX_BUYER_BOND_LOVELACE' } as const;
+
+/** The line of the log for an advert that the choice refuses because a bond is above a limit, from the reason the kit gives; null for any other reason. */
+function bondRefusalLine(reason: string): string | null {
+  const found = BOND_REFUSAL.exec(reason);
+  if (found === null) return null;
+  const [, advertRef, kind, bond, limit] = found;
+  return `inference: marketplace choice refused the advert ${advertRef}: its ${kind} bond is ${bond} lovelace, above the limit of ${limit} lovelace (${BOND_SETTING[kind as keyof typeof BOND_SETTING]})`;
+}
+
 /** The codes of a hire after which the job does not fall back (R-F4): the Accept could not be made, or the store could not be written. */
 const NO_FALLBACK: ReadonlySet<string> = new Set(['llm_accept_failed', 'store_write_failed']);
 /** The code of a job that goes to OpenRouter because the marketplace path is off. */
@@ -157,8 +180,12 @@ async function viaMarketplace(input: string, deps: InferenceDeps): Promise<Infer
   try {
     supplier = await within(chooseChatSupplier(deps.chain, {
       fetchImpl: deps.fetchImpl, indexerUrl: deps.indexerUrl, allowlist: deps.allowlist, maxPriceLovelace: deps.maxPriceLovelace, ceilingSetting: 'LLM_MAX_PRICE_LOVELACE',
-      budgetMs: CHOICE_BUDGET_MS, maxCandidates: CHOICE_MAX_CANDIDATES, log,
-    }, () => new HopFailed('llm_supplier_unavailable', null)), CHOICE_WITHIN_MS);
+      ...deps.bondLimits, budgetMs: CHOICE_BUDGET_MS, maxCandidates: CHOICE_MAX_CANDIDATES, log,
+    }, (reason) => {
+      const refusal = bondRefusalLine(reason);
+      if (refusal !== null) log(refusal);
+      return new HopFailed('llm_supplier_unavailable', null);
+    }), CHOICE_WITHIN_MS);
   } catch { return fallBack('llm_supplier_unavailable', 'choice'); }
 
   // The float: a fresh read of the wallet, its collateral output, and the lock of this advert and two fees outside it.

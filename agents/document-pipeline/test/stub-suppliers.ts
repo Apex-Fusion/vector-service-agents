@@ -40,6 +40,6 @@ export type Marketplace = SharedMarketplace;
  * The FakeChain (the adverts, the clock at T0), the indexer listing both adverts free, and the two suppliers behind one fetch. `ocrAdvert` and `llmAdvert` replace the datum of
  * an advert, on the chain and in the indexer's row alike (a test of a price, for one).
  */
-export function marketplace(opts: Pick<FakeChainOptions, 'floatLovelace' | 'collateralLovelace'> & { ocrAdvert?: AdvertDatum; llmAdvert?: AdvertDatum } = {}): Marketplace {
+export function marketplace(opts: Pick<FakeChainOptions, 'floatLovelace' | 'collateralLovelace' | 'lockLovelace'> & { ocrAdvert?: AdvertDatum; llmAdvert?: AdvertDatum } = {}): Marketplace {
   return sharedMarketplace({ ...opts, world, listed: ['ocr', 'llm'] });
 }

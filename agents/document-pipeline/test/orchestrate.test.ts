@@ -6,13 +6,14 @@
 //
 // The golden run pins the whole result byte for byte. The result is test/golden.ts: its values were computed from the stubs alone (what each supplier signs
 // for the request the Pipeline must send), not from a run of the code under test, and test/spec.test.ts holds the example of specs/document-pipeline.md to it.
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { responsesPromptHash, TxNotConfirmedError } from '@vsa/buyer-core';
 import type { Chain, ChainEscrowState } from '@vsa/buyer-core';
+import type * as HireKit from '@vsa/hire-kit';
 import { KOIOS_URL, blake2b224Hex, encodeIdentityDatum, identityRegistryOf, utf8ToHex } from '@vsa/vector-read';
 import type { AdvertDatum, IdentityDatum, Registry } from '@vsa/vector-read';
 import { runPipeline, PipelineError } from '../src/orchestrate.ts';
@@ -29,6 +30,14 @@ import {
   ALLOWLIST, INDEXER, LLM_ADVERT, LLM_ADVERT_REF, LLM_ENDPOINT, LLM_KEY, OCR_ADVERT, OCR_ADVERT_REF, OCR_ENDPOINT, OCR_KEY, T0, escrowNo, indexerRow, marketplace,
 } from './stub-suppliers.ts';
 import type { Marketplace } from './stub-suppliers.ts';
+
+// The query of each choice of a chat supplier, recorded on the way to the real choice.
+const spy = vi.hoisted(() => ({ queries: [] as unknown[] }));
+vi.mock('@vsa/hire-kit', async (importOriginal) => {
+  const real = await importOriginal<typeof HireKit>();
+  return { ...real, chooseChatSupplier: (...args: Parameters<typeof real.chooseChatSupplier>) => { spy.queries.push(args[1]); return real.chooseChatSupplier(...args); } };
+});
+beforeEach(() => { spy.queries.length = 0; });
 
 const DEADLINE_MS = 1_620_000;
 const SCHEMA = { type: 'object', required: ['title'], properties: { title: { type: 'string' } } };
@@ -839,6 +848,26 @@ describe('runPipeline: the chat answer', () => {
     await failure(runPipeline(request(), { ...run.deps, chain }), 'llm_supplier_unavailable', 503);
     expect(await states(run.m, escrowNo(1), escrowNo(2), escrowNo(3))).toStrictEqual(['spent', 'spent', 'unknown']);
   });
+
+  it('a chat supplier chosen again whose bond is above a limit by then: llm_supplier_unavailable (503), the page escrows settled, the chat escrow never posted', async () => {
+    const run = setup();
+    const heavy = { ...LLM_ADVERT, supplier_bond_lovelace: 2_000_001n };
+    let accepts = 0;
+    let changed = false;
+    const chain = chainWith(run.m, {
+      accept: async (r) => {
+        const done = await run.m.chain.accept(r);
+        accepts += 1;
+        if (accepts === 2) { run.m.clock.now = T0 + 700_000; run.m.rows[1] = indexerRow(LLM_ADVERT_REF, heavy); changed = true; }
+        return done;
+      },
+      readAdvert: async (r) => (changed && r.toLowerCase() === LLM_ADVERT_REF.toLowerCase() ? heavy : run.m.chain.readAdvert(r)),
+    });
+    const error = await failure(runPipeline(request(), { ...run.deps, chain, llmBondLimits: { maxSupplierBondLovelace: 2_000_000n } }), 'llm_supplier_unavailable', 503);
+    expect(error.message).toContain(`its advert ${LLM_ADVERT_REF} has a supplier bond of 2000001 lovelace, above the limit of 2000000 lovelace`);
+    expect(await states(run.m, escrowNo(1), escrowNo(2), escrowNo(3))).toStrictEqual(['spent', 'spent', 'unknown']);
+    expect(run.m.llm.sends).toHaveLength(0);
+  });
 });
 
 // --- The deadline -------------------------------------------------------------------------------------------------------------------------
@@ -1014,6 +1043,75 @@ describe('runPipeline: refusals before anything is posted', () => {
     expect(error.message).toContain('at a price at or under the ceiling of 1000000 lovelace (LLM_MAX_PRICE_LOVELACE)');
     expect(run.m.llm.sends).toHaveLength(0);
     expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
+  });
+
+  // The bonds. The buyer funds the price and both bonds of an escrow, and an Accept pays the supplier the price and its bond, so the price ceiling does not bound what a
+  // hire pays. Two optional limits hold the bonds of the chat advert. With none set, the choice of the chat supplier is given none.
+  /** A marketplace whose chat advert has the terms `over` says, and whose Post locks what that advert asks for and a little more, as a Post on the ledger does. */
+  const withChatAdvert = (over: Partial<AdvertDatum>): Run => {
+    const llmAdvert = { ...LLM_ADVERT, ...over };
+    return setup({ llmAdvert, lockLovelace: llmAdvert.price_lovelace + llmAdvert.supplier_bond_lovelace + llmAdvert.buyer_bond_lovelace + 100_000n });
+  };
+
+  it('no limit of a bond set: the choice of the chat supplier is called with the fields it had before the limits and with neither of the two, and a chat advert with large bonds is hired', async () => {
+    const run = withChatAdvert({ supplier_bond_lovelace: 7_000_000n, buyer_bond_lovelace: 9_000_000n });
+    const deps = { ...run.deps, log: () => undefined };
+    expect((await runPipeline(request(), deps)).accounting.sub_jobs).toBe(3);
+    expect(await states(run.m, escrowNo(1), escrowNo(2), escrowNo(3))).toStrictEqual(['spent', 'spent', 'spent']);
+    expect(spy.queries).toStrictEqual([{ fetchImpl: deps.fetchImpl, indexerUrl: INDEXER, allowlist: ALLOWLIST, maxPriceLovelace: CEILING, ceilingSetting: 'LLM_MAX_PRICE_LOVELACE', log: deps.log }]);
+  });
+
+  it('limits set: the choice of the chat supplier is called with both, as the bigints the service holds, and with the fields it had before', async () => {
+    const run = setup();
+    const deps = { ...run.deps, log: () => undefined, llmBondLimits: { maxSupplierBondLovelace: 3_000_000n, maxBuyerBondLovelace: 4_000_000n } };
+    await runPipeline(request(), deps);
+    expect(spy.queries).toStrictEqual([{
+      fetchImpl: deps.fetchImpl, indexerUrl: INDEXER, allowlist: ALLOWLIST, maxPriceLovelace: CEILING, ceilingSetting: 'LLM_MAX_PRICE_LOVELACE',
+      maxSupplierBondLovelace: 3_000_000n, maxBuyerBondLovelace: 4_000_000n, log: deps.log,
+    }]);
+    const supplierOnly = setup();
+    await runPipeline(request(), { ...supplierOnly.deps, llmBondLimits: { maxSupplierBondLovelace: 3_000_000n } });
+    expect(Object.keys(spy.queries[1] as object)).toContain('maxSupplierBondLovelace');
+    expect(Object.keys(spy.queries[1] as object)).not.toContain('maxBuyerBondLovelace');
+  });
+
+  it('a chat advert whose supplier bond is above LLM_MAX_SUPPLIER_BOND_LOVELACE: llm_supplier_unavailable (503), naming the advert, the bond and the limit, before any page is paid for; an advert at the limit is hired', async () => {
+    const run = withChatAdvert({ supplier_bond_lovelace: 2_000_001n });
+    const error = await failure(runPipeline(request(), { ...run.deps, llmBondLimits: { maxSupplierBondLovelace: 2_000_000n } }), 'llm_supplier_unavailable', 503);
+    expect(error.message).toMatch(/^No chat supplier can be hired for the summary: on chain, /);
+    expect(error.message).toContain(`its advert ${LLM_ADVERT_REF} has a supplier bond of 2000001 lovelace, above the limit of 2000000 lovelace`);
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
+    expect([run.m.ocr.sends, run.m.llm.sends, run.stranded.list()]).toStrictEqual([[], [], []]);
+    expect((await run.m.chain.wallet()).floatLovelace).toBe(50_000_000n);
+    const at = withChatAdvert({ supplier_bond_lovelace: 2_000_000n });
+    expect((await runPipeline(request(), { ...at.deps, llmBondLimits: { maxSupplierBondLovelace: 2_000_000n } })).accounting.sub_jobs).toBe(3);
+  });
+
+  it('a chat advert whose buyer bond is above LLM_MAX_BUYER_BOND_LOVELACE: the same, with the buyer bond; an advert at the limit is hired', async () => {
+    const run = withChatAdvert({ buyer_bond_lovelace: 2_000_001n });
+    const error = await failure(runPipeline(request(), { ...run.deps, llmBondLimits: { maxBuyerBondLovelace: 2_000_000n } }), 'llm_supplier_unavailable', 503);
+    expect(error.message).toMatch(/^No chat supplier can be hired for the summary: on chain, /);
+    expect(error.message).toContain(`its advert ${LLM_ADVERT_REF} has a buyer bond of 2000001 lovelace, above the limit of 2000000 lovelace`);
+    expect(await states(run.m, escrowNo(1))).toStrictEqual(['unknown']);
+    expect([run.m.ocr.sends, run.m.llm.sends, run.stranded.list()]).toStrictEqual([[], [], []]);
+    expect((await run.m.chain.wallet()).floatLovelace).toBe(50_000_000n);
+    const at = withChatAdvert({ buyer_bond_lovelace: 2_000_000n });
+    expect((await runPipeline(request(), { ...at.deps, llmBondLimits: { maxBuyerBondLovelace: 2_000_000n } })).accounting.sub_jobs).toBe(3);
+  });
+
+  it('each limit holds its own bond: a large buyer bond passes a limit of the supplier bond, and a large supplier bond passes a limit of the buyer bond', async () => {
+    const buyerBond = withChatAdvert({ buyer_bond_lovelace: 9_000_000n });
+    expect((await runPipeline(request(), { ...buyerBond.deps, llmBondLimits: { maxSupplierBondLovelace: 1_000_000n } })).accounting.sub_jobs).toBe(3);
+    const supplierBond = withChatAdvert({ supplier_bond_lovelace: 9_000_000n });
+    expect((await runPipeline(request(), { ...supplierBond.deps, llmBondLimits: { maxBuyerBondLovelace: 1_000_000n } })).accounting.sub_jobs).toBe(3);
+  });
+
+  it('a limit of 0 is a limit: a chat advert with any bond above it is refused', async () => {
+    for (const [kind, limits] of [['supplier', { maxSupplierBondLovelace: 0n }], ['buyer', { maxBuyerBondLovelace: 0n }]] as const) {
+      const run = setup();
+      const error = await failure(runPipeline(request(), { ...run.deps, llmBondLimits: limits }), 'llm_supplier_unavailable', 503);
+      expect(error.message, kind).toContain(`has a ${kind} bond of 1000000 lovelace, above the limit of 0 lovelace`);
+    }
   });
 
   it('the second look at the float, with the locks of the suppliers chosen: a one-page job whose chat advert is priced 5 is refused with a float of 9, before any Post (ruling R56)', async () => {

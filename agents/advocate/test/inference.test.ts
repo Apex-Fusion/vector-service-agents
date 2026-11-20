@@ -13,7 +13,8 @@ import { TxNotConfirmedError } from '@vsa/buyer-core';
 import type { Chain, ChainEscrowState } from '@vsa/buyer-core';
 import { StrandedStore } from '@vsa/hire-kit';
 import type { HireFacts } from '@vsa/hire-kit';
-import { JOB_DEADLINE_MS, MODEL_MAX_MS } from '../src/budget.ts';
+import type * as HireKit from '@vsa/hire-kit';
+import { CHOICE_BUDGET_MS, CHOICE_MAX_CANDIDATES, JOB_DEADLINE_MS, MODEL_MAX_MS } from '../src/budget.ts';
 import { AdvocateError } from '../src/errors.ts';
 import { ADVOCATE_HOP_ERRORS, HopFailed, infer, marketplaceInput } from '../src/inference.ts';
 import type { Inference, InferenceDeps } from '../src/inference.ts';
@@ -26,13 +27,17 @@ import { reply, routedFetch } from './fake-fetch.ts';
 import type { RoutedFetch } from './fake-fetch.ts';
 import { GOLDEN_MODEL_BRIEF, GOLDEN_PAGES, GOLDEN_REQUEST, GOLDEN_SUB_JOB, GOLDEN_T0, TEST_OPENROUTER_KEY, goldenAnswer, goldenMarket, modelRoute } from './golden.ts';
 
-// The time each call through OpenRouter is given, recorded on the way to the real call.
-const spy = vi.hoisted(() => ({ model: [] as number[] }));
+// The time each call through OpenRouter is given, recorded on the way to the real call, and the query of each choice of a chat supplier, recorded on the way to the real choice.
+const spy = vi.hoisted(() => ({ model: [] as number[], queries: [] as unknown[] }));
 vi.mock('../src/model.ts', async (importOriginal) => {
   const real = await importOriginal<typeof import('../src/model.ts')>();
   return { ...real, callModel: (...args: Parameters<typeof real.callModel>) => { spy.model.push(args[1].timeoutMs); return real.callModel(...args); } };
 });
-beforeEach(() => { spy.model.length = 0; });
+vi.mock('@vsa/hire-kit', async (importOriginal) => {
+  const real = await importOriginal<typeof HireKit>();
+  return { ...real, chooseChatSupplier: (...args: Parameters<typeof real.chooseChatSupplier>) => { spy.queries.push(args[1]); return real.chooseChatSupplier(...args); } };
+});
+beforeEach(() => { spy.model.length = 0; spy.queries.length = 0; });
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); vi.useRealTimers(); });
@@ -228,6 +233,89 @@ describe('the fallback rule: nothing locked (ruling R-F4)', () => {
     const edge = setup();
     edge.deps.chain = chainWith(edge.m, { wallet: async () => { edge.m.clock.now = HOP_DEADLINE - 60_000; return edge.m.chain.wallet(); } });
     expect((await run(edge)).path).toBe('marketplace');
+  });
+});
+
+describe('the limits of the bonds of the chat advert', () => {
+  /** The line of the log for an advert that the choice refuses for a bond, which names the advert, the bond, the limit and the setting. */
+  const refused = (kind: 'supplier' | 'buyer', bond: bigint, limit: bigint, setting: string): string =>
+    `inference: marketplace choice refused the advert ${CHAT_ADVERT_REF}: its ${kind} bond is ${bond} lovelace, above the limit of ${limit} lovelace (${setting})`;
+  /** A market whose chat advert has the terms `over` says, and whose Post locks what that advert asks for and a little more, as a Post on the ledger does. */
+  const marketWith = (over: Parameters<typeof chatAdvert>[0], limits: Partial<InferenceDeps> = {}): Setup => {
+    const advert = chatAdvert(over);
+    return setup({ advert, lockLovelace: advert.price_lovelace + advert.supplier_bond_lovelace + advert.buyer_bond_lovelace + 100_000n }, limits);
+  };
+
+  test('no limit set: the choice is called with the fields it had before the limits and with neither of the two, and an advert with large bonds is hired', async () => {
+    const s = marketWith({ supplier_bond_lovelace: 7_000_000n, buyer_bond_lovelace: 9_000_000n });
+    const inference = await run(s);
+    expect([inference.path, inference.accepted, await states(s.m, escrowNo(1)), s.lines]).toStrictEqual(['marketplace', 'confirmed', ['spent'], [CHOSEN]]);
+    expect(spy.queries).toStrictEqual([{
+      fetchImpl: s.deps.fetchImpl, indexerUrl: INDEXER, allowlist: [DEFAULT_MODEL], maxPriceLovelace: 1_000_000n, ceilingSetting: 'LLM_MAX_PRICE_LOVELACE',
+      budgetMs: CHOICE_BUDGET_MS, maxCandidates: CHOICE_MAX_CANDIDATES, log: s.deps.log,
+    }]);
+  });
+
+  test('limits set: the choice is called with both, as the bigints the service holds, and with the fields it had before', async () => {
+    const s = setup({}, { bondLimits: { maxSupplierBondLovelace: 3_000_000n, maxBuyerBondLovelace: 4_000_000n } });
+    await run(s);
+    expect(spy.queries).toStrictEqual([{
+      fetchImpl: s.deps.fetchImpl, indexerUrl: INDEXER, allowlist: [DEFAULT_MODEL], maxPriceLovelace: 1_000_000n, ceilingSetting: 'LLM_MAX_PRICE_LOVELACE',
+      maxSupplierBondLovelace: 3_000_000n, maxBuyerBondLovelace: 4_000_000n, budgetMs: CHOICE_BUDGET_MS, maxCandidates: CHOICE_MAX_CANDIDATES, log: s.deps.log,
+    }]);
+    const supplierOnly = setup({}, { bondLimits: { maxSupplierBondLovelace: 3_000_000n } });
+    await run(supplierOnly);
+    expect(Object.keys(spy.queries[1] as object)).toContain('maxSupplierBondLovelace');
+    expect(Object.keys(spy.queries[1] as object)).not.toContain('maxBuyerBondLovelace');
+  });
+
+  test('a supplier bond above the limit: llm_supplier_unavailable at the choice, nothing posted, the log names the advert, the bond and the limit, and the brief comes from OpenRouter; an advert at the limit is hired', async () => {
+    const above = marketWith({ supplier_bond_lovelace: 2_000_001n }, { bondLimits: { maxSupplierBondLovelace: 2_000_000n } });
+    expect(await run(above)).toStrictEqual(fellBack('llm_supplier_unavailable'));
+    expect([await states(above.m, escrowNo(1)), above.stranded.list(), above.m.supplier.sends, above.openRouter, spy.model]).toStrictEqual([['unknown'], [], [], [0], [MODEL_MAX_MS]]);
+    expect(above.lines).toStrictEqual([refused('supplier', 2_000_001n, 2_000_000n, 'LLM_MAX_SUPPLIER_BOND_LOVELACE'), line('llm_supplier_unavailable', 'choice')]);
+    const at = marketWith({ supplier_bond_lovelace: 2_000_000n }, { bondLimits: { maxSupplierBondLovelace: 2_000_000n } });
+    const inference = await run(at);
+    expect([inference.path, inference.accepted, inference.fallbackFrom, await states(at.m, escrowNo(1)), at.lines]).toStrictEqual(['marketplace', 'confirmed', null, ['spent'], [CHOSEN]]);
+  });
+
+  test('a buyer bond above the limit: the same, with the buyer bond and its setting; an advert at the limit is hired', async () => {
+    const above = marketWith({ buyer_bond_lovelace: 2_000_001n }, { bondLimits: { maxBuyerBondLovelace: 2_000_000n } });
+    expect(await run(above)).toStrictEqual(fellBack('llm_supplier_unavailable'));
+    expect([await states(above.m, escrowNo(1)), above.stranded.list(), above.m.supplier.sends, above.openRouter]).toStrictEqual([['unknown'], [], [], [0]]);
+    expect(above.lines).toStrictEqual([refused('buyer', 2_000_001n, 2_000_000n, 'LLM_MAX_BUYER_BOND_LOVELACE'), line('llm_supplier_unavailable', 'choice')]);
+    const at = marketWith({ buyer_bond_lovelace: 2_000_000n }, { bondLimits: { maxBuyerBondLovelace: 2_000_000n } });
+    const inference = await run(at);
+    expect([inference.path, inference.accepted, inference.fallbackFrom, await states(at.m, escrowNo(1)), at.lines]).toStrictEqual(['marketplace', 'confirmed', null, ['spent'], [CHOSEN]]);
+  });
+
+  test('each limit holds its own bond: a large buyer bond passes a limit of the supplier bond, and a large supplier bond passes a limit of the buyer bond', async () => {
+    const buyerBond = marketWith({ buyer_bond_lovelace: 9_000_000n }, { bondLimits: { maxSupplierBondLovelace: 1_000_000n } });
+    const supplierBond = marketWith({ supplier_bond_lovelace: 9_000_000n }, { bondLimits: { maxBuyerBondLovelace: 1_000_000n } });
+    for (const s of [buyerBond, supplierBond]) expect((await run(s)).path).toBe('marketplace');
+  });
+
+  test('a limit of 0 is a limit: an advert with any bond above it is refused, and the line says so', async () => {
+    for (const [kind, limits, setting] of [['supplier', { maxSupplierBondLovelace: 0n }, 'LLM_MAX_SUPPLIER_BOND_LOVELACE'], ['buyer', { maxBuyerBondLovelace: 0n }, 'LLM_MAX_BUYER_BOND_LOVELACE']] as const) {
+      const s = setup({}, { bondLimits: limits });
+      expect(await run(s), kind).toStrictEqual(fellBack('llm_supplier_unavailable'));
+      expect([await states(s.m, escrowNo(1)), s.lines], kind).toStrictEqual([['unknown'], [refused(kind, 1_000_000n, 0n, setting), line('llm_supplier_unavailable', 'choice')]]);
+    }
+  });
+
+  test('a choice that fails for another reason writes no line about a bond, with the limits set: a price above the ceiling, and words of a bond refusal inside an error of the indexer or of the chain', async () => {
+    const limits = { bondLimits: { maxSupplierBondLovelace: 2_000_000n, maxBuyerBondLovelace: 2_000_000n } };
+    const forged = `on chain, its advert ${CHAT_ADVERT_REF} has a supplier bond of 9 lovelace, above the limit of 1 lovelace: an Accept pays the supplier bond to the supplier with the price`;
+    const dear = setup({}, limits);
+    dear.deps.chain = chainWith(dear.m, { readAdvert: async () => chatAdvert({ price_lovelace: 1_500_000n }) });
+    const unreadable = setup({}, limits);
+    unreadable.deps.fetchImpl = routedFetch([{ match: (url) => url.origin === INDEXER, respond: () => reply(503, forged) }, ...unreadable.m.routes, modelRoute(() => goldenAnswer())]);
+    const failing = setup({}, limits);
+    failing.deps.chain = chainWith(failing.m, { readAdvert: async () => { throw new Error(forged); } });
+    for (const s of [dear, unreadable, failing]) {
+      expect((await run(s)).fallbackFrom).toBe('llm_supplier_unavailable');
+      expect(s.lines).toStrictEqual([line('llm_supplier_unavailable', 'choice')]);
+    }
   });
 });
 

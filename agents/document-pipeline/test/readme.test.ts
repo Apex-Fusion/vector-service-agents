@@ -68,6 +68,13 @@ describe('agents/document-pipeline/README.md', () => {
     expect(row('VECTOR_IDENTITY_ESCROW_REF_UTXO')).toMatch(/ \| empty \|$/);
     // The price ceilings of ruling R56.
     for (const name of ['OCR_MAX_PRICE_LOVELACE', 'LLM_MAX_PRICE_LOVELACE']) expect(row(name), name).toContain(`\`${PRICE_CEILING_DEFAULT_LOVELACE}\``);
+    // The limits of the bonds of the chat advert have no default, and the OCR hop has none: an advert above one is refused as one above the ceiling is.
+    for (const name of ['LLM_MAX_SUPPLIER_BOND_LOVELACE', 'LLM_MAX_BUYER_BOND_LOVELACE']) {
+      expect(row(name), name).toMatch(/ \| none: no limit \|$/);
+      expect(row(name), name).toContain('the choice of the chat supplier refuses an advert with a larger');
+      expect(row(name), name).toContain('`llm_supplier_unavailable` (503)');
+      expect(OTHER_SETTINGS, name).toContain(name);
+    }
   });
 
   test('the Errors table gives each code of the intake its status, and every code it names is one the sources know', () => {

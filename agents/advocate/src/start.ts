@@ -28,6 +28,7 @@ import { join } from 'node:path';
 import { BUYER_IDENTITY_SETTINGS, buyerIdentityDeployment, buyerIdentityOf, createRealChain, rawHexToBech32 } from '@vsa/buyer-core';
 import type { Chain, IdentityDeployment } from '@vsa/buyer-core';
 import { StrandedStore, abandonedLine, startJanitor, stopJanitorWithin } from '@vsa/hire-kit';
+import type { BondLimits } from '@vsa/hire-kit';
 import {
   assertHeaderValue, assertNoTokenIn, envInt, errorText, given, hexOf, lifecycle, listen, refuseSecretIn, refuseTokenIn, requiredEnv, stopOnSignals as stopServiceOnSignals, tokenForms,
 } from '@vsa/service-kit';
@@ -61,7 +62,7 @@ export const SETTINGS = [
   'ADVERT_MAX_PROCESSING_MS', 'ADVERT_EXPLORER_URL',
   'SERVICE_AUTH_HEADER', 'SUPPLIER_PKH', 'SUPPLIER_PUB_KEY_HEX', 'BRAVE_SEARCH_API_KEY', 'OPENROUTER_API_KEY', 'OPENROUTER_MODEL',
   'ADVOCATE_BUYER_PRIV_KEY_HEX', 'ADVOCATE_BUYER_PUB_KEY_HEX', 'ADVOCATE_BUYER_PKH', 'ADVOCATE_BUYER_ADDRESS', 'ADVOCATE_STATE_DIR', 'LLM_MODEL_ALLOWLIST',
-  'LLM_MAX_PRICE_LOVELACE', 'VECTOR_MARKETPLACE_INDEXER_URL', 'PORT', 'HOST',
+  'LLM_MAX_PRICE_LOVELACE', 'LLM_MAX_SUPPLIER_BOND_LOVELACE', 'LLM_MAX_BUYER_BOND_LOVELACE', 'VECTOR_MARKETPLACE_INDEXER_URL', 'PORT', 'HOST',
 ] as const;
 /**
  * The settings that packages/buyer-core reads: the three chain endpoints, which its errors print, and the three settings of the identity registry
@@ -100,6 +101,12 @@ export interface ServiceConfig {
   allowlist: readonly string[];
   /** The most the chat job may be priced at, in lovelace (LLM_MAX_PRICE_LOVELACE). */
   maxPriceLovelace: bigint;
+  /**
+   * The most that the supplier bond and the buyer bond of the chat advert may each be, in lovelace (LLM_MAX_SUPPLIER_BOND_LOVELACE, LLM_MAX_BUYER_BOND_LOVELACE). A field is absent
+   * when its setting is not set: there is no limit then, and the hire is given none.
+   */
+  maxSupplierBondLovelace?: bigint;
+  maxBuyerBondLovelace?: bigint;
   /** The marketplace indexer (VECTOR_MARKETPLACE_INDEXER_URL); the configured one when absent. */
   indexerUrl?: string;
   /** The identity registry deployment the chain posts to and settles with (packages/buyer-core, buyerIdentityDeployment), or null: legacy adverts and escrows only. */
@@ -144,10 +151,11 @@ function assertNoBuyerKeyIn(published: string, key: string): void {
 }
 
 /**
- * A price in lovelace: a whole number of at least 0, or `fallback` when the setting is absent or empty. Anything else is refused with the variable named and
- * the length of what was written, never with the value: a value that is no number may be a secret in the wrong line.
+ * A number of lovelace: a whole number of at least 0, or `fallback` when the setting is absent or empty. A price has its default for `fallback`. A limit has none, and
+ * `undefined` for `fallback` says that the operator sets no limit. Anything else is refused with the variable named and the length of what was written, never with the
+ * value: a value that is no number may be a secret in the wrong line.
  */
-function lovelaceOf(name: string, value: string, fallback: bigint): bigint {
+function lovelaceOf<F extends bigint | undefined>(name: string, value: string, fallback: F): bigint | F {
   if (value === '') return fallback;
   if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error(`environment variable ${name} must be a whole number of lovelace of at least 0, and it has ${value.length} characters`);
   return BigInt(value);
@@ -157,7 +165,8 @@ function lovelaceOf(name: string, value: string, fallback: bigint): bigint {
  * The configuration of the service from its environment; throws, naming the variable, for one that is required and missing or that is given and wrong. In
  * this order: OPERATOR_CONTACT; the buyer key of ADVOCATE_BUYER_PRIV_KEY_HEX (its form, and the key looked for in every other setting); the token looked
  * for in every other setting, when it is given; SUPPLIER_PKH, SERVICE_AUTH_HEADER, SUPPLIER_PUB_KEY_HEX and its key hash; the two API keys, each checked and
- * looked for; OPENROUTER_MODEL; ADVERT_MAX_PROCESSING_MS; LLM_MODEL_ALLOWLIST and LLM_MAX_PRICE_LOVELACE; PORT, HOST, ADVOCATE_STATE_DIR and
+ * looked for; OPENROUTER_MODEL; ADVERT_MAX_PROCESSING_MS; LLM_MODEL_ALLOWLIST, LLM_MAX_PRICE_LOVELACE and the two limits of the bonds (LLM_MAX_SUPPLIER_BOND_LOVELACE and
+ * LLM_MAX_BUYER_BOND_LOVELACE, read as the price is, and no limit when one is not set); PORT, HOST, ADVOCATE_STATE_DIR and
  * VECTOR_MARKETPLACE_INDEXER_URL; the buyer key apart from the supplier key; the buyer key hash, address and public key the operator wrote down, each against
  * the key; and the manifest last, searched for the four secrets. `makeManifest` is a seam for a test of that last look.
  */
@@ -186,6 +195,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (
   // The chat models, in order of preference: the model of OPENROUTER_MODEL unless the operator names others, so that both paths ask the same model.
   const allowlist = modelAllowlist(env.LLM_MODEL_ALLOWLIST, model);
   const maxPriceLovelace = lovelaceOf('LLM_MAX_PRICE_LOVELACE', given(env.LLM_MAX_PRICE_LOVELACE), PRICE_CEILING_DEFAULT_LOVELACE);
+  // The bonds of the advert have no limit unless the operator sets one: no default, and a field in the config only for a limit that is set.
+  const maxSupplierBondLovelace = lovelaceOf('LLM_MAX_SUPPLIER_BOND_LOVELACE', given(env.LLM_MAX_SUPPLIER_BOND_LOVELACE), undefined);
+  const maxBuyerBondLovelace = lovelaceOf('LLM_MAX_BUYER_BOND_LOVELACE', given(env.LLM_MAX_BUYER_BOND_LOVELACE), undefined);
   const port = envInt('PORT', given(env.PORT), PORT_DEFAULT);
   const host = given(env.HOST) || '0.0.0.0';
   const stateDir = given(env.ADVOCATE_STATE_DIR) || STATE_DIR_DEFAULT;
@@ -224,7 +236,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (
   const identityDeployment = buyerIdentityDeployment(env);
   return {
     manifest, authHeader, host, port, braveApiKey, openRouterApiKey, model, buyer: { privateKeyHex, pkh: buyer.buyerPkh, address: buyer.address }, stateDir, allowlist,
-    maxPriceLovelace, ...(indexerUrl === undefined ? {} : { indexerUrl }), identityDeployment,
+    maxPriceLovelace, ...(maxSupplierBondLovelace === undefined ? {} : { maxSupplierBondLovelace }), ...(maxBuyerBondLovelace === undefined ? {} : { maxBuyerBondLovelace }),
+    ...(indexerUrl === undefined ? {} : { indexerUrl }), identityDeployment,
   };
 }
 
@@ -284,11 +297,16 @@ export async function startService(env: NodeJS.ProcessEnv = process.env, options
   });
   const clock = options.clock ?? Date.now;
   const slot = new JobSlot();
+  // The limits of the bonds that the operator set, as the hire takes them: one that is not set is left out, so that the choice of the chat supplier is given none.
+  const bondLimits: BondLimits = {
+    ...(config.maxSupplierBondLovelace === undefined ? {} : { maxSupplierBondLovelace: config.maxSupplierBondLovelace }),
+    ...(config.maxBuyerBondLovelace === undefined ? {} : { maxBuyerBondLovelace: config.maxBuyerBondLovelace }),
+  };
   const server = createServer({
     manifest: config.manifest, authHeader: config.authHeader, log, slot,
     deps: {
       fetchImpl: options.fetchImpl ?? globalThis.fetch, clock, braveApiKey: config.braveApiKey, openRouterApiKey: config.openRouterApiKey, model: config.model, log,
-      chain, stranded, sleep: options.sleep ?? defaultSleep, allowlist: config.allowlist, maxPriceLovelace: config.maxPriceLovelace,
+      chain, stranded, sleep: options.sleep ?? defaultSleep, allowlist: config.allowlist, maxPriceLovelace: config.maxPriceLovelace, bondLimits,
       ...(config.indexerUrl === undefined ? {} : { indexerUrl: config.indexerUrl }), buyerPkh: config.buyer.pkh, marketplace: { on: true },
     },
   });
