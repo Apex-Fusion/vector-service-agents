@@ -5,7 +5,7 @@
 import { inspect } from 'node:util';
 import { presentToken, type GatewayClient, type KeyInput, type PresentedToken } from '@vsa/id-kit/client';
 import { accepted, parseDelegationId, parseDid, type Accepted, type DelegationId, type Did } from '../protocol/index.ts';
-import { fromRule, fromThrown, gatewayFailure, type GatewayFailure } from './gateway.ts';
+import { fromRule, fromThrown, gatewayFailure, noting, type GatewayFailure } from './gateway.ts';
 import { MAX_WAIT_MS, type Clock } from './ports.ts';
 import type { RouteId, TokenCallers, TokenTarget } from './routes.ts';
 
@@ -96,21 +96,22 @@ export async function requestRouteToken(deps: TokenDeps, request: RouteTokenRequ
   if (!delegation.ok) return gatewayFailure('bad_request', delegation.detail);
   const { target } = request;
   if (request.holder === 'subagent' && target.callers !== 'agent-or-subagent') return gatewayFailure('bad_request', `the route ${target.route} takes the agent only: a subagent gets no token for it`);
+  const secrets: string[] = [];
   try {
     const issued = await deps.client.requestToken({
-      subject: { did: did.value, key: request.subject.key },
-      dpopKey: request.dpopKey,
+      subject: { did: did.value, key: noting(request.subject.key, secrets, 'the authentication key') },
+      dpopKey: noting(request.dpopKey, secrets, 'the DPoP key'),
       resource: target.resource,
       delegation: { identifier: delegation.value, actions: [target.action], locations: [target.resource] },
     });
-    if (!issued.ok) return fromRule(issued);
+    if (!issued.ok) return fromRule(issued, secrets);
     if (!grantIsTheRoute(issued.value.authorizationDetails, target, delegation.value)) {
       return gatewayFailure('gateway_bad_response', 'the grant of the token is not the one action and the one resource that were asked for');
     }
     const facts = { route: target.route, action: target.action, resource: target.resource, callers: target.callers, holder: request.holder, expiresAt: issued.value.expiresAt };
     return accepted(new RouteToken(facts, issued.value.accessToken, request.dpopKey));
   } catch (error) {
-    return fromThrown(error);
+    return fromThrown(error, secrets);
   }
 }
 

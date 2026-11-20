@@ -1,9 +1,9 @@
 // packages/usecase-kit/src/access/gateway.ts
 // How a failure of the identity gateway reaches a caller. The client of id-kit gives a rule for each failure, and this file gives each rule its own code. The error code of the protocol for
 // every one of them in a buyer-side agent is `token_failed`. A caller that can wait (a delegation that is too young) reads `delegation_too_young`.
-import type { GatewayRefused } from '@vsa/id-kit/client';
+import { resolveKey, type GatewayRefused, type KeyInput } from '@vsa/id-kit/client';
 import { refused, type Refused } from '../protocol/index.ts';
-import { errorText, safeText } from './text.ts';
+import { errorText, piecesOf, safeText } from './text.ts';
 
 export const GATEWAY_FAILURES = ['bad_request', 'gateway_refused', 'delegation_too_young', 'gateway_unavailable', 'gateway_unreachable', 'gateway_bad_response'] as const;
 export type GatewayFailureCode = (typeof GATEWAY_FAILURES)[number];
@@ -59,4 +59,23 @@ export function fromRule(result: GatewayRefused, secrets: readonly string[] = []
 export function fromThrown(error: unknown, secrets: readonly string[] = []): GatewayFailure {
   if (error instanceof TypeError || error instanceof RangeError) return gatewayFailure('bad_request', errorText(error, secrets));
   return gatewayFailure('bad_request', `the request could not be made: ${error instanceof Error ? safeText(error.name) : 'a value that is not an error was thrown'}`);
+}
+
+/**
+ * A key that signs as `key` does, and that notes the parts of each JWS that it signs into `notes`. The client of the gateway makes the subject token, the DPoP proof and the other proofs inside one
+ * call, so the caller never holds them, and the error text of a gateway can repeat a part of one of them. `fromRule` and `fromThrown` take the notes as their secrets, with the rule that a call
+ * uses for its own headers (`piecesOf`): the whole token and each part of 12 characters or more between dots. The key of the caller is read here, so a key that is not accepted throws the
+ * TypeError of the client.
+ */
+export function noting(key: KeyInput, notes: string[], what: string): KeyInput {
+  const resolved = resolveKey(key, what);
+  return {
+    algorithm: resolved.algorithm,
+    publicKey: resolved.jwk,
+    async sign(data) {
+      const signature = await resolved.sign(data);
+      notes.push(...piecesOf(`${Buffer.from(data).toString('ascii')}.${Buffer.from(signature).toString('base64url')}`));
+      return signature;
+    },
+  };
 }
