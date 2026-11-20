@@ -1,7 +1,7 @@
 // packages/usecase-kit/test/protocol/handoff.test.ts: the two messages that a buyer-side agent sends to a counterparty. The handoff carries the approved document, its salt and the approval reference.
 // The request for quotation carries no approval, because the buyer approves the ranking and not the request. Each refusal has an accepted twin.
 import { describe, expect, expectTypeOf, it } from 'vitest';
-import { HANDOFF_SCHEMA, PROPOSAL_SCHEMA, RESULT_SCHEMA, RFQ_SCHEMA, USE_CASES, parseHandoff, parseRfq } from '@vsa/usecase-kit/protocol';
+import { HANDOFF_SCHEMA, HANDOFF_USE_CASES, PROPOSAL_SCHEMA, RESULT_SCHEMA, RFQ_SCHEMA, parseHandoff, parseRfq } from '@vsa/usecase-kit/protocol';
 import type { Handoff, RfqMessage } from '@vsa/usecase-kit/protocol';
 import { APPROVAL, BAD_MARKER, DELEGATION, DID_A, DOCUMENT, MARKER, SALT, copy } from './support.ts';
 
@@ -38,8 +38,15 @@ describe('parseHandoff', () => {
     expect(parseHandoff({ ...copy(HANDOFF), approval: null })).toStrictEqual({ ok: true, value: { ...HANDOFF, approval: null } });
   });
 
-  it.each(USE_CASES)('takes the use case %s', (useCase) => {
+  it.each(HANDOFF_USE_CASES)('takes the use case %s', (useCase) => {
     expect(parseHandoff({ ...copy(HANDOFF), use_case: useCase }).ok).toBe(true);
+  });
+
+  it('refuses the use case bid-evaluation, which has no handoff, and takes the other two use cases', () => {
+    const refused = parseHandoff({ ...copy(HANDOFF), use_case: 'bid-evaluation' });
+    expect(refused).toMatchObject({ ok: false, code: 'bad_shape' });
+    expect(!refused.ok && refused.detail).toBe('handoff.use_case must be one of inventory-reorder, prior-authorization');
+    for (const useCase of HANDOFF_USE_CASES) expect(parseHandoff({ ...copy(HANDOFF), use_case: useCase }).ok).toBe(true);
   });
 
   it('takes the members in any order', () => {
@@ -115,11 +122,11 @@ describe('parseHandoff', () => {
 });
 
 describe('parseRfq', () => {
-  it('takes a request for quotation, and the rfq object is the same object', () => {
+  it('takes a request for quotation, and the rfq object is a copy', () => {
     const input = copy(RFQ);
     const result = parseRfq(input);
     expect(result).toStrictEqual({ ok: true, value: RFQ });
-    expect(result.ok && result.value.rfq).toBe(input.rfq);
+    expect(result.ok && result.value.rfq).not.toBe(input.rfq);
   });
 
   it('takes the members in any order', () => {

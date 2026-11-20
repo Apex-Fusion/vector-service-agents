@@ -4,6 +4,7 @@
 // The canonical form is the one that `canonicalize` of the buyer code writes: keys sorted by UTF-16 code units, every string value in the NFC form, no white space, and numbers as
 // JSON.stringify writes them. A key is in the NFC form already, because parseJsonValue refuses any other key. This file holds its own copy of the rule, so that the protocol loads no chain
 // library. A test holds the copy to the buyer code. The two give the same text on every document that parseJsonValue takes, and the cases where they differ are the cases that it refuses.
+// The text is written from the copy that the walk of parseJsonValue built, and never from the input, so the text is the text of the value that the walk checked.
 //
 // The digest of a proposal is SHA-256(salt bytes ++ UTF-8 of the canonical document). The salt is the 32 bytes that its 64 hex characters stand for. The salt comes first.
 import { createHash } from 'node:crypto';
@@ -13,16 +14,20 @@ import { accepted, type ProtocolResult } from './result.ts';
 
 const isList = (value: JsonValue): value is readonly JsonValue[] => Array.isArray(value);
 
-/** The canonical text of a value that parseJsonValue has taken: at most MAX_DOCUMENT_DEPTH levels, so the recursion is short. */
+/** The canonical text of a copy that parseJsonValue built: at most MAX_DOCUMENT_DEPTH levels, so the recursion is short. No array method runs on the copy. */
 function write(value: JsonValue): string {
   if (value === null) return 'null';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   if (typeof value === 'number') return JSON.stringify(value);
   if (typeof value === 'string') return JSON.stringify(value.normalize('NFC'));
-  if (isList(value)) return `[${value.map((member) => write(member)).join(',')}]`;
+  const parts: string[] = [];
+  if (isList(value)) {
+    for (let index = 0; index < value.length; index += 1) parts.push(write(value[index]!));
+    return `[${parts.join(',')}]`;
+  }
   // Array.prototype.sort with no function orders strings by UTF-16 code unit, which is the order of the canonical form.
-  const keys = Object.keys(value).sort();
-  return `{${keys.map((key) => `${JSON.stringify(key)}:${write(value[key])}`).join(',')}}`;
+  for (const key of Object.keys(value).sort()) parts.push(`${JSON.stringify(key)}:${write(value[key]!)}`);
+  return `{${parts.join(',')}}`;
 }
 
 /** The canonical text of a JSON value, or a refusal when the value is not one that the canonical form can write without loss (see parseJsonValue). */

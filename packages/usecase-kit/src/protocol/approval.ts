@@ -6,10 +6,9 @@
 import type { APPROVAL_REFUSALS } from './codes.ts';
 import { parseAttestationId, parseDid } from './identifiers.ts';
 import type { AttestationId, DelegationId, Did, Digest, Salt } from './identifiers.ts';
-import { isPlainObject } from './json.ts';
 import type { Document } from './json.ts';
-import { checkMembers } from './members.ts';
-import { accepted, refused } from './result.ts';
+import { checkMembers, readMembers } from './members.ts';
+import { accepted } from './result.ts';
 import type { ProtocolResult } from './result.ts';
 
 /** The attestation type of an approval. The hosted tools and the attestation builder call it `approval`. */
@@ -29,12 +28,13 @@ export interface ApprovalRef {
 
 /** An approval reference with exactly the two members, as a new object. The reference can be null in a request and in a handoff: that case is not for this parser. */
 export function parseApprovalRef(value: unknown, field = 'approval'): ProtocolResult<ApprovalRef> {
-  if (!isPlainObject(value)) return refused('bad_shape', `${field} must be a JSON object`);
-  const members = checkMembers(value, field, ['attestation', 'issuer_did']);
+  const read = readMembers(value, field);
+  if (!read.ok) return read;
+  const members = checkMembers(read.value, field, ['attestation', 'issuer_did']);
   if (members !== null) return members;
-  const attestation = parseAttestationId(value.attestation, `${field}.attestation`);
+  const attestation = parseAttestationId(read.value.attestation, `${field}.attestation`);
   if (!attestation.ok) return attestation;
-  const issuer = parseDid(value.issuer_did, `${field}.issuer_did`);
+  const issuer = parseDid(read.value.issuer_did, `${field}.issuer_did`);
   if (!issuer.ok) return issuer;
   return accepted({ attestation: attestation.value, issuer_did: issuer.value });
 }

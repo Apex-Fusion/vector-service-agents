@@ -31,7 +31,7 @@ describe('isPlainObject', () => {
   });
 });
 
-describe('parseJsonValue takes JSON data and returns the same value', () => {
+describe('parseJsonValue takes JSON data and returns an equal copy', () => {
   const takes: ReadonlyArray<readonly [string, unknown]> = [
     ['null', null],
     ['true', true],
@@ -61,8 +61,8 @@ describe('parseJsonValue takes JSON data and returns the same value', () => {
 
   it.each(takes)('takes %s', (_name, value) => {
     const result = parseJsonValue(value);
-    expect(result).toStrictEqual({ ok: true, value });
-    expect(result.ok && result.value).toBe(value);
+    expect(result).toEqual({ ok: true, value });
+    if (typeof value === 'object' && value !== null) expect(result.ok && result.value).not.toBe(value);
   });
 
   it('takes a document as deep as the limit', () => {
@@ -184,11 +184,11 @@ describe('parseJsonValue refuses what JSON cannot hold, or what the canonical fo
 });
 
 describe('parseDocument takes a JSON object and nothing else', () => {
-  it('takes an object and returns the same object', () => {
+  it('takes an object and returns an equal copy of it', () => {
     const document = { schema: 'vector.usecase.po.v1', quantity: 50, lines: [{ sku: 'a' }] };
     const result = parseDocument(document);
-    expect(result).toStrictEqual({ ok: true, value: document });
-    expect(result.ok && result.value).toBe(document);
+    expect(result).toEqual({ ok: true, value: document });
+    expect(result.ok && result.value).not.toBe(document);
   });
 
   it('takes an empty object', () => {
