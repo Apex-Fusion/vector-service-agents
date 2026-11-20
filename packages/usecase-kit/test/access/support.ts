@@ -321,6 +321,8 @@ export interface Faults {
   submitUndelegateThrows?: boolean;
   /** The Undelegate is accepted and never lands. */
   undelegateNeverLands?: boolean;
+  /** The Delegate is accepted and never lands. */
+  delegateNeverLands?: boolean;
   /** A third key must sign the Delegate (in the report of the build). */
   extraSigner?: string;
 }
@@ -521,7 +523,7 @@ export class FakeDelegations implements DelegationChain {
         if (this.faults.delegateLandsAnyway === true) this.#pending.push({ made, landsAt, lands: true });
         throw new Error('the node did not answer');
       }
-      this.#pending.push({ made, landsAt, lands: true });
+      this.#pending.push({ made, landsAt, lands: this.faults.delegateNeverLands !== true });
     } else {
       if (this.faults.submitUndelegateThrows === true) throw new Error('the node refused the transaction');
       this.#pending.push({ made, landsAt, lands: this.faults.undelegateNeverLands !== true });
