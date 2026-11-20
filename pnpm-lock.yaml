@@ -283,6 +283,31 @@ importers:
         specifier: ^5.0.5
         version: 5.0.5(@types/node@22.20.5)(vite@7.3.7(@types/node@22.20.5)(tsx@4.23.15)(yaml@2.8.1))
 
+  services/mock-systems:
+    dependencies:
+      '@vsa/buyer-core':
+        specifier: workspace:*
+        version: link:../../packages/buyer-core
+      '@vsa/id-kit':
+        specifier: workspace:*
+        version: link:../../packages/id-kit
+      '@vsa/service-kit':
+        specifier: workspace:*
+        version: link:../../packages/service-kit
+      tsx:
+        specifier: ^4.21.0
+        version: 4.23.15
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.1
+        version: 22.20.5
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5(@types/node@22.20.5)(vite@7.3.7(@types/node@22.20.5)(tsx@4.23.15)(yaml@2.8.1))
+
 packages:
 
   '@anastasia-labs/cardano-multiplatform-lib-browser@6.0.2-2':
