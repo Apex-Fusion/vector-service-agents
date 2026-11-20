@@ -62,6 +62,23 @@ describe('the results of execute', () => {
     expect(Object.keys(failedResult(pieces(), 'x')).sort()).toStrictEqual(RESULT_KEYS);
   });
 
+  it('makes a failed result that holds the record of a hire whose Accept was made: the work was paid and a later step failed, so the result keeps the record of what was paid, and the state stays Failed', () => {
+    const writes = [{ system: 'po-store', route: 'POST /po', status: 503, ref: null }];
+    for (const record of [accepted, { ...accepted, accepted: 'pending' }]) {
+      const result = failedResult(pieces({ handoff: record as never, writes }), 'mock_system_failed');
+      expect(result).toMatchObject({ outcome: 'failed', reason: 'mock_system_failed', challenge: null, exit_state: 'Failed', writes });
+      expect(result.handoff).toStrictEqual(record);
+      expect(Object.keys(result).sort()).toStrictEqual(RESULT_KEYS);
+      expect(result.exit_state).toBe(exitStateOf({ outcome: 'failed', reason: 'mock_system_failed', challenge_filed: false, delegation_ended: false }));
+    }
+    // The twins: no record, a hire with no Accept, and a delivery that the decision refused make the same result as before.
+    for (const record of [null, handoff, { ...accepted, accepted: 'no' }]) {
+      const result = failedResult(pieces({ handoff: record as never, writes }), 'mock_system_failed');
+      expect(result).toMatchObject({ outcome: 'failed', reason: 'mock_system_failed', challenge: null, exit_state: 'Failed' });
+      expect(result.handoff).toStrictEqual(record);
+    }
+  });
+
   it('makes a dispute: Escalated with the challenge that was filed, and Failed with no challenge and a reason', () => {
     const escalated = disputedResult(pieces({ handoff }), { challenge });
     expect(escalated).toMatchObject({ outcome: 'disputed', reason: null, challenge, exit_state: 'Escalated' });
@@ -157,16 +174,14 @@ describe('the results of execute', () => {
     expect(disputedResult(pieces({ handoff }), { challenge })).toMatchObject({ outcome: 'disputed', reason: null, challenge, exit_state: 'Escalated' });
   });
 
-  it('refuses the record of a hire whose Accept was made for a refusal by the counterparty, a refusal of the vault and a failed result; a refusal by a mock system can hold it', () => {
+  it('refuses the record of a hire whose Accept was made for a refusal by the counterparty and a refusal of the vault; a refusal by a mock system can hold it', () => {
     for (const record of [accepted, { ...accepted, accepted: 'pending' }]) {
       expect(() => refusedResult('counterparty', pieces({ handoff: record as never }), 'approval_not_found')).toThrow(TypeError);
       expect(() => vaultRefusedResult(pieces({ handoff: record as never }), 'eval error', false)).toThrow(TypeError);
-      expect(() => failedResult(pieces({ handoff: record as never }), 'post_failed')).toThrow(TypeError);
     }
     // The twins: no record, a hire with no Accept, and a delivery that the decision refused have no Accept that was made.
     for (const record of [null, handoff, { ...accepted, accepted: 'no' }]) {
       expect(refusedResult('counterparty', pieces({ handoff: record as never }), 'approval_not_found').outcome).toBe('refused_by_counterparty');
-      expect(failedResult(pieces({ handoff: record as never }), 'post_failed').outcome).toBe('failed');
     }
     expect(vaultRefusedResult(pieces(), 'eval error', false).outcome).toBe('vault_refused');
     // A mock system can refuse after the hire was accepted: its refusal holds the record of the accepted hire.
@@ -240,6 +255,7 @@ describe('settledResult', () => {
     expect(() => settledResult({ ...refused, handoff: accepted }, base)).toThrow(TypeError);
     expect(() => settledResult({ kind: 'failed', reason: 'free words', detail: 'x', handoff: null, vault_ref: null, terms: null }, base)).toThrow(TypeError);
     expect(() => settledResult({ kind: 'failed', reason: 'timeout', detail: 'x', handoff: accepted, vault_ref: null, terms: null }, base)).toThrow(TypeError);
+    for (const step of [interrupted('deadline'), unconfirmed]) expect(() => settledResult({ ...step, handoff: accepted }, base), step.kind).toThrow(TypeError);
     // The twin: the same steps with a code and a record with no Accept make their results.
     expect(settledResult({ kind: 'failed', reason: 'timeout', detail: 'x', handoff, vault_ref: null, terms: null }, base)).toMatchObject({ outcome: 'failed', reason: 'timeout' });
   });

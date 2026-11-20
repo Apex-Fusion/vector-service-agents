@@ -1,8 +1,8 @@
 // packages/usecase-kit/src/buyer/results.ts
 // The results of a buyer-side agent, made from their pieces. A caller gives the pieces once, and the helper writes every member of the result: no caller builds a result by hand and leaves a
 // member out. The exit state of an `execute` result comes from `exitStateOf` of the protocol, in this file only, and no helper writes a state of its own. A piece of the wrong shape is a
-// fault of the code of the caller: the helper throws a TypeError and makes no result. The pieces must agree with the outcome: a reason is a code, a refusal of the counterparty or a failure holds no
-// record of an Accept that was made, and a completed result holds a hire that the vault paid and that was verified and accepted.
+// fault of the code of the caller: the helper throws a TypeError and makes no result. The pieces must agree with the outcome: a reason is a code, a refusal of the counterparty or of the vault holds no
+// record of an Accept that was made, a failed result may hold it (the work was paid, and a later step failed), and a completed result holds a hire that the vault paid and that was verified and accepted.
 //
 //   propose  proposedResult, failedProposalResult
 //   execute  completedResult, refusedResult, vaultRefusedResult, failedResult, disputedResult, and settledResult for the steps of the hire that need nothing more from the use case
@@ -132,11 +132,13 @@ export function vaultRefusedResult(pieces: ResultPieces, reason: string, delegat
   return { ...base, outcome: 'vault_refused', reason: text, challenge: null, exit_state: state };
 }
 
-/** The job could not be finished. `reason` is a code. The record holds no Accept that was made: paid work that was accepted is not reported as a failure. */
+/**
+ * The job could not be finished. `reason` is a code. The record may hold an Accept that was made (`confirmed` or `pending`): the work was paid, and a later step failed, for example the write to a mock
+ * system. The result keeps the record of what was paid, and the exit state stays `Failed`.
+ */
 export function failedResult(pieces: ResultPieces, reason: string): FailedResult {
   const code = codeOf(reason);
   const base = baseOf(pieces);
-  if (acceptWasMade(base.handoff)) throw new TypeError('a failed result cannot hold the record of a hire whose Accept was made');
   const state = stateOf('failed', code, false, false);
   if (state !== 'Failed') throw wrongState('failed', state);
   return { ...base, outcome: 'failed', reason: code, challenge: null, exit_state: state };
@@ -172,17 +174,23 @@ export function disputedResult(pieces: ResultPieces, dispute: { readonly challen
 /** The steps that the use case has to finish itself: a completed hire writes to a mock system, a delivery that was not accepted is disputed, and a refused request is an error answer. */
 export type SettledStep = Exclude<HireStep, CompletedStep | NotAcceptedStep | RefusedStep>;
 
+/** The record of a step that ended the hire with no pass. Only a `completed` step holds an Accept that was made, and the use case finishes that step, so a step that holds one was made by hand. */
+function recordWithNoAccept(handoff: HandoffRecord | null): HandoffRecord | null {
+  if (acceptWasMade(handoff)) throw new TypeError('a step of the hire that the use case does not finish cannot hold the record of a hire whose Accept was made');
+  return handoff;
+}
+
 /**
  * The result for a step of the hire that needs nothing more from the use case. The handoff comes from the step. A step that the use case must finish (`completed`, `not_accepted`, `refused`)
- * is a fault of the caller: the function throws and makes no result.
+ * is a fault of the caller: the function throws and makes no result. So is a failure step that holds the record of an Accept that was made: no step of the hire has one except `completed`.
  */
 export function settledResult(step: SettledStep, pieces: Omit<ResultPieces, 'handoff'>): ExecuteResult {
   switch (step.kind) {
     case 'refused_by_counterparty': return refusedResult('counterparty', { ...pieces, handoff: step.handoff }, step.reason);
     case 'vault_refused': return vaultRefusedResult({ ...pieces, handoff: null }, step.reason, step.delegation_ended);
-    case 'failed': return failedResult({ ...pieces, handoff: step.handoff }, step.reason);
-    case 'interrupted': return failedResult({ ...pieces, handoff: step.handoff }, INTERRUPTION_REASONS[step.cause_kind]);
-    case 'pay_unconfirmed': return failedResult({ ...pieces, handoff: step.handoff }, PAY_UNCONFIRMED);
+    case 'failed': return failedResult({ ...pieces, handoff: recordWithNoAccept(step.handoff) }, step.reason);
+    case 'interrupted': return failedResult({ ...pieces, handoff: recordWithNoAccept(step.handoff) }, INTERRUPTION_REASONS[step.cause_kind]);
+    case 'pay_unconfirmed': return failedResult({ ...pieces, handoff: recordWithNoAccept(step.handoff) }, PAY_UNCONFIRMED);
     default: {
       const exhaustive: never = step;
       throw new TypeError(`the step ${String(Reflect.get(exhaustive, 'kind'))} needs the use case to finish it`);
