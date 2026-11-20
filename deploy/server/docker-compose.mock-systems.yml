@@ -1,0 +1,35 @@
+# The mock service on the agents host: one container. It serves the mock systems of the tenants on 127.0.0.1:9120. Caddy is its only way in (Caddyfile.mock-systems.snippet).
+# The env file sits next to this file. The operator makes it from .env.mock-systems.example, with mode 600 (RUNBOOK.md, step 6, "Run the mock service"). It never enters git.
+# The service keeps the data of its tenants in memory. It has no volume, no key and no wallet. Each restart of the container loses every tenant and its log: make each tenant again.
+# The container reads the env file when it is created. After a change to the file, create the container again: docker compose -f docker-compose.mock-systems.yml up -d --force-recreate mock-systems. restart does not read it again.
+name: mock-systems
+services:
+  mock-systems:
+    # Pinned by digest, not by tag. CI pushes the image under :latest and under :<full git commit sha>, and :latest moves with every merge to main, so a later pull could change the bytes that run here.
+    # The placeholder below is replaced on the host with the digest of the image (RUNBOOK.md, step 6); compose refuses to start the service until it is (invalid reference format).
+    image: ghcr.io/apex-fusion/vector-service-agents/mock-systems@sha256:<digest>
+    container_name: mock-systems
+    restart: unless-stopped
+    env_file: [ { path: ./.env.mock-systems, required: true } ]
+    # The port mapping below needs these two values: the service listens on 0.0.0.0:9120 inside the container. The compose file sets them, and its values win over the env file.
+    environment: { PORT: "9120", HOST: "0.0.0.0" }
+    # The port is on the loopback address only. Caddy must be the only way in: a client that reached the port itself could send a forged Client-Cert header (README.md, "The header Client-Cert").
+    ports: ["127.0.0.1:9120:9120"]
+    # The service keeps at most 100 tenants, and at most 5000 log lines for each tenant (MAX_TENANTS and MAX_LOG_LINES in services/mock-systems/src/tenants.ts).
+    # Measured with Node 22: about 140 MiB with no tenant, and about 650 MiB of heap with the most tenants and the most log lines. Node limits its heap to half of the container limit,
+    # so 1 GiB stops a full store with an out-of-memory error. 2 GiB leaves room for it. The plan of the memory (README.md, "The host") keeps more than 4 GiB free for growth.
+    # If a fault makes the service grow past the limit, the kernel stops this container only, and the runtimes keep their memory.
+    mem_limit: 2048m
+    # The service writes no file of its own. The loader tsx writes its cache to the temp folder, so /tmp is a small memory file system. A file there counts against the memory limit.
+    read_only: true
+    tmpfs: ["/tmp:size=64m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # This check is here so that docker ps shows the state of the service. GET /healthz answers 200 and writes no log line, so the check does not fill the log.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9120/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
