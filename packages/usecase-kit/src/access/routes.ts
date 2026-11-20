@@ -80,7 +80,7 @@ export interface JwtSvidTarget extends TargetBase {
 }
 export type RouteTarget = TokenTarget | X509Target | JwtSvidTarget;
 
-/** The origin of a base: https, or http for a loopback host (a test). No user, path, query or fragment. */
+/** The origin of a base: https only, because a resource of a delegation is an https URL. No user, path, query or fragment. */
 function originOf(base: unknown, field: string): ProtocolResult<string> {
   if (typeof base !== 'string') return refused('bad_shape', `${field} must be text`);
   let url: URL;
@@ -89,8 +89,7 @@ function originOf(base: unknown, field: string): ProtocolResult<string> {
   } catch {
     return refused('bad_shape', `${field} must be a URL`);
   }
-  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) return refused('bad_shape', `${field} must be an https URL (http only for a loopback host)`);
+  if (url.protocol !== 'https:') return refused('bad_shape', `${field} must be an https URL`);
   if (url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '' || url.pathname !== '/') return refused('bad_shape', `${field} must be an origin: no user, no path, no query and no fragment`);
   return accepted(url.origin);
 }
