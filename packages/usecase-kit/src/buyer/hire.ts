@@ -83,6 +83,9 @@ class DecisionError extends Error {
   }
 }
 
+/** What the flow tells the hire kit when it does not accept a delivery that cannot be recorded. It goes into the outcome of the kit, and into no step and no result. */
+const NOT_RECORDABLE = 'delivery_not_recordable';
+
 const ERRORS: AgentErrors<HireFault> = {
   failure: (_kind, what, message) => new HireFault('failure', message, what),
   deadline: (doing) => new HireFault('deadline', `The deadline of the job came while ${doing}.`, null),
@@ -272,7 +275,9 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
       decide: async (delivered: AgentDelivery): Promise<AcceptDecision> => {
         const forDecision = deliveryOf(delivered);
         const forRecord = deliveryOf(delivered);
-        if (forDecision === null || forRecord === null) throw new DecisionError('the delivery cannot be given to the decision, because it cannot be written as JSON data');
+        // A delivery that cannot be written as JSON data cannot be recorded, so it cannot be accepted, and the decision of the use case is not asked about it. The hire kit ends the hire as `not_accepted`, no
+        // Accept is made, and the step says why: the use case files its challenge, and the counterparty cannot choose to end the job without one.
+        if (forDecision === null || forRecord === null) return { accept: false, reason: NOT_RECORDABLE };
         seen.delivery = forRecord;
         let answer: unknown;
         try {

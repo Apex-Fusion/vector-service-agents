@@ -6,7 +6,7 @@
 //   refused_by_counterparty  the counterparty refused the job by a rule of the protocol: before its Claim (status 403 and a refusal code of its kind), or after its Claim (a code of AFTER_CLAIM_REFUSALS). Before its Claim the escrow stays Open. After its Claim the escrow is Claimed. Either way it returns to the vault after its deadline.
 //   vault_refused            the ledger refused the Pay from the vault, or the Pay could not be made. Nothing was signed and no money moved.
 //   failed                   the job did not finish, and it is not a refusal. A job that failed after the Claim is here, and so is an answer before the Claim that is not a refusal by a rule of the protocol.
-//   not_accepted             the delivery came, and the decision said no or did not answer in time. The code of the use case files the challenge.
+//   not_accepted             the delivery came, and the decision said no or did not answer in time, or the delivery passed the eight checks and cannot be recorded. The code of the use case files the challenge.
 //   interrupted              an error ended the hire after the Pay was confirmed.
 //   pay_unconfirmed          the Pay was sent and not seen confirmed. It may still land.
 //   refused                  the request is refused before any ledger read of the Pay: an error of the protocol with its code.
@@ -93,14 +93,42 @@ export interface FailedStep {
   readonly cause?: unknown;
 }
 
-export interface NotAcceptedStep extends PaidStep {
+/**
+ * What can be recorded of a delivery that passed the eight checks and that cannot be written as JSON data of the protocol: a receipt whose member is nested too deep, for example. The receipt itself is not
+ * here.
+ */
+export interface UnrecordedDelivery {
+  readonly escrow_ref: OutputRef;
+  readonly advert_ref: OutputRef;
+  /** The hash of the supplier key: 56 lower-case hex characters. */
+  readonly supplier_pkh: string;
+  /** The eight checks of the receipt. */
+  readonly verification: ReceiptVerification;
+}
+
+/** The delivery came and can be recorded. The decision said no (`declined`), or it did not answer in time (`decision_timeout`). No Accept was made. */
+interface NotAcceptedByDecisionStep extends PaidStep {
   readonly kind: 'not_accepted';
-  /** The decision said no (`declined`), or it did not answer in time (`decision_timeout`). */
   readonly why: 'declined' | 'decision_timeout';
   /** The reason that the decision gave when it said no, and `null` for a decision that did not answer. It is the words of the use case, never of the counterparty. */
   readonly declined: string | null;
   readonly delivery: VerifiedDelivery;
 }
+
+/**
+ * The delivery passed the eight checks, and it cannot be written as JSON data of the protocol, so no result can hold it and the flow cannot accept it. The decision was not asked, and no Accept was made:
+ * the escrow stays Submitted. The counterparty must not be able to choose this end for itself, so the use case treats this step as it treats a delivery that its decision refused, and files its challenge
+ * with what the step holds.
+ */
+interface NotAcceptedUnrecordableStep extends PaidStep {
+  readonly kind: 'not_accepted';
+  readonly why: 'not_recordable';
+  readonly declined: null;
+  readonly delivery: null;
+  readonly unrecorded: UnrecordedDelivery;
+}
+
+export type NotAcceptedStep = NotAcceptedByDecisionStep | NotAcceptedUnrecordableStep;
 
 /** Why an error ended a hire after the Pay was confirmed. */
 export type InterruptionCause = 'deadline' | 'store_write' | 'decision_error' | 'other';

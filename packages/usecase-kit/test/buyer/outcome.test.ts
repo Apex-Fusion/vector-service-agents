@@ -178,6 +178,18 @@ const TABLE: readonly Row[] = [
     name: 'not accepted, the delivery has a check that is not a boolean', step: `failed ${INCONSISTENT_OUTCOME}`, result: `failed:${INCONSISTENT_OUTCOME}:Failed`,
     outcome: { ...declined, delivery: { ...delivery, record: { ...record, verification: { ...ALL_TRUE, fields_match: undefined as never } } } } as AgentOutcome,
   },
+  {
+    name: 'not accepted, the delivery passed the checks and its receipt cannot be recorded (it has no member)', step: 'not_accepted not_recordable', result: 'use case',
+    outcome: { ...declined, delivery: { ...delivery, record: { ...record, receipt: {} as never } } } as AgentOutcome,
+  },
+  {
+    name: 'not accepted, the delivery cannot be recorded, and the decision did not answer in time', step: 'not_accepted not_recordable', result: 'use case',
+    outcome: { ...timedOut, delivery: { ...delivery, record: { ...record, receipt: null as never } } } as AgentOutcome,
+  },
+  {
+    name: 'not accepted, the delivery cannot be recorded, and the supplier key hash is not a hash', step: `failed ${INCONSISTENT_OUTCOME}`, result: `failed:${INCONSISTENT_OUTCOME}:Failed`,
+    outcome: { ...declined, delivery: { ...delivery, record: { ...record, receipt: {} as never, supplier_pkh: 'ab' } } } as AgentOutcome,
+  },
   { name: 'an outcome that the kit does not have', outcome: { outcome: 'paid', ...paid } as never, step: `failed ${INCONSISTENT_OUTCOME}`, result: `failed:${INCONSISTENT_OUTCOME}:Failed` },
   { name: 'an outcome that is null', outcome: null as never, step: `failed ${INCONSISTENT_OUTCOME}`, result: `failed:${INCONSISTENT_OUTCOME}:Failed` },
   { name: 'an outcome that is undefined', outcome: undefined as never, step: `failed ${INCONSISTENT_OUTCOME}`, result: `failed:${INCONSISTENT_OUTCOME}:Failed` },
@@ -393,6 +405,38 @@ describe('a completed outcome that does not hold together', () => {
     const other: Extract<AgentOutcome, { outcome: 'completed' }> = { ...completed, advertRef: OTHER_ADVERT, record: { ...record, advert_ref: OTHER_ADVERT } };
     expect(stepOfOutcome(other, { ...CONTEXT, advert_ref: OTHER_ADVERT }).kind).toBe('completed');
     expect(stepOfOutcome(other, CONTEXT).kind).toBe('failed');
+  });
+});
+
+describe('a delivery that passed the eight checks and cannot be recorded', () => {
+  /** The delivery of a hire whose receipt the reader of the protocol refuses: a member nested too deep. */
+  let deep: unknown = 0;
+  for (let level = 0; level < 40; level += 1) deep = [deep];
+  const unrecordable: AgentOutcome = { ...declined, delivery: { ...delivery, record: { ...record, receipt: { escrow_ref: ESCROW, prompt_tokens: deep } as never } } } as AgentOutcome;
+
+  it('is a not_accepted step with its own reason and no delivery: it holds the escrow, the advert, the supplier key hash and the eight checks, and the record says that no Accept was made', () => {
+    const step = stepOfOutcome(unrecordable, CONTEXT);
+    if (step.kind !== 'not_accepted' || step.why !== 'not_recordable') throw new Error(`the step is ${words(step)}`);
+    expect([step.declined, step.delivery]).toStrictEqual([null, null]);
+    expect(step.unrecorded).toStrictEqual({ escrow_ref: ESCROW, advert_ref: AGENT_ADVERT_REF, supplier_pkh: record.supplier_pkh, verification: ALL_TRUE });
+    expect(step.handoff).toStrictEqual({
+      counterparty_did: COUNTERPARTY_DID, advert_ref: AGENT_ADVERT_REF, escrow_ref: ESCROW, paid_from_vault: true, receipt: null, receipt_signature: null, verification: ALL_TRUE, result: null, accepted: 'no',
+    });
+    expect([step.vault_ref, step.terms]).toStrictEqual([NEXT_VAULT, TERMS]);
+  });
+
+  it('is never completed: a completed outcome with such a receipt is failed with inconsistent_outcome, and the escrow is kept', () => {
+    const step = stepOfOutcome({ ...completed, record: { ...record, receipt: { escrow_ref: ESCROW, prompt_tokens: deep } as never } }, CONTEXT);
+    if (step.kind !== 'failed') throw new Error(`the step is ${words(step)}`);
+    expect([step.reason, step.handoff?.escrow_ref, step.handoff?.accepted]).toStrictEqual([INCONSISTENT_OUTCOME, ESCROW, null]);
+  });
+
+  it('twin: a receipt that the reader takes, at five levels, is recorded with the delivery', () => {
+    let shallow: unknown = 0;
+    for (let level = 0; level < 5; level += 1) shallow = [shallow];
+    const step = stepOfOutcome({ ...declined, delivery: { ...delivery, record: { ...record, receipt: { escrow_ref: ESCROW, prompt_tokens: shallow } as never } } } as AgentOutcome, CONTEXT);
+    if (step.kind !== 'not_accepted' || step.why !== 'declined') throw new Error(`the step is ${words(step)}`);
+    expect(step.delivery.receipt).toStrictEqual({ escrow_ref: ESCROW, prompt_tokens: shallow });
   });
 });
 

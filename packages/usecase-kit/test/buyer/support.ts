@@ -11,7 +11,7 @@ import type { Marketplace } from '@vsa/hire-kit/testing';
 import { makeProposal, parseRequest } from '@vsa/usecase-kit/protocol';
 import type { DelegationId, ExecuteRequest, Handoff } from '@vsa/usecase-kit/protocol';
 import { handoffOf, hireCounterparty } from '@vsa/usecase-kit/buyer';
-import type { DelegationReading, DeliveryDecision, HireDeps, HireInput, HireLimits, HireStep, LedgerReads, LiveVaults, ResultPieces } from '@vsa/usecase-kit/buyer';
+import type { DelegationReading, DeliveryDecision, HireDeps, HireInput, HireLimits, HireStep, LedgerReads, LiveVaults, NotAcceptedStep, ResultPieces } from '@vsa/usecase-kit/buyer';
 
 export const BUYER_ID = 'a1'.repeat(32);
 /** The DID of the buyer-side agent: the delegate of the delegation. */
@@ -180,6 +180,13 @@ export function untouched(w: World): { posted: number; sends: number; stranded: 
 export function expectKind<K extends HireStep['kind']>(step: HireStep, kind: K): Extract<HireStep, { kind: K }> {
   if (step.kind !== kind) throw new Error(`the step is ${words(step)}, and the test expected ${kind}`);
   return step as Extract<HireStep, { kind: K }>;
+}
+
+/** A `not_accepted` step whose delivery could be recorded: the decision said no, or it did not answer in time. */
+export function expectDecided(step: HireStep): Extract<NotAcceptedStep, { why: 'declined' | 'decision_timeout' }> {
+  const found = expectKind(step, 'not_accepted');
+  if (found.why === 'not_recordable') throw new Error('the delivery of the step cannot be recorded, and the test expected a decision');
+  return found;
 }
 
 /**

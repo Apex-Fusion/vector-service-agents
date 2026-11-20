@@ -8,13 +8,14 @@
 //   refused_before_claim, any other answer                        failed                     the code when it is a code of ERROR_STATUS, else `counterparty_refused`
 //   failed_after_claim, `failed`, with a code of AFTER_CLAIM    refused_by_counterparty    that code (the decision of the counterparty after its Claim)
 //   failed_after_claim, any other                               failed                     the reason of the hire kit. It is NOT a refusal.
-//   vault_refused                                               vault_refused              the evaluation error of the node, or the code of the builder when the Pay could not be built
+//   vault_refused                                               vault_refused              the evaluation error of the node, or the code of the builder when the Pay could not be built, or `vault_reason_missing` when none was given
 //   not_accepted, declined                                      not_accepted               (the code of the use case files the challenge)
 //   not_accepted, decision_timeout                              not_accepted               (the same)
+//   not_accepted, and the delivery cannot be recorded           not_accepted, `not_recordable`   (the same, with the escrow, the advert, the supplier key hash and the eight checks)
 //   not_accepted, receipt_failed                                failed                     `receipt_failed`
 //   HireInterrupted                                             interrupted                `deadline`, `store_write_failed`, `decision_error` or `hire_interrupted`
 //   HirePayUnconfirmed                                          pay_unconfirmed            `pay_unconfirmed`
-//   a hire that no outcome names (a fault before any Pay)       failed                     `advert_unavailable`, `post_failed` or `hire_error`
+//   a hire that no outcome names (a fault before any Pay)       failed                     `advert_unavailable`, `post_failed`, `earlier_pay_may_land` or `hire_error`
 //   anything else, or a `completed` that does not hold         failed                     `inconsistent_outcome`
 //
 // The words of a counterparty never reach a reason: a reason is a code of the protocol, or a fixed code of this folder. An answer before the Claim is a refusal only when its status is 403 and its code
@@ -26,7 +27,7 @@ import { flatText } from '@vsa/service-kit/text';
 import { AFTER_CLAIM_REFUSALS, COUNTERPARTY_REFUSALS, ERROR_STATUS, RECEIPT_CHECKS, isErrorCode, isPlainObject, parseJsonText, parseJsonValue, parseOutputRef } from '@vsa/usecase-kit/protocol';
 import type { CounterpartyKind, Did, HandoffRecord, JsonObject, OutputRef, ReceiptCheck, ReceiptVerification, UseCase } from '@vsa/usecase-kit/protocol';
 import type { DelegationAfter } from './authority.ts';
-import type { BookingFailure, FailedStep, HireStep, VerifiedDelivery } from './steps.ts';
+import type { BookingFailure, FailedStep, HireStep, UnrecordedDelivery, VerifiedDelivery } from './steps.ts';
 
 /** The reason of a `failed` step for an answer before the Claim that is not a refusal by a rule of the protocol, and whose code is not a code of ERROR_STATUS. It is never the words of the counterparty. */
 export const COUNTERPARTY_REFUSED = 'counterparty_refused';
@@ -269,6 +270,36 @@ function vaultRefusedStep(outcome: VaultRefused, context: StepContext): HireStep
   };
 }
 
+/** The hash of a supplier key: 56 lower-case hex characters. */
+const SUPPLIER_PKH = /^[0-9a-f]{56}$/;
+
+/** What can be recorded of a delivery that cannot be written as JSON data: the escrow and the advert of the outcome, the supplier key hash and the eight checks of its record. `null` when one of them cannot be read. */
+function unrecordedOf(delivery: AgentDelivery, escrow: Escrow): UnrecordedDelivery | null {
+  try {
+    const record: unknown = delivery.record;
+    if (typeof record !== 'object' || record === null) return null;
+    const supplier: unknown = Reflect.get(record, 'supplier_pkh');
+    const verification = verificationFrom(Reflect.get(record, 'verification'));
+    if (typeof supplier !== 'string' || !SUPPLIER_PKH.test(supplier) || verification === null) return null;
+    return { escrow_ref: escrow.escrow_ref, advert_ref: escrow.advert_ref, supplier_pkh: supplier, verification };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The step for a delivery that the hire kit verified and that cannot be recorded: `not_accepted` with its own reason, and what can be recorded. The use case files its challenge for it, as it does for a
+ * delivery that its decision refused. The counterparty cannot choose to end the job with no challenge by sending a receipt that the reader of the protocol refuses.
+ */
+function unrecordedStep(delivery: AgentDelivery, context: StepContext, escrow: Escrow): HireStep {
+  const unrecorded = unrecordedOf(delivery, escrow);
+  if (unrecorded === null) return inconsistent(context, 'the delivery of the hire cannot be written as JSON data, and what can be recorded of it cannot be read either', escrow);
+  return {
+    kind: 'not_accepted', why: 'not_recordable', declined: null, delivery: null, unrecorded,
+    handoff: { ...recordOf(context.counterparty_did, escrow.advert_ref, escrow.escrow_ref, null, 'no'), verification: unrecorded.verification }, vault_ref: escrow.vault_ref, terms: escrow.terms,
+  };
+}
+
 function notAcceptedStep(outcome: NotAccepted, context: StepContext): HireStep {
   const escrow = escrowOf(outcome);
   if (escrow === null) return inconsistent(context, 'the hire kit gave an escrow or an advert that is not an output reference');
@@ -280,7 +311,7 @@ function notAcceptedStep(outcome: NotAccepted, context: StepContext): HireStep {
   }
   if (outcome.reason !== 'declined' && outcome.reason !== 'decision_timeout') return inconsistent(context, 'the hire kit gave a not_accepted that it does not list', escrow);
   const delivery = deliveryOf(outcome.delivery);
-  if (delivery === null) return inconsistent(context, 'the delivery of the hire cannot be written as JSON data', escrow);
+  if (delivery === null) return unrecordedStep(outcome.delivery, context, escrow);
   return {
     kind: 'not_accepted', why: outcome.reason, declined: outcome.reason === 'declined' ? flatText(String(outcome.declined), DECLINED_MAX) : null,
     handoff: recordOf(context.counterparty_did, escrow.advert_ref, escrow.escrow_ref, delivery, 'no'), vault_ref: escrow.vault_ref, terms: escrow.terms, delivery,

@@ -9,7 +9,7 @@ import { ERROR_STATUS, parseHandoff } from '@vsa/usecase-kit/protocol';
 import { completedResult, requestText, settledResult } from '@vsa/usecase-kit/buyer';
 import type { DeliveryDecision, HireStep } from '@vsa/usecase-kit/buyer';
 import {
-  AGENT_ADVERT_REF, COUNTERPARTY_DID, T0, cleanWorlds, expectKind, go, handoffFor, inFrontOfPolls, inFrontOfSends, jsonResponse, page, pieces, purchaseOrder, untouched, words, world,
+  AGENT_ADVERT_REF, COUNTERPARTY_DID, T0, cleanWorlds, expectDecided, expectKind, go, handoffFor, inFrontOfPolls, inFrontOfSends, jsonResponse, page, pieces, purchaseOrder, untouched, words, world,
 } from './support.ts';
 
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); cleanWorlds(); });
@@ -341,7 +341,7 @@ describe('a Pay that the vault refuses', () => {
 describe('a decision that does not accept', () => {
   it('ends as not_accepted with declined when the decision said no: the delivery and the receipt are in the step, the escrow stays Submitted, and nothing is accepted', async () => {
     const w = await world();
-    const step = expectKind(await go(w, { decide: () => ({ accept: false, reason: 'the lot of the confirmation is not the lot of the order' }) }), 'not_accepted');
+    const step = expectDecided(await go(w, { decide: () => ({ accept: false, reason: 'the lot of the confirmation is not the lot of the order' }) }));
     expect([step.why, step.declined]).toStrictEqual(['declined', 'the lot of the confirmation is not the lot of the order']);
     expect(step.delivery).toMatchObject({ text: AGENT_ANSWER, result: JSON.parse(AGENT_ANSWER) });
     expect(step.handoff).toMatchObject({ accepted: 'no', result: JSON.parse(AGENT_ANSWER), receipt_signature: step.delivery.receipt_signature });
@@ -357,7 +357,7 @@ describe('a decision that does not accept', () => {
     const w = await world();
     let asked = 0;
     const never = (): Promise<never> => new Promise<never>(() => undefined);
-    const step = expectKind(await go(w, { decide: () => { asked += 1; vi.advanceTimersByTime(DECISION_WINDOW_MS); return never(); } }), 'not_accepted');
+    const step = expectDecided(await go(w, { decide: () => { asked += 1; vi.advanceTimersByTime(DECISION_WINDOW_MS); return never(); } }));
     expect([asked, step.why, step.declined]).toStrictEqual([1, 'decision_timeout', null]);
     expect(step.delivery.text).toBe(AGENT_ANSWER);
     expect(step.handoff.accepted).toBe('no');
