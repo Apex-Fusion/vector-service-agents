@@ -1,0 +1,538 @@
+// packages/usecase-kit/test/checks/approval.test.ts: the check of an approval, `checkApproval`, on the real read code of buyer-core over an offline node. Each refusal has an accepted twin: the world
+// with no change. The question of these tests: is a wrong approval ever accepted?
+import { describe, expect, it } from 'vitest';
+import { testKey } from '../../../buyer-core/test/fixtures/identity-world.ts';
+import { CheckUnavailableError, approvalCheckOf, checkApproval, runChecks, sharedChecks } from '../../src/checks/index.ts';
+import type { ChecksPorts } from '../../src/checks/index.ts';
+import type { AttestationCheck } from '@vsa/buyer-core';
+import { canonicalSha256, proposalDigest } from '../../src/protocol/index.ts';
+import type { ApprovalInput, Document } from '../../src/protocol/index.ts';
+import {
+  ATTESTATION_ID, DELEGATION_ID, DOCUMENT, HOUR, ISSUER_DID, ISSUER_ID, ISSUER_KEY, MAINNET, OTHER_DID, T, attestation, attestationUtxo, delegation, delegationUtxo, failing, from, leavingForm, makeWorld, proposalOf, valueAt,
+  withLedger, withMember,
+} from './support.ts';
+import type { World, WorldOptions } from './support.ts';
+
+const check = (world: World, input: ApprovalInput = world.approvalInput) => checkApproval(world.ports, input);
+const OTHER_KEY = testKey(40);
+/** The digest of a proposal, or an error for a document or a salt that the protocol refuses. */
+function digestOf(salt: string, document: Document): string {
+  const digest = proposalDigest(salt, document);
+  if (!digest.ok) throw new Error(digest.detail);
+  return digest.value;
+}
+const revoked = { type: 'AttRevoked' as const, at: T - HOUR, reason: 0 };
+/** An issuer record that was invalidated at `from`. */
+const invalidated = (from: number | null) => ({ status: { type: 'Revoked' as const, by: { type: 'ControllerSet' as const }, reason: 1, at: T - HOUR, invalidFrom: from, successor: null } });
+/** The world in which the issuer of the approval is a record: the root delegator is that agent. */
+const agentRoot = (over: WorldOptions = {}): WorldOptions => ({
+  delegation: { delegator: { type: 'Agent', id: ISSUER_ID } }, issuerRecord: {}, attestation: { issuerId: ISSUER_ID }, ...over,
+});
+const withIssuerDid = (world: World, issuerDid: string): ApprovalInput => ({ ...world.approvalInput, approval: { attestation: ATTESTATION_ID, issuer_did: issuerDid } });
+
+async function refusal(world: World, input: ApprovalInput = world.approvalInput) {
+  const result = await check(world, input);
+  if (result.ok) throw new Error('the approval was accepted');
+  return result;
+}
+
+describe('an approval that is right', () => {
+  it('is accepted, and the result tells what was found: the attestation, the issuer key hash and the end of its validity', async () => {
+    expect(await check(makeWorld())).toEqual({ ok: true, attestation: ATTESTATION_ID, issuer_did: null, issuer_key_hash: ISSUER_KEY.keyHash, valid_until: T + 4 * HOUR });
+  });
+
+  it('is accepted when its issuer is a record: the result names the issuer DID', async () => {
+    const world = makeWorld(agentRoot());
+    expect(await check(world, withIssuerDid(world, ISSUER_DID))).toMatchObject({ ok: true, issuer_did: ISSUER_DID });
+  });
+
+  it('has no end of validity when the attestation sets none', async () => {
+    expect(await check(makeWorld({ attestation: { validUntil: null } }))).toMatchObject({ ok: true, valid_until: null });
+  });
+
+  it('is the same through approvalCheckOf, and it takes the time from the input and not from the clock', async () => {
+    const world = makeWorld();
+    const bound = approvalCheckOf({ ...world.ports, clock: () => 0 });
+    expect(await bound(world.approvalInput)).toEqual(await check(world));
+    expect(await bound({ ...world.approvalInput, now_ms: T + 5 * HOUR })).toMatchObject({ ok: false, code: 'approval_expired' });
+  });
+});
+
+describe('found and authentic: approval_not_found', () => {
+  it('refuses a null approval, and reads nothing from the ledger', async () => {
+    const world = makeWorld();
+    const result = await refusal(world, { ...world.approvalInput, approval: null });
+    expect(result.code).toBe('approval_not_found');
+    expect(world.ledger.provider.scans).toEqual([]);
+    expect(world.ledger.koios.calls).toEqual([]);
+  });
+
+  it('refuses an attestation that no output holds', async () => {
+    expect((await refusal(makeWorld({ attestation: null }))).code).toBe('approval_not_found');
+  });
+
+  it('refuses an output that is not authentic: at another address, or with two attestation tokens', async () => {
+    const good = attestationUtxo(ATTESTATION_ID, attestation({ attType: 5 }));
+    const elsewhere = { ...good, address: MAINNET.vault.address };
+    const two = { ...good, assets: { ...good.assets, [`${MAINNET.attestation.hash}${'aa'.repeat(32)}`]: 1n } };
+    for (const extra of [elsewhere, two]) expect((await refusal(makeWorld({ attestation: null, extraUtxos: [extra] }))).code).toBe('approval_not_found');
+  });
+
+  it('refuses a reference to another attestation than the one on the ledger', async () => {
+    const world = makeWorld();
+    const other = { ...world.approvalInput, approval: { attestation: '99'.repeat(32), issuer_did: OTHER_DID } };
+    expect((await refusal(world, other)).code).toBe('approval_not_found');
+  });
+});
+
+describe('the type: approval_wrong_type', () => {
+  it.each([0, 1, 4, 15])('refuses an attestation of the type %i', async (attType) => {
+    expect((await refusal(makeWorld({ attestation: { attType } }))).code).toBe('approval_wrong_type');
+  });
+});
+
+describe('the subject: approval_wrong_subject', () => {
+  it('refuses an approval for another agent than the sender', async () => {
+    const result = await refusal(makeWorld({ attestation: { subject: 'b4'.repeat(32) } }));
+    expect(result.code).toBe('approval_wrong_subject');
+  });
+
+  it('refuses an approval for the sender that is checked for another sender', async () => {
+    const world = makeWorld();
+    expect((await refusal(world, { ...world.approvalInput, sender_did: OTHER_DID })).code).toBe('approval_wrong_subject');
+  });
+});
+
+describe('the issuer is the root delegator: approval_wrong_issuer', () => {
+  it('refuses an approval that another key issued than the root delegator of a key principal', async () => {
+    const result = await refusal(makeWorld({ attestation: { issuer: OTHER_KEY.publicKey } }));
+    expect(result.code).toBe('approval_wrong_issuer');
+  });
+
+  it('accepts the key of a key principal by its hash, and refuses a key whose hash is another', async () => {
+    const world = makeWorld({ delegation: { delegator: { type: 'PrincipalKey', hash: OTHER_KEY.keyHash, organisation: null } }, attestation: { issuer: OTHER_KEY.publicKey } });
+    expect(await check(world)).toMatchObject({ ok: true, issuer_key_hash: OTHER_KEY.keyHash });
+    const wrong = makeWorld({ delegation: { delegator: { type: 'PrincipalKey', hash: OTHER_KEY.keyHash, organisation: null } } });
+    expect((await refusal(wrong)).code).toBe('approval_wrong_issuer');
+  });
+
+  it('refuses an issuer record that is not the root delegator, when the root delegator is an agent', async () => {
+    const other = 'e2'.repeat(32);
+    const world = makeWorld(agentRoot({ attestation: { issuerId: other } }));
+    expect((await refusal(world, withIssuerDid(world, `did:vector:${other}`))).code).toBe('approval_wrong_issuer');
+  });
+
+  it('refuses an approval with no issuer record when the root delegator is an agent, even when the key is right', async () => {
+    const world = makeWorld(agentRoot({ attestation: { issuerId: null } }));
+    expect((await refusal(world)).code).toBe('approval_wrong_issuer');
+    const twin = makeWorld(agentRoot());
+    expect(await check(twin, withIssuerDid(twin, ISSUER_DID))).toMatchObject({ ok: true });
+  });
+
+  it('compares the issuer with the ROOT of the chain, not with the delegator of the delegation that was named', async () => {
+    const parent = delegationUtxo('a1'.repeat(32), delegation({ delegate: ISSUER_ID, delegateKey: ISSUER_KEY.keyHash, remaining: 2, depth: 1, delegator: { type: 'PrincipalKey', hash: ISSUER_KEY.keyHash, organisation: null } }));
+    const chain: WorldOptions = {
+      delegation: { parent: 'a1'.repeat(32), depth: 2, remaining: 0, delegator: { type: 'Agent', id: ISSUER_ID } }, extraUtxos: [parent],
+      issuerRecord: { keys: [{ keyType: 'Ed25519', key: ISSUER_KEY.publicKey, purposes: 31, pop: null }] },
+    };
+    expect(await check(makeWorld(chain))).toMatchObject({ ok: true });
+    // The leaf delegator is the agent ISSUER_ID. An approval of that agent, signed by another key, is not an approval of the root key.
+    const leaf = makeWorld({ ...chain, attestation: { issuerId: ISSUER_ID, issuer: OTHER_KEY.publicKey } });
+    expect((await refusal(leaf, withIssuerDid(leaf, ISSUER_DID))).code).toBe('approval_wrong_issuer');
+  });
+
+  it('refuses a chain whose parent was ended: there is no root delegator to compare with', async () => {
+    // The approval is by the agent that the leaf names as its delegator. The parent was ended, so the chain has no root: the leaf must not be taken for the root.
+    const orphan = makeWorld({ delegation: { parent: 'a1'.repeat(32), depth: 2, remaining: 0, delegator: { type: 'Agent', id: ISSUER_ID } }, issuerRecord: {}, attestation: { issuerId: ISSUER_ID } });
+    expect((await refusal(orphan, withIssuerDid(orphan, ISSUER_DID))).code).toBe('approval_wrong_issuer');
+  });
+
+  it('refuses a delegation that does not exist: no root delegator exists that the issuer could be', async () => {
+    const world = makeWorld({ delegation: null });
+    expect(await refusal(world)).toMatchObject({ code: 'approval_wrong_issuer', detail: expect.stringContaining('no live delegation has this identifier') });
+    expect(await approvalCheckOf(world.ports)(world.approvalInput)).toMatchObject({ ok: false, code: 'approval_wrong_issuer' });
+    // The same approval with the delegation on the ledger is accepted.
+    expect(await check(makeWorld())).toMatchObject({ ok: true });
+  });
+
+  it('is not reached for a delegation that does not exist when the shared checks run: the check of the delegation refuses it first, and the delegation is read once', async () => {
+    const counted = async (world: World) => {
+      let reads = 0;
+      const ports = withLedger(world, { readDelegation: (id) => { reads += 1; return world.ports.ledger.readDelegation(id); } });
+      const outcome = await runChecks(sharedChecks(ports, { kind: 'order-desk', request: world.handoff, context: world.context }));
+      return { outcome, reads };
+    };
+    const gone = await counted(makeWorld({ delegation: null }));
+    expect(gone.outcome).toMatchObject({ ok: false, code: 'delegation_invalid' });
+    expect(gone.reads).toBe(1);
+    // With the delegation on the ledger the approval check reads it a second time, and the run passes.
+    const live = await counted(makeWorld());
+    expect(live.outcome.ok).toBe(true);
+    expect(live.reads).toBe(2);
+  });
+
+  it('refuses a reference that names another issuer record than the attestation does, and accepts the right name', async () => {
+    const world = makeWorld({ attestation: { issuerId: ISSUER_ID }, issuerRecord: {} });
+    expect((await refusal(world, withIssuerDid(world, OTHER_DID))).code).toBe('approval_wrong_issuer');
+    expect(await check(world, withIssuerDid(world, ISSUER_DID))).toMatchObject({ ok: true, issuer_did: ISSUER_DID });
+  });
+});
+
+describe('valid by the rule of the registry', () => {
+  it('refuses a revoked approval whatever its reason, and accepts the approval before it was revoked', async () => {
+    for (const reason of [0, 1, 64, 1_000_000]) expect((await refusal(makeWorld({ attestation: { status: { ...revoked, reason } } }))).code).toBe('approval_revoked');
+    expect(await check(makeWorld())).toMatchObject({ ok: true });
+  });
+
+  it('refuses an approval after its end, and accepts it at the end: the bound is inside the range', async () => {
+    expect((await refusal(makeWorld({ attestation: { validUntil: T - 1 } }))).code).toBe('approval_expired');
+    expect(await check(makeWorld({ attestation: { validUntil: T } }))).toMatchObject({ ok: true });
+  });
+
+  it('refuses an approval that has not started, and accepts it at its start', async () => {
+    expect((await refusal(makeWorld({ attestation: { validFrom: T + 1 } }))).code).toBe('approval_expired');
+    expect(await check(makeWorld({ attestation: { validFrom: T } }))).toMatchObject({ ok: true });
+  });
+
+  it('does not require that the time is after the time of issue: up to an hour before it is accepted, and more than an hour before it is not', async () => {
+    expect(await check(makeWorld({ attestation: { issuedAt: T + 59 * 60_000 } }))).toMatchObject({ ok: true });
+    expect(await check(makeWorld({ attestation: { issuedAt: T + HOUR } }))).toMatchObject({ ok: true });
+    expect((await refusal(makeWorld({ attestation: { issuedAt: T + HOUR + 1 } }))).code).toBe('approval_expired');
+  });
+
+  it('refuses an approval whose issuer record was invalid when the approval was issued, and accepts one that was invalidated later', async () => {
+    const issuedAt = T - HOUR;
+    const world = (from: number | null) => makeWorld({ attestation: { issuerId: ISSUER_ID, issuedAt }, issuerRecord: invalidated(from) });
+    for (const from of [issuedAt - 1, issuedAt]) {
+      const refused = world(from);
+      expect((await refusal(refused, withIssuerDid(refused, ISSUER_DID))).code).toBe('approval_issuer_invalid');
+    }
+    for (const from of [issuedAt + 1, null]) {
+      const accepted = world(from);
+      expect(await check(accepted, withIssuerDid(accepted, ISSUER_DID))).toMatchObject({ ok: true });
+    }
+  });
+
+  it('refuses an approval whose issuer record cannot be found, and an approval whose envelope signature does not verify', async () => {
+    const lost = makeWorld({ attestation: { issuerId: ISSUER_ID } });
+    expect((await refusal(lost, withIssuerDid(lost, ISSUER_DID))).code).toBe('approval_issuer_invalid');
+    const forged = makeWorld({ attestation: { envelopeSig: '01'.repeat(64) } });
+    const result = await refusal(forged);
+    expect(result).toMatchObject({ code: 'approval_issuer_invalid', detail: expect.stringContaining('envelope') });
+  });
+});
+
+describe('the digest: approval_digest_mismatch', () => {
+  it('refuses the digest of another document, and gives both digests', async () => {
+    const other = proposalOf({ ...DOCUMENT, quantity: 51 });
+    const world = makeWorld({ attestation: { digest: other.proposal_digest } });
+    expect(await refusal(world)).toEqual({
+      ok: false, code: 'approval_digest_mismatch', detail: expect.any(String), expected_digest: other.proposal_digest, observed_digest: world.proposal.proposal_digest,
+    });
+  });
+
+  it('refuses a changed salt, and a changed document, with the digest of what was received', async () => {
+    const world = makeWorld();
+    const salt = '5a'.repeat(32);
+    const bySalt = await refusal(world, { ...world.approvalInput, salt });
+    expect(bySalt).toMatchObject({ code: 'approval_digest_mismatch', expected_digest: world.proposal.proposal_digest });
+    expect('observed_digest' in bySalt && bySalt.observed_digest).toBe(digestOf(salt, world.proposal.document));
+    const document = { ...DOCUMENT, quantity: 500 };
+    const byDocument = await refusal(world, { ...world.approvalInput, document });
+    expect('observed_digest' in byDocument && byDocument.observed_digest).toBe(digestOf(world.proposal.salt, document));
+  });
+
+  it('refuses the digest of the document with no salt, and accepts the digest with the salt', async () => {
+    const unsalted = canonicalSha256(DOCUMENT);
+    if (!unsalted.ok) throw new Error(unsalted.detail);
+    expect((await refusal(makeWorld({ attestation: { digest: unsalted.value } }))).code).toBe('approval_digest_mismatch');
+    expect(await check(makeWorld())).toMatchObject({ ok: true });
+  });
+
+  it('accepts a document whose keys come in another order: the digest is the digest of the canonical form', async () => {
+    const world = makeWorld();
+    const reordered = Object.fromEntries(Object.entries(world.proposal.document).reverse());
+    expect(await check(world, { ...world.approvalInput, document: reordered })).toMatchObject({ ok: true });
+  });
+});
+
+describe('the order of the checks', () => {
+  const senderId = makeWorld().sender.id;
+  const otherDigest = digestOf('5a'.repeat(32), DOCUMENT);
+  type Defect = 'type' | 'subject' | 'issuer' | 'revoked' | 'expired' | 'issuerInvalid' | 'digest';
+  /** A world with each defect in the list, and an approval that is right in every other way. */
+  function worldWith(defects: readonly Defect[]): World {
+    const has = (defect: Defect): boolean => defects.includes(defect);
+    return makeWorld({
+      attestation: {
+        issuerId: ISSUER_ID,
+        ...(has('type') ? { attType: 15 } : {}), ...(has('subject') ? { subject: 'b4'.repeat(32) } : { subject: senderId }), ...(has('issuer') ? { issuer: OTHER_KEY.publicKey } : {}),
+        ...(has('revoked') ? { status: revoked } : {}), ...(has('expired') ? { validUntil: T - 1 } : {}), ...(has('digest') ? { digest: otherDigest } : {}),
+      },
+      issuerRecord: has('issuerInvalid') ? invalidated(T - 2 * HOUR) : {},
+    });
+  }
+
+  it('gives the first refusal in the order of the checks, and accepts when no defect is left', async () => {
+    const order: Defect[] = ['type', 'subject', 'issuer', 'revoked', 'expired', 'issuerInvalid', 'digest'];
+    const expected = ['approval_wrong_type', 'approval_wrong_subject', 'approval_wrong_issuer', 'approval_revoked', 'approval_expired', 'approval_issuer_invalid', 'approval_digest_mismatch', 'accepted'];
+    const codes: string[] = [];
+    for (let left = 0; left <= order.length; left += 1) {
+      const world = worldWith(from(order, left));
+      const result = await check(world, withIssuerDid(world, ISSUER_DID));
+      codes.push(result.ok ? 'accepted' : result.code);
+    }
+    expect(codes).toEqual(expected);
+  });
+});
+
+describe('a source that cannot be read: never a pass, and never the code of a rule', () => {
+  it('throws CheckUnavailableError when the read of the attestation fails, and tells the service the cause but not the buyer', async () => {
+    const world = makeWorld();
+    const ports = withLedger(world, { attestation: failing });
+    const error = await checkApproval(ports, world.approvalInput).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(CheckUnavailableError);
+    expect(error).toMatchObject({ code: 'check_unavailable', source: 'attestation', message: 'the attestation could not be read' });
+    if (error instanceof CheckUnavailableError) expect(error.message).not.toContain('secret-token');
+    // The cause goes to the hook of the service, which is the operator's log. The error that the caller sees has only a fixed text.
+    expect(world.faults).toHaveLength(1);
+    expect(world.faults[0][0]).toBe('attestation');
+    expect(String(world.faults[0][1])).toContain('secret-token');
+  });
+
+  it('throws CheckUnavailableError when the read of the delegation fails, after the checks that need no delegation', async () => {
+    const world = makeWorld();
+    const error = await checkApproval(withLedger(world, { readDelegation: failing }), world.approvalInput).catch((cause: unknown) => cause);
+    expect(error).toMatchObject({ code: 'check_unavailable', source: 'delegation' });
+    // A wrong type is refused before the delegation is read, so a failing delegation read does not hide it.
+    const wrong = makeWorld({ attestation: { attType: 15 } });
+    expect(await checkApproval(withLedger(wrong, { readDelegation: failing }), wrong.approvalInput)).toMatchObject({ ok: false, code: 'approval_wrong_type' });
+  });
+
+  it('tells a delegation that does not exist from a read that did not answer: the first is a refusal, the others are CheckUnavailableError', async () => {
+    const world = makeWorld();
+    const view = await world.ports.ledger.readDelegation(DELEGATION_ID);
+    const reading = (read: unknown) => withLedger(world, { readDelegation: read as never });
+    // The port says that the delegation is not live: it gives the delegation that was asked for, with an empty chain. This is an answer, and the answer is a refusal.
+    expect(await checkApproval(reading(async () => ({ ...view, chain: [] })), world.approvalInput)).toMatchObject({ ok: false, code: 'approval_wrong_issuer' });
+    // A read that fails, an answer of the wrong shape and an answer for another delegation are not an answer: never a pass, and never the code of a rule.
+    const notAnswers = [failing, async () => null, async () => ({}), async () => ({ ...view, chain: null }), async () => ({ id: DELEGATION_ID, chain: [] }), async () => ({ ...view, id: '9e'.repeat(32), chain: [] })];
+    for (const [index, read] of notAnswers.entries()) await expect(checkApproval(reading(read), world.approvalInput), `read ${index}`).rejects.toBeInstanceOf(CheckUnavailableError);
+    expect(await checkApproval(reading(async () => view), world.approvalInput)).toMatchObject({ ok: true });
+  });
+
+  it('throws CheckUnavailableError when the node does not answer: the real read code fails and the approval is not accepted', async () => {
+    const world = makeWorld();
+    world.ledger.provider.getUtxos = failing;
+    await expect(check(world)).rejects.toBeInstanceOf(CheckUnavailableError);
+  });
+
+  it('throws CheckUnavailableError for an answer that is not for this approval: another attestation, another time, a missing or unknown condition', async () => {
+    const world = makeWorld();
+    const real = await world.ports.ledger.attestation(ATTESTATION_ID, T);
+    const answers = [
+      { ...real, id: '99'.repeat(32) }, { ...real, atMs: T + 1 }, { ...real, conditions: [] }, { ...real, conditions: real.conditions.filter((line) => line.id !== 'time_window') },
+      { ...real, conditions: real.conditions.map((line) => (line.id === 'active' ? { ...line, result: 'maybe' as never } : line)) },
+      { ...real, attestation: real.attestation === null ? null : { ...real.attestation, id: '99'.repeat(32) } },
+    ];
+    for (const answer of answers) await expect(checkApproval(withLedger(world, { attestation: async () => answer }), world.approvalInput)).rejects.toBeInstanceOf(CheckUnavailableError);
+    await expect(checkApproval(withLedger(world, { attestation: async () => real }), world.approvalInput)).resolves.toMatchObject({ ok: true });
+  });
+
+  it('throws CheckUnavailableError for an answer of the attestation read that has the wrong shape, and for an answer of the delegation read that has the wrong shape', async () => {
+    const world = makeWorld();
+    const real = await world.ports.ledger.attestation(ATTESTATION_ID, T);
+    const view = real.attestation;
+    if (view === null) throw new Error('the world has an attestation');
+    const shapes: unknown[] = [
+      null, undefined, {}, 'x', 5, [], { ...real, attestation: 'x' }, { ...real, attestation: { id: view.id } }, { ...real, attestation: { ...view, attestation: null } },
+      { ...real, attestation: { ...view, attestation: { ...view.attestation, attType: '5' } } }, { ...real, attestation: { ...view, attestation: { ...view.attestation, subject: 7 } } },
+      { ...real, attestation: { ...view, attestation: { ...view.attestation, issuer: null } } }, { ...real, attestation: { ...view, attestation: { ...view.attestation, issuerId: 7 } } },
+      { ...real, attestation: { ...view, attestation: { ...view.attestation, validUntil: 'never' } } }, { ...real, attestation: { ...view, attestation: { ...view.attestation, digest: undefined } } },
+    ];
+    for (const [index, answer] of shapes.entries()) {
+      await expect(checkApproval(withLedger(world, { attestation: async () => answer as AttestationCheck }), world.approvalInput), `shape ${index}`).rejects.toBeInstanceOf(CheckUnavailableError);
+    }
+    const delegation = await world.ports.ledger.readDelegation(DELEGATION_ID);
+    const link = delegation.chain[0];
+    const views: unknown[] = [
+      null, undefined, {}, 'x', { id: DELEGATION_ID }, { ...delegation, chain: 'x' }, { ...delegation, chain: [{}] }, { ...delegation, chain: [{ id: DELEGATION_ID }] },
+      { ...delegation, id: '9e'.repeat(32) }, { ...delegation, chain: [{ ...link, id: '9e'.repeat(32) }] }, { ...delegation, chain: [{ ...link, delegation: null }] },
+      { ...delegation, chain: [{ ...link, delegation: { ...link.delegation, delegator: { type: 'Nobody' } } }] }, { ...delegation, missingParent: 7 },
+    ];
+    for (const [index, answer] of views.entries()) {
+      await expect(checkApproval(withLedger(world, { readDelegation: async () => answer as never }), world.approvalInput), `view ${index}`).rejects.toBeInstanceOf(CheckUnavailableError);
+    }
+    await expect(checkApproval(withLedger(world, { readDelegation: async () => delegation, attestation: async () => real }), world.approvalInput)).resolves.toMatchObject({ ok: true });
+  });
+
+  it('reads a condition that does not apply as a pass only where the rule allows it', async () => {
+    const world = makeWorld();
+    const real = await world.ports.ledger.attestation(ATTESTATION_ID, T);
+    const change = (id: string, result: 'pass' | 'fail' | 'not_applicable') => withLedger(world, { attestation: async () => ({ ...real, conditions: real.conditions.map((line) => (line.id === id ? { ...line, result } : line)) }) });
+    for (const id of ['envelope', 'issuer_not_invalidated', 'issuer_key_listed']) expect(await checkApproval(change(id, 'not_applicable'), world.approvalInput), id).toMatchObject({ ok: true });
+    // The conditions that apply to every attestation that exists are `pass` or `fail`. A result of `not_applicable` is an answer that cannot be judged: it is not a pass and it is not a rule.
+    for (const id of ['authentic', 'active', 'time_window']) await expect(checkApproval(change(id, 'not_applicable'), world.approvalInput), id).rejects.toBeInstanceOf(CheckUnavailableError);
+    expect(await checkApproval(change('issuer_key_listed', 'fail'), world.approvalInput)).toMatchObject({ ok: false, code: 'approval_issuer_invalid' });
+  });
+});
+
+describe('an input of the wrong type is an error, never a pass', () => {
+  const world = makeWorld();
+  const bad: Array<[string, Partial<Record<keyof ApprovalInput, unknown>>]> = [
+    ['a time that is not a number', { now_ms: 'now' }], ['a time that is NaN', { now_ms: Number.NaN }], ['a time that is not whole', { now_ms: 1.5 }], ['a time below zero', { now_ms: -1 }],
+    ['a time that is infinite', { now_ms: Number.POSITIVE_INFINITY }], ['a missing time', { now_ms: undefined }], ['a sender that is not a DID', { sender_did: 'did:vector:abc' }],
+    ['a delegation in capitals', { delegation: DELEGATION_ID.toUpperCase() }], ['a salt that is too short', { salt: 'ab' }], ['a document that is not JSON data', { document: { a: undefined } }],
+    ['an approval with a member that is not named', { approval: { attestation: ATTESTATION_ID, issuer_did: OTHER_DID, extra: 1 } }], ['an approval that is not an object', { approval: 'abc' }],
+  ];
+  it.each(bad)('throws a TypeError for %s', async (_name, change) => {
+    await expect(check(world, { ...world.approvalInput, ...change } as ApprovalInput)).rejects.toBeInstanceOf(TypeError);
+  });
+
+  it('accepts the same input with the members right', async () => {
+    expect(await check(world)).toMatchObject({ ok: true });
+  });
+});
+
+describe('what a refusal says', () => {
+  it('never repeats the salt, the document or a secret of the read', async () => {
+    const salty = makeWorld({ attestation: { digest: proposalOf({ ...DOCUMENT, quantity: 1 }).proposal_digest } });
+    const refusals = [
+      await refusal(salty), await refusal(makeWorld({ attestation: { attType: 15 } })), await refusal(makeWorld({ attestation: { validUntil: T - 1 } })), await refusal(makeWorld({ attestation: { issuer: OTHER_KEY.publicKey } })),
+    ];
+    for (const result of refusals) {
+      const text = JSON.stringify(result);
+      expect(text).not.toContain(salty.proposal.salt);
+      expect(text).not.toContain('run1-0001');
+      expect(text).not.toContain('supplier_did');
+    }
+  });
+});
+
+describe('the approval uses what the read of the attestation decided: ruleValid and every line', () => {
+  const world = makeWorld();
+  const input = world.approvalInput;
+  const answering = (change: (answer: AttestationCheck) => unknown): ChecksPorts =>
+    withLedger(world, { attestation: async (id, at) => change(await world.ports.ledger.attestation(id, at)) as AttestationCheck });
+  const withLine = (id: string, over: Record<string, unknown>) => (answer: AttestationCheck) => ({ ...answer, conditions: answer.conditions.map((line) => (line.id === id ? { ...line, ...over } : line)) });
+  const extraLine = (result: string, ruleValid: boolean) => (answer: AttestationCheck) => ({ ...answer, ruleValid, conditions: [...answer.conditions, { id: 'not_superseded', label: 'x', result, detail: 'x' }] });
+  const unavailable = (ports: ChecksPorts, why: string) => expect(checkApproval(ports, input), why).rejects.toBeInstanceOf(CheckUnavailableError);
+
+  it('passes with the answer as the read gave it, and ruleValid must be the boolean true', async () => {
+    expect(await checkApproval(answering((answer) => answer), input)).toMatchObject({ ok: true });
+    for (const ruleValid of ['true', 1, undefined, null, {}]) await unavailable(answering((answer) => ({ ...answer, ruleValid })), `ruleValid ${String(ruleValid)}`);
+    // false with no failing line that explains it
+    await unavailable(answering((answer) => ({ ...answer, ruleValid: false })), 'ruleValid false');
+  });
+
+  it('gives the code of a failing line of a condition that it knows, whatever ruleValid says', async () => {
+    const codes: Array<[string, string]> = [
+      ['authentic', 'approval_not_found'], ['active', 'approval_revoked'], ['time_window', 'approval_expired'], ['envelope', 'approval_issuer_invalid'],
+      ['issuer_not_invalidated', 'approval_issuer_invalid'], ['issuer_key_listed', 'approval_issuer_invalid'],
+    ];
+    for (const [id, code] of codes) {
+      for (const ruleValid of [true, false]) {
+        expect(await checkApproval(answering((answer) => ({ ...withLine(id, { result: 'fail' })(answer), ruleValid })), input), `${id} ${ruleValid}`).toMatchObject({ ok: false, code });
+      }
+    }
+  });
+
+  it('gives approval_not_found for a line authentic that fails, also when the attestation is there, and before the type is read', async () => {
+    const wrongType = makeWorld({ attestation: { attType: 15 } });
+    const notAuthentic = withLedger(wrongType, { attestation: async (id, at) => withLine('authentic', { result: 'fail' })(await wrongType.ports.ledger.attestation(id, at)) as AttestationCheck });
+    expect(await checkApproval(notAuthentic, wrongType.approvalInput)).toMatchObject({ ok: false, code: 'approval_not_found' });
+    expect(await checkApproval(wrongType.ports, wrongType.approvalInput)).toMatchObject({ ok: false, code: 'approval_wrong_type' });
+    // An attestation that is missing while the line authentic passes is a read that contradicts itself.
+    await unavailable(answering((answer) => ({ ...answer, attestation: null })), 'null attestation, authentic passes');
+  });
+
+  it('cannot judge a failing line of a condition that it does not know, and a known failing line is still its code', async () => {
+    await unavailable(answering(extraLine('fail', false)), 'unknown line fails, ruleValid false');
+    await unavailable(answering(extraLine('fail', true)), 'unknown line fails, ruleValid true');
+    expect(await checkApproval(answering(extraLine('pass', true)), input)).toMatchObject({ ok: true });
+    expect(await checkApproval(answering(extraLine('not_applicable', true)), input)).toMatchObject({ ok: true });
+    const both = answering((answer) => withLine('active', { result: 'fail' })(extraLine('fail', false)(answer) as unknown as AttestationCheck));
+    expect(await checkApproval(both, input)).toMatchObject({ ok: false, code: 'approval_revoked' });
+  });
+
+  it('cannot judge an answer that lacks a line of the rule, also when an earlier check would refuse: the answer is not judged at all', async () => {
+    const wrongType = makeWorld({ attestation: { attType: 15 } });
+    const without = (id: string): ChecksPorts =>
+      withLedger(wrongType, { attestation: async (at, time) => ({ ...(await wrongType.ports.ledger.attestation(at, time)), conditions: (await wrongType.ports.ledger.attestation(at, time)).conditions.filter((line) => line.id !== id) }) });
+    await expect(checkApproval(without('envelope'), wrongType.approvalInput)).rejects.toBeInstanceOf(CheckUnavailableError);
+    expect(await checkApproval(wrongType.ports, wrongType.approvalInput)).toMatchObject({ ok: false, code: 'approval_wrong_type' });
+  });
+
+  it('cannot judge two lines with one identifier, a line of the wrong shape, conditions that are not a list, or a condition with no line', async () => {
+    const active = (answer: AttestationCheck) => answer.conditions.filter((line) => line.id === 'active');
+    for (const [first, second] of [['pass', 'fail'], ['fail', 'pass'], ['pass', 'pass'], ['fail', 'fail']]) {
+      await unavailable(answering((answer) => ({ ...answer, conditions: [{ ...active(answer)[0], result: first }, ...answer.conditions.map((line) => (line.id === 'active' ? { ...line, result: second } : line))] })), `active twice ${first} ${second}`);
+    }
+    const lines: unknown[] = [null, 'active', [], { id: 'x' }, { id: 5, result: 'pass', detail: 'x' }, { id: 'x', result: 'PASS', detail: 'x' }, { id: 'x', result: true, detail: 'x' }, { id: 'x', result: 'pass' }];
+    for (const [index, line] of lines.entries()) await unavailable(answering((answer) => ({ ...answer, conditions: [...answer.conditions, line] })), `line ${index}`);
+    for (const conditions of [{}, null, 'x', undefined]) await unavailable(answering((answer) => ({ ...answer, conditions })), `conditions ${String(conditions)}`);
+    for (const id of ['authentic', 'active', 'time_window', 'envelope', 'issuer_not_invalidated', 'issuer_key_listed']) {
+      await unavailable(answering((answer) => ({ ...answer, conditions: answer.conditions.filter((line) => line.id !== id) })), `no line ${id}`);
+    }
+  });
+
+  it('records the issuer DID that the attestation names, and never the DID that the reference names: with no issuer record the fact is null', async () => {
+    const bare = makeWorld();
+    for (const named of [`did:vector:${'99'.repeat(32)}`, bare.sender.did, OTHER_DID]) {
+      expect(await check(bare, withIssuerDid(bare, named)), named).toMatchObject({ ok: true, issuer_did: null });
+    }
+    const outcome = await runChecks(sharedChecks(bare.ports, { kind: 'order-desk', request: { ...bare.handoff, approval: { attestation: ATTESTATION_ID, issuer_did: `did:vector:${'99'.repeat(32)}` } }, context: bare.context }));
+    expect(outcome.ok).toBe(true);
+    expect(outcome.record.facts.approval_issuer_did).toBeNull();
+    const registered = makeWorld({ attestation: { issuerId: ISSUER_ID }, issuerRecord: {} });
+    expect(await check(registered, withIssuerDid(registered, ISSUER_DID))).toMatchObject({ ok: true, issuer_did: ISSUER_DID });
+  });
+});
+
+describe('a hex member of an answer is read only in the form of its kind', () => {
+  const world = makeWorld();
+  const KEY = ISSUER_KEY.publicKey;
+  const attestationWith = (path: string, value: unknown, over: World = world) => async () => withMember(await over.ports.ledger.attestation(ATTESTATION_ID, T), `attestation.attestation.${path}`, value);
+
+  it('does not read a key with other characters before it, after it or inside it, or in capitals, as the key: the approval is not accepted', async () => {
+    const issuers = [`${KEY}zz`, `${KEY}0`, `${KEY}00`, `zz${KEY}`, `${KEY.toUpperCase()}zz`, `${KEY.substring(0, 62)} ${KEY.substring(62)}`, ...leavingForm(KEY)];
+    for (const issuer of issuers) {
+      await expect(checkApproval(withLedger(world, { attestation: attestationWith('issuer', issuer) }), world.approvalInput), issuer).rejects.toMatchObject({ code: 'check_unavailable', source: 'attestation' });
+    }
+    expect(await checkApproval(withLedger(world, { attestation: attestationWith('issuer', KEY) }), world.approvalInput)).toMatchObject({ ok: true, issuer_key_hash: ISSUER_KEY.keyHash });
+  });
+
+  it('does not read the subject or the digest in another form as the same value: the answer cannot be judged. A value in the right form that is another value is the code of its rule', async () => {
+    const real = await world.ports.ledger.attestation(ATTESTATION_ID, T);
+    for (const member of ['subject', 'digest']) {
+      for (const text of leavingForm(valueAt(real, `attestation.attestation.${member}`) as string)) {
+        await expect(checkApproval(withLedger(world, { attestation: attestationWith(member, text) }), world.approvalInput), `${member} ${text}`).rejects.toBeInstanceOf(CheckUnavailableError);
+      }
+    }
+    const refusedFor = (path: string, value: unknown) => checkApproval(withLedger(world, { attestation: attestationWith(path, value) }), world.approvalInput);
+    expect(await refusedFor('subject', 'b4'.repeat(32))).toMatchObject({ ok: false, code: 'approval_wrong_subject' });
+    expect(await refusedFor('digest', digestOf('5a'.repeat(32), DOCUMENT))).toMatchObject({ ok: false, code: 'approval_digest_mismatch' });
+    expect(await refusedFor('issuer', OTHER_KEY.publicKey)).toMatchObject({ ok: false, code: 'approval_wrong_issuer' });
+  });
+
+  it('does not read the hash of a root delegator that is a key in capitals as the same key hash', async () => {
+    const view = await world.ports.ledger.readDelegation(DELEGATION_ID);
+    for (const hash of leavingForm(ISSUER_KEY.keyHash)) {
+      const ports = withLedger(world, { readDelegation: async () => withMember(view, 'chain.0.delegation.delegator.hash', hash) });
+      await expect(checkApproval(ports, world.approvalInput), hash).rejects.toMatchObject({ code: 'check_unavailable', source: 'delegation' });
+    }
+    expect(await check(world)).toMatchObject({ ok: true });
+  });
+
+  it('does not read the issuer record, or an agent that is the root delegator, in capitals as the same agent', async () => {
+    const agent = makeWorld(agentRoot());
+    const input = withIssuerDid(agent, ISSUER_DID);
+    const view = await agent.ports.ledger.readDelegation(DELEGATION_ID);
+    for (const id of leavingForm(ISSUER_ID)) {
+      await expect(checkApproval(withLedger(agent, { attestation: attestationWith('issuerId', id, agent) }), input), `issuer record ${id}`).rejects.toMatchObject({ code: 'check_unavailable', source: 'attestation' });
+      const ports = withLedger(agent, { readDelegation: async () => withMember(view, 'chain.0.delegation.delegator.id', id) });
+      await expect(checkApproval(ports, input), `root delegator ${id}`).rejects.toMatchObject({ code: 'check_unavailable', source: 'delegation' });
+    }
+    expect(await check(agent, input)).toMatchObject({ ok: true, issuer_did: ISSUER_DID });
+  });
+});
