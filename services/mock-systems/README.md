@@ -157,12 +157,13 @@ A token is an access token of the identity gateway with a DPoP proof. The call s
 The route is on the client-certificate host. The checks, in order:
 
 1. The request has exactly one `Client-Cert` header, in the form `:<base64>:`.
-2. The certificate was issued by an authority in the SPIFFE bundle of the gateway. The service reads the bundle again every 300 seconds. When a new copy cannot be fetched (no answer, an error status, or a body that is not JSON), the verifier goes on with its old copy for up to one hour after the last good read, and then it refuses the call (503 `gateway_unavailable`). When the gateway answers with a body that is not a bundle, the service refuses the call at once.
-3. The certificate is valid now. The verifier accepts a clock difference of 30 seconds at the start.
-4. The certificate is a leaf (it is no CA). Its key usage has `digitalSignature`, and has neither `keyCertSign` nor `cRLSign`.
-5. The certificate has exactly one URI name. It is a SPIFFE ID of the form `spiffe://<trust domain>/agent/<64 hex characters>`, and the trust domain is the one of the gateway.
-6. The agent of that ID resolves at the gateway and is Active now.
-7. The record of the agent names the supplier organisation of the tenant, in an Accountable Party that is in force now, and the gateway has verified that organisation (`organisationVerified`). The organisation is compared as a domain name, in any case, and only as a whole name.
+2. The value holds exactly one certificate, and the certificate that the service verifies is the whole value. The service refuses bytes after the certificate, and a certificate that holds the PEM text of another certificate. Each is 401 `svid_invalid`, and the log line has the rule `x509.malformed`.
+3. The certificate was issued by an authority in the SPIFFE bundle of the gateway. The service reads the bundle again every 300 seconds. When a new copy cannot be fetched (no answer, an error status, or a body that is not JSON), the verifier goes on with its old copy for up to one hour after the last good read, and then it refuses the call (503 `gateway_unavailable`). When the gateway answers with a body that is not a bundle, the service refuses the call at once.
+4. The certificate is valid now. The verifier accepts a clock difference of 30 seconds at the start.
+5. The certificate is a leaf (it is no CA). Its key usage has `digitalSignature`, and has neither `keyCertSign` nor `cRLSign`.
+6. The certificate has exactly one URI name. It is a SPIFFE ID of the form `spiffe://<trust domain>/agent/<64 hex characters>`, and the trust domain is the one of the gateway.
+7. The agent of that ID resolves at the gateway and is Active now.
+8. The record of the agent names the supplier organisation of the tenant, in an Accountable Party that is in force now, and the gateway has verified that organisation (`organisationVerified`). The organisation is compared as a domain name, in any case, and only as a whole name.
 
 ### A JWT-SVID
 
