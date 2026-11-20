@@ -10,6 +10,10 @@ import { COSIGN_MANIFEST, COSIGN_PATH, COSIGN_REFUSALS, COSIGN_STATUS } from '@v
 const TOOL_CODES = ['not_a_delegation', 'not_for_this_agent', 'key_in_use', 'principal_not_allowed', 'spends_agent_funds', 'expired'];
 
 describe('the codes of the route', () => {
+  it('have the status that the table of the route gives to each refusal', () => {
+    expect(COSIGN_REFUSALS).toEqual({ not_a_delegation: 400, not_for_this_agent: 400, key_in_use: 409, principal_not_allowed: 403, spends_agent_funds: 403, expired: 400 });
+  });
+
   it('are the six refusal codes of the wire contract, and no other refusal', () => {
     expect(Object.keys(COSIGN_REFUSALS)).toEqual(TOOL_CODES);
   });

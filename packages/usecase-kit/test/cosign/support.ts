@@ -209,7 +209,10 @@ export function changed(hex: string, change: (parts: Parts) => void): string {
 }
 
 /** The transaction with one more input. */
-export const withInput = (hex: string, utxo: UTxO): string => changed(hex, (p) => { p.body = rebuilt(p.body, { inputs: inputList([...inputsOf(p.body.inputs()), refOf(utxo)]) }); });
+export const withInputs = (hex: string, utxos: UTxO[]): string => changed(hex, (p) => { p.body = rebuilt(p.body, { inputs: inputList([...inputsOf(p.body.inputs()), ...utxos.map(refOf)]) }); });
+export const withInput = (hex: string, utxo: UTxO): string => withInputs(hex, [utxo]);
+/** `count` outputs of the wallet of the member, for a world that holds them. */
+export const memberUtxos = (count: number): UTxO[] => Array.from({ length: count }, (_, i) => ({ txHash: (i + 1).toString(16).padStart(64, '0'), outputIndex: 0, address: OWN_ADDRESS, assets: { lovelace: 2_000_000n } }));
 /** The transaction with another collateral input (the same count). */
 export const withCollateral = (hex: string, utxo: UTxO): string => changed(hex, (p) => { p.body.set_collateral_inputs(inputList([refOf(utxo)])); });
 /** The transaction with the output at `index` paid to `address`. */
@@ -274,6 +277,13 @@ export function signedBy(hex: string, key: TestKey): string {
     list.add(CML.Vkeywitness.new(secret.to_public(), secret.sign(CML.hash_transaction(p.body).to_raw_bytes())));
     p.witnesses.set_vkeywitnesses(list);
   });
+}
+
+/** The outputs that the transaction spends or uses as collateral, each one once, as `hash#index`. A build can use one output for both. */
+export function spentOf(hex: string): string[] {
+  const body = CML.Transaction.from_cbor_hex(hex).body();
+  const refs = [...inputsOf(body.inputs()), ...inputsOf(body.collateral_inputs())].map((input) => `${input.transaction_id().to_hex()}#${input.index()}`);
+  return [...new Set(refs)];
 }
 
 /** The body of the transaction `hex` in hex, from the decoder library. */

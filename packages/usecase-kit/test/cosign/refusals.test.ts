@@ -8,8 +8,8 @@ import type { DelegationDatum } from '@vsa/vector-read/identity-codec';
 import { COSIGN_SETTINGS } from '@vsa/usecase-kit/cosign';
 import type { CosignCode } from '@vsa/usecase-kit/cosign';
 import {
-  AGENT_ID, DEPLOYMENT, DELEG_A, DELEG_B, NOW, OTHER_AGENT_ID, OTHER_AGENT_KEY, OWN_ADDRESS, PRINCIPAL, SERVICE, STRANGER, SUPPLIER, agentWallet, build, changed, harness, ledgerOf, liveDelegation, requestOf,
-  signedBy, walletAddress, withCollateral, withInput, withMint, withOutputAddress, withOutputs, withRedeemerMap, withRedeemers, withRequiredSigners, world,
+  AGENT_ID, DEPLOYMENT, DELEG_A, DELEG_B, NOW, OTHER_AGENT_ID, OTHER_AGENT_KEY, OWN_ADDRESS, PRINCIPAL, SERVICE, STRANGER, SUPPLIER, agentWallet, build, changed, harness, ledgerOf, liveDelegation, memberUtxos, requestOf,
+  signedBy, spentOf, walletAddress, withCollateral, withInput, withInputs, withMint, withOutputAddress, withOutputs, withRedeemerMap, withRedeemers, withRequiredSigners, world,
 } from './support.ts';
 import type { Setup } from './support.ts';
 
@@ -370,6 +370,18 @@ describe('the transaction must spend nothing of the agent', () => {
     const unknown = { ...agentWallet(DELEG_A, 1), txHash: 'ee'.repeat(32) };
     await refuses('not_a_delegation', withInput(hex, unknown));
     await signs(withInput(hex, { ...agentWallet(STRANGER, 1) }), { ledger: ledgerOf(world([agentWallet(STRANGER, 1)])) });
+  });
+
+  it('takes a transaction that spends 32 outputs, inputs and collateral inputs together, and refuses one that spends 33 or more', async () => {
+    const { hex } = await build();
+    const members = memberUtxos(40);
+    const ledger = ledgerOf(world(members));
+    // The build can use one output as the input and as the collateral, and then it spends one output. The test counts the outputs of the build and adds as many as it needs.
+    const own = spentOf(hex).length;
+    await signs(withInputs(hex, members.slice(0, 32 - own)), { ledger });
+    expect(spentOf(withInputs(hex, members.slice(0, 32 - own)))).toHaveLength(32);
+    await refuses('not_a_delegation', withInputs(hex, members.slice(0, 33 - own)), { ledger });
+    await refuses('not_a_delegation', withInputs(hex, members), { ledger });
   });
 
   it('refuses an input that is an output of the agent that the ledger does not have yet: an output that a later transaction makes', async () => {
