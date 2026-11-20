@@ -19,7 +19,7 @@ const record = (extra: Partial<JobRecord> = {}): JobRecord => ({
 });
 const CHAIN_FILED = {
   record: { claim: REF_A, evidence: EVIDENCE_TX, challenge: `${CHALLENGE_TX}#0` }, claim_token: TOKEN_A, against_did: OTHER, evidence_uri: documentUri(EVIDENCE_TX), evidence_hash: evidenceOf().hash,
-  challenge_tx: CHALLENGE_TX, challenge_token: CHALLENGE_TOKEN, stake_lovelace: 50_000_000n, deadline: NOW - 10 * 60_000 + 72 * HOUR, fee_lovelace: null,
+  challenge_tx: CHALLENGE_TX, challenge_token: CHALLENGE_TOKEN, stake_lovelace: 50_000_000n, deadline: NOW - 10 * 60_000 + 72 * HOUR, fee_lovelace: null, extra_evidence: null,
 };
 
 /** The challenge of this agent that the first try of a lapsed job landed: its evidence document is another transaction than the evidence document of the second try. */
@@ -28,6 +28,9 @@ const FIRST_CHALLENGE_TX = '98'.repeat(32);
 const FIRST_FILED = {
   ...CHAIN_FILED, record: { claim: REF_A, evidence: FIRST_EVIDENCE_TX, challenge: `${FIRST_CHALLENGE_TX}#0` }, evidence_uri: documentUri(FIRST_EVIDENCE_TX), challenge_tx: FIRST_CHALLENGE_TX,
 };
+
+/** The result for that challenge when the second try published its own evidence document (`EVIDENCE_TX`) before the job found the challenge: the result names that document. */
+const AFTER_SECOND_TRY = { ...FIRST_FILED, extra_evidence: EVIDENCE_TX };
 
 function expectNotFiled(result: ChallengeResult, code: string): asserts result is Extract<ChallengeResult, { ok: false }> {
   expect(result).toMatchObject({ ok: false, code });
@@ -121,6 +124,17 @@ describe('a job with a record gets its recorded state, and nothing is sent a sec
     expect(second.port.challenged).toEqual([]);
   });
 
+  it('gives the extra evidence document that the record keeps, and reads and sends nothing', async () => {
+    const journal = new MemoryJournal();
+    await journal.put(ESCROW, record({ step: 'done', evidence: { ...LANDED, tx_hash: FIRST_EVIDENCE_TX, uri: documentUri(FIRST_EVIDENCE_TX) }, filed: { ...FIRST_FILED, stake_lovelace: '50000000', extra_evidence: EVIDENCE_TX } }));
+    const { events, port, dispute } = rig({}, { journal });
+    port.claims = [claimView()];
+    expect(await dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: AFTER_SECOND_TRY });
+    expect(events).toEqual([]);
+    expect(port.published).toEqual([]);
+    expect(port.challenged).toEqual([]);
+  });
+
   const IN_DOUBT: Array<[string, JobRecord, Record<string, unknown>]> = [
     ['a job that started', record(), { evidence: null }],
     ['a job whose evidence landed', record({ step: 'evidence_landed', evidence: LANDED }), { evidence: LANDED }],
@@ -186,7 +200,7 @@ describe('a challenge of this agent for this job that is on chain is found again
     const rigged = rig({}, { journal });
     ownChallenge(rigged);
     const result = await rigged.dispute.challengeDelivery(delivery());
-    expect(result).toMatchObject({ ok: true, value: { record: { challenge: `${CHALLENGE_TX}#0` }, fee_lovelace: null } });
+    expect(result).toMatchObject({ ok: true, value: { record: { challenge: `${CHALLENGE_TX}#0` }, fee_lovelace: null, extra_evidence: null } });
     expect(rigged.port.challenged).toEqual([]);
   });
 
@@ -324,6 +338,9 @@ describe('the journal can fail', () => {
     ['a done record with neither filed nor ended', record({ step: 'done' })],
     ['a started record that says it is filed', { ...record(), filed: { ...CHAIN_FILED, stake_lovelace: '1', fee_lovelace: null } }],
     ['a done record with a stake that is not digits', { ...record({ step: 'done' }), filed: { ...CHAIN_FILED, stake_lovelace: '1.5', fee_lovelace: null } }],
+    ['a done record with no extra evidence member', { ...record({ step: 'done' }), filed: (({ extra_evidence: _extra, ...rest }) => rest)({ ...CHAIN_FILED, stake_lovelace: '50000000' }) }],
+    ['a done record with an extra evidence that is not a hash', { ...record({ step: 'done' }), filed: { ...CHAIN_FILED, stake_lovelace: '50000000', extra_evidence: 'zz' } }],
+    ['a done record with an extra evidence that is a number', { ...record({ step: 'done' }), filed: { ...CHAIN_FILED, stake_lovelace: '50000000', extra_evidence: 7 } }],
     ['a done record with a code that is not text', record({ step: 'done', ended: { code: 7 as never, detail: 'x', sent: null, challenge: null, wrong_document: null } })],
     ['a done record with a sent transaction of a wrong form', record({ step: 'done', ended: { code: 'x', detail: 'x', sent: { tx_hash: 'zz', valid_to: 1, may_land: true }, challenge: null, wrong_document: null } })],
   ];
@@ -340,7 +357,11 @@ describe('the journal can fail', () => {
   it('accepts a done record of each kind that the code writes, as the twin of the records above', async () => {
     const filed = { ...CHAIN_FILED, stake_lovelace: '50000000', fee_lovelace: '900000' };
     const ended = { code: 'challenge_not_built', detail: 'x', sent: null, challenge: null, wrong_document: null };
-    for (const stored of [record({ step: 'done', evidence: LANDED, filed }), record({ step: 'done', evidence: LANDED, ended }), record({ step: 'not_sent' }), record({ step: 'evidence_landed', evidence: LANDED })]) {
+    const withExtra = { ...filed, extra_evidence: FIRST_EVIDENCE_TX };
+    for (const stored of [
+      record({ step: 'done', evidence: LANDED, filed }), record({ step: 'done', evidence: LANDED, filed: withExtra }), record({ step: 'done', evidence: LANDED, ended }), record({ step: 'not_sent' }),
+      record({ step: 'evidence_landed', evidence: LANDED }),
+    ]) {
       const { dispute } = rig({}, { journal: failing([], { get: JSON.parse(JSON.stringify(stored)) }) });
       const result = await dispute.challengeDelivery(delivery());
       expect(['journal_unavailable']).not.toContain(result.ok ? 'ok' : result.code);
@@ -775,15 +796,23 @@ describe('a lapsed record gives the job back only for the claim that it names', 
       return publish(call);
     };
     const second = await dispute.challengeDelivery(delivery());
-    expect(second).toEqual({ ok: true, value: FIRST_FILED });
+    // The challenge names the evidence document of the first try. The evidence document of the second try is on chain and is not used, so the result names it.
+    expect(second).toEqual({ ok: true, value: AFTER_SECOND_TRY });
     // The second try published its own evidence document and sent no challenge: the job has one challenge, and it is not against the claim that ends later.
     expect(port.published.length).toBe(1);
     expect(port.challenged).toEqual([]);
-    // The journal keeps the challenge as the end of the job, and the next call gives it and reads nothing.
-    expect(journal.puts.at(-1)).toMatchObject({ step: 'done', filed: { record: { claim: REF_A, evidence: FIRST_EVIDENCE_TX, challenge: `${FIRST_CHALLENGE_TX}#0` } }, ended: null });
+    // The journal keeps the challenge and the extra evidence document as the end of the job, and the next call gives them and reads nothing.
+    expect(journal.puts.at(-1)).toMatchObject({
+      step: 'done', filed: { record: { claim: REF_A, evidence: FIRST_EVIDENCE_TX, challenge: `${FIRST_CHALLENGE_TX}#0` }, extra_evidence: EVIDENCE_TX }, ended: null,
+    });
     const calls = port.events.length;
     expect(await dispute.challengeDelivery(delivery())).toEqual(second);
     expect(port.events.length).toBe(calls);
+    // The twin: the first try landed before the second try started, so the job published no document, and the result names none.
+    const early = await lapsedOver([claimView(), later()]);
+    firstTryLands(early.port, [claimView({ state: 'Challenged' }), later()]);
+    expect(await early.dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: FIRST_FILED });
+    expect(early.port.published).toEqual([]);
   });
 
   it('gives the challenge of the first try as the result when it lands while the second try builds its challenge, and says challenge_not_built when no challenge of this agent is on chain', async () => {
@@ -793,7 +822,7 @@ describe('a lapsed record gives the job back only for the claim that it names', 
       firstTryLands(landing.port, [claimView({ state: 'Challenged' }), later()]);
       return { ok: false, code: 'not_built', detail: 'the claim output is spent' };
     };
-    expect(await landing.dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: FIRST_FILED });
+    expect(await landing.dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: AFTER_SECOND_TRY });
     expect(landing.port.challenged.map((call) => call.claim)).toEqual([REF_A]);
     // The twin: the build fails for another reason, and no challenge of this agent is on chain.
     const failing = await lapsedOver([claimView(), later()]);
@@ -814,14 +843,14 @@ describe('a lapsed record gives the job back only for the claim that it names', 
       firstTryLands(landing.port, [claimView({ state: 'Challenged' }), later()]);
       return REFUSED;
     };
-    expect(await landing.dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: FIRST_FILED });
+    expect(await landing.dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: AFTER_SECOND_TRY });
     // The second try built its challenge against the claim of the record. The job looked again for a challenge of this agent, and it has one challenge.
     expect(landing.port.challenged.map((call) => call.claim)).toEqual([REF_A]);
     expect(landing.events.filter((event) => event === 'readClaims').length).toBe(2);
     // The journal keeps the challenge as the end of the job, and the next call gives it and reads nothing.
     expect(landing.journal.puts.at(-1)).toMatchObject({ step: 'done', filed: { record: { claim: REF_A, evidence: FIRST_EVIDENCE_TX, challenge: `${FIRST_CHALLENGE_TX}#0` } }, ended: null });
     const calls = landing.events.length;
-    expect(await landing.dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: FIRST_FILED });
+    expect(await landing.dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: AFTER_SECOND_TRY });
     expect(landing.events.length).toBe(calls);
     // The twin: no challenge of this agent is on chain. The result is `challenge_not_confirmed`, with the evidence and the transaction that the node refused.
     const failing = await lapsedOver([claimView(), later()]);
@@ -846,7 +875,7 @@ describe('a lapsed record gives the job back only for the claim that it names', 
     expect(events.filter((event) => event === 'readClaims').length).toBe(1);
     expect(events).not.toContain('readChallenges');
     // The next call finds the challenge of the first try, as it does for any job.
-    expect(await dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: FIRST_FILED });
+    expect(await dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: AFTER_SECOND_TRY });
   });
 
   it('says claim_changed as before when no challenge of this agent is on chain: another agent challenged the claim, or the claim is gone', async () => {
@@ -888,9 +917,9 @@ describe('a lapsed record gives the job back only for the claim that it names', 
     expect(result.detail).toContain('the claim is Challenged now');
     expect(result.detail).not.toContain('secret-key');
     expect(result.evidence).toMatchObject({ tx_hash: EVIDENCE_TX });
-    // The twin: the chain can be read again, and the next call finds the challenge. Nothing is sent.
+    // The twin: the chain can be read again, and the next call finds the challenge. The record of the second try keeps its evidence document, so the result names it. Nothing is sent.
     port.readChallengesFails = null;
-    expect(await dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: FIRST_FILED });
+    expect(await dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: AFTER_SECOND_TRY });
     expect(port.challenged).toEqual([]);
   });
 

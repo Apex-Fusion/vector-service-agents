@@ -58,6 +58,12 @@ export interface ChallengeFiled {
   readonly deadline: number;
   /** The fees of the evidence transaction and the challenge transaction. It is null for a challenge that this agent filed earlier and that the code found again, from the chain: its fees are not known. */
   readonly fee_lovelace: bigint | null;
+  /**
+   * The transaction of an evidence document that this job published and that this challenge does not name, or null. A job that goes on after a lapsed record can publish the evidence document of its second try, and then find
+   * that the challenge of the first try is on chain: that challenge names the document of the first try. The document of the second try is on chain, and its fee is paid, so the result names it. `fee_lovelace` does not
+   * include that fee. It is null when the job published no other document.
+   */
+  readonly extra_evidence: string | null;
 }
 
 /** A challenge transaction that landed against another claim than the one that the evidence names. It is on chain, and it is not the challenge that the job wanted. */

@@ -37,6 +37,8 @@ export interface FiledRecord {
   readonly stake_lovelace: string;
   readonly deadline: number;
   readonly fee_lovelace: string | null;
+  /** The transaction of an evidence document that the job published and that the challenge does not name, or null (`ChallengeFiled`). */
+  readonly extra_evidence: string | null;
 }
 
 /** A job that ended with no challenge filed: the code of the step that failed, and each transaction that landed or may land. */
@@ -130,7 +132,7 @@ function landedOf(value: JsonValue | undefined): Reading<ChallengeLanded> {
 }
 
 function filedOf(value: JsonValue | undefined): Reading<FiledRecord> {
-  const members = ['record', 'claim_token', 'against_did', 'evidence_uri', 'evidence_hash', 'challenge_tx', 'challenge_token', 'stake_lovelace', 'deadline', 'fee_lovelace'];
+  const members = ['record', 'claim_token', 'against_did', 'evidence_uri', 'evidence_hash', 'challenge_tx', 'challenge_token', 'stake_lovelace', 'deadline', 'fee_lovelace', 'extra_evidence'];
   if (!isObject(value) || checkMembers(value, 'filed', members) !== null) return bad('filed');
   const record = value.record;
   if (!isObject(record) || checkMembers(record, 'record', ['claim', 'evidence', 'challenge']) !== null) return bad('filed');
@@ -139,14 +141,15 @@ function filedOf(value: JsonValue | undefined): Reading<FiledRecord> {
   const against = parseDid(value.against_did, 'against_did');
   const token = parseClaimToken(value.claim_token);
   const { evidence } = record;
-  const { evidence_uri: uri, evidence_hash: hash, challenge_tx: tx, challenge_token: challengeToken, stake_lovelace: stake, deadline, fee_lovelace: fee } = value;
+  const { evidence_uri: uri, evidence_hash: hash, challenge_tx: tx, challenge_token: challengeToken, stake_lovelace: stake, deadline, fee_lovelace: fee, extra_evidence: extra } = value;
   if (!claim.ok || !challenge.ok || !against.ok || !token.ok) return bad('filed');
   if (typeof evidence !== 'string' || !HASH.test(evidence) || !isText(uri) || typeof hash !== 'string' || !HASH.test(hash) || typeof tx !== 'string' || !HASH.test(tx)) return bad('filed');
   if (typeof challengeToken !== 'string' || !HASH.test(challengeToken) || typeof stake !== 'string' || !DIGITS.test(stake) || !isInteger(deadline)) return bad('filed');
   if (fee !== null && !(typeof fee === 'string' && DIGITS.test(fee))) return bad('filed');
+  if (extra !== null && !(typeof extra === 'string' && HASH.test(extra))) return bad('filed');
   return accepted({
     record: { claim: claim.value, evidence, challenge: challenge.value }, claim_token: token.value, against_did: against.value, evidence_uri: uri, evidence_hash: hash, challenge_tx: tx,
-    challenge_token: challengeToken, stake_lovelace: stake, deadline, fee_lovelace: fee,
+    challenge_token: challengeToken, stake_lovelace: stake, deadline, fee_lovelace: fee, extra_evidence: extra,
   });
 }
 

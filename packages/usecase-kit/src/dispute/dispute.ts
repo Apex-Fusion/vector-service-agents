@@ -23,7 +23,8 @@
 //      The challenge is not built.
 //   5. In one job of the queue: read the claim again, and build the challenge against the exact output that the evidence names. A claim that changed ends the job. After a lapsed record, the job then looks again
 //      for a challenge of this agent for this job on chain (step 1): the challenge of the first try can land while the second try runs. The second try then ends with `claim_changed`, with `challenge_not_built`, or
-//      with `challenge_not_confirmed` when the node refuses its challenge (`may_land` is false). That challenge is the result, and the evidence of the second try is not used.
+//      with `challenge_not_confirmed` when the node refuses its challenge (`may_land` is false). That challenge is the result. The evidence document of the second try is on chain, and the challenge of the first try
+//      does not name it, so the result names it in `extra_evidence`.
 // A job (one escrow) gets one challenge. Once a transaction of a job landed or may land, the job takes no second attempt, also after a restart: the journal says so. Only a record `started` lapses: it says
 // that the evidence may be on chain, and nothing else. After its lease the job may go on, but only against the claim that its record names. A challenge of the first try can still land after the lease, and the
 // chain takes only one challenge of a claim. So the second try cannot give the job a second challenge, and a second try against another claim could. When the claim of the record cannot be used any more, the job
@@ -76,7 +77,7 @@ export interface DisputeSettings {
    * first try can still land after the lease, and the chain takes only one challenge of a claim, so the job files at most one challenge. When that claim is spent, is not Open, or has too little window left, the
    * job ends with `claim_changed` or `claim_window_closing`, and nothing is sent. The first try can also land while the second try runs. The second try then ends with `claim_changed` (the claim is Challenged now),
    * with `challenge_not_built` (the node builds no challenge for a claim output that is spent), or with `challenge_not_confirmed` and `may_land` false (the node refuses the challenge, which spends a claim output that
-   * is spent), and it looks again for a challenge of this agent for the job on chain: that challenge is the result. Two processes
+   * is spent), and it looks again for a challenge of this agent for the job on chain: that challenge is the result, and the result names the evidence document of the second try (`extra_evidence`). Two processes
    * can both go on after a lease ends, and they go on against the same claim. The default is 10 minutes, or twice `read_timeout_ms` when that is more. A value below twice `read_timeout_ms` is refused: a write ends
    * at that bound and can still land later, so the lease must be longer than that.
    */
@@ -326,12 +327,13 @@ async function bounded<T, C extends string>(sleep: (ms: number) => Promise<void>
 const recordOfFiled = (filed: ChallengeFiled): FiledRecord => ({
   record: filed.record, claim_token: filed.claim_token, against_did: filed.against_did, evidence_uri: filed.evidence_uri, evidence_hash: filed.evidence_hash, challenge_tx: filed.challenge_tx,
   challenge_token: filed.challenge_token, stake_lovelace: String(filed.stake_lovelace), deadline: filed.deadline, fee_lovelace: filed.fee_lovelace === null ? null : String(filed.fee_lovelace),
+  extra_evidence: filed.extra_evidence,
 });
 
 const filedOfRecord = (record: FiledRecord): ChallengeFiled => ({
   record: record.record, claim_token: record.claim_token, against_did: record.against_did, evidence_uri: record.evidence_uri, evidence_hash: record.evidence_hash,
   challenge_tx: record.challenge_tx, challenge_token: record.challenge_token, stake_lovelace: BigInt(record.stake_lovelace), deadline: record.deadline,
-  fee_lovelace: record.fee_lovelace === null ? null : BigInt(record.fee_lovelace),
+  fee_lovelace: record.fee_lovelace === null ? null : BigInt(record.fee_lovelace), extra_evidence: record.extra_evidence,
 });
 
 /** The transactions that a record says landed or may land. */
@@ -803,22 +805,27 @@ export class Dispute {
       return accepted({
         record: { claim: challenge.claim, evidence: evidenceTx, challenge: challenge.ref }, claim_token: challenge.claim_token, against_did: target.against, evidence_uri: challenge.evidence_uri,
         evidence_hash: challenge.evidence_hash, challenge_tx: challenge.ref.split('#')[0]!, challenge_token: challenge.token, stake_lovelace: challenge.stake_lovelace,
-        deadline: challenge.challenged_at + challenge.resolution_deadline_ms, fee_lovelace: null,
+        deadline: challenge.challenged_at + challenge.resolution_deadline_ms, fee_lovelace: null, extra_evidence: null,
       });
     }
     return accepted(null);
   }
 
-  /** The result for a challenge of this agent that is on chain already: the journal keeps it as the end of the job, and the job gives it. */
-  async #found(target: ChallengeTarget, filed: ChallengeFiled): Promise<ChallengeResult> {
+  /**
+   * The result for a challenge of this agent that is on chain already: the journal keeps it as the end of the job, and the job gives it. `published` is the transaction of the evidence document that an earlier try of this
+   * job published, or null. That document is on chain, and its fee is paid. When the challenge names another document (the first try published its own), the result names the document of the earlier try in
+   * `extra_evidence`, and the journal keeps it. When the challenge names that document, or the job published none, `extra_evidence` is null.
+   */
+  async #found(target: ChallengeTarget, found: ChallengeFiled, published: string | null): Promise<ChallengeResult> {
     const escrow = target.escrow;
+    const filed: ChallengeFiled = { ...found, extra_evidence: published === found.record.evidence ? null : published };
     const base: JobRecord = {
       step: 'done', escrow, against: target.against, claim: filed.record.claim, claim_token: filed.claim_token, started_at: this.#now(),
       evidence: { tx_hash: filed.record.evidence, uri: filed.evidence_uri, document_hash: filed.evidence_hash },
       filed: recordOfFiled(filed), ended: null,
     };
     await this.#remember(escrow, base);
-    this.#log(`dispute: the challenge ${filed.record.challenge} of this agent for the job ${escrow} is on chain already, with the evidence ${filed.record.evidence}`);
+    this.#log(`dispute: the challenge ${filed.record.challenge} of this agent for the job ${escrow} is on chain already, with the evidence ${filed.record.evidence}${filed.extra_evidence === null ? '' : `, and the evidence ${filed.extra_evidence} of an earlier try is not used`}`);
     return accepted(filed);
   }
 
@@ -868,7 +875,7 @@ export class Dispute {
       this.#log(`dispute: no challenge for the job ${escrow}: ${own.code}`);
       return notFiled(own.code, own.detail, landedOf(earlier));
     }
-    if (own.value !== null) return this.#found(target, own.value);
+    if (own.value !== null) return this.#found(target, own.value, earlier?.evidence?.tx_hash ?? null);
     if (earlier !== null) {
       if (!lapsed) return notFiled('job_already_disputed', earlierDetail(earlier, this.#startedLease), landedOf(earlier));
       this.#log(`dispute: the started record of the job ${escrow} is older than its lease of ${this.#startedLease} ms, and no challenge of this agent is on chain, so the job goes on, only against the claim ${earlier.claim}`);
@@ -986,7 +993,7 @@ export class Dispute {
       if (!own.ok) return after('chain_unavailable', `${detail}; the search for a challenge of this agent on chain failed: ${own.detail}`, more);
       if (own.value === null) return after(code, detail, more);
       this.#log(`dispute: the evidence ${evidence.tx_hash} of this try is not used: the challenge ${own.value.record.challenge} of the first try landed while this try ran`);
-      return this.#found(target, own.value);
+      return this.#found(target, own.value, evidence.tx_hash);
     };
     if ('code' in second) return after('port_error', second.detail);
     if ('stop' in second) {
@@ -1009,7 +1016,7 @@ export class Dispute {
     const filed: ChallengeFiled = {
       record: { claim: opened.claim, evidence: evidence.tx_hash, challenge: opened.challenge }, claim_token: opened.claim_token, against_did: claim.claimer,
       evidence_uri: evidence.uri, evidence_hash: evidence.document_hash, challenge_tx: opened.tx_hash, challenge_token: opened.challenge_token,
-      stake_lovelace: opened.stake_lovelace, deadline: opened.deadline, fee_lovelace: published.value.fee_lovelace + opened.fee_lovelace,
+      stake_lovelace: opened.stake_lovelace, deadline: opened.deadline, fee_lovelace: published.value.fee_lovelace + opened.fee_lovelace, extra_evidence: null,
     };
     await this.#finish(escrow, landed, accepted(filed));
     this.#log(`dispute: challenge ${filed.record.challenge} filed against the claim ${filed.record.claim} of ${filed.against_did} with the evidence ${filed.record.evidence}`);
