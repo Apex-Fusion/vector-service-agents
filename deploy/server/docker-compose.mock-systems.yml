@@ -25,11 +25,4 @@ services:
     tmpfs: ["/tmp:size=64m"]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    # This check is here so that docker ps shows the state of the service. GET /healthz answers 200 and writes no log line, so the check does not fill the log.
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9120/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
-      interval: 20s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
     logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }

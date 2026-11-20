@@ -1987,7 +1987,7 @@ test('CI: the publish job also pushes the Document Pipeline image under :latest 
   assert.match(job.if, /github\.event_name == 'push'/);
   assert.match(job.if, /github\.ref == 'refs\/heads\/main'/);
   const builds = job.steps.filter((s) => s.uses === 'docker/build-push-action@v6');
-  assert.equal(builds.length, 4, 'one image for each agent that is built');
+  assert.equal(builds.length, 5, 'one image for each agent that is built, and one for the mock service');
   const history = builds.find((s) => s.with.file === 'agents/agent-history/Dockerfile');
   const pipeline = builds.find((s) => s.with.file === 'agents/document-pipeline/Dockerfile');
   assert.ok(history && pipeline);
@@ -3332,7 +3332,7 @@ test('CI: the publish job also pushes the Audio Snippets image under :latest and
 });
 
 // Ruling R-D26: a stage of a Dockerfile that no longer builds fails on the pull request that broke it, before main, with no registry login.
-test('CI: the build job builds the four images of the publish job on every pull request and every push to main, and pushes none and logs in nowhere', () => {
+test('CI: the build job builds the five images of the publish job on every pull request and every push to main, and pushes none and logs in nowhere', () => {
   assert.deepEqual(ci.on, { push: { branches: ['main'] }, pull_request: null });
   assert.deepEqual(ci.permissions, { contents: 'read' });
   const job = ci.jobs.build;
@@ -3344,7 +3344,7 @@ test('CI: the build job builds the four images of the publish job on every pull 
   assert.equal(job.steps[0].uses, 'actions/checkout@v4');
   assert.equal(job.steps.some((s) => typeof s.uses === 'string' && s.uses.startsWith('docker/login-action')), false, 'no registry login');
   const builds = job.steps.filter((s) => s.uses === 'docker/build-push-action@v6');
-  assert.equal(builds.length, 4);
+  assert.equal(builds.length, 5);
   const published = ci.jobs.publish.steps.filter((s) => s.uses === 'docker/build-push-action@v6').map((s) => s.with.file);
   assert.deepEqual(builds.map((s) => s.with.file), published, 'the Dockerfiles of the publish job, in its order');
   for (const step of builds) {
@@ -6188,9 +6188,6 @@ function mockComposeProblems(text, storeBytes = mockStoreBytes()) {
   if (!(s.security_opt ?? []).includes('no-new-privileges:true')) problems.push('security_opt must have no-new-privileges:true');
   if (!Array.isArray(s.tmpfs) || s.tmpfs.length !== 1 || !/^\/tmp(?::|$)/.test(s.tmpfs[0])) problems.push('tmpfs must be the one entry /tmp: tsx writes its cache there, and nothing else is writable');
   for (const key of ['privileged', 'cap_add', 'network_mode', 'pid', 'ipc', 'devices', 'volumes_from']) if (key in s) problems.push(`${key} is not allowed`);
-  const check = s.healthcheck?.test;
-  const command = Array.isArray(check) ? check.join(' ') : '';
-  if (check?.[0] !== 'CMD' || !command.includes(`http://127.0.0.1:${MOCK.port}/healthz`) || !command.includes('r.ok')) problems.push(`healthcheck must call GET /healthz on 127.0.0.1:${MOCK.port} and use the status of the answer`);
   if (s.logging?.driver !== 'json-file' || s.logging?.options?.['max-size'] !== '10m' || s.logging?.options?.['max-file'] !== '3') problems.push('logging must be json-file with 3 files of 10m, as the other compose files have it');
   const limit = mockBytes(s.mem_limit);
   if (!(limit > 0)) problems.push('mem_limit must be set, for example 2048m');
@@ -6234,8 +6231,6 @@ test('mock service compose: one container with the image by digest, on 127.0.0.1
     ['a limit under a full store', srvReplace(text, 'mem_limit: 2048m', 'mem_limit: 1024m'), /too small/],
     ['a limit above the plan', srvReplace(text, 'mem_limit: 2048m', 'mem_limit: 8192m'), /3 GiB/],
     ['no log limit', srvReplace(text, 'max-size: "10m"', 'max-size: "1g"'), /logging must be/],
-    ['a health check on another path', srvReplace(text, '/healthz', '/health'), /healthcheck must call/],
-    ['a health check that ignores the status', srvReplace(text, 'r.ok ? 0 : 1', '0'), /healthcheck must call/],
     ['a second service', `${text}  other:\n    image: example\n`, /one service/],
   ];
   for (const [name, broken, expected] of faults) {
@@ -6656,10 +6651,14 @@ test('mock service README and RUNBOOK: the two files, the health check, the tena
   assert.deepEqual(commands, ['-f docker-compose.mock-systems.yml up -d', '-f docker-compose.mock-systems.yml up -d --force-recreate mock-systems', '-f docker-compose.mock-systems.yml down']);
 });
 
-test('mock service compose, the health check: run as written against a stand-in for the service, it passes on a 200 and fails on a 503 and on a port that nobody listens on', async () => {
-  const check = parseYaml(mockComposeText).services[MOCK.name].healthcheck.test;
-  const [word, program, flag, script] = check;
-  assert.deepEqual([word, program, flag], ['CMD', 'node', '-e']);
+test('mock service image, the health check: run as the Dockerfile writes it against a stand-in for the service, it passes on a 200 and fails on a 503 and on a port that nobody listens on', async () => {
+  // The image has the one health check of the service. The compose file sets none, so docker ps shows the state that the image reports.
+  assert.equal('healthcheck' in parseYaml(mockComposeText).services[MOCK.name], false, 'the compose file has no second health check');
+  const line = read('services/mock-systems/Dockerfile').split('\n').find((text) => text.startsWith('HEALTHCHECK '));
+  assert.ok(line, 'the Dockerfile has a HEALTHCHECK');
+  const [program, flag, script] = JSON.parse(line.slice(line.indexOf(' CMD ') + 5));
+  assert.deepEqual([program, flag], ['node', '-e']);
+  assert.ok(script.includes(`http://127.0.0.1:${MOCK.port}/healthz`), 'the check calls GET /healthz on the port of the service');
   const run = async (port) => {
     try {
       await execFileAsync(process.execPath, ['-e', script.replace(`127.0.0.1:${MOCK.port}`, `127.0.0.1:${port}`)], { timeout: 30_000 });
