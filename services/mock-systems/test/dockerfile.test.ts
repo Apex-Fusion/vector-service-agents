@@ -37,7 +37,7 @@ describe('services/mock-systems/Dockerfile', () => {
   });
 
   test('every path it copies from the build context exists in the repository, and the final stage copies nothing but the workspace of the builder', () => {
-    expect(copies).toHaveLength(11);
+    expect(copies).toHaveLength(12);
     for (const { line } of copies) for (const source of sourcesOf(line)) expect(existsSync(join(root, source)), `${source} (${line})`).toBe(true);
     expect(final.filter((line) => /^COPY /.test(line))).toStrictEqual(['COPY --from=builder --chown=node:node /repo /repo']);
   });
@@ -50,12 +50,22 @@ describe('services/mock-systems/Dockerfile', () => {
     expect(packageJson('services/mock-systems').name).toBe('@vsa/mock-systems');
     for (const dir of closure) {
       const manifest = copies.find(({ line }) => sourcesOf(line).includes(`${dir}/package.json`));
-      const sources = copies.find(({ line }) => sourcesOf(line).includes(dir));
+      const sources = copies.find(({ line }) => sourcesOf(line).includes(dir === 'services/mock-systems' ? `${dir}/src` : dir));
       expect(manifest!.at, `${dir}/package.json comes before the install`).toBeLessThan(install);
       expect(sources!.at, `${dir} comes after the install`).toBeGreaterThan(install);
     }
     for (const file of ['pnpm-workspace.yaml', 'pnpm-lock.yaml', 'package.json', 'tsconfig.base.json']) expect(copies.some(({ line, at }) => sourcesOf(line).includes(file) && at < install), file).toBe(true);
     expect(builder).toContain('RUN corepack enable && corepack prepare pnpm@10.33.2 --activate');
+  });
+
+  test('the image holds no test file of the service: only its manifest, its tsconfig.json and its src folder come from the build context, and the final stage takes the builder as it is', () => {
+    const service = 'services/mock-systems';
+    const fromService = copies.flatMap(({ line }) => sourcesOf(line)).filter((source) => source === service || source.startsWith(`${service}/`));
+    expect(fromService.sort()).toStrictEqual([`${service}/package.json`, `${service}/src`, `${service}/tsconfig.json`]);
+    // The files that these copies bring. A test folder, a test file and the support files of the tests are not among them.
+    const brought = ['package.json', 'tsconfig.json', ...readdirSync(join(root, service, 'src'), { recursive: true }).map((file) => `src/${String(file)}`)];
+    expect(brought.filter((file) => /(^|\/)(test|tests|support)(\/|$)|\.test\.|serve\.ts/.test(file))).toStrictEqual([]);
+    expect(final.filter((line) => /^COPY /.test(line))).toStrictEqual(['COPY --from=builder --chown=node:node /repo /repo']);
   });
 
   test('the final image: tini from Debian and no other package, no Python, no model, the workspace owned by node, no volume, run as node', () => {

@@ -1,6 +1,7 @@
 # services/mock-systems/Dockerfile - build context is the repo root. Two stages: the workspace installed from the lockfile (builder), and the final image. The service holds no key and no
 # wallet, and it has no volume: the data of the tenants is in memory, and a restart loses it. Nothing is fetched at run time but what a call asks of the identity gateway, and what the check of a
-# delegation reads from the Vector node and the Vector indexer. No Python, no model files.
+# delegation reads from the Vector node and the Vector indexer. No Python, no model files. The image holds no test file of the service: the service folder is copied in parts (its manifest,
+# its tsconfig.json and src/), never whole. The tests start the service with an approval check that always passes (test/support/serve.ts), and the image must have no way to start it so.
 FROM node:22-bookworm-slim AS builder
 WORKDIR /repo
 RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
@@ -15,7 +16,8 @@ COPY packages/vector-read ./packages/vector-read
 COPY packages/buyer-core ./packages/buyer-core
 COPY packages/service-kit ./packages/service-kit
 COPY packages/id-kit ./packages/id-kit
-COPY services/mock-systems ./services/mock-systems
+COPY services/mock-systems/tsconfig.json ./services/mock-systems/tsconfig.json
+COPY services/mock-systems/src ./services/mock-systems/src
 
 FROM node:22-bookworm-slim
 # tini is the first process, and the one package added to the base image: node verifies TLS with the root certificates built into it.
