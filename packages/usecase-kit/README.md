@@ -84,7 +84,7 @@ The protocol takes a document only when the two give the same text. It refuses a
 
 ### Results and the exit state
 
-A buyer-side agent answers 200 with an `outcome` whenever it could read the request. `exitStateOf` gives the exit state of an `execute` result. It is the one rule for every buyer-side agent, and the result types agree with it: a result with a pair of outcome and exit state that the function cannot give does not compile.
+A buyer-side agent answers 200 with an `outcome` whenever it could read the request. `exitStateOf` gives the exit state of an `execute` result. It is the one rule for every buyer-side agent, and the result types agree with it: a result with a pair of outcome and exit state that the function cannot give does not compile. The one exception is the reason `approval_expired` with the state `Rejected`. The type of a refused result cannot refuse that pair, so make a result with `exitStateOf`.
 
 | Outcome | Exit state |
 |---|---|

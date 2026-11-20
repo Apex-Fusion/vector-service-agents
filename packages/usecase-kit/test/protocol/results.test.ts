@@ -143,6 +143,27 @@ describe('the result of execute: one form for each outcome', () => {
     expect(system.use_case).toBe('bid-evaluation');
   });
 
+  it('gives a refusal the exit state that its reason has: Expired, Cancelled, or Rejected for any other reason', () => {
+    const rejected: RefusedResult = { ...base, outcome: 'refused_by_counterparty', reason: 'not_covered', exit_state: 'Rejected', handoff, challenge: null };
+    const expired: RefusedResult = { ...base, outcome: 'refused_by_system', reason: 'approval_expired', exit_state: 'Expired', handoff, challenge: null };
+    const cancelled: RefusedResult = { ...base, outcome: 'refused_by_counterparty', reason: 'delegation_ended', exit_state: 'Cancelled', handoff, challenge: null };
+    // @ts-expect-error the reason not_covered has the state Rejected, and not Expired
+    const notCoveredExpired: RefusedResult = { ...base, outcome: 'refused_by_system', reason: 'not_covered', exit_state: 'Expired', handoff, challenge: null };
+    // @ts-expect-error the reason delegation_ended has the state Cancelled, and not Expired
+    const endedExpired: RefusedResult = { ...base, outcome: 'refused_by_counterparty', reason: 'delegation_ended', exit_state: 'Expired', handoff, challenge: null };
+    // @ts-expect-error the reason approval_expired has the state Expired, and not Cancelled
+    const expiredCancelled: RefusedResult = { ...base, outcome: 'refused_by_system', reason: 'approval_expired', exit_state: 'Cancelled', handoff, challenge: null };
+    // @ts-expect-error the reason not_covered has the state Rejected, and not Cancelled
+    const notCoveredCancelled: RefusedResult = { ...base, outcome: 'refused_by_counterparty', reason: 'not_covered', exit_state: 'Cancelled', handoff, challenge: null };
+    for (const result of [rejected, expired, cancelled]) {
+      expect(exitStateOf({ outcome: result.outcome, reason: result.reason, challenge_filed: false, delegation_ended: false })).toBe(result.exit_state);
+    }
+    expect([notCoveredExpired, endedExpired, expiredCancelled, notCoveredCancelled]).toHaveLength(4);
+    expectTypeOf<Extract<RefusedResult, { reason: 'approval_expired' }>['exit_state']>().toEqualTypeOf<'Expired'>();
+    expectTypeOf<Extract<RefusedResult, { reason: 'delegation_ended' }>['exit_state']>().toEqualTypeOf<'Cancelled'>();
+    expectTypeOf<Extract<RefusedResult, { exit_state: 'Rejected' }>['reason']>().toEqualTypeOf<string>();
+  });
+
   it('has the evaluation error of the node as the reason when the vault refused, and the state Cancelled or Failed', () => {
     const failed = { ...base, outcome: 'vault_refused', reason: 'the value per transaction is over the limit', exit_state: 'Failed', handoff: null, challenge: null } as const satisfies ExecuteResult;
     const cancelled = { ...failed, exit_state: 'Cancelled' } as const satisfies ExecuteResult;

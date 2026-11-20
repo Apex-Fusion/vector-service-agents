@@ -8,7 +8,8 @@
 // `reason` is a code or a sentence that goes with the outcome: the code of the counterparty for `refused_by_counterparty`, the evaluation error of the node for `vault_refused`, the code of the mock
 // system for `refused_by_system`, and a code for `failed`. A job that was carried out has no reason. `fault_mode` is in every result: it is empty in a clean run.
 //
-// The exit state is fixed by one rule, `exitStateOf`, and the types below agree with it: a result with a pair of outcome and exit state that the function cannot give does not compile.
+// The exit state is fixed by one rule, `exitStateOf`, and the types below agree with it: a result with a pair of outcome and exit state that the function cannot give does not compile. The one exception
+// is the reason `approval_expired` with the state `Rejected`: see RefusedResult.
 import type { ExecuteOutcome, ExitState, UseCase } from './codes.ts';
 import type { FaultSetting } from './faults.ts';
 import type { Did, Digest, OutputRef, Salt } from './identifiers.ts';
@@ -148,13 +149,20 @@ export interface UnfiledDisputeResult extends ExecuteResultBase {
 
 export type DisputedResult = EscalatedResult | UnfiledDisputeResult;
 
-/** The counterparty or a mock system refused. The reason is its code. The state is `Expired` for `approval_expired`, `Cancelled` for `delegation_ended`, and `Rejected` for any other code. */
-export interface RefusedResult extends ExecuteResultBase {
+interface RefusedResultBase extends ExecuteResultBase {
   readonly outcome: 'refused_by_counterparty' | 'refused_by_system';
-  readonly reason: string;
   readonly challenge: null;
-  readonly exit_state: 'Rejected' | 'Expired' | 'Cancelled';
 }
+
+/**
+ * The counterparty or a mock system refused. The reason is its code. The state follows the reason, as `exitStateOf` gives it: `Expired` for `approval_expired`, `Cancelled` for `delegation_ended`, and
+ * `Rejected` for any other code. The type cannot refuse the reason `approval_expired` with the state `Rejected`, because TypeScript has no type for a string that is not one of two given strings. Make a
+ * result with `exitStateOf`, so that the state is the state of the reason.
+ */
+export type RefusedResult =
+  | (RefusedResultBase & { readonly reason: 'approval_expired'; readonly exit_state: 'Expired' })
+  | (RefusedResultBase & { readonly reason: 'delegation_ended'; readonly exit_state: 'Cancelled' })
+  | (RefusedResultBase & { readonly reason: string; readonly exit_state: 'Rejected' });
 
 /** The ledger refused the payment from the vault. The reason is the evaluation error. The state is `Cancelled` when the hirer ended the delegation, and `Failed` in every other case. */
 export interface VaultRefusedResult extends ExecuteResultBase {
