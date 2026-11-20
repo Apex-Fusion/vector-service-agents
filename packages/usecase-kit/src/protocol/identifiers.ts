@@ -1,7 +1,7 @@
 // packages/usecase-kit/src/protocol/identifiers.ts
 // The identifiers of the protocol, each with the form that it has on the wire and a parse function. A parse function takes any value and never throws. It returns the text as it is when
 // the form is right, and a refusal when it is not. The refusal names the field and the form, and it never repeats the value. Every hex form is lower case: a text in upper case is a
-// different text, so it is refused and not changed.
+// different text, so it is refused and not changed. A caller that needs no detail of a refusal uses the `is` function of a form (`isKeyHash` and `isScriptHash`).
 import { randomBytes } from 'node:crypto';
 import { accepted, refused, type ProtocolResult } from './result.ts';
 
@@ -19,6 +19,10 @@ export type Digest = string;
 export type OutputRef = string;
 /** The name of a tenant of the mock systems: 1 to 64 characters that are safe in a path segment. */
 export type TenantId = string;
+/** The hash of a key: BLAKE2b with 28 bytes of the public key, as 56 lower-case hex characters. The record of an agent, a delegation and a signer name a key by this hash. */
+export type KeyHash = string;
+/** The hash of a script: BLAKE2b with 28 bytes of the script, as 56 lower-case hex characters. The hash of the delegation script is the policy of the delegation tokens. */
+export type ScriptHash = string;
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const DID = /^did:vector:[0-9a-f]{64}$/;
@@ -26,11 +30,16 @@ const DID = /^did:vector:[0-9a-f]{64}$/;
 const OUTPUT_REF = /^[0-9a-f]{64}#(?:0|[1-9][0-9]{0,9})$/;
 // A tenant is a path segment of a mock URL and the start of a document number. It starts with a letter or a digit, so it is never "." or "..".
 const TENANT_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
+// A key hash and a script hash are two kinds of one form: a hash of 28 bytes.
+const HASH28 = /^[0-9a-f]{56}$/;
 
 const HEX_FORM = '64 lower-case hex characters';
+const HASH28_FORM = '56 lower-case hex characters';
+
+const matches = (value: unknown, pattern: RegExp): value is string => typeof value === 'string' && pattern.test(value);
 
 function parseForm(value: unknown, pattern: RegExp, field: string, form: string): ProtocolResult<string> {
-  return typeof value === 'string' && pattern.test(value) ? accepted(value) : refused('bad_shape', `${field} must be ${form}`);
+  return matches(value, pattern) ? accepted(value) : refused('bad_shape', `${field} must be ${form}`);
 }
 
 export const parseDid = (value: unknown, field = 'did'): ProtocolResult<Did> => parseForm(value, DID, field, `"did:vector:" and ${HEX_FORM}`);
@@ -42,6 +51,10 @@ export const parseOutputRef = (value: unknown, field = 'ref'): ProtocolResult<Ou
   parseForm(value, OUTPUT_REF, field, `a transaction hash of ${HEX_FORM}, a hash sign and an output index with no leading zero`);
 export const parseTenantId = (value: unknown, field = 'tenant'): ProtocolResult<TenantId> =>
   parseForm(value, TENANT_ID, field, '1 to 64 characters (letters, digits, hyphen, underscore and dot) that start with a letter or a digit');
+export const parseKeyHash = (value: unknown, field = 'key hash'): ProtocolResult<KeyHash> => parseForm(value, HASH28, field, HASH28_FORM);
+
+export const isKeyHash = (value: unknown): value is KeyHash => matches(value, HASH28);
+export const isScriptHash = (value: unknown): value is ScriptHash => matches(value, HASH28);
 
 /** A new salt: 32 random bytes from the system source, as 64 lower-case hex characters. */
 export const newSalt = (): Salt => randomBytes(32).toString('hex');

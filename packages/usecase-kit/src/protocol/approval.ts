@@ -5,7 +5,7 @@
 // This file holds the reference, the constants of an approval, and the types of the check that a counterparty and a mock system share. The function that makes the check is not here.
 import type { APPROVAL_REFUSALS } from './codes.ts';
 import { parseAttestationId, parseDid } from './identifiers.ts';
-import type { AttestationId, DelegationId, Did, Digest, Salt } from './identifiers.ts';
+import type { AttestationId, DelegationId, Did, Digest, KeyHash, Salt } from './identifiers.ts';
 import type { Document } from './json.ts';
 import { checkMembers, readMembers } from './members.ts';
 import { accepted } from './result.ts';
@@ -65,7 +65,7 @@ export interface ApprovalAccepted {
   /** The record of the issuer, or null when the issuer has no record. */
   readonly issuer_did: Did | null;
   /** The hash of the issuer key: 56 lower-case hex characters. */
-  readonly issuer_key_hash: string;
+  readonly issuer_key_hash: KeyHash;
   /** The end of the validity of the attestation, in milliseconds since 1970, or null when it has none. */
   readonly valid_until: number | null;
 }

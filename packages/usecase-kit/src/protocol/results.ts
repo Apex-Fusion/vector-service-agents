@@ -15,7 +15,7 @@
 //   refused_by_counterparty, refused_by_system    `...refusedExit(reason)`. It gives the reason and its state together, and the type of a refused result needs that pair.
 import type { ExecuteOutcome, ExitState, UseCase } from './codes.ts';
 import type { FaultSetting } from './faults.ts';
-import type { Did, Digest, OutputRef, Salt } from './identifiers.ts';
+import type { Did, Digest, KeyHash, OutputRef, Salt } from './identifiers.ts';
 import type { Document, JsonObject, JsonValue } from './json.ts';
 import type { PROPOSAL_SCHEMA, RESULT_SCHEMA } from './messages.ts';
 
@@ -33,7 +33,7 @@ export interface SubJob {
   readonly advert_ref: OutputRef;
   readonly escrow_ref: OutputRef;
   /** The hash of the supplier key: 56 lower-case hex characters. */
-  readonly supplier_pkh: string;
+  readonly supplier_pkh: KeyHash;
   readonly receipt: JsonObject;
   readonly receipt_signature: string;
   readonly verification: ReceiptVerification;

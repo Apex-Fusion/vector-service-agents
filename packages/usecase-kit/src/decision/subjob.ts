@@ -8,12 +8,10 @@
 // A refusal of the record comes after the Accept: the hire was paid. `unrecordedOf` keeps what can still be recorded of it, so that the failure of the decision says that the escrow was paid.
 import type { HireRecord } from '@vsa/hire-kit';
 import {
-  RECEIPT_CHECKS, accepted, isPlainObject, parseDocument, parseOutputRef, refused, type OutputRef, type ProtocolResult, type ReceiptCheck, type ReceiptVerification, type SubJob,
+  RECEIPT_CHECKS, accepted, isKeyHash, isPlainObject, parseDocument, parseOutputRef, refused, type OutputRef, type ProtocolResult, type ReceiptCheck, type ReceiptVerification, type SubJob,
 } from '../protocol/index.ts';
 import type { UnrecordedDelivery } from './result.ts';
 import { whereNotJson } from './where.ts';
-
-const KEY_HASH = /^[0-9a-f]{56}$/;
 
 /** The eight checks as booleans, in the order of the protocol, or a refusal that says what is missing. A check that is not true is still a boolean here: the caller decides what it means. */
 function checksOf(checks: unknown): ProtocolResult<ReceiptVerification, 'bad_checks'> {
@@ -42,7 +40,7 @@ export function subJobOf(record: HireRecord): ProtocolResult<SubJob, 'llm_receip
   if (!advertRef.ok) return bad(advertRef.detail);
   const escrowRef = parseOutputRef(record.escrow_ref, 'escrow_ref');
   if (!escrowRef.ok) return bad(escrowRef.detail);
-  if (typeof record.supplier_pkh !== 'string' || !KEY_HASH.test(record.supplier_pkh)) return bad('a supplier key hash that is not 56 lower-case hex characters');
+  if (!isKeyHash(record.supplier_pkh)) return bad('a supplier key hash that is not 56 lower-case hex characters');
   if (typeof record.capability_id !== 'string' || record.capability_id === '') return bad('no capability');
   if (typeof record.receipt_signature !== 'string' || record.receipt_signature === '') return bad('no signature');
   const receipt = parseDocument(record.receipt, 'receipt');
@@ -82,7 +80,7 @@ export function unrecordedOf(record: unknown, how: 'confirmed' | 'pending', escr
     accepted: how,
     escrow_ref: escrowRef.ok ? escrowRef.value : escrow,
     advert_ref: advertRef.ok ? advertRef.value : null,
-    supplier_pkh: typeof pkh === 'string' && KEY_HASH.test(pkh) ? pkh : null,
+    supplier_pkh: isKeyHash(pkh) ? pkh : null,
     verification: checks.ok ? checks.value : null,
   };
 }

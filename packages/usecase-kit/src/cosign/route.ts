@@ -18,7 +18,7 @@ import { blake2b } from '@noble/hashes/blake2b';
 import type { IdentityDeployment } from '@vsa/buyer-core';
 import { within } from '@vsa/service-kit';
 import { addressDetails, decodeTransaction } from '@vsa/vector-read/guarded-decode';
-import { COSIGN_ROUTE, COSIGN_RULE, accepted, checkMembers, parseDid, parseJsonText, readMembers, refused } from '../protocol/index.ts';
+import { COSIGN_ROUTE, COSIGN_RULE, accepted, checkMembers, isKeyHash, isScriptHash, parseDid, parseJsonText, readMembers, refused } from '../protocol/index.ts';
 import type { ManifestCosign, ProtocolResult, Refused } from '../protocol/index.ts';
 import { MAX_COSIGN_REQUEST_BYTES, MAX_TRANSACTION_HEX, MAX_WINDOW_MS, RESERVATION_MARGIN_MS, SLOT_MS } from './codes.ts';
 import type { CosignCode } from './codes.ts';
@@ -86,7 +86,6 @@ export interface CosignRoute {
 /** The route and the rule of the co-signature, for `behaviour.cosign` of the manifest of a buyer-side agent. Both are the ones of the protocol: the manifest folder builds the same member from them. */
 export const COSIGN_MANIFEST: ManifestCosign = { route: COSIGN_ROUTE, rule: COSIGN_RULE };
 
-const KEY_HASH = /^[0-9a-f]{56}$/;
 const HEX = /^(?:[0-9a-fA-F]{2})+$/;
 /** The largest slot that the route converts to a time: about 35,000 years. A slot above it is "too far ahead". */
 const MAX_SLOT = 2n ** 40n;
@@ -155,7 +154,7 @@ function keysInUseOf(value: unknown): Set<string> | undefined {
   const keys = new Set<string>();
   // The built-in iterator of `Set` throws for a value that is not a `Set`, and a `Set` that has another `has` or another iterator is read as the built-in `Set` reads it.
   for (const entry of Set.prototype.values.call(value) as Iterable<unknown>) {
-    if (typeof entry !== 'string' || !KEY_HASH.test(entry)) return undefined;
+    if (!isKeyHash(entry)) return undefined;
     keys.add(entry);
   }
   return keys;
@@ -194,9 +193,9 @@ function checkConfig(config: CosignConfig): ProtocolResult<{ agentId: string; ke
   if (!did.ok) return bad('agentDid must be a DID of the form did:vector:<64 hex characters>');
   const hash = config.deployment?.delegation?.hash;
   const address = config.deployment?.delegation?.address;
-  if (typeof hash !== 'string' || !KEY_HASH.test(hash) || typeof address !== 'string' || address === '') return bad('deployment must hold the hash and the address of the delegation script');
+  if (!isScriptHash(hash) || typeof address !== 'string' || address === '') return bad('deployment must hold the hash and the address of the delegation script');
   if (!Array.isArray(config.delegationKeys) || config.delegationKeys.length < 1 || config.delegationKeys.length > 8) return bad('delegationKeys must be a list of one to eight keys');
-  if (!Array.isArray(config.otherKeyHashes) || config.otherKeyHashes.length > 64 || config.otherKeyHashes.some((entry) => typeof entry !== 'string' || !KEY_HASH.test(entry))) {
+  if (!Array.isArray(config.otherKeyHashes) || config.otherKeyHashes.length > 64 || config.otherKeyHashes.some((entry) => !isKeyHash(entry))) {
     return bad('otherKeyHashes must be a list of at most 64 key hashes of 56 lower-case hex characters');
   }
   const keys = new Map<string, Key>();
