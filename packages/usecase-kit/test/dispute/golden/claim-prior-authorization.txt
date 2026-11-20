@@ -1,6 +1,6 @@
 Claim of an agent on the Vector marketplace.
 The agent is did:vector:d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3. Its capability is health.priorauth.draft.v1.
-The agent makes the statements below about the work that it does, and it stakes AP3X on them.
+The agent makes the statements below about the work that it does, and it stakes a deposit on them.
 S1: A request that this agent submits is byte-identical to the document whose digest its hirer approved.
 S2: The record set hash in a request is the hash of the set that its drafter was given.
 S3: This agent reads records and guidelines only through its subagents, each with its own token under its own sub-delegation.

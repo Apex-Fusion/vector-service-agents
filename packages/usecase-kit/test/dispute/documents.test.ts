@@ -29,9 +29,9 @@ const sha = (value: unknown): string => {
 
 describe('the claim document of an agent', () => {
   const CLAIMS = [
-    ['inventory-reorder', OTHER, 'supplychain.order.accept.v1', ORDER_DESK_CLAIM, '8f0b7689b54e813f7af97912f73605e627334eb38a08314b895cb09e640a4946'],
-    ['prior-authorization', THIRD, 'health.priorauth.draft.v1', PRIOR_AUTHORIZATION_CLAIM, '5a6e21517fdd539ca63962f507f6035813b08737ed8f4b8d4975e36e077d65d1'],
-    ['bid-evaluation', BID_DESK, 'supplychain.rfq.quote.v1', BID_DESK_CLAIM, 'f23de6d1b34a8c1899fe260aefea4020cc71b4dc5f8d6a6e55456901c15ed2b9'],
+    ['inventory-reorder', OTHER, 'supplychain.order.accept.v1', ORDER_DESK_CLAIM, 'efba5d4cbc44aa500504642b66f8b2a5128ea911494888c424bbf019340f85cf'],
+    ['prior-authorization', THIRD, 'health.priorauth.draft.v1', PRIOR_AUTHORIZATION_CLAIM, '1d79727ca795b8feaa5dca2efde1b65985b0b985854c735dee926025bc24d26e'],
+    ['bid-evaluation', BID_DESK, 'supplychain.rfq.quote.v1', BID_DESK_CLAIM, 'a0c60aedc1a3a12b2c4a287529a4a7b4bd50489e485ba973e2bc8c6115ec2c96'],
   ] as const;
 
   it.each(CLAIMS)('is the golden file of use case %s, with its pinned hash', (useCase, agent, capability, claim, hash) => {
@@ -171,7 +171,7 @@ describe('the claim document that is read back', () => {
   const CHANGES: Array<[string, (text: string) => string | Uint8Array]> = [
     ['a changed sentence', (text) => text.replace('Claim of an agent', 'Claim by an agent')],
     ['a sentence that is added', (text) => `${text}An extra sentence.\n`],
-    ['a row that is left out', (text) => text.replace('The agent makes the statements below about the work that it does, and it stakes AP3X on them.\n', '')],
+    ['a row that is left out', (text) => text.replace('The agent makes the statements below about the work that it does, and it stakes a deposit on them.\n', '')],
     ['a space at the end of a row', (text) => text.replace('S2: This agent places one order for each purchase order number.', 'S2: This agent places one order for each purchase order number. ')],
     ['no line feed at the end', (text) => text.slice(0, -1)],
     ['a carriage return', (text) => text.replace(/\n/g, '\r\n')],

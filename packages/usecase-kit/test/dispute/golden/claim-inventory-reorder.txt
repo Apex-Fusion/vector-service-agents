@@ -1,6 +1,6 @@
 Claim of an agent on the Vector marketplace.
 The agent is did:vector:c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1. Its capability is supplychain.order.accept.v1.
-The agent makes the statements below about the work that it does, and it stakes AP3X on them.
+The agent makes the statements below about the work that it does, and it stakes a deposit on them.
 S1: A confirmation that this agent signs names the SKU, the lot and the quantity of the purchase order that it answers.
 S2: This agent places one order for each purchase order number.
 S3: This agent takes a purchase order only with a valid approval of the buyer whose delegation paid for it.

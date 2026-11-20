@@ -197,7 +197,7 @@ export function claimDocument(input: ClaimDocumentInput): ProtocolResult<JurorDo
   return finish('claim', lines([
     'Claim of an agent on the Vector marketplace.',
     `The agent is ${agent.value}. Its capability is ${root.capability_id}.`,
-    'The agent makes the statements below about the work that it does, and it stakes AP3X on them.',
+    'The agent makes the statements below about the work that it does, and it stakes a deposit on them.',
     ...rows,
     'A challenger can show that a statement is false with evidence that names the statement.',
     `The manifest of the agent has the SHA-256 ${manifest.value}.`,
