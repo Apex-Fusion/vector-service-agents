@@ -95,18 +95,19 @@ The protocol takes a document only when the two give the same text. It refuses a
 
 ### Results and the exit state
 
-A buyer-side agent answers 200 with an `outcome` whenever it could read the request. `exitStateOf` gives the exit state of an `execute` result. It is the one rule for every buyer-side agent, and the result types agree with it: a result with a pair of outcome and exit state that the function cannot give does not compile. The one exception is the reason `approval_expired` with the state `Rejected`: the type of a refused result cannot refuse that pair.
+A buyer-side agent answers 200 with an `outcome` whenever it could read the request. `exitStateOf` gives the exit state of an `execute` result. It is the one rule for every buyer-side agent, and the result types agree with it: a result with a pair of outcome and exit state that the function cannot give does not compile. The one exception is a reason that has a state of its own (`approval_expired`, `delegation_ended`, and `approval_digest_mismatch` from the counterparty) with the state `Rejected`: the type of a refused result cannot refuse that pair.
 
 | Outcome | Exit state |
 |---|---|
 | `completed` | `Completed` |
 | `disputed`, with a challenge filed | `Escalated` (the reason is `null`) |
 | `disputed`, with no challenge filed | `Failed` (the reason is `NO_OPEN_CLAIM`, or the code of the step that failed) |
-| `refused_by_counterparty`, `refused_by_system` | `Expired` for the reason `approval_expired`, `Cancelled` for the reason `delegation_ended`, and `Rejected` for any other reason |
+| `refused_by_counterparty` | `Escalated` for the reason `approval_digest_mismatch` (the counterparty also challenges the claim of the sender), and else as `refused_by_system` |
+| `refused_by_system` | `Expired` for the reason `approval_expired`, `Cancelled` for the reason `delegation_ended`, and `Rejected` for any other reason (a mock system files no challenge, so its `approval_digest_mismatch` is `Rejected`) |
 | `vault_refused` | `Cancelled` when the agent read the delegation after the refusal and found that the hirer ended it, and `Failed` in every other case |
 | `failed` | `Failed` |
 
-A result is made with no cast. A form that has one state has that state written in it: `Completed` for `completed`, `Failed` for `failed`, `Escalated` for a dispute with a challenge, and `Failed` for a dispute with no challenge. A `vault_refused` result takes `exit_state: exitStateOf({ outcome: 'vault_refused', ... })`. For an outcome that the compiler knows, the type of that call is the state type of the result. For an outcome that only the run knows, the type is `ExitState`. A refused result takes `...refusedExit(reason)`, as in `{ ...base, outcome, ...refusedExit(reason), challenge: null }`. It gives the reason and its exit state together, and the type of a refused result needs that pair. `exit_state: exitStateOf(...)` does not compile in a refused result, because its type does not prove that the state goes with the reason.
+A result is made with no cast. A form that has one state has that state written in it: `Completed` for `completed`, `Failed` for `failed`, `Escalated` for a dispute with a challenge, and `Failed` for a dispute with no challenge. A `vault_refused` result takes `exit_state: exitStateOf({ outcome: 'vault_refused', ... })`. For an outcome that the compiler knows, the type of that call is the state type of the result. For an outcome that only the run knows, the type is `ExitState`. A refused result takes `...refusedExit(outcome, reason)`, as in `{ ...base, ...refusedExit(outcome, reason), challenge: null }`. It gives the outcome, the reason and its exit state together, and the type of a refused result needs that triple. `exit_state: exitStateOf(...)` does not compile in a refused result, because its type does not prove that the state goes with the reason.
 
 A proposal that was made has the exit state `null`. A proposal that failed has `Failed`.
 
