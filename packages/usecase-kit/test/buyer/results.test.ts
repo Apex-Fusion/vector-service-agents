@@ -13,6 +13,8 @@ import { COUNTERPARTY_DID, SALT, pieces, purchaseOrder } from './support.ts';
 
 const ESCROW = `${'44'.repeat(32)}#0`;
 const ADVERT = `${'55'.repeat(32)}#0`;
+const OTHER_ADVERT = `${'66'.repeat(32)}#0`;
+const OTHER_DID = `did:vector:${'cc'.repeat(32)}`;
 const TERMS: HireTerms = {
   price_lovelace: '200000', supplier_bond_lovelace: '1000000', buyer_bond_lovelace: '1000000', locked_lovelace: '2261030', paid_to_supplier_at_accept_lovelace: '1200000',
 };
@@ -23,7 +25,7 @@ const ALL_TRUE: ReceiptVerification = {
   escrow_ref_matches: true, response_hash_matches: true, supplier_key_matches: true, signature_valid: true, on_chain_hash_matches: true, prompt_hash_matches: true, model_matches: true, fields_match: true,
 };
 /** The record of a hire that was verified and accepted. */
-const accepted = { ...handoff, receipt: { escrow_ref: ESCROW }, receipt_signature: 'cd'.repeat(64), verification: ALL_TRUE, result: { status: 'confirmed' }, accepted: 'confirmed' } as const;
+const accepted = { ...handoff, receipt: { escrow_ref: ESCROW, agent_did: COUNTERPARTY_DID }, receipt_signature: 'cd'.repeat(64), verification: ALL_TRUE, result: { status: 'confirmed' }, accepted: 'confirmed' } as const;
 const challenge = { claim: `${'66'.repeat(32)}#0`, evidence: '77'.repeat(32), challenge: `${'88'.repeat(32)}#0` };
 const RESULT_KEYS = ['challenge', 'decisions', 'exit_state', 'fault_mode', 'handoff', 'outcome', 'proposal_digest', 'reason', 'schema', 'use_case', 'writes'];
 
@@ -121,6 +123,9 @@ describe('the results of execute', () => {
       ['a receipt of another escrow than the escrow of the record', { ...accepted, receipt: { escrow_ref: `${'99'.repeat(32)}#0` } }],
       ['a check that is the text "true"', { ...accepted, verification: { ...ALL_TRUE, model_matches: 'true' } }], ['a receipt that is a list', { ...accepted, receipt: [ESCROW] }],
       ['a hire that the wallet paid', { ...accepted, paid_from_vault: false }], ['a flag of the payment that is the text "true"', { ...accepted, paid_from_vault: 'true' }],
+      ['a receipt of another agent than the counterparty of the record', { ...accepted, receipt: { ...accepted.receipt, agent_did: OTHER_DID } }], ['a receipt that names no agent', { ...accepted, receipt: { escrow_ref: ESCROW } }],
+      ['a receipt of another advert than the advert of the record', { ...accepted, receipt: { ...accepted.receipt, advert_ref: OTHER_ADVERT } }],
+      ['the record of two hires: the escrow and the receipt of one, the counterparty and the advert of the other', { ...accepted, counterparty_did: OTHER_DID, advert_ref: OTHER_ADVERT }],
     ];
     for (const useCase of ['inventory-reorder', 'prior-authorization'] as const) {
       for (const [name, record] of records) expect(() => completedResult(pieces({ use_case: useCase, handoff: record as never })), `${useCase}: ${name}`).toThrow(TypeError);
@@ -129,6 +134,10 @@ describe('the results of execute', () => {
     expect(completedResult(pieces({ handoff: { ...accepted, accepted: 'pending' } })).outcome).toBe('completed');
     expect(completedResult(pieces({ handoff: { ...accepted, paid_from_vault: true } })).outcome).toBe('completed');
     expect(completedResult(pieces({ use_case: 'bid-evaluation', handoff: null })).exit_state).toBe('Completed');
+    // The twins: a record whose parts are one hire is completed, with a receipt that names no advert, with a receipt that names the advert of the record, and for another counterparty and advert when every part names them.
+    expect(completedResult(pieces({ handoff: { ...accepted, receipt: { ...accepted.receipt, advert_ref: ADVERT } } })).outcome).toBe('completed');
+    const otherHire = { ...accepted, counterparty_did: OTHER_DID, advert_ref: OTHER_ADVERT, receipt: { ...accepted.receipt, agent_did: OTHER_DID, advert_ref: OTHER_ADVERT } };
+    expect(completedResult(pieces({ handoff: otherHire })).outcome).toBe('completed');
   });
 
   it('refuses a completed result of use case 3 that holds the record of a hire: that use case hires no counterparty to execute', () => {
@@ -174,18 +183,42 @@ describe('the results of execute', () => {
     expect(disputedResult(pieces({ handoff }), { challenge })).toMatchObject({ outcome: 'disputed', reason: null, challenge, exit_state: 'Escalated' });
   });
 
-  it('refuses the record of a hire whose Accept was made for a refusal by the counterparty and a refusal of the vault; a refusal by a mock system can hold it', () => {
-    for (const record of [accepted, { ...accepted, accepted: 'pending' }]) {
-      expect(() => refusedResult('counterparty', pieces({ handoff: record as never }), 'approval_not_found')).toThrow(TypeError);
-      expect(() => vaultRefusedResult(pieces({ handoff: record as never }), 'eval error', false)).toThrow(TypeError);
-    }
-    // The twins: no record, a hire with no Accept, and a delivery that the decision refused have no Accept that was made.
-    for (const record of [null, handoff, { ...accepted, accepted: 'no' }]) {
-      expect(refusedResult('counterparty', pieces({ handoff: record as never }), 'approval_not_found').outcome).toBe('refused_by_counterparty');
-    }
-    expect(vaultRefusedResult(pieces(), 'eval error', false).outcome).toBe('vault_refused');
+  it('refuses a refusal by the counterparty that holds a delivery: it comes before the delivery, so a record with a receipt, a signature, checks, a result or a word on the Accept is refused; a refusal by a mock system can hold an accepted hire', () => {
+    const delivered: Array<[string, unknown]> = [
+      ['an accepted hire', accepted], ['a pending Accept', { ...accepted, accepted: 'pending' }], ['a delivery that the decision refused', { ...accepted, accepted: 'no' }],
+      ['a receipt', { ...handoff, receipt: { escrow_ref: ESCROW } }], ['a signature', { ...handoff, receipt_signature: 'cd'.repeat(64) }], ['checks', { ...handoff, verification: ALL_TRUE }],
+      ['a result', { ...handoff, result: { status: 'confirmed' } }], ['a word on the Accept', { ...handoff, accepted: 'no' }],
+    ];
+    for (const [name, record] of delivered) expect(() => refusedResult('counterparty', pieces({ handoff: record as never }), 'approval_not_found'), name).toThrow(TypeError);
+    // The twins: no record, and the record of a hire that was paid and refused before any delivery.
+    for (const record of [null, handoff]) expect(refusedResult('counterparty', pieces({ handoff: record as never }), 'approval_not_found').outcome).toBe('refused_by_counterparty');
     // A mock system can refuse after the hire was accepted: its refusal holds the record of the accepted hire.
-    expect(refusedResult('system', pieces({ handoff: accepted }), 'token_invalid')).toMatchObject({ outcome: 'refused_by_system', reason: 'token_invalid', handoff: accepted });
+    for (const record of [accepted, { ...accepted, accepted: 'pending' }, { ...accepted, accepted: 'no' }]) {
+      expect(refusedResult('system', pieces({ handoff: record as never }), 'token_invalid')).toMatchObject({ outcome: 'refused_by_system', reason: 'token_invalid', handoff: record });
+    }
+  });
+
+  it('refuses a refusal of the vault that holds the record of a hire: the Pay was refused, so no escrow was posted', () => {
+    const records: Array<[string, unknown]> = [
+      ['an accepted hire', accepted], ['a pending Accept', { ...accepted, accepted: 'pending' }], ['a paid escrow with no delivery and no Accept', handoff], ['a delivery that the decision refused', { ...accepted, accepted: 'no' }],
+    ];
+    for (const [name, record] of records) expect(() => vaultRefusedResult(pieces({ handoff: record as never }), 'eval error', false), name).toThrow(TypeError);
+    // The twins: with no record the result is made, Failed while the delegation stands and Cancelled when the hirer ended it.
+    expect(vaultRefusedResult(pieces(), 'eval error', false)).toMatchObject({ outcome: 'vault_refused', exit_state: 'Failed', handoff: null });
+    expect(vaultRefusedResult(pieces({ handoff: null }), 'eval error', true)).toMatchObject({ outcome: 'vault_refused', exit_state: 'Cancelled', handoff: null });
+  });
+
+  it('refuses a dispute that holds the record of a hire whose Accept was made: a dispute is about a delivery that was not accepted', () => {
+    for (const record of [accepted, { ...accepted, accepted: 'pending' }]) {
+      expect(() => disputedResult(pieces({ handoff: record as never }), { challenge })).toThrow(TypeError);
+      expect(() => disputedResult(pieces({ handoff: record as never }), { challenge: null as never })).toThrow(TypeError);
+      expect(() => disputedResult(pieces({ handoff: record as never }), { reason: 'challenge_failed' })).toThrow(TypeError);
+    }
+    // The twins: no record, a hire with no delivery, and a delivery that the decision refused make the results of a dispute.
+    for (const record of [null, handoff, { ...accepted, accepted: 'no' }]) {
+      expect(disputedResult(pieces({ handoff: record as never }), { challenge })).toMatchObject({ outcome: 'disputed', reason: null, challenge, exit_state: 'Escalated' });
+      expect(disputedResult(pieces({ handoff: record as never }), { reason: 'challenge_failed' })).toMatchObject({ outcome: 'disputed', reason: 'challenge_failed', challenge: null, exit_state: 'Failed' });
+    }
   });
 
   it('refuses pieces of the wrong shape, and makes no result', () => {

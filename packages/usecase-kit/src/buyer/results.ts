@@ -1,8 +1,9 @@
 // packages/usecase-kit/src/buyer/results.ts
 // The results of a buyer-side agent, made from their pieces. A caller gives the pieces once, and the helper writes every member of the result: no caller builds a result by hand and leaves a
 // member out. The exit state of an `execute` result comes from `exitStateOf` of the protocol, in this file only, and no helper writes a state of its own. A piece of the wrong shape is a
-// fault of the code of the caller: the helper throws a TypeError and makes no result. The pieces must agree with the outcome: a reason is a code, a refusal of the counterparty or of the vault holds no
-// record of an Accept that was made, a failed result may hold it (the work was paid, and a later step failed), and a completed result holds a hire that the vault paid and that was verified and accepted.
+// fault of the code of the caller: the helper throws a TypeError and makes no result. The pieces must agree with the outcome: a reason is a code, a refusal of the vault holds no record of a hire (no Pay was made),
+// a refusal of the counterparty holds no delivery (it comes before the delivery), a dispute holds no record of an Accept that was made (it is about a delivery that was not accepted), a failed result may hold
+// such a record (the work was paid, and a later step failed), and a completed result holds one hire that the vault paid and that was verified and accepted: its receipt names its escrow, its counterparty and its advert.
 //
 //   propose  proposedResult, failedProposalResult
 //   execute  completedResult, refusedResult, vaultRefusedResult, failedResult, disputedResult, and settledResult for the steps of the hire that need nothing more from the use case
@@ -84,19 +85,21 @@ function acceptWasMade(handoff: HandoffRecord | null): boolean {
 
 /**
  * The record of a hire that the vault paid, and that was verified and accepted: `paid_from_vault` is the boolean `true` (the flow always hires from the Live vault of the delegation, so a hire that the
- * wallet paid is not the hire of this flow), the Accept is confirmed or pending, the receipt is an object with members that names the escrow of the record, its signature is a text that is not empty,
- * and each of the eight checks is the boolean `true`.
+ * wallet paid is not the hire of this flow), the Accept is confirmed or pending, the receipt is an object with members, its signature is a text that is not empty, and each of the eight checks is the boolean
+ * `true`. The parts are one hire: the receipt names the escrow of the record, the counterparty of the record as its agent, and, when it names an advert, the advert of the record.
  */
 function holdsAcceptedHire(handoff: HandoffRecord | null): boolean {
   if (handoff === null || handoff.paid_from_vault !== true || !acceptWasMade(handoff)) return false;
   const { receipt, receipt_signature: signature, verification } = handoff;
-  const receiptNamesEscrow = typeof receipt === 'object' && receipt !== null && !Array.isArray(receipt) && Object.keys(receipt).length > 0 && receipt.escrow_ref === handoff.escrow_ref;
-  return receiptNamesEscrow && typeof signature === 'string' && signature !== '' && verification !== null && RECEIPT_CHECKS.every((check) => verification[check] === true);
+  if (typeof receipt !== 'object' || receipt === null || Array.isArray(receipt) || Object.keys(receipt).length === 0) return false;
+  const oneHire = receipt.escrow_ref === handoff.escrow_ref && receipt.agent_did === handoff.counterparty_did && (!Object.hasOwn(receipt, 'advert_ref') || receipt.advert_ref === handoff.advert_ref);
+  return oneHire && typeof signature === 'string' && signature !== '' && verification !== null && RECEIPT_CHECKS.every((check) => verification[check] === true);
 }
 
 /**
- * The approved proposal was carried out. A use case that hires a counterparty needs the record of a hire that the vault paid, and that was verified and accepted: a record that holds none is a fault of the caller, and
- * the function throws and makes no result. Use case 3 (supplier bid evaluation) hires no counterparty to execute, so its record is `null`, and any record is a fault.
+ * The approved proposal was carried out. A use case that hires a counterparty needs the record of a hire that the vault paid, and that was verified and accepted, and whose parts are one hire: the receipt names
+ * the escrow, the counterparty and, when it names one, the advert of the record. A record that holds none of that is a fault of the caller, and the function throws and makes no result. Use case 3 (supplier bid
+ * evaluation) hires no counterparty to execute, so its record is `null`, and any record is a fault.
  */
 export function completedResult(pieces: ResultPieces): CompletedResult {
   const base = baseOf(pieces);
@@ -111,22 +114,34 @@ export function completedResult(pieces: ResultPieces): CompletedResult {
 }
 
 /**
+ * True when the record holds a delivery of the counterparty (the receipt, its signature, its checks or the result), or says anything of the Accept. The record of a hire that the counterparty refused before its
+ * delivery has none of these: the members are null.
+ */
+function holdsDelivery(handoff: HandoffRecord | null): boolean {
+  return handoff !== null && (handoff.receipt !== null || handoff.receipt_signature !== null || handoff.verification !== null || handoff.result !== null || handoff.accepted !== null);
+}
+
+/**
  * The counterparty (`by` is `counterparty`) or a mock system (`system`) refused. `reason` is its code. The exit state follows the reason: `refusedExit` of the protocol gives the two as one pair. A refusal
- * by the counterparty holds no record of an Accept that was made. A mock system can refuse after the hire was accepted, so the record of an accepted hire is allowed for a refusal by a mock system.
+ * by the counterparty comes before the delivery, so its record holds no receipt and no Accept. A mock system can refuse after the hire was accepted, so the record of an accepted hire is allowed for a refusal by a
+ * mock system.
  */
 export function refusedResult(by: 'counterparty' | 'system', pieces: ResultPieces, reason: string): RefusedResult {
   if (by !== 'counterparty' && by !== 'system') throw new TypeError('a refusal is by the counterparty or by a mock system');
   const base = baseOf(pieces);
-  if (by === 'counterparty' && acceptWasMade(base.handoff)) throw new TypeError('a refusal by the counterparty cannot hold the record of a hire whose Accept was made');
+  if (by === 'counterparty' && holdsDelivery(base.handoff)) throw new TypeError('a refusal by the counterparty cannot hold the record of a hire that was delivered: it comes before the delivery');
   return { ...base, outcome: by === 'counterparty' ? 'refused_by_counterparty' : 'refused_by_system', ...refusedExit(codeOf(reason)), challenge: null };
 }
 
-/** The ledger refused the Pay from the vault. `reason` is the evaluation error. `delegationEnded` is true when the flow read the delegation again and found that the hirer ended it. No Accept was made. */
+/**
+ * The ledger refused the Pay from the vault. `reason` is the evaluation error. `delegationEnded` is true when the flow read the delegation again and found that the hirer ended it. No Pay was made, so no
+ * escrow was posted, and the result holds no record of a hire.
+ */
 export function vaultRefusedResult(pieces: ResultPieces, reason: string, delegationEnded: boolean): VaultRefusedResult {
   if (typeof delegationEnded !== 'boolean') throw new TypeError('delegationEnded must be a boolean');
   const text = evaluationErrorOf(reason);
   const base = baseOf(pieces);
-  if (acceptWasMade(base.handoff)) throw new TypeError('a refusal of the vault cannot hold the record of a hire whose Accept was made: no Pay was made');
+  if (base.handoff !== null) throw new TypeError('a refusal of the vault cannot hold the record of a hire: no Pay was made, so no escrow was posted');
   const state = stateOf('vault_refused', text, false, delegationEnded);
   if (state !== 'Cancelled' && state !== 'Failed') throw wrongState('vault_refused', state);
   return { ...base, outcome: 'vault_refused', reason: text, challenge: null, exit_state: state };
@@ -151,13 +166,14 @@ function isChallengeRecord(value: unknown): value is ChallengeRecord {
 }
 
 /**
- * The agent did not accept the delivery. With a challenge that it filed, the state is `Escalated`. With no challenge, the result has the form with no challenge and the state that `exitStateOf` gives for
- * it, which is `Failed`, and never `Escalated`: `reason` is the code of the step that failed, and `{ challenge: null }` says that no challenge was filed and gives the reason `NO_OPEN_CLAIM`. A challenge that
- * is not the record of a challenge is a fault of the caller.
+ * The agent did not accept the delivery. A dispute is about a delivery that was not accepted, so its record holds no Accept that was made. With a challenge that it filed, the state is `Escalated`. With no
+ * challenge, the result has the form with no challenge and the state that `exitStateOf` gives for it, which is `Failed`, and never `Escalated`: `reason` is the code of the step that failed, and
+ * `{ challenge: null }` says that no challenge was filed and gives the reason `NO_OPEN_CLAIM`. A challenge that is not the record of a challenge is a fault of the caller.
  */
 export function disputedResult(pieces: ResultPieces, dispute: { readonly challenge: ChallengeRecord } | { readonly reason: string }): DisputedResult {
   const given: Readonly<Record<string, unknown>> = dispute;
   const base = baseOf(pieces);
+  if (acceptWasMade(base.handoff)) throw new TypeError('a dispute cannot hold the record of a hire whose Accept was made: it is about a delivery that was not accepted');
   if ('challenge' in given && given.challenge !== null) {
     if (!isChallengeRecord(given.challenge)) throw new TypeError('the challenge must be the record of a challenge that was filed: a claim, the evidence and the challenge output');
     const state = stateOf('disputed', null, true, false);
