@@ -42,7 +42,7 @@ export const OTHER_AGENT_KEY = keyOf(25);
 export const PRINCIPAL = keyOf(31);
 export const STRANGER = keyOf(32);
 
-/** The wallet of a key of the agent: an enterprise address, with a collateral output of 5 AP3X and a float of 20. */
+/** The wallet of a key of the agent: an enterprise address, with a collateral output of 5 units and a float of 20. */
 export const walletAddress = (key: TestKey): string => credentialToAddress('Mainnet', { type: 'Key', hash: key.keyHash });
 export const agentWallet = (key: TestKey, index = 0): UTxO => ({
   txHash: key.keyHash.slice(0, 8).repeat(8), outputIndex: index, address: walletAddress(key), assets: { lovelace: index === 0 ? 5_000_000n : 20_000_000n },
