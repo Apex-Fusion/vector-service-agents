@@ -222,6 +222,7 @@ const TABLE: readonly Row[] = [
   },
   { name: 'completed, but the escrow of the outcome is not the escrow of the record', outcome: { ...completed, escrowRef: OTHER_ESCROW }, ...NOT_HOLDING },
   { name: 'completed, but the escrow of the receipt is not the escrow of the outcome', outcome: { ...completed, record: { ...record, receipt: { ...record.receipt, escrow_ref: OTHER_ESCROW } } }, ...NOT_HOLDING },
+  { name: 'completed, but the escrow of the record is not the escrow of the outcome', outcome: { ...completed, record: { ...record, escrow_ref: OTHER_ESCROW } }, ...NOT_HOLDING },
   { name: 'completed, but the advert of the outcome is not the advert that the document names', outcome: { ...completed, advertRef: OTHER_ADVERT }, ...NOT_HOLDING },
   { name: 'completed, but the advert of the record is not the advert that the document names', outcome: { ...completed, record: { ...record, advert_ref: OTHER_ADVERT } }, ...NOT_HOLDING },
   { name: 'completed, the verdict says VERIFIED, and one of its eight checks failed', outcome: { ...completed, verdict: { verdict: 'VERIFIED', checks: { ...CHECKS, signature_valid: 'fail' } } }, ...NOT_HOLDING },
@@ -260,6 +261,14 @@ describe('the map from the outcome of the hire kit to the step and the result', 
       expect(resultOf(step)).toBe(row.result);
     });
   }
+
+  it('reads an outcome that is null or undefined without an error: no cause, and the sentence of the flow', () => {
+    for (const outcome of [null, undefined]) {
+      const step = stepOfOutcome(outcome as never, CONTEXT);
+      if (step.kind !== 'failed') throw new Error(`the step is ${words(step)}`);
+      expect([step.reason, 'cause' in step, step.detail], String(outcome)).toStrictEqual([INCONSISTENT_OUTCOME, false, 'the hire kit gave no outcome']);
+    }
+  });
 
   it('reports `completed` only for a hire that is verified and accepted: no other row is completed', () => {
     const passes = TABLE.filter((row) => row.result.startsWith('completed:')).map((row) => row.name);
@@ -360,6 +369,7 @@ describe('a completed outcome that does not hold together', () => {
   const BROKEN: Array<[string, typeof completed]> = [
     ['the escrow of the outcome is not the escrow of the record', { ...completed, escrowRef: OTHER_ESCROW }],
     ['the escrow of the receipt is not the escrow of the outcome', { ...completed, record: { ...record, receipt: { ...record.receipt, escrow_ref: OTHER_ESCROW } } }],
+    ['the escrow of the record is not the escrow of the outcome', { ...completed, record: { ...record, escrow_ref: OTHER_ESCROW } }],
     ['the advert of the outcome is not the advert that the document names', { ...completed, advertRef: OTHER_ADVERT }],
     ['the advert of the record is not the advert that the document names', { ...completed, record: { ...record, advert_ref: OTHER_ADVERT } }],
     ['one check of the verdict failed', { ...completed, verdict: { verdict: 'VERIFIED', checks: { ...CHECKS, signature_valid: 'fail' } } }],
