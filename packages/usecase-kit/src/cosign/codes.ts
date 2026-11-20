@@ -6,8 +6,8 @@
 // datum names. A refusal is a 4xx `{ "error": "<code>", "message": "<words>" }`. A source that cannot be read, and a fault of the service, are 5xx: they are never a refusal and never a pass.
 import { ERROR_STATUS } from '../protocol/index.ts';
 
-/** The path of the route, on the origin of the endpoint in the record of the agent. */
-export const COSIGN_PATH = '/cosign/delegate';
+/** The path of the route, on the origin of the endpoint in the record of the agent. It is `COSIGN_ROUTE` of the protocol, the path that the manifest of a buyer-side agent names. */
+export { COSIGN_ROUTE as COSIGN_PATH } from '../protocol/index.ts';
 
 /**
  * The refusal codes of the route and the HTTP status of each. A code is the answer of one rule of the agent: it names the rule that failed. The six codes are the ones that the wire contract names. The wire
