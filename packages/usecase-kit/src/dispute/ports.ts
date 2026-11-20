@@ -1,7 +1,7 @@
 // packages/usecase-kit/src/dispute/ports.ts
 // What the dispute code needs from the outside: the chain, the queue of the service key and the clock.
 //
-// The chain port reads the claims and the challenges of Module-1 and the documents that they name, and it lands four kinds of transaction: a document, a claim, a challenge and a withdrawal. A port
+// The chain port reads the claims and the challenges of Module-1, the documents that they name, and the time of the Post of the escrow of a job. It lands four kinds of transaction: a document, a claim, a challenge and a withdrawal. A port
 // method that lands a transaction never throws for a problem of the build, the signature or the submit. It returns a typed result that says what happened, and what could still land. A read throws
 // when the chain cannot be read, and it never answers with a list that leaves a claim out. The real port is `createModule1Port` (chain.ts). A test can give a scripted port, or the real port over the
 // fixture world of the buyer code.
@@ -73,6 +73,21 @@ export type DocumentAbsent = Refused<'transaction_unknown' | 'no_document'>;
 
 /** The result of a read of a document: the document, or the reason that the source, which answered, has none. A read that gets no answer throws. */
 export type DocumentResult = Accepted<ReadDocument> | DocumentAbsent;
+
+/** What the port reads from the datum of an escrow output: when the escrow was posted. */
+export interface EscrowPost {
+  /** The time of the Post of the escrow, in POSIX milliseconds: the member `posted_at` of its datum. Claim and Submit keep it as it was posted, so every output of the escrow holds it. */
+  readonly posted_at: number;
+}
+
+/**
+ * Why a read of an escrow found none although the source answered: the output is not an escrow output of the deployment. It is not at the escrow script, or it holds no escrow datum, or it holds less than its
+ * datum owes. The sender of an output can cause each of these, because anyone can lock an output at any address.
+ */
+export type NotAnEscrow = Refused<'not_escrow'>;
+
+/** The result of a read of the escrow of a job: the time of its Post, or the reason that the output is no escrow output. A read that gets no answer throws. */
+export type EscrowPostResult = Accepted<EscrowPost> | NotAnEscrow;
 
 /** The last moment of the challenge window of a claim, in POSIX milliseconds. A challenge must start before it, and a withdrawal after it. */
 export const challengeDeadlineOf = (claim: Pick<ClaimView, 'submitted_at' | 'challenge_window_ms'>): number => claim.submitted_at + claim.challenge_window_ms;
@@ -197,6 +212,12 @@ export interface Module1Port {
    * has the claim has the document. False when the source answers that it does not have the output. It throws when the source cannot be read.
    */
   isIndexed(ref: OutputRef): Promise<boolean>;
+  /**
+   * The time of the Post of the escrow that has the output at `ref`, from the datum of that output: an output of any state of the escrow, spent or not. It gives `not_escrow` when the source answered and the
+   * output is not an escrow output of the deployment. It throws when the source cannot be read, answers in a wrong shape, or does not have the output (it can be behind): a read that throws never says that the
+   * output is no escrow output.
+   */
+  readEscrowPostedAt(ref: OutputRef): Promise<EscrowPostResult>;
   publishDocument(call: PublishCall): Promise<TxResult<PublishedDocument>>;
   submitClaim(call: SubmitClaimCall): Promise<TxResult<SubmittedClaim>>;
   openChallenge(call: OpenChallengeCall): Promise<TxResult<OpenedChallenge>>;

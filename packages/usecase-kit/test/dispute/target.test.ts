@@ -9,7 +9,7 @@ import { Dispute, claimDocument } from '@vsa/usecase-kit/dispute';
 import type { ChallengeResult, ClaimView, DeliveryChallengeInput } from '@vsa/usecase-kit/dispute';
 import {
   CAPABILITY, ESCROW, EVIDENCE_TX, HOUR, JOB, JOB_BEGAN_AT, MANIFEST_SHA, NO_DOCUMENT, NO_TRANSACTION, NOW, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER, PRIOR_AUTHORIZATION_CLAIM, REF_A, REF_B, REF_C,
-  RecordingQueue, STATEMENT_S1, SETTINGS, ScriptedPort, THIRD, TOKEN_A, TOKEN_B, TOKEN_C, claimView, kitClaimDocument, never, rig,
+  RecordingQueue, SCOPE, STATEMENT_S1, SETTINGS, ScriptedPort, THIRD, TOKEN_A, TOKEN_B, TOKEN_C, claimView, deferred, kitClaimDocument, never, rig,
 } from './support.ts';
 import type { Rig } from './support.ts';
 
@@ -87,7 +87,7 @@ describe('a challenge names only a claim of this kit', () => {
     expect(result.detail).toBe(counted(1, [0, 0, 0, 0, 1, 0, 0]));
     expect(rigged.port.published).toEqual([]);
     expect(rigged.port.challenged).toEqual([]);
-    expect(rigged.events).toEqual(['readClaims', `readDocument ${rigged.port.claims[0]!.claim_uri}`]);
+    expect(rigged.events).toEqual(['readClaims', `readEscrow ${ESCROW}`, `readDocument ${rigged.port.claims[0]!.claim_uri}`]);
   });
 
   it('is the twin: the claim document that this kit writes for the claimer is challenged', async () => {
@@ -103,7 +103,7 @@ describe('a challenge names only a claim of this kit', () => {
       rigged.port.claims = [claimView({ claim_uri: uri })];
       const result = await rigged.dispute.challengeDelivery(delivery());
       expectNotFiled(result, NO_OPEN_CLAIM);
-      expect(rigged.events, uri).toEqual(['readClaims']);
+      expect(rigged.events, uri).toEqual(['readClaims', `readEscrow ${ESCROW}`]);
     }
   });
 
@@ -112,7 +112,7 @@ describe('a challenge names only a claim of this kit', () => {
       const rigged = rig();
       rigged.port.claims = [claimView({ claim_hash: hash })];
       expectNotFiled(await rigged.dispute.challengeDelivery(delivery()), NO_OPEN_CLAIM);
-      expect(rigged.events).toEqual(['readClaims']);
+      expect(rigged.events).toEqual(['readClaims', `readEscrow ${ESCROW}`]);
     }
     // A hash with a character that is not lower-case hex is a view of a wrong shape, and the lookup does not go on.
     for (const hash of ['zz'.repeat(32), 'AB'.repeat(32)]) {
@@ -156,7 +156,7 @@ describe('a challenge names only a claim of this kit', () => {
       claimView({ ref: `${'ce'.repeat(32)}#0`, token: `636c6d5f${'0e'.repeat(28)}`, stake_lovelace: SETTINGS.challenge_stake_lovelace + 1n }),
     ];
     expectNotFiled(await rigged.dispute.challengeDelivery(delivery()), NO_OPEN_CLAIM);
-    expect(rigged.events).toEqual(['readClaims']);
+    expect(rigged.events).toEqual(['readClaims', `readEscrow ${ESCROW}`]);
   });
 
   it('names the statement of the claim document that the claim holds, and not a statement of the facts', async () => {
@@ -269,11 +269,13 @@ describe('a claim is a target only when it covers the job', () => {
   it('gives the same target from findOpenClaim, and refuses a scope that is not a scope', async () => {
     const { port, dispute } = rig();
     port.claims = [claimView(), newer({ stake_lovelace: 500_000_000n })];
-    expect(await dispute.findOpenClaim(OTHER, JOB)).toMatchObject({ ok: true, value: { ref: REF_A } });
-    expect(await dispute.findOpenClaim(OTHER, { ...JOB, job_began_at: NOW - 3 * HOUR })).toMatchObject({ ok: false, code: NO_OPEN_CLAIM });
+    expect(await dispute.findOpenClaim(OTHER, SCOPE)).toMatchObject({ ok: true, value: { ref: REF_A } });
+    // The claim was submitted an hour before the clock, and the escrow of the job was posted three hours before it.
+    port.readEscrowAnswer = () => ({ ok: true, value: { posted_at: NOW - 3 * HOUR } });
+    expect(await dispute.findOpenClaim(OTHER, SCOPE)).toMatchObject({ ok: false, code: NO_OPEN_CLAIM });
     for (const bad of [
-      null, 'zq9', {}, { capability_id: CAPABILITY }, { capability_id: CAPABILITY, job_began_at: JOB_BEGAN_AT }, { ...JOB, extra: 1 }, { ...JOB, job_began_at: 0 }, { ...JOB, capability_id: 'zq9 x' },
-      { ...JOB, statement_text: 7 }, { ...JOB, statement_text: 'one\ntwo' }, { ...JOB, statement_text: '' },
+      null, 'zq9', {}, JOB, { capability_id: CAPABILITY, statement_text: STATEMENT_S1, escrow_ref: ESCROW, job_began_at: JOB_BEGAN_AT }, { ...SCOPE, extra: 1 }, { ...SCOPE, escrow_ref: 'zq9' },
+      { ...SCOPE, capability_id: 'zq9 x' }, { ...SCOPE, statement_text: 7 }, { ...SCOPE, statement_text: 'one\ntwo' }, { ...SCOPE, statement_text: '' },
     ]) {
       expect(await dispute.findOpenClaim(OTHER, bad as never), JSON.stringify(bad)).toMatchObject({ ok: false, code: 'bad_shape' });
     }
@@ -339,9 +341,106 @@ describe('a claim is a target only when its statement S1 is the statement that t
   it('gives the same target from findOpenClaim', async () => {
     const rigged = rig();
     rigged.port.claims = [claimView(), decoyOf(rigged)];
-    expect(await rigged.dispute.findOpenClaim(OTHER, JOB)).toMatchObject({ ok: true, value: { ref: REF_A } });
-    expect(await rigged.dispute.findOpenClaim(OTHER, { ...JOB, statement_text: DECOY_S1 })).toMatchObject({ ok: true, value: { ref: REF_B } });
-    expect(await rigged.dispute.findOpenClaim(OTHER, { ...JOB, statement_text: 'Another statement.' })).toMatchObject({ ok: false, code: NO_OPEN_CLAIM });
+    expect(await rigged.dispute.findOpenClaim(OTHER, SCOPE)).toMatchObject({ ok: true, value: { ref: REF_A } });
+    expect(await rigged.dispute.findOpenClaim(OTHER, { ...SCOPE, statement_text: DECOY_S1 })).toMatchObject({ ok: true, value: { ref: REF_B } });
+    expect(await rigged.dispute.findOpenClaim(OTHER, { ...SCOPE, statement_text: 'Another statement.' })).toMatchObject({ ok: false, code: NO_OPEN_CLAIM });
+  });
+});
+
+describe('the job began when its escrow was posted, and the chain says when', () => {
+  const posted = (postedAt: number) => ({ ok: true, value: { posted_at: postedAt } }) as const;
+
+  it('takes a claim that was submitted before the time of the Post, and leaves out a claim that was submitted at it or after it: the port gives the time', async () => {
+    // The claim of the samples was submitted an hour before the clock.
+    for (const [postedAt, filed] of [[NOW - HOUR + 1, true], [NOW - HOUR, false], [NOW - 2 * HOUR, false], [NOW, true]] as const) {
+      const rigged = rig();
+      rigged.port.claims = [claimView()];
+      rigged.port.readEscrowAnswer = () => posted(postedAt);
+      const result = await rigged.dispute.challengeDelivery(delivery());
+      expect(result.ok, String(postedAt)).toBe(filed);
+      if (!result.ok) expect(result.detail).toBe(counted(1, [0, 1, 0, 0, 0, 0, 0]));
+    }
+  });
+
+  it('reads the escrow of the job one time, after the claims and before any claim document, and only when the agent has an open claim', async () => {
+    const rigged = rig();
+    rigged.port.claims = [claimView(), newer()];
+    expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(rigged.events.filter((event) => /^(readClaims|readEscrow|readDocument)/.test(event))).toEqual(['readClaims', `readEscrow ${ESCROW}`, `readDocument ${newer().claim_uri}`]);
+    const none = rig();
+    none.port.claims = [claimView({ claimer: THIRD })];
+    expectNotFiled(await none.dispute.challengeDelivery(delivery()), NO_OPEN_CLAIM);
+    expect(none.events).toEqual(['readClaims']);
+  });
+
+  it('says bad_shape, and publishes nothing, when the output is no escrow output of the deployment, and does not repeat the text of the port', async () => {
+    const rigged = rig();
+    rigged.port.claims = [claimView()];
+    rigged.port.readEscrowAnswer = () => ({ ok: false, code: 'not_escrow', detail: 'the output is not at the escrow script: see https://koios.example/key-0123456789abcdef' });
+    const result = await rigged.dispute.challengeDelivery(delivery());
+    expectNotFiled(result, 'bad_shape');
+    expect(result.detail).toContain('escrow_ref names no escrow output');
+    expect(result.detail).not.toContain('key-0123456789abcdef');
+    expect(rigged.port.published).toEqual([]);
+    expect(await rigged.dispute.findOpenClaim(OTHER, SCOPE)).toMatchObject({ ok: false, code: 'bad_shape' });
+    // The twin: the output is an escrow output, and the same job is filed.
+    rigged.port.readEscrowAnswer = () => posted(JOB_BEGAN_AT);
+    expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
+  });
+
+  it('refuses an escrow that was posted after the clock, because its time of the Post cannot be right, and takes one that was posted at the clock', async () => {
+    const rigged = rig();
+    rigged.port.claims = [claimView()];
+    for (const postedAt of [NOW + 1, NOW + 24 * HOUR]) {
+      rigged.port.readEscrowAnswer = () => posted(postedAt);
+      const result = await rigged.dispute.challengeDelivery(delivery());
+      expectNotFiled(result, 'bad_shape');
+      expect(result.detail).toContain('escrow_ref');
+      expect(rigged.port.published, String(postedAt)).toEqual([]);
+    }
+    rigged.port.readEscrowAnswer = () => posted(NOW);
+    expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
+  });
+
+  it('says chain_unavailable, and publishes nothing, when the escrow cannot be read or the port gives a result of a wrong shape, and files the same job when it can be read', async () => {
+    const wrong: Array<[string, unknown]> = [
+      ['a read that throws', new Error('Koios answered 503 at https://koios.example/secret-key')],
+      ['no result', null],
+      ['a text', 'text'],
+      ['a result with no value', { ok: true }],
+      ['a value with no time', { ok: true, value: {} }],
+      ['a time that is a text', { ok: true, value: { posted_at: String(JOB_BEGAN_AT) } }],
+      ['a time of 0', posted(0)],
+      ['a time that is not a whole number', posted(JOB_BEGAN_AT + 0.5)],
+      ['a refusal with another code', { ok: false, code: 'weird', detail: 'x' }],
+      ['a refusal with no detail', { ok: false, code: 'not_escrow' }],
+    ];
+    for (const [name, answer] of wrong) {
+      const rigged = rig();
+      rigged.port.claims = [claimView()];
+      rigged.port.readEscrowAnswer = () => answer as never;
+      const result = await rigged.dispute.challengeDelivery(delivery());
+      expectNotFiled(result, 'chain_unavailable');
+      expect(result.detail, name).not.toContain('secret-key');
+      expect(rigged.port.published, name).toEqual([]);
+      expect(await rigged.dispute.findOpenClaim(OTHER, SCOPE), name).toMatchObject({ ok: false, code: 'chain_unavailable' });
+      rigged.port.readEscrowAnswer = () => posted(JOB_BEGAN_AT);
+      expect((await rigged.dispute.challengeDelivery(delivery())).ok, name).toBe(true);
+    }
+  });
+
+  it('says chain_unavailable when the read of the escrow never answers, with the bound of the settings', async () => {
+    const fire = deferred<void>();
+    const rigged = rig({ read_timeout_ms: 5_000 }, { sleep: () => fire.promise });
+    rigged.port.claims = [claimView()];
+    rigged.port.readEscrowPostedAt = () => {
+      fire.resolve(undefined);
+      return new Promise<never>(() => undefined);
+    };
+    const result = await rigged.dispute.challengeDelivery(delivery());
+    expectNotFiled(result, 'chain_unavailable');
+    expect(result.detail).toContain('the escrow of the job did not answer within 5000 ms');
+    expect(rigged.port.published).toEqual([]);
   });
 });
 
@@ -498,11 +597,11 @@ describe('the newest open claim of the other party is the target', () => {
   it('gives the newest claim of this kit from findOpenClaim, and the claim with the lowest token for claims that end at the same moment', async () => {
     const { port, dispute } = rig();
     port.claims = [EARLIER, LATER, LATEST];
-    expect(await dispute.findOpenClaim(OTHER, JOB)).toMatchObject({ ok: true, value: { ref: REF_C } });
+    expect(await dispute.findOpenClaim(OTHER, SCOPE)).toMatchObject({ ok: true, value: { ref: REF_C } });
     port.claims = [{ ...LATEST, claim_hash: 'ab'.repeat(32) }, LATER];
-    expect(await dispute.findOpenClaim(OTHER, JOB)).toMatchObject({ ok: true, value: { ref: REF_A } });
+    expect(await dispute.findOpenClaim(OTHER, SCOPE)).toMatchObject({ ok: true, value: { ref: REF_A } });
     port.claims = [EARLIER, { ...EARLIER, ref: REF_C, token: TOKEN_C }];
-    expect(await dispute.findOpenClaim(OTHER, JOB)).toMatchObject({ ok: true, value: { token: TOKEN_B } });
+    expect(await dispute.findOpenClaim(OTHER, SCOPE)).toMatchObject({ ok: true, value: { token: TOKEN_B } });
   });
 
   it('files no challenge when the claim that was chosen changed at the second read, and the evidence landed', async () => {
@@ -544,7 +643,7 @@ describe('the window that is left is checked in the job of the queue, right befo
     expect(rigged.port.published).toEqual([]);
     expect(rigged.port.challenged).toEqual([]);
     // The check comes after the wait for the queue: the job started, and the publish did not follow.
-    expect(rigged.events).toEqual(['readClaims', expect.stringContaining('readDocument'), 'waited 1800000']);
+    expect(rigged.events).toEqual(['readClaims', `readEscrow ${ESCROW}`, expect.stringContaining('readDocument'), 'waited 1800000']);
     // The job is free: nothing was sent, and the claim can be challenged again while its window is open.
     rigged.time.now = NOW;
     const retry = rig();

@@ -1,13 +1,18 @@
 // packages/usecase-kit/src/dispute/chain.ts
-// The chain port of the dispute code over the Module-1 builders of the buyer code. It reads the claims and the challenges of Module-1 and the documents that they name, and it builds, signs, submits and
-// confirms four kinds of transaction: a document, a claim, a challenge and a withdrawal. The builders are keyless: they take a Lucid instance bound to the wallet address and return an unsigned
-// transaction. The signature comes from a function that the caller gives. The code never holds a key: the caller closes the function over the service key.
+// The chain port of the dispute code over the Module-1 builders of the buyer code. It reads the claims and the challenges of Module-1, the documents that they name, and the time of the Post of the escrow of a
+// job, and it builds, signs, submits and confirms four kinds of transaction: a document, a claim, a challenge and a withdrawal. The builders are keyless: they take a Lucid instance bound to the wallet address
+// and return an unsigned transaction. The signature comes from a function that the caller gives. The code never holds a key: the caller closes the function over the service key.
 //
 // The reads go by the payment credential of the script. Module-1 checks only the payment credential of a claim or a challenge output (SPEC, the data that the jury reads), so a claimer can stake a
 // claim at an address of the claim script with a stake part, and the node, which lists by exact address, does not show it. The node lists the address of the script. Koios lists every address that has
 // the script as its payment credential, and the node must hold each output that Koios lists and the node did not list yet: the node decides what an output holds and whether it is spent. An answer of
 // a wrong shape from the node is an error, and never "no claim": a claim that was left out for such an answer would let a challenge pass it by. The same holds for Koios: the reader of the buyer code
 // leaves out each row that it cannot read, and takes the rest for the whole list, so the port checks every row of a list first (`wholeRows`), and a row of a wrong shape is an error.
+//
+// The escrow of a job is read from Koios `utxo_info` with `readEscrowOutput` of the buyer code, and not from the node. Koios keeps the datum of a spent output, so the output of any state of the escrow can be named
+// when the job is long done, and one request gives its datum. The reader looks at the one output that it is asked for, so an output that someone locks at the escrow credential cannot change the answer, and it fails
+// closed: an output that is not at the escrow script of the deployment, that holds no escrow datum, or that holds less than its datum owes is no escrow (`not_escrow`). The `tx_info` of the Post is not used: it
+// needs the hash of the Post transaction, and a caller names any output of the escrow. Every other failure of the reader, and an output that Koios does not have, throws.
 //
 // The checks come before the signature. Each build is compared with the call that asked for it: a challenge or a withdrawal must spend the claim output that the call names, and a challenge must hold
 // the hash and the URI of the evidence of the call. A build that does not match is refused (`not_built`), and nothing is signed. Every transaction needs the signature of the wallet key only.
@@ -17,17 +22,17 @@
 // before its `valid_to`. The `sleep` that the caller gives must not hold the process open: its timer is not cancelled when the work ends first.
 import {
   AWAIT_TIMEOUT_MAX_MS, BUILD_TIMEOUT_MS, DELIVER_BY_BUFFER_MS, DOCUMENT_LABEL, KOIOS_ANSWER_BYTES, buildDocumentPublish, buildOpenChallenge, buildSubmitClaim, buildWithdrawClaim, credentialOutputs,
-  decodeChallengeDatum, decodeClaimDatum, koiosUtxoInfo, lucidForAddress, paymentKeyHashOf, readDocument as readDocumentOfUri, txHashOfUri, utxoOfKoiosRow,
+  decodeChallengeDatum, decodeClaimDatum, koiosUtxoInfo, lucidForAddress, paymentKeyHashOf, readDocument as readDocumentOfUri, readEscrowOutput, txHashOfUri, utxoOfKoiosRow,
 } from '@vsa/buyer-core';
-import type { ChallengeDatum, LedgerEnv, Module1Deployment } from '@vsa/buyer-core';
+import type { ChallengeDatum, IdentityDeployment, LedgerEnv, Module1Deployment } from '@vsa/buyer-core';
 import type { Provider, UTxO } from '@lucid-evolution/lucid';
 import { addressDetails, decodeTransaction } from '@vsa/vector-read/guarded-decode';
 import { utf8Hex } from '@vsa/vector-read/identity-codec';
 import { accepted, parseOutputRef, refused } from '../protocol/index.ts';
 import type { Did, OutputRef } from '../protocol/index.ts';
 import type {
-  ChallengeView, ClaimView, DocumentAbsent, DocumentResult, Module1Port, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument, SubmitClaimCall, SubmittedClaim, TxNotBuilt, TxNotConfirmed,
-  TxResult, WithdrawClaimCall, WithdrawnClaim,
+  ChallengeView, ClaimView, DocumentAbsent, DocumentResult, EscrowPostResult, Module1Port, NotAnEscrow, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument, SubmitClaimCall, SubmittedClaim, TxNotBuilt,
+  TxNotConfirmed, TxResult, WithdrawClaimCall, WithdrawnClaim,
 } from './ports.ts';
 import { describeError } from './text.ts';
 
@@ -53,6 +58,11 @@ export interface Module1PortDeps {
   readonly fetch: typeof fetch;
   /** The base URL of Blockfrost, for the document of a transaction that Koios shows with no JSON. The default is the one of the buyer code. */
   readonly blockfrost_url?: string;
+  /**
+   * The identity-marketplace deployment, which gives the escrow script of the identity layout (`buyerIdentityDeployment` of the buyer code reads it). The port reads the escrow of a job at the escrow script of the
+   * legacy layout and at the escrow script of this deployment. Give null for a service that has no identity deployment: an identity-marketplace escrow is then no escrow output of the deployment.
+   */
+  readonly identity_deployment: IdentityDeployment | null;
   /** The most time for the build of one transaction. The default is the one of the chain of the buyer code. */
   readonly build_timeout_ms?: number;
   /** The most time from the start of the submit to the confirmation. The default is the one of the chain of the buyer code, and the most is its most. */
@@ -114,6 +124,27 @@ function absenceOf(error: unknown): DocumentAbsent | null {
   if (UNKNOWN_TRANSACTION.test(error.message)) return refused('transaction_unknown', 'the source does not have the transaction of the document');
   if (NO_DOCUMENT.test(error.message)) return refused('no_document', 'the transaction carries no document that the source can give');
   return null;
+}
+
+/** A reference to an output, as `readEscrowOutput` of the buyer code writes it into a message: the hash of the transaction, a hash sign and the index. */
+const OUTPUT_REF = `${TX_HASH}#\\d+`;
+/**
+ * What `readEscrowOutput` of the buyer code says when the source answered and the output is not an escrow output of the deployment, and what the port gives for each: the output is not at the escrow script, it is
+ * an identity-marketplace escrow and the port has no identity deployment, it holds no escrow datum, or it holds less than its datum owes. The sender of an output makes each of these, because anyone can lock an
+ * output at any address. Every other error is a failure of the source, and the port throws it on. That includes the error for an output that the source does not have: the source can be behind.
+ */
+const NOT_ESCROW: ReadonlyArray<readonly [RegExp, string]> = [
+  [new RegExp(`^UTxO ${OUTPUT_REF} is not an escrow output: `), 'the output is not at the escrow script of the deployment'],
+  [new RegExp(`^Escrow ${OUTPUT_REF} is an identity-marketplace escrow\\. `), 'the output holds an identity-marketplace escrow, and the port has no identity deployment'],
+  [new RegExp(`^UTxO ${OUTPUT_REF} does not hold an escrow datum\\.`), 'the output holds no escrow datum'],
+  [new RegExp(`^Escrow ${OUTPUT_REF} is not funded: `), 'the output holds less than its escrow datum owes'],
+];
+
+/** The refusal that an error of the reader of an escrow output stands for, or null when the error is a failure of the source. */
+function notEscrowOf(error: unknown): NotAnEscrow | null {
+  if (!(error instanceof Error)) return null;
+  const known = NOT_ESCROW.find(([pattern]) => pattern.test(error.message));
+  return known === undefined ? null : refused('not_escrow', known[1]);
 }
 
 /**
@@ -282,6 +313,10 @@ export function createModule1Port(deps: Module1PortDeps): Module1Port {
   if (typeof deps.koios_url !== 'string' || !/^https?:\/\/\S+$/.test(deps.koios_url)) throw new TypeError('koios_url must be an http or https URL');
   if (typeof deps.fetch !== 'function') throw new TypeError('fetch must be a function');
   if (deps.blockfrost_url !== undefined && (typeof deps.blockfrost_url !== 'string' || !/^https?:\/\/\S+$/.test(deps.blockfrost_url))) throw new TypeError('blockfrost_url must be an http or https URL');
+  const identityDeployment = deps.identity_deployment;
+  if (identityDeployment !== null && (typeof identityDeployment !== 'object' || typeof identityDeployment.escrow?.hash !== 'string')) {
+    throw new TypeError('identity_deployment must be the identity deployment of the buyer code, or null');
+  }
   const resolutionDeadline = deps.module1.protocol.resolutionDeadline;
   if (!Number.isSafeInteger(resolutionDeadline) || resolutionDeadline < 1) throw new TypeError('the resolution deadline of the Module-1 deployment must be a whole number of milliseconds');
   const agent: { readonly did: Did; readonly key_hash: string } = { did: `did:vector:${agentId}`, key_hash: keyHash };
@@ -425,6 +460,20 @@ export function createModule1Port(deps: Module1PortDeps): Module1Port {
       if (named === null) throw new TypeError('ref must be a transaction hash, a hash sign and an output index');
       const rows = await koiosUtxoInfo(deps.koios_url, [ref], deps.fetch, KOIOS_ANSWER_BYTES);
       return rows.some((row) => typeof row?.tx_hash === 'string' && row.tx_hash.toLowerCase() === named.txHash && row.tx_index === named.outputIndex);
+    },
+
+    async readEscrowPostedAt(ref: OutputRef): Promise<EscrowPostResult> {
+      if (refOf(ref) === null) throw new TypeError('ref must be a transaction hash, a hash sign and an output index');
+      try {
+        const { datum } = await readEscrowOutput(deps.koios_url, ref, deps.fetch, identityDeployment);
+        // The reader takes a number out of an integer of the datum, and an integer beyond 2^53 loses its digits: a time that is not a whole number of milliseconds above 0 is no time of a Post.
+        if (!Number.isSafeInteger(datum.posted_at) || datum.posted_at < 1) return refused('not_escrow', 'the escrow datum holds a time of the Post that is not a time in POSIX milliseconds');
+        return accepted({ posted_at: datum.posted_at });
+      } catch (error) {
+        const reason = notEscrowOf(error);
+        if (reason === null) throw error;
+        return reason;
+      }
     },
 
     async publishDocument(call: PublishCall): Promise<TxResult<PublishedDocument>> {

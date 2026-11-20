@@ -4,8 +4,8 @@ import { documentHash, documentUri } from '@vsa/buyer-core';
 import { canonicalSha256 } from '@vsa/usecase-kit/protocol';
 import { Dispute, claimDocument, evidenceDocument } from '@vsa/usecase-kit/dispute';
 import type {
-  ChallengeView, ClaimView, DisputeJournal, DisputeSettings, DocumentAbsent, DocumentResult, Module1Port, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument, ReadDocument, ServiceQueue,
-  SubmittedClaim, SubmitClaimCall, TxResult, WithdrawClaimCall, WithdrawnClaim,
+  ChallengeView, ClaimView, DisputeJournal, DisputeSettings, DocumentAbsent, DocumentResult, EscrowPostResult, Module1Port, NotAnEscrow, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument,
+  ReadDocument, ServiceQueue, SubmittedClaim, SubmitClaimCall, TxResult, WithdrawClaimCall, WithdrawnClaim,
 } from '@vsa/usecase-kit/dispute';
 
 export const NOW = Date.UTC(2026, 10, 15, 12, 0, 0);
@@ -98,8 +98,11 @@ export const REORDER_AGENT_S1 = 'An order that this agent places is the purchase
 /** The text of the statement S1 of the claim document of the samples: the statement that the evidence is about. */
 export const STATEMENT_S1 = ORDER_DESK_CLAIM.statements[0].text;
 
-/** The job that the claims of the samples cover: the capability that they are for, the statement S1 of their claim document, and the time that the job began. */
-export const JOB = { capability_id: CAPABILITY, statement_text: STATEMENT_S1, job_began_at: JOB_BEGAN_AT } as const;
+/** The job that the claims of the samples cover: the capability that they are for, and the statement S1 of their claim document. A challenge adds the escrow of the job. */
+export const JOB = { capability_id: CAPABILITY, statement_text: STATEMENT_S1 } as const;
+
+/** The whole scope of the job of the samples, for a lookup: its escrow, its capability and its statement. The scripted port gives `JOB_BEGAN_AT` as the time of the Post of each escrow. */
+export const SCOPE = { escrow_ref: ESCROW, ...JOB } as const;
 
 export const PARTIES = { claim: REF_A, claim_token: TOKEN_A, against_did: OTHER, by_did: ME, escrow_ref: ESCROW, statement_text: STATEMENT_S1 } as const;
 
@@ -166,6 +169,9 @@ export class RecordingQueue {
 export const NO_TRANSACTION: DocumentAbsent = { ok: false, code: 'transaction_unknown', detail: 'the source does not have the transaction of the document' };
 export const NO_DOCUMENT: DocumentAbsent = { ok: false, code: 'no_document', detail: 'the transaction carries no document' };
 
+/** What a read of an escrow answers when the output is no escrow output of the deployment. */
+export const NOT_ESCROW: NotAnEscrow = { ok: false, code: 'not_escrow', detail: 'the output is not at the escrow script of the deployment' };
+
 /** A chain port that answers from lists that a test sets, and that writes each call to the events. A test changes an answer by setting the member of the same name. */
 export class ScriptedPort implements Module1Port {
   readonly agent = { did: ME, key_hash: KEY_HASH };
@@ -188,6 +194,8 @@ export class ScriptedPort implements Module1Port {
   };
   /** What `isIndexed` answers: the source of the documents has each claim, unless a test says that it is behind or that it fails. */
   isIndexedAnswer: (ref: string) => boolean | Error = () => true;
+  /** What `readEscrowPostedAt` answers: the time of the Post, the refusal that the output is no escrow output, or an error for a source that fails. The default is `JOB_BEGAN_AT` for each escrow. */
+  readEscrowAnswer: (ref: string) => EscrowPostResult | Error = () => ({ ok: true, value: { posted_at: JOB_BEGAN_AT } });
   publishAnswer: (call: PublishCall) => Answer<PublishedDocument> = (call) => ok({ tx_hash: EVIDENCE_TX, uri: documentUri(EVIDENCE_TX), document_hash: documentHash(call.bytes), fee_lovelace: 200_000n });
   submitClaimAnswer: (call: SubmitClaimCall) => Answer<SubmittedClaim> = (call) =>
     ok({ tx_hash: CHALLENGE_TX, claim: REF_C, claim_token: TOKEN_C, stake_lovelace: call.stake_lovelace, submitted_at: NOW, challenge_window_ms: call.challenge_window_ms, fee_lovelace: 500_000n });
@@ -248,6 +256,13 @@ export class ScriptedPort implements Module1Port {
   async isIndexed(ref: string): Promise<boolean> {
     this.events.push(`isIndexed ${ref}`);
     const answer = this.isIndexedAnswer(ref);
+    if (answer instanceof Error) throw answer;
+    return answer;
+  }
+
+  async readEscrowPostedAt(ref: string): Promise<EscrowPostResult> {
+    this.events.push(`readEscrow ${ref}`);
+    const answer = this.readEscrowAnswer(ref);
     if (answer instanceof Error) throw answer;
     return answer;
   }

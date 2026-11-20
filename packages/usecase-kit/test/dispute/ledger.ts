@@ -2,7 +2,8 @@
 // A small ledger over the fixture world of the buyer code, so that the real chain port runs its builders and a test can read what the transactions did. The fixture world has the mainnet Module-1
 // scripts, and Lucid runs them on every build. This provider adds what the fixture node lacks: it takes a signed transaction, checks that the required signers signed it, removes the outputs that the
 // transaction spends, adds the outputs that it makes, and keeps the document that it carries. A transaction is confirmed when the provider has taken it, unless a test says that it is not.
-// `koiosOf` is a fake Koios over the same ledger: it lists the outputs of a payment credential, at any address, and it gives the metadata of a document.
+// `koiosOf` is a fake Koios over the same ledger: it lists the outputs of a payment credential, at any address, it gives the metadata of a document, and it describes the outputs by reference, spent or not.
+// The world holds the escrow of the job of the samples (`jobEscrow`), an output of the identity layout that the real port reads for the time of the Post.
 import { CML, coreToTxOutput, getAddressDetails } from '@lucid-evolution/lucid';
 import type { Address, Credential, OutRef, UTxO } from '@lucid-evolution/lucid';
 import { documentUri, rawHexToBech32, signTransaction } from '@vsa/buyer-core';
@@ -10,9 +11,11 @@ import type { ClaimDatum } from '@vsa/buyer-core';
 import { utf8Hex } from '@vsa/vector-read/identity-codec';
 import { FixtureProvider } from '../../../buyer-core/test/fixtures/fixture-provider.ts';
 import { AUDITOR_ID, CLAIMER_ID, JURY_REF_UTXO, MODULE1, MODULE1_UTXOS, WALLET, WALLET_ADDRESS, WALLET_UTXOS, claimUtxo, recordUtxo } from '../../../buyer-core/test/fixtures/jury-world.ts';
+import { DEPLOYMENT } from '../../../buyer-core/test/fixtures/identity-world.ts';
+import { escrowUtxo, identityEscrow } from '../../../buyer-core/test/fixtures/escrow-identity.fixture.ts';
 import { createModule1Port } from '@vsa/usecase-kit/dispute';
 import type { Module1Port, Module1PortDeps } from '@vsa/usecase-kit/dispute';
-import { kitClaimDocument } from './support.ts';
+import { ESCROW, JOB_BEGAN_AT, kitClaimDocument } from './support.ts';
 
 export { AUDITOR_ID, CLAIMER_ID, JURY_REF_UTXO, MODULE1, WALLET, WALLET_ADDRESS };
 
@@ -50,6 +53,8 @@ export class LedgerProvider extends FixtureProvider {
   koiosStatus: number | null = null;
   /** Outputs that the fake Koios lists and the node does not hold: spent outputs, or outputs that the node has not seen. */
   readonly koiosOnly: UTxO[] = [];
+  /** Outputs that are spent, and that the fake Koios still describes: its output info gives each with `is_spent` true, and no list gives it. Koios keeps the datum of a spent output. */
+  readonly koiosSpent: UTxO[] = [];
   /** Transactions that the fake Koios does not have yet: it is behind. Its lists, its metadata and its output info leave their outputs and their documents out. */
   readonly koiosBehind = new Set<string>();
   /** Transactions that the fake Koios has and that carry no document, with the CBOR that `tx_cbor` gives for each, or null for a transaction of which it keeps no CBOR. */
@@ -141,9 +146,26 @@ export class LedgerProvider extends FixtureProvider {
  */
 const RECORDS: UTxO[] = [recordUtxo(CLAIMER_ID), recordUtxo(AUDITOR_ID)];
 
-/** A node with the wallet, the Module-1 outputs, the records of the claimer and the auditor, and `extra`: outputs, or a function that makes them with the ledger in hand (a claim needs its document on the ledger). */
+/**
+ * The escrow of the job `ESCROW`: an output of the identity layout whose datum says that the escrow was posted at `postedAt`. `over` changes members of the output. The output is at the escrow address
+ * of the deployment of the fixture world, and it holds more than its datum owes.
+ */
+export function jobEscrow(postedAt = JOB_BEGAN_AT, over: Partial<UTxO> = {}): UTxO {
+  const [txHash, index] = ESCROW.split('#') as [string, string];
+  return { ...escrowUtxo(txHash, identityEscrow(postedAt)), outputIndex: Number(index), ...over };
+}
+
+/** Puts the escrow of the job into the ledger as the Post made it (live), or as the settlement left it (spent: only the output info of the fake Koios gives it), in the place of the escrow that the ledger has. */
+export function postEscrowAt(ledger: LedgerProvider, postedAt: number, spent = false, over: Partial<UTxO> = {}): void {
+  const others = (utxo: UTxO): boolean => refOf(utxo) !== ESCROW;
+  ledger.live = ledger.live.filter(others);
+  ledger.koiosSpent.splice(0, ledger.koiosSpent.length, ...ledger.koiosSpent.filter(others));
+  (spent ? ledger.koiosSpent : ledger.live).push(jobEscrow(postedAt, over));
+}
+
+/** A node with the wallet, the Module-1 outputs, the records of the claimer and the auditor, the escrow of the job, and `extra`: outputs, or a function that makes them with the ledger in hand (a claim needs its document on the ledger). */
 export function ledgerWorld(extra: UTxO[] | ((ledger: LedgerProvider) => UTxO[]) = [], records: UTxO[] = RECORDS): LedgerProvider {
-  const ledger = new LedgerProvider([...WALLET_UTXOS, ...MODULE1_UTXOS, JURY_REF_UTXO, ...records]);
+  const ledger = new LedgerProvider([...WALLET_UTXOS, ...MODULE1_UTXOS, JURY_REF_UTXO, ...records, jobEscrow()]);
   ledger.live.push(...(typeof extra === 'function' ? extra(ledger) : extra));
   return ledger;
 }
@@ -161,12 +183,12 @@ export function kitClaim(ledger: LedgerProvider, token: string, overrides: Parti
 /** The payment credential of an address, in hex. */
 const paymentCredentialOf = (address: string): string | undefined => getAddressDetails(address).paymentCredential?.hash;
 
-/** A Koios row of an output, as `credential_utxos` shows it. */
-function koiosRow(utxo: UTxO): Record<string, unknown> {
+/** A Koios row of an output, as `credential_utxos` and `utxo_info` show it. `spent` is what the row says about the output. */
+function koiosRow(utxo: UTxO, spent = false): Record<string, unknown> {
   const tokens = Object.entries(utxo.assets).filter(([unit]) => unit !== 'lovelace');
   return {
     tx_hash: utxo.txHash, tx_index: utxo.outputIndex, address: utxo.address, value: String(utxo.assets.lovelace), payment_cred: paymentCredentialOf(utxo.address), datum_hash: null,
-    inline_datum: utxo.datum ? { bytes: utxo.datum } : null, reference_script: null, is_spent: false,
+    inline_datum: utxo.datum ? { bytes: utxo.datum } : null, reference_script: null, is_spent: spent,
     asset_list: tokens.map(([unit, quantity]) => ({ policy_id: unit.slice(0, 56), asset_name: unit.slice(56), quantity: String(quantity), decimals: 0 })),
   };
 }
@@ -195,7 +217,7 @@ export function koiosOf(ledger: LedgerProvider): typeof fetch {
       rows = [...rows].sort((a, b) => (a.txHash < b.txHash ? -1 : a.txHash > b.txHash ? 1 : a.outputIndex - b.outputIndex));
       const offset = Number(address.searchParams.get('offset') ?? 0);
       const limit = Number(address.searchParams.get('limit') ?? 1000);
-      return answer(rows.slice(offset, offset + limit).map(koiosRow));
+      return answer(rows.slice(offset, offset + limit).map((utxo) => koiosRow(utxo)));
     }
     if (route === 'tx_metadata') {
       const known = (body._tx_hashes ?? []).filter((hash) => !ledger.koiosBehind.has(hash));
@@ -206,7 +228,8 @@ export function koiosOf(ledger: LedgerProvider): typeof fetch {
     if (route === 'tx_cbor') return answer((body._tx_hashes ?? []).filter((hash) => ledger.bare.has(hash)).map((hash) => ({ tx_hash: hash, cbor: ledger.bare.get(hash) })));
     if (route === 'utxo_info') {
       const wanted = new Set(body._utxo_refs ?? []);
-      return answer([...ledger.live, ...ledger.koiosOnly].filter((utxo) => wanted.has(refOf(utxo)) && !ledger.koiosBehind.has(utxo.txHash)).map(koiosRow));
+      const asked = (utxo: UTxO): boolean => wanted.has(refOf(utxo)) && !ledger.koiosBehind.has(utxo.txHash);
+      return answer([...[...ledger.live, ...ledger.koiosOnly].filter(asked).map((utxo) => koiosRow(utxo)), ...ledger.koiosSpent.filter(asked).map((utxo) => koiosRow(utxo, true))]);
     }
     return new Response('[]', { status: 404 });
   }) as unknown as typeof fetch;
@@ -224,6 +247,7 @@ export const signWithWallet = (unsignedCborHex: string): { signedCborHex: string
 /** The real chain port for `agentId` over the ledger, with a clock at `now`, the fake Koios of the ledger, and waits that never end, unless `extra` gives others. */
 export function realPort(provider: LedgerProvider, agentId: string, now: number, extra: Partial<Module1PortDeps> = {}): Module1Port {
   return createModule1Port({
-    provider, module1: MODULE1, address: WALLET_ADDRESS, agent_id: agentId, sign: signWithWallet, clock: () => now, sleep: forever, koios_url: 'https://koios.test', fetch: koiosOf(provider), ...extra,
+    provider, module1: MODULE1, address: WALLET_ADDRESS, agent_id: agentId, sign: signWithWallet, clock: () => now, sleep: forever, koios_url: 'https://koios.test', fetch: koiosOf(provider),
+    identity_deployment: DEPLOYMENT, ...extra,
   });
 }
