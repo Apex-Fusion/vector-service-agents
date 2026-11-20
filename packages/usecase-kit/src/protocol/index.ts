@@ -7,3 +7,6 @@ export * from './json.ts';
 export * from './digest.ts';
 export * from './kinds.ts';
 export * from './codes.ts';
+export * from './faults.ts';
+export * from './manifest.ts';
+export * from './limits.ts';

@@ -1,0 +1,63 @@
+// packages/usecase-kit/src/protocol/manifest.ts
+// What an agent manifest (`vector.agent-manifest.v2`) adds under `behaviour` for these agents, as types. The manifest has other members that each agent writes. These are the members that
+// the agents share, and the members that only some kinds have.
+//
+//   claim        The three statements of the claim of the agent, with no reference to a claim: a claim is staked for each run.
+//   cosign       The rule by which a buyer-side agent co-signs a delegation. Only a buyer-side agent has it.
+//   operations   `["propose", "execute"]` for a buyer-side agent. A counterparty has no operations, and the member is absent.
+//   fault_modes  The fault values that the agent kind lists. The value that is active is not in the manifest.
+//   model        The models that the agent may hire for its decisions, and the most that it pays for a call.
+//   relying_on   The mock systems and the routes of the identity gateway that the agent calls.
+//   price_list   Only a bid desk: the file with its prices.
+//   lots         Only an order desk: the file with its lot sizes.
+import type { FaultMode } from './faults.ts';
+import type { Digest } from './identifiers.ts';
+import type { AgentKind, BuyerSideKind } from './kinds.ts';
+
+export interface ClaimStatement<Id extends string = string> {
+  readonly id: Id;
+  readonly text: string;
+}
+
+/** The statements of a claim: exactly three, with the ids S1, S2 and S3 in this order. */
+export interface ManifestClaim {
+  readonly statements: readonly [ClaimStatement<'S1'>, ClaimStatement<'S2'>, ClaimStatement<'S3'>];
+}
+
+/** The rule of the co-signature of a buyer-side agent: the path of its route, and the rule in words. */
+export interface ManifestCosign {
+  readonly route: string;
+  readonly rule: string;
+}
+
+/** The models that an agent may hire (the setting `LLM_MODEL_ALLOWLIST`) and the most that it pays for one call, in lovelace (`LLM_MAX_PRICE_LOVELACE`). */
+export interface ManifestModel {
+  readonly allowlist: readonly string[];
+  readonly max_price_lovelace: number;
+}
+
+/** What the agent calls: the routes of the mock systems and the routes of the identity gateway, each as `METHOD /path`. */
+export interface ManifestRelyingOn {
+  readonly mock_systems: readonly string[];
+  readonly gateway_routes: readonly string[];
+}
+
+/** A published file and its hash: the lots file of an order desk, and the price list of a bid desk. */
+export interface ManifestFileRef {
+  readonly uri: string;
+  readonly sha256: Digest;
+}
+
+type ForKind<K extends AgentKind> = {
+  readonly claim: ManifestClaim;
+  readonly fault_modes: readonly FaultMode<K>[];
+  readonly model: ManifestModel;
+  readonly relying_on: ManifestRelyingOn;
+} & (K extends BuyerSideKind
+  ? { readonly operations: readonly ['propose', 'execute']; readonly cosign: ManifestCosign }
+  : { readonly operations?: undefined; readonly cosign?: undefined }) &
+  (K extends 'order-desk' ? { readonly lots: ManifestFileRef } : { readonly lots?: undefined }) &
+  (K extends 'bid-desk' ? { readonly price_list: ManifestFileRef } : { readonly price_list?: undefined });
+
+/** The members that these agents add under `behaviour`, for one kind of agent. With no kind, the type is one of the six. */
+export type BehaviourAdditions<K extends AgentKind = AgentKind> = ForKind<K>;
