@@ -14,8 +14,11 @@ export const didOf = (id: string): Did => `${DID_PREFIX}${id}`;
 /** The hash of a public key as the registry holds it: BLAKE2b with 28 bytes, as 56 lower-case hex characters. The input is the key as hex. */
 export const keyHashOf = (publicKeyHex: string): string => Buffer.from(blake2b(Buffer.from(publicKeyHex, 'hex'), { dkLen: 28 })).toString('hex');
 
-/** A text for a detail: one line, printable characters only, and at most `max` characters. Text that comes from a read of the chain can be long. */
+/**
+ * A text for a detail: one line, printable characters only, each run of 56 or more hex characters (an identifier, a hash) cut to its first 8 characters, and at most `max` characters. Text
+ * that comes from a read of the chain can be long.
+ */
 export function clip(text: string, max = 160): string {
-  const line = text.replace(/[^\x20-\x7e]/g, '?');
+  const line = text.replace(/[^\x20-\x7e]/g, '?').replace(/[0-9a-f]{56,}/g, (hex) => `${hex.substring(0, 8)}..`);
   return line.length <= max ? line : `${line.substring(0, max - 3)}...`;
 }

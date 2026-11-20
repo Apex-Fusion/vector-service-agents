@@ -113,7 +113,7 @@ export async function runChecks(steps: readonly CheckStep[]): Promise<ChecksOutc
   assertSteps(steps);
   const checks: Record<string, true> = {};
   const facts: Record<string, JsonValue> = {};
-  const record = (): ChecksRecord => ({ checks: Object.freeze({ ...checks }), facts: Object.freeze({ ...facts }) });
+  const record = (): ChecksRecord => Object.freeze({ checks: Object.freeze({ ...checks }), facts: Object.freeze({ ...facts }) });
   for (const step of steps) {
     const result = await runStep(step);
     if (!result.ok) return { ok: false, code: result.code, detail: result.detail, digests: result.digests ?? null, record: record() };
