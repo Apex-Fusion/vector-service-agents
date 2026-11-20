@@ -13,7 +13,9 @@
 //      The object text must parse as JSON, and it must say one thing: no key stands two times in one object, and every number reads back as itself (see lossless.ts). The value must be plain JSON
 //      data (no `__proto__` key, no number that is not finite, no value nested deeper than the protocol allows).
 //   3. The object has the members `reasoning` and `choice`, and no other member. The reasoning is a text with at least one character that is not white space. It is kept as the model wrote it.
-//   4. The parser of the decision accepts the choice. The parser gets a COPY of the choice and returns the parsed value or a refusal.
+//   4. The parser of the decision accepts the choice. The parser gets a COPY of the choice and returns the parsed value or a refusal AT ONCE. A parser that throws gives `model_output_invalid`: it
+//      could not read the choice. A parser that returns a promise is a wrong parser. The value of the promise is not read, its rejection is handled here so that none stays unhandled, and the reading
+//      ends with `bad_decision`. A parser cannot be proven before it runs, so a caller must hold to this (see spec.ts).
 //   5. The value that the parser returned is the choice that the model gave. A parser that changed a member, left one out or added one is a defect of the use case. The reading ends with
 //      `choice_changed`, which is not a fault of the model, and no decision is recorded. The comparison is against the choice as it was BEFORE the parser ran, so a parser that changes its own copy
 //      in place does not hide the change.
@@ -32,8 +34,11 @@ export interface Answer<C extends JsonValue> {
   readonly choice: C;
 }
 
-/** `model_output_invalid` is a fault of the answer. `choice_changed` is a fault of the parser of the use case: it returned a value that is not the choice that it was given. */
-export type AnswerFault = 'model_output_invalid' | 'choice_changed';
+/**
+ * `model_output_invalid` is a fault of the answer. `choice_changed` and `bad_decision` are faults of the parser of the use case: it returned a value that is not the choice that it was given, or it
+ * returned a promise.
+ */
+export type AnswerFault = 'model_output_invalid' | 'choice_changed' | 'bad_decision';
 
 /** What a supplier gives of an answer: its text, and the status of the response as the supplier wrote it. It is the value of `hireModel`. */
 export interface ModelAnswerText {
@@ -141,7 +146,21 @@ export function readAnswer<C extends JsonValue>(answer: ModelAnswerText, parse: 
   } catch {
     return invalid('has a choice that the parser of the decision could not read');
   }
-  const { ok, value } = (typeof verdict === 'object' && verdict !== null ? verdict : {}) as { ok?: unknown; value?: unknown };
+  // A parser returns its result at once. A promise is a wrong parser, and its rejection must not stay unhandled: the hire was paid, and a rejection that nobody handles can stop the process.
+  let ok: unknown;
+  let value: unknown;
+  try {
+    // A promise, or any value that has a `then` function. Reading `then` can throw (a getter or a Proxy that throws), and then the catch below says that the verdict cannot be read.
+    if ((typeof verdict === 'object' || typeof verdict === 'function') && verdict !== null && 'then' in verdict && typeof verdict.then === 'function') {
+      void Promise.resolve(verdict).then(undefined, () => undefined);
+      return refused('bad_decision', 'the parser of the decision returned a promise: a parser must return its result, and never a promise');
+    }
+    // The verdict is read one time. A parser that returns another value than `{ ok, value }` has no `ok` that is true.
+    const members = (typeof verdict === 'object' && verdict !== null ? verdict : {}) as { ok?: unknown; value?: unknown };
+    ({ ok, value } = members);
+  } catch {
+    return invalid('has a choice that the parser of the decision could not read');
+  }
   if (ok !== true) return invalid('has a choice of another shape');
 
   const returned = parseJsonValue(value, 'choice');

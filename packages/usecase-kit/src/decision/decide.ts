@@ -20,6 +20,9 @@
 //   - A paid hire is always in the failure. The Accept pays the supplier, and what fails after it does not undo that: the record of the hire cannot be recorded (the supplier writes its receipt), the
 //     answer cannot be read, or the ledger of the caller throws. Every failure after an Accept says in its detail that the escrow was paid, and it has a `delivery`: the complete sub-job, or as much
 //     of it as can be recorded. Every failure after a Post has the escrow and the stage (see src/decision/result.ts).
+//   - `decide` always gives a typed result. It does not throw for a `deps` that is null or has a member that throws when it is read (`bad_limit`), for a clock that cannot be read (`bad_deps`), for a
+//     hire that fails, for an answer that is wrong, or for a parser that returns a promise (`bad_decision`). An async function as a parser is refused before the hire. A function that returns a promise
+//     is found when it runs, after the hire, and then the rejection of the promise is handled, so that none stays unhandled (see src/decision/spec.ts for what a caller must hold to).
 //   - The prompt holds the input as data in one marked block (src/decision/prompt.ts). This lowers the risk that the input misleads the model, and it does not remove it.
 //
 // What a decision costs and locks. The Post locks the price and both bonds of the advert, raised to the floor of the escrow, and the fee of the Post and the fee of the Accept come from the wallet
@@ -196,12 +199,21 @@ function afterHire<C extends JsonValue>(name: string, parse: ChoiceParser<C>, hi
 }
 
 /**
- * Makes one decision. The result is `{ ok: true, value }` with the decision, or a failure (see src/decision/result.ts). It does not throw for a hire that fails, for an answer that is wrong or for
- * a limit that is wrong. The decision holds the name of the definition, the choice and the reasoning of the model, and the sub-job with its receipt, its eight checks and its Accept state.
+ * Makes one decision. The result is `{ ok: true, value }` with the decision, or a failure (see src/decision/result.ts). It does not throw for a hire that fails, for an answer that is wrong, for
+ * a limit that is wrong, for deps that cannot be read or for a parser that returns a promise. The decision holds the name of the definition, the choice and the reasoning of the model, and the
+ * sub-job with its receipt, its eight checks and its Accept state.
  */
 export async function decide<C extends JsonValue>(deps: DecisionDeps, spec: DecisionSpec<C>, input: JsonValue): Promise<DecideResult<C>> {
-  // The limits, the definition and the input are read one time, as data, and nothing below reads them from the caller's objects again.
-  const { key, limits: givenLimits, ...ports } = deps;
+  // The deps, the limits, the definition and the input are read one time, as data, and nothing below reads them from the caller's objects again. A `deps` that is null, and a member that throws when it
+  // is read, give a failure that names the limits: the limits are the first thing that a decision needs, and they cannot be proven without the deps.
+  let key: PayingKey;
+  let givenLimits: ModelLimits;
+  let ports: Omit<DecisionDeps, 'key' | 'limits'>;
+  try {
+    ({ key, limits: givenLimits, ...ports } = deps);
+  } catch {
+    return failure('internal', 'bad_limit', 'the deps of the decision cannot be read, so its limits cannot be read: nothing was hired');
+  }
   const limits = checkLimits(givenLimits);
   if (!limits.ok) return failure('internal', limits.code, limits.detail);
   const definition = checkSpec(spec);

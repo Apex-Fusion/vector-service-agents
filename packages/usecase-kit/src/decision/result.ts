@@ -15,10 +15,11 @@
 //                                                        did not start its hire because less than HIRE_MIN_MS was left, nothing was locked), or `hire_threw` (a port threw)
 //   store_write_failed    store_write_failed             the stranded store of the key could not be written for the escrow of the hire
 //   model_output_invalid  model_output_invalid           the hire completed, and the answer is not an object of the shape that the decision asks for
-//   internal              bad_limit                      a limit is missing or has a wrong type: nothing was hired
-//   internal              bad_decision                   the definition of the decision is wrong: nothing was hired
+//   internal              bad_limit                      a limit is missing or has a wrong type, or the deps of the decision cannot be read: nothing was hired
+//   internal              bad_decision                   the definition of the decision is wrong, and an async parser is wrong: nothing was hired. Or the parser returned a promise: that is
+//                                                        after the hire, so the failure has a delivery
 //   internal              bad_input                      the input is not JSON data, or its prompt has more than MAX_PROMPT_BYTES bytes: nothing was hired
-//   internal              bad_deps                       a member of the deps cannot be read, or the clock does not give the time: nothing was hired
+//   internal              bad_deps                       the clock does not give the time, or the deadline is not a number: nothing was hired
 //   internal              choice_changed                 the parser of the decision returned a value that is not the choice that the model gave
 //
 // `delivery` is set for every failure after an Accept: the hire was paid, and the failure says so. It holds the complete sub-job (`PaidDelivery`) when the record of the hire can be recorded, and

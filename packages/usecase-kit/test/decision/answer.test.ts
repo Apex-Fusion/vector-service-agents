@@ -174,4 +174,20 @@ describe('readAnswer: the parser of the decision', () => {
     expect(readAnswer(completed(said(MEDIUM_LOT)), parse)).toMatchObject({ ok: true, value: { choice: MEDIUM_LOT } });
     expect(reads).toBe(1);
   });
+
+  it.each<[string, () => unknown]>([
+    ['a promise that resolves', () => Promise.resolve(accepted(MEDIUM_LOT))],
+    ['a promise that rejects', () => Promise.reject(new Error(MARKER))],
+    ['a thenable', () => ({ then: () => undefined })],
+  ])('is bad_decision, and not model_output_invalid, when the parser returns %s: the parser is wrong, and the value of the promise is not read', (_name, parse) => {
+    const result = readAnswer(completed(said(MEDIUM_LOT)), parse as unknown as ChoiceParser<JsonValue>);
+    expect(result).toStrictEqual({ ok: false, code: 'bad_decision', detail: 'the parser of the decision returned a promise: a parser must return its result, and never a promise' });
+  });
+
+  it('is model_output_invalid when a verdict cannot be read, and takes a verdict whose then is not a function: the twin', () => {
+    const unreadable = Object.defineProperty({}, 'then', { get(): never { throw new Error(MARKER); } });
+    expect(readAnswer(completed(said(MEDIUM_LOT)), (() => unreadable) as unknown as ChoiceParser<JsonValue>)).toMatchObject({ ok: false, code: 'model_output_invalid' });
+    const plain = (given: JsonValue): unknown => ({ ok: true, value: given, then: 5 });
+    expect(readAnswer(completed(said(MEDIUM_LOT)), plain as ChoiceParser<JsonValue>)).toMatchObject({ ok: true, value: { choice: MEDIUM_LOT } });
+  });
 });
