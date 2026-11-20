@@ -4,7 +4,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import { EXECUTE_OUTCOMES, EXIT_STATES, NO_OPEN_CLAIM, PROPOSAL_SCHEMA, RECEIPT_CHECKS, RESULT_SCHEMA, exitStateOf, refusedExit } from '@vsa/usecase-kit/protocol';
 import type {
   ChallengeRecord, CompletedResult, Decision, DisputedResult, EscalatedResult, ExecuteOutcome, ExecuteResult, ExitState, ExitStateInput, FailedProposalResult, FailedResult, HandoffRecord,
-  ProposalResult, ProposedResult, ReceiptVerification, RefusedResult, SubJob, UnfiledDisputeResult, VaultRefusedResult, WriteRecord,
+  ProposalResult, ProposedResult, ReceiptVerification, RefusedExit, RefusedResult, SubJob, UnfiledDisputeResult, VaultRefusedResult, WriteRecord,
 } from '@vsa/usecase-kit/protocol';
 import { DID_B, DOCUMENT, REF, SALT } from './support.ts';
 
@@ -143,10 +143,12 @@ describe('the result of execute: one form for each outcome', () => {
     expect(system.use_case).toBe('bid-evaluation');
   });
 
-  it('gives a refusal the exit state that its reason has: Expired, Cancelled, or Rejected for any other reason', () => {
+  it('gives a refusal the exit state that its outcome and reason have: Escalated for a wrong approval digest from the counterparty, Expired, Cancelled, or Rejected for any other reason', () => {
     const rejected: RefusedResult = { ...base, outcome: 'refused_by_counterparty', reason: 'not_covered', exit_state: 'Rejected', handoff, challenge: null };
     const expired: RefusedResult = { ...base, outcome: 'refused_by_system', reason: 'approval_expired', exit_state: 'Expired', handoff, challenge: null };
     const cancelled: RefusedResult = { ...base, outcome: 'refused_by_counterparty', reason: 'delegation_ended', exit_state: 'Cancelled', handoff, challenge: null };
+    const escalated: RefusedResult = { ...base, outcome: 'refused_by_counterparty', reason: 'approval_digest_mismatch', exit_state: 'Escalated', handoff, challenge: null };
+    const systemDigest: RefusedResult = { ...base, outcome: 'refused_by_system', reason: 'approval_digest_mismatch', exit_state: 'Rejected', handoff, challenge: null };
     // @ts-expect-error the reason not_covered has the state Rejected, and not Expired
     const notCoveredExpired: RefusedResult = { ...base, outcome: 'refused_by_system', reason: 'not_covered', exit_state: 'Expired', handoff, challenge: null };
     // @ts-expect-error the reason delegation_ended has the state Cancelled, and not Expired
@@ -155,12 +157,18 @@ describe('the result of execute: one form for each outcome', () => {
     const expiredCancelled: RefusedResult = { ...base, outcome: 'refused_by_system', reason: 'approval_expired', exit_state: 'Cancelled', handoff, challenge: null };
     // @ts-expect-error the reason not_covered has the state Rejected, and not Cancelled
     const notCoveredCancelled: RefusedResult = { ...base, outcome: 'refused_by_counterparty', reason: 'not_covered', exit_state: 'Cancelled', handoff, challenge: null };
-    for (const result of [rejected, expired, cancelled]) {
+    // @ts-expect-error a mock system files no challenge, so no refusal of a mock system is Escalated
+    const systemEscalated: RefusedResult = { ...base, outcome: 'refused_by_system', reason: 'approval_digest_mismatch', exit_state: 'Escalated', handoff, challenge: null };
+    // @ts-expect-error only the reason approval_digest_mismatch of the counterparty is Escalated
+    const otherEscalated: RefusedResult = { ...base, outcome: 'refused_by_counterparty', reason: 'approval_revoked', exit_state: 'Escalated', handoff, challenge: null };
+    for (const result of [rejected, expired, cancelled, escalated, systemDigest]) {
       expect(exitStateOf({ outcome: result.outcome, reason: result.reason, challenge_filed: false, delegation_ended: false })).toBe(result.exit_state);
     }
-    expect([notCoveredExpired, endedExpired, expiredCancelled, notCoveredCancelled]).toHaveLength(4);
+    expect([notCoveredExpired, endedExpired, expiredCancelled, notCoveredCancelled, systemEscalated, otherEscalated]).toHaveLength(6);
     expectTypeOf<Extract<RefusedResult, { reason: 'approval_expired' }>['exit_state']>().toEqualTypeOf<'Expired'>();
     expectTypeOf<Extract<RefusedResult, { reason: 'delegation_ended' }>['exit_state']>().toEqualTypeOf<'Cancelled'>();
+    expectTypeOf<Extract<RefusedResult, { exit_state: 'Escalated' }>['outcome']>().toEqualTypeOf<'refused_by_counterparty'>();
+    expectTypeOf<Extract<RefusedResult, { exit_state: 'Escalated' }>['reason']>().toEqualTypeOf<'approval_digest_mismatch'>();
     expectTypeOf<Extract<RefusedResult, { exit_state: 'Rejected' }>['reason']>().toEqualTypeOf<string>();
   });
 
@@ -171,20 +179,22 @@ describe('the result of execute: one form for each outcome', () => {
       const completed: CompletedResult = { ...base, outcome: 'completed', reason: null, challenge: null, handoff, exit_state: exitStateOf({ ...input, reason: null, outcome: 'completed' }) };
       const failed: FailedResult = { ...base, outcome: 'failed', reason, challenge: null, handoff: null, exit_state: exitStateOf({ ...input, reason, outcome: 'failed' }) };
       const vault: VaultRefusedResult = { ...base, outcome: 'vault_refused', reason, challenge: null, handoff: null, exit_state: exitStateOf({ ...input, reason, outcome: 'vault_refused' }) };
-      const byCounterparty: RefusedResult = { ...base, outcome: 'refused_by_counterparty', ...refusedExit(reason), challenge: null, handoff };
-      const bySystem: RefusedResult = { ...base, outcome: 'refused_by_system', ...refusedExit(reason), challenge: null, handoff: null };
+      const byCounterparty: RefusedResult = { ...base, ...refusedExit('refused_by_counterparty', reason), challenge: null, handoff };
+      const bySystem: RefusedResult = { ...base, ...refusedExit('refused_by_system', reason), challenge: null, handoff: null };
       // @ts-expect-error exitStateOf of the outcome failed gives Failed, and a completed result has the state Completed
       const completedFromFailed: CompletedResult = { ...base, outcome: 'completed', reason: null, challenge: null, handoff, exit_state: exitStateOf({ ...input, reason: null, outcome: 'failed' }) };
       // @ts-expect-error the state of exitStateOf for a refused outcome is not proven to go with the reason that is a string beside it
       const refusedFromState: RefusedResult = { ...base, outcome: 'refused_by_counterparty', reason, challenge: null, handoff, exit_state: exitStateOf({ ...input, reason, outcome: 'refused_by_counterparty' }) };
       return { completed, failed, vault, byCounterparty, bySystem, completedFromFailed, refusedFromState };
     };
-    const rows = [make('approval_expired', false), make('delegation_ended', true), make('not_covered', true)];
+    const rows = [make('approval_expired', false), make('delegation_ended', true), make('not_covered', true), make('approval_digest_mismatch', false)];
     expect(rows.map((row) => [row.completed.exit_state, row.failed.exit_state, row.vault.exit_state, row.byCounterparty.exit_state, row.bySystem.exit_state])).toStrictEqual([
       ['Completed', 'Failed', 'Failed', 'Expired', 'Expired'],
       ['Completed', 'Failed', 'Cancelled', 'Cancelled', 'Cancelled'],
       ['Completed', 'Failed', 'Cancelled', 'Rejected', 'Rejected'],
+      ['Completed', 'Failed', 'Failed', 'Escalated', 'Rejected'],
     ]);
+    expect([rows[3]!.byCounterparty.outcome, rows[3]!.bySystem.outcome]).toStrictEqual(['refused_by_counterparty', 'refused_by_system']);
   });
 
   it('has the evaluation error of the node as the reason when the vault refused, and the state Cancelled or Failed', () => {
@@ -250,8 +260,9 @@ describe('the result of execute: one form for each outcome', () => {
     type StateOf<O extends ExecuteOutcome> = (O extends RefusedResult['outcome'] ? RefusedResult : Extract<ExecuteResult, { outcome: O }>)['exit_state'];
     expectTypeOf<StateOf<'completed'>>().toEqualTypeOf<'Completed'>();
     expectTypeOf<StateOf<'disputed'>>().toEqualTypeOf<'Escalated' | 'Failed'>();
-    expectTypeOf<StateOf<'refused_by_counterparty'>>().toEqualTypeOf<'Rejected' | 'Expired' | 'Cancelled'>();
-    expectTypeOf<StateOf<'refused_by_system'>>().toEqualTypeOf<'Rejected' | 'Expired' | 'Cancelled'>();
+    expectTypeOf<StateOf<'refused_by_counterparty'>>().toEqualTypeOf<'Rejected' | 'Expired' | 'Cancelled' | 'Escalated'>();
+    expectTypeOf<StateOf<'refused_by_system'>>().toEqualTypeOf<'Rejected' | 'Expired' | 'Cancelled' | 'Escalated'>();
+    expectTypeOf<Extract<RefusedResult, { outcome: 'refused_by_system' }>['exit_state']>().toEqualTypeOf<'Rejected' | 'Expired' | 'Cancelled'>();
     expectTypeOf<StateOf<'vault_refused'>>().toEqualTypeOf<'Cancelled' | 'Failed'>();
     expectTypeOf<StateOf<'failed'>>().toEqualTypeOf<'Failed'>();
     expectTypeOf<ExecuteResult['exit_state']>().toEqualTypeOf<ExitState>();
@@ -294,12 +305,16 @@ describe('exitStateOf', () => {
     ['refused_by_counterparty, approval_expired', given('refused_by_counterparty', 'approval_expired'), 'Expired'],
     ['refused_by_counterparty, delegation_ended', given('refused_by_counterparty', 'delegation_ended'), 'Cancelled'],
     ['refused_by_counterparty, approval_revoked', given('refused_by_counterparty', 'approval_revoked'), 'Rejected'],
+    ['refused_by_counterparty, approval_digest_mismatch: the counterparty also challenges the claim of the sender', given('refused_by_counterparty', 'approval_digest_mismatch'), 'Escalated'],
+    ['refused_by_counterparty, approval_digest_mismatch, both flags set: the flags do not count', given('refused_by_counterparty', 'approval_digest_mismatch', true, true), 'Escalated'],
+    ['refused_by_counterparty, another letter case of approval_digest_mismatch', given('refused_by_counterparty', 'Approval_Digest_Mismatch'), 'Rejected'],
     ['refused_by_counterparty, a code of a rule of the sender', given('refused_by_counterparty', 'sender_not_active'), 'Rejected'],
     ['refused_by_counterparty, no reason', given('refused_by_counterparty', null), 'Rejected'],
     ['refused_by_counterparty, other reason, both flags set: the flags do not count', given('refused_by_counterparty', 'approval_revoked', true, true), 'Rejected'],
     ['refused_by_system, approval_expired', given('refused_by_system', 'approval_expired'), 'Expired'],
     ['refused_by_system, delegation_ended', given('refused_by_system', 'delegation_ended'), 'Cancelled'],
     ['refused_by_system, approval_not_found', given('refused_by_system', 'approval_not_found'), 'Rejected'],
+    ['refused_by_system, approval_digest_mismatch: a mock system files no challenge', given('refused_by_system', 'approval_digest_mismatch'), 'Rejected'],
     ['refused_by_system, a code of the system itself', given('refused_by_system', 'token_invalid'), 'Rejected'],
     ['refused_by_system, a code that the protocol does not name', given('refused_by_system', 'client_certificate_missing'), 'Rejected'],
     ['refused_by_system, no reason', given('refused_by_system', null), 'Rejected'],
@@ -320,14 +335,14 @@ describe('exitStateOf', () => {
     const allowed: Readonly<Record<ExecuteOutcome, readonly ExitState[]>> = {
       completed: ['Completed'],
       disputed: ['Escalated', 'Failed'],
-      refused_by_counterparty: ['Rejected', 'Expired', 'Cancelled'],
+      refused_by_counterparty: ['Rejected', 'Expired', 'Cancelled', 'Escalated'],
       refused_by_system: ['Rejected', 'Expired', 'Cancelled'],
       vault_refused: ['Cancelled', 'Failed'],
       failed: ['Failed'],
     };
     let checked = 0;
     for (const outcome of EXECUTE_OUTCOMES) {
-      for (const reason of [null, '', 'approval_expired', 'delegation_ended', NO_OPEN_CLAIM, 'x']) {
+      for (const reason of [null, '', 'approval_expired', 'delegation_ended', 'approval_digest_mismatch', NO_OPEN_CLAIM, 'x']) {
         for (const challenge_filed of [false, true]) {
           for (const delegation_ended of [false, true]) {
             expect(allowed[outcome], `${outcome} ${String(reason)} ${challenge_filed} ${delegation_ended}`).toContain(exitStateOf({ outcome, reason, challenge_filed, delegation_ended }));
@@ -336,7 +351,7 @@ describe('exitStateOf', () => {
         }
       }
     }
-    expect(checked).toBe(EXECUTE_OUTCOMES.length * 6 * 4);
+    expect(checked).toBe(EXECUTE_OUTCOMES.length * 7 * 4);
   });
 
   it('gives Completed only for the outcome completed', () => {
@@ -381,8 +396,8 @@ describe('exitStateOf', () => {
     expectTypeOf(exitStateOf({ ...input, outcome: 'failed' })).toEqualTypeOf<FailedResult['exit_state']>();
     expectTypeOf(exitStateOf({ ...input, outcome: 'vault_refused' })).toEqualTypeOf<VaultRefusedResult['exit_state']>();
     expectTypeOf(exitStateOf({ ...input, outcome: 'disputed' })).toEqualTypeOf<DisputedResult['exit_state']>();
-    expectTypeOf(exitStateOf({ ...input, outcome: 'refused_by_counterparty' })).toEqualTypeOf<RefusedResult['exit_state']>();
-    expectTypeOf(exitStateOf({ ...input, outcome: 'refused_by_system' })).toEqualTypeOf<RefusedResult['exit_state']>();
+    expectTypeOf(exitStateOf({ ...input, outcome: 'refused_by_counterparty' })).toEqualTypeOf<Extract<RefusedResult, { outcome: 'refused_by_counterparty' }>['exit_state']>();
+    expectTypeOf(exitStateOf({ ...input, outcome: 'refused_by_system' })).toEqualTypeOf<Extract<RefusedResult, { outcome: 'refused_by_system' }>['exit_state']>();
     // An outcome that is a variable of a union type: the two refused outcomes have one form, and all outcomes together have the general form.
     const refused = 'refused_by_system' as RefusedResult['outcome'];
     expectTypeOf(exitStateOf({ ...input, outcome: refused })).toEqualTypeOf<RefusedResult['exit_state']>();
@@ -393,29 +408,38 @@ describe('exitStateOf', () => {
 });
 
 describe('refusedExit', () => {
-  const REASONS = ['approval_expired', 'delegation_ended', 'approval_revoked', 'not_covered', 'sender_not_active', '', 'Approval_Expired', 'toString', '__proto__'];
+  const REASONS = ['approval_expired', 'delegation_ended', 'approval_digest_mismatch', 'approval_revoked', 'not_covered', 'sender_not_active', '', 'Approval_Expired', 'toString', '__proto__'];
 
-  it.each(REASONS)('gives the reason as it is, and the state that exitStateOf gives for each refused outcome: %j', (reason) => {
-    const pair = refusedExit(reason);
-    expect(pair.reason).toBe(reason);
+  it.each(REASONS)('gives the outcome and the reason as they are, and the state that exitStateOf gives for each refused outcome: %j', (reason) => {
     for (const outcome of ['refused_by_counterparty', 'refused_by_system'] as const) {
-      expect(pair.exit_state).toBe(exitStateOf({ outcome, reason, challenge_filed: false, delegation_ended: false }));
-      expect(pair.exit_state).toBe(exitStateOf({ outcome, reason, challenge_filed: true, delegation_ended: true }));
+      const triple = refusedExit(outcome, reason);
+      expect([triple.outcome, triple.reason]).toStrictEqual([outcome, reason]);
+      expect(triple.exit_state).toBe(exitStateOf({ outcome, reason, challenge_filed: false, delegation_ended: false }));
+      expect(triple.exit_state).toBe(exitStateOf({ outcome, reason, challenge_filed: true, delegation_ended: true }));
     }
   });
 
-  it('gives Expired for approval_expired, Cancelled for delegation_ended, and Rejected for any other reason', () => {
-    expect(refusedExit('approval_expired')).toStrictEqual({ reason: 'approval_expired', exit_state: 'Expired' });
-    expect(refusedExit('delegation_ended')).toStrictEqual({ reason: 'delegation_ended', exit_state: 'Cancelled' });
-    for (const other of ['approval_revoked', 'not_covered', '', 'Approval_Expired']) expect(refusedExit(other)).toStrictEqual({ reason: other, exit_state: 'Rejected' });
+  it('gives Escalated for approval_digest_mismatch from the counterparty only, Expired for approval_expired, Cancelled for delegation_ended, and Rejected for any other reason', () => {
+    expect(refusedExit('refused_by_counterparty', 'approval_digest_mismatch')).toStrictEqual({ outcome: 'refused_by_counterparty', reason: 'approval_digest_mismatch', exit_state: 'Escalated' });
+    expect(refusedExit('refused_by_system', 'approval_digest_mismatch')).toStrictEqual({ outcome: 'refused_by_system', reason: 'approval_digest_mismatch', exit_state: 'Rejected' });
+    for (const outcome of ['refused_by_counterparty', 'refused_by_system'] as const) {
+      expect(refusedExit(outcome, 'approval_expired')).toStrictEqual({ outcome, reason: 'approval_expired', exit_state: 'Expired' });
+      expect(refusedExit(outcome, 'delegation_ended')).toStrictEqual({ outcome, reason: 'delegation_ended', exit_state: 'Cancelled' });
+      for (const other of ['approval_revoked', 'not_covered', '', 'Approval_Expired', 'approval_digest_mismatch ']) expect(refusedExit(outcome, other)).toStrictEqual({ outcome, reason: other, exit_state: 'Rejected' });
+    }
   });
 
-  it('has the pair that the type of a refused result needs', () => {
-    expectTypeOf(refusedExit).parameters.toEqualTypeOf<[reason: string]>();
-    expectTypeOf(refusedExit('x')).toEqualTypeOf<
-      | { readonly reason: 'approval_expired'; readonly exit_state: 'Expired' }
-      | { readonly reason: 'delegation_ended'; readonly exit_state: 'Cancelled' }
-      | { readonly reason: string; readonly exit_state: 'Rejected' }
+  it('refuses an outcome that is not a refusal with a TypeError', () => {
+    for (const outcome of ['completed', 'disputed', 'failed', 'vault_refused', '', 'Refused_By_Counterparty']) {
+      expect(() => refusedExit(outcome as never, 'approval_digest_mismatch')).toThrow(TypeError);
+    }
+  });
+
+  it('has the triple that the type of a refused result needs', () => {
+    expectTypeOf(refusedExit).parameters.toEqualTypeOf<[outcome: 'refused_by_counterparty' | 'refused_by_system', reason: string]>();
+    expectTypeOf(refusedExit('refused_by_system', 'x')).toEqualTypeOf<RefusedExit>();
+    expectTypeOf<Extract<RefusedExit, { exit_state: 'Escalated' }>>().toEqualTypeOf<
+      { readonly outcome: 'refused_by_counterparty' } & { readonly reason: 'approval_digest_mismatch'; readonly exit_state: 'Escalated' }
     >();
   });
 });

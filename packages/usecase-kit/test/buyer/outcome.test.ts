@@ -91,7 +91,7 @@ const TABLE: readonly Row[] = [
   { name: 'refused before the Claim, approval_expired', outcome: refusedBefore('approval_expired', 403), step: 'refused_by_counterparty before_claim approval_expired', result: 'refused_by_counterparty:approval_expired:Expired' },
   {
     name: 'refused before the Claim, approval_digest_mismatch', outcome: refusedBefore('approval_digest_mismatch', 403), step: 'refused_by_counterparty before_claim approval_digest_mismatch',
-    result: 'refused_by_counterparty:approval_digest_mismatch:Rejected',
+    result: 'refused_by_counterparty:approval_digest_mismatch:Escalated',
   },
   { name: 'before the Claim, the status 409 and the code busy, which is no refusal', outcome: refusedBefore('busy', 409), step: 'failed busy', result: 'failed:busy:Failed' },
   { name: 'before the Claim, a refusal code of the Order Desk with a status that is not 403', outcome: refusedBefore('delegation_ended', 409), step: 'failed delegation_ended', result: 'failed:delegation_ended:Failed' },
@@ -291,7 +291,7 @@ describe('the map from the outcome of the hire kit to the step and the result', 
   });
 
   it('reads the refusal codes of the counterparty of the use case: an order desk, an insurer intake agent and a bid desk, each with its own codes, and the exit state follows the rule', () => {
-    const states: Record<string, ExitState> = { approval_expired: 'Expired', delegation_ended: 'Cancelled' };
+    const states: Record<string, ExitState> = { approval_expired: 'Expired', delegation_ended: 'Cancelled', approval_digest_mismatch: 'Escalated' };
     const kinds = { 'inventory-reorder': 'order-desk', 'prior-authorization': 'insurer-intake-agent', 'bid-evaluation': 'bid-desk' } as const;
     for (const useCase of USE_CASES) {
       const listed = COUNTERPARTY_REFUSALS[kinds[useCase]] as readonly string[];

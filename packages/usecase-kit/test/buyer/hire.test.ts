@@ -130,7 +130,8 @@ describe('a hire that the counterparty refuses before its Claim', () => {
       expect(w.booked.accepted).toStrictEqual([]);
       expect(step.handoff).toMatchObject({ paid_from_vault: true, receipt: null, receipt_signature: null, verification: null, result: null, accepted: null });
       expect(JSON.stringify(step)).not.toContain('words of the counterparty');
-      expect(settledResult(step, pieces())).toMatchObject({ outcome: 'refused_by_counterparty', reason: code, challenge: null, exit_state: 'Rejected' });
+      // The counterparty that finds a wrong approval digest also challenges the claim of the sender, so that refusal is Escalated.
+      expect(settledResult(step, pieces())).toMatchObject({ outcome: 'refused_by_counterparty', reason: code, challenge: null, exit_state: code === 'approval_digest_mismatch' ? 'Escalated' : 'Rejected' });
     });
   }
 

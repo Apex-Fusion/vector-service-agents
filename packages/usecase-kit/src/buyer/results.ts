@@ -122,15 +122,15 @@ function holdsDelivery(handoff: HandoffRecord | null): boolean {
 }
 
 /**
- * The counterparty (`by` is `counterparty`) or a mock system (`system`) refused. `reason` is its code. The exit state follows the reason: `refusedExit` of the protocol gives the two as one pair. A refusal
- * by the counterparty comes before the delivery, so its record holds no receipt and no Accept. A mock system can refuse after the hire was accepted, so the record of an accepted hire is allowed for a refusal by a
- * mock system.
+ * The counterparty (`by` is `counterparty`) or a mock system (`system`) refused. `reason` is its code. The exit state follows the outcome and the reason: `refusedExit` of the protocol gives the three as
+ * one triple (a counterparty that refuses with `approval_digest_mismatch` also challenges the claim of the sender, so that refusal is `Escalated`). A refusal by the counterparty comes before the delivery,
+ * so its record holds no receipt and no Accept. A mock system can refuse after the hire was accepted, so the record of an accepted hire is allowed for a refusal by a mock system.
  */
 export function refusedResult(by: 'counterparty' | 'system', pieces: ResultPieces, reason: string): RefusedResult {
   if (by !== 'counterparty' && by !== 'system') throw new TypeError('a refusal is by the counterparty or by a mock system');
   const base = baseOf(pieces);
   if (by === 'counterparty' && holdsDelivery(base.handoff)) throw new TypeError('a refusal by the counterparty cannot hold the record of a hire that was delivered: it comes before the delivery');
-  return { ...base, outcome: by === 'counterparty' ? 'refused_by_counterparty' : 'refused_by_system', ...refusedExit(codeOf(reason)), challenge: null };
+  return { ...base, ...refusedExit(by === 'counterparty' ? 'refused_by_counterparty' : 'refused_by_system', codeOf(reason)), challenge: null };
 }
 
 /**

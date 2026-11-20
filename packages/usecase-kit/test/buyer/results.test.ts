@@ -39,9 +39,11 @@ describe('the results of execute', () => {
     });
   });
 
-  it('makes a refusal by the counterparty and a refusal by a mock system, and the exit state follows the reason', () => {
+  it('makes a refusal by the counterparty and a refusal by a mock system, and the exit state follows the outcome and the reason', () => {
+    // The counterparty that finds a wrong approval digest also challenges the claim of the sender. A mock system files no challenge.
+    expect(refusedResult('counterparty', pieces(), 'approval_digest_mismatch')).toMatchObject({ outcome: 'refused_by_counterparty', reason: 'approval_digest_mismatch', challenge: null, exit_state: 'Escalated' });
+    expect(refusedResult('system', pieces(), 'approval_digest_mismatch')).toMatchObject({ outcome: 'refused_by_system', reason: 'approval_digest_mismatch', challenge: null, exit_state: 'Rejected' });
     for (const [by, outcome] of [['counterparty', 'refused_by_counterparty'], ['system', 'refused_by_system']] as const) {
-      expect(refusedResult(by, pieces(), 'approval_digest_mismatch')).toMatchObject({ outcome, reason: 'approval_digest_mismatch', challenge: null, exit_state: 'Rejected' });
       expect(refusedResult(by, pieces(), 'approval_expired')).toMatchObject({ outcome, reason: 'approval_expired', exit_state: 'Expired' });
       expect(refusedResult(by, pieces(), 'delegation_ended')).toMatchObject({ outcome, reason: 'delegation_ended', exit_state: 'Cancelled' });
       expect(Object.keys(refusedResult(by, pieces(), 'x')).sort()).toStrictEqual(RESULT_KEYS);
