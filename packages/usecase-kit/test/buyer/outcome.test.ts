@@ -18,7 +18,7 @@ const TERMS: HireTerms = {
 };
 const paid = { advertRef: AGENT_ADVERT_REF, escrowRef: ESCROW, vaultRef: NEXT_VAULT, terms: TERMS };
 /** What the flow knows besides the outcome: the counterparty, and the advert that the approved document names. */
-const CONTEXT: StepContext = { counterparty_did: COUNTERPARTY_DID, advert_ref: AGENT_ADVERT_REF, use_case: 'inventory-reorder', delegation_after: null };
+const CONTEXT: StepContext = { counterparty_did: COUNTERPARTY_DID, advert_ref: AGENT_ADVERT_REF, use_case: 'inventory-reorder', delegation_after: null, booking_failed: null };
 /** The message that the hire kit writes when the counterparty says that a job failed. The words of the counterparty are between the brackets. */
 const kitMessage = (words: string): string => `The agent failed the handoff (${words}); its escrow ${ESCROW} is Claimed and goes to the janitor.`;
 /** The words of the runtime of the counterparty when its service answered with an HTTP error. */
@@ -393,6 +393,27 @@ describe('a completed outcome that does not hold together', () => {
     const other: Extract<AgentOutcome, { outcome: 'completed' }> = { ...completed, advertRef: OTHER_ADVERT, record: { ...record, advert_ref: OTHER_ADVERT } };
     expect(stepOfOutcome(other, { ...CONTEXT, advert_ref: OTHER_ADVERT }).kind).toBe('completed');
     expect(stepOfOutcome(other, CONTEXT).kind).toBe('failed');
+  });
+});
+
+describe('a booking that failed', () => {
+  const boom = new Error('the ledger is closed');
+
+  it('is a member of the completed step, which is still completed, and it is null when the booking worked', () => {
+    const step = stepOfOutcome(completed, { ...CONTEXT, booking_failed: { cause: boom } });
+    if (step.kind !== 'completed') throw new Error(`the step is ${words(step)}`);
+    expect(step.booking_failed).toStrictEqual({ cause: boom });
+    expect(step.handoff.accepted).toBe('confirmed');
+    expect(resultOf(step)).toBe('completed:null:Completed');
+    const twin = stepOfOutcome(completed, CONTEXT);
+    expect(twin.kind === 'completed' && twin.booking_failed).toBeNull();
+  });
+
+  it('is kept as the cause of a failed step when the outcome does not hold together: no error of the ledger is lost', () => {
+    const step = stepOfOutcome({ ...completed, advertRef: OTHER_ADVERT }, { ...CONTEXT, booking_failed: { cause: boom } });
+    if (step.kind !== 'failed') throw new Error(`the step is ${words(step)}`);
+    expect([step.reason, step.cause]).toStrictEqual([INCONSISTENT_OUTCOME, boom]);
+    expect('cause' in (stepOfOutcome({ ...completed, advertRef: OTHER_ADVERT }, CONTEXT) as object)).toBe(false);
   });
 });
 

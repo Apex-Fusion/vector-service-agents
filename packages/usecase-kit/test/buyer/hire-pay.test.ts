@@ -1,8 +1,9 @@
-// packages/usecase-kit/test/buyer/hire-pay.test.ts: the state that one hire leaves for the next hire of the same paying key. A Pay that was sent and not seen confirmed may still land, and it spends the
-// vault output that it names, so no other Pay of the key starts until its validity has ended. Each refusal has an accepted twin, and the clock is the clock port of the test.
+// packages/usecase-kit/test/buyer/hire-pay.test.ts: what a hire leaves behind after its Pay. A Pay that was sent and not seen confirmed may still land, and it spends the vault output that it names, so no
+// other Pay of the key starts until its validity has ended. A ledger that throws when it books the fee of a confirmed Accept does not turn paid work into a failure. Each refusal has an accepted twin, and
+// the clock is the clock port of the test.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TxNotConfirmedError } from '@vsa/buyer-core';
-import { EARLIER_PAY_MAY_LAND, hireCounterparty, settledResult } from '@vsa/usecase-kit/buyer';
+import { EARLIER_PAY_MAY_LAND, completedResult, hireCounterparty, settledResult } from '@vsa/usecase-kit/buyer';
 import { T0, cleanWorlds, expectKind, go, handoffFor, input, otherKeyDeps, pieces, purchaseOrder, untouched, words, world } from './support.ts';
 
 afterEach(() => { vi.restoreAllMocks(); cleanWorlds(); });
@@ -75,5 +76,42 @@ describe('a Pay that may still land', () => {
     w.reads.failDelegation = null;
     expect(untouched(w)).toStrictEqual({ posted: 0, sends: 0, stranded: 0, spent: 0 });
     expect(words(await go(w))).toBe('completed');
+  });
+});
+
+describe('a ledger that throws when it books the Accept', () => {
+  it('does not turn paid work into a failure: the Accept is confirmed on the chain, so the step is completed with the Accept confirmed, and it says that the booking failed', async () => {
+    const w = await world();
+    const boom = new Error('the ledger is closed');
+    w.deps.hire.ledger.accepted = () => { throw boom; };
+    const step = expectKind(await go(w), 'completed');
+    expect(step.handoff).toMatchObject({ accepted: 'confirmed', paid_from_vault: true });
+    expect(step.booking_failed).toStrictEqual({ cause: boom });
+    expect(step.booking_failed?.cause).toBe(boom);
+    expect(await w.m.chain.escrowState(step.handoff.escrow_ref)).toBe('spent');
+    // The hire kit went on after the Accept: its entry in the stranded store is gone, the Post was booked, and the work was sent one time.
+    expect(w.key.stranded.list()).toStrictEqual([]);
+    expect(w.booked.posted).toHaveLength(1);
+    expect(w.m.agent.sends).toHaveLength(1);
+    // The result is completed, so nothing invites a second execute of the same work.
+    expect(completedResult(pieces({ handoff: step.handoff }))).toMatchObject({ outcome: 'completed', reason: null, exit_state: 'Completed' });
+  });
+
+  it('keeps an error that is not an Error object, and its twin: a ledger that books the Accept gives a completed step with no booking failure', async () => {
+    const w = await world();
+    w.deps.hire.ledger.accepted = () => { throw 'a text'; };
+    expect(expectKind(await go(w), 'completed').booking_failed).toStrictEqual({ cause: 'a text' });
+    const twin = await world();
+    const step = expectKind(await go(twin), 'completed');
+    expect(step.booking_failed).toBeNull();
+    expect(twin.booked.accepted).toHaveLength(1);
+  });
+
+  it('still ends the hire with an error when the ledger throws when it books the Post: no Accept was made, and the work is not done', async () => {
+    const w = await world();
+    w.deps.hire.ledger.posted = () => { throw new Error('the ledger is closed'); };
+    const step = expectKind(await go(w), 'interrupted');
+    expect(step.handoff.accepted).toBeNull();
+    expect(await w.m.chain.escrowState(step.escrow_ref)).toBe('Open');
   });
 });

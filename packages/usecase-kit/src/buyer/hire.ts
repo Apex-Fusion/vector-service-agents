@@ -20,7 +20,7 @@ import type { CounterpartyMessage } from './message.ts';
 import { INCONSISTENT_OUTCOME, JOB_LABEL, deliveryOf, failure, recordOf, stepOfOutcome } from './outcome.ts';
 import type { StepContext } from './outcome.ts';
 import type { LedgerReads } from './ports.ts';
-import type { HireStep, InterruptionCause, RefusedCode, RefusedStep, VerifiedDelivery } from './steps.ts';
+import type { BookingFailure, HireStep, InterruptionCause, RefusedCode, RefusedStep, VerifiedDelivery } from './steps.ts';
 import { findLiveVault } from './vault.ts';
 
 /** The decision of a use case on a delivery: accept it, or say no with a reason. The hire kit gives it until the end of its decision window. A decision that does not answer in time is an outcome. */
@@ -195,8 +195,8 @@ function causeOf(cause: unknown): InterruptionCause {
 
 /**
  * The step for an error of `hireAgent`. The hire kit wraps every error that follows a Pay: a confirmed Pay is a HireInterrupted, and a Pay that was sent and not seen confirmed is a
- * HirePayUnconfirmed. Any other error came before every Pay, so no vault was spent. `delivery` is what the decision was given, or `null`. The record of an interrupted hire does not say
- * whether the Accept was made: the hire kit wraps an error of its ledger, which can come after the Accept, in the same error as a decision that threw.
+ * HirePayUnconfirmed. Any other error came before every Pay, so no vault was spent. `delivery` is what the decision was given, or `null`. No Accept was made in an interrupted hire: the only call of the
+ * hire kit after a confirmed Accept is the booking of its fee through the ledger of the caller, and the flow wraps that port, so an error of the ledger is a `booking_failed` of a completed step.
  */
 function stepOfError(error: unknown, context: StepContext, delivery: VerifiedDelivery | null): HireStep {
   if (error instanceof HireInterrupted) {
@@ -283,10 +283,26 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
         return decisionOf(answer);
       },
     };
-    const context = { counterparty_did: counterparty, advert_ref: advert, use_case: useCase, delegation_after: null };
+    // The hire kit books the fee of a confirmed Accept through the ledger of the caller, and it ends the hire with an error when that ledger throws. The Accept is on the chain all the same, and the work
+    // is paid for: a failed result for paid work invites a second execute of the same work. So the flow keeps the error for the step, and the hire kit does not end the hire with it.
+    const booking: { failed: BookingFailure | null } = { failed: null };
+    const hireDeps: AgentDeps = {
+      ...hire,
+      ledger: {
+        posted: (post) => { hire.ledger.posted(post); },
+        accepted: (accept) => {
+          try {
+            hire.ledger.accepted(accept);
+          } catch (error) {
+            booking.failed = { cause: error };
+          }
+        },
+      },
+    };
+    const context = { counterparty_did: counterparty, advert_ref: advert, use_case: useCase, delegation_after: null, booking_failed: null };
     let outcome: AgentOutcome;
     try {
-      outcome = await hireAgent(key, hire, request, ERRORS);
+      outcome = await hireAgent(key, hireDeps, request, ERRORS);
     } catch (error) {
       const step = stepOfError(error, context, seen.delivery);
       if (step.kind === 'pay_unconfirmed' && step.may_land) state.pending = { vault_ref: found.vault_ref, valid_to: step.valid_to };
@@ -294,6 +310,6 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
     }
     // The delegation is read again only after a refused Pay: `delegation_ended` decides between the exit states Cancelled and Failed.
     const after = outcome?.outcome === 'vault_refused' ? await delegationAfter(reads, message.delegation) : null;
-    return stepOfOutcome(outcome, { ...context, delegation_after: after });
+    return stepOfOutcome(outcome, { ...context, delegation_after: after, booking_failed: booking.failed });
   });
 }

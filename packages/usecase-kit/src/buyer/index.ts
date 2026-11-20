@@ -16,7 +16,7 @@ export type { AfterClaimRefusal, StepContext } from './outcome.ts';
 export { EARLIER_PAY_MAY_LAND, hireCounterparty } from './hire.ts';
 export type { DeliveryDecision, HandoffHireInput, HireDeps, HireInput, QuoteHireInput } from './hire.ts';
 export type {
-  CompletedStep, FailedStep, HireStep, InterruptedStep, InterruptionCause, NotAcceptedStep, PayUnconfirmedStep, RefusedByCounterpartyStep, RefusedCode, RefusedStep, VaultRefusedStep,
+  BookingFailure, CompletedStep, FailedStep, HireStep, InterruptedStep, InterruptionCause, NotAcceptedStep, PayUnconfirmedStep, RefusedByCounterpartyStep, RefusedCode, RefusedStep, VaultRefusedStep,
   VerifiedDelivery,
 } from './steps.ts';
 export {

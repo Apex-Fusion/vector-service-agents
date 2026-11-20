@@ -2,7 +2,7 @@
 // How a hire of a counterparty ended, as one tagged union. A caller switches on `kind`, and the compiler checks that it handled every kind. No kind is read from a text, and no kind is a pass
 // except `completed`. A step holds what the hire kit knows of the payment: the escrow, the vault that continues, and the terms. It holds no text of the counterparty.
 //
-//   completed                the receipt passed the eight checks, the decision accepted the delivery, and the Accept was made.
+//   completed                the receipt passed the eight checks, the decision accepted the delivery, and the Accept was made. A ledger of the caller that failed to book the Accept does not change this: `booking_failed` says it.
 //   refused_by_counterparty  the counterparty refused the job by a rule of the protocol: before its Claim (status 403 and a refusal code of its kind), or after its Claim (a code of AFTER_CLAIM_REFUSALS). Before its Claim the escrow stays Open. After its Claim the escrow is Claimed. Either way it returns to the vault after its deadline.
 //   vault_refused            the ledger refused the Pay from the vault, or the Pay could not be made. Nothing was signed and no money moved.
 //   failed                   the job did not finish, and it is not a refusal. A job that failed after the Claim is here, and so is an answer before the Claim that is not a refusal by a rule of the protocol.
@@ -39,9 +39,19 @@ interface PaidStep {
   readonly terms: HireTerms;
 }
 
+/** The ledger of the caller threw when the hire kit booked the fee of an Accept that was confirmed. The error is for the log of the operator. Never put it in a result. */
+export interface BookingFailure {
+  readonly cause: unknown;
+}
+
 export interface CompletedStep extends PaidStep {
   readonly kind: 'completed';
   readonly delivery: VerifiedDelivery;
+  /**
+   * Set when the ledger of the caller threw while it booked the fee of the Accept. The Accept is confirmed on the chain, and the work is paid for: the step is still `completed`, because a failed result for
+   * paid work invites a second execute of the same work. The service must log the error and book the fee by other means. `null` when the booking worked.
+   */
+  readonly booking_failed: BookingFailure | null;
 }
 
 export interface RefusedByCounterpartyStep extends PaidStep {

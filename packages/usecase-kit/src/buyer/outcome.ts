@@ -26,7 +26,7 @@ import { flatText } from '@vsa/service-kit/text';
 import { AFTER_CLAIM_REFUSALS, COUNTERPARTY_REFUSALS, ERROR_STATUS, RECEIPT_CHECKS, isErrorCode, isPlainObject, parseJsonText, parseJsonValue, parseOutputRef } from '@vsa/usecase-kit/protocol';
 import type { CounterpartyKind, Did, HandoffRecord, JsonObject, OutputRef, ReceiptCheck, ReceiptVerification, UseCase } from '@vsa/usecase-kit/protocol';
 import type { DelegationAfter } from './authority.ts';
-import type { FailedStep, HireStep, VerifiedDelivery } from './steps.ts';
+import type { BookingFailure, FailedStep, HireStep, VerifiedDelivery } from './steps.ts';
 
 /** The reason of a `failed` step for an answer before the Claim that is not a refusal by a rule of the protocol, and whose code is not a code of ERROR_STATUS. It is never the words of the counterparty. */
 export const COUNTERPARTY_REFUSED = 'counterparty_refused';
@@ -50,6 +50,8 @@ export interface StepContext {
   readonly use_case: UseCase;
   /** What the delegation was after a refused Pay. The flow reads it when the outcome is `vault_refused`; it is `null` for any other outcome. */
   readonly delegation_after: DelegationAfter | null;
+  /** Set when the ledger of the caller threw while it booked the fee of the confirmed Accept. It is `null` when the booking worked, and for any outcome that has no Accept. */
+  readonly booking_failed: BookingFailure | null;
 }
 
 /** The longest reason that the use case gave when it said no: it is words, and the flow cuts them. */
@@ -167,7 +169,7 @@ export function failure(reason: string, detail: string, extra: Partial<Omit<Fail
 function inconsistent(context: StepContext, detail: string, escrow: Escrow | null = null): FailedStep {
   return failure(INCONSISTENT_OUTCOME, detail, {
     handoff: escrow === null ? null : recordOf(context.counterparty_did, escrow.advert_ref, escrow.escrow_ref, null, null),
-    vault_ref: escrow?.vault_ref ?? null, terms: escrow?.terms ?? null,
+    vault_ref: escrow?.vault_ref ?? null, terms: escrow?.terms ?? null, ...(context.booking_failed === null ? {} : { cause: context.booking_failed.cause }),
   });
 }
 
@@ -207,6 +209,7 @@ function completedStep(outcome: Completed, context: StepContext): HireStep {
   if (outcome.accepted !== 'confirmed' && outcome.accepted !== 'pending') return no('the hire says completed, and it does not say whether the Accept was seen');
   return {
     kind: 'completed', handoff: recordOf(context.counterparty_did, escrow.advert_ref, escrow.escrow_ref, delivery, outcome.accepted, outcome.paidFrom === 'vault'), vault_ref: escrow.vault_ref, terms: escrow.terms, delivery,
+    booking_failed: context.booking_failed,
   };
 }
 
