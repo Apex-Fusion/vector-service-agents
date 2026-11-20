@@ -4,7 +4,8 @@
 // path: after a success, a refusal, a failure, a throw of the job, a timeout of the job, and a timeout of the wait. It returns what the job returned together with the result of the end step.
 //
 // The sub-delegation is narrow by construction, and the caller cannot widen it: `remaining` is 0 (the subagent cannot delegate again), the value limit is `{ per_tx: 0, total: 0 }` with the period of
-// the parent, and the validity is inside the validity of the parent and ends within `validForMs`. The action and the resource come from the route table. The keys sign the BYTES of a transaction
+// the parent, and the validity is inside the validity of the parent and ends within `validForMs`. The action and the resource come from the route table, and the host of the resource is the public base of
+// the mock service (`bases`), and never a host that the caller names. The keys sign the BYTES of a transaction
 // that was read (txcheck.ts), and never the report of the builder about them, so a builder that gives the bytes of a wider delegation gets no signature. A sub-delegation that is not ended still
 // ends by itself at its `notAfter`, and the result gives the reference that a janitor needs to end it earlier.
 //
@@ -21,7 +22,7 @@ import { encodeDelegationDatum } from '@vsa/vector-read/identity-codec';
 import { accepted, parseDelegationId, parseDid, parseTenantId, refused, type Accepted, type DelegationId, type Did, type Refused } from '../protocol/index.ts';
 import { MAX_WAIT_MS, within, type Clock } from './ports.ts';
 import { takeTurn, type SerialQueue } from './queue.ts';
-import { ROUTES, type RouteId, type TokenTarget } from './routes.ts';
+import { ROUTES, originOf, type MockBases, type RouteId, type TokenTarget } from './routes.ts';
 import { errorText, safeText } from './text.ts';
 import { addressHexOf, delegateTxProblem, delegationScriptProblem, undelegateTxProblem, type DelegationScript } from './txcheck.ts';
 
@@ -92,6 +93,11 @@ export interface SubDelegationDeps {
   readonly clock: Clock;
   /** The delegation script of the identity deployment: `deployment.delegation` of `@vsa/buyer-core`. The keys sign only a transaction that mints the token of this script and puts it in an output at its address. */
   readonly delegationScript: DelegationScript;
+  /**
+   * The two origins of the mock service: the same bases that the calls take. The resource of a sub-delegation is `<publicBase>/t/<tenant>/<system>` for the route, and no other. A target with a resource on
+   * another host gets no sub-delegation, whatever the delegation of the parent covers.
+   */
+  readonly bases: MockBases;
   /**
    * The queue of the wallet key of the agent: the same queue that holds its other transactions. The build and the send of a Delegate or an Undelegate go through it, one at a time, and each keeps its
    * turn until the ledger shows it. `createSerialQueue()` makes one for a test and for a caller that has none.
@@ -238,8 +244,8 @@ function signerProblem(signer: unknown, field: string): string | null {
   return typeof sign === 'function' ? null : `${field}.sign must be a function`;
 }
 
-/** The first rule that the resource of a target breaks, or null: `<public base>/t/<tenant>/<system>` in its canonical form, for the system of the route. */
-function resourceProblem(resource: unknown, system: string): string | null {
+/** The first rule that the resource of a target breaks, or null: it is exactly `<public base>/t/<tenant>/<system>` for the system of the route, in its canonical form. `origin` is the origin of the public base. */
+function resourceProblem(resource: unknown, origin: string, system: string): string | null {
   if (typeof resource !== 'string') return 'the resource of the target must be text';
   let url: URL;
   try {
@@ -251,14 +257,16 @@ function resourceProblem(resource: unknown, system: string): string | null {
     return 'the resource of the target must be an https URL in its canonical form, with no user part, no query and no fragment';
   }
   const [, prefix, tenant, name, ...rest] = url.pathname.split('/');
-  return prefix === 't' && rest.length === 0 && name === system && parseTenantId(tenant).ok ? null : `the resource of the target must be <public base>/t/<tenant>/${system}`;
+  if (prefix !== 't' || rest.length > 0 || name !== system || !parseTenantId(tenant).ok) return `the resource of the target must be <public base>/t/<tenant>/${system}`;
+  return resource === `${origin}/t/${tenant}/${system}` ? null : 'the resource of the target is not on the public base of the mock service';
 }
 
 /**
  * The route of a target as the route table gives it, or why no sub-delegation is made for it. The action and who may call come from `ROUTES[target.route]` only, and the target of the caller must
- * agree with them: a target that says more, such as a write route with the callers of a read route, or any other action or resource, is `bad_request`. Nothing is built for it.
+ * agree with them: a target that says more, such as a write route with the callers of a read route, or any other action or resource, is `bad_request`. The resource must be on the public base `origin`.
+ * Nothing is built for it.
  */
-function routeOf(target: TokenTarget): Accepted<{ readonly action: string; readonly resource: string }> | SubDelegationFailure {
+function routeOf(target: TokenTarget, origin: string): Accepted<{ readonly action: string; readonly resource: string }> | SubDelegationFailure {
   const bad = (detail: string): SubDelegationFailure => refused('bad_request', detail);
   const route: unknown = typeof target === 'object' && target !== null ? target.route : undefined;
   if (typeof route !== 'string' || !Object.hasOwn(ROUTES, route)) return bad('the route of the target is not a route of the mock systems');
@@ -268,7 +276,7 @@ function routeOf(target: TokenTarget): Accepted<{ readonly action: string; reado
   if (target.credential !== 'token' || target.callers !== spec.callers || target.action !== spec.action || target.system !== spec.system) {
     return bad(`the target is not the target of the route ${route}: its credential, its callers, its action and its system are the ones of the route table`);
   }
-  const problem = resourceProblem(target.resource, spec.system);
+  const problem = resourceProblem(target.resource, origin, spec.system);
   return problem === null ? accepted({ action: spec.action, resource: target.resource }) : bad(problem);
 }
 
@@ -279,8 +287,10 @@ function planOf(deps: SubDelegationDeps, request: SubDelegationRequest, limits: 
   if (scriptProblem !== null) return bad(scriptProblem);
   if (typeof deps.walletQueue !== 'object' || deps.walletQueue === null || typeof deps.walletQueue.run !== 'function') return bad('walletQueue must be the queue of the wallet key: an object with a run function');
   if (typeof deps.chain?.slotAt !== 'function') return bad('chain.slotAt must be the slot rule of the chain: a function that gives the slot of a time');
+  const publicOrigin = originOf(deps.bases?.publicBase, 'publicBase');
+  if (!publicOrigin.ok) return bad(`bases must be the bases of the mock service: ${publicOrigin.detail}`);
   const { target } = request;
-  const route = routeOf(target);
+  const route = routeOf(target, publicOrigin.value);
   if (!route.ok) return route;
   const parent = parseDelegationId(request.parent, 'parent');
   if (!parent.ok) return bad(parent.detail);

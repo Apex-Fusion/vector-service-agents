@@ -590,6 +590,12 @@ describe('a sub-delegation is made only for a route that the table gives to a su
     ['a resource with a tenant that is not a tenant', { ...erp, resource: 'https://mock.example/t/-bad/erp' }],
     ['a resource that is not text', { ...erp, resource: 5 }],
     ['a resource that is not a URL', { ...erp, resource: 'not a url' }],
+    ['a resource on another host with the right path', { ...erp, resource: 'https://evil.test/t/run1/erp' }],
+    ['a resource on a host that starts with the public base', { ...erp, resource: 'https://mock.example.evil.test/t/run1/erp' }],
+    ['a resource on a subdomain of the public base', { ...erp, resource: 'https://api.mock.example/t/run1/erp' }],
+    ['a resource on the public base with another port', { ...erp, resource: 'https://mock.example:8443/t/run1/erp' }],
+    ['a resource on the host of the client-certificate base', { ...erp, resource: 'https://mock-mtls.example/t/run1/erp' }],
+    ['a resource with the public base as the user part of another host', { ...erp, resource: 'https://mock.example@evil.test/t/run1/erp' }],
   ];
 
   it.each(refusedTargets)('is refused for %s: bad_request, and nothing is built', async (_name, target) => {
@@ -613,8 +619,9 @@ describe('a sub-delegation is made only for a route that the table gives to a su
     ['vendors.list', 'vendor.read', {}],
   ];
   it.each(subagentRoutes)('is made for the route %s, with the action of the table and the resource of its system, on another host and another tenant: the twin of every target above', async (route, action, params) => {
-    const target = expectTarget(tokenTarget({ publicBase: 'https://other.example:8443', mtlsBase: 'https://other-mtls.example' }, 'tenant-2', route as never, params));
-    const w = subWorld({ request: { target } });
+    const other = { publicBase: 'https://other.example:8443', mtlsBase: 'https://other-mtls.example' };
+    const target = expectTarget(tokenTarget(other, 'tenant-2', route as never, params));
+    const w = subWorld({ bases: other, request: { target } });
     expect(await go(w, idle)).toMatchObject({ ok: true, kind: 'returned', end: { state: 'ended' } });
     expect(w.chain.params).toHaveLength(1);
     expect(w.chain.params[0]).toMatchObject({ actions: [action], resources: [`https://other.example:8443/t/tenant-2/${target.system}`] });
@@ -623,6 +630,58 @@ describe('a sub-delegation is made only for a route that the table gives to a su
   it('has a twin for every route that the table gives to a subagent', () => {
     const listed = Object.entries(ROUTES).filter(([, spec]) => spec.credential === 'token' && spec.callers === 'agent-or-subagent').map(([name]) => name);
     expect(listed.sort()).toStrictEqual(subagentRoutes.map(([name]) => name).sort());
+  });
+});
+
+describe('the host of the resource of a sub-delegation comes from the bases', () => {
+  const everything = parentDatum({ resources: [hex('*')] });
+  const evil = { ...erpTarget(), resource: 'https://evil.test/t/run1/erp', url: 'https://evil.test/t/run1/erp/stock/GLV-NIT-M' };
+
+  it('refuses a target on another host even when the parent covers every resource: bad_request, and nothing is read or built', async () => {
+    const w = subWorld({ parent: everything, request: { target: evil } });
+    const run = await go(w, idle);
+    expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'bad_request', detail: expect.stringContaining('public base') }, end: { state: 'not_made' } });
+    expect(w.chain.log).toStrictEqual([]);
+    expect(w.chain.submitted).toHaveLength(0);
+  });
+
+  it('makes the sub-delegation for the target on the public base when the parent covers every resource: the twin', async () => {
+    const w = subWorld({ parent: everything });
+    expect(await go(w, idle)).toMatchObject({ ok: true, kind: 'returned', end: { state: 'ended' } });
+    expect(w.chain.params).toHaveLength(1);
+    expect(w.chain.params[0]).toMatchObject({ resources: ['https://mock.example/t/run1/erp'] });
+  });
+
+  it('follows the bases: the same target is refused for one public base and made for another', async () => {
+    const refusedHere = subWorld({ request: { target: evil } });
+    expect(await go(refusedHere, idle)).toMatchObject({ ok: false, failure: { code: 'bad_request' }, end: { state: 'not_made' } });
+    const madeThere = subWorld({ bases: { publicBase: 'https://evil.test', mtlsBase: 'https://evil-mtls.test' }, request: { target: evil } });
+    expect(await go(madeThere, idle)).toMatchObject({ ok: true, kind: 'returned', end: { state: 'ended' } });
+    expect(madeThere.chain.params[0]).toMatchObject({ resources: ['https://evil.test/t/run1/erp'] });
+  });
+
+  it.each<[string, unknown]>([
+    ['not given', undefined],
+    ['null', null],
+    ['a text', 'https://mock.example'],
+    ['an object with no public base', { mtlsBase: 'https://mock-mtls.example' }],
+    ['a public base that is not text', { publicBase: 5, mtlsBase: 'https://mock-mtls.example' }],
+    ['a public base that is not a URL', { publicBase: 'mock.example', mtlsBase: 'https://mock-mtls.example' }],
+    ['a public base with the scheme http', { publicBase: 'http://mock.example', mtlsBase: 'https://mock-mtls.example' }],
+    ['a public base with a path', { publicBase: 'https://mock.example/t/run1', mtlsBase: 'https://mock-mtls.example' }],
+    ['a public base with a query', { publicBase: 'https://mock.example/?x=1', mtlsBase: 'https://mock-mtls.example' }],
+    ['a public base with a user part', { publicBase: 'https://user@mock.example', mtlsBase: 'https://mock-mtls.example' }],
+  ])('is refused before anything is read or built when the bases are %s', async (_name, bases) => {
+    const w = subWorld();
+    const run = await w.clock.run(withSubDelegation({ ...w.deps, bases: bases as never }, w.request, w.limits, idle));
+    expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'bad_request', detail: expect.stringContaining('bases') }, end: { state: 'not_made' } });
+    expect(w.chain.log).toStrictEqual([]);
+  });
+
+  it('takes the origin of a public base in any of its forms: capital letters, the default port and a closing slash are the same base: the twin', async () => {
+    const w = subWorld({ bases: { publicBase: 'https://MOCK.example:443/', mtlsBase: 'https://mock-mtls.example' } });
+    expect(w.target.resource).toBe('https://mock.example/t/run1/erp');
+    expect(await go(w, idle)).toMatchObject({ ok: true, kind: 'returned', end: { state: 'ended' } });
   });
 });
 

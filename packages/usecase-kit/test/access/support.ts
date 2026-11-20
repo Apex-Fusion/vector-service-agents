@@ -567,16 +567,19 @@ export interface SubWorldOptions {
   readonly script?: DelegationScript;
   /** The queue of the wallet. The default is a new queue. */
   readonly queue?: SerialQueue;
+  /** The two origins of the mock service. The default is BASES, and the target of the request is on its public base. */
+  readonly bases?: MockBases;
 }
 export function subWorld(over: SubWorldOptions = {}): SubWorld {
   const clock = new FakeClock(NOW);
   const script = over.script ?? SCRIPT;
+  const bases = over.bases ?? BASES;
   const chain = new FakeDelegations(clock, over.parent, script);
-  const target = erpTarget();
+  const target = erpTarget(bases);
   const request: SubDelegationRequest = {
     target, parent: PARENT_ID, agent: { signer: markSigner(AGENT_KEY), walletAddress: WALLET }, subagent: { did: `did:vector:${SUBAGENT_ID}`, signer: markSigner(SUBAGENT_KEY) }, validForMs: 3_600_000,
     ...over.request,
   };
   const limits: SubDelegationLimits = { jobTimeoutMs: 600_000, ...over.limits };
-  return { clock, chain, deps: { chain, clock, delegationScript: script, walletQueue: over.queue ?? createSerialQueue() }, request, limits, target };
+  return { clock, chain, deps: { chain, clock, delegationScript: script, bases, walletQueue: over.queue ?? createSerialQueue() }, request, limits, target };
 }
