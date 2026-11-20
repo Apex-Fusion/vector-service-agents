@@ -15,6 +15,8 @@ The operator's steps are in [RUNBOOK.md](RUNBOOK.md). This note gives the facts.
 | `setup.sh` | One script. The operator runs it as root on the new host. It can run again with the same result. |
 | `Caddyfile` | The main Caddy file. It has the global options and one `import` line. It has no site block. |
 | `Caddyfile.mock-systems.snippet` | The two host blocks of the mock systems: one normal HTTPS host and one client-certificate (mTLS) host. |
+| `docker-compose.mock-systems.yml` | The compose file of the mock service: one container, the image by digest, and the port on `127.0.0.1:9120`. |
+| `.env.mock-systems.example` | The settings of the mock service. Names and placeholders only. The operator copies it to `.env.mock-systems`, which has mode 600. |
 | `prove-mock-mtls.mjs` | A local proof of the mock snippet with the real Caddy. It runs on a developer machine, not on the host. |
 | `RUNBOOK.md` | The operator's steps, the checks and the failure table. |
 
@@ -31,6 +33,7 @@ Each agent adds one snippet file, one compose file and one env example later. Th
 | Provider and region | The same as the present host |
 
 A runtime uses about 190 MiB. An idle service uses about 160 MiB. The 19 containers use about 3.3 GiB together.
+The mock service uses about 140 MiB with no tenant. It keeps its tenants in memory, and its limit is 2 GiB (section "The mock service").
 Docker, Caddy and the system use about 0.6 GiB more. The rest of the memory is for jobs, for image pulls and for a container that starts again.
 Keep 1 GiB available when a container starts.
 
@@ -61,7 +64,7 @@ Keep 1 GiB available when a container starts.
 |---|---|---|
 | `/srv/agents` | `agents`, 750 | Home of the service user. |
 | `/srv/agents/<agent>` | `agents`, 750 | One folder for each agent: the compose file and the env file. The operator gives the names to the script. |
-| `/srv/agents/mock-systems` | `agents`, 750 | The folder of the mock service. |
+| `/srv/agents/mock-systems` | `agents`, 750 | The folder of the mock service: its compose file and its env file. |
 | `/srv/agents/keys` | `agents`, 700 | The folder for keys. It is empty after the set-up. |
 | `/etc/caddy/Caddyfile` | `root`, 644 | The main Caddy file. |
 | `/etc/caddy/agents/*.snippet` | `root`, 644 | One snippet file for each agent. |
@@ -120,6 +123,7 @@ The records must exist, and must resolve to the host, before the snippet of the 
 | `<mock mtls host>` | The client-certificate host. A caller presents an X.509-SVID as the TLS client certificate. |
 
 Both names go to the mock service on `127.0.0.1:9120`. The operator puts the real names in the snippet (RUNBOOK, step 6).
+The operator puts the same two names, as https origins, in the env file of the mock service (RUNBOOK, step 6, "Run the mock service"). Each name must be the same in the snippet and in the env file.
 
 On `<mock mtls host>`, Caddy asks for a client certificate (`client_auth` with `mode request`). Caddy does not require the certificate.
 Caddy does not check who issued it. It passes the certificate that the client presented to the mock service, in one request header.
@@ -139,14 +143,16 @@ Caddy does not check who issued it. It passes the certificate that the client pr
 | `Client-Cert-Chain` | Caddy never sets it. Caddy removes it from every request. The service reads it as absent. |
 
 Caddy removes any `Client-Cert` header and any `Client-Cert-Chain` header that a client sends. It does this on both host names, before it sets its own header.
-So a client cannot forge a certificate. This is true only while Caddy is the sole way to reach the mock service. The service listens on `127.0.0.1` for this reason.
+So a client cannot forge a certificate. This is true only while Caddy is the sole way to reach the mock service. For this reason the compose file publishes the port of the service on `127.0.0.1` only, so that only a program on the host reaches it.
+Every process of the host that can open `127.0.0.1:9120` is a direct client of the service. It can send the bytes of the certificate of any SVID with no key, and any `Host`. So the host runs nothing that is not trusted, the port is on the loopback address only, and no other container shares the network of the service. The compose file gives the service the default network of its own project, and no other container joins it.
 
 The TLS handshake proves that the client holds the private key of the certificate. Nothing else is checked.
 The mock service must check these things itself:
 
-1. The certificate chain, against the SPIFFE bundle of the identity gateway. The service reads the bundle again every 300 seconds.
-2. The validity time of the certificate.
-3. The SPIFFE ID in the URI name of the certificate.
+1. The value holds exactly one certificate, and the certificate that the service verifies is the whole value. `X509Certificate` reads the first certificate that it finds, drops the bytes after it, and reads a certificate that sits inside another one in place of the outer one. The TLS handshake proves only that the client holds the key of the certificate that it presented, and it does not prove who issued that certificate. So a client can put the SVID of another agent inside a certificate of its own, and a service that keeps the inner certificate takes the client for that agent.
+2. The certificate chain, against the SPIFFE bundle of the identity gateway. The service reads the bundle again every 300 seconds. When a new copy cannot be fetched, the service goes on with its old copy for up to one hour after the last good read, and then it refuses the call. So an authority that the gateway removed stays trusted for up to one hour in that time.
+3. The validity time of the certificate.
+4. The SPIFFE ID in the URI name of the certificate.
 
 A service reads the header in this way (Node 22). The result is `null` when there is no valid certificate:
 
@@ -157,11 +163,18 @@ const header = req.headers['client-cert']; // A string, or undefined. Node joins
 const match = /^:([A-Za-z0-9+/]+={0,2}):$/.exec(header ?? '');
 let certificate = null;
 try {
-  if (match) certificate = new X509Certificate(Buffer.from(match[1], 'base64'));
+  if (match) {
+    const bytes = Buffer.from(match[1], 'base64');
+    const read = new X509Certificate(bytes);
+    // X509Certificate reads the first certificate that it finds in the bytes. Keep the result only when it is the whole value.
+    if (read.raw.equals(bytes)) certificate = read;
+  }
 } catch {
   // The bytes are not a certificate. The request has no certificate.
 }
 ```
+
+`x509Svid` of `@vsa/id-kit` makes this check and the three other checks.
 
 ### The local proof
 
@@ -182,11 +195,38 @@ node deploy/server/prove-mock-mtls.mjs
 
 The script removes its container and its temporary folder at the end. The exit code is 0 when every check passes.
 
+## The mock service
+
+The mock service is one container. It serves the mock systems of the tenants. The data of a tenant is synthetic. A caller reads and writes it with a token or an SVID of an agent.
+The operator makes a tenant with one call (RUNBOOK, step 6, "Make or reset a tenant").
+
+| Item | Value |
+|---|---|
+| Image | `ghcr.io/apex-fusion/vector-service-agents/mock-systems`. CI builds it. The compose file names it by digest. |
+| Files | `docker-compose.mock-systems.yml` and `.env.mock-systems.example`. The operator puts them in `/srv/agents/mock-systems`. |
+| Port | `127.0.0.1:9120` on the host, and `0.0.0.0:9120` inside the container. Only Caddy reaches it. |
+| Health | `GET /healthz` answers 200 and writes no log line. |
+| Memory limit | 2 GiB. A full store (100 tenants with 5000 log lines each) needs about 650 MiB of heap, and Node keeps its heap below half of the container limit. |
+| Hardening | A read-only file system, with a small memory file system on `/tmp`. No Linux capability. No new privileges. |
+| State | In memory. A restart loses every tenant and its log. There is no volume. |
+| Keys | None. The service holds no key and no wallet. Its one secret is the operator token in the env file. |
+
+`.env.mock-systems.example` has a comment for each setting. Three groups need care:
+
+- `MOCK_PUBLIC_BASE` and `MOCK_MTLS_BASE` are the origins of the two mock host names. They must name the same hosts as the snippet. A call that names another host gets `421`.
+- `MOCK_OPERATOR_TOKEN` is the one secret. It is empty in the example, and the service does not start without it.
+- The three `VECTOR_IDENTITY_*` values are the values that the identity registry deployment on Vector mainnet published on 2026-11-03.
+
+A call needs the right host. `POST /admin/tenants` and every route of a system that takes an access token or a JWT-SVID go to `<mock host>`. A route that takes an X.509-SVID goes to `<mock mtls host>`.
+`GET /healthz` answers on both hosts. The service refuses a `Client-Cert` header on `<mock host>`: Caddy removes that header there, so a call that carries it did not pass through Caddy.
+
 ## Rules for the host
 
 - **Jobs stay in memory.** A runtime keeps its jobs in memory. A restart of a runtime, of Docker or of the host stops every job that runs.
   A restart during a run is forbidden. Before any restart, each runtime must say `free` on `/status`.
   Reload Caddy. Do not restart it.
+- **The mock service keeps its tenants in memory.** A restart of the mock service, or a reboot of the host, loses every tenant and its log. It holds no job, so the check of the runtimes does not cover it.
+  Make each tenant again after such a restart (RUNBOOK, step 6, "Make or reset a tenant").
 - **Keys are made on the host and stay on it.** No key is made on another machine. No key leaves the host.
   A key file is in `/srv/agents/keys`, or in an env file with mode 600. See the RUNBOOK, section "Keys".
 - **The host builds no image.** CI builds the images. A compose file names an image by its digest.

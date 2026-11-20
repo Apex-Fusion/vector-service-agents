@@ -6035,10 +6035,10 @@ test('agents host: the README gives the header Client-Cert as the snippet sets i
   const dir = mkdtempSync(join(tmpdir(), 'agents-host-example-'));
   try {
     writeFileSync(join(dir, 'example.mjs'), source);
-    const bad = [null, value.slice(1, -1), `${value}, ${value}`, ':not base64!:', '::', `${value} `, `x${value}`, ':AAAA:'];
+    const bad = [null, value.slice(1, -1), `${value}, ${value}`, ':not base64!:', '::', `${value} `, `x${value}`, ':AAAA:', `:${Buffer.concat([der, Buffer.from([0])]).toString('base64')}:`, `:${Buffer.concat([der, der]).toString('base64')}:`];
     const out = JSON.parse(execFileSync(process.execPath, [join(dir, 'example.mjs'), JSON.stringify([value, ...bad])], { encoding: 'utf8' }));
     assert.deepEqual(out[0], { subject: 'CN=test client', fingerprint: new X509Certificate(SRV_TEST_CERT).fingerprint256 });
-    assert.deepEqual(out.slice(1), bad.map(() => null), 'no header, no colons, two headers, no base64, an empty value, a space, a prefix and bytes that are not a certificate all give null');
+    assert.deepEqual(out.slice(1), bad.map(() => null), 'no header, no colons, two headers, no base64, an empty value, a space, a prefix, bytes that are not a certificate, a certificate and one more byte, and a certificate two times all give null');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -6125,4 +6125,564 @@ test('agents host: no command of the runbook prints a key or an env file, and no
   const danger = /keygen|genpkey|gen-keypair|openssl\s+(?:req|genpkey|rand)|\bcat\b[^\n]*(?:\.env|keys\/|\.key|\.skey)|\bprintenv\b|\bdocker\s+(?:compose\s+config|inspect)\b/i;
   assert.doesNotMatch(blocks, danger);
   for (const bad of ['ssh-keygen -t ed25519', 'cat /srv/agents/keys/service.key', 'cat .env.agent', 'docker compose config', 'docker inspect agent', 'printenv', 'gen-keypair --network 1', 'openssl genpkey -algorithm ed25519']) assert.match(bad, danger, bad);
+});
+
+// ======================================================================================================================================
+// The mock service on the agents host (deploy/server): its compose file, its env example, its steps in the runbook and its CI lines.
+// The service holds no key and no wallet, and it keeps its tenants in memory. These tests parse the files and keep them equal to the settings and the limits of the
+// service (services/mock-systems/src), run the commands of the runbook that a test can run (with stand-ins for docker and curl), and send the tenant call of the
+// runbook to the real code of the service on a loopback port. They read no Dockerfile: CI builds the image. Each guard has an accepted twin and refused copies.
+// ======================================================================================================================================
+import { createServer as createStubServer } from 'node:http';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { chmodSync } from 'node:fs';
+const execFileAsync = promisify(execFile);
+const MOCK = { image: 'ghcr.io/apex-fusion/vector-service-agents/mock-systems', name: 'mock-systems', port: 9120, composeFile: 'docker-compose.mock-systems.yml', exampleFile: '.env.mock-systems.example', envFile: '.env.mock-systems' };
+const mockComposeText = srvRead(MOCK.composeFile);
+const mockExampleText = srvRead(MOCK.exampleFile);
+const mockExample = parseEnv(mockExampleText);
+const mockRunbook = srvRead('RUNBOOK.md');
+const mockReadme = srvRead('README.md');
+const mockConfigSource = read('services/mock-systems/src/config.ts');
+const mockTenantsSource = read('services/mock-systems/src/tenants.ts');
+const inMockService = (code, arg) => JSON.parse(execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code, JSON.stringify(arg)], { cwd: join(root, 'services/mock-systems'), encoding: 'utf8' }));
+// A name that would hold a key or a wallet. The service holds neither.
+const MOCK_KEYLIKE = /PRIV|KEY|WALLET|PKH|ADDRESS/;
+// The sizes of the limits of the service, as its source writes them.
+const mockNumber = (source, name) => { const m = new RegExp(`export const ${name} = ([0-9_]+);`).exec(source); return m ? Number(m[1].replaceAll('_', '')) : NaN; };
+const mockConstant = (name) => mockNumber(mockTenantsSource, name);
+const mockDefault = (name) => new RegExp(`export const ${name} = '([^']+)';`).exec(mockConfigSource)?.[1];
+// A size as compose writes it: 2048m, 1g, 512k.
+const mockBytes = (text) => { const m = /^(\d+)([kmg])$/i.exec(String(text)); return m ? Number(m[1]) * { k: 1024, m: 1024 ** 2, g: 1024 ** 3 }[m[2].toLowerCase()] : NaN; };
+// What a full store takes in the heap: the most tenants with the most log lines each (src/tenants.ts). Measured with Node 22: 100 tenants of 5000 lines took 650 MiB of heap, about
+// 1.2 KiB for each line (a short path and one actor), and an idle service holds about 80 MiB. A line with the longest path and two actors is about 1.5 KiB.
+const MOCK_LINE_BYTES = 1536;
+const MOCK_IDLE_HEAP = 80 * 1024 ** 2;
+const mockStoreBytes = () => mockConstant('MAX_TENANTS') * mockConstant('MAX_LOG_LINES') * MOCK_LINE_BYTES + MOCK_IDLE_HEAP;
+// The plan of the memory (README, section "The host") keeps free for growth: 8 GiB, less 3.3 GiB of containers, 0.6 GiB of system and 1 GiB for a start. That is about 3 GiB.
+const MOCK_LIMIT_MAX = 3 * 1024 ** 3;
+const mockSame = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const mockSorted = (object) => JSON.stringify(Object.entries(object).sort());
+
+// The faults of the compose file of the mock service. An empty list is a pass.
+function mockComposeProblems(text, storeBytes = mockStoreBytes()) {
+  const model = parseYaml(text);
+  const names = Object.keys(model?.services ?? {});
+  if (names.join() !== MOCK.name) return [`the file must have one service, ${MOCK.name}; it has: ${names.join() || 'none'}`];
+  const s = model.services[MOCK.name];
+  const problems = [...srvComposeProblems(text)];
+  if (!new RegExp(`^${srvEscape(MOCK.image)}@sha256:(?:<digest>|[0-9a-f]{64})$`).test(String(s.image))) problems.push(`image must be ${MOCK.image}@sha256: and 64 hex digits, or the placeholder <digest>; found: ${s.image}`);
+  if (s.container_name !== MOCK.name) problems.push(`container_name must be ${MOCK.name}`);
+  if (s.restart !== 'unless-stopped') problems.push('restart must be unless-stopped');
+  if (!mockSame(s.env_file, [{ path: `./${MOCK.envFile}`, required: true }])) problems.push(`env_file must be the one file ./${MOCK.envFile}, and it must be required`);
+  if (!mockSame(s.ports, [`127.0.0.1:${MOCK.port}:${MOCK.port}`])) problems.push(`ports must be the one entry 127.0.0.1:${MOCK.port}:${MOCK.port}; found: ${JSON.stringify(s.ports)}`);
+  const environment = runtimeEnvironment(s);
+  const keyNames = Object.keys(environment).filter((name) => MOCK_KEYLIKE.test(name));
+  if (keyNames.length > 0) problems.push(`the service holds no key and no wallet, and the file sets: ${keyNames.join(', ')}`);
+  if (mockSorted(environment) !== mockSorted({ PORT: String(MOCK.port), HOST: '0.0.0.0' })) problems.push(`environment must be PORT "${MOCK.port}" and HOST "0.0.0.0" and nothing else: the other settings belong in the env file; found: ${JSON.stringify(environment)}`);
+  if ('volumes' in s || 'volumes' in model) problems.push('the mock service has no volume: its tenants are in memory');
+  // The hardening that the service permits: it writes nothing but the cache of tsx in /tmp.
+  if (s.read_only !== true) problems.push('read_only must be true');
+  if (!mockSame(s.cap_drop, ['ALL'])) problems.push('cap_drop must be [ALL]');
+  if (!(s.security_opt ?? []).includes('no-new-privileges:true')) problems.push('security_opt must have no-new-privileges:true');
+  if (!Array.isArray(s.tmpfs) || s.tmpfs.length !== 1 || !/^\/tmp(?::|$)/.test(s.tmpfs[0])) problems.push('tmpfs must be the one entry /tmp: tsx writes its cache there, and nothing else is writable');
+  for (const key of ['privileged', 'cap_add', 'network_mode', 'pid', 'ipc', 'devices', 'volumes_from']) if (key in s) problems.push(`${key} is not allowed`);
+  // The service listens on 0.0.0.0 inside its container. A network that another container shares would let that container send a forged Client-Cert header. With no networks key, compose puts
+  // the service on the default network of its own project, which no other container joins.
+  if ('networks' in s) problems.push('the service has no networks key: it stays on the default network of its own project, which no other container shares');
+  if ('networks' in model) problems.push('the file has no top-level networks key: the service stays on the default network of its own project');
+  if (s.logging?.driver !== 'json-file' || s.logging?.options?.['max-size'] !== '10m' || s.logging?.options?.['max-file'] !== '3') problems.push('logging must be json-file with 3 files of 10m, as the other compose files have it');
+  const limit = mockBytes(s.mem_limit);
+  if (!(limit > 0)) problems.push('mem_limit must be set, for example 2048m');
+  else {
+    if (limit / 2 < storeBytes) problems.push(`mem_limit ${s.mem_limit} is too small: Node keeps its heap below half of it, and a full store needs about ${Math.ceil(storeBytes / 1024 ** 2)} MiB of heap`);
+    if (limit > MOCK_LIMIT_MAX) problems.push(`mem_limit ${s.mem_limit} is above the 3 GiB that the plan of the memory keeps free for growth`);
+  }
+  return problems;
+}
+
+test('mock service compose: one container with the image by digest, on 127.0.0.1:9120 only, no volume, no key and no wallet, the hardening, and a memory limit that a full store fits; the guard refuses each copy that breaks one of these', () => {
+  assert.deepEqual(mockComposeProblems(mockComposeText), [], 'the real file passes');
+  const text = mockComposeText;
+  const faults = [
+    ['a public port', srvReplace(text, '["127.0.0.1:9120:9120"]', '["9120:9120"]'), /ports must be the one entry/],
+    ['the address of every interface', srvReplace(text, '"127.0.0.1:9120:9120"', '"0.0.0.0:9120:9120"'), /ports must be the one entry/],
+    ['a second port', srvReplace(text, '["127.0.0.1:9120:9120"]', '["127.0.0.1:9120:9120", "127.0.0.1:9121:9121"]'), /ports must be the one entry/],
+    ['another port on the host', srvReplace(text, '"127.0.0.1:9120:9120"', '"127.0.0.1:9121:9120"'), /ports must be the one entry/],
+    ['the host network', srvReplace(text, '    read_only: true\n', '    read_only: true\n    network_mode: host\n'), /network_mode/],
+    ['a network of the service', srvReplace(text, '    read_only: true\n', '    read_only: true\n    networks: [proxy]\n'), /the service has no networks key/],
+    ['a network at the top', `${text}networks:\n  proxy:\n    name: shared\n`, /no top-level networks key/],
+    ['the external network of the proxy, on the service and at the top', `${srvReplace(text, '    read_only: true\n', '    read_only: true\n    networks: [proxy]\n')}networks:\n  proxy:\n    external: true\n`, /the service has no networks key/],
+    ['a volume', srvReplace(text, '    read_only: true\n', '    read_only: true\n    volumes: ["state:/data"]\n'), /no volume/],
+    ['a named volume at the top', `${text}volumes:\n  state: {}\n`, /no volume/],
+    ['the image by tag', srvReplace(text, '@sha256:<digest>', ':latest'), /image must be/],
+    ['the image of another repository', srvReplace(text, '/mock-systems@sha256', '/agent-history@sha256'), /image must be/],
+    ['a digest that is too short', srvReplace(text, '<digest>', 'abc123'), /image must be/],
+    ['no read-only file system', srvReplace(text, '    read_only: true\n', ''), /read_only must be true/],
+    ['a writable file system', srvReplace(text, 'read_only: true', 'read_only: false'), /read_only must be true/],
+    ['capabilities kept', srvReplace(text, 'cap_drop: [ALL]', 'cap_drop: [NET_RAW]'), /cap_drop must be/],
+    ['a capability added', srvReplace(text, '    read_only: true\n', '    read_only: true\n    cap_add: [NET_ADMIN]\n'), /cap_add is not allowed/],
+    ['new privileges allowed', srvReplace(text, '    security_opt: ["no-new-privileges:true"]\n', ''), /no-new-privileges/],
+    ['a privileged container', srvReplace(text, '    read_only: true\n', '    read_only: true\n    privileged: true\n'), /privileged is not allowed/],
+    ['a second tmpfs', srvReplace(text, 'tmpfs: ["/tmp:size=64m"]', 'tmpfs: ["/tmp:size=64m", "/var/tmp"]'), /tmpfs must be/],
+    ['no tmpfs', srvReplace(text, '    tmpfs: ["/tmp:size=64m"]\n', ''), /tmpfs must be/],
+    ['a key variable', srvReplace(text, 'HOST: "0.0.0.0" }', 'HOST: "0.0.0.0", SUPPLIER_PRIV_KEY_HEX: "" }'), /no key and no wallet/],
+    ['a wallet variable', srvReplace(text, 'HOST: "0.0.0.0" }', 'HOST: "0.0.0.0", BUYER_WALLET: "" }'), /no key and no wallet/],
+    ['another setting in the compose file', srvReplace(text, 'HOST: "0.0.0.0" }', 'HOST: "0.0.0.0", MOCK_PUBLIC_BASE: "https://mock.example.test" }'), /nothing else/],
+    ['a port that the mapping does not publish', srvReplace(text, 'PORT: "9120"', 'PORT: "9121"'), /environment must be PORT/],
+    ['the loopback address inside the container', srvReplace(text, 'HOST: "0.0.0.0"', 'HOST: "127.0.0.1"'), /environment must be PORT/],
+    ['restart always', srvReplace(text, 'restart: unless-stopped', 'restart: always'), /restart must be/],
+    ['an env file that is not required', srvReplace(text, 'required: true', 'required: false'), /env_file must be/],
+    ['no memory limit', srvReplace(text, '    mem_limit: 2048m\n', ''), /mem_limit must be set/],
+    ['a limit under a full store', srvReplace(text, 'mem_limit: 2048m', 'mem_limit: 1024m'), /too small/],
+    ['a limit above the plan', srvReplace(text, 'mem_limit: 2048m', 'mem_limit: 8192m'), /3 GiB/],
+    ['no log limit', srvReplace(text, 'max-size: "10m"', 'max-size: "1g"'), /logging must be/],
+    ['a second service', `${text}  other:\n    image: example\n`, /one service/],
+  ];
+  for (const [name, broken, expected] of faults) {
+    const problems = mockComposeProblems(broken);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  // The twins: the image with a digest, a higher limit that the plan still holds, and a store that the limit fits or does not fit.
+  assert.deepEqual(mockComposeProblems(srvReplace(text, '@sha256:<digest>', `@sha256:${'ab'.repeat(32)}`)), [], 'the image with a digest of 64 hex digits');
+  assert.deepEqual(mockComposeProblems(srvReplace(text, 'mem_limit: 2048m', 'mem_limit: 3072m')), [], 'a limit of 3 GiB');
+  assert.deepEqual(mockComposeProblems(text, 1_000_000_000), [], 'a store of 1 GB fits under half of 2 GiB');
+  assert.ok(mockComposeProblems(text, 1_100_000_000).some((p) => /too small/.test(p)), 'a store of 1.1 GB does not');
+  // The limit follows the limits of the service: the guard reads them from the source of the store.
+  assert.ok(mockConstant('MAX_TENANTS') > 0 && mockConstant('MAX_LOG_LINES') > 0, 'the guard finds MAX_TENANTS and MAX_LOG_LINES');
+});
+
+test('mock service compose in docker compose config: it renders with its env file, the rendered service has the loopback port, the limit and the hardening and no volume, the compose file wins over PORT and HOST of the env file, and compose stops while the env file is missing', { skip: HAVE_COMPOSE ? false : 'needs docker compose' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mock-compose-'));
+  // A COMPOSE_ variable of the shell (the project name, the file) would change what compose renders, so the runs here have none.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('COMPOSE_')));
+  const config = () => spawnSync('docker', ['compose', '-f', MOCK.composeFile, 'config'], { cwd: dir, env, encoding: 'utf8', timeout: 120_000 });
+  try {
+    copyFileSync(join(root, SRV, MOCK.composeFile), join(dir, MOCK.composeFile));
+    const missing = config();
+    assert.notEqual(missing.status, 0, 'compose stops while the env file is missing');
+    assert.ok(missing.stderr.includes(MOCK.envFile), `and names the file: ${missing.stderr}`);
+    copyFileSync(join(root, SRV, MOCK.exampleFile), join(dir, MOCK.envFile));
+    const run = config();
+    assert.equal(run.status, 0, run.stderr);
+    const model = parseYaml(run.stdout);
+    assert.equal(model.name, MOCK.name);
+    assert.deepEqual(Object.keys(model.services), [MOCK.name]);
+    const s = model.services[MOCK.name];
+    assert.equal(s.image, `${MOCK.image}@sha256:<digest>`);
+    assert.equal(s.container_name, MOCK.name);
+    assert.equal(s.restart, 'unless-stopped');
+    assert.deepEqual(s.ports, [{ mode: 'ingress', host_ip: '127.0.0.1', target: MOCK.port, published: String(MOCK.port), protocol: 'tcp' }]);
+    assert.equal(s.mem_limit, String(mockBytes(/^ {4}mem_limit: (\S+)$/m.exec(mockComposeText)[1])));
+    assert.equal(s.read_only, true);
+    assert.deepEqual(s.cap_drop, ['ALL']);
+    assert.deepEqual(s.security_opt, ['no-new-privileges:true']);
+    assert.deepEqual(s.tmpfs, ['/tmp:size=64m']);
+    assert.equal(s.volumes, undefined, 'no volume');
+    assert.equal(model.volumes, undefined, 'no volume at the top');
+    assert.ok(Object.values(model.networks ?? {}).every((network) => !network.external), 'no external network: Caddy reaches the service by the published port');
+    // The env file is read: every name of the example is in the environment of the service.
+    assert.deepEqual(Object.keys(s.environment).sort(), Object.keys(mockExample).sort());
+    // The values that the port mapping needs are the compose file's. A line in the env file does not change them.
+    writeFileSync(join(dir, MOCK.envFile), mockExampleText.replace('PORT=9120\n', 'PORT=9999\n').replace('HOST=0.0.0.0\n', 'HOST=127.0.0.1\n'));
+    const overridden = config();
+    assert.equal(overridden.status, 0, overridden.stderr);
+    const environment = parseYaml(overridden.stdout).services[MOCK.name].environment;
+    assert.deepEqual([environment.PORT, environment.HOST], [String(MOCK.port), '0.0.0.0']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The faults of the env example. The names that config.ts reads and the names of the example must be the same list.
+const mockReadNames = [...envNamesIn(mockConfigSource)].sort();
+const MOCK_FIXED = { PORT: String(MOCK.port), HOST: '0.0.0.0' };
+const MOCK_URL_SETTINGS = { IDENTITY_GATEWAY_URL: 'GATEWAY_DEFAULT', VECTOR_OGMIOS_URL: 'OGMIOS_DEFAULT', VECTOR_KOIOS_URL: 'KOIOS_DEFAULT' };
+function mockExampleProblems(text, readNames = mockReadNames) {
+  let env;
+  try { env = parseEnv(text); } catch (error) { return [`the example does not parse: ${error.message}`]; }
+  const problems = [];
+  for (const name of readNames) if (!(name in env)) problems.push(`${name} is read by config.ts and has no line in the example`);
+  for (const name of Object.keys(env)) if (!readNames.includes(name)) problems.push(`${name} is in the example, and config.ts does not read it`);
+  for (const [name, value] of Object.entries(env)) {
+    if (!(value === '' || PLACEHOLDER.test(value) || value === MOCK_FIXED[name])) problems.push(`${name} must be empty or a placeholder in angle brackets${name in MOCK_FIXED ? ` or ${MOCK_FIXED[name]}` : ''}; found: ${value}`);
+  }
+  problems.push(...keyProblems(env));
+  if (env.MOCK_OPERATOR_TOKEN !== '') problems.push('MOCK_OPERATOR_TOKEN must be empty: the service stops at start without it');
+  const keyNames = Object.keys(env).filter((name) => MOCK_KEYLIKE.test(name));
+  if (keyNames.length > 0) problems.push(`the service holds no key and no wallet, and the example names: ${keyNames.join(', ')}`);
+  if (/\b[0-9a-f]{56,}\b/i.test(text)) problems.push('a run of 56 or more hex characters looks like key material or a published value; the example holds placeholders only');
+  if (/addr1[0-9a-z]{20,}|ed25519_sk/i.test(text)) problems.push('an address or a signing key; the example holds placeholders only');
+  for (const [name, constant] of Object.entries(MOCK_URL_SETTINGS)) {
+    if (env[name] !== '') problems.push(`${name} must be empty, so that the default of the code applies`);
+    if (!text.includes(`Default: ${mockDefault(constant)}`)) problems.push(`the comment of ${name} must give the default of the code: ${mockDefault(constant)}`);
+  }
+  if (env.PORT !== String(mockNumber(mockConfigSource, 'PORT_DEFAULT'))) problems.push(`PORT must be ${mockNumber(mockConfigSource, 'PORT_DEFAULT')}, the port that the compose file publishes`);
+  if (env.HOST !== '0.0.0.0') problems.push('HOST must be 0.0.0.0: the published port reaches nothing when the service listens on the loopback address of the container');
+  if (!/mode 600/.test(text)) problems.push('the example must say that the copy has mode 600');
+  return problems;
+}
+
+test('mock service env example: each variable that config.ts reads has a line, each line is read by config.ts, the values are placeholders and empty lines, and no key, wallet or published value is in it; the guard refuses each copy that breaks one of these', () => {
+  const listed = [...(/export const SETTINGS = \[([\s\S]*?)\] as const;/.exec(mockConfigSource)?.[1] ?? '').matchAll(/'([A-Z][A-Z0-9_]*)'/g)].map((m) => m[1]).sort();
+  assert.deepEqual(listed, mockReadNames, 'the list SETTINGS of config.ts names the variables that config.ts reads');
+  assert.ok(mockReadNames.length >= 11 && mockReadNames.includes('MOCK_OPERATOR_TOKEN') && mockReadNames.includes('PORT'), 'the guard finds the settings');
+  assert.deepEqual(mockExampleProblems(mockExampleText), [], 'the real file passes');
+  assert.deepEqual(Object.keys(mockExample).sort(), mockReadNames, 'both directions: the names of the example are the names that config.ts reads');
+  assert.equal(mockNumber(mockConfigSource, 'PORT_DEFAULT'), MOCK.port, 'the default port of the code is the port of the compose file');
+  // The compose file and the example give the same two values for the port mapping.
+  const mockEnvOfCompose = parseYaml(mockComposeText).services[MOCK.name].environment;
+  assert.deepEqual([mockEnvOfCompose.PORT, mockEnvOfCompose.HOST], [mockExample.PORT, mockExample.HOST]);
+  const text = mockExampleText;
+  const faults = [
+    ['a variable that config.ts does not read', `${text}MOCK_DEBUG=1\n`, /MOCK_DEBUG is in the example/],
+    ['a setting that has no line', srvReplace(text, 'HOST=0.0.0.0\n', ''), /HOST is read by config\.ts and has no line/],
+    ['a host that is not a placeholder', srvReplace(text, 'MOCK_PUBLIC_BASE=<https origin of the mock host>', 'MOCK_PUBLIC_BASE=https://mock.example.test'), /MOCK_PUBLIC_BASE must be empty or a placeholder/],
+    ['the operator token written in', srvReplace(text, 'MOCK_OPERATOR_TOKEN=\n', `MOCK_OPERATOR_TOKEN=${'Ab1'.repeat(16)}\n`), /MOCK_OPERATOR_TOKEN must be empty/],
+    ['the published root written in', srvReplace(text, 'VECTOR_IDENTITY_LEGACY_ROOT=<64 hex characters>', `VECTOR_IDENTITY_LEGACY_ROOT=${IDENTITY_MAINNET.VECTOR_IDENTITY_LEGACY_ROOT}`), /looks like key material/],
+    ['a key variable', `${text}SUPPLIER_PRIV_KEY_HEX=\n`, /holds no key and no wallet/],
+    ['a wallet variable', `${text}BUYER_WALLET=\n`, /holds no key and no wallet/],
+    ['a key in a comment', `${text}# ${'ab'.repeat(32)}\n`, /run of 56 or more hex/],
+    ['an address in a comment', `${text}# addr1${'q'.repeat(30)}\n`, /an address or a signing key/],
+    ['a gateway that is not empty', srvReplace(text, 'IDENTITY_GATEWAY_URL=\n', 'IDENTITY_GATEWAY_URL=https://id.example.test\n'), /IDENTITY_GATEWAY_URL must be empty/],
+    ['a default that the comment gets wrong', srvReplace(text, 'Default: https://id.vector.apexfusion.org', 'Default: https://id.old.example.test'), /must give the default of the code/],
+    ['a port that the compose file does not publish', srvReplace(text, 'PORT=9120\n', 'PORT=9121\n'), /PORT must be 9120/],
+    ['the loopback address inside the container', srvReplace(text, 'HOST=0.0.0.0\n', 'HOST=127.0.0.1\n'), /HOST must be 0\.0\.0\.0/],
+    ['no word about the mode of the copy', srvReplace(text, 'The copy has mode 600 on the host.', 'The copy is private.'), /mode 600/],
+    ['a line that is not NAME=value', `${text}MOCK TOKEN\n`, /does not parse/],
+  ];
+  for (const [name, broken, expected] of faults) {
+    const problems = mockExampleProblems(broken);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+});
+
+// The settings of the service, read by loadConfig of the real code (tsx). Each case is an environment; the answer is the config or the error.
+const MOCK_CONFIG_CODE = "import { loadConfig } from './src/config.ts'; " +
+  "console.log(JSON.stringify(JSON.parse(process.argv[1]).map((env) => { try { const c = loadConfig(env); return { ok: true, port: c.port, host: c.host, gatewayUrl: c.gatewayUrl, ogmiosUrl: c.ogmiosUrl, koiosUrl: c.koiosUrl, publicBase: c.publicBase, mtlsBase: c.mtlsBase }; } " +
+  "catch (error) { return { ok: false, message: error instanceof Error ? error.message : String(error) }; } })));";
+
+test('mock service env example, filled: with sample values the example passes loadConfig of the service, the empty lines take the defaults of the code, and each line that is left as the example has it is refused by the name of its variable', () => {
+  const sample = {
+    MOCK_OPERATOR_TOKEN: 'Zk3'.repeat(16), MOCK_PUBLIC_BASE: 'https://mock.example.test', MOCK_MTLS_BASE: 'https://mock-mtls.example.test',
+    VECTOR_IDENTITY_LEGACY_ROOT: IDENTITY_MAINNET.VECTOR_IDENTITY_LEGACY_ROOT, VECTOR_IDENTITY_CONFIG_SEED: IDENTITY_MAINNET.VECTOR_IDENTITY_CONFIG_SEED, VECTOR_IDENTITY_POLICY_ID: IDENTITY_MAINNET.IDENTITY_POLICY_ID,
+  };
+  const pick = (...names) => Object.fromEntries(names.map((name) => [name, sample[name]]));
+  // [name, the lines that the operator filled, the error that names the variable, or null for a start that works]
+  const cases = [
+    ['the example as it is copied', {}, /MOCK_OPERATOR_TOKEN is required/],
+    ['the token made', pick('MOCK_OPERATOR_TOKEN'), /MOCK_PUBLIC_BASE must be an https origin/],
+    ['the first host filled', pick('MOCK_OPERATOR_TOKEN', 'MOCK_PUBLIC_BASE'), /MOCK_MTLS_BASE must be an https origin/],
+    ['the token and the two hosts', pick('MOCK_OPERATOR_TOKEN', 'MOCK_PUBLIC_BASE', 'MOCK_MTLS_BASE'), /VECTOR_IDENTITY_LEGACY_ROOT must be 64 hex characters/],
+    ['the two hosts the same', { ...sample, MOCK_MTLS_BASE: sample.MOCK_PUBLIC_BASE }, /MOCK_MTLS_BASE must name another host/],
+    ['a policy that the two values do not give', { ...sample, VECTOR_IDENTITY_POLICY_ID: '0'.repeat(56) }, /VECTOR_IDENTITY_POLICY_ID is/],
+    ['a token of 31 characters', { ...sample, MOCK_OPERATOR_TOKEN: 'a'.repeat(31) }, /MOCK_OPERATOR_TOKEN must have 32 to 128 characters/],
+    ['a token with a space', { ...sample, MOCK_OPERATOR_TOKEN: 'a b'.repeat(16) }, /MOCK_OPERATOR_TOKEN must have 32 to 128 characters/],
+    ['everything filled', sample, null],
+    ['a token of 32 characters', { ...sample, MOCK_OPERATOR_TOKEN: 'a'.repeat(32) }, null],
+    ['a token of 128 characters with every sign that is allowed', { ...sample, MOCK_OPERATOR_TOKEN: `${'a.b_c~d+e/f=g-'.repeat(9)}abcdefghijklm`.slice(0, 128) }, null],
+  ];
+  const answers = inMockService(MOCK_CONFIG_CODE, cases.map(([, filled]) => ({ ...mockExample, ...filled })));
+  cases.forEach(([name, , expected], i) => {
+    const answer = answers[i];
+    if (expected === null) {
+      assert.equal(answer.ok, true, `${name}: ${answer.message}`);
+      assert.deepEqual([answer.port, answer.host], [MOCK.port, '0.0.0.0'], `${name}: the port and the address of the container`);
+      assert.deepEqual([answer.gatewayUrl, answer.ogmiosUrl, answer.koiosUrl], ['GATEWAY_DEFAULT', 'OGMIOS_DEFAULT', 'KOIOS_DEFAULT'].map(mockDefault), `${name}: the empty lines take the defaults of the code`);
+      assert.deepEqual([answer.publicBase, answer.mtlsBase], [sample.MOCK_PUBLIC_BASE, sample.MOCK_MTLS_BASE], name);
+    } else {
+      assert.equal(answer.ok, false, `${name}: the start must be refused`);
+      assert.match(answer.message, expected, name);
+      assert.equal(answer.message.includes(sample.MOCK_OPERATOR_TOKEN) || answer.message.includes('a'.repeat(31)), false, `${name}: the error never shows the token`);
+    }
+  });
+});
+
+// The one command of the example that makes the token. It is a comment line with three spaces after the hash.
+const mockTokenCommand = /^#   (sed -i .*)$/m.exec(mockExampleText)?.[1];
+const mockTokenForm = new RegExp(/const TOKEN_FORM = \/(.+)\/;/.exec(mockConfigSource)?.[1] ?? '$^');
+
+test('mock service operator token: the command of the example writes a token that the service takes into its own line and nothing else, prints nothing, makes a new token each time, and the runbook gives the same command', NEEDS_BASH, () => {
+  assert.ok(mockTokenCommand, 'the example has the command');
+  assert.ok(mockRunbook.includes(`\n   ${mockTokenCommand}\n`), 'the runbook has the same command, in step 3');
+  // The form of the service, as extracted: a twin and a refused copy at each edge.
+  for (const good of ['a'.repeat(32), 'a'.repeat(128), 'aZ09._~+/=-'.repeat(4)]) assert.match(good, mockTokenForm, good);
+  for (const bad of ['', 'a'.repeat(31), 'a'.repeat(129), `${'a'.repeat(31)} `, `<${'a'.repeat(40)}>`, `${'a'.repeat(40)}!`]) assert.doesNotMatch(bad, mockTokenForm, JSON.stringify(bad));
+  const dir = mkdtempSync(join(tmpdir(), 'mock-token-'));
+  try {
+    const run = () => {
+      writeFileSync(join(dir, MOCK.envFile), mockExampleText);
+      chmodSync(join(dir, MOCK.envFile), 0o600);
+      const r = runBash(mockTokenCommand, dir);
+      const text = readFileSync(join(dir, MOCK.envFile), 'utf8');
+      return { r, text, token: parseEnv(text).MOCK_OPERATOR_TOKEN };
+    };
+    const [first, second] = [run(), run()];
+    for (const { r, token } of [first, second]) {
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout + r.stderr, '', 'the command prints nothing');
+      assert.match(token, mockTokenForm, 'a token that the service takes');
+      assert.equal(token.length, 48);
+    }
+    assert.notEqual(first.token, second.token, 'a new token each time');
+    const others = (text) => text.split('\n').filter((line) => !line.startsWith('MOCK_OPERATOR_TOKEN=')).join('\n');
+    assert.equal(others(first.text), others(mockExampleText), 'every other line is as the example has it');
+    assert.equal(first.text.split('\n').filter((line) => line.startsWith('MOCK_OPERATOR_TOKEN=')).length, 1, 'one line of the token');
+    assert.equal(statSync(join(dir, MOCK.envFile)).mode & 0o777, 0o600, 'the file keeps mode 600: the command edits it in place');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The code blocks of the runbook, with the indent of their list item taken off.
+const mockBlocks = [...mockRunbook.matchAll(/^( *)```sh\n([\s\S]*?)\n\1```$/gm)].map((m) => m[2].split('\n').map((line) => (line.startsWith(m[1]) ? line.slice(m[1].length) : line)).join('\n'));
+const mockBlock = (part) => {
+  const found = mockBlocks.filter((block) => block.includes(part));
+  assert.equal(found.length, 1, `one code block of the runbook has: ${part}`);
+  return found[0];
+};
+
+test('mock service RUNBOOK step 4: the three checks run as written; a mode that is not 600, a placeholder that is left and a token of the wrong form are each shown, and the files that are right pass', SRV_NEEDS, () => {
+  const block = mockBlock("stat -c '%a %U:%G %n' .env.mock-systems");
+  const dir = mkdtempSync(join(tmpdir(), 'mock-step4-'));
+  const fill = (values) => mockExampleText.split('\n').map((line) => { const m = /^([A-Z][A-Z0-9_]*)=/.exec(line); return m && m[1] in values ? `${m[1]}=${values[m[1]]}` : line; }).join('\n');
+  const filled = { MOCK_PUBLIC_BASE: 'https://mock.example.test', MOCK_MTLS_BASE: 'https://mock-mtls.example.test', VECTOR_IDENTITY_LEGACY_ROOT: 'a'.repeat(64), VECTOR_IDENTITY_CONFIG_SEED: `${'b'.repeat(64)}#0`, VECTOR_IDENTITY_POLICY_ID: 'c'.repeat(56) };
+  const check = (text, mode = 0o600) => {
+    writeFileSync(join(dir, MOCK.envFile), text);
+    chmodSync(join(dir, MOCK.envFile), mode);
+    const r = runBash(block, dir);
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout.trimEnd().split('\n');
+  };
+  try {
+    const placeholders = ['MOCK_PUBLIC_BASE=<https origin of the mock host>', 'MOCK_MTLS_BASE=<https origin of the mock mtls host>', 'VECTOR_IDENTITY_LEGACY_ROOT=<64 hex characters>', 'VECTOR_IDENTITY_CONFIG_SEED=<txid>#<index>', 'VECTOR_IDENTITY_POLICY_ID=<56 hex characters>'];
+    const wrong = 'the token is missing or has a wrong form';
+    const good = 'ok: the token has the right form';
+    // The example as it is copied: the mode is right, the five placeholders are shown, and the token is missing.
+    const raw = check(mockExampleText);
+    assert.match(raw[0], /^600 \S+:\S+ \.env\.mock-systems$/);
+    assert.deepEqual(raw.slice(1), [...placeholders, wrong]);
+    // The file that is filled: nothing is left, and each token that the form allows passes.
+    for (const token of ['a'.repeat(32), 'a'.repeat(128), 'aZ09._~+/=-'.repeat(4), 'Zk3'.repeat(16)]) {
+      assert.deepEqual(check(fill({ ...filled, MOCK_OPERATOR_TOKEN: token })).slice(1), ['ok: no placeholder is left', good], token);
+    }
+    // Each token that the form refuses is shown.
+    for (const token of ['', 'a'.repeat(31), 'a'.repeat(129), `${'a'.repeat(40)} ${'b'.repeat(5)}`, `<${'a'.repeat(40)}>`, `${'a'.repeat(40)}!`]) {
+      assert.deepEqual(check(fill({ ...filled, MOCK_OPERATOR_TOKEN: token })).slice(1), ['ok: no placeholder is left', wrong], JSON.stringify(token));
+    }
+    // One placeholder that is left is shown, and only that one.
+    assert.deepEqual(check(fill({ ...filled, MOCK_OPERATOR_TOKEN: 'a'.repeat(40), VECTOR_IDENTITY_POLICY_ID: '<56 hex characters>' })).slice(1), ['VECTOR_IDENTITY_POLICY_ID=<56 hex characters>', good]);
+    // The mode: 644 is shown as it is, so that the operator sees it.
+    assert.match(check(fill({ ...filled, MOCK_OPERATOR_TOKEN: 'a'.repeat(40) }), 0o644)[0], /^644 /);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const MOCK_DOCKER_STUB = String.raw`#!/bin/bash
+printf '%s\n' "$*" >> "$STUB_OUT/docker-calls"
+if [ "$1 $2" = 'image inspect' ]; then
+  [ -n "$STUB_DIGEST" ] || exit 1
+  printf 'ghcr.io/apex-fusion/vector-service-agents/mock-systems@sha256:%s\n' "$STUB_DIGEST"
+fi
+`;
+
+test('mock service RUNBOOK step 5: the commands run as written against a stand-in for docker; the digest goes into the image line, an old digest is replaced, the rest of the file stays, and a failed pull changes nothing', NEEDS_BASH, () => {
+  const block = mockBlock('IMAGE=ghcr.io/apex-fusion/vector-service-agents/mock-systems');
+  const dir = mkdtempSync(join(tmpdir(), 'mock-step5-'));
+  try {
+    mkdirSync(join(dir, 'bin'));
+    writeFileSync(join(dir, 'bin', 'docker'), MOCK_DOCKER_STUB, { mode: 0o755 });
+    const composePath = join(dir, MOCK.composeFile);
+    writeFileSync(composePath, mockComposeText);
+    const [one, two] = ['1234abcd'.repeat(8), 'fedcba98'.repeat(8)];
+    // The last command of the block is the grep that shows the image line: it exits 1 when it shows nothing, and that is the signal of the runbook.
+    const run = (digest, status) => {
+      rmSync(join(dir, 'docker-calls'), { force: true });
+      const r = runBash(`export PATH="${join(dir, 'bin')}:$PATH" STUB_OUT="${dir}" STUB_DIGEST="${digest}"\n${block}\n`, dir);
+      assert.equal(r.status, status, r.stderr);
+      return { stdout: r.stdout, text: readFileSync(composePath, 'utf8'), calls: existsSync(join(dir, 'docker-calls')) ? readFileSync(join(dir, 'docker-calls'), 'utf8').trimEnd().split('\n') : [] };
+    };
+    const imageLine = (digest) => `    image: ${MOCK.image}@sha256:${digest}`;
+    // The file as shipped: the placeholder. A failed pull leaves it, and the check prints nothing and the runbook says so.
+    const failed = run('', 1);
+    assert.equal(failed.text, mockComposeText, 'no digest: the file is not changed');
+    assert.match(failed.stdout, /^no digest: the compose file is not changed\n$/, 'and the check prints no image line');
+    // The first pin.
+    const pinned = run(one, 0);
+    assert.equal(pinned.stdout, `${imageLine(one)}\n`);
+    assert.equal(pinned.text, srvReplace(mockComposeText, '@sha256:<digest>', `@sha256:${one}`), 'only the image line changed');
+    assert.deepEqual(pinned.calls, [`pull ${MOCK.image}:<full git commit sha>`, `image inspect --format {{index .RepoDigests 0}} ${MOCK.image}:<full git commit sha>`]);
+    assert.deepEqual(mockComposeProblems(pinned.text), [], 'the pinned file passes the guard of the compose file');
+    // An upgrade: the old digest is replaced, and a failed pull then leaves the digest that runs.
+    const upgraded = run(two, 0);
+    assert.equal(upgraded.stdout, `${imageLine(two)}\n`);
+    assert.equal(upgraded.text, srvReplace(mockComposeText, '@sha256:<digest>', `@sha256:${two}`));
+    const kept = run('', 0);
+    assert.equal(kept.text, upgraded.text, 'a failed pull keeps the digest that runs');
+    assert.match(kept.stdout, /^no digest: the compose file is not changed\n.*@sha256:fedcba98/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const MOCK_CURL_STUB = String.raw`#!/bin/bash
+: > "$STUB_OUT/args"
+: > "$STUB_OUT/header-file"
+for a in "$@"; do
+  printf '%s\n' "$a" >> "$STUB_OUT/args"
+  case "$a" in @*) cat "$(printf '%s' "$a" | cut -c2-)" >> "$STUB_OUT/header-file" ;; esac
+done
+printf '{"stub":true}'
+`;
+// The app of the service on a loopback port, with the host names of the example. The requests go to it with the Host header of the mock host. The identity and the approval
+// check are never reached: the tenant call and the two reads need no credential of an agent.
+const MOCK_REPLAY_CODE = `
+import { createServer, request } from 'node:http';
+import { createApp } from './src/app.ts';
+const spec = JSON.parse(process.argv[1]);
+const app = createApp({ config: { publicBase: 'https://' + spec.publicHost, publicHost: spec.publicHost, mtlsHost: spec.mtlsHost, operatorToken: spec.token }, identity: {}, approvalCheck: async () => ({ ok: true }), now: () => 1700000000000, writeLog: () => {} });
+const server = createServer((req, res) => { void app.handle(req, res); });
+await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+const { port } = server.address();
+const send = ({ method, path, headers = {}, body }) => new Promise((resolve, reject) => {
+  const req = request({ host: '127.0.0.1', port, method, path, agent: false, headers: { host: spec.publicHost, ...headers } }, (res) => {
+    const chunks = [];
+    res.on('data', (chunk) => chunks.push(chunk));
+    res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+  });
+  req.on('error', reject);
+  req.end(body);
+});
+const answers = [];
+for (const one of spec.requests) answers.push(await send(one));
+console.log(JSON.stringify(answers));
+process.exit(0);
+`;
+
+test('mock service RUNBOOK, the tenant call: run as written with a stand-in for curl it keeps the token out of the arguments and sends it in a header, with the body and the type that the service takes; the real service makes the tenant (201), makes it again (200), and refuses a wrong token, another type and a mistyped field', NEEDS_BASH, () => {
+  const block = mockBlock('/admin/tenants');
+  const token = 'Qx7'.repeat(16);
+  const dir = mkdtempSync(join(tmpdir(), 'mock-tenant-call-'));
+  try {
+    mkdirSync(join(dir, 'bin'));
+    writeFileSync(join(dir, 'bin', 'curl'), MOCK_CURL_STUB, { mode: 0o755 });
+    writeFileSync(join(dir, MOCK.envFile), srvReplace(mockExampleText, 'MOCK_OPERATOR_TOKEN=\n', `MOCK_OPERATOR_TOKEN=${token}\n`));
+    const r = runBash(`export PATH="${join(dir, 'bin')}:$PATH" STUB_OUT="${dir}"\n${srvReplace(srvReplace(block, 'cd /srv/agents/mock-systems', `cd "${dir}"`), '<mock host>', 'mock.example.test')}\n`, dir);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, '{"stub":true}', 'the answer of the call is printed as it is');
+    const argsText = readFileSync(join(dir, 'args'), 'utf8');
+    const args = argsText.trimEnd().split('\n');
+    assert.equal(argsText.includes(token), false, 'the token is in no argument of the program, so ps does not show it');
+    assert.ok(args.some((a) => /^@\/dev\/fd\/\d+$/.test(a)), 'the header comes from a file that holds no copy on the disk');
+    assert.equal(readFileSync(join(dir, 'header-file'), 'utf8'), `Authorization: Bearer ${token}\n`, 'the header of the token');
+    assert.ok(args.includes('Content-Type: application/json'));
+    assert.equal(args.at(-1), 'https://mock.example.test/admin/tenants', 'the operator puts the name of the mock host in place of <mock host>');
+    const body = JSON.parse(args[args.indexOf('--data') + 1]);
+    assert.deepEqual(Object.keys(body).sort(), ['organisations', 'tenant']);
+    // The service takes it. The same text, the same header and the same type go to the real code.
+    const authorization = `Bearer ${token}`;
+    const call = (overrides = {}) => ({ method: 'POST', path: '/admin/tenants', headers: { authorization, 'content-type': 'application/json' }, body: JSON.stringify(body), ...overrides });
+    const answers = inMockService(MOCK_REPLAY_CODE, {
+      publicHost: 'mock.example.test', mtlsHost: 'mock-mtls.example.test', token,
+      requests: [
+        call(), call(),
+        { method: 'GET', path: `/t/${body.tenant}/state` }, { method: 'GET', path: `/t/${body.tenant}/log` },
+        call({ headers: { authorization: 'Bearer wrong', 'content-type': 'application/json' } }),
+        call({ headers: { authorization } }),
+        call({ body: JSON.stringify({ tenant: body.tenant, organizations: body.organisations }) }),
+        call({ body: JSON.stringify({ tenant: body.tenant.toUpperCase(), organisations: body.organisations }) }),
+      ],
+    });
+    assert.deepEqual(answers.map((a) => a.status), [201, 200, 200, 200, 401, 415, 400, 400], 'new, again, the state, the log, and the four refusals');
+    const [made, again, state, log] = answers.slice(0, 4).map((a) => JSON.parse(a.body));
+    assert.deepEqual([made.created, again.created], [true, false]);
+    assert.equal(made.base, `https://mock.example.test/t/${body.tenant}`);
+    assert.deepEqual(Object.keys(made.resources).sort(), ['erp', 'guidelines', 'po', 'records', 'sourcing', 'vendors']);
+    assert.equal(made.audiences.insurer, `https://mock.example.test/t/${body.tenant}/insurer`);
+    assert.deepEqual([state.tenant, log.tenant, log.dropped, log.lines], [body.tenant, body.tenant, 0, []], 'the two reads need no credential, and a tenant that was made again has an empty log');
+    assert.deepEqual(JSON.parse(answers[4].body).error, 'operator_token_invalid');
+    assert.deepEqual(JSON.parse(answers[5].body).error, 'unsupported_media_type');
+    assert.deepEqual(answers.slice(6).map((a) => JSON.parse(a.body).error), ['bad_request', 'bad_request']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('mock service README and RUNBOOK: the two files, the health check, the tenant call, the loss at a restart and the mode 600 are written down, the sections stand in step 6, the failure rows give the codes and the statuses of the service, and every compose command names the one file', () => {
+  const errors = read('services/mock-systems/src/errors.ts');
+  const start = read('services/mock-systems/src/start.ts');
+  // README: the two files, the folder, the limit, the port and the loss.
+  for (const row of [`| \`${MOCK.composeFile}\` | `, `| \`${MOCK.exampleFile}\` | `, '| `/srv/agents/mock-systems` | `agents`, 750 | The folder of the mock service: its compose file and its env file. |']) assert.ok(mockReadme.includes(row), row);
+  assert.ok(mockReadme.includes('\n## The mock service\n'));
+  const gib = mockBytes(/^ {4}mem_limit: (\S+)$/m.exec(mockComposeText)[1]) / 1024 ** 3;
+  assert.ok(mockReadme.includes(`its limit is ${gib} GiB`) && mockReadme.includes(`| Memory limit | ${gib} GiB.`), 'the README gives the limit of the compose file');
+  assert.ok(mockReadme.includes(`| Port | \`127.0.0.1:${MOCK.port}\` on the host, and \`0.0.0.0:${MOCK.port}\` inside the container.`));
+  assert.ok(mockReadme.includes('A restart of the mock service, or a reboot of the host, loses every tenant and its log.'));
+  assert.ok(mockReadme.includes('The operator puts the same two names, as https origins, in the env file of the mock service'));
+  // RUNBOOK: the sections stand in step 6, in this order, and the headings of the file are the ones of the test above.
+  const step6 = section(mockRunbook, '6. Install the snippet of the mock systems');
+  assert.deepEqual([...step6.matchAll(/^### (.+)$/gm)].map((m) => m[1]), ['Run the mock service', 'Make or reset a tenant', 'Read the state and the log of a tenant', 'What a restart loses, upgrade and stop']);
+  for (const part of [
+    MOCK.composeFile, MOCK.exampleFile, MOCK.envFile, '/srv/agents/mock-systems', 'with mode 600',
+    `curl -fsS http://127.0.0.1:${MOCK.port}/healthz`, "docker ps --filter name='^mock-systems$' --format '{{.Names}} {{.Status}} {{.Ports}}'", 'curl -sS -w \'\\n%{http_code}\\n\' https://<mock host>/t/none/state',
+    'https://<mock host>/admin/tenants', 'Authorization: Bearer', '"organisations"', 'docker logs --tail 20 mock-systems', 'https://<mock host>/t/demo-1/state', 'https://<mock host>/t/demo-1/log',
+    'The service keeps every tenant and its log in memory. A restart loses all of them.', 'After a restart, make each tenant again with the call above.',
+    'The mock service holds no job, so this check does not cover it.', 'The mock service starts again with no tenant: make each tenant again',
+  ]) assert.ok(mockRunbook.includes(part), `the runbook says: ${part}`);
+  // The failure table: the two rows of before stay (the first one tells the 421 of Caddy from the 421 of the service), and the rows of the service give the status and the code that the service answers with.
+  const table = section(mockRunbook, 'The failure table');
+  for (const row of ['| A request to the mock host gets `421`, and the body has no `wrong_host` | The TLS name and the Host header differ.', '| The mock service sees no `Client-Cert` header | The client sent no certificate']) assert.ok(table.includes(row), row);
+  const rows = [
+    ['| The mock container starts again and again (`docker ps` says `Restarting`) |', ['the error names the variable', 'the approval check of the use-case kit is not wired in this build']],
+    ['| A call gets `421`, and the JSON body has `wrong_host` |', ['`<mock host>`', '`<mock mtls host>`']],
+    ['| A call gets `400`, and the body has `client_certificate_unexpected` |', ['`request_header -Client-Cert`']],
+    ['| A call to a tenant gets `404`, and the body has `tenant_not_found` |', ['Make the tenant']],
+    ['| `POST /admin/tenants` gets `401`, and the body has `operator_token_invalid` |', ['Send the token of the env file']],
+  ];
+  for (const [start6, parts] of rows) {
+    const row = table.split('\n').find((line) => line.startsWith(start6));
+    assert.ok(row, `a row of the failure table starts with: ${start6}`);
+    assert.equal(row.split(/(?<!\\)\|/).length, 5, `three cells: ${start6}`);
+    for (const part of parts) assert.ok(row.includes(part), `${start6} has: ${part}`);
+  }
+  for (const [code, status] of [['wrong_host', 421], ['client_certificate_unexpected', 400], ['tenant_not_found', 404], ['operator_token_invalid', 401]]) {
+    assert.ok(errors.includes(`${code}: ${status},`), `the service answers ${code} with ${status}`);
+    assert.ok(table.includes(`\`${status}\``) && table.includes(`\`${code}\``), `the failure table has ${status} and ${code}`);
+  }
+  assert.ok(start.includes('the approval check of the use-case kit is not wired in this build'), 'the start of the service refuses with the words of the failure table');
+  // The compose commands of the steps: the one file, and only up -d, up -d --force-recreate and down. No restart command and no -v.
+  const mine = mockBlocks.filter((block) => block.includes('docker-compose.mock-systems.yml')).join('\n');
+  const commands = [...mine.matchAll(/docker compose ([^\n]*)/g)].map((m) => m[1]);
+  assert.deepEqual(commands, ['-f docker-compose.mock-systems.yml up -d', '-f docker-compose.mock-systems.yml up -d --force-recreate mock-systems', '-f docker-compose.mock-systems.yml down']);
+});
+
+test('mock service image, the health check: run as the Dockerfile writes it against a stand-in for the service, it passes on a 200 and fails on a 503 and on a port that nobody listens on', async () => {
+  // The image has the one health check of the service. The compose file sets none, so docker ps shows the state that the image reports.
+  assert.equal('healthcheck' in parseYaml(mockComposeText).services[MOCK.name], false, 'the compose file has no second health check');
+  const line = read('services/mock-systems/Dockerfile').split('\n').find((text) => text.startsWith('HEALTHCHECK '));
+  assert.ok(line, 'the Dockerfile has a HEALTHCHECK');
+  const [program, flag, script] = JSON.parse(line.slice(line.indexOf(' CMD ') + 5));
+  assert.deepEqual([program, flag], ['node', '-e']);
+  assert.ok(script.includes(`http://127.0.0.1:${MOCK.port}/healthz`), 'the check calls GET /healthz on the port of the service');
+  const run = async (port) => {
+    try {
+      await execFileAsync(process.execPath, ['-e', script.replace(`127.0.0.1:${MOCK.port}`, `127.0.0.1:${port}`)], { timeout: 30_000 });
+      return 0;
+    } catch (error) {
+      return error.code;
+    }
+  };
+  const serve = (status) => new Promise((resolve) => { const server = createStubServer((req, res) => { res.statusCode = status; res.end('{"ok":true}'); }); server.listen(0, '127.0.0.1', () => resolve(server)); });
+  const [ok, unwell, gone] = [await serve(200), await serve(503), await serve(200)];
+  const goneTo = gone.address().port;
+  await new Promise((resolve) => gone.close(resolve));
+  try {
+    assert.equal(await run(ok.address().port), 0, 'a 200 is healthy');
+    assert.equal(await run(unwell.address().port), 1, 'a 503 is not healthy');
+    assert.equal(await run(goneTo), 1, 'a port with no service is not healthy');
+  } finally {
+    for (const server of [ok, unwell]) { server.closeAllConnections(); server.close(); }
+  }
 });
