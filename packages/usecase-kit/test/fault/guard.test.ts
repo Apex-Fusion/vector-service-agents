@@ -148,12 +148,36 @@ describe('checkCleanRun', () => {
     expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: { FAULT_MODE: '' } }])).toMatchObject({ ok: true });
   });
 
-  it('refuses an environment that cannot be read as variables: a Proxy that throws when it is read, and a Proxy whose prototype cannot be read', () => {
-    const throwsOnHas = new Proxy({}, { has: () => { throw new Error('no'); } });
-    const throwsOnPrototype = new Proxy({}, { getPrototypeOf: () => { throw new Error('no'); } });
-    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: throwsOnHas }])).toMatchObject({ ok: false, code: 'service_unreadable' });
-    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: throwsOnPrototype }])).toMatchObject({ ok: false, code: 'service_unreadable' });
-    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: new Proxy({}, {}) }])).toMatchObject({ ok: true });
+  it('refuses a Proxy as the environment, because its traps can answer the guard in one way and a reader of the object in another: the two cases of the review, and the twins', () => {
+    const parsed: Record<string, string> = { FAULT_MODE: 'confirm_wrong_lot' };
+    // A get trap that gives the variable, and a target that has none: the prototype test and the `in` test see an empty record.
+    const getOnly = new Proxy({}, { get: (_target, name) => parsed[String(name)] });
+    // A target that has the variable, and a has trap that says that it has not.
+    const hasLies = new Proxy({ FAULT_MODE: 'confirm_wrong_lot' }, { has: () => false });
+    const seenAs = (env: unknown) => [{ service: 'svc', kind: 'order-desk', env }] as SeenService[];
+    for (const [name, env] of [['a get trap', getOnly], ['a has trap that says no', hasLies]] as const) {
+      expect(checkCleanRun(seenAs(env)), name).toMatchObject({ ok: false, code: 'bad_input' });
+      expect(checkFaultRun(seenAs(env), { service: 'svc', value: 'confirm_wrong_lot' }), name).toMatchObject({ ok: false, code: 'bad_input' });
+    }
+    // The twins: the same records with no Proxy are read, and the fault in them is found.
+    expect(checkCleanRun(seenAs({ ...parsed }))).toMatchObject({ ok: false, code: 'fault_set' });
+    expect(checkCleanRun(seenAs({ FAULT_MODE: 'confirm_wrong_lot' }))).toMatchObject({ ok: false, code: 'fault_set' });
+    expect(checkFaultRun(seenAs({ ...parsed }), { service: 'svc', value: 'confirm_wrong_lot' })).toMatchObject({ ok: true });
+  });
+
+  it('refuses every other Proxy too: a Proxy with no trap, a Proxy of process.env, a Proxy that throws, and a revoked Proxy', () => {
+    const revocable = Proxy.revocable({}, {});
+    revocable.revoke();
+    const proxies: [string, unknown][] = [
+      ['a Proxy with no trap', new Proxy({}, {})],
+      ['a Proxy of a record with a fault', new Proxy({ FAULT_MODE: 'confirm_wrong_lot' }, {})],
+      ['a Proxy of process.env', new Proxy(process.env, {})],
+      ['a Proxy that throws when it is read', new Proxy({}, { has: () => { throw new Error('no'); } })],
+      ['a Proxy whose prototype cannot be read', new Proxy({}, { getPrototypeOf: () => { throw new Error('no'); } })],
+      ['a revoked Proxy', revocable.proxy],
+    ];
+    for (const [name, env] of proxies) expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env }] as SeenService[]), name).toMatchObject({ ok: false, code: 'bad_input' });
+    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: {} }])).toMatchObject({ ok: true });
   });
 
   it('refuses a FAULT_MODE that comes from Object.prototype: it is not a variable of the environment, so the guard cannot read it as one', () => {
