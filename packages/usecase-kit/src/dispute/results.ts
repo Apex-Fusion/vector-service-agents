@@ -31,6 +31,7 @@ export type ChallengeCode =
   | DocumentCode
   | 'same_agent'
   | 'job_already_disputed'
+  | 'journal_unavailable'
   | 'claim_window_closing'
   | 'challenge_stake_too_low'
   | 'evidence_not_built'
@@ -56,14 +57,30 @@ export interface ChallengeFiled {
   readonly stake_lovelace: bigint;
   /** POSIX milliseconds: the end of the time that the oracle and the jury have to resolve the challenge. */
   readonly deadline: number;
-  /** The fees of the evidence transaction and the challenge transaction. */
-  readonly fee_lovelace: bigint;
+  /** The fees of the evidence transaction and the challenge transaction. It is null for a challenge that this agent filed earlier and that the code found again, from the chain: its fees are not known. */
+  readonly fee_lovelace: bigint | null;
 }
 
-/** A challenge that is not filed. `evidence` is set when the evidence document landed before the step failed, and `sent` when a transaction was sent and not seen confirmed. */
+/** A challenge transaction that landed against another claim than the one that the evidence names. It is on chain, and it is not the challenge that the job wanted. */
+export interface ChallengeLanded {
+  readonly tx_hash: string;
+  readonly challenge: OutputRef;
+  readonly challenge_token: string;
+  /** The claim output that the transaction spent. */
+  readonly claim: OutputRef;
+  readonly claim_token: string;
+}
+
+/**
+ * A challenge that is not filed. Each member that is not null names a transaction that landed or may land before the step failed: `evidence` is the evidence document, `sent` a transaction that was sent
+ * and not seen confirmed, `challenge` a challenge transaction that landed against another claim than the one that the evidence names, and `wrong_document` a document transaction that landed with
+ * another hash than the evidence document.
+ */
 export interface ChallengeNotFiled extends Refused<ChallengeCode> {
   readonly evidence: DocumentLanded | null;
   readonly sent: SentNotConfirmed | null;
+  readonly challenge: ChallengeLanded | null;
+  readonly wrong_document: DocumentLanded | null;
 }
 
 export type ChallengeResult = Accepted<ChallengeFiled> | ChallengeNotFiled;
@@ -108,9 +125,11 @@ export interface RunClaimStaked {
   readonly fee_lovelace: bigint;
 }
 
+/** A claim that is not staked. `document` is the claim document that landed before the step failed, `sent` a transaction that was sent and not seen confirmed, and `wrong_document` a document transaction that landed with another hash than the claim document. */
 export interface RunClaimNotStaked extends Refused<RunClaimCode> {
   readonly document: DocumentLanded | null;
   readonly sent: SentNotConfirmed | null;
+  readonly wrong_document: DocumentLanded | null;
 }
 
 export type RunClaimResult = Accepted<RunClaimStaked> | RunClaimNotStaked;

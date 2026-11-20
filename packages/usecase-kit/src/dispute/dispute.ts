@@ -1,35 +1,58 @@
 // packages/usecase-kit/src/dispute/dispute.ts
-// The Module-1 path of an agent: the claim of a run, the lookup of the open claim of an agent, the challenge, and the withdrawal. The class holds the order of the steps and the guards. The chain, the queue
-// of the service key and the clock come in as ports (ports.ts), so a test runs it on a scripted port and on the fixture world.
+// The Module-1 path of an agent: the claim of a run, the lookup of the claim that a challenge names, the challenge, and the withdrawal. The class holds the order of the steps and the guards. The chain,
+// the queue of the service key, the clock and the journal come in as ports (ports.ts, journal.ts), so a test runs it on a scripted port and on the fixture world.
 //
 // The order of a challenge is fixed, and each step is checked before the next one starts:
-//   1. Find the open claim of the OTHER party, and nothing else. No open claim ends the job with `no_open_claim`. More than one open claim ends it with `claim_ambiguous`: the code never guesses.
-//   2. Make the evidence document. A document that is refused ends the job. Nothing is on chain yet.
-//   3. Publish the evidence document, and wait for its confirmation. A document that is not confirmed ends the job. The challenge is not built.
-//   4. In one job of the queue: read the claim again, and build the challenge against the exact output that the evidence names. A claim that changed ends the job.
-// A job (one escrow) gets one challenge. Once a transaction of a job landed or may land, the job takes no second attempt.
+//   0. Read the journal of the job. A job that has a record gets that state, and nothing is sent a second time.
+//   1. Read the claims. A challenge of this agent for this job that is on chain already is found again, and it is the result. The code never files a second one.
+//   2. Choose the claim: among the Open claims of the OTHER party that are claims of this kit and have enough window left, the one with the latest challenge deadline. A claim is a claim of this kit when
+//      its claim document is on chain, its hash is the hash that the claim holds, and it is the document that `claimDocument` writes for that party. Two claims with the same last deadline end the job with
+//      `claim_ambiguous`: the code never chooses by the order of a list. None ends it with `no_open_claim`.
+//   3. Make the evidence document. A document that is refused ends the job. Nothing is on chain yet.
+//   4. In one job of the queue: check the window that is left, write the journal, publish the evidence document, and wait for its confirmation. A document that is not confirmed ends the job. The
+//      challenge is not built.
+//   5. In one job of the queue: read the claim again, and build the challenge against the exact output that the evidence names. A claim that changed ends the job.
+// A job (one escrow) gets one challenge. Once a transaction of a job landed or may land, the job takes no second attempt, also after a restart: the journal says so.
 //
-// Every transaction runs in the queue of the service key. The code of a caller must not call a method of this class from inside a job of the same queue: the call would wait for itself.
-import { NO_OPEN_CLAIM, accepted, parseDid, parseJsonValue, parseOutputRef, refused, checkMembers } from '../protocol/index.ts';
+// Every read of a port has a bound, so a read that never answers does not hold the queue of the service key: it ends with `chain_unavailable`. Every transaction runs in the queue of the service key.
+// The code of a caller must not call a method of this class from inside a job of the same queue: the call would wait for itself.
+import { documentHash, txHashOfUri } from '@vsa/buyer-core';
+import { NO_OPEN_CLAIM, accepted, checkMembers, parseDid, parseJsonValue, parseOutputRef, refused } from '../protocol/index.ts';
 import type { Did, Digest, JsonObject, JsonValue, ManifestClaim, OutputRef, ProtocolResult, Refused } from '../protocol/index.ts';
-import { JUROR_MEDIA_TYPE, claimDocument, evidenceDocument } from './documents.ts';
+import { EVIDENCE_STATEMENT, JUROR_MEDIA_TYPE, claimDocument, evidenceDocument, evidenceReferences, parseClaimToken, readClaimDocument } from './documents.ts';
 import type { ApprovalDigestFacts, EvidenceDocumentInput, OrderConfirmationFacts, QuotePriceFacts } from './documents.ts';
-import { challengeDeadlineOf, withdrawableFrom } from './ports.ts';
-import type { ClaimView, Module1Port, OpenedChallenge, ServiceQueue, TxNotBuilt, TxNotConfirmed, TxResult } from './ports.ts';
+import { MemoryJournal, parseJobRecord } from './journal.ts';
+import type { DisputeJournal, FiledRecord, JobRecord } from './journal.ts';
+import { MAX_CLAIM_TYPE_BYTES, challengeDeadlineOf, withdrawableFrom } from './ports.ts';
+import type { ChallengeView, ClaimView, Module1Port, OpenedChallenge, PublishedDocument, ReadDocument, ServiceQueue, TxNotBuilt, TxNotConfirmed, TxResult } from './ports.ts';
 import type {
   ChallengeCode, ChallengeFiled, ChallengeNotFiled, ChallengeResult, ClaimLookupCode, ClaimWithdrawn, DocumentLanded, RunClaimNotStaked, RunClaimResult, SentNotConfirmed, WithdrawNotDone,
   WithdrawResult,
 } from './results.ts';
 import { describeError } from './text.ts';
 
+const HOUR_MS = 3_600_000;
+
+/**
+ * The least resolution deadline for which a challenge can have a jury: 6 hours and 40 minutes. The relay opens the case of a challenge only when it can do so at least 6 hours before the end of the
+ * deadline (the time of the commit window, the reveal window and the margin of the jury of the deployment), and it opens the case at once when the deadline is at most 6 hours and 40 minutes away. With
+ * this value the relay has 40 minutes to see the challenge and to open the case. A deadline below it gives a challenge that no jury reads: the relay resolves it as inconclusive for lack of time.
+ */
+export const LEAST_RESOLUTION_DEADLINE_MS = 6 * HOUR_MS + 40 * 60_000;
+
 /** What a challenge needs besides the evidence. The caller reads the values from its own settings: the code has no default. */
 export interface DisputeSettings {
   /** The stake of a challenge. It must be at least the stake of the claim that it challenges: a challenge with less is refused before anything is published. */
   readonly challenge_stake_lovelace: bigint;
-  /** The time that the oracle and the jury have to resolve a challenge, counted from its start. The Module-1 deployment names its own value. */
-  readonly resolution_deadline_ms: number;
+  /**
+   * The resolution deadline of the challenges, in milliseconds. The value of a challenge is the one that the Module-1 deployment names (the `protocol` of the port), and no setting can change it.
+   * A caller that keeps this setting must give the value of the deployment: another value is an error of the construction, and nothing is published.
+   */
+  readonly resolution_deadline_ms?: number;
   /** The least time that must be left in the challenge window of a claim when the evidence is published. Use the time that the evidence needs to confirm, and some more. At least 2,000. */
   readonly min_window_left_ms: number;
+  /** The most time that one read of a port may take, in milliseconds. A read that takes longer ends with `chain_unavailable`, or `journal_unavailable` for the journal. */
+  readonly read_timeout_ms: number;
 }
 
 export interface DisputeDeps {
@@ -37,8 +60,12 @@ export interface DisputeDeps {
   readonly queue: ServiceQueue;
   /** The time in POSIX milliseconds. */
   readonly clock: () => number;
+  /** Waits `ms` milliseconds. It bounds each read of a port. Its timer is not cancelled when the read ends first, so it must not hold the process open. */
+  readonly sleep: (ms: number) => Promise<void>;
   readonly settings: DisputeSettings;
-  /** One line for each step. A line has references of the chain and codes: it has no key and no part of a request. */
+  /** The journal of the jobs. The default keeps the records in memory: a restart forgets them. A service that must not file a job twice after a restart gives a journal that keeps them on disk. */
+  readonly journal?: DisputeJournal;
+  /** One line for each step. A line has references of the chain and codes: it has no key and no part of a request. A function that throws changes no result. */
   readonly log?: (line: string) => void;
 }
 
@@ -71,7 +98,7 @@ export interface RunClaimInput {
   readonly stake_lovelace: bigint;
   /** The challenge window of the claim in milliseconds. Module-1 has a least and a most. */
   readonly challenge_window_ms: number;
-  /** The category tag of the claim: 1 to 64 bytes of text. */
+  /** The category tag of the claim: 1 to MAX_CLAIM_TYPE_BYTES bytes of text. */
   readonly claim_type: string;
 }
 
@@ -93,11 +120,15 @@ function requireMilliseconds(value: unknown, name: string, least: number): numbe
   return value;
 }
 
-const notFiled = (code: ChallengeCode, detail: string, landed: Partial<Pick<ChallengeNotFiled, 'evidence' | 'sent'>> = {}): ChallengeNotFiled => ({
-  ok: false, code, detail, evidence: null, sent: null, ...landed,
+type Landed = Partial<Pick<ChallengeNotFiled, 'evidence' | 'sent' | 'challenge' | 'wrong_document'>>;
+
+const notFiled = (code: ChallengeCode, detail: string, landed: Landed = {}): ChallengeNotFiled => ({
+  ok: false, code, detail, evidence: null, sent: null, challenge: null, wrong_document: null, ...landed,
 });
 
 const sentOf = (result: { tx_hash: string; valid_to: number; may_land: boolean }): SentNotConfirmed => ({ tx_hash: result.tx_hash, valid_to: result.valid_to, may_land: result.may_land });
+
+const landedDocument = (published: PublishedDocument): DocumentLanded => ({ tx_hash: published.tx_hash, uri: published.uri, document_hash: published.document_hash });
 
 /** A transaction step that did not confirm: the port did not build it, it was sent and not seen confirmed, or the port itself failed. */
 type StepFailure = TxNotBuilt | TxNotConfirmed | Refused<'port_error'>;
@@ -113,38 +144,177 @@ function failed<B extends string, C extends string>(failure: StepFailure, built:
 function changeOf(before: ClaimView, after: ClaimView | null, now: number): string | null {
   if (after === null) return 'the claim output is spent or is not a claim output any more';
   if (after.state !== 'Open') return `the claim is ${after.state} now`;
-  if (after.token !== before.token || after.claimer !== before.claimer) return 'the output holds another claim now';
+  if (after.token !== before.token || after.claimer !== before.claimer || after.claim_hash !== before.claim_hash) return 'the output holds another claim now';
   if (now >= challengeDeadlineOf(after)) return 'the challenge window of the claim ended';
   return null;
 }
 
-/** What a challenge step knows when it ends: the result, and whether a transaction of the job landed or may land. */
-interface Ended {
-  readonly result: ChallengeResult;
-  readonly landed: boolean;
+// --- What a port gives, checked ---------------------------------------------------------------------------------------------------------------------------------------
+
+const CLAIM_STATES: readonly string[] = ['Open', 'Challenged', 'Validated', 'Invalidated'];
+const CHALLENGE_STATES: readonly string[] = ['PendingOracle', 'PendingJury', 'Voting', 'Resolved'];
+const KEY_HASH = /^[0-9a-f]{56}$/;
+const HASH = /^[0-9a-f]{64}$/;
+const HEX = /^(?:[0-9a-f]{2})*$/;
+const MAX_RECORDED_DETAIL = 400;
+
+const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+const isKeyHash = (value: unknown): value is string | null => value === null || (typeof value === 'string' && KEY_HASH.test(value));
+
+/**
+ * A claim view as the port must give it, or null when a member has the wrong type or form. The view that this returns is a copy: what a port changes later does not change what the code compared.
+ * A claim that is left out for a view of a wrong shape would let a challenge pass it by, so the caller ends with `chain_unavailable` for a null.
+ */
+function claimViewOf(value: unknown): ClaimView | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+  const ref = parseOutputRef(v.ref, 'ref');
+  const token = parseClaimToken(v.token, 'token');
+  const claimer = parseDid(v.claimer, 'claimer');
+  if (!ref.ok || !token.ok || !claimer.ok || !isKeyHash(v.claimer_key_hash)) return null;
+  if (typeof v.state !== 'string' || !CLAIM_STATES.includes(v.state)) return null;
+  if (typeof v.stake_lovelace !== 'bigint' || v.stake_lovelace < 0n) return null;
+  if (!isCount(v.submitted_at) || !isCount(v.challenge_window_ms) || v.challenge_window_ms < 1 || !Number.isSafeInteger(v.submitted_at + v.challenge_window_ms)) return null;
+  if (typeof v.claim_hash !== 'string' || !HEX.test(v.claim_hash) || typeof v.claim_type !== 'string' || typeof v.claim_uri !== 'string') return null;
+  return {
+    ref: ref.value, token: token.value, claimer: claimer.value, claimer_key_hash: v.claimer_key_hash, state: v.state as ClaimView['state'], stake_lovelace: v.stake_lovelace,
+    submitted_at: v.submitted_at, challenge_window_ms: v.challenge_window_ms, claim_hash: v.claim_hash, claim_type: v.claim_type, claim_uri: v.claim_uri,
+  };
+}
+
+/** A challenge view as the port must give it, or null (see claimViewOf). */
+function challengeViewOf(value: unknown): ChallengeView | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+  const ref = parseOutputRef(v.ref, 'ref');
+  const claim = parseOutputRef(v.claim, 'claim');
+  const claimToken = parseClaimToken(v.claim_token, 'claim_token');
+  const auditor = parseDid(v.auditor, 'auditor');
+  if (!ref.ok || !claim.ok || !claimToken.ok || !auditor.ok || typeof v.token !== 'string' || !HASH.test(v.token) || !isKeyHash(v.auditor_key_hash)) return null;
+  if (typeof v.stake_lovelace !== 'bigint' || v.stake_lovelace < 0n || typeof v.evidence_hash !== 'string' || !HEX.test(v.evidence_hash) || typeof v.evidence_uri !== 'string') return null;
+  if (!isCount(v.challenged_at) || !isCount(v.resolution_deadline_ms) || !Number.isSafeInteger(v.challenged_at + v.resolution_deadline_ms)) return null;
+  if (typeof v.state !== 'string' || !CHALLENGE_STATES.includes(v.state)) return null;
+  return {
+    ref: ref.value, token: v.token, claim: claim.value, claim_token: claimToken.value, auditor: auditor.value, auditor_key_hash: v.auditor_key_hash, stake_lovelace: v.stake_lovelace,
+    evidence_hash: v.evidence_hash, evidence_uri: v.evidence_uri, challenged_at: v.challenged_at, resolution_deadline_ms: v.resolution_deadline_ms, state: v.state as ChallengeView['state'],
+  };
+}
+
+/** A document that the port read, or null when a member has the wrong type. */
+function readDocumentOf(value: unknown): ReadDocument | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+  const fine = (member: unknown): member is string | null => member === null || typeof member === 'string';
+  if (!(v.bytes instanceof Uint8Array) || !fine(v.type) || !fine(v.media_type)) return null;
+  return { bytes: v.bytes, type: v.type, media_type: v.media_type };
+}
+
+const LATE = Symbol('late');
+
+/**
+ * Runs a read of a port with a bound. A read that throws, and a read that is not done after `ms` milliseconds of the `sleep` port, give a refusal with `code`. The read that lost is left to end alone:
+ * its answer is not used, and its error is not an unhandled one.
+ */
+async function bounded<T, C extends string>(sleep: (ms: number) => Promise<void>, ms: number, code: C, what: string, read: () => Promise<T>): Promise<ProtocolResult<T, C>> {
+  try {
+    const running = Promise.resolve().then(read);
+    running.catch(() => undefined);
+    const timer = sleep(ms).then(() => LATE);
+    timer.catch(() => undefined);
+    const result = await Promise.race([running, timer]);
+    return result === LATE ? refused(code, `${what} did not answer within ${ms} ms`) : accepted(result as T);
+  } catch (error) {
+    return refused(code, `${what} cannot be read: ${describeError(error)}`);
+  }
+}
+
+// --- The records of the journal ---------------------------------------------------------------------------------------------------------------------------------------
+
+const recordOfFiled = (filed: ChallengeFiled): FiledRecord => ({
+  record: filed.record, claim_token: filed.claim_token, against_did: filed.against_did, evidence_uri: filed.evidence_uri, evidence_hash: filed.evidence_hash, challenge_tx: filed.challenge_tx,
+  challenge_token: filed.challenge_token, stake_lovelace: String(filed.stake_lovelace), deadline: filed.deadline, fee_lovelace: filed.fee_lovelace === null ? null : String(filed.fee_lovelace),
+});
+
+const filedOfRecord = (record: FiledRecord): ChallengeFiled => ({
+  record: record.record, claim_token: record.claim_token, against_did: record.against_did, evidence_uri: record.evidence_uri, evidence_hash: record.evidence_hash,
+  challenge_tx: record.challenge_tx, challenge_token: record.challenge_token, stake_lovelace: BigInt(record.stake_lovelace), deadline: record.deadline,
+  fee_lovelace: record.fee_lovelace === null ? null : BigInt(record.fee_lovelace),
+});
+
+/** The transactions that a record says landed or may land. */
+const landedOf = (record: JobRecord | null): Landed => (record === null ? {} : {
+  evidence: record.evidence, sent: record.ended?.sent ?? null, challenge: record.ended?.challenge ?? null, wrong_document: record.ended?.wrong_document ?? null,
+});
+
+function earlierDetail(record: JobRecord): string {
+  const what = record.step === 'started' ? 'a challenge for this job was started before, and its evidence may be on chain'
+    : record.step === 'evidence_landed' ? 'the evidence of a challenge for this job landed before, and the challenge may be on chain'
+      : `a challenge for this job ended before with the code ${record.ended?.code ?? 'unknown'}`;
+  return `${what}: a job gets one challenge, and nothing is sent a second time`;
+}
+
+/** The claim that a challenge names, and the text of its statement `EVIDENCE_STATEMENT`. */
+interface Chosen {
+  readonly claim: ClaimView;
+  readonly statement_text: string;
+}
+
+/** What a challenge knows about its own transactions while it runs. */
+interface Progress {
+  /** True once the code is about to send a transaction of the job: from then on the job is not free for a second attempt. */
+  sent: boolean;
 }
 
 export class Dispute {
   readonly #port: Module1Port;
   readonly #queue: ServiceQueue;
   readonly #clock: () => number;
-  readonly #settings: DisputeSettings;
+  readonly #sleep: (ms: number) => Promise<void>;
+  readonly #stake: bigint;
+  readonly #windowLeft: number;
+  readonly #readTimeout: number;
+  readonly #resolutionDeadline: number;
+  readonly #journal: DisputeJournal;
   readonly #log: (line: string) => void;
-  /** The jobs that have a challenge in progress or a transaction that landed. */
-  readonly #jobs = new Map<OutputRef, 'pending' | 'landed'>();
+  /** The jobs of which a challenge runs now in this process. */
+  readonly #running = new Set<OutputRef>();
 
-  /** Refuses settings of the wrong type before anything is read: a challenge stake that is not a bigint, or a time that is not a whole number, is an error and never "no limit". */
+  /**
+   * Refuses settings of the wrong type before anything is read: a challenge stake that is not a bigint, or a time that is not a whole number, is an error and never "no limit". The resolution
+   * deadline is the one of the Module-1 deployment, from the port. A deployment whose deadline is too short for the relay, and a setting that is not the value of the deployment, are errors: a
+   * challenge with another value would have no jury.
+   */
   constructor(deps: DisputeDeps) {
     const settings = deps.settings;
-    this.#settings = {
-      challenge_stake_lovelace: requireBigint(settings.challenge_stake_lovelace, 'settings.challenge_stake_lovelace'),
-      resolution_deadline_ms: requireMilliseconds(settings.resolution_deadline_ms, 'settings.resolution_deadline_ms', 1),
-      min_window_left_ms: requireMilliseconds(settings.min_window_left_ms, 'settings.min_window_left_ms', LEAST_WINDOW_LEFT_MS),
-    };
+    this.#stake = requireBigint(settings.challenge_stake_lovelace, 'settings.challenge_stake_lovelace');
+    this.#windowLeft = requireMilliseconds(settings.min_window_left_ms, 'settings.min_window_left_ms', LEAST_WINDOW_LEFT_MS);
+    this.#readTimeout = requireMilliseconds(settings.read_timeout_ms, 'settings.read_timeout_ms', 1);
+    const deployment = requireMilliseconds(deps.port.protocol?.resolution_deadline_ms, 'port.protocol.resolution_deadline_ms', 1);
+    if (deployment < LEAST_RESOLUTION_DEADLINE_MS) {
+      throw new RangeError(`the resolution deadline of the Module-1 deployment is ${deployment} ms, and a challenge needs at least ${LEAST_RESOLUTION_DEADLINE_MS} ms: the relay opens no case for less`);
+    }
+    if (settings.resolution_deadline_ms !== undefined) {
+      const given = requireMilliseconds(settings.resolution_deadline_ms, 'settings.resolution_deadline_ms', 1);
+      if (given !== deployment) throw new RangeError(`settings.resolution_deadline_ms is ${given} ms, and the Module-1 deployment has ${deployment} ms: a challenge names the value of the deployment`);
+    }
+    this.#resolutionDeadline = deployment;
+    if (typeof deps.sleep !== 'function') throw new TypeError('sleep must be a function');
+    if (deps.journal !== undefined && (typeof deps.journal.get !== 'function' || typeof deps.journal.put !== 'function')) throw new TypeError('journal must have the functions get and put');
     this.#port = deps.port;
     this.#queue = deps.queue;
     this.#clock = deps.clock;
-    this.#log = deps.log ?? (() => undefined);
+    this.#sleep = deps.sleep;
+    this.#journal = deps.journal ?? new MemoryJournal();
+    const log = deps.log ?? (() => undefined);
+    // A log line that fails changes no result: a transaction may have landed when the line is written, and the result must say so.
+    this.#log = (line) => {
+      try {
+        const out: unknown = log(line);
+        if (out !== undefined && out !== null) Promise.resolve(out).catch(() => undefined);
+      } catch {
+        // The line is lost. Nothing else changes.
+      }
+    };
   }
 
   #now(): number {
@@ -153,41 +323,122 @@ export class Dispute {
     return now;
   }
 
+  /** The claims of the chain, each in its form. A list that cannot be read, or that has a view of a wrong shape, is `chain_unavailable`: the code never takes it for a list with no claim. */
   async #readClaims(): Promise<ProtocolResult<readonly ClaimView[], 'chain_unavailable'>> {
-    try {
-      const claims = await this.#port.readClaims();
-      return Array.isArray(claims) ? accepted(claims) : refused('chain_unavailable', 'the claims cannot be read: the port gave no list');
-    } catch (error) {
-      return refused('chain_unavailable', `the claims cannot be read from the chain: ${describeError(error)}`);
+    const read = await bounded(this.#sleep, this.#readTimeout, 'chain_unavailable', 'the claims', () => this.#port.readClaims());
+    if (!read.ok) return read;
+    if (!Array.isArray(read.value)) return refused('chain_unavailable', 'the claims cannot be read: the port gave no list');
+    const views: ClaimView[] = [];
+    for (const value of read.value) {
+      const view = claimViewOf(value);
+      if (view === null) return refused('chain_unavailable', 'the claims cannot be read: the port gave a claim of a wrong shape');
+      views.push(view);
     }
+    return accepted(views);
   }
 
-  /** Runs a job in the queue of the service key. A job that throws gives `port_error`: the port must describe each problem with a result, so a throw is a defect, and a transaction may have landed. */
-  async #queued<T>(job: () => Promise<T>): Promise<T | Refused<'port_error'>> {
+  /** Runs a job in the queue of the service key. A job that throws gives `port_error`: the port must describe each problem with a result, so a throw is a defect. */
+  async #queued<T>(job: () => Promise<T>, mayHaveLanded: () => boolean = () => true): Promise<T | Refused<'port_error'>> {
     try {
       return await this.#queue.run(job);
     } catch (error) {
-      return refused('port_error', `the chain port or the queue failed, and a transaction may have landed: ${describeError(error)}`);
+      return refused('port_error', `the chain port or the queue failed, and ${mayHaveLanded() ? 'a transaction may have landed' : 'nothing was sent'}: ${describeError(error)}`);
     }
+  }
+
+  /** The document at a `vector-tx:` address, in its form. Null when the address is of another kind: a document that cannot be a document of this kit, and that the code never fetches. */
+  async #document(uri: string, what: string): Promise<ProtocolResult<ReadDocument | null, 'chain_unavailable'>> {
+    let address: string | null;
+    try {
+      address = txHashOfUri(uri);
+    } catch {
+      address = null;
+    }
+    if (address === null) return accepted(null);
+    const read = await bounded(this.#sleep, this.#readTimeout, 'chain_unavailable', what, () => this.#port.readDocument(uri));
+    if (!read.ok) return read;
+    const document = readDocumentOf(read.value);
+    return document === null ? refused('chain_unavailable', `${what} cannot be read: the port gave a document of a wrong shape`) : accepted(document);
+  }
+
+  /** Stores a record, bounded. A failure is `journal_unavailable` with the reason. */
+  async #store(escrow: OutputRef, record: JobRecord): Promise<ProtocolResult<null, 'journal_unavailable'>> {
+    const stored = await bounded(this.#sleep, this.#readTimeout, 'journal_unavailable', 'the journal', () => this.#journal.put(escrow, record));
+    return stored.ok ? accepted(null) : stored;
+  }
+
+  /** Stores the record of a step that landed. A failure is logged and changes no result: the transaction is on chain, and the result must say so. */
+  async #remember(escrow: OutputRef, record: JobRecord): Promise<void> {
+    const stored = await this.#store(escrow, record);
+    if (!stored.ok) this.#log(`dispute: the journal did not store the step ${record.step} of the job ${escrow}: ${stored.detail}`);
+  }
+
+  // --- The claim that a challenge names ---------------------------------------------------------------------------------------------------------------------------------
+
+  /**
+   * The statement of a claim of this kit, or null for a claim that is not one. A claim is a claim of this kit when its claim document is a `vector-tx:` document that is on chain, its hash is the
+   * claim hash that the claim holds, it was published as a claim with the media type of this kit, and it is the document that `claimDocument` writes for the claimer. A document that cannot be read
+   * is `chain_unavailable`.
+   */
+  async #kitClaim(claim: ClaimView): Promise<ProtocolResult<string | null, 'chain_unavailable'>> {
+    if (!HASH.test(claim.claim_hash)) return accepted(null);
+    const read = await this.#document(claim.claim_uri, 'the claim document');
+    if (!read.ok) return read;
+    const document = read.value;
+    if (document === null || documentHash(document.bytes) !== claim.claim_hash) return accepted(null);
+    if (document.type !== 'claim' || document.media_type !== JUROR_MEDIA_TYPE) return accepted(null);
+    const input = readClaimDocument(document.bytes);
+    if (!input.ok || input.value.agent_did !== claim.claimer) return accepted(null);
+    return accepted(input.value.claim.statements.find((statement) => statement.id === EVIDENCE_STATEMENT)?.text ?? null);
+  }
+
+  /**
+   * The claim that a challenge of `did` names: among the Open claims of `did` that have at least `leastLeft` milliseconds of window left at `now` and that are claims of this kit, the one with the
+   * latest challenge deadline. A claim is staked for each run, so an agent can have several open claims at one time, and the newest one is the one that a challenge names. Two claims with the same
+   * latest deadline are `claim_ambiguous`: the code does not choose by the order of a list. None is `no_open_claim`, and its detail says how many open claims were left out and why. A document that
+   * cannot be read is `chain_unavailable`, and it is never taken for a claim that is not of this kit.
+   */
+  async #choose(did: Did, claims: readonly ClaimView[], now: number, leastLeft: number): Promise<ProtocolResult<Chosen, ClaimLookupCode>> {
+    const open = claims.filter((claim) => claim.claimer === did && claim.state === 'Open');
+    if (open.length === 0) return refused(NO_OPEN_CLAIM, 'the agent has no open claim');
+    const room = Math.max(leastLeft, 1);
+    const live = open.filter((claim) => challengeDeadlineOf(claim) - now >= room);
+    const newestFirst = [...live].sort((a, b) => challengeDeadlineOf(b) - challengeDeadlineOf(a) || (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0));
+    let notOfThisKit = 0;
+    let from = 0;
+    while (from < newestFirst.length) {
+      const deadline = challengeDeadlineOf(newestFirst[from]!);
+      let to = from;
+      while (to < newestFirst.length && challengeDeadlineOf(newestFirst[to]!) === deadline) to += 1;
+      const found: Chosen[] = [];
+      for (const claim of newestFirst.slice(from, to)) {
+        const statement = await this.#kitClaim(claim);
+        if (!statement.ok) return statement;
+        if (statement.value === null) notOfThisKit += 1;
+        else found.push({ claim, statement_text: statement.value });
+      }
+      if (found.length === 1) return accepted(found[0]!);
+      if (found.length > 1) return refused('claim_ambiguous', `the agent has ${found.length} open claims of this kit with the same last moment of the challenge window, and the code does not choose between them`);
+      from = to;
+    }
+    const tooSoon = open.length - live.length;
+    return refused(NO_OPEN_CLAIM, `the agent has ${open.length} open claim(s), and none can be challenged: ${notOfThisKit} without a claim document of this kit, ${tooSoon} with a challenge window that ends too soon`);
   }
 
   // --- The open claim of an agent -------------------------------------------------------------------------------------------------------------------------------------
 
   /**
-   * The open claim of an agent that can still be challenged: its state is Open, and its challenge window has not ended. `no_open_claim` says that there is none. `claim_ambiguous` says that there
-   * are several: the code does not choose, because the wrong choice would challenge the wrong claim. `chain_unavailable` says that the claims could not be read, and it is never `no_open_claim`.
+   * The open claim of an agent that a challenge would name: the Open claim of this kit with the latest challenge deadline, among the claims whose challenge window has not ended. `no_open_claim`
+   * says that there is none. `claim_ambiguous` says that two have the same latest deadline. `chain_unavailable` says that the claims or a claim document could not be read, and it is never
+   * `no_open_claim`.
    */
   async findOpenClaim(did: Did): Promise<ProtocolResult<ClaimView, ClaimLookupCode>> {
     const checked = parseDid(did, 'did');
     if (!checked.ok) return checked;
     const read = await this.#readClaims();
     if (!read.ok) return read;
-    const now = this.#now();
-    const open = read.value.filter((claim) => claim.claimer === checked.value && claim.state === 'Open');
-    const live = open.filter((claim) => now < challengeDeadlineOf(claim));
-    if (live.length === 1) return accepted(live[0]!);
-    if (live.length > 1) return refused('claim_ambiguous', `the agent has ${live.length} open claims, and the code does not choose between them`);
-    return refused(NO_OPEN_CLAIM, open.length === 0 ? 'the agent has no open claim' : `the agent has ${open.length} open claim(s), and the challenge window of each has ended`);
+    const chosen = await this.#choose(checked.value, read.value, this.#now(), 0);
+    return chosen.ok ? accepted(chosen.value.claim) : chosen;
   }
 
   /** Every claim of an agent whose state is Open, whatever its window, the newest first. An operator reads it to withdraw the claims that nobody challenged. */
@@ -197,22 +448,23 @@ export class Dispute {
     const read = await this.#readClaims();
     if (!read.ok) return read;
     const open = read.value.filter((claim) => claim.claimer === checked.value && claim.state === 'Open');
-    return accepted([...open].sort((a, b) => b.submitted_at - a.submitted_at));
+    return accepted([...open].sort((a, b) => b.submitted_at - a.submitted_at || (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0)));
   }
 
   // --- The claim of a run ---------------------------------------------------------------------------------------------------------------------------------------------
 
   /**
    * Stakes the claim of a run: it publishes the claim document, waits for its confirmation, and then submits the claim with the hash and the URI of that document. The claim holds `stake_lovelace`
-   * until the challenge window ends. A step that fails after the document landed says so in `document`.
+   * until the challenge window ends. A step that fails after the document landed says so in `document`. A claim type of more than MAX_CLAIM_TYPE_BYTES bytes is refused before anything is published.
    */
   async stakeRunClaim(input: RunClaimInput): Promise<RunClaimResult> {
     const { capability_id, manifest_sha256, claim, stake_lovelace, challenge_window_ms, claim_type } = input;
     const stake = requireBigint(stake_lovelace, 'stake_lovelace');
     const window = requireMilliseconds(challenge_window_ms, 'challenge_window_ms', 1);
     if (typeof claim_type !== 'string' || claim_type.length === 0) throw new TypeError('claim_type must be a text');
-    const notStaked = (code: RunClaimNotStaked['code'], detail: string, landed: Partial<Pick<RunClaimNotStaked, 'document' | 'sent'>> = {}): RunClaimNotStaked => ({
-      ok: false, code, detail, document: null, sent: null, ...landed,
+    if (Buffer.byteLength(claim_type, 'utf8') > MAX_CLAIM_TYPE_BYTES) throw new RangeError(`claim_type must be at most ${MAX_CLAIM_TYPE_BYTES} bytes of text`);
+    const notStaked = (code: RunClaimNotStaked['code'], detail: string, landed: Partial<Pick<RunClaimNotStaked, 'document' | 'sent' | 'wrong_document'>> = {}): RunClaimNotStaked => ({
+      ok: false, code, detail, document: null, sent: null, wrong_document: null, ...landed,
     });
     const me = this.#port.agent.did;
     const document = claimDocument({ agent_did: me, capability_id, manifest_sha256, claim });
@@ -223,8 +475,11 @@ export class Dispute {
       const why = failed(published, 'claim_document_not_built', 'claim_document_not_confirmed');
       return notStaked(why.code, why.detail, { sent: why.sent });
     }
-    if (published.value.document_hash !== document.value.hash) return notStaked('port_error', 'the port published a document with another hash than the claim document');
-    const landed: DocumentLanded = { tx_hash: published.value.tx_hash, uri: published.value.uri, document_hash: published.value.document_hash };
+    const landed = landedDocument(published.value);
+    if (published.value.document_hash !== document.value.hash) {
+      this.#log(`dispute: the port published the document ${landed.tx_hash} with another hash than the claim document of ${me}`);
+      return notStaked('port_error', 'the port published a document with another hash than the claim document', { wrong_document: landed });
+    }
     this.#log(`dispute: claim document ${landed.tx_hash} confirmed for ${me}`);
 
     const submitted = await this.#queued(() => this.#port.submitClaim({
@@ -253,12 +508,10 @@ export class Dispute {
     const notDone = (code: WithdrawNotDone['code'], detail: string, sent: SentNotConfirmed | null = null): WithdrawNotDone => ({ ok: false, code, detail, sent });
     const ref = parseOutputRef(input.claim, 'claim');
     if (!ref.ok) return notDone(ref.code, ref.detail);
-    let claim: ClaimView | null;
-    try {
-      claim = await this.#port.readClaim(ref.value);
-    } catch (error) {
-      return notDone('chain_unavailable', `the claim cannot be read from the chain: ${describeError(error)}`);
-    }
+    const read = await bounded(this.#sleep, this.#readTimeout, 'chain_unavailable', 'the claim', () => this.#port.readClaim(ref.value));
+    if (!read.ok) return notDone('chain_unavailable', read.detail);
+    const claim = read.value === null ? null : claimViewOf(read.value);
+    if (read.value !== null && claim === null) return notDone('chain_unavailable', 'the claim cannot be read: the port gave a claim of a wrong shape');
     if (claim === null) return notDone('claim_not_open', 'the output is spent, or it is not a claim output');
     if (claim.state !== 'Open') return notDone('claim_not_open', `the claim is ${claim.state}, and only an Open claim can be withdrawn`);
     if (claim.claimer_key_hash === null || claim.claimer_key_hash !== this.#port.agent.key_hash) return notDone('not_claimer', 'the key of this agent is not the claimer credential of the claim');
@@ -299,93 +552,199 @@ export class Dispute {
   async #file(target: ChallengeTarget): Promise<ChallengeResult> {
     const me = this.#port.agent.did;
     if (target.against === me) return notFiled('same_agent', 'the other party is the agent itself, and an agent cannot challenge its own claim');
-    const earlier = this.#jobs.get(target.escrow);
-    if (earlier !== undefined) {
-      return notFiled('job_already_disputed', earlier === 'pending' ? 'a challenge for this job is in progress' : 'a transaction of a challenge for this job landed or may land, and a job gets one challenge');
-    }
-    this.#jobs.set(target.escrow, 'pending');
-    let ended: Ended;
+    if (this.#running.has(target.escrow)) return notFiled('job_already_disputed', 'a challenge for this job is in progress');
+    this.#running.add(target.escrow);
+    const progress: Progress = { sent: false };
     try {
-      ended = await this.#fileJob(target, me);
+      return await this.#fileJob(target, me, progress);
     } catch (error) {
-      ended = { result: notFiled('port_error', `the challenge stopped with an error, and a transaction may have landed: ${describeError(error)}`), landed: true };
+      return notFiled('port_error', `the challenge stopped with an error, and ${progress.sent ? 'a transaction may have landed' : 'nothing was sent'}: ${describeError(error)}`);
+    } finally {
+      this.#running.delete(target.escrow);
     }
-    if (ended.landed) this.#jobs.set(target.escrow, 'landed');
-    else this.#jobs.delete(target.escrow);
-    return ended.result;
   }
 
-  async #fileJob(target: ChallengeTarget, me: Did): Promise<Ended> {
-    const nothing = (code: ChallengeCode, detail: string): Ended => ({ result: notFiled(code, detail), landed: false });
-    // 1. The open claim of the other party.
-    const found = await this.findOpenClaim(target.against);
-    if (!found.ok) {
-      this.#log(`dispute: no challenge for the job ${target.escrow}: ${found.code}`);
-      return nothing(found.code, found.detail);
+  /**
+   * A challenge of this agent for this job that is on chain already, as the filed challenge, or null. The claims of the other party that are Challenged are looked at, and the challenges that name
+   * one of them: a challenge of this agent whose evidence document is on chain, has the hash that the challenge holds, and names this job. A document that cannot be read is `chain_unavailable`.
+   */
+  async #findOwn(target: ChallengeTarget, me: Did, claims: readonly ClaimView[]): Promise<ProtocolResult<ChallengeFiled | null, 'chain_unavailable'>> {
+    const challenged = claims.filter((claim) => claim.claimer === target.against && claim.state === 'Challenged');
+    if (challenged.length === 0) return accepted(null);
+    const read = await bounded(this.#sleep, this.#readTimeout, 'chain_unavailable', 'the challenges', () => this.#port.readChallenges());
+    if (!read.ok) return read;
+    if (!Array.isArray(read.value)) return refused('chain_unavailable', 'the challenges cannot be read: the port gave no list');
+    const mine: ChallengeView[] = [];
+    for (const value of read.value) {
+      const view = challengeViewOf(value);
+      if (view === null) return refused('chain_unavailable', 'the challenges cannot be read: the port gave a challenge of a wrong shape');
+      if (view.auditor === me && view.auditor_key_hash === this.#port.agent.key_hash && challenged.some((claim) => claim.token === view.claim_token)) mine.push(view);
     }
-    const claim = found.value;
-    if (claim.stake_lovelace > this.#settings.challenge_stake_lovelace) return nothing('challenge_stake_too_low', 'the challenge stake is below the stake of the claim');
-    if (challengeDeadlineOf(claim) - this.#now() < this.#settings.min_window_left_ms) return nothing('claim_window_closing', 'the challenge window of the claim ends too soon for the evidence to confirm');
+    mine.sort((a, b) => a.challenged_at - b.challenged_at || (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0));
+    for (const challenge of mine) {
+      const fetched = await this.#document(challenge.evidence_uri, 'the evidence document');
+      if (!fetched.ok) return fetched;
+      if (fetched.value === null || documentHash(fetched.value.bytes) !== challenge.evidence_hash) continue;
+      const references = evidenceReferences(fetched.value.bytes);
+      if (!references.ok || references.value.escrow_ref !== target.escrow || references.value.by_did !== me || references.value.against_did !== target.against) continue;
+      const evidenceTx = txHashOfUri(challenge.evidence_uri)!;
+      return accepted({
+        record: { claim: challenge.claim, evidence: evidenceTx, challenge: challenge.ref }, claim_token: challenge.claim_token, against_did: target.against, evidence_uri: challenge.evidence_uri,
+        evidence_hash: challenge.evidence_hash, challenge_tx: challenge.ref.split('#')[0]!, challenge_token: challenge.token, stake_lovelace: challenge.stake_lovelace,
+        deadline: challenge.challenged_at + challenge.resolution_deadline_ms, fee_lovelace: null,
+      });
+    }
+    return accepted(null);
+  }
 
-    // 2. The evidence document: refused here, and nothing is on chain.
+  /** Writes how a job ended to the journal, and gives the result. The write changes no result. */
+  async #finish(escrow: OutputRef, base: JobRecord, result: ChallengeResult): Promise<ChallengeResult> {
+    const record: JobRecord = result.ok
+      ? { ...base, step: 'done', filed: recordOfFiled(result.value), ended: null }
+      : {
+        ...base, step: 'done', filed: null,
+        ended: { code: result.code, detail: result.detail.slice(0, MAX_RECORDED_DETAIL), sent: result.sent, challenge: result.challenge, wrong_document: result.wrong_document },
+      };
+    await this.#remember(escrow, record);
+    return result;
+  }
+
+  async #fileJob(target: ChallengeTarget, me: Did, progress: Progress): Promise<ChallengeResult> {
+    const escrow = target.escrow;
+    // 0. The journal of the job.
+    const stored = await bounded(this.#sleep, this.#readTimeout, 'journal_unavailable', 'the journal', () => this.#journal.get(escrow));
+    if (!stored.ok) return notFiled('journal_unavailable', stored.detail);
+    const parsed = parseJobRecord(stored.value);
+    if (!parsed.ok) return notFiled('journal_unavailable', `the journal gave a record that is not in its form: ${parsed.detail}`);
+    const earlier = parsed.value !== null && parsed.value.step !== 'not_sent' ? parsed.value : null;
+    if (earlier?.filed != null) return accepted(filedOfRecord(earlier.filed));
+
+    // 1. The claims, and a challenge of this agent for this job that is on chain already.
+    const claims = await this.#readClaims();
+    if (!claims.ok) {
+      this.#log(`dispute: no challenge for the job ${escrow}: ${claims.code}`);
+      return notFiled(claims.code, claims.detail, landedOf(earlier));
+    }
+    const own = await this.#findOwn(target, me, claims.value);
+    if (!own.ok) {
+      this.#log(`dispute: no challenge for the job ${escrow}: ${own.code}`);
+      return notFiled(own.code, own.detail, landedOf(earlier));
+    }
+    if (own.value !== null) {
+      const filed = own.value;
+      const base: JobRecord = {
+        step: 'done', against: target.against, claim: filed.record.claim, claim_token: filed.claim_token, evidence: { tx_hash: filed.record.evidence, uri: filed.evidence_uri, document_hash: filed.evidence_hash },
+        filed: recordOfFiled(filed), ended: null,
+      };
+      await this.#remember(escrow, base);
+      this.#log(`dispute: the challenge ${filed.record.challenge} of this agent for the job ${escrow} is on chain already, with the evidence ${filed.record.evidence}`);
+      return accepted(filed);
+    }
+    if (earlier !== null) return notFiled('job_already_disputed', earlierDetail(earlier), landedOf(earlier));
+
+    // 2. The claim of the other party that the challenge names.
+    const chosen = await this.#choose(target.against, claims.value, this.#now(), this.#windowLeft);
+    if (!chosen.ok) {
+      this.#log(`dispute: no challenge for the job ${escrow}: ${chosen.code}`);
+      return notFiled(chosen.code, chosen.detail);
+    }
+    const { claim, statement_text: statement } = chosen.value;
+    if (claim.stake_lovelace > this.#stake) return notFiled('challenge_stake_too_low', 'the challenge stake is below the stake of the claim');
+
+    // 3. The evidence document: refused here, and nothing is on chain.
     const document = evidenceDocument({
-      ...target.facts, claim: claim.ref, claim_token: claim.token, against_did: claim.claimer, by_did: me, escrow_ref: target.escrow,
+      ...target.facts, claim: claim.ref, claim_token: claim.token, against_did: claim.claimer, by_did: me, escrow_ref: escrow, statement_text: statement,
     } as unknown as EvidenceDocumentInput);
-    if (!document.ok) return nothing(document.code, document.detail);
+    if (!document.ok) return notFiled(document.code, document.detail);
 
-    // 3. The evidence is published first, and the challenge waits for its confirmation.
-    const published = await this.#queued(() => this.#port.publishDocument({ bytes: document.value.bytes, type: 'evidence', media_type: JUROR_MEDIA_TYPE }));
+    // 4. The evidence is published first, and the challenge waits for its confirmation. The window that is left is checked in the job, right before the publish: the wait for the queue can be long.
+    const started: JobRecord = { step: 'started', against: claim.claimer, claim: claim.ref, claim_token: claim.token, evidence: null, filed: null, ended: null };
+    type FirstJob = { readonly stop: ChallengeCode; readonly detail: string } | { readonly tx: TxResult<PublishedDocument> };
+    const first = await this.#queued<FirstJob>(async () => {
+      let at: number;
+      try {
+        at = this.#now();
+      } catch (error) {
+        return { stop: 'port_error', detail: `the clock failed, and nothing was sent: ${describeError(error)}` };
+      }
+      if (challengeDeadlineOf(claim) - at < this.#windowLeft) return { stop: 'claim_window_closing', detail: 'the challenge window of the claim ends too soon for the evidence to confirm' };
+      const written = await this.#store(escrow, started);
+      if (!written.ok) return { stop: 'journal_unavailable', detail: `${written.detail}, so nothing was sent` };
+      progress.sent = true;
+      return { tx: await this.#port.publishDocument({ bytes: document.value.bytes, type: 'evidence', media_type: JUROR_MEDIA_TYPE }) };
+    }, () => progress.sent);
+    if ('code' in first) return notFiled('port_error', first.detail);
+    if ('stop' in first) {
+      this.#log(`dispute: no evidence for the job ${escrow}: ${first.stop}`);
+      return notFiled(first.stop, first.detail);
+    }
+    const published = first.tx;
     if (!published.ok) {
       const why = failed(published, 'evidence_not_built', 'evidence_not_confirmed');
-      return { result: notFiled(why.code, why.detail, { sent: why.sent }), landed: why.code !== 'evidence_not_built' };
+      if (why.code === 'evidence_not_built') {
+        // Nothing was sent: the job may be tried again.
+        await this.#remember(escrow, { ...started, step: 'not_sent' });
+        return notFiled(why.code, why.detail);
+      }
+      return this.#finish(escrow, started, notFiled(why.code, why.detail, { sent: why.sent }));
     }
+    const evidence = landedDocument(published.value);
     if (published.value.document_hash !== document.value.hash) {
-      return { result: notFiled('port_error', 'the port published a document with another hash than the evidence document'), landed: true };
+      this.#log(`dispute: the port published the document ${evidence.tx_hash} with another hash than the evidence document for the claim ${claim.ref}`);
+      return this.#finish(escrow, started, notFiled('port_error', 'the port published a document with another hash than the evidence document', { wrong_document: evidence }));
     }
-    const evidence: DocumentLanded = { tx_hash: published.value.tx_hash, uri: published.value.uri, document_hash: published.value.document_hash };
+    const landed: JobRecord = { ...started, step: 'evidence_landed', evidence };
+    await this.#remember(escrow, landed);
     this.#log(`dispute: evidence ${evidence.tx_hash} confirmed for the claim ${claim.ref} of ${claim.claimer}`);
 
-    // 4. The challenge, against the exact output that the evidence names, in one job of the queue.
-    const step = await this.#queued(async (): Promise<{ readonly stop: ChallengeCode; readonly detail: string } | { readonly sent: TxResult<OpenedChallenge> }> => {
-      let again: ClaimView | null;
+    // 5. The challenge, against the exact output that the evidence names, in one job of the queue.
+    type SecondJob = { readonly stop: ChallengeCode; readonly detail: string } | { readonly sent: TxResult<OpenedChallenge> };
+    const second = await this.#queued<SecondJob>(async () => {
+      const again = await bounded(this.#sleep, this.#readTimeout, 'chain_unavailable', 'the claim', () => this.#port.readClaim(claim.ref));
+      if (!again.ok) return { stop: 'chain_unavailable', detail: again.detail };
+      const view = again.value === null ? null : claimViewOf(again.value);
+      if (again.value !== null && view === null) return { stop: 'chain_unavailable', detail: 'the claim cannot be read: the port gave a claim of a wrong shape' };
+      let at: number;
       try {
-        again = await this.#port.readClaim(claim.ref);
+        at = this.#now();
       } catch (error) {
-        return { stop: 'chain_unavailable', detail: `the claim cannot be read from the chain: ${describeError(error)}` };
+        return { stop: 'port_error', detail: `the clock failed, and the challenge was not sent: ${describeError(error)}` };
       }
-      const change = changeOf(claim, again, this.#now());
+      const change = changeOf(claim, view, at);
       if (change !== null) return { stop: 'claim_changed', detail: change };
       return {
         sent: await this.#port.openChallenge({
-          claim: claim.ref, claim_token: claim.token, evidence_hash: evidence.document_hash, evidence_uri: evidence.uri, stake_lovelace: this.#settings.challenge_stake_lovelace,
-          resolution_deadline_ms: this.#settings.resolution_deadline_ms,
+          claim: claim.ref, claim_token: claim.token, evidence_hash: evidence.document_hash, evidence_uri: evidence.uri, stake_lovelace: this.#stake, resolution_deadline_ms: this.#resolutionDeadline,
         }),
       };
     });
-    const after = (code: ChallengeCode, detail: string, sent: SentNotConfirmed | null = null): Ended => ({ result: notFiled(code, detail, { evidence, sent }), landed: true });
-    if ('code' in step) return after(step.code, step.detail);
-    if ('stop' in step) {
-      this.#log(`dispute: the evidence ${evidence.tx_hash} landed and no challenge was filed: ${step.stop}`);
-      return after(step.stop, step.detail);
+    const after = (code: ChallengeCode, detail: string, more: Landed = {}): Promise<ChallengeResult> => this.#finish(escrow, landed, notFiled(code, detail, { evidence, ...more }));
+    if ('code' in second) return after('port_error', second.detail);
+    if ('stop' in second) {
+      this.#log(`dispute: the evidence ${evidence.tx_hash} landed and no challenge was filed: ${second.stop}`);
+      return after(second.stop, second.detail);
     }
-    const sent = step.sent;
+    const sent = second.sent;
     if (!sent.ok) {
       const why = failed(sent, 'challenge_not_built', 'challenge_not_confirmed');
       this.#log(`dispute: the evidence ${evidence.tx_hash} landed and no challenge was filed: ${why.code}`);
-      return after(why.code, why.detail, why.sent);
+      return after(why.code, why.detail, { sent: why.sent });
     }
     const opened = sent.value;
     if (opened.claim !== claim.ref || opened.claim_token !== claim.token) {
       this.#log(`dispute: the challenge ${opened.challenge} spent the claim ${opened.claim}, and the evidence names the claim ${claim.ref}`);
-      return after('challenge_wrong_claim', `the challenge ${opened.challenge} spent the claim output ${opened.claim}, and the evidence names the claim output ${claim.ref}`);
+      return after('challenge_wrong_claim', `the challenge ${opened.challenge} spent the claim output ${opened.claim}, and the evidence names the claim output ${claim.ref}`, {
+        challenge: { tx_hash: opened.tx_hash, challenge: opened.challenge, challenge_token: opened.challenge_token, claim: opened.claim, claim_token: opened.claim_token },
+      });
     }
     const filed: ChallengeFiled = {
       record: { claim: opened.claim, evidence: evidence.tx_hash, challenge: opened.challenge }, claim_token: opened.claim_token, against_did: claim.claimer,
       evidence_uri: evidence.uri, evidence_hash: evidence.document_hash, challenge_tx: opened.tx_hash, challenge_token: opened.challenge_token,
       stake_lovelace: opened.stake_lovelace, deadline: opened.deadline, fee_lovelace: published.value.fee_lovelace + opened.fee_lovelace,
     };
+    await this.#finish(escrow, landed, accepted(filed));
     this.#log(`dispute: challenge ${filed.record.challenge} filed against the claim ${filed.record.claim} of ${filed.against_did} with the evidence ${filed.record.evidence}`);
-    return { result: accepted(filed), landed: true };
+    return accepted(filed);
   }
 }
 

@@ -1,26 +1,10 @@
 // packages/usecase-kit/test/dispute/claim.test.ts: the claim of a run and the withdrawal of a claim, on a scripted chain port. Each refusal has an accepted twin.
 import { describe, expect, it } from 'vitest';
-import { Dispute, challengeDeadlineOf, claimDocument, withdrawableFrom } from '@vsa/usecase-kit/dispute';
-import type { DisputeSettings, RunClaimInput, RunClaimResult, WithdrawResult } from '@vsa/usecase-kit/dispute';
+import { MAX_CLAIM_TYPE_BYTES, challengeDeadlineOf, claimDocument, withdrawableFrom } from '@vsa/usecase-kit/dispute';
+import type { RunClaimInput, RunClaimResult, WithdrawResult } from '@vsa/usecase-kit/dispute';
 import {
-  CHALLENGE_TX, CLAIM_DOC_TX, EVIDENCE_TX, HOUR, KEY_HASH, MANIFEST_SHA, ME, NOW, ORDER_DESK_CLAIM, OTHER_KEY_HASH, RecordingQueue, REF_A, REF_C, ScriptedPort, TOKEN_A, TOKEN_C, claimView,
+  CHALLENGE_TX, CLAIM_DOC_TX, EVIDENCE_TX, HOUR, KEY_HASH, MANIFEST_SHA, ME, NOW, ORDER_DESK_CLAIM, OTHER_KEY_HASH, REF_A, REF_C, TOKEN_A, TOKEN_C, claimView, rig,
 } from './support.ts';
-import type { Events } from './support.ts';
-
-interface Rig {
-  readonly events: Events;
-  readonly port: ScriptedPort;
-  readonly dispute: Dispute;
-  readonly time: { now: number };
-}
-
-function rig(): Rig {
-  const events: Events = [];
-  const port = new ScriptedPort(events);
-  const time = { now: NOW };
-  const settings: DisputeSettings = { challenge_stake_lovelace: 50_000_000n, resolution_deadline_ms: 72 * HOUR, min_window_left_ms: 600_000 };
-  return { events, port, time, dispute: new Dispute({ port, queue: new RecordingQueue(events), clock: () => time.now, settings }) };
-}
 
 const runClaim = (extra: Record<string, unknown> = {}): RunClaimInput => ({
   capability_id: 'supplychain.order.accept.v1', manifest_sha256: MANIFEST_SHA, claim: ORDER_DESK_CLAIM, stake_lovelace: 50_000_000n, challenge_window_ms: 24 * HOUR, claim_type: 'service-quality', ...extra,
@@ -68,13 +52,24 @@ describe('the claim of a run', () => {
     for (const [member, value, error] of [
       ['stake_lovelace', 50_000_000, TypeError], ['stake_lovelace', '50000000', TypeError], ['stake_lovelace', undefined, TypeError], ['stake_lovelace', 0n, RangeError],
       ['challenge_window_ms', '86400000', TypeError], ['challenge_window_ms', 1.5, TypeError], ['challenge_window_ms', undefined, TypeError], ['challenge_window_ms', 0, RangeError],
-      ['claim_type', '', TypeError], ['claim_type', 7, TypeError],
+      ['claim_type', '', TypeError], ['claim_type', 7, TypeError], ['claim_type', 'x'.repeat(MAX_CLAIM_TYPE_BYTES + 1), RangeError], ['claim_type', 'é'.repeat(MAX_CLAIM_TYPE_BYTES / 2 + 1), RangeError],
     ] as const) {
       await expect(dispute.stakeRunClaim(runClaim({ [member]: value }))).rejects.toThrow(error);
     }
     expect(events).toEqual([]);
     // The twin: the same input with the right types is staked.
     expect((await dispute.stakeRunClaim(runClaim())).ok).toBe(true);
+  });
+
+  it('refuses a claim type of more than 64 bytes before the claim document is published, and accepts a type of 64 bytes', async () => {
+    const { events, port, dispute } = rig();
+    expect(MAX_CLAIM_TYPE_BYTES).toBe(64);
+    await expect(dispute.stakeRunClaim(runClaim({ claim_type: 'x'.repeat(65) }))).rejects.toThrow(RangeError);
+    expect(events).toEqual([]);
+    expect(port.published).toEqual([]);
+    // The twin: a type of 64 bytes, and a type of 32 characters of 2 bytes each, is staked.
+    for (const type of ['x'.repeat(64), 'é'.repeat(32), 'x']) expect((await dispute.stakeRunClaim(runClaim({ claim_type: type }))).ok).toBe(true);
+    expect(port.submitted.map((call) => Buffer.byteLength(call.claim_type, 'utf8'))).toEqual([64, 64, 1]);
   });
 
   it('does not submit the claim before the claim document is confirmed', async () => {
@@ -99,11 +94,17 @@ describe('the claim of a run', () => {
     expect(thrown.port.submitted).toEqual([]);
   });
 
-  it('refuses a document that the port published with another hash, and a claim that is not in its form, before it sends anything', async () => {
+  it('refuses a document that the port published with another hash, in a member of the result, and a claim that is not in its form, before it sends anything', async () => {
     const wrong = rig();
     wrong.port.publishAnswer = () => ({ ok: true, value: { tx_hash: CLAIM_DOC_TX, uri: 'vector-tx:x', document_hash: 'ab'.repeat(32), fee_lovelace: 1n } });
-    expectStakeRefused(await wrong.dispute.stakeRunClaim(runClaim()), 'port_error');
+    const refused = await wrong.dispute.stakeRunClaim(runClaim());
+    expectStakeRefused(refused, 'port_error');
+    // The document transaction landed, and it is not the claim document: the result names it, and the claim document is not taken for published.
+    expect(refused).toMatchObject({ document: null, sent: null, wrong_document: { tx_hash: CLAIM_DOC_TX, uri: 'vector-tx:x', document_hash: 'ab'.repeat(32) } });
     expect(wrong.port.submitted).toEqual([]);
+    // The twin: the port that publishes the claim document that was made stakes the claim, and no member says that a wrong document landed.
+    const right = await rig().dispute.stakeRunClaim(runClaim());
+    expect(right.ok).toBe(true);
     const bad = rig();
     expectStakeRefused(await bad.dispute.stakeRunClaim(runClaim({ capability_id: 'two words' })), 'bad_shape');
     expectStakeRefused(await bad.dispute.stakeRunClaim(runClaim({ claim: { statements: ORDER_DESK_CLAIM.statements.slice(0, 2) } })), 'bad_shape');

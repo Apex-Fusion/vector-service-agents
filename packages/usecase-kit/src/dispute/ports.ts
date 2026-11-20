@@ -1,11 +1,15 @@
 // packages/usecase-kit/src/dispute/ports.ts
 // What the dispute code needs from the outside: the chain, the queue of the service key and the clock.
 //
-// The chain port reads the claims of Module-1 and lands four kinds of transaction: a document, a claim, a challenge and a withdrawal. A port method that lands a transaction never throws for a
-// problem of the build, the signature or the submit. It returns a typed result that says what happened, and what could still land. The real port is `createModule1Port` (chain.ts). A test can
-// give a scripted port, or the real port over the fixture world of the buyer code.
-import type { ClaimState } from '@vsa/buyer-core';
+// The chain port reads the claims and the challenges of Module-1 and the documents that they name, and it lands four kinds of transaction: a document, a claim, a challenge and a withdrawal. A port
+// method that lands a transaction never throws for a problem of the build, the signature or the submit. It returns a typed result that says what happened, and what could still land. A read throws
+// when the chain cannot be read, and it never answers with a list that leaves a claim out. The real port is `createModule1Port` (chain.ts). A test can give a scripted port, or the real port over the
+// fixture world of the buyer code.
+import type { ChallengeState, ClaimState } from '@vsa/buyer-core';
 import type { Accepted, Did, OutputRef, Refused } from '../protocol/index.ts';
+
+/** The most bytes of a claim type: the limit of `buildSubmitClaim` of the buyer code, which refuses a type of 0 bytes and a type of more than 64 bytes. */
+export const MAX_CLAIM_TYPE_BYTES = 64;
 
 /** A live claim output of Module-1, as the chain port reads it. */
 export interface ClaimView {
@@ -21,6 +25,43 @@ export interface ClaimView {
   /** POSIX milliseconds. */
   readonly submitted_at: number;
   readonly challenge_window_ms: number;
+  /** The hash of the claim document that the claim holds, in lower-case hex. It is a blake2b-256 hash of 64 characters when the claim is a claim of this kit. */
+  readonly claim_hash: string;
+  /** The claim type that the claim holds, read as text. */
+  readonly claim_type: string;
+  /** The address of the claim document that the claim holds: a `vector-tx:` URI for a claim of this kit. */
+  readonly claim_uri: string;
+}
+
+/** A live challenge output of Module-1, as the chain port reads it. */
+export interface ChallengeView {
+  /** The output that holds the challenge. */
+  readonly ref: OutputRef;
+  /** The challenge token: 64 lower-case hex characters. */
+  readonly token: string;
+  /** The claim output that the challenge spent. */
+  readonly claim: OutputRef;
+  readonly claim_token: string;
+  /** The challenger. */
+  readonly auditor: Did;
+  /** The key hash of the auditor credential (56 lower-case hex characters), or null when the credential is a script. */
+  readonly auditor_key_hash: string | null;
+  readonly stake_lovelace: bigint;
+  /** The hash of the evidence document that the challenge holds, in lower-case hex. */
+  readonly evidence_hash: string;
+  /** The address of the evidence document that the challenge holds, read as text. */
+  readonly evidence_uri: string;
+  /** POSIX milliseconds. */
+  readonly challenged_at: number;
+  readonly resolution_deadline_ms: number;
+  readonly state: ChallengeState['type'];
+}
+
+/** A document that the port read from the chain: its bytes, and the type and the media type that its metadata names. */
+export interface ReadDocument {
+  readonly bytes: Uint8Array;
+  readonly type: string | null;
+  readonly media_type: string | null;
 }
 
 /** The last moment of the challenge window of a claim, in POSIX milliseconds. A challenge must start before it, and a withdrawal after it. */
@@ -100,6 +141,7 @@ export interface SubmitClaimCall {
   readonly claim_hash: string;
   /** The URI of the claim document. */
   readonly claim_uri: string;
+  /** The claim type: 1 to MAX_CLAIM_TYPE_BYTES bytes of text. */
   readonly claim_type: string;
   readonly stake_lovelace: bigint;
   readonly challenge_window_ms: number;
@@ -124,10 +166,19 @@ export interface WithdrawClaimCall {
 export interface Module1Port {
   /** The agent that the key acts for: its DID, and the hash of the key. */
   readonly agent: { readonly did: Did; readonly key_hash: string };
-  /** Every live claim output at the claim script, whatever its state. It throws when the chain cannot be read. */
+  /**
+   * The parameters of the Module-1 deployment that a challenge must agree with. `resolution_deadline_ms` is the time that the oracle and the jury have to resolve a challenge: a challenge
+   * names this value, and the relay opens a case for it only when the value leaves the time that it needs (SPEC rule of the relay).
+   */
+  readonly protocol: { readonly resolution_deadline_ms: number };
+  /** Every live claim output whose payment credential is the claim script, at any address, whatever its state. It throws when the chain cannot be read. */
   readClaims(): Promise<readonly ClaimView[]>;
   /** The live claim output at `ref`, or null when the output is spent, or is not a claim output. It throws when the chain cannot be read. */
   readClaim(ref: OutputRef): Promise<ClaimView | null>;
+  /** Every live challenge output whose payment credential is the challenge script, at any address. It throws when the chain cannot be read. */
+  readChallenges(): Promise<readonly ChallengeView[]>;
+  /** The document at a `vector-tx:` URI. It throws for another address, and when the chain cannot be read or has no document there. */
+  readDocument(uri: string): Promise<ReadDocument>;
   publishDocument(call: PublishCall): Promise<TxResult<PublishedDocument>>;
   submitClaim(call: SubmitClaimCall): Promise<TxResult<SubmittedClaim>>;
   openChallenge(call: OpenChallengeCall): Promise<TxResult<OpenedChallenge>>;

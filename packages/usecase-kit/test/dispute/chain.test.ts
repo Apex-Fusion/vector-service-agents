@@ -1,36 +1,35 @@
 // packages/usecase-kit/test/dispute/chain.test.ts: the dispute code with the real chain port over the fixture world of the buyer code. Lucid runs the mainnet Module-1 scripts on every build, and the
-// ledger of ledger.ts applies each signed transaction, so a test reads what the transactions did to the claims, the challenges and the documents.
-import { CML } from '@lucid-evolution/lucid';
+// ledger of ledger.ts applies each signed transaction, so a test reads what the transactions did to the claims, the challenges and the documents. The fake Koios of the ledger lists the outputs by
+// payment credential and gives the metadata of a document.
+import { CML, credentialToAddress } from '@lucid-evolution/lucid';
 import { setImmediate as tick } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 import { HireLane } from '@vsa/hire-kit';
-import { decodeChallengeDatum, decodeClaimDatum, documentHash, documentUri } from '@vsa/buyer-core';
+import { buildSubmitClaim, decodeChallengeDatum, decodeClaimDatum, documentHash, documentUri, lucidForAddress } from '@vsa/buyer-core';
+import type { ClaimDatum } from '@vsa/buyer-core';
 import { utf8Hex } from '@vsa/vector-read/identity-codec';
-import { Dispute, claimDocument, evidenceDocument } from '@vsa/usecase-kit/dispute';
-import type { ChallengeResult, DisputeSettings, Module1PortDeps, ServiceQueue } from '@vsa/usecase-kit/dispute';
+import { Dispute, MAX_CLAIM_TYPE_BYTES, MemoryJournal, claimDocument, evidenceDocument } from '@vsa/usecase-kit/dispute';
+import type { ChallengeResult, DisputeJournal, DisputeSettings, Module1PortDeps, ServiceQueue } from '@vsa/usecase-kit/dispute';
 import { CLAIM_TOKEN, DAY, HOUR, NOW, agentRecord, claimUtxo, recordUtxo } from '../../../buyer-core/test/fixtures/jury-world.ts';
-import { AUDITOR_ID, CLAIMER_ID, MODULE1, WALLET, WALLET_ADDRESS, forever, ledgerWorld, realPort, signWithWallet } from './ledger.ts';
+import { AUDITOR_ID, CLAIMER_ID, MODULE1, WALLET, WALLET_ADDRESS, forever, kitClaim, koiosOf, ledgerWorld, realPort, signWithWallet } from './ledger.ts';
 import type { LedgerProvider } from './ledger.ts';
-import { DIGEST_FACTS, ESCROW, ESCROW_2, MANIFEST_SHA, ORDER_DESK_CLAIM, ORDER_FACTS, THIRD_ID, deferred } from './support.ts';
+import { DIGEST_FACTS, ESCROW, ESCROW_2, MANIFEST_SHA, ORDER_DESK_CLAIM, ORDER_FACTS, SETTINGS, STATEMENT_S1, THIRD_ID, deferred, kitClaimDocument } from './support.ts';
 
 const did = (id: string): string => `did:vector:${id}`;
 const CLAIMER = did(CLAIMER_ID);
 const AUDITOR = did(AUDITOR_ID);
 const CLAIM_REF = `${'cc'.repeat(32)}#0`;
-const SETTINGS: DisputeSettings = { challenge_stake_lovelace: 50_000_000n, resolution_deadline_ms: 72 * HOUR, min_window_left_ms: 10 * 60_000 };
 const SLOW = 120_000;
 
 /** The dispute code of `agentId` over `ledger`, in the queue of a service key. */
-function disputeOf(ledger: LedgerProvider, agentId: string, now = NOW): Dispute {
+function disputeOf(ledger: LedgerProvider, agentId: string, now = NOW, extra: { readonly journal?: DisputeJournal; readonly settings?: Partial<DisputeSettings> } = {}): Dispute {
   const queue: ServiceQueue = new HireLane();
-  return new Dispute({ port: realPort(ledger, agentId, now), queue, clock: () => now, settings: SETTINGS });
+  return new Dispute({
+    port: realPort(ledger, agentId, now), queue, clock: () => now, sleep: forever, settings: { ...SETTINGS, ...extra.settings }, ...(extra.journal === undefined ? {} : { journal: extra.journal }),
+  });
 }
 
-const claimText = (agent: string) => {
-  const document = claimDocument({ agent_did: agent, capability_id: 'supplychain.order.accept.v1', manifest_sha256: MANIFEST_SHA, claim: ORDER_DESK_CLAIM });
-  if (!document.ok) throw new Error(document.detail);
-  return document.value;
-};
+const claimText = (agent: string) => kitClaimDocument(agent);
 
 const runClaim = { capability_id: 'supplychain.order.accept.v1', manifest_sha256: MANIFEST_SHA, claim: ORDER_DESK_CLAIM, stake_lovelace: 50_000_000n, challenge_window_ms: 24 * HOUR, claim_type: 'service-quality' };
 
@@ -69,7 +68,7 @@ describe('the claim of a run on the ledger', () => {
     expect(output.assets).toMatchObject({ lovelace: 50_000_000n, [`${MODULE1.claim.hash}${staked.value.claim_token}`]: 1n });
     expect(staked.value.challenge_deadline).toBe(datum.submittedAt + 24 * HOUR);
     expect(staked.value.fee_lovelace > 0n).toBe(true);
-    // The open claim of the agent is this claim.
+    // The open claim of the agent is this claim: its document is read from the ledger, and it is the claim document that this kit wrote.
     expect(await dispute.findOpenClaim(CLAIMER)).toMatchObject({ ok: true, value: { ref: staked.value.claim, token: staked.value.claim_token, state: 'Open', claimer: CLAIMER } });
   }, SLOW);
 
@@ -87,7 +86,7 @@ describe('the claim of a run on the ledger', () => {
     const suspended = agentRecord({ status: { type: 'Suspended', holds: [{ by: { type: 'ControllerSet' }, reason: 0, since: NOW - DAY, until: NOW + DAY }] } });
     const ledger = ledgerWorld([], [recordUtxo(CLAIMER_ID, suspended), recordUtxo(AUDITOR_ID)]);
     const staked = await disputeOf(ledger, CLAIMER_ID).stakeRunClaim(runClaim);
-    expect(staked).toMatchObject({ ok: false, code: 'claim_not_built', sent: null });
+    expect(staked).toMatchObject({ ok: false, code: 'claim_not_built', sent: null, wrong_document: null });
     if (staked.ok) return;
     expect(staked.detail).toContain('Suspended');
     expect(staked.document).not.toBeNull();
@@ -106,16 +105,31 @@ describe('the claim of a run on the ledger', () => {
     expect(window).toMatchObject({ ok: false, code: 'claim_not_built' });
     expect((await dispute.stakeRunClaim({ ...runClaim, challenge_window_ms: 30 * 60_000 })).ok).toBe(true);
   }, SLOW);
+
+  it('has the limit of the builder for the claim type: 64 bytes pass the builder, 65 do not, and the dispute refuses 65 before it publishes anything', async () => {
+    expect(MAX_CLAIM_TYPE_BYTES).toBe(64);
+    const ledger = ledgerWorld();
+    const lucid = await lucidForAddress(ledger, WALLET_ADDRESS);
+    const params = { changeAddress: WALLET_ADDRESS, agentId: CLAIMER_ID, claimHash: 'ab'.repeat(32), claimUri: utf8Hex('vector-tx:x'), stakeLovelace: 50_000_000n, nowMs: NOW };
+    await expect(buildSubmitClaim({ lucid, provider: ledger, module1: MODULE1 }, { ...params, claimType: utf8Hex('x'.repeat(65)) })).rejects.toThrow('1 to 64 bytes');
+    await expect(buildSubmitClaim({ lucid, provider: ledger, module1: MODULE1 }, { ...params, claimType: utf8Hex('x'.repeat(MAX_CLAIM_TYPE_BYTES)) })).resolves.toMatchObject({ claim: { state: 'Open' } });
+    const fresh = ledgerWorld();
+    await expect(disputeOf(fresh, CLAIMER_ID).stakeRunClaim({ ...runClaim, claim_type: 'x'.repeat(65) })).rejects.toThrow(RangeError);
+    expect(fresh.accepted).toEqual([]);
+    expect((await disputeOf(fresh, CLAIMER_ID).stakeRunClaim({ ...runClaim, claim_type: 'x'.repeat(64) })).ok).toBe(true);
+  }, SLOW);
 });
 
 describe('the challenge on the ledger', () => {
   it('publishes the evidence, and then challenges the open claim, with the hash and the URI of the evidence that is on the ledger', async () => {
-    const ledger = ledgerWorld([claimUtxo(CLAIM_TOKEN)]);
+    const ledger = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN)]);
     const filed = filedOf(await challengeOrder(disputeOf(ledger, AUDITOR_ID)));
     const [evidenceTx, challengeTx] = ledger.accepted;
     expect(ledger.accepted.length).toBe(2);
-    // The evidence is the first transaction. It carries the document, and the challenge carries none.
-    const expected = evidenceDocument({ ...ORDER_FACTS, claim: CLAIM_REF, claim_token: CLAIM_TOKEN, against_did: CLAIMER, by_did: AUDITOR, escrow_ref: ESCROW });
+    // The evidence is the first transaction. It carries the document, and the challenge carries none. The document names the statement S1 of the claim document that the claim holds.
+    const expected = evidenceDocument({
+      ...ORDER_FACTS, claim: CLAIM_REF, claim_token: CLAIM_TOKEN, against_did: CLAIMER, by_did: AUDITOR, escrow_ref: ESCROW, statement_text: STATEMENT_S1,
+    });
     if (!expected.ok) throw new Error(expected.detail);
     expect(ledger.documents.get(evidenceTx!)).toBe(expected.value.text);
     expect(ledger.documents.has(challengeTx!)).toBe(false);
@@ -127,9 +141,12 @@ describe('the challenge on the ledger', () => {
     expect(challenge.evidenceHash).toBe(documentHash(Buffer.from(ledger.documents.get(evidenceTx!)!, 'utf8')));
     expect(challenge.evidenceHash).toBe(filed.evidence_hash);
     expect(challenge.evidenceUri).toBe(utf8Hex(documentUri(evidenceTx!)));
+    // The resolution deadline of the challenge is the one of the deployment.
     expect(challenge).toMatchObject({
-      claimRef: { txHash: 'cc'.repeat(32), outputIndex: 0 }, claimToken: CLAIM_TOKEN, auditorDid: AUDITOR_ID, stakeAmount: 50_000_000n, resolutionDeadline: 72 * HOUR, state: { type: 'PendingOracle' },
+      claimRef: { txHash: 'cc'.repeat(32), outputIndex: 0 }, claimToken: CLAIM_TOKEN, auditorDid: AUDITOR_ID, stakeAmount: 50_000_000n, resolutionDeadline: MODULE1.protocol.resolutionDeadline,
+      state: { type: 'PendingOracle' },
     });
+    expect(MODULE1.protocol.resolutionDeadline).toBe(72 * HOUR);
     expect(output.assets).toMatchObject({ lovelace: 50_000_000n });
     // The claim moved on into the state Challenged.
     expect(ledger.at(CLAIM_REF)).toBeUndefined();
@@ -137,16 +154,18 @@ describe('the challenge on the ledger', () => {
     expect(claim!.datum).toMatchObject({ state: 'Challenged', claimerDid: CLAIMER_ID });
     expect(claim!.utxo.assets[`${MODULE1.claim.hash}${CLAIM_TOKEN}`]).toBe(1n);
     expect(filed.deadline).toBe(challenge.challengedAt + 72 * HOUR);
-    expect(filed.fee_lovelace > 0n).toBe(true);
+    expect(filed.fee_lovelace! > 0n).toBe(true);
   }, SLOW);
 
   it('challenges the claim of the other party and leaves its own claim and the claim of a third agent as they are', async () => {
-    const own = { ...claimUtxo(`636c6d5f${'0a'.repeat(28)}`, { claimerDid: AUDITOR_ID }), txHash: 'c0'.repeat(32) };
-    const third = { ...claimUtxo(`636c6d5f${'0b'.repeat(28)}`, { claimerDid: THIRD_ID }), txHash: 'c3'.repeat(32) };
-    const ledger = ledgerWorld([own, claimUtxo(CLAIM_TOKEN), third]);
+    const ledger = ledgerWorld((l) => [
+      { ...kitClaim(l, `636c6d5f${'0a'.repeat(28)}`, { claimerDid: AUDITOR_ID }), txHash: 'c0'.repeat(32) }, kitClaim(l, CLAIM_TOKEN),
+      { ...kitClaim(l, `636c6d5f${'0b'.repeat(28)}`, { claimerDid: THIRD_ID }), txHash: 'c3'.repeat(32) },
+    ]);
+    const [own, , third] = ledger.live.filter((utxo) => utxo.address === MODULE1.claim.address);
     filedOf(await challengeOrder(disputeOf(ledger, AUDITOR_ID)));
     expect(ledger.at(CLAIM_REF)).toBeUndefined();
-    for (const untouched of [own, third]) {
+    for (const untouched of [own!, third!]) {
       const now = ledger.at(`${untouched.txHash}#0`)!;
       expect(now.datum).toBe(untouched.datum);
       expect(decodeClaimDatum(now.datum!).state).toBe('Open');
@@ -155,29 +174,29 @@ describe('the challenge on the ledger', () => {
   }, SLOW);
 
   it('files nothing when the other party has no open claim, and sends no transaction', async () => {
-    const own = { ...claimUtxo(`636c6d5f${'0a'.repeat(28)}`, { claimerDid: AUDITOR_ID }), txHash: 'c0'.repeat(32) };
-    const ledger = ledgerWorld([own, claimUtxo(CLAIM_TOKEN, { state: 'Challenged' })]);
+    const own = (l: LedgerProvider) => ({ ...kitClaim(l, `636c6d5f${'0a'.repeat(28)}`, { claimerDid: AUDITOR_ID }), txHash: 'c0'.repeat(32) });
+    const ledger = ledgerWorld((l) => [own(l), kitClaim(l, CLAIM_TOKEN, { state: 'Challenged' })]);
     const result = await challengeOrder(disputeOf(ledger, AUDITOR_ID));
     expect(result).toMatchObject({ ok: false, code: 'no_open_claim', evidence: null, sent: null });
     expect(ledger.accepted).toEqual([]);
     // The twin: the claim of the other party is open, and the transaction goes out.
-    const open = ledgerWorld([own, claimUtxo(CLAIM_TOKEN)]);
+    const open = ledgerWorld((l) => [own(l), kitClaim(l, CLAIM_TOKEN)]);
     expect((await challengeOrder(disputeOf(open, AUDITOR_ID))).ok).toBe(true);
   }, SLOW);
 
-  it('files a second challenge for one job never, and a second job finds the claim challenged and publishes nothing', async () => {
-    const ledger = ledgerWorld([claimUtxo(CLAIM_TOKEN)]);
+  it('gives the filed challenge again for the same job, and a second job finds the claim challenged and publishes nothing', async () => {
+    const ledger = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN)]);
     const dispute = disputeOf(ledger, AUDITOR_ID);
-    filedOf(await challengeOrder(dispute));
+    const first = filedOf(await challengeOrder(dispute));
     expect(ledger.accepted.length).toBe(2);
-    expect(await challengeOrder(dispute)).toMatchObject({ ok: false, code: 'job_already_disputed' });
+    expect(filedOf(await challengeOrder(dispute))).toEqual(first);
     expect(await challengeOrder(dispute, ESCROW_2)).toMatchObject({ ok: false, code: 'no_open_claim' });
     expect(ledger.accepted.length).toBe(2);
     expect(ledger.atAddress(MODULE1.challenge.address).length).toBe(1);
   }, SLOW);
 
   it('does not challenge when the evidence is not confirmed, and the evidence transaction can still land', async () => {
-    const ledger = ledgerWorld([claimUtxo(CLAIM_TOKEN)]);
+    const ledger = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN)]);
     ledger.confirms = false;
     const result = await challengeOrder(disputeOf(ledger, AUDITOR_ID));
     expect(result).toMatchObject({ ok: false, code: 'evidence_not_confirmed', evidence: null, sent: { tx_hash: ledger.accepted[0], may_land: true } });
@@ -188,7 +207,7 @@ describe('the challenge on the ledger', () => {
 
   it('says that the evidence landed when the challenge cannot be built, and the claim is as it was', async () => {
     // The wallet holds two outputs, of 6 and 5 units: the evidence fits, and the stake of the challenge does not.
-    const ledger = ledgerWorld([claimUtxo(CLAIM_TOKEN)]);
+    const ledger = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN)]);
     const poor = ledger.live.filter((utxo) => utxo.address === WALLET_ADDRESS);
     ledger.live = ledger.live.filter((utxo) => !poor.includes(utxo));
     ledger.live.push({ txHash: 'f1'.repeat(32), outputIndex: 0, address: WALLET_ADDRESS, assets: { lovelace: 6_000_000n } }, { txHash: 'f2'.repeat(32), outputIndex: 1, address: WALLET_ADDRESS, assets: { lovelace: 5_000_000n } });
@@ -202,12 +221,156 @@ describe('the challenge on the ledger', () => {
   }, SLOW);
 
   it('files the evidence of a counterparty that refused for the digest of the approval', async () => {
-    const ledger = ledgerWorld([claimUtxo(CLAIM_TOKEN)]);
+    const ledger = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN)]);
     const filed = filedOf(await disputeOf(ledger, AUDITOR_ID).challengeApproval({ sender: CLAIMER, escrow_ref: ESCROW, evidence: DIGEST_FACTS }));
     expect(ledger.documents.get(filed.record.evidence)).toContain('The challenger refused the request before it did any work.');
     expect(ledger.documents.get(filed.record.evidence)).not.toContain('salt:');
     expect(decodeChallengeDatum(ledger.at(filed.record.challenge)!.datum!).evidenceHash).toBe(filed.evidence_hash);
   }, SLOW);
+
+  it('challenges a claim that sits at an address of the claim script with a stake part, which the node does not list by address', async () => {
+    const address = credentialToAddress('Mainnet', { type: 'Script', hash: MODULE1.claim.hash }, { type: 'Key', hash: '0d'.repeat(28) });
+    const ledger = ledgerWorld((l) => [{ ...kitClaim(l, CLAIM_TOKEN), address }]);
+    // The node lists outputs by exact address: the claim is not at the address of the script.
+    expect(ledger.atAddress(MODULE1.claim.address)).toEqual([]);
+    const filed = filedOf(await challengeOrder(disputeOf(ledger, AUDITOR_ID)));
+    expect(filed.record.claim).toBe(CLAIM_REF);
+    // The claim went on in the state Challenged, at the same address, with its stake part.
+    const claim = ledger.live.find((utxo) => utxo.assets[`${MODULE1.claim.hash}${CLAIM_TOKEN}`] === 1n)!;
+    expect(claim.address).toBe(address);
+    expect(decodeClaimDatum(claim.datum!).state).toBe('Challenged');
+    // The twin: the same claim at the address of the script is challenged too.
+    const plain = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN)]);
+    expect((await challengeOrder(disputeOf(plain, AUDITOR_ID))).ok).toBe(true);
+  }, SLOW);
+
+  it('says chain_unavailable when Koios cannot list the claims, and sends nothing: the claims at other addresses are not seen', async () => {
+    const ledger = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN)]);
+    ledger.koiosStatus = 503;
+    const result = await challengeOrder(disputeOf(ledger, AUDITOR_ID));
+    expect(result).toMatchObject({ ok: false, code: 'chain_unavailable' });
+    expect(ledger.accepted).toEqual([]);
+    ledger.koiosStatus = null;
+    expect((await challengeOrder(disputeOf(ledger, AUDITOR_ID))).ok).toBe(true);
+  }, SLOW);
+
+  describe('a claim that is not a claim of this kit is not challenged', () => {
+    const other = (ledger: LedgerProvider, text: string, type = 'claim', mediaType = 'text/plain') => {
+      const { uri } = ledger.addDocument(text, type, mediaType);
+      return { claimHash: documentHash(Buffer.from(text, 'utf8')), storageUri: utf8Hex(uri) };
+    };
+
+    it('leaves out a claim whose document is another text, another agent, another type or another hash, and files nothing', async () => {
+      const kit = kitClaimDocument(CLAIMER);
+      const cases: Array<[string, (ledger: LedgerProvider) => Partial<ClaimDatum>]> = [
+        ['a document that is another text', (ledger) => other(ledger, 'any other text\n')],
+        ['the claim document of another agent', (ledger) => other(ledger, kitClaimDocument(did(THIRD_ID)).text)],
+        ['a document that is not published as a claim', (ledger) => other(ledger, kit.text, 'evidence')],
+        ['a document with another media type', (ledger) => other(ledger, kit.text, 'claim', 'application/json')],
+        ['a claim hash that is not the hash of the document', (ledger) => ({ ...other(ledger, kit.text), claimHash: 'ab'.repeat(32) })],
+        ['an https address', () => ({ claimHash: kit.hash, storageUri: utf8Hex('https://example.org/claim.txt') })],
+      ];
+      for (const [name, make] of cases) {
+        const ledger = ledgerWorld((l) => [claimUtxo(CLAIM_TOKEN, make(l))]);
+        const result = await challengeOrder(disputeOf(ledger, AUDITOR_ID));
+        expect(result, name).toMatchObject({ ok: false, code: 'no_open_claim' });
+        if (!result.ok) expect(result.detail, name).toContain('1 without a claim document of this kit');
+        expect(ledger.accepted, name).toEqual([]);
+      }
+      // The twin: the claim document of this kit for the claimer is challenged.
+      const twin = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN)]);
+      expect((await challengeOrder(disputeOf(twin, AUDITOR_ID))).ok).toBe(true);
+    }, SLOW);
+
+    it('says chain_unavailable for a claim whose document is not on the ledger, and never takes it for a claim of another kind', async () => {
+      // The fixture claim holds the address of a document that no transaction of the ledger carries.
+      const ledger = ledgerWorld([claimUtxo(CLAIM_TOKEN)]);
+      const result = await challengeOrder(disputeOf(ledger, AUDITOR_ID));
+      expect(result).toMatchObject({ ok: false, code: 'chain_unavailable' });
+      expect(ledger.accepted).toEqual([]);
+    }, SLOW);
+  });
+
+  describe('an agent that staked a claim for each of two runs has two open claims, and the newest one is challenged', () => {
+    it('challenges the claim with the latest challenge deadline, and the evidence names that claim', async () => {
+      const ledger = ledgerWorld();
+      const older = await disputeOf(ledger, CLAIMER_ID, NOW).stakeRunClaim({ ...runClaim, challenge_window_ms: 12 * HOUR });
+      const newer = await disputeOf(ledger, CLAIMER_ID, NOW + 60_000).stakeRunClaim({ ...runClaim, challenge_window_ms: 24 * HOUR });
+      if (!older.ok || !newer.ok) throw new Error('a claim was not staked');
+      expect(claimsOn(ledger).filter((claim) => claim.datum.state === 'Open').length).toBe(2);
+      expect(newer.value.challenge_deadline).toBeGreaterThan(older.value.challenge_deadline);
+      const filed = filedOf(await challengeOrder(disputeOf(ledger, AUDITOR_ID, NOW + 120_000)));
+      expect(filed.record.claim).toBe(newer.value.claim);
+      expect(filed.claim_token).toBe(newer.value.claim_token);
+      expect(ledger.documents.get(filed.record.evidence)).toContain(`Claim: ${newer.value.claim}`);
+      // The older claim is still open.
+      expect(claimsOn(ledger).find((claim) => claim.ref === older.value.claim)!.datum.state).toBe('Open');
+    }, SLOW);
+
+    it('says claim_ambiguous when two claims of this kit end at the same moment, and files nothing', async () => {
+      const ledger = ledgerWorld();
+      const first = await disputeOf(ledger, CLAIMER_ID, NOW).stakeRunClaim(runClaim);
+      const second = await disputeOf(ledger, CLAIMER_ID, NOW).stakeRunClaim(runClaim);
+      if (!first.ok || !second.ok) throw new Error('a claim was not staked');
+      expect(first.value.challenge_deadline).toBe(second.value.challenge_deadline);
+      const before = ledger.accepted.length;
+      expect(await challengeOrder(disputeOf(ledger, AUDITOR_ID, NOW + 120_000))).toMatchObject({ ok: false, code: 'claim_ambiguous' });
+      expect(ledger.accepted.length).toBe(before);
+    }, SLOW);
+  });
+
+  describe('a restart does not file a second challenge for one job', () => {
+    /** A ledger whose node takes the challenge and then fails the answer of the submit: the challenge landed, and the code is told that it may not have. */
+    function lostAnswer(): LedgerProvider {
+      const ledger = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN)]);
+      const original = ledger.submitTx.bind(ledger);
+      let submits = 0;
+      ledger.submitTx = async (tx: string) => {
+        const hash = await original(tx);
+        submits += 1;
+        if (submits === 2) throw new Error('fetch failed');
+        return hash;
+      };
+      return ledger;
+    }
+
+    it('finds the challenge of this agent for this job again, in the same process and after a restart with no journal', async () => {
+      const ledger = lostAnswer();
+      const dispute = disputeOf(ledger, AUDITOR_ID);
+      const first = await challengeOrder(dispute);
+      expect(first).toMatchObject({ ok: false, code: 'challenge_not_confirmed', sent: { may_land: true } });
+      expect(ledger.accepted.length).toBe(2);
+      const challenge = ledger.atAddress(MODULE1.challenge.address)[0]!;
+      const ref = `${challenge.txHash}#${challenge.outputIndex}`;
+      // The same process: the challenge is on chain, so it is the result, and nothing is sent.
+      const again = filedOf(await challengeOrder(dispute));
+      expect(again.record).toMatchObject({ claim: CLAIM_REF, challenge: ref });
+      expect(again.fee_lovelace).toBeNull();
+      expect(again.claim_token).toBe(CLAIM_TOKEN);
+      expect(again.against_did).toBe(CLAIMER);
+      // A restart: a new process has an empty journal, and it finds the same challenge.
+      const restarted = filedOf(await challengeOrder(disputeOf(ledger, AUDITOR_ID)));
+      expect(restarted.record).toEqual(again.record);
+      expect(restarted.evidence_hash).toBe(decodeChallengeDatum(challenge.datum!).evidenceHash);
+      expect(ledger.accepted.length).toBe(2);
+      // Another job against the same claimer finds no open claim: its claim is challenged, and the challenge is for the first job.
+      expect(await challengeOrder(disputeOf(ledger, AUDITOR_ID), ESCROW_2)).toMatchObject({ ok: false, code: 'no_open_claim' });
+      expect(ledger.accepted.length).toBe(2);
+    }, SLOW);
+
+    it('gives the recorded state after a restart with the journal of the first process, and sends nothing', async () => {
+      const ledger = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN)]);
+      ledger.confirms = false;
+      const journal = new MemoryJournal();
+      const first = await challengeOrder(disputeOf(ledger, AUDITOR_ID, NOW, { journal }));
+      expect(first).toMatchObject({ ok: false, code: 'evidence_not_confirmed' });
+      expect(ledger.accepted.length).toBe(1);
+      // The evidence transaction may still land, so the new process does not publish a second evidence document.
+      const restarted = await challengeOrder(disputeOf(ledger, AUDITOR_ID, NOW, { journal }));
+      expect(restarted).toMatchObject({ ok: false, code: 'job_already_disputed', sent: { tx_hash: ledger.accepted[0] } });
+      expect(ledger.accepted.length).toBe(1);
+    }, SLOW);
+  });
 });
 
 describe('the withdrawal on the ledger', () => {
@@ -249,14 +412,14 @@ describe('what the chain port reads', () => {
     const claims = await realPort(ledger, AUDITOR_ID, NOW).readClaims();
     expect(claims).toEqual([{
       ref: CLAIM_REF, token: CLAIM_TOKEN, claimer: CLAIMER, claimer_key_hash: expect.stringMatching(/^[0-9a-f]{56}$/), state: 'Open', stake_lovelace: 50_000_000n, submitted_at: NOW - HOUR,
-      challenge_window_ms: 4 * HOUR,
+      challenge_window_ms: 4 * HOUR, claim_hash: '0c'.repeat(32), claim_type: 'certification', claim_uri: 'vector-tx:cu8SkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
     }]);
     expect(await realPort(ledger, AUDITOR_ID, NOW).readClaim(CLAIM_REF)).toEqual(claims[0]);
     expect(await realPort(ledger, AUDITOR_ID, NOW).readClaim(`${'ab'.repeat(32)}#0`)).toBeNull();
     expect(await realPort(ledger, AUDITOR_ID, NOW).readClaim(`${'ee'.repeat(32)}#0`)).toBeNull();
   }, SLOW);
 
-  it('reads a claim of a script credential with no key hash, and takes no output of another address for a claim', async () => {
+  it('reads a claim of a script credential with no key hash, and takes no output of another credential for a claim', async () => {
     const script = claimUtxo(CLAIM_TOKEN, { claimerCredential: { type: 'Script', hash: 'ab'.repeat(28) } });
     const elsewhere = { ...claimUtxo(`636c6d5f${'0b'.repeat(28)}`), txHash: 'ad'.repeat(32), address: WALLET_ADDRESS };
     const atChallenge = { ...claimUtxo(`636c6d5f${'0c'.repeat(28)}`), txHash: 'ae'.repeat(32), address: MODULE1.challenge.address };
@@ -268,6 +431,19 @@ describe('what the chain port reads', () => {
     expect((await port.readClaims()).map((claim) => claim.ref)).toEqual([CLAIM_REF]);
   }, SLOW);
 
+  it('reads the claims at every address of the claim script: the node lists the address of the script, and Koios the others, and the node confirms what Koios lists', async () => {
+    const stake = credentialToAddress('Mainnet', { type: 'Script', hash: MODULE1.claim.hash }, { type: 'Key', hash: '0d'.repeat(28) });
+    const withStake = { ...claimUtxo(`636c6d5f${'0b'.repeat(28)}`), txHash: 'ad'.repeat(32), address: stake };
+    const ledger = ledgerWorld([claimUtxo(CLAIM_TOKEN), withStake]);
+    // An output that only Koios lists is spent on the node: it is not a claim of the list.
+    const spent = { ...claimUtxo(`636c6d5f${'0c'.repeat(28)}`), txHash: 'ae'.repeat(32), address: stake };
+    ledger.koiosOnly.push(spent);
+    const port = realPort(ledger, AUDITOR_ID, NOW);
+    expect((await port.readClaims()).map((claim) => claim.ref).sort()).toEqual([CLAIM_REF, `${'ad'.repeat(32)}#0`].sort());
+    expect(await port.readClaim(`${'ae'.repeat(32)}#0`)).toBeNull();
+    expect(ledger.koiosCalls).toContain('credential_utxos');
+  }, SLOW);
+
   it('does not take a claim output with a datum that it cannot read for no claim', async () => {
     const broken = { ...claimUtxo(CLAIM_TOKEN), datum: 'd8799f01ff' };
     const ledger = ledgerWorld([broken]);
@@ -275,6 +451,64 @@ describe('what the chain port reads', () => {
     const result = await challengeOrder(disputeOf(ledger, AUDITOR_ID));
     expect(result).toMatchObject({ ok: false, code: 'chain_unavailable' });
     expect(ledger.accepted).toEqual([]);
+  }, SLOW);
+
+  describe('an answer of a wrong shape from the node is an error, and never no claim', () => {
+    const SHAPES: Array<[string, (utxo: LedgerProvider['live'][number]) => unknown]> = [
+      ['an output with no address', (utxo) => ({ ...utxo, address: '' })],
+      ['an output with an address that cannot be read', (utxo) => ({ ...utxo, address: 'zq9' })],
+      ['a token quantity that is a number', (utxo) => ({ ...utxo, assets: Object.fromEntries(Object.entries(utxo.assets).map(([unit, quantity]) => [unit, unit === 'lovelace' ? quantity : Number(quantity)])) })],
+      ['no assets', (utxo) => ({ ...utxo, assets: undefined })],
+      ['a datum that is not text', (utxo) => ({ ...utxo, datum: 7 })],
+      ['an output with no reference', (utxo) => ({ ...utxo, txHash: undefined })],
+      ['an output that is not an object', () => 'zq9'],
+    ];
+
+    it.each(SHAPES)('says chain_unavailable for %s, and sends nothing', async (_name, change) => {
+      const ledger = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN)]);
+      const original = ledger.getUtxos.bind(ledger);
+      ledger.getUtxos = async (address) => (await original(address)).map((utxo) => (utxo.address === MODULE1.claim.address ? (change(utxo) as typeof utxo) : utxo));
+      await expect(realPort(ledger, AUDITOR_ID, NOW).readClaims()).rejects.toThrow(/the node gave/);
+      const result = await challengeOrder(disputeOf(ledger, AUDITOR_ID));
+      expect(result).toMatchObject({ ok: false, code: 'chain_unavailable' });
+      expect(ledger.accepted).toEqual([]);
+    }, SLOW);
+
+    it('says so for a list that is not a list, and for an output that the node was not asked for', async () => {
+      const ledger = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN)]);
+      ledger.getUtxos = async () => 'zq9' as never;
+      await expect(realPort(ledger, AUDITOR_ID, NOW).readClaims()).rejects.toThrow(/no list/);
+      const stake = credentialToAddress('Mainnet', { type: 'Script', hash: MODULE1.claim.hash }, { type: 'Key', hash: '0d'.repeat(28) });
+      const hidden = ledgerWorld([{ ...claimUtxo(CLAIM_TOKEN), address: stake }]);
+      // Koios lists the claim, and the node answers with another output than the one that was asked for.
+      hidden.getUtxosByOutRef = async () => [{ txHash: 'ee'.repeat(32), outputIndex: 0, address: WALLET_ADDRESS, assets: { lovelace: 5_000_000n } }];
+      await expect(realPort(hidden, AUDITOR_ID, NOW).readClaims()).rejects.toThrow(/not asked for/);
+      await expect(realPort(hidden, AUDITOR_ID, NOW).readClaim(CLAIM_REF)).rejects.toThrow(/not asked for/);
+    }, SLOW);
+
+    it('takes a well-formed output that is not a claim for no claim, as the twin of the shapes above', async () => {
+      const ledger = ledgerWorld([{ txHash: 'ab'.repeat(32), outputIndex: 0, address: MODULE1.claim.address, assets: { lovelace: 3_000_000n, [`${MODULE1.claim.hash}${'11'.repeat(32)}`]: 2n } }]);
+      expect(await realPort(ledger, AUDITOR_ID, NOW).readClaims()).toEqual([]);
+    }, SLOW);
+  });
+
+  it('reads the challenges, and the document at a vector-tx address, and gives the deployment value of the resolution deadline', async () => {
+    const ledger = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN)]);
+    const filed = filedOf(await challengeOrder(disputeOf(ledger, AUDITOR_ID)));
+    const port = realPort(ledger, AUDITOR_ID, NOW);
+    expect(port.protocol).toEqual({ resolution_deadline_ms: MODULE1.protocol.resolutionDeadline });
+    const [challenge] = await port.readChallenges();
+    expect(challenge).toMatchObject({
+      ref: filed.record.challenge, token: filed.challenge_token, claim: CLAIM_REF, claim_token: CLAIM_TOKEN, auditor: AUDITOR, auditor_key_hash: WALLET.keyHash, stake_lovelace: 50_000_000n,
+      evidence_hash: filed.evidence_hash, evidence_uri: filed.evidence_uri, resolution_deadline_ms: 72 * HOUR, state: 'PendingOracle',
+    });
+    const document = await port.readDocument(filed.evidence_uri);
+    expect(Buffer.from(document.bytes).toString('utf8')).toBe(ledger.documents.get(filed.record.evidence));
+    expect(document).toMatchObject({ type: 'evidence', media_type: 'text/plain' });
+    // No other address is read: an https address is refused, and so is an address that is not a transaction.
+    await expect(port.readDocument('https://example.org/claim.txt')).rejects.toThrow(TypeError);
+    await expect(port.readDocument('vector-tx:zq9')).rejects.toThrow();
+    await expect(port.readDocument(documentUri('9a'.repeat(32)))).rejects.toThrow();
   }, SLOW);
 });
 
@@ -363,10 +597,14 @@ describe('what the chain port does before and after the signature', () => {
 
   it('refuses settings of the wrong type before it reads anything', () => {
     const ledger = ledgerWorld();
-    for (const extra of [{ agent_id: 'ab' }, { agent_id: AUDITOR_ID.toUpperCase() }, { valid_minutes: 0 }, { valid_minutes: 60 }, { valid_minutes: 1.5 }, { build_timeout_ms: 0 }, { confirm_timeout_ms: 600_001 }, { confirm_timeout_ms: '1000' }]) {
-      expect(() => realPort(ledger, AUDITOR_ID, NOW, extra as Partial<Module1PortDeps>)).toThrow(TypeError);
-    }
-    expect(() => realPort(ledger, AUDITOR_ID, NOW, { valid_minutes: 59, build_timeout_ms: 1, confirm_timeout_ms: 600_000 })).not.toThrow();
+    const wrong: Array<Partial<Module1PortDeps>> = [
+      { agent_id: 'ab' }, { agent_id: AUDITOR_ID.toUpperCase() }, { valid_minutes: 0 }, { valid_minutes: 60 }, { valid_minutes: 1.5 }, { build_timeout_ms: 0 }, { confirm_timeout_ms: 600_001 },
+      { confirm_timeout_ms: '1000' as never }, { koios_url: 'ftp://koios.test' }, { koios_url: 'koios.test' }, { koios_url: 7 as never }, { fetch: 'fetch' as never }, { blockfrost_url: 'blockfrost' },
+      { module1: { ...MODULE1, protocol: { ...MODULE1.protocol, resolutionDeadline: 0 } } }, { module1: { ...MODULE1, protocol: { ...MODULE1.protocol, resolutionDeadline: 1.5 } } },
+    ];
+    for (const extra of wrong) expect(() => realPort(ledger, AUDITOR_ID, NOW, extra)).toThrow(TypeError);
+    expect(() => realPort(ledger, AUDITOR_ID, NOW, { valid_minutes: 59, build_timeout_ms: 1, confirm_timeout_ms: 600_000, blockfrost_url: 'https://blockfrost.test' })).not.toThrow();
     expect(() => realPort(ledger, AUDITOR_ID, NOW, { address: 'not an address' })).toThrow();
+    expect(koiosOf(ledger)).toBeTypeOf('function');
   });
 });

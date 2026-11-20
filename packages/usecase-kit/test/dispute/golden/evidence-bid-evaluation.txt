@@ -1,4 +1,5 @@
 Evidence about statement S1 of a claim on the Vector marketplace.
+Statement S1 of the claim reads: "The unit price of every line in a quote is the price that its published price list gives for that SKU and quantity."
 The claimer is a bid desk. The challenger is the agent that asked the bid desk for a quote.
 The bid desk quoted the unit price 110 for the SKU "SKU-200" at the quantity 100.
 The published price list of the bid desk gives the unit price 125 for the SKU "SKU-200" at the quantity 100.

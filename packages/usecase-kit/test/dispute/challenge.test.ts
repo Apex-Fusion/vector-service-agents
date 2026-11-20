@@ -1,40 +1,23 @@
 // packages/usecase-kit/test/dispute/challenge.test.ts: the challenge of a buyer-side agent and of a counterparty, on a scripted chain port. The question of these tests: is a challenge ever filed with no
-// evidence document, or against the wrong claim? Each refusal has an accepted twin.
+// evidence document, or against the wrong claim? Each refusal has an accepted twin. The claim that a challenge names has its own tests (target.test.ts), the journal has its own (journal.test.ts), and
+// the reads that fail or answer in a wrong shape have theirs (reads.test.ts).
 import { setImmediate as tick } from 'node:timers/promises';
-import { describe, expect, it, vi } from 'vitest';
-import { documentHash } from '@vsa/buyer-core';
+import { describe, expect, it } from 'vitest';
+import { documentHash, documentUri } from '@vsa/buyer-core';
 import { NO_OPEN_CLAIM, RESULT_SCHEMA, exitStateOf } from '@vsa/usecase-kit/protocol';
 import type { EscalatedResult, UnfiledDisputeResult } from '@vsa/usecase-kit/protocol';
-import { Dispute, disputedFields } from '@vsa/usecase-kit/dispute';
+import { Dispute, LEAST_RESOLUTION_DEADLINE_MS, disputedFields } from '@vsa/usecase-kit/dispute';
 import type { ApprovalChallengeInput, ChallengeResult, ClaimView, DeliveryChallengeInput, DisputeSettings } from '@vsa/usecase-kit/dispute';
 import {
-  CHALLENGE_TX, DIGEST_FACTS, ESCROW, ESCROW_2, EVIDENCE_TX, HOUR, ME, MISMATCH, ORDER_FACTS, OTHER, QUOTE_FACTS, RecordingQueue, REF_A, REF_B, REF_C, ScriptedPort, THIRD, TOKEN_A, TOKEN_B, TOKEN_C, NOW,
-  claimView,
+  CHALLENGE_TX, DIGEST_FACTS, ESCROW, ESCROW_2, EVIDENCE_TX, HOUR, ME, MISMATCH, NOW, ORDER_FACTS, OTHER, QUOTE_FACTS, RecordingQueue, REF_A, REF_B, REF_C, ScriptedPort, SETTINGS, STATEMENT_S1, THIRD,
+  TOKEN_A, TOKEN_B, TOKEN_C, canonical, claimView, never, rig,
 } from './support.ts';
-import type { Events } from './support.ts';
-
-interface Rig {
-  readonly events: Events;
-  readonly port: ScriptedPort;
-  readonly dispute: Dispute;
-  readonly logs: string[];
-  readonly time: { now: number };
-}
-
-function rig(settings: Partial<DisputeSettings> = {}): Rig {
-  const events: Events = [];
-  const port = new ScriptedPort(events);
-  const time = { now: NOW };
-  const logs: string[] = [];
-  const dispute = new Dispute({
-    port, queue: new RecordingQueue(events), clock: () => time.now, log: (line) => logs.push(line),
-    settings: { challenge_stake_lovelace: 50_000_000n, resolution_deadline_ms: 72 * HOUR, min_window_left_ms: 10 * 60_000, ...settings },
-  });
-  return { events, port, dispute, logs, time };
-}
 
 const delivery = (extra: Partial<DeliveryChallengeInput> = {}): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: ESCROW, evidence: ORDER_FACTS, ...extra });
 const approval = (extra: Partial<ApprovalChallengeInput> = {}): ApprovalChallengeInput => ({ sender: OTHER, escrow_ref: ESCROW, evidence: DIGEST_FACTS, ...extra });
+
+/** The call of the port that reads the claim document of a claim view. */
+const readsDocumentOf = (claim: ClaimView = claimView()): string => `readDocument ${claim.claim_uri}`;
 
 /** The chain after a challenge: the claim that the challenge spent is Challenged, so it is no longer open. */
 function challengeChangesTheClaim(port: ScriptedPort): void {
@@ -57,13 +40,15 @@ describe('a challenge is never built before the evidence document is confirmed',
     port.claims = [claimView()];
     const result = await dispute.challengeDelivery(delivery());
     expect(result.ok).toBe(true);
-    expect(events).toEqual(['readClaims', 'queue:start', 'publish evidence', 'queue:end', 'queue:start', `readClaim ${REF_A}`, `openChallenge ${REF_A}`, 'queue:end']);
+    expect(events).toEqual([
+      'readClaims', readsDocumentOf(), 'queue:start', 'publish evidence', 'queue:end', 'queue:start', `readClaim ${REF_A}`, `openChallenge ${REF_A}`, 'queue:end',
+    ]);
     // The challenge holds the hash and the URI of the evidence document that the port confirmed, and the document is the one that names the claim.
     const [published] = port.published;
     const [challenged] = port.challenged;
     expect(published!.type).toBe('evidence');
     expect(challenged!.evidence_hash).toBe(documentHash(published!.bytes));
-    expect(challenged!.evidence_uri).toBe(`vector-tx:${EVIDENCE_TX.slice(0, 43)}`);
+    expect(challenged!.evidence_uri).toBe(documentUri(EVIDENCE_TX));
     expect(textOf(published!.bytes)).toContain(`Claim: ${REF_A}`);
     expect(challenged).toMatchObject({ claim: REF_A, claim_token: TOKEN_A, stake_lovelace: 50_000_000n, resolution_deadline_ms: 72 * HOUR });
   });
@@ -73,6 +58,7 @@ describe('a challenge is never built before the evidence document is confirmed',
     port.claims = [claimView()];
     const release = port.holdPublish();
     const pending = dispute.challengeDelivery(delivery());
+    await tick();
     await tick();
     await tick();
     expect(port.published.length).toBe(1);
@@ -89,7 +75,7 @@ describe('a challenge is never built before the evidence document is confirmed',
     port.publishAnswer = () => ({ ok: false, code: 'not_confirmed', detail: 'not seen confirmed', tx_hash: EVIDENCE_TX, valid_to: NOW + HOUR, may_land: true });
     const result = await dispute.challengeDelivery(delivery());
     expectNotFiled(result, 'evidence_not_confirmed');
-    expect(result.evidence).toBeNull();
+    expect(result).toMatchObject({ evidence: null, challenge: null, wrong_document: null });
     expect(result.sent).toEqual({ tx_hash: EVIDENCE_TX, valid_to: NOW + HOUR, may_land: true });
     expect(port.challenged).toEqual([]);
     expect(events.some((event) => event.startsWith('openChallenge'))).toBe(false);
@@ -117,16 +103,28 @@ describe('a challenge is never built before the evidence document is confirmed',
     port.publishAnswer = () => { throw new Error('the port failed'); };
     const result = await dispute.challengeDelivery(delivery());
     expectNotFiled(result, 'port_error');
+    expect(result.detail).toContain('a transaction may have landed');
     expect(port.challenged).toEqual([]);
     expect(await dispute.challengeDelivery(delivery())).toMatchObject({ ok: false, code: 'job_already_disputed' });
   });
 
-  it('files no challenge when the port published a document with another hash than the evidence', async () => {
+  it('files no challenge when the port published a document with another hash than the evidence, and names the transaction that landed', async () => {
     const { port, dispute } = rig();
     port.claims = [claimView()];
-    port.publishAnswer = () => ({ ok: true, value: { tx_hash: EVIDENCE_TX, uri: 'vector-tx:evidence', document_hash: 'ab'.repeat(32), fee_lovelace: 1n } });
-    expectNotFiled(await dispute.challengeDelivery(delivery()), 'port_error');
+    const normal = port.publishAnswer;
+    port.publishAnswer = () => ({ ok: true, value: { tx_hash: EVIDENCE_TX, uri: documentUri(EVIDENCE_TX), document_hash: 'ab'.repeat(32), fee_lovelace: 1n } });
+    const result = await dispute.challengeDelivery(delivery());
+    expectNotFiled(result, 'port_error');
     expect(port.challenged).toEqual([]);
+    // The document transaction is on chain, and the result has it in a member, not only in a text.
+    expect(result).toMatchObject({ evidence: null, sent: null, challenge: null, wrong_document: { tx_hash: EVIDENCE_TX, uri: documentUri(EVIDENCE_TX), document_hash: 'ab'.repeat(32) } });
+    // The job is not tried again, because a transaction of it landed.
+    expect(await dispute.challengeDelivery(delivery())).toMatchObject({ ok: false, code: 'job_already_disputed', wrong_document: { tx_hash: EVIDENCE_TX } });
+    // The twin: a port that publishes the document that was made lets the challenge go on.
+    const twin = rig();
+    twin.port.claims = [claimView()];
+    twin.port.publishAnswer = normal;
+    expect((await twin.dispute.challengeDelivery(delivery())).ok).toBe(true);
   });
 
   it('makes the evidence before it publishes anything: facts with no contradiction publish nothing', async () => {
@@ -135,11 +133,25 @@ describe('a challenge is never built before the evidence document is confirmed',
     const same = { ...ORDER_FACTS, confirmation: { ...ORDER_FACTS.purchase_order, schema: 'x' } };
     const result = await dispute.challengeDelivery(delivery({ evidence: same as unknown as DeliveryChallengeInput['evidence'] }));
     expectNotFiled(result, 'no_contradiction');
-    expect(events).toEqual(['readClaims']);
+    expect(events).toEqual(['readClaims', readsDocumentOf()]);
     expect(result).toMatchObject({ evidence: null, sent: null });
     // The twin: facts that differ are published.
     expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
     expect(port.published.length).toBe(1);
+  });
+
+  it('refuses a confirmation that is not signed for this purchase order, and publishes nothing; the twin publishes', async () => {
+    const { events, port, dispute } = rig();
+    port.claims = [claimView()];
+    const other = { ...ORDER_FACTS, confirmation: { ...ORDER_FACTS.confirmation, po_sha256: '44'.repeat(32) } };
+    const result = await dispute.challengeDelivery(delivery({ evidence: other as unknown as DeliveryChallengeInput['evidence'] }));
+    expectNotFiled(result, 'confirmation_not_for_order');
+    expect(events).toEqual(['readClaims', readsDocumentOf()]);
+    expect(port.published).toEqual([]);
+    expect(disputedFields(result)).toMatchObject({ reason: 'confirmation_not_for_order', challenge: null, exit_state: 'Failed' });
+    // The refusal does not use up the job: the right confirmation is filed, and its evidence says that it was signed for this purchase order.
+    expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(textOf(port.published[0]!.bytes)).toContain('signed for this purchase order');
   });
 
   it('publishes the evidence of use case 3 and of use case 2 the same way', async () => {
@@ -156,11 +168,13 @@ describe('a challenge is never built before the evidence document is confirmed',
   it('writes lines with references and codes to the log, and no value of the facts and no text of the evidence', async () => {
     const { logs, port, dispute } = rig();
     port.claims = [claimView()];
-    const facts = { ...ORDER_FACTS, purchase_order: { ...ORDER_FACTS.purchase_order, sku: 'SKU-zq9marker' }, confirmation: { ...ORDER_FACTS.confirmation, sku: 'SKU-zq9other' } };
+    const order = { ...ORDER_FACTS.purchase_order, sku: 'SKU-zq9marker' };
+    const facts = { ...ORDER_FACTS, purchase_order: order, confirmation: { ...ORDER_FACTS.confirmation, po_sha256: canonical(order), sku: 'SKU-zq9other' } };
     expect((await dispute.challengeDelivery(delivery({ evidence: facts }))).ok).toBe(true);
     expect(logs.length).toBeGreaterThan(1);
     expect(logs.join('\n')).not.toContain('zq9');
     expect(logs.join('\n')).not.toContain('Evidence about');
+    expect(logs.join('\n')).not.toContain(STATEMENT_S1);
     expect(textOf(port.published[0]!.bytes)).toContain('SKU-zq9marker');
     // A failure that stops after the evidence landed is logged with its code and its references.
     const late = rig();
@@ -204,12 +218,17 @@ describe('the claim that is challenged is the open claim of the other party of t
   });
 
   it('never challenges a claim that is withdrawn or resolved, or one that is already challenged', async () => {
-    for (const state of ['Challenged', 'Validated', 'Invalidated'] as const) {
+    for (const state of ['Validated', 'Invalidated'] as const) {
       const { events, port, dispute } = rig();
       port.claims = [claimView({ state })];
       expectNotFiled(await dispute.challengeDelivery(delivery()), NO_OPEN_CLAIM);
       expect(events).toEqual(['readClaims']);
     }
+    // A claim that is Challenged by another agent: the code looks for a challenge of its own for this job, finds none, and files nothing.
+    const challenged = rig();
+    challenged.port.claims = [claimView({ state: 'Challenged' })];
+    expectNotFiled(await challenged.dispute.challengeDelivery(delivery()), NO_OPEN_CLAIM);
+    expect(challenged.events).toEqual(['readClaims', 'readChallenges']);
     // A claim that was withdrawn is gone from the chain: the list has no claim of the other party.
     const gone = rig();
     gone.port.claims = [third];
@@ -237,18 +256,6 @@ describe('the claim that is challenged is the open claim of the other party of t
     const wide = rig({ min_window_left_ms: 2_000 });
     wide.port.claims = [claimView({ submitted_at: NOW - 4 * HOUR + 60_000 })];
     expect((await wide.dispute.challengeDelivery(delivery())).ok).toBe(true);
-  });
-
-  it('does not choose between two open claims of the other party', async () => {
-    const { events, port, dispute } = rig();
-    port.claims = [target, claimView({ ref: REF_B, token: TOKEN_B, submitted_at: NOW - 2 * HOUR })];
-    const result = await dispute.challengeDelivery(delivery());
-    expectNotFiled(result, 'claim_ambiguous');
-    expect(events).toEqual(['readClaims']);
-    // The twin: one of the two claims is already challenged, so one claim is open.
-    port.claims = [target, claimView({ ref: REF_B, token: TOKEN_B, state: 'Challenged' })];
-    expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
-    expect(port.challenged[0]!.claim).toBe(REF_A);
   });
 
   it('refuses a challenge against its own claim before it reads the chain', async () => {
@@ -280,6 +287,7 @@ describe('the claim that is challenged is the open claim of the other party of t
       ['was withdrawn or resolved, so no output holds it', () => null],
       ['is another claim at the same output', (claim) => ({ ...claim, token: TOKEN_B })],
       ['is of another claimer at the same output', (claim) => ({ ...claim, claimer: THIRD })],
+      ['holds another claim document at the same output', (claim) => ({ ...claim, claim_hash: 'ab'.repeat(32) })],
     ];
 
     it.each(changes)('files no challenge when the claim %s, and says that the evidence landed', async (_name, change) => {
@@ -325,7 +333,7 @@ describe('the claim that is challenged is the open claim of the other party of t
       expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
     });
 
-    it('reports a challenge that the port landed on another claim, and does not call it filed', async () => {
+    it('reports a challenge that the port landed on another claim, in a member of the result, and does not call it filed', async () => {
       const { logs, port, dispute } = rig();
       port.claims = [target];
       port.openChallengeAnswer = (call) => ({
@@ -338,16 +346,20 @@ describe('the claim that is challenged is the open claim of the other party of t
       const result = await dispute.challengeDelivery(delivery());
       expectNotFiled(result, 'challenge_wrong_claim');
       expect(result.evidence).not.toBeNull();
+      // The transaction that landed is in a typed member, so no caller reads it from a text.
+      expect(result.challenge).toEqual({ tx_hash: CHALLENGE_TX, challenge: `${CHALLENGE_TX}#0`, challenge_token: `63686c5f${'0e'.repeat(28)}`, claim: REF_B, claim_token: TOKEN_A });
       expect(logs.some((line) => line.includes(REF_B))).toBe(true);
       const outcome = disputedFields(result);
       expect(outcome).toMatchObject({ outcome: 'disputed', challenge: null, exit_state: 'Failed' });
+      // The job is not tried again, and the repeat says what landed.
+      expect(await dispute.challengeDelivery(delivery())).toMatchObject({ ok: false, code: 'job_already_disputed', challenge: { tx_hash: CHALLENGE_TX } });
     });
   });
 
   it('names in the evidence the claim, the parties and the job that it found, whatever the facts say', async () => {
     const { port, dispute } = rig();
     port.claims = [claimView()];
-    const facts = { ...ORDER_FACTS, claim: REF_B, claim_token: TOKEN_B, against_did: THIRD, by_did: OTHER, escrow_ref: ESCROW_2 };
+    const facts = { ...ORDER_FACTS, claim: REF_B, claim_token: TOKEN_B, against_did: THIRD, by_did: OTHER, escrow_ref: ESCROW_2, statement_text: 'zq9 a statement that is not in the claim document' };
     const result = await dispute.challengeDelivery(delivery({ evidence: facts as unknown as DeliveryChallengeInput['evidence'] }));
     expect(result.ok).toBe(true);
     const text = textOf(port.published[0]!.bytes);
@@ -356,9 +368,11 @@ describe('the claim that is challenged is the open claim of the other party of t
     expect(text).toContain(`Claimer: ${OTHER}`);
     expect(text).toContain(`Challenger: ${ME}`);
     expect(text).toContain(`Escrow of the job: ${ESCROW}`);
+    expect(text).toContain(`Statement S1 of the claim reads: "${STATEMENT_S1}"`);
     expect(text).not.toContain(REF_B);
     expect(text).not.toContain(TOKEN_B);
     expect(text).not.toContain(ESCROW_2);
+    expect(text).not.toContain('zq9');
     expect(port.challenged[0]!.claim).toBe(REF_A);
   });
 
@@ -366,7 +380,7 @@ describe('the claim that is challenged is the open claim of the other party of t
     const low = rig({ challenge_stake_lovelace: 49_999_999n });
     low.port.claims = [target];
     expectNotFiled(await low.dispute.challengeDelivery(delivery()), 'challenge_stake_too_low');
-    expect(low.events).toEqual(['readClaims']);
+    expect(low.events).toEqual(['readClaims', readsDocumentOf()]);
     for (const stake of [50_000_000n, 80_000_000n]) {
       const fine = rig({ challenge_stake_lovelace: stake });
       fine.port.claims = [target];
@@ -375,10 +389,12 @@ describe('the claim that is challenged is the open claim of the other party of t
     }
   });
 
-  it('refuses a claim whose window ends too soon for the evidence, before it publishes', async () => {
+  it('leaves out a claim whose window ends too soon for the evidence, and publishes nothing', async () => {
     const closing = rig({ min_window_left_ms: 4 * HOUR });
     closing.port.claims = [target];
-    expectNotFiled(await closing.dispute.challengeDelivery(delivery()), 'claim_window_closing');
+    const refused = await closing.dispute.challengeDelivery(delivery());
+    expectNotFiled(refused, NO_OPEN_CLAIM);
+    expect(refused.detail).toContain('1 with a challenge window that ends too soon');
     expect(closing.events).toEqual(['readClaims']);
     const roomy = rig({ min_window_left_ms: 3 * HOUR });
     roomy.port.claims = [target];
@@ -387,25 +403,27 @@ describe('the claim that is challenged is the open claim of the other party of t
 });
 
 describe('a job gets one challenge', () => {
-  it('refuses a second challenge for one job, and publishes and challenges once', async () => {
+  it('gives the filed challenge again for a second call for one job, and publishes and challenges once', async () => {
     const { port, dispute } = rig();
     port.claims = [claimView()];
-    expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
-    // The claim is still open on this port: only the guard of the job stops the second challenge.
+    const first = await dispute.challengeDelivery(delivery());
+    expect(first.ok).toBe(true);
+    // The claim is still open on this port: only the journal of the job stops a second challenge.
     const second = await dispute.challengeDelivery(delivery());
-    expectNotFiled(second, 'job_already_disputed');
+    expect(second).toEqual(first);
     expect(port.published.length).toBe(1);
     expect(port.challenged.length).toBe(1);
   });
 
-  it('refuses a second challenge for one job against another claim of the same agent', async () => {
+  it('files no second challenge for one job against another claim of the same agent', async () => {
     const { port, dispute } = rig();
     port.claims = [claimView()];
     challengeChangesTheClaim(port);
-    expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
+    const first = await dispute.challengeDelivery(delivery());
+    expect(first.ok).toBe(true);
     // The old claim of the other party is not open any more. A new claim of the same agent appears, and the same job must not challenge it.
     port.claims = [...port.claims, claimView({ ref: REF_B, token: TOKEN_B, submitted_at: NOW - 10 * 60_000 })];
-    expectNotFiled(await dispute.challengeDelivery(delivery()), 'job_already_disputed');
+    expect(await dispute.challengeDelivery(delivery())).toEqual(first);
     expect(port.challenged.length).toBe(1);
   });
 
@@ -427,6 +445,8 @@ describe('a job gets one challenge', () => {
     const release = port.holdPublish();
     const first = dispute.challengeDelivery(delivery());
     await tick();
+    await tick();
+    await tick();
     expectNotFiled(await dispute.challengeDelivery(delivery()), 'job_already_disputed');
     release();
     expect((await first).ok).toBe(true);
@@ -438,18 +458,24 @@ describe('a job gets one challenge', () => {
     port.claims = [claimView()];
     port.publishAnswer = () => ({ ok: false, code: 'not_confirmed', detail: 'late', tx_hash: EVIDENCE_TX, valid_to: NOW + HOUR, may_land: true });
     expectNotFiled(await dispute.challengeDelivery(delivery()), 'evidence_not_confirmed');
-    expectNotFiled(await dispute.challengeDelivery(delivery()), 'job_already_disputed');
+    const again = await dispute.challengeDelivery(delivery());
+    expectNotFiled(again, 'job_already_disputed');
+    // The repeat gives the recorded state: the evidence transaction that may still land.
+    expect(again.sent).toMatchObject({ tx_hash: EVIDENCE_TX, may_land: true });
     expect(port.published.length).toBe(1);
   });
 
-  it('refuses a second try after the evidence landed and the challenge failed', async () => {
+  it('refuses a second try after the evidence landed and the challenge failed, and gives the recorded state', async () => {
     const { port, dispute } = rig();
     port.claims = [claimView()];
     port.openChallengeAnswer = () => ({ ok: false, code: 'not_built', detail: 'the wallet is empty' });
     const first = await dispute.challengeDelivery(delivery());
     expectNotFiled(first, 'challenge_not_built');
     expect(first.evidence).toMatchObject({ tx_hash: EVIDENCE_TX });
-    expectNotFiled(await dispute.challengeDelivery(delivery()), 'job_already_disputed');
+    const again = await dispute.challengeDelivery(delivery());
+    expectNotFiled(again, 'job_already_disputed');
+    expect(again.evidence).toMatchObject({ tx_hash: EVIDENCE_TX });
+    expect(again.detail).toContain('challenge_not_built');
     expect(port.published.length).toBe(1);
   });
 
@@ -498,7 +524,7 @@ describe('the challenge of a counterparty that refused for the digest of the app
     const withText = { ...DIGEST_FACTS, request: { sku: 'SKU-1' } };
     const result = await dispute.challengeApproval(approval({ evidence: withText as unknown as ApprovalChallengeInput['evidence'] }));
     expectNotFiled(result, 'bad_shape');
-    expect(events).toEqual(['readClaims']);
+    expect(events).toEqual(['readClaims', readsDocumentOf()]);
     expect(port.published).toEqual([]);
   });
 
@@ -537,10 +563,14 @@ describe('the input of a challenge', () => {
 });
 
 describe('the settings of the dispute', () => {
-  const make = (settings: Record<string, unknown>) => () => new Dispute({
-    port: new ScriptedPort(), queue: new RecordingQueue([]), clock: () => NOW,
-    settings: { challenge_stake_lovelace: 50_000_000n, resolution_deadline_ms: 72 * HOUR, min_window_left_ms: 600_000, ...settings } as unknown as DisputeSettings,
+  const make = (settings: Record<string, unknown>, port = new ScriptedPort()) => () => new Dispute({
+    port, queue: new RecordingQueue([]), clock: () => NOW, sleep: never, settings: { ...SETTINGS, ...settings } as unknown as DisputeSettings,
   });
+  const portWith = (resolutionDeadline: unknown): ScriptedPort => {
+    const port = new ScriptedPort();
+    Object.defineProperty(port, 'protocol', { value: { resolution_deadline_ms: resolutionDeadline } });
+    return port;
+  };
 
   it('refuses a stake that is not a bigint, and a time that is not a whole number, and never reads them as no limit', () => {
     expect(make({ challenge_stake_lovelace: 50_000_000 })).toThrow(TypeError);
@@ -549,33 +579,73 @@ describe('the settings of the dispute', () => {
     expect(make({ challenge_stake_lovelace: null })).toThrow(TypeError);
     expect(make({ resolution_deadline_ms: '259200000' })).toThrow(TypeError);
     expect(make({ resolution_deadline_ms: 1.5 })).toThrow(TypeError);
-    expect(make({ resolution_deadline_ms: undefined })).toThrow(TypeError);
     expect(make({ min_window_left_ms: Number.POSITIVE_INFINITY })).toThrow(TypeError);
     expect(make({ min_window_left_ms: null })).toThrow(TypeError);
+    expect(make({ read_timeout_ms: undefined })).toThrow(TypeError);
+    expect(make({ read_timeout_ms: '30000' })).toThrow(TypeError);
+    expect(make({ read_timeout_ms: 1.5 })).toThrow(TypeError);
+    expect(() => new Dispute({ port: new ScriptedPort(), queue: new RecordingQueue([]), clock: () => NOW, settings: SETTINGS } as never)).toThrow(TypeError);
   });
 
-  it('refuses a stake of 0, a deadline of 0 and a window that is too short to confirm anything', () => {
+  it('refuses a stake of 0, a window that is too short to confirm anything, and a read bound of 0', () => {
     expect(make({ challenge_stake_lovelace: 0n })).toThrow(RangeError);
     expect(make({ challenge_stake_lovelace: -1n })).toThrow(RangeError);
-    expect(make({ resolution_deadline_ms: 0 })).toThrow(RangeError);
     expect(make({ min_window_left_ms: 1_999 })).toThrow(RangeError);
+    expect(make({ read_timeout_ms: 0 })).toThrow(RangeError);
   });
 
   it('accepts the settings of the twin', () => {
     expect(make({})).not.toThrow();
-    expect(make({ min_window_left_ms: 2_000, resolution_deadline_ms: 1 })).not.toThrow();
+    expect(make({ min_window_left_ms: 2_000, read_timeout_ms: 1 })).not.toThrow();
   });
 
   it('refuses a clock that does not give POSIX milliseconds, and files nothing', async () => {
     for (const bad of [Number.NaN, 0, -5, 1.5]) {
       const port = new ScriptedPort();
       port.claims = [claimView()];
-      const dispute = new Dispute({
-        port, queue: new RecordingQueue([]), clock: () => bad, settings: { challenge_stake_lovelace: 50_000_000n, resolution_deadline_ms: 72 * HOUR, min_window_left_ms: 600_000 },
-      });
-      await expect(dispute.challengeDelivery(delivery())).resolves.toMatchObject({ ok: false, code: 'port_error' });
+      const dispute = new Dispute({ port, queue: new RecordingQueue([]), clock: () => bad, sleep: never, settings: SETTINGS });
+      const result = await dispute.challengeDelivery(delivery());
+      expect(result).toMatchObject({ ok: false, code: 'port_error' });
+      expect(result.ok ? '' : result.detail).toContain('nothing was sent');
       expect(port.published).toEqual([]);
     }
+  });
+
+  describe('the resolution deadline of a challenge is the one of the Module-1 deployment', () => {
+    it('is the value that the port gives, in the call of the challenge', async () => {
+      for (const hours of [72, 80]) {
+        const port = portWith(hours * HOUR);
+        port.claims = [claimView()];
+        const dispute = new Dispute({ port, queue: new RecordingQueue([]), clock: () => NOW, sleep: never, settings: SETTINGS });
+        expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
+        expect(port.challenged[0]!.resolution_deadline_ms).toBe(hours * HOUR);
+      }
+    });
+
+    it('refuses a setting that is not the value of the deployment before anything is published, and accepts the same value or no setting', async () => {
+      expect(make({ resolution_deadline_ms: 90 * 60_000 })).toThrow(RangeError);
+      expect(make({ resolution_deadline_ms: 72 * HOUR + 1 })).toThrow(RangeError);
+      expect(make({ resolution_deadline_ms: 72 * HOUR })).not.toThrow();
+      expect(make({})).not.toThrow();
+      const port = new ScriptedPort();
+      port.claims = [claimView()];
+      expect(make({ resolution_deadline_ms: 90 * 60_000 }, port)).toThrow(/5400000 ms/);
+      expect(port.events).toEqual([]);
+    });
+
+    it('refuses a deployment whose deadline leaves the relay no time to open a case, and accepts one that does', () => {
+      expect(LEAST_RESOLUTION_DEADLINE_MS).toBe(6 * HOUR + 40 * 60_000);
+      expect(make({}, portWith(LEAST_RESOLUTION_DEADLINE_MS - 1))).toThrow(RangeError);
+      expect(make({}, portWith(90 * 60_000))).toThrow(RangeError);
+      expect(make({}, portWith(LEAST_RESOLUTION_DEADLINE_MS))).not.toThrow();
+    });
+
+    it('refuses a port that gives no value, and a value that is not a whole number', () => {
+      for (const bad of [undefined, null, '259200000', 1.5, Number.NaN]) expect(make({}, portWith(bad))).toThrow(TypeError);
+      const none = new ScriptedPort();
+      Object.defineProperty(none, 'protocol', { value: undefined });
+      expect(make({}, none)).toThrow(TypeError);
+    });
   });
 });
 
@@ -588,7 +658,7 @@ describe('the lookup of the open claim of an agent', () => {
     expect(await dispute.findOpenClaim(THIRD)).toMatchObject({ ok: true, value: { ref: REF_B } });
   });
 
-  it('says no_open_claim for an agent with no claim, and claim_ambiguous for two', async () => {
+  it('says no_open_claim for an agent with no claim, and claim_ambiguous for two claims that end at the same moment', async () => {
     const { port, dispute } = rig();
     expect(await dispute.findOpenClaim(OTHER)).toMatchObject({ ok: false, code: NO_OPEN_CLAIM });
     port.claims = [claimView(), claimView({ ref: REF_B, token: TOKEN_B })];
@@ -600,7 +670,8 @@ describe('the lookup of the open claim of an agent', () => {
     expect(await dispute.findOpenClaim('zq9' as never)).toMatchObject({ ok: false, code: 'bad_shape' });
     port.readClaimsFails = new Error('down');
     expect(await dispute.findOpenClaim(OTHER)).toMatchObject({ ok: false, code: 'chain_unavailable' });
-    vi.spyOn(port, 'readClaims').mockResolvedValue('not a list' as never);
+    port.readClaimsFails = null;
+    port.readClaims = async () => 'not a list' as never;
     expect(await dispute.findOpenClaim(OTHER)).toMatchObject({ ok: false, code: 'chain_unavailable' });
   });
 
@@ -647,6 +718,19 @@ describe('the members of a disputed result', () => {
     late.port.publishAnswer = () => ({ ok: false, code: 'not_built', detail: 'x' });
     expect(disputedFields(await late.dispute.challengeDelivery(delivery()))).toMatchObject({ reason: 'evidence_not_built', challenge: null, exit_state: 'Failed' });
   });
+
+  it('agrees with the one rule of the exit state for every code that a challenge can end with', () => {
+    const codes = [
+      'bad_shape', 'no_open_claim', 'claim_ambiguous', 'chain_unavailable', 'same_agent', 'job_already_disputed', 'journal_unavailable', 'claim_window_closing', 'challenge_stake_too_low',
+      'evidence_not_built', 'evidence_not_confirmed', 'claim_changed', 'challenge_not_built', 'challenge_not_confirmed', 'challenge_wrong_claim', 'port_error', 'document_too_large',
+      'no_contradiction', 'confirmation_not_for_order',
+    ] as const;
+    for (const code of codes) {
+      const fields = disputedFields({ ok: false, code, detail: 'x', evidence: null, sent: null, challenge: null, wrong_document: null });
+      expect(fields).toEqual({ outcome: 'disputed', reason: code, challenge: null, exit_state: 'Failed' });
+      expect(exitStateOf({ outcome: 'disputed', reason: fields.reason, challenge_filed: false, delegation_ended: false })).toBe(fields.exit_state);
+    }
+  });
 });
 
 describe('every transaction runs in the queue of the service key', () => {
@@ -663,15 +747,19 @@ describe('every transaction runs in the queue of the service key', () => {
     expect(depth).toBe(0);
   });
 
-  it('says port_error when the queue fails, and the evidence is not taken for published', async () => {
+  it('says port_error when the queue fails, and the evidence is not taken for published; the job is free for the next try', async () => {
     const port = new ScriptedPort();
     port.claims = [claimView()];
-    const dispute = new Dispute({
-      port, queue: { run: async () => { throw new Error('the queue is closed'); } }, clock: () => NOW,
-      settings: { challenge_stake_lovelace: 50_000_000n, resolution_deadline_ms: 72 * HOUR, min_window_left_ms: 600_000 },
-    });
-    expectNotFiled(await dispute.challengeDelivery(delivery()), 'port_error');
+    let closed = true;
+    const queue = { run: async <T>(job: () => Promise<T>): Promise<T> => { if (closed) throw new Error('the queue is closed'); return job(); } };
+    const dispute = new Dispute({ port, queue, clock: () => NOW, sleep: never, settings: SETTINGS });
+    const result = await dispute.challengeDelivery(delivery());
+    expectNotFiled(result, 'port_error');
+    expect(result.detail).toContain('nothing was sent');
     expect(port.published).toEqual([]);
     expect(port.challenged).toEqual([]);
+    // The twin: the queue works again, and the same job is filed. No record of the job says that something was sent.
+    closed = false;
+    expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
   });
 });

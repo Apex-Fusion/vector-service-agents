@@ -3,11 +3,12 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { documentHash } from '@vsa/buyer-core';
-import { JUROR_RECORD_LIMIT_BYTES, MAX_JUROR_DOCUMENT_BYTES, claimDocument, evidenceDocument, jurorRecordSize } from '@vsa/usecase-kit/dispute';
+import { canonicalSha256 } from '@vsa/usecase-kit/protocol';
+import { EVIDENCE_STATEMENT, JUROR_RECORD_LIMIT_BYTES, MAX_JUROR_DOCUMENT_BYTES, claimDocument, evidenceDocument, evidenceReferences, jurorRecordSize, readClaimDocument } from '@vsa/usecase-kit/dispute';
 import type { ClaimDocumentInput, EvidenceDocumentInput } from '@vsa/usecase-kit/dispute';
 import {
-  APPROVAL, BID_DESK, BID_DESK_CLAIM, CONFIRMATION, DIGEST_FACTS, ESCROW, HIRER, MANIFEST_SHA, MISMATCH, ME, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER, PARTIES, PRIOR_AUTHORIZATION_CLAIM, PURCHASE_ORDER,
-  QUOTE_FACTS, REF_A, THIRD, TOKEN_A,
+  APPROVAL, BID_DESK, BID_DESK_CLAIM, CONFIRMATION, DIGEST_FACTS, ESCROW, HIRER, MANIFEST_SHA, MISMATCH, ME, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER, PARTIES, PRIOR_AUTHORIZATION_CLAIM,
+  PURCHASE_ORDER, PURCHASE_ORDER_SHA, QUOTE_FACTS, REF_A, REORDER_AGENT_S1, STATEMENT_S1, THIRD, TOKEN_A,
 } from './support.ts';
 
 const golden = (name: string): string => readFileSync(new URL(`./golden/${name}.txt`, import.meta.url), 'utf8');
@@ -18,6 +19,13 @@ const claimInput = (extra: Partial<ClaimDocumentInput> = {}): ClaimDocumentInput
 });
 
 const evidenceInput = (extra: Record<string, unknown> = {}): EvidenceDocumentInput => ({ ...PARTIES, ...ORDER_FACTS, ...extra }) as unknown as EvidenceDocumentInput;
+
+/** The canonical SHA-256 of a JSON value. */
+const sha = (value: unknown): string => {
+  const digest = canonicalSha256(value, 'value');
+  if (!digest.ok) throw new Error(digest.detail);
+  return digest.value;
+};
 
 describe('the claim document of an agent', () => {
   const CLAIMS = [
@@ -136,12 +144,68 @@ describe('the claim document of an agent', () => {
   });
 });
 
+describe('the claim document that is read back', () => {
+  const CLAIM_DOCUMENTS = [
+    ['use case 1', OTHER, 'supplychain.order.accept.v1', ORDER_DESK_CLAIM],
+    ['use case 2', THIRD, 'health.priorauth.draft.v1', PRIOR_AUTHORIZATION_CLAIM],
+    ['use case 3', BID_DESK, 'supplychain.rfq.quote.v1', BID_DESK_CLAIM],
+  ] as const;
+
+  it.each(CLAIM_DOCUMENTS)('gives the fields of the claim document of %s, and writing them again gives the same bytes', (_name, agent, capability, claim) => {
+    const document = claimDocument({ agent_did: agent, capability_id: capability, manifest_sha256: MANIFEST_SHA, claim });
+    if (!document.ok) throw new Error(document.detail);
+    const read = readClaimDocument(document.value.bytes);
+    if (!read.ok) throw new Error(read.detail);
+    expect(read.value).toEqual({ agent_did: agent, capability_id: capability, manifest_sha256: MANIFEST_SHA, claim });
+    const again = claimDocument(read.value);
+    if (!again.ok) throw new Error(again.detail);
+    expect(again.value.bytes.equals(document.value.bytes)).toBe(true);
+  });
+
+  const original = (): string => {
+    const document = claimDocument(claimInput());
+    if (!document.ok) throw new Error(document.detail);
+    return document.value.text;
+  };
+
+  const CHANGES: Array<[string, (text: string) => string | Uint8Array]> = [
+    ['a changed sentence', (text) => text.replace('Claim of an agent', 'Claim by an agent')],
+    ['a sentence that is added', (text) => `${text}An extra sentence.\n`],
+    ['a row that is left out', (text) => text.replace('The agent makes the statements below about the work that it does, and it stakes AP3X on them.\n', '')],
+    ['a space at the end of a row', (text) => text.replace('S2: This agent places one order for each purchase order number.', 'S2: This agent places one order for each purchase order number. ')],
+    ['no line feed at the end', (text) => text.slice(0, -1)],
+    ['a carriage return', (text) => text.replace(/\n/g, '\r\n')],
+    ['statements in another order', (text) => text.replace('S2:', 'S3:').replace('S3: This agent takes', 'S2: This agent takes')],
+    ['a capability that a claim document cannot have', (text) => text.replace('supplychain.order.accept.v1', 'two words')],
+    ['an agent that is not a DID', (text) => text.replace(/did:vector:[0-9a-f]{64}/, 'did:vector:xyz')],
+    ['a manifest hash in upper case', (text) => text.replace(MANIFEST_SHA, MANIFEST_SHA.toUpperCase())],
+    ['a byte order mark', (text) => `\ufeff${text}`],
+    ['bytes that are not UTF-8', () => Uint8Array.from([0xff, 0xfe, 0x41])],
+    ['no bytes', () => new Uint8Array()],
+    ['more bytes than a document can have', (text) => `${text}${'x'.repeat(MAX_JUROR_DOCUMENT_BYTES)}`],
+  ];
+
+  it.each(CHANGES)('refuses %s, and the detail does not repeat the bytes', (_name, change) => {
+    const changed = change(original());
+    const read = readClaimDocument(typeof changed === 'string' ? Buffer.from(changed, 'utf8') : changed);
+    expect(read).toMatchObject({ ok: false, code: 'bad_shape' });
+    if (!read.ok) expect(read.detail).not.toContain('Claim by');
+  });
+
+  it('refuses a document that is not bytes, and a document of an evidence', () => {
+    expect(readClaimDocument('text' as unknown as Uint8Array)).toMatchObject({ ok: false, code: 'bad_shape' });
+    const evidence = evidenceDocument(evidenceInput());
+    if (!evidence.ok) throw new Error(evidence.detail);
+    expect(readClaimDocument(evidence.value.bytes)).toMatchObject({ ok: false, code: 'bad_shape' });
+  });
+});
+
 describe('the evidence document of a challenge', () => {
   const EVIDENCE = [
-    ['use case 1, a delivery', 'inventory-reorder', { ...PARTIES, ...ORDER_FACTS }, '5febc7789d47799b6664b0ab8e641a6e3391f887a4da810b7c518bcfdc7a0f6c'],
-    ['use case 1, an approval', 'inventory-reorder-approval', { ...PARTIES, ...DIGEST_FACTS, use_case: 'inventory-reorder' }, '683cd6e45a9e709bc3bfb4602e662e00b9e4a9507355d66f4c22859f56535973'],
-    ['use case 2, an approval', 'prior-authorization', { ...PARTIES, against_did: THIRD, ...DIGEST_FACTS }, 'eccb68ee22b9d67c38c9156cc14cb034bc34d9bee6ed152d91901111fb5a9f04'],
-    ['use case 3, a quote', 'bid-evaluation', { ...PARTIES, against_did: BID_DESK, ...QUOTE_FACTS }, '551c89e7fb7431680a72fe954f7757e793402ad9779f0227243988b627ce2898'],
+    ['use case 1, a delivery', 'inventory-reorder', { ...PARTIES, ...ORDER_FACTS }, 'f332c74e4bead7d50c81bdad72a4b1953da42d96e1d87c1c01996a205cff459a'],
+    ['use case 1, an approval', 'inventory-reorder-approval', { ...PARTIES, statement_text: REORDER_AGENT_S1, ...DIGEST_FACTS, use_case: 'inventory-reorder' }, '8accca0a08cbeab3a848c66c1f895a971ac1b7d196e85362977e8209252a1b27'],
+    ['use case 2, an approval', 'prior-authorization', { ...PARTIES, against_did: THIRD, statement_text: PRIOR_AUTHORIZATION_CLAIM.statements[0].text, ...DIGEST_FACTS }, '4d5cb387436f96c7f70ad49984e4c1b4c41679375da14b3543fc46c4500bcd5f'],
+    ['use case 3, a quote', 'bid-evaluation', { ...PARTIES, against_did: BID_DESK, statement_text: BID_DESK_CLAIM.statements[0].text, ...QUOTE_FACTS }, '0490b6a79a55ea2f2655a8df544e0befe984de42af9557af1ead838a1108b189'],
   ] as const;
 
   it.each(EVIDENCE)('of %s is the golden file, with its pinned hash', (_name, file, input, hash) => {
@@ -160,9 +224,14 @@ describe('the evidence document of a challenge', () => {
     const text = document.value.text;
     expect(text.indexOf('lot-large')).toBeGreaterThan(-1);
     expect(text.indexOf('lot-large')).toBeLessThan(text.indexOf('References'));
-    for (const reference of [REF_A, TOKEN_A, OTHER, ME, ESCROW, '33'.repeat(32), '3cd0eded21242ff660885bccdffc84de8a23c7362d84c3a6a20776e0a594c611']) {
+    for (const reference of [REF_A, TOKEN_A, OTHER, ME, ESCROW, '33'.repeat(32), PURCHASE_ORDER_SHA]) {
       expect(text.indexOf(reference)).toBeGreaterThan(text.indexOf('References'));
     }
+  });
+
+  it('has the canonical SHA-256 of the purchase order in the confirmation of the samples, so the golden input agrees with itself', () => {
+    expect(canonicalSha256(PURCHASE_ORDER, 'purchase_order')).toEqual({ ok: true, value: PURCHASE_ORDER_SHA });
+    expect(CONFIRMATION.po_sha256).toBe(PURCHASE_ORDER_SHA);
   });
 
   describe('use case 1: the purchase order against the confirmation', () => {
@@ -280,7 +349,8 @@ describe('the evidence document of a challenge', () => {
 
     it('is shown cut with a note, and the references still follow it', () => {
       const long = 'x'.repeat(500);
-      const document = evidenceDocument(evidenceInput({ purchase_order: { ...PURCHASE_ORDER, lot: long }, confirmation: { ...CONFIRMATION, lot: long } }));
+      const order = { ...PURCHASE_ORDER, lot: long };
+      const document = evidenceDocument(evidenceInput({ purchase_order: order, confirmation: { ...CONFIRMATION, po_sha256: sha(order), lot: long } }));
       if (!document.ok) throw new Error(document.detail);
       expect(document.value.text).toContain('[cut: the text of the value has 502 characters]');
       expect(document.value.text).not.toContain('x'.repeat(100));
@@ -289,9 +359,8 @@ describe('the evidence document of a challenge', () => {
     });
 
     it('is compared whole: two long values that differ only after the shown part differ', () => {
-      const document = evidenceDocument(evidenceInput({
-        purchase_order: { ...PURCHASE_ORDER, lot: 'x'.repeat(500) }, confirmation: { ...CONFIRMATION, lot: `${'x'.repeat(499)}y` },
-      }));
+      const order = { ...PURCHASE_ORDER, lot: 'x'.repeat(500) };
+      const document = evidenceDocument(evidenceInput({ purchase_order: order, confirmation: { ...CONFIRMATION, po_sha256: sha(order), lot: `${'x'.repeat(499)}y` } }));
       if (!document.ok) throw new Error(document.detail);
       expect(document.value.text).toContain('The lot differs.');
     });
@@ -338,5 +407,105 @@ describe('the evidence document of a challenge', () => {
     Object.defineProperty(withGetter, 'escrow_ref', { enumerable: true, get: () => ESCROW });
     expect(evidenceDocument(withGetter as unknown as EvidenceDocumentInput)).toMatchObject({ ok: false, code: 'bad_shape' });
     expect(evidenceDocument(null as unknown as EvidenceDocumentInput)).toMatchObject({ ok: false, code: 'bad_shape' });
+  });
+
+  describe('the statement of the claim document', () => {
+    it('names the statement and its text in the second row, whatever kind of evidence it is', () => {
+      for (const input of [evidenceInput(), { ...PARTIES, ...QUOTE_FACTS }, { ...PARTIES, ...DIGEST_FACTS }]) {
+        const document = evidenceDocument(input as unknown as EvidenceDocumentInput);
+        if (!document.ok) throw new Error(document.detail);
+        expect(document.value.text.split('\n')[1]).toBe(`Statement ${EVIDENCE_STATEMENT} of the claim reads: "${STATEMENT_S1}"`);
+      }
+    });
+
+    it('shows a long statement cut with a note, and the references still follow it', () => {
+      const document = evidenceDocument(evidenceInput({ statement_text: 'x'.repeat(2_000) }));
+      if (!document.ok) throw new Error(document.detail);
+      expect(document.value.text).toContain('[cut: the text of the value has 2002 characters]');
+      expect(document.value.text).not.toContain('x'.repeat(400));
+      expect(document.value.text).toContain(`Escrow of the job: ${ESCROW}`);
+      expect(document.value.bytes.length).toBeLessThanOrEqual(MAX_JUROR_DOCUMENT_BYTES);
+    });
+
+    it('refuses a statement that is not plain text, and a statement that is too long for any document, and the detail does not repeat it', () => {
+      for (const statement of [`line\n${MARKER}`, `${MARKER}\u0000`, ` ${MARKER}`, '', 7, null]) {
+        const refused = evidenceDocument(evidenceInput({ statement_text: statement }));
+        expect(refused).toMatchObject({ ok: false, code: 'bad_shape' });
+        if (!refused.ok) expect(refused.detail).not.toContain(MARKER);
+      }
+      expect(evidenceDocument(evidenceInput({ statement_text: 'x'.repeat(MAX_JUROR_DOCUMENT_BYTES + 1) }))).toMatchObject({ ok: false, code: 'document_too_large' });
+      const { statement_text: _statement, ...without } = PARTIES;
+      expect(evidenceDocument({ ...without, ...ORDER_FACTS } as unknown as EvidenceDocumentInput)).toMatchObject({ ok: false, code: 'bad_shape' });
+    });
+  });
+
+  describe('use case 1: the confirmation is signed for this purchase order', () => {
+    const other = { ...PURCHASE_ORDER, po_number: 'run1-0002', lot: 'lot-large', quantity: 120 };
+
+    it('says that the order desk signed the confirmation for this purchase order when its po_sha256 is the hash of the purchase order', () => {
+      const document = evidenceDocument(evidenceInput());
+      if (!document.ok) throw new Error(document.detail);
+      expect(document.value.text).toContain('The confirmation that the order desk signed for this purchase order names');
+    });
+
+    it('refuses a confirmation that is signed for another purchase order, and makes no document', () => {
+      const refused = evidenceDocument(evidenceInput({ confirmation: { ...CONFIRMATION, po_number: 'run1-0002', po_sha256: sha(other) } }));
+      expect(refused).toMatchObject({ ok: false, code: 'confirmation_not_for_order' });
+      if (!refused.ok) expect(refused.detail).not.toContain(sha(other));
+    });
+
+    it('refuses a confirmation with no po_sha256, with one that is not the hash, and with one in upper case', () => {
+      const { po_sha256: _hash, ...without } = CONFIRMATION;
+      expect(evidenceDocument(evidenceInput({ confirmation: without }))).toMatchObject({ ok: false, code: 'confirmation_not_for_order' });
+      for (const value of ['44'.repeat(32), PURCHASE_ORDER_SHA.toUpperCase(), 7, null]) {
+        expect(evidenceDocument(evidenceInput({ confirmation: { ...CONFIRMATION, po_sha256: value } }))).toMatchObject({ ok: false, code: 'confirmation_not_for_order' });
+      }
+    });
+
+    it('accepts the same confirmation for the purchase order that it names', () => {
+      expect(evidenceDocument(evidenceInput({ purchase_order: other, confirmation: { ...CONFIRMATION, po_number: 'run1-0002', po_sha256: sha(other), lot: 'lot-small' } }))).toMatchObject({ ok: true });
+    });
+
+    it('says that there is nothing to challenge before it says that the confirmation is not for this order', () => {
+      const same = { ...CONFIRMATION, lot: 'lot-medium', quantity: 50, po_sha256: '44'.repeat(32) };
+      expect(evidenceDocument(evidenceInput({ confirmation: same }))).toMatchObject({ ok: false, code: 'no_contradiction' });
+    });
+  });
+
+  describe('the references that are read back', () => {
+    it.each(EVIDENCE)('give the claim, the claim token, the two agents and the job of the evidence of %s', (_name, _file, input) => {
+      const document = evidenceDocument(input as unknown as EvidenceDocumentInput);
+      if (!document.ok) throw new Error(document.detail);
+      const { claim, claim_token: claimToken, against_did: against, by_did: by, escrow_ref: escrow } = input;
+      expect(evidenceReferences(document.value.bytes)).toEqual({ ok: true, value: { claim, claim_token: claimToken, against_did: against, by_did: by, escrow_ref: escrow } });
+    });
+
+    const text = (): string => {
+      const document = evidenceDocument(evidenceInput());
+      if (!document.ok) throw new Error(document.detail);
+      return document.value.text;
+    };
+    const CHANGES: Array<[string, (text: string) => string | Uint8Array]> = [
+      ['another first row', (value) => value.replace('Evidence about statement S1', 'Evidence about statement S2')],
+      ['no row References', (value) => value.replace('\nReferences\n', '\nReference\n')],
+      ['two rows References', (value) => value.replace('Escrow of the job:', 'References\nEscrow of the job:')],
+      ['a label that is missing', (value) => value.replace('Claimer: ', 'The claimer is ')],
+      ['a job that is not an output reference', (value) => value.replace(`Escrow of the job: ${ESCROW}`, 'Escrow of the job: zq9')],
+      ['a challenger that is not a DID', (value) => value.replace(`Challenger: ${ME}`, 'Challenger: zq9')],
+      ['rows that end too soon', (value) => value.slice(0, value.indexOf('Escrow of the job'))],
+      ['bytes that are not UTF-8', () => Uint8Array.from([0xff, 0xfe])],
+      ['no bytes', () => new Uint8Array()],
+    ];
+
+    it.each(CHANGES)('refuse %s', (_name, change) => {
+      const changed = change(text());
+      expect(evidenceReferences(typeof changed === 'string' ? Buffer.from(changed, 'utf8') : changed)).toMatchObject({ ok: false, code: 'bad_shape' });
+    });
+
+    it('cannot be fooled by a value of the facts that looks like a row of the references: a value is shown as JSON text', () => {
+      const document = evidenceDocument(evidenceInput({ confirmation: { ...CONFIRMATION, lot: `x\nReferences\nClaim: ${'ff'.repeat(32)}#0` } }));
+      if (!document.ok) throw new Error(document.detail);
+      expect(evidenceReferences(document.value.bytes)).toMatchObject({ ok: true, value: { claim: REF_A } });
+    });
   });
 });

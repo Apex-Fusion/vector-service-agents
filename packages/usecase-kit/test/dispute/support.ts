@@ -1,11 +1,29 @@
 // packages/usecase-kit/test/dispute/support.ts
 // The samples that the tests of the dispute folder share, and a scripted chain port. Every value has the form that the protocol names. No value is a key or a real reference.
-import { documentHash } from '@vsa/buyer-core';
-import type { ClaimView, Module1Port, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument, SubmittedClaim, SubmitClaimCall, TxResult, WithdrawClaimCall, WithdrawnClaim } from '@vsa/usecase-kit/dispute';
+import { documentHash, documentUri } from '@vsa/buyer-core';
+import { canonicalSha256 } from '@vsa/usecase-kit/protocol';
+import { Dispute, claimDocument, evidenceDocument } from '@vsa/usecase-kit/dispute';
+import type {
+  ChallengeView, ClaimView, DisputeJournal, DisputeSettings, Module1Port, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument, ReadDocument, ServiceQueue, SubmittedClaim,
+  SubmitClaimCall, TxResult, WithdrawClaimCall, WithdrawnClaim,
+} from '@vsa/usecase-kit/dispute';
 
 export const NOW = Date.UTC(2026, 10, 15, 12, 0, 0);
 export const HOUR = 3_600_000;
 export const DAY = 24 * HOUR;
+
+/** The canonical SHA-256 of a JSON value, as a confirmation names the purchase order that it answers. */
+export function canonical(value: unknown): string {
+  const digest = canonicalSha256(value, 'value');
+  if (!digest.ok) throw new Error(digest.detail);
+  return digest.value;
+}
+
+/** The settings of a test. The resolution deadline is not here: it comes from the port. */
+export const SETTINGS: DisputeSettings = { challenge_stake_lovelace: 50_000_000n, min_window_left_ms: 10 * 60_000, read_timeout_ms: 30_000 };
+
+/** A wait that never ends: a bound that never fires. */
+export const never = (): Promise<never> => new Promise<never>(() => undefined);
 
 export const ME_ID = 'a1'.repeat(32);
 export const ME = `did:vector:${ME_ID}`;
@@ -30,13 +48,7 @@ export const EVIDENCE_TX = '77'.repeat(32);
 export const CLAIM_DOC_TX = '88'.repeat(32);
 export const CHALLENGE_TX = '99'.repeat(32);
 export const MANIFEST_SHA = '5a'.repeat(32);
-
-/** A claim that is open and was submitted one hour ago with a window of four hours. `overrides` change members. */
-export function claimView(overrides: Partial<ClaimView> = {}): ClaimView {
-  return {
-    ref: REF_A, token: TOKEN_A, claimer: OTHER, claimer_key_hash: OTHER_KEY_HASH, state: 'Open', stake_lovelace: 50_000_000n, submitted_at: NOW - HOUR, challenge_window_ms: 4 * HOUR, ...overrides,
-  };
-}
+export const CHALLENGE_TOKEN = `63686c5f${'0e'.repeat(28)}`;
 
 // --- The statements of three agents -----------------------------------------------------------------------------------------------------------------------------------
 
@@ -58,16 +70,42 @@ export const BID_DESK_CLAIM = statements(
   'This agent gives one quote for each request for quotation and sender.',
 );
 
+/** The claim document that this kit writes for `claimer`: the statements of the order desk, and the manifest of the samples. */
+export function kitClaimDocument(claimer: string) {
+  const document = claimDocument({ agent_did: claimer, capability_id: 'supplychain.order.accept.v1', manifest_sha256: MANIFEST_SHA, claim: ORDER_DESK_CLAIM });
+  if (!document.ok) throw new Error(document.detail);
+  return document.value;
+}
+
+/** A claim that is open and was submitted one hour ago with a window of four hours. Its document is the claim document that this kit writes for the claimer, and its URI names the transaction of the claim. `overrides` change members. */
+export function claimView(overrides: Partial<ClaimView> = {}): ClaimView {
+  const base = {
+    ref: REF_A, token: TOKEN_A, claimer: OTHER, claimer_key_hash: OTHER_KEY_HASH, state: 'Open', stake_lovelace: 50_000_000n, submitted_at: NOW - HOUR, challenge_window_ms: 4 * HOUR,
+    claim_type: 'service-quality', ...overrides,
+  } as const;
+  return { claim_hash: kitClaimDocument(base.claimer).hash, claim_uri: documentUri(base.ref.split('#')[0]!), ...base };
+}
+
 // --- The evidence of the three use cases ------------------------------------------------------------------------------------------------------------------------------
 
-export const PARTIES = { claim: REF_A, claim_token: TOKEN_A, against_did: OTHER, by_did: ME, escrow_ref: ESCROW } as const;
+/** The statement S1 of a reorder agent: the claim that the evidence of an approval of use case 1 is about. */
+export const REORDER_AGENT_S1 = 'An order that this agent places is the purchase order whose digest its hirer approved.';
+
+/** The text of the statement S1 of the claim document of the samples: the statement that the evidence is about. */
+export const STATEMENT_S1 = ORDER_DESK_CLAIM.statements[0].text;
+
+export const PARTIES = { claim: REF_A, claim_token: TOKEN_A, against_did: OTHER, by_did: ME, escrow_ref: ESCROW, statement_text: STATEMENT_S1 } as const;
 
 export const PURCHASE_ORDER = {
   schema: 'vector.usecase.po.v1', po_number: 'run1-0001', tenant: 'run1', sku: 'SKU-100', lot: 'lot-medium', quantity: 50, needed_by: '2026-12-01', supplier_did: OTHER, advert_ref: REF_B,
 } as const;
 
+/** The canonical SHA-256 of `PURCHASE_ORDER`: the confirmation of the order desk names the purchase order that it answers by this hash. A test pins it against `canonicalSha256`. */
+export const PURCHASE_ORDER_SHA = '3cd0eded21242ff660885bccdffc84de8a23c7362d84c3a6a20776e0a594c611';
+
 export const CONFIRMATION = {
-  schema: 'vector.usecase.order-confirmation.v1', outcome: 'done', po_number: 'run1-0001', po_sha256: '44'.repeat(32), sku: 'SKU-100', lot: 'lot-large', quantity: 120, ship_by: '2026-11-28', order_id: 'ORD-77',
+  schema: 'vector.usecase.order-confirmation.v1', outcome: 'done', po_number: 'run1-0001', po_sha256: PURCHASE_ORDER_SHA, sku: 'SKU-100', lot: 'lot-large', quantity: 120, ship_by: '2026-11-28',
+  order_id: 'ORD-77',
 } as const;
 
 export const ORDER_FACTS = { kind: 'order_confirmation', purchase_order: PURCHASE_ORDER, confirmation: CONFIRMATION, confirmation_sha256: '33'.repeat(32) } as const;
@@ -120,16 +158,29 @@ export class RecordingQueue {
 /** A chain port that answers from lists that a test sets, and that writes each call to the events. A test changes an answer by setting the member of the same name. */
 export class ScriptedPort implements Module1Port {
   readonly agent = { did: ME, key_hash: KEY_HASH };
+  readonly protocol = { resolution_deadline_ms: 72 * HOUR };
   claims: ClaimView[] = [];
+  challenges: ChallengeView[] = [];
+  /** The documents by URI. The default answer of `readDocumentAnswer` reads this first, and then the claim documents of `claims`. */
+  documents = new Map<string, ReadDocument>();
   readClaimsFails: Error | null = null;
+  readChallengesFails: Error | null = null;
   /** What `readClaim` answers. The default finds the claim by its ref in `claims`. */
   readClaimAnswer: (ref: string) => ClaimView | null | Error = (ref) => this.claims.find((claim) => claim.ref === ref) ?? null;
-  publishAnswer: (call: PublishCall) => Answer<PublishedDocument> = (call) => ok({ tx_hash: EVIDENCE_TX, uri: `vector-tx:${EVIDENCE_TX.slice(0, 43)}`, document_hash: documentHash(call.bytes), fee_lovelace: 200_000n });
+  /** What `readDocument` answers. The default is the claim document that this kit writes for the claim with this URI. */
+  readDocumentAnswer: (uri: string) => ReadDocument | Error = (uri) => {
+    const named = this.documents.get(uri);
+    if (named !== undefined) return named;
+    const claim = this.claims.find((candidate) => candidate.claim_uri === uri);
+    if (claim === undefined) return new Error('no document at this address');
+    return { bytes: kitClaimDocument(claim.claimer).bytes, type: 'claim', media_type: 'text/plain' };
+  };
+  publishAnswer: (call: PublishCall) => Answer<PublishedDocument> = (call) => ok({ tx_hash: EVIDENCE_TX, uri: documentUri(EVIDENCE_TX), document_hash: documentHash(call.bytes), fee_lovelace: 200_000n });
   submitClaimAnswer: (call: SubmitClaimCall) => Answer<SubmittedClaim> = (call) =>
     ok({ tx_hash: CHALLENGE_TX, claim: REF_C, claim_token: TOKEN_C, stake_lovelace: call.stake_lovelace, submitted_at: NOW, challenge_window_ms: call.challenge_window_ms, fee_lovelace: 500_000n });
   openChallengeAnswer: (call: OpenChallengeCall) => Answer<OpenedChallenge> = (call) =>
     ok({
-      tx_hash: CHALLENGE_TX, challenge: `${CHALLENGE_TX}#0`, challenge_token: `63686c5f${'0e'.repeat(28)}`, claim: call.claim, claim_token: call.claim_token, stake_lovelace: call.stake_lovelace,
+      tx_hash: CHALLENGE_TX, challenge: `${CHALLENGE_TX}#0`, challenge_token: CHALLENGE_TOKEN, claim: call.claim, claim_token: call.claim_token, stake_lovelace: call.stake_lovelace,
       deadline: NOW + call.resolution_deadline_ms, fee_lovelace: 700_000n,
     });
   withdrawAnswer: (call: WithdrawClaimCall) => Answer<WithdrawnClaim> = (call) =>
@@ -167,6 +218,19 @@ export class ScriptedPort implements Module1Port {
     return answer;
   }
 
+  async readChallenges(): Promise<readonly ChallengeView[]> {
+    this.events.push('readChallenges');
+    if (this.readChallengesFails !== null) throw this.readChallengesFails;
+    return this.challenges;
+  }
+
+  async readDocument(uri: string): Promise<ReadDocument> {
+    this.events.push(`readDocument ${uri}`);
+    const answer = this.readDocumentAnswer(uri);
+    if (answer instanceof Error) throw answer;
+    return answer;
+  }
+
   async publishDocument(call: PublishCall): Promise<TxResult<PublishedDocument>> {
     this.events.push(`publish ${call.type}`);
     this.published.push(call);
@@ -190,4 +254,53 @@ export class ScriptedPort implements Module1Port {
     this.withdrawn.push(call);
     return this.withdrawAnswer(call);
   }
+}
+
+/** A dispute over a scripted port, and what a test needs to look at it. */
+export interface Rig {
+  readonly events: Events;
+  readonly port: ScriptedPort;
+  readonly dispute: Dispute;
+  readonly logs: string[];
+  /** The clock of the dispute: a test moves `now`. */
+  readonly time: { now: number };
+}
+
+/** What a rig can take instead of its defaults. */
+export interface RigOptions {
+  readonly journal?: DisputeJournal;
+  /** The list that the port and the queue write their calls to: a test that wraps another port, such as a journal, writes to the same list. */
+  readonly events?: Events;
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly queue?: ServiceQueue;
+  readonly port?: ScriptedPort;
+  readonly log?: (line: string) => void;
+}
+
+/** A dispute over a scripted port, a queue that writes to the events, a clock that a test moves, a sleep that never ends, and a log that keeps its lines. `settings` change the settings of the samples. */
+export function rig(settings: Partial<DisputeSettings> = {}, options: RigOptions = {}): Rig {
+  const events: Events = options.events ?? [];
+  const port = options.port ?? new ScriptedPort(events);
+  const time = { now: NOW };
+  const logs: string[] = [];
+  const dispute = new Dispute({
+    port, queue: options.queue ?? new RecordingQueue(events), clock: () => time.now, sleep: options.sleep ?? never, log: options.log ?? ((line) => logs.push(line)), settings: { ...SETTINGS, ...settings },
+    ...(options.journal === undefined ? {} : { journal: options.journal }),
+  });
+  return { events: port.events, port, dispute, logs, time };
+}
+
+/** The evidence document that this kit writes for the job `ESCROW`: ME challenges OTHER on the claim REF_A with the facts of use case 1. `overrides` change members of the input. */
+export function evidenceOf(overrides: Record<string, unknown> = {}) {
+  const document = evidenceDocument({ ...PARTIES, ...ORDER_FACTS, ...overrides } as never);
+  if (!document.ok) throw new Error(document.detail);
+  return document.value;
+}
+
+/** A live challenge of ME against the claim REF_A, with the evidence of `evidenceOf()` at the URI of `EVIDENCE_TX`. `overrides` change members. */
+export function challengeView(overrides: Partial<ChallengeView> = {}): ChallengeView {
+  return {
+    ref: `${CHALLENGE_TX}#0`, token: CHALLENGE_TOKEN, claim: REF_A, claim_token: TOKEN_A, auditor: ME, auditor_key_hash: KEY_HASH, stake_lovelace: 50_000_000n, evidence_hash: evidenceOf().hash,
+    evidence_uri: documentUri(EVIDENCE_TX), challenged_at: NOW - 10 * 60_000, resolution_deadline_ms: 72 * HOUR, state: 'PendingOracle', ...overrides,
+  };
 }

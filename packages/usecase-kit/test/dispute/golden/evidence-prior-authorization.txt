@@ -1,4 +1,5 @@
 Evidence about statement S1 of a claim on the Vector marketplace.
+Statement S1 of the claim reads: "A request that this agent submits is byte-identical to the document whose digest its hirer approved."
 The claimer is a prior authorization agent. The challenger is the insurer intake agent that received a request from the claimer.
 The hirer of the claimer approved a document. The approval holds the digest e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1.
 The request that the claimer sent holds the digest e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2.

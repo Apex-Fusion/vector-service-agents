@@ -1,4 +1,5 @@
 Evidence about statement S1 of a claim on the Vector marketplace.
+Statement S1 of the claim reads: "An order that this agent places is the purchase order whose digest its hirer approved."
 The claimer is a reorder agent. The challenger is the order desk that received a purchase order from the claimer.
 The hirer of the claimer approved a document. The approval holds the digest e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1.
 The purchase order that the claimer sent holds the digest e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2.
