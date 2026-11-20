@@ -7,10 +7,10 @@ import { NO_OPEN_CLAIM } from '@vsa/usecase-kit/protocol';
 import { MemoryJournal } from '@vsa/usecase-kit/dispute';
 import type { ChallengeResult, ChallengeView, ClaimView, DeliveryChallengeInput, DisputeJournal, DisputeSettings, JobRecord } from '@vsa/usecase-kit/dispute';
 import {
-  CHALLENGE_TOKEN, CHALLENGE_TX, ESCROW, ESCROW_2, EVIDENCE_TX, HOUR, JOB, KEY_HASH, NO_DOCUMENT, NO_TRANSACTION, NOW, ORDER_FACTS, OTHER, REF_A, REF_B, THIRD, TOKEN_A, TOKEN_B, challengeView, claimView, deferred,
-  evidenceOf, never, rig,
+  CHALLENGE_TOKEN, CHALLENGE_TX, ESCROW, ESCROW_2, EVIDENCE_TX, HOUR, JOB, KEY_HASH, NO_DOCUMENT, NO_TRANSACTION, NOW, ORDER_FACTS, OTHER, OTHER_KEY_HASH, REF_A, REF_B, THIRD, TOKEN_A, TOKEN_B, challengeView, claimView,
+  deferred, evidenceOf, never, rig,
 } from './support.ts';
-import type { Events, Rig } from './support.ts';
+import type { Events, Rig, ScriptedPort } from './support.ts';
 
 const delivery = (escrow = ESCROW): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: escrow, ...JOB, evidence: ORDER_FACTS });
 const LANDED = { tx_hash: EVIDENCE_TX, uri: documentUri(EVIDENCE_TX), document_hash: evidenceOf().hash };
@@ -20,6 +20,13 @@ const record = (extra: Partial<JobRecord> = {}): JobRecord => ({
 const CHAIN_FILED = {
   record: { claim: REF_A, evidence: EVIDENCE_TX, challenge: `${CHALLENGE_TX}#0` }, claim_token: TOKEN_A, against_did: OTHER, evidence_uri: documentUri(EVIDENCE_TX), evidence_hash: evidenceOf().hash,
   challenge_tx: CHALLENGE_TX, challenge_token: CHALLENGE_TOKEN, stake_lovelace: 50_000_000n, deadline: NOW - 10 * 60_000 + 72 * HOUR, fee_lovelace: null,
+};
+
+/** The challenge of this agent that the first try of a lapsed job landed: its evidence document is another transaction than the evidence document of the second try. */
+const FIRST_EVIDENCE_TX = '76'.repeat(32);
+const FIRST_CHALLENGE_TX = '98'.repeat(32);
+const FIRST_FILED = {
+  ...CHAIN_FILED, record: { claim: REF_A, evidence: FIRST_EVIDENCE_TX, challenge: `${FIRST_CHALLENGE_TX}#0` }, evidence_uri: documentUri(FIRST_EVIDENCE_TX), challenge_tx: FIRST_CHALLENGE_TX,
 };
 
 function expectNotFiled(result: ChallengeResult, code: string): asserts result is Extract<ChallengeResult, { ok: false }> {
@@ -750,21 +757,124 @@ describe('a lapsed record gives the job back only for the claim that it names', 
     expect(port.challenged.map((call) => call.claim)).toEqual([REF_B]);
   });
 
-  it('files no second challenge when the challenge of the first try lands while the evidence of the second try confirms', async () => {
+  /**
+   * The chain when the first try lands: `claims` are the claims of the chain, and the challenge of this agent for this job is on chain with the evidence document of the first try. `challenge` changes members of
+   * the challenge, for a first try that named another claim.
+   */
+  function firstTryLands(port: ScriptedPort, claims: ClaimView[], challenge: Partial<ChallengeView> = {}): void {
+    port.claims = claims;
+    port.challenges = [challengeView({ ref: `${FIRST_CHALLENGE_TX}#0`, evidence_uri: documentUri(FIRST_EVIDENCE_TX), ...challenge })];
+    port.documents.set(documentUri(FIRST_EVIDENCE_TX), { bytes: evidenceOf().bytes, type: 'evidence', media_type: 'text/plain' });
+  }
+
+  it('gives the challenge of the first try as the result when it lands while the evidence of the second try confirms, and files no second challenge', async () => {
+    const { journal, port, dispute } = await lapsedOver([claimView(), later()]);
+    const publish = port.publishAnswer;
+    port.publishAnswer = (call) => {
+      firstTryLands(port, [claimView({ state: 'Challenged' }), later()]);
+      return publish(call);
+    };
+    const second = await dispute.challengeDelivery(delivery());
+    expect(second).toEqual({ ok: true, value: FIRST_FILED });
+    // The second try published its own evidence document and sent no challenge: the job has one challenge, and it is not against the claim that ends later.
+    expect(port.published.length).toBe(1);
+    expect(port.challenged).toEqual([]);
+    // The journal keeps the challenge as the end of the job, and the next call gives it and reads nothing.
+    expect(journal.puts.at(-1)).toMatchObject({ step: 'done', filed: { record: { claim: REF_A, evidence: FIRST_EVIDENCE_TX, challenge: `${FIRST_CHALLENGE_TX}#0` } }, ended: null });
+    const calls = port.events.length;
+    expect(await dispute.challengeDelivery(delivery())).toEqual(second);
+    expect(port.events.length).toBe(calls);
+  });
+
+  it('gives the challenge of the first try as the result when it lands while the second try builds its challenge, and says challenge_not_built when no challenge of this agent is on chain', async () => {
+    const landing = await lapsedOver([claimView(), later()]);
+    landing.port.openChallengeAnswer = () => {
+      // The first try lands now: the claim output is spent, so the node builds no challenge for it.
+      firstTryLands(landing.port, [claimView({ state: 'Challenged' }), later()]);
+      return { ok: false, code: 'not_built', detail: 'the claim output is spent' };
+    };
+    expect(await landing.dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: FIRST_FILED });
+    expect(landing.port.challenged.map((call) => call.claim)).toEqual([REF_A]);
+    // The twin: the build fails for another reason, and no challenge of this agent is on chain.
+    const failing = await lapsedOver([claimView(), later()]);
+    failing.port.openChallengeAnswer = () => ({ ok: false, code: 'not_built', detail: 'the wallet is empty' });
+    const result = await failing.dispute.challengeDelivery(delivery());
+    expectNotFiled(result, 'challenge_not_built');
+    expect(result).toMatchObject({ evidence: { tx_hash: EVIDENCE_TX }, sent: null });
+    expect(failing.journal.puts.at(-1)).toMatchObject({ step: 'done', filed: null, ended: { code: 'challenge_not_built' } });
+  });
+
+  it('says claim_changed as before when no challenge of this agent is on chain: another agent challenged the claim, or the claim is gone', async () => {
+    const other = await lapsedOver([claimView(), later()]);
+    const publish = other.port.publishAnswer;
+    other.port.publishAnswer = (call) => {
+      // Another auditor challenges the claim of the record. Its challenge is on chain, and it is not a challenge of this agent.
+      other.port.claims = [claimView({ state: 'Challenged' }), later()];
+      other.port.challenges = [challengeView({ auditor: THIRD, auditor_key_hash: OTHER_KEY_HASH })];
+      return publish(call);
+    };
+    const challenged = await other.dispute.challengeDelivery(delivery());
+    expectNotFiled(challenged, 'claim_changed');
+    expect(challenged).toMatchObject({ evidence: { tx_hash: EVIDENCE_TX }, sent: null, challenge: null });
+    expect(other.port.challenged).toEqual([]);
+    expect(other.journal.puts.at(-1)).toMatchObject({ step: 'done', filed: null, ended: { code: 'claim_changed' } });
+    expect(other.events.filter((event) => event === 'readChallenges').length).toBe(1);
+    // The claim is gone: there is no claim of the other party that is Challenged, so the search reads no challenge.
+    const gone = await lapsedOver([claimView(), later()]);
+    const answer = gone.port.publishAnswer;
+    gone.port.publishAnswer = (call) => {
+      gone.port.claims = [later()];
+      return answer(call);
+    };
+    expectNotFiled(await gone.dispute.challengeDelivery(delivery()), 'claim_changed');
+    expect(gone.events).not.toContain('readChallenges');
+  });
+
+  it('says chain_unavailable when the search for the challenge of the first try fails, keeps the evidence in the result, and gives the challenge to the next call', async () => {
     const { port, dispute } = await lapsedOver([claimView(), later()]);
     const publish = port.publishAnswer;
     port.publishAnswer = (call) => {
-      // The first try lands now: the claim of the record is Challenged, and the challenge of this agent for this job is on chain.
-      port.claims = [claimView({ state: 'Challenged' }), later()];
-      port.challenges = [challengeView()];
-      port.documents.set(documentUri(EVIDENCE_TX), { bytes: evidenceOf().bytes, type: 'evidence', media_type: 'text/plain' });
+      firstTryLands(port, [claimView({ state: 'Challenged' }), later()]);
+      port.readChallengesFails = new Error('Koios answered 503 at https://koios.example/secret-key');
+      return publish(call);
+    };
+    const result = await dispute.challengeDelivery(delivery());
+    expectNotFiled(result, 'chain_unavailable');
+    expect(result.detail).toContain('the claim is Challenged now');
+    expect(result.detail).not.toContain('secret-key');
+    expect(result.evidence).toMatchObject({ tx_hash: EVIDENCE_TX });
+    // The twin: the chain can be read again, and the next call finds the challenge. Nothing is sent.
+    port.readChallengesFails = null;
+    expect(await dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: FIRST_FILED });
+    expect(port.challenged).toEqual([]);
+  });
+
+  it('does not search again when the job had no lapsed record: claim_changed stays, and the chain is not read a second time', async () => {
+    const { events, port, dispute } = rig();
+    port.claims = [claimView()];
+    const publish = port.publishAnswer;
+    port.publishAnswer = (call) => {
+      firstTryLands(port, [claimView({ state: 'Challenged' })]);
       return publish(call);
     };
     expectNotFiled(await dispute.challengeDelivery(delivery()), 'claim_changed');
-    expect(port.challenged).toEqual([]);
-    // The next call finds the challenge of the first try. The job has one challenge, and it is not against the claim that ends later.
-    expect(await dispute.challengeDelivery(delivery())).toEqual({ ok: true, value: CHAIN_FILED });
-    expect(port.challenged).toEqual([]);
+    expect(events.filter((event) => event === 'readClaims').length).toBe(1);
+    expect(events).not.toContain('readChallenges');
+  });
+
+  it('searches again also when the lapsed record is found only in the job, right before the evidence is sent', async () => {
+    // The first read gives no record, so the job chooses the claim that ends later. Then a record of that claim lapses before the job runs.
+    const rigged = rig({}, { journal: onSecondRead(record({ started_at: NOW - LEASE, claim: REF_B, claim_token: TOKEN_B })) });
+    rigged.port.claims = [claimView(), later()];
+    const publish = rigged.port.publishAnswer;
+    rigged.port.publishAnswer = (call) => {
+      firstTryLands(rigged.port, [claimView(), { ...later(), state: 'Challenged' }], { claim: REF_B, claim_token: TOKEN_B });
+      return publish(call);
+    };
+    expect(await rigged.dispute.challengeDelivery(delivery())).toMatchObject({
+      ok: true, value: { record: { claim: REF_B, evidence: FIRST_EVIDENCE_TX, challenge: `${FIRST_CHALLENGE_TX}#0` }, claim_token: TOKEN_B },
+    });
+    expect(rigged.port.challenged).toEqual([]);
   });
 
   it('stops in the job when the journal gives a lapsed record of another claim at the second read, and sends nothing', async () => {

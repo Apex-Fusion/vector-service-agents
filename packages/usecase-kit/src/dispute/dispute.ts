@@ -20,7 +20,8 @@
 //   4. In one job of the queue: check the window that is left, read the journal again (another call can have written its record while this job waited: a record that stops the job ends it, and so does a
 //      lapsed record of another claim), write the journal with the time of the job (`started_at`), publish the evidence document, and wait for its confirmation. A document that is not confirmed ends the job.
 //      The challenge is not built.
-//   5. In one job of the queue: read the claim again, and build the challenge against the exact output that the evidence names. A claim that changed ends the job.
+//   5. In one job of the queue: read the claim again, and build the challenge against the exact output that the evidence names. A claim that changed ends the job. After a lapsed record, the job then looks again
+//      for a challenge of this agent for this job on chain (step 1): the challenge of the first try can land while the second try runs. That challenge is the result, and the evidence of the second try is not used.
 // A job (one escrow) gets one challenge. Once a transaction of a job landed or may land, the job takes no second attempt, also after a restart: the journal says so. Only a record `started` lapses: it says
 // that the evidence may be on chain, and nothing else. After its lease the job may go on, but only against the claim that its record names. A challenge of the first try can still land after the lease, and the
 // chain takes only one challenge of a claim. So the second try cannot give the job a second challenge, and a second try against another claim could. When the claim of the record cannot be used any more, the job
@@ -71,8 +72,10 @@ export interface DisputeSettings {
    * end of the job. A write that lands after its bound (`journal_unavailable`) leaves one with nothing sent, and a process that stops after the write leaves one with the evidence sent. After the lease
    * the record gives the job back: a challenge of this agent that is on chain is still the result, and if there is none, the job goes on, but only against the claim that the record names. A transaction of the
    * first try can still land after the lease, and the chain takes only one challenge of a claim, so the job files at most one challenge. When that claim is spent, is not Open, or has too little window left, the
-   * job ends with `claim_changed` or `claim_window_closing`, and nothing is sent. Two processes can both go on after a lease ends, and they go on against the same claim. The default is 10 minutes, or twice
-   * `read_timeout_ms` when that is more. A value below twice `read_timeout_ms` is refused: a write ends at that bound and can still land later, so the lease must be longer than that.
+   * job ends with `claim_changed` or `claim_window_closing`, and nothing is sent. The first try can also land while the second try runs. The second try then ends with `claim_changed` (the claim is Challenged now)
+   * or with `challenge_not_built` (the node builds no challenge for a claim output that is spent), and it looks again for a challenge of this agent for the job on chain: that challenge is the result. Two processes
+   * can both go on after a lease ends, and they go on against the same claim. The default is 10 minutes, or twice `read_timeout_ms` when that is more. A value below twice `read_timeout_ms` is refused: a write ends
+   * at that bound and can still land later, so the lease must be longer than that.
    */
   readonly started_lease_ms?: number;
 }
@@ -798,6 +801,28 @@ export class Dispute {
     return accepted(null);
   }
 
+  /** The result for a challenge of this agent that is on chain already: the journal keeps it as the end of the job, and the job gives it. */
+  async #found(target: ChallengeTarget, filed: ChallengeFiled): Promise<ChallengeResult> {
+    const escrow = target.escrow;
+    const base: JobRecord = {
+      step: 'done', escrow, against: target.against, claim: filed.record.claim, claim_token: filed.claim_token, started_at: this.#now(),
+      evidence: { tx_hash: filed.record.evidence, uri: filed.evidence_uri, document_hash: filed.evidence_hash },
+      filed: recordOfFiled(filed), ended: null,
+    };
+    await this.#remember(escrow, base);
+    this.#log(`dispute: the challenge ${filed.record.challenge} of this agent for the job ${escrow} is on chain already, with the evidence ${filed.record.evidence}`);
+    return accepted(filed);
+  }
+
+  /**
+   * A challenge of this agent for this job that is on chain now, as the filed challenge, or null: the claims are read again, and then `#findOwn` looks at the challenges. After a lapsed record, the first try can
+   * have landed its challenge while the second try ran, so the claims that the second try read are no longer the claims of the chain.
+   */
+  async #findOwnAgain(target: ChallengeTarget, me: Did): Promise<ProtocolResult<ChallengeFiled | null, 'chain_unavailable'>> {
+    const claims = await this.#readClaims();
+    return claims.ok ? this.#findOwn(target, me, claims.value) : claims;
+  }
+
   /** Writes how a job ended to the journal, and gives the result. The write changes no result. */
   async #finish(escrow: OutputRef, base: JobRecord, result: ChallengeResult): Promise<ChallengeResult> {
     const record: JobRecord = result.ok
@@ -835,17 +860,7 @@ export class Dispute {
       this.#log(`dispute: no challenge for the job ${escrow}: ${own.code}`);
       return notFiled(own.code, own.detail, landedOf(earlier));
     }
-    if (own.value !== null) {
-      const filed = own.value;
-      const base: JobRecord = {
-        step: 'done', escrow, against: target.against, claim: filed.record.claim, claim_token: filed.claim_token, started_at: this.#now(),
-        evidence: { tx_hash: filed.record.evidence, uri: filed.evidence_uri, document_hash: filed.evidence_hash },
-        filed: recordOfFiled(filed), ended: null,
-      };
-      await this.#remember(escrow, base);
-      this.#log(`dispute: the challenge ${filed.record.challenge} of this agent for the job ${escrow} is on chain already, with the evidence ${filed.record.evidence}`);
-      return accepted(filed);
-    }
+    if (own.value !== null) return this.#found(target, own.value);
     if (earlier !== null) {
       if (!lapsed) return notFiled('job_already_disputed', earlierDetail(earlier, this.#startedLease), landedOf(earlier));
       this.#log(`dispute: the started record of the job ${escrow} is older than its lease of ${this.#startedLease} ms, and no challenge of this agent is on chain, so the job goes on, only against the claim ${earlier.claim}`);
@@ -951,16 +966,27 @@ export class Dispute {
       };
     });
     const after = (code: ChallengeCode, detail: string, more: Landed = {}): Promise<ChallengeResult> => this.#finish(escrow, landed, notFiled(code, detail, { evidence, ...more }));
+    // After a lapsed record, the first try can have landed its challenge while this try ran. It spent the claim of both tries, so this try ends with `claim_changed` or with `challenge_not_built`. A challenge of
+    // this agent for this job that is on chain now is the result. A search that fails is `chain_unavailable`: nothing says that no challenge is on chain, and a later call finds it.
+    const lapsedBefore = earlier !== null || replaced !== null;
+    const endOrFind = async (code: ChallengeCode, detail: string, more: Landed = {}): Promise<ChallengeResult> => {
+      if (!lapsedBefore || (code !== 'claim_changed' && code !== 'challenge_not_built')) return after(code, detail, more);
+      const own = await this.#findOwnAgain(target, me);
+      if (!own.ok) return after('chain_unavailable', `${detail}; the search for a challenge of this agent on chain failed: ${own.detail}`, more);
+      if (own.value === null) return after(code, detail, more);
+      this.#log(`dispute: the evidence ${evidence.tx_hash} of this try is not used: the challenge ${own.value.record.challenge} of the first try landed while this try ran`);
+      return this.#found(target, own.value);
+    };
     if ('code' in second) return after('port_error', second.detail);
     if ('stop' in second) {
       this.#log(`dispute: the evidence ${evidence.tx_hash} landed and no challenge was filed: ${second.stop}`);
-      return after(second.stop, second.detail);
+      return endOrFind(second.stop, second.detail);
     }
     const sent = second.sent;
     if (!sent.ok) {
       const why = failed(sent, 'challenge_not_built', 'challenge_not_confirmed');
       this.#log(`dispute: the evidence ${evidence.tx_hash} landed and no challenge was filed: ${why.code}`);
-      return after(why.code, why.detail, { sent: why.sent });
+      return endOrFind(why.code, why.detail, { sent: why.sent });
     }
     const opened = sent.value;
     if (opened.claim !== claim.ref || opened.claim_token !== claim.token) {
