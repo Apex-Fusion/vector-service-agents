@@ -210,6 +210,7 @@ The operator makes a tenant with one call (RUNBOOK, step 6, "Make or reset a ten
 | Hardening | A read-only file system, with a small memory file system on `/tmp`. No Linux capability. No new privileges. |
 | State | In memory. A restart loses every tenant and its log. There is no volume. |
 | Keys | None. The service holds no key and no wallet. Its one secret is the operator token in the env file. |
+| Reads | The identity gateway, and the node and the indexer of the Vector ledger. The checks of a token and of an approval use them. The start needs none of them. A call whose check cannot read a source gets `503`. |
 
 `.env.mock-systems.example` has a comment for each setting. Three groups need care:
 

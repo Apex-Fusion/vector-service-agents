@@ -6621,6 +6621,7 @@ test('mock service README and RUNBOOK: the two files, the health check, the tena
   assert.ok(mockReadme.includes(`| Port | \`127.0.0.1:${MOCK.port}\` on the host, and \`0.0.0.0:${MOCK.port}\` inside the container.`));
   assert.ok(mockReadme.includes('A restart of the mock service, or a reboot of the host, loses every tenant and its log.'));
   assert.ok(mockReadme.includes('The operator puts the same two names, as https origins, in the env file of the mock service'));
+  assert.ok(mockReadme.includes('| Reads | The identity gateway, and the node and the indexer of the Vector ledger. The checks of a token and of an approval use them. The start needs none of them.'));
   // RUNBOOK: the sections stand in step 6, in this order, and the headings of the file are the ones of the test above.
   const step6 = section(mockRunbook, '6. Install the snippet of the mock systems');
   assert.deepEqual([...step6.matchAll(/^### (.+)$/gm)].map((m) => m[1]), ['Run the mock service', 'Make or reset a tenant', 'Read the state and the log of a tenant', 'What a restart loses, upgrade and stop']);
@@ -6635,7 +6636,8 @@ test('mock service README and RUNBOOK: the two files, the health check, the tena
   const table = section(mockRunbook, 'The failure table');
   for (const row of ['| A request to the mock host gets `421`, and the body has no `wrong_host` | The TLS name and the Host header differ.', '| The mock service sees no `Client-Cert` header | The client sent no certificate']) assert.ok(table.includes(row), row);
   const rows = [
-    ['| The mock container starts again and again (`docker ps` says `Restarting`) |', ['the error names the variable', 'the approval check of the use-case kit is not wired in this build']],
+    ['| The mock container starts again and again (`docker ps` says `Restarting`) |', ['the error names the variable']],
+    ['| A call to `POST /t/<tenant>/sourcing/rankings` gets `503`, and the body has `approval_unavailable` |', ['`approval.failed`', '`VECTOR_OGMIOS_URL`', '`VECTOR_KOIOS_URL`', 'The service wrote nothing.']],
     ['| A call gets `421`, and the JSON body has `wrong_host` |', ['`<mock host>`', '`<mock mtls host>`']],
     ['| A call gets `400`, and the body has `client_certificate_unexpected` |', ['`request_header -Client-Cert`']],
     ['| A call to a tenant gets `404`, and the body has `tenant_not_found` |', ['Make the tenant']],
@@ -6647,11 +6649,14 @@ test('mock service README and RUNBOOK: the two files, the health check, the tena
     assert.equal(row.split(/(?<!\\)\|/).length, 5, `three cells: ${start6}`);
     for (const part of parts) assert.ok(row.includes(part), `${start6} has: ${part}`);
   }
-  for (const [code, status] of [['wrong_host', 421], ['client_certificate_unexpected', 400], ['tenant_not_found', 404], ['operator_token_invalid', 401]]) {
+  for (const [code, status] of [['wrong_host', 421], ['client_certificate_unexpected', 400], ['tenant_not_found', 404], ['operator_token_invalid', 401], ['approval_unavailable', 503]]) {
     assert.ok(errors.includes(`${code}: ${status},`), `the service answers ${code} with ${status}`);
     assert.ok(table.includes(`\`${status}\``) && table.includes(`\`${code}\``), `the failure table has ${status} and ${code}`);
   }
-  assert.ok(start.includes('the approval check of the use-case kit is not wired in this build'), 'the start of the service refuses with the words of the failure table');
+  // The start wires the approval check of the use-case kit, so no image comes without one: the failure table has no row for it.
+  const wiring = read('services/mock-systems/src/wiring.ts');
+  assert.ok(wiring.includes("from '@vsa/usecase-kit/checks'") && start.includes("import { wireApprovalCheck } from './wiring.ts'"), 'the start of the service wires the approval check of the use-case kit');
+  assert.ok(!mockRunbook.includes('not wired in this build'), 'the runbook has no row for an image with no approval check');
   // The compose commands of the steps: the one file, and only up -d, up -d --force-recreate and down. No restart command and no -v.
   const mine = mockBlocks.filter((block) => block.includes('docker-compose.mock-systems.yml')).join('\n');
   const commands = [...mine.matchAll(/docker compose ([^\n]*)/g)].map((m) => m[1]);
