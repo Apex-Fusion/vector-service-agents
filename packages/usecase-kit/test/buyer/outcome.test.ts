@@ -7,7 +7,7 @@ import type { AgentDelivery, AgentOutcome, HireRecord, HireTerms } from '@vsa/hi
 import { AFTER_CLAIM_REFUSALS, COUNTERPARTY_REFUSALS, ERROR_STATUS, REFUSAL_CODES, RECEIPT_CHECKS, USE_CASES } from '@vsa/usecase-kit/protocol';
 import type { ExitState, UseCase } from '@vsa/usecase-kit/protocol';
 import { COUNTERPARTY_REFUSED, INCONSISTENT_OUTCOME, VAULT_REASON_MISSING, afterClaimRefusalIn, completedResult, settledResult, stepOfOutcome } from '@vsa/usecase-kit/buyer';
-import type { DelegationAfter, HireStep, StepContext } from '@vsa/usecase-kit/buyer';
+import type { BookingFailure, DelegationAfter, HireStep, StepContext } from '@vsa/usecase-kit/buyer';
 import { AGENT_ADVERT_REF, COUNTERPARTY_DID, pieces, words } from './support.ts';
 
 const ESCROW = `${'44'.repeat(32)}#0`;
@@ -510,11 +510,13 @@ describe('a delivery that passed the eight checks and cannot be recorded', () =>
 
 describe('a booking that failed', () => {
   const boom = new Error('the ledger is closed');
+  /** What the hire kit gave to the ledger in the call that threw: the hash of the Accept transaction and its fee. */
+  const booking: BookingFailure = { cause: boom, accept_tx_hash: '77'.repeat(32), fee_lovelace: 176_000n };
 
   it('is a member of the completed step, which is still completed, and it is null when the booking worked', () => {
-    const step = stepOfOutcome(completed, { ...CONTEXT, booking_failed: { cause: boom } });
+    const step = stepOfOutcome(completed, { ...CONTEXT, booking_failed: booking });
     if (step.kind !== 'completed') throw new Error(`the step is ${words(step)}`);
-    expect(step.booking_failed).toStrictEqual({ cause: boom });
+    expect(step.booking_failed).toStrictEqual(booking);
     expect(step.handoff.accepted).toBe('confirmed');
     expect(resultOf(step)).toBe('completed:null:Completed');
     const twin = stepOfOutcome(completed, CONTEXT);
@@ -522,7 +524,7 @@ describe('a booking that failed', () => {
   });
 
   it('is kept as the cause of a failed step when the outcome does not hold together: no error of the ledger is lost', () => {
-    const step = stepOfOutcome({ ...completed, advertRef: OTHER_ADVERT }, { ...CONTEXT, booking_failed: { cause: boom } });
+    const step = stepOfOutcome({ ...completed, advertRef: OTHER_ADVERT }, { ...CONTEXT, booking_failed: booking });
     if (step.kind !== 'failed') throw new Error(`the step is ${words(step)}`);
     expect([step.reason, step.cause]).toStrictEqual([INCONSISTENT_OUTCOME, boom]);
     expect('cause' in (stepOfOutcome({ ...completed, advertRef: OTHER_ADVERT }, CONTEXT) as object)).toBe(false);

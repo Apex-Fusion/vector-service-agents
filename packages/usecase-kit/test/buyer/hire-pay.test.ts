@@ -111,13 +111,18 @@ describe('a Pay that may still land', () => {
 });
 
 describe('a ledger that throws when it books the Accept', () => {
-  it('does not turn paid work into a failure: the Accept is confirmed on the chain, so the step is completed with the Accept confirmed, and it says that the booking failed', async () => {
+  it('does not turn paid work into a failure: the Accept is confirmed on the chain, so the step is completed with the Accept confirmed, and it says that the booking failed, with the hash and the fee of the Accept', async () => {
     const w = await world();
     const boom = new Error('the ledger is closed');
+    const accept = vi.spyOn(w.m.chain, 'accept');
     w.deps.hire.ledger.accepted = () => { throw boom; };
     const step = expectKind(await go(w), 'completed');
     expect(step.handoff).toMatchObject({ accepted: 'confirmed', paid_from_vault: true });
-    expect(step.booking_failed).toStrictEqual({ cause: boom });
+    // The step holds what the chain gave for the Accept: the hash of its transaction and its fee. The caller books the fee by other means, after it checks its ledger by that hash.
+    const made: { txHash: string; feeLovelace: bigint } = await accept.mock.results[0]!.value;
+    expect(made.txHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(made.feeLovelace).toBeGreaterThan(0n);
+    expect(step.booking_failed).toStrictEqual({ cause: boom, accept_tx_hash: made.txHash, fee_lovelace: made.feeLovelace });
     expect(step.booking_failed?.cause).toBe(boom);
     expect(await w.m.chain.escrowState(step.handoff.escrow_ref)).toBe('spent');
     // The hire kit went on after the Accept: its entry in the stranded store is gone, the Post was booked, and the work was sent one time.
@@ -131,11 +136,42 @@ describe('a ledger that throws when it books the Accept', () => {
   it('keeps an error that is not an Error object, and its twin: a ledger that books the Accept gives a completed step with no booking failure', async () => {
     const w = await world();
     w.deps.hire.ledger.accepted = () => { throw 'a text'; };
-    expect(expectKind(await go(w), 'completed').booking_failed).toStrictEqual({ cause: 'a text' });
+    expect(expectKind(await go(w), 'completed').booking_failed?.cause).toBe('a text');
     const twin = await world();
     const step = expectKind(await go(twin), 'completed');
     expect(step.booking_failed).toBeNull();
     expect(twin.booked.accepted).toHaveLength(1);
+  });
+
+  it('keeps what the ledger got in the call as it was when the call began: the ledger may have written the booking before it threw, and it may change what it got', async () => {
+    const w = await world();
+    const got: Array<{ txHash: unknown; feeLovelace: bigint }> = [];
+    w.deps.hire.ledger.accepted = (accept) => {
+      got.push({ ...accept } as { txHash: unknown; feeLovelace: bigint });
+      Object.assign(accept, { txHash: 'changed by the ledger', feeLovelace: 0n });
+      throw new Error('the ledger is closed after the write');
+    };
+    const step = expectKind(await go(w), 'completed');
+    expect(got).toHaveLength(1);
+    expect(got[0]!.txHash).toMatch(/^[0-9a-f]{64}$/);
+    // The step holds the hash and the fee as the ledger got them, and not what the ledger left in the object.
+    expect(step.booking_failed).toMatchObject({ accept_tx_hash: got[0]!.txHash, fee_lovelace: got[0]!.feeLovelace });
+    expect(got[0]!.feeLovelace).toBeGreaterThan(0n);
+  });
+
+  it('gives a null hash and the fee when the call that the ledger threw for holds no hash: the type of that call in the hire kit names only the fee', async () => {
+    const w = await world();
+    const accept = w.m.chain.accept.bind(w.m.chain);
+    let fee = 0n;
+    vi.spyOn(w.m.chain, 'accept').mockImplementationOnce(async (ref) => {
+      fee = (await accept(ref)).feeLovelace;
+      return { feeLovelace: fee } as never;
+    });
+    w.deps.hire.ledger.accepted = () => { throw new Error('the ledger is closed'); };
+    const step = expectKind(await go(w), 'completed');
+    expect(fee).toBeGreaterThan(0n);
+    expect(step.booking_failed).toMatchObject({ accept_tx_hash: null, fee_lovelace: fee });
+    expect(step.handoff).toMatchObject({ accepted: 'confirmed' });
   });
 
   it('still ends the hire with an error when the ledger throws when it books the Post: no Accept was made, and the work is not done', async () => {

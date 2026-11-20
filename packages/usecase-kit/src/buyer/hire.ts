@@ -292,17 +292,21 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
       },
     };
     // The hire kit books the fee of a confirmed Accept through the ledger of the caller, and it ends the hire with an error when that ledger throws. The Accept is on the chain all the same, and the work
-    // is paid for: a failed result for paid work invites a second execute of the same work. So the flow keeps the error for the step, and the hire kit does not end the hire with it.
+    // is paid for: a failed result for paid work invites a second execute of the same work. So the flow keeps the error for the step, and the hire kit does not end the hire with it. The step also keeps what the
+    // hire kit gave to the ledger in that call, the hash of the Accept transaction and its fee, so that the caller can book the fee by other means. The ledger may have written the booking before it threw:
+    // the caller checks its ledger by that hash before it books again. Both values are read before the call, so a ledger that changes what it got does not change the step.
     const booking: { failed: BookingFailure | null } = { failed: null };
     const hireDeps: AgentDeps = {
       ...hire,
       ledger: {
         posted: (post) => { hire.ledger.posted(post); },
-        accepted: (accept) => {
+        // The type of this call names only the fee. The hire kit gives the result of the Accept of the chain, which holds the hash as well.
+        accepted: (accept: { feeLovelace: bigint; txHash?: unknown }) => {
+          const { feeLovelace, txHash } = accept;
           try {
             hire.ledger.accepted(accept);
           } catch (error) {
-            booking.failed = { cause: error };
+            booking.failed = { cause: error, accept_tx_hash: typeof txHash === 'string' ? txHash : null, fee_lovelace: feeLovelace };
           }
         },
       },

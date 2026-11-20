@@ -39,9 +39,18 @@ interface PaidStep {
   readonly terms: HireTerms;
 }
 
-/** The ledger of the caller threw when the hire kit booked the fee of an Accept that was confirmed. The error is for the log of the operator. Never put it in a result. */
+/**
+ * The ledger of the caller threw when the hire kit booked the fee of an Accept that was confirmed. The Accept is on the chain, so the caller books the fee by other means, and the hash and the fee below are what
+ * the hire kit gave to the ledger in that call. The ledger may have written the booking before it threw: the caller checks its ledger by `accept_tx_hash` before it books the fee again. The error is for the
+ * log of the operator. Never put it in a result.
+ */
 export interface BookingFailure {
+  /** The error that the ledger threw. */
   readonly cause: unknown;
+  /** The hash of the Accept transaction, as the hire kit gave it to the ledger. `null` when the call holds no hash: the type of the ledger of the hire kit names only the fee. */
+  readonly accept_tx_hash: string | null;
+  /** The fee of the Accept transaction in lovelace, as the hire kit gave it to the ledger. */
+  readonly fee_lovelace: bigint;
 }
 
 export interface CompletedStep extends PaidStep {
@@ -49,7 +58,8 @@ export interface CompletedStep extends PaidStep {
   readonly delivery: VerifiedDelivery;
   /**
    * Set when the ledger of the caller threw while it booked the fee of the Accept. The Accept is confirmed on the chain, and the work is paid for: the step is still `completed`, because a failed result for
-   * paid work invites a second execute of the same work. The service must log the error and book the fee by other means. `null` when the booking worked.
+   * paid work invites a second execute of the same work. The service must log the error and book the fee by other means, with the hash and the fee that this member holds. The ledger may have written the
+   * booking before it threw, so the service checks its ledger by that hash before it books the fee again. `null` when the booking worked.
    */
   readonly booking_failed: BookingFailure | null;
 }
