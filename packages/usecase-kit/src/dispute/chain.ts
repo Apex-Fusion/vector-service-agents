@@ -11,10 +11,11 @@
 //
 // The escrow of a job is read from Koios `utxo_info`, and not from the node. Koios keeps the datum of a spent output, so the output of any state of the escrow can be named when the job is long done. The reader
 // `readEscrowOutput` of the buyer code looks at the one output that it is asked for, so an output that someone locks at the escrow credential cannot change the answer, and it fails closed: an output that is not
-// at the escrow script of the deployment, that holds no escrow datum, or that holds less than its datum owes is no escrow (`not_escrow`). The start of the job is the `block_time` that `utxo_info` gives for the same output:
-// the time of the block that holds the transaction that made it, in seconds. The datum has a time too (`posted_at`), but the poster writes it and no validator checks it, so the port never uses it. The time of the block comes
-// from `utxo_info` and not from `tx_info` of the transaction: one small answer gives it, and `tx_info` gives the whole transaction. Every other failure of the reader, an output that Koios does not have, and a row with no
-// time of the block throw.
+// at the escrow script of the deployment, that holds no escrow datum, or that holds less than its datum owes is no escrow (`not_escrow`). The port gives the capability and the agent of the datum (the agent is null for
+// the legacy layout, which names none), so that the dispute code can check that the escrow is the escrow of its job. The start of the job is the `block_time` that `utxo_info` gives for the same output: the time of the
+// block that holds the transaction that made it, in seconds. The datum has a time too (`posted_at`), but the poster writes it and no validator checks it, so the port never uses it. The time of the block comes from
+// `utxo_info` and not from `tx_info` of the transaction: one small answer gives it, and `tx_info` gives the whole transaction. Every other failure of the reader, an output that Koios does not have, and a row with
+// no time of the block throw.
 //
 // The checks come before the signature. Each build is compared with the call that asked for it: a challenge or a withdrawal must spend the claim output that the call names, and a challenge must hold
 // the hash and the URI of the evidence of the call. A build that does not match is refused (`not_built`), and nothing is signed. Every transaction needs the signature of the wallet key only.
@@ -24,11 +25,12 @@
 // before its `valid_to`. The `sleep` that the caller gives must not hold the process open: its timer is not cancelled when the work ends first.
 import {
   AWAIT_TIMEOUT_MAX_MS, BUILD_TIMEOUT_MS, DELIVER_BY_BUFFER_MS, DOCUMENT_LABEL, KOIOS_ANSWER_BYTES, buildDocumentPublish, buildOpenChallenge, buildSubmitClaim, buildWithdrawClaim, credentialOutputs,
-  decodeChallengeDatum, decodeClaimDatum, koiosUtxoInfo, lucidForAddress, paymentKeyHashOf, readDocument as readDocumentOfUri, readEscrowOutput, txHashOfUri, utxoOfKoiosRow,
+  decodeChallengeDatum, decodeClaimDatum, isIdentityEscrow, koiosUtxoInfo, lucidForAddress, paymentKeyHashOf, readDocument as readDocumentOfUri, readEscrowOutput, txHashOfUri, utxoOfKoiosRow,
 } from '@vsa/buyer-core';
 import type { ChallengeDatum, IdentityDeployment, LedgerEnv, Module1Deployment } from '@vsa/buyer-core';
 import type { Provider, UTxO } from '@lucid-evolution/lucid';
 import { addressDetails, decodeTransaction } from '@vsa/vector-read/guarded-decode';
+import type { EscrowDatum } from '@vsa/vector-read';
 import { utf8Hex } from '@vsa/vector-read/identity-codec';
 import { accepted, parseOutputRef, refused } from '../protocol/index.ts';
 import type { Did, OutputRef } from '../protocol/index.ts';
@@ -62,7 +64,8 @@ export interface Module1PortDeps {
   readonly blockfrost_url?: string;
   /**
    * The identity-marketplace deployment, which gives the escrow script of the identity layout (`buyerIdentityDeployment` of the buyer code reads it). The port reads the escrow of a job at the escrow script of the
-   * legacy layout and at the escrow script of this deployment. Give null for a service that has no identity deployment: an identity-marketplace escrow is then no escrow output of the deployment.
+   * legacy layout and at the escrow script of this deployment. Give null for a service that has no identity deployment: an identity-marketplace escrow is then no escrow output of the deployment, and an escrow of the
+   * legacy layout names no agent, so the dispute code refuses a challenge for it. Such a service can still stake and withdraw claims.
    */
   readonly identity_deployment: IdentityDeployment | null;
   /** The most time for the build of one transaction. The default is the one of the chain of the buyer code. */
@@ -467,8 +470,9 @@ export function createModule1Port(deps: Module1PortDeps): Module1Port {
     async readEscrowJob(ref: OutputRef): Promise<EscrowJobResult> {
       const named = refOf(ref);
       if (named === null) throw new TypeError('ref must be a transaction hash, a hash sign and an output index');
+      let datum: EscrowDatum;
       try {
-        await readEscrowOutput(deps.koios_url, ref, deps.fetch, identityDeployment);
+        ({ datum } = await readEscrowOutput(deps.koios_url, ref, deps.fetch, identityDeployment));
       } catch (error) {
         const reason = notEscrowOf(error);
         if (reason === null) throw error;
@@ -479,7 +483,7 @@ export function createModule1Port(deps: Module1PortDeps): Module1Port {
       if (row === undefined) throw new Error('Koios does not have the escrow output');
       const seconds = row.block_time;
       if (typeof seconds !== 'number' || !Number.isSafeInteger(seconds) || seconds < 1 || !Number.isSafeInteger(seconds * 1000)) throw new Error('Koios gave no time of the block for the escrow output');
-      return accepted({ block_time_ms: seconds * 1000 });
+      return accepted({ block_time_ms: seconds * 1000, capability_id: datum.capability_id, agent_id: isIdentityEscrow(datum) ? datum.agent_id : null });
     },
 
     async publishDocument(call: PublishCall): Promise<TxResult<PublishedDocument>> {

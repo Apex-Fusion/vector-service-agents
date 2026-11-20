@@ -9,8 +9,8 @@ import type { EscalatedResult, UnfiledDisputeResult } from '@vsa/usecase-kit/pro
 import { Dispute, LEAST_RESOLUTION_DEADLINE_MS, disputedFields } from '@vsa/usecase-kit/dispute';
 import type { ApprovalChallengeInput, ChallengeResult, ClaimView, DeliveryChallengeInput, DisputeSettings } from '@vsa/usecase-kit/dispute';
 import {
-  CHALLENGE_TX, DIGEST_FACTS, ESCROW, ESCROW_2, EVIDENCE_TX, HOUR, JOB, JOB_BEGAN_AT, ME, MISMATCH, NOW, ORDER_FACTS, OTHER, QUOTE_FACTS, RecordingQueue, REF_A, REF_B, REF_C, SCOPE, ScriptedPort, SETTINGS,
-  STATEMENT_S1, THIRD, TOKEN_A, TOKEN_B, TOKEN_C, canonical, claimView, never, rig,
+  CHALLENGE_TX, DIGEST_FACTS, ESCROW, ESCROW_2, EVIDENCE_TX, HOUR, JOB, JOB_BEGAN_AT, ME, ME_ID, MISMATCH, NOW, ORDER_FACTS, OTHER, OTHER_ID, QUOTE_FACTS, RecordingQueue, REF_A, REF_B, REF_C, SCOPE, ScriptedPort, SETTINGS,
+  STATEMENT_S1, THIRD, THIRD_ID, TOKEN_A, TOKEN_B, TOKEN_C, canonical, claimView, escrowJob, never, rig,
 } from './support.ts';
 
 const delivery = (extra: Partial<DeliveryChallengeInput> = {}): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: ESCROW, ...JOB, evidence: ORDER_FACTS, ...extra });
@@ -21,6 +21,11 @@ const readsDocumentOf = (claim: ClaimView = claimView()): string => `readDocumen
 
 /** The call of the port that reads the escrow of the job: the time of its Post is the start of the job. */
 const readsEscrow = (escrow: string = ESCROW): string => `readEscrow ${escrow}`;
+
+/** The escrow of a job that the sender of a request hired this agent for: its datum names this agent. */
+const hiringMe = (port: ScriptedPort): void => {
+  port.readEscrowAnswer = () => escrowJob({ agent_id: ME_ID });
+};
 
 /** The chain after a challenge: the claim that the challenge spent is Challenged, so it is no longer open. */
 function challengeChangesTheClaim(port: ScriptedPort): void {
@@ -164,6 +169,7 @@ describe('a challenge is never built before the evidence document is confirmed',
     expect(textOf(quote.port.published[0]!.bytes)).toContain('The bid desk quoted the unit price 110');
     const digest = rig();
     digest.port.claims = [claimView()];
+    hiringMe(digest.port);
     expect((await digest.dispute.challengeApproval(approval())).ok).toBe(true);
     expect(textOf(digest.port.published[0]!.bytes)).toContain(`holds the digest ${MISMATCH.expected_digest}`);
   });
@@ -436,6 +442,8 @@ describe('a job gets one challenge', () => {
   it('files the second job against the claim of its own party, and a second job against a claim that is challenged finds no open claim', async () => {
     const { port, dispute } = rig();
     port.claims = [claimView(), claimView({ ref: REF_C, token: TOKEN_C, claimer: THIRD })];
+    // The second job hired the third agent: the datum of its escrow names that agent.
+    port.readEscrowAnswer = (ref) => escrowJob({ agent_id: ref === ESCROW ? OTHER_ID : THIRD_ID });
     challengeChangesTheClaim(port);
     expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
     expect((await dispute.challengeDelivery(delivery({ counterparty: THIRD, escrow_ref: ESCROW_2 }))).ok).toBe(true);
@@ -507,6 +515,7 @@ describe('the challenge of a counterparty that refused for the digest of the app
   it('challenges the open claim of the sender, and puts the reference of the challenge into the result and the log', async () => {
     const { logs, port, dispute } = rig();
     port.claims = [claimView({ claimer: OTHER })];
+    hiringMe(port);
     const result = await dispute.challengeApproval(approval());
     if (!result.ok) throw new Error(result.detail);
     expect(result.value.record).toEqual({ claim: REF_A, evidence: EVIDENCE_TX, challenge: `${CHALLENGE_TX}#0` });
@@ -527,6 +536,7 @@ describe('the challenge of a counterparty that refused for the digest of the app
   it('holds no text of the request: a request in the evidence refuses the challenge before anything is published', async () => {
     const { events, port, dispute } = rig();
     port.claims = [claimView()];
+    hiringMe(port);
     const withText = { ...DIGEST_FACTS, request: { sku: 'SKU-1' } };
     const result = await dispute.challengeApproval(approval({ evidence: withText as unknown as ApprovalChallengeInput['evidence'] }));
     expectNotFiled(result, 'bad_shape');
@@ -705,6 +715,8 @@ describe('the lookup of the open claim of an agent', () => {
     port.claims = [claimView(), claimView({ ref: REF_B, token: TOKEN_B, claimer: THIRD })];
     const found = await dispute.findOpenClaim(OTHER, SCOPE);
     expect(found).toMatchObject({ ok: true, value: { ref: REF_A, token: TOKEN_A } });
+    // The escrow of a job that names the third agent: a lookup takes the agent that it looks up, or this agent, as the agent of the escrow.
+    port.readEscrowAnswer = () => escrowJob({ agent_id: THIRD_ID });
     expect(await dispute.findOpenClaim(THIRD, SCOPE)).toMatchObject({ ok: true, value: { ref: REF_B } });
   });
 

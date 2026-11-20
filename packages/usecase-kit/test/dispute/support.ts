@@ -4,7 +4,7 @@ import { documentHash, documentUri } from '@vsa/buyer-core';
 import { canonicalSha256 } from '@vsa/usecase-kit/protocol';
 import { Dispute, claimDocument, evidenceDocument } from '@vsa/usecase-kit/dispute';
 import type {
-  ChallengeView, ClaimView, DisputeJournal, DisputeSettings, DocumentAbsent, DocumentResult, EscrowJobResult, Module1Port, NotAnEscrow, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument,
+  ChallengeView, ClaimView, DisputeJournal, DisputeSettings, DocumentAbsent, DocumentResult, EscrowJob, EscrowJobResult, Module1Port, NotAnEscrow, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument,
   ReadDocument, ServiceQueue, SubmittedClaim, SubmitClaimCall, TxResult, WithdrawClaimCall, WithdrawnClaim,
 } from '@vsa/usecase-kit/dispute';
 
@@ -172,6 +172,14 @@ export const NO_DOCUMENT: DocumentAbsent = { ok: false, code: 'no_document', det
 /** What a read of an escrow answers when the output is no escrow output of the deployment. */
 export const NOT_ESCROW: NotAnEscrow = { ok: false, code: 'not_escrow', detail: 'the output is not at the escrow script of the deployment' };
 
+/**
+ * What a read of the escrow of the job of the samples answers: the job began at `JOB_BEGAN_AT`, for the capability of the job, and the datum names `OTHER_ID` as its agent, which is the counterparty that this agent hired.
+ * A job that the sender of a request hired this agent for names `ME_ID`. `overrides` change members.
+ */
+export const escrowJob = (overrides: Partial<EscrowJob> = {}): Extract<EscrowJobResult, { ok: true }> => ({
+  ok: true, value: { block_time_ms: JOB_BEGAN_AT, capability_id: CAPABILITY, agent_id: OTHER_ID, ...overrides },
+});
+
 /** A chain port that answers from lists that a test sets, and that writes each call to the events. A test changes an answer by setting the member of the same name. */
 export class ScriptedPort implements Module1Port {
   readonly agent = { did: ME, key_hash: KEY_HASH };
@@ -194,8 +202,8 @@ export class ScriptedPort implements Module1Port {
   };
   /** What `isIndexed` answers: the source of the documents has each claim, unless a test says that it is behind or that it fails. */
   isIndexedAnswer: (ref: string) => boolean | Error = () => true;
-  /** What `readEscrowJob` answers: the job of the escrow, the refusal that the output is no escrow output, or an error for a source that fails. The default is the start `JOB_BEGAN_AT` for each escrow. */
-  readEscrowAnswer: (ref: string) => EscrowJobResult | Error = () => ({ ok: true, value: { block_time_ms: JOB_BEGAN_AT } });
+  /** What `readEscrowJob` answers: the job of the escrow, the refusal that the output is no escrow output, or an error for a source that fails. The default is `escrowJob()` for each escrow. */
+  readEscrowAnswer: (ref: string) => EscrowJobResult | Error = () => escrowJob();
   publishAnswer: (call: PublishCall) => Answer<PublishedDocument> = (call) => ok({ tx_hash: EVIDENCE_TX, uri: documentUri(EVIDENCE_TX), document_hash: documentHash(call.bytes), fee_lovelace: 200_000n });
   submitClaimAnswer: (call: SubmitClaimCall) => Answer<SubmittedClaim> = (call) =>
     ok({ tx_hash: CHALLENGE_TX, claim: REF_C, claim_token: TOKEN_C, stake_lovelace: call.stake_lovelace, submitted_at: NOW, challenge_window_ms: call.challenge_window_ms, fee_lovelace: 500_000n });

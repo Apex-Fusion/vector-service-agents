@@ -13,9 +13,10 @@ import { FixtureProvider } from '../../../buyer-core/test/fixtures/fixture-provi
 import { AUDITOR_ID, CLAIMER_ID, JURY_REF_UTXO, MODULE1, MODULE1_UTXOS, WALLET, WALLET_ADDRESS, WALLET_UTXOS, claimUtxo, recordUtxo } from '../../../buyer-core/test/fixtures/jury-world.ts';
 import { DEPLOYMENT } from '../../../buyer-core/test/fixtures/identity-world.ts';
 import { escrowUtxo, identityEscrow } from '../../../buyer-core/test/fixtures/escrow-identity.fixture.ts';
+import type { IdentityEscrowDatum } from '@vsa/vector-read';
 import { createModule1Port } from '@vsa/usecase-kit/dispute';
 import type { Module1Port, Module1PortDeps } from '@vsa/usecase-kit/dispute';
-import { ESCROW, JOB_BEGAN_AT, kitClaimDocument } from './support.ts';
+import { CAPABILITY, ESCROW, JOB_BEGAN_AT, kitClaimDocument } from './support.ts';
 
 export { AUDITOR_ID, CLAIMER_ID, JURY_REF_UTXO, MODULE1, WALLET, WALLET_ADDRESS };
 
@@ -152,24 +153,26 @@ export class LedgerProvider extends FixtureProvider {
 const RECORDS: UTxO[] = [recordUtxo(CLAIMER_ID), recordUtxo(AUDITOR_ID)];
 
 /**
- * The escrow of the job `ESCROW`: an output of the identity layout whose datum says that the escrow was posted at `postedAt`. `over` changes members of the output. The output is at the escrow address
- * of the deployment of the fixture world, and it holds more than its datum owes.
+ * The escrow of the job `ESCROW`: an output of the identity layout whose datum says that the escrow was posted at `postedAt`. The datum names the capability of the job, and the counterparty `CLAIMER_ID` as its
+ * agent: the agent that this agent hired. `datum` changes members of the datum, and `over` changes members of the output. The output is at the escrow address of the deployment of the fixture world, and it holds more
+ * than its datum owes.
  */
-export function jobEscrow(postedAt = JOB_BEGAN_AT, over: Partial<UTxO> = {}): UTxO {
+export function jobEscrow(postedAt = JOB_BEGAN_AT, over: Partial<UTxO> = {}, datum: Partial<IdentityEscrowDatum> = {}): UTxO {
   const [txHash, index] = ESCROW.split('#') as [string, string];
-  return { ...escrowUtxo(txHash, identityEscrow(postedAt)), outputIndex: Number(index), ...over };
+  return { ...escrowUtxo(txHash, identityEscrow(postedAt, { capability_id: CAPABILITY, agent_id: CLAIMER_ID, ...datum })), outputIndex: Number(index), ...over };
 }
 
 /**
  * Puts the escrow of the job into the ledger as the Post made it (live), or as the settlement left it (spent: only the output info of the fake Koios gives it), in the place of the escrow that the ledger has. `at` is the time of
- * the block of its transaction, and the datum says the same time as its member `posted_at`, as a poster that tells the truth writes it. A test that wants another `posted_at` gives its own datum in `over`.
+ * the block of its transaction, and the datum says the same time as its member `posted_at`, as a poster that tells the truth writes it. A test that wants another `posted_at`, another capability or another agent changes
+ * `datum`, and a test that wants another output changes `over`.
  */
-export function postEscrowAt(ledger: LedgerProvider, at: number, spent = false, over: Partial<UTxO> = {}): void {
+export function postEscrowAt(ledger: LedgerProvider, at: number, spent = false, over: Partial<UTxO> = {}, datum: Partial<IdentityEscrowDatum> = {}): void {
   const others = (utxo: UTxO): boolean => refOf(utxo) !== ESCROW;
   ledger.live = ledger.live.filter(others);
   ledger.koiosSpent.splice(0, ledger.koiosSpent.length, ...ledger.koiosSpent.filter(others));
   ledger.blockTimes.set(ESCROW_TX, Math.floor(at / 1000));
-  (spent ? ledger.koiosSpent : ledger.live).push(jobEscrow(at, over));
+  (spent ? ledger.koiosSpent : ledger.live).push(jobEscrow(at, over, datum));
 }
 
 /** A node with the wallet, the Module-1 outputs, the records of the claimer and the auditor, the escrow of the job, and `extra`: outputs, or a function that makes them with the ledger in hand (a claim needs its document on the ledger). */

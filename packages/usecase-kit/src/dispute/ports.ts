@@ -74,13 +74,17 @@ export type DocumentAbsent = Refused<'transaction_unknown' | 'no_document'>;
 /** The result of a read of a document: the document, or the reason that the source, which answered, has none. A read that gets no answer throws. */
 export type DocumentResult = Accepted<ReadDocument> | DocumentAbsent;
 
-/** What the port reads about the job that an escrow output stands for. */
+/** What the port reads about the job that an escrow output stands for: when it began, and the capability and the agent that its datum names. */
 export interface EscrowJob {
   /**
    * The start of the job, in POSIX milliseconds: the time of the block that holds the transaction that made the escrow output. The chain gives it, and the poster of the escrow cannot choose it. It is not the member
    * `posted_at` of the datum: the poster writes that member, and no validator checks it.
    */
   readonly block_time_ms: number;
+  /** The capability that the datum names, as text: the member `capability_id` of the datum. */
+  readonly capability_id: string;
+  /** The agent that the datum names: 64 lower-case hex characters, with no `did:vector:`. It is the agent that the job hired. Null for an escrow of the legacy layout: its datum names no agent. */
+  readonly agent_id: string | null;
 }
 
 /**
@@ -216,9 +220,9 @@ export interface Module1Port {
    */
   isIndexed(ref: OutputRef): Promise<boolean>;
   /**
-   * The job that the escrow output at `ref` stands for: the time of the block that holds the transaction that made the output (`EscrowJob`). The output can be in any state of the escrow, spent or not. It gives `not_escrow`
-   * when the source answered and the output is not an escrow output of the deployment. It throws when the source cannot be read, answers in a wrong shape, gives no time of the block, or does not have the output (it can
-   * be behind): a read that throws never says that the output is no escrow output.
+   * The job that the escrow output at `ref` stands for: the time of the block that holds the transaction that made the output, and the capability and the agent of its datum (`EscrowJob`). The output can be in any state of
+   * the escrow, spent or not. It gives `not_escrow` when the source answered and the output is not an escrow output of the deployment. It throws when the source cannot be read, answers in a wrong shape, gives no time of
+   * the block, or does not have the output (it can be behind): a read that throws never says that the output is no escrow output.
    */
   readEscrowJob(ref: OutputRef): Promise<EscrowJobResult>;
   publishDocument(call: PublishCall): Promise<TxResult<PublishedDocument>>;
