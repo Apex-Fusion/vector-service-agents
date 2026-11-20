@@ -1,13 +1,12 @@
 // services/mock-systems/src/start.ts
 // How the service starts and stops. `startService` reads the settings (every one is checked, and a wrong value stops the start with the name of the variable), makes the verifier and the
-// gateway client, wires the ledger and the approval check, and listens. It refuses to start when no approval check is wired (src/wiring.ts). Nothing is made before every setting is
-// checked, and the service listens last, so a start that is refused never opens a port.
+// gateway client, wires the approval check of the use-case kit to the ledger, the gateway client and the clock (src/wiring.ts), and listens. It refuses to start when the wiring gives no
+// approval check. Nothing is made before every setting is checked, and the service listens last, so a start that is refused never opens a port.
 // A stop takes no new connection, closes the connections that are idle, and gives a call that runs 5 seconds. The state of the tenants is in memory: a stop loses it.
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { errorText, listen } from '@vsa/service-kit';
-import type { LedgerEnv } from '@vsa/buyer-core';
 import type { ApprovalCheck } from './approval.ts';
 import { createApp } from './app.ts';
 import { loadConfig } from './config.ts';
@@ -15,17 +14,18 @@ import { createIdentityDeps } from './identity.ts';
 import type { LedgerPort } from './identity.ts';
 import { createLedgerEnv, ledgerPort } from './ledger.ts';
 import { wireApprovalCheck } from './wiring.ts';
+import type { ApprovalSources } from './wiring.ts';
 
 /** How long a stop waits for the calls that run, in milliseconds. */
 export const STOP_WAIT_MS = 5_000;
 
-/** What a test may replace. The production entry (src/index.ts) passes none of it. */
+/** What a test may replace. The production entry (src/index.ts) passes none of it, so the check is the one of src/wiring.ts. */
 export interface StartOptions {
   readonly fetch?: typeof fetch;
   readonly now?: () => number;
   readonly writeLog?: (line: string) => void;
   readonly ledger?: LedgerPort;
-  readonly wire?: (ledger: LedgerEnv) => ApprovalCheck | null;
+  readonly wire?: (sources: ApprovalSources) => ApprovalCheck | null;
 }
 
 export interface Started {
@@ -36,7 +36,7 @@ export interface Started {
 }
 
 export const NO_APPROVAL_CHECK =
-  'the approval check of the use-case kit is not wired in this build (src/wiring.ts): the service does not start without a real check, and it never runs with a fake one or one that always passes';
+  'no approval check is wired (src/wiring.ts): the service does not start without a real check, and it never runs with a fake one or one that always passes';
 
 export async function startService(env: NodeJS.ProcessEnv, options: StartOptions = {}): Promise<Started> {
   const config = loadConfig(env);
@@ -44,10 +44,10 @@ export async function startService(env: NodeJS.ProcessEnv, options: StartOptions
   const now = options.now ?? Date.now;
   const writeLog = options.writeLog ?? ((line: string) => { process.stdout.write(`${line}\n`); });
   const ledgerEnv = createLedgerEnv(config, fetchImpl);
-  const approvalCheck = (options.wire ?? wireApprovalCheck)(ledgerEnv);
+  const identity = createIdentityDeps({ gatewayUrl: config.gatewayUrl, fetch: fetchImpl, now, ledger: options.ledger ?? ledgerPort(ledgerEnv) });
+  const approvalCheck = (options.wire ?? wireApprovalCheck)({ ledger: ledgerEnv, gateway: identity.client, now });
   if (approvalCheck === null) throw new Error(NO_APPROVAL_CHECK);
 
-  const identity = createIdentityDeps({ gatewayUrl: config.gatewayUrl, fetch: fetchImpl, now, ledger: options.ledger ?? ledgerPort(ledgerEnv) });
   const app = createApp({ config, identity, approvalCheck, now, writeLog });
 
   const server = createServer((req, res) => { void app.handle(req, res); });

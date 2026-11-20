@@ -1,9 +1,9 @@
 // POST /sourcing/rankings: the token check, then the approval check against the ranking that was sent, then the record of the top-ranked supplier, which must be Active. A null approval is
-// 403 approval_not_found. The approval check is a dependency, so these tests give it a fake that records what it was asked and answers as the test says. The fake is in the test support only:
-// no source of the service builds one. Each refusal has the call that is accepted beside it, and no ranking is written for a refusal.
+// 403 approval_not_found. The approval check is a dependency, so most of these tests give it a fake that records what it was asked and answers as the test says. The fake is in the test support
+// only: no source of the service builds one. The last tests run the route with the real check. Each refusal has the call that is accepted beside it, and no ranking is written for a refusal.
 import { describe, expect, it } from 'vitest';
 import { APPROVAL_CODES } from '../src/errors.ts';
-import { callWithToken, delegateTo, rankingBody, scenario } from './support/scenario.ts';
+import { callWithToken, delegateTo, rankingBody, rankingsOf, scenario } from './support/scenario.ts';
 import type { HarnessOptions } from './support/harness.ts';
 import type { Scenario } from './support/scenario.ts';
 import { PUBLIC_BASE } from './support/world.ts';
@@ -15,7 +15,7 @@ const refused = (reply: { status: number; json: Record<string, unknown> | null }
   expect([reply.status, reply.json?.error]).toEqual([status, code]);
 };
 const lastRule = (s: Scenario): unknown => s.harness.logged().at(-1)?.rule;
-const written = async (s: Scenario): Promise<unknown[]> => ((await s.harness.call({ path: `/t/${TENANT}/state` })).json as { sourcing: { rankings: unknown[] } }).sourcing.rankings;
+const written = rankingsOf;
 interface LogEntry { decision: string; code: string | null; rule: string | null }
 const tenantLog = async (s: Scenario): Promise<LogEntry[]> => {
   const body = (await s.harness.call({ path: `/t/${TENANT}/log` })).json as { lines: LogEntry[] }; // the shape of the answer of GET /log
@@ -261,5 +261,30 @@ describe('the resource of the call', () => {
     expect(reply.status, reply.text).toBe(201);
     const other = await s.world.token(agent.agent, agent.delegation, `${url}/`);
     refused(await s.harness.call({ method: 'POST', path: `/t/${TENANT}${ROUTE}`, headers: await s.world.presented(other, 'POST', `${url}/rankings`), body: rankingBody(TENANT, alfa.did, bravo.did) }), 401, 'token_invalid');
+  });
+});
+
+describe('the route with the real approval check', () => {
+  const reversed = (object: Record<string, unknown>) => Object.fromEntries(Object.entries(object).reverse());
+
+  it('writes the ranking that the member approved, also when the body writes the keys of the ranking in another order: the digest is of the canonical form of the ranking', async () => {
+    const { s, agent, send, body } = await setup({ realApproval: true });
+    const sent = body();
+    s.world.approve(agent.agent, sent.ranking, sent.salt);
+    const other = { ...sent, ranking: { ...reversed(sent.ranking), weights: reversed(sent.ranking.weights as Record<string, unknown>) } };
+    const reply = await send(other);
+    expect(reply.status, reply.text).toBe(201);
+    expect(await written(s)).toHaveLength(1);
+  });
+  it('refuses a ranking that differs from the approved one in one number: 403 approval_digest_mismatch, nothing is written, and the approved ranking is written', async () => {
+    const { s, agent, send, body } = await setup({ realApproval: true });
+    const sent = body();
+    s.world.approve(agent.agent, sent.ranking, sent.salt);
+    const changed = { ...sent, ranking: { ...sent.ranking, weights: { ...(sent.ranking.weights as Record<string, unknown>), price: 0.5 } } };
+    refused(await send(changed), 403, 'approval_digest_mismatch');
+    expect(lastRule(s)).toBe('approval.approval_digest_mismatch');
+    expect(await written(s)).toEqual([]);
+    expect((await send(sent)).status).toBe(201);
+    expect(await written(s)).toHaveLength(1);
   });
 });

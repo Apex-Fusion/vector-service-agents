@@ -1,7 +1,8 @@
 // services/mock-systems/test/support/world.ts
 // The world of the tests: the stub gateway of @vsa/id-kit (agents, delegations, tokens, SVIDs, status lists, DID resolution) and a ledger of fixture data built from the same agents and
 // delegations (the fixtures of the ledger reads of packages/buyer-core). The service runs its real code on both: the real verifier on the tokens of the stub, and the real
-// `checkDelegationUse` of buyer-core on the fixture ledger. No test touches a network. One clock moves the gateway, the verifier and the service together.
+// `checkDelegationUse` of buyer-core on the fixture ledger. The approvals that the member issues are attestations on the same ledger, and the real approval check of the use-case kit reads them.
+// No test touches a network. One clock moves the gateway, the verifier and the service together.
 import { X509Certificate } from 'node:crypto';
 import { checkDelegationUse } from '@vsa/buyer-core';
 import type { DelegationUseCheck, DelegationUseParams, LedgerEnv } from '@vsa/buyer-core';
@@ -11,7 +12,8 @@ import { createStubGateway, ed25519Key } from '@vsa/id-kit/testing';
 import type { AgentOptions, DelegationOptions, StubAgent, StubDelegation, StubGateway, TestKey } from '@vsa/id-kit/testing';
 import { createIdentityDeps } from '../../src/identity.ts';
 import type { IdentityDeps, LedgerPort } from '../../src/identity.ts';
-import { delegation as delegationDatum, delegationUtxo, ledgerWorld, liveRecord, recordUtxo } from '../../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
+import { proposalDigest } from '@vsa/usecase-kit/protocol';
+import { attestation as attestationDatum, attestationUtxo, delegation as delegationDatum, delegationUtxo, ledgerWorld, liveRecord, MAINNET, recordUtxo } from '../../../../packages/buyer-core/test/fixtures/ledger-read-world.ts';
 
 export const T0 = Date.UTC(2026, 10, 19, 12, 0, 0);
 export const PUBLIC_BASE = 'https://mock.example.test';
@@ -22,6 +24,10 @@ export const OPERATOR_TOKEN = 'operator-token-of-the-tests-0123456789abcdef';
 export const SUPPLIER_ORG = 'alfa.example.test';
 export const INSURER_ORG = 'delta.example.test';
 export const HOUR = 3_600_000;
+/** The name of an approval that `World.approve` makes, and the name that `rankingBody` (test/support/scenario.ts) gives to the approval of a ranking. */
+export const APPROVAL_ID = '07'.repeat(32);
+/** The fields of an attestation that a test changes. */
+type AttestationFields = NonNullable<Parameters<typeof attestationDatum>[0]>;
 
 /** The published values of the identity registry deployment of Vector mainnet: public chain data, and the three settings of the service that name them. */
 export const DEPLOYMENT_SETTINGS = {
@@ -65,6 +71,10 @@ export class World {
   private onLedgerAsked: (() => void) | null = null;
   /** What the service asked of the ledger, in order. */
   readonly ledgerParams: DelegationUseParams[] = [];
+  /** The approvals that the member issued: one attestation output of the ledger for each. */
+  readonly attestations: Array<{ id: string; fields: AttestationFields }> = [];
+  /** The reads of the approval check that fail: the node and the indexer give no answer for the attestation, for the delegation chain, or for both. Null: every read answers. */
+  approvalFault: 'attestation' | 'delegation' | 'both' | null = null;
   readonly ledger: LedgerPort = async (params) => {
     this.ledgerParams.push(params);
     this.onLedgerAsked?.();
@@ -110,6 +120,19 @@ export class World {
     this.gateway.endDelegation(delegation);
   }
 
+  /**
+   * The member approves a ranking for `subject`: an attestation of the approval type (5), issued by the key of the member (the root delegator of the delegations of this world), with the digest
+   * of the salt and the ranking. It is valid from one hour ago for four hours from now. `over` changes the attestation. Gives the name of the attestation.
+   */
+  approve(subject: StubAgent, ranking: unknown, salt: string, over: AttestationFields = {}, id: string = APPROVAL_ID): string {
+    const digest = proposalDigest(salt, ranking);
+    if (!digest.ok) throw new Error(`the ranking has no digest: ${digest.detail}`);
+    this.attestations.push({
+      id, fields: { subject: subject.id, issuer: this.member.publicKeyHex, attType: 5, digest: digest.value, issuedAt: this.time - HOUR, validFrom: null, validUntil: this.time + 4 * HOUR, ...over },
+    });
+    return id;
+  }
+
   /** The ledger as it is now: a record for each agent and an output for each delegation that has not ended. */
   ledgerEnv(): LedgerEnv {
     const now = this.time;
@@ -127,7 +150,29 @@ export class World {
         notBefore: d.notBefore, notAfter: d.notAfter, depth: d.depth, remaining: d.remaining, purpose: d.purpose,
         value: d.value === null ? null : { perTx: d.value.perTx, total: d.value.total, periodMs: d.value.periodMs },
       })));
-    return ledgerWorld([...records, ...links]).env;
+    const approvals = this.attestations.map(({ id, fields }) => attestationUtxo(id, attestationDatum(fields)));
+    return ledgerWorld([...records, ...links, ...approvals]).env;
+  }
+
+  /** The ledger as the approval check reads it: the ledger as it is now, and the reads that `approvalFault` names do not answer. */
+  approvalLedgerEnv(): LedgerEnv {
+    const env = this.ledgerEnv();
+    if (this.approvalFault === null) return env;
+    const scripts = this.approvalFault === 'attestation' ? [MAINNET.attestation] : this.approvalFault === 'delegation' ? [MAINNET.delegation] : [MAINNET.attestation, MAINNET.delegation];
+    // A read names its script by address, by policy or by credential. The text of its arguments holds one of them, so a read of another script is not touched.
+    const names = (args: unknown): boolean => {
+      const text = JSON.stringify(args, (_key, value: unknown) => (typeof value === 'bigint' ? value.toString() : value));
+      return scripts.some(({ address, hash }) => text.includes(address) || text.includes(hash));
+    };
+    const provider = new Proxy(env.provider, {
+      get(target, name) {
+        const member: unknown = Reflect.get(target, name);
+        if (typeof member !== 'function') return member;
+        return (...args: unknown[]) => (names(args) ? Promise.reject(new Error('the node gave no answer')) : member.apply(target, args));
+      },
+    });
+    const fetchImpl = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => (names([String(input), init?.body]) ? Promise.reject(new TypeError('fetch failed')) : env.fetchImpl(input, init))) as typeof fetch;
+    return { ...env, provider, fetchImpl };
   }
 
   /** A token of `agent` under `delegation` for `resource`, bound to the delegate key of the agent. */

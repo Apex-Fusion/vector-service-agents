@@ -1,7 +1,8 @@
 // services/mock-systems/test/support/harness.ts
 // The service on a real HTTP server on 127.0.0.1 (a port that the system gives), with the world of the tests behind it, and a client that sends the header fields that a proxy would
 // send: the Host header of the host of tokens or of the client-certificate host, and a Client-Cert header. The approval check is a fake that the test gives: it records what it was
-// asked, and it answers with what the test says. It exists only here: no source of the service builds one.
+// asked, and it answers with what the test says. A test that asks for the real check (`realApproval`) gets the check of src/wiring.ts on the ledger and the gateway of the world: the
+// attestations of the world are what it reads. The fake exists only here: no source of the service builds one.
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { connect } from 'node:net';
@@ -10,6 +11,7 @@ import { listen } from '@vsa/service-kit';
 import { createApp } from '../../src/app.ts';
 import type { App } from '../../src/app.ts';
 import type { ApprovalAnswer, ApprovalCheck, ApprovalInput } from '../../src/approval.ts';
+import { wireApprovalCheck } from '../../src/wiring.ts';
 import { INSURER_ORG, MTLS_HOST, OPERATOR_TOKEN, PUBLIC_BASE, PUBLIC_HOST, SUPPLIER_ORG, World, resourceOf } from './world.ts';
 import type { IssuedCredential } from './world.ts';
 import { send } from './net.ts';
@@ -21,6 +23,8 @@ export type { CallOptions, Reply } from './net.ts';
 export interface HarnessOptions {
   /** How long a call waits for the approval check, in milliseconds. The default is the one of the app. */
   approvalTimeoutMs?: number;
+  /** Gives the app the real approval check, wired to the ledger and the gateway of the world, in place of the fake check. */
+  realApproval?: boolean;
 }
 
 export class Harness {
@@ -36,7 +40,7 @@ export class Harness {
   port = 0;
 
   constructor(readonly world: World, options: HarnessOptions = {}) {
-    const approvalCheck: ApprovalCheck = async (input) => {
+    const fake: ApprovalCheck = async (input) => {
       this.approvals.push(input);
       this.onApprovalAsked?.();
       if (this.approvalGate !== null) await this.approvalGate;
@@ -44,6 +48,9 @@ export class Harness {
       if (this.answer === 'garbage') return { ok: 'true' } as unknown as ApprovalAnswer;
       return this.answer;
     };
+    // The real check is wired again for each call, over the ledger of the world as it is then, as the check of the token reads the ledger of the world at each call.
+    const real: ApprovalCheck = (input) => wireApprovalCheck({ ledger: world.approvalLedgerEnv(), gateway: world.client, now: world.now })(input);
+    const approvalCheck = options.realApproval === true ? real : fake;
     this.app = createApp({
       config: { publicBase: PUBLIC_BASE, publicHost: PUBLIC_HOST, mtlsHost: MTLS_HOST, operatorToken: OPERATOR_TOKEN },
       identity: world.identity, approvalCheck, approvalTimeoutMs: options.approvalTimeoutMs, now: world.now, writeLog: (line) => { this.lines.push(line); },
