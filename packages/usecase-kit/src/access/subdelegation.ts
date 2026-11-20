@@ -9,10 +9,10 @@
 //
 // What it costs and locks, from the builders: the Delegate makes one output at the delegation address that holds the ledger minimum for its datum (`DelegateBuild.outputLovelace`). The agent pays
 // that deposit and the fee of the transaction from the wallet of its live delegation key. The Undelegate returns the deposit to that wallet, less its own fee.
-import { isAction, isResource, type DelegateBuild, type DelegateParams, type UndelegateBuild, type UndelegateParams } from '@vsa/buyer-core';
-import { accepted, parseDelegationId, parseDid, refused, type Accepted, type DelegationId, type Did, type Refused } from '../protocol/index.ts';
+import type { DelegateBuild, DelegateParams, UndelegateBuild, UndelegateParams } from '@vsa/buyer-core';
+import { accepted, parseDelegationId, parseDid, parseTenantId, refused, type Accepted, type DelegationId, type Did, type Refused } from '../protocol/index.ts';
 import { MAX_WAIT_MS, within, type Clock } from './ports.ts';
-import type { TokenTarget } from './routes.ts';
+import { ROUTES, type RouteId, type TokenTarget } from './routes.ts';
 import { errorText, safeText } from './text.ts';
 
 /** The confirmations that the gateway wants for every delegation of a chain, before it issues a token under it. */
@@ -24,6 +24,8 @@ export const MAX_SUB_DELEGATION_MS = 86_400_000;
 export const DEFAULT_CONFIRMATION_WAIT_MS = 360_000;
 export const DEFAULT_POLL_MS = 5_000;
 export const DEFAULT_END_TIMEOUT_MS = 120_000;
+/** The longest wait for one answer of a port before the Delegate is sent and while it is sent: the read of the parent, the build, the hook and the send. The default is 60 seconds. */
+export const DEFAULT_STEP_TIMEOUT_MS = 60_000;
 
 /** The datum of a delegation as the builders of the ledger give it. */
 export type DelegationDatum = DelegateBuild['delegation'];
@@ -98,6 +100,8 @@ export interface SubDelegationLimits {
   readonly pollMs?: number;
   /** The longest time of the end step: the Undelegate, and the wait until the ledger shows it. The default is DEFAULT_END_TIMEOUT_MS. */
   readonly endTimeoutMs?: number;
+  /** The longest wait for one answer of a port: the read of the parent, the build, the hook, the send, and each call of the end step. The default is DEFAULT_STEP_TIMEOUT_MS. */
+  readonly stepTimeoutMs?: number;
 }
 
 /** What the job gets. */
@@ -114,7 +118,7 @@ export interface SubDelegationHandle {
 
 export const SUB_DELEGATION_FAILURES = [
   'bad_request', 'parent_unreadable', 'parent_not_live', 'parent_exhausted', 'parent_expiring', 'build_refused', 'build_mismatch', 'missing_signer', 'sign_failed', 'submit_failed',
-  'confirmation_timeout', 'ledger_unreadable', 'sub_delegation_unusable', 'journal_failed', 'internal',
+  'confirmation_timeout', 'ledger_unreadable', 'sub_delegation_unusable', 'journal_failed', 'step_timeout', 'internal',
 ] as const;
 export type SubDelegationFailureCode = (typeof SUB_DELEGATION_FAILURES)[number];
 /** Why the job did not start. The error code of the protocol for a buyer-side agent is `failed`, with this code as the reason. */
@@ -162,6 +166,9 @@ export type SubDelegationRun<T> = SubDelegationOutcome<T> & { readonly end: SubD
 
 interface Plan {
   readonly target: TokenTarget;
+  /** The action of the route table, and the resource of the target after the check of its form. These two are the action and the resource of the sub-delegation. */
+  readonly action: string;
+  readonly resource: string;
   readonly parent: DelegationId;
   readonly subagentId: string;
   readonly agentSigner: TxSigner;
@@ -172,6 +179,7 @@ interface Plan {
   readonly confirmationWaitMs: number;
   readonly pollMs: number;
   readonly endTimeoutMs: number;
+  readonly stepTimeoutMs: number;
 }
 
 const KEY_HASH = /^[0-9a-f]{56}$/;
@@ -186,13 +194,46 @@ function signerProblem(signer: unknown, field: string): string | null {
   return typeof sign === 'function' ? null : `${field}.sign must be a function`;
 }
 
+/** The first rule that the resource of a target breaks, or null: `<public base>/t/<tenant>/<system>` in its canonical form, for the system of the route. */
+function resourceProblem(resource: unknown, system: string): string | null {
+  if (typeof resource !== 'string') return 'the resource of the target must be text';
+  let url: URL;
+  try {
+    url = new URL(resource);
+  } catch {
+    return 'the resource of the target is not a URL';
+  }
+  if (url.protocol !== 'https:' || url.href !== resource || url.username !== '' || url.password !== '' || resource.includes('?') || resource.includes('#')) {
+    return 'the resource of the target must be an https URL in its canonical form, with no user part, no query and no fragment';
+  }
+  const [, prefix, tenant, name, ...rest] = url.pathname.split('/');
+  return prefix === 't' && rest.length === 0 && name === system && parseTenantId(tenant).ok ? null : `the resource of the target must be <public base>/t/<tenant>/${system}`;
+}
+
+/**
+ * The route of a target as the route table gives it, or why no sub-delegation is made for it. The action and who may call come from `ROUTES[target.route]` only, and the target of the caller must
+ * agree with them: a target that says more, such as a write route with the callers of a read route, or any other action or resource, is `bad_request`. Nothing is built for it.
+ */
+function routeOf(target: TokenTarget): Accepted<{ readonly action: string; readonly resource: string }> | SubDelegationFailure {
+  const bad = (detail: string): SubDelegationFailure => refused('bad_request', detail);
+  const route: unknown = typeof target === 'object' && target !== null ? target.route : undefined;
+  if (typeof route !== 'string' || !Object.hasOwn(ROUTES, route)) return bad('the route of the target is not a route of the mock systems');
+  const spec = ROUTES[route as RouteId];
+  if (spec.credential !== 'token') return bad(`the route ${route} takes no access token`);
+  if (spec.callers !== 'agent-or-subagent') return bad(`the route ${route} takes the agent only: a subagent gets no delegation for it`);
+  if (target.credential !== 'token' || target.callers !== spec.callers || target.action !== spec.action || target.system !== spec.system) {
+    return bad(`the target is not the target of the route ${route}: its credential, its callers, its action and its system are the ones of the route table`);
+  }
+  const problem = resourceProblem(target.resource, spec.system);
+  return problem === null ? accepted({ action: spec.action, resource: target.resource }) : bad(problem);
+}
+
 /** The plan of a request, or the first rule that it breaks. Nothing is sent before this passes. */
 function planOf(request: SubDelegationRequest, limits: SubDelegationLimits): Accepted<Plan> | SubDelegationFailure {
   const bad = (detail: string): SubDelegationFailure => refused('bad_request', detail);
   const { target } = request;
-  if (target.callers !== 'agent-or-subagent') return bad(`the route ${String(target.route)} takes the agent only: a subagent gets no delegation for it`);
-  if (!isAction(target.action)) return bad('the action of the route is not an action of the delegation rules');
-  if (!isResource(target.resource)) return bad('the resource of the route is not a resource of the delegation rules: it must be an https URL');
+  const route = routeOf(target);
+  if (!route.ok) return route;
   const parent = parseDelegationId(request.parent, 'parent');
   if (!parent.ok) return bad(parent.detail);
   const subagent = parseDid(request.subagent.did, 'subagent.did');
@@ -205,11 +246,15 @@ function planOf(request: SubDelegationRequest, limits: SubDelegationLimits): Acc
   const confirmationWaitMs = limits.confirmationWaitMs === undefined ? DEFAULT_CONFIRMATION_WAIT_MS : limits.confirmationWaitMs;
   const pollMs = limits.pollMs === undefined ? DEFAULT_POLL_MS : limits.pollMs;
   const endTimeoutMs = limits.endTimeoutMs === undefined ? DEFAULT_END_TIMEOUT_MS : limits.endTimeoutMs;
+  const stepTimeoutMs = limits.stepTimeoutMs === undefined ? DEFAULT_STEP_TIMEOUT_MS : limits.stepTimeoutMs;
   if (!isWhole(limits.jobTimeoutMs, 1, MAX_WAIT_MS)) return bad(`jobTimeoutMs must be a whole number from 1 to ${MAX_WAIT_MS}`);
-  if (!isWhole(confirmationWaitMs, 1, MAX_WAIT_MS) || !isWhole(pollMs, 1, MAX_WAIT_MS) || !isWhole(endTimeoutMs, 1, MAX_WAIT_MS)) return bad(`confirmationWaitMs, pollMs and endTimeoutMs must be whole numbers from 1 to ${MAX_WAIT_MS}`);
+  if (![confirmationWaitMs, pollMs, endTimeoutMs, stepTimeoutMs].every((ms) => isWhole(ms, 1, MAX_WAIT_MS))) {
+    return bad(`confirmationWaitMs, pollMs, endTimeoutMs and stepTimeoutMs must be whole numbers from 1 to ${MAX_WAIT_MS}`);
+  }
   return accepted({
-    target, parent: parent.value, subagentId: subagent.value.slice('did:vector:'.length), agentSigner: request.agent.signer, subagentSigner: request.subagent.signer,
-    walletAddress: request.agent.walletAddress, validForMs: request.validForMs, jobTimeoutMs: limits.jobTimeoutMs, confirmationWaitMs, pollMs, endTimeoutMs,
+    target, action: route.value.action, resource: route.value.resource, parent: parent.value, subagentId: subagent.value.slice('did:vector:'.length), agentSigner: request.agent.signer,
+    subagentSigner: request.subagent.signer, walletAddress: request.agent.walletAddress, validForMs: request.validForMs, jobTimeoutMs: limits.jobTimeoutMs, confirmationWaitMs, pollMs,
+    endTimeoutMs, stepTimeoutMs,
   });
 }
 
@@ -224,7 +269,7 @@ function buildProblem(built: DelegateBuild, plan: Plan, parent: DelegationDatum,
   if (d.delegator.type !== 'Agent') return 'the delegator of the build is not an agent';
   if (d.parent !== plan.parent) return 'the build is not one hop below the parent that was asked for';
   if (d.delegate !== plan.subagentId || d.delegateKey !== plan.subagentSigner.keyHash) return 'the build has not the delegate and the delegate key of the subagent';
-  if (!only(d.actions, plan.target.action) || !only(d.resources, plan.target.resource)) return 'the build has not exactly the one action and the one resource of the route';
+  if (!only(d.actions, plan.action) || !only(d.resources, plan.resource)) return 'the build has not exactly the one action and the one resource of the route';
   if (d.depth !== parent.depth + 1) return 'the build has not the depth of the parent plus one';
   if (d.notBefore < parent.notBefore || d.notAfter > parent.notAfter || d.notAfter !== notAfter || d.notAfter <= d.notBefore) return 'the build has not a period inside the period of the parent';
   return null;
@@ -241,15 +286,30 @@ function signAll(cbor: string, required: readonly { readonly keyHash: string }[]
   }
 }
 
-/** Reads the parent, builds the Delegate, checks the build, signs it, and sends it. `left.current` is set before the send: a transaction that was sent may land, even when the send throws. */
+/** The answer of one call of a port: its value, the error that it threw, or `timed_out` when no answer came within `ms` of the clock. A call that never answers does not hold the run. */
+type Answer<T> = { readonly state: 'value'; readonly value: T } | { readonly state: 'threw'; readonly error: unknown } | { readonly state: 'timed_out' };
+
+async function answerOf<T>(clock: Clock, ms: number, call: () => Promise<T>): Promise<Answer<T>> {
+  try {
+    const result = await within(clock, ms, call);
+    return result.timedOut ? { state: 'timed_out' } : { state: 'value', value: result.value };
+  } catch (error) {
+    return { state: 'threw', error };
+  }
+}
+
+const timedOut = (what: string, ms: number): SubDelegationFailure => refused('step_timeout', `${what} did not answer within ${ms} ms`);
+
+/**
+ * Reads the parent, builds the Delegate, checks the build, signs it, and sends it. Each call of a port has the bound `stepTimeoutMs`, and a call that gives no answer is `step_timeout`.
+ * `left.current` is set before the send: a transaction that was sent may land, even when the send throws or gives no answer, and the end step then runs as for a Delegate that may have landed.
+ */
 async function makeSubDelegation(deps: SubDelegationDeps, plan: Plan, left: { current: LeftSubDelegation | null }): Promise<Accepted<LeftSubDelegation> | SubDelegationFailure> {
   const { chain, clock } = deps;
-  let parent: LiveDelegation | null;
-  try {
-    parent = await chain.readDelegation(plan.parent);
-  } catch (error) {
-    return refused('parent_unreadable', `the parent delegation could not be read: ${errorText(error)}`);
-  }
+  const read = await answerOf(clock, plan.stepTimeoutMs, () => chain.readDelegation(plan.parent));
+  if (read.state === 'timed_out') return timedOut('the read of the parent delegation', plan.stepTimeoutMs);
+  if (read.state === 'threw') return refused('parent_unreadable', `the parent delegation could not be read: ${errorText(read.error)}`);
+  const parent: LiveDelegation | null = read.value;
   if (parent === null) return refused('parent_not_live', 'the parent delegation is not live: it does not exist, or it ended');
   const datum = parent.delegation;
   if (datum.remaining < 1) return refused('parent_exhausted', 'the parent delegation allows no further hop: its remaining is 0');
@@ -259,32 +319,26 @@ async function makeSubDelegation(deps: SubDelegationDeps, plan: Plan, left: { cu
   const periodMs = datum.value === null ? plan.validForMs : datum.value.periodMs;
   const params: DelegateParams = {
     changeAddress: plan.walletAddress, nowMs: now, parent: plan.parent, delegate: plan.subagentId, delegateKey: plan.subagentSigner.keyHash,
-    actions: [plan.target.action], resources: [plan.target.resource], notAfter, remaining: 0, value: { perTx: 0n, total: 0n, periodMs },
+    actions: [plan.action], resources: [plan.resource], notAfter, remaining: 0, value: { perTx: 0n, total: 0n, periodMs },
   };
-  let built: DelegateBuild;
-  try {
-    built = await chain.buildDelegate(params);
-  } catch (error) {
-    return refused('build_refused', `the Delegate could not be built: ${errorText(error)}`);
-  }
+  const build = await answerOf(clock, plan.stepTimeoutMs, () => chain.buildDelegate(params));
+  if (build.state === 'timed_out') return timedOut('the build of the Delegate', plan.stepTimeoutMs);
+  if (build.state === 'threw') return refused('build_refused', `the Delegate could not be built: ${errorText(build.error)}`);
+  const built: DelegateBuild = build.value;
   const problem = buildProblem(built, plan, datum, notAfter, periodMs);
   if (problem !== null) return refused('build_mismatch', problem);
   const signed = signAll(built.txCbor, built.requiredSigners, [plan.agentSigner, plan.subagentSigner]);
   if (!signed.ok) return signed;
   const made: LeftSubDelegation = {
-    id: built.id, parent: plan.parent, action: plan.target.action, resource: plan.target.resource, delegateTxHash: built.txHash, delegateValidTo: built.validTo, notAfter, endTxHash: null,
+    id: built.id, parent: plan.parent, action: plan.action, resource: plan.resource, delegateTxHash: built.txHash, delegateValidTo: built.validTo, notAfter, endTxHash: null,
   };
-  try {
-    await deps.beforeSend?.(made);
-  } catch (error) {
-    return refused('journal_failed', `the reference of the sub-delegation could not be written: ${errorText(error)}`);
-  }
+  const journal = await answerOf(clock, plan.stepTimeoutMs, async () => deps.beforeSend?.(made));
+  if (journal.state === 'timed_out') return timedOut('the hook that writes the reference of the sub-delegation', plan.stepTimeoutMs);
+  if (journal.state === 'threw') return refused('journal_failed', `the reference of the sub-delegation could not be written: ${errorText(journal.error)}`);
   left.current = made;
-  try {
-    await chain.submit(signed.value);
-  } catch (error) {
-    return refused('submit_failed', `the Delegate was not accepted by the node: ${errorText(error)}`);
-  }
+  const sent = await answerOf(clock, plan.stepTimeoutMs, () => chain.submit(signed.value));
+  if (sent.state === 'timed_out') return timedOut('the node, after the Delegate was sent to it,', plan.stepTimeoutMs);
+  if (sent.state === 'threw') return refused('submit_failed', `the Delegate was not accepted by the node: ${errorText(sent.error)}`);
   return accepted(made);
 }
 

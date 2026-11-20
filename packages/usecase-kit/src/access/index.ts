@@ -32,7 +32,8 @@ export { httpsTransport } from './mtls.ts';
 export type { MtlsReply, MtlsRequest, MtlsTransport } from './mtls.ts';
 
 export {
-  CONFIRMATIONS_REQUIRED, DEFAULT_CONFIRMATION_WAIT_MS, DEFAULT_END_TIMEOUT_MS, DEFAULT_POLL_MS, MAX_SUB_DELEGATION_MS, MIN_SUB_DELEGATION_MS, SUB_DELEGATION_FAILURES, withSubDelegation,
+  CONFIRMATIONS_REQUIRED, DEFAULT_CONFIRMATION_WAIT_MS, DEFAULT_END_TIMEOUT_MS, DEFAULT_POLL_MS, DEFAULT_STEP_TIMEOUT_MS, MAX_SUB_DELEGATION_MS, MIN_SUB_DELEGATION_MS, SUB_DELEGATION_FAILURES,
+  withSubDelegation,
 } from './subdelegation.ts';
 export type {
   DelegationChain, DelegationDatum, LeftSubDelegation, LiveDelegation, Readiness, SubDelegationDeps, SubDelegationEnd, SubDelegationFailure, SubDelegationFailureCode, SubDelegationHandle,

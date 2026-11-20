@@ -1,9 +1,9 @@
 // packages/usecase-kit/test/access/subdelegation.test.ts: the sub-delegation of an agent to a subagent. The ledger is an object in memory and the clock is moved by the test (support.ts). The review
 // question: is a sub-delegation ever left alive? Each test of an end has its twin: the same run in which nothing goes wrong, or the same failure at a point where it is harmless.
 import { describe, expect, it } from 'vitest';
-import { MAX_SUB_DELEGATION_MS, MIN_SUB_DELEGATION_MS, tokenTarget, withSubDelegation } from '../../src/access/index.ts';
+import { DEFAULT_STEP_TIMEOUT_MS, MAX_SUB_DELEGATION_MS, MIN_SUB_DELEGATION_MS, ROUTES, tokenTarget, withSubDelegation, x509Target } from '../../src/access/index.ts';
 import type { DelegationDatum, LeftSubDelegation, SubDelegationHandle, SubDelegationRun } from '../../src/access/index.ts';
-import { AGENT_KEY, BASES, DAY, NOW, OTHER_KEY, PARENT_ID, SUBAGENT_ID, SUBAGENT_KEY, WALLET, expectTarget, markSigner, parentDatum, subWorld, type SubWorld } from './support.ts';
+import { AGENT_KEY, BASES, DAY, NOW, OTHER_KEY, PARENT_ID, SUBAGENT_ID, SUBAGENT_KEY, WALLET, erpTarget, expectTarget, markSigner, parentDatum, subWorld, type SubWorld } from './support.ts';
 
 
 /** Runs the sub-delegation with the job, and moves the clock until it ends. A wait with no end fails the test. */
@@ -548,5 +548,181 @@ describe('a build that has no delegation identifier', () => {
     expect(await go(w, idle)).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'build_mismatch' }, end: { state: 'not_made' } });
     expect(w.chain.submitted).toHaveLength(0);
     expect((await go(subWorld(), idle)).kind).toBe('returned');
+  });
+});
+
+describe('a sub-delegation is made only for a route that the table gives to a subagent', () => {
+  const po = expectTarget(tokenTarget(BASES, 'run1', 'po.write'));
+  const erp = erpTarget();
+  const refusedTargets: [string, Record<string, unknown>][] = [
+    ['a write route with the callers of a read route', { ...po, callers: 'agent-or-subagent' }],
+    ['a write route with the callers and the action of a read route', { ...po, callers: 'agent-or-subagent', action: 'erp.stock.read' }],
+    ['a read route with the action of a write route', { ...erp, action: 'po.write' }],
+    ['an action pattern', { ...erp, action: 'erp.*' }],
+    ['an external action', { ...erp, action: 'https://evil.test/anything' }],
+    ['the hire action on a script', { ...erp, action: 'marketplace.hire.v1', resource: `script:${'ab'.repeat(28)}` }],
+    ['a route that the table does not have', { ...erp, route: 'erp.everything' }],
+    ['a route that is a property of every object', { ...erp, route: 'constructor' }],
+    ['no route', { ...erp, route: undefined }],
+    ['a route that gives an SVID', { ...expectTarget(x509Target(BASES, 'run1', 'supplier.catalogue', { sku: 'X' })) }],
+    ['the system of another route', { ...erp, system: 'po' }],
+    ['callers that say agent', { ...erp, callers: 'agent' }],
+    ['a credential that is not a token', { ...erp, credential: 'jwt-svid' }],
+    ['a resource of another system', { ...erp, resource: 'https://mock.example/t/run1/po' }],
+    ['a resource with a path below the system', { ...erp, resource: 'https://mock.example/t/run1/erp/stock' }],
+    ['a star resource', { ...erp, resource: '*' }],
+    ['a resource on a script', { ...erp, resource: `script:${'ab'.repeat(28)}` }],
+    ['an http resource', { ...erp, resource: 'http://mock.example/t/run1/erp' }],
+    ['a resource that is not in its canonical form', { ...erp, resource: 'https://MOCK.example/t/run1/erp' }],
+    ['a resource with a dot segment', { ...erp, resource: 'https://mock.example/t/run1/../run2/erp' }],
+    ['a resource with a closing slash', { ...erp, resource: 'https://mock.example/t/run1/erp/' }],
+    ['a resource with a query', { ...erp, resource: 'https://mock.example/t/run1/erp?x=1' }],
+    ['a resource with an empty query', { ...erp, resource: 'https://mock.example/t/run1/erp?' }],
+    ['a resource with a fragment', { ...erp, resource: 'https://mock.example/t/run1/erp#x' }],
+    ['a resource with a user part', { ...erp, resource: 'https://user@mock.example/t/run1/erp' }],
+    ['a resource with no tenant prefix', { ...erp, resource: 'https://mock.example/run1/erp' }],
+    ['a resource with a tenant that is not a tenant', { ...erp, resource: 'https://mock.example/t/-bad/erp' }],
+    ['a resource that is not text', { ...erp, resource: 5 }],
+    ['a resource that is not a URL', { ...erp, resource: 'not a url' }],
+  ];
+
+  it.each(refusedTargets)('is refused for %s: bad_request, and nothing is built', async (_name, target) => {
+    const w = subWorld({ request: { target: target as never } });
+    expect(await go(w, idle)).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'bad_request' }, end: { state: 'not_made' } });
+    expect(w.chain.log).not.toContain('buildDelegate');
+    expect(w.chain.submitted).toHaveLength(0);
+  });
+
+  it('is not made for a target that is not an object', async () => {
+    for (const target of [null, undefined, 'erp.stock']) {
+      const w = subWorld({ request: { target: target as never } });
+      expect(await go(w, idle)).toMatchObject({ ok: false, failure: { code: 'bad_request' }, end: { state: 'not_made' } });
+    }
+  });
+
+  const subagentRoutes: [string, string, Record<string, string>][] = [
+    ['erp.stock', 'erp.stock.read', { sku: 'GLV-NIT-M' }],
+    ['records.order', 'record.read', { order_id: 'ORD-1001' }],
+    ['guidelines.read', 'guideline.read', { code: 'SYN-MRI-LS' }],
+    ['vendors.list', 'vendor.read', {}],
+  ];
+  it.each(subagentRoutes)('is made for the route %s, with the action of the table and the resource of its system, on another host and another tenant: the twin of every target above', async (route, action, params) => {
+    const target = expectTarget(tokenTarget({ publicBase: 'https://other.example:8443', mtlsBase: 'https://other-mtls.example' }, 'tenant-2', route as never, params));
+    const w = subWorld({ request: { target } });
+    expect(await go(w, idle)).toMatchObject({ ok: true, kind: 'returned', end: { state: 'ended' } });
+    expect(w.chain.params).toHaveLength(1);
+    expect(w.chain.params[0]).toMatchObject({ actions: [action], resources: [`https://other.example:8443/t/tenant-2/${target.system}`] });
+  });
+
+  it('has a twin for every route that the table gives to a subagent', () => {
+    const listed = Object.entries(ROUTES).filter(([, spec]) => spec.credential === 'token' && spec.callers === 'agent-or-subagent').map(([name]) => name);
+    expect(listed.sort()).toStrictEqual(subagentRoutes.map(([name]) => name).sort());
+  });
+});
+
+describe('every wait on a port has a bound', () => {
+  const never = (): Promise<never> => new Promise<never>(() => undefined);
+  const STEP = 30_000;
+  const withStep = (over: Partial<SubWorld['limits']> = {}) => subWorld({ limits: { stepTimeoutMs: STEP, endTimeoutMs: 40_000, ...over } });
+  const expectStopped = (w: SubWorld, run: SubDelegationRun<unknown>, started: number): void => {
+    expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'step_timeout' }, end: { state: 'not_made' } });
+    expect(w.clock.now() - started).toBe(STEP);
+    expect(w.chain.submitted).toHaveLength(0);
+  };
+
+  it('ends a read of the parent that never answers at the bound, with nothing sent and nothing to end', async () => {
+    const w = withStep();
+    const read = w.chain.readDelegation.bind(w.chain);
+    w.chain.readDelegation = (id) => (id === PARENT_ID ? never() : read(id));
+    const started = w.clock.now();
+    const run = await go(w, idle);
+    expectStopped(w, run, started);
+    expect(run.kind === 'not_ready' && run.failure.detail).toContain('the read of the parent delegation did not answer within 30000 ms');
+    expect(w.chain.log).not.toContain('buildDelegate');
+  });
+
+  it('ends a build that never answers at the bound, with nothing sent and nothing to end', async () => {
+    const w = withStep();
+    w.chain.buildDelegate = never;
+    const started = w.clock.now();
+    expectStopped(w, await go(w, idle), started);
+  });
+
+  it('ends a hook that never answers at the bound, with nothing sent and nothing to end', async () => {
+    const w = withStep();
+    const started = w.clock.now();
+    const run = await w.clock.run(withSubDelegation({ ...w.deps, beforeSend: never }, w.request, w.limits, idle));
+    expectStopped(w, run, started);
+  });
+
+  it('ends a send that the node took and never answered at the bound, and then ends the sub-delegation as for a Delegate that landed: the probe of the review', async () => {
+    const w = withStep();
+    const submit = w.chain.submit.bind(w.chain);
+    let first = true;
+    w.chain.submit = async (cbor) => {
+      if (!first) return submit(cbor);
+      first = false;
+      await submit(cbor);
+      return never();
+    };
+    const journal: LeftSubDelegation[] = [];
+    const started = w.clock.now();
+    const run = await w.clock.run(withSubDelegation({ ...w.deps, beforeSend: (reference) => void journal.push(reference) }, w.request, w.limits, idle));
+    expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'step_timeout' }, end: { state: 'ended' } });
+    expect(run.kind === 'not_ready' && run.failure.detail).toContain('after the Delegate was sent to it');
+    expect(w.chain.submitted.map((s) => s.kind)).toStrictEqual(['delegate', 'undelegate']);
+    expect(await w.chain.readDelegation(w.chain.subId!)).toBeNull();
+    expect(journal).toHaveLength(1);
+    expect(w.clock.now() - started).toBeGreaterThanOrEqual(STEP);
+  });
+
+  it('ends a send that never reached the node at the bound, and reports the reference that is left when the Delegate never lands', async () => {
+    const w = withStep();
+    w.chain.submit = never;
+    const run = await go(w, idle);
+    expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'step_timeout' }, end: { state: 'not_ended', code: 'end_unconfirmed', left: { id: expect.any(String), endTxHash: null } } });
+    expect(w.chain.submitted).toHaveLength(0);
+  });
+
+  it('has the default bound of DEFAULT_STEP_TIMEOUT_MS for a port that never answers', async () => {
+    const w = subWorld();
+    w.chain.buildDelegate = never;
+    const started = w.clock.now();
+    expect(await go(w, idle)).toMatchObject({ failure: { code: 'step_timeout' } });
+    expect(w.clock.now() - started).toBe(DEFAULT_STEP_TIMEOUT_MS);
+  });
+
+  it.each([
+    ['the read of the parent', (w: SubWorld, ms: number) => {
+      const read = w.chain.readDelegation.bind(w.chain);
+      w.chain.readDelegation = async (id) => (id === PARENT_ID ? (await w.clock.sleep(ms), read(id)) : read(id));
+    }],
+    ['the build', (w: SubWorld, ms: number) => {
+      const build = w.chain.buildDelegate.bind(w.chain);
+      w.chain.buildDelegate = async (params) => (await w.clock.sleep(ms), build(params));
+    }],
+    ['the send', (w: SubWorld, ms: number) => {
+      const submit = w.chain.submit.bind(w.chain);
+      w.chain.submit = async (cbor) => (await w.clock.sleep(ms), submit(cbor));
+    }],
+  ])('waits for %s that answers a millisecond before its bound, and gives up for one that answers at the bound: the twin', async (_name, slow) => {
+    for (const [ms, code] of [[STEP - 1, null], [STEP, 'step_timeout']] as const) {
+      const w = withStep();
+      slow(w, ms);
+      const run = await go(w, idle);
+      expect(run.kind === 'not_ready' ? run.failure.code : null, `${ms}`).toBe(code);
+    }
+  });
+
+  it('waits for a hook that answers a millisecond before its bound', async () => {
+    const w = withStep();
+    const run = await w.clock.run(withSubDelegation({ ...w.deps, beforeSend: () => w.clock.sleep(STEP - 1) }, w.request, w.limits, idle));
+    expect(run).toMatchObject({ ok: true, kind: 'returned', end: { state: 'ended' } });
+  });
+
+  it.each([[0], [1.5], [Number.NaN], [86_400_001], ['5000'], [null]])('refuses the step bound %j before anything is built', async (stepTimeoutMs) => {
+    const w = subWorld({ limits: { stepTimeoutMs: stepTimeoutMs as never } });
+    expect(await go(w, idle)).toMatchObject({ ok: false, failure: { code: 'bad_request' }, end: { state: 'not_made' } });
+    expect(w.chain.log).not.toContain('buildDelegate');
   });
 });

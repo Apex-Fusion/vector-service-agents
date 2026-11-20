@@ -13,7 +13,8 @@ describe('the folder', () => {
     expect(byName.withSubDelegation).toBe(byPath.withSubDelegation);
     expect(Object.keys(byName).sort()).toStrictEqual(
       [
-        'CONFIRMATIONS_REQUIRED', 'DEFAULT_CALL_TIMEOUT_MS', 'DEFAULT_CONFIRMATION_WAIT_MS', 'DEFAULT_END_TIMEOUT_MS', 'DEFAULT_MAX_ANSWER_BYTES', 'DEFAULT_POLL_MS', 'GATEWAY_FAILURES', 'JwtSvidCredential',
+        'CONFIRMATIONS_REQUIRED', 'DEFAULT_CALL_TIMEOUT_MS', 'DEFAULT_CONFIRMATION_WAIT_MS', 'DEFAULT_END_TIMEOUT_MS', 'DEFAULT_MAX_ANSWER_BYTES', 'DEFAULT_POLL_MS', 'DEFAULT_STEP_TIMEOUT_MS', 'GATEWAY_FAILURES',
+        'JwtSvidCredential',
         'MAX_CODE_CHARS', 'MAX_SUB_DELEGATION_MS', 'MIN_SUB_DELEGATION_MS', 'REFUSAL_WITHOUT_CODE', 'ROUTES', 'RouteToken', 'SUB_DELEGATION_FAILURES', 'SYSTEMS', 'X509SvidCredential', 'askWhileTooYoung',
         'callWithJwtSvid', 'callWithToken', 'callWithX509Svid', 'codeIn', 'fetchJwtSvid', 'fetchX509Svid', 'httpsTransport', 'jwtSvidTarget', 'readAnswer', 'requestRouteToken', 'requestSubagentToken',
         'systemClock', 'tokenTarget', 'txSignerOfRawKey', 'withSubDelegation', 'within', 'x509Target',
