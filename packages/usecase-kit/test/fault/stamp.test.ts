@@ -67,6 +67,15 @@ describe('withFaultMode', () => {
     expect(withFaultMode(clean, completed).fault_mode).toBe('');
   });
 
+  it('keeps a member named __proto__ as a member, and never changes the prototype of the result', () => {
+    const parsed: object = JSON.parse('{"__proto__":{"polluted":true},"outcome":"failed"}');
+    const out = withFaultMode(faulty, parsed);
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+    expect(Object.keys(out)).toStrictEqual(['__proto__', 'outcome', 'fault_mode']);
+    expect(Reflect.get(out, 'polluted')).toBeUndefined();
+    expect(Reflect.get({}, 'polluted')).toBeUndefined();
+  });
+
   it('gives a type that the result types of the protocol take', () => {
     const typed: FailedResult = withFaultMode(faulty, failed);
     const result: ExecuteResult = withFaultMode(clean, completed);

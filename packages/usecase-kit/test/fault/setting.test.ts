@@ -78,12 +78,17 @@ describe('readFaultSwitch: a value that stops the start', () => {
   it('never repeats a long value or a value that looks like a key', () => {
     const key = 'ab'.repeat(32);
     const long = `confirm_wrong_lot_${'x'.repeat(40)}`;
-    for (const value of [key, long, `x${key}`]) {
+    // The last value is short, and it still has a run of 20 hex characters: a short key must not be shown either.
+    for (const value of [key, long, `x${key}`, 'ab'.repeat(10), `x${'0'.repeat(20)}`]) {
       const message = startError('order-desk', value);
       expect(message, value).not.toContain(value);
       expect(message, value).not.toContain(key);
       expect(message, value).toContain(`got ${value.length} characters`);
     }
+  });
+
+  it('shows a short value with a run of 19 hex characters: the twin of the key-like values', () => {
+    expect(startError('order-desk', 'abcdef0123456789abc')).toContain('got "abcdef0123456789abc"');
   });
 
   it('stops for a kind that is not a kind of agent, also with the empty setting', () => {

@@ -18,7 +18,7 @@ export type WithFaultMode<R extends object, K extends AgentKind> = R extends unk
 export function withFaultMode<K extends AgentKind, R extends object>(fault: FaultSwitch<K>, result: R): WithFaultMode<R, K> {
   if (!isFaultSwitch(fault)) throw new TypeError('the fault switch is not a switch that readFaultSwitch made');
   if (!isPlainObject(result)) throw new TypeError('a result must be a JSON object, so that it can carry fault_mode');
-  const { fault_mode: _written, ...members } = result as Record<string, unknown>;
+  const { fault_mode: _written, ...members } = result;
   return { ...members, fault_mode: fault.mode } as WithFaultMode<R, K>;
 }
 
