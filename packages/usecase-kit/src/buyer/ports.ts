@@ -28,7 +28,7 @@ export interface LedgerReads {
   liveVaults(id: DelegationId, atMs: number): Promise<LiveVaults>;
 }
 
-/** An output list of buyer-core holds 50 rows at most. A delegation has one vault, so more than a few pages of outputs are not a vault of a delegator. */
+/** A page of vault outputs holds 50 rows at most in buyer-core. The port reads four pages, so 200 outputs. A delegation has one vault: more outputs than that are outputs that others wrote. */
 const PAGE_ROWS = 50;
 const MAX_PAGES = 4;
 

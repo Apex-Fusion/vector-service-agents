@@ -3,11 +3,11 @@
 //   1. The settings and the message are checked. A limit that is not a bigint or null, and a decision that is not a function, are a fault of the settings (`internal`).
 //   2. The authority: the delegation of the message must not name another agent (`delegation_not_mine`). A delegation that is not found goes on.
 //   3. The size: the body of the call to the runtime must not pass its limit (`request_too_large`). It is checked here because the hire kit builds the body after the Pay.
-//   4. One job at a time for the paying key. In that turn the flow reads the Live vault of the delegation, exactly one, and hires from it with `hireAgent`. The advert is read on the chain:
-//      the flow never asks the indexer. The three limits go to the hire kit as the caller gave them.
+//   4. One job at a time for the paying key. In that turn the flow reads the Live vault of the delegation, exactly one, and checks that the deadline of the job leaves time for the first poll. Then it
+//      hires from the vault with `hireAgent`. The advert is read on the chain: the flow never asks the indexer. The three limits go to the hire kit as the caller gave them.
 //   5. The outcome becomes a step (outcome.ts). After a refused Pay the delegation is read again.
 // The delegation key is the paying key: it signs the Pay and the Accept. No step retries, and no step hires a second time for the same work.
-import { HireInterrupted, HireLane, HirePayUnconfirmed, hireAgent } from '@vsa/hire-kit';
+import { HireInterrupted, HireLane, HirePayUnconfirmed, POLL_INTERVAL_MS, hireAgent } from '@vsa/hire-kit';
 import type { AcceptDecision, AgentDeps, AgentDelivery, AgentErrors, AgentOutcome, AgentRequest, HireFailure, PayingKey } from '@vsa/hire-kit';
 import { HANDOFF_SCHEMA, parseDid, parseOutputRef } from '@vsa/usecase-kit/protocol';
 import type { Did, Handoff, OutputRef, ProtocolResult, RfqMessage } from '@vsa/usecase-kit/protocol';
@@ -223,6 +223,9 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
   return serially(key, async () => {
     const found = await findLiveVault(reads, message.delegation, hire.clock());
     if (!found.ok) return failure(found.code, found.detail);
+    // A job that waited for the lane, or for the read of the vault, may have run out of time. The first thing that the hire kit does after the Pay is to wait one poll interval, and it fails when that
+    // wait ends after the deadline. A Pay with less time than that is lost: it would lock the money until the reclaim. A moment equal to the deadline is in time, as the hire kit counts it.
+    if (hire.clock() + POLL_INTERVAL_MS > hire.deadlineMs) return failure('deadline', 'the deadline of the job leaves no time for the first poll, so nothing was paid');
     // What the decision was given: if the hire ends in an error after the decision started, the step still names the delivery.
     const seen: { delivery: VerifiedDelivery | null } = { delivery: null };
     const request: AgentRequest = {
