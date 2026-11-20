@@ -18,6 +18,8 @@ Two registries do not check each other, so a service makes one registry and give
 `hireModel` and `hireAgent` take the paying key as their first argument.
 They run in the lane of the key: one hire at a time for the key.
 A hire whose turn comes at or after its deadline reads and pays nothing, and the facts of its deadline error name the stage `lane` and no escrow.
+A request can set `minLeftAtTurnMs`: a turn with less time left before the deadline ends in the same way.
+Use it when a hire that posts with little time left can only end at its first poll, with its escrow locked until the janitor reclaims it.
 The janitor of the key starts no transaction while a hire runs or waits.
 The chain and the store of a hire are the ones of its key, so a hire cannot use the chain of one key with the store of another.
 

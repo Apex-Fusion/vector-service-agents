@@ -14,7 +14,7 @@ import type { FetchLike } from '@vsa/buyer-core';
 import type { Clocked } from './budget.ts';
 import { chatJob, hireOne } from './hire.ts';
 import type { HireErrors, HireLedger, HireOptions, Hired } from './hire.ts';
-import { checkTurn } from './keys.ts';
+import { checkTurn, minLeftAtTurn } from './keys.ts';
 import type { PayingKey } from './keys.ts';
 import { chooseChatSupplier, requireLimits } from './select.ts';
 
@@ -39,6 +39,11 @@ export interface ModelRequest {
   /** To the choice of the supplier: absent, its own defaults (120 s and 6 candidates). */
   budgetMs?: number;
   maxCandidates?: number;
+  /**
+   * The least time, in milliseconds, that must be left before `deps.deadlineMs` when the turn of the hire comes. A turn with less time left ends with the deadline error at the stage `lane`, before
+   * anything is read or posted. Absent is 0: only a turn at or after the deadline ends. A value that is not a finite number of 0 or more is refused with a TypeError.
+   */
+  minLeftAtTurnMs?: number;
 }
 
 export interface ModelDeps extends Clocked {
@@ -61,16 +66,17 @@ export interface ModelErrors<E extends Error> extends HireErrors<E> {
 
 /**
  * Hires one model for `request` from `key`: the answer, the record of the hire, and what the Accept came to. Refuses a limit that is not a bigint (the two limits of the bonds also take
- * null) with a TypeError, before the lane of the key is used and before anything is read. A hire whose turn in the lane comes at or after `deps.deadlineMs` rejects with the `deadline` of `errors`,
- * with the stage `lane` and no escrow, before anything is read or posted. Rejects with the error of `errors` for every other failure; the kit does not try again, does not choose another
- * supplier and does not fall back (see the head of this file).
+ * null), and a `minLeftAtTurnMs` that is not a finite number of 0 or more, with a TypeError, before the lane of the key is used and before anything is read. A hire whose turn in the lane comes at or
+ * after `deps.deadlineMs`, or with less than `request.minLeftAtTurnMs` left, rejects with the `deadline` of `errors`, with the stage `lane` and no escrow, before anything is read or posted. Rejects
+ * with the error of `errors` for every other failure; the kit does not try again, does not choose another supplier and does not fall back (see the head of this file).
  */
 export async function hireModel<E extends Error>(key: PayingKey, deps: ModelDeps, request: ModelRequest, errors: ModelErrors<E>): Promise<Hired<ModelAnswer>> {
   requireLimits({ maxPriceLovelace: request.maxPriceLovelace }, { null: false, absent: false });
   requireLimits({ maxSupplierBondLovelace: request.maxSupplierBondLovelace, maxBuyerBondLovelace: request.maxBuyerBondLovelace }, { null: true, absent: false });
+  const minLeftMs = minLeftAtTurn(request.minLeftAtTurnMs);
   const label = request.label ?? 'the model call';
   return key.lane.run(async () => {
-    checkTurn(deps, label, errors);
+    checkTurn(deps, label, errors, minLeftMs);
     const supplier = await chooseChatSupplier(key.chain, {
       fetchImpl: deps.fetchImpl, indexerUrl: deps.indexerUrl, allowlist: request.allowlist, maxPriceLovelace: request.maxPriceLovelace, ceilingSetting: request.ceilingSetting,
       maxSupplierBondLovelace: request.maxSupplierBondLovelace, maxBuyerBondLovelace: request.maxBuyerBondLovelace, budgetMs: request.budgetMs, maxCandidates: request.maxCandidates, log: deps.log,
