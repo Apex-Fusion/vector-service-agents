@@ -426,3 +426,23 @@ describe('a credential in the words of the other side', () => {
     for (const part of parts) expect(JSON.stringify(result)).not.toContain(part);
   });
 });
+
+describe('the signature of a token in the words of the other side', () => {
+  it('is not shown when an error repeats only the signature of the token or of the proof', async () => {
+    const w = world();
+    const token = await w.tokenFor(w.erp);
+    const signatures: string[] = [];
+    const failing: typeof fetch = async (_url, init) => {
+      const headers = init?.headers as Record<string, string>;
+      signatures.push(headers.authorization!.split('.')[2]!, headers.dpop!.split('.')[2]!);
+      throw new Error(`failed near ${signatures[0]} and ${signatures[1]}`);
+    };
+    const result = await callWithToken({ ...w.deps, fetch: failing }, token, w.erp);
+    expect(result).toMatchObject({ ok: false, code: 'mock_system_failed', sent: true });
+    for (const part of signatures) {
+      expect(part.length).toBeGreaterThan(40);
+      expect(part.length).toBeLessThan(100);
+      expect(JSON.stringify(result)).not.toContain(part);
+    }
+  });
+});

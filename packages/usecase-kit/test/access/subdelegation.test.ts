@@ -539,3 +539,14 @@ describe('a route that cannot be a sub-delegation', () => {
     expect(await go(w, idle)).toMatchObject({ ok: false, failure: { code: 'bad_request' }, end: { state: 'not_made' } });
   });
 });
+
+describe('a build that has no delegation identifier', () => {
+  it('is not signed and not sent; the twin is the build with an identifier', async () => {
+    const w = subWorld();
+    const build = w.chain.buildDelegate.bind(w.chain);
+    w.chain.buildDelegate = async (params) => ({ ...(await build(params)), id: 'not-an-identifier' });
+    expect(await go(w, idle)).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'build_mismatch' }, end: { state: 'not_made' } });
+    expect(w.chain.submitted).toHaveLength(0);
+    expect((await go(subWorld(), idle)).kind).toBe('returned');
+  });
+});

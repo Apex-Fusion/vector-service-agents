@@ -306,3 +306,14 @@ describe('what counts as a delegation that is too young', () => {
     ]) expect(await code({ detail }), detail).toBe('gateway_refused');
   });
 });
+
+describe('askWhileTooYoung with a clock that stands still', () => {
+  it('asks at most waitMs / pollMs + 1 times, whatever the clock says', async () => {
+    const w = world({ childConfirmations: 10 });
+    const stuck = { now: (): number => NOW, sleep: async (): Promise<void> => undefined };
+    let asks = 0;
+    const result = await askWhileTooYoung(stuck, () => (asks += 1, requestSubagentToken({ client: w.client }, w.readerRequest(w.erp))), { waitMs: 30_000, pollMs: 10_000 });
+    expect(failure(result).code).toBe('delegation_too_young');
+    expect(asks).toBe(4);
+  });
+});
