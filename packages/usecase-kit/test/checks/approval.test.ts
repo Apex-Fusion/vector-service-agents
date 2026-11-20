@@ -2,7 +2,9 @@
 // with no change. The question of these tests: is a wrong approval ever accepted?
 import { describe, expect, it } from 'vitest';
 import { testKey } from '../../../buyer-core/test/fixtures/identity-world.ts';
-import { CheckUnavailableError, approvalCheckOf, checkApproval } from '../../src/checks/index.ts';
+import { CheckUnavailableError, approvalCheckOf, checkApproval, runChecks, sharedChecks } from '../../src/checks/index.ts';
+import type { ChecksPorts } from '../../src/checks/index.ts';
+import type { AttestationCheck } from '@vsa/buyer-core';
 import { canonicalSha256, proposalDigest } from '../../src/protocol/index.ts';
 import type { ApprovalInput, Document } from '../../src/protocol/index.ts';
 import {
@@ -138,11 +140,15 @@ describe('the issuer is the root delegator: approval_wrong_issuer', () => {
     expect((await refusal(leaf, withIssuerDid(leaf, ISSUER_DID))).code).toBe('approval_wrong_issuer');
   });
 
-  it('refuses a delegation that is not live, and a chain whose parent was ended: there is no root delegator to compare with', async () => {
-    expect((await refusal(makeWorld({ delegation: null }))).code).toBe('approval_wrong_issuer');
+  it('refuses a chain whose parent was ended: there is no root delegator to compare with', async () => {
     // The approval is by the agent that the leaf names as its delegator. The parent was ended, so the chain has no root: the leaf must not be taken for the root.
     const orphan = makeWorld({ delegation: { parent: 'a1'.repeat(32), depth: 2, remaining: 0, delegator: { type: 'Agent', id: ISSUER_ID } }, issuerRecord: {}, attestation: { issuerId: ISSUER_ID } });
     expect((await refusal(orphan, withIssuerDid(orphan, ISSUER_DID))).code).toBe('approval_wrong_issuer');
+  });
+
+  it('throws CheckUnavailableError for a delegation that is not live: it has no chain, so the answer cannot be judged, and it is not a rule', async () => {
+    await expect(check(makeWorld({ delegation: null }))).rejects.toBeInstanceOf(CheckUnavailableError);
+    await expect(check(makeWorld())).resolves.toMatchObject({ ok: true });
   });
 
   it('refuses a reference that names another issuer record than the attestation does, and accepts the right name', async () => {
@@ -301,13 +307,40 @@ describe('a source that cannot be read: never a pass, and never the code of a ru
     await expect(checkApproval(withLedger(world, { attestation: async () => real }), world.approvalInput)).resolves.toMatchObject({ ok: true });
   });
 
+  it('throws CheckUnavailableError for an answer of the attestation read that has the wrong shape, and for an answer of the delegation read that has the wrong shape', async () => {
+    const world = makeWorld();
+    const real = await world.ports.ledger.attestation(ATTESTATION_ID, T);
+    const view = real.attestation;
+    if (view === null) throw new Error('the world has an attestation');
+    const shapes: unknown[] = [
+      null, undefined, {}, 'x', 5, [], { ...real, attestation: 'x' }, { ...real, attestation: { id: view.id } }, { ...real, attestation: { ...view, attestation: null } },
+      { ...real, attestation: { ...view, attestation: { ...view.attestation, attType: '5' } } }, { ...real, attestation: { ...view, attestation: { ...view.attestation, subject: 7 } } },
+      { ...real, attestation: { ...view, attestation: { ...view.attestation, issuer: null } } }, { ...real, attestation: { ...view, attestation: { ...view.attestation, issuerId: 7 } } },
+      { ...real, attestation: { ...view, attestation: { ...view.attestation, validUntil: 'never' } } }, { ...real, attestation: { ...view, attestation: { ...view.attestation, digest: undefined } } },
+    ];
+    for (const [index, answer] of shapes.entries()) {
+      await expect(checkApproval(withLedger(world, { attestation: async () => answer as AttestationCheck }), world.approvalInput), `shape ${index}`).rejects.toBeInstanceOf(CheckUnavailableError);
+    }
+    const delegation = await world.ports.ledger.readDelegation(DELEGATION_ID);
+    const link = delegation.chain[0];
+    const views: unknown[] = [
+      null, undefined, {}, 'x', { id: DELEGATION_ID }, { ...delegation, chain: 'x' }, { ...delegation, chain: [{}] }, { ...delegation, chain: [{ id: DELEGATION_ID }] }, { ...delegation, chain: [] },
+      { ...delegation, id: '9e'.repeat(32) }, { ...delegation, chain: [{ ...link, id: '9e'.repeat(32) }] }, { ...delegation, chain: [{ ...link, delegation: null }] },
+      { ...delegation, chain: [{ ...link, delegation: { ...link.delegation, delegator: { type: 'Nobody' } } }] }, { ...delegation, missingParent: 7 },
+    ];
+    for (const [index, answer] of views.entries()) {
+      await expect(checkApproval(withLedger(world, { readDelegation: async () => answer as never }), world.approvalInput), `view ${index}`).rejects.toBeInstanceOf(CheckUnavailableError);
+    }
+    await expect(checkApproval(withLedger(world, { readDelegation: async () => delegation, attestation: async () => real }), world.approvalInput)).resolves.toMatchObject({ ok: true });
+  });
+
   it('reads a condition that does not apply as a pass only where the rule allows it', async () => {
     const world = makeWorld();
     const real = await world.ports.ledger.attestation(ATTESTATION_ID, T);
     const change = (id: string, result: 'pass' | 'fail' | 'not_applicable') => withLedger(world, { attestation: async () => ({ ...real, conditions: real.conditions.map((line) => (line.id === id ? { ...line, result } : line)) }) });
-    expect(await checkApproval(change('envelope', 'not_applicable'), world.approvalInput)).toMatchObject({ ok: true });
-    expect(await checkApproval(change('active', 'not_applicable'), world.approvalInput)).toMatchObject({ ok: false, code: 'approval_revoked' });
-    expect(await checkApproval(change('time_window', 'not_applicable'), world.approvalInput)).toMatchObject({ ok: false, code: 'approval_expired' });
+    for (const id of ['envelope', 'issuer_not_invalidated', 'issuer_key_listed']) expect(await checkApproval(change(id, 'not_applicable'), world.approvalInput), id).toMatchObject({ ok: true });
+    // The conditions that apply to every attestation that exists are `pass` or `fail`. A result of `not_applicable` is an answer that cannot be judged: it is not a pass and it is not a rule.
+    for (const id of ['authentic', 'active', 'time_window']) await expect(checkApproval(change(id, 'not_applicable'), world.approvalInput), id).rejects.toBeInstanceOf(CheckUnavailableError);
     expect(await checkApproval(change('issuer_key_listed', 'fail'), world.approvalInput)).toMatchObject({ ok: false, code: 'approval_issuer_invalid' });
   });
 });
@@ -333,7 +366,7 @@ describe('what a refusal says', () => {
   it('never repeats the salt, the document or a secret of the read', async () => {
     const salty = makeWorld({ attestation: { digest: proposalOf({ ...DOCUMENT, quantity: 1 }).proposal_digest } });
     const refusals = [
-      await refusal(salty), await refusal(makeWorld({ attestation: { attType: 15 } })), await refusal(makeWorld({ attestation: { validUntil: T - 1 } })), await refusal(makeWorld({ delegation: null })),
+      await refusal(salty), await refusal(makeWorld({ attestation: { attType: 15 } })), await refusal(makeWorld({ attestation: { validUntil: T - 1 } })), await refusal(makeWorld({ attestation: { issuer: OTHER_KEY.publicKey } })),
     ];
     for (const result of refusals) {
       const text = JSON.stringify(result);
@@ -341,5 +374,77 @@ describe('what a refusal says', () => {
       expect(text).not.toContain('run1-0001');
       expect(text).not.toContain('supplier_did');
     }
+  });
+});
+
+describe('the approval uses what the read of the attestation decided: ruleValid and every line', () => {
+  const world = makeWorld();
+  const input = world.approvalInput;
+  const answering = (change: (answer: AttestationCheck) => unknown): ChecksPorts =>
+    withLedger(world, { attestation: async (id, at) => change(await world.ports.ledger.attestation(id, at)) as AttestationCheck });
+  const withLine = (id: string, over: Record<string, unknown>) => (answer: AttestationCheck) => ({ ...answer, conditions: answer.conditions.map((line) => (line.id === id ? { ...line, ...over } : line)) });
+  const extraLine = (result: string, ruleValid: boolean) => (answer: AttestationCheck) => ({ ...answer, ruleValid, conditions: [...answer.conditions, { id: 'not_superseded', label: 'x', result, detail: 'x' }] });
+  const unavailable = (ports: ChecksPorts, why: string) => expect(checkApproval(ports, input), why).rejects.toBeInstanceOf(CheckUnavailableError);
+
+  it('passes with the answer as the read gave it, and ruleValid must be the boolean true', async () => {
+    expect(await checkApproval(answering((answer) => answer), input)).toMatchObject({ ok: true });
+    for (const ruleValid of ['true', 1, undefined, null, {}]) await unavailable(answering((answer) => ({ ...answer, ruleValid })), `ruleValid ${String(ruleValid)}`);
+    // false with no failing line that explains it
+    await unavailable(answering((answer) => ({ ...answer, ruleValid: false })), 'ruleValid false');
+  });
+
+  it('gives the code of a failing line of a condition that it knows, whatever ruleValid says', async () => {
+    const codes: Array<[string, string]> = [
+      ['authentic', 'approval_not_found'], ['active', 'approval_revoked'], ['time_window', 'approval_expired'], ['envelope', 'approval_issuer_invalid'],
+      ['issuer_not_invalidated', 'approval_issuer_invalid'], ['issuer_key_listed', 'approval_issuer_invalid'],
+    ];
+    for (const [id, code] of codes) {
+      for (const ruleValid of [true, false]) {
+        expect(await checkApproval(answering((answer) => ({ ...withLine(id, { result: 'fail' })(answer), ruleValid })), input), `${id} ${ruleValid}`).toMatchObject({ ok: false, code });
+      }
+    }
+  });
+
+  it('gives approval_not_found for a line authentic that fails, also when the attestation is there, and before the type is read', async () => {
+    const wrongType = makeWorld({ attestation: { attType: 15 } });
+    const notAuthentic = withLedger(wrongType, { attestation: async (id, at) => withLine('authentic', { result: 'fail' })(await wrongType.ports.ledger.attestation(id, at)) as AttestationCheck });
+    expect(await checkApproval(notAuthentic, wrongType.approvalInput)).toMatchObject({ ok: false, code: 'approval_not_found' });
+    expect(await checkApproval(wrongType.ports, wrongType.approvalInput)).toMatchObject({ ok: false, code: 'approval_wrong_type' });
+    // An attestation that is missing while the line authentic passes is a read that contradicts itself.
+    await unavailable(answering((answer) => ({ ...answer, attestation: null })), 'null attestation, authentic passes');
+  });
+
+  it('cannot judge a failing line of a condition that it does not know, and a known failing line is still its code', async () => {
+    await unavailable(answering(extraLine('fail', false)), 'unknown line fails, ruleValid false');
+    await unavailable(answering(extraLine('fail', true)), 'unknown line fails, ruleValid true');
+    expect(await checkApproval(answering(extraLine('pass', true)), input)).toMatchObject({ ok: true });
+    expect(await checkApproval(answering(extraLine('not_applicable', true)), input)).toMatchObject({ ok: true });
+    const both = answering((answer) => withLine('active', { result: 'fail' })(extraLine('fail', false)(answer) as unknown as AttestationCheck));
+    expect(await checkApproval(both, input)).toMatchObject({ ok: false, code: 'approval_revoked' });
+  });
+
+  it('cannot judge two lines with one identifier, a line of the wrong shape, conditions that are not a list, or a condition with no line', async () => {
+    const active = (answer: AttestationCheck) => answer.conditions.filter((line) => line.id === 'active');
+    for (const [first, second] of [['pass', 'fail'], ['fail', 'pass'], ['pass', 'pass'], ['fail', 'fail']]) {
+      await unavailable(answering((answer) => ({ ...answer, conditions: [{ ...active(answer)[0], result: first }, ...answer.conditions.map((line) => (line.id === 'active' ? { ...line, result: second } : line))] })), `active twice ${first} ${second}`);
+    }
+    const lines: unknown[] = [null, 'active', [], { id: 'x' }, { id: 5, result: 'pass', detail: 'x' }, { id: 'x', result: 'PASS', detail: 'x' }, { id: 'x', result: true, detail: 'x' }, { id: 'x', result: 'pass' }];
+    for (const [index, line] of lines.entries()) await unavailable(answering((answer) => ({ ...answer, conditions: [...answer.conditions, line] })), `line ${index}`);
+    for (const conditions of [{}, null, 'x', undefined]) await unavailable(answering((answer) => ({ ...answer, conditions })), `conditions ${String(conditions)}`);
+    for (const id of ['authentic', 'active', 'time_window', 'envelope', 'issuer_not_invalidated', 'issuer_key_listed']) {
+      await unavailable(answering((answer) => ({ ...answer, conditions: answer.conditions.filter((line) => line.id !== id) })), `no line ${id}`);
+    }
+  });
+
+  it('records the issuer DID that the attestation names, and never the DID that the reference names: with no issuer record the fact is null', async () => {
+    const bare = makeWorld();
+    for (const named of [`did:vector:${'99'.repeat(32)}`, bare.sender.did, OTHER_DID]) {
+      expect(await check(bare, withIssuerDid(bare, named)), named).toMatchObject({ ok: true, issuer_did: null });
+    }
+    const outcome = await runChecks(sharedChecks(bare.ports, { kind: 'order-desk', request: { ...bare.handoff, approval: { attestation: ATTESTATION_ID, issuer_did: `did:vector:${'99'.repeat(32)}` } }, context: bare.context }));
+    expect(outcome.ok).toBe(true);
+    expect(outcome.record.facts.approval_issuer_did).toBeNull();
+    const registered = makeWorld({ attestation: { issuerId: ISSUER_ID }, issuerRecord: {} });
+    expect(await check(registered, withIssuerDid(registered, ISSUER_DID))).toMatchObject({ ok: true, issuer_did: ISSUER_DID });
   });
 });
