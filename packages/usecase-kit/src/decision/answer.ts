@@ -4,8 +4,9 @@
 // The model answers with one JSON object that has exactly two members, `reasoning` (a text that is not blank) and `choice` (JSON data of the shape that the decision names). The text of the answer is
 // read in these steps. The first step that fails ends the reading with `model_output_invalid`, and then no decision is recorded:
 //   1. The supplier gave the answer as completed. An answer that stopped at its output limit is cut, and it is not read.
-//   2. The object is the text from the first `{` to the last `}`. Words before it and after it, and a code fence around it, are not read. The text must parse as JSON, and it must be plain JSON data
-//      (no `__proto__` key, no number that is not finite, no value nested deeper than the protocol allows).
+//   2. The object is the text from the first `{` to the last `}`. Words before it and after it, and a code fence around it, are not read. The text must parse as JSON, and it must say one thing:
+//      no key stands two times in one object, and every number reads back as itself (see lossless.ts). The value must be plain JSON data (no `__proto__` key, no number that is not finite, no
+//      value nested deeper than the protocol allows).
 //   3. The object has the members `reasoning` and `choice`, and no other member. The reasoning is a text with at least one character that is not white space. It is kept as the model wrote it.
 //   4. The parser of the decision accepts the choice. The parser gets a COPY of the choice and returns the parsed value or a refusal.
 //   5. The value that the parser returned is the choice that the model gave. A parser that changed a member, left one out or added one is a defect of the use case. The reading ends with
@@ -16,6 +17,7 @@
 // A detail never repeats the text of the answer: the answer can quote the input. It gives the length of the answer, and the name of the member that is wrong. The detail of the parser is cut
 // to 200 printable characters, and a parser names a member and never repeats a value.
 import { accepted, checkMembers, parseJsonValue, refused, type JsonValue, type ProtocolResult } from '../protocol/index.ts';
+import { losses } from './lossless.ts';
 import type { ChoiceParser } from './spec.ts';
 
 /** What the reading of an answer gives: the reasoning as the model wrote it, and the choice as the model gave it. */
@@ -61,12 +63,16 @@ export function readAnswer<C extends JsonValue>(answer: ModelAnswerText, parse: 
   const first = text.indexOf('{');
   const last = text.lastIndexOf('}');
   if (first === -1 || last < first) return invalid('holds no JSON object');
+  const json = text.slice(first, last + 1);
   let parsedText: unknown;
   try {
-    parsedText = JSON.parse(text.slice(first, last + 1));
+    parsedText = JSON.parse(json);
   } catch {
     return invalid('is not JSON');
   }
+  // `JSON.parse` keeps the last of two members that have one key, and it rounds a number to a double. A text that says more than the value that it gives is refused (see lossless.ts).
+  const lost = losses(json);
+  if (lost !== null) return invalid(lost);
   const data = parseJsonValue(parsedText, 'answer');
   if (!data.ok) return invalid(`is not plain JSON data (${data.detail})`);
   // The text starts with `{` and it parsed, so the value is an object.

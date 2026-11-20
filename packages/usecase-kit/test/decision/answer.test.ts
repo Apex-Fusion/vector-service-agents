@@ -40,7 +40,7 @@ describe('readAnswer: the text of the answer', () => {
     ['text that is not JSON between the braces', '{not json}', 'is not JSON'],
     ['two objects', `${said(MEDIUM_LOT)} ${said(MEDIUM_LOT)}`, 'is not JSON'],
     ['a cut object', `${said(MEDIUM_LOT)}`.slice(0, -2) + '}', 'is not JSON'],
-    ['a number that is not finite', '{"reasoning":"r","choice":1e999}', 'is not plain JSON data'],
+    ['a number that is not finite', '{"reasoning":"r","choice":1e999}', 'has a number that a double does not hold without loss'],
     ['the key __proto__', '{"reasoning":"r","choice":{"__proto__":1}}', 'is not plain JSON data'],
     ['a value nested too deep', `{"reasoning":"r","choice":${'{"a":'.repeat(40)}1${'}'.repeat(40)}}`, 'is not plain JSON data'],
     ['no choice', '{"reasoning":"r"}', 'has the wrong members'],
