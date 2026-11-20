@@ -59,5 +59,8 @@ type ForKind<K extends AgentKind> = {
   (K extends 'order-desk' ? { readonly lots: ManifestFileRef } : { readonly lots?: undefined }) &
   (K extends 'bid-desk' ? { readonly price_list: ManifestFileRef } : { readonly price_list?: undefined });
 
-/** The members that these agents add under `behaviour`, for one kind of agent. With no kind, the type is one of the six. */
-export type BehaviourAdditions<K extends AgentKind = AgentKind> = ForKind<K>;
+/**
+ * The members that these agents add under `behaviour`, for one kind of agent. With no kind, the type is the union of the six: an object is the additions of exactly one kind, and never a mix of the
+ * members or the fault values of two kinds.
+ */
+export type BehaviourAdditions<K extends AgentKind = AgentKind> = K extends AgentKind ? ForKind<K> : never;
