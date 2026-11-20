@@ -5,7 +5,7 @@ import { HireLane } from '@vsa/hire-kit';
 import { documentUri } from '@vsa/buyer-core';
 import { NO_OPEN_CLAIM } from '@vsa/usecase-kit/protocol';
 import { MemoryJournal } from '@vsa/usecase-kit/dispute';
-import type { ChallengeResult, ChallengeView, DeliveryChallengeInput, DisputeJournal, JobRecord } from '@vsa/usecase-kit/dispute';
+import type { ChallengeResult, ChallengeView, DeliveryChallengeInput, DisputeJournal, DisputeSettings, JobRecord } from '@vsa/usecase-kit/dispute';
 import {
   CHALLENGE_TOKEN, CHALLENGE_TX, ESCROW, ESCROW_2, EVIDENCE_TX, HOUR, JOB, KEY_HASH, NO_DOCUMENT, NO_TRANSACTION, NOW, ORDER_FACTS, OTHER, REF_A, REF_B, THIRD, TOKEN_A, TOKEN_B, challengeView, claimView, deferred,
   evidenceOf, never, rig,
@@ -14,7 +14,9 @@ import type { Events, Rig } from './support.ts';
 
 const delivery = (escrow = ESCROW): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: escrow, ...JOB, evidence: ORDER_FACTS });
 const LANDED = { tx_hash: EVIDENCE_TX, uri: documentUri(EVIDENCE_TX), document_hash: evidenceOf().hash };
-const record = (extra: Partial<JobRecord> = {}): JobRecord => ({ step: 'started', escrow: ESCROW, against: OTHER, claim: REF_A, claim_token: TOKEN_A, evidence: null, filed: null, ended: null, ...extra });
+const record = (extra: Partial<JobRecord> = {}): JobRecord => ({
+  step: 'started', escrow: ESCROW, against: OTHER, claim: REF_A, claim_token: TOKEN_A, started_at: NOW, evidence: null, filed: null, ended: null, ...extra,
+});
 const CHAIN_FILED = {
   record: { claim: REF_A, evidence: EVIDENCE_TX, challenge: `${CHALLENGE_TX}#0` }, claim_token: TOKEN_A, against_did: OTHER, evidence_uri: documentUri(EVIDENCE_TX), evidence_hash: evidenceOf().hash,
   challenge_tx: CHALLENGE_TX, challenge_token: CHALLENGE_TOKEN, stake_lovelace: 50_000_000n, deadline: NOW - 10 * 60_000 + 72 * HOUR, fee_lovelace: null,
@@ -296,6 +298,12 @@ describe('the journal can fail', () => {
     ['a member that the record does not have', { ...record(), extra: 1 }],
     ['a member that is missing', (({ against: _against, ...rest }) => rest)(record())],
     ['no escrow member', (({ escrow: _escrow, ...rest }) => rest)(record())],
+    ['no start time member', (({ started_at: _startedAt, ...rest }) => rest)(record())],
+    ['a start time that is a text', { ...record(), started_at: String(NOW) }],
+    ['a start time that is null', { ...record(), started_at: null }],
+    ['a start time that is not a whole number', { ...record(), started_at: NOW + 0.5 }],
+    ['a start time of 0', { ...record(), started_at: 0 }],
+    ['a start time below 0', { ...record(), started_at: -1 }],
     ['an escrow that is not an output reference', { ...record(), escrow: 'zq9' }],
     ['a claimer that is not a DID', { ...record(), against: 'zq9' }],
     ['a claim token that is not a claim token', { ...record(), claim_token: 'ab' }],
@@ -457,6 +465,177 @@ describe('a record of another job is never the record of this job', () => {
     const puts = [...stored.puts, ...found.puts];
     expect(puts.length).toBe(4);
     expect(puts.map((value) => value.escrow)).toEqual([ESCROW, ESCROW, ESCROW, ESCROW]);
+  });
+});
+
+describe('a record started gives the job back when its lease has passed', () => {
+  const LEASE = 600_000;
+
+  /** The call for the job when the journal holds a record `started` that is `age` milliseconds older than the clock of the dispute. */
+  async function callAfter(age: number, settings: Partial<DisputeSettings> = {}) {
+    const inner = new MemoryJournal();
+    await inner.put(ESCROW, record({ started_at: NOW - age }));
+    const journal = recording([], inner);
+    const rigged = rig(settings, { journal });
+    rigged.port.claims = [claimView()];
+    return { ...rigged, journal, result: await rigged.dispute.challengeDelivery(delivery()) };
+  }
+
+  it('stops the job while the record is younger than the lease, says how long, and sends nothing', async () => {
+    const { events, journal, port, result } = await callAfter(LEASE - 1);
+    expectNotFiled(result, 'job_already_disputed');
+    expect(result.detail).toContain(`${LEASE} ms`);
+    expect(events).toEqual(['readClaims']);
+    expect(port.published).toEqual([]);
+    expect(port.challenged).toEqual([]);
+    expect(journal.puts).toEqual([]);
+  });
+
+  it('goes on when the record is as old as the lease, files the challenge, and writes the time of the new start', async () => {
+    const { journal, logs, port, result } = await callAfter(LEASE);
+    expect(result.ok).toBe(true);
+    expect(port.published.length).toBe(1);
+    expect(port.challenged.length).toBe(1);
+    expect(journal.puts.map((value) => [value.step, value.started_at])).toEqual([['started', NOW], ['evidence_landed', NOW], ['done', NOW]]);
+    expect(logs.some((line) => line.includes('older than its lease'))).toBe(true);
+  });
+
+  const LEASES: Array<[string, Partial<DisputeSettings>, number]> = [
+    ['10 minutes when the settings give no lease', {}, 600_000],
+    ['twice the read bound when that is more than 10 minutes', { read_timeout_ms: 400_000 }, 800_000],
+    ['the lease of the settings', { started_lease_ms: 120_000 }, 120_000],
+    ['the least lease of the settings, twice the read bound', { read_timeout_ms: 400_000, started_lease_ms: 800_000 }, 800_000],
+  ];
+
+  it.each(LEASES)('uses %s', async (_name, settings, lease) => {
+    expectNotFiled((await callAfter(lease - 1, settings)).result, 'job_already_disputed');
+    expect((await callAfter(lease, settings)).result.ok).toBe(true);
+  });
+
+  it('counts the lease on the clock of the dispute: the same record stops the job, and gives it back when the clock has moved', async () => {
+    const journal = new MemoryJournal();
+    await journal.put(ESCROW, record());
+    const { port, dispute, time } = rig({}, { journal });
+    port.claims = [claimView()];
+    time.now = NOW + LEASE - 1;
+    expectNotFiled(await dispute.challengeDelivery(delivery()), 'job_already_disputed');
+    expect(port.published).toEqual([]);
+    time.now = NOW + LEASE;
+    expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(port.published.length).toBe(1);
+  });
+
+  it('gives the challenge of this agent that is on chain for a record of any age, writes the time of the find, and sends nothing', async () => {
+    for (const age of [LEASE - 1, LEASE]) {
+      const inner = new MemoryJournal();
+      await inner.put(ESCROW, record({ started_at: NOW - age }));
+      const journal = recording([], inner);
+      const rigged = rig({}, { journal });
+      ownChallenge(rigged);
+      expect(await rigged.dispute.challengeDelivery(delivery()), `age ${age}`).toEqual({ ok: true, value: CHAIN_FILED });
+      expect(rigged.port.published).toEqual([]);
+      expect(rigged.port.challenged).toEqual([]);
+      expect(journal.puts).toMatchObject([{ step: 'done', started_at: NOW, filed: { record: { challenge: `${CHALLENGE_TX}#0` } } }]);
+    }
+  });
+
+  it('never gives the job back for a record of another step, whatever its age', async () => {
+    const ended = { code: 'challenge_not_built', detail: 'x', sent: null, challenge: null, wrong_document: null };
+    for (const stored of [record({ step: 'evidence_landed', evidence: LANDED, started_at: 1 }), record({ step: 'done', evidence: LANDED, ended, started_at: 1 })]) {
+      const journal = new MemoryJournal();
+      await journal.put(ESCROW, stored);
+      const { port, dispute } = rig({}, { journal });
+      port.claims = [claimView()];
+      expectNotFiled(await dispute.challengeDelivery(delivery()), 'job_already_disputed');
+      expect(port.published).toEqual([]);
+    }
+    // The twin: a record `started` of the same age is given back.
+    const old = new MemoryJournal();
+    await old.put(ESCROW, record({ started_at: 1 }));
+    const { port, dispute } = rig({}, { journal: old });
+    port.claims = [claimView()];
+    expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
+  });
+
+  it('uses the same rule in the job, where the journal is read again right before the evidence is sent', async () => {
+    const second = (stored: JobRecord): DisputeJournal => {
+      let reads = 0;
+      return { get: async () => { reads += 1; return reads === 1 ? null : stored; }, put: async () => undefined };
+    };
+    const young = rig({}, { journal: second(record({ started_at: NOW - LEASE + 1 })) });
+    young.port.claims = [claimView()];
+    const stopped = await young.dispute.challengeDelivery(delivery());
+    expectNotFiled(stopped, 'job_already_disputed');
+    expect(stopped.detail).toContain('nothing was sent');
+    expect(young.port.published).toEqual([]);
+    const old = rig({}, { journal: second(record({ started_at: NOW - LEASE })) });
+    old.port.claims = [claimView()];
+    expect((await old.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(old.port.published.length).toBe(1);
+  });
+
+  it('writes the time that the clock gives in the job, and each later record of the job keeps it', async () => {
+    const journal = recording([]);
+    const rigged = rig({}, { journal });
+    rigged.port.claims = [claimView()];
+    // The clock moves while the claims are read, so the time of the job is later than the time of the first read of the journal.
+    const read = rigged.port.readClaims.bind(rigged.port);
+    rigged.port.readClaims = async () => {
+      rigged.time.now += 5_000;
+      return read();
+    };
+    expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(journal.puts.map((value) => value.started_at)).toEqual([NOW + 5_000, NOW + 5_000, NOW + 5_000]);
+  });
+
+  it('does not block the job for good when the write of the record started lands after its bound and nothing was sent', async () => {
+    const inner = new MemoryJournal();
+    const timers: Array<() => void> = [];
+    const writing = deferred<void>();
+    const landing = deferred<void>();
+    const landed = deferred<void>();
+    let late = true;
+    const journal: DisputeJournal = {
+      get: (escrow) => inner.get(escrow),
+      put: async (escrow, value) => {
+        if (late && value.step === 'started') {
+          late = false;
+          writing.resolve();
+          await landing.promise;
+          await inner.put(escrow, value);
+          landed.resolve();
+          return;
+        }
+        await inner.put(escrow, value);
+      },
+    };
+    // Every bound of a read is a timer that the test fires by hand.
+    const sleep = (): Promise<void> => {
+      const timer = deferred<void>();
+      timers.push(timer.resolve);
+      return timer.promise;
+    };
+    const rigged = rig({}, { journal, sleep });
+    rigged.port.claims = [claimView()];
+    const first = rigged.dispute.challengeDelivery(delivery());
+    await writing.promise;
+    // The bound of the write ends while the write is still open.
+    for (const fire of timers.splice(0)) fire();
+    const stopped = await first;
+    expectNotFiled(stopped, 'journal_unavailable');
+    expect(stopped.detail).toContain('nothing was sent');
+    expect(rigged.port.published).toEqual([]);
+    // The write lands after the bound. The record says started, and nothing was sent.
+    landing.resolve();
+    await landed.promise;
+    expect((await inner.get(ESCROW))?.step).toBe('started');
+    // A call before the end of the lease still stops, and a call at the end of it files the challenge.
+    expectNotFiled(await rigged.dispute.challengeDelivery(delivery()), 'job_already_disputed');
+    expect(rigged.port.published).toEqual([]);
+    rigged.time.now = NOW + LEASE;
+    expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(rigged.port.published.length).toBe(1);
+    expect(rigged.port.challenged.length).toBe(1);
   });
 });
 

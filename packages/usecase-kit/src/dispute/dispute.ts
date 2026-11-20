@@ -4,16 +4,18 @@
 //
 // The order of a challenge is fixed, and each step is checked before the next one starts:
 //   0. Read the journal of the job. A job that has a record gets that state, and nothing is sent a second time. A record that is for another escrow is `journal_unavailable`: it is not this job's record.
+//      A record `started` that is older than its lease gives the job back (`started_lease_ms`), and only after step 1 found no challenge of this agent on chain.
 //   1. Read the claims. A challenge of this agent for this job that is on chain already is found again, and it is the result. The code never files a second one.
 //   2. Choose the claim. A claim is a target only when ALL hold: its claimer is the other party; its claim document is a claim document of this kit for the capability of the job (it is on chain, its hash
 //      is the hash that the claim holds, and it is the document that `claimDocument` writes for that party and that capability); it was submitted before the job began; it is Open with enough window left;
 //      and its stake is not above the challenge stake. A claim that is not a target is left out and counted by its reason, so the claimer cannot choose the target or block a challenge with a claim of its
 //      own. Among the targets the one with the latest challenge deadline is chosen, and with the same deadline the one with the lowest claim token. None ends the job with `no_open_claim`.
 //   3. Make the evidence document. A document that is refused ends the job. Nothing is on chain yet.
-//   4. In one job of the queue: check the window that is left, read the journal again (another call can have written its record while this job waited), write the journal, publish the evidence
-//      document, and wait for its confirmation. A document that is not confirmed ends the job. The challenge is not built.
+//   4. In one job of the queue: check the window that is left, read the journal again (another call can have written its record while this job waited), write the journal with the time of the job
+//      (`started_at`), publish the evidence document, and wait for its confirmation. A document that is not confirmed ends the job. The challenge is not built.
 //   5. In one job of the queue: read the claim again, and build the challenge against the exact output that the evidence names. A claim that changed ends the job.
-// A job (one escrow) gets one challenge. Once a transaction of a job landed or may land, the job takes no second attempt, also after a restart: the journal says so.
+// A job (one escrow) gets one challenge. Once a transaction of a job landed or may land, the job takes no second attempt, also after a restart: the journal says so. Only a record `started` lapses: it says
+// that the evidence may be on chain, and nothing else. After its lease the job may go on, and the chain still takes one challenge of a claim.
 //
 // Every read of a port has a bound, so a read that never answers does not hold the queue of the service key: it ends with `chain_unavailable`. Every transaction runs in the queue of the service key.
 // The code of a caller must not call a method of this class from inside a job of the same queue: the call would wait for itself.
@@ -54,6 +56,14 @@ export interface DisputeSettings {
   readonly min_window_left_ms: number;
   /** The most time that one read of a port may take, in milliseconds. A read that takes longer ends with `chain_unavailable`, or `journal_unavailable` for the journal. */
   readonly read_timeout_ms: number;
+  /**
+   * How long a record `started` blocks the job, in milliseconds, counted from the time in the record. Such a record says that the evidence of the job may be on chain, and that the code did not write the
+   * end of the job. A write that lands after its bound (`journal_unavailable`) leaves one with nothing sent, and a process that stops after the write leaves one with the evidence sent. After the lease
+   * the record gives the job back: a challenge of this agent that is on chain is still the result, and if there is none, the job goes on. Two processes can both go on after a lease ends, and the chain
+   * takes only one challenge of a claim. The default is 10 minutes, or twice `read_timeout_ms` when that is more. A value below twice `read_timeout_ms` is refused: a write ends at that bound and can still
+   * land later, so the lease must be longer than that.
+   */
+  readonly started_lease_ms?: number;
 }
 
 export interface DisputeDeps {
@@ -116,6 +126,9 @@ export interface WithdrawClaimInput {
 }
 
 const LEAST_WINDOW_LEFT_MS = 2_000;
+
+/** The default lease of a record `started`: 10 minutes. */
+const STARTED_LEASE_MS = 600_000;
 
 function requireBigint(value: unknown, name: string): bigint {
   if (typeof value !== 'bigint') throw new TypeError(`${name} must be a bigint`);
@@ -281,11 +294,13 @@ const landedOf = (record: JobRecord | null): Landed => (record === null ? {} : {
   evidence: record.evidence, sent: record.ended?.sent ?? null, challenge: record.ended?.challenge ?? null, wrong_document: record.ended?.wrong_document ?? null,
 });
 
-function earlierDetail(record: JobRecord): string {
+/** What a record that stops a job says. A record `started` stops the job only until its lease ends, and the text says so. */
+function earlierDetail(record: JobRecord, lease: number): string {
   const what = record.step === 'started' ? 'a challenge for this job was started before, and its evidence may be on chain'
     : record.step === 'evidence_landed' ? 'the evidence of a challenge for this job landed before, and the challenge may be on chain'
       : `a challenge for this job ended before with the code ${record.ended?.code ?? 'unknown'}`;
-  return `${what}: a job gets one challenge, and nothing is sent a second time`;
+  const rule = record.step === 'started' ? `a job gets one challenge, and nothing is sent again until the record is ${lease} ms old` : 'a job gets one challenge, and nothing is sent a second time';
+  return `${what}: ${rule}`;
 }
 
 /** The claim that a challenge names, and the text of its statement `EVIDENCE_STATEMENT`. */
@@ -324,6 +339,8 @@ export class Dispute {
   readonly #stake: bigint;
   readonly #windowLeft: number;
   readonly #readTimeout: number;
+  /** How long a record `started` blocks the job, counted from the time in the record. */
+  readonly #startedLease: number;
   readonly #resolutionDeadline: number;
   readonly #journal: DisputeJournal;
   readonly #log: (line: string) => void;
@@ -333,13 +350,15 @@ export class Dispute {
   /**
    * Refuses settings of the wrong type before anything is read: a challenge stake that is not a bigint, or a time that is not a whole number, is an error and never "no limit". The resolution
    * deadline is the one of the Module-1 deployment, from the port. A deployment whose deadline is too short for the relay, and a setting that is not the value of the deployment, are errors: a
-   * challenge with another value would have no jury.
+   * challenge with another value would have no jury. A lease of a record `started` that is below twice the read bound is an error too.
    */
   constructor(deps: DisputeDeps) {
     const settings = deps.settings;
     this.#stake = requireBigint(settings.challenge_stake_lovelace, 'settings.challenge_stake_lovelace');
     this.#windowLeft = requireMilliseconds(settings.min_window_left_ms, 'settings.min_window_left_ms', LEAST_WINDOW_LEFT_MS);
     this.#readTimeout = requireMilliseconds(settings.read_timeout_ms, 'settings.read_timeout_ms', 1);
+    const leastLease = 2 * this.#readTimeout;
+    this.#startedLease = settings.started_lease_ms === undefined ? Math.max(STARTED_LEASE_MS, leastLease) : requireMilliseconds(settings.started_lease_ms, 'settings.started_lease_ms', leastLease);
     const deployment = requireMilliseconds(deps.port.protocol?.resolution_deadline_ms, 'port.protocol.resolution_deadline_ms', 1);
     if (deployment < LEAST_RESOLUTION_DEADLINE_MS) {
       throw new RangeError(`the resolution deadline of the Module-1 deployment is ${deployment} ms, and a challenge needs at least ${LEAST_RESOLUTION_DEADLINE_MS} ms: the relay opens no case for less`);
@@ -372,6 +391,15 @@ export class Dispute {
     const now = this.#clock();
     if (!Number.isSafeInteger(now) || now <= 0) throw new TypeError('the clock must give POSIX milliseconds');
     return now;
+  }
+
+  /**
+   * Is `record` a record `started` that is older than its lease at `now`? Only such a record lapses. It says that the evidence may be on chain, and no later step ends it. A record of any other step says what
+   * landed or how the job ended, and it stays. The journal has no lock across processes, so two processes that read the same lapsed record can both go on, and both can publish an evidence document. The chain
+   * takes only one challenge of a claim: the second job finds the claim changed, or the node refuses its build. So a job never files two challenges.
+   */
+  #lapsed(record: JobRecord, now: number): boolean {
+    return record.step === 'started' && now - record.started_at >= this.#startedLease;
   }
 
   /** The claims of the chain, each in its form. A list that cannot be read, or that has a view of a wrong shape, is `chain_unavailable`: the code never takes it for a list with no claim. */
@@ -698,6 +726,8 @@ export class Dispute {
     const earlier = parsed.value !== null && parsed.value.step !== 'not_sent' ? parsed.value : null;
     if (earlier !== null && earlier.against !== target.against) return notFiled('job_already_disputed', 'a challenge for this job was recorded against another agent: a job has one counterparty', landedOf(earlier));
     if (earlier?.filed != null) return accepted(filedOfRecord(earlier.filed));
+    // A record `started` that is older than its lease gives the job back, but only after the search of the chain below: a challenge of this agent that is on chain is still the result.
+    const lapsed = earlier !== null && this.#lapsed(earlier, this.#now());
 
     // 1. The claims, and a challenge of this agent for this job that is on chain already.
     const claims = await this.#readClaims();
@@ -713,14 +743,18 @@ export class Dispute {
     if (own.value !== null) {
       const filed = own.value;
       const base: JobRecord = {
-        step: 'done', escrow, against: target.against, claim: filed.record.claim, claim_token: filed.claim_token, evidence: { tx_hash: filed.record.evidence, uri: filed.evidence_uri, document_hash: filed.evidence_hash },
+        step: 'done', escrow, against: target.against, claim: filed.record.claim, claim_token: filed.claim_token, started_at: this.#now(),
+        evidence: { tx_hash: filed.record.evidence, uri: filed.evidence_uri, document_hash: filed.evidence_hash },
         filed: recordOfFiled(filed), ended: null,
       };
       await this.#remember(escrow, base);
       this.#log(`dispute: the challenge ${filed.record.challenge} of this agent for the job ${escrow} is on chain already, with the evidence ${filed.record.evidence}`);
       return accepted(filed);
     }
-    if (earlier !== null) return notFiled('job_already_disputed', earlierDetail(earlier), landedOf(earlier));
+    if (earlier !== null) {
+      if (!lapsed) return notFiled('job_already_disputed', earlierDetail(earlier, this.#startedLease), landedOf(earlier));
+      this.#log(`dispute: the started record of the job ${escrow} is older than its lease of ${this.#startedLease} ms, and no challenge of this agent is on chain, so the job goes on`);
+    }
 
     // 2. The claim of the other party that the challenge names.
     const chosen = await this.#choose(target.against, claims.value, target.scope, this.#now(), this.#windowLeft);
@@ -737,8 +771,7 @@ export class Dispute {
     if (!document.ok) return notFiled(document.code, document.detail);
 
     // 4. The evidence is published first, and the challenge waits for its confirmation. The window that is left is checked in the job, right before the publish: the wait for the queue can be long.
-    const started: JobRecord = { step: 'started', escrow, against: claim.claimer, claim: claim.ref, claim_token: claim.token, evidence: null, filed: null, ended: null };
-    type FirstJob = { readonly stop: ChallengeCode; readonly detail: string } | { readonly tx: TxResult<PublishedDocument> };
+    type FirstJob = { readonly stop: ChallengeCode; readonly detail: string } | { readonly tx: TxResult<PublishedDocument>; readonly started: JobRecord };
     const first = await this.#queued<FirstJob>(async () => {
       let at: number;
       try {
@@ -753,18 +786,19 @@ export class Dispute {
       const seen = parseJobRecord(current.value);
       if (!seen.ok) return { stop: 'journal_unavailable', detail: `the journal gave a record that is not in its form, so nothing was sent: ${seen.detail}` };
       if (seen.value !== null && seen.value.escrow !== escrow) return { stop: 'journal_unavailable', detail: 'the journal gave the record of another job, so nothing was sent' };
-      if (seen.value !== null && seen.value.step !== 'not_sent') return { stop: 'job_already_disputed', detail: `${earlierDetail(seen.value)}; nothing was sent` };
+      if (seen.value !== null && seen.value.step !== 'not_sent' && !this.#lapsed(seen.value, at)) return { stop: 'job_already_disputed', detail: `${earlierDetail(seen.value, this.#startedLease)}; nothing was sent` };
+      const started: JobRecord = { step: 'started', escrow, against: claim.claimer, claim: claim.ref, claim_token: claim.token, started_at: at, evidence: null, filed: null, ended: null };
       const written = await this.#store(escrow, started);
       if (!written.ok) return { stop: 'journal_unavailable', detail: `${written.detail}, so nothing was sent` };
       progress.sent = true;
-      return { tx: await this.#port.publishDocument({ bytes: document.value.bytes, type: 'evidence', media_type: JUROR_MEDIA_TYPE }) };
+      return { tx: await this.#port.publishDocument({ bytes: document.value.bytes, type: 'evidence', media_type: JUROR_MEDIA_TYPE }), started };
     }, () => progress.sent);
     if ('code' in first) return notFiled('port_error', first.detail);
     if ('stop' in first) {
       this.#log(`dispute: no evidence for the job ${escrow}: ${first.stop}`);
       return notFiled(first.stop, first.detail);
     }
-    const published = first.tx;
+    const { tx: published, started } = first;
     if (!published.ok) {
       const why = failed(published, 'evidence_not_built', 'evidence_not_confirmed');
       if (why.code === 'evidence_not_built') {

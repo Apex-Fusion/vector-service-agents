@@ -624,6 +624,24 @@ describe('the settings of the dispute', () => {
     expect(make({ min_window_left_ms: 2_000, read_timeout_ms: 1 })).not.toThrow();
   });
 
+  it('refuses a lease that is not a whole number, and a lease below twice the read bound', () => {
+    expect(make({ started_lease_ms: '600000' })).toThrow(TypeError);
+    expect(make({ started_lease_ms: 600_000.5 })).toThrow(TypeError);
+    expect(make({ started_lease_ms: null })).toThrow(TypeError);
+    expect(make({ started_lease_ms: Number.POSITIVE_INFINITY })).toThrow(TypeError);
+    // The read bound of the samples is 30,000, so the least lease is 60,000.
+    expect(make({ started_lease_ms: 59_999 })).toThrow(RangeError);
+    expect(make({ started_lease_ms: 0 })).toThrow(RangeError);
+    expect(make({ read_timeout_ms: 400_000, started_lease_ms: 799_999 })).toThrow(RangeError);
+  });
+
+  it('accepts no lease, and a lease at twice the read bound', () => {
+    expect(make({ started_lease_ms: undefined })).not.toThrow();
+    expect(make({ started_lease_ms: 60_000 })).not.toThrow();
+    expect(make({ read_timeout_ms: 400_000, started_lease_ms: 800_000 })).not.toThrow();
+    expect(make({ read_timeout_ms: 1, started_lease_ms: 2 })).not.toThrow();
+  });
+
   it('refuses a clock that does not give POSIX milliseconds, and files nothing', async () => {
     for (const bad of [Number.NaN, 0, -5, 1.5]) {
       const port = new ScriptedPort();

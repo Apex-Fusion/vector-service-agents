@@ -3,6 +3,9 @@
 // landed, and it reads it FIRST: a job that has a record gets that state, and nothing of it is sent a second time. So a restart of the process, or a second call for the same job, does not publish
 // a second evidence document and does not file a second challenge.
 //
+// One record can lapse: a record `started` that is older than its lease (`started_lease_ms` of the settings) does not block the job any more. It says only that the evidence may be on chain. A write
+// that lands after its bound leaves such a record with nothing sent, and a process that stops after the write leaves one with the evidence sent. Without the lease the job stays blocked for good.
+//
 // The journal is a port, because a process that keeps its records in memory forgets them when it stops. `MemoryJournal` is the default: it holds the records of the life of the process, and it is
 // what a test uses. A service that must not file a job twice after a restart gives a journal that keeps the records on disk, and that returns from `put` only when the record is stored.
 //
@@ -53,6 +56,11 @@ export interface JobRecord {
   /** The claim output that the evidence names, and its token. */
   readonly claim: OutputRef;
   readonly claim_token: string;
+  /**
+   * When the job started, in POSIX milliseconds: the time of the clock in the job that writes the record `started`. Each later record of the job keeps it. A record of a challenge that the code finds
+   * on chain has the time of that find. The lease of a record `started` counts from it.
+   */
+  readonly started_at: number;
   /** The evidence document, from the step `evidence_landed` on, when it landed. */
   readonly evidence: DocumentLanded | null;
   /** How a job of the step `done` ended: with a filed challenge, or with none. Exactly one of the two is set for `done`, and none for any other step. */
@@ -160,7 +168,7 @@ export function parseJobRecord(value: unknown): ProtocolResult<JobRecord | null>
   if (!copy.ok) return copy;
   const root = copy.value;
   if (!isObject(root)) return bad('shape');
-  const members = checkMembers(root, 'the journal record', ['step', 'escrow', 'against', 'claim', 'claim_token', 'evidence', 'filed', 'ended']);
+  const members = checkMembers(root, 'the journal record', ['step', 'escrow', 'against', 'claim', 'claim_token', 'started_at', 'evidence', 'filed', 'ended']);
   if (members !== null) return members;
   const step = root.step;
   if (typeof step !== 'string' || !STEPS.includes(step)) return bad('step');
@@ -170,6 +178,8 @@ export function parseJobRecord(value: unknown): ProtocolResult<JobRecord | null>
   const token = parseClaimToken(root.claim_token);
   if (!escrow.ok) return bad('escrow');
   if (!against.ok || !claim.ok || !token.ok) return bad('claim');
+  const startedAt = root.started_at;
+  if (!isInteger(startedAt) || startedAt < 1) return bad('started_at');
   const evidence = root.evidence === null ? accepted(null) : documentOf(root.evidence, 'evidence');
   const filed = root.filed === null ? accepted(null) : filedOf(root.filed);
   const ended = root.ended === null ? accepted(null) : endedOf(root.ended);
@@ -177,5 +187,7 @@ export function parseJobRecord(value: unknown): ProtocolResult<JobRecord | null>
   if (!filed.ok) return filed;
   if (!ended.ok) return ended;
   if (step === 'done' ? (filed.value === null) === (ended.value === null) : filed.value !== null || ended.value !== null) return bad('end');
-  return accepted({ step: step as JobStep, escrow: escrow.value, against: against.value, claim: claim.value, claim_token: token.value, evidence: evidence.value, filed: filed.value, ended: ended.value });
+  return accepted({
+    step: step as JobStep, escrow: escrow.value, against: against.value, claim: claim.value, claim_token: token.value, started_at: startedAt, evidence: evidence.value, filed: filed.value, ended: ended.value,
+  });
 }
