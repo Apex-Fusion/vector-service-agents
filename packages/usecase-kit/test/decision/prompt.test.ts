@@ -89,17 +89,21 @@ describe('the prompt of a decision', () => {
     expect(promptsSent(run)).toStrictEqual([build(input)]);
   });
 
-  it.each<[string, unknown]>([
-    ['undefined', undefined],
-    ['a bigint', { a: `${MARKER}`, b: 12n }],
-    ['a number that is not finite', { a: `${MARKER}`, b: Number.POSITIVE_INFINITY }],
-    ['an object of a class', { a: `${MARKER}`, b: new Map() }],
-    ['a function', { a: `${MARKER}`, b: () => 1 }],
-    ['a hole in a list', { a: `${MARKER}`, b: [1, , 3] }],
-    ['a value nested too deep', (() => { let value: unknown = `${MARKER}`; for (let level = 0; level < 40; level += 1) value = { next: value }; return value; })()],
-  ])('refuses an input that is not JSON data, and never repeats it: %s', (_name, input) => {
+  const at = (depth: number): string => `the input holds, at depth ${depth}, a value or a key that JSON data does not allow`;
+  it.each<[string, unknown, string]>([
+    ['undefined', undefined, at(1)],
+    ['a bigint', { a: `${MARKER}`, b: 12n }, at(2)],
+    ['a number that is not finite', { a: `${MARKER}`, b: Number.POSITIVE_INFINITY }, at(2)],
+    ['an object of a class', { a: `${MARKER}`, b: new Map() }, at(2)],
+    ['a function', { a: `${MARKER}`, b: () => 1 }, at(2)],
+    ['a hole in a list', { a: `${MARKER}`, b: [1, , 3] }, at(2)],
+    ['a bigint below a key', { [`${MARKER}-key`]: { n: 1n } }, at(3)],
+    ['a key that is a whole number below a key', { [`${MARKER}-key`]: { 7: 1 } }, at(2)],
+    ['the key __proto__ below two keys', JSON.parse(`{"${MARKER}-key":{"${MARKER}-two":{"__proto__":1}}}`), at(3)],
+    ['a value nested too deep', (() => { let value: unknown = `${MARKER}`; for (let level = 0; level < 40; level += 1) value = { [`${MARKER}-key`]: value }; return value; })(), 'the input is nested deeper than 32 levels'],
+  ])('refuses an input that is not JSON data, says where by depth, and repeats no key and no value: %s', (_name, input, detail) => {
     const result = buildPrompt(REORDER, input);
-    expect(result).toMatchObject({ ok: false, code: 'bad_input' });
+    expect(result).toStrictEqual({ ok: false, code: 'bad_input', detail });
     expect(JSON.stringify(result)).not.toContain(MARKER);
   });
 

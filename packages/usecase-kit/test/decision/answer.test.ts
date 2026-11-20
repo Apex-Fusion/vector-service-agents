@@ -40,11 +40,11 @@ describe('readAnswer: the text of the answer', () => {
     ['two objects', `${said(MEDIUM_LOT)} ${said(MEDIUM_LOT)}`, 'is not one JSON object alone'],
     ['a cut object', `${said(MEDIUM_LOT)}`.slice(0, -2) + '}', 'is not one JSON object alone'],
     ['a number that is not finite', '{"reasoning":"r","choice":1e999}', 'has a number that a double does not hold without loss'],
-    ['the key __proto__', '{"reasoning":"r","choice":{"__proto__":1}}', 'is not plain JSON data'],
-    ['a value nested too deep', `{"reasoning":"r","choice":${'{"a":'.repeat(40)}1${'}'.repeat(40)}}`, 'is not plain JSON data'],
+    ['the key __proto__', '{"reasoning":"r","choice":{"__proto__":1}}', 'holds, at depth 2, a value or a key that JSON data does not allow'],
+    ['a value nested too deep', `{"reasoning":"r","choice":${'{"a":'.repeat(40)}1${'}'.repeat(40)}}`, 'is nested deeper than 32 levels'],
     ['no choice', '{"reasoning":"r"}', 'has the wrong members'],
     ['no reasoning', '{"choice":1}', 'has the wrong members'],
-    ['a third member', '{"reasoning":"r","choice":1,"extra":2}', 'has the wrong members'],
+    ['a third member', '{"reasoning":"r","choice":1,"extra":2}', 'has the wrong members: it has a member that is not allowed'],
     ['a reasoning that is a number', '{"reasoning":1,"choice":1}', 'has no reasoning'],
     ['a reasoning that is null', '{"reasoning":null,"choice":1}', 'has no reasoning'],
     ['a reasoning of white space', '{"reasoning":" \\n\\t ","choice":1}', 'has no reasoning'],
@@ -62,6 +62,33 @@ describe('readAnswer: the text of the answer', () => {
       expect(result.detail).not.toContain(MARKER);
       expect(result.detail).toContain(`an answer of ${text.length} characters`);
     }
+  });
+
+  // The answer can quote the input, so a key that the model writes can be a key of the input. No detail repeats it, and each says where by position.
+  it.each<[string, string, string]>([
+    ['a member of the answer that is not allowed', `{"reasoning":"r","choice":1,"${MARKER}-key":2}`, 'has the wrong members: it has a member that is not allowed'],
+    ['the key __proto__ below a key', `{"reasoning":"r","choice":{"${MARKER}-key":{"__proto__":1}}}`, 'holds, at depth 3, a value or a key that JSON data does not allow'],
+    ['a key that is a whole number below a key', `{"reasoning":"r","choice":{"${MARKER}-key":{"7":1}}}`, 'holds, at depth 3, a value or a key that JSON data does not allow'],
+    ['a key that is not in the NFC form', `{"reasoning":"r","choice":{"${MARKER}-cafe\\u0301":1}}`, 'holds, at depth 2, a value or a key that JSON data does not allow'],
+    ['a nest of keys that is too deep', `{"reasoning":"r","choice":${`{"${MARKER}-key":`.repeat(40)}1${'}'.repeat(40)}}`, 'is nested deeper than 32 levels'],
+  ])('names no key of the answer, and says where: %s', (_name, text, why) => {
+    const result = readAnswer(completed(text), any);
+    expect(result).toMatchObject({ ok: false, code: 'model_output_invalid' });
+    if (result.ok) return;
+    expect(result.detail).toContain(why);
+    expect(result.detail).not.toContain(MARKER);
+  });
+
+  it('names no key of the choice when the parser refuses it, and does not copy the detail of the parser', () => {
+    // checkMembers of the protocol, which a parser of a use case calls, repeats the key that it refuses. That text is not copied.
+    const choice = `{"lot":"lot-medium","quantity":50,"needed_by":"2026-12-01","${MARKER}-key":1}`;
+    const text = `{"reasoning":"r","choice":${choice}}`;
+    expect(parseReorder(JSON.parse(choice))).toMatchObject({ ok: false, detail: expect.stringContaining(MARKER) });
+    expect(readAnswer(completed(text), parseReorder)).toStrictEqual({
+      ok: false, code: 'model_output_invalid', detail: `the answer of the model has a choice of another shape (an answer of ${text.length} characters)`,
+    });
+    // The twin: the choice without the key that the shape does not name is read.
+    expect(readAnswer(completed(said(MEDIUM_LOT)), parseReorder).ok).toBe(true);
   });
 
   it('keeps the reasoning as written: no trim, no change of case, no normalisation', () => {
@@ -108,15 +135,13 @@ describe('readAnswer: the parser of the decision', () => {
     expect(result.value.choice).toStrictEqual(MEDIUM_LOT);
   });
 
-  it('refuses a choice of another shape with the detail of the parser, cut to 200 printable characters', () => {
-    const long = `choice.lot is wrong \u00e9\n${'x'.repeat(400)}`;
-    const result = readAnswer(completed(said(MEDIUM_LOT)), () => refused('bad_shape', long));
-    expect(result).toMatchObject({ ok: false, code: 'model_output_invalid' });
-    if (result.ok) return;
-    const detail = result.detail.split(': ').slice(1).join(': ').replace(/ \(an answer of \d+ characters\)$/, '');
-    expect(detail).toHaveLength(200);
-    expect(detail).toMatch(/^[\x20-\x7e]+$/);
-    expect(detail.startsWith('choice.lot is wrong ?')).toBe(true);
+  it('refuses a choice of another shape with a detail that is the same for every parser: the text of the parser is not copied', () => {
+    const refusing = (detail: string) => readAnswer(completed(said(MEDIUM_LOT)), () => refused('bad_shape', detail));
+    const first = refusing('choice.lot must name one of the three lots');
+    const second = refusing(`choice has the member "${MARKER}", which is not allowed\n${'x'.repeat(400)}`);
+    expect(first).toMatchObject({ ok: false, code: 'model_output_invalid' });
+    expect(second).toStrictEqual(first);
+    if (!first.ok) expect(first.detail).toBe(`the answer of the model has a choice of another shape (an answer of ${said(MEDIUM_LOT).length} characters)`);
   });
 
   it.each<[string, (given: JsonValue) => unknown]>([

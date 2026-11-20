@@ -17,6 +17,7 @@
 // model decides, and nothing can. The hirer approves a proposal, and the checks of the counterparty and of the mock systems come after it.
 import { accepted, canonicalJson, refused, type ProtocolResult } from '../protocol/index.ts';
 import type { DecisionSpec } from './spec.ts';
+import { whereNotJson } from './where.ts';
 
 /** The mark that opens the input block. */
 export const INPUT_OPEN = '<input_data>';
@@ -39,10 +40,10 @@ const oneLine = (json: string): string => json.replace(/[<>\u0085\u2028\u2029]/g
 
 /**
  * The prompt for a decision and its input. `input` is JSON data. A value that JSON cannot hold (`undefined`, a bigint, `NaN`, an object of a class, a value nested too deep) is refused, and the
- * refusal names the member and never repeats the value. The instruction comes from a definition that `checkSpec` took.
+ * refusal says where, by depth, and repeats no key and no value: the input holds text of other parties (see where.ts). The instruction comes from a definition that `checkSpec` took.
  */
 export function buildPrompt(spec: Pick<DecisionSpec, 'instruction'>, input: unknown): ProtocolResult<string, 'bad_input'> {
   const data = canonicalJson(input, 'input');
-  if (!data.ok) return refused('bad_input', data.detail);
+  if (!data.ok) return refused('bad_input', `the input ${whereNotJson(input)}`);
   return accepted([spec.instruction, RULES, `${INPUT_OPEN}\n${oneLine(data.value)}\n${INPUT_CLOSE}`, CLOSING].join('\n\n'));
 }

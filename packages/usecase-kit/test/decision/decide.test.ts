@@ -167,6 +167,10 @@ describe('decide: an answer of another shape', () => {
     ['a reasoning that is not a text', JSON.stringify({ reasoning: 7, choice: lot })],
     ['a reasoning of white space only', JSON.stringify({ reasoning: ' \n ', choice: lot })],
     ['a member beside the reasoning and the choice', wrapped(lot, { confidence: 0.9 })],
+    ['a key beside the reasoning and the choice that repeats a key of the input', wrapped(lot, { [`${MARKER}-key`]: 1 })],
+    ['a choice with a key that the shape does not name and that repeats a key of the input', wrapped({ ...lot, [`${MARKER}-key`]: 1 })],
+    ['a key __proto__ below a key of the input', `{"reasoning":"r","choice":{"${MARKER}-key":{"__proto__":1}}}`],
+    ['a key that is a whole number below a key of the input', `{"reasoning":"r","choice":{"${MARKER}-key":{"7":1}}}`],
     ['a choice of another shape', wrapped({ lot: 'lot-huge', quantity: 50, needed_by: '2026-12-01' })],
     ['a choice with a member that the shape does not name', wrapped({ ...lot, note: MARKER })],
     ['a choice that is a text', wrapped(`lot-medium ${MARKER}`)],
@@ -363,10 +367,14 @@ describe('decide: the definition and the input', () => {
     ['a bigint', { on_hand: 12n }],
     ['a date', { at: new Date(0) }],
     ['a function', { run: () => 1 }],
+    ['a bigint below a key', { [`${MARKER}-key`]: { on_hand: 12n } }],
+    ['a key that is a whole number below a key', { [`${MARKER}-key`]: { 7: 1 } }],
   ])('refuses an input that is not JSON data before anything is hired: %s', async (_name, input) => {
     const run = await setup();
     const failure = lost(await decide(run.deps, REORDER, input as JsonValue));
     expect([failure.code, failure.reason, failure.delivery]).toStrictEqual(['internal', 'bad_input', null]);
+    expect(failure.detail).toMatch(/^the input (holds, at depth \d+, a value or a key that JSON data does not allow|is nested deeper than 32 levels)$/);
+    expect(JSON.stringify(failure)).not.toContain(MARKER);
     expect([run.m.calls, run.booked, run.key.stranded.list()]).toStrictEqual([[], [], []]);
   });
 

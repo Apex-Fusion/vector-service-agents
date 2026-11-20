@@ -19,11 +19,12 @@
 //      in place does not hide the change.
 // The value that the reading returns is a new copy of the parsed value. It shares no object with the parser, so a parser that keeps a reference cannot change the decision later.
 //
-// A detail never repeats the text of the answer: the answer can quote the input. It gives the length of the answer, and the name of the member that is wrong. The detail of the parser is cut
-// to 200 printable characters, and a parser names a member and never repeats a value.
-import { accepted, checkMembers, parseJsonValue, refused, type JsonValue, type ProtocolResult } from '../protocol/index.ts';
+// A detail never repeats the text of the answer, a key of it or a value of it: the answer can quote the input. It says what kind of fault it is, and where by position: the length of the answer, a
+// member of the answer that is not allowed, or the depth at which the data is not allowed (see where.ts). The detail of the parser is not copied: a parser can name a key that the model wrote.
+import { accepted, parseJsonValue, refused, type JsonValue, type ProtocolResult } from '../protocol/index.ts';
 import { losses } from './lossless.ts';
 import type { ChoiceParser } from './spec.ts';
+import { whereNotJson } from './where.ts';
 
 /** What the reading of an answer gives: the reasoning as the model wrote it, and the choice as the model gave it. */
 export interface Answer<C extends JsonValue> {
@@ -40,8 +41,8 @@ export interface ModelAnswerText {
   readonly status: unknown;
 }
 
-const DETAIL_CHARS = 200;
-const printable = (text: string): string => text.slice(0, DETAIL_CHARS).replace(/[^\x20-\x7e]/g, '?');
+/** The two members of the object that the model writes, and no other. */
+const ENVELOPE: readonly string[] = ['reasoning', 'choice'];
 
 const isList = (value: JsonValue): value is readonly JsonValue[] => Array.isArray(value);
 
@@ -123,11 +124,11 @@ export function readAnswer<C extends JsonValue>(answer: ModelAnswerText, parse: 
   const lost = losses(json);
   if (lost !== null) return invalid(lost);
   const data = parseJsonValue(parsedText, 'answer');
-  if (!data.ok) return invalid(`is not plain JSON data (${data.detail})`);
+  if (!data.ok) return invalid(whereNotJson(parsedText));
   // The text is one JSON object that parsed, and the copy keeps that: the value is an object.
   const object = data.value as Record<string, unknown>;
-  const members = checkMembers(object, 'answer', ['reasoning', 'choice']);
-  if (members !== null) return invalid(`has the wrong members (${members.detail})`);
+  for (const name of ENVELOPE) if (!Object.hasOwn(object, name)) return invalid(`has the wrong members: it has no member ${name}`);
+  if (Object.keys(object).some((name) => !ENVELOPE.includes(name))) return invalid('has the wrong members: it has a member that is not allowed');
   const { reasoning } = object;
   if (typeof reasoning !== 'string' || reasoning.trim() === '') return invalid('has no reasoning, a text that is not blank');
   // A member of the copy that parseJsonValue checked: plain JSON data.
@@ -140,8 +141,8 @@ export function readAnswer<C extends JsonValue>(answer: ModelAnswerText, parse: 
   } catch {
     return invalid('has a choice that the parser of the decision could not read');
   }
-  const { ok, value, detail } = (typeof verdict === 'object' && verdict !== null ? verdict : {}) as { ok?: unknown; value?: unknown; detail?: unknown };
-  if (ok !== true) return invalid(`has a choice of another shape${typeof detail === 'string' ? `: ${printable(detail)}` : ''}`);
+  const { ok, value } = (typeof verdict === 'object' && verdict !== null ? verdict : {}) as { ok?: unknown; value?: unknown };
+  if (ok !== true) return invalid('has a choice of another shape');
 
   const returned = parseJsonValue(value, 'choice');
   if (!returned.ok) return refused('choice_changed', 'the parser of the decision returned a value that is not JSON data');

@@ -15,8 +15,8 @@ import { accepted, refused, type JsonValue, type ProtocolResult } from '../proto
 import { INPUT_CLOSE, INPUT_OPEN } from './prompt.ts';
 
 /**
- * Checks the shape of a choice. `given` is a copy of the choice as the model gave it: plain JSON data that the parser may read as it likes. The parser returns that value, or a refusal that names the
- * member that is wrong. The detail of a refusal names a member and never repeats a value of the choice. A parser never throws.
+ * Checks the shape of a choice. `given` is a copy of the choice as the model gave it: plain JSON data that the parser may read as it likes. The parser returns that value, or a refusal. The detail of
+ * a refusal is for the parser's own tests and logs. `decide` does not copy it into a failure, because a parser can name a key that the model wrote (`checkMembers` does). A parser never throws.
  *
  * `C` is the type of the choice. Write it as a type alias of JSON data: an interface is not assignable to `JsonValue`.
  */

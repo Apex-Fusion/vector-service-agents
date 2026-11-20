@@ -99,6 +99,23 @@ describe('subJobOf', () => {
     expect(result.detail).not.toContain(MARKER);
   });
 
+  // The supplier writes the receipt. A refusal of the receipt says where, by depth, and repeats no key and no value.
+  it.each<[string, unknown, string]>([
+    ['a receipt that is a list', [1], 'the record of the hire has a receipt that is not a JSON object'],
+    ['a receipt with a number that is not finite', { prompt_tokens: Number.NaN }, 'the record of the hire has a receipt that holds, at depth 2, a value or a key that JSON data does not allow'],
+    ['a key that is a whole number below a key', { prompt_tokens: { [`${MARKER}-key`]: { 7: 1 } } }, 'the record of the hire has a receipt that holds, at depth 3, a value or a key that JSON data does not allow'],
+    ['the key __proto__ below a key', { prompt_tokens: JSON.parse(`{"${MARKER}-key":{"__proto__":1}}`) }, 'the record of the hire has a receipt that holds, at depth 3, a value or a key that JSON data does not allow'],
+    ['a key that is not in the NFC form', { [`${MARKER}-cafe\u0301`]: 1 }, 'the record of the hire has a receipt that holds, at depth 1, a value or a key that JSON data does not allow'],
+    ['a nest that is too deep', (() => { let value: unknown = 1; for (let level = 0; level < 40; level += 1) value = { [`${MARKER}-key`]: value }; return value; })(), 'the record of the hire has a receipt that is nested deeper than 32 levels'],
+  ])('says where the receipt is refused and names no key of it: %s', (_name, receipt, detail) => {
+    expect(subJobOf(record({ receipt }))).toStrictEqual({ ok: false, code: 'llm_bad_result', detail });
+  });
+
+  it('takes the receipt that has the same members without the faults: the twin of the cases above', () => {
+    const receipt = { prompt_tokens: { [`${MARKER}-key`]: { a: 1 } }, completion_tokens: 2 };
+    expect(subJobOf(record({ receipt }))).toMatchObject({ ok: true, value: { receipt } });
+  });
+
   it('never repeats a value of a record that has the wrong form', () => {
     for (const field of ['advert_ref', 'escrow_ref', 'supplier_pkh', 'capability_id', 'receipt_signature']) {
       const result = subJobOf(record({ [field]: field === 'capability_id' || field === 'receipt_signature' ? 7 : `${MARKER}` }));

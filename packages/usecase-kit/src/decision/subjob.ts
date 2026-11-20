@@ -3,15 +3,16 @@
 // that: it builds the `SubJob` from the record of the hire, and it refuses a record in which one of the eight checks is missing or is not true. A refusal here is never a pass.
 //
 // Every member of the sub-job is checked for its form: the references (`<64 hex>#<index>`), the key hash (56 lower-case hex characters), the capability, the signature and the receipt. The receipt is
-// returned as a new copy of plain JSON data.
+// returned as a new copy of plain JSON data. The supplier writes the receipt, so a refusal of the receipt says where, by depth, and repeats no key and no value (see where.ts).
 import type { HireRecord } from '@vsa/hire-kit';
-import { RECEIPT_CHECKS, accepted, parseDocument, parseOutputRef, refused, type ProtocolResult, type ReceiptCheck, type SubJob } from '../protocol/index.ts';
+import { RECEIPT_CHECKS, accepted, isPlainObject, parseDocument, parseOutputRef, refused, type ProtocolResult, type ReceiptCheck, type SubJob } from '../protocol/index.ts';
+import { whereNotJson } from './where.ts';
 
 const KEY_HASH = /^[0-9a-f]{56}$/;
 
 /**
  * The sub-job of a hire record. `llm_receipt_failed` says that a check of the receipt is not true: the hire must not give a decision. `llm_bad_result` says that the record has a member that is
- * missing or has the wrong form. Both are codes of a hire that failed. The refusal never repeats a value of the record.
+ * missing or has the wrong form. Both are codes of a hire that failed. The refusal never repeats a key or a value of the record.
  */
 export function subJobOf(record: HireRecord): ProtocolResult<SubJob, 'llm_receipt_failed' | 'llm_bad_result'> {
   const bad = (what: string): ProtocolResult<never, 'llm_bad_result'> => refused('llm_bad_result', `the record of the hire has ${what}`);
@@ -34,7 +35,7 @@ export function subJobOf(record: HireRecord): ProtocolResult<SubJob, 'llm_receip
   if (typeof record.capability_id !== 'string' || record.capability_id === '') return bad('no capability');
   if (typeof record.receipt_signature !== 'string' || record.receipt_signature === '') return bad('no signature');
   const receipt = parseDocument(record.receipt, 'receipt');
-  if (!receipt.ok) return bad(receipt.detail);
+  if (!receipt.ok) return bad(isPlainObject(record.receipt) ? `a receipt that ${whereNotJson(record.receipt)}` : 'a receipt that is not a JSON object');
   return accepted({
     capability_id: record.capability_id,
     advert_ref: advertRef.value,
