@@ -37,14 +37,14 @@ describe('services/mock-systems/Dockerfile', () => {
   });
 
   test('every path it copies from the build context exists in the repository, and the final stage copies nothing but the workspace of the builder', () => {
-    expect(copies).toHaveLength(12);
+    expect(copies).toHaveLength(16);
     for (const { line } of copies) for (const source of sourcesOf(line)) expect(existsSync(join(root, source)), `${source} (${line})`).toBe(true);
     expect(final.filter((line) => /^COPY /.test(line))).toStrictEqual(['COPY --from=builder --chown=node:node /repo /repo']);
   });
 
   test('the builder installs the service and every workspace package it depends on: the manifests, then the install from the lockfile, then the sources', () => {
     const closure = workspaceClosure('services/mock-systems');
-    expect(closure).toStrictEqual(['packages/buyer-core', 'packages/id-kit', 'packages/service-kit', 'packages/vector-read', 'services/mock-systems']);
+    expect(closure).toStrictEqual(['packages/buyer-core', 'packages/hire-kit', 'packages/id-kit', 'packages/service-kit', 'packages/usecase-kit', 'packages/vector-read', 'services/mock-systems']);
     const install = instructions.findIndex((line) => /^RUN pnpm install /.test(line));
     expect(instructions[install]).toBe("RUN pnpm install --frozen-lockfile --filter '@vsa/mock-systems...'");
     expect(packageJson('services/mock-systems').name).toBe('@vsa/mock-systems');
