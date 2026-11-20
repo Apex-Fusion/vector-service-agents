@@ -158,3 +158,102 @@ describe('a text that cannot be read back', () => {
     expect(renderManifest('reorder-agent', () => sampleManifest('reorder-agent'))).toMatchObject({ ok: true });
   });
 });
+
+describe('a manifest that cannot be written again', () => {
+  it('is refused and never passes: the check of the written form runs, and a write that fails is not a pass', () => {
+    const write = JSON.stringify;
+    let calls = 0;
+    const stringify = vi.spyOn(JSON, 'stringify').mockImplementation((value, replacer, space) => {
+      calls += 1;
+      // The first two calls write the manifest for the two settings of a kind with no fault value. The third call is the check of the written form.
+      if (calls === 3) throw new RangeError('Maximum call stack size exceeded');
+      return write(value, replacer, space);
+    });
+    try {
+      expect(refusal(renderManifest('reorder-agent', () => sampleManifest('reorder-agent'))).code).toBe('manifest_not_in_written_form');
+      expect(calls).toBe(3);
+    } finally {
+      stringify.mockRestore();
+    }
+    expect(renderManifest('reorder-agent', () => sampleManifest('reorder-agent'))).toMatchObject({ ok: true });
+  });
+});
+
+/** `JSON.rawJSON` of the Node 22 line. It makes a value that `JSON.stringify` writes as the text that its author gave, so the text can hold an escape that a reader decodes. */
+interface RawJson {
+  rawJSON(text: string): object;
+}
+
+const hasRawJson = (json: JSON): json is JSON & RawJson => 'rawJSON' in json && typeof json.rawJSON === 'function';
+
+function rawJson(text: string): object {
+  if (!hasRawJson(JSON)) throw new Error('JSON.rawJSON is not in this Node');
+  return JSON.rawJSON(text);
+}
+
+describe.skipIf(!hasRawJson(JSON))('a text that is not in the written form', () => {
+  it('is refused when it writes a fault value with an escape, which a reader decodes: the case of the review, and its twin', () => {
+    const escaped = { ...sampleManifest('order-desk'), name: rawJson('"confirm_wrong\\u005flot"') };
+    // The served text has the escape, a reader decodes the fault value, and a count in the text finds none.
+    const text = JSON.stringify(escaped);
+    expect(text).toContain('confirm_wrong\\u005flot');
+    expect(JSON.parse(text).name).toBe('confirm_wrong_lot');
+    expect(refusal(renderManifest('order-desk', () => escaped)).code).toBe('manifest_not_in_written_form');
+    // The twin: the same value, written in the form that the kit writes, is a fault value outside the kit places.
+    expect(refusal(renderManifest('order-desk', () => ({ ...sampleManifest('order-desk'), name: 'confirm_wrong_lot' }))).code).toBe('manifest_names_fault');
+  });
+
+  const ESCAPED: [string, string][] = [
+    ['a fault value with an escape for its underscore', '"confirm_wrong\\u005flot"'],
+    ['a fault value of another kind with an escape', '"quote_off\\u005fprice_list"'],
+    ['an escape for a letter of an innocent text', '"caf\\u00e9"'],
+    ['an escape of a slash', '"a\\/b"'],
+    ['a placeholder with escapes for its angle brackets', '"\\u003cOPERATOR_CONTACT\\u003e"'],
+    ['a number that JSON.stringify writes in another way', '1.0'],
+    ['a number with an exponent', '1E2'],
+  ];
+
+  it.each(ESCAPED)('is refused, in a served manifest and in a template, for %s', (name, json) => {
+    const served = () => ({ ...sampleManifest('order-desk'), name: rawJson(json) });
+    const template = () => ({ ...sampleManifest('order-desk', { template: true }), name: rawJson(json) });
+    expect(refusal(renderManifest('order-desk', served)).code, name).toBe('manifest_not_in_written_form');
+    expect(refusal(renderManifest('order-desk', template, { template: true })).code, name).toBe('manifest_not_in_written_form');
+  });
+
+  it('takes the same values when they are written in the form that the kit writes: the twins', () => {
+    for (const value of ['café', 'a/b', 1, 100, '<not a placeholder>']) {
+      expect(renderManifest('order-desk', () => ({ ...sampleManifest('order-desk'), name: value })), String(value)).toMatchObject({ ok: true });
+    }
+    expect(refusal(renderManifest('order-desk', () => ({ ...sampleManifest('order-desk'), name: '<OPERATOR_CONTACT>' }))).code).toBe('manifest_has_placeholder');
+  });
+});
+
+describe('a text with every escape that JSON.stringify makes', () => {
+  it('is in the written form: it renders, in a served manifest and in a template, and the text is what JSON.stringify writes', () => {
+    const name = 'quote " backslash \\ newline \n tab \t control \u0001 lone \ud800 separator \u2028 emoji \u{1F600} accent \u00e9';
+    const served = unwrap(renderManifest('order-desk', () => ({ ...sampleManifest('order-desk'), name })));
+    expect(served.text).toBe(JSON.stringify({ ...sampleManifest('order-desk'), name }));
+    const template = unwrap(renderManifest('order-desk', () => ({ ...sampleManifest('order-desk', { template: true }), name }), { template: true }));
+    expect(template.text).toBe(`${JSON.stringify({ ...sampleManifest('order-desk', { template: true }), name }, null, 2)}\n`);
+  });
+});
+
+describe('the bytes of a manifest that is in the written form', () => {
+  // The hashes of the served text and of the template text of the sample manifest of each kind, as they were before the check of the written form.
+  const BEFORE: Record<AgentKind, readonly [string, string]> = {
+    'reorder-agent': ['773b325a733b82cb6936c27dbd988e3353c3760097c833baf0bf139922aabdba', '9a76a888a05e46f898c93b5fa1e1f6cb2d3089ebc8cc2da40e3c07b58e911e2b'],
+    'prior-authorization-agent': ['ca6d8b535c131cc7cb7dfd5f47f977d6ec3b741d01192a8cb9fdc426c67754dc', '64c21f01d2104514ed7f12256568d4507debff897e45c705cd2419db484f9a24'],
+    'sourcing-agent': ['77dc1b23f67c9a10382b7cacf736d55b4d517bbe57c864bd72d87c6421dc88ef', 'c6928486a7aec40774196ac090e3cdcd64bc512588501b8334ee7f60c51ed69c'],
+    'order-desk': ['19dd2112bdf5bbaf208fb4c95e6b2b3e64baf6248948cb4f95438043e8943407', '7e40a3d214255d15460e7e10b797ae6dea30ffa2fe048d66949f231916ec19d3'],
+    'insurer-intake-agent': ['3e73274e87226859803a2d8dfa3949423a469ad536c7928e006bc6669c2d35bf', 'ca60abefd3b9328c94d9c9580a82ca6c853ed4b57e7c0b6f2346c6c5230ab9f6'],
+    'bid-desk': ['10ad5430b6a93005afc694d2f9d9cf850aac8a1f2b757801b575abed65330976', '9c5f38960883fd2cd758b51c67cf99a9aed220ab981f0fa6533b6c72a495a02e'],
+  };
+
+  it.each(AGENT_KINDS)('are the same as before for %s, for every setting: the served text and the template', (kind) => {
+    for (const setting of ['', ...FAULT_MODES[kind]]) {
+      const served = unwrap(renderManifest(kind, () => { readFaultSwitch(kind, setting); return sampleManifest(kind); }));
+      const template = unwrap(renderManifest(kind, () => { readFaultSwitch(kind, setting); return sampleManifest(kind, { template: true }); }, { template: true }));
+      expect([served.sha256, template.sha256], `${kind} ${setting}`).toStrictEqual([...BEFORE[kind]]);
+    }
+  });
+});

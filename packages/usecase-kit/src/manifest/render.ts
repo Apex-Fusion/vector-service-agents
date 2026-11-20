@@ -6,7 +6,8 @@
 // renders differ. That check works only when the builder takes the setting from its argument. A builder that reads the environment by itself gives the same bytes in one process, and a fault process
 // and a clean process then serve other bytes. So `renderManifest` also checks the TEXT that is served: a fault value of ANY kind may stand only in the places that the kit makes, the members of
 // `behaviour.fault_modes` and the one gap sentence, and a key `fault_mode` may stand nowhere. No walk with a depth limit decides this: the text is searched, and a text that cannot be written or
-// read back is refused.
+// read back is refused. The search sees what a reader of the text decodes only when the text is in the ONE form that the kit writes. So the text must equal what `JSON.stringify` writes for the
+// manifest that the text holds: a value that was written with an escape (`JSON.rawJSON` makes one) is refused, because a reader decodes the escape and a count in the text does not.
 import { createHash } from 'node:crypto';
 import { AGENT_KINDS, FAULT_MODES, accepted, isPlainObject, refused } from '../protocol/index.ts';
 import type { AgentKind, Digest, FaultSetting, ProtocolResult, Refused } from '../protocol/index.ts';
@@ -29,7 +30,8 @@ export type ManifestRefusal =
   | 'manifest_schema'
   | 'manifest_behaviour'
   | 'manifest_fault_gap'
-  | 'manifest_names_fault';
+  | 'manifest_names_fault'
+  | 'manifest_not_in_written_form';
 
 /** A placeholder of a template, found anywhere in the text. */
 const PLACEHOLDER_IN_TEXT = /<[A-Z][A-Z0-9_]*>/;
@@ -40,11 +42,16 @@ const FAULT_KEY_IN_TEXT = /"fault_mode"\s*:/;
 /** Every fault value of every kind. */
 const FAULT_VALUES: readonly string[] = AGENT_KINDS.flatMap((kind) => [...FAULT_MODES[kind]]);
 
-/** The text of a manifest: the compact JSON that a service serves, or the indented JSON of a template with a line break at the end. It is null for a value that is not a JSON object. */
+/** The text that the kit writes for a manifest: the compact JSON that a service serves, or the indented JSON of a template with a line break at the end. */
+function writtenText(manifest: object, template: boolean): string {
+  return template ? `${JSON.stringify(manifest, null, 2)}\n` : JSON.stringify(manifest);
+}
+
+/** The text of a manifest in the written form. It is null for a value that is not a JSON object, and for a value that JSON cannot write. */
 function textOf(manifest: unknown, template: boolean): string | null {
   if (!isPlainObject(manifest)) return null;
   try {
-    const text = template ? `${JSON.stringify(manifest, null, 2)}\n` : JSON.stringify(manifest);
+    const text = writtenText(manifest, template);
     return typeof text === 'string' ? text : null;
   } catch {
     return null;
@@ -148,6 +155,14 @@ function checkManifest(kind: AgentKind, text: string, options: ManifestOptions):
     return refused('manifest_not_json', 'the text of the manifest cannot be read back as JSON');
   }
   if (!isPlainObject(manifest)) return refused('manifest_not_json', 'the manifest must be a JSON object');
+  // The text must be the text that the kit writes for the manifest that it holds. Every escape in it is then an escape that `JSON.stringify` makes, so the counts below see what a reader decodes.
+  let again: string | null;
+  try {
+    again = writtenText(manifest, options.template === true);
+  } catch {
+    again = null;
+  }
+  if (again !== text) return refused('manifest_not_in_written_form', 'the text of the manifest is not the text that the kit writes for the manifest that it holds, so a reader and a count in the text could see other values: a JSON.rawJSON value is one cause');
   if (options.template !== true && PLACEHOLDER_IN_TEXT.test(text)) return refused('manifest_has_placeholder', 'the manifest still has a placeholder of the template, and a service must not serve a template');
   if (manifest.schema !== MANIFEST_SCHEMA) return refused('manifest_schema', `the manifest schema must be ${MANIFEST_SCHEMA}`);
   if (FAULT_KEY_IN_TEXT.test(text)) {
