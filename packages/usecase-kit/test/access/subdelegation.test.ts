@@ -2,7 +2,7 @@
 // question: is a sub-delegation ever left alive? Each test of an end has its twin: the same run in which nothing goes wrong, or the same failure at a point where it is harmless.
 import { describe, expect, it } from 'vitest';
 import { MAX_SUB_DELEGATION_MS, MIN_SUB_DELEGATION_MS, tokenTarget, withSubDelegation } from '../../src/access/index.ts';
-import type { DelegationDatum, SubDelegationHandle, SubDelegationRun } from '../../src/access/index.ts';
+import type { DelegationDatum, LeftSubDelegation, SubDelegationHandle, SubDelegationRun } from '../../src/access/index.ts';
 import { AGENT_KEY, BASES, DAY, NOW, OTHER_KEY, PARENT_ID, SUBAGENT_ID, SUBAGENT_KEY, WALLET, expectTarget, markSigner, parentDatum, subWorld, type SubWorld } from './support.ts';
 
 
@@ -422,5 +422,60 @@ describe('the end of a run that cannot be sent', () => {
     const run = await go(w, idle);
     expect(run.kind).toBe('not_ready');
     expect(run.end.state).toBe('not_ended');
+  });
+});
+
+describe('the reference that is given before the Delegate is sent', () => {
+  it('is given to the hook before the node gets the Delegate, and it is the reference that a failed end returns', async () => {
+    const w = subWorld();
+    const seen: { reference: LeftSubDelegation; logBefore: string[] }[] = [];
+    const deps = { ...w.deps, beforeSend: (reference: LeftSubDelegation): void => void seen.push({ reference, logBefore: [...w.chain.log] }) };
+    w.chain.faults.buildUndelegateThrows = true;
+    const run = await w.clock.run(withSubDelegation(deps, w.request, w.limits, idle));
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.logBefore).toContain('buildDelegate');
+    expect(seen[0]!.logBefore).not.toContain('submit:delegate');
+    expect(seen[0]!.reference).toMatchObject({ id: w.chain.subId, parent: PARENT_ID, action: 'erp.stock.read', resource: w.target.resource, endTxHash: null });
+    expect(run.end.state === 'not_ended' && run.end.left).toStrictEqual(seen[0]!.reference);
+  });
+
+  it('is awaited before the send when the hook is asynchronous', async () => {
+    const w = subWorld();
+    const order: string[] = [];
+    const deps = {
+      ...w.deps,
+      beforeSend: async (): Promise<void> => {
+        await w.clock.sleep(1_000);
+        order.push(`hook after ${w.chain.log.includes('submit:delegate') ? 'send' : 'build'}`);
+      },
+    };
+    expect((await w.clock.run(withSubDelegation(deps, w.request, w.limits, idle))).kind).toBe('returned');
+    expect(order).toStrictEqual(['hook after build']);
+  });
+
+  it('stops the run when the hook throws: nothing is sent and nothing is ended; the twin is the run with a hook that works', async () => {
+    const w = subWorld();
+    const failing = { ...w.deps, beforeSend: (): void => { throw new Error('the store is full'); } };
+    const run = await w.clock.run(withSubDelegation(failing, w.request, w.limits, idle));
+    expect(run).toMatchObject({ ok: false, kind: 'not_ready', failure: { code: 'journal_failed' }, end: { state: 'not_made' } });
+    expect(run.kind === 'not_ready' && run.failure.detail).toContain('the store is full');
+    expect(w.chain.submitted).toHaveLength(0);
+    const rejecting = { ...w.deps, beforeSend: async (): Promise<void> => Promise.reject(new Error('disk')) };
+    expect(await w.clock.run(withSubDelegation(rejecting, w.request, w.limits, idle))).toMatchObject({ ok: false, failure: { code: 'journal_failed' } });
+    const working = { ...w.deps, beforeSend: (): void => undefined };
+    expect((await w.clock.run(withSubDelegation(working, w.request, w.limits, idle))).kind).toBe('returned');
+  });
+
+  it('is not given when there is nothing to name: a wrong request, a parent that is not live, and a build that the builder refuses', async () => {
+    let calls = 0;
+    const count = (w: SubWorld) => ({ ...w.deps, beforeSend: (): void => void (calls += 1) });
+    const wrong = subWorld({ limits: { jobTimeoutMs: 0 } });
+    await wrong.clock.run(withSubDelegation(count(wrong), wrong.request, wrong.limits, idle));
+    const gone = subWorld({ parent: null });
+    await gone.clock.run(withSubDelegation(count(gone), gone.request, gone.limits, idle));
+    const refused = subWorld();
+    refused.chain.faults.buildDelegateThrows = true;
+    await refused.clock.run(withSubDelegation(count(refused), refused.request, refused.limits, idle));
+    expect(calls).toBe(0);
   });
 });

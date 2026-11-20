@@ -234,6 +234,11 @@ export class FakeDelegations implements DelegationChain {
     return this.#sub?.id ?? null;
   }
 
+  /** Takes the build of another builder as the sub-delegation that this ledger holds, so that the later steps of a run find it. */
+  adopt(built: DelegateBuild): void {
+    this.#sub = { id: built.id, datum: built.delegation, landsAt: Number.MAX_SAFE_INTEGER };
+  }
+
   async readDelegation(id: string): Promise<LiveDelegation | null> {
     this.log.push(`read:${id === PARENT_ID ? 'parent' : 'sub'}`);
     if (this.faults.readThrows === true) throw new Error('the ledger cannot be read');
@@ -284,12 +289,13 @@ export class FakeDelegations implements DelegationChain {
     if (this.faults.buildUndelegateThrows === true || sub === null || params.id !== sub.id || this.clock.now() < sub.landsAt) throw new Error(`No live delegation ${params.id}: it does not exist, or it is not confirmed yet.`);
     return {
       txCbor: `undelegate:${sub.id}`, txHash: `ff${sub.id.slice(2)}`, fee: '190000', feeAda: '0.19', validFrom: this.clock.now() - 60_000, validTo: this.clock.now() + 1_800_000,
-      requiredSigners: [{ keyHash: AGENT_KEY, roles: ['delegation key of the delegator'] }], id: sub.id, delegation: sub.datum, releasedLovelace: 2_400_000n, authorityLink: 0, authority: 'the agent',
+      requiredSigners: [{ keyHash: params.signer ?? AGENT_KEY, roles: ['delegation key of the delegator'] }], id: sub.id, delegation: sub.datum, releasedLovelace: 2_400_000n, authorityLink: 0, authority: 'the agent',
     };
   }
 
   async submit(signedCborHex: string): Promise<string> {
-    const kind = signedCborHex.startsWith('delegate:') ? 'delegate' : 'undelegate';
+    // The first transaction that is sent after a build is the Delegate; a sub-delegation that has landed or was sent gets the Undelegate.
+    const kind = this.#sub !== null && this.#sub.landsAt === Number.MAX_SAFE_INTEGER ? 'delegate' : 'undelegate';
     this.log.push(`submit:${kind}`);
     this.submitted.push({ kind, cbor: signedCborHex, at: this.clock.now() });
     if (kind === 'delegate') {
