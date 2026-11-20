@@ -27,7 +27,7 @@ export interface TestKey {
   readonly publicKey: string;
   readonly keyHash: string;
 }
-const keyOf = (n: number): TestKey => ({ n, ...testKey(n) });
+export const keyOf = (n: number): TestKey => ({ n, ...testKey(n) });
 export const privateKeyOf = (key: TestKey): CML.PrivateKey => CML.PrivateKey.from_normal_bytes(Buffer.alloc(32, key.n));
 
 /** The two delegation keys of the agent. */
@@ -91,6 +91,8 @@ export interface Setup {
   otherKeyHashes: string[];
   ledger: CosignLedger;
   limits: Record<string, string>;
+  /** Replaces the sign function of each delegation key: it gets the key and the function that signs well. */
+  sign: (key: TestKey, good: DelegationKey['sign']) => DelegationKey['sign'];
 }
 
 export interface Harness {
@@ -101,6 +103,9 @@ export interface Harness {
   /** The clock: a test moves it. */
   clock: { now: number };
 }
+
+/** The config of the route of the agent, and what the tests watch: the clock, the sign calls and the log. */
+export type Watched = Omit<Harness, 'route'> & { config: CosignConfig };
 
 /** A sign function over the private key of `key`. */
 export function signerOf(key: TestKey, signed: Harness['signed'] = []): DelegationKey {
@@ -114,8 +119,11 @@ export function signerOf(key: TestKey, signed: Harness['signed'] = []): Delegati
   };
 }
 
-/** The route of the agent, with the world of the tests. A test changes what it needs: the clock, the allowlist, the keys of the service, the ledger. */
-export function harness(over: Partial<Setup> = {}): Harness {
+/** The key `signer` with its sign function replaced by `replace`, when a test gives one. */
+const withSign = (signer: DelegationKey, key: TestKey, replace: Setup['sign'] | undefined): DelegationKey => (replace === undefined ? signer : { publicKey: signer.publicKey, sign: replace(key, signer.sign) });
+
+/** The config of the route of the agent, with the world of the tests. A test changes what it needs: the clock, the allowlist, the keys of the service, the ledger. */
+export function configOf(over: Partial<Setup> = {}): Watched {
   const clock = { now: over.now ?? NOW };
   const signed: Harness['signed'] = [];
   const logs: string[] = [];
@@ -123,16 +131,31 @@ export function harness(over: Partial<Setup> = {}): Harness {
   const settings = parseCosignSettings({ [COSIGN_SETTINGS.allowlist]: (over.allowed ?? [PRINCIPAL.keyHash]).join('\n'), ...over.limits });
   if (!settings.ok) throw new Error(`test settings: ${settings.detail}`);
   const config: CosignConfig = {
-    agentDid: AGENT_DID, deployment: DEPLOYMENT, delegationKeys: keys.map((key) => signerOf(key, signed)), otherKeyHashes: over.otherKeyHashes ?? [SUPPLIER.keyHash, SERVICE.keyHash],
+    agentDid: AGENT_DID, deployment: DEPLOYMENT, delegationKeys: keys.map((key) => withSign(signerOf(key, signed), key, over.sign)), otherKeyHashes: over.otherKeyHashes ?? [SUPPLIER.keyHash, SERVICE.keyHash],
     settings: settings.value, ledger: over.ledger ?? ledgerOf(world()), systemStartMs: SYSTEM_START_MS, now: () => clock.now, log: (line) => logs.push(line),
   };
+  return { config, signed, logs, clock };
+}
+
+/** The route of the agent, with the world of the tests. */
+export function harness(over: Partial<Setup> = {}): Harness {
+  const { config, ...watched } = configOf(over);
   const made = createCosignRoute(config);
   if (!made.ok) throw new Error(`test route: ${made.detail}`);
-  return { route: made.value, signed, logs, clock };
+  return { route: made.value, ...watched };
 }
 
 /** The request body of the route for a transaction. */
 export const requestOf = (hex: string): string => JSON.stringify({ transaction: hex });
+
+/** A promise and the function that settles it. A test holds a read of the ledger at a gate with it. (`Promise.withResolvers` is not in the library of the target of this package, es2022.) */
+export function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
 
 // ─── Changes that make a hostile transaction out of a build ─────────────────────────────────────────────────────────────────────
 
@@ -226,6 +249,15 @@ export function withRedeemers(hex: string, tags: number[]): string {
     p.witnesses.set_redeemers(CML.Redeemers.new_arr_legacy_redeemer(list));
   });
 }
+/** The transaction with a redeemer for each of `tags`, in the form of a map (key: tag and index, value: data and units) that the newer ledger takes. One index for each tag, so the keys differ. */
+export function withRedeemerMap(hex: string, tags: number[]): string {
+  return changed(hex, (p) => {
+    const map = CML.MapRedeemerKeyToRedeemerVal.new();
+    for (const tag of tags) map.insert(CML.RedeemerKey.new(tag, 0n), CML.RedeemerVal.new(CML.PlutusData.new_integer(CML.BigInteger.from_str('0')), CML.ExUnits.new(1n, 1n)));
+    p.witnesses.set_redeemers(CML.Redeemers.new_map_redeemer_key_to_redeemer_val(map));
+  });
+}
+
 /** The transaction with the required signers `hashes`. */
 export function withRequiredSigners(hex: string, hashes: string[]): string {
   return changed(hex, (p) => {
