@@ -113,8 +113,8 @@ describe('decide: a clock that cannot be read is never enough time', () => {
 
 describe('decide: a decision that waits in the lane until after the deadline', () => {
   // The check of `decide` is made when the decision starts. A decision that starts with time left, waits for the lane of its key, and gets its turn after the deadline is checked by the hire kit, at
-  // the moment when the lane gives the turn. This test turns on when the hire kit has that check.
-  it.skip('does not post for it: needs the turn check of the hire kit', async () => {
+  // the moment when the lane gives the turn.
+  it('does not post for it: the hire kit ends it at its turn, and nothing is posted or locked', async () => {
     const gate = deferred();
     const reached = deferred();
     let held = true;
