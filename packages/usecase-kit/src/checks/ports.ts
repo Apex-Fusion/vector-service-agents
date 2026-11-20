@@ -1,8 +1,8 @@
 // packages/usecase-kit/src/checks/ports.ts
-// The ports of the checks. Every read of the chain, every call to the identity gateway and every read of the clock goes through them, so that a test gives fixtures and fakes.
+// The ports of the checks. Every read of the chain, every call to the identity gateway and every read of the clock goes through a port. A test gives fixtures and fakes.
 // The code of the checks reads no key file and no environment variable.
 //
-// A read that fails is never a pass. A port may throw, or the gateway may refuse the call: the check then ends with the code `check_unavailable`, and never with the code of a rule.
+// A read that fails is never a pass. A port can throw, or the gateway can refuse the call. The check then ends with the code `check_unavailable`. It never ends with the code of a rule.
 import { HIRE_ACTION, checkAttestation, checkDelegationUse, escrowPaidFromVault, escrowResource, readDelegation } from '@vsa/buyer-core';
 import type { AttestationCheck, DelegationUseCheck, DelegationView, EscrowVaultResult, LedgerEnv } from '@vsa/buyer-core';
 import type { GatewayClient } from '@vsa/id-kit/client';

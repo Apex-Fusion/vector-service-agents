@@ -1,19 +1,25 @@
 // packages/usecase-kit/src/checks/approval.ts
-// The check of an approval: ONE function that makes the six checks in their order, and answers with the types of the protocol.
+// The check of an approval. ONE function makes the six checks in this order. It answers with the types of the protocol.
 //   found and authentic            approval_not_found
 //   the type is the approval type  approval_wrong_type
 //   the subject is the sender      approval_wrong_subject
-//   the issuer is the root delegator of the delegation: for a key principal the hash of the issuer key is the hash of the root delegator, for an agent root the issuer id is the id of
-//   the root delegator             approval_wrong_issuer
-//   valid at the time of the check by the rule of the registry: active, inside its validity range, the issuer not invalid when it issued the approval
-//                                  approval_revoked, approval_expired, approval_issuer_invalid
-//   the digest is the digest of the document and the salt that were received   approval_digest_mismatch
+//   the issuer is the root delegator of the delegation    approval_wrong_issuer
+//     - Root delegator is a key principal: the hash of the issuer key is the hash of the root delegator.
+//     - Root delegator is an agent: the issuer id is the id of the root delegator.
+//     - The reference names an issuer record: it must be the issuer record of the attestation.
+//   valid at the time of the check by the rule of the registry    approval_revoked, approval_expired, approval_issuer_invalid
+//     - The attestation is active.
+//     - The time is inside its validity range.
+//     - The issuer was not invalid when it issued the approval. The envelope signature verifies, when there is one.
+//   the digest is the digest of the document and the salt that were received    approval_digest_mismatch
 //
-// The time of the check can be before the time of issue. A relying party does not require that the time is after `issued_at`: the registry sets `issued_at` to the end of the validity
-// window of the transaction, so it can be up to an hour after the block. The rule of the registry already refuses a time that is more than an hour before it.
+// The time of the check can be before the time of issue. A relying party does not require that the time is after `issued_at`.
+// The registry sets `issued_at` to the end of the validity window of the transaction. So it can be up to an hour after the block.
+// The rule of the registry refuses a time that is more than an hour before `issued_at`.
 //
-// A null approval is `approval_not_found`, and no read is made. A digest mismatch gives both digests: the one that the attestation holds and the one of the document that was received.
-// A source that cannot be read, or that gives an answer that is not for this check, throws CheckUnavailableError. It is never a pass, and it is never the code of a rule.
+// A null approval is `approval_not_found`. The check makes no read for it.
+// A digest mismatch gives both digests: the digest that the attestation holds, and the digest of the document that was received.
+// A source can fail to answer, or it can give an answer that is not for this check. The check then throws CheckUnavailableError. That is never a pass. It is never the code of a rule.
 import type { CheckLine } from '@vsa/buyer-core';
 import type { Delegator } from '@vsa/vector-read/identity-codec';
 import { APPROVAL_ATT_TYPE, isPlainObject, parseApprovalRef, parseDelegationId, parseDid, parseDigest, proposalDigest } from '../protocol/index.ts';

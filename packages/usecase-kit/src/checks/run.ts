@@ -1,9 +1,9 @@
 // packages/usecase-kit/src/checks/run.ts
-// The run of an ordered list of checks. It runs the checks one after the other, it stops at the first refusal, and it records which checks passed and what they learned.
+// The run of an ordered list of checks. It runs the checks one after the other. It stops at the first refusal. It records which checks passed and what they learned.
 //
-// A check never throws a rule. It answers `{ ok: true, value }`, with the facts that it learned, or `{ ok: false, code, detail }`. The run reads success from `ok` and from nothing else: an answer that is
-// neither `ok: true` nor `ok: false` is a fault of the check, and the run throws it. A fault is never a pass. A check that could not read its source throws CheckUnavailableError, or answers the
-// code `check_unavailable`: the run ends with that code, which is never the code of a rule.
+// A check never throws a rule. It answers `{ ok: true, value }` with the facts that it learned, or `{ ok: false, code, detail }`.
+// The run reads success from `ok` and from nothing else. An answer that is neither `ok: true` nor `ok: false` is a fault of the check, and the run throws it. A fault is never a pass.
+// A check can fail to read its source. It then throws CheckUnavailableError, or it answers the code `check_unavailable`. The run ends with that code. It is never the code of a rule.
 import { accepted, isPlainObject, isRefusalCode, parseDigest, parseDocument, refused } from '../protocol/index.ts';
 import type { Accepted, Digest, JsonValue, RefusalCode, Refused } from '../protocol/index.ts';
 import { CheckUnavailableError } from './ports.ts';

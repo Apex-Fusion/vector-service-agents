@@ -5,8 +5,8 @@
 //   a refusal            { go: false, status, error: <code>, message }    the status is the status of the code in ERROR_STATUS: 403 for the code of a rule, 503 for `check_unavailable`
 //   a fault of the code  the answer is a rejection, and service-kit answers 500 and never a go
 //
-// The checks of the kind come after the shared ones. A check of the kind answers with a refusal code of its own page that a counterparty gives before the Claim: a code that
-// COUNTERPARTY_REFUSALS lists for the kind, that the shared checks do not own, and that is not an AFTER_CLAIM_REFUSALS code. Any other code is a fault of the check.
+// The checks of the kind come after the shared ones. A check of the kind refuses with a code of its own page, and the code must come before the Claim.
+// That is a code that COUNTERPARTY_REFUSALS lists for the kind, that the shared checks do not own, and that AFTER_CLAIM_REFUSALS does not list. Any other code is a fault of the check.
 import type { JobContext, PrecheckAnswer } from '@vsa/service-kit';
 import {
   AFTER_CLAIM_REFUSALS, APPROVAL_REFUSALS, COUNTERPARTY_KINDS, COUNTERPARTY_REFUSALS, DELEGATION_REFUSALS, ERROR_STATUS, SENDER_REFUSALS, VAULT_REFUSALS, isPlainObject,

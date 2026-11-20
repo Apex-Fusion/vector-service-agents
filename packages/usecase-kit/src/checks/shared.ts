@@ -9,8 +9,8 @@
 // What a pass learns, as facts: `organisation` and `organisation_verified` (the organisation of the sender and whether the gateway verified it: recorded, never a reason to refuse),
 // and for an approval `approval_attestation`, `approval_issuer_did`, `approval_issuer_key_hash` and `approval_valid_until`.
 //
-// The buyer key is the key hash of the job context. The runtime read it from the escrow on the ledger. Nothing in the body of the request names it, and a member of the body that looks
-// like a buyer key is not read.
+// The buyer key is the key hash of the job context. The runtime read it from the escrow on the ledger.
+// Nothing in the body of the request names it. A member of the body that looks like a buyer key is not read.
 import type { JobContext } from '@vsa/service-kit';
 import type { Resolution } from '@vsa/id-kit/client';
 import { COUNTERPARTY_KINDS, HANDOFF_SCHEMA, RFQ_SCHEMA, accepted, isPlainObject, parseDelegationId, parseDid, parseOutputRef, refused } from '../protocol/index.ts';
