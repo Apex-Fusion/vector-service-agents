@@ -81,6 +81,7 @@ describe('checkCleanRun', () => {
       [{ service: 7, kind: 'order-desk', env: env() }],
       [{ service: 'a', kind: 'order-desk', env: env(), extra: 1 }],
       [null],
+      [{ service: 'a', kind: 'order-desk', env: undefined }],
     ];
     for (const services of bad) expect(checkCleanRun(services as SeenService[]), JSON.stringify(services)).toMatchObject({ ok: false, code: 'bad_input' });
     expect(checkCleanRun([service('a', 'order-desk'), service('b', 'bid-desk')])).toMatchObject({ ok: true });
@@ -106,24 +107,64 @@ describe('checkCleanRun', () => {
     }
   });
 
-  it('refuses a FAULT_MODE that the environment inherits from a prototype, because it cannot tell the effective value as data', () => {
-    for (const inherited of ['', 'confirm_wrong_lot']) {
-      const layered = Object.create({ FAULT_MODE: inherited }) as Record<string, unknown>;
-      expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: layered }]), inherited).toMatchObject({ ok: false, code: 'service_unreadable' });
+  it('refuses an environment that is not a record of variables, because the variables in it are in a form that a guard does not read', () => {
+    // Each of them holds FAULT_MODE=confirm_wrong_lot.
+    const holders: [string, unknown][] = [
+      ['a Buffer of an environ file', Buffer.from('PATH=/usr/bin\0FAULT_MODE=confirm_wrong_lot\0')],
+      ['a Map', new Map([['FAULT_MODE', 'confirm_wrong_lot']])],
+      ['a String object', new String('FAULT_MODE=confirm_wrong_lot')],
+      ['a URLSearchParams', new URLSearchParams('FAULT_MODE=confirm_wrong_lot')],
+      ['an object of a class', new (class Env { vars = { FAULT_MODE: 'confirm_wrong_lot' }; })()],
+      ['an array of lines', ['FAULT_MODE=confirm_wrong_lot']],
+      ['a text', 'FAULT_MODE=confirm_wrong_lot'],
+      ['a number', 7],
+      ['a Date', new Date(0)],
+      ['an object that inherits FAULT_MODE from another object', Object.create({ FAULT_MODE: 'confirm_wrong_lot' })],
+    ];
+    for (const [name, value] of holders) {
+      const seenAs = [{ service: 'svc', kind: 'order-desk', env: value }] as SeenService[];
+      expect(checkCleanRun(seenAs), name).toMatchObject({ ok: false, code: 'bad_input' });
+      expect(checkFaultRun(seenAs, { service: 'svc', value: 'confirm_wrong_lot' }), name).toMatchObject({ ok: false, code: 'bad_input' });
     }
   });
 
-  it('takes an environment with a prototype that has no FAULT_MODE, and reads its own FAULT_MODE: the twins', () => {
-    const base = { PATH: '/usr/bin' };
-    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: Object.create(base) as Record<string, unknown> }])).toMatchObject({ ok: true });
-    const own = Object.assign(Object.create(base) as Record<string, unknown>, { FAULT_MODE: 'confirm_wrong_lot' });
-    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: own }])).toMatchObject({ ok: false, code: 'fault_set' });
+  it('takes a record of variables: a plain object, an object with no prototype, an object with the prototype of process.env, and process.env itself: the twins', () => {
+    const noPrototype = Object.assign(Object.create(null) as Record<string, unknown>, { PATH: '/usr/bin' });
+    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: { PATH: '/usr/bin' } }])).toMatchObject({ ok: true });
+    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: noPrototype }])).toMatchObject({ ok: true });
+    noPrototype.FAULT_MODE = 'confirm_wrong_lot';
+    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: noPrototype }])).toMatchObject({ ok: false, code: 'fault_set' });
+    const shaped = Object.create(Object.getPrototypeOf(process.env)) as Record<string, unknown>;
+    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: shaped }])).toMatchObject({ ok: true });
+    shaped.FAULT_MODE = 'confirm_wrong_lot';
+    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: shaped }])).toMatchObject({ ok: false, code: 'fault_set' });
   });
 
-  it('refuses an environment that cannot be read, and takes a FAULT_MODE that is set to undefined as not set', () => {
-    const proxy = new Proxy({}, { has: () => { throw new Error('no'); } });
-    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: proxy }])).toMatchObject({ ok: false, code: 'service_unreadable' });
-    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: { FAULT_MODE: undefined } }])).toMatchObject({ ok: true });
+  it('refuses a FAULT_MODE that is not a text in a record, also undefined: the variable is deleted to say that it is not set', () => {
+    for (const value of [undefined, null, 0, false, {}, []]) {
+      expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: { FAULT_MODE: value } }]), String(value)).toMatchObject({ ok: false, code: 'bad_fault_mode' });
+    }
+    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: {} }])).toMatchObject({ ok: true });
+    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: { FAULT_MODE: '' } }])).toMatchObject({ ok: true });
+  });
+
+  it('refuses an environment that cannot be read as variables: a Proxy that throws when it is read, and a Proxy whose prototype cannot be read', () => {
+    const throwsOnHas = new Proxy({}, { has: () => { throw new Error('no'); } });
+    const throwsOnPrototype = new Proxy({}, { getPrototypeOf: () => { throw new Error('no'); } });
+    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: throwsOnHas }])).toMatchObject({ ok: false, code: 'service_unreadable' });
+    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: throwsOnPrototype }])).toMatchObject({ ok: false, code: 'service_unreadable' });
+    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: new Proxy({}, {}) }])).toMatchObject({ ok: true });
+  });
+
+  it('refuses a FAULT_MODE that comes from Object.prototype: it is not a variable of the environment, so the guard cannot read it as one', () => {
+    Object.defineProperty(Object.prototype, 'FAULT_MODE', { value: 'confirm_wrong_lot', configurable: true, writable: true, enumerable: false });
+    try {
+      expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: {} }])).toMatchObject({ ok: false, code: 'service_unreadable' });
+      expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: { FAULT_MODE: '' } }])).toMatchObject({ ok: true });
+    } finally {
+      Reflect.deleteProperty(Object.prototype, 'FAULT_MODE');
+    }
+    expect(checkCleanRun([{ service: 'a', kind: 'order-desk', env: {} }])).toMatchObject({ ok: true });
   });
 
   it('never repeats a long value or a value that looks like a key, and cuts the name of a service', () => {

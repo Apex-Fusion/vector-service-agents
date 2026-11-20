@@ -4,9 +4,13 @@
 //
 // A guard never passes by default:
 //   - a list with no service is refused, because a guard that checks nothing must not pass;
-//   - an environment that the script could not read is refused;
+//   - an environment that is not a record of variables is refused (`bad_input`): a Buffer of an environ file, a Map, a text and a class instance hold variables in a form that a guard does not read;
+//   - an environment that the script could not read, or that throws when it is read, is refused (`service_unreadable`);
 //   - a value that is not a text is refused, and it is never read as "no fault".
-// The guards look at the settings of the environments. The field `fault_mode` of each result (see `checkFaultMode`) shows what the running process did, so a script checks both.
+//
+// A guard reads the environments at ONE time. A service that starts again with another value after that read is not seen. So a run script calls the guard before the run and again after it, and the
+// evidence of a run records the value that the guard read for each service. The field `fault_mode` of each result (see `checkFaultMode`) is the second proof of what the running process did. A
+// refusal body of a service has no `fault_mode` (the protocol fixes its two members), so for a counterparty that refused, the value that the guard read is the record.
 import { FAULT_MODES, accepted, checkMembers, isFaultSetting, readMembers, refused } from '../protocol/index.ts';
 import type { AgentKind, FaultSetting, ProtocolResult } from '../protocol/index.ts';
 import { compareDetail, compareSettings } from './compare.ts';
@@ -49,6 +53,22 @@ interface Entry {
   readonly env: object | null;
 }
 
+/**
+ * What the script gave as the environment of a service. A record of variables is an object whose prototype is `Object.prototype`, `null`, or the prototype of the real `process.env` of Node (which is
+ * neither of the two). `null`, and an object that cannot be inspected, are `unreadable`: the script could not read the environment. Everything else is `wrong`: an array, a Buffer, a Map, a String
+ * object, a URLSearchParams, a text and an object of a class hold variables in a form that this guard does not read, so the script gave a wrong thing.
+ */
+function envKind(env: unknown): 'record' | 'unreadable' | 'wrong' {
+  if (env === null) return 'unreadable';
+  if (typeof env !== 'object') return 'wrong';
+  try {
+    const prototype: unknown = Object.getPrototypeOf(env);
+    return prototype === Object.prototype || prototype === null || prototype === Object.getPrototypeOf(process.env) ? 'record' : 'wrong';
+  } catch {
+    return 'unreadable';
+  }
+}
+
 /** The services of a run: a list that is not empty, with a name, a kind of agent and an environment in each entry, and no name twice. */
 function readServices(seen: unknown): ProtocolResult<readonly Entry[], 'bad_input'> {
   if (!Array.isArray(seen) || seen.length === 0) return refused('bad_input', 'the script gave no service to check, and a guard that checks nothing does not pass');
@@ -63,9 +83,10 @@ function readServices(seen: unknown): ProtocolResult<readonly Entry[], 'bad_inpu
     if (typeof service !== 'string' || service === '') return refused('bad_input', `services[${index}].service must be the name of a service`);
     if (names.has(service)) return refused('bad_input', `the service ${label(service)} is in the list twice`);
     if (!isAgentKind(kind)) return refused('bad_input', `the service ${label(service)} has a kind that is not a kind of agent`);
-    if (env !== null && (typeof env !== 'object' || Array.isArray(env))) return refused('bad_input', `the environment of the service ${label(service)} must be an object, or null when it could not be read`);
+    const kindOfEnv = envKind(env);
+    if (kindOfEnv === 'wrong') return refused('bad_input', `the environment of the service ${label(service)} must be a record of variables, as process.env is, or null when it could not be read`);
     names.add(service);
-    entries.push({ service, kind, env });
+    entries.push({ service, kind, env: kindOfEnv === 'record' && typeof env === 'object' ? env : null });
   }
   return accepted(entries);
 }
@@ -89,9 +110,9 @@ function readExpected(expected: unknown, entries: readonly Entry[]): ProtocolRes
 }
 
 /**
- * The text of FAULT_MODE in an environment: not set is the empty text, and a value that is not a text is refused. Only the variable of the environment itself counts. A value that the environment
- * inherits from a prototype, a getter, and an object that cannot be read (a Proxy that throws) are `service_unreadable`: a guard never passes on a value that it cannot read as data. The real
- * `process.env` of Node has a prototype of its own, so the environment is not required to be a plain object.
+ * The text of FAULT_MODE in an environment that is a record of variables: not set is the empty text, and a value that is not a text is refused, `undefined` too (delete the variable to say that it
+ * is not set). Only the variable of the record itself counts. A value that the record inherits from a prototype, a getter, and a record that throws when it is read (a Proxy) are
+ * `service_unreadable`: a guard never passes on a value that it cannot read as data.
  */
 function settingOf(entry: Entry): ProtocolResult<string, 'service_unreadable' | 'bad_fault_mode'> {
   const unreadable = refused('service_unreadable', `the script could not read the environment of the service ${label(entry.service)}`);
@@ -101,7 +122,6 @@ function settingOf(entry: Entry): ProtocolResult<string, 'service_unreadable' | 
     const descriptor = Reflect.getOwnPropertyDescriptor(entry.env, FAULT_MODE_VARIABLE);
     if (descriptor === undefined || !('value' in descriptor)) return unreadable;
     const value: unknown = descriptor.value;
-    if (value === undefined) return accepted('');
     if (typeof value !== 'string') return refused('bad_fault_mode', `${FAULT_MODE_VARIABLE} of the service ${label(entry.service)} must be a text, got ${describeValue(value)}`);
     return accepted(value);
   } catch {
