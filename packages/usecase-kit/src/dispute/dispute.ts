@@ -5,9 +5,10 @@
 // The order of a challenge is fixed, and each step is checked before the next one starts:
 //   0. Read the journal of the job. A job that has a record gets that state, and nothing is sent a second time.
 //   1. Read the claims. A challenge of this agent for this job that is on chain already is found again, and it is the result. The code never files a second one.
-//   2. Choose the claim: among the Open claims of the OTHER party that are claims of this kit and have enough window left, the one with the latest challenge deadline. A claim is a claim of this kit when
-//      its claim document is on chain, its hash is the hash that the claim holds, and it is the document that `claimDocument` writes for that party. Two claims with the same last deadline end the job with
-//      `claim_ambiguous`: the code never chooses by the order of a list. None ends it with `no_open_claim`.
+//   2. Choose the claim. A claim is a target only when ALL hold: its claimer is the other party; its claim document is a claim document of this kit for the capability of the job (it is on chain, its hash
+//      is the hash that the claim holds, and it is the document that `claimDocument` writes for that party and that capability); it was submitted before the job began; it is Open with enough window left;
+//      and its stake is not above the challenge stake. A claim that is not a target is left out and counted by its reason, so the claimer cannot choose the target or block a challenge with a claim of its
+//      own. Among the targets the one with the latest challenge deadline is chosen, and with the same deadline the one with the lowest claim token. None ends the job with `no_open_claim`.
 //   3. Make the evidence document. A document that is refused ends the job. Nothing is on chain yet.
 //   4. In one job of the queue: check the window that is left, read the journal again (another call can have written its record while this job waited), write the journal, publish the evidence
 //      document, and wait for its confirmation. A document that is not confirmed ends the job. The challenge is not built.
@@ -19,7 +20,7 @@
 import { documentHash, txHashOfUri } from '@vsa/buyer-core';
 import { NO_OPEN_CLAIM, accepted, checkMembers, parseDid, parseJsonValue, parseOutputRef, refused } from '../protocol/index.ts';
 import type { Did, Digest, JsonObject, JsonValue, ManifestClaim, OutputRef, ProtocolResult, Refused } from '../protocol/index.ts';
-import { EVIDENCE_STATEMENT, JUROR_MEDIA_TYPE, claimDocument, evidenceDocument, evidenceReferences, parseClaimToken, readClaimDocument } from './documents.ts';
+import { EVIDENCE_STATEMENT, JUROR_MEDIA_TYPE, claimDocument, evidenceDocument, evidenceReferences, parseCapabilityId, parseClaimToken, readClaimDocument } from './documents.ts';
 import type { ApprovalDigestFacts, EvidenceDocumentInput, OrderConfirmationFacts, QuotePriceFacts } from './documents.ts';
 import { MemoryJournal, parseJobRecord } from './journal.ts';
 import type { DisputeJournal, FiledRecord, JobRecord } from './journal.ts';
@@ -42,7 +43,7 @@ export const LEAST_RESOLUTION_DEADLINE_MS = 6 * HOUR_MS + 40 * 60_000;
 
 /** What a challenge needs besides the evidence. The caller reads the values from its own settings: the code has no default. */
 export interface DisputeSettings {
-  /** The stake of a challenge. It must be at least the stake of the claim that it challenges: a challenge with less is refused before anything is published. */
+  /** The stake of a challenge. A claim with a higher stake is not a target: Module-1 refuses a challenge with less stake than the claim that it challenges. */
   readonly challenge_stake_lovelace: bigint;
   /**
    * The resolution deadline of the challenges, in milliseconds. The value of a challenge is the one that the Module-1 deployment names (the `protocol` of the port), and no setting can change it.
@@ -69,9 +70,17 @@ export interface DisputeDeps {
   readonly log?: (line: string) => void;
 }
 
+/** What a claim of the other party must match to be the target of a challenge for a job. */
+export interface ClaimScope {
+  /** The capability that the job hired. The caller knows it from the advert of the job. The target holds a claim document of this kit for this capability. */
+  readonly capability_id: string;
+  /** When the job began, in POSIX milliseconds: the time of the Post of its escrow. A claim that was submitted at or after this time does not cover the job, so it is never the target. */
+  readonly job_began_at: number;
+}
+
 /** A buyer-side agent whose model did not accept a delivery. */
-export interface DeliveryChallengeInput {
-  /** The agent that made the delivery. Its open claim is challenged. */
+export interface DeliveryChallengeInput extends ClaimScope {
+  /** The agent that made the delivery. Its claim that covers the job is challenged. */
   readonly counterparty: Did;
   /** The escrow of the job. A job gets one challenge. */
   readonly escrow_ref: OutputRef;
@@ -79,8 +88,8 @@ export interface DeliveryChallengeInput {
 }
 
 /** A counterparty that refused a request because the digest of the approval is not the digest of the request. */
-export interface ApprovalChallengeInput {
-  /** The sender of the request. Its open claim is challenged. */
+export interface ApprovalChallengeInput extends ClaimScope {
+  /** The sender of the request. Its claim that covers the job is challenged. */
   readonly sender: Did;
   /** The escrow of the job. A job gets one challenge. */
   readonly escrow_ref: OutputRef;
@@ -259,6 +268,21 @@ interface Chosen {
   readonly statement_text: string;
 }
 
+/** Why a claim of the other party is left out of the choice of the target, in the words of the detail of `no_open_claim`. The order of the members is the order of the detail. */
+const SKIPS = {
+  window: 'with a challenge window that ends too soon',
+  began: 'submitted at or after the start of the job',
+  stake: 'with a stake above the challenge stake',
+  not_kit: 'without a claim document of this kit',
+  capability: 'with a claim document for another capability',
+} as const;
+type SkipReason = keyof typeof SKIPS;
+
+/** What the code finds in the claim document of a claim that it looks at: the statement of a target, or the reason that the claim is left out. */
+type Examined =
+  | { readonly kind: 'target'; readonly statement_text: string }
+  | { readonly kind: 'skip'; readonly reason: 'not_kit' | 'capability' };
+
 /** What a challenge knows about its own transactions while it runs. */
 interface Progress {
   /** True once the code is about to send a transaction of the job: from then on the job is not free for a second attempt. */
@@ -376,68 +400,69 @@ export class Dispute {
   // --- The claim that a challenge names ---------------------------------------------------------------------------------------------------------------------------------
 
   /**
-   * The statement of a claim of this kit, or null for a claim that is not one. A claim is a claim of this kit when its claim document is a `vector-tx:` document that is on chain, its hash is the
-   * claim hash that the claim holds, it was published as a claim with the media type of this kit, and it is the document that `claimDocument` writes for the claimer. A document that cannot be read
-   * is `chain_unavailable`.
+   * What the code finds in the claim document of a claim: the statement of a target, or the reason that the claim is left out. A claim is a claim of this kit when its claim document is a `vector-tx:`
+   * document that is on chain, its hash is the claim hash that the claim holds, it was published as a claim with the media type of this kit, and it is the document that `claimDocument` writes for the
+   * claimer. It covers the job only when the capability of the document is the capability of the job. The kit fixes no text of a statement for a capability, so no statement is compared. A document
+   * that cannot be read is `chain_unavailable`.
    */
-  async #kitClaim(claim: ClaimView): Promise<ProtocolResult<string | null, 'chain_unavailable'>> {
-    if (!HASH.test(claim.claim_hash)) return accepted(null);
+  async #examine(claim: ClaimView, scope: ClaimScope): Promise<ProtocolResult<Examined, 'chain_unavailable'>> {
+    const skip = (reason: 'not_kit' | 'capability'): ProtocolResult<Examined, 'chain_unavailable'> => accepted({ kind: 'skip', reason });
+    if (!HASH.test(claim.claim_hash)) return skip('not_kit');
     const read = await this.#document(claim.claim_uri, 'the claim document');
     if (!read.ok) return read;
     const document = read.value;
-    if (document === null || documentHash(document.bytes) !== claim.claim_hash) return accepted(null);
-    if (document.type !== 'claim' || document.media_type !== JUROR_MEDIA_TYPE) return accepted(null);
+    if (document === null || documentHash(document.bytes) !== claim.claim_hash) return skip('not_kit');
+    if (document.type !== 'claim' || document.media_type !== JUROR_MEDIA_TYPE) return skip('not_kit');
     const input = readClaimDocument(document.bytes);
-    if (!input.ok || input.value.agent_did !== claim.claimer) return accepted(null);
-    return accepted(input.value.claim.statements.find((statement) => statement.id === EVIDENCE_STATEMENT)?.text ?? null);
+    if (!input.ok || input.value.agent_did !== claim.claimer) return skip('not_kit');
+    if (input.value.capability_id !== scope.capability_id) return skip('capability');
+    const statement = input.value.claim.statements.find((candidate) => candidate.id === EVIDENCE_STATEMENT);
+    return statement === undefined ? skip('not_kit') : accepted({ kind: 'target', statement_text: statement.text });
   }
 
   /**
-   * The claim that a challenge of `did` names: among the Open claims of `did` that have at least `leastLeft` milliseconds of window left at `now` and that are claims of this kit, the one with the
-   * latest challenge deadline. A claim is staked for each run, so an agent can have several open claims at one time, and the newest one is the one that a challenge names. Two claims with the same
-   * latest deadline are `claim_ambiguous`: the code does not choose by the order of a list. None is `no_open_claim`, and its detail says how many open claims were left out and why. A document that
-   * cannot be read is `chain_unavailable`, and it is never taken for a claim that is not of this kit.
+   * The claim that a challenge of `did` names for the job in `scope`. A claim is a target only when ALL hold: it is an Open claim of `did`; it has at least `leastLeft` milliseconds of window left at `now`;
+   * it was submitted before the job began; its stake is not above the challenge stake; and its claim document is a claim document of this kit for the capability of the job. A claim that is not a target is
+   * left out of the choice and counted by its reason: the detail of `no_open_claim` says how many claims were left out for each reason. Among the targets the one with the latest challenge deadline is
+   * chosen, and with the same deadline the one with the lowest claim token, so the choice does not depend on the order of a list. The claim documents are read in that order, and the first target ends the
+   * search. A document that cannot be read is `chain_unavailable`, and it is never taken for a claim that is not a target.
    */
-  async #choose(did: Did, claims: readonly ClaimView[], now: number, leastLeft: number): Promise<ProtocolResult<Chosen, ClaimLookupCode>> {
+  async #choose(did: Did, claims: readonly ClaimView[], scope: ClaimScope, now: number, leastLeft: number): Promise<ProtocolResult<Chosen, ClaimLookupCode>> {
     const open = claims.filter((claim) => claim.claimer === did && claim.state === 'Open');
     if (open.length === 0) return refused(NO_OPEN_CLAIM, 'the agent has no open claim');
+    const skipped: Record<SkipReason, number> = { window: 0, began: 0, stake: 0, not_kit: 0, capability: 0 };
     const room = Math.max(leastLeft, 1);
-    const live = open.filter((claim) => challengeDeadlineOf(claim) - now >= room);
-    const newestFirst = [...live].sort((a, b) => challengeDeadlineOf(b) - challengeDeadlineOf(a) || (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0));
-    let notOfThisKit = 0;
-    let from = 0;
-    while (from < newestFirst.length) {
-      const deadline = challengeDeadlineOf(newestFirst[from]!);
-      let to = from;
-      while (to < newestFirst.length && challengeDeadlineOf(newestFirst[to]!) === deadline) to += 1;
-      const found: Chosen[] = [];
-      for (const claim of newestFirst.slice(from, to)) {
-        const statement = await this.#kitClaim(claim);
-        if (!statement.ok) return statement;
-        if (statement.value === null) notOfThisKit += 1;
-        else found.push({ claim, statement_text: statement.value });
-      }
-      if (found.length === 1) return accepted(found[0]!);
-      if (found.length > 1) return refused('claim_ambiguous', `the agent has ${found.length} open claims of this kit with the same last moment of the challenge window, and the code does not choose between them`);
-      from = to;
+    const candidates: ClaimView[] = [];
+    for (const claim of open) {
+      const reason: SkipReason | null = challengeDeadlineOf(claim) - now < room ? 'window' : claim.submitted_at >= scope.job_began_at ? 'began' : claim.stake_lovelace > this.#stake ? 'stake' : null;
+      if (reason === null) candidates.push(claim);
+      else skipped[reason] += 1;
     }
-    const tooSoon = open.length - live.length;
-    return refused(NO_OPEN_CLAIM, `the agent has ${open.length} open claim(s), and none can be challenged: ${notOfThisKit} without a claim document of this kit, ${tooSoon} with a challenge window that ends too soon`);
+    candidates.sort((a, b) => challengeDeadlineOf(b) - challengeDeadlineOf(a) || (a.token < b.token ? -1 : a.token > b.token ? 1 : 0));
+    for (const claim of candidates) {
+      const examined = await this.#examine(claim, scope);
+      if (!examined.ok) return examined;
+      if (examined.value.kind === 'target') return accepted({ claim, statement_text: examined.value.statement_text });
+      skipped[examined.value.reason] += 1;
+    }
+    const counts = (Object.keys(SKIPS) as SkipReason[]).map((reason) => `${skipped[reason]} ${SKIPS[reason]}`).join(', ');
+    return refused(NO_OPEN_CLAIM, `the agent has ${open.length} open claim(s), and none can be challenged: ${counts}`);
   }
 
   // --- The open claim of an agent -------------------------------------------------------------------------------------------------------------------------------------
 
   /**
-   * The open claim of an agent that a challenge would name: the Open claim of this kit with the latest challenge deadline, among the claims whose challenge window has not ended. `no_open_claim`
-   * says that there is none. `claim_ambiguous` says that two have the same latest deadline. `chain_unavailable` says that the claims or a claim document could not be read, and it is never
-   * `no_open_claim`.
+   * The claim that a challenge of `did` would name for the job in `scope`: the target with the latest challenge deadline (see `#choose`). `no_open_claim` says that there is none, and its detail counts the
+   * claims that were left out for each reason. `chain_unavailable` says that the claims or a claim document could not be read, and it is never `no_open_claim`.
    */
-  async findOpenClaim(did: Did): Promise<ProtocolResult<ClaimView, ClaimLookupCode>> {
+  async findOpenClaim(did: Did, scope: ClaimScope): Promise<ProtocolResult<ClaimView, ClaimLookupCode>> {
     const checked = parseDid(did, 'did');
     if (!checked.ok) return checked;
+    const job = parseScope(scope, 'scope');
+    if (!job.ok) return job;
     const read = await this.#readClaims();
     if (!read.ok) return read;
-    const chosen = await this.#choose(checked.value, read.value, this.#now(), 0);
+    const chosen = await this.#choose(checked.value, read.value, job.value, this.#now(), 0);
     return chosen.ok ? accepted(chosen.value.claim) : chosen;
   }
 
@@ -644,13 +669,12 @@ export class Dispute {
     if (earlier !== null) return notFiled('job_already_disputed', earlierDetail(earlier), landedOf(earlier));
 
     // 2. The claim of the other party that the challenge names.
-    const chosen = await this.#choose(target.against, claims.value, this.#now(), this.#windowLeft);
+    const chosen = await this.#choose(target.against, claims.value, target.scope, this.#now(), this.#windowLeft);
     if (!chosen.ok) {
       this.#log(`dispute: no challenge for the job ${escrow}: ${chosen.code}`);
       return notFiled(chosen.code, chosen.detail);
     }
     const { claim, statement_text: statement } = chosen.value;
-    if (claim.stake_lovelace > this.#stake) return notFiled('challenge_stake_too_low', 'the challenge stake is below the stake of the claim');
 
     // 3. The evidence document: refused here, and nothing is on chain.
     const document = evidenceDocument({
@@ -755,10 +779,11 @@ export class Dispute {
   }
 }
 
-/** A challenge input that passed its checks: the other party, the job, and the facts of the evidence as a copy of plain JSON data. */
+/** A challenge input that passed its checks: the other party, the job with its scope, and the facts of the evidence as a copy of plain JSON data. */
 interface ChallengeTarget {
   readonly against: Did;
   readonly escrow: OutputRef;
+  readonly scope: ClaimScope;
   readonly facts: JsonObject;
 }
 
@@ -769,14 +794,34 @@ function parseChallengeInput(input: unknown, party: 'counterparty' | 'sender', k
   const copy = parseJsonValue(input, 'challenge');
   if (!copy.ok) return copy;
   if (!isObject(copy.value)) return refused('bad_shape', 'challenge must be a JSON object');
-  const members = checkMembers(copy.value, 'challenge', [party, 'escrow_ref', 'evidence']);
+  const members = checkMembers(copy.value, 'challenge', [party, 'escrow_ref', 'capability_id', 'job_began_at', 'evidence']);
   if (members !== null) return members;
   const against = parseDid(copy.value[party], `challenge.${party}`);
   if (!against.ok) return against;
   const escrow = parseOutputRef(copy.value.escrow_ref, 'challenge.escrow_ref');
   if (!escrow.ok) return escrow;
+  const scope = parseClaimScope(copy.value, 'challenge');
+  if (!scope.ok) return scope;
   const facts = copy.value.evidence;
   if (!isObject(facts)) return refused('bad_shape', 'challenge.evidence must be a JSON object');
   if (typeof facts.kind !== 'string' || !kinds.includes(facts.kind)) return refused('bad_shape', `challenge.evidence.kind must be one of: ${kinds.join(', ')}`);
-  return accepted({ against: against.value, escrow: escrow.value, facts });
+  return accepted({ against: against.value, escrow: escrow.value, scope: scope.value, facts });
+}
+
+/** The capability and the start of a job, from the members of an object that `checkMembers` passed. The detail names the member and never repeats the value. */
+function parseClaimScope(record: JsonObject, field: string): ProtocolResult<ClaimScope, 'bad_shape'> {
+  const capability = parseCapabilityId(record.capability_id, `${field}.capability_id`);
+  if (!capability.ok) return capability;
+  const began = record.job_began_at;
+  if (typeof began !== 'number' || !Number.isSafeInteger(began) || began <= 0) return refused('bad_shape', `${field}.job_began_at must be a time in POSIX milliseconds: a whole number above 0`);
+  return accepted({ capability_id: capability.value, job_began_at: began });
+}
+
+/** A scope that a caller gives alone, as a copy of plain data, or a refusal. */
+function parseScope(input: unknown, field: string): ProtocolResult<ClaimScope, 'bad_shape'> {
+  const copy = parseJsonValue(input, field);
+  if (!copy.ok) return copy;
+  if (!isObject(copy.value)) return refused('bad_shape', `${field} must be a JSON object`);
+  const members = checkMembers(copy.value, field, ['capability_id', 'job_began_at']);
+  return members !== null ? members : parseClaimScope(copy.value, field);
 }

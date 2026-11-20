@@ -126,6 +126,11 @@ export function parseClaimToken(value: unknown, field = 'claim_token'): Protocol
   return typeof value === 'string' && CLAIM_TOKEN.test(value) ? accepted(value) : refused('bad_shape', `${field} must be "636c6d5f" and 56 lower-case hex characters`);
 }
 
+/** A capability identifier: 1 to 64 characters, letters, digits, dot, underscore and hyphen, and it starts with a letter or a digit. */
+export function parseCapabilityId(value: unknown, field = 'capability_id'): ProtocolResult<string> {
+  return typeof value === 'string' && CAPABILITY.test(value) ? accepted(value) : refused('bad_shape', `${field} must be 1 to 64 characters: letters, digits, dot, underscore and hyphen`);
+}
+
 const isObject = (value: JsonValue | undefined): value is JsonObject => typeof value === 'object' && value !== null && !Array.isArray(value);
 const member = (record: JsonObject, name: string): JsonValue | undefined => (Object.hasOwn(record, name) ? record[name] : undefined);
 
@@ -171,9 +176,8 @@ export function claimDocument(input: ClaimDocumentInput): ProtocolResult<JurorDo
   if (members !== null) return members;
   const agent = parseDid(root.agent_did, 'claim document.agent_did');
   if (!agent.ok) return agent;
-  if (typeof root.capability_id !== 'string' || !CAPABILITY.test(root.capability_id)) {
-    return refused('bad_shape', 'claim document.capability_id must be 1 to 64 characters: letters, digits, dot, underscore and hyphen');
-  }
+  const capability = parseCapabilityId(root.capability_id, 'claim document.capability_id');
+  if (!capability.ok) return capability;
   const manifest = parseDigest(root.manifest_sha256, 'claim document.manifest_sha256');
   if (!manifest.ok) return manifest;
   const claim = root.claim;
@@ -196,7 +200,7 @@ export function claimDocument(input: ClaimDocumentInput): ProtocolResult<JurorDo
   }
   return finish('claim', lines([
     'Claim of an agent on the Vector marketplace.',
-    `The agent is ${agent.value}. Its capability is ${root.capability_id}.`,
+    `The agent is ${agent.value}. Its capability is ${capability.value}.`,
     'The agent makes the statements below about the work that it does, and it stakes a deposit on them.',
     ...rows,
     'A challenger can show that a statement is false with evidence that names the statement.',

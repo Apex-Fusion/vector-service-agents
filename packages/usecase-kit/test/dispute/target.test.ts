@@ -1,19 +1,25 @@
-// packages/usecase-kit/test/dispute/target.test.ts: the claim that a challenge names, on a scripted chain port. A challenge names only a claim of this kit: a claim whose claim document is on chain, is
-// the document that the claim holds by hash, and is the document that `claimDocument` writes for the claimer. Among the open claims of the other party that are claims of this kit and have enough window
-// left at the moment of the publish, the one with the latest challenge deadline is the target. Each refusal has an accepted twin.
+// packages/usecase-kit/test/dispute/target.test.ts: the claim that a challenge names, on a scripted chain port. A claim is a target only when ALL hold: its claimer is the other party; its claim document
+// is on chain, is the document that the claim holds by hash, and is the document that `claimDocument` writes for the claimer and for the capability of the job; it was submitted before the job began; it is
+// Open with enough window left; and its stake is not above the challenge stake. Among the targets the one with the latest challenge deadline is chosen, and with the same deadline the one with the lowest
+// claim token. A claim that is not a target is left out and counted. Each refusal has an accepted twin.
 import { describe, expect, it } from 'vitest';
 import { documentHash, documentUri } from '@vsa/buyer-core';
 import { NO_OPEN_CLAIM } from '@vsa/usecase-kit/protocol';
 import { Dispute, claimDocument } from '@vsa/usecase-kit/dispute';
 import type { ChallengeResult, ClaimView, DeliveryChallengeInput } from '@vsa/usecase-kit/dispute';
 import {
-  ESCROW, EVIDENCE_TX, HOUR, MANIFEST_SHA, NOW, ORDER_FACTS, OTHER, PRIOR_AUTHORIZATION_CLAIM, REF_A, REF_B, REF_C, RecordingQueue, STATEMENT_S1, SETTINGS, ScriptedPort, THIRD, TOKEN_A, TOKEN_B, TOKEN_C,
-  claimView, kitClaimDocument, never, rig,
+  CAPABILITY, ESCROW, EVIDENCE_TX, HOUR, JOB, JOB_BEGAN_AT, MANIFEST_SHA, NOW, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER, PRIOR_AUTHORIZATION_CLAIM, REF_A, REF_B, REF_C, RecordingQueue, STATEMENT_S1, SETTINGS,
+  ScriptedPort, THIRD, TOKEN_A, TOKEN_B, TOKEN_C, claimView, kitClaimDocument, never, rig,
 } from './support.ts';
 import type { Rig } from './support.ts';
 
-const delivery = (): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: ESCROW, evidence: ORDER_FACTS });
+const delivery = (): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: ESCROW, ...JOB, evidence: ORDER_FACTS });
 const textOf = (bytes: Uint8Array): string => Buffer.from(bytes).toString('utf8');
+
+/** The detail of no_open_claim for `open` open claims, and for the counts of the five reasons in the order of the detail. */
+const counted = (open: number, left: readonly [number, number, number, number, number]): string =>
+  `the agent has ${open} open claim(s), and none can be challenged: ${left[0]} with a challenge window that ends too soon, ${left[1]} submitted at or after the start of the job, `
+  + `${left[2]} with a stake above the challenge stake, ${left[3]} without a claim document of this kit, ${left[4]} with a claim document for another capability`;
 
 function expectNotFiled(result: ChallengeResult, code: string): asserts result is Extract<ChallengeResult, { ok: false }> {
   expect(result).toMatchObject({ ok: false, code });
@@ -27,7 +33,7 @@ function holding(port: ScriptedPort, claim: ClaimView, bytes: Uint8Array, type =
 
 /** The claim document that this kit writes for `claimer`, with other statements. */
 function otherStatements(claimer: string) {
-  const document = claimDocument({ agent_did: claimer, capability_id: 'health.priorauth.draft.v1', manifest_sha256: MANIFEST_SHA, claim: PRIOR_AUTHORIZATION_CLAIM });
+  const document = claimDocument({ agent_did: claimer, capability_id: CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: PRIOR_AUTHORIZATION_CLAIM });
   if (!document.ok) throw new Error(document.detail);
   return document.value;
 }
@@ -50,7 +56,7 @@ describe('a challenge names only a claim of this kit', () => {
     rigged.port.claims = [make(rigged)];
     const result = await rigged.dispute.challengeDelivery(delivery());
     expectNotFiled(result, NO_OPEN_CLAIM);
-    expect(result.detail).toContain('the agent has 1 open claim(s), and none can be challenged: 1 without a claim document of this kit, 0 with a challenge window that ends too soon');
+    expect(result.detail).toBe(counted(1, [0, 0, 0, 1, 0]));
     expect(rigged.port.published).toEqual([]);
     expect(rigged.port.challenged).toEqual([]);
     expect(rigged.events).toEqual(['readClaims', `readDocument ${rigged.port.claims[0]!.claim_uri}`]);
@@ -114,10 +120,12 @@ describe('a challenge names only a claim of this kit', () => {
     }
   });
 
-  it('does not read the document of a claim that is not a candidate: a claim of another agent, a claim that is not open, and a claim whose window ended', async () => {
+  it('does not read the document of a claim that is not a candidate: a claim of another agent, a claim that is not open, a claim whose window ended, a claim that was submitted after the job began, and a claim with a stake above the challenge stake', async () => {
     const rigged = rig();
     rigged.port.claims = [
       claimView({ ref: REF_B, token: TOKEN_B, claimer: THIRD }), claimView({ ref: REF_C, token: TOKEN_C, state: 'Validated' }), claimView({ submitted_at: NOW - 5 * HOUR }),
+      claimView({ ref: `${'cd'.repeat(32)}#0`, token: `636c6d5f${'0d'.repeat(28)}`, submitted_at: JOB_BEGAN_AT }),
+      claimView({ ref: `${'ce'.repeat(32)}#0`, token: `636c6d5f${'0e'.repeat(28)}`, stake_lovelace: SETTINGS.challenge_stake_lovelace + 1n }),
     ];
     expectNotFiled(await rigged.dispute.challengeDelivery(delivery()), NO_OPEN_CLAIM);
     expect(rigged.events).toEqual(['readClaims']);
@@ -150,9 +158,106 @@ describe('a challenge names only a claim of this kit', () => {
   });
 });
 
+describe('a claim is a target only when it covers the job', () => {
+  /** A claim of the other party that was staked a minute after the older claim of the samples, before the job began, and that ends 15 hours later: with no rule of the job, it would be the target. */
+  const newer = (overrides: Partial<ClaimView> = {}): ClaimView => claimView({ ref: REF_B, token: TOKEN_B, submitted_at: NOW - HOUR + 60_000, challenge_window_ms: 20 * HOUR, ...overrides });
+
+  /** The claim document that this kit writes for OTHER for `capability`, with the statements of the order desk. */
+  function forCapability(capability: string) {
+    const document = claimDocument({ agent_did: OTHER, capability_id: capability, manifest_sha256: MANIFEST_SHA, claim: ORDER_DESK_CLAIM });
+    if (!document.ok) throw new Error(document.detail);
+    return document.value;
+  }
+
+  it('leaves out a claim document of this kit for another capability, and challenges the claim that is for the capability of the job', async () => {
+    const rigged = rig();
+    const decoy = holding(rigged.port, newer(), forCapability('supplychain.rfq.quote.v1').bytes);
+    rigged.port.claims = [claimView(), decoy];
+    expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(rigged.port.challenged.map((call) => call.claim)).toEqual([REF_A]);
+    expect(textOf(rigged.port.published[0]!.bytes)).toContain(`Claim: ${REF_A}`);
+    // The decoy ends later, so it is looked at first, and the claim for the capability of the job after it.
+    expect(rigged.events.filter((event) => event.startsWith('readDocument'))).toEqual([`readDocument ${decoy.claim_uri}`, `readDocument ${claimView().claim_uri}`]);
+  });
+
+  it('says no_open_claim and counts the claim when no claim is for the capability of the job, and takes the same claim for its own capability', async () => {
+    const rigged = rig();
+    rigged.port.claims = [holding(rigged.port, claimView(), forCapability('supplychain.rfq.quote.v1').bytes)];
+    const result = await rigged.dispute.challengeDelivery(delivery());
+    expectNotFiled(result, NO_OPEN_CLAIM);
+    expect(result.detail).toBe(counted(1, [0, 0, 0, 0, 1]));
+    expect(rigged.port.published).toEqual([]);
+    const twin = rig();
+    twin.port.claims = [holding(twin.port, claimView(), forCapability('supplychain.rfq.quote.v1').bytes)];
+    expect((await twin.dispute.challengeDelivery({ ...delivery(), capability_id: 'supplychain.rfq.quote.v1' })).ok).toBe(true);
+  });
+
+  it('leaves out a claim that was submitted at or after the start of the job, and takes a claim that was submitted a millisecond before it', async () => {
+    for (const [submitted, filed] of [[JOB_BEGAN_AT - 1, true], [JOB_BEGAN_AT, false], [JOB_BEGAN_AT + 1, false], [NOW, false]] as const) {
+      const rigged = rig();
+      rigged.port.claims = [claimView({ submitted_at: submitted })];
+      const result = await rigged.dispute.challengeDelivery(delivery());
+      expect(result.ok, String(submitted)).toBe(filed);
+      if (!result.ok) expect(result.detail).toBe(counted(1, [0, 1, 0, 0, 0]));
+      expect(rigged.events.includes(`readDocument ${claimView().claim_uri}`), String(submitted)).toBe(filed);
+    }
+  });
+
+  it('does not let a claim that was staked after the job began take the place of the claim that covers the job, although it ends later', async () => {
+    const rigged = rig();
+    rigged.port.claims = [claimView(), newer({ submitted_at: JOB_BEGAN_AT + 60_000 })];
+    expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(rigged.port.challenged.map((call) => call.claim)).toEqual([REF_A]);
+    expect(rigged.events.filter((event) => event.startsWith('readDocument'))).toEqual([`readDocument ${claimView().claim_uri}`]);
+    // The twin: the same claim, staked before the job began, is the target because it ends later.
+    const twin = rig();
+    twin.port.claims = [claimView(), newer({ submitted_at: JOB_BEGAN_AT - 60_000 })];
+    expect((await twin.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(twin.port.challenged.map((call) => call.claim)).toEqual([REF_B]);
+  });
+
+  it('leaves out a claim with a stake above the challenge stake, and challenges the older claim', async () => {
+    const rigged = rig();
+    rigged.port.claims = [claimView(), newer({ stake_lovelace: 500_000_000n })];
+    expect((await rigged.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(rigged.port.challenged.map((call) => call.claim)).toEqual([REF_A]);
+    expect(rigged.events.filter((event) => event.startsWith('readDocument'))).toEqual([`readDocument ${claimView().claim_uri}`]);
+    // The twin: a stake of the same size as the challenge stake is a target, and it ends later, so it is chosen.
+    const twin = rig();
+    twin.port.claims = [claimView(), newer({ stake_lovelace: SETTINGS.challenge_stake_lovelace })];
+    expect((await twin.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(twin.port.challenged.map((call) => call.claim)).toEqual([REF_B]);
+  });
+
+  it('counts the claims that were left out for each reason in the detail of no_open_claim', async () => {
+    const rigged = rig();
+    rigged.port.claims = [
+      claimView({ submitted_at: NOW - 4 * HOUR + 60_000 }),
+      claimView({ ref: REF_B, token: TOKEN_B, submitted_at: JOB_BEGAN_AT }),
+      claimView({ ref: REF_C, token: TOKEN_C, stake_lovelace: SETTINGS.challenge_stake_lovelace + 1n }),
+      { ...claimView({ ref: `${'cd'.repeat(32)}#0`, token: `636c6d5f${'0d'.repeat(28)}` }), claim_hash: 'ab'.repeat(32) },
+      holding(rigged.port, claimView({ ref: `${'ce'.repeat(32)}#0`, token: `636c6d5f${'0e'.repeat(28)}` }), forCapability('supplychain.rfq.quote.v1').bytes),
+    ];
+    const result = await rigged.dispute.challengeDelivery(delivery());
+    expectNotFiled(result, NO_OPEN_CLAIM);
+    expect(result.detail).toBe(counted(5, [1, 1, 1, 1, 1]));
+    expect(rigged.port.published).toEqual([]);
+  });
+
+  it('gives the same target from findOpenClaim, and refuses a scope that is not a scope', async () => {
+    const { port, dispute } = rig();
+    port.claims = [claimView(), newer({ stake_lovelace: 500_000_000n })];
+    expect(await dispute.findOpenClaim(OTHER, JOB)).toMatchObject({ ok: true, value: { ref: REF_A } });
+    expect(await dispute.findOpenClaim(OTHER, { ...JOB, job_began_at: NOW - 3 * HOUR })).toMatchObject({ ok: false, code: NO_OPEN_CLAIM });
+    for (const bad of [null, 'zq9', {}, { capability_id: CAPABILITY }, { ...JOB, extra: 1 }, { ...JOB, job_began_at: 0 }, { ...JOB, capability_id: 'zq9 x' }]) {
+      expect(await dispute.findOpenClaim(OTHER, bad as never), JSON.stringify(bad)).toMatchObject({ ok: false, code: 'bad_shape' });
+    }
+  });
+});
+
 describe('the newest open claim of the other party is the target', () => {
-  /** An open claim of the other party that ends `left` milliseconds after the clock, with a window of four hours. */
-  const endingIn = (ref: string, token: string, left: number): ClaimView => claimView({ ref, token, submitted_at: NOW + left - 4 * HOUR });
+  /** An open claim of the other party that ends `left` milliseconds after the clock: it was submitted an hour before the clock, before the job began, with a window of `left` and that hour. */
+  const endingIn = (ref: string, token: string, left: number): ClaimView => claimView({ ref, token, submitted_at: NOW - HOUR, challenge_window_ms: left + HOUR });
   const EARLIER = endingIn(REF_B, TOKEN_B, 2 * HOUR);
   const LATER = endingIn(REF_A, TOKEN_A, 3 * HOUR);
   const LATEST = endingIn(REF_C, TOKEN_C, 4 * HOUR);
@@ -183,29 +288,29 @@ describe('the newest open claim of the other party is the target', () => {
     expect(port.challenged.map((call) => call.claim)).toEqual([REF_B]);
   });
 
-  it('says claim_ambiguous when two claims of this kit have the same latest challenge deadline, whatever the order, and files nothing', async () => {
-    const same = [endingIn(REF_A, TOKEN_A, 3 * HOUR), endingIn(REF_B, TOKEN_B, 3 * HOUR)];
-    for (const claims of [same, [...same].reverse(), [EARLIER, ...same], [...same, EARLIER]]) {
+  it('takes the claim with the lowest claim token when two claims of this kit have the same latest challenge deadline, whatever the order of the list', async () => {
+    // The lowest token is on the highest reference, so the choice is not the order of the references.
+    const same = [endingIn(REF_A, TOKEN_C, 3 * HOUR), endingIn(REF_B, TOKEN_B, 3 * HOUR), endingIn(REF_C, TOKEN_A, 3 * HOUR)];
+    for (const claims of [same, [...same].reverse(), [same[1]!, same[2]!, same[0]!], [EARLIER, ...same]]) {
       const { events, port, dispute } = rig();
       port.claims = claims;
-      const result = await dispute.challengeDelivery(delivery());
-      expectNotFiled(result, 'claim_ambiguous');
-      expect(result.detail).toContain('2 open claims of this kit');
-      expect(port.published).toEqual([]);
-      expect(events.filter((event) => event.startsWith('readDocument'))).toEqual([...same].sort((a, b) => (a.ref < b.ref ? -1 : 1)).map((claim) => `readDocument ${claim.claim_uri}`));
+      expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
+      expect(port.challenged.map((call) => call.claim)).toEqual([REF_C]);
+      expect(port.challenged[0]!.claim_token).toBe(TOKEN_A);
+      // The documents are read in the order of the choice, and the first target ends the search.
+      expect(events.filter((event) => event.startsWith('readDocument'))).toEqual([`readDocument ${same[2]!.claim_uri}`]);
     }
   });
 
-  it('does not say claim_ambiguous for a tie below the newest claim, and does not when one of the two claims is not a claim of this kit', async () => {
+  it('takes the next claim in the order of the choice when the claim with the lowest token is not a target, and a tie below the newest claim changes nothing', async () => {
     const lower = rig();
     lower.port.claims = [endingIn(REF_A, TOKEN_A, 2 * HOUR), endingIn(REF_B, TOKEN_B, 2 * HOUR), LATEST];
     expect((await lower.dispute.challengeDelivery(delivery())).ok).toBe(true);
     expect(lower.port.challenged.map((call) => call.claim)).toEqual([REF_C]);
-    const twin = rig();
-    const notKit = { ...endingIn(REF_B, TOKEN_B, 3 * HOUR), claim_hash: 'ab'.repeat(32) };
-    twin.port.claims = [endingIn(REF_A, TOKEN_A, 3 * HOUR), notKit];
-    expect((await twin.dispute.challengeDelivery(delivery())).ok).toBe(true);
-    expect(twin.port.challenged.map((call) => call.claim)).toEqual([REF_A]);
+    const skipped = rig();
+    skipped.port.claims = [endingIn(REF_B, TOKEN_B, 3 * HOUR), { ...endingIn(REF_A, TOKEN_A, 3 * HOUR), claim_hash: 'ab'.repeat(32) }];
+    expect((await skipped.dispute.challengeDelivery(delivery())).ok).toBe(true);
+    expect(skipped.port.challenged.map((call) => call.claim)).toEqual([REF_B]);
   });
 
   it('takes the next claim when the newest claim is not a claim of this kit, and says chain_unavailable when its document cannot be read', async () => {
@@ -227,17 +332,17 @@ describe('the newest open claim of the other party is the target', () => {
     port.claims = [{ ...LATEST, claim_hash: 'ab'.repeat(32) }, { ...LATER, claim_uri: 'https://example.org/c' }, claimView({ ref: REF_B, token: TOKEN_B, submitted_at: NOW - 4 * HOUR + 60_000 })];
     const result = await dispute.challengeDelivery(delivery());
     expectNotFiled(result, NO_OPEN_CLAIM);
-    expect(result.detail).toBe('the agent has 3 open claim(s), and none can be challenged: 2 without a claim document of this kit, 1 with a challenge window that ends too soon');
+    expect(result.detail).toBe(counted(3, [1, 0, 0, 2, 0]));
   });
 
-  it('gives the newest claim of this kit from findOpenClaim, and not claim_ambiguous for claims that end at different moments', async () => {
+  it('gives the newest claim of this kit from findOpenClaim, and the claim with the lowest token for claims that end at the same moment', async () => {
     const { port, dispute } = rig();
     port.claims = [EARLIER, LATER, LATEST];
-    expect(await dispute.findOpenClaim(OTHER)).toMatchObject({ ok: true, value: { ref: REF_C } });
+    expect(await dispute.findOpenClaim(OTHER, JOB)).toMatchObject({ ok: true, value: { ref: REF_C } });
     port.claims = [{ ...LATEST, claim_hash: 'ab'.repeat(32) }, LATER];
-    expect(await dispute.findOpenClaim(OTHER)).toMatchObject({ ok: true, value: { ref: REF_A } });
+    expect(await dispute.findOpenClaim(OTHER, JOB)).toMatchObject({ ok: true, value: { ref: REF_A } });
     port.claims = [EARLIER, { ...EARLIER, ref: REF_C, token: TOKEN_C }];
-    expect(await dispute.findOpenClaim(OTHER)).toMatchObject({ ok: false, code: 'claim_ambiguous' });
+    expect(await dispute.findOpenClaim(OTHER, JOB)).toMatchObject({ ok: true, value: { token: TOKEN_B } });
   });
 
   it('files no challenge when the claim that was chosen changed at the second read, and the evidence landed', async () => {

@@ -5,10 +5,10 @@ import { describe, expect, it } from 'vitest';
 import { HireLane } from '@vsa/hire-kit';
 import type { ChallengeResult, ClaimView, DeliveryChallengeInput, RunClaimInput } from '@vsa/usecase-kit/dispute';
 import {
-  ESCROW, EVIDENCE_TX, HOUR, KEY_HASH, MANIFEST_SHA, ME, NOW, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER, REF_A, REF_B, ScriptedPort, THIRD, TOKEN_B, challengeView, claimView, deferred, evidenceOf, rig,
+  ESCROW, EVIDENCE_TX, HOUR, JOB, KEY_HASH, MANIFEST_SHA, ME, NOW, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER, REF_A, REF_B, ScriptedPort, THIRD, TOKEN_B, challengeView, claimView, deferred, evidenceOf, rig,
 } from './support.ts';
 
-const delivery = (): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: ESCROW, evidence: ORDER_FACTS });
+const delivery = (): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: ESCROW, ...JOB, evidence: ORDER_FACTS });
 const runClaim = (): RunClaimInput => ({
   capability_id: 'supplychain.order.accept.v1', manifest_sha256: MANIFEST_SHA, claim: ORDER_DESK_CLAIM, stake_lovelace: 50_000_000n, challenge_window_ms: 24 * HOUR, claim_type: 'service-quality',
 });

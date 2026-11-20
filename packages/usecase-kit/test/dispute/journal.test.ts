@@ -7,11 +7,11 @@ import { NO_OPEN_CLAIM } from '@vsa/usecase-kit/protocol';
 import { MemoryJournal } from '@vsa/usecase-kit/dispute';
 import type { ChallengeResult, ChallengeView, DeliveryChallengeInput, DisputeJournal, JobRecord } from '@vsa/usecase-kit/dispute';
 import {
-  CHALLENGE_TOKEN, CHALLENGE_TX, ESCROW, ESCROW_2, EVIDENCE_TX, HOUR, KEY_HASH, NOW, ORDER_FACTS, OTHER, REF_A, REF_B, THIRD, TOKEN_A, TOKEN_B, challengeView, claimView, deferred, evidenceOf, never, rig,
+  CHALLENGE_TOKEN, CHALLENGE_TX, ESCROW, ESCROW_2, EVIDENCE_TX, HOUR, JOB, KEY_HASH, NOW, ORDER_FACTS, OTHER, REF_A, REF_B, THIRD, TOKEN_A, TOKEN_B, challengeView, claimView, deferred, evidenceOf, never, rig,
 } from './support.ts';
 import type { Events, Rig } from './support.ts';
 
-const delivery = (escrow = ESCROW): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: escrow, evidence: ORDER_FACTS });
+const delivery = (escrow = ESCROW): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: escrow, ...JOB, evidence: ORDER_FACTS });
 const LANDED = { tx_hash: EVIDENCE_TX, uri: documentUri(EVIDENCE_TX), document_hash: evidenceOf().hash };
 const record = (extra: Partial<JobRecord> = {}): JobRecord => ({ step: 'started', against: OTHER, claim: REF_A, claim_token: TOKEN_A, evidence: null, filed: null, ended: null, ...extra });
 const CHAIN_FILED = {

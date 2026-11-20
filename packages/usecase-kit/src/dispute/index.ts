@@ -14,7 +14,7 @@ export type {
 export { MemoryJournal } from './journal.ts';
 export type { DisputeJournal, EndedRecord, FiledRecord, JobRecord, JobStep } from './journal.ts';
 export { Dispute, LEAST_RESOLUTION_DEADLINE_MS } from './dispute.ts';
-export type { ApprovalChallengeInput, DeliveryChallengeInput, DisputeDeps, DisputeSettings, RunClaimInput, WithdrawClaimInput } from './dispute.ts';
+export type { ApprovalChallengeInput, ClaimScope, DeliveryChallengeInput, DisputeDeps, DisputeSettings, RunClaimInput, WithdrawClaimInput } from './dispute.ts';
 export { disputedFields } from './results.ts';
 export type {
   ChallengeCode, ChallengeFiled, ChallengeLanded, ChallengeNotFiled, ChallengeResult, ClaimLookupCode, ClaimWithdrawn, DisputeOutcome, DocumentLanded, RunClaimCode, RunClaimNotStaked,

@@ -50,6 +50,11 @@ export const CHALLENGE_TX = '99'.repeat(32);
 export const MANIFEST_SHA = '5a'.repeat(32);
 export const CHALLENGE_TOKEN = `63686c5f${'0e'.repeat(28)}`;
 
+/** The capability that the claim documents of the samples are for, and the scope of a job that they cover: the job began half an hour ago, after the claims of the samples were staked. */
+export const CAPABILITY = 'supplychain.order.accept.v1';
+export const JOB_BEGAN_AT = NOW - 30 * 60_000;
+export const JOB = { capability_id: CAPABILITY, job_began_at: JOB_BEGAN_AT } as const;
+
 // --- The statements of three agents -----------------------------------------------------------------------------------------------------------------------------------
 
 const statements = (...texts: [string, string, string]) => ({ statements: [{ id: 'S1', text: texts[0] }, { id: 'S2', text: texts[1] }, { id: 'S3', text: texts[2] }] }) as const;
@@ -72,7 +77,7 @@ export const BID_DESK_CLAIM = statements(
 
 /** The claim document that this kit writes for `claimer`: the statements of the order desk, and the manifest of the samples. */
 export function kitClaimDocument(claimer: string) {
-  const document = claimDocument({ agent_did: claimer, capability_id: 'supplychain.order.accept.v1', manifest_sha256: MANIFEST_SHA, claim: ORDER_DESK_CLAIM });
+  const document = claimDocument({ agent_did: claimer, capability_id: CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: ORDER_DESK_CLAIM });
   if (!document.ok) throw new Error(document.detail);
   return document.value;
 }

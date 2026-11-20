@@ -9,11 +9,11 @@ import { buildSubmitClaim, decodeChallengeDatum, decodeClaimDatum, documentHash,
 import type { ClaimDatum } from '@vsa/buyer-core';
 import { utf8Hex } from '@vsa/vector-read/identity-codec';
 import { Dispute, MAX_CLAIM_TYPE_BYTES, MemoryJournal, claimDocument, evidenceDocument } from '@vsa/usecase-kit/dispute';
-import type { ChallengeResult, DisputeJournal, DisputeSettings, Module1PortDeps, ServiceQueue } from '@vsa/usecase-kit/dispute';
+import type { ChallengeResult, ClaimScope, DisputeJournal, DisputeSettings, Module1PortDeps, ServiceQueue } from '@vsa/usecase-kit/dispute';
 import { CLAIM_TOKEN, DAY, HOUR, NOW, agentRecord, claimUtxo, recordUtxo } from '../../../buyer-core/test/fixtures/jury-world.ts';
 import { AUDITOR_ID, CLAIMER_ID, MODULE1, WALLET, WALLET_ADDRESS, forever, kitClaim, koiosOf, ledgerWorld, realPort, signWithWallet } from './ledger.ts';
 import type { LedgerProvider } from './ledger.ts';
-import { DIGEST_FACTS, ESCROW, ESCROW_2, MANIFEST_SHA, ORDER_DESK_CLAIM, ORDER_FACTS, SETTINGS, STATEMENT_S1, THIRD_ID, deferred, kitClaimDocument } from './support.ts';
+import { DIGEST_FACTS, ESCROW, ESCROW_2, JOB, MANIFEST_SHA, ORDER_DESK_CLAIM, ORDER_FACTS, SETTINGS, STATEMENT_S1, THIRD_ID, deferred, kitClaimDocument } from './support.ts';
 
 const did = (id: string): string => `did:vector:${id}`;
 const CLAIMER = did(CLAIMER_ID);
@@ -37,7 +37,7 @@ const runClaim = { capability_id: 'supplychain.order.accept.v1', manifest_sha256
 const claimsOn = (ledger: LedgerProvider) => ledger.atAddress(MODULE1.claim.address).map((utxo) => ({ ref: `${utxo.txHash}#${utxo.outputIndex}`, datum: decodeClaimDatum(utxo.datum!), utxo }));
 
 /** The challenge of the buyer-side agent of use case 1 for the escrow of a job. */
-const challengeOrder = (dispute: Dispute, escrow: string = ESCROW): Promise<ChallengeResult> => dispute.challengeDelivery({ counterparty: CLAIMER, escrow_ref: escrow, evidence: ORDER_FACTS });
+const challengeOrder = (dispute: Dispute, escrow: string = ESCROW, scope: ClaimScope = JOB): Promise<ChallengeResult> => dispute.challengeDelivery({ counterparty: CLAIMER, escrow_ref: escrow, ...scope, evidence: ORDER_FACTS });
 
 function filedOf(result: ChallengeResult) {
   if (!result.ok) throw new Error(`${result.code}: ${result.detail}`);
@@ -68,8 +68,10 @@ describe('the claim of a run on the ledger', () => {
     expect(output.assets).toMatchObject({ lovelace: 50_000_000n, [`${MODULE1.claim.hash}${staked.value.claim_token}`]: 1n });
     expect(staked.value.challenge_deadline).toBe(datum.submittedAt + 24 * HOUR);
     expect(staked.value.fee_lovelace > 0n).toBe(true);
-    // The open claim of the agent is this claim: its document is read from the ledger, and it is the claim document that this kit wrote.
-    expect(await dispute.findOpenClaim(CLAIMER)).toMatchObject({ ok: true, value: { ref: staked.value.claim, token: staked.value.claim_token, state: 'Open', claimer: CLAIMER } });
+    // The open claim of the agent for a job that began after the claim is this claim: its document is read from the ledger, and it is the claim document that this kit wrote.
+    expect(await dispute.findOpenClaim(CLAIMER, { ...JOB, job_began_at: datum.submittedAt + 1 })).toMatchObject({ ok: true, value: { ref: staked.value.claim, token: staked.value.claim_token, state: 'Open', claimer: CLAIMER } });
+    // The twin: a job that began at the moment of the claim is not covered by it.
+    expect(await dispute.findOpenClaim(CLAIMER, { ...JOB, job_began_at: datum.submittedAt })).toMatchObject({ ok: false, code: 'no_open_claim' });
   }, SLOW);
 
   it('signs each transaction with the wallet key and no other key', async () => {
@@ -222,7 +224,7 @@ describe('the challenge on the ledger', () => {
 
   it('files the evidence of a counterparty that refused for the digest of the approval', async () => {
     const ledger = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN)]);
-    const filed = filedOf(await disputeOf(ledger, AUDITOR_ID).challengeApproval({ sender: CLAIMER, escrow_ref: ESCROW, evidence: DIGEST_FACTS }));
+    const filed = filedOf(await disputeOf(ledger, AUDITOR_ID).challengeApproval({ sender: CLAIMER, escrow_ref: ESCROW, ...JOB, evidence: DIGEST_FACTS }));
     expect(ledger.documents.get(filed.record.evidence)).toContain('The challenger refused the request before it did any work.');
     expect(ledger.documents.get(filed.record.evidence)).not.toContain('salt:');
     expect(decodeChallengeDatum(ledger.at(filed.record.challenge)!.datum!).evidenceHash).toBe(filed.evidence_hash);
@@ -242,6 +244,30 @@ describe('the challenge on the ledger', () => {
     // The twin: the same claim at the address of the script is challenged too.
     const plain = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN)]);
     expect((await challengeOrder(disputeOf(plain, AUDITOR_ID))).ok).toBe(true);
+  }, SLOW);
+
+  it('challenges the claim that covers the job, and leaves out a newer claim for another capability, a claim with a higher stake, and a claim that was staked after the job began', async () => {
+    const otherCapability = (ledger: LedgerProvider): Partial<ClaimDatum> => {
+      const document = claimDocument({ agent_did: CLAIMER, capability_id: 'supplychain.rfq.quote.v1', manifest_sha256: MANIFEST_SHA, claim: ORDER_DESK_CLAIM });
+      if (!document.ok) throw new Error(document.detail);
+      return { claimHash: document.value.hash, storageUri: utf8Hex(ledger.addDocument(document.value.text, 'claim').uri), challengeWindow: 20 * HOUR };
+    };
+    const token = (byte: string): string => `636c6d5f${byte.repeat(28)}`;
+    const world = (): LedgerProvider => ledgerWorld((l) => [
+      kitClaim(l, CLAIM_TOKEN),
+      { ...kitClaim(l, token('0d'), otherCapability(l), 50 * 60_000), txHash: 'c4'.repeat(32) },
+      { ...kitClaim(l, token('0e'), { stakeAmount: 500_000_000n, challengeWindow: 20 * HOUR }, 50 * 60_000), txHash: 'c5'.repeat(32) },
+      { ...kitClaim(l, token('0c'), { challengeWindow: 20 * HOUR }, 10 * 60_000), txHash: 'c6'.repeat(32) },
+    ]);
+    const ledger = world();
+    const filed = filedOf(await challengeOrder(disputeOf(ledger, AUDITOR_ID)));
+    expect(filed.record.claim).toBe(CLAIM_REF);
+    expect(filed.claim_token).toBe(CLAIM_TOKEN);
+    expect(ledger.documents.get(filed.record.evidence)).toContain(`Claim: ${CLAIM_REF}`);
+    // The twin: a job that hired the other capability is covered by the claim for it, and that claim ends later than the first one.
+    const twin = world();
+    const covered = filedOf(await challengeOrder(disputeOf(twin, AUDITOR_ID), ESCROW, { ...JOB, capability_id: 'supplychain.rfq.quote.v1' }));
+    expect(covered.record.claim).toBe(`${'c4'.repeat(32)}#0`);
   }, SLOW);
 
   it('says chain_unavailable when Koios cannot list the claims, and sends nothing: the claims at other addresses are not seen', async () => {
@@ -299,7 +325,7 @@ describe('the challenge on the ledger', () => {
       if (!older.ok || !newer.ok) throw new Error('a claim was not staked');
       expect(claimsOn(ledger).filter((claim) => claim.datum.state === 'Open').length).toBe(2);
       expect(newer.value.challenge_deadline).toBeGreaterThan(older.value.challenge_deadline);
-      const filed = filedOf(await challengeOrder(disputeOf(ledger, AUDITOR_ID, NOW + 120_000)));
+      const filed = filedOf(await challengeOrder(disputeOf(ledger, AUDITOR_ID, NOW + 120_000), ESCROW, { ...JOB, job_began_at: NOW + 90_000 }));
       expect(filed.record.claim).toBe(newer.value.claim);
       expect(filed.claim_token).toBe(newer.value.claim_token);
       expect(ledger.documents.get(filed.record.evidence)).toContain(`Claim: ${newer.value.claim}`);
@@ -307,15 +333,17 @@ describe('the challenge on the ledger', () => {
       expect(claimsOn(ledger).find((claim) => claim.ref === older.value.claim)!.datum.state).toBe('Open');
     }, SLOW);
 
-    it('says claim_ambiguous when two claims of this kit end at the same moment, and files nothing', async () => {
+    it('takes the claim with the lowest claim token when two claims of this kit end at the same moment, and files one challenge', async () => {
       const ledger = ledgerWorld();
       const first = await disputeOf(ledger, CLAIMER_ID, NOW).stakeRunClaim(runClaim);
       const second = await disputeOf(ledger, CLAIMER_ID, NOW).stakeRunClaim(runClaim);
       if (!first.ok || !second.ok) throw new Error('a claim was not staked');
       expect(first.value.challenge_deadline).toBe(second.value.challenge_deadline);
-      const before = ledger.accepted.length;
-      expect(await challengeOrder(disputeOf(ledger, AUDITOR_ID, NOW + 120_000))).toMatchObject({ ok: false, code: 'claim_ambiguous' });
-      expect(ledger.accepted.length).toBe(before);
+      const lowest = [first.value, second.value].sort((a, b) => (a.claim_token < b.claim_token ? -1 : 1))[0]!;
+      const filed = filedOf(await challengeOrder(disputeOf(ledger, AUDITOR_ID, NOW + 120_000), ESCROW, { ...JOB, job_began_at: NOW + 90_000 }));
+      expect(filed.record.claim).toBe(lowest.claim);
+      expect(filed.claim_token).toBe(lowest.claim_token);
+      expect(ledger.atAddress(MODULE1.challenge.address).length).toBe(1);
     }, SLOW);
   });
 

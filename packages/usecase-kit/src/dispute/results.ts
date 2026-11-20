@@ -6,7 +6,7 @@ import type { Accepted, ChallengeRecord, Did, OutputRef, Refused } from '../prot
 import type { DocumentCode } from './documents.ts';
 
 /** The codes of a lookup of the open claim of an agent. `no_open_claim` is the reason of a dispute that files no challenge because the other party has no open claim. */
-export type ClaimLookupCode = 'bad_shape' | typeof NO_OPEN_CLAIM | 'claim_ambiguous' | 'chain_unavailable';
+export type ClaimLookupCode = 'bad_shape' | typeof NO_OPEN_CLAIM | 'chain_unavailable';
 
 /** A document that landed: its transaction is confirmed. */
 export interface DocumentLanded {
@@ -33,7 +33,6 @@ export type ChallengeCode =
   | 'job_already_disputed'
   | 'journal_unavailable'
   | 'claim_window_closing'
-  | 'challenge_stake_too_low'
   | 'evidence_not_built'
   | 'evidence_not_confirmed'
   | 'claim_changed'
