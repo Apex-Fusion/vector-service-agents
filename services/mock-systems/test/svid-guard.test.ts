@@ -5,7 +5,7 @@ import { X509Certificate } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { createGatewayClient } from '@vsa/id-kit';
 import { createStubGateway } from '@vsa/id-kit/testing';
-import type { StubAgent } from '@vsa/id-kit/testing';
+import type { StubAgent, StubGateway } from '@vsa/id-kit/testing';
 import { insurerAgent, scenario, supplierAgent } from './support/scenario.ts';
 import type { Scenario } from './support/scenario.ts';
 import { INSURER_ORG, MTLS_HOST, PUBLIC_BASE, PUBLIC_HOST, SUPPLIER_ORG } from './support/world.ts';
@@ -45,6 +45,24 @@ async function stranger(s: Scenario) {
   return { other, agent, client, clientCert };
 }
 
+/**
+ * The bundle of this gateway with the keys of another gateway added to it: a federation of two trust domains. The service reads this bundle. The SVIDs of the other domain chain to it, and
+ * only their trust domain tells them from the SVIDs of this one.
+ */
+async function federate(s: Scenario, other: StubGateway): Promise<void> {
+  const read = async (gateway: StubGateway) => (await (await gateway.fetch(`${gateway.baseUrl}/spiffe/bundle`)).json()) as { keys: unknown[] };
+  const [own, foreign] = [await read(s.world.gateway), await read(other)];
+  s.world.gateway.fault('/spiffe/bundle', { status: 200, body: JSON.stringify({ ...own, keys: [...own.keys, ...foreign.keys] }), headers: { 'content-type': 'application/json' } });
+}
+
+/** The record of an agent as the gateway resolves it, with the period of its Accountable Party changed. The gateway answers with that record for this DID from now on. */
+async function changeParty(s: Scenario, agent: StubAgent, period: { notBefore?: string; notAfter?: string }): Promise<void> {
+  const path = `/1.0/identifiers/${agent.did}`;
+  const record = (await (await s.world.gateway.fetch(`${s.world.gateway.baseUrl}${path}`)).json()) as { didDocumentMetadata: { vectorParties: Array<Record<string, unknown>> } };
+  Object.assign(record.didDocumentMetadata.vectorParties[0]!, period);
+  s.world.gateway.fault(path, { status: 200, body: JSON.stringify(record), headers: { 'content-type': 'application/did-resolution' } });
+}
+
 const NOT_FOUND_BODY = JSON.stringify({ didDocument: null, didResolutionMetadata: { error: { type: 'https://www.w3.org/ns/did#NOT_FOUND', title: 'DID not found' } }, didDocumentMetadata: {} });
 
 describe('an X.509-SVID that is right', () => {
@@ -75,6 +93,29 @@ describe('an X.509-SVID that is not right', () => {
     s.world.advance(2 * 3_600_000);
     refused(await x509(s, header), 401, 'svid_invalid');
     expect(lastRule(s)).toBe('x509.expired');
+  });
+  it('a certificate of another trust domain is refused for its trust domain when the bundle holds the authority of that domain too, and the certificate of this domain is accepted with the same bundle', async () => {
+    const s = await scenario(TENANT);
+    const { other, clientCert } = await stranger(s);
+    await federate(s, other);
+    // The same agent exists at this gateway, so the certificate would be honoured if its trust domain were not checked.
+    const own = supplierAgent(s, 'order-desk');
+    refused(await x509(s, await clientCert()), 401, 'svid_invalid');
+    expect(lastRule(s)).toBe('x509.trust_domain');
+    expect((await viaCert(s, own)).status).toBe(200);
+  });
+  it('a certificate that is not valid yet is refused, and the same certificate is accepted when its start is inside the leeway of 30 seconds', async () => {
+    const s = await scenario(TENANT);
+    const agent = supplierAgent(s);
+    // The first certificate makes the authority of the stub, which starts one minute before. The second certificate starts later. When the clock goes back, the authority is valid and the certificate is not.
+    expect((await viaCert(s, agent)).status).toBe(200);
+    s.world.advance(600_000);
+    const header = await s.world.clientCert(agent);
+    s.world.advance(-500_000);
+    refused(await x509(s, header), 401, 'svid_invalid');
+    expect(lastRule(s)).toBe('x509.not_yet_valid');
+    s.world.advance(420_000);
+    expect((await x509(s, header)).status).toBe(200);
   });
   it('a certificate whose bytes are no certificate is refused, and a header that is not in the form of the contract is refused as malformed', async () => {
     const s = await scenario(TENANT);
@@ -216,6 +257,26 @@ describe('the agent of an SVID', () => {
       refused(await viaCert(s, s.world.agent(label, { organisation: { domain, verified: true } })), 403, 'organisation_mismatch');
     }
   });
+  it('a Party whose period has ended names no organisation, and the same record with a period that goes on is accepted', async () => {
+    const s = await scenario(TENANT);
+    const agent = supplierAgent(s);
+    const header = await s.world.clientCert(agent);
+    await changeParty(s, agent, { notAfter: '2026-11-19T11:00:00Z' });
+    refused(await x509(s, header), 403, 'organisation_mismatch');
+    expect(lastRule(s)).toBe('agent.organisation');
+    await changeParty(s, agent, { notAfter: '2026-11-20T12:00:00Z' });
+    expect((await x509(s, header)).status).toBe(200);
+  });
+  it('a Party that is not in force yet names no organisation, and the same record with a period that has begun is accepted', async () => {
+    const s = await scenario(TENANT);
+    const agent = insurerAgent(s);
+    const token = await s.world.jwtSvid(agent, AUDIENCE);
+    await changeParty(s, agent, { notBefore: '2026-11-19T13:00:00Z' });
+    refused(await s.harness.call({ path: REQUIREMENTS, headers: { authorization: `Bearer ${token}` } }), 403, 'organisation_mismatch');
+    expect(lastRule(s)).toBe('agent.organisation');
+    await changeParty(s, agent, { notBefore: '2026-11-19T11:00:00Z' });
+    expect((await s.harness.call({ path: REQUIREMENTS, headers: { authorization: `Bearer ${token}` } })).status).toBe(200);
+  });
   it('an agent that is suspended after its certificate was made is refused, and accepted again when the hold ends', async () => {
     const s = await scenario(TENANT);
     const agent = supplierAgent(s);
@@ -325,6 +386,30 @@ describe('a JWT-SVID', () => {
     s.world.advance(200_000);
     refused(await call(), 401, 'svid_invalid');
     expect(lastRule(s)).toBe('jwt_svid.expired');
+  });
+  it('is refused for its trust domain when the bundle holds the key of that domain too, and a JWT-SVID of this domain is accepted with the same bundle', async () => {
+    const s = await scenario(TENANT);
+    const { other, agent, client } = await stranger(s);
+    await federate(s, other);
+    // The same agent exists at this gateway, so the JWT-SVID would be honoured if its trust domain were not checked.
+    const own = insurerAgent(s, 'order-desk');
+    const issued = await client.jwtSvid({ agent: { did: agent.did, key: agent.authentication.privateKey }, audience: AUDIENCE });
+    if (!issued.ok) throw new Error(issued.detail);
+    refused(await s.harness.call({ path: REQUIREMENTS, headers: { authorization: `Bearer ${issued.value.svid}` } }), 401, 'svid_invalid');
+    expect(lastRule(s)).toBe('jwt_svid.trust_domain');
+    expect((await viaJwt(s, own)).status).toBe(200);
+  });
+  it('is refused when it is issued in the future, and is accepted when its start is inside the leeway of 30 seconds', async () => {
+    const s = await scenario(TENANT);
+    const agent = insurerAgent(s);
+    s.world.advance(600_000);
+    const token = await s.world.jwtSvid(agent, AUDIENCE);
+    const call = () => s.harness.call({ path: REQUIREMENTS, headers: { authorization: `Bearer ${token}` } });
+    s.world.advance(-560_000);
+    refused(await call(), 401, 'svid_invalid');
+    expect(lastRule(s)).toBe('jwt_svid.not_yet_valid');
+    s.world.advance(540_000);
+    expect((await call()).status).toBe(200);
   });
   it('is refused when another gateway signed it, and when the agent is of another organisation or not Active', async () => {
     const s = await scenario(TENANT);
