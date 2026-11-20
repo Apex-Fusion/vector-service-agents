@@ -53,7 +53,7 @@ The sourcing record takes a ranking in this order. The first failure ends the ca
 
 1. The body is a ranking.
 2. An `approval` of `null` is 403 `approval_not_found`.
-3. The approval check passes for the ranking exactly as it was sent. A check that does not pass gives one of the codes `approval_*` (403). A check that fails to run is 503 `approval_unavailable`.
+3. The approval check passes for the ranking exactly as it was sent. A check that does not pass gives one of the codes `approval_*` (403). A check that fails to run, or that does not answer in 30 seconds, is 503 `approval_unavailable`. The log line then has the rule `approval.timeout` or `approval.failed`. A late answer changes nothing.
 4. The supplier of rank 1 resolves at the identity gateway and is Active now (403 `supplier_not_active`).
 5. The tenant is still the one that the caller was verified for (409 `tenant_changed`).
 
@@ -141,13 +141,13 @@ A call that cannot be checked is refused, and the answer is 503. The service nev
 A token is an access token of the identity gateway with a DPoP proof. The call sends `Authorization: DPoP <token>` and one `DPoP` header. The checks, in order:
 
 1. The `Authorization` header has the scheme `DPoP` and a token.
-2. The signature is valid against the key set of the gateway. The service reads the key set again every 300 seconds, and when a token names a key that it does not hold.
+2. The signature is valid against the key set of the gateway. The service reads the key set again every 300 seconds, and when a token names a key that it does not hold. When a read fails, the verifier goes on with its old copy for up to one hour after the last good read. After that it refuses the call (503 `gateway_unavailable`).
 3. The issuer is the gateway.
 4. The audience is the resource of the route: `<public base>/t/<tenant>/<system>`. The comparison is exact.
 5. The time: the life of the token is at most 5 minutes, it has not ended, and it is not from the future. The verifier accepts a clock difference of 30 seconds.
 6. The DPoP proof: its key is the key that the token is bound to, it is for this method and this URL (the public URL, with no query), it names this token by its hash, and its time is in the window. The service accepts a proof once.
 7. The act chain is a chain of agent DIDs, and it is no deeper than the route takes.
-8. The delegation of the token covers the action and the resource of the route. The comparison is exact: a grant for another action, another system or another tenant covers nothing here.
+8. The delegation of the token covers the action and the resource of the route. The service asks for them as whole texts. The grant covers them when it names them, or names a pattern of a delegation that covers them, for example `erp.*` or `*`. A text that is only a prefix covers nothing: `erp.stock` does not cover `erp.stock.read`, and `<public base>/t/a` does not cover `<public base>/t/ab`.
 9. The Token Status List entry of the agent that asked is not revoked and not suspended. A list that cannot be read, or that is old, does not refuse the call. The log line says so.
 10. Each agent of the act chain, and the agent that asked, resolves at the gateway and is Active now. The service resolves each DID at each call.
 11. The whole chain of the delegation is usable on the ledger now, for this action and this resource. The service reads the node and the indexer of Vector for this. A check that takes more than 20 seconds is refused.
@@ -157,7 +157,7 @@ A token is an access token of the identity gateway with a DPoP proof. The call s
 The route is on the client-certificate host. The checks, in order:
 
 1. The request has exactly one `Client-Cert` header, in the form `:<base64>:`.
-2. The certificate was issued by an authority in the SPIFFE bundle of the gateway. The service reads the bundle again every 300 seconds.
+2. The certificate was issued by an authority in the SPIFFE bundle of the gateway. The service reads the bundle again every 300 seconds. When a read fails, the verifier goes on with its old copy for up to one hour after the last good read, and then it refuses the call (503 `gateway_unavailable`).
 3. The certificate is valid now. The verifier accepts a clock difference of 30 seconds at the start.
 4. The certificate is a leaf (it is no CA). Its key usage has `digitalSignature`, and has neither `keyCertSign` nor `cRLSign`.
 5. The certificate has exactly one URI name. It is a SPIFFE ID of the form `spiffe://<trust domain>/agent/<64 hex characters>`, and the trust domain is the one of the gateway.
@@ -216,7 +216,7 @@ A 401 has a `WWW-Authenticate` header (`DPoP algs="ES256 EdDSA"` for a token, `B
 | `operator_token_invalid` | 401 | The operator token is missing or wrong. |
 | `gateway_unavailable` | 503 | The identity gateway could not be read. |
 | `ledger_unavailable` | 503 | The ledger could not be read. |
-| `approval_unavailable` | 503 | The approval check failed to run, or it gave an answer that is not a pass and is not a refusal. |
+| `approval_unavailable` | 503 | The approval check failed to run, did not answer in 30 seconds, or gave an answer that is not a pass and is not a refusal. |
 | `service_busy` | 503 | The store of used proofs is full. Send the call again later. |
 | `bad_request` | 400 | The request is not as the route needs. The message names the field. |
 | `not_found` | 404 | No such route. |
@@ -314,8 +314,14 @@ The approval check in the tests is a fake that exists in the test support only.
 
 - **An approval.** The service does not check an approval itself. The approval check is a dependency of the app. The production start refuses while none is wired.
 - **A second use of a JWT-SVID.** A JWT-SVID can be used again within its lifetime. The service does not record the SVIDs that it saw.
-- **The end of a token.** A token is honoured up to 30 seconds after `exp`. This is the clock difference that the verifier accepts. The check of the ledger still refuses an ended delegation in that time.
+- **The end of a token or an SVID.** A token is honoured up to 30 seconds after `exp`, and a JWT-SVID up to 30 seconds after its end. This is the clock difference that the verifier accepts. The check of the ledger still refuses an ended delegation in that time. An X.509-SVID gets no time after its end. At its start, a certificate is accepted 30 seconds early.
+- **A key or an authority that the gateway removed.** The verifier reads the key set and the bundle every 300 seconds. While a read fails, it uses its old copy for up to one hour after the last good read. So a key or an authority that the gateway removed stays trusted for up to one hour in that time.
+- **The width of a delegation.** A delegation with the grant `*` on `*` covers every route of every tenant. The organisation that delegates decides how wide its delegation is.
+- **Where an SVID is honoured.** A JWT-SVID with two audiences is honoured at both. One X.509-SVID is honoured at every tenant whose organisation for that route is the organisation of the agent.
+- **A second ranking.** The same ranking with the same approval can be written again. A ranking has no one-for-each rule.
+- **A status list that is not read.** A status list that cannot be fetched (the gateway does not answer, or it answers with an error status), or that is over, does not refuse a token call. The log line says that the list was not read (`token_status`). A list that arrives and is not valid, for example a body that is not a list, refuses the call (401 `token_invalid`, rule `status.list`).
 - **The client certificate.** The proxy proves that the client holds the key of its certificate. The service does not. So the service must be reachable through the proxy only. A client that reaches the service directly can send any `Client-Cert` header.
+- **Direct clients.** Every process of the host that can open `127.0.0.1:9120` is a direct client. It can send the bytes of the certificate of any SVID with no key, and any `Host`. So the host runs nothing that is not trusted, the port is on the loopback address only, and no other container shares the network of the service.
 - **The data.** The data of the tenants is in memory. A restart of the service loses it.
 
 ## Source files

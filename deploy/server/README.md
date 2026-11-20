@@ -144,11 +144,12 @@ Caddy does not check who issued it. It passes the certificate that the client pr
 
 Caddy removes any `Client-Cert` header and any `Client-Cert-Chain` header that a client sends. It does this on both host names, before it sets its own header.
 So a client cannot forge a certificate. This is true only while Caddy is the sole way to reach the mock service. For this reason the compose file publishes the port of the service on `127.0.0.1` only, so that only a program on the host reaches it.
+Every process of the host that can open `127.0.0.1:9120` is a direct client of the service. It can send the bytes of the certificate of any SVID with no key, and any `Host`. So the host runs nothing that is not trusted, the port is on the loopback address only, and no other container shares the network of the service. The compose file gives the service the default network of its own project, and no other container joins it.
 
 The TLS handshake proves that the client holds the private key of the certificate. Nothing else is checked.
 The mock service must check these things itself:
 
-1. The certificate chain, against the SPIFFE bundle of the identity gateway. The service reads the bundle again every 300 seconds.
+1. The certificate chain, against the SPIFFE bundle of the identity gateway. The service reads the bundle again every 300 seconds. When a read fails, the service goes on with its old copy for up to one hour after the last good read, and then it refuses the call. So an authority that the gateway removed stays trusted for up to one hour in that time.
 2. The validity time of the certificate.
 3. The SPIFFE ID in the URI name of the certificate.
 
