@@ -32,7 +32,7 @@ describe('handoffOf', () => {
     expect(withOther.ok && withOther.value.approval).toStrictEqual(other);
   });
 
-  it('makes a handoff for the second use case too, and refuses the third, which has no handoff', () => {
+  it('makes a handoff for use case 2 (prior authorization) too, and refuses use case 3 (supplier bid evaluation), which has no handoff', () => {
     const request = executeRequest({ schema: 'vector.usecase.priorauth-request.v1', request_number: 'run1-0001', insurer_did: COUNTERPARTY_DID });
     expect(handoffOf({ use_case: 'prior-authorization', agent_did: BUYER_DID, request })).toMatchObject({ ok: true, value: { use_case: 'prior-authorization' } });
     expect(handoffOf({ use_case: 'bid-evaluation' as never, agent_did: BUYER_DID, request })).toMatchObject({ ok: false, code: 'bad_shape' });

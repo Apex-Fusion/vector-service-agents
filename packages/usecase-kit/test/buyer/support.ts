@@ -175,13 +175,6 @@ export function expectKind<K extends HireStep['kind']>(step: HireStep, kind: K):
   return step as Extract<HireStep, { kind: K }>;
 }
 
-/** A promise that the test settles by hand. */
-export function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
-  return { promise, resolve };
-}
-
 /**
  * A fetch in front of the marketplace that lets the test answer the poll of a job (GET /v1/job/<id> of the template supplier). `answer` gets the response of the supplier, and it gives the
  * response to hand back, or `undefined` to hand back the response of the supplier.

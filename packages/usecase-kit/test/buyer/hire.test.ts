@@ -72,7 +72,7 @@ describe('a hire that completes', () => {
     expect(words(await go(refusing, { message }))).toBe('refused_by_counterparty before_claim approval_not_found');
   });
 
-  it('hires for the second use case as well, from a handoff of the prior-authorization use case', async () => {
+  it('hires for use case 2 (prior authorization) as well, from its handoff', async () => {
     const w = await world();
     const document = { schema: 'vector.usecase.priorauth-request.v1', request_number: 'run1-0001', insurer_did: COUNTERPARTY_DID, advert_ref: AGENT_ADVERT_REF };
     const base = handoffFor(document);
@@ -454,5 +454,28 @@ describe('a receipt that does not verify', () => {
     // The twin: a supplier that signs with its own key is accepted.
     const honest = await world();
     expect(words(await go(honest))).toBe('completed');
+  });
+});
+
+describe('an Accept that does not land at once', () => {
+  it('says completed with the Accept pending when it was sent and not seen confirmed: the delivery was verified and the decision accepted it', async () => {
+    const w = await world();
+    vi.spyOn(w.m.chain, 'accept').mockImplementationOnce(async (escrowRef) => {
+      throw new TxNotConfirmedError('The Accept was submitted, but Koios did not report it confirmed.', { txHash: 'ab'.repeat(32), escrowRef, deliverBy: null, validTo: T0 + 400_000, mayLand: true });
+    });
+    const step = expectKind(await go(w), 'completed');
+    expect(step.handoff.accepted).toBe('pending');
+    // The record is the record of a verified delivery, and the result of the protocol takes it.
+    expect(completedResult(pieces({ handoff: step.handoff }))).toMatchObject({ outcome: 'completed', exit_state: 'Completed' });
+  });
+
+  it('says failed with accept_failed when the Accept cannot be made before the accept window closes: the escrow stays Submitted, and the hire is never completed', async () => {
+    const w = await world();
+    w.m.chain.failNextAccepts(1_000);
+    const step = expectKind(await go(w), 'failed');
+    expect(step.reason).toBe('accept_failed');
+    expect(await w.m.chain.escrowState(escrowOf(step))).toBe('Submitted');
+    expect(w.booked.accepted).toStrictEqual([]);
+    expect(settledResult(step, pieces())).toMatchObject({ outcome: 'failed', reason: 'accept_failed', exit_state: 'Failed' });
   });
 });

@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import type { HireTerms } from '@vsa/hire-kit';
 import { EXECUTE_OUTCOMES, NO_OPEN_CLAIM, PROPOSAL_SCHEMA, RESULT_SCHEMA, SYSTEM_REFUSALS, USE_CASES, exitStateOf, makeProposal, proposalDigest } from '@vsa/usecase-kit/protocol';
-import type { ExecuteOutcome } from '@vsa/usecase-kit/protocol';
+import type { ExecuteOutcome, ReceiptVerification } from '@vsa/usecase-kit/protocol';
 import {
   BAD_DOCUMENT, INTERRUPTION_REASONS, PAY_UNCONFIRMED, completedResult, disputedResult, failedProposalResult, failedResult, proposedResult, refusedResult, settledResult, vaultRefusedResult,
 } from '@vsa/usecase-kit/buyer';
@@ -19,15 +19,20 @@ const TERMS: HireTerms = {
 const handoff = {
   counterparty_did: COUNTERPARTY_DID, advert_ref: ADVERT, escrow_ref: ESCROW, paid_from_vault: true, receipt: null, receipt_signature: null, verification: null, result: null, accepted: null,
 } as const;
+const ALL_TRUE: ReceiptVerification = {
+  escrow_ref_matches: true, response_hash_matches: true, supplier_key_matches: true, signature_valid: true, on_chain_hash_matches: true, prompt_hash_matches: true, model_matches: true, fields_match: true,
+};
+/** The record of a hire that was verified and accepted. */
+const accepted = { ...handoff, receipt: { escrow_ref: ESCROW }, receipt_signature: 'cd'.repeat(64), verification: ALL_TRUE, result: { status: 'confirmed' }, accepted: 'confirmed' } as const;
 const challenge = { claim: `${'66'.repeat(32)}#0`, evidence: '77'.repeat(32), challenge: `${'88'.repeat(32)}#0` };
 const RESULT_KEYS = ['challenge', 'decisions', 'exit_state', 'fault_mode', 'handoff', 'outcome', 'proposal_digest', 'reason', 'schema', 'use_case', 'writes'];
 
 describe('the results of execute', () => {
   it('makes a completed result with every member, and the state Completed', () => {
-    const result = completedResult(pieces({ handoff }));
+    const result = completedResult(pieces({ handoff: accepted }));
     expect(Object.keys(result).sort()).toStrictEqual(RESULT_KEYS);
     expect(result).toStrictEqual({
-      schema: RESULT_SCHEMA, use_case: 'inventory-reorder', proposal_digest: '88'.repeat(32), handoff, writes: [], decisions: [], fault_mode: '', outcome: 'completed', reason: null, challenge: null,
+      schema: RESULT_SCHEMA, use_case: 'inventory-reorder', proposal_digest: '88'.repeat(32), handoff: accepted, writes: [], decisions: [], fault_mode: '', outcome: 'completed', reason: null, challenge: null,
       exit_state: 'Completed',
     });
   });
@@ -67,7 +72,7 @@ describe('the results of execute', () => {
 
   it('gives the state that exitStateOf gives for every outcome and every flag: the helpers hold no state of their own', () => {
     const made: Array<[ExecuteOutcome, string | null, boolean, boolean, string]> = [
-      ['completed', null, false, false, completedResult(pieces()).exit_state],
+      ['completed', null, false, false, completedResult(pieces({ handoff: accepted })).exit_state],
       ['refused_by_counterparty', 'approval_expired', false, false, refusedResult('counterparty', pieces(), 'approval_expired').exit_state],
       ['refused_by_system', 'delegation_ended', false, false, refusedResult('system', pieces(), 'delegation_ended').exit_state],
       ['vault_refused', 'r', false, true, vaultRefusedResult(pieces(), 'r', true).exit_state],
@@ -90,19 +95,33 @@ describe('the results of execute', () => {
     expect(() => refusedResult('hirer' as never, pieces(), 'x')).toThrow(TypeError);
   });
 
+  it('refuses a completed result when the record is not the record of a hire that was verified and accepted: a refused or failed hire is never reported as completed', () => {
+    const records: Array<[string, unknown]> = [
+      ['no record', null], ['a hire that no delivery came for', handoff], ['a delivery that the decision did not accept', { ...accepted, accepted: 'no' }],
+      ['an Accept that is not known', { ...accepted, accepted: null }], ['a check that is false', { ...accepted, verification: { ...ALL_TRUE, model_matches: false } }],
+      ['a record with no checks', { ...accepted, verification: null }], ['a record with no receipt', { ...accepted, receipt: null }], ['a record with no signature', { ...accepted, receipt_signature: null }],
+    ];
+    for (const useCase of ['inventory-reorder', 'prior-authorization'] as const) {
+      for (const [name, record] of records) expect(() => completedResult(pieces({ use_case: useCase, handoff: record as never })), `${useCase}: ${name}`).toThrow(TypeError);
+    }
+    // The twins: an Accept that is pending is an accepted hire, and use case 3 (supplier bid evaluation) hires no counterparty to execute.
+    expect(completedResult(pieces({ handoff: { ...accepted, accepted: 'pending' } })).outcome).toBe('completed');
+    expect(completedResult(pieces({ use_case: 'bid-evaluation', handoff: null })).exit_state).toBe('Completed');
+  });
+
   it('refuses pieces of the wrong shape, and makes no result', () => {
     const wrong: Array<[string, Record<string, unknown>]> = [
       ['a use case that the protocol does not have', { use_case: 'payroll' }], ['a digest that is no digest', { proposal_digest: 'abc' }], ['a handoff that is a list', { handoff: [] }],
       ['a handoff that is a text', { handoff: 'done' }], ['writes that are no list', { writes: 'none' }], ['decisions that are no list', { decisions: undefined }], ['a fault setting that is no text', { fault_mode: null }],
     ];
-    for (const [name, over] of wrong) expect(() => completedResult({ ...pieces(), ...over } as never), name).toThrow(TypeError);
-    for (const useCase of USE_CASES) expect(completedResult(pieces({ use_case: useCase })).use_case).toBe(useCase);
+    for (const [name, over] of wrong) expect(() => completedResult({ ...pieces({ handoff: accepted }), ...over } as never), name).toThrow(TypeError);
+    for (const useCase of USE_CASES) expect(completedResult(pieces({ use_case: useCase, handoff: accepted })).use_case).toBe(useCase);
   });
 
   it('keeps no list of the caller: a write that the caller adds later is not in the result', () => {
     const writes = [{ system: 'po-store', route: 'POST /po', status: 201, ref: 'po-1' }];
     const decisions: never[] = [];
-    const result = completedResult(pieces({ writes, decisions }));
+    const result = completedResult(pieces({ handoff: accepted, writes, decisions }));
     writes.push({ system: 'po-store', route: 'POST /po', status: 201, ref: 'po-2' });
     expect(result.writes).toHaveLength(1);
     expect(result.writes).not.toBe(writes);
