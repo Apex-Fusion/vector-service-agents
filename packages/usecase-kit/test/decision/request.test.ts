@@ -1,9 +1,10 @@
 // packages/usecase-kit/test/decision/request.test.ts: the call that `decide` makes to hire-kit. `hireModel` is wrapped: it still runs, and each test sees its calls. A decision that passes its checks makes
 // exactly one call, with the key and the ports of the caller and the four limits as the caller gave them, each in its own field. A decision that fails a check makes none. The record of a hire is not
-// trusted: a record with a check that is not true gives no decision, also when hire-kit says that the hire completed. Each refusal has an accepted twin.
+// trusted: a record with a check that is not true gives no decision, also when hire-kit says that the hire completed. A result of a hire that has a wrong form is a typed failure that says that the hire
+// was paid, or may be. Each refusal has an accepted twin.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as HireKit from '@vsa/hire-kit';
-import { FakeChain } from '@vsa/buyer-core';
+import { FakeChain, TxNotConfirmedError } from '@vsa/buyer-core';
 import { hireModel } from '@vsa/hire-kit';
 import type { Hired, ModelAnswer } from '@vsa/hire-kit';
 import { ALLOWLIST, LLM_ADVERT, T0, escrowNo } from '@vsa/hire-kit/testing';
@@ -144,6 +145,58 @@ describe('the record of a hire is not trusted', () => {
     const decision = won(await decide(run.deps, REORDER, STOCK_INPUT));
     expect([decision.choice, decision.inference.sub_job.escrow_ref, decision.inference.accepted]).toStrictEqual([MEDIUM_LOT, hired.record.escrow_ref, 'confirmed']);
   });
+});
+
+describe('a result of a hire that has a wrong form, after its Accept', () => {
+  const E1 = escrowNo(1);
+  const unseen = (ref: string): TxNotConfirmedError => new TxNotConfirmedError('The Accept was submitted, but Koios did not report it confirmed.', { txHash: 'ac'.repeat(32), escrowRef: ref, deliverBy: null, validTo: T0 + 606_000, mayLand: true });
+
+  /** The next hire runs as hire-kit runs it, with its Post, its Accept and its calls to the ledger. Then `change` gives the result that hire-kit hands over. */
+  function handOver(change: (hired: Hired<ModelAnswer>) => unknown): void {
+    const real = hires.getMockImplementation()!;
+    hires.mockImplementationOnce(async (...args) => change(await real(...args)) as Hired<ModelAnswer>);
+  }
+
+  const FORMS: Array<[string, (hired: Hired<ModelAnswer>) => unknown, string]> = [
+    ['a hire that is null', () => null, 'TypeError'],
+    ['a record that is null', (hired) => ({ ...hired, record: null }), 'TypeError'],
+    ['a record whose verification throws when it is read', (hired) => ({ ...hired, record: { ...hired.record, get verification(): never { throw new Error(`no read ${MARKER}`); } } }), 'Error'],
+    ['an answer that is null', (hired) => ({ ...hired, value: null }), 'TypeError'],
+    ['an answer whose text is not a text', (hired) => ({ ...hired, value: { ...hired.value, text: 5 } }), 'TypeError'],
+    ['an Accept state that is missing', (hired) => ({ ...hired, accepted: undefined }), 'TypeError'],
+    ['an Accept state that is another word', (hired) => ({ ...hired, accepted: 'maybe' }), 'TypeError'],
+  ];
+  const STATES: Array<{ accept: 'confirmed' | 'pending'; wrap: Parameters<typeof setup>[1]; said: string }> = [
+    { accept: 'confirmed', wrap: undefined, said: `its escrow ${E1} was accepted, so the supplier is paid` },
+    { accept: 'pending', wrap: () => ({ accept: async (ref) => { throw unseen(ref); } }), said: `the Accept of its escrow ${E1} was sent and the chain does not show it yet, so the supplier may be paid` },
+  ];
+
+  for (const state of STATES) {
+    describe(`with an Accept that is ${state.accept}`, () => {
+      it.each(FORMS)('is a failure that says that the hire was paid, or may be, with the escrow and the stage: %s', async (_name, change, kind) => {
+        const run = await setup({}, state.wrap);
+        run.m.llm.answer = said(MEDIUM_LOT);
+        handOver(change);
+        const failure = lost(await decide(run.deps, REORDER, STOCK_INPUT));
+        expect([failure.code, failure.reason, failure.stage, failure.escrow_ref]).toStrictEqual(['inference_failed', 'hire_threw', 'accept', E1]);
+        expect(failure.detail).toBe(`the model hire for the decision reorder threw ${kind} after its Accept; ${state.said}`);
+        // The result is not read again, so the delivery holds the escrow that the ledger was told of, and nothing else.
+        expect(failure.delivery).toStrictEqual({ sub_job: null, receipt: 'not_recordable', accepted: state.accept, escrow_ref: E1, advert_ref: null, supplier_pkh: null, verification: null });
+        expect(JSON.stringify(failure)).not.toContain(MARKER);
+        expect('value' in failure).toBe(false);
+        // The hire was made one time, and nothing hires again.
+        expect([run.booked.length, run.m.llm.sends.length]).toStrictEqual([1, 1]);
+      });
+
+      it('records the decision for a result of the right form: the twin', async () => {
+        const run = await setup({}, state.wrap);
+        run.m.llm.answer = said(MEDIUM_LOT);
+        handOver((hired) => hired);
+        const decision = won(await decide(run.deps, REORDER, STOCK_INPUT));
+        expect([decision.choice, decision.inference.accepted, decision.inference.sub_job.escrow_ref]).toStrictEqual([MEDIUM_LOT, state.accept, E1]);
+      });
+    });
+  }
 });
 
 describe('a call that throws what hire-kit did not make', () => {

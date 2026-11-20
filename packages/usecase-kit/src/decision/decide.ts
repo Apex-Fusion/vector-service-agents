@@ -18,11 +18,13 @@
 //     out of time with its lock held until the deadline of the escrow. The check is made when the decision starts. A decision that waits in the lane of the key and gets its turn after the
 //     deadline is not covered here: the hire kit checks that when the lane gives the turn.
 //   - A paid hire is always in the failure. The Accept pays the supplier, and what fails after it does not undo that: the record of the hire cannot be recorded (the supplier writes its receipt), the
-//     answer cannot be read, or the ledger of the caller throws. Every failure after an Accept says in its detail that the escrow was paid, and it has a `delivery`: the complete sub-job, or as much
-//     of it as can be recorded. Every failure after a Post has the escrow and the stage (see src/decision/result.ts).
+//     answer cannot be read, the result of the hire has a wrong form, or the ledger of the caller throws. An Accept that was sent and is not seen on the chain may still land, so the supplier may be
+//     paid also when the stranded store cannot be written for it. Every failure after an Accept says in its detail that the escrow was paid, or may be paid, and it has a `delivery`: the complete
+//     sub-job, or as much of it as can be recorded. Every failure after a Post has the escrow and the stage (see src/decision/result.ts).
 //   - `decide` always gives a typed result. It does not throw for a `deps` that is null or has a member that throws when it is read (`bad_limit`), for a clock that cannot be read (`bad_deps`), for a
-//     hire that fails, for an answer that is wrong, or for a parser that returns a promise (`bad_decision`). An async function as a parser is refused before the hire. A function that returns a promise
-//     is found when it runs, after the hire, and then the rejection of the promise is handled, so that none stays unhandled (see src/decision/spec.ts for what a caller must hold to).
+//     hire that fails, for an answer that is wrong, for a result of the hire that has a wrong form, or for a parser that returns a promise (`bad_decision`). An async function as a parser is refused
+//     before the hire, and so is a parser that cannot be read. A function that returns a promise is found when it runs, after the hire, and then the rejection of the promise is handled, so that none
+//     stays unhandled (see src/decision/spec.ts for what a caller must hold to).
 //   - The prompt holds the input as data in one marked block (src/decision/prompt.ts). This lowers the risk that the input misleads the model, and it does not remove it.
 //
 // What a decision costs and locks. The Post locks the price and both bonds of the advert, raised to the floor of the escrow, and the fee of the Post and the fee of the Accept come from the wallet
@@ -100,12 +102,20 @@ function timeLeft(ports: Pick<ModelDeps, 'clock' | 'deadlineMs'>): ProtocolResul
   return typeof now === 'number' && Number.isFinite(now) ? accepted(deadlineMs - now) : refused('bad_deps', 'the clock of the decision does not give a finite number: nothing was hired');
 }
 
-/** The failure of a hire: the code of the hire as the reason, and what became of its escrow. */
+/**
+ * The failure of a hire: the code of the hire as the reason, and what became of its escrow. A store that cannot be written at the stage `accept` is the one failure here after which the supplier may be
+ * paid: the Accept was sent, it may still land, and the store could not be told. hire-kit does not hand over the record of the hire when it throws, so that delivery holds the escrow and nothing else.
+ */
 function hireFailure(decision: string, error: HireEnded): DecisionFailure {
   const { hopCode, facts } = error;
   const escrow = facts?.escrowRef ?? null;
   const at = facts === null ? '' : ` at ${facts.stage}`;
   const what = `the model hire for the decision ${decision} ended with ${hopCode}${at}`;
+  if (hopCode === 'store_write_failed' && facts?.stage === 'accept') {
+    // A Submitted escrow cannot be reclaimed, so no word here tells the operator to settle it by hand: if the Accept lands, the supplier is paid.
+    const detail = `${what}; ${paidText(escrow, 'pending')}; the Accept may still land; the stranded store could not be written, so the janitor of the key does not know of the Accept`;
+    return failure('store_write_failed', hopCode, detail, { delivery: unrecordedOf(undefined, 'pending', escrow), escrow_ref: escrow, stage: 'accept' });
+  }
   let detail: string;
   if (escrow === null) detail = `${what}; nothing was locked for it`;
   else if (hopCode === 'store_write_failed') detail = `${what}; the stranded store could not be written, so settle its escrow ${escrow} by hand after its deadline`;
@@ -113,10 +123,13 @@ function hireFailure(decision: string, error: HireEnded): DecisionFailure {
   return failure(hopCode === 'store_write_failed' ? 'store_write_failed' : 'inference_failed', hopCode, detail, { escrow_ref: escrow, stage: facts?.stage ?? null });
 }
 
-/** What the ledger of the caller was told during one hire: the escrow that the Post made, and whether an Accept was confirmed. */
+/**
+ * What `decide` knows of one hire: the escrow that the ledger of the caller was told of at the Post, and how far the Accept went. The note of the ledger sets `confirmed` when hire-kit tells the ledger that
+ * the Accept was confirmed. `decide` sets `pending` for a hire that gave a result and did not tell it: the Accept was sent, and the chain does not show it yet. Null means that no Accept was made.
+ */
 interface Seen {
   escrow: OutputRef | null;
-  paid: boolean;
+  accept: 'confirmed' | 'pending' | null;
 }
 
 /**
@@ -136,7 +149,7 @@ function escrowOf(post: unknown): OutputRef | null {
 
 /**
  * The ledger of the caller, with a note of what it is told. hire-kit calls `posted` when the Post is confirmed and `accepted` when the Accept is confirmed. When the ledger of the caller throws, the
- * hire ends with that error, and the error knows nothing of the escrow. So the note is the one place that knows which escrow was posted, and whether it was paid. The note is made before the call
+ * hire ends with that error, and the error knows nothing of the escrow. So the note is the one place that knows which escrow was posted, and whether its Accept was confirmed. The note is made before the call
  * goes on to the ledger of the caller, and the error of that ledger goes on to hire-kit as it is.
  */
 function noting(ledger: HireLedger, seen: Seen): HireLedger {
@@ -146,7 +159,7 @@ function noting(ledger: HireLedger, seen: Seen): HireLedger {
       ledger.posted(post);
     },
     accepted: (accept) => {
-      seen.paid = true;
+      seen.accept = 'confirmed';
       ledger.accepted(accept);
     },
   };
@@ -158,13 +171,16 @@ function paidText(escrow: OutputRef | null, how: 'confirmed' | 'pending'): strin
   return how === 'confirmed' ? `${of} was accepted, so the supplier is paid` : `the Accept of ${of} was sent and the chain does not show it yet, so the supplier may be paid`;
 }
 
-/** The failure of a hire that ended with an error that hire-kit did not make: a port threw. The note of the ledger says how far the hire went. */
+/**
+ * The failure of a hire that ended with an error that hire-kit did not make: a port threw, or the result of the hire could not be read. The note of the ledger says how far the hire went, and a hire
+ * that was paid, or may be, says so.
+ */
 function threwFailure(decision: string, error: unknown, seen: Seen): DecisionFailure {
   const kind = error instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.name) ? error.name : 'a value that is not an error';
   const what = `the model hire for the decision ${decision} threw ${kind}`;
-  if (seen.paid) {
-    const delivery = unrecordedOf(undefined, 'confirmed', seen.escrow);
-    return failure('inference_failed', 'hire_threw', `${what} after its Accept; ${paidText(seen.escrow, 'confirmed')}`, { delivery, escrow_ref: seen.escrow, stage: 'accept' });
+  if (seen.accept !== null) {
+    const delivery = unrecordedOf(undefined, seen.accept, seen.escrow);
+    return failure('inference_failed', 'hire_threw', `${what} after its Accept; ${paidText(seen.escrow, seen.accept)}`, { delivery, escrow_ref: seen.escrow, stage: 'accept' });
   }
   if (seen.escrow !== null) {
     return failure('inference_failed', 'hire_threw', `${what} after its Post; its escrow ${seen.escrow} stays with the janitor of the key`, { escrow_ref: seen.escrow, stage: 'post' });
@@ -173,11 +189,13 @@ function threwFailure(decision: string, error: unknown, seen: Seen): DecisionFai
 }
 
 /**
- * The decision, or the failure, for a hire that completed: its Accept was made, and the supplier is paid. Every failure here says so and carries the delivery: the complete sub-job when the record
- * can be recorded, and as much of it as can be recorded when it cannot.
+ * The decision, or the failure, for a hire that completed: its Accept was made, and the supplier is paid, or may be. Every failure here says so and carries the delivery: the complete sub-job when the
+ * record can be recorded, and as much of it as can be recorded when it cannot. A result of a wrong form throws here, and `decide` gives the failure for it.
  */
 function afterHire<C extends JsonValue>(name: string, parse: ChoiceParser<C>, hired: Hired<ModelAnswer>, seen: Seen): DecideResult<C> {
   const how = hired.accepted;
+  // The state of the Accept is one of two words, and it goes into the decision. Another value is a result of a wrong form, and it is never recorded.
+  if (how !== 'confirmed' && how !== 'pending') throw new TypeError('the hire gave no state of its Accept');
   const subJob = subJobOf(hired.record);
   if (!subJob.ok) {
     const delivery = unrecordedOf(hired.record, how, seen.escrow);
@@ -201,8 +219,8 @@ function afterHire<C extends JsonValue>(name: string, parse: ChoiceParser<C>, hi
 
 /**
  * Makes one decision. The result is `{ ok: true, value }` with the decision, or a failure (see src/decision/result.ts). It does not throw for a hire that fails, for an answer that is wrong, for
- * a limit that is wrong, for deps that cannot be read or for a parser that returns a promise. The decision holds the name of the definition, the choice and the reasoning of the model, and the
- * sub-job with its receipt, its eight checks and its Accept state.
+ * a limit that is wrong, for deps that cannot be read, for a parser that returns a promise or cannot be read, or for a result of the hire that has a wrong form. The decision holds the name of the
+ * definition, the choice and the reasoning of the model, and the sub-job with its receipt, its eight checks and its Accept state.
  */
 export async function decide<C extends JsonValue>(deps: DecisionDeps, spec: DecisionSpec<C>, input: JsonValue): Promise<DecideResult<C>> {
   // The deps, the limits, the definition and the input are read one time, as data, and nothing below reads them from the caller's objects again. A `deps` that is null, and a member that throws when it
@@ -237,7 +255,7 @@ export async function decide<C extends JsonValue>(deps: DecisionDeps, spec: Deci
     maxBuyerBondLovelace: limits.value.maxBuyerBondLovelace,
     ceilingSetting: LLM_MAX_PRICE_SETTING,
   };
-  const seen: Seen = { escrow: null, paid: false };
+  const seen: Seen = { escrow: null, accept: null };
   let hired: Hired<ModelAnswer>;
   try {
     hired = await hireModel(key, { ...ports, ledger: noting(ports.ledger, seen) }, request, ERRORS);
@@ -246,5 +264,11 @@ export async function decide<C extends JsonValue>(deps: DecisionDeps, spec: Deci
     // Something that hire-kit did not turn into its own error: a port threw. It is a failure and never a pass, and it says how far the hire went.
     return threwFailure(name, error, seen);
   }
-  return afterHire(name, parse, hired, seen);
+  try {
+    return afterHire(name, parse, hired, seen);
+  } catch (error) {
+    // The result of the hire has a wrong form: a record that is null, or a member that throws when it is read. The hire kit gave a result, so its Accept was sent. The ledger is told when the Accept is
+    // confirmed, so an Accept that it was not told of is not seen on the chain yet. The hire was paid, or may be, and the failure says so. It is a failure and never a pass.
+    return threwFailure(name, error, { ...seen, accept: seen.accept ?? 'pending' });
+  }
 }

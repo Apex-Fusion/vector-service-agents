@@ -12,20 +12,23 @@
 //   inference_failed      the code of hire-kit           the hire of the model failed, or its receipt did not pass the checks: `llm_supplier_unavailable` (no model on the allowlist at or
 //                                                        under the three limits), `llm_post_failed`, `llm_busy`, `llm_refused`, `llm_send_lost`, `llm_failed`, `llm_timeout`, `llm_bad_result`,
 //                                                        `llm_receipt_failed`, `llm_receipt_unavailable`, `llm_accept_failed`, `llm_out_of_time` (the deadline of the run came; when the decision
-//                                                        did not start its hire because less than HIRE_MIN_MS was left, nothing was locked), or `hire_threw` (a port threw)
-//   store_write_failed    store_write_failed             the stranded store of the key could not be written for the escrow of the hire
+//                                                        did not start its hire because less than HIRE_MIN_MS was left, nothing was locked), or `hire_threw` (a port threw, or the result of the
+//                                                        hire could not be read)
+//   store_write_failed    store_write_failed             the stranded store of the key could not be written for the escrow of the hire. At the stage `accept` the Accept was sent and may still land:
+//                                                        the supplier may be paid, and the failure has a delivery
 //   model_output_invalid  model_output_invalid           the hire completed, and the answer is not an object of the shape that the decision asks for
 //   internal              bad_limit                      a limit is missing or has a wrong type, or the deps of the decision cannot be read: nothing was hired
-//   internal              bad_decision                   the definition of the decision is wrong, and an async parser is wrong: nothing was hired. Or the parser returned a promise: that is
-//                                                        after the hire, so the failure has a delivery
+//   internal              bad_decision                   the definition of the decision is wrong, an async parser is wrong, or a parser cannot be read: nothing was hired. Or the parser returned a
+//                                                        promise: that is after the hire, so the failure has a delivery
 //   internal              bad_input                      the input is not JSON data, or its prompt has more than MAX_PROMPT_BYTES bytes: nothing was hired
 //   internal              bad_deps                       the clock does not give the time, or the deadline is not a number: nothing was hired
 //   internal              choice_changed                 the parser of the decision returned a value that is not the choice that the model gave
 //
-// `delivery` is set for every failure after an Accept: the hire was paid, and the failure says so. It holds the complete sub-job (`PaidDelivery`) when the record of the hire can be recorded, and
-// otherwise as much of it as can be recorded (`UnrecordedDelivery`: the escrow, the advert, the key hash of the supplier and the eight checks, and a typed member that says that the receipt is
-// not recorded). The agent carries the delivery in its failed result. A failure before an Accept has no delivery. `escrow_ref` and `stage` are set for every failure after a Post, and they say where
-// the hire ended. An escrow that a failed hire left is with the janitor of the key.
+// `delivery` is set for every failure after an Accept: the hire was paid, and the failure says so. A store that cannot be written for an Accept that was sent and may still land is one of them: the
+// supplier may be paid, and `accepted` is `pending`. The delivery holds the complete sub-job (`PaidDelivery`) when the record of the hire can be recorded, and otherwise as much of it as can be recorded
+// (`UnrecordedDelivery`: the escrow, the advert, the key hash of the supplier and the eight checks, and a typed member that says that the receipt is not recorded). The agent carries the delivery in its
+// failed result. A failure before an Accept has no delivery. `escrow_ref` and `stage` are set for every failure after a Post, and they say where the hire ended. An escrow that a failed hire left is with
+// the janitor of the key.
 import type { HireStage } from '@vsa/hire-kit';
 import type { Accepted, Decision, ErrorCode, JsonValue, OutputRef, ReceiptVerification, Refused, SubJob } from '../protocol/index.ts';
 
@@ -41,8 +44,9 @@ export interface PaidDelivery {
 
 /**
  * A hire that was paid, and whose sub-job cannot be recorded in full. `sub_job` is null, and `receipt` says that the receipt is not recorded: it cannot be copied as JSON data, or a check of it is
- * not true, or the record of the hire was not handed over at all (a port threw after the Accept). Each other member is what could be read, and it is null when it could not be: the escrow, the
- * advert, the key hash of the supplier and the eight checks. The supplier writes the receipt, so a supplier can make a hire that is paid and has no complete sub-job.
+ * not true, or the record of the hire was not handed over at all (a port threw after the Accept, the store could not be written for an Accept that may still land, or the result of the hire could not
+ * be read). Each other member is what could be read, and it is null when it could not be: the escrow, the advert, the key hash of the supplier and the eight checks. The supplier writes the receipt,
+ * so a supplier can make a hire that is paid and has no complete sub-job.
  */
 export interface UnrecordedDelivery {
   readonly sub_job: null;
@@ -62,8 +66,8 @@ export interface DecisionFailure extends Refused<DecisionFailureCode> {
   /** The escrow of the hire, for every failure after a Post when its reference is known. It is a public reference. */
   readonly escrow_ref: OutputRef | null;
   /**
-   * Where the hire was when it ended: `accept` for a hire that was paid, whatever failed after the Accept. For an error that hire-kit did not make (a port threw), the last stage that the ledger
-   * told of: `post` once it booked the Post. Null when no escrow was posted and the failure is not a failure of the hire, and for a throw that no ledger call came before.
+   * Where the hire was when it ended: `accept` for a hire that was paid, or may be, whatever failed after the Accept. For an error that hire-kit did not make, the last stage that the ledger told of:
+   * `post` once it booked the Post. A hire that gave a result that could not be read is at `accept`. Null when no escrow was posted and the failure is not a failure of the hire, and for a throw that no ledger call came before.
    */
   readonly stage: HireStage | null;
 }

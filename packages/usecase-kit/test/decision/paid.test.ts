@@ -1,6 +1,7 @@
 // packages/usecase-kit/test/decision/paid.test.ts: a paid hire is always in the failure. The Accept pays the supplier, and what fails after it does not undo that. Every failure after a Post has the escrow
-// and the stage, and every failure after an Accept says that the hire was paid and holds as much of the delivery as can be recorded. The supplier writes the receipt, so a supplier can make a hire that
-// is paid and whose receipt the protocol refuses. Each case has an accepted twin.
+// and the stage, and every failure after an Accept says that the hire was paid and holds as much of the delivery as can be recorded. An Accept that was sent and may still land counts too: a store that cannot
+// be written for it gives a failure that says that the supplier may be paid. The supplier writes the receipt, so a supplier can make a hire that is paid and whose receipt the protocol refuses. Each case has
+// an accepted twin.
 import { afterEach, describe, expect, it } from 'vitest';
 import { TxNotConfirmedError } from '@vsa/buyer-core';
 import { LLM_ADVERT_REF, LLM_KEY, T0, escrowNo } from '@vsa/hire-kit/testing';
@@ -134,5 +135,57 @@ describe('a hire that fails before its Accept is not paid', () => {
     expect([failure.reason, failure.stage, failure.escrow_ref, failure.delivery]).toStrictEqual(['llm_accept_failed', 'accept', E1, null]);
     expect(failure.detail).toBe(`the model hire for the decision reorder ended with llm_accept_failed at accept; its escrow ${E1} stays with the janitor of the key`);
     expect(await run.m.chain.escrowState(E1)).toBe('Submitted');
+  });
+});
+
+describe('a stranded store that cannot be written for an Accept that may still land', () => {
+  const head = 'the model hire for the decision reorder ended with store_write_failed at accept';
+  const MAY_BE_PAID = `the Accept of its escrow ${E1} was sent and the chain does not show it yet, so the supplier may be paid`;
+
+  it.each<[string, boolean, string]>([
+    ['the Accept lands later', true, 'spent'],
+    ['the Accept never lands', false, 'Submitted'],
+  ])('says that the supplier may be paid, with the escrow, the stage and a pending delivery: %s', async (_name, lands, state) => {
+    const run = await setup({}, (m) => ({ accept: async (ref) => { if (lands) await m.chain.accept(ref); throw unseen(ref); } }));
+    run.m.llm.answer = said(MEDIUM_LOT);
+    run.key.stranded.update = () => { throw new Error(`ENOSPC ${MARKER}`); };
+    const failure = lost(await decide(run.deps, REORDER, STOCK_INPUT));
+    expect([failure.code, failure.reason, failure.stage, failure.escrow_ref]).toStrictEqual(['store_write_failed', 'store_write_failed', 'accept', E1]);
+    expect(failure.detail).toBe(`${head}; ${MAY_BE_PAID}; the Accept may still land; the stranded store could not be written, so the janitor of the key does not know of the Accept`);
+    // The record of the hire is not handed over when the hire kit throws, so the delivery holds the escrow and nothing else.
+    expect(failure.delivery).toStrictEqual({ sub_job: null, receipt: 'not_recordable', accepted: 'pending', escrow_ref: E1, advert_ref: null, supplier_pkh: null, verification: null });
+    expect(JSON.stringify(failure)).not.toContain(MARKER);
+    expect('value' in failure).toBe(false);
+    // The failure is the same whichever way the Accept ends. An Accept that lands pays the supplier, and a Submitted escrow cannot be reclaimed.
+    expect(await run.m.chain.escrowState(E1)).toBe(state);
+    expect([run.booked.length, run.m.llm.sends.length]).toStrictEqual([1, 1]);
+  });
+
+  it('records the decision, with the Accept as pending, when the store can be written: the twin', async () => {
+    const run = await setup({}, () => ({ accept: async (ref) => { throw unseen(ref); } }));
+    run.m.llm.answer = said(MEDIUM_LOT);
+    const decision = won(await decide(run.deps, REORDER, STOCK_INPUT));
+    expect([decision.choice, decision.inference.accepted]).toStrictEqual([MEDIUM_LOT, 'pending']);
+    expect(run.key.stranded.list().map((entry) => [entry.escrow_ref, 'accept_pending' in entry])).toStrictEqual([[E1, true]]);
+  });
+
+  // The twins: the same fault of the store, before any Accept. The supplier is not paid, no Accept is sent, and the failure has no delivery.
+  const unconfirmedPost = new TxNotConfirmedError('The Post was submitted, but Koios did not report it confirmed.', {
+    txHash: 'ee'.repeat(32), escrowRef: `${'ee'.repeat(32)}#0`, deliverBy: T0 + 480_000, validTo: T0 + 180_000, mayLand: true,
+  });
+  it.each<[string, (run: Run) => void, string, string]>([
+    ['a Post that is confirmed: the escrow stays open', () => undefined, E1, 'Open'],
+    ['a Post that is signed and not seen confirmed: no escrow is on the chain', (run) => { run.m.chain.failNextPost(unconfirmedPost); }, `${'ee'.repeat(32)}#0`, 'unknown'],
+  ])('does not say that the supplier may be paid when the store cannot be written at the Post: %s', async (_name, arrange, escrow, state) => {
+    const run = await setup();
+    run.m.llm.answer = said(MEDIUM_LOT);
+    arrange(run);
+    run.key.stranded.add = () => { throw new Error(`ENOSPC ${MARKER}`); };
+    const failure = lost(await decide(run.deps, REORDER, STOCK_INPUT));
+    expect([failure.code, failure.reason, failure.stage, failure.escrow_ref, failure.delivery]).toStrictEqual(['store_write_failed', 'store_write_failed', 'post', escrow, null]);
+    expect(failure.detail).toBe(`the model hire for the decision reorder ended with store_write_failed at post; the stranded store could not be written, so settle its escrow ${escrow} by hand after its deadline`);
+    expect(JSON.stringify(failure)).not.toContain(MARKER);
+    expect(await run.m.chain.escrowState(escrow)).toBe(state);
+    expect(run.m.llm.sends).toHaveLength(0);
   });
 });

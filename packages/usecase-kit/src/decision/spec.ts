@@ -14,7 +14,7 @@
 //
 // A parser cannot be proven before it runs. A caller must hold to these rules, and `decide` checks what it can:
 //   - The parser is a plain function that returns its result at once. It never returns a promise, and it is never an async function. `decide` refuses an async function before the hire
-//     (`bad_decision`, nothing is hired). A function that returns a promise cannot be seen before it runs. It is found when the parser runs, after the hire: the hire was paid, so the failure carries
+//     (`bad_decision`, nothing is hired). It refuses a parser that cannot be read in the same way, for example a Proxy that throws when it is read. A function that returns a promise cannot be seen before it runs. It is found when the parser runs, after the hire: the hire was paid, so the failure carries
 //     it, and its reason is `bad_decision`. The rejection of such a promise is handled, so no rejection stays unhandled.
 //   - The parser never throws. A parser that throws gives `model_output_invalid`, as a choice that it could not read.
 //   - The parser returns the value that it was given, or a refusal. Another value gives `choice_changed`.
@@ -41,15 +41,19 @@ export interface DecisionSpec<C extends JsonValue = JsonValue> {
 const DECISION_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 
 /**
- * The decision as a new object, or a refusal that names the member that is wrong. Each member is read one time, so a getter cannot give the prompt one name and the record another.
+ * The decision as a new object, or a refusal that names the member that is wrong. Each member is read one time, so a getter cannot give the prompt one name and the record another. The parser is read
+ * in the same place, for its tag: a parser that throws when it is read is a decision that cannot be read, and it is found before anything is hired.
  * The instruction must not hold the marks of the input block: the block is the only place for the input, and one mark in the fixed text would give a second block.
  */
 export function checkSpec<C extends JsonValue>(spec: DecisionSpec<C>): ProtocolResult<DecisionSpec<C>, 'bad_decision'> {
   let name: unknown;
   let instruction: unknown;
   let parse: unknown;
+  let tag = '';
   try {
     ({ name, instruction, parse } = spec as unknown as Record<string, unknown>);
+    // The tag of a function says whether it is an async function. A Proxy can throw when its tag is read, so this read is guarded like the reads above.
+    if (typeof parse === 'function') tag = Object.prototype.toString.call(parse);
   } catch {
     return refused('bad_decision', 'the decision cannot be read');
   }
@@ -60,6 +64,6 @@ export function checkSpec<C extends JsonValue>(spec: DecisionSpec<C>): ProtocolR
   if (instruction.includes(INPUT_OPEN) || instruction.includes(INPUT_CLOSE)) return refused('bad_decision', 'decision.instruction must not hold the marks of the input block');
   if (typeof parse !== 'function') return refused('bad_decision', 'decision.parse must be a function');
   // An async function always returns a promise, so it is a wrong parser, and it is found before anything is hired. The check does not see a function that returns a promise by another way.
-  if (Object.prototype.toString.call(parse) === '[object AsyncFunction]') return refused('bad_decision', 'decision.parse must return its result, and an async function never does: it returns a promise');
+  if (tag === '[object AsyncFunction]') return refused('bad_decision', 'decision.parse must return its result, and an async function never does: it returns a promise');
   return accepted({ name, instruction, parse: parse as ChoiceParser<C> });
 }
