@@ -3,15 +3,19 @@
 //   1. The settings and the message are checked. A limit that is not a bigint or null, and a decision that is not a function, are a fault of the settings (`internal`).
 //   2. The authority: the delegation of the message must not name another agent (`delegation_not_mine`). A delegation that is not found goes on.
 //   3. The size: the wire payload that is sent must not pass the limit of a service, and the body of the call to the runtime must not pass its limit (`request_too_large`). It is checked here because the hire kit builds both after the Pay.
-//   4. One job at a time for the paying key, and no Pay while an earlier Pay of the key may still land (`earlier_pay_may_land`). In that turn the flow reads the Live vault of the delegation, exactly one,
+//   4. The advert: the advert of the document is read on the chain, and it must name the counterparty as its agent (`advert_not_counterparty`). The hire kit checks the agent of the receipt against the agent of the
+//      advert and never against the counterparty of the document, so this check is the one that ties the Pay to the counterparty. An advert that cannot be read is `ledger_unavailable`. When the check fails, no
+//      vault is read and nothing is paid (advert.ts).
+//   5. One job at a time for the paying key, and no Pay while an earlier Pay of the key may still land (`earlier_pay_may_land`). In that turn the flow reads the Live vault of the delegation, exactly one,
 //      and checks that the deadline of the job leaves time for the first poll. Then it hires from the vault with `hireAgent`, and it asks the hire kit to end the hire with the `deadline` error when its turn in
 //      the lane of the key comes with less than that time left. The advert is read on the chain: the flow never asks the indexer. The three limits go to the hire kit as the caller gave them.
-//   5. The outcome becomes a step (outcome.ts). After a refused Pay the delegation is read again.
+//   6. The outcome becomes a step (outcome.ts). After a refused Pay the delegation is read again.
 // The delegation key is the paying key: it signs the Pay and the Accept. No step retries, and no step hires a second time for the same work.
 import { HireInterrupted, HireLane, HirePayUnconfirmed, POLL_INTERVAL_MS, hireAgent } from '@vsa/hire-kit';
 import type { AcceptDecision, AgentDeps, AgentDelivery, AgentErrors, AgentOutcome, AgentRequest, HireFailure, PayingKey } from '@vsa/hire-kit';
 import { HANDOFF_SCHEMA, parseDid, parseOutputRef } from '@vsa/usecase-kit/protocol';
 import type { Did, Handoff, OutputRef, ProtocolResult, RfqMessage, UseCase } from '@vsa/usecase-kit/protocol';
+import { checkAdvertAgent } from './advert.ts';
 import { checkAuthority, delegationAfter } from './authority.ts';
 import { checkLimits } from './limits.ts';
 import type { HireLimits } from './limits.ts';
@@ -53,7 +57,7 @@ export interface QuoteHireInput extends HireInputBase {
 export type HireInput = HandoffHireInput | QuoteHireInput;
 
 export interface HireDeps {
-  /** The paying key of the delegation key. It signs the Pay and the Accept. Its chain must pay from a vault. */
+  /** The paying key of the delegation key. It signs the Pay and the Accept. Its chain must pay from a vault, and the flow reads the advert of the document through it. */
   readonly key: PayingKey;
   /** The deps of the hire kit: the fetch, the clock, the sleep, the deadline, the ledger that books the lock and the fees, and the log. The indexer is never asked. */
   readonly hire: AgentDeps;
@@ -249,6 +253,9 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
   if (!wire.ok) return refusal(wire.code, wire.detail);
   const size = checkRuntimeBody(text);
   if (!size.ok) return refusal('request_too_large', size.detail);
+  // The hire kit checks the agent of the receipt against the agent of the advert, and not against the counterparty of the document. So the advert is read here, before any vault is read and before the Pay.
+  const advertCheck = await checkAdvertAgent(key.chain, advert, counterparty);
+  if (!advertCheck.ok) return failure(advertCheck.code, advertCheck.detail);
 
   const state = stateOfKey(key);
   return state.lane.run(async () => {

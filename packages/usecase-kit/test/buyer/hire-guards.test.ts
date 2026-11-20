@@ -1,6 +1,7 @@
 // packages/usecase-kit/test/buyer/hire-guards.test.ts: what stops a hire before the Pay. Each guard has a test with an accepted twin. After a guard stops a hire nothing is posted, sent or recorded,
 // and no vault output is spent. The guards: the settings and the message, the limits that the caller must give, the authority of the job, the Live vault of the delegation, the size of the body of the
-// call to the runtime, and the advert that the document names. The last tests are for two jobs at one time on one delegation key, and for the hire of a bidder with a request for quotation.
+// call to the runtime, and the advert that the document names, which must name the counterparty as its agent. The last tests are for two jobs at one time on one delegation key, and for the hire of a bidder with a
+// request for quotation.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { POLL_INTERVAL_MS, hireAgent } from '@vsa/hire-kit';
 import type { AgentErrors } from '@vsa/hire-kit';
@@ -257,10 +258,10 @@ describe('the size of the call', () => {
 });
 
 describe('the advert that the document names', () => {
-  it('refuses an advert that is not on the chain: advert_unavailable, and nothing is paid', async () => {
+  it('refuses an advert that is not on the chain: the chain cannot read it, so the code is ledger_unavailable, and nothing is paid', async () => {
     const w = await world();
     const step = expectKind(await go(w, { message: handoffFor(purchaseOrder({ advert_ref: `${'ee'.repeat(32)}#0` })) }), 'failed');
-    expect([step.reason, step.handoff, step.vault_ref]).toStrictEqual(['advert_unavailable', null, null]);
+    expect([step.reason, step.handoff, step.vault_ref]).toStrictEqual(['ledger_unavailable', null, null]);
     expect(untouched(w)).toStrictEqual(NOTHING);
     expect(words(await go(w))).toBe('completed');
   });
@@ -279,12 +280,45 @@ describe('the advert that the document names', () => {
     expect(words(await go(w, { model: 'order-desk-small' }))).toBe('completed');
   });
 
-  it('refuses an advert that is Active on the chain and is another capability: the chain is read for the advert that the document names, and the indexer is not asked', async () => {
+  it('refuses an advert that is Active on the chain and names no agent (an advert of the legacy layout): advert_not_counterparty; the chain is read for the advert that the document names, and the indexer is not asked', async () => {
     const w = await world();
     const step = await go(w, { message: handoffFor(purchaseOrder({ advert_ref: LLM_ADVERT_REF })) });
-    expect(words(step)).toBe('failed advert_unavailable');
+    expect(words(step)).toBe('failed advert_not_counterparty');
     expect(untouched(w)).toStrictEqual(NOTHING);
     expect(w.m.calls.filter((call) => call.url.startsWith(INDEXER))).toStrictEqual([]);
+  });
+
+  it('refuses a purchase order whose counterparty is not the agent of its advert: advert_not_counterparty, before any vault is read and before any Pay, and the decision is not asked', async () => {
+    const other = `did:vector:${OTHER_ID}`;
+    const w = await world();
+    let asked = 0;
+    const decide = (): { accept: true } => { asked += 1; return { accept: true }; };
+    const step = expectKind(await go(w, { message: handoffFor(purchaseOrder({ supplier_did: other })), counterparty_did: other, decide }), 'failed');
+    expect([step.reason, step.handoff, step.vault_ref, step.terms]).toStrictEqual(['advert_not_counterparty', null, null, null]);
+    expect(untouched(w)).toStrictEqual(NOTHING);
+    // The advert is read first: no vault was read, no Accept was booked, and the decision was not asked.
+    expect([w.reads.calls.liveVaults, w.booked.accepted.length, asked]).toStrictEqual([0, 0, 0]);
+    expect(settledResult(step, pieces())).toMatchObject({ outcome: 'failed', reason: 'advert_not_counterparty', exit_state: 'Failed', handoff: null });
+    // The twin: the counterparty is the agent of the advert, and the hire completes from the vault.
+    expect(words(await go(w, { decide }))).toBe('completed');
+    expect([w.reads.calls.liveVaults, w.booked.accepted.length, asked]).toStrictEqual([1, 1, 1]);
+  });
+
+  it('refuses an advert that cannot be read: ledger_unavailable, no vault is read and nothing is paid, and the error text is not repeated', async () => {
+    const w = await world();
+    const read = vi.spyOn(w.m.chain, 'readAdvert').mockRejectedValueOnce(new Error('koios answered 502 for the token s3cret'));
+    const step = expectKind(await go(w), 'failed');
+    expect([step.reason, step.handoff, step.vault_ref]).toStrictEqual(['ledger_unavailable', null, null]);
+    expect(JSON.stringify(step)).not.toContain('s3cret');
+    expect(untouched(w)).toStrictEqual(NOTHING);
+    expect(w.reads.calls.liveVaults).toBe(0);
+    // A reading that is no advert is no match either.
+    read.mockResolvedValueOnce(null as never);
+    expect(words(await go(w))).toBe('failed ledger_unavailable');
+    expect(untouched(w)).toStrictEqual(NOTHING);
+    expect(w.reads.calls.liveVaults).toBe(0);
+    // The twin: when the chain reads the advert, the hire completes.
+    expect(words(await go(w))).toBe('completed');
   });
 
   const LIMITS: Array<[string, Partial<Record<'maxPriceLovelace' | 'maxSupplierBondLovelace' | 'maxBuyerBondLovelace', bigint>>, bigint]> = [
@@ -492,6 +526,17 @@ describe('the hire of a bidder with a request for quotation', () => {
     const content = (JSON.parse(w.m.agent.sends[0]!.payload) as Array<{ content: string }>)[0]!.content;
     expect(parseRfq(JSON.parse(content))).toStrictEqual(rfq);
     expect(content).toBe(requestText(rfq.value));
+  });
+
+  it('refuses a bidder that is not the agent of the advert that the caller names: advert_not_counterparty, before any vault is read and before any Pay', async () => {
+    const w = await world();
+    const step = expectKind(await go(w, { message: rfq.value, advert_ref: AGENT_ADVERT_REF, counterparty_did: `did:vector:${OTHER_ID}` }), 'failed');
+    expect([step.reason, step.handoff, step.vault_ref]).toStrictEqual(['advert_not_counterparty', null, null]);
+    expect(untouched(w)).toStrictEqual(NOTHING);
+    expect(w.reads.calls.liveVaults).toBe(0);
+    expect(settledResult(step, pieces({ use_case: 'bid-evaluation' }))).toMatchObject({ outcome: 'failed', reason: 'advert_not_counterparty', exit_state: 'Failed', handoff: null });
+    // The twin: the bidder is the agent of the advert, and the hire completes.
+    expect(words(await go(w, { message: rfq.value, advert_ref: AGENT_ADVERT_REF }))).toBe('completed');
   });
 
   it('refuses a quote hire with no advert, or with an advert that is no output reference, as internal: the caller found the advert', async () => {
