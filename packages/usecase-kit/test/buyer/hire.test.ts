@@ -352,6 +352,17 @@ describe('a decision that does not accept', () => {
     expect(await w.m.chain.escrowState(step.escrow_ref)).toBe('Submitted');
     expect(settledResult(step, pieces())).toMatchObject({ outcome: 'failed', reason: 'decision_error', exit_state: 'Failed' });
   });
+
+  it('does not let the decision change the delivery that an interrupted step names: the step holds its own copy', async () => {
+    const w = await world();
+    const decide: DeliveryDecision = (delivery) => {
+      if (delivery.result !== null) (delivery.result as Record<string, unknown>).quantity = 9_999;
+      throw new Error('the decision changed what it was given and failed');
+    };
+    const step = expectKind(await go(w, { decide }), 'interrupted');
+    expect(step.delivery?.result).toStrictEqual(JSON.parse(AGENT_ANSWER));
+    expect(step.handoff.result).toStrictEqual(JSON.parse(AGENT_ANSWER));
+  });
 });
 
 describe('a hire that an error ends after the Pay', () => {

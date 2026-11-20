@@ -2,6 +2,7 @@
 // and no vault output is spent. The guards: the settings and the message, the limits that the caller must give, the authority of the job, the Live vault of the delegation, the size of the body of the
 // call to the runtime, and the advert that the document names. The last tests are for two jobs at one time on one delegation key, and for the hire of a bidder with a request for quotation.
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { POLL_INTERVAL_MS } from '@vsa/hire-kit';
 import { AGENT_ADVERT, INDEXER, LLM_ADVERT_REF } from '@vsa/hire-kit/testing';
 import { MAX_REQUEST_BYTES, RFQ_SCHEMA, RUNTIME_BODY_LIMIT_BYTES, checkRequestSize, parseRfq } from '@vsa/usecase-kit/protocol';
 import { requestText, runtimeBody } from '@vsa/usecase-kit/buyer';
@@ -257,6 +258,44 @@ describe('two jobs at one time on one delegation key', () => {
     expect(words(a)).toBe('refused_by_counterparty before_claim sender_not_active');
     expect(words(b)).toBe('refused_by_counterparty before_claim sender_not_active');
     expect(w.m.chain.vaults().filter((vault) => !vault.consumed)).toHaveLength(1);
+  });
+
+  it('does not pay for a second job whose deadline came while it waited for the lane: failed with the reason deadline, and its vault is not spent', async () => {
+    const w = await world({ deadlineMs: 20_000 });
+    w.m.agent.steps = ['running', 'running', 'running', 'running', 'running', 'running', 'running', 'running', 'done'];
+    const [a, b] = await Promise.all([go(w), go(w, { message: handoffFor(purchaseOrder({ po_number: 'run1-0002' })) })]);
+    expect(words(a)).toBe('interrupted deadline');
+    const second = expectKind(b, 'failed');
+    expect([second.reason, second.handoff, second.vault_ref]).toStrictEqual(['deadline', null, null]);
+    expect(w.booked.posted).toHaveLength(1);
+    expect(w.m.agent.sends).toHaveLength(1);
+    // The vault that the first Pay left is live and unspent.
+    expect(w.m.chain.vaults().filter((vault) => !vault.consumed)).toHaveLength(1);
+  });
+});
+
+describe('the deadline of the job', () => {
+  it('does not pay when the deadline has come: failed with the reason deadline, and nothing is spent, sent or recorded', async () => {
+    const w = await world();
+    w.deps.hire.deadlineMs = T0;
+    const step = expectKind(await go(w), 'failed');
+    expect([step.reason, step.handoff, step.vault_ref]).toStrictEqual(['deadline', null, null]);
+    expect(untouched(w)).toStrictEqual(NOTHING);
+    // The twin: a deadline after the clock lets the hire go on.
+    w.deps.hire.deadlineMs = T0 + 1_000_000;
+    expect(words(await go(w))).toBe('completed');
+  });
+
+  it('does not pay when the deadline leaves less time than the first poll of the hire kit, and pays when it leaves exactly that time', async () => {
+    const short = await world();
+    short.m.agent.steps = ['done'];
+    short.deps.hire.deadlineMs = T0 + POLL_INTERVAL_MS - 1;
+    expect(words(await go(short))).toBe('failed deadline');
+    expect(untouched(short)).toStrictEqual(NOTHING);
+    const exact = await world();
+    exact.m.agent.steps = ['done'];
+    exact.deps.hire.deadlineMs = T0 + POLL_INTERVAL_MS;
+    expect(words(await go(exact))).toBe('completed');
   });
 });
 

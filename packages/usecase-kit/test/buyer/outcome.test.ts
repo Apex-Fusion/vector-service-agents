@@ -189,6 +189,14 @@ describe('the map from the outcome of the hire kit to the step and the result', 
     }
   });
 
+  it('says in the record when a hire was paid from the wallet and not from the vault: the flag is the word of the hire kit, and it is not assumed', () => {
+    const context = { counterparty_did: COUNTERPARTY_DID, delegation_after: null };
+    const fromWallet = stepOfOutcome({ ...completed, paidFrom: 'wallet' }, context);
+    const fromVault = stepOfOutcome(completed, context);
+    if (fromWallet.kind !== 'completed' || fromVault.kind !== 'completed') throw new Error('unexpected steps');
+    expect([fromWallet.handoff.paid_from_vault, fromVault.handoff.paid_from_vault]).toStrictEqual([false, true]);
+  });
+
   it('writes the delivery into the record of a completed hire and of a hire that was not accepted, and nothing of it for a refusal', () => {
     const context = { counterparty_did: COUNTERPARTY_DID, delegation_after: null };
     const done = stepOfOutcome(completed, context);
