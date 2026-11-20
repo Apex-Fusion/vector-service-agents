@@ -321,9 +321,11 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
  * Two hires of one paying key at one time. The first is made with the hire kit itself, from the wallet, and it holds the lane of the key: its Accept waits until the test lets it go, and the clock then
  * stands RELEASE_MS after T0. The second goes through the flow, from the vault, with the deadline `deadlineMs` after T0: it enters the lane while the first holds it, and it has its turn when the first has
  * ended. `held` is what the chain and the fetch had seen when the second hire waited in the lane, and `after` is what they had seen at the end: the difference is the work of the second hire.
+ * `steps` are the poll steps of both jobs: `['done']` makes each job end at its first poll.
  */
-async function twoAtOnce(deadlineMs: number) {
+async function twoAtOnce(deadlineMs: number, steps?: Array<'running' | 'done'>) {
   const w = await world({ deadlineMs });
+  if (steps !== undefined) w.m.agent.steps = steps;
   const chain = { adverts: vi.spyOn(w.m.chain, 'readAdvert'), posts: vi.spyOn(w.m.chain, 'postEscrow'), pays: vi.spyOn(w.m.chain, 'payFromVault') };
   const seen = (): number[] => [chain.adverts.mock.calls.length, chain.posts.mock.calls.length, chain.pays.mock.calls.length, w.m.calls.length];
   const gate = deferred();
@@ -422,6 +424,34 @@ describe('two jobs at one time on one delegation key', () => {
     expect(chain.pays).toHaveBeenCalledTimes(1);
     expect(step.handoff).toMatchObject({ paid_from_vault: true, accepted: 'confirmed' });
     expect(w.m.chain.vault(w.vault)).toMatchObject({ consumed: true });
+    expect([w.booked.posted.length, w.m.agent.sends.length, w.booked.accepted.length]).toStrictEqual([2, 2, 2]);
+  });
+
+  it('ends a hire whose turn in the lane of the hire kit has less than one poll interval left: failed with the reason deadline, no Pay and no escrow, for 1 ms, for 1,000 ms and for one millisecond less than the interval', async () => {
+    for (const left of [1, 1_000, POLL_INTERVAL_MS - 1]) {
+      const { w, chain, held, first, second, after } = await twoAtOnce(RELEASE_MS + left);
+      expect(first.outcome, `${left} ms`).toBe('completed');
+      const step = expectKind(second, 'failed');
+      expect([step.reason, step.handoff, step.vault_ref, step.terms], `${left} ms`).toStrictEqual(['deadline', null, null, null]);
+      // The hire kit ended it at its turn, with the margin that the flow gave it: its error says how much time was left.
+      expect((step.cause as Error).message, `${left} ms`).toContain(`its turn came ${left} ms before the deadline, less than minLeftAtTurnMs (${POLL_INTERVAL_MS} ms)`);
+      // The hire kit read no advert, made no Post and no Pay, and the fetch got no call: no send, and no escrow that stays Claimed.
+      expect(after, `${left} ms`).toStrictEqual(held);
+      expect(chain.pays, `${left} ms`).not.toHaveBeenCalled();
+      expect(w.m.chain.vault(w.vault), `${left} ms`).toMatchObject({ kind: 'Live', consumed: false });
+      expect([w.booked.posted.length, w.m.agent.sends.length, w.key.stranded.list().length], `${left} ms`).toStrictEqual([1, 1, 0]);
+      expect(settledResult(step, pieces()), `${left} ms`).toMatchObject({ outcome: 'failed', reason: 'deadline', exit_state: 'Failed', handoff: null });
+    }
+  });
+
+  it('twin: a turn in the lane of the hire kit with exactly one poll interval left pays from the vault and completes, and its escrow is accepted', async () => {
+    const { w, chain, held, first, second, after } = await twoAtOnce(RELEASE_MS + POLL_INTERVAL_MS, ['done']);
+    expect(first.outcome).toBe('completed');
+    const step = expectKind(second, 'completed');
+    expect(after).not.toStrictEqual(held);
+    expect(chain.pays).toHaveBeenCalledTimes(1);
+    expect(step.handoff).toMatchObject({ paid_from_vault: true, accepted: 'confirmed' });
+    expect(await w.m.chain.escrowState(step.handoff.escrow_ref)).toBe('spent');
     expect([w.booked.posted.length, w.m.agent.sends.length, w.booked.accepted.length]).toStrictEqual([2, 2, 2]);
   });
 });

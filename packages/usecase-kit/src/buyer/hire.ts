@@ -4,8 +4,8 @@
 //   2. The authority: the delegation of the message must not name another agent (`delegation_not_mine`). A delegation that is not found goes on.
 //   3. The size: the wire payload that is sent must not pass the limit of a service, and the body of the call to the runtime must not pass its limit (`request_too_large`). It is checked here because the hire kit builds both after the Pay.
 //   4. One job at a time for the paying key, and no Pay while an earlier Pay of the key may still land (`earlier_pay_may_land`). In that turn the flow reads the Live vault of the delegation, exactly one,
-//      and checks that the deadline of the job leaves time for the first poll. Then it hires from the vault with `hireAgent`. The advert is read on the chain: the flow never asks the indexer. The three
-//      limits go to the hire kit as the caller gave them.
+//      and checks that the deadline of the job leaves time for the first poll. Then it hires from the vault with `hireAgent`, and it asks the hire kit to end the hire with the `deadline` error when its turn in
+//      the lane of the key comes with less than that time left. The advert is read on the chain: the flow never asks the indexer. The three limits go to the hire kit as the caller gave them.
 //   5. The outcome becomes a step (outcome.ts). After a refused Pay the delegation is read again.
 // The delegation key is the paying key: it signs the Pay and the Accept. No step retries, and no step hires a second time for the same work.
 import { HireInterrupted, HireLane, HirePayUnconfirmed, POLL_INTERVAL_MS, hireAgent } from '@vsa/hire-kit';
@@ -263,7 +263,7 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
     }
     const found = await findLiveVault(reads, message.delegation, hire.clock());
     if (!found.ok) return failure(found.code, found.detail);
-    // A job that waited for the lane, or for the read of the vault, may have run out of time. The first thing that the hire kit does after the Pay is to wait one poll interval, and it fails when that
+    // A job that waited for the lane of the flow, or for the read of the vault, may have run out of time. The first thing that the hire kit does after the Pay is to wait one poll interval, and it fails when that
     // wait ends after the deadline. A Pay with less time than that is lost: it would lock the money until the reclaim. A moment equal to the deadline is in time, as the hire kit counts it.
     if (hire.clock() + POLL_INTERVAL_MS > hire.deadlineMs) return failure('deadline', 'the deadline of the job leaves no time for the first poll, so nothing was paid');
     // What the decision was given: if the hire ends in an error after the decision started, the step still names the delivery.
@@ -272,6 +272,9 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
       selection: { advertRef: advert, capabilityId: capability, ...(model === undefined ? {} : { model }) },
       payload: text, label: JOB_LABEL, vaultRef: found.vault_ref,
       maxPriceLovelace: limits.maxPriceLovelace, maxSupplierBondLovelace: limits.maxSupplierBondLovelace, maxBuyerBondLovelace: limits.maxBuyerBondLovelace,
+      // The hire kit has its own lane for the key, and this hire may wait in it behind a hire that the flow did not start. The check above comes before that wait, so the hire kit checks the same time when its
+      // turn comes: a turn with less than one poll interval left ends with the `deadline` error before the hire kit reads an advert or pays.
+      minLeftAtTurnMs: POLL_INTERVAL_MS,
       decide: async (delivered: AgentDelivery): Promise<AcceptDecision> => {
         const forDecision = deliveryOf(delivered);
         const forRecord = deliveryOf(delivered);
