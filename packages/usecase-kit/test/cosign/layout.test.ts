@@ -128,6 +128,12 @@ describe('addVkeyWitness', () => {
     expect(hexOf(out)).toBe(hexOf(make(`a1 00 d90102 9818 ${old} ${NEW_WITNESS}`)));
   });
 
+  it.each([[22, '96', '97'], [23, '97', '9818'], [254, '98fe', '98ff'], [255, '98ff', '990100']] as [number, string, string][])('writes the head of a list of %i witnesses in its shortest form after the add (%s, then %s)', (count, before, after) => {
+    const old = Array.from({ length: count }, (_, i) => witness((i % 250) + 1)).join(' ');
+    const out = add(make(`a1 00 d90102 ${before} ${old}`));
+    expect(hexOf(out)).toBe(hexOf(make(`a1 00 d90102 ${after} ${old} ${NEW_WITNESS}`)));
+  });
+
   it('keeps the entries that are not the vkey witnesses as they are, in their order', () => {
     const entries = 'a3 01 80 04 80 05 80';
     expect(hexOf(add(make(entries)))).toBe(hexOf(make(`a4 00 d90102 81 ${NEW_WITNESS} 01 80 04 80 05 80`)));

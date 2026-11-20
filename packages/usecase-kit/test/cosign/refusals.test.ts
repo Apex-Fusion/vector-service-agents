@@ -9,7 +9,7 @@ import { COSIGN_SETTINGS } from '@vsa/usecase-kit/cosign';
 import type { CosignCode } from '@vsa/usecase-kit/cosign';
 import {
   AGENT_ID, DEPLOYMENT, DELEG_A, DELEG_B, NOW, OTHER_AGENT_ID, OTHER_AGENT_KEY, OWN_ADDRESS, PRINCIPAL, SERVICE, STRANGER, SUPPLIER, agentWallet, build, changed, harness, ledgerOf, liveDelegation, memberUtxos, requestOf,
-  signedBy, spentOf, walletAddress, withCollateral, withInput, withInputs, withMint, withOutputAddress, withOutputs, withRedeemerMap, withRedeemers, withRequiredSigners, world,
+  signedBy, spentOf, walletAddress, withCollateral, withInput, withInputs, withMint, withOutputAddress, withOutputs, withRedeemerMap, withRedeemers, withRequiredSigners, withoutParts, world,
 } from './support.ts';
 import type { Setup } from './support.ts';
 
@@ -95,6 +95,13 @@ describe('a transaction that does more than delegate is not a Delegate', () => {
   it('refuses an update, a part that only the bytes can carry, before the decoder library reads the transaction', async () => {
     const { hex } = await build();
     await refuses('not_a_delegation', withRawBodyEntry(hex, 6, 'a0'));
+  });
+
+  it('refuses a body that lacks a part that a Delegate has, and takes a body that lacks the optional collateral return', async () => {
+    const { hex } = await build();
+    await refuses('not_a_delegation', withoutParts(hex, ['reference_inputs']));
+    await refuses('not_a_delegation', withoutParts(hex, ['script_data_hash']));
+    await signs(withoutParts(hex, ['collateral_return', 'total_collateral']));
   });
 
   it('refuses auxiliary data', async () => {
@@ -293,6 +300,12 @@ describe('the delegator must be a principal key on the allowlist', () => {
     await refuses('principal_not_allowed', hex, { allowed: [PRINCIPAL.keyHash, OTHER_AGENT_ID.slice(0, 56)] });
   });
 
+  it('refuses a sub-delegation by an agent for the delegator, and a delegation of a principal key with a parent for what it is', async () => {
+    const byAgent = (await build({ delegator: { type: 'Agent', id: OTHER_AGENT_ID } })).hex;
+    await refuses('principal_not_allowed', withDatum(byAgent, (d) => ({ ...d, parent: '66'.repeat(32), depth: 2, remaining: 0 })));
+    await refuses('not_a_delegation', withDatum((await build()).hex, (d) => ({ ...d, parent: '66'.repeat(32), depth: 2, remaining: 0 })));
+  });
+
   it('shows nothing of the list in the refusal: not a key, not the size', async () => {
     const { hex } = await build({ delegator: { type: 'PrincipalKey', hash: STRANGER.keyHash } });
     const { result } = await ask(hex, { allowed: [PRINCIPAL.keyHash, DELEG_B.keyHash] });
@@ -354,6 +367,13 @@ describe('the transaction must spend nothing of the agent', () => {
     // The value of the agent leaves to the member: the change output is paid to the address of the member.
     await refuses('spends_agent_funds', withOutputAddress(funded.hex, 1, OWN_ADDRESS));
     await signs((await build()).hex);
+  });
+
+  it('refuses an input whose address has no payment key: the agent cannot tell whose it is', async () => {
+    const { hex } = await build();
+    const stake = { txHash: 'ab'.repeat(32), outputIndex: 3, address: CML.RewardAddress.new(1, keyCredential(STRANGER.keyHash)).to_address().to_bech32(), assets: { lovelace: 2_000_000n } };
+    await refuses('not_a_delegation', withInput(hex, stake), { ledger: ledgerOf(world([stake])) });
+    await signs(withInput(hex, agentWallet(STRANGER, 1)), { ledger: ledgerOf(world([agentWallet(STRANGER, 1)])) });
   });
 
   it('knows a wallet only by the keys that the service gives: a key that it did not give is not the agent', async () => {

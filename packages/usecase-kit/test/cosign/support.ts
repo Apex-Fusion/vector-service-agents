@@ -168,8 +168,11 @@ function inputList(refs: CML.TransactionInput[]): CML.TransactionInputList {
 }
 const inputsOf = (list: CML.TransactionInputList | undefined): CML.TransactionInput[] => Array.from({ length: list?.len() ?? 0 }, (_, i) => list!.get(i));
 
-/** A body with the same parts as `old`, and the inputs, the outputs and the fee that `over` gives. CML has no setter for these three. */
-function rebuilt(old: CML.TransactionBody, over: { inputs?: CML.TransactionInputList; outputs?: CML.TransactionOutputList }): CML.TransactionBody {
+/** A part of a body that a test can leave out of a rebuilt body. */
+export type BodyPart = 'script_data_hash' | 'collateral_return' | 'total_collateral' | 'reference_inputs';
+
+/** A body with the same parts as `old`, and the inputs, the outputs and the fee that `over` gives, and without the parts of `over.skip`. CML has no setter for the inputs, the outputs and the fee. */
+function rebuilt(old: CML.TransactionBody, over: { inputs?: CML.TransactionInputList; outputs?: CML.TransactionOutputList; skip?: readonly BodyPart[] }): CML.TransactionBody {
   const body = CML.TransactionBody.new(over.inputs ?? old.inputs(), over.outputs ?? old.outputs(), old.fee());
   const ttl = old.ttl();
   if (ttl !== undefined) body.set_ttl(ttl);
@@ -178,19 +181,22 @@ function rebuilt(old: CML.TransactionBody, over: { inputs?: CML.TransactionInput
   const mint = old.mint();
   if (mint !== undefined) body.set_mint(mint);
   const scriptData = old.script_data_hash();
-  if (scriptData !== undefined) body.set_script_data_hash(scriptData);
+  if (scriptData !== undefined && !over.skip?.includes('script_data_hash')) body.set_script_data_hash(scriptData);
   const collateral = old.collateral_inputs();
   if (collateral !== undefined) body.set_collateral_inputs(collateral);
   const signers = old.required_signers();
   if (signers !== undefined) body.set_required_signers(signers);
   const returned = old.collateral_return();
-  if (returned !== undefined) body.set_collateral_return(returned);
+  if (returned !== undefined && !over.skip?.includes('collateral_return')) body.set_collateral_return(returned);
   const total = old.total_collateral();
-  if (total !== undefined) body.set_total_collateral(total);
+  if (total !== undefined && !over.skip?.includes('total_collateral')) body.set_total_collateral(total);
   const references = old.reference_inputs();
-  if (references !== undefined) body.set_reference_inputs(references);
+  if (references !== undefined && !over.skip?.includes('reference_inputs')) body.set_reference_inputs(references);
   return body;
 }
+
+/** The transaction without the parts `parts` in its body. */
+export const withoutParts = (hex: string, parts: BodyPart[]): string => changed(hex, (p) => { p.body = rebuilt(p.body, { skip: parts }); });
 
 /** What a change may touch: the body, the witness set, and the auxiliary data of a transaction. */
 export interface Parts {
