@@ -20,9 +20,9 @@
 // that deposit and the fee of the transaction from the wallet of its live delegation key. The Undelegate returns the deposit to that wallet, less its own fee.
 import type { DelegateBuild, DelegateParams, UndelegateBuild, UndelegateParams } from '@vsa/buyer-core';
 import { encodeDelegationDatum } from '@vsa/vector-read/identity-codec';
-import { accepted, agentIdOf, parseDelegationId, parseDid, parseKeyHash, parseTenantId, refused, type Accepted, type DelegationId, type Did, type Refused } from '../protocol/index.ts';
+import { accepted, agentIdOf, parseDelegationId, parseDid, parseKeyHash, parseTenantId, refused, type Accepted, type DelegationId, type Did, type Refused, type SerialQueue } from '../protocol/index.ts';
 import { MAX_WAIT_MS, within, type Clock } from './ports.ts';
-import { takeTurn, type SerialQueue } from './queue.ts';
+import { takeTurn } from './queue.ts';
 import { ROUTES, originOf, type MockBases, type RouteId, type TokenTarget } from './routes.ts';
 import { errorText, safeText } from './text.ts';
 import { addressHexOf, delegateTxProblem, delegationScriptProblem, undelegateTxProblem, type DelegationScript } from './txcheck.ts';

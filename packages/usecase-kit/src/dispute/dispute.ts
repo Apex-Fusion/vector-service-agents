@@ -34,13 +34,13 @@
 // The code of a caller must not call a method of this class from inside a job of the same queue: the call would wait for itself.
 import { documentHash, txHashOfUri } from '@vsa/buyer-core';
 import { NO_OPEN_CLAIM, accepted, checkMembers, didOfAgentId, isKeyHash, parseDid, parseJsonValue, parseOutputRef, refused } from '../protocol/index.ts';
-import type { Did, Digest, JsonObject, JsonValue, KeyHash, ManifestClaim, OutputRef, ProtocolResult, Refused } from '../protocol/index.ts';
+import type { Did, Digest, JsonObject, JsonValue, KeyHash, ManifestClaim, OutputRef, ProtocolResult, Refused, SerialQueue } from '../protocol/index.ts';
 import { EVIDENCE_STATEMENT, JUROR_MEDIA_TYPE, claimDocument, evidenceDocument, evidenceReferences, parseCapabilityId, parseClaimToken, parseStatementText, readClaimDocument } from './documents.ts';
 import type { ApprovalDigestFacts, EvidenceDocumentInput, OrderConfirmationFacts, QuotePriceFacts } from './documents.ts';
 import { MemoryJournal, parseJobRecord } from './journal.ts';
 import type { DisputeJournal, FiledRecord, JobRecord } from './journal.ts';
 import { MAX_CLAIM_TYPE_BYTES, challengeDeadlineOf, withdrawableFrom } from './ports.ts';
-import type { ChallengeView, ClaimView, DocumentAbsent, Module1Port, OpenedChallenge, PublishedDocument, ReadDocument, ServiceQueue, TxNotBuilt, TxNotConfirmed, TxResult } from './ports.ts';
+import type { ChallengeView, ClaimView, DocumentAbsent, Module1Port, OpenedChallenge, PublishedDocument, ReadDocument, TxNotBuilt, TxNotConfirmed, TxResult } from './ports.ts';
 import type {
   ChallengeCode, ChallengeFiled, ChallengeNotFiled, ChallengeResult, ClaimLookupCode, ClaimWithdrawn, DocumentLanded, RunClaimNotStaked, RunClaimResult, SentNotConfirmed, WithdrawNotDone,
   WithdrawResult,
@@ -85,7 +85,11 @@ export interface DisputeSettings {
 
 export interface DisputeDeps {
   readonly port: Module1Port;
-  readonly queue: ServiceQueue;
+  /**
+   * The queue of the service key. The key has one wallet, and a Module-1 build spends every output of it but one, so a transaction must not run beside a hire or another Module-1 step: give the queue that
+   * runs the hires of the key. Every transaction of this code runs as one job of the queue.
+   */
+  readonly queue: SerialQueue;
   /** The time in POSIX milliseconds. */
   readonly clock: () => number;
   /** Waits `ms` milliseconds. It bounds each read of a port. Its timer is not cancelled when the read ends first, so it must not hold the process open. */
@@ -388,7 +392,7 @@ interface Progress {
 
 export class Dispute {
   readonly #port: Module1Port;
-  readonly #queue: ServiceQueue;
+  readonly #queue: SerialQueue;
   readonly #clock: () => number;
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #stake: bigint;

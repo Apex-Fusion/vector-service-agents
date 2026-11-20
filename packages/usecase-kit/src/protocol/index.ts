@@ -10,6 +10,7 @@ export * from './codes.ts';
 export * from './faults.ts';
 export * from './manifest.ts';
 export * from './limits.ts';
+export * from './queue.ts';
 export * from './members.ts';
 export * from './approval.ts';
 export * from './messages.ts';

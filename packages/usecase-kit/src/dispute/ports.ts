@@ -1,5 +1,5 @@
 // packages/usecase-kit/src/dispute/ports.ts
-// What the dispute code needs from the outside: the chain, the queue of the service key and the clock.
+// What the dispute code needs from the outside: the chain. The queue of the service key is the `SerialQueue` of the protocol, and the clock is a function (`DisputeDeps`).
 //
 // The chain port reads the claims and the challenges of Module-1, the documents that they name, and the job of an escrow output: the time of the block that holds its transaction (the start of the job, for the output that
 // the Post made), the state of its datum, and the capability and the agent that the datum names. It lands four kinds of transaction: a document, a claim, a challenge and a withdrawal. A port
@@ -237,12 +237,4 @@ export interface Module1Port {
   submitClaim(call: SubmitClaimCall): Promise<TxResult<SubmittedClaim>>;
   openChallenge(call: OpenChallengeCall): Promise<TxResult<OpenedChallenge>>;
   withdrawClaim(call: WithdrawClaimCall): Promise<TxResult<WithdrawnClaim>>;
-}
-
-/**
- * The queue of the service key. The key has one wallet, and a Module-1 build spends every output of it but one, so a transaction must not run beside a hire or another Module-1 step.
- * `HireLane` of the hire kit is such a queue. A job runs when every job before it has ended.
- */
-export interface ServiceQueue {
-  run<T>(job: () => Promise<T>): Promise<T>;
 }

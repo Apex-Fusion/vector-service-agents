@@ -51,6 +51,7 @@ A validator takes any value and never throws. It returns `{ ok: true, value }` o
 | Kinds and faults | `BUYER_SIDE_KINDS`, `COUNTERPARTY_KINDS`, `AGENT_KINDS`, `BuyerSideKind`, `CounterpartyKind`, `AgentKind`, `FAULT_MODES`, `FaultMode`, `FaultSetting`; `isAgentKind`, `isFaultSetting` |
 | Manifest | `BehaviourAdditions`, `ManifestClaim`, `ClaimStatement`, `ManifestCosign`, `ManifestModel`, `ManifestRelyingOn`, `ManifestFileRef`, `COSIGN_ROUTE`, `COSIGN_RULE` |
 | Limits | `MAX_REQUEST_BYTES`, `RUNTIME_BODY_LIMIT_BYTES`; `checkRequestSize` |
+| Queue | `SerialQueue` |
 
 ### A request
 
@@ -127,6 +128,10 @@ A check can throw when it cannot read a source, such as the ledger or the gatewa
 `BehaviourAdditions<K>` gives the members that an agent of kind `K` adds under `behaviour`. With no kind, the type is the union of the six kinds: an object is the additions of exactly one kind, and never a mix of the members or the fault values of two kinds.
 
 `COSIGN_ROUTE` is the path of the co-sign route, `/cosign/delegate`, and `COSIGN_RULE` is the rule of the co-signature in words. The cosign folder states this rule, and the manifest of a buyer-side agent holds it. There is one text of each.
+
+### The queue of a key
+
+`SerialQueue` is the type of the queue of one wallet key. `run(job)` starts the job when every job before it has ended, whatever the outcome of those jobs. A job that fails does not stop the next one. The build and the send of a transaction from the wallet of a key run in this queue, so two builds of that wallet do not run at one time. The dispute folder and the access folder take the queue as a parameter, and the dispute folder names the type `ServiceQueue`. A service makes one queue for each key and gives the same object to both folders and to its hires. `HireLane` of the hire kit is such a queue, and `createSerialQueue` of the access folder makes one in memory.
 
 ### What the protocol does not prove
 

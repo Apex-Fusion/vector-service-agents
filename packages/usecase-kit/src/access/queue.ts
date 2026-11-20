@@ -4,13 +4,8 @@
 // the next build then reads the outputs that the last one left. The jobs under the sub-delegations still run at the same time, because only these transactions are queued.
 //
 // The caller gives the queue of the wallet key: the same queue that holds its other transactions of that key. `createSerialQueue` makes one, for a test and for a caller that has none.
+import type { SerialQueue } from '../protocol/index.ts';
 import { within, type Clock } from './ports.ts';
-
-/** Runs one task at a time, in the order of the calls. The queue of the chain client of a caller has this shape. */
-export interface SerialQueue {
-  /** Runs `task` after every task that was given before it has ended, whatever the outcome of those tasks, and gives its result. A task that fails does not stop the ones behind it. */
-  run<T>(task: () => Promise<T>): Promise<T>;
-}
 
 /** A queue in memory. It uses no timer. */
 export function createSerialQueue(): SerialQueue {
