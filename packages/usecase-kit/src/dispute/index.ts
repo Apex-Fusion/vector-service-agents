@@ -8,9 +8,10 @@ export type {
 } from './documents.ts';
 export { MAX_CLAIM_TYPE_BYTES, challengeDeadlineOf, withdrawableFrom } from './ports.ts';
 export type {
-  ChallengeView, ClaimView, DocumentAbsent, DocumentResult, EscrowJob, EscrowJobResult, Module1Port, NotAnEscrow, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument, ReadDocument, ServiceQueue,
+  ChallengeView, ClaimView, DocumentAbsent, DocumentResult, EscrowJob, EscrowJobResult, Module1Port, NotAnEscrow, OpenChallengeCall, OpenedChallenge, PublishCall, PublishedDocument, ReadDocument,
   SubmitClaimCall, SubmittedClaim, TxNotBuilt, TxNotConfirmed, TxResult, WithdrawClaimCall, WithdrawnClaim,
 } from './ports.ts';
+export type { SerialQueue as ServiceQueue } from '../protocol/index.ts';
 export { MemoryJournal } from './journal.ts';
 export type { DisputeJournal, EndedRecord, FiledRecord, JobRecord, JobStep } from './journal.ts';
 export { Dispute, LEAST_RESOLUTION_DEADLINE_MS } from './dispute.ts';

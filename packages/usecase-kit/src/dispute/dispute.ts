@@ -33,14 +33,14 @@
 // Every read of a port has a bound, so a read that never answers does not hold the queue of the service key: it ends with `chain_unavailable`. Every transaction runs in the queue of the service key.
 // The code of a caller must not call a method of this class from inside a job of the same queue: the call would wait for itself.
 import { documentHash, txHashOfUri } from '@vsa/buyer-core';
-import { NO_OPEN_CLAIM, accepted, checkMembers, parseDid, parseJsonValue, parseOutputRef, refused } from '../protocol/index.ts';
-import type { Did, Digest, JsonObject, JsonValue, ManifestClaim, OutputRef, ProtocolResult, Refused } from '../protocol/index.ts';
+import { NO_OPEN_CLAIM, accepted, checkMembers, didOfAgentId, isKeyHash, parseDid, parseJsonValue, parseOutputRef, refused } from '../protocol/index.ts';
+import type { Did, Digest, JsonObject, JsonValue, KeyHash, ManifestClaim, OutputRef, ProtocolResult, Refused, SerialQueue } from '../protocol/index.ts';
 import { EVIDENCE_STATEMENT, JUROR_MEDIA_TYPE, claimDocument, evidenceDocument, evidenceReferences, parseCapabilityId, parseClaimToken, parseStatementText, readClaimDocument } from './documents.ts';
 import type { ApprovalDigestFacts, EvidenceDocumentInput, OrderConfirmationFacts, QuotePriceFacts } from './documents.ts';
 import { MemoryJournal, parseJobRecord } from './journal.ts';
 import type { DisputeJournal, FiledRecord, JobRecord } from './journal.ts';
 import { MAX_CLAIM_TYPE_BYTES, challengeDeadlineOf, withdrawableFrom } from './ports.ts';
-import type { ChallengeView, ClaimView, DocumentAbsent, Module1Port, OpenedChallenge, PublishedDocument, ReadDocument, ServiceQueue, TxNotBuilt, TxNotConfirmed, TxResult } from './ports.ts';
+import type { ChallengeView, ClaimView, DocumentAbsent, Module1Port, OpenedChallenge, PublishedDocument, ReadDocument, TxNotBuilt, TxNotConfirmed, TxResult } from './ports.ts';
 import type {
   ChallengeCode, ChallengeFiled, ChallengeNotFiled, ChallengeResult, ClaimLookupCode, ClaimWithdrawn, DocumentLanded, RunClaimNotStaked, RunClaimResult, SentNotConfirmed, WithdrawNotDone,
   WithdrawResult,
@@ -48,7 +48,6 @@ import type {
 import { describeError } from './text.ts';
 
 const HOUR_MS = 3_600_000;
-const DID_PREFIX = 'did:vector:';
 
 /**
  * The least resolution deadline for which a challenge can have a jury: 6 hours and 40 minutes. The relay opens the case of a challenge only when it can do so at least 6 hours before the end of the
@@ -86,7 +85,11 @@ export interface DisputeSettings {
 
 export interface DisputeDeps {
   readonly port: Module1Port;
-  readonly queue: ServiceQueue;
+  /**
+   * The queue of the service key. The key has one wallet, and a Module-1 build spends every output of it but one, so a transaction must not run beside a hire or another Module-1 step: give the queue that
+   * runs the hires of the key. Every transaction of this code runs as one job of the queue.
+   */
+  readonly queue: SerialQueue;
   /** The time in POSIX milliseconds. */
   readonly clock: () => number;
   /** Waits `ms` milliseconds. It bounds each read of a port. Its timer is not cancelled when the read ends first, so it must not hold the process open. */
@@ -204,13 +207,12 @@ function changeOf(before: Pick<ClaimView, 'token' | 'claimer' | 'claim_hash'>, a
 
 const CLAIM_STATES: readonly string[] = ['Open', 'Challenged', 'Validated', 'Invalidated'];
 const CHALLENGE_STATES: readonly string[] = ['PendingOracle', 'PendingJury', 'Voting', 'Resolved'];
-const KEY_HASH = /^[0-9a-f]{56}$/;
 const HASH = /^[0-9a-f]{64}$/;
 const HEX = /^(?:[0-9a-f]{2})*$/;
 const MAX_RECORDED_DETAIL = 400;
 
 const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-const isKeyHash = (value: unknown): value is string | null => value === null || (typeof value === 'string' && KEY_HASH.test(value));
+const isKeyHashOrNull = (value: unknown): value is KeyHash | null => value === null || isKeyHash(value);
 
 /**
  * A claim view as the port must give it, or null when a member has the wrong type or form. The view that this returns is a copy: what a port changes later does not change what the code compared.
@@ -222,7 +224,7 @@ function claimViewOf(value: unknown): ClaimView | null {
   const ref = parseOutputRef(v.ref, 'ref');
   const token = parseClaimToken(v.token, 'token');
   const claimer = parseDid(v.claimer, 'claimer');
-  if (!ref.ok || !token.ok || !claimer.ok || !isKeyHash(v.claimer_key_hash)) return null;
+  if (!ref.ok || !token.ok || !claimer.ok || !isKeyHashOrNull(v.claimer_key_hash)) return null;
   if (typeof v.state !== 'string' || !CLAIM_STATES.includes(v.state)) return null;
   if (typeof v.stake_lovelace !== 'bigint' || v.stake_lovelace < 0n) return null;
   if (!isCount(v.submitted_at) || !isCount(v.challenge_window_ms) || v.challenge_window_ms < 1 || !Number.isSafeInteger(v.submitted_at + v.challenge_window_ms)) return null;
@@ -241,7 +243,7 @@ function challengeViewOf(value: unknown): ChallengeView | null {
   const claim = parseOutputRef(v.claim, 'claim');
   const claimToken = parseClaimToken(v.claim_token, 'claim_token');
   const auditor = parseDid(v.auditor, 'auditor');
-  if (!ref.ok || !claim.ok || !claimToken.ok || !auditor.ok || typeof v.token !== 'string' || !HASH.test(v.token) || !isKeyHash(v.auditor_key_hash)) return null;
+  if (!ref.ok || !claim.ok || !claimToken.ok || !auditor.ok || typeof v.token !== 'string' || !HASH.test(v.token) || !isKeyHashOrNull(v.auditor_key_hash)) return null;
   if (typeof v.stake_lovelace !== 'bigint' || v.stake_lovelace < 0n || typeof v.evidence_hash !== 'string' || !HEX.test(v.evidence_hash) || typeof v.evidence_uri !== 'string') return null;
   if (!isCount(v.challenged_at) || !isCount(v.resolution_deadline_ms) || !Number.isSafeInteger(v.challenged_at + v.resolution_deadline_ms)) return null;
   if (typeof v.state !== 'string' || !CHALLENGE_STATES.includes(v.state)) return null;
@@ -252,11 +254,11 @@ function challengeViewOf(value: unknown): ChallengeView | null {
 }
 
 /** The challenger of a challenge view: its DID and its key hash. Null when either has the wrong form, because the code cannot tell then whose the challenge is. */
-function challengerOf(value: unknown): { readonly did: Did; readonly key_hash: string | null } | null {
+function challengerOf(value: unknown): { readonly did: Did; readonly key_hash: KeyHash | null } | null {
   if (typeof value !== 'object' || value === null) return null;
   const v = value as Record<string, unknown>;
   const did = parseDid(v.auditor, 'auditor');
-  return did.ok && isKeyHash(v.auditor_key_hash) ? { did: did.value, key_hash: v.auditor_key_hash } : null;
+  return did.ok && isKeyHashOrNull(v.auditor_key_hash) ? { did: did.value, key_hash: v.auditor_key_hash } : null;
 }
 
 /** A document that the port read, or null when a member has the wrong type. */
@@ -390,7 +392,7 @@ interface Progress {
 
 export class Dispute {
   readonly #port: Module1Port;
-  readonly #queue: ServiceQueue;
+  readonly #queue: SerialQueue;
   readonly #clock: () => number;
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #stake: bigint;
@@ -590,7 +592,7 @@ export class Dispute {
     if (job.kind === 'refused') return refused('bad_shape', `escrow_ref names no escrow output of the deployment: ${describeError(job.detail)}`);
     if (job.agent_id === null) return refused('bad_shape', 'escrow_ref names an escrow of the legacy layout: its datum has no agent_id, so it is not the escrow of this job');
     if (job.capability_id !== scope.capability_id) return refused('bad_shape', 'escrow_ref names the escrow of another job: the capability_id of its datum is not the capability_id of the job');
-    if (!hired.dids.includes(`${DID_PREFIX}${job.agent_id}`)) return refused('bad_shape', `escrow_ref names the escrow of another job: the agent_id of its datum is not ${hired.words}`);
+    if (!hired.dids.includes(didOfAgentId(job.agent_id))) return refused('bad_shape', `escrow_ref names the escrow of another job: the agent_id of its datum is not ${hired.words}`);
     if (job.state !== 'Open') return refused('bad_shape', 'escrow_ref names an output that a later step of the escrow made, and not the output of its Post: the state of its datum is not Open. Name the output that the Post made, because only the block of that output is the start of the job');
     if (job.block_time_ms > now) return refused('chain_unavailable', 'the block of the escrow output is dated after the clock, so the clock or the source of the chain is wrong');
     return accepted(job.block_time_ms);

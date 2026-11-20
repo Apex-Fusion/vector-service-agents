@@ -16,7 +16,7 @@ export { systemClock, within } from './ports.ts';
 export type { Bounded, Clock } from './ports.ts';
 
 export { createSerialQueue } from './queue.ts';
-export type { SerialQueue } from './queue.ts';
+export type { SerialQueue } from '../protocol/index.ts';
 export { MAX_COLLATERAL_LOVELACE, MAX_DELEGATION_DEPOSIT_LOVELACE, MAX_TX_FEE_LOVELACE } from './txcheck.ts';
 export type { DelegationScript } from './txcheck.ts';
 
