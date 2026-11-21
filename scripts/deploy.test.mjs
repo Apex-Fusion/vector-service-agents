@@ -1982,7 +1982,7 @@ test('Pipeline RUNBOOK failure table: the start-up refusals, the pipeline codes 
 
 test('CI: the test job installs poppler-utils before the tests and sets REQUIRE_POPPLER on the test step, so that a failed install fails the real-renderer test instead of skipping it', () => {
   const steps = ci.jobs.test.steps;
-  assert.equal(ci.jobs.test['runs-on'], 'nixos');
+  assert.equal(ci.jobs.test['runs-on'], 'self-hosted');
   const install = steps.findIndex((s) => typeof s.run === 'string' && /apt-get install -y poppler-utils/.test(s.run));
   const tests = steps.findIndex((s) => s.run === 'pnpm test');
   assert.ok(install >= 0, 'a step installs poppler-utils');
@@ -3351,7 +3351,7 @@ test('CI: the build job builds the four images of the publish job on every pull 
   assert.deepEqual(ci.permissions, { contents: 'read' });
   const job = ci.jobs.build;
   assert.ok(job, 'a build job');
-  assert.equal(job['runs-on'], 'nixos');
+  assert.equal(job['runs-on'], 'self-hosted');
   assert.equal(job.if, undefined, 'on every event of the workflow');
   assert.equal(job.needs, undefined, 'beside the tests, not after them');
   assert.equal(job.permissions, undefined, 'the read-only permissions of the workflow');
