@@ -784,12 +784,17 @@ describe('src/index.ts as a process', () => {
   }, 60_000);
 
   // A signal reaches a handler only on POSIX (on Windows kill() ends the process at once, whatever the signal), so CI on Linux runs this and Windows skips it.
+  // The line "listening" does not show that the handlers of SIGTERM are on. The entry puts them on in the same run of its event loop, a moment after that line.
+  // A signal that comes in that moment finds no handler and ends the process with no exit code. A busy host can hold the process in that moment for long enough.
+  // An answer of the server comes in a later run of the loop, so the handlers are on by then. The test waits for one answer before it sends the signal.
   test.skipIf(process.platform === 'win32')('SIGTERM stops it the way a restart should: the line of the stop, and exit 0', async () => {
     const p = run({ ...FULL_ENV, PORT: '0', HOST: '127.0.0.1', OPENROUTER_MODEL: '', ADVOCATE_STATE_DIR: tempDir() });
     try {
       const end = Date.now() + 30_000;
       while (!/listening on 127\.0\.0\.1:\d+/.test(p.out()) && Date.now() < end && p.child.exitCode === null) await new Promise((resolve) => setTimeout(resolve, 50));
       expect(p.out(), p.err()).toMatch(/listening on 127\.0\.0\.1:\d+/);
+      const port = /listening on 127\.0\.0\.1:(\d+)/.exec(p.out())?.[1];
+      expect(await (await fetch(`http://127.0.0.1:${port}/healthz`)).json(), p.err()).toStrictEqual({ ok: true });
       p.child.kill('SIGTERM');
       expect(await p.exited).toBe(0);
       expect(p.out()).toContain('[advocate] SIGTERM: stopping; no new job, and up to 300 s for the one that is running');

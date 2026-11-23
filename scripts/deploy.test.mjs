@@ -4018,6 +4018,9 @@ test('Advocate RUNBOOK steps 1 to 3: the bundle into $BASE and .env with the net
 // from its backticks, on scratch repositories in a folder of the OS temp directory and never in this repository: no GIT_ variable of the process reaches them, no
 // configuration of the machine is read, and git looks for no repository above that folder. A bundle of a first commit is cloned as step 1 clones it, the pin of
 // step 2 is made in the clone and the two env files are written next to it; a second commit that rewrites the compose file comes as a new bundle in the same place.
+// The configuration file of that folder is the only one git reads. It holds three settings that keep git from working in the background. Without them, git 2.54 and later
+// start a detached repack after a commit, a fetch or a merge. That process can still write in the repository, and make its directories again, when the removal at the end
+// runs. The removal then fails with ENOTEMPTY. The removal also retries a few times for an entry that goes away by itself. Any other error stops the test.
 const HAVE_GIT = (() => { try { execFileSync('git', ['--version'], { stdio: 'ignore' }); return true; } catch { return false; } })();
 test('Advocate RUNBOOK first paragraph in git: step 1 cannot clone again and a pull stops on the pin of step 2; the checkout of the compose file and the pull the paragraph records bring the new commit with its placeholder, and .env and .env.advocate stay as they are', { skip: HAVE_GIT ? false : 'needs git' }, () => {
   const first = aRunbook.split('\n')[2];
@@ -4035,7 +4038,7 @@ test('Advocate RUNBOOK first paragraph in git: step 1 cannot clone again and a p
   assert.ok(bundleOnHost !== undefined && pull.split(' ').includes(bundleOnHost), `the pull reads the bundle where step 1 puts it: ${bundleOnHost}`);
   const scratch = mkdtempSync(join(tmpdir(), 'advocate-rerun-'));
   try {
-    writeFileSync(join(scratch, 'gitconfig'), '');
+    writeFileSync(join(scratch, 'gitconfig'), '[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n[core]\n\tfsmonitor = false\n');
     const env = {
       ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^GIT_/i.test(name))),
       GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(scratch, 'gitconfig'), GIT_CEILING_DIRECTORIES: scratch, GIT_TERMINAL_PROMPT: '0',
@@ -4097,7 +4100,7 @@ test('Advocate RUNBOOK first paragraph in git: step 1 cannot clone again and a p
     assert.equal(shown.status, 0, shown.stderr);
     assert.ok(shown.stdout.startsWith(reviewed.slice(0, 7)) && shown.stdout.trim().endsWith('the change that is reviewed'), `the last command shows the reviewed commit: ${shown.stdout}`);
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
