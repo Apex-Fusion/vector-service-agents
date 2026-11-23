@@ -13,3 +13,4 @@ export { PO_SCHEMA, parsePurchaseOrder, poNumberOf } from './order.ts';
 export type { PurchaseOrder } from './order.ts';
 export { CONFIRMATION_CHECKS, CONFIRMATION_SCHEMA, parseOrderConfirmation } from './confirmation.ts';
 export type { OrderConfirmation } from './confirmation.ts';
+export { INVENTORY_CAPABILITIES, ORDER_DESK_CLAIM, REORDER_CLAIM } from './claims.ts';
