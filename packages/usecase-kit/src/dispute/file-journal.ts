@@ -8,9 +8,9 @@
 // gave, as one line of JSON.
 //
 // A write is whole, or it is not there. `put` writes a temporary file in the same folder, syncs it, renames it over the file of the job, syncs the folder, and then it returns. An error or a crash before the
-// rename leaves the old file as it was, and the temporary file has a name that no read takes. The writes for one job of one instance run one after the other in the order of the calls, so a slow old write never
-// lands after a newer one. Writes for two jobs do not wait for each other. When the sync of the folder fails, `put` rejects, although the new record may be in place. The caller reads a rejection as "not stored",
-// which is the safe reading: the dispute code sends nothing after a failed write of the record `started`.
+// rename leaves the old file as it was, and the temporary file has a name that no read takes. The writes for one job run one after the other in the order of the calls, whatever instance of the process makes
+// them (the queue is shared, and its key is the resolved path of the file), so a slow old write never lands after a newer one. Writes for two jobs do not wait for each other. When the sync of the folder fails,
+// `put` rejects, although the new record may be in place. The caller reads a rejection as "not stored", which is the safe reading: the dispute code sends nothing after a failed write of the record `started`.
 //
 // A read gives null when the job has no file. It throws when the file cannot be read, and when the file does not hold a JSON object: a record that exists is never read as "no record". The dispute code checks the
 // record that a read gives (`parseJobRecord`), so this class says nothing about the content.
@@ -107,11 +107,27 @@ async function writeDurably(fs: JournalFs, folder: string, target: string, text:
   await fs.fsync(folder);
 }
 
+/**
+ * The last write that is queued or running for each file of the process, by the resolved path of the file. Every instance shares it, so the writes for one file run one after the other in the order of the
+ * calls, whatever instance makes them. A folder that is reached through a link has other keys.
+ */
+const queued = new Map<string, Promise<void>>();
+
+/** Runs `write` when every write that was queued for the file before it has ended, whatever the outcome of those writes. The result is the outcome of `write`. */
+function inOrder(file: string, write: () => Promise<void>): Promise<void> {
+  const key = resolve(file);
+  const run = (queued.get(key) ?? Promise.resolve()).then(write);
+  const tail = run.then(() => undefined, () => undefined);
+  queued.set(key, tail);
+  tail.then(() => {
+    if (queued.get(key) === tail) queued.delete(key);
+  });
+  return run;
+}
+
 export class FileJournal implements DisputeJournal {
   readonly #folder: string;
   readonly #fs: JournalFs;
-  /** The last write that is queued or running for each file. A write waits for the one in front of it. */
-  readonly #tails = new Map<string, Promise<void>>();
 
   constructor(directory: string, options: FileJournalOptions = {}) {
     this.#folder = absolutePath(directory, 'the journal folder');
@@ -135,23 +151,12 @@ export class FileJournal implements DisputeJournal {
     const file = this.#fileOf(escrow);
     // The text is made at the call, so a later change of the record object changes nothing that is written.
     const text = textOf(record);
-    await this.#inOrder(file, () => writeDurably(this.#fs, this.#folder, file, text));
+    await inOrder(file, () => writeDurably(this.#fs, this.#folder, file, text));
   }
 
   /** The file of a job. Only an output reference gives one, so no other text reaches the file system. */
   #fileOf(escrow: OutputRef): string {
     if (!parseOutputRef(escrow).ok) throw new TypeError('the journal needs an output reference as the name of a job');
     return join(this.#folder, escrow.split('#').join('_'));
-  }
-
-  /** Runs `write` when every write that was queued for the file before it has ended, whatever the outcome of those writes. The result is the outcome of `write`. */
-  #inOrder(file: string, write: () => Promise<void>): Promise<void> {
-    const run = (this.#tails.get(file) ?? Promise.resolve()).then(write);
-    const tail = run.then(() => undefined, () => undefined);
-    this.#tails.set(file, tail);
-    tail.then(() => {
-      if (this.#tails.get(file) === tail) this.#tails.delete(file);
-    });
-    return run;
   }
 }

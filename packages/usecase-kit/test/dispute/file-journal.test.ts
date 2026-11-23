@@ -388,6 +388,24 @@ describe('two writes never mix', () => {
     expect(readdirSync(folder)).toEqual([FILE]);
   });
 
+  it('lands the writes for one job in the order of the calls when two instances share the folder, also when the folder is spelled in another way', async () => {
+    const folder = tempFolder();
+    const gate = deferred<void>();
+    let calls = 0;
+    const slow = new FileJournal(folder, {
+      fs: { writeFile: async (path, text) => { calls += 1; if (calls === 1) await gate.promise; return real.writeFile(path, text); } },
+    });
+    const quick = new FileJournal(`${folder}/.`);
+    const older = slow.put(ESCROW, record());
+    const newer = quick.put(ESCROW, record({ step: 'evidence_landed', evidence: LANDED }));
+    await tick();
+    await tick();
+    gate.resolve();
+    await Promise.all([older, newer]);
+    expect((await new FileJournal(folder).get(ESCROW))!.step).toBe('evidence_landed');
+    expect(readdirSync(folder)).toEqual([FILE]);
+  });
+
   it('goes on with the writes of a job after a write of that job failed', async () => {
     const folder = tempFolder();
     let calls = 0;

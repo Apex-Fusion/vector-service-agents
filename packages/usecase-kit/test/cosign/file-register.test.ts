@@ -189,6 +189,17 @@ describe.each(SUBJECTS)('%s keeps the contract of the register', (_name, make) =
       expect(await register.take(claim('body-2'), 999)).toBe('in_use');
     });
 
+    it('drops only the ended entry of the key that a call claims: a call for another key at a later time leaves the entry for a call at an earlier time', async () => {
+      const { register } = make();
+      expect(await register.commit(claim('body-1', { keyHash: 'k1', untilMs: 100 }), 0)).toBe('held');
+      // The time of this call is past the end of the entry of k1, and the call is for k2.
+      expect(await register.take(claim('body-2', { keyHash: 'k2', untilMs: 9_000 }), 150)).toBe('held');
+      // A call for k1 with the time 50 comes after it. The entry of k1 is live at 50, so another body is refused.
+      expect(await register.take(claim('body-3', { keyHash: 'k1', untilMs: 9_000 }), 50)).toBe('in_use');
+      // The twin: at the end of the entry the key is free for another body.
+      expect(await register.take(claim('body-3', { keyHash: 'k1', untilMs: 9_000 }), 100)).toBe('held');
+    });
+
     it('rejects a time that is not a number, and makes no entry, also for a key that is free', async () => {
       const { register, size } = make();
       for (const [untilMs, now] of [[Number.NaN, 0], [1_000, Number.NaN], [Infinity, 0]] as const) {
@@ -285,20 +296,25 @@ describe('the register on disk keeps its entries over a restart', () => {
     expect(readdirSync(join(file, '..'))).toEqual(['register.json']);
   });
 
-  it('drops an entry whose time has come when it reads it, and writes the file without it', async () => {
+  it('drops the ended entry of the claimed key only, and leaves the entries of the other keys in the file', async () => {
     const file = newFile();
     const register = new FileKeyRegister(file);
     await register.commit(claim('body-1', { untilMs: 1_000 }), 0);
     await register.take(claim('body-2', { keyHash: 'key-2', untilMs: 9_000 }), 0);
     expect(entriesOn(file).map((one) => one.key_hash)).toEqual(['key-1', 'key-2']);
-    // At 1,000 the entry of key-1 has ended: the next write leaves it out.
+    // At 1,000 the entry of key-1 has ended. A call for key-3 does not touch it: a call with an earlier time can still need it.
     expect(await register.take(claim('body-3', { keyHash: 'key-3', untilMs: 9_000 }), 1_000)).toBe('held');
-    expect(entriesOn(file).map((one) => one.key_hash)).toEqual(['key-2', 'key-3']);
-    // The key of the ended entry is free for another body, and a body that held it before is a stranger now.
+    expect(entriesOn(file).map((one) => one.key_hash)).toEqual(['key-1', 'key-2', 'key-3']);
+    // A call for key-1 at 999 still sees the entry. A call for key-1 at 1,000 drops it, and the file holds the new body for that key.
+    expect(await register.take(claim('body-4', { untilMs: 9_000 }), 999)).toBe('in_use');
     expect(await register.take(claim('body-4', { untilMs: 9_000 }), 1_000)).toBe('held');
+    expect(entriesOn(file)).toEqual([
+      entry('body-2', { key_hash: 'key-2', until_ms: 9_000 }),
+      entry('body-3', { key_hash: 'key-3', until_ms: 9_000 }),
+      entry('body-4', { key_hash: 'key-1', until_ms: 9_000 }),
+    ]);
+    // A body that held the key before is a stranger now.
     expect(await register.take(claim('body-1', { untilMs: 9_000 }), 1_000)).toBe('in_use');
-    // The twin: an entry that has not ended stays in the file.
-    expect(entriesOn(file).map((one) => one.key_hash)).toEqual(['key-2', 'key-3', 'key-1']);
   });
 
   it('treats a file that is not there as a register with no entries, and makes the file at the first write', async () => {
@@ -606,6 +622,24 @@ describe('two calls never race on the file', () => {
     gate.resolve();
     expect(await Promise.all([first, second])).toEqual(['held', 'held']);
     expect(entriesOn(file).map((one) => one.key_hash)).toEqual(['key-1', 'key-2']);
+  });
+
+  it('holds one body when two instances on one path take it at one time, also when the path is spelled in another way', async () => {
+    const folder = tempFolder();
+    const file = join(folder, 'register.json');
+    const gate = deferred<void>();
+    let writes = 0;
+    const slow = new FileKeyRegister(file, {
+      fs: { writeFile: async (path, text) => { writes += 1; if (writes === 1) await gate.promise; return real.writeFile(path, text); } },
+    });
+    const other = new FileKeyRegister(`${folder}/./register.json`);
+    const first = slow.take(claim('body-1'), 0);
+    const second = other.take(claim('body-2'), 0);
+    await tick();
+    await tick();
+    gate.resolve();
+    expect(await Promise.all([first, second])).toEqual(['held', 'in_use']);
+    expect(entriesOn(file)).toEqual([entry('body-1')]);
   });
 });
 

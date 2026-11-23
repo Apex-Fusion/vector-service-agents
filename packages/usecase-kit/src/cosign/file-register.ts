@@ -2,16 +2,17 @@
 // The register of the signed bodies, on disk. `FileKeyRegister` keeps the entries of the contract in register.ts in one JSON file, so a restart of the service does not free a key that holds a body that the
 // agent signed. `KeyReservations` forgets its entries at a restart. This class does not.
 //
-// The rules are those of `KeyReservations`. `take` and `commit` are one compare-and-set on the key, and `release` removes only an entry of its own body that is not committed. An entry whose time has come
-// (`nowMs >= untilMs`) is dropped when the file is read, and the next write leaves it out. A time that is not a finite number is a `RangeError`, and it makes no entry. A claim whose key hash or body hash is
-// not text, or is empty, is a `TypeError`: the file never holds an entry that it cannot read back.
+// The rules are those of `KeyReservations`. `take` and `commit` are one compare-and-set on the key, and `release` removes only an entry of its own body that is not committed. A call drops the entry of the
+// claimed key when its time has come at the `nowMs` of the call (`nowMs >= untilMs`), and it drops no other entry: a call for another key can have an earlier `nowMs`, and for that call the entry is still live.
+// The file holds one entry for each key, so it stays small. A time that is not a finite number is a `RangeError`, and it makes no entry. A claim whose key hash or body hash is not text, or is empty, is a
+// `TypeError`: the file never holds an entry that it cannot read back.
 //
-// What the disk adds. Each call reads the file again, so the file is the truth, and a file that was damaged after the last call is seen at this call. All calls of one instance run in one promise queue, so two
-// calls never overlap in one process. A call that changes the entry writes the whole file before it returns: a temporary file in the same folder, a sync of it, a rename over the register file, and a sync of
-// the folder. `commit` always writes, also for an entry that is committed already, so a `commit` that settles with 'held' never rests on a file that no call has synced. A call that changes nothing writes
-// nothing. A crash between a `take` and its `commit` leaves the entry that the `take` made, so the key stays held until `untilMs`. When the write fails, the call rejects, and the route reads that as
-// `check_unavailable` and sends no signature. A failure before the rename leaves the old file whole. A failure of the sync of the folder leaves the new file in place, so the key stays held for the body, which
-// is the safe side: a key that is held too long never gives a second body.
+// What the disk adds. Each call reads the file again, so the file is the truth, and a file that was damaged after the last call is seen at this call. All calls for one file run in one promise queue that
+// every instance of the process shares (the key is the resolved path), so two calls never overlap in one process, whatever instance makes them. A call that changes the entry writes the whole file before it
+// returns: a temporary file in the same folder, a sync of it, a rename over the register file, and a sync of the folder. `commit` always writes, also for an entry that is committed already, so a `commit` that
+// settles with 'held' never rests on a file that no call has synced. A call that changes nothing writes nothing. A crash between a `take` and its `commit` leaves the entry that the `take` made, so the key
+// stays held until `untilMs`. When the write fails, the call rejects, and the route reads that as `check_unavailable` and sends no signature. A failure before the rename leaves the old file whole. A failure of
+// the sync of the folder leaves the new file in place, so the key stays held for the body, which is the safe side: a key that is held too long never gives a second body.
 //
 // A file that is not there is a register with no entries. A file that cannot be read, that is not JSON, or that is not in its form makes every call throw. It never reads as a free key, and the call changes
 // nothing. The form is `{"version":1,"entries":[{"key_hash":..,"body_hash":..,"until_ms":..,"committed":..}]}` with one entry for each key. It holds hashes and times, and no key and no part of a request.
@@ -134,12 +135,28 @@ async function writeDurably(fs: RegisterFs, folder: string, target: string, text
   await fs.fsync(folder);
 }
 
+/**
+ * The last call that is queued or running for each register file of the process, by the resolved path of the file. Every instance on one path shares it, so two calls for one file never overlap in the process,
+ * whatever instance makes them. A path that reaches the file through a link has another key.
+ */
+const queued = new Map<string, Promise<void>>();
+
+/** Runs `call` when every call that was queued for the file before it has ended, whatever the outcome of those calls. The result is the outcome of `call`. */
+function inOrder<T>(file: string, call: () => Promise<T>): Promise<T> {
+  const key = resolve(file);
+  const run = (queued.get(key) ?? Promise.resolve()).then(call);
+  const tail = run.then(() => undefined, () => undefined);
+  queued.set(key, tail);
+  tail.then(() => {
+    if (queued.get(key) === tail) queued.delete(key);
+  });
+  return run;
+}
+
 export class FileKeyRegister implements KeyRegister {
   readonly #file: string;
   readonly #folder: string;
   readonly #fs: RegisterFs;
-  /** The end of the last call that is queued or running. A call starts when the call in front of it has ended, whatever its outcome. */
-  #tail: Promise<void> = Promise.resolve();
 
   constructor(path: string, options: FileKeyRegisterOptions = {}) {
     this.#file = absolutePath(path, 'the register path');
@@ -149,15 +166,15 @@ export class FileKeyRegister implements KeyRegister {
   }
 
   take(claim: KeyClaim, nowMs: number): Promise<ClaimResult> {
-    return this.#inOrder(() => this.#claim(claim, nowMs, false));
+    return inOrder(this.#file, () => this.#claim(claim, nowMs, false));
   }
 
   commit(claim: KeyClaim, nowMs: number): Promise<ClaimResult> {
-    return this.#inOrder(() => this.#claim(claim, nowMs, true));
+    return inOrder(this.#file, () => this.#claim(claim, nowMs, true));
   }
 
   release(claim: Pick<KeyClaim, 'keyHash' | 'bodyHash'>): Promise<void> {
-    return this.#inOrder(async () => {
+    return inOrder(this.#file, async () => {
       checkClaim(claim);
       const entries = await this.#read();
       const held = entries.get(claim.keyHash);
@@ -172,9 +189,9 @@ export class FileKeyRegister implements KeyRegister {
     if (!(Number.isFinite(nowMs) && Number.isFinite(claim.untilMs))) throw new RangeError('the register needs a time that is a number');
     checkClaim(claim);
     const entries = await this.#read();
-    for (const [keyHash, entry] of entries) {
-      if (nowMs >= entry.untilMs) entries.delete(keyHash);
-    }
+    // Only the entry of this key can end for this call. The entries of other keys stay: a call with an earlier time can still need them.
+    const old = entries.get(claim.keyHash);
+    if (old !== undefined && nowMs >= old.untilMs) entries.delete(claim.keyHash);
     const held = entries.get(claim.keyHash);
     if (held !== undefined && held.bodyHash !== claim.bodyHash) return 'in_use';
     if (held === undefined) entries.set(claim.keyHash, { bodyHash: claim.bodyHash, untilMs: claim.untilMs, committed });
@@ -197,12 +214,5 @@ export class FileKeyRegister implements KeyRegister {
 
   #write(entries: ReadonlyMap<string, Entry>): Promise<void> {
     return writeDurably(this.#fs, this.#folder, this.#file, textOf(entries));
-  }
-
-  /** Runs `call` when every call that was queued before it has ended. The result is the outcome of `call`. */
-  #inOrder<T>(call: () => Promise<T>): Promise<T> {
-    const run = this.#tail.then(call);
-    this.#tail = run.then(() => undefined, () => undefined);
-    return run;
   }
 }
