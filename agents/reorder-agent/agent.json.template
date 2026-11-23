@@ -1,0 +1,273 @@
+{
+  "schema": "vector.agent-manifest.v2",
+  "name": "Reorder Agent",
+  "capability_id": "supplychain.reorder.po.v1",
+  "version": "0.1.0",
+  "description": "For a buying organisation: reads the stock of one SKU, proposes a purchase order for one lot from a named supplier, and, once the organisation has approved the order, places it from the vault of the organisation and records it.",
+  "operator": {
+    "name": "Apex Fusion Foundation",
+    "contact": "<OPERATOR_CONTACT>"
+  },
+  "identity": {
+    "did": "<AGENT_DID>",
+    "registry_address": "",
+    "supplier_key": "<AGENT_DID>#<SUPPLIER_PKH>"
+  },
+  "keys": {
+    "supplier_pkh": "<SUPPLIER_PKH>",
+    "pub_key_hex": "<SUPPLIER_PUB_KEY_HEX>",
+    "buyer_pkh": "<REORDER_SERVICE_PKH>",
+    "delegation_pkhs": [
+      "<REORDER_DELEGATION_1_PKH>",
+      "<REORDER_DELEGATION_2_PKH>"
+    ]
+  },
+  "interface": {
+    "request_schema": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "authority",
+            "tenant",
+            "sku",
+            "supplier_did"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "propose"
+            },
+            "authority": {
+              "type": "object",
+              "required": [
+                "principal_did",
+                "delegation"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "principal_did": {
+                  "type": "string",
+                  "pattern": "^did:vector:[0-9a-f]{64}$",
+                  "description": "The DID of the principal who gave the delegation"
+                },
+                "delegation": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "description": "The identifier of the delegation that names this agent as its delegate"
+                }
+              }
+            },
+            "tenant": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 48,
+              "pattern": "^[a-z0-9][a-z0-9-]{0,47}$",
+              "description": "The tenant of the mock systems: 1 to 48 characters, lower-case letters, digits and hyphens, starting with a letter or a digit"
+            },
+            "sku": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+              "description": "The SKU to reorder: 1 to 64 characters"
+            },
+            "supplier_did": {
+              "type": "string",
+              "pattern": "^did:vector:[0-9a-f]{64}$",
+              "description": "The DID of the Order Desk that takes the order"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "authority",
+            "tenant",
+            "proposal",
+            "approval"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "op": {
+              "const": "execute"
+            },
+            "authority": {
+              "type": "object",
+              "required": [
+                "principal_did",
+                "delegation"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "principal_did": {
+                  "type": "string",
+                  "pattern": "^did:vector:[0-9a-f]{64}$",
+                  "description": "The DID of the principal who gave the delegation"
+                },
+                "delegation": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "description": "The identifier of the delegation that names this agent as its delegate"
+                }
+              }
+            },
+            "tenant": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 48,
+              "pattern": "^[a-z0-9][a-z0-9-]{0,47}$",
+              "description": "The tenant of the mock systems: 1 to 48 characters, lower-case letters, digits and hyphens, starting with a letter or a digit"
+            },
+            "proposal": {
+              "type": "object",
+              "required": [
+                "document",
+                "salt",
+                "proposal_digest"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "document": {
+                  "type": "object",
+                  "description": "The purchase order that propose returned"
+                },
+                "salt": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "proposal_digest": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$",
+                  "description": "The digest of the salt and the document, which the hirer approved"
+                }
+              }
+            },
+            "approval": {
+              "description": "The approval of the hirer for the digest of the proposal, or null: the Order Desk refuses an order with no valid approval",
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "attestation",
+                    "issuer_did"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "attestation": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "issuer_did": {
+                      "type": "string",
+                      "pattern": "^did:vector:[0-9a-f]{64}$"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "response_schema": {
+      "$ref": "https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/reorder-agent.md#response"
+    },
+    "routes": {
+      "job": "/v1/job",
+      "status": "/status",
+      "capability": "/capability"
+    },
+    "notes": [
+      "A request is one JSON object with the member op set to propose or to execute, with the members of that operation and no other member. A request that breaks a rule of the intake is refused with bad_shape (400).",
+      "propose reads the stock of one SKU through a sub-delegation to stock-reader, reads the Order Desk of the supplier, asks one model for the lot, and returns a purchase order with its salt and its digest. It pays nothing and writes nothing to the PO store.",
+      "execute places an order that the hirer approved: it pays the advert of the Order Desk from the vault of the delegation, checks the confirmation, asks one model whether to accept it, accepts the escrow and writes the order to the PO store. A confirmation that the model does not accept is challenged and not accepted.",
+      "The route POST /cosign/delegate is open and takes no job: it signs only the Delegate that the rule in behaviour.cosign allows, for a principal key on the allowlist of the operator."
+    ]
+  },
+  "terms": {
+    "price_lovelace": 3000000,
+    "supplier_bond_lovelace": 1000000,
+    "buyer_bond_lovelace": 1000000,
+    "max_processing_ms": 1800000,
+    "input_limits": {
+      "request_bytes": 900000,
+      "sku_chars": 64,
+      "tenant_chars": 48
+    }
+  },
+  "behaviour": {
+    "data_handling": "The stock reading, the purchase order and the confirmation are synthetic data, and they are held in memory while a job runs. On disk the service keeps the bookkeeping of the escrows it posts, the list of sub-delegations that it has to end, the record of the challenges it files, the register of the transactions it co-signed, and the counter of purchase order numbers. The log carries job outcomes, counts and codes, never a request, a stock reading, an order or a key.",
+    "third_parties": [
+      "the identity gateway (the token requests of the agent and of stock-reader)",
+      "the mock ERP and the PO store (the calls above, with their tokens)",
+      "a model supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it (the prompt of each decision: the stock reading and the lots, or the purchase order and the confirmation)",
+      "the Order Desk (the purchase order, the salt, the approval reference, the DID of this agent and the delegation)",
+      "the Vector ledger (the sub-delegation and, on a dispute, the evidence document and the challenge)"
+    ],
+    "operations": [
+      "propose",
+      "execute"
+    ],
+    "claim": {
+      "statements": [
+        {
+          "id": "S1",
+          "text": "An order this agent places is the purchase order whose digest its hirer approved."
+        },
+        {
+          "id": "S2",
+          "text": "This agent accepts only a confirmation that names the SKU and the lot of the purchase order it answers."
+        },
+        {
+          "id": "S3",
+          "text": "This agent pays a supplier only from the vault of the delegation it was given."
+        }
+      ]
+    },
+    "cosign": {
+      "route": "/cosign/delegate",
+      "rule": "The agent signs one kind of transaction: a Delegate transaction of the delegation contract that names this agent as the delegate and one of its own delegation keys as the delegate key. The delegator must have signed the transaction first, and the delegator must be a principal key on the allowlist of the operator. The delegation key must have no live delegation and no other signed transaction whose window is open. The transaction must spend nothing of the agent, and it must have no certificate, no withdrawal and no other mint. Its validity window must end in the future, and not too far ahead, and the period of the delegation must not be over. The agent adds one witness of the delegation key and changes nothing else."
+    },
+    "fault_modes": [],
+    "model": {
+      "allowlist": [
+        "deepseek/deepseek-v4-flash"
+      ],
+      "max_price_lovelace": 1000000
+    },
+    "relying_on": {
+      "mock_systems": [
+        "GET /t/{tenant}/erp/stock/{sku}",
+        "POST /t/{tenant}/po"
+      ],
+      "gateway_routes": [
+        "POST /token"
+      ]
+    }
+  },
+  "status": {
+    "chip": "proposed",
+    "since": "2026-11-16"
+  },
+  "gaps": [
+    "The model chooses the lot. Nothing in this agent limits that choice: the vault of the hirer refuses a lot above the delegated amount, and the hirer approves the order or does not.",
+    "This agent does not check the approval of the hirer. The Order Desk does.",
+    "A challenge puts a hold on the identity of the supplier if the jury finds for this agent. It does not return what the escrow locked: a delivery that this agent refuses can still be released to the supplier 600 s after its Submit.",
+    "The stock reading comes from a mock system and is not checked against anything.",
+    "A model call that fails ends the job. There is no second provider.",
+    "Every party on the supplier side is operated by the same foundation as this agent.",
+    "The controller key, the Accountable key and the guardian keys of this deployment are held on one host by one operator, so a party is independent of the controller by key only.",
+    "What this does not show: no run covers the refund of the escrow of a revoked agent, the reclaim of an escrow by its buyer, or a relying party that refuses a live token after its authority ended, and tests alone cover the last."
+  ],
+  "links": {
+    "spec": "https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/reorder-agent.md",
+    "source": "https://github.com/Apex-Fusion/vector-service-agents/tree/main/agents/reorder-agent",
+    "explorer_advert": ""
+  }
+}
