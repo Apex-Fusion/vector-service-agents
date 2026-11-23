@@ -2,24 +2,31 @@
 // specs/order-desk.md is the public page of the Order Desk, and the manifest links to its Request and Response headings. These tests hold the page to the code, so that the two cannot part: the opening line, the
 // status and the changelog to the manifest; the terms of the three adverts to the constants, to the manifest, to the example environment and to the compose file; the claim to the constants of the kit; the gaps
 // word for word to the manifest; the third parties and the data handling to the manifest; and the links to files that exist. No test here uses the network.
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import { parse as parseYaml } from 'yaml';
-import { MAX_BODY } from '@vsa/service-kit';
-import { CONFIRMATION_CHECKS, INVENTORY_CAPABILITIES, LOT_NAMES, ORDER_DESK_CLAIM } from '@vsa/usecase-kit/inventory';
+import { CONTEXT_HEADERS, MAX_BODY, RESERVATION_MS, parseWire } from '@vsa/service-kit';
+import { CONFIRMATION_CHECKS, INVENTORY_CAPABILITIES, LOT_NAMES, ORDER_DESK_CLAIM, PO_SCHEMA, REORDER_CLAIM, parsePurchaseOrder } from '@vsa/usecase-kit/inventory';
 import { faultGap } from '@vsa/usecase-kit/manifest';
-import { ERROR_STATUS, FAULT_MODES, MAX_REQUEST_BYTES, RUNTIME_BODY_LIMIT_BYTES } from '@vsa/usecase-kit/protocol';
+import {
+  COUNTERPARTY_REFUSALS, ERROR_STATUS, FAULT_MODES, HANDOFF_SCHEMA, MAX_REQUEST_BYTES, NO_OPEN_CLAIM, RUNTIME_BODY_LIMIT_BYTES, canonicalJson, parseHandoff, proposalDigest,
+} from '@vsa/usecase-kit/protocol';
+import { PASSED_CHECKS_TTL_MS } from '../src/checks/index.ts';
 import { AVAILABILITY_DECISION, wrongLotOf } from '../src/job/index.ts';
 import { CONTROLLER_GAP, GAPS, NOT_SHOWN_GAP, PAGE_GAPS } from '../src/serve/gaps.ts';
 import { TEMPLATE_ENV, manifestFromEnv } from '../src/serve/manifest.ts';
-import { JOB_DEADLINE_MS, LOTS_ROUTE, MIN_PROCESSING_WINDOW_MS, faultOf } from '../src/serve/settings.ts';
+import { RequestRefusal, parseOrderRequest } from '../src/serve/server.ts';
+import { JOB_DEADLINE_MS, LOTS_ROUTE, MIN_PROCESSING_WINDOW_MS, RUNTIME_PRECHECK_WAIT_MS, faultOf } from '../src/serve/settings.ts';
 import { SETTINGS } from '../src/serve/start.ts';
+import { PURCHASE_ORDER, handoffOf } from './job/samples.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const page = readFileSync(new URL('../../../specs/order-desk.md', import.meta.url), 'utf8');
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 const section = (heading: string): string => (page.split(`\n## ${heading}\n`)[1] ?? '').split('\n## ')[0];
+const sub = (heading: string): string => (page.split(`\n### ${heading}\n`)[1] ?? '').split(/\n##+ /)[0];
 /** The first row of a table whose first cell is `label`, or the empty text. */
 const row = (text: string, label: string): string => text.split('\n').find((line) => line.startsWith(`| ${label} |`)) ?? '';
 const printed = (lovelace: number): string => (lovelace / 1_000_000).toFixed(6);
@@ -262,5 +269,141 @@ describe('specs/order-desk.md: the routes of the Interface', () => {
     expect(ERROR_STATUS.unauthorized).toBe(401);
     expect(readme).toContain('Without it, 401 `{"error":"unauthorized"}`');
     expect(readme).toContain('| any other route | 404 `{"error":"not_found"}` |');
+  });
+});
+
+describe('specs/order-desk.md: the request', () => {
+  const request = sub('Request');
+  const rows = request.split('\n').filter((line) => /^\| `/.test(line));
+
+  test('the wire payload and the request JSON are the two names of the wire message that the service reads', () => {
+    const interfaceText = section('Interface');
+    expect(interfaceText).toContain("The **request JSON** is what the buyer's agent writes: the handoff under Request below.");
+    expect(interfaceText).toContain('The **wire payload** is the request JSON written as a string inside a one-message array: `[{"content": "<request JSON as a string>", "role": "user"}]`.');
+    expect(interfaceText).toContain("The buyer's agent commits to the wire payload in the escrow, and a runtime posts it to the service as the body of `POST /` and of `POST /precheck`.");
+    // The service reads exactly this array and gives back the request JSON as a string. It refuses any other body.
+    expect(parseWire(JSON.stringify([{ content: 'request JSON', role: 'user' }]))).toBe('request JSON');
+    expect(() => parseWire(JSON.stringify({ content: 'request JSON', role: 'user' }))).toThrow(/one-element message array/);
+    expect(() => parseWire(JSON.stringify([{ content: 'request JSON', role: 'assistant' }]))).toThrow(/role must be/);
+  });
+
+  test('the example is the handoff of the sample of the job, and the service takes it', () => {
+    const shown = /```json\n([\s\S]*?)\n```/.exec(request)?.[1] ?? '';
+    expect(shown).toBe(JSON.stringify(handoffOf(), null, 2));
+    expect(parseOrderRequest(shown)).toStrictEqual(handoffOf());
+    expect(parseWire(JSON.stringify([{ content: shown, role: 'user' }]))).toBe(shown);
+    expect(request).toContain('The request JSON is the handoff of use case 1 (inventory reorder). It has the members of the first table, in this order, and no other.');
+    expect(request).toContain('Its `document` is a purchase order, which has the members of the second table, in this order, and no other.');
+    expect(request).toContain('A request that breaks a rule is refused with `bad_shape` (400), before any check.');
+    expect(() => parseOrderRequest('{}')).toThrow(RequestRefusal);
+    expect(new RequestRefusal('bad_shape', 'x').status).toBe(400);
+    expect(ERROR_STATUS.bad_shape).toBe(400);
+  });
+
+  test('the members of the handoff and of the purchase order are the members of the parsers of the kit, in their order, and the page states the rules of the parsers', () => {
+    expect(rows).toHaveLength(17);
+    const names = rows.map((line) => /^\| `([a-z0-9_]+)` \|/.exec(line)?.[1] ?? '');
+    expect(names.slice(0, 7)).toStrictEqual(Object.keys(handoffOf()));
+    expect(names.slice(7)).toStrictEqual(Object.keys(handoffOf().document));
+    expect(rows.slice(0, 7)).toStrictEqual([
+      `| \`schema\` | \`${HANDOFF_SCHEMA}\` |`,
+      '| `use_case` | `inventory-reorder`. The Order Desk takes the handoff of use case 1 (inventory reorder) only |',
+      '| `sender_did` | the DID of the agent of the buyer: `did:vector:` and 64 hex characters |',
+      '| `delegation` | the identifier of the delegation that paid for the order: 64 hex characters |',
+      '| `document` | the purchase order, with the members of the second table |',
+      '| `salt` | 64 hex characters, which are 32 bytes. The digest that the buyer approved is the SHA-256 of these 32 bytes followed by the canonical text of the purchase order |',
+      '| `approval` | `{ "attestation": "<64 hex characters>", "issuer_did": "did:vector:<64 hex characters>" }`: the approval of the buyer for this exact purchase order. It can be `null`, and the hook then refuses with `approval_not_found` |',
+    ]);
+    expect(rows.slice(7)).toStrictEqual([
+      `| \`schema\` | \`${PO_SCHEMA}\` |`,
+      '| `po_number` | 1 to 64 characters: letters, digits, dots, hyphens and underscores, starting with a letter or a digit. A number counts without regard to case |',
+      '| `tenant` | 1 to 48 characters: lower-case letters, digits and hyphens, starting with a letter or a digit |',
+      '| `sku` | 1 to 64 characters: letters, digits, dots, hyphens and underscores, starting with a letter or a digit |',
+      `| \`lot\` | ${LOT_NAMES.slice(0, -1).map((lot) => `\`${lot}\``).join(', ')} or \`${LOT_NAMES.at(-1)}\` |`,
+      '| `quantity` | a whole number from 1 to 1000000 |',
+      '| `needed_by` | a date that exists, as `YYYY-MM-DD` |',
+      '| `supplier_did` | the DID of the supplier: `did:vector:` and 64 hex characters |',
+      '| `advert_ref` | `<transaction hash>#<output index>`: 64 hex characters, `#`, and an index of at most 6 digits |',
+      '| `stock_reading_sha256` | 64 hex characters: the digest of the stock reading that the buyer\'s agent read |',
+    ]);
+    // The use case, the shape and the approval of the handoff.
+    expect(() => parseOrderRequest(JSON.stringify({ ...handoffOf(), use_case: 'prior-authorization' }))).toThrow(RequestRefusal);
+    expect(parseHandoff(JSON.parse(JSON.stringify({ ...handoffOf(), approval: null }))).ok).toBe(true);
+    // The digest that the buyer approved: the salt comes first, as 32 bytes.
+    const canonical = canonicalJson(handoffOf().document);
+    const digest = createHash('sha256').update(Buffer.from('9a'.repeat(32), 'hex')).update(canonical.ok ? canonical.value : '', 'utf8').digest('hex');
+    expect(proposalDigest('9a'.repeat(32), handoffOf().document)).toStrictEqual({ ok: true, value: digest });
+    // The rules of the purchase order are the rules of its parser.
+    const accepts = (over: Record<string, unknown>): boolean => parsePurchaseOrder({ ...PURCHASE_ORDER, ...over }).ok;
+    expect([accepts({}), accepts({ po_number: 'a'.repeat(64) }), accepts({ po_number: 'a'.repeat(65) }), accepts({ po_number: '-a' }), accepts({ po_number: 'a b' })]).toStrictEqual([true, true, false, false, false]);
+    expect([accepts({ tenant: 'a'.repeat(48) }), accepts({ tenant: 'a'.repeat(49) }), accepts({ tenant: 'Run1' })]).toStrictEqual([true, false, false]);
+    expect([accepts({ sku: 'a'.repeat(64) }), accepts({ sku: 'a'.repeat(65) })]).toStrictEqual([true, false]);
+    expect([accepts({ quantity: 1 }), accepts({ quantity: 1_000_000 }), accepts({ quantity: 0 }), accepts({ quantity: 1_000_001 }), accepts({ quantity: 1.5 })]).toStrictEqual([true, true, false, false, false]);
+    expect([accepts({ needed_by: '2026-12-31' }), accepts({ needed_by: '2026-02-30' })]).toStrictEqual([true, false]);
+    expect([accepts({ advert_ref: `${'d4'.repeat(32)}#123456` }), accepts({ advert_ref: `${'d4'.repeat(32)}#1234567` })]).toStrictEqual([true, false]);
+    expect([...LOT_NAMES.map((lot) => accepts({ lot })), accepts({ lot: 'lot-huge' })]).toStrictEqual([true, true, true, false]);
+  });
+});
+
+describe('specs/order-desk.md: what the hook checks before the Claim', () => {
+  const hook = sub('What it checks before the Claim');
+  const checks = hook.split('\n').filter((line) => /^\| \d+ \|/.test(line)).map((line) => line.slice(2, -2).split(' | '));
+  /** The refusal codes of one row of the table, in the order of the row. */
+  const codesOf = (cells: string[]): string[] => [...cells[2].matchAll(/`([a-z_]+)`/g)].map((hit) => hit[1]);
+
+  test('the 16 checks are the checks of the confirmation in their order, with the 18 refusal codes of the kit that come before the Claim in their order, each with its status', () => {
+    expect(checks).toHaveLength(CONFIRMATION_CHECKS.length);
+    expect(checks.map((cells) => Number(cells[0]))).toStrictEqual(CONFIRMATION_CHECKS.map((_, at) => at + 1));
+    expect(checks.map((cells) => cells[1])).toStrictEqual(CONFIRMATION_CHECKS.map((name) => `\`${name}\``));
+    const before = COUNTERPARTY_REFUSALS['order-desk'].filter((code) => code !== 'cannot_supply');
+    expect(checks.flatMap(codesOf)).toStrictEqual(before);
+    expect(before).toHaveLength(18);
+    // Every code of a row has the status of that row, and the status is the one of the protocol.
+    for (const cells of checks) for (const code of codesOf(cells)) expect(cells[3], code).toBe(String(ERROR_STATUS[code as keyof typeof ERROR_STATUS]));
+    expect(checks.every((cells) => cells[3] === '403')).toBe(true);
+    // The last four checks are the checks of the Order Desk, in the words of its README.
+    const own = (readme.split('\n## The checks\n')[1] ?? '').split('\n## ')[0].split('\n').filter((line) => /^\| `/.test(line)).map((line) => line.slice(2, -2).split(' | '));
+    expect(own).toHaveLength(4);
+    expect(checks.slice(-4).map((cells) => [cells[1], cells[2], cells[4]])).toStrictEqual(own);
+    expect(hook).toContain('The hook makes 16 checks, one after the other, in the order of the table.');
+    expect(hook).toContain('The first check that fails ends the hook. Its answer is the refusal code of that check, with the status 403.');
+    expect(hook).toContain('A refusal comes before the Claim: the escrow stays open, nothing is claimed, nothing is paid, and the buyer reclaims the escrow after `deliver_by`.');
+  });
+
+  test('a go keeps the record for 300 s and reserves the job slot for 120 s, the hook answers 503 for a source that it cannot read, and the runtime waits 10000 ms', () => {
+    expect(hook).toContain(`When every check passes, the hook answers 200 \`{"go":true,"reserved_ms":${RESERVATION_MS}}\`.`);
+    expect(hook).toContain(`The service keeps the record of the checks for ${PASSED_CHECKS_TTL_MS / 1000} s, and it reserves the job slot for that escrow for ${RESERVATION_MS / 1000} s.`);
+    expect([RESERVATION_MS, PASSED_CHECKS_TTL_MS]).toStrictEqual([120_000, 300_000]);
+    expect(hook).toContain('A source that the hook cannot read (the identity gateway, the ledger or the order book) is never a pass: the hook answers 503 `check_unavailable`.');
+    expect(ERROR_STATUS.check_unavailable).toBe(503);
+    expect(hook).toContain(`The runtime waits ${RUNTIME_PRECHECK_WAIT_MS} ms for the hook, and reads silence as a refusal.`);
+    expect(readme).toContain('the hook keeps the record of the checks for 300 s and reserves the job slot for that escrow for 120 s');
+    expect(readme).toContain('The runtime waits 10000 ms for the hook, and reads silence as a refusal.');
+  });
+
+  test('the six headers of the context carry the key of the escrow, the advert and the lot, and the body never does', () => {
+    const headers = Object.values(CONTEXT_HEADERS);
+    expect(headers).toHaveLength(6);
+    const named = `${headers.slice(0, -1).map((name) => `\`${name}\``).join(', ')} and \`${headers.at(-1)}\``;
+    expect(hook).toContain(`The runtime sends six headers of context with each call: ${named}.`);
+    expect(hook).toContain('The hook needs all six, and a call with none, with some, or with a bad one gets 400 `bad_context`.');
+    expect(hook).toContain('The key of the escrow, the advert and the lot come from these headers and never from the body: the checks `sender_key`, `delegation`, `lot` and `quantity` read them there.');
+    expect(readme).toContain('a call with none, with some, or with a bad one gets 400 `bad_context`');
+    expect(new RequestRefusal('bad_context', 'x').status).toBe(400);
+  });
+
+  test('a refusal for approval_digest_mismatch is answered first, and the service then files a challenge that names S1 of the claim of the Reorder Agent, with no reference in the message', () => {
+    const precheck = readFileSync(new URL('../src/checks/precheck.ts', import.meta.url), 'utf8');
+    expect(precheck).toContain("if (refusal.code !== 'approval_digest_mismatch') return;");
+    expect(precheck).toContain('statement_text: REORDER_CLAIM.statements[0].text,');
+    expect(REORDER_CLAIM.statements[0].id).toBe('S1');
+    expect(NO_OPEN_CLAIM).toBe('no_open_claim');
+    expect(hook).toContain('When the check `approval_digest` fails, the approval is for another purchase order than the one in the handoff. The hook refuses first, with `approval_digest_mismatch`.');
+    expect(hook).toContain('Then the service starts a challenge in the background, against the open claim of the sender: it publishes an evidence document and opens the challenge on the ledger.');
+    expect(hook).toContain(`The challenge names the statement S1 of the claim of the Reorder Agent: "${REORDER_CLAIM.statements[0].text}"`);
+    expect(hook).toContain(`The answer of the hook never waits for the challenge and never holds a reference to it, because a challenge takes two transactions and the runtime waits only ${RUNTIME_PRECHECK_WAIT_MS} ms.`);
+    expect(hook).toContain('The reference of the challenge goes to the log of the service and to the journal of its dispute code, never to the message of the refusal.');
+    expect(hook).toContain('A challenge needs an open claim of the sender: when there is none, the service files nothing, and its log names the code `no_open_claim`.');
+    expect(readme).toContain('The answer to the runtime never waits for the challenge and never holds a reference to it.');
   });
 });

@@ -89,6 +89,8 @@ Economics: on Accept the supplier receives the price and the supplier bond, and 
 
 A buyer's agent hires the Order Desk through one of its three runtimes. It posts an escrow on the advert of one lot, pays it from a vault of its delegation, and sends one request, the handoff of use case 1 (inventory reorder). The runtime of that advert asks the service before it claims the escrow. After the Claim it posts the job to the service. The service answers with the confirmation of the order, or with an error.
 
+Two things are named apart on this page. The **request JSON** is what the buyer's agent writes: the handoff under Request below. The **wire payload** is the request JSON written as a string inside a one-message array: `[{"content": "<request JSON as a string>", "role": "user"}]`. The buyer's agent commits to the wire payload in the escrow, and a runtime posts it to the service as the body of `POST /` and of `POST /precheck`.
+
 | Route | Called by | Answer |
 |---|---|---|
 | `POST /precheck` | a runtime, before the Claim | the hook: 200 `{"go":true,"reserved_ms":120000}`, or a refusal with its code |
@@ -98,6 +100,90 @@ A buyer's agent hires the Order Desk through one of its three runtimes. It posts
 | `GET /healthz` | anyone | `{"ok":true}` while the service runs |
 
 `POST /` and `POST /precheck` need the token that only the runtimes hold. A call without it gets 401 `{"error":"unauthorized"}`, before the body is read. `GET /lots.json`, `GET /agent.json` and `GET /healthz` need no token. Any other route gets 404 `{"error":"not_found"}`. A buyer sends its job to the runtime of its advert, on the runtime route `/v1/job` of the manifest, and never to the service.
+
+### Request
+
+The request JSON is the handoff of use case 1 (inventory reorder). It has the members of the first table, in this order, and no other. Its `document` is a purchase order, which has the members of the second table, in this order, and no other. A request that breaks a rule is refused with `bad_shape` (400), before any check.
+
+Example. The tests of the job use this handoff. Its identifiers, references and digests are made up, so none of them is of a real escrow, agent or key.
+
+```json
+{
+  "schema": "vector.usecase.handoff.v1",
+  "use_case": "inventory-reorder",
+  "sender_did": "did:vector:ecececececececececececececececececececececececececececececececec",
+  "delegation": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+  "document": {
+    "schema": "vector.usecase.po.v1",
+    "po_number": "run1-0001",
+    "tenant": "run1",
+    "sku": "GLV-NIT-M",
+    "lot": "lot-medium",
+    "quantity": 50,
+    "needed_by": "2026-12-05",
+    "supplier_did": "did:vector:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "advert_ref": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4#1",
+    "stock_reading_sha256": "abababababababababababababababababababababababababababababababab"
+  },
+  "salt": "9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+  "approval": {
+    "attestation": "9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b",
+    "issuer_did": "did:vector:1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"
+  }
+}
+```
+
+| Member | Rule |
+|---|---|
+| `schema` | `vector.usecase.handoff.v1` |
+| `use_case` | `inventory-reorder`. The Order Desk takes the handoff of use case 1 (inventory reorder) only |
+| `sender_did` | the DID of the agent of the buyer: `did:vector:` and 64 hex characters |
+| `delegation` | the identifier of the delegation that paid for the order: 64 hex characters |
+| `document` | the purchase order, with the members of the second table |
+| `salt` | 64 hex characters, which are 32 bytes. The digest that the buyer approved is the SHA-256 of these 32 bytes followed by the canonical text of the purchase order |
+| `approval` | `{ "attestation": "<64 hex characters>", "issuer_did": "did:vector:<64 hex characters>" }`: the approval of the buyer for this exact purchase order. It can be `null`, and the hook then refuses with `approval_not_found` |
+
+| Member of the purchase order | Rule |
+|---|---|
+| `schema` | `vector.usecase.po.v1` |
+| `po_number` | 1 to 64 characters: letters, digits, dots, hyphens and underscores, starting with a letter or a digit. A number counts without regard to case |
+| `tenant` | 1 to 48 characters: lower-case letters, digits and hyphens, starting with a letter or a digit |
+| `sku` | 1 to 64 characters: letters, digits, dots, hyphens and underscores, starting with a letter or a digit |
+| `lot` | `lot-small`, `lot-medium` or `lot-large` |
+| `quantity` | a whole number from 1 to 1000000 |
+| `needed_by` | a date that exists, as `YYYY-MM-DD` |
+| `supplier_did` | the DID of the supplier: `did:vector:` and 64 hex characters |
+| `advert_ref` | `<transaction hash>#<output index>`: 64 hex characters, `#`, and an index of at most 6 digits |
+| `stock_reading_sha256` | 64 hex characters: the digest of the stock reading that the buyer's agent read |
+
+### What it checks before the Claim
+
+The runtime asks the service before it claims an escrow. The question is `POST /precheck`, and this page calls it the hook. The hook makes 16 checks, one after the other, in the order of the table. The first check that fails ends the hook. Its answer is the refusal code of that check, with the status 403. A refusal comes before the Claim: the escrow stays open, nothing is claimed, nothing is paid, and the buyer reclaims the escrow after `deliver_by`.
+
+| # | Check | Refusal code | Status | The rule |
+|---|---|---|---|---|
+| 1 | `sender_active` | `sender_not_active` | 403 | the sender has a record at the identity gateway, the record has not ended, and its status is Active. A record that the gateway suspends because no Accountable Party covers it gets `sender_unaccountable` |
+| 2 | `sender_accountable` | `sender_unaccountable` | 403 | an Accountable Party covers the record of the sender now |
+| 3 | `sender_key` | `sender_key_mismatch` | 403 | the key that posted the escrow is a key that the record of the sender lists with the delegation purpose. The runtime reads that key from the escrow, and the body never gives it |
+| 4 | `delegation` | `delegation_invalid` | 403 | a live delegation has the identifier of the request, its delegate is the sender, and its delegate key is the key that posted the escrow |
+| 5 | `delegation_usable` | `delegation_ended` | 403 | the delegation and each of its parents can be used now to hire. The check does not wait for confirmations |
+| 6 | `vault_paid` | `not_vault_paid` | 403 | the escrow was paid from a vault of this delegation |
+| 7 | `approval_found` | `approval_not_found` | 403 | the request has an approval, and its attestation is found and is authentic |
+| 8 | `approval_type` | `approval_wrong_type` | 403 | the attestation is an approval (type 5) |
+| 9 | `approval_subject` | `approval_wrong_subject` | 403 | the subject of the approval is the sender |
+| 10 | `approval_issuer` | `approval_wrong_issuer` | 403 | the issuer of the approval is the root delegator of the delegation |
+| 11 | `approval_valid` | `approval_revoked`, `approval_expired`, `approval_issuer_invalid` | 403 | the approval is valid now by the rule of the registry: it is not revoked, its time is not over, and its issuer was valid when it issued it |
+| 12 | `approval_digest` | `approval_digest_mismatch` | 403 | the digest of the approval is the digest of the purchase order and the salt that the Order Desk received |
+| 13 | `for_this_supplier` | `not_for_this_supplier` | 403 | the purchase order names this agent (`AGENT_DID`) as its supplier |
+| 14 | `lot` | `lot_mismatch` | 403 | the advert of the order is the advert of the escrow, and the lot of the order is the `model` of that advert |
+| 15 | `quantity` | `quantity_mismatch` | 403 | the quantity is the size of that lot for the SKU in the lots file. A SKU that the file does not list is a mismatch |
+| 16 | `not_duplicate` | `duplicate_po` | 403 | the order book holds no order for the tenant and the purchase order number. A number counts without regard to case |
+
+When every check passes, the hook answers 200 `{"go":true,"reserved_ms":120000}`. The service keeps the record of the checks for 300 s, and it reserves the job slot for that escrow for 120 s. A source that the hook cannot read (the identity gateway, the ledger or the order book) is never a pass: the hook answers 503 `check_unavailable`. The runtime waits 10000 ms for the hook, and reads silence as a refusal.
+
+The runtime sends six headers of context with each call: `x-vector-escrow-ref`, `x-vector-advert-ref`, `x-vector-advert-model`, `x-vector-buyer-pkh`, `x-vector-payment-lovelace` and `x-vector-deliver-by-ms`. The hook needs all six, and a call with none, with some, or with a bad one gets 400 `bad_context`. The key of the escrow, the advert and the lot come from these headers and never from the body: the checks `sender_key`, `delegation`, `lot` and `quantity` read them there.
+
+When the check `approval_digest` fails, the approval is for another purchase order than the one in the handoff. The hook refuses first, with `approval_digest_mismatch`. Then the service starts a challenge in the background, against the open claim of the sender: it publishes an evidence document and opens the challenge on the ledger. The challenge names the statement S1 of the claim of the Reorder Agent: "An order this agent places is the purchase order whose digest its hirer approved." The answer of the hook never waits for the challenge and never holds a reference to it, because a challenge takes two transactions and the runtime waits only 10000 ms. The reference of the challenge goes to the log of the service and to the journal of its dispute code, never to the message of the refusal. A challenge needs an open claim of the sender: when there is none, the service files nothing, and its log names the code `no_open_claim`.
 
 ## What the receipt commits to
 
