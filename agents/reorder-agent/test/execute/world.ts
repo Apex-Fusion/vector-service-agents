@@ -148,8 +148,8 @@ export interface World {
   vault: string;
   /** The order document of the world: the lot of its advert, and `over` replaces members. */
   document(over?: Record<string, unknown>): Record<string, unknown>;
-  /** The `execute` request for a document, with the approval of the tests unless another is given (`null` is a request with no approval). */
-  request(document?: Record<string, unknown>, approval?: unknown): ExecuteRequest;
+  /** The `execute` request for a document, with the approval of the tests unless another is given (`null` is a request with no approval), and the tenant of the tests unless another is given. */
+  request(document?: Record<string, unknown>, approval?: unknown, tenant?: string): ExecuteRequest;
   /** The Order Desk answers with the confirmation of the order document of the world, with `over` replacing members. A text is the answer as it is. */
   answer(over?: Record<string, unknown> | string): void;
   run(request?: ExecuteRequest, arrivedAt?: number, deps?: ExecuteDeps, signal?: AbortSignal): Promise<ExecuteResult>;
@@ -258,7 +258,7 @@ export async function world(options: WorldOptions = {}): Promise<World> {
     m, gateway, agent, delegation, po: po.value, lot, a, b, reads, store, dispute, accept, tokens, log, booked, delegateKey, receipt, deps,
     vault: options.vault === false ? '' : m.chain.openVault({ delegation: DELEGATION, lovelace: 40_000_000n, limit: options.limit ?? LIMIT }),
     document,
-    request: (given = document(), approval: unknown = APPROVAL) => executeRequest(given, DELEGATION, approval),
+    request: (given = document(), approval: unknown = APPROVAL, tenant?: string) => executeRequest(given, DELEGATION, approval, tenant),
     answer: (over = {}) => { m.agent.answer = typeof over === 'string' ? over : JSON.stringify(confirmationOf(document(), over)); },
     run: (request = made.request(), arrivedAt = T0, given = made.deps, signal) => runExecute(given, request, arrivedAt, signal),
     endDelegation: () => {

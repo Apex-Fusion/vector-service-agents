@@ -158,6 +158,32 @@ describe('an order document that is not a purchase order', () => {
   });
 });
 
+describe('an order of another tenant than the request', () => {
+  // The PO store takes an order for the tenant of its URL, and for no other. An order of another tenant would be refused after the Pay and the Accept, so the job stops before it reads the ledger.
+  const OTHER: Array<[string, Record<string, unknown>, string | undefined]> = [
+    ['an order that names another tenant', { tenant: 'run2' }, undefined],
+    ['an order that names the tenant of the request in another case', {}, 'Run1'],
+  ];
+  for (const [name, over, tenant] of OTHER) {
+    it(`is failed with po_not_for_tenant before any read of the ledger: nothing is read, paid, sent, written or asked, and the vault is untouched: ${name}`, async () => {
+      const w = await world();
+      const result = await w.run(w.request(w.document(over), undefined, tenant));
+      expect(words(result)).toBe('failed po_not_for_tenant Failed');
+      expect(result.handoff).toBeNull();
+      expect(footprint(w)).toStrictEqual(NOTHING);
+      expect(w.reads.calls).toStrictEqual({ delegation: 0, liveVaults: 0 });
+      expect(w.m.chain.vault(w.vault)).toMatchObject({ kind: 'Live', consumed: false });
+      expect(w.tokens).toHaveLength(0);
+    });
+  }
+
+  it('twin: an order that names the tenant of the request is carried out, and the PO store gets it at the URL of that tenant', async () => {
+    const w = await world();
+    expect(words(await w.run(w.request(w.document({ tenant: 'run1' }), undefined, 'run1')))).toBe(COMPLETED);
+    expect(w.store.calls[0]?.url).toBe('https://mock.example/t/run1/po');
+  });
+});
+
 describe('an advert that is not the one the order names', () => {
   it('is failed with advert_not_counterparty when the agent of the advert is not the supplier of the order: nothing is paid', async () => {
     const w = await world();

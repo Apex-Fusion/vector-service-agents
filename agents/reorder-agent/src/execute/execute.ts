@@ -2,7 +2,7 @@
 // The job `execute` of the Reorder Agent (use case 1, inventory reorder). It carries out the purchase order that the hirer approved: it pays the advert of the Order Desk that the order names, from the
 // vault of the delegation, sends the handoff, decides whether the confirmation is the one it paid for, and writes the order to the PO store. Every end is a typed result of the protocol. The steps, in order:
 //   1. The settings: the three limits, the DID of the agent and the target of the PO store. A wrong setting stops the job here, before any read and before any Pay.
-//   2. The order document must be a purchase order (`bad_document` otherwise), and it must have a hash.
+//   2. The order document must be a purchase order (`bad_document` otherwise), it must have a hash, and it must name the tenant of the request (`po_not_for_tenant` otherwise).
 //   3. The authority: a delegation that names another agent is a refusal for the server (`delegation_not_mine`). A delegation that the ledger does not show goes on, and the ledger refuses the Pay.
 //   4. The delegation key: the key that the delegation names pays. A key that the agent does not hold is `delegation_key_unknown`. A ledger that cannot be read is `ledger_unavailable`.
 //   5. The handoff, with the document, the salt and the approval as the request gave them. A null approval goes on: the Order Desk refuses it.
@@ -70,6 +70,7 @@ const FAILED = {
   timeout: 'decision_timeout',
   token: 'token_failed',
   system: 'mock_system_failed',
+  tenant: 'po_not_for_tenant',
 } as const;
 
 function piecesOf(request: ExecuteRequest, decisions: readonly Decision[] = [], writes: readonly WriteRecord[] = []): Omit<ResultPieces, 'handoff'> {
@@ -288,6 +289,8 @@ export async function runExecute(deps: ExecuteDeps, request: ExecuteRequest, arr
   if (!order.ok) return stop(BAD_DOCUMENT);
   const orderSha256 = canonicalSha256(order.value);
   if (!orderSha256.ok) return stop(BAD_DOCUMENT);
+  // The PO store takes an order for the tenant of its URL, and for no other. An order of another tenant would be refused after the Pay and the Accept, so it stops here, before any read of the ledger.
+  if (order.value.tenant !== request.tenant) return stop(FAILED.tenant);
 
   const authority = await checkAuthority(deps.reads, settings.agent, request.authority.delegation);
   if (!authority.ok) {

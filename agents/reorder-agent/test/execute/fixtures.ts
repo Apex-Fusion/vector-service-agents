@@ -96,11 +96,11 @@ export function deliveryOf(value: unknown = confirmationOf()): VerifiedDelivery 
   };
 }
 
-/** The `execute` request for an order document, as the protocol parser gives it. */
-export function executeRequest(document: unknown, delegation: string, approval: unknown = APPROVAL): ExecuteRequest {
+/** The `execute` request for an order document, as the protocol parser gives it. The tenant of the request is the tenant of the tests unless another is given. */
+export function executeRequest(document: unknown, delegation: string, approval: unknown = APPROVAL, tenant: string = TENANT): ExecuteRequest {
   const proposal = makeProposal(document, SALT);
   if (!proposal.ok) throw new Error(`the proposal of the test is refused: ${proposal.detail}`);
-  const parsed = parseRequest({ op: 'execute', authority: { principal_did: PRINCIPAL_DID, delegation }, tenant: TENANT, proposal: proposal.value, approval });
+  const parsed = parseRequest({ op: 'execute', authority: { principal_did: PRINCIPAL_DID, delegation }, tenant, proposal: proposal.value, approval });
   if (!parsed.ok) throw new Error(`the request of the test is refused: ${parsed.detail}`);
   if (parsed.value.op !== 'execute') throw new Error('the request of the test is not an execute request');
   return parsed.value;
