@@ -185,6 +185,143 @@ The runtime sends six headers of context with each call: `x-vector-escrow-ref`, 
 
 When the check `approval_digest` fails, the approval is for another purchase order than the one in the handoff. The hook refuses first, with `approval_digest_mismatch`. Then the service starts a challenge in the background, against the open claim of the sender: it publishes an evidence document and opens the challenge on the ledger. The challenge names the statement S1 of the claim of the Reorder Agent: "An order this agent places is the purchase order whose digest its hirer approved." The answer of the hook never waits for the challenge and never holds a reference to it, because a challenge takes two transactions and the runtime waits only 10000 ms. The reference of the challenge goes to the log of the service and to the journal of its dispute code, never to the message of the refusal. A challenge needs an open claim of the sender: when there is none, the service files nothing, and its log names the code `no_open_claim`.
 
+### What it does
+
+After the Claim the runtime posts the job to the service. The job has a deadline of 300000 ms after its request arrives, and it runs these steps in this order. A failure ends the job with an error, and no later step runs.
+
+1. The job takes the record of the checks that the hook kept for its escrow, and it compares the hash of its own body with the hash that the hook checked. A job with no record, or with the record of another body, fails with `precheck_missing` and places no order.
+2. It gets an X.509-SVID for the service key from the identity gateway.
+3. It reads `GET /t/{tenant}/supplier/catalogue/{sku}` at the supplier portal, with the SVID. The tenant and the SKU are those of the purchase order.
+4. Decision `availability`: the service hires one model from the Vector marketplace. The model gets a fixed instruction, the purchase order and the catalogue entry, and it answers `{ "confirm": true | false, "ship_by": "<date>", "note": "..." }`.
+5. When the answer is `confirm: true`, the job places one order with `POST /t/{tenant}/supplier/orders` and the same SVID. The order has the purchase order number, the hash of the purchase order, the SKU, the lot, the quantity and the ship-by date.
+6. The job writes the order book, after the portal took the order, and it answers with the confirmation.
+
+When the model answers `confirm: false`, the job refuses with `cannot_supply` (403) after step 4. It places no order, and nothing is paid. The message of the refusal holds a fixed sentence and the first 120 characters of the note of the model. The escrow is Claimed, and it stays Claimed until the buyer reclaims it after `deliver_by`.
+
+The job places at most one order, and nothing retries the order call. The portal refuses a second order for the same number, and the service answers `duplicate_po` (403). A job whose caller hangs up stops before the order is placed, because the service never places an order that nobody reads. The job places no order when the order call could end less than 30 s before `deliver_by`, because the runtime stops waiting then. One call to the supplier portal takes 20000 ms at most.
+
+### Response
+
+`schema` is `vector.usecase.order-confirmation.v1`. A job that places the order answers with the confirmation, as the body of the answer, serialised once, with its members in the order of the table below. A job that does not place it answers with an error and no confirmation.
+
+Example. The test of the golden run of the job gives exactly this confirmation for the handoff above, with stand-ins for the identity gateway, the supplier portal and the model supplier. It is an illustration and not a recorded run: its references, hashes, key hash and signature are of no escrow, no supplier and no key.
+
+```json
+{
+  "schema": "vector.usecase.order-confirmation.v1",
+  "outcome": "done",
+  "po_number": "run1-0001",
+  "po_sha256": "ee530a49d9ead8b2a2ecbd3896fc6b018e0050a0bf24ddf4dad7f88775585cbc",
+  "sku": "GLV-NIT-M",
+  "lot": "lot-medium",
+  "quantity": 50,
+  "ship_by": "2026-11-28",
+  "order_id": "SO-run1-0001",
+  "sender": {
+    "did": "did:vector:ecececececececececececececececececececececececececececececececec",
+    "organisation": "buyer.example",
+    "organisation_verified": true
+  },
+  "approval": {
+    "attestation": "9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b",
+    "issuer_did": "did:vector:1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f",
+    "valid_until": "2026-11-24T10:00:00.000Z"
+  },
+  "checks": {
+    "sender_active": true,
+    "sender_accountable": true,
+    "sender_key": true,
+    "delegation": true,
+    "delegation_usable": true,
+    "vault_paid": true,
+    "approval_found": true,
+    "approval_type": true,
+    "approval_subject": true,
+    "approval_issuer": true,
+    "approval_valid": true,
+    "approval_digest": true,
+    "for_this_supplier": true,
+    "lot": true,
+    "quantity": true,
+    "not_duplicate": true
+  },
+  "decisions": [
+    {
+      "name": "availability",
+      "choice": {
+        "confirm": true,
+        "ship_by": "2026-11-28",
+        "note": "The catalogue holds enough boxes for this lot."
+      },
+      "reasoning": "The catalogue shows 5000 boxes available and the lot needs 50, so the order can ship in three days.",
+      "inference": {
+        "path": "marketplace",
+        "sub_job": {
+          "capability_id": "llm.text.generate.v1",
+          "advert_ref": "b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3#0",
+          "escrow_ref": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c#0",
+          "supplier_pkh": "7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d",
+          "receipt": {
+            "escrow_ref": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c#0",
+            "supplier_pkh": "7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d",
+            "prompt_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+            "response_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+            "model": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 412,
+            "completion_tokens": 58,
+            "wallclock_ms": 2140
+          },
+          "receipt_signature": "8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e",
+          "verification": {
+            "escrow_ref_matches": true,
+            "response_hash_matches": true,
+            "supplier_key_matches": true,
+            "signature_valid": true,
+            "on_chain_hash_matches": true,
+            "prompt_hash_matches": true,
+            "model_matches": true,
+            "fields_match": true
+          }
+        },
+        "accepted": "confirmed"
+      }
+    }
+  ],
+  "fault_mode": ""
+}
+```
+
+| Member | Content |
+|---|---|
+| `schema` | `vector.usecase.order-confirmation.v1` |
+| `outcome` | always `done`: a refusal or a failure is an error, never a confirmation |
+| `po_number` | the number of the purchase order |
+| `po_sha256` | the SHA-256 of the canonical text of the purchase order that the Order Desk received, with no salt |
+| `sku` | the SKU of the purchase order |
+| `lot`, `quantity` | the lot and the quantity of the order that the Order Desk placed. In a clean run they are the lot and the quantity of the purchase order |
+| `ship_by` | the date by which the supplier ships the order, as the model gave it |
+| `order_id` | the identifier that the supplier portal gave the order |
+| `sender` | the DID of the sender, the organisation that the Accountable Party names (or `null`), and whether the identity gateway verified it. The organisation is recorded, and it is never a reason to refuse |
+| `approval` | the attestation of the approval, the DID of its issuer (or `null`), and the end of its validity as a time in UTC (or `null`) |
+| `checks` | the 16 checks, each `true`, in the order of the table of the hook |
+| `decisions` | one decision, `availability`: its choice, its reasoning, and the hire of the model supplier with the sub-receipt that the service verified (`inference`) |
+| `fault_mode` | the setting of the fault switch: the empty text in a clean run |
+
+### The lots file
+
+`GET /lots.json` answers the lots file: the size of each lot for each SKU. It needs no token. The manifest holds its address and its SHA-256 in `behaviour.lots`, and the SHA-256 is the hash of these bytes as the service serves them. The check `quantity` reads the same file, and the agent of a buyer reads it to choose the lot and the quantity of its order.
+
+```json
+{
+  "schema": "vector.usecase.lots.v1",
+  "items": [
+    { "sku": "GLV-NIT-M", "lots": { "lot-small": 10, "lot-medium": 50, "lot-large": 200 } },
+    { "sku": "SYR-10ML", "lots": { "lot-small": 25, "lot-medium": 100, "lot-large": 400 } },
+    { "sku": "MSK-N95", "lots": { "lot-small": 20, "lot-medium": 100, "lot-large": 400 } }
+  ]
+}
+```
+
 ## What the receipt commits to
 
 The service signs no receipt. The runtime builds and signs the receipt, and submits its hash in the Submit transaction.
@@ -217,7 +354,7 @@ S1 is the statement that the fault `confirm_wrong_lot` breaks. A buyer's agent t
 
 ## Fault switch
 
-`FAULT_MODE=confirm_wrong_lot`: the confirmation names another lot and quantity than the purchase order, and the order that the service places has that wrong lot. The wrong lot of `lot-small` is `lot-medium`. The wrong lot of any other lot is `lot-small`. The quantity is the size of the wrong lot for the SKU in the lots file. A failure run uses the switch, to show that the agent of the buyer refuses a confirmation that breaks S1.
+`FAULT_MODE=confirm_wrong_lot`: the confirmation names another lot and quantity than the purchase order, and the order that the service places has that wrong lot. The wrong lot of `lot-small` is `lot-medium`. The wrong lot of any other lot is `lot-small`. The quantity is the size of the wrong lot for the SKU in the lots file. For the purchase order of the example under Request, the confirmation of a fault run names `lot-small` and the quantity 10, and its `fault_mode` is `confirm_wrong_lot`. A failure run uses the switch, to show that the agent of the buyer refuses a confirmation that breaks S1.
 
 The switch is empty in a clean run. Any other value stops the start of the service. The switch changes what the job sends and never a check: the hook does not know that it exists. It is declared in the manifest, in `behaviour.fault_modes`, and the manifest is the same for every value. Each result returns the active value as `fault_mode`, its last member.
 

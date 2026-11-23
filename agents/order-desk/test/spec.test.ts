@@ -8,19 +8,22 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 import { CONTEXT_HEADERS, MAX_BODY, RESERVATION_MS, parseWire } from '@vsa/service-kit';
-import { CONFIRMATION_CHECKS, INVENTORY_CAPABILITIES, LOT_NAMES, ORDER_DESK_CLAIM, PO_SCHEMA, REORDER_CLAIM, parsePurchaseOrder } from '@vsa/usecase-kit/inventory';
+import {
+  CONFIRMATION_CHECKS, INVENTORY_CAPABILITIES, LOT_NAMES, ORDER_DESK_CLAIM, PO_SCHEMA, REORDER_CLAIM, lotsFileSha256, parseLotsFile, parseOrderConfirmation, parsePurchaseOrder,
+} from '@vsa/usecase-kit/inventory';
 import { faultGap } from '@vsa/usecase-kit/manifest';
 import {
-  COUNTERPARTY_REFUSALS, ERROR_STATUS, FAULT_MODES, HANDOFF_SCHEMA, MAX_REQUEST_BYTES, NO_OPEN_CLAIM, RUNTIME_BODY_LIMIT_BYTES, canonicalJson, parseHandoff, proposalDigest,
+  COUNTERPARTY_REFUSALS, ERROR_STATUS, FAULT_MODES, HANDOFF_SCHEMA, MAX_REQUEST_BYTES, NO_OPEN_CLAIM, RUNTIME_BODY_LIMIT_BYTES, accepted, canonicalJson, parseHandoff, proposalDigest,
 } from '@vsa/usecase-kit/protocol';
 import { PASSED_CHECKS_TTL_MS } from '../src/checks/index.ts';
-import { AVAILABILITY_DECISION, wrongLotOf } from '../src/job/index.ts';
+import { AVAILABILITY_DECISION, ORDER_REFUSAL_STATUS, wrongLotOf } from '../src/job/index.ts';
 import { CONTROLLER_GAP, GAPS, NOT_SHOWN_GAP, PAGE_GAPS } from '../src/serve/gaps.ts';
 import { TEMPLATE_ENV, manifestFromEnv } from '../src/serve/manifest.ts';
 import { RequestRefusal, parseOrderRequest } from '../src/serve/server.ts';
-import { JOB_DEADLINE_MS, LOTS_ROUTE, MIN_PROCESSING_WINDOW_MS, RUNTIME_PRECHECK_WAIT_MS, faultOf } from '../src/serve/settings.ts';
+import { CALL_TIMEOUT_MS, JOB_DEADLINE_MS, LOTS_ROUTE, MIN_PROCESSING_WINDOW_MS, RUNTIME_PRECHECK_WAIT_MS, faultOf } from '../src/serve/settings.ts';
 import { SETTINGS } from '../src/serve/start.ts';
-import { PURCHASE_ORDER, handoffOf } from './job/samples.ts';
+import { makeRig, refusalOf, sentOrder } from './job/rig.ts';
+import { CATALOGUE_ENTRY, PURCHASE_ORDER, decisionOf, handoffOf, hashOf } from './job/samples.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const page = readFileSync(new URL('../../../specs/order-desk.md', import.meta.url), 'utf8');
@@ -405,5 +408,120 @@ describe('specs/order-desk.md: what the hook checks before the Claim', () => {
     expect(hook).toContain('The reference of the challenge goes to the log of the service and to the journal of its dispute code, never to the message of the refusal.');
     expect(hook).toContain('A challenge needs an open claim of the sender: when there is none, the service files nothing, and its log names the code `no_open_claim`.');
     expect(readme).toContain('The answer to the runtime never waits for the challenge and never holds a reference to it.');
+  });
+});
+
+describe('specs/order-desk.md: what the job does, the response and the lots file', () => {
+  const does = sub('What it does');
+  const steps = does.split('\n').filter((line) => /^\d\. /.test(line));
+
+  test('the job takes its six steps in the order of the page, with the calls to the portal that the manifest names, and it places one order of six members', async () => {
+    const rig = makeRig();
+    await rig.run();
+    expect(rig.events).toStrictEqual(['take', 'svid', 'catalogue', 'decide', 'order', 'book']);
+    const phrases = ['takes the record of the checks', 'X.509-SVID', 'supplier/catalogue/{sku}', 'Decision `availability`', 'supplier/orders', 'writes the order book'];
+    expect(steps).toHaveLength(phrases.length);
+    phrases.forEach((phrase, at) => expect(steps[at], phrase).toContain(phrase));
+    const [catalogue, orders] = manifest.behaviour.relying_on.mock_systems;
+    expect(steps[2]).toContain(`\`${catalogue}\``);
+    expect(steps[4]).toContain(`\`${orders}\``);
+    expect(rig.portal.calls.map((call) => `${call.method} ${new URL(call.url).pathname}`)).toStrictEqual(['GET /t/run1/supplier/catalogue/GLV-NIT-M', 'POST /t/run1/supplier/orders']);
+    expect(Object.keys(sentOrder(rig.portal))).toStrictEqual(['po_number', 'po_sha256', 'sku', 'lot', 'quantity', 'ship_by']);
+    expect(steps[4]).toContain('The order has the purchase order number, the hash of the purchase order, the SKU, the lot, the quantity and the ship-by date.');
+    expect(rig.decideInputs).toStrictEqual([{ purchase_order: PURCHASE_ORDER, catalogue_entry: CATALOGUE_ENTRY }]);
+    expect(steps[3]).toContain('The model gets a fixed instruction, the purchase order and the catalogue entry, and it answers `{ "confirm": true | false, "ship_by": "<date>", "note": "..." }`.');
+    expect(AVAILABILITY_DECISION.parse({ confirm: true, ship_by: '2026-11-28', note: 'It is in stock.' }).ok).toBe(true);
+    expect(AVAILABILITY_DECISION.parse({ confirm: 'yes', ship_by: '2026-11-28', note: 'It is in stock.' }).ok).toBe(false);
+    expect(rig.portal.calls.filter((call) => call.method === 'POST')).toHaveLength(1);
+    expect(does).toContain(`The job has a deadline of ${JOB_DEADLINE_MS} ms after its request arrives, and it runs these steps in this order. A failure ends the job with an error, and no later step runs.`);
+    expect(steps[0]).toContain('A job with no record, or with the record of another body, fails with `precheck_missing` and places no order.');
+    expect(ORDER_REFUSAL_STATUS.precheck_missing).toBe(500);
+  });
+
+  test('a model that says no ends the job with cannot_supply and places no order, and the message holds the first 120 characters of the note', async () => {
+    const rig = makeRig();
+    rig.decision = accepted(decisionOf({ confirm: false, note: 'x'.repeat(200) }));
+    const refusal = await refusalOf(rig.run());
+    expect([refusal.code, refusal.status]).toStrictEqual(['cannot_supply', 403]);
+    expect(ORDER_REFUSAL_STATUS.cannot_supply).toBe(403);
+    expect(refusal.message.endsWith(`Note of the model: ${'x'.repeat(120)}`)).toBe(true);
+    expect(rig.portal.orders.size).toBe(0);
+    expect(rig.events).not.toContain('order');
+    expect(does).toContain('When the model answers `confirm: false`, the job refuses with `cannot_supply` (403) after step 4. It places no order, and nothing is paid.');
+    expect(does).toContain('The message of the refusal holds a fixed sentence and the first 120 characters of the note of the model.');
+    expect(does).toContain('The escrow is Claimed, and it stays Claimed until the buyer reclaims it after `deliver_by`.');
+  });
+
+  test('the limits of the job: one order and no retry, a caller that hangs up, the 30 s before deliver_by, and the 20 s of a call to the portal', async () => {
+    const gone = new AbortController();
+    gone.abort();
+    const rig = makeRig();
+    const refusal = await refusalOf(rig.run({ signal: gone.signal }));
+    expect([refusal.code, refusal.status]).toStrictEqual(['deadline', 422]);
+    expect(rig.portal.orders.size).toBe(0);
+    expect(ORDER_REFUSAL_STATUS.duplicate_po).toBe(403);
+    expect(readFileSync(new URL('../src/job/order.ts', import.meta.url), 'utf8')).toContain('const RUNTIME_MARGIN_MS = 30_000;');
+    expect(CALL_TIMEOUT_MS).toBe(20_000);
+    expect(does).toContain('The job places at most one order, and nothing retries the order call. The portal refuses a second order for the same number, and the service answers `duplicate_po` (403).');
+    expect(does).toContain('A job whose caller hangs up stops before the order is placed, because the service never places an order that nobody reads.');
+    expect(does).toContain(`The job places no order when the order call could end less than 30 s before \`deliver_by\`, because the runtime stops waiting then. One call to the supplier portal takes ${CALL_TIMEOUT_MS} ms at most.`);
+  });
+
+  test('the Request and the Response headings are the two anchors that the manifest links to', () => {
+    expect(page.match(/^### Request$/gm)).toHaveLength(1);
+    expect(page.match(/^### Response$/gm)).toHaveLength(1);
+    expect(manifest.interface.request_schema.$ref.endsWith('/specs/order-desk.md#request')).toBe(true);
+    expect(manifest.interface.response_schema.$ref.endsWith('/specs/order-desk.md#response')).toBe(true);
+  });
+
+  test('the response example is the confirmation that the job gives in the golden run, and the members of the table are its members in their order', async () => {
+    const response = sub('Response');
+    const golden = readFileSync(new URL('./job/golden/confirmation.json', import.meta.url), 'utf8');
+    const shown = /```json\n([\s\S]*?)\n```/.exec(response)?.[1] ?? '';
+    expect(shown).toBe(golden.trimEnd());
+    const given = await makeRig().run();
+    expect(JSON.parse(shown)).toStrictEqual(given);
+    expect(shown).toBe(JSON.stringify(given, null, 2));
+    expect(parseOrderConfirmation(JSON.parse(shown))).toStrictEqual({ ok: true, value: given });
+    // The example answers the request of the example: the same order, the same sender and the same approval, and the hash of its purchase order.
+    const handoff = handoffOf();
+    expect([given.po_number, given.sku, given.lot, given.quantity]).toStrictEqual([handoff.document.po_number, handoff.document.sku, handoff.document.lot, handoff.document.quantity]);
+    expect(given.po_sha256).toBe(hashOf(handoff.document));
+    expect(given.sender.did).toBe(handoff.sender_did);
+    expect(given.approval.attestation).toBe(handoff.approval?.attestation);
+    expect(given.approval.issuer_did).toBe(handoff.approval?.issuer_did);
+    expect(Object.keys(given.checks)).toStrictEqual([...CONFIRMATION_CHECKS]);
+    // The table names the members in the order of the confirmation, and its rows say what they hold.
+    const names = response.split('\n').filter((line) => /^\| `/.test(line)).flatMap((line) => [...(line.split(' | ')[0] ?? '').matchAll(/`([a-z0-9_]+)`/g)].map((hit) => hit[1]));
+    expect(names).toStrictEqual(Object.keys(given));
+    expect(row(response, '`schema`')).toBe(`| \`schema\` | \`${given.schema}\` |`);
+    expect(row(response, '`outcome`')).toBe('| `outcome` | always `done`: a refusal or a failure is an error, never a confirmation |');
+    expect(row(response, '`po_sha256`')).toBe('| `po_sha256` | the SHA-256 of the canonical text of the purchase order that the Order Desk received, with no salt |');
+    expect(row(response, '`checks`')).toBe(`| \`checks\` | the ${CONFIRMATION_CHECKS.length} checks, each \`true\`, in the order of the table of the hook |`);
+    expect(row(response, '`decisions`')).toBe('| `decisions` | one decision, `availability`: its choice, its reasoning, and the hire of the model supplier with the sub-receipt that the service verified (`inference`) |');
+    expect(row(response, '`fault_mode`')).toBe('| `fault_mode` | the setting of the fault switch: the empty text in a clean run |');
+    expect(response).toContain('It is an illustration and not a recorded run: its references, hashes, key hash and signature are of no escrow, no supplier and no key.');
+    expect(response).toContain('A job that does not place it answers with an error and no confirmation.');
+  });
+
+  test('the fault run of the example names the wrong lot and its size, and the page says so', async () => {
+    const wrong = JSON.parse(readFileSync(new URL('./job/golden/confirmation-wrong-lot.json', import.meta.url), 'utf8')) as Record<string, unknown>;
+    const given = await makeRig({ mode: 'confirm_wrong_lot' }).run();
+    expect(given).toStrictEqual(wrong);
+    expect([given.lot, given.quantity, given.fault_mode]).toStrictEqual(['lot-small', 10, 'confirm_wrong_lot']);
+    expect(section('Fault switch')).toContain('For the purchase order of the example under Request, the confirmation of a fault run names `lot-small` and the quantity 10, and its `fault_mode` is `confirm_wrong_lot`.');
+  });
+
+  test('the lots example is the lots file that the service serves, and the manifest holds the hash of its bytes', () => {
+    const lots = sub('The lots file');
+    const file = readFileSync(new URL('../lots.json', import.meta.url), 'utf8');
+    const shown = /```json\n([\s\S]*?)\n```/.exec(lots)?.[1] ?? '';
+    expect(shown).toBe(file.trimEnd());
+    expect(parseLotsFile(JSON.parse(shown)).ok).toBe(true);
+    expect(manifest.behaviour.lots.sha256).toBe(lotsFileSha256(file));
+    expect(lots).toContain(`\`GET ${LOTS_ROUTE}\` answers the lots file: the size of each lot for each SKU. It needs no token.`);
+    expect(lots).toContain('The manifest holds its address and its SHA-256 in `behaviour.lots`, and the SHA-256 is the hash of these bytes as the service serves them.');
+    expect(lots).toContain('The check `quantity` reads the same file, and the agent of a buyer reads it to choose the lot and the quantity of its order.');
+    expect(readme).toContain('| `GET /lots.json` | the lots file, the bytes that the manifest hashes. It needs no token and takes no job slot |');
   });
 });
