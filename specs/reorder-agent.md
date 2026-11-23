@@ -28,7 +28,7 @@ The table gives the design of the record. A value that the registration fixes re
 | Subagent | `stock-reader`: its own record, with this agent as its parent. It has its own authentication key and its own delegation key, which are the other two keys of the service. It has no endpoint, and nobody can hire it. `STOCK_READER_DID` names it |
 | Public URL | planned: `https://mp-suppliers-reorder.vector.apexfusion.org`, the origin of the runtime in the pack. The agent has no advert yet |
 | Reputation stake | a Module-3 self-stake on the capability, owned by the service key |
-| Claim | a Module-1 claim for each run, staked with the service key. See Claim statements |
+| Claim | a Module-1 claim that an operator command stakes with the service key before a run. The service stakes none. See Claim statements |
 
 ## Capability id
 
@@ -76,14 +76,14 @@ The agent has two operations. `propose` reads the stock and proposes a purchase 
 
 ### Request
 
-A request is one JSON object. Its member `op` is `propose` or `execute`. It has the members of that operation and no other member. A request that breaks a rule of the fields below is refused with `bad_shape` (400) before the job does anything, so it locks nothing of the service's. One exception is the tenant of `execute`: the job checks it against its order (`po_not_for_tenant`).
+A request is one JSON object. Its member `op` is `propose` or `execute`. It has the members of that operation and no other member. A hex text is lower case: a hex text in upper case breaks a rule. A request that breaks a rule of the fields below is refused with `bad_shape` (400) before the job does anything, so it locks nothing of the service's. One exception is the tenant of `execute`: the job checks it against its order (`po_not_for_tenant`).
 
 **`propose`.** The agent reads the stock of one SKU and proposes an order for one lot from the Order Desk that you name.
 
 | Field | Rule |
 |---|---|
 | `op`, required | `propose` |
-| `authority`, required | `principal_did`: the DID of the principal who gave the delegation, `did:vector:` and 64 lower-case hex characters. `delegation`: the identifier of the delegation that names this agent as its delegate, 64 hex characters. The authority has no vault: the agent finds the Live vault of the delegation itself. |
+| `authority`, required | `principal_did`: the DID of the principal who gave the delegation, `did:vector:` and 64 lower-case hex characters. `delegation`: the identifier of the delegation that names this agent as its delegate, 64 lower-case hex characters. The authority has no vault: the agent finds the Live vault of the delegation itself. |
 | `tenant`, required | 1 to 48 characters: lower-case letters, digits and hyphens, starting with a letter or a digit. It names the tenant of the mock systems. |
 | `sku`, required | 1 to 64 characters: letters, digits, dot, hyphen and underscore, starting with a letter or a digit. |
 | `supplier_did`, required | the DID of the Order Desk that takes the order. |
@@ -106,8 +106,8 @@ A request is one JSON object. Its member `op` is `propose` or `execute`. It has 
 | Field | Rule |
 |---|---|
 | `op`, `authority`, `tenant`, required | as for `propose`, with `op` set to `execute`. The tenant must be the tenant of the order. |
-| `proposal`, required | the proposal that `propose` returned: `document` (the purchase order), `salt` (64 hex characters) and `proposal_digest` (64 hex characters). The digest is the sha256 of the 32 bytes of the salt and the canonical JSON of the document. A digest that is not the digest of the salt and the document is refused with `bad_shape`. |
-| `approval`, required | the approval of the hirer for the digest of the proposal, or `null`. It has two members: `attestation`, the identifier of the approval (64 hex characters), and `issuer_did`, the DID of its issuer (`did:vector:` and 64 hex characters). The agent does not check the approval. It passes it on, and the Order Desk refuses an order with no valid approval. |
+| `proposal`, required | the proposal that `propose` returned: `document` (the purchase order), `salt` (64 lower-case hex characters) and `proposal_digest` (64 lower-case hex characters). The digest is the sha256 of the 32 bytes of the salt and the canonical JSON of the document. A digest that is not the digest of the salt and the document is refused with `bad_shape`. |
+| `approval`, required | the approval of the hirer for the digest of the proposal, or `null`. It has two members: `attestation`, the identifier of the approval (64 lower-case hex characters), and `issuer_did`, the DID of its issuer (`did:vector:` and 64 lower-case hex characters). The agent does not check the approval. It passes it on, and the Order Desk refuses an order with no valid approval. |
 
 ```json
 {
@@ -151,13 +151,13 @@ What `propose` does, in this order, under its deadline:
 What `execute` does, in this order, under its deadline:
 
 1. It checks the document. The document must be a purchase order (`bad_document` otherwise) for the tenant of the request (`po_not_for_tenant` otherwise).
-2. It reads the delegation as `propose` does: `delegation_not_mine` (400) for a delegation that names another agent, and `delegation_key_unknown` for a delegate key that the agent does not hold.
+2. It reads the delegation, but not as `propose` does. A delegation that names another agent is refused with `delegation_not_mine` (400). A delegate key that the agent does not hold ends the job with `delegation_key_unknown`, and a read of the ledger that fails ends it with `ledger_unavailable`. A delegation that the ledger does not show does not stop the job. The job goes on with the first delegation key of the agent, and it ends with `no_live_vault` in step 4.
 3. It builds the handoff from the document, the salt and the approval as the request gave them. It refuses a proposal whose digest is not the digest of its document and its salt (`bad_shape`). It checks the size of the handoff before the Pay: at most 900000 bytes of wire payload, and at most 1048576 bytes in the body of the call to the runtime of the Order Desk. A larger handoff is refused with `request_too_large` (400).
 4. It hires the advert that the document names in `advert_ref`, one time, with one Pay from the Live vault of the delegation, signed by the delegation key. It never retries the Pay. A delegation with no Live vault ends the job with `no_live_vault`, and a delegation with several ends it with `several_live_vaults`. A Pay that the ledger refuses ends the job with `vault_refused`.
-5. It sends the handoff to the Order Desk. The Order Desk checks the order before it claims the escrow. When the order fails a check, the Order Desk refuses with a 403 and a code, and the result is `refused_by_counterparty` with that code. The escrow stays Open until the janitor of the key reclaims it after `deliver_by`. Any other answer before the Claim is a `failed` result. Its reason is the code of the answer when the protocol lists it, such as `check_unavailable` (503), and `counterparty_refused` otherwise. The one refusal that comes after the Claim is `cannot_supply`: the escrow then stays Claimed.
+5. It sends the handoff to the Order Desk. The Order Desk checks the order before it claims the escrow. When the order fails a check, the Order Desk refuses with a 403 and a code, and the result is `refused_by_counterparty` with that code. The escrow stays Open until the janitor of the key reclaims it after `deliver_by`. Any other refusal before the Claim is a `failed` result. Its reason is the code of the answer when the protocol lists it, such as `bad_shape` (400) or `busy` (409), and `counterparty_refused` otherwise. A send that does not end in a clear refusal is `failed` with `send_lost`, because the Order Desk may hold the escrow. A status of 500 or more is such an end. The exception is a 503 answer with `precheck_unreachable`, `precheck_timeout` or `precheck_failed`: the runtime says that it could not ask its service, and the reason is `counterparty_refused`. The one refusal that comes after the Claim is `cannot_supply`: the escrow then stays Claimed.
 6. It runs the eight checks on the receipt of the Order Desk. Then it checks the confirmation in code: it must be an order confirmation (`confirmation_invalid`), and it must answer this order by its number and its hash (`confirmation_not_for_order`). Neither check asks the model.
 7. It asks one model whether to accept the delivery (decision `accept_delivery`). The model reads the SKU, the lot and the quantity of the order and of the confirmation, and nothing else of either. It answers `{ accept, mismatch }`, and the agent accepts exactly when `mismatch` is empty.
-8. On accept, it accepts the escrow with the delegation key and writes the order to the PO store: `POST /t/<tenant>/po`, with a token for the action `po.write`. The result is `completed` when the store records the order (201), and `refused_by_system` when the store refuses it.
+8. On accept, it accepts the escrow with the delegation key and writes the order to the PO store: `POST /t/<tenant>/po`, with a token for the action `po.write`. The result is `completed` when the store records the order (201), and `refused_by_system` when the store refuses it. The Accept comes before the write, so no end of the write undoes it. Two ends are `failed`: `token_failed` when the agent gets no token for the write, and `mock_system_failed` when the call ends in any other way.
 9. When the model does not accept, it does not accept the escrow. It publishes the evidence, challenges the open claim of the Order Desk with the first statement of that claim, and returns `disputed`.
 
 ### Response
@@ -298,7 +298,7 @@ The result of `execute` has these members:
 | `schema` | `vector.usecase.result.v1` |
 | `use_case` | `inventory-reorder` |
 | `proposal_digest` | the digest of the proposal that the hirer approved |
-| `handoff` | the hire of the Order Desk, or `null` when no escrow was posted. Its members: `counterparty_did`, `advert_ref`, `escrow_ref`, `paid_from_vault`, `receipt`, `receipt_signature`, `verification`, `result` (the confirmation that the Order Desk returned) and `accepted` (`confirmed`, `pending` or `no`) |
+| `handoff` | the hire of the Order Desk, or `null` when no escrow was posted. Its members: `counterparty_did`, `advert_ref`, `escrow_ref`, `paid_from_vault`, `receipt`, `receipt_signature`, `verification`, `result` (the confirmation that the Order Desk returned) and `accepted` (`confirmed`, `pending`, `no` or `null`) |
 | `writes` | each call that changed a mock system, with `system`, `route`, `status` and `ref` |
 | `decisions` | the decision on the delivery, when the model made one, with its reasoning and the sub-job that bought it |
 | `outcome`, `reason`, `exit_state` | see Outcomes |
@@ -322,38 +322,59 @@ A `propose` job ends with `proposed` or with `failed`, and a proposal has no exi
 
 ### Errors
 
-A call that the service refuses before it does any work is `{ "error": "<code>", "message": "<words>" }`, with the status of the first table. A job that the service runs and that does not end well is no HTTP error: it is a 200 result with the outcome `failed` and a `reason` code. A fault of the service (500) gets fixed words, and the whole message is in the log.
+A call that the service refuses has the body `{ "error": "<code>", "message": "<words>" }`, with the status of the first table. Four answers carry the code only, with no `message`: the 401, the 404, the 409 of a job, and a 500 for an error that the service does not name. The 409 of `POST /precheck` has a `message`. A refusal with a status of 500 or more gets fixed words, and the whole message is in the log. A job that the service runs and that does not end well is no HTTP error: it is a 200 result with the outcome `failed` and a `reason` code.
 
 | Status | Codes |
 |---|---|
 | 400 | `bad_wire` (not the one-element message array), `request_too_large` (over a limit of Terms), `bad_shape` (a request that breaks a rule of Request), `bad_context` (a call to `POST /precheck` with a missing or wrong context header), `delegation_not_mine` (the delegation names another agent as its delegate) |
 | 401 | `unauthorized` (no authorization header, or one that is not the token of the service) |
+| 404 | `not_found` (any other path, and any method that a route does not take) |
 | 409 | `busy` (a job runs, or the slot is reserved for another escrow) |
 | 503 | `shutting_down` (the service is stopping) |
 | 500 | `internal` |
 
-The codes that the agent itself writes as the `reason` of a `failed` result are these. The code of a mock system and a code of the hire kit can stand there too.
+The next table lists each code that a job writes as the `reason` of a `failed` result. The column Job says which job writes it: `propose`, `execute` or both. The other outcomes have their own reasons: see Outcomes. Two rows stand for a class of codes and not for one code: the code of a mock system, which the system chooses, and a code of the protocol, which the use case kit lists.
 
-| Reason | What it says |
-|---|---|
-| `delegation_not_found`, `delegation_key_unknown` | the ledger shows no delegation with that identifier, or the delegation names a delegate key that the agent does not hold |
-| `ledger_unavailable` | a read of the ledger gave no answer in time |
-| `supplier_not_listed`, `supplier_manifest_invalid`, `supplier_lots_invalid`, `sku_not_in_lots`, `supplier_unavailable` | `propose` cannot read the Order Desk (step 2 of `propose`) |
-| `stock_reading_mismatch`, `stock_reading_invalid`, `stock_read_timeout` | the stock reading is for another SKU, it is no stock reading, or it did not come in time |
-| `mock_system_failed`, `token_failed` | a mock system did not take a call, or the identity gateway gave no token |
-| `inference_failed`, `model_output_invalid`, `decision_mismatch` | the hire of the model failed, its answer is not a choice, or the choice that the job built is not the choice that the decision records |
-| `no_live_vault`, `several_live_vaults` | `execute` found no Live vault under the delegation, or more than one |
-| `confirmation_invalid`, `confirmation_not_for_order` | the answer of the Order Desk is no order confirmation, or it answers another order |
-| `decision_failed`, `decision_timeout`, `delivery_not_recordable` | the decision on the delivery could not be made, did not end in time, or the delivery cannot be written as a record |
-| `po_not_for_tenant`, `bad_document` | the order is for another tenant than the request, or the document is no purchase order |
-| `pay_unconfirmed`, `hire_interrupted`, `decision_error` | the Pay was sent and not seen confirmed, or an error ended the hire after the Pay was confirmed |
-| `store_write_failed`, `deadline`, `aborted`, `internal` | a record could not be written on the volume, the job ran out of its time, the caller hung up, or the service failed |
-
-A failure of the sub-delegation of `stock-reader` is `sub_delegation_` and the code of the failure, such as `sub_delegation_parent_not_live`. A failure of its token is `token_` and the code of the failure, such as `token_delegation_too_young`.
+| Reason | Job | What it says |
+|---|---|---|
+| `delegation_key_unknown` | both | the delegation names a delegate key that the agent does not hold |
+| `ledger_unavailable` | both | a read of the ledger gave no answer in time, or an answer that the job cannot read |
+| `mock_system_failed` | both | a call to a mock system failed: in `propose` the call to the ERP, when the system gave no code, and in `execute` the call to the PO store, when it neither recorded the order nor refused it |
+| `bad_document` | both | the document is no purchase order, or the job cannot hash it |
+| `store_write_failed`, `deadline`, `aborted` | both | a record could not be written on the volume, the job ran out of its time, or the caller hung up |
+| `delegation_not_found` | `propose` | the ledger shows no delegation with that identifier |
+| `supplier_not_listed`, `supplier_manifest_invalid`, `supplier_lots_invalid`, `sku_not_in_lots`, `supplier_unavailable` | `propose` | `propose` cannot read the Order Desk (step 2 of `propose`) |
+| `sub_delegation_<code>` | `propose` | the sub-delegation of `stock-reader` failed. The `<code>` is one of `bad_request`, `parent_unreadable`, `parent_not_live`, `parent_exhausted`, `parent_expiring`, `build_refused`, `build_mismatch`, `missing_signer`, `sign_failed`, `submit_failed`, `confirmation_timeout`, `ledger_unreadable`, `sub_delegation_unusable`, `journal_failed`, `step_timeout` and `internal` |
+| `token_<code>` | `propose` | the identity gateway gave `stock-reader` no token. The `<code>` is one of `bad_request`, `gateway_refused`, `delegation_too_young`, `gateway_unavailable`, `gateway_unreachable` and `gateway_bad_response` |
+| the code of a mock system | `propose` | the call to the ERP was refused or failed, and the system gave a code. `propose` writes that code when it has the form of a code (lower-case letters, digits and `_`, at most 64 characters), and `internal` when it has not |
+| `stock_read_timeout`, `stock_reading_invalid`, `stock_reading_mismatch` | `propose` | the stock read did not end in time, its body is no stock reading, or the reading is for another SKU |
+| `llm_supplier_unavailable` | `propose` | no model on the allowlist is within the three limits, so no hire starts |
+| `llm_out_of_time`, `hire_threw` | `propose` | the deadline came during the hire of the model, or less than 60 s were left when the decision began, so no hire started (`llm_out_of_time`); or a port threw, or the result of the hire cannot be read (`hire_threw`) |
+| `llm_post_failed`, `llm_busy`, `llm_refused`, `llm_send_lost`, `llm_failed`, `llm_timeout`, `llm_bad_result`, `llm_receipt_failed`, `llm_receipt_unavailable`, `llm_accept_failed` | `propose` | the hire of the model failed with a code of the hire kit, and the code follows the prefix. The ten codes of the hire kit are in the row of the hire of the Order Desk |
+| `model_output_invalid` | `propose` | the hire of the model ended, and its answer is not usable as a choice |
+| `choice_changed`, `bad_decision` | `propose` | the parser of the decision is wrong: it returned a value that is not the choice that the model gave (`choice_changed`), or the definition of the decision or its parser is wrong (`bad_decision`) |
+| `bad_limit`, `bad_input`, `bad_deps` | `propose` | a limit, the input or the clock of the decision is wrong, and nothing was hired |
+| `decision_mismatch` | `propose` | the choice that the job built is not the choice that the decision records |
+| `internal` | `propose` | the job threw, a port gave an answer of a wrong form, or a code that the job read is not in the form of a code |
+| `po_not_for_tenant` | `execute` | the order is for another tenant than the request |
+| `advert_not_counterparty` | `execute` | the advert in the document is not an advert of the Order Desk that the document names |
+| `advert_unavailable` | `execute` | no agent can be hired for the advert of the document, and nothing was paid |
+| `no_live_vault`, `several_live_vaults` | `execute` | `execute` found no Live vault under the delegation, or more than one |
+| `earlier_pay_may_land` | `execute` | an earlier Pay of the same key was sent and not seen confirmed, and it may still land. No job of that key pays until its validity ends |
+| `pay_unconfirmed` | `execute` | the Pay was sent and not seen confirmed, and it may still land |
+| `hire_interrupted`, `decision_error` | `execute` | an error ended the hire after the Pay was confirmed. `decision_error` stands when the error came from the decision on the delivery. An interrupted hire can also end with `deadline` or `store_write_failed` |
+| `post_failed`, `busy`, `refused`, `send_lost`, `failed`, `timeout`, `bad_result`, `receipt_failed`, `receipt_unavailable`, `accept_failed` | `execute` | the hire of the Order Desk failed, and the hire kit gave the code. The flow takes these ten codes from the hire kit, and it turns any other code into `inconsistent_outcome` |
+| `counterparty_refused` | `execute` | the Order Desk refused before its Claim with no rule of the protocol, and the protocol does not list the code of its answer |
+| a code of the protocol | `execute` | the Order Desk refused before its Claim with no rule of the protocol, and the protocol lists the code of its answer, such as `bad_shape` (400) or `busy` (409) |
+| `confirmation_invalid`, `confirmation_not_for_order` | `execute` | the answer of the Order Desk is no order confirmation, or it answers another order |
+| `decision_failed`, `decision_timeout`, `delivery_not_recordable` | `execute` | the decision on the delivery could not be made or read, did not end in time, or the delivery cannot be written as a record. The code of a decision that fails goes to the log and not to the result |
+| `token_failed` | `execute` | the identity gateway gave no token for the write to the PO store |
+| `inconsistent_outcome` | `execute` | the hire kit gave an outcome that does not hold together, so the job trusts none of it. The order is not written |
+| `hire_error` | `execute` | an error that no other code names ended the hire before any Pay |
 
 ### The co-sign route
 
-`POST /cosign/delegate` is an open route of the service: it needs no token, and it takes no job slot. The body is `{ "transaction": "<hex CBOR>" }`. The answer is 200 `{ "transaction": "<hex CBOR>" }`: the same transaction with one more witness, of the delegation key that its datum names. A refusal is `{ "error": "<code>", "message": "<words>" }`.
+`POST /cosign/delegate` is an open route of the service: it needs no token, and it takes no job slot. The route takes `POST` only. Any other method gets the 404 `not_found` of the service, as an unknown path does. The body is `{ "transaction": "<hex CBOR>" }`. The answer is 200 `{ "transaction": "<hex CBOR>" }`: the same transaction with one more witness, of the delegation key that its datum names. A refusal is `{ "error": "<code>", "message": "<words>" }`.
 
 The route signs only for a principal key on the allowlist that the operator sets with `COSIGN_ALLOWLIST`. The empty allowlist holds nobody, and a service with no such setting does not start. The rule of the route is the rule that the manifest states in `behaviour.cosign`:
 
@@ -363,8 +384,8 @@ The route signs only for a principal key on the allowlist that the operator sets
 |---|---|
 | 400 | `not_a_delegation`, `not_for_this_agent`, `expired`, `bad_shape`, `request_too_large` |
 | 403 | `principal_not_allowed`, `spends_agent_funds` |
-| 405, 415 | `method_not_allowed`, `unsupported_media_type` |
 | 409 | `key_in_use`, `busy` |
+| 415 | `unsupported_media_type` |
 | 503 | `check_unavailable` |
 | 500 | `internal` |
 
@@ -376,7 +397,7 @@ The service signs no receipt. The runtime builds the receipt, signs it with the 
 
 | Receipt field | Value for this agent |
 |---|---|
-| `escrow_ref` | the escrow UTxO, `<txid>#<index>` |
+| `escrow_ref` | the escrow UTxO, `<txid>#<index>`: 64 lower-case hex characters, a hash sign, and an output index with no leading zero |
 | `supplier_pkh` | the key hash of the supplier key |
 | `prompt_hash` | sha256 of the UTF-8 bytes of the wire payload, as the buyer committed it in the escrow datum |
 | `response_hash` | sha256 of the UTF-8 bytes of the result exactly as the service returned them |
@@ -390,7 +411,7 @@ The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of t
 
 ## Claim statements
 
-The agent stakes a claim for each run, not a standing claim. A claim has these three statements. The manifest holds them in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.
+The service stakes no claim, and no code of the service calls the staking of one. Before a run, an operator command stakes one claim with the service key of the agent: 50 units, with a challenge window of 24 hours. The operator withdraws the claim after the window. A claim has these three statements. The manifest holds them in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.
 
 | Id | Statement |
 |---|---|
@@ -437,10 +458,10 @@ The manifest states these eight, in this order, word for word. A test keeps them
 
 The agent has no advert yet, so nobody can hire it today. These steps are for the day it has one. You hire it twice, once for each operation, and a delegation and a vault carry the authority for the order. [docs/HIRE.md](../docs/HIRE.md) gives the steps of the marketplace tools.
 
-1. **Delegate to the agent.** Build the Delegate transaction with `vector_build_delegation_delegate`. The delegate is this agent. The delegate key is a free one of its two delegation keys, which `keys.delegation_pkhs` of the manifest lists. The actions are `marketplace.hire.v1`, `erp.stock.read` and `po.write`. The resources are the escrow script and the two mock URLs, `<mock base>/t/<tenant>/erp` and `<mock base>/t/<tenant>/po`, where `<mock base>` is the origin of the mock systems that the operator gives you. Set `remaining` to 1 or more: `propose` makes a sub-delegation under your delegation, and a delegation with `remaining` 0 ends that job with `sub_delegation_parent_exhausted`. Set the value limit to the price and both bonds of the lot that you accept. Sign the transaction with your key first: the co-sign route refuses a transaction that the delegator did not sign (`principal_not_allowed`). Send the signed transaction to the agent with `vector_delegation_request_cosign`. The route signs only for a principal key on the allowlist of the operator, and it answers `key_in_use` (409) for a delegation key that is in use. Submit the transaction that comes back, and wait until it is confirmed: a `propose` job on a delegation that is not live ends with `sub_delegation_parent_not_live`.
+1. **Delegate to the agent.** Build the Delegate transaction with `vector_build_delegation_delegate`. The delegate is this agent. The delegate key is a free one of its two delegation keys, which `keys.delegation_pkhs` of the manifest lists. The actions are `marketplace.hire.v1`, `erp.stock.read` and `po.write`. The resources are the escrow script and the two mock URLs, `<mock base>/t/<tenant>/erp` and `<mock base>/t/<tenant>/po`, where `<mock base>` is the origin of the mock systems that the operator gives you. Set `remaining` to 1 or more: `propose` makes a sub-delegation under your delegation, and a delegation with `remaining` 0 ends that job with `sub_delegation_parent_exhausted`. Set the value limit to the price and both bonds of the lot that you accept. Sign the transaction with your key first: the co-sign route refuses a transaction that the delegator did not sign (`principal_not_allowed`). Send the signed transaction to the agent with `vector_delegation_request_cosign`. The route signs only for a principal key on the allowlist of the operator, and it answers `key_in_use` (409) for a delegation key that is in use. Submit the transaction that comes back. Wait until the ledger shows the delegation: a `propose` job on a delegation that the ledger does not show ends with `delegation_not_found`. Then wait for 30 confirmations of the delegation. The sub-delegation of `propose` needs 30 confirmations on every link of its chain, and `stock-reader` gets no token before that.
 2. **Open one vault under the delegation** with `vector_build_vault_open`. The agent finds the Live vault of the delegation itself, so the delegation needs exactly one: `execute` ends with `failed` and the reason `no_live_vault` or `several_live_vaults` otherwise. The vault pays the price and both bonds of the advert of the lot, so put in it what the order needs.
 3. **Hire `propose`.** Post the escrow for the advert of the agent, send the request JSON, read the result, verify the receipt and accept, as `docs/HIRE.md` says. The request JSON is the first example under Request, with your own values. The purchase order is the `document` of the result.
-4. **Approve the order.** Read the purchase order. If you accept it, make the approval with `vector_build_attestation_attest`: the type is 5, the subject is this agent, and the digest is the `proposal_digest`. Make it with the key that gave the delegation: the Order Desk refuses another issuer with `approval_wrong_issuer`. The approval is valid for 4 hours unless you choose another time, and for 24 hours at most. The attestation holds a deposit of 5000000 lovelace, and the deposit returns 90 days after the attestation ends.
+4. **Approve the order.** Read the purchase order. If you accept it, make the approval with `vector_build_attestation_attest`: the type is 5, the subject is this agent, and the digest is the `proposal_digest`. Make it with the key that gave the delegation: the Order Desk refuses another issuer with `approval_wrong_issuer`. Set `valid_until` yourself: the tool sets no end. The runs use 4 hours. The attestation holds a deposit of 5000000 lovelace, and the deposit returns 90 days after the attestation ends.
 5. **Hire `execute`.** Send the `proposal` as `propose` returned it, with the `approval` of step 4. The second example under Request shows the request. Verify the receipt and accept.
 6. **Close the vault and end the delegation.** Close the vault with `vector_build_vault_close`. End the delegation with `vector_build_delegation_undelegate`.
 

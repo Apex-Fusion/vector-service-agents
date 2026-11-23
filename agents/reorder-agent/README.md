@@ -2,7 +2,7 @@
 
 For a buying organisation: reads the stock of one SKU, proposes a purchase order for one lot from a named supplier, and, once the organisation has approved the order, places it from the vault of the organisation and records it. Capability `supplychain.reorder.po.v1`.
 
-Status: `proposed` since 2026-11-16. The service is built. Its tests run the whole path against stand-ins for the chain, the marketplace, the identity gateway, the mock systems and the model supplier, with no network. It is not deployed, and no job of it has settled. The manifest links the specification and the source.
+Status: `proposed` since 2026-11-23. The service is built. Its tests run the whole path against stand-ins for the chain, the marketplace, the identity gateway, the mock systems and the model supplier, with no network. It is not deployed, and no job of it has settled. The manifest links the specification and the source.
 
 The service sits behind the template runtime. The runtime holds the supplier key, claims the escrow of the hirer, and posts the job to this service as the body of `POST /`. The job is `propose` or `execute`. `propose` reads the stock from the mock system, asks a model supplier on the marketplace for a lot choice, and answers with a proposal. `execute` checks the approval of the organisation, hires the supplier of the lot, and writes the order. The service holds five keys and pays from three of them. It never publishes a key.
 
@@ -105,7 +105,7 @@ A value that breaks a rule stops the service at start, and the message names the
 | `IDENTITY_POLICY_ID`, `IDENTITY_ADDRESS` | the identity registry: the policy ID (56 lowercase hex characters) and its address, which must be the address of the policy | none. The policy is required |
 | `AGENT_VERSION` | `version` | `0.1.0` |
 | `AGENT_STATUS_CHIP` | `status.chip`, in lower case | `proposed` |
-| `AGENT_STATUS_SINCE` | `status.since`, as YYYY-MM-DD | `2026-11-16` |
+| `AGENT_STATUS_SINCE` | `status.since`, as YYYY-MM-DD | `2026-11-23` |
 | `ADVERT_EXPLORER_URL` | `links.explorer_advert` | empty |
 | `SERVICE_AUTH_HEADER` | the `authorization` header of the runtime, `Bearer ` and 64 hex characters. Never published, never logged | none. Required |
 | `FAULT_MODE` | the one fault switch. The Reorder Agent has no fault value: any value stops the start | empty |

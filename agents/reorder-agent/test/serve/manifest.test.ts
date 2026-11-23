@@ -86,7 +86,7 @@ describe('the members of the manifest', () => {
     expect(manifest).toMatchObject({
       schema: 'vector.agent-manifest.v2', name: 'Reorder Agent', capability_id: INVENTORY_CAPABILITIES.reorder, version: '0.1.0', description: DESCRIPTION,
       operator: { name: 'Apex Fusion Foundation', contact: 'ops@example.test' },
-      status: { chip: 'proposed', since: '2026-11-16' },
+      status: { chip: 'proposed', since: '2026-11-23' },
       links: { spec: SPEC_URL, source: SOURCE_URL, explorer_advert: '' },
     });
     expect(manifest.capability_id).toBe('supplychain.reorder.po.v1');
