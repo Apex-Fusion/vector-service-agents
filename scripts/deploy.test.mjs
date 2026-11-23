@@ -6792,7 +6792,7 @@ function runtimeImageProblems(text, pins) {
     const at = steps.findIndex((s) => s?.with?.repository === RT.repository);
     if (at < 0) { problems.push(`${job}: no step checks out ${RT.repository}`); continue; }
     const ref = steps[at].with.ref;
-    if (!isDeepStrictEqual(steps[at], { uses: 'actions/checkout@v4', with: { repository: RT.repository, ref, path: RT.folder } })) problems.push(`${job}: the checkout must be actions/checkout@v4 with the repository, a ref and the path ${RT.folder}, and nothing else; found: ${JSON.stringify(steps[at])}`);
+    if (!isDeepStrictEqual(steps[at], { uses: 'actions/checkout@v4', with: { repository: RT.repository, ref, path: RT.folder, 'persist-credentials': false } })) problems.push(`${job}: the checkout must be actions/checkout@v4 with the repository, a ref, the path ${RT.folder} and persist-credentials false, and nothing else; found: ${JSON.stringify(steps[at])}`);
     if (!/^[0-9a-f]{40}$/.test(String(ref))) problems.push(`${job}: the ref must be a commit of 40 hex digits; found: ${ref}`);
     else if (ref !== commit) problems.push(`${job}: the ref ${ref} is not the commit ${commit} of the compose files`);
     const check = { run: `test "$(git -C ${RT.folder} rev-parse HEAD)" = ${commit}` };
@@ -6828,7 +6828,7 @@ test('CI: the runtime image is built from the template at the pinned commit in b
   assert.deepEqual([first, more], [RT.sourceLabel, [`${RT.commitLabel}=${PIN}`]]);
   assert.deepEqual(ci.jobs.build.steps.find((s) => s.with?.file === RT.dockerfile).with, { context: RT.folder, file: RT.dockerfile, push: false });
   // The parts of the real text that the faults change.
-  const CHECKOUT = `      - uses: actions/checkout@v4\n        with:\n          repository: ${RT.repository}\n          ref: ${PIN}\n          path: ${RT.folder}\n`;
+  const CHECKOUT = `      - uses: actions/checkout@v4\n        with:\n          repository: ${RT.repository}\n          ref: ${PIN}\n          path: ${RT.folder}\n          persist-credentials: false\n`;
   const CHECK = `      - run: test "$(git -C ${RT.folder} rev-parse HEAD)" = ${PIN}\n`;
   const STEP = (file) => `      - uses: docker/build-push-action@v6\n        with:\n          context: .\n          file: ${file}\n`;
   const LOGIN = '      - uses: docker/login-action@v3\n';
@@ -6853,6 +6853,8 @@ test('CI: the runtime image is built from the template at the pinned commit in b
     ['the checkout of another repository', change(`repository: ${RT.repository}`, `repository: ${RT.repository}-fork`), /build: no step checks out/],
     ['the checkout in another folder', change(`path: ${RT.folder}`, 'path: template', 1), /publish: the checkout must be actions\/checkout@v4/],
     ['a token for the checkout', change(`path: ${RT.folder}\n`, `path: ${RT.folder}\n          token: x\n`), /build: the checkout must be actions\/checkout@v4/],
+    ['no persist-credentials in the checkout of the publish job', change('          persist-credentials: false\n', '', 1), /publish: the checkout must be actions\/checkout@v4/],
+    ['persist-credentials left on in the checkout of the build job', change('persist-credentials: false', 'persist-credentials: true'), /build: the checkout must be actions\/checkout@v4/],
     ['a push in the build job', change(`${RUNTIME}false`, `${RUNTIME}true`), /build: the step after the check must be exactly/],
     ['a tag in the build job', change(`${RUNTIME}false\n`, `${RUNTIME}false\n          tags: ${RT.image}:latest\n`), /build: the step after the check must be exactly/],
     ['no push in the publish job', change(`${RUNTIME}true`, `${RUNTIME}false`), /publish: the step after the check must be exactly/],
@@ -6911,5 +6913,5 @@ test('CI: the runtime image: the README of deploy/server follows its section of 
   assert.ok(text.length > 0, 'the section is there');
   const at = (heading) => readme.indexOf(`\n## ${heading}\n`);
   assert.ok(at('The host') > 0 && at('The host') < at('The runtime image') && at('The runtime image') < at('What the script does'), 'after the host, before the script');
-  for (const part of [`${RT.image}@sha256:<digest>`, '`:latest`', '`:<full git commit sha>`', RT.commitLabel, RT.repository, '`ref`', 'deploy/host', 'scripts/deploy.test.mjs', 'public']) assert.ok(text.includes(part), part);
+  for (const part of [`${RT.image}@sha256:<digest>`, '`:latest`', '`:<full git commit sha>`', RT.commitLabel, RT.repository, '`ref`', 'deploy/host', 'scripts/deploy.test.mjs', 'check that the package is public', `docker manifest inspect ${RT.image}:latest`, 'admin of the organisation']) assert.ok(text.includes(part), part);
 });

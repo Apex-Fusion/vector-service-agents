@@ -51,7 +51,7 @@ CI builds one runtime image. Every runtime of the host runs it. The image comes 
 
 The operator takes the digest of the image that CI pushed for the reviewed commit, as for the mock service (RUNBOOK, step 6, "Run the mock service").
 
-The first publish makes the package. A new package can be private. The host pulls with no login, so set the package to public in its settings. A pull of a private package says `denied`.
+The host pulls with no login, so the package must be public. The first publish of a new package can make it private. After the first publish, check that the package is public: an anonymous `docker manifest inspect ghcr.io/apex-fusion/vector-service-agents/agent-runtime:latest` works. Run it with no login to `ghcr.io`. If the answer says `denied`, the package is private. An admin of the organisation then makes it public.
 
 ### Move the pin
 
