@@ -76,7 +76,7 @@ describe('the copies that read chain data check it first', () => {
   });
 
   it('the vault Pay, the delegation builders and what they build on read a transaction and an address through the checked wrappers, and none calls the address decoder of Lucid', () => {
-    // These copies are at 2d95483. The datums they read come through @vsa/vector-read/identity-codec, which runs the check first.
+    // These copies are at 2d95483 or ebce68a (VENDORED-FROM.md names the pin of each). The datums they read come through @vsa/vector-read/identity-codec, which runs the check first.
     const copies = ['vault-build', 'delegation-build', 'identity-build', 'attestation-build', 'marketplace-build'].map((name) => `vendored/mcp/${name}.ts`);
     for (const file of copies) expect(count(file, /\bgetAddressDetails\s*\(/), `${file} calls the address decoder of Lucid`).toBe(0);
     expect(files.get('vendored/mcp/vault-build.ts')!).toMatch(/import \{ addressDetails \} from '@vsa\/vector-read\/guarded-decode';/);
@@ -99,6 +99,7 @@ const CHECKED_CALLS: Record<string, { calls: number; reads: string }> = {
   'chain.ts': { calls: 1, reads: `the supplier, the output and the collateral of ${OWN_TRANSACTION} (the Pay of a vault, which the node evaluated)` },
   'vendored/mcp/attestation-build.ts': { calls: 2, reads: `the outputs of ${OWN_TRANSACTION} (the deposit, and the output of the attestation)` },
   'vendored/mcp/attestation-read.ts': { calls: 1, reads: 'the datum of an attestation output, which comes from the chain' },
+  'vendored/mcp/build.ts': { calls: 1, reads: 'the change address that a caller gives (lucidForAddress): no chain data reaches it, and addressDetails refuses a text of more than 1,024 characters' },
   'vendored/mcp/gov-build.ts': { calls: 1, reads: 'an address that a caller gives' },
   'vendored/mcp/identity-build.ts': { calls: 2, reads: `the outputs of ${OWN_TRANSACTION}` },
   'vendored/mcp/identity-deployment.ts': { calls: 1, reads: 'the datum of the configuration record, which comes from the chain' },

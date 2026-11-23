@@ -211,9 +211,9 @@ const errorText = (err: unknown): string => (err instanceof Error ? err.message 
 const refusedOutright = (err: unknown): boolean => /^Transaction submission rejected \(4\d\d\b/.test(errorText(err));
 
 /**
- * The one place the closed accept window is read off the vendored planner. planAccept (vendored/mcp/marketplace-build.ts, line 482) throws
- * `Accept window closed at <iso>; the supplier may now Release.`, and buildEscrowSpend passes it on with ` (escrow <ref>)` after it. Any other error
- * of the build is passed on as it is.
+ * The one place the closed accept window is read off the vendored planner. planAccept (vendored/mcp/marketplace-build.ts, line 497) throws
+ * `Accept window closed at <iso>; the supplier may now Release.` and then the sentence that names the rule of the escrow contract (`The escrow contract
+ * refuses the same transaction on chain (Accept: ...)`), and buildEscrowSpend passes it on with ` (escrow <ref>)` after it. Any other error of the build is passed on as it is.
  */
 const ACCEPT_WINDOW_CLOSED = /^Accept window closed at /;
 function acceptRefusal(err: unknown): unknown {
