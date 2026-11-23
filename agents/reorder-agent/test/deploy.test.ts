@@ -761,3 +761,135 @@ describe('deploy/server/.env.reorder-agent.example', () => {
     expect([runtimeEnv.LIVE_CHAIN, runtimeEnv.RELEASE_WATCHER], 'the release watcher needs LIVE_CHAIN').toStrictEqual(['1', '1']);
   });
 });
+
+// --- the Caddy block -----------------------------------------------------------------------------------------------------------------------------------
+
+const snippetText = readPack(FILES.snippet);
+const BEGIN = '# reorder-agent vhosts (BEGIN)';
+const END = '# reorder-agent vhosts (END)';
+
+interface CaddyNode { readonly head: string; readonly children: CaddyNode[] }
+/** The lines of a Caddyfile as a tree: a line that ends with " {" opens a block, "}" closes it, and a comment or a blank line is dropped. Null when the braces do not balance. */
+function caddyTree(lines: readonly string[]): CaddyNode[] | null {
+  const top: CaddyNode[] = [];
+  const stack: CaddyNode[][] = [top];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    if (line === '}') {
+      if (stack.length === 1) return null;
+      stack.pop();
+      continue;
+    }
+    const opens = line.endsWith(' {');
+    const node: CaddyNode = { head: opens ? line.slice(0, -2) : line, children: [] };
+    stack[stack.length - 1].push(node);
+    if (opens) stack.push(node.children);
+  }
+  return stack.length === 1 ? top : null;
+}
+
+/** The lines between the two markers, and the lines of the block that is in the file. Null when the markers are not one pair. */
+function blockOf(text: string): { readonly inside: string[]; readonly outside: string[] } | null {
+  const lines = text.split('\n');
+  const begins = lines.flatMap((line, at) => (line === BEGIN ? [at] : []));
+  const ends = lines.flatMap((line, at) => (line === END ? [at] : []));
+  if (begins.length !== 1 || ends.length !== 1 || begins[0] > ends[0]) return null;
+  return { inside: lines.slice(begins[0] + 1, ends[0]), outside: [...lines.slice(0, begins[0]), ...lines.slice(ends[0] + 1)] };
+}
+
+/** The three routes of the block, in order: the manifest and the co-sign route go to the service, and every other path goes to the runtime. */
+const ROUTES: ReadonlyArray<readonly [string, string]> = [['handle /agent.json', SERVICE_UPSTREAM], ['handle /cosign/delegate', SERVICE_UPSTREAM], ['handle', RUNTIME_UPSTREAM]];
+
+/** What is wrong with the Caddy block. An empty list is a pass. */
+function caddyProblems(text: string): string[] {
+  const block = blockOf(text);
+  if (block === null) return [`the file must hold the line "${BEGIN}" one time, and after it the line "${END}" one time`];
+  const problems: string[] = [];
+  if (block.outside.some((line) => line.trim() !== '' && !line.trim().startsWith('#'))) problems.push('only comments stand outside the two markers: the lines between them are what a command adds, replaces and removes');
+  const tree = caddyTree(block.inside);
+  if (tree === null) return [...problems, 'the braces between the markers do not balance'];
+  if (!same(tree.map((node) => node.head), [HOST])) problems.push(`the one block must be the host name ${HOST}; found: ${tree.map((node) => node.head).join(', ') || 'none'}`);
+  const host = tree.find((node) => node.head === HOST);
+  if (host === undefined) return problems;
+  const found = host.children.map((child) => [child.head, child.children.map((inner) => [inner.head, inner.children.length])]);
+  if (!same(found, ROUTES.map(([head, upstream]) => [head, [[`reverse_proxy ${upstream}`, 0]]]))) {
+    problems.push(`${HOST}: the block must send /agent.json and /cosign/delegate to ${SERVICE_UPSTREAM} and every other path to ${RUNTIME_UPSTREAM}, with nothing else in it; found: ${JSON.stringify(found)}`);
+  }
+  return problems;
+}
+
+describe('deploy/server/Caddyfile.reorder-agent.snippet', () => {
+  test('the real block passes: one host name between the markers, sending the manifest and the co-sign route to the service and the rest to the runtime', () => {
+    expect(caddyProblems(snippetText)).toStrictEqual([]);
+    const lines = snippetText.split('\n');
+    expect(lines.filter((line) => line === BEGIN)).toHaveLength(1);
+    expect(lines.filter((line) => line === END)).toHaveLength(1);
+    expect(ROUTES.map(([head]) => head)).toStrictEqual(['handle /agent.json', 'handle /cosign/delegate', 'handle']);
+  });
+
+  test('the upstreams are the container names and the container ports of the compose file, and the host is the origin that the compose file and the example name', () => {
+    const compose = parse(composeText) as Model;
+    const tree = caddyTree(blockOf(snippetText)!.inside)!;
+    const upstreamOf = (head: string): string => tree[0].children.find((child) => child.head === head)!.children[0].head.replace(/^reverse_proxy /, '');
+    const runtime = compose.services.runtime as Model;
+    const service = compose.services.service as Model;
+    expect(upstreamOf('handle'), 'the runtime').toBe(`${runtime.container_name}:${String(runtime.ports[0]).split(':')[2]}`);
+    expect(upstreamOf('handle /agent.json'), 'the manifest').toBe(`${service.container_name}:${String(service.ports[0]).split(':')[2]}`);
+    expect(upstreamOf('handle /cosign/delegate'), 'the co-sign route').toBe(`${service.container_name}:${String(service.ports[0]).split(':')[2]}`);
+    expect(runtime.environment.PUBLIC_ORIGIN, 'the card of the runtime').toBe(`https://${tree[0].head}`);
+    expect(runtime.environment.SERVICE_URL, 'the address of the service for the runtime').toBe(`http://${upstreamOf('handle /agent.json')}/`);
+  });
+
+  const faults: ReadonlyArray<readonly [string, (text: string) => string, RegExp]> = [
+    ['no begin marker', (t) => swap(t, `${BEGIN}\n`, ''), /^the file must hold the line/],
+    ['no end marker', (t) => swap(t, `${END}\n`, ''), /^the file must hold the line/],
+    ['the markers in the wrong order', (t) => exchange(t, BEGIN, END), /^the file must hold the line/],
+    ['a marker twice', (t) => `${t}${BEGIN}\n`, /^the file must hold the line/],
+    ['a marker with another name', (t) => swap(t, BEGIN, '# order-desk vhosts (BEGIN)'), /^the file must hold the line/],
+    ['a marker with a space after it', (t) => swap(t, BEGIN, `${BEGIN} `), /^the file must hold the line/],
+    ['a block outside the markers', (t) => `${t}extra.example.org {\n    respond 200\n}\n`, /^only comments stand outside the two markers/],
+    ['a directive before the begin marker', (t) => swap(t, `${BEGIN}\n`, `encode gzip\n${BEGIN}\n`), /^only comments stand outside the two markers/],
+    ['the host name of another pack', (t) => swap(t, `${HOST} {`, 'mp-suppliers-orders-small.vector.apexfusion.org {'), /^the one block must be the host name/],
+    ['a second block', (t) => swap(t, END, `second.example.org {\n    handle {\n        reverse_proxy reorder-runtime:8080\n    }\n}\n${END}`), /^the one block must be the host name/],
+    ['no block', (t) => `${BEGIN}\n${END}\n`, /^the one block must be the host name/],
+    ['a host that sends its rest to the service', (t) => swap(t, 'reverse_proxy reorder-runtime:8080', 'reverse_proxy reorder-service:9101'), new RegExp(`^${escapeRegExp(HOST)}: the block must send`)],
+    ['the wrong port of the runtime', (t) => swap(t, 'reverse_proxy reorder-runtime:8080', 'reverse_proxy reorder-runtime:8101'), new RegExp(`^${escapeRegExp(HOST)}: the block must send`)],
+    ['the runtime by its address on the host', (t) => swap(t, 'reverse_proxy reorder-runtime:8080', 'reverse_proxy 127.0.0.1:8101'), new RegExp(`^${escapeRegExp(HOST)}: the block must send`)],
+    ['the alias of the service in place of its container', (t) => swap(t, 'reverse_proxy reorder-service:9101', 'reverse_proxy service:9101'), /: the block must send/],
+    ['the alias of the runtime in place of its container', (t) => swap(t, 'reverse_proxy reorder-runtime:8080', 'reverse_proxy runtime:8080'), /: the block must send/],
+    ['the wrong port of the service', (t) => swap(t, 'reverse_proxy reorder-service:9101', 'reverse_proxy reorder-service:9102'), /: the block must send/],
+    ['the service by its address on the host', (t) => swap(t, 'reverse_proxy reorder-service:9101', 'reverse_proxy 127.0.0.1:9101'), /: the block must send/],
+    ['no route for the manifest', (t) => swap(t, 'handle /agent.json {', 'handle /agent {'), /: the block must send/],
+    ['no route for the co-sign route', (t) => swap(t, 'handle /cosign/delegate {', 'handle /cosign {'), /: the block must send/],
+    ['the co-sign route sent to the runtime', (t) => swap(t, '    handle /cosign/delegate {\n        reverse_proxy reorder-service:9101\n', '    handle /cosign/delegate {\n        reverse_proxy reorder-runtime:8080\n'), /: the block must send/],
+    ['the manifest sent to the runtime', (t) => swap(t, '    handle /agent.json {\n        reverse_proxy reorder-service:9101\n', '    handle /agent.json {\n        reverse_proxy reorder-runtime:8080\n'), /: the block must send/],
+    ['a path of the job sent to the service', (t) => swap(t, 'handle /cosign/delegate {', 'handle /precheck {'), /: the block must send/],
+    ['a third public path of the service', (t) => swap(t, '    handle {\n', '    handle /status {\n        reverse_proxy reorder-service:9101\n    }\n    handle {\n'), /: the block must send/],
+    ['a directive that changes the request', (t) => swap(t, '        reverse_proxy reorder-runtime:8080\n', '        header_up Authorization x\n        reverse_proxy reorder-runtime:8080\n'), /: the block must send/],
+    ['options in the proxy block', (t) => swap(t, 'reverse_proxy reorder-runtime:8080\n', 'reverse_proxy reorder-runtime:8080 {\n            header_up X-Test 1\n        }\n'), /: the block must send/],
+    ['a redirect before the handles', (t) => swap(t, `${HOST} {\n`, `${HOST} {\n    redir https://elsewhere.example.org\n`), /: the block must send/],
+    ['the routes in another order', (t) => exchange(t, 'handle /agent.json {', 'handle /cosign/delegate {'), /: the block must send/],
+    ['braces that do not balance', (t) => swap(t, END, `}\n${END}`), /^the braces between the markers do not balance/],
+  ];
+  test('each copy that breaks one rule is refused, in the words of that rule', () => {
+    for (const [what, change, expected] of faults) {
+      const problems = caddyProblems(change(snippetText));
+      expect(problems.some((problem) => expected.test(problem)), `${what}: found ${JSON.stringify(problems)}`).toBe(true);
+    }
+  });
+
+  test('the twins: tabs in place of spaces, a comment, a blank line and a changed header change nothing', () => {
+    const lines = snippetText.split('\n');
+    const inside = lines.slice(lines.indexOf(BEGIN), lines.indexOf(END) + 1).join('\n');
+    expect(caddyProblems(inside), 'the block alone, with no header').toStrictEqual([]);
+    expect(caddyProblems(inside.replace(/^ {4}/gm, '\t').replace(/^ {8}/gm, '\t\t')), 'tabs').toStrictEqual([]);
+    expect(caddyProblems(swap(inside, 'handle /agent.json {', '# a note\n\n    handle /agent.json {')), 'a comment and a blank line').toStrictEqual([]);
+    expect(caddyProblems(`# another header\n${inside}\n# a footer\n`)).toStrictEqual([]);
+  });
+
+  test('the header says how the block gets in: in place, validated, and then a reload; the Caddy container joins the network of the project, and joins again after a new container', () => {
+    const header = snippetText.slice(0, snippetText.indexOf(BEGIN));
+    for (const part of [NETWORK, 'docker network connect', '<caddy container>', 'in place', 'inode', 'validate', 'reload', 'Never restart', 'DNS-only', 'joins again', FILES.runbook]) expect(header, part).toContain(part);
+  });
+});

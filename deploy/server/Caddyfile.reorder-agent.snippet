@@ -1,0 +1,29 @@
+# deploy/server/Caddyfile.reorder-agent.snippet - the host block of the Reorder Agent.
+#
+# The Reorder Agent has one runtime in front of one service. The host name belongs to the runtime, and so to the advert:
+#   mp-suppliers-reorder.vector.apexfusion.org   reorder-runtime:8080
+# The block sends two paths to the service, reorder-service:9101: /agent.json (the manifest) and /cosign/delegate (the co-sign route). The runtime serves neither path. Every other path goes to the runtime. The service gets no other public path:
+# POST / and POST /precheck of the service need the token that only the runtime holds.
+# The co-sign route needs no token. The service checks every call against its allowlist, so a call from a principal that the allowlist does not hold gets a refusal and no signature.
+# All upstream names are container names of the compose project reorder-agent (docker-compose.reorder-agent.yml). The Caddy container of the host must join the network of that project, so that it resolves them:
+#   docker network connect reorder-agent_default <caddy container>
+# A new Caddy container joins again. The network exists after the first start of the service.
+# The host name is a DNS-only name. Caddy ends TLS itself and gets its own certificate for the name. A proxy in front of the name would end TLS first, and it would replace the body of an error answer: a failed job answers 502, and the buyer needs the body.
+#
+# How the block gets in. The host has one Caddyfile, and the Caddy container mounts that one file. Add the lines from the marker BEGIN to the marker END to the end of that file, in place:
+# append to the file, so that it keeps its inode. A mounted file does not follow a new file that replaces it. Then validate the whole file in the Caddy container, and reload Caddy. Never restart it.
+# The two markers are exact lines. A command finds them to replace the block or to remove it, so keep them as they are.
+# RUNBOOK-reorder-agent.md, "The Caddy block", gives the commands and the way back.
+# reorder-agent vhosts (BEGIN)
+mp-suppliers-reorder.vector.apexfusion.org {
+    handle /agent.json {
+        reverse_proxy reorder-service:9101
+    }
+    handle /cosign/delegate {
+        reverse_proxy reorder-service:9101
+    }
+    handle {
+        reverse_proxy reorder-runtime:8080
+    }
+}
+# reorder-agent vhosts (END)
