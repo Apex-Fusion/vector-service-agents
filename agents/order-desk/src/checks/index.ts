@@ -9,3 +9,5 @@ export { loadLots } from './lots.ts';
 export type { LoadedLots } from './lots.ts';
 export { PASSED_CHECKS_LIMIT, PASSED_CHECKS_TTL_MS, PassedChecks } from './passed.ts';
 export type { PassedEntry } from './passed.ts';
+export { createPrecheck } from './precheck.ts';
+export type { PrecheckDeps } from './precheck.ts';
