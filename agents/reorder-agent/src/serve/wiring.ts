@@ -165,8 +165,14 @@ export async function wire(settings: WiringSettings, options: WiringOptions = {}
 
   const provider: Module1Provider = options.provider ?? new OgmiosProvider({ ogmiosUrl: endpoints.ogmiosUrl, submitUrl: endpoints.submitUrl, koiosUrl: endpoints.koiosUrl });
   const ledger: LedgerEnv = { provider, deployment: identityDeployment, koiosUrl: endpoints.koiosUrl, fetchImpl, budgetMs: LEDGER_BUDGET_MS };
-  const module1 = options.module1
-    ?? module1FromManifest(await readManifest(settings.module1Manifest, `The Module-1 manifest (${MODULE1_MANIFEST_ENV})`, fetchImpl), settings.module1Manifest);
+  let module1 = options.module1;
+  if (module1 === undefined) {
+    module1 = module1FromManifest(await readManifest(settings.module1Manifest, `The Module-1 manifest (${MODULE1_MANIFEST_ENV})`, fetchImpl), settings.module1Manifest);
+    // A manifest of another registry, from a wrong commit, would make the dispute code build against records that the identity deployment of this service does not own. The message names the two settings and shows no hash.
+    if (module1.identityHash !== identityDeployment.identity.hash) {
+      throw new Error(`the Module-1 manifest (${MODULE1_MANIFEST_ENV}) names another identity registry than IDENTITY_POLICY_ID: it is the manifest of another deployment, so the service does not start with it`);
+    }
+  }
   const systemStartMs = await systemStartOf(provider);
 
   // The three paying keys. A chain is made from the key and the identity deployment that pays from a vault. The registry reads the wallet of each chain for its key hash.

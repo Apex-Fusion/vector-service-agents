@@ -394,6 +394,9 @@ describe('the start', () => {
     expect(wired.systemStartMs).toBe(SYSTEM_START_MS);
   });
 
+  /** A fetch in front of the stub marketplace that answers MODULE1_URL with `response()` and passes every other call on. */
+  const answering = (response: () => Response) => (next: typeof fetch): typeof fetch => (async (input, init) => (String(input) === MODULE1_URL ? response() : next(input, init))) as typeof fetch;
+
   test('fetches the Module-1 manifest at its pinned address one time, and the start fetches nothing else', async () => {
     const seen: string[] = [];
     const spy = (next: typeof fetch): typeof fetch => (async (input, init) => { seen.push(String(input)); return withModule1(next)(input, init); }) as typeof fetch;
@@ -402,12 +405,24 @@ describe('the start', () => {
   });
 
   test('stops when the Module-1 manifest cannot be fetched, or is not JSON, naming the variable, and the answer of the stub is its twin', async () => {
-    const answering = (response: () => Response) => (next: typeof fetch): typeof fetch => (async (input, init) => (String(input) === MODULE1_URL ? response() : next(input, init))) as typeof fetch;
     const missing = await setup({ fetch: answering(() => new Response('', { status: 404 })) }).catch((error: unknown) => error);
     expect((missing as Error).message).toMatch(/^The Module-1 manifest \(VECTOR_MODULE1_MANIFEST\) .* cannot be fetched: the host answered HTTP 404/);
     const notJson = await setup({ fetch: answering(() => new Response('not json', { status: 200 })) }).catch((error: unknown) => error);
     expect((notJson as Error).message).toMatch(/^The Module-1 manifest \(VECTOR_MODULE1_MANIFEST\) .* is not JSON/);
     await expect(setup()).resolves.toBeDefined();
+  });
+
+  test('stops when the Module-1 manifest names another identity registry than IDENTITY_POLICY_ID, naming the two settings and no hash, and the manifest of the fixture is its twin', async () => {
+    const fixture = await (await withModule1(fetch)(MODULE1_URL)).text();
+    const other = JSON.parse(fixture) as { identity: { identity_hash: string } };
+    const registry = other.identity.identity_hash;
+    other.identity.identity_hash = 'ab'.repeat(28);
+    const failed = await setup({ fetch: answering(() => new Response(JSON.stringify(other), { status: 200 })) }).catch((error: unknown) => error);
+    const message = (failed as Error).message;
+    expect(message).toMatch(/^the Module-1 manifest \(VECTOR_MODULE1_MANIFEST\) names another identity registry than IDENTITY_POLICY_ID/);
+    expect(message).not.toContain('ab'.repeat(28));
+    expect(message).not.toContain(registry);
+    await expect(setup({ fetch: answering(() => new Response(fixture, { status: 200 })) })).resolves.toBeDefined();
   });
 
   test('the co-sign route is made over the two delegation keys, and a setting that the kit refuses stops the start with its detail', async () => {

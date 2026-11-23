@@ -2,7 +2,7 @@
 // The README names every setting the service reads, every code it answers with, and the numbers of its jobs. These tests keep the page and the code from parting: a setting that the code reads and the table does
 // not name fails, so does a name in the table that no code reads, a code with the wrong status, and a number that is not the code's.
 import { describe, test, expect } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { HEARTBEAT_MS, MAX_BODY, RESERVATION_MS, SHUTDOWN_WAIT_MS } from '@vsa/service-kit';
 import { COSIGN_STATUS } from '@vsa/usecase-kit/cosign';
 import { INVENTORY_CAPABILITIES } from '@vsa/usecase-kit/inventory';
@@ -66,16 +66,37 @@ describe('agents/reorder-agent/README.md', () => {
     }
   });
 
-  test('the Errors tables give each code its status, as the kit has it', () => {
+  test('the first Errors table gives each code its status, as the kit has it, and the co-sign table gives the codes of the co-sign route', () => {
     const [job, cosign] = section('Errors').split('The co-sign route has its own codes:');
     // The three codes that the shared server answers with itself are not in the table of the protocol.
     const serverOwn: Record<string, number> = { bad_context: 400, shutting_down: 503, internal: 500 };
     const jobRows = codeRows(job);
-    expect(jobRows.flatMap((row) => row.codes).length).toBeGreaterThan(15);
+    expect(jobRows.flatMap((row) => row.codes)).toStrictEqual(['bad_wire', 'request_too_large', 'bad_shape', 'bad_context', 'delegation_not_mine', 'unauthorized', 'busy', 'shutting_down', 'internal']);
     for (const { statuses, codes } of jobRows) for (const code of codes) expect([code, statuses], code).toStrictEqual([code, [(ERROR_STATUS as Record<string, number>)[code] ?? serverOwn[code]]]);
     const cosignRows = codeRows(cosign);
     expect(cosignRows.flatMap((row) => row.codes).sort()).toStrictEqual(Object.keys(COSIGN_STATUS).sort());
     for (const { statuses, codes } of cosignRows) for (const code of codes) expect(statuses, code).toContain((COSIGN_STATUS as Record<string, number>)[code]);
+  });
+
+  test('a job that does not end well is a 200 result with a reason code: the reason table names codes that the sources know and gives no status, and no reason is a code of the first table', () => {
+    const errors = section('Errors');
+    expect(errors).toContain('is no HTTP error');
+    const reasons = errors.split('\n').filter((line) => /^\| `/.test(line)).flatMap((line) => ticks(cellsOf(line)[0]));
+    expect(reasons).toStrictEqual(['supplier_not_listed', 'inference_failed', 'model_output_invalid', 'deadline', 'aborted']);
+    const sources = [new URL('../src/', import.meta.url), new URL('packages/usecase-kit/src/', root)]
+      .flatMap((dir) => readdirSync(dir, { recursive: true }).map(String).filter((file) => file.endsWith('.ts')).map((file) => readFileSync(new URL(file, dir), 'utf8')))
+      .join('\n');
+    for (const code of reasons) expect(sources.includes(`'${code}'`), code).toBe(true);
+    const first = codeRows(errors.split('The co-sign route has its own codes:')[0]).flatMap((row) => row.codes);
+    for (const code of reasons) expect(first, code).not.toContain(code);
+  });
+
+  test('the Deploy section is three lines, and the port that the compose file publishes for the service is the port of the code', () => {
+    const lines = section('Deploy').split('\n').filter((line) => line !== '');
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toContain('`deploy/server`');
+    expect(lines[1]).toContain(`\`127.0.0.1:${PORT_DEFAULT}\``);
+    expect(lines[2]).toContain('`test/deploy.test.ts`');
   });
 
   test('the numbers of Routes, Stopping, State and Settings are the code', () => {

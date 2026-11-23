@@ -47,7 +47,13 @@ export const MODULE1_COMMIT = '1234567890abcdef1234567890abcdef12345678';
  * It is the one fetch that the start makes besides the calls to the node.
  */
 export const MODULE1_URL = `https://198.51.100.7/Apex-Fusion/vector-agent-modules/${MODULE1_COMMIT}/Module-1/deploy/identity/mainnet/manifest.json`;
-export const MODULE1_TEXT = readFileSync(MODULE1_FIXTURE, 'utf8');
+/** The Module-1 manifest of the fixture world, as the text that a fetch stub serves, with the identity registry of a deployment. The default is the deployment of the tests, so the manifest is the one of this service. */
+export function module1ManifestText(identityHash: string = DEPLOYMENT.identity.hash): string {
+  const manifest = JSON.parse(readFileSync(MODULE1_FIXTURE, 'utf8')) as { identity: { identity_hash: string } };
+  manifest.identity.identity_hash = identityHash;
+  return JSON.stringify(manifest, null, 2);
+}
+export const MODULE1_TEXT = module1ManifestText();
 
 /** A fetch that answers MODULE1_URL with the fixture manifest, and gives every other call to `next`. */
 export function withModule1(next: typeof fetch): typeof fetch {

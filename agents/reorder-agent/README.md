@@ -21,7 +21,7 @@ pnpm start
 
 The service logs one `listening` line. It holds the hash of the manifest and the three addresses that pay. It stops at start, with the variable named and the value never shown, when a required setting is missing, when a setting is not well formed, when a `..._PKH` is not the hash of its key, when two keys are equal, when a key equals the supplier key, when `FAULT_MODE` is set, when a key or the token is in the wrong line, and when it cannot write to its state directory.
 
-At start the service fetches one file, the Module-1 manifest. `VECTOR_MODULE1_MANIFEST` must be an `https://` address with a path segment of 40 lowercase hex characters, the commit that the manifest was published at. A file path, an `http://` address, an address with no commit, and an address with a user, a query or a fragment stop the start. The service also asks the node for the start time of the chain, and it reads the wallet of each of its three paying keys. It calls nothing else at start.
+At start the service fetches one file, the Module-1 manifest. `VECTOR_MODULE1_MANIFEST` must be an `https://` address with a path segment of 40 lowercase hex characters, the commit that the manifest was published at. A file path, an `http://` address, an address with no commit, and an address with a user, a query or a fragment stop the start. The manifest must name the identity registry of `IDENTITY_POLICY_ID`. A manifest of another registry, from a wrong commit, stops the start, and the message shows no hash. The service also asks the node for the start time of the chain, and it reads the wallet of each of its three paying keys. It calls nothing else at start.
 
 A secret in the wrong line of an env file is the mistake that the start guards against. Each of the five keys and the token is looked for in every other setting, and in the manifest, in its raw form and its bech32 form. A hit stops the start. The message names the variable and never shows the value.
 
@@ -46,20 +46,26 @@ The log has one line for each job: the operation, the time it took, the outcome,
 
 ## Errors
 
-A refusal is `{"error": "<code>", "message": "<words>"}` with the status of the table. A job that fails at a third party, or with a fault of the service (500 or more), gets fixed words, and the whole message is in the log.
+A call that the service refuses before it does any work is `{"error": "<code>", "message": "<words>"}`, with the status of the first table. A job that the service runs and that does not end well is no HTTP error. It is a 200 result with `outcome` `failed` and a `reason` code, as the second table says. A fault of the service (500) gets fixed words, and the whole message is in the log.
 
 | Status | Codes |
 |---|---|
 | 400 | `bad_wire` (not the one-element message array), `request_too_large` (over the limit), `bad_shape` (a request that breaks a rule of the intake), `bad_context` (a call to `POST /precheck` with a missing or wrong context header), `delegation_not_mine` |
 | 401 | `unauthorized` (no authorization header, or one that is not the token) |
-| 403 | `sender_not_active`, `approval_not_found`, `approval_revoked`, `approval_expired`, `duplicate_po`, `cannot_supply`, and the other rules of the protocol |
 | 409 | `busy` (a job runs, or the slot is reserved for another escrow) |
-| 422 | `deadline` (the job ran out of its time) |
-| 502 | `inference_failed`, `model_output_invalid` |
 | 503 | `shutting_down` (the service is stopping) |
 | 500 | `internal` |
 
-The full list of the codes and their statuses is `ERROR_STATUS` in `packages/usecase-kit/src/protocol`. The co-sign route has its own codes:
+The codes and their statuses are `ERROR_STATUS` in `packages/usecase-kit/src/protocol`. The `reason` of a result is a code of that protocol, or a code that the job makes. The status of such a result is 200 whatever its reason:
+
+| Reason | What it says |
+|---|---|
+| `supplier_not_listed` | `propose` found no listed supplier for the order |
+| `inference_failed`, `model_output_invalid` | the model hire gave no answer that the job can use |
+| `deadline` | the job ran out of its time |
+| `aborted` | the caller hung up, so the job stopped. The log keeps the reason, and nobody reads the answer |
+
+The co-sign route has its own codes:
 
 | Status | Codes |
 |---|---|
@@ -145,3 +151,9 @@ The tests need no network and no key. The folder `test/serve` holds the tests of
 ## Image
 
 `Dockerfile` builds the service image on `node:22-bookworm-slim`. The build context is the repository root, because the image installs the workspace from the lockfile: `docker build -f agents/reorder-agent/Dockerfile -t vsa/reorder-agent:dev .`. The image runs as the `node` user under `tini`, listens on 9101 and answers `/healthz` for its health check. `/data` is a volume that `node` owns. The image has no test file, no Python and no model. At start it fetches one file, the Module-1 manifest at its pinned address. At run time it fetches only what a job asks of the identity gateway, the mock systems, the node, the indexer and a supplier. The memory limit is set where the container runs.
+
+## Deploy
+
+`deploy/server` holds the compose file, the env example, the Caddy block and the runbook of the Reorder Agent.
+The compose file pins both images by digest, publishes `127.0.0.1:8101` and `127.0.0.1:9101`, and gives the runtime none of the five keys of the service.
+`test/deploy.test.ts` holds the pack to these rules and to `SETTINGS`.
