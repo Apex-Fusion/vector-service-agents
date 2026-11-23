@@ -363,7 +363,7 @@ Caddy runs in a container on the host. `<caddy container>` is the name of that c
    grep -c '^# order-desk vhosts (BEGIN)$' <caddyfile>
    ```
 
-3. Add the block to the end of the file, in place. Append to the file: do not replace it. A mounted file keeps its inode, and the container does not see a new file that takes its place. Run this in the folder that holds `Caddyfile.order-desk.snippet`:
+3. Add the block to the end of the file, in place. Append to the file: do not replace it. The container mounts one file, and a mount follows the inode of that file. A new file that takes its place has another inode, and the container does not see it. Run this in the folder that holds `Caddyfile.order-desk.snippet`:
 
    ```sh
    sed -n '/^# order-desk vhosts (BEGIN)$/,/^# order-desk vhosts (END)$/p' Caddyfile.order-desk.snippet >> <caddyfile>
@@ -491,7 +491,7 @@ A failed start of the service or of a runtime shows in `docker ps` as `Restartin
 | `precheck_timeout` or `precheck_unreachable` (503) | The service gave no answer in 10 seconds, or the runtime could not connect to `orders-service:9102`. | Check `docker ps`, `docker logs --tail 20 orders-service` and `/healthz` on port 9102. |
 | `precheck_bad_status` (502) | The service answered with a redirect, or with a status that the runtime does not read. | Read the log of the service. |
 | `precheck_missing` (500, after the Claim) | The job had no record of its check: the service restarted between the check and the job, or the job came more than 300 seconds after the check. | Never restart during a run. The escrow stays Claimed, and the buyer reclaims it after the deadline. |
-| `cannot_supply` (403, after the Claim) | The model decided that the lot cannot be supplied. No order is placed, and nothing is paid. The escrow stays Claimed until the buyer reclaims it after the deadline. | Nothing on the host: the decision is the model's. The log has the line `the decision availability`. |
+| `cannot_supply` (403, after the Claim) | The model decided that the lot cannot be supplied. No order is placed, and nothing is paid. The escrow stays Claimed until the buyer reclaims it after the deadline. The buyer reads the note of the model, 120 characters at most. | Nothing on the host: the decision is the model's. The log has the line `cannot_supply: the model did not confirm the order, so no order is placed`. |
 | `svid_failed` (502) | The identity gateway gave no X.509-SVID for the key of the service. | Check that the key of the service is in the agent record with the authentication purpose, and that the host reaches the gateway. |
 | `mock_system_failed` (502) | The supplier portal of the mock systems did not take the call. | Check `MOCK_PUBLIC_BASE` and `MOCK_MTLS_BASE`, the tenant, and the mock service. The log of the service has the code of the portal. |
 | `inference_failed` or `model_output_invalid` (502) | The hire of the model failed, or the model gave no valid answer. | Read the log line. Check the wallet of the service: it needs its collateral and a float. |

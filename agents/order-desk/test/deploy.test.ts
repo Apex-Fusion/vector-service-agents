@@ -875,12 +875,12 @@ function runbookProblems(text: string): string[] {
     if (/\bconfig\b/.test(compose) && !/--quiet|-q\b/.test(compose) && !line.includes('cd "$scratch" &&')) problems.push('docker compose config prints the environment: run it with --quiet, or in the scratch folder with the stand-in files');
   }
   for (const port of matchesOf(text, /(?:127\.0\.0\.1|localhost):\d+/g)) if (!LOOPBACK_PORTS.includes(Number(port.split(':')[1]))) problems.push(`the runbook names the loopback port ${port}, which is no port of this pack`);
-  for (const port of LOOPBACK_PORTS) if (!text.includes(`${port}`)) problems.push(`the runbook never names the port ${port}`);
+  for (const port of LOOPBACK_PORTS) if (!new RegExp(`\\b${port}\\b`).test(text)) problems.push(`the runbook never names the port ${port}`);
   const containers = [...RUNTIMES.map((runtime) => runtime.container), SERVICE_CONTAINER];
   for (const name of matchesOf(text, /(?<![\w.-])orders-[a-z-]+/g)) if (!containers.includes(name)) problems.push(`the runbook names the container ${name}, which is no container of this pack`);
   for (const name of containers) if (!text.includes(name)) problems.push(`the runbook never names the container ${name}`);
   for (const name of matchesOf(text, /mp-suppliers-[a-z-]+\.vector\.apexfusion\.org/g)) if (!RUNTIMES.some((runtime) => runtime.host === name)) problems.push(`the runbook names the host ${name}, which is no host of this pack`);
-  for (const runtime of RUNTIMES) if (!text.includes(runtime.host)) problems.push(`the runbook never names the host ${runtime.host}`);
+  for (const runtime of RUNTIMES) if (!new RegExp(`(?<![\\w.-])${escapeRegExp(runtime.host)}(?![\\w-])`).test(text)) problems.push(`the runbook never names the host ${runtime.host}`);
   if (/\bdocker (?:build|run)\b|--build\b|\bdocker compose[^\n]* (?:build|run)\b/.test(code.join('\n'))) problems.push('the host builds no image and starts no container outside compose');
   if (/\bdown\b[^\n]*(?:\s-v\b|--volumes)/.test(code.join('\n'))) problems.push('down never takes -v: the volume holds the order book and the journal');
   const printing = [/\bcat\s+\S*\.env/, /\bprintenv\b/, /\bdocker inspect\b/, /\bdocker exec\b[^\n]*\b(?:env|printenv)\b/, /\becho\s+"?\$\{?[A-Z_]*PRIV_KEY/];
