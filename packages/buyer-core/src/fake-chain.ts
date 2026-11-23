@@ -136,7 +136,7 @@ export class FakeChain implements VaultChain {
     const [ref, escrow] = this.#escrow(escrowRef);
     if (escrow.state !== 'Submitted') throw new Error(`FakeChain: escrow ${ref} is ${escrow.state}; Accept needs Submitted.`);
     if (this.#acceptWindowClosed) {
-      throw new AcceptWindowClosedError(`Accept window closed at ${new Date(this.#clock()).toISOString()}; the supplier may now Release. (escrow ${ref})`);
+      throw new AcceptWindowClosedError(`Accept window closed at ${new Date(this.#clock()).toISOString()}; the supplier may now Release. The escrow contract refuses the same transaction on chain (Accept: the validity range ends at most 600 s after the Submit). (escrow ${ref})`);
     }
     if (this.#failingAccepts.length > 0) {
       const failure = this.#failingAccepts.shift() ?? null;
