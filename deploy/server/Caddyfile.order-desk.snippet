@@ -1,0 +1,53 @@
+# deploy/server/Caddyfile.order-desk.snippet - the three host blocks of the Order Desk.
+#
+# The Order Desk has three runtimes in front of one service. Each host name belongs to one runtime, and so to one advert:
+#   mp-suppliers-orders-small.vector.apexfusion.org    orders-small-runtime:8080    the small lot
+#   mp-suppliers-orders-medium.vector.apexfusion.org   orders-medium-runtime:8080   the medium lot
+#   mp-suppliers-orders-large.vector.apexfusion.org    orders-large-runtime:8080    the large lot
+# Every block sends two paths to the service, orders-service:9102: /agent.json (the manifest, one file for the three adverts) and /lots.json (the sizes of the lots).
+# The runtime serves neither file. Every other path goes to the runtime of the host name. The service gets no other public path:
+# POST / and POST /precheck of the service need the token that only the runtimes hold.
+# All upstream names are container names of the compose project order-desk (docker-compose.order-desk.yml). The Caddy container of the host must join the network of that project, so that it resolves them:
+#   docker network connect order-desk_default <caddy container>
+# A new Caddy container has to join again. The network exists after the first start of the service.
+# Every host name is a DNS-only name. Caddy ends TLS itself and gets its own certificate for each name. A proxy in front of a name would end TLS first, and it would replace the body of an error answer: a failed job answers 502, and the buyer needs the body.
+#
+# How the block gets in. The host has one Caddyfile, and the Caddy container mounts that one file. Add the lines from the marker BEGIN to the marker END to the end of that file, in place:
+# append to the file, so that it keeps its inode. A mounted file does not follow a new file that replaces it. Then validate the whole file in the Caddy container, and reload Caddy. Never restart it.
+# The two markers are exact lines. A command finds them to replace the block or to remove it, so keep them as they are.
+# RUNBOOK-order-desk.md, "The Caddy block", gives the commands and the way back.
+# order-desk vhosts (BEGIN)
+mp-suppliers-orders-small.vector.apexfusion.org {
+    handle /agent.json {
+        reverse_proxy orders-service:9102
+    }
+    handle /lots.json {
+        reverse_proxy orders-service:9102
+    }
+    handle {
+        reverse_proxy orders-small-runtime:8080
+    }
+}
+mp-suppliers-orders-medium.vector.apexfusion.org {
+    handle /agent.json {
+        reverse_proxy orders-service:9102
+    }
+    handle /lots.json {
+        reverse_proxy orders-service:9102
+    }
+    handle {
+        reverse_proxy orders-medium-runtime:8080
+    }
+}
+mp-suppliers-orders-large.vector.apexfusion.org {
+    handle /agent.json {
+        reverse_proxy orders-service:9102
+    }
+    handle /lots.json {
+        reverse_proxy orders-service:9102
+    }
+    handle {
+        reverse_proxy orders-large-runtime:8080
+    }
+}
+# order-desk vhosts (END)

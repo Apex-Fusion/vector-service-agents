@@ -19,6 +19,11 @@ The operator's steps are in [RUNBOOK.md](RUNBOOK.md). This note gives the facts.
 | `.env.mock-systems.example` | The settings of the mock service. Names and placeholders only. The operator copies it to `.env.mock-systems`, which has mode 600. |
 | `prove-mock-mtls.mjs` | A local proof of the mock snippet with the real Caddy. It runs on a developer machine, not on the host. |
 | `RUNBOOK.md` | The operator's steps, the checks and the failure table. |
+| `docker-compose.order-desk.yml` | The compose file of the Order Desk: three runtimes (`runtime-small`, `runtime-medium`, `runtime-large`) in front of one service, each image by digest, each port on `127.0.0.1`. |
+| `.env.order-desk.example` | The settings of the Order Desk service and the values that its three runtimes share. Names and placeholders only. |
+| `.env.order-desk-runtime.example` | The settings of one Order Desk runtime: its supplier key, its advert and its agent. The operator makes one copy for each of the three runtimes. |
+| `Caddyfile.order-desk.snippet` | The three host blocks of the Order Desk: `/agent.json` and `/lots.json` go to the service, the rest to the runtime of the host. |
+| `RUNBOOK-order-desk.md` | The operator's steps for the Order Desk, its checks and its failure table. |
 
 Each agent adds one snippet file, one compose file and one env example later. They go in this folder, with the deploy pack of the agent.
 

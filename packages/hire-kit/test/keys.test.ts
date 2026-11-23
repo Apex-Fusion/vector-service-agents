@@ -61,6 +61,11 @@ const request = (over: Partial<AgentRequest> = {}): AgentRequest => ({
 function agentDeps(m: Marketplace): AgentDeps {
   return { clock: () => m.clock.now, sleep: async (ms: number) => { m.clock.now += ms; }, deadlineMs: T0 + 1_000_000, fetchImpl: m.fetchImpl, indexerUrl: INDEXER, ledger: { posted: () => undefined, accepted: () => undefined } };
 }
+/** The chain of `m` whose wallet is a read of a node that is down: it throws, and `reads` counts the calls. */
+function nodeDown(m: Marketplace): { chain: Chain; reads: () => number } {
+  let reads = 0;
+  return { chain: chainWith(m, { wallet: async () => { reads += 1; throw new Error('the node is down'); } }), reads: () => reads };
+}
 /** Hires an agent that turns the job down, so that the escrow stays Open in the store of `key`; gives the ref of that escrow. */
 async function strand(key: PayingKey, m: Marketplace, over: Partial<AgentRequest> = {}): Promise<string> {
   m.agent.refuse = { status: 403, code: 'approval_revoked' };
@@ -152,6 +157,65 @@ describe('PayingKeys', () => {
     }
     expect(keys.list()).toStrictEqual([]);
     expect((await keys.add(m.chain)).keyHash).toBe(SERVICE_PKH);
+  });
+
+  it('takes the key hash that the caller gives and reads no wallet, and its twin without a key hash reads the wallet', async () => {
+    const dir = tempDir();
+    const down = nodeDown(marketplace({ buyerPkh: SERVICE_PKH }));
+    // The twin: with no key hash the key takes its name from the wallet, and the wallet is a read of the node that is down.
+    await expect(new PayingKeys(dir).add(down.chain)).rejects.toThrow('the node is down');
+    expect(down.reads()).toBe(1);
+    const keys = new PayingKeys(dir);
+    const key = await keys.add(down.chain, { keyHash: SERVICE_PKH });
+    expect(down.reads()).toBe(1);
+    expect([key.keyHash, key.dir, key.chain]).toStrictEqual([SERVICE_PKH, join(dir, 'keys', SERVICE_PKH), down.chain]);
+    // The folder is the one that the caller names, as it is with a wallet.
+    const named = await keys.add(down.chain, { keyHash: DELEGATE_PKH, dir: join(dir, 'own') });
+    expect([named.keyHash, named.dir, down.reads()]).toStrictEqual([DELEGATE_PKH, join(dir, 'own'), 1]);
+    expect([keys.get(SERVICE_PKH), keys.get(DELEGATE_PKH), keys.list()]).toStrictEqual([key, named, [key, named]]);
+  });
+
+  it('refuses a key hash that is not 56 lowercase hex characters, reads no wallet and never repeats the value, and adds the key hash that is', async () => {
+    const keys = new PayingKeys(tempDir());
+    const m = marketplace({ buyerPkh: SERVICE_PKH });
+    let reads = 0;
+    const chain: Chain = chainWith(m, { wallet: async () => { reads += 1; return m.chain.wallet(); } });
+    const bad: unknown[] = ['', 'not-a-hash', 'AA'.repeat(28), 'aa'.repeat(27), 'aa'.repeat(29), 'zz'.repeat(28), ` ${SERVICE_PKH}`, `${SERVICE_PKH}\n`, 'ab'.repeat(32), null, 7, {}];
+    for (const keyHash of bad) {
+      const error = await keys.add(chain, { keyHash: keyHash as string }).then(() => null, (cause: unknown) => cause);
+      expect(error, String(keyHash)).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      expect(message, String(keyHash)).toMatch(/^The keyHash given to PayingKeys\.add must be 56 lowercase hex characters, and it is /);
+      // A value that is a key by mistake is never shown.
+      if (typeof keyHash === 'string' && keyHash.length > 8) expect(message).not.toContain(keyHash.trim());
+    }
+    expect([reads, keys.list()]).toStrictEqual([0, []]);
+    // The twin: a key hash of the right form is added, and the wallet is still not read.
+    expect((await keys.add(chain, { keyHash: SERVICE_PKH })).keyHash).toBe(SERVICE_PKH);
+    expect(reads).toBe(0);
+  });
+
+  it('keeps the other checks when a key hash is given: a key that is held already, however it was added, and a directory that another key uses', async () => {
+    const dir = tempDir();
+    const keys = new PayingKeys(dir);
+    const m = marketplace({ buyerPkh: SERVICE_PKH });
+    const down = nodeDown(m);
+    await keys.add(down.chain, { keyHash: SERVICE_PKH });
+    await expect(keys.add(down.chain, { keyHash: SERVICE_PKH })).rejects.toThrow(/held already/);
+    // A chain whose wallet says the same hash is the same key.
+    await expect(keys.add(m.chain)).rejects.toThrow(/held already/);
+    const shared = join(dir, 'shared');
+    await keys.add(down.chain, { keyHash: DELEGATE_PKH, dir: shared });
+    await expect(keys.add(down.chain, { keyHash: THIRD_PKH, dir: shared })).rejects.toThrow(/never share a store/);
+    await expect(keys.add(down.chain, { keyHash: THIRD_PKH, dir: join(shared, '..', 'shared') })).rejects.toThrow(/never share a store/);
+    expect(keys.list().map((key) => key.keyHash)).toStrictEqual([SERVICE_PKH, DELEGATE_PKH]);
+    // The twin: the third key, in a folder of its own, is added. No wallet was read for any of them.
+    const third = await keys.add(down.chain, { keyHash: THIRD_PKH, dir: join(dir, 'other') });
+    expect([third.keyHash, third.dir, down.reads()]).toStrictEqual([THIRD_PKH, join(dir, 'other'), 0]);
+    // The other way round: a key that the wallet named is held against the same hash given by the caller.
+    const reverse = new PayingKeys(tempDir());
+    await reverse.add(m.chain);
+    await expect(reverse.add(down.chain, { keyHash: SERVICE_PKH })).rejects.toThrow(/held already/);
   });
 
   it('gives the deps of a hire with the chain and the store of the key and no other', async () => {

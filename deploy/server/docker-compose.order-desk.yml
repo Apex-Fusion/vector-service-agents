@@ -1,0 +1,114 @@
+# The Order Desk on the agents host: three runtimes in front of one service. Four containers: orders-small-runtime, orders-medium-runtime, orders-large-runtime and orders-service.
+# Each runtime serves one advert, for one lot (small, medium or large). It has its own supplier key, wallet, advert, port and host name. The service does the work, and the three runtimes call it.
+# The env files sit next to this file (RUNBOOK-order-desk.md, "The env files"). .env.order-desk is read by the service and by the three runtimes. Each runtime then reads its own file: .env.order-desk-small, .env.order-desk-medium or .env.order-desk-large.
+# The operator makes them from .env.order-desk.example and .env.order-desk-runtime.example, with mode 600. They hold keys and a token, and they never enter git.
+# A container reads its env files when it is created. After a change, create the container again: restart does not read them. Do it only when the three runtimes say free on /status (RUNBOOK-order-desk.md, "The restart rule").
+# The host builds no image. CI pushes the images. Each image below is named by its digest, not by a tag: a tag moves, and a later pull could change the bytes that run here.
+# Replace each placeholder <digest> with the digest of the image of the reviewed commit (RUNBOOK-order-desk.md, "The images"). Compose refuses to start a container while a placeholder is left (invalid reference format).
+# The file has no networks key, on purpose. Compose puts the four containers on the default network of this project, order-desk_default. The Caddy container of the host joins that network, and no other container does (Caddyfile.order-desk.snippet).
+# The service listens on 0.0.0.0 inside its container. A container on a network that others share could call it, so do not add a networks key here, and do not join another container to that network.
+# SERVICE_URL names the container of the service, not the alias "service". The Caddy container joins the networks of several projects, and each project can have a service with that alias.
+# The limits keep a fault in one container. A runtime of the other agents of the host uses about 190 MiB. If a container grows past its limit, the kernel stops that container only.
+name: order-desk
+services:
+  runtime-small:
+    image: ghcr.io/apex-fusion/vector-service-agents/agent-runtime@sha256:<digest>
+    container_name: orders-small-runtime
+    restart: unless-stopped
+    # The shared file first, then the file of this runtime. A name in both files would get the value of the second, so no name stands in both.
+    env_file:
+      - { path: ./.env.order-desk, required: true }
+      - { path: ./.env.order-desk-small, required: true }
+    # The runtime holds its own supplier key, from its own file. The key of the service is in the shared file, so it is blanked here: an empty string overrides the value from an env file, and the runtime never holds that key.
+    # SERVICE_TIMEOUT_MS is 60 s more than the deadline of a job (300,000 ms), and 120 s inside the window of the advert (480,000 ms). The runtime refuses to boot unless it is at least 60 s inside the window.
+    # SERVICE_PRECHECK_URL is the check before the Claim. The three runtimes ask the same service, which has one job slot, so it refuses a job while it works on another.
+    # PUBLIC_ORIGIN is the https origin of the host name of this runtime. The card of the runtime and the record of the agent name it, and it is the host of its block in Caddyfile.order-desk.snippet.
+    # RELEASE_WATCHER releases an escrow that the buyer did not accept, after the window of 600 s. It needs LIVE_CHAIN=1, which the shared file sets.
+    environment:
+      CAPABILITY_KIND: custom
+      SERVICE_URL: http://orders-service:9102/
+      SERVICE_PRECHECK_URL: http://orders-service:9102/precheck
+      SERVICE_CONTENT_TYPE: application/json
+      SERVICE_TIMEOUT_MS: "360000"
+      ADVERT_MAX_PROCESSING_MS: "480000"
+      PORT: "8080"
+      PUBLIC_ORIGIN: https://mp-suppliers-orders-small.vector.apexfusion.org
+      RELEASE_WATCHER: "1"
+      ORDER_DESK_SERVICE_PRIV_KEY_HEX: ""
+    ports: ["127.0.0.1:8102:8080"]
+    depends_on: [service]
+    mem_limit: 768m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+  runtime-medium:
+    # The same as runtime-small, with its own container, port, env file and host name.
+    image: ghcr.io/apex-fusion/vector-service-agents/agent-runtime@sha256:<digest>
+    container_name: orders-medium-runtime
+    restart: unless-stopped
+    env_file:
+      - { path: ./.env.order-desk, required: true }
+      - { path: ./.env.order-desk-medium, required: true }
+    environment:
+      CAPABILITY_KIND: custom
+      SERVICE_URL: http://orders-service:9102/
+      SERVICE_PRECHECK_URL: http://orders-service:9102/precheck
+      SERVICE_CONTENT_TYPE: application/json
+      SERVICE_TIMEOUT_MS: "360000"
+      ADVERT_MAX_PROCESSING_MS: "480000"
+      PORT: "8080"
+      PUBLIC_ORIGIN: https://mp-suppliers-orders-medium.vector.apexfusion.org
+      RELEASE_WATCHER: "1"
+      ORDER_DESK_SERVICE_PRIV_KEY_HEX: ""
+    ports: ["127.0.0.1:8103:8080"]
+    depends_on: [service]
+    mem_limit: 768m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+  runtime-large:
+    # The same as runtime-small, with its own container, port, env file and host name.
+    image: ghcr.io/apex-fusion/vector-service-agents/agent-runtime@sha256:<digest>
+    container_name: orders-large-runtime
+    restart: unless-stopped
+    env_file:
+      - { path: ./.env.order-desk, required: true }
+      - { path: ./.env.order-desk-large, required: true }
+    environment:
+      CAPABILITY_KIND: custom
+      SERVICE_URL: http://orders-service:9102/
+      SERVICE_PRECHECK_URL: http://orders-service:9102/precheck
+      SERVICE_CONTENT_TYPE: application/json
+      SERVICE_TIMEOUT_MS: "360000"
+      ADVERT_MAX_PROCESSING_MS: "480000"
+      PORT: "8080"
+      PUBLIC_ORIGIN: https://mp-suppliers-orders-large.vector.apexfusion.org
+      RELEASE_WATCHER: "1"
+      ORDER_DESK_SERVICE_PRIV_KEY_HEX: ""
+    ports: ["127.0.0.1:8104:8080"]
+    depends_on: [service]
+    mem_limit: 768m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+  service:
+    image: ghcr.io/apex-fusion/vector-service-agents/order-desk@sha256:<digest>
+    container_name: orders-service
+    restart: unless-stopped
+    # The service reads the shared file only. It never reads the file of a runtime, so no supplier key reaches it. SUPPLIER_PRIV_KEY_HEX is blanked below as well, so that no supplier key gets in by another way.
+    env_file: [ { path: ./.env.order-desk, required: true } ]
+    # The service listens on 0.0.0.0:9102 inside the container, and the mapping below publishes it on 127.0.0.1 only. The compose values win over the env file.
+    # ORDER_DESK_STATE_DIR is the volume below.
+    environment: { PORT: "9102", HOST: "0.0.0.0", SUPPLIER_PRIV_KEY_HEX: "", ORDER_DESK_STATE_DIR: /data }
+    ports: ["127.0.0.1:9102:9102"]
+    # The order book (orders.json), the journal of the dispute code and the record of the model hires. They outlive the container. docker compose down keeps the volume.
+    volumes: ["order-desk-state:/data"]
+    mem_limit: 1024m
+    # On SIGTERM the service takes no new job and waits up to 300 s for the job that runs. The 30 s more are for it to log a job that it abandoned, and to exit.
+    # A grace period of 300 s or less can cut a job under escrow.
+    stop_grace_period: 330s
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+volumes:
+  order-desk-state: { name: order-desk-state }
