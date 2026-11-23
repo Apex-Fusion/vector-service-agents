@@ -285,7 +285,7 @@ The protocol holds types, parsers and tables. It reads no setting and no file. I
 
 **What a caller must give.**
 
-- `LiveChainDeps` is a `LedgerEnv` of buyer-core: `provider`, `deployment`, `koiosUrl`, `fetchImpl` and the optional `budgetMs`. The `provider` also gives `getSystemStartMs` (the slot clock) and takes a signed transaction with `submitTx`. The `OgmiosProvider` of buyer-core does both. The same object serves `ledgerReadsFrom` of the buyer folder. A service makes the provider from the settings `VECTOR_OGMIOS_URL`, `VECTOR_SUBMIT_URL` and `VECTOR_KOIOS_URL`.
+- `LiveChainDeps` is a `LedgerEnv` of buyer-core: `provider`, `deployment`, `koiosUrl`, `fetchImpl` and the optional `budgetMs`. `budgetMs` is the time of one read, and `readiness` makes up to two reads. The `provider` also gives `getSystemStartMs` (the slot clock) and takes a signed transaction with `submitTx`. The `OgmiosProvider` of buyer-core does both. The same object serves `ledgerReadsFrom` of the buyer folder. A service makes the provider from the settings `VECTOR_OGMIOS_URL`, `VECTOR_SUBMIT_URL` and `VECTOR_KOIOS_URL`.
 - `tipSlotOf` takes `fetch`, `ogmiosUrl` (an https URL) and `timeoutMs` (a whole number from 1 to 86,400,000). It throws a TypeError when it is made with a value that is not in its form.
 - `keyObjectOfRawKey` takes 64 lower-case hex characters. The caller reads the key from its own settings.
 - The folder reads no environment variable and no key file.

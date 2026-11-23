@@ -18,7 +18,7 @@ import type { DelegationChain, Readiness, SlotClockSource } from '../access/inde
 
 /**
  * What the chain needs. It is a `LedgerEnv` of buyer-core (the node, the identity deployment, Koios with its `fetch`, and the time budget of one read), so the same object also serves the reads of the buyer folder.
- * It holds no key and no secret that a log could show.
+ * It holds no key: the keys are in the signers that the caller gives to `withSubDelegation`.
  */
 export interface LiveChainDeps extends LedgerEnv {
   /**
