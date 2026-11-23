@@ -81,10 +81,10 @@ The answer must be the address of the host and nothing else. The address of a pr
 
 ## The folder
 
-The folder of the Reorder Agent is `/srv/agents/reorder-agent`. It belongs to the service user, `agents`, with mode 750. The script of RUNBOOK.md (step 7) makes it. Run these commands in the folder `agents-server` of that runbook, which holds the files of `deploy/server`:
+The folder of the Reorder Agent is `/srv/agents/reorder-agent`. It belongs to the service user, `agents`, with mode 750. The first command makes it. Run the third command in the folder that holds the files of `deploy/server` (the folder `agents-server` of RUNBOOK.md, step 2):
 
 ```sh
-sudo ./setup.sh reorder-agent
+sudo install -d -m 750 -o agents -g agents /srv/agents/reorder-agent
 sudo stat -c '%a %U:%G %n' /srv/agents/reorder-agent
 sudo install -m 644 -o agents -g agents docker-compose.reorder-agent.yml .env.reorder-agent.example /srv/agents/reorder-agent/
 ```
@@ -237,7 +237,7 @@ Run each `docker compose` command as the service user, in `/srv/agents/reorder-a
    - `detail_uri`: that origin and `/agent.json`;
    - `detail_hash`: the hash of step 4.
 
-   Write the reference of the advert, `<transaction hash>#<output index>`, into `ADVERT_REF` of the env file. A change to the manifest after this step means a retired advert and a new one.
+   Write the reference of the advert, `<transaction hash>#<output index>`, into `ADVERT_REF` of `.env.reorder-agent`. A change to the manifest after this step means a retired advert and a new one. After you post the new advert, write its reference into `ADVERT_REF`, and create the runtime again with `up -d --no-deps --force-recreate runtime`, as section "The restart rule" says. A runtime that holds the reference of a retired advert refuses every job with 503 `advert_not_active`.
 6. Start the runtime. Pass the memory gate first. After the start, wait 30 seconds, and check that the runtime is up and says `free`:
 
    ```sh
@@ -286,7 +286,7 @@ Each command only reads. None prints a secret.
    node scripts/manifest-hash.mjs https://mp-suppliers-reorder.vector.apexfusion.org
    ```
 
-   The `detail_hash` must be the `manifest` value in the line `listening on` of the service. After the advert exists, the `detail_hash` of the advert must be this value.
+   The `detail_hash` must be the `manifest` value in the line `listening on` of the service. After the advert exists, the `detail_hash` of the advert must be this value. If it is not, retire the advert and post a new one with this hash. Then write the new reference into `ADVERT_REF` of `.env.reorder-agent`, and create the runtime again with `up -d --no-deps --force-recreate runtime` (section "The restart rule"). A runtime that keeps the reference of the retired advert refuses every job with 503 `advert_not_active`.
 
 6. The runtime serves its card. The first command prints one JSON document with the interface `https://mp-suppliers-reorder.vector.apexfusion.org/v1/job`. The second prints `200`:
 
@@ -365,23 +365,23 @@ A runtime keeps its jobs in memory. The service keeps the slot of its job, and t
 
 These actions are restarts of a container: `docker restart`, `docker compose restart`, `docker compose up -d --force-recreate`, `docker compose up -d` after a change of an image or of the env file, a reboot of the host and a power-off. These are not restarts: a reload of Caddy, a change of the Caddy block, and the first start of a container.
 
-Check the runtime before you restart any container of the Reorder Agent, the service or the runtime. It must say `free`:
+The service does not say anything about its slot, and a job can start at any time. So every restart has three steps, in this order, and the third follows the second with no pause:
+
+1. Wait 2 minutes after the last job. A go of the check before the Claim keeps the slot for 120 seconds. After the wait, no slot is held for a job that has not started.
+2. Check that the runtime says `free`. The word `working` means that a job runs: do not restart, wait for the job to end, and begin again at step 1.
+3. Run the `up` command at once. Never check first and then wait: a job that starts in a wait after the check is cut.
+
+This command does the three steps without a gap. It waits 2 minutes, checks `/status`, and creates the container only when the runtime says `free`. A container reads its env file when it is created, so use the command after each change of the env file. Use the name of the compose service: `service` or `runtime`:
 
 ```sh
-curl -s --max-time 5 http://127.0.0.1:8101/status || printf 'no answer'
+sleep 120; if curl -s --max-time 5 http://127.0.0.1:8101/status | grep -q '"status":"free"'; then docker compose -f docker-compose.reorder-agent.yml up -d --no-deps --force-recreate service; else echo 'the runtime does not say free: nothing was restarted'; fi
 ```
 
-A runtime that says `working` holds a job. Wait and check again. The service does not say anything about its slot. So wait 2 minutes after the last job: a go of the check keeps the slot for 120 seconds.
-
-A container reads its env file when it is created. After a change, create that container again, and only when the runtime says `free`. Use the name of the compose service: `service` or `runtime`:
-
-```sh
-docker compose -f docker-compose.reorder-agent.yml up -d --no-deps --force-recreate service
-```
+When the command prints the last words, nothing was restarted. Run it again after the job ends.
 
 The allowlist of the co-sign route is an env line: `COSIGN_ALLOWLIST` in `.env.reorder-agent`. The service reads it at start, so a new principal needs the service created again, with the command above. The register of the keys that a co-signed delegation uses is on the volume, so a restart does not free a key that was used. A call to the route that arrives while the service stops gets no answer: the caller asks again.
 
-A change to `SERVICE_AUTH_HEADER` needs the service and the runtime created again, so that the two hold one value. A new image is a restart too: pin it as in section "The images", and create only the containers that use it.
+A change to `SERVICE_AUTH_HEADER` needs the service and the runtime created again, so that the two hold one value. Write `service runtime` in place of `service` in the command: one command creates both. A new image is a restart too: pin it as in section "The images", and create only the containers that use it, with the same command.
 
 A stop of the service waits up to 300 seconds for the job that runs. Compose waits 330 seconds before it kills the container: the 30 seconds more are for the service to log a job that it abandoned, and to exit. A runtime has the default grace period of 10 seconds, so never stop a runtime that says `working`.
 
@@ -402,7 +402,7 @@ A failed start of the service or of the runtime shows in `docker ps` as `Restart
 | `... holds the key of SUPPLIER_PKH: the supplier key is the runtime's` | A key of the service is the supplier key. | Make a key of its own for the service. The supplier key belongs to the runtime. |
 | `... holds the service key, which belongs in REORDER_SERVICE_PRIV_KEY_HEX alone`, or `... holds the service token, which belongs in SERVICE_AUTH_HEADER alone` | A key or the token stands in another line too. The words before "which" name the key. The message names that line and does not show the value. | Take it out of the line that the message names. |
 | `... REORDER_SERVICE_PKH (56 characters) is not the key hash of the key in REORDER_SERVICE_PRIV_KEY_HEX` | A key hash line does not belong to the key before it. The same message holds for each of the other four. | Correct the line, or leave it empty. |
-| `... SERVICE_AUTH_HEADER is required`, or `must be printable ASCII` | The token line is empty, or it holds a character that a header cannot carry. | Make the token again (section "The env file"). Create the service and the runtime again. |
+| `... SERVICE_AUTH_HEADER is required`, or `must be printable ASCII` | The token line is empty, or it holds a character that a header cannot carry. | Make the token again (section "The env file"). Create the service and the runtime again with the command of section "The restart rule". |
 | `... SUPPLIER_PUB_KEY_HEX is not the public key of SUPPLIER_PKH` | The two lines come from two keys, or a private key is in the line of the public key. | Copy both values from the key of the runtime. |
 | `... AGENT_DID is required`, or `... must be did:vector: and 64 lowercase hex characters` (the same for `STOCK_READER_DID`) | A DID line is empty or has the wrong form. | Write `did:vector:` and the 64 hex characters of the agent record. |
 | `... MOCK_PUBLIC_BASE must be an https origin`, or `... MOCK_MTLS_BASE must name another host than MOCK_PUBLIC_BASE` | A placeholder is still in the line, or the two origins name one host. | Write the origin of the mock host and the origin of the mock mtls host. |
@@ -420,8 +420,9 @@ A failed start of the service or of the runtime shows in `docker ps` as `Restart
 | A runtime log says `loadConfig: PUBLIC_ORIGIN must be an https origin` | The compose file was changed. | Write the origin of the host name, as the compose file has it. |
 | Caddy answers 502 for the host name | The Caddy container is not on the network, or a container of the Reorder Agent is down. | Check with `docker network inspect reorder-agent_default ...` (section "The Caddy block") and `docker ps`. Join the network again. |
 | Caddy gets no certificate for the name | The name does not resolve to the host, the record is proxied, or TCP 80 is closed. | Check the record (section "The DNS record"). Read the log of the Caddy container. |
-| The hash of `/agent.json` is not the `detail_hash` of the advert | A setting of the manifest changed after the advert was posted: an env line of the service, the image or the status word. | Retire the advert. Post it again with the hash that is served now. |
-| `precheck_failed` (503) | The service answered the runtime with 401 `unauthorized`: the two containers were created from two versions of `SERVICE_AUTH_HEADER`. The log of the runtime says that the service refused the token. | When the runtime says `free`, create the service and the runtime again. |
+| The hash of `/agent.json` is not the `detail_hash` of the advert | A setting of the manifest changed after the advert was posted: an env line of the service, the image or the status word. | Retire the advert. Post a new advert with the hash that is served now. Write its reference into `ADVERT_REF` of `.env.reorder-agent`. Create the runtime again with `up -d --no-deps --force-recreate runtime` (section "The restart rule"). |
+| `advert_not_active` (503) | The runtime holds the reference of an advert that is retired or not active, so it refuses every job. | Post a new advert when none is active. Write the reference of the active advert into `ADVERT_REF` of `.env.reorder-agent`. Create the runtime again with `up -d --no-deps --force-recreate runtime` (section "The restart rule"). |
+| `precheck_failed` (503) | The service answered the runtime with 401 `unauthorized`: the two containers were created from two versions of `SERVICE_AUTH_HEADER`. The log of the runtime says that the service refused the token. | Create the service and the runtime again with the command of section "The restart rule", with `service runtime` as the names. |
 | `busy` (409) | The service works on a job, or it keeps its slot for another escrow for up to 120 seconds, or the co-sign route works on as many calls as `COSIGN_MAX_CONCURRENT` allows. | Wait. Nothing to fix. The caller sends the call again. |
 | `supplier_busy` (409) | The runtime works on a job itself. | Wait. Nothing to fix. |
 | `precheck_timeout` or `precheck_unreachable` (503) | The service gave no answer in 10 seconds, or the runtime could not connect to `reorder-service:9101`. | Check `docker ps`, `docker logs --tail 20 reorder-service` and `/healthz` on port 9101. |
@@ -451,12 +452,16 @@ A failed start of the service or of the runtime shows in `docker ps` as `Restart
 To take the Reorder Agent out of service. The order matters: the advert goes first, so that nobody can post an escrow against an agent that goes away.
 
 1. Retire the advert. The operator does it with the hosted tools, signed with the supplier key of the runtime. Skip this step when `ADVERT_REF` is empty in the env file: nothing was posted.
-2. Wait until the runtime says `free`, and 2 minutes after the last job (section "The restart rule"). A job that was claimed before the retire still runs. Let it end.
-3. Remove the Caddy block, as section "The Caddy block" says. Validate and reload Caddy.
-4. Stop the containers. Do not use `-v`. Compose waits up to 330 seconds for the service. Leave the network of the project before the `down` command, because the Caddy container is on it:
+2. Wait 2 minutes after the last job. Then check that the runtime says `free`, and stop the containers at once. Never check first and then wait. The command does the three steps without a gap. A job that was claimed before the retire still runs: when the runtime says `working`, nothing is stopped. Let the job end, and run the command again. Compose waits up to 330 seconds for the service:
 
    ```sh
-   docker compose -f docker-compose.reorder-agent.yml stop
+   sleep 120; if curl -s --max-time 5 http://127.0.0.1:8101/status | grep -q '"status":"free"'; then docker compose -f docker-compose.reorder-agent.yml stop; else echo 'the runtime does not say free: nothing was stopped'; fi
+   ```
+
+3. Remove the Caddy block, as section "The Caddy block" says. Validate and reload Caddy.
+4. Leave the network of the project before the `down` command, because the Caddy container is on it. Do not use `-v`:
+
+   ```sh
    docker network disconnect reorder-agent_default <caddy container>
    docker compose -f docker-compose.reorder-agent.yml down
    ```

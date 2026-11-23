@@ -994,6 +994,12 @@ function runbookProblems(text: string): string[] {
   const commands = code.join('\n');
   if (/\bdocker (?:build|run)\b|--build\b|\bdocker compose[^\n]* (?:build|run)\b/.test(commands)) problems.push('the host builds no image and starts no container outside compose');
   if (/\bdown\b[^\n]*(?:\s-v\b|--volumes)/.test(commands)) problems.push('down never takes -v: the volume holds the records of the service');
+  if (/\bsetup\.sh\b/.test(text)) problems.push('the folder is made with install -d: the set-up script refuses on a host that already runs agents');
+  // A restart waits 2 minutes first, then checks that the runtime says free, then runs its command at once, all in one line. A check before the wait leaves a gap in which a job can start and be cut.
+  const guarded = /^sleep 120; if curl -s --max-time 5 http:\/\/127\.0\.0\.1:8101\/status \| grep -q '"status":"free"'; then docker compose -f docker-compose\.reorder-agent\.yml [^;]+; else echo '[^']+'; fi$/;
+  for (const line of code) {
+    if (/--force-recreate|\bdocker compose\b[^\n]* stop\b|\bdocker (?:restart|stop)\b|\bcompose restart\b/.test(line) && !guarded.test(line)) problems.push(`a restart waits 2 minutes, then checks that the runtime says free, then runs its command at once, in one line: ${line}`);
+  }
   const printing = [/\bcat\s+\S*\.env/, /\bprintenv\b/, /\bdocker inspect\b/, /\bdocker exec\b[^\n]*\b(?:env|printenv)\b/, /\becho\s+"?\$\{?[A-Z_]*PRIV_KEY/];
   for (const pattern of printing) if (code.some((line) => pattern.test(line))) problems.push(`a command prints an env file or an environment: ${pattern.source}`);
   problems.push(...keyProblems(text).map((problem) => `the runbook: ${problem}`));
@@ -1046,7 +1052,8 @@ describe('deploy/server/RUNBOOK-reorder-agent.md', () => {
     const gate = sectionOf(runbookText, 'The memory gate');
     for (const part of ['MemAvailable', '1,024 MiB', '/proc/meminfo']) expect(gate, part).toContain(part);
     const folder = sectionOf(runbookText, 'The folder');
-    for (const part of ['/srv/agents/reorder-agent', '750', 'agents']) expect(folder, part).toContain(part);
+    for (const part of ['/srv/agents/reorder-agent', '750', 'agents', 'sudo install -d -m 750 -o agents -g agents /srv/agents/reorder-agent']) expect(folder, part).toContain(part);
+    expect(runbookText, 'the set-up script refuses on a host that already runs agents').not.toContain('setup.sh');
     expect(sectionOf(runbookText, 'The DNS record')).toContain('DNS only');
     expect(sectionOf(runbookText, 'The DNS record')).toContain(HOST);
   });
@@ -1077,7 +1084,7 @@ describe('deploy/server/RUNBOOK-reorder-agent.md', () => {
     for (const part of order) expect(at(part), part).toBeGreaterThanOrEqual(0);
     expect(order.map(at)).toStrictEqual([...order.map(at)].sort((a, b) => a - b));
     expect(start).toContain('The memory gate');
-    for (const part of [INVENTORY_CAPABILITIES.reorder, 'reorder-agent-v1', MIN_PROCESSING_WINDOW_MS.toLocaleString('en-US'), 'detail_hash', 'detail_uri', 'endpoint_url', 'ADVERT_REF', 'listening on']) expect(start, part).toContain(part);
+    for (const part of [INVENTORY_CAPABILITIES.reorder, 'reorder-agent-v1', MIN_PROCESSING_WINDOW_MS.toLocaleString('en-US'), 'detail_hash', 'detail_uri', 'endpoint_url', 'ADVERT_REF', 'listening on', 'up -d --no-deps --force-recreate runtime', 'advert_not_active', '.env.reorder-agent']) expect(start, part).toContain(part);
   });
 
   test('the checks cover the two loopback ports, the public ports of the pack, the hash of the manifest, the card of the runtime, the co-sign route and the blank keys', () => {
@@ -1093,10 +1100,19 @@ describe('deploy/server/RUNBOOK-reorder-agent.md', () => {
     expect(caddy).not.toMatch(/\bsed -i\b[^\n]*<caddyfile>/);
   });
 
-  test('the restart rule needs the runtime free, names every action that is a restart, says that the allowlist is an env line, and gives the waits of the service', () => {
+  test('the restart rule waits first, then checks that the runtime says free, then runs the command at once; it names every action that is a restart, says that the allowlist is an env line, and gives the waits of the service', () => {
     const rule = sectionOf(runbookText, 'The restart rule');
-    for (const part of ['/status', 'free', 'working', 'docker restart', 'docker compose restart', '--force-recreate', '120', '300', '330', 'SERVICE_AUTH_HEADER', FILES.compose, 'COSIGN_ALLOWLIST', 'env line', '2 minutes', String(RUNTIME_HOST_PORT)]) expect(rule, part).toContain(part);
+    for (const part of ['/status', 'free', 'working', 'docker restart', 'docker compose restart', '--force-recreate', '120', '300', '330', 'SERVICE_AUTH_HEADER', FILES.compose, 'COSIGN_ALLOWLIST', 'env line', '2 minutes', String(RUNTIME_HOST_PORT), 'at once', 'Never check first and then wait']) expect(rule, part).toContain(part);
     expect(rule).toMatch(/reload/);
+    const at = (part: string): number => rule.indexOf(part);
+    const steps = ['1. Wait 2 minutes', '2. Check that the runtime says `free`', '3. Run the `up` command at once'];
+    expect(steps.map(at).every((position) => position >= 0), 'the three steps').toBe(true);
+    expect(steps.map(at)).toStrictEqual([...steps.map(at)].sort((a, b) => a - b));
+    const command = blockWith(rule, 'sleep 120');
+    expect(command.indexOf('sleep 120'), 'the wait comes first').toBe(0);
+    expect(command.indexOf('sleep 120')).toBeLessThan(command.indexOf('/status'));
+    expect(command.indexOf('/status')).toBeLessThan(command.indexOf('up -d --no-deps --force-recreate'));
+    expect(command, 'the command runs only when the runtime says free').toContain(`grep -q '"status":"free"'; then docker compose`);
   });
 
   test('the failure table names the refusals of the service, the codes of the runtime for the check before the Claim, the codes of the co-sign route, the reasons of a failed job and the start refusals', () => {
@@ -1105,7 +1121,7 @@ describe('deploy/server/RUNBOOK-reorder-agent.md', () => {
       'busy', 'supplier_busy', 'unauthorized', 'shutting_down', 'bad_context', 'bad_wire', 'request_too_large', 'bad_shape', 'delegation_not_mine', 'internal', 'precheck_timeout', 'precheck_unreachable', 'precheck_failed',
       'precheck_bad_status', 'principal_not_allowed', 'spends_agent_funds', 'key_in_use', 'check_unavailable', 'not_a_delegation', 'not_for_this_agent', 'expired', 'approval_not_found', 'approval_expired', 'duplicate_po',
       'cannot_supply', 'supplier_not_listed', 'supplier_unavailable', 'ledger_unavailable', 'mock_system_failed', 'token_failed', 'inference_failed', 'model_output_invalid', 'store_write_failed', 'deadline', 'aborted',
-      'delegation_key_unknown',
+      'delegation_key_unknown', 'advert_not_active',
     ];
     for (const code of codes) expect(table, code).toContain(`\`${code}\``);
     for (const part of ['cannot start', 'invalid reference format', 'denied', '502', NETWORK, ...KEY_VARIABLES, 'VECTOR_MODULE1_MANIFEST must be pinned to a commit', 'IDENTITY_POLICY_ID', 'MOCK_MTLS_BASE must name another host',
@@ -1115,7 +1131,7 @@ describe('deploy/server/RUNBOOK-reorder-agent.md', () => {
     expect(rows.length).toBeGreaterThan(30);
     for (const row of rows) expect(row.split('|').length, row).toBe(5);
     // A status in the first cell is the status that the code gives. The runtime codes are those of the template runtime, and `bad_context` is the answer of the server of the service kit.
-    const statusOf: Readonly<Record<string, number>> = { ...ERROR_STATUS, ...COSIGN_STATUS, precheck_timeout: 503, precheck_unreachable: 503, precheck_failed: 503, precheck_bad_status: 502, supplier_busy: 409, bad_context: 400 };
+    const statusOf: Readonly<Record<string, number>> = { ...ERROR_STATUS, ...COSIGN_STATUS, precheck_timeout: 503, precheck_unreachable: 503, precheck_failed: 503, precheck_bad_status: 502, supplier_busy: 409, bad_context: 400, advert_not_active: 503 };
     let checked = 0;
     for (const row of rows) {
       const symptom = row.split('|')[1];
@@ -1129,14 +1145,15 @@ describe('deploy/server/RUNBOOK-reorder-agent.md', () => {
     expect(checked).toBeGreaterThan(18);
   });
 
-  test('back out retires the advert first, waits for the runtime, removes the Caddy block, stops the containers and keeps the volume', () => {
+  test('back out retires the advert first, waits 2 minutes, checks that the runtime says free and stops the containers at once, then removes the Caddy block and keeps the volume', () => {
     const out = sectionOf(runbookText, 'Back out');
     const at = (part: string): number => out.indexOf(part);
-    const order = ['Retire', 'free', 'Remove', 'stop', 'volume'];
+    const order = ['Retire', 'Wait 2 minutes after the last job', 'check that the runtime says `free`, and stop the containers at once', 'Remove the Caddy block', 'volume'];
     for (const part of order) expect(at(part), part).toBeGreaterThanOrEqual(0);
     expect(order.map(at)).toStrictEqual([...order.map(at)].sort((a, b) => a - b));
     expect(out).toContain(VOLUME);
     expect(out).toContain('docker network disconnect');
+    expect(blockWith(out, 'sleep 120').indexOf('sleep 120'), 'the wait comes first').toBe(0);
   });
 
   const faults: ReadonlyArray<readonly [string, (text: string) => string, RegExp]> = [
@@ -1159,6 +1176,12 @@ describe('deploy/server/RUNBOOK-reorder-agent.md', () => {
     ['a command that prints the environment of a container', (t) => `${t}\n\`\`\`sh\ndocker exec reorder-service printenv\n\`\`\`\n`, /^a command prints an env file or an environment/],
     ['a command that inspects a container', (t) => `${t}\n\`\`\`sh\ndocker inspect reorder-runtime\n\`\`\`\n`, /^a command prints an env file or an environment/],
     ['a key', (t) => `${t}\nSUPPLIER_PRIV_KEY_HEX=${HEX}\n`, /^the runbook: the text has a run of hex digits/],
+    ['the folder made by the set-up script', (t) => `${t}\n\`\`\`sh\nsudo ./setup.sh reorder-agent\n\`\`\`\n`, /^the folder is made with install -d/],
+    ['a recreate with no wait and no check', (t) => `${t}\n\`\`\`sh\ndocker compose -f docker-compose.reorder-agent.yml up -d --no-deps --force-recreate service\n\`\`\`\n`, /^a restart waits 2 minutes, then checks/],
+    ['a check, then a wait, then the command', (t) => `${t}\n\`\`\`sh\ncurl -s http://127.0.0.1:8101/status; sleep 120; docker compose -f docker-compose.reorder-agent.yml up -d --no-deps --force-recreate service\n\`\`\`\n`, /^a restart waits 2 minutes, then checks/],
+    ['a stop with no wait and no check', (t) => `${t}\n\`\`\`sh\ndocker compose -f docker-compose.reorder-agent.yml stop\n\`\`\`\n`, /^a restart waits 2 minutes, then checks/],
+    ['a restart with docker restart', (t) => `${t}\n\`\`\`sh\ndocker restart reorder-runtime\n\`\`\`\n`, /^a restart waits 2 minutes, then checks/],
+    ['the check before the wait, in the line of the command', (t) => swap(t, `sleep 120; if curl -s --max-time 5 http://127.0.0.1:8101/status | grep -q '"status":"free"'; then docker compose -f docker-compose.reorder-agent.yml up -d`, `if curl -s --max-time 5 http://127.0.0.1:8101/status | grep -q '"status":"free"'; then sleep 120; docker compose -f docker-compose.reorder-agent.yml up -d`), /^a restart waits 2 minutes, then checks/],
   ];
   test('each copy that breaks one rule is refused, in the words of that rule', () => {
     for (const [what, change, expected] of faults) {
@@ -1264,6 +1287,35 @@ describe('deploy/server/RUNBOOK-reorder-agent.md', () => {
       expect(appended).toBe(`${before}${lines.slice(lines.indexOf(BEGIN), lines.indexOf(END) + 1).join('\n')}\n`);
       expect(readFileSync(join(run.dir, 'Caddyfile'), 'utf8'), 'the block is gone').toBe(before);
       expect(statSync(join(run.dir, 'Caddyfile')).isFile()).toBe(true);
+    });
+
+    /** The calls that the stand-ins record, in order. */
+    const callsOf = (dir: string): string[] => readFileSync(join(dir, 'calls'), 'utf8').split('\n').filter((line) => line !== '');
+    /** Stand-ins for sleep, curl and docker: each writes its call to the file `calls`, and curl answers with the status word of the runtime. */
+    const standIns = (status: string): Record<string, string> => ({
+      sleep: 'echo "sleep $*" >> calls',
+      curl: `echo curl >> calls; echo '{"status":"${status}","last_seen":"2026-11-23T00:00:00.000Z"}'`,
+      docker: 'echo "docker $*" >> calls',
+    });
+
+    test('the restart command waits first, then checks that the runtime says free, and runs the up command only then: while a job runs, nothing is restarted', () => {
+      const script = blockWith(sectionOf(runbookText, 'The restart rule'), 'sleep 120');
+      const free = runInFolder(script, {}, standIns('free'));
+      expect(free.status).toBe(0);
+      expect(callsOf(free.dir), 'wait, check, then the command').toStrictEqual(['sleep 120', 'curl', `docker compose -f ${FILES.compose} up -d --no-deps --force-recreate service`]);
+      for (const status of ['working', 'offline']) {
+        const held = runInFolder(script, {}, standIns(status));
+        expect(callsOf(held.dir), `the runtime says ${status}`).toStrictEqual(['sleep 120', 'curl']);
+        expect(held.out).toContain('the runtime does not say free: nothing was restarted');
+      }
+    });
+
+    test('the stop command of the back out waits first, then checks that the runtime says free, and stops the containers only then', () => {
+      const script = blockWith(sectionOf(runbookText, 'Back out'), 'sleep 120');
+      expect(callsOf(runInFolder(script, {}, standIns('free')).dir)).toStrictEqual(['sleep 120', 'curl', `docker compose -f ${FILES.compose} stop`]);
+      const held = runInFolder(script, {}, standIns('working'));
+      expect(callsOf(held.dir)).toStrictEqual(['sleep 120', 'curl']);
+      expect(held.out).toContain('the runtime does not say free: nothing was stopped');
     });
   });
 });
