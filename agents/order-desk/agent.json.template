@@ -1,0 +1,147 @@
+{
+  "schema": "vector.agent-manifest.v2",
+  "name": "Order Desk",
+  "capability_id": "supplychain.order.accept.v1",
+  "version": "0.1.0",
+  "description": "For a supplier: takes a purchase order for one lot from a buyer's agent, checks who sent it and that the buyer approved exactly this order, and, if the lot can be supplied, places it in the supplier's system and confirms it.",
+  "operator": {
+    "name": "Apex Fusion Foundation",
+    "contact": "<OPERATOR_CONTACT>"
+  },
+  "identity": {
+    "did": "<AGENT_DID>",
+    "registry_address": "",
+    "supplier_key": "<AGENT_DID>#<SMALL_SUPPLIER_PKH>"
+  },
+  "keys": {
+    "service_pkh": "<ORDER_DESK_SERVICE_PKH>"
+  },
+  "interface": {
+    "request_schema": {
+      "$ref": "https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/order-desk.md#request"
+    },
+    "response_schema": {
+      "$ref": "https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/order-desk.md#response"
+    },
+    "routes": {
+      "job": "/v1/job",
+      "status": "/status",
+      "capability": "/capability",
+      "lots": "/lots.json"
+    },
+    "notes": [
+      "The request is the handoff of use case 1 (inventory reorder): its use case is inventory-reorder, and its document is a purchase order. A handoff for another use case, and a document that is not a purchase order, are refused with bad_shape (400).",
+      "Before the runtime claims the escrow, the service makes 16 checks: the sender, the delegation, the payment from a vault, the approval, and then the supplier, the lot, the quantity and the number of the purchase order. A check that fails is a refusal with its code (403), and the escrow stays open. A source that cannot be read is 503 check_unavailable.",
+      "The advert that the escrow was posted on gives the lot: its model is lot-small, lot-medium or lot-large. The quantity of the order must be the size of that lot for the SKU in the lots file.",
+      "The lots file is served at /lots.json, and its SHA-256 is in behaviour.lots. One manifest serves the three adverts, so the three adverts hold one manifest hash.",
+      "After the Claim, the model decides whether the lot can be supplied. A decision of no is a refusal with the code cannot_supply (403), and no order is placed."
+    ]
+  },
+  "terms": {
+    "tiers": [
+      {
+        "model": "lot-small",
+        "price_lovelace": 2000000,
+        "supplier_bond_lovelace": 1000000,
+        "buyer_bond_lovelace": 1000000,
+        "max_processing_ms": 480000,
+        "supplier_pkh": "<SMALL_SUPPLIER_PKH>",
+        "pub_key_hex": "<SMALL_SUPPLIER_PUB_KEY_HEX>",
+        "endpoint": "<SMALL_ENDPOINT>"
+      },
+      {
+        "model": "lot-medium",
+        "price_lovelace": 5000000,
+        "supplier_bond_lovelace": 1000000,
+        "buyer_bond_lovelace": 1000000,
+        "max_processing_ms": 480000,
+        "supplier_pkh": "<MEDIUM_SUPPLIER_PKH>",
+        "pub_key_hex": "<MEDIUM_SUPPLIER_PUB_KEY_HEX>",
+        "endpoint": "<MEDIUM_ENDPOINT>"
+      },
+      {
+        "model": "lot-large",
+        "price_lovelace": 10000000,
+        "supplier_bond_lovelace": 1000000,
+        "buyer_bond_lovelace": 1000000,
+        "max_processing_ms": 480000,
+        "supplier_pkh": "<LARGE_SUPPLIER_PKH>",
+        "pub_key_hex": "<LARGE_SUPPLIER_PUB_KEY_HEX>",
+        "endpoint": "<LARGE_ENDPOINT>"
+      }
+    ],
+    "input_limits": {
+      "request_bytes": 900000
+    }
+  },
+  "behaviour": {
+    "data_handling": "The purchase order, the approval reference and the catalogue entry are held in memory while a job runs, and none of them is kept after the job. The service writes to its state directory the bookkeeping of the escrows that it posts for its model call, the order book (the tenant, the purchase order number and the order id of each order that it placed) and the journal of its challenges. On a digest mismatch it publishes an evidence document and a challenge on the ledger. The log carries job outcomes, counts and codes, never a request, a catalogue entry or a key.",
+    "third_parties": [
+      "the identity gateway (the resolution of the DID of the sender, and the request for the X.509-SVID)",
+      "the ledger, read only (the delegation, the escrow paid from a vault, the approval attestation)",
+      "the supplier portal of the mock service (the catalogue read and the order, with the X.509-SVID)",
+      "a model supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it (the prompt of the decision: the purchase order and the catalogue entry)",
+      "the ledger, written only after a digest mismatch (the evidence document and the challenge)"
+    ],
+    "claim": {
+      "statements": [
+        {
+          "id": "S1",
+          "text": "A confirmation names the SKU, the lot and the quantity of the purchase order it answers."
+        },
+        {
+          "id": "S2",
+          "text": "This agent places one order per purchase order number."
+        },
+        {
+          "id": "S3",
+          "text": "This agent takes no purchase order without a valid approval by the buyer whose delegation paid for it."
+        }
+      ]
+    },
+    "fault_modes": [
+      "confirm_wrong_lot"
+    ],
+    "model": {
+      "allowlist": [
+        "deepseek/deepseek-v4-flash"
+      ],
+      "max_price_lovelace": 1000000
+    },
+    "relying_on": {
+      "mock_systems": [
+        "GET /t/{tenant}/supplier/catalogue/{sku}",
+        "POST /t/{tenant}/supplier/orders"
+      ],
+      "gateway_routes": [
+        "POST /spiffe/nonce",
+        "POST /spiffe/x509-svid",
+        "GET /1.0/identifiers/{did}"
+      ]
+    },
+    "lots": {
+      "uri": "<LOTS_URI>",
+      "sha256": "b6879bc6de9226b8d4c56cfe53a8a956ff8c064038ff3ce2885d8bba28523fea"
+    }
+  },
+  "status": {
+    "chip": "proposed",
+    "since": "2026-11-23"
+  },
+  "gaps": [
+    "The model decides whether the lot can be supplied. Nothing in this agent overrides it.",
+    "The checks read the ledger and the gateway as they are at that moment. A delegation or approval ended a moment later is not seen.",
+    "The organisation of the sender is reported, not required.",
+    "If the buyer's agent does not accept a confirmation, this agent's operator can still release the escrow 600 s after the Submit. A verdict against this agent does not change that.",
+    "An order refused or not supplied is not paid, and leaves no signed record of the refusal except, on a digest mismatch, the evidence of the challenge.",
+    "The price of a lot is a stand-in for its size.",
+    "The controller key of this deployment, the Accountable key and the guardian keys are on one host of one operator, so a party is independent of the controller by key only.",
+    "What this does not show: no run covers the refund of the escrow of a revoked agent, the reclaim of an escrow in use case 1, or a relying party that refuses a live token after its authority ends. Tests cover that last case only.",
+    "This service has a fault switch for failure runs with these possible values: confirm_wrong_lot (the confirmation names another lot and quantity than the purchase order, and the order that it places has the wrong lot); this manifest is the same for every value, so only the field fault_mode of each result shows which value is active."
+  ],
+  "links": {
+    "spec": "https://github.com/Apex-Fusion/vector-service-agents/blob/main/specs/order-desk.md",
+    "source": "https://github.com/Apex-Fusion/vector-service-agents/tree/main/agents/order-desk",
+    "explorer_advert": ""
+  }
+}
