@@ -16,7 +16,7 @@ import { escrowUtxo, identityEscrow, submitted } from '../../../buyer-core/test/
 import type { IdentityEscrowDatum } from '@vsa/vector-read';
 import { createModule1Port } from '@vsa/usecase-kit/dispute';
 import type { Module1Port, Module1PortDeps } from '@vsa/usecase-kit/dispute';
-import { CAPABILITY, ESCROW, JOB_BEGAN_AT, kitClaimDocument } from './support.ts';
+import { BUYER_PKH, ESCROW, ESCROW_CAPABILITY, JOB_BEGAN_AT, kitClaimDocument, senderClaimDocument } from './support.ts';
 
 export { AUDITOR_ID, CLAIMER_ID, JURY_REF_UTXO, MODULE1, WALLET, WALLET_ADDRESS };
 
@@ -153,13 +153,13 @@ export class LedgerProvider extends FixtureProvider {
 const RECORDS: UTxO[] = [recordUtxo(CLAIMER_ID), recordUtxo(AUDITOR_ID)];
 
 /**
- * The escrow of the job `ESCROW`: an output of the identity layout whose datum says that the escrow was posted at `postedAt`. The datum names the capability of the job, and the counterparty `CLAIMER_ID` as its
- * agent: the agent that this agent hired. `datum` changes members of the datum, and `over` changes members of the output. The output is at the escrow address of the deployment of the fixture world, and it holds more
- * than its datum owes.
+ * The escrow of the job `ESCROW`: an output of the identity layout whose datum says that the escrow was posted at `postedAt`. The datum names the capability of the job, the counterparty `CLAIMER_ID` as its agent
+ * (the agent that this agent hired), and `BUYER_PKH` as its buyer. `datum` changes members of the datum, and `over` changes members of the output. The output is at the escrow address of the deployment of the fixture
+ * world, and it holds more than its datum owes.
  */
 export function jobEscrow(postedAt = JOB_BEGAN_AT, over: Partial<UTxO> = {}, datum: Partial<IdentityEscrowDatum> = {}): UTxO {
   const [txHash, index] = ESCROW.split('#') as [string, string];
-  return { ...escrowUtxo(txHash, identityEscrow(postedAt, { capability_id: CAPABILITY, agent_id: CLAIMER_ID, ...datum })), outputIndex: Number(index), ...over };
+  return { ...escrowUtxo(txHash, identityEscrow(postedAt, { capability_id: ESCROW_CAPABILITY, agent_id: CLAIMER_ID, buyer_pkh: BUYER_PKH, ...datum })), outputIndex: Number(index), ...over };
 }
 
 /**
@@ -181,7 +181,7 @@ export function postEscrowAt(ledger: LedgerProvider, at: number, spent = false, 
  * 0 of the transaction, and this gives its reference.
  */
 export function laterEscrowAt(ledger: LedgerProvider, txHash: string, at: number, state: 'Claimed' | 'Submitted', spent: boolean): string {
-  const post = identityEscrow(JOB_BEGAN_AT, { capability_id: CAPABILITY, agent_id: CLAIMER_ID });
+  const post = identityEscrow(JOB_BEGAN_AT, { capability_id: ESCROW_CAPABILITY, agent_id: CLAIMER_ID, buyer_pkh: BUYER_PKH });
   (spent ? ledger.koiosSpent : ledger.live).push(escrowUtxo(txHash, state === 'Claimed' ? { ...post, state } : submitted(post, at)));
   ledger.blockTimes.set(txHash, Math.floor(at / 1000));
   return `${txHash}#0`;
@@ -195,14 +195,23 @@ export function ledgerWorld(extra: UTxO[] | ((ledger: LedgerProvider) => UTxO[])
   return ledger;
 }
 
+/** A claim output whose document is `document`: the document is on the ledger, and the claim holds its hash and its URI. `overrides` change members of the datum. The output is at the claim address. */
+function claimWith(ledger: LedgerProvider, document: { readonly text: string; readonly hash: string }, token: string, overrides: Partial<ClaimDatum>, ageMs: number): UTxO {
+  const { uri } = ledger.addDocument(document.text, 'claim');
+  return claimUtxo(token, { claimHash: document.hash, storageUri: utf8Hex(uri), ...overrides }, ageMs);
+}
+
 /**
  * A claim output of the claimer of the fixture world (`CLAIMER_ID`, or `overrides.claimerDid`) that is a claim of this kit: its document is the claim document that the kit writes for the claimer,
  * the document is on the ledger, and the claim holds its hash and its URI. `overrides` change members of the datum. The output is at the claim address.
  */
 export function kitClaim(ledger: LedgerProvider, token: string, overrides: Partial<ClaimDatum> = {}, ageMs = 3_600_000): UTxO {
-  const document = kitClaimDocument(`did:vector:${overrides.claimerDid ?? CLAIMER_ID}`);
-  const { uri } = ledger.addDocument(document.text, 'claim');
-  return claimUtxo(token, { claimHash: document.hash, storageUri: utf8Hex(uri), ...overrides }, ageMs);
+  return claimWith(ledger, kitClaimDocument(`did:vector:${overrides.claimerDid ?? CLAIMER_ID}`), token, overrides, ageMs);
+}
+
+/** A claim output of the sender of an approval: like `kitClaim`, but its document is the claim document of `senderClaimDocument`, which is for the capability of the sender. */
+export function senderClaim(ledger: LedgerProvider, token: string, overrides: Partial<ClaimDatum> = {}, ageMs = 3_600_000): UTxO {
+  return claimWith(ledger, senderClaimDocument(`did:vector:${overrides.claimerDid ?? CLAIMER_ID}`), token, overrides, ageMs);
 }
 
 /** The payment credential of an address, in hex. */

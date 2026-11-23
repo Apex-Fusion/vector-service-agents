@@ -35,6 +35,10 @@ export const HIRER = `did:vector:${'b2'.repeat(32)}`;
 export const BID_DESK = `did:vector:${'f7'.repeat(32)}`;
 export const KEY_HASH = '0b'.repeat(28);
 export const OTHER_KEY_HASH = '0c'.repeat(28);
+/** The key hash of the buyer that posted the escrow of the job of the samples: the member `buyer_pkh` of its datum. */
+export const BUYER_PKH = 'b7'.repeat(28);
+/** The key hash of another buyer: the escrow of a job of another buyer for the same hired agent and the same capability names it. */
+export const OTHER_BUYER_PKH = 'b8'.repeat(28);
 
 export const TOKEN_A = `636c6d5f${'0a'.repeat(28)}`;
 export const TOKEN_B = `636c6d5f${'0b'.repeat(28)}`;
@@ -50,8 +54,13 @@ export const CHALLENGE_TX = '99'.repeat(32);
 export const MANIFEST_SHA = '5a'.repeat(32);
 export const CHALLENGE_TOKEN = `63686c5f${'0e'.repeat(28)}`;
 
-/** The capability that the claim documents of the samples are for, and the time that the job of the samples began: half an hour ago, after the claims of the samples were staked. */
-export const CAPABILITY = 'supplychain.order.accept.v1';
+/** The capability that the escrow of the job of the samples names: the capability that the job hired. The datum of the escrow holds it, and a scope names it as `capability_id`. */
+export const ESCROW_CAPABILITY = 'supplychain.order.accept.v1';
+/** The capability that the claim document of the other party is for. A delivery has one capability: the job hired the other party, so its claim document is for the capability of the escrow. */
+export const CLAIM_CAPABILITY = ESCROW_CAPABILITY;
+/** The capability that the claim document of the sender of an approval is for. The sender hired this agent for the capability of the escrow, and its own claim is for the capability of the agent that it runs. */
+export const SENDER_CAPABILITY = 'supplychain.reorder.po.v1';
+/** The time that the job of the samples began: half an hour ago, after the claims of the samples were staked. */
 export const JOB_BEGAN_AT = NOW - 30 * 60_000;
 
 // --- The statements of three agents -----------------------------------------------------------------------------------------------------------------------------------
@@ -76,7 +85,7 @@ export const BID_DESK_CLAIM = statements(
 
 /** The claim document that this kit writes for `claimer`: the statements of the order desk, and the manifest of the samples. */
 export function kitClaimDocument(claimer: string) {
-  const document = claimDocument({ agent_did: claimer, capability_id: CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: ORDER_DESK_CLAIM });
+  const document = claimDocument({ agent_did: claimer, capability_id: CLAIM_CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: ORDER_DESK_CLAIM });
   if (!document.ok) throw new Error(document.detail);
   return document.value;
 }
@@ -95,14 +104,45 @@ export function claimView(overrides: Partial<ClaimView> = {}): ClaimView {
 /** The statement S1 of a reorder agent: the claim that the evidence of an approval of use case 1 is about. */
 export const REORDER_AGENT_S1 = 'An order that this agent places is the purchase order whose digest its hirer approved.';
 
+/** The three statements of a reorder agent (use case 1), which sends the request that an approval challenge is about. */
+export const REORDER_AGENT_CLAIM = statements(
+  REORDER_AGENT_S1,
+  'This agent takes a confirmation only for a purchase order that it placed.',
+  'This agent pays a supplier from the vault of its delegation and from no other source.',
+);
+
+/** The claim document that this kit writes for `claimer` as the sender of an approval: it is for `SENDER_CAPABILITY`, and it states the claim of a reorder agent. */
+export function senderClaimDocument(claimer: string) {
+  const document = claimDocument({ agent_did: claimer, capability_id: SENDER_CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: REORDER_AGENT_CLAIM });
+  if (!document.ok) throw new Error(document.detail);
+  return document.value;
+}
+
+/** A claim as `claimView` makes it, for the sender of an approval: its document is `senderClaimDocument`, and `port` gives that document at the URI of the claim. */
+export function senderClaimView(port: ScriptedPort, overrides: Partial<ClaimView> = {}): ClaimView {
+  const claim = claimView(overrides);
+  const document = senderClaimDocument(claim.claimer);
+  port.documents.set(claim.claim_uri, { bytes: document.bytes, type: 'claim', media_type: 'text/plain' });
+  return { ...claim, claim_hash: document.hash };
+}
+
 /** The text of the statement S1 of the claim document of the samples: the statement that the evidence is about. */
 export const STATEMENT_S1 = ORDER_DESK_CLAIM.statements[0].text;
 
 /** The job that the claims of the samples cover: the capability that they are for, and the statement S1 of their claim document. A challenge adds the escrow of the job. */
-export const JOB = { capability_id: CAPABILITY, statement_text: STATEMENT_S1 } as const;
+export const JOB = { capability_id: ESCROW_CAPABILITY, statement_text: STATEMENT_S1 } as const;
 
 /** The whole scope of the job of the samples, for a lookup: its escrow, its capability and its statement. The scripted port gives `JOB_BEGAN_AT` as the start of the job of each escrow. */
 export const SCOPE = { escrow_ref: ESCROW, ...JOB } as const;
+
+/** The job of a delivery that a challenge names: the job of the samples, with the key hashes of the buyers that may have posted its escrow (the delegation keys of this agent). */
+export const DELIVERY_JOB = { ...JOB, buyer_pkhs: [BUYER_PKH] } as const;
+
+/**
+ * The job of an approval that a challenge names. The escrow hired this agent for `ESCROW_CAPABILITY`. The claim of the sender is for `SENDER_CAPABILITY`, and its statement S1 is `REORDER_AGENT_S1`. One key names the
+ * buyer of the escrow.
+ */
+export const APPROVAL_JOB = { capability_id: ESCROW_CAPABILITY, claim_capability_id: SENDER_CAPABILITY, statement_text: REORDER_AGENT_S1, buyer_pkhs: [BUYER_PKH] } as const;
 
 export const PARTIES = { claim: REF_A, claim_token: TOKEN_A, against_did: OTHER, by_did: ME, escrow_ref: ESCROW, statement_text: STATEMENT_S1 } as const;
 
@@ -174,10 +214,10 @@ export const NOT_ESCROW: NotAnEscrow = { ok: false, code: 'not_escrow', detail: 
 
 /**
  * What a read of the escrow of the job of the samples answers: the output of the Post, in a block made at `JOB_BEGAN_AT` (the state Open), for the capability of the job, and the datum names `OTHER_ID` as its agent, which is
- * the counterparty that this agent hired. A job that the sender of a request hired this agent for names `ME_ID`. `overrides` change members.
+ * the counterparty that this agent hired. A job that the sender of a request hired this agent for names `ME_ID`. The datum names `BUYER_PKH` as the buyer. `overrides` change members.
  */
 export const escrowJob = (overrides: Partial<EscrowJob> = {}): Extract<EscrowJobResult, { ok: true }> => ({
-  ok: true, value: { block_time_ms: JOB_BEGAN_AT, state: 'Open', capability_id: CAPABILITY, agent_id: OTHER_ID, ...overrides },
+  ok: true, value: { block_time_ms: JOB_BEGAN_AT, state: 'Open', capability_id: ESCROW_CAPABILITY, agent_id: OTHER_ID, buyer_pkh: BUYER_PKH, ...overrides },
 });
 
 /** A chain port that answers from lists that a test sets, and that writes each call to the events. A test changes an answer by setting the member of the same name. */

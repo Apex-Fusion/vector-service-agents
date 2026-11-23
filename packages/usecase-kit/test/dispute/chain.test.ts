@@ -11,14 +11,17 @@ import { utf8Hex } from '@vsa/vector-read/identity-codec';
 import { encodeEscrowDatum } from '@vsa/vector-read';
 import type { IdentityEscrowDatum } from '@vsa/vector-read';
 import { Dispute, MAX_CLAIM_TYPE_BYTES, MemoryJournal, claimDocument, evidenceDocument } from '@vsa/usecase-kit/dispute';
-import type { ChallengeResult, ClaimScope, DisputeJournal, DisputeSettings, Module1PortDeps, ServiceQueue } from '@vsa/usecase-kit/dispute';
+import type { ChallengeResult, ClaimScope, DeliveryChallengeInput, DisputeJournal, DisputeSettings, Module1PortDeps, ServiceQueue } from '@vsa/usecase-kit/dispute';
 import { encodeChallengeDatum } from '../../../buyer-core/src/vendored/mcp/jury-codec.ts';
 import { CLAIM_TOKEN, DAY, HOUR, NOW, agentRecord, claimUtxo, recordUtxo } from '../../../buyer-core/test/fixtures/jury-world.ts';
 import { ESCROW_ADDRESS } from '../../../buyer-core/src/vendored/mcp/marketplace-constants.ts';
 import { identityEscrow } from '../../../buyer-core/test/fixtures/escrow-identity.fixture.ts';
-import { AUDITOR_ID, CLAIMER_ID, MODULE1, WALLET, WALLET_ADDRESS, bareTransactionCbor, forever, kitClaim, koiosOf, laterEscrowAt, ledgerWorld, postEscrowAt, realPort, signWithWallet } from './ledger.ts';
+import { AUDITOR_ID, CLAIMER_ID, MODULE1, WALLET, WALLET_ADDRESS, bareTransactionCbor, forever, kitClaim, koiosOf, laterEscrowAt, ledgerWorld, postEscrowAt, realPort, senderClaim, signWithWallet } from './ledger.ts';
 import type { LedgerProvider } from './ledger.ts';
-import { CONFIRMATION, DIGEST_FACTS, ESCROW, ESCROW_2, JOB, JOB_BEGAN_AT, MANIFEST_SHA, ORDER_DESK_CLAIM, ORDER_FACTS, QUOTE_FACTS, SCOPE, SETTINGS, STATEMENT_S1, THIRD_ID, deferred, kitClaimDocument } from './support.ts';
+import {
+  APPROVAL_JOB, BUYER_PKH, CLAIM_CAPABILITY, CONFIRMATION, DELIVERY_JOB, DIGEST_FACTS, ESCROW, ESCROW_2, ESCROW_CAPABILITY, JOB, JOB_BEGAN_AT, MANIFEST_SHA, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER_BUYER_PKH, QUOTE_FACTS,
+  REORDER_AGENT_S1, SCOPE, SETTINGS, STATEMENT_S1, THIRD_ID, deferred, kitClaimDocument,
+} from './support.ts';
 
 const did = (id: string): string => `did:vector:${id}`;
 const CLAIMER = did(CLAIMER_ID);
@@ -87,10 +90,12 @@ const runClaim = { capability_id: 'supplychain.order.accept.v1', manifest_sha256
 const claimsOn = (ledger: LedgerProvider) => ledger.atAddress(MODULE1.claim.address).map((utxo) => ({ ref: `${utxo.txHash}#${utxo.outputIndex}`, datum: decodeClaimDatum(utxo.datum!), utxo }));
 
 /** The challenge of the buyer-side agent of use case 1 for the escrow of a job. */
-const challengeOrder = (dispute: Dispute, escrow: string = ESCROW, scope: Omit<ClaimScope, 'escrow_ref'> = JOB): Promise<ChallengeResult> => dispute.challengeDelivery({ counterparty: CLAIMER, escrow_ref: escrow, ...scope, evidence: ORDER_FACTS });
+const challengeOrder = (dispute: Dispute, escrow: string = ESCROW, scope: Omit<DeliveryChallengeInput, 'counterparty' | 'escrow_ref' | 'evidence'> = DELIVERY_JOB): Promise<ChallengeResult> =>
+  dispute.challengeDelivery({ counterparty: CLAIMER, escrow_ref: escrow, ...scope, evidence: ORDER_FACTS });
 
-/** The challenge of a counterparty that refused a request of the other party for the digest of the approval. The other party posted the escrow of the job. */
-const challengeApproved = (dispute: Dispute, escrow: string = ESCROW): Promise<ChallengeResult> => dispute.challengeApproval({ sender: CLAIMER, escrow_ref: escrow, ...JOB, evidence: DIGEST_FACTS });
+/** The challenge of a counterparty that refused a request of the other party for the digest of the approval. The other party posted the escrow of the job, and its claim is for the capability of the escrow (a world of `kitClaim`). */
+const challengeApproved = (dispute: Dispute, escrow: string = ESCROW): Promise<ChallengeResult> =>
+  dispute.challengeApproval({ sender: CLAIMER, escrow_ref: escrow, ...DELIVERY_JOB, claim_capability_id: CLAIM_CAPABILITY, evidence: DIGEST_FACTS });
 
 function filedOf(result: ChallengeResult) {
   if (!result.ok) throw new Error(`${result.code}: ${result.detail}`);
@@ -306,13 +311,13 @@ describe('the challenge on the ledger', () => {
         const name = `${field}: ${JSON.stringify(value)}`;
         const ledger = ledgerWorld((l) => [kitClaim(l, CLAIM_TOKEN)]);
         const dispute = disputeOf(ledger, AUDITOR_ID);
-        const filed = filedOf(await dispute.challengeDelivery({ counterparty: CLAIMER, escrow_ref: ESCROW, ...JOB, evidence: facts(value) as never }));
+        const filed = filedOf(await dispute.challengeDelivery({ counterparty: CLAIMER, escrow_ref: ESCROW, ...DELIVERY_JOB, evidence: facts(value) as never }));
         const text = ledger.documents.get(filed.record.evidence)!;
         expect(text, name).not.toContain('\u0000');
         expect(text, name).not.toContain('\\u0000');
         expect(ledger.accepted.length, name).toBe(2);
         // The same job gives the same challenge, and sends nothing.
-        expect(filedOf(await dispute.challengeDelivery({ counterparty: CLAIMER, escrow_ref: ESCROW, ...JOB, evidence: facts(value) as never })), name).toEqual(filed);
+        expect(filedOf(await dispute.challengeDelivery({ counterparty: CLAIMER, escrow_ref: ESCROW, ...DELIVERY_JOB, evidence: facts(value) as never })), name).toEqual(filed);
         expect(ledger.accepted.length, name).toBe(2);
       }
     }
@@ -355,7 +360,7 @@ describe('the challenge on the ledger', () => {
     // The twin: a job that hired the other capability is covered by the claim for it, and that claim ends later than the first one.
     const twin = world();
     postEscrowAt(twin, JOB_BEGAN_AT, false, {}, { capability_id: 'supplychain.rfq.quote.v1' });
-    const covered = filedOf(await challengeOrder(disputeOf(twin, AUDITOR_ID), ESCROW, { ...JOB, capability_id: 'supplychain.rfq.quote.v1' }));
+    const covered = filedOf(await challengeOrder(disputeOf(twin, AUDITOR_ID), ESCROW, { ...DELIVERY_JOB, capability_id: 'supplychain.rfq.quote.v1' }));
     expect(covered.record.claim).toBe(`${'c4'.repeat(32)}#0`);
   }, SLOW);
 
@@ -972,7 +977,7 @@ describe('the start of a job is the time of the block of its escrow output', () 
   }, SLOW);
 
   /** What the port gives for the escrow of the job of the samples when its block was made at `blockTime` and the state of its datum is `state`. */
-  const job = (blockTime: number, state = 'Open') => ({ ok: true, value: { block_time_ms: blockTime, state, capability_id: JOB.capability_id, agent_id: CLAIMER_ID } });
+  const job = (blockTime: number, state = 'Open') => ({ ok: true, value: { block_time_ms: blockTime, state, capability_id: JOB.capability_id, agent_id: CLAIMER_ID, buyer_pkh: BUYER_PKH } });
 
   it('gives the time of the block of an escrow output of any state, unspent or spent, with the state, the capability and the agent of its datum', async () => {
     const ledger = ledgerWorld();
@@ -986,6 +991,16 @@ describe('the start of a job is the time of the block of its escrow output', () 
     postEscrowAt(ledger, NOW - DAY, false, {}, { posted_at: NOW - 2 * DAY, state: 'Submitted', submitted_at: NOW - DAY, result_receipt_hash: 'cd'.repeat(32) });
     expect(await port.readEscrowJob(ESCROW)).toEqual(job(NOW - DAY, 'Submitted'));
     await expect(port.readEscrowJob('zq9')).rejects.toThrow(TypeError);
+  }, SLOW);
+
+  it('gives the buyer key of the datum, in lower case, for the output that the Post made, unspent or spent', async () => {
+    const ledger = ledgerWorld();
+    const port = realPort(ledger, AUDITOR_ID, NOW);
+    expect(await port.readEscrowJob(ESCROW)).toMatchObject({ ok: true, value: { buyer_pkh: BUYER_PKH } });
+    for (const spent of [false, true]) {
+      postEscrowAt(ledger, JOB_BEGAN_AT, spent, {}, { buyer_pkh: OTHER_BUYER_PKH });
+      expect(await port.readEscrowJob(ESCROW), String(spent)).toMatchObject({ ok: true, value: { buyer_pkh: OTHER_BUYER_PKH } });
+    }
   }, SLOW);
 
   /**
@@ -1067,9 +1082,9 @@ describe('the start of a job is the time of the block of its escrow output', () 
     expect(refused).toMatchObject({ ok: false, code: 'not_escrow' });
     if (!refused.ok) expect(refused.detail).toContain('no identity deployment');
     // The twin: an escrow of the legacy layout, at the legacy escrow address.
-    const { agent_id: _agent, refund: _refund, ...legacy } = identityEscrow(JOB_BEGAN_AT, { capability_id: JOB.capability_id });
+    const { agent_id: _agent, refund: _refund, ...legacy } = identityEscrow(JOB_BEGAN_AT, { capability_id: JOB.capability_id, buyer_pkh: BUYER_PKH });
     postEscrowAt(ledger, JOB_BEGAN_AT, false, { address: ESCROW_ADDRESS, datum: encodeEscrowDatum(legacy) });
-    expect(await port.readEscrowJob(ESCROW)).toEqual({ ok: true, value: { block_time_ms: JOB_BEGAN_AT, state: 'Open', capability_id: JOB.capability_id, agent_id: null } });
+    expect(await port.readEscrowJob(ESCROW)).toEqual({ ok: true, value: { block_time_ms: JOB_BEGAN_AT, state: 'Open', capability_id: JOB.capability_id, agent_id: null, buyer_pkh: BUYER_PKH } });
   }, SLOW);
 
   /** The fake Koios of the ledger, with the answer of the route `utxo_info` changed by `change`. Any other route is as it is. */
@@ -1125,6 +1140,7 @@ describe('the escrow of a challenge is the escrow of this job, on the ledger', (
     ['the capability and the agent of an escrow of another purpose', { capability_id: 'demo.text.stats.v1', agent_id: 'ae'.repeat(32) }, 'capability_id'],
     ['another agent', { agent_id: THIRD_ID }, 'agent_id'],
     ['this agent, which a job that hired this agent names', { agent_id: AUDITOR_ID }, 'agent_id'],
+    ['another buyer', { buyer_pkh: OTHER_BUYER_PKH }, 'buyer_pkhs'],
   ];
 
   it.each(OF_ANOTHER_JOB)('refuses a delivery for an escrow with %s, names the member, and sends nothing; the same job is filed when the datum is right', async (_name, datum, member) => {
@@ -1144,6 +1160,7 @@ describe('the escrow of a challenge is the escrow of this job, on the ledger', (
       ['the sender', { agent_id: CLAIMER_ID }],
       ['another agent', { agent_id: THIRD_ID }],
       ['another capability', { agent_id: AUDITOR_ID, capability_id: OTHER_CAPABILITY }],
+      ['another buyer', { agent_id: AUDITOR_ID, buyer_pkh: OTHER_BUYER_PKH }],
     ];
     for (const [name, datum] of refusals) {
       const ledger = world();
@@ -1168,15 +1185,43 @@ describe('the escrow of a challenge is the escrow of this job, on the ledger', (
   }, SLOW);
 
   it('gives the lookup of the open claim the same refusals, and takes the counterparty or this agent as the agent of the escrow', async () => {
-    const lookup = (datum: Partial<IdentityEscrowDatum>) => {
+    const lookup = (datum: Partial<IdentityEscrowDatum>, scope: ClaimScope = SCOPE) => {
       const ledger = world();
       postEscrowAt(ledger, JOB_BEGAN_AT, false, {}, datum);
-      return disputeOf(ledger, AUDITOR_ID).findOpenClaim(CLAIMER, SCOPE);
+      return disputeOf(ledger, AUDITOR_ID).findOpenClaim(CLAIMER, scope);
     };
     expect(await lookup({})).toMatchObject({ ok: true, value: { ref: CLAIM_REF } });
     expect(await lookup({ agent_id: AUDITOR_ID })).toMatchObject({ ok: true, value: { ref: CLAIM_REF } });
     expect(await lookup({ agent_id: THIRD_ID })).toMatchObject({ ok: false, code: 'bad_shape' });
     expect(await lookup({ capability_id: OTHER_CAPABILITY })).toMatchObject({ ok: false, code: 'bad_shape' });
+    // A lookup that names no buyer takes the escrow of any buyer. A lookup that names the buyer is bound to it.
+    expect(await lookup({ buyer_pkh: OTHER_BUYER_PKH })).toMatchObject({ ok: true, value: { ref: CLAIM_REF } });
+    expect(await lookup({ buyer_pkh: OTHER_BUYER_PKH }, { ...SCOPE, buyer_pkhs: [BUYER_PKH] })).toMatchObject({ ok: false, code: 'bad_shape' });
+    expect(await lookup({}, { ...SCOPE, buyer_pkhs: [BUYER_PKH] })).toMatchObject({ ok: true, value: { ref: CLAIM_REF } });
+  }, SLOW);
+});
+
+describe('the approval challenge names the claim of the sender on the ledger', () => {
+  /** The escrow of the job hired this agent for the capability of the escrow, and the claim of the sender is for the capability of the sender: two capabilities. */
+  const world = (): LedgerProvider => {
+    const ledger = ledgerWorld((l) => [senderClaim(l, CLAIM_TOKEN)]);
+    postEscrowAt(ledger, JOB_BEGAN_AT, false, {}, { agent_id: AUDITOR_ID });
+    return ledger;
+  };
+
+  it('files the challenge against the claim of the sender when the scope names the capability of that claim, and the evidence on the ledger quotes its statement S1', async () => {
+    const ledger = world();
+    const filed = filedOf(await disputeOf(ledger, AUDITOR_ID).challengeApproval({ sender: CLAIMER, escrow_ref: ESCROW, ...APPROVAL_JOB, evidence: DIGEST_FACTS }));
+    expect(filed.record.claim).toBe(CLAIM_REF);
+    expect(ledger.accepted.length).toBe(2);
+    expect(ledger.documents.get(filed.record.evidence)).toContain(REORDER_AGENT_S1);
+  }, SLOW);
+
+  it('finds no claim and sends nothing when the scope names the capability of the escrow for the claim of the sender', async () => {
+    const ledger = world();
+    const result = await disputeOf(ledger, AUDITOR_ID).challengeApproval({ sender: CLAIMER, escrow_ref: ESCROW, ...APPROVAL_JOB, claim_capability_id: ESCROW_CAPABILITY, evidence: DIGEST_FACTS });
+    expect(result).toMatchObject({ ok: false, code: 'no_open_claim' });
+    expect(ledger.accepted).toEqual([]);
   }, SLOW);
 });
 

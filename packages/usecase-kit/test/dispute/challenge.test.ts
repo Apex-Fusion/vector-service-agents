@@ -9,12 +9,12 @@ import type { EscalatedResult, UnfiledDisputeResult } from '@vsa/usecase-kit/pro
 import { Dispute, LEAST_RESOLUTION_DEADLINE_MS, disputedFields } from '@vsa/usecase-kit/dispute';
 import type { ApprovalChallengeInput, ChallengeResult, ClaimView, DeliveryChallengeInput, DisputeSettings } from '@vsa/usecase-kit/dispute';
 import {
-  CHALLENGE_TX, DIGEST_FACTS, ESCROW, ESCROW_2, EVIDENCE_TX, HOUR, JOB, JOB_BEGAN_AT, ME, ME_ID, MISMATCH, NOW, ORDER_FACTS, OTHER, OTHER_ID, QUOTE_FACTS, RecordingQueue, REF_A, REF_B, REF_C, SCOPE, ScriptedPort, SETTINGS,
-  STATEMENT_S1, THIRD, THIRD_ID, TOKEN_A, TOKEN_B, TOKEN_C, canonical, claimView, escrowJob, never, rig,
+  APPROVAL_JOB, BUYER_PKH, CHALLENGE_TX, CLAIM_CAPABILITY, DELIVERY_JOB, DIGEST_FACTS, ESCROW, ESCROW_2, ESCROW_CAPABILITY, EVIDENCE_TX, HOUR, JOB, JOB_BEGAN_AT, ME, ME_ID, MISMATCH, NOW, ORDER_FACTS, OTHER, OTHER_BUYER_PKH,
+  OTHER_ID, QUOTE_FACTS, RecordingQueue, REF_A, REF_B, REF_C, SCOPE, ScriptedPort, SENDER_CAPABILITY, SETTINGS, STATEMENT_S1, THIRD, THIRD_ID, TOKEN_A, TOKEN_B, TOKEN_C, canonical, claimView, escrowJob, never, rig, senderClaimView,
 } from './support.ts';
 
-const delivery = (extra: Partial<DeliveryChallengeInput> = {}): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: ESCROW, ...JOB, evidence: ORDER_FACTS, ...extra });
-const approval = (extra: Partial<ApprovalChallengeInput> = {}): ApprovalChallengeInput => ({ sender: OTHER, escrow_ref: ESCROW, ...JOB, evidence: DIGEST_FACTS, ...extra });
+const delivery = (extra: Partial<DeliveryChallengeInput> = {}): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: ESCROW, ...DELIVERY_JOB, evidence: ORDER_FACTS, ...extra });
+const approval = (extra: Partial<ApprovalChallengeInput> = {}): ApprovalChallengeInput => ({ sender: OTHER, escrow_ref: ESCROW, ...APPROVAL_JOB, evidence: DIGEST_FACTS, ...extra });
 
 /** The call of the port that reads the claim document of a claim view. */
 const readsDocumentOf = (claim: ClaimView = claimView()): string => `readDocument ${claim.claim_uri}`;
@@ -168,7 +168,7 @@ describe('a challenge is never built before the evidence document is confirmed',
     expect((await quote.dispute.challengeDelivery(delivery({ evidence: QUOTE_FACTS }))).ok).toBe(true);
     expect(textOf(quote.port.published[0]!.bytes)).toContain('The bid desk quoted the unit price 110');
     const digest = rig();
-    digest.port.claims = [claimView()];
+    digest.port.claims = [senderClaimView(digest.port)];
     hiringMe(digest.port);
     expect((await digest.dispute.challengeApproval(approval())).ok).toBe(true);
     expect(textOf(digest.port.published[0]!.bytes)).toContain(`holds the digest ${MISMATCH.expected_digest}`);
@@ -514,7 +514,7 @@ describe('a job gets one challenge', () => {
 describe('the challenge of a counterparty that refused for the digest of the approval', () => {
   it('challenges the open claim of the sender, and puts the reference of the challenge into the result and the log', async () => {
     const { logs, port, dispute } = rig();
-    port.claims = [claimView({ claimer: OTHER })];
+    port.claims = [senderClaimView(port, { claimer: OTHER })];
     hiringMe(port);
     const result = await dispute.challengeApproval(approval());
     if (!result.ok) throw new Error(result.detail);
@@ -535,7 +535,7 @@ describe('the challenge of a counterparty that refused for the digest of the app
 
   it('holds no text of the request: a request in the evidence refuses the challenge before anything is published', async () => {
     const { events, port, dispute } = rig();
-    port.claims = [claimView()];
+    port.claims = [senderClaimView(port)];
     hiringMe(port);
     const withText = { ...DIGEST_FACTS, request: { sku: 'SKU-1' } };
     const result = await dispute.challengeApproval(approval({ evidence: withText as unknown as ApprovalChallengeInput['evidence'] }));
@@ -580,8 +580,8 @@ describe('the input of a challenge', () => {
     expect(events).toEqual([]);
   });
 
-  it('refuses an input that lacks the escrow, the capability or the statement of the job, for a delivery and for an approval, before it reads the chain', async () => {
-    for (const name of ['escrow_ref', 'capability_id', 'statement_text'] as const) {
+  it('refuses an input that lacks the escrow, the capability, the statement or the buyer keys of the job, for a delivery and for an approval, before it reads the chain', async () => {
+    for (const name of ['escrow_ref', 'capability_id', 'statement_text', 'buyer_pkhs'] as const) {
       const { events, dispute } = rig();
       const { [name]: _left, ...rest } = delivery();
       expectNotFiled(await dispute.challengeDelivery(rest as unknown as DeliveryChallengeInput), 'bad_shape');
@@ -589,10 +589,167 @@ describe('the input of a challenge', () => {
       expectNotFiled(await dispute.challengeApproval(restOfApproval as unknown as ApprovalChallengeInput), 'bad_shape');
       expect(events).toEqual([]);
     }
-    // The twin: an input with all three members is filed.
+    // The twin: an input with all four members is filed.
     const { port, dispute } = rig();
     port.claims = [claimView()];
     expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
+  });
+
+  describe('the buyer keys of the job', () => {
+    const KEY = BUYER_PKH;
+    /** Nine different key hashes: a list of eight is the most that a delivery takes. */
+    const NINE = Array.from({ length: 9 }, (_, index) => String(index + 1).repeat(56));
+    class KeyList extends Array<string> {}
+
+    const BAD_KEYS: Array<[string, unknown]> = [
+      ['an empty list', []],
+      ['nine keys', NINE],
+      ['a key of 55 characters', [KEY.slice(1)]],
+      ['a key of 57 characters', [`${KEY}0`]],
+      ['a key in upper case', [KEY.toUpperCase()]],
+      ['a key that is not hex', [`zq9${KEY.slice(3)}`]],
+      ['a key that is a number', [7]],
+      ['a key that is null', [null]],
+      ['a list with a duplicate', [KEY, OTHER_BUYER_PKH, KEY]],
+      ['a list that is a text', KEY],
+      ['a list that is an object', { 0: KEY, length: 1 }],
+      ['a list that is null', null],
+      ['a list with a hole', Object.assign(new Array<string>(2), { 1: KEY })],
+      ['a list with an accessor member', Object.defineProperty([KEY], 0, { get: () => KEY, enumerable: true })],
+      ['a list of another kind', KeyList.from([KEY])],
+      ['a set', new Set([KEY])],
+    ];
+
+    it.each(BAD_KEYS)('refuses %s as the buyer keys of a delivery and of an approval, before it reads the chain, and never repeats a key', async (_name, keys) => {
+      const { events, dispute } = rig();
+      const results = [
+        await dispute.challengeDelivery({ ...delivery(), buyer_pkhs: keys } as unknown as DeliveryChallengeInput),
+        await dispute.challengeApproval({ ...approval(), buyer_pkhs: keys } as unknown as ApprovalChallengeInput),
+      ];
+      for (const result of results) {
+        expectNotFiled(result, 'bad_shape');
+        expect(result.detail).toContain('buyer_pkhs');
+        expect(result.detail).not.toContain('zq9');
+        for (const key of [KEY, OTHER_BUYER_PKH, NINE[0]!]) expect(result.detail).not.toContain(key);
+      }
+      expect(events).toEqual([]);
+    });
+
+    it('refuses a getter for the member and a list that throws when it is read, and never runs the getter', async () => {
+      const { events, dispute } = rig();
+      let reads = 0;
+      const withGetter = { ...delivery() };
+      Object.defineProperty(withGetter, 'buyer_pkhs', { enumerable: true, get: () => { reads += 1; return [KEY]; } });
+      expectNotFiled(await dispute.challengeDelivery(withGetter), 'bad_shape');
+      expect(reads).toBe(0);
+      const failing = new Proxy([KEY], { ownKeys() { throw new Error('zq9 secret'); } });
+      const result = await dispute.challengeDelivery({ ...delivery(), buyer_pkhs: failing } as unknown as DeliveryChallengeInput);
+      expectNotFiled(result, 'bad_shape');
+      expect(result.detail).not.toContain('zq9');
+      expect(events).toEqual([]);
+    });
+
+    it('files a delivery with one to eight different keys, and an approval with one key', async () => {
+      for (const count of [1, 2, 8]) {
+        const { port, dispute } = rig();
+        port.claims = [claimView()];
+        expect((await dispute.challengeDelivery(delivery({ buyer_pkhs: [KEY, ...NINE.slice(0, count - 1)] }))).ok, String(count)).toBe(true);
+      }
+      const approved = rig();
+      approved.port.claims = [senderClaimView(approved.port)];
+      hiringMe(approved.port);
+      expect((await approved.dispute.challengeApproval(approval())).ok).toBe(true);
+    });
+
+    it('reads the keys one time: a list that the caller changes while the port reads gives no other answer', async () => {
+      // The list names the buyer of the escrow when the call starts, and the caller replaces its key while the port reads the escrow. The call checks the keys that it read first.
+      const kept = rig();
+      kept.port.claims = [claimView()];
+      const matching = [KEY];
+      kept.port.readEscrowAnswer = () => {
+        matching[0] = OTHER_BUYER_PKH;
+        return escrowJob();
+      };
+      expect((await kept.dispute.challengeDelivery(delivery({ buyer_pkhs: matching }))).ok).toBe(true);
+      // The twin: the list names another buyer when the call starts, and the caller replaces its key with the buyer of the escrow while the port reads. The call is still refused.
+      const refused = rig();
+      refused.port.claims = [claimView()];
+      const other = [OTHER_BUYER_PKH];
+      refused.port.readEscrowAnswer = () => {
+        other[0] = KEY;
+        return escrowJob();
+      };
+      expectNotFiled(await refused.dispute.challengeDelivery(delivery({ buyer_pkhs: other })), 'bad_shape');
+      expect(refused.port.published).toEqual([]);
+    });
+
+    it('refuses an approval with two keys or with none, and says that it takes exactly one; the twin with one key is filed', async () => {
+      const { events, port, dispute } = rig();
+      port.claims = [senderClaimView(port)];
+      hiringMe(port);
+      for (const keys of [[KEY, OTHER_BUYER_PKH], []]) {
+        const result = await dispute.challengeApproval(approval({ buyer_pkhs: keys as unknown as ApprovalChallengeInput['buyer_pkhs'] }));
+        expectNotFiled(result, 'bad_shape');
+        expect(result.detail).toContain('buyer_pkhs must hold exactly one key hash');
+      }
+      expect(events).toEqual([]);
+      expect((await dispute.challengeApproval(approval())).ok).toBe(true);
+    });
+
+    it('has input types that need the buyer keys and the capability of the claim of the sender', () => {
+      // @ts-expect-error A delivery names the buyer keys of its job.
+      const noKeys: DeliveryChallengeInput = { counterparty: OTHER, escrow_ref: ESCROW, ...JOB, evidence: ORDER_FACTS };
+      // @ts-expect-error An approval names exactly one buyer key.
+      const twoKeys: ApprovalChallengeInput = { ...approval(), buyer_pkhs: [KEY, OTHER_BUYER_PKH] };
+      // @ts-expect-error A delivery takes no capability for the claim of the other party: the job hired that party, so it has one capability.
+      const withCapability: DeliveryChallengeInput = { ...delivery(), claim_capability_id: CLAIM_CAPABILITY };
+      // @ts-expect-error An approval names the capability of the claim of its sender.
+      const noCapability: ApprovalChallengeInput = { sender: OTHER, escrow_ref: ESCROW, capability_id: ESCROW_CAPABILITY, statement_text: STATEMENT_S1, buyer_pkhs: [KEY], evidence: DIGEST_FACTS };
+      expect([noKeys, twoKeys, withCapability, noCapability]).toHaveLength(4);
+    });
+  });
+
+  describe('the capability of the claim of the other party', () => {
+    it('refuses an approval that lacks claim_capability_id, before it reads the chain; the twin that has it is filed', async () => {
+      const { events, port, dispute } = rig();
+      port.claims = [senderClaimView(port)];
+      hiringMe(port);
+      const { claim_capability_id: _left, ...rest } = approval();
+      const result = await dispute.challengeApproval(rest as unknown as ApprovalChallengeInput);
+      expectNotFiled(result, 'bad_shape');
+      expect(result.detail).toContain('claim_capability_id');
+      expect(events).toEqual([]);
+      expect((await dispute.challengeApproval(approval())).ok).toBe(true);
+    });
+
+    it('refuses claim_capability_id in a delivery, whatever its value, before it reads the chain; the delivery without it is filed', async () => {
+      const { events, port, dispute } = rig();
+      port.claims = [claimView()];
+      for (const capability of [CLAIM_CAPABILITY, SENDER_CAPABILITY]) {
+        const result = await dispute.challengeDelivery({ ...delivery(), claim_capability_id: capability } as unknown as DeliveryChallengeInput);
+        expectNotFiled(result, 'bad_shape');
+        expect(result.detail).toContain('claim_capability_id');
+      }
+      expect(events).toEqual([]);
+      expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
+    });
+
+    const BAD_CAPABILITIES: Array<[string, unknown]> = [
+      ['a capability with spaces', 'zq9 with spaces'],
+      ['a capability that is too long', `zq9${'a'.repeat(64)}`],
+      ['a capability that is empty', ''],
+      ['a capability that is a number', 7],
+      ['a capability that is null', null],
+    ];
+
+    it.each(BAD_CAPABILITIES)('refuses %s as the capability of the claim of the sender, before it reads the chain, and never repeats it', async (_name, capability) => {
+      const { events, dispute } = rig();
+      const result = await dispute.challengeApproval({ ...approval(), claim_capability_id: capability } as unknown as ApprovalChallengeInput);
+      expectNotFiled(result, 'bad_shape');
+      expect(result.detail).toContain('claim_capability_id');
+      expect(result.detail).not.toContain('zq9');
+      expect(events).toEqual([]);
+    });
   });
 
   it('never throws for an input that cannot be read', async () => {

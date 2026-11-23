@@ -8,12 +8,16 @@ import { NO_OPEN_CLAIM } from '@vsa/usecase-kit/protocol';
 import { Dispute, claimDocument } from '@vsa/usecase-kit/dispute';
 import type { ApprovalChallengeInput, ChallengeResult, ClaimView, DeliveryChallengeInput, EscrowJob } from '@vsa/usecase-kit/dispute';
 import {
-  CAPABILITY, DIGEST_FACTS, ESCROW, ESCROW_2, EVIDENCE_TX, HOUR, JOB, JOB_BEGAN_AT, MANIFEST_SHA, ME_ID, NO_DOCUMENT, NO_TRANSACTION, NOW, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER, OTHER_ID,
-  PRIOR_AUTHORIZATION_CLAIM, REF_A, REF_B, REF_C, RecordingQueue, SCOPE, STATEMENT_S1, SETTINGS, ScriptedPort, THIRD, THIRD_ID, TOKEN_A, TOKEN_B, TOKEN_C, claimView, deferred, escrowJob, kitClaimDocument, never, rig,
+  APPROVAL_JOB, BUYER_PKH, CLAIM_CAPABILITY, DELIVERY_JOB, DIGEST_FACTS, ESCROW, ESCROW_2, ESCROW_CAPABILITY, EVIDENCE_TX, HOUR, JOB, JOB_BEGAN_AT, MANIFEST_SHA, ME_ID, NO_DOCUMENT, NO_TRANSACTION, NOW, ORDER_DESK_CLAIM,
+  ORDER_FACTS, OTHER, OTHER_BUYER_PKH, OTHER_ID, PRIOR_AUTHORIZATION_CLAIM, REF_A, REF_B, REF_C, REORDER_AGENT_S1, RecordingQueue, SCOPE, SENDER_CAPABILITY, STATEMENT_S1, SETTINGS, ScriptedPort, THIRD, THIRD_ID, TOKEN_A, TOKEN_B,
+  TOKEN_C, claimView, deferred, escrowJob, kitClaimDocument, never, rig, senderClaimView,
 } from './support.ts';
 import type { Rig } from './support.ts';
 
-const delivery = (extra: Partial<DeliveryChallengeInput> = {}): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: ESCROW, ...JOB, evidence: ORDER_FACTS, ...extra });
+const delivery = (extra: Partial<DeliveryChallengeInput> = {}): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: ESCROW, ...DELIVERY_JOB, evidence: ORDER_FACTS, ...extra });
+const approval = (extra: Partial<ApprovalChallengeInput> = {}): ApprovalChallengeInput => ({ sender: OTHER, escrow_ref: ESCROW, ...APPROVAL_JOB, evidence: DIGEST_FACTS, ...extra });
+/** What a read answers for a job that the sender of a request hired this agent for: the datum names this agent. */
+const hiringMe = (overrides: Partial<EscrowJob> = {}) => escrowJob({ agent_id: ME_ID, ...overrides });
 const textOf = (bytes: Uint8Array): string => Buffer.from(bytes).toString('utf8');
 
 /** The detail of no_open_claim for `open` open claims, and for the counts of the seven reasons in the order of the detail. */
@@ -50,7 +54,7 @@ function holding(port: ScriptedPort, claim: ClaimView, bytes: Uint8Array, type =
 
 /** The claim document that this kit writes for `claimer`, with other statements. */
 function otherStatements(claimer: string) {
-  const document = claimDocument({ agent_did: claimer, capability_id: CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: PRIOR_AUTHORIZATION_CLAIM });
+  const document = claimDocument({ agent_did: claimer, capability_id: CLAIM_CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: PRIOR_AUTHORIZATION_CLAIM });
   if (!document.ok) throw new Error(document.detail);
   return document.value;
 }
@@ -58,7 +62,7 @@ function otherStatements(claimer: string) {
 /** The claim document that this kit writes for OTHER for the capability of the job, with `text` as its statement S1 and the other statements of the order desk. */
 function withStatement(text: string) {
   const document = claimDocument({
-    agent_did: OTHER, capability_id: CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: { statements: [{ id: 'S1', text }, ORDER_DESK_CLAIM.statements[1], ORDER_DESK_CLAIM.statements[2]] },
+    agent_did: OTHER, capability_id: CLAIM_CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: { statements: [{ id: 'S1', text }, ORDER_DESK_CLAIM.statements[1], ORDER_DESK_CLAIM.statements[2]] },
   });
   if (!document.ok) throw new Error(document.detail);
   return document.value;
@@ -275,11 +279,76 @@ describe('a claim is a target only when it covers the job', () => {
     port.readEscrowAnswer = () => escrowJob({ block_time_ms: NOW - 3 * HOUR });
     expect(await dispute.findOpenClaim(OTHER, SCOPE)).toMatchObject({ ok: false, code: NO_OPEN_CLAIM });
     for (const bad of [
-      null, 'zq9', {}, JOB, { capability_id: CAPABILITY, statement_text: STATEMENT_S1, escrow_ref: ESCROW, job_began_at: JOB_BEGAN_AT }, { ...SCOPE, extra: 1 }, { ...SCOPE, escrow_ref: 'zq9' },
+      null, 'zq9', {}, JOB, { capability_id: ESCROW_CAPABILITY, statement_text: STATEMENT_S1, escrow_ref: ESCROW, job_began_at: JOB_BEGAN_AT }, { ...SCOPE, extra: 1 }, { ...SCOPE, escrow_ref: 'zq9' },
       { ...SCOPE, capability_id: 'zq9 x' }, { ...SCOPE, statement_text: 7 }, { ...SCOPE, statement_text: 'one\ntwo' }, { ...SCOPE, statement_text: '' },
+      { ...SCOPE, claim_capability_id: 'zq9 x' }, { ...SCOPE, claim_capability_id: 7 }, { ...SCOPE, claim_capability_id: '' }, { ...SCOPE, buyer_pkhs: [] }, { ...SCOPE, buyer_pkhs: 'zq9' }, { ...SCOPE, buyer_pkhs: [BUYER_PKH, BUYER_PKH] },
     ]) {
       expect(await dispute.findOpenClaim(OTHER, bad as never), JSON.stringify(bad)).toMatchObject({ ok: false, code: 'bad_shape' });
     }
+  });
+});
+
+describe('an approval challenge names the claim of the sender, which is for another capability than the escrow', () => {
+  /** A job that the sender hired this agent for. The escrow names `ESCROW_CAPABILITY`, and the one open claim of the sender is for `SENDER_CAPABILITY`. */
+  const hired = (): Rig => {
+    const rigged = rig();
+    rigged.port.claims = [senderClaimView(rigged.port)];
+    rigged.port.readEscrowAnswer = () => hiringMe();
+    return rigged;
+  };
+
+  it('files the challenge against the claim of the sender when the scope names the capability of that claim, and quotes its statement S1', async () => {
+    const rigged = hired();
+    const result = await rigged.dispute.challengeApproval(approval());
+    if (!result.ok) throw new Error(result.detail);
+    expect(result.value.record.claim).toBe(REF_A);
+    expect(rigged.port.challenged.map((call) => call.claim)).toEqual([REF_A]);
+    const evidence = textOf(rigged.port.published[0]!.bytes);
+    expect(evidence).toContain(`Claim: ${REF_A}`);
+    expect(evidence).toContain(REORDER_AGENT_S1);
+    // The escrow is read one time, and its capability is the capability of the escrow.
+    expect(rigged.events.filter((event) => event.startsWith('readEscrow'))).toEqual([`readEscrow ${ESCROW}`]);
+  });
+
+  it('finds no target when the scope names the capability of the escrow for the claim of the sender: the claim counts as one for another capability, and nothing is published', async () => {
+    const rigged = hired();
+    const result = await rigged.dispute.challengeApproval(approval({ claim_capability_id: ESCROW_CAPABILITY }));
+    expectNotFiled(result, NO_OPEN_CLAIM);
+    expect(result.detail).toBe(counted(1, [0, 0, 0, 0, 0, 1, 0]));
+    expect(rigged.port.published).toEqual([]);
+    expect(rigged.port.challenged).toEqual([]);
+    // The twin: the scope that names the capability of the claim files the same job.
+    expect((await rigged.dispute.challengeApproval(approval())).ok).toBe(true);
+  });
+
+  it('names the claim for the capability of the sender, and no claim for another capability, although the other claim ends later', async () => {
+    const rigged = rig();
+    // The decoy is for the capability of the escrow, was staked before the job began, and ends 15 hours after the claim of the sender: with no rule of the scope, it would be the target.
+    const decoy = holding(rigged.port, newer(), kitClaimDocument(OTHER).bytes);
+    rigged.port.claims = [senderClaimView(rigged.port), decoy];
+    rigged.port.readEscrowAnswer = () => hiringMe();
+    expect((await rigged.dispute.challengeApproval(approval())).ok).toBe(true);
+    expect(rigged.port.challenged.map((call) => call.claim)).toEqual([REF_A]);
+    expect(rigged.events.filter((event) => event.startsWith('readDocument'))).toEqual([`readDocument ${decoy.claim_uri}`, `readDocument ${claimView().claim_uri}`]);
+  });
+
+  it('keeps the check of the escrow on capability_id: an escrow for the capability of the claim is the escrow of another job', async () => {
+    const rigged = hired();
+    rigged.port.readEscrowAnswer = () => hiringMe({ capability_id: SENDER_CAPABILITY });
+    const result = await rigged.dispute.challengeApproval(approval());
+    expectNotFiled(result, 'bad_shape');
+    expect(result.detail).toContain('capability_id');
+    expect(rigged.events.some((event) => event.startsWith('readDocument'))).toBe(false);
+    expect(rigged.port.published).toEqual([]);
+  });
+
+  it('gives the same target from findOpenClaim for a scope with claim_capability_id, and finds none when the scope leaves it out', async () => {
+    const rigged = hired();
+    const scope = { escrow_ref: ESCROW, capability_id: ESCROW_CAPABILITY, claim_capability_id: SENDER_CAPABILITY, statement_text: REORDER_AGENT_S1 };
+    expect(await rigged.dispute.findOpenClaim(OTHER, scope)).toMatchObject({ ok: true, value: { ref: REF_A } });
+    // A scope with no claim_capability_id takes the capability of the escrow for the claim, as a delivery does.
+    const { claim_capability_id: _left, ...single } = scope;
+    expect(await rigged.dispute.findOpenClaim(OTHER, single)).toMatchObject({ ok: false, code: NO_OPEN_CLAIM });
   });
 });
 
@@ -463,6 +532,8 @@ describe('the job began when the block of its escrow output was made, and the ch
       ['an agent that is a DID', escrowJob({ agent_id: OTHER })],
       ['an agent in upper case', escrowJob({ agent_id: OTHER_ID.toUpperCase() })],
       ['an agent that is too short', escrowJob({ agent_id: 'c1' })],
+      ['no buyer', escrowJob({ buyer_pkh: undefined as never })],
+      ['a buyer that is a number', escrowJob({ buyer_pkh: 7 as never })],
       ['no state', escrowJob({ state: undefined as never })],
       ['a state that is a number', escrowJob({ state: 1 as never })],
       ['a refusal with another code', { ok: false, code: 'weird', detail: 'x' }],
@@ -499,13 +570,10 @@ describe('the job began when the block of its escrow output was made, and the ch
 
 describe('the escrow is the escrow of this job', () => {
   const OTHER_CAPABILITY = 'supplychain.rfq.quote.v1';
-  const approval = (extra: Partial<ApprovalChallengeInput> = {}): ApprovalChallengeInput => ({ sender: OTHER, escrow_ref: ESCROW, ...JOB, evidence: DIGEST_FACTS, ...extra });
-  /** What a read answers for a job that the sender of a request hired this agent for: the datum names this agent. */
-  const hiringMe = (overrides: Partial<EscrowJob> = {}) => escrowJob({ agent_id: ME_ID, ...overrides });
 
   it('refuses an escrow with another capability than the job, for a delivery, an approval and a lookup, names the member, and publishes nothing', async () => {
     // A text that is not the capability of the job is another capability, whatever its case or its length.
-    for (const capability of [OTHER_CAPABILITY, CAPABILITY.toUpperCase(), `${CAPABILITY}.x`, CAPABILITY.slice(0, -1), 'zq9 marker']) {
+    for (const capability of [OTHER_CAPABILITY, ESCROW_CAPABILITY.toUpperCase(), `${ESCROW_CAPABILITY}.x`, ESCROW_CAPABILITY.slice(0, -1), 'zq9 marker']) {
       const rigged = rig();
       rigged.port.claims = [claimView()];
       rigged.port.readEscrowAnswer = () => escrowJob({ capability_id: capability });
@@ -525,7 +593,7 @@ describe('the escrow is the escrow of this job', () => {
     twin.port.claims = [claimView()];
     expect((await twin.dispute.challengeDelivery(delivery())).ok).toBe(true);
     const approved = rig();
-    approved.port.claims = [claimView()];
+    approved.port.claims = [senderClaimView(approved.port)];
     approved.port.readEscrowAnswer = () => hiringMe();
     expect((await approved.dispute.challengeApproval(approval())).ok).toBe(true);
   });
@@ -563,7 +631,7 @@ describe('the escrow is the escrow of this job', () => {
       expect(rigged.events.some((event) => event.startsWith('readDocument'))).toBe(false);
     }
     const twin = rig();
-    twin.port.claims = [claimView()];
+    twin.port.claims = [senderClaimView(twin.port)];
     twin.port.readEscrowAnswer = () => hiringMe();
     expect((await twin.dispute.challengeApproval(approval())).ok).toBe(true);
   });
@@ -610,23 +678,33 @@ describe('the escrow is the escrow of this job', () => {
     expect((await twin.dispute.challengeDelivery(delivery())).ok).toBe(true);
   });
 
-  it('names the first member that is wrong: the layout, then the capability, then the agent, then the state', async () => {
+  it('names the first member that is wrong: the layout, then the capability, then the agent, then the buyer, then the state and the time', async () => {
     const rigged = rig();
     rigged.port.claims = [claimView()];
-    rigged.port.readEscrowAnswer = () => escrowJob({ agent_id: null, capability_id: OTHER_CAPABILITY });
+    // Each of the first three escrows names another buyer than the job too. The detail shows which check came first: none of the three names `buyer_pkhs`.
+    rigged.port.readEscrowAnswer = () => escrowJob({ agent_id: null, capability_id: OTHER_CAPABILITY, buyer_pkh: OTHER_BUYER_PKH });
     const legacy = await rigged.dispute.challengeDelivery(delivery());
     expectNotFiled(legacy, 'bad_shape');
     expect(legacy.detail).toContain('legacy layout');
-    rigged.port.readEscrowAnswer = () => escrowJob({ agent_id: THIRD_ID, capability_id: OTHER_CAPABILITY });
+    expect(legacy.detail).not.toContain('buyer_pkhs');
+    rigged.port.readEscrowAnswer = () => escrowJob({ agent_id: THIRD_ID, capability_id: OTHER_CAPABILITY, buyer_pkh: OTHER_BUYER_PKH });
     const capability = await rigged.dispute.challengeDelivery(delivery());
     expectNotFiled(capability, 'bad_shape');
     expect(capability.detail).toContain('capability_id');
     expect(capability.detail).not.toContain('agent_id');
-    rigged.port.readEscrowAnswer = () => escrowJob({ agent_id: THIRD_ID, state: 'Submitted' });
+    expect(capability.detail).not.toContain('buyer_pkhs');
+    rigged.port.readEscrowAnswer = () => escrowJob({ agent_id: THIRD_ID, state: 'Submitted', buyer_pkh: OTHER_BUYER_PKH });
     const agent = await rigged.dispute.challengeDelivery(delivery());
     expectNotFiled(agent, 'bad_shape');
     expect(agent.detail).toContain('agent_id');
+    expect(agent.detail).not.toContain('buyer_pkhs');
     expect(agent.detail).not.toContain('state');
+    rigged.port.readEscrowAnswer = () => escrowJob({ buyer_pkh: OTHER_BUYER_PKH, state: 'Submitted', block_time_ms: NOW + 1 });
+    const buyer = await rigged.dispute.challengeDelivery(delivery());
+    expectNotFiled(buyer, 'bad_shape');
+    expect(buyer.detail).toContain('buyer_pkhs');
+    expect(buyer.detail).not.toContain('state');
+    expect(buyer.detail).not.toContain('clock');
     rigged.port.readEscrowAnswer = () => escrowJob({ state: 'Submitted' });
     const state = await rigged.dispute.challengeDelivery(delivery());
     expectNotFiled(state, 'bad_shape');
@@ -647,7 +725,7 @@ describe('the escrow is the escrow of this job', () => {
   it('does not let the escrow of a newer job for another capability or another agent widen the choice of the target', async () => {
     // The claim was staked 10 minutes ago, after the job began 30 minutes ago, so it does not cover the job. A job that began a minute ago would be covered.
     const newerJob = { block_time_ms: NOW - 60_000 };
-    for (const [name, other] of [['another capability', { capability_id: OTHER_CAPABILITY }], ['another agent', { agent_id: THIRD_ID }]] as const) {
+    for (const [name, other] of [['another capability', { capability_id: OTHER_CAPABILITY }], ['another agent', { agent_id: THIRD_ID }], ['another buyer', { buyer_pkh: OTHER_BUYER_PKH }]] as const) {
       const rigged = rig();
       rigged.port.claims = [claimView({ submitted_at: NOW - 10 * 60_000 })];
       rigged.port.readEscrowAnswer = (ref) => escrowJob(ref === ESCROW ? {} : { ...newerJob, ...other });
@@ -655,6 +733,122 @@ describe('the escrow is the escrow of this job', () => {
       expectNotFiled(await rigged.dispute.challengeDelivery(delivery({ escrow_ref: ESCROW_2 })), 'bad_shape');
       expect(rigged.port.published, name).toEqual([]);
     }
+  });
+});
+
+describe('the escrow is the escrow of a buyer that the caller names', () => {
+  /** A key that is none of the keys of the samples: the datum of the escrow of a third buyer names it. */
+  const THIRD_BUYER_PKH = 'b9'.repeat(28);
+  const KEYS = [BUYER_PKH, OTHER_BUYER_PKH];
+
+  it('files a delivery when the buyer of the escrow is one of the keys of the list, whichever key it is and wherever it stands in the list', async () => {
+    for (const keys of [KEYS, [...KEYS].reverse(), [BUYER_PKH]]) {
+      for (const buyer of KEYS.filter((key) => keys.includes(key))) {
+        const rigged = rig();
+        rigged.port.claims = [claimView()];
+        rigged.port.readEscrowAnswer = () => escrowJob({ buyer_pkh: buyer });
+        expect((await rigged.dispute.challengeDelivery(delivery({ buyer_pkhs: keys }))).ok, `${buyer} in a list of ${keys.length}`).toBe(true);
+        expect(rigged.port.challenged.map((call) => call.claim)).toEqual([REF_A]);
+      }
+    }
+  });
+
+  it('refuses a delivery for the escrow of another buyer, names the member buyer_pkhs, never repeats a key, and reads no claim document', async () => {
+    for (const keys of [[BUYER_PKH], KEYS]) {
+      const rigged = rig();
+      rigged.port.claims = [claimView()];
+      rigged.port.readEscrowAnswer = () => escrowJob({ buyer_pkh: THIRD_BUYER_PKH });
+      const result = await rigged.dispute.challengeDelivery(delivery({ buyer_pkhs: keys }));
+      expectNotFiled(result, 'bad_shape');
+      expect(result.detail).toContain('buyer_pkhs');
+      for (const key of [...KEYS, THIRD_BUYER_PKH]) expect(result.detail).not.toContain(key);
+      expect(rigged.port.published).toEqual([]);
+      expect(rigged.port.challenged).toEqual([]);
+      expect(rigged.events.some((event) => event.startsWith('readDocument'))).toBe(false);
+      // The twin: the escrow names a key of the list, and the same job is filed.
+      rigged.port.readEscrowAnswer = () => escrowJob({ buyer_pkh: BUYER_PKH });
+      expect((await rigged.dispute.challengeDelivery(delivery({ buyer_pkhs: keys }))).ok).toBe(true);
+    }
+  });
+
+  it('refuses an approval, and a lookup that names its buyer, for the escrow of another buyer in the same way; the twins are filed and found', async () => {
+    const rigged = rig();
+    rigged.port.claims = [senderClaimView(rigged.port)];
+    const lookup = { escrow_ref: ESCROW, ...APPROVAL_JOB };
+    rigged.port.readEscrowAnswer = () => hiringMe({ buyer_pkh: OTHER_BUYER_PKH });
+    const approved = await rigged.dispute.challengeApproval(approval());
+    const looked = await rigged.dispute.findOpenClaim(OTHER, lookup);
+    for (const result of [approved, looked]) expect(result).toMatchObject({ ok: false, code: 'bad_shape', detail: expect.stringContaining('buyer_pkhs') as never });
+    expect(JSON.stringify([approved, looked])).not.toContain(OTHER_BUYER_PKH);
+    expect(JSON.stringify([approved, looked])).not.toContain(BUYER_PKH);
+    expect(rigged.port.published).toEqual([]);
+    // The twins: the escrow names the buyer of the job.
+    rigged.port.readEscrowAnswer = () => hiringMe();
+    expect((await rigged.dispute.challengeApproval(approval())).ok).toBe(true);
+    expect(await rigged.dispute.findOpenClaim(OTHER, lookup)).toMatchObject({ ok: true, value: { ref: REF_A } });
+  });
+
+  it('compares the key of the datum as text: a key in another case, of another length, or that is no key is another buyer', async () => {
+    for (const buyer of [BUYER_PKH.toUpperCase(), BUYER_PKH.slice(2), `${BUYER_PKH}00`, `${BUYER_PKH.slice(0, 54)}zq`, '']) {
+      const rigged = rig();
+      rigged.port.claims = [claimView()];
+      rigged.port.readEscrowAnswer = () => escrowJob({ buyer_pkh: buyer });
+      const result = await rigged.dispute.challengeDelivery(delivery());
+      expectNotFiled(result, 'bad_shape');
+      expect(result.detail, buyer).toContain('buyer_pkhs');
+      if (buyer !== '') expect(result.detail, buyer).not.toContain(buyer);
+      expect(rigged.port.published, buyer).toEqual([]);
+    }
+  });
+
+  it('leaves the lookup that names no buyer as it was, so that the escrow of any buyer is the escrow of the lookup, and binds the lookup that names one', async () => {
+    for (const buyer of [BUYER_PKH, OTHER_BUYER_PKH, THIRD_BUYER_PKH]) {
+      const { port, dispute } = rig();
+      port.claims = [claimView()];
+      port.readEscrowAnswer = () => escrowJob({ buyer_pkh: buyer });
+      expect(await dispute.findOpenClaim(OTHER, SCOPE), buyer).toMatchObject({ ok: true, value: { ref: REF_A } });
+      expect((await dispute.findOpenClaim(OTHER, { ...SCOPE, buyer_pkhs: [BUYER_PKH] })).ok, buyer).toBe(buyer === BUYER_PKH);
+      expect((await dispute.findOpenClaim(OTHER, { ...SCOPE, buyer_pkhs: KEYS })).ok, buyer).toBe(buyer !== THIRD_BUYER_PKH);
+    }
+  });
+});
+
+describe('a scope that lacks an optional member reads nothing from Object.prototype', () => {
+  /** Puts a value on `Object.prototype` as the member `name`, and gives the function that takes it away again. The member is not enumerable, so no loop of the test run sees it. */
+  const plant = (name: string, value: unknown): (() => void) => {
+    Object.defineProperty(Object.prototype, name, { value, configurable: true, writable: true, enumerable: false });
+    return () => {
+      delete (Object.prototype as unknown as Record<string, unknown>)[name];
+    };
+  };
+
+  it('takes the capability of the job for the claim of a delivery and of a lookup, and no buyer for a lookup, whatever Object.prototype holds', async () => {
+    // A claim with the statement S1 of the job, for the capability of the sender: only its capability tells it from the claim of the job.
+    const other = rig();
+    other.port.claims = [holding(other.port, claimView(), forCapability(SENDER_CAPABILITY).bytes)];
+    // The claim of the job, and the escrow of its buyer.
+    const same = rig();
+    same.port.claims = [claimView()];
+    let answers: [ChallengeResult, unknown, unknown, ChallengeResult];
+    const taken = [plant('claim_capability_id', SENDER_CAPABILITY), plant('buyer_pkhs', [OTHER_BUYER_PKH])];
+    try {
+      answers = [
+        await other.dispute.challengeDelivery(delivery()), await other.dispute.findOpenClaim(OTHER, SCOPE),
+        await same.dispute.findOpenClaim(OTHER, SCOPE), await same.dispute.challengeDelivery(delivery()),
+      ];
+    } finally {
+      for (const take of taken) take();
+    }
+    const [refusedDelivery, refusedLookup, foundByLookup, filedDelivery] = answers;
+    expectNotFiled(refusedDelivery, NO_OPEN_CLAIM);
+    expect(refusedDelivery.detail).toBe(counted(1, [0, 0, 0, 0, 0, 1, 0]));
+    expect(other.port.published).toEqual([]);
+    expect(refusedLookup).toMatchObject({ ok: false, code: NO_OPEN_CLAIM });
+    expect(foundByLookup).toMatchObject({ ok: true, value: { ref: REF_A } });
+    expect(filedDelivery.ok).toBe(true);
+    // The twin: with nothing on the prototype, the same calls give the same answers. Nothing stays on the prototype after the test.
+    expect('claim_capability_id' in {}).toBe(false);
+    expect('buyer_pkhs' in {}).toBe(false);
   });
 });
 
