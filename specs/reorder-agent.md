@@ -62,7 +62,7 @@ The price is the default of `ADVERT_PRICE_LOVELACE`. Each bond is fixed in the c
 | Jobs at a time | one: a second job gets 409 `busy` |
 | Reservation | a go from `POST /precheck` reserves the job slot for 120 s |
 
-**The request limit.** The service counts the request JSON in bytes of UTF-8, and it refuses a request JSON of more than 900000 bytes with `request_too_large` (400). It reads at most 1000000 bytes of wire payload. The wire payload is the request JSON written as a string inside a one-message array (see Interface). The limit of 900000 bytes is safe only below the 1 MiB limit of the runtime, 1048576 bytes, on the escaped body. A buyer calls the runtime with the wire payload inside a second JSON object, so the request JSON is escaped two times, and each quote mark and each backslash costs more bytes each time. A request JSON under 900000 bytes can give a body above 1048576 bytes, and the runtime refuses that body. A sender keeps the body of its call at or below 1048576 bytes. The two requests of this agent are a few kilobytes, so they are far below both limits.
+**The request limit.** The service counts the request JSON in bytes of UTF-8, and it refuses a request JSON of more than 900000 bytes with `request_too_large` (400). It reads at most 1000000 bytes of wire payload. The wire payload carries the request JSON as a string inside a one-message array (see Interface). The limit of 900000 bytes is safe only below the 1 MiB limit of the runtime, 1048576 bytes, on the escaped body. A buyer calls the runtime with the wire payload inside a second JSON object, so the request JSON is escaped two times, and each quote mark and each backslash costs more bytes each time. A request JSON under 900000 bytes can give a body above 1048576 bytes, and the runtime refuses that body. A sender keeps the body of its call at or below 1048576 bytes. The two requests of this agent are a few kilobytes, so they are far below both limits.
 
 **The money.** A hire of either operation locks the price and both bonds, 5 units. On Accept the supplier receives the price and the supplier bond, and the buyer's bond returns to the buyer. If the buyer does not accept within 600 s of the supplier's Submit, the supplier may Release the escrow and take the price and both bonds. If the supplier never submits, the buyer reclaims after `deliver_by`. The order is paid from the vault of the hirer: the vault pays the price and both bonds of the advert of the lot, and the value limit of the delegation caps that payment. The delegation key of the agent pays the fees of that Pay and of the Accept.
 
@@ -403,3 +403,55 @@ The agent stakes a claim for each run, not a standing claim. A claim has these t
 None. `FAULT_MODE` must be empty.
 
 The service stops at start when `FAULT_MODE` has a value. Every result has the member `fault_mode`, and it is the empty text. The manifest lists no fault value in `behaviour.fault_modes`.
+
+## Operator and data handling
+
+Operator: Apex Fusion Foundation. The contact is `operator.contact` in the manifest.
+
+The stock reading, the purchase order and the confirmation are synthetic data, and they are held in memory while a job runs. On disk the service keeps the bookkeeping of the escrows it posts, the list of sub-delegations that it has to end, the record of the challenges it files, the register of the transactions it co-signed, and the counter of purchase order numbers. The log carries job outcomes, counts and codes, never a request, a stock reading, an order or a key. What leaves to third parties:
+
+| Party | What it receives |
+|---|---|
+| the identity gateway (the token requests of the agent and of stock-reader) | the token request of the agent for the action `po.write`, with the subject token that the service key signs and the proof that the delegation key signs, and the token request of `stock-reader` for the action `erp.stock.read`, signed with its two keys. Each request names one action, one resource and one delegation |
+| the mock ERP and the PO store (the calls above, with their tokens) | a read of the stock of one SKU, and a write of one order. Each call carries a token for one action and one resource. The write holds the purchase order |
+| a model supplier on the Vector marketplace, hired through a bonded escrow, and the model provider behind it (the prompt of each decision: the stock reading and the lots, or the purchase order and the confirmation) | one job for each decision: the fixed prompt of the decision, its data and the reference of the escrow. The data of `reorder` is the SKU and five numbers of the stock reading, the three lot sizes and the date of today. The data of `accept_delivery` is the SKU, the lot and the quantity of the order and of the confirmation. |
+| the Order Desk (the purchase order, the salt, the approval reference, the DID of this agent and the delegation) | the handoff. The handoff holds the purchase order, the salt, the approval reference, the DID of this agent and the identifier of the delegation. |
+| the Vector ledger (the sub-delegation and, on a dispute, the evidence document and the challenge) | the Delegate and the Undelegate transactions of the sub-delegation. On a dispute, the evidence document and the challenge. Each stays in the history of the ledger |
+
+To post and settle its escrows, the service reads the ledger through the node (Ogmios) and the Koios indexer, submits its transactions through the submit API, and finds suppliers on the marketplace indexer. They see the references and the transactions of those escrows, and nothing of a request. On the ledger an escrow carries only the sha256 of its wire payload. At start the service fetches one file: the Module-1 deployment manifest, at an https address that a commit pins. It sends no data of a job there.
+
+## Known gaps
+
+The manifest states these eight, in this order, word for word. A test keeps them equal to `gapsFor` in `agents/reorder-agent/src/serve/gaps.ts`. The Reorder Agent has no fault value, so the list has no sentence about a fault switch. The seventh sentence says whose keys the parties are. The eighth starts with the lead `What this does not show:` and names three things that no run of use case 1 (inventory reorder) covers.
+
+- The model chooses the lot. Nothing in this agent limits that choice: the vault of the hirer refuses a lot above the delegated amount, and the hirer approves the order or does not.
+- This agent does not check the approval of the hirer. The Order Desk does.
+- A challenge puts a hold on the identity of the supplier if the jury finds for this agent. It does not return what the escrow locked: a delivery that this agent refuses can still be released to the supplier 600 s after its Submit.
+- The stock reading comes from a mock system and is not checked against anything.
+- A model call that fails ends the job. There is no second provider.
+- Every party on the supplier side is operated by the same foundation as this agent.
+- The controller key, the Accountable key and the guardian keys of this deployment are held on one host by one operator, so a party is independent of the controller by key only.
+- What this does not show: no run covers the refund of the escrow of a revoked agent, the reclaim of an escrow by its buyer, or a relying party that refuses a live token after its authority ended, and tests alone cover the last.
+
+## How to hire it
+
+The agent has no advert yet, so nobody can hire it today. These steps are for the day it has one. You hire it twice, once for each operation, and a delegation and a vault carry the authority for the order. [docs/HIRE.md](../docs/HIRE.md) gives the steps of the marketplace tools.
+
+1. **Delegate to the agent.** Build the Delegate transaction with `vector_build_delegation_delegate`. The delegate is this agent. The delegate key is a free one of its two delegation keys, which `keys.delegation_pkhs` of the manifest lists. The actions are `marketplace.hire.v1`, `erp.stock.read` and `po.write`. The resources are the escrow script and the two mock URLs, `<mock base>/t/<tenant>/erp` and `<mock base>/t/<tenant>/po`, where `<mock base>` is the origin of the mock systems that the operator gives you. Set `remaining` to 1 or more: `propose` makes a sub-delegation under your delegation, and a delegation with `remaining` 0 ends that job with `sub_delegation_parent_exhausted`. Set the value limit to the price and both bonds of the lot that you accept. Sign the transaction with your key first: the co-sign route refuses a transaction that the delegator did not sign (`principal_not_allowed`). Send the signed transaction to the agent with `vector_delegation_request_cosign`. The route signs only for a principal key on the allowlist of the operator, and it answers `key_in_use` (409) for a delegation key that is in use. Submit the transaction that comes back, and wait until it is confirmed: a `propose` job on a delegation that is not live ends with `sub_delegation_parent_not_live`.
+2. **Open one vault under the delegation** with `vector_build_vault_open`. The agent finds the Live vault of the delegation itself, so the delegation needs exactly one: `execute` ends with `failed` and the reason `no_live_vault` or `several_live_vaults` otherwise. The vault pays the price and both bonds of the advert of the lot, so put in it what the order needs.
+3. **Hire `propose`.** Post the escrow for the advert of the agent, send the request JSON, read the result, verify the receipt and accept, as `docs/HIRE.md` says. The request JSON is the first example under Request, with your own values. The purchase order is the `document` of the result.
+4. **Approve the order.** Read the purchase order. If you accept it, make the approval with `vector_build_attestation_attest`: the type is 5, the subject is this agent, and the digest is the `proposal_digest`. Make it with the key that gave the delegation: the Order Desk refuses another issuer with `approval_wrong_issuer`. The approval is valid for 4 hours unless you choose another time, and for 24 hours at most. The attestation holds a deposit of 5000000 lovelace, and the deposit returns 90 days after the attestation ends.
+5. **Hire `execute`.** Send the `proposal` as `propose` returned it, with the `approval` of step 4. The second example under Request shows the request. Verify the receipt and accept.
+6. **Close the vault and end the delegation.** Close the vault with `vector_build_vault_close`. End the delegation with `vector_build_delegation_undelegate`.
+
+## Changelog
+
+- 0.1.0, 2026-11-23: built
+
+## Links
+
+- Manifest: `GET /agent.json` on the public URL of the agent, once the agent has an advert. The service renders it from its environment when it starts. The template is [agents/reorder-agent/agent.json.template](../agents/reorder-agent/agent.json.template).
+- Source: [agents/reorder-agent](../agents/reorder-agent)
+- Deploy pack: [deploy/server/RUNBOOK-reorder-agent.md](../deploy/server/RUNBOOK-reorder-agent.md)
+- Use case kit: [packages/usecase-kit](../packages/usecase-kit)
+- Guide: [docs/HIRE.md](../docs/HIRE.md)

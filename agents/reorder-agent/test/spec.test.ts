@@ -4,29 +4,30 @@
 // with their statuses, the claim statements, the gap sentences word for word, the third parties, and the files that the page links.
 // The tests read the page, the manifest, the env example and the compose file of the pack, and no network.
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import { parse } from 'yaml';
-import { ACCEPT_WINDOW_MS } from '@vsa/buyer-core';
+import { ACCEPT_WINDOW_MS, HIRE_ACTION } from '@vsa/buyer-core';
 import { MAX_BODY, RESERVATION_MS } from '@vsa/service-kit';
-import { CONFIRMATIONS_REQUIRED } from '@vsa/usecase-kit/access';
-import { INTERRUPTION_REASONS, PAY_UNCONFIRMED, checkRuntimeBody, checkWirePayload, completedResult, disputedResult, failedResult, proposedResult, refusedResult, vaultRefusedResult } from '@vsa/usecase-kit/buyer';
+import { CONFIRMATIONS_REQUIRED, tokenTarget } from '@vsa/usecase-kit/access';
+import { INTERRUPTION_REASONS, PAY_UNCONFIRMED, checkRuntimeBody, checkWirePayload, completedResult, disputedResult, failedResult, handoffOf, proposedResult, refusedResult, vaultRefusedResult } from '@vsa/usecase-kit/buyer';
 import { COSIGN_SETTINGS, COSIGN_STATUS, parseAllowlist, parseCosignSettings } from '@vsa/usecase-kit/cosign';
 import { readFaultSwitch, withFaultMode } from '@vsa/usecase-kit/fault';
 import { INVENTORY_CAPABILITIES, LOT_NAMES, PO_SCHEMA, REORDER_CLAIM, parseOrderConfirmation, parsePurchaseOrder, poNumberOf } from '@vsa/usecase-kit/inventory';
 import {
-  AFTER_CLAIM_REFUSALS, COSIGN_ROUTE, COSIGN_RULE, ERROR_STATUS, EXECUTE_OUTCOMES, EXIT_STATES, FAULT_MODES, MAX_REQUEST_BYTES, PROPOSE_OUTCOMES, RECEIPT_CHECKS, RUNTIME_BODY_LIMIT_BYTES, canonicalJson,
-  checkRequestSize, exitStateOf, makeProposal, parseProposal, parseRequest,
+  AFTER_CLAIM_REFUSALS, APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE, APPROVAL_VALIDITY_DEFAULT_MS, APPROVAL_VALIDITY_MAX_MS, COSIGN_ROUTE, COSIGN_RULE, COUNTERPARTY_REFUSALS, ERROR_STATUS, EXECUTE_OUTCOMES,
+  EXIT_STATES, FAULT_MODES, MAX_REQUEST_BYTES, PROPOSE_OUTCOMES, RECEIPT_CHECKS, RUNTIME_BODY_LIMIT_BYTES, canonicalJson, checkRequestSize, exitStateOf, makeProposal, parseProposal, parseRequest,
 } from '@vsa/usecase-kit/protocol';
-import type { Decision, ExecuteOutcome, ExecuteResult, HandoffRecord, ProtocolResult, ReceiptVerification, SubJob, WriteRecord } from '@vsa/usecase-kit/protocol';
+import type { Decision, ExecuteOutcome, ExecuteRequest, ExecuteResult, HandoffRecord, ProtocolResult, ReceiptVerification, SubJob, WriteRecord } from '@vsa/usecase-kit/protocol';
 import { JOB_DEADLINE_MS as EXECUTE_DEADLINE_MS } from '../src/execute/index.ts';
 import { ACCEPT_DECISION, REORDER_DECISION, SUPPLIER_FAILURES, acceptInput, parseProposeFields, reorderInput, stockReadingSha256 } from '../src/model/index.ts';
 import type { StockReading } from '../src/model/index.ts';
 import { PROPOSE_DEADLINE_MS, PROPOSE_FAILURES, ProposeRefusal, runPropose } from '../src/propose/index.ts';
 import type { ProposeDeps, ProposeRequest } from '../src/propose/index.ts';
+import { CHALLENGE_GAP, KEYS_GAP, NOT_SHOWN_GAP, gapsFor } from '../src/serve/gaps.ts';
 import { REQUEST_SCHEMA, TEMPLATE_ENV, manifestFromEnv } from '../src/serve/manifest.ts';
 import { RequestError, parseJob } from '../src/serve/server.ts';
-import { BUYER_BOND_LOVELACE, JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, PRICE_DEFAULT_LOVELACE, SUPPLIER_BOND_LOVELACE, priceOf, processingWindowOf, supplierKeyOf } from '../src/serve/settings.ts';
+import { BUYER_BOND_LOVELACE, JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, PRICE_DEFAULT_LOVELACE, SUPPLIER_BOND_LOVELACE, module1SourceOf, priceOf, processingWindowOf, supplierKeyOf } from '../src/serve/settings.ts';
 import { SETTINGS } from '../src/serve/start.ts';
 
 const root = new URL('../../../', import.meta.url);
@@ -169,6 +170,7 @@ describe('specs/reorder-agent.md', () => {
     expect([MAX_REQUEST_BYTES, RUNTIME_BODY_LIMIT_BYTES, MAX_BODY]).toStrictEqual([900_000, 1_048_576, 1_000_000]);
     for (const part of [
       'The service counts the request JSON in bytes of UTF-8, and it refuses a request JSON of more than 900000 bytes with `request_too_large` (400). It reads at most 1000000 bytes of wire payload.',
+      'The wire payload carries the request JSON as a string inside a one-message array (see Interface).',
       'The limit of 900000 bytes is safe only below the 1 MiB limit of the runtime, 1048576 bytes, on the escaped body.',
       'A request JSON under 900000 bytes can give a body above 1048576 bytes, and the runtime refuses that body. A sender keeps the body of its call at or below 1048576 bytes.',
       'The two requests of this agent are a few kilobytes, so they are far below both limits.',
@@ -531,5 +533,100 @@ describe('specs/reorder-agent.md, the receipt, the claim and the fault switch', 
     expect(fault).toContain('The service stops at start when `FAULT_MODE` has a value. Every result has the member `fault_mode`, and it is the empty text. The manifest lists no fault value in `behaviour.fault_modes`.');
     expect(PROPOSED.fault_mode).toBe('');
     for (const result of Object.values(RESULTS)) expect(withFaultMode(FAULT, result).fault_mode).toBe('');
+  });
+});
+
+describe('specs/reorder-agent.md, the operator, the gaps, the hire and the links', () => {
+  test('Operator and data handling: the operator, the data sentences of the manifest, the five third parties, and what each decision and the handoff carry', () => {
+    const operator = section('Operator and data handling');
+    expect(manifest.operator.name).toBe('Apex Fusion Foundation');
+    expect(operator).toContain('Operator: Apex Fusion Foundation. The contact is `operator.contact` in the manifest.');
+    expect(operator).toContain(manifest.behaviour.data_handling);
+    const parties = firstCells(operator, '| Party | What it receives |');
+    expect(parties).toStrictEqual(manifest.behaviour.third_parties);
+    expect(parties).toHaveLength(5);
+    // A decision carries the SKU and five numbers of the stock reading, the three lot sizes and the date, or the SKU, the lot and the quantity of each side.
+    const input = reorderInput(READING, { 'lot-small': 10, 'lot-medium': 50, 'lot-large': 200 }, '2026-11-30') as { stock_reading: Record<string, unknown> };
+    expect(Object.keys(input.stock_reading)).toStrictEqual(['sku', 'on_hand', 'threshold', 'daily_usage', 'lead_time_days', 'open_orders']);
+    expect(operator).toContain('The data of `reorder` is the SKU and five numbers of the stock reading, the three lot sizes and the date of today. The data of `accept_delivery` is the SKU, the lot and the quantity of the order and of the confirmation.');
+    // The handoff to the Order Desk.
+    const handoff = must(handoffOf({ use_case: 'inventory-reorder', agent_did: didOf('the Reorder Agent'), request: must(parseRequest(EXECUTE_REQUEST)) as ExecuteRequest }));
+    expect(Object.keys(handoff)).toStrictEqual(['schema', 'use_case', 'sender_did', 'delegation', 'document', 'salt', 'approval']);
+    expect(operator).toContain('The handoff holds the purchase order, the salt, the approval reference, the DID of this agent and the identifier of the delegation.');
+    // The one file that the start fetches, and the services that the service calls.
+    for (const name of ['VECTOR_MODULE1_MANIFEST', 'VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_MARKETPLACE_INDEXER_URL', 'IDENTITY_GATEWAY_URL']) expect(SETTINGS).toContain(name);
+    expect(() => module1SourceOf({ VECTOR_MODULE1_MANIFEST: 'https://example.test/vector-agent-modules/main/manifest.json' })).toThrow('must be pinned to a commit');
+    expect(module1SourceOf({ VECTOR_MODULE1_MANIFEST: `https://example.test/vector-agent-modules/${'ab'.repeat(20)}/manifest.json` })).toContain('ab'.repeat(20));
+    expect(operator).toContain('At start the service fetches one file: the Module-1 deployment manifest, at an https address that a commit pins.');
+    expect(operator).toContain('the node (Ogmios) and the Koios indexer');
+  });
+
+  test('Known gaps: the eight sentences of the manifest, word for word and in order, with the sentence about the keys and the lead of what no run shows', () => {
+    const gaps = section('Known gaps');
+    const lines = gaps.split('\n').filter((line) => line.startsWith('- '));
+    expect(lines).toStrictEqual(gapsFor().map((gap) => `- ${gap}`));
+    expect(manifest.gaps).toStrictEqual([...gapsFor()]);
+    expect(lines).toHaveLength(8);
+    expect(gaps).toContain('The manifest states these eight, in this order, word for word. A test keeps them equal to `gapsFor` in `agents/reorder-agent/src/serve/gaps.ts`.');
+    expect(gaps).toContain('The Reorder Agent has no fault value, so the list has no sentence about a fault switch.');
+    // The seventh says that one operator holds the keys of the parties on one host. The eighth is the lead of what no run shows, with its three things.
+    expect(lines[6]).toBe(`- ${KEYS_GAP}`);
+    expect(KEYS_GAP).toBe('The controller key, the Accountable key and the guardian keys of this deployment are held on one host by one operator, so a party is independent of the controller by key only.');
+    expect(lines[7]).toBe(`- ${NOT_SHOWN_GAP}`);
+    expect(NOT_SHOWN_GAP.startsWith('What this does not show: ')).toBe(true);
+    for (const part of ['the refund of the escrow of a revoked agent', 'the reclaim of an escrow by its buyer', 'a relying party that refuses a live token after its authority ended', 'tests alone cover the last']) {
+      expect(NOT_SHOWN_GAP, part).toContain(part);
+    }
+    expect(gaps).toContain('The seventh sentence says whose keys the parties are. The eighth starts with the lead `What this does not show:` and names three things that no run of use case 1 (inventory reorder) covers.');
+    // The third gap says when a delivery that the agent refuses can still be released: the window of the Accept.
+    expect(CHALLENGE_GAP).toContain(`released to the supplier ${ACCEPT_WINDOW_MS / 1000} s after its Submit`);
+  });
+
+  test('How to hire it: six steps, the tools of the hosted server, the actions and the resources of the delegation, and the codes and the limits that the steps name', () => {
+    const how = section('How to hire it');
+    const hosted = text('scripts/specs.test.mjs');
+    const tools = [...how.matchAll(/`(vector_[a-z_]+)`/g)].map((hit) => hit[1]);
+    expect(tools).toStrictEqual(['vector_build_delegation_delegate', 'vector_delegation_request_cosign', 'vector_build_vault_open', 'vector_build_attestation_attest', 'vector_build_vault_close', 'vector_build_delegation_undelegate']);
+    for (const tool of tools) expect(hosted.includes(`'${tool}'`), tool).toBe(true);
+    expect(how.split('\n').filter((line) => /^\d\. \*\*/.test(line))).toHaveLength(6);
+    // The actions of the delegation, and the resource of each mock route.
+    const bases = { publicBase: 'https://mock.example', mtlsBase: 'https://mtls.example' };
+    const stock = must(tokenTarget(bases, TENANT, 'erp.stock', { sku: READING.sku }));
+    const write = must(tokenTarget(bases, TENANT, 'po.write'));
+    expect([HIRE_ACTION, stock.action, write.action]).toStrictEqual(['marketplace.hire.v1', 'erp.stock.read', 'po.write']);
+    expect([stock.resource, write.resource]).toStrictEqual([`${bases.publicBase}/t/${TENANT}/erp`, `${bases.publicBase}/t/${TENANT}/po`]);
+    expect(how).toContain('The actions are `marketplace.hire.v1`, `erp.stock.read` and `po.write`.');
+    expect(how).toContain('`<mock base>/t/<tenant>/erp` and `<mock base>/t/<tenant>/po`');
+    expect(manifest.keys.delegation_pkhs).toHaveLength(2);
+    expect(how).toContain('a free one of its two delegation keys, which `keys.delegation_pkhs` of the manifest lists');
+    // The codes that the steps name are the codes of the jobs and of the co-sign route.
+    expect(PROPOSE_FAILURES).toEqual(expect.arrayContaining(['sub_delegation_parent_exhausted', 'sub_delegation_parent_not_live']));
+    expect([COSIGN_STATUS.principal_not_allowed, COSIGN_STATUS.key_in_use]).toStrictEqual([403, 409]);
+    expect(COUNTERPARTY_REFUSALS['order-desk']).toContain('approval_wrong_issuer');
+    for (const code of ['sub_delegation_parent_exhausted', 'sub_delegation_parent_not_live', 'principal_not_allowed', 'key_in_use', 'no_live_vault', 'several_live_vaults', 'approval_wrong_issuer']) {
+      expect(how, code).toContain(`\`${code}\``);
+    }
+    // The approval: the type, the times and the deposit of the kit.
+    expect([APPROVAL_ATT_TYPE, APPROVAL_VALIDITY_DEFAULT_MS / 3_600_000, APPROVAL_VALIDITY_MAX_MS / 3_600_000, APPROVAL_DEPOSIT_LOVELACE]).toStrictEqual([5, 4, 24, 5_000_000n]);
+    expect(text('packages/usecase-kit/src/protocol/approval.ts')).toContain('It returns 90 days after the attestation ends.');
+    expect(how).toContain('the type is 5, the subject is this agent, and the digest is the `proposal_digest`');
+    expect(how).toContain('The approval is valid for 4 hours unless you choose another time, and for 24 hours at most. The attestation holds a deposit of 5000000 lovelace, and the deposit returns 90 days after the attestation ends.');
+    expect(how).toContain('The agent has no advert yet, so nobody can hire it today.');
+  });
+
+  test('the Changelog is the version of the manifest, and the links name files that exist', () => {
+    expect(manifest.version).toBe('0.1.0');
+    expect(section('Changelog').trim()).toBe(`- ${manifest.version}, ${PAGE_DATE}: built`);
+    const links = section('Links');
+    const targets = [...links.matchAll(/\[([^\]]+)\]\(\.\.\/([^)]+)\)/g)].map((hit) => ({ label: hit[1], target: hit[2] }));
+    expect(targets.length).toBeGreaterThanOrEqual(4);
+    for (const { label, target } of targets) {
+      expect(existsSync(new URL(target, root)), target).toBe(true);
+      expect(label, target).toBe(target);
+    }
+    expect(manifest.links.spec.endsWith('/specs/reorder-agent.md')).toBe(true);
+    expect(manifest.links.source.endsWith('/agents/reorder-agent')).toBe(true);
+    expect(links).toContain('[agents/reorder-agent/agent.json.template](../agents/reorder-agent/agent.json.template)');
+    expect(links).toContain('[docs/HIRE.md](../docs/HIRE.md)');
   });
 });
