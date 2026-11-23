@@ -27,11 +27,12 @@
 //                     runs or by a reservation. A path that the server answers itself, a path with a query, and a path given twice are refused when the server is made.
 //                     GET matches whatever the query, and a HEAD gets the headers and no body; POST matches only the path itself. A method that the route does not list is
 //                     404. The handler is given a new object { method, headers, body }, never the request of Node, and reads the body with a limit of its own: the server
-//                     reads no byte of it. The reply is written with the content-length of the server. A handler that throws, rejects, runs longer than openRouteTimeoutMs
+//                     reads no byte of it, and calls the handler with no this. The reply is written with the content-length of the server (a 204 has none, and no body), and the
+//                     connection is closed after it when the caller has not sent the whole body. A handler that throws, rejects, runs longer than openRouteTimeoutMs
 //                     (60 s at most) or gives a reply of another shape is 500 {error: "internal"}. The log gets the message of the cause, never the request, its body or its
-//                     headers: a line for each route at once, then one a minute at most with the count since the last line, as for the 401 line. A stop (src/lifecycle.ts) waits
-//                     for an open route in flight, until it has answered or has failed at its bound, or until the wait of the stop is over, and the kit refuses no open route
-//                     while it stops. An open route holds no job slot, so it is never an abandoned job.
+//                     headers: a line for each route at once, then one a minute at most with the count since the last line, as for the 401 line. A stop (src/lifecycle.ts) takes
+//                     no new connection, and it waits for an open route in flight, until it has answered or has failed at its bound, or until the wait of the stop is over.
+//                     An open route holds no job slot, so it is never an abandoned job.
 //
 // A caller that hangs up (ruling R-D24). The runtime aborts its call at its own budget, min(SERVICE_TIMEOUT_MS, deliver_by - send time - 30 s), and frees the
 // escrow. By default the job runs to its end whatever its connection does, and holds the slot until then: a service whose job must settle what it started (the
@@ -237,22 +238,26 @@ export function createJobServer<Req, Res>(opts: JobServerOptions<Req, Res>): Ser
       noteFailure(route.path, arrivedAt, cause);
       if (res.destroyed || res.writableEnded) return;
       if (res.headersSent) { res.destroy(); return; }
-      res.writeHead(500, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(INTERNAL_TEXT), connection: 'close' });
+      // The reason phrase is given: a first attempt to write the head that failed may have left the phrase of its own status behind, and that would make a 500 OK.
+      res.writeHead(500, 'Internal Server Error', { 'content-type': 'application/json', 'content-length': Buffer.byteLength(INTERNAL_TEXT), connection: 'close' });
       if (head) res.end(); else res.end(INTERNAL_TEXT);
     };
     let reply: CheckedReply;
     try {
       // A new plain object with three members, and never the request of Node: that has no member body, for it is the body. The server reads no byte of it.
       const request: OpenRequest = { method: req.method, headers: req.headers, body: req };
-      // A handler that runs too long is not stopped, it cannot be: its answer is ignored when it comes, and the reply of the 500 is written once.
-      reply = checkOpenReply(await within((async () => route.handle(request))(), openRouteTimeoutMs));
+      // The handler is called as a plain function with no this: it gets nothing of the route.
+      const { handle } = route;
+      // A handler that runs too long is not stopped, it cannot be: its answer is ignored when it comes, and the reply of the 500 is written once. A caller that has not sent the
+      // whole body when the handler has answered gets the connection closed after the answer, as after a 400 and a 401: it cannot go on uploading.
+      reply = checkOpenReply(await within((async () => handle(request))(), openRouteTimeoutMs), !req.complete);
     } catch (e) {
       fail(e);
       return;
     }
     if (res.destroyed || res.writableEnded) return; // the caller has gone
     try {
-      res.writeHead(reply.status, { ...reply.headers, 'content-length': reply.bytes });
+      res.writeHead(reply.status, reply.headers);
       if (head) res.end(); else res.end(reply.body);
     } catch (e) {
       fail(e);

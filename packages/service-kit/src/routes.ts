@@ -86,6 +86,7 @@ function pathProblem(path: string): string | undefined {
   if (!PATH_CHARS.test(path)) return 'has a character other than a letter, a digit, or one of . _ ~ / - (no query, no "#", no "%" escape, no space, no text that is not ASCII)';
   if (path.includes('..')) return 'has ".."';
   if (path.includes('//')) return 'has "//"';
+  if (path.split('/').includes('.')) return 'has a "." segment';
   if (OWN_PATHS.includes(path)) return 'is a path that the server answers itself';
   return undefined;
 }
@@ -134,33 +135,39 @@ export function matchOpenRoute(routes: ReadonlyMap<string, CheckedOpenRoute>, me
   return undefined;
 }
 
-/** A reply that has been checked: the headers to write, which hold no framing header, and the length of the body in bytes. */
+/** A reply that has been checked and made into the answer to write: the status, the headers (the framing is the server's) and the body (none for a 204). */
 export interface CheckedReply {
   readonly status: number;
-  readonly headers: Readonly<Record<string, string>>;
+  readonly headers: Readonly<Record<string, string | number>>;
   readonly body: string;
-  readonly bytes: number;
 }
 // What Node refuses in a header: a name that is not a token, and a value with a control character or a character above U+00FF.
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const HEADER_VALUE = /^[\t\x20-\x7e\x80-\xff]*$/;
 /**
- * The reply of a handler, checked: an object whose status is a whole number from 200 to 599 (an interim status is no answer), whose headers are text for names and
- * values that Node can send, and whose body is a text. Each member is read one time. Anything else throws a TypeError whose message names the fault and shows no value.
+ * The reply of a handler, checked, and made into the answer that the server writes. The reply is an object whose status is a whole number from 200 to 599 (an interim
+ * status is no answer), whose headers are a plain object with text for names and values that Node can send, and whose body is a text. Each member is read one time.
+ * Anything else throws a TypeError whose message names the fault and shows no value. The framing is the server's: it writes content-length itself, and it drops the
+ * content-length, the transfer-encoding and the trailer of the handler, in any letter case. A 204 has no content, so it has no content-length and no body. `closing` is
+ * true when the caller has not sent the whole body: the answer then closes the connection, and the connection header of the handler is dropped.
  */
-export function checkOpenReply(value: unknown): CheckedReply {
+export function checkOpenReply(value: unknown, closing: boolean): CheckedReply {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('the reply of the handler is not an object with the members status, headers and body');
   const { status, headers, body } = value as { status?: unknown; headers?: unknown; body?: unknown };
   if (typeof status !== 'number' || !Number.isInteger(status) || status < 200 || status > 599) throw new TypeError('the status of the reply is not a whole number from 200 to 599');
   if (typeof body !== 'string') throw new TypeError('the body of the reply is not a text');
   if (!isPlain(headers)) throw new TypeError('the headers of the reply are not a plain object');
-  const kept: Record<string, string> = Object.create(null);
+  const written: Record<string, string | number> = Object.create(null);
   for (const name of Object.keys(headers)) {
     const given = (headers as Record<string, unknown>)[name];
     if (typeof given !== 'string' || !HEADER_NAME.test(name) || !HEADER_VALUE.test(given)) throw new TypeError('a header of the reply has a name or a value that cannot be sent');
-    // The server writes the length of the body, and the way that it is framed, itself: the handler's own headers for them are dropped, in any letter case.
+    // The headers of the framing are the server's, and so is the connection when it closes after this answer: the handler's own are dropped, in any letter case.
     const lower = name.toLowerCase();
-    if (lower !== 'content-length' && lower !== 'transfer-encoding') kept[name] = given;
+    if (lower === 'content-length' || lower === 'transfer-encoding' || lower === 'trailer' || (closing && lower === 'connection')) continue;
+    written[name] = given;
   }
-  return { status, headers: kept, body, bytes: Buffer.byteLength(body, 'utf8') };
+  const noContent = status === 204;
+  if (!noContent) written['content-length'] = Buffer.byteLength(body, 'utf8');
+  if (closing) written.connection = 'close';
+  return { status, headers: written, body: noContent ? '' : body };
 }

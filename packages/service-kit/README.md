@@ -224,7 +224,7 @@ The message names the path.
 The rules:
 
 - A path starts with `/` and has at most 128 characters.
-- A path has only the characters `A-Z a-z 0-9 . _ ~ / -`. It has no `..` and no `//`.
+- A path has only the characters `A-Z a-z 0-9 . _ ~ / -`. It has no `..`, no `//` and no segment that is only a dot.
 - A query, a `#`, a `%` escape, a space and text that is not ASCII are refused.
 - A path is none of the four paths of the kit.
 - No path is given twice. A path that needs both methods lists both in one entry.
@@ -257,7 +257,9 @@ The reply:
 - `headers` is a plain object. It has text for each name and each value, and Node can send them.
 - `body` is a text.
 - The kit writes `content-length` as the number of bytes of the body.
-- The kit drops a `content-length` and a `transfer-encoding` of the handler, in any letter case.
+- A 204 has no body and no `content-length`. The kit writes neither, and it drops the body of the handler.
+- The kit drops a `content-length`, a `transfer-encoding` and a `trailer` of the handler, in any letter case.
+- The kit closes the connection after the answer when the caller has not sent the whole body yet. It writes `connection: close` and drops a `connection` header of the handler.
 
 The handler is a fault when it throws, rejects, runs longer than the bound, or gives a reply of another shape.
 The answer to a fault is 500 `{error: "internal"}`, with `connection: close`.
@@ -282,12 +284,12 @@ It ignores the answer that comes late, and it writes the reply one time.
 
 ### A stop
 
-A stop waits for a call of an open route that is in flight.
-It waits until the call has its answer.
+A stop takes no new connection.
+It answers the open-route calls that are in flight.
+It waits until each call has its answer.
 A call that runs too long has its answer at the bound of the route, which is 60 seconds at most.
 A stop that has a shorter wait ends at its own wait, and then it closes the connection of the call.
 A call of an open route holds no job slot, so it never makes a stop say that it abandoned a job.
-A stop does not make the kit refuse an open route.
 
 ## The timing
 

@@ -4,6 +4,7 @@
 import { describe, test, expect, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { ServerResponse } from 'node:http';
 import { connect } from 'node:net';
 import * as kit from '../src/index.ts';
 import type { OpenReply, OpenRequest, OpenRoute } from '../src/index.ts';
@@ -52,6 +53,20 @@ function raw(port: number, method: string, path: string, body = ''): Promise<str
   });
 }
 const statusOf = (response: string): number => Number(/^HTTP\/1\.1 (\d{3})/.exec(response)?.[1]);
+/** A POST that announces `announced` bytes of body and sends `sent` of them, then waits for the head of the answer, which it returns as text. */
+function partial(port: number, path: string, announced: number, sent: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, '127.0.0.1');
+    let seen = '';
+    socket.on('error', reject);
+    socket.on('data', (chunk: Buffer) => {
+      seen += chunk.toString('latin1');
+      const end = seen.indexOf('\r\n\r\n');
+      if (end !== -1) { socket.destroy(); resolve(seen.slice(0, end)); }
+    });
+    socket.write(`POST ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: ${announced}\r\n\r\n${'x'.repeat(sent)}`);
+  });
+}
 
 // The shapes of the co-sign route of use case 1 (inventory reorder), written out: this package cannot import the kit of that use case.
 interface CosignHttpRequest { readonly method?: string | undefined; readonly headers: Readonly<Record<string, string | string[] | undefined>>; readonly body: AsyncIterable<Uint8Array | string> }
@@ -110,6 +125,15 @@ describe('what an open route answers', () => {
     expect([post.method, post.headers['x-probe'], post.headers['content-type'], typeof post.body[Symbol.asyncIterator]]).toStrictEqual(['POST', 'one', 'application/x-test', 'function']);
     expect(post).not.toBe(head);
     expect(head.method).toBe('HEAD'); // a route that lists GET also answers HEAD, and its handler sees the method
+  });
+
+  test('the kit calls the handler with no this: a function that reads this gets undefined, and not the route', async () => {
+    const seen: unknown[] = [];
+    const reader: OpenRoute = { path: '/this', methods: ['GET'], handle: function (this: unknown) { seen.push(this); return text('read'); } };
+    await withRoutes([reader], async (base) => {
+      expect((await fetch(`${base}/this`)).status).toBe(200);
+    });
+    expect(seen).toStrictEqual([undefined]);
   });
 
   test('a handler typed with the shapes of the co-sign route is a handle with no wrapper, and the status and headers that it chooses are written as they are', async () => {
@@ -287,13 +311,13 @@ describe('an open route and a stop', () => {
     const answered = fetch(`${base}${path}`).then(async (res) => [res.status, await res.text()], () => 'cut');
     await until(parts.entered, 'the handler has the request');
     return {
-      logs, answered, release: parts.release,
+      logs, answered, base, release: parts.release,
       stop: (waitMs: number) => lifecycle({ server, slot, log: (line) => { logs.push(line); } }).shutdown(waitMs),
       end: () => { server.close(); server.closeAllConnections(); },
     };
   }
 
-  test('a stop makes the kit refuse no open route: with the slot drained, an open route answers and a job is refused', async () => {
+  test('a call of an open route that reaches the kit during a stop is answered: with the slot drained, the route answers and a job is refused', async () => {
     const slot = new JobSlot();
     await withRoutes([getRoute], async (base) => {
       slot.drain(); // the first step of a stop
@@ -303,13 +327,14 @@ describe('an open route and a stop', () => {
     }, { slot });
   });
 
-  test('a stop waits for an open route in flight, and ends as finished once the call has its answer', async () => {
+  test('a stop takes no new connection and answers the open-route call that is in flight: it ends as finished once the call has its answer', async () => {
     const run = await stoppable('/slow');
     try {
       let ended = false;
       const stopped = run.stop(30_000).then((outcome) => { ended = true; return outcome; });
       await pause(250);
       expect(ended, 'the stop waits for the route').toBe(false);
+      await expect(fetch(`${run.base}/lots.json`), 'the stop takes no new connection').rejects.toThrow();
       run.release();
       expect(await run.answered, 'the call has its answer').toStrictEqual([200, 'slow']);
       expect(await stopped).toBe('finished');
@@ -362,11 +387,14 @@ describe('the check of the list, at the start of the server', () => {
     for (const near of ['/precheck/x', '/healthz2', '/agent', '/agent.json5', '/health', '/Precheck']) accepted([route(near)]);
   });
 
-  test('a path is refused for a missing slash, "..", "//", a query, "#", "%", a character that is not ASCII or not allowed, or more than 128 characters; the twins are accepted', () => {
+  test('a path is refused for a missing slash, "..", "//", a "." segment, a query, "#", "%", a character that is not ASCII or not allowed, or more than 128 characters; the twins are accepted', () => {
     expect(MAX_OPEN_PATH).toBe(128);
-    const bad = ['lots.json', '', '/a/../b', '/..', '/a//b', '//', '/a?x=1', '/a?', '/a#b', '/a%2e%2e/b', '/a%2F', '/a%2f', '/a b', '/\u00e9', '/a\u0000', '/a\nb', '/a\\b', '/a:b', `/${'a'.repeat(MAX_OPEN_PATH)}`];
+    const bad = [
+      'lots.json', '', '/a/../b', '/..', '/a//b', '//', '/.', '/./', '/./a', '/a/.', '/a/./b', '/a/./', '/./healthz', '/a?x=1', '/a?', '/a#b', '/a%2e%2e/b', '/a%2F', '/a%2f', '/a b', '/\u00e9', '/a\u0000',
+      '/a\nb', '/a\\b', '/a:b', `/${'a'.repeat(MAX_OPEN_PATH)}`,
+    ];
     for (const path of bad) refused([route(path)], /^[\x20-\x7e]{0,64}$/.test(path) && !/["\\]/.test(path) ? path : undefined);
-    const good = ['/a', '/a.b', '/a_b-c~d/e', '/A-Z0-9', '/a/', '/lots.json', '/cosign/delegate', '/.well-known/x', `/${'a'.repeat(MAX_OPEN_PATH - 1)}`];
+    const good = ['/a', '/a.b', '/a_b-c~d/e', '/A-Z0-9', '/a/', '/lots.json', '/cosign/delegate', '/.well-known/x', '/a./b', '/.a', '/a/.b/', '/a/b.', `/${'a'.repeat(MAX_OPEN_PATH - 1)}`];
     for (const path of good) accepted([route(path)]);
     for (const notText of [undefined, null, 5, ['/a'], {}]) refused([route(notText)]);
   });
@@ -607,10 +635,10 @@ describe('what goes wrong inside a handler', () => {
     });
   });
 
-  test('the server sets content-length and ignores the one of the handler, in any letter case, and the transfer-encoding of the handler: the answer has one length and is the whole body', async () => {
+  test('the server sets content-length and ignores the one of the handler, in any letter case, and the transfer-encoding and the trailer of the handler: the answer has one length and is the whole body', async () => {
     const framing: OpenRoute = {
       path: '/framing', methods: ['GET'],
-      handle: () => text(LOTS_TEXT, { headers: { 'Content-Length': '999', 'content-length': '1', 'CONTENT-LENGTH': '3', 'Transfer-Encoding': 'chunked', 'content-type': 'application/json' } }),
+      handle: () => text(LOTS_TEXT, { headers: { 'Content-Length': '999', 'content-length': '1', 'CONTENT-LENGTH': '3', 'Transfer-Encoding': 'chunked', Trailer: 'x-check', 'content-type': 'application/json' } }),
     };
     await withRoutes([framing], async (base, port) => {
       const res = await fetch(`${base}/framing`);
@@ -618,7 +646,62 @@ describe('what goes wrong inside a handler', () => {
       const head = (await raw(port, 'GET', '/framing')).split('\r\n\r\n')[0].split('\r\n');
       expect(head.filter((line) => /^content-length:/i.test(line)).map((line) => line.toLowerCase())).toStrictEqual([`content-length: ${Buffer.byteLength(LOTS_TEXT)}`]);
       expect(head.filter((line) => /^transfer-encoding:/i.test(line))).toStrictEqual([]);
+      expect(head.filter((line) => /^trailer:/i.test(line))).toStrictEqual([]);
       expect(head.filter((line) => /^content-type:/i.test(line))).toStrictEqual(['content-type: application/json']);
+    });
+  });
+
+  test('a 204 has no content-length and no body, whatever the handler gives; a 200 with an empty body is the twin and has content-length 0', async () => {
+    const routes: OpenRoute[] = [
+      { path: '/no-content', methods: ['GET'], handle: () => ({ status: 204, headers: { 'x-a': 'b', 'Content-Length': '5' }, body: 'text' }) },
+      { path: '/empty', methods: ['GET'], handle: () => ({ status: 200, headers: { 'x-a': 'b' }, body: '' }) },
+    ];
+    await withRoutes(routes, async (base, port) => {
+      for (const method of ['GET', 'HEAD']) {
+        const none = await fetch(`${base}/no-content`, { method });
+        expect([none.status, none.headers.get('content-length'), none.headers.get('transfer-encoding'), none.headers.get('x-a'), await none.text()], `204 ${method}`).toStrictEqual([204, null, null, 'b', '']);
+      }
+      const [wireHead, afterHead] = (await raw(port, 'GET', '/no-content')).split('\r\n\r\n');
+      expect(wireHead.split('\r\n').filter((line) => /^(content-length|transfer-encoding):/i.test(line)), 'no framing header on the wire').toStrictEqual([]);
+      expect(afterHead, 'no byte after the head').toBe('');
+      const empty = await fetch(`${base}/empty`);
+      expect([empty.status, empty.headers.get('content-length'), await empty.text()]).toStrictEqual([200, '0', '']);
+    });
+  });
+
+  test('the 500 of a failure has its own reason phrase, whatever a failed first attempt to write the head left behind', async () => {
+    const proto = ServerResponse.prototype as unknown as { writeHead: (this: ServerResponse, ...args: unknown[]) => unknown };
+    const original = proto.writeHead;
+    let attempts = 0;
+    // The first attempt fails after Node has set the status line to 200 OK, as it does when it refuses a header. The second attempt is the 500.
+    const spy = vi.spyOn(proto, 'writeHead').mockImplementation(function (this: ServerResponse, ...args: unknown[]) {
+      attempts += 1;
+      return attempts === 1 ? original.call(this, 200, { 'bad name': 'x' }) : original.apply(this, args);
+    });
+    try {
+      await withRoutes([getRoute], async (base) => {
+        const res = await fetch(`${base}/lots.json`);
+        expect([res.status, res.statusText, await res.text(), attempts]).toStrictEqual([500, 'Internal Server Error', '{"error":"internal"}', 2]);
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('an answer that comes before the caller has sent the whole body closes the connection and drops the connection header of the handler; a whole body and no body are the twins', async () => {
+    const answering = (path: string, reads: boolean): OpenRoute => ({
+      path, methods: ['POST'],
+      handle: async (request) => { if (reads) await bytesOf(request.body); return text('answer', { headers: { Connection: 'keep-alive', 'content-type': 'text/plain' } }); },
+    });
+    await withRoutes([answering('/early', false), answering('/read', true), getRoute], async (base, port) => {
+      // The caller announces 5 MB, sends 1000 bytes, and waits for the answer.
+      const head = (await partial(port, '/early', 5_000_000, 1000)).split('\r\n');
+      expect(head[0]).toBe('HTTP/1.1 200 OK');
+      expect(head.filter((line) => /^connection:/i.test(line)).map((line) => line.toLowerCase())).toStrictEqual(['connection: close']);
+      const read = await fetch(`${base}/read`, { method: 'POST', body: 'a whole body' });
+      expect([read.status, read.headers.get('connection')], 'a whole body').toStrictEqual([200, 'keep-alive']);
+      const get = await fetch(`${base}/lots.json`);
+      expect([get.status, get.headers.get('connection')], 'no body').toStrictEqual([200, 'keep-alive']);
     });
   });
 });
@@ -646,8 +729,14 @@ describe('the README', () => {
     expect(section).toContain('{error: "internal"}');
     expect(section).toContain('then at most one in 60 seconds');
     expect(section).toContain('(<n> since the last line of this kind)');
-    expect(section).toContain('A stop waits for a call of an open route that is in flight.');
+    expect(section).toContain('A stop takes no new connection.');
+    expect(section).toContain('It answers the open-route calls that are in flight.');
     expect(section).not.toContain('does not wait');
+    expect(section).not.toContain('refuse an open route');
+    expect(section).toContain('no segment that is only a dot');
+    expect(section).toContain('a `trailer`');
+    expect(section).toContain('A 204 has no body and no `content-length`.');
+    expect(section).toContain('`connection: close`');
     expect(README.split('\n## Routes\n')[1]?.split('\n## ')[0]).toContain('Open routes');
     expect(/[\u2013\u2014]/.test(section), 'no en dash and no em dash').toBe(false);
   });
