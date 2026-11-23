@@ -2,9 +2,10 @@
 
 This folder has the files of the agents and the mock systems that `deploy/host` does not hold. They run on a new host that `setup.sh` prepares, or beside the agents of `deploy/host` on the same host, when its proxy runs in a container (section "A host whose proxy runs in a container").
 In both ways, the agents of this folder share no container, no folder and no port with the agents of `deploy/host`.
+The snippet of the mock service is for Caddy on the host: its upstream is `127.0.0.1:9120`. On a host whose proxy runs in a container, the block of the mock service uses `mock-systems:9120` (section "A host whose proxy runs in a container").
 
-The host has 19 containers: 8 services, 10 runtimes and 1 mock service. One agent has three runtimes in front of one service, so there are 10 runtimes.
-The host builds no image. CI builds each image. A compose file names the image by its digest.
+The plan for the host is 19 containers: 8 services, 10 runtimes and 1 mock service. One agent has three runtimes in front of one service, so there are 10 runtimes. The memory of the host holds the mock service and the six containers of use case 1 at the planning sizes. The other 12 containers wait for a new count (section "The host").
+The agents of this folder build no image on the host. CI builds each image. A compose file names the image by its digest.
 
 The operator's steps are in [RUNBOOK.md](RUNBOOK.md). This note gives the facts.
 
@@ -41,7 +42,7 @@ Each agent adds one snippet file, one compose file and one env example later. Th
 | Address | One public IPv4 address. It does not change. |
 | Provider and region | The same as the present host |
 
-A runtime uses about 190 MiB. A service takes more than an idle service shows. On 2026-11-23 the mock service showed 169 MiB in `docker stats`, and `MemAvailable` fell by 462 MiB when it started, from 4,074 MiB to 3,612 MiB. So the plan counts 462 MiB for each new service, until the first start of that service is measured.
+A runtime uses about 190 MiB. A service takes more than an idle service shows. On 2026-11-23 the mock service showed 169 MiB in `docker stats`, and `MemAvailable` fell by 462 MiB when it started, from 4,074 MiB to 3,612 MiB. So the plan counts 462 MiB for each new service, until the first start of that service is measured. The figures in this section were measured on a host that also runs the agents of `deploy/host`. A new host needs its own measurement.
 The mock service keeps its tenants in memory, and its limit is 2 GiB (section "The mock service"). `MemAvailable` already counts Docker, Caddy and the system. The rest of the memory is for jobs, for image pulls and for a container that starts again.
 The gate is 1,024 MiB: a container starts only while `MemAvailable` is at least 1,024 MiB. A container that starts again needs the gate too.
 
@@ -62,10 +63,10 @@ With the mock service running, `MemAvailable` was 3,612 MiB in the typical case,
 | The mock service runs | 3,612 | 2,963 | passes |
 | The six containers run | 1,928 | 1,279 | passes, with 255 MiB of margin in the lowest case |
 
-The host builds none of these images, so no build counts here. The compose files give each runtime 768 MiB and each service 1,024 MiB (`mem_limit`), so that a fault stops one container only.
+The host builds none of the images of use case 1, so no build of theirs counts here. The agents of `deploy/host` build their runtime on the host: that build takes memory too, and the figures here do not count it. The compose files give each runtime 768 MiB and each service 1,024 MiB (`mem_limit`), so that a fault stops one container only.
 A job adds memory while it runs, in the service and in the runtime that holds its escrow: about 100 to 200 MiB in each. One job runs at a time in each service, so the two services add about 800 MiB. The co-sign route of the Reorder Agent runs outside the job slot: up to 4 calls at one time, about 100 MiB for each call. These figures are not measured.
 With one job in each service, the six containers leave 1,128 MiB in the typical case and 479 MiB in the lowest case. With 4 calls of the co-sign route as well, they leave 728 MiB and 79 MiB. The gate is for a start, not for a peak. Measure a job and a co-sign call in the first run, and count again.
-The containers of later agents come after these six. Add them to the table, and check the gate again. At the planning sizes, four more containers (two runtimes and two services) do not pass the gate. Measure the real size of each container at its first start.
+The containers of later agents come after these six. Add them to the table, and check the gate again. At the planning sizes, four more containers (two runtimes and two services) do not pass the gate. So the other 12 containers need more memory, or a real size below the planning size, before they start. Measure the real size of each container at its first start.
 
 ## The runtime image
 
@@ -164,7 +165,7 @@ This shape is for Caddy on the host. A host whose proxy runs in a container uses
 
 ## A host whose proxy runs in a container
 
-On some hosts the proxy is a Caddy container, and no Caddy package is installed on the host. The packs of use case 1 (the Reorder Agent and the Order Desk) are written for such a host. The script, the main `Caddyfile` of this folder and the folder `/etc/caddy/agents` are not used there.
+On some hosts the proxy is a Caddy container, and no Caddy package is installed on the host. The packs of use case 1 (the Reorder Agent and the Order Desk) are written for such a host, and they fit no other: their upstreams are container names, and Caddy on the host cannot resolve them. The script, the main `Caddyfile` of this folder and the folder `/etc/caddy/agents` are not used there.
 In this section, `<caddy container>` is the name of the Caddy container. `<caddyfile>` is the one file on the host that the container mounts as `/etc/caddy/Caddyfile`.
 
 | Item | Rule |
@@ -172,12 +173,13 @@ In this section, `<caddy container>` is the name of the Caddy container. `<caddy
 | The Caddyfile | One file. The container mounts that file. There is no folder of snippets. |
 | The block of an agent | The lines of the snippet of the pack, from `# <agent> vhosts (BEGIN)` to `# <agent> vhosts (END)`. The two markers are exact lines. A command finds them to replace the block or to remove it. |
 | The upstreams | Container names and container ports, for example `reorder-service:9101` and `reorder-runtime:8080`. They are not ports on `127.0.0.1`. |
-| The network | Compose makes the default network of the project, `<project>_default`, when it starts the service. A pack has no `networks` key, and no other container joins that network. |
+| The network | Compose makes the default network of the project, `<project>_default`, when it starts the service. A pack has no `networks` key. Only the Caddy container joins it. |
 | The join | `docker network connect <project>_default <caddy container>`. Do it once for each project. Do it again after each new Caddy container, because a new container has none of the joins of the old one. |
 | The write | Append the block to the end of `<caddyfile>`, in place. A mounted file does not follow a new file that replaces it. |
 | The check | `docker exec <caddy container> caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile`. The answer must say `Valid configuration`. |
 | The reload | `docker exec <caddy container> caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`. Never restart Caddy. |
 | The way back | Write the file again without the lines from the BEGIN marker to the END marker, in place. Then validate and reload. |
+| The mock service | The snippet of the mock service has the upstream `127.0.0.1:9120`, and `127.0.0.1` in a Caddy container is the container itself. So the block of the mock service names the container: `reverse_proxy mock-systems:9120` in each of its three proxy lines, and the Caddy container joins `mock-systems_default`. The compose file still publishes `127.0.0.1:9120` for the checks of the operator. Only the Caddy container joins that network. |
 
 The shape of the block:
 
@@ -220,7 +222,7 @@ The records must exist, and must resolve to the host, before the block of the na
 | `<mock host>` | The normal HTTPS host. Callers send access tokens and JWT-SVIDs here. |
 | `<mock mtls host>` | The client-certificate host. A caller presents an X.509-SVID as the TLS client certificate. |
 
-Both names go to the mock service on `127.0.0.1:9120`. The operator puts the real names in the snippet (RUNBOOK, step 6).
+Both names go to the mock service on `127.0.0.1:9120`, or on `mock-systems:9120` when the proxy is a container. The operator puts the real names in the snippet (RUNBOOK, step 6).
 The operator puts the same two names, as https origins, in the env file of the mock service (RUNBOOK, step 6, "Run the mock service"). Each name must be the same in the snippet and in the env file.
 
 On `<mock mtls host>`, Caddy asks for a client certificate (`client_auth` with `mode request`). Caddy does not require the certificate.
@@ -242,7 +244,7 @@ Caddy does not check who issued it. It passes the certificate that the client pr
 
 Caddy removes any `Client-Cert` header and any `Client-Cert-Chain` header that a client sends. It does this on both host names, before it sets its own header.
 So a client cannot forge a certificate. This is true only while Caddy is the sole way to reach the mock service. For this reason the compose file publishes the port of the service on `127.0.0.1` only, so that only a program on the host reaches it.
-Every process of the host that can open `127.0.0.1:9120` is a direct client of the service. It can send the bytes of the certificate of any SVID with no key, and any `Host`. So the host runs nothing that is not trusted, the port is on the loopback address only, and no other container shares the network of the service. The compose file gives the service the default network of its own project, and no other container joins it.
+Every process of the host that can open `127.0.0.1:9120` is a direct client of the service. It can send the bytes of the certificate of any SVID with no key, and any `Host`. So the host runs nothing that is not trusted, and the port is on the loopback address only. The compose file gives the service the default network of its own project. No other container joins it. When the proxy is a container, only the Caddy container joins it.
 
 The TLS handshake proves that the client holds the private key of the certificate. Nothing else is checked.
 The mock service must check these things itself:
@@ -328,5 +330,5 @@ A call needs the right host. `POST /admin/tenants` and every route of a system t
   Make each tenant again after such a restart (RUNBOOK, step 6, "Make or reset a tenant").
 - **Keys are made on the host and stay on it.** No key is made on another machine. No key leaves the host.
   A key file is in `/srv/agents/keys`, or in an env file with mode 600. See the RUNBOOK, section "Keys".
-- **The host builds no image.** CI builds the images. A compose file names an image by its digest.
+- **The agents of this folder build no image on the host.** CI builds the images. A compose file names an image by its digest.
 - **No container port is public.** See the section "Folders and ports".

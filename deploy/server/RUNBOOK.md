@@ -259,7 +259,7 @@ docker compose -f docker-compose.mock-systems.yml down
 
 ## 7. Add an agent
 
-The deploy pack of an agent has its compose file, its env example, its snippet and its own runbook. The packs of use case 1 (inventory reorder) are the Reorder Agent, with `RUNBOOK-reorder-agent.md`, and the Order Desk, with `RUNBOOK-order-desk.md`. The runbook of an agent gives the keys, the registration and the advert. These steps are only for the host.
+The deploy pack of an agent has its compose file, its env example, its snippet and its own runbook. The packs of use case 1 (inventory reorder) are the Reorder Agent, with `RUNBOOK-reorder-agent.md`, and the Order Desk, with `RUNBOOK-order-desk.md`. They fit the marker block only: their upstreams are container names, and Caddy on the host cannot resolve them. The runbook of an agent gives the keys, the registration and the advert. These steps are only for the host.
 
 1. Make the DNS record of each host name of the agent (step 5). Wait until it resolves to `<host address>`.
 2. Make the folder of the agent. Use the name of the agent:
@@ -289,8 +289,8 @@ The deploy pack of an agent has its compose file, its env example, its snippet a
 
    The second command must print `ok: no public container port`. If a container port is public, stop the container. Write `127.0.0.1:` before the port in the compose file. Start the container again.
 6. Put the block of the agent in the proxy. There are two ways. Use the one that fits the host, and use only that one:
-   - Snippet folder. Caddy runs on the host (the set-up of this runbook). Install the snippet of the agent as `/etc/caddy/agents/<agent>.snippet`, as in step 6. Check the whole configuration and reload Caddy.
-   - Marker block. Caddy runs in a container, and it mounts one Caddyfile (README, section "A host whose proxy runs in a container"). Join the Caddy container to the network of the project of the agent. Append the lines of the snippet, from its BEGIN marker to its END marker, to the Caddyfile, in place. Validate the whole file in the Caddy container, and reload Caddy. The runbook of the pack gives the commands, in its section "The Caddy block".
+   - Snippet folder. Caddy runs on the host (the set-up of this runbook), and the upstreams of the snippet are ports on `127.0.0.1`. The packs of use case 1 do not fit this way. Install the snippet of the agent as `/etc/caddy/agents/<agent>.snippet`, as in step 6. Check the whole configuration and reload Caddy.
+   - Marker block. Caddy runs in a container, and it mounts one Caddyfile (README, section "A host whose proxy runs in a container"). The packs of use case 1 use this way only. Join the Caddy container to the network of the project of the agent. Append the lines of the snippet, from its BEGIN marker to its END marker, to the Caddyfile, in place. Validate the whole file in the Caddy container, and reload Caddy. The runbook of the pack gives the commands, in its section "The Caddy block".
 7. Check the public name:
 
    ```sh
@@ -301,25 +301,26 @@ The deploy pack of an agent has its compose file, its env example, its snippet a
 
 1. The operator retires the advert first, as the runbook of the agent says. Then nobody can post an escrow against an agent that stops.
 2. Check that the runtime says `free` (section "The restart rule"). Wait while it says `working`.
-3. Stop the containers. Do not use `-v`. A volume can hold the list of escrows that a job left behind.
-
-   ```sh
-   sudo -u agents -H bash -c 'cd /srv/agents/<agent> && docker compose -f <compose file> down'
-   ```
-
-4. Take the block of the agent out of the proxy, in the way that put it in:
-   - Snippet folder. Remove the snippet. Check the configuration. Reload Caddy:
+3. Take the block of the agent out of the proxy, and stop the containers. The order depends on the way that put the block in. Do not use `-v` when you stop the containers. A volume can hold the list of escrows that a job left behind.
+   - Snippet folder. Stop the containers first. Then remove the snippet, check the configuration and reload Caddy:
 
      ```sh
+     sudo -u agents -H bash -c 'cd /srv/agents/<agent> && docker compose -f <compose file> down'
      sudo rm /etc/caddy/agents/<agent>.snippet
      sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
      sudo systemctl reload caddy
      ```
 
-   - Marker block. Write the Caddyfile again without the lines from the BEGIN marker to the END marker, in place. Validate the whole file in the Caddy container, and reload Caddy. The runbook of the pack gives the commands, in its section "Back out".
+   - Marker block. Take the block out first. Write the Caddyfile again without the lines from the BEGIN marker to the END marker, in place. Validate the whole file in the Caddy container, and reload Caddy. Leave the network of the project before the `down` command, because the Caddy container is on it. Then stop the containers:
 
-5. Remove the DNS records of the agent.
-6. Keep `/srv/agents/<agent>` and its keys. Delete them only when each wallet of the agent is empty. A deleted key cannot be made again.
+     ```sh
+     docker network disconnect <project>_default <caddy container>
+     sudo -u agents -H bash -c 'cd /srv/agents/<agent> && docker compose -f <compose file> down'
+     ```
+
+     The runbook of the pack gives the commands, in its section "Back out".
+4. Remove the DNS records of the agent.
+5. Keep `/srv/agents/<agent>` and its keys. Delete them only when each wallet of the agent is empty. A deleted key cannot be made again.
 
 ## Keys
 

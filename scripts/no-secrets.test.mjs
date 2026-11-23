@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 const FORBIDDEN = /(mnemonic|seed phrase|PRIV_KEY_HEX=[0-9a-f]{64}|ed25519_sk1[0-9a-z]{20,})/i;
@@ -268,11 +269,28 @@ function deploymentProblems(deployments, table, composeFiles) {
   return problems;
 }
 
+/** The compose files of a folder: the name starts with docker-compose, and it ends in .yml or .yaml. */
+const composeFilesIn = (folder) => readdirSync(folder).filter((file) => /^docker-compose.*\.ya?ml$/.test(file)).sort().map((file) => join(folder, file));
+
 test('the compose files of the host give each container its own keys: the runtime blanks the keys of its service, the service blanks the supplier key, and no container writes a key', () => {
-  const files = ['host', 'server'].flatMap((folder) => readdirSync(join('deploy', folder)).filter((file) => /^docker-compose\..+\.yml$/.test(file)).map((file) => join('deploy', folder, file)));
+  const files = ['host', 'server'].flatMap((folder) => composeFilesIn(join('deploy', folder)));
   assert.ok(['docker-compose.mock-systems.yml', 'docker-compose.order-desk.yml', 'docker-compose.reorder-agent.yml'].every((name) => files.includes(join('deploy', 'server', name))), 'the folder of the agents host is read too');
   assert.deepEqual(deploymentProblems(DEPLOYMENTS, KEY_VARIABLES, files), []);
   for (const deployment of DEPLOYMENTS) assert.deepEqual(composeKeyProblems(parseYaml(readFileSync(deployment.compose, 'utf8')), deployment), [], deployment.compose);
+});
+
+test('the list of compose files takes the files that end in .yml and in .yaml, and no other file, and a .yaml file that no deployment lists is refused', () => {
+  const folder = mkdtempSync(join(tmpdir(), 'compose-names-'));
+  try {
+    for (const name of ['docker-compose.a.yml', 'docker-compose.b.yaml', 'docker-compose.yaml', 'docker-compose.c.json', 'docker-compose.d.yml.bak', 'compose.e.yml', 'my-docker-compose.f.yml', 'README.md']) writeFileSync(join(folder, name), 'services: {}\n');
+    const files = composeFilesIn(folder);
+    assert.deepEqual(files.map((file) => file.slice(folder.length + 1)), ['docker-compose.a.yml', 'docker-compose.b.yaml', 'docker-compose.yaml'], 'the three compose files, and none of the five other names');
+    const listed = [{ compose: join(folder, 'docker-compose.a.yml'), runtimes: [], service: 'x', holdsNoKey: true }];
+    assert.deepEqual(deploymentProblems(listed, new Map(), files.slice(0, 1)), [], 'the file that is listed passes');
+    assert.deepEqual(deploymentProblems(listed, new Map(), files), [`${join(folder, 'docker-compose.b.yaml')} is a compose file that no deployment lists`, `${join(folder, 'docker-compose.yaml')} is a compose file that no deployment lists`], 'a file that ends in .yaml and that no deployment lists is refused');
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
 });
 
 test('the compose check lets a service with several keys through, with three runtimes in front of it, and refuses a container that gets a key that is not its own, in the words of the rule that it breaks', () => {
