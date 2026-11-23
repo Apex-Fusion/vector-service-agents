@@ -24,6 +24,10 @@ The operator's steps are in [RUNBOOK.md](RUNBOOK.md). This note gives the facts.
 | `.env.order-desk-runtime.example` | The settings of one Order Desk runtime: its supplier key, its advert and its agent. The operator makes one copy for each of the three runtimes. |
 | `Caddyfile.order-desk.snippet` | The three host blocks of the Order Desk: `/agent.json` and `/lots.json` go to the service, the rest to the runtime of the host. |
 | `RUNBOOK-order-desk.md` | The operator's steps for the Order Desk, its checks and its failure table. |
+| `docker-compose.reorder-agent.yml` | The compose file of the Reorder Agent: one runtime in front of one service, each image by digest, each port on `127.0.0.1`. The runtime gets none of the five keys of the service. |
+| `.env.reorder-agent.example` | The settings of the Reorder Agent: its service and its runtime read the same file. Names and placeholders only. |
+| `Caddyfile.reorder-agent.snippet` | The host block of the Reorder Agent: `/agent.json` and the co-sign route go to the service, the rest to the runtime. |
+| `RUNBOOK-reorder-agent.md` | The operator's steps for the Reorder Agent, its checks and its failure table. |
 
 Each agent adds one snippet file, one compose file and one env example later. They go in this folder, with the deploy pack of the agent.
 

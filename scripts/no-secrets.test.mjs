@@ -26,6 +26,7 @@ const KEY_VARIABLES = new Map([
   [join('agents', 'document-pipeline', 'src', 'start.ts'), { service: 'PIPELINE_BUYER_PRIV_KEY_HEX', delegation: [], subagent: [] }],
   [join('agents', 'advocate', 'src', 'start.ts'), { service: 'ADVOCATE_BUYER_PRIV_KEY_HEX', delegation: [], subagent: [] }],
   [join('agents', 'order-desk', 'src', 'serve', 'start.ts'), { service: 'ORDER_DESK_SERVICE_PRIV_KEY_HEX', delegation: [], subagent: [] }],
+  [join('agents', 'reorder-agent', 'src', 'serve', 'start.ts'), { service: 'REORDER_SERVICE_PRIV_KEY_HEX', delegation: ['REORDER_DELEGATION_1_PRIV_KEY_HEX', 'REORDER_DELEGATION_2_PRIV_KEY_HEX'], subagent: ['STOCK_READER_AUTH_PRIV_KEY_HEX', 'STOCK_READER_DELEGATION_PRIV_KEY_HEX'] }],
 ]);
 const variablesOf = (keys) => [keys.service, ...keys.delegation, ...keys.subagent];
 /** A source of an agent that holds keys: every source in the folder of its start is held to the run of 64 hex characters. */
@@ -253,6 +254,7 @@ const DEPLOYMENTS = [
   { compose: join('deploy', 'host', 'docker-compose.audio-snippets.yml'), runtimes: ['agent'], service: 'service' },
   { compose: join('deploy', 'host', 'docker-compose.advocate.yml'), runtimes: ['agent'], service: 'service', start: join('agents', 'advocate', 'src', 'start.ts') },
   { compose: join('deploy', 'server', 'docker-compose.order-desk.yml'), runtimes: ['runtime-small', 'runtime-medium', 'runtime-large'], service: 'service', start: join('agents', 'order-desk', 'src', 'serve', 'start.ts') },
+  { compose: join('deploy', 'server', 'docker-compose.reorder-agent.yml'), runtimes: ['runtime'], service: 'service', start: join('agents', 'reorder-agent', 'src', 'serve', 'start.ts') },
 ];
 /** What the list of deployments leaves out: a start that holds keys and has no compose file in it, a start that no list of keys names, and a compose file of the host that it does not list. */
 function deploymentProblems(deployments, table, composeFiles) {
