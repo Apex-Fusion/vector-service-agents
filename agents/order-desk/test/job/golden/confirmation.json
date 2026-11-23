@@ -1,0 +1,82 @@
+{
+  "schema": "vector.usecase.order-confirmation.v1",
+  "outcome": "done",
+  "po_number": "run1-0001",
+  "po_sha256": "ee530a49d9ead8b2a2ecbd3896fc6b018e0050a0bf24ddf4dad7f88775585cbc",
+  "sku": "GLV-NIT-M",
+  "lot": "lot-medium",
+  "quantity": 50,
+  "ship_by": "2026-11-28",
+  "order_id": "SO-run1-0001",
+  "sender": {
+    "did": "did:vector:ecececececececececececececececececececececececececececececececec",
+    "organisation": "buyer.example",
+    "organisation_verified": true
+  },
+  "approval": {
+    "attestation": "9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b",
+    "issuer_did": "did:vector:1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f",
+    "valid_until": "2026-11-24T10:00:00.000Z"
+  },
+  "checks": {
+    "sender_active": true,
+    "sender_accountable": true,
+    "sender_key": true,
+    "delegation": true,
+    "delegation_usable": true,
+    "vault_paid": true,
+    "approval_found": true,
+    "approval_type": true,
+    "approval_subject": true,
+    "approval_issuer": true,
+    "approval_valid": true,
+    "approval_digest": true,
+    "for_this_supplier": true,
+    "lot": true,
+    "quantity": true,
+    "not_duplicate": true
+  },
+  "decisions": [
+    {
+      "name": "availability",
+      "choice": {
+        "confirm": true,
+        "ship_by": "2026-11-28",
+        "note": "The catalogue holds enough boxes for this lot."
+      },
+      "reasoning": "The catalogue shows 5000 boxes available and the lot needs 50, so the order can ship in three days.",
+      "inference": {
+        "path": "marketplace",
+        "sub_job": {
+          "capability_id": "llm.text.generate.v1",
+          "advert_ref": "b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3#0",
+          "escrow_ref": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c#0",
+          "supplier_pkh": "7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d",
+          "receipt": {
+            "escrow_ref": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c#0",
+            "supplier_pkh": "7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d",
+            "prompt_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+            "response_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+            "model": "deepseek/deepseek-v4-flash",
+            "prompt_tokens": 412,
+            "completion_tokens": 58,
+            "wallclock_ms": 2140
+          },
+          "receipt_signature": "8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e",
+          "verification": {
+            "escrow_ref_matches": true,
+            "response_hash_matches": true,
+            "supplier_key_matches": true,
+            "signature_valid": true,
+            "on_chain_hash_matches": true,
+            "prompt_hash_matches": true,
+            "model_matches": true,
+            "fields_match": true
+          }
+        },
+        "accepted": "confirmed"
+      }
+    }
+  ],
+  "fault_mode": ""
+}
