@@ -16,6 +16,7 @@ The package has no root entry. Each folder of `src/` is one part of the code and
 | `src/manifest` | `@vsa/usecase-kit/manifest` | What the agents add under `behaviour` of the manifest, with builders and parsers, and `renderManifest`, which gives the bytes of a manifest and their hash. |
 | `src/cosign` | `@vsa/usecase-kit/cosign` | The route `POST /cosign/delegate` of a buyer-side agent. It adds the signature of a delegation key to a Delegate transaction, under one fixed rule. |
 | `src/access` | `@vsa/usecase-kit/access` | The credentials that an agent needs for a call to a business system (tokens and SVIDs), the typed result of a call, and the sub-delegation of a subagent. |
+| `src/janitor` | `@vsa/usecase-kit/janitor` | The list of the sub-delegations that a run left alive, in memory and on disk, and the janitor that ends them with the Undelegate. |
 | `src/decision` | `@vsa/usecase-kit/decision` | The decisions that an agent buys from a model. One decision is one hire, with limits that the caller must give, and no second try. |
 | `src/buyer` | `@vsa/usecase-kit/buyer` | The flow of a buyer-side agent: it reads the authority of a request, finds the vault, hires the counterparty, and makes the results of the protocol. |
 | `src/dispute` | `@vsa/usecase-kit/dispute` | The Module-1 path of an agent: the documents for a juror, the claim of a run and its withdrawal, and the challenge of a buyer-side agent and of a counterparty. |
@@ -205,6 +206,63 @@ The protocol holds types, parsers and tables. It reads no setting and no file. I
 **The contract of a caller.** A left sub-delegation (`LeftSubDelegation`) may be alive. The janitor ends it with the Undelegate, and the key of the agent signs. The janitor may drop the reference only when two things hold: the slot of the chain tip is at or past `delegateTtlSlot`, and the ledger does not show the Delegate (the delegation `id` that the transaction `delegateTxHash` made). Then the Delegate never lands. A Delegate that the ledger shows is live, and the janitor ends it with the Undelegate: the slot of the tip does not change this. The janitor compares slots, and never the clock with `delegateValidTo`: the TTL is in the signed bytes, and the time is only what the build port reported. The chain port (`DelegationChain`) needs the method `slotAt`, and `deploymentSlotAt` gives it for the identity deployment. `withSubDelegation` needs the bases of the mock service in its `deps`: the resource of a sub-delegation is `<publicBase>/t/<tenant>/<system>`, and a target on another host gets no sub-delegation.
 
 **What it does not prove without a chain and a live gateway.** The wait for 30 confirmations and the submit are ports, and their adapters come with the agents. The folder does not prove the TLS handshake with a real client-certificate host.
+
+## The janitor folder
+
+**What it is for.** The sub-delegations that a run made and did not see ended. `withSubDelegation` ends each sub-delegation in a `finally` path. When the end fails, the result is `not_ended` with a `LeftSubDelegation`: the delegation may be alive, and the delegation key of the subagent stays in use until the Undelegate lands. An expiry does not free a key. The janitor reads the list of these references and ends each live delegation with the Undelegate. The buyer-side agents of the three use cases use it in the same way.
+
+**Main exports.** `FileLeftStore` and `MemoryLeftStore` (the list: `put`, `list` and `remove` of a `LeftEntry`), `DamagedLeftEntriesError`, `parseLeftEntry`, `runJanitorOnce` (one pass) and `startJanitor` (a pass at once, then one after each interval, and never two at one time), `JanitorDeps`, `JanitorReport` and `JANITOR_STATES`.
+
+**What a caller must give.** `JanitorDeps` has these members. The folder reads no key file and no environment variable.
+
+| Member | What it is |
+|---|---|
+| `store` | The list: a `FileLeftStore` on a folder of the state volume of the service. |
+| `chain` | The `DelegationChain` of the sub-delegation. The janitor uses `readDelegation`, `buildUndelegate` and `submit`. |
+| `delegationScript` | The delegation script of the identity deployment: the same value that `SubDelegationDeps` takes. The janitor signs only a transaction that burns the token of this script. |
+| `signerOf(keyHash)` | The signer of a delegation key and the address of its wallet, or `null` when the service has no such key. The key hash is the `signer_key_hash` of the entry: the live delegation key of the agent, which is the delegator of the sub-delegation. |
+| `queueOf(keyHash)` | The queue of that key, with a member `busy`. It is the one object that the service gives to the hires of the key and to `walletQueue` of `withSubDelegation`. `HireLane` of the hire kit is such a queue. |
+| `tipSlot()` | The slot of the tip of the chain, from the node. It rejects when the node gives no slot. |
+| `clock`, `log` | The clock port, and one function that takes one line of text. |
+| `inFlight(id)` | Optional. True while a run of this process still uses the sub-delegation. See the contract below. |
+| `entryTimeoutMs`, `pollMs`, `stopWaitMs` | Optional bounds, in milliseconds from 1 to one day: the time for one entry (60,000), the time between two reads of the ledger after the send (5,000), and the wait of `stop` for the pass in flight (30,000). |
+
+**The list.** `FileLeftStore(directory)` keeps one JSON file for each delegation id, named `<id>.json`. The id has 64 lower-case hex characters. A file looks like this:
+
+```json
+{
+  "left": {
+    "id": "<64 hex characters>",
+    "parent": "<64 hex characters>",
+    "action": "erp.stock.read",
+    "resource": "https://mock.example/t/run1/erp",
+    "delegateTxHash": "<64 hex characters>",
+    "delegateValidTo": 1790000000000,
+    "delegateTtlSlot": 33000000,
+    "notAfter": 1790003600000,
+    "endTxHash": null
+  },
+  "signer_key_hash": "<56 hex characters>"
+}
+```
+
+`put` writes a temporary file in the folder, flushes it, renames it over the file of the id, and flushes the folder. It settles only after the flush of the folder, so an entry that `put` accepted is on the disk. A write that fails leaves the old entry whole, and a failed flush of the folder is an error of `put` too. A `put` for an id that the list has replaces the entry: a later end attempt updates `endTxHash`. An id that is not 64 hex characters, and an entry that is not in the form, are refused before any file is touched. One instance runs its calls one at a time, and one process owns the folder. `remove` of an id that is not there is not an error. The store makes its folder with mode 700. A folder path that has a part `..` is refused.
+
+A file that is not an entry is never skipped in silence. `list` throws `DamagedLeftEntriesError` when a file that ends in `.json` cannot be read, is not JSON, is not an entry in the form, or holds the entry of another id than its name. The error names each damaged file and carries the entries that it could read (`entries`). The janitor logs each damaged file, keeps it, and goes on with the other entries. The store never removes a damaged file. A temporary file that a crash left does not end in `.json`, so it is not an entry.
+
+**The contract of a caller.**
+
+- Put the reference in the list from `beforeSend` of `withSubDelegation`, so that the entry is on the disk before the Delegate is sent. A `put` that fails stops the run and nothing is sent. After the run, call `remove` for the end states `ended` and `not_made`, and call `put` with the `left` of the end for `not_ended`.
+- A run that still goes on must not lose its delegation to the janitor. The reference is in the list from before the send until the end step has returned, so a pass at that time would end the delegation of a job that is running. A service that makes sub-delegations in the process of the janitor gives `inFlight`: it adds the id when `beforeSend` is called and removes it after the run has returned and the list is up to date. A pass leaves such an entry alone, and it reads nothing for it. An answer of `inFlight` that is not true or false counts as true.
+- The rules of a pass, for each entry in the order of the list, and only for an entry of the list: an id that the list does not hold is never read and never ended.
+  - The ledger shows the delegation, and its transaction hash is `delegateTxHash`: the janitor takes the signer and the queue of the key. An entry with no usable signer stays, with a line in the log. A busy queue is not used, and the entry is skipped. In the queue the janitor builds the Undelegate, checks its bytes with the rules of the end step of `withSubDelegation`, signs, sends, and reads the ledger until it no longer shows the delegation or the time of the entry ends. Then it removes the entry. If the delegation is still shown, the entry stays and holds the hash of the Undelegate.
+  - The ledger shows a delegation with this id that another transaction made: the Delegate of this run can never land. The entry is removed, and the removal is logged. A transaction hash that is not 64 lower-case hex characters is not another transaction: the entry stays.
+  - The ledger shows nothing: the entry is removed only when the slot of the tip is at or past `delegateTtlSlot`, and a second read of the ledger, made after the tip was read, still shows nothing. Before that slot the Delegate can still land, and the entry stays. The janitor compares slots and never the clock with `delegateValidTo`.
+  - A read that throws, gives no answer, or gives a value that is not a delegation with the id of the entry keeps the entry. A tip that cannot be read keeps it too. A throw is never read as "not shown".
+- A pass makes one transaction at most for an entry. It holds the turn in the queue of the key while it waits for the ledger, so a hire of that key waits for it. A pass never throws. Each entry has its own state, and the report says what happened: `ended`, `dropped_not_made`, `dropped_other`, `kept_waiting`, `kept_busy`, `kept_unreadable`, `kept_no_signer`, `kept_end_pending`, `kept_end_failed` and `kept_store_failed`. The log gets one line for each entry that needs a person, and none for `kept_waiting` and `kept_busy`. A detail names no key and no part of a request.
+- `startJanitor` throws for an interval that is not a whole number of milliseconds from 1 to one day, and for deps that are not valid, so a service that is set up wrong does not start. `stop` lets no entry start after it and waits for the pass in flight, for at most `stopWaitMs`. A pass that does not end by then is abandoned with a line in the log, and its entries stay in the list for the next start.
+
+**What it does not prove without a chain.** The tests run the janitor over the fake ledger of the access tests, which builds real bytes for the Delegate and the Undelegate, and over the Undelegate that the real builder of buyer-core makes in an offline world. They do not prove the lag between the ledger source and the tip of the node (the second read narrows it, and does not remove it), the answer of a real node to a send, the timing of a block, or the behaviour of a real disk after a crash.
 
 ## The decision folder
 
