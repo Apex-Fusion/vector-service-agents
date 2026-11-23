@@ -53,6 +53,8 @@ const SERVICE_HOST_PORT = PORT_DEFAULT;
 const SERVICE_UPSTREAM = `${SERVICE_CONTAINER}:${PORT_DEFAULT}`;
 const RUNTIME_UPSTREAM = `${RUNTIME_CONTAINER}:${RUNTIME_PORT}`;
 const HOST = 'mp-suppliers-reorder.vector.apexfusion.org';
+/** The host name as a pattern, each dot escaped, for the patterns that find it in a text. */
+const HOST_PATTERN = /mp-suppliers-reorder\.vector\.apexfusion\.org/;
 const NETWORK = 'reorder-agent_default';
 const VOLUME = 'reorder-state';
 /** The runtime waits this long for the service beyond the deadline of a job. */
@@ -859,9 +861,9 @@ describe('deploy/server/Caddyfile.reorder-agent.snippet', () => {
     ['the host name of another pack', (t) => swap(t, `${HOST} {`, 'mp-suppliers-orders-small.vector.apexfusion.org {'), /^the one block must be the host name/],
     ['a second block', (t) => swap(t, END, `second.example.org {\n    handle {\n        reverse_proxy reorder-runtime:8080\n    }\n}\n${END}`), /^the one block must be the host name/],
     ['no block', (t) => `${BEGIN}\n${END}\n`, /^the one block must be the host name/],
-    ['a host that sends its rest to the service', (t) => swap(t, 'reverse_proxy reorder-runtime:8080', 'reverse_proxy reorder-service:9101'), new RegExp(`^${escapeRegExp(HOST)}: the block must send`)],
-    ['the wrong port of the runtime', (t) => swap(t, 'reverse_proxy reorder-runtime:8080', 'reverse_proxy reorder-runtime:8101'), new RegExp(`^${escapeRegExp(HOST)}: the block must send`)],
-    ['the runtime by its address on the host', (t) => swap(t, 'reverse_proxy reorder-runtime:8080', 'reverse_proxy 127.0.0.1:8101'), new RegExp(`^${escapeRegExp(HOST)}: the block must send`)],
+    ['a host that sends its rest to the service', (t) => swap(t, 'reverse_proxy reorder-runtime:8080', 'reverse_proxy reorder-service:9101'), new RegExp(`^${HOST_PATTERN.source}: the block must send`)],
+    ['the wrong port of the runtime', (t) => swap(t, 'reverse_proxy reorder-runtime:8080', 'reverse_proxy reorder-runtime:8101'), new RegExp(`^${HOST_PATTERN.source}: the block must send`)],
+    ['the runtime by its address on the host', (t) => swap(t, 'reverse_proxy reorder-runtime:8080', 'reverse_proxy 127.0.0.1:8101'), new RegExp(`^${HOST_PATTERN.source}: the block must send`)],
     ['the alias of the service in place of its container', (t) => swap(t, 'reverse_proxy reorder-service:9101', 'reverse_proxy service:9101'), /: the block must send/],
     ['the alias of the runtime in place of its container', (t) => swap(t, 'reverse_proxy reorder-runtime:8080', 'reverse_proxy runtime:8080'), /: the block must send/],
     ['the wrong port of the service', (t) => swap(t, 'reverse_proxy reorder-service:9101', 'reverse_proxy reorder-service:9102'), /: the block must send/],
@@ -990,7 +992,7 @@ function runbookProblems(text: string): string[] {
   for (const name of matchesOf(text, /(?<![\w./-])reorder-[a-z]+(?![\w-])/g)) if (![...CONTAINERS, ...PROJECT_NAMES].includes(name)) problems.push(`the runbook names ${name}, which is no container of this pack`);
   for (const name of CONTAINERS) if (!text.includes(name)) problems.push(`the runbook never names the container ${name}`);
   for (const name of matchesOf(text, /mp-suppliers-[a-z-]+\.vector\.apexfusion\.org/g)) if (name !== HOST) problems.push(`the runbook names the host ${name}, which is no host of this pack`);
-  if (!new RegExp(`(?<![\\w.-])${escapeRegExp(HOST)}(?![\\w-])`).test(text)) problems.push(`the runbook never names the host ${HOST}`);
+  if (!new RegExp(`(?<![\\w.-])${HOST_PATTERN.source}(?![\\w-])`).test(text)) problems.push(`the runbook never names the host ${HOST}`);
   const commands = code.join('\n');
   if (/\bdocker (?:build|run)\b|--build\b|\bdocker compose[^\n]* (?:build|run)\b/.test(commands)) problems.push('the host builds no image and starts no container outside compose');
   if (/\bdown\b[^\n]*(?:\s-v\b|--volumes)/.test(commands)) problems.push('down never takes -v: the volume holds the records of the service');
