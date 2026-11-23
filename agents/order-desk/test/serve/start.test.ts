@@ -12,7 +12,7 @@ import { rawHexToBech32 } from '@vsa/buyer-core';
 import { LOTS_FILE } from '../../src/serve/settings.ts';
 import { SETTINGS, startService, stopOnSignals } from '../../src/serve/start.ts';
 import { until } from './serve.ts';
-import { AGENT_DID, FULL_ENV, SERVICE, SERVICE_ADDRESS, TOKEN, cleanDirs, envWith, module1ManifestFile, shows, tempDir } from './support.ts';
+import { AGENT_DID, FULL_ENV, MODULE1_URL, SERVICE, SERVICE_ADDRESS, TOKEN, cleanDirs, envWith, module1StubFile, shows, tempDir, withModule1 } from './support.ts';
 import { headersOf, makeWorld, wire } from './world.ts';
 
 afterEach(() => { cleanDirs(); });
@@ -62,11 +62,17 @@ describe('startService', () => {
     expect(world.logs.filter((line) => line.startsWith('listening on'))).toStrictEqual([]);
   });
 
-  test('a Module-1 manifest that cannot be read stops the start after the settings and before the listener, and nothing keeps running', async () => {
+  test('a Module-1 manifest that cannot be fetched stops the start after the settings and before the listener, and nothing keeps running; the twin with the manifest at its address starts', async () => {
     const world = makeWorld();
-    const env = { ...world.env, VECTOR_MODULE1_MANIFEST: join(world.stateDir, 'missing.json') };
-    expect(await refusal(startService(env, { ...world.options, module1Port: undefined }))).toMatch(/^The Module-1 manifest \(VECTOR_MODULE1_MANIFEST\) .*missing\.json cannot be read/);
+    const missing = { ...world.options, fetchImpl: withModule1(world.options.fetchImpl!, { status: 404 }), module1Port: undefined };
+    expect(await refusal(startService(world.env, missing))).toBe(`The Module-1 manifest (VECTOR_MODULE1_MANIFEST) ${MODULE1_URL} cannot be fetched: the host answered HTTP 404.`);
     expect(world.logs.filter((line) => line.startsWith('listening on'))).toStrictEqual([]);
+    const service = await startService(world.env, { ...world.options, module1Port: undefined });
+    try {
+      expect(world.logs.filter((line) => line.startsWith('listening on'))).toHaveLength(1);
+    } finally {
+      await service.stop();
+    }
   });
 
   test('the janitor of the paying key is started: a stop waits for it, and an interval of one hour makes a pass at the start and no more', async () => {
@@ -74,6 +80,16 @@ describe('startService', () => {
     const service = await startService(world.env, world.options);
     await service.stop();
     expect(world.logs.filter((line) => line.startsWith('janitor'))).toStrictEqual([]);
+  });
+});
+
+describe('what the start says that it fetches', () => {
+  test('the comments of the start, of the wiring and of the Dockerfile name the one fetch of the Module-1 manifest, and none of them says that the start makes no call', () => {
+    for (const path of ['../../src/serve/start.ts', '../../src/serve/wiring.ts', '../../Dockerfile']) {
+      const text = readFileSync(new URL(path, import.meta.url), 'utf8');
+      expect(text, path).toContain('the one fetch of the Module-1 manifest');
+      expect(text, path).not.toMatch(/makes no network call|asks no third party anything but what the janitor|Nothing is fetched at run time but what the hook reads/);
+    }
   });
 });
 
@@ -126,6 +142,8 @@ describe('stopOnSignals', () => {
 
 describe('src/index.ts as a process', () => {
   const cwd = fileURLToPath(new URL('../../', import.meta.url));
+  /** The file that the child loads before the service: it answers the fetch of the Module-1 manifest from MODULE1_STUB_FILE and passes every other fetch on. */
+  const PRELOAD = fileURLToPath(new URL('./module1-preload.mjs', import.meta.url));
   /** The ledger and the marketplace indexer at a loopback port where nothing listens. */
   let offChain: Record<string, string> = {};
   const closedPort = (): Promise<number> => new Promise<number>((resolve, reject) => {
@@ -138,9 +156,12 @@ describe('src/index.ts as a process', () => {
     offChain = { VECTOR_OGMIOS_URL: node, VECTOR_KOIOS_URL: `${node}/`, VECTOR_SUBMIT_URL: `${node}/api/submit/tx`, VECTOR_MARKETPLACE_INDEXER_URL: node, IDENTITY_GATEWAY_URL: 'https://gateway.example.test' };
   });
 
-  /** The settings of a full deployment on a state directory of its own, with the real parts. A state directory and a manifest of Module-1 are made for the run. */
+  /**
+   * The settings of a full deployment on a state directory of its own, with the real parts. A state directory is made for the run. The child cannot take a stub fetch, so the preload answers the one fetch of the
+   * start, the Module-1 manifest at its pinned address, from a file that is made for the run.
+   */
   const envOf = (over: Readonly<Record<string, string | undefined>> = {}): NodeJS.ProcessEnv => envWith({
-    ...offChain, PORT: '0', HOST: '127.0.0.1', ORDER_DESK_STATE_DIR: tempDir(), VECTOR_MODULE1_MANIFEST: module1ManifestFile(), LLM_MAX_PRICE_LOVELACE: '1000000', ...over,
+    ...offChain, PORT: '0', HOST: '127.0.0.1', ORDER_DESK_STATE_DIR: tempDir(), MODULE1_STUB_URL: MODULE1_URL, MODULE1_STUB_FILE: module1StubFile(), LLM_MAX_PRICE_LOVELACE: '1000000', ...over,
   });
 
   /**
@@ -150,7 +171,7 @@ describe('src/index.ts as a process', () => {
   const run = (env: NodeJS.ProcessEnv) => {
     const inherited: NodeJS.ProcessEnv = { ...process.env };
     for (const name of SETTINGS) delete inherited[name];
-    const child = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], { cwd, env: { ...inherited, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, ['--import', 'tsx', '--import', PRELOAD, 'src/index.ts'], { cwd, env: { ...inherited, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
     child.stdout.on('data', (chunk: Buffer) => { out += chunk.toString('utf8'); });

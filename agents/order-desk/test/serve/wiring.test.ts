@@ -15,7 +15,8 @@ import { wireService } from '../../src/serve/wiring.ts';
 import { until } from './serve.ts';
 import { DESK_DID, T, makeWorld, proposalOf } from './world.ts';
 import type { World } from './world.ts';
-import { SERVICE, cleanDirs, envWith, message, module1ManifestFile, shows } from './support.ts';
+import { MODULE1_URL, SERVICE, cleanDirs, envWith, message, module1ManifestText, shows, withModule1 } from './support.ts';
+import type { Module1Answer } from './support.ts';
 
 afterEach(() => { cleanDirs(); });
 
@@ -194,38 +195,44 @@ describe('the time of the hook', () => {
 });
 
 describe('the Module-1 port and the dispute settings', () => {
-  const real = (world: World, file: string, over: Readonly<Record<string, string | undefined>> = {}) =>
-    wireService(loadConfig({ ...world.env, VECTOR_MODULE1_MANIFEST: file, ...over }), { ...world.options, module1Port: undefined });
+  /** Wires the service with no port given, so that the real port is made over the manifest that the host of `answer` gives. */
+  const real = (world: World, answer: Module1Answer = module1ManifestText(), over: Readonly<Record<string, string | undefined>> = {}) =>
+    wireService(loadConfig({ ...world.env, ...over }), { ...world.options, fetchImpl: withModule1(world.options.fetchImpl!, answer), module1Port: undefined });
 
-  test('with no port given, the service reads the manifest of the deployment and makes the real port: no network call is made', async () => {
+  test('with no port given, the service fetches the manifest of the deployment one time, from the address that the setting names, and makes the real port: no other call is made', async () => {
     const world = makeWorld();
-    const result = await real(world, module1ManifestFile());
+    const urls: string[] = [];
+    const recording: typeof fetch = (input, init) => {
+      urls.push(new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url).href);
+      return world.options.fetchImpl!(input, init);
+    };
+    const result = await wireService(loadConfig(world.env), { ...world.options, fetchImpl: recording, module1Port: undefined });
     expect(typeof result.precheck).toBe('function');
+    expect(urls).toStrictEqual([MODULE1_URL]);
   });
 
   test('a manifest that names another identity registry than the deployment of the service is refused, naming both registries', async () => {
     const world = makeWorld();
-    const text = await real(world, module1ManifestFile('ab'.repeat(28))).then(() => 'accepted', (error: Error) => error.message);
+    const text = await real(world, module1ManifestText('ab'.repeat(28))).then(() => 'accepted', (error: Error) => error.message);
     expect(text).toMatch(/^the Module-1 manifest names the identity registry (ab){28}, but the identity deployment of this service is [0-9a-f]{56}/);
   });
 
-  test('a manifest that cannot be read stops the start, naming the file and the setting', async () => {
+  test('a manifest that cannot be fetched stops the start, naming the address and the setting', async () => {
     const world = makeWorld();
-    const text = await real(world, join(world.stateDir, 'no-such-file.json')).then(() => 'accepted', (error: Error) => error.message);
-    expect(text).toMatch(/^The Module-1 manifest \(VECTOR_MODULE1_MANIFEST\) .*no-such-file\.json cannot be read/);
+    const text = await real(world, { status: 404 }).then(() => 'accepted', (error: Error) => error.message);
+    expect(text).toBe(`The Module-1 manifest (VECTOR_MODULE1_MANIFEST) ${MODULE1_URL} cannot be fetched: the host answered HTTP 404.`);
   });
 
   test('a resolution deadline that is not the deadline of the deployment is refused, and the deadline of the deployment is taken', async () => {
     const world = makeWorld();
-    const file = module1ManifestFile();
-    const text = await real(world, file, { DISPUTE_RESOLUTION_DEADLINE_MS: '30000000' }).then(() => 'accepted', (error: Error) => error.message);
+    const text = await real(world, undefined, { DISPUTE_RESOLUTION_DEADLINE_MS: '30000000' }).then(() => 'accepted', (error: Error) => error.message);
     expect(text).toMatch(/^the dispute settings are refused: .*30000000 ms.*259200000 ms/);
-    await expect(real(world, file, { DISPUTE_RESOLUTION_DEADLINE_MS: '259200000' })).resolves.toBeDefined();
+    await expect(real(world, undefined, { DISPUTE_RESOLUTION_DEADLINE_MS: '259200000' })).resolves.toBeDefined();
   });
 
   test('a message of the wiring shows no key', async () => {
     const world = makeWorld();
-    const text = await real(world, join(world.stateDir, 'none.json')).then(() => 'accepted', (error: Error) => error.message);
+    const text = await real(world, { status: 404 }).then(() => 'accepted', (error: Error) => error.message);
     expect(shows(text, SERVICE.privateKeyHex)).toBe(false);
     expect(text.toLowerCase()).not.toContain(rawHexToBech32(SERVICE.privateKeyHex));
     expect(message(() => loadConfig(envWith({ ORDER_DESK_SERVICE_PRIV_KEY_HEX: undefined })))).not.toContain(SERVICE.privateKeyHex);

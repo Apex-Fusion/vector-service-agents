@@ -9,7 +9,7 @@ import {
   CHECKS_READ_BUDGET_DEFAULT_MS, CHECKS_READ_BUDGET_MAX_MS, CHECKS_READ_BUDGET_MIN_MS, HOOK_READS, HOOK_READS_LIMIT_MS, PORT_DEFAULT, STATE_DIR_DEFAULT, checksBudgetOf, endpointsOf, lotsOriginOf,
 } from '../../src/serve/settings.ts';
 import { SETTINGS, loadConfig } from '../../src/serve/start.ts';
-import { AGENT_DID, FULL_ENV, LARGE, MEDIUM, ORIGIN, POLICY, SERVICE, SERVICE_ADDRESS, SMALL, TOKEN, envWith, keyOf, message, shows } from './support.ts';
+import { AGENT_DID, FULL_ENV, LARGE, MEDIUM, MODULE1_COMMIT, MODULE1_URL, ORIGIN, POLICY, SERVICE, SERVICE_ADDRESS, SMALL, TOKEN, envWith, keyOf, message, shows } from './support.ts';
 
 const other = keyOf('order desk settings test: another key');
 const ANOTHER_DID = `did:vector:${'ab'.repeat(32)}`;
@@ -115,7 +115,16 @@ const REFUSALS: readonly Row[] = [
   ['VECTOR_KOIOS_URL', 'https://user:password@koios.example.test', /^environment variable VECTOR_KOIOS_URL must be an http or https address with no user and no password/, 'https://koios.example.test'],
   ['VECTOR_SUBMIT_URL', 'submit.example.test', /^environment variable VECTOR_SUBMIT_URL must be an http or https address/, 'https://submit.example.test/api/submit/tx'],
   ['VECTOR_MARKETPLACE_INDEXER_URL', 'mailto:ops@example.test', /^environment variable VECTOR_MARKETPLACE_INDEXER_URL must be an http or https address/, 'https://indexer.example.test'],
-  ['VECTOR_MODULE1_MANIFEST', undefined, /^environment variable VECTOR_MODULE1_MANIFEST is required/, '/etc/order-desk/module1.json'],
+  ['VECTOR_MODULE1_MANIFEST', undefined, /^environment variable VECTOR_MODULE1_MANIFEST is required/, MODULE1_URL],
+  ['VECTOR_MODULE1_MANIFEST', '/etc/order-desk/module1.json', 'environment variable VECTOR_MODULE1_MANIFEST must be an https URL with no user, query or fragment, and it has 28 characters', MODULE1_URL],
+  [
+    'VECTOR_MODULE1_MANIFEST', `http://raw.githubusercontent.com/Apex-Fusion/vector-agent-modules/${MODULE1_COMMIT}/Module-1/deploy/identity/mainnet/manifest.json`,
+    /^environment variable VECTOR_MODULE1_MANIFEST must be an https URL with no user, query or fragment, and it has \d+ characters$/, MODULE1_URL,
+  ],
+  [
+    'VECTOR_MODULE1_MANIFEST', 'https://raw.githubusercontent.com/Apex-Fusion/vector-agent-modules/main/Module-1/deploy/identity/mainnet/manifest.json',
+    /^environment variable VECTOR_MODULE1_MANIFEST must be pinned to a commit: one segment of its path must be the 40 lowercase hex characters of the commit, .* It has \d+ characters$/, MODULE1_URL,
+  ],
   ['LLM_MODEL_ALLOWLIST', undefined, /^environment variable LLM_MODEL_ALLOWLIST is required/, 'a/one, b/two'],
   ['LLM_MODEL_ALLOWLIST', 'deepseek/deepseek-v4-flash free', 'environment variable LLM_MODEL_ALLOWLIST entry 1 must be a model name (letters, digits, dots, underscores, colons, slashes and hyphens)', 'deepseek/deepseek-v4-flash:free'],
   ['LLM_MODEL_ALLOWLIST', ' , ', 'environment variable LLM_MODEL_ALLOWLIST must name at least one model, as a comma-separated list', 'a/one'],
@@ -303,5 +312,78 @@ describe('the manifest is looked at last', () => {
 
   test('a manifest that the kit refuses stops the start with its code: a placeholder in a served value', () => {
     expect(message(() => loadConfig(envWith({ OPERATOR_CONTACT: '<OPERATOR_CONTACT>' })))).toMatch(/^the manifest is refused \(manifest_has_placeholder\)/);
+  });
+});
+
+describe('the manifest that the start renders for each setting of the fault switch', () => {
+  // A builder that lets the fault setting into the bytes of the manifest. The start gives the builder each setting of the switch, one after the other, in the environment that it passes. The live value of
+  // FAULT_MODE is not what the builder reads: a builder that reads the live value gives one text for every setting, and the check would prove nothing.
+  const leaking: Parameters<typeof loadConfig>[1] = (env, lots) => ({ ...manifestFromEnv(env, lots), description: `${manifestFromEnv(env, lots).description}${env.FAULT_MODE ?? ''}` });
+  const faithful: Parameters<typeof loadConfig>[1] = (env, lots) => manifestFromEnv(env, lots);
+
+  test('a manifest that changes with the fault setting stops the start with manifest_changes_with_fault, whatever the live value is, and the twin that does not change starts', () => {
+    for (const live of ['', 'confirm_wrong_lot']) {
+      expect(message(() => loadConfig(envWith({ FAULT_MODE: live }), leaking)), `live value ${JSON.stringify(live)}`).toMatch(/^the manifest is refused \(manifest_changes_with_fault\)/);
+      expect(() => loadConfig(envWith({ FAULT_MODE: live }), faithful), `the twin, live value ${JSON.stringify(live)}`).not.toThrow();
+    }
+  });
+
+  test('the builder is given every setting of the switch and nothing else in the member FAULT_MODE: the empty setting, and the fault value, whatever the live value is', () => {
+    for (const live of ['', 'confirm_wrong_lot']) {
+      const seen: string[] = [];
+      loadConfig(envWith({ FAULT_MODE: live }), (env, lots) => { seen.push(env.FAULT_MODE ?? '(none)'); return manifestFromEnv(env, lots); });
+      expect(new Set(seen), `live value ${JSON.stringify(live)}`).toStrictEqual(new Set(['', 'confirm_wrong_lot']));
+    }
+  });
+});
+
+describe('VECTOR_MODULE1_MANIFEST is an https URL pinned to a commit', () => {
+  const PINNED = `https://raw.githubusercontent.com/Apex-Fusion/vector-agent-modules/${MODULE1_COMMIT}/Module-1/deploy/identity/mainnet/manifest.json`;
+  const FORM = /^environment variable VECTOR_MODULE1_MANIFEST must be an https URL with no user, query or fragment, and it has \d+ characters$/;
+  const PIN = /^environment variable VECTOR_MODULE1_MANIFEST must be pinned to a commit: one segment of its path must be the 40 lowercase hex characters of the commit, .* It has \d+ characters$/;
+  const manifestAt = (value: string): string => message(() => loadConfig(envWith({ VECTOR_MODULE1_MANIFEST: value })));
+
+  test('the address of a raw file at a commit is accepted, as the start takes it: the commit is one whole segment of the path, wherever it stands in the path, and a port is allowed', () => {
+    for (const url of [PINNED, MODULE1_URL, `https://raw.example.test:8443/${MODULE1_COMMIT}`, `https://raw.example.test/a/b/${MODULE1_COMMIT}/c/manifest.json`, `https://raw.example.test/${MODULE1_COMMIT}/`]) {
+      expect(loadConfig(envWith({ VECTOR_MODULE1_MANIFEST: url })).module1Manifest, url).toBe(url);
+    }
+    expect(loadConfig(envWith({ VECTOR_MODULE1_MANIFEST: ` ${PINNED}\n` })).module1Manifest).toBe(PINNED);
+  });
+
+  test('a file path, a relative path, an http address, a text that is no address, and an address with a user, a query or a fragment are refused, by the name of the setting', () => {
+    for (const value of [
+      '/etc/order-desk/module1.json', 'module1.json', './module1.json', 'file:///etc/order-desk/module1.json', `http://raw.githubusercontent.com/Apex-Fusion/vector-agent-modules/${MODULE1_COMMIT}/manifest.json`,
+      `HTTPS://raw.example.test/${MODULE1_COMMIT}/manifest.json`, 'https://', 'not an address', `https://someone:a-password@raw.example.test/${MODULE1_COMMIT}/manifest.json`,
+      `https://someone@raw.example.test/${MODULE1_COMMIT}/manifest.json`, `https://raw.example.test/${MODULE1_COMMIT}/manifest.json?ref=main`, `https://raw.example.test/${MODULE1_COMMIT}/manifest.json#top`,
+      `https://raw.example.test/${MODULE1_COMMIT}/manifest.json?`,
+    ]) {
+      expect(manifestAt(value), value).toMatch(FORM);
+    }
+  });
+
+  test('an address that names no commit is refused as unpinned: a branch, a tag, a commit that is too short or too long, a commit in capitals, a run inside a longer segment, and a commit that is not in the path', () => {
+    for (const value of [
+      'https://raw.githubusercontent.com/Apex-Fusion/vector-agent-modules/main/Module-1/deploy/identity/mainnet/manifest.json', 'https://raw.example.test/refs/tags/v1.0.0/manifest.json',
+      `https://raw.example.test/${MODULE1_COMMIT.slice(1)}/manifest.json`, `https://raw.example.test/${MODULE1_COMMIT}0/manifest.json`, `https://raw.example.test/${MODULE1_COMMIT.toUpperCase()}/manifest.json`,
+      `https://raw.example.test/x${MODULE1_COMMIT}/manifest.json`, `https://raw.example.test/${MODULE1_COMMIT}.json`, `https://${MODULE1_COMMIT}.example.test/manifest.json`, 'https://raw.example.test/manifest.json',
+      `https://raw.example.test/${MODULE1_COMMIT.slice(0, 20)}/${MODULE1_COMMIT.slice(20)}/manifest.json`, `https://raw.example.test/%61${MODULE1_COMMIT.slice(1)}/manifest.json`,
+    ]) {
+      expect(manifestAt(value), value).toMatch(PIN);
+    }
+    // The path that the start takes is the path that the fetch takes: a commit that a dot segment removes is not in the path.
+    expect(manifestAt(`https://raw.example.test/${MODULE1_COMMIT}/../main/manifest.json`)).toMatch(PIN);
+  });
+
+  test('the message names the setting and the length of the value, and shows nothing else of it: not a user, a password, a key in a query, or the host', () => {
+    const secret = 'ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12';
+    for (const value of [
+      `https://someone:${secret}@raw.example.test/${MODULE1_COMMIT}/manifest.json`, `https://raw.example.test/${MODULE1_COMMIT}/manifest.json?key=${secret}`, `https://raw.example.test/${secret.slice(1)}/manifest.json`,
+      `/home/someone/${secret}.json`,
+    ]) {
+      const text = manifestAt(value);
+      expect(text, value).toMatch(/^environment variable VECTOR_MODULE1_MANIFEST must be /);
+      for (const part of [secret, secret.slice(1), 'someone', 'raw.example.test', MODULE1_COMMIT]) expect(text.includes(part), `${part} in the message for ${value}`).toBe(false);
+      expect(text).toContain(`${value.length} characters`);
+    }
   });
 });

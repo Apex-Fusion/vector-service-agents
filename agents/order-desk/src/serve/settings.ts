@@ -255,9 +255,35 @@ export function endpointsFromEnv(env: NodeJS.ProcessEnv): Endpoints {
   };
 }
 
-/** The file or the https address of the Module-1 deployment manifest. The wiring reads it at the start. */
+/** A whole segment of 40 lowercase hex characters: the full commit of a Git host. */
+const COMMIT_SEGMENT = /^[0-9a-f]{40}$/;
+
+/**
+ * The address of the Module-1 deployment manifest, which the wiring fetches one time at the start: an https URL pinned to a commit. One segment of its path is the 40 lowercase hex characters of the commit, as in
+ * https://raw.githubusercontent.com/<owner>/<repository>/<commit>/<path>. The manifest sets the parameters that a challenge must agree with, and a branch or a tag can change after the operator checked it, so a
+ * file path, an http address, an address with a user, a query or a fragment, and an address that names no commit are refused. The check reads the path that the fetch takes (`URL` takes the dot segments out). A
+ * message names the variable and gives the length of the value, never the value: an address can carry a user, a password or a key in a query.
+ */
 export function module1SourceOf(env: NodeJS.ProcessEnv): string {
-  return requiredEnv('VECTOR_MODULE1_MANIFEST', env.VECTOR_MODULE1_MANIFEST, 'the Module-1 deployment manifest (a file path or an https address), which the dispute code reads at start');
+  const value = requiredEnv('VECTOR_MODULE1_MANIFEST', env.VECTOR_MODULE1_MANIFEST, 'the https URL of the Module-1 deployment manifest, pinned to a commit, which the dispute code fetches one time at start');
+  let url: URL | null = null;
+  if (value.startsWith('https://')) {
+    try {
+      url = new URL(value);
+    } catch {
+      // Not an address: the message below says so, and it never shows the value.
+    }
+  }
+  if (url === null || url.username !== '' || url.password !== '' || /[?#]/.test(value)) {
+    throw new Error(`environment variable VECTOR_MODULE1_MANIFEST must be an https URL with no user, query or fragment, and it has ${value.length} characters`);
+  }
+  if (!url.pathname.split('/').some((segment) => COMMIT_SEGMENT.test(segment))) {
+    throw new Error(
+      'environment variable VECTOR_MODULE1_MANIFEST must be pinned to a commit: one segment of its path must be the 40 lowercase hex characters of the commit, '
+      + `because a branch or a tag can change after the manifest was checked. It has ${value.length} characters`,
+    );
+  }
+  return value;
 }
 
 // --- the limits of the model hire, the dispute ------------------------------------------------------------------------------------------------------

@@ -10,7 +10,8 @@
 // on it, because the order book, the journal of the dispute code and the record of the model hires are in it.
 //
 // The identity names of the deployment come from VAULT_PAYER_IDENTITY_SETTINGS of buyer-core, so that no source of the service writes them. FAULT_MODE is read one time, and a value that the Order Desk does not
-// list stops the start. The start asks no third party anything but what the janitor reads of the chain for the escrows that a run left behind, and the dispute code reads when it files a challenge.
+// list stops the start. The start makes the one fetch of the Module-1 manifest, from its pinned https address: the dispute code needs the parameters of the deployment. Apart from that, the start asks a third
+// party only what the janitor reads of the chain, in a pass of its own, for the escrows that a run left behind. The dispute code reads the chain when it files a challenge.
 import { rmSync, writeFileSync } from 'node:fs';
 import type { EventEmitter } from 'node:events';
 import type { Server } from 'node:http';
@@ -88,7 +89,7 @@ export interface ServiceConfig {
   readonly suppliers: Readonly<Record<LotName, SupplierKey>>;
   readonly limits: ModelLimits;
   readonly dispute: DisputeSettings;
-  /** The file or the https address of the Module-1 deployment manifest, which the wiring reads. */
+  /** The https address of the Module-1 deployment manifest, pinned to a commit. The wiring fetches it one time at the start. */
   readonly module1Manifest: string;
   /** The budget of one timed read of the hook, in milliseconds. */
   readonly checksBudgetMs: number;
@@ -158,7 +159,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (
   const module1Manifest = module1SourceOf(env);
   const identityDeployment = buyerVaultDeployment(env);
 
-  // The manifest comes last, from an environment with no secret in it and with the values as the checks above normalised them.
+  // The manifest comes last, from an environment with no secret in it and with the values as the checks above normalised them. The kit renders it for each setting of the fault switch, and refuses a manifest
+  // whose bytes change. So the builder gets the setting that the kit is trying in the member FAULT_MODE, and never the live value: a builder that read the live value would give one text for every setting.
   const lots = loadLots(LOTS_FILE);
   const published: NodeJS.ProcessEnv = {
     ...Object.fromEntries(SETTINGS.filter((name) => !SECRET_SETTINGS.includes(name)).map((name) => [name, env[name]])),
@@ -172,7 +174,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (
     ORDER_DESK_SERVICE_PKH: service.pkh,
     LOTS_PUBLIC_ORIGIN: lotsOrigin,
   };
-  const rendered = renderManifest('order-desk', () => makeManifest(published, lots));
+  const rendered = renderManifest('order-desk', (setting) => makeManifest({ ...published, FAULT_MODE: setting }, lots));
   if (!rendered.ok) throw new Error(`the manifest is refused (${rendered.code}): ${rendered.detail}`);
   assertNoKeyIn(rendered.value.text, privateKeyHex);
   assertNoTokenIn(rendered.value.text, authHeader);

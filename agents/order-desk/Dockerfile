@@ -1,8 +1,9 @@
 # agents/order-desk/Dockerfile - build context is the repo root. Two stages: the workspace installed from the lockfile (builder), and the final image. The service sits behind three runtimes that share it.
-# It holds one key, the service key, which the compose file hands it as an environment variable: the keys of the three runtimes are the runtimes'. Nothing is fetched at run time but what the hook reads of the
-# identity gateway and the ledger, what a job asks of the identity gateway, the supplier portal, the ledger and a model supplier on the marketplace, and what the janitor reads of the ledger. No Python, no model
-# files. The image holds no test file of the service: the service folder is copied in parts (its manifest, its tsconfig.json, its src folder and its data file), never whole. One volume, /data, holds the order
-# book, the journal of the dispute code and the bookkeeping of the model hires, so that they outlive the container. The data file lots.json is the file that the service serves at /lots.json.
+# It holds one key, the service key, which the compose file hands it as an environment variable: the keys of the three runtimes are the runtimes'.
+# Nothing is fetched at run time but the one fetch of the Module-1 manifest at start, from its pinned https address, what the hook reads of the identity gateway and the ledger, what a job asks of the identity
+# gateway, the supplier portal, the ledger and a model supplier on the marketplace, and what the janitor reads of the ledger. No Python, no model files. The image holds no test file of the service: the service
+# folder is copied in parts (its manifest, its tsconfig.json, its src folder and its data file), never whole. One volume, /data, holds the order book, the journal of the dispute code and the bookkeeping of the model
+# hires, so that they outlive the container. The data file lots.json is the file that the service serves at /lots.json.
 FROM node:22-bookworm-slim AS builder
 WORKDIR /repo
 RUN corepack enable && corepack prepare pnpm@10.33.2 --activate

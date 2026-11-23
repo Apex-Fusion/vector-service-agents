@@ -16,7 +16,7 @@ import {
   MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, RUNTIME_PRECHECK_WAIT_MS, STATE_DIR_DEFAULT,
 } from '../src/serve/settings.ts';
 import { JANITOR_INTERVAL_MS, JANITOR_STOP_WAIT_MS, SETTINGS, loadConfig } from '../src/serve/start.ts';
-import { FULL_ENV, LARGE, MEDIUM, SERVICE, SMALL, envWith, message } from './serve/support.ts';
+import { FULL_ENV, LARGE, MEDIUM, MODULE1_URL, SERVICE, SMALL, envWith, message } from './serve/support.ts';
 
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 // The ledger's native unit is named once in the repository, in docs/HIRE.md. Spelled in two parts, so that a search for the name finds only the guide.
@@ -118,6 +118,8 @@ describe('agents/order-desk/README.md: Run it', () => {
     ],
     ['ADVERT_MAX_PROCESSING_MS below 8 min', { ADVERT_MAX_PROCESSING_MS: String(MIN_PROCESSING_WINDOW_MS - 1) }, /^environment variable ADVERT_MAX_PROCESSING_MS must be at least 480000/, { ADVERT_MAX_PROCESSING_MS: String(MIN_PROCESSING_WINDOW_MS) }],
     ['LOTS_PUBLIC_ORIGIN that is not the origin of the small runtime', { LOTS_PUBLIC_ORIGIN: 'https://orders.example.test' }, /^environment variable LOTS_PUBLIC_ORIGIN must be the origin of the host of the small runtime/, { LOTS_PUBLIC_ORIGIN: 'https://orders-small.example.test' }],
+    ['VECTOR_MODULE1_MANIFEST that is a file path', { VECTOR_MODULE1_MANIFEST: '/etc/order-desk/module1.json' }, /^environment variable VECTOR_MODULE1_MANIFEST must be an https URL/, { VECTOR_MODULE1_MANIFEST: MODULE1_URL }],
+    ['VECTOR_MODULE1_MANIFEST that names a branch', { VECTOR_MODULE1_MANIFEST: 'https://raw.example.test/branch/manifest.json' }, /^environment variable VECTOR_MODULE1_MANIFEST must be pinned to a commit/, { VECTOR_MODULE1_MANIFEST: MODULE1_URL }],
   ];
 
   test('it names the command, the two secrets that the operator makes, and the refusals of the start, and each refusal is one that the start makes', () => {
@@ -138,6 +140,19 @@ describe('agents/order-desk/README.md: Run it', () => {
     expect(run).toContain('when `FAULT_MODE` names a value that the Order Desk does not list,');
     expect(run).toContain(`when \`CHECKS_READ_BUDGET_MS\` is not from ${CHECKS_READ_BUDGET_MIN_MS} to ${CHECKS_READ_BUDGET_MAX_MS},`);
     expect(run).toContain('when `ADVERT_MAX_PROCESSING_MS` is below 8 min, when `LOTS_PUBLIC_ORIGIN` is not the origin of the small runtime,');
+    expect(run).toContain('when `VECTOR_MODULE1_MANIFEST` is not an https URL pinned to a commit, when the Module-1 manifest cannot be fetched or names another identity registry than this deployment,');
+  });
+
+  test('it names the one fetch of the start, the Module-1 manifest at its pinned address, with the limit that the fetch has, and the row of the setting says what the start refuses', () => {
+    expect(run).toContain('At start the service makes one fetch: the Module-1 manifest, from its pinned address. The fetch has a limit of 20 s.');
+    expect(textOf('../../../packages/buyer-core/src/vendored/mcp/jury-deployment.ts')).toContain('maxResponseBytes: MANIFEST_MAX_BYTES, timeoutMs: 20_000');
+    expect(textOf('../src/serve/wiring.ts')).toContain("readManifest(config.module1Manifest, 'The Module-1 manifest (VECTOR_MODULE1_MANIFEST)', ports.fetchImpl)");
+    const use = cell('VECTOR_MODULE1_MANIFEST', 1);
+    expect(use).toContain('the https URL of the Module-1 deployment manifest, pinned to a commit: one segment of its path is the 40 lowercase hex characters of the commit');
+    expect(use).toContain('The service fetches it one time at start, and it must name the identity registry of this deployment.');
+    expect(use).toContain('A file path, an http URL, a URL with a user, a query or a fragment, and a URL that names a branch or a tag stop the start');
+    expect(cell('VECTOR_MODULE1_MANIFEST', 2)).toBe('none. Required');
+    expect(loadConfig(FULL_ENV).module1Manifest).toBe(MODULE1_URL);
   });
 
   test('it says where the secrets are looked for, as the start does it, and shows no secret', () => {

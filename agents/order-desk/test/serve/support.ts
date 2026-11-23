@@ -40,6 +40,13 @@ export const POLICY = deployment.identity.hash;
 export const CONTACT = 'ops@example.test';
 export const ORIGIN = 'https://orders-small.example.test';
 
+/**
+ * The pinned address of the Module-1 manifest that the tests give the service: an https URL with the 40 hex characters of a commit as a segment of its path. The host is an IP literal on purpose. `safeFetch`, which
+ * reads the manifest, asks the DNS for a host name before it calls the fetch that a test gives it, and no test uses the DNS.
+ */
+export const MODULE1_COMMIT = sha256('order desk service test: the Module-1 commit').slice(0, 40);
+export const MODULE1_URL = `https://203.0.113.9/modules/${MODULE1_COMMIT}/Module-1/deploy/identity/mainnet/manifest.json`;
+
 /** What an operator sets for a full deployment, and nothing else: every other setting has a default or is optional. */
 export const FULL_ENV: Readonly<Record<string, string>> = {
   OPERATOR_CONTACT: CONTACT,
@@ -55,7 +62,7 @@ export const FULL_ENV: Readonly<Record<string, string>> = {
   LARGE_SUPPLIER_PUB_KEY_HEX: LARGE.pubKeyHex,
   IDENTITY_POLICY_ID: POLICY,
   ...IDENTITY_SETTINGS,
-  VECTOR_MODULE1_MANIFEST: '/etc/order-desk/module1.json',
+  VECTOR_MODULE1_MANIFEST: MODULE1_URL,
   MOCK_PUBLIC_BASE: 'https://mock.example.test',
   MOCK_MTLS_BASE: 'https://mock-mtls.example.test',
   LLM_MODEL_ALLOWLIST: 'deepseek/deepseek-v4-flash',
@@ -104,13 +111,31 @@ export function cleanDirs(): void {
 const MODULE1_FIXTURE = new URL('../../../../packages/buyer-core/test/fixtures/module1-mainnet-manifest.json', import.meta.url);
 
 /**
- * Writes the Module-1 manifest of the mainnet capture to a file of its own, with the identity registry of the deployment of these tests, and gives the path of the file. The service checks that the manifest names
- * the registry that its own deployment gives, so the capture is changed in that one place.
+ * The text of the Module-1 manifest of the mainnet capture, with the identity registry of the deployment of these tests. The service checks that the manifest names the registry that its own deployment gives, so
+ * the capture is changed in that one place. `identityHash` gives another registry, for the test of the refusal.
  */
-export function module1ManifestFile(identityHash: string = POLICY): string {
+export function module1ManifestText(identityHash: string = POLICY): string {
   const manifest = JSON.parse(readFileSync(MODULE1_FIXTURE, 'utf8')) as { identity: { identity_hash: string } };
   manifest.identity.identity_hash = identityHash;
+  return JSON.stringify(manifest);
+}
+
+/** What the host of the manifest answers: a text with the status 200, or a status alone with no body. */
+export type Module1Answer = string | { readonly status: number };
+
+/** A fetch that answers the address of the Module-1 manifest with `answer`, and passes every other call on to `next`. */
+export function withModule1(next: typeof fetch, answer: Module1Answer): typeof fetch {
+  const address = new URL(MODULE1_URL).href;
+  return async (input, init) => {
+    const href = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url).href;
+    if (href !== address) return next(input, init);
+    return typeof answer === 'string' ? new Response(answer, { status: 200, headers: { 'content-type': 'text/plain' } }) : new Response('', { status: answer.status });
+  };
+}
+
+/** A file with the manifest of these tests, for the child process of a test: a child cannot take a stub fetch, so its preload (module1-preload.mjs) answers the address from this file. */
+export function module1StubFile(): string {
   const file = join(tempDir(), 'module1.json');
-  writeFileSync(file, JSON.stringify(manifest), 'utf8');
+  writeFileSync(file, module1ManifestText(), 'utf8');
   return file;
 }

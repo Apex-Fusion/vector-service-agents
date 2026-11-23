@@ -23,7 +23,7 @@ import type { LedgerWorld } from '../../../../packages/buyer-core/test/fixtures/
 import { MANIFEST_SHA, ScriptedPort, claimView, escrowJob } from '../../../../packages/usecase-kit/test/dispute/support.ts';
 import { Portal } from '../job/rig.ts';
 import type { StartOptions } from '../../src/serve/start.ts';
-import { SERVICE, envWith, tempDir } from './support.ts';
+import { SERVICE, envWith, module1ManifestText, tempDir, withModule1 } from './support.ts';
 
 export const HOUR = 3_600_000;
 /** The time of the world: a minute after the tip of the captured ledger. */
@@ -144,7 +144,8 @@ export function makeWorld(over: WorldOptions = {}): World {
   const stateDir = tempDir();
   const gatewayOrigin = new URL(gateway.baseUrl).origin;
   let gate: { reached: () => void; open: Promise<void> } | null = null;
-  const routed: typeof fetch = async (input, init) => {
+  // The address of the Module-1 manifest answers with the manifest of the deployment of these tests. Every other call goes to the gateway, the model supplier or the marketplace.
+  const routed: typeof fetch = withModule1(async (input, init) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
     if (url.origin === gatewayOrigin) return gateway.fetch(input, init);
     if (gate !== null && url.pathname === '/v1/responses' && init?.method === 'POST') {
@@ -152,7 +153,7 @@ export function makeWorld(over: WorldOptions = {}): World {
       await gate.open;
     }
     return m.fetchImpl(input, init);
-  };
+  }, module1ManifestText());
   const env = envWith({
     AGENT_DID: DESK_DID, PORT: '0', HOST: '127.0.0.1', ORDER_DESK_STATE_DIR: stateDir, IDENTITY_GATEWAY_URL: gateway.baseUrl, VECTOR_MARKETPLACE_INDEXER_URL: INDEXER,
     LLM_MODEL_ALLOWLIST: ALLOWLIST.join(','), LLM_MAX_PRICE_LOVELACE: String(LLM_ADVERT.price_lovelace), LLM_MAX_SUPPLIER_BOND_LOVELACE: String(LLM_ADVERT.supplier_bond_lovelace),

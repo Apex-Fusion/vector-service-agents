@@ -49,7 +49,7 @@ export interface WireOptions {
   readonly transport?: MtlsTransport;
   /** The ledger that the hook reads. Its budget is replaced by the budget of the hook. */
   readonly ledgerEnv?: LedgerEnv;
-  /** The Module-1 port of the dispute code. The default reads the manifest of the deployment and makes the real port. */
+  /** The Module-1 port of the dispute code. The default fetches the manifest of the deployment one time, from its pinned address, and makes the real port. */
   readonly module1Port?: Module1Port;
 }
 
@@ -78,7 +78,10 @@ function hireLedgerOf(log: (line: string) => void): HireLedger {
   };
 }
 
-/** The Module-1 port: the one that a test gives, or the real port over the manifest of the deployment. The manifest must name the identity registry that the deployment of this service gives. */
+/**
+ * The Module-1 port: the one that a test gives, or the real port over the manifest of the deployment. The manifest is fetched one time, from the pinned https address of the setting. It must name the identity
+ * registry that the deployment of this service gives. The port itself makes no call when it is made.
+ */
 async function module1PortOf(
   config: ServiceConfig, options: WireOptions, ports: { clock: () => number; sleep: (ms: number) => Promise<void>; fetchImpl: typeof fetch; koiosUrl: string; service: ServiceKey },
 ): Promise<Module1Port> {
@@ -97,7 +100,8 @@ async function module1PortOf(
 
 /**
  * Makes the real parts of the service from its configuration and joins them: the chain and the paying key, the two gateway clients, the ledger of the hook, the order book and the record of the passed checks, the
- * dispute code over its journal and its port, the hook, and the ports of the job. It reads files and makes no network call. It throws, naming what is wrong, and nothing keeps running then.
+ * dispute code over its journal and its port, the hook, and the ports of the job. It reads files and makes the one fetch of the Module-1 manifest, from its pinned https address (`module1PortOf`), and no other
+ * network call: the chain, the ledger and the gateway are read when the hook and the job need them. It throws, naming what is wrong, and nothing keeps running then.
  */
 export async function wireService(config: ServiceConfig, options: WireOptions = {}): Promise<Wired> {
   const log = options.log ?? defaultLog;
