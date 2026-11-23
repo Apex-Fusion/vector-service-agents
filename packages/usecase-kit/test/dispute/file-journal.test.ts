@@ -440,7 +440,7 @@ describe('a reference that is not an output reference', () => {
     for (const ref of [`${HEX}#0`, `${HEX}#9`, `${HEX}#10`, `${HEX}#9999999999`]) {
       await journal.put(ref, record({ escrow: ref }));
       expect(await journal.get(ref), ref).toEqual(record({ escrow: ref }));
-      expect(existsSync(join(folder, ref.replace('#', '_'))), ref).toBe(true);
+      expect(existsSync(join(folder, ref.split('#').join('_'))), ref).toBe(true);
     }
   });
 

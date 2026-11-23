@@ -141,7 +141,7 @@ export class FileJournal implements DisputeJournal {
   /** The file of a job. Only an output reference gives one, so no other text reaches the file system. */
   #fileOf(escrow: OutputRef): string {
     if (!parseOutputRef(escrow).ok) throw new TypeError('the journal needs an output reference as the name of a job');
-    return join(this.#folder, escrow.replace('#', '_'));
+    return join(this.#folder, escrow.split('#').join('_'));
   }
 
   /** Runs `write` when every write that was queued for the file before it has ended, whatever the outcome of those writes. The result is the outcome of `write`. */
