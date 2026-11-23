@@ -1,7 +1,7 @@
 // agents/reorder-agent/test/serve/support.ts
 // What the tests of the serve folder share: the five keys of the tests, the supplier key, a complete environment, and a place for the state directory. A key of the tests is 32 bytes of one number, which is a raw
 // Ed25519 key, and it is the key of the same number in the fixture world of buyer-core, so the co-sign route reads the records that the fixture world holds for them. No test uses the network and no key is real.
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,7 +39,20 @@ export const AGENT_DID = `did:vector:${'a1'.repeat(32)}`;
 export const READER_DID = `did:vector:${'b2'.repeat(32)}`;
 export const TOKEN = `Bearer ${'4f'.repeat(24)}`;
 export const CONTACT = 'ops@example.test';
-export const MODULE1_MANIFEST = fileURLToPath(new URL('../../../../packages/buyer-core/test/fixtures/module1-mainnet-manifest.json', import.meta.url));
+/** The Module-1 manifest of the fixture world of buyer-core: the file that a fetch stub serves at MODULE1_URL. */
+export const MODULE1_FIXTURE = fileURLToPath(new URL('../../../../packages/buyer-core/test/fixtures/module1-mainnet-manifest.json', import.meta.url));
+export const MODULE1_COMMIT = '1234567890abcdef1234567890abcdef12345678';
+/**
+ * The address of that manifest at a pinned commit. The host is an address of the range for documentation, so that the fetch of the kit needs no lookup of a name, and no test reaches it: a fetch stub answers it.
+ * It is the one fetch that the start makes besides the calls to the node.
+ */
+export const MODULE1_URL = `https://198.51.100.7/Apex-Fusion/vector-agent-modules/${MODULE1_COMMIT}/Module-1/deploy/identity/mainnet/manifest.json`;
+export const MODULE1_TEXT = readFileSync(MODULE1_FIXTURE, 'utf8');
+
+/** A fetch that answers MODULE1_URL with the fixture manifest, and gives every other call to `next`. */
+export function withModule1(next: typeof fetch): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => (String(input) === MODULE1_URL ? new Response(MODULE1_TEXT, { status: 200, headers: { 'content-type': 'application/json' } }) : next(input, init))) as typeof fetch;
+}
 
 /** Every secret of an environment, as the texts that must stand in no log, no manifest, no answer and no detail: each key in its hex and bech32 forms, and the token with its credential. */
 export function secretsOf(env: NodeJS.ProcessEnv = completeEnv()): string[] {
@@ -59,7 +72,7 @@ export function completeEnv(over: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     VECTOR_IDENTITY_CONFIG_SEED: `${CONFIG_SEED.txHash}#${CONFIG_SEED.outputIndex}`,
     VECTOR_IDENTITY_ESCROW_REF_UTXO: `${'e0'.repeat(32)}#4`,
     VECTOR_IDENTITY_VAULT_REF_UTXO: `${'e0'.repeat(32)}#3`,
-    VECTOR_MODULE1_MANIFEST: MODULE1_MANIFEST,
+    VECTOR_MODULE1_MANIFEST: MODULE1_URL,
     MOCK_PUBLIC_BASE: 'https://mock.example',
     MOCK_MTLS_BASE: 'https://mock-mtls.example',
     SUPPLIER_PKH: SUPPLIER.keyHash,

@@ -23,7 +23,7 @@ import type { SupplierSources, Wired, WiringOptions } from '../../src/serve/wiri
 import { said } from '../model/decide-support.ts';
 import { AGENT_ID as SUPPLIER_AGENT_ID, CAPABILITY, SKU, SUPPLIER as SUPPLIER_DID, goldenWorld } from '../model/supplier-support.ts';
 import { golden, must } from '../model/support.ts';
-import { KEY_NUMBERS, KEY_VARIABLES, ROLES, cleanDirs, completeEnv, messageOf, rawKey, secretsOf, tempDir } from './support.ts';
+import { KEY_NUMBERS, KEY_VARIABLES, MODULE1_URL, ROLES, cleanDirs, completeEnv, messageOf, rawKey, secretsOf, tempDir, withModule1 } from './support.ts';
 
 afterEach(cleanDirs);
 
@@ -48,14 +48,14 @@ interface Setup {
 }
 
 /** The chain of each key: the FakeChain of the stub marketplace, with the wallet of the key. A chain is made once for each key, and the test reads the map. */
-async function setup(over: { env?: NodeJS.ProcessEnv; options?: Partial<WiringOptions>; provider?: Module1Provider } = {}): Promise<Setup> {
+async function setup(over: { env?: NodeJS.ProcessEnv; options?: Partial<WiringOptions>; provider?: Module1Provider; fetch?: (next: typeof fetch) => typeof fetch } = {}): Promise<Setup> {
   const m = marketplace();
   const dir = tempDir();
   const config = loadConfig(completeEnv({ REORDER_STATE_DIR: dir, VECTOR_MARKETPLACE_INDEXER_URL: INDEXER, ...over.env }));
   const log: string[] = [];
   const chains = new Map<string, VaultChain>();
   const wired = await wire({ ...config, modelLimits: LIMITS }, {
-    fetchImpl: m.fetchImpl, clock: clockOf(m), log: (line) => { log.push(line); }, provider: over.provider ?? world([liveDelegation(DELEG_A.keyHash)]), tipSlot: async () => 0,
+    fetchImpl: (over.fetch ?? withModule1)(m.fetchImpl), clock: clockOf(m), log: (line) => { log.push(line); }, provider: over.provider ?? world([liveDelegation(DELEG_A.keyHash)]), tipSlot: async () => 0,
     createChain: async (options) => {
       const pkh = keyOf(options.privateKeyHex).pkh;
       const chain = vaultChainWith(m, { wallet: async () => ({ ...(await m.chain.wallet()), buyerPkh: pkh }) });
@@ -354,9 +354,19 @@ describe('the start', () => {
     expect(wired.systemStartMs).toBe(SYSTEM_START_MS);
   });
 
-  test('stops when the Module-1 manifest cannot be read, naming the variable, and the manifest of the fixture is its twin', async () => {
-    const failed = await setup({ env: { VECTOR_MODULE1_MANIFEST: '/nonexistent/module1.json' } }).catch((error: unknown) => error);
-    expect((failed as Error).message).toMatch(/VECTOR_MODULE1_MANIFEST/);
+  test('fetches the Module-1 manifest at its pinned address one time, and the start fetches nothing else', async () => {
+    const seen: string[] = [];
+    const spy = (next: typeof fetch): typeof fetch => (async (input, init) => { seen.push(String(input)); return withModule1(next)(input, init); }) as typeof fetch;
+    await setup({ fetch: spy });
+    expect(seen).toStrictEqual([MODULE1_URL]);
+  });
+
+  test('stops when the Module-1 manifest cannot be fetched, or is not JSON, naming the variable, and the answer of the stub is its twin', async () => {
+    const answering = (response: () => Response) => (next: typeof fetch): typeof fetch => (async (input, init) => (String(input) === MODULE1_URL ? response() : next(input, init))) as typeof fetch;
+    const missing = await setup({ fetch: answering(() => new Response('', { status: 404 })) }).catch((error: unknown) => error);
+    expect((missing as Error).message).toMatch(/^The Module-1 manifest \(VECTOR_MODULE1_MANIFEST\) .* cannot be fetched: the host answered HTTP 404/);
+    const notJson = await setup({ fetch: answering(() => new Response('not json', { status: 200 })) }).catch((error: unknown) => error);
+    expect((notJson as Error).message).toMatch(/^The Module-1 manifest \(VECTOR_MODULE1_MANIFEST\) .* is not JSON/);
     await expect(setup()).resolves.toBeDefined();
   });
 

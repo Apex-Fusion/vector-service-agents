@@ -21,13 +21,15 @@ import { manifestFromEnv } from '../../src/serve/manifest.ts';
 import { SETTINGS, loadConfig, startService, stopOnSignals } from '../../src/serve/start.ts';
 import type { StartOptions } from '../../src/serve/start.ts';
 import {
-  KEY_NUMBERS, KEY_VARIABLES, PKH_VARIABLES, PRINCIPAL, ROLES, SUPPLIER, TOKEN, cleanDirs, completeEnv, messageOf, rawKey, secretsOf, tempDir,
+  KEY_NUMBERS, KEY_VARIABLES, MODULE1_COMMIT, MODULE1_FIXTURE, MODULE1_URL, PKH_VARIABLES, PRINCIPAL, ROLES, SUPPLIER, TOKEN, cleanDirs, completeEnv, messageOf, rawKey, secretsOf, tempDir, withModule1,
 } from './support.ts';
 import type { Role } from './support.ts';
 
 const run = promisify(execFile);
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
 const agentDir = fileURLToPath(new URL('../../', import.meta.url));
+/** The preload that a child process loads before the service: it answers the fetch of the Module-1 manifest, the one fetch of the start that is not a call to the node. */
+const childFetch = fileURLToPath(new URL('./child-fetch.mjs', import.meta.url));
 const SERVICE_HEX = rawKey(KEY_NUMBERS.service);
 
 afterEach(async () => {
@@ -187,6 +189,34 @@ describe('every refusal of the start has its accepted twin', () => {
     }
     expect(() => loadConfig(completeEnv())).not.toThrow();
   });
+
+  test('VECTOR_MODULE1_MANIFEST must be an https address pinned to a commit: a file path, an http address, an address with no commit, and an address with a user, a query or a fragment stop the start by name and never show the value', () => {
+    const pinned = (host = 'https://198.51.100.7', commit = MODULE1_COMMIT): string => `${host}/Apex-Fusion/vector-agent-modules/${commit}/Module-1/manifest.json`;
+    const wrong: Array<[string, string, RegExp]> = [
+      ['a file path', MODULE1_FIXTURE, /must be an https address/],
+      ['a relative path', 'module1.json', /must be an https address/],
+      ['an http address', pinned('http://198.51.100.7'), /must be an https address/],
+      ['no address after the scheme', 'https://', /must be an https address/],
+      ['an address with no commit', 'https://198.51.100.7/Apex-Fusion/vector-agent-modules/main/Module-1/manifest.json', /must be pinned to a commit/],
+      ['a commit of 39 characters', pinned('https://198.51.100.7', MODULE1_COMMIT.slice(1)), /must be pinned to a commit/],
+      ['a commit of 41 characters', pinned('https://198.51.100.7', `${MODULE1_COMMIT}0`), /must be pinned to a commit/],
+      ['a commit in upper case', pinned('https://198.51.100.7', MODULE1_COMMIT.toUpperCase()), /must be pinned to a commit/],
+      ['a commit that is a part of a longer segment', pinned('https://198.51.100.7', `x${MODULE1_COMMIT}`), /must be pinned to a commit/],
+      ['an address with a user and a password', pinned('https://user:secret-text@198.51.100.7'), /no user, no password, no query and no fragment/],
+      ['an address with a query', `${pinned()}?token=secret-text`, /no user, no password, no query and no fragment/],
+      ['an address with a fragment', `${pinned()}#secret-text`, /no user, no password, no query and no fragment/],
+    ];
+    for (const [what, value, expected] of wrong) {
+      const message = messageOf(() => loadConfig(completeEnv({ VECTOR_MODULE1_MANIFEST: value })));
+      expect(message, what).toMatch(/^environment variable VECTOR_MODULE1_MANIFEST /);
+      expect(message, what).toMatch(expected);
+      expect(message, what).not.toContain(value);
+      expect(message, what).not.toContain('secret-text');
+    }
+    expect(() => loadConfig(completeEnv({ VECTOR_MODULE1_MANIFEST: pinned() }))).not.toThrow();
+    expect(() => loadConfig(completeEnv({ VECTOR_MODULE1_MANIFEST: `https://raw.githubusercontent.com/Apex-Fusion/vector-agent-modules/${MODULE1_COMMIT}/Module-1/deploy/identity/mainnet/manifest.json` }))).not.toThrow();
+    expect(MODULE1_URL).toContain(MODULE1_COMMIT);
+  });
 });
 
 describe('the secrets stay in their own lines', () => {
@@ -237,6 +267,16 @@ describe('the secrets stay in their own lines', () => {
     const message = messageOf(() => loadConfig(completeEnv(), (published) => ({ ...manifestFromEnv(published), schema: 'vector.agent-manifest.v1' })));
     expect(message).toMatch(/^the manifest is refused \(manifest_schema\)/);
   });
+
+  test('the manifest is built with the setting that the kit gives it and never with the live environment, and a build that differs between two renders is refused', () => {
+    const seen: Array<string | undefined> = [];
+    loadConfig(completeEnv({ FAULT_MODE: undefined }), (published) => { seen.push(published.FAULT_MODE); return manifestFromEnv(published); });
+    // The kit renders twice for the empty setting, and the live environment holds no FAULT_MODE at all: the text is the setting of the kit.
+    expect(seen).toStrictEqual(['', '']);
+    let calls = 0;
+    const unstable = messageOf(() => loadConfig(completeEnv(), (published) => ({ ...manifestFromEnv(published), description: `render ${(calls += 1)}` })));
+    expect(unstable).toMatch(/^the manifest is refused \(manifest_not_stable\)/);
+  });
 });
 
 /** A start of the whole service in this process, with the parts of the tests: the offline node of the fixture world, a chain for each key, and no network. */
@@ -245,7 +285,7 @@ async function start(env: NodeJS.ProcessEnv = {}, options: StartOptions = {}) {
   const m = marketplace();
   const log: string[] = [];
   const service = await startService(completeEnv({ REORDER_STATE_DIR: dir, VECTOR_MARKETPLACE_INDEXER_URL: INDEXER, ...env }), {
-    fetchImpl: m.fetchImpl, log: (line) => { log.push(line); }, provider: world(), tipSlot: async () => 0, janitorIntervalMs: 3_600_000,
+    fetchImpl: withModule1(m.fetchImpl), log: (line) => { log.push(line); }, provider: world(), tipSlot: async () => 0, janitorIntervalMs: 3_600_000,
     createChain: async (chainOptions) => vaultChainWith(m, { wallet: async () => ({ ...(await m.chain.wallet()), buyerPkh: keyOf(chainOptions.privateKeyHex).pkh }) }),
     ...options,
   });
@@ -366,11 +406,14 @@ describe('src/index.ts as a process', () => {
     return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   }
 
-  /** The environment of the child: the complete environment, and no setting of this process. The addresses that the child could use point at the stand-in node or at a port that nothing holds. */
+  /**
+   * The environment of the child: the complete environment, and no setting of this process. The addresses that the child could use point at the stand-in node or at a port that nothing holds. The one fetch of the
+   * start that is not a call to the node, the Module-1 manifest at its pinned address, is answered by `child-fetch.mjs`, which a child loads before the service: no child reaches a network.
+   */
   const run1 = (env: NodeJS.ProcessEnv) => {
     const inherited: NodeJS.ProcessEnv = { ...process.env };
     for (const name of SETTINGS) delete inherited[name];
-    const child = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], { cwd: agentDir, env: { ...inherited, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, ['--import', 'tsx', '--import', childFetch, 'src/index.ts'], { cwd: agentDir, env: { ...inherited, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
     child.stdout.on('data', (chunk: Buffer) => { out += chunk.toString('utf8'); });
@@ -388,6 +431,7 @@ describe('src/index.ts as a process', () => {
       [{ REORDER_DELEGATION_2_PRIV_KEY_HEX: '' }, /^\[reorder-agent\] cannot start: environment variable REORDER_DELEGATION_2_PRIV_KEY_HEX is required/],
       [{ OPERATOR_CONTACT: SERVICE_HEX }, /^\[reorder-agent\] cannot start: environment variable OPERATOR_CONTACT holds the service key/],
       [{ FAULT_MODE: 'confirm_wrong_lot' }, /^\[reorder-agent\] cannot start: environment variable FAULT_MODE must be empty/],
+      [{ VECTOR_MODULE1_MANIFEST: MODULE1_FIXTURE }, /^\[reorder-agent\] cannot start: environment variable VECTOR_MODULE1_MANIFEST must be an https address/],
     ];
     const results = await Promise.all(cases.map(async ([env]) => {
       const p = run1({ ...completeEnv({ REORDER_STATE_DIR: dir, ...env }), ...offChain(ogmios) });

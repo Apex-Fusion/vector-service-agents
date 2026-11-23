@@ -182,9 +182,30 @@ export function endpointsFromEnv(env: NodeJS.ProcessEnv): Endpoints {
   };
 }
 
-/** The file or the https address of the Module-1 deployment manifest. The wiring reads it at the start. */
+/** A commit of git as a segment of a path: 40 lower-case hex characters. */
+const COMMIT_SEGMENT = /^[0-9a-f]{40}$/;
+
+/**
+ * The https address of the Module-1 deployment manifest, pinned to a commit: its path holds a segment of 40 lower-case hex characters, the commit that the manifest was published at, so the manifest that the
+ * service reads cannot change under it. The wiring fetches that one file one time, at the start: it is the one thing that the start fetches besides the node. A file path, an `http` address, an address with a user,
+ * a password, a query or a fragment, and an address with no commit segment (a branch name moves) stop the start. A message names the variable and never repeats the value: an address can hold a secret.
+ */
 export function module1SourceOf(env: NodeJS.ProcessEnv): string {
-  return requiredEnv('VECTOR_MODULE1_MANIFEST', env.VECTOR_MODULE1_MANIFEST, 'the Module-1 deployment manifest (a file path or an https address), which the dispute code reads at start');
+  const source = requiredEnv('VECTOR_MODULE1_MANIFEST', env.VECTOR_MODULE1_MANIFEST, 'the https address of the Module-1 deployment manifest, pinned to a commit, which the service fetches one time at its start');
+  let url: URL | null = null;
+  try {
+    url = source.startsWith('https://') ? new URL(source) : null;
+  } catch {
+    url = null;
+  }
+  if (url === null) throw new Error(`environment variable VECTOR_MODULE1_MANIFEST must be an https address, and it has ${source.length} characters: a file path and an http address are refused`);
+  if (url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '') {
+    throw new Error('environment variable VECTOR_MODULE1_MANIFEST must be an https address with no user, no password, no query and no fragment');
+  }
+  if (!url.pathname.split('/').some((segment) => COMMIT_SEGMENT.test(segment))) {
+    throw new Error('environment variable VECTOR_MODULE1_MANIFEST must be pinned to a commit: its path must hold a segment of 40 lowercase hex characters, because an address with no commit can change under the service');
+  }
+  return source;
 }
 
 // --- the limits of the two kinds of hire, the dispute, the co-signature ----------------------------------------------------------------------------------

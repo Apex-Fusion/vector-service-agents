@@ -24,7 +24,7 @@ const manifestEnv = (over: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => complet
 });
 
 const render = (env: NodeJS.ProcessEnv = manifestEnv()) => {
-  const rendered = renderManifest('reorder-agent', () => manifestFromEnv(env));
+  const rendered = renderManifest('reorder-agent', (setting) => manifestFromEnv({ ...env, FAULT_MODE: setting }));
   if (!rendered.ok) throw new Error(`${rendered.code}: ${rendered.detail}`);
   return rendered.value;
 };

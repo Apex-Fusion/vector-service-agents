@@ -181,7 +181,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (
     REORDER_DELEGATION_1_PKH: keys.delegation1.pkh,
     REORDER_DELEGATION_2_PKH: keys.delegation2.pkh,
   };
-  const rendered = renderManifest('reorder-agent', () => makeManifest(published));
+  // The build gets the setting that `renderManifest` gives it, as FAULT_MODE of its environment, and never the live environment: the kit renders for each setting and refuses bytes that differ, and a build that
+  // ignored its setting would let that check pass with no meaning.
+  const rendered = renderManifest('reorder-agent', (setting) => makeManifest({ ...published, FAULT_MODE: setting }));
   if (!rendered.ok) throw new Error(`the manifest is refused (${rendered.code}): ${rendered.detail}`);
   for (const key of held) assertNoKeyIn(rendered.value.text, key.hex, KEY_WORDS[key.role]);
   assertNoTokenIn(rendered.value.text, authHeader);
@@ -226,8 +228,8 @@ function assertWritable(dir: string): void {
 }
 
 /**
- * Starts the service on its environment: loadConfig, the state directory proved writable, the wiring (which asks the node and the chain, and stops the start when they give no answer), the co-sign route, the server and
- * the janitors, which make no transaction while their key is busy. Rejects with the reason when it cannot; nothing keeps running then.
+ * Starts the service on its environment: loadConfig, the state directory proved writable, the wiring (which fetches the pinned Module-1 manifest, the one file that the start fetches, asks the node and the chain,
+ * and stops the start when they give no answer), the co-sign route, the server and the janitors, which make no transaction while their key is busy. Rejects with the reason when it cannot; nothing keeps running then.
  */
 export async function startService(env: NodeJS.ProcessEnv = process.env, options: StartOptions = {}): Promise<RunningService> {
   const config = loadConfig(env);

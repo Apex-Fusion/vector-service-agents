@@ -151,8 +151,8 @@ function checkPaying(key: PayingKey, material: KeyMaterial, what: string): Payin
 }
 
 /**
- * Builds everything that the jobs, the route and the janitors use. It asks the node and the chain for four things, and each can fail the start: the Module-1 manifest (a file or an https address), the start time
- * of the chain, and the wallet of each of the three paying keys (the registry reads the wallet to learn the key hash). The rest is made with no call. A clash among the keys is refused first, before a chain is made.
+ * Builds everything that the jobs, the route and the janitors use. It reaches out for four things, and each can fail the start: the Module-1 manifest (an https address, pinned to a commit: the one file that the
+ * start fetches), the start time of the chain from the node, and the wallet of each of the three paying keys (the registry reads the wallet to learn the key hash). The rest is made with no call. A clash among the keys is refused first, before a chain is made.
  */
 export async function wire(settings: WiringSettings, options: WiringOptions = {}): Promise<Wired> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;

@@ -175,7 +175,7 @@ export const TEMPLATE_ENV = {
 
 /** The text of agent.json.template: the manifest with the placeholders, indented, with a line break at the end. `pnpm --filter @vsa/reorder-agent template` writes it. */
 export function renderTemplate(): string {
-  const rendered = renderManifest('reorder-agent', () => manifestFromEnv(TEMPLATE_ENV), { template: true });
+  const rendered = renderManifest('reorder-agent', (setting) => manifestFromEnv({ ...TEMPLATE_ENV, FAULT_MODE: setting }), { template: true });
   if (!rendered.ok) throw new Error(`the template is refused (${rendered.code}): ${rendered.detail}`);
   return rendered.value.text;
 }

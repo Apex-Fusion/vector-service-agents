@@ -9,7 +9,7 @@ import {
   GATEWAY_DEFAULT, HOST_DEFAULT, JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, PRICE_DEFAULT_LOVELACE, STATE_DIR_DEFAULT, agentDidOf, cosignSettingsOf, disputeOf, endpointsFromEnv,
   faultOf, handoffLimitsOf, hostOf, httpsOriginOf, limitsOf, mockBasesOf, modelOf, module1SourceOf, portOf, priceOf, processingWindowOf, stateDirOf, stockReaderDidOf, supplierKeyOf,
 } from '../../src/serve/settings.ts';
-import { AGENT_DID, PRINCIPAL, READER_DID, SUPPLIER, completeEnv, messageOf } from './support.ts';
+import { AGENT_DID, MODULE1_COMMIT, MODULE1_URL, PRINCIPAL, READER_DID, SUPPLIER, completeEnv, messageOf } from './support.ts';
 
 /** A value that no setting takes. A message must name the variable and never repeat this value. */
 const MARKER = 'zq9-marker-value-7f3';
@@ -117,9 +117,16 @@ describe('the endpoints, the mock service and the Module-1 manifest', () => {
     }
   });
 
-  test('the Module-1 manifest is required', () => {
-    expect(module1SourceOf(completeEnv({ VECTOR_MODULE1_MANIFEST: ' /srv/module1.json ' }))).toBe('/srv/module1.json');
+  test('the Module-1 manifest is required, as an https address pinned to a commit: a file path, an http address and an address with no commit are refused by name, and the value is never repeated', () => {
+    expect(module1SourceOf(completeEnv())).toBe(MODULE1_URL);
+    expect(module1SourceOf(completeEnv({ VECTOR_MODULE1_MANIFEST: ` ${MODULE1_URL} ` }))).toBe(MODULE1_URL);
     expect(messageOf(() => module1SourceOf(completeEnv({ VECTOR_MODULE1_MANIFEST: undefined })))).toMatch(/^environment variable VECTOR_MODULE1_MANIFEST is required/);
+    for (const wrong of ['/srv/module1.json', 'http://198.51.100.7/a/' + MODULE1_COMMIT + '/m.json', 'https://198.51.100.7/a/main/m.json', `https://198.51.100.7/a/${MODULE1_COMMIT.toUpperCase()}/m.json`, `${MODULE1_URL}?x=${MARKER}`]) {
+      const message = messageOf(() => module1SourceOf(completeEnv({ VECTOR_MODULE1_MANIFEST: wrong })));
+      expect(message).toMatch(/^environment variable VECTOR_MODULE1_MANIFEST must be /);
+      expect(message).not.toContain(wrong);
+      expect(message).not.toContain(MARKER);
+    }
   });
 });
 

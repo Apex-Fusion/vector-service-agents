@@ -23,7 +23,7 @@ import { ProposeRefusal } from '../../src/propose/index.ts';
 import { ExecuteRefusal } from '../../src/execute/index.ts';
 import { cleanWorlds, footprint, NOTHING, world as executeWorld } from '../execute/world.ts';
 import { FakeClock, REQUEST as PROPOSE_REQUEST, expectEnded, world as proposeWorld } from '../propose/support.ts';
-import { PRINCIPAL, TOKEN, cleanDirs, completeEnv, tempDir } from './support.ts';
+import { PRINCIPAL, TOKEN, cleanDirs, completeEnv, tempDir, withModule1 } from './support.ts';
 
 afterEach(async () => {
   cleanWorlds();
@@ -283,7 +283,7 @@ describe('the open route POST /cosign/delegate', () => {
     const config = loadConfig(completeEnv({ REORDER_STATE_DIR: dir, AGENT_DID: KIT_AGENT_DID, ...env }));
     const m = marketplace();
     const wired = await wire(config, {
-      fetchImpl: m.fetchImpl, clock: { now: () => NOW, sleep: async () => undefined }, provider: cosignWorld(),
+      fetchImpl: withModule1(m.fetchImpl), clock: { now: () => NOW, sleep: async () => undefined }, provider: cosignWorld(),
       createChain: async (options) => vaultChainWith(m, { wallet: async () => ({ ...(await m.chain.wallet()), buyerPkh: keyOf(options.privateKeyHex).pkh }) }),
     });
     return serve({ cosign: wired.cosignRoute(config.cosign), proposeDeps: wired.proposeDeps, executeDeps: wired.executeDeps, clock: () => NOW });
