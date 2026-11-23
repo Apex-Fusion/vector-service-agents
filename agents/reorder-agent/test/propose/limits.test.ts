@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { accepted } from '@vsa/usecase-kit/protocol';
 import { PROPOSE_DEADLINE_MS } from '../../src/propose/index.ts';
-import { NOW, SUPPLIER, TENANT, expectFailed, expectRecordedAndEnded, expectUntouched, issued, proposed, world } from './support.ts';
+import { NOW, SUPPLIER, TENANT, expectFailed, expectRecordedAndEnded, expectUntouched, issued, proposed, tooYoung, world } from './support.ts';
 
 /** The least time that a job needs for a sub-delegation: the least wait for the confirmations, the job under the sub-delegation, and the end step. */
 const LEAST_MS = 180_000 + 240_000 + 120_000;
@@ -78,7 +78,7 @@ describe('a caller that hangs up', () => {
     expectUntouched(w);
   });
 
-  it('still ends the sub-delegation when the caller hangs up during the stock read, and then never asks the model and takes no number', async () => {
+  it('still ends the sub-delegation when the caller hangs up during the stock read, and then never calls the ERP, never asks the model, and takes no number', async () => {
     const w = world();
     const controller = new AbortController();
     w.script.requestToken = async (request) => {
@@ -86,9 +86,39 @@ describe('a caller that hangs up', () => {
       return issued(request, w.clock.now());
     };
     expectFailed(await w.run({ signal: controller.signal }), 'aborted');
+    expect(w.tokenRequests).toHaveLength(1);
+    expect(w.fetched).toStrictEqual([]);
     await expectRecordedAndEnded(w);
     expect(w.reorderCalls).toStrictEqual([]);
     expect(await w.counter.next(TENANT)).toBe(1);
+  });
+
+  it('makes no token request when the caller hangs up during the wait for the confirmations, ends the sub-delegation, and never asks the model', async () => {
+    const w = world();
+    const controller = new AbortController();
+    const readiness = w.chain.readiness.bind(w.chain);
+    w.chain.readiness = async (id) => {
+      controller.abort();
+      return readiness(id);
+    };
+    expectFailed(await w.run({ signal: controller.signal }), 'aborted');
+    expect(w.tokenRequests).toStrictEqual([]);
+    expect(w.fetched).toStrictEqual([]);
+    await expectRecordedAndEnded(w);
+    expect(w.reorderCalls).toStrictEqual([]);
+  });
+
+  it('asks the gateway no more when the caller hangs up while the delegation is too young, and calls nothing', async () => {
+    const w = world();
+    const controller = new AbortController();
+    w.script.requestToken = async (_request, attempt) => {
+      if (attempt === 2) controller.abort();
+      return tooYoung();
+    };
+    expectFailed(await w.run({ signal: controller.signal }), 'aborted');
+    expect(w.tokenRequests).toHaveLength(2);
+    expect(w.fetched).toStrictEqual([]);
+    await expectRecordedAndEnded(w);
   });
 
   it('keeps the proposal when the caller hangs up during the model decision: the decision is paid for', async () => {

@@ -28,10 +28,12 @@ export interface LeftEntry {
 }
 
 /**
- * The list of left sub-delegations, as far as a run uses it. `LeftStore` of the janitor folder of the kit has these two methods. `put` stores the entry before the Delegate is sent, and it replaces the entry
- * of an id that it holds. `remove` of an id that is not there is not an error.
+ * The list of left sub-delegations, as far as a run uses it. `LeftStore` of the janitor folder of the kit has these three methods. `list` gives every entry, and it rejects when the list cannot be read: a run that
+ * cannot read the list sends nothing. `put` stores the entry before the Delegate is sent, and it replaces the entry of an id that it holds, so a run reads the list first and never puts an entry with an id that
+ * the list holds. `remove` of an id that is not there is not an error.
  */
 export interface LeftSink {
+  list(): Promise<readonly LeftEntry[]>;
   put(entry: LeftEntry): Promise<void>;
   remove(id: DelegationId): Promise<void>;
 }

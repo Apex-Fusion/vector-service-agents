@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { PROPOSE_FAILURES, runPropose } from '../../src/propose/index.ts';
 import type { LeftEntry } from '../../src/propose/index.ts';
 import {
-  AGENT_KEY, BASES, NOW, REQUEST, SCRIPT, TENANT, expectFailed, expectRecordedAndEnded, janitorPass, markSigner, opsOf, parentDatum, proposed, showing, world,
+  AGENT_KEY, BASES, ERP_RESOURCE, NOW, PARENT_ID, REQUEST, SCRIPT, TENANT, expectFailed, expectRecordedAndEnded, janitorOnce, janitorPass, markSigner, opsOf, parentDatum, proposed, showing, world,
 } from './support.ts';
 import type { World } from './support.ts';
 
@@ -150,6 +150,7 @@ describe('a throw', () => {
         await w.sink.put(entry);
         broken = true;
       },
+      list: () => w.sink.list(),
       remove: (id: string) => w.sink.remove(id),
     };
     await expect(w.run({ deps: { subDelegation: { chain: w.chain, clock, delegationScript: SCRIPT, bases: BASES }, leftSink } })).rejects.toThrow('the clock broke');
@@ -173,5 +174,120 @@ describe('two jobs at one time', () => {
     for (const op of ['add', 'put', 'remove', 'delete']) expect(w.steps.filter((step) => step.op === op)).toHaveLength(2);
     expect(w.sink.entries.size).toBe(0);
     expect(w.live.size).toBe(0);
+  });
+});
+
+/**
+ * The ledger of these tests builds the id of a sub-delegation from the largest output of the wallet, as the builder of the ledger does. While a Delegate is on its way, the wallet has the same outputs, so the
+ * next Delegate of the same key gets the same id: the first Delegate lands later, and it is alive. The entry of the first job must stay, and the second job must send nothing.
+ */
+describe('the next job on the same key', () => {
+  /** A job whose process dies right after the Delegate was sent: the answer of the node is the last thing that it sees. The run rejects, and its set of runs in use is lost with the process. */
+  async function diesAfterSend(w: World): Promise<void> {
+    let dead = false;
+    const clock = {
+      now: () => {
+        if (dead) throw new Error('the process died');
+        return w.clock.now();
+      },
+      sleep: (ms: number, signal?: AbortSignal) => {
+        if (dead) throw new Error('the process died');
+        return w.clock.sleep(ms, signal);
+      },
+    };
+    const submit = w.chain.submit.bind(w.chain);
+    w.chain.submit = async (cbor) => {
+      const hash = await submit(cbor);
+      dead = true;
+      return hash;
+    };
+    await expect(w.run({ deps: { subDelegation: { chain: w.chain, clock, delegationScript: SCRIPT, bases: BASES } } })).rejects.toThrow('the process died');
+    w.chain.submit = submit;
+  }
+
+  it('fails with sub_delegation_journal_failed, sends nothing and keeps the entry of the first job, when the first Delegate is still pending and the next job builds its id', async () => {
+    const w = world();
+    w.chain.faults.delegateNeverLands = true;
+    const results = await w.clock.run(Promise.all([runPropose(w.deps, REQUEST, NOW), runPropose(w.deps, REQUEST, NOW)]));
+    expect(results.map((result) => result.reason).sort()).toStrictEqual(['sub_delegation_confirmation_timeout', 'sub_delegation_journal_failed']);
+    for (const result of results) expect(result).toMatchObject({ outcome: 'failed', exit_state: 'Failed', document: null, salt: null, proposal_digest: null, fault_mode: '' });
+    const [one, two] = w.chain.builtDelegates;
+    expect(two!.id).toBe(one!.id);
+    expect(two!.txHash).not.toBe(one!.txHash);
+    expect(w.chain.submitted.map((sent) => sent.kind)).toStrictEqual(['delegate']);
+    expect(opsOf(w)).toStrictEqual(['add', 'put', 'put', 'delete']);
+    expect(w.sink.entries.get(one!.id)).toMatchObject({ left: { id: one!.id, delegateTxHash: one!.txHash } });
+    expect(w.live.size).toBe(0);
+    expect(janitorPass(w.sink.entries, w.live)).toStrictEqual({ skipped: [], taken: [one!.id] });
+  });
+
+  it('fails the job after a restart that came after the send, because the new process builds the id of the Delegate on its way, and the janitor then ends the first sub-delegation', async () => {
+    const w = world();
+    await diesAfterSend(w);
+    expect(w.chain.submitted.map((sent) => sent.kind)).toStrictEqual(['delegate']);
+    expect(w.live.size).toBe(0);
+    const stepsBefore = w.steps.length;
+    expectFailed(await w.run(), 'sub_delegation_journal_failed');
+    const [one, two] = w.chain.builtDelegates;
+    expect(two!.id).toBe(one!.id);
+    expect(w.chain.submitted.map((sent) => sent.kind)).toStrictEqual(['delegate']);
+    expect(w.steps.slice(stepsBefore)).toStrictEqual([]);
+    expect(w.sink.entries.get(one!.id)).toMatchObject({ left: { id: one!.id, delegateTxHash: one!.txHash } });
+    // The Delegate of the first job lands, and the entry still names it, so the janitor ends it.
+    await w.clock.advance(10_000);
+    expect((await w.chain.readDelegation(one!.id))?.txHash).toBe(one!.txHash);
+    expect((await janitorOnce(w)).entries).toMatchObject([{ id: one!.id, state: 'ended' }]);
+    expect(await w.chain.readDelegation(one!.id)).toBeNull();
+    expect(w.chain.submitted.map((sent) => sent.kind)).toStrictEqual(['delegate', 'undelegate']);
+    expect(w.sink.entries.size).toBe(0);
+  });
+
+  it('fails the next job when the first Delegate lands 900 seconds later, and the janitor then ends the first sub-delegation', async () => {
+    const w = world();
+    // The node takes the first Delegate and includes it 900 seconds later.
+    const submit = w.chain.submit.bind(w.chain);
+    let held = false;
+    w.chain.submit = async (cbor) => {
+      if (held) return submit(cbor);
+      held = true;
+      const hash = w.chain.builtDelegates.at(-1)!.txHash;
+      void w.clock.sleep(900_000).then(() => submit(cbor));
+      return hash;
+    };
+    expectFailed(await w.run(), 'sub_delegation_confirmation_timeout');
+    const afterFirst = w.sink.entries.size;
+    expectFailed(await w.run(), 'sub_delegation_journal_failed');
+    const [one, two] = w.chain.builtDelegates;
+    expect(two!.id).toBe(one!.id);
+    expect(afterFirst).toBe(1);
+    expect(w.sink.entries.get(one!.id)).toMatchObject({ left: { id: one!.id, delegateTxHash: one!.txHash } });
+    expect(opsOf(w)).toStrictEqual(['add', 'put', 'put', 'delete']);
+    await w.clock.advance(500_000);
+    expect((await w.chain.readDelegation(one!.id))?.txHash).toBe(one!.txHash);
+    expect((await janitorOnce(w)).entries).toMatchObject([{ id: one!.id, state: 'ended' }]);
+    expect(await w.chain.readDelegation(one!.id)).toBeNull();
+    expect(w.sink.entries.size).toBe(0);
+  });
+
+  it('fails with sub_delegation_journal_failed and sends nothing when the list cannot be read', async () => {
+    const w = world();
+    w.sink.failList = true;
+    expectFailed(await w.run(), 'sub_delegation_journal_failed');
+    expect(w.chain.submitted).toStrictEqual([]);
+    expect(w.steps).toStrictEqual([]);
+  });
+
+  it('goes on when the list holds the entry of another id, and leaves that entry as it is: the twin', async () => {
+    const w = world();
+    const other = 'ab'.repeat(32);
+    const entry = {
+      left: { id: other, parent: PARENT_ID, action: 'erp.stock.read', resource: ERP_RESOURCE, delegateTxHash: 'cd'.repeat(32), delegateValidTo: NOW, delegateTtlSlot: 1, notAfter: NOW, endTxHash: null },
+      signer_key_hash: AGENT_KEY,
+    };
+    w.sink.entries.set(other, entry);
+    proposed(await w.run());
+    expect(w.sink.entries.get(other)).toBe(entry);
+    expect(w.sink.entries.size).toBe(1);
+    expect(w.chain.submitted.map((sent) => sent.kind)).toStrictEqual(['delegate', 'undelegate']);
   });
 });

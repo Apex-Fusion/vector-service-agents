@@ -9,15 +9,17 @@ import { createSerialQueue } from '@vsa/usecase-kit/access';
 import type { SerialQueue } from '@vsa/usecase-kit/access';
 import type { DelegationReading } from '@vsa/usecase-kit/buyer';
 import type { LotName } from '@vsa/usecase-kit/inventory';
+import { runJanitorOnce } from '@vsa/usecase-kit/janitor';
+import type { JanitorReport } from '@vsa/usecase-kit/janitor';
 import { accepted, refused } from '@vsa/usecase-kit/protocol';
 import type { Decision, DelegationId, Document, ProposalResult, ProposedResult, ProtocolResult, SubJob } from '@vsa/usecase-kit/protocol';
 import {
-  AGENT_ID, AGENT_KEY, BASES, DAY, FakeClock, FakeDelegations, NOW, OTHER_KEY, PARENT_ID, SCRIPT, SUBAGENT_ID, SUBAGENT_KEY, WALLET, markSigner, parentDatum,
+  AGENT_ID, AGENT_KEY, BASES, DAY, FakeClock, FakeDelegations, NOW, OTHER_KEY, PARENT_ID, SCRIPT, SUBAGENT_ID, SUBAGENT_KEY, WALLET, markSigner, parentDatum, slotOf,
 } from '../../../../packages/usecase-kit/test/access/support.ts';
 import { MemoryPoCounter, runPropose } from '../../src/propose/index.ts';
 import type { DelegationKey, LeftEntry, LeftSink, PoCounter, ProposeDeps, ProposeRequest, ReorderAnswer, ReorderChoice, SupplierRead } from '../../src/propose/index.ts';
 
-export { AGENT_KEY, BASES, DAY, FakeClock, NOW, OTHER_KEY, PARENT_ID, SCRIPT, SUBAGENT_KEY, WALLET, markSigner, parentDatum };
+export { AGENT_KEY, BASES, DAY, FakeClock, NOW, OTHER_KEY, PARENT_ID, SCRIPT, SUBAGENT_KEY, WALLET, markSigner, parentDatum, slotOf };
 
 export const AGENT_DID = `did:vector:${AGENT_ID}`;
 export const SUBAGENT_DID = `did:vector:${SUBAGENT_ID}`;
@@ -128,6 +130,8 @@ export class SinkSpy implements LeftSink {
   /** The numbers of the calls of `put` that fail, counted from 1. */
   readonly failPutAt = new Set<number>();
   failRemove = false;
+  /** `list` fails: the list cannot be read. */
+  failList = false;
 
   constructor(private readonly steps: Step[]) {}
 
@@ -142,6 +146,11 @@ export class SinkSpy implements LeftSink {
     this.steps.push({ op: 'remove', id });
     if (this.failRemove) throw new Error('the disk is full');
     this.entries.delete(id);
+  }
+
+  async list(): Promise<readonly LeftEntry[]> {
+    if (this.failList) throw new Error('the list cannot be read');
+    return [...this.entries.values()];
   }
 }
 
@@ -343,4 +352,24 @@ export function showing(chain: FakeDelegations, txHash: () => string): void {
     const live = await read(id);
     return live === null || id === PARENT_ID ? live : { ...live, txHash: txHash() };
   };
+}
+
+/**
+ * One pass of the REAL janitor of the kit over the list and the ledger of the world. A run that this process still uses is left alone, a sub-delegation that is live and that the Delegate of an entry made is
+ * ended with the Undelegate, and the entry is then removed.
+ */
+export function janitorOnce(w: World): Promise<JanitorReport> {
+  return w.clock.run(
+    runJanitorOnce({
+      store: w.sink,
+      chain: w.chain,
+      delegationScript: SCRIPT,
+      signerOf: (keyHash) => (keyHash === AGENT_KEY ? { ...markSigner(AGENT_KEY), address: WALLET } : null),
+      queueOf: () => ({ run: (job) => w.queue.run(job), busy: false }),
+      tipSlot: async () => slotOf(w.clock.now()),
+      clock: w.clock,
+      log: () => undefined,
+      inFlight: (id) => w.live.has(id),
+    }),
+  );
 }

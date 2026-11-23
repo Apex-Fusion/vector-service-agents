@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FilePoCounter, MemoryPoCounter, PROPOSE_FAILURES } from '../../src/propose/index.ts';
-import type { CounterFs, PoCounter, ReorderAnswer } from '../../src/propose/index.ts';
-import { CHOICE, DECISION, NOW, SUB_JOB, TENANT, answerFor, expectFailed, expectRecordedAndEnded, proposed, world } from './support.ts';
+import type { CounterFs, PoCounter, ReorderAnswer, ReorderChoice } from '../../src/propose/index.ts';
+import { CHOICE, DECISION, NOW, SUB_JOB, SUPPLIER, TENANT, answerFor, expectFailed, expectRecordedAndEnded, proposed, world } from './support.ts';
 import type { JsonValue } from '@vsa/usecase-kit/protocol';
 
 /** An answer of the decision `reorder` that holds a decision. */
@@ -153,6 +153,23 @@ describe('the choice and the decision that records it', () => {
     const result = proposed(await w.run());
     expect(result.document).toMatchObject(RECORDED);
     expect(result.decisions[0]!.choice).toStrictEqual({ needed_by: '2026-12-01', quantity: 50, lot: 'lot-medium' });
+  });
+
+  it('builds the order, and keeps the decision, from the copy that it checked, and not from the objects of the port, which the port changes while the job waits for the number', async () => {
+    const w = world();
+    const choice: ReorderChoice = { lot: 'lot-medium', quantity: 50, needed_by: '2026-12-01' };
+    const recorded = { lot: 'lot-medium', quantity: 50, needed_by: '2026-12-01' };
+    w.script.reorder = async () => ({ ok: true, decision: { ...DECISION, choice: recorded }, choice });
+    const counter: PoCounter = {
+      next: async () => {
+        Object.assign(choice, { lot: 'lot-large', quantity: 9_999, needed_by: '2030-01-01' });
+        recorded.quantity = 1;
+        return 1;
+      },
+    };
+    const result = proposed(await w.run({ deps: { counter } }));
+    expect(result.document).toMatchObject({ lot: 'lot-medium', quantity: 50, needed_by: '2026-12-01', advert_ref: SUPPLIER.adverts['lot-medium'].advert_ref });
+    expect(result.decisions[0]!.choice).toStrictEqual({ lot: 'lot-medium', quantity: 50, needed_by: '2026-12-01' });
   });
 });
 

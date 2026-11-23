@@ -15,10 +15,11 @@
 //      choice that the decision records: no code changes what the model chose, and a difference is `failed` `decision_mismatch`.
 //   6. The purchase order. The number comes from the counter, which stores it before this step uses it. The document must be accepted by `parsePurchaseOrder`. The choice of the model is kept as it is.
 //
-// The records of a sub-delegation. `beforeSend` adds the id to the set of the sub-delegations that a run uses, and then it stores the entry in the list of left sub-delegations, both BEFORE the Delegate is
-// sent. After the run, an end that is `ended` or `not_made` removes the entry, and an end that is `not_ended` stores the entry again with the Undelegate that was tried. Then the id leaves the set, on every path.
-// So the janitor never ends the sub-delegation of a run that still waits, and a run that did not end its sub-delegation leaves an entry for the janitor. A failure to update the list after the run changes no
-// result: the entry that `beforeSend` stored stays, and the janitor ends it or drops it.
+// The records of a sub-delegation. `beforeSend` first reads the list of left sub-delegations: an entry with the id of this sub-delegation means that an earlier Delegate of the same key is on its way, because the
+// builder takes the id from the largest output of the wallet, and the run then sends nothing and records nothing. Else it adds the id to the set of the sub-delegations that a run uses, and it stores the entry in
+// the list, both BEFORE the Delegate is sent. After the run, an end that is `ended` or `not_made` removes the entry, and an end that is `not_ended` stores the entry again with the Undelegate that was tried.
+// Then the id leaves the set, on every path. So the janitor never ends the sub-delegation of a run that still waits, and a run that did not end its sub-delegation leaves an entry for the janitor. A failure to
+// update the list after the run changes no result: the entry that `beforeSend` stored stays, and the janitor ends it or drops it.
 //
 // Time. Every wait of the job is bounded by the deadline: `PROPOSE_DEADLINE_MS` after the arrival of the job. A call of a port that would start after it is not made. The sub-delegation gets a budget that
 // leaves room for its end step inside the deadline, and a job that arrives with less time than the least budget fails with `deadline` before it sends anything. The update of the list after the run has a bound
@@ -27,12 +28,12 @@ import {
   DEFAULT_CONFIRMATION_WAIT_MS, DEFAULT_END_TIMEOUT_MS, DEFAULT_POLL_MS, DEFAULT_STEP_TIMEOUT_MS, GATEWAY_FAILURES, SUB_DELEGATION_FAILURES, askWhileTooYoung, callWithToken, requestSubagentToken, tokenTarget,
   withSubDelegation, within,
 } from '@vsa/usecase-kit/access';
-import type { SubDelegationEnd, SubDelegationHandle, TokenTarget } from '@vsa/usecase-kit/access';
+import type { RouteTokenResult, SubDelegationEnd, SubDelegationHandle, TokenTarget } from '@vsa/usecase-kit/access';
 import { checkAuthority, failedProposalResult, proposedResult } from '@vsa/usecase-kit/buyer';
 import type { ProposalPieces } from '@vsa/usecase-kit/buyer';
 import { LOT_NAMES, PO_SCHEMA, isLotName, parsePurchaseOrder, poNumberOf } from '@vsa/usecase-kit/inventory';
-import { ERROR_STATUS, canonicalJson, canonicalSha256 } from '@vsa/usecase-kit/protocol';
-import type { Decision, DelegationId, Document, ProposalResult } from '@vsa/usecase-kit/protocol';
+import { ERROR_STATUS, canonicalJson, canonicalSha256, isPlainObject } from '@vsa/usecase-kit/protocol';
+import type { Decision, DelegationId, Document, JsonValue, ProposalResult } from '@vsa/usecase-kit/protocol';
 import type { DelegationKey, ProposeDeps, ProposeRequest, SupplierRead } from './ports.ts';
 
 /** The job deadline of the Reorder Agent: the time from the arrival of a job to the end of every wait of `propose`, in milliseconds. */
@@ -169,24 +170,37 @@ async function updateList(run: Run, id: DelegationId | null, keyHash: string, en
   }
 }
 
+/** The caller hung up before a step of the job started. */
+class HungUp extends Error {}
+
 /**
  * The job of the subagent: a token for the stock route under the sub-delegation, the call of the ERP, and the check of the body. The gateway may need some time to see the 30 confirmations, so a token
- * request that gets `delegation_too_young` is asked again for the patience of the job. A call is made once. A job that ran past its time makes no further request: the sub-delegation is ended by then.
+ * request that gets `delegation_too_young` is asked again for the patience of the job. A call is made once. A job that ran past its time makes no further request: the sub-delegation is ended by then. A job
+ * whose caller hung up makes no further request either, and it gives `aborted`.
  */
 async function stockJob(run: Run, target: TokenTarget, handle: SubDelegationHandle): Promise<StockRead> {
   const { deps } = run;
-  const token = await askWhileTooYoung(
-    deps.clock,
-    () =>
-      requestSubagentToken(deps.tokens, {
-        target,
-        subagent: { did: deps.subagent.did, authenticationKey: deps.subagent.authenticationKey, delegationKey: deps.subagent.delegationKey },
-        subDelegation: handle.id,
-      }),
-    { waitMs: TOKEN_PATIENCE_MS, pollMs: DEFAULT_POLL_MS },
-  );
+  let token: RouteTokenResult;
+  try {
+    token = await askWhileTooYoung(
+      deps.clock,
+      () => {
+        if (run.signal?.aborted === true) throw new HungUp();
+        return requestSubagentToken(deps.tokens, {
+          target,
+          subagent: { did: deps.subagent.did, authenticationKey: deps.subagent.authenticationKey, delegationKey: deps.subagent.delegationKey },
+          subDelegation: handle.id,
+        });
+      },
+      { waitMs: TOKEN_PATIENCE_MS, pollMs: DEFAULT_POLL_MS },
+    );
+  } catch (error) {
+    if (error instanceof HungUp) return { ok: false, code: 'aborted' };
+    throw error;
+  }
   if (token.ok !== true) return { ok: false, code: `token_${token.code}` };
   if (handle.signal.aborted) throw new Error('the time of the job ended');
+  if (run.signal?.aborted === true) return { ok: false, code: 'aborted' };
   const answer = await callWithToken(deps.calls, token.value, target);
   if (answer.ok !== true) return { ok: false, code: answer.code === 'refused_by_system' ? answer.reason : (answer.systemCode ?? 'mock_system_failed') };
   const parsed = deps.parseStock(answer.body);
@@ -212,6 +226,10 @@ async function readStock(run: Run, key: DelegationKey): Promise<StockRead> {
         ...deps.subDelegation,
         walletQueue: key.queue,
         beforeSend: async (reference) => {
+          // The id comes from the largest output of the wallet. While an earlier Delegate of this key is on its way, the wallet is the same, so this Delegate has the same id, and the entry of the earlier one must
+          // stay. The hook throws before this run takes the id: nothing is sent, this run records nothing, and it removes nothing.
+          const held = await deps.leftSink.list();
+          if (held.some((entry) => entry.left.id === reference.id)) throw new Error('the list of left sub-delegations holds an entry with the id of this sub-delegation');
           sent.id = reference.id;
           deps.inFlight.add(reference.id);
           await deps.leftSink.put({ left: reference, signer_key_hash: key.signer.keyHash });
@@ -240,7 +258,7 @@ async function readStock(run: Run, key: DelegationKey): Promise<StockRead> {
 /**
  * Runs `propose` for a request that the service parsed. It returns the proposal, or a failed proposal with a code. It throws `ProposeRefusal` for a request that it refuses before it does anything. A
  * sub-delegation that it made is ended or recorded for the janitor before it returns or throws. `arrivedAt` is the time that the job arrived, by the clock of the deps, and the deadline of every wait is
- * `PROPOSE_DEADLINE_MS` after it. `signal` aborts when the caller hangs up: no step starts after that, and a sub-delegation that is made is ended.
+ * `PROPOSE_DEADLINE_MS` after it. `signal` aborts when the caller hangs up: no read, request, call or hire starts after that, a sub-delegation that is made is ended, and a decision that was already paid for is kept.
  */
 export async function runPropose(deps: ProposeDeps, request: ProposeRequest, arrivedAt: number, signal?: AbortSignal): Promise<ProposalResult> {
   try {
@@ -313,12 +331,14 @@ export async function runPropose(deps: ProposeDeps, request: ProposeRequest, arr
   if (!isDecision(answer.decision)) return failed('internal');
   decisions = [answer.decision];
   // The order is built from the choice only when it is the choice that the decision records: no code changes what the model chose.
-  const choice = answer.choice;
-  const given = canonicalJson(choice, 'choice');
+  const given = canonicalJson(answer.choice, 'choice');
   const recorded = canonicalJson(answer.decision.choice, 'decision.choice');
   if (given.ok !== true || recorded.ok !== true) return failed('bad_document');
   if (given.value !== recorded.value) return failed('decision_mismatch');
-  if (typeof choice !== 'object' || choice === null || !isLotName(choice.lot)) return failed('bad_document');
+  // From here on the job uses the copy that it checked, and never an object of the port: the port could change its objects while the job waits for the number.
+  const chosen: JsonValue = JSON.parse(given.value);
+  if (!isPlainObject(chosen) || !isLotName(chosen.lot)) return failed('bad_document');
+  decisions = [{ ...answer.decision, choice: chosen }];
 
   // 6. The purchase order.
   const counted = await attempt(run, () => deps.counter.next(request.tenant));
@@ -334,11 +354,11 @@ export async function runPropose(deps: ProposeDeps, request: ProposeRequest, arr
     po_number: poNumber,
     tenant: request.tenant,
     sku: request.sku,
-    lot: choice.lot,
-    quantity: choice.quantity,
-    needed_by: choice.needed_by,
+    lot: chosen.lot,
+    quantity: chosen.quantity,
+    needed_by: chosen.needed_by,
     supplier_did: request.supplier_did,
-    advert_ref: supplier.adverts[choice.lot].advert_ref,
+    advert_ref: supplier.adverts[chosen.lot].advert_ref,
     stock_reading_sha256: stockSha256.value,
   });
   if (order.ok !== true) return failed('bad_document');
