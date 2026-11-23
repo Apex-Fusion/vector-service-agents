@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { proposalDigest } from '@vsa/usecase-kit/protocol';
 import { judgeDelivery } from '../../src/execute/decision.ts';
 import type { DeliveryJudge } from '../../src/execute/decision.ts';
-import { SALT, ScriptedAccept, acceptDecision, confirmationOf, deliveryOf, orderHash, purchaseOrder, typedConfirmation, typedOrder } from './fixtures.ts';
+import { SALT, ScriptedAccept, acceptDecision, confirmationOf, decisionOf, deliveryOf, orderHash, purchaseOrder, typedConfirmation, typedOrder } from './fixtures.ts';
 
 const ORDER = purchaseOrder();
 
@@ -95,6 +95,9 @@ describe('a decision that failed, or that cannot be read', () => {
     ['a choice that says accept with the number 1', () => ({ ok: true, decision: acceptDecision(true), choice: { accept: 1, mismatch: [] } })],
     ['a choice that says accept with nothing', () => ({ ok: true, decision: acceptDecision(true), choice: { mismatch: [] } })],
     ['a choice whose mismatch is not a list', () => ({ ok: true, decision: acceptDecision(false), choice: { accept: false, mismatch: 'sku' } })],
+    ['a choice that names a field that the model does not compare', () => ({ ok: true, decision: decisionOf('accept_delivery', { accept: false, mismatch: ['tenant'] }), choice: { accept: false, mismatch: ['tenant'] } })],
+    ['a choice that accepts and names a field that differs', () => ({ ok: true, decision: acceptDecision(true, ['sku']), choice: { accept: true, mismatch: ['sku'] } })],
+    ['a choice that does not accept and names no field', () => ({ ok: true, decision: acceptDecision(false), choice: { accept: false, mismatch: [] } })],
     ['a choice that is not the choice of the decision that was recorded', () => ({ ok: true, decision: acceptDecision(false, ['sku']), choice: { accept: true, mismatch: [] } })],
     ['a choice whose fields are not the fields of the recorded decision', () => ({ ok: true, decision: acceptDecision(false, ['sku']), choice: { accept: false, mismatch: ['lot'] } })],
   ];

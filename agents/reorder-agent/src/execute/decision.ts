@@ -7,8 +7,8 @@
 // A delivery that fails the part 1 or the part 2 is never given to the model, and the model is not paid for it. No part is a reason for a challenge except the no of the model: a challenge needs the
 // decision of the model as its ground.
 //
-// The decision accepts only for the boolean `true` of a choice that is the choice that the recorded decision holds. Any other answer of the model port, a failure, a throw and a value of another
-// type included, is `decision_failed`, and nothing is accepted. The judge keeps what it learned (which of the five ends, and the decision when the model made one), so that the job reads it after the hire.
+// The decision accepts only for the boolean `true` of a choice that names no field and that is the choice that the recorded decision holds. Any other answer of the model port, a failure, a throw and a
+// value of another type included, is `decision_failed`, and nothing is accepted. The judge keeps what it learned (which of the five ends, and the decision when the model made one), so that the job reads it after the hire.
 import type { AcceptDecision } from '@vsa/hire-kit';
 import type { DeliveryDecision, VerifiedDelivery } from '@vsa/usecase-kit/buyer';
 import { parseOrderConfirmation } from '@vsa/usecase-kit/inventory';
@@ -64,8 +64,8 @@ const unreadable = (code: string): Read => ({ ok: false, code });
 
 /**
  * The answer of the model port as a decision that was made, or the code of why it is not one. The answer is read as a value of an unknown type: `ok` must be `true`, the decision must be an object,
- * `accept` must be a boolean, `mismatch` must be a list of the three fields, and the choice must be the choice that the recorded decision holds, so that the Accept never rests on a value that the
- * record does not show.
+ * `accept` must be a boolean, `mismatch` must be a list of the three fields, the choice must not contradict itself (it accepts exactly when `mismatch` is empty), and it must be the choice that the
+ * recorded decision holds, so that the Accept never rests on a value that the record does not show.
  */
 function readAnswer(answer: unknown): Read {
   if (typeof answer !== 'object' || answer === null) return unreadable('answer_missing');
@@ -79,6 +79,8 @@ function readAnswer(answer: unknown): Read {
   const mismatch: unknown = choice.mismatch;
   if (typeof accept !== 'boolean') return unreadable('choice_invalid');
   if (!Array.isArray(mismatch) || !mismatch.every((field): field is OrderField => (FIELDS as readonly unknown[]).includes(field))) return unreadable('choice_invalid');
+  // A choice that contradicts itself is no decision: it accepts exactly when it names no field. The Accept cannot be undone, so the job acts on neither side of a contradiction.
+  if (accept === (mismatch.length > 0)) return unreadable('choice_invalid');
   const recorded = canonicalJson(Reflect.get(decision, 'choice'));
   const typed = canonicalJson(choice);
   if (!recorded.ok || !typed.ok || recorded.value !== typed.value) return unreadable('choice_not_recorded');
