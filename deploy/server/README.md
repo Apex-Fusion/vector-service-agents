@@ -1,7 +1,7 @@
 # The agents host: set-up files
 
-This folder has the files that set up one new host. The host runs the agents and the mock systems.
-It is not the present host (see `deploy/host`). The two hosts share no container, no folder and no port.
+This folder has the files of the agents and the mock systems that `deploy/host` does not hold. They run on a new host that `setup.sh` prepares, or beside the agents of `deploy/host` on the same host, when its proxy runs in a container (section "A host whose proxy runs in a container").
+In both ways, the agents of this folder share no container, no folder and no port with the agents of `deploy/host`.
 
 The host has 19 containers: 8 services, 10 runtimes and 1 mock service. One agent has three runtimes in front of one service, so there are 10 runtimes.
 The host builds no image. CI builds each image. A compose file names the image by its digest.
