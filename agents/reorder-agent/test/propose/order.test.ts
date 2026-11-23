@@ -6,8 +6,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FilePoCounter, MemoryPoCounter, PROPOSE_FAILURES } from '../../src/propose/index.ts';
-import type { CounterFs, PoCounter } from '../../src/propose/index.ts';
-import { DECISION, NOW, SUB_JOB, TENANT, expectFailed, expectRecordedAndEnded, proposed, world } from './support.ts';
+import type { CounterFs, PoCounter, ReorderAnswer } from '../../src/propose/index.ts';
+import { CHOICE, DECISION, NOW, SUB_JOB, TENANT, answerFor, expectFailed, expectRecordedAndEnded, proposed, world } from './support.ts';
+import type { JsonValue } from '@vsa/usecase-kit/protocol';
+
+/** An answer of the decision `reorder` that holds a decision. */
+type OkAnswer = Extract<ReorderAnswer, { readonly ok: true }>;
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -87,13 +91,17 @@ describe('the purchase order', () => {
     ['a quantity that is a text', { lot: 'lot-medium', quantity: '50', needed_by: '2026-12-01' }],
     ['a lot that is not a lot name', { lot: 'lot-huge', quantity: 50, needed_by: '2026-12-01' }],
     ['no choice', null],
+    ['a choice that is not JSON data', undefined],
+    ['a quantity that JSON cannot hold', { lot: 'lot-medium', quantity: Number.NaN, needed_by: '2026-12-01' }],
   ];
   it.each(WRONG)('is a failed proposal with bad_document for a choice with %s, and the decision is kept in the result', async (_name, choice) => {
     const w = world();
-    w.script.reorder = async () => ({ ok: true, decision: DECISION, choice: choice as never });
+    // The decision records the same choice, so the failure is the one of the document, and not a difference between the choice and the decision.
+    const decision = { ...DECISION, choice: choice as never };
+    w.script.reorder = async () => ({ ok: true, decision, choice: choice as never });
     const result = await w.run();
     expectFailed(result, 'bad_document');
-    expect(result.decisions).toStrictEqual([DECISION]);
+    expect(result.decisions).toStrictEqual([decision]);
     expect(result.sub_jobs).toStrictEqual([SUB_JOB]);
     await expectRecordedAndEnded(w);
     expect(PROPOSE_FAILURES).toContain('bad_document');
@@ -113,6 +121,41 @@ describe('the purchase order', () => {
   });
 });
 
+describe('the choice and the decision that records it', () => {
+  const RECORDED = { lot: 'lot-medium', quantity: 50, needed_by: '2026-12-01' };
+  /** The answer of a decision that records `recorded`, for the choice `choice`. */
+  const answer = (recorded: JsonValue, choice: unknown): OkAnswer => ({ ok: true, decision: { ...DECISION, choice: recorded }, choice: choice as never });
+  const DIFFERENT: [string, OkAnswer][] = [
+    ['another quantity', answer(RECORDED, { ...RECORDED, quantity: 5000 })],
+    ['another lot', answer(RECORDED, { ...RECORDED, lot: 'lot-large' })],
+    ['another date', answer(RECORDED, { ...RECORDED, needed_by: '2026-12-02' })],
+    ['a quantity that is a text for a quantity that is a number', answer(RECORDED, { ...RECORDED, quantity: '50' })],
+    ['a member that the decision does not record', answer(RECORDED, { ...RECORDED, note: 'more' })],
+    ['a member that only the decision records', answer({ ...RECORDED, note: 'more' }, RECORDED)],
+    ['a decision that records a text', answer('lot-medium', RECORDED)],
+    ['a decision that records nothing', answer(null, RECORDED)],
+  ];
+  it.each(DIFFERENT)('is a failed proposal with decision_mismatch for %s, with the decision kept, no number taken, and the sub-delegation ended', async (_name, given) => {
+    const w = world();
+    w.script.reorder = async () => given;
+    const result = await w.run();
+    expectFailed(result, 'decision_mismatch');
+    expect(PROPOSE_FAILURES).toContain('decision_mismatch');
+    expect(result.decisions).toStrictEqual([given.decision]);
+    expect(w.reorderCalls).toHaveLength(1);
+    await expectRecordedAndEnded(w);
+    expect(await w.counter.next(TENANT)).toBe(1);
+  });
+
+  it('builds the order from a choice that equals the recorded choice, also with its members in another order: the twin', async () => {
+    const w = world();
+    w.script.reorder = async () => answer({ needed_by: '2026-12-01', quantity: 50, lot: 'lot-medium' }, RECORDED);
+    const result = proposed(await w.run());
+    expect(result.document).toMatchObject(RECORDED);
+    expect(result.decisions[0]!.choice).toStrictEqual({ needed_by: '2026-12-01', quantity: 50, lot: 'lot-medium' });
+  });
+});
+
 describe('the number of the purchase order', () => {
   it('is taken after the decision and once: a failed decision takes none, and the next job gets the first number', async () => {
     const w = world();
@@ -124,9 +167,9 @@ describe('the number of the purchase order', () => {
 
   it('is never given again when the order that took it failed: the next job gets the next number', async () => {
     const w = world();
-    w.script.reorder = async () => ({ ok: true, decision: DECISION, choice: { lot: 'lot-medium', quantity: 0, needed_by: '2026-12-01' } });
+    w.script.reorder = async () => answerFor({ lot: 'lot-medium', quantity: 0, needed_by: '2026-12-01' });
     expectFailed(await w.run(), 'bad_document');
-    w.script.reorder = async () => ({ ok: true, decision: DECISION, choice: { lot: 'lot-medium', quantity: 50, needed_by: '2026-12-01' } });
+    w.script.reorder = async () => answerFor(CHOICE);
     expect(proposed(await w.run()).document.po_number).toBe('run1-2');
   });
 

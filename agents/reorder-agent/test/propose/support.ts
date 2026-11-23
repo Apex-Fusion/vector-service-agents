@@ -61,6 +61,11 @@ export const DECISION: Decision = {
   inference: { path: 'marketplace', sub_job: SUB_JOB, accepted: 'confirmed' },
 };
 
+/** The answer of the decision `reorder` for a choice: the decision records that same choice, as the decision of the model does. */
+export function answerFor(choice: ReorderChoice): ReorderAnswer {
+  return { ok: true, decision: { ...DECISION, choice: { lot: choice.lot, quantity: choice.quantity, needed_by: choice.needed_by } }, choice };
+}
+
 /** The request of the golden run: the delegation of the hirer to this agent, the tenant, the SKU and the supplier. */
 export const REQUEST: ProposeRequest = {
   op: 'propose',

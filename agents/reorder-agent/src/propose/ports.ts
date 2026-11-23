@@ -58,7 +58,10 @@ export interface ReorderChoice {
   readonly needed_by: string;
 }
 
-/** The decision `reorder`: the decision with its receipt and the choice that it holds, or the code of the failure. A failure holds no decision. */
+/**
+ * The decision `reorder`: the decision with its receipt and the choice that it holds, or the code of the failure. A failure holds no decision. `choice` must be the choice that `decision.choice` records, with the
+ * same members and the same values: `runPropose` builds the order from `choice` only when the two are equal, and it fails with `decision_mismatch` when they differ.
+ */
 export type ReorderAnswer = { readonly ok: true; readonly decision: Decision; readonly choice: ReorderChoice } | { readonly ok: false; readonly code: string };
 
 /**

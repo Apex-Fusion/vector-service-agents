@@ -11,7 +11,8 @@
 //   4. The stock, through `withSubDelegation` of the kit: one action (`erp.stock.read`) on one resource, one hop below the delegation of the hirer, no value, made by the delegation key of this agent and the
 //      delegation key of the subagent. The subagent asks the gateway for its token after the 30 confirmations and reads the stock with it. The sub-delegation is ENDED in every case: after the stock, after a
 //      refusal, after a failure, after a throw and after a timeout. A reading whose SKU is not the SKU of the request is `failed` `stock_reading_mismatch`.
-//   5. The model decision `reorder`, once. A failure gives `failed` with its code, and the decision is kept in the result when a later step fails.
+//   5. The model decision `reorder`, once. A failure gives `failed` with its code, and the decision is kept in the result when a later step fails. The order is built from the choice only when it EQUALS the
+//      choice that the decision records: no code changes what the model chose, and a difference is `failed` `decision_mismatch`.
 //   6. The purchase order. The number comes from the counter, which stores it before this step uses it. The document must be accepted by `parsePurchaseOrder`. The choice of the model is kept as it is.
 //
 // The records of a sub-delegation. `beforeSend` adds the id to the set of the sub-delegations that a run uses, and then it stores the entry in the list of left sub-delegations, both BEFORE the Delegate is
@@ -30,7 +31,7 @@ import type { SubDelegationEnd, SubDelegationHandle, TokenTarget } from '@vsa/us
 import { checkAuthority, failedProposalResult, proposedResult } from '@vsa/usecase-kit/buyer';
 import type { ProposalPieces } from '@vsa/usecase-kit/buyer';
 import { LOT_NAMES, PO_SCHEMA, isLotName, parsePurchaseOrder, poNumberOf } from '@vsa/usecase-kit/inventory';
-import { ERROR_STATUS, canonicalSha256 } from '@vsa/usecase-kit/protocol';
+import { ERROR_STATUS, canonicalJson, canonicalSha256 } from '@vsa/usecase-kit/protocol';
 import type { Decision, DelegationId, Document, ProposalResult } from '@vsa/usecase-kit/protocol';
 import type { DelegationKey, ProposeDeps, ProposeRequest, SupplierRead } from './ports.ts';
 
@@ -54,8 +55,8 @@ const BOOKKEEPING_TIMEOUT_MS = DEFAULT_STEP_TIMEOUT_MS;
 
 /** The codes of a failed proposal that this folder gives. The codes of the reader of the supplier, of the model decision and of a mock system pass through, and they are not in this list. */
 const OWN_FAILURES = [
-  'ledger_unavailable', 'delegation_not_found', 'delegation_key_unknown', 'stock_read_timeout', 'stock_reading_invalid', 'stock_reading_mismatch', 'mock_system_failed', 'bad_document', 'store_write_failed',
-  'deadline', 'aborted', 'internal',
+  'ledger_unavailable', 'delegation_not_found', 'delegation_key_unknown', 'stock_read_timeout', 'stock_reading_invalid', 'stock_reading_mismatch', 'mock_system_failed', 'decision_mismatch',
+  'bad_document', 'store_write_failed', 'deadline', 'aborted', 'internal',
 ] as const;
 
 /**
@@ -311,7 +312,12 @@ export async function runPropose(deps: ProposeDeps, request: ProposeRequest, arr
   if (answer.ok !== true) return failed(answer.code);
   if (!isDecision(answer.decision)) return failed('internal');
   decisions = [answer.decision];
+  // The order is built from the choice only when it is the choice that the decision records: no code changes what the model chose.
   const choice = answer.choice;
+  const given = canonicalJson(choice, 'choice');
+  const recorded = canonicalJson(answer.decision.choice, 'decision.choice');
+  if (given.ok !== true || recorded.ok !== true) return failed('bad_document');
+  if (given.value !== recorded.value) return failed('decision_mismatch');
   if (typeof choice !== 'object' || choice === null || !isLotName(choice.lot)) return failed('bad_document');
 
   // 6. The purchase order.

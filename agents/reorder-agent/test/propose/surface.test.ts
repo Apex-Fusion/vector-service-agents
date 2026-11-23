@@ -44,8 +44,8 @@ describe('the propose folder', () => {
 
   test('lists the codes that it gives itself, and each has the form of a code', () => {
     const own = [
-      'ledger_unavailable', 'delegation_not_found', 'delegation_key_unknown', 'stock_read_timeout', 'stock_reading_invalid', 'stock_reading_mismatch', 'mock_system_failed', 'bad_document', 'store_write_failed',
-      'deadline', 'aborted', 'internal',
+      'ledger_unavailable', 'delegation_not_found', 'delegation_key_unknown', 'stock_read_timeout', 'stock_reading_invalid', 'stock_reading_mismatch', 'mock_system_failed', 'decision_mismatch',
+      'bad_document', 'store_write_failed', 'deadline', 'aborted', 'internal',
     ];
     expect(propose.PROPOSE_FAILURES).toStrictEqual([...own, ...SUB_DELEGATION_FAILURES.map((code) => `sub_delegation_${code}`), ...GATEWAY_FAILURES.map((code) => `token_${code}`)]);
     expect(propose.PROPOSE_FAILURES).toContain('sub_delegation_confirmation_timeout');

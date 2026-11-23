@@ -8,7 +8,8 @@ import { parsePurchaseOrder } from '@vsa/usecase-kit/inventory';
 import { canonicalSha256, parseProposal, proposalDigest } from '@vsa/usecase-kit/protocol';
 import { PROPOSE_FAILURES } from '../../src/propose/index.ts';
 import {
-  AGENT_KEY, BASES, DAY, DECISION, ERP_RESOURCE, LOTS, NOW, PARENT_ID, SKU, STOCK, SUBAGENT_DID, SUBAGENT_KEY, SUPPLIER, SUPPLIER_DID, WALLET, expectRecordedAndEnded, janitorPass, opsOf, proposed, world,
+  AGENT_KEY, BASES, DAY, DECISION, ERP_RESOURCE, LOTS, NOW, PARENT_ID, SKU, STOCK, SUBAGENT_DID, SUBAGENT_KEY, SUPPLIER, SUPPLIER_DID, WALLET, answerFor, expectRecordedAndEnded, janitorPass, opsOf, proposed,
+  world,
 } from './support.ts';
 
 const golden = JSON.parse(readFileSync(new URL('./golden/po.json', import.meta.url), 'utf8')) as Record<string, unknown>; // a golden file
@@ -101,11 +102,12 @@ describe('the golden run', () => {
     expect(janitorPass(w.sink.entries, w.live)).toStrictEqual({ skipped: [], taken: [] });
   });
 
-  it('keeps the choice of the model as it is: the lot, the quantity and the date are the ones that the model gave, and the advert is the advert of that lot', async () => {
+  it('keeps the choice of the model as it is: the lot, the quantity and the date are the ones that the decision records, and the advert is the advert of that lot', async () => {
     const w = world();
-    w.script.reorder = async () => ({ ok: true, decision: DECISION, choice: { lot: 'lot-small', quantity: 99, needed_by: '2027-01-15' } });
+    w.script.reorder = async () => answerFor({ lot: 'lot-small', quantity: 99, needed_by: '2027-01-15' });
     const result = proposed(await w.run());
     expect(result.document).toMatchObject({ lot: 'lot-small', quantity: 99, needed_by: '2027-01-15', advert_ref: SUPPLIER.adverts['lot-small'].advert_ref });
+    expect(result.decisions[0]!.choice).toStrictEqual({ lot: 'lot-small', quantity: 99, needed_by: '2027-01-15' });
   });
 
   it('makes each proposal on its own: a second job gets the next number and a new salt', async () => {
