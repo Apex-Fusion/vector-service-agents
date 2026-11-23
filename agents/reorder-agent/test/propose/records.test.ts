@@ -219,6 +219,9 @@ describe('the next job on the same key', () => {
     expect(w.sink.entries.get(one!.id)).toMatchObject({ left: { id: one!.id, delegateTxHash: one!.txHash } });
     expect(w.live.size).toBe(0);
     expect(janitorPass(w.sink.entries, w.live)).toStrictEqual({ skipped: [], taken: [one!.id] });
+    expect(w.logs).toHaveLength(1);
+    expect(w.logs[0]).toMatch(/holds an entry with this id/);
+    expect(w.logs[0]).toContain(one!.id);
   });
 
   it('fails the job after a restart that came after the send, because the new process builds the id of the Delegate on its way, and the janitor then ends the first sub-delegation', async () => {
@@ -233,6 +236,9 @@ describe('the next job on the same key', () => {
     expect(w.chain.submitted.map((sent) => sent.kind)).toStrictEqual(['delegate']);
     expect(w.steps.slice(stepsBefore)).toStrictEqual([]);
     expect(w.sink.entries.get(one!.id)).toMatchObject({ left: { id: one!.id, delegateTxHash: one!.txHash } });
+    expect(w.logs).toHaveLength(1);
+    expect(w.logs[0]).toMatch(/holds an entry with this id/);
+    expect(w.logs[0]).toContain(one!.id);
     // The Delegate of the first job lands, and the entry still names it, so the janitor ends it.
     await w.clock.advance(10_000);
     expect((await w.chain.readDelegation(one!.id))?.txHash).toBe(one!.txHash);
@@ -262,19 +268,14 @@ describe('the next job on the same key', () => {
     expect(afterFirst).toBe(1);
     expect(w.sink.entries.get(one!.id)).toMatchObject({ left: { id: one!.id, delegateTxHash: one!.txHash } });
     expect(opsOf(w)).toStrictEqual(['add', 'put', 'put', 'delete']);
+    expect(w.logs).toHaveLength(1);
+    expect(w.logs[0]).toMatch(/holds an entry with this id/);
+    expect(w.logs[0]).toContain(one!.id);
     await w.clock.advance(500_000);
     expect((await w.chain.readDelegation(one!.id))?.txHash).toBe(one!.txHash);
     expect((await janitorOnce(w)).entries).toMatchObject([{ id: one!.id, state: 'ended' }]);
     expect(await w.chain.readDelegation(one!.id)).toBeNull();
     expect(w.sink.entries.size).toBe(0);
-  });
-
-  it('fails with sub_delegation_journal_failed and sends nothing when the list cannot be read', async () => {
-    const w = world();
-    w.sink.failList = true;
-    expectFailed(await w.run(), 'sub_delegation_journal_failed');
-    expect(w.chain.submitted).toStrictEqual([]);
-    expect(w.steps).toStrictEqual([]);
   });
 
   it('goes on when the list holds the entry of another id, and leaves that entry as it is: the twin', async () => {

@@ -28,9 +28,10 @@ export interface LeftEntry {
 }
 
 /**
- * The list of left sub-delegations, as far as a run uses it. `LeftStore` of the janitor folder of the kit has these three methods. `list` gives every entry, and it rejects when the list cannot be read: a run that
- * cannot read the list sends nothing. `put` stores the entry before the Delegate is sent, and it replaces the entry of an id that it holds, so a run reads the list first and never puts an entry with an id that
- * the list holds. `remove` of an id that is not there is not an error.
+ * The list of left sub-delegations, as far as a run uses it. `LeftStore` of the janitor folder of the kit has these three methods. `list` gives every entry. It rejects when the list cannot be read, and a run that
+ * cannot read the list sends nothing. It rejects with `DamagedLeftEntriesError` of the janitor folder when a file of the list is damaged: the run then goes on with the entries that the error carries, unless a
+ * damaged file has the name `<id>.json` of its own sub-delegation. The read has a bound of 20 seconds in the run. `put` stores the entry before the Delegate is sent, and it replaces the entry of an id that it
+ * holds, so a run reads the list first and never puts an entry with an id that the list holds. `remove` of an id that is not there is not an error.
  */
 export interface LeftSink {
   list(): Promise<readonly LeftEntry[]>;
@@ -79,6 +80,8 @@ export type ReorderAnswer = { readonly ok: true; readonly decision: Decision; re
  * - `leftSink` and `inFlight` are the list of left sub-delegations and the set of the ids that a run still uses.
  * - `readSupplier` reads the Order Desk of the supplier for the SKU. `parseStock` reads the body that the ERP gave. `reorder` asks the model for a lot.
  * - `counter` gives the number of the purchase order.
+ * - `log` gets one line for each job that a check stops before its Delegate is sent, with the cause. A line has codes and references of the chain, and no key, token or part of a request. A function that throws
+ *   changes no result.
  */
 export interface ProposeDeps {
   readonly agent: { readonly did: Did };
@@ -96,4 +99,5 @@ export interface ProposeDeps {
   readonly parseStock: (body: unknown) => ProtocolResult<Document>;
   readonly reorder: (reading: Document, lots: Record<LotName, number>) => Promise<ReorderAnswer>;
   readonly counter: PoCounter;
+  readonly log: (line: string) => void;
 }

@@ -22,10 +22,10 @@ describe('the propose folder', () => {
     expect(files).toStrictEqual(['counter.ts', 'index.ts', 'ports.ts', 'propose.ts']);
   });
 
-  test('imports the kit folders of the protocol, the inventory, the access and the buyer flow, the client of the gateway, the node modules of its counter, and its own files, and nothing else', () => {
+  test('imports the kit folders of the protocol, the inventory, the access, the buyer flow and the janitor, the client of the gateway, the node modules of its counter, and its own files, and nothing else', () => {
     const allowed = [
-      'node:crypto', 'node:fs', 'node:fs/promises', 'node:path', '@vsa/id-kit/client', '@vsa/usecase-kit/access', '@vsa/usecase-kit/buyer', '@vsa/usecase-kit/inventory', '@vsa/usecase-kit/protocol',
-      './counter.ts', './ports.ts', './propose.ts',
+      'node:crypto', 'node:fs', 'node:fs/promises', 'node:path', '@vsa/id-kit/client', '@vsa/usecase-kit/access', '@vsa/usecase-kit/buyer', '@vsa/usecase-kit/inventory', '@vsa/usecase-kit/janitor',
+      '@vsa/usecase-kit/protocol', './counter.ts', './ports.ts', './propose.ts',
     ];
     for (const name of files) {
       const imports = importsOf(textOf(name));

@@ -16,10 +16,11 @@
 //   6. The purchase order. The number comes from the counter, which stores it before this step uses it. The document must be accepted by `parsePurchaseOrder`. The choice of the model is kept as it is.
 //
 // The records of a sub-delegation. `beforeSend` first reads the list of left sub-delegations: an entry with the id of this sub-delegation means that an earlier Delegate of the same key is on its way, because the
-// builder takes the id from the largest output of the wallet, and the run then sends nothing and records nothing. Else it adds the id to the set of the sub-delegations that a run uses, and it stores the entry in
-// the list, both BEFORE the Delegate is sent. After the run, an end that is `ended` or `not_made` removes the entry, and an end that is `not_ended` stores the entry again with the Undelegate that was tried.
-// Then the id leaves the set, on every path. So the janitor never ends the sub-delegation of a run that still waits, and a run that did not end its sub-delegation leaves an entry for the janitor. A failure to
-// update the list after the run changes no result: the entry that `beforeSend` stored stays, and the janitor ends it or drops it.
+// builder takes the id from the largest output of the wallet, and the run then sends nothing and records nothing. The read has a bound of its own inside the bound of the hook, so that a late answer never finds a
+// run that ended. One damaged file of the list does not block the run, but a damaged file with the name of this sub-delegation does. Each stop writes one line with its cause to the log. Else the hook adds the id
+// to the set of the sub-delegations that a run uses, and it stores the entry in the list, both BEFORE the Delegate is sent. After the run, an end that is `ended` or `not_made` removes the entry, and an end that
+// is `not_ended` stores the entry again with the Undelegate that was tried. Then the id leaves the set, on every path. So the janitor never ends the sub-delegation of a run that still waits, and a run that did
+// not end its sub-delegation leaves an entry for the janitor. A failure to update the list after the run changes no result: the entry that `beforeSend` stored stays, and the janitor ends it or drops it.
 //
 // Time. Every wait of the job is bounded by the deadline: `PROPOSE_DEADLINE_MS` after the arrival of the job. A call of a port that would start after it is not made. The sub-delegation gets a budget that
 // leaves room for its end step inside the deadline, and a job that arrives with less time than the least budget fails with `deadline` before it sends anything. The update of the list after the run has a bound
@@ -32,9 +33,10 @@ import type { RouteTokenResult, SubDelegationEnd, SubDelegationHandle, TokenTarg
 import { checkAuthority, failedProposalResult, proposedResult } from '@vsa/usecase-kit/buyer';
 import type { ProposalPieces } from '@vsa/usecase-kit/buyer';
 import { LOT_NAMES, PO_SCHEMA, isLotName, parsePurchaseOrder, poNumberOf } from '@vsa/usecase-kit/inventory';
+import { DamagedLeftEntriesError } from '@vsa/usecase-kit/janitor';
 import { ERROR_STATUS, canonicalJson, canonicalSha256, isPlainObject } from '@vsa/usecase-kit/protocol';
 import type { Decision, DelegationId, Document, JsonValue, ProposalResult } from '@vsa/usecase-kit/protocol';
-import type { DelegationKey, ProposeDeps, ProposeRequest, SupplierRead } from './ports.ts';
+import type { DelegationKey, LeftEntry, ProposeDeps, ProposeRequest, SupplierRead } from './ports.ts';
 
 /** The job deadline of the Reorder Agent: the time from the arrival of a job to the end of every wait of `propose`, in milliseconds. */
 export const PROPOSE_DEADLINE_MS = 1_620_000;
@@ -53,6 +55,8 @@ const END_TIMEOUT_MS = DEFAULT_END_TIMEOUT_MS;
 const VALIDITY_SLACK_MS = 300_000;
 /** The bound of one update of the list of left sub-delegations after the run. */
 const BOOKKEEPING_TIMEOUT_MS = DEFAULT_STEP_TIMEOUT_MS;
+/** The longest wait for the read of the list inside the hook before the send. The hook has the bound `DEFAULT_STEP_TIMEOUT_MS` in the access folder, so this wait is a third of it: a read that answers later never finds a run that is still waiting. */
+const LIST_TIMEOUT_MS = DEFAULT_STEP_TIMEOUT_MS / 3;
 
 /** The codes of a failed proposal that this folder gives. The codes of the reader of the supplier, of the model decision and of a mock system pass through, and they are not in this list. */
 const OWN_FAILURES = [
@@ -170,6 +174,53 @@ async function updateList(run: Run, id: DelegationId | null, keyHash: string, en
   }
 }
 
+/** Writes one line to the log of the deps. A log that throws changes no result: the line is lost, and the job goes on. */
+function note(run: Run, line: string): void {
+  try {
+    run.deps.log(line);
+  } catch {
+    // The line is lost.
+  }
+}
+
+/**
+ * The check inside the hook before the send: the list of left sub-delegations must hold no entry with the id of this sub-delegation. It throws when an entry has this id, and when it cannot tell: the read fails,
+ * gives no list, or does not answer within `LIST_TIMEOUT_MS`. Each throw has one line in the log with its cause. The read has a bound of its own inside the bound of the hook of the access folder, so that no answer
+ * comes after the run gave up: a late answer would add the id to the set of the runs in use and store the entry of a Delegate that was never sent, and nothing would take them away. One damaged file of the
+ * list does not block the job: the entries that could be read are checked. A damaged file with the name of this sub-delegation does, because it may hold the entry of an earlier Delegate with this id.
+ */
+async function checkFree(run: Run, id: DelegationId): Promise<void> {
+  const { clock, leftSink } = run.deps;
+  let held: readonly LeftEntry[] | null;
+  try {
+    const listed = await within(clock, LIST_TIMEOUT_MS, () => leftSink.list());
+    held = listed.timedOut ? null : listed.value;
+  } catch (error) {
+    if (!(error instanceof DamagedLeftEntriesError)) {
+      note(run, 'propose: no Delegate was sent: the list of left sub-delegations cannot be read');
+      throw error;
+    }
+    if (error.damaged.some((damaged) => damaged.file === `${id}.json`)) {
+      note(run, `propose: no Delegate was sent for the sub-delegation ${id}: a damaged file of the list has the name of this sub-delegation`);
+      throw error;
+    }
+    held = error.entries;
+  }
+  if (held === null) {
+    note(run, `propose: no Delegate was sent: the list of left sub-delegations did not answer within ${LIST_TIMEOUT_MS} ms`);
+    throw new Error('the list of left sub-delegations did not answer in time');
+  }
+  const entries: unknown = held;
+  if (!Array.isArray(entries)) {
+    note(run, 'propose: no Delegate was sent: the list of left sub-delegations cannot be read');
+    throw new Error('the list of left sub-delegations is not a list');
+  }
+  if (entries.some((entry: LeftEntry) => entry.left.id === id)) {
+    note(run, `propose: no Delegate was sent for the sub-delegation ${id}: the list of left sub-delegations holds an entry with this id, so an earlier Delegate of this key may be on its way, and the janitor ends or drops that entry`);
+    throw new Error('the list of left sub-delegations holds an entry with the id of this sub-delegation');
+  }
+}
+
 /** The caller hung up before a step of the job started. */
 class HungUp extends Error {}
 
@@ -226,10 +277,9 @@ async function readStock(run: Run, key: DelegationKey): Promise<StockRead> {
         ...deps.subDelegation,
         walletQueue: key.queue,
         beforeSend: async (reference) => {
-          // The id comes from the largest output of the wallet. While an earlier Delegate of this key is on its way, the wallet is the same, so this Delegate has the same id, and the entry of the earlier one must
-          // stay. The hook throws before this run takes the id: nothing is sent, this run records nothing, and it removes nothing.
-          const held = await deps.leftSink.list();
-          if (held.some((entry) => entry.left.id === reference.id)) throw new Error('the list of left sub-delegations holds an entry with the id of this sub-delegation');
+          // The list must hold no entry with the id of this sub-delegation, and it must answer inside a bound of its own (see `checkFree`). The hook throws before this run takes the id: nothing is sent, this
+          // run records nothing, and it removes nothing.
+          await checkFree(run, reference.id);
           sent.id = reference.id;
           deps.inFlight.add(reference.id);
           await deps.leftSink.put({ left: reference, signer_key_hash: key.signer.keyHash });

@@ -130,10 +130,15 @@ export class SinkSpy implements LeftSink {
   /** The numbers of the calls of `put` that fail, counted from 1. */
   readonly failPutAt = new Set<number>();
   failRemove = false;
-  /** `list` fails: the list cannot be read. */
-  failList = false;
+  /** `list` throws this error: the list cannot be read, or a file of it is damaged. */
+  listFailure: (() => Error) | null = null;
+  /** `list` answers only after this time of the clock, in milliseconds. */
+  listDelayMs = 0;
 
-  constructor(private readonly steps: Step[]) {}
+  constructor(
+    private readonly steps: Step[],
+    private readonly clock: FakeClock,
+  ) {}
 
   async put(entry: LeftEntry): Promise<void> {
     this.steps.push({ op: 'put', id: entry.left.id });
@@ -149,7 +154,8 @@ export class SinkSpy implements LeftSink {
   }
 
   async list(): Promise<readonly LeftEntry[]> {
-    if (this.failList) throw new Error('the list cannot be read');
+    if (this.listDelayMs > 0) await this.clock.sleep(this.listDelayMs);
+    if (this.listFailure !== null) throw this.listFailure();
     return [...this.entries.values()];
   }
 }
@@ -214,6 +220,8 @@ export interface World {
   readonly reorderCalls: { readonly reading: Document; readonly lots: Record<LotName, number> }[];
   /** A pass of the janitor at the moment of each token request: the run waits for its 30 confirmations before that. */
   readonly janitorSeen: JanitorPass[];
+  /** The lines that the job wrote to its log. */
+  readonly logs: string[];
   readonly script: Script;
   readonly deps: ProposeDeps;
   run(over?: RunOptions): Promise<ProposalResult>;
@@ -224,7 +232,7 @@ export function world(options: { readonly counter?: PoCounter } = {}): World {
   const clock = new FakeClock(NOW);
   const chain = new FakeDelegations(clock, parentDatum(), SCRIPT);
   const steps: Step[] = [];
-  const sink = new SinkSpy(steps);
+  const sink = new SinkSpy(steps, clock);
   const live = new Set<string>();
   const queue = createSerialQueue();
   const counter = options.counter ?? new MemoryPoCounter();
@@ -235,6 +243,7 @@ export function world(options: { readonly counter?: PoCounter } = {}): World {
   const supplierCalls: World['supplierCalls'] = [];
   const reorderCalls: World['reorderCalls'] = [];
   const janitorSeen: JanitorPass[] = [];
+  const logs: string[] = [];
   const script: Script = {
     delegation: async () => ({ delegate: AGENT_ID, chain_whole: true }),
     delegateKeyOf: async () => AGENT_KEY,
@@ -293,9 +302,10 @@ export function world(options: { readonly counter?: PoCounter } = {}): World {
       return script.reorder(reading, lots);
     },
     counter,
+    log: (line) => void logs.push(line),
   };
   return {
-    clock, chain, queue, counter, sink, live, steps, keys, tokenRequests, tokenTimes, fetched, supplierCalls, reorderCalls, janitorSeen, script, deps,
+    clock, chain, queue, counter, sink, live, steps, keys, tokenRequests, tokenTimes, fetched, supplierCalls, reorderCalls, janitorSeen, logs, script, deps,
     run: (over = {}) => clock.run(runPropose({ ...deps, ...over.deps }, { ...REQUEST, ...over.request }, over.arrivedAt ?? NOW, over.signal)),
   };
 }
