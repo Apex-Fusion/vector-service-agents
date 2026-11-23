@@ -160,9 +160,11 @@ export interface HireJob<T> {
 export interface HireDeps extends Clocked { chain: Chain; stranded: StrandedStore; log?: (line: string) => void }
 /**
  * Where a hire books what it moved: the lock and the fee of its Post, the fee and the hash of its Accept seen confirmed. The hash is the one that the chain gave for the Accept, so that a caller can
- * find the booking again. A ledger that was written for the fee alone fits this type, because a function that asks for less than the kit gives is a ledger. The Pipeline's Accounting is one.
+ * find the booking again. A ledger that was written for the fee alone fits this type, because a function that asks for less than the kit gives is a ledger. A function that asks for more than the kit gives
+ * is not: `accepted` is a property of this type and not a method, so TypeScript checks its parameter in one direction only, and a ledger that asks for a member that the kit does not give does not compile.
+ * The Pipeline's Accounting is a ledger.
  */
-export interface HireLedger { posted(post: { lockLovelace: bigint; feeLovelace: bigint }): void; accepted(accept: { feeLovelace: bigint; txHash: string }): void }
+export interface HireLedger { posted(post: { lockLovelace: bigint; feeLovelace: bigint }): void; accepted: (accept: { feeLovelace: bigint; txHash: string }) => void }
 /**
  * What a hire locks and what an Accept pays, in whole lovelace as decimal text, so that the record is JSON. The buyer funds the price and both bonds at the Post. An Accept pays the
  * supplier the price and the supplier bond, and the buyer bond returns. A Release, which the supplier makes when the buyer does not accept in time, pays the supplier all three.

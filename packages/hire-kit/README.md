@@ -139,7 +139,8 @@ A hire books what it moved in `deps.ledger`.
 The hash is the one that the chain gave for the Accept transaction.
 A caller finds a booking again by that hash.
 An Accept that was sent and not seen confirmed books nothing, and the hire stands as `pending`.
-A ledger that was written for the fee alone (`accepted(accept: { feeLovelace: bigint })`) still fits the type.
+A ledger that was written for the fee alone (`accepted: (accept: { feeLovelace: bigint }) => ...`) still fits the type.
+A ledger that asks for a member that the kit does not give does not fit it: `accepted` is a property of the type, and the type checker refuses such a function.
 
 ## The decision of the caller
 

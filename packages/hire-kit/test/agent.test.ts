@@ -1026,21 +1026,30 @@ describe('hireAgent: what the ledger is told of the Accept', () => {
     expect(run.accepts).toStrictEqual([]);
   });
 
-  it('has the fee and the hash in the type of the call, and a ledger that names only the fee still fits that type', async () => {
+  it('has the fee and the hash in the type of the call: a ledger that asks for less, or for the same, fits it, and a ledger that asks for a member that the kit does not give is no ledger', async () => {
     // The parameter of `accepted` is exactly the fee and the hash. The next line stops compiling when the type changes.
     const exact: [Parameters<HireLedger['accepted']>[0]] extends [{ feeLovelace: bigint; txHash: string }]
       ? ([{ feeLovelace: bigint; txHash: string }] extends [Parameters<HireLedger['accepted']>[0]] ? true : never) : never = true;
     expect(exact).toBe(true);
-    // A ledger that was written when the type named only the fee fits the type, and it books the fee of the hire.
+    // A ledger that was written when the type named only the fee fits the type, and so does a ledger that asks for the fee and the hash. Each books what it asks for.
     const fees: bigint[] = [];
     const feeOnly: HireLedger = { posted: () => undefined, accepted: (accept: { feeLovelace: bigint }) => { fees.push(accept.feeLovelace); } };
-    // @ts-expect-error A function that asks for a member that the kit does not give is no ledger.
-    const asksForMore: HireLedger = { posted: () => undefined, accepted: (accept: { feeLovelace: bigint; slot: number }) => { void accept.slot; } };
-    expect(typeof asksForMore.accepted).toBe('function');
-    const run = await setup();
-    run.deps.ledger = feeOnly;
-    expect((await go(run)).outcome).toBe('completed');
+    const hashes: string[] = [];
+    const feeAndHash: HireLedger = { posted: () => undefined, accepted: (accept: { feeLovelace: bigint; txHash: string }) => { hashes.push(accept.txHash); } };
+    // `accepted` is a property of the type and not a method, so its parameter is checked in one direction only: a ledger that asks for more than the kit gives would get `undefined`, and it does not compile.
+    // @ts-expect-error A function that asks for a member that the kit does not give, besides the fee and the hash, is no ledger.
+    const asksForMore: HireLedger = { posted: () => undefined, accepted: (accept: { feeLovelace: bigint; txHash: string; slot: number }) => { void accept.slot; } };
+    // @ts-expect-error The same holds for a function that asks for the fee and another member, and not for the hash.
+    const asksForOther: HireLedger = { posted: () => undefined, accepted: (accept: { feeLovelace: bigint; slot: number }) => { void accept.slot; } };
+    expect([typeof asksForMore.accepted, typeof asksForOther.accepted]).toStrictEqual(['function', 'function']);
+    for (const ledger of [feeOnly, feeAndHash]) {
+      const run = await setup();
+      run.deps.ledger = ledger;
+      expect((await go(run)).outcome).toBe('completed');
+    }
     expect(fees).toStrictEqual([FakeChain.FEE_LOVELACE]);
+    expect(hashes).toHaveLength(1);
+    expect(hashes[0]).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 
