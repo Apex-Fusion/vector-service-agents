@@ -18,6 +18,32 @@ import { MAX_DEPTH, MAX_RANGE_MS, keyHashOf, signerText } from './identity-rules
 
 const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
+// ─── Refusal texts ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * An amount for a refusal: units first (a whole number when it is one, else up to 6 decimals), then the base units in brackets, for
+ * example `7 units (7000000 lovelace)`. Exact for every amount: no floating-point number is involved.
+ */
+export function unitsText(lovelace: bigint): string {
+  const magnitude = lovelace < 0n ? -lovelace : lovelace;
+  const fraction = (magnitude % 1_000_000n).toString().padStart(6, '0').replace(/0+$/, '');
+  return `${lovelace < 0n ? '-' : ''}${magnitude / 1_000_000n}${fraction === '' ? '' : `.${fraction}`} units (${lovelace} lovelace)`;
+}
+
+/** The contracts whose rules the builders check before they build. */
+export type RuleContract = 'vault' | 'delegation' | 'escrow';
+
+/**
+ * The sentence that ends the refusal of a rule that a contract enforces: it names the contract, the redeemer and the rule, and says
+ * that the chain refuses the same transaction (`what` names it when it is not a transaction). A rule that only the builder enforces
+ * never ends with it: its text says that the builder refuses.
+ */
+export const chainRefuses = (contract: RuleContract, redeemer: string, rule: string, what = 'transaction'): string =>
+  `The ${contract} contract refuses the same ${what} on chain (${redeemer}: ${rule}).`;
+
+/** The sentence that ends the refusal of a vault Pay rule that `ledger_decides` makes the builder skip: the way to let the node judge the payment. */
+export const LEDGER_DECIDES_HINT = 'Pass ledger_decides: true to let the node judge it.';
+
 // ─── Identifiers and DIDs ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
 const VECTOR_ID = /^[0-9a-f]{64}$/;
@@ -99,12 +125,17 @@ export const isRecordOutput = (utxo: UTxO, deployment: IdentityDeployment, id: s
   holdsSoleToken(utxo, deployment.identity.address, deployment.identity.hash, id);
 
 /**
- * The authentic output of the token `name` of `policy` at `address` (holdsSoleToken), or null. Koios names the UTxO that holds the
- * token (fast), and the node must list that UTxO; when Koios has no answer, or one the node does not confirm (it lags), the node's
- * list of the address decides.
+ * The authentic output of the token `name` of `policy` at `address` (holdsSoleToken), or null. `name` is an identifier of the identity
+ * registry. Koios names the UTxO that holds the token (fast), and the node must list that UTxO; when Koios has no answer, or one the node
+ * does not confirm (it lags), the node's list of the address decides.
  */
 export async function findTokenOutput(provider: Provider, address: string, policy: string, name: string): Promise<UTxO | null> {
   if (!VECTOR_ID.test(name)) throw new Error(`${JSON.stringify(name)} is not an identifier (64 lowercase hex characters).`);
+  return findSoleTokenOutput(provider, address, policy, name);
+}
+
+/** The lookup of `findTokenOutput` for a token with any asset name, such as the record token `params` of a module: no identifier check. */
+export async function findSoleTokenOutput(provider: Provider, address: string, policy: string, name: string): Promise<UTxO | null> {
   let hint: UTxO | undefined;
   try { hint = await provider.getUtxoByUnit(`${policy}${name}`); } catch { /* no Koios answer: the address scan below decides */ }
   if (hint) {
@@ -184,28 +215,58 @@ export async function findDelegation(provider: Provider, deployment: IdentityDep
   }
 }
 
-/** The delegation `id` and its ancestors, the delegation first (at most 4 links, Part 2 Section 5.2). A missing link is an error: it has been undelegated. */
-export async function delegationChain(provider: Provider, deployment: IdentityDeployment, id: string): Promise<DelegationUtxo[]> {
+/** The parent delegation `missing` of the link `child` has no output on the node: it was undelegated, or it is not confirmed yet. */
+export interface ChainGap { missing: string; child: string }
+
+/**
+ * The error of `delegationChain` for a chain with a gap. Its message is the plain message of old. Its type tells a caller that the gap
+ * is the cause: `vector_build_vault_pay` uses it to say that `ledger_decides` makes the builder skip this refusal.
+ */
+export class ChainGapError extends Error {
+  readonly gap: ChainGap;
+  constructor(gap: ChainGap) {
+    super(`The parent delegation ${gap.missing} of ${gap.child} no longer exists (undelegated), so the chain cannot be used.`);
+    this.gap = gap;
+  }
+}
+
+/**
+ * The delegation `id` and its ancestors, the delegation first (at most 4 links, Part 2 Section 5.2), up to the first ancestor that has
+ * no output on the node. That ancestor is the `gap`: the chain ends before it, so its last link is not the root. A delegation `id`
+ * that has no output is an error: nothing says which delegate key it names.
+ */
+export async function delegationChainToGap(provider: Provider, deployment: IdentityDeployment, id: string): Promise<{ chain: DelegationUtxo[]; gap: ChainGap | null }> {
   const chain: DelegationUtxo[] = [];
   for (let next: string | null = id; next !== null;) {
     if (chain.length >= MAX_DEPTH) throw new Error('The delegation chain is longer than 4 links.');
     const link = await findDelegation(provider, deployment, next);
-    if (!link) throw new Error(chain.length === 0 ? `No live delegation ${next}: it does not exist or has been undelegated.` : `The parent delegation ${next} of ${chain[chain.length - 1].id} no longer exists (undelegated), so the chain cannot be used.`);
+    if (!link) {
+      if (chain.length === 0) throw new Error(`No live delegation ${next}: it does not exist or has been undelegated.`);
+      return { chain, gap: { missing: next, child: chain[chain.length - 1].id } };
+    }
     chain.push(link);
     next = link.delegation.parent;
   }
+  return { chain, gap: null };
+}
+
+/** The delegation `id` and its ancestors, the delegation first (at most 4 links, Part 2 Section 5.2). A missing link is an error: it has been undelegated. */
+export async function delegationChain(provider: Provider, deployment: IdentityDeployment, id: string): Promise<DelegationUtxo[]> {
+  const { chain, gap } = await delegationChainToGap(provider, deployment, id);
+  if (gap !== null) throw new ChainGapError(gap);
   return chain;
 }
 
 /**
  * The records that the use check of a delegation chain reads (`links_active`, Part 2 Section 5.2): the delegate of every link, the
- * root delegator when it is an agent, and the ancestors of each, once each.
+ * root delegator when it is an agent, and the ancestors of each, once each. A chain that ends at a gap (`endsAtRoot` false) holds no
+ * root, so no root delegator is read.
  */
-export async function chainRecords(provider: Provider, deployment: IdentityDeployment, chain: DelegationUtxo[]): Promise<RecordUtxo[]> {
+export async function chainRecords(provider: Provider, deployment: IdentityDeployment, chain: DelegationUtxo[], endsAtRoot = true): Promise<RecordUtxo[]> {
   const records: RecordUtxo[] = [];
   for (const link of chain) records.push(...await recordWithAncestors(provider, deployment, link.delegation.delegate, 'record of the delegate'));
   const root = chain[chain.length - 1].delegation.delegator;
-  if (root.type === 'Agent') records.push(...await recordWithAncestors(provider, deployment, root.id, 'record of the delegator'));
+  if (endsAtRoot && root.type === 'Agent') records.push(...await recordWithAncestors(provider, deployment, root.id, 'record of the delegator'));
   return uniqueRecords(records);
 }
 
@@ -263,10 +324,10 @@ export const COLLATERAL_MIN_LOVELACE = 5_000_000n;
  */
 export async function walletOf(lucid: LucidEvolution, changeAddress: string): Promise<{ keyHash: string; utxos: UTxO[] }> {
   const keyHash = paymentKeyHashOf(changeAddress);
-  if ((await lucid.wallet().address()) !== changeAddress) throw new Error('changeAddress is not the address this wallet is bound to; nothing was built.');
+  if ((await lucid.wallet().address()) !== changeAddress) throw new Error('changeAddress is not the address this wallet is bound to; nothing was built. This is a check of the builder, not of a contract.');
   const utxos = await lucid.wallet().getUtxos();
   if (!utxos.some((u) => Object.keys(u.assets).every((k) => k === 'lovelace') && u.assets.lovelace >= COLLATERAL_MIN_LOVELACE)) {
-    throw new Error('Collateral required: the wallet must hold one pure units output of at least 5 units.');
+    throw new Error('Collateral required: the wallet must hold one pure units output of at least 5 units. The builder refuses to build without it: the ledger needs collateral for a transaction that runs a script.');
   }
   return { keyHash, utxos };
 }

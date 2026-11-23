@@ -1,4 +1,4 @@
-// Vitest port of packages/builder/test/vault-read.test.ts at 2d95483 (Apex-Fusion/mcp-server): VENDORED-FROM.md lists the lines that differ from the source.
+// Vitest port of packages/builder/test/vault-read.test.ts at ebce68a (Apex-Fusion/mcp-server): VENDORED-FROM.md lists the lines that differ from the source.
 // The reads of vaults (vault-read.ts) on the vault outputs that mainnet holds (one Live, four Returned) and on synthetic ones, and the
 // check whether an escrow was paid from a vault on the payment that mainnet holds and on its twin, an escrow that no vault paid. The node
 // is an offline world and Koios is a fake: no network. Anyone can write an output at the vault address with any datum, so the synthetic
@@ -459,11 +459,11 @@ describe('readVaults: an allowance only for an output that can pay', () => {
     assert.deepEqual([r.canPay, r.allowance, r.error], [false, null, null]);
     assert.ok(r.problems.some((p) => /the records that the use checks read cannot be read \(No record of the delegate for did:vector:/.test(p)), r.problems.join('; '));
   });
-  test('an output that holds a token besides units cannot pay (vault decision 5)', async () => {
+  test('an output that holds a token besides units cannot pay: the vault contract refuses a Pay from it', async () => {
     const w = ledgerWorld([vaultUtxo(live(), 9_000_000n, { assets: { lovelace: 9_000_000n, [`${'ab'.repeat(28)}01`]: 1n } }), delegationUtxo(D, delegation({ delegator: owner })), record()]);
     const r = (await readVaults(w.env, { delegation: D }, CAPTURE_MS)).items[0].live!;
     assert.deepEqual([r.canPay, r.allowance], [false, null]);
-    assert.ok(r.problems.some((p) => /holds assets other than units, so it cannot pay/.test(p)), r.problems.join('; '));
+    assert.ok(r.problems.some((p) => /holds assets other than units, so it cannot pay \(the vault contract refuses a Pay from it\); its owner can close it/.test(p)), r.problems.join('; '));
   });
   test('an output that was posted for the delegation of another owner is not read as the vault of this one: no allowance', async () => {
     const r = await read({}, [record()], live({ owner: { type: 'Agent', id: 'a7'.repeat(32) } }));

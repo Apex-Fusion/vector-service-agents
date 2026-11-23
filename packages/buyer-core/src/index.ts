@@ -1,7 +1,7 @@
 // packages/buyer-core/src/index.ts
 // The public surface of @vsa/buyer-core, under stable names: the code the hosted keyless MCP server builds, reads and verifies with,
 // and the signing function of the member's local signer (sign.ts; the hosted server never signs), all vendored from
-// Apex-Fusion/mcp-server at 94bd293 and 2d95483 (see VENDORED-FROM.md), both escrow and advert layouts of the drain included (Part 2 sections 6.1 to 6.5).
+// Apex-Fusion/mcp-server at 94bd293, 2d95483 and ebce68a (see VENDORED-FROM.md), both escrow and advert layouts of the drain included (Part 2 sections 6.1 to 6.5).
 // Endpoint defaults are Vector mainnet. The identity registry deployment a chain posts to and settles with is read once at start
 // (deployment.ts). The commitments of the fleet jobs (OCR and Responses) come from commitments.ts, which composes the Responses code vendored
 // from Apex-Fusion/agents-marketplace at 4c95c3f. The chain layer is buyer-core's own: the fleet Post (fleet-build.ts), the Chain interface
@@ -61,7 +61,7 @@ export { readCapability, probeStatus, sendOcrJob, sendResponsesJob, pollOcrJob, 
 export type { FetchLike, SupplierCapability, Receipt, SendResult, PollResult } from './fleet-clients.ts';
 export { selectLlmSupplier, findOcrAdvert, LLM_SELECTION_BUDGET_MS, LLM_SELECTION_MAX_CANDIDATES } from './select-supplier.ts';
 export type { LlmSupplierChoice, OcrAdvertListing } from './select-supplier.ts';
-// The read and check code of the identity registry and the Module-1 builders, vendored from Apex-Fusion/mcp-server at 2d95483 (VENDORED-FROM.md).
+// The read and check code of the identity registry and the Module-1 builders, vendored from Apex-Fusion/mcp-server at 2d95483 and ebce68a (VENDORED-FROM.md).
 // The reads work on a LedgerEnv (the node, the deployment, Koios) and end inside one budget. The builders take Lucid bound to the wallet, the node
 // and the Module-1 deployment, and return an unsigned transaction.
 export { MAX_PAGE, DEFAULT_PAGE, KOIOS_ANSWER_BYTES, READ_BUDGET_MS, BudgetSpent, TooManyMatches, withinBudget, utxoOfKoiosRow, soleTokenName, credentialOutputs, credentialPage, koiosTipHeight, dataOfKoiosJson, checkPage, pageOf } from './vendored/mcp/ledger-read.ts';

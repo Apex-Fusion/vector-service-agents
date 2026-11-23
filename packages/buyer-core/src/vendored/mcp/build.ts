@@ -7,10 +7,12 @@
 // happens on the user's local signer; submission via vector_submit_transaction.
 import {
   Lucid, fromText, Data, applyDoubleCborEncoding, validatorToAddress,
-  validatorToScriptHash, getAddressDetails,
+  validatorToScriptHash,
 } from '@lucid-evolution/lucid';
-import type { LucidEvolution, Provider, SpendingValidator, TxSignBuilder } from '@lucid-evolution/lucid';
+import type { LucidEvolution, Provider, SpendingValidator, TxBuilder, TxSignBuilder } from '@lucid-evolution/lucid';
 import { lovelaceToAda } from '../mcp-shared/tx.js';
+import { CborGuardError, assertCborHexDepth } from '@vsa/vector-read/cbor-depth';
+import { addressDetails, assertDatumInput, assertScriptInput } from '@vsa/vector-read/guarded-decode';
 import type {
   TxOutput, VectorUnsignedBuildResult, VectorBuildDeployResult, VectorBuildInteractResult,
 } from '../mcp-shared/types.js';
@@ -23,7 +25,7 @@ import type {
  */
 export async function lucidForAddress(provider: Provider, changeAddress: string): Promise<LucidEvolution> {
   try {
-    getAddressDetails(changeAddress);
+    addressDetails(changeAddress);
   } catch (err) {
     throw new Error(`Invalid change address: ${err instanceof Error ? err.message : String(err)}`);
   }

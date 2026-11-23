@@ -377,7 +377,7 @@ describe('RealChain accept and reclaim (offline, refused before anything is subm
 
   it('an Accept of an escrow another key posted is refused by the vendored planner, through the Koios the chain was given', async () => {
     const { chain, node, koios } = chainWith(() => ({ escrows: [escrowAt(SUBMIT_TX, submittedNow(posted))] }));
-    await expect(chain.accept(ESCROW_REF)).rejects.toThrow(`This escrow was posted by another key; you are not the buyer. (escrow ${ESCROW_REF})`);
+    await expect(chain.accept(ESCROW_REF)).rejects.toThrow(`This escrow was posted by another key; you are not the buyer. The escrow contract refuses the same transaction on chain (Accept: the buyer key signs). (escrow ${ESCROW_REF})`);
     expect(node.submitted).toStrictEqual([]);
     expect(koios.calls.length).toBeGreaterThan(0);
     expect(koios.calls.every((c) => c.url?.startsWith(`${KOIOS}api/v1/`))).toBe(true);
@@ -385,7 +385,7 @@ describe('RealChain accept and reclaim (offline, refused before anything is subm
 
   it('a Reclaim of an escrow another key posted is refused by the vendored planner', async () => {
     const { chain, node } = chainWith(() => ({ escrows: [escrowAt(ESCROW_TX, posted)], koios: { spent: false } }));
-    await expect(chain.reclaim(ESCROW_REF)).rejects.toThrow(`This escrow was posted by another key; you are not the buyer. (escrow ${ESCROW_REF})`);
+    await expect(chain.reclaim(ESCROW_REF)).rejects.toThrow(`This escrow was posted by another key; you are not the buyer. The escrow contract refuses the same transaction on chain (Reclaim: without a refund address, the buyer key signs). (escrow ${ESCROW_REF})`);
     expect(node.submitted).toStrictEqual([]);
   }, 30_000);
 
@@ -410,7 +410,7 @@ describe('RealChain accept and reclaim (offline, refused before anything is subm
     expect(err).toBeInstanceOf(AcceptWindowClosedError);
     expect(err).not.toBeInstanceOf(TxNotConfirmedError);
     expect(err).toMatchObject({ name: 'AcceptWindowClosedError' });
-    expect((err as Error).message).toMatch(new RegExp(`^Accept window closed at \\d{4}-\\d{2}-\\d{2}T[0-9:.]+Z; the supplier may now Release\\. \\(escrow ${ESCROW_REF}\\)$`));
+    expect((err as Error).message).toMatch(new RegExp(`^Accept window closed at \\d{4}-\\d{2}-\\d{2}T[0-9:.]+Z; the supplier may now Release\\. The escrow contract refuses the same transaction on chain \\(Accept: the validity range ends at most 600 s after the Submit\\)\\. \\(escrow ${ESCROW_REF}\\)$`));
     expect((err as Error).cause).toBeInstanceOf(Error);
     expect(node.submitted).toStrictEqual([]);
     // Another refusal of the planner is not the closed window: the escrow of another key stays a plain Error.

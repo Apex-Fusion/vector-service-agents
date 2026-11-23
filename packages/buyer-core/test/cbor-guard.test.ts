@@ -1,7 +1,7 @@
 // The CBOR check at the places where the vendored copies of this package read data that comes from the chain: the OgmiosProvider (the inline datum of each output that
 // Ogmios or Koios lists, and the datum that is looked up by its hash), the configuration record of the identity deployment, and the signer. The rule: CBOR that is
 // nested deeper than 64 levels is refused before it is decoded. The provider tests are the tests of packages/shared/test/provider-cbor-guard.test.ts of the
-// mcp-server at 2d95483, ported from node:test to vitest. The others are local.
+// mcp-server at 2d95483 (the same file at ebce68a), ported from node:test to vitest. The others are local.
 //
 // A library decoder is replaced by a watch where a test needs to show that no deep value reaches it (test/decoder-watch.ts). The watch counts each call and throws a
 // marked Error for a value that nests past the limit, so no deep value reaches the real library.
