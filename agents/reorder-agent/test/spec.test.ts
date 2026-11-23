@@ -50,6 +50,13 @@ const PAGE_DATE = '2026-11-23';
 const STATUS_LINE = `PROPOSED (built, not deployed). Since ${PAGE_DATE}.`;
 
 describe('specs/reorder-agent.md', () => {
+  test('the page has the thirteen headings of its profile in order, and Interface has the five sub-headings that the tests below read', () => {
+    expect([...page.matchAll(/^## (.+)$/gm)].map((hit) => hit[1])).toStrictEqual([
+      'Status', 'Identity', 'Capability id', 'Terms', 'Interface', 'What the receipt commits to', 'Claim statements', 'Fault switch', 'Operator and data handling', 'Known gaps', 'How to hire it', 'Changelog', 'Links',
+    ]);
+    expect([...page.matchAll(/^### (.+)$/gm)].map((hit) => hit[1])).toStrictEqual(['Request', 'Response', 'Outcomes', 'Errors', 'The co-sign route']);
+  });
+
   test('the opening line, the capability, the model string and the status are the manifest and the pack', () => {
     expect(page.startsWith('# Reorder Agent\n')).toBe(true);
     expect(manifest.name).toBe('Reorder Agent');
@@ -115,7 +122,7 @@ describe('specs/reorder-agent.md', () => {
 
   test('the public URL of the identity table is the origin of the runtime in the compose file of the pack', () => {
     expect(row(section('Identity'), 'Public URL')).toBe(`| Public URL | planned: \`${runtimeEnv.PUBLIC_ORIGIN}\`, the origin of the runtime in the pack. The agent has no advert yet |`);
-    expect(runtimeEnv.PUBLIC_ORIGIN.startsWith('https://')).toBe(true);
+    expect(new URL(runtimeEnv.PUBLIC_ORIGIN).protocol).toBe('https:');
   });
 
   test('the Terms tables carry the numbers of the manifest, of the code and of the pack', () => {
@@ -388,6 +395,10 @@ describe('specs/reorder-agent.md, Interface', () => {
   test('the proposal: the table names its members, the example holds them in the order of the result, and fault_mode is last and empty', () => {
     const shown = JSON.parse(jsonBlocks(response)[0]) as Record<string, unknown>;
     const keys = Object.keys(shown);
+    // The proposal that the example result holds is a proposal for the kit: its digest is the digest of its document and its salt, and its document is a purchase order.
+    const { document, salt, proposal_digest: digest } = shown as { document: unknown; salt: unknown; proposal_digest: unknown };
+    expect(must(parseProposal({ document, salt, proposal_digest: digest }))).toStrictEqual(PROPOSAL);
+    expect(must(parsePurchaseOrder(document))).toStrictEqual(ORDER);
     expect(keys).toStrictEqual(['schema', 'use_case', 'decisions', 'sub_jobs', 'document', 'salt', 'proposal_digest', 'outcome', 'exit_state', 'reason', 'fault_mode']);
     expect(namesOf(firstCells(response, '| Member | Content |')).sort()).toStrictEqual([...keys].sort());
     expect(shown).toMatchObject({ schema: 'vector.usecase.proposal.v1', use_case: 'inventory-reorder', outcome: 'proposed', exit_state: null, reason: null, fault_mode: '' });
