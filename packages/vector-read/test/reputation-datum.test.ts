@@ -4,9 +4,10 @@
 // does not carry. Local: the table of refusals (one row for each rule of decodeStakeDatum, each with its accepted twin) and the tests of the two readers that
 // the file also holds.
 //
-// The stake datum below is a BUILT vector, not a recorded datum. No stake exists on the deployment yet: on 2026-11-19 its stake address held no output.
-// The bytes are what the builder of the MCP server writes (encodeStakeDatum, the Lucid encoding). When a live stake exists, put its recorded inline datum in
-// BUILT_STAKE_HEX and the fields that it decodes to in BUILT_STAKE, here and in agents/agent-history/test/support.ts.
+// The stake datum below is a recorded datum: the inline datum of the stake output 48d4ce7b…#0 on Vector mainnet, as Koios gave it on 2026-11-23 (utxo_info, extended).
+// The output holds the stake of a test record of the Foundation. Its bytes pin the codec to what the chain holds. When the layout of the datum changes, take the inline
+// datum of a stake of the new layout from Koios, and put it in RECORDED_STAKE_HEX and the fields that it decodes to in RECORDED_STAKE, here and in
+// agents/agent-history/test/support.ts.
 import { describe, test, expect } from 'vitest';
 import { Constr, Data, credentialToAddress, getAddressDetails } from '@lucid-evolution/lucid';
 import {
@@ -14,20 +15,22 @@ import {
 } from '../src/reputation-datum.ts';
 import type { StakeDatum } from '../src/reputation-datum.ts';
 
-const ID = '5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db';
-const OWNER = '401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9';
-const TX = 'ab'.repeat(32);
 const ENDORSEMENT_SCRIPT_HASH = '21ac1502ba7bab74e98ef3ad256bba1622a1351934ac19d0432126fe';
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 
-const BUILT_STAKE: StakeDatum = {
-  agent_did: ID, owner_pkh: OWNER, stake_amount: 10_000_000n, staked_capabilities: [Buffer.from('ocr.page.extract.chandra-ocr-2.v1').toString('hex')], last_updated: 1_794_745_920_000,
-  history_points: 0n, challenge_locks: [], stake_id: { txHash: TX, outputIndex: 1 },
+const RECORDED_STAKE: StakeDatum = {
+  agent_did: '4e1272ee30e5bdf5ad75be55553563a7056ab228295c70ffda988892da4a8fe9', owner_pkh: '34267e928e17c77063ee4957b6932182b7d804ed1d3f77c3f4121682',
+  stake_amount: 11_000_000n, staked_capabilities: [Buffer.from('smoke.stake-check.a.v1').toString('hex'), Buffer.from('smoke.stake-check.b.v1').toString('hex')],
+  last_updated: 1_795_425_911_000, history_points: 0n, challenge_locks: [], stake_id: { txHash: 'c4ec66206f6f917519f411f9fbab1d709c918b30acf6bc7951759a513fa22c8c', outputIndex: 0 },
 };
-// Constr 0 [agent_did, VerificationKey(owner), stake_amount, [capability], last_updated, history_points, [], OutputReference]. The capability is 33 bytes (header
-// 5821). last_updated 1794745920000 is 1b000001a1df316a00. Lucid writes the empty challenge_locks as 80, where the reference SDK writes 9fff: the same Plutus
-// data, and the validator compares data, not bytes.
-const BUILT_STAKE_HEX = `d8799f5820${ID}d8799f581c${OWNER}ff1a009896809f5821${BUILT_STAKE.staked_capabilities[0]}ff1b000001a1df316a000080d8799f5820${TX}01ffff`;
+// Constr 0 [agent_did, VerificationKey(owner), stake_amount, [capability, capability], last_updated, history_points, [], OutputReference]. Each capability is 22 bytes
+// (header 56). stake_amount 11000000 is 1a00a7d8c0, and last_updated 1795425911000 is 1b000001a207b940d8. The chain holds the empty challenge_locks as 80, as Lucid
+// writes it, where the reference SDK writes 9fff: the same Plutus data, and the validator compares data, not bytes.
+const RECORDED_STAKE_HEX = 'd8799f58204e1272ee30e5bdf5ad75be55553563a7056ab228295c70ffda988892da4a8fe9d8799f581c34267e928e17c77063ee4957b6932182b7d804ed1d3f77c3f4121682ff1a00a7d8c09f56736d6f6b652e7374616b652d636865636b2e612e763156736d6f6b652e7374616b652d636865636b2e622e7631ff1b000001a207b940d80080d8799f5820c4ec66206f6f917519f411f9fbab1d709c918b30acf6bc7951759a513fa22c8c00ffff';
+// Values of the recorded stake that the rows below use as plain values.
+const ID = RECORDED_STAKE.agent_did;
+const OWNER = RECORDED_STAKE.owner_pkh;
+const TX = RECORDED_STAKE.stake_id.txHash;
 
 describe('the deployment values', () => {
   test('the reputation validator is the policy fad945ab…, and the stake address is its exact script address, with no stake credential', () => {
@@ -39,19 +42,22 @@ describe('the deployment values', () => {
 });
 
 describe('the stake datum', () => {
-  test('is a built vector: 8 fields in the order of types.ak, written as the module writes them', () => {
-    expect(encodeStakeDatum(BUILT_STAKE)).toBe(BUILT_STAKE_HEX);
-    expect(decodeStakeDatum(BUILT_STAKE_HEX)).toStrictEqual(BUILT_STAKE);
+  test('the recorded datum decodes to its 8 fields, in the order of types.ak: two capabilities, no history points and no challenge lock', () => {
+    expect(decodeStakeDatum(RECORDED_STAKE_HEX)).toStrictEqual(RECORDED_STAKE);
+  });
+  test('the encoder writes the recorded datum byte for byte, from the fields and from the fields that the decoder read', () => {
+    expect(encodeStakeDatum(RECORDED_STAKE)).toBe(RECORDED_STAKE_HEX);
+    expect(encodeStakeDatum(decodeStakeDatum(RECORDED_STAKE_HEX))).toBe(RECORDED_STAKE_HEX);
   });
   test('round trips with locks, history points and the opening placeholder', () => {
-    const d: StakeDatum = { ...BUILT_STAKE, history_points: 7n, challenge_locks: ['72636c5f' + '01'.repeat(24)], stake_id: SEED_STAKE_ID, staked_capabilities: ['61', '62'] };
+    const d: StakeDatum = { ...RECORDED_STAKE, history_points: 7n, challenge_locks: ['72636c5f' + '01'.repeat(24)], stake_id: SEED_STAKE_ID, staked_capabilities: ['61', '62'] };
     expect(decodeStakeDatum(encodeStakeDatum(d))).toStrictEqual(d);
     expect(SEED_STAKE_ID).toStrictEqual({ txHash: '00'.repeat(32), outputIndex: 0 });
     expect(outRefText({ txHash: TX, outputIndex: 1 })).toBe(`${TX}#1`);
   });
 
   // One row for each rule of decodeStakeDatum, and for each way that a rule can fail. The accepted twins below hold the values on the edge of each rule.
-  const fields = () => (Data.from(encodeStakeDatum(BUILT_STAKE)) as Constr<Data>).fields;
+  const fields = () => (Data.from(encodeStakeDatum(RECORDED_STAKE)) as Constr<Data>).fields;
   const withField = (i: number, value: Data) => Data.to(new Constr(0, fields().map((f, j) => (j === i ? value : f))));
   const refused: Array<[what: string, datum: string, message: RegExp]> = [
     ['bytes that are not Plutus data', 'zz', /^not a stake datum \(not Plutus data\)$/],
@@ -107,27 +113,28 @@ describe('the stake datum', () => {
   });
 
   const accepted: Array<[what: string, datum: StakeDatum]> = [
-    ['the built vector', BUILT_STAKE],
-    ['last_updated 0', { ...BUILT_STAKE, last_updated: 0 }],
-    ['last_updated 2^53 - 1', { ...BUILT_STAKE, last_updated: Number.MAX_SAFE_INTEGER }],
-    ['integers beyond 2^53', { ...BUILT_STAKE, stake_amount: 2n ** 70n, history_points: 2n ** 70n }],
-    ['no staked capability', { ...BUILT_STAKE, staked_capabilities: [] }],
-    ['two staked capabilities', { ...BUILT_STAKE, staked_capabilities: ['61', '62'] }],
-    ['one challenge lock', { ...BUILT_STAKE, challenge_locks: ['72636c5f' + '01'.repeat(24)] }],
-    ['a stake_id with the output index 0', { ...BUILT_STAKE, stake_id: { txHash: TX, outputIndex: 0 } }],
-    ['a stake_id with the output index 2^53 - 1', { ...BUILT_STAKE, stake_id: { txHash: TX, outputIndex: Number.MAX_SAFE_INTEGER } }],
-    ['the opening placeholder as stake_id', { ...BUILT_STAKE, stake_id: SEED_STAKE_ID }],
+    ['the recorded vector', RECORDED_STAKE],
+    ['last_updated 0', { ...RECORDED_STAKE, last_updated: 0 }],
+    ['last_updated 2^53 - 1', { ...RECORDED_STAKE, last_updated: Number.MAX_SAFE_INTEGER }],
+    ['integers beyond 2^53', { ...RECORDED_STAKE, stake_amount: 2n ** 70n, history_points: 2n ** 70n }],
+    ['no staked capability', { ...RECORDED_STAKE, staked_capabilities: [] }],
+    ['one staked capability', { ...RECORDED_STAKE, staked_capabilities: [RECORDED_STAKE.staked_capabilities[0]] }],
+    ['two staked capabilities of one byte each', { ...RECORDED_STAKE, staked_capabilities: ['61', '62'] }],
+    ['one challenge lock', { ...RECORDED_STAKE, challenge_locks: ['72636c5f' + '01'.repeat(24)] }],
+    ['a stake_id with the output index 1', { ...RECORDED_STAKE, stake_id: { txHash: TX, outputIndex: 1 } }],
+    ['a stake_id with the output index 2^53 - 1', { ...RECORDED_STAKE, stake_id: { txHash: TX, outputIndex: Number.MAX_SAFE_INTEGER } }],
+    ['the opening placeholder as stake_id', { ...RECORDED_STAKE, stake_id: SEED_STAKE_ID }],
   ];
   test.each(accepted)('decodeStakeDatum accepts %s', (_what, datum) => {
     expect(decodeStakeDatum(encodeStakeDatum(datum))).toStrictEqual(datum);
   });
 
   test('encodeStakeDatum refuses fields that are not what the datum holds', () => {
-    expect(() => encodeStakeDatum({ ...BUILT_STAKE, agent_did: 'ab' })).toThrow(/agent_did must be 32 bytes/);
-    expect(() => encodeStakeDatum({ ...BUILT_STAKE, owner_pkh: 'ab' })).toThrow(/owner_pkh must be 28 bytes/);
-    expect(() => encodeStakeDatum({ ...BUILT_STAKE, staked_capabilities: ['xyz'] })).toThrow(/not lowercase hex/);
-    expect(() => encodeStakeDatum({ ...BUILT_STAKE, stake_id: { txHash: 'ab', outputIndex: 0 } })).toThrow(/stake_id is not an output reference/);
-    expect(() => encodeStakeDatum({ ...BUILT_STAKE, last_updated: 1.5 })).toThrow(/whole number of POSIX milliseconds/);
+    expect(() => encodeStakeDatum({ ...RECORDED_STAKE, agent_did: 'ab' })).toThrow(/agent_did must be 32 bytes/);
+    expect(() => encodeStakeDatum({ ...RECORDED_STAKE, owner_pkh: 'ab' })).toThrow(/owner_pkh must be 28 bytes/);
+    expect(() => encodeStakeDatum({ ...RECORDED_STAKE, staked_capabilities: ['xyz'] })).toThrow(/not lowercase hex/);
+    expect(() => encodeStakeDatum({ ...RECORDED_STAKE, stake_id: { txHash: 'ab', outputIndex: 0 } })).toThrow(/stake_id is not an output reference/);
+    expect(() => encodeStakeDatum({ ...RECORDED_STAKE, last_updated: 1.5 })).toThrow(/whole number of POSIX milliseconds/);
   });
 });
 
@@ -137,6 +144,12 @@ describe('the stake token', () => {
     expect(stakeTokenName('8a98c4b74f0e49a09ca4b3502e121c96a8e6992afd2cba64ef8128042fedd440')).toBe('7273746b5f59bf69e33704bdced209a605cedeec1c9c2439920829877ca45915');
     expect(stakeTokenName(ID)).toHaveLength(64); // 32 bytes, the longest asset name
     expect(stakeTokenUnit(ID)).toBe(REPUTATION_SCRIPT_HASH + stakeTokenName(ID));
+  });
+  test('the unit of the recorded agent is the asset that the recorded output holds: the policy fad945ab… and the name that Koios lists', () => {
+    // Koios utxo_info, 2026-11-23: the output 48d4ce7b…#0 holds 1 of this asset. The name comes from the agent that the datum names, not from its stake_id.
+    const recorded = { policy: 'fad945ab20f61a58fbdf6a33a8f491899b7dd4167fb64200bc060424', name: '7273746b5f1b98065ee43002664ff55bc12bba527c45b233b80cd7a4517e1581' };
+    expect(stakeTokenName(ID)).toBe(recorded.name);
+    expect(stakeTokenUnit(ID)).toBe(recorded.policy + recorded.name);
   });
   test('an identifier is 32 bytes of lowercase hex', () => {
     expect(() => stakeTokenName('abcd')).toThrow(/32 bytes/);
