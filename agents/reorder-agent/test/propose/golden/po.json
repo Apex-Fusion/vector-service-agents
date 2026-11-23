@@ -1,0 +1,12 @@
+{
+  "schema": "vector.usecase.po.v1",
+  "po_number": "run1-1",
+  "tenant": "run1",
+  "sku": "GLV-NIT-M",
+  "lot": "lot-medium",
+  "quantity": 50,
+  "needed_by": "2026-12-01",
+  "supplier_did": "did:vector:d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+  "advert_ref": "2222222222222222222222222222222222222222222222222222222222222222#1",
+  "stock_reading_sha256": "11532e38e5314a47c1b641dad8e7ab340f400f1fe1290eb72283270119f1b3a5"
+}
