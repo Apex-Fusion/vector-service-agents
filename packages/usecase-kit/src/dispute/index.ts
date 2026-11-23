@@ -14,6 +14,8 @@ export type {
 export type { SerialQueue as ServiceQueue } from '../protocol/index.ts';
 export { MemoryJournal } from './journal.ts';
 export type { DisputeJournal, EndedRecord, FiledRecord, JobRecord, JobStep } from './journal.ts';
+export { FileJournal } from './file-journal.ts';
+export type { FileJournalOptions, JournalFs } from './file-journal.ts';
 export { Dispute, LEAST_RESOLUTION_DEADLINE_MS } from './dispute.ts';
 export type { ApprovalChallengeInput, ClaimScope, DeliveryChallengeInput, DisputeDeps, DisputeSettings, RunClaimInput, WithdrawClaimInput } from './dispute.ts';
 export { disputedFields } from './results.ts';
