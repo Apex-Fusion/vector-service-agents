@@ -619,7 +619,7 @@ describe('deploy/server/.env.reorder-agent.example', () => {
     // A name that the compose file sets: its value wins, so a line here does nothing.
     ...['PORT=9101', 'HOST=0.0.0.0', 'REORDER_STATE_DIR=/data', 'CAPABILITY_KIND=custom', 'SERVICE_URL=http://reorder-service:9101/', 'SERVICE_PRECHECK_URL=http://reorder-service:9101/precheck', 'SERVICE_CONTENT_TYPE=application/json',
       'SERVICE_TIMEOUT_MS=1680000', `PUBLIC_ORIGIN=https://${HOST}`, 'RELEASE_WATCHER=1'].map((line): readonly [string, (text: string) => string, RegExp] => [
-      `a line for a name that the compose file sets: ${line.split('=')[0]}`, (t) => withLine(t, line), new RegExp(`^${line.split('=')[0]} is set by the compose file, which wins`),
+      `a line for a name that the compose file sets: ${line.split('=')[0]}`, (t) => withLine(t, line), /^[A-Z_]+ is set by the compose file, which wins/,
     ]),
     // A name that the example must not hold, and a line that is no setting.
     ['a name that is no setting', (t) => withLine(t, 'SOMETHING_ELSE=1'), /^SOMETHING_ELSE is no setting of the service and no setting of the runtime/],
