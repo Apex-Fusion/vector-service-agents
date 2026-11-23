@@ -353,21 +353,22 @@ Times named `time` are Unix seconds. `registered_at`, `created_at`, `not_before`
 | `sources` | every URL the report read, once each, sorted. Request bodies are not part of it, so `address_utxos` appears once however many addresses were read |
 | `blind_spots` | the fixed lines under Known gaps, plus the lines added when they apply |
 
-An entry of `reputation.stakes[]`. The example is built from the datum encoding of the deployment's builder, because no stake exists on the deployment yet. Its transaction ids are made up.
+An entry of `reputation.stakes[]`. The example is a stake output on Vector mainnet, as Koios gave it on 2026-11-23: the stake of a test record of the Foundation, not of ChandraOCR.
 
 ```json
 {
-  "utxo": "0000000000000000000000000000000000000000000000000000000000000002#0",
-  "agent_asset_name": "5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db",
-  "owner_pkh": "401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9",
-  "stake_lovelace": "10000000",
+  "utxo": "48d4ce7bbd9141a0e5787af08a2cb14aa6c75b64134f874fa64bc8a4155eb6ad#0",
+  "agent_asset_name": "4e1272ee30e5bdf5ad75be55553563a7056ab228295c70ffda988892da4a8fe9",
+  "owner_pkh": "34267e928e17c77063ee4957b6932182b7d804ed1d3f77c3f4121682",
+  "stake_lovelace": "11000000",
   "capabilities": [
-    "ocr.page.extract.chandra-ocr-2.v1"
+    "smoke.stake-check.a.v1",
+    "smoke.stake-check.b.v1"
   ],
-  "last_updated": 1794745920000,
+  "last_updated": 1795425911000,
   "history_points": 0,
   "challenge_locks": [],
-  "stake_id": "abababababababababababababababababababababababababababababababab#1"
+  "stake_id": "c4ec66206f6f917519f411f9fbab1d709c918b30acf6bc7951759a513fa22c8c#0"
 }
 ```
 

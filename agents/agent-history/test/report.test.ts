@@ -5,7 +5,7 @@ import { replayFetch, keyHash, utf8ToHex, legacyVectorDid, KOIOS_URL, INDEXER_UR
 import type { Fetch, Key } from '@vsa/vector-read';
 import { buildReport, degradedReasons, lastKnownKeysLine, BLIND_SPOTS, CURRENT_STATE_GAP, IDENTITY_VIEW_GAP, LEGACY_ONLY, REPORT_BUDGET_MS } from '../src/report.ts';
 import { manifestFromEnv } from '../src/server.ts';
-import { TEST_ENV, WITH_IDENTITY, TEST_IDENTITY, LEGACY, BUILT_STAKE_HEX, koiosLedger, token, txHash, identityHex, stakeRow, stakeToken, withStakeRows } from './support.ts';
+import { TEST_ENV, WITH_IDENTITY, TEST_IDENTITY, LEGACY, RECORDED_STAKE, koiosLedger, token, txHash, identityHex, withRecordedStake } from './support.ts';
 import type { LedgerTx } from './support.ts';
 const fx = JSON.parse(readFileSync(new URL('./fixtures/chandra.json', import.meta.url), 'utf8'));
 const CHANDRA = '5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db';
@@ -118,17 +118,19 @@ describe('report assembly against the recording', () => {
     const r = await buildReport({ subject: DID, include: ['reputation'] }, replayFetch(fx.store), opts);
     expect(r.reputation).toEqual({ stakes: [], endorsements: [] });
   });
-  test('a stake of the identity deployment is in the report, field by field (a built stake: no stake exists on that deployment yet)', async () => {
-    const store = withStakeRows(fx.store, [stakeRow(2, BUILT_STAKE_HEX, [stakeToken(CHANDRA)])]);
-    const r = await buildReport({ subject: DID, include: ['reputation'] }, replayFetch(store), opts);
+  test('a stake of the identity deployment is in the report, field by field: the recorded stake output, in the report for the agent that its datum names', async () => {
+    const staked = `did:vector:${RECORDED_STAKE.agent_did}`;
+    const r = await buildReport({ subject: staked, include: ['reputation'] }, replayFetch(withRecordedStake(fx.store)), opts);
+    expect(r.subject).toEqual({ kind: 'asset', pkh: null, asset_name: RECORDED_STAKE.agent_did, did: staked, registry: null, controller_pkh: null, candidates: [] }); // no record: the stake is joined by the identifier in the datum
     expect(json(r.reputation)).toEqual({
       stakes: [{
-        utxo: `${txHash(2)}#0`, agent_asset_name: CHANDRA, owner_pkh: PKH, stake_lovelace: '10000000', capabilities: ['ocr.page.extract.chandra-ocr-2.v1'],
-        last_updated: 1_794_745_920_000, history_points: 0, challenge_locks: [], stake_id: `${'ab'.repeat(32)}#1`,
+        utxo: '48d4ce7bbd9141a0e5787af08a2cb14aa6c75b64134f874fa64bc8a4155eb6ad#0', agent_asset_name: RECORDED_STAKE.agent_did, owner_pkh: RECORDED_STAKE.owner_pkh, stake_lovelace: '11000000',
+        capabilities: ['smoke.stake-check.a.v1', 'smoke.stake-check.b.v1'], last_updated: 1_795_425_911_000, history_points: 0, challenge_locks: [],
+        stake_id: 'c4ec66206f6f917519f411f9fbab1d709c918b30acf6bc7951759a513fa22c8c#0',
       }],
       endorsements: [],
     });
-    expect(r.blind_spots).toEqual([LEGACY_ONLY, ...BLIND_SPOTS]);
+    expect(r.blind_spots).toEqual([LEGACY_ONLY, expect.stringMatching(/^marketplace was not read: /), ...BLIND_SPOTS]); // the stake adds no line of its own
     expect(degradedReasons(r)).toEqual([]);
   });
   test('the dispute and self-improvement sections list their module addresses and find nothing for this agent', async () => {
