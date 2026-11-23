@@ -10,7 +10,7 @@ import { parse } from 'yaml';
 import { ACCEPT_WINDOW_MS, HIRE_ACTION } from '@vsa/buyer-core';
 import { MAX_BODY, RESERVATION_MS } from '@vsa/service-kit';
 import { CONFIRMATIONS_REQUIRED, tokenTarget } from '@vsa/usecase-kit/access';
-import { INTERRUPTION_REASONS, PAY_UNCONFIRMED, checkRuntimeBody, checkWirePayload, completedResult, disputedResult, failedResult, handoffOf, proposedResult, refusedResult, vaultRefusedResult } from '@vsa/usecase-kit/buyer';
+import { COUNTERPARTY_REFUSED, INTERRUPTION_REASONS, PAY_UNCONFIRMED, checkRuntimeBody, checkWirePayload, completedResult, disputedResult, failedResult, handoffOf, proposedResult, refusedResult, vaultRefusedResult } from '@vsa/usecase-kit/buyer';
 import { COSIGN_SETTINGS, COSIGN_STATUS, parseAllowlist, parseCosignSettings } from '@vsa/usecase-kit/cosign';
 import { readFaultSwitch, withFaultMode } from '@vsa/usecase-kit/fault';
 import { INVENTORY_CAPABILITIES, LOT_NAMES, PO_SCHEMA, REORDER_CLAIM, parseOrderConfirmation, parsePurchaseOrder, poNumberOf } from '@vsa/usecase-kit/inventory';
@@ -360,6 +360,9 @@ describe('specs/reorder-agent.md, Interface', () => {
     expect(PROPOSE_FAILURES).toEqual(expect.arrayContaining(['delegation_not_found', 'delegation_key_unknown', 'stock_reading_mismatch', 'decision_mismatch']));
     expect(SUPPLIER_FAILURES).toStrictEqual(['supplier_not_listed', 'supplier_manifest_invalid', 'supplier_lots_invalid', 'sku_not_in_lots', 'supplier_unavailable']);
     expect(AFTER_CLAIM_REFUSALS).toStrictEqual(['cannot_supply']);
+    expect([COUNTERPARTY_REFUSED, ERROR_STATUS.check_unavailable]).toStrictEqual(['counterparty_refused', 503]);
+    expect(request).toContain('When the order fails a check, the Order Desk refuses with a 403 and a code, and the result is `refused_by_counterparty` with that code.');
+    expect(request).toContain('Any other answer before the Claim is a `failed` result. Its reason is the code of the answer when the protocol lists it, such as `check_unavailable` (503), and `counterparty_refused` otherwise.');
     expect(RECEIPT_CHECKS).toHaveLength(8);
     expect(request).toContain('It runs the eight checks on the receipt of the Order Desk.');
     // The model of `reorder` reads the stock reading, the three lot sizes and the date of today. The model of `accept_delivery` reads the SKU, the lot and the quantity of each side, and nothing else.
