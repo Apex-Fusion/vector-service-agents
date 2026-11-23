@@ -4,14 +4,20 @@
 //
 // A guard here takes a text and gives the list of what is wrong with it. The list is empty for the real file, and it names the rule for each copy that breaks one. Each refusal has an accepted twin.
 // The question of the pack: can a container start with a key that it must not hold, on a public port, from an image that a tag can move, from a build on the host, or on a network that another container shares?
-// No test here uses the network, Docker or the clock. The render of the compose file and the check of the Caddy block need Docker, so they run by hand (RUNBOOK-reorder-agent.md).
-import { readFileSync } from 'node:fs';
+// No test here uses the network, Docker or the clock. The render of the compose file and the check of the Caddy block need Docker, so they run by hand (RUNBOOK-reorder-agent.md). A few tests run the shell commands of the runbook on
+// Linux, in a new folder, with a stand-in for docker: they use sed, awk and od, and they read no secret.
+import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, test } from 'vitest';
+import { afterAll, describe, expect, test } from 'vitest';
 import { parse, stringify } from 'yaml';
+import { COSIGN_STATUS } from '@vsa/usecase-kit/cosign';
+import { INVENTORY_CAPABILITIES } from '@vsa/usecase-kit/inventory';
+import { ERROR_STATUS } from '@vsa/usecase-kit/protocol';
 import { testKey } from '../../../packages/buyer-core/test/fixtures/identity-world.ts';
-import { JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, PRICE_DEFAULT_LOVELACE, STATE_DIR_DEFAULT } from '../src/serve/settings.ts';
+import { BUYER_BOND_LOVELACE, JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, PORT_DEFAULT, PRICE_DEFAULT_LOVELACE, STATE_DIR_DEFAULT, SUPPLIER_BOND_LOVELACE } from '../src/serve/settings.ts';
 import { SETTINGS, SHUTDOWN_WAIT_MS, loadConfig } from '../src/serve/start.ts';
 import { AGENT_DID, CONTACT, KEY_NUMBERS, KEY_VARIABLES as KEY_OF_ROLE, PRINCIPAL, READER_DID, ROLES, SUPPLIER, TOKEN, rawKey } from './serve/support.ts';
 
@@ -892,4 +898,416 @@ describe('deploy/server/Caddyfile.reorder-agent.snippet', () => {
     const header = snippetText.slice(0, snippetText.indexOf(BEGIN));
     for (const part of [NETWORK, 'docker network connect', '<caddy container>', 'in place', 'inode', 'validate', 'reload', 'Never restart', 'DNS-only', 'joins again', FILES.runbook]) expect(header, part).toContain(part);
   });
+});
+
+// --- the runbook ---------------------------------------------------------------------------------------------------------------------------------------
+
+const runbookText = readPack(FILES.runbook);
+
+const SECTIONS = [
+  'What it is', 'The files', 'The memory gate', 'The DNS record', 'The folder', 'The env file', 'The images', 'Check the compose file', 'The start order', 'The checks', 'The Caddy block', 'The restart rule',
+  'The failure table', 'Back out',
+];
+
+/** The text of a section: from its heading to the next heading of its level. */
+function sectionOf(text: string, heading: string): string {
+  const start = text.indexOf(`\n## ${heading}\n`);
+  if (start < 0) return '';
+  const rest = text.slice(start + 1);
+  const next = rest.indexOf('\n## ', 1);
+  return next < 0 ? rest : rest.slice(0, next);
+}
+/** The fenced blocks of a text, each one as written, with the indent of a list item taken off. */
+function blocksOf(text: string): string[] {
+  const blocks: string[] = [];
+  let current: string[] | null = null;
+  let indent = 0;
+  for (const line of text.split('\n')) {
+    const fence = /^(\s*)```/.exec(line);
+    if (fence !== null) {
+      if (current === null) {
+        current = [];
+        indent = fence[1].length;
+      } else {
+        blocks.push(current.join('\n'));
+        current = null;
+      }
+    } else if (current !== null) {
+      current.push(line.slice(Math.min(indent, line.length - line.trimStart().length)));
+    }
+  }
+  return blocks;
+}
+/** The one fenced block of a section that holds a part. A section with no such block, or with two, stops the test. */
+function blockWith(section: string, part: string): string {
+  const found = blocksOf(section).filter((block) => block.includes(part));
+  expect(found, `one block holds: ${part}`).toHaveLength(1);
+  return found[0];
+}
+/** Every distinct match of a pattern in a text. */
+const matchesOf = (text: string, pattern: RegExp): string[] => [...new Set([...text.matchAll(pattern)].map((hit) => hit[0]))];
+
+const NAMED_FILES = [...Object.values(FILES), ENV_FILE, 'RUNBOOK.md', 'README.md'];
+const SERVICE_NAMES = Object.keys(WANT);
+const LOOPBACK_PORTS = [RUNTIME_HOST_PORT, SERVICE_HOST_PORT];
+const CONTAINERS = [RUNTIME_CONTAINER, SERVICE_CONTAINER];
+/** The names that start as the name of the agent and are no container: the project and the image, and the volume. */
+const PROJECT_NAMES = ['reorder-agent', VOLUME];
+const HEX_RUN = /[0-9a-fA-F]{56,}/g;
+const PUBLISHED_RUNS = new Set(Object.values(PUBLISHED).flatMap((value) => value.match(/[0-9a-f]{56,}/g) ?? []));
+
+/** What is wrong with a file of the pack as to key material: a run of hex digits that is not a published value (it could be a key), and the value of a key variable that is written out. */
+function keyProblems(text: string, allowed: ReadonlySet<string> = new Set()): string[] {
+  const problems: string[] = [];
+  if ((text.match(HEX_RUN) ?? []).some((run) => !allowed.has(run))) problems.push('the text has a run of hex digits that is not a published value: it could be a key');
+  if (/PRIV_KEY_HEX=[0-9a-fA-F]{8,}/.test(text)) problems.push('the text writes the value of a key');
+  return problems;
+}
+
+/** What is wrong with the runbook. An empty list is a pass. */
+function runbookProblems(text: string): string[] {
+  const problems: string[] = [];
+  if (!text.startsWith('# Runbook: the Reorder Agent on the agents host\n')) problems.push('the title must be "Runbook: the Reorder Agent on the agents host"');
+  const headings = [...text.matchAll(/^## (.+)$/gm)].map((hit) => hit[1]);
+  if (!same(headings, SECTIONS)) problems.push(`the sections must be, in this order: ${SECTIONS.join(', ')}; found: ${headings.join(', ')}`);
+  for (const name of matchesOf(text, /(?<![\w.-])(?:docker-compose\.[a-z0-9-]+\.yml|Caddyfile\.[a-z0-9-]+\.snippet|RUNBOOK(?:-[a-z0-9-]+)?\.md|README\.md|\.env\.[A-Za-z0-9._-]*[A-Za-z0-9])/g)) {
+    if (!NAMED_FILES.includes(name)) problems.push(`the runbook names ${name}, which is no file of this pack`);
+  }
+  for (const name of [...Object.values(FILES), ENV_FILE]) if (!new RegExp(`(?<![\\w.-])${escapeRegExp(name)}(?![\\w-]|\\.[A-Za-z0-9])`).test(text)) problems.push(`the runbook never names ${name}`);
+  const code = blocksOf(text).flatMap((block) => block.split('\n').map((line) => line.trim()));
+  for (const line of code) {
+    const compose = /\bdocker compose\b.*/.exec(line)?.[0];
+    if (compose === undefined) continue;
+    if (!compose.includes(`-f ${FILES.compose}`)) problems.push(`a docker compose command names no -f ${FILES.compose}: ${compose}`);
+    const verb = /-f \S+ (up|stop|start|logs|ps|rm|config|down|pull)\b([^|)&;]*)/.exec(compose);
+    for (const token of (verb?.[2] ?? '').split(/\s+/).filter((part) => part !== '' && !part.startsWith('-'))) {
+      if (!SERVICE_NAMES.includes(token)) problems.push(`a docker compose command names the service ${token}, which is no service of this pack`);
+    }
+    if (/\bconfig\b/.test(compose) && !/--quiet|-q\b/.test(compose) && !line.includes('cd "$scratch" &&')) problems.push('docker compose config prints the environment: run it with --quiet, or in the scratch folder with the stand-in files');
+  }
+  for (const port of matchesOf(text, /(?:127\.0\.0\.1|localhost):\d+/g)) if (!LOOPBACK_PORTS.includes(Number(port.split(':')[1]))) problems.push(`the runbook names the loopback port ${port}, which is no port of this pack`);
+  for (const port of LOOPBACK_PORTS) if (!new RegExp(`\\b${port}\\b`).test(text)) problems.push(`the runbook never names the port ${port}`);
+  for (const name of matchesOf(text, /(?<![\w./-])reorder-[a-z]+(?![\w-])/g)) if (![...CONTAINERS, ...PROJECT_NAMES].includes(name)) problems.push(`the runbook names ${name}, which is no container of this pack`);
+  for (const name of CONTAINERS) if (!text.includes(name)) problems.push(`the runbook never names the container ${name}`);
+  for (const name of matchesOf(text, /mp-suppliers-[a-z-]+\.vector\.apexfusion\.org/g)) if (name !== HOST) problems.push(`the runbook names the host ${name}, which is no host of this pack`);
+  if (!new RegExp(`(?<![\\w.-])${escapeRegExp(HOST)}(?![\\w-])`).test(text)) problems.push(`the runbook never names the host ${HOST}`);
+  const commands = code.join('\n');
+  if (/\bdocker (?:build|run)\b|--build\b|\bdocker compose[^\n]* (?:build|run)\b/.test(commands)) problems.push('the host builds no image and starts no container outside compose');
+  if (/\bdown\b[^\n]*(?:\s-v\b|--volumes)/.test(commands)) problems.push('down never takes -v: the volume holds the records of the service');
+  const printing = [/\bcat\s+\S*\.env/, /\bprintenv\b/, /\bdocker inspect\b/, /\bdocker exec\b[^\n]*\b(?:env|printenv)\b/, /\becho\s+"?\$\{?[A-Z_]*PRIV_KEY/];
+  for (const pattern of printing) if (code.some((line) => pattern.test(line))) problems.push(`a command prints an env file or an environment: ${pattern.source}`);
+  problems.push(...keyProblems(text).map((problem) => `the runbook: ${problem}`));
+  return problems;
+}
+
+/** The folders that the tests of the commands make: each test removes its own at the end of the file. */
+const folders: string[] = [];
+/** What a shell script of the runbook does in a new folder: the folder, what it printed, and its status. The files are made first. A stub is a program that stands in front of the real one in the PATH. */
+function runInFolder(script: string, files: Readonly<Record<string, string>>, stubs: Readonly<Record<string, string>> = {}): { readonly dir: string; readonly out: string; readonly err: string; readonly status: number | null } {
+  const dir = mkdtempSync(join(tmpdir(), 'reorder-deploy-'));
+  folders.push(dir);
+  mkdirSync(join(dir, 'bin'));
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
+  for (const [name, content] of Object.entries(stubs)) {
+    writeFileSync(join(dir, 'bin', name), `#!/bin/sh\n${content}\n`);
+    chmodSync(join(dir, 'bin', name), 0o755);
+  }
+  const run = spawnSync('bash', ['-c', script], { cwd: dir, env: { PATH: `${join(dir, 'bin')}:${process.env.PATH ?? ''}`, HOME: dir }, encoding: 'utf8' });
+  return { dir, out: run.stdout, err: run.stderr, status: run.status };
+}
+const LINUX = process.platform === 'linux';
+
+describe('deploy/server/RUNBOOK-reorder-agent.md', () => {
+  test('the real runbook passes: the sections in order, the files, the commands and the numbers of the pack', () => {
+    expect(runbookProblems(runbookText)).toStrictEqual([]);
+    expect([...runbookText.matchAll(/^## (.+)$/gm)].map((hit) => hit[1])).toStrictEqual(SECTIONS);
+  });
+
+  test('the table of the first section gives the container, the port, the host name, the advert model, the price, the bonds and the lock, as the code has them', () => {
+    const what = sectionOf(runbookText, 'What it is');
+    const row = what.split('\n').find((line) => line.startsWith('|') && line.includes(RUNTIME_CONTAINER));
+    expect(row, `a row for ${RUNTIME_CONTAINER}`).toBeDefined();
+    const cells = row!.split('|').slice(1, -1).map((cell) => cell.trim().replaceAll('`', ''));
+    const price = PRICE_DEFAULT_LOVELACE / 1_000_000;
+    const bond = SUPPLIER_BOND_LOVELACE / 1_000_000;
+    expect(BUYER_BOND_LOVELACE).toBe(SUPPLIER_BOND_LOVELACE);
+    expect(cells.slice(1)).toStrictEqual([RUNTIME_CONTAINER, String(RUNTIME_HOST_PORT), HOST, 'reorder-agent-v1', String(price), `${bond} and ${bond}`, String(price + 2 * bond)]);
+    expect(what).toContain(INVENTORY_CAPABILITIES.reorder);
+    for (const ms of [MIN_PROCESSING_WINDOW_MS, SERVICE_TIMEOUT_MS, JOB_DEADLINE_MS]) expect(what, String(ms)).toContain(ms.toLocaleString('en-US'));
+    for (const part of [SERVICE_CONTAINER, String(SERVICE_HOST_PORT), '/cosign/delegate', 'does one job at a time']) expect(what, part).toContain(part);
+  });
+
+  test('the files named in the first table are the files of the pack, and the second section lists all of them', () => {
+    const files = sectionOf(runbookText, 'The files');
+    for (const name of [...Object.values(FILES), ENV_FILE]) expect(files, name).toContain(`\`${name}\``);
+  });
+
+  test('the memory gate is 1,024 MiB of MemAvailable before each start, and the folder is the one of the pack, owned by the service user with mode 750', () => {
+    const gate = sectionOf(runbookText, 'The memory gate');
+    for (const part of ['MemAvailable', '1,024 MiB', '/proc/meminfo']) expect(gate, part).toContain(part);
+    const folder = sectionOf(runbookText, 'The folder');
+    for (const part of ['/srv/agents/reorder-agent', '750', 'agents']) expect(folder, part).toContain(part);
+    expect(sectionOf(runbookText, 'The DNS record')).toContain('DNS only');
+    expect(sectionOf(runbookText, 'The DNS record')).toContain(HOST);
+  });
+
+  test('the env file is made with mode 600, the keys are never typed or printed, and the checks print names and lengths only', () => {
+    const file = sectionOf(runbookText, 'The env file');
+    for (const part of ['600', 'umask 077', ENV_FILE, '<commit>', 'SERVICE_AUTH_HEADER', ...SUPPLIER_LINES, ...KEY_VARIABLES, 'ADVERT_REF', 'AGENT_ID', 'AGENT_DID', 'STOCK_READER_DID', 'COSIGN_ALLOWLIST', 'OPERATOR_CONTACT',
+      'MOCK_PUBLIC_BASE', 'MOCK_MTLS_BASE', 'operator pack', 'never typed']) expect(file, part).toContain(part);
+    expect(file).toMatch(/one pure output of 5 units/);
+    expect(file).toMatch(/four wallets/);
+    expect(file).toMatch(/six keys, and all six are different/);
+  });
+
+  test('both images are pulled by the tag of the reviewed commit and pinned by digest', () => {
+    const images = sectionOf(runbookText, 'The images');
+    for (const part of [SERVICE_IMAGE, RUNTIME_IMAGE, '<full git commit sha>', 'sha256', 'denied', 'read:packages', FILES.compose, '<digest>']) expect(images, part).toContain(part);
+  });
+
+  test('the compose file is rendered with a stand-in file, never with the real env file that holds keys', () => {
+    const check = sectionOf(runbookText, 'Check the compose file');
+    for (const part of ['scratch', '--quiet', FILES.example, 'config', "grep -c '@sha256:<digest>'"]) expect(check, part).toContain(part);
+  });
+
+  test('the start order is the service, then the Caddy block and the public checks, then the advert, then the runtime, each start after the memory gate and the runtime without its dependencies', () => {
+    const start = sectionOf(runbookText, 'The start order');
+    const at = (part: string): number => start.indexOf(part);
+    const order = [`up -d ${SERVICE_NAME}`, 'The Caddy block', 'Post the advert', 'up -d --no-deps runtime'];
+    for (const part of order) expect(at(part), part).toBeGreaterThanOrEqual(0);
+    expect(order.map(at)).toStrictEqual([...order.map(at)].sort((a, b) => a - b));
+    expect(start).toContain('The memory gate');
+    for (const part of [INVENTORY_CAPABILITIES.reorder, 'reorder-agent-v1', MIN_PROCESSING_WINDOW_MS.toLocaleString('en-US'), 'detail_hash', 'detail_uri', 'endpoint_url', 'ADVERT_REF', 'listening on']) expect(start, part).toContain(part);
+  });
+
+  test('the checks cover the two loopback ports, the public ports of the pack, the hash of the manifest, the card of the runtime, the co-sign route and the blank keys', () => {
+    const checks = sectionOf(runbookText, 'The checks');
+    for (const part of ['/healthz', '/status', 'free', 'manifest-hash.mjs', '/.well-known/agent-card.json', '/cosign/delegate', 'bad_shape', 'detail_hash', "name='^reorder-'", 'docker stats', 'blank', HOST]) expect(checks, part).toContain(part);
+    for (const port of LOOPBACK_PORTS) expect(checks, String(port)).toContain(String(port));
+  });
+
+  test('the Caddy section gives the join of the network, the markers, the in-place append, the validation, the reload and the way back, and never a restart of Caddy', () => {
+    const caddy = sectionOf(runbookText, 'The Caddy block');
+    for (const part of [`docker network connect ${NETWORK} <caddy container>`, BEGIN, END, '<caddyfile>', 'caddy validate', 'caddy reload', FILES.snippet, 'inode', 'DNS only']) expect(caddy, part).toContain(part);
+    expect(caddy).not.toMatch(/caddy restart|docker restart <caddy/);
+    expect(caddy).not.toMatch(/\bsed -i\b[^\n]*<caddyfile>/);
+  });
+
+  test('the restart rule needs the runtime free, names every action that is a restart, says that the allowlist is an env line, and gives the waits of the service', () => {
+    const rule = sectionOf(runbookText, 'The restart rule');
+    for (const part of ['/status', 'free', 'working', 'docker restart', 'docker compose restart', '--force-recreate', '120', '300', '330', 'SERVICE_AUTH_HEADER', FILES.compose, 'COSIGN_ALLOWLIST', 'env line', '2 minutes', String(RUNTIME_HOST_PORT)]) expect(rule, part).toContain(part);
+    expect(rule).toMatch(/reload/);
+  });
+
+  test('the failure table names the refusals of the service, the codes of the runtime for the check before the Claim, the codes of the co-sign route, the reasons of a failed job and the start refusals', () => {
+    const table = sectionOf(runbookText, 'The failure table');
+    const codes = [
+      'busy', 'supplier_busy', 'unauthorized', 'shutting_down', 'bad_context', 'bad_wire', 'request_too_large', 'bad_shape', 'delegation_not_mine', 'internal', 'precheck_timeout', 'precheck_unreachable', 'precheck_failed',
+      'precheck_bad_status', 'principal_not_allowed', 'spends_agent_funds', 'key_in_use', 'check_unavailable', 'not_a_delegation', 'not_for_this_agent', 'expired', 'approval_not_found', 'approval_expired', 'duplicate_po',
+      'cannot_supply', 'supplier_not_listed', 'supplier_unavailable', 'ledger_unavailable', 'mock_system_failed', 'token_failed', 'inference_failed', 'model_output_invalid', 'store_write_failed', 'deadline', 'aborted',
+      'delegation_key_unknown',
+    ];
+    for (const code of codes) expect(table, code).toContain(`\`${code}\``);
+    for (const part of ['cannot start', 'invalid reference format', 'denied', '502', NETWORK, ...KEY_VARIABLES, 'VECTOR_MODULE1_MANIFEST must be pinned to a commit', 'IDENTITY_POLICY_ID', 'MOCK_MTLS_BASE must name another host',
+      'FAULT_MODE must be empty', 'ADVERT_MAX_PROCESSING_MS must be at least 1800000', 'REORDER_STATE_DIR names /data', 'the node gave no start time of the chain', 'COSIGN_ALLOWLIST is not set', 'outcome refused_by_counterparty',
+      'outcome failed']) expect(table, part).toContain(part);
+    const rows = table.split('\n').filter((line) => line.startsWith('|') && !line.startsWith('|---') && !line.startsWith('| Symptom'));
+    expect(rows.length).toBeGreaterThan(30);
+    for (const row of rows) expect(row.split('|').length, row).toBe(5);
+    // A status in the first cell is the status that the code gives. The runtime codes are those of the template runtime, and `bad_context` is the answer of the server of the service kit.
+    const statusOf: Readonly<Record<string, number>> = { ...ERROR_STATUS, ...COSIGN_STATUS, precheck_timeout: 503, precheck_unreachable: 503, precheck_failed: 503, precheck_bad_status: 502, supplier_busy: 409, bad_context: 400 };
+    let checked = 0;
+    for (const row of rows) {
+      const symptom = row.split('|')[1];
+      const status = /\((\d{3})\b/.exec(symptom)?.[1];
+      if (status === undefined) continue;
+      for (const hit of symptom.matchAll(/`([a-z]+(?:_[a-z]+)*)`/g)) {
+        expect(statusOf[hit[1]], `${hit[1]} in: ${symptom}`).toBe(Number(status));
+        checked += 1;
+      }
+    }
+    expect(checked).toBeGreaterThan(18);
+  });
+
+  test('back out retires the advert first, waits for the runtime, removes the Caddy block, stops the containers and keeps the volume', () => {
+    const out = sectionOf(runbookText, 'Back out');
+    const at = (part: string): number => out.indexOf(part);
+    const order = ['Retire', 'free', 'Remove', 'stop', 'volume'];
+    for (const part of order) expect(at(part), part).toBeGreaterThanOrEqual(0);
+    expect(order.map(at)).toStrictEqual([...order.map(at)].sort((a, b) => a - b));
+    expect(out).toContain(VOLUME);
+    expect(out).toContain('docker network disconnect');
+  });
+
+  const faults: ReadonlyArray<readonly [string, (text: string) => string, RegExp]> = [
+    ['a title of another pack', (t) => swap(t, '# Runbook: the Reorder Agent on the agents host\n', '# Runbook: the Order Desk on the agents host\n'), /^the title must be/],
+    ['a section missing', (t) => swap(t, '\n## The restart rule\n', '\n## Another heading\n'), /^the sections must be, in this order/],
+    ['the sections in another order', (t) => exchange(t, '\n## The checks\n', '\n## The Caddy block\n'), /^the sections must be, in this order/],
+    ['a file of another pack', (t) => `${t}\nSee docker-compose.order-desk.yml.\n`, /^the runbook names docker-compose\.order-desk\.yml, which is no file of this pack/],
+    ['an env file of another agent', (t) => `${t}\nRead .env.order-desk.\n`, /^the runbook names \.env\.order-desk, which is no file of this pack/],
+    ['an env file with another name', (t) => `${t}\nRead .env.reorder-agent-huge.\n`, /^the runbook names \.env\.reorder-agent-huge, which is no file of this pack/],
+    ['a compose command without the file', (t) => `${t}\n\`\`\`sh\ndocker compose up -d service\n\`\`\`\n`, /a docker compose command names no -f docker-compose\.reorder-agent\.yml/],
+    ['a service that the pack does not have', (t) => `${t}\n\`\`\`sh\ndocker compose -f docker-compose.reorder-agent.yml up -d runtime-huge\n\`\`\`\n`, /names the service runtime-huge/],
+    ['a compose config that prints the environment', (t) => `${t}\n\`\`\`sh\ndocker compose -f docker-compose.reorder-agent.yml config\n\`\`\`\n`, /^docker compose config prints the environment/],
+    ['a port of another pack', (t) => `${t}\ncurl http://127.0.0.1:8102/healthz\n`, /the loopback port 127\.0\.0\.1:8102/],
+    ['a container of another pack', (t) => `${t}\ndocker logs reorder-huge\n`, /the runbook names reorder-huge, which is no container/],
+    ['a host of another pack', (t) => `${t}\nhttps://mp-suppliers-orders-small.vector.apexfusion.org\n`, /the host mp-suppliers-orders-small\.vector\.apexfusion\.org/],
+    ['a build on the host', (t) => `${t}\n\`\`\`sh\ndocker build -t x .\n\`\`\`\n`, /^the host builds no image/],
+    ['a container started outside compose', (t) => `${t}\n\`\`\`sh\ndocker run --rm alpine true\n\`\`\`\n`, /^the host builds no image and starts no container outside compose/],
+    ['a stop that removes the volume', (t) => `${t}\n\`\`\`sh\ndocker compose -f docker-compose.reorder-agent.yml down -v\n\`\`\`\n`, /^down never takes -v/],
+    ['a command that prints an env file', (t) => `${t}\n\`\`\`sh\ncat .env.reorder-agent\n\`\`\`\n`, /^a command prints an env file or an environment/],
+    ['a command that prints the environment of a container', (t) => `${t}\n\`\`\`sh\ndocker exec reorder-service printenv\n\`\`\`\n`, /^a command prints an env file or an environment/],
+    ['a command that inspects a container', (t) => `${t}\n\`\`\`sh\ndocker inspect reorder-runtime\n\`\`\`\n`, /^a command prints an env file or an environment/],
+    ['a key', (t) => `${t}\nSUPPLIER_PRIV_KEY_HEX=${HEX}\n`, /^the runbook: the text has a run of hex digits/],
+  ];
+  test('each copy that breaks one rule is refused, in the words of that rule', () => {
+    for (const [what, change, expected] of faults) {
+      const problems = runbookProblems(change(runbookText));
+      expect(problems.some((problem) => expected.test(problem)), `${what}: found ${JSON.stringify(problems)}`).toBe(true);
+    }
+  });
+
+  test('the twins: a command with --quiet, a command in the scratch folder, a start without dependencies and a comment about a file of the pack are accepted', () => {
+    const accepted = `${runbookText}\n\`\`\`sh\ndocker compose -f ${FILES.compose} config --quiet\n(cd "$scratch" && docker compose -f ${FILES.compose} config | grep image)\ndocker compose -f ${FILES.compose} up -d --no-deps runtime\n\`\`\`\n`;
+    expect(runbookProblems(accepted)).toStrictEqual([]);
+    expect(runbookProblems(`${runbookText}\nThe file ${FILES.snippet} holds the block. See RUNBOOK.md and README.md.\n`)).toStrictEqual([]);
+  });
+
+  // The commands of the runbook run as written, on Linux, in a new folder. A stand-in takes the place of docker. No command reads a real file, and none prints a key.
+  describe.skipIf(!LINUX)('the shell commands of the runbook', () => {
+    const hex = (n: number): string => n.toString(16).padStart(2, '0').repeat(32);
+    const fill: Readonly<Record<string, string>> = {
+      SUPPLIER_PRIV_KEY_HEX: hex(1), SUPPLIER_PUB_KEY_HEX: hex(2), SUPPLIER_PKH: hex(3).slice(0, 56), SUPPLIER_ADDRESS: `addr1${'q'.repeat(53)}`,
+      REORDER_SERVICE_PRIV_KEY_HEX: hex(4), REORDER_DELEGATION_1_PRIV_KEY_HEX: hex(5), REORDER_DELEGATION_2_PRIV_KEY_HEX: hex(6), STOCK_READER_AUTH_PRIV_KEY_HEX: hex(7), STOCK_READER_DELEGATION_PRIV_KEY_HEX: hex(8),
+      SERVICE_AUTH_HEADER: `"Bearer ${hex(9)}"`, OPERATOR_CONTACT: 'ops', AGENT_DID: `did:vector:${hex(10)}`, STOCK_READER_DID: `did:vector:${hex(11)}`, AGENT_ID: hex(10),
+      MOCK_PUBLIC_BASE: 'https://mock.example.test', MOCK_MTLS_BASE: 'https://mock-mtls.example.test',
+    };
+    /** The example with every line that the operator fills, filled in. */
+    const filledFile = (extra: Readonly<Record<string, string>> = {}): string => Object.entries({ ...fill, ...extra }).reduce((text, [name, value]) => withValue(text, name, value), swap(exampleText, '/<commit>/', `/${'a1'.repeat(20)}/`));
+
+    test('the memory gate command prints ok or stop, and the MiB that are available', () => {
+      const run = runInFolder(blockWith(sectionOf(runbookText, 'The memory gate'), '/proc/meminfo'), {});
+      expect([run.status, run.err]).toStrictEqual([0, '']);
+      expect(run.out).toMatch(/^(ok|stop) \d+ MiB available\n$/);
+    });
+
+    test('the token command writes a token of the form "Bearer" and 64 hex digits into its line, prints nothing, and makes a new token each time', () => {
+      const script = blockWith(sectionOf(runbookText, 'The env file'), 'SERVICE_AUTH_HEADER=\\"Bearer');
+      const tokenOf = (): string => {
+        const run = runInFolder(script, { [ENV_FILE]: exampleText });
+        expect([run.status, run.out, run.err], 'the command prints nothing').toStrictEqual([0, '', '']);
+        return /^SERVICE_AUTH_HEADER=(.*)$/m.exec(readFileSync(join(run.dir, ENV_FILE), 'utf8'))![1];
+      };
+      const [one, two] = [tokenOf(), tokenOf()];
+      for (const token of [one, two]) expect(token).toMatch(/^"Bearer [0-9a-f]{64}"$/);
+      expect(one).not.toBe(two);
+    });
+
+    test('the check commands of the env file print the placeholders and the empty lines of the example, nothing for a file that is filled in, and the names and lengths that the runbook says', () => {
+      const section = sectionOf(runbookText, 'The env file');
+      const placeholders = blockWith(section, "grep -nE '^[A-Z0-9_]+=.*<[^>]*>'");
+      const empty = blockWith(section, 'empty: $name');
+      const lengths = blockWith(section, 'length($2)');
+      const twice = blockWith(section, 'uniq -d');
+      const required = /for name in ([A-Z0-9_ ]+); do/.exec(empty)![1].split(' ');
+      expect(required).toStrictEqual(expect.arrayContaining([...SUPPLIER_LINES, ...KEY_VARIABLES, 'SERVICE_AUTH_HEADER', 'OPERATOR_CONTACT', 'AGENT_DID', 'STOCK_READER_DID', 'AGENT_ID', 'MOCK_PUBLIC_BASE', 'MOCK_MTLS_BASE']));
+
+      const raw = runInFolder([placeholders, empty, twice].join('\n'), { [ENV_FILE]: exampleText });
+      const lines = raw.out.split('\n').filter((line) => line !== '');
+      const listed = lines.filter((line) => /^\d+:/.test(line)).map((line) => line.replace(/^\d+:/, ''));
+      expect(listed.sort(), 'the placeholders of the example').toStrictEqual([...PLACEHOLDER_NAMES].sort());
+      const exampleEnv = Object.fromEntries(entriesOf(exampleText).entries.map((entry) => [entry.name, entry.value === '""' ? '' : entry.value]));
+      expect(lines.filter((line) => line.startsWith('empty: ')), 'the empty lines of the example').toStrictEqual(required.filter((name) => exampleEnv[name] === '').map((name) => `empty: ${name}`));
+      expect(lines.filter((line) => !/^\d+:/.test(line) && !line.startsWith('empty: ')), 'no key hash stands twice in the example').toStrictEqual([]);
+
+      const done = runInFolder([placeholders, empty, twice].join('\n'), { [ENV_FILE]: filledFile() });
+      expect([done.status, done.out, done.err], 'nothing is printed for a file that is filled in').toStrictEqual([0, '', '']);
+      const measured = runInFolder(lengths, { [ENV_FILE]: filledFile() });
+      expect(measured.out.split('\n').filter((line) => line !== '')).toStrictEqual([
+        'SUPPLIER_PRIV_KEY_HEX=64 SUPPLIER_PUB_KEY_HEX=64 SUPPLIER_PKH=56 SUPPLIER_ADDRESS=58 AGENT_ID=64 ADVERT_REF=0 ',
+        ...KEY_VARIABLES.flatMap((name) => [`${name}=64`, `${name.replace('_PRIV_KEY_HEX', '_PKH')}=0`]),
+      ]);
+      const hash = hex(12).slice(0, 56);
+      const clash = runInFolder(twice, { [ENV_FILE]: filledFile({ REORDER_SERVICE_PKH: hash, STOCK_READER_AUTH_PKH: hash, REORDER_DELEGATION_1_PKH: hex(13).slice(0, 56) }) });
+      expect(clash.out, 'a key hash that stands twice').toBe(`${hash}\n`);
+    });
+
+    test('the pin command puts the digest of each image in the compose file, and the file then passes the guard; a digest that is not 64 characters changes nothing', () => {
+      const script = swap(swap(blockWith(sectionOf(runbookText, 'The images'), 'docker pull'), '<full git commit sha>', 'a1'.repeat(20)), 'cd /srv/agents/reorder-agent\n', '');
+      const stub = (digest: string): string => `case "$1" in pull) ;; image) printf 'ghcr.io/example/image@sha256:${digest}\\n' ;; esac`;
+      const pinned = runInFolder(script, { [FILES.compose]: composeText }, { docker: stub('ab'.repeat(32)) });
+      expect(pinned.status).toBe(0);
+      const text = readFileSync(join(pinned.dir, FILES.compose), 'utf8');
+      expect(composeProblems(text)).toStrictEqual([]);
+      expect(text.match(/@sha256:[0-9a-f]{64}/g)).toHaveLength(2);
+      expect(text.match(/@sha256:<digest>/g), 'no placeholder is left in an image').toBeNull();
+      expect(pinned.out.split('\n').filter((line) => line.startsWith('    image: '))).toHaveLength(2);
+      const short = runInFolder(script, { [FILES.compose]: composeText }, { docker: stub('abc') });
+      expect(short.out).toContain('no digest for reorder-agent: the compose file is not changed');
+      expect(short.out).toContain('no digest for agent-runtime: the compose file is not changed');
+      expect(readFileSync(join(short.dir, FILES.compose), 'utf8'), 'the file is not changed').toBe(composeText);
+    });
+
+    test('the commands of the Caddy section add the block in place, show that it is there, and take it out again with the bytes that the file had', () => {
+      const section = sectionOf(runbookText, 'The Caddy block');
+      const own = (block: string): string => swap(block, '<caddyfile>', 'Caddyfile');
+      const keep = own(blockWith(section, 'cp -p <caddyfile>'));
+      const append = own(blockWith(section, '>> <caddyfile>'));
+      const remove = own(blockWith(section, "/d' <caddyfile>"));
+      const before = '{\n\tadmin localhost:2019\n}\n\nexisting.example.test {\n\trespond "ok"\n}\n';
+      const script = [keep, 'before=$(stat -c %i Caddyfile)', append, 'after=$(stat -c %i Caddyfile)', 'echo "same inode: $([ "$before" = "$after" ] && echo yes || echo no)"', 'cp Caddyfile appended.copy',
+        "grep -c '^# reorder-agent vhosts (BEGIN)$' Caddyfile", remove, 'cmp Caddyfile Caddyfile.before-reorder-agent && echo restored'].join('\n');
+      const run = runInFolder(script, { Caddyfile: before, [FILES.snippet]: snippetText });
+      expect(run.out.split('\n').filter((line) => line !== '')).toStrictEqual(['0', 'same inode: yes', '1', 'restored']);
+      const appended = readFileSync(join(run.dir, 'appended.copy'), 'utf8');
+      const lines = snippetText.split('\n');
+      expect(appended).toBe(`${before}${lines.slice(lines.indexOf(BEGIN), lines.indexOf(END) + 1).join('\n')}\n`);
+      expect(readFileSync(join(run.dir, 'Caddyfile'), 'utf8'), 'the block is gone').toBe(before);
+      expect(statSync(join(run.dir, 'Caddyfile')).isFile()).toBe(true);
+    });
+  });
+});
+
+// --- the whole pack ------------------------------------------------------------------------------------------------------------------------------------
+
+describe('the pack as a whole', () => {
+  test('no file of the pack holds key material: no run of hex digits except the published values, and no value written for a key variable', () => {
+    for (const [name, text] of [[FILES.compose, composeText], [FILES.example, exampleText], [FILES.snippet, snippetText], [FILES.runbook, runbookText]] as const) {
+      expect(keyProblems(text, PUBLISHED_RUNS), name).toStrictEqual([]);
+    }
+  });
+
+  test('the guard of key material refuses each fault and passes the clean text', () => {
+    expect(keyProblems(`A clean text with a published value ${PUBLISHED.IDENTITY_POLICY_ID}`, PUBLISHED_RUNS)).toStrictEqual([]);
+    expect(keyProblems(`A key ${HEX}`)).toStrictEqual(['the text has a run of hex digits that is not a published value: it could be a key']);
+    expect(keyProblems(`A key ${HEX}`, new Set([HEX]))).toStrictEqual([]);
+    expect(keyProblems('SUPPLIER_PRIV_KEY_HEX=abcdef0123')).toStrictEqual(['the text writes the value of a key']);
+    expect(keyProblems('Use ghcr.io/x/y@sha256:<digest>')).toStrictEqual([]);
+  });
+
+  test('the host, the ports and the container names are the same in the compose file, the Caddy block, the example and the runbook', () => {
+    const compose = parse(composeText) as Model;
+    expect(compose.services.runtime.container_name).toBe(RUNTIME_CONTAINER);
+    expect(compose.services.runtime.ports).toStrictEqual([`127.0.0.1:${RUNTIME_HOST_PORT}:${RUNTIME_PORT}`]);
+    expect(compose.services.runtime.environment.PUBLIC_ORIGIN).toBe(`https://${HOST}`);
+    expect(compose.services.service.container_name).toBe(SERVICE_CONTAINER);
+    expect(compose.services.service.ports).toStrictEqual([`127.0.0.1:${SERVICE_HOST_PORT}:${PORT_DEFAULT}`]);
+    expect(snippetText).toContain(`${HOST} {`);
+    expect(snippetText).toContain(`reverse_proxy ${RUNTIME_UPSTREAM}`);
+    expect(snippetText).toContain(`reverse_proxy ${SERVICE_UPSTREAM}`);
+    expect(runbookText).toContain(HOST);
+    expect(runbookText).toContain(RUNTIME_CONTAINER);
+    expect(runbookText).toContain(SERVICE_CONTAINER);
+    expect(compose.services.runtime.environment.SERVICE_URL).toBe(`http://${SERVICE_UPSTREAM}/`);
+  });
+
+  test('the real env file never enters git: the ignore file covers .env.* and lets the examples through', () => {
+    const ignore = readFileSync(join(root, '.gitignore'), 'utf8').split('\n');
+    expect(ignore).toContain('.env.*');
+    expect(ignore).toContain('!.env.*.example');
+  });
+});
+
+afterAll(() => {
+  for (const dir of folders.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
