@@ -9,8 +9,8 @@ import type { EscalatedResult, UnfiledDisputeResult } from '@vsa/usecase-kit/pro
 import { Dispute, LEAST_RESOLUTION_DEADLINE_MS, disputedFields } from '@vsa/usecase-kit/dispute';
 import type { ApprovalChallengeInput, ChallengeResult, ClaimView, DeliveryChallengeInput, DisputeSettings } from '@vsa/usecase-kit/dispute';
 import {
-  APPROVAL_JOB, BUYER_PKH, CHALLENGE_TX, DELIVERY_JOB, DIGEST_FACTS, ESCROW, ESCROW_2, EVIDENCE_TX, HOUR, JOB, JOB_BEGAN_AT, ME, ME_ID, MISMATCH, NOW, ORDER_FACTS, OTHER, OTHER_BUYER_PKH, OTHER_ID, QUOTE_FACTS, RecordingQueue,
-  REF_A, REF_B, REF_C, SCOPE, ScriptedPort, SETTINGS, STATEMENT_S1, THIRD, THIRD_ID, TOKEN_A, TOKEN_B, TOKEN_C, canonical, claimView, escrowJob, never, rig,
+  APPROVAL_JOB, BUYER_PKH, CHALLENGE_TX, CLAIM_CAPABILITY, DELIVERY_JOB, DIGEST_FACTS, ESCROW, ESCROW_2, ESCROW_CAPABILITY, EVIDENCE_TX, HOUR, JOB, JOB_BEGAN_AT, ME, ME_ID, MISMATCH, NOW, ORDER_FACTS, OTHER, OTHER_BUYER_PKH,
+  OTHER_ID, QUOTE_FACTS, RecordingQueue, REF_A, REF_B, REF_C, SCOPE, ScriptedPort, SENDER_CAPABILITY, SETTINGS, STATEMENT_S1, THIRD, THIRD_ID, TOKEN_A, TOKEN_B, TOKEN_C, canonical, claimView, escrowJob, never, rig, senderClaimView,
 } from './support.ts';
 
 const delivery = (extra: Partial<DeliveryChallengeInput> = {}): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: ESCROW, ...DELIVERY_JOB, evidence: ORDER_FACTS, ...extra });
@@ -168,7 +168,7 @@ describe('a challenge is never built before the evidence document is confirmed',
     expect((await quote.dispute.challengeDelivery(delivery({ evidence: QUOTE_FACTS }))).ok).toBe(true);
     expect(textOf(quote.port.published[0]!.bytes)).toContain('The bid desk quoted the unit price 110');
     const digest = rig();
-    digest.port.claims = [claimView()];
+    digest.port.claims = [senderClaimView(digest.port)];
     hiringMe(digest.port);
     expect((await digest.dispute.challengeApproval(approval())).ok).toBe(true);
     expect(textOf(digest.port.published[0]!.bytes)).toContain(`holds the digest ${MISMATCH.expected_digest}`);
@@ -514,7 +514,7 @@ describe('a job gets one challenge', () => {
 describe('the challenge of a counterparty that refused for the digest of the approval', () => {
   it('challenges the open claim of the sender, and puts the reference of the challenge into the result and the log', async () => {
     const { logs, port, dispute } = rig();
-    port.claims = [claimView({ claimer: OTHER })];
+    port.claims = [senderClaimView(port, { claimer: OTHER })];
     hiringMe(port);
     const result = await dispute.challengeApproval(approval());
     if (!result.ok) throw new Error(result.detail);
@@ -535,7 +535,7 @@ describe('the challenge of a counterparty that refused for the digest of the app
 
   it('holds no text of the request: a request in the evidence refuses the challenge before anything is published', async () => {
     const { events, port, dispute } = rig();
-    port.claims = [claimView()];
+    port.claims = [senderClaimView(port)];
     hiringMe(port);
     const withText = { ...DIGEST_FACTS, request: { sku: 'SKU-1' } };
     const result = await dispute.challengeApproval(approval({ evidence: withText as unknown as ApprovalChallengeInput['evidence'] }));
@@ -656,7 +656,7 @@ describe('the input of a challenge', () => {
         expect((await dispute.challengeDelivery(delivery({ buyer_pkhs: [KEY, ...NINE.slice(0, count - 1)] }))).ok, String(count)).toBe(true);
       }
       const approved = rig();
-      approved.port.claims = [claimView()];
+      approved.port.claims = [senderClaimView(approved.port)];
       hiringMe(approved.port);
       expect((await approved.dispute.challengeApproval(approval())).ok).toBe(true);
     });
@@ -685,7 +685,7 @@ describe('the input of a challenge', () => {
 
     it('refuses an approval with two keys or with none, and says that it takes exactly one; the twin with one key is filed', async () => {
       const { events, port, dispute } = rig();
-      port.claims = [claimView()];
+      port.claims = [senderClaimView(port)];
       hiringMe(port);
       for (const keys of [[KEY, OTHER_BUYER_PKH], []]) {
         const result = await dispute.challengeApproval(approval({ buyer_pkhs: keys as unknown as ApprovalChallengeInput['buyer_pkhs'] }));
@@ -696,12 +696,59 @@ describe('the input of a challenge', () => {
       expect((await dispute.challengeApproval(approval())).ok).toBe(true);
     });
 
-    it('has input types that need the buyer keys: a delivery takes a list, and an approval takes one key', () => {
+    it('has input types that need the buyer keys and the capability of the claim of the sender', () => {
       // @ts-expect-error A delivery names the buyer keys of its job.
       const noKeys: DeliveryChallengeInput = { counterparty: OTHER, escrow_ref: ESCROW, ...JOB, evidence: ORDER_FACTS };
       // @ts-expect-error An approval names exactly one buyer key.
       const twoKeys: ApprovalChallengeInput = { ...approval(), buyer_pkhs: [KEY, OTHER_BUYER_PKH] };
-      expect([noKeys, twoKeys]).toHaveLength(2);
+      // @ts-expect-error A delivery takes no capability for the claim of the other party: the job hired that party, so it has one capability.
+      const withCapability: DeliveryChallengeInput = { ...delivery(), claim_capability_id: CLAIM_CAPABILITY };
+      // @ts-expect-error An approval names the capability of the claim of its sender.
+      const noCapability: ApprovalChallengeInput = { sender: OTHER, escrow_ref: ESCROW, capability_id: ESCROW_CAPABILITY, statement_text: STATEMENT_S1, buyer_pkhs: [KEY], evidence: DIGEST_FACTS };
+      expect([noKeys, twoKeys, withCapability, noCapability]).toHaveLength(4);
+    });
+  });
+
+  describe('the capability of the claim of the other party', () => {
+    it('refuses an approval that lacks claim_capability_id, before it reads the chain; the twin that has it is filed', async () => {
+      const { events, port, dispute } = rig();
+      port.claims = [senderClaimView(port)];
+      hiringMe(port);
+      const { claim_capability_id: _left, ...rest } = approval();
+      const result = await dispute.challengeApproval(rest as unknown as ApprovalChallengeInput);
+      expectNotFiled(result, 'bad_shape');
+      expect(result.detail).toContain('claim_capability_id');
+      expect(events).toEqual([]);
+      expect((await dispute.challengeApproval(approval())).ok).toBe(true);
+    });
+
+    it('refuses claim_capability_id in a delivery, whatever its value, before it reads the chain; the delivery without it is filed', async () => {
+      const { events, port, dispute } = rig();
+      port.claims = [claimView()];
+      for (const capability of [CLAIM_CAPABILITY, SENDER_CAPABILITY]) {
+        const result = await dispute.challengeDelivery({ ...delivery(), claim_capability_id: capability } as unknown as DeliveryChallengeInput);
+        expectNotFiled(result, 'bad_shape');
+        expect(result.detail).toContain('claim_capability_id');
+      }
+      expect(events).toEqual([]);
+      expect((await dispute.challengeDelivery(delivery())).ok).toBe(true);
+    });
+
+    const BAD_CAPABILITIES: Array<[string, unknown]> = [
+      ['a capability with spaces', 'zq9 with spaces'],
+      ['a capability that is too long', `zq9${'a'.repeat(64)}`],
+      ['a capability that is empty', ''],
+      ['a capability that is a number', 7],
+      ['a capability that is null', null],
+    ];
+
+    it.each(BAD_CAPABILITIES)('refuses %s as the capability of the claim of the sender, before it reads the chain, and never repeats it', async (_name, capability) => {
+      const { events, dispute } = rig();
+      const result = await dispute.challengeApproval({ ...approval(), claim_capability_id: capability } as unknown as ApprovalChallengeInput);
+      expectNotFiled(result, 'bad_shape');
+      expect(result.detail).toContain('claim_capability_id');
+      expect(result.detail).not.toContain('zq9');
+      expect(events).toEqual([]);
     });
   });
 

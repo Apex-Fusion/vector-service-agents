@@ -16,7 +16,7 @@ import { escrowUtxo, identityEscrow, submitted } from '../../../buyer-core/test/
 import type { IdentityEscrowDatum } from '@vsa/vector-read';
 import { createModule1Port } from '@vsa/usecase-kit/dispute';
 import type { Module1Port, Module1PortDeps } from '@vsa/usecase-kit/dispute';
-import { BUYER_PKH, ESCROW, ESCROW_CAPABILITY, JOB_BEGAN_AT, kitClaimDocument } from './support.ts';
+import { BUYER_PKH, ESCROW, ESCROW_CAPABILITY, JOB_BEGAN_AT, kitClaimDocument, senderClaimDocument } from './support.ts';
 
 export { AUDITOR_ID, CLAIMER_ID, JURY_REF_UTXO, MODULE1, WALLET, WALLET_ADDRESS };
 
@@ -195,14 +195,23 @@ export function ledgerWorld(extra: UTxO[] | ((ledger: LedgerProvider) => UTxO[])
   return ledger;
 }
 
+/** A claim output whose document is `document`: the document is on the ledger, and the claim holds its hash and its URI. `overrides` change members of the datum. The output is at the claim address. */
+function claimWith(ledger: LedgerProvider, document: { readonly text: string; readonly hash: string }, token: string, overrides: Partial<ClaimDatum>, ageMs: number): UTxO {
+  const { uri } = ledger.addDocument(document.text, 'claim');
+  return claimUtxo(token, { claimHash: document.hash, storageUri: utf8Hex(uri), ...overrides }, ageMs);
+}
+
 /**
  * A claim output of the claimer of the fixture world (`CLAIMER_ID`, or `overrides.claimerDid`) that is a claim of this kit: its document is the claim document that the kit writes for the claimer,
  * the document is on the ledger, and the claim holds its hash and its URI. `overrides` change members of the datum. The output is at the claim address.
  */
 export function kitClaim(ledger: LedgerProvider, token: string, overrides: Partial<ClaimDatum> = {}, ageMs = 3_600_000): UTxO {
-  const document = kitClaimDocument(`did:vector:${overrides.claimerDid ?? CLAIMER_ID}`);
-  const { uri } = ledger.addDocument(document.text, 'claim');
-  return claimUtxo(token, { claimHash: document.hash, storageUri: utf8Hex(uri), ...overrides }, ageMs);
+  return claimWith(ledger, kitClaimDocument(`did:vector:${overrides.claimerDid ?? CLAIMER_ID}`), token, overrides, ageMs);
+}
+
+/** A claim output of the sender of an approval: like `kitClaim`, but its document is the claim document of `senderClaimDocument`, which is for the capability of the sender. */
+export function senderClaim(ledger: LedgerProvider, token: string, overrides: Partial<ClaimDatum> = {}, ageMs = 3_600_000): UTxO {
+  return claimWith(ledger, senderClaimDocument(`did:vector:${overrides.claimerDid ?? CLAIMER_ID}`), token, overrides, ageMs);
 }
 
 /** The payment credential of an address, in hex. */

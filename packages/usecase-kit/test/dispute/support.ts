@@ -58,6 +58,8 @@ export const CHALLENGE_TOKEN = `63686c5f${'0e'.repeat(28)}`;
 export const ESCROW_CAPABILITY = 'supplychain.order.accept.v1';
 /** The capability that the claim document of the other party is for. A delivery has one capability: the job hired the other party, so its claim document is for the capability of the escrow. */
 export const CLAIM_CAPABILITY = ESCROW_CAPABILITY;
+/** The capability that the claim document of the sender of an approval is for. The sender hired this agent for the capability of the escrow, and its own claim is for the capability of the agent that it runs. */
+export const SENDER_CAPABILITY = 'supplychain.reorder.po.v1';
 /** The time that the job of the samples began: half an hour ago, after the claims of the samples were staked. */
 export const JOB_BEGAN_AT = NOW - 30 * 60_000;
 
@@ -102,6 +104,28 @@ export function claimView(overrides: Partial<ClaimView> = {}): ClaimView {
 /** The statement S1 of a reorder agent: the claim that the evidence of an approval of use case 1 is about. */
 export const REORDER_AGENT_S1 = 'An order that this agent places is the purchase order whose digest its hirer approved.';
 
+/** The three statements of a reorder agent (use case 1), which sends the request that an approval challenge is about. */
+export const REORDER_AGENT_CLAIM = statements(
+  REORDER_AGENT_S1,
+  'This agent takes a confirmation only for a purchase order that it placed.',
+  'This agent pays a supplier from the vault of its delegation and from no other source.',
+);
+
+/** The claim document that this kit writes for `claimer` as the sender of an approval: it is for `SENDER_CAPABILITY`, and it states the claim of a reorder agent. */
+export function senderClaimDocument(claimer: string) {
+  const document = claimDocument({ agent_did: claimer, capability_id: SENDER_CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: REORDER_AGENT_CLAIM });
+  if (!document.ok) throw new Error(document.detail);
+  return document.value;
+}
+
+/** A claim as `claimView` makes it, for the sender of an approval: its document is `senderClaimDocument`, and `port` gives that document at the URI of the claim. */
+export function senderClaimView(port: ScriptedPort, overrides: Partial<ClaimView> = {}): ClaimView {
+  const claim = claimView(overrides);
+  const document = senderClaimDocument(claim.claimer);
+  port.documents.set(claim.claim_uri, { bytes: document.bytes, type: 'claim', media_type: 'text/plain' });
+  return { ...claim, claim_hash: document.hash };
+}
+
 /** The text of the statement S1 of the claim document of the samples: the statement that the evidence is about. */
 export const STATEMENT_S1 = ORDER_DESK_CLAIM.statements[0].text;
 
@@ -114,8 +138,11 @@ export const SCOPE = { escrow_ref: ESCROW, ...JOB } as const;
 /** The job of a delivery that a challenge names: the job of the samples, with the key hashes of the buyers that may have posted its escrow (the delegation keys of this agent). */
 export const DELIVERY_JOB = { ...JOB, buyer_pkhs: [BUYER_PKH] } as const;
 
-/** The job of an approval that a challenge names: the job of the samples, with the key hash of the buyer that posted its escrow (one key). */
-export const APPROVAL_JOB = { ...JOB, buyer_pkhs: [BUYER_PKH] } as const;
+/**
+ * The job of an approval that a challenge names. The escrow hired this agent for `ESCROW_CAPABILITY`. The claim of the sender is for `SENDER_CAPABILITY`, and its statement S1 is `REORDER_AGENT_S1`. One key names the
+ * buyer of the escrow.
+ */
+export const APPROVAL_JOB = { capability_id: ESCROW_CAPABILITY, claim_capability_id: SENDER_CAPABILITY, statement_text: REORDER_AGENT_S1, buyer_pkhs: [BUYER_PKH] } as const;
 
 export const PARTIES = { claim: REF_A, claim_token: TOKEN_A, against_did: OTHER, by_did: ME, escrow_ref: ESCROW, statement_text: STATEMENT_S1 } as const;
 
