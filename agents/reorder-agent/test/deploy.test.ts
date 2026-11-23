@@ -1122,7 +1122,7 @@ describe('deploy/server/RUNBOOK-reorder-agent.md', () => {
     const codes = [
       'busy', 'supplier_busy', 'unauthorized', 'shutting_down', 'bad_context', 'bad_wire', 'request_too_large', 'bad_shape', 'delegation_not_mine', 'internal', 'precheck_timeout', 'precheck_unreachable', 'precheck_failed',
       'precheck_bad_status', 'principal_not_allowed', 'spends_agent_funds', 'key_in_use', 'check_unavailable', 'not_a_delegation', 'not_for_this_agent', 'expired', 'approval_not_found', 'approval_expired', 'duplicate_po',
-      'cannot_supply', 'supplier_not_listed', 'supplier_unavailable', 'ledger_unavailable', 'mock_system_failed', 'token_failed', 'inference_failed', 'model_output_invalid', 'store_write_failed', 'deadline', 'aborted',
+      'cannot_supply', 'supplier_not_listed', 'supplier_unavailable', 'ledger_unavailable', 'mock_system_failed', 'token_failed', 'llm_', 'hire_threw', 'model_output_invalid', 'decision_failed', 'store_write_failed', 'deadline', 'aborted',
       'delegation_key_unknown', 'advert_not_active',
     ];
     for (const code of codes) expect(table, code).toContain(`\`${code}\``);
