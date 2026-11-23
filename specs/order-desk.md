@@ -202,7 +202,7 @@ The job places at most one order, and nothing retries the order call. The portal
 
 ### Response
 
-`schema` is `vector.usecase.order-confirmation.v1`. A job that places the order answers with the confirmation, as the body of the answer, serialised once, with its members in the order of the table below. A job that does not place it answers with an error and no confirmation.
+`schema` is `vector.usecase.order-confirmation.v1`. A job that places the order answers with the confirmation, as the body of the answer, serialised once, with its members in the order of the table below. A job that does not place it answers with an error (see Errors) and no confirmation.
 
 Example. The test of the golden run of the job gives exactly this confirmation for the handoff above, with stand-ins for the identity gateway, the supplier portal and the model supplier. It is an illustration and not a recorded run: its references, hashes, key hash and signature are of no escrow, no supplier and no key.
 
@@ -321,6 +321,31 @@ Example. The test of the golden run of the job gives exactly this confirmation f
   ]
 }
 ```
+
+### Errors
+
+A refusal is `{ "error": "<code>", "message": "<words>" }` with the status in the table.
+
+- The 401 has the code and no message.
+- A refusal of status 500 or more gets a fixed message, `The service could not do this job (<code>). The operator's log has the detail.`, because the runtime copies the first 200 characters of a failure to the buyer, and the detail is the operator's. `busy` and `shutting_down` have a fixed message of their own.
+- The message of `cannot_supply` holds a fixed sentence and the first 120 characters of the note of the model.
+- Anything else is 500 `{"error":"internal"}` with no detail. The cause is in the log.
+- A refusal of the hook leaves the escrow open, and nothing is paid. A job that fails after the Claim leaves the escrow Claimed: the buyer reclaims it after `deliver_by`, and nothing is paid for work that was not done. A job that fails before the order is placed places no order.
+- One job runs at a time. A job, or a call of the hook for another escrow, that arrives while a job runs, or while the slot is reserved for another escrow, gets 409 `{"error":"busy"}`, and nothing starts.
+- While a job runs, the service writes an interim `102 Processing` line every 60 s, ahead of the answer, because the fetch of the runtime gives up after 300 s of silence.
+
+| Status | Codes |
+|---|---|
+| 400, the message | `bad_wire` (not the one-element message array), `request_too_large` (over 1000000 bytes) |
+| 400, the request | `bad_shape` (a request JSON that is not a handoff of use case 1 with a purchase order), `bad_context` (the six headers of the context are missing, some are missing, or one is not well formed) |
+| 401, the caller | `unauthorized` |
+| 403, the hook, before the Claim | `sender_not_active`, `sender_unaccountable`, `sender_key_mismatch`, `delegation_invalid`, `delegation_ended`, `not_vault_paid`, `approval_not_found`, `approval_wrong_type`, `approval_wrong_subject`, `approval_wrong_issuer`, `approval_revoked`, `approval_expired`, `approval_issuer_invalid`, `approval_digest_mismatch`, `not_for_this_supplier`, `lot_mismatch`, `quantity_mismatch`, `duplicate_po` |
+| 403, the job, after the Claim | `cannot_supply` (the model says that the lot cannot be supplied), `duplicate_po` (the supplier portal holds an order for the number already) |
+| 409, the service is busy | `busy` |
+| 422, the job | `deadline` (the caller hung up, or too little time was left to place the order) |
+| 500, the service | `precheck_missing` (the job has no record of passed checks for its body), `store_write_failed` (the order book or the record of the model hire cannot be written), `internal` |
+| 502, a third party | `svid_failed` (the identity gateway gave no X.509-SVID), `mock_system_failed` (the supplier portal did not take the call), `inference_failed` (the model hire failed), `model_output_invalid` (the answer of the model cannot be used) |
+| 503, the service cannot answer now | `check_unavailable` (the hook could not read a source), `shutting_down` (the service is stopping) |
 
 ## What the receipt commits to
 

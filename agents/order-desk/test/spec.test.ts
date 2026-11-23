@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import { parse as parseYaml } from 'yaml';
-import { CONTEXT_HEADERS, MAX_BODY, RESERVATION_MS, parseWire } from '@vsa/service-kit';
+import { CONTEXT_HEADERS, HEARTBEAT_MS, MAX_BODY, RESERVATION_MS, operatorsText, parseWire } from '@vsa/service-kit';
 import {
   CONFIRMATION_CHECKS, INVENTORY_CAPABILITIES, LOT_NAMES, ORDER_DESK_CLAIM, PO_SCHEMA, REORDER_CLAIM, lotsFileSha256, parseLotsFile, parseOrderConfirmation, parsePurchaseOrder,
 } from '@vsa/usecase-kit/inventory';
@@ -501,7 +501,7 @@ describe('specs/order-desk.md: what the job does, the response and the lots file
     expect(row(response, '`decisions`')).toBe('| `decisions` | one decision, `availability`: its choice, its reasoning, and the hire of the model supplier with the sub-receipt that the service verified (`inference`) |');
     expect(row(response, '`fault_mode`')).toBe('| `fault_mode` | the setting of the fault switch: the empty text in a clean run |');
     expect(response).toContain('It is an illustration and not a recorded run: its references, hashes, key hash and signature are of no escrow, no supplier and no key.');
-    expect(response).toContain('A job that does not place it answers with an error and no confirmation.');
+    expect(response).toContain('A job that does not place it answers with an error (see Errors) and no confirmation.');
   });
 
   test('the fault run of the example names the wrong lot and its size, and the page says so', async () => {
@@ -523,5 +523,49 @@ describe('specs/order-desk.md: what the job does, the response and the lots file
     expect(lots).toContain('The manifest holds its address and its SHA-256 in `behaviour.lots`, and the SHA-256 is the hash of these bytes as the service serves them.');
     expect(lots).toContain('The check `quantity` reads the same file, and the agent of a buyer reads it to choose the lot and the quantity of its order.');
     expect(readme).toContain('| `GET /lots.json` | the lots file, the bytes that the manifest hashes. It needs no token and takes no job slot |');
+  });
+});
+
+describe('specs/order-desk.md: the errors', () => {
+  const errors = sub('Errors');
+  const statusRows = (text: string): string[] => text.split('\n').filter((line) => /^\| \d{3}, /.test(line));
+  /** The names of codes in the second cell of a row of the table, in order. */
+  const codesIn = (line: string): string[] => [...(line.split('|')[2] ?? '').matchAll(/`([^`]+)`/g)].map((hit) => hit[1]).filter((text) => /^[a-z_]+$/.test(text));
+
+  test('the table is the table of the README, row for row, and every code has its status in the protocol or in the request refusal of the service', () => {
+    const onPage = statusRows(errors);
+    expect(onPage).toHaveLength(10);
+    expect(onPage).toStrictEqual(statusRows(readme.split('\n## Errors\n')[1] ?? ''));
+    const documented = new Map<string, number[]>();
+    for (const line of onPage) {
+      const status = Number(/^\| (\d{3}), /.exec(line)?.[1]);
+      for (const code of codesIn(line)) {
+        documented.set(code, [...(documented.get(code) ?? []), status]);
+        expect(code === 'bad_context' ? new RequestRefusal('bad_context', 'x').status : ERROR_STATUS[code as keyof typeof ERROR_STATUS], code).toBe(status);
+      }
+    }
+    // The 403 row before the Claim holds the 18 codes of the hook, in the order of its checks, and the codes of the job are the codes that the job gives.
+    const before = onPage.find((line) => line.startsWith('| 403, the hook, before the Claim')) ?? '';
+    expect(codesIn(before)).toStrictEqual(COUNTERPARTY_REFUSALS['order-desk'].filter((code) => code !== 'cannot_supply'));
+    expect(codesIn(onPage.find((line) => line.startsWith('| 403, the job, after the Claim')) ?? '')).toStrictEqual(['cannot_supply', 'duplicate_po']);
+    for (const [code, status] of Object.entries(ORDER_REFUSAL_STATUS)) expect(documented.get(code), code).toContain(status);
+    for (const code of [...COUNTERPARTY_REFUSALS['order-desk'], 'check_unavailable', 'busy', 'shutting_down', 'unauthorized', 'bad_wire', 'request_too_large', 'bad_shape', 'bad_context', 'internal']) {
+      expect(documented.has(code), code).toBe(true);
+    }
+    expect([...documented.entries()].filter(([, statuses]) => statuses.length > 1)).toStrictEqual([['duplicate_po', [403, 403]]]);
+  });
+
+  test('the text of the section gives the shape of a refusal, the fixed message of a fault, what a refusal leaves behind, the busy answer and the interim line', () => {
+    expect(errors).toContain('A refusal is `{ "error": "<code>", "message": "<words>" }` with the status in the table.');
+    expect(errors).toContain('- The 401 has the code and no message.');
+    expect(errors).toContain(`- A refusal of status 500 or more gets a fixed message, \`${operatorsText('<code>')}\`, because the runtime copies the first 200 characters of a failure to the buyer, and the detail is the operator's.`);
+    expect(errors).toContain('- The message of `cannot_supply` holds a fixed sentence and the first 120 characters of the note of the model.');
+    expect(errors).toContain('- Anything else is 500 `{"error":"internal"}` with no detail. The cause is in the log.');
+    expect(errors).toContain('- A refusal of the hook leaves the escrow open, and nothing is paid. A job that fails after the Claim leaves the escrow Claimed: the buyer reclaims it after `deliver_by`, and nothing is paid for work that was not done. A job that fails before the order is placed places no order.');
+    expect(errors).toContain('gets 409 `{"error":"busy"}`, and nothing starts.');
+    expect(HEARTBEAT_MS).toBe(60_000);
+    expect(errors).toContain('writes an interim `102 Processing` line every 60 s, ahead of the answer, because the fetch of the runtime gives up after 300 s of silence.');
+    expect(readme).toContain('The reason is that the runtime\'s fetch gives up after 300 s of silence.');
+    expect(readme).toContain('A job that fails after the Claim leaves the escrow claimed. The buyer reclaims it after the deadline, and nothing is paid for work that was not done. A job that fails before the order is placed places no order.');
   });
 });
