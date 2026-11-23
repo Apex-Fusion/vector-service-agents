@@ -33,6 +33,8 @@ describe('a delivery that the model does not accept', () => {
       expect(result).toMatchObject({ outcome: 'disputed', reason: null, exit_state: 'Escalated', challenge: CHALLENGE, writes: [] });
       expect(result.decisions).toStrictEqual([acceptDecision(false, [field])]);
       const escrow = hireOf(result).escrow_ref;
+      // The chain posts the escrow with the delegation key of the agent, so the keys that the challenge names hold the buyer that the datum of the escrow names.
+      expect(w.dispute.calls[0]?.buyer_pkhs).toContain(w.m.chain.escrowDatum(escrow)?.buyer_pkh);
       const confirmation = confirmationOf(w.document(), { [field]: value });
       expect(hireOf(result)).toMatchObject({ accepted: 'no', paid_from_vault: true, result: confirmation });
       // The Accept was not made, the order was not written, and the escrow stays Submitted.

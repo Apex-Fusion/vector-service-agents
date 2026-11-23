@@ -277,8 +277,9 @@ async function finish(job: Job, step: HireStep): Promise<ExecuteResult> {
 
 /**
  * Carries out the approved purchase order of an `execute` request that arrived at `arrivedAt` (POSIX milliseconds). It throws `ExecuteRefusal` for a request that it refuses before it pays, and for a
- * setting that is wrong. It gives a result for every other end. The job ends 1,620,000 ms after the arrival of the request (JOB_DEADLINE_MS). A caller that hung up (`signal`) before the Pay stops the job
- * with `failed` and `aborted`; after the Pay the job runs to its end, because a hire that was paid for is carried to a result.
+ * setting that is wrong. It gives a result for every other end. The job ends 1,620,000 ms after the arrival of the request (JOB_DEADLINE_MS). A caller that hung up (`signal`) before the hire starts stops
+ * the job with `failed` and `aborted`. The job reads the signal one time, at that point: a job that then waits in the lane of the key, or on a read of the ledger, still pays. After the Pay the job runs to
+ * its end, because a hire that was paid for is carried to a result.
  */
 export async function runExecute(deps: ExecuteDeps, request: ExecuteRequest, arrivedAt: number, signal?: AbortSignal): Promise<ExecuteResult> {
   const note = noteOf(deps.log);
@@ -303,7 +304,7 @@ export async function runExecute(deps: ExecuteDeps, request: ExecuteRequest, arr
   const handoff = handoffOf({ use_case: USE_CASE, agent_did: settings.agent, request });
   if (!handoff.ok) return stop(BAD_DOCUMENT);
 
-  // The last point at which the job can stop with nothing paid.
+  // The job reads the signal one time, here, before the hire starts. The hire then waits in the lane of the key and reads the ledger, and it still pays when the caller hangs up in that time.
   if (signal?.aborted === true) return stop(FAILED.aborted);
 
   const judge = judgeDelivery({ acceptDelivery: deps.acceptDelivery, note }, order.value, orderSha256.value);
