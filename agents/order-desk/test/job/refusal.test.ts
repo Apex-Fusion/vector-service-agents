@@ -1,8 +1,8 @@
 // agents/order-desk/test/job/refusal.test.ts: the refusal of the job. `OrderRefusal` has the form of the `Refusal` of the service kit: a code, a status, a message and the kind `job`. The status of a code is the
-// status of that code in ERROR_STATUS of the protocol, and a caller cannot choose another status. `precheck_missing` and `svid_failed` are not in that table, so the job keeps their statuses (500 and 502).
+// status of that code in ERROR_STATUS of the protocol, and a caller cannot choose another status. Each code of the job is in that table, so the table of the job and the table of the protocol are one.
 import { describe, expect, it } from 'vitest';
 import type { Refusal } from '@vsa/service-kit';
-import { COUNTERPARTY_REFUSALS, ERROR_STATUS } from '@vsa/usecase-kit/protocol';
+import { COUNTERPARTY_REFUSALS, ERROR_STATUS, isErrorCode } from '@vsa/usecase-kit/protocol';
 import { ORDER_REFUSAL_STATUS, OrderRefusal } from '../../src/job/index.ts';
 import type { OrderRefusalCode } from '../../src/job/index.ts';
 
@@ -41,15 +41,11 @@ describe('an OrderRefusal', () => {
     expect(ORDER_REFUSAL_STATUS[code]).toBe(status);
   });
 
-  it('has the status of ERROR_STATUS for each code that ERROR_STATUS lists', () => {
+  it('has each code in ERROR_STATUS of the kit with the same status, and the kit knows each one as an error code', () => {
     for (const code of CODES) {
-      if (Object.hasOwn(ERROR_STATUS, code)) expect(ORDER_REFUSAL_STATUS[code], code).toBe(ERROR_STATUS[code as keyof typeof ERROR_STATUS]);
+      expect(isErrorCode(code), code).toBe(true);
+      expect(ORDER_REFUSAL_STATUS[code], code).toBe(ERROR_STATUS[code]);
     }
-  });
-
-  it('keeps its own status for the two codes that ERROR_STATUS does not list: a candidate for that table', () => {
-    const unlisted = CODES.filter((code) => !Object.hasOwn(ERROR_STATUS, code));
-    expect(unlisted).toStrictEqual(['precheck_missing', 'svid_failed']);
   });
 
   it('has a table that nothing can change', () => {
@@ -57,10 +53,11 @@ describe('an OrderRefusal', () => {
     expect(Object.keys(ORDER_REFUSAL_STATUS)).toHaveLength(10);
   });
 
-  it('has the two refusal codes of the Order Desk that the job gives after the Claim in the list of that agent, and the others are codes of any agent', () => {
+  it('has the two refusal codes of the Order Desk that the job gives after the Claim in the list of that agent, and the others are error codes that no counterparty lists as a refusal', () => {
     for (const code of ['duplicate_po', 'cannot_supply'] as const) expect(COUNTERPARTY_REFUSALS['order-desk']).toContain(code);
-    for (const code of ['mock_system_failed', 'inference_failed', 'model_output_invalid', 'store_write_failed', 'internal', 'deadline'] as const) {
+    for (const code of ['precheck_missing', 'svid_failed', 'mock_system_failed', 'inference_failed', 'model_output_invalid', 'store_write_failed', 'internal', 'deadline'] as const) {
       expect(ERROR_STATUS[code]).toBeGreaterThanOrEqual(400);
+      for (const list of Object.values(COUNTERPARTY_REFUSALS)) expect(list, code).not.toContain(code);
     }
   });
 });

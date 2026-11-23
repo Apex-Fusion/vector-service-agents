@@ -124,6 +124,8 @@ export interface RigOptions {
   readonly lots?: LotsFile;
   /** `take` removes the entry, as the store of the hook does. */
   readonly oneShot?: boolean;
+  /** The time from now to the `deliver_by` of the escrow, in milliseconds. The default is 300,000. A negative number is an escrow whose `deliver_by` has passed. */
+  readonly deliverInMs?: number;
 }
 
 export interface Rig {
@@ -174,7 +176,7 @@ export function makeRig(options: RigOptions = {}): Rig {
   const document = purchaseOrder(options.order ?? {});
   const request = handoffOf(document);
   const context: JobContext = {
-    escrowRef: ESCROW_REF, advertRef: ADVERT_REF, advertModel: String(document.lot), buyerPkh: BUYER_PKH, paymentLovelace: 5_000_000n, deliverByMs: gateway.now() + 300_000,
+    escrowRef: ESCROW_REF, advertRef: ADVERT_REF, advertModel: String(document.lot), buyerPkh: BUYER_PKH, paymentLovelace: 5_000_000n, deliverByMs: gateway.now() + (options.deliverInMs ?? 300_000),
   };
   const rig: Rig = {
     gateway, agent, portal, events, logs, takes, decideInputs, booked, fault, request, context,

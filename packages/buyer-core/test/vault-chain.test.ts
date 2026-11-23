@@ -17,6 +17,7 @@ import { RealChain } from '../src/chain.ts';
 import { OgmiosRpcError } from '../src/vendored/mcp-shared/provider.ts';
 import { FixtureProvider, FIXTURE_TXHASH, fixtureProtocolParameters } from './fixtures/fixture-provider.ts';
 import { CONFIG_SEED, CONFIG_UTXO, DAY, DEPLOYMENT, NOW, REF_UTXOS } from './fixtures/identity-world.ts';
+import { PARENT_ID, twoHopWorld } from './fixtures/ledger-node.fixture.ts';
 import type { IdentityDeployment } from '../src/vendored/mcp/identity-deployment.ts';
 import {
   ADVERT_REF, AGENT_ID, CHAIN_TXS, CLAIM_TX, DELEGATE_KEY, DELEGATION_ID, ESCROW_LOCK, ESCROW_REF, IDENTITY_ADVERT, OWN_PKH, PAYLOAD, POST_TX, SUBMIT_TX, advertUtxo, agentRecord,
@@ -248,6 +249,19 @@ describe('RealChain.payFromVault refused by the vault script (VaultPayRefused: n
     assertEvidence(await rejection(pay()), node);
     await expect(pay({ vaultRef: `${vaultUtxo(liveVault()).txHash}#1` })).resolves.toMatchObject({ newPeriod: true });
     expect(node.submitted).toHaveLength(1);
+  }, 120_000);
+
+  it('a delegation that names a parent with no output is refused by the node, and it is not impossible: the draft lacks the parent, the node evaluates it once, and nothing is submitted; with the parent the same Pay is paid', async () => {
+    // The parent of the leaf was undelegated, so the chain has a gap. The builder does not judge it: the node judges the draft that lacks the parent.
+    const gap = payChain([...walletAt(delegateAddress), ...twoHopWorld({ parent: false })]);
+    const refused = assertEvidence(await rejection(gap.pay()), gap.node);
+    expect(refused.attempt.missingParent).toStrictEqual({ missing: PARENT_ID, child: DELEGATION_ID });
+    expect(gap.node.evaluations).toHaveLength(1);
+    expect(gap.node.events).not.toContain('submit');
+    // The twin: the parent has its output, and the same chain, vault and advert pay.
+    const whole = payChain([...walletAt(delegateAddress), ...twoHopWorld()]);
+    await expect(whole.pay()).resolves.toMatchObject({ agentId: AGENT_ID });
+    expect(whole.node.submitted).toHaveLength(1);
   }, 120_000);
 });
 

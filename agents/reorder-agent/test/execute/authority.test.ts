@@ -244,7 +244,7 @@ describe('the time of the job', () => {
     expect(words(await w.run(w.request(), T0))).toBe(COMPLETED);
   });
 
-  it('stops a job whose caller hung up before the Pay: failed with aborted, and nothing is paid', async () => {
+  it('stops a job whose caller hung up before the hire starts: failed with aborted, and nothing is paid', async () => {
     const w = await world();
     const result = await w.run(w.request(), T0, w.deps, AbortSignal.abort());
     expect(words(result)).toBe('failed aborted Failed');

@@ -34,7 +34,8 @@ export interface OrderDeps {
   readonly svid: SvidDeps;
   /**
    * The calls to the supplier portal: the `fetch` and the clock of the caller, the two origins of the mock service, and the transport that presents the X.509-SVID as the client certificate. A call with a
-   * client certificate goes through the transport and never through `fetch`.
+   * client certificate goes through the transport and never through `fetch`. `timeoutMs` (60 seconds when it is not set) is the longest time of one call, and the job keeps that time for the order call: it
+   * places no order when the call could end less than 30 seconds before `deliver_by`.
    */
   readonly calls: CallDeps & { readonly transport: MtlsTransport };
   /** Takes the record that the hook kept for the escrow, and removes it. It gives null when there is none. The service gives `take` of the store of the hook, with its clock. */
@@ -46,7 +47,7 @@ export interface OrderDeps {
   readonly decide: (input: JsonValue) => Promise<DecideResult<AvailabilityChoice>>;
   /** The fault switch that the service made at its start. The job reads `mode` one time, and nothing else of the switch. */
   readonly fault: FaultSwitch<'order-desk'>;
-  /** The time now, in milliseconds: the clock that gave `arrivedAt`. The job uses it for the time of a log line. */
+  /** The time now, in milliseconds: the clock that gave `arrivedAt`. The job uses it for the time of a log line, and for the time that is left until `deliver_by`. */
   readonly clock: () => number;
   /** Writes one line to the log of the service. A line has codes and references, and no key, no token and no part of a request. A function that throws changes nothing. */
   readonly log: (line: string) => void;

@@ -49,11 +49,13 @@ const EXPECTED_STATUS: Readonly<Record<string, number>> = {
   token_failed: 502,
   mock_system_failed: 502,
   hire_failed: 502,
+  svid_failed: 502,
   // 503
   shutting_down: 503,
   check_unavailable: 503,
   // 500
   store_write_failed: 500,
+  precheck_missing: 500,
   internal: 500,
 };
 
@@ -154,6 +156,24 @@ describe('check_unavailable', () => {
     for (const kind of COUNTERPARTY_KINDS) expect(COUNTERPARTY_REFUSALS[kind]).not.toContain('check_unavailable');
     expectTypeOf<'check_unavailable'>().toExtend<ErrorCode>();
     expectTypeOf<'check_unavailable'>().not.toExtend<RefusalCode>();
+  });
+});
+
+describe('the codes of the job of a counterparty after its Claim', () => {
+  it('are precheck_missing (500) and svid_failed (502): error codes, and not refusal codes of a rule', () => {
+    expect(ERROR_STATUS.precheck_missing).toBe(500);
+    expect(ERROR_STATUS.svid_failed).toBe(502);
+    for (const code of ['precheck_missing', 'svid_failed']) {
+      expect(isErrorCode(code), code).toBe(true);
+      expect(isRefusalCode(code), code).toBe(false);
+      expect(REFUSAL_CODES).not.toContain(code);
+      expect(AFTER_CLAIM_REFUSALS).not.toContain(code);
+      for (const kind of COUNTERPARTY_KINDS) expect(COUNTERPARTY_REFUSALS[kind], code).not.toContain(code);
+    }
+    expectTypeOf<'precheck_missing'>().toExtend<ErrorCode>();
+    expectTypeOf<'svid_failed'>().toExtend<ErrorCode>();
+    expectTypeOf<'precheck_missing'>().not.toExtend<RefusalCode>();
+    expectTypeOf<'svid_failed'>().not.toExtend<RefusalCode>();
   });
 });
 

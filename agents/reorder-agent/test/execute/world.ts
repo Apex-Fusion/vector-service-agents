@@ -179,7 +179,6 @@ export function cleanWorlds(): void {
 
 export async function world(options: WorldOptions = {}): Promise<World> {
   const lot = options.lot ?? 'lot-medium';
-  const m = marketplace({ agentAdvert: { ...AGENT_ADVERT, model: lot, price_lovelace: PRICES[lot] } });
   const dir = mkdtempSync(join(tmpdir(), 'reorder-execute-'));
   dirs.push(dir);
   const registry = new PayingKeys(dir);
@@ -191,6 +190,8 @@ export async function world(options: WorldOptions = {}): Promise<World> {
   const po = tokenTarget(BASES, 'run1', 'po.write');
   if (!po.ok) throw new Error('the PO target of the test is refused');
   const named = options.delegate === 'b' ? second : agent.delegation;
+  // A vault Pay names the delegate key that signs it as the buyer of its escrow. The chain of the world posts with that key, so the datum of each escrow holds a key that is in `buyerPkhs`.
+  const m = marketplace({ agentAdvert: { ...AGENT_ADVERT, model: lot, price_lovelace: PRICES[lot] }, buyerPkh: named.keyHash });
   const delegation = gateway.delegate({
     delegator: { principalKey: hirer }, delegate: agent, delegateKey: named, actions: ['marketplace.hire.v1', 'erp.stock.read', 'po.write'], resources: [po.value.resource], remaining: 1, id: DELEGATION,
   });

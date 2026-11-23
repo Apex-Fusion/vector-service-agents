@@ -69,7 +69,8 @@ export const AFTER_CLAIM_REFUSALS = ['cannot_supply'] as const;
 
 /**
  * The HTTP status of every error code of an agent. A refusal code of a counterparty is a 403. A request that cannot be read is a 400, and so is a delegation that names another agent. A check of a
- * counterparty that could not read its source is a 503 (`check_unavailable`).
+ * counterparty that could not read its source is a 503 (`check_unavailable`). The job of a counterparty, after its Claim, ends with a 500 when it has no record of its pre-check (`precheck_missing`),
+ * and with a 502 when the identity gateway gives it no SVID (`svid_failed`).
  */
 export const ERROR_STATUS = {
   bad_wire: 400,
@@ -108,11 +109,17 @@ export const ERROR_STATUS = {
   token_failed: 502,
   mock_system_failed: 502,
   hire_failed: 502,
+  // The job of a counterparty could not get the SVID that it needs to call the system of its organisation: the identity gateway refused the request or gave no answer. It is not a refusal code of a rule,
+  // so it is not in REFUSAL_CODES.
+  svid_failed: 502,
   shutting_down: 503,
   // A check of a counterparty could not read its source: the ledger or the gateway. It is never a pass, and the counterparty does not take the job. It is not a refusal code of a rule, so it is
   // not in REFUSAL_CODES.
   check_unavailable: 503,
   store_write_failed: 500,
+  // The job of a counterparty has no record that its pre-check passed for this request, or the record is for another request. The job writes nothing then. It is not a refusal code of a rule, so it is
+  // not in REFUSAL_CODES.
+  precheck_missing: 500,
   internal: 500,
 } as const;
 export type ErrorCode = keyof typeof ERROR_STATUS;

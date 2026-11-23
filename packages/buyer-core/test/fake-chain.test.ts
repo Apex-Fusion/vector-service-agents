@@ -244,7 +244,7 @@ describe('FakeChain', () => {
     for (let i = 0; i < 2; i++) {
       const err = await chain.accept(escrowRef).then(() => null, (e: unknown) => e);
       expect(err).toBeInstanceOf(AcceptWindowClosedError);
-      expect((err as Error).message).toMatch(new RegExp(`^Accept window closed at \\d{4}-\\d{2}-\\d{2}T[0-9:.]+Z; the supplier may now Release\\. \\(escrow ${escrowRef}\\)$`));
+      expect((err as Error).message).toMatch(new RegExp(`^Accept window closed at \\d{4}-\\d{2}-\\d{2}T[0-9:.]+Z; the supplier may now Release\\. The escrow contract refuses the same transaction on chain \\(Accept: the validity range ends at most 600 s after the Submit\\)\\. \\(escrow ${escrowRef}\\)$`));
     }
     expect(await chain.escrowState(escrowRef)).toBe('Submitted');
   });

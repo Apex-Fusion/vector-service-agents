@@ -4,7 +4,8 @@
 // before its body is parsed. A source that cannot be read is its own code, and it is never a pass and never `supplier_not_listed`. No detail repeats text of the supplier. The text of the supplier
 // reaches the result as a reference, a number or the one fixed statement, and nothing else.
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { fetchSuppliers, readAdvert } from '@vsa/buyer-core';
+import { VECTOR_KOIOS_URL, fetchSuppliers, readAdvert } from '@vsa/buyer-core';
+import type { IdentityDeployment } from '@vsa/buyer-core';
 import { LOT_NAMES, ORDER_DESK_CLAIM, lotsFileSha256 } from '@vsa/usecase-kit/inventory';
 import type { LotName } from '@vsa/usecase-kit/inventory';
 import type { ProtocolResult } from '@vsa/usecase-kit/protocol';
@@ -13,7 +14,7 @@ import { SUPPLIER_FAILURES, readSupplier } from '../../src/model/index.ts';
 import type { SupplierDeps, SupplierFailureCode } from '../../src/model/index.ts';
 import {
   AGENT_ID, CAPABILITY, LIMITS, LOTS_SHA, LOTS_TEXT, LOTS_URL, MANIFEST_URL, REFS, S1, SKU, STRANGER_ID, SUPPLIER, advertOf, bytesOf, changeManifest, goldenWorld, manifestOf, ok, rowOf, serveLots,
-  serveManifest, sha256, stubOf,
+  paddedLots, paddedManifest, serveManifest, sha256, stubOf,
 } from './supplier-support.ts';
 import type { World } from './supplier-support.ts';
 import { MARKER, expectNames, golden, must, refusal } from './support.ts';
@@ -211,6 +212,26 @@ describe('readSupplier: the adverts on the chain', () => {
     expect(calls.fetch).toStrictEqual([]);
   });
 
+  test('gives `supplier_unavailable` when the chain answers `{ error }` for every advert of the supplier: a chain read that is set up wrongly must not look like a supplier that is not listed', async () => {
+    const world = goldenWorld();
+    for (const lot of LOT_NAMES) world.reads[REFS[lot]] = { error: 'LEAK the identity advert address of the deployment is not set' };
+    const { result, calls } = await read(world);
+    expectFailure(result, 'supplier_unavailable', 'chain');
+    // The reader read the three adverts before it said so, and it fetched nothing.
+    expect(calls.read).toStrictEqual(GOLDEN_CALLS.read);
+    expect(calls.fetch).toStrictEqual([]);
+  });
+
+  test.each([
+    [['lot-small', 'lot-medium']],
+    [['lot-medium', 'lot-large']],
+    [['lot-small', 'lot-large']],
+  ] as const)('gives `supplier_not_listed` when the chain answers `{ error }` for some of the adverts and not for all of them: %j', async (lots) => {
+    const world = goldenWorld();
+    for (const lot of lots) world.reads[REFS[lot]] = { error: 'No UTxO at the reference of the advert.' };
+    expectFailure((await read(world)).result, 'supplier_not_listed', lots[0]);
+  });
+
   test('never takes the advert of one lot for another: an advert that the chain names lot-medium is not the advert of lot-small', async () => {
     const world = goldenWorld();
     const hash = sha256(JSON.stringify(manifestOf()));
@@ -388,18 +409,11 @@ describe('readSupplier: the manifest of the supplier', () => {
   });
 
   test('refuses a manifest above the byte limit, also when its hash is right, and takes a manifest of exactly the limit', async () => {
-    const padded = (size: number): string => {
-      const base = manifestOf();
-      base.links = { spec: 'https://example.invalid/spec', padding: '' };
-      const empty = Buffer.byteLength(JSON.stringify(base), 'utf8');
-      base.links = { spec: 'https://example.invalid/spec', padding: 'p'.repeat(size - empty) };
-      return JSON.stringify(base);
-    };
     const over = goldenWorld();
-    serveManifest(over, padded(LIMITS.maxBytes + 1));
+    serveManifest(over, paddedManifest(LIMITS.maxBytes + 1));
     expectFailure((await read(over)).result, 'supplier_manifest_invalid', 'manifest');
     const exact = goldenWorld();
-    const body = padded(LIMITS.maxBytes);
+    const body = paddedManifest(LIMITS.maxBytes);
     expect(Buffer.byteLength(body, 'utf8')).toBe(LIMITS.maxBytes);
     serveManifest(exact, body);
     must((await read(exact)).result);
@@ -584,6 +598,28 @@ describe('readSupplier: a source that cannot be read', () => {
     world.files[MANIFEST_URL] = { status: 200, bytes: Buffer.from(JSON.stringify(manifestOf())) };
     must((await read(world)).result);
   });
+
+  test.each([
+    ['manifest', 'supplier_manifest_invalid'],
+    ['lots file', 'supplier_lots_invalid'],
+  ] as const)('gives `supplier_unavailable` for a %s that the port refuses by its size, as `safeFetch` throws, and `%s` for a port that returns the same bytes', async (what, invalid) => {
+    const oversize = (): World => {
+      const world = goldenWorld();
+      if (what === 'manifest') serveManifest(world, paddedManifest(LIMITS.maxBytes + 1));
+      else serveLots(world, paddedLots(LIMITS.maxBytes + 1));
+      return world;
+    };
+    // A port that throws above the limit, as the real `safeFetch` does. Its error text has the size and a word of the host, and the reader repeats none of it.
+    const throwingOnSize = (inner: SupplierDeps['fetchBytes']): SupplierDeps['fetchBytes'] => async (url, limits) => {
+      const answer = await inner(url, limits);
+      if (answer.bytes.length > limits.maxBytes) throw new Error(`LEAK safeFetch: response of ${answer.bytes.length} bytes exceeds the ${limits.maxBytes} byte cap`);
+      return answer;
+    };
+    const stub = stubOf(oversize());
+    unavailable(await readSupplier({ ...stub.deps, fetchBytes: throwingOnSize(stub.deps.fetchBytes) }, SUPPLIER, SKU), what);
+    // The port refused the body, so the reader never saw it. A port that returns the same bytes gets the code of the reader.
+    expectFailure((await read(oversize())).result, invalid, what);
+  });
 });
 
 describe('readSupplier: the time of the reading', () => {
@@ -658,18 +694,19 @@ describe('readSupplier: the codes and the real ports', () => {
     expect(SUPPLIER_FAILURES).toContain(refusal((await read(world)).result).code);
   });
 
-  test('has the ports that the real readers fit: fetchSuppliers and readAdvert of buyer-core, and the fetch of vector-read behind a function that makes bytes', () => {
-    // The functions are made and never called: the typecheck proves that their types fit the ports, and no test here uses the network.
-    const real: SupplierDeps = {
-      listAdverts: (capabilityId) => fetchSuppliers({ capability_id: capabilityId }),
-      readAdvert: (ref) => readAdvert(ref),
+  test('has the ports that the real readers fit: fetchSuppliers and readAdvert of buyer-core, with the identity advert address of the deployment, and the fetch of vector-read behind a function that makes bytes', () => {
+    // The function is made and never called: the typecheck proves that the types of the real readers fit the ports, and no test here uses the network.
+    const wiring = (deployment: IdentityDeployment, fetchImpl: typeof fetch): SupplierDeps => ({
+      listAdverts: (capabilityId) => fetchSuppliers({ capability_id: capabilityId, fetchImpl }),
+      // Without the identity advert address of the deployment, buyer-core gives `{ error }` for every advert of an Order Desk.
+      readAdvert: (ref) => readAdvert(ref, fetchImpl, VECTOR_KOIOS_URL, deployment.advert.address),
       fetchBytes: async (url, limits) => {
         const answer = await safeFetch(url, {}, { maxResponseBytes: limits.maxBytes, timeoutMs: limits.timeoutMs });
         return { status: answer.status, bytes: Buffer.from(answer.text, 'utf8') };
       },
       clock: () => Date.now(),
-    };
-    expect(Object.keys(real).sort()).toStrictEqual(['clock', 'fetchBytes', 'listAdverts', 'readAdvert']);
+    });
+    expect(wiring.length).toBe(2);
   });
 
   test('the golden world agrees with itself: the manifest holds the hash of the lots file, and the adverts hold the hash of the manifest', () => {

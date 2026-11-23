@@ -120,6 +120,8 @@ A proposal that was made has the exit state `null`. A proposal that failed has `
 
 `check_unavailable` (503) means that a check of a counterparty could not read its source, the ledger or the gateway. It is never a pass. It is an error code and not a refusal code of a rule, so it is not in `REFUSAL_CODES`.
 
+`precheck_missing` (500) and `svid_failed` (502) are the codes of the job of a counterparty after its Claim. `precheck_missing` means that the job has no record that its pre-check passed for this request: it writes nothing. `svid_failed` means that the identity gateway gave no SVID for a call to the system of the organisation. They are error codes and not refusal codes of a rule, so they are not in `REFUSAL_CODES`.
+
 `refused_by_counterparty` has the code of the counterparty as its `reason`. `vault_refused` has the evaluation error of the node as its `reason`. `refused_by_system` has the code of the mock system as its `reason`. `SYSTEM_REFUSALS` and `SYSTEM_REFUSAL_STATUS` list the refusals that the protocol names for a mock system, with their statuses: `token_invalid` (401), and `not_covered`, `delegation_ended`, `chain_too_deep`, `supplier_not_active` and the eight approval codes (403). A mock system can answer other codes of its own, for a client certificate, a tenant or a host. A buyer-side agent passes any code on as the reason, so a reason that is not in the list is not an error.
 
 ### The approval check

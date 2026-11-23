@@ -236,3 +236,22 @@ describe('a document that is not a purchase order', () => {
     await expect(lot.run(handoffOf(missing), CONTEXT)).rejects.toBeInstanceOf(TypeError);
   });
 });
+
+describe('a handoff for another use case', () => {
+  it('is a fault of the service in each check: a throw, never a pass, also when the purchase order that it carries passes the check', async () => {
+    const { supplier, lot, quantity, duplicate } = rig();
+    const other = handoffOf(PURCHASE_ORDER, { use_case: 'prior-authorization' });
+    for (const check of [supplier, lot, quantity, duplicate]) {
+      await expect(check.run(other, CONTEXT), check.names[0]).rejects.toBeInstanceOf(TypeError);
+      // The twin: the same purchase order in a handoff for use case 1 (inventory reorder) passes.
+      expect(await check.run(handoffOf(), CONTEXT).then((result) => result.ok, () => false), check.names[0]).toBe(true);
+    }
+  });
+
+  it('is refused with a message that names the use case that is right and not the value that came', async () => {
+    const failure = await rig().supplier.run(handoffOf(PURCHASE_ORDER, { use_case: 'prior-authorization' }), CONTEXT).then(() => null, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(TypeError);
+    expect((failure as TypeError).message).toContain('use case 1 (inventory reorder)');
+    expect((failure as TypeError).message).not.toContain('prior');
+  });
+});
