@@ -617,23 +617,10 @@ describe('specs/order-desk.md: the errors', () => {
   const codesIn = (line: string): string[] => [...(line.split('|')[2] ?? '').matchAll(/`([^`]+)`/g)].map((hit) => hit[1]).filter((text) => /^[a-z_]+$/.test(text));
   const kitServer = readFileSync(new URL('../../../packages/service-kit/src/server.ts', import.meta.url), 'utf8');
 
-  test('the table is the table of the README, but for five rows that this page words otherwise and a row for the 404, and every code has its status', () => {
-    // The five rows: the answers with no message, the busy answers, the hang-up before the order call, and the order that may exist at the portal.
-    const reworded: Record<string, string> = {
-      '| 401, ': '| 401, the caller | `unauthorized` (no message) |',
-      '| 409, ': '| 409, the service is busy | `busy` (a job runs, or the slot is reserved for another escrow. The answer to a job has no message, and the answer of the hook has one) |',
-      '| 422, ': '| 422, the job | `deadline` (the caller hung up before the order call, or too little time was left to place the order) |',
-      '| 500, ': '| 500, the service | `precheck_missing` (the job has no record of passed checks for its body), `store_write_failed` (the order book or the record of the model hire cannot be written. When the order book fails, the portal holds the order), `internal` (a fault of the service: a plain 500 with no message when nothing names it, and the fixed message when the job names it) |',
-      '| 502, ': '| 502, a third party | `svid_failed` (the identity gateway gave no X.509-SVID), `mock_system_failed` (the supplier portal did not take the call. After a call that was sent, the order may exist at the portal), `inference_failed` (the model hire failed), `model_output_invalid` (the answer of the model cannot be used) |',
-    };
-    const notFound = '| 404, no such route | `not_found` (no message) |';
-    const expected = statusRows(readme.split('\n## Errors\n')[1] ?? '').flatMap((line) => {
-      const own = Object.entries(reworded).find(([prefix]) => line.startsWith(prefix))?.[1] ?? line;
-      return line.startsWith('| 409, ') ? [notFound, own] : [own];
-    });
+  test('the table is the table of the README, with its 11 rows, and every code has its status', () => {
     const onPage = statusRows(errors);
-    expect(expected).toHaveLength(11);
-    expect(onPage).toStrictEqual(expected);
+    expect(onPage).toHaveLength(11);
+    expect(onPage).toStrictEqual(statusRows(readme.split('\n## Errors\n')[1] ?? ''));
     // A code that the protocol does not list has its status elsewhere: the request refusal of the service, and the kit of the service.
     const outside: Record<string, number> = { bad_context: new RequestRefusal('bad_context', 'x').status, not_found: 404 };
     const documented = new Map<string, number[]>();

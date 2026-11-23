@@ -4,7 +4,7 @@
 import { describe, expect, test } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { VAULT_PAYER_IDENTITY_SETTINGS } from '@vsa/buyer-core';
-import { CONTEXT_HEADERS, HEARTBEAT_MS, MAX_BODY, RESERVATION_MS, SHUTDOWN_WAIT_MS, TOKEN_SEARCH_MIN, operatorsText } from '@vsa/service-kit';
+import { BUSY_TEXT, CONTEXT_HEADERS, HEARTBEAT_MS, JobSlot, MAX_BODY, RESERVATION_MS, SHUTDOWN_WAIT_MS, STOPPING_TEXT, TOKEN_SEARCH_MIN, operatorsText } from '@vsa/service-kit';
 import { CONFIRMATION_CHECKS, INVENTORY_CAPABILITIES, LOT_NAMES, PO_SCHEMA } from '@vsa/usecase-kit/inventory';
 import { COUNTERPARTY_REFUSALS, ERROR_STATUS, HANDOFF_SCHEMA } from '@vsa/usecase-kit/protocol';
 import { ORDER_BOOK_LIMIT, PASSED_CHECKS_LIMIT, PASSED_CHECKS_TTL_MS } from '../src/checks/index.ts';
@@ -194,6 +194,19 @@ describe('agents/order-desk/README.md: the routes, the checks and the errors', (
     expect(routes).toContain(`(\`${PO_SCHEMA}\`)`);
     expect(routes).toContain('Without it, 401 `{"error":"unauthorized"}`');
     expect(textOf('../../../packages/service-kit/src/server.ts')).toContain('req.httpVersionMajor === 1 && req.httpVersionMinor >= 1');
+    // The busy answers: a job that finds the slot taken gets 409 with no message, the hook gets 409 with a message, and the slot gives them as the README says.
+    expect(routes).toContain('One job runs at a time. A job that arrives while a job runs, or while the slot is reserved for another escrow, gets 409 `{"error":"busy"}`, and nothing starts. A call of the hook gets 409 `busy` with a message while a job runs, whatever its escrow, and while the slot is reserved for another escrow. The call of the hook for the escrow that holds the reservation reserves the slot again.');
+    const slot = new JobSlot();
+    expect(slot.take('escrow-a', 1_000)).toBe('taken');
+    expect([slot.canTake('escrow-a', 1_000), slot.canTake('escrow-b', 1_000)]).toStrictEqual(['busy', 'busy']);
+    slot.release();
+    expect(slot.reserve('escrow-a', 1_000)).toBe('reserved');
+    expect([slot.canTake('escrow-a', 2_000), slot.canTake('escrow-b', 2_000)]).toStrictEqual(['free', 'held']);
+    expect(slot.reserve('escrow-a', 2_000)).toBe('reserved');
+    expect(slot.take('escrow-b', 2_000)).toBe('held');
+    // The hang-up: the job stops before the order call, and it goes on during the order call and after it.
+    expect(routes).toContain('A job whose caller hangs up before the order call is stopped there: the service never places an order that nobody will read. A hang-up during the order call, or after it, does not stop the job: it books the order, and its log says that the caller hung up.');
+    expect(textOf('../src/job/order.ts')).toContain('the caller hung up while the order was placed');
   });
 
   test('the checks: the 16 names in their order, and the four of the Order Desk with their codes', () => {
@@ -211,7 +224,8 @@ describe('agents/order-desk/README.md: the routes, the checks and the errors', (
 
   test('the Errors table gives each code its status, every code is one that the protocol or the service kit gives, and the codes of the hook and of the job are all there', () => {
     const table = section('Errors').split('\n').filter((line) => /^\| \d{3}, /.test(line));
-    expect(table).toHaveLength(10);
+    const kit = textOf('../../../packages/service-kit/src/server.ts');
+    expect(table).toHaveLength(11);
     const documented = new Map<string, number[]>();
     for (const line of table) {
       const status = Number(/^\| (\d{3}), /.exec(line)?.[1]);
@@ -220,6 +234,7 @@ describe('agents/order-desk/README.md: the routes, the checks and the errors', (
       for (const code of cellCodes) {
         documented.set(code, [...(documented.get(code) ?? []), status]);
         if (code === 'bad_context' || code === 'bad_shape') expect(new RequestRefusal(code, 'x').status, code).toBe(status);
+        else if (code === 'not_found') expect([status, kit.includes("return send(404, { error: 'not_found' });")], code).toStrictEqual([404, true]);
         else expect(ERROR_STATUS[code as keyof typeof ERROR_STATUS], code).toBe(status);
       }
     }
@@ -229,12 +244,25 @@ describe('agents/order-desk/README.md: the routes, the checks and the errors', (
     const after = table.find((line) => line.startsWith('| 403, the job, after the Claim'));
     expect(ticks((after ?? '').split('|')[2])).toStrictEqual(['cannot_supply', 'duplicate_po']);
     for (const [code, status] of Object.entries(ORDER_REFUSAL_STATUS)) expect(documented.get(code), code).toContain(status);
-    for (const code of [...COUNTERPARTY_REFUSALS['order-desk'], 'check_unavailable', 'busy', 'shutting_down', 'unauthorized', 'bad_wire', 'request_too_large', 'bad_shape', 'bad_context', 'internal']) {
+    for (const code of [...COUNTERPARTY_REFUSALS['order-desk'], 'check_unavailable', 'busy', 'shutting_down', 'unauthorized', 'not_found', 'bad_wire', 'request_too_large', 'bad_shape', 'bad_context', 'internal']) {
       expect(documented.has(code), code).toBe(true);
     }
     expect([...documented.entries()].filter(([, statuses]) => statuses.length > 1)).toStrictEqual([['duplicate_po', [403, 403]]]);
-    expect(section('Errors')).toContain(`\`${operatorsText('<code>')}\``);
-    expect(section('Errors')).toContain('A refusal of status 500 or more gets a fixed message');
+    const errors = section('Errors');
+    expect(errors).toContain(`\`${operatorsText('<code>')}\``);
+    expect(errors).toContain('A refusal of status 500 or more gets a fixed message');
+    // The answers with no message, and the two fixed messages: the kit gives them as the README says.
+    expect(errors).toContain('The 401, the 404, the 409 of a job and a plain 500 have the code and no message: `{"error":"unauthorized"}`, `{"error":"not_found"}`, `{"error":"busy"}` and `{"error":"internal"}`.');
+    expect(kit).toContain("return send(401, { error: 'unauthorized' });");
+    expect(kit.split("send(409, { error: 'busy' })").length - 1).toBe(2);
+    expect(kit).toContain("return send(409, { error: 'busy', message: BUSY_TEXT });");
+    expect(kit).toContain("return send(500, { error: 'internal' });");
+    expect(errors).toContain(`\`shutting_down\` has the fixed message \`${STOPPING_TEXT}\`, and the 409 \`busy\` of the hook has the fixed message \`${BUSY_TEXT}\`.`);
+    // The order that can stay at the portal: the job logs it for a call that was sent and for a failed write of the order book.
+    expect(errors).toContain('A job that fails before the order call places no order. A job that fails after the order call can leave an order at the portal with no entry in the order book.');
+    const order = textOf('../src/job/order.ts');
+    expect(order).toContain('the order may exist at the portal');
+    expect(order).toContain('and the portal holds the order');
     expect(readme).toContain('answers `cannot_supply` and places no order');
   });
 });
