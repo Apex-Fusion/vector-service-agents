@@ -6012,16 +6012,32 @@ test('agents host: the proof script fills the real snippet and the real main Cad
 test('agents host: the README gives the counts, the memory and the plan of the ports, and the snippet shape of the README is the one that the proof validates', () => {
   const readme = srvRead('README.md');
   for (const part of ['The host has 19 containers: 8 services, 10 runtimes and 1 mock service.', '| Memory | 8 GiB |', '| Agent host names | 10 | A, DNS only |', '| Mock host names | 2 | A, DNS only |', '| Organisation checks | 9 | TXT |']) assert.ok(readme.includes(part), part);
-  // The plan of the ports: the counts in the rows are the sizes of the ranges, and together they are the 19 containers.
-  const plan = Object.fromEntries([...readme.matchAll(/^\| (Runtime|Service|Mock service) \((\d+)\) \| (\d+)(?: to (\d+))? \|$/gm)].map((m) => [m[1], { count: Number(m[2]), from: Number(m[3]), to: Number(m[4] ?? m[3]) }]));
-  assert.deepEqual(Object.keys(plan), ['Runtime', 'Service', 'Mock service']);
-  for (const [name, { count, from, to }] of Object.entries(plan)) assert.equal(to - from + 1, count, `${name}: the range has as many ports as the count`);
-  assert.equal(plan.Runtime.count + plan.Service.count + plan['Mock service'].count, 19);
-  assert.ok(plan.Runtime.to < plan.Service.from && plan.Service.to < plan['Mock service'].from, 'the ranges do not overlap');
+  // The plan of the ports: the counts in the rows are the sizes of the ranges, and together they are the 19 containers. The rows of the two packs of use case 1 are the ports of their compose files,
+  // and the rows of the later agents keep the ports that come after them.
+  const rows = [...section(readme, 'Folders and ports').matchAll(/^\| ([A-Za-z][^|]*?) \((\d+)\) \| (\d+)(?: to (\d+))? \|$/gm)].map((m) => ({ label: m[1], count: Number(m[2]), from: Number(m[3]), to: Number(m[4] ?? m[3]) }));
+  assert.deepEqual(rows.map((row) => row.label), ['Reorder Agent runtime', 'Order Desk runtimes', 'Runtimes of later agents', 'Reorder Agent service', 'Order Desk service', 'Services of later agents', 'Mock service']);
+  const plan = Object.fromEntries(rows.map((row) => [row.label, row]));
+  for (const row of rows) assert.equal(row.to - row.from + 1, row.count, `${row.label}: the range has as many ports as the count`);
+  const runtimeRows = rows.filter((row) => /runtime/i.test(row.label));
+  const serviceRows = rows.filter((row) => /service/i.test(row.label) && row.label !== 'Mock service');
+  assert.equal(runtimeRows.reduce((sum, row) => sum + row.count, 0), 10, 'ten runtimes');
+  assert.equal(serviceRows.reduce((sum, row) => sum + row.count, 0), 8, 'eight services');
+  assert.equal(rows.reduce((sum, row) => sum + row.count, 0), 19);
+  for (const group of [runtimeRows, serviceRows]) group.slice(1).forEach((row, i) => assert.equal(row.from, group[i].to + 1, `${row.label} follows ${group[i].label} with no gap`));
+  const [runtimeFrom, runtimeTo, serviceFrom, serviceTo] = [runtimeRows[0].from, runtimeRows.at(-1).to, serviceRows[0].from, serviceRows.at(-1).to];
+  assert.ok(runtimeTo < serviceFrom && serviceTo < plan['Mock service'].from, 'the ranges do not overlap');
   assert.equal(SRV_UPSTREAM, `127.0.0.1:${plan['Mock service'].from}`, 'the snippet proxies to the port of the mock service in the plan');
+  const reorderPorts = PACK_PORTS[serverCompose('reorder-agent')];
+  const orderPorts = PACK_PORTS[serverCompose('order-desk')];
+  const orderRuntimes = ['runtime-small', 'runtime-medium', 'runtime-large'].map((name) => orderPorts[name]);
+  assert.deepEqual([plan['Reorder Agent runtime'].from, plan['Reorder Agent runtime'].to], [reorderPorts.runtime, reorderPorts.runtime], 'the runtime of the Reorder Agent');
+  assert.deepEqual([plan['Order Desk runtimes'].from, plan['Order Desk runtimes'].to], [Math.min(...orderRuntimes), Math.max(...orderRuntimes)], 'the three runtimes of the Order Desk');
+  assert.deepEqual([plan['Reorder Agent service'].from, plan['Order Desk service'].from], [reorderPorts.service, orderPorts.service], 'the two services');
+  assert.deepEqual([plan['Runtimes of later agents'].from, plan['Runtimes of later agents'].to], [8105, 8110], 'the later runtimes keep 8105 to 8110');
+  assert.deepEqual([plan['Services of later agents'].from, plan['Services of later agents'].to], [9103, 9108], 'the later services keep 9103 to 9108');
   const runbook = srvRead('RUNBOOK.md');
-  assert.ok(runbook.includes(`seq ${plan.Runtime.from} ${plan.Runtime.to}`), 'the runbook checks each runtime port of the plan');
-  assert.ok(runbook.includes(`range ${plan.Runtime.from} to ${plan.Runtime.to}`) && runbook.includes(`range ${plan.Service.from} to ${plan.Service.to}`));
+  assert.ok(runbook.includes(`seq ${runtimeFrom} ${runtimeTo}`), 'the runbook checks each runtime port of the plan');
+  assert.ok(runbook.includes(`range ${runtimeFrom} to ${runtimeTo}`) && runbook.includes(`range ${serviceFrom} to ${serviceTo}`));
   // The snippet shape of an agent.
   const block = /\n```\n(<agent-host> \{\n[\s\S]*?\n\})\n```\n/.exec(readme)?.[1];
   assert.equal(`${block}\n`, AGENT_SNIPPET);
@@ -6179,7 +6195,7 @@ const mockBytes = (text) => { const m = /^(\d+)([kmg])$/i.exec(String(text)); re
 const MOCK_LINE_BYTES = 1536;
 const MOCK_IDLE_HEAP = 80 * 1024 ** 2;
 const mockStoreBytes = () => mockConstant('MAX_TENANTS') * mockConstant('MAX_LOG_LINES') * MOCK_LINE_BYTES + MOCK_IDLE_HEAP;
-// The plan of the memory (README, section "The host") keeps free for growth: 8 GiB, less 3.3 GiB of containers, 0.6 GiB of system and 1 GiB for a start. That is about 3 GiB.
+// No limit of the mock service may pass 3 GiB: the host has 8 GiB, and the mock service shares them with the containers of the agents (README, section "The host").
 const MOCK_LIMIT_MAX = 3 * 1024 ** 3;
 const mockSame = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const mockSorted = (object) => JSON.stringify(Object.entries(object).sort());
@@ -7036,8 +7052,8 @@ const PACK_PORTS = {
   [serverCompose('reorder-agent')]: { runtime: 8101, service: 9101 },
   [serverCompose('order-desk')]: { 'runtime-small': 8102, 'runtime-medium': 8103, 'runtime-large': 8104, service: 9102 },
 };
-// The rows of the plan in the README of the agents host: a label, a count in brackets and a port or a range.
-const planRows = (readme) => [...readme.matchAll(/^\| [A-Za-z][^|]*? \((\d+)\) \| (\d+)(?: to (\d+))? \|$/gm)].map((m) => ({ count: Number(m[1]), from: Number(m[2]), to: Number(m[3] ?? m[2]) }));
+// The rows of the plan in the README of the agents host, in its section "Folders and ports": a label, a count in brackets and a port or a range.
+const planRows = (readme) => [...section(readme, 'Folders and ports').matchAll(/^\| [A-Za-z][^|]*? \((\d+)\) \| (\d+)(?: to (\d+))? \|$/gm)].map((m) => ({ count: Number(m[1]), from: Number(m[2]), to: Number(m[3] ?? m[2]) }));
 // The faults of the ports: the plan of the two packs, a host port that stands once in all the compose files of the two hosts, and a row of the README plan for each port of the agents host.
 function portProblems(texts, packPorts, readme) {
   const problems = [];
@@ -7285,4 +7301,115 @@ test('use case 1 drift: the confirmation of the kit has the members of the order
     assert.equal(problems.length, 1, `${name}: found ${JSON.stringify(problems)}`);
   }
   assert.deepEqual(confirmationDriftProblems(members, names), [], 'the twin: the members of the golden');
+});
+
+// ---- The README and the RUNBOOK of the agents host, and the ignore file of the build context, for the packs of use case 1 ----
+test('use case 1 README: the table of the files has a row for each of the nine files of the two packs, and each file is there', () => {
+  const readme = srvRead('README.md');
+  for (const file of USE_CASE_1_FILES) {
+    const name = file.slice(`${SRV}/`.length);
+    assert.ok(readme.includes(`| \`${name}\` | `), `${name} has a row`);
+    assert.ok(existsSync(join(root, file)), `${name} is there`);
+  }
+  assert.equal(section(readme, 'The files').split('\n').filter((line) => /^\| `[^`]*(?:order-desk|reorder-agent)[^`]*` \|/.test(line)).length, 9, 'nine rows for the two packs');
+});
+
+test('use case 1 README: the section of a host whose proxy runs in a container gives the one mounted Caddyfile, the markers of the blocks, the join of the network, the write in place, the check and the reload, and what a new Caddy container needs; the markers and the network are those of the two packs', () => {
+  const readme = srvRead('README.md');
+  const text = section(readme, 'A host whose proxy runs in a container');
+  assert.ok(text.length > 0, 'the section is there');
+  const at = (heading) => readme.indexOf(`\n## ${heading}\n`);
+  assert.ok(at('The snippet of an agent') > 0 && at('The snippet of an agent') < at('A host whose proxy runs in a container') && at('A host whose proxy runs in a container') < at('DNS'), 'after the snippet of an agent, before DNS');
+  // The markers of each snippet and the network of each project are the ones that the section gives, with the name of the agent in place of <agent> and <project>.
+  for (const [snippet, composeFile] of [['Caddyfile.reorder-agent.snippet', 'docker-compose.reorder-agent.yml'], ['Caddyfile.order-desk.snippet', 'docker-compose.order-desk.yml']]) {
+    const agent = /^# (\S+) vhosts \(BEGIN\)$/m.exec(srvRead(snippet))?.[1];
+    assert.ok(agent, `${snippet} has its BEGIN marker`);
+    assert.ok(srvRead(snippet).includes(`\n# ${agent} vhosts (END)\n`), `${snippet} has its END marker`);
+    assert.equal(parseYaml(srvRead(composeFile)).name, agent, `the project of ${composeFile} is the name in the markers`);
+    assert.ok(srvRead(snippet).includes(`docker network connect ${agent}_default <caddy container>`), `${snippet} gives the join`);
+  }
+  const parts = [
+    '# <agent> vhosts (BEGIN)', '# <agent> vhosts (END)', 'docker network connect <project>_default <caddy container>', '`<caddy container>`', '`<caddyfile>`',
+    'caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile', 'caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile', 'Valid configuration', 'in place', 'Never restart Caddy',
+    'again after each new Caddy container', 'RUNBOOK-reorder-agent.md', 'RUNBOOK-order-desk.md', 'section "The Caddy block"',
+  ];
+  for (const part of parts) assert.ok(text.includes(part), part);
+  assert.doesNotMatch(readme, HOST_WORDS, 'the README names no host, no proxy stack, no login and no key file');
+  // The files of the host with the proxy in a container are in the one Caddyfile: the lines about the snippet folder say that they are for Caddy on the host.
+  for (const part of ['when Caddy runs on the host', 'Caddy on the host reaches a container by its port on `127.0.0.1`', 'Caddy in a container reaches it by its container name']) assert.ok(readme.includes(part), part);
+});
+
+test('use case 1 README: the memory arithmetic of the six containers adds up, and the host stays above the gate of 1,024 MiB after the six containers start', () => {
+  const text = section(srvRead('README.md'), 'The host');
+  const number = (value) => Number(value.replaceAll(',', ''));
+  const sizes = Object.fromEntries([...text.matchAll(/^\| ([A-Za-z][^|]*?) \| ([\d,]+) \|$/gm)].map((m) => [m[1], number(m[2])]));
+  assert.deepEqual(Object.keys(sizes), ['Reorder Agent runtime', 'Reorder Agent service', 'Order Desk runtimes (3)', 'Order Desk service', 'The six containers']);
+  assert.equal(sizes['Order Desk runtimes (3)'], 3 * sizes['Reorder Agent runtime'], 'three runtimes of one size');
+  assert.equal(sizes['Reorder Agent service'], sizes['Order Desk service'], 'the two services have the planning size of a new service');
+  const total = sizes['Reorder Agent runtime'] + sizes['Reorder Agent service'] + sizes['Order Desk runtimes (3)'] + sizes['Order Desk service'];
+  assert.equal(sizes['The six containers'], total, 'the six containers are the sum of the rows');
+  const after = Object.fromEntries([...text.matchAll(/^\| (The mock service runs|The six containers run) \| ([\d,]+) \| ([\d,]+) \| (.+) \|$/gm)].map((m) => [m[1], [number(m[2]), number(m[3]), m[4]]]));
+  const [typical, lowest] = after['The mock service runs'];
+  const [typicalAfter, lowestAfter, gate] = after['The six containers run'];
+  assert.deepEqual([typicalAfter, lowestAfter], [typical - total, lowest - total], 'after the start, the memory is the memory before it less the six containers');
+  assert.ok(lowestAfter >= 1024, 'the lowest case stays above the gate');
+  assert.ok(gate.includes(`${lowestAfter - 1024} MiB of margin in the lowest case`), 'the margin is the lowest case less the gate');
+  // The peaks: one job in each service adds 2 x (200 + 200) MiB, and 4 calls of the co-sign route add 4 x 100 MiB. The later containers (two runtimes and two services) do not pass the gate.
+  const fmt = (value) => value.toLocaleString('en-US');
+  for (const part of [`${fmt(typicalAfter - 800)} MiB in the typical case and ${fmt(lowestAfter - 800)} MiB in the lowest case`, `${fmt(typicalAfter - 1200)} MiB and ${fmt(lowestAfter - 1200)} MiB`, 'about 800 MiB', 'up to 4 calls', 'about 100 MiB for each call']) assert.ok(text.includes(part), part);
+  const later = 2 * sizes['Reorder Agent runtime'] + 2 * sizes['Reorder Agent service'];
+  assert.ok(typicalAfter - later < 1024 && lowestAfter - later < 1024, 'four more containers at the planning sizes do not pass the gate, in either case');
+  assert.ok(text.includes('four more containers (two runtimes and two services) do not pass the gate'), 'and the README says so');
+  for (const part of ['169 MiB in `docker stats`', '`MemAvailable` fell by 462 MiB', '4,074 MiB to 3,612 MiB', 'The gate is 1,024 MiB', 'The host builds none of these images', '`mem_limit`', 'The gate is for a start, not for a peak']) assert.ok(text.includes(part), part);
+  assert.doesNotMatch(text, /3\.3 GiB/, 'the old total of the 19 containers is gone');
+});
+
+test('use case 1 RUNBOOK: step 7 points to the runbooks of the two packs, and names the two ways to put a block in the proxy, the snippet folder and the marker block', () => {
+  const runbook = srvRead('RUNBOOK.md');
+  const step = section(runbook, '7. Add an agent');
+  for (const file of ['RUNBOOK-reorder-agent.md', 'RUNBOOK-order-desk.md']) assert.ok(step.includes(`\`${file}\``) && existsSync(join(root, SRV, file)), file);
+  for (const part of ['Snippet folder.', 'Marker block.', '/etc/caddy/agents/<agent>.snippet', 'section "A host whose proxy runs in a container"', 'in place', 'section "The Caddy block"']) assert.ok(step.includes(part), part);
+  // Step 8 takes a block out in the same two ways.
+  const eight = section(runbook, '8. Remove an agent');
+  for (const part of ['Snippet folder.', 'Marker block.', 'section "Back out"']) assert.ok(eight.includes(part), `step 8: ${part}`);
+});
+
+// The Dockerfiles that build from the repo root: each COPY of a folder takes the folder whole, with its test folders. The ignore file keeps every folder named test out of the context.
+const copiedFolders = (dockerfile) => [...dockerfile.matchAll(/^COPY (?!--)(\S+) \S+$/gm)].map((m) => m[1]).filter((src) => existsSync(join(root, src)) && statSync(join(root, src)).isDirectory());
+function folderNamesIn(dir, name, found = []) {
+  for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === 'node_modules') continue;
+    if (entry.name === name) found.push(`${dir}/${entry.name}`);
+    else folderNamesIn(`${dir}/${entry.name}`, name, found);
+  }
+  return found;
+}
+// The folders that a COPY takes whole and that hold a test folder, which the ignore file does not keep out: by the pattern for every folder named test, or by the path of the test folder.
+function dockerignoreProblems(ignoreText, folders) {
+  const lines = ignoreText.split('\n');
+  return folders.flatMap((folder) => folderNamesIn(folder, 'test').filter((path) => !lines.includes('**/test') && !lines.includes(path)).map((path) => `${path} is copied into an image: the ignore file keeps no test folder out`));
+}
+
+test('dockerignore: no image holds a test folder, and the first comment line names the Dockerfiles that build from the repo root; the guard refuses an ignore file that leaves a test folder in', () => {
+  const ignore = read('.dockerignore');
+  const lines = ignore.split('\n');
+  const rows = CI_IMAGES.filter((row) => row.context === '.');
+  const folders = [...new Set(rows.flatMap((row) => copiedFolders(read(row.file))))];
+  const withTests = folders.filter((folder) => folderNamesIn(folder, 'test').length > 0);
+  // The kit packages are copied whole by the agent images, with their test folders. The two agents of use case 1 copy their source folder only.
+  for (const folder of ['packages/usecase-kit', 'packages/hire-kit', 'packages/service-kit', 'packages/id-kit', 'agents/audio-snippets']) assert.ok(withTests.includes(folder), `${folder} is copied whole and holds a test folder: ${withTests.join(', ')}`);
+  assert.deepEqual(['agents/reorder-agent', 'agents/order-desk'].filter((folder) => folders.includes(folder)), [], 'the two agents of use case 1 are not copied whole');
+  assert.ok(lines.includes('**/test'), 'the ignore file has the line for every folder named test');
+  assert.deepEqual(dockerignoreProblems(ignore, folders), [], 'the real file passes');
+  const without = lines.filter((line) => line !== '**/test').join('\n');
+  const refused = dockerignoreProblems(without, folders);
+  assert.ok(refused.includes('packages/usecase-kit/test is copied into an image: the ignore file keeps no test folder out'), `a file with no line for the test folders is refused: ${JSON.stringify(refused)}`);
+  assert.equal(refused.length, withTests.flatMap((folder) => folderNamesIn(folder, 'test')).length, 'each test folder is named once');
+  // The twin: the path of each test folder in place of the pattern.
+  const paths = withTests.flatMap((folder) => folderNamesIn(folder, 'test'));
+  assert.deepEqual(dockerignoreProblems([without, ...paths].join('\n'), folders), [], 'a path for each test folder');
+  assert.equal(dockerignoreProblems([without, ...paths.slice(1)].join('\n'), folders).length, 1, 'one test folder left out of the list');
+  // The first comment line names the Dockerfiles of the repo root context.
+  for (const row of rows) assert.ok(lines[0].includes(row.file), `${row.file} is named in the first comment line`);
+  assert.equal(lines[0].includes(RT.dockerfile), false, 'the runtime Dockerfile has another context');
 });

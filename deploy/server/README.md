@@ -41,10 +41,31 @@ Each agent adds one snippet file, one compose file and one env example later. Th
 | Address | One public IPv4 address. It does not change. |
 | Provider and region | The same as the present host |
 
-A runtime uses about 190 MiB. An idle service uses about 160 MiB. The 19 containers use about 3.3 GiB together.
-The mock service uses about 140 MiB with no tenant. It keeps its tenants in memory, and its limit is 2 GiB (section "The mock service").
-Docker, Caddy and the system use about 0.6 GiB more. The rest of the memory is for jobs, for image pulls and for a container that starts again.
-Keep 1 GiB available when a container starts.
+A runtime uses about 190 MiB. A service takes more than an idle service shows. On 2026-11-23 the mock service showed 169 MiB in `docker stats`, and `MemAvailable` fell by 462 MiB when it started, from 4,074 MiB to 3,612 MiB. So the plan counts 462 MiB for each new service, until the first start of that service is measured.
+The mock service keeps its tenants in memory, and its limit is 2 GiB (section "The mock service"). `MemAvailable` already counts Docker, Caddy and the system. The rest of the memory is for jobs, for image pulls and for a container that starts again.
+The gate is 1,024 MiB: a container starts only while `MemAvailable` is at least 1,024 MiB. A container that starts again needs the gate too.
+
+The six containers of use case 1 (inventory reorder) have these planning sizes:
+
+| Container | MiB |
+|---|---|
+| Reorder Agent runtime | 190 |
+| Reorder Agent service | 462 |
+| Order Desk runtimes (3) | 570 |
+| Order Desk service | 462 |
+| The six containers | 1,684 |
+
+With the mock service running, `MemAvailable` was 3,612 MiB in the typical case, and 2,963 MiB at its lowest in 2 minutes. This table gives the memory after the six containers run, and compares it with the gate:
+
+| After | Typical (MiB) | Lowest (MiB) | Gate 1,024 |
+|---|---|---|---|
+| The mock service runs | 3,612 | 2,963 | passes |
+| The six containers run | 1,928 | 1,279 | passes, with 255 MiB of margin in the lowest case |
+
+The host builds none of these images, so no build counts here. The compose files give each runtime 768 MiB and each service 1,024 MiB (`mem_limit`), so that a fault stops one container only.
+A job adds memory while it runs, in the service and in the runtime that holds its escrow: about 100 to 200 MiB in each. One job runs at a time in each service, so the two services add about 800 MiB. The co-sign route of the Reorder Agent runs outside the job slot: up to 4 calls at one time, about 100 MiB for each call. These figures are not measured.
+With one job in each service, the six containers leave 1,128 MiB in the typical case and 479 MiB in the lowest case. With 4 calls of the co-sign route as well, they leave 728 MiB and 79 MiB. The gate is for a start, not for a peak. Measure a job and a co-sign call in the first run, and count again.
+The containers of later agents come after these six. Add them to the table, and check the gate again. At the planning sizes, four more containers (two runtimes and two services) do not pass the gate. Measure the real size of each container at its first start.
 
 ## The runtime image
 
@@ -102,23 +123,28 @@ The compose files of `deploy/host` build the runtime on their own host from the 
 | `/srv/agents/<agent>` | `agents`, 750 | One folder for each agent: the compose file and the env file. The operator gives the names to the script. |
 | `/srv/agents/mock-systems` | `agents`, 750 | The folder of the mock service: its compose file and its env file. |
 | `/srv/agents/keys` | `agents`, 700 | The folder for keys. It is empty after the set-up. |
-| `/etc/caddy/Caddyfile` | `root`, 644 | The main Caddy file. |
-| `/etc/caddy/agents/*.snippet` | `root`, 644 | One snippet file for each agent. |
+| `/etc/caddy/Caddyfile` | `root`, 644 | The main Caddy file, when Caddy runs on the host. |
+| `/etc/caddy/agents/*.snippet` | `root`, 644 | One snippet file for each agent, when Caddy runs on the host. |
 
-Caddy runs on the host. A container that Caddy reaches publishes its port on `127.0.0.1` only. The plan of the ports:
+Caddy runs on the host (the set-up of this folder), or in a container (section "A host whose proxy runs in a container"). In both cases a container publishes its port on `127.0.0.1` only. The plan of the ports:
 
 | Container | Port on 127.0.0.1 |
 |---|---|
-| Runtime (10) | 8101 to 8110 |
-| Service (8) | 9101 to 9108 |
+| Reorder Agent runtime (1) | 8101 |
+| Order Desk runtimes (3) | 8102 to 8104 |
+| Runtimes of later agents (6) | 8105 to 8110 |
+| Reorder Agent service (1) | 9101 |
+| Order Desk service (1) | 9102 |
+| Services of later agents (6) | 9103 to 9108 |
 | Mock service (1) | 9120 |
 
+Caddy on the host reaches a container by its port on `127.0.0.1`. Caddy in a container reaches it by its container name and its container port, on the network of the compose project. The port on `127.0.0.1` then serves the checks of the operator.
 No container port binds to a public address. The compose files write the address (`127.0.0.1:8101:8080`).
 The setting `ip` in `daemon.json` is a second lock. The firewall is a third, but Docker publishes ports around the firewall. So the first two locks matter.
 
 ## The snippet of an agent
 
-Each agent has one snippet file in `/etc/caddy/agents`. The deploy pack of the agent holds it. The snippet has this shape:
+When Caddy runs on the host, each agent has one snippet file in `/etc/caddy/agents`. The deploy pack of the agent holds it. The snippet has this shape:
 
 ```
 <agent-host> {
@@ -134,6 +160,42 @@ Each agent has one snippet file in `/etc/caddy/agents`. The deploy pack of the a
 The route `/agent.json` goes to the service. Every other route goes to the runtime. An agent can add more routes for its service in the same way.
 `<agent-host>` is one host name of the agent. An agent with three runtimes has three blocks, one for each host name.
 The service port is in the range 9101 to 9108, and the runtime port is in the range 8101 to 8110.
+This shape is for Caddy on the host. A host whose proxy runs in a container uses the shape of the next section.
+
+## A host whose proxy runs in a container
+
+On some hosts the proxy is a Caddy container, and no Caddy package is installed on the host. The packs of use case 1 (the Reorder Agent and the Order Desk) are written for such a host. The script, the main `Caddyfile` of this folder and the folder `/etc/caddy/agents` are not used there.
+In this section, `<caddy container>` is the name of the Caddy container. `<caddyfile>` is the one file on the host that the container mounts as `/etc/caddy/Caddyfile`.
+
+| Item | Rule |
+|---|---|
+| The Caddyfile | One file. The container mounts that file. There is no folder of snippets. |
+| The block of an agent | The lines of the snippet of the pack, from `# <agent> vhosts (BEGIN)` to `# <agent> vhosts (END)`. The two markers are exact lines. A command finds them to replace the block or to remove it. |
+| The upstreams | Container names and container ports, for example `reorder-service:9101` and `reorder-runtime:8080`. They are not ports on `127.0.0.1`. |
+| The network | Compose makes the default network of the project, `<project>_default`, when it starts the service. A pack has no `networks` key, and no other container joins that network. |
+| The join | `docker network connect <project>_default <caddy container>`. Do it once for each project. Do it again after each new Caddy container, because a new container has none of the joins of the old one. |
+| The write | Append the block to the end of `<caddyfile>`, in place. A mounted file does not follow a new file that replaces it. |
+| The check | `docker exec <caddy container> caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile`. The answer must say `Valid configuration`. |
+| The reload | `docker exec <caddy container> caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`. Never restart Caddy. |
+| The way back | Write the file again without the lines from the BEGIN marker to the END marker, in place. Then validate and reload. |
+
+The shape of the block:
+
+```
+# <agent> vhosts (BEGIN)
+<agent-host> {
+	handle /agent.json {
+		reverse_proxy <service container>:<service port>
+	}
+	handle {
+		reverse_proxy <runtime container>:8080
+	}
+}
+# <agent> vhosts (END)
+```
+
+Keep a copy of the Caddyfile before each change. Write it back, in place, when `caddy validate` fails. A new Caddy container reads the file when it starts, and it does not start with a file that fails.
+The runbooks of the two packs give the commands with the names of their projects and their markers: `RUNBOOK-reorder-agent.md` and `RUNBOOK-order-desk.md`, in the section "The Caddy block".
 
 ## DNS
 
@@ -149,7 +211,7 @@ The 9 TXT records are not part of the host set-up. They need the agent DIDs, whi
 
 DNS only means that no proxy stands in front of the name. Caddy ends TLS and gets its own certificate for each name.
 A proxy would end TLS before Caddy. It would also replace the body of an error answer, for example the 502 of a failed job.
-The records must exist, and must resolve to the host, before the snippet of the name goes into `/etc/caddy/agents`. Caddy asks for the certificate when it loads the snippet.
+The records must exist, and must resolve to the host, before the block of the name goes into Caddy: the snippet in `/etc/caddy/agents`, or the block in the Caddyfile of a container. Caddy asks for the certificate when it loads the block.
 
 ## The two mock host names
 
