@@ -100,7 +100,7 @@ export interface World {
 }
 
 /** A ledger, a clock, an empty list, a signer for the agent key, a queue, a tip, and the deps of a janitor over them. `limits` are the optional members of the deps. */
-export function world(limits: Pick<JanitorDeps, 'entryTimeoutMs' | 'pollMs' | 'stopWaitMs'> = {}): World {
+export function world(limits: Pick<JanitorDeps, 'entryTimeoutMs' | 'pollMs' | 'stopWaitMs' | 'ttlMarginSlots'> = {}): World {
   const sub = subWorld();
   const chain = new ProbeChain(sub.chain);
   const store = new MemoryLeftStore();
@@ -132,6 +132,7 @@ export function world(limits: Pick<JanitorDeps, 'entryTimeoutMs' | 'pollMs' | 's
     },
     clock: sub.clock,
     log: (line) => void logs.push(line),
+    inFlight: () => false,
     ...limits,
   };
   return { sub, clock: sub.clock, fake: sub.chain, chain, store, lane, tip, signed, logs, deps };

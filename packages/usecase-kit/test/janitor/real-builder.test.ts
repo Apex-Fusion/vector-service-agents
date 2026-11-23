@@ -88,6 +88,7 @@ describe('the Undelegate that the real builder makes', () => {
       tipSlot: async () => 0,
       clock: sub.clock,
       log: () => undefined,
+      inFlight: () => false,
     };
     const report = await sub.clock.run(runJanitorOnce(deps));
     expect(report.entries).toStrictEqual([{ id: entry.left.id, state: 'ended', detail: expect.any(String), endTxHash: undelegated[0]!.txHash }]);

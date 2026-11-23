@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { HireLane } from '@vsa/hire-kit';
-import { DEFAULT_END_POLL_MS, DEFAULT_ENTRY_TIMEOUT_MS, DEFAULT_STOP_WAIT_MS, DamagedLeftEntriesError, FileLeftStore, JANITOR_STATES, MemoryLeftStore, runJanitorOnce, startJanitor } from '../../src/janitor/index.ts';
-import type { JanitorDeps, JanitorEntryReport, JanitorReport, LeftEntry, LeftStore } from '../../src/janitor/index.ts';
+import { DEFAULT_END_POLL_MS, DEFAULT_ENTRY_TIMEOUT_MS, DEFAULT_STOP_WAIT_MS, DEFAULT_TTL_MARGIN_SLOTS, DamagedLeftEntriesError, FileLeftStore, JANITOR_STATES, MemoryLeftStore, runJanitorOnce, startJanitor } from '../../src/janitor/index.ts';
+import type { JanitorDeps, JanitorEntryReport, JanitorReport, JanitorState, LeftEntry, LeftStore } from '../../src/janitor/index.ts';
 import type { Clock } from '../../src/access/index.ts';
 import { DAY, OTHER_KEY, SCRIPT, STRANGER, parentDatum } from '../access/support.ts';
 import { AGENT_KEY, WALLET, answer, hangs, kindsOf, leave, settle, throws, world } from './support.ts';
@@ -23,6 +23,8 @@ function one(report: JanitorReport): JanitorEntryReport {
 /** A delegation as the ledger shows it, made by the transaction `txHash`. */
 const shown = (entry: LeftEntry, txHash: string, id = entry.left.id): unknown => ({ id, delegation: parentDatum(), txHash });
 const OTHER_TX = 'ee'.repeat(32);
+/** The slot from which a drop is allowed: the TTL slot of the Delegate of the entry, the margin, and `extra` slots. */
+const dropPoint = (entry: LeftEntry, extra = 0, margin = DEFAULT_TTL_MARGIN_SLOTS): number => entry.left.delegateTtlSlot + margin + extra;
 /** Nothing was sent: the node got the Delegate only, and the janitor asked for no Undelegate and signed nothing. */
 function expectNothingSent(w: World): void {
   expect(kindsOf(w)).toStrictEqual(['delegate']);
@@ -204,6 +206,36 @@ describe('a live delegation of the run', () => {
       expect(item.detail).toContain('could not write the hash');
       expect(await w.store.list()).toStrictEqual([entry]);
     });
+
+    it('keeps the hash of the first Undelegate when a second one is refused: the first can still land', async () => {
+      const w = world();
+      const entry = await leave(w);
+      w.fake.faults.undelegateNeverLands = true;
+      const first = one(await go(w));
+      expect(first.state).toBe('kept_end_pending');
+      w.fake.txTamper = (spec, kind) => (kind === 'undelegate' ? { ...spec, fee: spec.fee + 1n } : spec);
+      const second = one(await go(w));
+      expect(second.state).toBe('kept_end_failed');
+      expect(second.endTxHash).not.toBeNull();
+      expect(second.endTxHash).not.toBe(first.endTxHash);
+      expect(await w.store.list()).toStrictEqual([{ ...entry, left: { ...entry.left, endTxHash: first.endTxHash } }]);
+    });
+
+    it('stores the hash of a first Undelegate that is refused, and replaces it when a second one is accepted and still pending: the twins', async () => {
+      const w = world();
+      const entry = await leave(w);
+      w.fake.faults.submitUndelegateThrows = true;
+      const first = one(await go(w));
+      expect(first.state).toBe('kept_end_failed');
+      expect(await w.store.list()).toStrictEqual([{ ...entry, left: { ...entry.left, endTxHash: first.endTxHash } }]);
+      w.fake.faults.submitUndelegateThrows = false;
+      w.fake.faults.undelegateNeverLands = true;
+      w.fake.txTamper = (spec, kind) => (kind === 'undelegate' ? { ...spec, fee: spec.fee + 1n } : spec);
+      const second = one(await go(w));
+      expect(second.state).toBe('kept_end_pending');
+      expect(second.endTxHash).not.toBe(first.endTxHash);
+      expect(await w.store.list()).toStrictEqual([{ ...entry, left: { ...entry.left, endTxHash: second.endTxHash } }]);
+    });
   });
 });
 
@@ -223,10 +255,22 @@ describe('a delegation that the ledger does not show', () => {
     expect(w.chain.builds).toStrictEqual([]);
   });
 
-  it.each([0, 1, 1_000])('is dropped when the tip is %i slots past the TTL slot, at the TTL included, and no transaction is made', async (past) => {
+  it.each([['at the TTL slot', 0], ['one slot after it', 1], ['one slot before the end of the margin', DEFAULT_TTL_MARGIN_SLOTS - 1]])('is kept when the tip is %s: the margin after the TTL slot is not over', async (_what, after) => {
     const w = world();
     const entry = await leave(w, 'never_lands');
-    w.tip.slot = entry.left.delegateTtlSlot + past;
+    w.tip.slot = entry.left.delegateTtlSlot + after;
+    const item = one(await go(w));
+    expect(item.state).toBe('kept_waiting');
+    expect(item.detail).toContain(`slot ${dropPoint(entry)}`);
+    expect(await w.store.list()).toStrictEqual([entry]);
+    expect(w.chain.reads).toHaveLength(1);
+    expect(w.chain.builds).toStrictEqual([]);
+  });
+
+  it.each([0, 1, 1_000])('is dropped when the tip is %i slots past the TTL slot plus the margin, the end of the margin included, and no transaction is made', async (past) => {
+    const w = world();
+    const entry = await leave(w, 'never_lands');
+    w.tip.slot = dropPoint(entry, past);
     const item = one(await go(w));
     expect(item.state).toBe('dropped_not_made');
     expect(await w.store.list()).toStrictEqual([]);
@@ -235,10 +279,23 @@ describe('a delegation that the ledger does not show', () => {
     expect(w.chain.reads).toHaveLength(2);
   });
 
+  it.each([[0], [10]])('drops at the end of a margin of %i slots and not before it: the margin is a parameter', async (margin) => {
+    const w = world({ ttlMarginSlots: margin });
+    const entry = await leave(w, 'never_lands');
+    if (margin > 0) {
+      w.tip.slot = dropPoint(entry, -1, margin);
+      expect(one(await go(w)).state).toBe('kept_waiting');
+      expect(await w.store.list()).toStrictEqual([entry]);
+    }
+    w.tip.slot = dropPoint(entry, 0, margin);
+    expect(one(await go(w)).state).toBe('dropped_not_made');
+    expect(await w.store.list()).toStrictEqual([]);
+  });
+
   it('is not dropped when the Delegate lands between the first read and the read of the tip: the second read shows it, and the pass ends it', async () => {
     const w = world();
     const entry = await leave(w);
-    w.tip.slot = entry.left.delegateTtlSlot + 5;
+    w.tip.slot = dropPoint(entry, 5);
     w.chain.script.push(answer(null));
     const item = one(await go(w));
     expect(item.state).toBe('ended');
@@ -249,7 +306,7 @@ describe('a delegation that the ledger does not show', () => {
   it('is dropped when the second read shows nothing too: the twin', async () => {
     const w = world();
     const entry = await leave(w);
-    w.tip.slot = entry.left.delegateTtlSlot;
+    w.tip.slot = dropPoint(entry);
     w.chain.script.push(answer(null), answer(null));
     expect(one(await go(w)).state).toBe('dropped_not_made');
     expect(await w.store.list()).toStrictEqual([]);
@@ -259,7 +316,7 @@ describe('a delegation that the ledger does not show', () => {
   it('is kept when the second read throws, and when it shows a delegation with a hash that is not in the form of a hash', async () => {
     const w = world();
     const entry = await leave(w, 'never_lands');
-    w.tip.slot = entry.left.delegateTtlSlot;
+    w.tip.slot = dropPoint(entry);
     w.chain.script.push(answer(null), throws(new Error('the ledger is down')));
     expect(one(await go(w)).state).toBe('kept_unreadable');
     w.chain.script.push(answer(null), answer(shown(entry, 'EE')));
@@ -286,7 +343,7 @@ describe('a delegation that the ledger does not show', () => {
       expect(await w.store.list()).toStrictEqual([entry]);
       expect(w.chain.reads).toHaveLength(1);
       w.tip.error = null;
-      w.tip.slot = entry.left.delegateTtlSlot;
+      w.tip.slot = dropPoint(entry);
       expect(one(await go(w)).state).toBe('dropped_not_made');
     });
 
@@ -353,7 +410,7 @@ describe('a read of the ledger that fails', () => {
   it('keeps the entry, makes no transaction and asks no slot when it throws, also when the tip is long past the TTL slot; the twin ends the entry', async () => {
     const w = world();
     const entry = await leave(w);
-    w.tip.slot = entry.left.delegateTtlSlot + 100;
+    w.tip.slot = dropPoint(entry, 100);
     w.fake.faults.readThrows = true;
     const item = one(await go(w));
     expect(item.state).toBe('kept_unreadable');
@@ -368,7 +425,7 @@ describe('a read of the ledger that fails', () => {
   it('keeps the entry when the ledger gives no answer, and the pass ends at the bound of the entry', async () => {
     const w = world();
     const entry = await leave(w);
-    w.tip.slot = entry.left.delegateTtlSlot + 100;
+    w.tip.slot = dropPoint(entry, 100);
     w.chain.script.push(hangs);
     const started = w.clock.now();
     expect(one(await go(w)).state).toBe('kept_unreadable');
@@ -386,7 +443,7 @@ describe('a read of the ledger that fails', () => {
   ])('keeps the entry when the ledger gives %s: it is not "not shown", and not a delegation', async (_what, value) => {
     const w = world();
     const entry = await leave(w);
-    w.tip.slot = entry.left.delegateTtlSlot + 100;
+    w.tip.slot = dropPoint(entry, 100);
     w.chain.script.push(answer(value));
     expect(one(await go(w)).state).toBe('kept_unreadable');
     expect(await w.store.list()).toStrictEqual([entry]);
@@ -434,6 +491,7 @@ describe('the queue of the key', () => {
     expect(w.lane.runs).toBe(0);
     expect(await w.store.list()).toStrictEqual([entry]);
     expectNothingSent(w);
+    expect(w.logs).toStrictEqual([]);
     w.lane.busy = false;
     expect(one(await go(w)).state).toBe('ended');
     expect(w.lane.runs).toBe(1);
@@ -490,17 +548,20 @@ describe('the queue of the key', () => {
     ['a call that throws', () => { throw new Error('no queue'); }, 'kept_end_failed'],
     ['no queue', () => null as unknown as ReturnType<JanitorDeps['queueOf']>, 'kept_end_failed'],
   ];
-  it.each(BAD_QUEUES)('is never read as free: %s keeps the entry and sends nothing', async (_what, queueOf, state) => {
+  it.each(BAD_QUEUES)('is never read as free: %s keeps the entry and sends nothing, and one line of the log says why', async (_what, queueOf, state) => {
     const w = world();
     const entry = await leave(w);
     expect(one(await go(w, { ...w.deps, queueOf })).state).toBe(state);
     expect(await w.store.list()).toStrictEqual([entry]);
     expectNothingSent(w);
+    expect(w.logs).toHaveLength(1);
+    expect(w.logs[0]).toContain(state);
+    expect(w.logs[0]).toContain(entry.left.id);
   });
 });
 
 describe('a sub-delegation that a run of this process still uses', () => {
-  it('is left alone: no read, no transaction, and the entry stays; the twin is a run that has ended', async () => {
+  it('is left alone: no read, no transaction, no line in the log, and the entry stays; the twin is a run that has ended', async () => {
     const w = world();
     const entry = await leave(w);
     const deps: JanitorDeps = { ...w.deps, inFlight: (id) => id === entry.left.id };
@@ -511,18 +572,37 @@ describe('a sub-delegation that a run of this process still uses', () => {
     expect(w.tip.calls).toBe(0);
     expect(await w.store.list()).toStrictEqual([entry]);
     expectNothingSent(w);
+    expect(w.logs).toStrictEqual([]);
     expect(one(await go(w, { ...w.deps, inFlight: () => false })).state).toBe('ended');
   });
 
-  it('is left alone when the question cannot be answered: a throw and an answer that is not true or false are never "free"', async () => {
+  it('is asked for the id of each entry, one time in a pass', async () => {
+    const w = world();
+    const first = await leave(w);
+    const second = await leave(w);
+    const asked: string[] = [];
+    await go(w, { ...w.deps, inFlight: (id) => (asked.push(id), true) });
+    expect(asked).toStrictEqual([first.left.id, second.left.id]);
+  });
+
+  const UNSURE: [string, JanitorDeps['inFlight'], string][] = [
+    ['an inFlight that throws', () => { throw new Error('no registry'); }, 'no registry'],
+    ['an inFlight that answers nothing', () => undefined as unknown as boolean, 'true or false'],
+    ['an inFlight that answers text', () => 'yes' as unknown as boolean, 'true or false'],
+  ];
+  it.each(UNSURE)('is left alone, and the cause is logged in one line, when the question cannot be answered: %s', async (_what, inFlight, cause) => {
     const w = world();
     const entry = await leave(w);
-    const throwing: JanitorDeps = { ...w.deps, inFlight: () => { throw new Error('no registry'); } };
-    expect(one(await go(w, throwing)).state).toBe('kept_busy');
-    const unsure: JanitorDeps = { ...w.deps, inFlight: () => undefined as unknown as boolean };
-    expect(one(await go(w, unsure)).state).toBe('kept_busy');
+    const item = one(await go(w, { ...w.deps, inFlight }));
+    expect(item.state).toBe('kept_busy');
+    expect(item.detail).toContain(cause);
+    expect(w.logs).toHaveLength(1);
+    expect(w.logs[0]).toContain('kept_busy');
+    expect(w.logs[0]).toContain(entry.left.id);
+    expect(w.logs[0]).toContain(cause);
     expect(w.chain.reads).toStrictEqual([]);
     expect(await w.store.list()).toStrictEqual([entry]);
+    expectNothingSent(w);
   });
 });
 
@@ -632,11 +712,31 @@ describe('the list of the store', () => {
     const w = world();
     const stuck: LeftStore = { list: () => w.store.list(), put: (e) => w.store.put(e), remove: async () => { throw new Error('the disk is read only'); } };
     const gone = await leave(w, 'never_lands');
-    w.tip.slot = gone.left.delegateTtlSlot;
+    w.tip.slot = dropPoint(gone);
     expect(one(await go(w, { ...w.deps, store: stuck })).state).toBe('kept_store_failed');
     expect(await w.store.list()).toStrictEqual([gone]);
     w.chain.script.push(answer(shown(gone, OTHER_TX)));
     expect(one(await go(w, { ...w.deps, store: stuck })).state).toBe('kept_store_failed');
+  });
+
+  const STORE_STALLS: [string, (w: World) => void, 'put' | 'remove', JanitorState][] = [
+    ['the removal of an entry that is ended', () => undefined, 'remove', 'kept_store_failed'],
+    ['the write of a hash after a refused send', (w) => { w.fake.faults.submitUndelegateThrows = true; }, 'put', 'kept_end_failed'],
+  ];
+  it.each(STORE_STALLS)('gives the turn in the queue back before it writes to the store: a store that does not answer holds no queue, for %s', async (_what, setup, stalled, state) => {
+    const w = world();
+    await leave(w);
+    setup(w);
+    const never = (): Promise<void> => new Promise<void>(() => undefined);
+    const store: LeftStore = { list: () => w.store.list(), put: stalled === 'put' ? never : (e) => w.store.put(e), remove: stalled === 'remove' ? never : (id) => w.store.remove(id) };
+    const pass = runJanitorOnce({ ...w.deps, store });
+    await w.clock.advance(20_000);
+    expect(w.chain.submits).toHaveLength(1);
+    let ran = false;
+    void w.lane.run(async () => { ran = true; });
+    await settle();
+    expect(ran).toBe(true);
+    expect(one(await w.clock.run(pass)).state).toBe(state);
   });
 });
 
@@ -736,6 +836,12 @@ describe('the deps', () => {
     ['no tipSlot', () => ({ tipSlot: undefined as unknown as JanitorDeps['tipSlot'] })],
     ['no store', () => ({ store: undefined as unknown as LeftStore })],
     ['an inFlight that is not a function', () => ({ inFlight: true as unknown as JanitorDeps['inFlight'] })],
+    ['no inFlight', () => ({ inFlight: undefined as unknown as JanitorDeps['inFlight'] })],
+    ['a TTL margin below 0', () => ({ ttlMarginSlots: -1 })],
+    ['a TTL margin that is not a whole number', () => ({ ttlMarginSlots: 1.5 })],
+    ['a TTL margin that is NaN', () => ({ ttlMarginSlots: Number.NaN })],
+    ['a TTL margin that is text', () => ({ ttlMarginSlots: '600' as unknown as number })],
+    ['a TTL margin above one day of slots', () => ({ ttlMarginSlots: 86_401 })],
   ];
 
   it.each(BAD)('refuses %s: the pass says why and asks nothing, and startJanitor throws', async (_what, spoil) => {
@@ -750,13 +856,13 @@ describe('the deps', () => {
   });
 
   it('takes the least and the greatest bounds, and the defaults when a bound is not given: the twin', async () => {
-    const w = world({ entryTimeoutMs: 1, pollMs: 1, stopWaitMs: 1 });
+    const w = world({ entryTimeoutMs: 1, pollMs: 1, stopWaitMs: 1, ttlMarginSlots: 0 });
     await leave(w);
     expect((await go(w)).failure).toBeNull();
-    const longest = world({ entryTimeoutMs: 86_400_000, pollMs: 86_400_000, stopWaitMs: 86_400_000 });
+    const longest = world({ entryTimeoutMs: 86_400_000, pollMs: 86_400_000, stopWaitMs: 86_400_000, ttlMarginSlots: 86_400 });
     await leave(longest);
     expect((await go(longest)).failure).toBeNull();
-    expect([DEFAULT_ENTRY_TIMEOUT_MS, DEFAULT_END_POLL_MS, DEFAULT_STOP_WAIT_MS]).toStrictEqual([60_000, 5_000, 30_000]);
+    expect([DEFAULT_ENTRY_TIMEOUT_MS, DEFAULT_END_POLL_MS, DEFAULT_STOP_WAIT_MS, DEFAULT_TTL_MARGIN_SLOTS]).toStrictEqual([60_000, 5_000, 30_000, 600]);
   });
 
   it('names the report states in one list', () => {

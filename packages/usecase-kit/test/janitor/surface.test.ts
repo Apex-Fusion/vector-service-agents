@@ -23,7 +23,7 @@ describe('the folder', () => {
     expect(byName.runJanitorOnce).toBe(byPath.runJanitorOnce);
     expect(Object.keys(byName).sort()).toStrictEqual(
       [
-        'DEFAULT_END_POLL_MS', 'DEFAULT_ENTRY_TIMEOUT_MS', 'DEFAULT_STOP_WAIT_MS', 'DamagedLeftEntriesError', 'FileLeftStore', 'JANITOR_STATES', 'MemoryLeftStore', 'nodeLeftFs', 'parseLeftEntry',
+        'DEFAULT_END_POLL_MS', 'DEFAULT_ENTRY_TIMEOUT_MS', 'DEFAULT_STOP_WAIT_MS', 'DEFAULT_TTL_MARGIN_SLOTS', 'DamagedLeftEntriesError', 'FileLeftStore', 'JANITOR_STATES', 'MemoryLeftStore', 'nodeLeftFs', 'parseLeftEntry',
         'runJanitorOnce', 'startJanitor',
       ].sort(),
     );

@@ -5,5 +5,5 @@
 // The folder reads no environment variable and no key file. Every access to the ledger, the node, the keys, the queue and the clock goes through a parameter.
 export { DamagedLeftEntriesError, FileLeftStore, MemoryLeftStore, nodeLeftFs, parseLeftEntry } from './store.ts';
 export type { DamagedLeftEntry, LeftEntry, LeftFs, LeftStore } from './store.ts';
-export { DEFAULT_END_POLL_MS, DEFAULT_ENTRY_TIMEOUT_MS, DEFAULT_STOP_WAIT_MS, JANITOR_STATES, runJanitorOnce, startJanitor } from './janitor.ts';
+export { DEFAULT_END_POLL_MS, DEFAULT_ENTRY_TIMEOUT_MS, DEFAULT_STOP_WAIT_MS, DEFAULT_TTL_MARGIN_SLOTS, JANITOR_STATES, runJanitorOnce, startJanitor } from './janitor.ts';
 export type { JanitorDeps, JanitorEntryReport, JanitorReport, JanitorState } from './janitor.ts';

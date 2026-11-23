@@ -4,17 +4,20 @@
 // a key: only the Undelegate does.
 //
 // The rules of one pass, for each entry of the list, in this order. The janitor ends only an entry of its own list: an id that the list does not hold is never read and never ended, whatever the ledger shows.
-//   1. A sub-delegation that a run of this process still uses (`inFlight`) is left alone. The janitor does not end the delegation of a job that is running.
+//   1. A sub-delegation that a run of this process still uses (`inFlight`, which every caller gives) is left alone. The janitor does not end the delegation of a job that is running. If `inFlight` cannot tell, the
+//      sub-delegation is taken as in use, and the cause is logged.
 //   2. The ledger is read. A read that throws, gives no answer, or gives a value that is not a delegation with the id of the entry keeps the entry. A throw is never read as "not shown".
-//   3. The ledger shows nothing. The Delegate carries a TTL in its signed bytes, and it can land until the slot of the chain tip is at or past `delegateTtlSlot`. So the entry stays while the tip is before that slot.
-//      At or past it, the ledger is read once more, because the first read may be older than the tip: only a second answer of "not shown" removes the entry, since then the Delegate never landed and cannot land any
-//      more. A tip that cannot be read keeps the entry. The clock decides nothing here: it is never compared with the end of validity that the build port reported.
+//   3. The ledger shows nothing. The Delegate carries a TTL in its signed bytes, and it can land until the slot of the chain tip is at or past `delegateTtlSlot`. A fork that switches near that slot can put the Delegate
+//      in a block that the first chain did not have, so the entry stays until the tip is `ttlMarginSlots` slots past the TTL slot (600 by default). From that slot on, the ledger is read once more, because the first
+//      read may be older than the tip: only a second answer of "not shown" removes the entry, since then the Delegate did not land and cannot land any more. A tip that cannot be read keeps the entry. The clock decides
+//      nothing here: it is never compared with the end of validity that the build port reported.
 //   4. The ledger shows the delegation, and another transaction made it. The id comes from the seed output, and only one transaction can spend that output, so the Delegate of this run can never land. The entry is
 //      removed and the removal is logged. A hash that has not the form of a hash is not another transaction: the entry stays.
 //   5. The ledger shows the delegation, and the Delegate of this run made it. The janitor takes the signer of the key of the entry, and the queue of that key. An entry with no signer stays, with a line in the log.
 //      A busy queue is not used: the entry is skipped. In the queue the janitor builds the Undelegate, checks its BYTES with the rules of the end step of `withSubDelegation` (`undelegateTxProblem`), signs, sends,
-//      and reads the ledger until it no longer shows the delegation or the time of the entry ends. The turn in the queue is kept meanwhile. An entry whose delegation is gone is removed. An entry whose Undelegate was
-//      sent and whose delegation is still shown keeps the hash of that Undelegate.
+//      and reads the ledger until it no longer shows the delegation or the time of the entry ends. The turn in the queue is kept meanwhile, and it is given back before the janitor writes to the store. An entry whose
+//      delegation is gone is removed. An entry whose Undelegate was sent and whose delegation is still shown keeps the hash of that Undelegate. A refused Undelegate does not replace a hash that the entry holds: the
+//      first Undelegate can still land.
 // A pass makes one transaction at most for one entry. A pass never throws: each entry has its own try, and the report says what happened to it. Every wait on a port has a bound, and a port that gives no answer is a
 // typed result. The janitor reads no key: a signer is a parameter. A message of a port is cut to 200 printable characters before it reaches a detail or a log line.
 import { addressHexOf, delegationScriptProblem, takeTurn, undelegateTxProblem, within } from '../access/index.ts';
@@ -22,13 +25,23 @@ import type { Clock, DelegationChain, DelegationScript, SerialQueue, TxSigner } 
 import { accepted, refused, type Accepted, type DelegationId, type Refused } from '../protocol/index.ts';
 import { DamagedLeftEntriesError, parseLeftEntry, type DamagedLeftEntry, type LeftEntry, type LeftStore } from './store.ts';
 
-/** The longest time for one entry, in milliseconds: every call of a port and the wait for the ledger after the send share it. The default is 60 seconds. */
+/**
+ * The longest time for one entry, in milliseconds: the reads of the ledger and of the tip, the turn in the queue, the build, the send and the wait for the ledger after it share one deadline. Each call of the store
+ * has a bound of the same length of its own, and no call of the store is made while the turn in the queue is held. The default is 60 seconds.
+ */
 export const DEFAULT_ENTRY_TIMEOUT_MS = 60_000;
 /** The time between two reads of the ledger after the Undelegate was sent, in milliseconds. The default is 5 seconds. */
 export const DEFAULT_END_POLL_MS = 5_000;
 /** The longest time that `stop` waits for the pass in flight, in milliseconds. The default is 30 seconds. */
 export const DEFAULT_STOP_WAIT_MS = 30_000;
-/** The longest bound that any parameter takes: one day. A timer cannot hold much more, and a longer number would end at once. */
+/**
+ * The slots after the TTL slot of a Delegate that the janitor waits before it drops an entry that the ledger does not show. A fork that switches near the TTL can put the Delegate in a block that the first chain did
+ * not have. A slot lasts one second on the chain of the identity deployment, so the default is 10 minutes: 600 slots.
+ */
+export const DEFAULT_TTL_MARGIN_SLOTS = 600;
+/** The most slots that `ttlMarginSlots` can be: one day. */
+const MAX_TTL_MARGIN_SLOTS = 86_400;
+/** The longest bound in milliseconds that any other parameter takes: one day. A timer cannot hold much more, and a longer number would end at once. */
 const MAX_WAIT_MS = 86_400_000;
 
 export const JANITOR_STATES = [
@@ -37,14 +50,15 @@ export const JANITOR_STATES = [
 /**
  * What a pass did with one entry.
  * - `ended`: the Undelegate landed. The ledger no longer shows the delegation, and the entry is removed.
- * - `dropped_not_made`: the ledger does not show the delegation, and the tip is at or past the TTL slot of its Delegate, so the Delegate never lands. The entry is removed.
+ * - `dropped_not_made`: the ledger does not show the delegation, and the tip is at or past the TTL slot of its Delegate plus the margin, so the Delegate does not land any more. The entry is removed.
  * - `dropped_other`: the ledger shows a delegation with this id that another transaction made, so the Delegate of this run never lands. The entry is removed.
- * - `kept_waiting`: the ledger does not show the delegation, and the tip is before the TTL slot, so the Delegate can still land.
- * - `kept_busy`: the queue of the key is busy, or a run of this process still uses the sub-delegation. Nothing was sent.
+ * - `kept_waiting`: the ledger does not show the delegation, and the tip is before the TTL slot plus the margin, so the Delegate may still land.
+ * - `kept_busy`: the queue of the key is busy, or a run of this process still uses the sub-delegation. Nothing was sent. A cause that is a failure of a port (`inFlight` that throws or does not answer true or false, a
+ *   queue whose `busy` is not true or false) is logged.
  * - `kept_unreadable`: the ledger or the tip could not be read, or gave a value that is not usable. Nothing was sent.
  * - `kept_no_signer`: no usable signer is given for the key of the entry. Nothing was sent.
  * - `kept_end_pending`: the Undelegate was sent, and the ledger still shows the delegation when the time of the entry ended. The entry keeps the hash of the Undelegate.
- * - `kept_end_failed`: the Undelegate was not sent, or the node refused it. The detail says why.
+ * - `kept_end_failed`: the Undelegate was not sent, or the node refused it. The detail says why. The entry keeps the hash of an Undelegate that it held before.
  * - `kept_store_failed`: the entry should be removed, and the store could not remove it.
  */
 export type JanitorState = (typeof JANITOR_STATES)[number];
@@ -81,29 +95,34 @@ export interface JanitorDeps {
   readonly clock: Clock;
   readonly log: (line: string) => void;
   /**
-   * True while a run of this process still uses the sub-delegation `id`. The reference of a run is in the list from before its Delegate is sent until its end step has returned, so a pass that runs at that time would end the
-   * delegation of a job that is running. A service that makes sub-delegations in the process of the janitor must give this function. It marks the id when `beforeSend` is called and clears it after the run has returned.
-   * An answer that is not true or false counts as true, and so does a throw.
+   * True while a run of this process still uses the sub-delegation `id`. REQUIRED. The reference of a run is in the list from before its Delegate is sent until its end step has returned, so a pass that runs at that time
+   * (for example while the run waits for its 30 confirmations) would end the delegation of a job that is running. A service that makes sub-delegations marks the id when `beforeSend` is called, and clears it after the run
+   * has returned and the list is up to date. A process that makes no sub-delegation gives a function that answers false. An answer that is not true or false counts as true, and so does a throw. Each is logged.
    */
-  readonly inFlight?: (id: DelegationId) => boolean;
+  readonly inFlight: (id: DelegationId) => boolean;
   /** The longest time for one entry. A whole number of milliseconds from 1 to one day. The default is DEFAULT_ENTRY_TIMEOUT_MS. */
   readonly entryTimeoutMs?: number;
   /** The time between two reads of the ledger after the Undelegate was sent. The default is DEFAULT_END_POLL_MS. */
   readonly pollMs?: number;
   /** The longest time that `stop` of `startJanitor` waits for the pass in flight. The default is DEFAULT_STOP_WAIT_MS. */
   readonly stopWaitMs?: number;
+  /** The slots after the TTL slot of a Delegate that the janitor waits before it drops an entry that the ledger does not show. A whole number from 0 to 86,400. The default is DEFAULT_TTL_MARGIN_SLOTS. */
+  readonly ttlMarginSlots?: number;
 }
 
 interface Limits {
   readonly entryTimeoutMs: number;
   readonly pollMs: number;
   readonly stopWaitMs: number;
+  readonly ttlMarginSlots: number;
 }
 
 interface Context {
   readonly deps: JanitorDeps;
   readonly limits: Limits;
   readonly clock: Clock;
+  /** The log of the deps, which never throws. */
+  readonly log: (line: string) => void;
 }
 
 const TX_HASH = /^[0-9a-f]{64}$/;
@@ -130,12 +149,14 @@ function limitsOf(deps: JanitorDeps): Accepted<Limits> | Refused<'bad_deps'> {
   if (scriptProblem !== null) return bad(scriptProblem);
   if (!isFunction(deps.signerOf) || !isFunction(deps.queueOf) || !isFunction(deps.tipSlot) || !isFunction(deps.log)) return bad('signerOf, queueOf, tipSlot and log must be functions');
   if (typeof deps.clock !== 'object' || deps.clock === null || !isFunction(deps.clock.now) || !isFunction(deps.clock.sleep)) return bad('clock must be the clock port: an object with now and sleep');
-  if (deps.inFlight !== undefined && !isFunction(deps.inFlight)) return bad('inFlight must be a function when it is given');
+  if (!isFunction(deps.inFlight)) return bad('inFlight must be a function that says whether a run of this process still uses a sub-delegation: a process with no runs gives one that answers false');
   const entryTimeoutMs = deps.entryTimeoutMs === undefined ? DEFAULT_ENTRY_TIMEOUT_MS : deps.entryTimeoutMs;
   const pollMs = deps.pollMs === undefined ? DEFAULT_END_POLL_MS : deps.pollMs;
   const stopWaitMs = deps.stopWaitMs === undefined ? DEFAULT_STOP_WAIT_MS : deps.stopWaitMs;
   if (![entryTimeoutMs, pollMs, stopWaitMs].every((ms) => isWhole(ms, 1, MAX_WAIT_MS))) return bad(`entryTimeoutMs, pollMs and stopWaitMs must be whole numbers from 1 to ${MAX_WAIT_MS}`);
-  return accepted({ entryTimeoutMs, pollMs, stopWaitMs });
+  const ttlMarginSlots = deps.ttlMarginSlots === undefined ? DEFAULT_TTL_MARGIN_SLOTS : deps.ttlMarginSlots;
+  if (!isWhole(ttlMarginSlots, 0, MAX_TTL_MARGIN_SLOTS)) return bad(`ttlMarginSlots must be a whole number from 0 to ${MAX_TTL_MARGIN_SLOTS}`);
+  return accepted({ entryTimeoutMs, pollMs, stopWaitMs, ttlMarginSlots });
 }
 
 /** A log that never throws: the log is the last place to say that something went wrong. */
@@ -240,16 +261,25 @@ function queueFor(ctx: Context, keyHash: string): Accepted<Lane> | Refused<'bad_
   return accepted(lane);
 }
 
-/** Why the janitor leaves the entry alone because a run of this process uses it, or null. An answer that is not true or false counts as true. */
-function usedByRun(ctx: Context, id: DelegationId): string | null {
-  if (ctx.deps.inFlight === undefined) return null;
+/**
+ * Whether a run of this process uses the entry, or null when none does. `failure` is true when the janitor cannot tell: `inFlight` threw, or it answered something that is not true or false. The entry is then taken as in use,
+ * and the cause is logged.
+ */
+function usedByRun(ctx: Context, id: DelegationId): { readonly detail: string; readonly failure: boolean } | null {
   try {
     const uses: unknown = ctx.deps.inFlight(id);
     if (uses === false) return null;
-    return uses === true ? 'a run of this process still uses the sub-delegation' : 'inFlight did not answer true or false, so the sub-delegation is taken as in use';
+    if (uses === true) return { detail: 'a run of this process still uses the sub-delegation', failure: false };
+    return { detail: 'inFlight did not answer true or false, so the sub-delegation is taken as in use', failure: true };
   } catch (error) {
-    return `inFlight failed (${errorText(error)}), so the sub-delegation is taken as in use`;
+    return { detail: `inFlight failed (${errorText(error)}), so the sub-delegation is taken as in use`, failure: true };
   }
+}
+
+/** `kept_busy` for a cause that is a failure of a port. The pass logs no `kept_busy` of the plain kind, so this is the one line that says why the entry is kept. */
+function busyByFailure(ctx: Context, id: DelegationId, detail: string): JanitorEntryReport {
+  ctx.log(`janitor: kept_busy ${id}: ${detail}`);
+  return result(id, 'kept_busy', detail);
 }
 
 /** Why the store did not do what it was asked, from an answer that is not a value. */
@@ -271,38 +301,59 @@ async function ended(ctx: Context, entry: LeftEntry, endTxHash: string): Promise
     : result(id, 'kept_store_failed', `the Undelegate landed, and ${storeFailure('remove the entry', removed, ctx.limits.entryTimeoutMs)}`, endTxHash);
 }
 
-/** Keeps the entry after an Undelegate was tried, with the hash of that Undelegate in the store. A store that cannot write the hash does not change the state of the end; the detail says so. */
+/**
+ * Keeps the entry after an Undelegate was tried, with the hash of that Undelegate in the store. A hash that the entry holds already stays when the new Undelegate failed: the first one can still land, and the refused
+ * second one must not hide it. A store that cannot write the hash does not change the state of the end; the detail says so.
+ */
 async function keepAfterSend(ctx: Context, entry: LeftEntry, state: 'kept_end_failed' | 'kept_end_pending', detail: string, endTxHash: string): Promise<JanitorEntryReport> {
   const { left } = entry;
-  if (left.endTxHash === endTxHash) return result(left.id, state, detail, endTxHash);
+  const keepsHash = left.endTxHash === endTxHash || (state === 'kept_end_failed' && left.endTxHash !== null);
+  if (keepsHash) return result(left.id, state, detail, endTxHash);
   const saved = await answerOf(ctx.clock, ctx.limits.entryTimeoutMs, () => ctx.deps.store.put({ left: { ...left, endTxHash }, signer_key_hash: entry.signer_key_hash }));
   const note = saved.state === 'value' ? '' : ` ${storeFailure('write the hash of the Undelegate', saved, ctx.limits.entryTimeoutMs)}.`;
   return result(left.id, state, `${detail}${note}`, endTxHash);
 }
 
 /**
+ * What the turn in the queue gave. The janitor writes to the store only after it has given the turn back, so a store that is slow never holds the queue of the key. `report` needs no write. `ended`: the delegation
+ * is gone, and the entry is to be removed. `kept`: the entry stays, and it holds the hash of the Undelegate that was tried.
+ */
+type Outcome =
+  | { readonly kind: 'report'; readonly report: JanitorEntryReport }
+  | { readonly kind: 'ended'; readonly endTxHash: string }
+  | { readonly kind: 'kept'; readonly state: 'kept_end_failed' | 'kept_end_pending'; readonly detail: string; readonly endTxHash: string };
+
+/**
  * Reads the ledger until it no longer shows the delegation or the time of the entry ends. Only "not shown" counts as the end: a read that fails, or shows the delegation, is read again. The number of reads is
  * bounded as well as the time, so a clock that does not move cannot make a wait with no end.
  */
-async function watchEnd(ctx: Context, entry: LeftEntry, deadline: number, endTxHash: string): Promise<JanitorEntryReport> {
+async function watchEnd(ctx: Context, entry: LeftEntry, deadline: number, endTxHash: string): Promise<Outcome> {
   const polls = Math.ceil(ctx.limits.entryTimeoutMs / ctx.limits.pollMs) + 1;
   for (let poll = 1; ; poll += 1) {
     const seen = await seeOn(ctx, entry.left.id, deadline);
-    if (seen.state === 'absent') return ended(ctx, entry, endTxHash);
+    if (seen.state === 'absent') return { kind: 'ended', endTxHash };
     const why = seen.state === 'unreadable' ? `after the Undelegate was sent, ${seen.detail}` : 'the ledger still shows the sub-delegation after the Undelegate was sent';
-    if (poll >= polls || deadline - ctx.clock.now() <= ctx.limits.pollMs) return keepAfterSend(ctx, entry, 'kept_end_pending', why, endTxHash);
+    if (poll >= polls || deadline - ctx.clock.now() <= ctx.limits.pollMs) return { kind: 'kept', state: 'kept_end_pending', detail: why, endTxHash };
     await ctx.clock.sleep(ctx.limits.pollMs);
   }
 }
 
+/** Writes to the store what an outcome needs. The turn in the queue is given back before this runs. */
+async function settle(ctx: Context, entry: LeftEntry, outcome: Outcome): Promise<JanitorEntryReport> {
+  if (outcome.kind === 'report') return outcome.report;
+  if (outcome.kind === 'ended') return ended(ctx, entry, outcome.endTxHash);
+  return keepAfterSend(ctx, entry, outcome.state, outcome.detail, outcome.endTxHash);
+}
+
 /**
- * Builds the Undelegate of the entry, checks its bytes, signs it, sends it, and watches the ledger. The turn in the queue is held by the caller. At most one transaction is made. The bytes are checked with the
- * rules of the end step, for the id of the entry, the wallet of the signer and the signer alone: a transaction that burns another token, pays another address, or names another signer gets no signature.
+ * Builds the Undelegate of the entry, checks its bytes, signs it, sends it, and watches the ledger. The caller holds the turn in the queue meanwhile. This function writes nothing to the store: it gives an outcome,
+ * and the caller writes after it has given the turn back. At most one transaction is made. The bytes are checked with the rules of the end step, for the id of the entry, the wallet of the signer and the signer
+ * alone: a transaction that burns another token, pays another address, or names another signer gets no signature.
  */
-async function undelegate(ctx: Context, entry: LeftEntry, usable: Usable, deadline: number): Promise<JanitorEntryReport> {
+async function undelegate(ctx: Context, entry: LeftEntry, usable: Usable, deadline: number): Promise<Outcome> {
   const { left } = entry;
   const { signer, walletHex } = usable;
-  const failed = (detail: string): JanitorEntryReport => result(left.id, 'kept_end_failed', detail);
+  const failed = (detail: string): Outcome => ({ kind: 'report', report: result(left.id, 'kept_end_failed', detail) });
   const ms = timeLeft(ctx, deadline);
   const build = await answerOf(ctx.clock, ms, () => ctx.deps.chain.buildUndelegate({ changeAddress: signer.address, nowMs: ctx.clock.now(), id: left.id, signer: signer.keyHash }));
   if (build.state === 'timed_out') return failed(`the build of the Undelegate did not answer within ${ms} ms`);
@@ -321,12 +372,12 @@ async function undelegate(ctx: Context, entry: LeftEntry, usable: Usable, deadli
   const signedText: string = signed;
   if (deadline - ctx.clock.now() <= 0) return failed('the time of the entry ended before the Undelegate was sent');
   const sent = await answerOf(ctx.clock, timeLeft(ctx, deadline), () => ctx.deps.chain.submit(signedText));
-  if (sent.state === 'threw') return keepAfterSend(ctx, entry, 'kept_end_failed', `the Undelegate was not accepted by the node: ${errorText(sent.error)}`, built.txHash);
+  if (sent.state === 'threw') return { kind: 'kept', state: 'kept_end_failed', detail: `the Undelegate was not accepted by the node: ${errorText(sent.error)}`, endTxHash: built.txHash };
   // A send that gave no answer may have reached the node: the ledger tells, as it does after a send that was accepted.
   return watchEnd(ctx, entry, deadline, built.txHash);
 }
 
-/** The live delegation of the run: takes the signer and the queue of the key, and ends it in the queue. */
+/** The live delegation of the run: takes the signer and the queue of the key, ends it in the queue, and writes to the store after the turn in the queue is given back. */
 async function end(ctx: Context, entry: LeftEntry, deadline: number): Promise<JanitorEntryReport> {
   const { left, signer_key_hash: keyHash } = entry;
   const usable = signerFor(ctx, keyHash);
@@ -334,15 +385,18 @@ async function end(ctx: Context, entry: LeftEntry, deadline: number): Promise<Ja
   const lane = queueFor(ctx, keyHash);
   if (!lane.ok) return result(left.id, 'kept_end_failed', lane.detail);
   const busy: unknown = lane.value.busy;
-  if (busy !== false) return result(left.id, 'kept_busy', busy === true ? 'the queue of the key is busy: a transaction of this key waits or runs' : 'the queue of the key does not say whether it is busy, so it is taken as busy');
+  if (busy === true) return result(left.id, 'kept_busy', 'the queue of the key is busy: a transaction of this key waits or runs');
+  if (busy !== false) return busyByFailure(ctx, left.id, 'the queue of the key does not say whether it is busy, so it is taken as busy');
   const turn = await takeTurn(lane.value, ctx.clock, timeLeft(ctx, deadline));
   if (turn.state === 'timed_out') return result(left.id, 'kept_busy', 'the turn in the queue of the key did not come before the time of the entry ended');
   if (turn.state === 'failed') return result(left.id, 'kept_end_failed', `the queue of the key failed: ${errorText(turn.error)}`);
+  let outcome: Outcome;
   try {
-    return await undelegate(ctx, entry, usable.value, deadline);
+    outcome = await undelegate(ctx, entry, usable.value, deadline);
   } finally {
     turn.release();
   }
+  return settle(ctx, entry, outcome);
 }
 
 /** One entry: the rules of the head of this file, in order. */
@@ -350,21 +404,21 @@ async function tend(ctx: Context, entry: LeftEntry): Promise<JanitorEntryReport>
   const { left } = entry;
   const deadline = ctx.clock.now() + ctx.limits.entryTimeoutMs;
   const using = usedByRun(ctx, left.id);
-  if (using !== null) return result(left.id, 'kept_busy', using);
+  if (using !== null) return using.failure ? busyByFailure(ctx, left.id, using.detail) : result(left.id, 'kept_busy', using.detail);
   let seen = await seeOn(ctx, left.id, deadline);
   if (seen.state === 'unreadable') return result(left.id, 'kept_unreadable', seen.detail);
   if (seen.state === 'absent') {
     const tip = await tipOf(ctx, deadline);
     if (!tip.ok) return result(left.id, 'kept_unreadable', tip.detail);
-    if (tip.value < left.delegateTtlSlot) {
-      return result(left.id, 'kept_waiting', `the Delegate is not on the ledger, and the tip (slot ${tip.value}) is before its TTL (slot ${left.delegateTtlSlot}), so it can still land`);
-    }
-    // The first read may be older than the tip: the Delegate can land in a block before the TTL while the tip moves past it. Only an answer that is read after the tip is at or past the TTL proves that it never landed.
+    // A Delegate can land until the tip is at or past its TTL slot. A fork can switch near that slot, and the chain that wins can hold the Delegate in a block that the first chain did not have. So the entry
+    // stays for the margin of slots after the TTL as well, and only a tip at or past that slot lets the janitor drop it.
+    const dropAt = left.delegateTtlSlot + ctx.limits.ttlMarginSlots;
+    const from = `slot ${dropAt} (its TTL, slot ${left.delegateTtlSlot}, and a margin of ${ctx.limits.ttlMarginSlots} slots)`;
+    if (tip.value < dropAt) return result(left.id, 'kept_waiting', `the Delegate is not on the ledger, and the tip (slot ${tip.value}) is before ${from}, so it may still land`);
+    // The first read may be older than the tip: the Delegate can land in a block before the TTL while the tip moves past it. Only an answer that is read after the tip is at or past the slot above proves that it did not land.
     seen = await seeOn(ctx, left.id, deadline);
     if (seen.state === 'unreadable') return result(left.id, 'kept_unreadable', seen.detail);
-    if (seen.state === 'absent') {
-      return drop(ctx, left.id, 'dropped_not_made', `the Delegate is not on the ledger, and the tip (slot ${tip.value}) is at or past its TTL (slot ${left.delegateTtlSlot}), so it never lands`);
-    }
+    if (seen.state === 'absent') return drop(ctx, left.id, 'dropped_not_made', `the Delegate is not on the ledger, and the tip (slot ${tip.value}) is at or past ${from}, so it does not land any more`);
   }
   if (seen.txHash !== left.delegateTxHash) {
     return drop(ctx, left.id, 'dropped_other', `the ledger shows a delegation with this id that the transaction ${seen.txHash} made, and not the Delegate of this run, so that Delegate never lands`);
@@ -389,7 +443,7 @@ async function pass(deps: JanitorDeps, limits: Limits, stopped: () => boolean): 
     return { entries: [], damaged: [], failure: detail };
   };
   try {
-    const ctx: Context = { deps, limits, clock: deps.clock };
+    const ctx: Context = { deps, limits, clock: deps.clock, log };
     const listed = await answerOf(ctx.clock, limits.entryTimeoutMs, () => deps.store.list());
     const damaged: DamagedLeftEntry[] = [];
     let items: readonly unknown[];
