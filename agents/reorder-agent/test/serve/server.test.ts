@@ -335,10 +335,12 @@ describe('the open route POST /cosign/delegate', () => {
     expect((await cosign(second.origin, requestOf(one.hex))).status).toBe(200);
   });
 
-  test('answers a method that is not POST with no signature', async () => {
+  test('answers a method that is not POST with the 404 not_found of the service, and no signature', async () => {
     const { origin } = await cosignServer(tempDir());
-    const answered = await fetch(`${origin}/cosign/delegate`);
-    expect([404, 405]).toContain(answered.status);
-    expect(await answered.text()).not.toContain('transaction');
+    for (const method of ['GET', 'PUT', 'DELETE']) {
+      const answered = await fetch(`${origin}/cosign/delegate`, { method });
+      expect([method, answered.status], method).toStrictEqual([method, 404]);
+      expect(await answered.json(), method).toStrictEqual({ error: 'not_found' });
+    }
   });
 });

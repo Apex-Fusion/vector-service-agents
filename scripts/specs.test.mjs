@@ -44,6 +44,8 @@ const AGENTS = {
   'document-pipeline': { profile: 'deployed', capability: 'document.pipeline.ocr-summary.v1', model: 'document-pipeline-v1', status: DP_STATUS, record: DP_HAS_RECORD },
   'audio-snippets': { profile: 'deployed', capability: 'audio.transcript.snippets.v1', model: 'audio-snippets-v1', status: AS_STATUS, record: AS_HAS_RECORD },
   advocate: { profile: 'deployed', capability: 'research.advocate.onesided.v1', model: 'advocate-v1', status: AD_STATUS, record: AD_HAS_RECORD },
+  'reorder-agent': { profile: 'use-case', capability: 'supplychain.reorder.po.v1', model: 'reorder-agent-v1', status: 'PROPOSED (built, not deployed). Since 2026-11-23.', record: NO_RECORD },
+  'order-desk': { profile: 'use-case', capability: 'supplychain.order.accept.v1', status: 'PROPOSED (built, not deployed). Since 2026-11-23.', record: NO_RECORD, adverts: 3 },
 };
 // The tests of the guide, the README table and the design read the entries of the deployed agents only. A use-case page has an entry in AGENTS and is not one of them.
 const DEPLOYED_AGENTS = Object.fromEntries(Object.entries(AGENTS).filter(([, agent]) => agent.profile === 'deployed'));
@@ -121,16 +123,19 @@ const payloadProblems = (text, { profile }) => [
   ] : []),
 ].filter(Boolean);
 
-/** Terms are lovelace fields printed with six decimals. */
-const termsProblems = (text) => {
+/** Terms are lovelace fields printed with six decimals. A page has one group of three rows of price and bonds for each advert of its entry (`adverts`, one by default), in the order Price, Supplier bond, Buyer bond. */
+const TERMS_ROWS = ['Price', 'Supplier bond', 'Buyer bond'];
+const termsProblems = (text, { adverts = 1 } = {}) => {
   const rows = [...section(text, 'Terms').matchAll(/^\| (Price|Supplier bond|Buyer bond) \| (\d+) \| (\d+\.\d{6}) \|$/gm)];
+  const wanted = TERMS_ROWS.length * adverts;
   return [
-    rows.length !== 3 && problem('terms-rows', `Terms has ${rows.length} rows of price and bonds, and wants 3`),
+    rows.length !== wanted && problem('terms-rows', `Terms has ${rows.length} rows of price and bonds, and wants ${wanted}`),
+    rows.length === wanted && rows.some(([, label], at) => label !== TERMS_ROWS[at % TERMS_ROWS.length]) && problem('terms-order', `the rows of price and bonds stand in groups in the order ${TERMS_ROWS.join(', ')}`),
     ...rows.filter(([, , lovelace, printed]) => (Number(lovelace) / 1_000_000).toFixed(6) !== printed).map(([, label]) => problem('terms-decimals', `${label} is not printed with six decimals`)),
   ].filter(Boolean);
 };
 
-const pageProblems = (text, entry) => [...structureProblems(text, entry), ...wordProblems(text, entry), ...identityProblems(text, entry), ...payloadProblems(text, entry), ...termsProblems(text)];
+const pageProblems = (text, entry) => [...structureProblems(text, entry), ...wordProblems(text, entry), ...identityProblems(text, entry), ...payloadProblems(text, entry), ...termsProblems(text, entry)];
 const rulesOf = (problems) => problems.map((p) => p.rule);
 
 for (const [name, entry] of Object.entries(AGENTS)) {
@@ -152,12 +157,12 @@ for (const [name, entry] of Object.entries(AGENTS)) {
   });
 
   test(`${name}: Terms are lovelace fields printed with six decimals`, () => {
-    assert.deepEqual(termsProblems(read(name)), []);
+    assert.deepEqual(termsProblems(read(name), entry), []);
   });
 }
 
 // ---- The two profiles, on pages that this test makes ----
-// The use-case profile has no page in specs/ yet. These fixtures show what it accepts and what it refuses, with the functions that check the real pages.
+// These fixtures show what each profile accepts and what it refuses, with the functions that check the real pages.
 // Each refused page is the accepted page with one change, and the test names the rule that the change breaks.
 const FIXTURE_ENTRIES = {
   deployed: { profile: 'deployed', capability: 'example.fixture.deployed.v1', status: 'DEPLOYED (registered and staked 2026-11-01, advertised 2026-11-01, one first-party job settled 2026-11-02). Since 2026-11-02.', record: HAS_RECORD },
@@ -260,6 +265,25 @@ test('the deployed profile keeps its rules beside the use-case profile, and refu
     assert.notEqual(variant, page, `${what}: the page changes`);
     assert.deepEqual(rulesOf(pageProblems(variant, checked)), rules, what);
   }
+});
+
+test('the use-case profile counts the rows of price and bonds for each advert of its entry: nine rows under adverts 3, three rows by default, and a group in the wrong order is refused', () => {
+  const entry = FIXTURE_ENTRIES['use-case'];
+  const three = { ...entry, adverts: 3 };
+  const group = ['Price', 'Supplier bond', 'Buyer bond'];
+  const own = ['| Price | 3000000 | 3.000000 |', '| Supplier bond | 1000000 | 1.000000 |', '| Buyer bond | 1000000 | 1.000000 |'].join('\n');
+  // The accepted page with its three rows of price and bonds replaced by the rows of `labels`, each printed with six decimals.
+  const withRows = (labels) => {
+    const page = examplePage(entry);
+    assert.ok(page.includes(own), 'the page has its three rows');
+    return page.replace(own, labels.map((label, at) => `| ${label} | ${(at + 1) * 1_000_000} | ${(at + 1).toFixed(6)} |`).join('\n'));
+  };
+  assert.deepEqual(pageProblems(withRows(group), entry), [], 'three rows pass under the default');
+  assert.deepEqual(pageProblems(withRows([...group, ...group, ...group]), three), [], 'nine rows pass under adverts 3');
+  assert.deepEqual(rulesOf(pageProblems(withRows(group), three)), ['terms-rows'], 'three rows fail under adverts 3');
+  assert.deepEqual(rulesOf(pageProblems(withRows([...group, ...group, ...group]), entry)), ['terms-rows'], 'nine rows fail under the default');
+  assert.deepEqual(rulesOf(pageProblems(withRows([...group, 'Supplier bond', 'Price', 'Buyer bond', ...group]), three)), ['terms-order'], 'a group in the wrong order fails');
+  assert.deepEqual(rulesOf(pageProblems(withRows([...group, ...group, 'Price', 'Price', 'Price']), three)), ['terms-order'], 'a group of one label fails');
 });
 
 test('specs/ holds one page for each agent of the list, whatever the number: ten agents want ten files, and a missing file or an extra file is refused', () => {
@@ -1268,6 +1292,8 @@ test('the READMEs: Agent History is DEPLOYED since 2026-10-15, Document Pipeline
     '| Document Pipeline | `document.pipeline.ocr-summary.v1` | DEPLOYED |',
     '| Audio Snippets | `audio.transcript.snippets.v1` | DEPLOYED |',
     '| Advocate | `research.advocate.onesided.v1` | DEPLOYED |',
+    '| Reorder Agent | `supplychain.reorder.po.v1` | PROPOSED |',
+    '| Order Desk | `supplychain.order.accept.v1` | PROPOSED |',
   ]);
   // No README says of an agent that it is not advertised or waits for its deployment: the four are advertised. The README of Advocate names "no advert" once, in its rule of the ceiling of the chat job.
   for (const [name, text] of [['agents/agent-history/README.md', agentReadme], ['agents/document-pipeline/README.md', pipelineReadme], ['agents/audio-snippets/README.md', snippetsReadme], ['agents/advocate/README.md', advocateReadme.replace('when no advert at or under it can be', '')], ['README.md', rootReadme]]) assert.equal(text.match(/not yet advertised|no advert\b|not posted|not in service|<ADVERT_REF>|waits for its deployment/i), null, name);
@@ -1280,7 +1306,7 @@ test('README: the section "Hire Agent History" sits between the status table and
   assert.equal(readme.split(heading).length - 1, 1, 'one such section');
   const start = readme.indexOf(heading);
   const links = readme.indexOf('\n- Hire one: `docs/HIRE.md`\n');
-  assert.ok(readme.slice(0, start).trimEnd().endsWith('| Advocate | `research.advocate.onesided.v1` | DEPLOYED |'), 'right after the status table');
+  assert.ok(readme.slice(0, start).trimEnd().endsWith('| Order Desk | `supplychain.order.accept.v1` | PROPOSED |'), 'right after the status table');
   assert.ok(links > start, 'before the link list');
   const body = readme.slice(start + heading.length, links);
   const lines = body.split('\n').filter((l) => l.trim() !== '');

@@ -253,7 +253,7 @@
   },
   "status": {
     "chip": "proposed",
-    "since": "2026-11-16"
+    "since": "2026-11-23"
   },
   "gaps": [
     "The model chooses the lot. Nothing in this agent limits that choice: the vault of the hirer refuses a lot above the delegated amount, and the hirer approves the order or does not.",

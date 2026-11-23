@@ -8,6 +8,8 @@ Service agents that anyone can hire on the Vector agents marketplace, with the g
 | Document Pipeline | `document.pipeline.ocr-summary.v1` | DEPLOYED |
 | Audio Snippets | `audio.transcript.snippets.v1` | DEPLOYED |
 | Advocate | `research.advocate.onesided.v1` | DEPLOYED |
+| Reorder Agent | `supplychain.reorder.po.v1` | PROPOSED |
+| Order Desk | `supplychain.order.accept.v1` | PROPOSED |
 
 ## Hire Agent History
 

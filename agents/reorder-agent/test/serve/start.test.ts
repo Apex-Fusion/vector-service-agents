@@ -435,7 +435,7 @@ describe('src/index.ts as a process', () => {
       const base = `http://127.0.0.1:${port}`;
       expect(await (await fetch(`${base}/healthz`)).json()).toStrictEqual({ ok: true });
       const manifest = (await (await fetch(`${base}/agent.json`)).json()) as { name: string; status: unknown; keys: { buyer_pkh: string } };
-      expect([manifest.name, manifest.status, manifest.keys.buyer_pkh]).toStrictEqual(['Reorder Agent', { chip: 'proposed', since: '2026-11-16' }, keyOf(SERVICE_HEX).pkh]);
+      expect([manifest.name, manifest.status, manifest.keys.buyer_pkh]).toStrictEqual(['Reorder Agent', { chip: 'proposed', since: '2026-11-23' }, keyOf(SERVICE_HEX).pkh]);
       expect((await fetch(`${base}/`, { method: 'POST', body: '[]' })).status).toBe(401);
       expect(p.out()).toMatch(/^\[reorder-agent\] listening on 127\.0\.0\.1:\d+; manifest [0-9a-f]{64}; wallets \(service, delegation 1, delegation 2\) addr1/m);
       for (const secret of secretsOf()) expect((p.out() + p.err()).toLowerCase()).not.toContain(secret.toLowerCase());

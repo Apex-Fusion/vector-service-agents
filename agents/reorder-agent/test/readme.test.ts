@@ -2,7 +2,7 @@
 // The README names every setting the service reads, every code it answers with, and the numbers of its jobs. These tests keep the page and the code from parting: a setting that the code reads and the table does
 // not name fails, so does a name in the table that no code reads, a code with the wrong status, and a number that is not the code's.
 import { describe, test, expect } from 'vitest';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { HEARTBEAT_MS, MAX_BODY, RESERVATION_MS, SHUTDOWN_WAIT_MS } from '@vsa/service-kit';
 import { COSIGN_STATUS } from '@vsa/usecase-kit/cosign';
 import { INVENTORY_CAPABILITIES } from '@vsa/usecase-kit/inventory';
@@ -27,6 +27,9 @@ const defaultOf = (name: string): string => settingsRows().find(([names]) => tic
 /** The rows of a table of the Errors section: the statuses of the row, and the codes in backticks of its second cell. */
 const codeRows = (text: string): Array<{ statuses: number[]; codes: string[] }> =>
   text.split('\n').filter((line) => /^\| \d/.test(line)).map(cellsOf).map(([status, cell]) => ({ statuses: status.split(', ').map(Number), codes: ticks(cell).filter((code) => /^[a-z_]+$/.test(code)) }));
+const page = readFileSync(new URL('specs/reorder-agent.md', root), 'utf8');
+/** A sub-section of the page of the agent, from its heading to the next heading. */
+const pageSub = (heading: string): string => (page.split(`\n### ${heading}\n`)[1] ?? '').split(/\n##+ /)[0];
 
 describe('agents/reorder-agent/README.md', () => {
   test('line 3 is the capability sentence of the manifest and the capability id', () => {
@@ -66,29 +69,33 @@ describe('agents/reorder-agent/README.md', () => {
     }
   });
 
-  test('the first Errors table gives each code its status, as the kit has it, and the co-sign table gives the codes of the co-sign route', () => {
+  test('the first Errors table gives each code its status, as the kit has it, the co-sign table gives the codes of the co-sign route, and the page of the agent has the same two tables', () => {
     const [job, cosign] = section('Errors').split('The co-sign route has its own codes:');
-    // The three codes that the shared server answers with itself are not in the table of the protocol.
-    const serverOwn: Record<string, number> = { bad_context: 400, shutting_down: 503, internal: 500 };
+    // The codes that the shared server answers with itself are not all in the table of the protocol.
+    const serverOwn: Record<string, number> = { bad_context: 400, not_found: 404, shutting_down: 503, internal: 500 };
     const jobRows = codeRows(job);
-    expect(jobRows.flatMap((row) => row.codes)).toStrictEqual(['bad_wire', 'request_too_large', 'bad_shape', 'bad_context', 'delegation_not_mine', 'unauthorized', 'busy', 'shutting_down', 'internal']);
+    expect(jobRows.flatMap((row) => row.codes)).toStrictEqual(['bad_wire', 'request_too_large', 'bad_shape', 'bad_context', 'delegation_not_mine', 'unauthorized', 'not_found', 'busy', 'shutting_down', 'internal']);
     for (const { statuses, codes } of jobRows) for (const code of codes) expect([code, statuses], code).toStrictEqual([code, [(ERROR_STATUS as Record<string, number>)[code] ?? serverOwn[code]]]);
+    // The handler of the kit answers 405 to a method that is not POST. The service registers the route for POST only, so any other method gets the 404 of the service, and no table has a 405.
     const cosignRows = codeRows(cosign);
-    expect(cosignRows.flatMap((row) => row.codes).sort()).toStrictEqual(Object.keys(COSIGN_STATUS).sort());
-    for (const { statuses, codes } of cosignRows) for (const code of codes) expect(statuses, code).toContain((COSIGN_STATUS as Record<string, number>)[code]);
+    expect(COSIGN_STATUS.method_not_allowed).toBe(405);
+    expect(cosignRows.flatMap((row) => row.codes).sort()).toStrictEqual(Object.keys(COSIGN_STATUS).filter((code) => code !== 'method_not_allowed').sort());
+    for (const { statuses, codes } of cosignRows) for (const code of codes) expect([code, statuses], code).toStrictEqual([code, [(COSIGN_STATUS as Record<string, number>)[code]]]);
+    expect(cosign).toContain('The route takes `POST` only. Any other method gets the 404 `not_found` of the service, as an unknown path does.');
+    // The page of the agent has the same two tables, row for row.
+    expect(jobRows).toStrictEqual(codeRows(pageSub('Errors')));
+    expect(cosignRows).toStrictEqual(codeRows(pageSub('The co-sign route')));
   });
 
-  test('a job that does not end well is a 200 result with a reason code: the reason table names codes that the sources know and gives no status, and no reason is a code of the first table', () => {
+  test('a job that does not end well is a 200 result with a reason code: the README lists no reason and points at the table of the page, which has the Job column and no inference_failed', () => {
     const errors = section('Errors');
     expect(errors).toContain('is no HTTP error');
-    const reasons = errors.split('\n').filter((line) => /^\| `/.test(line)).flatMap((line) => ticks(cellsOf(line)[0]));
-    expect(reasons).toStrictEqual(['supplier_not_listed', 'inference_failed', 'model_output_invalid', 'deadline', 'aborted']);
-    const sources = [new URL('../src/', import.meta.url), new URL('packages/usecase-kit/src/', root)]
-      .flatMap((dir) => readdirSync(dir, { recursive: true }).map(String).filter((file) => file.endsWith('.ts')).map((file) => readFileSync(new URL(file, dir), 'utf8')))
-      .join('\n');
-    for (const code of reasons) expect(sources.includes(`'${code}'`), code).toBe(true);
-    const first = codeRows(errors.split('The co-sign route has its own codes:')[0]).flatMap((row) => row.codes);
-    for (const code of reasons) expect(first, code).not.toContain(code);
+    // No row of the section starts with a code in backticks: its tables hold statuses, and the reasons are in the table of the page.
+    expect(errors.split('\n').filter((line) => /^\| `/.test(line))).toStrictEqual([]);
+    expect(errors).not.toContain('inference_failed');
+    expect(errors).toContain('The status of a `failed` result is 200 whatever its reason. Each reason that a job writes is in the table of the section Errors of `specs/reorder-agent.md`, with the job that writes it.');
+    expect(pageSub('Errors')).toContain('| Reason | Job | What it says |');
+    expect(pageSub('Errors')).not.toContain('inference_failed');
   });
 
   test('the Deploy section is three lines, and the port that the compose file publishes for the service is the port of the code', () => {
@@ -134,7 +141,7 @@ describe('agents/reorder-agent/README.md', () => {
 
   test('the fetch of the start is named, the files the page points at exist, and the Image section says what the Dockerfile says', () => {
     expect(readme).toContain('`VECTOR_MODULE1_MANIFEST` must be an `https://` address with a path segment of 40 lowercase hex characters');
-    for (const path of ['agents/reorder-agent/Dockerfile', 'agents/reorder-agent/src/index.ts', 'agents/reorder-agent/test/serve/child-fetch.mjs', 'agents/reorder-agent/test/dockerfile.test.ts', 'agents/reorder-agent/test/readme.test.ts', 'packages/usecase-kit/src/protocol']) {
+    for (const path of ['agents/reorder-agent/Dockerfile', 'agents/reorder-agent/src/index.ts', 'agents/reorder-agent/test/serve/child-fetch.mjs', 'agents/reorder-agent/test/dockerfile.test.ts', 'agents/reorder-agent/test/readme.test.ts', 'packages/usecase-kit/src/protocol', 'specs/reorder-agent.md']) {
       expect(existsSync(new URL(path, root)), path).toBe(true);
     }
     const image = section('Image');
