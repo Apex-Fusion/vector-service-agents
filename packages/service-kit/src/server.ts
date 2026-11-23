@@ -270,6 +270,7 @@ export function createJobServer<Req, Res>(opts: JobServerOptions<Req, Res>): Ser
       }
       if (read && path === '/agent.json') return sendText(200, opts.manifestText);
       // The open routes of the service: after the two paths above, which win, and before the token check below. They need no token and take no job slot.
+      // A path that this server answers by itself must be in OWN_PATHS of src/routes.ts, so that no open route can take it.
       const open = matchOpenRoute(openRoutes, req.method, req.url ?? '');
       if (open !== undefined) return await serveOpen(open, req, res, arrivedAt);
       if (req.method !== 'POST' || (req.url !== '/' && !isPrecheck)) return send(404, { error: 'not_found' });

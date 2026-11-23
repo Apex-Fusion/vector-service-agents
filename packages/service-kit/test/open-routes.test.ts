@@ -495,19 +495,23 @@ describe('what goes wrong inside a handler', () => {
       ['status NaN', { status: Number.NaN, headers: {}, body: '' }], ['no status', { headers: {}, body: '' }],
       ['no body', { status: 200, headers: {} }], ['a body that is a number', { status: 200, headers: {}, body: 5 }], ['a body that is a buffer', { status: 200, headers: {}, body: Buffer.from('x') }],
       ['no headers', { status: 200, body: '' }], ['headers null', { status: 200, headers: null, body: '' }], ['headers as an array', { status: 200, headers: [], body: '' }], ['headers as a text', { status: 200, headers: 'x', body: '' }],
+      ['headers as a Map', { status: 200, headers: new Map([['x-a', 'b']]), body: '' }], ['headers as a class instance', { status: 200, headers: new (class Headed { 'x-a' = 'b'; })(), body: '' }],
       ['a header value that is a number', { status: 200, headers: { 'x-n': 1 }, body: '' }], ['a header value that is an array', { status: 200, headers: { 'x-a': ['a', 'b'] }, body: '' }],
       ['a header name with a space', { status: 200, headers: { 'bad name': 'x' }, body: '' }], ['an empty header name', { status: 200, headers: { '': 'x' }, body: '' }],
       ['a header value with a line break', { status: 200, headers: { 'x-a': 'a\r\nx-injected: 1' }, body: '' }],
     ];
     const routes: OpenRoute[] = BAD.map(([, reply], index) => ({ path: `/bad/${index}`, methods: ['GET'], handle: () => reply as OpenReply }));
     routes.push({ path: '/good', methods: ['GET'], handle: () => ({ status: 200, headers: { 'x-ok': 'yes' }, body: 'good' }) });
+    routes.push({ path: '/good/null', methods: ['GET'], handle: () => ({ status: 200, headers: Object.assign(Object.create(null) as Record<string, string>, { 'x-ok': 'yes' }), body: 'good' }) });
     await withRoutes(routes, async (base, _port, logs) => {
       for (const [index, [name]] of BAD.entries()) {
         const res = await fetch(`${base}/bad/${index}`);
         expect([res.status, await res.text()], name).toStrictEqual([500, '{"error":"internal"}']);
       }
-      const good = await fetch(`${base}/good`);
-      expect([good.status, good.headers.get('x-ok'), await good.text()]).toStrictEqual([200, 'yes', 'good']);
+      for (const name of ['good', 'good/null']) {
+        const good = await fetch(`${base}/${name}`);
+        expect([good.status, good.headers.get('x-ok'), await good.text()], name).toStrictEqual([200, 'yes', 'good']);
+      }
       expect(logs).toHaveLength(BAD.length);
       logs.forEach((line, index) => expect(line, `line ${index}`).toMatch(new RegExp(`^open route /bad/${index} failed after \\d+ ms: (?:the (?:reply|status|body|headers)|a header) `)));
       expect(logs.join('\n')).not.toMatch(/injected|bad name/);

@@ -43,14 +43,19 @@ export interface CheckedOpenRoute {
   readonly handle: OpenRoute['handle'];
 }
 
+/** A plain object: made by a literal or by Object.create(null), and no array, no class instance and no Proxy. A Proxy is looked for first, so that nothing of it runs. */
+function isPlain(value: unknown): value is object {
+  if (typeof value !== 'object' || value === null || types.isProxy(value) || Array.isArray(value)) return false;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 /**
- * The members of a plain object, each read one time. The descriptor says that the member is the object's own and holds a value, so that no getter runs. A Proxy,
- * an object with a prototype (a class instance, an inherited member) and a missing member are refused.
+ * The members of a plain object, each read one time. The descriptor says that the member is the object's own and holds a value, so that no getter runs. An object
+ * that is not plain (a Proxy, a class instance, an inherited member) and a missing member are refused.
  */
 function ownValues(value: unknown, names: readonly string[], what: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || types.isProxy(value) || Array.isArray(value)) throw new RangeError(`${what} must be a plain object and not a Proxy`);
-  const prototype: unknown = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) throw new RangeError(`${what} must be a plain object: no class instance, and no member from a prototype`);
+  if (!isPlain(value)) throw new RangeError(`${what} must be a plain object: no Proxy, no class instance and no member from a prototype`);
   const out: Record<string, unknown> = Object.create(null);
   for (const name of names) {
     const found = Object.getOwnPropertyDescriptor(value, name);
@@ -148,7 +153,7 @@ export function checkOpenReply(value: unknown): CheckedReply {
   const { status, headers, body } = value as { status?: unknown; headers?: unknown; body?: unknown };
   if (typeof status !== 'number' || !Number.isInteger(status) || status < 200 || status > 599) throw new TypeError('the status of the reply is not a whole number from 200 to 599');
   if (typeof body !== 'string') throw new TypeError('the body of the reply is not a text');
-  if (typeof headers !== 'object' || headers === null || Array.isArray(headers)) throw new TypeError('the headers of the reply are not an object');
+  if (!isPlain(headers)) throw new TypeError('the headers of the reply are not a plain object');
   const kept: Record<string, string> = Object.create(null);
   for (const name of Object.keys(headers)) {
     const given = (headers as Record<string, unknown>)[name];

@@ -249,11 +249,12 @@ It never gives the request of Node.
 A request of Node has no member `body`.
 The kit reads no byte of the body.
 The handler reads it, with a size limit of its own.
+The kit calls `handle` with no `this`, so give a function that needs none.
 
 The reply:
 
 - `status` is a whole number from 200 to 599.
-- `headers` has text for each name and each value, and Node can send them.
+- `headers` is a plain object. It has text for each name and each value, and Node can send them.
 - `body` is a text.
 - The kit writes `content-length` as the number of bytes of the body.
 - The kit drops a `content-length` and a `transfer-encoding` of the handler, in any letter case.
