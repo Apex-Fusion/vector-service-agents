@@ -2,6 +2,8 @@
 
 The files under `src/vendored/mcp/`, `src/vendored/mcp-shared/` and `src/vendored/signer/` and the files under `test/fixtures/` are copies of files of Apex-Fusion/mcp-server at commit `94bd293` (`94bd293403039e2c9762e0c86a87892467cbc9c6`, committed on 2026-11-03 at 01:15:28 +0100), but for the copies whose row in Files names `2d95483` (see CBOR check, and Read and check code for the ledger copies). `94bd293` is not a merge commit: it is the head of the branch `feat/identity-registry`, which is not merged into main. After the pin before, that branch was rebased onto `4f01518`, the commit of PR #25 on main (2026-10-23). So the pin before is not an ancestor of `94bd293`. The copies before it were at `f456194` (`f45619410aaeafeb287b36958ef251c38cf8186d`, committed on 2026-11-02 at 20:35:53 +0100) and before that at `ef374f8` (`ef374f878f7ac8f44eb32c68b0be12a1d2f63de3`, committed on 2026-11-02 at 19:18:59 +0100), two heads of the same branch before the rebase, and before that at `651ae93`, the merge of PR #24 into main on 2026-10-14. `2d95483` (`2d9548319d8d3e6406622131260c4278f3cc195a`, committed on 2026-11-19 at 13:41:08 +0100) is the commit that adds the CBOR check. Its parent is `06a9df1`, the head of main on that day, and `94bd293` is an ancestor of `06a9df1`. The two files under `src/vendored/fleet/` are copies of files of Apex-Fusion/agents-marketplace at commit `e847a55` (`e847a553146516e574f3cadb6688d74dd4cf2b7b`, committed on 2026-10-13, the `origin/main` of the clone it was taken from on 2026-10-15).
 
+`ebce68a` (`ebce68a1b2d185a86123f8e2bd506032330f41de`, committed on 2026-11-23 at 13:25:05 +0100) is the merge of PR #46 into main. Its one commit is `59f9d2f` (`59f9d2f3f5420c0b10ce3bda2036851f33df8394`), which sits on `e234006`, the head of main before the merge. The pins `94bd293` and `2d95483` are ancestors of `e234006`. PR #46 changes four of the files that this package copies and adds a fifth that they import. These five copies are at `ebce68a` (see Signature rules and node answers). Each was taken from its blob.
+
 Each copy was taken from the blob at its commit, `git -C <checkout> cat-file blob <commit>:<path>`, never from a working file. A checkout that runs with `core.autocrlf=true` has CRLF working files, while the blobs are LF and so is every checkout of this repository (`.gitattributes` says `eol=lf`). A `cp` of such a working file records a sha256 that no checkout of this repository reproduces. The mcp-server checkout of the first copies (at `651ae93`) ran with `core.autocrlf=true`, and each of its working files was checked to equal its blob once CR is stripped. The re-vendors at `ef374f8`, `f456194` and `94bd293` took every copy from its blob too. The agents-marketplace clone runs with `core.autocrlf=true` too, and its working tree is a stale branch while the copies come from `origin/main`: the two fleet files were taken from the blobs and no working file of that clone was read.
 
 ## Why vendored
@@ -21,9 +23,9 @@ The fleet is not published to a registry either. The Pipeline commits to the req
 | `src/vendored/mcp/marketplace-constants.ts` | `mcp-server:packages/builder/src/vector/marketplace-constants.ts` | `2d95483` | `ece39f1c1c274e51eff5a7f4f76a025c31df6f6cb26870c396ca225944446352` |
 | `src/vendored/mcp/marketplace-shared.ts` | `mcp-server:packages/builder/src/vector/marketplace-shared.ts` | `94bd293` | `440e6cacfa3203e78e383897259f202b7f7efd027ad893d12ac661348a0f0d6a` |
 | `src/vendored/mcp/marketplace-indexer.ts` | `mcp-server:packages/builder/src/vector/marketplace-indexer.ts` | `2d95483` | `ea1019d5a21f82a7e6d7d5d2ad9082e0c8ef3f1ec118e638e44dbd3a43de75ec` |
-| `src/vendored/mcp/marketplace-lineage.ts` | `mcp-server:packages/builder/src/vector/marketplace-lineage.ts` | `2d95483` | `418be0f614b0d584c66752899dea6394a965a3ab3e46001eeed3c4bdcc00240b` |
+| `src/vendored/mcp/marketplace-lineage.ts` | `mcp-server:packages/builder/src/vector/marketplace-lineage.ts` | `ebce68a` | `a1c13f493660c4d49418e6333d46c63ef393a06b7aec77b705c59015690a5ca3` |
 | `src/vendored/mcp/marketplace-build.ts` | `mcp-server:packages/builder/src/vector/marketplace-build.ts` | `2d95483` | `df4feb12fe7f68f4a76a87c75888c48e0d99129c5247d4b7b278e9bbb5654cd3` |
-| `src/vendored/mcp/marketplace-verify.ts` | `mcp-server:packages/builder/src/vector/marketplace-verify.ts` | `94bd293` | `1ab38e9be9f6690f1ef64c82961c21556135650b6703938b1a63290fc9c92792` |
+| `src/vendored/mcp/marketplace-verify.ts` | `mcp-server:packages/builder/src/vector/marketplace-verify.ts` | `ebce68a` | `9ce3fc9bc5ec7b03e796b95cf301378acec245d3bf5f8df91fd80497df24f278` |
 | `src/vendored/mcp/marketplace-transport.ts` | `mcp-server:packages/builder/src/vector/marketplace-transport.ts` | `94bd293` | `4fdce708d65b3d5977de4c52dfd183e07dff169348deeac9de80eeea336943bb` |
 | `src/vendored/mcp/marketplace-supplier.ts` | `mcp-server:packages/builder/src/vector/marketplace-supplier.ts` | `94bd293` | `2143daa71df94833f9c36ff84927f391374be5d2c38f18c8c102184aaa3e7746` |
 | `src/vendored/mcp/gov-build.ts` | `mcp-server:packages/builder/src/vector/gov-build.ts` | `2d95483` | `3a242c62cf365ec9f3fff61ae2cc017e3114bca4b0cc3c695124be62815e7843` |
@@ -37,7 +39,7 @@ The fleet is not published to a registry either. The Pipeline commits to the req
 | `src/vendored/mcp/legacy-registry.ts` | `mcp-server:packages/builder/src/vector/legacy-registry.ts` | `94bd293` | `6011cb3eafe396446ccfb6abd28bc97a141fb1db6a0b35c4f50fb441c90ed178` |
 | `src/vendored/mcp/ledger-read.ts` | `mcp-server:packages/builder/src/vector/ledger-read.ts` | `2d95483` | `783eb1e2ea3173ec92570dbcabc5545eb1ec7535a52b19318a6bd251f37f9f94` |
 | `src/vendored/mcp/identity-build.ts` | `mcp-server:packages/builder/src/vector/identity-build.ts` | `2d95483` | `39e00fd8e9b772b889c343aecfdc4e12bed8329d963a7b000ee511900b7995e5` |
-| `src/vendored/mcp/attestation-build.ts` | `mcp-server:packages/builder/src/vector/attestation-build.ts` | `2d95483` | `84827a361ee73cb5866b90baf3c325f01dbd35a555943ba85df8cf99d2d123b4` |
+| `src/vendored/mcp/attestation-build.ts` | `mcp-server:packages/builder/src/vector/attestation-build.ts` | `ebce68a` | `1042f4ef2836a508b94fb82740cad35a235ffa3e68246fdc90d2456bc424ba0b` |
 | `src/vendored/mcp/attestation-read.ts` | `mcp-server:packages/builder/src/vector/attestation-read.ts` | `2d95483` | `f6af8a2843edc6510fdeab3e07c7efa4244200f2d8e129ec2534d40d86616d44` |
 | `src/vendored/mcp/delegation-build.ts` | `mcp-server:packages/builder/src/vector/delegation-build.ts` | `2d95483` | `91cc41aa181b7413520dac3cdec64d6c23cee7e5511db045f2083f790fe49444` |
 | `src/vendored/mcp/delegation-read.ts` | `mcp-server:packages/builder/src/vector/delegation-read.ts` | `2d95483` | `49b508b96949e964252baebd03cd70b28f22bb2e587e8b58f535b32919af46fe` |
@@ -50,7 +52,8 @@ The fleet is not published to a registry either. The Pipeline commits to the req
 | `src/vendored/mcp/jury-read.ts` | `mcp-server:packages/builder/src/vector/jury-read.ts` | `2d95483` | `ac2926e08b0285af4959e967f2a21b7fd9b88bd4f45ff1048c6e6714493d4189` |
 | `src/vendored/mcp/jury-build.ts` | `mcp-server:packages/builder/src/vector/jury-build.ts` | `2d95483` | `0db3ea754beeafd40747c93c27ad588d676bc58fb62d6ac3177af426d629f5cc` |
 | `src/vendored/mcp/module1-build.ts` | `mcp-server:packages/builder/src/vector/module1-build.ts` | `2d95483` | `8af4372dce544d3988cf70bc281d1ff936f04f1bfaac389556b132d0401cbfa6` |
-| `src/vendored/mcp-shared/provider.ts` | `mcp-server:packages/shared/src/provider.ts` | `2d95483` | `52f4f59caa36a4f1020bf9c1969a0949148b3e9b145e6d3cbc3baceda085035a` |
+| `src/vendored/mcp/ed25519-rules.ts` | `mcp-server:packages/builder/src/vector/ed25519-rules.ts` | `ebce68a` | `face28447af5f0f2a4f44b792e7912bb0783b0e481e90a9faa4978e1f74076ad` |
+| `src/vendored/mcp-shared/provider.ts` | `mcp-server:packages/shared/src/provider.ts` | `ebce68a` | `5fc419efbfff894e770fed001ee6f13bb5b44b551daae35c5d1a02a76a5be71c` |
 | `src/vendored/mcp-shared/config.ts` | `mcp-server:packages/shared/src/config.ts` | `94bd293` | `4e1961be29545ff23978f51189c0ed47ca023e63af4ba2652e6ee89d00a4e089` |
 | `src/vendored/mcp-shared/types.ts` | `mcp-server:packages/shared/src/types.ts` | `94bd293` | `18ee292f4feca95e2c0d0eb51ce69b3bd3aba5185491ec6deac46990d27c8111` |
 | `src/vendored/mcp-shared/tx.ts` | `mcp-server:packages/shared/src/tx.ts` excerpt, lines 1-3, 46-54, 66-103 | `94bd293` | `94b72ffa2eff13b7aa1ace088dd3a56cb699c4c1fcf338ccf7d5e4b003007eec` |
@@ -74,8 +77,10 @@ The fleet is not published to a registry either. The Pipeline commits to the req
 | `test/fixtures/module1-withdrawal-mainnet.json` | `mcp-server:packages/builder/test/fixtures/module1-withdrawal-mainnet.json` | `2d95483` | `e22d2a728261867f5a3d48dd04a7a3e27baae967d943bbd537b5133b67060713` |
 | `test/fixtures/jury-document-mainnet.json` | `mcp-server:packages/builder/test/fixtures/jury-document-mainnet.json` | `2d95483` | `9ccc6bb58247ff8584161b8cadc3294375b190d777f5a0a3e2de61b6773c0a55` |
 | `test/fixtures/jury-python-vectors.json` | `mcp-server:packages/builder/test/fixtures/jury-python-vectors.json` | `2d95483` | `5533c78fa10cfaeee50017eb1949737795eaa87e5bed9d61012fceeb3a610432` |
+| `test/fixtures/small-order.ts` | `mcp-server:packages/builder/test/fixtures/small-order.ts` | `ebce68a` | `1e684a2d6d43bc080e99654118d53ef7b0dde545efeffa15882a6643f64da09d` |
+| `test/fixtures/template-receipt.fixture.ts` | `mcp-server:packages/builder/test/fixtures/template-receipt.fixture.ts` | `ebce68a` | `c6fc0833f27d2dd1bee0243241173d5a429e68bc8adc2bf93e985abfc350086b` |
 
-Byte-identical to the blob (no edit at all): `marketplace-shared.ts`, `env.ts`, `identity-scripts.generated.ts`, `legacy-registry.ts`, `types.ts`, `marketplace.fixture.ts`, `fixture-provider.ts`, `protocol-params.fixture.json`, and the copies that Read and check code names as byte-identical. The excerpts `tx.ts` and `fleet/types.ts` are byte-identical to their line ranges. Every other copy differs from its blob only on the lines listed below and under Read and check code (`fleet/responses.ts`: line 1). The copies at `2d95483` differ from their blobs on import lines, and on the lines of the unit name where their source names it: `identity-deployment.ts`, `provider.ts`, `sign.ts` and `gov-build.ts` by one import line each, `marketplace-lineage.ts` by three and `marketplace-indexer.ts` by four.
+Byte-identical to the blob (no edit at all): `marketplace-shared.ts`, `env.ts`, `identity-scripts.generated.ts`, `legacy-registry.ts`, `ed25519-rules.ts`, `types.ts`, `marketplace.fixture.ts`, `fixture-provider.ts`, `protocol-params.fixture.json`, `template-receipt.fixture.ts`, and the copies that Read and check code names as byte-identical. The excerpts `tx.ts` and `fleet/types.ts` are byte-identical to their line ranges. Every other copy differs from its blob only on the lines listed below and under Read and check code (`fleet/responses.ts`: line 1). The copies at `2d95483` differ from their blobs on import lines, and on the lines of the unit name where their source names it: `identity-deployment.ts`, `sign.ts` and `gov-build.ts` by one import line each, and `marketplace-indexer.ts` by four. The copies at `ebce68a` differ the same way: `provider.ts` by one import line, `marketplace-lineage.ts` and `marketplace-verify.ts` by three, `attestation-build.ts` by three import lines and eight lines of the unit name, and `small-order.ts` by one.
 
 Eight copies are the same files as at `651ae93`, with the same sha256: `build.ts`, `rate-limiter.ts`, `env.ts`, `config.ts` and the four fixtures `escrow-koios.fixture.ts`, `marketplace.fixture.ts`, `fixture-provider.ts` and `protocol-params.fixture.json`. Their sources did not change between `651ae93` and `94bd293`. `provider.ts` was the same file as at `651ae93` until `f456194`.
 
@@ -93,6 +98,15 @@ At `94bd293` eight copies changed against `f456194`. The sources of the other co
 - `test/fixtures/identity-world.ts`: the fixture node gives its reward accounts through `getRewardAccount`, in place of `getDelegation`: registered with `rewards` (0 by default), or not registered with `rewards: null`. The new line 15 imports the type `RewardAccount` from the shared provider (see Rewritten lines). The comment that names the unit moved from line 89 to line 90.
 
 At `94bd293` the datum module that `@vsa/vector-read` carries also gained `encodeAdvertDatum` (see `packages/vector-read/VENDORED-FROM.md`). No copy here imports it.
+
+At `ebce68a` four copies changed against their rows before, and one file is new. The sources of the other copies did not change in PR #46, so their sha256 did not change.
+
+- `provider.ts`: the private method `rpcList`, which four readers call to turn an answer with no list into an error (see Signature rules and node answers). The file also holds `OgmiosProvider.getBlockHeight`, which PR #43 of the mcp-server added before PR #46. No code of this package calls it.
+- `marketplace-lineage.ts`: `nodeFailure` passes on the new fault text `the node gave no list`, with the texts that it passed on before.
+- `marketplace-verify.ts`: the receipt check calls `signatureVerifies`, and the file imports it.
+- `attestation-build.ts`: `envelopeVerifies` calls `signatureVerifies`, and the file imports it. The file no longer imports `CML`. The first line of the unit name moved down by one line, and the others by four.
+- `ed25519-rules.ts`: new. It holds `SMALL_ORDER_ENCODINGS`, `hasSmallOrder` and `signatureVerifies`.
+- `test/fixtures/small-order.ts` and `test/fixtures/template-receipt.fixture.ts`: new. The ported tests of the signature rules need them.
 
 The header comments inside the copies still name their source paths, and a comment may speak of code the copy does not carry (the excerpts below, and `identity-codec.ts`, which sits in `@vsa/vector-read` here). They are kept so that a diff against the source shows only the rewritten lines.
 
@@ -122,7 +136,7 @@ Per file (the line numbers are the same in the source and the copy):
 - line 7: `import { decodeAdvertDatum, decodeIdentityAdvertDatum, formatOutRef, parseOutRef } from './marketplace-datum.js';` becomes `import { decodeAdvertDatum, decodeIdentityAdvertDatum, formatOutRef, parseOutRef } from '@vsa/vector-read';`
 - line 8: `import type { AdvertDatum, IdentityAdvertDatum } from './marketplace-datum.js';` becomes `import type { AdvertDatum, IdentityAdvertDatum } from '@vsa/vector-read';`
 
-`src/vendored/mcp/marketplace-lineage.ts` (at `2d95483`)
+`src/vendored/mcp/marketplace-lineage.ts` (at `ebce68a`)
 - line 10: `import { addressDetails } from './guarded-decode.js';` becomes `import { addressDetails } from '@vsa/vector-read/guarded-decode';`
 - line 13: `import { decodeEscrowDatum, decodeIdentityEscrowDatum, encodeEscrowDatum, encodeIdentityEscrowDatum, parseOutRef, formatOutRef } from './marketplace-datum.js';` becomes `import { decodeEscrowDatum, decodeIdentityEscrowDatum, encodeEscrowDatum, encodeIdentityEscrowDatum, parseOutRef, formatOutRef } from '@vsa/vector-read';`
 - line 14: `import type { EscrowDatum, EscrowState, IdentityEscrowDatum, Refund } from './marketplace-datum.js';` becomes `import type { EscrowDatum, EscrowState, IdentityEscrowDatum, Refund } from '@vsa/vector-read';`
@@ -144,7 +158,7 @@ Per file (the line numbers are the same in the source and the copy):
 - line 139: the refusal of `assertWithinCap` calls `units` twice (the function of line 57) and says `units` twice, where the source calls that function by its old name and names the unit (`... of ${units(economic)} units, above the ${units(MAX_ESCROW_LOVELACE)} units value cap of an escrow (F-29) ...`).
 - line 655: in the comment of `otherAssetsOf`, the unit name becomes `units` (`The escrow input's assets other than units`).
 
-`src/vendored/mcp/marketplace-verify.ts`
+`src/vendored/mcp/marketplace-verify.ts` (at `ebce68a`)
 - line 8: `import { safeFetch } from './safe-fetch.js';` becomes `import { safeFetch } from '@vsa/vector-read';`
 - line 10: `import { canonicalize, formatOutRef, sha256Utf8Hex } from './marketplace-datum.js';` becomes `import { canonicalize, formatOutRef, sha256Utf8Hex } from '@vsa/vector-read';`
 - line 11: `import type { EscrowDatum } from './marketplace-datum.js';` becomes `import type { EscrowDatum } from '@vsa/vector-read';`
@@ -207,11 +221,14 @@ Per file (the line numbers are the same in the source and the copy):
 `src/vendored/mcp/identity-deployment.ts` (at `2d95483`)
 - line 17: `import { decodePlutusData } from './guarded-decode.js';` becomes `import { decodePlutusData } from '@vsa/vector-read/guarded-decode';`
 
-`src/vendored/mcp-shared/provider.ts` (at `2d95483`)
+`src/vendored/mcp-shared/provider.ts` (at `ebce68a`)
 - line 32: `import { assertCborHexDepth } from './cbor-depth.js';` becomes `import { assertCborHexDepth } from '@vsa/vector-read/cbor-depth';`
 
 `src/vendored/signer/sign.ts` (at `2d95483`)
 - line 5: `import { assertCborHexDepth } from '@apexfusion/vector-mcp-shared/cbor-depth';` becomes `import { assertCborHexDepth } from '@vsa/vector-read/cbor-depth';`
+
+`test/fixtures/small-order.ts` (at `ebce68a`)
+- line 8: `import { SMALL_ORDER_ENCODINGS } from '../../src/vector/ed25519-rules.ts';` becomes `import { SMALL_ORDER_ENCODINGS } from '../../src/vendored/mcp/ed25519-rules.ts';`
 
 `src/vendored/mcp-shared/config.ts`: not an import rewrite, the listed deviation below.
 
@@ -271,6 +288,8 @@ No other copy holds an en or em dash (the comment of `ToolCall` in the source of
   - `legacy-registry.ts`: the script, policy and address of the legacy registry. `identity-deployment.ts` gives its policy to the identity script as a parameter.
 - `test/fixtures/marketplace.fixture.ts`, `test/fixtures/fixture-provider.ts` and `test/fixtures/protocol-params.fixture.json`: `escrow-koios.fixture.ts` imports the first two, and the fixture provider reads the JSON when a test asks it for protocol parameters. `marketplace.fixture.ts` is the same file as `packages/vector-read/test/fixtures/marketplace.fixture.ts` (it did not change between `94b8f41` and `94bd293`).
 - `test/fixtures/identity-world.ts` and `test/fixtures/escrow-identity.fixture.ts`, new at `ef374f8`: the offline identity registry of the mcp-server's builder tests (a deployment with test parameters applied to the real blueprint scripts, its reference-script UTxOs, a configuration record, test keys, records, and a `FixtureProvider` that holds them with the wallet), and the identity marketplace over it (an agent whose record lists the supplier key, its advert in the identity layout, identity escrows, delegations and vaults, and one fake of Koios and the marketplace indexer). Lucid runs the real applied scripts on every build over them (local evaluation). `identity-world.ts` imports `fixture-provider.ts`, and `escrow-identity.fixture.ts` imports `identity-world.ts`. Only their import lines are rewritten.
+- `src/vendored/mcp/ed25519-rules.ts`, new at `ebce68a`: `attestation-build.ts` and `marketplace-verify.ts` import it. Whole file. It imports `@lucid-evolution/lucid`, a dependency of this package already.
+- `test/fixtures/small-order.ts` and `test/fixtures/template-receipt.fixture.ts`, new at `ebce68a`: the ported tests of the signature rules import them. `small-order.ts` imports `ed25519-rules.ts`.
 
 ## Not copied
 
@@ -303,7 +322,41 @@ Left at `94bd293`, with the reason:
 - `src/vendored/mcp/build.ts`. The excerpt (lines 1-48) holds `lucidForAddress` and `toBuildResult`. The changes of the source at `2d95483` are in the builders that the excerpt leaves out: the datum, the redeemer and the script that a caller gives, and the fee of a transaction that a caller gives.
 - Every other copy: its source has no change of the check since `94bd293`.
 
+`src/vendored/mcp-shared/provider.ts` and `src/vendored/mcp/marketplace-lineage.ts` moved on to `ebce68a`, and `src/vendored/mcp/marketplace-verify.ts` moved there from `94bd293`. The check of CBOR in them is as at `2d95483`: PR #46 does not change it.
+
 Code of this package that decodes by itself: `src/chain.ts` reads the time to live of the unsigned transaction, and `src/fees.ts` reads the fee of the signed transaction. The builder and the signer of this process made both transactions, so no chain data reaches those reads.
+
+## Signature rules and node answers
+
+PR #46 of the mcp-server changes two rules. `ebce68a` is its merge into main. Four copies follow it, and `ed25519-rules.ts` is new.
+
+**A node answer with no list is an error.** An answer of Ogmios to a read of outputs or to the evaluation of a transaction can hold no list: `"result": null`, no `result`, or a `result` that is not an array. The source read such an answer as an empty list, so a check said "not found" where "cannot read" is right. Now the answer is an error with the text `Ogmios request failed (<method>): the node gave no list`. The error names the method and nothing else. The log line for the operator names the node and the kind of the answer, and never its content. The private method `rpcList` of `OgmiosProvider` makes the check. Four readers call it: `getUtxos` (`getUtxosWithUnit` reads through it), `getUtxosByOutRef`, `evaluateTx` and `evaluateTransaction`. An empty array is a list and stays empty. The readers of other answers (the tip, the start time, the block height, the protocol parameters and the reward account) are as before. `nodeFailure` of `marketplace-lineage.ts` passes the new text on, so the read of an escrow fails with `... from the node: Ogmios request failed (queryLedgerState/utxo): the node gave no list`.
+
+**A key of small order never verifies.** `ed25519-rules.ts` holds `signatureVerifies`. It refuses a public key of a small order, a signature whose R has a small order, and a key or a signature of the wrong size. Then CML checks the encoding of R, that S is below the group order, and the equation. The check of CML alone takes a forged signature for a key of a small order: R = the identity point and S = 0 verifies over some messages, and over every message when the key is the identity point. `envelopeVerifies` of `attestation-build.ts` and the receipt check of `marketplace-verify.ts` call `signatureVerifies`. In this package, `checkAttestation` calls the first, and `verifyFleetReceipt` calls the second. A normal key and signature give the same result as before. A key or a signature that cannot be read does not verify, and nothing throws. The source moved these rules out of its co-sign code of delegations (`delegation-cosign.ts`), which is not copied. The new file decodes no CBOR (it reads raw key and signature bytes), so `test/cbor-guard-sites.test.ts` does not name it.
+
+**Copies.** At `ebce68a`: `provider.ts`, `attestation-build.ts`, `marketplace-verify.ts`, `marketplace-lineage.ts`, and the new `ed25519-rules.ts`. Their rewritten lines are the import rewrites of Rewritten lines, and the lines of the unit name of `attestation-build.ts` (lines 33, 283, 306, 309, 323, 427, 442 and 516; line 323 is a refusal text that a caller sees). `ed25519-rules.ts` is byte-identical to its blob. The imports of `./ed25519-rules.js` (line 27 of `attestation-build.ts` and line 16 of `marketplace-verify.ts`) stay as the source has them, because the copy sits next to them.
+
+**Fixtures.** `small-order.ts` (the points of a small order, and the signatures that forge with them) and `template-receipt.fixture.ts` (a receipt that the template made, with its signature) are copies at `ebce68a`. Line 8 of `small-order.ts` is rewritten (see Rewritten lines). `template-receipt.fixture.ts` is byte-identical.
+
+**Ported tests.** A diff against the source shows only the lines named here.
+
+- `test/provider-utxo-list.test.ts` from `packages/shared/test/provider-utxo-list.test.ts`: the readers of a list, for an answer with no list of each kind, for an empty array, for a good list and for the other failures of the node. A new line 1 names the source and the pin (the source has no comment there). `node:test` becomes `vitest` and `mock` becomes `vi`. One added line imports `./ported-support.ts`. The provider import is the path of the copy. `mock.method(console, 'error', ...)` becomes `vi.spyOn(console, 'error').mockImplementation(...)`, the read of the logged calls drops `.arguments`, and `log.mock.restore()` becomes `log.mockRestore()`.
+- `test/attestation-build.test.ts` and `test/attestation-read.test.ts`, at `ebce68a` (the rules of Read and check code): a key of a small order, a signature that starts with a point of a small order, an S that is not below the group order, and a signature or a key that cannot be read, each with its accepted twin. The new imports are `../src/vendored/mcp/ed25519-rules.ts` and `./fixtures/small-order.ts`.
+- `test/marketplace-template-receipt.test.ts` from `packages/builder/test/marketplace-template-receipt.test.ts`: the receipt that the template made, and the same rules for a receipt. Line 1 names the source and the pin. `node:test` becomes `vitest`, and one added line imports `./ported-support.ts`. The datum module imports become `@vsa/vector-read`, and the transport imports become the vendored path.
+- `test/marketplace-lineage-node-failure.test.ts`: one test of `packages/builder/test/marketplace-lineage.test.ts`, the test of the text of a node failure, with the lines of the source that it needs: the imports (rewritten as above), `KOIOS`, `posted`, `submitted` and `current` (the source writes `at(SUBMIT_TX, submitted)` after `const at = escrowAt;`). The body of the test is lines 426 to 447 of the source, byte for byte. A comment names the source and the pin.
+
+**Checking the copies against the pin.** From the repository root, with `<mcp-server>` a checkout that has `ebce68a`. Each `diff` prints only the lines that are listed above and under Rewritten lines (the old line of a unit-name rewrite holds the name), and each `cmp` prints nothing. The last command needs `bash`, because of the process substitution.
+
+```bash
+for f in marketplace-verify marketplace-lineage attestation-build; do git -C <mcp-server> cat-file blob ebce68a:packages/builder/src/vector/$f.ts | diff - packages/buyer-core/src/vendored/mcp/$f.ts; done
+git -C <mcp-server> cat-file blob ebce68a:packages/shared/src/provider.ts | diff - packages/buyer-core/src/vendored/mcp-shared/provider.ts
+git -C <mcp-server> cat-file blob ebce68a:packages/builder/src/vector/ed25519-rules.ts | cmp - packages/buyer-core/src/vendored/mcp/ed25519-rules.ts
+git -C <mcp-server> cat-file blob ebce68a:packages/builder/test/fixtures/small-order.ts | diff - packages/buyer-core/test/fixtures/small-order.ts
+git -C <mcp-server> cat-file blob ebce68a:packages/builder/test/fixtures/template-receipt.fixture.ts | cmp - packages/buyer-core/test/fixtures/template-receipt.fixture.ts
+for t in attestation-build attestation-read marketplace-template-receipt; do git -C <mcp-server> cat-file blob ebce68a:packages/builder/test/$t.test.ts | diff - packages/buyer-core/test/$t.test.ts; done
+git -C <mcp-server> cat-file blob ebce68a:packages/shared/test/provider-utxo-list.test.ts | diff - packages/buyer-core/test/provider-utxo-list.test.ts
+git -C <mcp-server> cat-file blob ebce68a:packages/builder/test/marketplace-lineage.test.ts | sed -n '426,447p' | diff - <(sed -n '19,40p' packages/buyer-core/test/marketplace-lineage-node-failure.test.ts)
+```
 
 ## Local files
 
@@ -328,19 +381,18 @@ The tests: `test/vendored.test.ts` (this manifest, both ways, and the public sur
 
 ## Checking the copies against the pin
 
-From the repository root, with `<mcp-server>` a checkout that has `94bd293` and `2d95483`, and `<agents-marketplace>` one that has `4c95c3f`. Each `diff` prints nothing for a byte-identical copy and only the lines listed under Rewritten lines for a rewritten one (the old line of a unit-name rewrite holds the name). Each `cmp` prints nothing.
+From the repository root, with `<mcp-server>` a checkout that has `94bd293` and `2d95483`, and `<agents-marketplace>` one that has `4c95c3f`. The copies at `ebce68a` have their commands under Signature rules and node answers. Each `diff` prints nothing for a byte-identical copy and only the lines listed under Rewritten lines for a rewritten one (the old line of a unit-name rewrite holds the name). Each `cmp` prints nothing.
 
 ```bash
 # The whole files.
-for f in marketplace-constants marketplace-shared marketplace-build marketplace-verify marketplace-transport marketplace-supplier rate-limiter identity-chain identity-rules identity-scripts.generated legacy-registry; do git -C <mcp-server> cat-file blob 94bd293:packages/builder/src/vector/$f.ts | diff - packages/buyer-core/src/vendored/mcp/$f.ts; done
+for f in marketplace-shared marketplace-transport marketplace-supplier rate-limiter identity-chain identity-rules identity-scripts.generated legacy-registry; do git -C <mcp-server> cat-file blob 94bd293:packages/builder/src/vector/$f.ts | diff - packages/buyer-core/src/vendored/mcp/$f.ts; done
 git -C <mcp-server> cat-file blob 94bd293:packages/builder/src/env.ts | diff - packages/buyer-core/src/vendored/mcp/env.ts
 for f in config types; do git -C <mcp-server> cat-file blob 94bd293:packages/shared/src/$f.ts | diff - packages/buyer-core/src/vendored/mcp-shared/$f.ts; done
 # The copies at 2d95483: each diff prints the rewritten import lines, and no other line.
 git -C <mcp-server> cat-file blob 2d95483:packages/builder/src/vector/identity-deployment.ts | diff - packages/buyer-core/src/vendored/mcp/identity-deployment.ts
-git -C <mcp-server> cat-file blob 2d95483:packages/shared/src/provider.ts | diff - packages/buyer-core/src/vendored/mcp-shared/provider.ts
 git -C <mcp-server> cat-file blob 2d95483:packages/signer/src/sign.ts | diff - packages/buyer-core/src/vendored/signer/sign.ts
 git -C <mcp-server> cat-file blob 2d95483:packages/builder/src/vector/marketplace-indexer.ts | diff - packages/buyer-core/src/vendored/mcp/marketplace-indexer.ts
-for f in marketplace-lineage gov-build; do git -C <mcp-server> cat-file blob 2d95483:packages/builder/src/vector/$f.ts | diff - packages/buyer-core/src/vendored/mcp/$f.ts; done
+git -C <mcp-server> cat-file blob 2d95483:packages/builder/src/vector/gov-build.ts | diff - packages/buyer-core/src/vendored/mcp/gov-build.ts
 for f in escrow-koios.fixture.ts marketplace.fixture.ts fixture-provider.ts protocol-params.fixture.json identity-world.ts escrow-identity.fixture.ts; do git -C <mcp-server> cat-file blob 94bd293:packages/builder/test/fixtures/$f | diff - packages/buyer-core/test/fixtures/$f; done
 # The excerpts.
 git -C <mcp-server> cat-file blob 94bd293:packages/shared/src/tx.ts | sed -n '1,3p;46,54p;66,103p' | cmp - packages/buyer-core/src/vendored/mcp-shared/tx.ts
@@ -352,7 +404,7 @@ git -C <agents-marketplace> cat-file blob 4c95c3f:packages/shared/src/tx/types.t
 
 ## Re-vendoring
 
-1. Take the new pin (a commit of Apex-Fusion/mcp-server). The copies are at `94bd293`, but for the copies whose row in Files names `2d95483` (CBOR check, above, and Read and check code): take those at the new pin, and take another copy when the new pin changes its source and the change belongs to this package.
+1. Take the new pin (a commit of Apex-Fusion/mcp-server). The copies are at `94bd293`, but for the copies whose row in Files names `2d95483` (CBOR check, above, and Read and check code) or `ebce68a` (Signature rules and node answers): take those at the new pin, and take another copy when the new pin changes its source and the change belongs to this package.
 2. Re-vendor `packages/vector-read` first, at the same pin: its `src/datum.ts`, `src/identity-codec.ts`, `src/cbor-depth.ts` and `src/guarded-decode.ts` are the datum codecs, the identity codecs and the CBOR check that the copies here import (see `packages/vector-read/VENDORED-FROM.md`).
 3. For each row, take the blob at the pin with `git cat-file blob` (never a working file of a CRLF checkout), cut the excerpts again after checking that the line ranges still hold the same code (`build.ts`: `lucidForAddress` and `toBuildResult`; `tx.ts`: the header and the `blake2b` import, `lovelaceToAda`, `cborUint`, `cborBytes` and `deriveNftAssetName`), and apply the import rewrites listed above, one line for one line.
 4. If a copy now imports a file that is not here, copy that file whole too and add its row. For the shared `tx.ts`, add the lines that are needed to the excerpt instead, whole lines in source order. A name of the datum module or of `identity-codec.ts` comes from `@vsa/vector-read` or `@vsa/vector-read/identity-codec`, and a name of the CBOR check comes from `@vsa/vector-read/cbor-depth` or `@vsa/vector-read/guarded-decode`. If the mcp-server changes its version of `@lucid-evolution/uplc`, pin the same version in `package.json`.
@@ -364,7 +416,7 @@ git -C <agents-marketplace> cat-file blob 4c95c3f:packages/shared/src/tx/types.t
 
 ## Read and check code of the identity registry, and the Module-1 builders
 
-The read and check code of attestations, delegations and vaults, and the builders of the four Module-1 transactions (a document, a claim, a challenge and the withdrawal of a claim), are copies of Apex-Fusion/mcp-server at `2d95483`. The head of main on 2026-11-19 (`c9043f6`) holds the same blob for each of these files: `git diff 2d95483 origin/main -- packages/builder/src packages/shared/src packages/signer/src packages/builder/test` prints nothing. A later pin of main takes the same files.
+The read and check code of attestations, delegations and vaults, and the builders of the four Module-1 transactions (a document, a claim, a challenge and the withdrawal of a claim), are copies of Apex-Fusion/mcp-server at `2d95483`, but for `attestation-build.ts`, which is at `ebce68a` (see Signature rules and node answers). The head of main on 2026-11-19 (`c9043f6`) holds the same blob for each of these files: `git diff 2d95483 c9043f6 -- packages/builder/src packages/shared/src packages/signer/src packages/builder/test` prints nothing. Later pull requests of main changed some of these sources (`marketplace-build.ts`, `delegation-build.ts`, `vault-build.ts` and `vault-read.ts` among them). The copies keep the blob of their row until a re-vendor takes the new one.
 
 **Where they sit.** The copies sit in `src/vendored/mcp/`, next to the copies that they import, and not in `@vsa/vector-read`. The read code needs a node `Provider`, the identity deployment, `identity-chain.ts` and `marketplace-indexer.ts`, and all three are copies of this package. This package depends on `@vsa/vector-read`, and not the other way. `@vsa/vector-read` keeps the plain code on bytes: the datum codecs, the checked decoders and the scanner, which the copies import by name. So the split of the repository stays: codecs and checked decoders in `@vsa/vector-read`, code that reads from a node or builds against it in `@vsa/buyer-core`. The relative imports of the sources (`./ledger-read.js`, `./identity-chain.js`) stay valid as they are.
 
@@ -395,7 +447,7 @@ Five copies moved to `2d95483` with these files. `marketplace-indexer.ts` gets t
 **Rewritten lines of the new copies.** The rules are the ones above: the import rewrites, and then the unit name (every spelling of the unit name, in any case, becomes `units`). `ledger-read.ts`, `delegation-read.ts` and `jury-read.ts` are byte-identical to their blobs. The other copies differ on these lines only (the check commands below print them):
 
 - `identity-build.ts`: imports 10 (`tx`), 11, 12 (identity codec), 13 (checked decoders), 29 (`safeFetch`); the unit name on lines 72, 73, 96 (the `ada` function, which ends every amount of a refusal with `units`), 169, 185, 190, 198, 258, 259, 387, 395, 412, 424, 480, 523, 634, 796, 802, 1072, 1074 and 1122.
-- `attestation-build.ts`: imports 11 (the end of the import that starts on line 9), 12, 13; the unit name on lines 32, 279, 302, 305, 319, 423, 438 and 512.
+- `attestation-build.ts` (at `ebce68a`): imports 11 (the end of the import that starts on line 9), 12, 13; the unit name on lines 33, 283, 306, 309, 323, 427, 442 and 516.
 - `attestation-read.ts`: imports 7 (checked decoders), 11, 12 (identity codec).
 - `delegation-build.ts`: imports 10 (the end of the import that starts on line 8), 11; the unit name on lines 114, 118, 123, 312, 318, 319, 467 and 477.
 - `vault-build.ts`: imports 9 (checked decoders), 11 (`provider`), 12, 13 (identity codec), 27, 28 (datum codecs); the unit name on lines 3, 70, 83, 361, 397 and 470.
@@ -407,11 +459,11 @@ Five copies moved to `2d95483` with these files. `marketplace-indexer.ts` gets t
 - `jury-build.ts`: import 8 (`tx`); the unit name on lines 36 (the `ada` function) and 84.
 - `module1-build.ts`: imports 16 (`tx`), 23 (checked decoders); the unit name on line 38 (the `ada` function).
 
-Four of these copies show a text to a caller with `units` where the source names the unit: the refusals of `identity-build.ts`, `attestation-build.ts`, `delegation-build.ts` and `vault-build.ts` (lines 198, 424, 523 and 796 of the first; line 319 of the second; line 123 of the third; line 397 of the fourth), the refusal of `vault-read.ts` (line 310), and the amounts that `identity-build.ts`, `jury-build.ts` and `module1-build.ts` show through `ada`. No amount and no logic changes.
+Four of these copies show a text to a caller with `units` where the source names the unit: the refusals of `identity-build.ts`, `attestation-build.ts`, `delegation-build.ts` and `vault-build.ts` (lines 198, 424, 523 and 796 of the first; line 323 of the second; line 123 of the third; line 397 of the fourth), the refusal of `vault-read.ts` (line 310), and the amounts that `identity-build.ts`, `jury-build.ts` and `module1-build.ts` show through `ada`. No amount and no logic changes.
 
 **Fixtures.** The fixtures that the tests need are copies at `2d95483`, and their rows are in Files. The imports of the TypeScript fixtures are rewritten by the rules of Rewritten lines: `ledger-read-world.ts` lines 11 to 17, `capture-neutral.ts` lines 10 to 12, `jury-world.ts` lines 13 to 19, `legacy-datum.ts` line 4. The JSON fixtures are byte-identical. `ledger-read-world.ts` (line 113) and `jury-world.ts` (line 36) name the ledger unit in a comment: the unit-name check does not read `test/fixtures/`, as for `identity-world.ts` (see Verbatim exceptions).
 
-**Ported tests.** The tests of the source for these copies run here, ported from `node:test` to vitest: `ledger-read`, `ledger-read-budget`, `attestation-read`, `delegation-read`, `vault-read`, `module1-build`, `jury-build`, `jury-document`, `jury-codec`, `jury-deployment`, `attestation-build`, `identity-build` and `identity-register`, each as `test/<name>.test.ts` from `packages/builder/test/<name>.test.ts` at `2d95483`. A ported test keeps the `node:assert/strict` calls of its source, so that a diff against the source shows only these lines: line 1 (a comment that names the source and the pin); the imports (`node:test` becomes `vitest`, and `../src/vector/<file>.ts` becomes the vendored path or the package name by the rules above); one added line that imports `./ported-support.ts`; the fake clock (`t.mock.timers` becomes `mockTimers`, and `async (t) =>` becomes `async () =>`); the skip option of one test in `jury-build.test.ts` (vitest takes a boolean, so the text of the reason goes); `mock` becomes `vi` in `jury-document.test.ts`, and its decoder watch comes from `test/decoder-watch.ts`; and the unit name becomes `units`, as the copies write it. `test/ported-support.ts` sets a time limit of 60 s for each test of a file that imports it (`node:test` has no limit for a test, and vitest has 5 s, but these tests build many rows and run the real validators, on shared runners) and holds the fake clock. The ported tests of the document read keep the check that CBOR nested past the limit never reaches a decoder: the watch stands in for each decoder, so no input of that kind reaches a real library.
+**Ported tests.** The tests of the source for these copies run here, ported from `node:test` to vitest: `ledger-read`, `ledger-read-budget`, `attestation-read`, `delegation-read`, `vault-read`, `module1-build`, `jury-build`, `jury-document`, `jury-codec`, `jury-deployment`, `attestation-build`, `identity-build` and `identity-register`, each as `test/<name>.test.ts` from `packages/builder/test/<name>.test.ts` at `2d95483`, but `attestation-read` and `attestation-build`, which are at `ebce68a`. A ported test keeps the `node:assert/strict` calls of its source, so that a diff against the source shows only these lines: line 1 (a comment that names the source and the pin); the imports (`node:test` becomes `vitest`, and `../src/vector/<file>.ts` becomes the vendored path or the package name by the rules above); one added line that imports `./ported-support.ts`; the fake clock (`t.mock.timers` becomes `mockTimers`, and `async (t) =>` becomes `async () =>`); the skip option of one test in `jury-build.test.ts` (vitest takes a boolean, so the text of the reason goes); `mock` becomes `vi` in `jury-document.test.ts`, and its decoder watch comes from `test/decoder-watch.ts`; and the unit name becomes `units`, as the copies write it. `test/ported-support.ts` sets a time limit of 60 s for each test of a file that imports it (`node:test` has no limit for a test, and vitest has 5 s, but these tests build many rows and run the real validators, on shared runners) and holds the fake clock. The ported tests of the document read keep the check that CBOR nested past the limit never reaches a decoder: the watch stands in for each decoder, so no input of that kind reaches a real library.
 
 `test/ledger-copies.test.ts` is not a port. It uses the package entry: it checks each exported name, and it runs one scenario for each use of the copies on the captured mainnet outputs and on the offline Module-1 world, each with its twin: read an attestation, check it at a time, read a delegation, check a use over two links, read a vault by reference and by delegation, check that a vault paid an escrow, and build the document, the claim, the challenge and the withdrawal.
 
@@ -424,10 +476,10 @@ The tests of `delegation-build.ts`, `marketplace-build.ts` and `marketplace-cons
 **Checking the copies against the pin.** From the repository root. Each `diff` prints only the lines that are listed above (the old line of a unit-name rewrite holds the name), and the `cmp` prints nothing.
 
 ```bash
-for f in identity-build attestation-build attestation-read delegation-build delegation-read vault-build vault-read module1-build jury-build jury-chain jury-codec jury-deployment jury-document jury-read marketplace-constants marketplace-build; do git -C <mcp-server> cat-file blob 2d95483:packages/builder/src/vector/$f.ts | diff - packages/buyer-core/src/vendored/mcp/$f.ts; done
+for f in identity-build attestation-read delegation-build delegation-read vault-build vault-read module1-build jury-build jury-chain jury-codec jury-deployment jury-document jury-read marketplace-constants marketplace-build; do git -C <mcp-server> cat-file blob 2d95483:packages/builder/src/vector/$f.ts | diff - packages/buyer-core/src/vendored/mcp/$f.ts; done
 git -C <mcp-server> cat-file blob 2d95483:packages/builder/src/vector/ledger-read.ts | cmp - packages/buyer-core/src/vendored/mcp/ledger-read.ts
 for f in ledger-read-world.ts capture-neutral.ts jury-world.ts legacy-datum.ts ledger-read-mainnet.json jury-blueprint.json module1-mainnet-manifest.json module1-mainnet-scripts.json module1-withdrawal-mainnet.json jury-document-mainnet.json jury-python-vectors.json; do git -C <mcp-server> cat-file blob 2d95483:packages/builder/test/fixtures/$f | diff - packages/buyer-core/test/fixtures/$f; done
-for t in ledger-read ledger-read-budget attestation-read delegation-read vault-read module1-build jury-build jury-document jury-codec jury-deployment attestation-build identity-build identity-register; do git -C <mcp-server> cat-file blob 2d95483:packages/builder/test/$t.test.ts | diff - packages/buyer-core/test/$t.test.ts; done
+for t in ledger-read ledger-read-budget delegation-read vault-read module1-build jury-build jury-document jury-codec jury-deployment identity-build identity-register; do git -C <mcp-server> cat-file blob 2d95483:packages/builder/test/$t.test.ts | diff - packages/buyer-core/test/$t.test.ts; done
 ```
 
 **Re-vendoring.** Take the blob of each file at the new pin with `git cat-file blob`, apply the import rewrites and then the unit-name rule, one line for one line, and recompute the rows. Check the new blob for a call of a decoder of CML or Lucid, and run `pnpm --filter @vsa/buyer-core test`: the decode-site test fails on a call that is not named, and the drift test fails on a row that is out of date. Port a changed source test by the rules above.
