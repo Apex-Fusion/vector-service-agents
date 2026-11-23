@@ -21,12 +21,12 @@ The table gives the design of the record. A value that the registration fixes re
 | DID | assigned at registration. The service reads it from `AGENT_DID`, and the manifest gives it as `identity.did` |
 | Controller | a controller key of this deployment. The Known gaps section says who holds the keys of the parties |
 | Supplier keys | three, one for each runtime, listed in the record for the authentication and transaction purposes. A runtime signs its receipts, and the Claim and Submit transactions of its escrows, with the supplier key of its own. The manifest gives the key hash and the public key of each runtime in `terms.tiers`. `identity.supplier_key` names the key of the small runtime as a key of the DID (`<DID>#<key hash>`) |
-| Service key | one key, listed in the record for the authentication and transaction purposes. The service holds it and no runtime holds it. It pays for the model hire of each decision, signs the transactions of the dispute code and signs the request for the X.509-SVID. The manifest publishes its key hash as `keys.service_pkh`. The service holds the key hashes and the public keys of the three runtimes, and no private supplier key |
+| Service key | one key, listed in the record for the authentication and transaction purposes. The service holds it and no runtime holds it. It pays for the model hire of each decision, signs the transactions of the challenges that the service files, and signs the request for the X.509-SVID. The manifest publishes its key hash as `keys.service_pkh`. The service holds the key hashes and the public keys of the three runtimes, and no private supplier key |
 | Parties | Accountable: the Accountable key of the organisation, with its domain. Responsible: Module-1. Provider: the Provider key. Guardians: the guardian key of the organisation and a controller key of this deployment, with threshold 2 |
 | Organisation | the domain `alfa.vector.apexfusion.org`, with the description "Demonstration organisation run by the Apex Fusion Foundation". The identity gateway verifies the domain with a DNS TXT record |
 | Public URL | planned: three origins, one for each runtime, `https://mp-suppliers-orders-small.vector.apexfusion.org`, `https://mp-suppliers-orders-medium.vector.apexfusion.org` and `https://mp-suppliers-orders-large.vector.apexfusion.org`, the origins of the runtimes in the pack. The manifest names the lots file at `/lots.json` on the origin of the small runtime. The agent has no advert yet |
 | Reputation stake | a Module-3 self-stake on the capability, owned by the service key |
-| Claim | a Module-1 claim for each run, staked with the service key. See Claim statements |
+| Claim | a Module-1 claim for each run. The service stakes none. Before a run, an operator command stakes the claim with the service key: 50 units, which is 50000000 lovelace, with a challenge window of 24 hours. The command withdraws it after the window, when nobody challenged it. See Claim statements |
 
 ## Capability id
 
@@ -107,7 +107,7 @@ Two things are named apart on this page. The **request JSON** is what the buyer'
 
 ### Request
 
-The request JSON is the handoff of use case 1 (inventory reorder). It has the members of the first table, in this order, and no other. Its `document` is a purchase order, which has the members of the second table, in this order, and no other. A request that breaks a rule is refused with `bad_shape` (400), before any check.
+The request JSON is the handoff of use case 1 (inventory reorder). It has exactly the members of the first table. Its `document` is a purchase order, which has exactly the members of the second table. The order of the members does not matter. A request that breaks a rule is refused with `bad_shape` (400), before any check.
 
 Example. The tests of the job use this handoff. Its identifiers, references and digests are made up, so none of them is of a real escrow, agent or key.
 
@@ -141,11 +141,11 @@ Example. The tests of the job use this handoff. Its identifiers, references and 
 |---|---|
 | `schema` | `vector.usecase.handoff.v1` |
 | `use_case` | `inventory-reorder`. The Order Desk takes the handoff of use case 1 (inventory reorder) only |
-| `sender_did` | the DID of the agent of the buyer: `did:vector:` and 64 hex characters |
-| `delegation` | the identifier of the delegation that paid for the order: 64 hex characters |
+| `sender_did` | the DID of the agent of the buyer: `did:vector:` and 64 lower-case hex characters |
+| `delegation` | the identifier of the delegation that paid for the order: 64 lower-case hex characters |
 | `document` | the purchase order, with the members of the second table |
-| `salt` | 64 hex characters, which are 32 bytes. The digest that the buyer approved is the SHA-256 of these 32 bytes followed by the canonical text of the purchase order |
-| `approval` | `{ "attestation": "<64 hex characters>", "issuer_did": "did:vector:<64 hex characters>" }`: the approval of the buyer for this exact purchase order. It can be `null`, and the hook then refuses with `approval_not_found` |
+| `salt` | 64 lower-case hex characters, which are 32 bytes. The digest that the buyer approved is the SHA-256 of these 32 bytes followed by the canonical text of the purchase order |
+| `approval` | `{ "attestation": "<64 lower-case hex characters>", "issuer_did": "did:vector:<64 lower-case hex characters>" }`: the approval of the buyer for this exact purchase order. It can be `null`, and the hook then refuses with `approval_not_found` |
 
 | Member of the purchase order | Rule |
 |---|---|
@@ -156,9 +156,9 @@ Example. The tests of the job use this handoff. Its identifiers, references and 
 | `lot` | `lot-small`, `lot-medium` or `lot-large` |
 | `quantity` | a whole number from 1 to 1000000 |
 | `needed_by` | a date that exists, as `YYYY-MM-DD` |
-| `supplier_did` | the DID of the supplier: `did:vector:` and 64 hex characters |
-| `advert_ref` | `<transaction hash>#<output index>`: 64 hex characters, `#`, and an index of at most 6 digits |
-| `stock_reading_sha256` | 64 hex characters: the digest of the stock reading that the buyer's agent read |
+| `supplier_did` | the DID of the supplier: `did:vector:` and 64 lower-case hex characters |
+| `advert_ref` | `<transaction hash>#<output index>`: 64 lower-case hex characters, `#`, and an index of at most 6 digits with no leading zero |
+| `stock_reading_sha256` | 64 lower-case hex characters: the digest of the stock reading that the buyer's agent read |
 
 ### What it checks before the Claim
 
@@ -175,8 +175,8 @@ The runtime asks the service before it claims an escrow. The question is `POST /
 | 7 | `approval_found` | `approval_not_found` | 403 | the request has an approval, and its attestation is found and is authentic |
 | 8 | `approval_type` | `approval_wrong_type` | 403 | the attestation is an approval (type 5) |
 | 9 | `approval_subject` | `approval_wrong_subject` | 403 | the subject of the approval is the sender |
-| 10 | `approval_issuer` | `approval_wrong_issuer` | 403 | the issuer of the approval is the root delegator of the delegation |
-| 11 | `approval_valid` | `approval_revoked`, `approval_expired`, `approval_issuer_invalid` | 403 | the approval is valid now by the rule of the registry: it is not revoked, its time is not over, and its issuer was valid when it issued it |
+| 10 | `approval_issuer` | `approval_wrong_issuer` | 403 | the issuer of the approval is the root delegator of the delegation, and, when the attestation names an issuer record, `issuer_did` of the approval is that record |
+| 11 | `approval_valid` | `approval_revoked`, `approval_expired`, `approval_issuer_invalid` | 403 | the approval is valid now by the rule of the registry. It is not revoked (`approval_revoked`). The time is inside its validity range: a window that is over, and a window that has not started, both give `approval_expired`. The issuer was valid, and its key was listed for assertion, when it issued the approval. The envelope signature, when there is one, verifies. A failure of one of these last three gives `approval_issuer_invalid` |
 | 12 | `approval_digest` | `approval_digest_mismatch` | 403 | the digest of the approval is the digest of the purchase order and the salt that the Order Desk received |
 | 13 | `for_this_supplier` | `not_for_this_supplier` | 403 | the purchase order names this agent (`AGENT_DID`) as its supplier |
 | 14 | `lot` | `lot_mismatch` | 403 | the advert of the order is the advert of the escrow, and the lot of the order is the `model` of that advert |
@@ -202,7 +202,7 @@ After the Claim the runtime posts the job to the service. The job has a deadline
 
 When the model answers `confirm: false`, the job refuses with `cannot_supply` (403) after step 4. It places no order, and nothing is paid. The message of the refusal holds a fixed sentence and the first 120 characters of the note of the model. The escrow is Claimed, and it stays Claimed until the buyer reclaims it after `deliver_by`.
 
-The job places at most one order, and nothing retries the order call. The portal refuses a second order for the same number, and the service answers `duplicate_po` (403). A job whose caller hangs up stops before the order is placed, because the service never places an order that nobody reads. The job places no order when the order call could end less than 30 s before `deliver_by`, because the runtime stops waiting then. One call to the supplier portal takes 20000 ms at most.
+The job places at most one order, and nothing retries the order call. The portal refuses a second order for the same number, and the service answers `duplicate_po` (403). A job whose caller hangs up before the order call stops there, because the service never places an order that nobody reads. A hang-up during the order call, or after it, does not stop the job: it books the order, and its log says that the caller hung up. A job can fail after the order call and leave an order at the portal with no entry in the order book (see Errors). The job places no order when the order call could end less than 30 s before `deliver_by`, because the runtime stops waiting then. One call to the supplier portal takes 20000 ms at most.
 
 ### Response
 
@@ -330,25 +330,26 @@ Example. The test of the golden run of the job gives exactly this confirmation f
 
 A refusal is `{ "error": "<code>", "message": "<words>" }` with the status in the table.
 
-- The 401 has the code and no message.
-- A refusal of status 500 or more gets a fixed message, `The service could not do this job (<code>). The operator's log has the detail.`, because the runtime copies the first 200 characters of a failure to the buyer, and the detail is the operator's. `busy` and `shutting_down` have a fixed message of their own.
+- The 401, the 404, the 409 of a job and a plain 500 have the code and no message: `{"error":"unauthorized"}`, `{"error":"not_found"}`, `{"error":"busy"}` and `{"error":"internal"}`. A plain 500 is the answer to a fault that no code names, and its cause is in the log.
+- A refusal of status 500 or more gets a fixed message, `The service could not do this job (<code>). The operator's log has the detail.`, because the runtime copies the first 200 characters of a failure to the buyer, and the detail is the operator's. `shutting_down` has the fixed message `The service is stopping and takes no new job. Try again shortly.`, and the 409 `busy` of the hook has the fixed message `The service is working on another job. Try again shortly.`.
 - The message of `cannot_supply` holds a fixed sentence and the first 120 characters of the note of the model.
-- Anything else is 500 `{"error":"internal"}` with no detail. The cause is in the log.
-- A refusal of the hook leaves the escrow open, and nothing is paid. A job that fails after the Claim leaves the escrow Claimed: the buyer reclaims it after `deliver_by`, and nothing is paid for work that was not done. A job that fails before the order is placed places no order.
-- One job runs at a time. A job, or a call of the hook for another escrow, that arrives while a job runs, or while the slot is reserved for another escrow, gets 409 `{"error":"busy"}`, and nothing starts.
+- A refusal of the hook leaves the escrow open, and nothing is paid. A job that fails after the Claim leaves the escrow Claimed: the buyer reclaims it after `deliver_by`, and nothing is paid for work that was not done. A job that fails before the order call places no order.
+- A job that fails after the order call can leave an order at the portal with no entry in the order book. That happens with `mock_system_failed` after a call that was sent, and with `store_write_failed` of the order book. The log says so. When the portal holds the order, a later job for the same purchase order number passes the check `not_duplicate`, and the portal then refuses its order: that job ends with `duplicate_po` (403) after the Claim.
+- One job runs at a time. A job that arrives while a job runs, or while the slot is reserved for another escrow, gets 409 `{"error":"busy"}`, and nothing starts. A call of the hook gets 409 `busy` with a message while a job runs, whatever its escrow, and while the slot is reserved for another escrow. The call of the hook for the escrow that holds the reservation reserves the slot again.
 - While a job runs, the service writes an interim `102 Processing` line every 60 s, ahead of the answer, because the fetch of the runtime gives up after 300 s of silence.
 
 | Status | Codes |
 |---|---|
 | 400, the message | `bad_wire` (not the one-element message array), `request_too_large` (over 1000000 bytes) |
 | 400, the request | `bad_shape` (a request JSON that is not a handoff of use case 1 with a purchase order), `bad_context` (the six headers of the context are missing, some are missing, or one is not well formed) |
-| 401, the caller | `unauthorized` |
+| 401, the caller | `unauthorized` (no message) |
 | 403, the hook, before the Claim | `sender_not_active`, `sender_unaccountable`, `sender_key_mismatch`, `delegation_invalid`, `delegation_ended`, `not_vault_paid`, `approval_not_found`, `approval_wrong_type`, `approval_wrong_subject`, `approval_wrong_issuer`, `approval_revoked`, `approval_expired`, `approval_issuer_invalid`, `approval_digest_mismatch`, `not_for_this_supplier`, `lot_mismatch`, `quantity_mismatch`, `duplicate_po` |
 | 403, the job, after the Claim | `cannot_supply` (the model says that the lot cannot be supplied), `duplicate_po` (the supplier portal holds an order for the number already) |
-| 409, the service is busy | `busy` |
-| 422, the job | `deadline` (the caller hung up, or too little time was left to place the order) |
-| 500, the service | `precheck_missing` (the job has no record of passed checks for its body), `store_write_failed` (the order book or the record of the model hire cannot be written), `internal` |
-| 502, a third party | `svid_failed` (the identity gateway gave no X.509-SVID), `mock_system_failed` (the supplier portal did not take the call), `inference_failed` (the model hire failed), `model_output_invalid` (the answer of the model cannot be used) |
+| 404, no such route | `not_found` (no message) |
+| 409, the service is busy | `busy` (a job runs, or the slot is reserved for another escrow. The answer to a job has no message, and the answer of the hook has one) |
+| 422, the job | `deadline` (the caller hung up before the order call, or too little time was left to place the order) |
+| 500, the service | `precheck_missing` (the job has no record of passed checks for its body), `store_write_failed` (the order book or the record of the model hire cannot be written. When the order book fails, the portal holds the order), `internal` (a fault of the service: a plain 500 with no message when nothing names it, and the fixed message when the job names it) |
+| 502, a third party | `svid_failed` (the identity gateway gave no X.509-SVID), `mock_system_failed` (the supplier portal did not take the call. After a call that was sent, the order may exist at the portal), `inference_failed` (the model hire failed), `model_output_invalid` (the answer of the model cannot be used) |
 | 503, the service cannot answer now | `check_unavailable` (the hook could not read a source), `shutting_down` (the service is stopping) |
 
 ## What the receipt commits to
@@ -371,7 +372,7 @@ The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of t
 
 ## Claim statements
 
-The Order Desk stakes a Module-1 claim for each run. The claim has three statements. The manifest holds the same three texts in `behaviour.claim`.
+The service stakes no claim: no code of the service calls the staking. Before a run, an operator command stakes a Module-1 claim for the agent with the service key: 50 units, which is 50000000 lovelace, with a challenge window of 24 hours. After the window, the same command withdraws the claim when nobody challenged it. The claim has three statements. The manifest holds the same three texts in `behaviour.claim`.
 
 | Id | Statement |
 |---|---|

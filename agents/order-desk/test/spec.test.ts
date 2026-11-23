@@ -3,11 +3,12 @@
 // status and the changelog to the manifest; the terms of the three adverts to the constants, to the manifest, to the example environment and to the compose file; the claim to the constants of the kit; the gaps
 // word for word to the manifest; the third parties and the data handling to the manifest; and the links to files that exist. No test here uses the network.
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import { parse as parseYaml } from 'yaml';
-import { CONTEXT_HEADERS, HEARTBEAT_MS, MAX_BODY, RESERVATION_MS, operatorsText, parseWire } from '@vsa/service-kit';
+import { BUSY_TEXT, CONTEXT_HEADERS, HEARTBEAT_MS, JobSlot, MAX_BODY, RESERVATION_MS, STOPPING_TEXT, operatorsText, parseWire } from '@vsa/service-kit';
+import type { MtlsTransport } from '@vsa/usecase-kit/access';
 import {
   CONFIRMATION_CHECKS, INVENTORY_CAPABILITIES, LOT_NAMES, ORDER_DESK_CLAIM, PO_SCHEMA, REORDER_CLAIM, lotsFileSha256, parseLotsFile, parseOrderConfirmation, parsePurchaseOrder,
 } from '@vsa/usecase-kit/inventory';
@@ -16,7 +17,7 @@ import {
   COUNTERPARTY_REFUSALS, ERROR_STATUS, FAULT_MODES, HANDOFF_SCHEMA, MAX_REQUEST_BYTES, NO_OPEN_CLAIM, RUNTIME_BODY_LIMIT_BYTES, accepted, canonicalJson, parseHandoff, proposalDigest,
 } from '@vsa/usecase-kit/protocol';
 import { PASSED_CHECKS_TTL_MS } from '../src/checks/index.ts';
-import { AVAILABILITY_DECISION, ORDER_REFUSAL_STATUS, wrongLotOf } from '../src/job/index.ts';
+import { AVAILABILITY_DECISION, ORDER_REFUSAL_STATUS, runOrder, wrongLotOf } from '../src/job/index.ts';
 import { CONTROLLER_GAP, GAPS, NOT_SHOWN_GAP, PAGE_GAPS } from '../src/serve/gaps.ts';
 import { TEMPLATE_ENV, manifestFromEnv } from '../src/serve/manifest.ts';
 import { RequestRefusal, parseOrderRequest } from '../src/serve/server.ts';
@@ -81,12 +82,12 @@ describe('specs/order-desk.md: the frame', () => {
     expect(suppliers).toContain('`identity.supplier_key` names the key of the small runtime as a key of the DID (`<DID>#<key hash>`)');
     const service = row(identity, 'Service key');
     expect(service).toContain('one key, listed in the record for the authentication and transaction purposes. The service holds it and no runtime holds it.');
-    expect(service).toContain('It pays for the model hire of each decision, signs the transactions of the dispute code and signs the request for the X.509-SVID.');
+    expect(service).toContain('It pays for the model hire of each decision, signs the transactions of the challenges that the service files, and signs the request for the X.509-SVID.');
     expect(service).toContain('The manifest publishes its key hash as `keys.service_pkh`.');
     expect(service).toContain('The service holds the key hashes and the public keys of the three runtimes, and no private supplier key');
     expect(row(identity, 'Parties')).toBe('| Parties | Accountable: the Accountable key of the organisation, with its domain. Responsible: Module-1. Provider: the Provider key. Guardians: the guardian key of the organisation and a controller key of this deployment, with threshold 2 |');
     expect(row(identity, 'Reputation stake')).toBe('| Reputation stake | a Module-3 self-stake on the capability, owned by the service key |');
-    expect(row(identity, 'Claim')).toBe('| Claim | a Module-1 claim for each run, staked with the service key. See Claim statements |');
+    expect(row(identity, 'Claim')).toBe('| Claim | a Module-1 claim for each run. The service stakes none. Before a run, an operator command stakes the claim with the service key: 50 units, which is 50000000 lovelace, with a challenge window of 24 hours. The command withdraws it after the window, when nobody challenged it. See Claim statements |');
     // The public URLs are the origins of the three runtimes of the pack, and the service derives the other two from the origin of the small runtime.
     const origins = runtimes.map((runtime) => String(runtime.environment?.PUBLIC_ORIGIN));
     expect(endpointsOf(origins[0])).toStrictEqual({ 'lot-small': origins[0], 'lot-medium': origins[1], 'lot-large': origins[2] });
@@ -198,7 +199,16 @@ describe('specs/order-desk.md: the claim, the fault switch and the gaps', () => 
     expect(table).toStrictEqual(ORDER_DESK_CLAIM.statements.map((statement) => `| ${statement.id} | ${statement.text} |`));
     expect(manifest.behaviour.claim.statements).toStrictEqual(ORDER_DESK_CLAIM.statements);
     expect(ORDER_DESK_CLAIM.statements.map((statement) => statement.id)).toStrictEqual(['S1', 'S2', 'S3']);
-    expect(section('Claim statements')).toContain('The Order Desk stakes a Module-1 claim for each run. The claim has three statements. The manifest holds the same three texts in `behaviour.claim`.');
+    const claim = section('Claim statements');
+    expect(claim).toContain('The service stakes no claim: no code of the service calls the staking. Before a run, an operator command stakes a Module-1 claim for the agent with the service key: 50 units, which is 50000000 lovelace, with a challenge window of 24 hours. After the window, the same command withdraws the claim when nobody challenged it.');
+    expect(claim).toContain('The claim has three statements. The manifest holds the same three texts in `behaviour.claim`.');
+    // No source of the service calls the staking of a run claim.
+    const sourceDir = new URL('../src/', import.meta.url);
+    const sources = (readdirSync(sourceDir, { recursive: true }) as string[]).map(String).filter((file) => file.endsWith('.ts'));
+    expect(sources.length).toBeGreaterThan(10);
+    expect(sources.filter((file) => readFileSync(new URL(file, sourceDir), 'utf8').includes('stakeRunClaim'))).toStrictEqual([]);
+    // The claim of 50 units is the least claim that the Module-1 deployment takes, and the example environment gives that number as the stake of a challenge: a challenge targets a claim whose stake is not above it.
+    expect(envExample.split('\n')).toContain('DISPUTE_CHALLENGE_STAKE_LOVELACE=50000000');
   });
 
   test('the Fault switch names the one value of the kit, the wrong lot of the job, and the field that every result carries', () => {
@@ -318,8 +328,8 @@ describe('specs/order-desk.md: the request', () => {
     expect(shown).toBe(JSON.stringify(handoffOf(), null, 2));
     expect(parseOrderRequest(shown)).toStrictEqual(handoffOf());
     expect(parseWire(JSON.stringify([{ content: shown, role: 'user' }]))).toBe(shown);
-    expect(request).toContain('The request JSON is the handoff of use case 1 (inventory reorder). It has the members of the first table, in this order, and no other.');
-    expect(request).toContain('Its `document` is a purchase order, which has the members of the second table, in this order, and no other.');
+    expect(request).toContain('The request JSON is the handoff of use case 1 (inventory reorder). It has exactly the members of the first table.');
+    expect(request).toContain('Its `document` is a purchase order, which has exactly the members of the second table. The order of the members does not matter.');
     expect(request).toContain('A request that breaks a rule is refused with `bad_shape` (400), before any check.');
     expect(() => parseOrderRequest('{}')).toThrow(RequestRefusal);
     expect(new RequestRefusal('bad_shape', 'x').status).toBe(400);
@@ -334,11 +344,11 @@ describe('specs/order-desk.md: the request', () => {
     expect(rows.slice(0, 7)).toStrictEqual([
       `| \`schema\` | \`${HANDOFF_SCHEMA}\` |`,
       '| `use_case` | `inventory-reorder`. The Order Desk takes the handoff of use case 1 (inventory reorder) only |',
-      '| `sender_did` | the DID of the agent of the buyer: `did:vector:` and 64 hex characters |',
-      '| `delegation` | the identifier of the delegation that paid for the order: 64 hex characters |',
+      '| `sender_did` | the DID of the agent of the buyer: `did:vector:` and 64 lower-case hex characters |',
+      '| `delegation` | the identifier of the delegation that paid for the order: 64 lower-case hex characters |',
       '| `document` | the purchase order, with the members of the second table |',
-      '| `salt` | 64 hex characters, which are 32 bytes. The digest that the buyer approved is the SHA-256 of these 32 bytes followed by the canonical text of the purchase order |',
-      '| `approval` | `{ "attestation": "<64 hex characters>", "issuer_did": "did:vector:<64 hex characters>" }`: the approval of the buyer for this exact purchase order. It can be `null`, and the hook then refuses with `approval_not_found` |',
+      '| `salt` | 64 lower-case hex characters, which are 32 bytes. The digest that the buyer approved is the SHA-256 of these 32 bytes followed by the canonical text of the purchase order |',
+      '| `approval` | `{ "attestation": "<64 lower-case hex characters>", "issuer_did": "did:vector:<64 lower-case hex characters>" }`: the approval of the buyer for this exact purchase order. It can be `null`, and the hook then refuses with `approval_not_found` |',
     ]);
     expect(rows.slice(7)).toStrictEqual([
       `| \`schema\` | \`${PO_SCHEMA}\` |`,
@@ -348,9 +358,9 @@ describe('specs/order-desk.md: the request', () => {
       `| \`lot\` | ${LOT_NAMES.slice(0, -1).map((lot) => `\`${lot}\``).join(', ')} or \`${LOT_NAMES.at(-1)}\` |`,
       '| `quantity` | a whole number from 1 to 1000000 |',
       '| `needed_by` | a date that exists, as `YYYY-MM-DD` |',
-      '| `supplier_did` | the DID of the supplier: `did:vector:` and 64 hex characters |',
-      '| `advert_ref` | `<transaction hash>#<output index>`: 64 hex characters, `#`, and an index of at most 6 digits |',
-      '| `stock_reading_sha256` | 64 hex characters: the digest of the stock reading that the buyer\'s agent read |',
+      '| `supplier_did` | the DID of the supplier: `did:vector:` and 64 lower-case hex characters |',
+      '| `advert_ref` | `<transaction hash>#<output index>`: 64 lower-case hex characters, `#`, and an index of at most 6 digits with no leading zero |',
+      '| `stock_reading_sha256` | 64 lower-case hex characters: the digest of the stock reading that the buyer\'s agent read |',
     ]);
     // The use case, the shape and the approval of the handoff.
     expect(() => parseOrderRequest(JSON.stringify({ ...handoffOf(), use_case: 'prior-authorization' }))).toThrow(RequestRefusal);
@@ -368,6 +378,15 @@ describe('specs/order-desk.md: the request', () => {
     expect([accepts({ needed_by: '2026-12-31' }), accepts({ needed_by: '2026-02-30' })]).toStrictEqual([true, false]);
     expect([accepts({ advert_ref: `${'d4'.repeat(32)}#123456` }), accepts({ advert_ref: `${'d4'.repeat(32)}#1234567` })]).toStrictEqual([true, false]);
     expect([...LOT_NAMES.map((lot) => accepts({ lot })), accepts({ lot: 'lot-huge' })]).toStrictEqual([true, true, true, false]);
+    // The parser checks which members are there and never their order. Hex is lower case only, and an output index has no leading zero.
+    expect(parseOrderRequest(JSON.stringify(Object.fromEntries(Object.entries(handoffOf()).reverse())))).toStrictEqual(handoffOf());
+    expect(accepts(Object.fromEntries(Object.entries(PURCHASE_ORDER).reverse()))).toBe(true);
+    expect(accepts({ extra: 1 })).toBe(false);
+    expect([accepts({ supplier_did: `did:vector:${'A1'.repeat(32)}` }), accepts({ stock_reading_sha256: 'AB'.repeat(32) })]).toStrictEqual([false, false]);
+    expect([accepts({ advert_ref: `${'d4'.repeat(32)}#0` }), accepts({ advert_ref: `${'d4'.repeat(32)}#01` }), accepts({ advert_ref: `${'D4'.repeat(32)}#1` })]).toStrictEqual([true, false, false]);
+    for (const over of [{ sender_did: `did:vector:${'EC'.repeat(32)}` }, { delegation: '5E'.repeat(32) }, { salt: '9A'.repeat(32) }]) {
+      expect(parseHandoff(JSON.parse(JSON.stringify({ ...handoffOf(), ...over }))).ok, Object.keys(over)[0]).toBe(false);
+    }
   });
 });
 
@@ -391,6 +410,15 @@ describe('specs/order-desk.md: what the hook checks before the Claim', () => {
     const own = (readme.split('\n## The checks\n')[1] ?? '').split('\n## ')[0].split('\n').filter((line) => /^\| `/.test(line)).map((line) => line.slice(2, -2).split(' | '));
     expect(own).toHaveLength(4);
     expect(checks.slice(-4).map((cells) => [cells[1], cells[2], cells[4]])).toStrictEqual(own);
+    // The rules of the checks approval_issuer and approval_valid, as the check of the approval gives them.
+    const approvalSource = readFileSync(new URL('../../../packages/usecase-kit/src/checks/approval.ts', import.meta.url), 'utf8');
+    expect(approvalSource).toContain("return refusedBy('approval_wrong_issuer', 'the issuer record that the reference names is not the issuer record of the attestation');");
+    expect(approvalSource).toContain("{ id: 'time_window', code: 'approval_expired', text: 'the time of the check is not inside the validity range of the approval'");
+    expect(approvalSource).toContain("{ id: 'envelope', code: 'approval_issuer_invalid', text: 'the envelope signature of the approval does not verify with the issuer key'");
+    expect(approvalSource).toContain("{ id: 'issuer_not_invalidated', code: 'approval_issuer_invalid', text: 'the issuer of the approval was invalid when it issued the approval'");
+    expect(approvalSource).toContain("{ id: 'issuer_key_listed', code: 'approval_issuer_invalid', text: 'the issuer key was not listed for assertion when the approval was issued'");
+    expect(checks[9][4]).toBe('the issuer of the approval is the root delegator of the delegation, and, when the attestation names an issuer record, `issuer_did` of the approval is that record');
+    expect(checks[10][4]).toBe('the approval is valid now by the rule of the registry. It is not revoked (`approval_revoked`). The time is inside its validity range: a window that is over, and a window that has not started, both give `approval_expired`. The issuer was valid, and its key was listed for assertion, when it issued the approval. The envelope signature, when there is one, verifies. A failure of one of these last three gives `approval_issuer_invalid`');
     expect(hook).toContain('The hook makes 16 checks, one after the other, in the order of the table.');
     expect(hook).toContain('The first check that fails ends the hook. Its answer is the refusal code of that check, with the status 403.');
     expect(hook).toContain('A refusal comes before the Claim: the escrow stays open, nothing is claimed, nothing is paid, and the buyer reclaims the escrow after `deliver_by`.');
@@ -486,8 +514,41 @@ describe('specs/order-desk.md: what the job does, the response and the lots file
     expect(readFileSync(new URL('../src/job/order.ts', import.meta.url), 'utf8')).toContain('const RUNTIME_MARGIN_MS = 30_000;');
     expect(CALL_TIMEOUT_MS).toBe(20_000);
     expect(does).toContain('The job places at most one order, and nothing retries the order call. The portal refuses a second order for the same number, and the service answers `duplicate_po` (403).');
-    expect(does).toContain('A job whose caller hangs up stops before the order is placed, because the service never places an order that nobody reads.');
+    expect(does).toContain('A job whose caller hangs up before the order call stops there, because the service never places an order that nobody reads. A hang-up during the order call, or after it, does not stop the job: it books the order, and its log says that the caller hung up.');
+    expect(does).toContain('A job can fail after the order call and leave an order at the portal with no entry in the order book (see Errors).');
     expect(does).toContain(`The job places no order when the order call could end less than 30 s before \`deliver_by\`, because the runtime stops waiting then. One call to the supplier portal takes ${CALL_TIMEOUT_MS} ms at most.`);
+  });
+
+  test('a hang-up during the order call does not stop the job, and a failure after the order call can leave an order at the portal with no entry in the order book', async () => {
+    // The caller hangs up during the order call: the job goes on, books the order, answers, and says in its log that the caller hung up.
+    const gone = new AbortController();
+    const rig = makeRig();
+    const during: MtlsTransport = async (request) => {
+      if (request.method === 'POST') gone.abort();
+      return rig.portal.transport(request);
+    };
+    const confirmation = await runOrder({ ...rig.deps, calls: { ...rig.deps.calls, transport: during } }, rig.request, rig.context, rig.gateway.now(), gone.signal);
+    expect(gone.signal.aborted).toBe(true);
+    expect(rig.booked).toStrictEqual([['run1', 'run1-0001', confirmation.order_id]]);
+    expect(rig.logs.some((line) => line.includes('the caller hung up while the order was placed'))).toBe(true);
+    // The order book fails after the portal took the order: the job fails, the portal holds the order, and the book has no entry.
+    const unbooked = makeRig();
+    unbooked.bookError = new Error('the disk is full');
+    const book = await refusalOf(unbooked.run());
+    expect([book.code, book.status]).toStrictEqual(['store_write_failed', 500]);
+    expect([unbooked.portal.orders.size, unbooked.booked.length]).toStrictEqual([1, 0]);
+    expect(unbooked.logs[0]).toContain('the portal holds the order');
+    // The portal gives no answer for the order: the job fails with mock_system_failed, the book has no entry, and the log says that the order may exist.
+    const silent = makeRig();
+    silent.portal.order = { throws: new Error('socket hang up') };
+    const none = await refusalOf(silent.run());
+    expect([none.code, none.status]).toStrictEqual(['mock_system_failed', 502]);
+    expect(silent.booked).toHaveLength(0);
+    expect(silent.logs[0]).toContain('may exist');
+    // When the portal holds the order, a later job for the same number passes the checks of the hook, and the portal refuses its order: duplicate_po after the Claim.
+    const later = makeRig();
+    later.portal.preplace('run1-0001');
+    expect(await refusalOf(later.run())).toMatchObject({ code: 'duplicate_po', status: 403 });
   });
 
   test('the Request and the Response headings are the two anchors that the manifest links to', () => {
@@ -554,17 +615,33 @@ describe('specs/order-desk.md: the errors', () => {
   const statusRows = (text: string): string[] => text.split('\n').filter((line) => /^\| \d{3}, /.test(line));
   /** The names of codes in the second cell of a row of the table, in order. */
   const codesIn = (line: string): string[] => [...(line.split('|')[2] ?? '').matchAll(/`([^`]+)`/g)].map((hit) => hit[1]).filter((text) => /^[a-z_]+$/.test(text));
+  const kitServer = readFileSync(new URL('../../../packages/service-kit/src/server.ts', import.meta.url), 'utf8');
 
-  test('the table is the table of the README, row for row, and every code has its status in the protocol or in the request refusal of the service', () => {
+  test('the table is the table of the README, but for five rows that this page words otherwise and a row for the 404, and every code has its status', () => {
+    // The five rows: the answers with no message, the busy answers, the hang-up before the order call, and the order that may exist at the portal.
+    const reworded: Record<string, string> = {
+      '| 401, ': '| 401, the caller | `unauthorized` (no message) |',
+      '| 409, ': '| 409, the service is busy | `busy` (a job runs, or the slot is reserved for another escrow. The answer to a job has no message, and the answer of the hook has one) |',
+      '| 422, ': '| 422, the job | `deadline` (the caller hung up before the order call, or too little time was left to place the order) |',
+      '| 500, ': '| 500, the service | `precheck_missing` (the job has no record of passed checks for its body), `store_write_failed` (the order book or the record of the model hire cannot be written. When the order book fails, the portal holds the order), `internal` (a fault of the service: a plain 500 with no message when nothing names it, and the fixed message when the job names it) |',
+      '| 502, ': '| 502, a third party | `svid_failed` (the identity gateway gave no X.509-SVID), `mock_system_failed` (the supplier portal did not take the call. After a call that was sent, the order may exist at the portal), `inference_failed` (the model hire failed), `model_output_invalid` (the answer of the model cannot be used) |',
+    };
+    const notFound = '| 404, no such route | `not_found` (no message) |';
+    const expected = statusRows(readme.split('\n## Errors\n')[1] ?? '').flatMap((line) => {
+      const own = Object.entries(reworded).find(([prefix]) => line.startsWith(prefix))?.[1] ?? line;
+      return line.startsWith('| 409, ') ? [notFound, own] : [own];
+    });
     const onPage = statusRows(errors);
-    expect(onPage).toHaveLength(10);
-    expect(onPage).toStrictEqual(statusRows(readme.split('\n## Errors\n')[1] ?? ''));
+    expect(expected).toHaveLength(11);
+    expect(onPage).toStrictEqual(expected);
+    // A code that the protocol does not list has its status elsewhere: the request refusal of the service, and the kit of the service.
+    const outside: Record<string, number> = { bad_context: new RequestRefusal('bad_context', 'x').status, not_found: 404 };
     const documented = new Map<string, number[]>();
     for (const line of onPage) {
       const status = Number(/^\| (\d{3}), /.exec(line)?.[1]);
       for (const code of codesIn(line)) {
         documented.set(code, [...(documented.get(code) ?? []), status]);
-        expect(code === 'bad_context' ? new RequestRefusal('bad_context', 'x').status : ERROR_STATUS[code as keyof typeof ERROR_STATUS], code).toBe(status);
+        expect(Object.hasOwn(outside, code) ? outside[code] : ERROR_STATUS[code as keyof typeof ERROR_STATUS], code).toBe(status);
       }
     }
     // The 403 row before the Claim holds the 18 codes of the hook, in the order of its checks, and the codes of the job are the codes that the job gives.
@@ -572,23 +649,37 @@ describe('specs/order-desk.md: the errors', () => {
     expect(codesIn(before)).toStrictEqual(COUNTERPARTY_REFUSALS['order-desk'].filter((code) => code !== 'cannot_supply'));
     expect(codesIn(onPage.find((line) => line.startsWith('| 403, the job, after the Claim')) ?? '')).toStrictEqual(['cannot_supply', 'duplicate_po']);
     for (const [code, status] of Object.entries(ORDER_REFUSAL_STATUS)) expect(documented.get(code), code).toContain(status);
-    for (const code of [...COUNTERPARTY_REFUSALS['order-desk'], 'check_unavailable', 'busy', 'shutting_down', 'unauthorized', 'bad_wire', 'request_too_large', 'bad_shape', 'bad_context', 'internal']) {
+    for (const code of [...COUNTERPARTY_REFUSALS['order-desk'], 'check_unavailable', 'busy', 'shutting_down', 'unauthorized', 'not_found', 'bad_wire', 'request_too_large', 'bad_shape', 'bad_context', 'internal']) {
       expect(documented.has(code), code).toBe(true);
     }
     expect([...documented.entries()].filter(([, statuses]) => statuses.length > 1)).toStrictEqual([['duplicate_po', [403, 403]]]);
   });
 
-  test('the text of the section gives the shape of a refusal, the fixed message of a fault, what a refusal leaves behind, the busy answer and the interim line', () => {
+  test('the 401, the 404, the 409 of a job and a plain 500 have no message, the 409 of the hook has one, and the slot gives the busy answers as the page says', () => {
     expect(errors).toContain('A refusal is `{ "error": "<code>", "message": "<words>" }` with the status in the table.');
-    expect(errors).toContain('- The 401 has the code and no message.');
-    expect(errors).toContain(`- A refusal of status 500 or more gets a fixed message, \`${operatorsText('<code>')}\`, because the runtime copies the first 200 characters of a failure to the buyer, and the detail is the operator's.`);
+    expect(errors).toContain('- The 401, the 404, the 409 of a job and a plain 500 have the code and no message: `{"error":"unauthorized"}`, `{"error":"not_found"}`, `{"error":"busy"}` and `{"error":"internal"}`. A plain 500 is the answer to a fault that no code names, and its cause is in the log.');
+    expect(kitServer).toContain("return send(401, { error: 'unauthorized' });");
+    expect(kitServer).toContain("return send(404, { error: 'not_found' });");
+    expect(kitServer.split("send(409, { error: 'busy' })").length - 1).toBe(2);
+    expect(kitServer).toContain("return send(409, { error: 'busy', message: BUSY_TEXT });");
+    expect(kitServer).toContain("return send(500, { error: 'internal' });");
+    expect(errors).toContain(`- A refusal of status 500 or more gets a fixed message, \`${operatorsText('<code>')}\`, because the runtime copies the first 200 characters of a failure to the buyer, and the detail is the operator's. \`shutting_down\` has the fixed message \`${STOPPING_TEXT}\`, and the 409 \`busy\` of the hook has the fixed message \`${BUSY_TEXT}\`.`);
     expect(errors).toContain('- The message of `cannot_supply` holds a fixed sentence and the first 120 characters of the note of the model.');
-    expect(errors).toContain('- Anything else is 500 `{"error":"internal"}` with no detail. The cause is in the log.');
-    expect(errors).toContain('- A refusal of the hook leaves the escrow open, and nothing is paid. A job that fails after the Claim leaves the escrow Claimed: the buyer reclaims it after `deliver_by`, and nothing is paid for work that was not done. A job that fails before the order is placed places no order.');
-    expect(errors).toContain('gets 409 `{"error":"busy"}`, and nothing starts.');
+    expect(errors).toContain('- A refusal of the hook leaves the escrow open, and nothing is paid. A job that fails after the Claim leaves the escrow Claimed: the buyer reclaims it after `deliver_by`, and nothing is paid for work that was not done. A job that fails before the order call places no order.');
+    expect(errors).toContain('- A job that fails after the order call can leave an order at the portal with no entry in the order book. That happens with `mock_system_failed` after a call that was sent, and with `store_write_failed` of the order book. The log says so. When the portal holds the order, a later job for the same purchase order number passes the check `not_duplicate`, and the portal then refuses its order: that job ends with `duplicate_po` (403) after the Claim.');
+    expect(readme).toContain('A job that fails after the Claim leaves the escrow claimed. The buyer reclaims it after the deadline, and nothing is paid for work that was not done.');
+    expect(errors).toContain('- One job runs at a time. A job that arrives while a job runs, or while the slot is reserved for another escrow, gets 409 `{"error":"busy"}`, and nothing starts. A call of the hook gets 409 `busy` with a message while a job runs, whatever its escrow, and while the slot is reserved for another escrow. The call of the hook for the escrow that holds the reservation reserves the slot again.');
+    // The slot: a job that runs holds it against every call, the escrow of a reservation gets it again, and another escrow is held off.
+    const slot = new JobSlot();
+    expect(slot.take('escrow-a', 1_000)).toBe('taken');
+    expect([slot.canTake('escrow-a', 1_000), slot.canTake('escrow-b', 1_000)]).toStrictEqual(['busy', 'busy']);
+    slot.release();
+    expect(slot.reserve('escrow-a', 1_000)).toBe('reserved');
+    expect([slot.canTake('escrow-a', 2_000), slot.canTake('escrow-b', 2_000)]).toStrictEqual(['free', 'held']);
+    expect(slot.reserve('escrow-a', 2_000)).toBe('reserved');
+    expect(slot.take('escrow-b', 2_000)).toBe('held');
     expect(HEARTBEAT_MS).toBe(60_000);
     expect(errors).toContain('writes an interim `102 Processing` line every 60 s, ahead of the answer, because the fetch of the runtime gives up after 300 s of silence.');
     expect(readme).toContain('The reason is that the runtime\'s fetch gives up after 300 s of silence.');
-    expect(readme).toContain('A job that fails after the Claim leaves the escrow claimed. The buyer reclaims it after the deadline, and nothing is paid for work that was not done. A job that fails before the order is placed places no order.');
   });
 });
