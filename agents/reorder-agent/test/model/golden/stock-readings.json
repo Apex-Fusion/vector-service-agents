@@ -1,0 +1,5 @@
+[
+  { "sku": "GLV-NIT-M", "on_hand": 60, "threshold": 100, "daily_usage": 12, "lead_time_days": 7, "open_orders": 0 },
+  { "sku": "SYR-10ML", "on_hand": 900, "threshold": 400, "daily_usage": 60, "lead_time_days": 5, "open_orders": 0 },
+  { "sku": "MSK-N95", "on_hand": 40, "threshold": 150, "daily_usage": 55, "lead_time_days": 10, "open_orders": 0 }
+]

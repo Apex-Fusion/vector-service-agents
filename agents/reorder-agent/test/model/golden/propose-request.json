@@ -1,0 +1,10 @@
+{
+  "op": "propose",
+  "authority": {
+    "principal_did": "did:vector:1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f",
+    "delegation": "9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b"
+  },
+  "tenant": "run1",
+  "sku": "GLV-NIT-M",
+  "supplier_did": "did:vector:d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5"
+}
