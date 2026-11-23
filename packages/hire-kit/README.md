@@ -15,6 +15,14 @@ It refuses a key hash that it holds already.
 It refuses a folder that another key of the same registry uses.
 Two registries do not check each other, so a service makes one registry and gives every key to it.
 
+`add(chain)` takes the key hash from the wallet of the chain.
+The wallet of the real chain is a read of the node, so a node that is down makes `add` fail.
+A service that derived the hash from its own key gives it: `add(chain, { dir, keyHash })`, with 56 lowercase hex characters.
+Then `add` reads no wallet.
+It makes the same checks for a key hash that it holds and for a folder that another key uses.
+It refuses a `keyHash` of another form, and its message never shows the value.
+The caller owns the claim that the hash is the hash of the key that the chain signs with.
+
 `hireModel` and `hireAgent` take the paying key as their first argument.
 They run in the lane of the key: one hire at a time for the key.
 A hire whose turn comes at or after its deadline reads and pays nothing, and the facts of its deadline error name the stage `lane` and no escrow.

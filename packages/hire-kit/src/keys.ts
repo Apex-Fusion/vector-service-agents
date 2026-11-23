@@ -63,7 +63,7 @@ export function checkTurn<E extends Error>(t: Clocked, label: string, errors: Pi
 
 /** One key that pays, with its chain, its stranded store and its lane. Made by PayingKeys.add. */
 export class PayingKey {
-  /** The hash of the key that signs: 56 lowercase hex characters, as the wallet of the chain says. */
+  /** The hash of the key that signs: 56 lowercase hex characters, as the wallet of the chain says, or as the caller of PayingKeys.add gave it. */
   readonly keyHash: string;
   readonly chain: Chain;
   /** The directory of the stranded file of this key. */
@@ -102,13 +102,25 @@ export class PayingKeys {
   }
 
   /**
-   * Adds the key of `chain`. Its hash is the one the wallet of the chain says. Its stranded file is in `dir` when the caller gives one (a service that keeps the file of its
-   * service key where it was before it held more than one key), and in `keys/<hash>` of the state directory otherwise. Refuses a key hash that is held already, and a directory
-   * that another key uses: two keys never share a store.
+   * Adds the key of `chain`. Its hash is the one the wallet of the chain says, or the `keyHash` that the caller gives: with a `keyHash`, no wallet is read. A service that knows the hash of its key
+   * (it derived it from the key that its chain signs with) gives it, so that a node that is down cannot stop it from starting, for the wallet of the real chain is a read of the node. The caller owns
+   * the claim that the hash is the hash of the key of the chain. Its stranded file is in `dir` when the caller gives one (a service that keeps the file of its service key where it was before it held
+   * more than one key), and in `keys/<hash>` of the state directory otherwise. Refuses a `keyHash` that is not 56 lowercase hex characters, a key hash that is held already, and a directory that
+   * another key uses: two keys never share a store. These checks are the same with or without a `keyHash`.
    */
-  async add(chain: Chain, opts: { dir?: string } = {}): Promise<PayingKey> {
-    const { buyerPkh } = await chain.wallet();
-    if (!KEY_HASH.test(buyerPkh)) throw new Error('The wallet of the chain gives no key hash of 56 lowercase hex characters, so the key has no name to keep its store under.');
+  async add(chain: Chain, opts: { dir?: string; keyHash?: string } = {}): Promise<PayingKey> {
+    const given: unknown = opts.keyHash;
+    let buyerPkh: string;
+    if (given === undefined) {
+      buyerPkh = (await chain.wallet()).buyerPkh;
+      if (!KEY_HASH.test(buyerPkh)) throw new Error('The wallet of the chain gives no key hash of 56 lowercase hex characters, so the key has no name to keep its store under.');
+    } else {
+      // The value is never shown: a key given by mistake would be printed. Its kind and its length say enough.
+      if (typeof given !== 'string' || !KEY_HASH.test(given)) {
+        throw new Error(`The keyHash given to PayingKeys.add must be 56 lowercase hex characters, and it is ${typeof given === 'string' ? `a text of ${given.length} characters` : `of type ${given === null ? 'null' : typeof given}`}.`);
+      }
+      buyerPkh = given;
+    }
     if (this.#byHash.has(buyerPkh)) throw new Error(`The key ${buyerPkh} is held already: a key has one chain, one stranded store and one janitor.`);
     const dir = resolve(opts.dir ?? join(this.stateDir, 'keys', buyerPkh));
     const user = this.#byDir.get(dir);
