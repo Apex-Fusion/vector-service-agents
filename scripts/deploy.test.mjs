@@ -6752,3 +6752,155 @@ test('mock service CI: the build job builds services/mock-systems/Dockerfile wit
   const words = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'];
   assert.ok(comment.includes(`builds the ${words[builds.length]} images`), `the comment names ${words[builds.length]} images: ${comment}`);
 });
+
+// ======================================================================================================================================
+// The image of the runtime. One image serves every runtime of the agents host, and the host builds none. CI builds it from the agent template at one pinned commit: the build job
+// builds it and pushes nothing, so that a runtime that no longer builds fails the pull request, and the publish job pushes it. The compose files of the four agents on the present
+// host build the runtime on the host from the same commit, and they keep doing so. These tests parse the workflow and those compose files. Each guard has an accepted twin and
+// refused copies.
+// ======================================================================================================================================
+import { isDeepStrictEqual } from 'node:util';
+const RT = {
+  repository: 'Apex-Fusion/vector-agent-template', folder: 'runtime-template', dockerfile: 'runtime-template/agent/Dockerfile', mock: 'services/mock-systems/Dockerfile',
+  image: 'ghcr.io/apex-fusion/vector-service-agents/agent-runtime', commitLabel: 'vector-agent-template.commit',
+  sourceLabel: 'org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}',
+};
+const ciText = read('.github/workflows/ci.yml');
+// The commit that the compose file of each agent on the present host builds the runtime from: the end of the build context of its service agent, after the #.
+const rtPins = () => Object.fromEntries(readdirSync(join(root, 'deploy/host')).filter((f) => /^docker-compose\..+\.yml$/.test(f)).sort()
+  .map((f) => [f, /^https:\/\/github\.com\/Apex-Fusion\/vector-agent-template\.git#([0-9a-f]{40})$/.exec(parseYaml(read(`deploy/host/${f}`)).services.agent.build.context)?.[1]]));
+// A step with its tags and labels as lists of lines, so that a block of lines and a list compare equal.
+const rtLines = (step) => ({ ...step, with: Object.fromEntries(Object.entries(step?.with ?? {}).map(([key, value]) => [key, ['tags', 'labels'].includes(key) && typeof value === 'string' ? value.trim().split('\n') : value])) });
+// Change one place of a text: the n-th copy of a part, the first by default. Stop when the part is not there: a change that changes nothing proves nothing.
+function rtChange(text, from, to, n = 0) {
+  let at = -1;
+  for (let i = 0; i <= n; i += 1) { at = text.indexOf(from, at + 1); assert.ok(at >= 0, `the text holds copy ${i} of: ${from}`); }
+  return text.slice(0, at) + to + text.slice(at + from.length);
+}
+
+// The faults of the runtime steps of the workflow, for the commits that the compose files name. An empty list is a pass.
+function runtimeImageProblems(text, pins) {
+  let model;
+  try { model = parseYaml(text); } catch (error) { return [`the workflow does not parse (a key twice is an error): ${error.message}`]; }
+  const problems = [];
+  const commit = Object.values(pins)[0];
+  if (!/^[0-9a-f]{40}$/.test(commit) || Object.values(pins).some((c) => c !== commit)) problems.push(`the compose files must name one commit of 40 hex digits; found: ${JSON.stringify(pins)}`);
+  const stepsOf = (job) => model?.jobs?.[job]?.steps ?? [];
+  const builds = (job) => stepsOf(job).filter((s) => s?.uses === 'docker/build-push-action@v6');
+  for (const job of ['build', 'publish']) {
+    const steps = stepsOf(job);
+    const at = steps.findIndex((s) => s?.with?.repository === RT.repository);
+    if (at < 0) { problems.push(`${job}: no step checks out ${RT.repository}`); continue; }
+    const ref = steps[at].with.ref;
+    if (!isDeepStrictEqual(steps[at], { uses: 'actions/checkout@v4', with: { repository: RT.repository, ref, path: RT.folder } })) problems.push(`${job}: the checkout must be actions/checkout@v4 with the repository, a ref and the path ${RT.folder}, and nothing else; found: ${JSON.stringify(steps[at])}`);
+    if (!/^[0-9a-f]{40}$/.test(String(ref))) problems.push(`${job}: the ref must be a commit of 40 hex digits; found: ${ref}`);
+    else if (ref !== commit) problems.push(`${job}: the ref ${ref} is not the commit ${commit} of the compose files`);
+    const check = { run: `test "$(git -C ${RT.folder} rev-parse HEAD)" = ${commit}` };
+    if (!isDeepStrictEqual(steps[at + 1], check)) problems.push(`${job}: the step after the checkout must be exactly ${JSON.stringify(check)}; found: ${JSON.stringify(steps[at + 1])}`);
+    const push = job === 'publish';
+    const build = { uses: 'docker/build-push-action@v6', with: { context: RT.folder, file: RT.dockerfile, push, ...(push && { tags: [`${RT.image}:latest`, `${RT.image}:\${{ github.sha }}`], labels: [RT.sourceLabel, `${RT.commitLabel}=${commit}`] }) } };
+    if (!isDeepStrictEqual(rtLines(steps[at + 2]), build)) problems.push(`${job}: the step after the check must be exactly ${JSON.stringify(build)}; found: ${JSON.stringify(steps[at + 2])}`);
+    if (!(steps.findIndex((s) => s?.with?.file === RT.mock) > at + 2)) problems.push(`${job}: the three steps of the runtime must come before the build of the mock service`);
+    const login = steps.findIndex((s) => String(s?.uses).startsWith('docker/login-action'));
+    if (push && !(login >= 0 && login < at + 2)) problems.push('publish: the push of the runtime must come after the login');
+    if (!push && login >= 0) problems.push('build: the job must have no registry login');
+  }
+  if (!isDeepStrictEqual(builds('build').map((s) => s.with?.file), builds('publish').map((s) => s.with?.file))) problems.push('the two jobs must build the same Dockerfiles in the same order');
+  // The comment above the build job counts the images that it builds.
+  const words = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'];
+  const comment = /^ {2}# (Every pull request[^\n]*\n {2}# [^\n]*)\n {2}build:$/m.exec(text)?.[1] ?? '';
+  if (!comment.includes(`builds the ${words[builds('build').length]} images`)) problems.push(`the comment above the build job must say that it builds the ${words[builds('build').length]} images; found: ${comment}`);
+  return problems;
+}
+
+test('CI: the runtime image is built from the template at the pinned commit in both jobs, the build job pushes none, and the guard refuses a ref, a check, a label, a step, an order or a comment that does not hold the pin', () => {
+  const pins = rtPins();
+  assert.deepEqual(Object.keys(pins), ['docker-compose.advocate.yml', 'docker-compose.agent-history.yml', 'docker-compose.audio-snippets.yml', 'docker-compose.document-pipeline.yml'], 'the four compose files of the present host');
+  const [PIN] = Object.values(pins);
+  const OTHER = '0123456789abcdef0123456789abcdef01234567';
+  assert.equal(ciText.split(PIN).length - 1, 5, 'the pin stands in five places of the workflow: two refs, two checks and one label');
+  assert.deepEqual(runtimeImageProblems(ciText, pins), [], 'the real file passes');
+  // The label line of the publish step is the line of the other images, and the step has one line more: the commit of the template. The build step has no tag and no label.
+  const publishes = ci.jobs.publish.steps.filter((s) => s.uses === 'docker/build-push-action@v6');
+  const pushed = publishes.find((s) => s.with.file === RT.dockerfile);
+  const [first, ...more] = pushed.with.labels.trim().split('\n');
+  for (const other of publishes.filter((s) => s !== pushed)) assert.equal(first, other.with.labels.trim().split('\n')[0], `the label line of ${other.with.file}`);
+  assert.deepEqual([first, more], [RT.sourceLabel, [`${RT.commitLabel}=${PIN}`]]);
+  assert.deepEqual(ci.jobs.build.steps.find((s) => s.with?.file === RT.dockerfile).with, { context: RT.folder, file: RT.dockerfile, push: false });
+  // The parts of the real text that the faults change.
+  const CHECKOUT = `      - uses: actions/checkout@v4\n        with:\n          repository: ${RT.repository}\n          ref: ${PIN}\n          path: ${RT.folder}\n`;
+  const CHECK = `      - run: test "$(git -C ${RT.folder} rev-parse HEAD)" = ${PIN}\n`;
+  const STEP = (file) => `      - uses: docker/build-push-action@v6\n        with:\n          context: .\n          file: ${file}\n`;
+  const LOGIN = '      - uses: docker/login-action@v3\n';
+  const RUNTIME = `file: ${RT.dockerfile}\n          push: `;
+  const block = (from) => ciText.slice(from, ciText.indexOf(STEP(RT.mock), from));
+  const [b0, b1] = [block(ciText.indexOf(CHECKOUT)), block(ciText.lastIndexOf(CHECKOUT))];
+  const change = (from, to, n) => rtChange(ciText, from, to, n);
+  const other = (text) => text.split(PIN).join(OTHER);
+  const moved = (part, before) => rtChange(change(part, ''), before, part + before);
+  const faults = [
+    ['the ref of the build job on another commit', change(`ref: ${PIN}`, `ref: ${OTHER}`), /build: the ref \S+ is not the commit/],
+    ['the ref of the publish job on another commit', change(`ref: ${PIN}`, `ref: ${OTHER}`, 1), /publish: the ref \S+ is not the commit/],
+    ['a branch name in place of a commit', change(`ref: ${PIN}`, 'ref: main'), /build: the ref must be a commit of 40 hex digits/],
+    ['a short commit', change(`ref: ${PIN}`, `ref: ${PIN.slice(0, 7)}`, 1), /publish: the ref must be a commit of 40 hex digits/],
+    ['the check of the build job on another commit', change(CHECK, other(CHECK)), /build: the step after the checkout must be exactly/],
+    ['the check of the publish job on another commit', change(CHECK, other(CHECK), 1), /publish: the step after the checkout must be exactly/],
+    ['a check that never fails', change(CHECK, `${CHECK.trimEnd()} || true\n`), /build: the step after the checkout must be exactly/],
+    ['no check in the publish job', change(CHECK, '', 1), /publish: the step after the checkout must be exactly/],
+    ['a step between the checkout and the check', change(CHECKOUT, `${CHECKOUT}      - run: echo patch\n`, 1), /publish: the step after the checkout must be exactly/],
+    ['a step between the check and the build', change(CHECK, `${CHECK}      - run: echo patch\n`), /build: the step after the check must be exactly/],
+    ['no checkout of the template', change(CHECKOUT, '', 1), /publish: no step checks out/],
+    ['the checkout of another repository', change(`repository: ${RT.repository}`, `repository: ${RT.repository}-fork`), /build: no step checks out/],
+    ['the checkout in another folder', change(`path: ${RT.folder}`, 'path: template', 1), /publish: the checkout must be actions\/checkout@v4/],
+    ['a token for the checkout', change(`path: ${RT.folder}\n`, `path: ${RT.folder}\n          token: x\n`), /build: the checkout must be actions\/checkout@v4/],
+    ['a push in the build job', change(`${RUNTIME}false`, `${RUNTIME}true`), /build: the step after the check must be exactly/],
+    ['a tag in the build job', change(`${RUNTIME}false\n`, `${RUNTIME}false\n          tags: ${RT.image}:latest\n`), /build: the step after the check must be exactly/],
+    ['no push in the publish job', change(`${RUNTIME}true`, `${RUNTIME}false`), /publish: the step after the check must be exactly/],
+    ['a build argument', change(`${RUNTIME}true`, `file: ${RT.dockerfile}\n          build-args: NODE_VERSION=20\n          push: true`), /publish: the step after the check must be exactly/],
+    ['the context of this repository', change(`context: ${RT.folder}`, 'context: .'), /build: the step after the check must be exactly/],
+    ['the tag :latest only', change(`            ${RT.image}:\${{ github.sha }}\n`, ''), /publish: the step after the check must be exactly/],
+    ['the tag of the commit only', change(`            ${RT.image}:latest\n`, ''), /publish: the step after the check must be exactly/],
+    ['the tag of another image', change(`${RT.image}:latest`, 'ghcr.io/apex-fusion/vector-service-agents/advocate:latest'), /publish: the step after the check must be exactly/],
+    ['no label of the commit', change(`            ${RT.commitLabel}=${PIN}\n`, ''), /publish: the step after the check must be exactly/],
+    ['the label of another commit', change(`${RT.commitLabel}=${PIN}`, `${RT.commitLabel}=${OTHER}`), /publish: the step after the check must be exactly/],
+    ['no label of the source', change(`            ${RT.sourceLabel}\n`, ''), /publish: the step after the check must be exactly/],
+    ['the steps of the runtime after the build of the mock service, in the build job', moved(b0, '  publish:\n'), /build: the three steps of the runtime must come before/],
+    ['the steps of the runtime after the build of the mock service, in the publish job', `${change(b1, '')}${b1}`, /publish: the three steps of the runtime must come before/],
+    ['the push of the runtime before the login', moved(b1, LOGIN), /publish: the push of the runtime must come after the login/],
+    ['the steps of the runtime in another place in one job', moved(b0, STEP('agents/agent-history/Dockerfile')), /the two jobs must build the same Dockerfiles in the same order/],
+    ['a login in the build job', change(CHECKOUT, `      - uses: docker/login-action@v3\n${CHECKOUT}`), /build: the job must have no registry login/],
+    ['a comment that counts five images', change('builds the six images', 'builds the five images'), /the comment above the build job must say that it builds the six images/],
+    ['a key twice', change(`path: ${RT.folder}\n`, `path: ${RT.folder}\n          path: ${RT.folder}\n`), /does not parse/],
+  ];
+  for (const [name, broken, expected] of faults) {
+    const problems = runtimeImageProblems(broken, pins);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  assert.ok(runtimeImageProblems(ciText, { ...pins, 'docker-compose.audio-snippets.yml': OTHER }).some((p) => /compose files must name one commit/.test(p)), 'a compose file on another commit');
+  // The twins: the pin moved to another commit in every place, a step that sits where it breaks nothing, and a comment.
+  const twins = [
+    ['the pin on another commit in the workflow and in the four compose files', other(ciText), Object.fromEntries(Object.keys(pins).map((file) => [file, OTHER]))],
+    ['a step between the runtime and the mock service', change(STEP(RT.mock), `      - run: echo ok\n${STEP(RT.mock)}`, 1), pins],
+    ['a step before the checkout, and a comment between the steps', change(CHECKOUT, `      - run: echo ok\n      # a note\n${CHECKOUT}`, 1), pins],
+  ];
+  for (const [name, text, given] of twins) assert.deepEqual(runtimeImageProblems(text, given), [], name);
+});
+
+// A tag moves and a digest does not: a compose file names the runtime image by its digest (or by the placeholder of a file that the operator completes).
+function runtimeReferenceProblems(text) {
+  const problems = [];
+  for (const [name, service] of Object.entries(parseYaml(text)?.services ?? {})) {
+    const image = String(service?.image ?? '');
+    if (image.startsWith(RT.image) && !new RegExp(`^${srvEscape(RT.image)}@sha256:(?:<digest>|[0-9a-f]{64})$`).test(image)) problems.push(`${name}: the runtime image is named by its digest, never by a tag; found: ${image}`);
+  }
+  return problems;
+}
+
+test('CI: the runtime image is named by its digest in every compose file of the repository; the guard refuses a tag and the bare name, and passes the digest and the placeholder', () => {
+  const files = ['deploy/host', 'deploy/server'].flatMap((dir) => readdirSync(join(root, dir)).filter((f) => /^docker-compose\..+\.yml$/.test(f)).map((f) => `${dir}/${f}`));
+  assert.ok(files.length >= 5 && files.includes('deploy/server/docker-compose.mock-systems.yml') && files.includes('deploy/host/docker-compose.advocate.yml'), `the walk reaches the compose files, found ${files.length}`);
+  for (const file of files) assert.deepEqual(runtimeReferenceProblems(read(file)), [], file);
+  const compose = (image) => `services:\n  runtime:\n    image: ${image}\n`;
+  for (const twin of [`${RT.image}@sha256:<digest>`, `${RT.image}@sha256:${'ab'.repeat(32)}`, 'ghcr.io/apex-fusion/vector-service-agents/mock-systems:latest']) assert.deepEqual(runtimeReferenceProblems(compose(twin)), [], twin);
+  for (const bad of [`${RT.image}:latest`, `${RT.image}:${'a'.repeat(40)}`, RT.image, `${RT.image}@sha256:abc`, `${RT.image}@sha256:${'AB'.repeat(32)}`]) assert.equal(runtimeReferenceProblems(compose(bad)).length, 1, bad);
+});
