@@ -2,7 +2,7 @@
 // What the dispute code needs from the outside: the chain. The queue of the service key is the `SerialQueue` of the protocol, and the clock is a function (`DisputeDeps`).
 //
 // The chain port reads the claims and the challenges of Module-1, the documents that they name, and the job of an escrow output: the time of the block that holds its transaction (the start of the job, for the output that
-// the Post made), the state of its datum, and the capability and the agent that the datum names. It lands four kinds of transaction: a document, a claim, a challenge and a withdrawal. A port
+// the Post made), the state of its datum, and the capability, the agent and the buyer key that the datum names. It lands four kinds of transaction: a document, a claim, a challenge and a withdrawal. A port
 // method that lands a transaction never throws for a problem of the build, the signature or the submit. It returns a typed result that says what happened, and what could still land. A read throws
 // when the chain cannot be read, and it never answers with a list that leaves a claim out. The real port is `createModule1Port` (chain.ts). A test can give a scripted port, or the real port over the
 // fixture world of the buyer code.
@@ -76,7 +76,7 @@ export type DocumentAbsent = Refused<'transaction_unknown' | 'no_document'>;
 /** The result of a read of a document: the document, or the reason that the source, which answered, has none. A read that gets no answer throws. */
 export type DocumentResult = Accepted<ReadDocument> | DocumentAbsent;
 
-/** What the port reads about the job that an escrow output stands for: when its block was made, the state of its datum, and the capability and the agent that its datum names. */
+/** What the port reads about the job that an escrow output stands for: when its block was made, the state of its datum, and the capability, the agent and the buyer key that its datum names. */
 export interface EscrowJob {
   /**
    * The time of the block that holds the transaction that made the escrow output, in POSIX milliseconds. For the output that the Post made (the state Open), it is the start of the job. The chain gives it, and the poster
@@ -92,6 +92,11 @@ export interface EscrowJob {
   readonly capability_id: string;
   /** The agent that the datum names: 64 lower-case hex characters, with no `did:vector:`. It is the agent that the job hired. Null for an escrow of the legacy layout: its datum names no agent. */
   readonly agent_id: string | null;
+  /**
+   * The buyer key that the datum names: the member `buyer_pkh` of the datum, as lower-case hex text. A hire that pays from a vault writes the key of its delegate here. Whoever posts the escrow writes the datum, so the text can
+   * have any form, and it names the buyer that the poster chose. The dispute code compares it as text with the keys that the caller names, and it never repeats it in a detail.
+   */
+  readonly buyer_pkh: string;
 }
 
 /**
@@ -227,7 +232,7 @@ export interface Module1Port {
    */
   isIndexed(ref: OutputRef): Promise<boolean>;
   /**
-   * The job that the escrow output at `ref` stands for: the time of the block that holds the transaction that made the output, the state of its datum, and the capability and the agent of its datum (`EscrowJob`). The output
+   * The job that the escrow output at `ref` stands for: the time of the block that holds the transaction that made the output, the state of its datum, and the capability, the agent and the buyer key of its datum (`EscrowJob`). The output
    * can be in any state of the escrow, spent or not, and the port gives the state: the dispute code takes only the output that the Post made (the state Open). It gives `not_escrow` when the source answered and the output
    * is not an escrow output of the deployment. It throws when the source cannot be read, answers in a wrong shape, gives no time of the block, or does not have the output (it can be behind): a read that throws never says
    * that the output is no escrow output.

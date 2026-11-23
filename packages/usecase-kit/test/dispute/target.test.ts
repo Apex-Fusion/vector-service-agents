@@ -8,12 +8,16 @@ import { NO_OPEN_CLAIM } from '@vsa/usecase-kit/protocol';
 import { Dispute, claimDocument } from '@vsa/usecase-kit/dispute';
 import type { ApprovalChallengeInput, ChallengeResult, ClaimView, DeliveryChallengeInput, EscrowJob } from '@vsa/usecase-kit/dispute';
 import {
-  CLAIM_CAPABILITY, DIGEST_FACTS, ESCROW, ESCROW_2, ESCROW_CAPABILITY, EVIDENCE_TX, HOUR, JOB, JOB_BEGAN_AT, MANIFEST_SHA, ME_ID, NO_DOCUMENT, NO_TRANSACTION, NOW, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER, OTHER_ID,
-  PRIOR_AUTHORIZATION_CLAIM, REF_A, REF_B, REF_C, RecordingQueue, SCOPE, STATEMENT_S1, SETTINGS, ScriptedPort, THIRD, THIRD_ID, TOKEN_A, TOKEN_B, TOKEN_C, claimView, deferred, escrowJob, kitClaimDocument, never, rig,
+  APPROVAL_JOB, BUYER_PKH, CLAIM_CAPABILITY, DELIVERY_JOB, DIGEST_FACTS, ESCROW, ESCROW_2, ESCROW_CAPABILITY, EVIDENCE_TX, HOUR, JOB, JOB_BEGAN_AT, MANIFEST_SHA, ME_ID, NO_DOCUMENT, NO_TRANSACTION, NOW, ORDER_DESK_CLAIM,
+  ORDER_FACTS, OTHER, OTHER_BUYER_PKH, OTHER_ID, PRIOR_AUTHORIZATION_CLAIM, REF_A, REF_B, REF_C, RecordingQueue, SCOPE, STATEMENT_S1, SETTINGS, ScriptedPort, THIRD, THIRD_ID, TOKEN_A, TOKEN_B, TOKEN_C, claimView, deferred,
+  escrowJob, kitClaimDocument, never, rig,
 } from './support.ts';
 import type { Rig } from './support.ts';
 
-const delivery = (extra: Partial<DeliveryChallengeInput> = {}): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: ESCROW, ...JOB, evidence: ORDER_FACTS, ...extra });
+const delivery = (extra: Partial<DeliveryChallengeInput> = {}): DeliveryChallengeInput => ({ counterparty: OTHER, escrow_ref: ESCROW, ...DELIVERY_JOB, evidence: ORDER_FACTS, ...extra });
+const approval = (extra: Partial<ApprovalChallengeInput> = {}): ApprovalChallengeInput => ({ sender: OTHER, escrow_ref: ESCROW, ...APPROVAL_JOB, evidence: DIGEST_FACTS, ...extra });
+/** What a read answers for a job that the sender of a request hired this agent for: the datum names this agent. */
+const hiringMe = (overrides: Partial<EscrowJob> = {}) => escrowJob({ agent_id: ME_ID, ...overrides });
 const textOf = (bytes: Uint8Array): string => Buffer.from(bytes).toString('utf8');
 
 /** The detail of no_open_claim for `open` open claims, and for the counts of the seven reasons in the order of the detail. */
@@ -463,6 +467,8 @@ describe('the job began when the block of its escrow output was made, and the ch
       ['an agent that is a DID', escrowJob({ agent_id: OTHER })],
       ['an agent in upper case', escrowJob({ agent_id: OTHER_ID.toUpperCase() })],
       ['an agent that is too short', escrowJob({ agent_id: 'c1' })],
+      ['no buyer', escrowJob({ buyer_pkh: undefined as never })],
+      ['a buyer that is a number', escrowJob({ buyer_pkh: 7 as never })],
       ['no state', escrowJob({ state: undefined as never })],
       ['a state that is a number', escrowJob({ state: 1 as never })],
       ['a refusal with another code', { ok: false, code: 'weird', detail: 'x' }],
@@ -499,9 +505,6 @@ describe('the job began when the block of its escrow output was made, and the ch
 
 describe('the escrow is the escrow of this job', () => {
   const OTHER_CAPABILITY = 'supplychain.rfq.quote.v1';
-  const approval = (extra: Partial<ApprovalChallengeInput> = {}): ApprovalChallengeInput => ({ sender: OTHER, escrow_ref: ESCROW, ...JOB, evidence: DIGEST_FACTS, ...extra });
-  /** What a read answers for a job that the sender of a request hired this agent for: the datum names this agent. */
-  const hiringMe = (overrides: Partial<EscrowJob> = {}) => escrowJob({ agent_id: ME_ID, ...overrides });
 
   it('refuses an escrow with another capability than the job, for a delivery, an approval and a lookup, names the member, and publishes nothing', async () => {
     // A text that is not the capability of the job is another capability, whatever its case or its length.
@@ -610,7 +613,7 @@ describe('the escrow is the escrow of this job', () => {
     expect((await twin.dispute.challengeDelivery(delivery())).ok).toBe(true);
   });
 
-  it('names the first member that is wrong: the layout, then the capability, then the agent, then the state', async () => {
+  it('names the first member that is wrong: the layout, then the capability, then the agent, then the buyer, then the state and the time', async () => {
     const rigged = rig();
     rigged.port.claims = [claimView()];
     rigged.port.readEscrowAnswer = () => escrowJob({ agent_id: null, capability_id: OTHER_CAPABILITY });
@@ -627,6 +630,12 @@ describe('the escrow is the escrow of this job', () => {
     expectNotFiled(agent, 'bad_shape');
     expect(agent.detail).toContain('agent_id');
     expect(agent.detail).not.toContain('state');
+    rigged.port.readEscrowAnswer = () => escrowJob({ buyer_pkh: OTHER_BUYER_PKH, state: 'Submitted', block_time_ms: NOW + 1 });
+    const buyer = await rigged.dispute.challengeDelivery(delivery());
+    expectNotFiled(buyer, 'bad_shape');
+    expect(buyer.detail).toContain('buyer_pkhs');
+    expect(buyer.detail).not.toContain('state');
+    expect(buyer.detail).not.toContain('clock');
     rigged.port.readEscrowAnswer = () => escrowJob({ state: 'Submitted' });
     const state = await rigged.dispute.challengeDelivery(delivery());
     expectNotFiled(state, 'bad_shape');
@@ -647,13 +656,89 @@ describe('the escrow is the escrow of this job', () => {
   it('does not let the escrow of a newer job for another capability or another agent widen the choice of the target', async () => {
     // The claim was staked 10 minutes ago, after the job began 30 minutes ago, so it does not cover the job. A job that began a minute ago would be covered.
     const newerJob = { block_time_ms: NOW - 60_000 };
-    for (const [name, other] of [['another capability', { capability_id: OTHER_CAPABILITY }], ['another agent', { agent_id: THIRD_ID }]] as const) {
+    for (const [name, other] of [['another capability', { capability_id: OTHER_CAPABILITY }], ['another agent', { agent_id: THIRD_ID }], ['another buyer', { buyer_pkh: OTHER_BUYER_PKH }]] as const) {
       const rigged = rig();
       rigged.port.claims = [claimView({ submitted_at: NOW - 10 * 60_000 })];
       rigged.port.readEscrowAnswer = (ref) => escrowJob(ref === ESCROW ? {} : { ...newerJob, ...other });
       expectNotFiled(await rigged.dispute.challengeDelivery(delivery()), NO_OPEN_CLAIM);
       expectNotFiled(await rigged.dispute.challengeDelivery(delivery({ escrow_ref: ESCROW_2 })), 'bad_shape');
       expect(rigged.port.published, name).toEqual([]);
+    }
+  });
+});
+
+describe('the escrow is the escrow of a buyer that the caller names', () => {
+  /** A key that is none of the keys of the samples: the datum of the escrow of a third buyer names it. */
+  const THIRD_BUYER_PKH = 'b9'.repeat(28);
+  const KEYS = [BUYER_PKH, OTHER_BUYER_PKH];
+
+  it('files a delivery when the buyer of the escrow is one of the keys of the list, whichever key it is and wherever it stands in the list', async () => {
+    for (const keys of [KEYS, [...KEYS].reverse(), [BUYER_PKH]]) {
+      for (const buyer of KEYS.filter((key) => keys.includes(key))) {
+        const rigged = rig();
+        rigged.port.claims = [claimView()];
+        rigged.port.readEscrowAnswer = () => escrowJob({ buyer_pkh: buyer });
+        expect((await rigged.dispute.challengeDelivery(delivery({ buyer_pkhs: keys }))).ok, `${buyer} in a list of ${keys.length}`).toBe(true);
+        expect(rigged.port.challenged.map((call) => call.claim)).toEqual([REF_A]);
+      }
+    }
+  });
+
+  it('refuses a delivery for the escrow of another buyer, names the member buyer_pkhs, never repeats a key, and reads no claim document', async () => {
+    for (const keys of [[BUYER_PKH], KEYS]) {
+      const rigged = rig();
+      rigged.port.claims = [claimView()];
+      rigged.port.readEscrowAnswer = () => escrowJob({ buyer_pkh: THIRD_BUYER_PKH });
+      const result = await rigged.dispute.challengeDelivery(delivery({ buyer_pkhs: keys }));
+      expectNotFiled(result, 'bad_shape');
+      expect(result.detail).toContain('buyer_pkhs');
+      for (const key of [...KEYS, THIRD_BUYER_PKH]) expect(result.detail).not.toContain(key);
+      expect(rigged.port.published).toEqual([]);
+      expect(rigged.port.challenged).toEqual([]);
+      expect(rigged.events.some((event) => event.startsWith('readDocument'))).toBe(false);
+      // The twin: the escrow names a key of the list, and the same job is filed.
+      rigged.port.readEscrowAnswer = () => escrowJob({ buyer_pkh: BUYER_PKH });
+      expect((await rigged.dispute.challengeDelivery(delivery({ buyer_pkhs: keys }))).ok).toBe(true);
+    }
+  });
+
+  it('refuses an approval, and a lookup that names its buyer, for the escrow of another buyer in the same way; the twins are filed and found', async () => {
+    const rigged = rig();
+    rigged.port.claims = [claimView()];
+    rigged.port.readEscrowAnswer = () => hiringMe({ buyer_pkh: OTHER_BUYER_PKH });
+    const approved = await rigged.dispute.challengeApproval(approval());
+    const looked = await rigged.dispute.findOpenClaim(OTHER, { ...SCOPE, buyer_pkhs: [BUYER_PKH] });
+    for (const result of [approved, looked]) expect(result).toMatchObject({ ok: false, code: 'bad_shape', detail: expect.stringContaining('buyer_pkhs') as never });
+    expect(JSON.stringify([approved, looked])).not.toContain(OTHER_BUYER_PKH);
+    expect(JSON.stringify([approved, looked])).not.toContain(BUYER_PKH);
+    expect(rigged.port.published).toEqual([]);
+    // The twins: the escrow names the buyer of the job.
+    rigged.port.readEscrowAnswer = () => hiringMe();
+    expect((await rigged.dispute.challengeApproval(approval())).ok).toBe(true);
+    expect(await rigged.dispute.findOpenClaim(OTHER, { ...SCOPE, buyer_pkhs: [BUYER_PKH] })).toMatchObject({ ok: true, value: { ref: REF_A } });
+  });
+
+  it('compares the key of the datum as text: a key in another case, of another length, or that is no key is another buyer', async () => {
+    for (const buyer of [BUYER_PKH.toUpperCase(), BUYER_PKH.slice(2), `${BUYER_PKH}00`, `${BUYER_PKH.slice(0, 54)}zq`, '']) {
+      const rigged = rig();
+      rigged.port.claims = [claimView()];
+      rigged.port.readEscrowAnswer = () => escrowJob({ buyer_pkh: buyer });
+      const result = await rigged.dispute.challengeDelivery(delivery());
+      expectNotFiled(result, 'bad_shape');
+      expect(result.detail, buyer).toContain('buyer_pkhs');
+      if (buyer !== '') expect(result.detail, buyer).not.toContain(buyer);
+      expect(rigged.port.published, buyer).toEqual([]);
+    }
+  });
+
+  it('leaves the lookup that names no buyer as it was, so that the escrow of any buyer is the escrow of the lookup, and binds the lookup that names one', async () => {
+    for (const buyer of [BUYER_PKH, OTHER_BUYER_PKH, THIRD_BUYER_PKH]) {
+      const { port, dispute } = rig();
+      port.claims = [claimView()];
+      port.readEscrowAnswer = () => escrowJob({ buyer_pkh: buyer });
+      expect(await dispute.findOpenClaim(OTHER, SCOPE), buyer).toMatchObject({ ok: true, value: { ref: REF_A } });
+      expect((await dispute.findOpenClaim(OTHER, { ...SCOPE, buyer_pkhs: [BUYER_PKH] })).ok, buyer).toBe(buyer === BUYER_PKH);
+      expect((await dispute.findOpenClaim(OTHER, { ...SCOPE, buyer_pkhs: KEYS })).ok, buyer).toBe(buyer !== THIRD_BUYER_PKH);
     }
   });
 });

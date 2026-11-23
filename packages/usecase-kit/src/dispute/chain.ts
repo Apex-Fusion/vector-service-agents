@@ -11,8 +11,8 @@
 //
 // The escrow of a job is read from Koios `utxo_info`, and not from the node. Koios keeps the datum of a spent output, so the output of any state of the escrow can be named when the job is long done. The reader
 // `readEscrowOutput` of the buyer code looks at the one output that it is asked for, so an output that someone locks at the escrow credential cannot change the answer, and it fails closed: an output that is not
-// at the escrow script of the deployment, that holds no escrow datum, or that holds less than its datum owes is no escrow (`not_escrow`). The port gives the state, the capability and the agent of the datum (the agent is
-// null for the legacy layout, which names none), so that the dispute code can check that the escrow is the escrow of its job, and that the output is the output that its Post made (the state Open). The start of the job is
+// at the escrow script of the deployment, that holds no escrow datum, or that holds less than its datum owes is no escrow (`not_escrow`). The port gives the state, the capability, the agent and the buyer key of the datum
+// (the agent is null for the legacy layout, which names none), so that the dispute code can check that the escrow is the escrow of its job, and that the output is the output that its Post made (the state Open). The start of the job is
 // the `block_time` that `utxo_info` gives for the same output: the time of the block that holds the transaction that made it, in seconds. An output that a later step made is in a later block, so it gives a later start.
 // The datum has a time too (`posted_at`), but the poster writes it and no validator checks it, so the port never uses it. The time of the block comes from
 // `utxo_info` and not from `tx_info` of the transaction: one small answer gives it, and `tx_info` gives the whole transaction. Every other failure of the reader, an output that Koios does not have, and a row with
@@ -484,7 +484,7 @@ export function createModule1Port(deps: Module1PortDeps): Module1Port {
       if (row === undefined) throw new Error('Koios does not have the escrow output');
       const seconds = row.block_time;
       if (typeof seconds !== 'number' || !Number.isSafeInteger(seconds) || seconds < 1 || !Number.isSafeInteger(seconds * 1000)) throw new Error('Koios gave no time of the block for the escrow output');
-      return accepted({ block_time_ms: seconds * 1000, state: datum.state, capability_id: datum.capability_id, agent_id: isIdentityEscrow(datum) ? datum.agent_id : null });
+      return accepted({ block_time_ms: seconds * 1000, state: datum.state, capability_id: datum.capability_id, agent_id: isIdentityEscrow(datum) ? datum.agent_id : null, buyer_pkh: datum.buyer_pkh });
     },
 
     async publishDocument(call: PublishCall): Promise<TxResult<PublishedDocument>> {

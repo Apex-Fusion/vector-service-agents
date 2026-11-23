@@ -35,6 +35,10 @@ export const HIRER = `did:vector:${'b2'.repeat(32)}`;
 export const BID_DESK = `did:vector:${'f7'.repeat(32)}`;
 export const KEY_HASH = '0b'.repeat(28);
 export const OTHER_KEY_HASH = '0c'.repeat(28);
+/** The key hash of the buyer that posted the escrow of the job of the samples: the member `buyer_pkh` of its datum. */
+export const BUYER_PKH = 'b7'.repeat(28);
+/** The key hash of another buyer: the escrow of a job of another buyer for the same hired agent and the same capability names it. */
+export const OTHER_BUYER_PKH = 'b8'.repeat(28);
 
 export const TOKEN_A = `636c6d5f${'0a'.repeat(28)}`;
 export const TOKEN_B = `636c6d5f${'0b'.repeat(28)}`;
@@ -107,6 +111,12 @@ export const JOB = { capability_id: ESCROW_CAPABILITY, statement_text: STATEMENT
 /** The whole scope of the job of the samples, for a lookup: its escrow, its capability and its statement. The scripted port gives `JOB_BEGAN_AT` as the start of the job of each escrow. */
 export const SCOPE = { escrow_ref: ESCROW, ...JOB } as const;
 
+/** The job of a delivery that a challenge names: the job of the samples, with the key hashes of the buyers that may have posted its escrow (the delegation keys of this agent). */
+export const DELIVERY_JOB = { ...JOB, buyer_pkhs: [BUYER_PKH] } as const;
+
+/** The job of an approval that a challenge names: the job of the samples, with the key hash of the buyer that posted its escrow (one key). */
+export const APPROVAL_JOB = { ...JOB, buyer_pkhs: [BUYER_PKH] } as const;
+
 export const PARTIES = { claim: REF_A, claim_token: TOKEN_A, against_did: OTHER, by_did: ME, escrow_ref: ESCROW, statement_text: STATEMENT_S1 } as const;
 
 export const PURCHASE_ORDER = {
@@ -177,10 +187,10 @@ export const NOT_ESCROW: NotAnEscrow = { ok: false, code: 'not_escrow', detail: 
 
 /**
  * What a read of the escrow of the job of the samples answers: the output of the Post, in a block made at `JOB_BEGAN_AT` (the state Open), for the capability of the job, and the datum names `OTHER_ID` as its agent, which is
- * the counterparty that this agent hired. A job that the sender of a request hired this agent for names `ME_ID`. `overrides` change members.
+ * the counterparty that this agent hired. A job that the sender of a request hired this agent for names `ME_ID`. The datum names `BUYER_PKH` as the buyer. `overrides` change members.
  */
 export const escrowJob = (overrides: Partial<EscrowJob> = {}): Extract<EscrowJobResult, { ok: true }> => ({
-  ok: true, value: { block_time_ms: JOB_BEGAN_AT, state: 'Open', capability_id: ESCROW_CAPABILITY, agent_id: OTHER_ID, ...overrides },
+  ok: true, value: { block_time_ms: JOB_BEGAN_AT, state: 'Open', capability_id: ESCROW_CAPABILITY, agent_id: OTHER_ID, buyer_pkh: BUYER_PKH, ...overrides },
 });
 
 /** A chain port that answers from lists that a test sets, and that writes each call to the events. A test changes an answer by setting the member of the same name. */
