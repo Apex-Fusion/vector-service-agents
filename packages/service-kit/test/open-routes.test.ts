@@ -3,6 +3,7 @@
 // Each refusal has an accepted twin, so that a guard that refuses everything fails here too.
 import { describe, test, expect, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import * as kit from '../src/index.ts';
 import type { OpenReply, OpenRequest, OpenRoute } from '../src/index.ts';
@@ -533,5 +534,24 @@ describe('the package exports', () => {
   test('a service imports the bound and the server from the package', () => {
     expect(Object.keys(kit)).toEqual(expect.arrayContaining(['OPEN_ROUTE_TIMEOUT_MS', 'createJobServer']));
     expect(kit.OPEN_ROUTE_TIMEOUT_MS).toBe(OPEN_ROUTE_TIMEOUT_MS);
+  });
+});
+
+describe('the README', () => {
+  const README = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const start = README.indexOf('\n## Open routes\n');
+  const next = README.indexOf('\n## ', start + 1);
+  const section = start === -1 ? '' : README.slice(start, next === -1 ? undefined : next);
+
+  test('the section Open routes names the types, the options, the bound, the paths of the server, the limit of a path and the answers that the code gives', () => {
+    expect(start, 'the heading Open routes').toBeGreaterThan(-1);
+    for (const name of ['OpenRoute', 'OpenRequest', 'OpenReply', 'openRoutes', 'openRouteTimeoutMs', 'RangeError', 'HEAD', 'content-length']) expect(section, name).toContain(name);
+    for (const path of ['/', '/precheck', '/healthz', '/agent.json']) expect(section, path).toContain(`\`${path}\``);
+    expect(section).toContain(`${OPEN_ROUTE_TIMEOUT_MS / 1000} seconds (\`OPEN_ROUTE_TIMEOUT_MS\`)`);
+    expect(section).toContain(`at most ${MAX_OPEN_PATH} characters`);
+    expect(section).toContain('{error: "not_found"}');
+    expect(section).toContain('{error: "internal"}');
+    expect(README.split('\n## Routes\n')[1]?.split('\n## ')[0]).toContain('Open routes');
+    expect(/[\u2013\u2014]/.test(section), 'no en dash and no em dash').toBe(false);
   });
 });
