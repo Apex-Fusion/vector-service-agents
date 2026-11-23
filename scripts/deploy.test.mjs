@@ -6011,7 +6011,7 @@ test('agents host: the proof script fills the real snippet and the real main Cad
 
 test('agents host: the README gives the counts, the memory and the plan of the ports, and the snippet shape of the README is the one that the proof validates', () => {
   const readme = srvRead('README.md');
-  for (const part of ['The host has 19 containers: 8 services, 10 runtimes and 1 mock service.', '| Memory | 8 GiB |', '| Agent host names | 10 | A, DNS only |', '| Mock host names | 2 | A, DNS only |', '| Organisation checks | 9 | TXT |']) assert.ok(readme.includes(part), part);
+  for (const part of ['The plan for the host is 19 containers: 8 services, 10 runtimes and 1 mock service.', '| Memory | 8 GiB |', '| Agent host names | 10 | A, DNS only |', '| Mock host names | 2 | A, DNS only |', '| Organisation checks | 9 | TXT |']) assert.ok(readme.includes(part), part);
   // The plan of the ports: the counts in the rows are the sizes of the ranges, and together they are the 19 containers. The rows of the two packs of use case 1 are the ports of their compose files,
   // and the rows of the later agents keep the ports that come after them.
   const rows = [...section(readme, 'Folders and ports').matchAll(/^\| ([A-Za-z][^|]*?) \((\d+)\) \| (\d+)(?: to (\d+))? \|$/gm)].map((m) => ({ label: m[1], count: Number(m[2]), from: Number(m[3]), to: Number(m[4] ?? m[3]) }));
@@ -6023,16 +6023,19 @@ test('agents host: the README gives the counts, the memory and the plan of the p
   assert.equal(runtimeRows.reduce((sum, row) => sum + row.count, 0), 10, 'ten runtimes');
   assert.equal(serviceRows.reduce((sum, row) => sum + row.count, 0), 8, 'eight services');
   assert.equal(rows.reduce((sum, row) => sum + row.count, 0), 19);
+  // The opening and the memory text say the same of the 19 containers: the memory holds the mock service and the six of use case 1, and the later agents have the other 12.
+  assert.equal(plan['Runtimes of later agents'].count + plan['Services of later agents'].count, 19 - 1 - 6, 'the later agents have the 12 containers that are not the mock service and the six of use case 1');
+  assert.ok(readme.includes(`The memory of the host holds the mock service and the six containers of use case 1 at the planning sizes. The other ${19 - 1 - 6} containers wait for a new count (section "The host").`), 'the opening says how many containers the memory holds');
   for (const group of [runtimeRows, serviceRows]) group.slice(1).forEach((row, i) => assert.equal(row.from, group[i].to + 1, `${row.label} follows ${group[i].label} with no gap`));
   const [runtimeFrom, runtimeTo, serviceFrom, serviceTo] = [runtimeRows[0].from, runtimeRows.at(-1).to, serviceRows[0].from, serviceRows.at(-1).to];
   assert.ok(runtimeTo < serviceFrom && serviceTo < plan['Mock service'].from, 'the ranges do not overlap');
   assert.equal(SRV_UPSTREAM, `127.0.0.1:${plan['Mock service'].from}`, 'the snippet proxies to the port of the mock service in the plan');
   const reorderPorts = PACK_PORTS[serverCompose('reorder-agent')];
   const orderPorts = PACK_PORTS[serverCompose('order-desk')];
-  const orderRuntimes = ['runtime-small', 'runtime-medium', 'runtime-large'].map((name) => orderPorts[name]);
-  assert.deepEqual([plan['Reorder Agent runtime'].from, plan['Reorder Agent runtime'].to], [reorderPorts.runtime, reorderPorts.runtime], 'the runtime of the Reorder Agent');
+  const orderRuntimes = ['runtime-small', 'runtime-medium', 'runtime-large'].map((name) => orderPorts[name][0]);
+  assert.deepEqual([plan['Reorder Agent runtime'].from, plan['Reorder Agent runtime'].to], [reorderPorts.runtime[0], reorderPorts.runtime[0]], 'the runtime of the Reorder Agent');
   assert.deepEqual([plan['Order Desk runtimes'].from, plan['Order Desk runtimes'].to], [Math.min(...orderRuntimes), Math.max(...orderRuntimes)], 'the three runtimes of the Order Desk');
-  assert.deepEqual([plan['Reorder Agent service'].from, plan['Order Desk service'].from], [reorderPorts.service, orderPorts.service], 'the two services');
+  assert.deepEqual([plan['Reorder Agent service'].from, plan['Order Desk service'].from], [reorderPorts.service[0], orderPorts.service[0]], 'the two services');
   assert.deepEqual([plan['Runtimes of later agents'].from, plan['Runtimes of later agents'].to], [8105, 8110], 'the later runtimes keep 8105 to 8110');
   assert.deepEqual([plan['Services of later agents'].from, plan['Services of later agents'].to], [9103, 9108], 'the later services keep 9103 to 9108');
   const runbook = srvRead('RUNBOOK.md');
@@ -6224,8 +6227,8 @@ function mockComposeProblems(text, storeBytes = mockStoreBytes()) {
   if (!Array.isArray(s.tmpfs) || s.tmpfs.length !== 1 || !/^\/tmp(?::|$)/.test(s.tmpfs[0])) problems.push('tmpfs must be the one entry /tmp: tsx writes its cache there, and nothing else is writable');
   for (const key of ['privileged', 'cap_add', 'network_mode', 'pid', 'ipc', 'devices', 'volumes_from']) if (key in s) problems.push(`${key} is not allowed`);
   // The service listens on 0.0.0.0 inside its container. A network that another container shares would let that container send a forged Client-Cert header. With no networks key, compose puts
-  // the service on the default network of its own project, which no other container joins.
-  if ('networks' in s) problems.push('the service has no networks key: it stays on the default network of its own project, which no other container shares');
+  // the service on the default network of its own project, which only the Caddy container joins, on a host whose proxy runs in a container.
+  if ('networks' in s) problems.push('the service has no networks key: it stays on the default network of its own project, which only the Caddy container joins');
   if ('networks' in model) problems.push('the file has no top-level networks key: the service stays on the default network of its own project');
   if (s.logging?.driver !== 'json-file' || s.logging?.options?.['max-size'] !== '10m' || s.logging?.options?.['max-file'] !== '3') problems.push('logging must be json-file with 3 files of 10m, as the other compose files have it');
   const limit = mockBytes(s.mem_limit);
@@ -6743,6 +6746,10 @@ const RT = {
 const IMAGE_REPOSITORY = 'ghcr.io/apex-fusion/vector-service-agents';
 const hostCompose = (name) => `deploy/host/docker-compose.${name}.yml`;
 const serverCompose = (name) => `deploy/server/docker-compose.${name}.yml`;
+// The compose files of a folder: the name starts with docker-compose, and it ends in .yml or .yaml. Each guard that reads the compose files of the two hosts takes them through these two functions.
+const COMPOSE_FILE = /^docker-compose.*\.ya?ml$/;
+const composeFilesOf = (dir, base = root) => readdirSync(join(base, dir)).filter((f) => COMPOSE_FILE.test(f)).sort();
+const composeTextsOf = (dirs, base = root) => Object.fromEntries(dirs.flatMap((dir) => composeFilesOf(dir, base).map((f) => [`${dir}/${f}`, readFileSync(join(base, dir, f), 'utf8')])));
 // One row for each image, in the order of both jobs. `context` is the build context. `label` is the name of the label line that the image has besides the source line, or null.
 // `named` lists each service of a compose file that names the image: the file and the name of the service.
 const CI_IMAGES = [
@@ -6762,7 +6769,7 @@ const MOCK_FILE = CI_IMAGES.at(-1).file;
 const IMAGE_WORDS = ['no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
 const ciText = read('.github/workflows/ci.yml');
 // The commit that the compose file of each agent on the present host builds the runtime from: the end of the build context of its service agent, after the #.
-const rtPins = () => Object.fromEntries(readdirSync(join(root, 'deploy/host')).filter((f) => /^docker-compose\..+\.yml$/.test(f)).sort()
+const rtPins = () => Object.fromEntries(composeFilesOf('deploy/host')
   .map((f) => [f, /^https:\/\/github\.com\/Apex-Fusion\/vector-agent-template\.git#([0-9a-f]{40})$/.exec(parseYaml(read(`deploy/host/${f}`)).services.agent.build.context)?.[1]]));
 // A step with its tags and labels as lists of lines, so that a block of lines and a list compare equal.
 const rtLines = (step) => ({ ...step, with: Object.fromEntries(Object.entries(step?.with ?? {}).map(([key, value]) => [key, ['tags', 'labels'].includes(key) && typeof value === 'string' ? value.trim().split('\n') : value])) });
@@ -6948,7 +6955,7 @@ function composeImageProblems(rows, texts) {
 }
 
 test('CI: each compose file of the two hosts names the image that CI pushes, and CI pushes each image that a compose file names; the guard refuses a name that is not the one of the row, a service that no row lists and a row that no compose file names', () => {
-  const texts = Object.fromEntries(['deploy/host', 'deploy/server'].flatMap((dir) => readdirSync(join(root, dir)).filter((f) => /^docker-compose\..+\.yml$/.test(f)).sort().map((f) => [`${dir}/${f}`, read(`${dir}/${f}`)])));
+  const texts = composeTextsOf(['deploy/host', 'deploy/server']);
   assert.deepEqual(Object.keys(texts), [...['advocate', 'agent-history', 'audio-snippets', 'document-pipeline'].map(hostCompose), ...['mock-systems', 'order-desk', 'reorder-agent'].map(serverCompose)], 'the four compose files of the present host and the three of the agents host');
   assert.deepEqual(composeImageProblems(CI_IMAGES, texts), [], 'the real files pass');
   // The two packs of use case 1 name the image of their service and the runtime image, as the workflow pushes them.
@@ -6990,7 +6997,7 @@ function runtimeReferenceProblems(text) {
 }
 
 test('CI: the runtime image is named by its digest in every compose file of the repository; the guard refuses a tag and the bare name, and passes the digest and the placeholder', () => {
-  const files = ['deploy/host', 'deploy/server'].flatMap((dir) => readdirSync(join(root, dir)).filter((f) => /^docker-compose\..+\.yml$/.test(f)).map((f) => `${dir}/${f}`));
+  const files = Object.keys(composeTextsOf(['deploy/host', 'deploy/server']));
   assert.ok(files.length >= 5 && files.includes('deploy/server/docker-compose.mock-systems.yml') && files.includes('deploy/host/docker-compose.advocate.yml'), `the walk reaches the compose files, found ${files.length}`);
   for (const file of files) assert.deepEqual(runtimeReferenceProblems(read(file)), [], file);
   const compose = (image) => `services:\n  runtime:\n    image: ${image}\n`;
@@ -7047,10 +7054,10 @@ function publishedPorts(text) {
     return { service, host: Number(host) };
   }));
 }
-// The plan of the ports of the two packs: each runtime and each service publishes one port, and no pack publishes another.
+// The plan of the ports of the two packs: each runtime and each service publishes exactly one port, as a list of one number, and no pack publishes another port.
 const PACK_PORTS = {
-  [serverCompose('reorder-agent')]: { runtime: 8101, service: 9101 },
-  [serverCompose('order-desk')]: { 'runtime-small': 8102, 'runtime-medium': 8103, 'runtime-large': 8104, service: 9102 },
+  [serverCompose('reorder-agent')]: { runtime: [8101], service: [9101] },
+  [serverCompose('order-desk')]: { 'runtime-small': [8102], 'runtime-medium': [8103], 'runtime-large': [8104], service: [9102] },
 };
 // The rows of the plan in the README of the agents host, in its section "Folders and ports": a label, a count in brackets and a port or a range.
 const planRows = (readme) => [...section(readme, 'Folders and ports').matchAll(/^\| [A-Za-z][^|]*? \((\d+)\) \| (\d+)(?: to (\d+))? \|$/gm)].map((m) => ({ count: Number(m[1]), from: Number(m[2]), to: Number(m[3] ?? m[2]) }));
@@ -7058,7 +7065,9 @@ const planRows = (readme) => [...section(readme, 'Folders and ports').matchAll(/
 function portProblems(texts, packPorts, readme) {
   const problems = [];
   for (const [file, expected] of Object.entries(packPorts)) {
-    const found = Object.fromEntries(publishedPorts(texts[file] ?? '').map(({ service, host }) => [service, host]));
+    // The ports of each service as a list, in the order of the file: an extra port, listed first or last, is a fault.
+    const found = {};
+    for (const { service, host } of publishedPorts(texts[file] ?? '')) (found[service] ??= []).push(host);
     if (!isDeepStrictEqual(found, expected)) problems.push(`${file} must publish ${JSON.stringify(expected)} and no other port; found ${JSON.stringify(found)}`);
   }
   const owners = new Map();
@@ -7075,9 +7084,9 @@ function portProblems(texts, packPorts, readme) {
 }
 
 test('use case 1 ports: the compose files of the two packs publish exactly 8101 to 8104 and 9101 and 9102, no host port stands twice in the compose files of the two hosts, and the plan in the README of the agents host holds each port of the agents host; the guard refuses each copy that breaks one rule', () => {
-  const texts = Object.fromEntries(['deploy/host', 'deploy/server'].flatMap((dir) => readdirSync(join(root, dir)).filter((f) => /^docker-compose\..+\.yml$/.test(f)).sort().map((f) => [`${dir}/${f}`, read(`${dir}/${f}`)])));
+  const texts = composeTextsOf(['deploy/host', 'deploy/server']);
   const readme = srvRead('README.md');
-  assert.deepEqual(Object.values(PACK_PORTS).flatMap((ports) => Object.values(ports)).sort(), [8101, 8102, 8103, 8104, 9101, 9102], 'the runtimes on 8101 to 8104 and the services on 9101 and 9102');
+  assert.deepEqual(Object.values(PACK_PORTS).flatMap((ports) => Object.values(ports).flat()).sort(), [8101, 8102, 8103, 8104, 9101, 9102], 'the runtimes on 8101 to 8104 and the services on 9101 and 9102');
   assert.deepEqual(portProblems(texts, PACK_PORTS, readme), [], 'the real files pass');
   const reorder = serverCompose('reorder-agent');
   const orders = serverCompose('order-desk');
@@ -7088,6 +7097,8 @@ test('use case 1 ports: the compose files of the two packs publish exactly 8101 
     ['the runtime of the Reorder Agent on another port', texts, { [reorder]: srvReplace(texts[reorder], '127.0.0.1:8101:8080', '127.0.0.1:8105:8080') }, readme, /reorder-agent\.yml must publish/],
     ['the service of the Order Desk on another port', texts, { [orders]: srvReplace(texts[orders], '127.0.0.1:9102:9102', '127.0.0.1:9103:9102') }, readme, /order-desk\.yml must publish/],
     ['a second port on the service of the Order Desk', texts, { [orders]: srvReplace(texts[orders], '["127.0.0.1:9102:9102"]', '["127.0.0.1:9102:9102", "127.0.0.1:9109:9109"]') }, readme, /order-desk\.yml must publish/],
+    ['an extra port listed first on the service of the Order Desk', texts, { [orders]: srvReplace(texts[orders], '["127.0.0.1:9102:9102"]', '["127.0.0.1:9109:9109", "127.0.0.1:9102:9102"]') }, readme, /order-desk\.yml must publish .* found .*"service":\[9109,9102\]/],
+    ['an extra port listed first on the runtime of the Reorder Agent', texts, { [reorder]: srvReplace(texts[reorder], '["127.0.0.1:8101:8080"]', '["127.0.0.1:8110:8080", "127.0.0.1:8101:8080"]') }, readme, /reorder-agent\.yml must publish .* found .*"runtime":\[8110,8101\]/],
     ['a port that no pack of the plan uses', texts, { [reorder]: srvReplace(texts[reorder], 'services:\n', 'services:\n  extra:\n    image: example\n    ports: ["127.0.0.1:8110:8080"]\n') }, readme, /reorder-agent\.yml must publish/],
     ['a port that two runtimes of the Order Desk share', texts, { [orders]: srvReplace(texts[orders], '127.0.0.1:8103:8080', '127.0.0.1:8102:8080') }, readme, /the port 8102 is published twice/],
     ['a port of the Reorder Agent that the present host uses', texts, { [reorder]: srvReplace(texts[reorder], '127.0.0.1:8101:8080', '127.0.0.1:8083:8080') }, readme, /the port 8083 is published twice/],
@@ -7104,6 +7115,32 @@ test('use case 1 ports: the compose files of the two packs publish exactly 8101 
   const long = srvReplace(texts[reorder], '["127.0.0.1:8101:8080"]', '[{ target: 8080, published: 8101, host_ip: 127.0.0.1 }]');
   assert.deepEqual(portProblems({ ...texts, [reorder]: long }, PACK_PORTS, readme), [], 'the long form');
   assert.deepEqual(portProblems(Object.fromEntries(Object.entries(texts).reverse()), PACK_PORTS, readme), [], 'the files in another order');
+});
+
+test('use case 1 guards: the compose files that end in .yml and in .yaml are read in both folders by the guards of the images, the ports and the digests, and a file with another name is not a compose file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'compose-names-'));
+  try {
+    const compose = (port, image) => `services:\n  x:\n    image: ${image}\n    ports: ["127.0.0.1:${port}:8080"]\n`;
+    const files = {
+      'deploy/host/docker-compose.a.yml': compose(8083, 'example'),
+      'deploy/host/docker-compose.b.yaml': compose(8084, `${RT.image}:latest`),
+      'deploy/server/docker-compose.yaml': compose(8083, `${IMAGE_REPOSITORY}/extra@sha256:<digest>`),
+      'deploy/server/docker-compose.c.yml': compose(8101, 'example'),
+      // Names that are not compose files: another ending, a backup, no docker-compose at the start, a prefix, and a note.
+      'deploy/server/docker-compose.d.json': '{}', 'deploy/server/docker-compose.e.yml.bak': 'x', 'deploy/server/compose.f.yml': 'x', 'deploy/server/my-docker-compose.g.yml': 'x', 'deploy/server/README.md': 'x',
+    };
+    for (const folder of ['deploy/host', 'deploy/server']) mkdirSync(join(dir, folder), { recursive: true });
+    for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
+    const texts = composeTextsOf(['deploy/host', 'deploy/server'], dir);
+    assert.deepEqual(Object.keys(texts), ['deploy/host/docker-compose.a.yml', 'deploy/host/docker-compose.b.yaml', 'deploy/server/docker-compose.c.yml', 'deploy/server/docker-compose.yaml'], 'the four compose files, and none of the five other names');
+    // Each guard finds the fault that sits in a file that ends in .yaml.
+    assert.ok(composeImageProblems(CI_IMAGES, texts).some((p) => /deploy\/server\/docker-compose\.yaml#x names the image \S+\/extra, and no row/.test(p)), 'the guard of the images reads a .yaml file');
+    assert.ok(portProblems(texts, {}, srvRead('README.md')).some((p) => /the port 8083 is published twice: deploy\/host\/docker-compose\.a\.yml#x, deploy\/server\/docker-compose\.yaml#x/.test(p)), 'the guard of the ports reads a .yaml file');
+    const tagged = Object.entries(texts).filter(([, text]) => runtimeReferenceProblems(text).length > 0).map(([file]) => file);
+    assert.deepEqual(tagged, ['deploy/host/docker-compose.b.yaml'], 'the guard of the digests reads a .yaml file');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // The purchase order read by the parser of the kit and by the reader of the purchase order store of the mock service, in one process. The store takes the tenant from the URL, and its router
@@ -7337,6 +7374,15 @@ test('use case 1 README: the section of a host whose proxy runs in a container g
   assert.doesNotMatch(readme, HOST_WORDS, 'the README names no host, no proxy stack, no login and no key file');
   // The files of the host with the proxy in a container are in the one Caddyfile: the lines about the snippet folder say that they are for Caddy on the host.
   for (const part of ['when Caddy runs on the host', 'Caddy on the host reaches a container by its port on `127.0.0.1`', 'Caddy in a container reaches it by its container name']) assert.ok(readme.includes(part), part);
+  // The packs fit a proxy in a container only. The mock service names its container there, and only the Caddy container joins the network of a project.
+  for (const part of ['they fit no other: their upstreams are container names, and Caddy on the host cannot resolve them', 'Only the Caddy container joins it', '`127.0.0.1` in a Caddy container is the container itself', '`reverse_proxy mock-systems:9120`', 'the Caddy container joins `mock-systems_default`']) assert.ok(text.includes(part), part);
+  const mockCompose = parseYaml(srvRead('docker-compose.mock-systems.yml'));
+  assert.deepEqual([mockCompose.name, mockCompose.services['mock-systems'].container_name, mockCompose.services['mock-systems'].environment.PORT], ['mock-systems', 'mock-systems', '9120'], 'the project, the container and the port that the README names for the mock service');
+  for (const part of ['On a host whose proxy runs in a container, the block of the mock service uses `mock-systems:9120`', 'or on `mock-systems:9120` when the proxy is a container', 'When the proxy is a container, only the Caddy container joins it.']) assert.ok(readme.includes(part), part);
+  assert.doesNotMatch(readme, /no other container joins that network/, 'no line says that no container but the project joins the network, where the Caddy container joins it');
+  // The agents of deploy/host build their runtime on the host, so the README does not say that the host builds no image: it says it of the agents of this folder.
+  assert.doesNotMatch(readme, /The host builds no image/, 'no line denies the build of the agents of deploy/host');
+  assert.equal(readme.split('The agents of this folder build no image on the host.').length - 1, 2, 'the opening and the rules say that the agents of this folder build no image on the host');
 });
 
 test('use case 1 README: the memory arithmetic of the six containers adds up, and the host stays above the gate of 1,024 MiB after the six containers start', () => {
@@ -7360,7 +7406,11 @@ test('use case 1 README: the memory arithmetic of the six containers adds up, an
   const later = 2 * sizes['Reorder Agent runtime'] + 2 * sizes['Reorder Agent service'];
   assert.ok(typicalAfter - later < 1024 && lowestAfter - later < 1024, 'four more containers at the planning sizes do not pass the gate, in either case');
   assert.ok(text.includes('four more containers (two runtimes and two services) do not pass the gate'), 'and the README says so');
-  for (const part of ['169 MiB in `docker stats`', '`MemAvailable` fell by 462 MiB', '4,074 MiB to 3,612 MiB', 'The gate is 1,024 MiB', 'The host builds none of these images', '`mem_limit`', 'The gate is for a start, not for a peak']) assert.ok(text.includes(part), part);
+  for (const part of ['169 MiB in `docker stats`', '`MemAvailable` fell by 462 MiB', '4,074 MiB to 3,612 MiB', 'The gate is 1,024 MiB', 'The host builds none of the images of use case 1', 'The agents of `deploy/host` build their runtime on the host', '`mem_limit`', 'The gate is for a start, not for a peak']) assert.ok(text.includes(part), part);
+  // The figures come from a host that also runs the agents of deploy/host, so a new host needs its own measurement, and the text does not deny the build of those agents.
+  assert.ok(text.includes('The figures in this section were measured on a host that also runs the agents of `deploy/host`. A new host needs its own measurement.'), 'where the figures come from');
+  assert.doesNotMatch(text, /no build counts here/, 'the text does not deny every build');
+  assert.ok(text.includes(`So the other ${19 - 1 - 6} containers need more memory, or a real size below the planning size, before they start.`), 'the memory text says what the opening says of the other containers');
   assert.doesNotMatch(text, /3\.3 GiB/, 'the old total of the 19 containers is gone');
 });
 
@@ -7369,9 +7419,27 @@ test('use case 1 RUNBOOK: step 7 points to the runbooks of the two packs, and na
   const step = section(runbook, '7. Add an agent');
   for (const file of ['RUNBOOK-reorder-agent.md', 'RUNBOOK-order-desk.md']) assert.ok(step.includes(`\`${file}\``) && existsSync(join(root, SRV, file)), file);
   for (const part of ['Snippet folder.', 'Marker block.', '/etc/caddy/agents/<agent>.snippet', 'section "A host whose proxy runs in a container"', 'in place', 'section "The Caddy block"']) assert.ok(step.includes(part), part);
-  // Step 8 takes a block out in the same two ways.
+  // The packs of use case 1 fit the marker block only: their upstreams are container names, and Caddy on the host cannot resolve them. The paragraph and the two ways say so.
+  const [paragraph, ways] = step.split('\n1. ');
+  assert.ok(paragraph.includes('They fit the marker block only: their upstreams are container names, and Caddy on the host cannot resolve them.'), 'the paragraph');
+  const [snippetFolder, markerBlock] = ways.split('   - Marker block.');
+  assert.ok(snippetFolder.includes('The packs of use case 1 do not fit this way.'), 'the snippet folder is not for the packs');
+  assert.ok(markerBlock.includes('The packs of use case 1 use this way only.'), 'the marker block is for the packs');
+  for (const snippet of ['Caddyfile.reorder-agent.snippet', 'Caddyfile.order-desk.snippet']) {
+    const upstreams = srvRead(snippet).split('\n').filter((line) => /^\s*reverse_proxy /.test(line));
+    assert.ok(upstreams.length > 0 && upstreams.every((line) => !/127\.0\.0\.1|localhost/.test(line)), `${snippet}: the upstreams are container names`);
+  }
+  // Step 8 takes a block out in the same two ways, each in its own order. With the snippet folder the containers stop first. With the marker block the block goes first, then the Caddy container
+  // leaves the network of the project, and then the down command runs, as the Back out section of each pack says.
   const eight = section(runbook, '8. Remove an agent');
-  for (const part of ['Snippet folder.', 'Marker block.', 'section "Back out"']) assert.ok(eight.includes(part), `step 8: ${part}`);
+  for (const part of ['Snippet folder.', 'Marker block.', 'section "Back out"', 'Do not use `-v`']) assert.ok(eight.includes(part), `step 8: ${part}`);
+  const [stopFirst, blockFirst] = eight.split('   - Marker block.');
+  const down = 'docker compose -f <compose file> down';
+  assert.ok(stopFirst.includes(down) && stopFirst.indexOf(down) < stopFirst.indexOf('sudo rm /etc/caddy/agents/<agent>.snippet'), 'snippet folder: the containers stop before the snippet is removed');
+  const at = (part) => blockFirst.indexOf(part);
+  const leave = 'docker network disconnect <project>_default <caddy container>';
+  assert.ok(at('Take the block out first') >= 0 && at('Take the block out first') < at('reload Caddy') && at('reload Caddy') < at(leave) && at(leave) < at(down), 'marker block: the block goes, then the Caddy container leaves the network, then down');
+  assert.ok(blockFirst.includes('Leave the network of the project before the `down` command, because the Caddy container is on it.'), 'and the text says why');
 });
 
 // The Dockerfiles that build from the repo root: each COPY of a folder takes the folder whole, with its test folders. The ignore file keeps every folder named test out of the context.
