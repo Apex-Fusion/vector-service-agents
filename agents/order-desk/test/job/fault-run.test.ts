@@ -10,7 +10,7 @@ import type { Handoff } from '@vsa/usecase-kit/protocol';
 import { runOrder, wrongLotOf } from '../../src/job/index.ts';
 import type { OrderDeps } from '../../src/job/index.ts';
 import { json, makeRig, refusalOf, sentOrder } from './rig.ts';
-import type { Rig } from './rig.ts';
+import type { Rig, RigOptions } from './rig.ts';
 import { CHECKS, PURCHASE_ORDER_SHA256, decisionOf, failureOf, hashOf, purchaseOrder, recordFor } from './samples.ts';
 
 const golden = (name: string): unknown => JSON.parse(readFileSync(new URL(`./golden/${name}.json`, import.meta.url), 'utf8'));
@@ -104,24 +104,32 @@ describe('the job with the fault confirm_wrong_lot', () => {
 });
 
 describe('the fault changes no check', () => {
-  const scenarios: ReadonlyArray<readonly [string, (rig: Rig) => void]> = [
-    ['no record', (rig) => { rig.entry = null; }],
-    ['a record of another body', (rig) => { rig.entry = recordFor(rig.request, { request_sha256: 'cd'.repeat(32) }); }],
-    ['a record without a check', (rig) => { rig.entry = recordFor(rig.request, { checks: Object.fromEntries(Object.entries(CHECKS).filter(([name]) => name !== 'lot')) }); }],
-    ['a gateway that refuses', (rig) => { rig.gateway.setStatus(rig.agent, 'suspended'); }],
-    ['a catalogue that fails', (rig) => { rig.portal.catalogue = json(500, { error: 'internal' }); }],
-    ['a decision that fails', (rig) => { rig.decision = failureOf('inference_failed'); }],
-    ['a decision of a shape that is not the shape of the confirmation', (rig) => { rig.decision = accepted(decisionOf({ ship_by: 'tomorrow' })); }],
-    ['a model that does not confirm', (rig) => { rig.decision = accepted(decisionOf({ confirm: false, note: 'The item is discontinued.' })); }],
-    ['a number that the portal holds', (rig) => { rig.portal.preplace('run1-0001'); }],
-    ['a portal that fails at the order', (rig) => { rig.portal.order = json(503, { error: 'service_busy' }); }],
-    ['an order book that fails', (rig) => { rig.bookError = new Error('the book is full'); }],
+  interface Scenario {
+    readonly what: string;
+    /** Changes the rig before the job runs. */
+    readonly change: (rig: Rig) => void;
+    /** The options of the rig: the setting of the fault is added to them. */
+    readonly options?: RigOptions;
+  }
+  const scenarios: readonly Scenario[] = [
+    { what: 'no record', change: (rig) => { rig.entry = null; } },
+    { what: 'a record of another body', change: (rig) => { rig.entry = recordFor(rig.request, { request_sha256: 'cd'.repeat(32) }); } },
+    { what: 'a record without a check', change: (rig) => { rig.entry = recordFor(rig.request, { checks: Object.fromEntries(Object.entries(CHECKS).filter(([name]) => name !== 'lot')) }); } },
+    { what: 'a gateway that refuses', change: (rig) => { rig.gateway.setStatus(rig.agent, 'suspended'); } },
+    { what: 'a catalogue that fails', change: (rig) => { rig.portal.catalogue = json(500, { error: 'internal' }); } },
+    { what: 'a decision that fails', change: (rig) => { rig.decision = failureOf('inference_failed'); } },
+    { what: 'a decision of a shape that is not the shape of the confirmation', change: (rig) => { rig.decision = accepted(decisionOf({ ship_by: 'tomorrow' })); } },
+    { what: 'a model that does not confirm', change: (rig) => { rig.decision = accepted(decisionOf({ confirm: false, note: 'The item is discontinued.' })); } },
+    { what: 'a number that the portal holds', change: (rig) => { rig.portal.preplace('run1-0001'); } },
+    { what: 'a portal that fails at the order', change: (rig) => { rig.portal.order = json(503, { error: 'service_busy' }); } },
+    { what: 'an order book that fails', change: (rig) => { rig.bookError = new Error('the book is full'); } },
+    { what: 'an escrow whose deliver_by has passed', change: () => undefined, options: { deliverInMs: -1_000 } },
   ];
 
-  it.each(scenarios)('%s ends the same with the fault on and off, and the fault value is in no log line and in no text', async (_what, change) => {
+  it.each(scenarios)('$what ends the same with the fault on and off, and the fault value is in no log line and in no text', async ({ change, options }) => {
     const ends = [];
     for (const mode of ['', 'confirm_wrong_lot'] as const) {
-      const rig = makeRig({ mode });
+      const rig = makeRig({ ...options, mode });
       change(rig);
       const refusal = await refusalOf(rig.run());
       ends.push({ code: refusal.code, status: refusal.status, message: refusal.message, events: rig.events, posts: posts(rig), orders: rig.portal.orders.size, booked: rig.booked.length });

@@ -11,14 +11,15 @@
 //   5. The decision `availability`. A failed decision ends the job with its own code. `confirm: false` is `cannot_supply`, and no order is placed. Only `confirm: true` goes on.
 //   6. The order, with the lot and the quantity of the purchase order (or with the fault, the wrong lot and its size). A refusal of the portal for a number that it holds is `duplicate_po`. Any other
 //      refusal or failure is `mock_system_failed`. A draft of the confirmation is checked with the parser of the kit BEFORE the order is sent, so that no order is placed for which no valid
-//      confirmation can be made.
-//   7. The order book, AFTER the portal took the order. A book that cannot be written is `store_write_failed`.
+//      confirmation can be made. The clock is read BEFORE the order is sent too: the runtime stops waiting 30 seconds before `deliver_by`, and with an order call that could end after that, no order is
+//      placed (`deadline`).
+//   7. The order book, AFTER the portal took the order. A book that cannot be written is `store_write_failed`. The order exists then, so a caller that hung up during the order gets one line in the log.
 //   8. The confirmation, checked by the parser of the kit.
 //
 // A job writes at most one order: the order call is made one time, and nothing retries it. The portal may hold an order after a call that gave no answer, so the log says so, and the portal itself refuses a
 // second order for the same number. No order is placed unless the model said `confirm: true`. The fault changes the lot and the quantity of the order and of the confirmation and nothing else, and the
 // fault value is in the confirmation and in no line of the log. The job writes no key, no certificate and no token to a log or to a text: a line holds codes, references and the names of members.
-import { callWithX509Svid, fetchX509Svid, x509Target } from '@vsa/usecase-kit/access';
+import { DEFAULT_CALL_TIMEOUT_MS, callWithX509Svid, fetchX509Svid, x509Target } from '@vsa/usecase-kit/access';
 import type { MockBases, SystemFailed, SystemRefused, X509Target } from '@vsa/usecase-kit/access';
 import type { ChecksRecord } from '@vsa/usecase-kit/checks';
 import { DECISION_FAILURE_CODES } from '@vsa/usecase-kit/decision';
@@ -36,13 +37,10 @@ import type { OrderDeps } from './ports.ts';
 
 // --- the refusal -----------------------------------------------------------------------------------------------------------------------------------
 
-/**
- * The status of each code of a refusal of the job. A code that ERROR_STATUS lists has the status of that table. `precheck_missing` and `svid_failed` are not in that table, so the job keeps their
- * statuses here: 500 for a job that the hook did not check, and 502 for a gateway that gave no SVID.
- */
+/** The status of each code of a refusal of the job: the status of that code in ERROR_STATUS of the protocol, so that the table of the job and the table of the protocol are one. */
 export const ORDER_REFUSAL_STATUS = Object.freeze({
-  precheck_missing: 500,
-  svid_failed: 502,
+  precheck_missing: ERROR_STATUS.precheck_missing,
+  svid_failed: ERROR_STATUS.svid_failed,
   mock_system_failed: ERROR_STATUS.mock_system_failed,
   inference_failed: ERROR_STATUS.inference_failed,
   model_output_invalid: ERROR_STATUS.model_output_invalid,
@@ -82,6 +80,7 @@ const TEXT = {
   duplicate_po: 'The supplier portal already holds an order for this purchase order number.',
   order_book: 'The order book could not record the order.',
   deadline: 'The caller hung up, and the job stopped before it went on.',
+  no_time: 'The job has too little time left to place the order.',
   internal: 'The job stopped on a fault of the service.',
 } as const;
 
@@ -248,12 +247,16 @@ function confirmationOf(parts: Parts, orderId: string): OrderConfirmation {
 /** The name of an error for a log line. The message of an error is never logged: it can name a path or a host. */
 const kindOf = (error: unknown): string => (error instanceof Error ? error.name : typeof error);
 
+/** How long before `deliver_by` the runtime stops waiting for the job, in milliseconds. */
+const RUNTIME_MARGIN_MS = 30_000;
+
 // --- the job ---------------------------------------------------------------------------------------------------------------------------------------
 
 /**
  * Does the job of an escrow that the Order Desk claimed, and gives the confirmation, or throws an `OrderRefusal`. `request` is the handoff that the server parsed, `context` is what the runtime said of the
  * escrow, and `arrivedAt` is the time of the clock of the service when the job arrived. `signal` aborts when the caller hangs up: the job looks at it before the model is hired and before the order is placed,
- * and it never passes it into a hire. See the head of this file for the steps and the codes.
+ * and again after the order book is written. After that last look the order exists and is booked, so the job goes on and writes one line to the log. It never passes the signal into a hire. See the head of
+ * this file for the steps and the codes.
  */
 export async function runOrder(deps: OrderDeps, request: Handoff, context: JobContext, arrivedAt: number, signal?: AbortSignal): Promise<OrderConfirmation> {
   const say = (text: string): void => {
@@ -323,6 +326,13 @@ export async function runOrder(deps: OrderDeps, request: Handoff, context: JobCo
   const draft = parseOrderConfirmation(confirmationOf(parts, DRAFT_ORDER_ID));
   if (!draft.ok) throw refuse('internal', TEXT.internal, `no valid confirmation can be made, so no order is placed: ${draft.detail}`);
   stopIfAbandoned('the order');
+  // The runtime stops waiting for the job 30 seconds before `deliver_by`, and the order call may take as long as its limit. An order that the portal takes after that is never confirmed to the buyer, so with
+  // too little time left no order is placed. The test is written so that a time that is not a number refuses: a time that is not known is never enough time.
+  const callMs = deps.calls.timeoutMs === undefined ? DEFAULT_CALL_TIMEOUT_MS : deps.calls.timeoutMs;
+  const now = deps.clock();
+  if (!(now + callMs <= context.deliverByMs - RUNTIME_MARGIN_MS)) {
+    throw refuse('deadline', TEXT.no_time, `the order call could end after the runtime stops waiting, so no order is placed (${context.deliverByMs - RUNTIME_MARGIN_MS - now} ms are left, and the call may take ${callMs} ms)`);
+  }
   const body: JsonValue = { po_number: order.po_number, po_sha256: documentHash.value, sku: order.sku, lot: ordered.lot, quantity: ordered.quantity, ship_by: choice.ship_by };
   const placed = await callWithX509Svid(deps.calls, svid.value, targets.value.orders, body);
   if (!placed.ok) {
@@ -341,6 +351,8 @@ export async function runOrder(deps: OrderDeps, request: Handoff, context: JobCo
   } catch (error) {
     throw refuse('store_write_failed', TEXT.order_book, `the order book could not record the order ${orderId} (${kindOf(error)}), and the portal holds the order`);
   }
+  // The signal is read after the commitment too. The order exists and is booked, so the job goes on and gives the confirmation, which a caller that hung up does not read.
+  if (signal?.aborted === true) say(`the caller hung up while the order was placed: the order ${orderId} exists and is booked`);
 
   // 8. The confirmation.
   const confirmation = parseOrderConfirmation(confirmationOf(parts, orderId));

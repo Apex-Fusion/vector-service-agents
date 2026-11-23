@@ -2,7 +2,9 @@
 // order. A refusal of the portal for a number that it holds (409, `duplicate_po`) is `duplicate_po` (403). Any other refusal or failure is `mock_system_failed` (502). The order book is written AFTER the portal took
 // the order, and never on a refusal. A book that cannot be written ends the job with `store_write_failed` (500). A job writes at most one order. Each refusal has an accepted twin.
 import { describe, expect, it } from 'vitest';
+import type { MtlsTransport } from '@vsa/usecase-kit/access';
 import { accepted } from '@vsa/usecase-kit/protocol';
+import type { JsonValue } from '@vsa/usecase-kit/protocol';
 import { runOrder } from '../../src/job/index.ts';
 import { expectNoSecrets, json, makeRig, refusalOf, sentOrder } from './rig.ts';
 import type { Reply, Rig } from './rig.ts';
@@ -199,6 +201,124 @@ describe('the order book', () => {
   it('twin: a book that can be written gives the confirmation', async () => {
     const rig = makeRig();
     expect(await rig.run()).toMatchObject({ outcome: 'done' });
+  });
+});
+
+describe('the time left for the order call', () => {
+  // The runtime stops waiting for the job 30 seconds before `deliver_by`, and the order call may take as long as the limit of the call: 60 seconds when the service gives no other limit.
+  it('gives no order to an escrow whose deliver_by has passed: deadline (422), with no call to the portal for the order and no record in the order book', async () => {
+    const rig = makeRig({ deliverInMs: -1_000 });
+    const refusal = await refusalOf(rig.run());
+    expect(refusal).toMatchObject({ code: 'deadline', status: 422, kind: 'job', message: 'The job has too little time left to place the order.' });
+    expect(rig.events).toStrictEqual(['take', 'svid', 'catalogue', 'decide']);
+    expect(posts(rig)).toBe(0);
+    expect(rig.portal.orders.size).toBe(0);
+    expect(rig.booked).toHaveLength(0);
+    expect(rig.logs).toHaveLength(1);
+    expect(rig.logs[0]).toContain('deadline');
+    expect(rig.logs[0]).toContain('the order call could end after the runtime stops waiting');
+  });
+
+  it('twin: an escrow with time left gets its order', async () => {
+    const rig = makeRig({ deliverInMs: 300_000 });
+    expect(await rig.run()).toMatchObject({ outcome: 'done' });
+    expect(posts(rig)).toBe(1);
+  });
+
+  it.each([
+    ['the default limit of 60 s, and exactly the time that the call may take with the margin of 30 s', undefined, 90_000, true],
+    ['the default limit of 60 s, and one millisecond less', undefined, 89_999, false],
+    ['a limit of 10 s, and exactly the time', 10_000, 40_000, true],
+    ['a limit of 10 s, and one millisecond less', 10_000, 39_999, false],
+    ['a limit of 5 minutes, and exactly the time', 300_000, 330_000, true],
+    ['a limit of 5 minutes, and one millisecond less', 300_000, 329_999, false],
+  ])('with %s: the order is placed only when the call can end 30 s before deliver_by', async (_what, timeoutMs, deliverInMs, placed) => {
+    const rig = makeRig({ deliverInMs });
+    const calls = timeoutMs === undefined ? rig.deps.calls : { ...rig.deps.calls, timeoutMs };
+    const job = runOrder({ ...rig.deps, calls }, rig.request, rig.context, rig.gateway.now());
+    if (placed) {
+      expect(await job).toMatchObject({ outcome: 'done' });
+      expect(posts(rig)).toBe(1);
+    } else {
+      expect(await refusalOf(job)).toMatchObject({ code: 'deadline', status: 422 });
+      expect(posts(rig)).toBe(0);
+      expect(rig.events).toStrictEqual(['take', 'svid', 'catalogue', 'decide']);
+    }
+  });
+
+  it('reads the clock after the model was hired: a decision that takes the time ends the job with deadline, and the twin that is quick gets its order', async () => {
+    const slow = makeRig();
+    const slowDeps = { ...slow.deps, decide: async (input: JsonValue) => { const result = await slow.deps.decide(input); slow.gateway.advance(250_000); return result; } };
+    expect(await refusalOf(runOrder(slowDeps, slow.request, slow.context, slow.gateway.now()))).toMatchObject({ code: 'deadline', status: 422 });
+    expect(slow.events).toStrictEqual(['take', 'svid', 'catalogue', 'decide']);
+    expect(posts(slow)).toBe(0);
+    const quick = makeRig();
+    const quickDeps = { ...quick.deps, decide: async (input: JsonValue) => { const result = await quick.deps.decide(input); quick.gateway.advance(100_000); return result; } };
+    expect(await runOrder(quickDeps, quick.request, quick.context, quick.gateway.now())).toMatchObject({ outcome: 'done' });
+    expect(posts(quick)).toBe(1);
+  });
+
+  it('refuses when the time is not known: a clock that gives no number, and a deliver_by that is no number, are never enough time', async () => {
+    const noClock = makeRig();
+    expect(await refusalOf(runOrder({ ...noClock.deps, clock: () => Number.NaN }, noClock.request, noClock.context, noClock.gateway.now()))).toMatchObject({ code: 'deadline', status: 422 });
+    expect(posts(noClock)).toBe(0);
+    const noEnd = makeRig();
+    expect(await refusalOf(runOrder(noEnd.deps, noEnd.request, { ...noEnd.context, deliverByMs: Number.NaN }, noEnd.gateway.now()))).toMatchObject({ code: 'deadline', status: 422 });
+    expect(posts(noEnd)).toBe(0);
+  });
+});
+
+describe('a caller that hangs up while the order is placed', () => {
+  /** A transport that gives the answer of the portal and then makes the caller hang up, as a caller does that stops waiting. */
+  const hangsUpAfterOrder = (rig: Rig, hungUp: AbortController): MtlsTransport => async (request) => {
+    const reply = await rig.portal.transport(request);
+    if (request.method === 'POST') hungUp.abort();
+    return reply;
+  };
+
+  it('gets its order and its record in the order book, the job gives the confirmation, and a line of the log says that the order exists and is booked', async () => {
+    const rig = makeRig();
+    const hungUp = new AbortController();
+    const deps = { ...rig.deps, calls: { ...rig.deps.calls, transport: hangsUpAfterOrder(rig, hungUp) } };
+    const confirmation = await runOrder(deps, rig.request, rig.context, rig.gateway.now(), hungUp.signal);
+    expect(confirmation).toMatchObject({ outcome: 'done', order_id: 'SO-run1-0001' });
+    expect(rig.portal.orders.size).toBe(1);
+    expect(rig.booked).toStrictEqual([['run1', 'run1-0001', 'SO-run1-0001']]);
+    expect(rig.logs).toHaveLength(2);
+    expect(rig.logs[0]).toContain('the caller hung up while the order was placed');
+    expect(rig.logs[0]).toContain('the order SO-run1-0001 exists and is booked');
+    expect(rig.logs[1]).toContain('placed the order SO-run1-0001');
+  });
+
+  it('gets the same line when the caller hangs up while the order book is written', async () => {
+    const rig = makeRig();
+    const hungUp = new AbortController();
+    const book = { record: async (tenant: string, poNumber: string, orderId: string) => { await rig.deps.book.record(tenant, poNumber, orderId); hungUp.abort(); } };
+    const confirmation = await runOrder({ ...rig.deps, book }, rig.request, rig.context, rig.gateway.now(), hungUp.signal);
+    expect(confirmation).toMatchObject({ outcome: 'done' });
+    expect(rig.booked).toHaveLength(1);
+    expect(rig.logs).toHaveLength(2);
+    expect(rig.logs[0]).toContain('the caller hung up while the order was placed');
+  });
+
+  it('gets no such line when the book cannot be written: the refusal store_write_failed comes first, as before', async () => {
+    const rig = makeRig();
+    const hungUp = new AbortController();
+    rig.bookError = new Error('the book is full');
+    const deps = { ...rig.deps, calls: { ...rig.deps.calls, transport: hangsUpAfterOrder(rig, hungUp) } };
+    expect(await refusalOf(runOrder(deps, rig.request, rig.context, rig.gateway.now(), hungUp.signal))).toMatchObject({ code: 'store_write_failed', status: 500 });
+    expect(rig.logs).toHaveLength(1);
+    expect(rig.logs[0]).not.toContain('hung up');
+  });
+
+  it('twin: a caller that stays, with a signal that never aborts and with no signal, gets one line in the log and no line about a hang-up', async () => {
+    const stays = makeRig();
+    expect(await stays.run({ signal: new AbortController().signal })).toMatchObject({ outcome: 'done' });
+    expect(stays.logs).toHaveLength(1);
+    expect(stays.logs[0]).not.toContain('hung up');
+    const none = makeRig();
+    expect(await none.run()).toMatchObject({ outcome: 'done' });
+    expect(none.logs).toHaveLength(1);
   });
 });
 
