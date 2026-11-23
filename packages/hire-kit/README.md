@@ -4,7 +4,7 @@ The code that a service uses to hire a supplier on the Vector marketplace.
 The kit posts the escrow, sends the job, polls for the result, checks the receipt and accepts the escrow.
 It hires a chat model, an OCR supplier or an agent of the template contract.
 
-This page describes the paying keys, the limits of a hire, the five outcomes of `hireAgent`, the limit of the decision, the vault that continues after a Pay, and the shared stubs.
+This page describes the paying keys, the limits of a hire, the five outcomes of `hireAgent`, the ledger, the limit of the decision, the vault that continues after a Pay, and the shared stubs.
 The head of each file in `src/` describes that file.
 
 ## Paying keys
@@ -114,6 +114,16 @@ The other reasons of `failed_after_claim` are `failed`, `timeout`, `bad_result`,
 
 What no outcome names is thrown as an error of the factory of the caller.
 That includes no advert to hire, an advert above a limit, a Post that failed before its signature, the deadline, a failed write of the store, and a decision that throws.
+
+## The ledger
+
+A hire books what it moved in `deps.ledger`.
+`posted` gets the lock and the fee of the Post, or of the vault Pay, once it is confirmed.
+`accepted` gets the fee and the hash of the Accept, once it is confirmed: `{ feeLovelace, txHash }`.
+The hash is the one that the chain gave for the Accept transaction.
+A caller finds a booking again by that hash.
+An Accept that was sent and not seen confirmed books nothing, and the hire stands as `pending`.
+A ledger that was written for the fee alone (`accepted(accept: { feeLovelace: bigint })`) still fits the type.
 
 ## The decision of the caller
 

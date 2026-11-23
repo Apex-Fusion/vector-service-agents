@@ -308,8 +308,8 @@ export async function hireCounterparty(deps: HireDeps, input: HireInput): Promis
       ...hire,
       ledger: {
         posted: (post) => { hire.ledger.posted(post); },
-        // The type of this call names only the fee. The hire kit gives the result of the Accept of the chain, which holds the hash as well.
-        accepted: (accept: { feeLovelace: bigint; txHash?: unknown }) => {
+        // The type of this call gives the fee and the hash of the Accept. The hash is still read as a value that must be a text: a chain that breaks its type and gives none leaves it `null`, and the step never makes one up.
+        accepted: (accept) => {
           const fee = String(accept.feeLovelace);
           const hash = typeof accept.txHash === 'string' ? accept.txHash : null;
           try {

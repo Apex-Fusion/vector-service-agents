@@ -68,6 +68,8 @@ afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: tru
 interface Run {
   m: Marketplace; deps: HireDeps; stranded: StrandedStore; sleeps: number[]; ledger: HireLedger;
   booked: { posted: Array<{ lockLovelace: bigint; feeLovelace: bigint }>; accepted: Array<{ feeLovelace: bigint }> };
+  /** What the ledger got when an Accept was confirmed: the fee and the hash of the transaction. */
+  accepts: Array<{ feeLovelace: bigint; txHash: string }>;
 }
 /** A marketplace, an empty stranded store, a ledger that books what it is told, and the deps of a hire whose deadline is `deadlineMs` after T0. */
 function setup(deadlineMs = 1_000_000): Run {
@@ -78,11 +80,12 @@ function setup(deadlineMs = 1_000_000): Run {
   const sleeps: number[] = [];
   const deps: HireDeps = { chain: m.chain, stranded, clock: () => m.clock.now, sleep: async (ms) => { sleeps.push(ms); m.clock.now += ms; }, deadlineMs: T0 + deadlineMs };
   const booked: Run['booked'] = { posted: [], accepted: [] };
+  const accepts: Run['accepts'] = [];
   const ledger: HireLedger = {
     posted: (post) => { booked.posted.push({ lockLovelace: post.lockLovelace, feeLovelace: post.feeLovelace }); },
-    accepted: (accept) => { booked.accepted.push({ feeLovelace: accept.feeLovelace }); },
+    accepted: (accept) => { booked.accepted.push({ feeLovelace: accept.feeLovelace }); accepts.push({ feeLovelace: accept.feeLovelace, txHash: accept.txHash }); },
   };
-  return { m, deps, stranded, sleeps, ledger, booked };
+  return { m, deps, stranded, sleeps, ledger, booked, accepts };
 }
 const job = (m: Marketplace) => chatJob(LLM_ENDPOINT, INPUT, LABEL, m.fetchImpl);
 /** The error a hire rejects with. */
@@ -110,6 +113,17 @@ describe('hireOne: a hire that ends well', () => {
     expect(run.stranded.list()).toStrictEqual([]);
     expect(run.sleeps).toStrictEqual([3_000, 3_000]);
     expect(run.m.llm.sends.map((s) => [s.escrowRef, JSON.parse(s.body)])).toStrictEqual([[escrowNo(1), { input: INPUT }]]);
+  });
+
+  it('books the fee and the hash of the Accept that the chain gave: the ledger gets what the Accept of the chain returned, once, and the hash is not the hash of the Post', async () => {
+    const run = setup();
+    const made: Array<{ txHash: string; feeLovelace: bigint }> = [];
+    const chain = chainWith(run.m, { accept: async (ref) => { const result = await run.m.chain.accept(ref); made.push(result); return result; } });
+    await hireOne({ ...run.deps, chain }, SUPPLIER, job(run.m), run.ledger, CODED);
+    expect(made).toHaveLength(1);
+    expect(made[0]!.txHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(run.accepts).toStrictEqual([{ feeLovelace: FakeChain.FEE_LOVELACE, txHash: made[0]!.txHash }]);
+    expect(run.accepts[0]!.txHash).not.toBe(escrowNo(1).split('#')[0]);
   });
 
   it('an Accept sent and not seen confirmed stands (ruling R33): accepted is pending, its fee is not booked, and the escrow stays marked for the janitor', async () => {

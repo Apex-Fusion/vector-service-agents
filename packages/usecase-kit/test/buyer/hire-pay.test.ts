@@ -147,9 +147,9 @@ describe('a ledger that throws when it books the Accept', () => {
 
   it('keeps what the ledger got in the call as it was when the call began: the ledger may have written the booking before it threw, and it may change what it got', async () => {
     const w = await world();
-    const got: Array<{ txHash: unknown; feeLovelace: bigint }> = [];
+    const got: Array<{ txHash: string; feeLovelace: bigint }> = [];
     w.deps.hire.ledger.accepted = (accept) => {
-      got.push({ ...accept } as { txHash: unknown; feeLovelace: bigint });
+      got.push({ ...accept });
       Object.assign(accept, { txHash: 'changed by the ledger', feeLovelace: 0n });
       throw new Error('the ledger is closed after the write');
     };
@@ -161,7 +161,7 @@ describe('a ledger that throws when it books the Accept', () => {
     expect(got[0]!.feeLovelace).toBeGreaterThan(0n);
   });
 
-  it('gives a null hash and the fee when the call that the ledger threw for holds no hash: the type of that call in the hire kit names only the fee', async () => {
+  it('gives a null hash and the fee when the chain gave no hash, which the type of its Accept does not allow: the step never makes a hash up, and the work stays paid', async () => {
     const w = await world();
     const accept = w.m.chain.accept.bind(w.m.chain);
     let fee = 0n;

@@ -59,6 +59,8 @@ function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => voi
 interface Run {
   m: Marketplace; key: PayingKey; deps: AgentDeps; stranded: StrandedStore; sleeps: number[]; logs: string[];
   booked: { posted: Array<{ lockLovelace: bigint; feeLovelace: bigint }>; accepted: Array<{ feeLovelace: bigint }> };
+  /** What the ledger got when an Accept was confirmed: the fee and the hash of the transaction. */
+  accepts: Array<{ feeLovelace: bigint; txHash: string }>;
 }
 /**
  * A marketplace, the paying key of its chain (the chain `chain` makes of it, when a test needs to see, hold or change what the chain says), an empty stranded store, a ledger that
@@ -72,15 +74,16 @@ async function setup(opts: Parameters<typeof marketplace>[0] = {}, over: { deadl
   const sleeps: number[] = [];
   const logs: string[] = [];
   const booked: Run['booked'] = { posted: [], accepted: [] };
+  const accepts: Run['accepts'] = [];
   const ledger: HireLedger = {
     posted: (post) => { booked.posted.push({ lockLovelace: post.lockLovelace, feeLovelace: post.feeLovelace }); },
-    accepted: (accept) => { booked.accepted.push({ feeLovelace: accept.feeLovelace }); },
+    accepted: (accept) => { booked.accepted.push({ feeLovelace: accept.feeLovelace }); accepts.push({ feeLovelace: accept.feeLovelace, txHash: accept.txHash }); },
   };
   const deps: AgentDeps = {
     clock: () => m.clock.now, sleep: async (ms) => { sleeps.push(ms); m.clock.now += ms; }, deadlineMs: T0 + (over.deadlineMs ?? 1_000_000),
     fetchImpl: m.fetchImpl, indexerUrl: INDEXER, ledger, log: (line) => { logs.push(line); },
   };
-  return { m, key, deps, stranded: key.stranded, sleeps, logs, booked };
+  return { m, key, deps, stranded: key.stranded, sleeps, logs, booked, accepts };
 }
 const request = (over: Partial<AgentRequest> = {}): AgentRequest => ({
   selection: { capabilityId: AGENT_CAPABILITY, model: AGENT_MODEL }, payload: PAYLOAD, label: 'the order', maxPriceLovelace: null, maxSupplierBondLovelace: null, maxBuyerBondLovelace: null, ...over,
@@ -902,6 +905,52 @@ describe('hireAgent: a vault Pay that was submitted and not seen confirmed', () 
     expect(error.code).toBe('agent_post_failed');
     expect(error).not.toBeInstanceOf(HirePayUnconfirmed);
     expect(run.stranded.list().map((entry) => entry.escrow_ref)).toStrictEqual([`${hash}#0`]);
+  });
+});
+
+describe('hireAgent: what the ledger is told of the Accept', () => {
+  interface Made { txHash: string; feeLovelace: bigint }
+  /** The chain of `m`, with each Accept that it makes written to `made`. */
+  const watching = (m: Marketplace, made: Made[]): Partial<VaultChain> => ({
+    accept: async (ref) => { const result = await m.chain.accept(ref); made.push(result); return result; },
+  });
+
+  it('gives the ledger the fee and the hash of the Accept that was confirmed, as the chain gave them: for a hire paid from the wallet and for a hire paid from a vault', async () => {
+    for (const fromVault of [false, true]) {
+      const made: Made[] = [];
+      const run = await setup({}, { chain: (m) => vaultChainWith(m, watching(m, made)) });
+      const outcome = await go(run, fromVault ? { vaultRef: openVault(run) } : {});
+      if (outcome.outcome !== 'completed') throw new Error(`the hire ended in ${outcome.outcome}`);
+      expect(made, 'the chain made one Accept').toHaveLength(1);
+      expect(made[0]!.txHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(run.accepts, fromVault ? 'vault' : 'wallet').toStrictEqual([{ feeLovelace: FakeChain.FEE_LOVELACE, txHash: made[0]!.txHash }]);
+      // It is the hash of the Accept, and not the hash of the transaction that opened the escrow.
+      expect(run.accepts[0]!.txHash).not.toBe(outcome.escrowRef.split('#')[0]);
+    }
+  });
+
+  it('tells the ledger nothing of an Accept that was sent and not seen confirmed: no fee and no hash, and the hire stands as pending', async () => {
+    const unseen = (ref: string) => new TxNotConfirmedError('The Accept was submitted, but Koios did not report it confirmed.', { txHash: 'ac'.repeat(32), escrowRef: ref, deliverBy: null, validTo: T0 + 606_000, mayLand: true });
+    const run = await setup({}, { chain: (m) => vaultChainWith(m, { accept: async (ref) => { throw unseen(ref); } }) });
+    expect(await go(run)).toMatchObject({ outcome: 'completed', accepted: 'pending' });
+    expect(run.accepts).toStrictEqual([]);
+  });
+
+  it('has the fee and the hash in the type of the call, and a ledger that names only the fee still fits that type', async () => {
+    // The parameter of `accepted` is exactly the fee and the hash. The next line stops compiling when the type changes.
+    const exact: [Parameters<HireLedger['accepted']>[0]] extends [{ feeLovelace: bigint; txHash: string }]
+      ? ([{ feeLovelace: bigint; txHash: string }] extends [Parameters<HireLedger['accepted']>[0]] ? true : never) : never = true;
+    expect(exact).toBe(true);
+    // A ledger that was written when the type named only the fee fits the type, and it books the fee of the hire.
+    const fees: bigint[] = [];
+    const feeOnly: HireLedger = { posted: () => undefined, accepted: (accept: { feeLovelace: bigint }) => { fees.push(accept.feeLovelace); } };
+    // @ts-expect-error A function that asks for a member that the kit does not give is no ledger.
+    const asksForMore: HireLedger = { posted: () => undefined, accepted: (accept: { feeLovelace: bigint; slot: number }) => { void accept.slot; } };
+    expect(typeof asksForMore.accepted).toBe('function');
+    const run = await setup();
+    run.deps.ledger = feeOnly;
+    expect((await go(run)).outcome).toBe('completed');
+    expect(fees).toStrictEqual([FakeChain.FEE_LOVELACE]);
   });
 });
 
