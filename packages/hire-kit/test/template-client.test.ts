@@ -5,7 +5,7 @@
 // without a code, an answer for another escrow.
 import { describe, it, expect } from 'vitest';
 import { promptHashForPayload, sha256Utf8Hex, wirePayloadFor } from '@vsa/vector-read';
-import { isRuntimeRefusal, pollTemplateJob, sendTemplateJob, templateJob } from '../src/template-client.ts';
+import { bodyBytesOf, isRuntimeRefusal, pollTemplateJob, sendTemplateJob, templateJob } from '../src/template-client.ts';
 import { AGENT_ANSWER, AGENT_ENDPOINT, AGENT_KEY, escrowNo, marketplace, templateFinished } from '../testing/index.ts';
 import type { Marketplace } from '../testing/index.ts';
 
@@ -132,6 +132,31 @@ describe('sendTemplateJob', () => {
     const answer = answering(() => json(202, { status: 'accepted', job_id: 'ok-1' }));
     await expect(sendTemplateJob(AGENT_ENDPOINT, OTHER, PAYLOAD, answer.fetchImpl, Number.NaN)).rejects.toThrow(TypeError);
     expect(answer.calls).toStrictEqual([]);
+  });
+});
+
+describe('bodyBytesOf', () => {
+  it('is the size of the body that sendTemplateJob sends for the escrow of a vault Pay, which is output 0: the size that is checked before the Pay is the size that is sent after it', async () => {
+    for (const payload of [PAYLOAD, '€"\\\n\u0001'.repeat(50), '\u{1D15E}'.repeat(20)]) {
+      const { m, post } = await posted(marketplace(), payload);
+      await sendTemplateJob(AGENT_ENDPOINT, post.escrowRef, payload, m.fetchImpl);
+      expect(post.escrowRef).toMatch(/^[0-9a-f]{64}#0$/);
+      expect(bodyBytesOf(payload, true)).toBe(Buffer.byteLength(m.agent.sends[0]!.body, 'utf8'));
+    }
+  });
+
+  it('is nine bytes longer for a Post of the wallet, whose escrow reference is sized as the longest: a hash sign and 10 digits, and not a hash sign and output 0', () => {
+    expect(bodyBytesOf(PAYLOAD, false) - bodyBytesOf(PAYLOAD, true)).toBe(9);
+  });
+
+  it('counts bytes of UTF-8 and the escapes of the body: a quote mark is four bytes, a character of three bytes is three, and a line feed is three', () => {
+    const base = bodyBytesOf('', true);
+    expect(bodyBytesOf('a'.repeat(10), true)).toBe(base + 10);
+    expect(bodyBytesOf('"'.repeat(10), true)).toBe(base + 40);
+    expect(bodyBytesOf('\\'.repeat(10), true)).toBe(base + 40);
+    expect(bodyBytesOf('€'.repeat(10), true)).toBe(base + 30);
+    expect(bodyBytesOf('\n'.repeat(10), true)).toBe(base + 30);
+    expect(bodyBytesOf('\u0001'.repeat(10), true)).toBe(base + 70);
   });
 });
 

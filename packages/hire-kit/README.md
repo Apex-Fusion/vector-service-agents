@@ -80,6 +80,15 @@ It checks every field of the selection against the advert: the advert must be Ac
 Then it checks the three limits.
 A mismatch is the `unavailable` error of the caller, and nothing is paid.
 
+The kit also checks the size of the request before it pays.
+The runtime of an agent takes a body of at most `RUNTIME_BODY_LIMIT_BYTES` (1 MiB), and it refuses a larger body after the payment.
+The body is the escrow and the wire form of the payload in one JSON object, so a quote mark of the payload takes four bytes of it.
+The escrow exists only after the payment, so the kit sizes the body with the reference that the payment will make.
+A vault Pay opens its escrow at output 0.
+A Post of the wallet promises no output, so its body is sized with the longest reference: 64 hex characters, a hash sign and 10 digits.
+A body above the limit is the `unavailable` error of the caller.
+The error comes before the lane, before any read and before any payment, so nothing is posted.
+
 `hireAgent` says how the hire ended in one of five outcomes.
 
 | Outcome | Meaning |
@@ -113,7 +122,7 @@ The other reasons of `failed_after_claim` are `failed`, `timeout`, `bad_result`,
 `receipt_unavailable` means that the buyer did not judge the delivery: the agent does not hand over the receipt, or its hash cannot be read on chain in time.
 
 What no outcome names is thrown as an error of the factory of the caller.
-That includes no advert to hire, an advert above a limit, a Post that failed before its signature, the deadline, a failed write of the store, and a decision that throws.
+That includes no advert to hire, an advert above a limit, a request body above the limit of the runtime, a Post that failed before its signature, the deadline, a failed write of the store, and a decision that throws.
 
 ## The ledger
 

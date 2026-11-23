@@ -25,6 +25,15 @@ const JSON_HEADERS = { 'content-type': 'application/json', accept: 'application/
 const READ_HEADERS = { accept: 'application/json' } as const;
 /** The codes of the 503 answers that the runtime gives, before its Claim, when it could not ask its service. */
 const PRECHECK_UNAVAILABLE: Readonly<Record<string, true>> = { precheck_unreachable: true, precheck_timeout: true, precheck_failed: true };
+/**
+ * The most bytes of body that the runtime of an agent takes in one call: 1 MiB. It refuses a body above it. The use case kit keeps a number of its own for the same limit (`RUNTIME_BODY_LIMIT_BYTES` of
+ * its protocol), and a test of that kit pins the two to each other.
+ */
+export const RUNTIME_BODY_LIMIT_BYTES = 1_048_576;
+/** The reference of the escrow that a vault Pay opens: 64 hex characters, a hash sign and output 0. A vault Pay opens its escrow at output 0, so the body of a vault hire has the size that this reference gives. */
+const VAULT_ESCROW_REF = `${'0'.repeat(64)}#0`;
+/** The longest reference that a body can hold: 64 hex characters, a hash sign and 10 digits, the most that an output index has. The Post of a wallet promises no output, so its body is sized with this reference. */
+const LONGEST_ESCROW_REF = `${'0'.repeat(64)}#${'9'.repeat(10)}`;
 
 /**
  * Is an answer to a send the runtime's own refusal, made before its Claim? It is the envelope of the runtime with a code (an answer that is no envelope has the code bad_response), and its
@@ -73,13 +82,26 @@ function sendResult(status: number, text: string): SendResult {
   return refused(status, code, messageOf(answer));
 }
 
+/** The body of the call that sends a job: the escrow and the wire form of the payload. It is written here only, so that the size that is checked before the Pay is the size that is sent after it. */
+function sendBody(escrowRef: string, payload: string): string {
+  return JSON.stringify({ escrow_ref: escrowRef, payload: wirePayloadFor(payload) });
+}
+
+/**
+ * The most bytes that the body of the send of `payload` can have, in bytes of UTF-8 as the runtime counts them. The escrow of a send exists only after the payment, so the body is sized with the
+ * reference that the payment will give: output 0 for a vault Pay (`fromVault`), and the longest reference for a Post of the wallet. The real body is never longer than the body that this gives.
+ */
+export function bodyBytesOf(payload: string, fromVault: boolean): number {
+  return Buffer.byteLength(sendBody(fromVault ? VAULT_ESCROW_REF : LONGEST_ESCROW_REF, payload), 'utf8');
+}
+
 /**
  * POST /v1/job of the endpoint for the payload of an escrow that is posted and Open: the body is `{escrow_ref, payload}` where the payload is the wire form of the text whose hash the
  * escrow commits to. `timeoutMs` is the budget of the call, 75 s by default. Rejects only for a malformed escrow ref or a budget that is not a number, before anything is sent.
  */
 export async function sendTemplateJob(endpoint: string, escrowRef: string, payload: string, fetchImpl: FetchLike, timeoutMs: number = SEND_TIMEOUT_MS): Promise<SendResult> {
   if (!Number.isFinite(timeoutMs)) throw new TypeError('timeoutMs must be a number of milliseconds.');
-  const body = JSON.stringify({ escrow_ref: canonicalRef(escrowRef), payload: wirePayloadFor(payload) });
+  const body = sendBody(canonicalRef(escrowRef), payload);
   let res: { status: number; text: string };
   try {
     res = await safeFetch(`${trim(endpoint)}/v1/job`, { method: 'POST', headers: { ...JSON_HEADERS }, body }, { maxResponseBytes: ANSWER_BYTES, timeoutMs: Math.max(0, Math.floor(timeoutMs)), fetchImpl });

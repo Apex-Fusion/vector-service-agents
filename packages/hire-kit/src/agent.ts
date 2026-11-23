@@ -21,7 +21,7 @@
 //   not_accepted          the delivery came and the escrow was not accepted: the receipt failed a check (the verdict says which), the decision of the caller said no, or the decision did not
 //                         answer in time (`decision_timeout`). The decision has until DECISION_WINDOW_MS after the answer of the agent: the accept window less what an Accept needs. No Accept is
 //                         made, and the escrow stays Submitted and recorded. With no Accept in the window the agent can release the escrow, and it takes the price and both bonds.
-// What is not an outcome is thrown by the factory of the caller: no advert or no agent to hire (an advert above a limit among them), a Post that failed before its signature, the deadline,
+// What is not an outcome is thrown by the factory of the caller: no advert or no agent to hire (an advert above a limit, and a request whose body is above the limit of the runtime, among them), a Post that failed before its signature, the deadline,
 // the stranded store, and a decision that throws. A limit that is not a bigint or null is a TypeError, thrown before anything is read. A Pay from a vault spends the vault that the caller
 // held and leaves a new one, so two errors carry a vault reference. After a confirmed Pay the error is a HireInterrupted: it carries the vault that continues, the escrow, and the error that
 // ended the hire as its cause. After a Pay that was submitted and not seen confirmed the error is a HirePayUnconfirmed: it carries the vault that continues if the Pay lands, the escrow,
@@ -36,7 +36,7 @@ import type { AcceptDecision, Delivery, HireDetail, HireErrors, HireFacts, HireF
 import { checkTurn, minLeftAtTurn } from './keys.ts';
 import type { PayingKey } from './keys.ts';
 import { advertOnChain, bondProblem, choiceLine, keyOfAdvert, requireLimits } from './select.ts';
-import { isRuntimeRefusal, templateJob } from './template-client.ts';
+import { RUNTIME_BODY_LIMIT_BYTES, bodyBytesOf, isRuntimeRefusal, templateJob } from './template-client.ts';
 import type { TemplateAnswer } from './template-client.ts';
 
 /**
@@ -52,7 +52,7 @@ export interface AgentDelivery { escrowRef: string; advertRef: string; text: str
 
 export interface AgentRequest {
   selection: AgentSelection;
-  /** The text the agent reads. The escrow commits to its hash. Not empty. */
+  /** The text the agent reads. The escrow commits to its hash. Not empty. The body of the call, with the escrow, is at most RUNTIME_BODY_LIMIT_BYTES; a request above that is refused before any payment. */
   payload: string;
   /** What the job is called in messages. */
   label?: string;
@@ -285,7 +285,8 @@ function ended<E extends Error>(stop: HireStop, advertRef: string, vaultRef: str
 }
 
 /**
- * Hires one agent for one request from `key`, and says how the hire ended. Refuses a limit that is neither a bigint nor null with a TypeError, before anything is read. Chooses the agent
+ * Hires one agent for one request from `key`, and says how the hire ended. Refuses a limit that is neither a bigint nor null with a TypeError, before anything is read. Refuses a request whose body, for the
+ * payload and the escrow of its payment, is above RUNTIME_BODY_LIMIT_BYTES with the `unavailable` error of `errors`, before the lane, before anything is read and before any payment: nothing is posted. Chooses the agent
  * (`request.selection`, checked on chain with the three limits), pays its escrow from the wallet or from the vault of `request.vaultRef`, sends the payload, polls, checks the receipt,
  * asks `request.decide`, and accepts or does not. It runs in the lane of the key: one hire at a time for the key, and the janitor of the key starts no transaction meanwhile. A vault
  * Pay checks no limit of the vault: the node evaluates it, and the answer of the vault script is the `vault_refused` outcome with the evaluation error and the body of the transaction.
@@ -297,6 +298,9 @@ export async function hireAgent<E extends Error>(key: PayingKey, deps: AgentDeps
   if (typeof request.payload !== 'string' || request.payload === '') throw new TypeError('The payload must be a non-empty string.');
   requireLimits({ maxPriceLovelace: request.maxPriceLovelace, maxSupplierBondLovelace: request.maxSupplierBondLovelace, maxBuyerBondLovelace: request.maxBuyerBondLovelace }, { null: true, absent: false });
   const minLeftMs = minLeftAtTurn(request.minLeftAtTurnMs);
+  // The runtime refuses a body above its limit only after the payment, and the lock then stays until the janitor reclaims it. So the size is checked here, with the escrow that the payment will make.
+  const bytes = bodyBytesOf(request.payload, request.vaultRef !== undefined);
+  if (bytes > RUNTIME_BODY_LIMIT_BYTES) throw errors.unavailable(`the call to the agent would have ${bytes} bytes, and its runtime takes at most ${RUNTIME_BODY_LIMIT_BYTES} bytes`);
   return key.lane.run(() => hireInLane(key, deps, request, errors, minLeftMs));
 }
 

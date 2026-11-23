@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeChain, TxNotConfirmedError } from '@vsa/buyer-core';
 import type { Chain, VaultChain } from '@vsa/buyer-core';
+import { wirePayloadFor } from '@vsa/vector-read';
 import { HireInterrupted, HirePayUnconfirmed, hireAgent } from '../src/agent.ts';
 import type { AgentDeps, AgentErrors, AgentOutcome, AgentRequest } from '../src/agent.ts';
 import { DECISION_WINDOW_MS } from '../src/hire.ts';
@@ -16,6 +17,7 @@ import type { HireFacts, HireLedger } from '../src/hire.ts';
 import { JANITOR_GRACE_MS, StrandedStore, runJanitorOnce } from '../src/janitor.ts';
 import { PayingKeys } from '../src/keys.ts';
 import type { PayingKey } from '../src/keys.ts';
+import { RUNTIME_BODY_LIMIT_BYTES } from '../src/template-client.ts';
 import {
   AGENT_ADVERT, AGENT_ADVERT_REF, AGENT_ANSWER, AGENT_CAPABILITY, AGENT_ENDPOINT, AGENT_KEY, AGENT_MODEL, FORGER_KEY, INDEXER, T0, chainWith, escrowNo, indexerRow, marketplace, vaultChainWith,
 } from '../testing/index.ts';
@@ -951,6 +953,75 @@ describe('hireAgent: what the ledger is told of the Accept', () => {
     run.deps.ledger = feeOnly;
     expect((await go(run)).outcome).toBe('completed');
     expect(fees).toStrictEqual([FakeChain.FEE_LOVELACE]);
+  });
+});
+
+describe('hireAgent: the size of the call to the runtime, checked before the Pay', () => {
+  /** The reference of the escrow that a vault Pay opens: 64 hex characters, a hash sign and output 0. */
+  const VAULT_ESCROW = `${'0'.repeat(64)}#0`;
+  /** The longest reference that a body can hold: 64 hex characters, a hash sign and 10 digits. A hire from the wallet is sized with it. */
+  const LONGEST_ESCROW = `${'0'.repeat(64)}#9999999999`;
+  /** The bytes of the body that the kit sends to the runtime for a payload and an escrow, counted here from its parts: the escrow and the wire form of the payload, in one JSON object. */
+  const bodyBytes = (escrow: string, payload: string): number => Buffer.byteLength(JSON.stringify({ escrow_ref: escrow, payload: wirePayloadFor(payload) }), 'utf8');
+  /** A payload of plain letters whose body has exactly `bytes` bytes with the escrow `escrow`: a letter is one byte at every level of the text. */
+  const payloadFor = (escrow: string, bytes: number): string => 'a'.repeat(bytes - (bodyBytes(escrow, 'a') - 1));
+  const refusal = (bytes: number): string => `No agent to hire: the call to the agent would have ${bytes} bytes, and its runtime takes at most ${RUNTIME_BODY_LIMIT_BYTES} bytes.`;
+
+  it('is 1 MiB, the limit of the runtime in front of an agent', () => {
+    expect(RUNTIME_BODY_LIMIT_BYTES).toBe(1_048_576);
+  });
+
+  it('hires from a vault with a body at the limit, and the body that was checked is the body that was sent', async () => {
+    const run = await setup();
+    const outcome = await go(run, { payload: payloadFor(VAULT_ESCROW, RUNTIME_BODY_LIMIT_BYTES), vaultRef: openVault(run) });
+    expect(outcome.outcome).toBe('completed');
+    expect(run.m.agent.sends).toHaveLength(1);
+    // The drift guard: the body of the real send has the size that the kit computed before the Pay.
+    expect(Buffer.byteLength(run.m.agent.sends[0]!.body, 'utf8')).toBe(RUNTIME_BODY_LIMIT_BYTES);
+  });
+
+  it('refuses a body of one byte above the limit, from a vault: the factory says that there is no agent to hire, and nothing is posted, sent or paid', async () => {
+    const run = await setup();
+    const held = openVault(run);
+    const float = (await run.m.chain.wallet()).floatLovelace;
+    const error = await thrown(go(run, { payload: payloadFor(VAULT_ESCROW, RUNTIME_BODY_LIMIT_BYTES + 1), vaultRef: held }));
+    expect([error.code, error.message]).toStrictEqual(['no_agent', refusal(RUNTIME_BODY_LIMIT_BYTES + 1)]);
+    expect(run.m.chain.vault(held)).toMatchObject({ kind: 'Live', consumed: false });
+    expect([run.m.agent.sends, run.booked.posted, run.stranded.list(), run.key.lane.busy]).toStrictEqual([[], [], [], false]);
+    expect((await run.m.chain.wallet()).floatLovelace).toBe(float);
+  });
+
+  it('hires from the wallet with a body that is at the limit when it holds the longest reference of an escrow, and the real body is shorter: the escrow is at output 0', async () => {
+    const run = await setup();
+    const outcome = await go(run, { payload: payloadFor(LONGEST_ESCROW, RUNTIME_BODY_LIMIT_BYTES) });
+    expect(outcome.outcome).toBe('completed');
+    // The reference of the real escrow ends in #0, which is nine bytes shorter than the longest reference.
+    expect(Buffer.byteLength(run.m.agent.sends[0]!.body, 'utf8')).toBe(RUNTIME_BODY_LIMIT_BYTES - 9);
+  });
+
+  it('refuses from the wallet a body that is one byte above the limit when it holds the longest reference: nothing is posted, sent or paid', async () => {
+    const run = await setup();
+    const float = (await run.m.chain.wallet()).floatLovelace;
+    const error = await thrown(go(run, { payload: payloadFor(LONGEST_ESCROW, RUNTIME_BODY_LIMIT_BYTES + 1) }));
+    expect([error.code, error.message]).toStrictEqual(['no_agent', refusal(RUNTIME_BODY_LIMIT_BYTES + 1)]);
+    expect([run.m.agent.sends, run.booked.posted, run.stranded.list(), run.key.lane.busy]).toStrictEqual([[], [], [], false]);
+    expect(await run.m.chain.escrowState(escrowNo(1))).toBe('unknown');
+    expect((await run.m.chain.wallet()).floatLovelace).toBe(float);
+  });
+
+  it('counts the body that is sent, and not the text that the caller gave: quote marks are escaped two times, and the NFC form of a text can be longer', async () => {
+    const run = await setup();
+    // 300,000 quote marks are 300 KB of text, and 1.2 MB of body. U+1D15E is four bytes, and its NFC form is two code points of four bytes each.
+    const quotes = '"'.repeat(300_000);
+    const notes = '\u{1D15E}'.repeat(140_000);
+    for (const payload of [quotes, notes]) {
+      expect(Buffer.byteLength(payload, 'utf8')).toBeLessThan(RUNTIME_BODY_LIMIT_BYTES / 1.5);
+      expect(bodyBytes(VAULT_ESCROW, payload)).toBeGreaterThan(RUNTIME_BODY_LIMIT_BYTES);
+      expect((await thrown(go(run, { payload }))).code).toBe('no_agent');
+    }
+    expect(run.m.agent.sends).toStrictEqual([]);
+    // The twin: letters of the same length make a body under the limit, and the hire is made.
+    expect((await go(run, { payload: 'a'.repeat(300_000) })).outcome).toBe('completed');
   });
 });
 
