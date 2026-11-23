@@ -3,6 +3,7 @@
 // the body are the ones that the hire kit builds after the Pay; the flow builds them before the Pay.
 import { describe, expect, it } from 'vitest';
 import { canonicalize, wirePayloadFor } from '@vsa/vector-read';
+import { RUNTIME_BODY_LIMIT_BYTES as KIT_BODY_LIMIT_BYTES } from '@vsa/hire-kit';
 import { HANDOFF_SCHEMA, MAX_REQUEST_BYTES, RFQ_SCHEMA, RUNTIME_BODY_LIMIT_BYTES, parseHandoff, parseRfq } from '@vsa/usecase-kit/protocol';
 import { BODY_ESCROW_REF, checkRuntimeBody, checkWirePayload, handoffOf, messageOf, requestText, runtimeBody } from '@vsa/usecase-kit/buyer';
 import { APPROVAL, BUYER_DID, COUNTERPARTY_DID, DELEGATION, PRINCIPAL_DID, SALT, executeRequest, purchaseOrder } from './support.ts';
@@ -123,6 +124,11 @@ describe('runtimeBody and checkRuntimeBody', () => {
     const over = checkRuntimeBody(`${atLimit}a`);
     expect(over).toMatchObject({ ok: false, code: 'request_too_large' });
     expect(over.ok ? '' : over.detail).toBe(`the call to the counterparty has ${RUNTIME_BODY_LIMIT_BYTES + 1} bytes, and the runtime takes at most ${RUNTIME_BODY_LIMIT_BYTES} bytes`);
+  });
+
+  it('has the limit that the hire kit checks again before it pays: the number of the protocol and the number of the kit are the same', () => {
+    expect(KIT_BODY_LIMIT_BYTES).toBe(RUNTIME_BODY_LIMIT_BYTES);
+    expect(KIT_BODY_LIMIT_BYTES).toBe(1_048_576);
   });
 
   it('counts the bytes and not the characters at the limit', () => {

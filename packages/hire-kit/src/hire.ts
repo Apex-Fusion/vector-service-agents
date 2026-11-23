@@ -39,7 +39,7 @@
 // is final (<hop>_receipt_failed) and the chain is not asked; then with the hash on chain, read again every 3 s for up to 120 s while it is not
 // listed or cannot be read (ruling R16; the supplier answers only after its Submit, but the indexer can lag). Only VERIFIED is accepted.
 //
-// The Accept. Confirmed: its fee is booked and the escrow leaves the store. Sent but not seen confirmed, so that it may still land (ruling R33): the job
+// The Accept. Confirmed: its fee and its hash are booked and the escrow leaves the store. Sent but not seen confirmed, so that it may still land (ruling R33): the job
 // stands, verified, its fee is not booked, and the escrow stays in the store marked accept_pending, for the janitor to confirm. Failed in a way that
 // cannot land (a build that did not complete, a submit the API refused): made again every 15 s, until the planner says the accept window has closed or
 // 600 s have passed since the supplier's answer, and only then <hop>_accept_failed (ruling R54). The hire says which of the first two it came to
@@ -105,6 +105,11 @@ export interface HireDetail {
   cause?: unknown;
   /** The checks of a receipt that failed one. */
   verdict?: FleetVerification;
+  /**
+   * The supplier's own word when it failed a job that it had claimed: the reason and the words of its envelope, as the poll read them (flat and cut short). A supplier that no longer knows the job (404) has
+   * none. A caller that turns the failure into a result reads from it what its supplier writes there: `serviceFailureOf` of src/template-client.ts does it for the runtime of an agent.
+   */
+  jobFailure?: { reason: string; message: string };
 }
 /** The kit writes every message; the factory chooses the class, the code and the status. */
 export interface HireErrors<E extends Error, K extends StrandedKind = HireKind> {
@@ -153,8 +158,13 @@ export interface HireJob<T> {
 }
 
 export interface HireDeps extends Clocked { chain: Chain; stranded: StrandedStore; log?: (line: string) => void }
-/** Where a hire books what it moved: the lock and the fee of its Post, the fee of its Accept seen confirmed. The Pipeline's Accounting is one. */
-export interface HireLedger { posted(post: { lockLovelace: bigint; feeLovelace: bigint }): void; accepted(accept: { feeLovelace: bigint }): void }
+/**
+ * Where a hire books what it moved: the lock and the fee of its Post, the fee and the hash of its Accept seen confirmed. The hash is the one that the chain gave for the Accept, so that a caller can
+ * find the booking again. A ledger that was written for the fee alone fits this type, because a function that asks for less than the kit gives is a ledger. A function that asks for more than the kit gives
+ * is not: `accepted` is a property of this type and not a method, so TypeScript checks its parameter in one direction only, and a ledger that asks for a member that the kit does not give does not compile.
+ * The Pipeline's Accounting is a ledger.
+ */
+export interface HireLedger { posted(post: { lockLovelace: bigint; feeLovelace: bigint }): void; accepted: (accept: { feeLovelace: bigint; txHash: string }) => void }
 /**
  * What a hire locks and what an Accept pays, in whole lovelace as decimal text, so that the record is JSON. The buyer funds the price and both bonds at the Post. An Accept pays the
  * supplier the price and the supplier bond, and the buyer bond returns. A Release, which the supplier makes when the buyer does not accept in time, pays the supplier all three.
@@ -459,7 +469,8 @@ async function finished<T, E extends Error>(deps: HireDeps, supplier: AnySupplie
       throw failure(errors, supplier, 'receipt_unavailable', `${named(supplier)} failed ${job.label} at its own Submit (${why}) while ${escrow} reads Submitted: the receipt is on chain, but the supplier will not hand it over and no poll will bring it. The escrow is not accepted and stays with the janitor.`, at());
     }
     if (state === null || state === 'Submitted') continue;
-    throw failure(errors, supplier, 'failed', `${named(supplier)} failed ${job.label} (${why}); ${escrow} is ${state} and goes to the janitor.`, at());
+    throw failure(errors, supplier, 'failed', `${named(supplier)} failed ${job.label} (${why}); ${escrow} is ${state} and goes to the janitor.`, at(),
+      polled.kind === 'failed' ? { jobFailure: { reason: polled.reason, message: polled.message } } : undefined);
   }
 }
 

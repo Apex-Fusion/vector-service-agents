@@ -15,7 +15,7 @@ export type {
 // --- The hire of an agent of the template contract (src/agent.ts, src/template-client.ts) ---
 export { HireInterrupted, HirePayUnconfirmed, hireAgent } from './agent.ts';
 export type { AgentDelivery, AgentDeps, AgentErrors, AgentEscrow, AgentOutcome, AgentRequest, AgentSelection, VaultRefusal } from './agent.ts';
-export { isRuntimeRefusal, pollTemplateJob, sendTemplateJob, templateJob } from './template-client.ts';
+export { RUNTIME_BODY_LIMIT_BYTES, isRuntimeRefusal, pollTemplateJob, sendTemplateJob, templateJob } from './template-client.ts';
 export type { TemplateAnswer } from './template-client.ts';
 
 // --- The paying keys (src/keys.ts) and the hire of a model from the service key (src/model.ts) ---

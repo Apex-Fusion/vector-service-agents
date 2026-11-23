@@ -4,7 +4,7 @@ The code that a service uses to hire a supplier on the Vector marketplace.
 The kit posts the escrow, sends the job, polls for the result, checks the receipt and accepts the escrow.
 It hires a chat model, an OCR supplier or an agent of the template contract.
 
-This page describes the paying keys, the limits of a hire, the five outcomes of `hireAgent`, the limit of the decision, the vault that continues after a Pay, and the shared stubs.
+This page describes the paying keys, the limits of a hire, the five outcomes of `hireAgent`, the ledger, the limit of the decision, the vault that continues after a Pay, and the shared stubs.
 The head of each file in `src/` describes that file.
 
 ## Paying keys
@@ -80,6 +80,15 @@ It checks every field of the selection against the advert: the advert must be Ac
 Then it checks the three limits.
 A mismatch is the `unavailable` error of the caller, and nothing is paid.
 
+The kit also checks the size of the request before it pays.
+The runtime of an agent takes a body of at most `RUNTIME_BODY_LIMIT_BYTES` (1 MiB), and it refuses a larger body after the payment.
+The body is the escrow and the wire form of the payload in one JSON object, so a quote mark of the payload takes four bytes of it.
+The escrow exists only after the payment, so the kit sizes the body with the reference that the payment will make.
+A vault Pay opens its escrow at output 0.
+A Post of the wallet promises no output, so its body is sized with the longest reference: 64 hex characters, a hash sign and 10 digits.
+A body above the limit is the `unavailable` error of the caller.
+The error comes before the lane, before any read and before any payment, so nothing is posted.
+
 `hireAgent` says how the hire ended in one of five outcomes.
 
 | Outcome | Meaning |
@@ -112,8 +121,26 @@ A caller must not hire again after `send_lost`, because the agent may hold the j
 The other reasons of `failed_after_claim` are `failed`, `timeout`, `bad_result`, `accept_failed` and `receipt_unavailable`.
 `receipt_unavailable` means that the buyer did not judge the delivery: the agent does not hand over the receipt, or its hash cannot be read on chain in time.
 
+The reason `failed` has two more members: `service_status` and `service_code`.
+The runtime of an agent copies the first 200 characters of an error of its service into the failure of the job.
+The kit reads the status and the code of that answer from the frame that the runtime writes: the reason `service_http_<status>`, and the message `service returned HTTP <status>: {"error":"<code>", ...`.
+Both members are `null` when the failure has no such frame, and when the agent no longer knows the job.
+The kit gives the status and the code as they came.
+It never reads a code from free text, and it does not say what a code means: the caller decides.
+
 What no outcome names is thrown as an error of the factory of the caller.
-That includes no advert to hire, an advert above a limit, a Post that failed before its signature, the deadline, a failed write of the store, and a decision that throws.
+That includes no advert to hire, an advert above a limit, a request body above the limit of the runtime, a Post that failed before its signature, the deadline, a failed write of the store, and a decision that throws.
+
+## The ledger
+
+A hire books what it moved in `deps.ledger`.
+`posted` gets the lock and the fee of the Post, or of the vault Pay, once it is confirmed.
+`accepted` gets the fee and the hash of the Accept, once it is confirmed: `{ feeLovelace, txHash }`.
+The hash is the one that the chain gave for the Accept transaction.
+A caller finds a booking again by that hash.
+An Accept that was sent and not seen confirmed books nothing, and the hire stands as `pending`.
+A ledger that was written for the fee alone (`accepted: (accept: { feeLovelace: bigint }) => ...`) still fits the type.
+A ledger that asks for a member that the kit does not give does not fit it: `accepted` is a property of the type, and the type checker refuses such a function.
 
 ## The decision of the caller
 

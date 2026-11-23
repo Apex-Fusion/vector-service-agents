@@ -227,8 +227,8 @@ describe('a hire that fails after the Claim', () => {
     expect(settledResult(step, pieces())).toMatchObject({ outcome: 'failed', reason: 'send_lost', exit_state: 'Failed' });
   });
 
-  /** The runtime copies the answer of the service into the failure of the job. */
-  const failureWith = (message: string) => (reached: Response): Response | undefined => (reached.status === 502 ? jsonResponse(502, { status: 'failed', reason: 'service_http_403', message }) : undefined);
+  /** The runtime copies the answer of the service into the failure of the job: the reason `service_http_<status>`, and the message with the start of the answer. */
+  const failureWith = (message: string, reason = 'service_http_403') => (reached: Response): Response | undefined => (reached.status === 502 ? jsonResponse(502, { status: 'failed', reason, message }) : undefined);
 
   it('is a refusal of the counterparty only when it answered with a code of its own decision after its Claim: cannot_supply, and the escrow is Claimed', async () => {
     const w = await world();
@@ -270,6 +270,16 @@ describe('a hire that fails after the Claim', () => {
       const step = expectKind(await go(w), 'failed');
       expect(step.reason).toBe('failed');
     }
+  });
+
+  it('is a failure, and not a refusal, when the service answered with the code of a decision after the Claim and a status that is not the status of the protocol: the hire kit reads both as they came, and the flow decides', async () => {
+    const w = await world();
+    w.m.agent.steps = ['running', { fail: 'service_http_500', submitted: false }];
+    w.deps.hire.fetchImpl = inFrontOfPolls(w.m, failureWith('service returned HTTP 500: {"error":"cannot_supply"}', 'service_http_500'));
+    const step = expectKind(await go(w), 'failed');
+    expect(step.reason).toBe('failed');
+    expect(await w.m.chain.escrowState(escrowOf(step))).toBe('Claimed');
+    expect(settledResult(step, pieces())).toMatchObject({ outcome: 'failed', reason: 'failed', exit_state: 'Failed' });
   });
 
   it('is a failure when the poll reason that the counterparty wrote holds the form of a decision after the Claim: the reason is its words, and it is not read', async () => {

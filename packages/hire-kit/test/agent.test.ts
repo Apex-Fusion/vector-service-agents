@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeChain, TxNotConfirmedError } from '@vsa/buyer-core';
 import type { Chain, VaultChain } from '@vsa/buyer-core';
+import { wirePayloadFor } from '@vsa/vector-read';
 import { HireInterrupted, HirePayUnconfirmed, hireAgent } from '../src/agent.ts';
 import type { AgentDeps, AgentErrors, AgentOutcome, AgentRequest } from '../src/agent.ts';
 import { DECISION_WINDOW_MS } from '../src/hire.ts';
@@ -16,6 +17,7 @@ import type { HireFacts, HireLedger } from '../src/hire.ts';
 import { JANITOR_GRACE_MS, StrandedStore, runJanitorOnce } from '../src/janitor.ts';
 import { PayingKeys } from '../src/keys.ts';
 import type { PayingKey } from '../src/keys.ts';
+import { RUNTIME_BODY_LIMIT_BYTES } from '../src/template-client.ts';
 import {
   AGENT_ADVERT, AGENT_ADVERT_REF, AGENT_ANSWER, AGENT_CAPABILITY, AGENT_ENDPOINT, AGENT_KEY, AGENT_MODEL, FORGER_KEY, INDEXER, T0, chainWith, escrowNo, indexerRow, marketplace, vaultChainWith,
 } from '../testing/index.ts';
@@ -59,6 +61,8 @@ function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => voi
 interface Run {
   m: Marketplace; key: PayingKey; deps: AgentDeps; stranded: StrandedStore; sleeps: number[]; logs: string[];
   booked: { posted: Array<{ lockLovelace: bigint; feeLovelace: bigint }>; accepted: Array<{ feeLovelace: bigint }> };
+  /** What the ledger got when an Accept was confirmed: the fee and the hash of the transaction. */
+  accepts: Array<{ feeLovelace: bigint; txHash: string }>;
 }
 /**
  * A marketplace, the paying key of its chain (the chain `chain` makes of it, when a test needs to see, hold or change what the chain says), an empty stranded store, a ledger that
@@ -72,15 +76,16 @@ async function setup(opts: Parameters<typeof marketplace>[0] = {}, over: { deadl
   const sleeps: number[] = [];
   const logs: string[] = [];
   const booked: Run['booked'] = { posted: [], accepted: [] };
+  const accepts: Run['accepts'] = [];
   const ledger: HireLedger = {
     posted: (post) => { booked.posted.push({ lockLovelace: post.lockLovelace, feeLovelace: post.feeLovelace }); },
-    accepted: (accept) => { booked.accepted.push({ feeLovelace: accept.feeLovelace }); },
+    accepted: (accept) => { booked.accepted.push({ feeLovelace: accept.feeLovelace }); accepts.push({ feeLovelace: accept.feeLovelace, txHash: accept.txHash }); },
   };
   const deps: AgentDeps = {
     clock: () => m.clock.now, sleep: async (ms) => { sleeps.push(ms); m.clock.now += ms; }, deadlineMs: T0 + (over.deadlineMs ?? 1_000_000),
     fetchImpl: m.fetchImpl, indexerUrl: INDEXER, ledger, log: (line) => { logs.push(line); },
   };
-  return { m, key, deps, stranded: key.stranded, sleeps, logs, booked };
+  return { m, key, deps, stranded: key.stranded, sleeps, logs, booked, accepts };
 }
 const request = (over: Partial<AgentRequest> = {}): AgentRequest => ({
   selection: { capabilityId: AGENT_CAPABILITY, model: AGENT_MODEL }, payload: PAYLOAD, label: 'the order', maxPriceLovelace: null, maxSupplierBondLovelace: null, maxBuyerBondLovelace: null, ...over,
@@ -574,6 +579,94 @@ describe('hireAgent: failed_after_claim', () => {
   });
 });
 
+describe('hireAgent: the status and the code of a failed job, as typed members of failed_after_claim', () => {
+  /** A fetch in front of the agent that gives the failed poll of a job the reason and the words of the test, in the envelope that the runtime writes when its service answered with an error. */
+  const failingWith = (m: Marketplace, reason: string, message: string): typeof fetch => (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const res = await m.fetchImpl(input, init);
+    if (res.status !== 502) return res;
+    const body = await res.json() as Record<string, unknown>;
+    return new Response(JSON.stringify({ ...body, reason, message }), { status: 502, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  /** The hire of a job that the agent claims and then fails, with the words of the failure that the test gives. */
+  async function failed(reason: string, message: string): Promise<{ run: Run; outcome: Extract<AgentOutcome, { outcome: 'failed_after_claim'; reason: 'failed' }> }> {
+    const run = await setup();
+    run.m.agent.steps = ['running', { fail: 'service_failure', submitted: false }];
+    const outcome = await hireAgent(run.key, { ...run.deps, fetchImpl: failingWith(run.m, reason, message) }, request(), ERRORS);
+    if (outcome.outcome !== 'failed_after_claim' || outcome.reason !== 'failed') throw new Error(`the hire ended in ${words(outcome)}`);
+    return { run, outcome };
+  }
+
+  it('gives the status and the code of the answer of the service when the runtime copies it into the failure of the job, and keeps every other member as it was', async () => {
+    const answer = '{"error":"cannot_supply","message":"the lot is gone"}';
+    const { run, outcome } = await failed('service_http_403', `service returned HTTP 403: ${answer}`);
+    expect([outcome.service_status, outcome.service_code]).toStrictEqual([403, 'cannot_supply']);
+    expect(outcome.message).toBe(`The agent failed the order (service_http_403: service returned HTTP 403: ${answer}); its escrow ${outcome.escrowRef} is Claimed and goes to the janitor.`);
+    expect([outcome.advertRef, outcome.vaultRef, outcome.terms.price_lovelace]).toStrictEqual([AGENT_ADVERT_REF, null, '200000']);
+    expect(Object.keys(outcome).sort()).toStrictEqual(['advertRef', 'escrowRef', 'message', 'outcome', 'reason', 'service_code', 'service_status', 'terms', 'vaultRef']);
+    expect(await run.m.chain.escrowState(outcome.escrowRef)).toBe('Claimed');
+    expect(run.stranded.list().map((entry) => entry.escrow_ref)).toStrictEqual([outcome.escrowRef]);
+    expect(run.booked.accepted).toStrictEqual([]);
+  });
+
+  it('gives the status and the code as they came, and leaves the decision to the caller: a code of another status, a code that is no decision after the Claim, and a status of another kind', async () => {
+    for (const [status, code] of [[500, 'cannot_supply'], [403, 'duplicate_po'], [429, 'rate_limited']] as const) {
+      const { outcome } = await failed(`service_http_${status}`, `service returned HTTP ${status}: {"error":"${code}"}`);
+      expect([outcome.service_status, outcome.service_code], `${status} ${code}`).toStrictEqual([status, code]);
+    }
+  });
+
+  it('gives null and null when the code is in free text, when the frame is not the frame of the runtime, and when the service gave no answer', async () => {
+    const cases: Array<[string, string, string]> = [
+      ['the code in the reason of the failure', 'x {"error":"cannot_supply"} y', 'the job failed'],
+      ['the code in free text of the words', 'upstream_failure', 'the service said {"error":"cannot_supply"} and more'],
+      ['the code later in the answer', 'service_http_403', 'service returned HTTP 403: it said {"error":"cannot_supply"}'],
+      ['two statuses', 'service_http_403', 'service returned HTTP 500: {"error":"cannot_supply"}'],
+      ['no answer of the service', 'service_timeout', 'service call failed after 30000ms: the operation timed out'],
+      ['an answer that is a page', 'service_http_503', 'service returned HTTP 503: <html><body>503</body></html>'],
+    ];
+    for (const [name, reason, message] of cases) {
+      const { outcome } = await failed(reason, message);
+      expect([outcome.service_status, outcome.service_code], name).toStrictEqual([null, null]);
+    }
+    // The twin: the same code at the start of the answer, in the frame of the runtime, is read.
+    expect((await failed('service_http_403', 'service returned HTTP 403: {"error":"cannot_supply"}')).outcome.service_code).toBe('cannot_supply');
+  });
+
+  it('gives null and null for a supplier that no longer knows the job (404): it has no words of a failure to read', async () => {
+    const run = await setup();
+    run.m.agent.steps = ['running', 'gone'];
+    const outcome = await go(run);
+    if (outcome.outcome !== 'failed_after_claim' || outcome.reason !== 'failed') throw new Error(`the hire ended in ${words(outcome)}`);
+    expect([outcome.service_status, outcome.service_code]).toStrictEqual([null, null]);
+    expect(outcome.message).toContain('no longer knows the job');
+  });
+
+  it('has the members for the reason failed and for no other reason of failed_after_claim', async () => {
+    const lost = await setup();
+    lost.m.agent.lose = ['after-claim'];
+    const unread = await setup({}, { chain: (m) => vaultChainWith(m, { onChainReceiptHash: async () => null }) });
+    for (const run of [lost, unread]) {
+      const outcome = await go(run);
+      if (outcome.outcome !== 'failed_after_claim') throw new Error(`the hire ended in ${words(outcome)}`);
+      expect(outcome.reason).not.toBe('failed');
+      expect(Object.keys(outcome)).not.toContain('service_status');
+      expect(Object.keys(outcome)).not.toContain('service_code');
+    }
+  });
+
+  it('has the members in the type of the reason failed only: a check on the reason gives them, and without it they are not there', async () => {
+    const run = await setup();
+    run.m.agent.steps = ['running', { fail: 'service_failure', submitted: false }];
+    const whole = await hireAgent(run.key, { ...run.deps, fetchImpl: failingWith(run.m, 'service_http_403', 'service returned HTTP 403: {"error":"cannot_supply"}') }, request(), ERRORS);
+    if (whole.outcome !== 'failed_after_claim') throw new Error('not failed_after_claim');
+    // @ts-expect-error The members are in the type of the reason failed only.
+    void whole.service_code;
+    if (whole.reason !== 'failed') throw new Error('the reason is not failed');
+    const typed: { status: number | null; code: string | null } = { status: whole.service_status, code: whole.service_code };
+    expect(typed).toStrictEqual({ status: 403, code: 'cannot_supply' });
+  });
+});
+
 describe('hireAgent: not_accepted', () => {
   it('says not_accepted with receipt_failed and the verdict when a check fails, and does not ask the decision of the caller; the escrow stays Submitted and recorded', async () => {
     const run = await setup();
@@ -902,6 +995,130 @@ describe('hireAgent: a vault Pay that was submitted and not seen confirmed', () 
     expect(error.code).toBe('agent_post_failed');
     expect(error).not.toBeInstanceOf(HirePayUnconfirmed);
     expect(run.stranded.list().map((entry) => entry.escrow_ref)).toStrictEqual([`${hash}#0`]);
+  });
+});
+
+describe('hireAgent: what the ledger is told of the Accept', () => {
+  interface Made { txHash: string; feeLovelace: bigint }
+  /** The chain of `m`, with each Accept that it makes written to `made`. */
+  const watching = (m: Marketplace, made: Made[]): Partial<VaultChain> => ({
+    accept: async (ref) => { const result = await m.chain.accept(ref); made.push(result); return result; },
+  });
+
+  it('gives the ledger the fee and the hash of the Accept that was confirmed, as the chain gave them: for a hire paid from the wallet and for a hire paid from a vault', async () => {
+    for (const fromVault of [false, true]) {
+      const made: Made[] = [];
+      const run = await setup({}, { chain: (m) => vaultChainWith(m, watching(m, made)) });
+      const outcome = await go(run, fromVault ? { vaultRef: openVault(run) } : {});
+      if (outcome.outcome !== 'completed') throw new Error(`the hire ended in ${outcome.outcome}`);
+      expect(made, 'the chain made one Accept').toHaveLength(1);
+      expect(made[0]!.txHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(run.accepts, fromVault ? 'vault' : 'wallet').toStrictEqual([{ feeLovelace: FakeChain.FEE_LOVELACE, txHash: made[0]!.txHash }]);
+      // It is the hash of the Accept, and not the hash of the transaction that opened the escrow.
+      expect(run.accepts[0]!.txHash).not.toBe(outcome.escrowRef.split('#')[0]);
+    }
+  });
+
+  it('tells the ledger nothing of an Accept that was sent and not seen confirmed: no fee and no hash, and the hire stands as pending', async () => {
+    const unseen = (ref: string) => new TxNotConfirmedError('The Accept was submitted, but Koios did not report it confirmed.', { txHash: 'ac'.repeat(32), escrowRef: ref, deliverBy: null, validTo: T0 + 606_000, mayLand: true });
+    const run = await setup({}, { chain: (m) => vaultChainWith(m, { accept: async (ref) => { throw unseen(ref); } }) });
+    expect(await go(run)).toMatchObject({ outcome: 'completed', accepted: 'pending' });
+    expect(run.accepts).toStrictEqual([]);
+  });
+
+  it('has the fee and the hash in the type of the call: a ledger that asks for less, or for the same, fits it, and a ledger that asks for a member that the kit does not give is no ledger', async () => {
+    // The parameter of `accepted` is exactly the fee and the hash. The next line stops compiling when the type changes.
+    const exact: [Parameters<HireLedger['accepted']>[0]] extends [{ feeLovelace: bigint; txHash: string }]
+      ? ([{ feeLovelace: bigint; txHash: string }] extends [Parameters<HireLedger['accepted']>[0]] ? true : never) : never = true;
+    expect(exact).toBe(true);
+    // A ledger that was written when the type named only the fee fits the type, and so does a ledger that asks for the fee and the hash. Each books what it asks for.
+    const fees: bigint[] = [];
+    const feeOnly: HireLedger = { posted: () => undefined, accepted: (accept: { feeLovelace: bigint }) => { fees.push(accept.feeLovelace); } };
+    const hashes: string[] = [];
+    const feeAndHash: HireLedger = { posted: () => undefined, accepted: (accept: { feeLovelace: bigint; txHash: string }) => { hashes.push(accept.txHash); } };
+    // `accepted` is a property of the type and not a method, so its parameter is checked in one direction only: a ledger that asks for more than the kit gives would get `undefined`, and it does not compile.
+    // @ts-expect-error A function that asks for a member that the kit does not give, besides the fee and the hash, is no ledger.
+    const asksForMore: HireLedger = { posted: () => undefined, accepted: (accept: { feeLovelace: bigint; txHash: string; slot: number }) => { void accept.slot; } };
+    // @ts-expect-error The same holds for a function that asks for the fee and another member, and not for the hash.
+    const asksForOther: HireLedger = { posted: () => undefined, accepted: (accept: { feeLovelace: bigint; slot: number }) => { void accept.slot; } };
+    expect([typeof asksForMore.accepted, typeof asksForOther.accepted]).toStrictEqual(['function', 'function']);
+    for (const ledger of [feeOnly, feeAndHash]) {
+      const run = await setup();
+      run.deps.ledger = ledger;
+      expect((await go(run)).outcome).toBe('completed');
+    }
+    expect(fees).toStrictEqual([FakeChain.FEE_LOVELACE]);
+    expect(hashes).toHaveLength(1);
+    expect(hashes[0]).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe('hireAgent: the size of the call to the runtime, checked before the Pay', () => {
+  /** The reference of the escrow that a vault Pay opens: 64 hex characters, a hash sign and output 0. */
+  const VAULT_ESCROW = `${'0'.repeat(64)}#0`;
+  /** The longest reference that a body can hold: 64 hex characters, a hash sign and 10 digits. A hire from the wallet is sized with it. */
+  const LONGEST_ESCROW = `${'0'.repeat(64)}#9999999999`;
+  /** The bytes of the body that the kit sends to the runtime for a payload and an escrow, counted here from its parts: the escrow and the wire form of the payload, in one JSON object. */
+  const bodyBytes = (escrow: string, payload: string): number => Buffer.byteLength(JSON.stringify({ escrow_ref: escrow, payload: wirePayloadFor(payload) }), 'utf8');
+  /** A payload of plain letters whose body has exactly `bytes` bytes with the escrow `escrow`: a letter is one byte at every level of the text. */
+  const payloadFor = (escrow: string, bytes: number): string => 'a'.repeat(bytes - (bodyBytes(escrow, 'a') - 1));
+  const refusal = (bytes: number): string => `No agent to hire: the call to the agent would have ${bytes} bytes, and its runtime takes at most ${RUNTIME_BODY_LIMIT_BYTES} bytes.`;
+
+  it('is 1 MiB, the limit of the runtime in front of an agent', () => {
+    expect(RUNTIME_BODY_LIMIT_BYTES).toBe(1_048_576);
+  });
+
+  it('hires from a vault with a body at the limit, and the body that was checked is the body that was sent', async () => {
+    const run = await setup();
+    const outcome = await go(run, { payload: payloadFor(VAULT_ESCROW, RUNTIME_BODY_LIMIT_BYTES), vaultRef: openVault(run) });
+    expect(outcome.outcome).toBe('completed');
+    expect(run.m.agent.sends).toHaveLength(1);
+    // The drift guard: the body of the real send has the size that the kit computed before the Pay.
+    expect(Buffer.byteLength(run.m.agent.sends[0]!.body, 'utf8')).toBe(RUNTIME_BODY_LIMIT_BYTES);
+  });
+
+  it('refuses a body of one byte above the limit, from a vault: the factory says that there is no agent to hire, and nothing is posted, sent or paid', async () => {
+    const run = await setup();
+    const held = openVault(run);
+    const float = (await run.m.chain.wallet()).floatLovelace;
+    const error = await thrown(go(run, { payload: payloadFor(VAULT_ESCROW, RUNTIME_BODY_LIMIT_BYTES + 1), vaultRef: held }));
+    expect([error.code, error.message]).toStrictEqual(['no_agent', refusal(RUNTIME_BODY_LIMIT_BYTES + 1)]);
+    expect(run.m.chain.vault(held)).toMatchObject({ kind: 'Live', consumed: false });
+    expect([run.m.agent.sends, run.booked.posted, run.stranded.list(), run.key.lane.busy]).toStrictEqual([[], [], [], false]);
+    expect((await run.m.chain.wallet()).floatLovelace).toBe(float);
+  });
+
+  it('hires from the wallet with a body that is at the limit when it holds the longest reference of an escrow, and the real body is shorter: the escrow is at output 0', async () => {
+    const run = await setup();
+    const outcome = await go(run, { payload: payloadFor(LONGEST_ESCROW, RUNTIME_BODY_LIMIT_BYTES) });
+    expect(outcome.outcome).toBe('completed');
+    // The reference of the real escrow ends in #0, which is nine bytes shorter than the longest reference.
+    expect(Buffer.byteLength(run.m.agent.sends[0]!.body, 'utf8')).toBe(RUNTIME_BODY_LIMIT_BYTES - 9);
+  });
+
+  it('refuses from the wallet a body that is one byte above the limit when it holds the longest reference: nothing is posted, sent or paid', async () => {
+    const run = await setup();
+    const float = (await run.m.chain.wallet()).floatLovelace;
+    const error = await thrown(go(run, { payload: payloadFor(LONGEST_ESCROW, RUNTIME_BODY_LIMIT_BYTES + 1) }));
+    expect([error.code, error.message]).toStrictEqual(['no_agent', refusal(RUNTIME_BODY_LIMIT_BYTES + 1)]);
+    expect([run.m.agent.sends, run.booked.posted, run.stranded.list(), run.key.lane.busy]).toStrictEqual([[], [], [], false]);
+    expect(await run.m.chain.escrowState(escrowNo(1))).toBe('unknown');
+    expect((await run.m.chain.wallet()).floatLovelace).toBe(float);
+  });
+
+  it('counts the body that is sent, and not the text that the caller gave: quote marks are escaped two times, and the NFC form of a text can be longer', async () => {
+    const run = await setup();
+    // 300,000 quote marks are 300 KB of text, and 1.2 MB of body. U+1D15E is four bytes, and its NFC form is two code points of four bytes each.
+    const quotes = '"'.repeat(300_000);
+    const notes = '\u{1D15E}'.repeat(140_000);
+    for (const payload of [quotes, notes]) {
+      expect(Buffer.byteLength(payload, 'utf8')).toBeLessThan(RUNTIME_BODY_LIMIT_BYTES / 1.5);
+      expect(bodyBytes(VAULT_ESCROW, payload)).toBeGreaterThan(RUNTIME_BODY_LIMIT_BYTES);
+      expect((await thrown(go(run, { payload }))).code).toBe('no_agent');
+    }
+    expect(run.m.agent.sends).toStrictEqual([]);
+    // The twin: letters of the same length make a body under the limit, and the hire is made.
+    expect((await go(run, { payload: 'a'.repeat(300_000) })).outcome).toBe('completed');
   });
 });
 

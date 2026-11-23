@@ -6,10 +6,11 @@
 //   refused_before_claim, status 403, a refusal code that the     refused_by_counterparty    that code
 //     protocol lists for the counterparty of the use case
 //   refused_before_claim, any other answer                        failed                     the code when it is a code of ERROR_STATUS, else `counterparty_refused`
-//   failed_after_claim, `failed`, with a code of AFTER_CLAIM,    refused_by_counterparty    that code (the decision of the counterparty after its Claim)
-//     that the protocol lists for the counterparty of the use case
-//   failed_after_claim, `failed`, with a code of AFTER_CLAIM,    failed                     that code
-//     that the protocol does not list for that counterparty
+//   failed_after_claim, `failed`, with the code of a decision        refused_by_counterparty    that code (the decision of the counterparty after its Claim)
+//     after the Claim and the status that the protocol gives it,
+//     which the protocol lists for the counterparty of the use case
+//   failed_after_claim, `failed`, with such a code that the          failed                     that code
+//     protocol does not list for that counterparty
 //   failed_after_claim, any other                               failed                     the reason of the hire kit. It is NOT a refusal.
 //   vault_refused                                               vault_refused              the evaluation error of the node, or the code of the builder when the Pay could not be built, or `vault_reason_missing` when none was given
 //   not_accepted, declined                                      not_accepted               (the code of the use case files the challenge)
@@ -23,8 +24,9 @@
 //
 // The words of a counterparty never reach a reason: a reason is a code of the protocol, or a fixed code of this folder. An answer before the Claim is a refusal only when its status is 403 and its code
 // is a refusal code that the protocol lists for the counterparty of the use case, and is not a code of AFTER_CLAIM_REFUSALS. A job that failed after the Claim is a failure and never a refusal. The one
-// exception is `afterClaimRefusalIn`: the code that the counterparty answered as its own decision after its Claim, which the runtime copies into the message of the failure. It is a refusal only when the
-// protocol lists that code for the counterparty of the use case, as before the Claim. For any other counterparty it is the reason of a failure.
+// exception is the typed code of the outcome: the members `service_status` and `service_code` of a `failed_after_claim` with the reason `failed`, which the hire kit reads from the answer of the service of
+// the counterparty, in the frame that the runtime writes. The flow reads no text of the counterparty. The code is a refusal only when it is a code of AFTER_CLAIM_REFUSALS with the status that ERROR_STATUS
+// gives it, and the protocol lists it for the counterparty of the use case, as before the Claim. For any other counterparty it is the reason of a failure.
 //
 // A `completed` that does not hold together is `failed`, and its record keeps what the hire kit said of the Accept: `confirmed` or `pending`. The Accept was made on the chain, so the record must say so, or a use
 // case that runs again would pay a second time for the same work. An outcome that did not reach the Accept has `null` there.
@@ -70,30 +72,8 @@ const EVALUATION_ERROR_MAX = 300;
 /** A code of `AFTER_CLAIM_REFUSALS`. */
 export type AfterClaimRefusal = (typeof AFTER_CLAIM_REFUSALS)[number];
 
-/** The label of the job in the messages of the hire kit. The flow gives it as the `label` of the request, and the kit writes it into the message of a job that failed. */
+/** The label of the job in the messages of the hire kit. The flow gives it as the `label` of the request. No code of the flow reads a message of the kit. */
 export const JOB_LABEL = 'the handoff';
-/** The start of the message that the hire kit writes when the counterparty says that the job failed: `The agent failed <label> (<reason>: <message>); its escrow ...`. */
-const FAILED_PREFIX = `The agent failed ${JOB_LABEL} (`;
-/**
- * The start of the words of the counterparty in that message when its service answered with an error: the runtime fails the job with the reason `service_http_<status>` and the message `service returned
- * HTTP <status>: <the first part of the answer>`. The answer of the service starts after that text, and the answer of the protocol is `{"error":"<code>", ...}`.
- */
-const SERVICE_ANSWER = /^service_http_([0-9]{3}): service returned HTTP \1: \{"error":"([a-z_]{1,64})"/;
-
-/**
- * The code of the counterparty in the message of a job that failed after its Claim, when the counterparty answered with a code of `AFTER_CLAIM_REFUSALS`: its own decision after its Claim. This is the one
- * place that reads that code. The hire kit puts the answer of the service into the message of the failure, after the words `The agent failed <label> (` and the reason of the poll, and the reason and the
- * rest of the message are words of the counterparty, so the function reads the form only at the start of those words, in the exact frame that the runtime writes, and for the status that goes with the
- * code. Any other text is `null`: a form inside the reason of the poll, or later in the message, is not read.
- * This read ends when the hire kit gives the code as a typed member of the outcome.
- */
-export function afterClaimRefusalIn(message: unknown): AfterClaimRefusal | null {
-  if (typeof message !== 'string' || !message.startsWith(FAILED_PREFIX)) return null;
-  const found = SERVICE_ANSWER.exec(message.slice(FAILED_PREFIX.length));
-  if (found === null) return null;
-  const code = AFTER_CLAIM_REFUSALS.find((listed) => listed === found[2]);
-  return code !== undefined && String(ERROR_STATUS[code]) === found[1] ? code : null;
-}
 
 /** A JSON object copy of a value, or `null` when the value is not a JSON object. */
 function jsonObjectOf(value: unknown): JsonObject | null {
@@ -264,11 +244,22 @@ function refusedBeforeClaimStep(outcome: Refused, context: StepContext): HireSte
   return failure(reason, 'the counterparty answered before its Claim, and the answer is not a refusal by a rule of the protocol for this counterparty', kept);
 }
 
+/**
+ * The code of a decision after the Claim, from the typed members of a job that failed: the hire kit read the status and the code of the answer of the service in the frame that the runtime writes, and this
+ * function reads no text. The code is a decision after the Claim only when it is a code of `AFTER_CLAIM_REFUSALS` and the status is the one that `ERROR_STATUS` gives that code. Any other pair gives `null`.
+ * So do a member that is missing or of another type, and a reason that is not `failed`: the members belong to that reason only.
+ */
+function afterClaimCodeOf(outcome: FailedAfterClaim): AfterClaimRefusal | null {
+  if (outcome.reason !== 'failed') return null;
+  const code = AFTER_CLAIM_REFUSALS.find((listed) => listed === outcome.service_code);
+  return code !== undefined && outcome.service_status === ERROR_STATUS[code] ? code : null;
+}
+
 function failedAfterClaimStep(outcome: FailedAfterClaim, context: StepContext): HireStep {
   const escrow = escrowOf(outcome);
   if (escrow === null) return inconsistent(context, 'the hire kit gave an escrow or an advert that is not an output reference');
   const handoff = recordOf(context.counterparty_did, escrow.advert_ref, escrow.escrow_ref, null, null);
-  const refusal = outcome.reason === 'failed' ? afterClaimRefusalIn(outcome.message) : null;
+  const refusal = afterClaimCodeOf(outcome);
   if (refusal !== null) {
     // The same rule as before the Claim: the code is a refusal only when the protocol lists it for the counterparty of the use case. A counterparty that has no such code did not decide this by a rule of
     // the protocol, so the job failed, and the reason is that code.

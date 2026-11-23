@@ -206,6 +206,19 @@ describe('the size of the call', () => {
     expect(w.m.chain.vault(w.vault)).toMatchObject({ kind: 'Live', consumed: false });
   });
 
+  it('is refused by the hire kit too, as a second line of defence: a body that the flow refuses is refused by the kit before its Pay, and the body at the limit is hired', async () => {
+    const w = await world();
+    const hire = (text: string) => hireAgent(w.key, w.deps.hire, {
+      selection: { advertRef: AGENT_ADVERT_REF }, payload: text, label: 'the handoff', vaultRef: w.vault, maxPriceLovelace: null, maxSupplierBondLovelace: null, maxBuyerBondLovelace: null,
+    }, KIT_ERRORS);
+    const over = requestText(handoffFor(documentForBody(RUNTIME_BODY_LIMIT_BYTES + 1)));
+    await expect(hire(over)).rejects.toThrow(`the call to the agent would have ${RUNTIME_BODY_LIMIT_BYTES + 1} bytes, and its runtime takes at most ${RUNTIME_BODY_LIMIT_BYTES} bytes`);
+    expect(untouched(w)).toStrictEqual(NOTHING);
+    expect(w.m.chain.vault(w.vault)).toMatchObject({ kind: 'Live', consumed: false });
+    // The twin: the body at the limit is hired by the kit alone.
+    expect((await hire(requestText(handoffFor(documentForBody(RUNTIME_BODY_LIMIT_BYTES))))).outcome).toBe('completed');
+  });
+
   it('hires with a wire payload at the limit of a service, and the payload that the flow computed is the payload that the hire kit sent', async () => {
     const w = await world();
     const step = await go(w, { message: handoffFor(documentForWire(MAX_REQUEST_BYTES)) });
