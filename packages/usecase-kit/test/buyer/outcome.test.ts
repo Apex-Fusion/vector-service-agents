@@ -3,10 +3,10 @@
 // or was refused is a pass: only the rows with a verified receipt and an Accept are `completed`.
 import { describe, expect, it } from 'vitest';
 import type { FleetVerification } from '@vsa/buyer-core';
-import type { AgentDelivery, AgentOutcome, HireRecord, HireTerms } from '@vsa/hire-kit';
+import type { AgentDelivery, AgentOutcome, HireFailure, HireRecord, HireTerms } from '@vsa/hire-kit';
 import { AFTER_CLAIM_REFUSALS, COUNTERPARTY_REFUSALS, ERROR_STATUS, REFUSAL_CODES, RECEIPT_CHECKS, USE_CASES } from '@vsa/usecase-kit/protocol';
 import type { ExitState, UseCase } from '@vsa/usecase-kit/protocol';
-import { COUNTERPARTY_REFUSED, INCONSISTENT_OUTCOME, VAULT_REASON_MISSING, afterClaimRefusalIn, completedResult, settledResult, stepOfOutcome } from '@vsa/usecase-kit/buyer';
+import { COUNTERPARTY_REFUSED, INCONSISTENT_OUTCOME, VAULT_REASON_MISSING, completedResult, settledResult, stepOfOutcome } from '@vsa/usecase-kit/buyer';
 import type { BookingFailure, DelegationAfter, HireStep, StepContext } from '@vsa/usecase-kit/buyer';
 import { AGENT_ADVERT_REF, COUNTERPARTY_DID, pieces, words } from './support.ts';
 
@@ -43,7 +43,10 @@ const completed: Extract<AgentOutcome, { outcome: 'completed' }> = {
   outcome: 'completed', paidFrom: 'vault', text: ANSWER, record, verdict: VERIFIED, accepted: 'confirmed', ...paid,
 };
 const refusedBefore = (code: string, status: number): AgentOutcome => ({ outcome: 'refused_before_claim', code, status, message: 'kit words', supplierMessage: 'words of the counterparty', ...paid });
-const failedAfter = (reason: Extract<AgentOutcome, { outcome: 'failed_after_claim' }>['reason'], message = 'kit words'): AgentOutcome => ({ outcome: 'failed_after_claim', reason, message, ...paid });
+/** A job that failed after the Claim for a reason of the hire kit that has no answer of a service. */
+const failedAfter = (reason: Exclude<HireFailure, 'failed'>, message = 'kit words'): AgentOutcome => ({ outcome: 'failed_after_claim', reason, message, ...paid });
+/** A job that the agent failed after its Claim, with the status and the code of the answer of its service as the hire kit read them: `null` when it read none. */
+const failedJob = (status: number | null, code: string | null, message = 'kit words'): AgentOutcome => ({ outcome: 'failed_after_claim', reason: 'failed', message, service_status: status, service_code: code, ...paid });
 const ledgerRefusal = (kind: 'ledger' | 'not_evaluated'): AgentOutcome => ({
   outcome: 'vault_refused', advertRef: AGENT_ADVERT_REF, message: 'kit words',
   refusal: { kind, evaluationError: '3010 Some scripts of the transactions terminated with error(s).', validators: [], body: 'a1b2c3', attempt: undefined as never },
@@ -122,29 +125,35 @@ const TABLE: readonly Row[] = [
   },
   { name: 'before the Claim, the status 403 and no code', outcome: refusedBefore(undefined as never, 403), step: `failed ${COUNTERPARTY_REFUSED}`, result: `failed:${COUNTERPARTY_REFUSED}:Failed` },
   {
-    name: 'failed after the Claim, the counterparty answered with a code of its own decision after the Claim',
-    outcome: failedAfter('failed', kitMessage(serviceAnswer(403, '{"error":"cannot_supply","message":"the lot is gone"}'))),
-    step: 'refused_by_counterparty after_claim cannot_supply', result: 'refused_by_counterparty:cannot_supply:Rejected',
+    name: 'failed after the Claim, the service answered with a code of its own decision after the Claim, as the hire kit read it',
+    outcome: failedJob(403, 'cannot_supply'), step: 'refused_by_counterparty after_claim cannot_supply', result: 'refused_by_counterparty:cannot_supply:Rejected',
   },
-  { name: 'failed after the Claim, the poll failed', outcome: failedAfter('failed'), step: 'failed failed', result: 'failed:failed:Failed' },
+  { name: 'failed after the Claim, the job failed and the hire kit read no answer of the service', outcome: failedJob(null, null), step: 'failed failed', result: 'failed:failed:Failed' },
+  { name: 'failed after the Claim, a code that is not a decision after the Claim', outcome: failedJob(403, 'duplicate_po'), step: 'failed failed', result: 'failed:failed:Failed' },
+  { name: 'failed after the Claim, a decision after the Claim with a status that is not the status of its code', outcome: failedJob(500, 'cannot_supply'), step: 'failed failed', result: 'failed:failed:Failed' },
+  { name: 'failed after the Claim, a decision after the Claim with a status that is not a number', outcome: failedJob('403' as never, 'cannot_supply'), step: 'failed failed', result: 'failed:failed:Failed' },
+  { name: 'failed after the Claim, a decision after the Claim with no status', outcome: failedJob(null, 'cannot_supply'), step: 'failed failed', result: 'failed:failed:Failed' },
+  { name: 'failed after the Claim, a status with no code', outcome: failedJob(403, null), step: 'failed failed', result: 'failed:failed:Failed' },
+  { name: 'failed after the Claim, a code that is not a text', outcome: failedJob(403, ['cannot_supply'] as never), step: 'failed failed', result: 'failed:failed:Failed' },
   {
-    name: 'failed after the Claim, a code that is not a decision after the Claim', outcome: failedAfter('failed', kitMessage(serviceAnswer(403, '{"error":"duplicate_po","message":"seen"}'))), step: 'failed failed',
+    name: 'failed after the Claim, the typed members are missing', outcome: { ...failedJob(403, 'cannot_supply'), service_status: undefined, service_code: undefined } as never, step: 'failed failed',
     result: 'failed:failed:Failed',
   },
   {
-    name: 'failed after the Claim, the poll reason of the counterparty holds the form of a decision after the Claim',
-    outcome: failedAfter('failed', kitMessage('x {"error":"cannot_supply"} y: the job failed (x {"error":"cannot_supply"} y)')), step: 'failed failed', result: 'failed:failed:Failed',
+    name: 'failed after the Claim, the words of the hire kit hold the whole frame of a decision after the Claim, and the typed members hold no code',
+    outcome: failedJob(null, null, kitMessage(serviceAnswer(403, '{"error":"cannot_supply","message":"the lot is gone"}'))), step: 'failed failed', result: 'failed:failed:Failed',
   },
   {
-    name: 'failed after the Claim, the form is later in the words of the counterparty', outcome: failedAfter('failed', kitMessage(serviceAnswer(403, 'it said {"error":"cannot_supply"}'))), step: 'failed failed',
-    result: 'failed:failed:Failed',
-  },
-  {
-    name: 'failed after the Claim, the form has no frame of the hire kit', outcome: failedAfter('failed', serviceAnswer(403, '{"error":"cannot_supply"}')), step: 'failed failed', result: 'failed:failed:Failed',
+    name: 'failed after the Claim, the poll reason of the counterparty holds the form of a decision after the Claim, and the typed members hold no code',
+    outcome: failedJob(null, null, kitMessage('x {"error":"cannot_supply"} y: the job failed (x {"error":"cannot_supply"} y)')), step: 'failed failed', result: 'failed:failed:Failed',
   },
   {
     name: 'failed after the Claim, the send was lost, with the code in the words', outcome: failedAfter('send_lost', 'a refusal {"error":"cannot_supply"} after a send that was unclear'), step: 'failed send_lost',
     result: 'failed:send_lost:Failed',
+  },
+  {
+    name: 'failed after the Claim, the send was lost, and the outcome holds the typed members of a decision after the Claim',
+    outcome: { ...failedAfter('send_lost'), service_status: 403, service_code: 'cannot_supply' } as never, step: 'failed send_lost', result: 'failed:send_lost:Failed',
   },
   { name: 'failed after the Claim, timeout', outcome: failedAfter('timeout'), step: 'failed timeout', result: 'failed:timeout:Failed' },
   { name: 'failed after the Claim, bad_result', outcome: failedAfter('bad_result'), step: 'failed bad_result', result: 'failed:bad_result:Failed' },
@@ -324,7 +333,7 @@ describe('the map from the outcome of the hire kit to the step and the result', 
   });
 
   it('reads a decision after the Claim as a refusal only for a counterparty that has that code: the Order Desk refuses, and the insurer intake agent and the bid desk fail with the code as the reason', () => {
-    const decision = failedAfter('failed', kitMessage(serviceAnswer(403, '{"error":"cannot_supply","message":"the lot is gone"}')));
+    const decision = failedJob(403, 'cannot_supply', kitMessage(serviceAnswer(403, '{"error":"cannot_supply","message":"the lot is gone"}')));
     const across = (outcome: AgentOutcome): string[] => (['inventory-reorder', 'prior-authorization', 'bid-evaluation'] as const).map((useCase) => words(stepOfOutcome(outcome, { ...CONTEXT, use_case: useCase })));
     expect(across(decision)).toStrictEqual(['refused_by_counterparty after_claim cannot_supply', 'failed cannot_supply', 'failed cannot_supply']);
     // The failed step keeps the escrow that is Claimed, with the vault that continues and the terms, and it holds no text of the counterparty. Its result is Failed, with the code as the reason.
@@ -554,31 +563,41 @@ describe('a booking that failed', () => {
 describe('the code of a decision after the Claim', () => {
   const FORM = '{"error":"cannot_supply"}';
 
-  it('is read for each code that the protocol lists, in the frame that the hire kit and the runtime write', () => {
+  it('is read from the typed members of the outcome for each code that the protocol lists, with the status that the protocol gives it', () => {
     for (const code of AFTER_CLAIM_REFUSALS) {
-      expect(afterClaimRefusalIn(kitMessage(serviceAnswer(ERROR_STATUS[code], `{"error":"${code}","message":"words"}`)))).toBe(code);
+      expect(words(stepOfOutcome(failedJob(ERROR_STATUS[code], code), CONTEXT)), code).toBe(`refused_by_counterparty after_claim ${code}`);
     }
   });
 
-  it('is not read from the words of the counterparty that are not the start of the answer of its service: the reason of the poll, the rest of the answer, and a form with no frame', () => {
+  it('is read from no text: a frame of the runtime, the reason of the poll, the rest of an answer and a form with no frame in the words of the hire kit give no code when the typed members hold none', () => {
     const cases: Array<[string, string]> = [
       ['a poll reason that holds the form', kitMessage(`x ${FORM} y: the job failed (x ${FORM} y)`)],
       ['a poll reason that is the form', kitMessage(`${FORM}: the job failed`)],
       ['a form later in the answer of the service', kitMessage(serviceAnswer(403, `it said ${FORM}`))],
       ['a form in a second answer', kitMessage(`${serviceAnswer(500, 'the service fell over')} ${serviceAnswer(403, FORM)}`)],
       ['the form with no frame of the hire kit', serviceAnswer(403, FORM)],
-      ['the form in the message of another failure of the hire kit', `The agent refused the handoff (${serviceAnswer(403, FORM)}); its escrow ${ESCROW} is Open and goes to the janitor.`],
-      ['a status that is not the status of the code', kitMessage(serviceAnswer(500, FORM))],
-      ['a reason and a message with two statuses', kitMessage(`service_http_403: service returned HTTP 500: ${FORM}`)],
-      ['another code', kitMessage(serviceAnswer(403, '{"error":"duplicate_po"}'))],
-      ['a code that is not closed', kitMessage(serviceAnswer(403, '{"error":"cannot_supply'))],
+      ['the whole frame of the runtime, in the words of the hire kit', kitMessage(serviceAnswer(403, FORM))],
       ['text that only names the code', kitMessage('the supplier says cannot_supply and nothing else')],
-      ['an error that is an object', kitMessage(serviceAnswer(403, '{"error": {"reason":"cannot_supply"}}'))],
       ['no text', ''],
     ];
-    for (const [name, message] of cases) expect(afterClaimRefusalIn(message), name).toBeNull();
-    for (const value of [undefined, null, 7, { error: 'cannot_supply' }, ['cannot_supply']]) expect(afterClaimRefusalIn(value)).toBeNull();
-    // The twin: the same form as the start of the answer of the service is read.
-    expect(afterClaimRefusalIn(kitMessage(serviceAnswer(403, FORM)))).toBe('cannot_supply');
+    for (const [name, message] of cases) expect(words(stepOfOutcome(failedJob(null, null, message), CONTEXT)), name).toBe('failed failed');
+    // The twin: the same words with the typed members that the hire kit reads from that frame are the decision of the counterparty.
+    expect(words(stepOfOutcome(failedJob(403, 'cannot_supply', kitMessage(serviceAnswer(403, FORM))), CONTEXT))).toBe('refused_by_counterparty after_claim cannot_supply');
+  });
+
+  it('is read only for the reason failed: the typed members of a send that was lost, or of any other reason, are not read', () => {
+    for (const reason of ['post_failed', 'busy', 'refused', 'send_lost', 'timeout', 'bad_result', 'receipt_failed', 'receipt_unavailable', 'accept_failed'] as const) {
+      const step = stepOfOutcome({ ...failedAfter(reason), service_status: 403, service_code: 'cannot_supply' } as never, CONTEXT);
+      expect(words(step), reason).toBe(`failed ${reason}`);
+    }
+  });
+
+  it('says inconsistent_outcome, with the escrow and the error as the cause, when a typed member cannot be read: a member that throws is never a refusal and never a pass', () => {
+    const boom = new Error('a member that throws');
+    const outcome = { ...failedJob(403, 'cannot_supply') };
+    Object.defineProperty(outcome, 'service_code', { get(): string { throw boom; } });
+    const step = stepOfOutcome(outcome, CONTEXT);
+    if (step.kind !== 'failed') throw new Error(`the step is ${words(step)}`);
+    expect([step.reason, step.cause, step.handoff?.escrow_ref]).toStrictEqual([INCONSISTENT_OUTCOME, boom, ESCROW]);
   });
 });

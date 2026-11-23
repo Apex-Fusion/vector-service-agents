@@ -45,6 +45,31 @@ export function isRuntimeRefusal({ status, code }: { status: number; code: strin
   return status < 500 || (status === 503 && PRECHECK_UNAVAILABLE[code] === true);
 }
 
+/** The status and the code of the answer of the service of an agent, as the runtime writes them into a job that failed. Both are numbers and texts, or both are `null`. */
+export interface ServiceFailure { service_status: number | null; service_code: string | null }
+/** The reason that the runtime gives a job whose service answered with an HTTP error: `service_http_<status>`, with the three digits of a status from 100 to 599. */
+const SERVICE_REASON = /^service_http_([1-5][0-9]{2})$/;
+/**
+ * The start of the message that the runtime writes with that reason: `service returned HTTP <status>: ` and the first 200 characters of the answer of the service. A service of an agent answers with an
+ * error as `{"error":"<code>", ...}`, and the code is 1 to 64 lower-case letters and underscores.
+ */
+const SERVICE_ANSWER = /^service returned HTTP ([1-5][0-9]{2}): \{"error":"([a-z_]{1,64})"/;
+
+/**
+ * The status and the code of the answer of the service, read from the words of a job that the runtime failed, or `null` and `null`. The runtime writes the failure of its service in one frame: the reason
+ * `service_http_<status>` and the message `service returned HTTP <status>: <the start of the answer>`. The code is read at the start of the answer only, and only when the reason and the message name the same
+ * status. So a form inside the reason of the poll, later in the answer, or in the words of a supplier that does not write this frame gives nothing: a code is never read from free text, and a status is never read
+ * alone. The status and the code are given as they came. What they mean is for the caller to decide: the kit does not know the codes of any protocol.
+ */
+export function serviceFailureOf(words: { reason: string; message: string } | undefined): ServiceFailure {
+  const none: ServiceFailure = { service_status: null, service_code: null };
+  if (words === undefined) return none;
+  const reason = SERVICE_REASON.exec(words.reason);
+  const answer = SERVICE_ANSWER.exec(words.message);
+  if (reason === null || answer === null || reason[1] !== answer[1]) return none;
+  return { service_status: Number(reason[1]), service_code: answer[2] };
+}
+
 /** The endpoint without the slashes at its end. It comes from an advert on the chain, so no pattern runs over it: a loop on the last character does it. */
 function trim(endpoint: string): string {
   let end = endpoint.length;

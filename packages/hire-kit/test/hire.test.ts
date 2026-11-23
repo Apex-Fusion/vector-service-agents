@@ -387,6 +387,20 @@ describe('hireOne: what a failure tells a factory that turns it into a result', 
     await failure<CodedError>(hireOne(clear.deps, SUPPLIER, job(clear.m), clear.ledger, keeping(clearSeen)));
     expect(clearSeen.map((detail) => detail.unclearSend)).toStrictEqual([false]);
   });
+
+  it('gives the reason and the words of the supplier when it fails a job that it claimed, and no detail when the supplier no longer knows the job', async () => {
+    const run = setup();
+    run.m.llm.steps = ['running', { fail: 'upstream_failure', submitted: false }];
+    const seen: HireDetail[] = [];
+    expect((await failure<CodedError>(hireOne(run.deps, SUPPLIER, job(run.m), run.ledger, keeping(seen)))).code).toBe('llm_failed');
+    expect(seen).toStrictEqual([{ jobFailure: { reason: 'upstream_failure', message: 'the job failed (upstream_failure)' } }]);
+    // The twin: a supplier that answers 404 job_not_found has no words of a failure, and the factory gets no detail.
+    const gone = setup();
+    gone.m.llm.steps = ['running', 'gone'];
+    const goneSeen: HireDetail[] = [];
+    expect((await failure<CodedError>(hireOne(gone.deps, SUPPLIER, job(gone.m), gone.ledger, keeping(goneSeen)))).code).toBe('llm_failed');
+    expect(goneSeen).toStrictEqual([{}]);
+  });
 });
 
 describe('hireOne: the Post is recorded before the ledger books it', () => {

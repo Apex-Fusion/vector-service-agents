@@ -579,6 +579,94 @@ describe('hireAgent: failed_after_claim', () => {
   });
 });
 
+describe('hireAgent: the status and the code of a failed job, as typed members of failed_after_claim', () => {
+  /** A fetch in front of the agent that gives the failed poll of a job the reason and the words of the test, in the envelope that the runtime writes when its service answered with an error. */
+  const failingWith = (m: Marketplace, reason: string, message: string): typeof fetch => (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const res = await m.fetchImpl(input, init);
+    if (res.status !== 502) return res;
+    const body = await res.json() as Record<string, unknown>;
+    return new Response(JSON.stringify({ ...body, reason, message }), { status: 502, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  /** The hire of a job that the agent claims and then fails, with the words of the failure that the test gives. */
+  async function failed(reason: string, message: string): Promise<{ run: Run; outcome: Extract<AgentOutcome, { outcome: 'failed_after_claim'; reason: 'failed' }> }> {
+    const run = await setup();
+    run.m.agent.steps = ['running', { fail: 'service_failure', submitted: false }];
+    const outcome = await hireAgent(run.key, { ...run.deps, fetchImpl: failingWith(run.m, reason, message) }, request(), ERRORS);
+    if (outcome.outcome !== 'failed_after_claim' || outcome.reason !== 'failed') throw new Error(`the hire ended in ${words(outcome)}`);
+    return { run, outcome };
+  }
+
+  it('gives the status and the code of the answer of the service when the runtime copies it into the failure of the job, and keeps every other member as it was', async () => {
+    const answer = '{"error":"cannot_supply","message":"the lot is gone"}';
+    const { run, outcome } = await failed('service_http_403', `service returned HTTP 403: ${answer}`);
+    expect([outcome.service_status, outcome.service_code]).toStrictEqual([403, 'cannot_supply']);
+    expect(outcome.message).toBe(`The agent failed the order (service_http_403: service returned HTTP 403: ${answer}); its escrow ${outcome.escrowRef} is Claimed and goes to the janitor.`);
+    expect([outcome.advertRef, outcome.vaultRef, outcome.terms.price_lovelace]).toStrictEqual([AGENT_ADVERT_REF, null, '200000']);
+    expect(Object.keys(outcome).sort()).toStrictEqual(['advertRef', 'escrowRef', 'message', 'outcome', 'reason', 'service_code', 'service_status', 'terms', 'vaultRef']);
+    expect(await run.m.chain.escrowState(outcome.escrowRef)).toBe('Claimed');
+    expect(run.stranded.list().map((entry) => entry.escrow_ref)).toStrictEqual([outcome.escrowRef]);
+    expect(run.booked.accepted).toStrictEqual([]);
+  });
+
+  it('gives the status and the code as they came, and leaves the decision to the caller: a code of another status, a code that is no decision after the Claim, and a status of another kind', async () => {
+    for (const [status, code] of [[500, 'cannot_supply'], [403, 'duplicate_po'], [429, 'rate_limited']] as const) {
+      const { outcome } = await failed(`service_http_${status}`, `service returned HTTP ${status}: {"error":"${code}"}`);
+      expect([outcome.service_status, outcome.service_code], `${status} ${code}`).toStrictEqual([status, code]);
+    }
+  });
+
+  it('gives null and null when the code is in free text, when the frame is not the frame of the runtime, and when the service gave no answer', async () => {
+    const cases: Array<[string, string, string]> = [
+      ['the code in the reason of the failure', 'x {"error":"cannot_supply"} y', 'the job failed'],
+      ['the code in free text of the words', 'upstream_failure', 'the service said {"error":"cannot_supply"} and more'],
+      ['the code later in the answer', 'service_http_403', 'service returned HTTP 403: it said {"error":"cannot_supply"}'],
+      ['two statuses', 'service_http_403', 'service returned HTTP 500: {"error":"cannot_supply"}'],
+      ['no answer of the service', 'service_timeout', 'service call failed after 30000ms: the operation timed out'],
+      ['an answer that is a page', 'service_http_503', 'service returned HTTP 503: <html><body>503</body></html>'],
+    ];
+    for (const [name, reason, message] of cases) {
+      const { outcome } = await failed(reason, message);
+      expect([outcome.service_status, outcome.service_code], name).toStrictEqual([null, null]);
+    }
+    // The twin: the same code at the start of the answer, in the frame of the runtime, is read.
+    expect((await failed('service_http_403', 'service returned HTTP 403: {"error":"cannot_supply"}')).outcome.service_code).toBe('cannot_supply');
+  });
+
+  it('gives null and null for a supplier that no longer knows the job (404): it has no words of a failure to read', async () => {
+    const run = await setup();
+    run.m.agent.steps = ['running', 'gone'];
+    const outcome = await go(run);
+    if (outcome.outcome !== 'failed_after_claim' || outcome.reason !== 'failed') throw new Error(`the hire ended in ${words(outcome)}`);
+    expect([outcome.service_status, outcome.service_code]).toStrictEqual([null, null]);
+    expect(outcome.message).toContain('no longer knows the job');
+  });
+
+  it('has the members for the reason failed and for no other reason of failed_after_claim', async () => {
+    const lost = await setup();
+    lost.m.agent.lose = ['after-claim'];
+    const unread = await setup({}, { chain: (m) => vaultChainWith(m, { onChainReceiptHash: async () => null }) });
+    for (const run of [lost, unread]) {
+      const outcome = await go(run);
+      if (outcome.outcome !== 'failed_after_claim') throw new Error(`the hire ended in ${words(outcome)}`);
+      expect(outcome.reason).not.toBe('failed');
+      expect(Object.keys(outcome)).not.toContain('service_status');
+      expect(Object.keys(outcome)).not.toContain('service_code');
+    }
+  });
+
+  it('has the members in the type of the reason failed only: a check on the reason gives them, and without it they are not there', async () => {
+    const run = await setup();
+    run.m.agent.steps = ['running', { fail: 'service_failure', submitted: false }];
+    const whole = await hireAgent(run.key, { ...run.deps, fetchImpl: failingWith(run.m, 'service_http_403', 'service returned HTTP 403: {"error":"cannot_supply"}') }, request(), ERRORS);
+    if (whole.outcome !== 'failed_after_claim') throw new Error('not failed_after_claim');
+    // @ts-expect-error The members are in the type of the reason failed only.
+    void whole.service_code;
+    if (whole.reason !== 'failed') throw new Error('the reason is not failed');
+    const typed: { status: number | null; code: string | null } = { status: whole.service_status, code: whole.service_code };
+    expect(typed).toStrictEqual({ status: 403, code: 'cannot_supply' });
+  });
+});
+
 describe('hireAgent: not_accepted', () => {
   it('says not_accepted with receipt_failed and the verdict when a check fails, and does not ask the decision of the caller; the escrow stays Submitted and recorded', async () => {
     const run = await setup();

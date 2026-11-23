@@ -105,6 +105,11 @@ export interface HireDetail {
   cause?: unknown;
   /** The checks of a receipt that failed one. */
   verdict?: FleetVerification;
+  /**
+   * The supplier's own word when it failed a job that it had claimed: the reason and the words of its envelope, as the poll read them (flat and cut short). A supplier that no longer knows the job (404) has
+   * none. A caller that turns the failure into a result reads from it what its supplier writes there: `serviceFailureOf` of src/template-client.ts does it for the runtime of an agent.
+   */
+  jobFailure?: { reason: string; message: string };
 }
 /** The kit writes every message; the factory chooses the class, the code and the status. */
 export interface HireErrors<E extends Error, K extends StrandedKind = HireKind> {
@@ -462,7 +467,8 @@ async function finished<T, E extends Error>(deps: HireDeps, supplier: AnySupplie
       throw failure(errors, supplier, 'receipt_unavailable', `${named(supplier)} failed ${job.label} at its own Submit (${why}) while ${escrow} reads Submitted: the receipt is on chain, but the supplier will not hand it over and no poll will bring it. The escrow is not accepted and stays with the janitor.`, at());
     }
     if (state === null || state === 'Submitted') continue;
-    throw failure(errors, supplier, 'failed', `${named(supplier)} failed ${job.label} (${why}); ${escrow} is ${state} and goes to the janitor.`, at());
+    throw failure(errors, supplier, 'failed', `${named(supplier)} failed ${job.label} (${why}); ${escrow} is ${state} and goes to the janitor.`, at(),
+      polled.kind === 'failed' ? { jobFailure: { reason: polled.reason, message: polled.message } } : undefined);
   }
 }
 

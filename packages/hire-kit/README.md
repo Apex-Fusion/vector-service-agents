@@ -121,6 +121,13 @@ A caller must not hire again after `send_lost`, because the agent may hold the j
 The other reasons of `failed_after_claim` are `failed`, `timeout`, `bad_result`, `accept_failed` and `receipt_unavailable`.
 `receipt_unavailable` means that the buyer did not judge the delivery: the agent does not hand over the receipt, or its hash cannot be read on chain in time.
 
+The reason `failed` has two more members: `service_status` and `service_code`.
+The runtime of an agent copies the first 200 characters of an error of its service into the failure of the job.
+The kit reads the status and the code of that answer from the frame that the runtime writes: the reason `service_http_<status>`, and the message `service returned HTTP <status>: {"error":"<code>", ...`.
+Both members are `null` when the failure has no such frame, and when the agent no longer knows the job.
+The kit gives the status and the code as they came.
+It never reads a code from free text, and it does not say what a code means: the caller decides.
+
 What no outcome names is thrown as an error of the factory of the caller.
 That includes no advert to hire, an advert above a limit, a request body above the limit of the runtime, a Post that failed before its signature, the deadline, a failed write of the store, and a decision that throws.
 

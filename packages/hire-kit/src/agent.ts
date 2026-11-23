@@ -15,7 +15,9 @@
 //                         `send_lost`: no answer, a page or a 5xx, a refusal after a send that was unclear, escrow_not_found (the view of the runtime may lag), an escrow that is not read
 //                         Open. The other reasons are the agent's failure, the polls that ran out of time, an answer that cannot be used, a receipt that the kit cannot get to check
 //                         (`receipt_unavailable`: the buyer did not judge the delivery, because the agent will not hand it over or its hash cannot be read on chain in time), and an Accept
-//                         that failed. The escrow stays recorded for the janitor.
+//                         that failed. The escrow stays recorded for the janitor. The reason `failed` has two more members, `service_status` and `service_code`: the status and the code of the answer of
+//                         the service of the agent, when the runtime copied that answer into the failure of the job (serviceFailureOf, src/template-client.ts), and `null` and `null` when it did not. A
+//                         caller that decides by the code reads these members, and reads no text.
 //   vault_refused         the vault Pay did not leave the node as a transaction: the script of the vault refused it (a limit), the node did not evaluate it, or it cannot be built. Nothing was
 //                         signed, nothing was submitted, and no money moved. The evaluation error and the body of the transaction are in the result.
 //   not_accepted          the delivery came and the escrow was not accepted: the receipt failed a check (the verdict says which), the decision of the caller said no, or the decision did not
@@ -36,8 +38,8 @@ import type { AcceptDecision, Delivery, HireDetail, HireErrors, HireFacts, HireF
 import { checkTurn, minLeftAtTurn } from './keys.ts';
 import type { PayingKey } from './keys.ts';
 import { advertOnChain, bondProblem, choiceLine, keyOfAdvert, requireLimits } from './select.ts';
-import { RUNTIME_BODY_LIMIT_BYTES, bodyBytesOf, isRuntimeRefusal, templateJob } from './template-client.ts';
-import type { TemplateAnswer } from './template-client.ts';
+import { RUNTIME_BODY_LIMIT_BYTES, bodyBytesOf, isRuntimeRefusal, serviceFailureOf, templateJob } from './template-client.ts';
+import type { ServiceFailure, TemplateAnswer } from './template-client.ts';
 
 /**
  * How an agent is chosen: by what it does, or by the advert that the caller names. Either way the advert is read on chain, and every field that the caller gives (the capability and the model)
@@ -110,7 +112,8 @@ export type VaultRefusal =
 export type AgentOutcome =
   | ({ outcome: 'completed'; paidFrom: 'wallet' | 'vault'; text: string; record: HireRecord; verdict: FleetVerification; accepted: 'confirmed' | 'pending' } & AgentEscrow)
   | ({ outcome: 'refused_before_claim'; code: string; status: number; message: string; supplierMessage: string } & AgentEscrow)
-  | ({ outcome: 'failed_after_claim'; reason: HireFailure; message: string } & AgentEscrow)
+  | ({ outcome: 'failed_after_claim'; reason: Exclude<HireFailure, 'failed'>; message: string } & AgentEscrow)
+  | ({ outcome: 'failed_after_claim'; reason: 'failed'; message: string } & ServiceFailure & AgentEscrow)
   | { outcome: 'vault_refused'; advertRef: string; message: string; refusal: VaultRefusal }
   | ({ outcome: 'not_accepted'; reason: 'receipt_failed'; message: string; verdict: FleetVerification } & AgentEscrow)
   | ({ outcome: 'not_accepted'; reason: 'declined'; message: string; declined: string; delivery: AgentDelivery } & AgentEscrow)
@@ -281,6 +284,8 @@ function ended<E extends Error>(stop: HireStop, advertRef: string, vaultRef: str
     if (detail?.verdict === undefined) return { outcome: 'failed_after_claim', reason: 'receipt_unavailable', message: stop.message, ...escrow };
     return { outcome: 'not_accepted', reason: 'receipt_failed', message: stop.message, verdict: detail.verdict, ...escrow };
   }
+  // The agent failed a job that it claimed. When its service answered with an error, the runtime copies the answer into the failure, and the status and the code of that answer are members of the outcome.
+  if (what === 'failed') return { outcome: 'failed_after_claim', reason: 'failed', message: stop.message, ...serviceFailureOf(detail?.jobFailure), ...escrow };
   return { outcome: 'failed_after_claim', reason: what, message: stop.message, ...escrow };
 }
 

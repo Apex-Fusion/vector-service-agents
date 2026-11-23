@@ -5,7 +5,7 @@
 // without a code, an answer for another escrow.
 import { describe, it, expect } from 'vitest';
 import { promptHashForPayload, sha256Utf8Hex, wirePayloadFor } from '@vsa/vector-read';
-import { bodyBytesOf, isRuntimeRefusal, pollTemplateJob, sendTemplateJob, templateJob } from '../src/template-client.ts';
+import { bodyBytesOf, isRuntimeRefusal, pollTemplateJob, sendTemplateJob, serviceFailureOf, templateJob } from '../src/template-client.ts';
 import { AGENT_ANSWER, AGENT_ENDPOINT, AGENT_KEY, escrowNo, marketplace, templateFinished } from '../testing/index.ts';
 import type { Marketplace } from '../testing/index.ts';
 
@@ -301,5 +301,67 @@ describe('isRuntimeRefusal', () => {
       [503, 'supplier_unavailable'], [504, 'claim_timeout'], [500, 'precheck_failed'], [504, 'precheck_timeout'], [502, 'precheck_unreachable'],
     ];
     for (const [status, code] of others) expect(isRuntimeRefusal({ status, code }), `${status} ${code}`).toBe(false);
+  });
+});
+
+describe('serviceFailureOf', () => {
+  const FORM = '{"error":"cannot_supply","message":"the lot is gone"}';
+  /** The words of the runtime when its service answered with an HTTP error: the reason `service_http_<status>`, and the message with the start of the answer. */
+  const answer = (status: number, body: string): { reason: string; message: string } => ({ reason: `service_http_${status}`, message: `service returned HTTP ${status}: ${body}` });
+  const NONE = { service_status: null, service_code: null };
+
+  it('reads the status and the code of the answer of the service, in the frame that the runtime writes', () => {
+    expect(serviceFailureOf(answer(403, FORM))).toStrictEqual({ service_status: 403, service_code: 'cannot_supply' });
+    expect(serviceFailureOf(answer(409, '{"error":"duplicate_po"}'))).toStrictEqual({ service_status: 409, service_code: 'duplicate_po' });
+  });
+
+  it('reads the failed job as the poll gives it: the words are flat and cut, and the runtime has cut the answer at 200 characters', async () => {
+    const body = `{"error":"cannot_supply","message":"${'line one\nline two '.repeat(12)}`.slice(0, 200);
+    const poll = await pollTemplateJob(AGENT_ENDPOINT, 'job-1', answering(() => json(502, { status: 'failed', ...answer(403, body), escrow_ref: OTHER })).fetchImpl, OTHER);
+    if (poll.kind !== 'failed') throw new Error(`the poll said ${poll.kind}`);
+    expect(poll.message).not.toContain('\n');
+    expect(serviceFailureOf(poll)).toStrictEqual({ service_status: 403, service_code: 'cannot_supply' });
+  });
+
+  it('gives the status and the code as they came, for every status of an HTTP answer and every code of the right form: what they mean is for the caller to decide', () => {
+    for (const [status, code] of [[500, 'cannot_supply'], [403, 'duplicate_po'], [429, 'rate_limited'], [404, 'not_for_this_supplier'], [503, 'check_unavailable'], [100, 'a'], [599, 'a_b_c']] as const) {
+      expect(serviceFailureOf(answer(status, `{"error":"${code}"}`)), `${status} ${code}`).toStrictEqual({ service_status: status, service_code: code });
+    }
+  });
+
+  it('says null and null for the words that are not the frame of the runtime: a code is never read from free text, and a status is never read alone', () => {
+    const cases: Array<[string, { reason: string; message: string } | undefined]> = [
+      ['no words at all, as for a supplier that no longer knows the job', undefined],
+      ['a failure of the service that is no HTTP answer', { reason: 'service_timeout', message: 'service call failed after 30000ms: the operation timed out' }],
+      ['a reason of the failure that holds the form', { reason: `x ${FORM} y`, message: `the job failed (x ${FORM} y)` }],
+      ['a reason of the failure that is the form', { reason: FORM, message: 'the job failed' }],
+      ['a form later in the answer of the service', answer(403, `it said ${FORM}`)],
+      ['a form in a second answer', { reason: 'service_http_500', message: `service returned HTTP 500: the service fell over service returned HTTP 403: ${FORM}` }],
+      ['a form in a second answer of the same status', { reason: 'service_http_403', message: `service returned HTTP 403: the service fell over service returned HTTP 403: ${FORM}` }],
+      ['the frame of the message after other words', { reason: 'service_http_403', message: `a note first: service returned HTTP 403: ${FORM}` }],
+      ['the reason after other words', { reason: 'a note first: service_http_403', message: `service returned HTTP 403: ${FORM}` }],
+      ['the form with no frame of the message', { reason: 'service_http_403', message: FORM }],
+      ['the frame in the reason and not in the message', { reason: `service_http_403: service returned HTTP 403: ${FORM}`, message: 'the job failed' }],
+      ['two statuses', { reason: 'service_http_403', message: `service returned HTTP 500: ${FORM}` }],
+      ['a reason with more than the status', { reason: 'service_http_403x', message: `service returned HTTP 403: ${FORM}` }],
+      ['a status of four digits', answer(4030, FORM)],
+      ['a status of two digits', answer(40, FORM)],
+      ['a status that is no HTTP status', answer(999, FORM)],
+      ['a status with a leading zero', { reason: 'service_http_040', message: `service returned HTTP 040: ${FORM}` }],
+      ['a status that is a word', { reason: 'service_http_abc', message: `service returned HTTP abc: ${FORM}` }],
+      ['a code that is not closed', answer(403, '{"error":"cannot_supply')],
+      ['a code of capital letters', answer(403, '{"error":"CANNOT_SUPPLY"}')],
+      ['a code with a space', answer(403, '{"error":"cannot supply"}')],
+      ['a code that is too long', answer(403, `{"error":"${'a'.repeat(65)}"}`)],
+      ['an empty code', answer(403, '{"error":""}')],
+      ['an error that is an object', answer(403, '{"error": {"reason":"cannot_supply"}}')],
+      ['a space in the form', answer(403, '{ "error":"cannot_supply"}')],
+      ['an answer that is a page, which has a status and no code', answer(503, '<html><body>503</body></html>')],
+      ['text that only names the code', { reason: 'service_failure', message: 'the supplier says cannot_supply and nothing else' }],
+      ['empty words', { reason: '', message: '' }],
+    ];
+    for (const [name, words] of cases) expect(serviceFailureOf(words), name).toStrictEqual(NONE);
+    // The twin: the longest code that the form allows is read.
+    expect(serviceFailureOf(answer(403, `{"error":"${'a'.repeat(64)}"}`))).toStrictEqual({ service_status: 403, service_code: 'a'.repeat(64) });
   });
 });
