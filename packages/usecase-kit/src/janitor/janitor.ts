@@ -16,7 +16,7 @@
 //      and reads the ledger until it no longer shows the delegation or the time of the entry ends. The turn in the queue is kept meanwhile. An entry whose delegation is gone is removed. An entry whose Undelegate was
 //      sent and whose delegation is still shown keeps the hash of that Undelegate.
 // A pass makes one transaction at most for one entry. A pass never throws: each entry has its own try, and the report says what happened to it. Every wait on a port has a bound, and a port that gives no answer is a
-// typed result. A key and a part of a request never reach a detail or a log line.
+// typed result. The janitor reads no key: a signer is a parameter. A message of a port is cut to 200 printable characters before it reaches a detail or a log line.
 import { addressHexOf, delegationScriptProblem, takeTurn, undelegateTxProblem, within } from '../access/index.ts';
 import type { Clock, DelegationChain, DelegationScript, SerialQueue, TxSigner } from '../access/index.ts';
 import { accepted, refused, type Accepted, type DelegationId, type Refused } from '../protocol/index.ts';
@@ -280,13 +280,17 @@ async function keepAfterSend(ctx: Context, entry: LeftEntry, state: 'kept_end_fa
   return result(left.id, state, `${detail}${note}`, endTxHash);
 }
 
-/** Reads the ledger until it no longer shows the delegation or the time of the entry ends. Only "not shown" counts as the end: a read that fails, or shows the delegation, is read again. */
+/**
+ * Reads the ledger until it no longer shows the delegation or the time of the entry ends. Only "not shown" counts as the end: a read that fails, or shows the delegation, is read again. The number of reads is
+ * bounded as well as the time, so a clock that does not move cannot make a wait with no end.
+ */
 async function watchEnd(ctx: Context, entry: LeftEntry, deadline: number, endTxHash: string): Promise<JanitorEntryReport> {
-  for (;;) {
+  const polls = Math.ceil(ctx.limits.entryTimeoutMs / ctx.limits.pollMs) + 1;
+  for (let poll = 1; ; poll += 1) {
     const seen = await seeOn(ctx, entry.left.id, deadline);
     if (seen.state === 'absent') return ended(ctx, entry, endTxHash);
     const why = seen.state === 'unreadable' ? `after the Undelegate was sent, ${seen.detail}` : 'the ledger still shows the sub-delegation after the Undelegate was sent';
-    if (deadline - ctx.clock.now() <= ctx.limits.pollMs) return keepAfterSend(ctx, entry, 'kept_end_pending', why, endTxHash);
+    if (poll >= polls || deadline - ctx.clock.now() <= ctx.limits.pollMs) return keepAfterSend(ctx, entry, 'kept_end_pending', why, endTxHash);
     await ctx.clock.sleep(ctx.limits.pollMs);
   }
 }

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { HireLane } from '@vsa/hire-kit';
 import { DEFAULT_END_POLL_MS, DEFAULT_ENTRY_TIMEOUT_MS, DEFAULT_STOP_WAIT_MS, DamagedLeftEntriesError, FileLeftStore, JANITOR_STATES, MemoryLeftStore, runJanitorOnce, startJanitor } from '../../src/janitor/index.ts';
 import type { JanitorDeps, JanitorEntryReport, JanitorReport, LeftEntry, LeftStore } from '../../src/janitor/index.ts';
+import type { Clock } from '../../src/access/index.ts';
 import { DAY, OTHER_KEY, SCRIPT, STRANGER, parentDatum } from '../access/support.ts';
 import { AGENT_KEY, WALLET, answer, hangs, kindsOf, leave, settle, throws, world } from './support.ts';
 import type { FakeClock, Tip, World } from './support.ts';
@@ -85,6 +86,18 @@ describe('a live delegation of the run', () => {
     expect(item.state).toBe('kept_end_failed');
     expect(item.detail).toContain('BadInputsUTxO');
     expect(w.chain.submits).toHaveLength(2);
+  });
+
+  it('is cut by the number of reads when the clock does not move: the wait after the send ends, with one transaction', async () => {
+    const w = world();
+    await leave(w);
+    w.fake.faults.undelegateNeverLands = true;
+    const now = w.clock.now();
+    const frozen: Clock = { now: () => now, sleep: (ms) => (ms === DEFAULT_END_POLL_MS ? Promise.resolve() : new Promise<void>(() => undefined)) };
+    const item = one(await runJanitorOnce({ ...w.deps, clock: frozen }));
+    expect(item.state).toBe('kept_end_pending');
+    expect(w.chain.submits).toHaveLength(1);
+    expect(w.chain.reads).toHaveLength(1 + Math.ceil(DEFAULT_ENTRY_TIMEOUT_MS / DEFAULT_END_POLL_MS) + 1);
   });
 
   it('is kept with the ledger read after the send when the ledger cannot be read then: the Undelegate may have landed', async () => {
