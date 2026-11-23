@@ -3,7 +3,7 @@
 // gives a go or the status and the code of the check, and a go keeps the record of the checks for the job. The job takes the confirmation only for the body that the hook checked: with no record, or with the record
 // of another body, it writes nothing. The lots file is served as the bytes that the manifest hashes. A digest mismatch is answered first, and the challenge starts after the answer. Nothing here uses the network.
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
@@ -354,8 +354,10 @@ describe('the challenge after a digest mismatch', () => {
       expect((await api.precheck()).status).toBe(403);
       await until(() => world.port.challenged.length === 1, 'the challenge is filed');
       const dir = join(world.stateDir, 'dispute');
-      const [file] = readdirSync(dir);
-      expect(readFileSync(join(dir, file ?? 'none'), 'utf8')).toContain(world.context.escrowRef);
+      // The journal writes a temporary file whose name starts with a dot, then renames it over the file of the job: read only the files of jobs, until one holds the challenge.
+      const holds = (name: string): boolean => { try { return readFileSync(join(dir, name), 'utf8').includes(world.context.escrowRef); } catch { return false; } };
+      const held = (): boolean => existsSync(dir) && readdirSync(dir).some((name) => !name.startsWith('.') && holds(name));
+      await until(held, 'the journal on the state volume holds the challenge');
     });
   });
 
