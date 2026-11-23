@@ -77,7 +77,7 @@ Check the name against a public resolver:
 dig +short mp-suppliers-reorder.vector.apexfusion.org A @1.1.1.1
 ```
 
-The answer must be the address of the host and nothing else. The address of a proxy means that the record is proxied: change it to DNS only. A proxy ends TLS before Caddy, and it replaces the body of an error answer. A failed job answers 502, and the buyer needs that body. Caddy gets the certificate of a name when it loads the block of the name, so the record must resolve first.
+The answer must be the address of the host and nothing else. The address of a proxy means that the record is proxied: change it to DNS only. A proxy ends TLS before Caddy, and it replaces the body of an error answer. A job that the service ends answers 200 with its `reason`. When the runtime cannot finish a job, it answers 502 with a JSON body, and the buyer needs that body. Caddy gets the certificate of a name when it loads the block of the name, so the record must resolve first.
 
 ## The folder
 
@@ -312,7 +312,7 @@ Each command only reads. None prints a secret.
 
 Caddy runs in a container on the host. `<caddy container>` is the name of that container. `<caddyfile>` is the one file on the host that the container mounts as `/etc/caddy/Caddyfile`. The block is in `Caddyfile.reorder-agent.snippet`, between the two lines `# reorder-agent vhosts (BEGIN)` and `# reorder-agent vhosts (END)`. It holds one host block. It sends `/agent.json` and `/cosign/delegate` to `reorder-service:9101`, and every other path to `reorder-runtime:8080`. The name must be a DNS only record that resolves to the host (section "The DNS record").
 
-1. Join the Caddy container to the network of the project. Compose makes the network when it starts the service. Do it once, and again after each new Caddy container. The second command must list `<caddy container>` and the two containers of the Reorder Agent:
+1. Join the Caddy container to the network of the project. Compose makes the network when it starts the service. Do it once, and again after each new Caddy container. The second command must list `<caddy container>` and `reorder-service`, and also `reorder-runtime` after step 6 of "The start order":
 
    ```sh
    docker network connect reorder-agent_default <caddy container>

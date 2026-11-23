@@ -8,7 +8,7 @@
 # All upstream names are container names of the compose project reorder-agent (docker-compose.reorder-agent.yml). The Caddy container of the host must join the network of that project, so that it resolves them:
 #   docker network connect reorder-agent_default <caddy container>
 # A new Caddy container joins again. The network exists after the first start of the service.
-# The host name is a DNS-only name. Caddy ends TLS itself and gets its own certificate for the name. A proxy in front of the name would end TLS first, and it would replace the body of an error answer: a failed job answers 502, and the buyer needs the body.
+# The host name is a DNS-only name. Caddy ends TLS itself and gets its own certificate for the name. A proxy in front of the name would end TLS first, and it would replace the body of an error answer. A job that the service ends answers 200 with its reason. When the runtime cannot finish a job, it answers 502 with a JSON body, and the buyer needs that body.
 #
 # How the block gets in. The host has one Caddyfile, and the Caddy container mounts that one file. Add the lines from the marker BEGIN to the marker END to the end of that file, in place:
 # append to the file, so that it keeps its inode. A mounted file does not follow a new file that replaces it. Then validate the whole file in the Caddy container, and reload Caddy. Never restart it.
