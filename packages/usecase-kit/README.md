@@ -20,6 +20,7 @@ The package has no root entry. Each folder of `src/` is one part of the code and
 | `src/buyer` | `@vsa/usecase-kit/buyer` | The flow of a buyer-side agent: it reads the authority of a request, finds the vault, hires the counterparty, and makes the results of the protocol. |
 | `src/dispute` | `@vsa/usecase-kit/dispute` | The Module-1 path of an agent: the documents for a juror, the claim of a run and its withdrawal, and the challenge of a buyer-side agent and of a counterparty. |
 | `src/inventory` | `@vsa/usecase-kit/inventory` | The documents of use case 1 (inventory reorder) that the Reorder Agent and the Order Desk share: the purchase order, the lots file and the order confirmation, each with a strict parser, and the lot names, the capabilities and the claim statements of the two agents. |
+| `src/live` | `@vsa/usecase-kit/live` | The parts that a buyer-side agent needs on a real chain: the real `DelegationChain` of a sub-delegation over the builders of `@vsa/buyer-core`, the slot of the tip of the node, and the key object of a raw Ed25519 key. |
 
 Each folder has a section below.
 
@@ -275,6 +276,32 @@ The protocol holds types, parsers and tables. It reads no setting and no file. I
 - The claim statements are the texts that the claim and the challenge use. The manifest of an agent, its claim document and the challenge of the other agent all take `REORDER_CLAIM` and `ORDER_DESK_CLAIM`, so a challenge names the text that the claim holds. The constants are frozen.
 
 **What it does not prove.** A parser checks the form of a document and nothing else. It does not prove that a lot size is the size that a supplier ships, that an order exists at the supplier, that a confirmation answers the purchase order that was sent (the agent that reads the confirmation compares the two documents), or that the hash in a manifest is the hash of the bytes that a host serves.
+
+## The live folder
+
+**What it is for.** Three parts that a buyer-side agent needs on a real chain, and that the other folders leave to the caller. `delegationChainOf` is the real `DelegationChain` for `withSubDelegation` of the access folder: the sub-delegation is made, the gateway can issue a token under it after 30 confirmations, and it is ended after the job. `tipSlotOf` gives the slot of the tip of the node, which the janitor of left sub-delegations compares with the TTL of a Delegate. `keyObjectOfRawKey` makes the Ed25519 key object that the token client and the DPoP proof take, from the 64 hex characters of a raw key.
+
+**Main exports.** `delegationChainOf`, `LiveChainDeps`, `tipSlotOf` and `keyObjectOfRawKey`.
+
+**What a caller must give.**
+
+- `LiveChainDeps` is a `LedgerEnv` of buyer-core: `provider`, `deployment`, `koiosUrl`, `fetchImpl` and the optional `budgetMs`. `budgetMs` is the time of one read, and `readiness` makes up to two reads. The `provider` also gives `getSystemStartMs` (the slot clock) and takes a signed transaction with `submitTx`. The `OgmiosProvider` of buyer-core does both. The same object serves `ledgerReadsFrom` of the buyer folder. A service makes the provider from the settings `VECTOR_OGMIOS_URL`, `VECTOR_SUBMIT_URL` and `VECTOR_KOIOS_URL`.
+- `tipSlotOf` takes `fetch`, `ogmiosUrl` (an https URL) and `timeoutMs` (a whole number from 1 to 86,400,000). It throws a TypeError when it is made with a value that is not in its form.
+- `keyObjectOfRawKey` takes 64 lower-case hex characters. The caller reads the key from its own settings.
+- The folder reads no environment variable and no key file.
+
+**The contract of a caller.**
+
+- The adapter ends nothing by itself. It builds and sends what `withSubDelegation` asks for, and it signs nothing. `withSubDelegation` decides what to end. It ends only a delegation whose transaction hash is the hash of its own Delegate, and `readDelegation` gives that hash for the delegation that the ledger shows.
+- A method that cannot read the ledger, or that the node refuses, throws. A throw is never `ready`, never `null` (the ledger shows none) and never a hash. A node that answers a read with no list of outputs is an error of the `OgmiosProvider`, and never an empty list: an empty list would read as "the ledger shows none". A test runs the real provider with a stub `fetch` for this, on the path of the address and on the path of the output that Koios names.
+- `submit` reads the signed bytes first, and it sends nothing that it cannot read. It gives the hash of the body that it sent, and it throws when the node answers with any other text. The node may have the transaction then: `withSubDelegation` reads the ledger after a throw of `submit`, and it ends a Delegate that landed. The submit of the `OgmiosProvider` has no time limit of its own. The caller sets it, and `withSubDelegation` does with `stepTimeoutMs`.
+- `readDelegation` gives `null` only when the ledger shows no delegation with that identifier. An identifier that is not 64 hex characters is an error. A delegation whose parent the ledger no longer shows is live, and `readiness` says that it is `unusable`.
+- `readiness` reads the ledger two times with `checkDelegationUse` of buyer-core. The first read asks for no depth, so its problems are rule problems. A delegate that is not Active is `unusable` with those problems, with any depth, and it is never `waiting`. A delegation that the ledger does not show yet is `waiting` with `confirmations: null`. The second read asks for 30 confirmations. The adapter reads the depth of each link from the typed members of the answer, and never from the text of a problem. A chain whose links all have 30 confirmations or more is `ready`. Any other chain is `waiting`, with the least depth, or with `null` when a link has no block height yet.
+- `slotAt` is `deploymentSlotAt` of the access folder: the slot that the real builder writes as the TTL of a transaction for the same time. The buyer code keeps the start time of the chain for the whole process after its first read.
+- `tipSlotOf` makes one request for each call and keeps no value. It asks `queryNetwork/tip`, the call that `OgmiosProvider` uses. It throws for a node that gives no slot, for a slot that is not a whole number of at least 1, for an error of the node, for a status other than 200, for an answer that is too long or is not JSON, for a failure of the network and for a time out. No message repeats the URL or a part of the answer.
+- `keyObjectOfRawKey` throws a TypeError for a text that is not 64 lower-case hex characters, and for a value that is not text. The message never repeats the value. `inspect`, `JSON.stringify` and `toString` of the object show nothing of the key. The key leaves the object only when a caller calls `export`.
+
+**What it does not prove without a chain.** The tests run the real builders over the fixture world of the buyer code, where Lucid runs the real scripts in every build, with a node that checks the signatures and a fake Koios. The real `OgmiosProvider` runs against a stub of `fetch`, and not against a real node. They do not prove the 30 confirmations on a real node: the depth that Koios gives, and the lag between the node and Koios. They do not prove the submit endpoint of a real node or the real answer of `queryNetwork/tip`.
 
 ## Tests
 
