@@ -3,8 +3,8 @@
 // this file; they get their ports in their deps, and this is the one place that makes them.
 //
 //   one paying key     The service key has one chain, one stranded store, one janitor and ONE queue (`lane`). The model hire of the decision, the claims and the challenges of the dispute code all run in that queue,
-//                      so no two of them build a transaction from the one wallet together. The key is made from the configuration, and not by `PayingKeys.add`: that call reads the wallet of the chain, and the wallet
-//                      of the real chain is a read of the node, so a node that is down would stop the start. The key hash of the configuration is the hash of the key that the chain signs with.
+//                      so no two of them build a transaction from the one wallet together. The key comes from the registry of the kit (`PayingKeys.add`), named by the key hash that the service key derives and in the
+//                      folder `keys/<key hash>` of the state directory. The hash is given, so that `add` reads no wallet: the wallet of the real chain is a read of the node, and a node that is down would stop the start.
 //   two gateway clients  The hook reads the gateway once, with a client whose timeout is the budget of the hook (CHECKS_READ_BUDGET_MS). The job asks the gateway for its X.509-SVID with a client that has the default
 //                      timeout of 10 s: an SVID that fails after the Claim would lose the job, and the hook is the only call that the runtime waits for.
 //   the hook's ledger  Every read of the ledger by the hook ends inside the budget of the hook. The wiring sets that budget over the one that the environment of the ledger carries.
@@ -15,8 +15,8 @@
 import { join } from 'node:path';
 import { OgmiosProvider, createRealChain, module1FromManifest, readManifest } from '@vsa/buyer-core';
 import type { Chain, LedgerEnv, RealChainOptions } from '@vsa/buyer-core';
-import { PayingKey } from '@vsa/hire-kit';
-import type { HireLedger } from '@vsa/hire-kit';
+import { PayingKeys } from '@vsa/hire-kit';
+import type { HireLedger, PayingKey } from '@vsa/hire-kit';
 import { createGatewayClient } from '@vsa/id-kit/client';
 import type { JobContext, PrecheckAnswer } from '@vsa/service-kit';
 import { httpsTransport, systemClock } from '@vsa/usecase-kit/access';
@@ -119,8 +119,8 @@ export async function wireService(config: ServiceConfig, options: WireOptions = 
     privateKeyHex: config.service.privateKeyHex, koiosUrl, ogmiosUrl: config.endpoints.ogmiosUrl, submitUrl: config.endpoints.submitUrl, identityDeployment: config.identityDeployment,
     ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }), ...(config.endpoints.indexerUrl === undefined ? {} : { indexerUrl: config.endpoints.indexerUrl }),
   });
-  // The folder of the key is `keys/<key hash>` of the state directory, as `PayingKeys.add` would make it. It is made here, and the stranded file in it is read.
-  const key = new PayingKey(config.service.pkh, chain, join(config.stateDir, 'keys', config.service.pkh));
+  // The registry holds the one key. The key hash is the one that the service key derives, and the folder is `keys/<key hash>` of the state directory. The stranded file in it is read here.
+  const key = await new PayingKeys(config.stateDir).add(chain, { dir: join(config.stateDir, 'keys', service.pkh), keyHash: service.pkh });
 
   const hookGateway = createGatewayClient({ baseUrl: config.endpoints.gatewayUrl, fetch: fetchImpl, now: clock, timeoutMs: config.checksBudgetMs });
   const jobGateway = createGatewayClient({ baseUrl: config.endpoints.gatewayUrl, fetch: fetchImpl, now: clock });

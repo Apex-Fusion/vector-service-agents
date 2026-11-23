@@ -2,8 +2,9 @@
 // The real ports of the Order Desk, made from the configuration: the state files, the one paying key and its one queue, the two gateway clients (the short budget of the hook, and the default time of the SVID), the
 // ledger reads of the hook that end inside the budget whatever the environment of the ledger says, the real model decision over the stub marketplace, the job deadline of 300 s, the Module-1 port over the manifest of
 // the deployment, and the log lines that name codes and kinds and never a message. No test here uses the network.
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, test } from 'vitest';
 import { FakeChain, rawHexToBech32 } from '@vsa/buyer-core';
 import { fetchX509Svid } from '@vsa/usecase-kit/access';
@@ -54,6 +55,15 @@ describe('wireService makes the real parts from the configuration', () => {
     chain.wallet = () => Promise.reject(new Error('the node does not answer'));
     const made = await wireService(config, { ...world.options, createChain: async () => chain, fetchImpl: () => Promise.reject(new Error('no network')) });
     expect(made.key.chain).toBe(chain);
+  });
+
+  test('the paying key comes from the registry of the kit, named by the hash that the service key derives, in the folder of that hash; the wiring does not call the internal constructor of PayingKey', async () => {
+    const world = makeWorld();
+    const { key } = await wired(world);
+    expect([key.keyHash, key.dir]).toStrictEqual([SERVICE.pkh, join(world.stateDir, 'keys', SERVICE.pkh)]);
+    const source = readFileSync(fileURLToPath(new URL('../../src/serve/wiring.ts', import.meta.url)), 'utf8');
+    expect(/new PayingKeys\(/.test(source), 'the wiring makes a registry of paying keys').toBe(true);
+    expect(/new PayingKey\b/.test(source), 'the wiring calls the internal constructor of PayingKey').toBe(false);
   });
 
   test('the job gets the service as its agent, the origins of the mock service, the call limit of 20 s, the fault switch and the lots file of the configuration', async () => {
