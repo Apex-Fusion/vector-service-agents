@@ -1,0 +1,9 @@
+{
+  "stock_reading": { "sku": "GLV-NIT-M", "on_hand": 60, "threshold": 100, "daily_usage": 12, "lead_time_days": 7, "open_orders": 0 },
+  "lots": [
+    { "lot": "lot-small", "size": 10 },
+    { "lot": "lot-medium", "size": 50 },
+    { "lot": "lot-large", "size": 200 }
+  ],
+  "today": "2026-11-23"
+}

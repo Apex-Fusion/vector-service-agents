@@ -6,7 +6,8 @@
 // only says what the data holds and what shape `choice` has. The input is JSON data in one marked block, and the decision folder writes it so that no text in it can close the block.
 //
 // What the model reads of another party is a number, a lot name or an identifier, and never free text:
-//   - `reorder` reads the stock reading of the ERP and the three lot sizes of the SKU. The sizes come from the lots file of the supplier, after its hash and its shape were checked.
+//   - `reorder` reads the stock reading of the ERP, the three lot sizes of the SKU and the date of today. The sizes come from the lots file of the supplier, after its hash and its shape were checked.
+//     The caller makes the date from its clock, and this folder reads no clock. The prompt says that `needed_by` is the date of today or a later date, and the parser does not hold the choice to that: the model decides.
 //   - `accept_delivery` reads the SKU, the lot and the quantity of the order and of the confirmation, and nothing else of either. The `decisions`, the `sender` and the `checks` of a confirmation never
 //     reach the prompt. The agent checks the number and the hash of the order in code before it asks the model.
 //
@@ -27,12 +28,13 @@ export type ReorderChoice = { lot: LotName; quantity: number; needed_by: string 
 
 const REORDER_INSTRUCTION = [
   'You decide how much of one SKU to order.',
-  'The data has two members.',
+  'The data has three members.',
   '"stock_reading" is the stock reading of the SKU: "on_hand" (the stock now), "threshold" (the stock level at which the SKU is reordered), "daily_usage" (the use each day), "lead_time_days" (the days from an order to its arrival) and "open_orders" (the orders that are still open).',
   '"lots" lists the three lots that the supplier sells for this SKU.',
   'Each entry has the name of the lot ("lot") and its size ("size").',
+  '"today" is the date of today, as YYYY-MM-DD.',
   'Choose exactly one lot.',
-  '"choice" is an object with exactly three members: "lot" (the name of the lot that you choose, as the data writes it), "quantity" (a whole number: the size of that lot) and "needed_by" (the date by which the stock must arrive, as YYYY-MM-DD).',
+  '"choice" is an object with exactly three members: "lot" (the name of the lot that you choose, as the data writes it), "quantity" (a whole number: the size of that lot) and "needed_by" (the date by which the stock must arrive, as YYYY-MM-DD: the date of today or a later date).',
 ].join(' ');
 
 /** The most that an order holds, as in the purchase order store of the mock service. */
@@ -62,6 +64,7 @@ const parseReorderChoice: ChoiceParser<ReorderChoice> = (given) => {
   if (typeof quantity !== 'number' || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > MAX_QUANTITY) {
     return refused('bad_shape', `choice.quantity must be a whole number from 1 to ${MAX_QUANTITY}`);
   }
+  // The date must exist. The parser does not hold it to the date of today: the prompt asks for that, and the model decides.
   if (!isDay(neededBy)) return refused('bad_shape', 'choice.needed_by must be a date that exists, as YYYY-MM-DD');
   // The members are checked, and the value that the model gave goes back as it is.
   return accepted(given as ReorderChoice);
@@ -71,10 +74,12 @@ const parseReorderChoice: ChoiceParser<ReorderChoice> = (given) => {
 export const REORDER_DECISION: DecisionSpec<ReorderChoice> = Object.freeze({ name: 'reorder', instruction: REORDER_INSTRUCTION, parse: parseReorderChoice });
 
 /**
- * The input of `reorder`: the six members of the stock reading, and the three lots of the SKU from the smallest to the largest, each with its name and its size. The members are copied by name, so no
- * other member of the reading reaches the prompt.
+ * The input of `reorder`: the six members of the stock reading, the three lots of the SKU from the smallest to the largest, each with its name and its size, and `today`. The members are copied by name,
+ * so no other member of the reading reaches the prompt. `today` is a date as `YYYY-MM-DD` that exists, and the caller makes it from its clock. A `today` that is not such a date is a mistake of the caller,
+ * and it is a `TypeError` that never repeats the value. The input holds the date and sets no limit: the model reads `needed_by` against it, and the parser of the choice does not.
  */
-export function reorderInput(reading: StockReading, lots: Record<LotName, number>): JsonValue {
+export function reorderInput(reading: StockReading, lots: Record<LotName, number>, today: string): JsonValue {
+  if (!isDay(today)) throw new TypeError('reorderInput: today must be a date that exists, as YYYY-MM-DD');
   return {
     stock_reading: {
       sku: reading.sku,
@@ -85,6 +90,7 @@ export function reorderInput(reading: StockReading, lots: Record<LotName, number
       open_orders: reading.open_orders,
     },
     lots: LOT_NAMES.map((lot) => ({ lot, size: lots[lot] })),
+    today,
   };
 }
 
