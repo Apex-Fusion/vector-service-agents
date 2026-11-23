@@ -6227,8 +6227,8 @@ function mockComposeProblems(text, storeBytes = mockStoreBytes()) {
   if (!Array.isArray(s.tmpfs) || s.tmpfs.length !== 1 || !/^\/tmp(?::|$)/.test(s.tmpfs[0])) problems.push('tmpfs must be the one entry /tmp: tsx writes its cache there, and nothing else is writable');
   for (const key of ['privileged', 'cap_add', 'network_mode', 'pid', 'ipc', 'devices', 'volumes_from']) if (key in s) problems.push(`${key} is not allowed`);
   // The service listens on 0.0.0.0 inside its container. A network that another container shares would let that container send a forged Client-Cert header. With no networks key, compose puts
-  // the service on the default network of its own project, which no other container joins.
-  if ('networks' in s) problems.push('the service has no networks key: it stays on the default network of its own project, which no other container shares');
+  // the service on the default network of its own project, which only the Caddy container joins, on a host whose proxy runs in a container.
+  if ('networks' in s) problems.push('the service has no networks key: it stays on the default network of its own project, which only the Caddy container joins');
   if ('networks' in model) problems.push('the file has no top-level networks key: the service stays on the default network of its own project');
   if (s.logging?.driver !== 'json-file' || s.logging?.options?.['max-size'] !== '10m' || s.logging?.options?.['max-file'] !== '3') problems.push('logging must be json-file with 3 files of 10m, as the other compose files have it');
   const limit = mockBytes(s.mem_limit);
