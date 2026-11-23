@@ -265,29 +265,83 @@ describe('an open route and the job slot', () => {
       precheck: () => { counts.precheck += 1; return { go: true }; },
     });
   });
+});
 
-  test('a stop refuses no open route and does not take the slot for one: it ends as finished with a route in flight, and logs no abandoned job', async () => {
-    const slot = new JobSlot();
-    const logs: string[] = [];
+describe('an open route and a stop', () => {
+  /** The routes of these tests: `/slow` answers once `release` is called, `/stuck` never answers, and `entered` says that a handler has the request. */
+  function gated() {
     let entered = false;
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const slow: OpenRoute = { path: '/slow', methods: ['GET'], handle: async () => { entered = true; await gate; return text('slow'); } };
     const stuck: OpenRoute = { path: '/stuck', methods: ['GET'], handle: () => { entered = true; return new Promise<OpenReply>(() => undefined); } };
-    const server = createJobServer(echoOptions({ slot, openRoutes: [getRoute, stuck], openRouteTimeoutMs: 30_000 }, logs));
+    return { routes: [getRoute, slow, stuck], entered: () => entered, release: () => release() };
+  }
+  /** A server of these routes on a slot of its own, with a call to `path` in flight: `answered` is its status and text, or 'cut' when the connection is closed. */
+  async function stoppable(path: string, over: Partial<JobServerOptions<Echo, Said>> = {}) {
+    const logs: string[] = [];
+    const slot = new JobSlot();
+    const parts = gated();
+    const server = createJobServer(echoOptions({ slot, openRoutes: parts.routes, ...over }, logs));
     const { base } = await listening(server);
-    try {
-      const waiting = fetch(`${base}/stuck`).then((res) => res.status, () => 'cut');
-      await until(() => entered, 'the handler has the request');
+    const answered = fetch(`${base}${path}`).then(async (res) => [res.status, await res.text()], () => 'cut');
+    await until(parts.entered, 'the handler has the request');
+    return {
+      logs, answered, release: parts.release,
+      stop: (waitMs: number) => lifecycle({ server, slot, log: (line) => { logs.push(line); } }).shutdown(waitMs),
+      end: () => { server.close(); server.closeAllConnections(); },
+    };
+  }
+
+  test('a stop makes the kit refuse no open route: with the slot drained, an open route answers and a job is refused', async () => {
+    const slot = new JobSlot();
+    await withRoutes([getRoute], async (base) => {
       slot.drain(); // the first step of a stop
-      expect((await fetch(`${base}/lots.json`)).status, 'an open route is not refused').toBe(200);
+      expect((await fetch(`${base}/lots.json`)).status).toBe(200);
       const job = await call(base, '/', wire({ say: 'late' }));
       expect([job.status, (await job.json() as { error: string }).error], 'the twin: a job is refused').toStrictEqual([503, 'shutting_down']);
-      const started = Date.now();
-      expect(await lifecycle({ server, slot, log: (line) => { logs.push(line); } }).shutdown(200)).toBe('finished');
-      expect(Date.now() - started).toBeLessThan(3000);
-      expect(logs.filter((line) => line.startsWith('stopping:'))).toStrictEqual([]);
-      expect(await waiting, 'the route in flight is cut with the connections').toBe('cut');
+    }, { slot });
+  });
+
+  test('a stop waits for an open route in flight, and ends as finished once the call has its answer', async () => {
+    const run = await stoppable('/slow');
+    try {
+      let ended = false;
+      const stopped = run.stop(30_000).then((outcome) => { ended = true; return outcome; });
+      await pause(250);
+      expect(ended, 'the stop waits for the route').toBe(false);
+      run.release();
+      expect(await run.answered, 'the call has its answer').toStrictEqual([200, 'slow']);
+      expect(await stopped).toBe('finished');
+      expect(run.logs).toStrictEqual([]);
     } finally {
-      server.close();
-      server.closeAllConnections();
+      run.end();
+    }
+  });
+
+  test('a stop waits for an open route that never answers until the bound of the route, and no longer', async () => {
+    const run = await stoppable('/stuck', { openRouteTimeoutMs: 300 });
+    try {
+      const started = Date.now();
+      expect(await run.stop(30_000)).toBe('finished');
+      expect(Date.now() - started, 'the stop waits for the bound').toBeGreaterThanOrEqual(150);
+      expect(Date.now() - started, 'and not for its own wait').toBeLessThan(3000);
+      expect(await run.answered, 'the call has the 500 of the bound').toStrictEqual([500, '{"error":"internal"}']);
+    } finally {
+      run.end();
+    }
+  });
+
+  test('a stop that has a shorter wait than the route ends at its own wait, closes the connection of the call, and logs no abandoned job', async () => {
+    const run = await stoppable('/stuck', { openRouteTimeoutMs: 30_000 });
+    try {
+      const started = Date.now();
+      expect(await run.stop(200)).toBe('finished');
+      expect(Date.now() - started).toBeLessThan(3000);
+      expect(run.logs.filter((line) => line.startsWith('stopping:'))).toStrictEqual([]);
+      expect(await run.answered, 'the call is cut with the connections').toBe('cut');
+    } finally {
+      run.end();
     }
   });
 });
@@ -393,7 +447,7 @@ describe('what goes wrong inside a handler', () => {
   const failing = (name: string, handle: OpenRoute['handle']): OpenRoute => ({ path: `/${name}`, methods: ['GET', 'POST'], handle });
   const refusal = new Refused({ code: 'bad_shape', status: 400, message: 'say must be text', kind: 'request' });
 
-  test('a handler that throws, rejects, throws something that is no error, or throws a value that cannot be read gives 500 {error: internal} with no detail, and the log holds the message', async () => {
+  test('a handler that throws, rejects, throws something that is no error, or throws a value that cannot be read gives 500 {error: internal} with no detail, and the log holds the message of the first failure of the route', async () => {
     const routes = [
       failing('throws', () => { throw new Error(SECRET); }), failing('rejects', async () => { throw new Error(SECRET); }), failing('refusal', () => { throw refusal; }),
       failing('string', () => { throw 'a plain text abc123'; }), failing('poisoned', () => { throw Object.create(null); }), failing('fine', fine),
@@ -409,12 +463,12 @@ describe('what goes wrong inside a handler', () => {
       expect([head.status, await head.text()], 'HEAD gets the status and no body').toStrictEqual([500, '']);
       const fineAnswer = await fetch(`${base}/fine`);
       expect([fineAnswer.status, await fineAnswer.text()], 'the twin').toStrictEqual([200, 'fine']);
-      expect(logs.filter((line) => line.startsWith('open route /throws failed after '))).toHaveLength(3);
-      expect(logs).toContainEqual(expect.stringMatching(/^open route \/throws failed after \d+ ms: the key was abc123 second line$/));
-      expect(logs).toContainEqual(expect.stringMatching(/^open route \/rejects failed after \d+ ms: the key was abc123 second line$/));
-      expect(logs).toContainEqual(expect.stringMatching(/^open route \/refusal failed after \d+ ms: say must be text$/));
-      expect(logs).toContainEqual(expect.stringMatching(/^open route \/string failed after \d+ ms: a plain text abc123$/));
-      expect(logs.filter((line) => line.startsWith('open route /poisoned failed after '))).toHaveLength(2);
+      expect(logs.filter((line) => line.startsWith('open route /throws failed after '))).toHaveLength(1);
+      expect(logs).toContainEqual(expect.stringMatching(/^open route \/throws failed after \d+ ms: the key was abc123 second line \(1 since the last line of this kind\)$/));
+      expect(logs).toContainEqual(expect.stringMatching(/^open route \/rejects failed after \d+ ms: the key was abc123 second line \(1 since the last line of this kind\)$/));
+      expect(logs).toContainEqual(expect.stringMatching(/^open route \/refusal failed after \d+ ms: say must be text \(1 since the last line of this kind\)$/));
+      expect(logs).toContainEqual(expect.stringMatching(/^open route \/string failed after \d+ ms: a plain text abc123 \(1 since the last line of this kind\)$/));
+      expect(logs.filter((line) => line.startsWith('open route /poisoned failed after '))).toHaveLength(1);
       expect(logs.filter((line) => !line.startsWith('open route /')), 'no other line').toStrictEqual([]);
       expect(logs.every((line) => !line.includes('\n'))).toBe(true);
     });
@@ -450,8 +504,43 @@ describe('what goes wrong inside a handler', () => {
       expect(Date.now() - started, 'the answer waits for the bound').toBeGreaterThanOrEqual(450);
       expect(Date.now() - started).toBeLessThan(3000);
       expect(logs).toHaveLength(1);
-      expect(logs[0]).toMatch(/^open route \/stuck failed after \d+ ms: no answer within 500 ms$/);
+      expect(logs[0]).toMatch(/^open route \/stuck failed after \d+ ms: no answer within 500 ms \(1 since the last line of this kind\)$/);
     }, { openRouteTimeoutMs: 500 });
+  });
+
+  test('a burst of failures is logged as a refusal for want of the token is: one line for each route, then a count once a minute, and a clock that is set back logs again', async () => {
+    let now = 1_000_000;
+    const crafted = (name: string): OpenRoute => ({ path: `/${name}`, methods: ['POST'], handle: async (request) => { throw new Error((await bytesOf(request.body)).toString('utf8')); } });
+    await withRoutes([crafted('a'), crafted('b')], async (base, _port, logs) => {
+      // Each body is a crafted message: a line break to forge a line, and a text far longer than a line of the log.
+      const fail = async (path: string, times: number, from: number): Promise<void> => {
+        for (let i = from; i < from + times; i++) await (await fetch(`${base}${path}`, { method: 'POST', body: `crafted ${i}\nforged line ${i} ${'x'.repeat(5000)}` })).text();
+      };
+      await fail('/a', 40, 0);
+      expect(logs, 'forty failures, one line').toHaveLength(1);
+      expect(logs[0]).toMatch(/^open route \/a failed after \d+ ms: crafted 0 forged line 0 x+\.\.\. \(1 since the last line of this kind\)$/);
+      expect(logs[0].length, 'the line is cut short').toBeLessThan(400);
+      await fail('/b', 3, 100);
+      expect(logs, 'another route has a line of its own').toHaveLength(2);
+      expect(logs[1]).toMatch(/^open route \/b failed after \d+ ms: crafted 100 forged line 100 x+\.\.\. \(1 since the last line of this kind\)$/);
+      now += 59_999;
+      await fail('/a', 1, 40);
+      expect(logs, 'silent until the minute is over').toHaveLength(2);
+      now += 1;
+      await fail('/a', 1, 41);
+      expect(logs, 'a line after the minute, with the count').toHaveLength(3);
+      expect(logs[2]).toMatch(/^open route \/a failed after \d+ ms: crafted 41 forged line 41 x+\.\.\. \(41 since the last line of this kind\)$/);
+      now -= 1_000_000; // a clock that was set back does not make the route silent for ever
+      await fail('/a', 1, 42);
+      expect(logs).toHaveLength(4);
+      expect(logs[3]).toMatch(/^open route \/a failed after \d+ ms: crafted 42 forged line 42 x+\.\.\. \(1 since the last line of this kind\)$/);
+      // A refusal for want of the token has its own line, whatever the routes wrote.
+      expect((await call(base, '/', wire({ say: 'x' }), {}, null)).status).toBe(401);
+      expect(logs.at(-1)).toBe('request refused: unauthorized (1 since the last line of this kind)');
+      expect(logs).toHaveLength(5);
+      expect(logs.join('\n'), 'the failures that were counted are not written').not.toMatch(/crafted (1|2|39|40|101|102) /);
+      expect(logs.every((line) => !line.includes('\n'))).toBe(true);
+    }, { clock: () => now });
   });
 
   test('a handler that is late is not stopped, and its late answer or failure is never written, logged or left unhandled: the reply is written once', async () => {
@@ -555,6 +644,10 @@ describe('the README', () => {
     expect(section).toContain(`at most ${MAX_OPEN_PATH} characters`);
     expect(section).toContain('{error: "not_found"}');
     expect(section).toContain('{error: "internal"}');
+    expect(section).toContain('then at most one in 60 seconds');
+    expect(section).toContain('(<n> since the last line of this kind)');
+    expect(section).toContain('A stop waits for a call of an open route that is in flight.');
+    expect(section).not.toContain('does not wait');
     expect(README.split('\n## Routes\n')[1]?.split('\n## ')[0]).toContain('Open routes');
     expect(/[\u2013\u2014]/.test(section), 'no en dash and no em dash').toBe(false);
   });

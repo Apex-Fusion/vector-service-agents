@@ -262,7 +262,10 @@ The reply:
 The handler is a fault when it throws, rejects, runs longer than the bound, or gives a reply of another shape.
 The answer to a fault is 500 `{error: "internal"}`, with `connection: close`.
 The answer never holds the cause.
-The log gets one line with the path of the route and the message of the cause.
+The log gets a line with the path of the route and the message of the cause.
+A route writes one such line at once, and then at most one in 60 seconds.
+The line ends with `(<n> since the last line of this kind)`, the number of failures since the last line of that route.
+A caller who makes a handler fail cannot fill the log.
 The kit never logs the body or the headers of an open route.
 
 The bound is 60 seconds (`OPEN_ROUTE_TIMEOUT_MS`), which is also the default.
@@ -279,10 +282,12 @@ It ignores the answer that comes late, and it writes the reply one time.
 
 ### A stop
 
-The wait of a stop is the wait for the job slot.
-An open route holds no slot, so a call of an open route never makes a stop report an abandoned job.
-A stop refuses no open route.
-It closes the connection of a call that is still in flight when the wait is over.
+A stop waits for a call of an open route that is in flight.
+It waits until the call has its answer.
+A call that runs too long has its answer at the bound of the route, which is 60 seconds at most.
+A stop that has a shorter wait ends at its own wait, and then it closes the connection of the call.
+A call of an open route holds no job slot, so it never makes a stop say that it abandoned a job.
+A stop does not make the kit refuse an open route.
 
 ## The timing
 
@@ -294,7 +299,7 @@ It closes the connection of a call that is still in flight when the wait is over
 | The job call of that escrow | It takes the reservation at once. |
 | A reservation that no job takes | It ends 120 seconds after the go, to the millisecond. |
 | A job that runs | The server writes `102 Processing` every 60 seconds (`HEARTBEAT_MS`). |
-| A stop | It waits up to 300 seconds (`SHUTDOWN_WAIT_MS`) for the job that runs. |
+| A stop | It waits up to 300 seconds (`SHUTDOWN_WAIT_MS`) for the job that runs. It also waits for an open route in flight, until the call has its answer. |
 
 All times come from the `clock` option of `createJobServer`.
 A test moves the clock by hand.

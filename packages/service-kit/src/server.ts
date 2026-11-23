@@ -28,8 +28,10 @@
 //                     GET matches whatever the query, and a HEAD gets the headers and no body; POST matches only the path itself. A method that the route does not list is
 //                     404. The handler is given a new object { method, headers, body }, never the request of Node, and reads the body with a limit of its own: the server
 //                     reads no byte of it. The reply is written with the content-length of the server. A handler that throws, rejects, runs longer than openRouteTimeoutMs
-//                     (60 s at most) or gives a reply of another shape is 500 {error: "internal"}, and the log gets the message of the cause, never the request, its body
-//                     or its headers. The stop of src/lifecycle.ts waits on the job slot, which an open route never holds, and it refuses no open route.
+//                     (60 s at most) or gives a reply of another shape is 500 {error: "internal"}. The log gets the message of the cause, never the request, its body or its
+//                     headers: a line for each route at once, then one a minute at most with the count since the last line, as for the 401 line. A stop (src/lifecycle.ts) waits
+//                     for an open route in flight, until it has answered or has failed at its bound, or until the wait of the stop is over, and the kit refuses no open route
+//                     while it stops. An open route holds no job slot, so it is never an abandoned job.
 //
 // A caller that hangs up (ruling R-D24). The runtime aborts its call at its own budget, min(SERVICE_TIMEOUT_MS, deliver_by - send time - 30 s), and frees the
 // escrow. By default the job runs to its end whatever its connection does, and holds the slot until then: a service whose job must settle what it started (the
@@ -148,7 +150,8 @@ function startHeartbeat(req: IncomingMessage, res: ServerResponse, everyMs: numb
 
 // The sha256 digest of a value: 32 bytes whatever its length, so that two of them can be compared in constant time without leaking the content or the length.
 const digest = (value: string): Buffer => createHash('sha256').update(value, 'utf8').digest();
-// A call refused for want of the token is logged once a minute at most, with the count since the last line: a caller that cannot authenticate must not fill the log.
+// A call refused for want of the token is logged once a minute at most, with the count since the last line, and so is a failure of an open route, for each route: a caller that
+// cannot authenticate, or that makes a handler fail, must not fill the log.
 const REFUSAL_LOG_MS = 60_000;
 
 const GO: PrecheckAnswer = { go: true };
@@ -212,13 +215,26 @@ export function createJobServer<Req, Res>(opts: JobServerOptions<Req, Res>): Ser
     lastRefusalLine = at;
     refusals = 0;
   };
-  // An open route (src/routes.ts): the handler of the service answers. Any failure of it, a reply of another shape included, is the same 500 for the caller and one line for
+  // A failure of an open route is logged as a refusal for want of the token is: for each route, one line at once, then one a minute at most with the count since the last line of its
+  // kind. The routes are fixed when the server is made, so there are as many notes as routes. The text of the cause is made for the line that is written, and for no other.
+  const failures = new Map<string, { count: number; lastLine: number | undefined }>();
+  const noteFailure = (path: string, arrivedAt: number, cause: unknown): void => {
+    const at = clock();
+    const note = failures.get(path) ?? { count: 0, lastLine: undefined };
+    failures.set(path, note);
+    note.count++;
+    if (note.lastLine !== undefined && at >= note.lastLine && at - note.lastLine < REFUSAL_LOG_MS) return; // a clock that was set back logs again, it does not go silent
+    log(`open route ${path} failed after ${at - arrivedAt} ms: ${causeText(cause)} (${note.count} since the last line of this kind)`);
+    note.lastLine = at;
+    note.count = 0;
+  };
+  // An open route (src/routes.ts): the handler of the service answers. Any failure of it, a reply of another shape included, is the same 500 for the caller and a line for
   // the operator. It never reaches the catch of the request below, which would read an error that refusalOf knows as a refusal, and answer its words.
   const serveOpen = async (route: CheckedOpenRoute, req: IncomingMessage, res: ServerResponse, arrivedAt: number): Promise<void> => {
     const head = req.method === 'HEAD';
     // The body of the request may be unread, so the connection is closed after the 500: a caller that goes on uploading is cut. A caller that has hung up is not answered.
     const fail = (cause: unknown): void => {
-      log(`open route ${route.path} failed after ${clock() - arrivedAt} ms: ${causeText(cause)}`);
+      noteFailure(route.path, arrivedAt, cause);
       if (res.destroyed || res.writableEnded) return;
       if (res.headersSent) { res.destroy(); return; }
       res.writeHead(500, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(INTERNAL_TEXT), connection: 'close' });
