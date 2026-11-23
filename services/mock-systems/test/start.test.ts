@@ -20,14 +20,24 @@ afterEach(async () => {
   await Promise.all(running.splice(0).map((started) => started.shutdown()));
 });
 
-/** The service on a free port, with the stub gateway, the ledger of fixture data and the clock of the world behind it, and an approval check that passes. */
+/**
+ * The service on a free port, with the stub gateway, the ledger of fixture data and the clock of the world behind it, and an approval check that passes. The port is free when
+ * `freePort` closes it, but another process of a busy host can take it before the service listens: then the start tries a new port, five times at most.
+ */
 async function start(world: World = new World(), settings: NodeJS.ProcessEnv = {}) {
-  const port = await freePort();
-  const lines: string[] = [];
-  const options: StartOptions = { fetch: world.gateway.fetch, now: world.now, writeLog: (line) => { lines.push(line); }, ledger: world.ledger, wire: () => async () => ({ ok: true }) };
-  const started = await startService(serviceEnvironment(port, settings), options);
-  running.push(started);
-  return { world, port, lines, started };
+  for (let attempt = 1; ; attempt += 1) {
+    const port = await freePort();
+    const lines: string[] = [];
+    const options: StartOptions = { fetch: world.gateway.fetch, now: world.now, writeLog: (line) => { lines.push(line); }, ledger: world.ledger, wire: () => async () => ({ ok: true }) };
+    try {
+      const started = await startService(serviceEnvironment(port, settings), options);
+      running.push(started);
+      return { world, port, lines, started };
+    } catch (error) {
+      if (attempt < 5 && (error as NodeJS.ErrnoException | undefined)?.code === 'EADDRINUSE') continue;
+      throw error;
+    }
+  }
 }
 
 const makeTenant = (port: number, tenant = 'run1') => send(port, { method: 'POST', path: '/admin/tenants', headers: ADMIN, body: { tenant, organisations: ORGS } });
