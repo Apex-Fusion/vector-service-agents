@@ -4,17 +4,24 @@
 //
 //   1. The indexer lists the adverts of the Order Desk capability. The adverts of this supplier must be Active, and each of the three lots must have exactly one.   `supplier_not_listed`
 //   2. The chain shows each of these adverts: unspent, Active, with the capability and the model that the row names, and the supplier as its agent.                 `supplier_not_listed`
+//      A chain that answers `{ error }` for all three adverts disagrees with the indexer as a whole, so its read is not usable: it must not look like a supplier that is not listed.   `supplier_unavailable`
 //   3. The three adverts hold one manifest hash. The manifest at the address of the advert has that hash. Its capability is the Order Desk, its behaviour parses as the behaviour of an Order Desk,
 //      and the first statement of its claim is the one of the Order Desk of the kit.                                                                              `supplier_manifest_invalid`
 //   4. The lots file at the address of the manifest has the hash that the manifest holds, and it parses. It lists the SKU.                                       `supplier_lots_invalid`, `sku_not_in_lots`
 //   5. A source that cannot be read, or that gives an answer of the wrong shape, is `supplier_unavailable`. It is never a pass, and it is never `supplier_not_listed`.
+//      A port that refuses a body above the byte limit by throwing, as `safeFetch` does, is a source that cannot be read. A port that returns more bytes than the limit gets `supplier_manifest_invalid` or
+//      `supplier_lots_invalid`, because the reader checks the size again.
 //
 // The hash of a body is checked before the body is parsed: a body whose hash is wrong is never parsed. The limits of a fetch come from this file and go to the port with each call. A supplier cannot widen
 // them: not by an address, not by a size, not by a host. The address goes to the port as the advert or the manifest wrote it, and the port decides whether the host is allowed.
 //
-// What the supplier says reaches the result only as a reference of an advert (which the indexer lists and the chain confirms), as a lot size (a whole number that the lots file holds), and as the first statement
-// of the claim (which is equal to the text of the kit). No text of the manifest, of the lots file or of an advert goes anywhere else. A detail names the source and the rule that failed. It never repeats a
-// word of a manifest, of a lots file, of an answer or of an error, and it never repeats an address.
+// What the supplier says reaches the result only as a reference of an advert (which the indexer lists and the chain shows as an unspent, Active advert), as a lot size (a whole number that the lots file holds), and
+// as the first statement of the claim (which is equal to the text of the kit). No text of the manifest, of the lots file or of an advert goes anywhere else. A detail names the source and the rule that failed. It
+// never repeats a word of a manifest, of a lots file, of an answer or of an error, and it never repeats an address.
+//
+// What the reader takes as true is the listing of the indexer together with the state of the chain. The indexer lists an advert of the identity layout only when the advert passes the listing rule. The chain
+// shows what the author of an advert datum wrote, the `agent_id` among it, and the advert validator does not check who the author is. So the state of the chain alone does not prove who made an advert. The hire
+// checks the listing rule again before the Pay.
 //
 // The ports are functions. The folder reads no file and no environment variable, and it makes no network call by itself. The whole reading has a budget of time: the clock is read before each call of a
 // port, and a clock that gives no time is `supplier_unavailable`, because an unknown time is never enough time.
@@ -38,8 +45,9 @@ export const SUPPLIER_FETCH_TIMEOUT_MS = 10_000;
 export const SUPPLIER_READ_BUDGET_MS = 60_000;
 
 /**
- * The members of a row of the indexer that the reader uses. `fetchSuppliers` of buyer-core gives rows with more members, and each of them fits. The indexer is not trusted: the reader checks each member that
- * it uses, and the chain confirms the advert.
+ * The members of a row of the indexer that the reader uses. `fetchSuppliers` of buyer-core gives rows with more members, and each of them fits. The reader checks each member that it uses. It takes the listing
+ * of the indexer, which applies the listing rule to an advert of the identity layout, together with the state of the chain. The chain shows the `agent_id` that the author of the datum wrote, and the advert
+ * validator does not check who the author is. The hire checks the listing rule again before the Pay.
  */
 export interface SupplierRow {
   /** The reference of the advert, as `<transaction hash>#<index>`. */
@@ -54,8 +62,8 @@ export interface SupplierRow {
 }
 
 /**
- * What the chain shows of one advert, in the members that the reader uses. `readAdvert` of buyer-core gives this and more: either `{ error }` for a reference that is not an advert, or the advert with its
- * agent. `spent` is true for an advert that was spent, and a retired advert has the status `Retired`.
+ * What the chain shows of one advert, in the members that the reader uses. `readAdvert` of buyer-core gives this and more: either `{ error }` for a reference that is not an advert (and for every advert of the
+ * identity layout, when `readAdvert` has no identity advert address), or the advert with its agent. `spent` is true for an advert that was spent, and a retired advert has the status `Retired`.
  */
 export type AdvertRead =
   | { readonly error: string }
@@ -87,9 +95,18 @@ export interface FetchedBytes {
 export interface SupplierDeps {
   /** The adverts that the indexer lists for a capability: `fetchSuppliers` of buyer-core with `capability_id`. */
   readonly listAdverts: (capabilityId: string) => Promise<readonly SupplierRow[]>;
-  /** One advert, read on the chain: `readAdvert` of buyer-core. */
+  /**
+   * One advert, read on the chain: `readAdvert` of buyer-core, bound to the fetch, to the Koios address and to the identity advert address of the deployment, as
+   * `(ref) => readAdvert(ref, fetchImpl, koiosUrl, deployment.advert.address)`. Without that address, buyer-core answers `{ error }` for every advert of the identity layout, and every advert of an Order Desk has that
+   * layout. The reader gives `supplier_unavailable`, and not `supplier_not_listed`, when the chain answers `{ error }` for all three adverts of the supplier: a port with no address must not look like a supplier that
+   * the indexer does not list.
+   */
   readonly readAdvert: (ref: OutputRef) => Promise<AdvertRead>;
-  /** A file of the supplier. The real port is `safeFetch` of `@vsa/vector-read`, which refuses an address that is not https or that names a private host, and gives the body as text: the adapter makes the bytes. */
+  /**
+   * A file of the supplier, fetched with the limits that the reader gives. The real port is `safeFetch` of `@vsa/vector-read` behind a function that makes bytes from its text. It refuses an address that is not https
+   * or that names a private host, and it THROWS for a body above `maxBytes`. A port that refuses a body by its size is a source that cannot be read, so the reader gives `supplier_unavailable`. A port that RETURNS more
+   * than `maxBytes` bytes gets `supplier_manifest_invalid` or `supplier_lots_invalid`, because the reader checks the size again.
+   */
   readonly fetchBytes: (url: string, limits: FetchLimits) => Promise<FetchedBytes>;
   /** The time, in milliseconds. */
   readonly clock: () => number;
@@ -174,9 +191,13 @@ interface AdvertDetail {
   readonly detail_hash: string;
 }
 
+/** True for the answer of the chain that says that a reference is no advert: `{ error }`. */
+const isErrorReading = (read: unknown): boolean => isPlainObject(read) && typeof read.error === 'string';
+
 /**
  * The detail of an advert, when the chain shows it as an unspent, Active advert of this agent with the capability of the Order Desk and the model of its lot. A reference that is not an advert, an advert
- * that is spent or retired, and an advert that names another capability, another model or another agent are `supplier_not_listed`. A reading of the wrong shape is `supplier_unavailable`.
+ * that is spent or retired, and an advert that names another capability, another model or another agent are `supplier_not_listed`. A reading of the wrong shape is `supplier_unavailable`. The agent is the
+ * `agentId` that the author of the datum wrote: `readSupplier` takes it together with the listing of the indexer, and it does not say more than that.
  */
 function checkAdvert(read: unknown, lot: LotName, agent: string): ProtocolResult<AdvertDetail, SupplierFailureCode> {
   const wrong = fail('supplier_unavailable', `the chain gave a reading of the wrong shape for the advert of ${lot}`);
@@ -198,7 +219,7 @@ function checkAdvert(read: unknown, lot: LotName, agent: string): ProtocolResult
 
 /**
  * The bytes of a file of the supplier. The port gets the address as it is written, and the limits of this reader. An answer with a status other than 200, and a port that throws, are
- * `supplier_unavailable`. A body above the byte limit is refused with `tooBig`, also when the port did not refuse it.
+ * `supplier_unavailable`: a port that refuses a body above the limit by throwing, as `safeFetch` does, is one of them. A body above the byte limit that the port returns is refused with `tooBig`.
  */
 async function fetchFile(
   deps: SupplierDeps, budget: Budget, url: string, what: 'manifest' | 'lots file', tooBig: 'supplier_manifest_invalid' | 'supplier_lots_invalid',
@@ -271,12 +292,19 @@ export async function readSupplier(deps: SupplierDeps, supplier: Did, sku: strin
   const refs = refsOf(rows, agent);
   if (!refs.ok) return refs;
 
-  // Step 2: the chain. The three adverts are read one after the other, from the smallest lot to the largest.
-  const details: AdvertDetail[] = [];
+  // Step 2: the chain. The three adverts are read one after the other, from the smallest lot to the largest, and then checked in the same order.
+  const readings: unknown[] = [];
   for (const lot of LOT_NAMES) {
     const reading = await viaPort(budget, `the advert of ${lot} on the chain`, () => deps.readAdvert(refs.value[lot]));
     if (!reading.ok) return reading;
-    const detail = checkAdvert(reading.value, lot, agent);
+    readings.push(reading.value);
+  }
+  // The indexer lists these three adverts. A chain that answers `{ error }` for every one of them disagrees with the indexer as a whole: its read may be set up wrongly, for example with no identity advert address.
+  // That is a source that cannot be read, and it must not look like a supplier that the indexer does not list.
+  if (readings.every(isErrorReading)) return fail('supplier_unavailable', 'the chain answers with an error for every advert of the supplier, although the indexer lists them: the chain read is not usable');
+  const details: AdvertDetail[] = [];
+  for (const [index, lot] of LOT_NAMES.entries()) {
+    const detail = checkAdvert(readings[index], lot, agent);
     if (!detail.ok) return detail;
     details.push(detail.value);
   }

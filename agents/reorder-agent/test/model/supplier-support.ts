@@ -128,6 +128,21 @@ export function serveLots(world: World, body: string | Uint8Array, hash: string 
   serveManifest(world, JSON.stringify(manifestOf({ uri: LOTS_URL, sha256: hash })));
 }
 
+/** The text of the manifest of the golden world with a `padding` member in `links`, so that the text has exactly `size` bytes. */
+export function paddedManifest(size: number): string {
+  const base = manifestOf();
+  base.links = { spec: 'https://example.invalid/spec', padding: '' };
+  const empty = Buffer.byteLength(JSON.stringify(base), 'utf8');
+  base.links = { spec: 'https://example.invalid/spec', padding: 'p'.repeat(size - empty) };
+  return JSON.stringify(base);
+}
+
+/** The text of the lots file of the golden world with white space at its end, so that the text has exactly `size` bytes. */
+export function paddedLots(size: number): string {
+  const trimmed = LOTS_TEXT.trimEnd();
+  return `${trimmed}${' '.repeat(size - Buffer.byteLength(trimmed, 'utf8'))}`;
+}
+
 export interface Calls {
   readonly list: string[];
   readonly read: string[];
