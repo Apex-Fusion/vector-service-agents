@@ -1,0 +1,266 @@
+// agents/order-desk/test/spec.test.ts
+// specs/order-desk.md is the public page of the Order Desk, and the manifest links to its Request and Response headings. These tests hold the page to the code, so that the two cannot part: the opening line, the
+// status and the changelog to the manifest; the terms of the three adverts to the constants, to the manifest, to the example environment and to the compose file; the claim to the constants of the kit; the gaps
+// word for word to the manifest; the third parties and the data handling to the manifest; and the links to files that exist. No test here uses the network.
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, test } from 'vitest';
+import { parse as parseYaml } from 'yaml';
+import { MAX_BODY } from '@vsa/service-kit';
+import { CONFIRMATION_CHECKS, INVENTORY_CAPABILITIES, LOT_NAMES, ORDER_DESK_CLAIM } from '@vsa/usecase-kit/inventory';
+import { faultGap } from '@vsa/usecase-kit/manifest';
+import { ERROR_STATUS, FAULT_MODES, MAX_REQUEST_BYTES, RUNTIME_BODY_LIMIT_BYTES } from '@vsa/usecase-kit/protocol';
+import { AVAILABILITY_DECISION, wrongLotOf } from '../src/job/index.ts';
+import { CONTROLLER_GAP, GAPS, NOT_SHOWN_GAP, PAGE_GAPS } from '../src/serve/gaps.ts';
+import { TEMPLATE_ENV, manifestFromEnv } from '../src/serve/manifest.ts';
+import { JOB_DEADLINE_MS, LOTS_ROUTE, MIN_PROCESSING_WINDOW_MS, faultOf } from '../src/serve/settings.ts';
+import { SETTINGS } from '../src/serve/start.ts';
+
+const root = fileURLToPath(new URL('../../../', import.meta.url));
+const page = readFileSync(new URL('../../../specs/order-desk.md', import.meta.url), 'utf8');
+const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+const section = (heading: string): string => (page.split(`\n## ${heading}\n`)[1] ?? '').split('\n## ')[0];
+/** The first row of a table whose first cell is `label`, or the empty text. */
+const row = (text: string, label: string): string => text.split('\n').find((line) => line.startsWith(`| ${label} |`)) ?? '';
+const printed = (lovelace: number): string => (lovelace / 1_000_000).toFixed(6);
+const manifest = manifestFromEnv(TEMPLATE_ENV);
+
+/** The compose file of the pack: three runtimes in front of one service. */
+interface ComposeService {
+  readonly environment?: Readonly<Record<string, string>>;
+}
+const compose = parseYaml(readFileSync(`${root}deploy/server/docker-compose.order-desk.yml`, 'utf8')) as { readonly services: Readonly<Record<string, ComposeService>> };
+const envExample = readFileSync(`${root}deploy/server/.env.order-desk.example`, 'utf8');
+/** The runtimes of the pack, one for each lot, in the order of the lots. */
+const runtimes = LOT_NAMES.map((lot) => compose.services[`runtime-${lot.slice('lot-'.length)}`]);
+
+describe('specs/order-desk.md: the frame', () => {
+  test("the opening line, the status line and the changelog are the manifest's, and the page says that the agent has no record", () => {
+    expect(manifest.name).toBe('Order Desk');
+    expect(page.split('\n')[0]).toBe(`# ${manifest.name}`);
+    expect(page.split('\n')[2]).toBe(`Capability \`${manifest.capability_id}\`. ${manifest.description}`);
+    expect(manifest.capability_id).toBe(INVENTORY_CAPABILITIES.order);
+    expect(section('Capability id').split('\n')[1]).toBe(`\`${manifest.capability_id}\``);
+    // The status line of the page opens with the word that the manifest carries and ends with its date.
+    expect(manifest.status).toStrictEqual({ chip: 'proposed', since: '2026-11-23' });
+    const status = `${manifest.status.chip.toUpperCase()} (built, not deployed). Since ${manifest.status.since}.`;
+    expect(section('Status').split('\n')).toContain(status);
+    expect(section('Status')).toContain('Nothing on this page is LIVE or DEPLOYED.');
+    expect(section('Identity')).toContain('\nThis agent has no registry record yet.\n');
+    expect(section('Changelog').trim()).toBe(`- ${manifest.version}, ${manifest.status.since}: built`);
+    expect(manifest.version).toBe('0.1.0');
+  });
+
+  test('the Identity table says what the manifest says of the keys: a controller key of this deployment, three public supplier keys and one service key', () => {
+    const identity = section('Identity');
+    expect(row(identity, 'DID')).toBe('| DID | assigned at registration |');
+    expect(row(identity, 'Controller')).toBe('| Controller | a controller key of this deployment |');
+    const organisation = row(identity, 'Organisation');
+    expect(organisation.includes('`alfa.vector.apexfusion.org`')).toBe(true);
+    expect(organisation.includes('"Demonstration organisation run by the Apex Fusion Foundation"')).toBe(true);
+    // The service holds one private key, the service key. It holds the key hash and the public key of each runtime, and the manifest publishes them for each tier.
+    expect(SETTINGS.filter((name) => name.endsWith('_PRIV_KEY_HEX'))).toStrictEqual(['ORDER_DESK_SERVICE_PRIV_KEY_HEX']);
+    expect(Object.keys(manifest.keys)).toStrictEqual(['service_pkh']);
+    for (const tier of manifest.terms.tiers) expect(Object.keys(tier)).toEqual(expect.arrayContaining(['supplier_pkh', 'pub_key_hex']));
+    expect(manifest.identity.supplier_key).toBe('<AGENT_DID>#<SMALL_SUPPLIER_PKH>');
+    const suppliers = row(identity, 'Supplier keys');
+    expect(suppliers).toContain('three, one for each runtime');
+    expect(suppliers).toContain('The manifest gives the key hash and the public key of each runtime in `terms.tiers`');
+    expect(suppliers).toContain('`identity.supplier_key` names the key of the small runtime as a key of the DID (`<DID>#<key hash>`)');
+    const service = row(identity, 'Service key');
+    expect(service).toContain('one key, held by the service and by no runtime');
+    expect(service).toContain('It pays for the model hire of each decision, signs the transactions of the dispute code and signs the request for the X.509-SVID');
+    expect(service).toContain('The manifest publishes its key hash as `keys.service_pkh`');
+    expect(service).toContain('The service holds the key hashes and the public keys of the three runtimes, and no private supplier key');
+    expect(row(identity, 'Parties')).toBe('| Parties | Accountable: the Accountable key of the organisation. Responsible: Module-1. Provider: the Provider key. Guardians: two, with a threshold of 2 |');
+  });
+
+  test('the Capability id names the three adverts by their lot, and the pack runs the three runtimes in front of the one service', () => {
+    const capability = section('Capability id');
+    for (const lot of LOT_NAMES) expect(row(capability, `\`${lot}\``), lot).toBe(`| \`${lot}\` | ${lot.slice('lot-'.length)} | set in the lots file, for each SKU |`);
+    expect(capability).toContain('The `model` string of an advert and of every receipt that it gives is the name of the lot.');
+    expect(manifest.terms.tiers.map((tier) => tier.model)).toStrictEqual([...LOT_NAMES]);
+    // The pack: four containers, and each runtime is a template runtime of the kind custom that asks the one service before it claims.
+    expect(Object.keys(compose.services)).toStrictEqual(['runtime-small', 'runtime-medium', 'runtime-large', 'service']);
+    for (const runtime of runtimes) {
+      expect(runtime.environment?.CAPABILITY_KIND).toBe('custom');
+      expect(runtime.environment?.SERVICE_URL).toBe(runtimes[0].environment?.SERVICE_URL);
+      expect(runtime.environment?.SERVICE_PRECHECK_URL).toBe(`${runtime.environment?.SERVICE_URL}precheck`);
+    }
+    expect(capability).toContain('The agent is three runtimes in front of one service. Each runtime is the template runtime (`vector-agent-template`, `CAPABILITY_KIND=custom`).');
+    expect(capability).toContain('It asks the service before it claims an escrow, claims the escrow, posts the job to the service, signs the receipt and submits the receipt hash.');
+    expect(capability).toContain('It holds the service key and no private supplier key.');
+    expect(capability).toContain('The three runtimes share the service, its manifest and its one job slot, so one job runs at a time.');
+    expect(readme).toContain('One job runs at a time.');
+  });
+});
+
+describe('specs/order-desk.md: the Terms', () => {
+  const terms = section('Terms');
+  const tiers = manifest.terms.tiers;
+  const lock = (tier: (typeof tiers)[number]): number => tier.price_lovelace + tier.supplier_bond_lovelace + tier.buyer_bond_lovelace;
+
+  test('three groups, one for each advert, each with its price, both bonds and lock from the manifest, and nine rows in all of price and bonds in the order Price, Supplier bond, Buyer bond', () => {
+    expect(tiers.map((tier) => tier.model)).toStrictEqual([...LOT_NAMES]);
+    // The nine rows that the rule of the page profile counts, as they stand on the page.
+    const shown = [...terms.matchAll(/^\| (Price|Supplier bond|Buyer bond) \| (\d+) \| (\d+\.\d{6}) \|$/gm)].map((hit) => hit[0]);
+    const wanted = tiers.flatMap((tier) => [['Price', tier.price_lovelace], ['Supplier bond', tier.supplier_bond_lovelace], ['Buyer bond', tier.buyer_bond_lovelace]].map(([label, lovelace]) => `| ${label} | ${lovelace} | ${printed(Number(lovelace))} |`));
+    expect(shown).toHaveLength(9);
+    expect(shown).toStrictEqual(wanted);
+    // Each group stands under the bold line of its advert, and holds its own three rows and its lock.
+    const marks = LOT_NAMES.map((lot) => terms.indexOf(`\n**Advert \`${lot}\`**\n`));
+    expect(marks.every((at) => at >= 0)).toBe(true);
+    expect([...marks].sort((a, b) => a - b)).toStrictEqual(marks);
+    tiers.forEach((tier, at) => {
+      const group = terms.slice(marks[at], marks[at + 1] ?? terms.length);
+      expect(group.split('\n').filter((line) => /^\| (Price|Supplier bond|Buyer bond) \|/.test(line)), tier.model).toStrictEqual(wanted.slice(3 * at, 3 * at + 3));
+      expect(row(group, 'Locked by the buyer (price and both bonds)'), tier.model).toBe(`| Locked by the buyer (price and both bonds) | ${lock(tier)} | ${printed(lock(tier))} |`);
+    });
+    expect(tiers.map(lock)).toStrictEqual([4_000_000, 7_000_000, 12_000_000]);
+    expect(terms).toContain('Amounts are `lovelace` fields. The last column is the same amount divided by 1,000,000, with six decimals.');
+  });
+
+  test('the window, the timeout of the runtimes and the deadline of the job are the constants, the manifest, the example environment and the compose file', () => {
+    expect(tiers.every((tier) => tier.max_processing_ms === MIN_PROCESSING_WINDOW_MS)).toBe(true);
+    expect(envExample.split('\n')).toContain(`ADVERT_MAX_PROCESSING_MS=${MIN_PROCESSING_WINDOW_MS}`);
+    const timeout = JOB_DEADLINE_MS + 60_000;
+    for (const runtime of runtimes) {
+      expect(runtime.environment?.ADVERT_MAX_PROCESSING_MS).toBe(String(MIN_PROCESSING_WINDOW_MS));
+      expect(runtime.environment?.SERVICE_TIMEOUT_MS).toBe(String(timeout));
+    }
+    expect(row(terms, 'Processing window, advert `max_processing_ms`')).toBe(`| Processing window, advert \`max_processing_ms\` | ${MIN_PROCESSING_WINDOW_MS} ms, for each of the three adverts |`);
+    expect(row(terms, 'Service timeout, `SERVICE_TIMEOUT_MS` of each runtime')).toBe(`| Service timeout, \`SERVICE_TIMEOUT_MS\` of each runtime | ${timeout} ms |`);
+    expect(row(terms, 'Job deadline, set by the service when a request arrives')).toBe(`| Job deadline, set by the service when a request arrives | ${JOB_DEADLINE_MS} ms |`);
+    expect([MIN_PROCESSING_WINDOW_MS, timeout, JOB_DEADLINE_MS]).toStrictEqual([480_000, 360_000, 300_000]);
+    // The one model call of a job is the decision availability.
+    expect(AVAILABILITY_DECISION.name).toBe('availability');
+    expect(row(terms, 'Model calls')).toBe('| Model calls | one for each job: the decision `availability` |');
+  });
+
+  test('the request limit is 900000 bytes of wire payload, and the page says that it is safe only below the limit of the runtime on the escaped body', () => {
+    expect(manifest.terms.input_limits.request_bytes).toBe(MAX_REQUEST_BYTES);
+    expect(row(terms, 'Request')).toBe(`| Request | at most ${MAX_REQUEST_BYTES} bytes of wire payload |`);
+    expect(MAX_REQUEST_BYTES).toBeLessThan(MAX_BODY);
+    expect(MAX_BODY).toBeLessThan(RUNTIME_BODY_LIMIT_BYTES);
+    expect(RUNTIME_BODY_LIMIT_BYTES).toBe(1_048_576);
+    expect(ERROR_STATUS.request_too_large).toBe(400);
+    expect(terms).toContain('The limit on a request counts the wire payload: the request JSON written as a string inside a one-message array. It does not count the body of the call that a buyer makes to a runtime.');
+    expect(terms).toContain('The buyer puts the wire payload inside a second JSON object, and each quote mark and each backslash of the wire payload then gets one more byte.');
+    expect(terms).toContain(`The runtime refuses a body above ${RUNTIME_BODY_LIMIT_BYTES} bytes (1 MiB).`);
+    expect(terms).toContain(`So the limit of ${MAX_REQUEST_BYTES} bytes is safe only below the limit of the runtime, on the escaped body, and a buyer must keep the body of its call at or below ${RUNTIME_BODY_LIMIT_BYTES} bytes.`);
+    expect(terms).toContain(`The service reads at most ${MAX_BODY} bytes of wire payload and refuses more with \`request_too_large\` (400).`);
+  });
+
+  test('the economics: the supplier receives the price and its bond on Accept, the buyer bond returns, and a job that fails is not paid', () => {
+    expect(terms).toContain("Economics: on Accept the supplier receives the price and the supplier bond, and the buyer's bond returns to the buyer.");
+    expect(terms).toContain('A job that the hook refuses, and a job that fails after the Claim, are not paid: the buyer reclaims the escrow after `deliver_by`.');
+    expect(terms).toContain('The price stands for the size of the order on the ledger.');
+    expect(readme).toContain('The price stands for the size of the order on the ledger. It is not the value of the goods.');
+  });
+});
+
+describe('specs/order-desk.md: the claim, the fault switch and the gaps', () => {
+  test('the claim statements are the constants of the kit, and the manifest holds the same three texts', () => {
+    const table = section('Claim statements').split('\n').filter((line) => /^\| S[123] \|/.test(line));
+    expect(table).toStrictEqual(ORDER_DESK_CLAIM.statements.map((statement) => `| ${statement.id} | ${statement.text} |`));
+    expect(manifest.behaviour.claim.statements).toStrictEqual(ORDER_DESK_CLAIM.statements);
+    expect(ORDER_DESK_CLAIM.statements.map((statement) => statement.id)).toStrictEqual(['S1', 'S2', 'S3']);
+    expect(section('Claim statements')).toContain('The Order Desk stakes a Module-1 claim for each run. The claim has three statements. The manifest holds the same three texts in `behaviour.claim`.');
+  });
+
+  test('the Fault switch names the one value of the kit, the wrong lot of the job, and the field that every result carries', () => {
+    const fault = section('Fault switch');
+    expect(FAULT_MODES['order-desk']).toStrictEqual(['confirm_wrong_lot']);
+    expect(manifest.behaviour.fault_modes).toStrictEqual(['confirm_wrong_lot']);
+    expect(fault).toContain('`FAULT_MODE=confirm_wrong_lot`: the confirmation names another lot and quantity than the purchase order, and the order that the service places has that wrong lot.');
+    // The wrong lot of the page is the wrong lot of the job.
+    expect([wrongLotOf('lot-small'), wrongLotOf('lot-medium'), wrongLotOf('lot-large')]).toStrictEqual(['lot-medium', 'lot-small', 'lot-small']);
+    expect(fault).toContain('The wrong lot of `lot-small` is `lot-medium`. The wrong lot of any other lot is `lot-small`. The quantity is the size of the wrong lot for the SKU in the lots file.');
+    // The switch is empty in a clean run, it takes the one value of the kit, and any other value stops the start.
+    expect(faultOf({ FAULT_MODE: '' }).mode).toBe('');
+    expect(faultOf({ FAULT_MODE: 'confirm_wrong_lot' }).mode).toBe('confirm_wrong_lot');
+    expect(() => faultOf({ FAULT_MODE: 'alter_after_approval' })).toThrow(/FAULT_MODE/);
+    expect(fault).toContain('The switch is empty in a clean run. Any other value stops the start of the service.');
+    expect(fault).toContain('It is declared in the manifest, in `behaviour.fault_modes`, and the manifest is the same for every value.');
+    expect(fault).toContain('Each result returns the active value as `fault_mode`, its last member.');
+    expect(fault).toContain('The switch changes what the job sends and never a check: the hook does not know that it exists.');
+  });
+
+  test('every gap of the manifest is on the page word for word, one to a line and in its order, and the page adds none', () => {
+    const lines = section('Known gaps').split('\n').filter((line) => line.startsWith('- '));
+    expect(lines).toStrictEqual(GAPS.map((gap) => `- ${gap}`));
+    expect(manifest.gaps).toStrictEqual([...GAPS]);
+    expect(lines).toHaveLength(9);
+    // The six gaps of the page, the keys of the parties, what no run shows, and the one sentence of the kit about the fault switch.
+    expect(lines.slice(0, 6)).toStrictEqual(PAGE_GAPS.map((gap) => `- ${gap}`));
+    expect(lines[6]).toBe(`- ${CONTROLLER_GAP}`);
+    expect(lines[7]).toBe(`- ${NOT_SHOWN_GAP}`);
+    expect(lines[8]).toBe(`- ${faultGap('order-desk')}`);
+    // The keys: the controller key, the Accountable key and the guardian keys are on one host of one operator.
+    expect(lines[6]).toBe('- The controller key of this deployment, the Accountable key and the guardian keys are on one host of one operator, so a party is independent of the controller by key only.');
+    // What no run shows: one run-in lead, and the three items, among them the reclaim of an escrow in use case 1.
+    expect(page.split('What this does not show:').length - 1).toBe(1);
+    expect(lines[7].startsWith('- What this does not show: ')).toBe(true);
+    for (const item of ['the refund of the escrow of a revoked agent', 'the reclaim of an escrow in use case 1', 'a relying party that refuses a live token after its authority ends']) expect(lines[7], item).toContain(item);
+    expect(section('Known gaps')).toContain('The manifest states these nine, in this order, word for word.');
+  });
+});
+
+describe('specs/order-desk.md: the receipt, the operator, how to hire it and the links', () => {
+  test('the receipt: the runtime signs it, and its model is the lot of the advert', () => {
+    const receipt = section('What the receipt commits to');
+    expect(receipt).toContain('The service signs no receipt. The runtime builds and signs the receipt, and submits its hash in the Submit transaction.');
+    expect(row(receipt, '`escrow_ref`')).toBe('| `escrow_ref` | the escrow UTxO, `<txid>#<index>` |');
+    expect(row(receipt, '`supplier_pkh`')).toBe('| `supplier_pkh` | the key hash of the supplier key of the runtime that took the job: one of the three |');
+    expect(row(receipt, '`prompt_hash`')).toBe('| `prompt_hash` | sha256 of the UTF-8 bytes of the wire payload, as the buyer committed it in the escrow datum |');
+    expect(row(receipt, '`response_hash`')).toBe('| `response_hash` | sha256 of the UTF-8 bytes of the confirmation exactly as the service returned them |');
+    // The model of a receipt is the model of its advert, and the model of each advert is its lot.
+    expect(row(receipt, '`model`')).toBe(`| \`model\` | the lot of the advert: ${LOT_NAMES.slice(0, -1).map((lot) => `\`${lot}\``).join(', ')} or \`${LOT_NAMES.at(-1)}\` |`);
+    expect(manifest.terms.tiers.map((tier) => tier.model)).toStrictEqual([...LOT_NAMES]);
+    expect(row(receipt, '`prompt_tokens`, `completion_tokens`')).toBe('| `prompt_tokens`, `completion_tokens` | 0 and 0, the runtime counts none. The token counts of the model hire are in the sub-receipt under `decisions[0].inference.sub_job` |');
+    expect(row(receipt, '`wallclock_ms`')).toBe('| `wallclock_ms` | how long the service call took |');
+    expect(receipt).toContain(`the ${CONFIRMATION_CHECKS.length} checks, and the availability decision with its reasoning and the sub-receipt of the model supplier.`);
+    expect(receipt).toContain('It does not commit to any goods being shipped: there are no goods.');
+    expect(receipt).toContain('The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of the canonical JSON of `{ receipt, signature }` is the `result_receipt_hash` in the Submitted escrow datum.');
+  });
+
+  test('the third parties and the data handling are the manifest\'s, word for word', () => {
+    const operator = section('Operator and data handling');
+    expect(manifest.operator.name).toBe('Apex Fusion Foundation');
+    expect(operator).toContain('Operator: Apex Fusion Foundation. The contact is `operator.contact` in the manifest.');
+    const parties = operator.split('\n').filter((line) => line.startsWith('| ') && !line.startsWith('| Party |')).map((line) => line.split(' | ')[0].slice(2));
+    expect(parties).toStrictEqual(manifest.behaviour.third_parties);
+    expect(parties).toHaveLength(5);
+    expect(operator).toContain(manifest.behaviour.data_handling);
+    expect(operator).toContain('All the data is synthetic. What leaves to third parties:');
+  });
+
+  test('How to hire it sends the reader to the Reorder Agent, and the Links name files that exist', () => {
+    const how = section('How to hire it');
+    expect(how).toContain('A buyer\'s agent hires the Order Desk from the vault of a delegation, with an approved purchase order.');
+    expect(how).toContain('To see the Order Desk work, hire the [Reorder Agent](reorder-agent.md).');
+    expect(how).toContain('No advert exists yet, so no buyer can hire the Order Desk today.');
+    const links = section('Links');
+    for (const [, target] of links.matchAll(/\]\(\.\.\/([^)]+)\)/g)) expect(existsSync(root + target), target).toBe(true);
+    for (const [, label, target] of links.matchAll(/\[([^\]]+)\]\(\.\.\/([^)]+)\)/g)) expect(label, target).toBe(target);
+    expect([...links.matchAll(/\]\(\.\.\/([^)]+)\)/g)].map((hit) => hit[1])).toStrictEqual(['agents/order-desk/agent.json.template', 'agents/order-desk/lots.json', 'agents/order-desk', 'deploy/server/RUNBOOK-order-desk.md']);
+    expect(links).toContain('[Reorder Agent](reorder-agent.md)');
+    expect(manifest.links.source.endsWith('/agents/order-desk')).toBe(true);
+    expect(manifest.links.spec.endsWith('/specs/order-desk.md')).toBe(true);
+  });
+});
+
+describe('specs/order-desk.md: the routes of the Interface', () => {
+  test('the Interface names the routes of the service and the token that two of them need, and the buyer reaches the service through a runtime only', () => {
+    const interfaceText = section('Interface');
+    expect(LOTS_ROUTE).toBe('/lots.json');
+    expect(manifest.interface.routes).toStrictEqual({ job: '/v1/job', status: '/status', capability: '/capability', lots: LOTS_ROUTE });
+    for (const route of ['`POST /precheck`', '`POST /`', '`GET /lots.json`', '`GET /agent.json`', '`GET /healthz`']) expect(row(interfaceText, route), route).not.toBe('');
+    expect(interfaceText).toContain('`POST /` and `POST /precheck` need the token that only the runtimes hold. A call without it gets 401 `{"error":"unauthorized"}`, before the body is read.');
+    expect(interfaceText).toContain('`GET /lots.json`, `GET /agent.json` and `GET /healthz` need no token. Any other route gets 404 `{"error":"not_found"}`.');
+    expect(interfaceText).toContain('A buyer sends its job to the runtime of its advert, on the runtime route `/v1/job` of the manifest, and never to the service.');
+    expect(ERROR_STATUS.unauthorized).toBe(401);
+    expect(readme).toContain('Without it, 401 `{"error":"unauthorized"}`');
+    expect(readme).toContain('| any other route | 404 `{"error":"not_found"}` |');
+  });
+});
