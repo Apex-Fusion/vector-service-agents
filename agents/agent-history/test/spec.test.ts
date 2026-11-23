@@ -4,7 +4,7 @@ import { replayFetch, REGISTRY_POLICY } from '@vsa/vector-read';
 import { buildReport, BLIND_SPOTS, CURRENT_STATE_GAP, IDENTITY_VIEW_GAP, LEGACY_ONLY, REPORT_BUDGET_MS, lastKnownKeysLine } from '../src/report.ts';
 import { manifestFromEnv } from '../src/server.ts';
 import { DEFAULT_MODULES } from '../src/config.ts';
-import { TEST_ENV, BUILT_STAKE_HEX, stakeRow, stakeToken, withStakeRows } from './support.ts';
+import { TEST_ENV, RECORDED_STAKE, withRecordedStake } from './support.ts';
 // specs/agent-history.md is written from what the code emits. These tests keep it that way.
 const spec = readFileSync(new URL('../../../specs/agent-history.md', import.meta.url), 'utf8');
 const fx = JSON.parse(readFileSync(new URL('./fixtures/chandra.json', import.meta.url), 'utf8'));
@@ -82,11 +82,10 @@ describe('specs/agent-history.md', () => {
     expect(example.identity).toEqual(real.identity);
     expect(example.key_roles).toEqual(real.key_roles);
   });
-  test('the stake entry example is what the code makes of the built stake, and its field table names the keys of the entry in order', async () => {
+  test('the stake entry example is what the code makes of the recorded stake, and its field table names the keys of the entry in order', async () => {
     const response = spec.split('\n### Response\n')[1];
     const example = JSON.parse(response.split('```json\n')[2].split('\n```')[0]); // the second block: the main example is the first
-    const store = withStakeRows(fx.store, [stakeRow(2, BUILT_STAKE_HEX, [stakeToken(CHANDRA)])]);
-    const report = JSON.parse(JSON.stringify(await buildReport({ subject: DID, include: ['reputation'] }, replayFetch(store), { manifest: manifestFromEnv(TEST_ENV), lookup })));
+    const report = JSON.parse(JSON.stringify(await buildReport({ subject: `did:vector:${RECORDED_STAKE.agent_did}`, include: ['reputation'] }, replayFetch(withRecordedStake(fx.store)), { manifest: manifestFromEnv(TEST_ENV), lookup })));
     expect(report.reputation.stakes).toHaveLength(1);
     expect(example).toEqual(report.reputation.stakes[0]);
     const table = response.split('| Stake field | Content |\n|---|---|\n')[1].split('\n\n')[0];

@@ -101,16 +101,16 @@ export function koiosLedger(txs: LedgerTx[], fallback?: Fetch): Fetch {
 }
 
 // ---- The Module-3 deployment on the identity registry ----
-// A BUILT stake, not a recorded one: no stake exists on the deployment yet (its stake address held no output on 2026-11-19). The datum has the encoding of the
-// MCP server builder (encodeStakeDatum; the golden bytes are in packages/vector-read/test/reputation-datum.test.ts) and the fields of ChandraOCR. When a live
-// stake exists, record its Koios row with `pnpm --filter @vsa/agent-history record-fixtures --extend`. Then put its inline datum in BUILT_STAKE_HEX and the
-// fields that it decodes to in BUILT_STAKE, here and in packages/vector-read/test/reputation-datum.test.ts.
-export const BUILT_STAKE: StakeDatum = {
-  agent_did: '5542837bc3a6ccd66cb75ac91a796cf5716d439f4a72594bbfc06db7231029db', owner_pkh: '401af418a7e6fb106277292881fcdeaa1cc15b5b112e9c8bdb2d46c9',
-  stake_amount: 10_000_000n, staked_capabilities: [Buffer.from('ocr.page.extract.chandra-ocr-2.v1').toString('hex')], last_updated: 1_794_745_920_000,
-  history_points: 0n, challenge_locks: [], stake_id: { txHash: 'ab'.repeat(32), outputIndex: 1 },
+// The stake of these tests is a recorded one: the output 48d4ce7b...#0 at the stake address on Vector mainnet, as Koios gave it (`utxo_info`, extended) on 2026-11-23. It is the
+// stake of a test record of the Foundation. RECORDED_STAKE_HEX is the inline datum of that output, byte for byte. RECORDED_STAKE holds the fields that it decodes to.
+// packages/vector-read/test/reputation-datum.test.ts holds the same datum and pins the codec to it. When the layout of the datum changes, take the inline datum of a stake
+// of the new layout from Koios, and put it in RECORDED_STAKE_HEX and the fields that it decodes to in RECORDED_STAKE, here and in that file.
+export const RECORDED_STAKE: StakeDatum = {
+  agent_did: '4e1272ee30e5bdf5ad75be55553563a7056ab228295c70ffda988892da4a8fe9', owner_pkh: '34267e928e17c77063ee4957b6932182b7d804ed1d3f77c3f4121682',
+  stake_amount: 11_000_000n, staked_capabilities: [Buffer.from('smoke.stake-check.a.v1').toString('hex'), Buffer.from('smoke.stake-check.b.v1').toString('hex')],
+  last_updated: 1_795_425_911_000, history_points: 0n, challenge_locks: [], stake_id: { txHash: 'c4ec66206f6f917519f411f9fbab1d709c918b30acf6bc7951759a513fa22c8c', outputIndex: 0 },
 };
-export const BUILT_STAKE_HEX = `d8799f5820${BUILT_STAKE.agent_did}d8799f581c${BUILT_STAKE.owner_pkh}ff1a009896809f5821${BUILT_STAKE.staked_capabilities[0]}ff1b000001a1df316a000080d8799f5820${'ab'.repeat(32)}01ffff`;
+export const RECORDED_STAKE_HEX = 'd8799f58204e1272ee30e5bdf5ad75be55553563a7056ab228295c70ffda988892da4a8fe9d8799f581c34267e928e17c77063ee4957b6932182b7d804ed1d3f77c3f4121682ff1a00a7d8c09f56736d6f6b652e7374616b652d636865636b2e612e763156736d6f6b652e7374616b652d636865636b2e622e7631ff1b000001a207b940d80080d8799f5820c4ec66206f6f917519f411f9fbab1d709c918b30acf6bc7951759a513fa22c8c00ffff';
 export const addressKey = (address: string) => `POST ${KOIOS_URL}/address_utxos ${JSON.stringify({ _addresses: [address], _extended: true })}`;
 /** The stake token of an agent, as Koios lists it in `asset_list`. */
 export const stakeToken = (agentId: string, quantity = '1'): Asset => ({ policy_id: REPUTATION_SCRIPT_HASH, asset_name: stakeTokenName(agentId), quantity });
@@ -122,3 +122,15 @@ export const stakeRow = (n: number, datum: string | null, assets: Asset[] | null
 });
 /** `store` with the stake address answering with `rows`. */
 export const withStakeRows = (store: FixtureStore, rows: unknown[]): FixtureStore => ({ ...store, [addressKey(M3_REPUTATION_ADDRESS)]: { status: 200, body: JSON.stringify(rows) } });
+/** The one token of the recorded stake output, as Koios lists it in `asset_list`: the policy of the reputation validator, and the name that the codec derives from the agent of the datum. */
+export const RECORDED_STAKE_ASSET: Asset = { policy_id: 'fad945ab20f61a58fbdf6a33a8f491899b7dd4167fb64200bc060424', asset_name: '7273746b5f1b98065ee43002664ff55bc12bba527c45b233b80cd7a4517e1581', quantity: '1' };
+/** The recorded stake output as a row of the extended Koios `address_utxos` answer: its reference, address, value, block, inline datum and token. */
+export const RECORDED_STAKE_ROW: StakeRow = {
+  tx_hash: '48d4ce7bbd9141a0e5787af08a2cb14aa6c75b64134f874fa64bc8a4155eb6ad', tx_index: 0, address: 'addr1w8adj3dtyrmp5k8mma4r8285jxyeklw5zelmvssqhsrqgfqc9uavs', value: '11000000',
+  block_height: 9_609_690, inline_datum: { bytes: RECORDED_STAKE_HEX }, asset_list: [RECORDED_STAKE_ASSET],
+};
+/** `store` with the recorded stake output at the stake address, and with no legacy registry record of the agent that its datum names: a report for that agent has a stake and no record. */
+export const withRecordedStake = (store: FixtureStore): FixtureStore => ({
+  ...withStakeRows(store, [RECORDED_STAKE_ROW]),
+  [`POST ${KOIOS_URL}/asset_utxos ${JSON.stringify({ _asset_list: [[LEGACY_REGISTRY.policy, RECORDED_STAKE.agent_did]], _extended: true })}`]: { status: 200, body: '[]' },
+});

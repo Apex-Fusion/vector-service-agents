@@ -11,13 +11,13 @@ import { replayFetch, didFor, M3_ENDORSEMENT_ADDRESS } from '@vsa/vector-read';
 import { assertCborHexDepth, cborDepth } from '@vsa/vector-read/cbor-depth';
 import { reputationSection } from '../src/modules.ts';
 import type { Subject } from '../src/subject.ts';
-import { BUILT_STAKE, BUILT_STAKE_HEX, addressKey, stakeRow, stakeToken, withStakeRows } from './support.ts';
+import { RECORDED_STAKE, RECORDED_STAKE_HEX, addressKey, stakeRow, stakeToken, withStakeRows } from './support.ts';
 import { watchDecoder } from './decoder-watch.ts';
 
 const fx = JSON.parse(readFileSync(new URL('./fixtures/chandra.json', import.meta.url), 'utf8'));
-const CHANDRA = BUILT_STAKE.agent_did;
-const OWNER = BUILT_STAKE.owner_pkh;
-const subject: Subject = { kind: 'asset', pkh: null, asset_name: CHANDRA, did: didFor(CHANDRA), registry: 'legacy', controller_pkh: OWNER, candidates: [] };
+const AGENT = RECORDED_STAKE.agent_did;
+const OWNER = RECORDED_STAKE.owner_pkh;
+const subject: Subject = { kind: 'asset', pkh: null, asset_name: AGENT, did: didFor(AGENT), registry: null, controller_pkh: OWNER, candidates: [] };
 /** CBOR hex of an array nested `levels` levels deep, with the integer 0 inside: valid Plutus data. */
 const nested = (levels: number): string => `${'81'.repeat(levels)}00`;
 const DEEP = nested(5000);
@@ -27,8 +27,8 @@ afterEach(() => { vi.restoreAllMocks(); });
 describe('a datum that nests too deep is skipped', () => {
   test('a stake output: skipped, with its token, and Data.from does not run for it; the stake beside it is read', async () => {
     const watch = watchDecoder(Data, 'from');
-    const token = [stakeToken(CHANDRA)];
-    const store = withStakeRows(fx.store, [stakeRow(1, nested(65), token), stakeRow(2, BUILT_STAKE_HEX, token), stakeRow(3, DEEP, token)]);
+    const token = [stakeToken(AGENT)];
+    const store = withStakeRows(fx.store, [stakeRow(1, nested(65), token), stakeRow(2, RECORDED_STAKE_HEX, token), stakeRow(3, DEEP, token)]);
     const r = await reputationSection(subject, replayFetch(store));
     expect(r.stakes.map((s) => s.utxo)).toEqual([`${stakeRow(2, null, null).tx_hash}#0`]);
     expect(watch.reached()).toBe(0);
@@ -38,7 +38,7 @@ describe('a datum that nests too deep is skipped', () => {
   test('an endorsement output: skipped, and the endorsement beside it is found', async () => {
     const watch = watchDecoder(Data, 'from');
     const row = (n: number, datum: string) => ({ tx_hash: n.toString(16).padStart(64, 'd'), tx_index: 0, address: M3_ENDORSEMENT_ADDRESS, value: '2000000', block_height: 9_100_000 + n, inline_datum: { bytes: datum }, asset_list: [] });
-    const named = Data.to(new Constr(0, [CHANDRA, new Constr(0, ['77'.repeat(28)])]));
+    const named = Data.to(new Constr(0, [AGENT, new Constr(0, ['77'.repeat(28)])]));
     const store = { ...fx.store, [addressKey(M3_ENDORSEMENT_ADDRESS)]: { status: 200, body: JSON.stringify([row(1, nested(65)), row(2, named), row(3, DEEP)]) } };
     const r = await reputationSection(subject, replayFetch(store));
     expect(r.endorsements.map((e) => e.utxo)).toEqual([`${row(2, named).tx_hash}#0`]);
@@ -48,9 +48,9 @@ describe('a datum that nests too deep is skipped', () => {
 });
 
 describe('real data is inside the limit', () => {
-  /** Every inline datum of the recorded answers of Koios and of the built stake: the check accepts each, and none nests more than 16 levels. */
-  test('every recorded datum is accepted, and the built stake too', () => {
-    const datums: string[] = [BUILT_STAKE_HEX];
+  /** Every inline datum of the recorded answers of Koios and of the recorded stake: the check accepts each, and none nests more than 16 levels. */
+  test('every recorded datum is accepted, and the recorded stake too', () => {
+    const datums: string[] = [RECORDED_STAKE_HEX];
     const walk = (x: unknown): void => {
       if (Array.isArray(x)) x.forEach(walk);
       else if (x !== null && typeof x === 'object') {
