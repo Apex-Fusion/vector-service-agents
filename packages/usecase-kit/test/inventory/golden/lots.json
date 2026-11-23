@@ -1,0 +1,8 @@
+{
+  "schema": "vector.usecase.lots.v1",
+  "items": [
+    { "sku": "GLV-NIT-M", "lots": { "lot-small": 10, "lot-medium": 50, "lot-large": 200 } },
+    { "sku": "SYR-10ML", "lots": { "lot-small": 25, "lot-medium": 100, "lot-large": 400 } },
+    { "sku": "MSK-N95", "lots": { "lot-small": 20, "lot-medium": 100, "lot-large": 400 } }
+  ]
+}
