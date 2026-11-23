@@ -6,7 +6,7 @@ The service does the job.
 `createJobServer` is the HTTP surface of the service.
 It has a job route, a pre-check route, a health check and a manifest route.
 
-This page describes the pre-check route, the job context and the timing of the job slot.
+This page describes the pre-check route, the job context, the open routes and the timing of the job slot.
 The head of `src/server.ts` describes the other routes.
 
 ## Routes
@@ -18,6 +18,10 @@ The head of `src/server.ts` describes the other routes.
 | `POST /` | the runtime | the result of the job |
 | `POST /precheck` | the runtime | go or refusal, before the runtime claims the escrow |
 | anything else | anyone | 404 `{error: "not_found"}` |
+
+A service can add public routes of its own with the option `openRoutes`.
+The section "Open routes" describes them.
+A server made with no `openRoutes` answers 404 for every other path.
 
 `POST /` and `POST /precheck` need the token of the runtime.
 The runtime sends the token in the `authorization` header.
@@ -170,6 +174,123 @@ It looks before the option is asked, so that a busy service does no work for the
 It looks again when the option has answered go, because a job can take the slot while the option runs.
 The answer is 409 if the slot is not free then.
 
+## Open routes
+
+A service can serve public paths of its own, next to the four routes above.
+The two services of use case 1 (inventory reorder) need it.
+One serves a co-sign route.
+The other serves a lots file.
+The option `openRoutes` of `createJobServer` lists the paths.
+A server made with no `openRoutes` answers every request as before.
+
+```ts
+interface OpenReply { readonly status: number; readonly headers: Readonly<Record<string, string>>; readonly body: string }
+interface OpenRequest {
+  readonly method: string | undefined;
+  readonly headers: Readonly<Record<string, string | string[] | undefined>>;
+  /** The body as chunks. The request of the server is one. */
+  readonly body: AsyncIterable<Uint8Array | string>;
+}
+interface OpenRoute {
+  readonly path: string;
+  readonly methods: readonly ('GET' | 'POST')[];
+  readonly handle: (request: OpenRequest) => Promise<OpenReply> | OpenReply;
+}
+
+createJobServer({
+  // ...
+  openRoutes: [{ path: '/lots.json', methods: ['GET'], handle: () => ({ status: 200, headers: { 'content-type': 'application/json' }, body: LOTS_TEXT }) }],
+});
+```
+
+`OpenReply` has the shape of the answer of the co-sign route of the use-case kit.
+`OpenRequest` has the three members of the request of that route.
+So the `handle` of that route is an `OpenRoute.handle`, with no wrapper.
+The use-case kit imports this kit, and never the other way.
+
+### What an open route is
+
+- It needs no token, and it takes no job slot.
+- A job that runs does not block it. A reservation of the slot stays as it was.
+- It never runs a job or a pre-check.
+- The four paths of the kit win: `/`, `/precheck`, `/healthz` and `/agent.json`.
+- The caller can be anyone. The handler checks every rule of its own.
+
+### The check of the list
+
+The kit checks the list when it makes the server.
+A bad list gives a `RangeError`, and the server is not made.
+The message names the path.
+The rules:
+
+- A path starts with `/` and has at most 128 characters.
+- A path has only the characters `A-Z a-z 0-9 . _ ~ / -`. It has no `..`, no `//` and no segment that is only a dot.
+- A query, a `#`, a `%` escape, a space and text that is not ASCII are refused.
+- A path is none of the four paths of the kit.
+- No path is given twice. A path that needs both methods lists both in one entry.
+- `methods` lists `GET`, `POST` or both, each one time. No other value is accepted.
+- `handle` is a function.
+- The list is an array of plain objects. A getter, a Proxy, an inherited member and a class instance are refused.
+- The kit reads each member one time. A later change of the objects changes nothing.
+- `openRouteTimeoutMs` is a whole number from 1 to 60,000.
+
+### The match
+
+- `GET` matches the path whatever the query, as `/agent.json` does.
+- A route that lists `GET` also answers `HEAD`, with the headers and no body. The handler sees the method `HEAD`.
+- `POST` matches only when the whole URL is the path. A query gives 404, as it does for `POST /`.
+- A method that the route does not list gives 404 `{error: "not_found"}`.
+- A path that is not listed gives the same 404.
+
+### The handler
+
+The kit gives each handler a new plain object with three members: `method`, `headers` and `body`.
+It never gives the request of Node.
+A request of Node has no member `body`.
+The kit reads no byte of the body.
+The handler reads it, with a size limit of its own.
+The kit calls `handle` with no `this`, so give a function that needs none.
+
+The reply:
+
+- `status` is a whole number from 200 to 599.
+- `headers` is a plain object. It has text for each name and each value, and Node can send them.
+- `body` is a text.
+- The kit writes `content-length` as the number of bytes of the body.
+- A 204 has no body and no `content-length`. The kit writes neither, and it drops the body of the handler.
+- The kit drops a `content-length`, a `transfer-encoding` and a `trailer` of the handler, in any letter case.
+- The kit closes the connection after the answer when the caller has not sent the whole body yet. It writes `connection: close` and drops a `connection` header of the handler.
+
+The handler is a fault when it throws, rejects, runs longer than the bound, or gives a reply of another shape.
+The answer to a fault is 500 `{error: "internal"}`, with `connection: close`.
+The answer never holds the cause.
+The log gets a line with the path of the route and the message of the cause.
+A route writes one such line at once, and then at most one in 60 seconds.
+The line ends with `(<n> since the last line of this kind)`, the number of failures since the last line of that route.
+A caller who makes a handler fail cannot fill the log.
+The kit never logs the body or the headers of an open route.
+
+The bound is 60 seconds (`OPEN_ROUTE_TIMEOUT_MS`), which is also the default.
+The option `openRouteTimeoutMs` sets a shorter bound.
+The kit cannot stop a handler that runs too long.
+It ignores the answer that comes late, and it writes the reply one time.
+
+### What a handler does for itself
+
+- It reads the body with its own size limit. The kit sets none.
+- It checks who may call and what the call may do.
+- It limits how many calls run at once. The kit sets no limit.
+- It never throws for a bad request. It answers the status that fits.
+
+### A stop
+
+A stop takes no new connection.
+It answers the open-route calls that are in flight.
+It waits until each call has its answer.
+A call that runs too long has its answer at the bound of the route, which is 60 seconds at most.
+A stop that has a shorter wait ends at its own wait, and then it closes the connection of the call.
+A call of an open route holds no job slot, so it never makes a stop say that it abandoned a job.
+
 ## The timing
 
 | What | Time |
@@ -180,7 +301,7 @@ The answer is 409 if the slot is not free then.
 | The job call of that escrow | It takes the reservation at once. |
 | A reservation that no job takes | It ends 120 seconds after the go, to the millisecond. |
 | A job that runs | The server writes `102 Processing` every 60 seconds (`HEARTBEAT_MS`). |
-| A stop | It waits up to 300 seconds (`SHUTDOWN_WAIT_MS`) for the job that runs. |
+| A stop | It waits up to 300 seconds (`SHUTDOWN_WAIT_MS`) for the job that runs. It also waits for an open route in flight, until the call has its answer. |
 
 All times come from the `clock` option of `createJobServer`.
 A test moves the clock by hand.
