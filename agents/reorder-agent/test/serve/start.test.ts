@@ -5,9 +5,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:http';
-import type { Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -390,25 +387,9 @@ async function until(condition: () => boolean, ms = 20_000): Promise<void> {
 }
 
 describe('src/index.ts as a process', () => {
-  /** A stand-in node: it answers the start time of the chain and an empty list of outputs for each address, and nothing else. It is the one address that the child process can reach. */
-  async function standInNode(): Promise<string> {
-    const server: Server = createServer((req, res) => {
-      let body = '';
-      req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8'); });
-      req.on('end', () => {
-        const call = JSON.parse(body) as { method: string };
-        const result = call.method === 'queryNetwork/startTime' ? '2025-08-29T16:40:00Z' : [];
-        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', result, id: null }));
-      });
-    });
-    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve); });
-    open.push(() => new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }));
-    return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  }
-
   /**
-   * The environment of the child: the complete environment, and no setting of this process. The addresses that the child could use point at the stand-in node or at a port that nothing holds. The one fetch of the
-   * start that is not a call to the node, the Module-1 manifest at its pinned address, is answered by `child-fetch.mjs`, which a child loads before the service: no child reaches a network.
+   * The environment of the child: the complete environment, and no setting of this process. The addresses that the child could use point at a port that nothing holds. The two fetches of the start that are not made
+   * to such a port, the Module-1 manifest at its pinned address and the calls to the node at its https address, are answered by `child-fetch.mjs`, which a child loads before the service: no child reaches a network.
    */
   const run1 = (env: NodeJS.ProcessEnv) => {
     const inherited: NodeJS.ProcessEnv = { ...process.env };
@@ -421,11 +402,10 @@ describe('src/index.ts as a process', () => {
     const exited = new Promise<number | null>((resolve) => child.on('exit', (code) => resolve(code)));
     return { child, exited, out: () => out, err: () => err };
   };
-  const offChain = (ogmios: string): NodeJS.ProcessEnv => ({ VECTOR_OGMIOS_URL: ogmios, VECTOR_KOIOS_URL: 'http://127.0.0.1:9', VECTOR_SUBMIT_URL: 'http://127.0.0.1:9', IDENTITY_GATEWAY_URL: 'https://127.0.0.1:9' });
+  const OFF_CHAIN: NodeJS.ProcessEnv = { VECTOR_OGMIOS_URL: 'https://198.51.100.8:1337', VECTOR_KOIOS_URL: 'http://127.0.0.1:9', VECTOR_SUBMIT_URL: 'http://127.0.0.1:9', IDENTITY_GATEWAY_URL: 'https://127.0.0.1:9' };
 
   test('exits 1 at start with the variable named, and listens on nothing, when a setting is missing, a key is in the wrong line or the fault switch is set', async () => {
     const dir = tempDir();
-    const ogmios = await standInNode();
     const cases: Array<[NodeJS.ProcessEnv, RegExp]> = [
       [{ COSIGN_ALLOWLIST: undefined }, /^\[reorder-agent\] cannot start: .*COSIGN_ALLOWLIST is not set/],
       [{ REORDER_DELEGATION_2_PRIV_KEY_HEX: '' }, /^\[reorder-agent\] cannot start: environment variable REORDER_DELEGATION_2_PRIV_KEY_HEX is required/],
@@ -434,7 +414,7 @@ describe('src/index.ts as a process', () => {
       [{ VECTOR_MODULE1_MANIFEST: MODULE1_FIXTURE }, /^\[reorder-agent\] cannot start: environment variable VECTOR_MODULE1_MANIFEST must be an https address/],
     ];
     const results = await Promise.all(cases.map(async ([env]) => {
-      const p = run1({ ...completeEnv({ REORDER_STATE_DIR: dir, ...env }), ...offChain(ogmios) });
+      const p = run1({ ...completeEnv({ REORDER_STATE_DIR: dir, ...env }), ...OFF_CHAIN });
       return { code: await p.exited, out: p.out(), err: p.err() };
     }));
     cases.forEach(([, refusal], index) => {
@@ -447,8 +427,7 @@ describe('src/index.ts as a process', () => {
 
   test('started for real: it logs its line, answers /healthz and /agent.json, refuses a job without the token, prints no secret, and stops on SIGTERM with exit 0', async () => {
     const dir = tempDir();
-    const ogmios = await standInNode();
-    const p = run1({ ...completeEnv({ REORDER_STATE_DIR: dir, VECTOR_MARKETPLACE_INDEXER_URL: undefined }), ...offChain(ogmios) });
+    const p = run1({ ...completeEnv({ REORDER_STATE_DIR: dir, VECTOR_MARKETPLACE_INDEXER_URL: undefined }), ...OFF_CHAIN });
     try {
       await until(() => /listening on 127\.0\.0\.1:\d+/.test(p.out()) || p.child.exitCode !== null);
       const port = /listening on 127\.0\.0\.1:(\d+)/.exec(p.out())?.[1];

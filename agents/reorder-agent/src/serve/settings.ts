@@ -171,11 +171,17 @@ export interface Endpoints {
   readonly indexerUrl: string | undefined;
 }
 
+/**
+ * The endpoints of the chain, the identity gateway and the indexer. `VECTOR_OGMIOS_URL` must be an https address: the janitor makes its reader of the tip, `tipSlotOf`, from it at its first pass, and that reader
+ * takes https only, so an http address would pass the start and fail at that pass, and a left sub-delegation would stay on the list for ever.
+ */
 export function endpointsFromEnv(env: NodeJS.ProcessEnv): Endpoints {
   const indexer = given(env.VECTOR_MARKETPLACE_INDEXER_URL);
+  const ogmiosUrl = addressOf('VECTOR_OGMIOS_URL', given(env.VECTOR_OGMIOS_URL), VECTOR_OGMIOS_URL);
+  if (new URL(ogmiosUrl).protocol !== 'https:') throw new Error(`environment variable VECTOR_OGMIOS_URL must be an https address: the tip reader of the janitor takes https only, and it has ${ogmiosUrl.length} characters`);
   return {
     gatewayUrl: httpsOriginOf('IDENTITY_GATEWAY_URL', given(env.IDENTITY_GATEWAY_URL) || GATEWAY_DEFAULT).origin,
-    ogmiosUrl: addressOf('VECTOR_OGMIOS_URL', given(env.VECTOR_OGMIOS_URL), VECTOR_OGMIOS_URL),
+    ogmiosUrl,
     koiosUrl: addressOf('VECTOR_KOIOS_URL', given(env.VECTOR_KOIOS_URL), VECTOR_KOIOS_URL),
     submitUrl: addressOf('VECTOR_SUBMIT_URL', given(env.VECTOR_SUBMIT_URL), VECTOR_SUBMIT_URL),
     indexerUrl: indexer === '' ? undefined : addressOf('VECTOR_MARKETPLACE_INDEXER_URL', indexer, indexer),

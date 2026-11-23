@@ -104,7 +104,7 @@ A value that breaks a rule stops the service at start, and the message names the
 | `SERVICE_AUTH_HEADER` | the `authorization` header of the runtime, `Bearer ` and 64 hex characters. Never published, never logged | none. Required |
 | `FAULT_MODE` | the one fault switch. The Reorder Agent has no fault value: any value stops the start | empty |
 | `PORT`, `HOST` | where the service listens | `9101`, `0.0.0.0` |
-| `VECTOR_OGMIOS_URL`, `VECTOR_KOIOS_URL`, `VECTOR_SUBMIT_URL` | the chain endpoints, which `packages/buyer-core` reads | the endpoints of Vector mainnet |
+| `VECTOR_OGMIOS_URL`, `VECTOR_KOIOS_URL`, `VECTOR_SUBMIT_URL` | the chain endpoints, which `packages/buyer-core` reads. `VECTOR_OGMIOS_URL` must be an `https://` address, because the tip reader of the janitor takes https only | the endpoints of Vector mainnet |
 | `VECTOR_MARKETPLACE_INDEXER_URL` | the marketplace indexer in which the suppliers are found. The code reads it when it loads | the default of `packages/buyer-core` |
 | `VECTOR_IDENTITY_LEGACY_ROOT`, `VECTOR_IDENTITY_CONFIG_SEED`, `VECTOR_IDENTITY_ESCROW_REF_UTXO`, `VECTOR_IDENTITY_VAULT_REF_UTXO` | the deployment values of the identity registry and of the vault, under the names that `packages/buyer-core` reads | none. Required |
 | `VECTOR_MODULE1_MANIFEST` | the pinned `https://` address of the Module-1 deployment manifest, which the start fetches one time | none. Required |
@@ -140,7 +140,7 @@ The tests do not reach a chain. They show that the service starts from a complet
 pnpm --filter @vsa/reorder-agent test
 ```
 
-The tests need no network and no key. The folder `test/serve` holds the tests of the settings, the keys, the manifest, the wiring, the server and the start. The start tests run `src/index.ts` as a process against a node that the test makes, with `test/serve/child-fetch.mjs` in front of the one fetch of the start. `test/dockerfile.test.ts` and `test/readme.test.ts` keep the image file and this page to the code.
+The tests need no network and no key. The folder `test/serve` holds the tests of the settings, the keys, the manifest, the wiring, the server and the start. The start tests run `src/index.ts` as a process, with `test/serve/child-fetch.mjs` in front of the fetch of the Module-1 manifest and of the calls to the node. `test/dockerfile.test.ts` and `test/readme.test.ts` keep the image file and this page to the code.
 
 ## Image
 

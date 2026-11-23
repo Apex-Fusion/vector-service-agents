@@ -10,7 +10,7 @@ import { ALLOWLIST, INDEXER, LLM_ADVERT, T0, marketplace, vaultChainWith } from 
 import type { Marketplace } from '@vsa/hire-kit/testing';
 import type { Clock } from '@vsa/usecase-kit/access';
 import type { ModelLimits } from '@vsa/usecase-kit/decision';
-import { parseOrderConfirmation, parsePurchaseOrder } from '@vsa/usecase-kit/inventory';
+import { INVENTORY_CAPABILITIES, REORDER_CLAIM, parseOrderConfirmation, parsePurchaseOrder } from '@vsa/usecase-kit/inventory';
 import { DELEG_A, DEPLOYMENT, SYSTEM_START_MS, liveDelegation, world } from '../../../../packages/usecase-kit/test/cosign/support.ts';
 import type { Module1Provider } from '@vsa/usecase-kit/dispute';
 import { PROPOSE_DEADLINE_MS } from '../../src/propose/index.ts';
@@ -33,7 +33,8 @@ const LIMITS: ModelLimits = {
 };
 const READING = { sku: 'GLV-NIT-M', on_hand: 60, threshold: 100, daily_usage: 12, lead_time_days: 7, open_orders: 0 };
 const LOTS = { 'lot-small': 10, 'lot-medium': 50, 'lot-large': 200 };
-const CHOICE = { lot: 'lot-medium', quantity: 50, needed_by: '2026-12-01' };
+/** The quantity is no size of a lot (the sizes are 10, 50 and 200): a decision that took the quantity from the size of its lot would not give the choice that the model made. */
+const CHOICE = { lot: 'lot-medium', quantity: 40, needed_by: '2026-12-01' };
 
 /** A clock that the sleep of a hire moves, over the clock of the stub marketplace. */
 const clockOf = (m: Marketplace): Clock => ({ now: () => m.clock.now, sleep: async (ms) => { m.clock.now += ms; } });
@@ -45,6 +46,8 @@ interface Setup {
   readonly wired: Wired;
   readonly log: string[];
   readonly chains: Map<string, VaultChain>;
+  /** Every call that a chain of the service made, with the hash of the key of that chain. The reads of the wallet at the start are in it. */
+  readonly used: Array<{ readonly pkh: string; readonly method: string }>;
 }
 
 /** The chain of each key: the FakeChain of the stub marketplace, with the wallet of the key. A chain is made once for each key, and the test reads the map. */
@@ -54,17 +57,19 @@ async function setup(over: { env?: NodeJS.ProcessEnv; options?: Partial<WiringOp
   const config = loadConfig(completeEnv({ REORDER_STATE_DIR: dir, VECTOR_MARKETPLACE_INDEXER_URL: INDEXER, ...over.env }));
   const log: string[] = [];
   const chains = new Map<string, VaultChain>();
+  const used: Array<{ readonly pkh: string; readonly method: string }> = [];
   const wired = await wire({ ...config, modelLimits: LIMITS }, {
     fetchImpl: (over.fetch ?? withModule1)(m.fetchImpl), clock: clockOf(m), log: (line) => { log.push(line); }, provider: over.provider ?? world([liveDelegation(DELEG_A.keyHash)]), tipSlot: async () => 0,
     createChain: async (options) => {
       const pkh = keyOf(options.privateKeyHex).pkh;
       const chain = vaultChainWith(m, { wallet: async () => ({ ...(await m.chain.wallet()), buyerPkh: pkh }) });
       chains.set(pkh, chain);
-      return chain;
+      // The chain that the service gets records each call with the key hash of its key, so a test reads which key paid.
+      return Object.fromEntries(Object.entries(chain).map(([method, member]) => [method, typeof member === 'function' ? (...args: unknown[]) => { used.push({ pkh, method }); return (member as (...call: unknown[]) => unknown)(...args); } : member])) as VaultChain;
     },
     ...over.options,
   });
-  return { m, dir, config, wired, log, chains };
+  return { m, dir, config, wired, log, chains, used };
 }
 
 describe('one queue for each key, one set of ids, one counter and one list for the process', () => {
@@ -96,6 +101,28 @@ describe('one queue for each key, one set of ids, one counter and one list for t
       expect(janitor.signerOf(pkh)).toBeNull();
       expect(() => janitor.queueOf(pkh)).toThrow(/does not hold/);
     }
+  });
+
+  test('the dispute code runs in the lane of the service key: a call that needs the key waits while the lane is held, and goes on when the lane is free', async () => {
+    const calls: string[] = [];
+    const base = world([liveDelegation(DELEG_A.keyHash)]);
+    // The provider records each call that the dispute code makes to the node.
+    const provider = new Proxy(base, { get: (target, name) => { const member = Reflect.get(target, name, target); return typeof member === 'function' ? (...args: unknown[]) => { calls.push(String(name)); return member.apply(target, args); } : member; } });
+    const run = await setup({ provider });
+    const input = {
+      capability_id: INVENTORY_CAPABILITIES.reorder, manifest_sha256: 'ab'.repeat(32), claim: REORDER_CLAIM, stake_lovelace: 5_000_000n, challenge_window_ms: 3_600_000, claim_type: 'reorder',
+    } as unknown as Parameters<Wired['dispute']['stakeRunClaim']>[0];
+    let release: () => void = () => undefined;
+    const held = run.wired.service.lane.run(() => new Promise<void>((resolve) => { release = resolve; }));
+    const before = calls.length;
+    const claim = run.wired.dispute.stakeRunClaim(input);
+    // The call is a chain of promises with no timer. Real time passes, and nothing of it may reach the node while the lane is held.
+    await new Promise<void>((resolve) => { setTimeout(resolve, 100); });
+    expect(calls.length).toBe(before);
+    release();
+    await held;
+    await claim;
+    expect(calls.length).toBeGreaterThan(before);
   });
 
   test('a run of propose and the janitor share one set of delegation ids, and the set is the one the wiring exposes', async () => {
@@ -188,6 +215,19 @@ describe('the decision `reorder` of a job of propose', () => {
     expect(prompt).toContain('GLV-NIT-M');
     expect(run.log.filter((line) => line.startsWith('booked a Post'))).toHaveLength(1);
     expect(run.log.filter((line) => line.startsWith('booked an Accept'))).toHaveLength(1);
+    // The key that pays: the Post and the Accept of the model hire are made by the chain of the service key, and no chain of a delegation key makes a call but the read of its wallet at the start.
+    const servicePkh = run.config.keys.service.pkh;
+    expect(run.used.filter((call) => call.method === 'postEscrow').map((call) => call.pkh)).toStrictEqual([servicePkh]);
+    expect(run.used.filter((call) => call.method === 'accept').map((call) => call.pkh)).toStrictEqual([servicePkh]);
+    expect(run.used.filter((call) => call.pkh !== servicePkh && call.method !== 'wallet')).toStrictEqual([]);
+  });
+
+  test('the log of proposeDeps and of executeDeps is the log of the service: a line that each one writes is in the service log', async () => {
+    const run = await setup();
+    run.wired.proposeDeps(T0).log('marker of the propose deps');
+    run.wired.executeDeps(T0).log('marker of the execute deps');
+    expect(run.log.some((line) => line.includes('marker of the propose deps'))).toBe(true);
+    expect(run.log.some((line) => line.includes('marker of the execute deps'))).toBe(true);
   });
 
   test('the book of the hire logs the lock, the fee and the transaction hash and nothing else', async () => {

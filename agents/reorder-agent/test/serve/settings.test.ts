@@ -95,10 +95,15 @@ describe('the numbers of the advert', () => {
 describe('the endpoints, the mock service and the Module-1 manifest', () => {
   test('the defaults are the endpoints of Vector mainnet, and an address with a user, a wrong scheme or no address form stops the start without repeating it', () => {
     expect(endpointsFromEnv({})).toStrictEqual({ gatewayUrl: GATEWAY_DEFAULT, ogmiosUrl: VECTOR_OGMIOS_URL, koiosUrl: VECTOR_KOIOS_URL, submitUrl: VECTOR_SUBMIT_URL, indexerUrl: undefined });
-    const set = endpointsFromEnv({ IDENTITY_GATEWAY_URL: 'https://gateway.example', VECTOR_OGMIOS_URL: 'http://127.0.0.1:1337', VECTOR_MARKETPLACE_INDEXER_URL: 'https://indexer.example/api' });
-    expect(set).toMatchObject({ gatewayUrl: 'https://gateway.example', ogmiosUrl: 'http://127.0.0.1:1337', indexerUrl: 'https://indexer.example/api' });
+    const set = endpointsFromEnv({ IDENTITY_GATEWAY_URL: 'https://gateway.example', VECTOR_OGMIOS_URL: 'https://127.0.0.1:1337', VECTOR_MARKETPLACE_INDEXER_URL: 'https://indexer.example/api' });
+    expect(set).toMatchObject({ gatewayUrl: 'https://gateway.example', ogmiosUrl: 'https://127.0.0.1:1337', indexerUrl: 'https://indexer.example/api' });
     const withUser = messageOf(() => endpointsFromEnv({ VECTOR_KOIOS_URL: `https://user:${MARKER}@koios.example` }));
     expect(withUser).toMatch(/^environment variable VECTOR_KOIOS_URL must be an http or https address with no user and no password/);
+    // The tip reader of the janitor takes https only and is made at the first pass of the janitor, so an http address of the node stops the start by name, and its https twin is accepted.
+    const http = messageOf(() => endpointsFromEnv({ VECTOR_OGMIOS_URL: `http://node.example:1337/${MARKER}` }));
+    expect(http).toMatch(/^environment variable VECTOR_OGMIOS_URL must be an https address/);
+    expect(http).not.toContain(MARKER);
+    expect(endpointsFromEnv({ VECTOR_OGMIOS_URL: 'https://node.example:1337' }).ogmiosUrl).toBe('https://node.example:1337');
     expect(withUser).not.toContain(MARKER);
     expect(messageOf(() => endpointsFromEnv({ VECTOR_SUBMIT_URL: 'ftp://submit.example' }))).toMatch(/^environment variable VECTOR_SUBMIT_URL must be an http or https address/);
     expect(messageOf(() => endpointsFromEnv({ VECTOR_OGMIOS_URL: MARKER }))).not.toContain(MARKER);
