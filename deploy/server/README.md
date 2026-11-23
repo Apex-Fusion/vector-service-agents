@@ -37,6 +37,33 @@ The mock service uses about 140 MiB with no tenant. It keeps its tenants in memo
 Docker, Caddy and the system use about 0.6 GiB more. The rest of the memory is for jobs, for image pulls and for a container that starts again.
 Keep 1 GiB available when a container starts.
 
+## The runtime image
+
+CI builds one runtime image. Every runtime of the host runs it. The image comes from the agent template at one pinned commit.
+
+| Item | Value |
+|---|---|
+| Image | `ghcr.io/apex-fusion/vector-service-agents/agent-runtime` |
+| Source | The repository `Apex-Fusion/vector-agent-template`, at the commit in the `ref` of `.github/workflows/ci.yml`. A step fails the job when the checkout is not at that commit. |
+| Tags | `:latest` and `:<full git commit sha>`. Only the `publish` job pushes them. The `build` job builds the image on every pull request and pushes nothing. |
+| Label | `vector-agent-template.commit` holds the full commit of the template. |
+| In a compose file | `ghcr.io/apex-fusion/vector-service-agents/agent-runtime@sha256:<digest>`. A tag moves, so a compose file never names the image by a tag. |
+
+The operator takes the digest of the image that CI pushed for the reviewed commit, as for the mock service (RUNBOOK, step 6, "Run the mock service").
+
+The first publish makes the package. A new package can be private. The host pulls with no login, so set the package to public in its settings. A pull of a private package says `denied`.
+
+### Move the pin
+
+The pin is one full commit of 40 hex digits. BuildKit does not resolve a short commit. Change the commit in one pull request, in all of these places:
+
+1. The `ref` of the checkout of the template, in the job `build` and in the job `publish` of `.github/workflows/ci.yml`.
+2. The check step after each of the two checkouts.
+3. The label `vector-agent-template.commit` in the job `publish`.
+4. The build context of each compose file in `deploy/host`. Each context ends with `#<commit>`.
+
+The compose files of `deploy/host` build the runtime on their own host from the same commit. They do not use this image. A test in `scripts/deploy.test.mjs` compares the four files with the workflow. The test fails when one place names another commit.
+
 ## What the script does
 
 1. It stops at once, and changes nothing, when the host already runs the agents of the present host.

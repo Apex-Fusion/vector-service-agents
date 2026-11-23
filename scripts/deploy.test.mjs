@@ -6904,3 +6904,12 @@ test('CI: the runtime image is named by its digest in every compose file of the 
   for (const twin of [`${RT.image}@sha256:<digest>`, `${RT.image}@sha256:${'ab'.repeat(32)}`, 'ghcr.io/apex-fusion/vector-service-agents/mock-systems:latest']) assert.deepEqual(runtimeReferenceProblems(compose(twin)), [], twin);
   for (const bad of [`${RT.image}:latest`, `${RT.image}:${'a'.repeat(40)}`, RT.image, `${RT.image}@sha256:abc`, `${RT.image}@sha256:${'AB'.repeat(32)}`]) assert.equal(runtimeReferenceProblems(compose(bad)).length, 1, bad);
 });
+
+test('CI: the runtime image: the README of deploy/server follows its section of the host with a section that names the image and its digest form, the places of the pin, and the package visibility', () => {
+  const readme = srvRead('README.md');
+  const text = section(readme, 'The runtime image');
+  assert.ok(text.length > 0, 'the section is there');
+  const at = (heading) => readme.indexOf(`\n## ${heading}\n`);
+  assert.ok(at('The host') > 0 && at('The host') < at('The runtime image') && at('The runtime image') < at('What the script does'), 'after the host, before the script');
+  for (const part of [`${RT.image}@sha256:<digest>`, '`:latest`', '`:<full git commit sha>`', RT.commitLabel, RT.repository, '`ref`', 'deploy/host', 'scripts/deploy.test.mjs', 'public']) assert.ok(text.includes(part), part);
+});
