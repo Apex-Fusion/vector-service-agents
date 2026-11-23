@@ -6,25 +6,27 @@ Capability `supplychain.order.accept.v1`. For a supplier: takes a purchase order
 
 PROPOSED (built, not deployed). Since 2026-11-23.
 
-The service is built. Its tests run the hook (the check that comes before the Claim), the job, the order book and the manifest against stand-ins for the identity gateway, the ledger, the supplier portal, a model supplier and the dispute code, with no network. The agent has no registry record, no advert and no job yet. Nothing on this page is LIVE or DEPLOYED.
+Nothing on this page is LIVE or DEPLOYED.
+
+The service is built. Its tests run the hook (the check that comes before the Claim), the job, the order book and the manifest against stand-ins for the identity gateway, the ledger, the supplier portal, a model supplier and the dispute code, with no network. The agent has no registry record, no advert and no job yet. It is the supplier side of use case 1 (inventory reorder). Its counterparty is the Reorder Agent.
 
 ## Identity
 
 This agent has no registry record yet.
 
-Planned. The values are filled at registration.
+The table gives the design of the record. A value that the registration fixes reads "assigned at registration".
 
 | Field | Value |
 |---|---|
-| DID | assigned at registration |
-| Controller | a controller key of this deployment |
-| Supplier keys | three, one for each runtime. A runtime signs its receipts, and the Claim and Submit transactions of its escrows, with the supplier key of its own. The manifest gives the key hash and the public key of each runtime in `terms.tiers`. `identity.supplier_key` names the key of the small runtime as a key of the DID (`<DID>#<key hash>`) |
-| Service key | one key, held by the service and by no runtime. It pays for the model hire of each decision, signs the transactions of the dispute code and signs the request for the X.509-SVID. The manifest publishes its key hash as `keys.service_pkh`. The service holds the key hashes and the public keys of the three runtimes, and no private supplier key |
-| Parties | Accountable: the Accountable key of the organisation. Responsible: Module-1. Provider: the Provider key. Guardians: two, with a threshold of 2 |
-| Organisation | `alfa.vector.apexfusion.org`, with the description "Demonstration organisation run by the Apex Fusion Foundation", verified by a DNS TXT record |
-| Public URL | to be set: one host name for each runtime. The manifest names the lots file at `/lots.json` on the host name of the small runtime |
-| Reputation stake | a Module-3 self-stake on the capability, made with the service key |
-| Claim | a Module-1 claim on the statements of Claim statements, staked for each run |
+| DID | assigned at registration. The service reads it from `AGENT_DID`, and the manifest gives it as `identity.did` |
+| Controller | a controller key of this deployment. The Known gaps section says who holds the keys of the parties |
+| Supplier keys | three, one for each runtime, listed in the record for the authentication and transaction purposes. A runtime signs its receipts, and the Claim and Submit transactions of its escrows, with the supplier key of its own. The manifest gives the key hash and the public key of each runtime in `terms.tiers`. `identity.supplier_key` names the key of the small runtime as a key of the DID (`<DID>#<key hash>`) |
+| Service key | one key, listed in the record for the authentication and transaction purposes. The service holds it and no runtime holds it. It pays for the model hire of each decision, signs the transactions of the dispute code and signs the request for the X.509-SVID. The manifest publishes its key hash as `keys.service_pkh`. The service holds the key hashes and the public keys of the three runtimes, and no private supplier key |
+| Parties | Accountable: the Accountable key of the organisation, with its domain. Responsible: Module-1. Provider: the Provider key. Guardians: the guardian key of the organisation and a controller key of this deployment, with threshold 2 |
+| Organisation | the domain `alfa.vector.apexfusion.org`, with the description "Demonstration organisation run by the Apex Fusion Foundation". The identity gateway verifies the domain with a DNS TXT record |
+| Public URL | planned: three origins, one for each runtime, `https://mp-suppliers-orders-small.vector.apexfusion.org`, `https://mp-suppliers-orders-medium.vector.apexfusion.org` and `https://mp-suppliers-orders-large.vector.apexfusion.org`, the origins of the runtimes in the pack. The manifest names the lots file at `/lots.json` on the origin of the small runtime. The agent has no advert yet |
+| Reputation stake | a Module-3 self-stake on the capability, owned by the service key |
+| Claim | a Module-1 claim for each run, staked with the service key. See Claim statements |
 
 ## Capability id
 
@@ -80,10 +82,12 @@ The price stands for the size of the order on the ledger. It lets the vault limi
 | Job deadline, set by the service when a request arrives | 300000 ms |
 | Request | at most 900000 bytes of wire payload |
 | Model calls | one for each job: the decision `availability` |
+| Jobs at a time | one: a second job gets 409 `busy` |
+| Reservation | a go from `POST /precheck` reserves the job slot for 120 s |
 
-The limit on a request counts the wire payload: the request JSON written as a string inside a one-message array. It does not count the body of the call that a buyer makes to a runtime. The buyer puts the wire payload inside a second JSON object, and each quote mark and each backslash of the wire payload then gets one more byte. The runtime refuses a body above 1048576 bytes (1 MiB). So the limit of 900000 bytes is safe only below the limit of the runtime, on the escaped body, and a buyer must keep the body of its call at or below 1048576 bytes. The service reads at most 1000000 bytes of wire payload and refuses more with `request_too_large` (400).
+**The request limit.** The limit on a request counts the wire payload: the request JSON written as a string inside a one-message array. The manifest publishes it in `terms.input_limits.request_bytes`. The limit does not count the body of the call that a buyer makes to a runtime. The buyer puts the wire payload inside a second JSON object, and each quote mark and each backslash of the wire payload then gets one more byte. The runtime refuses a body above 1048576 bytes (1 MiB). So the limit of 900000 bytes is safe only below the limit of the runtime, on the escaped body, and a buyer must keep the body of its call at or below 1048576 bytes. The service reads at most 1000000 bytes of wire payload and refuses more with `request_too_large` (400).
 
-Economics: on Accept the supplier receives the price and the supplier bond, and the buyer's bond returns to the buyer. A job that the hook refuses, and a job that fails after the Claim, are not paid: the buyer reclaims the escrow after `deliver_by`. The service pays for its one model call from the service key.
+**The money.** A hire of an advert locks its price and both bonds: 4, 7 or 12 units for the small, the medium or the large lot. The buyer pays the lock from a vault of its delegation, and the value limit of the delegation caps that payment. On Accept the supplier receives the price and the supplier bond, and the buyer's bond returns to the buyer. If the buyer does not accept within 600 s of the supplier's Submit, the supplier may Release the escrow and take the price and both bonds. If the supplier never submits, the buyer reclaims after `deliver_by`. A job that the hook refuses, and a job that fails after the Claim, end that way: neither is paid. The service pays for its one model call from the service key.
 
 ## Interface
 

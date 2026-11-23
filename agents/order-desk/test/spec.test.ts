@@ -20,7 +20,7 @@ import { AVAILABILITY_DECISION, ORDER_REFUSAL_STATUS, wrongLotOf } from '../src/
 import { CONTROLLER_GAP, GAPS, NOT_SHOWN_GAP, PAGE_GAPS } from '../src/serve/gaps.ts';
 import { TEMPLATE_ENV, manifestFromEnv } from '../src/serve/manifest.ts';
 import { RequestRefusal, parseOrderRequest } from '../src/serve/server.ts';
-import { CALL_TIMEOUT_MS, JOB_DEADLINE_MS, LOTS_ROUTE, MIN_PROCESSING_WINDOW_MS, RUNTIME_PRECHECK_WAIT_MS, faultOf } from '../src/serve/settings.ts';
+import { CALL_TIMEOUT_MS, JOB_DEADLINE_MS, LOTS_ROUTE, MIN_PROCESSING_WINDOW_MS, RUNTIME_PRECHECK_WAIT_MS, endpointsOf, faultOf } from '../src/serve/settings.ts';
 import { SETTINGS } from '../src/serve/start.ts';
 import { makeRig, refusalOf, sentOrder } from './job/rig.ts';
 import { CATALOGUE_ENTRY, PURCHASE_ORDER, decisionOf, handoffOf, hashOf } from './job/samples.ts';
@@ -56,33 +56,44 @@ describe('specs/order-desk.md: the frame', () => {
     const status = `${manifest.status.chip.toUpperCase()} (built, not deployed). Since ${manifest.status.since}.`;
     expect(section('Status').split('\n')).toContain(status);
     expect(section('Status')).toContain('Nothing on this page is LIVE or DEPLOYED.');
+    expect(section('Status')).toContain('It is the supplier side of use case 1 (inventory reorder). Its counterparty is the Reorder Agent.');
     expect(section('Identity')).toContain('\nThis agent has no registry record yet.\n');
+    expect(section('Identity')).toContain('The table gives the design of the record. A value that the registration fixes reads "assigned at registration".');
     expect(section('Changelog').trim()).toBe(`- ${manifest.version}, ${manifest.status.since}: built`);
     expect(manifest.version).toBe('0.1.0');
   });
 
   test('the Identity table says what the manifest says of the keys: a controller key of this deployment, three public supplier keys and one service key', () => {
     const identity = section('Identity');
-    expect(row(identity, 'DID')).toBe('| DID | assigned at registration |');
-    expect(row(identity, 'Controller')).toBe('| Controller | a controller key of this deployment |');
-    const organisation = row(identity, 'Organisation');
-    expect(organisation.includes('`alfa.vector.apexfusion.org`')).toBe(true);
-    expect(organisation.includes('"Demonstration organisation run by the Apex Fusion Foundation"')).toBe(true);
+    expect(row(identity, 'DID')).toBe('| DID | assigned at registration. The service reads it from `AGENT_DID`, and the manifest gives it as `identity.did` |');
+    expect(SETTINGS).toContain('AGENT_DID');
+    expect(Object.keys(manifest.identity)).toContain('did');
+    expect(row(identity, 'Controller')).toBe('| Controller | a controller key of this deployment. The Known gaps section says who holds the keys of the parties |');
+    expect(row(identity, 'Organisation')).toBe('| Organisation | the domain `alfa.vector.apexfusion.org`, with the description "Demonstration organisation run by the Apex Fusion Foundation". The identity gateway verifies the domain with a DNS TXT record |');
     // The service holds one private key, the service key. It holds the key hash and the public key of each runtime, and the manifest publishes them for each tier.
     expect(SETTINGS.filter((name) => name.endsWith('_PRIV_KEY_HEX'))).toStrictEqual(['ORDER_DESK_SERVICE_PRIV_KEY_HEX']);
     expect(Object.keys(manifest.keys)).toStrictEqual(['service_pkh']);
     for (const tier of manifest.terms.tiers) expect(Object.keys(tier)).toEqual(expect.arrayContaining(['supplier_pkh', 'pub_key_hex']));
     expect(manifest.identity.supplier_key).toBe('<AGENT_DID>#<SMALL_SUPPLIER_PKH>');
     const suppliers = row(identity, 'Supplier keys');
-    expect(suppliers).toContain('three, one for each runtime');
-    expect(suppliers).toContain('The manifest gives the key hash and the public key of each runtime in `terms.tiers`');
+    expect(suppliers).toContain('three, one for each runtime, listed in the record for the authentication and transaction purposes.');
+    expect(suppliers).toContain('The manifest gives the key hash and the public key of each runtime in `terms.tiers`.');
     expect(suppliers).toContain('`identity.supplier_key` names the key of the small runtime as a key of the DID (`<DID>#<key hash>`)');
     const service = row(identity, 'Service key');
-    expect(service).toContain('one key, held by the service and by no runtime');
-    expect(service).toContain('It pays for the model hire of each decision, signs the transactions of the dispute code and signs the request for the X.509-SVID');
-    expect(service).toContain('The manifest publishes its key hash as `keys.service_pkh`');
+    expect(service).toContain('one key, listed in the record for the authentication and transaction purposes. The service holds it and no runtime holds it.');
+    expect(service).toContain('It pays for the model hire of each decision, signs the transactions of the dispute code and signs the request for the X.509-SVID.');
+    expect(service).toContain('The manifest publishes its key hash as `keys.service_pkh`.');
     expect(service).toContain('The service holds the key hashes and the public keys of the three runtimes, and no private supplier key');
-    expect(row(identity, 'Parties')).toBe('| Parties | Accountable: the Accountable key of the organisation. Responsible: Module-1. Provider: the Provider key. Guardians: two, with a threshold of 2 |');
+    expect(row(identity, 'Parties')).toBe('| Parties | Accountable: the Accountable key of the organisation, with its domain. Responsible: Module-1. Provider: the Provider key. Guardians: the guardian key of the organisation and a controller key of this deployment, with threshold 2 |');
+    expect(row(identity, 'Reputation stake')).toBe('| Reputation stake | a Module-3 self-stake on the capability, owned by the service key |');
+    expect(row(identity, 'Claim')).toBe('| Claim | a Module-1 claim for each run, staked with the service key. See Claim statements |');
+    // The public URLs are the origins of the three runtimes of the pack, and the service derives the other two from the origin of the small runtime.
+    const origins = runtimes.map((runtime) => String(runtime.environment?.PUBLIC_ORIGIN));
+    expect(endpointsOf(origins[0])).toStrictEqual({ 'lot-small': origins[0], 'lot-medium': origins[1], 'lot-large': origins[2] });
+    expect(envExample.split('\n')).toContain(`LOTS_PUBLIC_ORIGIN=${origins[0]}`);
+    const url = row(identity, 'Public URL');
+    for (const origin of origins) expect(url.includes(`\`${origin}\``), origin).toBe(true);
+    expect(url).toContain('The manifest names the lots file at `/lots.json` on the origin of the small runtime. The agent has no advert yet |');
   });
 
   test('the Capability id names the three adverts by their lot, and the pack runs the three runtimes in front of the one service', () => {
@@ -145,6 +156,10 @@ describe('specs/order-desk.md: the Terms', () => {
     // The one model call of a job is the decision availability.
     expect(AVAILABILITY_DECISION.name).toBe('availability');
     expect(row(terms, 'Model calls')).toBe('| Model calls | one for each job: the decision `availability` |');
+    // One job at a time, and the slot that a go reserves.
+    expect(row(terms, 'Jobs at a time')).toBe('| Jobs at a time | one: a second job gets 409 `busy` |');
+    expect(ERROR_STATUS.busy).toBe(409);
+    expect(row(terms, 'Reservation')).toBe(`| Reservation | a go from \`POST /precheck\` reserves the job slot for ${RESERVATION_MS / 1000} s |`);
   });
 
   test('the request limit is 900000 bytes of wire payload, and the page says that it is safe only below the limit of the runtime on the escaped body', () => {
@@ -154,16 +169,24 @@ describe('specs/order-desk.md: the Terms', () => {
     expect(MAX_BODY).toBeLessThan(RUNTIME_BODY_LIMIT_BYTES);
     expect(RUNTIME_BODY_LIMIT_BYTES).toBe(1_048_576);
     expect(ERROR_STATUS.request_too_large).toBe(400);
-    expect(terms).toContain('The limit on a request counts the wire payload: the request JSON written as a string inside a one-message array. It does not count the body of the call that a buyer makes to a runtime.');
-    expect(terms).toContain('The buyer puts the wire payload inside a second JSON object, and each quote mark and each backslash of the wire payload then gets one more byte.');
+    expect(terms).toContain('**The request limit.** The limit on a request counts the wire payload: the request JSON written as a string inside a one-message array. The manifest publishes it in `terms.input_limits.request_bytes`.');
+    expect(terms).toContain('The limit does not count the body of the call that a buyer makes to a runtime. The buyer puts the wire payload inside a second JSON object, and each quote mark and each backslash of the wire payload then gets one more byte.');
     expect(terms).toContain(`The runtime refuses a body above ${RUNTIME_BODY_LIMIT_BYTES} bytes (1 MiB).`);
     expect(terms).toContain(`So the limit of ${MAX_REQUEST_BYTES} bytes is safe only below the limit of the runtime, on the escaped body, and a buyer must keep the body of its call at or below ${RUNTIME_BODY_LIMIT_BYTES} bytes.`);
     expect(terms).toContain(`The service reads at most ${MAX_BODY} bytes of wire payload and refuses more with \`request_too_large\` (400).`);
   });
 
-  test('the economics: the supplier receives the price and its bond on Accept, the buyer bond returns, and a job that fails is not paid', () => {
-    expect(terms).toContain("Economics: on Accept the supplier receives the price and the supplier bond, and the buyer's bond returns to the buyer.");
-    expect(terms).toContain('A job that the hook refuses, and a job that fails after the Claim, are not paid: the buyer reclaims the escrow after `deliver_by`.');
+  test('the money: the lock of each advert, the payment from a vault, Accept, Release and Reclaim, and a job that fails is not paid', () => {
+    expect(terms).toContain('**The money.** A hire of an advert locks its price and both bonds: 4, 7 or 12 units for the small, the medium or the large lot.');
+    expect(tiers.map((tier) => lock(tier) / 1_000_000)).toStrictEqual([4, 7, 12]);
+    expect(terms).toContain('The buyer pays the lock from a vault of its delegation, and the value limit of the delegation caps that payment.');
+    expect(terms).toContain("On Accept the supplier receives the price and the supplier bond, and the buyer's bond returns to the buyer.");
+    // The runtime of each advert releases an escrow that the buyer did not accept, after the window of 600 s.
+    expect(terms).toContain("If the buyer does not accept within 600 s of the supplier's Submit, the supplier may Release the escrow and take the price and both bonds.");
+    expect(PAGE_GAPS[3]).toContain('600 s after the Submit');
+    expect(runtimes.every((runtime) => runtime.environment?.RELEASE_WATCHER === '1')).toBe(true);
+    expect(terms).toContain('If the supplier never submits, the buyer reclaims after `deliver_by`. A job that the hook refuses, and a job that fails after the Claim, end that way: neither is paid.');
+    expect(terms).toContain('The service pays for its one model call from the service key.');
     expect(terms).toContain('The price stands for the size of the order on the ledger.');
     expect(readme).toContain('The price stands for the size of the order on the ledger. It is not the value of the goods.');
   });
