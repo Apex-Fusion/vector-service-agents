@@ -21,7 +21,15 @@
 //                     or a refusal { go: false, status, error, message }, and a refusal is answered as {error, message} with its status (400 to 599; one of 500 or
 //                     more gets the fixed text for the buyer, as a job does). A go is 200 {go: true, reserved_ms} and reserves the job slot for the escrow of the
 //                     call (RESERVATION_MS, src/slot.ts). Without the option every call that passes the checks above is a go.
-//   anything else     404 {error: "not_found"}, POST / and POST /precheck with a query among them.
+//   anything else     404 {error: "not_found"}, POST / and POST /precheck with a query among them (the open routes below aside).
+//   open routes       Only for a service that gives the option openRoutes (src/routes.ts): public paths of its own, each with the methods GET, POST or both. They are matched
+//                     after /healthz and /agent.json, which win, and before the token check: a call needs no token, takes no job slot, and is not held off by a job that
+//                     runs or by a reservation. A path that the server answers itself, a path with a query, and a path given twice are refused when the server is made.
+//                     GET matches whatever the query, and a HEAD gets the headers and no body; POST matches only the path itself. A method that the route does not list is
+//                     404. The handler is given a new object { method, headers, body }, never the request of Node, and reads the body with a limit of its own: the server
+//                     reads no byte of it. The reply is written with the content-length of the server. A handler that throws, rejects, runs longer than openRouteTimeoutMs
+//                     (60 s at most) or gives a reply of another shape is 500 {error: "internal"}, and the log gets the message of the cause, never the request, its body
+//                     or its headers. The stop of src/lifecycle.ts waits on the job slot, which an open route never holds, and it refuses no open route.
 //
 // A caller that hangs up (ruling R-D24). The runtime aborts its call at its own budget, min(SERVICE_TIMEOUT_MS, deliver_by - send time - 30 s), and frees the
 // escrow. By default the job runs to its end whatever its connection does, and holds the slot until then: a service whose job must settle what it started (the
@@ -43,8 +51,11 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { ContextError, parseContext, requireContext } from './context.ts';
 import type { JobContext } from './context.ts';
 import type { HealthMonitor } from './health.ts';
+import { OPEN_ROUTE_TIMEOUT_MS, checkOpenReply, checkOpenRoutes, matchOpenRoute } from './routes.ts';
+import type { CheckedOpenRoute, CheckedReply, OpenRequest, OpenRoute } from './routes.ts';
 import { JobSlot, RESERVATION_MS } from './slot.ts';
 import { errorText } from './text.ts';
+import { within } from './time.ts';
 import { WireError, parseWire, readBody } from './wire.ts';
 
 /**
@@ -111,6 +122,13 @@ export interface JobServerOptions<Req, Res> {
    * default, for a job that must run to its end whatever its caller does.
    */
   abortOnClose?: boolean;
+  /**
+   * The open routes of the service: public paths of its own, answered with no token and with no job slot (src/routes.ts, and the section "Open routes" of the README).
+   * The list is checked when the server is made, and a bad one throws a RangeError. There are none by default: every path other than the four of the kit is then 404.
+   */
+  readonly openRoutes?: readonly OpenRoute[];
+  /** The longest that the handler of an open route may run: a whole number from 1 to OPEN_ROUTE_TIMEOUT_MS, which is the default. Past it the answer is 500 {error: "internal"}. */
+  readonly openRouteTimeoutMs?: number;
 }
 
 /**
@@ -154,6 +172,14 @@ function checkAnswer(answer: unknown): void {
   throw new Error('the precheck option must answer { go: true } or { go: false, status, error, message } with a status from 400 to 599');
 }
 
+// What an open route answers for any failure of its handler: the same text whatever the cause, which goes to the log and never to the caller.
+const INTERNAL_TEXT = JSON.stringify({ error: 'internal' });
+
+/** The message of a failure for a line of the log. A value that cannot be turned into text (an object with no prototype, for one) is said so, and never throws. */
+function causeText(cause: unknown): string {
+  try { return errorText(cause); } catch { return 'a failure that cannot be read as text'; }
+}
+
 export function createJobServer<Req, Res>(opts: JobServerOptions<Req, Res>): Server {
   const { clock, log } = opts;
   const slot = opts.slot ?? new JobSlot();
@@ -164,6 +190,11 @@ export function createJobServer<Req, Res>(opts: JobServerOptions<Req, Res>): Ser
   if (typeof opts.authHeader !== 'string' || opts.authHeader === '') {
     throw new RangeError('authHeader must be the value of SERVICE_AUTH_HEADER and not empty: a service made without one would answer anyone who can reach its port');
   }
+  const openRouteTimeoutMs = opts.openRouteTimeoutMs === undefined ? OPEN_ROUTE_TIMEOUT_MS : opts.openRouteTimeoutMs;
+  if (!(Number.isInteger(openRouteTimeoutMs) && openRouteTimeoutMs >= 1 && openRouteTimeoutMs <= OPEN_ROUTE_TIMEOUT_MS)) {
+    throw new RangeError(`openRouteTimeoutMs must be a whole number from 1 to ${OPEN_ROUTE_TIMEOUT_MS}, got ${String(openRouteTimeoutMs)}`);
+  }
+  const openRoutes = checkOpenRoutes(opts.openRoutes);
   const serialize = opts.serialize ?? ((result: Res): string => JSON.stringify(result));
   const done = opts.done ?? ((_result: Res, arrivedAt: number): void => { log(`job done in ${clock() - arrivedAt} ms`); });
   const expectedAuth = digest(opts.authHeader);
@@ -180,6 +211,36 @@ export function createJobServer<Req, Res>(opts: JobServerOptions<Req, Res>): Ser
     log(`request refused: unauthorized (${refusals} since the last line of this kind)`);
     lastRefusalLine = at;
     refusals = 0;
+  };
+  // An open route (src/routes.ts): the handler of the service answers. Any failure of it, a reply of another shape included, is the same 500 for the caller and one line for
+  // the operator. It never reaches the catch of the request below, which would read an error that refusalOf knows as a refusal, and answer its words.
+  const serveOpen = async (route: CheckedOpenRoute, req: IncomingMessage, res: ServerResponse, arrivedAt: number): Promise<void> => {
+    const head = req.method === 'HEAD';
+    // The body of the request may be unread, so the connection is closed after the 500: a caller that goes on uploading is cut. A caller that has hung up is not answered.
+    const fail = (cause: unknown): void => {
+      log(`open route ${route.path} failed after ${clock() - arrivedAt} ms: ${causeText(cause)}`);
+      if (res.destroyed || res.writableEnded) return;
+      if (res.headersSent) { res.destroy(); return; }
+      res.writeHead(500, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(INTERNAL_TEXT), connection: 'close' });
+      if (head) res.end(); else res.end(INTERNAL_TEXT);
+    };
+    let reply: CheckedReply;
+    try {
+      // A new plain object with three members, and never the request of Node: that has no member body, for it is the body. The server reads no byte of it.
+      const request: OpenRequest = { method: req.method, headers: req.headers, body: req };
+      // A handler that runs too long is not stopped, it cannot be: its answer is ignored when it comes, and the reply of the 500 is written once.
+      reply = checkOpenReply(await within((async () => route.handle(request))(), openRouteTimeoutMs));
+    } catch (e) {
+      fail(e);
+      return;
+    }
+    if (res.destroyed || res.writableEnded) return; // the caller has gone
+    try {
+      res.writeHead(reply.status, { ...reply.headers, 'content-length': reply.bytes });
+      if (head) res.end(); else res.end(reply.body);
+    } catch (e) {
+      fail(e);
+    }
   };
   opts.health?.poke(); // the first check, at start
   return httpServer(async (req, res) => {
@@ -208,6 +269,9 @@ export function createJobServer<Req, Res>(opts: JobServerOptions<Req, Res>): Ser
         return health.healthy ? send(200, { ok: true }) : send(503, { ok: false, reason: health.reason });
       }
       if (read && path === '/agent.json') return sendText(200, opts.manifestText);
+      // The open routes of the service: after the two paths above, which win, and before the token check below. They need no token and take no job slot.
+      const open = matchOpenRoute(openRoutes, req.method, req.url ?? '');
+      if (open !== undefined) return await serveOpen(open, req, res, arrivedAt);
       if (req.method !== 'POST' || (req.url !== '/' && !isPrecheck)) return send(404, { error: 'not_found' });
       // Only the runtime posts a job or a pre-check. The check comes before the body is read and before the slot is looked at, so a stranger neither makes the service
       // read a megabyte nor learns that a job is running (a 409 would say so), and what the answer says is the same for a missing header and a wrong one.
