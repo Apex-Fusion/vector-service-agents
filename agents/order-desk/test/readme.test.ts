@@ -195,7 +195,7 @@ describe('agents/order-desk/README.md: the routes, the checks and the errors', (
     expect(routes).toContain('Without it, 401 `{"error":"unauthorized"}`');
     expect(textOf('../../../packages/service-kit/src/server.ts')).toContain('req.httpVersionMajor === 1 && req.httpVersionMinor >= 1');
     // The busy answers: a job that finds the slot taken gets 409 with no message, the hook gets 409 with a message, and the slot gives them as the README says.
-    expect(routes).toContain('One job runs at a time. A job that arrives while a job runs, or while the slot is reserved for another escrow, gets 409 `{"error":"busy"}`, and nothing starts. A call of the hook gets 409 `busy` with a message while a job runs, whatever its escrow, and while the slot is reserved for another escrow. The call of the hook for the escrow that holds the reservation reserves the slot again.');
+    expect(routes).toContain('One job runs at a time. A job that arrives while a job runs, or while the slot is reserved for another escrow, gets 409 `{"error":"busy"}`, and nothing starts. A call of the hook gets 409 `busy` with a message while a job runs, whatever its escrow, and while the slot is reserved for another escrow. A new go of the hook for the escrow that holds the reservation reserves the slot again; a refusal of the hook reserves nothing.');
     const slot = new JobSlot();
     expect(slot.take('escrow-a', 1_000)).toBe('taken');
     expect([slot.canTake('escrow-a', 1_000), slot.canTake('escrow-b', 1_000)]).toStrictEqual(['busy', 'busy']);
