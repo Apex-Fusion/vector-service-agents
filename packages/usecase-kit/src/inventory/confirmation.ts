@@ -10,9 +10,10 @@
 // The organisation of the sender is recorded and never a reason to refuse, so it can be null (no party names one). The issuer of the approval is null when the attestation has no issuer record. The end
 // of the approval is null when the attestation has no end, and else a time in UTC with milliseconds, as `Date.prototype.toISOString` writes it.
 //
-// `decisions` is a list of the decisions of the protocol. Each decision keeps every text as it came, because it holds the words of a model and the signed receipt of its supplier. The other members are
-// copies with each text in the NFC form. A member is read one time as data. An accessor, the key `__proto__` and a member that is not listed are refused. The detail of a refusal names the field
-// and never repeats the value.
+// `decisions` holds exactly one decision of the protocol, and its name is `availability`: the model decision of the Order Desk. The Order Desk makes it in every job, also when a fault value is set, so a
+// list with no decision, with two decisions, or with a decision of another name is refused. The decision keeps every text as it came, because it holds the words of a model and the signed receipt of
+// its supplier. The other members are copies with each text in the NFC form. A member is read one time as data. An accessor, the key `__proto__` and a member that is not listed are refused. The detail
+// of a refusal names the field and never repeats the value.
 import {
   RECEIPT_CHECKS, accepted, checkMembers, isFaultSetting, parseAttestationId, parseCanonicalDocument, parseDid, parseDigest, parseDocument, parseKeyHash, parseOutputRef, refused,
 } from '../protocol/index.ts';
@@ -74,7 +75,8 @@ const ORGANISATION_WORD = '[\\p{L}\\p{M}\\p{N}\\p{P}\\p{S}]';
 const ORGANISATION = new RegExp(`^${ORGANISATION_WORD}(?:[\\p{L}\\p{M}\\p{N}\\p{P}\\p{S} ]*${ORGANISATION_WORD})?$`, 'u');
 /** A time in UTC with milliseconds, as `toISOString` writes it for a year of four digits. */
 const TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const DECISION_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+/** The name of the one decision of the Order Desk: the model decides whether the lot can be supplied. */
+const AVAILABILITY = 'availability';
 /** The signature of a receipt: printable characters with no space. A signature is hex or base64, so no more is asked of it. */
 const SIGNATURE = /^[\x21-\x7e]{1,1024}$/;
 
@@ -184,22 +186,24 @@ function parseInference(value: JsonValue, field: string): ProtocolResult<Decisio
   return accepted(result);
 }
 
-/** One decision of the protocol: its name, the choice as the model gave it (any JSON), the reasoning (a text that is not blank), and the hire that bought it. */
+/** One decision of the protocol: its name (`availability`), the choice as the model gave it (any JSON), the reasoning (a text that is not blank), and the hire that bought it. */
 function parseDecision(value: JsonValue, field: string): ProtocolResult<Decision> {
   const decision = objectOf(value, field);
   if (!decision.ok) return decision;
   const members = checkMembers(decision.value, field, ['name', 'choice', 'reasoning', 'inference']);
   if (members !== null) return members;
   const { name, choice, reasoning } = decision.value;
-  if (typeof name !== 'string' || !DECISION_NAME.test(name)) return refused('bad_shape', `${field}.name must be 1 to 64 characters: a lower-case letter, then lower-case letters, digits and underscores`);
+  if (name !== AVAILABILITY) return refused('bad_shape', `${field}.name must be "${AVAILABILITY}"`);
   if (typeof reasoning !== 'string' || reasoning.trim() === '') return refused('bad_shape', `${field}.reasoning must be a text that is not blank`);
   const inference = parseInference(decision.value.inference, `${field}.inference`);
   if (!inference.ok) return inference;
   return accepted({ name, choice, reasoning, inference: inference.value });
 }
 
+/** The decisions of a confirmation: a list of exactly one decision, the decision `availability`. */
 function parseDecisions(value: JsonValue, field: string): ProtocolResult<readonly Decision[]> {
   if (!isList(value)) return refused('bad_shape', `${field} must be a list`);
+  if (value.length !== 1) return refused('bad_shape', `${field} must hold exactly one decision, named "${AVAILABILITY}"`);
   return valuesOf(Array.from(value, (entry, index) => parseDecision(entry, `${field}[${index}]`)));
 }
 

@@ -299,19 +299,38 @@ describe('the decisions', () => {
     expectRefused(parse(change(golden('confirmation'), ['decisions', 0], decision)), 'confirmation.decisions[0]');
   });
 
-  it('takes no decision and two decisions: the list is a list of decisions, and each one is read by itself', () => {
-    expect(must(parse(change(golden('confirmation'), ['decisions'], []))).decisions).toStrictEqual([]);
-    const two = change(golden('confirmation'), ['decisions'], [objectAt(golden('confirmation'), DECISION), objectAt(golden('confirmation'), DECISION)]);
-    expect(must(parse(two)).decisions).toHaveLength(2);
-    expectRefused(parse(change(two, ['decisions', 1, 'name'], 'Bad Name')), 'confirmation.decisions[1].name');
+  it('takes exactly one decision, the decision named availability, with the empty setting and with a fault value', () => {
+    for (const setting of ['', 'confirm_wrong_lot']) {
+      const confirmation = must(parse(change(golden('confirmation'), ['fault_mode'], setting)));
+      expect(confirmation.decisions.map((decision) => decision.name)).toStrictEqual(['availability']);
+    }
   });
 
-  it.each([
-    ['name', ['', 'Availability', '1availability', 'availability ', 'a'.repeat(65), 'a-b', 'a b', MARKER, ...NOT_TEXT], ['availability', 'accept_delivery', 'a', `a${'b'.repeat(63)}`]],
-    ['reasoning', ['', ' ', '\n\t ', ...NOT_TEXT], ['The catalogue shows enough boxes.', ' padded ', 'caf\u00e9']],
-  ])('decision %s: refuses each value that is not in its form, and takes the values that are', (name, bad, good) => {
-    for (const value of bad) expectRefused(parse(change(golden('confirmation'), [...DECISION, name], value)), `confirmation.decisions[0].${name}`);
-    for (const value of good) expect(parse(change(golden('confirmation'), [...DECISION, name], value)).ok, String(value)).toBe(true);
+  it('refuses no decision, with the empty setting and with a fault value, and names the list', () => {
+    for (const setting of ['', 'confirm_wrong_lot']) {
+      const none = change(change(golden('confirmation'), ['decisions'], []), ['fault_mode'], setting);
+      expectRefused(parse(none), 'confirmation.decisions');
+    }
+  });
+
+  it('refuses two decisions: two of the same name, one of this name and one of another name in each order, and two of other names', () => {
+    const decision = objectAt(golden('confirmation'), DECISION);
+    const named = (name: string): Json => ({ ...decision, name });
+    for (const names of [['availability', 'availability'], ['availability', 'accept_delivery'], ['accept_delivery', 'availability'], ['reorder', 'accept_delivery']]) {
+      expectRefused(parse(change(golden('confirmation'), ['decisions'], names.map(named))), 'confirmation.decisions');
+    }
+    expect(parse(change(golden('confirmation'), ['decisions'], [named('availability')])).ok).toBe(true);
+  });
+
+  it('refuses one decision of another name, and names the member', () => {
+    const others = ['accept_delivery', 'reorder', 'availabilty', 'availability_2', 'Availability', 'availability ', ' availability', 'availability\n', 'a', '', MARKER, ...NOT_TEXT];
+    for (const name of others) expectRefused(parse(change(golden('confirmation'), [...DECISION, 'name'], name)), 'confirmation.decisions[0].name');
+    expect(parse(change(golden('confirmation'), [...DECISION, 'name'], 'availability')).ok).toBe(true);
+  });
+
+  it('refuses a reasoning that is blank or is not a text, and takes any other text', () => {
+    for (const value of ['', ' ', '\n\t ', ...NOT_TEXT]) expectRefused(parse(change(golden('confirmation'), [...DECISION, 'reasoning'], value)), 'confirmation.decisions[0].reasoning');
+    for (const value of ['The catalogue shows enough boxes.', ' padded ', 'caf\u00e9']) expect(parse(change(golden('confirmation'), [...DECISION, 'reasoning'], value)).ok, value).toBe(true);
   });
 
   it('takes any JSON as the choice, and keeps it as the model gave it', () => {
