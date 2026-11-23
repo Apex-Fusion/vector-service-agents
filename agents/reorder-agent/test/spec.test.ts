@@ -573,8 +573,8 @@ describe('specs/reorder-agent.md, Interface', () => {
       const [status, code] = pair.split(':');
       expect([code, Number(status)], pair).toStrictEqual([code, (ERROR_STATUS as Record<string, number>)[code] ?? serverOwn[code]]);
     }
-    // The README has the same table. Its routes table names the 404, so its Errors table has no row for it.
-    expect(pairs.filter((pair) => pair !== '404:not_found')).toStrictEqual(codePairs((readme.split('\n## Errors\n')[1] ?? '').split('The co-sign route has its own codes:')[0]));
+    // The README has the same table, row for row, and its own test holds it to the code.
+    expect(pairs).toStrictEqual(codePairs((readme.split('\n## Errors\n')[1] ?? '').split('The co-sign route has its own codes:')[0]));
     expect(readme).toContain('| any other route | 404 `{"error":"not_found"}` |');
     expect(pairs.map((pair) => pair.split(':')[1])).toStrictEqual(['bad_wire', 'request_too_large', 'bad_shape', 'bad_context', 'delegation_not_mine', 'unauthorized', 'not_found', 'busy', 'shutting_down', 'internal']);
     expect(errors).toContain('A call that the service refuses has the body `{ "error": "<code>", "message": "<words>" }`, with the status of the first table. Four answers carry the code only, with no `message`: the 401, the 404, the 409 of a job, and a 500 for an error that the service does not name. The 409 of `POST /precheck` has a `message`. A refusal with a status of 500 or more gets fixed words, and the whole message is in the log. A job that the service runs and that does not end well is no HTTP error: it is a 200 result with the outcome `failed` and a `reason` code.');
@@ -652,6 +652,8 @@ describe('specs/reorder-agent.md, Interface', () => {
     expect(text('agents/reorder-agent/src/serve/server.ts')).toContain("methods: ['POST']");
     expect(text('packages/service-kit/src/routes.ts')).toContain("if (method === 'POST') return route.post && query === -1 ? route : undefined;");
     expect(cosign).toContain('The route takes `POST` only. Any other method gets the 404 `not_found` of the service, as an unknown path does.');
+    // The README has the same co-sign table, row for row.
+    expect(pairs).toStrictEqual(codePairs((readme.split('The co-sign route has its own codes:')[1] ?? '').split('\n## ')[0]));
   });
 });
 

@@ -46,24 +46,18 @@ The log has one line for each job: the operation, the time it took, the outcome,
 
 ## Errors
 
-A call that the service refuses before it does any work is `{"error": "<code>", "message": "<words>"}`, with the status of the first table. A job that the service runs and that does not end well is no HTTP error. It is a 200 result with `outcome` `failed` and a `reason` code, as the second table says. A fault of the service (500) gets fixed words, and the whole message is in the log.
+A call that the service refuses has the body `{"error": "<code>", "message": "<words>"}`, with the status of the first table. Four answers carry the code only, with no `message`: the 401, the 404, the 409 of a job, and a 500 for an error that the service does not name. The 409 of `POST /precheck` has a `message`. A refusal with a status of 500 or more gets fixed words, and the whole message is in the log. A job that the service runs and that does not end well is no HTTP error. It is a 200 result with `outcome` `failed` and a `reason` code, as the paragraph after the first table says.
 
 | Status | Codes |
 |---|---|
 | 400 | `bad_wire` (not the one-element message array), `request_too_large` (over the limit), `bad_shape` (a request that breaks a rule of the intake), `bad_context` (a call to `POST /precheck` with a missing or wrong context header), `delegation_not_mine` |
 | 401 | `unauthorized` (no authorization header, or one that is not the token) |
+| 404 | `not_found` (any other path, and any method that a route does not take) |
 | 409 | `busy` (a job runs, or the slot is reserved for another escrow) |
 | 503 | `shutting_down` (the service is stopping) |
 | 500 | `internal` |
 
-The codes and their statuses are `ERROR_STATUS` in `packages/usecase-kit/src/protocol`. The `reason` of a result is a code of that protocol, or a code that the job makes. The status of such a result is 200 whatever its reason:
-
-| Reason | What it says |
-|---|---|
-| `supplier_not_listed` | `propose` found no listed supplier for the order |
-| `inference_failed`, `model_output_invalid` | the model hire gave no answer that the job can use |
-| `deadline` | the job ran out of its time |
-| `aborted` | the caller hung up, so the job stopped. The log keeps the reason, and nobody reads the answer |
+The codes and their statuses are `ERROR_STATUS` in `packages/usecase-kit/src/protocol`, except the codes that the shared server answers itself. The status of a `failed` result is 200 whatever its reason. Each reason that a job writes is in the table of the section Errors of `specs/reorder-agent.md`, with the job that writes it.
 
 The co-sign route has its own codes:
 
@@ -71,10 +65,12 @@ The co-sign route has its own codes:
 |---|---|
 | 400 | `not_a_delegation`, `not_for_this_agent`, `expired`, `bad_shape`, `request_too_large` |
 | 403 | `principal_not_allowed`, `spends_agent_funds` |
-| 405, 415 | `method_not_allowed`, `unsupported_media_type` |
 | 409 | `key_in_use`, `busy` |
+| 415 | `unsupported_media_type` |
 | 503 | `check_unavailable` |
 | 500 | `internal` |
+
+The route takes `POST` only. Any other method gets the 404 `not_found` of the service, as an unknown path does.
 
 ## Stopping
 
