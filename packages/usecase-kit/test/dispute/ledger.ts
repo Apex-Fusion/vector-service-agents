@@ -16,7 +16,7 @@ import { escrowUtxo, identityEscrow, submitted } from '../../../buyer-core/test/
 import type { IdentityEscrowDatum } from '@vsa/vector-read';
 import { createModule1Port } from '@vsa/usecase-kit/dispute';
 import type { Module1Port, Module1PortDeps } from '@vsa/usecase-kit/dispute';
-import { CAPABILITY, ESCROW, JOB_BEGAN_AT, kitClaimDocument } from './support.ts';
+import { ESCROW, ESCROW_CAPABILITY, JOB_BEGAN_AT, kitClaimDocument } from './support.ts';
 
 export { AUDITOR_ID, CLAIMER_ID, JURY_REF_UTXO, MODULE1, WALLET, WALLET_ADDRESS };
 
@@ -159,7 +159,7 @@ const RECORDS: UTxO[] = [recordUtxo(CLAIMER_ID), recordUtxo(AUDITOR_ID)];
  */
 export function jobEscrow(postedAt = JOB_BEGAN_AT, over: Partial<UTxO> = {}, datum: Partial<IdentityEscrowDatum> = {}): UTxO {
   const [txHash, index] = ESCROW.split('#') as [string, string];
-  return { ...escrowUtxo(txHash, identityEscrow(postedAt, { capability_id: CAPABILITY, agent_id: CLAIMER_ID, ...datum })), outputIndex: Number(index), ...over };
+  return { ...escrowUtxo(txHash, identityEscrow(postedAt, { capability_id: ESCROW_CAPABILITY, agent_id: CLAIMER_ID, ...datum })), outputIndex: Number(index), ...over };
 }
 
 /**
@@ -181,7 +181,7 @@ export function postEscrowAt(ledger: LedgerProvider, at: number, spent = false, 
  * 0 of the transaction, and this gives its reference.
  */
 export function laterEscrowAt(ledger: LedgerProvider, txHash: string, at: number, state: 'Claimed' | 'Submitted', spent: boolean): string {
-  const post = identityEscrow(JOB_BEGAN_AT, { capability_id: CAPABILITY, agent_id: CLAIMER_ID });
+  const post = identityEscrow(JOB_BEGAN_AT, { capability_id: ESCROW_CAPABILITY, agent_id: CLAIMER_ID });
   (spent ? ledger.koiosSpent : ledger.live).push(escrowUtxo(txHash, state === 'Claimed' ? { ...post, state } : submitted(post, at)));
   ledger.blockTimes.set(txHash, Math.floor(at / 1000));
   return `${txHash}#0`;

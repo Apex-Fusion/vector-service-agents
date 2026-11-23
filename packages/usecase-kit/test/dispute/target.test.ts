@@ -8,7 +8,7 @@ import { NO_OPEN_CLAIM } from '@vsa/usecase-kit/protocol';
 import { Dispute, claimDocument } from '@vsa/usecase-kit/dispute';
 import type { ApprovalChallengeInput, ChallengeResult, ClaimView, DeliveryChallengeInput, EscrowJob } from '@vsa/usecase-kit/dispute';
 import {
-  CAPABILITY, DIGEST_FACTS, ESCROW, ESCROW_2, EVIDENCE_TX, HOUR, JOB, JOB_BEGAN_AT, MANIFEST_SHA, ME_ID, NO_DOCUMENT, NO_TRANSACTION, NOW, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER, OTHER_ID,
+  CLAIM_CAPABILITY, DIGEST_FACTS, ESCROW, ESCROW_2, ESCROW_CAPABILITY, EVIDENCE_TX, HOUR, JOB, JOB_BEGAN_AT, MANIFEST_SHA, ME_ID, NO_DOCUMENT, NO_TRANSACTION, NOW, ORDER_DESK_CLAIM, ORDER_FACTS, OTHER, OTHER_ID,
   PRIOR_AUTHORIZATION_CLAIM, REF_A, REF_B, REF_C, RecordingQueue, SCOPE, STATEMENT_S1, SETTINGS, ScriptedPort, THIRD, THIRD_ID, TOKEN_A, TOKEN_B, TOKEN_C, claimView, deferred, escrowJob, kitClaimDocument, never, rig,
 } from './support.ts';
 import type { Rig } from './support.ts';
@@ -50,7 +50,7 @@ function holding(port: ScriptedPort, claim: ClaimView, bytes: Uint8Array, type =
 
 /** The claim document that this kit writes for `claimer`, with other statements. */
 function otherStatements(claimer: string) {
-  const document = claimDocument({ agent_did: claimer, capability_id: CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: PRIOR_AUTHORIZATION_CLAIM });
+  const document = claimDocument({ agent_did: claimer, capability_id: CLAIM_CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: PRIOR_AUTHORIZATION_CLAIM });
   if (!document.ok) throw new Error(document.detail);
   return document.value;
 }
@@ -58,7 +58,7 @@ function otherStatements(claimer: string) {
 /** The claim document that this kit writes for OTHER for the capability of the job, with `text` as its statement S1 and the other statements of the order desk. */
 function withStatement(text: string) {
   const document = claimDocument({
-    agent_did: OTHER, capability_id: CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: { statements: [{ id: 'S1', text }, ORDER_DESK_CLAIM.statements[1], ORDER_DESK_CLAIM.statements[2]] },
+    agent_did: OTHER, capability_id: CLAIM_CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: { statements: [{ id: 'S1', text }, ORDER_DESK_CLAIM.statements[1], ORDER_DESK_CLAIM.statements[2]] },
   });
   if (!document.ok) throw new Error(document.detail);
   return document.value;
@@ -275,7 +275,7 @@ describe('a claim is a target only when it covers the job', () => {
     port.readEscrowAnswer = () => escrowJob({ block_time_ms: NOW - 3 * HOUR });
     expect(await dispute.findOpenClaim(OTHER, SCOPE)).toMatchObject({ ok: false, code: NO_OPEN_CLAIM });
     for (const bad of [
-      null, 'zq9', {}, JOB, { capability_id: CAPABILITY, statement_text: STATEMENT_S1, escrow_ref: ESCROW, job_began_at: JOB_BEGAN_AT }, { ...SCOPE, extra: 1 }, { ...SCOPE, escrow_ref: 'zq9' },
+      null, 'zq9', {}, JOB, { capability_id: ESCROW_CAPABILITY, statement_text: STATEMENT_S1, escrow_ref: ESCROW, job_began_at: JOB_BEGAN_AT }, { ...SCOPE, extra: 1 }, { ...SCOPE, escrow_ref: 'zq9' },
       { ...SCOPE, capability_id: 'zq9 x' }, { ...SCOPE, statement_text: 7 }, { ...SCOPE, statement_text: 'one\ntwo' }, { ...SCOPE, statement_text: '' },
     ]) {
       expect(await dispute.findOpenClaim(OTHER, bad as never), JSON.stringify(bad)).toMatchObject({ ok: false, code: 'bad_shape' });
@@ -505,7 +505,7 @@ describe('the escrow is the escrow of this job', () => {
 
   it('refuses an escrow with another capability than the job, for a delivery, an approval and a lookup, names the member, and publishes nothing', async () => {
     // A text that is not the capability of the job is another capability, whatever its case or its length.
-    for (const capability of [OTHER_CAPABILITY, CAPABILITY.toUpperCase(), `${CAPABILITY}.x`, CAPABILITY.slice(0, -1), 'zq9 marker']) {
+    for (const capability of [OTHER_CAPABILITY, ESCROW_CAPABILITY.toUpperCase(), `${ESCROW_CAPABILITY}.x`, ESCROW_CAPABILITY.slice(0, -1), 'zq9 marker']) {
       const rigged = rig();
       rigged.port.claims = [claimView()];
       rigged.port.readEscrowAnswer = () => escrowJob({ capability_id: capability });

@@ -50,8 +50,11 @@ export const CHALLENGE_TX = '99'.repeat(32);
 export const MANIFEST_SHA = '5a'.repeat(32);
 export const CHALLENGE_TOKEN = `63686c5f${'0e'.repeat(28)}`;
 
-/** The capability that the claim documents of the samples are for, and the time that the job of the samples began: half an hour ago, after the claims of the samples were staked. */
-export const CAPABILITY = 'supplychain.order.accept.v1';
+/** The capability that the escrow of the job of the samples names: the capability that the job hired. The datum of the escrow holds it, and a scope names it as `capability_id`. */
+export const ESCROW_CAPABILITY = 'supplychain.order.accept.v1';
+/** The capability that the claim document of the other party is for. A delivery has one capability: the job hired the other party, so its claim document is for the capability of the escrow. */
+export const CLAIM_CAPABILITY = ESCROW_CAPABILITY;
+/** The time that the job of the samples began: half an hour ago, after the claims of the samples were staked. */
 export const JOB_BEGAN_AT = NOW - 30 * 60_000;
 
 // --- The statements of three agents -----------------------------------------------------------------------------------------------------------------------------------
@@ -76,7 +79,7 @@ export const BID_DESK_CLAIM = statements(
 
 /** The claim document that this kit writes for `claimer`: the statements of the order desk, and the manifest of the samples. */
 export function kitClaimDocument(claimer: string) {
-  const document = claimDocument({ agent_did: claimer, capability_id: CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: ORDER_DESK_CLAIM });
+  const document = claimDocument({ agent_did: claimer, capability_id: CLAIM_CAPABILITY, manifest_sha256: MANIFEST_SHA, claim: ORDER_DESK_CLAIM });
   if (!document.ok) throw new Error(document.detail);
   return document.value;
 }
@@ -99,7 +102,7 @@ export const REORDER_AGENT_S1 = 'An order that this agent places is the purchase
 export const STATEMENT_S1 = ORDER_DESK_CLAIM.statements[0].text;
 
 /** The job that the claims of the samples cover: the capability that they are for, and the statement S1 of their claim document. A challenge adds the escrow of the job. */
-export const JOB = { capability_id: CAPABILITY, statement_text: STATEMENT_S1 } as const;
+export const JOB = { capability_id: ESCROW_CAPABILITY, statement_text: STATEMENT_S1 } as const;
 
 /** The whole scope of the job of the samples, for a lookup: its escrow, its capability and its statement. The scripted port gives `JOB_BEGAN_AT` as the start of the job of each escrow. */
 export const SCOPE = { escrow_ref: ESCROW, ...JOB } as const;
@@ -177,7 +180,7 @@ export const NOT_ESCROW: NotAnEscrow = { ok: false, code: 'not_escrow', detail: 
  * the counterparty that this agent hired. A job that the sender of a request hired this agent for names `ME_ID`. `overrides` change members.
  */
 export const escrowJob = (overrides: Partial<EscrowJob> = {}): Extract<EscrowJobResult, { ok: true }> => ({
-  ok: true, value: { block_time_ms: JOB_BEGAN_AT, state: 'Open', capability_id: CAPABILITY, agent_id: OTHER_ID, ...overrides },
+  ok: true, value: { block_time_ms: JOB_BEGAN_AT, state: 'Open', capability_id: ESCROW_CAPABILITY, agent_id: OTHER_ID, ...overrides },
 });
 
 /** A chain port that answers from lists that a test sets, and that writes each call to the events. A test changes an answer by setting the member of the same name. */
