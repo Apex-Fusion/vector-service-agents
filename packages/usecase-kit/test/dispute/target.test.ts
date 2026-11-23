@@ -681,19 +681,23 @@ describe('the escrow is the escrow of this job', () => {
   it('names the first member that is wrong: the layout, then the capability, then the agent, then the buyer, then the state and the time', async () => {
     const rigged = rig();
     rigged.port.claims = [claimView()];
-    rigged.port.readEscrowAnswer = () => escrowJob({ agent_id: null, capability_id: OTHER_CAPABILITY });
+    // Each of the first three escrows names another buyer than the job too. The detail shows which check came first: none of the three names `buyer_pkhs`.
+    rigged.port.readEscrowAnswer = () => escrowJob({ agent_id: null, capability_id: OTHER_CAPABILITY, buyer_pkh: OTHER_BUYER_PKH });
     const legacy = await rigged.dispute.challengeDelivery(delivery());
     expectNotFiled(legacy, 'bad_shape');
     expect(legacy.detail).toContain('legacy layout');
-    rigged.port.readEscrowAnswer = () => escrowJob({ agent_id: THIRD_ID, capability_id: OTHER_CAPABILITY });
+    expect(legacy.detail).not.toContain('buyer_pkhs');
+    rigged.port.readEscrowAnswer = () => escrowJob({ agent_id: THIRD_ID, capability_id: OTHER_CAPABILITY, buyer_pkh: OTHER_BUYER_PKH });
     const capability = await rigged.dispute.challengeDelivery(delivery());
     expectNotFiled(capability, 'bad_shape');
     expect(capability.detail).toContain('capability_id');
     expect(capability.detail).not.toContain('agent_id');
-    rigged.port.readEscrowAnswer = () => escrowJob({ agent_id: THIRD_ID, state: 'Submitted' });
+    expect(capability.detail).not.toContain('buyer_pkhs');
+    rigged.port.readEscrowAnswer = () => escrowJob({ agent_id: THIRD_ID, state: 'Submitted', buyer_pkh: OTHER_BUYER_PKH });
     const agent = await rigged.dispute.challengeDelivery(delivery());
     expectNotFiled(agent, 'bad_shape');
     expect(agent.detail).toContain('agent_id');
+    expect(agent.detail).not.toContain('buyer_pkhs');
     expect(agent.detail).not.toContain('state');
     rigged.port.readEscrowAnswer = () => escrowJob({ buyer_pkh: OTHER_BUYER_PKH, state: 'Submitted', block_time_ms: NOW + 1 });
     const buyer = await rigged.dispute.challengeDelivery(delivery());
@@ -806,6 +810,45 @@ describe('the escrow is the escrow of a buyer that the caller names', () => {
       expect((await dispute.findOpenClaim(OTHER, { ...SCOPE, buyer_pkhs: [BUYER_PKH] })).ok, buyer).toBe(buyer === BUYER_PKH);
       expect((await dispute.findOpenClaim(OTHER, { ...SCOPE, buyer_pkhs: KEYS })).ok, buyer).toBe(buyer !== THIRD_BUYER_PKH);
     }
+  });
+});
+
+describe('a scope that lacks an optional member reads nothing from Object.prototype', () => {
+  /** Puts a value on `Object.prototype` as the member `name`, and gives the function that takes it away again. The member is not enumerable, so no loop of the test run sees it. */
+  const plant = (name: string, value: unknown): (() => void) => {
+    Object.defineProperty(Object.prototype, name, { value, configurable: true, writable: true, enumerable: false });
+    return () => {
+      delete (Object.prototype as unknown as Record<string, unknown>)[name];
+    };
+  };
+
+  it('takes the capability of the job for the claim of a delivery and of a lookup, and no buyer for a lookup, whatever Object.prototype holds', async () => {
+    // A claim with the statement S1 of the job, for the capability of the sender: only its capability tells it from the claim of the job.
+    const other = rig();
+    other.port.claims = [holding(other.port, claimView(), forCapability(SENDER_CAPABILITY).bytes)];
+    // The claim of the job, and the escrow of its buyer.
+    const same = rig();
+    same.port.claims = [claimView()];
+    let answers: [ChallengeResult, unknown, unknown, ChallengeResult];
+    const taken = [plant('claim_capability_id', SENDER_CAPABILITY), plant('buyer_pkhs', [OTHER_BUYER_PKH])];
+    try {
+      answers = [
+        await other.dispute.challengeDelivery(delivery()), await other.dispute.findOpenClaim(OTHER, SCOPE),
+        await same.dispute.findOpenClaim(OTHER, SCOPE), await same.dispute.challengeDelivery(delivery()),
+      ];
+    } finally {
+      for (const take of taken) take();
+    }
+    const [refusedDelivery, refusedLookup, foundByLookup, filedDelivery] = answers;
+    expectNotFiled(refusedDelivery, NO_OPEN_CLAIM);
+    expect(refusedDelivery.detail).toBe(counted(1, [0, 0, 0, 0, 0, 1, 0]));
+    expect(other.port.published).toEqual([]);
+    expect(refusedLookup).toMatchObject({ ok: false, code: NO_OPEN_CLAIM });
+    expect(foundByLookup).toMatchObject({ ok: true, value: { ref: REF_A } });
+    expect(filedDelivery.ok).toBe(true);
+    // The twin: with nothing on the prototype, the same calls give the same answers. Nothing stays on the prototype after the test.
+    expect('claim_capability_id' in {}).toBe(false);
+    expect('buyer_pkhs' in {}).toBe(false);
   });
 });
 

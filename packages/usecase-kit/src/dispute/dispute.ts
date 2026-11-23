@@ -128,9 +128,9 @@ export interface ClaimScope {
    */
   readonly claim_capability_id?: string;
   /**
-   * The text of the statement S1 of the manifest that the job hired: the statement that the job broke. The caller has the manifest of the agent that it hired. The target is a claim whose claim document has
-   * this text as its statement S1: the same text in the form NFC and in the form NFD is one text, and any other difference leaves the claim out (a homoglyph is another text). A claim for the same capability with
-   * another S1 is left out, because the evidence would quote a statement that the job did not break.
+   * The text of the statement S1 that the job broke. For a delivery it is the statement S1 of the manifest of the agent that the job hired, and the caller has that manifest. For an approval it is the statement S1 of the
+   * claim of the sender, and the caller knows that text. The target is a claim whose claim document has this text as its statement S1: the same text in the form NFC and in the form NFD is one text, and any other
+   * difference leaves the claim out (a homoglyph is another text). A claim for the same capability with another S1 is left out, because the evidence would quote a statement that the job did not break.
    */
   readonly statement_text: string;
 }
@@ -1108,7 +1108,8 @@ function parseBuyerPkhs(value: unknown, field: string, most: number): ProtocolRe
 
 /**
  * The escrow, the capability, the statement, the buyer keys and the capability of the claim of a job, from the members of an object that `checkMembers` passed. The buyer keys and the capability of the claim are read only
- * when the object has them: `checkMembers` decided which members an object may have. The detail names the member and never repeats the value.
+ * when the object has them: `checkMembers` decided which members an object may have. The result has both as own members, with the value `undefined` when the object lacks them, so that a read of an absent member never
+ * reaches `Object.prototype`. The detail names the member and never repeats the value.
  */
 function parseClaimScope(record: JsonObject, field: string, mostKeys: number): ProtocolResult<ClaimScope, 'bad_shape'> {
   const escrow = parseOutputRef(record.escrow_ref, `${field}.escrow_ref`);
@@ -1130,8 +1131,7 @@ function parseClaimScope(record: JsonObject, field: string, mostKeys: number): P
     claimCapability = named.value;
   }
   return accepted({
-    escrow_ref: escrow.value, capability_id: capability.value, statement_text: statement.value, ...(keys === null ? {} : { buyer_pkhs: keys }),
-    ...(claimCapability === null ? {} : { claim_capability_id: claimCapability }),
+    escrow_ref: escrow.value, capability_id: capability.value, statement_text: statement.value, buyer_pkhs: keys ?? undefined, claim_capability_id: claimCapability ?? undefined,
   });
 }
 
