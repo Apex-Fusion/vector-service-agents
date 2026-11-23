@@ -11,3 +11,5 @@ export { LOT_NAMES, LOTS_SCHEMA, isLotName, lotSizeOf, lotsFileSha256, parseLots
 export type { LotName, LotsFile } from './lots.ts';
 export { PO_SCHEMA, parsePurchaseOrder, poNumberOf } from './order.ts';
 export type { PurchaseOrder } from './order.ts';
+export { CONFIRMATION_CHECKS, CONFIRMATION_SCHEMA, parseOrderConfirmation } from './confirmation.ts';
+export type { OrderConfirmation } from './confirmation.ts';
