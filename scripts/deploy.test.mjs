@@ -104,6 +104,10 @@ const S_FILES = ['deploy/host/docker-compose.audio-snippets.yml', 'deploy/host/.
 // Advocate is DEPLOYED since 2026-10-20: its four deploy files, read by the tests of the status words and of its stack.
 const A_FILES = ['deploy/host/docker-compose.advocate.yml', 'deploy/host/.env.advocate.example', 'deploy/host/Caddyfile.advocate.snippet', 'deploy/host/RUNBOOK-advocate.md'];
 const PUBLIC_FILES = ['deploy/host/README.md', 'deploy/host/RUNBOOK.md', 'deploy/host/docker-compose.agent-history.yml', 'deploy/host/.env.agent-history.example', 'deploy/host/Caddyfile.snippet', 'agents/agent-history/Dockerfile', '.dockerignore', ...PIPELINE_FILES, 'agents/document-pipeline/Dockerfile'];
+// The deploy packs of use case 1 (inventory reorder) on the agents host: four files for the Reorder Agent and five for the Order Desk. The README and the runbooks of the host are not in the lists.
+const REORDER_PACK = ['deploy/server/docker-compose.reorder-agent.yml', 'deploy/server/.env.reorder-agent.example', 'deploy/server/Caddyfile.reorder-agent.snippet', 'deploy/server/RUNBOOK-reorder-agent.md'];
+const ORDER_PACK = ['deploy/server/docker-compose.order-desk.yml', 'deploy/server/.env.order-desk.example', 'deploy/server/.env.order-desk-runtime.example', 'deploy/server/Caddyfile.order-desk.snippet', 'deploy/server/RUNBOOK-order-desk.md'];
+const USE_CASE_1_FILES = [...REORDER_PACK, ...ORDER_PACK];
 
 test('compose: two containers with fixed names, the runtime on loopback only, the service unpublished, both on the shared network', () => {
   assert.equal(compose.name, 'agent-history');
@@ -415,11 +419,18 @@ test('no individual name, and no personal address, on any public surface: the ma
   const files = [
     ...PUBLIC_FILES, 'agents/agent-history/agent.json.template', 'agents/agent-history/README.md', 'README.md', 'docs/HIRE.md', 'docs/E2E.md',
     ...sourceFiles('agents/agent-history/src'),
+    // Use case 1: the two Dockerfiles, the two manifest templates, the two READMEs, the nine files of the packs and the sources of the two agents.
+    'agents/reorder-agent/Dockerfile', 'agents/order-desk/Dockerfile', 'agents/reorder-agent/agent.json.template', 'agents/order-desk/agent.json.template', 'agents/reorder-agent/README.md', 'agents/order-desk/README.md',
+    ...USE_CASE_1_FILES, ...sourceFiles('agents/reorder-agent/src'), ...sourceFiles('agents/order-desk/src'),
     ...readdirSync(join(root, 'specs')).map((f) => `specs/${f}`),
     DESIGN_SPEC,
   ];
   assert.ok(files.length >= 23 && new Set(files).size === files.length, `the list reaches every surface, found ${files.length}`);
-  for (const must of ['agents/agent-history/agent.json.template', 'agents/agent-history/src/server.ts', 'specs/agent-history.md', 'specs/document-pipeline.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md', DESIGN_SPEC]) assert.ok(files.includes(must), `${must} is scanned`);
+  for (const must of [
+    'agents/agent-history/agent.json.template', 'agents/agent-history/src/server.ts', 'specs/agent-history.md', 'specs/document-pipeline.md', 'docs/HIRE.md', 'docs/E2E.md', 'README.md', 'agents/agent-history/README.md', DESIGN_SPEC,
+    'agents/reorder-agent/Dockerfile', 'agents/order-desk/Dockerfile', 'agents/reorder-agent/agent.json.template', 'agents/order-desk/agent.json.template', 'agents/reorder-agent/README.md', 'agents/order-desk/README.md',
+    'agents/reorder-agent/src/serve/start.ts', 'agents/order-desk/src/serve/start.ts', 'deploy/server/.env.reorder-agent.example', 'deploy/server/.env.order-desk-runtime.example', 'deploy/server/RUNBOOK-reorder-agent.md', 'deploy/server/RUNBOOK-order-desk.md',
+  ]) assert.ok(files.includes(must), `${must} is scanned`);
   for (const rel of files) assert.doesNotMatch(read(rel), NAMES, `${rel}: roles, not people`);
   // A path into someone's home folder names its owner too, and a reviewer's handle is a name.
   assert.doesNotMatch(read(DESIGN_SPEC), HOME_PATH, `${DESIGN_SPEC}: no path into a home folder`);
@@ -6978,4 +6989,300 @@ test('CI: the runtime image: the README of deploy/server follows its section of 
   const at = (heading) => readme.indexOf(`\n## ${heading}\n`);
   assert.ok(at('The host') > 0 && at('The host') < at('The runtime image') && at('The runtime image') < at('What the script does'), 'after the host, before the script');
   for (const part of [`${RT.image}@sha256:<digest>`, '`:latest`', '`:<full git commit sha>`', RT.commitLabel, RT.repository, '`ref`', 'deploy/host', 'scripts/deploy.test.mjs', 'check that the package is public', `docker manifest inspect ${RT.image}:latest`, 'admin of the organisation']) assert.ok(text.includes(part), part);
+});
+
+// ======================================================================================================================================
+// Use case 1 (inventory reorder): the Reorder Agent and the Order Desk. The tests of each pack hold its files on their own. These tests read more than one place: the tracked files of the
+// repository, the compose files of both hosts, the README of the agents host, and the parsers that the two agents and the mock service use for the documents that they pass to each other.
+// The drift tests run the real TypeScript of two packages in one child process, as the tests of the mock service do. Each guard has an accepted twin and refused copies.
+// ======================================================================================================================================
+
+// The files of a pack against the tracked files and the words of the host. A file that git does not track never reaches the host. A file that names the host, the stack of its reverse proxy, a
+// login or a key file stays out of a public repository. The scan of the host words above reads every tracked file already: this guard names the nine files of the two packs.
+function trackedFileProblems(files, tracked, textOf) {
+  const problems = [];
+  for (const file of files) {
+    if (!tracked.includes(file)) problems.push(`${file} is not tracked by git`);
+    else if (HOST_WORDS.test(textOf(file))) problems.push(`${file} names the host, the stack of its reverse proxy, a login or a key file`);
+  }
+  return problems;
+}
+
+test('use case 1 files: the nine files of the two deploy packs are tracked by git, and none names the host, the stack of its reverse proxy, a login or a key file; the guard refuses a file that is not tracked and a file that names the host', { skip: TRACKED ? false : 'needs a git checkout' }, () => {
+  assert.equal(USE_CASE_1_FILES.length, 9, 'four files for the Reorder Agent and five for the Order Desk');
+  assert.equal(new Set(USE_CASE_1_FILES).size, 9, 'each file once');
+  for (const file of USE_CASE_1_FILES) assert.ok(existsSync(join(root, file)), `${file} is there`);
+  assert.deepEqual(trackedFileProblems(USE_CASE_1_FILES, TRACKED, read), [], 'the real files pass');
+  const [compose, , , runbook] = USE_CASE_1_FILES;
+  assert.deepEqual(trackedFileProblems(USE_CASE_1_FILES, TRACKED.filter((file) => file !== runbook), read), [`${runbook} is not tracked by git`], 'a file that is not tracked');
+  for (const part of ['the apex' + '-web box', 'uma' + 'mi_default', 'root' + '@host', 'id_' + 'ed25519']) {
+    const text = (file) => (file === compose ? `${read(file)}# ${part}\n` : read(file));
+    assert.deepEqual(trackedFileProblems(USE_CASE_1_FILES, TRACKED, text), [`${compose} names the host, the stack of its reverse proxy, a login or a key file`], part);
+  }
+  // The twin: a text with the names that a pack holds on purpose: a public host name of an agent, the folder of the pack and the word host.
+  const twin = (file) => (file === compose ? `${read(file)}# mp-suppliers-reorder.vector.apexfusion.org in deploy/server on the agents host\n` : read(file));
+  assert.deepEqual(trackedFileProblems(USE_CASE_1_FILES, TRACKED, twin), [], 'the names of the pack');
+});
+
+// The host ports that the services of a compose file publish: the short form "127.0.0.1:8101:8080" and the long form with published and target.
+function publishedPorts(text) {
+  return Object.entries(parseYaml(text)?.services ?? {}).flatMap(([service, body]) => (body?.ports ?? []).map((port) => {
+    const host = typeof port === 'string' ? /^(?:(?:127\.0\.0\.1|\[::1\]):)?(\d+):\d+(?:\/(?:tcp|udp))?$/.exec(port)?.[1] : port?.published;
+    return { service, host: Number(host) };
+  }));
+}
+// The plan of the ports of the two packs: each runtime and each service publishes one port, and no pack publishes another.
+const PACK_PORTS = {
+  [serverCompose('reorder-agent')]: { runtime: 8101, service: 9101 },
+  [serverCompose('order-desk')]: { 'runtime-small': 8102, 'runtime-medium': 8103, 'runtime-large': 8104, service: 9102 },
+};
+// The rows of the plan in the README of the agents host: a label, a count in brackets and a port or a range.
+const planRows = (readme) => [...readme.matchAll(/^\| [A-Za-z][^|]*? \((\d+)\) \| (\d+)(?: to (\d+))? \|$/gm)].map((m) => ({ count: Number(m[1]), from: Number(m[2]), to: Number(m[3] ?? m[2]) }));
+// The faults of the ports: the plan of the two packs, a host port that stands once in all the compose files of the two hosts, and a row of the README plan for each port of the agents host.
+function portProblems(texts, packPorts, readme) {
+  const problems = [];
+  for (const [file, expected] of Object.entries(packPorts)) {
+    const found = Object.fromEntries(publishedPorts(texts[file] ?? '').map(({ service, host }) => [service, host]));
+    if (!isDeepStrictEqual(found, expected)) problems.push(`${file} must publish ${JSON.stringify(expected)} and no other port; found ${JSON.stringify(found)}`);
+  }
+  const owners = new Map();
+  for (const [file, text] of Object.entries(texts)) for (const { service, host } of publishedPorts(text)) owners.set(host, [...(owners.get(host) ?? []), `${file}#${service}`]);
+  for (const [port, users] of owners) if (users.length > 1) problems.push(`the port ${port} is published twice: ${users.join(', ')}`);
+  const rows = planRows(readme);
+  for (const row of rows) if (row.to - row.from + 1 !== row.count) problems.push(`a row of the plan in the README gives ${row.count} ports for the range ${row.from} to ${row.to}`);
+  rows.forEach((row, i) => rows.slice(i + 1).forEach((next) => { if (row.from <= next.to && next.from <= row.to) problems.push(`two rows of the plan in the README overlap: ${row.from} to ${row.to} and ${next.from} to ${next.to}`); }));
+  for (const [file, text] of Object.entries(texts)) {
+    if (!file.startsWith('deploy/server/')) continue;
+    for (const { service, host } of publishedPorts(text)) if (!rows.some((row) => row.from <= host && host <= row.to)) problems.push(`${file}#${service} publishes ${host}, and no row of the plan in the README holds that port`);
+  }
+  return problems;
+}
+
+test('use case 1 ports: the compose files of the two packs publish exactly 8101 to 8104 and 9101 and 9102, no host port stands twice in the compose files of the two hosts, and the plan in the README of the agents host holds each port of the agents host; the guard refuses each copy that breaks one rule', () => {
+  const texts = Object.fromEntries(['deploy/host', 'deploy/server'].flatMap((dir) => readdirSync(join(root, dir)).filter((f) => /^docker-compose\..+\.yml$/.test(f)).sort().map((f) => [`${dir}/${f}`, read(`${dir}/${f}`)])));
+  const readme = srvRead('README.md');
+  assert.deepEqual(Object.values(PACK_PORTS).flatMap((ports) => Object.values(ports)).sort(), [8101, 8102, 8103, 8104, 9101, 9102], 'the runtimes on 8101 to 8104 and the services on 9101 and 9102');
+  assert.deepEqual(portProblems(texts, PACK_PORTS, readme), [], 'the real files pass');
+  const reorder = serverCompose('reorder-agent');
+  const orders = serverCompose('order-desk');
+  const mock = serverCompose('mock-systems');
+  const row8101 = readme.split('\n').find((line) => /^\| [A-Za-z][^|]*? \(\d+\) \| 8101(?: to \d+)? \|$/.test(line));
+  assert.ok(row8101, 'the README plan has a row that holds 8101');
+  const faults = [
+    ['the runtime of the Reorder Agent on another port', texts, { [reorder]: srvReplace(texts[reorder], '127.0.0.1:8101:8080', '127.0.0.1:8105:8080') }, readme, /reorder-agent\.yml must publish/],
+    ['the service of the Order Desk on another port', texts, { [orders]: srvReplace(texts[orders], '127.0.0.1:9102:9102', '127.0.0.1:9103:9102') }, readme, /order-desk\.yml must publish/],
+    ['a second port on the service of the Order Desk', texts, { [orders]: srvReplace(texts[orders], '["127.0.0.1:9102:9102"]', '["127.0.0.1:9102:9102", "127.0.0.1:9109:9109"]') }, readme, /order-desk\.yml must publish/],
+    ['a port that no pack of the plan uses', texts, { [reorder]: srvReplace(texts[reorder], 'services:\n', 'services:\n  extra:\n    image: example\n    ports: ["127.0.0.1:8110:8080"]\n') }, readme, /reorder-agent\.yml must publish/],
+    ['a port that two runtimes of the Order Desk share', texts, { [orders]: srvReplace(texts[orders], '127.0.0.1:8103:8080', '127.0.0.1:8102:8080') }, readme, /the port 8102 is published twice/],
+    ['a port of the Reorder Agent that the present host uses', texts, { [reorder]: srvReplace(texts[reorder], '127.0.0.1:8101:8080', '127.0.0.1:8083:8080') }, readme, /the port 8083 is published twice/],
+    ['the port of the mock service that the plan in the README does not hold', texts, { [mock]: srvReplace(texts[mock], '127.0.0.1:9120:9120', '127.0.0.1:9200:9120') }, readme, /mock-systems\.yml#mock-systems publishes 9200, and no row of the plan/],
+    ['a README plan that leaves out the port of the Reorder Agent runtime', texts, {}, srvReplace(readme, `${row8101}\n`, ''), /reorder-agent\.yml#runtime publishes 8101, and no row of the plan/],
+    ['two rows of the README plan that overlap', texts, {}, srvReplace(readme, `${row8101}\n`, `${row8101}\n| Overlap (1) | 8101 |\n`), /two rows of the plan in the README overlap/],
+    ['a row of the README plan with a wrong count', texts, {}, srvReplace(readme, row8101, row8101.replace(/\((\d+)\)/, '(99)')), /a row of the plan in the README gives 99 ports/],
+  ];
+  for (const [name, base, changed, text, expected] of faults) {
+    const problems = portProblems({ ...base, ...changed }, PACK_PORTS, text);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  // The twins: the long form of a port, with the same numbers, and the compose files of the two hosts in another order.
+  const long = srvReplace(texts[reorder], '["127.0.0.1:8101:8080"]', '[{ target: 8080, published: 8101, host_ip: 127.0.0.1 }]');
+  assert.deepEqual(portProblems({ ...texts, [reorder]: long }, PACK_PORTS, readme), [], 'the long form');
+  assert.deepEqual(portProblems(Object.fromEntries(Object.entries(texts).reverse()), PACK_PORTS, readme), [], 'the files in another order');
+});
+
+// The purchase order read by the parser of the kit and by the reader of the purchase order store of the mock service, in one process. The store takes the tenant from the URL, and its router
+// takes only a name of the form TENANT there, so an order whose tenant has another form never reaches the reader.
+const PO_DRIFT_CODE = String.raw`
+import { parsePurchaseOrder as store } from './src/documents.ts';
+import { TENANT } from './src/validate.ts';
+import { parsePurchaseOrder as kit } from '../../packages/usecase-kit/src/inventory/index.ts';
+const verdict = (run) => { try { return { ok: true, value: run() }; } catch (error) { return { ok: false, message: String(error.message) }; } };
+console.log(JSON.stringify(JSON.parse(process.argv[1]).map((order) => {
+  const tenant = order !== null && typeof order === 'object' ? order.tenant : undefined;
+  const mock = typeof tenant === 'string' && TENANT.test(tenant) ? verdict(() => store(order, tenant)) : { ok: false, message: 'the tenant is not a name for the URL' };
+  const parsed = verdict(() => kit(order));
+  return { mock, kit: parsed.ok && parsed.value.ok ? { ok: true, value: parsed.value.value } : { ok: false, message: parsed.ok ? parsed.value.detail : parsed.message } };
+})));
+`;
+
+test('use case 1 drift: the purchase order is read in the same way by the parser of the kit and by the purchase order store of the mock service, for each golden order and for each edge of each member', () => {
+  const golden = JSON.parse(read('packages/usecase-kit/test/inventory/golden/po.json'));
+  const edit = (changes) => ({ ...golden, ...changes });
+  const without = (member) => Object.fromEntries(Object.entries(golden).filter(([name]) => name !== member));
+  const hex = (pair, times = 32) => pair.repeat(times);
+  const goldens = [
+    ['the golden of the kit', golden],
+    ['the golden of the Reorder Agent, in the proposal', JSON.parse(read('agents/reorder-agent/test/propose/golden/po.json'))],
+    ['the golden of the Reorder Agent, in the prompt of the model', JSON.parse(read('agents/reorder-agent/test/model/golden/po.json'))],
+    // The order that the tests of the purchase order store send to it (services/mock-systems/test/documents.test.ts).
+    ['the order of the tests of the mock service', { schema: 'vector.usecase.po.v1', po_number: 'run1-1', tenant: 'run1', sku: 'GLV-NIT-M', lot: 'lot-medium', quantity: 50, needed_by: '2026-12-01', supplier_did: `did:vector:${hex('a1')}`, advert_ref: `${hex('c3')}#0`, stock_reading_sha256: hex('d4') }],
+  ];
+  const ownProto = JSON.parse(`${JSON.stringify(golden).slice(0, -1)},"__proto__":{}}`);
+  assert.ok(Object.hasOwn(ownProto, '__proto__'), 'the document has the key __proto__ of its own');
+  // [name, order, true when both read it]
+  const cases = [
+    ...goldens.map(([name, order]) => [name, order, true]),
+    ['the members in another order', Object.fromEntries(Object.entries(golden).reverse()), true],
+    ['a po_number of 64 characters', edit({ po_number: `a${'0'.repeat(63)}` }), true],
+    ['a po_number of 65 characters', edit({ po_number: `a${'0'.repeat(64)}` }), false],
+    ['a po_number with a dot, a hyphen and an underscore', edit({ po_number: 'run1.a-b_c' }), true],
+    ['a po_number with a space', edit({ po_number: 'run1 1' }), false],
+    ['a po_number that starts with a dot', edit({ po_number: '.run1' }), false],
+    ['a po_number with a letter that is not ASCII', edit({ po_number: 'run\u00e91' }), false],
+    ['a po_number that is a number', edit({ po_number: 1 }), false],
+    ['a sku in lower case', edit({ sku: 'glv-nit-m' }), true],
+    ['a sku with the Kelvin sign, which NFC turns into K', edit({ sku: '\u212A-1' }), false],
+    ['an empty sku', edit({ sku: '' }), false],
+    ['a tenant of 48 characters', edit({ tenant: `a${'0'.repeat(47)}` }), true],
+    ['a tenant of 49 characters', edit({ tenant: `a${'0'.repeat(48)}` }), false],
+    ['a tenant in upper case', edit({ tenant: 'RUN1' }), false],
+    ['a tenant with an underscore', edit({ tenant: 'run_1' }), false],
+    ['a tenant that starts with a hyphen', edit({ tenant: '-run1' }), false],
+    ['an empty tenant', edit({ tenant: '' }), false],
+    ['the lot small', edit({ lot: 'lot-small' }), true],
+    ['the lot large', edit({ lot: 'lot-large' }), true],
+    ['a lot that is none of the three', edit({ lot: 'lot-huge' }), false],
+    ['a lot name without its prefix', edit({ lot: 'medium' }), false],
+    ['the least quantity', edit({ quantity: 1 }), true],
+    ['the greatest quantity', edit({ quantity: 1_000_000 }), true],
+    ['a quantity of 0', edit({ quantity: 0 }), false],
+    ['a quantity over the greatest', edit({ quantity: 1_000_001 }), false],
+    ['a negative quantity', edit({ quantity: -1 }), false],
+    ['a fraction as the quantity', edit({ quantity: 1.5 }), false],
+    ['the quantity as a text', edit({ quantity: '50' }), false],
+    ['a date on the 29th of February in a leap year', edit({ needed_by: '2028-02-29' }), true],
+    ['a date that does not exist', edit({ needed_by: '2026-02-30' }), false],
+    ['a date in the 29th of February of a year that is not a leap year', edit({ needed_by: '2027-02-29' }), false],
+    ['a date with one digit for the month', edit({ needed_by: '2026-1-01' }), false],
+    ['a date with a time', edit({ needed_by: '2026-12-01T00:00:00Z' }), false],
+    ['a date with a line break at the end', edit({ needed_by: '2026-12-01\n' }), false],
+    ['a date in the year 0099', edit({ needed_by: '0099-01-01' }), false],
+    ['a DID in upper case', edit({ supplier_did: `did:vector:${hex('D5')}` }), false],
+    ['a DID of 63 hex digits', edit({ supplier_did: `did:vector:${hex('d5').slice(1)}` }), false],
+    ['a DID of another method', edit({ supplier_did: `did:other:${hex('d5')}` }), false],
+    ['an advert reference with the index 0', edit({ advert_ref: `${hex('a7')}#0` }), true],
+    ['an advert reference with an index of 6 digits', edit({ advert_ref: `${hex('a7')}#123456` }), true],
+    ['an advert reference with an index of 7 digits', edit({ advert_ref: `${hex('a7')}#1234567` }), false],
+    ['an advert reference with a leading zero in the index', edit({ advert_ref: `${hex('a7')}#01` }), false],
+    ['an advert reference with a hash in upper case', edit({ advert_ref: `${hex('A7')}#1` }), false],
+    ['an advert reference with no index', edit({ advert_ref: hex('a7') }), false],
+    ['a digest in upper case', edit({ stock_reading_sha256: hex('5E') }), false],
+    ['a digest of 63 hex digits', edit({ stock_reading_sha256: hex('5e').slice(1) }), false],
+    ['another schema', edit({ schema: 'vector.usecase.po.v2' }), false],
+    ['a member that is not listed', edit({ carrier: 'x' }), false],
+    ['a member that is missing', without('lot'), false],
+    ['the key __proto__ of its own', ownProto, false],
+    ['no document', null, false],
+    ['a list', [], false],
+    ['a text', 'x', false],
+  ];
+  const answers = inMockService(PO_DRIFT_CODE, cases.map(([, order]) => order));
+  assert.equal(answers.length, cases.length);
+  cases.forEach(([name, , both], i) => {
+    const { mock, kit } = answers[i];
+    assert.equal(kit.ok, both, `${name}: the kit ${both ? 'must read it' : 'must refuse it'}; found ${JSON.stringify(kit)}`);
+    assert.equal(mock.ok, both, `${name}: the purchase order store ${both ? 'must read it' : 'must refuse it'}; found ${JSON.stringify(mock)}`);
+    // Both read an order in one form: the same members, in the same order, with the same values.
+    if (both) assert.equal(JSON.stringify(kit.value), JSON.stringify(mock.value), `${name}: both give one order`);
+  });
+  assert.ok(cases.filter(([, , both]) => both).length >= 10 && cases.filter(([, , both]) => !both).length >= 30, 'the table has the accepted twins and the refused copies');
+});
+
+// The lots file of the Order Desk against the default catalogue of the mock service: each SKU of the file has the lot sizes of the catalogue, and the file holds each SKU of the catalogue.
+const LOTS_DRIFT_CODE = String.raw`
+import { LOT_NAMES, defaultSeed } from './src/seed.ts';
+import { LOT_NAMES as KIT_LOT_NAMES } from '../../packages/usecase-kit/src/inventory/index.ts';
+console.log(JSON.stringify({ catalogue: defaultSeed().catalogue.map((entry) => ({ sku: entry.sku, lots: entry.lot_sizes })), names: [LOT_NAMES, KIT_LOT_NAMES] }));
+`;
+function lotsDriftProblems(file, catalogue) {
+  const problems = [];
+  const items = Array.isArray(file?.items) ? file.items : [];
+  const sizes = new Map(catalogue.map((entry) => [entry.sku, entry.lots]));
+  for (const item of items) {
+    if (!sizes.has(item.sku)) problems.push(`the lots file holds ${item.sku}, and the catalogue of the mock service does not`);
+    else if (!isDeepStrictEqual(item.lots, sizes.get(item.sku))) problems.push(`${item.sku}: the lots file gives ${JSON.stringify(item.lots)}, and the catalogue gives ${JSON.stringify(sizes.get(item.sku))}`);
+  }
+  for (const sku of sizes.keys()) if (!items.some((item) => item.sku === sku)) problems.push(`the catalogue holds ${sku}, and the lots file does not`);
+  return problems;
+}
+
+test('use case 1 drift: the lots file of the Order Desk gives the lot sizes of each SKU of the default catalogue of the mock service, and holds each SKU of it; the guard refuses a size that changed, a SKU that is missing and a SKU that the catalogue does not hold', () => {
+  const { catalogue, names } = inMockService(LOTS_DRIFT_CODE, null);
+  assert.deepEqual(names[0], names[1], 'the mock service and the kit have the same lot names, in the same order');
+  assert.ok(catalogue.length >= 3, `the catalogue has the SKUs of the seed, found ${catalogue.length}`);
+  const file = JSON.parse(read('agents/order-desk/lots.json'));
+  assert.deepEqual(lotsDriftProblems(file, catalogue), [], 'the real file passes');
+  assert.deepEqual(file.items.map((item) => item.sku).sort(), catalogue.map((entry) => entry.sku).sort(), 'the same SKUs');
+  const edited = (change) => { const copy = structuredClone(file); change(copy.items); return copy; };
+  const faults = [
+    ['a lot size that changed', edited((items) => { items[0].lots['lot-medium'] += 1; }), /lots file gives/],
+    ['the largest lot of a SKU as the smallest', edited((items) => { items[1].lots['lot-small'] = items[1].lots['lot-large']; }), /lots file gives/],
+    ['a lot that is missing from a SKU', edited((items) => { delete items[2].lots['lot-large']; }), /lots file gives/],
+    ['a lot that the catalogue does not have', edited((items) => { items[0].lots['lot-huge'] = 5; }), /lots file gives/],
+    ['a SKU that the file leaves out', edited((items) => { items.pop(); }), /the catalogue holds \S+, and the lots file does not/],
+    ['a SKU that the catalogue does not hold', edited((items) => { items.push({ sku: 'EXTRA-1', lots: { 'lot-small': 1, 'lot-medium': 2, 'lot-large': 3 } }); }), /the lots file holds EXTRA-1, and the catalogue/],
+    ['a SKU under another name', edited((items) => { items[0].sku = 'GLV-NIT-L'; }), /the lots file holds GLV-NIT-L/],
+  ];
+  for (const [name, broken, expected] of faults) {
+    const problems = lotsDriftProblems(broken, catalogue);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  // The twins: the items in another order, and the lots of an item in another order.
+  assert.deepEqual(lotsDriftProblems(edited((items) => { items.reverse(); }), catalogue), [], 'the items in another order');
+  assert.deepEqual(lotsDriftProblems(edited((items) => { items[0].lots = Object.fromEntries(Object.entries(items[0].lots).reverse()); }), catalogue), [], 'the lots in another order');
+});
+
+// The order that the supplier portal of the mock service takes, as its reader names the members: the reader names the first member that is missing, so each name is added until it stops, and a
+// member that it does not name is refused. The order that the Order Desk places is a part of its confirmation: the confirmation keeps its members.
+const ORDER_MEMBERS_CODE = String.raw`
+import { parseSupplierOrder } from './src/documents.ts';
+const body = {};
+const names = [];
+for (let i = 0; i < 32; i += 1) {
+  try { parseSupplierOrder(body); break; } catch (error) {
+    const found = /^body\.([a-z_0-9]+) is required$/.exec(String(error.message));
+    if (found === null) break;
+    names.push(found[1]);
+    body[found[1]] = null;
+  }
+}
+const refusal = (run) => { try { run(); return 'accepted'; } catch (error) { return String(error.message); } };
+const extra = refusal(() => parseSupplierOrder({ ...body, zz_probe: null }));
+const orders = JSON.parse(process.argv[1]).map((confirmation) => refusal(() => parseSupplierOrder(Object.fromEntries(names.map((name) => [name, confirmation[name]])))));
+console.log(JSON.stringify({ names, extra, orders }));
+`;
+// The members of a confirmation: the schema and the outcome, then the order that the portal takes, then what the Order Desk adds.
+function confirmationDriftProblems(members, names) {
+  const expected = ['schema', 'outcome', ...names, 'order_id', 'sender', 'approval', 'checks', 'decisions', 'fault_mode'];
+  return isDeepStrictEqual(members, expected) ? [] : [`the confirmation must have the members ${expected.join(', ')}, with the order that the portal takes after the outcome; found: ${members.join(', ')}`];
+}
+
+test('use case 1 drift: the confirmation of the kit has the members of the order that the supplier portal of the mock service takes, and the members of the order in it are an order that the portal reads; the guard refuses a member that is added, one that is renamed and one that is missing', () => {
+  const goldens = [
+    ['packages/usecase-kit/test/inventory/golden/confirmation.json', JSON.parse(read('packages/usecase-kit/test/inventory/golden/confirmation.json'))],
+    ['agents/order-desk/test/job/golden/confirmation.json', JSON.parse(read('agents/order-desk/test/job/golden/confirmation.json'))],
+    ['agents/reorder-agent/test/model/golden/confirmation.json', JSON.parse(read('agents/reorder-agent/test/model/golden/confirmation.json'))],
+  ];
+  const { names, extra, orders } = inMockService(ORDER_MEMBERS_CODE, goldens.map(([, confirmation]) => confirmation));
+  assert.deepEqual(names, ['po_number', 'po_sha256', 'sku', 'lot', 'quantity', 'ship_by'], 'the reader of the portal names six members');
+  assert.match(extra, /^body\.zz_probe is not a field of this object$/, 'and refuses another member');
+  goldens.forEach(([file, confirmation], i) => {
+    assert.deepEqual(confirmationDriftProblems(Object.keys(confirmation), names), [], `${file}: the members`);
+    assert.equal(orders[i], 'accepted', `${file}: the order in it is an order that the portal reads`);
+  });
+  const members = Object.keys(goldens[0][1]);
+  const faults = [
+    ['a member added to the confirmation', [...members, 'carrier'], names],
+    ['a member added in the middle of the order', [...members.slice(0, 4), 'carrier', ...members.slice(4)], names],
+    ['a member of the order renamed', members.map((name) => (name === 'ship_by' ? 'ship_date' : name)), names],
+    ['a member of the order that is missing', members.filter((name) => name !== 'po_sha256'), names],
+    ['a member added to the order of the portal', members, [...names, 'carrier']],
+    ['a member of the order of the portal renamed', members, names.map((name) => (name === 'quantity' ? 'amount' : name))],
+    ['the members of the order in another order', [...members.slice(0, 2), ...names.slice().reverse(), ...members.slice(2 + names.length)], names],
+  ];
+  for (const [name, given, accepted] of faults) {
+    const problems = confirmationDriftProblems(given, accepted);
+    assert.equal(problems.length, 1, `${name}: found ${JSON.stringify(problems)}`);
+  }
+  assert.deepEqual(confirmationDriftProblems(members, names), [], 'the twin: the members of the golden');
 });
