@@ -7,15 +7,17 @@
 // A confirmation exists only for a job whose checks all passed, so a check that is false, a check that is missing and a check that is not listed are refused. The list is written out in this file, because
 // the folder imports no other folder of the kit. A test holds its first 12 names to the shared checks of the checks folder.
 //
-// The organisation of the sender is recorded and never a reason to refuse, so it can be null (no party names one). The issuer of the approval is null when the attestation has no issuer record. The end
-// of the approval is null when the attestation has no end, and else a time in UTC with milliseconds, as `Date.prototype.toISOString` writes it.
+// The organisation of the sender is recorded and never a reason to refuse. It is null when no party names one, and else any text of at most 1024 characters, because the shared sender check takes any
+// text from the record of the sender, and a stricter parser would make the Reorder Agent fail after the order was placed. The issuer of the approval is null when the attestation has no issuer record.
+// The end of the approval is null when the attestation has no end, and else a time in UTC with milliseconds as `Date.prototype.toISOString` writes it: a year of four digits, or a sign and six digits.
 //
 // `decisions` holds exactly one decision of the protocol, and its name is `availability`: the model decision of the Order Desk. The Order Desk makes it in every job, also when a fault value is set, so a
 // list with no decision, with two decisions, or with a decision of another name is refused. The decision keeps every text as it came, because it holds the words of a model and the signed receipt of
-// its supplier. The other members are copies with each text in the NFC form. A member is read one time as data. An accessor, the key `__proto__` and a member that is not listed are refused. The detail
-// of a refusal names the field and never repeats the value.
+// its supplier. Every other text is checked as it is written: an identifier, a date and a digest are ASCII, so a text that passes is in the NFC form already, and a text that only NFC turns into a valid
+// text, such as the Kelvin sign that becomes the letter K, is refused. The organisation is the one free text, and the copy holds it in the NFC form. A member is read one time as data. An accessor,
+// the key `__proto__` and a member that is not listed are refused. The detail of a refusal names the field and never repeats the value.
 import {
-  RECEIPT_CHECKS, accepted, checkMembers, isFaultSetting, parseAttestationId, parseCanonicalDocument, parseDid, parseDigest, parseDocument, parseKeyHash, parseOutputRef, refused,
+  RECEIPT_CHECKS, accepted, checkMembers, isFaultSetting, parseAttestationId, parseDid, parseDigest, parseDocument, parseKeyHash, parseOutputRef, refused,
 } from '../protocol/index.ts';
 import type { AttestationId, Decision, Did, Digest, FaultSetting, JsonValue, ProtocolResult, ReceiptVerification, SubJob } from '../protocol/index.ts';
 import { isList, isLotName, objectOf, parseDay, parseId, parseQuantity, valuesOf } from './lots.ts';
@@ -68,22 +70,20 @@ type Approval = OrderConfirmation['approval'];
 
 const MEMBERS = ['schema', 'outcome', 'po_number', 'po_sha256', 'sku', 'lot', 'quantity', 'ship_by', 'order_id', 'sender', 'approval', 'checks', 'decisions', 'fault_mode'] as const;
 
-/** The longest organisation: the longest name that DNS holds. */
-const MAX_ORGANISATION_CHARS = 253;
-/** Letters, marks, numbers, punctuation and symbols, with single spaces inside. No control character, no line break, and no space at either end. */
-const ORGANISATION_WORD = '[\\p{L}\\p{M}\\p{N}\\p{P}\\p{S}]';
-const ORGANISATION = new RegExp(`^${ORGANISATION_WORD}(?:[\\p{L}\\p{M}\\p{N}\\p{P}\\p{S} ]*${ORGANISATION_WORD})?$`, 'u');
-/** A time in UTC with milliseconds, as `toISOString` writes it for a year of four digits. */
-const TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+/** The longest organisation that a confirmation holds, in characters. It is a limit of size only. */
+const MAX_ORGANISATION_CHARS = 1024;
+/** A time in UTC with milliseconds, as `toISOString` writes it: a year of four digits, or the extended form of a year, which is a sign and six digits. */
+const TIME = /^(?:\d{4}|[+-]\d{6})-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 /** The name of the one decision of the Order Desk: the model decides whether the lot can be supplied. */
 const AVAILABILITY = 'availability';
 /** The signature of a receipt: printable characters with no space. A signature is hex or base64, so no more is asked of it. */
 const SIGNATURE = /^[\x21-\x7e]{1,1024}$/;
 
+/** The organisation of the sender: null, or any text of at most MAX_ORGANISATION_CHARS characters. The copy holds the text in the NFC form. */
 function parseOrganisation(value: JsonValue, field: string): ProtocolResult<string | null> {
   if (value === null) return accepted(null);
-  if (typeof value === 'string' && value.length <= MAX_ORGANISATION_CHARS && ORGANISATION.test(value)) return accepted(value);
-  return refused('bad_shape', `${field} must be null or 1 to ${MAX_ORGANISATION_CHARS} characters of plain text: no control character, no line break, and no space at either end`);
+  if (typeof value === 'string' && value.length <= MAX_ORGANISATION_CHARS) return accepted(value.normalize('NFC'));
+  return refused('bad_shape', `${field} must be null or a text of at most ${MAX_ORGANISATION_CHARS} characters`);
 }
 
 function parseSender(value: JsonValue, field: string): ProtocolResult<Sender> {
@@ -107,7 +107,7 @@ function parseEnd(value: JsonValue, field: string): ProtocolResult<string | null
     const ms = Date.parse(value);
     if (Number.isFinite(ms) && new Date(ms).toISOString() === value) return accepted(value);
   }
-  return refused('bad_shape', `${field} must be null or a time in UTC with milliseconds, as YYYY-MM-DDTHH:MM:SS.mmmZ, that exists`);
+  return refused('bad_shape', `${field} must be null or a time in UTC with milliseconds that exists, as YYYY-MM-DDTHH:MM:SS.mmmZ, with a year of four digits or a sign and six digits`);
 }
 
 function parseApproval(value: JsonValue, field: string): ProtocolResult<Approval> {
@@ -217,11 +217,7 @@ export function parseOrderConfirmation(value: unknown): ProtocolResult<OrderConf
   if (!whole.ok) return whole;
   const members = checkMembers(whole.value, field, MEMBERS);
   if (members !== null) return members;
-  // The members that the Order Desk writes are read in the NFC form. The decisions keep each text as it came.
-  const { decisions: listed, ...rest } = whole.value;
-  const own = parseCanonicalDocument(rest, field);
-  if (!own.ok) return own;
-  const record = own.value;
+  const record = whole.value;
   if (record.schema !== CONFIRMATION_SCHEMA) return refused('bad_shape', `${field}.schema must be "${CONFIRMATION_SCHEMA}"`);
   if (record.outcome !== 'done') return refused('bad_shape', `${field}.outcome must be "done"`);
   const poNumber = parseId(record.po_number, `${field}.po_number`);
@@ -244,7 +240,7 @@ export function parseOrderConfirmation(value: unknown): ProtocolResult<OrderConf
   if (!approval.ok) return approval;
   const checks = parseChecks(record.checks, `${field}.checks`);
   if (!checks.ok) return checks;
-  const decisions = parseDecisions(listed, `${field}.decisions`);
+  const decisions = parseDecisions(record.decisions, `${field}.decisions`);
   if (!decisions.ok) return decisions;
   const faultMode = record.fault_mode;
   if (!isFaultSetting('order-desk', faultMode)) return refused('bad_shape', `${field}.fault_mode must be the empty text or a fault value of the Order Desk`);

@@ -231,19 +231,22 @@ describe('the sender', () => {
     expect(must(parse(change(golden('confirmation'), ['sender', 'organisation_verified'], false))).sender.organisation_verified).toBe(false);
   });
 
-  it('takes the organisation as null, which the checks give when no party names one, and as plain text', () => {
+  it('takes the organisation as null, which the checks give when no party names one', () => {
     expect(must(parse(change(golden('confirmation'), ['sender', 'organisation'], null))).sender.organisation).toBeNull();
-    for (const text of ['echo.example', 'a', 'Operator Echo (demo)', 'caf\u00e9.example', 'a'.repeat(253), '\u4e2d\u6587.example']) {
-      expect(must(parse(change(golden('confirmation'), ['sender', 'organisation'], text))).sender.organisation, text).toBe(text);
-    }
   });
 
-  it.each([
-    ['the empty text', ''], ['a space', ' '], ['254 characters', 'a'.repeat(254)], ['a space at the start', ' echo.example'], ['a space at the end', 'echo.example '], ['a line break', 'echo\nexample'],
-    ['a tab', 'echo\texample'], ['a control character', 'echo\u0001.example'], ['a line separator', 'echo\u2028example'], ['a zero width joiner', 'echo\u200d.example'], ['a number', 1], ['true', true],
-    ['a list', ['echo.example']], ['an object', {}], ['the marker', MARKER],
-  ])('refuses %s as the organisation', (_what, organisation) => {
-    expectRefused(parse(change(golden('confirmation'), ['sender', 'organisation'], organisation)), 'confirmation.sender.organisation');
+  it('takes any text of at most 1024 characters as the organisation, because the shared sender check takes any text from the record of the sender', () => {
+    const texts = [
+      'echo.example', 'a', 'Operator Echo (demo)', 'caf\u00e9.example', '\u4e2d\u6587.example', '', ' ', '\u00a0', 'echo\u200d.example', 'a'.repeat(254), 'a'.repeat(1024), ' echo.example ',
+      'echo\nexample', 'echo\texample', 'echo\u0001.example', 'echo\u2028example', MARKER,
+    ];
+    for (const text of texts) expect(must(parse(change(golden('confirmation'), ['sender', 'organisation'], text))).sender.organisation, JSON.stringify(text)).toBe(text);
+  });
+
+  it.each([['1025 characters', 'a'.repeat(1025)], ['2000 characters', 'a'.repeat(2000)], ['a number', 1], ['true', true], ['a list', ['echo.example']], ['an object', {}]])('refuses %s as the organisation', (_what, organisation) => {
+    const result = parse(change(golden('confirmation'), ['sender', 'organisation'], organisation));
+    expectRefused(result, 'confirmation.sender.organisation');
+    expect(!result.ok && result.detail).not.toContain('aaaa');
   });
 
   it.each([['a list', []], ['a text', 'sender'], ['null', null], ['a number', 1]])('refuses a sender that is %s', (_what, sender) => {
@@ -273,16 +276,34 @@ describe('the approval', () => {
   it.each([
     ['a time with milliseconds', '2026-11-24T10:00:00.000Z', true], ['a time with 123 milliseconds', '2026-11-24T10:00:00.123Z', true], ['the last day of a leap year', '2028-12-31T23:59:59.999Z', true],
     ['no end', null, true],
+    ['the year 10000, in the extended form', '+010000-01-01T00:00:00.000Z', true], ['a year before 0, in the extended form', '-000001-01-01T00:00:00.000Z', true],
+    ['the last time that a date holds', '+275760-09-13T00:00:00.000Z', true],
     ['a time with no milliseconds', '2026-11-24T10:00:00Z', false], ['a time with one digit of milliseconds', '2026-11-24T10:00:00.1Z', false],
     ['a time with an offset', '2026-11-24T10:00:00.000+00:00', false], ['a time in local form', '2026-11-24T10:00:00.000', false], ['a date', '2026-11-24', false],
     ['a lower case letter', '2026-11-24t10:00:00.000z', false], ['a day that does not exist', '2026-02-30T00:00:00.000Z', false], ['a month that does not exist', '2026-13-01T00:00:00.000Z', false],
     ['an hour that does not exist', '2026-11-24T24:00:00.000Z', false], ['a minute that does not exist', '2026-11-24T10:60:00.000Z', false], ['a space at the end', '2026-11-24T10:00:00.000Z ', false],
     ['a line break', '2026-11-24T10:00:00.000Z\n', false], ['milliseconds since 1970', 1_795_000_000_000, false], ['the text of milliseconds', '1795000000000', false], ['the empty text', '', false],
+    ['a year of five digits with a sign', '+10000-01-01T00:00:00.000Z', false], ['a year of six digits with no sign', '010000-01-01T00:00:00.000Z', false],
+    ['a year of seven digits with a sign', '+0100000-01-01T00:00:00.000Z', false], ['the year 0 with a minus sign', '-000000-01-01T00:00:00.000Z', false],
+    ['a millisecond after the last time that a date holds', '+275760-09-13T00:00:00.001Z', false], ['the extended form with no milliseconds', '+010000-01-01T00:00:00Z', false],
+    ['the extended form of a day that does not exist', '+010000-02-30T00:00:00.000Z', false],
     ['true', true, false], ['a list', [], false], ['an object', {}, false], ['the marker', MARKER, false],
   ])('valid_until: %s', (_what, value, passes) => {
     const result = parse(change(golden('confirmation'), ['approval', 'valid_until'], value));
     if (passes) expect(must(result).approval.valid_until).toBe(value);
     else expectRefused(result, 'confirmation.approval.valid_until');
+  });
+
+  it('takes the text that toISOString writes for a time of any year that a date holds, with the year of four digits or the extended form', () => {
+    const years = [-271820, -1, 0, 99, 100, 999, 1000, 9999, 10000, 275760];
+    for (const year of years) {
+      const time = new Date(0);
+      time.setUTCFullYear(year, 5, 17);
+      time.setUTCMilliseconds(123);
+      const text = time.toISOString();
+      expect(must(parse(change(golden('confirmation'), ['approval', 'valid_until'], text))).approval.valid_until, text).toBe(text);
+    }
+    expect(new Date(Date.UTC(2026, 10, 24, 10)).toISOString()).toBe('2026-11-24T10:00:00.000Z');
   });
 
   it.each([['a list', []], ['a text', 'approval'], ['null', null], ['a number', 1]])('refuses an approval that is %s', (_what, approval) => {
@@ -404,19 +425,33 @@ describe('the fault setting', () => {
 });
 
 describe('the Unicode form of a text', () => {
-  it('writes the texts of the confirmation in the NFC form, and keeps the texts of the decisions as they came', () => {
+  it('writes the organisation in the NFC form, and keeps the texts of the decision as they came', () => {
     const decision = [...DECISION] as const;
     let sample = change(golden('confirmation'), ['sender', 'organisation'], 'cafe\u0301.example');
-    sample = change(sample, ['sku'], '\u212ALV-NIT-M');
     sample = change(sample, [...decision, 'reasoning'], 'cafe\u0301 is open');
     sample = change(sample, [...SUB_JOB, 'receipt', 'model'], 'cafe\u0301');
     sample = change(sample, [...decision, 'choice', 'note'], 'cafe\u0301');
     const confirmation = must(parse(sample));
     expect(confirmation.sender.organisation).toBe('caf\u00e9.example');
-    expect(confirmation.sku).toBe('KLV-NIT-M');
     expect(confirmation.decisions[0]!.reasoning).toBe('cafe\u0301 is open');
     expect(confirmation.decisions[0]!.inference.sub_job.receipt).toMatchObject({ model: 'cafe\u0301' });
     expect(confirmation.decisions[0]!.choice).toMatchObject({ note: 'cafe\u0301' });
+  });
+
+  it('checks each identifier as it is written: the Kelvin sign is refused, although NFC turns it into the letter K, and the twin with the letter K passes', () => {
+    // The Kelvin sign (U+212A) is not an ASCII letter. The order store refuses it, and so does this parser.
+    const places: ReadonlyArray<readonly [string, readonly (string | number)[]]> = [
+      ['confirmation.po_number', ['po_number']], ['confirmation.sku', ['sku']], ['confirmation.order_id', ['order_id']],
+      ['confirmation.decisions[0].inference.sub_job.capability_id', [...SUB_JOB, 'capability_id']],
+    ];
+    for (const [where, path] of places) {
+      for (const text of ['\u212AO-1', 'SO-\u212A', 'x\u212Ay']) {
+        const result = parse(change(golden('confirmation'), path, text));
+        expectRefused(result, where);
+        expect(!result.ok && result.detail).not.toContain('\u212A');
+      }
+      expect(parse(change(golden('confirmation'), path, 'KO-1')).ok, where).toBe(true);
+    }
   });
 
   it('takes a text that is in the NFC form as it is', () => {

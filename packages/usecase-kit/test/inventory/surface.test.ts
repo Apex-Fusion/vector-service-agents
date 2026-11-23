@@ -19,7 +19,7 @@ function node(args: readonly string[]): string {
 
 const NAMES = [
   'CONFIRMATION_CHECKS', 'CONFIRMATION_SCHEMA', 'INVENTORY_CAPABILITIES', 'LOTS_SCHEMA', 'LOT_NAMES', 'ORDER_DESK_CLAIM', 'PO_SCHEMA', 'REORDER_CLAIM', 'isLotName', 'lotSizeOf', 'lotsFileSha256',
-  'parseLotsFile', 'parseOrderConfirmation', 'parsePurchaseOrder', 'poNumberOf',
+  'parseLotsFile', 'parseOrderConfirmation', 'parsePurchaseOrder', 'poNumberKey', 'poNumberOf',
 ];
 
 describe('the subpath @vsa/usecase-kit/inventory', () => {

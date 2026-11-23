@@ -152,18 +152,21 @@ describe('parseLotsFile', () => {
     expectRefused(parseLotsFile(value), 'lots file');
   });
 
-  it('writes each text in the NFC form: the Kelvin sign is the letter K, and the copy holds the letter', () => {
-    const file = must(parseLotsFile(change(golden('lots'), ['items', 0, 'sku'], '\u212ASU-1')));
-    expect(file.items[0]!.sku).toBe('KSU-1');
-    expect(lotSizeOf(file, 'KSU-1', 'lot-medium')).toBe(50);
-    expect(parseLotsFile(golden('lots'))).toStrictEqual({ ok: true, value: golden('lots') });
+  it('checks each text as it is written: the Kelvin sign is refused in a SKU, although NFC turns it into the letter K, and the twin with the letter K passes', () => {
+    // The Kelvin sign (U+212A) is not an ASCII letter, and the store refuses it. The lots file is held to the same rule.
+    for (const sku of ['\u212ASU-1', 'SKU-\u212A', 'x\u212Ay']) {
+      const result = parseLotsFile(change(golden('lots'), ['items', 0, 'sku'], sku));
+      expectRefused(result, 'lots file.items[0].sku');
+      expect(!result.ok && result.detail).not.toContain('\u212A');
+    }
+    expect(must(parseLotsFile(change(golden('lots'), ['items', 0, 'sku'], 'KSU-1'))).items[0]!.sku).toBe('KSU-1');
   });
 
-  it('does not hash the copy: the NFC form changes the copy and not the bytes that the manifest names', () => {
-    const text = goldenText('lots').split('GLV-NIT-M').join('\u212ALV-NIT-M');
-    const file = must(parseLotsFile(JSON.parse(text)));
-    expect(file.items[0]!.sku).toBe('KLV-NIT-M');
-    expect(lotsFileSha256(text)).not.toBe(lotsFileSha256(text.split('\u212A').join('K')));
+  it('holds only ASCII texts in the copy of a file, so that no text of an accepted file changes in the NFC form', () => {
+    for (const item of must(parseLotsFile(golden('lots'))).items) {
+      expect(item.sku).toMatch(/^[\x20-\x7e]+$/);
+      expect(item.sku).toBe(item.sku.normalize('NFC'));
+    }
   });
 });
 

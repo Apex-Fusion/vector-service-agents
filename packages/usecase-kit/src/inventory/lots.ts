@@ -4,11 +4,12 @@
 // A lot is one of three sizes of an order: `lot-small`, `lot-medium` and `lot-large`. The lots file gives the size of each lot for each SKU. The Order Desk serves the file as bytes, and the manifest of
 // the agent holds the SHA-256 of those bytes. So `lotsFileSha256` hashes the text as it is served and writes no canonical form.
 //
-// The field rules are the rules of the purchase order store of the mock service: an identifier, a quantity and a date. A document that this folder takes is a document that the store takes. A parser
-// reads its input with `parseCanonicalDocument` of the protocol: each member is read one time as data, the copy is a new plain object with each text in the NFC form, and an accessor, the key `__proto__`
-// and a member that is not listed are refused. The detail of a refusal names the field and never repeats the value.
+// The field rules are the rules of the purchase order store of the mock service: an identifier, a quantity and a date. A document that this folder takes is a document that the store takes, and no more.
+// A parser reads its input with `parseDocument` of the protocol: each member is read one time as data, the copy is a new plain object, and an accessor, the key `__proto__` and a member that is not
+// listed are refused. Each text is checked as it is written. A text that only the NFC form turns into a valid text, such as the Kelvin sign that NFC turns into the letter K, is refused. A text that
+// passes is ASCII, so it is in the NFC form already. The detail of a refusal names the field and never repeats the value.
 import { createHash } from 'node:crypto';
-import { accepted, checkMembers, parseCanonicalDocument, refused } from '../protocol/index.ts';
+import { accepted, checkMembers, parseDocument, refused } from '../protocol/index.ts';
 import type { Accepted, Digest, JsonObject, JsonValue, ProtocolResult, Refused } from '../protocol/index.ts';
 
 /** The three lots of an order, from the smallest to the largest. The `model` of each advert of the Order Desk is one of them. */
@@ -110,7 +111,7 @@ function parseItem(value: JsonValue, field: string): ProtocolResult<LotsItem> {
  */
 export function parseLotsFile(value: unknown): ProtocolResult<LotsFile> {
   const field = 'lots file';
-  const copy = parseCanonicalDocument(value, field);
+  const copy = parseDocument(value, field);
   if (!copy.ok) return copy;
   const members = checkMembers(copy.value, field, ['schema', 'items']);
   if (members !== null) return members;

@@ -11,9 +11,10 @@
 //   supplier_did          a DID
 //   advert_ref            a reference to an output: a transaction hash, a hash sign and an output index of at most 6 digits (the store takes 6 digits, and the form of the protocol takes 10)
 //   stock_reading_sha256  a digest
-// A member is read one time as data. The result is a new plain object with its members in the order above and each text in the NFC form, which is the form that the digest binds. An accessor, the key
-// `__proto__` and a member that is not listed are refused. The detail of a refusal names the field and never repeats the value.
-import { DOCUMENT_SCHEMAS, accepted, checkMembers, parseCanonicalDocument, parseDid, parseDigest, parseOutputRef, refused } from '../protocol/index.ts';
+// A member is read one time as data. The result is a new plain object with its members in the order above. Each text is checked as it is written, and every form above is ASCII, so a text that
+// passes is in the NFC form that the digest binds already. A text that only NFC turns into a valid text, such as the Kelvin sign that becomes the letter K, is refused, as the store refuses it. An
+// accessor, the key `__proto__` and a member that is not listed are refused. The detail of a refusal names the field and never repeats the value.
+import { DOCUMENT_SCHEMAS, accepted, checkMembers, parseDid, parseDigest, parseDocument, parseOutputRef, refused } from '../protocol/index.ts';
 import type { Did, Digest, OutputRef, ProtocolResult, TenantId } from '../protocol/index.ts';
 import { isLotName, parseDay, parseId, parseQuantity } from './lots.ts';
 import type { LotName } from './lots.ts';
@@ -60,7 +61,7 @@ function parseAdvertRef(value: unknown, field: string): ProtocolResult<OutputRef
  * reads the document of a handoff passes `handoff.document`.
  */
 export function parsePurchaseOrder(value: unknown, field = 'purchase order'): ProtocolResult<PurchaseOrder> {
-  const copy = parseCanonicalDocument(value, field);
+  const copy = parseDocument(value, field);
   if (!copy.ok) return copy;
   const members = checkMembers(copy.value, field, MEMBERS);
   if (members !== null) return members;
@@ -108,4 +109,12 @@ export function poNumberOf(tenant: string, counter: number): string {
   const number = `${tenant}-${counter}`;
   if (number.length > MAX_NUMBER_CHARS) throw new TypeError(`a purchase order number has at most ${MAX_NUMBER_CHARS} characters`);
   return number;
+}
+
+/**
+ * The key of a purchase order number: the number in lower case. The supplier portal takes one order for each number without regard to case, so a number is unique without regard to case, and a book of
+ * orders keys each number by this key. `RUN1-1` and `run1-1` are one purchase order.
+ */
+export function poNumberKey(poNumber: string): string {
+  return poNumber.toLowerCase();
 }

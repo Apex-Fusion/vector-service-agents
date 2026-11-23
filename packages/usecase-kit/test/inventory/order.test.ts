@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { DOCUMENT_SCHEMAS, canonicalSha256, makeProposal, parseHandoff, proposalDigest } from '@vsa/usecase-kit/protocol';
-import { LOT_NAMES, PO_SCHEMA, parsePurchaseOrder, poNumberOf } from '@vsa/usecase-kit/inventory';
+import { LOT_NAMES, PO_SCHEMA, parsePurchaseOrder, poNumberKey, poNumberOf } from '@vsa/usecase-kit/inventory';
 import { MARKER, change, expectRefused, golden, goldenText, must, withPrototype } from './support.ts';
 import type { Json } from './support.ts';
 
@@ -135,16 +135,17 @@ describe('a member of the wrong type or in the wrong form', () => {
 });
 
 describe('the Unicode form of a text', () => {
-  it('writes each text in the NFC form: a text that is not in this form is copied in it, and the digest is the digest of the NFC document', () => {
-    // The Kelvin sign (U+212A) is not in the NFC form: NFC replaces it by the letter K. It is the one such character that the form of an identifier then takes.
-    const sample = (sku: string): Json => change(golden('po'), ['sku'], sku);
-    const order = must(parsePurchaseOrder(sample('\u212ALV-NIT-M')));
-    expect(order.sku).toBe('KLV-NIT-M');
-    expect(order).toStrictEqual(must(parsePurchaseOrder(sample('KLV-NIT-M'))));
-    expect(proposalDigest(SALT, order)).toStrictEqual(proposalDigest(SALT, sample('KLV-NIT-M')));
-    expect(proposalDigest(SALT, order)).toStrictEqual(proposalDigest(SALT, sample('\u212ALV-NIT-M')));
-    expect(must(makeProposal(sample('\u212ALV-NIT-M'), SALT)).document).toStrictEqual(order);
-    expect(canonicalSha256(order)).toStrictEqual(canonicalSha256(sample('\u212ALV-NIT-M')));
+  it('checks each text as it is written: the Kelvin sign is refused in an identifier, although NFC turns it into the letter K, and the twin with the letter K passes', () => {
+    // The Kelvin sign (U+212A) is not an ASCII letter. NFC replaces it by the letter K, and it is the one character that the form of an identifier would then take. The store checks the text as it is
+    // written, so the Kelvin sign is refused here too.
+    for (const name of ['po_number', 'sku']) {
+      for (const text of ['\u212ALV-NIT-M', 'run\u212A-1', 'x\u212A']) {
+        const result = parsePurchaseOrder(change(golden('po'), [name], text));
+        expectRefused(result, `purchase order.${name}`);
+        expect(!result.ok && result.detail).not.toContain('\u212A');
+      }
+      expect(parsePurchaseOrder(change(golden('po'), [name], 'KLV-NIT-M')).ok, name).toBe(true);
+    }
   });
 
   it('refuses a letter with a mark in any form, because an identifier has letters, digits and three signs, and the refusal does not repeat the text', () => {
@@ -155,9 +156,13 @@ describe('the Unicode form of a text', () => {
     }
   });
 
-  it('takes the order of the protocol in its own copy: the same order has the same digest, whatever the form of its texts', () => {
-    const plain = must(parsePurchaseOrder(golden('po')));
-    expect(proposalDigest(SALT, plain)).toStrictEqual({ ok: true, value: GOLDEN_DIGEST });
+  it('holds only ASCII texts in the copy of an order, so that no text of an accepted order changes in the NFC form', () => {
+    const order = must(parsePurchaseOrder(golden('po')));
+    for (const [name, text] of Object.entries(order)) {
+      if (typeof text !== 'string') continue;
+      expect(text, name).toMatch(/^[\x20-\x7e]+$/);
+      expect(text, name).toBe(text.normalize('NFC'));
+    }
   });
 });
 
@@ -300,5 +305,42 @@ describe('poNumberOf', () => {
       expect(message).not.toContain('TTTT');
       expect(message).not.toContain('1000000');
     }
+  });
+});
+
+describe('poNumberKey', () => {
+  it('is the number in lower case', () => {
+    expect(poNumberKey('Run1-12')).toBe('run1-12');
+    expect(poNumberKey('RUN1-12')).toBe('run1-12');
+    expect(poNumberKey('run1-12')).toBe('run1-12');
+    expect(poNumberKey('A.b_C-d9')).toBe('a.b_c-d9');
+  });
+
+  it('is one key for the numbers that differ only in case, as the supplier portal takes them: one purchase order', () => {
+    const keys = new Set(['abc-1', 'ABC-1', 'Abc-1', 'aBC-1', 'abC-1'].map((number) => poNumberKey(number)));
+    expect([...keys]).toStrictEqual(['abc-1']);
+  });
+
+  it('is another key for a number that differs in more than the case', () => {
+    const keys = new Set(['abc-1', 'abc-2', 'abc_1', 'abc.1', 'abd-1', 'abc-10', 'abc-1x'].map((number) => poNumberKey(number)));
+    expect(keys.size).toBe(7);
+  });
+
+  it('does not depend on the language of the host: the capital I gives the letter i', () => {
+    expect(poNumberKey('TITLE-I')).toBe('title-i');
+    expect(poNumberKey('INDEX-1')).toBe('index-1');
+  });
+
+  it('gives the number that poNumberOf makes, because a tenant is in lower case already, and a number that the parser takes', () => {
+    for (const [tenant, counter] of [['run1', 1], ['acme-test', 1000], ['a', 0], ['t'.repeat(48), 999_999_999_999_999]] as const) {
+      const number = poNumberOf(tenant, counter);
+      expect(poNumberKey(number)).toBe(number);
+      expect(parsePurchaseOrder(change(golden('po'), ['po_number'], poNumberKey(number.toUpperCase()))).ok, number).toBe(true);
+    }
+    expect(poNumberKey(String(golden('po').po_number))).toBe(golden('po').po_number);
+  });
+
+  it('is idempotent', () => {
+    for (const number of ['RUN1-1', 'run1-1', 'A.B_C-D']) expect(poNumberKey(poNumberKey(number))).toBe(poNumberKey(number));
   });
 });
