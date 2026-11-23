@@ -40,7 +40,7 @@ jobs:
         env:
           REQUIRE_POPPLER: "1"
           REQUIRE_ASR: "1"
-  # Every pull request and every push to main builds the six images, with no push and no registry login, so that a stage that no longer builds fails before it
+  # Every pull request and every push to main builds the eight images, with no push and no registry login, so that a stage that no longer builds fails before it
   # reaches main. The publish job builds them again on main, and pushes them.
   build:
     runs-on: self-hosted
@@ -66,6 +66,16 @@ jobs:
         with:
           context: .
           file: agents/advocate/Dockerfile
+          push: false
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agents/reorder-agent/Dockerfile
+          push: false
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agents/order-desk/Dockerfile
           push: false
       # The runtime of the agent template, built from the commit that the compose files of deploy/host build it from. The pin stands in the ref, in the check and in the
       # label of the publish job, and a test holds the three equal to those compose files. This job pushes nothing.
@@ -137,6 +147,24 @@ jobs:
           tags: |
             ghcr.io/apex-fusion/vector-service-agents/advocate:latest
             ghcr.io/apex-fusion/vector-service-agents/advocate:${{ github.sha }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agents/reorder-agent/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/apex-fusion/vector-service-agents/reorder-agent:latest
+            ghcr.io/apex-fusion/vector-service-agents/reorder-agent:${{ github.sha }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agents/order-desk/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/apex-fusion/vector-service-agents/order-desk:latest
+            ghcr.io/apex-fusion/vector-service-agents/order-desk:${{ github.sha }}
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
       # The same runtime, pushed. Every runtime of the agents host runs this one image, and a compose file names it by digest.
       # The checkout keeps no credential, because its folder is a build context.

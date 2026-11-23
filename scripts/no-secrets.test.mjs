@@ -227,7 +227,7 @@ test('the list of key variables names a service key for each start, a name of it
 // The runtime and the service of an agent read one env file. So the compose file gives each container its own keys: the others are blanked (an empty string in `environment` overrides the value from the env file).
 // A runtime blanks every variable that its service reads a key from. The service blanks the supplier key. A runtime does not name the supplier key, and a service does not name its own keys:
 // both read them from the env file. No container writes the value of a key in the file.
-function composeKeyProblems(compose, { runtimes, service, start }, table = KEY_VARIABLES) {
+function composeKeyProblems(compose, { runtimes, service, start, holdsNoKey = false }, table = KEY_VARIABLES) {
   const keys = table.has(start) ? variablesOf(table.get(start)) : [];
   const environmentOf = (name) => {
     const environment = compose.services?.[name]?.environment ?? {};
@@ -240,7 +240,9 @@ function composeKeyProblems(compose, { runtimes, service, start }, table = KEY_V
     if ('SUPPLIER_PRIV_KEY_HEX' in environment) problems.push(`the runtime ${runtime} sets SUPPLIER_PRIV_KEY_HEX: it reads its key from the env file`);
   }
   const own = environmentOf(service);
-  if (own.SUPPLIER_PRIV_KEY_HEX !== '') problems.push(`the service ${service} does not blank SUPPLIER_PRIV_KEY_HEX`);
+  // A service with no key (the mock service) names no key variable at all, not even a blank one: it has no supplier key to blank and no key of its own to read.
+  if (holdsNoKey) for (const name of Object.keys(own)) if (/PRIV_KEY_HEX$/.test(name)) problems.push(`the service ${service} names ${name}: it holds no key`);
+  if (!holdsNoKey && own.SUPPLIER_PRIV_KEY_HEX !== '') problems.push(`the service ${service} does not blank SUPPLIER_PRIV_KEY_HEX`);
   for (const key of keys) if (key in own) problems.push(`the service ${service} sets ${key}: it reads its keys from the env file`);
   for (const container of Object.keys(compose.services)) {
     for (const [name, value] of Object.entries(environmentOf(container))) if (/PRIV_KEY_HEX$/.test(name) && value !== '') problems.push(`${container} writes a value for ${name}`);
@@ -255,6 +257,7 @@ const DEPLOYMENTS = [
   { compose: join('deploy', 'host', 'docker-compose.advocate.yml'), runtimes: ['agent'], service: 'service', start: join('agents', 'advocate', 'src', 'start.ts') },
   { compose: join('deploy', 'server', 'docker-compose.order-desk.yml'), runtimes: ['runtime-small', 'runtime-medium', 'runtime-large'], service: 'service', start: join('agents', 'order-desk', 'src', 'serve', 'start.ts') },
   { compose: join('deploy', 'server', 'docker-compose.reorder-agent.yml'), runtimes: ['runtime'], service: 'service', start: join('agents', 'reorder-agent', 'src', 'serve', 'start.ts') },
+  { compose: join('deploy', 'server', 'docker-compose.mock-systems.yml'), runtimes: [], service: 'mock-systems', holdsNoKey: true },
 ];
 /** What the list of deployments leaves out: a start that holds keys and has no compose file in it, a start that no list of keys names, and a compose file of the host that it does not list. */
 function deploymentProblems(deployments, table, composeFiles) {
@@ -266,7 +269,8 @@ function deploymentProblems(deployments, table, composeFiles) {
 }
 
 test('the compose files of the host give each container its own keys: the runtime blanks the keys of its service, the service blanks the supplier key, and no container writes a key', () => {
-  const files = readdirSync(join('deploy', 'host')).filter((file) => /^docker-compose\..+\.yml$/.test(file)).map((file) => join('deploy', 'host', file));
+  const files = ['host', 'server'].flatMap((folder) => readdirSync(join('deploy', folder)).filter((file) => /^docker-compose\..+\.yml$/.test(file)).map((file) => join('deploy', folder, file)));
+  assert.ok(['docker-compose.mock-systems.yml', 'docker-compose.order-desk.yml', 'docker-compose.reorder-agent.yml'].every((name) => files.includes(join('deploy', 'server', name))), 'the folder of the agents host is read too');
   assert.deepEqual(deploymentProblems(DEPLOYMENTS, KEY_VARIABLES, files), []);
   for (const deployment of DEPLOYMENTS) assert.deepEqual(composeKeyProblems(parseYaml(readFileSync(deployment.compose, 'utf8')), deployment), [], deployment.compose);
 });
@@ -309,4 +313,17 @@ test('the list of deployments names the compose file of each start that holds ke
   assert.deepEqual(deploymentProblems(deployments, SEVERAL, ['deploy/x/a.yml', 'deploy/x/b.yml']), [`${SPOKE} holds keys, and no compose file is listed for it`], 'a start with no compose file');
   assert.deepEqual(deploymentProblems(deployments, new Map(), ['deploy/x/a.yml', 'deploy/x/b.yml']), [`deploy/x/a.yml names the start ${HUB}, which no list of keys names`], 'a start that no list names');
   assert.deepEqual(deploymentProblems(deployments, table, ['deploy/x/a.yml', 'deploy/x/b.yml', 'deploy/x/c.yml']), ['deploy/x/c.yml is a compose file that no deployment lists'], 'a compose file that is not listed');
+});
+
+test('the compose check lets a service with no key through, and refuses one that names a key variable, blank or filled, and a listing that lacks the shape of a service with no key', () => {
+  const deployment = { runtimes: [], service: 'mock-systems', holdsNoKey: true };
+  const accepted = () => ({ services: { 'mock-systems': { environment: { PORT: '9120', HOST: '0.0.0.0' } } } });
+  const problemsOf = (change) => { const compose = accepted(); change(compose.services['mock-systems'].environment); return composeKeyProblems(compose, deployment); };
+  assert.deepEqual(problemsOf(() => {}), [], 'the accepted compose file');
+  assert.deepEqual(problemsOf((environment) => { environment.SUPPLIER_PRIV_KEY_HEX = ''; }), ['the service mock-systems names SUPPLIER_PRIV_KEY_HEX: it holds no key'], 'a blank supplier key');
+  assert.deepEqual(problemsOf((environment) => { environment.MOCK_PRIV_KEY_HEX = HEX; }), ['the service mock-systems names MOCK_PRIV_KEY_HEX: it holds no key', 'mock-systems writes a value for MOCK_PRIV_KEY_HEX'], 'a key written out');
+  assert.deepEqual(composeKeyProblems(accepted(), { runtimes: [], service: 'mock-systems' }), ['the service mock-systems does not blank SUPPLIER_PRIV_KEY_HEX'], 'the same file listed as a service that holds keys');
+  const asList = accepted();
+  asList.services['mock-systems'].environment = ['PORT=9120', 'HOST=0.0.0.0', 'SUPPLIER_PRIV_KEY_HEX='];
+  assert.deepEqual(composeKeyProblems(asList, deployment), ['the service mock-systems names SUPPLIER_PRIV_KEY_HEX: it holds no key'], 'a blank key in the environment as a list');
 });

@@ -19,7 +19,7 @@ services:
     # The service listens on 0.0.0.0 inside the container. A container on a shared network could reach the port and send a forged Client-Cert header. Do not add a networks key here, and do not join another container to that network.
     # The service keeps at most 100 tenants, and at most 5000 log lines for each tenant (MAX_TENANTS and MAX_LOG_LINES in services/mock-systems/src/tenants.ts).
     # Measured with Node 22: about 140 MiB with no tenant, and about 650 MiB of heap with the most tenants and the most log lines. Node limits its heap to half of the container limit,
-    # so 1 GiB stops a full store with an out-of-memory error. 2 GiB leaves room for it. The plan of the memory (README.md, "The host") keeps more than 4 GiB free for growth.
+    # so 1 GiB stops a full store with an out-of-memory error. 2 GiB leaves room for it. The plan of the memory (README.md, "The host") gives the memory that is left when the containers run.
     # If a fault makes the service grow past the limit, the kernel stops this container only, and the runtimes keep their memory.
     mem_limit: 2048m
     # The service writes no file of its own. The loader tsx writes its cache to the temp folder, so /tmp is a small memory file system. A file there counts against the memory limit.
