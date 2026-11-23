@@ -312,7 +312,7 @@ The outcome and the exit state of an `execute` result follow one rule. The exit 
 | Outcome | Exit state | When |
 |---|---|---|
 | `completed` | `Completed` | the Order Desk delivered, the model accepted the delivery, and the PO store recorded the order |
-| `vault_refused` | `Cancelled` when the hirer ended the delegation, else `Failed` | the ledger refused the Pay from the vault. The `reason` is the evaluation error of the node |
+| `vault_refused` | `Cancelled` when the hirer ended the delegation, else `Failed` | the ledger refused the Pay from the vault, or the builder could not make it. The `reason` is the text that the node or the builder gave, cut short, or `vault_reason_missing` when it gave none |
 | `refused_by_counterparty` | `Rejected`, but `Escalated` for `approval_digest_mismatch`, `Expired` for `approval_expired` and `Cancelled` for `delegation_ended` | the Order Desk refused the order. The `reason` is its code |
 | `refused_by_system` | `Rejected`, but `Expired` for `approval_expired` and `Cancelled` for `delegation_ended` | a mock system refused a call. The `reason` is its code |
 | `disputed` | `Escalated` when the agent filed a challenge, else `Failed` | the model did not accept the delivery. Without a challenge, the `reason` is the code of the step that failed, such as `no_open_claim` |

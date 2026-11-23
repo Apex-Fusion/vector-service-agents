@@ -10,7 +10,7 @@ import { parse } from 'yaml';
 import { ACCEPT_WINDOW_MS, HIRE_ACTION } from '@vsa/buyer-core';
 import { MAX_BODY, RESERVATION_MS } from '@vsa/service-kit';
 import { CONFIRMATIONS_REQUIRED, tokenTarget } from '@vsa/usecase-kit/access';
-import { COUNTERPARTY_REFUSED, INTERRUPTION_REASONS, PAY_UNCONFIRMED, checkRuntimeBody, checkWirePayload, completedResult, disputedResult, failedResult, handoffOf, proposedResult, refusedResult, vaultRefusedResult } from '@vsa/usecase-kit/buyer';
+import { COUNTERPARTY_REFUSED, INTERRUPTION_REASONS, PAY_UNCONFIRMED, VAULT_REASON_MISSING, checkRuntimeBody, checkWirePayload, completedResult, disputedResult, failedResult, handoffOf, proposedResult, refusedResult, vaultRefusedResult } from '@vsa/usecase-kit/buyer';
 import { COSIGN_SETTINGS, COSIGN_STATUS, parseAllowlist, parseCosignSettings } from '@vsa/usecase-kit/cosign';
 import { readFaultSwitch, withFaultMode } from '@vsa/usecase-kit/fault';
 import { INVENTORY_CAPABILITIES, LOT_NAMES, PO_SCHEMA, REORDER_CLAIM, parseOrderConfirmation, parsePurchaseOrder, poNumberOf } from '@vsa/usecase-kit/inventory';
@@ -446,6 +446,8 @@ describe('specs/reorder-agent.md, Interface', () => {
     expect(state('failed', 'deadline')).toBe('Failed');
     expect(row(outcomes, '`completed`')).toContain('| `Completed` |');
     expect(row(outcomes, '`vault_refused`')).toContain('| `Cancelled` when the hirer ended the delegation, else `Failed` |');
+    expect(VAULT_REASON_MISSING).toBe('vault_reason_missing');
+    expect(row(outcomes, '`vault_refused`')).toContain('The `reason` is the text that the node or the builder gave, cut short, or `vault_reason_missing` when it gave none |');
     expect(row(outcomes, '`refused_by_counterparty`')).toContain('| `Rejected`, but `Escalated` for `approval_digest_mismatch`, `Expired` for `approval_expired` and `Cancelled` for `delegation_ended` |');
     expect(row(outcomes, '`refused_by_system`')).toContain('| `Rejected`, but `Expired` for `approval_expired` and `Cancelled` for `delegation_ended` |');
     expect(row(outcomes, '`disputed`')).toContain('| `Escalated` when the agent filed a challenge, else `Failed` |');
