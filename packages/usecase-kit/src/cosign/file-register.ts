@@ -9,8 +9,9 @@
 // What the disk adds. Each call reads the file again, so the file is the truth, and a file that was damaged after the last call is seen at this call. All calls of one instance run in one promise queue, so two
 // calls never overlap in one process. A call that changes the entry writes the whole file before it returns: a temporary file in the same folder, a sync of it, a rename over the register file, and a sync of
 // the folder. `commit` always writes, also for an entry that is committed already, so a `commit` that settles with 'held' never rests on a file that no call has synced. A call that changes nothing writes
-// nothing. When the write fails, the call rejects, and the route reads that as `check_unavailable` and sends no signature. A failure before the rename leaves the old file whole. A failure of the sync of the
-// folder leaves the new file in place, so the key stays held for the body, which is the safe side: a key that is held too long never gives a second body.
+// nothing. A crash between a `take` and its `commit` leaves the entry that the `take` made, so the key stays held until `untilMs`. When the write fails, the call rejects, and the route reads that as
+// `check_unavailable` and sends no signature. A failure before the rename leaves the old file whole. A failure of the sync of the folder leaves the new file in place, so the key stays held for the body, which
+// is the safe side: a key that is held too long never gives a second body.
 //
 // A file that is not there is a register with no entries. A file that cannot be read, that is not JSON, or that is not in its form makes every call throw. It never reads as a free key, and the call changes
 // nothing. The form is `{"version":1,"entries":[{"key_hash":..,"body_hash":..,"until_ms":..,"committed":..}]}` with one entry for each key. It holds hashes and times, and no key and no part of a request.

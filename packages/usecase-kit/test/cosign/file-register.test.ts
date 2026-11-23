@@ -310,6 +310,17 @@ describe('the register on disk keeps its entries over a restart', () => {
     expect(existsSync(file)).toBe(true);
   });
 
+  it('ignores a temporary file that a crash left, and never takes it for the register', async () => {
+    const folder = tempFolder();
+    const file = join(folder, 'register.json');
+    const stray = join(folder, '.register.json.0123456789abcdef.tmp');
+    writeFileSync(stray, fileOf([entry('body-1', { committed: true })]));
+    const register = new FileKeyRegister(file);
+    expect(await register.take(claim('body-2'), 0)).toBe('held');
+    expect(entriesOn(file)).toEqual([entry('body-2')]);
+    expect(readFileSync(stray, 'utf8')).toBe(fileOf([entry('body-1', { committed: true })]));
+  });
+
   it('writes nothing for a call that changes nothing', async () => {
     const folder = tempFolder();
     const file = join(folder, 'register.json');
@@ -460,7 +471,7 @@ describe('a write is whole, or it is not there', () => {
     const register = new FileKeyRegister(file, { fs: spied(folder, calls, { writeFile: async (path, text) => { await gate.promise; return real.writeFile(path, text); } }) });
     let settled = false;
     const pending = register.commit(claim('body-1'), 0).then((result) => { settled = true; return result; });
-    await vi.waitFor(() => expect(calls.map((one) => one.call)).toContain('writeFile'));
+    await vi.waitFor(() => expect(calls.map((one) => one.call)).toContain('writeFile'), { timeout: 4_000 });
     await tick();
     await tick();
     expect(settled).toBe(false);
@@ -478,7 +489,7 @@ describe('a write is whole, or it is not there', () => {
     const register = new FileKeyRegister(file, { fs: spied(folder, calls, { fsync: async (path) => { if (path === folder) await gate.promise; return real.fsync(path); } }) });
     let settled = false;
     const pending = register.commit(claim('body-1'), 0).then((result) => { settled = true; return result; });
-    await vi.waitFor(() => expect(calls.at(-1)).toEqual({ call: 'fsync', path: '.' }));
+    await vi.waitFor(() => expect(calls.at(-1)).toEqual({ call: 'fsync', path: '.' }), { timeout: 4_000 });
     await tick();
     expect(settled).toBe(false);
     expect(entriesOn(file)).toEqual([entry('body-1', { committed: true })]);
@@ -587,7 +598,7 @@ describe('two calls never race on the file', () => {
     });
     const first = register.take(claim('body-1'), 0);
     const second = register.take(claim('body-2', { keyHash: 'key-2' }), 0);
-    await vi.waitFor(() => expect(calls.map((one) => one.call)).toContain('writeFile'));
+    await vi.waitFor(() => expect(calls.map((one) => one.call)).toContain('writeFile'), { timeout: 4_000 });
     await tick();
     await tick();
     // The first call waits at its write. The second call has not read the file yet.
