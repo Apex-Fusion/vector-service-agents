@@ -1,4 +1,4 @@
-// Vitest port of packages/builder/test/attestation-read.test.ts at 2d95483 (Apex-Fusion/mcp-server): VENDORED-FROM.md lists the lines that differ from the source.
+// Vitest port of packages/builder/test/attestation-read.test.ts at ebce68a (Apex-Fusion/mcp-server): VENDORED-FROM.md lists the lines that differ from the source.
 // The reads of attestations (attestation-read.ts) on the attestations that mainnet holds (the capture of capture-ledger-read.mjs) and on
 // synthetic ones where mainnet has no example (a start time, an envelope, an invalid-from time, a decoy). The node is an offline
 // world and Koios is a fake: no network. Each refusal of the check has its accepted twin.
@@ -16,6 +16,7 @@ import { keyHashOf } from '../src/vendored/mcp/identity-rules.ts';
 import { credentialOutputs, MAX_PAGE } from '../src/vendored/mcp/ledger-read.ts';
 import { CAPTURE, CAPTURE_MS, DAY, ISSUER_KEY, MAINNET, attestation, attestationIdOf, attestationUtxo, callsTo, capturedUtxos, koiosRow, ledgerWorld, liveRecord, recordUtxo, revokedWithReason, revokedWithStatus } from './fixtures/ledger-read-world.ts';
 import type { LedgerWorld } from './fixtures/ledger-read-world.ts';
+import { IDENTITY_POINT_HEX, UNIVERSAL_SIGNATURE_HEX, signatureWithIdentityR } from './fixtures/small-order.ts';
 
 // ─── The attestations of mainnet ──────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -699,6 +700,21 @@ describe('checkAttestation: the envelope', () => {
     const record = { [registered.issuerId]: liveRecord() };
     assert.equal((await check({ ...registered, envelopeSig: sign(registered) }, record)).valid, true, 'with an issuer record the DID of the issuer is in the signed header');
     assert.equal((await check({ ...registered, envelopeSig: sign(unsigned) }, record)).valid, false, 'a signature made without it does not verify');
+  });
+  test('an issuer key of a small order with a forged signature, and a signature that starts with the identity point, are not valid', async () => {
+    const structure = Buffer.from(envelopeSigStructure({ issuer: unsigned.issuer, issuerId: null, subject: unsigned.subject, issuedAt: unsigned.issuedAt, format: unsigned.format, digest: unsigned.digest }), 'hex');
+    // The identity point as the key: CML takes the universal signature over every message.
+    assert.ok(CML.PublicKey.from_bytes(Buffer.from(IDENTITY_POINT_HEX, 'hex')).verify(structure, CML.Ed25519Signature.from_hex(UNIVERSAL_SIGNATURE_HEX)), 'CML alone takes the forged signature');
+    const forged = await check({ ...unsigned, issuer: IDENTITY_POINT_HEX, envelopeSig: UNIVERSAL_SIGNATURE_HEX });
+    assert.equal(forged.valid, false);
+    assert.deepEqual(failing(forged), ['envelope']);
+    // The holder of the issuer key, with R = the identity point: CML takes it, the node does not.
+    const odd = signatureWithIdentityR(Buffer.alloc(32, 21), Buffer.from(unsigned.issuer, 'hex'), structure);
+    assert.ok(CML.PublicKey.from_bytes(Buffer.from(unsigned.issuer, 'hex')).verify(structure, CML.Ed25519Signature.from_raw_bytes(odd)), 'CML alone takes the signature of the holder');
+    const own = await check({ ...unsigned, envelopeSig: odd.toString('hex') });
+    assert.equal(own.valid, false);
+    assert.deepEqual(failing(own), ['envelope']);
+    assert.equal((await check({ ...unsigned, envelopeSig: sign(unsigned) })).valid, true, 'the twin: the signature of the issuer key');
   });
 });
 
