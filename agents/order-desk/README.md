@@ -192,3 +192,11 @@ The tests need no network and no key. The identity gateway is the stub gateway o
 ## Image
 
 `Dockerfile` builds the service image on `node:22-bookworm-slim`. The build context is the repository root, because the image installs the workspace from the lockfile: `docker build -f agents/order-desk/Dockerfile -t vsa/order-desk:dev .`. The image runs as the `node` user under `tini`, listens on 9102 and answers `/healthz` for its health check. `/data` is a volume that `node` owns. The image has no Python, no model and no env file. It copies the service in parts: its manifest, its `tsconfig.json`, its `src` folder and its `lots.json`. So it holds no test file of the service. The memory limit is set where the container runs.
+
+## Deploy
+
+`deploy/server/docker-compose.order-desk.yml` runs the three runtimes and this service as four containers. The steps are in `deploy/server/RUNBOOK-order-desk.md`.
+
+The env examples are `deploy/server/.env.order-desk.example` (the service, and the lines that the three runtimes share) and `deploy/server/.env.order-desk-runtime.example` (one copy for each runtime).
+
+`test/deploy.test.ts` holds the five files of that pack to their rules and to the settings of this service.

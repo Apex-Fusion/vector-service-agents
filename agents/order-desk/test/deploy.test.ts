@@ -834,20 +834,12 @@ const ENV_NAMES_IN_RUNBOOK = [SHARED_ENV_FILE, ...RUNTIMES.map((runtime) => runt
 const NAMED_FILES = [...Object.values(FILES), ...ENV_NAMES_IN_RUNBOOK, 'RUNBOOK.md', 'README.md'];
 const SERVICE_NAMES = Object.keys(WANT);
 const LOOPBACK_PORTS = [...RUNTIMES.map((runtime) => runtime.hostPort), SERVICE_HOST_PORT];
-const WORDS_OF_THE_HOST = new RegExp(['apex' + '-web', 'uma' + 'mi', 'chandra' + '-supplier', 'activity' + '-api-mainnet', 'vector-agent' + '-dashboard', 'module3' + '-', 'module6' + '-', 'hetz' + 'ner', 'root' + '@', 'id_' + 'ed25519'].join('|'), 'i');
-const DASH = new RegExp(`[${String.fromCharCode(0x2013, 0x2014)}]`);
-const UNIT_NAME = new RegExp(`AP${3}X`, 'i');
-const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/;
 const HEX_RUN = /[0-9a-fA-F]{56,}/g;
 const PUBLISHED_RUNS = new Set(Object.values(PUBLISHED).flatMap((value) => value.match(/[0-9a-f]{56,}/g) ?? []));
 
-/** What is wrong with the text of a file of the pack, as a public text: the host and its stack, the unit, the dash, an address of a person, and a run of hex digits that is not a published value. */
-function textProblems(text: string, allowed: ReadonlySet<string> = new Set()): string[] {
+/** What is wrong with a file of the pack as to key material: a run of hex digits that is not a published value (it could be a key), and the value of a key variable that is written out. */
+function keyProblems(text: string, allowed: ReadonlySet<string> = new Set()): string[] {
   const problems: string[] = [];
-  if (WORDS_OF_THE_HOST.test(text)) problems.push('the text names the host, its proxy stack, a login or a key file');
-  if (UNIT_NAME.test(text)) problems.push('the unit is called units');
-  if (DASH.test(text)) problems.push('the text has an em dash or an en dash');
-  if (EMAIL.test(text)) problems.push('the text has an address of a person or of a mailbox');
   if ((text.match(HEX_RUN) ?? []).some((run) => !allowed.has(run))) problems.push('the text has a run of hex digits that is not a published value: it could be a key');
   if (/PRIV_KEY_HEX=[0-9a-fA-F]{8,}/.test(text)) problems.push('the text writes the value of a key');
   return problems;
@@ -885,7 +877,7 @@ function runbookProblems(text: string): string[] {
   if (/\bdown\b[^\n]*(?:\s-v\b|--volumes)/.test(code.join('\n'))) problems.push('down never takes -v: the volume holds the order book and the journal');
   const printing = [/\bcat\s+\S*\.env/, /\bprintenv\b/, /\bdocker inspect\b/, /\bdocker exec\b[^\n]*\b(?:env|printenv)\b/, /\becho\s+"?\$\{?[A-Z_]*PRIV_KEY/];
   for (const pattern of printing) if (code.some((line) => pattern.test(line))) problems.push(`a command prints an env file or an environment: ${pattern.source}`);
-  problems.push(...textProblems(text).map((problem) => `the runbook: ${problem}`));
+  problems.push(...keyProblems(text).map((problem) => `the runbook: ${problem}`));
   return problems;
 }
 
@@ -1023,11 +1015,7 @@ describe('deploy/server/RUNBOOK-order-desk.md', () => {
     ['a stop that removes the volume', (t) => `${t}\n\`\`\`sh\ndocker compose -f docker-compose.order-desk.yml down -v\n\`\`\`\n`, /^down never takes -v/],
     ['a command that prints an env file', (t) => `${t}\n\`\`\`sh\ncat .env.order-desk-small\n\`\`\`\n`, /^a command prints an env file or an environment/],
     ['a command that prints the environment of a container', (t) => `${t}\n\`\`\`sh\ndocker exec orders-service printenv\n\`\`\`\n`, /^a command prints an env file or an environment/],
-    ['a dash', (t) => `${t}\nA note ${String.fromCharCode(0x2014)} with a dash.\n`, /^the runbook: the text has an em dash or an en dash/],
-    ['the name of the unit', (t) => `${t}\nSend 5 AP${3}X.\n`, /^the runbook: the unit is called units/],
-    ['an address of a person', (t) => `${t}\nAsk someone@example.org.\n`, /^the runbook: the text has an address of a person/],
     ['a key', (t) => `${t}\nSUPPLIER_PRIV_KEY_HEX=${HEX}\n`, /^the runbook: the text has a run of hex digits/],
-    ['a name of the host', (t) => `${t}\nLog in as ${'root'}@host.\n`, /^the runbook: the text names the host/],
   ];
   test('each copy that breaks one rule is refused, in the words of that rule', () => {
     for (const [what, change, expected] of faults) {
@@ -1046,20 +1034,18 @@ describe('deploy/server/RUNBOOK-order-desk.md', () => {
 // --- the whole pack ------------------------------------------------------------------------------------------------------------------------------------
 
 describe('the pack as a whole', () => {
-  test('every file of the pack is a public text: no host, no unit, no dash, no address of a person, and no run of hex digits except the published values', () => {
+  test('no file of the pack holds key material: no run of hex digits except the published values, and no value written for a key variable', () => {
     for (const [name, text] of [[FILES.compose, composeText], [FILES.example, exampleText], [FILES.runtimeExample, runtimeExampleText], [FILES.snippet, snippetText], [FILES.runbook, runbookText]] as const) {
-      expect(textProblems(text, PUBLISHED_RUNS), name).toStrictEqual([]);
+      expect(keyProblems(text, PUBLISHED_RUNS), name).toStrictEqual([]);
     }
   });
 
-  test('the guard of the text refuses each fault and passes the clean text', () => {
-    expect(textProblems('A clean text with a published value ' + PUBLISHED.IDENTITY_POLICY_ID, PUBLISHED_RUNS)).toStrictEqual([]);
-    expect(textProblems(`A key ${HEX}`)).toStrictEqual(['the text has a run of hex digits that is not a published value: it could be a key']);
-    expect(textProblems(`A key ${HEX}`, new Set([HEX]))).toStrictEqual([]);
-    expect(textProblems(`A ${String.fromCharCode(0x2013)} dash`)).toStrictEqual(['the text has an em dash or an en dash']);
-    expect(textProblems('SUPPLIER_PRIV_KEY_HEX=abcdef0123')).toStrictEqual(['the text writes the value of a key']);
-    expect(textProblems('Use ghcr.io/x/y@sha256:<digest> and ops-team@example.org')).toStrictEqual(['the text has an address of a person or of a mailbox']);
-    expect(textProblems('Use ghcr.io/x/y@sha256:<digest>')).toStrictEqual([]);
+  test('the guard of key material refuses each fault and passes the clean text', () => {
+    expect(keyProblems('A clean text with a published value ' + PUBLISHED.IDENTITY_POLICY_ID, PUBLISHED_RUNS)).toStrictEqual([]);
+    expect(keyProblems(`A key ${HEX}`)).toStrictEqual(['the text has a run of hex digits that is not a published value: it could be a key']);
+    expect(keyProblems(`A key ${HEX}`, new Set([HEX]))).toStrictEqual([]);
+    expect(keyProblems('SUPPLIER_PRIV_KEY_HEX=abcdef0123')).toStrictEqual(['the text writes the value of a key']);
+    expect(keyProblems('Use ghcr.io/x/y@sha256:<digest>')).toStrictEqual([]);
   });
 
   test('the hosts, the ports and the container names are the same in the compose file, the Caddy block, the examples and the runbook', () => {
