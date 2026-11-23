@@ -1,17 +1,28 @@
 // agents/order-desk/src/serve/start.ts
-// How the Order Desk starts: the environment read into a configuration (loadConfig). This is the one file of the service that names the key variable, and it reads that variable one time. The service key is
-// the key of the service: it pays for the model hire of the decision, signs the transactions of the claims and the challenges of the dispute code, and signs the request for the X.509-SVID. The three supplier
-// keys are the keys of the three runtimes, and they never reach this service: it holds their key hashes and public keys, which its manifest publishes.
+// How the Order Desk starts and stops: the environment read into a configuration (loadConfig), and the real parts put together and started (startService): the state directory proved writable, the chain of the
+// service key, the hook and the job, the server, and the janitor of the paying key. This is the one file of the service that names the key variable, and it reads that variable one time. The service key is the
+// key of the service: it pays for the model hire of the decision, signs the transactions of the claims and the challenges of the dispute code, and signs the request for the X.509-SVID. The three supplier keys
+// are the keys of the three runtimes, and they never reach this service: it holds their key hashes and public keys, which its manifest publishes.
 //
 // Two settings hold a secret. The service key is looked for in every other setting, in its hex form and its bech32 form, in any case, inside a longer value too, as soon as it is known, so before any check
 // that could print the line that holds it. The token (SERVICE_AUTH_HEADER) is looked for in the same way right after it. No message shows a value that is hex-shaped or long. The manifest is searched for both
-// last. Everything is checked before anything is made: no directory is created and no chain is built for an environment that is refused.
+// last. Everything is checked before anything is made: no directory is created and no chain is built for an environment that is refused. The state directory is proved writable before the first job could depend
+// on it, because the order book, the journal of the dispute code and the record of the model hires are in it.
 //
 // The identity names of the deployment come from VAULT_PAYER_IDENTITY_SETTINGS of buyer-core, so that no source of the service writes them. FAULT_MODE is read one time, and a value that the Order Desk does not
-// list stops the start.
+// list stops the start. The start asks no third party anything but what the janitor reads of the chain for the escrows that a run left behind, and the dispute code reads when it files a challenge.
+import { rmSync, writeFileSync } from 'node:fs';
+import type { EventEmitter } from 'node:events';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { join } from 'node:path';
 import { VAULT_PAYER_IDENTITY_SETTINGS, buyerVaultDeployment, rawHexToBech32 } from '@vsa/buyer-core';
 import type { IdentityDeployment } from '@vsa/buyer-core';
-import { assertHeaderValue, assertNoTokenIn, given, refuseSecretIn, refuseTokenIn, requiredEnv } from '@vsa/service-kit';
+import { abandonedLine, stopJanitorWithin } from '@vsa/hire-kit';
+import {
+  JobSlot, assertHeaderValue, assertNoTokenIn, errorText, given, lifecycle, listen, refuseSecretIn, refuseTokenIn, requiredEnv, stopOnSignals as stopServiceOnSignals,
+} from '@vsa/service-kit';
+import type { ShutdownOutcome } from '@vsa/service-kit';
 import type { MockBases } from '@vsa/usecase-kit/access';
 import type { ModelLimits } from '@vsa/usecase-kit/decision';
 import type { DisputeSettings } from '@vsa/usecase-kit/dispute';
@@ -23,11 +34,22 @@ import { loadLots } from '../checks/index.ts';
 import type { LoadedLots } from '../checks/index.ts';
 import { keyClashOf, serviceKeyOf } from './keys.ts';
 import { manifestFromEnv } from './manifest.ts';
+import { createServer, defaultLog } from './server.ts';
 import {
   LOTS_FILE, SUPPLIER_PKH_VARIABLES, agentDidOf, checksBudgetOf, disputeOf, endpointsFromEnv, faultOf, hostOf, limitsOf, lotsOriginOf, mockBasesOf, module1SourceOf, portOf, processingWindowOf,
   stateDirOf, supplierKeysOf,
 } from './settings.ts';
 import type { Endpoints, SupplierKey } from './settings.ts';
+import { wireService } from './wiring.ts';
+import type { WireOptions } from './wiring.ts';
+
+export { SHUTDOWN_WAIT_MS } from '@vsa/service-kit';
+export type { ShutdownOutcome } from '@vsa/service-kit';
+
+/** How often the janitor of the paying key looks at the escrows that a run left behind: a minute. */
+export const JANITOR_INTERVAL_MS = 60_000;
+/** How long a stop waits for a pass of the janitor that is in flight; a pass that hangs on a node call is abandoned then. */
+export const JANITOR_STOP_WAIT_MS = 30_000;
 
 /**
  * Every setting the service reads. Each secret belongs in its own line alone: in any other it would be printed, or published (the manifest, which the three adverts hash), or handed to the runtimes to send in a
@@ -158,4 +180,84 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, makeManifest: (
     manifest: rendered.value, authHeader, host, port, stateDir, fault, agentDid, service: { privateKeyHex, pkh: service.pkh, address: service.address }, suppliers, limits, dispute, module1Manifest,
     checksBudgetMs, endpoints, mock, identityDeployment, lots,
   };
+}
+
+/** The parts of the service that a test replaces, and the interval of the janitor. The service itself uses the real ones. */
+export interface StartOptions extends WireOptions {
+  readonly janitorIntervalMs?: number;
+  /** How long a stop waits for the pass of the janitor that is in flight: JANITOR_STOP_WAIT_MS by default. */
+  readonly janitorStopWaitMs?: number;
+}
+
+export interface RunningService {
+  readonly server: Server;
+  /** The port it listens on, which is the one asked for unless that was 0. */
+  readonly port: number;
+  /** Stops the janitor (a pass in flight has up to JANITOR_STOP_WAIT_MS) and closes the server and its connections, a job's included. Safe to call twice. */
+  readonly stop: () => Promise<void>;
+  /**
+   * The stop of a restart: no new job, no new connection, the janitor stopped at once, and up to `waitMs` (SHUTDOWN_WAIT_MS by default) for the job that is running; then stop(). Past the wait the job is
+   * abandoned, and the log names the escrows that the state directory holds for the janitor of the next start.
+   */
+  readonly shutdown: (waitMs?: number) => Promise<ShutdownOutcome>;
+}
+
+/** The file that proves a directory can be written. */
+export const WRITE_PROBE = '.write-probe';
+
+/** Throws, naming ORDER_DESK_STATE_DIR, unless a file can be made in `dir` and removed again (a volume that the user of the service does not own fails here). */
+function assertWritable(dir: string): void {
+  const probe = join(dir, WRITE_PROBE);
+  try {
+    writeFileSync(probe, '');
+    rmSync(probe);
+  } catch (error) {
+    throw new Error(`environment variable ORDER_DESK_STATE_DIR names ${dir}, which cannot be written (${errorText(error)}): the order book, the journal of the dispute code and the record of the model hires are kept there, so the service does not start without a place to keep them`);
+  }
+}
+
+/**
+ * Starts the service on its environment: loadConfig, the state directory proved writable, the real parts joined (wireService), the server and the janitor of the paying key, which makes no transaction while a hire
+ * or a challenge holds the queue. It rejects with the reason when it cannot, and nothing keeps running then.
+ */
+export async function startService(env: NodeJS.ProcessEnv = process.env, options: StartOptions = {}): Promise<RunningService> {
+  const config = loadConfig(env);
+  const log = options.log ?? defaultLog;
+  const clock = options.clock ?? Date.now;
+  assertWritable(config.stateDir);
+  const wired = await wireService(config, { ...options, log });
+  const slot = new JobSlot();
+  const server = createServer({
+    manifestText: config.manifest.text, authHeader: config.authHeader, fault: config.fault, precheck: wired.precheck, jobDeps: wired.jobDeps, lotsText: config.lots.text, clock, log, slot,
+  });
+  await listen(server, config.port, config.host);
+  const port = (server.address() as AddressInfo).port;
+  let janitor: { stop: () => Promise<void> };
+  try {
+    janitor = wired.key.startJanitor(options.janitorIntervalMs ?? JANITOR_INTERVAL_MS, { clock, log });
+    log(`listening on ${config.host}:${port}; service address ${config.service.address}; state directory ${config.stateDir}`);
+  } catch (error) {
+    // A start that fails after the port is open must not leave the server open: it would keep the process alive with nothing behind it.
+    server.close();
+    server.closeAllConnections();
+    throw error;
+  }
+  const janitorStopWaitMs = options.janitorStopWaitMs ?? JANITOR_STOP_WAIT_MS;
+  // The stop of the service kit: no new job and no new connection, the janitor stopped with a bound, and up to the wait for the job that is running. An abandoned job leaves its escrows in the state directory,
+  // and the line names them for the janitor of the next start.
+  const { stop, shutdown } = lifecycle({
+    server, slot, log, stopWork: () => stopJanitorWithin(janitor, janitorStopWaitMs, log), abandonedLine: (waitMs) => abandonedLine(wired.key.stranded, waitMs),
+  });
+  return { server, port, stop, shutdown };
+}
+
+/**
+ * Stops the service on SIGTERM and SIGINT (`docker stop` sends the first): no new job, up to `waitMs` for the job that is running, then exit 0, or 1 when that job had to be abandoned or the stop failed. The first
+ * signal takes both handlers off, so a second signal of either kind is the default action and ends the process at once. The handling is the service kit's, with the log of this service.
+ */
+export function stopOnSignals(
+  service: Pick<RunningService, 'shutdown'>,
+  options: { target?: EventEmitter; exit?: (code: number) => void; log?: (line: string) => void; waitMs?: number } = {},
+): void {
+  stopServiceOnSignals(service, { ...options, log: options.log ?? defaultLog });
 }
