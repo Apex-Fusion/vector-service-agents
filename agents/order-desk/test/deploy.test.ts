@@ -911,7 +911,8 @@ describe('deploy/server/RUNBOOK-order-desk.md', () => {
     const gate = sectionOf(runbookText, 'The memory gate');
     for (const part of ['MemAvailable', '1,024 MiB', '/proc/meminfo']) expect(gate, part).toContain(part);
     const folder = sectionOf(runbookText, 'The folder');
-    for (const part of ['/srv/agents/order-desk', '750', 'agents']) expect(folder, part).toContain(part);
+    for (const part of ['/srv/agents/order-desk', '750', 'agents', 'sudo install -d -m 750 -o agents -g agents /srv/agents/order-desk']) expect(folder, part).toContain(part);
+    expect(folder, 'the folder is made with install: no script of another runbook makes it').not.toContain('setup.sh');
     expect(sectionOf(runbookText, 'The DNS records')).toContain('DNS only');
     for (const runtime of RUNTIMES) expect(sectionOf(runbookText, 'The DNS records'), runtime.host).toContain(runtime.host);
   });
@@ -967,6 +968,11 @@ describe('deploy/server/RUNBOOK-order-desk.md', () => {
     for (const runtime of RUNTIMES) expect(rule, String(runtime.hostPort)).toContain(String(runtime.hostPort));
     expect(rule).toMatch(/all three runtimes/);
     expect(rule).toMatch(/reload/);
+    // The steps come in this order: the wait of 2 minutes, then the check of the three runtimes, then the command at once. A check before the wait leaves the whole wait to a new job.
+    const steps = ['Wait 2 minutes after the last job', 'for port in 8102 8103 8104', 'up -d --no-deps --force-recreate service'].map((part) => rule.indexOf(part));
+    expect(steps.every((at) => at >= 0), 'each step is there').toBe(true);
+    expect(steps).toStrictEqual([...steps].sort((a, b) => a - b));
+    expect(rule).toContain('at once');
   });
 
   test('the fault switch is empty, and a failure run sets confirm_wrong_lot in the shared file and creates the service again only when the three runtimes are free, never during a run', () => {
@@ -975,6 +981,16 @@ describe('deploy/server/RUNBOOK-order-desk.md', () => {
     for (const part of ['FAULT_MODE', 'confirm_wrong_lot', SHARED_ENV_FILE, 'up -d --no-deps --force-recreate service', 'free', 'fault_mode']) expect(fault, part).toContain(part);
     expect(fault).toMatch(/never during a run/i);
     expect(fault).toMatch(/empty/);
+    // The same order in a failure run: the line first (it changes a file only), then the wait, the check and the command at once, and the same again to end the run.
+    const at = (part: string): number => fault.indexOf(part);
+    const start = ["sed -i 's/^FAULT_MODE=.*/FAULT_MODE=confirm_wrong_lot/'", 'Wait 2 minutes after the last job', 'up -d --no-deps --force-recreate service'].map(at);
+    expect(start.every((place) => place >= 0), 'each step is there').toBe(true);
+    expect(start).toStrictEqual([...start].sort((a, b) => a - b));
+    expect(at('To end the run')).toBeGreaterThan(0);
+    const ending = fault.slice(at('To end the run'));
+    const end = ['wait 2 minutes after the last job', 'say `free`', 'at once'].map((part) => ending.indexOf(part));
+    expect(end.every((place) => place >= 0), 'each step of the end is there').toBe(true);
+    expect(end).toStrictEqual([...end].sort((a, b) => a - b));
   });
 
   test('the failure table names every refusal code of the hook, the codes after the Claim, the codes of the runtime for the hook, and the start refusals', () => {
@@ -986,6 +1002,9 @@ describe('deploy/server/RUNBOOK-order-desk.md', () => {
     for (const code of codes) expect(table, code).toContain(`\`${code}\``);
     for (const part of ['cannot start', 'invalid reference format', 'denied', '502', 'order-desk_default', 'ORDER_DESK_SERVICE_PRIV_KEY_HEX', 'LOTS_PUBLIC_ORIGIN', 'VECTOR_MODULE1_MANIFEST must be pinned to a commit', 'IDENTITY_POLICY_ID']) expect(table, part).toContain(part);
     for (const row of table.split('\n').filter((line) => line.startsWith('|') && !line.startsWith('|---') && !line.startsWith('| Symptom'))) expect(row.split('|').length, row).toBe(5);
+    const hashRow = table.split('\n').find((line) => line.startsWith('| The hash of `/agent.json` is not the `detail_hash` of an advert'));
+    expect(hashRow, 'the row of a manifest that changed after the adverts').toBeDefined();
+    for (const part of ['Retire the three adverts', '`ADVERT_REF` of its runtime file', 'say `free`', 'up -d --no-deps --force-recreate runtime-<size>']) expect(hashRow, part).toContain(part);
   });
 
   test('back out retires the three adverts first, waits for the runtimes, removes the Caddy block, stops the containers and keeps the volume', () => {
