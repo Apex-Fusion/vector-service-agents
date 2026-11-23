@@ -6,7 +6,7 @@ import { VAULT_PAYER_IDENTITY_SETTINGS, rawHexToBech32 } from '@vsa/buyer-core';
 import { blake2b224Hex } from '@vsa/vector-read';
 import { manifestFromEnv } from '../../src/serve/manifest.ts';
 import {
-  CHECKS_READ_BUDGET_DEFAULT_MS, HOOK_READS, HOOK_READS_LIMIT_MS, PORT_DEFAULT, STATE_DIR_DEFAULT, checksBudgetOf, endpointsOf, lotsOriginOf,
+  CHECKS_READ_BUDGET_DEFAULT_MS, CHECKS_READ_BUDGET_MAX_MS, CHECKS_READ_BUDGET_MIN_MS, HOOK_READS, HOOK_READS_LIMIT_MS, PORT_DEFAULT, STATE_DIR_DEFAULT, checksBudgetOf, endpointsOf, lotsOriginOf,
 } from '../../src/serve/settings.ts';
 import { SETTINGS, loadConfig } from '../../src/serve/start.ts';
 import { AGENT_DID, FULL_ENV, LARGE, MEDIUM, ORIGIN, POLICY, SERVICE, SERVICE_ADDRESS, SMALL, TOKEN, envWith, keyOf, message, shows } from './support.ts';
@@ -91,10 +91,10 @@ const REFUSALS: readonly Row[] = [
   ['PORT', '70000', 'environment variable PORT must be a port from 0 to 65535, got "70000"', '0'],
   ['PORT', 'abc', 'environment variable PORT must be a non-negative integer, got "abc"', '9102'],
   ['HOST', 'bad host!', 'environment variable HOST must be an address or a host name, got "bad host!"', '127.0.0.1'],
-  ['CHECKS_READ_BUDGET_MS', '499', 'environment variable CHECKS_READ_BUDGET_MS must be a whole number of milliseconds from 500 to 4000, got 499', '500'],
-  ['CHECKS_READ_BUDGET_MS', '4001', 'environment variable CHECKS_READ_BUDGET_MS must be a whole number of milliseconds from 500 to 4000, got 4001', '1499'],
-  ['CHECKS_READ_BUDGET_MS', '1500', /^environment variable CHECKS_READ_BUDGET_MS is 1500: .* the budget is at most 1499$/, '1499'],
-  ['CHECKS_READ_BUDGET_MS', '2500', /^environment variable CHECKS_READ_BUDGET_MS is 2500: .*15000 ms/, '1200'],
+  ['CHECKS_READ_BUDGET_MS', '499', 'environment variable CHECKS_READ_BUDGET_MS must be a whole number of milliseconds from 500 to 1499, got 499', '500'],
+  ['CHECKS_READ_BUDGET_MS', '1500', 'environment variable CHECKS_READ_BUDGET_MS must be a whole number of milliseconds from 500 to 1499, got 1500: the hook makes 6 timed reads one after the other, so it can take 9000 ms, and the runtime waits 10000 ms for it. 6 times the budget must be under 9000 ms', '1499'],
+  ['CHECKS_READ_BUDGET_MS', '2500', /^environment variable CHECKS_READ_BUDGET_MS must be a whole number of milliseconds from 500 to 1499, got 2500: .* it can take 15000 ms, /, '1200'],
+  ['CHECKS_READ_BUDGET_MS', '4001', /^environment variable CHECKS_READ_BUDGET_MS must be a whole number of milliseconds from 500 to 1499, got 4001: /, '1499'],
   ['CHECKS_READ_BUDGET_MS', 'fast', 'environment variable CHECKS_READ_BUDGET_MS must be a non-negative integer, got "fast"', '1200'],
   ['ADVERT_MAX_PROCESSING_MS', '479999', /^environment variable ADVERT_MAX_PROCESSING_MS must be at least 480000 .* got 479999$/, '480000'],
   ['ADVERT_MAX_PROCESSING_MS', 'long', 'environment variable ADVERT_MAX_PROCESSING_MS must be a non-negative integer, got "long"', '900000'],
@@ -184,11 +184,24 @@ describe('the fault switch', () => {
 });
 
 describe('the time of the hook', () => {
-  test('the reads of the hook are six, and the six budgets stay under 9 seconds: the budget is at most 1499', () => {
-    expect([HOOK_READS, HOOK_READS_LIMIT_MS]).toStrictEqual([6, 9_000]);
+  test('the reads of the hook are six, and the six budgets stay under 9 seconds: the budget is from 500 to 1499, and 1499 is accepted where 1500 is not', () => {
+    expect([HOOK_READS, HOOK_READS_LIMIT_MS, CHECKS_READ_BUDGET_MIN_MS, CHECKS_READ_BUDGET_MAX_MS]).toStrictEqual([6, 9_000, 500, 1_499]);
     for (const accepted of [500, 1_200, 1_499]) expect(checksBudgetOf({ CHECKS_READ_BUDGET_MS: String(accepted) }), String(accepted)).toBe(accepted);
-    for (const refused of [1_500, 2_500, 4_000]) expect(() => checksBudgetOf({ CHECKS_READ_BUDGET_MS: String(refused) }), String(refused)).toThrow(/the budget is at most 1499$/);
+    for (const refused of [499, 1_500, 2_500, 4_000, 4_001]) expect(() => checksBudgetOf({ CHECKS_READ_BUDGET_MS: String(refused) }), String(refused)).toThrow(/^environment variable CHECKS_READ_BUDGET_MS must be a whole number of milliseconds from 500 to 1499, got /);
     expect(checksBudgetOf({})).toBe(1_200);
+  });
+
+  test('the range that the message names is the range that the start accepts, and it is the widest range whose six reads stay under 9 seconds', () => {
+    const [, from, to] = /from (\d+) to (\d+)/.exec(message(() => checksBudgetOf({ CHECKS_READ_BUDGET_MS: '1' }))) ?? [];
+    const [least, most] = [Number(from), Number(to)];
+    expect([least, most]).toStrictEqual([CHECKS_READ_BUDGET_MIN_MS, CHECKS_READ_BUDGET_MAX_MS]);
+    for (const ms of [least, most]) expect(checksBudgetOf({ CHECKS_READ_BUDGET_MS: String(ms) }), String(ms)).toBe(ms);
+    for (const ms of [least - 1, most + 1]) expect(() => checksBudgetOf({ CHECKS_READ_BUDGET_MS: String(ms) }), String(ms)).toThrow(`from ${least} to ${most}, got ${ms}`);
+    expect(most * HOOK_READS).toBeLessThan(HOOK_READS_LIMIT_MS);
+    expect((most + 1) * HOOK_READS).toBeGreaterThanOrEqual(HOOK_READS_LIMIT_MS);
+    // The default is inside the range.
+    expect(CHECKS_READ_BUDGET_DEFAULT_MS).toBeGreaterThanOrEqual(least);
+    expect(CHECKS_READ_BUDGET_DEFAULT_MS).toBeLessThanOrEqual(most);
   });
 });
 

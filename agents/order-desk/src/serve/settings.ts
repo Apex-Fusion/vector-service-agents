@@ -46,7 +46,8 @@ export const HOOK_READS = 6;
 export const HOOK_READS_LIMIT_MS = 9_000;
 export const CHECKS_READ_BUDGET_DEFAULT_MS = 1_200;
 export const CHECKS_READ_BUDGET_MIN_MS = 500;
-export const CHECKS_READ_BUDGET_MAX_MS = 4_000;
+/** The widest budget of one read whose six reads stay under HOOK_READS_LIMIT_MS: 1499. */
+export const CHECKS_READ_BUDGET_MAX_MS = Math.floor((HOOK_READS_LIMIT_MS - 1) / HOOK_READS);
 
 /** The least window left in the challenge window of a claim that the dispute code takes, as the dispute code holds it. */
 const LEAST_WINDOW_LEFT_MS = 2_000;
@@ -137,16 +138,18 @@ export function stateDirOf(env: NodeJS.ProcessEnv): string {
 
 // --- the time of the hook, the window of the adverts --------------------------------------------------------------------------------------------------
 
-/** The budget of one timed read of the hook. A value outside its range, and a value whose six reads could fill the wait of the runtime, stop the start. */
+/**
+ * The budget of one timed read of the hook: a whole number of milliseconds from CHECKS_READ_BUDGET_MIN_MS to CHECKS_READ_BUDGET_MAX_MS. The upper end is the widest budget whose six reads stay under
+ * HOOK_READS_LIMIT_MS, so one range holds both rules, and the message names that range. Any other value stops the start.
+ */
 export function checksBudgetOf(env: NodeJS.ProcessEnv): number {
   const ms = envInt('CHECKS_READ_BUDGET_MS', given(env.CHECKS_READ_BUDGET_MS), CHECKS_READ_BUDGET_DEFAULT_MS);
-  if (ms < CHECKS_READ_BUDGET_MIN_MS || ms > CHECKS_READ_BUDGET_MAX_MS) {
-    throw new Error(`environment variable CHECKS_READ_BUDGET_MS must be a whole number of milliseconds from ${CHECKS_READ_BUDGET_MIN_MS} to ${CHECKS_READ_BUDGET_MAX_MS}, got ${ms}`);
-  }
-  if (ms * HOOK_READS >= HOOK_READS_LIMIT_MS) {
+  const range = `environment variable CHECKS_READ_BUDGET_MS must be a whole number of milliseconds from ${CHECKS_READ_BUDGET_MIN_MS} to ${CHECKS_READ_BUDGET_MAX_MS}, got ${ms}`;
+  if (ms < CHECKS_READ_BUDGET_MIN_MS) throw new Error(range);
+  if (ms > CHECKS_READ_BUDGET_MAX_MS) {
     throw new Error(
-      `environment variable CHECKS_READ_BUDGET_MS is ${ms}: the hook makes ${HOOK_READS} timed reads one after the other, so it can take ${ms * HOOK_READS} ms, and the runtime waits ${RUNTIME_PRECHECK_WAIT_MS} ms for it. `
-      + `The budget times ${HOOK_READS} must be under ${HOOK_READS_LIMIT_MS} ms, so the budget is at most ${Math.floor((HOOK_READS_LIMIT_MS - 1) / HOOK_READS)}`,
+      `${range}: the hook makes ${HOOK_READS} timed reads one after the other, so it can take ${ms * HOOK_READS} ms, and the runtime waits ${RUNTIME_PRECHECK_WAIT_MS} ms for it. `
+      + `${HOOK_READS} times the budget must be under ${HOOK_READS_LIMIT_MS} ms`,
     );
   }
   return ms;
