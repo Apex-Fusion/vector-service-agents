@@ -1,0 +1,9 @@
+{
+  "adverts": {
+    "lot-small": { "advert_ref": "1111111111111111111111111111111111111111111111111111111111111111#0" },
+    "lot-medium": { "advert_ref": "2222222222222222222222222222222222222222222222222222222222222222#1" },
+    "lot-large": { "advert_ref": "3333333333333333333333333333333333333333333333333333333333333333#2" }
+  },
+  "lots": { "lot-small": 10, "lot-medium": 50, "lot-large": 200 },
+  "order_desk_claim_s1": "A confirmation names the SKU, the lot and the quantity of the purchase order it answers."
+}
