@@ -285,11 +285,30 @@ describe('lotSizeOf', () => {
     for (const lot of ['lot-huge', 'constructor', '__proto__', 'LOT-SMALL', '', 'toString']) expect(lotSizeOf(file, 'GLV-NIT-M', lot as 'lot-small')).toBeNull();
   });
 
-  it('gives null, and never undefined, for a file that was built by hand and has no size for the lot', () => {
-    // A file of this kind never comes from the parser. The test gives the wrong shape on purpose.
-    const byHand = { schema: LOTS_SCHEMA, items: [{ sku: 'A-1', lots: { 'lot-small': 5 } }] } as unknown as LotsFile;
-    expect(lotSizeOf(byHand, 'A-1', 'lot-small')).toBe(5);
-    expect(lotSizeOf(byHand, 'A-1', 'lot-large')).toBeNull();
+  describe('on a file that was built by hand', () => {
+    // A file of this kind never comes from the parser. The tests give a wrong shape on purpose, with the lots of one item.
+    const byHand = (lots: unknown): LotsFile => ({ schema: LOTS_SCHEMA, items: [{ sku: 'A-1', lots }] }) as unknown as LotsFile;
+
+    it('gives the size of a lot that the item holds, and null, and never undefined, for a lot that it does not hold', () => {
+      expect(lotSizeOf(byHand({ 'lot-small': 5 }), 'A-1', 'lot-small')).toBe(5);
+      expect(lotSizeOf(byHand({ 'lot-small': 5 }), 'A-1', 'lot-large')).toBeNull();
+    });
+
+    it('gives no size for a lot that is not a lot name, although the item holds a member with that name', () => {
+      const file = byHand({ 'lot-small': 5, 'lot-huge': 7 });
+      expect(lotSizeOf(file, 'A-1', 'lot-huge' as 'lot-small')).toBeNull();
+      expect(lotSizeOf(file, 'A-1', 'lot-small')).toBe(5);
+    });
+
+    it('gives no size that a prototype holds, and the own size of the twin', () => {
+      const inherited = { 'lot-large': { value: 9, writable: true, enumerable: true } };
+      expect(withPrototype(Object.prototype, inherited, () => lotSizeOf(byHand({ 'lot-small': 5 }), 'A-1', 'lot-large'))).toBeNull();
+      expect(withPrototype(Object.prototype, inherited, () => lotSizeOf(byHand({ 'lot-small': 5, 'lot-large': 6 }), 'A-1', 'lot-large'))).toBe(6);
+    });
+
+    it.each([['a text', '5'], ['null', null], ['true', true], ['a list', [5]], ['an object', { size: 5 }], ['undefined', undefined]])('gives no size for %s', (_what, size) => {
+      expect(lotSizeOf(byHand({ 'lot-small': size }), 'A-1', 'lot-small')).toBeNull();
+    });
   });
 
   it('changes nothing of the file', () => {

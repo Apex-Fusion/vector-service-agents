@@ -129,11 +129,15 @@ export function parseLotsFile(value: unknown): ProtocolResult<LotsFile> {
   return accepted(file);
 }
 
-/** The size of a lot of a SKU, or null when the file does not list the SKU. A lot that is not a lot name has no size. The file is read as it is: a SKU is compared as it is written. */
+/**
+ * The size of a lot of a SKU, or null when the file does not list the SKU. A lot that is not a lot name has no size. The size is an own member of the lots of the item and a number: a member that a
+ * prototype holds, and a value of another type, are no size. The file is read as it is: a SKU is compared as it is written.
+ */
 export function lotSizeOf(file: LotsFile, sku: string, lot: LotName): number | null {
   if (!isLotName(lot)) return null;
   const item = file.items.find((entry) => entry.sku === sku);
-  const size: unknown = item?.lots[lot];
+  if (item === undefined || !Object.hasOwn(item.lots, lot)) return null;
+  const size: unknown = item.lots[lot];
   return typeof size === 'number' ? size : null;
 }
 
