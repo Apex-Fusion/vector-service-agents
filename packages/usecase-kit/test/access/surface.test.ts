@@ -17,7 +17,7 @@ describe('the folder', () => {
         'DEFAULT_STEP_TIMEOUT_MS', 'GATEWAY_FAILURES', 'JwtSvidCredential', 'MAX_CODE_CHARS', 'MAX_COLLATERAL_LOVELACE', 'MAX_DELEGATION_DEPOSIT_LOVELACE', 'MAX_SUB_DELEGATION_MS', 'MAX_TX_FEE_LOVELACE',
         'MIN_SUB_DELEGATION_MS', 'REFUSAL_WITHOUT_CODE', 'ROUTES', 'RouteToken', 'SUB_DELEGATION_FAILURES', 'SYSTEMS', 'X509SvidCredential', 'askWhileTooYoung', 'callWithJwtSvid', 'callWithToken',
         'callWithX509Svid', 'codeIn', 'createSerialQueue', 'deploymentSlotAt', 'fetchJwtSvid', 'fetchX509Svid', 'httpsTransport', 'jwtSvidTarget', 'readAnswer', 'requestRouteToken', 'requestSubagentToken',
-        'systemClock',
+        'systemClock', 'addressHexOf', 'delegationScriptProblem', 'takeTurn', 'undelegateTxProblem',
         'tokenTarget', 'txSignerOfRawKey', 'withSubDelegation', 'within', 'x509Target',
       ].sort(),
     );
