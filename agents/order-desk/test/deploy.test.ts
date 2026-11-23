@@ -989,10 +989,10 @@ describe('deploy/server/RUNBOOK-order-desk.md', () => {
     const table = sectionOf(runbookText, 'The failure table');
     const codes = [
       ...COUNTERPARTY_REFUSALS['order-desk'], 'check_unavailable', 'busy', 'supplier_busy', 'unauthorized', 'precheck_missing', 'svid_failed', 'mock_system_failed', 'inference_failed', 'model_output_invalid',
-      'store_write_failed', 'deadline', 'internal', 'precheck_timeout', 'precheck_unreachable', 'precheck_failed', 'precheck_bad_status',
+      'store_write_failed', 'deadline', 'internal', 'precheck_timeout', 'precheck_unreachable', 'precheck_failed', 'precheck_bad_status', 'bad_context', 'bad_wire', 'request_too_large', 'bad_shape', 'shutting_down',
     ];
     for (const code of codes) expect(table, code).toContain(`\`${code}\``);
-    for (const part of ['cannot start', 'invalid reference format', 'denied', '502', 'order-desk_default', 'ORDER_DESK_SERVICE_PRIV_KEY_HEX', 'LOTS_PUBLIC_ORIGIN', 'VECTOR_MODULE1_MANIFEST', 'IDENTITY_POLICY_ID']) expect(table, part).toContain(part);
+    for (const part of ['cannot start', 'invalid reference format', 'denied', '502', 'order-desk_default', 'ORDER_DESK_SERVICE_PRIV_KEY_HEX', 'LOTS_PUBLIC_ORIGIN', 'VECTOR_MODULE1_MANIFEST must be pinned to a commit', 'IDENTITY_POLICY_ID']) expect(table, part).toContain(part);
     for (const row of table.split('\n').filter((line) => line.startsWith('|') && !line.startsWith('|---') && !line.startsWith('| Symptom'))) expect(row.split('|').length, row).toBe(5);
   });
 
