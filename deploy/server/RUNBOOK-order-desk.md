@@ -89,10 +89,10 @@ Each answer must be the address of the host and nothing else. The address of a p
 
 ## The folder
 
-The folder of the Order Desk is `/srv/agents/order-desk`. It belongs to the service user, `agents`, with mode 750. The script of RUNBOOK.md (step 7) makes it. Run these commands in the folder `agents-server` of that runbook, which holds the files of `deploy/server`:
+The folder of the Order Desk is `/srv/agents/order-desk`. It belongs to the service user, `agents`, with mode 750. Run these commands in the folder `agents-server` of RUNBOOK.md, which holds the files of `deploy/server`:
 
 ```sh
-sudo ./setup.sh order-desk
+sudo install -d -m 750 -o agents -g agents /srv/agents/order-desk
 sudo stat -c '%a %U:%G %n' /srv/agents/order-desk
 sudo install -m 644 -o agents -g agents docker-compose.order-desk.yml .env.order-desk.example .env.order-desk-runtime.example /srv/agents/order-desk/
 ```
@@ -402,19 +402,22 @@ A runtime keeps its jobs in memory. The service keeps the record of the checks o
 
 These actions are restarts of a container: `docker restart`, `docker compose restart`, `docker compose up -d --force-recreate`, `docker compose up -d` after a change of an image or of an env file, a reboot of the host and a power-off. These are not restarts: a reload of Caddy, a change of the Caddy block, and the first start of a container.
 
-The three runtimes share the one job slot of the service. So all three runtimes must say `free` before you restart any container of the Order Desk, the service or a runtime. Check each runtime:
+The three runtimes share the one job slot of the service. So all three runtimes must say `free` before you restart any container of the Order Desk, the service or a runtime. The service does not say anything about its slot: a go of the check keeps the slot for 120 seconds, and the service forgets the record of a check after 300 seconds. So do these steps in this order:
 
-```sh
-for port in 8102 8103 8104; do printf '%s: ' "$port"; curl -s --max-time 5 "http://127.0.0.1:$port/status" || printf 'no answer'; printf '\n'; done
-```
+1. Wait 2 minutes after the last job.
+2. Then check each runtime. A runtime that says `working` holds a job. Wait until the job ends, and start again at step 1:
 
-A runtime that says `working` holds a job. Wait and check again. The service does not say anything about its slot. So wait 2 minutes after the last job: a go of the check keeps the slot for 120 seconds, and the service forgets the record of a check after 300 seconds.
+   ```sh
+   for port in 8102 8103 8104; do printf '%s: ' "$port"; curl -s --max-time 5 "http://127.0.0.1:$port/status" || printf 'no answer'; printf '\n'; done
+   ```
 
-A container reads its env files when it is created. After a change, create that container again, and only when all three runtimes say `free`. The service reads `.env.order-desk` only. A runtime reads `.env.order-desk` and its own file. Use the name of the compose service: `service`, `runtime-small`, `runtime-medium` or `runtime-large`:
+3. When all three say `free`, create the container again at once. Do not wait between the check and the command. Use the name of the compose service: `service`, `runtime-small`, `runtime-medium` or `runtime-large`:
 
-```sh
-docker compose -f docker-compose.order-desk.yml up -d --no-deps --force-recreate service
-```
+   ```sh
+   docker compose -f docker-compose.order-desk.yml up -d --no-deps --force-recreate service
+   ```
+
+A container reads its env files when it is created. After a change, create that container again with step 3. The service reads `.env.order-desk` only. A runtime reads `.env.order-desk` and its own file.
 
 A change to `SERVICE_AUTH_HEADER` needs the service and the three runtimes created again, so that the four hold one value. A new image is a restart too: pin it as in section "The images", and create only the containers that use it.
 
@@ -430,14 +433,14 @@ The switch does not change the manifest, so the three adverts stay valid. Every 
 
 To start a failure run:
 
-1. Check that the three runtimes say `free`, and wait 2 minutes after the last job (section "The restart rule").
-2. Set the line:
+1. Set the line. This changes the file only: no container reads it until the container is created again.
 
    ```sh
    sed -i 's/^FAULT_MODE=.*/FAULT_MODE=confirm_wrong_lot/' .env.order-desk
    ```
 
-3. Create the service again:
+2. Wait 2 minutes after the last job. Then check that the three runtimes say `free` (section "The restart rule").
+3. When all three say `free`, create the service again at once. Do not wait between the check and the command:
 
    ```sh
    docker compose -f docker-compose.order-desk.yml up -d --no-deps --force-recreate service
@@ -445,7 +448,7 @@ To start a failure run:
 
 4. Check that the service runs, and that the three runtimes still say `free`.
 
-To end the run, set the line empty again with `sed -i 's/^FAULT_MODE=.*/FAULT_MODE=/' .env.order-desk`, and create the service again in the same way, when the three runtimes say `free`.
+To end the run, set the line empty again with `sed -i 's/^FAULT_MODE=.*/FAULT_MODE=/' .env.order-desk`. Then wait 2 minutes after the last job, and check that the three runtimes say `free`. When all three say `free`, create the service again at once with the command of step 3.
 
 A failure run starts and ends between jobs, never during a run. Do not change the line, and do not create the service again, while a job runs. Never leave the switch on between runs.
 
@@ -478,7 +481,7 @@ A failed start of the service or of a runtime shows in `docker ps` as `Restartin
 | A runtime log says `loadConfig: PUBLIC_ORIGIN must be an https origin` | The compose file was changed. | Write the origin of the host of that runtime, as the compose file has it. |
 | Caddy answers 502 for a host name | The Caddy container is not on the network, or the container of that runtime is down. | Check with `docker network inspect order-desk_default ...` (section "The Caddy block") and `docker ps`. Join the network again. |
 | Caddy gets no certificate for a name | The name does not resolve to the host, the record is proxied, or TCP 80 is closed. | Check the record (section "The DNS records"). Read the log of the Caddy container. |
-| The hash of `/agent.json` is not the `detail_hash` of an advert | A setting of the manifest changed after the adverts were posted: an env line of the service, the image or the status word. | Retire the three adverts. Post them again with the hash that is served now. |
+| The hash of `/agent.json` is not the `detail_hash` of an advert | A setting of the manifest changed after the adverts were posted: an env line of the service, the image or the status word. | Retire the three adverts. Post them again with the hash that is served now. Write each new reference into `ADVERT_REF` of its runtime file. When all three runtimes say `free` (section "The restart rule"), run `docker compose -f docker-compose.order-desk.yml up -d --no-deps --force-recreate runtime-<size>` for each runtime, with the memory gate before each run. |
 | `sender_not_active`, `sender_unaccountable` or `sender_key_mismatch` (403, before the Claim) | The sender is not an active agent, it has no accountable party in force, or its key is not the key that paid. | Nothing on the host. The escrow stays open. The buyer fixes its side. |
 | `delegation_invalid`, `delegation_ended` or `not_vault_paid` (403, before the Claim) | The delegation does not name the sender, the delegation ended, or the escrow was not paid from a vault of the delegation. | Nothing on the host. The escrow stays open. |
 | `approval_not_found`, `approval_wrong_type`, `approval_wrong_subject`, `approval_wrong_issuer`, `approval_revoked`, `approval_expired` or `approval_issuer_invalid` (403, before the Claim) | The buyer has no valid approval for this order. | Nothing on the host. The escrow stays open. |
