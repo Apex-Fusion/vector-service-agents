@@ -3,19 +3,28 @@
 // numbers of the terms and the windows, the request limit, the request fields of the schema that the manifest publishes, the example requests and the example result (made here with the kit), the errors
 // with their statuses, the claim statements, the gap sentences word for word, the third parties, and the files that the page links.
 // The tests read the page, the manifest, the env example and the compose file of the pack, and no network.
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import { parse } from 'yaml';
 import { ACCEPT_WINDOW_MS } from '@vsa/buyer-core';
 import { MAX_BODY, RESERVATION_MS } from '@vsa/service-kit';
 import { CONFIRMATIONS_REQUIRED } from '@vsa/usecase-kit/access';
-import { checkRuntimeBody, checkWirePayload } from '@vsa/usecase-kit/buyer';
-import { INVENTORY_CAPABILITIES } from '@vsa/usecase-kit/inventory';
-import { ERROR_STATUS, MAX_REQUEST_BYTES, RUNTIME_BODY_LIMIT_BYTES, checkRequestSize } from '@vsa/usecase-kit/protocol';
+import { INTERRUPTION_REASONS, PAY_UNCONFIRMED, checkRuntimeBody, checkWirePayload, completedResult, disputedResult, failedResult, proposedResult, refusedResult, vaultRefusedResult } from '@vsa/usecase-kit/buyer';
+import { COSIGN_SETTINGS, COSIGN_STATUS, parseAllowlist, parseCosignSettings } from '@vsa/usecase-kit/cosign';
+import { readFaultSwitch, withFaultMode } from '@vsa/usecase-kit/fault';
+import { INVENTORY_CAPABILITIES, LOT_NAMES, PO_SCHEMA, REORDER_CLAIM, parseOrderConfirmation, parsePurchaseOrder, poNumberOf } from '@vsa/usecase-kit/inventory';
+import {
+  AFTER_CLAIM_REFUSALS, COSIGN_ROUTE, COSIGN_RULE, ERROR_STATUS, EXECUTE_OUTCOMES, EXIT_STATES, FAULT_MODES, MAX_REQUEST_BYTES, PROPOSE_OUTCOMES, RECEIPT_CHECKS, RUNTIME_BODY_LIMIT_BYTES, canonicalJson,
+  checkRequestSize, exitStateOf, makeProposal, parseProposal, parseRequest,
+} from '@vsa/usecase-kit/protocol';
+import type { Decision, ExecuteOutcome, ExecuteResult, HandoffRecord, ProtocolResult, ReceiptVerification, SubJob, WriteRecord } from '@vsa/usecase-kit/protocol';
 import { JOB_DEADLINE_MS as EXECUTE_DEADLINE_MS } from '../src/execute/index.ts';
-import { ACCEPT_DECISION, REORDER_DECISION } from '../src/model/index.ts';
-import { PROPOSE_DEADLINE_MS } from '../src/propose/index.ts';
-import { TEMPLATE_ENV, manifestFromEnv } from '../src/serve/manifest.ts';
+import { ACCEPT_DECISION, REORDER_DECISION, SUPPLIER_FAILURES, acceptInput, parseProposeFields, reorderInput, stockReadingSha256 } from '../src/model/index.ts';
+import type { StockReading } from '../src/model/index.ts';
+import { PROPOSE_DEADLINE_MS, PROPOSE_FAILURES, ProposeRefusal, runPropose } from '../src/propose/index.ts';
+import type { ProposeDeps, ProposeRequest } from '../src/propose/index.ts';
+import { REQUEST_SCHEMA, TEMPLATE_ENV, manifestFromEnv } from '../src/serve/manifest.ts';
 import { RequestError, parseJob } from '../src/serve/server.ts';
 import { BUYER_BOND_LOVELACE, JOB_DEADLINE_MS, MIN_PROCESSING_WINDOW_MS, PRICE_DEFAULT_LOVELACE, SUPPLIER_BOND_LOVELACE, priceOf, processingWindowOf, supplierKeyOf } from '../src/serve/settings.ts';
 import { SETTINGS } from '../src/serve/start.ts';
@@ -30,8 +39,9 @@ const compose = parse(text('deploy/server/docker-compose.reorder-agent.yml')) as
 const runtimeEnv = compose.services.runtime.environment;
 
 const section = (heading: string): string => (page.split(`\n## ${heading}\n`)[1] ?? '').split('\n## ')[0];
+const sub = (heading: string): string => (page.split(`\n### ${heading}\n`)[1] ?? '').split(/\n##+ /)[0];
 const row = (table: string, label: string): string => table.split('\n').find((line) => line.startsWith(`| ${label} |`)) ?? '';
-const envLine = (name: string): string | undefined => envExample.split('\n').find((line) => line.startsWith(`${name}=`))?.slice(name.length + 1);
+const envLine = (name: string): string | undefined => envExample.split('\n').find((line) => line.startsWith(`${name}=`))?.substring(name.length + 1);
 const manifest = manifestFromEnv({ ...TEMPLATE_ENV });
 
 /** The day of the page. The status line of the page and of its entry in the list of pages hold it. */
@@ -199,5 +209,327 @@ describe('specs/reorder-agent.md', () => {
     expect(readme).toContain('900000 bytes');
     expect(readme).toContain(`${JOB_DEADLINE_MS} ms`);
     expect(readme).toContain(`${MIN_PROCESSING_WINDOW_MS} ms`);
+  });
+});
+
+// ---- The examples of the page: an order, a decision, a proposal and the results of execute, made with the kit from labels -------------------------------------------------------------------------
+
+/** A hex text made from a label: no reference, hash or key of an example belongs to an escrow, a supplier or a key. */
+const made = (label: string, algorithm = 'sha256'): string => createHash(algorithm).update(`reorder agent example: ${label}`).digest('hex');
+const didOf = (label: string): string => `did:vector:${made(label)}`;
+
+/** The value of an accepted result. A refusal stops the test, and its detail names the field. */
+function must<T, C extends string>(result: ProtocolResult<T, C>): T {
+  if (!result.ok) throw new Error(result.detail);
+  return result.value;
+}
+
+const TENANT = 'demo';
+const MODEL = 'deepseek/deepseek-v4-flash';
+const READING: StockReading = { sku: 'GLV-NIT-M', on_hand: 60, threshold: 100, daily_usage: 12, lead_time_days: 7, open_orders: 0 };
+const HIRER = didOf('the hirer');
+const AUTHORITY = { principal_did: HIRER, delegation: made('the delegation') };
+const PROPOSE_REQUEST = { op: 'propose', authority: AUTHORITY, tenant: TENANT, sku: READING.sku, supplier_did: didOf('the Order Desk') };
+const ORDER = must(parsePurchaseOrder({
+  schema: PO_SCHEMA, po_number: poNumberOf(TENANT, 1), tenant: TENANT, sku: READING.sku, lot: 'lot-medium', quantity: 50, needed_by: '2026-12-01', supplier_did: PROPOSE_REQUEST.supplier_did,
+  advert_ref: `${made('the advert of lot-medium')}#0`, stock_reading_sha256: must(stockReadingSha256(READING)),
+}));
+const SALT = made('the salt');
+const PROPOSAL = must(makeProposal(ORDER, SALT));
+const EXECUTE_REQUEST = { op: 'execute', authority: AUTHORITY, tenant: TENANT, proposal: PROPOSAL, approval: { attestation: made('the approval'), issuer_did: HIRER } };
+
+const MODEL_ESCROW = `${made('the escrow of the model')}#0`;
+const MODEL_SUPPLIER = made('the key of the model supplier').substring(0, 56);
+const SUB_JOB: SubJob = {
+  capability_id: 'llm.text.generate.v1', advert_ref: `${made('the advert of the model')}#0`, escrow_ref: MODEL_ESCROW, supplier_pkh: MODEL_SUPPLIER,
+  receipt: {
+    escrow_ref: MODEL_ESCROW, supplier_pkh: MODEL_SUPPLIER, prompt_hash: made('the prompt'), response_hash: made('the answer'), model: MODEL, prompt_tokens: 412, completion_tokens: 58, wallclock_ms: 2140,
+  },
+  receipt_signature: made('the signature of the model supplier', 'sha512'),
+  verification: Object.fromEntries(RECEIPT_CHECKS.map((check) => [check, true])) as ReceiptVerification,
+};
+const DECISION: Decision = {
+  name: 'reorder',
+  choice: { lot: 'lot-medium', quantity: 50, needed_by: '2026-12-01' },
+  reasoning: 'The stock of 60 is below the threshold of 100, and the use is 12 a day over a lead time of 7 days. The medium lot of 50 brings the stock back above the threshold.',
+  inference: { path: 'marketplace', sub_job: SUB_JOB, accepted: 'confirmed' },
+};
+const FAULT = readFaultSwitch('reorder-agent', '');
+const PROPOSED = withFaultMode(FAULT, proposedResult(ORDER, { use_case: 'inventory-reorder', decisions: [DECISION], sub_jobs: [SUB_JOB], fault_mode: '' }, SALT));
+
+const ORDER_ESCROW = `${made('the escrow of the order')}#0`;
+const HANDOFF: HandoffRecord = {
+  counterparty_did: ORDER.supplier_did, advert_ref: ORDER.advert_ref, escrow_ref: ORDER_ESCROW, paid_from_vault: true,
+  receipt: { escrow_ref: ORDER_ESCROW, supplier_pkh: made('the key of the Order Desk').substring(0, 56), agent_did: ORDER.supplier_did },
+  receipt_signature: made('the signature of the Order Desk', 'sha512'), verification: SUB_JOB.verification, result: { po_number: ORDER.po_number }, accepted: 'confirmed',
+};
+const WRITE: WriteRecord = { system: 'po-store', route: 'POST /po', status: 201, ref: 'PO-1' };
+const CHALLENGE = { claim: `${made('the claim')}#0`, evidence: made('the evidence'), challenge: `${made('the challenge')}#0` };
+const PIECES = { use_case: 'inventory-reorder', proposal_digest: PROPOSAL.proposal_digest, handoff: HANDOFF, writes: [WRITE], decisions: [DECISION], fault_mode: '' } as const;
+/** One result of execute for each outcome. A dispute holds a hire whose Accept was not made. */
+const RESULTS: Record<ExecuteOutcome, ExecuteResult> = {
+  completed: completedResult(PIECES),
+  vault_refused: vaultRefusedResult({ ...PIECES, handoff: null, writes: [] }, 'the node refused the Pay', false),
+  refused_by_counterparty: refusedResult('counterparty', { ...PIECES, handoff: null, writes: [] }, 'lot_mismatch'),
+  refused_by_system: refusedResult('system', { ...PIECES, writes: [] }, 'not_covered'),
+  disputed: disputedResult({ ...PIECES, handoff: { ...HANDOFF, accepted: 'no' }, writes: [] }, { challenge: CHALLENGE }),
+  failed: failedResult({ ...PIECES, writes: [] }, 'deadline'),
+};
+
+const jsonBlocks = (body: string): string[] => [...body.matchAll(/```json\n([\s\S]*?)\n```/g)].map((hit) => hit[1]);
+/** The first cells of the rows of the table that starts with `header`. */
+function firstCells(body: string, header: string): string[] {
+  const lines = body.split('\n');
+  const at = lines.indexOf(header);
+  if (at < 0) throw new Error(`no table has the header ${header}`);
+  const cells: string[] = [];
+  for (let index = at + 2; index < lines.length && lines[index].startsWith('| '); index += 1) cells.push(lines[index].substring(2).split(' | ')[0]);
+  return cells;
+}
+/** The names in backticks of some cells: the cell "`a`, `b`" gives a and b. */
+const namesOf = (cells: readonly string[]): string[] => cells.flatMap((cell) => [...cell.matchAll(/`([a-z][a-z0-9_]*)`/g)].map((hit) => hit[1]));
+/** The rows of a table of statuses and codes, as "status:code" for each code in backticks of the second cell. */
+const codePairs = (body: string): string[] => body.split('\n').filter((line) => /^\| \d/.test(line)).flatMap((line) => {
+  const [status, cell] = line.substring(2).split(' | ');
+  return [...cell.matchAll(/`([a-z][a-z0-9_]*)`/g)].map((hit) => `${status}:${hit[1]}`);
+});
+
+describe('specs/reorder-agent.md, Interface', () => {
+  const request = sub('Request');
+  const response = sub('Response');
+
+  test('the request fields: each member of the schema is on the page, and the intake holds the rules of the field tables', async () => {
+    const [propose, execute] = REQUEST_SCHEMA.oneOf;
+    expect(Object.keys(propose.properties)).toStrictEqual(['op', 'authority', 'tenant', 'sku', 'supplier_did']);
+    expect(Object.keys(execute.properties)).toStrictEqual(['op', 'authority', 'tenant', 'proposal', 'approval']);
+    for (const field of ['op', 'authority', 'principal_did', 'delegation', 'tenant', 'sku', 'supplier_did', 'proposal', 'document', 'salt', 'proposal_digest', 'approval', 'attestation', 'issuer_did']) {
+      expect(request, field).toContain(`\`${field}\``);
+    }
+    const proposeOk = (over: Record<string, unknown>): boolean => parseRequest({ ...PROPOSE_REQUEST, ...over }, parseProposeFields).ok;
+    expect(proposeOk({})).toBe(true);
+    expect([proposeOk({ sku: 'a'.repeat(64) }), proposeOk({ sku: 'a'.repeat(65) }), proposeOk({ sku: '' }), proposeOk({ sku: '.a' }), proposeOk({ sku: 'a b' }), proposeOk({ sku: 'A-1_2.3' })]).toStrictEqual([true, false, false, false, false, true]);
+    // The tenant: the job refuses a `propose` request with a tenant outside the rule, with `bad_shape` (400), before it reads anything. The intake does not refuse it, and the job of `execute` checks it against the order.
+    const tenantCheck = async (tenant: string): Promise<string> => {
+      try {
+        await runPropose({} as ProposeDeps, { ...PROPOSE_REQUEST, tenant } as unknown as ProposeRequest, 0);
+        return 'past the check';
+      } catch (error) {
+        return error instanceof ProposeRefusal ? `${error.code} ${error.status}` : 'past the check';
+      }
+    };
+    expect(await Promise.all(['a'.repeat(48), 'a'.repeat(49), 'Demo', '-a', 'a-1'].map(tenantCheck))).toStrictEqual(['past the check', 'bad_shape 400', 'bad_shape 400', 'bad_shape 400', 'past the check']);
+    expect(parseRequest({ ...EXECUTE_REQUEST, tenant: 'Demo' }).ok).toBe(true);
+    expect(request).toContain('One exception is the tenant of `execute`: the job checks it against its order (`po_not_for_tenant`).');
+    expect([proposeOk({ supplier_did: 'nope' }), proposeOk({ extra: 1 }), proposeOk({ op: 'cancel' }), proposeOk({ authority: { principal_did: HIRER } })]).toStrictEqual([false, false, false, false]);
+    const executeOk = (over: Record<string, unknown>): boolean => parseRequest({ ...EXECUTE_REQUEST, ...over }).ok;
+    expect([executeOk({}), executeOk({ approval: null })]).toStrictEqual([true, true]);
+    expect([executeOk({ proposal: { ...PROPOSAL, proposal_digest: made('another digest') } }), executeOk({ extra: 1 }), executeOk({ approval: { attestation: made('only the attestation') } })]).toStrictEqual([false, false, false]);
+    const { approval: _left, ...withoutApproval } = EXECUTE_REQUEST;
+    expect(parseRequest(withoutApproval).ok).toBe(false);
+    expect(request).toContain('The authority has no vault: the agent finds the Live vault of the delegation itself.');
+    expect(request).toContain('The agent does not check the approval. It passes it on, and the Order Desk refuses an order with no valid approval.');
+  });
+
+  test('the examples of the requests are what the kit makes, the kit parses them, and the intake of the service takes them', () => {
+    const [proposeBlock, executeBlock] = jsonBlocks(request);
+    expect(proposeBlock).toBe(JSON.stringify(PROPOSE_REQUEST, null, 2));
+    expect(executeBlock).toBe(JSON.stringify(EXECUTE_REQUEST, null, 2));
+    expect(must(parseRequest(JSON.parse(proposeBlock), parseProposeFields))).toStrictEqual(PROPOSE_REQUEST);
+    expect(must(parseRequest(JSON.parse(executeBlock)))).toStrictEqual(EXECUTE_REQUEST);
+    expect(parseJob(proposeBlock).op).toBe('propose');
+    expect(parseJob(executeBlock).op).toBe('execute');
+    const { proposal } = JSON.parse(executeBlock) as typeof EXECUTE_REQUEST;
+    expect(must(parseProposal(proposal))).toStrictEqual(PROPOSAL);
+    expect(must(parsePurchaseOrder(proposal.document))).toStrictEqual(ORDER);
+    // The digest is the sha256 of the 32 bytes of the salt and the canonical JSON of the document.
+    expect(createHash('sha256').update(Buffer.from(proposal.salt, 'hex')).update(must(canonicalJson(proposal.document)), 'utf8').digest('hex')).toBe(proposal.proposal_digest);
+    expect(request).toContain('The digest is the sha256 of the 32 bytes of the salt and the canonical JSON of the document.');
+    // The two requests are a few kilobytes: far below the limits of Terms.
+    for (const block of [proposeBlock, executeBlock]) expect(Buffer.byteLength(block)).toBeLessThan(5_000);
+  });
+
+  test('the steps of propose and execute: the codes that they name are codes of the jobs, and the inputs of the two decisions are the ones that the steps say', () => {
+    for (const code of ['delegation_not_mine', 'delegation_not_found', 'delegation_key_unknown', 'supplier_not_listed', 'supplier_manifest_invalid', 'supplier_lots_invalid', 'sku_not_in_lots', 'supplier_unavailable']) {
+      expect(request, code).toContain(`\`${code}\``);
+    }
+    for (const code of ['bad_document', 'po_not_for_tenant', 'bad_shape', 'request_too_large', 'no_live_vault', 'several_live_vaults', 'vault_refused', 'confirmation_invalid', 'confirmation_not_for_order', 'cannot_supply']) {
+      expect(request, code).toContain(`\`${code}\``);
+    }
+    expect(PROPOSE_FAILURES).toEqual(expect.arrayContaining(['delegation_not_found', 'delegation_key_unknown', 'stock_reading_mismatch', 'decision_mismatch']));
+    expect(SUPPLIER_FAILURES).toStrictEqual(['supplier_not_listed', 'supplier_manifest_invalid', 'supplier_lots_invalid', 'sku_not_in_lots', 'supplier_unavailable']);
+    expect(AFTER_CLAIM_REFUSALS).toStrictEqual(['cannot_supply']);
+    expect(RECEIPT_CHECKS).toHaveLength(8);
+    expect(request).toContain('It runs the eight checks on the receipt of the Order Desk.');
+    // The model of `reorder` reads the stock reading, the three lot sizes and the date of today. The model of `accept_delivery` reads the SKU, the lot and the quantity of each side, and nothing else.
+    const input = reorderInput(READING, { 'lot-small': 10, 'lot-medium': 50, 'lot-large': 200 }, '2026-11-30') as Record<string, unknown>;
+    expect(Object.keys(input)).toStrictEqual(['stock_reading', 'lots', 'today']);
+    expect(LOT_NAMES).toStrictEqual(['lot-small', 'lot-medium', 'lot-large']);
+    const confirmation = must(parseOrderConfirmation(JSON.parse(readFileSync(new URL('agents/reorder-agent/test/model/golden/confirmation.json', root), 'utf8'))));
+    const seen = acceptInput(ORDER, confirmation) as Record<string, Record<string, unknown>>;
+    expect(Object.keys(seen)).toStrictEqual(['purchase_order', 'confirmation']);
+    expect([Object.keys(seen.purchase_order), Object.keys(seen.confirmation)]).toStrictEqual([['sku', 'lot', 'quantity'], ['sku', 'lot', 'quantity']]);
+    expect(request).toContain('The model reads the SKU, the lot and the quantity of the order and of the confirmation, and nothing else of either.');
+    // The agent accepts exactly when `mismatch` is empty: an answer that says both is no choice.
+    expect([ACCEPT_DECISION.parse({ accept: true, mismatch: [] }).ok, ACCEPT_DECISION.parse({ accept: false, mismatch: ['lot'] }).ok, ACCEPT_DECISION.parse({ accept: true, mismatch: ['lot'] }).ok, ACCEPT_DECISION.parse({ accept: false, mismatch: [] }).ok]).toStrictEqual([true, true, false, false]);
+    expect(text('agents/reorder-agent/src/execute/execute.ts')).toContain('statement_text: ORDER_DESK_CLAIM.statements[0].text');
+  });
+
+  test('the Response example is the result that the kit makes of the order, the decision and the sub-job, byte for byte', () => {
+    expect(page.match(/^### Response$/gm)).toHaveLength(1);
+    expect(manifest.interface.response_schema.$ref.endsWith('/specs/reorder-agent.md#response')).toBe(true);
+    expect(jsonBlocks(response)[0]).toBe(JSON.stringify(PROPOSED, null, 2));
+  });
+
+  test('the proposal: the table names its members, the example holds them in the order of the result, and fault_mode is last and empty', () => {
+    const shown = JSON.parse(jsonBlocks(response)[0]) as Record<string, unknown>;
+    const keys = Object.keys(shown);
+    expect(keys).toStrictEqual(['schema', 'use_case', 'decisions', 'sub_jobs', 'document', 'salt', 'proposal_digest', 'outcome', 'exit_state', 'reason', 'fault_mode']);
+    expect(namesOf(firstCells(response, '| Member | Content |')).sort()).toStrictEqual([...keys].sort());
+    expect(shown).toMatchObject({ schema: 'vector.usecase.proposal.v1', use_case: 'inventory-reorder', outcome: 'proposed', exit_state: null, reason: null, fault_mode: '' });
+    expect(PROPOSE_OUTCOMES).toStrictEqual(['proposed', 'failed']);
+    expect((shown.decisions as Decision[])[0].inference.sub_job).toStrictEqual((shown.sub_jobs as SubJob[])[0]);
+    expect(Object.keys(SUB_JOB)).toStrictEqual(['capability_id', 'advert_ref', 'escrow_ref', 'supplier_pkh', 'receipt', 'receipt_signature', 'verification']);
+    expect(Object.keys(SUB_JOB.verification)).toStrictEqual([...RECEIPT_CHECKS]);
+    expect(MODEL).toBe(manifest.behaviour.model.allowlist[0]);
+    expect(response).toContain('The example is an illustration and not a recorded run. Its references, hashes, key hash and signature are made from labels, and they belong to no escrow, no supplier and no key.');
+  });
+
+  test('the stock reading of the example hashes to the stock_reading_sha256 of the order, and the page shows its canonical text', () => {
+    const canonical = must(canonicalJson(READING));
+    expect(createHash('sha256').update(canonical, 'utf8').digest('hex')).toBe(ORDER.stock_reading_sha256);
+    expect(response).toContain(`The stock reading of the example, in canonical form, is \`${canonical}\`. Its sha256 is the \`stock_reading_sha256\` of the order.`);
+  });
+
+  test('the purchase order: the table names its members, the number is the tenant and a counter, and the choice of the model is not held to the size of the lot or to the date of today', () => {
+    expect(namesOf(firstCells(response, '| Document member | Content |')).sort()).toStrictEqual(Object.keys(ORDER).sort());
+    expect(ORDER.schema).toBe(PO_SCHEMA);
+    expect(ORDER.po_number).toBe(poNumberOf(TENANT, 1));
+    expect(row(response, '`schema`')).toContain('| `schema` |');
+    expect(row(response, '`lot`')).toBe('| `lot` | `lot-small`, `lot-medium` or `lot-large`, as the model chose |');
+    expect(row(response, '`quantity`')).toBe('| `quantity` | the quantity that the model chose. The Order Desk refuses a quantity that is not the size of the lot |');
+    expect(row(response, '`needed_by`')).toBe('| `needed_by` | the date that the model chose, as `YYYY-MM-DD` |');
+    expect(REORDER_DECISION.parse({ lot: 'lot-medium', quantity: 7, needed_by: '2020-01-01' }).ok).toBe(true);
+    expect(response).toContain('The service does not hold the choice of the model to the size of the lot or to the date of today.');
+  });
+
+  test('the result of execute: the table names the members of every outcome, and the members of the three records are on the page', () => {
+    const names = namesOf(firstCells(response, '| Result member | Content |')).sort();
+    for (const [outcome, result] of Object.entries(RESULTS)) {
+      const stamped = withFaultMode(FAULT, result);
+      expect(Object.keys(stamped).sort(), outcome).toStrictEqual(names);
+      expect(Object.keys(stamped).at(-1), outcome).toBe('fault_mode');
+      expect(result.outcome, outcome).toBe(outcome);
+    }
+    for (const [label, record] of [['handoff', HANDOFF], ['writes', WRITE], ['challenge', CHALLENGE]] as const) {
+      for (const member of Object.keys(record)) expect(row(response, `\`${label}\``), `${label}.${member}`).toContain(`\`${member}\``);
+    }
+    expect(row(response, '`handoff`')).toContain('`accepted` (`confirmed`, `pending` or `no`)');
+  });
+
+  test('the outcomes table lists the outcomes of the kit and gives the exit states of its rule', () => {
+    const outcomes = sub('Outcomes');
+    expect(firstCells(outcomes, '| Outcome | Exit state | When |').map((cell) => cell.replaceAll('`', ''))).toStrictEqual([...EXECUTE_OUTCOMES]);
+    const states = EXIT_STATES.map((state) => `\`${state}\``);
+    const lastState = states.pop();
+    expect(outcomes).toContain(`The exit state is ${states.join(', ')} or ${lastState}.`);
+    const state = (outcome: ExecuteOutcome, reason: string | null, filed = false, ended = false): string => exitStateOf({ outcome, reason, challenge_filed: filed, delegation_ended: ended });
+    expect(state('completed', null)).toBe('Completed');
+    expect([state('vault_refused', 'words', false, true), state('vault_refused', 'words')]).toStrictEqual(['Cancelled', 'Failed']);
+    expect(['approval_digest_mismatch', 'approval_expired', 'delegation_ended', 'lot_mismatch'].map((reason) => state('refused_by_counterparty', reason))).toStrictEqual(['Escalated', 'Expired', 'Cancelled', 'Rejected']);
+    expect(['approval_digest_mismatch', 'approval_expired', 'delegation_ended', 'not_covered'].map((reason) => state('refused_by_system', reason))).toStrictEqual(['Rejected', 'Expired', 'Cancelled', 'Rejected']);
+    expect([state('disputed', null, true), state('disputed', 'no_open_claim')]).toStrictEqual(['Escalated', 'Failed']);
+    expect(state('failed', 'deadline')).toBe('Failed');
+    expect(row(outcomes, '`completed`')).toContain('| `Completed` |');
+    expect(row(outcomes, '`vault_refused`')).toContain('| `Cancelled` when the hirer ended the delegation, else `Failed` |');
+    expect(row(outcomes, '`refused_by_counterparty`')).toContain('| `Rejected`, but `Escalated` for `approval_digest_mismatch`, `Expired` for `approval_expired` and `Cancelled` for `delegation_ended` |');
+    expect(row(outcomes, '`refused_by_system`')).toContain('| `Rejected`, but `Expired` for `approval_expired` and `Cancelled` for `delegation_ended` |');
+    expect(row(outcomes, '`disputed`')).toContain('| `Escalated` when the agent filed a challenge, else `Failed` |');
+    expect(row(outcomes, '`failed`')).toContain('| `Failed` |');
+    expect(outcomes).toContain('A `propose` job ends with `proposed` or with `failed`, and a proposal has no exit state.');
+  });
+
+  test('the Errors table gives each code the status of the kit and is the table of the README, and the reasons are codes of the sources', () => {
+    const errors = sub('Errors');
+    const pairs = codePairs(errors);
+    const serverOwn: Record<string, number> = { bad_context: 400 };
+    for (const pair of pairs) {
+      const [status, code] = pair.split(':');
+      expect([code, Number(status)], pair).toStrictEqual([code, (ERROR_STATUS as Record<string, number>)[code] ?? serverOwn[code]]);
+    }
+    expect(pairs).toStrictEqual(codePairs((readme.split('\n## Errors\n')[1] ?? '').split('The co-sign route has its own codes:')[0]));
+    expect(pairs.map((pair) => pair.split(':')[1])).toStrictEqual(['bad_wire', 'request_too_large', 'bad_shape', 'bad_context', 'delegation_not_mine', 'unauthorized', 'busy', 'shutting_down', 'internal']);
+    expect(errors).toContain('A job that the service runs and that does not end well is no HTTP error: it is a 200 result with the outcome `failed` and a `reason` code.');
+    const reasons = namesOf(firstCells(errors, '| Reason | What it says |'));
+    expect(reasons.length).toBeGreaterThan(20);
+    const sources = [new URL('agents/reorder-agent/src/', root), new URL('packages/usecase-kit/src/', root)]
+      .flatMap((dir) => readdirSync(dir, { recursive: true }).map(String).filter((file) => file.endsWith('.ts')).map((file) => readFileSync(new URL(file, dir), 'utf8')))
+      .join('\n');
+    for (const code of reasons) expect(sources.includes(`'${code}'`), code).toBe(true);
+    // The reasons that the page names for the interrupted hire are the ones of the kit.
+    expect([INTERRUPTION_REASONS.decision_error, INTERRUPTION_REASONS.other, PAY_UNCONFIRMED]).toStrictEqual(['decision_error', 'hire_interrupted', 'pay_unconfirmed']);
+    // A failure of the sub-delegation or of the token of stock-reader is the code of the failure with a prefix.
+    expect(PROPOSE_FAILURES).toEqual(expect.arrayContaining(['sub_delegation_parent_not_live', 'token_delegation_too_young']));
+    expect(errors).toContain('A failure of the sub-delegation of `stock-reader` is `sub_delegation_` and the code of the failure, such as `sub_delegation_parent_not_live`. A failure of its token is `token_` and the code of the failure, such as `token_delegation_too_young`.');
+  });
+
+  test('the co-sign route: the path, the rule, the allowlist and the codes are the kit and the manifest', () => {
+    const cosign = sub('The co-sign route');
+    expect(COSIGN_ROUTE).toBe('/cosign/delegate');
+    expect(manifest.behaviour.cosign).toMatchObject({ route: COSIGN_ROUTE, rule: COSIGN_RULE });
+    expect(cosign).toContain(`\`POST ${COSIGN_ROUTE}\` is an open route of the service: it needs no token, and it takes no job slot.`);
+    expect(cosign).toContain(`\n> ${COSIGN_RULE}\n`);
+    expect(COSIGN_SETTINGS.allowlist).toBe('COSIGN_ALLOWLIST');
+    expect(SETTINGS).toContain('COSIGN_ALLOWLIST');
+    expect(must(parseAllowlist('')).size).toBe(0);
+    expect(parseCosignSettings({}).ok).toBe(false);
+    expect(cosign).toContain('The route signs only for a principal key on the allowlist that the operator sets with `COSIGN_ALLOWLIST`. The empty allowlist holds nobody, and a service with no such setting does not start.');
+    const pairs = codePairs(cosign);
+    for (const pair of pairs) {
+      const [status, code] = pair.split(':');
+      expect(status.split(', ').map(Number), pair).toContain((COSIGN_STATUS as Record<string, number>)[code]);
+    }
+    expect(pairs.map((pair) => pair.split(':')[1]).sort()).toStrictEqual(Object.keys(COSIGN_STATUS).sort());
+    expect(pairs).toStrictEqual(codePairs((readme.split('The co-sign route has its own codes:')[1] ?? '').split('\n## ')[0]));
+  });
+});
+
+describe('specs/reorder-agent.md, the receipt, the claim and the fault switch', () => {
+  test('What the receipt commits to: the fields of the table, the members of the results that it holds, and the checks of the sub-receipt', () => {
+    const receipt = section('What the receipt commits to');
+    expect(receipt).toContain('The service signs no receipt. The runtime builds the receipt, signs it with the supplier key and submits its hash in the Submit transaction.');
+    expect(row(receipt, '`escrow_ref`')).toBe('| `escrow_ref` | the escrow UTxO, `<txid>#<index>` |');
+    expect(row(receipt, '`supplier_pkh`')).toBe('| `supplier_pkh` | the key hash of the supplier key |');
+    expect(row(receipt, '`prompt_hash`')).toBe('| `prompt_hash` | sha256 of the UTF-8 bytes of the wire payload, as the buyer committed it in the escrow datum |');
+    expect(row(receipt, '`response_hash`')).toBe('| `response_hash` | sha256 of the UTF-8 bytes of the result exactly as the service returned them |');
+    expect(row(receipt, '`model`')).toBe('| `model` | `reorder-agent-v1` |');
+    expect(receipt).toContain('The receipt of a `propose` job commits the purchase order, the salt, the digest of the proposal, the hash of the stock reading, and the decision of the model with its reasoning and the sub-job that bought it.');
+    expect(receipt).toContain('The receipt of an `execute` job commits the outcome, the confirmation that the Order Desk returned with its receipt, the decision on the delivery, every write to a mock system and, on `disputed`, the references of the challenge.');
+    for (const path of ['document.stock_reading_sha256', 'salt', 'proposal_digest', 'decisions.0.reasoning', 'decisions.0.inference.sub_job']) expect(PROPOSED, path).toHaveProperty(path);
+    for (const path of ['outcome', 'handoff.result', 'handoff.receipt', 'decisions.0.name', 'writes.0.route']) expect(RESULTS.completed, path).toHaveProperty(path);
+    expect(RESULTS.disputed).toHaveProperty('challenge.claim');
+    expect(RECEIPT_CHECKS).toEqual(expect.arrayContaining(['signature_valid', 'on_chain_hash_matches']));
+    expect(receipt).toContain('The signature is Ed25519 over the canonical JSON of the receipt. The sha256 of the canonical JSON of `{ receipt, signature }` is the `result_receipt_hash` in the Submitted escrow datum.');
+    expect(receipt).toContain('It does not commit to the stock reading being true, to the quantity being right, or to the order being fulfilled.');
+  });
+
+  test('Claim statements: the table is the claim of the kit and the manifest, and a claim has no reference to a claim', () => {
+    const claim = section('Claim statements');
+    expect(claim.split('\n').filter((line) => /^\| S[123] \|/.test(line))).toStrictEqual(REORDER_CLAIM.statements.map((statement) => `| ${statement.id} | ${statement.text} |`));
+    expect(REORDER_CLAIM.statements.map((statement) => statement.id)).toStrictEqual(['S1', 'S2', 'S3']);
+    expect(manifest.behaviour.claim).toStrictEqual(REORDER_CLAIM);
+    expect(Object.keys(manifest.behaviour.claim)).toStrictEqual(['statements']);
+    expect(claim).toContain('The agent stakes a claim for each run, not a standing claim. A claim has these three statements. The manifest holds them in `behaviour.claim`, with no reference to a claim. A challenge names the text of a statement.');
+  });
+
+  test('the fault switch: none, the service refuses a value, and every result has the member fault_mode, empty', () => {
+    const fault = section('Fault switch');
+    expect(fault).toContain('\nNone. `FAULT_MODE` must be empty.\n');
+    expect(FAULT_MODES['reorder-agent']).toStrictEqual([]);
+    expect(manifest.behaviour.fault_modes).toStrictEqual([]);
+    expect(FAULT.mode).toBe('');
+    expect(() => readFaultSwitch('reorder-agent', 'confirm_wrong_lot')).toThrow();
+    expect(fault).toContain('The service stops at start when `FAULT_MODE` has a value. Every result has the member `fault_mode`, and it is the empty text. The manifest lists no fault value in `behaviour.fault_modes`.');
+    expect(PROPOSED.fault_mode).toBe('');
+    for (const result of Object.values(RESULTS)) expect(withFaultMode(FAULT, result).fault_mode).toBe('');
   });
 });
