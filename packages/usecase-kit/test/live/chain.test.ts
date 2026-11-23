@@ -1,13 +1,15 @@
 // packages/usecase-kit/test/live/chain.test.ts: the delegation chain of the live folder, over the builders and the reads of the buyer code. The world is the offline identity world of the buyer code (Lucid runs the real
 // scripts in every build) with two additions: a node that takes a signed transaction, checks its signatures and changes its outputs, and a fake Koios that gives the tip and the block of each output. No test uses the
-// network or a key file. The first part runs the reads on that world: what `readDelegation` gives, and the decision of `readiness` from its two reads. The second part builds and sends the real Delegate and Undelegate.
-// The last part runs `withSubDelegation` of the access folder over the adapter: it makes the sub-delegation, waits for 30 confirmations, runs a job, and ends the sub-delegation.
+// network or a key file. The first part runs the reads on that world: what `readDelegation` gives, and the decision of `readiness` from its two reads. The next part runs the same reads through the real `OgmiosProvider` of
+// the buyer code, with a stub in place of `fetch`: a node that gives no list of outputs is a throw there, and never "not live" or ready. Then the real Delegate and Undelegate are built and sent, and the hash that the node
+// gives for a transaction is checked. The last part runs `withSubDelegation` of the access folder over the adapter: it makes the sub-delegation, waits for 30 confirmations, runs a job, and ends the sub-delegation.
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CML, coreToTxOutput, getAddressDetails } from '@lucid-evolution/lucid';
 import type { Address, Credential, OutRef, UTxO } from '@lucid-evolution/lucid';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { OgmiosProvider } from '@vsa/buyer-core';
 import type { DelegateParams, DelegationUseCheck, LedgerEnv, LinkConfirmations } from '@vsa/buyer-core';
 import { encodeDelegationDatum } from '@vsa/vector-read/identity-codec';
 import type { IdentityDatum } from '@vsa/vector-read/identity-codec';
@@ -224,6 +226,18 @@ function recording(world: World): { readonly provider: World; readonly calls: st
   return { provider, calls };
 }
 
+/** A text that only the node says: no error may repeat it. */
+const MARKER = 'node-text-6d1c';
+
+/** A node that takes nothing and answers `answer` to each `submitTx`, with the transactions that it was given: a node whose acknowledgement is not the hash of the transaction. Its other methods are those of the world. */
+function acknowledging(world: World, answer: unknown): { readonly provider: World; readonly sent: string[] } {
+  const sent: string[] = [];
+  const provider = new Proxy(world, {
+    get: (target, name) => (name === 'submitTx' ? async (tx: string): Promise<unknown> => (sent.push(tx), answer) : Reflect.get(target, name)),
+  });
+  return { provider, sent };
+}
+
 /** A provider whose every method throws: a node that is down. */
 const down = (world: World): World => new Proxy(world, { get: (target, name) => (typeof Reflect.get(target, name) === 'function' ? () => { throw new Error('the node is down'); } : Reflect.get(target, name)) });
 
@@ -367,6 +381,129 @@ describe('delegationChainOf: readiness', () => {
   });
 });
 
+// ── the real provider of buyer-core ──
+
+const OGMIOS_URL = 'https://ogmios.example/path-token-4c2e';
+const UTXO_METHOD = 'queryLedgerState/utxo';
+
+/** An output as Ogmios gives it: its value with the units under their policies, and its inline datum. */
+function ogmiosOutput(utxo: UTxO): Record<string, unknown> {
+  const value: Record<string, Record<string, number>> = { ada: { lovelace: Number(utxo.assets.lovelace) } };
+  for (const [unit, quantity] of Object.entries(utxo.assets)) {
+    if (unit !== 'lovelace') value[unit.slice(0, 56)] = { ...value[unit.slice(0, 56)], [unit.slice(56)]: Number(quantity) };
+  }
+  return { transaction: { id: utxo.txHash }, index: utxo.outputIndex, address: utxo.address, value, ...(utxo.datum ? { datum: utxo.datum } : {}) };
+}
+
+interface UtxoQuery {
+  readonly addresses?: readonly string[];
+  readonly outputReferences?: readonly { readonly transaction: { readonly id: string }; readonly index: number }[];
+}
+
+/** The answer of a node that lists the outputs of the world: those at the addresses of the call, and those that its references name. */
+const listing =
+  (world: World) =>
+  (query: UtxoQuery): unknown => ({
+    jsonrpc: '2.0',
+    method: UTXO_METHOD,
+    id: null,
+    result: world.live
+      .filter((utxo) => query.addresses?.includes(utxo.address) === true || query.outputReferences?.some((ref) => ref.transaction.id === utxo.txHash && ref.index === utxo.outputIndex) === true)
+      .map(ogmiosOutput),
+  });
+
+/**
+ * Puts a stub in place of the global `fetch`, so that the real `OgmiosProvider` of buyer-core reads from it, and silences the log of the provider, which names the node. The stub answers `queryLedgerState/utxo` with
+ * `utxo(query)`, and the `asset_utxos` of Koios with the output of the world that holds the asset, as Koios does. A call of any other method is a failure of the test. It gives the calls that were made, in order.
+ */
+function stubNode(world: World, utxo: (query: UtxoQuery) => unknown): string[] {
+  const asked: string[] = [];
+  vi.stubGlobal('fetch', async (url: unknown, init?: { body?: unknown }): Promise<Response> => {
+    const body = JSON.parse(String(init?.body)) as { method?: string; params?: UtxoQuery; _asset_list?: [string, string][] };
+    if (String(url).endsWith('/api/v1/asset_utxos')) {
+      asked.push('asset_utxos');
+      const [policy, name] = body._asset_list![0]!;
+      const holder = world.live.find((candidate) => candidate.assets[`${policy}${name}`] !== undefined);
+      return new Response(JSON.stringify(holder === undefined ? [] : [koiosRow(holder)]), { status: 200 });
+    }
+    if (body.method !== UTXO_METHOD) throw new Error(`the stub node does not answer ${String(body.method)}`);
+    asked.push(UTXO_METHOD);
+    return new Response(JSON.stringify(utxo(body.params ?? {})), { status: 200 });
+  });
+  vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  return asked;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+/** The chain over the real provider of buyer-core. With `koios`, the provider has the URL of Koios and asks Koios first for the output of a token, as a service does. The depth comes from the Koios of the world. */
+const overProvider = (world: World, koios = false): DelegationChain =>
+  delegationChainOf({
+    provider: new OgmiosProvider({ ogmiosUrl: OGMIOS_URL, submitUrl: 'https://submit.example/api/submit/tx', ...(koios ? { koiosUrl: 'https://koios.example' } : {}) }),
+    deployment: DEPLOYMENT,
+    koiosUrl: 'https://koios.example',
+    fetchImpl: koiosOf(world).f,
+  });
+
+/** The answers of a node that holds no list of outputs. */
+const NO_LIST: ReadonlyArray<readonly [string, unknown]> = [
+  ['a result of null', { jsonrpc: '2.0', method: UTXO_METHOD, result: null, id: null }],
+  ['no result', { jsonrpc: '2.0', id: null }],
+  ['a result that is an object', { jsonrpc: '2.0', method: UTXO_METHOD, result: {}, id: null }],
+  ['a result that is text', { jsonrpc: '2.0', method: UTXO_METHOD, result: MARKER, id: null }],
+];
+
+describe('delegationChainOf over the real provider of buyer-core', () => {
+  it.each(NO_LIST)('throws when the node answers %s, in readDelegation and in readiness, and gives neither null nor ready', async (_name, answer) => {
+    const world = worldOf({ depth: 500 });
+    const asked = stubNode(world, () => answer);
+    const chain = overProvider(world);
+    for (const call of [() => chain.readDelegation(SUB_ID), () => chain.readiness(SUB_ID, ROUTE, NOW)]) {
+      const error = await rejection(call());
+      expect(error.message).toContain('the node gave no list');
+      for (const shown of [MARKER, 'ogmios.example', 'path-token-4c2e']) expect(error.message).not.toContain(shown);
+    }
+    expect(asked).toStrictEqual([UTXO_METHOD, UTXO_METHOD]);
+  });
+
+  it.each(NO_LIST)('throws when Koios names the output and the node answers %s for it: the provider does not fall back to a scan that finds nothing', async (_name, answer) => {
+    const world = worldOf({ depth: 500 });
+    const asked = stubNode(world, () => answer);
+    const chain = overProvider(world, true);
+    for (const call of [() => chain.readDelegation(SUB_ID), () => chain.readiness(SUB_ID, ROUTE, NOW)]) {
+      const error = await rejection(call());
+      expect(error.message).toContain('the node gave no list');
+      for (const shown of [MARKER, 'ogmios.example', 'path-token-4c2e']) expect(error.message).not.toContain(shown);
+    }
+    expect(asked).toStrictEqual(['asset_utxos', UTXO_METHOD, 'asset_utxos', UTXO_METHOD]);
+  });
+
+  it('reads through the same provider when the node gives a list: an empty list shows no delegation, and the list of the world shows the delegation and a chain that is ready', async () => {
+    const world = worldOf({ depth: 500 });
+    stubNode(world, () => ({ jsonrpc: '2.0', method: UTXO_METHOD, result: [], id: null }));
+    const empty = overProvider(world);
+    expect(await empty.readDelegation(SUB_ID)).toBeNull();
+    expect(await empty.readiness(SUB_ID, ROUTE, NOW)).toStrictEqual({ state: 'waiting', confirmations: null });
+    stubNode(world, listing(world));
+    const listed = overProvider(world);
+    expect(await listed.readDelegation(SUB_ID)).toStrictEqual({ id: SUB_ID, delegation: SUB, txHash: SUB_TX });
+    expect(await listed.readiness(SUB_ID, ROUTE, NOW)).toStrictEqual({ state: 'ready' });
+  });
+
+  it('reads the same through the output that Koios names, when the node lists it', async () => {
+    const world = worldOf({ depth: 500 });
+    const asked = stubNode(world, listing(world));
+    const chain = overProvider(world, true);
+    expect(await chain.readDelegation(SUB_ID)).toStrictEqual({ id: SUB_ID, delegation: SUB, txHash: SUB_TX });
+    // The read of a delegation also reads its parent: Koios names each output, and the node confirms it.
+    expect(asked).toStrictEqual(['asset_utxos', UTXO_METHOD, 'asset_utxos', UTXO_METHOD]);
+    expect(await chain.readiness(SUB_ID, ROUTE, NOW)).toStrictEqual({ state: 'ready' });
+  });
+});
+
 // ── the decision of readiness, on typed values ──
 
 describe('the decision of readiness', () => {
@@ -473,6 +610,54 @@ describe('delegationChainOf: the builders, the submit and the slot clock', () =>
     expect(world.taken).toStrictEqual([]);
   });
 
+  it('gives the hash of the body of the transaction that it sent, and not the text of the node: capital letters from the node give the same lower-case hash', async () => {
+    const world = worldOf({ sub: null });
+    const built = await delegationChainOf(envOf(world)).buildDelegate(DELEGATE);
+    const signed = subagentSigner.sign(agentSigner.sign(built.txCbor));
+    const { provider, sent } = acknowledging(world, built.txHash.toUpperCase());
+    expect(await delegationChainOf({ ...envOf(world), provider }).submit(signed)).toBe(built.txHash);
+    expect(sent).toStrictEqual([signed]);
+  });
+
+  const WRONG_ANSWERS: ReadonlyArray<readonly [string, (hash: string) => unknown]> = [
+    ['the hash of another transaction', () => 'ab'.repeat(32)],
+    ['the hash of the transaction with one character more', (hash) => `${hash}0`],
+    ['the hash of the transaction with one character less', (hash) => hash.slice(1)],
+    ['text that is not a hash', () => MARKER],
+    ['an empty text', () => ''],
+    ['no value', () => undefined],
+    ['a number', () => 42],
+    ['an object that holds the hash', (hash) => ({ txId: hash })],
+  ];
+
+  it.each(WRONG_ANSWERS)('throws when the node answers %s, and the message does not repeat the answer', async (_name, answer) => {
+    const world = worldOf({ sub: null });
+    const built = await delegationChainOf(envOf(world)).buildDelegate(DELEGATE);
+    const signed = subagentSigner.sign(agentSigner.sign(built.txCbor));
+    const { provider, sent } = acknowledging(world, answer(built.txHash));
+    const error = await rejection(delegationChainOf({ ...envOf(world), provider }).submit(signed));
+    expect(error.message).toContain('not the hash of the transaction that was sent');
+    for (const shown of [MARKER, 'abababab', built.txHash.slice(1, 9)]) expect(error.message).not.toContain(shown);
+    expect(sent).toStrictEqual([signed]);
+  });
+
+  const UNREADABLE: ReadonlyArray<readonly [string, (signed: string) => string]> = [
+    ['an empty text', () => ''],
+    ['text that is not hex', () => 'zz'],
+    ['hex of half a byte', () => 'abc'],
+    ['CBOR that is not a transaction', () => '00'],
+    ['a transaction that ends too soon', (signed) => signed.slice(0, -2)],
+  ];
+
+  it.each(UNREADABLE)('sends nothing for %s, and throws', async (_name, bytes) => {
+    const world = worldOf({ sub: null });
+    const built = await delegationChainOf(envOf(world)).buildDelegate(DELEGATE);
+    const signed = subagentSigner.sign(agentSigner.sign(built.txCbor));
+    const { provider, sent } = acknowledging(world, built.txHash);
+    await rejection(delegationChainOf({ ...envOf(world), provider }).submit(bytes(signed)));
+    expect(sent).toStrictEqual([]);
+  });
+
   it('throws when the node does not take a transaction that is not signed by every required signer, and the node is the one that checks', async () => {
     const world = worldOf({ sub: null });
     const chain = delegationChainOf(envOf(world));
@@ -484,17 +669,20 @@ describe('delegationChainOf: the builders, the submit and the slot clock', () =>
 
   it('throws when the node cannot be read, in the builders and in the submit', async () => {
     const world = worldOf({ sub: null });
+    const built = await delegationChainOf(envOf(world)).buildDelegate(DELEGATE);
+    const signed = subagentSigner.sign(agentSigner.sign(built.txCbor));
     const chain = delegationChainOf(envOf(down(world)));
     // The slot clock is not in this list: the buyer code keeps the start time of the chain for the whole process once it has read it, so a node that is down is not asked again.
     for (const call of [
       () => chain.buildDelegate(DELEGATE),
       () => chain.buildUndelegate({ changeAddress: WALLET, nowMs: NOW, id: SUB_ID, signer: AGENT.keyHash }),
-      () => chain.submit('00'),
+      () => chain.submit(signed),
     ]) expect((await rejection(call())).message).toContain('the node is down');
     // The twin: the same calls on a node that answers.
     const live = delegationChainOf(envOf(world));
     expect((await live.buildDelegate(DELEGATE)).id).toMatch(/^[0-9a-f]{64}$/);
     expect(await live.slotAt(NOW)).toBe(slotOf(NOW));
+    expect(await live.submit(signed)).toBe(built.txHash);
   });
 
   it('throws for a wallet that holds no output, and builds nothing', async () => {

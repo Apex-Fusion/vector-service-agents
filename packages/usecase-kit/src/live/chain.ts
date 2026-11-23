@@ -5,14 +5,17 @@
 //
 // The adapter does what it is asked, and it tells what the ledger shows. It never ends a delegation by itself, and it never chooses which delegation to end: `withSubDelegation` chooses, and it compares the transaction
 // hash that `readDelegation` reports with the hash of its own Delegate. A method that cannot read the ledger, or that the node refuses, THROWS. A throw is never `ready`, never "not live" (`null`) and never a hash.
+// `submit` reads the signed bytes before it sends them, and it sends nothing that it cannot read. It gives the hash of the body that it sent, and it throws when the node answers with any other text.
 //
 // `readiness` reads the ledger twice with `checkDelegationUse`. The list `problems` of one read mixes the rule problems (a delegate that is not Active, a pattern that does not cover) with the depth problems, as text,
 // and this file never reads that text. The first read asks for no depth (`minConfirmations: 0`), so every problem in it is a rule problem. The second read asks for 30 confirmations, and the depth of each link comes from
 // its typed member `confirmations.links`. A rule that is broken is `unusable` whatever the depth is, so a delegate that is not Active is never `waiting`. A delegation that the ledger does not show yet, and a link that
 // has no depth yet, are `waiting`. `readinessOfRules` and `readinessOfDepth` hold the decision, and they read typed members only.
+import { CML } from '@lucid-evolution/lucid';
 import type { Provider } from '@lucid-evolution/lucid';
 import { buildDelegate as buildDelegateTx, buildUndelegate as buildUndelegateTx, checkDelegationUse, lucidForAddress, readDelegation as readDelegationView } from '@vsa/buyer-core';
 import type { DelegationUseCheck, IdentityContext, LedgerEnv } from '@vsa/buyer-core';
+import { decodeTransaction } from '@vsa/vector-read/guarded-decode';
 import { CONFIRMATIONS_REQUIRED, deploymentSlotAt } from '../access/index.ts';
 import type { DelegationChain, Readiness, SlotClockSource } from '../access/index.ts';
 
@@ -22,8 +25,10 @@ import type { DelegationChain, Readiness, SlotClockSource } from '../access/inde
  */
 export interface LiveChainDeps extends LedgerEnv {
   /**
-   * The node. The reads list outputs with it, the builders take it as the provider of Lucid, `slotAt` asks it for the start time of the chain, and `submit` gives it the signed transaction with `submitTx`. That call
-   * takes the hex of the signed transaction, gives its hash, and throws when the node refuses it or does not answer. The `OgmiosProvider` of buyer-core is one: it posts the bytes to its submit endpoint.
+   * The node. The reads list outputs with it, the builders take it as the provider of Lucid, `slotAt` asks it for the start time of the chain, and `submit` gives it the signed transaction with `submitTx`.
+   * A list of outputs that the node did not give must be an error of the provider, and never an empty list: an empty list reads as "the ledger shows no delegation". The `OgmiosProvider` of buyer-core throws for it.
+   * `submitTx` takes the hex of the signed transaction and answers with a hash. It throws when the node refuses the transaction or does not answer. `submit` gives the hash of the body that it sent, and it throws when
+   * the answer is any other text. The `OgmiosProvider` has no time limit of its own for `submitTx`: the caller sets it. `withSubDelegation` does, with `stepTimeoutMs`.
    */
   readonly provider: Provider & SlotClockSource;
 }
@@ -79,7 +84,11 @@ export function delegationChainOf(deps: LiveChainDeps): DelegationChain {
       return buildUndelegateTx(await contextOf(params.changeAddress), params);
     },
     async submit(signedCborHex) {
-      return provider.submitTx(signedCborHex);
+      // The hash of the body that is sent. The answer of the node must be this hash. The adapter returns this hash, and never the text of the node.
+      const hash = CML.hash_transaction(decodeTransaction(signedCborHex).body()).to_hex();
+      const answered: unknown = await provider.submitTx(signedCborHex);
+      if (typeof answered !== 'string' || answered.toLowerCase() !== hash) throw new Error('the node gave a hash that is not the hash of the transaction that was sent');
+      return hash;
     },
     slotAt: deploymentSlotAt(provider),
   };
