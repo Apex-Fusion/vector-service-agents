@@ -4,7 +4,7 @@
 //
 // The folder. The caller gives the folder, for example the state volume of the service. The class reads and writes only in that folder. It reads no environment variable and no key. The constructor makes the folder
 // when it is missing (mode 700, and the folders above it). It throws when the path has a `..` segment, and when the folder cannot be made, is not a folder, or cannot be written. The file of a job is named by
-// its escrow with the hash sign replaced by an underscore: `<64 hex characters>_<index>.json`. Any other reference is an error, and no file is touched for it. The file holds the record that the dispute code
+// its escrow with the hash sign replaced by an underscore: `<64 hex characters>_<index>`. Any other reference is an error, and no file is touched for it. The file holds the record that the dispute code
 // gave, as one line of JSON.
 //
 // A write is whole, or it is not there. `put` writes a temporary file in the same folder, syncs it, renames it over the file of the job, syncs the folder, and then it returns. An error or a crash before the
@@ -141,7 +141,7 @@ export class FileJournal implements DisputeJournal {
   /** The file of a job. Only an output reference gives one, so no other text reaches the file system. */
   #fileOf(escrow: OutputRef): string {
     if (!parseOutputRef(escrow).ok) throw new TypeError('the journal needs an output reference as the name of a job');
-    return join(this.#folder, `${escrow.replace('#', '_')}.json`);
+    return join(this.#folder, escrow.replace('#', '_'));
   }
 
   /** Runs `write` when every write that was queued for the file before it has ended, whatever the outcome of those writes. The result is the outcome of `write`. */

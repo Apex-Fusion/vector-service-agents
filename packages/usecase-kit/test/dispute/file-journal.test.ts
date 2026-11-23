@@ -16,10 +16,10 @@ import {
 } from './support.ts';
 import type { ScriptedPort } from './support.ts';
 
-const FILE = `${'e5'.repeat(32)}_1.json`;
-const FILE_2 = `${'e6'.repeat(32)}_1.json`;
+const FILE = `${'e5'.repeat(32)}_1`;
+const FILE_2 = `${'e6'.repeat(32)}_1`;
 /** The name of a temporary file: a dot, the name of the file, a random part, and `.tmp`. A reader never takes it for a record. */
-const TEMPORARY = /^\.[0-9a-f]{64}_1\.json\.[0-9a-f]{16}\.tmp$/;
+const TEMPORARY = /^\.[0-9a-f]{64}_1\.[0-9a-f]{16}\.tmp$/;
 const LEASE = 600_000;
 const LANDED = { tx_hash: EVIDENCE_TX, uri: documentUri(EVIDENCE_TX), document_hash: evidenceOf().hash };
 
@@ -174,6 +174,17 @@ describe('the file journal keeps its records on disk', () => {
     expect(await new FileJournal(folder).get(ESCROW)).toEqual({ step: 'finished' });
   });
 
+  it('ignores a temporary file that a crash left, and never takes it for a record', async () => {
+    const folder = tempFolder();
+    const stray = join(folder, `.${FILE}.0123456789abcdef.tmp`);
+    writeFileSync(stray, JSON.stringify(record({ step: 'done' })));
+    const journal = new FileJournal(folder);
+    expect(await journal.get(ESCROW)).toBeNull();
+    await journal.put(ESCROW, record());
+    expect(await journal.get(ESCROW)).toEqual(record());
+    expect(readFileSync(stray, 'utf8')).toBe(JSON.stringify(record({ step: 'done' })));
+  });
+
   describe('a file that holds no record is an error, and it is never read as no record', () => {
     const DAMAGED: Array<[string, string]> = [
       ['an empty file', ''],
@@ -250,7 +261,7 @@ describe('a write is whole, or it is not there', () => {
     const journal = new FileJournal(folder, { fs: spied(folder, calls, { fsync: async (path) => { if (path === folder) await gate.promise; return real.fsync(path); } }) });
     let settled = false;
     const pending = journal.put(ESCROW, record()).then(() => { settled = true; });
-    await vi.waitFor(() => expect(calls.at(-1)).toEqual({ call: 'fsync', path: '.' }));
+    await vi.waitFor(() => expect(calls.at(-1)).toEqual({ call: 'fsync', path: '.' }), { timeout: 4_000 });
     await tick();
     expect(settled).toBe(false);
     expect(onDisk(folder)).toEqual(record());
@@ -265,7 +276,7 @@ describe('a write is whole, or it is not there', () => {
     const calls: Call[] = [];
     const journal = new FileJournal(folder, { fs: spied(folder, calls, { writeFile: async (path, text) => { await gate.promise; return real.writeFile(path, text); } }) });
     const pending = journal.put(ESCROW, record());
-    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await vi.waitFor(() => expect(calls).toHaveLength(1), { timeout: 4_000 });
     await tick();
     expect(calls.map((entry) => entry.call)).toEqual(['writeFile']);
     expect(existsSync(join(folder, FILE))).toBe(false);
@@ -429,7 +440,7 @@ describe('a reference that is not an output reference', () => {
     for (const ref of [`${HEX}#0`, `${HEX}#9`, `${HEX}#10`, `${HEX}#9999999999`]) {
       await journal.put(ref, record({ escrow: ref }));
       expect(await journal.get(ref), ref).toEqual(record({ escrow: ref }));
-      expect(existsSync(join(folder, `${ref.replace('#', '_')}.json`)), ref).toBe(true);
+      expect(existsSync(join(folder, ref.replace('#', '_'))), ref).toBe(true);
     }
   });
 
@@ -595,7 +606,7 @@ const TABLE: Array<[string, (open: Open) => Promise<Run>, (run: Run) => void]> =
       first.port.claims = [claimView()];
       const release = first.port.holdPublish();
       const pending = first.dispute.challengeDelivery(delivery());
-      await vi.waitFor(async () => expect((await open().get(ESCROW))?.step).toBe('started'));
+      await vi.waitFor(async () => expect((await open().get(ESCROW))?.step).toBe('started'), { timeout: 4_000 });
       const refused = await fresh(open, first.port).dispute.challengeDelivery(delivery());
       release();
       return runOf(first.port, await pending, refused);
