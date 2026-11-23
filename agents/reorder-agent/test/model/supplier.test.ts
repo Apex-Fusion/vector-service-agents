@@ -558,9 +558,9 @@ describe('readSupplier: a source that cannot be read', () => {
   });
 
   test.each([
-    ['manifest', MANIFEST_URL, 404], ['manifest', MANIFEST_URL, 500], ['manifest', MANIFEST_URL, 204], ['manifest', MANIFEST_URL, 301], ['manifest', MANIFEST_URL, 206],
-    ['lots file', LOTS_URL, 404], ['lots file', LOTS_URL, 503], ['lots file', LOTS_URL, 204],
-  ])('gives `supplier_unavailable` for the %s when the host answers %i, also with a body that has the right hash', async (what, url, status) => {
+    ['manifest', 404, MANIFEST_URL], ['manifest', 500, MANIFEST_URL], ['manifest', 204, MANIFEST_URL], ['manifest', 301, MANIFEST_URL], ['manifest', 206, MANIFEST_URL],
+    ['lots file', 404, LOTS_URL], ['lots file', 503, LOTS_URL], ['lots file', 204, LOTS_URL],
+  ])('gives `supplier_unavailable` for the %s when the host answers %i, also with a body that has the right hash', async (what, status, url) => {
     const world = goldenWorld();
     const served = world.files[url] as { bytes: Uint8Array };
     world.files[url] = { status, bytes: served.bytes };
