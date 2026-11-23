@@ -1,7 +1,7 @@
 // agents/order-desk/test/checks/book.test.ts: the order book of the Order Desk. The book holds one entry for each purchase order number of a tenant, and it counts a number without regard to case, as the
 // supplier portal does. `MemoryOrderBook` and `FileOrderBook` pass one table of cases. The file book keeps its entries in one JSON file: a new instance reads them, a write is whole or it is not there,
-// and a damaged file is an error and never an empty book. The question: can a purchase order number that was recorded read as new?
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+// and a damaged file, and a file that goes missing after the start, are errors and never an empty book. The question: can a purchase order number that was recorded read as new?
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -133,13 +133,55 @@ describe('FileOrderBook', () => {
     expect(JSON.parse(readFileSync(file, 'utf8')).orders).toEqual([{ tenant: 'run1', po_number: 'PO-7', order_id: 'SO-1' }]);
   });
 
-  it('is an empty book when the file is not there, and it makes the folders of the path', async () => {
+  it('writes the empty book at the start when the file is not there, and it makes the folders of the path', async () => {
     const file = join(folder(), 'state', 'deep', 'orders.json');
     const book = new FileOrderBook(file);
     expect(statSync(dirname(file)).isDirectory()).toBe(true);
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ schema: SCHEMA, orders: [] });
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(readdirSync(dirname(file))).toEqual(['orders.json']);
     expect(await book.has('run1', 'po-1')).toBe(false);
     await book.record('run1', 'po-1', 'SO-1');
     expect(readdirSync(dirname(file))).toEqual(['orders.json']);
+  });
+
+  it('does not write over a file that is there when it starts: the orders of an earlier run stay, and so does a file that is damaged', () => {
+    const file = join(folder(), 'orders.json');
+    const text = fileOf([entry(1), entry(2)]);
+    writeFileSync(file, text);
+    expect(() => new FileOrderBook(file)).not.toThrow();
+    expect(readFileSync(file, 'utf8')).toBe(text);
+    const broken = join(folder(), 'orders.json');
+    writeFileSync(broken, 'not json');
+    expect(() => new FileOrderBook(broken)).not.toThrow();
+    expect(readFileSync(broken, 'utf8')).toBe('not json');
+  });
+
+  it('is an error and never an empty book when the file is missing after the start, and a restart with no file is a first start', async () => {
+    const file = join(folder(), 'orders.json');
+    const book = new FileOrderBook(file);
+    await book.record('run1', 'PO-7', 'SO-1');
+    // The twin: the book with its file knows the number.
+    expect(await book.has('run1', 'po-7')).toBe(true);
+    rmSync(file);
+    await expect(book.has('run1', 'po-7')).rejects.toThrow('missing');
+    await expect(book.has('run1', 'po-8')).rejects.toThrow('missing');
+    await expect(book.record('run1', 'po-8', 'SO-2')).rejects.toThrow('missing');
+    // A record does not make the file again. Only a start makes it.
+    expect(existsSync(file)).toBe(false);
+    const restarted = new FileOrderBook(file);
+    expect(existsSync(file)).toBe(true);
+    expect(await restarted.has('run1', 'po-7')).toBe(false);
+  });
+
+  it('is an error when the folder of the file is removed after the start', async () => {
+    const file = join(folder(), 'state', 'orders.json');
+    const book = new FileOrderBook(file);
+    await book.record('run1', 'po-1', 'SO-1');
+    expect(await book.has('run1', 'po-1')).toBe(true);
+    rmSync(dirname(file), { recursive: true });
+    await expect(book.has('run1', 'po-1')).rejects.toThrow('missing');
+    await expect(book.record('run1', 'po-2', 'SO-2')).rejects.toThrow(Error);
   });
 
   it('reads the file at each call, so a file that is damaged after the start is seen', async () => {
@@ -207,8 +249,8 @@ describe('FileOrderBook', () => {
 
     it('is an error when the path is a folder', async () => {
       const base = folder();
-      const book = new FileOrderBook(join(base, 'orders.json'));
       mkdirSync(join(base, 'orders.json'));
+      const book = new FileOrderBook(join(base, 'orders.json'));
       await expect(book.has('run1', 'po-1')).rejects.toThrow(Error);
     });
   });

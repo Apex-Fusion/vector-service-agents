@@ -12,8 +12,9 @@
 // advert, and not the size of the lot that the body names.
 //
 // A check answers a refusal of a rule as data: `{ ok: false, code, detail }` with a fixed sentence that names no value of the request. A source that cannot be read is another thing: the order book that
-// rejects, and the order book that answers with something that is not true or false, are `CheckUnavailableError`, and the run turns it into `check_unavailable` (503). Only `false` is a pass. The document
-// of the handoff is a purchase order after the parser of the service. A document that is not one is a fault of the service: the check throws a TypeError, and a throw is never a go.
+// rejects, and the order book that answers with something that is not true or false, are `CheckUnavailableError`, and the run turns it into `check_unavailable` (503). Only `false` is a pass. The handoff is for
+// use case 1 (inventory reorder), and its document is a purchase order, after the parser of the service. A handoff for another use case, and a document that is not a purchase order, are faults of the service: the
+// check throws a TypeError, and a throw is never a go.
 import { CheckUnavailableError } from '@vsa/usecase-kit/checks';
 import type { ExtraCheck } from '@vsa/usecase-kit/checks';
 import { isLotName, lotSizeOf, parseLotsFile, parsePurchaseOrder } from '@vsa/usecase-kit/inventory';
@@ -35,8 +36,12 @@ export interface OrderChecksDeps {
   readonly onFault?: (source: string, cause: unknown) => void;
 }
 
-/** The purchase order of a handoff. A document that is not one is a fault of the service: the parser of the service refuses it before the hook. The message names the member and never repeats the value. */
+/**
+ * The purchase order of a handoff. A handoff for another use case is a fault of the service, also when it carries a purchase order that passes every check: the page of the Order Desk has no code for it, and the
+ * parser of the service refuses it before the hook. So is a document that is not a purchase order. The message names the member and never repeats the value.
+ */
 function orderOf(request: Handoff): PurchaseOrder {
+  if (request.use_case !== 'inventory-reorder') throw new TypeError('the handoff is not for use case 1 (inventory reorder)');
   const parsed = parsePurchaseOrder(request.document, 'handoff.document');
   if (!parsed.ok) throw new TypeError(`the document of the handoff is not a purchase order: ${parsed.detail}`);
   return parsed.value;

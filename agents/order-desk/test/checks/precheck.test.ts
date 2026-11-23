@@ -1,7 +1,10 @@
 // agents/order-desk/test/checks/precheck.test.ts: the hook of the Order Desk, as the runtime asks it before it claims an escrow. A go is the answer only when the 16 checks passed, and then the record of the
 // checks waits for the job with the hash of the request. A refusal is the status and the code of the protocol, and the escrow stays open. A refusal for `approval_digest_mismatch` starts a challenge after the
 // answer, and the answer never holds a reference. The question: does the hook ever give a go for a wrong sender, delegation, vault payment, approval, supplier, lot, quantity or a number that exists?
-import type { Server } from 'node:http';
+import { mkdtempSync, rmSync } from 'node:fs';
+import type { Server, ServerResponse } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ed25519Key } from '@vsa/id-kit/testing';
 import { createJobServer } from '@vsa/service-kit';
@@ -12,7 +15,7 @@ import type { ApprovalChallengeInput, ChallengeResult } from '@vsa/usecase-kit/d
 import { CONFIRMATION_CHECKS, INVENTORY_CAPABILITIES, REORDER_CLAIM } from '@vsa/usecase-kit/inventory';
 import { COUNTERPARTY_REFUSALS, ERROR_STATUS, canonicalSha256, parseHandoff, parseJsonText } from '@vsa/usecase-kit/protocol';
 import type { Handoff } from '@vsa/usecase-kit/protocol';
-import { MemoryOrderBook, PassedChecks, createPrecheck, loadLots } from '../../src/checks/index.ts';
+import { FileOrderBook, MemoryOrderBook, PassedChecks, createPrecheck, loadLots } from '../../src/checks/index.ts';
 import type { OrderBook, PrecheckDeps } from '../../src/checks/index.ts';
 import { LOTS_PATH, OTHER_ADVERT_REF, OTHER_DID, SELF } from './samples.ts';
 import { ATTESTATION_ID, HOUR, ISSUER_ID, ISSUER_KEY, PLAIN_ESCROW_REF, T, failing, makeWorld, proposalOf, withLedger } from './support.ts';
@@ -287,10 +290,39 @@ describe('a source that cannot be read', () => {
     unavailable(await rig.run(), 'order book');
   });
 
+  it('is 503 check_unavailable when the file of the book is deleted after the start, and a number that was recorded is never a go', async () => {
+    const folder = mkdtempSync(join(tmpdir(), 'order-desk-hook-'));
+    try {
+      const book = new FileOrderBook(join(folder, 'orders.json'));
+      await book.record('run1', 'RUN1-0001', 'SO-run1-0001');
+      // The twin: the book with its file refuses the number that it holds.
+      expect(refusalOf(await rigOf(makeWorld(), { book }).run()).error).toBe('duplicate_po');
+      rmSync(join(folder, 'orders.json'));
+      const world = makeWorld();
+      unavailable(await rigOf(world, { book }).run(), 'order book');
+      expect(world.faults.map(([source]) => source)).toEqual(['order book']);
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  });
+
   it('is never a refusal of a rule: a read that fails before the order is read gives 503 and not a code of the page', async () => {
     const world = makeWorld({ order: { quantity: 51 } });
     const rig = rigOf(world, { ports: withLedger(world, { escrowPaid: failing }) });
     expect(refusalOf(await rig.run()).error).toBe('check_unavailable');
+  });
+});
+
+describe('a request for another use case', () => {
+  it('is a rejection and never a go, also when it carries the purchase order that the hirer approved: every shared check passes for it', async () => {
+    const world = makeWorld();
+    const rig = rigOf(world);
+    const other: Handoff = { ...world.handoff, use_case: 'prior-authorization' };
+    await expect(rig.hook(other, rig.context)).rejects.toBeInstanceOf(TypeError);
+    expect(rig.passed.take(rig.context.escrowRef, T)).toBeNull();
+    expect(rig.scheduled).toEqual([]);
+    // The twin: the same request for use case 1 (inventory reorder) gets a go.
+    expect(await rig.hook(world.handoff, rig.context)).toEqual({ go: true });
   });
 });
 
@@ -513,7 +545,18 @@ describe('inside createJobServer, as the runtime calls it', () => {
     'x-vector-payment-lovelace': String(context.paymentLovelace), 'x-vector-deliver-by-ms': String(context.deliverByMs),
   });
 
-  async function precheck(rig: Rig): Promise<{ status: number; body: unknown }> {
+  /** What a test changes in the call of the runtime: the body that it sends, and a look at each response before the handler of the server runs. */
+  interface Call {
+    readonly body?: Handoff;
+    readonly watch?: (response: ServerResponse) => void;
+  }
+
+  /** The `schedule` of the service: the task starts on the next turn of the event loop, after the server wrote the answer. */
+  const nextTurn: PrecheckDeps['schedule'] = (task) => { setImmediate(() => { void task(); }); };
+  /** A `schedule` that is not for the service: the task starts before the server writes the answer. */
+  const sameTurn: PrecheckDeps['schedule'] = (task) => { queueMicrotask(() => { void task(); }); };
+
+  async function precheck(rig: Rig, call: Call = {}): Promise<{ status: number; body: unknown }> {
     const server: Server = createJobServer<Handoff, { done: true }>({
       manifestText: '{}', authHeader: TOKEN, clock: () => T, log: () => undefined,
       parse: (json) => {
@@ -525,11 +568,13 @@ describe('inside createJobServer, as the runtime calls it', () => {
       run: async () => ({ done: true }), refusalOf: (error) => (error instanceof Bad ? error.refusal : null),
       precheck: rig.hook,
     });
+    const watch = call.watch;
+    if (watch !== undefined) server.prependListener('request', (_request, response) => { watch(response); });
     await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve); });
     try {
       const address = server.address();
       const port = typeof address === 'object' && address !== null ? address.port : 0;
-      const reply = await fetch(`http://127.0.0.1:${port}/precheck`, { method: 'POST', body: wire(rig.world.handoff), headers: headers(rig.context) });
+      const reply = await fetch(`http://127.0.0.1:${port}/precheck`, { method: 'POST', body: wire(call.body ?? rig.world.handoff), headers: headers(rig.context) });
       return { status: reply.status, body: await reply.json() };
     } finally {
       server.close();
@@ -553,10 +598,11 @@ describe('inside createJobServer, as the runtime calls it', () => {
     const release: Array<(result: ChallengeResult) => void> = [];
     const calls: ApprovalChallengeInput[] = [];
     const challenge = (input: ApprovalChallengeInput): Promise<ChallengeResult> => new Promise((resolve) => { calls.push(input); release.push(resolve); });
-    const rig = rigOf(makeWorld({ attestation: { digest: OTHER_DIGEST } }), { dispute: { challengeApproval: challenge }, schedule: (task) => { queueMicrotask(() => { void task(); }); } });
+    const rig = rigOf(makeWorld({ attestation: { digest: OTHER_DIGEST } }), { dispute: { challengeApproval: challenge }, schedule: nextTurn });
     const reply = await precheck(rig);
     expect(reply).toEqual({ status: 403, body: { error: 'approval_digest_mismatch', message: MISMATCH_DETAIL } });
     // The challenge started and it is not done, and the buyer has its answer.
+    await new Promise((resolve) => { setImmediate(resolve); });
     expect(calls).toHaveLength(1);
     expect(rig.logs).toEqual([]);
     release[0]!(FILED);
@@ -565,11 +611,49 @@ describe('inside createJobServer, as the runtime calls it', () => {
     expect(rig.logs[0]).toContain(rig.context.escrowRef);
   });
 
+  it('writes the 403 before the task starts when the service schedules it with setImmediate, and the task starts first with queueMicrotask', async () => {
+    const eventsOf = async (schedule: PrecheckDeps['schedule']): Promise<string[]> => {
+      const events: string[] = [];
+      const challengeApproval = async (): Promise<ChallengeResult> => {
+        events.push('task');
+        return FILED;
+      };
+      const rig = rigOf(makeWorld({ attestation: { digest: OTHER_DIGEST } }), { dispute: { challengeApproval }, schedule });
+      const reply = await precheck(rig, {
+        watch: (response) => {
+          const original = response.end;
+          // The first call of `end` on the response is the moment that the server writes the answer.
+          Object.defineProperty(response, 'end', {
+            configurable: true,
+            value(this: ServerResponse, ...args: unknown[]): unknown {
+              if (!events.includes('answer')) events.push('answer');
+              return Reflect.apply(original, this, args);
+            },
+          });
+        },
+      });
+      expect(reply).toEqual({ status: 403, body: { error: 'approval_digest_mismatch', message: MISMATCH_DETAIL } });
+      await new Promise((resolve) => { setImmediate(resolve); });
+      return events;
+    };
+    expect(await eventsOf(nextTurn)).toEqual(['answer', 'task']);
+    // The contrast: with queueMicrotask the task starts first, so a part of the challenge that does not wait holds the answer back.
+    expect(await eventsOf(sameTurn)).toEqual(['task', 'answer']);
+  });
+
   it('answers 500 and never a go when the document is not a purchase order: a fault of the service', async () => {
     const rig = rigOf(makeWorld({ order: { quantity: 0 } }));
     expect(await precheck(rig)).toEqual({ status: 500, body: { error: 'internal' } });
     expect(rig.passed.take(rig.context.escrowRef, T)).toBeNull();
     expect(rig.scheduled).toEqual([]);
+  });
+
+  it('answers 500 and never a go for a handoff of use case 2 (prior authorization) that carries the purchase order that the hirer approved', async () => {
+    const rig = rigOf(makeWorld());
+    expect(await precheck(rig, { body: { ...rig.world.handoff, use_case: 'prior-authorization' } })).toEqual({ status: 500, body: { error: 'internal' } });
+    expect(rig.passed.take(rig.context.escrowRef, T)).toBeNull();
+    // The twin: the same body for use case 1 (inventory reorder) gets a go.
+    expect(await precheck(rigOf(makeWorld()))).toEqual({ status: 200, body: { go: true, reserved_ms: 120000 } });
   });
 
   it('answers 503 for a read that failed, and never a go', async () => {

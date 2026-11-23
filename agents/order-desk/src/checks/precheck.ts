@@ -35,8 +35,9 @@ export interface PrecheckDeps {
   /** The Module-1 path of this agent. The hook uses `challengeApproval` only. */
   readonly dispute: Pick<Dispute, 'challengeApproval'>;
   /**
-   * Starts a task in the background and returns at once: the hook never waits for it. The task catches its own errors, so it never rejects. The service gives a function that runs the task after the current work,
-   * for example `queueMicrotask`, and a test gives a function that keeps the task and runs it by hand.
+   * Starts a task in the background and returns at once: the hook never waits for it. The task catches its own errors, so it never rejects. The service gives `(task) => { setImmediate(() => { void task(); }); }`.
+   * The task then starts after the server wrote the answer. `queueMicrotask` is wrong for this: its task starts before the server writes the answer, and a part of the challenge that does not wait holds the answer
+   * back. A test gives a function that keeps the task and runs it by hand.
    */
   readonly schedule: (task: () => Promise<void>) => void;
   /** One line for each step of a challenge, with references of the chain and codes. A line has no key and no part of a request. A function that throws changes nothing. */

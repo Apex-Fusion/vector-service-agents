@@ -8,13 +8,14 @@
 //   MemoryOrderBook   the entries in memory
 //   FileOrderBook     the entries in one JSON file on the state volume of the service
 //
-// A book that cannot answer rejects. The check of the Order Desk turns the rejection into `check_unavailable`, and a book never answers "no order" for a source that it could not read. A file that is not there
-// is an empty book, because the first start has none. A file that is there and is damaged is an error.
+// A book that cannot answer rejects. The check of the Order Desk turns the rejection into `check_unavailable`, and a book never answers "no order" for a source that it could not read. The first start has no
+// file, so the constructor of the file book writes the empty book then. A file that goes missing after the start is an error and never an empty book: a book that was deleted gives no go for a number that was
+// recorded. A file that is there and is damaged is an error too.
 //
 // A book holds at most ORDER_BOOK_LIMIT orders. It never drops an order to make room, because a dropped order reads as a new one. The record of a number that the book holds is a no-op for the same order id,
 // and an error for another order id: the portal never places two orders for one number.
 import { randomBytes } from 'node:crypto';
-import { accessSync, constants, mkdirSync, statSync } from 'node:fs';
+import { accessSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { poNumberKey } from '@vsa/usecase-kit/inventory';
@@ -86,7 +87,7 @@ export class MemoryOrderBook implements OrderBook {
 
 /** The file system calls of the file book. The default is the file system of the process. A test gives its own, to make a write fail or to see the order of the calls. */
 export interface BookFs {
-  /** The text of the file. It rejects with the code `ENOENT` when the file is not there. */
+  /** The text of the file. It rejects when the file is not there or cannot be read. The book reads a file that is not there as an error. */
   readFile(path: string): Promise<string>;
   /** Makes a new file with the text. The name of a temporary file is new, so the call never replaces a file. */
   writeFile(path: string, text: string): Promise<void>;
@@ -192,9 +193,42 @@ async function writeDurably(fs: BookFs, folder: string, target: string, text: st
   await fs.fsync(folder);
 }
 
+/** Returns when the data of the file, or the entries of the folder, are on the disk. It uses the file system of the process. */
+function flushSync(path: string): void {
+  const descriptor = openSync(path, 'r');
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
 /**
- * The order book in one JSON file: `{ "schema", "orders": [{ "tenant", "po_number", "order_id" }] }`, in the order of the records, with each number as it was written. The class reads the file at each call, so a
- * file that is damaged after the start is seen, and a new instance on the same file sees every order: a restart loses nothing. A write is whole or it is not there: it writes a temporary file in the same folder,
+ * Makes the file of a book that has none: the empty book. A file that is there stays as it is, whatever it holds. The write is whole or it is not there, as every write of the book is. The constructor cannot wait,
+ * so this uses the file system of the process, and not the calls that a test gives.
+ */
+function startFile(folder: string, file: string): void {
+  if (existsSync(file)) return;
+  const temporary = join(folder, `.${basename(file)}.${randomBytes(8).toString('hex')}.tmp`);
+  try {
+    writeFileSync(temporary, fileText(new Map()), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    flushSync(temporary);
+    renameSync(temporary, file);
+  } catch (error) {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // The temporary file stays. Nothing reads it, and the error of the write is the error that counts.
+    }
+    throw error;
+  }
+  flushSync(folder);
+}
+
+/**
+ * The order book in one JSON file: `{ "schema", "orders": [{ "tenant", "po_number", "order_id" }] }`, in the order of the records, with each number as it was written. The constructor writes the empty book when the
+ * file is not there: that is the first start, and a start never writes over a file that is there. The class reads the file at each call, so a file that is damaged after the start is seen, and a file that is missing
+ * after the start is an error and never an empty book. A new instance on the same file sees every order: a restart loses nothing. A write is whole or it is not there: it writes a temporary file in the same folder,
  * syncs it, renames it over the file, and syncs the folder. A record resolves only after that. When the sync of the folder fails, the record rejects although the new file may be in place, and the caller reads the
  * rejection as "not stored". The records of one instance run one after the other in the order of the calls. One process owns the file: nothing locks it across processes.
  */
@@ -209,6 +243,7 @@ export class FileOrderBook implements OrderBook {
     this.#file = absolutePath(path);
     this.#folder = dirname(this.#file);
     prepareFolder(this.#folder);
+    startFile(this.#folder, this.#file);
     const given = options.fs;
     this.#fs = {
       readFile: given?.readFile ?? NODE_FS.readFile,
@@ -238,13 +273,13 @@ export class FileOrderBook implements OrderBook {
     await writeDurably(this.#fs, this.#folder, this.#file, fileText(orders));
   }
 
-  /** The orders of the file. A file that is not there is an empty book. */
+  /** The orders of the file. A file that is not there is an error: the constructor made it at the start. */
   async #read(): Promise<Orders> {
     let text: string;
     try {
       text = await this.#fs.readFile(this.#file);
     } catch (error) {
-      if (isMissing(error)) return new Map();
+      if (isMissing(error)) throw new Error('the order book file is missing', { cause: error });
       throw error;
     }
     return parseOrders(text);
