@@ -1,6 +1,6 @@
 // services/mock-systems/src/tenants.ts
 // The tenants. One tenant is the world of one run: the seed data, what the callers wrote, and the log of the calls. All of it is in memory. A restart of the service loses it, and
-// `put` with the name of a tenant that exists makes it again from a seed, which also empties its writes and its log.
+// `put` replaces a tenant only when the request permits a reset. A reset empties the tenant's writes and log.
 // A write is a typed decision: it is a record, or a refusal that names the rule (a second order for one purchase order number, a second entry for one request number).
 // A record holds who wrote it (`by`): the verified identity of the caller, never a token, a proof or a certificate.
 import { pass, refuse } from './errors.ts';
@@ -60,6 +60,22 @@ export interface RankingRecord {
 export interface Organisations {
   readonly supplier: string;
   readonly insurer: string;
+}
+
+/** The operator run that owns a guarded tenant. The owner is not part of the tenant's public state. */
+interface TenantOwner {
+  readonly use_case: string;
+  readonly run: string;
+}
+
+export interface TenantWrite {
+  readonly operation: 'create' | 'reset';
+  readonly owner: TenantOwner;
+}
+
+interface StoredTenant {
+  readonly tenant: Tenant;
+  readonly owner?: TenantOwner;
 }
 
 const numbered = (prefix: string, tenant: string, n: number): string => `${prefix}-${tenant}-${String(n).padStart(4, '0')}`;
@@ -210,7 +226,7 @@ function copy<T>(value: T | undefined): T | undefined {
 }
 
 export class TenantStore {
-  readonly #tenants = new Map<string, Tenant>();
+  readonly #tenants = new Map<string, StoredTenant>();
   readonly #now: () => number;
   readonly #max: number;
 
@@ -221,14 +237,25 @@ export class TenantStore {
 
   get size(): number { return this.#tenants.size; }
 
-  get(id: string): Tenant | undefined { return this.#tenants.get(id); }
+  get(id: string): Tenant | undefined { return this.#tenants.get(id)?.tenant; }
 
-  /** Makes the tenant, or makes it again: a tenant that exists is replaced as a whole, so its writes and its log are gone. */
-  put(id: string, organisations: Organisations, seed: Seed): Outcome<{ tenant: Tenant; created: boolean }> {
-    const created = !this.#tenants.has(id);
-    if (created && this.#tenants.size >= this.#max) return refuse('tenant_limit', 'tenants.limit', `the service holds ${this.#max} tenants, the most that it takes: make an old tenant again with a name that exists`);
+  /** Check the operation and owner, then update the map without an asynchronous step. */
+  put(id: string, organisations: Organisations, seed: Seed, write?: TenantWrite): Outcome<{ tenant: Tenant; created: boolean }> {
+    const existing = this.#tenants.get(id);
+    const created = existing === undefined;
+    if (created) {
+      if (write?.operation === 'reset') return refuse('tenant_not_found', 'tenants.reset_missing', 'a reset requires an existing tenant');
+      if (this.#tenants.size >= this.#max) return refuse('tenant_limit', 'tenants.limit', `the service holds ${this.#max} tenants, the most that it takes`);
+    } else {
+      if (write?.operation === 'create') return refuse('tenant_exists', 'tenants.create_occupied', 'the tenant name is already in use');
+      const owner = existing.owner;
+      if (write === undefined ? owner !== undefined : owner === undefined || owner.use_case !== write.owner.use_case || owner.run !== write.owner.run) {
+        return refuse('tenant_owner_mismatch', 'tenants.reset_owner', 'this request does not have ownership of the tenant');
+      }
+    }
     const tenant = new Tenant(id, organisations, seed, this.#now());
-    this.#tenants.set(id, tenant);
+    const owner = created && write !== undefined ? { ...write.owner } : existing?.owner;
+    this.#tenants.set(id, owner === undefined ? { tenant } : { tenant, owner });
     return pass({ tenant, created });
   }
 }

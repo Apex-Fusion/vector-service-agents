@@ -26,8 +26,8 @@ import { JWT_AUDIENCE_SYSTEM, TOKEN_SYSTEMS, matchRoutes, systemUrl } from './ro
 import type { Call, Ok, Route } from './routes.ts';
 import { parseSeed } from './seed.ts';
 import { TenantStore } from './tenants.ts';
-import type { Actor, LogLine, Tenant } from './tenants.ts';
-import { ID, Invalid, TENANT, domain, fields, text } from './validate.ts';
+import type { Actor, LogLine, Tenant, TenantWrite } from './tenants.ts';
+import { ID, Invalid, TENANT, domain, fields, oneOf, text } from './validate.ts';
 
 /** The most bytes of a body that the service reads. */
 export const MAX_BODY_BYTES = 1_048_576;
@@ -174,7 +174,7 @@ export function createApp(deps: AppDeps): App {
     return same(config.mtlsHost) ? 'mtls' : 'other';
   }
 
-  /** `POST /admin/tenants`: makes a tenant, or makes it again from the seed. The operator token is the one need. */
+  /** `POST /admin/tenants`: makes or resets a tenant if the requested write permits it. It requires the operator token. */
   async function adminTenants(req: IncomingMessage, draft: Draft): Promise<Outcome<Ok>> {
     draft.credential = 'operator';
     draft.kind = 'operator';
@@ -183,13 +183,25 @@ export function createApp(deps: AppDeps): App {
     if (!operatorTokenMatches(authorization.value, config.operatorToken)) return refuse('operator_token_invalid', 'operator.token', 'the operator token is missing or wrong');
     const body = await readJson(req);
     if (!body.ok) return body;
-    const o = fields('body', body.value, ['tenant', 'organisations'], ['seed']);
+    const o = fields('body', body.value, ['tenant', 'organisations'], ['seed', 'operation', 'owner']);
     const name = text('body.tenant', o.tenant, { max: 48, pattern: TENANT, words: 'must be 1 to 48 lower case letters, digits or hyphens, and start with a letter or a digit' });
     const roles = fields('body.organisations', o.organisations, ['supplier', 'insurer']);
     const organisations = { supplier: domain('body.organisations.supplier', roles.supplier), insurer: domain('body.organisations.insurer', roles.insurer) };
+    if ((o.operation === undefined) !== (o.owner === undefined)) throw new Invalid('body', 'must contain operation and owner together');
+    let write: TenantWrite | undefined;
+    if (o.operation !== undefined) {
+      const owner = fields('body.owner', o.owner, ['use_case', 'run']);
+      write = {
+        operation: oneOf('body.operation', o.operation, ['create', 'reset']),
+        owner: {
+          use_case: text('body.owner.use_case', owner.use_case, { max: 48, pattern: /^[a-z][a-z0-9-]*$/, words: 'must be a lower case use case name' }),
+          run: text('body.owner.run', owner.run, { max: 32, pattern: TENANT, words: 'must be a lower case run label' }),
+        },
+      };
+    }
     const seed = parseSeed('body.seed', o.seed);
     draft.tenant = name;
-    const made = store.put(name, organisations, seed);
+    const made = store.put(name, organisations, seed, write);
     if (!made.ok) return made;
     const resources = Object.fromEntries(TOKEN_SYSTEMS.map((system) => [system, systemUrl(config.publicBase, name, system)]));
     return pass({

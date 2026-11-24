@@ -92,7 +92,7 @@ async function envWorld(options: WorldOptions = {}): Promise<EnvWorld> {
     const { folder, serviceEnvFile } = agent;
     const names = [agent.exampleEnvFile ?? `${serviceEnvFile}.example`];
     if (agent.adverts.some((advert) => advert.runtimeEnvFile !== serviceEnvFile)) names.push(`${serviceEnvFile}-runtime.example`);
-    mkdirSync(join(agents, folder), { mode: 0o750 });
+    mkdirSync(join(agents, folder), { mode: 0o750, recursive: true });
     if (options.examples !== false) for (const name of names) copyFileSync(join(SERVER, name), join(agents, folder, name));
   }
   // The injected loader supplies the data. Use a name the CLI accepts before activation.
@@ -376,6 +376,17 @@ describe('the service files for the additional agents', () => {
     env.set('COMPLIANCE_ISSUER_PKH', other('wrong issuer', 56));
     const problems = checkEnvFiles(BIDS, sourcing, new Map([[sourcing.serviceEnvFile, env]]), e.w.keys.registry);
     expect(problems).toContain(`${label(sourcing)}: the line COMPLIANCE_ISSUER_PKH is not the key hash of registry-foxtrot`);
+  });
+
+  it('refuses duplicate destinations before writing any env file', async () => {
+    const [prior, intake] = PRIORAUTH.agents;
+    const duplicate = { ...prior!, id: 'other-prior-authorization-agent' };
+    const use = { ...PRIORAUTH, agents: [prior!, intake!, duplicate] };
+    const e = await envWorld({ use });
+
+    expect(await submit(e)).toBe(2);
+    expect(e.w.screen.errorText).toContain(`${label(prior!)}: agents ${prior!.id} and ${duplicate.id} name the same env destination`);
+    for (const agent of use.agents) expect(existsSync(e.path(label(agent)))).toBe(false);
   });
 
   it('refuses an example path outside the agent folder before any write', async () => {

@@ -360,6 +360,7 @@ function planFile(ctx: Context, agent: AgentSpec, file: string, folder: string, 
 function planAll(ctx: Context): { plans: FilePlan[]; problems: string[] } {
   const plans: FilePlan[] = [];
   const problems: string[] = [];
+  const destinations = new Map<string, string>();
   for (const agent of ctx.use.agents) {
     const before = problems.length;
     problems.push(...placementProblems(ctx.use, agent));
@@ -369,11 +370,19 @@ function planAll(ctx: Context): { plans: FilePlan[]; problems: string[] } {
     if (found === 'failed') continue;
     if (found === undefined || !found.isDirectory()) { problems.push(`${agent.folder}: the folder of the agent is missing or is not a real folder (a link or a file is no folder): the runbook makes the folder before the env files`); continue; }
     const mine: FilePlan[] = [];
-    for (const file of agentFiles(agent).all) {
+    const files = agentFiles(agent).all;
+    for (const file of files) {
+      const destination = `${agent.folder}/${file}`;
+      const owner = destinations.get(destination);
+      if (owner !== undefined) {
+        problems.push(`${destination}: agents ${owner} and ${agent.id} name the same env destination`);
+        continue;
+      }
+      destinations.set(destination, agent.id);
       const plan = planFile(ctx, agent, file, folder, problems);
       if (plan !== null) mine.push(plan);
     }
-    if (problems.length === before && mine.length === agentFiles(agent).all.length) {
+    if (problems.length === before && mine.length === files.length) {
       problems.push(...checkEnvFiles(ctx.use, agent, new Map(mine.map((plan) => [plan.file, plan.env])), ctx.registry));
     }
     plans.push(...mine);
