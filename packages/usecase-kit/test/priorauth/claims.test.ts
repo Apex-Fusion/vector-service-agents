@@ -159,8 +159,8 @@ function node(args: readonly string[]): string {
 
 /** The names that the folder must export. A later part of the folder adds names, so the test asks for these and allows more. */
 const NAMES = [
-  'INTAKE_CLAIM', 'MAX_JUSTIFICATION_CHARS', 'PRIORAUTH_CAPABILITIES', 'PRIORAUTH_CLAIM', 'PRIORAUTH_MODELS', 'PRIORAUTH_REQUEST_SCHEMA', 'parseGuideline', 'parsePriorAuthRequest', 'parseRecordSet',
-  'parseRequirementSet', 'recordSetSha256', 'requestNumberKey', 'requestNumberOf',
+  'ALTERED_SENTENCE', 'INTAKE_CLAIM', 'MAX_JUSTIFICATION_CHARS', 'PRIORAUTH_CAPABILITIES', 'PRIORAUTH_CLAIM', 'PRIORAUTH_MODELS', 'PRIORAUTH_REQUEST_SCHEMA', 'SECOND_ALTERED_SENTENCE',
+  'alterJustification', 'parseGuideline', 'parsePriorAuthRequest', 'parseRecordSet', 'parseRequirementSet', 'recordSetSha256', 'requestNumberKey', 'requestNumberOf',
 ];
 
 describe('the subpath @vsa/usecase-kit/priorauth', () => {
@@ -185,7 +185,7 @@ describe('the subpath @vsa/usecase-kit/priorauth', () => {
 
 describe('the files of the folder', () => {
   it('include one file for each part', () => {
-    for (const name of ['claims.ts', 'ids.ts', 'index.ts', 'records.ts', 'request.ts']) expect(files, name).toContain(name);
+    for (const name of ['claims.ts', 'fault.ts', 'ids.ts', 'index.ts', 'records.ts', 'request.ts']) expect(files, name).toContain(name);
   });
 
   it.each(files)('%s imports the protocol folder and the files of this folder, and no other folder of the package', (name) => {

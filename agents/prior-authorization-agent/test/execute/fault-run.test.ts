@@ -3,9 +3,8 @@
 // setting empty the document is never touched, whichever way the job ends. The job reads the fault mode one time and nothing else of the switch, and only the exact value turns the fault on. The service stamps the
 // value on every result. Each test has its twin.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ALTERED_SENTENCE } from '../../src/execute/fault.ts';
-import type * as Fault from '../../src/execute/fault.ts';
-import type { PriorAuthRequest } from '@vsa/usecase-kit/priorauth';
+import { ALTERED_SENTENCE } from '@vsa/usecase-kit/priorauth';
+import type * as PriorAuth from '@vsa/usecase-kit/priorauth';
 import type { FaultSwitch } from '@vsa/usecase-kit/fault';
 import { proposalDigest } from '@vsa/usecase-kit/protocol';
 import { canonicalize } from '@vsa/vector-read';
@@ -17,11 +16,11 @@ import { DELEGATION, LIMIT, T0, cleanWorlds, footprint, handoffSent, words, worl
 /** How many times the job called `alterJustification`. The real function runs all the same. */
 const spy = vi.hoisted(() => ({ calls: 0 }));
 
-vi.mock('../../src/execute/fault.ts', async (importOriginal) => {
-  const real = await importOriginal<typeof Fault>();
+vi.mock('@vsa/usecase-kit/priorauth', async (importOriginal) => {
+  const real = await importOriginal<typeof PriorAuth>();
   return {
     ...real,
-    alterJustification: (document: PriorAuthRequest): PriorAuthRequest => {
+    alterJustification: (document: PriorAuth.PriorAuthRequest): PriorAuth.PriorAuthRequest => {
       spy.calls += 1;
       return real.alterJustification(document);
     },

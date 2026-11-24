@@ -6,9 +6,11 @@
 //   records  the record set of an order, the guideline of a service and the requirement set of an insurer, as the mock systems give them, and the hash of a record set that a request carries
 //   claims   the capabilities and the model names of the two agents, and their claim statements
 //   intake   the intake record that the Insurer Intake Agent returns, with its 15 checks and the four words for the attestations of the sender
+//   fault    the synthetic change to a request that the agent makes and the operator verifies
 export { MAX_JUSTIFICATION_CHARS, PRIORAUTH_REQUEST_SCHEMA, parsePriorAuthRequest, requestNumberKey, requestNumberOf } from './request.ts';
 export type { PriorAuthRequest } from './request.ts';
 export { parseGuideline, parseRecordSet, parseRequirementSet, recordSetSha256 } from './records.ts';
 export type { ClinicalOrder, ClinicalRecord, Criterion, Guideline, RecordSet, RequirementSet } from './records.ts';
 export { INTAKE_CLAIM, PRIORAUTH_CAPABILITIES, PRIORAUTH_CLAIM, PRIORAUTH_MODELS } from './claims.ts';
 export { ATTESTATION_STATES, INTAKE_CHECKS, INTAKE_RECORD_SCHEMA, INTAKE_STATUSES, parseIntakeRecord, type AttestationState, type IntakeRecord, type IntakeStatus } from './intake.ts';
+export { ALTERED_SENTENCE, SECOND_ALTERED_SENTENCE, alterJustification } from './fault.ts';

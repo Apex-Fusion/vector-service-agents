@@ -21,10 +21,9 @@ import { plutusAddressToData } from '../../../../packages/vector-read/src/vendor
 import { requestText } from '../../../../packages/usecase-kit/src/buyer/message.ts';
 import { evidenceDocument } from '../../../../packages/usecase-kit/src/dispute/index.ts';
 import { canonicalSha256, HANDOFF_SCHEMA, makeProposal, parseApprovalRef, parseDid, parseHandoff, parseOutputRef, PROPOSAL_SCHEMA, RECEIPT_CHECKS, RESULT_SCHEMA } from '../../../../packages/usecase-kit/src/protocol/index.ts';
-import { INTAKE_CHECKS, INTAKE_RECORD_SCHEMA, parsePriorAuthRequest, PRIORAUTH_REQUEST_SCHEMA } from '../../../../packages/usecase-kit/src/priorauth/index.ts';
+import { INTAKE_CHECKS, INTAKE_RECORD_SCHEMA, PRIORAUTH_REQUEST_SCHEMA, alterJustification, parsePriorAuthRequest } from '../../../../packages/usecase-kit/src/priorauth/index.ts';
 import type { PriorAuthRequest } from '../../../../packages/usecase-kit/src/priorauth/index.ts';
 import type { Proposal, ProtocolResult } from '../../../../packages/usecase-kit/src/protocol/index.ts';
-import { alterJustification } from '../../../../agents/prior-authorization-agent/src/execute/fault.ts';
 import { FactsFile } from '../../lib/facts.ts';
 import { priorAuthorization } from '../../lib/evidence/prior-authorization.ts';
 import type { Obj } from '../../lib/evidence/types.ts';

@@ -26,7 +26,7 @@ import { BAD_DOCUMENT, INCONSISTENT_OUTCOME, checkAuthority, checkLimits, comple
 import type { CompletedStep, HireDeps, HireLimits, HireStep, NotAcceptedStep, RefusedCode, ResultPieces, VerifiedDelivery } from '@vsa/usecase-kit/buyer';
 import { disputedFields } from '@vsa/usecase-kit/dispute';
 import type { ChallengeResult, DisputeOutcome } from '@vsa/usecase-kit/dispute';
-import { PRIORAUTH_CAPABILITIES, PRIORAUTH_MODELS, parsePriorAuthRequest } from '@vsa/usecase-kit/priorauth';
+import { PRIORAUTH_CAPABILITIES, PRIORAUTH_MODELS, alterJustification, parsePriorAuthRequest } from '@vsa/usecase-kit/priorauth';
 import type { IntakeRecord, PriorAuthRequest } from '@vsa/usecase-kit/priorauth';
 import { ERROR_STATUS, canonicalSha256, isPlainObject, parseDid, parseHandoff } from '@vsa/usecase-kit/protocol';
 import type { Decision, Did, ExecuteRequest, ExecuteResult, Handoff, HandoffRecord, ProtocolResult, WriteRecord } from '@vsa/usecase-kit/protocol';
@@ -35,7 +35,6 @@ import { sha256Utf8Hex } from '@vsa/vector-read';
 import { NOT_ACCEPTED, judgeDelivery } from './decision.ts';
 import type { Learned } from './decision.ts';
 import { disputeDelivery } from './dispute.ts';
-import { alterJustification } from './fault.ts';
 import type { DelegationKeyDeps, ExecuteDeps } from './ports.ts';
 
 /** The job of the Prior Authorization Agent ends 1,620,000 ms after its request arrived: 27 minutes, inside the window of its advert. */
