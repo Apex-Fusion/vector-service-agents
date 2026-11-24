@@ -1666,7 +1666,7 @@ describe('specs/sourcing-agent.md, the operator, the gaps, the hire and the link
     const how = section('How to hire it');
     const hosted = text('scripts/specs.test.mjs');
     const tools = [...how.matchAll(/`(vector_[a-z_]+)`/g)].map((hit) => hit[1]);
-    expect(tools).toStrictEqual(['vector_build_delegation_delegate', 'vector_delegation_request_cosign', 'vector_build_vault_open', 'vector_build_attestation_attest', 'vector_await_transaction', 'vector_build_vault_close', 'vector_build_delegation_undelegate', 'vector_build_attestation_withdraw']);
+    expect(tools).toStrictEqual(['vector_build_delegation_delegate', 'vector_delegation_request_cosign', 'vector_build_vault_open', 'vector_build_attestation_attest', 'vector_await_transaction', 'vector_get_attestation', 'vector_build_vault_close', 'vector_build_delegation_undelegate', 'vector_build_attestation_withdraw']);
     for (const tool of tools) expect(hosted.includes(`'${tool}'`), tool).toBe(true);
     expect(how.split('\n').filter((line) => /^\d\. \*\*/.test(line))).toHaveLength(6);
     // The actions of the delegation, and the resource of each mock route.
@@ -1699,9 +1699,16 @@ describe('specs/sourcing-agent.md, the operator, the gaps, the hire and the link
     expect(how).toContain('close the Live vault and collect any `Returned` outputs.');
     // The hosted tool uses the approval name, not the numeric ledger type.
     expect([APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE, RUN_APPROVAL_VALIDITY_MS / 3_600_000]).toStrictEqual([5, 5_000_000n, 4]);
-    expect(how).toContain('Set `att_type: "approval"`, `subject` to this agent\'s DID, and `digest` to `proposal_digest`.');
+    expect(how).toContain('Pass your allowlisted assertion public key as `principal_key`. Do not set `delegator` or `parent`');
+    expect(how).toContain('Set `att_type: "approval"` and set `subject` to this agent\'s DID. Set `digest` to the digest you recomputed.');
+    expect(how).toContain('Set `issuer_did` to your registered DID and `issuer` to the same public key you used as `principal_key`.');
+    expect(how).toContain('Compute SHA-256 over those bytes followed by the UTF-8 bytes of the canonical JSON of that document.');
+    expect(how).toContain('Compare the result with `proposal_digest`. If they differ, stop. Do not sign an approval or hire `execute`.');
     expect(how).toContain('Set `valid_until` in POSIX milliseconds. The tool sets no end by default. The planned runs use 4 hours.');
-    expect(how).toContain('Submit it and wait for confirmation with `vector_await_transaction` before you hire `execute`.');
+    expect(how).toContain('Submit it and wait for confirmation with `vector_await_transaction`. Then call `vector_get_attestation` with the `attestation` identifier.');
+    expect(how).toContain('Require `found: true`, `state: "active"` and `att_type: "approval"`. Check that `subject_did` names this agent and that `issuer_did` and `issuer_key` match the registered DID and public key you used.');
+    expect(how).toContain('Check that `digest` matches the digest you recomputed. If you cannot verify any of these values, stop. Do not pay for `execute`.');
+    expect(how).toContain('In `approval`, use the `attestation` identifier and the registered `issuer_did` you verified in step 4.');
     expect(how).toContain('If the ledger does not show the approval, the sourcing record returns `approval_not_found`.');
     expect(how).toContain('The default and minimum deposit is 5 units (5000000 lovelace).');
     expect(how).toContain('The deposit does not return automatically. Withdrawal becomes eligible 90 days after `valid_until` or, if revoked, 90 days after revocation, whichever date comes first.');
