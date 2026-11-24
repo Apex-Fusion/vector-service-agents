@@ -12,3 +12,5 @@ export { readStake } from './stake.ts';
 export type { StakeDeps, StakeFact } from './stake.ts';
 export { casesAgainst, casesAgainstAll } from './cases.ts';
 export type { CasesDeps, CasesFact } from './cases.ts';
+export { readCredential } from './credential.ts';
+export type { CredentialDeps, FactState } from './credential.ts';

@@ -1,11 +1,15 @@
 // agents/sourcing-agent/test/facts/support.ts
 // What the tests of the three readers of facts share. A clock that a test moves by hand. The stake that Vector mainnet holds for one test record, and the rows that Koios makes of it. The views of
 // claims and challenges, built by hand. A stub gateway with a client and the real verifier on it. Every port of a test counts its calls, so a test can show that nothing is retried.
+import { createGatewayClient } from '@vsa/id-kit/client';
 import type { Check, GatewayResult, GatewayRule } from '@vsa/id-kit/client';
+import { createStubGateway } from '@vsa/id-kit/testing';
+import type { StubAgent, StubGateway } from '@vsa/id-kit/testing';
+import { createVerifier } from '@vsa/id-kit/verify';
 import type { ChallengeView, ClaimView } from '@vsa/usecase-kit/dispute';
 import { REPUTATION_ADDRESS, REPUTATION_SCRIPT_HASH, encodeStakeDatum, stakeTokenName } from '@vsa/vector-read';
 import type { KoiosUtxo, StakeDatum } from '@vsa/vector-read';
-import type { FactClock } from '../../src/facts/index.ts';
+import type { CredentialDeps, FactClock } from '../../src/facts/index.ts';
 
 // ---- the clock ----
 
@@ -127,3 +131,25 @@ export function tamper(jwt: string): string {
   if (changed === text || changed.length !== text.length) throw new Error('the stub gateway writes the credential in another form: change the test');
   return [header, Buffer.from(changed, 'utf8').toString('base64url'), signature].join('.');
 }
+
+export interface CredentialWorld {
+  readonly gateway: StubGateway;
+  /** An agent with a record in the stub gateway. */
+  readonly agent: StubAgent;
+  readonly clock: ManualClock;
+  /** The ports of the reader: the client of the stub gateway and the real verifier on it. A test replaces a member. */
+  deps(over?: Partial<CredentialDeps>): CredentialDeps;
+}
+
+/** A stub gateway, a client and a verifier on it, one agent, and a clock for the reader. Each test makes its own world: a verifier keeps the lists that it read. */
+export function credentialWorld(): CredentialWorld {
+  const gateway = createStubGateway();
+  const client = createGatewayClient({ baseUrl: gateway.baseUrl, fetch: gateway.fetch, now: gateway.now });
+  const verifier = createVerifier({ baseUrl: gateway.baseUrl, fetch: gateway.fetch, now: gateway.now });
+  const agent = gateway.createAgent({ label: 'bidder' });
+  const clock = new ManualClock();
+  return { gateway, agent, clock, deps: (over = {}) => ({ fetchCredential: (did) => client.credential(did), verify: (jwt, policy) => verifier.credential(jwt, policy), clock, ...over }) };
+}
+
+/** The path of the credential of an agent at the stub gateway. */
+export const credentialPath = (agent: StubAgent): string => `/agents/${agent.id}/credential`;
