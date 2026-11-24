@@ -4,6 +4,10 @@
 import { createHash } from 'node:crypto';
 import { FakeChain } from '@vsa/buyer-core';
 import { T0, stubKey } from '@vsa/hire-kit/testing';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { identityDeploymentFrom, rawHexToBech32 } from '@vsa/buyer-core';
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 
@@ -110,4 +114,81 @@ export class FakeClock {
     this.advance(ms);
     return Promise.resolve();
   }
+}
+
+// --- what the tests of the start and of the service over HTTP add ---------------------------------------------------------------------------------------------
+
+/** The one key variable of the start. The start names it, and the tests name it here. */
+export const KEY_VARIABLES = { service: 'INTAKE_SERVICE_PRIV_KEY_HEX' } as const;
+
+const REF = (label: string): string => `${sha256(label)}#0`;
+/** The four identity names and their values: a legacy root, the configuration reference and the two reference scripts. Each value is made from a label. */
+export const IDENTITY_SETTINGS = {
+  VECTOR_IDENTITY_LEGACY_ROOT: sha256('insurer intake service test: the legacy root'),
+  VECTOR_IDENTITY_CONFIG_SEED: REF('insurer intake service test: the config reference'),
+  VECTOR_IDENTITY_ESCROW_REF_UTXO: REF('insurer intake service test: the escrow reference script'),
+  VECTOR_IDENTITY_VAULT_REF_UTXO: REF('insurer intake service test: the vault reference script'),
+} as const;
+const deployment = identityDeploymentFrom(IDENTITY_SETTINGS);
+if (deployment === null) throw new Error('the identity settings of the tests give no deployment');
+/** The identity policy that the deployment of the tests gives. `IDENTITY_POLICY_ID` must equal it for a start. */
+export const DEPLOYMENT_POLICY: string = deployment.identity.hash;
+
+/** The value that the runtime sends as the authorization header, as the header of a call to the service. */
+export const AUTH = { authorization: TOKEN };
+
+/**
+ * What an operator sets for a start: the full environment, the service key, and the four identity names with the policy that they give. `over` replaces settings, and a value of `undefined` takes a setting away.
+ * The key and the policy are what the environment of the settings tests leaves out, because a settings test needs neither.
+ */
+export function startEnvWith(over: Readonly<Record<string, string | undefined>> = {}): NodeJS.ProcessEnv {
+  return envWith({ [KEY_VARIABLES.service]: SERVICE.privateKeyHex, ...IDENTITY_SETTINGS, IDENTITY_POLICY_ID: DEPLOYMENT_POLICY, ...over });
+}
+
+/** The secrets of a start: the service key in both its forms, the token, and the credential of the token. No log line, answer or message shows any of them. */
+export function secretsOf(): string[] {
+  return [SERVICE.privateKeyHex, rawHexToBech32(SERVICE.privateKeyHex), TOKEN, TOKEN.slice('Bearer '.length)];
+}
+
+const dirs: string[] = [];
+/** A new empty directory, removed by `cleanDirs`. */
+export function tempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'insurer-intake-service-'));
+  dirs.push(dir);
+  return dir;
+}
+export function cleanDirs(): void {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+}
+
+const MODULE1_FIXTURE = new URL('../../../../packages/buyer-core/test/fixtures/module1-mainnet-manifest.json', import.meta.url);
+
+/**
+ * The text of the Module-1 manifest of the mainnet capture, with the identity registry of the deployment of these tests. The service checks that the manifest names the registry that its own deployment gives, so
+ * the capture is changed in that one place. `identityHash` gives another registry, for the test of the refusal.
+ */
+export function module1ManifestText(identityHash: string = DEPLOYMENT_POLICY): string {
+  const manifest = JSON.parse(readFileSync(MODULE1_FIXTURE, 'utf8')) as { identity: { identity_hash: string } };
+  manifest.identity.identity_hash = identityHash;
+  return JSON.stringify(manifest);
+}
+
+/** What the host of the manifest answers: a text with the status 200, or a status alone with no body. */
+export type Module1Answer = string | { readonly status: number };
+
+/** A fetch that answers the address of the Module-1 manifest with `answer`, and passes every other call on to `next`. */
+export function withModule1(next: typeof fetch, answer: Module1Answer = module1ManifestText()): typeof fetch {
+  const address = new URL(MODULE1_URL).href;
+  return async (input, init) => {
+    const href = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url).href;
+    if (href !== address) return next(input, init);
+    return typeof answer === 'string' ? new Response(answer, { status: 200, headers: { 'content-type': 'text/plain' } }) : new Response('', { status: answer.status });
+  };
+}
+
+/** A file with the manifest of these tests, for the child process of a test: a child cannot take a stub fetch, so its preload (module1-preload.mjs) answers the address from this file. */
+export function module1StubFile(): string {
+  const file = join(tempDir(), 'module1.json');
+  writeFileSync(file, module1ManifestText(), 'utf8');
+  return file;
 }
