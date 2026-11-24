@@ -1,8 +1,10 @@
 // The fake node and the in-process gateway test delegated and subagent token requests.
 // The stub uses the same temporary public keys as the node. The tests check that the probe outputs no token or proof.
 import { createPublicKey } from 'node:crypto';
+import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { EvidenceFile } from '../../checks/lib/evidence.ts';
 import { iso } from '../../checks/lib/format.ts';
 import { factsOf } from '../../checks/lib/txfacts.ts';
 import { buildEndSubagents } from '../../../packages/buyer-core/src/vendored/mcp/identity-build.ts';
@@ -25,6 +27,7 @@ import { parseOperatorSettings } from '../lib/settings.ts';
 import probe from '../tasks/probe.ts';
 import USE from '../usecases/inventory-reorder.ts';
 import UC2 from '../usecases/prior-authorization.ts';
+import UC3 from '../usecases/bid-evaluation.ts';
 import { NOW, USE_CASE, hashOf, taskWorld } from './support/task-world.ts';
 import type { TaskWorld } from './support/task-world.ts';
 
@@ -679,6 +682,61 @@ describe('the arguments', () => {
 });
 
 describe('status and cleanup', () => {
+  it.each([USE, UC2, UC3])('shows only the saved probe observations on $name, without keys, a node or a gateway', async (use) => {
+    const w = await taskWorld({ keys: [], use, env: { OPERATOR_USE_CASE: USE.name, OPERATOR_KEYS_DIR: undefined } });
+    mkdirSync(w.stateDir, { mode: 0o700 });
+    const path = join(w.stateDir, 'probe.r1.evidence.json');
+    const evidence = EvidenceFile.open(path, { check: 'probe', network: 'vector-mainnet', record: `${use.name}:r1` });
+    evidence.add({ step: 'run', status: 'info', at: iso(NOW), shows: {
+      summary: 'private text that status must not repeat', observation: { kind: 'refused', status: 401, text: 'private gateway reply' },
+      verdict: { expected: 'refused', observed: 'refused', ok: true, reason: 'private reason' },
+    } });
+    writeFileSync(join(w.stateDir, 'probe.r1.state.json'), 'not JSON', { mode: 0o600 });
+    writeFileSync(join(w.stateDir, 'facts.json'), 'not JSON', { mode: 0o600 });
+    const saved = readFileSync(path, 'utf8');
+    const files = readdirSync(w.stateDir).sort();
+    const noKeys = vi.fn(() => { throw new Error('status must not load a key'); });
+    const noNetwork = vi.spyOn(w.node, 'networkFacts').mockRejectedValue(new Error('status must not read the node'));
+    const noFetch = vi.fn(async () => { throw new Error('status must not request credentials or call the gateway'); });
+    const noHosted = vi.fn(async () => { throw new Error('status must not ask a hosted tool'); });
+    const code = await runTask(probe, ['status', '--run', 'r1', '--use-case', use.name],
+      w.deps({ readRegistry: noKeys, fetchImpl: noFetch, hosted: { call: noHosted } }));
+    expect(code).toBe(0);
+    const out = w.screen.lines.join('\n');
+    expect(out).toContain('requests that the evidence holds: 1');
+    expect(out).toContain(`request 1 at ${iso(NOW)}: expected refused, observed refused (status 401): as expected`);
+    expect(out).not.toContain('private');
+    expect(w.machine()).toMatchObject({ task: 'probe', command: 'status', mode: 'dry', outcome: 'done', exit: 0, step: null, result: {} });
+    expect(noKeys).not.toHaveBeenCalled();
+    expect(noNetwork).not.toHaveBeenCalled();
+    expect(noFetch).not.toHaveBeenCalled();
+    expect(noHosted).not.toHaveBeenCalled();
+    expect(w.node.submitted).toEqual([]);
+    expect(readFileSync(path, 'utf8')).toBe(saved);
+    expect(readdirSync(w.stateDir).sort()).toEqual(files);
+  });
+
+  it('does not create a journal and does not misread a damaged journal or an active lock as an absence', async () => {
+    const w = await taskWorld({ keys: [], use: UC3, env: { OPERATOR_USE_CASE: USE.name, OPERATOR_KEYS_DIR: undefined } });
+    const args = ['status', '--run', 'r1'];
+    const path = join(w.stateDir, 'probe.r1.evidence.json');
+    expect(await w.run(probe, ...args)).toBe(0);
+    expect(w.screen.lines).toContain('requests that the evidence holds: 0');
+    expect(existsSync(w.stateDir)).toBe(false);
+    mkdirSync(w.stateDir, { mode: 0o700 });
+    expect(await w.run(probe, ...args)).toBe(0);
+    expect(readdirSync(w.stateDir)).toEqual([]);
+    symlinkSync('missing-target', path);
+    w.screen.lines.length = 0;
+    expect(await w.run(probe, ...args)).toBe(2);
+    expect(w.screen.errors.join('\n')).toContain('is not a regular evidence file');
+    expect(w.screen.lines).not.toContain('requests that the evidence holds: 0');
+    writeFileSync(w.lockPath, 'writer owns the lock', { mode: 0o600 });
+    expect(await w.run(probe, ...args)).toBe(2);
+    expect(w.screen.errors.join('\n')).toContain('another run holds it');
+    expect(readFileSync(w.lockPath, 'utf8')).toBe('writer owns the lock');
+  });
+
   it('shows the requests that the evidence holds, each with what was expected and what was observed', async () => {
     const p = await world();
     const made = p.delegate();

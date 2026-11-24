@@ -2,6 +2,7 @@
 // It reads the delegation or the subagent's effective status from the chain before it sends the request.
 // Both dry mode and submit mode send the request. Only submit mode writes the evidence entry. Neither mode signs or builds a transaction.
 // The evidence and the machine line never hold the subject token, the access token or the DPoP proof.
+import { EvidenceError } from '../../checks/lib/evidence.ts';
 import { iso } from '../../checks/lib/format.ts';
 import { HostedError } from '../../checks/lib/hosted.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
@@ -276,6 +277,9 @@ const answerLine = (answer: TokenAnswer): string => {
   }
 };
 
+const requestSummary = (expected: Expectation, observed: string, ok: boolean, status: number | null): string =>
+  `expected ${expected}, observed ${observed}${status === null ? '' : ` (status ${status})`}: ${ok ? 'as expected' : 'NOT as expected'}`;
+
 function finish(session: TaskSession<ProbeExtra>, expect: Expectation, answer: TokenAnswer, verdict: Verdict, subject: SeenSubject, shows: Record<string, unknown>) {
   const observation = observationOf(answer);
   const subagent = 'subagent' in subject;
@@ -287,7 +291,7 @@ function finish(session: TaskSession<ProbeExtra>, expect: Expectation, answer: T
   session.out.out(answerLine(answer));
   session.out.out(`verdict: expected ${expect}, observed ${verdict.observed}: ${verdict.ok ? 'as expected' : 'NOT as expected'}. ${verdict.reason}`);
   if (session.mode === 'submit') {
-    const summary = `expected ${expect}, observed ${verdict.observed}${status === null ? '' : ` (status ${status})`}: ${verdict.ok ? 'as expected' : 'NOT as expected'}`;
+    const summary = requestSummary(expect, verdict.observed, verdict.ok, status);
     session.evidence.add({
       step: REQUEST.name, status: 'info',
       shows: { summary, ...shows, observation, verdict: { expected: expect, observed: verdict.observed, ok: verdict.ok, reason: verdict.reason } },
@@ -339,11 +343,29 @@ const REQUEST: StepHandler<ProbeExtra> = {
   },
 };
 
-/** The line of an entry of the evidence for `status`: the time and the summary that the entry holds. */
+const entryObject = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+
+/** Render the stored observation, not free text or the arguments of the request. */
 function summaryOf(entry: Record<string, unknown>): string | null {
-  const shows = entry.shows;
-  if (typeof shows !== 'object' || shows === null || !('summary' in shows) || typeof shows.summary !== 'string') return null;
-  return `${typeof entry.at === 'string' ? entry.at : 'an unknown time'}: ${shows.summary}`;
+  if (entry.step !== REQUEST.name || entry.status !== 'info') return null;
+  const shows = entryObject(entry.shows);
+  const verdict = entryObject(shows?.verdict);
+  const observation = entryObject(shows?.observation);
+  if (verdict === undefined && observation === undefined && shows !== undefined && !Object.hasOwn(shows, 'summary')) return null;
+  const expected = verdict?.expected;
+  const ok = verdict?.ok;
+  const kind = observation?.kind;
+  const status = observation?.status ?? null;
+  if ((expected !== 'granted' && expected !== 'refused') || typeof ok !== 'boolean' || (ok && kind !== expected)
+    || (kind !== 'granted' && kind !== 'refused' && kind !== 'unavailable' && kind !== 'unreadable' && kind !== 'unreachable')
+    || (status !== null && !(typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599))) {
+    throw new EvidenceError('the saved probe entry has no valid observation and verdict');
+  }
+  const observed = !ok && kind === expected ? `${kind} (not the expected answer)` : kind;
+  if (verdict?.observed !== observed) throw new EvidenceError('the saved probe verdict does not match its observation');
+  const at = typeof entry.at === 'string' ? Date.parse(entry.at) : NaN;
+  return `${Number.isFinite(at) ? iso(at) : 'an unknown time'}: ${requestSummary(expected, observed, ok, status)}`;
 }
 
 const task: TaskDefinition<ProbeExtra> = {
@@ -384,8 +406,8 @@ const task: TaskDefinition<ProbeExtra> = {
   },
   next: (session) => runSteps(session, [REQUEST]),
   cleanup: async () => ({ kind: 'done', message: 'the probe makes no transaction and holds nothing: there is nothing to take back' }),
-  async status(session) {
-    const lines = session.evidence.entries().flatMap((entry) => summaryOf(entry) ?? []);
+  async inspectStatus(input) {
+    const lines = input.readEvidence().flatMap((entry) => summaryOf(entry) ?? []);
     return [`requests that the evidence holds: ${lines.length}`, ...lines.map((line, index) => `request ${index + 1} at ${line}`)];
   },
   result: (session) => session.extra.seen ?? {},
