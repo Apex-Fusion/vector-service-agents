@@ -6,8 +6,8 @@
   "packageManager": "pnpm@10.33.2",
   "engines": { "node": ">=22" },
   "scripts": {
-    "test": "pnpm -r --if-present test && node --test scripts/no-secrets.test.mjs scripts/manifest-hash.test.mjs scripts/specs.test.mjs scripts/e2e-hire.test.mjs scripts/deploy.test.mjs && vitest run --config scripts/checks/vitest.config.ts",
-    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test && node --test scripts/no-secrets.test.mjs scripts/manifest-hash.test.mjs scripts/specs.test.mjs scripts/e2e-hire.test.mjs scripts/deploy.test.mjs && vitest run --config scripts/checks/vitest.config.ts && vitest run --config scripts/operator/vitest.config.ts",
+    "typecheck": "pnpm -r --if-present typecheck && tsc --noEmit -p scripts/checks/tsconfig.json && tsc --noEmit -p scripts/operator/tsconfig.json",
     "e2e": "node scripts/e2e-hire.mjs",
     "manifest-hash": "node scripts/manifest-hash.mjs"
   },
