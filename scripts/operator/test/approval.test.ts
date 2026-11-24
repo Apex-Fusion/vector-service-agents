@@ -1,5 +1,5 @@
 // The approval file of a session, the cap that it sets, and the net outflow of a transaction. Each refusal has an accepted twin. No test uses a real key, a real clock or the network.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -605,6 +605,28 @@ describe('Exposure', () => {
       const folderPath = join(folder(), 'exposure.test-session.json');
       mkdirSync(folderPath);
       expect(refusal(() => new Exposure(folderPath, fileOf()).total()).message).toContain('damaged');
+    });
+    it('refuses a link in place of the file, as damaged, in every call: a link to an exposure file and a link to nothing, and leaves the link and what it names as they are', () => {
+      const dir = folder();
+      const target = join(dir, 'target.json');
+      new Exposure(target, fileOf()).reserve(entryOf(1, 1n));
+      const before = readFileSync(target, 'utf8');
+      const nothing = join(dir, 'nothing.json');
+      for (const [name, goal] of [['link-to-file.json', target], ['link-to-nothing.json', nothing]] as const) {
+        const link = join(dir, name);
+        symlinkSync(goal, link);
+        const e = new Exposure(link, fileOf());
+        for (const call of [() => e.total(), () => e.projected(1n), () => e.refuseOver(1n), () => e.reserve(entryOf(2, 1n)), () => e.release(hashOf(1))]) {
+          const err = refusal(call);
+          expect(err.message, name).toContain('damaged');
+          expect(err.message, name).toContain('link');
+        }
+        expect(lstatSync(link).isSymbolicLink()).toBe(true);
+        expect(readlinkSync(link)).toBe(goal);
+        expect(existsSync(`${link}.lock`)).toBe(false);
+      }
+      expect(existsSync(nothing)).toBe(false);
+      expect(readFileSync(target, 'utf8')).toBe(before);
     });
   });
 });

@@ -3,9 +3,11 @@
 // only: a text that carries a mark of a secret (a key, a key variable that is set, a bearer token, a token in a URL) and a member that is named seed, secret, token, authorization or private are refused (`lib/secrets.ts`). A fact is set once. The same value again
 // changes nothing, and another value is a FactsConflict unless the call says `replace`. A later step sets one field of a fact that an earlier step wrote (a stake reference, the time at which an
 // organisation was verified, the transaction that lifts a hold or withdraws a claim): the fact must exist, the field is null until it is set, and it is set once in the same way. Every call reads
-// the file again, so that two instances over one file see each other. A file that is damaged is an error and never an empty store. A message names a section and a path, and never a value.
-import { readFileSync, statSync } from 'node:fs';
+// the file again, so that two instances over one file see each other, and a `put` holds a lock file next to the facts file from the read to the rename, so that two runs cannot lose a fact of each
+// other. A file that is damaged, and a link, are an error and never an empty store. A message names a section and a path, and never a value.
+import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync } from 'node:fs';
 import type { Stats } from 'node:fs';
+import { dirname } from 'node:path';
 import { writeFileAtomically } from '../../checks/lib/files.ts';
 import type { WriteIo } from '../../checks/lib/files.ts';
 import { jsonSafe } from '../../checks/lib/format.ts';
@@ -15,7 +17,7 @@ import type {
 import { codeOf } from './registry.ts';
 import { holdsSecret, isSecretName } from './secrets.ts';
 
-export type FactsReason = 'section' | 'path' | 'field' | 'missing_fact' | 'value' | 'secret' | 'conflict' | 'unreadable' | 'unwritable' | 'damaged' | 'mismatch' | 'mode';
+export type FactsReason = 'section' | 'path' | 'field' | 'missing_fact' | 'value' | 'secret' | 'conflict' | 'locked' | 'unreadable' | 'unwritable' | 'damaged' | 'mismatch' | 'mode';
 
 export class FactsError extends Error {
   readonly reason: FactsReason;
@@ -248,28 +250,51 @@ export class FactsFile implements FactsStore {
     }
     const where = [section, ...route.names].join('.');
     const replace = options.replace === true;
-    const facts = this.#load();
-    if (route.field === null) {
-      const held = getFact(facts, section, route.names);
-      if (held !== undefined && same(held, stored)) return;
-      if (held !== undefined && !replace) throw new FactsConflict(`the fact ${where} holds another value: set it again with replace to change it`);
-      setFact(facts, section, route.names, stored);
-    } else {
-      const fact = getFact(facts, section, route.names);
-      if (!isObject(fact)) throw new FactsError('missing_fact', `the fact ${where} does not exist: write the whole fact before one of its fields`);
-      const held = fact[route.field];
-      if (held !== null && held !== undefined && held === stored) return;
-      if (held !== null && held !== undefined && !replace) throw new FactsConflict(`the field ${route.field} of the fact ${where} holds another value: set it again with replace to change it`);
-      fact[route.field] = stored;
+    this.#locked(() => {
+      const facts = this.#load();
+      if (route.field === null) {
+        const held = getFact(facts, section, route.names);
+        if (held !== undefined && same(held, stored)) return;
+        if (held !== undefined && !replace) throw new FactsConflict(`the fact ${where} holds another value: set it again with replace to change it`);
+        setFact(facts, section, route.names, stored);
+      } else {
+        const fact = getFact(facts, section, route.names);
+        if (!isObject(fact)) throw new FactsError('missing_fact', `the fact ${where} does not exist: write the whole fact before one of its fields`);
+        const held = fact[route.field];
+        if (held !== null && held !== undefined && held === stored) return;
+        if (held !== null && held !== undefined && !replace) throw new FactsConflict(`the field ${route.field} of the fact ${where} holds another value: set it again with replace to change it`);
+        fact[route.field] = stored;
+      }
+      this.#write(facts);
+    });
+  }
+
+  /**
+   * Runs a read, a check and a write of the file while this call holds the lock file next to it (made with the flag `wx`, removed when the call ends, also by an error). A lock that exists is
+   * another run, or a run that stopped and left it: the call refuses and names the file, and the operator removes it when no run is active. So two runs cannot lose a fact of each other, and
+   * they cannot share the temporary file of the write. A read needs no lock: the write replaces the file whole.
+   */
+  #locked(run: () => void): void {
+    const lock = `${this.path}.lock`;
+    try { mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 }); } catch (err) { throw new FactsError('unwritable', `the facts file could not be written (${codeOf(err)})`); }
+    try { closeSync(openSync(lock, 'wx', FILE_MODE)); } catch (err) {
+      throw codeOf(err) === 'EEXIST'
+        ? new FactsError('locked', `the lock file ${lock} exists: another run holds it, or a run stopped and left it. Wait for the run, or remove the file when no run is active`)
+        : new FactsError('unwritable', `the lock file ${lock} could not be made (${codeOf(err)})`);
     }
-    this.#write(facts);
+    try {
+      run();
+    } finally {
+      try { unlinkSync(lock); } catch { /* the file is gone already: the next run finds no lock, or it names the file that stays */ }
+    }
   }
 
   /** Reads the file and checks it: the facts, or the empty facts when the file is not there. */
   #load(): Facts {
     let found: Stats | undefined;
-    try { found = statSync(this.path, { throwIfNoEntry: false }); } catch (err) { throw new FactsError('unreadable', `the facts file could not be read (${codeOf(err)})`); }
+    try { found = lstatSync(this.path, { throwIfNoEntry: false }); } catch (err) { throw new FactsError('unreadable', `the facts file could not be read (${codeOf(err)})`); }
     if (found === undefined) return emptyFacts();
+    if (found.isSymbolicLink()) throw damaged('it is a link, and the facts file is a file');
     if (!found.isFile()) throw damaged('it is not a file');
     const mode = found.mode & 0o777;
     if (CHECK_MODES && mode !== FILE_MODE) throw new FactsError('mode', `the facts file has mode ${mode.toString(8)}: set mode 600 on it`);

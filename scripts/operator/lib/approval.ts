@@ -2,7 +2,7 @@
 // `GO.json` is the approval of one session: the tasks that may run, the wallet that pays, the cap on what the keys of the pack move out in the session, the steps that cannot be undone, and the
 // end of the approval. The cap is cumulative. `Exposure` keeps one file for the session: the landing reserves the net outflow of a transaction in it before the transaction is submitted, and a
 // transaction that cannot land any more gives its reserve back. A message of this file names a task, a tag or a field. It never shows a value of the approval file.
-import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync } from 'node:fs';
+import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import type { Stats } from 'node:fs';
 import { dirname } from 'node:path';
 import { keyCredentialOf } from '../../checks/lib/addresses.ts';
@@ -354,8 +354,9 @@ export class Exposure {
 
   #read(): ExposureEntry[] {
     let found: Stats | undefined;
-    try { found = statSync(this.#path, { throwIfNoEntry: false }); } catch (err) { throw new ApprovalError(`the exposure file could not be read (${codeOf(err)})`); }
+    try { found = lstatSync(this.#path, { throwIfNoEntry: false }); } catch (err) { throw new ApprovalError(`the exposure file could not be read (${codeOf(err)})`); }
     if (found === undefined) return [];
+    if (found.isSymbolicLink()) throw damaged('it is a link, and the exposure file is a file');
     if (!found.isFile()) throw damaged('it is not a file');
     const mode = found.mode & 0o777;
     if (CHECK_MODES && mode !== FILE_MODE) throw new ApprovalError(`the exposure file has mode ${mode.toString(8)}: set mode 600 on it`);

@@ -1,6 +1,6 @@
 // The facts file of the operator pack: a fact is set once, a later step sets one field of a fact once, and the file holds public values only. Each refusal has an accepted twin. No test uses a real key:
 // a text that looks like a key is built at run time.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -523,16 +523,118 @@ describe('the file', () => {
     chmodSync(path, 0o600);
     expect(FactsFile.open(path, IDENTITY).read().records.a).toEqual(RECORD);
   });
-  it('refuses a path that is a folder, and fails a write below a file with the code of the system', () => {
+  it('refuses a path that is a folder as damaged, and a path below a file as unreadable, with the code of the system and no path', () => {
     const dir = folder();
     mkdirSync(join(dir, 'facts.json'));
     expect(refusal(() => FactsFile.open(join(dir, 'facts.json'), IDENTITY)).reason).toBe('damaged');
     writeFileSync(join(dir, 'a-file'), 'x', { mode: 0o600 });
-    const below = FactsFile.open(join(dir, 'a-file', 'facts.json'), IDENTITY);
-    const err = refusal(() => put(below, 'records', ['a'], RECORD));
+    const err = refusal(() => FactsFile.open(join(dir, 'a-file', 'facts.json'), IDENTITY));
+    expect(err.reason).toBe('unreadable');
+    expect(err.message).toContain('ENOTDIR');
+    expect(err.message).not.toContain(dir);
+    expect(textOf(join(dir, 'a-file'))).toBe('x');
+  });
+  it('says unwritable, with the code of the system and no path, when the folder of the file cannot be made', () => {
+    const dir = folder();
+    const facts = FactsFile.open(join(dir, 'sub', 'facts.json'), IDENTITY);
+    writeFileSync(join(dir, 'sub'), 'x', { mode: 0o600 });
+    const err = refusal(() => put(facts, 'records', ['a'], RECORD));
     expect(err.reason).toBe('unwritable');
     expect(err.message).toMatch(/\((?:EEXIST|ENOTDIR)\)/);
-    expect(textOf(join(dir, 'a-file'))).toBe('x');
+    expect(err.message).not.toContain(dir);
+    expect(textOf(join(dir, 'sub'))).toBe('x');
+  });
+  it('refuses a link as the facts file, as damaged, in open, read and put: a link to a facts file and a link to nothing, and leaves the link and what it names as they are', () => {
+    const dir = folder();
+    const target = join(dir, 'target.json');
+    put(FactsFile.open(target, IDENTITY), 'records', ['a'], RECORD);
+    const before = textOf(target);
+    const nothing = join(dir, 'nothing.json');
+    const links: [string, string][] = [[join(dir, 'to-file.json'), target], [join(dir, 'to-nothing.json'), nothing]];
+    const opened = links.map(([link]) => FactsFile.open(link, IDENTITY));
+    for (const [link, goal] of links) symlinkSync(goal, link);
+    for (const [index, [link, goal]] of links.entries()) {
+      const facts = opened[index]!;
+      expect(refusal(() => FactsFile.open(link, IDENTITY)).reason, link).toBe('damaged');
+      expect(refusal(() => facts.read()).reason).toBe('damaged');
+      for (const replace of [undefined, true]) expect(refusal(() => put(facts, 'records', ['b'], RECORD, replace)).reason).toBe('damaged');
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(link)).toBe(goal);
+      expect(existsSync(`${link}.lock`)).toBe(false);
+    }
+    expect(existsSync(nothing)).toBe(false);
+    expect(textOf(target)).toBe(before);
+  });
+  describe('the lock file', () => {
+    it('is held around a put and removed after it, and a put is refused while a lock file exists: the message names the file, and nothing changes', () => {
+      const { facts, path } = fresh();
+      const lock = `${path}.lock`;
+      put(facts, 'records', ['a'], RECORD);
+      expect(existsSync(lock)).toBe(false);
+      writeFileSync(lock, '', { mode: 0o600 });
+      const before = textOf(path);
+      const calls = [
+        () => put(facts, 'records', ['b'], RECORD), () => put(facts, 'records', ['a'], RECORD), () => put(facts, 'records', ['a'], { ...RECORD, tx: HEX_C }, true),
+        () => put(facts, 'holds', ['h'], HOLD), () => put(facts, 'holds', ['h', 'liftTx'], HEX_A),
+      ];
+      for (const call of calls) {
+        const err = refusal(call);
+        expect(err.reason).toBe('locked');
+        expect(err.message).toContain(lock);
+        expect(err.message).toContain('lock file');
+      }
+      expect(textOf(path)).toBe(before);
+      expect(existsSync(lock)).toBe(true);
+      expect(facts.read().records.a).toEqual(RECORD);
+      rmSync(lock);
+      put(facts, 'records', ['b'], RECORD);
+      expect(existsSync(lock)).toBe(false);
+      expect(Object.keys(facts.read().records)).toEqual(['a', 'b']);
+    });
+    it('is taken before the file is read: with a lock file there and a damaged facts file, a put says locked and not damaged', () => {
+      const { facts, path } = fresh();
+      put(facts, 'records', ['a'], RECORD);
+      writeFileSync(path, 'not json', { mode: 0o600 });
+      writeFileSync(`${path}.lock`, '', { mode: 0o600 });
+      expect(refusal(() => put(facts, 'records', ['b'], RECORD)).reason).toBe('locked');
+      rmSync(`${path}.lock`);
+      expect(refusal(() => put(facts, 'records', ['b'], RECORD)).reason).toBe('damaged');
+      expect(existsSync(`${path}.lock`)).toBe(false);
+      expect(textOf(path)).toBe('not json');
+    });
+    it('is held until the rename: a put of another instance in the middle of a write is refused, so that no fact is lost', () => {
+      const path = join(folder(), 'facts.json');
+      const second = FactsFile.open(path, IDENTITY);
+      const seen: FactsError[] = [];
+      const first = FactsFile.open(path, IDENTITY, { rename: (from, to) => { seen.push(refusal(() => put(second, 'records', ['b'], RECORD))); renameSync(from, to); } });
+      put(first, 'records', ['a'], RECORD);
+      expect(seen.map((err) => err.reason)).toEqual(['locked']);
+      expect(Object.keys(first.read().records)).toEqual(['a']);
+      put(second, 'records', ['b'], RECORD);
+      expect(Object.keys(second.read().records)).toEqual(['a', 'b']);
+    });
+    it('is removed when a put ends, also when the put is a no-op, is refused or fails to write', () => {
+      const { facts, path } = fresh();
+      const lock = `${path}.lock`;
+      put(facts, 'records', ['a'], RECORD);
+      put(facts, 'records', ['a'], RECORD);
+      expect(existsSync(lock)).toBe(false);
+      expect(refusal(() => put(facts, 'records', ['a'], { ...RECORD, tx: HEX_C })).reason).toBe('conflict');
+      expect(existsSync(lock)).toBe(false);
+      expect(refusal(() => put(facts, 'stakes', ['x', 'stakeRef'], HEX_C)).reason).toBe('missing_fact');
+      expect(existsSync(lock)).toBe(false);
+      const failing = FactsFile.open(path, IDENTITY, { rename: () => { throw Object.assign(new Error('EIO: a message that holds /a/private/path'), { code: 'EIO' }); } });
+      expect(refusal(() => put(failing, 'records', ['b'], RECORD)).reason).toBe('unwritable');
+      expect(existsSync(lock)).toBe(false);
+    });
+    it('makes no lock file and no folder for a refusal that comes before the file: a secret, a section, a value', () => {
+      const dir = join(folder(), 'state');
+      const facts = FactsFile.open(join(dir, 'facts.json'), IDENTITY);
+      expect(refusal(() => put(facts, 'records', ['seed'], RECORD)).reason).toBe('secret');
+      expect(refusal(() => put(facts, 'nothing' as keyof Facts, ['a'], RECORD)).reason).toBe('section');
+      expect(refusal(() => put(facts, 'records', ['a'], { did: 'x' })).reason).toBe('value');
+      expect(existsSync(dir)).toBe(false);
+    });
   });
 
   describe('a damaged file is an error and never an empty store', () => {
