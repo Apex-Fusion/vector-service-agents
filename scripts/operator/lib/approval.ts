@@ -394,8 +394,9 @@ export class Exposure {
  * wallets of the ring. A transfer between two wallets of the ring is only its fee, and a transfer to any other address counts in full. The result is not below 0 (a withdrawal of rewards
  * brings in more than the inputs hold). `inputs` holds the outputs that the transaction spends, by reference `<hash>#<index>`, as the node gives them. An input that is missing from it is an
  * error and never a zero. An input at a script address is no input of the registry. Reference inputs are not spent, so they do not count.
- * A transaction that runs scripts can also fail in phase 2: then it spends its collateral and nothing else. So the result is the larger of the net outflow and the collateral that a failure takes:
- * `totalCollateral` of the body, or, when the body has none, the collateral inputs of the ring less the collateral return to a wallet of the ring (these inputs must be in `inputs` then).
+ * A transaction that runs scripts can also fail in phase 2: then it spends its collateral and nothing else. So the result is the largest of three numbers: the net outflow, `totalCollateral` of
+ * the body, and the lovelace of the collateral inputs of the ring less the collateral return to a wallet of the ring (a return to another address is lost). The collateral inputs must be in
+ * `inputs`: one that is missing is an error, also when the body states `totalCollateral`.
  */
 export function netRegistryOutflow(facts: TxFacts, inputs: ReadonlyMap<string, { address: string; lovelace: bigint }>, ring: RingView): bigint {
   const keyHashes = ring.keyHashes();
@@ -411,17 +412,16 @@ export function netRegistryOutflow(facts: TxFacts, inputs: ReadonlyMap<string, {
   for (const output of facts.outputs) if (wallets.has(output.address)) returning += output.lovelace;
   const net = leaving > returning ? leaving - returning : 0n;
   if (!facts.runsScripts) return net;
-  let collateral = facts.totalCollateral;
-  if (collateral === null) {
-    let pledged = 0n;
-    for (const reference of facts.collateralInputs) {
-      const held = inputs.get(reference);
-      if (held === undefined) throw new ApprovalError(`the collateral cannot be counted: the input ${reference} is not among the outputs that the node gave`);
-      const credential = keyCredentialOf(held.address);
-      if (credential !== null && keyHashes.has(credential)) pledged += held.lovelace;
-    }
-    const back = facts.collateralReturn !== null && wallets.has(facts.collateralReturn.address) ? facts.collateralReturn.lovelace : 0n;
-    collateral = pledged > back ? pledged - back : 0n;
+  let pledged = 0n;
+  for (const reference of facts.collateralInputs) {
+    const held = inputs.get(reference);
+    if (held === undefined) throw new ApprovalError(`the collateral cannot be counted: the input ${reference} is not among the outputs that the node gave`);
+    const credential = keyCredentialOf(held.address);
+    if (credential !== null && keyHashes.has(credential)) pledged += held.lovelace;
   }
-  return collateral > net ? collateral : net;
+  const back = facts.collateralReturn !== null && wallets.has(facts.collateralReturn.address) ? facts.collateralReturn.lovelace : 0n;
+  const taken = pledged > back ? pledged - back : 0n;
+  const stated = facts.totalCollateral ?? 0n;
+  const worst = taken > stated ? taken : stated;
+  return worst > net ? worst : net;
 }

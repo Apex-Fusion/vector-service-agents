@@ -693,7 +693,7 @@ describe('netRegistryOutflow', () => {
     expect(netRegistryOutflow(tx, spent([ref(1), RUN_ADDRESS, 10_000_000n]), ring)).toBe(400_000n);
   });
 
-  it('counts the larger of the net outflow and the collateral when the transaction runs scripts', () => {
+  it('counts the larger of the net outflow and the collateral that the body states when the transaction runs scripts', () => {
     const plain = facts({ inputs: [ref(1)], outputs: outputs([RUN_ADDRESS, 9_600_000n]) });
     const script = (over: Partial<TxFacts> = {}): TxFacts => ({ ...plain, runsScripts: true, ...over });
     const held = spent([ref(1), RUN_ADDRESS, 10_000_000n]);
@@ -702,10 +702,12 @@ describe('netRegistryOutflow', () => {
     expect(netRegistryOutflow(script({ totalCollateral: 400_000n }), held, ring)).toBe(400_000n);
     expect(netRegistryOutflow(script({ totalCollateral: 300_000n }), held, ring)).toBe(400_000n);
     expect(netRegistryOutflow({ ...plain, totalCollateral: 5_000_000n }, held, ring)).toBe(400_000n);
-    expect(netRegistryOutflow(script({ totalCollateral: 5_000_000n, collateralInputs: [ref(5)] }), held, ring)).toBe(5_000_000n);
+    const withCollateral = spent([ref(1), RUN_ADDRESS, 10_000_000n], [ref(5), RUN_ADDRESS, 5_000_000n]);
+    expect(netRegistryOutflow(script({ totalCollateral: 5_000_000n, collateralInputs: [ref(5)] }), withCollateral, ring)).toBe(5_000_000n);
+    expect(refusal(() => netRegistryOutflow(script({ totalCollateral: 5_000_000n, collateralInputs: [ref(5)] }), held, ring)).message).toContain(ref(5));
   });
 
-  it('works out the collateral from the collateral inputs of the ring and the collateral return when the body has no total, and refuses a collateral input that the node did not give', () => {
+  it('works out the collateral from the collateral inputs of the ring and the collateral return, and refuses a collateral input that the node did not give', () => {
     const script = (over: Partial<TxFacts> = {}): TxFacts => facts({ runsScripts: true, inputs: [ref(1)], outputs: outputs([RUN_ADDRESS, 9_600_000n]), collateralInputs: [ref(5)], ...over });
     const held = spent([ref(1), RUN_ADDRESS, 10_000_000n], [ref(5), RUN_ADDRESS, 5_000_000n]);
     expect(netRegistryOutflow(script(), held, ring)).toBe(5_000_000n);
@@ -716,6 +718,26 @@ describe('netRegistryOutflow', () => {
     const err = refusal(() => netRegistryOutflow(script(), spent([ref(1), RUN_ADDRESS, 10_000_000n]), ring));
     expect(err.message).toContain(ref(5));
     expect(err.message).toContain('collateral');
+  });
+
+  it('counts what a failed script takes from the registry even when the body says less: a collateral return to an outside address is lost, and the largest of three numbers counts', () => {
+    const script = (over: Partial<TxFacts> = {}): TxFacts => facts({ runsScripts: true, inputs: [ref(1)], outputs: outputs([RUN_ADDRESS, 9_600_000n]), collateralInputs: [ref(5)], ...over });
+    const held = spent([ref(1), RUN_ADDRESS, 10_000_000n], [ref(5), RUN_ADDRESS, 5_000_000n]);
+    // 5 units of collateral, 4 of them returned to an outside address, 1 stated by the body: a failure costs the registry 5.
+    const probe = script({ collateralReturn: { address: STRANGER, lovelace: 4_000_000n }, totalCollateral: 1_000_000n });
+    expect(netRegistryOutflow(probe, held, ring)).toBe(5_000_000n);
+    // The same return to a wallet of the registry: only the 1 unit that the script takes is lost.
+    expect(netRegistryOutflow(script({ collateralReturn: { address: RUN_ADDRESS, lovelace: 4_000_000n }, totalCollateral: 1_000_000n }), held, ring)).toBe(1_000_000n);
+    // A body that states more than the inputs hold: the stated number counts.
+    expect(netRegistryOutflow(script({ collateralReturn: { address: RUN_ADDRESS, lovelace: 4_000_000n }, totalCollateral: 7_000_000n }), held, ring)).toBe(7_000_000n);
+    // The net outflow is the largest of the three.
+    expect(netRegistryOutflow(script({ outputs: outputs([RUN_ADDRESS, 2_000_000n]), collateralReturn: { address: RUN_ADDRESS, lovelace: 4_500_000n }, totalCollateral: 500_000n }), held, ring)).toBe(8_000_000n);
+    // A collateral input that the node did not give is an error, also when the body states the total.
+    const err = refusal(() => netRegistryOutflow(probe, spent([ref(1), RUN_ADDRESS, 10_000_000n]), ring));
+    expect(err.message).toContain(ref(5));
+    expect(err.message).toContain('collateral');
+    // A transaction that runs no script does not count the collateral.
+    expect(netRegistryOutflow({ ...probe, runsScripts: false }, held, ring)).toBe(400_000n);
   });
 
   it('gives 0 for a transaction with no input and no output', () => {
