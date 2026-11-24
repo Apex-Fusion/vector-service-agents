@@ -3,12 +3,14 @@
 // files and to the deploy pack, table by table, so that they cannot part: the opening line, the status line and the changelog; the identity rows of the three instances; the terms, the times and the limits; the 7 checks
 // of the hook with their refusal codes; the steps of the job; the quote; the price list tables; the errors; the claim; the gaps word for word; the data that leaves the service; and the links. No test here uses the network.
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, test } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 import { ACCEPT_WINDOW_MS } from '@vsa/buyer-core';
-import { STRANDED_FILE } from '@vsa/hire-kit';
+import { JANITOR_GRACE_MS, STRANDED_FILE } from '@vsa/hire-kit';
+import { LLM_ADVERT_REF } from '@vsa/hire-kit/testing';
 import { BUSY_TEXT, CONTEXT_HEADERS, HEARTBEAT_MS, JobSlot, MAX_BODY, RESERVATION_MS, STOPPING_TEXT, operatorsText, parseWire } from '@vsa/service-kit';
 import {
   BID_CAPABILITIES, BID_DESK_CLAIM, BID_DESK_MODEL, MAX_RFQ_ITEMS, QUOTE_CHECKS, checkQuoteFromList, lineChecks, parseQuote, parseRfqDocument, priceFor, quotePriceFacts, quoteTotals, rfqSha256,
@@ -22,6 +24,7 @@ import { COUNTERPARTY_REFUSALS, ERROR_STATUS, FAULT_MODES, MAX_REQUEST_BYTES, NO
 import type { FaultSetting, ProtocolResult } from '@vsa/usecase-kit/protocol';
 import { blake2b224Hex } from '@vsa/vector-read';
 import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS } from '../../../scripts/operator/lib/claim-constants.ts';
+import { USE_CASE_NAMES } from '../../../scripts/operator/usecases/names.ts';
 import { MemoryRfqBook, PASSED_CHECKS_TTL_MS, PassedChecks, createPrecheck, loadPriceList, rfqChecks } from '../src/checks/index.ts';
 import { QUOTE_DECISION, QUOTE_REFUSAL_STATUS, RUNTIME_MARGIN_MS, faultyPriceOf, runQuote } from '../src/job/index.ts';
 import type { QuoteChoice } from '../src/job/index.ts';
@@ -36,12 +39,12 @@ import {
   MIN_PROCESSING_WINDOW_MS, PRICE_LIST_ROUTE, PRICE_LOVELACE, RUNTIME_PRECHECK_WAIT_MS, STATE_DIR_DEFAULT, faultOf, organisationOf, priceListFileOf, publicOriginOf, supplierKeyOf,
 } from '../src/serve/settings.ts';
 import type { Instance } from '../src/serve/settings.ts';
-import { SETTINGS } from '../src/serve/start.ts';
+import { JANITOR_INTERVAL_MS, SETTINGS } from '../src/serve/start.ts';
 import { T as HOOK_T, makeWorld as makeHookWorld } from './checks/support.ts';
 import { gatewayFailure, makeRig, refusalOf } from './job/rig.ts';
 import { CHECKS, DESK_DID, RFQ_VALUE, SENDER_DID, T0, choiceOf, decisionOf, messageOf, recordFor } from './job/samples.ts';
 import { PRICE_LIST_SHA256, SERVICE, envOf, priceListOf } from './serve/support.ts';
-import { serve } from './serve/serve.ts';
+import { serve, until } from './serve/serve.ts';
 import { cleanDirs, makeWorld as makeServiceWorld } from './serve/world.ts';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
@@ -127,6 +130,16 @@ const jsonBlock = (text: string): string => /```json\n([\s\S]*?)\n```/.exec(text
 /** The source files of the service, each with its text. */
 const sourceDir = new URL('../src/', import.meta.url);
 const sources = (readdirSync(sourceDir, { recursive: true }) as string[]).map(String).filter((file) => file.endsWith('.ts')).map((file) => [file, readFileSync(new URL(file, sourceDir), 'utf8')] as const);
+/** The non-test TypeScript files below some folders of the repository, as `[path from its root, text]`. A folder that is not there gives none. */
+function repoSources(folders: readonly string[]): Array<readonly [string, string]> {
+  return folders
+    .filter((folder) => existsSync(`${root}${folder}`))
+    .flatMap((folder) => (readdirSync(`${root}${folder}`, { recursive: true }) as string[]).map((file) => `${folder}/${String(file)}`))
+    .filter((file) => file.endsWith('.ts') && !file.split('/').some((part) => part === 'node_modules' || part === 'test'))
+    .map((file) => [file, readFileSync(`${root}${file}`, 'utf8')] as const);
+}
+/** The `src` folder of each agent and of each package of the repository. */
+const srcFoldersOf = (parent: string): string[] => readdirSync(`${root}${parent}`).map((name) => `${parent}/${name}/src`);
 
 /** What the model says in the example of the page: it prices each item from the list of Bid Desk Alfa. */
 const ALFA_REASONING = 'The list gives 125 for 100 gloves, 28 for 250 syringes and 60 for 40 masks, so each line takes the unit price of its break and the lead time of its SKU.';
@@ -328,8 +341,15 @@ describe('specs/bid-desk.md: the Terms', () => {
     }
     expect(row(terms, 'Processing window, advert `max_processing_ms`')).toBe(`| Processing window, advert \`max_processing_ms\` | ${MIN_PROCESSING_WINDOW_MS} ms, for each of the three adverts |`);
     expect(row(terms, 'Service timeout, `SERVICE_TIMEOUT_MS` of each runtime')).toBe(`| Service timeout, \`SERVICE_TIMEOUT_MS\` of each runtime | ${timeout} ms |`);
-    expect(row(terms, 'Job deadline, set by the service when a request arrives')).toBe(`| Job deadline, set by the service when a request arrives | ${JOB_DEADLINE_MS} ms |`);
+    // The 300000 ms are the deadline of the model hire: the earlier of that time after the request arrives and the time that the runtime and the call for the credential need before deliver_by.
+    const hireMargin = RUNTIME_MARGIN_MS + CALL_TIMEOUT_MS;
+    expect(row(terms, 'Deadline of the model hire, set by the service when a request arrives')).toBe(
+      `| Deadline of the model hire, set by the service when a request arrives | ${JOB_DEADLINE_MS} ms after the request arrives, or ${hireMargin} ms before \`deliver_by\`, whichever is earlier |`,
+    );
     expect([MIN_PROCESSING_WINDOW_MS, timeout, JOB_DEADLINE_MS]).toStrictEqual([480_000, 360_000, 300_000]);
+    // The 300000 ms hold the model hire only: the wiring of the hire is the one source, apart from the settings that name the constant, that reads it, and it reads it for the deadline of the hire alone.
+    expect(sources.filter(([file, text]) => file !== 'serve/settings.ts' && text.includes('JOB_DEADLINE_MS')).map(([file]) => file)).toStrictEqual(['serve/wiring.ts']);
+    expect(readFileSync(new URL('../src/serve/wiring.ts', import.meta.url), 'utf8').split('JOB_DEADLINE_MS')).toHaveLength(3);
     // The one model call of a job is the decision quote. A job at a time, and the slot that a go reserves.
     expect(QUOTE_DECISION.name).toBe('quote');
     expect(row(terms, 'Model calls')).toBe('| Model calls | one for each job: the decision `quote` |');
@@ -353,6 +373,7 @@ describe('specs/bid-desk.md: the Terms', () => {
     expect(readme).toContain(`| Call for the credential | ${CALL_TIMEOUT_MS} ms |`);
     expect(readme).toContain(`at or below ${MAX_REQUEST_BYTES} bytes (\`terms.input_limits.request_bytes\`)`);
     expect(readme).toContain(`The three share the terms of their adverts: price ${PRICE_LOVELACE} lovelace, supplier bond ${BOND_LOVELACE} and buyer bond ${BOND_LOVELACE}. The buyer locks ${lock}.`);
+    expect(readme).toContain(`| Least time left before delivery | ${RUNTIME_MARGIN_MS} ms | the job records no quote when less than this is left before \`deliver_by\`. The runtime stops waiting for the job this long before \`deliver_by\` |`);
   });
 
   test('the request limit is 900000 bytes of wire payload and 20 items, and the page says that it is safe only below the limit of the runtime on the escaped body', () => {
@@ -581,7 +602,8 @@ describe('specs/bid-desk.md: what the hook checks before the Claim', () => {
     expect(await go(world.rfq, world.context)).toStrictEqual({ go: true });
     expect(Object.keys(passed.take(world.context.escrowRef, HOOK_T)?.record.checks ?? {})).toStrictEqual([...QUOTE_CHECKS]);
     expect(hook).toContain('The hook does not check the SKUs of the request against the price list. A request none of whose SKUs the list carries passes the hook and the Claim.');
-    expect(hook).toContain('The job then hires the model, and it ends with `model_output_invalid` (502), because a quote needs at least one line (see What it does).');
+    expect(hook).toContain('The job then hires the model. It ends with `model_output_invalid` (502) only when the model gives no line, because a quote needs at least one line (see What it does).');
+    expect(hook).toContain('When the model gives a line for an item that the list does not carry, with a price that it made up, the job makes a quote: it checks no price against the list.');
   });
 });
 
@@ -598,7 +620,10 @@ describe('specs/bid-desk.md: what the job does', () => {
     const phrases = ['takes the record of the checks', 'Decision `quote`', 'checks the choice against the request', 'When the fault switch is set', 'reads the book again', 'credential of the Bid Desk', 'builds the quote', 'checks the time'];
     expect(steps).toHaveLength(phrases.length);
     phrases.forEach((phrase, at) => expect(steps[at], phrase).toContain(phrase));
-    expect(does).toContain(`The job has a deadline of ${JOB_DEADLINE_MS} ms after its request arrives, and it runs these steps in this order. A failure ends the job with an error, and no later step runs.`);
+    const hireMargin = RUNTIME_MARGIN_MS + CALL_TIMEOUT_MS;
+    expect(does).toContain(
+      `The job runs these steps in this order. A failure ends the job with an error, and no later step runs. The service sets one deadline when the request arrives, and it holds the model hire only: the earlier of ${JOB_DEADLINE_MS} ms after the request arrives and ${hireMargin} ms before \`deliver_by\`. The ${hireMargin} ms are ${RUNTIME_MARGIN_MS} ms for the runtime, which stops waiting then, and ${CALL_TIMEOUT_MS} ms for the call for the credential. The steps after the hire can end later than the ${JOB_DEADLINE_MS} ms.`,
+    );
     // The input of the decision: the date of today, the items and the date of the request, and the entries of the list for the SKUs of the items. The identifier of the request, the sender and the delegation stay out.
     const input = membersOf(rig.decideInputs[0]);
     expect(Object.keys(input)).toStrictEqual(['today', 'request', 'price_list']);
@@ -609,10 +634,10 @@ describe('specs/bid-desk.md: what the job does', () => {
     expect(steps[1]).toContain('It answers `{ "lines": [ { "sku", "quantity", "unit_price", "lead_time_days" } ], "valid_until": "<date>", "notes": "..." }`, and its reasons.');
     expect(QUOTE_DECISION.parse(choiceOf()).ok).toBe(true);
     expect(QUOTE_DECISION.parse({ ...choiceOf(), extra: 1 }).ok).toBe(false);
-    // The hire ends at the job deadline, or 50000 ms before deliver_by when that is earlier, and it does not start with less than 60000 ms left for it.
+    // The hire ends 300000 ms after the request arrives, or 50000 ms before deliver_by when that is earlier, and it does not start with less than 60000 ms left for it.
     expect(readFileSync(new URL('../src/serve/wiring.ts', import.meta.url), 'utf8')).toContain('deadlineMs: Math.min(arrivedAt + JOB_DEADLINE_MS, context.deliverByMs - RUNTIME_MARGIN_MS - CALL_TIMEOUT_MS)');
     expect([RUNTIME_MARGIN_MS + CALL_TIMEOUT_MS, HIRE_MIN_MS]).toStrictEqual([50_000, 60_000]);
-    expect(steps[1]).toContain('The hire ends at the job deadline, or 50000 ms before `deliver_by` when that is earlier, and it does not start with less than 60000 ms left for it.');
+    expect(steps[1]).toContain(`The hire ends ${JOB_DEADLINE_MS} ms after the request arrives, or ${hireMargin} ms before \`deliver_by\` when that is earlier, and it does not start with less than ${HIRE_MIN_MS} ms left for it.`);
     expect(steps[0]).toContain('A job with no record, with the record of another body, with a record that lacks one of the 7 checks, or with a fact in the record that it cannot read, fails with `precheck_missing` and makes no quote.');
   });
 
@@ -630,6 +655,17 @@ describe('specs/bid-desk.md: what the job does', () => {
       expect(rig.events).toStrictEqual(['take']);
       expect(rig.booked).toHaveLength(0);
     }
+    // A record whose organisation of the sender has more than 1024 characters holds a fact that the job cannot read, and a record with 1024 characters is read: the twin gives the quote with the whole text.
+    const withOrganisation = (text: string) => {
+      const rig = makeRig();
+      rig.entry = recordFor(rig.request, { facts: { organisation: text, organisation_verified: true } });
+      return rig;
+    };
+    const tooLong = withOrganisation('x'.repeat(1025));
+    expect(await refusalOf(tooLong.run())).toMatchObject({ code: 'precheck_missing', status: 500 });
+    expect(tooLong.events).toStrictEqual(['take']);
+    expect(tooLong.booked).toHaveLength(0);
+    expect((await withOrganisation('x'.repeat(1024)).run()).sender.organisation).toBe('x'.repeat(1024));
     expect(QUOTE_REFUSAL_STATUS.precheck_missing).toBe(500);
   });
 
@@ -680,6 +716,12 @@ describe('specs/bid-desk.md: what the job does', () => {
     expect(await refusalOf(unlisted.run())).toMatchObject({ code: 'model_output_invalid', status: 502 });
     expect(membersOf(unlisted.decideInputs[0]).price_list).toStrictEqual([]);
     expect(unlisted.events).toStrictEqual(['take', 'decide']);
+    // The twin: a model that gives a line for the item that the list lacks, at a price that it made up, gets a quote. Only a choice with no line ends with model_output_invalid.
+    const invented = makeRig({ rfq: { items: [{ sku: 'NO-SUCH-SKU', quantity: 3 }] } });
+    invented.decision = accepted(decisionOf(choiceOf({ lines: [{ sku: 'NO-SUCH-SKU', quantity: 3, unit_price: 50, lead_time_days: 3 }] })));
+    expect(priceFor(invented.deps.priceList.list, 'NO-SUCH-SKU', 3)).toBeNull();
+    expect((await invented.run()).lines).toStrictEqual([{ sku: 'NO-SUCH-SKU', quantity: 3, unit_price: 50, line_total: 150, lead_time_days: 3 }]);
+    expect(invented.booked).toHaveLength(1);
     expect(does).toContain('The instruction to the model says to leave an item that the list does not carry out of the lines, and to name it in the notes. When no line is left, the job ends with `model_output_invalid` (502) after the Claim, and the service has paid for the model hire.');
   });
 
@@ -727,6 +769,12 @@ describe('specs/bid-desk.md: what the job does', () => {
     expect(late.events).toStrictEqual(['take', 'decide', 'has', 'credential']);
     const edge = makeRig({ deliverInMs: RUNTIME_MARGIN_MS });
     expect((await edge.run()).rfq_id).toBe('run1-rfq-1');
+    // The 300000 ms hold the model hire only: a hire that ends after them leaves the job as it was, and the job gives its quote when 30000 ms or more are left before deliver_by.
+    const slow = makeRig({ deliverInMs: JOB_DEADLINE_MS + 120_000 });
+    const decideSlowly = slow.deps.decide;
+    const slowQuote = await runQuote({ ...slow.deps, decide: async (input) => { slow.now += JOB_DEADLINE_MS + 1; return decideSlowly(input); } }, slow.request, slow.context, T0);
+    expect(slowQuote.rfq_id).toBe('run1-rfq-1');
+    expect(slow.booked).toHaveLength(1);
     const gone = new AbortController();
     gone.abort();
     const before = makeRig();
@@ -778,7 +826,8 @@ describe('specs/bid-desk.md: the response', () => {
     expect(row(response, '`decisions`')).toBe('| `decisions` | one decision, `quote`: its choice, its reasoning, and the hire of the model supplier with the sub-receipt that the service verified (`inference`) |');
     expect(row(response, '`fault_mode`')).toBe('| `fault_mode` | the setting of the fault switch: the empty text in a clean run. It is the last member |');
     expect(row(response, '`notes`')).toBe('| `notes` | the note of the model: at most 500 characters |');
-    expect(row(response, '`sender`')).toBe('| `sender` | the DID of the sender, the organisation that the covering Accountable Party names (or `null`), and whether the identity gateway verified it. The organisation is recorded, and it is never a reason to refuse |');
+    expect(row(response, '`sender`')).toBe('| `sender` | the DID of the sender, the organisation that the covering Accountable Party names (or `null`), and whether the identity gateway verified it. The organisation is recorded, and the hook never refuses a sender for it. The job refuses an organisation of more than 1024 characters with `precheck_missing` (500) after the Claim |');
+    expect(readme).toContain('| `sender` | the sender: `did`, `organisation` and `organisation_verified`. The organisation is the one that the covering Accountable Party names, or `null`. It is recorded, and the hook never refuses a sender for it. The job refuses one of more than 1024 characters with `precheck_missing` (500) after the Claim |');
     expect(Object.keys(given).at(-1)).toBe('fault_mode');
     expect(response).toContain('`schema` is `vector.usecase.quote.v1`. A job that makes the quote answers with it, as the body of the answer, serialised once, with its members in the order of the table below.');
     expect(response).toContain('The signed receipt of the job is the signed quote: the receipt commits to the text of the quote. A job that does not make a quote answers with an error (see Errors) and no quote.');
@@ -800,8 +849,26 @@ describe('specs/bid-desk.md: the response', () => {
     expect([withNotes('a'.repeat(500)), withNotes('a'.repeat(501)), withNotes('a\u0007b'), withNotes('a\u200bb')]).toStrictEqual([true, false, false, false]);
     const withOrganisation = (organisation: string): boolean => parseQuote({ ...given, sender: { ...given.sender, organisation } }).ok;
     expect([withOrganisation('x'.repeat(1024)), withOrganisation('x'.repeat(1025)), withOrganisation('Any text, with spaces.')]).toStrictEqual([true, false, true]);
-    expect(response).toContain('The `notes` and the organisation of the sender are free text. The notes hold at most 500 characters and no control or hidden character. The organisation of the sender holds at most 1024 characters, and it can be any text that the covering Accountable Party names.');
+    expect(response).toContain('The `notes` and the organisation of the sender are free text. The notes hold at most 500 characters and no control or hidden character. The quote holds an organisation of the sender of at most 1024 characters, and it can be any text that the covering Accountable Party names. The hook takes an organisation of any length. The job refuses one of more than 1024 characters: it fails with `precheck_missing` (500) after the Claim and before the model hire, and it makes no quote.');
     expect(response).toContain('The quote names the hash of the request and the hash of the price list that it was priced from, so a buyer\'s agent can check each unit price against the public list.');
+  });
+
+  test('the hook takes an organisation of the sender of any length, and the job refuses one of more than 1024 characters with precheck_missing after the Claim and before the model hire', async () => {
+    const organisation = 'x'.repeat(5_000);
+    const world = makeHookWorld({ organisation: { domain: organisation, verified: true } });
+    const passed = new PassedChecks();
+    const go = createPrecheck({ ports: world.ports, book: new MemoryRfqBook(), passed, clock: () => HOOK_T, log: () => undefined });
+    expect(await go(world.rfq, world.context)).toStrictEqual({ go: true });
+    const kept = passed.take(world.context.escrowRef, HOOK_T);
+    if (kept === null) throw new Error('the hook kept no record of the checks');
+    expect(kept.record.facts).toMatchObject({ organisation, organisation_verified: true });
+    // The job takes that record, as the hook kept it, and refuses it before it hires a model.
+    const rig = makeRig();
+    rig.entry = { record: kept.record, request_sha256: recordFor(rig.request).request_sha256 };
+    expect(await refusalOf(rig.run())).toMatchObject({ code: 'precheck_missing', status: 500 });
+    expect(rig.events).toStrictEqual(['take']);
+    expect(rig.booked).toHaveLength(0);
+    expect(response).toContain('The hook takes an organisation of any length. The job refuses one of more than 1024 characters: it fails with `precheck_missing` (500) after the Claim and before the model hire, and it makes no quote.');
   });
 });
 
@@ -857,8 +924,8 @@ describe('specs/bid-desk.md: the price list', () => {
 describe('specs/bid-desk.md: the errors', () => {
   const errors = sub('Errors');
   const statusRows = (text: string): string[] => text.split('\n').filter((line) => /^\| \d{3}, /.test(line));
-  /** The names of codes in the second cell of a row of the table, in order. */
-  const codesIn = (line: string): string[] => [...(line.split('|')[2] ?? '').matchAll(/`([^`]+)`/g)].map((hit) => hit[1]).filter((text) => /^[a-z_]+$/.test(text));
+  /** The names of codes in the second cell of a row of the table, in order. A word in the explanation of a code, in brackets, is no code. */
+  const codesIn = (line: string): string[] => [...(line.split('|')[2] ?? '').replace(/\([^)]*\)/g, '').matchAll(/`([^`]+)`/g)].map((hit) => hit[1]).filter((text) => /^[a-z_]+$/.test(text));
   const kitServer = readFileSync(new URL('../../../packages/service-kit/src/server.ts', import.meta.url), 'utf8');
 
   test('the table is the table of the README, with its 11 rows, every code has its status, and the codes are the codes of the hook, the job and the service, and no others', () => {
@@ -894,6 +961,8 @@ describe('specs/bid-desk.md: the errors', () => {
     expect(kitServer).toContain("return send(500, { error: 'internal' });");
     expect(errors).toContain(`- A refusal of status 500 or more gets a fixed message, \`${operatorsText('<code>')}\`, because the runtime copies the first 200 characters of a failure to the buyer, and the detail is the operator's. \`shutting_down\` has the fixed message \`${STOPPING_TEXT}\`, and the 409 \`busy\` of the hook has the fixed message \`${BUSY_TEXT}\`.`);
     expect(errors).toContain('- The messages of `duplicate_rfq` and `deadline` are fixed texts that hold no value of the request.');
+    // The `deadline` row names the time before deliver_by. The runtime stops waiting 30 s before deliver_by, so the job gives its quote while 30 s or more are left before deliver_by, and "30 s before the runtime stops waiting" would be 60 s before deliver_by.
+    expect(statusRows(errors).find((line) => line.startsWith('| 422, the job |'))).toBe('| 422, the job | `deadline` (the caller hung up before the model hire or before the record in the book, or less than 30 s are left before `deliver_by`) |');
     expect(errors).toContain('- A refusal of the hook leaves the escrow open, and nothing is paid. A job that fails after the Claim leaves the escrow Claimed: the buyer reclaims it after `deliver_by`, and nothing is paid for work that was not done.');
     expect(readme).toContain('A job that fails after the Claim leaves the escrow claimed. The buyer reclaims it after the deadline, and nothing is paid for work that was not done.');
     expect(errors).toContain('- The Bid Desk calls no mock system, so a failed job can leave behind a model hire and nothing else. A job that fails after the service accepted the model hire has paid the model supplier from the service key. A hire that stays unfinished is in the stranded file of the service key, and the janitor settles it.');
@@ -996,7 +1065,9 @@ describe('specs/bid-desk.md: the receipt, the claim and the fault switch', () =>
     expect(await refusalOf(none.run())).toMatchObject({ code: 'internal', status: 500 });
     expect(none.booked).toHaveLength(0);
     expect(fault).toContain('When no line can take the new price, the job ends with `internal` (500): a run never says that a fault was on when it changed nothing.');
-    expect(fault).toContain('The failure run sets the switch on one Bid Desk only, Bid Desk Charlie, to show that the Sourcing Agent catches a quote that is below the published price list. The switch of one Bid Desk never changes another: each Bid Desk reads an env file of its own.');
+    // The failure run is a plan. The operator pack has the data of use case 1 only, so no command runs use case 3: the data file of another use case fails this test and forces a change of the page.
+    expect([...USE_CASE_NAMES]).toStrictEqual(['inventory-reorder']);
+    expect(fault).toContain('The planned failure run sets the switch on one Bid Desk only, Bid Desk Charlie, to show that the Sourcing Agent catches a quote that is below the published price list. No command of this repository runs use case 3 yet. The switch of one Bid Desk never changes another: each Bid Desk reads an env file of its own.');
   });
 
   test('the switch is empty in a clean run, any other value stops the start, the hook does not know the switch, and the manifest is the same for every value', () => {
@@ -1057,10 +1128,38 @@ describe('specs/bid-desk.md: the receipt, the claim and the fault switch', () =>
       expect(prompt.slice(open), text).toContain(text);
     }
     expect(operator).toContain('The text of the request and of the price list reaches the model only inside the marked data block, and never inside an instruction.');
-    // The service reads the ledger and posts its escrows through four settings, and its start makes no call to a third party.
+    // The service reads the ledger and posts its escrows through four settings, and its start makes no call of its own to a third party. The first pass of its janitor is the one thing that it does at start (the next test).
     for (const name of ['VECTOR_OGMIOS_URL', 'VECTOR_KOIOS_URL', 'VECTOR_SUBMIT_URL', 'VECTOR_MARKETPLACE_INDEXER_URL']) expect(SETTINGS, name).toContain(name);
     expect(readme).toContain('The start makes no call of its own to a third party.');
-    expect(operator).toContain('To post and settle its escrows for the model hire, the service reads the ledger through the node (Ogmios) and the Koios indexer, submits its transactions through the submit API, and finds the model suppliers on the marketplace indexer. At start the service makes no call to a third party.');
+    expect(readme).toContain(`The start makes no call of its own to a third party. The janitor runs its first pass at once, and then one pass every ${JANITOR_INTERVAL_MS / 1000} s. A pass reads the ledger for each escrow of the stranded file that is due, and it can submit a Reclaim, or one more Accept.`);
+    expect(operator).toContain(
+      `To post and settle its escrows for the model hire, the service reads the ledger through the node (Ogmios) and the Koios indexer, submits its transactions through the submit API, and finds the model suppliers on the marketplace indexer. At start the service makes no call of its own to a third party. The janitor of the service key runs its first pass at once, and then one pass every ${JANITOR_INTERVAL_MS / 1000} s. A pass reads the ledger for each escrow of the stranded file that is due, and it can submit a Reclaim, or one more Accept, through the submit API. When the stranded file holds no escrow that is due, a pass makes no call.`,
+    );
+  });
+
+  test('the first pass of the janitor runs at once when the service starts: it reads the ledger for an escrow of the stranded file that is due and submits a Reclaim, and it does not wait for the interval', async () => {
+    const world = makeServiceWorld();
+    // A model hire that a stopped service left behind: an Open escrow of the stub marketplace, posted from the service key, whose deliver_by has passed. The stranded file of the key names it.
+    const posted = await world.m.chain.postEscrow({ advertRef: LLM_ADVERT_REF, promptHash: 'ab'.repeat(32) });
+    world.m.clock.now = posted.deliverBy + JANITOR_GRACE_MS;
+    const folder = join(world.stateDir, 'keys', SERVICE.pkh);
+    mkdirSync(folder, { recursive: true });
+    const stranded = join(folder, STRANDED_FILE);
+    writeFileSync(stranded, JSON.stringify([{ escrow_ref: posted.escrowRef, deliver_by: posted.deliverBy, posted_at: posted.postedAt, kind: 'llm' }]));
+    expect(await world.m.chain.escrowState(posted.escrowRef)).toBe('Open');
+    // The interval of the world is one hour, so a second pass cannot come inside this test: the Reclaim is the work of the first pass.
+    expect(world.options.janitorIntervalMs).toBe(3_600_000);
+    expect(JANITOR_INTERVAL_MS).toBe(60_000);
+    try {
+      await serve(world, async () => {
+        await until(() => world.logs.some((line) => line.includes('janitor: reclaimed')), 'the first pass has reclaimed the escrow');
+        expect(await world.m.chain.escrowState(posted.escrowRef)).toBe('spent');
+        expect(JSON.parse(readFileSync(stranded, 'utf8'))).toStrictEqual([]);
+      });
+    } finally {
+      cleanDirs();
+    }
+    expect(readFileSync(new URL('../../../packages/hire-kit/src/janitor.ts', import.meta.url), 'utf8')).toContain('Runs a pass at once and then one every `intervalMs` after the last one ended');
   });
 
   test('Known gaps: the eight sentences of the manifest, word for word and in order, with the sentence about the keys, the run-in lead of what no run shows, and the sentence of the kit about the fault switch', () => {
@@ -1082,6 +1181,21 @@ describe('specs/bid-desk.md: the receipt, the claim and the fault switch', () =>
     for (const item of ['the refund of the escrow of a revoked agent', 'the reclaim of an escrow in use case 3', 'a relying party that refuses a live token after its authority ends']) expect(lines[6], item).toContain(item);
     expect(known).toContain('The manifest states these eight, in this order, word for word. A test keeps them equal to `GAPS` in `agents/bid-desk/src/serve/gaps.ts`.');
     expect(known).toContain('The first five are the gaps of the agent. The sixth says whose keys the parties are. The seventh starts with a run-in lead and names three things that no run of use case 3 (supplier bid evaluation) covers. The eighth is the sentence of the kit about the fault switch.');
+    // The fourth gap names the compliance attestation. The Sourcing Agent reads it (type 0), the Bid Desk reads none, and nothing in this repository issues it.
+    expect(known).toContain('The fourth gap names the compliance attestation of a Bid Desk: an identity attestation (type 0) that the compliance registry issues about it. The Bid Desk does not read it. Only the Sourcing Agent reads it. Nothing in this repository issues it.');
+    expect(readFileSync(new URL('../../sourcing-agent/src/compliance/read.ts', import.meta.url), 'utf8')).toContain('export const COMPLIANCE_ATT_TYPE = 0;');
+    expect(sources.filter(([, text]) => /attestation/i.test(text)).map(([file]) => file)).toStrictEqual(['serve/gaps.ts']);
+    const everySource = repoSources([...srcFoldersOf('agents'), ...srcFoldersOf('packages'), 'scripts']);
+    expect(everySource.length).toBeGreaterThan(100);
+    const readers = everySource.filter(([, text]) => /\bCOMPLIANCE_ATT_TYPE\b|\breadCompliance\b/.test(text)).map(([file]) => file);
+    expect(readers.length).toBeGreaterThan(0);
+    expect(readers.filter((file) => !file.startsWith('agents/sourcing-agent/src/'))).toStrictEqual([]);
+    // The one function that builds an attestation is called by the task `attest` of the operator pack (provenance and software), by the checks (approval and principal binding), and by nothing else.
+    expect(everySource.filter(([, text]) => text.includes('buildAttest(')).map(([file]) => file).sort()).toStrictEqual([
+      'packages/buyer-core/src/vendored/mcp/attestation-build.ts', 'scripts/checks/lib/check-attestations.ts', 'scripts/operator/tasks/attest.ts',
+    ]);
+    expect(readFileSync(`${root}scripts/operator/lib/contract.ts`, 'utf8')).toContain("readonly types: readonly ('provenance' | 'software')[]");
+    expect(readFileSync(`${root}scripts/checks/lib/check-attestations.ts`, 'utf8')).toContain("type: 'approval' | 'principal_binding';");
   });
 });
 
