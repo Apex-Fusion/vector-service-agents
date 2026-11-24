@@ -20,6 +20,7 @@ import { QUOTE_CODES, QUOTE_HIRE_RESERVE_MS } from '../src/quotes/index.ts';
 import { SCORER_JOB_TIMEOUT_MS, SCORER_NEED_MS, SCORERS_NEED_MS, SCORING_FAILURES, SUB_DELEGATION_VALID_MS } from '../src/scoring/index.ts';
 import { reversedOf, scoreFaultOf } from '../src/scoring/fault.ts';
 import { BIDDER_FETCH_TIMEOUT_MS, BIDDER_READ_BUDGET_MS, FACT_READ_TIMEOUT_MS, MAX_CANDIDATES } from '../src/bidders/index.ts';
+import { NOT_ACCEPTED } from '../src/quotes/decide.ts';
 import { DESCRIPTION, ID_CHARS, REQUEST_SCHEMA, TENANT_CHARS } from '../src/serve/manifest.ts';
 import { RequestRefusal, parseJob } from '../src/serve/server.ts';
 import {
@@ -101,6 +102,10 @@ describe('agents/sourcing-agent/README.md: what it is', () => {
     expect(intro).toContain('It reads the candidates: the Bid Desks that the indexer lists and the chain shows, at most 8.');
     expect(MAX_CANDIDATES).toBe(8);
     expect(intro).toContain('The agent hires the invited bidders one after the other');
+    // Five checks in code come before the model. They are the reasons of `NOT_ACCEPTED` that are no decision: the other two are the no of the model and a decision that failed.
+    const checks = Object.entries(NOT_ACCEPTED).filter(([name]) => name !== 'declined' && name !== 'failed').map(([, code]) => code);
+    expect(checks).toStrictEqual(['quote_invalid', 'quote_not_from_bidder', 'quote_not_for_rfq', 'quote_not_from_list', 'delivery_not_recordable']);
+    expect(intro).toContain('Five checks in code come before the model: the answer is a quote, the quote is from the bidder, it answers this request, it names the price list that the agent read, and the receipt names the key hash of the supplier, so that the agent can record the delivery.');
     expect(intro).toContain('The three scorers are used one for each accepted quote, in the order of the quotes.');
     expect(SCORER_DIDS).toHaveLength(3);
     expect([SHORTLIST_DECISION, ACCEPT_QUOTE_DECISION, SCORE_DECISION, RANKING_DECISION].map((decision) => decision.name)).toStrictEqual(['shortlist', 'accept_quote', 'score', 'ranking']);
