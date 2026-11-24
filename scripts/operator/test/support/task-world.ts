@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll } from 'vitest';
 import { iso } from '../../../checks/lib/format.ts';
+import { recordLanded } from '../../../checks/lib/inflight.ts';
 import type { HostedTools } from '../../../checks/lib/hosted.ts';
 import type { LandIo, LandRequest } from '../../../checks/lib/land.ts';
 import { lucidForAddress } from '../../../checks/lib/platform.ts';
@@ -203,7 +204,7 @@ export function recordingStep<Extra = unknown>(name: string, ran: string[], over
     async run(session) {
       ran.push(name);
       if (session.mode === 'dry') return { kind: 'dry' };
-      session.state.recordStep(name, { confirmed_at: iso(session.clock.now()), tx_hash: hashOf(`step ${name}`), refs: {}, facts: {} });
+      recordLanded(session.state, { step: name, tx_hash: hashOf(`step ${name}`), refs: {}, facts: {} }, session.clock.now());
       return { kind: 'done', message: `${name} is confirmed` };
     },
     ...over,

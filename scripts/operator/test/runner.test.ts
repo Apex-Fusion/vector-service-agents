@@ -437,6 +437,75 @@ describe('runSteps', () => {
     expect(w.state('toy').steps.one!.verified_at).not.toBeNull();
     expect(ran).toEqual(['one', 'two']);
   });
+
+  describe('a step with a colon in its name, which the landing keeps as a part of a step', () => {
+    const colonSteps = (ran: string[]): StepHandler[] => [recordingStep('agent:open', ran), recordingStep('agent:create', ran)];
+    it('counts as confirmed when its part is recorded: one step at a time, never again, and finished at the end', async () => {
+      const w = await taskWorld();
+      w.writeGo();
+      const ran: string[] = [];
+      const def = toyTask(colonSteps(ran));
+      expect(await w.run(def, '--submit')).toBe(0);
+      expect(ran).toEqual(['agent:open']);
+      expect(w.state('toy').steps).toEqual({});
+      expect(Object.keys(w.state('toy').notes)).toEqual(['part.agent:open']);
+      expect(w.machine()).toMatchObject({ outcome: 'done', step: 'agent:open' });
+      expect(await w.run(def, '--submit')).toBe(0);
+      expect(ran).toEqual(['agent:open', 'agent:create']);
+      expect(w.machine()).toMatchObject({ outcome: 'done', step: 'agent:create' });
+      reset(w);
+      expect(await w.run(def, '--submit')).toBe(0);
+      expect(ran).toEqual(['agent:open', 'agent:create']);
+      expect(w.machine()).toMatchObject({ outcome: 'finished', step: null });
+    });
+    it('goes on to the end with --all', async () => {
+      const w = await taskWorld();
+      w.writeGo();
+      const ran: string[] = [];
+      expect(await w.run(toyTask(colonSteps(ran)), '--submit', '--all')).toBe(0);
+      expect(ran).toEqual(['agent:open', 'agent:create']);
+      expect(w.machine()).toMatchObject({ outcome: 'finished', step: 'agent:create' });
+    });
+    it('shows each step once in the status, with its transaction and the next step, and shows a part that no step names', async () => {
+      const w = await taskWorld();
+      w.writeGo();
+      const ran: string[] = [];
+      const opening = recordingStep('agent:open', ran, {
+        run: async (session) => {
+          await recordingStep('agent:open', ran).run(session);
+          session.state.setNote('part.hire:pay', { confirmed_at: iso(NOW), tx_hash: hashOf('pay'), refs: {}, facts: {} });
+          return { kind: 'done', message: 'agent:open is confirmed' };
+        },
+      });
+      const def = toyTask([opening, recordingStep('agent:create', ran)]);
+      await w.run(def, '--submit');
+      reset(w);
+      expect(await w.run(def, 'status')).toBe(0);
+      const lines = w.screen.lines;
+      expect(lines.filter((line) => line.includes('agent:open'))).toHaveLength(1);
+      expect(lines.find((line) => line.trim().startsWith('agent:open'))).toMatch(/agent:open +confirmed .*transaction [0-9a-f]{64}, not verified/);
+      expect(lines.find((line) => line.trim().startsWith('agent:create'))).toMatch(/agent:create +not run/);
+      expect(lines.find((line) => line.trim().startsWith('hire:pay'))).toContain(`confirmed (a part of a step), transaction ${hashOf('pay')}`);
+      expect(lines).toContain('next: agent:create');
+    });
+    it('verifies a part at once, marks it verified in its note, and verifies a part that is not verified before anything else', async () => {
+      const w = await taskWorld();
+      w.writeGo();
+      const events: string[] = [];
+      const verify = async (): Promise<void> => { events.push('verify'); };
+      expect(await w.run(toyTask([recordingStep('agent:open', events, { verify }), recordingStep('agent:create', events)]), '--submit')).toBe(0);
+      expect(events).toEqual(['agent:open', 'verify']);
+      expect(w.state('toy').notes['part.agent:open']).toMatchObject({ tx_hash: hashOf('step agent:open'), verified_at: iso(NOW) });
+      expect(w.screen.lines).toContain('the step agent:open is verified');
+      expect(await w.run(toyTask(colonSteps([])), '--submit', '--all')).toBe(0);
+      events.length = 0;
+      const later = toyTask([recordingStep('agent:open', events), recordingStep('agent:create', events, { verify })]);
+      expect(await w.run(later, '--submit')).toBe(0);
+      expect(events).toEqual(['verify']);
+      expect(w.state('toy').notes['part.agent:create']).toMatchObject({ verified_at: iso(NOW) });
+      expect(w.machine()).toMatchObject({ outcome: 'finished' });
+    });
+  });
 });
 
 describe('a transaction in flight', () => {

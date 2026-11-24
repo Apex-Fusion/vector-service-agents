@@ -30,7 +30,7 @@ import type { ChainAccess, Mode, StepOutcome } from '../../checks/lib/session.ts
 import { SettingsError } from '../../checks/lib/settings.ts';
 import type { Env } from '../../checks/lib/settings.ts';
 import { StateError, StateFile } from '../../checks/lib/state.ts';
-import type { InFlight, StepRecord } from '../../checks/lib/state.ts';
+import type { CheckState, InFlight, StepRecord } from '../../checks/lib/state.ts';
 import type { HostedTools } from '../../checks/lib/hosted.ts';
 import { TASK_NAMES } from '../tasks/names.ts';
 import { ApprovalError, Exposure, loadGo, requireGo } from './approval.ts';
@@ -200,6 +200,43 @@ export interface StepHandler<Extra = unknown> {
 /** What the runner knows of the run while a task runs, by session: `runSteps` tells it the step that it is at. */
 const PROGRESS = new WeakMap<object, { step: string | null }>();
 
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * The record of a confirmed step, or undefined. A step that the state file holds has its own record. A name with a colon (`reorder-agent:open`) is a part of a step for the state file: the landing
+ * keeps the part as the note `part.<name>`, and that note is the record of a step of the task whose name has a colon.
+ */
+function recordOf(state: StateFile, name: string): StepRecord | undefined {
+  const step = state.step(name);
+  if (step !== undefined || !name.includes(':')) return step;
+  const note = state.note<unknown>(`part.${name}`);
+  if (!isObject(note)) return undefined;
+  const { confirmed_at: confirmedAt, tx_hash: txHash, refs, facts, verified_at: verifiedAt } = note;
+  return {
+    confirmed_at: typeof confirmedAt === 'string' ? confirmedAt : '',
+    tx_hash: typeof txHash === 'string' ? txHash : null,
+    refs: isObject(refs) ? Object.fromEntries(Object.entries(refs).filter((pair): pair is [string, string] => typeof pair[1] === 'string')) : {},
+    facts: isObject(facts) ? facts : {},
+    verified_at: typeof verifiedAt === 'string' ? verifiedAt : null,
+  };
+}
+
+/** Marks a confirmed step as verified: in the state file, or, for the part that is the record of a step with a colon in its name, in its note. */
+function markVerifiedStep(state: StateFile, name: string, at: string): void {
+  if (state.step(name) !== undefined || !name.includes(':')) {
+    state.markVerified(name, at);
+    return;
+  }
+  const note = state.note<unknown>(`part.${name}`);
+  if (!isObject(note)) throw new StateError('unknown_step', `the step ${name} is not recorded`);
+  state.setNote(`part.${name}`, { ...note, verified_at: at });
+}
+
+/** The names that a state holds: each confirmed step, and each part, which is the record of a step with a colon in its name. */
+function namesOf(snapshot: CheckState): string[] {
+  return [...Object.keys(snapshot.steps), ...Object.keys(snapshot.notes).filter((key) => key.startsWith('part.')).map((key) => key.slice(5))];
+}
+
 /**
  * Does the next step: the first step that is not confirmed. A step that is confirmed is never run again, and a confirmed step that is not verified is verified first. A step that lands is verified
  * at once. Without `--all` the run ends after one step. With `--all` it goes on after each step that is done and recorded, and ends at the first step that is only shown, that must wait, or that
@@ -208,14 +245,14 @@ const PROGRESS = new WeakMap<object, { step: string | null }>();
 export async function runSteps<Extra>(session: TaskSession<Extra>, handlers: readonly StepHandler<Extra>[]): Promise<StepOutcome> {
   const progress = PROGRESS.get(session);
   for (const handler of handlers) {
-    const record = session.state.step(handler.name);
+    const record = recordOf(session.state, handler.name);
     if (record !== undefined) {
       if (record.verified_at === null) await verifyStep(session, handler, record);
       continue;
     }
     if (progress !== undefined) progress.step = handler.name;
     let outcome = await handler.run(session);
-    const landed = session.state.step(handler.name);
+    const landed = recordOf(session.state, handler.name);
     if (outcome.kind === 'done' && landed !== undefined && landed.verified_at === null && handler.verify !== undefined) {
       session.out.out(outcome.message);
       await verifyStep(session, handler, landed);
@@ -231,7 +268,7 @@ export async function verifyStep<Extra>(session: TaskSession<Extra>, handler: St
   if (handler.verify === undefined) return;
   session.out.out(`verifying the step ${handler.name} with the hosted tools`);
   await handler.verify(session, record);
-  session.state.markVerified(handler.name, iso(session.clock.now()));
+  markVerifiedStep(session.state, handler.name, iso(session.clock.now()));
   session.out.out(`the step ${handler.name} is verified`);
 }
 
@@ -296,17 +333,17 @@ export async function statusLines<Extra>(def: TaskDefinition<Extra>, session: Ta
   const steps = def.steps(session.use, session.flags);
   const lines = [`task ${def.name}: ${def.title}`, `use case ${session.use.name}, network ${session.settings.network.name}`, `state file ${session.state.path}`, 'steps:'];
   for (const step of steps) {
-    const record = snapshot.steps[step];
+    const record = recordOf(session.state, step);
     lines.push(`  ${step.padEnd(16)} ${record === undefined ? 'not run' : `confirmed ${record.confirmed_at}${record.tx_hash === null ? '' : `, transaction ${record.tx_hash}`}, ${record.verified_at === null ? 'not verified' : 'verified'}`}`);
   }
-  for (const key of Object.keys(snapshot.notes).filter((note) => note.startsWith('part.'))) {
+  for (const key of Object.keys(snapshot.notes).filter((note) => note.startsWith('part.') && !steps.includes(note.slice(5)))) {
     const part = snapshot.notes[key];
     const hash = part !== null && typeof part === 'object' && 'tx_hash' in part && typeof part.tx_hash === 'string' ? part.tx_hash : '?';
     lines.push(`  ${key.slice(5).padEnd(16)} confirmed (a part of a step), transaction ${hash}`);
   }
   const flight = snapshot.in_flight;
   lines.push(flight === null ? 'in flight: nothing' : `in flight: the step ${flight.step}, transaction ${flight.tx_hash}, signed at ${iso(flight.signed_at)}, may land until ${iso(flight.valid_to)}`);
-  const next = steps.find((step) => snapshot.steps[step] === undefined);
+  const next = steps.find((step) => recordOf(session.state, step) === undefined);
   lines.push(`next: ${next === undefined ? 'every step is confirmed; run cleanup to take back what can come back' : next}`);
   if (def.needs.chain) {
     const gate = session.networkResult();
@@ -400,7 +437,7 @@ function landingsSince(state: StateFile, before: ReadonlyMap<string, string>): L
 
 /** The first step of the task that the state file does not hold, or null. A task that fails to list its steps gives null. */
 function firstOpenStep<Extra>(def: TaskDefinition<Extra>, session: TaskSession<Extra>): string | null {
-  try { return def.steps(session.use, session.flags).find((step) => !session.state.confirmed(step)) ?? null; } catch { return null; }
+  try { return def.steps(session.use, session.flags).find((step) => recordOf(session.state, step) === undefined) ?? null; } catch { return null; }
 }
 
 /** Says what happened to the transaction of a cleared `in_flight`, after the second read of its status. The runner gives a reserve back only when that read worked and did not know the hash. */
@@ -531,7 +568,7 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
 
   ctx.session = session;
   ctx.before = transactionsOf(state);
-  ctx.stepsBefore = new Set(Object.keys(state.snapshot().steps));
+  ctx.stepsBefore = new Set(namesOf(state.snapshot()));
   const outcome = args.command === 'cleanup' ? await def.cleanup(session) : await def.next(session);
   return endOf(outcome, args.mode, out);
 }
@@ -540,7 +577,7 @@ async function execute<Extra>(def: TaskDefinition<Extra>, argv: readonly string[
 function stepOf<Extra>(def: TaskDefinition<Extra>, ctx: Context<Extra>, outcome: ResultOutcome): string | null {
   if (ctx.progress.step !== null) return ctx.progress.step;
   if (ctx.before === null || ctx.session === null || ctx.state === null || outcome === 'finished') return null;
-  if (outcome === 'done') return Object.keys(ctx.state.snapshot().steps).filter((name) => !ctx.stepsBefore.has(name)).at(-1) ?? null;
+  if (outcome === 'done') return namesOf(ctx.state.snapshot()).filter((name) => !ctx.stepsBefore.has(name)).at(-1) ?? null;
   return firstOpenStep(def, ctx.session);
 }
 
