@@ -8949,16 +8949,23 @@ test('use case 3 drift: each SKU of the three price lists is a SKU of the defaul
   assert.deepEqual(priceListDriftProblems(lists, [...answer.catalogue].reverse()), [], 'a price of 10, and the catalogue in another order');
 });
 
-// The vendors of the default seed of the mock service, as the vendor parser of the Sourcing Agent reads them. The route of the vendors gives the vendors of the seed of the tenant, so each vendor list that the seed
-// takes must be a list that the parser takes, and the parser may take more. The organisation of each vendor is the key of the entry that a scorer reads: the entry whose organisation is the verified organisation of
-// the bidder. The default seed names three example domains, and the seed that the operator gives a tenant names the domains of the three Bid Desks, so a vendor with each of those domains must be read too.
-const VENDORS_DRIFT_CODE = String.raw`
+// Use the response body of GET /vendors. If the seed refuses an input, test it only as a direct input to the parser.
+const VENDOR_RESPONSE_CODE = String.raw`
 import { readFileSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { defaultSeed, parseSeed } from './src/seed.ts';
-import { parseVendors } from '../../agents/sourcing-agent/src/scoring/vendors.ts';
-const accepted = (run) => { try { run(); return true; } catch (error) { if (error?.name !== 'Invalid') throw error; return false; } };
-const { cases, desks } = JSON.parse(readFileSync(0, 'utf8'));
+import { Tenant } from './src/tenants.ts';
+import { parseVendors, vendorFor } from '../../agents/sourcing-agent/src/scoring/vendors.ts';
+const bodyOf = ({ tenant, organisations, seed }) => {
+  const parsed = parseSeed('body.seed', seed);
+  const instance = new Tenant(tenant, organisations, parsed, 0);
+  return JSON.parse(JSON.stringify({ vendors: instance.vendors() }));
+};
+`;
+
+const VENDORS_DRIFT_CODE = VENDOR_RESPONSE_CODE + String.raw`
+const cases = JSON.parse(readFileSync(0, 'utf8'));
+const tenant = { tenant: 'run1', organisations: { supplier: 'supplier.example.org', insurer: 'insurer.example.org' } };
 const seed = defaultSeed();
 const base = seed.vendors[0];
 const others = (count) => Array.from({ length: count }, (_, i) => ({ ...base, vendor_id: 'V-' + (2000 + i) }));
@@ -8972,18 +8979,17 @@ const vendorsOf = (op) => {
     default: return [{ ...base, [op.member]: op.value }];
   }
 };
-const both = (vendors) => ({ mock: accepted(() => parseSeed('seed', { vendors })), agent: parseVendors({ vendors: JSON.parse(JSON.stringify(vendors)) }).ok });
-const body = { vendors: JSON.parse(JSON.stringify(seed.vendors)) };
-const read = parseVendors(body);
-console.log(JSON.stringify({
-  seed: { ok: read.ok, same: read.ok && isDeepStrictEqual(JSON.parse(JSON.stringify(read.value)), body.vendors), organisations: seed.vendors.map((vendor) => vendor.organisation) },
-  cases: cases.map(([, op]) => both(vendorsOf(op))),
-  desks: desks.map((organisation) => ({ organisation, ...both([{ ...base, vendor_id: 'V-9999', organisation }]) })),
-}));
+const both = (vendors) => {
+  let body;
+  try { body = bodyOf({ ...tenant, seed: { vendors } }); }
+  catch (error) { if (error?.name !== 'Invalid') throw error; }
+  const parsed = parseVendors(body ?? { vendors });
+  return { mock: body !== undefined, agent: parsed.ok, detail: parsed.ok ? null : parsed.detail };
+};
+console.log(JSON.stringify(cases.map((op) => both(vendorsOf(op)))));
 `;
 
-test('use case 3 drift: the default vendors of the mock service are a vendor list that the vendor parser of the Sourcing Agent reads, each vendor list that the seed takes is read by the parser, and a vendor with the organisation of each Bid Desk is read by both', (t) => {
-  const desks = BID_DESKS.map((name) => parseYaml(read(`deploy/server/docker-compose.bid-desk-${name}.yml`)).services.service.environment.BID_DESK_ORGANISATION);
+test('use case 3 drift: the vendor cases compare the mock seed and the Sourcing Agent parser, including text that the mock emits and the parser rejects', (t) => {
   const fill = (count, char = 'a') => char.repeat(count);
   const set = (member, value) => ({ kind: 'set', member, value });
   // [name, what to change in the first vendor of the seed, whether the seed takes it, whether the parser takes it]
@@ -9002,18 +9008,62 @@ test('use case 3 drift: the default vendors of the mock service are a vendor lis
     // The parser reads more than the seed takes: a name of 201 to 500 characters comes from no seed, and the parser takes it.
     ['a name of 201 characters', set('name', fill(201)), false, true],
   ];
-  const answer = inMockServiceStdin(VENDORS_DRIFT_CODE, { cases: cases.map(([name, op]) => [name, op]), desks });
-  assert.deepEqual(answer.seed, { ok: true, same: true, organisations: answer.seed.organisations }, `the vendors of the default seed are read by the parser and given back as they are; found ${JSON.stringify(answer.seed)}`);
-  // The set of the vendor organisations of the default seed is reported: the tenant seed of the operator replaces it with the domains of the three Bid Desks.
-  t.diagnostic(`vendor organisations of the default seed: ${answer.seed.organisations.join(', ')}; organisations of the three Bid Desks: ${desks.join(', ')}`);
-  assert.ok(answer.seed.organisations.length >= 3 && new Set(answer.seed.organisations).size === answer.seed.organisations.length, 'the default seed has at least three vendors, each with an organisation of its own');
-  assert.equal(answer.cases.length, cases.length);
-  cases.forEach(([name, , mock, agent], i) => {
-    assert.deepEqual(answer.cases[i], { mock, agent }, `${name}: the seed ${mock ? 'takes' : 'refuses'} it, and the parser ${agent ? 'takes' : 'refuses'} it; found ${JSON.stringify(answer.cases[i])}`);
-    assert.ok(!answer.cases[i].mock || answer.cases[i].agent, `${name}: the seed takes a vendor list that the parser refuses`);
+  // [name, character, whether the seed takes it, whether the parser takes it]
+  const textCases = [
+    ['a space', ' ', true, true], ['an accented letter', '\u00e9', true, true], ['a nonbreaking space', '\u00a0', true, true],
+    ['a tab', '\t', true, false], ['a line feed', '\n', true, false], ['a carriage return', '\r', true, false],
+    ['U+0085', '\u0085', true, false], ['a zero-width space', '\u200b', true, false], ['a right-to-left override', '\u202e', true, false],
+    ['a soft hyphen', '\u00ad', true, false], ['a line separator', '\u2028', true, false],
+    ['NUL', '\0', false, false], ['DEL', '\u007f', false, false],
+  ];
+  for (const [name, char, mock, agent] of textCases) {
+    cases.push([`${name} in a name`, set('name', `Alpha${char}Supply`), mock, agent]);
+    cases.push([`${name} in a certification`, set('certifications', [`ISO${char}9001`]), mock, agent]);
+  }
+  const answers = inMockServiceStdin(VENDORS_DRIFT_CODE, cases.map(([, op]) => op));
+  assert.equal(answers.length, cases.length);
+  cases.forEach(([name, op, mock, agent], i) => {
+    const { detail, ...result } = answers[i];
+    assert.deepEqual(result, { mock, agent }, `${name}: the seed ${mock ? 'takes' : 'refuses'} it, and the parser ${agent ? 'takes' : 'refuses'} it`);
+    if (mock && !agent) {
+      const field = op.member === 'certifications' ? 'certifications[0]' : 'name';
+      assert.equal(detail, `vendor list.vendors[0].${field} must not hold a hidden character`, name);
+    }
   });
+  t.diagnostic('The mock seed emits tabs, line breaks and the other invisible characters in the table. The Sourcing Agent parser rejects them.');
   assert.ok(cases.filter(([, , mock, agent]) => mock && agent).length >= 10 && cases.filter(([, , mock, agent]) => !mock && !agent).length >= 15, 'the table has the accepted twins and the refused copies');
-  assert.deepEqual(answer.desks, desks.map((organisation) => ({ organisation, mock: true, agent: true })), 'a vendor with the organisation of each Bid Desk is read by the seed and by the parser');
+});
+
+const VENDOR_MAPPING_CODE = VENDOR_RESPONSE_CODE + String.raw`
+const { desks, request } = JSON.parse(readFileSync(0, 'utf8'));
+const read = (input) => {
+  const body = bodyOf(input);
+  const parsed = parseVendors(body);
+  if (!parsed.ok) throw new Error(parsed.detail);
+  return {
+    same: isDeepStrictEqual(parsed.value, body.vendors),
+    organisations: parsed.value.map((vendor) => vendor.organisation),
+    matches: desks.map((organisation) => vendorFor(parsed.value, organisation)),
+  };
+};
+const { tenant, organisations } = request;
+console.log(JSON.stringify({ defaults: read({ tenant, organisations }), override: read(request) }));
+`;
+
+test('use case 3 drift: the runbook vendor override gives each Bid Desk one match in the same tenant, while the default vendors give no match', () => {
+  const step = section(srvRead('RUNBOOK.md'), '6. Install the snippet of the mock systems');
+  const instructions = step.split('\n### Make or reset a tenant\n')[1]?.split('\n### ')[0];
+  assert.ok(instructions?.includes('none of the default vendor organisations at `example.org` matches a Bid Desk'), 'the runbook states the default mismatch');
+  assert.ok(instructions.includes('`--data @tenant.json`'), 'the runbook uses the example as the tenant request body');
+  const example = /^```json\n([\s\S]*?)\n```$/m.exec(instructions);
+  assert.ok(example, 'the tenant override example is present');
+  const request = JSON.parse(example[1]);
+  const desks = BID_DESKS.map((name) => parseYaml(read(serverCompose(`bid-desk-${name}`))).services.service.environment.BID_DESK_ORGANISATION);
+  const { defaults, override } = inMockServiceStdin(VENDOR_MAPPING_CODE, { desks, request });
+  assert.deepEqual(defaults, { same: true, organisations: BID_DESKS.map((name) => `${name}.example.org`), matches: desks.map(() => null) }, 'omitting seed uses the readable defaults and gives no desk match');
+  assert.equal(override.same, true, 'the parser preserves the emitted override');
+  assert.deepEqual([...override.organisations].sort(), [...desks].sort(), 'the same tenant list gives exactly one entry per desk organisation');
+  assert.deepEqual(override.matches, desks.map((organisation) => request.seed.vendors.find((vendor) => vendor.organisation === organisation)), 'the scorer finds the documented entry for each desk');
 });
 
 // The routes and the actions. A route that an agent calls with a token has an action, a system and a rule for the act chain of the token: one link for an agent, and two for a subagent. The kit holds the route table of
