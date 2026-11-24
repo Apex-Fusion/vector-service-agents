@@ -24,8 +24,8 @@ import type { EvidenceDocumentInput } from '@vsa/usecase-kit/dispute';
 import { readFaultSwitch, withFaultMode } from '@vsa/usecase-kit/fault';
 import { faultGap } from '@vsa/usecase-kit/manifest';
 import {
-  ATTESTATION_STATES, INTAKE_CHECKS, INTAKE_CLAIM, MAX_JUSTIFICATION_CHARS, PRIORAUTH_CAPABILITIES, PRIORAUTH_CLAIM, PRIORAUTH_MODELS, PRIORAUTH_REQUEST_SCHEMA, parseGuideline, parseIntakeRecord,
-  parsePriorAuthRequest, parseRecordSet, recordSetSha256, requestNumberOf,
+  ALTERED_SENTENCE, ATTESTATION_STATES, INTAKE_CHECKS, INTAKE_CLAIM, MAX_JUSTIFICATION_CHARS, PRIORAUTH_CAPABILITIES, PRIORAUTH_CLAIM, PRIORAUTH_MODELS, PRIORAUTH_REQUEST_SCHEMA,
+  alterJustification, parseGuideline, parseIntakeRecord, parsePriorAuthRequest, parseRecordSet, recordSetSha256, requestNumberOf,
 } from '@vsa/usecase-kit/priorauth';
 import {
   AFTER_CLAIM_REFUSALS, APPROVAL_ATT_TYPE, APPROVAL_DEPOSIT_LOVELACE, COSIGN_ROUTE, COSIGN_RULE, COUNTERPARTY_REFUSALS, ERROR_STATUS, EXECUTE_OUTCOMES, EXIT_STATES, FAULT_MODES, MAX_REQUEST_BYTES, NO_OPEN_CLAIM,
@@ -37,8 +37,7 @@ import { CLAIM_STAKE_LOVELACE, CLAIM_WINDOW_MS, RUN_APPROVAL_VALIDITY_MS } from 
 import { EVIDENCE_FAILURES } from '../src/evidence/index.ts';
 import { MOCK_CODES } from '../src/evidence/subread.ts';
 import { NOT_ACCEPTED } from '../src/execute/decision.ts';
-import { ALTERED_SENTENCE } from '../src/execute/fault.ts';
-import { EXECUTE_REASONS, JOB_DEADLINE_MS as EXECUTE_DEADLINE_MS, alterJustification } from '../src/execute/index.ts';
+import { EXECUTE_REASONS, JOB_DEADLINE_MS as EXECUTE_DEADLINE_MS } from '../src/execute/index.ts';
 import { INSURER_FAILURES, readInsurer } from '../src/insurer/index.ts';
 import type { SupplierRow } from '../src/insurer/index.ts';
 import { ACCEPT_DECISION, acceptInput, justificationDecision, justificationInput, parseProposeFields } from '../src/model/index.ts';
