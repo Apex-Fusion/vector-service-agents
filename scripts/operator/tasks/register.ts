@@ -1,12 +1,12 @@
-// scripts/operator/tasks/register.ts - the task `register`: it registers the records of a use case (each agent, then its subagents) with the hosted tool `vector_build_identity_register`, signs in
-// process with the keys of the registry, and then waits until the gateway shows the organisation of each agent as verified. The order matters, and the gate is in code:
+// Register each agent, its subagents and the additional root records. Then wait for the gateway to verify each subject's organisation.
+// The hosted builder returns unsigned transactions. The existing guards check each transaction before the registry signs.
 //   1. A dry run builds the record and prints its DID (the DID follows the largest pure output of the `fee` wallet), the TXT name `_did.<domain>` and the TXT value (the DID). It looks nothing
 //      up. It writes the note `dry.<step>` with the DID and the TXT value that it printed, and nothing else.
 //   2. The workstation publishes the TXT value.
 //   3. `run --submit` builds again and reads the DID of THAT build. Before the signature it checks, in this order: the consent of Module-1 (lib/consent.ts), the note of the dry run, that the DID of
 //      the note is the DID of the build, and that three public resolvers show the TXT value (lib/dns.ts). A resolver is asked about a name only after a dry run printed its value: a resolver
 //      keeps the answer "no record" for a name that it was asked about too early. A record with no organisation (a subagent) has no TXT and needs no note.
-//   4. After the registration the step `organisation:<agent>` asks the gateway until it shows organisationVerified for the Accountable party of the record. It is a wait, and a wait is never a
+//   4. After registration, `organisation:<subject>` asks the gateway to verify the Accountable domain of that subject's DID. A wait is never a
 //      failure before its time. It takes no transaction.
 // The signers are exactly the keys that the data names, the plan has the identity address as its one destination, one identity token as its mint, and one withdrawal for a record with a Module-1
 // party. The record is permanent: the step carries the tag `record`. Each step checks the record on the node after it landed.
@@ -22,7 +22,7 @@ import { RIGHT, ROLE_MAX_RIGHTS } from '../../../packages/buyer-core/src/vendore
 // The entry of vector-read gives no codec of the identity datums either: `decodeIdentityDatum` reads the inline datum of a record output, as `findRecord` does.
 import { decodeIdentityDatum } from '../../../packages/vector-read/src/identity-codec.ts';
 import { checkConsentWithdrawal } from '../lib/consent.ts';
-import type { HostedBuild, HostedLandSpec, KeyPurpose, KeyUse, OrganisationSpec, PartySpec, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
+import type { HostedBuild, HostedLandSpec, KeyPurpose, KeyUse, OrganisationFact, OrganisationMove, OrganisationSpec, PartySpec, RecordFact, TaskDefinition, TaskSession, UseCase } from '../lib/contract.ts';
 import { checkTxt } from '../lib/dns.ts';
 import { landHosted } from '../lib/land-hosted.ts';
 import type { Landed } from '../lib/land-hosted.ts';
@@ -46,10 +46,13 @@ const IDENTIFIER = /^[0-9a-f]{64}$/;
 const MAX_REASON_CHARS = 200;
 
 /** What the task keeps for the machine line of the run. The runner reads it after the run, through `result`. */
-interface Extra { result: Record<string, unknown> | null }
+interface Extra {
+  result: Record<string, unknown> | null;
+  legacy?: ReadonlyMap<string, OrganisationFact>;
+}
 type Session = TaskSession<Extra>;
 
-/** One record of the data: an agent, or a subagent of an agent. The data of the subagent has no parties, no endpoint and no capability: its one party is the controller. */
+/** A root record or a subagent of an agent. The controller is the only party of a subagent. */
 interface Subject {
   readonly id: string;
   readonly name: string;
@@ -59,7 +62,7 @@ interface Subject {
   readonly capability: string | null;
   readonly parties: readonly PartySpec[];
   readonly guardianThreshold: number;
-  /** The id of the parent agent, or null for an agent. */
+  /** The id of the parent agent, or null for a root record. */
   readonly parent: string | null;
   readonly organisation: OrganisationSpec | null;
 }
@@ -68,7 +71,7 @@ interface Txt { name: string; value: string }
 
 const CONTROLLER_PARTY: PartySpec = { role: 'Accountable', signer: { kind: 'controller' }, organisation: null, rights: null };
 
-/** The records in the order of the steps: each agent, and after it the subagents that name it as their parent. A subagent whose parent is no agent of the data is a mistake of the data. */
+/** Each agent and its subagents come first. The additional root records follow in data order. */
 function subjectsOf(use: UseCase): Subject[] {
   const subjects: Subject[] = [];
   for (const agent of use.agents) {
@@ -84,6 +87,11 @@ function subjectsOf(use: UseCase): Subject[] {
   }
   const orphan = use.subagents.find((sub) => !use.agents.some((agent) => agent.id === sub.parent));
   if (orphan !== undefined) throw new Error(`the subagent ${orphan.id} names the parent ${orphan.parent}, and the data lists no such agent`);
+  for (const record of use.records) {
+    const organisation = record.organisation === null ? null : use.organisations.find((one) => one.id === record.organisation);
+    if (organisation === undefined) throw new Error(`the record ${record.id} names the organisation ${record.organisation}, and the data lists no such organisation`);
+    subjects.push({ ...record, endpoint: null, capability: null, parent: null, organisation });
+  }
   return subjects;
 }
 
@@ -149,6 +157,150 @@ function noteOf(session: Session, step: string): Note | null {
   if (typeof note !== 'object' || note === null || !('did' in note) || !('txtName' in note) || !('txtValue' in note)) return null;
   const { did, txtName, txtValue } = note;
   return typeof did === 'string' && typeof txtName === 'string' && typeof txtValue === 'string' ? { did, txtName, txtValue } : null;
+}
+
+function requireOrganisationFact(subject: Subject, record: RecordFact | undefined, fact: OrganisationFact): number {
+  const registered = record === undefined ? NaN : Date.parse(record.registeredAt);
+  const txt = record === undefined ? null : txtOf(subject, record.did);
+  if (record === undefined || !IDENTIFIER.test(record.id) || record.did !== `${DID_PREFIX}${record.id}` || txt === null
+    || fact.txtName !== txt.name || fact.txtValue !== txt.value || !Number.isFinite(registered)
+    || (fact.verifiedAt !== null && !(Date.parse(fact.verifiedAt) >= registered))) {
+    throw new PreconditionError(`the organisation fact of ${subject.id} does not match its registered DID, TXT name, TXT value or registration times`);
+  }
+  return registered;
+}
+
+function verifiedStepMatches(step: StepRecord | undefined, at: string | null, did: string, organisation: OrganisationSpec): boolean {
+  return at !== null && step?.tx_hash === null && step.refs.did === did && step.facts.organisation === organisation.id
+    && step.facts.domain === organisation.domain && Date.parse(step.confirmed_at) <= Date.parse(at) && step.verified_at === at;
+}
+
+interface LegacyMove extends OrganisationMove {
+  readonly subject: Subject;
+  /** Undefined: no repair. Null: the gateway must be read. A time: the fresh observation is in the journal. */
+  readonly recheck: string | null | undefined;
+}
+
+function requireLegacyProof(session: Session, subject: Subject, fact: OrganisationFact, record: RecordFact, entries: readonly Record<string, unknown>[]): LegacyMove['recheck'] {
+  const step = session.state.step(subject.id);
+  const note = noteOf(session, subject.id);
+  if (step === undefined || step.tx_hash !== record.tx || step.refs.did !== record.did || step.refs.id !== record.id
+    || step.refs.recordRef !== record.recordRef || step.confirmed_at !== record.registeredAt || step.facts.depositLovelace !== record.depositLovelace
+    || note === null || note.did !== record.did || note.txtName !== fact.txtName || note.txtValue !== fact.txtValue) {
+    throw new PreconditionError(`the legacy organisation fact of ${subject.id} needs its matching registration step and TXT note. Use the original register state and evidence files`);
+  }
+  const name = `organisation:${subject.id}`;
+  const proof = session.state.step(name);
+  const results = entries.filter((entry) => entry !== null && entry.step === name);
+  if (fact.verifiedAt === null && proof === undefined && results.length === 0) return;
+  const entry = results[0];
+  const shows = entry?.shows;
+  const organisation = subject.organisation!;
+  const old = fact.verifiedAt;
+  const oldProof = old !== null && verifiedStepMatches(proof, old, record.did, organisation) && proof?.confirmed_at === old;
+  if (old !== null && results.length === 0 && (proof === undefined || oldProof)) return null;
+  const conflict = () => new PreconditionError(`the legacy organisation fact of ${subject.id} has no matching verification evidence or its evidence conflicts. Use the original register state and evidence files`);
+  if (old === null || results.length !== 1 || entry?.status !== 'info' || typeof entry.at !== 'string'
+    || typeof shows !== 'object' || shows === null || !('did' in shows) || shows.did !== record.did
+    || !('organisation' in shows) || shows.organisation !== organisation.id || !('domain' in shows) || shows.domain !== organisation.domain
+    || !('organisationVerified' in shows) || shows.organisationVerified !== true) throw conflict();
+  if (!('legacyVerifiedAt' in shows)) {
+    if (!oldProof || !(Date.parse(entry.at) >= Date.parse(old))) throw conflict();
+    return undefined;
+  }
+  if (shows.legacyVerifiedAt !== old || !('txtName' in shows) || shows.txtName !== fact.txtName || !('txtValue' in shows) || shows.txtValue !== fact.txtValue
+    || !('verifiedAt' in shows) || shows.verifiedAt !== entry.at || !(Date.parse(entry.at) >= Date.parse(record.registeredAt))
+    || (proof !== undefined && !oldProof && (!verifiedStepMatches(proof, entry.at, record.did, organisation)
+      || (proof.confirmed_at !== old && proof.confirmed_at !== entry.at)))) throw conflict();
+  return entry.at;
+}
+
+/** Only the earlier inventory register wrote organisation ids as keys. Check the entire old mapping before moving any fact. */
+function organisationMoves(session: Session, subjects: readonly Subject[]): LegacyMove[] {
+  const facts = session.facts.read();
+  const moves: LegacyMove[] = [];
+  let entries: readonly Record<string, unknown>[] | undefined;
+  for (const [from, fact] of Object.entries(facts.organisations)) {
+    const own = subjects.find((subject) => subject.id === from);
+    if (own !== undefined) {
+      requireOrganisationFact(own, facts.records[from], fact);
+      continue;
+    }
+    if (session.use.legacyOrganisationWriter !== session.use.name) throw new PreconditionError('the facts file has an organisation key that is not a subject of this use case');
+    const matching = Object.entries(facts.records).filter(([, record]) => record.did === fact.txtValue);
+    const to = matching[0]?.[0];
+    const record = matching[0]?.[1];
+    const subject = subjects.find((candidate) => candidate.id === to && candidate.organisation?.id === from);
+    if (matching.length !== 1 || subject === undefined || record === undefined || Object.entries(facts.records).some(([id, other]) => id !== to && other.id === record.id)) {
+      throw new PreconditionError('a legacy organisation fact does not match one unique registered subject of its organisation');
+    }
+    requireOrganisationFact(subject, record, fact);
+    const recheck = requireLegacyProof(session, subject, fact, record, entries ??= session.evidence.entries());
+    const target = facts.organisations[subject.id];
+    if (target !== undefined && (target.txtName !== fact.txtName || target.txtValue !== fact.txtValue
+      || (target.verifiedAt !== fact.verifiedAt && (typeof recheck !== 'string' || target.verifiedAt !== recheck)))) {
+      throw new PreconditionError(`the legacy and subject organisation facts for ${subject.id} conflict`);
+    }
+    moves.push({ from, to: subject.id, subject, fact, record, recheck });
+  }
+  for (const subject of subjects) {
+    if (subject.organisation === null || moves.some(({ to }) => to === subject.id)) continue;
+    const proof = session.state.step(`organisation:${subject.id}`);
+    if (proof === undefined) continue;
+    const fact = facts.organisations[subject.id];
+    const record = facts.records[subject.id];
+    if (fact === undefined || record === undefined || !verifiedStepMatches(proof, fact.verifiedAt, record.did, subject.organisation)) {
+      throw new PreconditionError(`the completed organisation step of ${subject.id} does not match its record and TXT fact`);
+    }
+  }
+  return moves;
+}
+
+/** The runner holds the run lock. Record all fresh gateway reads before the atomic facts move, so an interrupted move can resume. */
+async function moveOrganisations(session: Session, moves: readonly LegacyMove[]): Promise<StepOutcome | null> {
+  if (session.networkResult()?.ok !== true) throw new PreconditionError('the network guard did not pass, so the organisation facts were not moved');
+  const checked: OrganisationMove[] = [];
+  const observations: Array<{ move: LegacyMove; at: string; journaled: boolean }> = [];
+  for (const move of moves) {
+    const { subject, record, recheck } = move;
+    if (recheck === undefined) {
+      checked.push(move);
+      continue;
+    }
+    const organisation = subject.organisation!;
+    let at = recheck;
+    if (at === null) {
+      const result = await askGateway(session, record.did, organisation.domain);
+      const now = session.clock.now();
+      if (!result.verified) {
+        const untilMs = Date.parse(record.registeredAt) + ORGANISATION_LIMIT_MS;
+        const message = `the legacy organisation fact of ${subject.id} needs fresh verification (${result.why}). It is left unchanged`;
+        if (now < untilMs) return { kind: 'wait', untilMs, message };
+        throw new PreconditionError(message);
+      }
+      if (now < Date.parse(move.fact.verifiedAt!)) throw new PreconditionError('the current clock is before the legacy verification time');
+      at = iso(now);
+    }
+    observations.push({ move, at, journaled: recheck !== null });
+    checked.push({ ...move, recheckedAt: at });
+  }
+  for (const { move, at, journaled } of observations) {
+    const { subject, fact, record } = move;
+    const organisation = subject.organisation!;
+    const name = `organisation:${subject.id}`;
+    if (!journaled) session.evidence.add({
+      step: name, status: 'info', at,
+      shows: { organisation: organisation.id, domain: organisation.domain, did: record.did, organisationVerified: true, txtName: fact.txtName, txtValue: fact.txtValue, legacyVerifiedAt: fact.verifiedAt, verifiedAt: at },
+    });
+    const step = session.state.step(name);
+    if (step === undefined) {
+      session.state.recordStep(name, { confirmed_at: at, tx_hash: null, refs: { did: record.did }, facts: { organisation: organisation.id, domain: organisation.domain }, verified_at: at });
+    } else if (step.verified_at !== at) {
+      session.state.markVerified(name, at);
+    }
+  }
+  session.facts.moveOrganisations(checked);
+  return null;
 }
 
 /**
@@ -281,17 +433,19 @@ function showDry(session: Session, subject: Subject, landed: Landed): void {
   session.extra.result = resultOf(subject, did, build);
 }
 
-/** The facts of a record that landed, from the record of its step in the state file. The same facts again change nothing. The organisation of an agent gets its fact once, with no verification yet. */
+/** Write the record of the confirmed step and its own TXT fact, without changing an existing verification. */
 function writeFacts(session: Session, subject: Subject, record: StepRecord): void {
   const { did, id, recordRef } = record.refs;
   const deposit = record.facts.depositLovelace;
-  if (record.tx_hash === null || did === undefined || id === undefined || recordRef === undefined || typeof deposit !== 'string') {
+  if (record.tx_hash === null || id === undefined || !IDENTIFIER.test(id) || did !== `${DID_PREFIX}${id}` || recordRef === undefined || typeof deposit !== 'string') {
     throw new Error(`the state file holds the step ${subject.id} without the DID, the identifier, the reference or the deposit of its record: its facts cannot be written`);
   }
-  session.facts.put('records', [subject.id], { did, id, tx: record.tx_hash, recordRef, depositLovelace: deposit, registeredAt: record.confirmed_at });
-  if (subject.organisation !== null && session.facts.read().organisations[subject.organisation.id] === undefined) {
-    session.facts.put('organisations', [subject.organisation.id], { txtName: `_did.${subject.organisation.domain}`, txtValue: did, verifiedAt: null });
-  }
+  const fact = { did, id, tx: record.tx_hash, recordRef, depositLovelace: deposit, registeredAt: record.confirmed_at };
+  const txt = txtOf(subject, did);
+  const held = session.facts.read().organisations[subject.id] ?? session.extra.legacy?.get(subject.id);
+  if (held !== undefined) requireOrganisationFact(subject, fact, held);
+  session.facts.put('records', [subject.id], fact);
+  if (txt !== null && held === undefined) session.facts.put('organisations', [subject.id], { txtName: txt.name, txtValue: txt.value, verifiedAt: null });
 }
 
 // ---- the check of the record on the node ----
@@ -399,7 +553,6 @@ function recordStep(subject: Subject): StepHandler<Extra> {
     name: subject.id,
     async run(session) {
       session.extra.result = null;
-      if (session.state.snapshot().in_flight !== null) throw new PreconditionError('a transaction is in flight: settle it before a record is built');
       const held = session.facts.read().records[subject.id];
       if (held !== undefined) throw new PreconditionError(`the facts file holds the record ${subject.id} already (${held.did}): a record is registered once, and another run label or a state file that was moved away does not change that`);
       requireOrganisationParty(subject);
@@ -452,11 +605,12 @@ async function askGateway(session: Session, did: string, domain: string): Promis
   const resolution = answer.value;
   if (resolution.kind === 'not_found') return { verified: false, why: 'the gateway has no record for this DID yet' };
   if (resolution.kind === 'deactivated') throw new Error(`the gateway shows the record ${did} as ${resolution.effectiveStatus}: a record that ended cannot get a verified organisation`);
+  if (resolution.document.id !== did) return { verified: false, why: 'the gateway returned a document for a different DID' };
   if (showsVerified(resolution.metadata.vectorParties, domain)) return { verified: true };
   return { verified: false, why: `the gateway shows no verified Accountable party for ${domain}` };
 }
 
-/** The step that waits for the gateway to show the organisation of an agent as verified. It takes no transaction and no approval. In a dry run it reads and writes nothing. */
+/** Wait for verification of this subject's Accountable domain. A dry run never records the result. */
 function organisationStep(agent: Subject): StepHandler<Extra> {
   const organisation = agent.organisation!;
   const name = `organisation:${agent.id}`;
@@ -466,13 +620,12 @@ function organisationStep(agent: Subject): StepHandler<Extra> {
       session.extra.result = null;
       const facts = session.facts.read();
       const record = facts.records[agent.id];
-      const held = facts.organisations[organisation.id];
-      if (record === undefined || held === undefined) throw new PreconditionError(`the facts file holds no record of ${agent.id} and no organisation ${organisation.id}: register the record first`);
-      const registered = Date.parse(record.registeredAt);
-      if (Number.isNaN(registered)) throw new PreconditionError(`the facts file holds a time of registration of ${agent.id} that is no time`);
+      const held = facts.organisations[agent.id] ?? session.extra.legacy?.get(agent.id);
+      if (record === undefined || held === undefined) throw new PreconditionError(`the facts file holds no record and TXT fact for ${agent.id}: register the record first`);
+      const registered = requireOrganisationFact(agent, record, held);
       const now = session.clock.now();
       const deadline = registered + ORGANISATION_LIMIT_MS;
-      const verdict: Verdict = held.verifiedAt === null ? await askGateway(session, record.did, organisation.domain) : { verified: true };
+      const verdict = await askGateway(session, record.did, organisation.domain);
       const shown = (verified: boolean): Record<string, unknown> => ({
         subject: name, did: record.did, organisation: organisation.id, txt: { name: held.txtName, value: held.txtValue }, verified, verified_at: held.verifiedAt,
       });
@@ -482,11 +635,11 @@ function organisationStep(agent: Subject): StepHandler<Extra> {
           session.extra.result = shown(true);
           return { kind: 'dry' };
         }
-        const at = iso(now);
-        if (held.verifiedAt === null) session.facts.put('organisations', [organisation.id, 'verifiedAt'], at);
+        const at = held.verifiedAt ?? iso(now);
+        if (held.verifiedAt === null) session.facts.put('organisations', [agent.id, 'verifiedAt'], at);
         session.state.recordStep(name, { confirmed_at: at, tx_hash: null, refs: { did: record.did }, facts: { organisation: organisation.id, domain: organisation.domain }, verified_at: at });
         session.evidence.add({ step: name, status: 'info', shows: { organisation: organisation.id, domain: organisation.domain, did: record.did, organisationVerified: true } });
-        session.extra.result = { ...shown(true), verified_at: held.verifiedAt ?? at };
+        session.extra.result = { ...shown(true), verified_at: at };
         return { kind: 'done', message: `the gateway shows the organisation ${organisation.domain} of ${agent.id} as verified` };
       }
       session.extra.result = shown(false);
@@ -511,8 +664,7 @@ const stepNames = (use: UseCase): string[] => {
   const subjects = subjectsOf(use);
   return [...subjects.map((subject) => subject.id), ...subjects.filter((subject) => subject.organisation !== null).map((subject) => `organisation:${subject.id}`)];
 };
-const handlersOf = (use: UseCase): StepHandler<Extra>[] => {
-  const subjects = subjectsOf(use);
+const handlersOf = (subjects: readonly Subject[]): StepHandler<Extra>[] => {
   return [...subjects.map(recordStep), ...subjects.filter((subject) => subject.organisation !== null).map(organisationStep)];
 };
 
@@ -524,8 +676,28 @@ const register: TaskDefinition<Extra> = {
   needs: { keys: keysOf, chain: true, hosted: [TOOL, 'vector_resolve_did'], approval: 'submit' },
   steps: stepNames,
   parse: () => ({ result: null }),
-  next: (session) => runSteps(session, handlersOf(session.use)),
+  async next(session) {
+    if (session.state.snapshot().in_flight !== null) throw new PreconditionError('a transaction is in flight: settle it before a record is built');
+    const subjects = subjectsOf(session.use);
+    const moves = organisationMoves(session, subjects);
+    if (moves.length > 0) {
+      if (session.mode === 'submit') {
+        const stopped = await moveOrganisations(session, moves);
+        if (stopped !== null) return stopped;
+      } else {
+        if (moves.some(({ recheck }) => recheck !== undefined)) throw new PreconditionError('a legacy organisation fact needs a fresh verified read. Run register with --submit to finish the check');
+        session.extra.legacy = new Map(moves.map(({ to, fact }) => [to, fact]));
+      }
+    }
+    return runSteps(session, handlersOf(subjects));
+  },
   cleanup: async () => ({ kind: 'done', message: 'a record is permanent: there is nothing to take back' }),
+  async status(session) {
+    if (organisationMoves(session, subjectsOf(session.use)).some(({ recheck }) => recheck !== undefined)) {
+      throw new PreconditionError('a legacy organisation fact needs a fresh verified read. Run register with --submit to finish the check');
+    }
+    return [];
+  },
   result: (session) => session.extra.result ?? {},
 };
 

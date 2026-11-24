@@ -1,5 +1,5 @@
-// scripts/operator/tasks/advert.ts - the task `advert`: the adverts of the use case (one for the Reorder Agent, three for the Order Desk), each posted with the hosted tool
-// `vector_build_marketplace_advert_post` and signed in process by the supplier key of the advert. An advert carries the hash of the manifest that the running service serves now.
+// The task posts the use case's adverts with the hash of each service's manifest.
+// The hosted builder returns unsigned bytes. The plan checks those bytes and the supplier key signs.
 // Before a step builds, three things are checked:
 //   the record     it is in the facts file, on the node and Active, and it lists the supplier key with the transaction purpose and the capability of the agent, byte for byte;
 //   the runtimes   the supplier wallet is also the wallet of a running runtime, so no runtime of the agent that runs may work (`running-images.json` decides which runtimes run: a runtime that is
@@ -7,29 +7,36 @@
 //   the manifest   `<origin>/agent.json` is read twice, 5 seconds apart on the clock of the run (status 200, JSON, at most 262,144 bytes), the two bodies must be equal byte for byte, and the
 //                  SHA-256 of the bytes is the detail hash (the value of `scripts/manifest-hash.mjs`). The manifest must agree with the advert: the capability, the DID of the record, the price, both
 //                  bonds and the window, and the key hash of the supplier. A difference stops the run with the names of the members, and nothing is built.
-// The plan judges the bytes: the advert output is at the advert address with a datum that holds the terms of the data and the hash that was read, and the transaction mints nothing (an advert
-// output holds a datum and units only, so a mint of any token is refused). The three adverts of the Order Desk share one manifest hash: a later advert is refused when the service serves
-// another hash while an advert of the agent is on the node. The `cleanup` retires each advert that this task posted and recorded, never another one.
+// The plan checks that the advert output holds the terms, manifest hash and agent in its datum, plus the deposit. It refuses any mint.
+// The adverts of one agent share a manifest hash.
+// Cleanup retires only recorded adverts that match the agent on the node. The --agent flag limits the retirement to that agent.
 import { createHash } from 'node:crypto';
+import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { collateralAdvice, isCollateralOutput } from '../../checks/lib/collateral.ts';
 import { iso, units } from '../../checks/lib/format.ts';
 import { GuardRefusal } from '../../checks/lib/land.ts';
+import type { GuardName } from '../../checks/lib/guards.ts';
+import type { Utxo } from '../../checks/lib/platform.ts';
 import { eventually } from '../../checks/lib/retry.ts';
 import { PreconditionError } from '../../checks/lib/session.ts';
 import type { StepOutcome } from '../../checks/lib/session.ts';
+import { StateFile } from '../../checks/lib/state.ts';
 import type { StepRecord } from '../../checks/lib/state.ts';
 import type { OutputFacts, TxFacts } from '../../checks/lib/txfacts.ts';
 import { VERIFY_WINDOW, VerificationError } from '../../checks/lib/verify.ts';
 // The pack's platform file gives no name of the advert codec, so this file takes it from the entry of vector-read.
 import { decodeIdentityAdvertDatum } from '../../../packages/vector-read/src/index.ts';
 import type { IdentityAdvertDatum } from '../../../packages/vector-read/src/index.ts';
-import type { AdvertSpec, AgentSpec, HostedBuild, HostedLandSpec, TaskDefinition, TaskSession } from '../lib/contract.ts';
+import { requireGo } from '../lib/approval.ts';
+import { isAdvertRetireRedeemer, proveAdvertRetirement, readConfirmedSpend, valueSeal } from '../lib/confirmed-spend.ts';
+import type { RecordSpendValueRow } from '../lib/confirmed-spend.ts';
+import type { AdvertSpec, AgentSpec, HostedBuild, HostedLandSpec, ResubmitFlight, ResubmitSession, TaskCommand, TaskDefinition, TaskSession } from '../lib/contract.ts';
 import { readRunning, requireRuntimesFree, runtimesOf } from '../lib/free.ts';
 import { landHosted } from '../lib/land-hosted.ts';
 import { planOf } from '../lib/plan.ts';
-import { PURPOSE, effectiveStatus, findRecord, keyHashOf, parseOutRef } from '../lib/platform.ts';
-import { runSteps } from '../lib/runner.ts';
+import { PURPOSE, decodeTransaction, effectiveStatus, findRecord, formatOutRef, keyHashOf, parseOutRef } from '../lib/platform.ts';
+import { FlagError, runSteps } from '../lib/runner.ts';
 import type { StepHandler } from '../lib/runner.ts';
 
 const TOOL_POST = 'vector_build_marketplace_advert_post';
@@ -40,8 +47,11 @@ const MAX_MANIFEST_BYTES = 262_144;
 const READ_GAP_MS = 5_000;
 const READ_LIMIT_MS = 10_000;
 const MAX_SHOWN = 120;
+const HASH = /^[0-9a-f]{64}$/;
+const LOVELACE = /^(?:0|[1-9][0-9]{0,19})$/;
+const ADVERT_STATE = /^advert(?:\.[a-z0-9][a-z0-9-]{0,31})?\.state\.json$/;
 
-interface Extra { result: Record<string, unknown> | null }
+interface Extra { result: Record<string, unknown> | null; readonly cleanupAgent: AgentSpec | null }
 type Session = TaskSession<Extra>;
 interface Ready { did: string; id: string }
 /** The manifest that the service served: the address, the bytes (as a count and as the SHA-256 of them), the time of the reads and the JSON object. */
@@ -92,22 +102,26 @@ async function requireCollateralOutput(session: Session, supplierKey: string): P
   }
 }
 
-/** No running runtime of the agent works: `running-images.json` says which runtimes run, and only those are asked. */
-async function requireFree(session: Session, agent: AgentSpec): Promise<void> {
+/** Checks every running runtime of the agent during a post, or of the use case during cleanup. */
+async function requireFree(session: Pick<Session, 'settings' | 'clock' | 'use' | 'fetchImpl' | 'out'>, agent?: AgentSpec): Promise<void> {
   const running = readRunning(join(session.settings.stateDir, 'running-images.json'), session.clock.now());
-  await requireRuntimesFree({ fetchImpl: session.fetchImpl, runtimes: runtimesOf(agent), running, out: session.out });
+  const runtimes = agent === undefined ? session.use.agents.flatMap(runtimesOf) : runtimesOf(agent);
+  await requireRuntimesFree({ fetchImpl: session.fetchImpl, runtimes, running, out: session.out });
 }
 
 const requireNoFlight = (session: Session): void => {
   if (session.state.snapshot().in_flight !== null) throw new PreconditionError('a transaction is in flight: settle it before an advert step is built');
 };
 
-/** True when the output of the reference is on the node: an advert that the facts file holds is live while its output is not spent. */
-async function isLive(session: Session, ref: string): Promise<boolean> {
+/** Reads a recorded reference on the node. A missing output is spent or not yet visible. An unreadable reference is not a missing output. */
+async function outputAt(session: Session, ref: string) {
   let parsed: { txHash: string; outputIndex: number };
   try { parsed = parseOutRef(ref); } catch { throw new PreconditionError('the facts file holds a reference of an advert that is not of the form <hash>#<index>'); }
-  return (await session.chain.provider.getUtxosByOutRef([parsed])).length > 0;
+  const [output] = await session.chain.provider.getUtxosByOutRef([parsed]);
+  return output;
 }
+
+const isLive = async (session: Session, ref: string): Promise<boolean> => (await outputAt(session, ref)) !== undefined;
 
 /** The models of the adverts of the agent that the facts file holds and that are on the node now. */
 async function liveModels(session: Session, agent: AgentSpec): Promise<string[]> {
@@ -182,8 +196,8 @@ async function readTwice(session: Session, uri: string): Promise<Manifest> {
 }
 
 /**
- * What the manifest says that the advert does not: the capability, the DID of the record, the price, both bonds and the window, and the key hash of the supplier. The terms of the Order Desk are
- * the tier of the model in `terms.tiers`, and the terms of the Reorder Agent are `terms`. Each problem names the member of the manifest.
+ * Checks the capability, DID, price, bonds, window and supplier key of the advert.
+ * A list of tiers must name the model exactly once. Without tiers, read the direct terms and supplier key.
  */
 function manifestProblems(agent: AgentSpec, advert: AdvertSpec, did: string, supplierHash: string, json: Record<string, unknown>): string[] {
   const problems: string[] = [];
@@ -197,9 +211,8 @@ function manifestProblems(agent: AgentSpec, advert: AdvertSpec, did: string, sup
   let place = 'terms';
   let supplier: unknown = isObject(json.keys) ? json.keys.supplier_pkh : undefined;
   let supplierName = 'keys.supplier_pkh';
-  if (agent.kind === 'order-desk') {
-    const tiers = Array.isArray(terms.tiers) ? terms.tiers : [];
-    const matching = tiers.filter((tier): tier is Record<string, unknown> => isObject(tier) && tier.model === advert.model);
+  if (Array.isArray(terms.tiers)) {
+    const matching = terms.tiers.filter((tier): tier is Record<string, unknown> => isObject(tier) && tier.model === advert.model);
     place = `terms.tiers[${advert.model}]`;
     if (matching.length !== 1) return [...problems, `terms.tiers holds ${matching.length} tier(s) for the model ${advert.model}, and the advert needs exactly one`];
     sheet = matching[0]!;
@@ -435,35 +448,220 @@ function recordOfStep(session: Session, name: string): StepRecord | undefined {
   const note = session.state.note<unknown>(`part.${name}`);
   if (!isObject(note) || typeof note.confirmed_at !== 'string') return undefined;
   const refs = isObject(note.refs) ? Object.fromEntries(Object.entries(note.refs).filter((pair): pair is [string, string] => typeof pair[1] === 'string')) : {};
-  return { confirmed_at: note.confirmed_at, tx_hash: typeof note.tx_hash === 'string' ? note.tx_hash : null, refs, facts: isObject(note.facts) ? note.facts : {}, verified_at: null };
+  return { confirmed_at: note.confirmed_at, tx_hash: typeof note.tx_hash === 'string' ? note.tx_hash : null, refs, facts: isObject(note.facts) ? note.facts : {}, verified_at: typeof note.verified_at === 'string' ? note.verified_at : null };
 }
 
 // ---- the cleanup ----
 
-/** The next advert of the data (in the order of the data) that the facts file holds and that is on the node. */
-async function nextLive(session: Session): Promise<{ agent: AgentSpec; advert: AdvertSpec; ref: string } | null> {
-  for (const agent of session.use.agents) {
+interface Retirement {
+  readonly agent: AgentSpec;
+  readonly advert: AdvertSpec;
+  readonly ref: string;
+  readonly output: Utxo;
+}
+
+/** The next recorded advert in the selected order, with its identity and deposit confirmed on the node. */
+async function nextLive(session: Session): Promise<Retirement | null> {
+  const held = session.facts.read();
+  const selected = session.extra.cleanupAgent;
+  const agents = selected === null ? session.use.agents : [selected];
+  for (const agent of agents) {
     for (const advert of agent.adverts) {
-      const fact = session.facts.read().adverts[agent.id]?.[advert.model];
-      if (fact !== undefined && (await isLive(session, fact.ref))) return { agent, advert, ref: fact.ref };
+      const fact = held.adverts[agent.id]?.[advert.model];
+      if (fact === undefined) continue;
+      const output = await outputAt(session, fact.ref);
+      if (output === undefined) continue;
+      const record = held.records[agent.id];
+      const mismatch = () => new PreconditionError(`the recorded output of ${advert.model} of ${agent.id} does not match its advert on the node: nothing is retired`);
+      if (record === undefined || record.did !== `did:vector:${record.id}` || output.address !== session.chain.deployment.advert.address || typeof output.datum !== 'string'
+        || formatOutRef(output.txHash, output.outputIndex) !== fact.ref || output.assets.lovelace !== advert.depositLovelace
+        || Object.keys(output.assets).length !== 1 || output.scriptRef != null) throw mismatch();
+      let datum: IdentityAdvertDatum;
+      try { datum = decodeIdentityAdvertDatum(output.datum); } catch { throw mismatch(); }
+      if (datum.status !== 'Active' || datum.agent_id !== record.id || datum.model !== advert.model || datum.capability_id !== agent.capability
+        || datum.supplier_pkh !== session.registry.hashOf(advert.supplierKey)) throw mismatch();
+      return { agent, advert, ref: fact.ref, output };
     }
   }
   return null;
 }
 
-/** Retires one advert: the same checks as a post except the manifest, then the tool, the guards with the advert output as the one explained input, and the landing. */
-async function retireOne(session: Session, agent: AgentSpec, advert: AdvertSpec, ref: string): Promise<StepOutcome> {
+interface RetirementProof {
+  readonly phase: 'retire';
+  readonly agent: string;
+  readonly model: string;
+  readonly supplierPkh: string;
+  readonly supplierAddress: string;
+  readonly depositLovelace: string;
+  readonly feeLovelace: string;
+  readonly creditLovelace: string;
+  readonly valueSeal: string;
+  readonly approvalSession: string | null;
+}
+
+const plain = (output: Utxo): boolean => output.datum == null && output.datumHash == null && output.scriptRef == null;
+
+async function checkRetirement(session: Session, target: Retirement, build: HostedBuild, facts: TxFacts): Promise<RetirementProof> {
+  const { agent, advert, ref, output } = target;
+  const step = retireName(agent, advert);
+  const fail = (guard: GuardName, message: string) => new GuardRefusal(step, [{ guard, ok: false, message }]);
+  if (!facts.inputs.includes(ref)) throw fail('inputs', `the transaction does not spend the advert output ${ref}`);
+  const reference = session.chain.deployment.refs.advert;
+  if (reference === undefined || facts.referenceInputs.length !== 1 || facts.referenceInputs[0] !== formatOutRef(reference.txHash, reference.outputIndex)) {
+    throw fail('body', 'the retirement does not name the deployed advert reference script');
+  }
+  const tx = decodeTransaction(build.unsignedCbor);
+  const redeemers = tx.witness_set().redeemers()?.to_flat_format();
+  // A spend pointer uses the ledger's sorted input order, not the order of a builder's list.
+  const index = [...facts.inputs].sort((a, b) => a.slice(0, 64).localeCompare(b.slice(0, 64)) || Number(a.slice(65)) - Number(b.slice(65))).indexOf(ref);
+  const redeemer = redeemers?.len() === 1 ? redeemers.get(0) : undefined;
+  if (!tx.is_valid() || !facts.runsScripts || redeemer === undefined || redeemer.tag() !== 0 || redeemer.index() !== BigInt(index)
+    || !isAdvertRetireRedeemer({ bytes: redeemer.data().to_cbor_hex() })) {
+    throw fail('body', 'the transaction must use only RetireAdvert for the recorded input');
+  }
+  const supplierAddress = session.registry.addressOf(advert.supplierKey);
+  const supplierPkh = session.registry.hashOf(advert.supplierKey);
+  const returned = tx.body().collateral_return();
+  if (facts.outputs.length === 0 || facts.outputs.some((one) => one.address !== supplierAddress || one.inlineDatum !== null || one.datumHash !== null || one.hasScriptRef)
+    || (returned !== undefined && (facts.collateralReturn?.address !== supplierAddress || returned.datum() !== undefined || returned.script_ref() !== undefined
+      || (returned.amount().multi_asset()?.keys().len() ?? 0) !== 0))) {
+    throw fail('destinations', 'every output and any collateral return must be a plain output to the supplier wallet');
+  }
+
+  const refs = [...facts.inputs, ...facts.collateralInputs];
+  if (new Set(refs).size !== refs.length) throw fail('inputs', 'the transaction repeats an input or collateral reference');
+  const resolved = await session.node.resolveInputs(refs);
+  const inputs = new Map(resolved.map((one) => [formatOutRef(one.txHash, one.outputIndex), one]));
+  if (inputs.size !== refs.length || resolved.length !== inputs.size) throw fail('inputs', 'the node did not resolve every input exactly once');
+  const spent = inputs.get(ref);
+  if (spent?.address !== output.address || spent.datum !== output.datum || spent.assets.lovelace !== output.assets.lovelace
+    || Object.keys(spent.assets).length !== 1 || spent.scriptRef != null) throw fail('inputs', 'the input does not match the checked advert and deposit');
+  for (const collateral of facts.collateralInputs) {
+    const one = inputs.get(collateral);
+    if (one === undefined || one.address !== supplierAddress || !plain(one) || Object.keys(one.assets).length !== 1 || !isCollateralOutput(one)) {
+      throw fail('inputs', 'collateral must be a pure output of the supplier wallet');
+    }
+  }
+
+  let credit = 0n;
+  const assets = new Map<string, bigint>();
+  const spending: RecordSpendValueRow[] = [];
+  for (const input of facts.inputs) {
+    const one = inputs.get(input);
+    if (one === undefined || (input !== ref && (one.address !== supplierAddress || !plain(one))) || typeof one.assets.lovelace !== 'bigint' || one.assets.lovelace <= 0n) {
+      throw fail('inputs', 'every regular input except the advert must be a plain output of the supplier wallet');
+    }
+    const lovelace = one.assets.lovelace;
+    spending.push({ ref: input, address: one.address, lovelace });
+    if (input === ref) continue;
+    credit -= lovelace;
+    for (const [unit, quantity] of Object.entries(one.assets)) if (unit !== 'lovelace') assets.set(unit, (assets.get(unit) ?? 0n) - quantity);
+  }
+  const outputs: RecordSpendValueRow[] = [];
+  for (const one of facts.outputs) {
+    credit += one.lovelace;
+    outputs.push({ ref: formatOutRef(facts.txHash, one.index), address: one.address, lovelace: one.lovelace });
+    for (const [unit, quantity] of Object.entries(one.assets)) assets.set(unit, (assets.get(unit) ?? 0n) + quantity);
+  }
+  if ([...assets.values()].some((change) => change !== 0n)) throw fail('outflow', 'the transaction does not return all supplier assets');
+  const deposit = output.assets.lovelace;
+  if (credit <= 0n || credit !== deposit - facts.feeLovelace) throw fail('outflow', 'the supplier must gain exactly the advert deposit minus the actual fee');
+  return {
+    phase: 'retire', agent: agent.id, model: advert.model, supplierPkh, supplierAddress, depositLovelace: String(deposit),
+    feeLovelace: String(facts.feeLovelace), creditLovelace: String(credit), valueSeal: valueSeal({ fee: facts.feeLovelace, inputs: spending, outputs }),
+    approvalSession: session.go?.session ?? null,
+  };
+}
+
+function proofOf(session: Pick<Session, 'registry' | 'facts'>, agent: AgentSpec, advert: AdvertSpec, ref: string | undefined, facts: Readonly<Record<string, unknown>>): RetirementProof {
+  const { phase, supplierPkh, supplierAddress, depositLovelace, feeLovelace, creditLovelace, valueSeal: seal, approvalSession } = facts;
+  if (ref === undefined || session.facts.read().adverts[agent.id]?.[advert.model]?.ref !== ref || phase !== 'retire'
+    || facts.agent !== agent.id || facts.model !== advert.model
+    || supplierPkh !== session.registry.hashOf(advert.supplierKey) || supplierAddress !== session.registry.addressOf(advert.supplierKey)
+    || depositLovelace !== String(advert.depositLovelace) || typeof feeLovelace !== 'string' || !LOVELACE.test(feeLovelace)
+    || typeof creditLovelace !== 'string' || !LOVELACE.test(creditLovelace) || BigInt(creditLovelace) <= 0n
+    || BigInt(creditLovelace) !== advert.depositLovelace - BigInt(feeLovelace)
+    || typeof seal !== 'string' || !HASH.test(seal) || typeof approvalSession !== 'string' || approvalSession === '') {
+    throw new PreconditionError(`the recorded retirement of ${advert.model} of ${agent.id} lacks a matching supplier refund proof`);
+  }
+  return { phase, agent: agent.id, model: advert.model, supplierPkh, supplierAddress, depositLovelace, feeLovelace, creditLovelace, valueSeal: seal, approvalSession };
+}
+
+async function verifyRetirement(session: Session, agent: AgentSpec, advert: AdvertSpec, record: StepRecord): Promise<RetirementProof> {
+  const step = retireName(agent, advert);
+  const retiredRef = record.refs.retiredRef;
+  const proof = proofOf(session, agent, advert, retiredRef, record.facts);
+  if (record.tx_hash === null) throw new VerificationError('The retirement has no recorded transaction.');
+  const flow = await readConfirmedSpend(session, record.tx_hash, { withDetails: true });
+  const { advert: script } = session.chain.deployment;
+  const credit = proveAdvertRetirement(flow, {
+    advertRef: retiredRef!, advertAddress: script.address, advertScriptHash: script.hash, supplierAddress: proof.supplierAddress, depositLovelace: BigInt(proof.depositLovelace),
+  });
+  if (valueSeal(flow) !== proof.valueSeal || flow.fee !== BigInt(proof.feeLovelace) || credit !== BigInt(proof.creditLovelace)) {
+    throw new VerificationError('The confirmed retirement inputs, outputs or fee do not match the checked supplier refund.');
+  }
+  if (session.mode === 'submit') {
+    const shows = { ...proof, retiredRef, tx: record.tx_hash, refundVerified: true };
+    if (!session.evidence.entries().some(({ step: name, status, shows: seen }) => name === step && status === 'info' && isObject(seen)
+      && seen.tx === record.tx_hash && seen.valueSeal === proof.valueSeal && seen.refundVerified === true)) {
+      session.evidence.add({ step, status: 'info', shows });
+    }
+    session.state.setNote(`part.${step}`, { ...record, verified_at: iso(session.clock.now()) });
+  }
+  return proof;
+}
+
+async function verifyRetirementNotes(session: Session): Promise<void> {
+  const agents = session.extra.cleanupAgent === null ? session.use.agents : [session.extra.cleanupAgent];
+  for (const agent of agents) for (const advert of agent.adverts) {
+    const step = retireName(agent, advert);
+    const note = session.state.note(`part.${step}`);
+    if (note === undefined) continue;
+    const record = recordOfStep(session, step);
+    if (record === undefined) throw new VerificationError('The recorded retirement cannot be read.');
+    if (record.verified_at === null) await verifyRetirement(session, agent, advert, record);
+  }
+}
+
+async function beforeResubmit(session: ResubmitSession<Extra>, command: TaskCommand, flight: ResubmitFlight): Promise<void> {
+  const isRetirement = flight.step.startsWith('retire:');
+  if ((isRetirement ? command !== 'cleanup' : command !== 'run')) {
+    throw new PreconditionError(`the run has an advert transaction in flight for ${isRetirement ? 'cleanup' : 'run'}, not ${command}`);
+  }
+  const agents = session.extra.cleanupAgent === null ? session.use.agents : [session.extra.cleanupAgent];
+  for (const agent of agents) for (const advert of agent.adverts) {
+    if ((isRetirement ? retireName(agent, advert) : stepName(agent, advert)) !== flight.step) continue;
+    if (isRetirement) {
+      const proof = proofOf(session, agent, advert, flight.refs.retiredRef, flight.facts);
+      if (!flight.inputRefs.includes(flight.refs.retiredRef!)) throw new PreconditionError('the in-flight transaction does not spend the recorded advert');
+      if (proof.approvalSession !== session.go?.session) throw new PreconditionError('the current approval is not the approval of the recorded retirement');
+    }
+    await requireFree(session, isRetirement ? undefined : agent);
+    requireGo(session.go, { task: session.task, runWallet: session.registry.addressOf('run'), nowMs: session.clock.now(), irreversible: [] });
+    return;
+  }
+  throw new PreconditionError('the run has a transaction in flight outside --agent or outside the advert data. Use the matching action of this same run');
+}
+
+/** Retire one recorded advert, then check its actual confirmed supplier credit. */
+async function retireOne(session: Session, target: Retirement): Promise<StepOutcome> {
+  const { agent, advert, ref } = target;
   const step = retireName(agent, advert);
   requireNoFlight(session);
-  await requireFree(session, agent);
+  await requireFree(session);
   await requireCollateralOutput(session, advert.supplierKey);
+  let proof: RetirementProof | undefined;
   const spec: HostedLandSpec = {
     step, tool: TOOL_RETIRE, args: { changeAddress: session.registry.addressOf(advert.supplierKey), advert_ref: ref }, expectSigners: [advert.supplierKey],
-    plan: (_build: HostedBuild, facts: TxFacts) => {
-      if (!facts.inputs.includes(ref)) throw new GuardRefusal(step, [{ guard: 'inputs', ok: false, message: `the transaction does not spend the advert output ${ref}` }]);
-      return planOf(session, { outflow: { [advert.supplierKey]: session.settings.maxFeeLovelace }, explained: [ref], mint: {} });
+    plan: async (build, facts) => {
+      proof = await checkRetirement(session, target, build, facts);
+      return planOf(session, { outflow: { [advert.supplierKey]: 0n }, explained: [ref], mint: {} });
     },
     refs: () => ({ retiredRef: ref }),
+    facts: () => {
+      if (proof === undefined) throw new Error('the retirement has no checked refund');
+      return { ...proof };
+    },
   };
   const landed = await landHosted(session, spec);
   if (landed.kind === 'dry') {
@@ -471,19 +669,25 @@ async function retireOne(session: Session, agent: AgentSpec, advert: AdvertSpec,
     session.extra.result = { agent: agent.id, model: advert.model, retire: ref };
     return { kind: 'dry' };
   }
-  session.extra.result = { agent: agent.id, model: advert.model, retire: ref, tx: landed.txHash };
-  return { kind: 'done', message: `the advert ${advert.model} of ${agent.id} is retired in the transaction ${landed.txHash}` };
+  const record = recordOfStep(session, step);
+  if (record === undefined) throw new VerificationError('The confirmed retirement has no record to verify.');
+  const { creditLovelace } = await verifyRetirement(session, agent, advert, record);
+  session.extra.result = { agent: agent.id, model: advert.model, retire: ref, tx: landed.txHash, creditLovelace, refundVerified: true };
+  return { kind: 'done', message: `the advert ${advert.model} of ${agent.id} is retired in ${landed.txHash}, with ${units(BigInt(creditLovelace))} credited to the supplier` };
 }
 
 async function cleanup(session: Session): Promise<StepOutcome> {
   session.extra.result = null;
+  await verifyRetirementNotes(session);
   let retired = 0;
   for (;;) {
     const next = await nextLive(session);
     if (next === null) {
-      return { kind: 'finished', message: retired === 0 ? 'no advert that the facts file holds is on the node: there is nothing to retire' : `${retired} advert(s) are retired, and no advert that the facts file holds is left on the node` };
+      const selected = session.extra.cleanupAgent;
+      const scope = selected === null ? 'that the facts file holds' : `of ${selected.id} that the facts file holds`;
+      return { kind: 'finished', message: retired === 0 ? `no advert ${scope} is on the node: there is nothing to retire` : `${retired} advert(s) are retired, and no advert ${scope} is left on the node` };
     }
-    const outcome = await retireOne(session, next.agent, next.advert, next.ref);
+    const outcome = await retireOne(session, next);
     if (outcome.kind !== 'done') return outcome;
     retired += 1;
     if (!session.all) return outcome;
@@ -494,7 +698,7 @@ const advert: TaskDefinition<Extra> = {
   name: 'advert',
   title: 'Post the adverts of the use case with the hash of the manifest that each service serves',
   flags: [],
-  valued: [],
+  valued: ['agent'],
   needs: {
     keys: (use) => [...new Set(use.agents.flatMap((agent) => agent.adverts.map((one) => one.supplierKey)))],
     chain: true,
@@ -502,8 +706,26 @@ const advert: TaskDefinition<Extra> = {
     approval: 'submit',
   },
   steps: (use) => use.agents.flatMap((agent) => agent.adverts.map((one) => stepName(agent, one))),
-  parse: () => ({ result: null }),
+  parse(_env, settings, use, flags, command = 'run') {
+    const name = flags.value('agent');
+    if (name !== undefined && command !== 'cleanup') throw new FlagError('--agent goes with advert cleanup');
+    if (name !== undefined && flags.has('release')) throw new FlagError('--agent does not go with --release');
+    const cleanupAgent = name === undefined ? null : use.agents.find((agent) => agent.id === name);
+    if (cleanupAgent === undefined) throw new FlagError(`--agent is one of ${use.agents.map(({ id }) => id).join(', ')}`);
+    if (flags.has('submit') && !flags.has('release')) {
+      const run = flags.value('run');
+      const current = run === undefined ? 'advert.state.json' : `advert.${run}.state.json`;
+      // The run lock covers every advert stream in this state folder. Do not start another while any holds a flight.
+      for (const file of readdirSync(settings.stateDir)) {
+        if (file === current || !ADVERT_STATE.test(file)) continue;
+        const previous = StateFile.peek(join(settings.stateDir, file));
+        if (previous?.in_flight != null) throw new PreconditionError('another advert run has a transaction in flight. Use its existing run label');
+      }
+    }
+    return { result: null, cleanupAgent };
+  },
   next: (session) => runSteps(session, session.use.agents.flatMap((agent) => agent.adverts.map((one) => postStep(agent, one)))),
+  beforeResubmit,
   cleanup,
   result: (session) => session.extra.result ?? {},
 };

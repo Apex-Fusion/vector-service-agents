@@ -12,6 +12,7 @@ import { iso } from '../../../checks/lib/format.ts';
 import { HostedError, checkArguments } from '../../../checks/lib/hosted.ts';
 import type { ToolAnswer } from '../../../checks/lib/hosted.ts';
 import type { ChainAccess } from '../../../checks/lib/session.ts';
+import { factsOf } from '../../../checks/lib/txfacts.ts';
 import { SYSTEM_START_MS } from '../../../checks/test/support/chain-view.ts';
 import { DEPLOYMENT } from '../../../checks/test/support/world.ts';
 import { recordUtxo, rootRecord } from '../../../../packages/buyer-core/test/fixtures/identity-world.ts';
@@ -25,7 +26,7 @@ import type { GoFile } from '../../lib/approval.ts';
 import { StateFile } from '../../../checks/lib/state.ts';
 import type { AdvertSpec, AgentSpec, TaskDefinition, UseCase } from '../../lib/contract.ts';
 import { FactsFile } from '../../lib/facts.ts';
-import { lucidForAddress } from '../../lib/platform.ts';
+import { decodeTransaction, formatOutRef, lucidForAddress, parseOutRef } from '../../lib/platform.ts';
 import type { Utxo } from '../../lib/platform.ts';
 import { loadRegistry } from '../../lib/registry.ts';
 import type { Registry } from '../../lib/registry.ts';
@@ -52,6 +53,7 @@ interface List { add(item: Item): void }
 interface Body {
   set_ttl(slot: bigint): void; set_validity_interval_start(slot: bigint): void; set_mint(mint: Item): void; set_script_data_hash(hash: Item): void;
   set_collateral_inputs(list: Item): void; set_required_signers(list: Item): void;
+  set_reference_inputs(list: Item): void;
 }
 interface Multi { set(policy: Item, name: Item, quantity: bigint): void }
 /** The part of CML that the builds use. Its functions are static members named `new` in CML. */
@@ -73,7 +75,12 @@ interface Cml {
   Ed25519KeyHashList: { 'new'(): List };
   ScriptDataHash: { from_hex(hex: string): Item };
   TransactionBody: { 'new'(inputs: Item, outputs: Item, fee: bigint): Body };
-  TransactionWitnessSet: { 'new'(): Item };
+  TransactionWitnessSet: { 'new'(): { set_redeemers(redeemers: Item): void } };
+  MapRedeemerKeyToRedeemerVal: { 'new'(): { insert(key: Item, value: Item): void } };
+  RedeemerKey: { 'new'(tag: number, index: bigint): Item };
+  RedeemerVal: { 'new'(datum: Item, units: Item): Item };
+  Redeemers: { new_map_redeemer_key_to_redeemer_val(map: Item): Item };
+  ExUnits: { 'new'(memory: bigint, steps: bigint): Item };
   Transaction: { 'new'(body: Item, witnesses: Item, valid: boolean): { to_cbor_hex(): string; body(): Item } };
   hash_transaction(body: Item): { to_hex(): string };
 }
@@ -83,14 +90,16 @@ const lucidModule = createRequire(fileURLToPath(new URL('../../../../packages/bu
 const CML = lucidModule.CML;
 
 interface TxOutput { address: string; lovelace: bigint; assets?: Record<string, bigint>; datum?: string }
+type Ref = Pick<Utxo, 'txHash' | 'outputIndex'>;
 interface TxSpec {
   wallet: string; inputs: readonly Utxo[]; collateral: readonly Utxo[]; outputs: readonly TxOutput[]; mint?: Record<string, bigint>; signers: readonly string[]; fee: bigint; validFrom: number; validTo: number;
+  spend?: { readonly input: Ref; readonly reference: Ref; readonly redeemer: string };
 }
 interface Unsigned { txCbor: string; txHash: string; fee: bigint }
 
 const unitParts = (unit: string): { policy: Item; name: Item } => ({ policy: CML.ScriptHash.from_hex(unit.slice(0, 56)), name: CML.AssetName.from_hex(unit.slice(56)) });
-const inputOf = (utxo: Utxo): Item => CML.TransactionInput.new(CML.TransactionHash.from_hex(utxo.txHash), BigInt(utxo.outputIndex));
-const listOf = (utxos: readonly Utxo[]): List => {
+const inputOf = (utxo: Ref): Item => CML.TransactionInput.new(CML.TransactionHash.from_hex(utxo.txHash), BigInt(utxo.outputIndex));
+const listOf = (utxos: readonly Ref[]): List => {
   const list = CML.TransactionInputList.new();
   for (const utxo of utxos) list.add(inputOf(utxo));
   return list;
@@ -124,7 +133,18 @@ function unsignedTx(spec: TxSpec): Unsigned {
     body.set_collateral_inputs(listOf(spec.collateral));
     body.set_script_data_hash(CML.ScriptDataHash.from_hex('ab'.repeat(32)));
   }
-  const tx = CML.Transaction.new(body, CML.TransactionWitnessSet.new(), true);
+  const witnesses = CML.TransactionWitnessSet.new();
+  if (spec.spend !== undefined) {
+    const { input, reference, redeemer } = spec.spend;
+    body.set_reference_inputs(listOf([reference]));
+    const ordered = [...spec.inputs].sort((a, b) => a.txHash.localeCompare(b.txHash) || a.outputIndex - b.outputIndex);
+    const index = ordered.indexOf(input as Utxo);
+    if (index < 0) throw new Error('the test has no input for its spend redeemer');
+    const map = CML.MapRedeemerKeyToRedeemerVal.new();
+    map.insert(CML.RedeemerKey.new(0, BigInt(index)), CML.RedeemerVal.new(CML.PlutusData.from_cbor_hex(redeemer), CML.ExUnits.new(1n, 1n)));
+    witnesses.set_redeemers(CML.Redeemers.new_map_redeemer_key_to_redeemer_val(map));
+  }
+  const tx = CML.Transaction.new(body, witnesses, true);
   return { txCbor: tx.to_cbor_hex(), txHash: CML.hash_transaction(tx.body()).to_hex(), fee: spec.fee };
 }
 
@@ -155,14 +175,41 @@ export function manifestOf(agent: AgentSpec, did: string, hashOf_: (key: string)
 }
 
 /** A `fetch` for the manifests (`/agent.json`) and the statuses (`/status`) of the runtimes. It keeps each URL that it was asked for, and refuses any other address. */
+interface ArchivedValue {
+  tx_hash: string; tx_index: number; payment_addr: { bech32: string }; value: string;
+  asset_list: { policy_id: string; asset_name: string; quantity: string }[];
+  inline_datum?: { bytes: string };
+}
+
+interface ArchivedRetirement {
+  tx_hash: string; fee: string; inputs: ArchivedValue[]; outputs: ArchivedValue[];
+  plutus_contracts: { script_hash: string; spends_input: { tx_hash: string; tx_index: number }; valid_contract: boolean;
+    input: { redeemer: { purpose: 'spend'; datum: { bytes: string } } } }[];
+}
+
+function archiveValue(tx_hash: string, tx_index: number, bech32: string, amount: bigint, assets: Record<string, bigint>, datum?: string | null): ArchivedValue {
+  const asset_list = Object.entries(assets).filter(([unit]) => unit !== 'lovelace').map(([unit, quantity]) => (
+    { policy_id: unit.slice(0, 56), asset_name: unit.slice(56), quantity: String(quantity) }
+  ));
+  return { tx_hash, tx_index, payment_addr: { bech32 }, value: String(amount), asset_list, ...(datum == null ? {} : { inline_datum: { bytes: datum } }) };
+}
+
 export class Net {
   readonly urls: string[] = [];
   readonly manifests = new Map<string, () => Response>();
   readonly statuses = new Map<string, () => Response>();
+  retirement: (hash: string) => ArchivedRetirement | null = () => null;
 
-  readonly fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
+  readonly fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
     this.urls.push(url.href);
+    if (url.origin === 'https://koios.test' && url.pathname === '/api/v1/tx_info') {
+      if (init?.method !== 'POST' || typeof init.body !== 'string') throw new Error('the test expects a bounded tx_info request');
+      const args = JSON.parse(init.body) as { _tx_hashes: string[]; _inputs: boolean; _scripts: boolean; _assets: boolean };
+      if (args._tx_hashes.length !== 1 || !args._inputs || !args._scripts || !args._assets) throw new Error('the test expects one transaction with resolved spend details');
+      const row = this.retirement(args._tx_hashes[0]!);
+      return jsonResponse(row === null ? [] : [row]);
+    }
     const held = url.pathname === '/agent.json' ? this.manifests : url.pathname === '/status' ? this.statuses : undefined;
     const answer = held?.get(url.origin);
     if (answer === undefined) throw new Error('the test fetch was asked for an address that it does not know');
@@ -191,6 +238,8 @@ export interface Twist {
   mint?: Record<string, bigint>;
   /** The output that the build spends instead of the one that it was asked for (create, retire). */
   spend?: string;
+  /** The retirement redeemer of the test builder. */
+  retireRedeemer?: string;
   /** The stake of the stake output, in lovelace. */
   stake?: bigint;
   /** The detail hash that the advert datum holds. */
@@ -234,6 +283,8 @@ export class StakeAdvertHosted extends PackHosted {
   /** Changes the arguments that the tool of a name gets, as a builder that ignores what it was asked for. */
   readonly bend: Record<string, (args: Record<string, unknown>) => Record<string, unknown>> = {};
   listLag = 0;
+  rewriteRetirement: (row: ArchivedRetirement) => ArchivedRetirement | null = (row) => row;
+  readonly #retiredInputs = new Map<string, ReadonlyMap<string, Utxo>>();
   readonly #world: World;
   readonly #now: () => number;
   readonly #controller: string;
@@ -243,6 +294,31 @@ export class StakeAdvertHosted extends PackHosted {
     this.#world = world;
     this.#now = now;
     this.#controller = controllerHash;
+  }
+
+  archivedRetirement(hash: string): ArchivedRetirement | null {
+    const inputs = this.#retiredInputs.get(hash);
+    if (inputs === undefined) return null;
+    const cbor = this.#world.chain.applied.find((bytes) => factsOf(bytes).txHash === hash);
+    if (cbor === undefined) return null;
+    const facts = factsOf(cbor);
+    const tx = decodeTransaction(cbor);
+    const redeemer = tx.witness_set().redeemers()!.to_flat_format().get(0);
+    const ordered = [...facts.inputs].sort((a, b) => a.slice(0, 64).localeCompare(b.slice(0, 64)) || Number(a.slice(65)) - Number(b.slice(65)));
+    const spent = ordered[Number(redeemer.index())]!;
+    const ref = parseOutRef(spent);
+    return this.rewriteRetirement({
+      tx_hash: hash, fee: String(facts.feeLovelace),
+      inputs: facts.inputs.map((regular) => {
+        const item = inputs.get(regular)!;
+        return archiveValue(item.txHash, item.outputIndex, item.address, item.assets.lovelace, item.assets, item.datum);
+      }),
+      outputs: facts.outputs.map(({ index, address, lovelace, assets, inlineDatum }) => archiveValue(hash, index, address, lovelace, assets, inlineDatum)),
+      plutus_contracts: [{
+        script_hash: DEPLOYMENT.advert.hash, spends_input: { tx_hash: ref.txHash, tx_index: ref.outputIndex }, valid_contract: tx.is_valid(),
+        input: { redeemer: { purpose: 'spend', datum: { bytes: redeemer.data().to_cbor_hex() } } },
+      }],
+    });
   }
 
   override async call(name: string, args: Record<string, unknown>): Promise<ToolAnswer> {
@@ -272,6 +348,7 @@ export class StakeAdvertHosted extends PackHosted {
     const { spec, title, extra, roles } = make();
     const built = unsignedTx(spec);
     this.built.push({ tool: TOOLS[key], txCbor: built.txCbor, txHash: built.txHash });
+    if (key === 'retire') this.#retiredInputs.set(built.txHash, new Map(spec.inputs.map((input) => [formatOutRef(input.txHash, input.outputIndex), input])));
     const listed = this.twist[key]?.signers ?? [...new Set([...spec.signers, keyCredentialOf(String(args.changeAddress))!])];
     return liveBuildAnswer(title, {
       txCbor: built.txCbor, txHash: built.txHash, fee: built.fee.toString(), validFrom: spec.validFrom, validTo: spec.validTo,
@@ -361,6 +438,7 @@ export class StakeAdvertHosted extends PackHosted {
     const spec: TxSpec = {
       wallet, inputs: [advert, pay], collateral: [collateral], signers: t.signers ?? [supplier], fee: FEES.retire, validFrom: lo, validTo: hi,
       outputs: [{ address: t.address ?? wallet, lovelace: advert.assets.lovelace ?? 0n }, ...(t.extra === undefined ? [] : [t.extra])],
+      spend: { input: advert, reference: DEPLOYMENT.refs.advert!, redeemer: t.retireRedeemer ?? 'd87b80' },
     };
     return { spec, title: 'Advert Retirement', extra: { advert_ref: null, spent_ref: String(args.advert_ref) }, roles: { [supplier]: 'supplier key, and the wallet' } };
   }
@@ -462,6 +540,7 @@ export async function stakeAdvertWorld(over: {
   const node = new ScriptedNode(world);
   const net = new Net();
   const hosted = new StakeAdvertHosted(world, () => w.clock.now(), keys.hashOf('controller'));
+  net.retirement = (hash) => hosted.archivedRetirement(hash);
   const chain: ChainAccess = {
     provider: world.chain, deployment: DEPLOYMENT, koiosUrl: 'https://koios.test', fetchImpl: net.fetchImpl,
     context: async (address) => ({ lucid: await lucidForAddress(world.chain, address), provider: world.chain, deployment: DEPLOYMENT }), liveVaultsOf: async () => [],
