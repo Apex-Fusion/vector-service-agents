@@ -425,6 +425,9 @@ test('no individual name, and no personal address, on any public surface: the ma
     // Use case 2: the two Dockerfiles, the two manifest templates, the two READMEs, the eight files of the packs and the sources of the two agents.
     'agents/prior-authorization-agent/Dockerfile', 'agents/insurer-intake-agent/Dockerfile', 'agents/prior-authorization-agent/agent.json.template', 'agents/insurer-intake-agent/agent.json.template', 'agents/prior-authorization-agent/README.md', 'agents/insurer-intake-agent/README.md',
     ...USE_CASE_2_FILES, ...sourceFiles('agents/prior-authorization-agent/src'), ...sourceFiles('agents/insurer-intake-agent/src'),
+    // Use case 3: the two Dockerfiles, the two manifest templates, the two READMEs, the three price lists, the ten files of the packs and the sources of the two agents.
+    'agents/sourcing-agent/Dockerfile', 'agents/bid-desk/Dockerfile', 'agents/sourcing-agent/agent.json.template', 'agents/bid-desk/agent.json.template', 'agents/sourcing-agent/README.md', 'agents/bid-desk/README.md',
+    ...BID_DESK_PRICE_LISTS, ...USE_CASE_3_FILES, ...sourceFiles('agents/sourcing-agent/src'), ...sourceFiles('agents/bid-desk/src'),
     ...readdirSync(join(root, 'specs')).map((f) => `specs/${f}`),
     DESIGN_SPEC,
   ];
@@ -435,6 +438,8 @@ test('no individual name, and no personal address, on any public surface: the ma
     'agents/reorder-agent/src/serve/start.ts', 'agents/order-desk/src/serve/start.ts', 'deploy/server/.env.reorder-agent.example', 'deploy/server/.env.order-desk-runtime.example', 'deploy/server/RUNBOOK-reorder-agent.md', 'deploy/server/RUNBOOK-order-desk.md',
     'agents/prior-authorization-agent/Dockerfile', 'agents/insurer-intake-agent/Dockerfile', 'agents/prior-authorization-agent/agent.json.template', 'agents/insurer-intake-agent/agent.json.template', 'agents/prior-authorization-agent/README.md', 'agents/insurer-intake-agent/README.md',
     'agents/prior-authorization-agent/src/serve/start.ts', 'agents/insurer-intake-agent/src/serve/start.ts', ...USE_CASE_2_FILES,
+    'agents/sourcing-agent/Dockerfile', 'agents/bid-desk/Dockerfile', 'agents/sourcing-agent/agent.json.template', 'agents/bid-desk/agent.json.template', 'agents/sourcing-agent/README.md', 'agents/bid-desk/README.md',
+    'agents/sourcing-agent/src/serve/start.ts', 'agents/bid-desk/src/serve/start.ts', ...BID_DESK_PRICE_LISTS, ...USE_CASE_3_FILES,
   ]) assert.ok(files.includes(must), `${must} is scanned`);
   for (const rel of files) assert.doesNotMatch(read(rel), NAMES, `${rel}: roles, not people`);
   // A path into someone's home folder names its owner too, and a reviewer's handle is a name.
@@ -8215,3 +8220,221 @@ test('the README of the agents host has a section about the operator image: its 
   assert.ok(section(runbook, '7. Add an agent').includes('The runbooks of the other packs give the keys, the registration and the advert.'), 'step 7 says that the runbooks of the other packs still give them');
   assert.ok(section(runbook, 'Keys').includes('The task `keys` of the operator pack makes the keys on this host. It never prints a key.'), 'the keys are made by the task keys');
 });
+
+// ======================================================================================================================================
+// Use case 3 (supplier bid evaluation): the Sourcing Agent and the three Bid Desks. The tests of each pack hold its files on their own (agents/*/test/deploy.test.ts). These tests read more than one
+// place: the tracked files of the repository, the compose files of both hosts, the price lists of the Bid Desks, the README and the RUNBOOK of the agents host, and the parsers that the kit, the two agents
+// and the mock service use for the documents that they pass to each other. The drift tests run the real TypeScript of the kit, of the two agents and of the mock service in one child process, as the tests
+// of use case 1 and of use case 2 do. Each guard has an accepted twin and refused copies.
+// ======================================================================================================================================
+const SOURCING_PACK = ['deploy/server/docker-compose.sourcing-agent.yml', 'deploy/server/.env.sourcing-agent.example', 'deploy/server/Caddyfile.sourcing-agent.snippet', 'deploy/server/RUNBOOK-sourcing-agent.md'];
+const BID_DESKS = ['alfa', 'bravo', 'charlie'];
+// The three Bid Desks run one image in three compose files. They share one env example, one snippet file with three blocks and one runbook.
+const BID_DESK_PACK = [...BID_DESKS.map((name) => `deploy/server/docker-compose.bid-desk-${name}.yml`), 'deploy/server/.env.bid-desk.example', 'deploy/server/Caddyfile.bid-desk.snippet', 'deploy/server/RUNBOOK-bid-desk.md'];
+const USE_CASE_3_FILES = [...SOURCING_PACK, ...BID_DESK_PACK];
+// The price list of each Bid Desk: the file that its instance selects, and that its manifest hashes.
+const BID_DESK_PRICE_LISTS = BID_DESKS.map((name) => `agents/bid-desk/price-lists/${name}.json`);
+
+test('use case 3 files: the ten files of the packs of the Sourcing Agent and of the three Bid Desks, and the three price lists, are tracked by git, and none names the host, the stack of its reverse proxy, a login or a key file; the guard refuses a file that is not tracked and a file that names the host', { skip: TRACKED ? false : 'needs a git checkout' }, () => {
+  assert.equal(SOURCING_PACK.length, 4, 'four files for the Sourcing Agent');
+  assert.equal(BID_DESK_PACK.length, 6, 'six files for the three Bid Desks: three compose files, one env example, one snippet and one runbook');
+  assert.equal(new Set([...USE_CASE_1_FILES, ...USE_CASE_2_FILES, ...USE_CASE_3_FILES]).size, 9 + 8 + 10, 'none of the ten is a file of use case 1 or of use case 2');
+  const files = [...USE_CASE_3_FILES, ...BID_DESK_PRICE_LISTS];
+  for (const file of files) assert.ok(existsSync(join(root, file)), `${file} is there`);
+  assert.deepEqual(trackedFileProblems(files, TRACKED, read), [], 'the real files pass');
+  // [the files of a pack, the compose file that the test changes, the runbook that the test leaves out of the tracked files]
+  for (const [pack, compose, runbook] of [[SOURCING_PACK, SOURCING_PACK[0], SOURCING_PACK[3]], [BID_DESK_PACK, BID_DESK_PACK[1], BID_DESK_PACK[5]]]) {
+    assert.deepEqual(trackedFileProblems(pack, TRACKED.filter((file) => file !== runbook), read), [`${runbook} is not tracked by git`], 'a file that is not tracked');
+    for (const part of ['the apex' + '-web box', 'uma' + 'mi_default', 'root' + '@host', 'id_' + 'ed25519']) {
+      const text = (file) => (file === compose ? `${read(file)}# ${part}\n` : read(file));
+      assert.deepEqual(trackedFileProblems(pack, TRACKED, text), [`${compose} names the host, the stack of its reverse proxy, a login or a key file`], part);
+    }
+    // The twin: the names that a pack holds on purpose: the public host name of the agent, the folder of the pack and the word host.
+    const origin = /^ +PUBLIC_ORIGIN: https:\/\/(\S+)$/m.exec(read(compose))?.[1];
+    assert.ok(origin, `${compose} gives the public origin of the runtime`);
+    const twin = (file) => (file === compose ? `${read(file)}# ${origin} in deploy/server on the agents host\n` : read(file));
+    assert.deepEqual(trackedFileProblems(pack, TRACKED, twin), [], 'the names of the pack');
+  }
+  // A price list that git does not track never reaches the image.
+  const list = BID_DESK_PRICE_LISTS[0];
+  assert.deepEqual(trackedFileProblems(files, TRACKED.filter((file) => file !== list), read), [`${list} is not tracked by git`], 'a price list that is not tracked');
+});
+
+// The names that a compose file claims on a host: its project, the name of each container and the name of each volume. Docker refuses a second container with a name that is in use, two projects with one name
+// share their default network, and two volumes with one name share their data. So each name stands once in all the compose files of the two hosts. A volume has the name that its `name` gives, or
+// `<project>_<key>` when it gives none. A service with no `container_name` gets a name from its project, and that is no claim here.
+function composeNameProblems(texts) {
+  const problems = [];
+  const owners = { project: new Map(), container: new Map(), volume: new Map() };
+  const claim = (kind, name, owner) => owners[kind].set(name, [...(owners[kind].get(name) ?? []), owner]);
+  for (const [file, text] of Object.entries(texts)) {
+    const parsed = parseYaml(text) ?? {};
+    if (typeof parsed.name !== 'string' || parsed.name === '') {
+      problems.push(`${file} has no project name`);
+      continue;
+    }
+    claim('project', parsed.name, file);
+    for (const [service, body] of Object.entries(parsed.services ?? {})) if (typeof body?.container_name === 'string') claim('container', body.container_name, `${file}#${service}`);
+    for (const [key, body] of Object.entries(parsed.volumes ?? {})) claim('volume', typeof body?.name === 'string' ? body.name : `${parsed.name}_${key}`, `${file}#${key}`);
+  }
+  for (const [kind, names] of Object.entries(owners)) for (const [name, users] of names) if (users.length > 1) problems.push(`the ${kind} name ${name} is used twice: ${users.join(', ')}`);
+  return problems;
+}
+
+test('use case 3 names: the project, each container and each volume of the compose files of the two hosts have one name, and the Sourcing Agent and the three Bid Desks have the names of the plan; the guard refuses a name that stands twice', () => {
+  const texts = composeTextsOf(['deploy/host', 'deploy/server']);
+  assert.deepEqual(composeNameProblems(texts), [], 'the real files pass');
+  const sourcing = serverCompose('sourcing-agent');
+  const [alfa, bravo, charlie] = BID_DESKS.map((name) => serverCompose(`bid-desk-${name}`));
+  // The names of the plan: the project, the runtime, the service and the volume of each pack.
+  const plan = { [sourcing]: ['sourcing-agent', 'sourcing-runtime', 'sourcing-service', 'sourcing-state'], ...Object.fromEntries(BID_DESKS.map((name) => [serverCompose(`bid-desk-${name}`), [`bid-desk-${name}`, `bids-${name}-runtime`, `bids-${name}-service`, `bid-desk-${name}-state`]])) };
+  assert.equal(Object.keys(plan).length, 4, 'the Sourcing Agent and the three Bid Desks');
+  for (const [file, expected] of Object.entries(plan)) {
+    const parsed = parseYaml(texts[file]);
+    assert.deepEqual([parsed.name, parsed.services.runtime.container_name, parsed.services.service.container_name, Object.values(parsed.volumes).map((volume) => volume.name)], [expected[0], expected[1], expected[2], [expected[3]]], `${file}: the names of the plan`);
+  }
+  const extra = (name, body) => ({ [`deploy/server/docker-compose.${name}.yml`]: body });
+  const faults = [
+    ['two Bid Desks with one container name', { [bravo]: srvReplace(texts[bravo], 'container_name: bids-bravo-service', 'container_name: bids-alfa-service') }, /the container name bids-alfa-service is used twice: \S+bid-desk-alfa\.yml#service, \S+bid-desk-bravo\.yml#service/],
+    ['two runtimes of the Bid Desks with one container name', { [charlie]: srvReplace(texts[charlie], 'container_name: bids-charlie-runtime', 'container_name: bids-bravo-runtime') }, /the container name bids-bravo-runtime is used twice: \S+bid-desk-bravo\.yml#runtime, \S+bid-desk-charlie\.yml#runtime/],
+    ['the service of the Sourcing Agent with the name of a container of the present host', { [sourcing]: srvReplace(texts[sourcing], 'container_name: sourcing-service', 'container_name: advocate-service') }, /the container name advocate-service is used twice: \S+advocate\.yml#service, \S+sourcing-agent\.yml#service/],
+    ['two projects with one name', { [charlie]: srvReplace(texts[charlie], '\nname: bid-desk-charlie\n', '\nname: bid-desk-bravo\n') }, /the project name bid-desk-bravo is used twice: \S+bid-desk-bravo\.yml, \S+bid-desk-charlie\.yml/],
+    ['two volumes with one name', { [charlie]: srvReplace(texts[charlie], 'bid-desk-charlie-state', 'bid-desk-bravo-state') }, /the volume name bid-desk-bravo-state is used twice: \S+bid-desk-bravo\.yml#bid-desk-bravo-state, \S+bid-desk-charlie\.yml#bid-desk-bravo-state/],
+    ['a volume with no name that has the name of a volume of another file', { ...extra('one', 'name: one\nservices: {}\nvolumes:\n  state: {}\n'), ...extra('two', 'name: two\nservices: {}\nvolumes:\n  data: { name: one_state }\n') }, /the volume name one_state is used twice/],
+    ['a compose file with no project name', extra('three', 'services: {}\n'), /docker-compose\.three\.yml has no project name/],
+  ];
+  for (const [name, changed, expected] of faults) {
+    const problems = composeNameProblems({ ...texts, ...changed });
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  // The twins: the files in another order, and two projects that each have a service with no container name and a volume with no name: their default names differ.
+  assert.deepEqual(composeNameProblems(Object.fromEntries(Object.entries(texts).reverse())), [], 'the files in another order');
+  const twins = { ...extra('one', 'name: one\nservices:\n  service:\n    image: example\nvolumes:\n  state: {}\n'), ...extra('two', 'name: two\nservices:\n  service:\n    image: example\nvolumes:\n  state: {}\n') };
+  assert.deepEqual(composeNameProblems({ ...texts, ...twins }), [], 'two projects with the same service name and the same volume key');
+});
+
+test('use case 3 ports: the compose files of the Sourcing Agent and of the three Bid Desks publish exactly 8107 to 8110 for the runtimes and 9105 to 9108 for the services, one port for each container, and no host port stands twice in the compose files of the two hosts; the guard refuses each copy that breaks one rule', () => {
+  const texts = composeTextsOf(['deploy/host', 'deploy/server']);
+  const readme = srvRead('README.md');
+  const sourcing = serverCompose('sourcing-agent');
+  const desks = BID_DESKS.map((name) => serverCompose(`bid-desk-${name}`));
+  const packs = [sourcing, ...desks];
+  const found = (kind) => packs.flatMap((file) => publishedPorts(texts[file]).filter((port) => port.service === kind).map((port) => port.host)).sort((a, b) => a - b);
+  assert.deepEqual(found('runtime'), [8107, 8108, 8109, 8110], 'the four runtimes publish 8107 to 8110');
+  assert.deepEqual(found('service'), [9105, 9106, 9107, 9108], 'the four services publish 9105 to 9108');
+  assert.equal(packs.flatMap((file) => publishedPorts(texts[file])).length, 8, 'one port for each container, and no other port');
+  assert.deepEqual(packs.map((file) => PACK_PORTS[file]), [{ runtime: [8107], service: [9105] }, { runtime: [8108], service: [9106] }, { runtime: [8109], service: [9107] }, { runtime: [8110], service: [9108] }], 'the ports that the guard expects of the four files');
+  assert.deepEqual(portProblems(texts, PACK_PORTS, readme), [], 'the real files pass');
+  const [alfa, bravo, charlie] = desks;
+  const faults = [
+    ['the runtime of Bid Desk charlie on the port of the Prior Authorization Agent', { [charlie]: srvReplace(texts[charlie], '127.0.0.1:8110:8080', '127.0.0.1:8105:8080') }, /the port 8105 is published twice(?=.*bid-desk-charlie\.yml#runtime)(?=.*prior-authorization-agent\.yml#runtime)/],
+    ['the service of the Sourcing Agent on the port of the Insurer Intake Agent', { [sourcing]: srvReplace(texts[sourcing], '127.0.0.1:9105:9105', '127.0.0.1:9104:9105') }, /the port 9104 is published twice(?=.*insurer-intake-agent\.yml#service)(?=.*sourcing-agent\.yml#service)/],
+    ['the runtime of Bid Desk alfa on the port of the third runtime of the Order Desk', { [alfa]: srvReplace(texts[alfa], '127.0.0.1:8108:8080', '127.0.0.1:8104:8080') }, /the port 8104 is published twice(?=.*bid-desk-alfa\.yml#runtime)(?=.*order-desk\.yml#runtime-large)/],
+    ['the runtime of Bid Desk alfa on the port of the runtime of the Sourcing Agent', { [alfa]: srvReplace(texts[alfa], '127.0.0.1:8108:8080', '127.0.0.1:8107:8080') }, /the port 8107 is published twice(?=.*bid-desk-alfa\.yml#runtime)(?=.*sourcing-agent\.yml#runtime)/],
+    ['the service of Bid Desk bravo on a port of the present host', { [bravo]: srvReplace(texts[bravo], '127.0.0.1:9107:9106', '127.0.0.1:8083:9106') }, /the port 8083 is published twice/],
+    ['the runtime of Bid Desk alfa on a public address', { [alfa]: srvReplace(texts[alfa], '["127.0.0.1:8108:8080"]', '["0.0.0.0:8108:8080"]') }, /bid-desk-alfa\.yml must publish/],
+    ['a third port on the runtime of the Sourcing Agent', { [sourcing]: srvReplace(texts[sourcing], '["127.0.0.1:8107:8080"]', '["127.0.0.1:8107:8080", "127.0.0.1:8111:8081"]') }, /sourcing-agent\.yml must publish/],
+  ];
+  for (const [name, changed, expected] of faults) {
+    const problems = portProblems({ ...texts, ...changed }, PACK_PORTS, readme);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  // The twins: the long form of a port with the same numbers, and the compose files of the two hosts in another order.
+  const long = srvReplace(texts[charlie], '["127.0.0.1:8110:8080"]', '[{ target: 8080, published: 8110, host_ip: 127.0.0.1 }]');
+  assert.deepEqual(portProblems({ ...texts, [charlie]: long }, PACK_PORTS, readme), [], 'the long form');
+  assert.deepEqual(portProblems(Object.fromEntries(Object.entries(texts).reverse()), PACK_PORTS, readme), [], 'the files in another order');
+});
+
+// The three Bid Desks are one code base in three compose files. Each file names one image of the service and one image of the runtime, and the same image as the other two: the digest that the operator writes
+// in one file stands in the three. The instance of each file selects the price list of the same name, so the folder of the price lists holds one file for each instance and no other file.
+function bidDeskProblems(texts, listFiles) {
+  const problems = [];
+  const images = { service: new Set(), runtime: new Set() };
+  for (const name of BID_DESKS) {
+    const file = serverCompose(`bid-desk-${name}`);
+    if (texts[file] === undefined) {
+      problems.push(`${file} is not there`);
+      continue;
+    }
+    const services = parseYaml(texts[file])?.services ?? {};
+    for (const kind of Object.keys(images)) images[kind].add(services[kind]?.image);
+    const instance = services.service?.environment?.BID_DESK_INSTANCE;
+    if (instance !== name) problems.push(`${file} gives the instance ${instance}, and it is the file of ${name}`);
+    if (!listFiles.includes(`${instance}.json`)) problems.push(`${file} selects the price list ${instance}.json, and no such file is there`);
+  }
+  const wanted = { service: `${IMAGE_REPOSITORY}/bid-desk@sha256:`, runtime: `${RT.image}@sha256:` };
+  for (const [kind, set] of Object.entries(images)) {
+    if (set.size > 1) problems.push(`the three Bid Desks must name one image of the ${kind}, and they name ${set.size}`);
+    for (const image of set) if (typeof image !== 'string' || !image.startsWith(wanted[kind])) problems.push(`the image of the ${kind} must be ${wanted[kind]}<digest>`);
+  }
+  const expected = BID_DESKS.map((name) => `${name}.json`);
+  if (!isDeepStrictEqual([...listFiles].sort(), expected)) problems.push(`the folder of the price lists must hold ${expected.join(', ')} and no other file`);
+  return problems;
+}
+
+test('use case 3 Bid Desks: the three compose files are there and name one image of the service and one image of the runtime, and the instance of each selects the price list of the same name; the guard refuses each copy that breaks one rule', () => {
+  const texts = composeTextsOf(['deploy/server']);
+  const listFiles = readdirSync(join(root, 'agents/bid-desk/price-lists'));
+  assert.deepEqual(bidDeskProblems(texts, listFiles), [], 'the real files pass');
+  const [alfa, bravo, charlie] = BID_DESKS.map((name) => serverCompose(`bid-desk-${name}`));
+  const other = 'ab'.repeat(32);
+  const without = (file) => Object.fromEntries(Object.entries(texts).filter(([path]) => path !== file));
+  const faults = [
+    ['the service of Bid Desk charlie under another digest', { ...texts, [charlie]: srvReplace(texts[charlie], `${IMAGE_REPOSITORY}/bid-desk@sha256:<digest>`, `${IMAGE_REPOSITORY}/bid-desk@sha256:${other}`) }, listFiles, /must name one image of the service, and they name 2/],
+    ['the runtime of Bid Desk bravo under another digest', { ...texts, [bravo]: srvReplace(texts[bravo], `${RT.image}@sha256:<digest>`, `${RT.image}@sha256:${other}`) }, listFiles, /must name one image of the runtime, and they name 2/],
+    ['the service of the three Bid Desks under the name of another agent', { ...texts, ...Object.fromEntries([alfa, bravo, charlie].map((file) => [file, srvReplace(texts[file], `${IMAGE_REPOSITORY}/bid-desk@sha256`, `${IMAGE_REPOSITORY}/sourcing-agent@sha256`)])) }, listFiles, /the image of the service must be \S+\/bid-desk@sha256:<digest>/],
+    ['the compose file of Bid Desk charlie that is gone', without(charlie), listFiles, /bid-desk-charlie\.yml is not there/],
+    ['an instance that names another Bid Desk', { ...texts, [bravo]: srvReplace(texts[bravo], 'BID_DESK_INSTANCE: bravo', 'BID_DESK_INSTANCE: alfa') }, listFiles, /bid-desk-bravo\.yml gives the instance alfa, and it is the file of bravo/],
+    ['an instance that has no price list', { ...texts, [charlie]: srvReplace(texts[charlie], 'BID_DESK_INSTANCE: charlie', 'BID_DESK_INSTANCE: delta') }, listFiles, /bid-desk-charlie\.yml selects the price list delta\.json, and no such file is there/],
+    ['a folder of price lists with a fourth file', texts, [...listFiles, 'delta.json'], /the folder of the price lists must hold alfa\.json, bravo\.json, charlie\.json and no other file/],
+    ['a folder of price lists without the file of charlie', texts, listFiles.filter((name) => name !== 'charlie.json'), /bid-desk-charlie\.yml selects the price list charlie\.json, and no such file is there/],
+  ];
+  for (const [name, given, files, expected] of faults) {
+    const problems = bidDeskProblems(given, files);
+    assert.ok(problems.some((p) => expected.test(p)), `${name}: found ${JSON.stringify(problems)}`);
+  }
+  // The twins: one digest in the three files, for the service and for the runtime, and the files in another order.
+  const digest = (text) => srvReplace(srvReplace(text, `${IMAGE_REPOSITORY}/bid-desk@sha256:<digest>`, `${IMAGE_REPOSITORY}/bid-desk@sha256:${other}`), `${RT.image}@sha256:<digest>`, `${RT.image}@sha256:${other}`);
+  assert.deepEqual(bidDeskProblems({ ...texts, ...Object.fromEntries([alfa, bravo, charlie].map((file) => [file, digest(texts[file])])) }, listFiles), [], 'one digest in the three files');
+  assert.deepEqual(bidDeskProblems(Object.fromEntries(Object.entries(texts).reverse()), [...listFiles].reverse()), [], 'the files in another order');
+});
+
+// The files of the two hosts that a reader meets: the compose files, the env examples, the snippets, the runbooks, the READMEs and the scripts. An env file of a host (`.env.<name>` with no `.example`) is no
+// file of the repository, and the guard does not read it.
+const deployFiles = () => ['deploy/host', 'deploy/server'].flatMap((dir) => readdirSync(join(root, dir))
+  .filter((name) => /^(?:docker-compose.*\.ya?ml|\.env\..*\.example|Caddyfile.*|.*\.md|.*\.sh|.*\.mjs)$/.test(name) && statSync(join(root, dir, name)).isFile())
+  .map((name) => `${dir}/${name}`));
+// The addresses that a file of a pack holds on purpose: loopback, the address that means every interface inside a container, and the public resolver that the DNS check of a runbook asks. The address of the
+// host is none of them, and it never enters the repository. A refusal gives the line and never the address.
+const PACK_ADDRESSES = new Set(['127.0.0.1', '0.0.0.0', '1.1.1.1']);
+function addressProblems(files, textOf) {
+  const problems = [];
+  for (const file of files) {
+    textOf(file).split('\n').forEach((line, at) => {
+      if ((line.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) ?? []).some((address) => !PACK_ADDRESSES.has(address))) problems.push(`${file}:${at + 1} holds an IPv4 address that no pack may hold`);
+    });
+  }
+  return problems;
+}
+
+test('use case 3 addresses: no file of the packs of use case 1, of use case 2 and of use case 3, and no other file of the two hosts, holds an IPv4 address other than 127.0.0.1, 0.0.0.0 and 1.1.1.1; the guard refuses another address in each kind of file and passes the three addresses of a pack', () => {
+  const files = deployFiles();
+  for (const must of [...USE_CASE_1_FILES, ...USE_CASE_2_FILES, ...USE_CASE_3_FILES, 'deploy/server/README.md', 'deploy/server/RUNBOOK.md', 'deploy/host/README.md', 'deploy/host/docker-compose.agent-history.yml']) assert.ok(files.includes(must), `${must} is read`);
+  assert.ok(files.length >= 30 && new Set(files).size === files.length, `the walk reaches the files of both hosts, found ${files.length}`);
+  assert.deepEqual(addressProblems(files, read), [], 'the real files pass');
+  // The addresses are of the ranges that RFC 5737 keeps for documentation, and a private address: no address of a real host is written here.
+  const kinds = [['a compose file', SOURCING_PACK[0]], ['an env example', SOURCING_PACK[1]], ['a Caddy snippet', BID_DESK_PACK[4]], ['a runbook', BID_DESK_PACK[5]], ['a runbook of use case 1', USE_CASE_1_FILES[3]], ['a compose file of use case 2', USE_CASE_2_FILES[0]], ['the README of the agents host', 'deploy/server/README.md']];
+  for (const [kind, file] of kinds) {
+    for (const address of ['192.0.2.7', '198.51.100.23', '203.0.113.5', '10.0.0.1']) {
+      const text = (name) => (name === file ? `${read(name)}\nThe host is at ${address} today.\n` : read(name));
+      const problems = addressProblems(files, text);
+      assert.equal(problems.length, 1, `${kind}, ${address}: found ${JSON.stringify(problems)}`);
+      assert.ok(problems[0].startsWith(`${file}:`) && problems[0].endsWith('holds an IPv4 address that no pack may hold') && !problems[0].includes(address), `${kind}, ${address}: the refusal names the file and the line, and never the address`);
+    }
+  }
+  // An address in a URL, with a port and with a prefix length is found too.
+  for (const text of ['http://192.0.2.7:9105/', '192.0.2.0/24', 'addr=203.0.113.5,', '1.1.1.1 and 8.8.8.8']) assert.equal(addressProblems(['x'], () => text).length, 1, text);
+  // The twins: the three addresses of a pack, a version of three parts, a date with dots, a port on loopback and a range that starts at 0.0.0.0.
+  for (const text of ['127.0.0.1', '0.0.0.0', '1.1.1.1', 'listen 127.0.0.1:8108 and 0.0.0.0:9106', 'version 1.2.3', 'on 2026.11.24', '0.0.0.0/0']) assert.deepEqual(addressProblems(['x'], () => text), [], text);
+});
+
