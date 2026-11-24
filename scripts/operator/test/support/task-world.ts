@@ -12,14 +12,16 @@ import type { HostedTools } from '../../../checks/lib/hosted.ts';
 import type { LandIo, LandRequest } from '../../../checks/lib/land.ts';
 import { lucidForAddress } from '../../../checks/lib/platform.ts';
 import type { Utxo } from '../../../checks/lib/platform.ts';
-import type { NetworkFacts, TxStatus } from '../../../checks/lib/ports.ts';
+import type { Clock, NetworkFacts, NodeTip, TxStatus } from '../../../checks/lib/ports.ts';
 import { commitStep, landFor } from '../../../checks/lib/session.ts';
 import type { ChainAccess } from '../../../checks/lib/session.ts';
 import { factsOf } from '../../../checks/lib/txfacts.ts';
+import { SYSTEM_START_MS } from '../../../checks/test/support/chain-view.ts';
 import { DEPLOYMENT, NOW } from '../../../checks/test/support/world.ts';
 import type { GoFile } from '../../lib/approval.ts';
 import type { Facts, TaskDefinition, UseCase } from '../../lib/contract.ts';
 import { FactsFile } from '../../lib/facts.ts';
+import { ensureSlotConfig } from '../../lib/platform.ts';
 import { runSteps, runTask } from '../../lib/runner.ts';
 import type { CliDeps, StepHandler } from '../../lib/runner.ts';
 import { FakeClock, FakeNode, MemoryOutput, World } from './fakes.ts';
@@ -43,7 +45,8 @@ export const hashOf = (text: string): string => createHash('sha256').update(`ope
 /**
  * A node over the world that answers the status of a transaction from a list first, counts the reads, and counts the questions about its network. It keeps the lists of references that it was asked to
  * resolve, and it throws `inputsError` when a test sets one. A test that models a transaction that was lost, which never reached the ledger, signs it and lets `submitError` fail the submit, so that the
- * world does not apply it: its inputs stay unspent.
+ * world does not apply it: its inputs stay unspent. Its tip follows the clock of the world, one slot each second from the start of the chain, as the tip of a node that is up to date. A test sets `tipSlot`
+ * for a node that is behind, and `tipError` for a node that does not give its tip.
  */
 export class ScriptedNode extends FakeNode {
   /** The hashes that a status was read for, in order. */
@@ -55,6 +58,14 @@ export class ScriptedNode extends FakeNode {
   /** When set, `resolveInputs` throws it. */
   inputsError: Error | null = null;
   networkReads = 0;
+  /** The clock that the tip follows: a node that is up to date has seen the blocks up to the time of the clock. The world sets it. */
+  clock: Clock | null = null;
+  /** When set, the slot of the tip that the node gives, whatever the clock says. */
+  tipSlot: number | null = null;
+  /** When set, `networkTip` throws it. */
+  tipError: Error | null = null;
+  /** How many times the node was asked for its tip. */
+  tipReads = 0;
 
   override async resolveInputs(refs: readonly string[]): Promise<Utxo[]> {
     this.inputReads.push([...refs]);
@@ -65,6 +76,14 @@ export class ScriptedNode extends FakeNode {
   override async networkFacts(): Promise<NetworkFacts> {
     this.networkReads += 1;
     return super.networkFacts();
+  }
+
+  override async networkTip(): Promise<NodeTip> {
+    this.tipReads += 1;
+    if (this.tipError !== null) throw this.tipError;
+    if (this.tipSlot !== null) return { slot: this.tipSlot };
+    if (this.clock !== null) return { slot: Math.floor((this.clock.now() - SYSTEM_START_MS) / 1000) };
+    return super.networkTip();
   }
 
   override async txStatus(txHash: string): Promise<TxStatus> {
@@ -159,6 +178,7 @@ export async function taskWorld(options: TaskWorldOptions = {}): Promise<TaskWor
   const world = await World.create([], utxos);
   const node = new ScriptedNode(world);
   const clock = new FakeClock(NOW);
+  node.clock = clock;
   const screen = new MemoryOutput();
   const stateDir = join(dir, 'state');
   const goPath = join(stateDir, 'GO.json');
@@ -230,9 +250,13 @@ export function recordingStep<Extra = unknown>(name: string, ran: string[], over
   };
 }
 
+/** The part of the provider of the world that sets the slot clock of Vector: the start of the chain. */
+interface ClockedProvider { getSystemStartMs(): Promise<number> }
+
 /**
  * A step that lands a real payment of `lovelace` from the wallet of the key `from` to the wallet of the key `to`, with the landing of the checks: the guards, the signature of the registry ring,
- * the reserve of the cap before the submit, the state file, and the wait for the confirmation. It stands in for the landing helpers of the tasks. As the real builders do, it sets the end of the validity
+ * the reserve of the cap before the submit, the state file, and the wait for the confirmation. It stands in for the landing helpers of the tasks. As the real builders do, it sets the slot clock of
+ * Vector first (the clock is global to the process, and it is set here, not in the world, because a test of the task `fund` needs a Lucid that has not got it yet), and it sets the end of the validity
  * in the body, 30 minutes after the clock, so a transaction that is built again at another time is another transaction, also when it spends the same inputs.
  */
 export function landingStep<Extra = unknown>(name: string, ran: string[], from: string, to: string, lovelace: bigint): StepHandler<Extra> {
@@ -240,6 +264,7 @@ export function landingStep<Extra = unknown>(name: string, ran: string[], from: 
     name,
     async run(session) {
       ran.push(name);
+      await ensureSlotConfig(session.chain.provider as unknown as ClockedProvider);
       const { lucid } = await session.chain.context(session.registry.addressOf(from));
       const validTo = session.clock.now() + 30 * 60_000;
       const built = await lucid.newTx().pay.ToAddress(session.registry.addressOf(to), { lovelace }).validTo(validTo).complete();

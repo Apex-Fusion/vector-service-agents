@@ -6,7 +6,7 @@ import type { NodeProvider } from '../lib/node.ts';
 const GENESIS = [{ networkmagic: '764824073', networkid: 'Mainnet', activeslotcoeff: '0.25', epochlength: '86400', systemstart: 1756485600, slotlength: '1' }];
 const reply = (body: unknown, status = 200): typeof fetch => (async () => new Response(JSON.stringify(body), { status })) as typeof fetch;
 const provider = (over: Partial<NodeProvider> = {}): NodeProvider => ({
-  getUtxosByOutRef: async () => [], submitTx: async () => 'ab'.repeat(32), getKoiosTxStatus: async () => [], getSystemStartMs: async () => 1_756_485_600_000, ...over,
+  getUtxosByOutRef: async () => [], submitTx: async () => 'ab'.repeat(32), getKoiosTxStatus: async () => [], getSystemStartMs: async () => 1_756_485_600_000, getNetworkTip: async () => ({ slot: 70_000_000 }), ...over,
 });
 
 describe('networkFacts', () => {
@@ -28,6 +28,21 @@ describe('networkFacts', () => {
     await expect(new VectorNode({ provider: provider(), koiosUrl: 'https://koios.example', fetchImpl: reply([]) }).networkFacts()).rejects.toThrow(/genesis/);
     await expect(new VectorNode({ provider: provider(), koiosUrl: 'https://koios.example', fetchImpl: reply([{ networkmagic: 'x', systemstart: 1 }]) }).networkFacts()).rejects.toThrow(/genesis/);
     await expect(new VectorNode({ provider: provider(), koiosUrl: 'https://koios.example', fetchImpl: reply({ error: 'x' }, 500) }).networkFacts()).rejects.toThrow(/500/);
+  });
+});
+
+describe('networkTip', () => {
+  const tipOf = async (answer: unknown) => new VectorNode({ provider: provider({ getNetworkTip: async () => answer as { slot: number } }), koiosUrl: 'https://koios.example', fetchImpl: reply([]) }).networkTip();
+  it('gives the slot of the newest block that the node reports, and nothing else of its answer', async () => {
+    expect(await tipOf({ slot: 70_123_456, hash: 'ab'.repeat(32) })).toEqual({ slot: 70_123_456 });
+    expect(await tipOf({ slot: 0 })).toEqual({ slot: 0 });
+  });
+  it('refuses an answer that has no usable slot, and lets the error of the node through', async () => {
+    for (const answer of [{}, { slot: '7' }, { slot: -1 }, { slot: 1.5 }, { slot: Number.NaN }, { slot: Number.MAX_SAFE_INTEGER + 2 }, null, 'tip', 7]) {
+      await expect(tipOf(answer), JSON.stringify(answer)).rejects.toThrow('the node gave no usable tip');
+    }
+    const node = new VectorNode({ provider: provider({ getNetworkTip: async () => { throw new Error('the node is down'); } }), koiosUrl: 'https://koios.example', fetchImpl: reply([]) });
+    await expect(node.networkTip()).rejects.toThrow('the node is down');
   });
 });
 

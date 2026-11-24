@@ -1,5 +1,5 @@
 // The fakes that the tests of the checks share: a clock that moves when it sleeps, a node over a World, a screen that keeps its lines, and a signer that must never be asked.
-import type { Clock, NetworkFacts, NodeAccess, Output, Signer, TxStatus } from '../../lib/ports.ts';
+import type { Clock, NetworkFacts, NodeAccess, NodeTip, Output, Signer, TxStatus } from '../../lib/ports.ts';
 import type { Utxo } from '../../lib/platform.ts';
 import { VECTOR_MAINNET } from '../../lib/settings.ts';
 import { World } from './world.ts';
@@ -83,6 +83,10 @@ export class FakeNode implements NodeAccess {
 
   async networkFacts(): Promise<NetworkFacts> {
     return this.facts;
+  }
+
+  async networkTip(): Promise<NodeTip> {
+    return { slot: (await this.world.chain.getNetworkTip()).slot };
   }
 
   async resolveInputs(refs: readonly string[]): Promise<Utxo[]> {

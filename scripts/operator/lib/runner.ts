@@ -33,6 +33,7 @@ import type { Env } from '../../checks/lib/settings.ts';
 import { StateError, StateFile } from '../../checks/lib/state.ts';
 import type { CheckState, InFlight, StepRecord } from '../../checks/lib/state.ts';
 import { factsOf } from '../../checks/lib/txfacts.ts';
+import type { TxFacts } from '../../checks/lib/txfacts.ts';
 import type { HostedTools } from '../../checks/lib/hosted.ts';
 import { TASK_NAMES } from '../tasks/names.ts';
 import { ApprovalError, Exposure, loadGo, requireGo } from './approval.ts';
@@ -484,19 +485,36 @@ export function inputsToCheck(facts: { readonly inputs: readonly string[]; reado
   return [...new Set([...facts.inputs, ...facts.collateralInputs])];
 }
 
+/** The slots by which the tip of the node must be past the end of the validity of a transaction before the answer of the node about its inputs counts: a small rollback must not undo that answer. */
+export const TIP_MARGIN_SLOTS = 20;
+
 /** What the node says of the inputs of a signed transaction: all unspent, some spent (how many of how many), or not to be told. */
 type InputsCheck = { readonly kind: 'unspent' } | { readonly kind: 'spent'; readonly spent: number; readonly total: number } | { readonly kind: 'unreadable'; readonly why: string };
 
+const unreadable = (why: string): InputsCheck => ({ kind: 'unreadable', why });
+
 /**
- * Asks the node, and not the indexer, which inputs of the signed bytes are still unspent. A transaction that landed has spent its inputs, so when all of them are unspent it did not land, however far
- * the indexer is behind. A node that does not answer, bytes that cannot be read and a transaction with no input tell nothing: they are `unreadable`, never `unspent`.
+ * Asks the node, and not the indexer, which inputs of the signed bytes are still unspent. A transaction that landed has spent its inputs, so when they are unspent it did not land, but only when the node
+ * has seen every block in which it could have landed. A node that is behind answers from a ledger before the landing, and says that every input is unspent. So the node gives its tip first, and the slot
+ * of the tip must be past the end of the validity of the transaction by `TIP_MARGIN_SLOTS`: a node whose newest block is past that slot has all the blocks before it. The tip is read before the inputs,
+ * so that the view of the inputs is at least as new as the tip. A node that does not answer, a tip that is not past the end, bytes that cannot be read, a transaction with no input and a transaction with no
+ * end of validity tell nothing: they are `unreadable`, never `unspent`.
  */
 async function checkInputs(node: NodeAccess, signedCbor: string): Promise<InputsCheck> {
-  let refs: string[];
-  try { refs = inputsToCheck(factsOf(signedCbor)); } catch (err) { return { kind: 'unreadable', why: `the bytes of the transaction cannot be read: ${errorText(err)}` }; }
-  if (refs.length === 0) return { kind: 'unreadable', why: 'the transaction has no input' };
+  let facts: TxFacts;
+  try { facts = factsOf(signedCbor); } catch (err) { return unreadable(`the bytes of the transaction cannot be read: ${errorText(err)}`); }
+  const refs = inputsToCheck(facts);
+  if (refs.length === 0) return unreadable('the transaction has no input');
+  const end = facts.validityEndSlot;
+  if (end === null) return unreadable('the transaction has no end of validity, so no tip of the node shows that it cannot land');
+  let tip: number;
+  try { tip = (await node.networkTip()).slot; } catch (err) { return unreadable(`the node did not give its tip: ${errorText(err)}`); }
+  const counts = end + BigInt(TIP_MARGIN_SLOTS);
+  if (!Number.isSafeInteger(tip) || BigInt(tip) <= counts) {
+    return unreadable(`the tip of the node is at slot ${String(tip)}, and its answer about the inputs counts only past slot ${counts} (the validity of the transaction ended at slot ${end}): the node may not have seen the block of the transaction yet`);
+  }
   let held: Utxo[];
-  try { held = await node.resolveInputs(refs); } catch (err) { return { kind: 'unreadable', why: `the node did not answer: ${errorText(err)}` }; }
+  try { held = await node.resolveInputs(refs); } catch (err) { return unreadable(`the node did not answer: ${errorText(err)}`); }
   const unspent = new Set(held.map((utxo) => `${utxo.txHash}#${utxo.outputIndex}`));
   const spent = refs.filter((ref) => !unspent.has(ref)).length;
   return spent === 0 ? { kind: 'unspent' } : { kind: 'spent', spent, total: refs.length };
@@ -509,9 +527,10 @@ async function checkInputs(node: NodeAccess, signedCbor: string): Promise<Inputs
  *     and its reserve of the cap stays.
  *   - a read that fails: nobody knows. The transaction stays in flight and the run stops, so that no step is built that may have landed.
  *   - a read that works and does not know the transaction: the indexer can be behind the node, so the transaction may have landed after its validity ended. The runner asks the node for the inputs of the
- *     signed bytes (`checkInputs`). When one of them is spent, or the node cannot tell, the transaction stays in flight with its reserve and the run stops: the operator checks the chain. When all of
- *     them are unspent, the transaction did not land, and it cannot land any more because its validity ended. A dry run then leaves it in flight and goes on, so that the summary shows the step as it
- *     would be built again. A run with --submit gives its reserve back (when the approval is loaded) and lets it go, and the run goes on.
+ *     signed bytes (`checkInputs`), but only when the tip of the node is past the end of the validity: a node that is behind answers from a ledger before the landing. When one of the inputs is spent, or
+ *     the node cannot tell, the transaction stays in flight with its reserve and the run stops: the operator checks the chain. When all of them are unspent, the transaction did not land, and it cannot land
+ *     any more because its validity ended. A dry run then leaves it in flight and goes on, so that the summary shows the step as it would be built again. A run with --submit gives its reserve back (when
+ *     the approval is loaded) and lets it go, and the run goes on.
  * It gives the reason to stop, or null when the run goes on.
  */
 async function reconcile(flight: InFlight, parts: { node: NodeAccess; state: StateFile; clock: Clock; exposure: Exposure; go: GoFile | null; mode: Mode; out: Output }): Promise<string | null> {
