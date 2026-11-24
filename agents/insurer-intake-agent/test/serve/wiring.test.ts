@@ -12,10 +12,11 @@ import { HIRE_MIN_MS } from '@vsa/usecase-kit/decision';
 import { INTAKE_CHECKS } from '@vsa/usecase-kit/priorauth';
 import { canonicalSha256 } from '@vsa/usecase-kit/protocol';
 import { REPORT_BUDGET_MS as JOB_REPORT_BUDGET_MS } from '../../src/job/attest.ts';
+import { RUNTIME_MARGIN_MS } from '../../src/job/index.ts';
 import { READ_BUDGET_MS as REPORT_READ_BUDGET_MS, REPORT_BUDGET_MS } from '../../src/report/index.ts';
 import { CALL_TIMEOUT_MS, JOB_DEADLINE_MS } from '../../src/serve/settings.ts';
 import { loadConfig } from '../../src/serve/start.ts';
-import { wireService } from '../../src/serve/wiring.ts';
+import { GATEWAY_DEFAULT_TIMEOUT_MS, wireService } from '../../src/serve/wiring.ts';
 import { until } from './serve.ts';
 import { DELEGATION_ID, INTAKE_DID, T, makeWorld, proposalOf } from './world.ts';
 import type { World } from './world.ts';
@@ -233,19 +234,25 @@ describe('the model decision', () => {
     expect(late.ok).toBe(false);
     if (!late.ok) expect([late.code, late.reason]).toStrictEqual(['inference_failed', 'llm_out_of_time']);
     expect(world.m.llm.sends).toStrictEqual([]);
+    expect(world.logs.filter((line) => line.startsWith('model hire:'))).toStrictEqual([]);
   });
 
-  test('never runs past the end of the time that the filing needs: deliver_by less 30 s less the 20 s of a call, so a decision that could not be filed after it is not paid for', async () => {
+  test('never runs past the end of the time that the filing needs: deliver_by less 30 s, less the 20 s of a call, less the 10 s of a new JWT-SVID, so no escrow is posted and nothing is paid for a decision that could not be filed after it', async () => {
     const world = makeWorld();
     const { jobDeps } = await wired(world);
-    // The job arrived now, so its own deadline is 300 s away. The escrow ends in 109 s: 109 less 30 less 20 leaves 59 s, which is under the 60 s that a hire needs. 30 s alone would leave 79 s and a hire.
-    const short = await jobDeps(T, { ...world.context, deliverByMs: T + 109_000 }).decide(INPUT, IDS);
+    expect([RUNTIME_MARGIN_MS, CALL_TIMEOUT_MS, GATEWAY_DEFAULT_TIMEOUT_MS]).toStrictEqual([30_000, 20_000, 10_000]);
+    // The job arrived now, so its own deadline is 300 s away. The escrow ends in 119 s: 119 less 30, less 20, less 10 leaves 59 s, which is under the 60 s that a hire needs. Without the 10 s of the new JWT-SVID it
+    // would leave 69 s and a hire.
+    const short = await jobDeps(T, { ...world.context, deliverByMs: T + 119_000 }).decide(INPUT, IDS);
     expect(short.ok).toBe(false);
     if (!short.ok) expect([short.code, short.reason]).toStrictEqual(['inference_failed', 'llm_out_of_time']);
+    // Nothing was posted or accepted: the book of the hires holds no line. The model supplier had no job.
+    expect(world.logs.filter((line) => line.startsWith('model hire:'))).toStrictEqual([]);
     expect(world.m.llm.sends).toStrictEqual([]);
-    // The same job with the time of the escrow that the world gives hires.
+    // The same job with the time of the escrow that the world gives hires, and the book then holds its lines: the check above is not empty for want of a line.
     expect((await jobDeps(T, world.context).decide(INPUT, IDS)).ok).toBe(true);
     expect(world.m.llm.sends).toHaveLength(1);
+    expect(world.logs.filter((line) => line.startsWith('model hire: posted'))).toHaveLength(1);
   });
 
   test('refuses an escrow whose end is not a number: an unknown time is never enough time', async () => {
@@ -254,6 +261,7 @@ describe('the model decision', () => {
     const result = await jobDeps(T, { ...world.context, deliverByMs: Number.NaN }).decide(INPUT, IDS);
     expect(result.ok).toBe(false);
     expect(world.m.llm.sends).toStrictEqual([]);
+    expect(world.logs.filter((line) => line.startsWith('model hire:'))).toStrictEqual([]);
   });
 
   test('has the limits of the settings: a model that the allowlist does not name is never hired', async () => {
@@ -275,15 +283,20 @@ describe('the time of the hook', () => {
     expect(world.logs.some((line) => line.startsWith('the hook could not read the identity gateway'))).toBe(true);
   });
 
-  test('the gateway client of the job has the default time of 10 s: the same late gateway gives the job its JWT-SVID', async () => {
+  test('the gateway client of the job has the default time of 10 s: the same late gateway gives the job its JWT-SVID, and each call of the client is bounded by the time that the decision counts for a new one', async () => {
     const world = makeWorld();
     const config = loadConfig({ ...world.env, CHECKS_READ_BUDGET_MS: '500' });
     const { jobDeps } = await wireService(config, { ...world.options, fetchImpl: lateGateway(world, 700) });
     const deps = jobDeps(T, world.context);
     const target = jwtSvidTarget(deps.calls.bases, 'run1', 'insurer.requests');
     if (!target.ok) throw new Error(target.detail);
+    // The client bounds each call with a signal of its own, made with its time. The time of the hook is 500 ms here, and the client of the job has none of it.
+    const bounds = vi.spyOn(AbortSignal, 'timeout');
     const svid = await fetchJwtSvid(deps.svid, { did: deps.agent.did, key: deps.agent.authenticationKey }, target.value);
     expect(svid.ok, JSON.stringify(svid)).toBe(true);
+    const times = bounds.mock.calls.map(([ms]) => ms);
+    expect(times).toContain(GATEWAY_DEFAULT_TIMEOUT_MS);
+    expect(times).not.toContain(config.checksBudgetMs);
   });
 
   test('a ledger that does not answer ends each read of the hook inside the budget of the hook, whatever budget the environment of the ledger carries', async () => {

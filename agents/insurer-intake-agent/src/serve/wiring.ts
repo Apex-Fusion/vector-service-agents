@@ -14,7 +14,7 @@
 //   one store each      ONE record of passed checks and ONE intake book for the process. The hook puts into the record and reads the book, the job takes from the record and writes the book. Two objects would not see
 //                       each other: a pass of the hook would never reach the job, and two books on one file could lose an entry.
 //   the decision        `decide` of the kit with the decision `completeness` over the requirement ids of that job, the four limits of the settings, and the deadline of that job: 300 s after it arrived, and never past the
-//                       end of the time that the filing needs. One decision is one hire, with no second try.
+//                       end of the time that the rest of the job needs (the margin of the runtime, the call of the filing and a new JWT-SVID before it). One decision is one hire, with no second try.
 //   the challenge       A task that starts after the hook has answered (`setImmediate`): the runtime waits 10 s for the hook, and a challenge takes two transactions.
 //
 // The deps of a job are made when the job arrives, so no job can change the deadline of another. A line that this file writes holds codes, references and the kind of an error, and never the message of an error: a
@@ -36,14 +36,19 @@ import type { Module1Port } from '@vsa/usecase-kit/dispute';
 import { agentIdOf } from '@vsa/usecase-kit/protocol';
 import type { Handoff } from '@vsa/usecase-kit/protocol';
 import { createPrecheck } from '../checks/index.ts';
-import { RUNTIME_MARGIN_MS } from '../job/filing.ts';
-import { completenessDecision } from '../job/index.ts';
+import { RUNTIME_MARGIN_MS, completenessDecision } from '../job/index.ts';
 import type { IntakeDeps } from '../job/index.ts';
 import { READ_BUDGET_MS as REPORT_READ_BUDGET_MS, ledgerReportDeps, reportAttestations } from '../report/index.ts';
 import { FileIntakeBook, PassedChecks } from '../store/index.ts';
 import { defaultLog } from './server.ts';
 import { CALL_TIMEOUT_MS, JOB_DEADLINE_MS } from './settings.ts';
 import type { ServiceConfig } from './start.ts';
+
+/**
+ * The time of one call of the gateway client when its caller gives none: 10 s. This is `DEFAULT_TIMEOUT_MS` of id-kit, which no entry of that package exports, so the number is written here, and a test holds the
+ * two equal through the client itself. The client of the job takes it. A new JWT-SVID, which the job asks for between the decision and the filing when the first one is about to end, takes that long at most.
+ */
+export const GATEWAY_DEFAULT_TIMEOUT_MS = 10_000;
 
 /** The parts that a test replaces. The service itself uses the real one of each. */
 export interface WireOptions {
@@ -179,11 +184,13 @@ export async function wireService(config: ServiceConfig, options: WireOptions = 
     takeChecks: (escrowRef) => passed.take(escrowRef, clock()),
     book,
     report: (input) => reportAttestations(reportDeps, input),
-    // The job has no check of the time before the paid decision, so the deadline of the decision holds it: the hire never runs past the time that the filing needs after it (the runtime stops waiting 30 s before
-    // deliver_by, and a call takes up to CALL_TIMEOUT_MS). A time that is not a number is no deadline, and the decision hires nothing for it.
+    // The job has no check of the time before the paid decision, so the deadline of the decision holds it: the hire never runs past the time that the rest of the job needs after it. The runtime stops waiting 30 s
+    // before deliver_by (RUNTIME_MARGIN_MS), the call of the filing takes up to CALL_TIMEOUT_MS, and a new JWT-SVID before the filing takes up to GATEWAY_DEFAULT_TIMEOUT_MS. A time that is not a number is no
+    // deadline, and the decision hires nothing for it.
     decide: (input, requirementIds) => decide(
       {
-        key, limits: config.limits, clock, sleep, deadlineMs: Math.min(arrivedAt + JOB_DEADLINE_MS, context.deliverByMs - RUNTIME_MARGIN_MS - CALL_TIMEOUT_MS), fetchImpl, ledger: hireLedger, log: say,
+        key, limits: config.limits, clock, sleep, fetchImpl, ledger: hireLedger, log: say,
+        deadlineMs: Math.min(arrivedAt + JOB_DEADLINE_MS, context.deliverByMs - RUNTIME_MARGIN_MS - CALL_TIMEOUT_MS - GATEWAY_DEFAULT_TIMEOUT_MS),
         ...(config.endpoints.indexerUrl === undefined ? {} : { indexerUrl: config.endpoints.indexerUrl }),
       },
       completenessDecision(requirementIds),
