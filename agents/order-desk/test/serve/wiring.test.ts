@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, test } from 'vitest';
 import { FakeChain, rawHexToBech32 } from '@vsa/buyer-core';
+import { LLM_ADVERT } from '@vsa/hire-kit/testing';
 import { fetchX509Svid } from '@vsa/usecase-kit/access';
 import { HIRE_MIN_MS } from '@vsa/usecase-kit/decision';
 import { JOB_DEADLINE_MS } from '../../src/serve/settings.ts';
@@ -147,6 +148,23 @@ describe('the model decision', () => {
     const result = await jobDeps(T).decide(INPUT);
     expect(result.ok).toBe(false);
     expect(world.m.llm.sends).toStrictEqual([]);
+  });
+
+  test('has the limits of the settings: a price ceiling or a bond limit one lovelace below the terms of the model advert hires and pays nothing, and the same limit at the terms hires', async () => {
+    // The stub advert asks 200,000 lovelace for the job and a bond of 1,000,000 lovelace from each side. The world sets each limit to exactly that.
+    const terms = { LLM_MAX_PRICE_LOVELACE: LLM_ADVERT.price_lovelace, LLM_MAX_SUPPLIER_BOND_LOVELACE: LLM_ADVERT.supplier_bond_lovelace, LLM_MAX_BUYER_BOND_LOVELACE: LLM_ADVERT.buyer_bond_lovelace };
+    expect(Object.values(terms)).toStrictEqual([200_000n, 1_000_000n, 1_000_000n]);
+    for (const [name, at] of Object.entries(terms)) {
+      const below = makeWorld();
+      const refused = await (await wired(below, { [name]: String(at - 1n) })).jobDeps(T).decide(INPUT);
+      expect(refused.ok, `${name} one below the terms`).toBe(false);
+      expect(below.m.llm.sends, `${name} one below the terms`).toStrictEqual([]);
+      expect(below.logs.filter((line) => line.startsWith('model hire: posted')), `${name} one below the terms`).toStrictEqual([]);
+      const twin = makeWorld();
+      const taken = await (await wired(twin, { [name]: String(at) })).jobDeps(T).decide(INPUT);
+      expect(taken.ok, `${name} at the terms: ${JSON.stringify(taken)}`).toBe(true);
+      expect(twin.m.llm.sends, `${name} at the terms`).toHaveLength(1);
+    }
   });
 });
 
