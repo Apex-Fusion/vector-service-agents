@@ -187,7 +187,8 @@
       "A request is one JSON object with the member op set to propose or to execute, with the members of that operation and no other member. A request that breaks a rule of the intake is refused with bad_shape (400).",
       "propose reads the order and its record set through a sub-delegation to record-reader, reads the guideline of the service through a sub-delegation to drafter, asks one model for the justification, and returns an authorization request with its salt and its digest. It writes nothing to the records system and pays the Insurer Intake Agent nothing.",
       "execute submits a request that the hirer signed off: it pays the advert of the Insurer Intake Agent from the vault of the delegation, checks the intake record, asks one model whether to accept it, accepts the escrow and writes the intake reference to the records system. An intake record that the model does not accept is challenged and not accepted.",
-      "The route POST /cosign/delegate is open and takes no job: it signs only the Delegate that the rule in behaviour.cosign allows, for a principal key on the allowlist of the operator."
+      "The route POST /cosign/delegate is open and takes no job: it signs only the Delegate that the rule in behaviour.cosign allows, for a principal key on the allowlist of the operator.",
+      "The advert and every receipt name the model prior-authorization-agent-v1."
     ]
   },
   "terms": {

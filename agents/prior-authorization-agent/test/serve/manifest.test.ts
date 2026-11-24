@@ -233,7 +233,11 @@ describe('the members of the manifest', () => {
     expect(surface.request_schema).toStrictEqual(JSON.parse(JSON.stringify(REQUEST_SCHEMA)));
     expect(surface.response_schema).toStrictEqual({ $ref: `${SPEC_URL}#response` });
     expect(surface.routes).toStrictEqual({ job: '/v1/job', status: '/status', capability: '/capability' });
-    expect(surface.notes).toHaveLength(4);
+    expect(surface.notes).toHaveLength(5);
+    // The receipt model: the advert and every receipt name it, and the text that is served and the template both say so.
+    expect(surface.notes.at(-1)).toBe(`The advert and every receipt name the model ${PRIORAUTH_MODELS.draft}.`);
+    expect(surface.notes.at(-1)).toBe('The advert and every receipt name the model prior-authorization-agent-v1.');
+    for (const text of [render().text, readFileSync(templateFile, 'utf8')]) expect(text).toContain('The advert and every receipt name the model prior-authorization-agent-v1.');
     const notes = surface.notes.join(' ');
     expect(notes).toContain('bad_shape (400)');
     expect(notes).toContain('POST /cosign/delegate');

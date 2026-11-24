@@ -324,19 +324,33 @@ export function modelOf(env: NodeJS.ProcessEnv): { readonly allowlist: readonly 
 }
 
 /**
- * The four limits of a model hire: the allowlist, the price ceiling and the limit of each bond. All four are required. The service never fills in a limit and never gives `null`: an operator who sets no limit has a
- * service that hires nothing.
+ * Refuses the three limits of one hire, the price and the two bonds, when they add up to more than the value cap of an escrow (`MAX_ESCROW_LOVELACE` of buyer-core). The escrow of a hire locks the price and both
+ * bonds, and a Post refuses a lock above the cap, so a hire with limits above the cap could never be posted, and a typo in a limit would read as "no limit up to the cap". The message names the three settings and
+ * never a value.
+ */
+function refuseAboveCap(names: readonly [string, string, string], limits: readonly [bigint, bigint, bigint]): void {
+  if (limits[0] + limits[1] + limits[2] > MAX_ESCROW_LOVELACE) {
+    throw new Error(
+      `environment variable ${names[0]}, ${names[1]} and ${names[2]} must add up to at most ${MAX_ESCROW_LOVELACE} lovelace (the price and both bonds of a hire make the lock of an escrow, and a Post refuses a lock above its value cap)`,
+    );
+  }
+}
+
+/**
+ * The four limits of a model hire: the allowlist, the price ceiling and the limit of each bond. All four are required. The price ceiling and the two bond limits add up to at most the value cap of an escrow. The
+ * service never fills in a limit and never gives `null`: an operator who sets no limit has a service that hires nothing.
  */
 export function limitsOf(env: NodeJS.ProcessEnv): ModelLimits {
   const model = modelOf(env);
   const supplierBond = lovelaceOf('LLM_MAX_SUPPLIER_BOND_LOVELACE', requiredEnv('LLM_MAX_SUPPLIER_BOND_LOVELACE', env.LLM_MAX_SUPPLIER_BOND_LOVELACE, 'the most that the supplier bond of a model advert may be, in lovelace'));
   const buyerBond = lovelaceOf('LLM_MAX_BUYER_BOND_LOVELACE', requiredEnv('LLM_MAX_BUYER_BOND_LOVELACE', env.LLM_MAX_BUYER_BOND_LOVELACE, 'the most that the buyer bond of a model advert may be, in lovelace'));
+  refuseAboveCap(['LLM_MAX_PRICE_LOVELACE', 'LLM_MAX_SUPPLIER_BOND_LOVELACE', 'LLM_MAX_BUYER_BOND_LOVELACE'], [model.maxPriceLovelace, supplierBond, buyerBond]);
   const checked = checkLimits({ allowlist: model.allowlist, maxPriceLovelace: model.maxPriceLovelace, maxSupplierBondLovelace: supplierBond, maxBuyerBondLovelace: buyerBond });
   if (!checked.ok) throw new Error(`the limits of the model hire are refused: ${checked.detail}`);
   return checked.value;
 }
 
-/** The three limits of the hire of the Insurer Intake Agent: the price and each bond. All three are required, and each is a bigint of more than 0. */
+/** The three limits of the hire of the Insurer Intake Agent: the price and each bond. All three are required, each is a bigint of more than 0, and the three add up to at most the value cap of an escrow. */
 export function handoffLimitsOf(env: NodeJS.ProcessEnv): HireLimits {
   const price = lovelaceOf('HANDOFF_MAX_PRICE_LOVELACE', requiredEnv('HANDOFF_MAX_PRICE_LOVELACE', env.HANDOFF_MAX_PRICE_LOVELACE, 'the most that the price of the advert of the Insurer Intake Agent may be, in lovelace'));
   const supplierBond = lovelaceOf(
@@ -347,6 +361,7 @@ export function handoffLimitsOf(env: NodeJS.ProcessEnv): HireLimits {
     'HANDOFF_MAX_BUYER_BOND_LOVELACE',
     requiredEnv('HANDOFF_MAX_BUYER_BOND_LOVELACE', env.HANDOFF_MAX_BUYER_BOND_LOVELACE, 'the most that the buyer bond of the advert of the Insurer Intake Agent may be, in lovelace'),
   );
+  refuseAboveCap(['HANDOFF_MAX_PRICE_LOVELACE', 'HANDOFF_MAX_SUPPLIER_BOND_LOVELACE', 'HANDOFF_MAX_BUYER_BOND_LOVELACE'], [price, supplierBond, buyerBond]);
   const checked = checkHireLimits({ maxPriceLovelace: price, maxSupplierBondLovelace: supplierBond, maxBuyerBondLovelace: buyerBond });
   if (!checked.ok) throw new Error(`the limits of the hire of the Insurer Intake Agent are refused: ${checked.detail}`);
   return checked.value;

@@ -10,7 +10,7 @@
 import { given, hexOf, requiredEnv, statusChip, statusSince } from '@vsa/service-kit';
 import type { StatusChip } from '@vsa/service-kit';
 import { MANIFEST_SCHEMA, MAX_URI_CHARS, buildBehaviour, renderManifest } from '@vsa/usecase-kit/manifest';
-import { MAX_JUSTIFICATION_CHARS, PRIORAUTH_CAPABILITIES, PRIORAUTH_CLAIM } from '@vsa/usecase-kit/priorauth';
+import { MAX_JUSTIFICATION_CHARS, PRIORAUTH_CAPABILITIES, PRIORAUTH_CLAIM, PRIORAUTH_MODELS } from '@vsa/usecase-kit/priorauth';
 import { MAX_REQUEST_BYTES } from '@vsa/usecase-kit/protocol';
 import type { BehaviourAdditions } from '@vsa/usecase-kit/protocol';
 import { REGISTRY_POLICY, identityRegistryOf, manifestIdentity, scriptAddress } from '@vsa/vector-read';
@@ -115,6 +115,7 @@ const NOTES = [
   'execute submits a request that the hirer signed off: it pays the advert of the Insurer Intake Agent from the vault of the delegation, checks the intake record, asks one model whether to accept it, '
   + 'accepts the escrow and writes the intake reference to the records system. An intake record that the model does not accept is challenged and not accepted.',
   'The route POST /cosign/delegate is open and takes no job: it signs only the Delegate that the rule in behaviour.cosign allows, for a principal key on the allowlist of the operator.',
+  `The advert and every receipt name the model ${PRIORAUTH_MODELS.draft}.`,
 ];
 const DATA_HANDLING =
   'The order, the record set, the guideline, the authorization request and the intake record are synthetic data, and they are held in memory while a job runs. '

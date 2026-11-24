@@ -44,6 +44,8 @@ const NOT_THE_KEY = /^environment variable SUPPLIER_PUB_KEY_HEX is not the publi
 const WINDOW_RULE = /^environment variable ADVERT_MAX_PROCESSING_MS must be at least 1800000 \(the window of 30 min that the deadline of a job, 1620000 ms, assumes\)$/;
 const WINDOW_MAX_RULE = /^environment variable ADVERT_MAX_PROCESSING_MS must be at most 86400000 \(24 h, the longest window that a Post accepts\)$/;
 const PRICE_CAP = /^environment variable ADVERT_PRICE_LOVELACE must be at most 9998000000 \(with both bonds, the lock of an escrow stays inside its value cap of 10000000000 lovelace\)$/;
+const LLM_CAP = /^environment variable LLM_MAX_PRICE_LOVELACE, LLM_MAX_SUPPLIER_BOND_LOVELACE and LLM_MAX_BUYER_BOND_LOVELACE must add up to at most 10000000000 lovelace \(the price and both bonds of a hire make the lock of an escrow, and a Post refuses a lock above its value cap\)$/;
+const HANDOFF_CAP = /^environment variable HANDOFF_MAX_PRICE_LOVELACE, HANDOFF_MAX_SUPPLIER_BOND_LOVELACE and HANDOFF_MAX_BUYER_BOND_LOVELACE must add up to at most 10000000000 lovelace \(the price and both bonds of a hire make the lock of an escrow, and a Post refuses a lock above its value cap\)$/;
 const SAME_HOST = /^environment variable MOCK_MTLS_BASE must name another host than MOCK_PUBLIC_BASE: the mock service tells the two hosts apart by the Host header$/;
 const OGMIOS_HTTPS = /^environment variable VECTOR_OGMIOS_URL must be an https address: the tip reader of the janitor takes https only, and it has \d+ characters$/;
 const MODULE1_FORM = /^environment variable VECTOR_MODULE1_MANIFEST must be an https URL with no user, query or fragment, and it has \d+ characters$/;
@@ -126,13 +128,16 @@ const ROWS: readonly Row[] = [
   ['LLM_MAX_PRICE_LOVELACE', limitsOf, undefined, required('LLM_MAX_PRICE_LOVELACE'), '250000'],
   ['LLM_MAX_PRICE_LOVELACE', limitsOf, '1.5', LLM_PRICE, '250000'],
   ['LLM_MAX_PRICE_LOVELACE', limitsOf, '0', LLM_PRICE_ZERO, '1'],
+  ['LLM_MAX_PRICE_LOVELACE', limitsOf, '9996000001', LLM_CAP, '9996000000', '9996000731'],
   ['LLM_MAX_SUPPLIER_BOND_LOVELACE', limitsOf, undefined, required('LLM_MAX_SUPPLIER_BOND_LOVELACE'), '1000000'],
   ['LLM_MAX_SUPPLIER_BOND_LOVELACE', limitsOf, '0', lovelaceRule('LLM_MAX_SUPPLIER_BOND_LOVELACE'), '1000000'],
   ['LLM_MAX_SUPPLIER_BOND_LOVELACE', limitsOf, '1.5', lovelaceRule('LLM_MAX_SUPPLIER_BOND_LOVELACE'), '15', '2.7731'],
   ['LLM_MAX_SUPPLIER_BOND_LOVELACE', limitsOf, '-1', lovelaceRule('LLM_MAX_SUPPLIER_BOND_LOVELACE'), '0001'],
+  ['LLM_MAX_SUPPLIER_BOND_LOVELACE', limitsOf, '9997000001', LLM_CAP, '9997000000', '9997000731'],
   ['LLM_MAX_BUYER_BOND_LOVELACE', limitsOf, '  ', required('LLM_MAX_BUYER_BOND_LOVELACE'), '1000000'],
   ['LLM_MAX_BUYER_BOND_LOVELACE', limitsOf, 'none', lovelaceRule('LLM_MAX_BUYER_BOND_LOVELACE'), '1000000'],
   ['LLM_MAX_BUYER_BOND_LOVELACE', limitsOf, '1e6', lovelaceRule('LLM_MAX_BUYER_BOND_LOVELACE'), '1000000'],
+  ['LLM_MAX_BUYER_BOND_LOVELACE', limitsOf, '9997000001', LLM_CAP, '9997000000', '9997000731'],
   ...['HANDOFF_MAX_PRICE_LOVELACE', 'HANDOFF_MAX_SUPPLIER_BOND_LOVELACE', 'HANDOFF_MAX_BUYER_BOND_LOVELACE'].flatMap((name): readonly Row[] => [
     [name, handoffLimitsOf, undefined, required(name), '5000000'],
     [name, handoffLimitsOf, '  ', required(name), '5000000'],
@@ -140,7 +145,8 @@ const ROWS: readonly Row[] = [
     [name, handoffLimitsOf, '1.5', lovelaceRule(name), '5000000', '2.7731'],
     [name, handoffLimitsOf, 'none', lovelaceRule(name), '5000000'],
     [name, handoffLimitsOf, '-2000000', lovelaceRule(name), '5000000'],
-    [name, handoffLimitsOf, '9007199254740993', lovelaceRule(name), '9007199254740991'],
+    [name, handoffLimitsOf, '9007199254740993', lovelaceRule(name), '9996000000'],
+    [name, handoffLimitsOf, '9996000001', HANDOFF_CAP, '9996000000', '9996000731'],
   ]),
   ['DISPUTE_CHALLENGE_STAKE_LOVELACE', disputeOf, undefined, required('DISPUTE_CHALLENGE_STAKE_LOVELACE'), '50000000'],
   ['DISPUTE_CHALLENGE_STAKE_LOVELACE', disputeOf, '0', lovelaceRule('DISPUTE_CHALLENGE_STAKE_LOVELACE'), '50000000'],
@@ -402,6 +408,24 @@ describe('the limits of the model hire and of the hire of the Insurer Intake Age
     expect(messageOf(() => limitsOf({}))).toMatch(required('LLM_MODEL_ALLOWLIST'));
     expect(messageOf(() => handoffLimitsOf({}))).toMatch(required('HANDOFF_MAX_PRICE_LOVELACE'));
     for (const value of [...Object.values(limitsOf(completeEnv())), ...Object.values(handoffLimitsOf(completeEnv()))]) expect(value).not.toBeNull();
+  });
+
+  test('the price and the two bond limits of a hire add up to at most the value cap of an escrow, for both kinds of hire: a limit that takes the sum to the cap is taken, one more is refused, and three limits that are each below the cap but add up to more are refused', () => {
+    const LLM = ['LLM_MAX_PRICE_LOVELACE', 'LLM_MAX_SUPPLIER_BOND_LOVELACE', 'LLM_MAX_BUYER_BOND_LOVELACE'] as const;
+    const HANDOFF = ['HANDOFF_MAX_PRICE_LOVELACE', 'HANDOFF_MAX_SUPPLIER_BOND_LOVELACE', 'HANDOFF_MAX_BUYER_BOND_LOVELACE'] as const;
+    const limits = (names: readonly string[], values: readonly number[]): NodeJS.ProcessEnv => completeEnv(Object.fromEntries(names.map((name, index) => [name, String(values[index])])));
+    const capMessage = (names: readonly string[]): string =>
+      `environment variable ${names[0]}, ${names[1]} and ${names[2]} must add up to at most ${MAX_ESCROW_LOVELACE} lovelace (the price and both bonds of a hire make the lock of an escrow, and a Post refuses a lock above its value cap)`;
+    for (const [read, names] of [[limitsOf, LLM], [handoffLimitsOf, HANDOFF]] as const) {
+      for (const big of [0, 1, 2]) {
+        const at = [1, 1, 1].map((one, index) => (index === big ? 9_999_999_998 : one));
+        const over = [1, 1, 1].map((one, index) => (index === big ? 9_999_999_999 : one));
+        expect(() => read(limits(names, at)), `${names[big]} takes the sum to the cap`).not.toThrow();
+        expect(messageOf(() => read(limits(names, over))), `${names[big]} takes the sum above the cap`).toBe(capMessage(names));
+      }
+      expect(messageOf(() => read(limits(names, [4_000_000_000, 4_000_000_000, 4_000_000_000]))), names[0]).toBe(capMessage(names));
+      expect(() => read(limits(names, [8_000_000_000, 1_000_000_000, 1_000_000_000])), names[0]).not.toThrow();
+    }
   });
 });
 
