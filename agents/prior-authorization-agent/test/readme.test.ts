@@ -11,7 +11,7 @@ import { STRANDED_FILE } from '@vsa/hire-kit';
 import { CONTEXT_HEADERS, HEARTBEAT_MS, MAX_BODY, RESERVATION_MS, SHUTDOWN_WAIT_MS, TOKEN_SEARCH_MIN } from '@vsa/service-kit';
 import { COSIGN_SETTINGS, COSIGN_STATUS, DEFAULT_LIMITS } from '@vsa/usecase-kit/cosign';
 import { PRIORAUTH_CAPABILITIES, PRIORAUTH_MODELS } from '@vsa/usecase-kit/priorauth';
-import { ERROR_STATUS, FAULT_MODES, MAX_REQUEST_BYTES, RUNTIME_BODY_LIMIT_BYTES, checkRequestSize } from '@vsa/usecase-kit/protocol';
+import { ERROR_STATUS, FAULT_MODES, MAX_REQUEST_BYTES, RUNTIME_BODY_LIMIT_BYTES } from '@vsa/usecase-kit/protocol';
 import { identityRegistryOf } from '@vsa/vector-read';
 import { world as ledgerWorld } from '../../../packages/usecase-kit/test/cosign/support.ts';
 import { EVIDENCE_FAILURES } from '../src/evidence/index.ts';
@@ -320,10 +320,6 @@ describe('agents/prior-authorization-agent/README.md: the routes and the errors'
   const documented = [...jobRows, ...cosignRows].flatMap((row) => row.codes);
 
   test('Routes states the numbers of the code: the body, the request, the limit of the runtime, the reservation, the heartbeat and the deadline of a job', () => {
-    expect(routes).toContain(`It is read up to ${MAX_BODY} bytes.`);
-    expect(routes).toContain(`The request JSON is read up to ${MAX_REQUEST_BYTES} bytes`);
-    expect(checkRequestSize('x'.repeat(MAX_REQUEST_BYTES)).ok).toBe(true);
-    expect(checkRequestSize('x'.repeat(MAX_REQUEST_BYTES + 1)).ok).toBe(false);
     const codeOf = (text: string): string | null => {
       try {
         parseJob(text);
@@ -334,7 +330,6 @@ describe('agents/prior-authorization-agent/README.md: the routes and the errors'
     };
     expect([codeOf('x'.repeat(MAX_REQUEST_BYTES + 1)), codeOf(JSON.stringify({ ...PROPOSE, extra: 1 })), codeOf(JSON.stringify(PROPOSE))]).toStrictEqual(['request_too_large', 'bad_shape', null]);
     expect([MAX_BODY, MAX_REQUEST_BYTES, RUNTIME_BODY_LIMIT_BYTES]).toStrictEqual([1_000_000, 900_000, 1_048_576]);
-    expect(routes).toContain(`safe only while the escaped body stays below ${RUNTIME_BODY_LIMIT_BYTES} bytes`);
     expect(routes).toContain(`for ${RESERVATION_MS / 1000} s`);
     expect(routes).toContain(`every ${HEARTBEAT_MS / 1000} s`);
     expect([PROPOSE_DEADLINE_MS, EXECUTE_DEADLINE_MS]).toStrictEqual([JOB_DEADLINE_MS, JOB_DEADLINE_MS]);

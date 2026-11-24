@@ -17,6 +17,8 @@ import type { CommonSettings, Env } from '../../checks/lib/settings.ts';
 import type { StateFile } from '../../checks/lib/state.ts';
 import type { Exposure, GoFile } from './approval.ts';
 import type { FactsStore, OperatorSettings, TaskDefinition, TaskFlags, TaskSession, UseCase } from './contract.ts';
+import { dohOverHttp2, dohUsingFetch } from './dns.ts';
+import type { DohLookup } from './dns.ts';
 import type { Registry } from './registry.ts';
 
 /** How long a transaction is waited for, and how often its status is read, in milliseconds. The checks use the same values. */
@@ -29,6 +31,7 @@ export interface Connections {
   readonly chain: ChainAccess;
   readonly hosted: HostedTools;
   readonly fetchImpl: typeof fetch;
+  readonly dohLookup: DohLookup;
   /** The network guard over the node: it asks the node for its network once and keeps a result that it read. The runner asks it before a transaction in flight is settled, and the landing asks it again. */
   readonly network: NetworkGate;
   /** Closes the hosted tools when they were connected. It never throws. */
@@ -64,7 +67,8 @@ export function connect(def: Pick<TaskDefinition, 'name' | 'needs'>, settings: O
   const node = deps.node ?? new VectorNode({ provider: provider!, koiosUrl: settings.urls.koios, fetchImpl });
   const chain = deps.chain ?? (def.needs.chain ? realChain(commonOf(settings), deps.env, fetchImpl, provider!) : unusedChain(def.name));
   const lazy = deps.hosted === undefined ? lazyHosted(settings.urls.hosted, def.needs.hosted) : { tools: deps.hosted, close: async () => undefined };
-  return { node, chain, hosted: lazy.tools, fetchImpl, network: new NetworkGate(node, settings.network), close: lazy.close };
+  const dohLookup = deps.fetchImpl === undefined ? dohOverHttp2 : dohUsingFetch(deps.fetchImpl);
+  return { node, chain, hosted: lazy.tools, fetchImpl, dohLookup, network: new NetworkGate(node, settings.network), close: lazy.close };
 }
 
 /** What `makeSession` needs: the parts that the runner opened, and the way to read the result of the network guard. */
@@ -118,6 +122,7 @@ export function makeSession<Extra>(parts: SessionParts<Extra>): TaskSession<Extr
     flags: parts.flags,
     facts: parts.facts,
     fetchImpl: connections.fetchImpl,
+    dohLookup: connections.dohLookup,
     all: parts.all,
   });
 }

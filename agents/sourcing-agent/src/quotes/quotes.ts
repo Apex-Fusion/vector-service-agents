@@ -6,7 +6,7 @@
 //   2. The deadline leaves the time of a hire and the time that the caller keeps for the scoring. Else `deadline`.
 //   3. The bidder has a price list that the job read. Else `no_price_list`: a quote that nobody can check is not bought.
 //   4. The status of the bidder is read again with the gateway (`recheck`). Only `active` goes on. Else `not_active` with the status, or `status_unreadable`. Nothing is paid for a bidder that cannot claim its job.
-//   5. One hire (`hireCounterparty`): one Pay, no retry, no second hire. The decision on the delivery is `judgeQuote`: three checks in code, and then the model.
+//   5. One hire (`hireCounterparty`): one Pay, no retry, no second hire. The decision on the delivery is `judgeQuote`: five checks in code, and then the model.
 //   6. The end of the hire becomes an outcome:
 //        completed                          an accepted quote: the quote, the record and the sub-job of the hire, and the decision of the model that accepted it
 //        refused_by_counterparty            excluded `refused`, with the refusal code and the record of the hire

@@ -1,18 +1,17 @@
-// scripts/operator/lib/dns.ts - the check that a TXT value is public. The gateway checks the organisation of an agent with the TXT record `_did.<domain>` of the domain, and it looks the name up
-// once at its first check of a record. So the pack signs a registration only when three public resolvers show the value. The resolvers answer over DNS-over-HTTPS in the JSON form: one GET
-// for each resolver, with the name and the type TXT. A record counts when its text is the value or `did=` and the value, and the check is ok only when all three resolvers show such a record.
-// An answer that cannot be read, a status that is not 200, a DNS status other than 0, an answer with no such record, and a call that fails or times out are a resolver that did not show the
-// value, with the reason. The function reads nothing else and never throws for a failure of the network. It throws a TypeError for a name or a value that a caller got wrong, because an
-// empty value could match an empty record.
-// Ask a resolver about a name only after the value is published: a public resolver keeps the answer "no record" for a name that it was asked about too early.
+// Registration signs only when three independent public resolvers show the same TXT value.
+// Do not look up the name before the operator publishes it. Resolvers can cache a negative answer.
+import { RECURSION_DESIRED, TRUNCATED_RESPONSE, encode, txt } from '@dnsquery/dns-packet';
+import { connect } from 'node:http2';
+import { Readable } from 'node:stream';
+import type { ReadableStream } from 'node:stream/web';
 
-/** A public resolver: its name in a report, and the URL of its DNS-over-HTTPS JSON route. */
+/** The resolver name for reports and its RFC 8484 endpoint. */
 export interface Resolver { readonly name: string; readonly url: string }
 
 export const RESOLVERS: readonly Resolver[] = [
   { name: 'cloudflare', url: 'https://cloudflare-dns.com/dns-query' },
-  { name: 'google', url: 'https://dns.google/resolve' },
-  { name: 'quad9', url: 'https://dns.quad9.net:5053/dns-query' },
+  { name: 'google', url: 'https://dns.google/dns-query' },
+  { name: 'quad9', url: 'https://dns.quad9.net/dns-query' },
 ];
 
 /** How long one resolver is asked, in milliseconds. */
@@ -24,98 +23,236 @@ export interface ResolverAnswer { resolver: string; seen: boolean; error: string
 /** The result of the check: `ok` only when all three resolvers show the value. */
 export interface TxtCheck { ok: boolean; resolvers: ResolverAnswer[] }
 
-/** An answer of more characters than this is not read: a TXT answer for one name is small. */
-const MAX_BODY_CHARS = 1_048_576;
+export type DohLookup = (url: URL, signal: AbortSignal) => Promise<Buffer>;
+
+const DNS_MESSAGE = 'application/dns-message';
+const MAX_MESSAGE_BYTES = 65_535; // RFC 8484 section 6.
 const MAX_REASON_CHARS = 200;
-const TXT_TYPE = 16;
-const DNS_NAME = /^[A-Za-z0-9_.-]+$/;
-const DECIMAL_ESCAPE = /^\d{3}/;
+const QUERY_ID = 0; // HTTP matches each response to its request (RFC 8484 section 4.1).
+const HEADER_BYTES = 12;
+const NS = 2;
+const TXT = 16;
+const OPT = 41;
+const IN = 1;
+const DNS_LABEL = /^[A-Za-z0-9_-]{1,63}$/;
 
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
-const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err)).slice(0, MAX_REASON_CHARS);
-const timedOut = (err: unknown): boolean => isRecord(err) && (err.name === 'TimeoutError' || err.name === 'AbortError');
+function requireWireResponse(status: number | undefined, contentType: string | null | undefined): void {
+  if (status !== 200) throw new Error(`the resolver answered with the HTTP status ${status ?? 'missing'}`);
+  if (contentType?.trim().toLowerCase() !== DNS_MESSAGE) throw new Error('the HTTP answer is not application/dns-message');
+}
 
-/**
- * The text of one TXT record as a resolver writes it: a list of character strings in quotes, with a space between two strings. The quotes go, the strings are joined, and the text is trimmed.
- * Inside a string, `\"` and `\\` are the characters that they stand for, and `\DDD` is the character with that decimal code. A text that does not start with a quote is the text as it is. A text
- * that starts with a quote and is no list of strings (a quote that is never closed, a word after a string) is the text as it is, and so it matches nothing.
- */
-function textOf(data: string): string {
-  const trimmed = data.trim();
-  if (!trimmed.startsWith('"')) return trimmed;
-  const parts: string[] = [];
-  let at = 0;
-  while (at < trimmed.length) {
-    while (at < trimmed.length && /\s/.test(trimmed.charAt(at))) at += 1;
-    if (at >= trimmed.length) break;
-    if (trimmed.charAt(at) !== '"') return trimmed;
-    at += 1;
-    let part = '';
-    for (; at < trimmed.length && trimmed.charAt(at) !== '"'; at += 1) {
-      if (trimmed.charAt(at) !== '\\' || at + 1 >= trimmed.length) {
-        part += trimmed.charAt(at);
-        continue;
-      }
-      const code = DECIMAL_ESCAPE.exec(trimmed.slice(at + 1, at + 4))?.[0];
-      if (code !== undefined) {
-        part += String.fromCharCode(Number(code));
-        at += 3;
-      } else {
-        at += 1;
-        part += trimmed.charAt(at);
-      }
+async function readWireBody(stream: AsyncIterable<Uint8Array>): Promise<Buffer> {
+  let length = 0;
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of stream) {
+    length += chunk.length;
+    if (length > MAX_MESSAGE_BYTES) throw new Error('the answer is too long to read');
+    chunks.push(chunk);
+  }
+  const first = chunks[0];
+  return chunks.length === 1 && Buffer.isBuffer(first) ? first : Buffer.concat(chunks, length);
+}
+
+/** Use an injected fetch for the same wire requests, without opening a separate connection. */
+export function dohUsingFetch(fetchImpl: typeof fetch): DohLookup {
+  return async (url, signal) => {
+    const response = await fetchImpl(url.href, { method: 'GET', headers: { accept: DNS_MESSAGE }, redirect: 'manual', signal });
+    try {
+      if (response.redirected) throw new Error('the resolver redirected the query');
+      requireWireResponse(response.status, response.headers.get('content-type'));
+      if (response.body === null) throw new Error('the HTTP answer has no body');
+    } catch (err) {
+      void response.body?.cancel().catch(() => undefined);
+      throw err;
     }
-    if (at >= trimmed.length) return trimmed;
+    return readWireBody(Readable.fromWeb(response.body as ReadableStream<Uint8Array>, { signal }));
+  };
+}
+
+/** Use verified TLS and HTTP/2. Do not follow redirects or fall back to another protocol. */
+export const dohOverHttp2: DohLookup = (url, signal) => new Promise((resolve, reject) => {
+  signal.throwIfAborted();
+  if (url.protocol !== 'https:') throw new Error('the resolver URL must use HTTPS');
+  const client = connect(url.origin, {
+    ALPNProtocols: ['h2'], servername: url.hostname, rejectUnauthorized: true, settings: { enablePush: false },
+  });
+  let closed = false;
+  let sent = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    signal.removeEventListener('abort', abort);
+    client.destroy();
+  };
+  const fail = (error: unknown) => { reject(error); close(); };
+  const abort = () => fail(signal.reason);
+  const incomplete = () => new Error('the HTTP/2 answer did not complete');
+  signal.addEventListener('abort', abort, { once: true });
+  client.on('error', fail);
+  client.once('close', () => { if (!sent && !closed) fail(incomplete()); });
+  client.once('connect', () => {
+    try {
+      if (client.alpnProtocol !== 'h2') throw new Error('the resolver did not negotiate HTTP/2');
+      const stream = client.request({
+        ':method': 'GET', ':authority': url.host, ':path': `${url.pathname}${url.search}`, accept: DNS_MESSAGE,
+      }, { endStream: true });
+      sent = true;
+      stream.on('error', fail);
+      let answered = false;
+      stream.once('close', () => { if (!answered || !stream.readableEnded || stream.rstCode !== 0) fail(incomplete()); });
+      stream.once('response', (headers) => {
+        try {
+          const type = headers['content-type'];
+          requireWireResponse(headers[':status'], typeof type === 'string' ? type : undefined);
+          answered = true;
+          void readWireBody(stream).then((body) => {
+            if (stream.rstCode !== 0) fail(incomplete());
+            else { resolve(body); close(); }
+          }, fail);
+        } catch (err) { fail(err); }
+      });
+    } catch (err) { fail(err); }
+  });
+});
+
+/** Compare wire labels and accept compression only to label boundaries of earlier names. */
+function readName(body: Buffer, start: number, expected: Buffer, known: Set<number>): { end: number; matches: boolean } {
+  let at = start;
+  let end: number | undefined;
+  let used = 0;
+  let matches = true;
+  let jumps = 0;
+  while (true) {
+    const size = body.readUInt8(at);
+    if ((size & 0xc0) === 0xc0) {
+      const target = body.readUInt16BE(at) & 0x3fff;
+      if (target >= start || !known.has(target) || ++jumps > 128) throw new Error('invalid DNS compression pointer');
+      if (end === undefined) { known.add(at); end = at + 2; }
+      at = start = target;
+      continue;
+    }
+    if (size > 63 || used + size + 1 > 255 || at + size >= body.length) throw new Error('invalid DNS label');
+    if (end === undefined) known.add(at);
+    matches &&= size === expected[used];
     at += 1;
-    parts.push(part);
+    used += 1;
+    for (let i = 0; matches && i < size; i += 1) {
+      const byte = body[at + i]!;
+      matches = (byte >= 65 && byte <= 90 ? byte + 32 : byte) === expected[used + i];
+    }
+    at += size;
+    used += size;
+    if (size === 0) return { end: end ?? at, matches: matches && used === expected.length };
   }
-  return parts.join('').trim();
 }
 
-/** Reads the body of an answer: the reason that no resolver can show the value, or the TXT records of the answer as texts. */
-function recordsOf(body: string): { error: string } | { records: string[] } {
-  let parsed: unknown;
-  try { parsed = JSON.parse(body); } catch { return { error: 'the body of the answer is not JSON' }; }
-  if (!isRecord(parsed) || typeof parsed.Status !== 'number') return { error: 'the body of the answer is not a DNS answer (it has no Status)' };
-  if (parsed.Status !== 0) return { error: `the answer has the DNS status ${parsed.Status}, and 0 is the status of an answer` };
-  if (parsed.Answer === undefined) return { records: [] };
-  if (!Array.isArray(parsed.Answer)) return { error: 'the body of the answer is not a DNS answer (its Answer is not a list)' };
-  const records = parsed.Answer.flatMap((entry: unknown) => (isRecord(entry) && entry.type === TXT_TYPE && typeof entry.data === 'string' ? [textOf(entry.data)] : []));
-  return { records };
+function matchesTxt(chunks: readonly Uint8Array[], expected: Buffer): boolean {
+  let at = 0;
+  for (const chunk of chunks) {
+    const end = at + chunk.length;
+    if (!expected.subarray(at, end).equals(chunk)) return false;
+    at = end;
+  }
+  return at === expected.length;
 }
 
-/** Asks one resolver. It never throws: a failure is the reason that the resolver did not show the value. */
-async function ask(fetchImpl: typeof fetch, resolver: Resolver, name: string, value: string, timeoutMs: number): Promise<ResolverAnswer> {
-  const not = (error: string): ResolverAnswer => ({ resolver: resolver.name, seen: false, error });
-  const url = new URL(resolver.url);
-  url.searchParams.set('name', name);
-  url.searchParams.set('type', 'TXT');
-  let status: number;
-  let body: string;
+/** Check the DNS frame and count only complete TXT records in the answer for the exact question. */
+function refusalOf(body: Buffer, name: Buffer, plain: Buffer, tagged: Buffer): string | null {
   try {
-    const response = await fetchImpl(url.href, { method: 'GET', headers: { accept: 'application/dns-json' }, redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) });
-    status = response.status;
-    body = await response.text();
-  } catch (err) {
-    return not(timedOut(err) ? `the resolver timed out after ${timeoutMs / 1000} s` : `the call failed (${errorText(err)})`);
+    const flags = body.readUInt16BE(2);
+    if (body.readUInt16BE(0) !== QUERY_ID || (flags & 0xf840) !== 0x8000) return 'the DNS response has the wrong ID or flags';
+    if ((flags & TRUNCATED_RESPONSE) !== 0) return 'the DNS answer is truncated';
+    if ((flags & 15) !== 0) return `the answer has the DNS status ${flags & 15}`;
+    if (body.readUInt16BE(4) !== 1) return 'the DNS response does not have one question';
+    const answers = body.readUInt16BE(6);
+    const authorities = body.readUInt16BE(8);
+    const records = answers + authorities + body.readUInt16BE(10);
+    const known = new Set<number>();
+    const question = readName(body, HEADER_BYTES, name, known);
+    if (!question.matches || body.readUInt16BE(question.end) !== TXT || body.readUInt16BE(question.end + 2) !== IN) {
+      return 'the DNS response has the wrong question';
+    }
+
+    let position = question.end + 4;
+    let count = 0;
+    let found = false;
+    let edns = false;
+    for (let i = 0; i < records; i += 1) {
+      const owner = readName(body, position, name, known);
+      const type = body.readUInt16BE(owner.end);
+      const klass = body.readUInt16BE(owner.end + 2);
+      const dataStart = owner.end + 10;
+      const end = dataStart + body.readUInt16BE(owner.end + 8);
+      if (end > body.length) throw new Error('invalid DNS resource record length');
+      if (type === OPT) {
+        if (edns || i < answers + authorities || owner.end !== position + 1 || body[position] !== 0 || body[owner.end + 5] !== 0) {
+          throw new Error('invalid DNS OPT record');
+        }
+        edns = true;
+        const extended = body[owner.end + 4]!;
+        if (extended !== 0) return `the answer has the DNS status ${extended << 4}`;
+        for (let option = dataStart; option < end;) {
+          if (option + 4 > end) throw new Error('invalid DNS option length');
+          option += 4 + body.readUInt16BE(option + 2);
+          if (option > end) throw new Error('invalid DNS option length');
+        }
+      } else if (type === NS) {
+        // A later glue owner can point to a label in this nameserver name (RFC 1035).
+        if (readName(body, dataStart, name, known).end !== end) throw new Error('invalid DNS NS record length');
+      } else if (type === TXT) {
+        // The codec reads the length field followed by the character strings.
+        const chunks = txt.decode(body.subarray(owner.end + 8, end));
+        if (chunks.length === 0) throw new Error('missing DNS character string');
+        if (i < answers && klass === IN && owner.matches) {
+          count += 1;
+          found ||= matchesTxt(chunks, plain) || matchesTxt(chunks, tagged);
+        }
+      }
+      position = end;
+    }
+    if (position !== body.length) throw new Error('trailing bytes in DNS message');
+    if (found) return null;
+    if (count === 0) return 'the answer has no TXT record for this name and class';
+    return `the answer has no TXT record with this value (${count} TXT record(s) of other values)`;
+  } catch {
+    return 'the body is not a complete, valid DNS message';
   }
-  if (status !== 200) return not(`the resolver answered with the HTTP status ${status}`);
-  if (body.length > MAX_BODY_CHARS) return not('the answer is too long to read');
-  const read = recordsOf(body);
-  if ('error' in read) return not(read.error);
-  if (read.records.length === 0) return not('the answer has no TXT record');
-  if (!read.records.some((text) => text === value || text === `did=${value}`)) return not(`the answer has no TXT record with this value (${read.records.length} TXT record(s) of other values)`);
-  return { resolver: resolver.name, seen: true, error: null };
+}
+
+async function ask(lookup: DohLookup, resolver: Resolver, query: string, name: Buffer, plain: Buffer, tagged: Buffer, timeoutMs: number): Promise<ResolverAnswer> {
+  const url = new URL(resolver.url);
+  url.searchParams.set('dns', query);
+  const signal = AbortSignal.timeout(timeoutMs);
+  let error: string | null;
+  try {
+    const body = await lookup(url, signal);
+    signal.throwIfAborted();
+    error = refusalOf(body, name, plain, tagged);
+  } catch (err) {
+    const reason = (err instanceof Error ? err.message : String(err)).slice(0, MAX_REASON_CHARS);
+    error = signal.aborted || (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError'))
+      ? `the resolver timed out after ${timeoutMs / 1000} s` : `the call failed (${reason})`;
+  }
+  return { resolver: resolver.name, seen: error === null, error };
 }
 
 /**
  * Asks the three public resolvers for the TXT records of `name`, all at the same time, and says for each whether it shows `value`. `ok` is true only when all three do. `options.timeoutMs`
  * changes the limit of 10 seconds for each resolver (a test uses a short one).
  */
-export async function checkTxt(fetchImpl: typeof fetch, name: string, value: string, options: { timeoutMs?: number } = {}): Promise<TxtCheck> {
-  if (typeof name !== 'string' || !DNS_NAME.test(name)) throw new TypeError('checkTxt needs the name of a DNS record: letters, digits, underscores, hyphens and dots');
+export async function checkTxt(lookup: DohLookup, name: string, value: string, options: { timeoutMs?: number } = {}): Promise<TxtCheck> {
+  if (typeof name !== 'string') throw new TypeError('checkTxt needs a DNS record name');
+  const unrooted = name.replace(/\.$/, '');
+  if (unrooted.length > 253 || !unrooted.split('.').every((label) => DNS_LABEL.test(label))) throw new TypeError('checkTxt needs a valid DNS record name');
+  const canonical = unrooted.toLowerCase();
   if (typeof value !== 'string' || value.trim() === '') throw new TypeError('checkTxt needs a value that is not empty');
   const timeoutMs = options.timeoutMs ?? RESOLVER_TIMEOUT_MS;
-  const resolvers = await Promise.all(RESOLVERS.map((resolver) => ask(fetchImpl, resolver, name, value, timeoutMs)));
+  const encoded = encode({ type: 'query', id: QUERY_ID, flags: RECURSION_DESIRED, questions: [{ name: canonical, type: 'TXT', class: 'IN' }] });
+  const wire = Buffer.from(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+  const query = wire.toString('base64url');
+  const owner = wire.subarray(HEADER_BYTES, -4);
+  const plain = Buffer.from(value);
+  const tagged = Buffer.from(`did=${value}`);
+  const resolvers = await Promise.all(RESOLVERS.map((resolver) => ask(lookup, resolver, query, owner, plain, tagged, timeoutMs)));
   return { ok: resolvers.every((one) => one.seen), resolvers };
 }

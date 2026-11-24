@@ -36,7 +36,7 @@ A secret in the wrong line of an env file is the mistake that the start guards a
 | `POST /cosign/delegate` | the co-sign route: no token, no job slot. It signs a sub-delegation for a buyer that the allowlist names |
 | any other route | 404 `{"error":"not_found"}` |
 
-The body of `POST /` is the wire message: a one-element array whose `content` is the request JSON as a string. It is read up to 1000000 bytes. The request JSON is read up to 900000 bytes, and it is one of the two operations. The manifest publishes its schema under `interface.request_schema`. A member that the schema does not list is refused. Each result carries the member `fault_mode`, which is always the empty text.
+The body of `POST /` and `POST /precheck` is the wire message: a one-element array whose `content` is the request JSON as a string. The service accepts at most 900000 bytes of wire payload, including the framing and escapes. The shared HTTP reader stops at 1000000 bytes. The manifest publishes the request schema under `interface.request_schema`. A member that the schema does not list is refused. Each result carries the member `fault_mode`, which is always the empty text.
 
 One job runs at a time, because the keys pay one escrow at a time. A second job gets 409 `{"error":"busy"}`. While a job runs, the server writes a `102 Processing` line every 60 s. A job has its own deadline of 1620000 ms after its request arrives. That is 60 s inside the `SERVICE_TIMEOUT_MS` of the runtime, 1680000 ms. The window of the advert, `ADVERT_MAX_PROCESSING_MS`, is at least 1800000 ms.
 

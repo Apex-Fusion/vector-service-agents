@@ -137,6 +137,12 @@ pnpm --filter @vsa/advocate test
 
 The tests need no network and no key. The Brave Search API, the result pages, the chat supplier and OpenRouter are stand-ins (`test/fake-fetch.ts`, with the answers and the pages of `test/fixtures/`, and the chat supplier and its indexer in `test/fake-chain-support.ts`), the chain is the fake chain of `packages/buyer-core`, and a fake clock runs the budgets of a job. The pages of the fixtures are written by hand, and nothing is downloaded.
 
+The normal suite checks the output for the large HTML inputs. To also check the 2 s limit for each input, run this command from the repository root on an idle machine. Do not run other tests at the same time.
+
+```bash
+VSA_WORKLOAD_PERF=1 pnpm --filter @vsa/advocate exec vitest run test/html.test.ts -t 'extractText: large malformed and sparse pages' --maxWorkers=1
+```
+
 ## Image
 
 `Dockerfile` builds the service image on `node:22-bookworm-slim`. The build context is the repository root, because the image installs the workspace from the lockfile: `docker build -f agents/advocate/Dockerfile -t vsa/advocate:dev .`. The image runs as the `node` user under `tini`, listens on 9094 and answers `/healthz` for its health check. `/data` is a volume owned by `node`. The image has no Python and no model, and it fetches nothing at run time but what a job asks for, what the hire of a chat supplier reads and sends, and what the janitor asks of the Vector chain about the escrows a job left behind. The memory limit is set where the container is run; the compose file gives it 1024m.

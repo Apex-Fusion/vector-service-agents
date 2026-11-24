@@ -1,4 +1,4 @@
-"""The JSON contract of worker.py, with a model that is a stub: no faster-whisper, no model files.
+"""The JSON contract of worker.py. The jobs use a stub model. The startup check uses the library if installed.
 
 Run: python3 -I test_worker.py  (test/worker-contract.test.ts runs it so)
 """
@@ -14,6 +14,16 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I leaves the folder of the script off the path
 
 import worker  # noqa: E402
+
+try:
+    import faster_whisper
+except ImportError:
+    faster_whisper = None
+
+try:
+    from huggingface_hub import constants
+except ImportError:
+    constants = None
 
 
 class Word:
@@ -64,10 +74,6 @@ def without_network(action):
 
     Answers what action() answered, the connections it tried and the seconds it took.
     """
-    try:
-        from huggingface_hub import constants
-    except ImportError:
-        constants = None
     attempts = []
 
     def refuse(*args, **kwargs):
@@ -177,9 +183,7 @@ class Contract(unittest.TestCase):
     def test_check_names_the_model_files_that_are_missing(self):
         stdout = io.StringIO()
         here = os.path.dirname(os.path.abspath(__file__))
-        try:
-            import faster_whisper  # noqa: F401
-        except ImportError:
+        if faster_whisper is None:
             self.skipTest("faster-whisper is not installed here; the check is run for real by test/asr-real.test.ts")
         self.assertEqual(worker.main(["--check", here], io.BytesIO(b""), stdout), 1)
         out = json.loads(stdout.getvalue())
@@ -207,4 +211,6 @@ class Contract(unittest.TestCase):
         self.assertLess(took, 5)
 
 if __name__ == "__main__":
+    # Load the interpreter and libraries before the runner starts its test watchdog.
+    print("worker contract ready", flush=True)
     unittest.main()
